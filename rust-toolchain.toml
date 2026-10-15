@@ -1,0 +1,6 @@
+[toolchain]
+# Pinned nightly: the limine and acpi crates need nightly features (docs/decisions.md, M0).
+channel = "nightly-2026-10-14"
+profile = "minimal"
+components = ["rustfmt", "clippy"]
+targets = ["x86_64-unknown-none"]

@@ -24,11 +24,12 @@ Sources: the five merged memos in `docs/research/`. Milestones are defined in `d
 
 | Needed by | Decision | Recommended default |
 |---|---|---|
-| M0 | Rust toolchain | Pinned nightly, no older than `nightly-2026-07-10`. The `limine` and `acpi` crates require nightly features. |
-| M0 | Firmware and boot media | UEFI only: OVMF with a virtual FAT drive. |
-| M0 | QEMU version in WSL2 | Record which is used: apt 8.2.2 or a build of 11.1.x. |
-| M0 | Accelerators and CI | KVM in WSL2 for daily work. TCG in CI and for deterministic measurement (icount). WHPX optional. |
-| M0 | Code budget, reuse policy, boot metric | Soft size budget checked in CI. Borrow ideas only, clean-room. Record boot-to-prompt time from the first boot. |
+| M0, decided 2026-10-15 | Rust toolchain | `nightly-2026-10-14`, pinned in `rust-toolchain.toml`. The `limine` and `acpi` crates require nightly features. |
+| M0, decided 2026-10-15 | Firmware and boot media | UEFI only: OVMF code plus a fresh variable store, Limine 12.9.3 (checksum pinned in xtask), QEMU virtual FAT drive. |
+| M0, decided 2026-10-15 | QEMU version | CI uses Ubuntu 24.04's apt QEMU. Locally, whatever `cargo xtask` finds, recorded in the run log. |
+| M0, decided 2026-10-15 | Accelerators and CI | CI runs the boot test under both KVM and TCG. Locally, KVM in WSL2 once Windows' Virtual Machine Platform is enabled; TCG on Windows until then. WHPX only on explicit request. |
+| M0, decided 2026-10-15 | Code budget, reuse policy, boot metric | No size budget yet; revisit at M2. Borrow ideas only, clean-room. `cargo xtask test` prints boot-to-ready time, firmware included. |
+| M0, decided 2026-10-15 | Kernel licence (workspace manifest) | MPL-2.0 in `Cargo.toml` as the working choice. Contributor terms stay open until the first outside contribution. |
 | M1 | Panic strategy | Abort. |
 | M1 | Framebuffer, font, source links | Limine 32-bit framebuffer, a Unicode-subset font. Source kept as plain text with sidecar metadata, bundled compressed, linked through DWARF and ctags. |
 | M2 | Paging, heap, reclaim | 4-level paging, the `talc` heap, a `ReclaimPolicy` trait with a CLOCK default, page-table layout ready for user mode. |
