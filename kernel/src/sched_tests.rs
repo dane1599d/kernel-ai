@@ -141,7 +141,7 @@ impl SchedPolicy for Starver {
 pub fn watchdog_check() -> Result<(), &'static str> {
     let tids = spawn_hogs(3)?;
     VICTIM.store(tids[1], Ordering::SeqCst);
-    threads::set_policy(alloc::boxed::Box::new(Starver(RoundRobin::new())));
+    threads::set_policy_all(|| alloc::boxed::Box::new(Starver(RoundRobin::new())));
     let victim_before = HOG_WORK[1].load(Ordering::Relaxed);
     log!("sched: installed a policy that starves thread {}", tids[1]);
     threads::sleep_ms(1_000);

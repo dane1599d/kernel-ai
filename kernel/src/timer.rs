@@ -4,17 +4,26 @@
 //! interrupt latency never accumulates into drift. The same one-shot mechanism
 //! will later allow tickless idle.
 
-use crate::{apic, hpet, log};
+use crate::{apic, hpet, log, percpu};
 use core::sync::atomic::{AtomicU64, Ordering};
 
 pub const HZ: u64 = 1000;
 const PERIOD_NS: u64 = 1_000_000_000 / HZ;
 const CALIBRATION_NS: u64 = 10_000_000;
 
+/// CPU 0's tick count: the system-wide clock the tests measure.
 static TICKS: AtomicU64 = AtomicU64::new(0);
-static START_NS: AtomicU64 = AtomicU64::new(0);
-/// Local APIC timer counts per millisecond at divide-by-16.
+/// Local APIC timer counts per millisecond at divide-by-16. Every local APIC timer
+/// runs from the same clock, so the boot CPU's calibration serves all CPUs.
 static APIC_PER_MS: AtomicU64 = AtomicU64::new(0);
+
+/// Starts an application processor's 1 kHz tick using the boot CPU's calibration.
+pub fn init_ap() {
+    apic::timer_configure();
+    let now = hpet::nanos();
+    percpu::this().tick_start_ns.store(now, Ordering::Relaxed);
+    arm(now + PERIOD_NS);
+}
 
 /// Calibrates the local APIC timer against the HPET and starts ticking.
 /// Interrupts must still be disabled.
@@ -33,7 +42,7 @@ pub fn init() -> Result<(), &'static str> {
     }
     APIC_PER_MS.store(per_ms, Ordering::Relaxed);
     let now = hpet::nanos();
-    START_NS.store(now, Ordering::Relaxed);
+    percpu::this().tick_start_ns.store(now, Ordering::Relaxed);
     arm(now + PERIOD_NS);
     log!(
         "timer: APIC {} counts/ms, HPET {} Hz, ticking at {HZ} Hz",
@@ -45,8 +54,12 @@ pub fn init() -> Result<(), &'static str> {
 
 /// Called from the timer interrupt.
 pub fn on_tick() {
-    let ticks = TICKS.fetch_add(1, Ordering::Relaxed) + 1;
-    arm(START_NS.load(Ordering::Relaxed) + (ticks + 1) * PERIOD_NS);
+    let cpu = percpu::this();
+    let ticks = cpu.ticks.fetch_add(1, Ordering::Relaxed) + 1;
+    if percpu::index() == 0 {
+        TICKS.fetch_add(1, Ordering::Relaxed);
+    }
+    arm(cpu.tick_start_ns.load(Ordering::Relaxed) + (ticks + 1) * PERIOD_NS);
 }
 
 fn arm(deadline_ns: u64) {

@@ -3,7 +3,7 @@
 use crate::backtrace::current_rbp;
 use crate::faults::{self, Exception};
 use crate::gdt::DOUBLE_FAULT_IST_INDEX;
-use crate::{apic, keyboard, threads, timer};
+use crate::{apic, keyboard, smp, threads, timer};
 use spin::LazyLock;
 use x86_64::registers::control::Cr2;
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
@@ -25,6 +25,9 @@ static IDT: LazyLock<InterruptDescriptorTable> = LazyLock::new(|| {
     idt[apic::TIMER_VECTOR].set_handler_fn(timer_interrupt);
     idt[apic::KEYBOARD_VECTOR].set_handler_fn(keyboard_interrupt);
     idt[apic::SPURIOUS_VECTOR].set_handler_fn(spurious_interrupt);
+    idt[apic::RESCHEDULE_VECTOR].set_handler_fn(reschedule_ipi);
+    idt[apic::TLB_VECTOR].set_handler_fn(tlb_ipi);
+    idt[apic::HALT_VECTOR].set_handler_fn(halt_ipi);
     idt
 });
 
@@ -77,3 +80,18 @@ extern "x86-interrupt" fn keyboard_interrupt(_frame: InterruptStackFrame) {
 
 /// Spurious interrupts must not be acknowledged.
 extern "x86-interrupt" fn spurious_interrupt(_frame: InterruptStackFrame) {}
+
+extern "x86-interrupt" fn reschedule_ipi(_frame: InterruptStackFrame) {
+    apic::end_of_interrupt();
+    threads::on_reschedule_ipi();
+}
+
+extern "x86-interrupt" fn tlb_ipi(_frame: InterruptStackFrame) {
+    smp::on_tlb_ipi();
+    apic::end_of_interrupt();
+}
+
+/// Another CPU hit a fatal error: stop here so its report is not interleaved.
+extern "x86-interrupt" fn halt_ipi(_frame: InterruptStackFrame) {
+    crate::halt_forever();
+}

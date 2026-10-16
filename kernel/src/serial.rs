@@ -2,6 +2,8 @@
 
 use crate::port::{inb, outb};
 use core::fmt::{self, Write};
+use core::sync::atomic::{AtomicUsize, Ordering};
+use x86_64::instructions::interrupts;
 
 const COM1: u16 = 0x3F8;
 const LINE_STATUS: u16 = COM1 + 5;
@@ -45,11 +47,36 @@ impl Write for Serial {
     }
 }
 
+/// CPU index plus one of the CPU printing a line, or 0. Keeps lines from different
+/// CPUs apart. A CPU may re-enter (a fault while printing) without deadlocking.
+static LINE_OWNER: AtomicUsize = AtomicUsize::new(0);
+
 #[doc(hidden)]
 pub fn _print(args: fmt::Arguments) {
-    // Serial writes cannot fail; the Result exists only to satisfy fmt::Write.
-    let _ = Serial.write_fmt(args);
-    crate::console::print(args);
+    interrupts::without_interrupts(|| {
+        let me = crate::percpu::index() + 1;
+        let reentered = LINE_OWNER.load(Ordering::Acquire) == me;
+        if !reentered {
+            while LINE_OWNER
+                .compare_exchange(0, me, Ordering::Acquire, Ordering::Relaxed)
+                .is_err()
+            {
+                core::hint::spin_loop();
+            }
+        }
+        // Serial writes cannot fail; the Result exists only to satisfy fmt::Write.
+        let _ = Serial.write_fmt(args);
+        crate::console::print(args);
+        if !reentered {
+            LINE_OWNER.store(0, Ordering::Release);
+        }
+    });
+}
+
+/// Releases the line lock unconditionally. Only for fatal-error reporting, after the
+/// other CPUs were halted, possibly while holding it.
+pub fn break_line_lock() {
+    LINE_OWNER.store(0, Ordering::Release);
 }
 
 /// Prints a line to COM1 and the framebuffer console.

@@ -85,8 +85,13 @@ pub fn breakpoint(frame: &InterruptStackFrame) {
 /// the expected one and its report is correct, and fail otherwise.
 pub fn fatal(fault: Exception, frame: &InterruptStackFrame, handler_rbp: u64) -> ! {
     let rip = frame.instruction_pointer.as_u64();
+    crate::smp::halt_others();
+    crate::serial::break_line_lock();
     log!("");
-    log!("=== CPU EXCEPTION: {fault} ===");
+    log!(
+        "=== CPU EXCEPTION on cpu {}: {fault} ===",
+        crate::percpu::index()
+    );
     log!("rip: {}", Describe(rip));
     log!("rsp: {:#018x}", frame.stack_pointer.as_u64());
     log!("backtrace:");

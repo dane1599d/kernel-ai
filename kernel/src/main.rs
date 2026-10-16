@@ -1,11 +1,12 @@
-//! Kernel AI: M4, threads and preemptive scheduling.
+//! Kernel AI: M5, multiprocessing.
 //!
 //! Boots through Limine, logs to COM1 and the framebuffer console, loads the GDT,
 //! TSS and IDT, sets up memory, then the APICs, HPET, a 1 kHz timer and the PS/2
-//! keyboard. Fault addresses resolve to source lines from the `kernel.lines` module.
-//! The kernel command line selects a self-test: `test` (boot checks), or
-//! `test=` one of `page-fault`, `double-fault`, `write-protect`, `stack-overflow`,
-//! `timer`, `keyboard`, `sched`, `watchdog`.
+//! keyboard, starts the scheduler, and brings up every other CPU. Fault addresses
+//! resolve to source lines from the `kernel.lines` module. The kernel command line
+//! selects a self-test: `test` (boot checks), or `test=` one of `page-fault`,
+//! `double-fault`, `write-protect`, `stack-overflow`, `timer`, `keyboard`, `sched`,
+//! `watchdog`, `smp`, `tlb`, `storm` or `storm-SECONDS`.
 
 #![no_std]
 #![no_main]
@@ -23,20 +24,23 @@ mod idt;
 mod keyboard;
 mod lines;
 mod memory;
+mod percpu;
 mod platform;
 mod port;
 mod qemu;
 mod sched_tests;
 mod serial;
+mod smp;
+mod smp_tests;
 #[cfg(feature = "spikes")]
 mod spikes;
 mod threads;
 mod timer;
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use limine::request::{
     ExecutableCmdlineRequest, FramebufferRequest, HhdmRequest, MemmapRequest, ModulesRequest,
-    RsdpRequest,
+    MpRequest, RsdpRequest,
 };
 use limine::{BaseRevision, RequestsEndMarker, RequestsStartMarker};
 use qemu::ExitCode;
@@ -73,12 +77,19 @@ static HHDM: HhdmRequest = HhdmRequest::new();
 #[unsafe(link_section = ".requests")]
 static RSDP: RsdpRequest = RsdpRequest::new();
 
+/// Application processors, in xAPIC mode (flag 0: no x2APIC).
+#[used]
+#[unsafe(link_section = ".requests")]
+static MP: MpRequest = MpRequest::new(0);
+
 #[used]
 #[unsafe(link_section = ".requests_end_marker")]
 static REQUESTS_END: RequestsEndMarker = RequestsEndMarker::new();
 
 /// Set when the kernel command line selects a self-test; outcomes then exit QEMU.
 static TEST_MODE: AtomicBool = AtomicBool::new(false);
+/// Number of CPUs Limine reported, for the boot check.
+static REPORTED_CPUS: AtomicUsize = AtomicUsize::new(1);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SelfTest {
@@ -92,7 +103,13 @@ enum SelfTest {
     Keyboard,
     Sched,
     Watchdog,
+    Smp,
+    Tlb,
+    /// Spawn/exit/sleep storm for this many seconds.
+    Storm(u64),
 }
+
+const DEFAULT_STORM_SECONDS: u64 = 60;
 
 fn self_test_from(cmdline: &str) -> SelfTest {
     cmdline
@@ -107,14 +124,28 @@ fn self_test_from(cmdline: &str) -> SelfTest {
             "test=keyboard" => Some(SelfTest::Keyboard),
             "test=sched" => Some(SelfTest::Sched),
             "test=watchdog" => Some(SelfTest::Watchdog),
-            _ => None,
+            "test=smp" => Some(SelfTest::Smp),
+            "test=tlb" => Some(SelfTest::Tlb),
+            other => other.strip_prefix("test=storm").map(|rest| {
+                let seconds = rest.strip_prefix('-').and_then(|s| s.parse().ok());
+                SelfTest::Storm(seconds.unwrap_or(DEFAULT_STORM_SECONDS))
+            }),
         })
         .unwrap_or(SelfTest::None)
+}
+
+/// Runs one self-test case and reports its outcome to QEMU.
+fn run_case(check: impl FnOnce() -> Result<(), &'static str>) -> ! {
+    if let Err(message) = check() {
+        fail(message);
+    }
+    test_exit(ExitCode::Success)
 }
 
 /// Kernel entry point, called by Limine.
 #[unsafe(no_mangle)]
 extern "C" fn kmain() -> ! {
+    percpu::init(0);
     serial::init();
     let test = CMDLINE
         .response()
@@ -129,7 +160,7 @@ extern "C" fn kmain() -> ! {
         .and_then(|r| r.framebuffers().first().copied())
     {
         let ready = console::init(fb);
-        log!("Kernel AI {} (M4)", env!("CARGO_PKG_VERSION"));
+        log!("Kernel AI {} (M5)", env!("CARGO_PKG_VERSION"));
         log!(
             "framebuffer: {}x{} {} bpp, console: {}",
             fb.width,
@@ -139,7 +170,7 @@ extern "C" fn kmain() -> ! {
         );
     } else {
         log!(
-            "Kernel AI {} (M4), no framebuffer",
+            "Kernel AI {} (M5), no framebuffer",
             env!("CARGO_PKG_VERSION")
         );
     }
@@ -153,6 +184,7 @@ extern "C" fn kmain() -> ! {
     if let Err(message) = threads::init() {
         fail(message);
     }
+    start_other_cpus();
 
     match test {
         SelfTest::PageFault => {
@@ -168,30 +200,13 @@ extern "C" fn kmain() -> ! {
             let result = memory::selftest::trigger_stack_overflow();
             fail(result.err().unwrap_or("stack-overflow test returned"));
         }
-        SelfTest::Timer => {
-            if let Err(message) = timer::sixty_second_check() {
-                fail(message);
-            }
-            test_exit(ExitCode::Success);
-        }
-        SelfTest::Keyboard => {
-            if let Err(message) = keyboard::typing_check() {
-                fail(message);
-            }
-            test_exit(ExitCode::Success);
-        }
-        SelfTest::Sched => {
-            if let Err(message) = sched_tests::latency_check() {
-                fail(message);
-            }
-            test_exit(ExitCode::Success);
-        }
-        SelfTest::Watchdog => {
-            if let Err(message) = sched_tests::watchdog_check() {
-                fail(message);
-            }
-            test_exit(ExitCode::Success);
-        }
+        SelfTest::Timer => run_case(timer::sixty_second_check),
+        SelfTest::Keyboard => run_case(keyboard::typing_check),
+        SelfTest::Sched => run_case(sched_tests::latency_check),
+        SelfTest::Watchdog => run_case(sched_tests::watchdog_check),
+        SelfTest::Smp => run_case(smp_tests::all_cpus_check),
+        SelfTest::Tlb => run_case(smp_tests::tlb_check),
+        SelfTest::Storm(seconds) => run_case(|| smp_tests::storm_check(seconds)),
         SelfTest::Boot | SelfTest::None => {}
     }
 
@@ -214,6 +229,19 @@ extern "C" fn kmain() -> ! {
     keyboard::echo_forever()
 }
 
+/// Brings up every application processor Limine reported.
+fn start_other_cpus() {
+    let Some(mp) = MP.response() else {
+        log!("smp: Limine reported no other CPUs");
+        return;
+    };
+    REPORTED_CPUS.store(mp.cpus().len(), Ordering::Relaxed);
+    match smp::start_aps(mp.cpus(), mp.bsp_lapic_id) {
+        Ok(online) => log!("smp: {online} CPU(s) online"),
+        Err(message) => fail(message),
+    }
+}
+
 /// ACPI, local APIC, HPET, the 1 kHz timer and the keyboard, then interrupts on.
 fn init_devices() -> &'static acpitables::Platform {
     let hhdm = HHDM.response().map_or(0, |r| r.offset);
@@ -222,6 +250,7 @@ fn init_devices() -> &'static acpitables::Platform {
     };
     let result = platform::init(rsdp, hhdm).and_then(|platform| {
         let apic_id = apic::init_local(platform)?;
+        smp::set_boot_lapic(u32::from(apic_id));
         let hpet = platform
             .hpet
             .ok_or("no HPET; a PIT fallback is not implemented yet")?;
@@ -293,6 +322,9 @@ fn boot_self_test() {
         fail("line table did not resolve a known function to kernel/src/faults.rs");
     }
     log!("self-test: breakpoint resumed, source lookup ok");
+    if let Err(message) = smp_tests::boot_check(REPORTED_CPUS.load(Ordering::Relaxed)) {
+        fail(message);
+    }
     if let Err(message) = sched_tests::boot_check() {
         fail(message);
     }
@@ -314,7 +346,9 @@ pub fn test_exit(code: ExitCode) -> ! {
 
 /// Logs a fatal error and stops.
 fn fail(message: &str) -> ! {
-    log!("FATAL: {message}");
+    smp::halt_others();
+    serial::break_line_lock();
+    log!("FATAL on cpu {}: {message}", percpu::index());
     backtrace::print_from(backtrace::current_rbp());
     test_exit(ExitCode::Failure)
 }
@@ -329,7 +363,9 @@ pub fn halt_forever() -> ! {
 
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-    log!("PANIC: {info}");
+    smp::halt_others();
+    serial::break_line_lock();
+    log!("PANIC on cpu {}: {info}", percpu::index());
     log!("backtrace:");
     backtrace::print_from(backtrace::current_rbp());
     test_exit(ExitCode::Failure)

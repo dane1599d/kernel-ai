@@ -3,6 +3,7 @@
 //! cargo xtask build [--release] [--spikes]
 //! cargo xtask run   [--release] [--spikes] [--accel auto|kvm|whpx|tcg]
 //! cargo xtask test  [--release] [--accel auto|kvm|whpx|tcg] [--timeout SECS]
+//! cargo xtask soak  [--accel auto|kvm|whpx|tcg]   (10-minute storm, M5 exit test)
 //!
 //! `test` boots the kernel headless once per test case (boot and memory checks,
 //! page fault, double fault, write-protect, stack overflow, 60 s timer, keyboard,
@@ -28,12 +29,16 @@ const KERNEL_TARGET: &str = "x86_64-unknown-none";
 /// QEMU exit status for `isa-debug-exit` value 0x10: (0x10 << 1) | 1.
 const QEMU_PASS: i32 = 33;
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
+const SOAK_TIMEOUT_SECS: u64 = 900;
+const CPUS: &str = "4";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Task {
     Build,
     Run,
     Test,
+    /// Long-running cases (the 10-minute storm), run on demand rather than on every PR.
+    Soak,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,14 +75,19 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         Some("build") => Task::Build,
         Some("run") => Task::Run,
         Some("test") => Task::Test,
-        other => return Err(format!("expected build, run or test, got {other:?}")),
+        Some("soak") => Task::Soak,
+        other => return Err(format!("expected build, run, test or soak, got {other:?}")),
     };
     let mut options = Options {
         task,
         release: false,
         spikes: task == Task::Test,
         accel: Accel::Auto,
-        timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECS),
+        timeout: Duration::from_secs(if task == Task::Soak {
+            SOAK_TIMEOUT_SECS
+        } else {
+            DEFAULT_TIMEOUT_SECS
+        }),
     };
     let mut rest = args[1..].iter();
     while let Some(arg) = rest.next() {
@@ -129,7 +139,12 @@ fn execute(options: &Options) -> Result<(), String> {
         return run_interactive(&qemu, &args, &target_dir);
     }
     let mut failures = Vec::new();
-    for (name, cmdline) in TEST_CASES {
+    let cases: &[(&str, &str)] = if options.task == Task::Soak {
+        &SOAK_CASES
+    } else {
+        &TEST_CASES
+    };
+    for &(name, cmdline) in cases {
         println!("xtask: test case {name} ({cmdline})");
         make_esp(&esp, &kernel, &line_table, &efi, cmdline)?;
         let firmware = find_firmware(&qemu, &target_dir)?;
@@ -148,7 +163,7 @@ fn execute(options: &Options) -> Result<(), String> {
         }
     }
     if failures.is_empty() {
-        println!("xtask: all {} test cases passed", TEST_CASES.len());
+        println!("xtask: all {} test cases passed", cases.len());
         Ok(())
     } else {
         Err(format!("failed test cases: {}", failures.join(", ")))
@@ -157,7 +172,7 @@ fn execute(options: &Options) -> Result<(), String> {
 
 /// Each test case boots the kernel once with this command line. The kernel itself
 /// decides pass or fail and reports it through isa-debug-exit.
-const TEST_CASES: [(&str, &str); 9] = [
+const TEST_CASES: [(&str, &str); 12] = [
     ("boot", "test"),
     ("page-fault", "test=page-fault"),
     ("double-fault", "test=double-fault"),
@@ -167,8 +182,13 @@ const TEST_CASES: [(&str, &str); 9] = [
     ("keyboard", "test=keyboard"),
     ("sched", "test=sched"),
     ("watchdog", "test=watchdog"),
+    ("smp", "test=smp"),
+    ("tlb", "test=tlb"),
+    ("storm", "test=storm"),
 ];
 
+/// The M5 exit test: a 10-minute spawn, exit and sleep storm.
+const SOAK_CASES: [(&str, &str); 1] = [("storm-10min", "test=storm-600")];
 /// Keys the harness types when the kernel logs "ready for keys".
 const TEST_KEYS: [&str; 4] = ["k", "a", "i", "ret"];
 
@@ -422,7 +442,7 @@ fn qemu_args(firmware: &Firmware, accel: Accel, headless: bool) -> Vec<String> {
         "-m",
         "512M",
         "-smp",
-        "1",
+        CPUS,
         "-no-reboot",
         "-serial",
         "stdio",

@@ -8,6 +8,9 @@ use x86_64::structures::paging::PageTableFlags;
 
 pub const TIMER_VECTOR: u8 = 0x20;
 pub const KEYBOARD_VECTOR: u8 = 0x21;
+pub const RESCHEDULE_VECTOR: u8 = 0x22;
+pub const TLB_VECTOR: u8 = 0x23;
+pub const HALT_VECTOR: u8 = 0x24;
 pub const SPURIOUS_VECTOR: u8 = 0xFF;
 
 const IA32_APIC_BASE: u32 = 0x1B;
@@ -24,6 +27,10 @@ const TIMER_INITIAL: u64 = 0x380;
 const TIMER_CURRENT: u64 = 0x390;
 const TIMER_DIVIDE: u64 = 0x3E0;
 const DIVIDE_BY_16: u32 = 0b0011;
+const ICR_LOW: u64 = 0x300;
+const ICR_HIGH: u64 = 0x310;
+const ICR_PENDING: u32 = 1 << 12;
+const ICR_ASSERT: u32 = 1 << 14;
 
 /// Uncached, writable, non-executable: the flags every register block needs.
 const DEVICE: PageTableFlags = PageTableFlags::PRESENT
@@ -108,4 +115,29 @@ pub fn route_isa_irq(
     write(register + 1, u32::from(apic_id) << 24);
     write(register, low);
     Ok(())
+}
+
+/// Enables an application processor's local APIC. The register page is already
+/// mapped: every CPU sees its own local APIC at the same address.
+pub fn init_ap() -> u8 {
+    let mut msr = Msr::new(IA32_APIC_BASE);
+    // SAFETY: IA32_APIC_BASE exists on every x86_64 CPU; this sets the enable bit.
+    unsafe {
+        let value = msr.read();
+        msr.write(value | APIC_GLOBAL_ENABLE);
+    }
+    lapic_write(TASK_PRIORITY, 0);
+    lapic_write(SPURIOUS, 0x100 | u32::from(SPURIOUS_VECTOR));
+    (lapic_read(ID) >> 24) as u8
+}
+
+/// Sends a fixed interrupt with `vector` to the CPU whose local APIC has `lapic_id`.
+pub fn send_ipi(lapic_id: u32, vector: u8) {
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        while lapic_read(ICR_LOW) & ICR_PENDING != 0 {
+            core::hint::spin_loop();
+        }
+        lapic_write(ICR_HIGH, lapic_id << 24);
+        lapic_write(ICR_LOW, u32::from(vector) | ICR_ASSERT);
+    });
 }
