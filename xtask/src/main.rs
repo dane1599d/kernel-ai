@@ -4,8 +4,11 @@
 //! cargo xtask run   [--release] [--spikes] [--accel auto|kvm|whpx|tcg]
 //! cargo xtask test  [--release] [--accel auto|kvm|whpx|tcg] [--timeout SECS]
 //!
-//! `test` boots the kernel headless with the spikes enabled and passes only if the
+//! `test` boots the kernel headless once per test case (boot checks, page fault,
+//! double fault) with the spikes enabled. Each case passes only if the
 //! kernel reports success through QEMU's isa-debug-exit device.
+
+mod lines;
 
 use sha2::{Digest, Sha256};
 use std::io::{BufRead, BufReader};
@@ -109,23 +112,44 @@ fn execute(options: &Options) -> Result<(), String> {
         return Ok(());
     }
     let target_dir = root.join("target");
+    let line_table = lines::build(&kernel, &root)?;
     let efi = ensure_limine(&target_dir)?;
-    let cmdline = if options.task == Task::Test {
-        "test"
-    } else {
-        ""
-    };
-    make_esp(&target_dir.join("esp"), &kernel, &efi, cmdline)?;
+    let esp = target_dir.join("esp");
     let qemu = find_qemu()?;
-    let firmware = find_firmware(&qemu, &target_dir)?;
     let accel = resolve_accel(options.accel);
-    let args = qemu_args(&firmware, accel, options.task == Task::Test);
-    println!("xtask: {} {}", qemu.display(), args.join(" "));
-    match options.task {
-        Task::Test => run_test(&qemu, &args, &target_dir, accel, options.timeout),
-        _ => run_interactive(&qemu, &args, &target_dir),
+    if options.task == Task::Run {
+        make_esp(&esp, &kernel, &line_table, &efi, "")?;
+        let firmware = find_firmware(&qemu, &target_dir)?;
+        let args = qemu_args(&firmware, accel, false);
+        println!("xtask: {} {}", qemu.display(), args.join(" "));
+        return run_interactive(&qemu, &args, &target_dir);
+    }
+    let mut failures = Vec::new();
+    for (name, cmdline) in TEST_CASES {
+        println!("xtask: test case {name} ({cmdline})");
+        make_esp(&esp, &kernel, &line_table, &efi, cmdline)?;
+        let firmware = find_firmware(&qemu, &target_dir)?;
+        let args = qemu_args(&firmware, accel, true);
+        if let Err(message) = run_test(&qemu, &args, &target_dir, accel, options.timeout) {
+            eprintln!("xtask: test case {name}: {message}");
+            failures.push(name);
+        }
+    }
+    if failures.is_empty() {
+        println!("xtask: all {} test cases passed", TEST_CASES.len());
+        Ok(())
+    } else {
+        Err(format!("failed test cases: {}", failures.join(", ")))
     }
 }
+
+/// Each test case boots the kernel once with this command line. The kernel itself
+/// decides pass or fail and reports it through isa-debug-exit.
+const TEST_CASES: [(&str, &str); 3] = [
+    ("boot", "test"),
+    ("page-fault", "test=page-fault"),
+    ("double-fault", "test=double-fault"),
+];
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -216,12 +240,18 @@ fn sha256_hex(bytes: &[u8]) -> String {
 
 fn limine_conf(cmdline: &str) -> String {
     format!(
-        "timeout: 0\n\n/Kernel AI\n    protocol: limine\n    path: boot():/boot/kernel\n    cmdline: {cmdline}\n"
+        "timeout: 0\n\n/Kernel AI\n    protocol: limine\n    path: boot():/boot/kernel\n    cmdline: {cmdline}\n    module_path: boot():/boot/kernel.lines\n"
     )
 }
 
 /// Lays out the EFI system partition that QEMU exposes as a virtual FAT drive.
-fn make_esp(esp: &Path, kernel: &Path, efi: &Path, cmdline: &str) -> Result<(), String> {
+fn make_esp(
+    esp: &Path,
+    kernel: &Path,
+    line_table: &[u8],
+    efi: &Path,
+    cmdline: &str,
+) -> Result<(), String> {
     if esp.exists() {
         fs::remove_dir_all(esp).map_err(|e| format!("cannot clear {}: {e}", esp.display()))?;
     }
@@ -232,6 +262,8 @@ fn make_esp(esp: &Path, kernel: &Path, efi: &Path, cmdline: &str) -> Result<(), 
     }
     copy(efi, &boot_efi.join("BOOTX64.EFI"))?;
     copy(kernel, &esp.join("boot").join("kernel"))?;
+    fs::write(esp.join("boot").join("kernel.lines"), line_table)
+        .map_err(|e| format!("cannot write kernel.lines: {e}"))?;
     fs::write(limine_dir.join("limine.conf"), limine_conf(cmdline))
         .map_err(|e| format!("cannot write limine.conf: {e}"))
 }
@@ -490,6 +522,7 @@ mod tests {
         assert!(conf.contains("protocol: limine"));
         assert!(conf.contains("path: boot():/boot/kernel"));
         assert!(conf.contains("cmdline: test"));
+        assert!(conf.contains("module_path: boot():/boot/kernel.lines"));
     }
 
     #[test]
