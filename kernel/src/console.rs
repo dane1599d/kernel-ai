@@ -111,12 +111,34 @@ impl Console {
     }
 }
 
+/// ASCII backspace: erases the character before the cursor.
+pub const BACKSPACE: char = 8u8 as char;
+
+/// Clears the text area and moves the cursor to the top left.
+pub fn clear() {
+    if let Some(mut guard) = CONSOLE.try_lock()
+        && let Some(console) = guard.as_mut()
+    {
+        for row in 0..console.rows {
+            console.clear_text_row(row);
+        }
+        console.col = 0;
+        console.row = 0;
+    }
+}
+
 impl Write for Console {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         for ch in s.chars() {
             match ch {
                 '\n' => self.newline(),
                 '\r' => self.col = 0,
+                BACKSPACE => {
+                    if self.col > 0 {
+                        self.col -= 1;
+                        self.draw(' ');
+                    }
+                }
                 _ => {
                     if self.col >= self.cols {
                         self.newline();

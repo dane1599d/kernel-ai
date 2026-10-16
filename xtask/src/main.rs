@@ -1,7 +1,7 @@
 //! Build and run tool for Kernel AI.
 //!
 //! cargo xtask build [--release] [--spikes]
-//! cargo xtask run   [--release] [--spikes] [--accel auto|kvm|whpx|tcg]
+//! cargo xtask run   [--release] [--spikes] [--accel auto|kvm|whpx|tcg] [--llm IP:PORT] [--model NAME]
 //! cargo xtask test  [--release] [--accel auto|kvm|whpx|tcg] [--timeout SECS]
 //! cargo xtask soak  [--accel auto|kvm|whpx|tcg]   (10-minute storm, M5 exit test)
 //!
@@ -12,37 +12,24 @@
 //! enabled. Each case passes only if the
 //! kernel reports success through QEMU's isa-debug-exit device.
 
+mod cases;
 mod lines;
+mod mock_llm;
+mod qemu;
 
 use sha2::{Digest, Sha256};
-use std::io::{BufRead, BufReader, Write};
-use std::net::{TcpListener, TcpStream};
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
-use std::sync::mpsc;
-use std::time::{Duration, Instant};
-use std::{env, fs, thread};
+
+use std::time::Duration;
+use std::{env, fs};
 
 const LIMINE_VERSION: &str = "12.9.3";
 const LIMINE_SHA256: &str = "9f42fe9ea2e84d71056529969b1d5c24ba9a2287ffcc01bcce58b0ef8aa98b1d";
 const KERNEL_TARGET: &str = "x86_64-unknown-none";
-/// QEMU exit status for `isa-debug-exit` value 0x10: (0x10 << 1) | 1.
-const QEMU_PASS: i32 = 33;
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
 const SOAK_TIMEOUT_SECS: u64 = 900;
-/// CPUs in the VM. Emulation (TCG) gets no more CPUs than the host has cores: on an
-/// overcommitted host, virtual CPUs wait for host scheduling, which looks like
-/// guest latency the kernel cannot control. KVM tolerates overcommit far better.
-const MAX_CPUS: usize = 4;
-
-fn vm_cpus(accel: Accel) -> usize {
-    let host = thread::available_parallelism().map_or(1, usize::from);
-    match accel {
-        Accel::Tcg | Accel::Auto => MAX_CPUS.min(host.max(1)),
-        Accel::Kvm | Accel::Whpx => MAX_CPUS,
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Task {
     Build,
@@ -67,6 +54,9 @@ struct Options {
     spikes: bool,
     accel: Accel,
     timeout: Duration,
+    /// LLM server as HOST:PORT for `run`, for example the Mac mini on the LAN.
+    llm: Option<String>,
+    model: Option<String>,
 }
 
 fn main() -> ExitCode {
@@ -99,6 +89,8 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         } else {
             DEFAULT_TIMEOUT_SECS
         }),
+        llm: None,
+        model: None,
     };
     let mut rest = args[1..].iter();
     while let Some(arg) = rest.next() {
@@ -123,6 +115,22 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
                     .ok_or("--timeout expects a number of seconds")?;
                 options.timeout = Duration::from_secs(secs);
             }
+            "--llm" => {
+                let server = rest.next().ok_or("--llm expects HOST:PORT")?;
+                if !valid_host_port(server) {
+                    return Err(format!(
+                        "--llm expects HOST:PORT with an IPv4 host, got {server:?}"
+                    ));
+                }
+                options.llm = Some(server.clone());
+            }
+            "--model" => {
+                let model = rest.next().ok_or("--model expects a model name")?;
+                if model.is_empty() || model.chars().any(char::is_whitespace) {
+                    return Err("--model expects a name without spaces".into());
+                }
+                options.model = Some(model.clone());
+            }
             other => return Err(format!("unknown option {other}")),
         }
     }
@@ -143,36 +151,48 @@ fn execute(options: &Options) -> Result<(), String> {
     let qemu = find_qemu()?;
     let accel = resolve_accel(options.accel);
     if options.task == Task::Run {
-        make_esp(&esp, &kernel, &line_table, &efi, "")?;
+        let cmdline = llm_cmdline(options.llm.as_deref(), options.model.as_deref());
+        make_esp(&esp, &kernel, &line_table, &efi, &cmdline)?;
         let firmware = find_firmware(&qemu, &target_dir)?;
-        let args = qemu_args(&firmware, accel, false);
+        let args = qemu::args(&firmware, accel, false);
         println!("xtask: {} {}", qemu.display(), args.join(" "));
-        return run_interactive(&qemu, &args, &target_dir);
+        return qemu::run_interactive(&qemu, &args, &target_dir);
     }
+    // Tests talk to a local stand-in for the LLM server, reached from the guest at
+    // 10.0.2.2 through QEMU's user-mode network.
+    let mock = mock_llm::start()?;
+    let llm = format!("10.0.2.2:{}", mock.port);
+    let llm_args = llm_cmdline(Some(&llm), Some(mock_llm::MODEL));
     let mut failures = Vec::new();
-    let cases: &[(&str, &str)] = if options.task == Task::Soak {
-        &SOAK_CASES
+    let cases = if options.task == Task::Soak {
+        cases::SOAK_CASES
     } else {
-        &TEST_CASES
+        cases::TEST_CASES
     };
-    for &(name, cmdline) in cases {
-        println!("xtask: test case {name} ({cmdline})");
-        make_esp(&esp, &kernel, &line_table, &efi, cmdline)?;
+    for case in cases {
+        let cmdline = format!("{} {llm_args}", case.cmdline);
+        println!("xtask: test case {} ({cmdline})", case.name);
+        make_esp(&esp, &kernel, &line_table, &efi, &cmdline)?;
         let firmware = find_firmware(&qemu, &target_dir)?;
-        let monitor = free_port()?;
-        let mut args = qemu_args(&firmware, accel, true);
+        let monitor = qemu::free_port()?;
+        let mut args = qemu::args(&firmware, accel, true);
         args.push("-monitor".into());
         args.push(format!("tcp:127.0.0.1:{monitor},server=on,wait=off"));
-        let run = TestRun {
+        let run = qemu::TestRun {
+            case,
             accel,
             timeout: options.timeout,
             monitor,
         };
-        if let Err(message) = run_test(&qemu, &args, &target_dir, &run) {
-            eprintln!("xtask: test case {name}: {message}");
-            failures.push(name);
+        if let Err(message) = qemu::run_test(&qemu, &args, &target_dir, &run) {
+            eprintln!("xtask: test case {}: {message}", case.name);
+            failures.push(case.name);
         }
     }
+    println!(
+        "xtask: the mock LLM server answered {} chat requests",
+        mock.chats()
+    );
     if failures.is_empty() {
         println!("xtask: all {} test cases passed", cases.len());
         Ok(())
@@ -181,63 +201,24 @@ fn execute(options: &Options) -> Result<(), String> {
     }
 }
 
-/// Each test case boots the kernel once with this command line. The kernel itself
-/// decides pass or fail and reports it through isa-debug-exit.
-const TEST_CASES: [(&str, &str); 12] = [
-    ("boot", "test"),
-    ("page-fault", "test=page-fault"),
-    ("double-fault", "test=double-fault"),
-    ("write-protect", "test=write-protect"),
-    ("stack-overflow", "test=stack-overflow"),
-    ("timer", "test=timer"),
-    ("keyboard", "test=keyboard"),
-    ("sched", "test=sched"),
-    ("watchdog", "test=watchdog"),
-    ("smp", "test=smp"),
-    ("tlb", "test=tlb"),
-    ("storm", "test=storm"),
-];
-
-/// The M5 exit test: a 10-minute spawn, exit and sleep storm.
-const SOAK_CASES: [(&str, &str); 1] = [("storm-10min", "test=storm-600")];
-/// Keys the harness types when the kernel logs "ready for keys".
-const TEST_KEYS: [&str; 4] = ["k", "a", "i", "ret"];
-
-struct TestRun {
-    accel: Accel,
-    timeout: Duration,
-    /// TCP port of the QEMU human monitor, used to inject keystrokes.
-    monitor: u16,
-}
-
-/// Asks the OS for a free local port. QEMU binds it right after, so a clash is unlikely.
-fn free_port() -> Result<u16, String> {
-    TcpListener::bind(("127.0.0.1", 0))
-        .and_then(|listener| listener.local_addr())
-        .map(|addr| addr.port())
-        .map_err(|e| format!("cannot find a free port for the QEMU monitor: {e}"))
-}
-
-/// Types keys into the guest through the QEMU monitor's `sendkey` command.
-fn type_keys(port: u16) {
-    for _ in 0..50 {
-        if let Ok(mut monitor) = TcpStream::connect(("127.0.0.1", port)) {
-            thread::sleep(Duration::from_millis(200));
-            for key in TEST_KEYS {
-                if writeln!(monitor, "sendkey {key}").is_err() {
-                    break;
-                }
-                thread::sleep(Duration::from_millis(150));
-            }
-            println!(
-                "xtask: typed {} keys through the QEMU monitor",
-                TEST_KEYS.len()
-            );
-            return;
-        }
-        thread::sleep(Duration::from_millis(100));
+/// Kernel command-line arguments that point the kernel at an LLM server.
+fn llm_cmdline(llm: Option<&str>, model: Option<&str>) -> String {
+    let mut args = Vec::new();
+    if let Some(llm) = llm {
+        args.push(format!("llm={llm}"));
     }
-    eprintln!("xtask: could not reach the QEMU monitor on port {port}");
+    if let Some(model) = model {
+        args.push(format!("model={model}"));
+    }
+    args.join(" ")
+}
+
+/// IPv4 address and port, for example 192.168.1.50:8080. The kernel has no DNS.
+fn valid_host_port(text: &str) -> bool {
+    let Some((host, port)) = text.rsplit_once(':') else {
+        return false;
+    };
+    host.parse::<std::net::Ipv4Addr>().is_ok() && port.parse::<u16>().is_ok_and(|p| p > 0)
 }
 
 fn workspace_root() -> PathBuf {
@@ -444,123 +425,6 @@ fn resolve_accel(requested: Accel) -> Accel {
     if kvm_usable { Accel::Kvm } else { Accel::Tcg }
 }
 
-/// QEMU runs with `target/` as its working directory, so drive paths stay relative
-/// and free of drive-letter colons, which QEMU's option parser would misread.
-fn qemu_args(firmware: &Firmware, accel: Accel, headless: bool) -> Vec<String> {
-    let mut args: Vec<String> = [
-        "-machine",
-        "q35",
-        "-m",
-        "512M",
-        "-no-reboot",
-        "-serial",
-        "stdio",
-        "-device",
-        "isa-debug-exit,iobase=0xf4,iosize=0x04",
-    ]
-    .iter()
-    .map(|s| s.to_string())
-    .collect();
-    args.push("-smp".into());
-    args.push(vm_cpus(accel).to_string());
-    args.push("-drive".into());
-    args.push(format!(
-        "if=pflash,format=raw,readonly=on,file={}",
-        firmware.code.display()
-    ));
-    args.push("-drive".into());
-    args.push("if=pflash,format=raw,file=ovmf-vars.fd".into());
-    debug_assert!(firmware.vars.ends_with("ovmf-vars.fd"));
-    args.push("-drive".into());
-    args.push("format=raw,file=fat:rw:esp".into());
-    let (accel_name, cpu) = match accel {
-        Accel::Kvm => ("kvm", "host"),
-        Accel::Whpx => ("whpx", "max"),
-        Accel::Tcg | Accel::Auto => ("tcg", "max"),
-    };
-    args.extend([
-        "-accel".into(),
-        accel_name.into(),
-        "-cpu".into(),
-        cpu.into(),
-    ]);
-    if headless {
-        args.extend(["-display".into(), "none".into()]);
-    }
-    args
-}
-
-fn run_interactive(qemu: &Path, args: &[String], target_dir: &Path) -> Result<(), String> {
-    let status = Command::new(qemu)
-        .current_dir(target_dir)
-        .args(args)
-        .status()
-        .map_err(|e| format!("cannot start QEMU: {e}"))?;
-    println!("xtask: QEMU exited with {status}");
-    Ok(())
-}
-
-fn run_test(qemu: &Path, args: &[String], target_dir: &Path, run: &TestRun) -> Result<(), String> {
-    let (accel, timeout, monitor) = (run.accel, run.timeout, run.monitor);
-    let started = Instant::now();
-    let mut child = Command::new(qemu)
-        .current_dir(target_dir)
-        .args(args)
-        .stdout(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("cannot start QEMU: {e}"))?;
-    let stdout = child.stdout.take().ok_or("QEMU stdout was not captured")?;
-    let (ready_tx, ready_rx) = mpsc::channel();
-    let reader = thread::spawn(move || {
-        let mut measure_start = None;
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            println!("  | {line}");
-            if line.contains("boot-ok") {
-                let _ = ready_tx.send(started.elapsed());
-            } else if line.contains("ready for keys") {
-                thread::spawn(move || type_keys(monitor));
-            } else if line.contains("measure-start") {
-                measure_start = Some(Instant::now());
-            } else if line.contains("measure-end")
-                && let Some(start) = measure_start
-            {
-                println!(
-                    "xtask: host wall time for the measurement: {} ms",
-                    start.elapsed().as_millis()
-                );
-            }
-        }
-    });
-    let status = loop {
-        if let Some(status) = child
-            .try_wait()
-            .map_err(|e| format!("waiting on QEMU: {e}"))?
-        {
-            break status;
-        }
-        if started.elapsed() > timeout {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(format!("timed out after {} s", timeout.as_secs()));
-        }
-        thread::sleep(Duration::from_millis(50));
-    };
-    let _ = reader.join();
-    if let Ok(elapsed) = ready_rx.try_recv() {
-        println!(
-            "xtask: boot-to-ready {} ms (accel {:?}, includes firmware)",
-            elapsed.as_millis(),
-            accel
-        );
-    }
-    if status.code() == Some(QEMU_PASS) {
-        println!("xtask: PASS");
-        Ok(())
-    } else {
-        Err(format!("FAIL: QEMU exited with {status}"))
-    }
-}
-
 fn run_checked(command: &mut Command) -> Result<(), String> {
     let status = command
         .status()
@@ -635,7 +499,7 @@ mod tests {
             code: PathBuf::from("code.fd"),
             vars: PathBuf::from("target/ovmf-vars.fd"),
         };
-        let list = qemu_args(&firmware, Accel::Tcg, true);
+        let list = qemu::args(&firmware, Accel::Tcg, true);
         assert!(list.contains(&"format=raw,file=fat:rw:esp".to_string()));
         assert!(list.contains(&"isa-debug-exit,iobase=0xf4,iosize=0x04".to_string()));
         assert!(list.windows(2).any(|w| w[0] == "-accel" && w[1] == "tcg"));

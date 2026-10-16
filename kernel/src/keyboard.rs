@@ -176,15 +176,6 @@ impl Decoder {
     }
 }
 
-/// Echoes typed characters to the console and serial port, forever.
-pub fn echo_forever() -> ! {
-    let mut decoder = Decoder::new();
-    loop {
-        let ch = decoder.read_char();
-        serial::_print(format_args!("{ch}"));
-    }
-}
-
 /// M3 exit test: the harness types `kai` and Enter; the kernel must echo and receive it.
 pub fn typing_check() -> Result<(), &'static str> {
     const TIMEOUT_NS: u64 = 30_000_000_000;
