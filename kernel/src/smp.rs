@@ -117,17 +117,29 @@ pub fn on_tlb_ipi() {
     SHOOTDOWN_PENDING.fetch_sub(1, Ordering::AcqRel);
 }
 
-static FAILING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// CPU index plus one of the CPU reporting a fatal error, or 0.
+static REPORTER: AtomicUsize = AtomicUsize::new(0);
+/// How many times the reporting CPU re-entered the fatal path.
+static REPORT_DEPTH: AtomicUsize = AtomicUsize::new(0);
 
-/// Prepares this CPU to report a fatal error: interrupts off, so a halt request or
-/// a context switch cannot interrupt the report; then, if no other CPU is already
-/// reporting, halt the rest and take over the output line. A CPU that fails while
-/// another is reporting just stops.
+/// Prepares this CPU to report a fatal error. Interrupts go off, so a halt request
+/// or a context switch cannot interrupt the report.
+/// - The first CPU to fail halts the others and takes over the output line.
+/// - A CPU that fails while another is reporting just stops.
+/// - If the reporting CPU itself faults again mid-report (say, walking a corrupt
+///   backtrace), it may report once more; a further fault ends the run at once, so
+///   QEMU always exits.
 pub fn begin_fatal_report() {
     x86_64::instructions::interrupts::disable();
-    if FAILING.swap(true, Ordering::AcqRel) {
-        crate::halt_forever();
+    let me = percpu::index() + 1;
+    match REPORTER.compare_exchange(0, me, Ordering::AcqRel, Ordering::Acquire) {
+        Ok(_) => halt_others(),
+        Err(owner) if owner == me => {
+            if REPORT_DEPTH.fetch_add(1, Ordering::Relaxed) >= 1 {
+                crate::test_exit(crate::qemu::ExitCode::Failure);
+            }
+        }
+        Err(_) => crate::halt_forever(),
     }
-    halt_others();
     crate::serial::break_line_lock();
 }

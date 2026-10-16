@@ -105,9 +105,9 @@ fn wait_scancode() -> u8 {
         // SeqCst orders this store before the ring check inside block_unless, so the
         // interrupt cannot both miss the waiter and have its scancode go unseen.
         WAITER.store(crate::threads::current(), Ordering::SeqCst);
-        if crate::threads::block_unless(has_scancode) {
-            // After a real block the ring was empty, so the scancode at TAIL is the
-            // one whose interrupt woke us. Measure from its arrival.
+        if crate::threads::block_unless(has_scancode) && has_scancode() {
+            // After a real block the ring was empty, so the scancode at TAIL is the first
+            // to arrive since. A stale wake on an empty ring is not counted.
             let tail = TAIL.load(Ordering::Relaxed);
             let arrived = ARRIVED_NS[tail % RING].load(Ordering::Relaxed);
             let latency = hpet::nanos().saturating_sub(arrived);

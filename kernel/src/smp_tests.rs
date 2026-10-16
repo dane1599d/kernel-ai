@@ -51,9 +51,15 @@ fn pinned_reporter(expected_cpu: usize) {
 }
 
 /// Extra load pinned to CPU 0, so the balancer keeps trying to pull work off it.
-fn pinned_hog(_: usize) {
+/// It also checks that it stays on its CPU.
+fn pinned_hog(expected_cpu: usize) {
     while !STOP_PINNED.load(Ordering::Acquire) {
-        core::hint::spin_loop();
+        if percpu::index() != expected_cpu {
+            PIN_VIOLATIONS.fetch_add(1, Ordering::SeqCst);
+        }
+        for _ in 0..REPORTER_SPIN {
+            core::hint::spin_loop();
+        }
     }
 }
 
@@ -73,6 +79,8 @@ pub fn boot_check(expected: usize) -> Result<(), &'static str> {
 pub fn all_cpus_check() -> Result<(), &'static str> {
     const CPU0_EXTRA_HOGS: usize = 3;
     let cpus = smp::online();
+    // Counted from the start: the balancer may act as soon as the work exists.
+    let migrations_before = threads::migrations();
     for _ in 0..2 * cpus {
         threads::spawn("worker", worker, 0)?;
     }
@@ -84,7 +92,6 @@ pub fn all_cpus_check() -> Result<(), &'static str> {
             threads::spawn_pinned(0, "pinned-hog", pinned_hog, 0)?;
         }
     }
-    let migrations_before = threads::migrations();
     threads::sleep_ms(1_000);
     STOP_PINNED.store(true, Ordering::Release);
     let migrated = threads::migrations() - migrations_before;
