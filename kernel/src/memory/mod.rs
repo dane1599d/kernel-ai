@@ -1,0 +1,81 @@
+//! Physical frames, page tables, the kernel heap and guarded kernel stacks.
+//!
+//! Virtual layout of the kernel half (PML4 slots 256..512, shared by every future
+//! address space):
+//!
+//! | Range start             | Use                                   |
+//! |-------------------------|---------------------------------------|
+//! | `0xffff_8000_0000_0000` | Limine's higher-half direct map (HHDM) |
+//! | `0xffff_c000_0000_0000` | kernel heap                           |
+//! | `0xffff_c800_0000_0000` | kernel stacks with guard pages        |
+//! | `0xffff_d000_0000_0000` | self-test scratch mappings            |
+//! | `0xffff_ffff_8000_0000` | kernel image (Limine)                 |
+
+pub mod heap;
+pub mod paging;
+pub mod selftest;
+pub mod stack;
+
+use crate::log;
+use limine::memmap::{Entry, MEMMAP_USABLE};
+use mm::{FrameBitmap, PAGE_SIZE};
+use paging::Memory;
+use spin::Mutex;
+
+pub const HEAP_START: u64 = 0xFFFF_C000_0000_0000;
+pub const STACKS_START: u64 = 0xFFFF_C800_0000_0000;
+pub const SCRATCH_START: u64 = 0xFFFF_D000_0000_0000;
+
+static MEMORY: Mutex<Option<Memory>> = Mutex::new(None);
+
+/// Runs `f` with the memory manager. Panics if called before [`init`].
+pub fn with<R>(f: impl FnOnce(&mut Memory) -> R) -> R {
+    let mut guard = MEMORY.lock();
+    f(guard.as_mut().expect("memory::init has run"))
+}
+
+/// Builds the frame allocator from Limine's memory map, adopts Limine's page tables,
+/// prepares the shared kernel half, and maps the heap.
+pub fn init(entries: &[&Entry], hhdm: u64) -> Result<(), &'static str> {
+    let usable = || entries.iter().filter(|e| e.type_ == MEMMAP_USABLE);
+    let end = usable()
+        .map(|e| e.base + e.length)
+        .max()
+        .ok_or("no usable memory")?;
+    let frames = end / PAGE_SIZE;
+    let storage_bytes = (FrameBitmap::words_for(frames) * 8) as u64;
+    let storage_region = usable()
+        .find(|e| e.base >= PAGE_SIZE && e.length >= storage_bytes)
+        .ok_or("no usable region large enough for the frame bitmap")?;
+    // SAFETY: the region is usable RAM, mapped by Limine's HHDM, and reserved below
+    // so nothing else will ever hand it out.
+    let storage = unsafe {
+        core::slice::from_raw_parts_mut(
+            (hhdm + storage_region.base) as *mut u64,
+            FrameBitmap::words_for(frames),
+        )
+    };
+    let mut bitmap = FrameBitmap::new(storage, frames);
+    for entry in usable() {
+        bitmap.release_range(entry.base / PAGE_SIZE, entry.length / PAGE_SIZE);
+    }
+    bitmap.reserve_range(
+        storage_region.base / PAGE_SIZE,
+        storage_bytes.div_ceil(PAGE_SIZE),
+    );
+    bitmap.reserve_range(0, 1);
+
+    // SAFETY: Limine's page tables are live in CR3 and reachable through the HHDM.
+    let mut memory = unsafe { Memory::adopt(bitmap, hhdm) };
+    let prepared = memory.prepare_kernel_half()?;
+    heap::map(&mut memory)?;
+    let (free, total) = (memory.free_frames(), memory.total_frames());
+    *MEMORY.lock() = Some(memory);
+    log!(
+        "memory: {} MiB free of {} MiB tracked, {prepared} kernel-half tables prepared, heap {} MiB",
+        free * PAGE_SIZE / (1024 * 1024),
+        total * PAGE_SIZE / (1024 * 1024),
+        heap::HEAP_SIZE / (1024 * 1024)
+    );
+    Ok(())
+}
