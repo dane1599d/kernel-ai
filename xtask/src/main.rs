@@ -4,8 +4,9 @@
 //! cargo xtask run   [--release] [--spikes] [--accel auto|kvm|whpx|tcg]
 //! cargo xtask test  [--release] [--accel auto|kvm|whpx|tcg] [--timeout SECS]
 //!
-//! `test` boots the kernel headless once per test case (boot checks, page fault,
-//! double fault) with the spikes enabled. Each case passes only if the
+//! `test` boots the kernel headless once per test case (boot and memory checks,
+//! page fault, double fault, write-protect, stack overflow) with the spikes
+//! enabled. Each case passes only if the
 //! kernel reports success through QEMU's isa-debug-exit device.
 
 mod lines;
@@ -145,10 +146,12 @@ fn execute(options: &Options) -> Result<(), String> {
 
 /// Each test case boots the kernel once with this command line. The kernel itself
 /// decides pass or fail and reports it through isa-debug-exit.
-const TEST_CASES: [(&str, &str); 3] = [
+const TEST_CASES: [(&str, &str); 5] = [
     ("boot", "test"),
     ("page-fault", "test=page-fault"),
     ("double-fault", "test=double-fault"),
+    ("write-protect", "test=write-protect"),
+    ("stack-overflow", "test=stack-overflow"),
 ];
 
 fn workspace_root() -> PathBuf {

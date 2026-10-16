@@ -5,7 +5,7 @@ use crate::lines::{self, Describe};
 use crate::log;
 use crate::qemu::ExitCode;
 use core::fmt;
-use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
 use x86_64::structures::idt::{InterruptStackFrame, PageFaultErrorCode};
 
 /// Unmapped lower-half address used by the page-fault test.
@@ -47,9 +47,26 @@ enum Expected {
     Nothing = 0,
     PageFault = 1,
     DoubleFault = 2,
+    WriteProtect = 3,
+    StackOverflow = 4,
 }
 
 static EXPECTED: AtomicU8 = AtomicU8::new(Expected::Nothing as u8);
+/// The address a write-protect test writes to, or the guard page a stack-overflow test hits.
+static EXPECTED_ADDRESS: AtomicU64 = AtomicU64::new(0);
+const PAGE: u64 = 4096;
+
+/// The next fault must be a write to the read-only page at `address`.
+pub fn expect_write_fault(address: u64) {
+    EXPECTED_ADDRESS.store(address, Ordering::SeqCst);
+    EXPECTED.store(Expected::WriteProtect as u8, Ordering::SeqCst);
+}
+
+/// The next fault must be a double fault caused by running into the guard page at `guard`.
+pub fn expect_stack_overflow(guard: u64) {
+    EXPECTED_ADDRESS.store(guard, Ordering::SeqCst);
+    EXPECTED.store(Expected::StackOverflow as u8, Ordering::SeqCst);
+}
 static BREAKPOINTS: AtomicU32 = AtomicU32::new(0);
 
 pub fn breakpoint_count() -> u32 {
@@ -80,9 +97,31 @@ pub fn fatal(fault: Exception, frame: &InterruptStackFrame, handler_rbp: u64) ->
     let expected = match EXPECTED.load(Ordering::SeqCst) {
         1 => Expected::PageFault,
         2 => Expected::DoubleFault,
+        3 => Expected::WriteProtect,
+        4 => Expected::StackOverflow,
         _ => Expected::Nothing,
     };
+    let target = EXPECTED_ADDRESS.load(Ordering::SeqCst);
+    let rsp = frame.stack_pointer.as_u64();
     let verdict = match (expected, &fault) {
+        (Expected::WriteProtect, Exception::PageFault { address, code }) => {
+            let write_to_present =
+                PageFaultErrorCode::PROTECTION_VIOLATION | PageFaultErrorCode::CAUSED_BY_WRITE;
+            if *address != target {
+                Err("write-protect fault reported the wrong address")
+            } else if !code.contains(write_to_present) {
+                Err("write-protect fault was not a write to a present page")
+            } else {
+                Ok(())
+            }
+        }
+        (Expected::StackOverflow, Exception::DoubleFault) => {
+            if (target..target + 2 * PAGE).contains(&rsp) {
+                Ok(())
+            } else {
+                Err("double fault did not come from the guard page")
+            }
+        }
         (Expected::PageFault, Exception::PageFault { address, .. }) => {
             if *address != PAGE_FAULT_TARGET {
                 Err("page fault reported the wrong address")
