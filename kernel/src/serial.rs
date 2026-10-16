@@ -49,9 +49,10 @@ impl Write for Serial {
 pub fn _print(args: fmt::Arguments) {
     // Serial writes cannot fail; the Result exists only to satisfy fmt::Write.
     let _ = Serial.write_fmt(args);
+    crate::console::print(args);
 }
 
-/// Prints a line to COM1.
+/// Prints a line to COM1 and the framebuffer console.
 #[macro_export]
 macro_rules! log {
     ($($arg:tt)*) => {

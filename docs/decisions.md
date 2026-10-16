@@ -30,8 +30,8 @@ Sources: the five merged memos in `docs/research/`. Milestones are defined in `d
 | M0, decided 2026-10-15 | Accelerators and CI | CI runs the boot test under both KVM and TCG. Locally, KVM in WSL2 once Windows' Virtual Machine Platform is enabled; TCG on Windows until then. WHPX only on explicit request. |
 | M0, decided 2026-10-15 | Code budget, reuse policy, boot metric | No size budget yet; revisit at M2. Borrow ideas only, clean-room. `cargo xtask test` prints boot-to-ready time, firmware included. |
 | M0, decided 2026-10-15 | Kernel licence (workspace manifest) | MPL-2.0 in `Cargo.toml` as the working choice. Contributor terms stay open until the first outside contribution. |
-| M1 | Panic strategy | Abort. |
-| M1 | Framebuffer, font, source links | Limine 32-bit framebuffer, a Unicode-subset font. Source kept as plain text with sidecar metadata, bundled compressed, linked through DWARF and ctags. |
+| M1, decided 2026-10-16 | Panic strategy | Abort. The panic handler logs the message and a frame-pointer backtrace. |
+| M1, decided 2026-10-16 | Framebuffer, font, source links | Limine 32-bit framebuffer; Noto Sans Mono 16 px regular (basic Latin plus the replacement glyph). Source links come from a line table that xtask builds from DWARF and Limine loads as the `kernel.lines` module; format in the `linetable` crate. |
 | M2 | Paging, heap, reclaim | 4-level paging, the `talc` heap, a `ReclaimPolicy` trait with a CLOCK default, page-table layout ready for user mode. |
 | M3 | Interrupt controllers and timer | LAPIC and IOAPIC. One-shot timer, at a fixed 1 kHz first. |
 | M4 | Kernel preemption | Preemptible kernel threads with a preempt count. Not preemption of ring-3 code only. |

@@ -1,0 +1,10 @@
+[package]
+name = "linetable"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+# Enables the Builder used by the host-side xtask.
+alloc = []

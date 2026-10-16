@@ -16,5 +16,9 @@ spikes = ["dep:spike-rhai", "dep:spike-wasmi"]
 
 [dependencies]
 limine = "0.6.5"
+linetable = { path = "../linetable" }
+noto-sans-mono-bitmap = { version = "0.3.2", default-features = false, features = ["regular", "size_16", "unicode-basic-latin", "unicode-specials"] }
+spin = "0.12.3"
+x86_64 = { version = "0.15.5", features = ["abi_x86_interrupt"] }
 spike-rhai = { path = "../spikes/rhai", optional = true }
 spike-wasmi = { path = "../spikes/wasmi", optional = true }
