@@ -1,0 +1,16 @@
+[workspace]
+resolver = "3"
+members = ["kernel", "xtask", "spikes/rhai", "spikes/wasmi"]
+# Host builds only build the xtask runner; the kernel and spikes are built by xtask for x86_64-unknown-none.
+default-members = ["xtask"]
+
+[workspace.package]
+edition = "2024"
+license = "MPL-2.0"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+debug = true
