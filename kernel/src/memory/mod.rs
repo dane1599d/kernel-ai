@@ -50,8 +50,12 @@ static MEMORY: Mutex<Option<Memory>> = Mutex::new(None);
 
 /// Runs `f` with the memory manager. Panics if called before [`init`].
 pub fn with<R>(f: impl FnOnce(&mut Memory) -> R) -> R {
+    crate::threads::preempt_disable();
     let mut guard = MEMORY.lock();
-    f(guard.as_mut().expect("memory::init has run"))
+    let result = f(guard.as_mut().expect("memory::init has run"));
+    drop(guard);
+    crate::threads::preempt_enable();
+    result
 }
 
 /// Builds the frame allocator from Limine's memory map, adopts Limine's page tables,

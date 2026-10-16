@@ -3,7 +3,7 @@
 use crate::backtrace::current_rbp;
 use crate::faults::{self, Exception};
 use crate::gdt::DOUBLE_FAULT_IST_INDEX;
-use crate::{apic, keyboard, timer};
+use crate::{apic, keyboard, threads, timer};
 use spin::LazyLock;
 use x86_64::registers::control::Cr2;
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
@@ -64,11 +64,15 @@ extern "x86-interrupt" fn double_fault(frame: InterruptStackFrame, _code: u64) -
 extern "x86-interrupt" fn timer_interrupt(_frame: InterruptStackFrame) {
     timer::on_tick();
     apic::end_of_interrupt();
+    threads::on_tick();
 }
 
 extern "x86-interrupt" fn keyboard_interrupt(_frame: InterruptStackFrame) {
-    keyboard::on_interrupt();
+    let waiter = keyboard::on_interrupt();
     apic::end_of_interrupt();
+    if let Some(tid) = waiter {
+        threads::wake(tid);
+    }
 }
 
 /// Spurious interrupts must not be acknowledged.

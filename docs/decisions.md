@@ -36,8 +36,8 @@ Sources: the five merged memos in `docs/research/`. Milestones are defined in `d
 | M3, decided 2026-10-16 | Interrupt controllers and timer | xAPIC (memory-mapped) local APIC and I/O APIC; the legacy PIC stays masked. HPET is the reference clock; a PIT fallback is not implemented. The local APIC timer runs one-shot at 1 kHz, re-armed each tick for an absolute HPET deadline so latency never accumulates. |
 | M3, decided 2026-10-16 | ACPI | Own minimal reader (`acpitables` crate: RSDP, XSDT or RSDT, MADT, HPET) instead of the `acpi` crate, whose 6.x handler needs about 25 methods. Revisit if AML is needed. |
 | M3, decided 2026-10-16 | Keyboard | PS/2 with scancode set 1 translation, decoded by `pc-keyboard`. The interrupt only queues scancodes; decoding happens outside the handler. Tests type keys through the QEMU monitor. |
-| M4 | Kernel preemption | Preemptible kernel threads with a preempt count. Not preemption of ring-3 code only. |
-| M4 | Scheduler policy shape | A policy trait, a round-robin fallback, a 200 ms watchdog, policies compiled in. |
+| M4, decided 2026-10-16 | Kernel preemption | Kernel threads are preemptible by the timer and by wake-ups, with a preempt count that defers switching (used around memory-manager calls). Interrupt handlers acknowledge the APIC before switching. |
+| M4, decided 2026-10-16 | Scheduler policy shape | Mechanism and policy split like sched_ext, in the host-tested `sched` crate: `Core` owns states, sleep, wake and a 200 ms watchdog; a `SchedPolicy` trait (enqueue, dequeue, pick_next, tick, preempt_on_wake, reset) picks threads. Policies are compiled in, allocation-free and swappable at runtime. Default `Interactive` (woken threads first, preempt on wake); fallback `RoundRobin` (10 ms slices) after an ejection. |
 | M6 | Virtio interrupts | Polling first, then MSI-X. |
 | M6 | LLM transport and client | virtio-net on QEMU user-mode networking, a blocking client, `serde_json`, plain HTTP plus an API key on the LAN. TLS stays out of the kernel. |
 | M6 | LLM server | llama.cpp `llama-server`. It is the only server here that accepts a raw grammar, which M8 needs. |

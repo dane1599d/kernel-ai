@@ -20,6 +20,7 @@ limine = "0.6.5"
 linetable = { path = "../linetable" }
 mm = { path = "../mm" }
 pc-keyboard = "0.9.0"
+sched = { path = "../sched" }
 talc = "5.1.1"
 noto-sans-mono-bitmap = { version = "0.3.2", default-features = false, features = ["regular", "size_16", "unicode-basic-latin", "unicode-specials"] }
 spin = "0.12.3"
