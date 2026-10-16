@@ -377,8 +377,7 @@ pub fn test_exit(code: ExitCode) -> ! {
 
 /// Logs a fatal error and stops.
 fn fail(message: &str) -> ! {
-    smp::halt_others();
-    serial::break_line_lock();
+    smp::begin_fatal_report();
     log!("FATAL on cpu {}: {message}", percpu::index());
     backtrace::print_from(backtrace::current_rbp());
     test_exit(ExitCode::Failure)
@@ -394,8 +393,7 @@ pub fn halt_forever() -> ! {
 
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-    smp::halt_others();
-    serial::break_line_lock();
+    smp::begin_fatal_report();
     log!("PANIC on cpu {}: {info}", percpu::index());
     log!("backtrace:");
     backtrace::print_from(backtrace::current_rbp());

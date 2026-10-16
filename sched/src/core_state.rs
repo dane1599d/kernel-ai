@@ -36,6 +36,8 @@ pub struct Core {
     ejections: u32,
     pending_ejection: Option<&'static str>,
     switches: u64,
+    /// A wake-up asked for a reschedule that no switch has consumed yet.
+    resched_pending: bool,
 }
 
 impl Core {
@@ -58,6 +60,7 @@ impl Core {
             ejections: 0,
             pending_ejection: None,
             switches: 0,
+            resched_pending: false,
         }
     }
 
@@ -160,7 +163,8 @@ impl Core {
     /// Timer tick: wakes sleepers, runs the watchdog, asks the policy about preemption.
     /// Returns the thread to switch to, if the current one should change.
     pub fn tick(&mut self, now: u64) -> Option<Tid> {
-        let mut reschedule = false;
+        // A wake-up whose reschedule interrupt has not arrived yet is delivered here.
+        let mut reschedule = self.resched_pending;
         for tid in 0..MAX_THREADS {
             if let State::Sleeping { until } = self.states[tid]
                 && until <= now
@@ -184,14 +188,29 @@ impl Core {
     }
 
     /// Wakes a blocked or sleeping thread this CPU owns. Returns true if the current
-    /// thread should be preempted for it; the owner CPU then calls [`Core::preempt`].
+    /// thread should be preempted for it; the owner CPU then calls
+    /// [`Core::preempt_if_pending`], possibly later from an interrupt.
     pub fn wake(&mut self, tid: Tid, now: u64) -> bool {
         match self.state(tid) {
             State::Blocked | State::Sleeping { .. } => {}
             _ => return false,
         }
         self.make_runnable(tid, EnqueueReason::Woken, now);
-        self.should_preempt_for(tid)
+        let wants = self.should_preempt_for(tid);
+        self.resched_pending |= wants;
+        wants
+    }
+
+    /// Like [`Core::preempt`], but only if a wake-up asked for it and no switch has
+    /// consumed it since, or if this CPU is idle with work queued. A late reschedule
+    /// interrupt therefore cannot demote a woken thread that is already running.
+    pub fn preempt_if_pending(&mut self, now: u64) -> Option<Tid> {
+        let idle_with_work = self.current == self.idle && self.any_runnable();
+        if self.resched_pending || idle_with_work {
+            self.preempt(now)
+        } else {
+            None
+        }
     }
 
     /// Puts the running thread back in the queue and picks again.
@@ -272,6 +291,7 @@ impl Core {
             self.switches += 1;
         }
         self.current = next;
+        self.resched_pending = false;
         self.slice_start = now;
         next
     }
@@ -624,6 +644,30 @@ mod tests {
         assert_eq!(core.block_current(MS), 3);
         assert!(core.wake(4, 2 * MS));
         assert_eq!(core.current(), 3, "wake must not switch by itself");
-        assert_eq!(core.preempt(2 * MS), Some(4));
+        assert_eq!(core.preempt_if_pending(2 * MS), Some(4));
+    }
+
+    #[test]
+    fn late_reschedule_request_does_not_demote_the_woken_thread() {
+        let mut core = Core::new(Box::new(Interactive::new()), 0, WATCHDOG, 0);
+        core.adopt(3, "hog", EnqueueReason::New, 0);
+        core.adopt(4, "typist", EnqueueReason::New, 0);
+        assert_eq!(core.preempt(0), Some(3));
+        assert_eq!(core.preempt(MS), Some(4));
+        assert_eq!(core.block_current(MS), 3);
+        assert!(core.wake(4, 2 * MS));
+        // The owner's timer tick gets there first and runs the woken thread...
+        assert_eq!(core.tick(2 * MS), Some(4));
+        // ...so the reschedule interrupt that arrives afterwards must do nothing.
+        assert_eq!(core.preempt_if_pending(2 * MS + 1), None);
+        assert_eq!(core.current(), 4);
+    }
+
+    #[test]
+    fn idle_cpu_picks_up_adopted_work_on_request() {
+        let mut core = Core::new(Box::new(Interactive::new()), 0, WATCHDOG, 0);
+        assert_eq!(core.preempt_if_pending(0), None);
+        core.adopt(5, "new", EnqueueReason::New, 0);
+        assert_eq!(core.preempt_if_pending(0), Some(5));
     }
 }

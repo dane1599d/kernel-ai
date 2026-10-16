@@ -123,6 +123,10 @@ fn spawn_on(
     entry: fn(usize),
     arg: usize,
 ) -> Result<Tid, &'static str> {
+    // Cores are published before ONLINE is bumped, so any CPU below online() has one.
+    if cpu.is_some_and(|cpu| cpu >= smp::online()) {
+        return Err("threads: no such CPU");
+    }
     let tid = allocate_tid().ok_or("threads: table full")?;
     let top = match STACK_TOP[tid].load(Ordering::Acquire) {
         0 => match GuardedStack::new(STACK_PAGES) {
@@ -149,7 +153,15 @@ fn spawn_on(
         core.adopt(tid, name, EnqueueReason::New, hpet::nanos());
         LOAD[target].store(core.load(), Ordering::Relaxed);
         Ok::<bool, &'static str>(core.current() == core.idle())
-    })?;
+    });
+    let kick = match kick {
+        Ok(kick) => kick,
+        Err(error) => {
+            PINNED[tid].store(false, Ordering::Relaxed);
+            IN_USE[tid].store(false, Ordering::Release);
+            return Err(error);
+        }
+    };
     if kick && target != percpu::index() {
         smp::send(target, apic::RESCHEDULE_VECTOR);
     }
@@ -291,20 +303,29 @@ pub fn exit() -> ! {
 }
 
 /// Blocks the calling thread until `wake` is called for it, unless `ready()` is
-/// already true. The check runs with interrupts off, so a wake-up cannot be lost.
-pub fn block_unless(ready: impl Fn() -> bool) {
+/// already true. Returns whether it actually blocked.
+///
+/// `ready()` is checked while holding this CPU's core lock, the same lock `wake`
+/// takes. A waker publishes its condition before it locks the core, so either the
+/// check sees the condition, or `wake` sees the thread Blocked and makes it runnable.
+/// Disabling interrupts alone would only exclude wakers on this CPU. `ready()` must
+/// not take a core lock.
+pub fn block_unless(ready: impl Fn() -> bool) -> bool {
     interrupts::without_interrupts(|| {
-        if ready() {
-            return;
-        }
         let me = percpu::index();
         let (from, to) = {
             let mut guard = CORES[me].lock();
+            if ready() {
+                return false;
+            }
             let core = guard.as_mut().expect("threads::init has run");
-            (core.current(), core.block_current(hpet::nanos()))
+            let switch_to = (core.current(), core.block_current(hpet::nanos()));
+            LOAD[me].store(core.load(), Ordering::Relaxed);
+            switch_to
         };
         switch(from, to);
-    });
+        true
+    })
 }
 
 /// Makes a blocked or sleeping thread runnable on its own CPU. If it should preempt
@@ -341,7 +362,9 @@ fn reschedule_here() {
     let me = percpu::index();
     let next = CORES[me].lock().as_mut().map(|core| {
         let from = core.current();
-        let next = core.preempt(hpet::nanos());
+        // A no-op if a tick already ran the woken thread: a late interrupt must not
+        // put it back in the queue and cost it its interactive boost.
+        let next = core.preempt_if_pending(hpet::nanos());
         LOAD[me].store(core.load(), Ordering::Relaxed);
         (from, next)
     });
@@ -357,7 +380,6 @@ pub fn on_tick() {
         cpu.need_resched.store(true, Ordering::Relaxed);
         return;
     }
-    let deferred = cpu.need_resched.swap(false, Ordering::Relaxed);
     let me = percpu::index();
     let Some(mut guard) = CORES[me].try_lock() else {
         return;
@@ -365,12 +387,18 @@ pub fn on_tick() {
     let Some(core) = guard.as_mut() else {
         return;
     };
+    // Cleared only once the lock is held, so a failed try_lock keeps the request.
+    let deferred = cpu.need_resched.swap(false, Ordering::Relaxed);
     let from = core.current();
     let now = hpet::nanos();
     // A wake-up that arrived while preemption was disabled still needs its switch.
-    let next = core
-        .tick(now)
-        .or_else(|| if deferred { core.preempt(now) } else { None });
+    let next = core.tick(now).or_else(|| {
+        if deferred {
+            core.preempt_if_pending(now)
+        } else {
+            None
+        }
+    });
     let ejection = core.take_ejection();
     let policy = core.policy_name();
     LOAD[me].store(core.load(), Ordering::Relaxed);
@@ -417,15 +445,25 @@ fn balance(me: usize) {
         core.adopt(tid, name, EnqueueReason::Preempted, hpet::nanos());
         LOAD[me].store(core.load(), Ordering::Relaxed);
     }
+    MIGRATIONS.fetch_add(1, Ordering::Relaxed);
+}
+
+static MIGRATIONS: AtomicU64 = AtomicU64::new(0);
+
+/// Threads moved between CPUs by load balancing so far.
+pub fn migrations() -> u64 {
+    MIGRATIONS.load(Ordering::Relaxed)
 }
 
 /// Keeps the current thread on its CPU until the matching `preempt_enable`.
+/// A single GS-relative instruction, so the thread cannot migrate between finding
+/// its CPU's counter and updating it.
 pub fn preempt_disable() {
-    percpu::this().preempt_count.fetch_add(1, Ordering::Relaxed);
+    percpu::preempt_count_add(1);
 }
 
 pub fn preempt_enable() {
-    percpu::this().preempt_count.fetch_sub(1, Ordering::Relaxed);
+    percpu::preempt_count_add(-1);
 }
 
 pub fn current() -> Tid {

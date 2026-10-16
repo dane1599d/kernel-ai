@@ -8,7 +8,8 @@ use limine::mp::MpInfo;
 use spin::Mutex;
 
 const START_TIMEOUT_NS: u64 = 2_000_000_000;
-const SHOOTDOWN_TIMEOUT_NS: u64 = 1_000_000_000;
+/// After this long a shootdown is logged as slow, but the wait continues.
+const SHOOTDOWN_SLOW_NS: u64 = 1_000_000_000;
 
 static ONLINE: AtomicUsize = AtomicUsize::new(1);
 static LAPIC_IDS: [AtomicU32; MAX_CPUS] = [const { AtomicU32::new(0) }; MAX_CPUS];
@@ -96,11 +97,14 @@ pub fn tlb_shootdown(address: u64) {
     for cpu in (0..cpus).filter(|&cpu| cpu != me) {
         send(cpu, apic::TLB_VECTOR);
     }
+    // Never give up: returning early would let the caller free a frame that another
+    // CPU still maps, and a late acknowledgement would corrupt the next round's count.
     let start = hpet::nanos();
+    let mut warned = false;
     while SHOOTDOWN_PENDING.load(Ordering::Acquire) > 0 {
-        if hpet::nanos() - start > SHOOTDOWN_TIMEOUT_NS {
-            log!("smp: TLB shootdown for {address:#x} timed out");
-            return;
+        if !warned && hpet::nanos() - start > SHOOTDOWN_SLOW_NS {
+            log!("smp: TLB shootdown for {address:#x} is slow; still waiting");
+            warned = true;
         }
         core::hint::spin_loop();
     }
@@ -111,4 +115,19 @@ pub fn on_tlb_ipi() {
     let address = SHOOTDOWN_ADDRESS.load(Ordering::Acquire);
     x86_64::instructions::tlb::flush(x86_64::VirtAddr::new(address));
     SHOOTDOWN_PENDING.fetch_sub(1, Ordering::AcqRel);
+}
+
+static FAILING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Prepares this CPU to report a fatal error: interrupts off, so a halt request or
+/// a context switch cannot interrupt the report; then, if no other CPU is already
+/// reporting, halt the rest and take over the output line. A CPU that fails while
+/// another is reporting just stops.
+pub fn begin_fatal_report() {
+    x86_64::instructions::interrupts::disable();
+    if FAILING.swap(true, Ordering::AcqRel) {
+        crate::halt_forever();
+    }
+    halt_others();
+    crate::serial::break_line_lock();
 }

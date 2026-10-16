@@ -72,3 +72,22 @@ pub fn index() -> usize {
 pub fn get(index: usize) -> &'static PerCpu {
     &CPUS[index]
 }
+
+/// Adds `delta` to this CPU's preempt count with one GS-relative instruction.
+/// Interrupts (and so migration) happen only between instructions, so the update
+/// always lands on the CPU the thread is running on at that moment. Before
+/// `init`, GS is not set up yet and nothing can migrate, so the update is skipped.
+pub fn preempt_count_add(delta: i32) {
+    if !READY.load(Ordering::Acquire) {
+        return;
+    }
+    // SAFETY: GS points at this CPU's PerCpu; the field is a 32-bit atomic.
+    unsafe {
+        core::arch::asm!(
+            "add dword ptr gs:[{offset}], {delta:e}",
+            offset = const core::mem::offset_of!(PerCpu, preempt_count),
+            delta = in(reg) delta,
+            options(nostack)
+        );
+    }
+}

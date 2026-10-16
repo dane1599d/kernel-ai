@@ -4,7 +4,7 @@
 use crate::memory::{self, SCRATCH_START};
 use crate::percpu::{self, MAX_CPUS};
 use crate::{hpet, log, smp, threads};
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use x86_64::structures::paging::PageTableFlags;
 
 const RW: PageTableFlags = PageTableFlags::PRESENT
@@ -23,7 +23,12 @@ fn wait_for(done: impl Fn() -> bool, timeout_ms: u64) -> bool {
 }
 
 static WORK_ON_CPU: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
-static PINNED_OK: AtomicUsize = AtomicUsize::new(0);
+static PIN_SAMPLES: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+static PIN_VIOLATIONS: AtomicU64 = AtomicU64::new(0);
+static STOP_PINNED: AtomicBool = AtomicBool::new(false);
+/// Iterations a pinned reporter spins between samples, so it is often preempted and
+/// sits runnable where the load balancer could see it.
+const REPORTER_SPIN: u32 = 20_000;
 
 fn worker(_: usize) {
     loop {
@@ -32,13 +37,23 @@ fn worker(_: usize) {
     }
 }
 
+/// Samples its CPU for the whole test and counts every sample taken elsewhere.
 fn pinned_reporter(expected_cpu: usize) {
-    for _ in 0..20 {
-        if percpu::index() == expected_cpu {
-            PINNED_OK.fetch_add(1, Ordering::SeqCst);
-            return;
+    while !STOP_PINNED.load(Ordering::Acquire) {
+        if percpu::index() != expected_cpu {
+            PIN_VIOLATIONS.fetch_add(1, Ordering::SeqCst);
         }
-        threads::sleep_ms(1);
+        PIN_SAMPLES[expected_cpu].fetch_add(1, Ordering::Relaxed);
+        for _ in 0..REPORTER_SPIN {
+            core::hint::spin_loop();
+        }
+    }
+}
+
+/// Extra load pinned to CPU 0, so the balancer keeps trying to pull work off it.
+fn pinned_hog(_: usize) {
+    while !STOP_PINNED.load(Ordering::Acquire) {
+        core::hint::spin_loop();
     }
 }
 
@@ -53,27 +68,45 @@ pub fn boot_check(expected: usize) -> Result<(), &'static str> {
     }
 }
 
-/// M5 exit test: unpinned threads spread to every CPU, and pinned threads stay put.
+/// M5 exit test: unpinned threads spread to every CPU, the balancer moves work off an
+/// overloaded CPU, and pinned threads never leave their CPU while that happens.
 pub fn all_cpus_check() -> Result<(), &'static str> {
+    const CPU0_EXTRA_HOGS: usize = 3;
     let cpus = smp::online();
-    for cpu in 0..cpus {
-        threads::spawn_pinned(cpu, "pinned", pinned_reporter, cpu)?;
-    }
     for _ in 0..2 * cpus {
         threads::spawn("worker", worker, 0)?;
     }
+    for cpu in 0..cpus {
+        threads::spawn_pinned(cpu, "pinned-reporter", pinned_reporter, cpu)?;
+    }
+    if cpus > 1 {
+        for _ in 0..CPU0_EXTRA_HOGS {
+            threads::spawn_pinned(0, "pinned-hog", pinned_hog, 0)?;
+        }
+    }
+    let migrations_before = threads::migrations();
     threads::sleep_ms(1_000);
+    STOP_PINNED.store(true, Ordering::Release);
+    let migrated = threads::migrations() - migrations_before;
     let work: [u64; MAX_CPUS] = core::array::from_fn(|i| WORK_ON_CPU[i].load(Ordering::Relaxed));
-    let pinned = PINNED_OK.load(Ordering::SeqCst);
+    let samples: [u64; MAX_CPUS] = core::array::from_fn(|i| PIN_SAMPLES[i].load(Ordering::Relaxed));
+    let violations = PIN_VIOLATIONS.load(Ordering::SeqCst);
     log!(
-        "smp: worker progress per CPU {:?}; {pinned}/{cpus} pinned threads ran where pinned",
-        &work[..cpus]
+        "smp: worker progress per CPU {:?}; pinned samples {:?}, {violations} on the wrong CPU; {migrated} migrations",
+        &work[..cpus],
+        &samples[..cpus]
     );
     if work[..cpus].contains(&0) {
         return Err("smp: a CPU never ran a worker thread");
     }
-    if pinned != cpus {
+    if samples[..cpus].contains(&0) {
+        return Err("smp: a pinned reporter never ran");
+    }
+    if violations > 0 {
         return Err("smp: a pinned thread ran on the wrong CPU");
+    }
+    if cpus > 1 && migrated == 0 {
+        return Err("smp: the load balancer never moved work off the overloaded CPU");
     }
     Ok(())
 }
