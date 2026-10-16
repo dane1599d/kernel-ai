@@ -139,9 +139,11 @@ pub fn self_test() -> Result<(), &'static str> {
         log!("llm: chat failed: {error}");
         "llm: chat request failed"
     })?;
+    // One line only: a long reply in a single print would keep interrupts off.
     log!(
-        "llm: reply in {} ms: {reply}",
-        (hpet::nanos() - started) / 1_000_000
+        "llm: reply in {} ms: {}",
+        (hpet::nanos() - started) / 1_000_000,
+        printable(&reply, MAX_ERROR_CHARS, 1)
     );
     Ok(())
 }
