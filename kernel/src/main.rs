@@ -180,6 +180,37 @@ extern "C" fn kmain() -> ! {
     idt::init();
     init_memory();
     log!("cpu: GDT, TSS (double-fault IST) and IDT loaded");
+    move_to_boot_stack()
+}
+
+/// Pages in the boot thread's stack. Limine's boot stack is only guaranteed 64 KiB
+/// and has no guard page; the debug-build interpreters in the spikes need more.
+const BOOT_STACK_PAGES: u64 = 63;
+
+/// Leaves Limine's stack for a large, guarded one, then continues booting there.
+fn move_to_boot_stack() -> ! {
+    let stack = match memory::stack::GuardedStack::new(BOOT_STACK_PAGES) {
+        Ok(stack) => stack,
+        Err(message) => fail(message),
+    };
+    // SAFETY: stack.top is the top of a freshly mapped stack; boot_continue never returns.
+    unsafe {
+        core::arch::asm!(
+            "mov rsp, {top}",
+            "xor rbp, rbp",
+            "call {next}",
+            top = in(reg) stack.top,
+            next = sym boot_continue,
+            options(noreturn)
+        )
+    }
+}
+
+/// Second boot stage, on the guarded boot stack.
+extern "C" fn boot_continue() -> ! {
+    let test = CMDLINE
+        .response()
+        .map_or(SelfTest::None, |r| self_test_from(r.cmdline()));
     let platform = init_devices();
     if let Err(message) = threads::init() {
         fail(message);

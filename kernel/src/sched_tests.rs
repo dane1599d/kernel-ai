@@ -139,7 +139,13 @@ impl SchedPolicy for Starver {
 
 /// M4 exit test: a policy that starves a thread is ejected, and the system recovers.
 pub fn watchdog_check() -> Result<(), &'static str> {
-    let tids = spawn_hogs(3)?;
+    // All hogs share one CPU: on a CPU of its own, the victim would never need to
+    // be queued, so a broken policy could not starve it.
+    let cpu = usize::from(crate::smp::online() > 1);
+    let mut tids = [0; 3];
+    for (i, tid) in tids.iter_mut().enumerate() {
+        *tid = threads::spawn_pinned(cpu, "hog", hog, i)?;
+    }
     VICTIM.store(tids[1], Ordering::SeqCst);
     threads::set_policy_all(|| alloc::boxed::Box::new(Starver(RoundRobin::new())));
     let victim_before = HOG_WORK[1].load(Ordering::Relaxed);
