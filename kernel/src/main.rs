@@ -159,9 +159,6 @@ extern "C" fn kmain() -> ! {
         .response()
         .map_or(SelfTest::None, |r| self_test_from(r.cmdline()));
     TEST_MODE.store(test != SelfTest::None, Ordering::SeqCst);
-    if let Some(cmdline) = CMDLINE.response() {
-        llm::configure(cmdline.cmdline());
-    }
 
     if !BASE_REVISION.is_supported() {
         fail("Limine base revision 6 is not supported by this bootloader");
@@ -171,7 +168,7 @@ extern "C" fn kmain() -> ! {
         .and_then(|r| r.framebuffers().first().copied())
     {
         let ready = console::init(fb);
-        log!("Kernel AI {} (M5)", env!("CARGO_PKG_VERSION"));
+        log!("Kernel AI {} (M6)", env!("CARGO_PKG_VERSION"));
         log!(
             "framebuffer: {}x{} {} bpp, console: {}",
             fb.width,
@@ -181,7 +178,7 @@ extern "C" fn kmain() -> ! {
         );
     } else {
         log!(
-            "Kernel AI {} (M5), no framebuffer",
+            "Kernel AI {} (M6), no framebuffer",
             env!("CARGO_PKG_VERSION")
         );
     }
@@ -222,6 +219,10 @@ extern "C" fn boot_continue() -> ! {
     let test = CMDLINE
         .response()
         .map_or(SelfTest::None, |r| self_test_from(r.cmdline()));
+    // Not in kmain: configuring allocates, and the heap is mapped only by init_memory.
+    if let Some(cmdline) = CMDLINE.response() {
+        llm::configure(cmdline.cmdline());
+    }
     let platform = init_devices();
     if let Err(message) = threads::init() {
         fail(message);
