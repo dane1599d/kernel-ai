@@ -357,7 +357,7 @@ pub fn on_tick() {
         cpu.need_resched.store(true, Ordering::Relaxed);
         return;
     }
-    cpu.need_resched.store(false, Ordering::Relaxed);
+    let deferred = cpu.need_resched.swap(false, Ordering::Relaxed);
     let me = percpu::index();
     let Some(mut guard) = CORES[me].try_lock() else {
         return;
@@ -366,7 +366,11 @@ pub fn on_tick() {
         return;
     };
     let from = core.current();
-    let next = core.tick(hpet::nanos());
+    let now = hpet::nanos();
+    // A wake-up that arrived while preemption was disabled still needs its switch.
+    let next = core
+        .tick(now)
+        .or_else(|| if deferred { core.preempt(now) } else { None });
     let ejection = core.take_ejection();
     let policy = core.policy_name();
     LOAD[me].store(core.load(), Ordering::Relaxed);

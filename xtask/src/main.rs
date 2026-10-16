@@ -30,7 +30,18 @@ const KERNEL_TARGET: &str = "x86_64-unknown-none";
 const QEMU_PASS: i32 = 33;
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
 const SOAK_TIMEOUT_SECS: u64 = 900;
-const CPUS: &str = "4";
+/// CPUs in the VM. Emulation (TCG) gets no more CPUs than the host has cores: on an
+/// overcommitted host, virtual CPUs wait for host scheduling, which looks like
+/// guest latency the kernel cannot control. KVM tolerates overcommit far better.
+const MAX_CPUS: usize = 4;
+
+fn vm_cpus(accel: Accel) -> usize {
+    let host = thread::available_parallelism().map_or(1, usize::from);
+    match accel {
+        Accel::Tcg | Accel::Auto => MAX_CPUS.min(host.max(1)),
+        Accel::Kvm | Accel::Whpx => MAX_CPUS,
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Task {
@@ -441,8 +452,6 @@ fn qemu_args(firmware: &Firmware, accel: Accel, headless: bool) -> Vec<String> {
         "q35",
         "-m",
         "512M",
-        "-smp",
-        CPUS,
         "-no-reboot",
         "-serial",
         "stdio",
@@ -452,6 +461,8 @@ fn qemu_args(firmware: &Firmware, accel: Accel, headless: bool) -> Vec<String> {
     .iter()
     .map(|s| s.to_string())
     .collect();
+    args.push("-smp".into());
+    args.push(vm_cpus(accel).to_string());
     args.push("-drive".into());
     args.push(format!(
         "if=pflash,format=raw,readonly=on,file={}",
