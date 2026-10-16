@@ -1,6 +1,6 @@
 # Kernel AI
 
-A from-scratch x86_64 operating system in Rust, inspired by TempleOS, with a local LLM built into how the system is used and tuned. Status: milestone M4 (kernel threads, preemptive scheduling, swappable policies with a watchdog). `cargo xtask run` boots to a screen that echoes typing.
+A from-scratch x86_64 operating system in Rust, inspired by TempleOS, with a local LLM built into how the system is used and tuned. Status: milestone M5 (multiprocessing: per-CPU schedulers, load balancing, TLB shootdown). `cargo xtask run` boots to a screen that echoes typing.
 
 - Plan: [docs/roadmap.md](docs/roadmap.md)
 - Decisions: [docs/decisions.md](docs/decisions.md)
@@ -29,8 +29,9 @@ A from-scratch x86_64 operating system in Rust, inspired by TempleOS, with a loc
 ```bash
 cargo xtask build            # build the kernel
 cargo xtask run              # boot it in a QEMU window
-cargo xtask test             # boots each self-test case headless (9 cases, including a 60 s timer check and scheduling under load)
+cargo xtask test             # boots each self-test case headless (12 cases on 4 CPUs)
 cargo xtask test --accel kvm # use KVM (Linux or WSL2)
+cargo xtask soak             # the 10-minute spawn/exit/sleep storm
 cargo test -p xtask -p linetable -p mm -p acpitables -p sched --features linetable/alloc  # host unit tests
 ```
 

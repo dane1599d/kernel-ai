@@ -137,22 +137,50 @@ impl Memory {
 
     /// Unmaps `addr` and returns its frame to the allocator.
     pub fn unmap(&mut self, addr: u64) -> Result<(), &'static str> {
+        let frame = self.unmap_keep_frame(addr)?;
+        self.frames
+            .free(frame / PAGE_SIZE)
+            .map_err(|_| "unmapped frame was not allocated")
+    }
+
+    /// Unmaps `addr` everywhere and returns the physical frame without freeing it.
+    pub fn unmap_keep_frame(&mut self, addr: u64) -> Result<u64, &'static str> {
         let (frame, flush) = self
             .mapper
             .unmap(page(addr))
             .map_err(|_| "page not mapped")?;
         flush.flush();
-        self.frames
-            .free(frame.start_address().as_u64() / PAGE_SIZE)
-            .map_err(|_| "unmapped frame was not allocated")
+        crate::smp::tlb_shootdown(addr);
+        Ok(frame.start_address().as_u64())
     }
 
-    /// Replaces the leaf flags of a mapped page.
+    /// Points a mapped page at a different physical frame. Returns the old frame,
+    /// which the caller now owns.
+    pub fn retarget(
+        &mut self,
+        addr: u64,
+        phys: u64,
+        flags: PageTableFlags,
+    ) -> Result<u64, &'static str> {
+        let old = self.unmap_keep_frame(addr)?;
+        self.map_physical_page(addr, phys, flags)?;
+        Ok(old)
+    }
+
+    /// Returns a frame that a caller of `unmap_keep_frame` or `retarget` owns.
+    pub fn free_frame(&mut self, phys: u64) -> Result<(), &'static str> {
+        self.frames
+            .free(phys / PAGE_SIZE)
+            .map_err(|_| "frame was not allocated")
+    }
+
+    /// Replaces the leaf flags of a mapped page on every CPU.
     pub fn protect(&mut self, addr: u64, flags: PageTableFlags) -> Result<(), &'static str> {
         // SAFETY: callers only change pages they mapped themselves.
         let flush = unsafe { self.mapper.update_flags(page(addr), flags) }
             .map_err(|_| "page not mapped")?;
         flush.flush();
+        crate::smp::tlb_shootdown(addr);
         Ok(())
     }
 

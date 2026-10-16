@@ -23,6 +23,8 @@ const SPIN_LIMIT: u32 = 1_000_000;
 const RING: usize = 256;
 
 static SCANCODES: [AtomicU8; RING] = [const { AtomicU8::new(0) }; RING];
+/// HPET time at which each queued scancode arrived, for wake-latency measurement.
+static ARRIVED_NS: [AtomicU64; RING] = [const { AtomicU64::new(0) }; RING];
 static HEAD: AtomicUsize = AtomicUsize::new(0);
 static TAIL: AtomicUsize = AtomicUsize::new(0);
 
@@ -68,8 +70,7 @@ pub fn init(platform: &Platform, apic_id: u8) -> Result<(), &'static str> {
 /// Thread blocked in [`wait_scancode`], or `NO_WAITER`.
 static WAITER: AtomicUsize = AtomicUsize::new(NO_WAITER);
 const NO_WAITER: usize = usize::MAX;
-/// HPET time of the latest keyboard interrupt, and wake-latency statistics.
-static LAST_IRQ_NS: AtomicU64 = AtomicU64::new(0);
+/// Wake-latency statistics: measured wake-ups and the worst one.
 static WAKES: AtomicU64 = AtomicU64::new(0);
 static WORST_WAKE_NS: AtomicU64 = AtomicU64::new(0);
 
@@ -78,10 +79,10 @@ static WORST_WAKE_NS: AtomicU64 = AtomicU64::new(0);
 pub fn on_interrupt() -> Option<usize> {
     // SAFETY: the controller raised IRQ1, so a byte is waiting.
     let scancode = unsafe { inb(DATA) };
-    LAST_IRQ_NS.store(hpet::nanos(), Ordering::Relaxed);
     let head = HEAD.load(Ordering::Relaxed);
     if head.wrapping_sub(TAIL.load(Ordering::Acquire)) < RING {
         SCANCODES[head % RING].store(scancode, Ordering::Relaxed);
+        ARRIVED_NS[head % RING].store(hpet::nanos(), Ordering::Relaxed);
         HEAD.store(head.wrapping_add(1), Ordering::Release);
     }
     match WAITER.swap(NO_WAITER, Ordering::AcqRel) {
@@ -101,10 +102,15 @@ fn wait_scancode() -> u8 {
         if let Some(scancode) = next_scancode() {
             return scancode;
         }
-        WAITER.store(crate::threads::current(), Ordering::Release);
-        crate::threads::block_unless(has_scancode);
-        if has_scancode() {
-            let latency = hpet::nanos().saturating_sub(LAST_IRQ_NS.load(Ordering::Relaxed));
+        // SeqCst orders this store before the ring check inside block_unless, so the
+        // interrupt cannot both miss the waiter and have its scancode go unseen.
+        WAITER.store(crate::threads::current(), Ordering::SeqCst);
+        if crate::threads::block_unless(has_scancode) && has_scancode() {
+            // After a real block the ring was empty, so the scancode at TAIL is the first
+            // to arrive since. A stale wake on an empty ring is not counted.
+            let tail = TAIL.load(Ordering::Relaxed);
+            let arrived = ARRIVED_NS[tail % RING].load(Ordering::Relaxed);
+            let latency = hpet::nanos().saturating_sub(arrived);
             WAKES.fetch_add(1, Ordering::Relaxed);
             WORST_WAKE_NS.fetch_max(latency, Ordering::Relaxed);
         }
