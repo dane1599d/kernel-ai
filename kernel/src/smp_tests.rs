@@ -198,10 +198,16 @@ pub fn storm_check(seconds: u64) -> Result<(), &'static str> {
     for i in 0..STORMERS {
         threads::spawn("stormer", stormer, 0x9E37_79B9 + i * 7919)?;
     }
+    let end = STORM_END_NS.load(Ordering::Acquire);
     let mut last = 0;
     for second in 1..=seconds {
         threads::sleep_ms(1_000);
         let spawned = STORM_SPAWNED.load(Ordering::Acquire);
+        // Each one-second sleep runs slightly long, so late windows can reach past
+        // the deadline, where spawning stops by design. Only judge whole windows.
+        if hpet::nanos() >= end {
+            break;
+        }
         if spawned == last {
             log!("storm: no new threads in second {second}");
             return Err("storm: spawning stopped making progress");
