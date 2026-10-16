@@ -1,10 +1,11 @@
-//! Kernel AI: M2, memory management.
+//! Kernel AI: M3, interrupts and time.
 //!
 //! Boots through Limine, logs to COM1 and the framebuffer console, loads the GDT,
-//! TSS and IDT, and resolves fault addresses to source lines from the
-//! `kernel.lines` module. The kernel command line selects a self-test:
-//! `test` (boot checks), `test=page-fault`, `test=double-fault`, `test=write-protect` or
-//! `test=stack-overflow`.
+//! TSS and IDT, sets up memory, then the APICs, HPET, a 1 kHz timer and the PS/2
+//! keyboard. Fault addresses resolve to source lines from the `kernel.lines` module.
+//! The kernel command line selects a self-test: `test` (boot checks), or
+//! `test=` one of `page-fault`, `double-fault`, `write-protect`, `stack-overflow`,
+//! `timer`, `keyboard`.
 
 #![no_std]
 #![no_main]
@@ -12,22 +13,28 @@
 
 extern crate alloc;
 
+mod apic;
 mod backtrace;
 mod console;
 mod faults;
 mod gdt;
+mod hpet;
 mod idt;
+mod keyboard;
 mod lines;
 mod memory;
+mod platform;
 mod port;
 mod qemu;
 mod serial;
 #[cfg(feature = "spikes")]
 mod spikes;
+mod timer;
 
 use core::sync::atomic::{AtomicBool, Ordering};
 use limine::request::{
     ExecutableCmdlineRequest, FramebufferRequest, HhdmRequest, MemmapRequest, ModulesRequest,
+    RsdpRequest,
 };
 use limine::{BaseRevision, RequestsEndMarker, RequestsStartMarker};
 use qemu::ExitCode;
@@ -61,6 +68,10 @@ static MEMMAP: MemmapRequest = MemmapRequest::new();
 static HHDM: HhdmRequest = HhdmRequest::new();
 
 #[used]
+#[unsafe(link_section = ".requests")]
+static RSDP: RsdpRequest = RsdpRequest::new();
+
+#[used]
 #[unsafe(link_section = ".requests_end_marker")]
 static REQUESTS_END: RequestsEndMarker = RequestsEndMarker::new();
 
@@ -75,6 +86,8 @@ enum SelfTest {
     DoubleFault,
     WriteProtect,
     StackOverflow,
+    Timer,
+    Keyboard,
 }
 
 fn self_test_from(cmdline: &str) -> SelfTest {
@@ -86,6 +99,8 @@ fn self_test_from(cmdline: &str) -> SelfTest {
             "test=double-fault" => Some(SelfTest::DoubleFault),
             "test=write-protect" => Some(SelfTest::WriteProtect),
             "test=stack-overflow" => Some(SelfTest::StackOverflow),
+            "test=timer" => Some(SelfTest::Timer),
+            "test=keyboard" => Some(SelfTest::Keyboard),
             _ => None,
         })
         .unwrap_or(SelfTest::None)
@@ -108,7 +123,7 @@ extern "C" fn kmain() -> ! {
         .and_then(|r| r.framebuffers().first().copied())
     {
         let ready = console::init(fb);
-        log!("Kernel AI {} (M2)", env!("CARGO_PKG_VERSION"));
+        log!("Kernel AI {} (M3)", env!("CARGO_PKG_VERSION"));
         log!(
             "framebuffer: {}x{} {} bpp, console: {}",
             fb.width,
@@ -118,7 +133,7 @@ extern "C" fn kmain() -> ! {
         );
     } else {
         log!(
-            "Kernel AI {} (M2), no framebuffer",
+            "Kernel AI {} (M3), no framebuffer",
             env!("CARGO_PKG_VERSION")
         );
     }
@@ -128,6 +143,7 @@ extern "C" fn kmain() -> ! {
     idt::init();
     init_memory();
     log!("cpu: GDT, TSS (double-fault IST) and IDT loaded");
+    let platform = init_devices();
 
     match test {
         SelfTest::PageFault => {
@@ -142,6 +158,18 @@ extern "C" fn kmain() -> ! {
         SelfTest::StackOverflow => {
             let result = memory::selftest::trigger_stack_overflow();
             fail(result.err().unwrap_or("stack-overflow test returned"));
+        }
+        SelfTest::Timer => {
+            if let Err(message) = timer::sixty_second_check() {
+                fail(message);
+            }
+            test_exit(ExitCode::Success);
+        }
+        SelfTest::Keyboard => {
+            if let Err(message) = keyboard::typing_check() {
+                fail(message);
+            }
+            test_exit(ExitCode::Success);
         }
         SelfTest::Boot | SelfTest::None => {}
     }
@@ -158,7 +186,41 @@ extern "C" fn kmain() -> ! {
     if test != SelfTest::None {
         test_exit(ExitCode::Success);
     }
-    halt_forever()
+    log!(
+        "Ready. {} CPU(s) reported by firmware. Typing echoes here.",
+        platform.cpus.len()
+    );
+    keyboard::echo_forever()
+}
+
+/// ACPI, local APIC, HPET, the 1 kHz timer and the keyboard, then interrupts on.
+fn init_devices() -> &'static acpitables::Platform {
+    let hhdm = HHDM.response().map_or(0, |r| r.offset);
+    let Some(rsdp) = RSDP.response().map(|r| r.address as u64) else {
+        fail("Limine did not provide the ACPI RSDP");
+    };
+    let result = platform::init(rsdp, hhdm).and_then(|platform| {
+        let apic_id = apic::init_local(platform)?;
+        let hpet = platform
+            .hpet
+            .ok_or("no HPET; a PIT fallback is not implemented yet")?;
+        hpet::init(hpet)?;
+        timer::init()?;
+        keyboard::init(platform, apic_id)?;
+        log!(
+            "devices: local APIC id {apic_id}, {} I/O APIC(s), {} IRQ override(s)",
+            platform.io_apics.len(),
+            platform.overrides.len()
+        );
+        Ok(platform)
+    });
+    match result {
+        Ok(platform) => {
+            x86_64::instructions::interrupts::enable();
+            platform
+        }
+        Err(message) => fail(message),
+    }
 }
 
 /// Sets up frames, page tables and the heap. Nothing may allocate before this runs.
@@ -210,6 +272,9 @@ fn boot_self_test() {
         fail("line table did not resolve a known function to kernel/src/faults.rs");
     }
     log!("self-test: breakpoint resumed, source lookup ok");
+    if let Err(message) = timer::boot_check() {
+        fail(message);
+    }
     if let Err(message) = memory::selftest::run() {
         fail(message);
     }

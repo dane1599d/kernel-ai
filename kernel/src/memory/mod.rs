@@ -9,6 +9,7 @@
 //! | `0xffff_c000_0000_0000` | kernel heap                           |
 //! | `0xffff_c800_0000_0000` | kernel stacks with guard pages        |
 //! | `0xffff_d000_0000_0000` | self-test scratch mappings            |
+//! | `0xffff_d800_0000_0000` | device registers and firmware tables  |
 //! | `0xffff_ffff_8000_0000` | kernel image (Limine)                 |
 
 pub mod heap;
@@ -21,10 +22,29 @@ use limine::memmap::{Entry, MEMMAP_USABLE};
 use mm::{FrameBitmap, PAGE_SIZE};
 use paging::Memory;
 use spin::Mutex;
+use x86_64::structures::paging::PageTableFlags;
 
 pub const HEAP_START: u64 = 0xFFFF_C000_0000_0000;
 pub const STACKS_START: u64 = 0xFFFF_C800_0000_0000;
 pub const SCRATCH_START: u64 = 0xFFFF_D000_0000_0000;
+pub const PHYS_WINDOW_START: u64 = 0xFFFF_D800_0000_0000;
+
+static NEXT_WINDOW_PAGE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// Maps `len` bytes of physical memory starting at `phys` into the device window and
+/// returns the virtual address of `phys`. Mappings are permanent.
+pub fn map_physical(phys: u64, len: u64, flags: PageTableFlags) -> Result<u64, &'static str> {
+    let first = phys / PAGE_SIZE * PAGE_SIZE;
+    let pages = (phys + len.max(1)).div_ceil(PAGE_SIZE) - first / PAGE_SIZE;
+    let start = NEXT_WINDOW_PAGE.fetch_add(pages, core::sync::atomic::Ordering::Relaxed);
+    let base = PHYS_WINDOW_START + start * PAGE_SIZE;
+    with(|m| {
+        (0..pages).try_for_each(|i| {
+            m.map_physical_page(base + i * PAGE_SIZE, first + i * PAGE_SIZE, flags)
+        })
+    })?;
+    Ok(base + (phys - first))
+}
 
 static MEMORY: Mutex<Option<Memory>> = Mutex::new(None);
 

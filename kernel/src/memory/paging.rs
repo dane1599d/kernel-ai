@@ -115,6 +115,26 @@ impl Memory {
         }
     }
 
+    /// Maps the existing physical page `phys` at `addr`, for device registers and
+    /// firmware tables. The frame is not owned by the allocator and is never freed.
+    pub fn map_physical_page(
+        &mut self,
+        addr: u64,
+        phys: u64,
+        flags: PageTableFlags,
+    ) -> Result<(), &'static str> {
+        let frame = PhysFrame::containing_address(PhysAddr::new(phys));
+        let mut tables = Frames {
+            bitmap: &mut self.frames,
+            hhdm: self.hhdm,
+        };
+        // SAFETY: the caller maps device or firmware memory into a kernel-owned window.
+        let flush = unsafe { self.mapper.map_to(page(addr), frame, flags, &mut tables) }
+            .map_err(|_| "physical window page already mapped")?;
+        flush.flush();
+        Ok(())
+    }
+
     /// Unmaps `addr` and returns its frame to the allocator.
     pub fn unmap(&mut self, addr: u64) -> Result<(), &'static str> {
         let (frame, flush) = self

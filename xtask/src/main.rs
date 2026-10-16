@@ -5,14 +5,16 @@
 //! cargo xtask test  [--release] [--accel auto|kvm|whpx|tcg] [--timeout SECS]
 //!
 //! `test` boots the kernel headless once per test case (boot and memory checks,
-//! page fault, double fault, write-protect, stack overflow) with the spikes
+//! page fault, double fault, write-protect, stack overflow, 60 s timer, keyboard
+//! typed through the QEMU monitor) with the spikes
 //! enabled. Each case passes only if the
 //! kernel reports success through QEMU's isa-debug-exit device.
 
 mod lines;
 
 use sha2::{Digest, Sha256};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::sync::mpsc;
@@ -130,8 +132,16 @@ fn execute(options: &Options) -> Result<(), String> {
         println!("xtask: test case {name} ({cmdline})");
         make_esp(&esp, &kernel, &line_table, &efi, cmdline)?;
         let firmware = find_firmware(&qemu, &target_dir)?;
-        let args = qemu_args(&firmware, accel, true);
-        if let Err(message) = run_test(&qemu, &args, &target_dir, accel, options.timeout) {
+        let monitor = free_port()?;
+        let mut args = qemu_args(&firmware, accel, true);
+        args.push("-monitor".into());
+        args.push(format!("tcp:127.0.0.1:{monitor},server=on,wait=off"));
+        let run = TestRun {
+            accel,
+            timeout: options.timeout,
+            monitor,
+        };
+        if let Err(message) = run_test(&qemu, &args, &target_dir, &run) {
             eprintln!("xtask: test case {name}: {message}");
             failures.push(name);
         }
@@ -146,13 +156,55 @@ fn execute(options: &Options) -> Result<(), String> {
 
 /// Each test case boots the kernel once with this command line. The kernel itself
 /// decides pass or fail and reports it through isa-debug-exit.
-const TEST_CASES: [(&str, &str); 5] = [
+const TEST_CASES: [(&str, &str); 7] = [
     ("boot", "test"),
     ("page-fault", "test=page-fault"),
     ("double-fault", "test=double-fault"),
     ("write-protect", "test=write-protect"),
     ("stack-overflow", "test=stack-overflow"),
+    ("timer", "test=timer"),
+    ("keyboard", "test=keyboard"),
 ];
+
+/// Keys the harness types when the kernel announces the keyboard test.
+const TEST_KEYS: [&str; 4] = ["k", "a", "i", "ret"];
+
+struct TestRun {
+    accel: Accel,
+    timeout: Duration,
+    /// TCP port of the QEMU human monitor, used to inject keystrokes.
+    monitor: u16,
+}
+
+/// Asks the OS for a free local port. QEMU binds it right after, so a clash is unlikely.
+fn free_port() -> Result<u16, String> {
+    TcpListener::bind(("127.0.0.1", 0))
+        .and_then(|listener| listener.local_addr())
+        .map(|addr| addr.port())
+        .map_err(|e| format!("cannot find a free port for the QEMU monitor: {e}"))
+}
+
+/// Types keys into the guest through the QEMU monitor's `sendkey` command.
+fn type_keys(port: u16) {
+    for _ in 0..50 {
+        if let Ok(mut monitor) = TcpStream::connect(("127.0.0.1", port)) {
+            thread::sleep(Duration::from_millis(200));
+            for key in TEST_KEYS {
+                if writeln!(monitor, "sendkey {key}").is_err() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(150));
+            }
+            println!(
+                "xtask: typed {} keys through the QEMU monitor",
+                TEST_KEYS.len()
+            );
+            return;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    eprintln!("xtask: could not reach the QEMU monitor on port {port}");
+}
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -414,13 +466,8 @@ fn run_interactive(qemu: &Path, args: &[String], target_dir: &Path) -> Result<()
     Ok(())
 }
 
-fn run_test(
-    qemu: &Path,
-    args: &[String],
-    target_dir: &Path,
-    accel: Accel,
-    timeout: Duration,
-) -> Result<(), String> {
+fn run_test(qemu: &Path, args: &[String], target_dir: &Path, run: &TestRun) -> Result<(), String> {
+    let (accel, timeout, monitor) = (run.accel, run.timeout, run.monitor);
     let started = Instant::now();
     let mut child = Command::new(qemu)
         .current_dir(target_dir)
@@ -431,10 +478,22 @@ fn run_test(
     let stdout = child.stdout.take().ok_or("QEMU stdout was not captured")?;
     let (ready_tx, ready_rx) = mpsc::channel();
     let reader = thread::spawn(move || {
+        let mut measure_start = None;
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
             println!("  | {line}");
             if line.contains("boot-ok") {
                 let _ = ready_tx.send(started.elapsed());
+            } else if line.contains("keyboard: ready") {
+                thread::spawn(move || type_keys(monitor));
+            } else if line.contains("measure-start") {
+                measure_start = Some(Instant::now());
+            } else if line.contains("measure-end")
+                && let Some(start) = measure_start
+            {
+                println!(
+                    "xtask: host wall time for the measurement: {} ms",
+                    start.elapsed().as_millis()
+                );
             }
         }
     });

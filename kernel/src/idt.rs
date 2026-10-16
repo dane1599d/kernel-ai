@@ -3,6 +3,7 @@
 use crate::backtrace::current_rbp;
 use crate::faults::{self, Exception};
 use crate::gdt::DOUBLE_FAULT_IST_INDEX;
+use crate::{apic, keyboard, timer};
 use spin::LazyLock;
 use x86_64::registers::control::Cr2;
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
@@ -21,6 +22,9 @@ static IDT: LazyLock<InterruptDescriptorTable> = LazyLock::new(|| {
             .set_handler_fn(double_fault)
             .set_stack_index(DOUBLE_FAULT_IST_INDEX);
     }
+    idt[apic::TIMER_VECTOR].set_handler_fn(timer_interrupt);
+    idt[apic::KEYBOARD_VECTOR].set_handler_fn(keyboard_interrupt);
+    idt[apic::SPURIOUS_VECTOR].set_handler_fn(spurious_interrupt);
     idt
 });
 
@@ -56,3 +60,16 @@ extern "x86-interrupt" fn page_fault(frame: InterruptStackFrame, code: PageFault
 extern "x86-interrupt" fn double_fault(frame: InterruptStackFrame, _code: u64) -> ! {
     faults::fatal(Exception::DoubleFault, &frame, current_rbp());
 }
+
+extern "x86-interrupt" fn timer_interrupt(_frame: InterruptStackFrame) {
+    timer::on_tick();
+    apic::end_of_interrupt();
+}
+
+extern "x86-interrupt" fn keyboard_interrupt(_frame: InterruptStackFrame) {
+    keyboard::on_interrupt();
+    apic::end_of_interrupt();
+}
+
+/// Spurious interrupts must not be acknowledged.
+extern "x86-interrupt" fn spurious_interrupt(_frame: InterruptStackFrame) {}
