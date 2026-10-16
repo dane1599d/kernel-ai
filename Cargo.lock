@@ -3,6 +3,10 @@
 version = 4
 
 [[package]]
+name = "acpitables"
+version = "0.0.0"
+
+[[package]]
 name = "addr2line"
 version = "0.27.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -290,10 +294,12 @@ dependencies = [
 name = "kernel"
 version = "0.0.0"
 dependencies = [
+ "acpitables",
  "limine",
  "linetable",
  "mm",
  "noto-sans-mono-bitmap",
+ "pc-keyboard",
  "spike-rhai",
  "spike-wasmi",
  "spin 0.12.3",
@@ -402,6 +408,12 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 dependencies = [
  "portable-atomic",
 ]
+
+[[package]]
+name = "pc-keyboard"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "73c53b65bbadd653c9d125e745d2659a3a060539b17d96ab1c59f9f5bfdacce5"
 
 [[package]]
 name = "pin-project-lite"

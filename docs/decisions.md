@@ -33,7 +33,9 @@ Sources: the five merged memos in `docs/research/`. Milestones are defined in `d
 | M1, decided 2026-10-16 | Panic strategy | Abort. The panic handler logs the message and a frame-pointer backtrace. |
 | M1, decided 2026-10-16 | Framebuffer, font, source links | Limine 32-bit framebuffer; Noto Sans Mono 16 px regular (basic Latin plus the replacement glyph). Source links come from a line table that xtask builds from DWARF and Limine loads as the `kernel.lines` module; format in the `linetable` crate. |
 | M2, decided 2026-10-16 | Paging, heap, reclaim | 4-level paging on Limine's tables through the HHDM; bitmap frame allocator (`mm` crate); fixed 32 MiB `talc` heap, pre-mapped, behind a counting wrapper for leak checks; `ReclaimPolicy` trait with a CLOCK default tested on real accessed bits; all 256 kernel-half PML4 slots pre-allocated for future address spaces; kernel stacks get an unmapped guard page. Heap growth is deferred. |
-| M3 | Interrupt controllers and timer | LAPIC and IOAPIC. One-shot timer, at a fixed 1 kHz first. |
+| M3, decided 2026-10-16 | Interrupt controllers and timer | xAPIC (memory-mapped) local APIC and I/O APIC; the legacy PIC stays masked. HPET is the reference clock; a PIT fallback is not implemented. The local APIC timer runs one-shot at 1 kHz, re-armed each tick for an absolute HPET deadline so latency never accumulates. |
+| M3, decided 2026-10-16 | ACPI | Own minimal reader (`acpitables` crate: RSDP, XSDT or RSDT, MADT, HPET) instead of the `acpi` crate, whose 6.x handler needs about 25 methods. Revisit if AML is needed. |
+| M3, decided 2026-10-16 | Keyboard | PS/2 with scancode set 1 translation, decoded by `pc-keyboard`. The interrupt only queues scancodes; decoding happens outside the handler. Tests type keys through the QEMU monitor. |
 | M4 | Kernel preemption | Preemptible kernel threads with a preempt count. Not preemption of ring-3 code only. |
 | M4 | Scheduler policy shape | A policy trait, a round-robin fallback, a 200 ms watchdog, policies compiled in. |
 | M6 | Virtio interrupts | Polling first, then MSI-X. |
