@@ -37,6 +37,18 @@ pub struct Override {
     pub flags: u16,
 }
 
+/// A PCIe enhanced configuration (ECAM) window from the MCFG table. `base` is the
+/// address bus 0 would have even when `start_bus` is higher, so function
+/// (bus, device, function), for `start_bus <= bus <= end_bus`, has its 4 KiB
+/// configuration space at `base + (bus << 20 | device << 15 | function << 12)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ecam {
+    pub base: u64,
+    pub segment: u16,
+    pub start_bus: u8,
+    pub end_bus: u8,
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Platform {
     pub local_apic: u64,
@@ -46,6 +58,8 @@ pub struct Platform {
     pub overrides: Vec<Override>,
     /// HPET register block, if the firmware has an HPET table.
     pub hpet: Option<u64>,
+    /// PCIe configuration windows, if the firmware has an MCFG table.
+    pub ecam: Vec<Ecam>,
 }
 
 /// How an ISA IRQ reaches the I/O APIC.
@@ -128,6 +142,7 @@ pub fn parse(mem: &impl PhysMem, rsdp: u64) -> Result<Platform, Error> {
                     platform.hpet = Some(u64_at(hpet, 44));
                 }
             }
+            b"MCFG" => parse_mcfg(table(mem, address)?, &mut platform),
             _ => {}
         }
     }
@@ -178,6 +193,25 @@ fn parse_madt(madt: &[u8], platform: &mut Platform) {
             _ => {}
         }
         offset += len;
+    }
+}
+
+/// MCFG: the 36-byte header, 8 reserved bytes, then 16-byte allocation entries
+/// (base address u64, segment group u16, start bus u8, end bus u8, reserved u32).
+fn parse_mcfg(mcfg: &[u8], platform: &mut Platform) {
+    const FIRST_ENTRY: usize = SDT_HEADER_LEN + 8;
+    const ENTRY_LEN: usize = 16;
+    if mcfg.len() < FIRST_ENTRY {
+        return;
+    }
+    let (entries, _) = mcfg[FIRST_ENTRY..].as_chunks::<ENTRY_LEN>();
+    for entry in entries {
+        platform.ecam.push(Ecam {
+            base: u64_at(entry, 0),
+            segment: u16::from_le_bytes([entry[8], entry[9]]),
+            start_bus: entry[10],
+            end_bus: entry[11],
+        });
     }
 }
 
@@ -254,19 +288,32 @@ mod tests {
         b
     }
 
-    /// Lays out RSDP v2 at 0, XSDT at 0x100, MADT at 0x200, HPET at 0x400.
+    fn mcfg_body() -> Vec<u8> {
+        let mut b = vec![0u8; 8]; // reserved
+        b.extend_from_slice(&0xB000_0000u64.to_le_bytes());
+        b.extend_from_slice(&0u16.to_le_bytes()); // segment 0
+        b.extend_from_slice(&[0, 255]); // buses 0..=255
+        b.extend_from_slice(&[0, 0, 0, 0]);
+        b
+    }
+
+    /// Lays out RSDP v2 at 0, XSDT at 0x100, MADT at 0x200, HPET at 0x400 and
+    /// MCFG at 0x600.
     fn machine(include_hpet: bool) -> Flat {
         let mut mem = vec![0u8; 0x800];
         let madt = sdt(b"APIC", &madt_body());
         let hpet = sdt(b"HPET", &hpet_body());
+        let mcfg = sdt(b"MCFG", &mcfg_body());
         let mut pointers = 0x200u64.to_le_bytes().to_vec();
         if include_hpet {
             pointers.extend_from_slice(&0x400u64.to_le_bytes());
         }
+        pointers.extend_from_slice(&0x600u64.to_le_bytes());
         let xsdt = sdt(b"XSDT", &pointers);
         mem[0x100..0x100 + xsdt.len()].copy_from_slice(&xsdt);
         mem[0x200..0x200 + madt.len()].copy_from_slice(&madt);
         mem[0x400..0x400 + hpet.len()].copy_from_slice(&hpet);
+        mem[0x600..0x600 + mcfg.len()].copy_from_slice(&mcfg);
         let mut rsdp = vec![0u8; 36];
         rsdp[..8].copy_from_slice(b"RSD PTR ");
         rsdp[15] = 2;
@@ -287,6 +334,15 @@ mod tests {
         assert_eq!(platform.io_apics[0].address, 0xFEC0_0000);
         assert_eq!(platform.overrides.len(), 2);
         assert_eq!(platform.hpet, Some(0xFED0_0000));
+        assert_eq!(
+            platform.ecam,
+            vec![Ecam {
+                base: 0xB000_0000,
+                segment: 0,
+                start_bus: 0,
+                end_bus: 255
+            }]
+        );
     }
 
     #[test]

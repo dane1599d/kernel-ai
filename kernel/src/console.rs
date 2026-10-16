@@ -111,12 +111,41 @@ impl Console {
     }
 }
 
+/// ASCII backspace: moves the cursor back one cell, to the end of the row above
+/// if it is at the start of a row. Echo "\x08 \x08" to erase a character.
+pub const BACKSPACE: char = 8u8 as char;
+/// ASCII form feed: clears the screen. Printed like any other text, so it is
+/// serialised with other output by the serial line lock.
+pub const FORM_FEED: char = 12u8 as char;
+
+impl Console {
+    fn clear_screen(&mut self) {
+        for row in 0..self.rows {
+            self.clear_text_row(row);
+        }
+        self.col = 0;
+        self.row = 0;
+    }
+
+    fn back_one(&mut self) {
+        if self.col > 0 {
+            self.col -= 1;
+        } else if self.row > 0 {
+            // Wrapped input continues on the next row, so it ends in the last column.
+            self.row -= 1;
+            self.col = self.cols.saturating_sub(1);
+        }
+    }
+}
+
 impl Write for Console {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         for ch in s.chars() {
             match ch {
                 '\n' => self.newline(),
                 '\r' => self.col = 0,
+                FORM_FEED => self.clear_screen(),
+                BACKSPACE => self.back_one(),
                 _ => {
                     if self.col >= self.cols {
                         self.newline();

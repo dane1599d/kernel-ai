@@ -94,6 +94,43 @@ impl<'a> FrameBitmap<'a> {
         None
     }
 
+    /// Finds `count` consecutive free frames whose first frame number is a multiple of
+    /// `align`, marks them used, and returns the first. First fit from frame 0, so
+    /// large early allocations (the heap, DMA rings) come from low memory.
+    pub fn allocate_contiguous(&mut self, count: u64, align: u64) -> Option<u64> {
+        if count == 0 || align == 0 || count > self.free {
+            return None;
+        }
+        let mut start = 0;
+        while start + count <= self.frames {
+            match (start..start + count).find(|&frame| !self.is_free(frame)) {
+                // Restart just past the used frame, rounded up to the alignment.
+                Some(used) => start = (used + 1).next_multiple_of(align),
+                None => {
+                    for frame in start..start + count {
+                        self.set(frame);
+                    }
+                    self.free -= count;
+                    return Some(start);
+                }
+            }
+        }
+        None
+    }
+
+    /// Frees `count` frames starting at `first`, as allocated by `allocate_contiguous`.
+    pub fn free_contiguous(&mut self, first: u64, count: u64) -> Result<(), FrameError> {
+        if first.checked_add(count).is_none_or(|end| end > self.frames) {
+            return Err(FrameError::OutOfRange);
+        }
+        if (first..first + count).any(|frame| self.is_free(frame)) {
+            return Err(FrameError::DoubleFree);
+        }
+        (first..first + count).for_each(|frame| self.clear(frame));
+        self.free += count;
+        Ok(())
+    }
+
     pub fn free(&mut self, frame: u64) -> Result<(), FrameError> {
         if frame >= self.frames {
             return Err(FrameError::OutOfRange);
@@ -158,6 +195,36 @@ mod tests {
         assert_eq!(bitmap.free(frame), Err(FrameError::DoubleFree));
         assert_eq!(bitmap.free(64), Err(FrameError::OutOfRange));
         assert_eq!(bitmap.free_count(), 64);
+    }
+
+    #[test]
+    fn contiguous_allocation_skips_holes_and_honours_alignment() {
+        let mut storage = vec![0; FrameBitmap::words_for(256)];
+        let mut bitmap = FrameBitmap::new(&mut storage, 256);
+        bitmap.release_range(0, 256);
+        bitmap.reserve_range(5, 1); // a hole at frame 5
+        assert_eq!(bitmap.allocate_contiguous(8, 1), Some(6));
+        assert_eq!(bitmap.allocate_contiguous(4, 1), Some(0));
+        assert_eq!(bitmap.allocate_contiguous(16, 16), Some(16));
+        assert_eq!(bitmap.free_count(), 256 - 1 - 8 - 4 - 16);
+        assert!((16..32).all(|f| !bitmap.is_free(f)));
+        assert_eq!(bitmap.allocate_contiguous(1000, 1), None);
+        assert_eq!(bitmap.allocate_contiguous(0, 1), None);
+    }
+
+    #[test]
+    fn contiguous_free_restores_and_rejects_bad_ranges() {
+        let mut storage = vec![0; FrameBitmap::words_for(64)];
+        let mut bitmap = FrameBitmap::new(&mut storage, 64);
+        bitmap.release_range(0, 64);
+        let first = bitmap.allocate_contiguous(10, 2).unwrap();
+        assert_eq!(bitmap.free_contiguous(first, 10), Ok(()));
+        assert_eq!(bitmap.free_count(), 64);
+        assert_eq!(
+            bitmap.free_contiguous(first, 10),
+            Err(FrameError::DoubleFree)
+        );
+        assert_eq!(bitmap.free_contiguous(60, 10), Err(FrameError::OutOfRange));
     }
 
     #[test]

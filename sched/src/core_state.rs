@@ -88,6 +88,11 @@ impl Core {
         }
     }
 
+    /// The policy last installed, even while the watchdog has the fallback running.
+    pub fn installed_policy_name(&self) -> &'static str {
+        self.policy.name()
+    }
+
     pub fn on_fallback(&self) -> bool {
         self.on_fallback
     }
@@ -543,6 +548,7 @@ mod tests {
         assert_eq!(sim.core.ejections(), 1);
         assert!(sim.core.on_fallback());
         assert_eq!(sim.core.policy_name(), "round-robin");
+        assert_eq!(sim.core.installed_policy_name(), "starver");
         assert!(sim.core.take_ejection().unwrap().contains("watchdog"));
         assert!(
             sim.cpu[hogs[1]] >= 10 * MS,

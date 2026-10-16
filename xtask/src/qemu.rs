@@ -1,0 +1,202 @@
+//! Building QEMU command lines and running QEMU, interactively or as a test.
+
+use crate::cases::TestCase;
+use crate::{Accel, Firmware};
+use std::io::{BufRead, BufReader, Write};
+use std::net::{TcpListener, TcpStream};
+use std::path::Path;
+use std::process::{Command, Stdio};
+use std::sync::mpsc;
+use std::thread;
+use std::time::{Duration, Instant};
+
+/// QEMU exit status for `isa-debug-exit` value 0x10: (0x10 << 1) | 1.
+const QEMU_PASS: i32 = 33;
+/// CPUs in the VM. Emulation (TCG) gets no more CPUs than the host has cores: on an
+/// overcommitted host, virtual CPUs wait for host scheduling, which looks like
+/// guest latency the kernel cannot control. KVM tolerates overcommit far better.
+const MAX_CPUS: usize = 4;
+
+pub fn vm_cpus(accel: Accel) -> usize {
+    let host = thread::available_parallelism().map_or(1, usize::from);
+    match accel {
+        Accel::Tcg | Accel::Auto => MAX_CPUS.min(host.max(1)),
+        Accel::Kvm | Accel::Whpx => MAX_CPUS,
+    }
+}
+
+/// QEMU runs with `target/` as its working directory, so drive paths stay relative
+/// and free of drive-letter colons, which QEMU's option parser would misread.
+/// Every VM gets a virtio network card on QEMU's user-mode network: the guest is
+/// 10.0.2.15, and 10.0.2.2 reaches the host's 127.0.0.1.
+pub fn args(firmware: &Firmware, accel: Accel, headless: bool) -> Vec<String> {
+    let mut args: Vec<String> = [
+        "-machine",
+        "q35",
+        "-m",
+        "512M",
+        "-no-reboot",
+        "-serial",
+        "stdio",
+        "-device",
+        "isa-debug-exit,iobase=0xf4,iosize=0x04",
+        "-netdev",
+        "user,id=net0",
+        "-device",
+        "virtio-net-pci,netdev=net0",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    args.push("-smp".into());
+    args.push(vm_cpus(accel).to_string());
+    args.push("-drive".into());
+    args.push(format!(
+        "if=pflash,format=raw,readonly=on,file={}",
+        firmware.code.display()
+    ));
+    args.push("-drive".into());
+    args.push("if=pflash,format=raw,file=ovmf-vars.fd".into());
+    debug_assert!(firmware.vars.ends_with("ovmf-vars.fd"));
+    args.push("-drive".into());
+    args.push("format=raw,file=fat:rw:esp".into());
+    let (accel_name, cpu) = match accel {
+        Accel::Kvm => ("kvm", "host"),
+        Accel::Whpx => ("whpx", "max"),
+        Accel::Tcg | Accel::Auto => ("tcg", "max"),
+    };
+    args.extend([
+        "-accel".into(),
+        accel_name.into(),
+        "-cpu".into(),
+        cpu.into(),
+    ]);
+    if headless {
+        args.extend(["-display".into(), "none".into()]);
+    }
+    args
+}
+
+/// Asks the OS for a free local port. QEMU binds it right after, so a clash is unlikely.
+pub fn free_port() -> Result<u16, String> {
+    TcpListener::bind(("127.0.0.1", 0))
+        .and_then(|listener| listener.local_addr())
+        .map(|addr| addr.port())
+        .map_err(|e| format!("cannot find a free port for the QEMU monitor: {e}"))
+}
+
+/// Types keys into the guest through the QEMU monitor's `sendkey` command.
+fn type_keys(port: u16, keys: &[&str]) {
+    for _ in 0..50 {
+        if let Ok(mut monitor) = TcpStream::connect(("127.0.0.1", port)) {
+            thread::sleep(Duration::from_millis(200));
+            for key in keys {
+                if writeln!(monitor, "sendkey {key}").is_err() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(150));
+            }
+            println!("xtask: typed {} keys through the QEMU monitor", keys.len());
+            return;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    eprintln!("xtask: could not reach the QEMU monitor on port {port}");
+}
+
+pub fn run_interactive(qemu: &Path, args: &[String], target_dir: &Path) -> Result<(), String> {
+    let status = Command::new(qemu)
+        .current_dir(target_dir)
+        .args(args)
+        .status()
+        .map_err(|e| format!("cannot start QEMU: {e}"))?;
+    println!("xtask: QEMU exited with {status}");
+    Ok(())
+}
+
+pub struct TestRun<'a> {
+    pub case: &'a TestCase,
+    pub accel: Accel,
+    pub timeout: Duration,
+    /// TCP port of the QEMU human monitor, used to inject keystrokes.
+    pub monitor: u16,
+}
+
+pub fn run_test(
+    qemu: &Path,
+    args: &[String],
+    target_dir: &Path,
+    run: &TestRun,
+) -> Result<(), String> {
+    let (accel, timeout, monitor) = (run.accel, run.timeout, run.monitor);
+    let keys: Vec<&'static str> = run.case.keys.to_vec();
+    let expect = run.case.expect;
+    let started = Instant::now();
+    let mut child = Command::new(qemu)
+        .current_dir(target_dir)
+        .args(args)
+        .stdout(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("cannot start QEMU: {e}"))?;
+    let stdout = child.stdout.take().ok_or("QEMU stdout was not captured")?;
+    let (ready_tx, ready_rx) = mpsc::channel();
+    let reader = thread::spawn(move || {
+        let mut measure_start = None;
+        let mut expected_seen = expect.is_none();
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            println!("  | {line}");
+            if expect.is_some_and(|text| line.contains(text)) {
+                expected_seen = true;
+            }
+            if line.contains("boot-ok") {
+                let _ = ready_tx.send(started.elapsed());
+            } else if line.contains("ready for keys") {
+                let keys = keys.clone();
+                thread::spawn(move || type_keys(monitor, &keys));
+            } else if line.contains("measure-start") {
+                measure_start = Some(Instant::now());
+            } else if line.contains("measure-end")
+                && let Some(start) = measure_start
+            {
+                println!(
+                    "xtask: host wall time for the measurement: {} ms",
+                    start.elapsed().as_millis()
+                );
+            }
+        }
+        expected_seen
+    });
+    let status = loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|e| format!("waiting on QEMU: {e}"))?
+        {
+            break status;
+        }
+        if started.elapsed() > timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("timed out after {} s", timeout.as_secs()));
+        }
+        thread::sleep(Duration::from_millis(50));
+    };
+    let expected_seen = reader.join().unwrap_or(false);
+    if let Ok(elapsed) = ready_rx.try_recv() {
+        println!(
+            "xtask: boot-to-ready {} ms (accel {:?}, includes firmware)",
+            elapsed.as_millis(),
+            accel
+        );
+    }
+    if status.code() != Some(QEMU_PASS) {
+        return Err(format!("FAIL: QEMU exited with {status}"));
+    }
+    if !expected_seen {
+        return Err(format!(
+            "FAIL: expected {:?} on the console",
+            expect.unwrap_or_default()
+        ));
+    }
+    println!("xtask: PASS");
+    Ok(())
+}

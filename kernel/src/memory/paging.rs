@@ -168,6 +168,19 @@ impl Memory {
     }
 
     /// Returns a frame that a caller of `unmap_keep_frame` or `retarget` owns.
+    /// Allocates `count` physically contiguous frames; returns the first physical address.
+    pub fn allocate_contiguous(&mut self, count: u64) -> Option<u64> {
+        self.frames
+            .allocate_contiguous(count, 1)
+            .map(|frame| frame * PAGE_SIZE)
+    }
+
+    pub fn free_contiguous(&mut self, phys: u64, count: u64) -> Result<(), &'static str> {
+        self.frames
+            .free_contiguous(phys / PAGE_SIZE, count)
+            .map_err(|_| "contiguous frames were not allocated")
+    }
+
     pub fn free_frame(&mut self, phys: u64) -> Result<(), &'static str> {
         self.frames
             .free(phys / PAGE_SIZE)

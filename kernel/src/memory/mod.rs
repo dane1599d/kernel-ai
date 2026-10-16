@@ -47,6 +47,12 @@ pub fn map_physical(phys: u64, len: u64, flags: PageTableFlags) -> Result<u64, &
 }
 
 static MEMORY: Mutex<Option<Memory>> = Mutex::new(None);
+static HHDM_OFFSET: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// Offset of Limine's higher-half direct map: physical address + hhdm() is mapped.
+pub fn hhdm() -> u64 {
+    HHDM_OFFSET.load(core::sync::atomic::Ordering::Relaxed)
+}
 
 /// Runs `f` with the memory manager. Panics if called before [`init`].
 pub fn with<R>(f: impl FnOnce(&mut Memory) -> R) -> R {
@@ -91,6 +97,7 @@ pub fn init(entries: &[&Entry], hhdm: u64) -> Result<(), &'static str> {
 
     // SAFETY: Limine's page tables are live in CR3 and reachable through the HHDM.
     let mut memory = unsafe { Memory::adopt(bitmap, hhdm) };
+    HHDM_OFFSET.store(hhdm, core::sync::atomic::Ordering::Relaxed);
     let prepared = memory.prepare_kernel_half()?;
     heap::map(&mut memory)?;
     let (free, total) = (memory.free_frames(), memory.total_frames());

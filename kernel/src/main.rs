@@ -1,4 +1,4 @@
-//! Kernel AI: M5, multiprocessing.
+//! Kernel AI: M6, network and terminal.
 //!
 //! Boots through Limine, logs to COM1 and the framebuffer console, loads the GDT,
 //! TSS and IDT, sets up memory, then the APICs, HPET, a 1 kHz timer and the PS/2
@@ -6,7 +6,8 @@
 //! resolve to source lines from the `kernel.lines` module. The kernel command line
 //! selects a self-test: `test` (boot checks), or `test=` one of `page-fault`,
 //! `double-fault`, `write-protect`, `stack-overflow`, `timer`, `keyboard`, `sched`,
-//! `watchdog`, `smp`, `tlb`, `storm` or `storm-SECONDS`.
+//! `watchdog`, `smp`, `tlb`, `storm`, `storm-SECONDS`, `net` or `terminal`. `llm=IP:PORT`
+//! and `model=NAME` point the LLM client at a server.
 
 #![no_std]
 #![no_main]
@@ -23,7 +24,9 @@ mod hpet;
 mod idt;
 mod keyboard;
 mod lines;
+mod llm;
 mod memory;
+mod net;
 mod percpu;
 mod platform;
 mod port;
@@ -34,6 +37,7 @@ mod smp;
 mod smp_tests;
 #[cfg(feature = "spikes")]
 mod spikes;
+mod terminal;
 mod threads;
 mod timer;
 
@@ -107,6 +111,8 @@ enum SelfTest {
     Tlb,
     /// Spawn/exit/sleep storm for this many seconds.
     Storm(u64),
+    Net,
+    Terminal,
 }
 
 const DEFAULT_STORM_SECONDS: u64 = 60;
@@ -126,6 +132,8 @@ fn self_test_from(cmdline: &str) -> SelfTest {
             "test=watchdog" => Some(SelfTest::Watchdog),
             "test=smp" => Some(SelfTest::Smp),
             "test=tlb" => Some(SelfTest::Tlb),
+            "test=net" => Some(SelfTest::Net),
+            "test=terminal" => Some(SelfTest::Terminal),
             other => other.strip_prefix("test=storm").map(|rest| {
                 let seconds = rest.strip_prefix('-').and_then(|s| s.parse().ok());
                 SelfTest::Storm(seconds.unwrap_or(DEFAULT_STORM_SECONDS))
@@ -160,7 +168,7 @@ extern "C" fn kmain() -> ! {
         .and_then(|r| r.framebuffers().first().copied())
     {
         let ready = console::init(fb);
-        log!("Kernel AI {} (M5)", env!("CARGO_PKG_VERSION"));
+        log!("Kernel AI {} (M6)", env!("CARGO_PKG_VERSION"));
         log!(
             "framebuffer: {}x{} {} bpp, console: {}",
             fb.width,
@@ -170,7 +178,7 @@ extern "C" fn kmain() -> ! {
         );
     } else {
         log!(
-            "Kernel AI {} (M5), no framebuffer",
+            "Kernel AI {} (M6), no framebuffer",
             env!("CARGO_PKG_VERSION")
         );
     }
@@ -211,11 +219,18 @@ extern "C" fn boot_continue() -> ! {
     let test = CMDLINE
         .response()
         .map_or(SelfTest::None, |r| self_test_from(r.cmdline()));
+    // Not in kmain: configuring allocates, and the heap is mapped only by init_memory.
+    if let Some(cmdline) = CMDLINE.response() {
+        llm::configure(cmdline.cmdline());
+    }
     let platform = init_devices();
     if let Err(message) = threads::init() {
         fail(message);
     }
     start_other_cpus();
+    if let Err(message) = net::init(platform) {
+        log!("{message}");
+    }
 
     match test {
         SelfTest::PageFault => {
@@ -238,6 +253,8 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Smp => run_case(smp_tests::all_cpus_check),
         SelfTest::Tlb => run_case(smp_tests::tlb_check),
         SelfTest::Storm(seconds) => run_case(|| smp_tests::storm_check(seconds)),
+        SelfTest::Net => run_case(llm::self_test),
+        SelfTest::Terminal => run_case(terminal::self_test),
         SelfTest::Boot | SelfTest::None => {}
     }
 
@@ -253,11 +270,9 @@ extern "C" fn boot_continue() -> ! {
     if test != SelfTest::None {
         test_exit(ExitCode::Success);
     }
-    log!(
-        "Ready. {} CPU(s) reported by firmware. Typing echoes here.",
-        platform.cpus.len()
-    );
-    keyboard::echo_forever()
+    log!("Ready on {} CPU(s).", smp::online());
+    terminal::run(0);
+    halt_forever()
 }
 
 /// Brings up every application processor Limine reported.
