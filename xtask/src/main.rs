@@ -5,7 +5,8 @@
 //! cargo xtask test  [--release] [--accel auto|kvm|whpx|tcg] [--timeout SECS]
 //!
 //! `test` boots the kernel headless once per test case (boot and memory checks,
-//! page fault, double fault, write-protect, stack overflow, 60 s timer, keyboard
+//! page fault, double fault, write-protect, stack overflow, 60 s timer, keyboard,
+//! scheduling latency under load, policy watchdog; keys are
 //! typed through the QEMU monitor) with the spikes
 //! enabled. Each case passes only if the
 //! kernel reports success through QEMU's isa-debug-exit device.
@@ -156,7 +157,7 @@ fn execute(options: &Options) -> Result<(), String> {
 
 /// Each test case boots the kernel once with this command line. The kernel itself
 /// decides pass or fail and reports it through isa-debug-exit.
-const TEST_CASES: [(&str, &str); 7] = [
+const TEST_CASES: [(&str, &str); 9] = [
     ("boot", "test"),
     ("page-fault", "test=page-fault"),
     ("double-fault", "test=double-fault"),
@@ -164,9 +165,11 @@ const TEST_CASES: [(&str, &str); 7] = [
     ("stack-overflow", "test=stack-overflow"),
     ("timer", "test=timer"),
     ("keyboard", "test=keyboard"),
+    ("sched", "test=sched"),
+    ("watchdog", "test=watchdog"),
 ];
 
-/// Keys the harness types when the kernel announces the keyboard test.
+/// Keys the harness types when the kernel logs "ready for keys".
 const TEST_KEYS: [&str; 4] = ["k", "a", "i", "ret"];
 
 struct TestRun {
@@ -483,7 +486,7 @@ fn run_test(qemu: &Path, args: &[String], target_dir: &Path, run: &TestRun) -> R
             println!("  | {line}");
             if line.contains("boot-ok") {
                 let _ = ready_tx.send(started.elapsed());
-            } else if line.contains("keyboard: ready") {
+            } else if line.contains("ready for keys") {
                 thread::spawn(move || type_keys(monitor));
             } else if line.contains("measure-start") {
                 measure_start = Some(Instant::now());

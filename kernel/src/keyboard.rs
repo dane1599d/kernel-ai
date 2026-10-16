@@ -5,7 +5,7 @@ use crate::port::{inb, outb};
 use crate::{apic, hpet, log, serial};
 use acpitables::Platform;
 use alloc::string::String;
-use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use pc_keyboard::layouts::Us104Key;
 use pc_keyboard::{DecodedKey, HandleControl, PS2Keyboard, ScancodeSet1};
 
@@ -65,15 +65,58 @@ pub fn init(platform: &Platform, apic_id: u8) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// Called from the keyboard interrupt: queue the scancode, dropping it if the ring is full.
-pub fn on_interrupt() {
+/// Thread blocked in [`wait_scancode`], or `NO_WAITER`.
+static WAITER: AtomicUsize = AtomicUsize::new(NO_WAITER);
+const NO_WAITER: usize = usize::MAX;
+/// HPET time of the latest keyboard interrupt, and wake-latency statistics.
+static LAST_IRQ_NS: AtomicU64 = AtomicU64::new(0);
+static WAKES: AtomicU64 = AtomicU64::new(0);
+static WORST_WAKE_NS: AtomicU64 = AtomicU64::new(0);
+
+/// Called from the keyboard interrupt: queue the scancode, dropping it if the ring
+/// is full. Returns the thread to wake, which the handler wakes after the EOI.
+pub fn on_interrupt() -> Option<usize> {
     // SAFETY: the controller raised IRQ1, so a byte is waiting.
     let scancode = unsafe { inb(DATA) };
+    LAST_IRQ_NS.store(hpet::nanos(), Ordering::Relaxed);
     let head = HEAD.load(Ordering::Relaxed);
     if head.wrapping_sub(TAIL.load(Ordering::Acquire)) < RING {
         SCANCODES[head % RING].store(scancode, Ordering::Relaxed);
         HEAD.store(head.wrapping_add(1), Ordering::Release);
     }
+    match WAITER.swap(NO_WAITER, Ordering::AcqRel) {
+        NO_WAITER => None,
+        tid => Some(tid),
+    }
+}
+
+fn has_scancode() -> bool {
+    TAIL.load(Ordering::Relaxed) != HEAD.load(Ordering::Acquire)
+}
+
+/// Blocks the calling thread until a scancode arrives, and records how long the
+/// thread took to run after the interrupt that woke it.
+fn wait_scancode() -> u8 {
+    loop {
+        if let Some(scancode) = next_scancode() {
+            return scancode;
+        }
+        WAITER.store(crate::threads::current(), Ordering::Release);
+        crate::threads::block_unless(has_scancode);
+        if has_scancode() {
+            let latency = hpet::nanos().saturating_sub(LAST_IRQ_NS.load(Ordering::Relaxed));
+            WAKES.fetch_add(1, Ordering::Relaxed);
+            WORST_WAKE_NS.fetch_max(latency, Ordering::Relaxed);
+        }
+    }
+}
+
+/// Number of measured wake-ups and the worst interrupt-to-running latency in ns.
+pub fn wake_latency() -> (u64, u64) {
+    (
+        WAKES.load(Ordering::Relaxed),
+        WORST_WAKE_NS.load(Ordering::Relaxed),
+    )
 }
 
 fn next_scancode() -> Option<u8> {
@@ -97,16 +140,33 @@ impl Decoder {
         ))
     }
 
+    fn decode(&mut self, scancode: u8) -> Option<char> {
+        match self.0.add_byte(scancode) {
+            Ok(Some(event)) => match self.0.process_keyevent(event) {
+                Some(DecodedKey::Unicode(ch)) => Some(ch),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// Decodes queued scancodes until one produces a character.
     pub fn next_char(&mut self) -> Option<char> {
         while let Some(scancode) = next_scancode() {
-            if let Ok(Some(event)) = self.0.add_byte(scancode)
-                && let Some(DecodedKey::Unicode(ch)) = self.0.process_keyevent(event)
-            {
+            if let Some(ch) = self.decode(scancode) {
                 return Some(ch);
             }
         }
         None
+    }
+
+    /// Blocks the calling thread until a key produces a character.
+    pub fn read_char(&mut self) -> char {
+        loop {
+            if let Some(ch) = self.decode(wait_scancode()) {
+                return ch;
+            }
+        }
     }
 }
 
@@ -114,17 +174,15 @@ impl Decoder {
 pub fn echo_forever() -> ! {
     let mut decoder = Decoder::new();
     loop {
-        while let Some(ch) = decoder.next_char() {
-            serial::_print(format_args!("{ch}"));
-        }
-        x86_64::instructions::interrupts::enable_and_hlt();
+        let ch = decoder.read_char();
+        serial::_print(format_args!("{ch}"));
     }
 }
 
 /// M3 exit test: the harness types `kai` and Enter; the kernel must echo and receive it.
 pub fn typing_check() -> Result<(), &'static str> {
     const TIMEOUT_NS: u64 = 30_000_000_000;
-    log!("keyboard: ready, waiting for \"kai\" and Enter");
+    log!("keyboard: ready for keys, waiting for \"kai\" and Enter");
     let mut decoder = Decoder::new();
     let mut line = String::new();
     let start = hpet::nanos();

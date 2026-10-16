@@ -1,6 +1,6 @@
 # Kernel AI
 
-A from-scratch x86_64 operating system in Rust, inspired by TempleOS, with a local LLM built into how the system is used and tuned. Status: milestone M3 (APICs, HPET, 1 kHz timer, PS/2 keyboard). `cargo xtask run` boots to a screen that echoes typing.
+A from-scratch x86_64 operating system in Rust, inspired by TempleOS, with a local LLM built into how the system is used and tuned. Status: milestone M4 (kernel threads, preemptive scheduling, swappable policies with a watchdog). `cargo xtask run` boots to a screen that echoes typing.
 
 - Plan: [docs/roadmap.md](docs/roadmap.md)
 - Decisions: [docs/decisions.md](docs/decisions.md)
@@ -15,6 +15,7 @@ A from-scratch x86_64 operating system in Rust, inspired by TempleOS, with a loc
 | `linetable/` | Address-to-source table format shared by xtask and the kernel. |
 | `mm/` | Host-tested memory logic: frame bitmap and the CLOCK reclaim policy. |
 | `acpitables/` | Host-tested ACPI reader for the MADT and HPET tables. |
+| `sched/` | Host-tested scheduler: mechanism, policies, watchdog and a simulator. |
 | `spikes/` | M0 proofs that Rhai and wasmi run on bare metal. |
 
 ## Requirements
@@ -28,9 +29,9 @@ A from-scratch x86_64 operating system in Rust, inspired by TempleOS, with a loc
 ```bash
 cargo xtask build            # build the kernel
 cargo xtask run              # boot it in a QEMU window
-cargo xtask test             # boots each self-test case headless (7 cases, including a 60 s timer check)
+cargo xtask test             # boots each self-test case headless (9 cases, including a 60 s timer check and scheduling under load)
 cargo xtask test --accel kvm # use KVM (Linux or WSL2)
-cargo test -p xtask -p linetable -p mm -p acpitables --features linetable/alloc  # host unit tests
+cargo test -p xtask -p linetable -p mm -p acpitables -p sched --features linetable/alloc  # host unit tests
 ```
 
 ## Licence

@@ -1,11 +1,11 @@
-//! Kernel AI: M3, interrupts and time.
+//! Kernel AI: M4, threads and preemptive scheduling.
 //!
 //! Boots through Limine, logs to COM1 and the framebuffer console, loads the GDT,
 //! TSS and IDT, sets up memory, then the APICs, HPET, a 1 kHz timer and the PS/2
 //! keyboard. Fault addresses resolve to source lines from the `kernel.lines` module.
 //! The kernel command line selects a self-test: `test` (boot checks), or
 //! `test=` one of `page-fault`, `double-fault`, `write-protect`, `stack-overflow`,
-//! `timer`, `keyboard`.
+//! `timer`, `keyboard`, `sched`, `watchdog`.
 
 #![no_std]
 #![no_main]
@@ -26,9 +26,11 @@ mod memory;
 mod platform;
 mod port;
 mod qemu;
+mod sched_tests;
 mod serial;
 #[cfg(feature = "spikes")]
 mod spikes;
+mod threads;
 mod timer;
 
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -88,6 +90,8 @@ enum SelfTest {
     StackOverflow,
     Timer,
     Keyboard,
+    Sched,
+    Watchdog,
 }
 
 fn self_test_from(cmdline: &str) -> SelfTest {
@@ -101,6 +105,8 @@ fn self_test_from(cmdline: &str) -> SelfTest {
             "test=stack-overflow" => Some(SelfTest::StackOverflow),
             "test=timer" => Some(SelfTest::Timer),
             "test=keyboard" => Some(SelfTest::Keyboard),
+            "test=sched" => Some(SelfTest::Sched),
+            "test=watchdog" => Some(SelfTest::Watchdog),
             _ => None,
         })
         .unwrap_or(SelfTest::None)
@@ -123,7 +129,7 @@ extern "C" fn kmain() -> ! {
         .and_then(|r| r.framebuffers().first().copied())
     {
         let ready = console::init(fb);
-        log!("Kernel AI {} (M3)", env!("CARGO_PKG_VERSION"));
+        log!("Kernel AI {} (M4)", env!("CARGO_PKG_VERSION"));
         log!(
             "framebuffer: {}x{} {} bpp, console: {}",
             fb.width,
@@ -133,7 +139,7 @@ extern "C" fn kmain() -> ! {
         );
     } else {
         log!(
-            "Kernel AI {} (M3), no framebuffer",
+            "Kernel AI {} (M4), no framebuffer",
             env!("CARGO_PKG_VERSION")
         );
     }
@@ -144,6 +150,9 @@ extern "C" fn kmain() -> ! {
     init_memory();
     log!("cpu: GDT, TSS (double-fault IST) and IDT loaded");
     let platform = init_devices();
+    if let Err(message) = threads::init() {
+        fail(message);
+    }
 
     match test {
         SelfTest::PageFault => {
@@ -167,6 +176,18 @@ extern "C" fn kmain() -> ! {
         }
         SelfTest::Keyboard => {
             if let Err(message) = keyboard::typing_check() {
+                fail(message);
+            }
+            test_exit(ExitCode::Success);
+        }
+        SelfTest::Sched => {
+            if let Err(message) = sched_tests::latency_check() {
+                fail(message);
+            }
+            test_exit(ExitCode::Success);
+        }
+        SelfTest::Watchdog => {
+            if let Err(message) = sched_tests::watchdog_check() {
                 fail(message);
             }
             test_exit(ExitCode::Success);
@@ -272,6 +293,9 @@ fn boot_self_test() {
         fail("line table did not resolve a known function to kernel/src/faults.rs");
     }
     log!("self-test: breakpoint resumed, source lookup ok");
+    if let Err(message) = sched_tests::boot_check() {
+        fail(message);
+    }
     if let Err(message) = timer::boot_check() {
         fail(message);
     }

@@ -300,6 +300,7 @@ dependencies = [
  "mm",
  "noto-sans-mono-bitmap",
  "pc-keyboard",
+ "sched",
  "spike-rhai",
  "spike-wasmi",
  "spin 0.12.3",
@@ -497,6 +498,10 @@ checksum = "69e4ce4a039f42bf25920b95667e4d789e98749ab11bbb8d2c2936f788421bb5"
 dependencies = [
  "twox-hash",
 ]
+
+[[package]]
+name = "sched"
+version = "0.0.0"
 
 [[package]]
 name = "scopeguard"
