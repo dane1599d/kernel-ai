@@ -68,9 +68,11 @@ pub fn probe(platform: &acpitables::Platform) -> Result<Nic, &'static str> {
         .iter()
         .find(|window| window.segment == 0)
         .ok_or("net: no PCIe configuration window (MCFG) for segment 0")?;
-    // On q35 the virtio card sits on the root bus; one bus is 1 MiB of ECAM.
+    // On q35 the virtio card sits on the root bus; one bus is 1 MiB of ECAM. The
+    // MCFG base is where bus 0 would be, even if the window starts at a later bus.
     let buses = 1;
-    let base = memory::map_physical(ecam.base, u64::from(buses) << 20, DEVICE)?;
+    let first_bus = ecam.base + (u64::from(ecam.start_bus) << 20);
+    let base = memory::map_physical(first_bus, u64::from(buses) << 20, DEVICE)?;
     let mut root = PciRoot::new(EcamAccess {
         base,
         start_bus: ecam.start_bus,

@@ -71,6 +71,9 @@ pub fn parse_response(buf: &[u8], closed: bool) -> Result<Response, ParseError> 
             let length = value
                 .parse::<usize>()
                 .map_err(|_| ParseError::Malformed("bad Content-Length"))?;
+            if length > MAX_RESPONSE {
+                return Err(ParseError::TooLarge);
+            }
             content_length = Some(length);
         } else if name.eq_ignore_ascii_case("transfer-encoding") {
             chunked = value.to_ascii_lowercase().contains("chunked");
@@ -124,6 +127,11 @@ fn decode_chunked(mut rest: &[u8], closed: bool) -> Result<Vec<u8>, ParseError> 
         let size_text = size_text.split(';').next().unwrap_or("").trim();
         let size = usize::from_str_radix(size_text, 16)
             .map_err(|_| ParseError::Malformed("bad chunk size"))?;
+        // Checked before any arithmetic: a hostile size such as usize::MAX would
+        // otherwise overflow `size + 2` below.
+        if size > MAX_RESPONSE.saturating_sub(body.len()) {
+            return Err(ParseError::TooLarge);
+        }
         rest = &rest[line_end + 2..];
         if size == 0 {
             return Ok(body);
@@ -234,5 +242,37 @@ mod tests {
         ));
         let big = alloc::vec![b'a'; MAX_RESPONSE + 1];
         assert_eq!(parse_response(&big, false), Err(ParseError::TooLarge));
+    }
+
+    #[test]
+    fn rejects_hostile_lengths_without_waiting() {
+        let head = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n";
+        for size in ["ffffffffffffffff", "fffffffffffffffe", "40001"] {
+            for tail in ["", "\r\n", "\r\nX"] {
+                let raw = format!("{head}{size}{tail}");
+                for closed in [false, true] {
+                    let result = parse_response(raw.as_bytes(), closed);
+                    if tail.is_empty() {
+                        // The size line has not ended yet.
+                        assert_ne!(result, Err(ParseError::TooLarge), "{raw:?}");
+                    } else {
+                        assert_eq!(result, Err(ParseError::TooLarge), "{raw:?}");
+                    }
+                }
+            }
+        }
+        let huge = "HTTP/1.1 200 OK\r\nContent-Length: 18446744073709551615\r\n\r\n";
+        assert_eq!(
+            parse_response(huge.as_bytes(), false),
+            Err(ParseError::TooLarge)
+        );
+        let over = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n",
+            MAX_RESPONSE + 1
+        );
+        assert_eq!(
+            parse_response(over.as_bytes(), false),
+            Err(ParseError::TooLarge)
+        );
     }
 }

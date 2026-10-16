@@ -146,8 +146,9 @@ pub fn exchange(
                 Err(_) => break,
             }
         }
+        // A close ends the exchange even with nothing received: no more data can come.
         let closed = connected && !socket.may_recv();
-        if !response.is_empty() && done(&response, closed) {
+        if closed || (!response.is_empty() && done(&response, closed)) {
             break Ok(());
         }
         if matches!(socket.state(), tcp::State::Closed | tcp::State::TimeWait) {

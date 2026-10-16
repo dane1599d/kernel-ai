@@ -492,6 +492,18 @@ pub fn stats() -> (&'static str, u32, u64) {
     total
 }
 
+/// True if every online CPU has the policy `name` installed (whether or not the
+/// watchdog has it on the fallback for now).
+pub fn installed_policy_everywhere(name: &str) -> bool {
+    CORES.iter().take(smp::online()).all(|slot| {
+        interrupts::without_interrupts(|| {
+            slot.lock()
+                .as_ref()
+                .is_some_and(|core| core.installed_policy_name() == name)
+        })
+    })
+}
+
 /// Installs a fresh policy from `make` on every CPU. Old policies are dropped with
 /// interrupts enabled.
 pub fn set_policy_all(make: fn() -> Box<dyn SchedPolicy>) {

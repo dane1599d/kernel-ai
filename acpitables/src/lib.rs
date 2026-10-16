@@ -37,9 +37,10 @@ pub struct Override {
     pub flags: u16,
 }
 
-/// A PCIe enhanced configuration (ECAM) window from the MCFG table. Function
-/// (bus, device, function) has its 4 KiB configuration space at
-/// `base + ((bus - start_bus) << 20 | device << 15 | function << 12)`.
+/// A PCIe enhanced configuration (ECAM) window from the MCFG table. `base` is the
+/// address bus 0 would have even when `start_bus` is higher, so function
+/// (bus, device, function), for `start_bus <= bus <= end_bus`, has its 4 KiB
+/// configuration space at `base + (bus << 20 | device << 15 | function << 12)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Ecam {
     pub base: u64,

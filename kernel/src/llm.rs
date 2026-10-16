@@ -8,6 +8,7 @@ use alloc::string::{String, ToString};
 use core::net::Ipv4Addr;
 use llmproto::http::{self, ParseError};
 use llmproto::openai;
+use llmproto::text::printable;
 use spin::Once;
 
 const DEFAULT_MODEL: &str = "qwen3-8b";
@@ -16,6 +17,11 @@ const SYSTEM_PROMPT: &str = "You are the assistant built into Kernel AI, a small
 const MAX_TOKENS: u32 = 256;
 const CHAT_TIMEOUT_MS: u64 = 120_000;
 const HEALTH_TIMEOUT_MS: u64 = 5_000;
+/// Limits on server text shown to the user; replies are also stripped of control
+/// characters (see `llmproto::text::printable`).
+const MAX_REPLY_CHARS: usize = 4096;
+const MAX_REPLY_LINES: usize = 64;
+const MAX_ERROR_CHARS: usize = 160;
 
 struct Config {
     server: (Ipv4Addr, u16),
@@ -100,18 +106,19 @@ pub fn ask(prompt: &str) -> Result<String, String> {
     let request = http::post_json(&host_header(config), openai::CHAT_PATH, None, &body);
     let response = round_trip(config, &request, CHAT_TIMEOUT_MS)?;
     if response.status != 200 {
-        let snippet = core::str::from_utf8(&response.body)
-            .unwrap_or("")
-            .chars()
-            .take(120);
+        let body = core::str::from_utf8(&response.body).unwrap_or("");
         return Err(format!(
             "server answered HTTP {}: {}",
             response.status,
-            snippet.collect::<String>()
+            printable(body, MAX_ERROR_CHARS, 1)
         ));
     }
     openai::parse_chat_response(&response.body)
-        .map_err(|error| format!("bad chat reply: {error:?}"))
+        .map(|reply| printable(&reply, MAX_REPLY_CHARS, MAX_REPLY_LINES))
+        .map_err(|error| {
+            let error = format!("{error:?}");
+            format!("bad chat reply: {}", printable(&error, MAX_ERROR_CHARS, 1))
+        })
 }
 
 /// M6 exit test, network half: the server answers its health check and a chat request.

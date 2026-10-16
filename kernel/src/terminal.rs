@@ -1,7 +1,7 @@
 //! The M6 terminal: a prompt with line editing and a fixed set of built-in commands.
 //! A real REPL language arrives in M8; until then, commands are plain words.
 
-use crate::console::{self, BACKSPACE};
+use crate::console::{BACKSPACE, FORM_FEED};
 use crate::keyboard::Decoder;
 use crate::{hpet, llm, log, memory, net, serial, smp, threads};
 use alloc::boxed::Box;
@@ -56,7 +56,7 @@ fn read_line(decoder: &mut Decoder) -> String {
             }
             BACKSPACE | DELETE => {
                 if line.pop().is_some() {
-                    print(format_args!("{BACKSPACE}"));
+                    print(format_args!("{BACKSPACE} {BACKSPACE}"));
                 }
             }
             ch if !ch.is_control() && line.len() < MAX_LINE => {
@@ -101,7 +101,7 @@ fn execute(line: &str) {
         }
         "net" => net_status(),
         "uptime" => log!("{} s", hpet::nanos() / 1_000_000_000),
-        "clear" => console::clear(),
+        "clear" => print(format_args!("{FORM_FEED}")),
         other => log!("unknown command: {other} (try help)"),
     }
 }
@@ -110,10 +110,29 @@ fn ask(prompt: &str) {
     log!("(asking the LLM...)");
     match llm::ask(prompt) {
         Ok(reply) => {
-            log!("ai: {reply}");
+            show_reply(&reply);
             REPLIES.fetch_add(1, Ordering::SeqCst);
         }
         Err(error) => log!("error: {error}"),
+    }
+}
+
+/// Prints a reply a piece at a time: each print holds the line lock with interrupts
+/// off, so a long reply must not go out in one call.
+fn show_reply(reply: &str) {
+    const PIECE_CHARS: usize = 160;
+    print(format_args!("ai: "));
+    for line in reply.split('\n') {
+        let mut rest = line;
+        while !rest.is_empty() {
+            let cut = rest
+                .char_indices()
+                .nth(PIECE_CHARS)
+                .map_or(rest.len(), |(at, _)| at);
+            print(format_args!("{}", &rest[..cut]));
+            rest = &rest[cut..];
+        }
+        print(format_args!("\n"));
     }
 }
 
@@ -155,7 +174,9 @@ pub fn self_test() -> Result<(), &'static str> {
     threads::spawn("terminal", run, 0)?;
     threads::sleep_ms(200);
     log!("terminal: ready for keys");
-    let switched = || threads::stats().0 == "round-robin";
+    // The installed policy on every CPU, not the active one: a watchdog fallback
+    // also runs round-robin and must not count as the command having worked.
+    let switched = || threads::installed_policy_everywhere("round-robin");
     let replied = || REPLIES.load(Ordering::SeqCst) >= 1;
     for _ in 0..TIMEOUT_MS / 10 {
         if switched() && replied() {
