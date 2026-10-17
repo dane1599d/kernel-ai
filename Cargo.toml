@@ -1,8 +1,8 @@
 [workspace]
 resolver = "3"
-members = ["acpitables", "kabi", "kernel", "linetable", "llmproto", "mm", "sched", "shellcore", "supervise", "uelf", "user", "xtask", "spikes/rhai", "spikes/wasmi"]
+members = ["acpitables", "compsdk", "livecore", "wasmhost", "components/notes", "components/fixtures/notes-v1", "components/fixtures/notes-bad", "kabi", "kernel", "linetable", "llmproto", "mm", "sched", "shellcore", "supervise", "uelf", "user", "xtask", "spikes/rhai", "spikes/wasmi"]
 # Host builds only build the xtask runner; the kernel, user programs and spikes are built by xtask for x86_64-unknown-none.
-default-members = ["acpitables", "kabi", "linetable", "llmproto", "mm", "sched", "shellcore", "supervise", "uelf", "xtask"]
+default-members = ["acpitables", "compsdk", "livecore", "wasmhost", "components/notes", "components/fixtures/notes-v1", "components/fixtures/notes-bad", "kabi", "linetable", "llmproto", "mm", "sched", "shellcore", "supervise", "uelf", "xtask"]
 
 [workspace.package]
 edition = "2024"
@@ -16,6 +16,22 @@ panic = "abort"
 [profile.dev.package."*"]
 opt-level = 2
 
+# wasmi's host-function glue crashes when compiled without optimisation, and its
+# generics are instantiated in wasmhost (see wasmhost/src/lib.rs).
+[profile.dev.package.wasmhost]
+opt-level = 2
+
 [profile.release]
 panic = "abort"
 debug = true
+
+# Live components (wasm32-unknown-unknown): small and reproducible, so the fuel a
+# request uses stays the same from build to build.
+[profile.component]
+inherits = "release"
+opt-level = "s"
+lto = true
+codegen-units = 1
+debug = false
+strip = "debuginfo"
+panic = "abort"

@@ -19,6 +19,7 @@ acpitables = { path = "../acpitables" }
 kabi = { path = "../kabi" }
 limine = "0.6.5"
 linetable = { path = "../linetable" }
+livecore = { path = "../livecore" }
 llmproto = { path = "../llmproto" }
 mm = { path = "../mm" }
 pc-keyboard = "0.9.0"

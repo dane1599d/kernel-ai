@@ -1,0 +1,201 @@
+//! Live components (M9a): the versions Limine loaded as modules
+//! (`boot/comp/<component>/<label>.wasm`) and one ledger per component, behind the
+//! COMP_* calls. The rules live in the host-tested `livecore` crate; here they are
+//! applied under a lock, after everything is copied out of the caller's memory.
+//!
+//! A process may fetch and report only for the component named like itself, and
+//! only the `comphost` program holds the capability at all.
+
+use super::uaccess::{copy_from_user, copy_to_user, read_struct};
+use crate::{log, threads};
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
+use kabi::Error;
+use kabi::live::{Event, MAX_CHECKPOINT, MAX_COMPONENTS, MAX_DETAIL, MAX_LABEL, Restore};
+use livecore::ledger::{self, Ledger};
+use livecore::store::{Bytes, Component};
+use spin::Mutex;
+
+static COMPONENTS: Mutex<Vec<Component>> = Mutex::new(Vec::new());
+
+fn with<R>(f: impl FnOnce(&mut Vec<Component>) -> R) -> R {
+    threads::preempt_disable();
+    let result = f(&mut COMPONENTS.lock());
+    threads::preempt_enable();
+    result
+}
+
+/// Indexes the component versions among the boot modules, given as (path, bytes).
+pub fn init<'a>(modules: impl Iterator<Item = (&'a str, &'static [u8])>) {
+    let mut components: Vec<Component> = Vec::new();
+    for (path, bytes) in modules {
+        let Some((name, label)) = path
+            .split_once("/comp/")
+            .and_then(|(_, rest)| rest.strip_suffix(".wasm"))
+            .and_then(|rest| rest.split_once('/'))
+        else {
+            continue;
+        };
+        let index = match components.iter().position(|c| c.name == name) {
+            Some(index) => index,
+            None if components.len() < MAX_COMPONENTS => {
+                components.push(Component::new(name));
+                components.len() - 1
+            }
+            None => {
+                log!("live: too many components; {name} left out");
+                continue;
+            }
+        };
+        if let Err(why) = components[index].add_version(label, Bytes::Static(bytes)) {
+            log!("live: {name} {label} left out: {why}");
+        }
+    }
+    for component in &components {
+        let labels: Vec<&str> = component.labels().collect();
+        log!(
+            "live: {} has versions {}",
+            component.name,
+            labels.join(", ")
+        );
+    }
+    with(|all| *all = components);
+}
+
+fn copy_text(slot: usize, ptr: u64, len: u64, max: usize) -> Result<String, Error> {
+    let len = usize::try_from(len).map_err(|_| Error::TooBig)?;
+    if len > max {
+        return Err(Error::TooBig);
+    }
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(len).map_err(|_| Error::NoMemory)?;
+    bytes.resize(len, 0);
+    copy_from_user(slot, ptr, &mut bytes)?;
+    String::from_utf8(bytes).map_err(|_| Error::Invalid)
+}
+
+/// The caller's name and pid; the component it may act on is named the same.
+fn caller(slot: usize) -> (String, u64) {
+    let me = super::identity(slot);
+    (me.name.as_str().to_string(), me.pid)
+}
+
+/// `comp_fetch(label_ptr, label_len, buf, cap) -> len`
+pub fn fetch(
+    slot: usize,
+    label_ptr: u64,
+    label_len: u64,
+    buf: u64,
+    cap: u64,
+) -> Result<u64, Error> {
+    let label = copy_text(slot, label_ptr, label_len, MAX_LABEL)?;
+    let (name, pid) = caller(slot);
+    let bytes = with(|all| {
+        let component = all.iter().find(|c| c.name == name).ok_or(Error::NotFound)?;
+        match component.bytes(&label)? {
+            Bytes::Static(bytes) => Ok(*bytes),
+            // Uploaded versions come with the edit loop (M9b).
+            Bytes::Heap(_) => Err(Error::Invalid),
+        }
+    })?;
+    let len = bytes.len() as u64;
+    if cap >= len {
+        copy_to_user(slot, buf, bytes)?;
+        with(|all| {
+            if let Some(component) = all.iter_mut().find(|c| c.name == name) {
+                component.record_fetch(pid, &label);
+            }
+        });
+    }
+    Ok(len)
+}
+
+/// `comp_event(&Event) -> 0`
+pub fn event(slot: usize, event_ptr: u64) -> Result<u64, Error> {
+    let raw: Event = read_struct(slot, event_ptr)?;
+    let blob_len = usize::try_from(raw.blob_len).map_err(|_| Error::TooBig)?;
+    if blob_len > MAX_CHECKPOINT {
+        return Err(Error::TooBig);
+    }
+    let mut blob = Vec::new();
+    blob.try_reserve_exact(blob_len)
+        .map_err(|_| Error::NoMemory)?;
+    blob.resize(blob_len, 0);
+    copy_from_user(slot, raw.blob_ptr, &mut blob)?;
+    let event = ledger::Event {
+        kind: raw.kind,
+        reason: raw.reason,
+        label: copy_text(slot, raw.label_ptr, raw.label_len, MAX_LABEL)?,
+        schema: raw.schema,
+        served: raw.served,
+        regressions: raw.regressions,
+        flags: raw.flags,
+        blob,
+        detail: copy_text(slot, raw.detail_ptr, raw.detail_len, MAX_DETAIL)?,
+    };
+    let (name, pid) = caller(slot);
+    let line = with(|all| {
+        let component = all
+            .iter_mut()
+            .find(|c| c.name == name)
+            .ok_or(Error::NotFound)?;
+        component.event(pid, &event)
+    })?;
+    if let Some(line) = line {
+        let clean = llmproto::text::printable(&line, 200, 1);
+        log!("live: {name} {clean}");
+    }
+    Ok(0)
+}
+
+/// `comp_restore(&mut Restore, buf, cap) -> checkpoint length`
+pub fn restore(slot: usize, restore_ptr: u64, buf: u64, cap: u64) -> Result<u64, Error> {
+    let (name, _) = caller(slot);
+    let (restore, checkpoint) = with(|all| {
+        let component = all.iter().find(|c| c.name == name).ok_or(Error::NotFound)?;
+        let mut copy = Vec::new();
+        copy.try_reserve_exact(component.checkpoint().len())
+            .map_err(|_| Error::NoMemory)?;
+        copy.extend_from_slice(component.checkpoint());
+        Ok::<(Restore, Vec<u8>), Error>((component.restore(), copy))
+    })?;
+    // SAFETY: Restore is plain old data with no padding.
+    let bytes = unsafe {
+        core::slice::from_raw_parts(
+            (&raw const restore).cast::<u8>(),
+            core::mem::size_of::<Restore>(),
+        )
+    };
+    copy_to_user(slot, restore_ptr, bytes)?;
+    if cap >= checkpoint.len() as u64 {
+        copy_to_user(slot, buf, &checkpoint)?;
+    }
+    Ok(checkpoint.len() as u64)
+}
+
+/// A copy of `name`'s ledger.
+pub fn ledger(name: &str) -> Option<Ledger> {
+    with(|all| {
+        all.iter()
+            .find(|c| c.name == name)
+            .map(|c| c.ledger.clone())
+    })
+}
+
+/// How often version `label` of `name` was fetched.
+pub fn fetches(name: &str, label: &str) -> u64 {
+    with(|all| {
+        all.iter()
+            .find(|c| c.name == name)
+            .map_or(0, |c| c.fetches(label))
+    })
+}
+
+/// Every component and its versions.
+pub fn versions() -> Vec<(String, Vec<String>)> {
+    with(|all| {
+        all.iter()
+            .map(|c| (c.name.clone(), c.labels().map(String::from).collect()))
+            .collect()
+    })
+}

@@ -62,6 +62,8 @@ Effort for M0 to M6 comes from the two research passes, which scoped the work di
 
 The fluency test in M8 can run on the dev host at any time, since it needs only the Mac mini. Running it early de-risks the choice of Rhai.
 
+**M9 status:** M9a, the swap, migration, probation and rollback mechanism with prebuilt versions, is built and checked by the `live` boot case and the same scenario run on the host. M9b, the edit loop that makes new versions from in-OS edits, is next.
+
 **M8 status:** the shell (M8a) and the LLM script path (M8b) are built and pass their CI cases against the mock server. The fluency gate and the 20-request exit test still need the real model on the Mac mini.
 
 **Open follow-up:** M7's exit test is not written yet; the founder will write it (see `docs/decisions.md`). M7 merged with all earlier exit tests passing and the `net` and `terminal` cases running through the ring-3 llm service.

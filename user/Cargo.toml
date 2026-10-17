@@ -14,8 +14,10 @@ bench = false
 
 [dependencies]
 kabi = { path = "../kabi" }
+livecore = { path = "../livecore" }
 llmproto = { path = "../llmproto" }
 supervise = { path = "../supervise" }
 shellcore = { path = "../shellcore" }
 spin = "0.12.3"
 talc = "5.1.1"
+wasmhost = { path = "../wasmhost" }

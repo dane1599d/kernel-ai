@@ -16,6 +16,7 @@
 //! a context switch or `memory::with`. A slot's SPACE lock is only taken by the
 //! process's own thread, before MEMORY.
 
+pub mod components;
 pub mod programs;
 pub mod supervision;
 pub mod syscall;
@@ -90,7 +91,10 @@ pub struct Crash {
 pub struct Process {
     pub pid: u64,
     pub state: State,
+    /// The service: names the process and its endpoint.
     pub name: Name,
+    /// The program it runs: the service name, or a shared host such as `comphost`.
+    pub program: Name,
     args: [u8; MAX_ARGS],
     args_len: usize,
     pub limits: Limits,
@@ -108,6 +112,7 @@ impl Process {
         pid: 0,
         state: State::Free,
         name: Name::EMPTY,
+        program: Name::EMPTY,
         args: [0; MAX_ARGS],
         args_len: 0,
         limits: Limits {
@@ -318,6 +323,8 @@ fn die() -> ! {
 /// What `spawn` needs to start a process.
 pub struct SpawnRequest<'a> {
     pub name: &'a str,
+    /// The program to load.
+    pub program: &'a str,
     pub args: &'a [u8],
     pub limits: Limits,
     /// The pid asking (0 for the kernel).
@@ -325,13 +332,14 @@ pub struct SpawnRequest<'a> {
     pub supervisor: bool,
 }
 
-/// Starts a process. At most one live process per program name.
+/// Starts a process. At most one live process per service name.
 pub fn spawn(request: &SpawnRequest) -> Result<u64, kabi::Error> {
     use kabi::Error;
-    if programs::find(request.name).is_none() {
+    if programs::find(request.program).is_none() {
         return Err(Error::NotFound);
     }
     let name = Name::new(request.name).ok_or(Error::Invalid)?;
+    let program = Name::new(request.program).ok_or(Error::Invalid)?;
     if request.args.len() > MAX_ARGS || request.limits.max_pages > MAX_PAGES_PER_PROCESS {
         return Err(Error::TooBig);
     }
@@ -354,6 +362,7 @@ pub fn spawn(request: &SpawnRequest) -> Result<u64, kabi::Error> {
             pid,
             state: State::Starting,
             name,
+            program,
             limits: request.limits,
             supervisor: request.supervisor,
             spawner: request.spawner,
@@ -392,11 +401,11 @@ struct UserEntry {
 fn process_main(slot: usize) {
     let me = threads::current_tid();
     SLOT_OF_TID[me].store(slot + 1, Ordering::Release);
-    let (name, limits) = with_table(|table| {
+    let (name, program, limits) = with_table(|table| {
         table[slot].tid = Some(me);
-        (table[slot].name, table[slot].limits)
+        (table[slot].name, table[slot].program, table[slot].limits)
     });
-    let entry = match load(slot, name.as_str(), &limits) {
+    let entry = match load(slot, program.as_str(), &limits) {
         Ok(entry) => entry,
         Err(error) => {
             log!("process {}: cannot load: {error}", name.as_str());
@@ -575,7 +584,7 @@ fn report_exit(process: &Process, reason: ExitReason, detail: u64, freed: u64) {
     match (reason, process.crash) {
         (ExitReason::Crashed, Some(crash)) => {
             let fault = crate::faults::vector_name(crash.vector);
-            let source = programs::find(name)
+            let source = programs::find(process.program.as_str())
                 .and_then(|program| program.describe(crash.rip))
                 .unwrap_or_default();
             if crash.vector == 14 {

@@ -1,0 +1,22 @@
+[package]
+name = "comp-notes-bad"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# `notes` version 2 with one real bug, chosen by a feature: the versions the M9a
+# test expects to roll back by themselves. Built once per feature.
+[lib]
+crate-type = ["cdylib", "rlib"]
+doctest = false
+
+[features]
+bug-import = []
+bug-health = []
+bug-trap = []
+bug-spin = []
+
+[dependencies]
+comp-notes = { path = "../../notes", default-features = false }
+compsdk = { path = "../../../compsdk" }

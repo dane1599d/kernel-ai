@@ -191,7 +191,7 @@ fn kernel_command(line: &str) {
     let rest = rest.trim();
     match command {
         "" | "help" => {
-            for (usage, what) in HELP {
+            for (usage, what) in HELP.iter().chain(crate::live_commands::HELP) {
                 log!("  {usage:<26} {what}");
             }
             log!("  any other line goes to the Rhai shell");
@@ -221,6 +221,7 @@ fn kernel_command(line: &str) {
         "ps" => processes(),
         "uptime" => log!("{} s", hpet::nanos() / 1_000_000_000),
         "clear" => print(format_args!("{FORM_FEED}")),
+        other if crate::live_commands::run(other, rest) => {}
         other => log!("unknown kernel command :{other} (try :help)"),
     }
 }

@@ -26,6 +26,8 @@ mod idt;
 mod ipc;
 mod keyboard;
 mod lines;
+mod live_commands;
+mod live_tests;
 mod llm;
 mod memory;
 mod metrics;
@@ -123,6 +125,8 @@ enum SelfTest {
     Shell,
     /// M8b: LLM-written scripts are checked, shown, and run only after a yes.
     Scripts,
+    /// M9a: a live component swaps versions, migrates its state and rolls back.
+    Live,
 }
 
 const DEFAULT_STORM_SECONDS: u64 = 60;
@@ -146,6 +150,7 @@ fn self_test_from(cmdline: &str) -> SelfTest {
             "test=terminal" => Some(SelfTest::Terminal),
             "test=shell" => Some(SelfTest::Shell),
             "test=scripts" => Some(SelfTest::Scripts),
+            "test=live" => Some(SelfTest::Live),
             other => other.strip_prefix("test=storm").map(|rest| {
                 let seconds = rest.strip_prefix('-').and_then(|s| s.parse().ok());
                 SelfTest::Storm(seconds.unwrap_or(DEFAULT_STORM_SECONDS))
@@ -279,6 +284,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Terminal => run_case(terminal::self_test),
         SelfTest::Shell => run_case(shell_tests::check),
         SelfTest::Scripts => run_case(script_tests::check),
+        SelfTest::Live => run_case(live_tests::check),
         SelfTest::Boot | SelfTest::None => {}
     }
 
@@ -452,6 +458,10 @@ fn on_off(on: bool) -> &'static str {
 fn start_user_space(test: SelfTest) {
     let modules: &'static [&'static limine::file::File] =
         MODULES.response().map_or(&[], |r| r.modules());
+    process::components::init(modules.iter().map(|file| {
+        let file: &'static limine::file::File = file;
+        (file.path(), file.data())
+    }));
     process::programs::init(modules.iter().map(|file| {
         let file: &'static limine::file::File = file;
         (file.path(), file.data())
@@ -462,16 +472,29 @@ fn start_user_space(test: SelfTest) {
     process::set_page_budget(free / 2);
     let wanted = matches!(
         test,
-        SelfTest::None | SelfTest::Net | SelfTest::Terminal | SelfTest::Shell | SelfTest::Scripts
+        SelfTest::None
+            | SelfTest::Net
+            | SelfTest::Terminal
+            | SelfTest::Shell
+            | SelfTest::Scripts
+            | SelfTest::Live
     );
     if !wanted || programs.is_empty() {
         return;
     }
-    let mut plan = llm::plan_line();
+    // The live case needs only its component, run with probation ended by calls.
+    let mut plan = match test {
+        SelfTest::Live => alloc::string::String::from(kabi::plan::NOTES_TEST),
+        _ => llm::plan_line(),
+    };
     // The net case checks only the llm path, so it runs without the shell.
-    if test != SelfTest::Net {
+    if !matches!(test, SelfTest::Net | SelfTest::Live) {
         plan.push('\n');
         plan.push_str(kabi::plan::SHELL);
+    }
+    if test == SelfTest::None {
+        plan.push('\n');
+        plan.push_str(kabi::plan::NOTES);
     }
     if let Err(message) = process::supervision::start(plan) {
         fail(message);

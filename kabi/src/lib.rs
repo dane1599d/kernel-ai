@@ -8,6 +8,8 @@
 
 #![no_std]
 
+pub mod live;
+
 /// System-call numbers.
 pub mod call {
     /// `exit(code: i32) -> !`
@@ -60,6 +62,18 @@ pub mod call {
     /// `interrupted() -> 1 or 0`: whether the user pressed Ctrl-C since the last
     /// call; reading clears it.
     pub const INTERRUPTED: u64 = 20;
+    /// `comp_fetch(label_ptr, label_len, buf, cap) -> len`: copies version `label` of
+    /// the caller's component into `buf` when it fits; the length either way.
+    /// Needs [`cap::COMPONENT`].
+    pub const COMP_FETCH: u64 = 21;
+    /// `comp_event(&live::Event) -> 0`: reports a ledger event; the kernel checks
+    /// it against the ledger rules and refuses what they do not allow.
+    pub const COMP_EVENT: u64 = 22;
+    /// `comp_restore(&mut live::Restore, buf, cap) -> len`: the ledger, and the
+    /// active version's checkpoint copied into `buf` when it fits.
+    pub const COMP_RESTORE: u64 = 23;
+    // 24 (COMP_PUT, uploads into the version store) and 25 (COMP_CONTROL, relayed
+    // control requests) are kept for the edit loop (M9b).
 }
 
 /// Errors, returned in RAX as their negative value.
@@ -134,8 +148,13 @@ pub mod cap {
     pub const CALL: u64 = 1 << 3;
     /// Change the scheduling policy.
     pub const POLICY: u64 = 1 << 4;
+    /// Fetch versions of the component named like the process and report its ledger
+    /// events. The kernel grants it only to processes running the `comphost` program.
+    pub const COMPONENT: u64 = 1 << 5;
+    /// Reserved for the edit loop (M9b): upload versions and relay control requests.
+    pub const PUBLISH: u64 = 1 << 6;
     /// Every capability a supervisor may grant.
-    pub const GRANTABLE: u64 = SERVE | NET | CALL | POLICY;
+    pub const GRANTABLE: u64 = SERVE | NET | CALL | POLICY | COMPONENT;
 }
 
 /// Why a process ended, as reported to the supervisor.
@@ -193,11 +212,15 @@ pub const MAX_MESSAGE: usize = 8192;
 #[derive(Clone, Copy, Debug, Default)]
 #[repr(C)]
 pub struct SpawnRequest {
+    /// The service: it names the process and its endpoint.
     pub name_ptr: u64,
     pub name_len: u64,
     pub args_ptr: u64,
     pub args_len: u64,
     pub limits: Limits,
+    /// The program to run; length 0 means the program named like the service.
+    pub program_ptr: u64,
+    pub program_len: u64,
 }
 
 /// Per-process limits, set by the supervisor at spawn.
@@ -332,7 +355,7 @@ const _: () = {
     assert!(IMAGE_BASE < HEAP_BASE && HEAP_BASE + HEAP_MAX < STACK_TOP - STACK_PAGES * 4096);
     assert!(STACK_TOP < USER_END);
     assert!(core::mem::size_of::<ExitRecord>() == 32 + MAX_NAME);
-    assert!(core::mem::size_of::<SpawnRequest>() == 8 * 8);
+    assert!(core::mem::size_of::<SpawnRequest>() == 10 * 8);
     assert!(core::mem::size_of::<CallRequest>() == 5 * 8);
     assert!(core::mem::size_of::<Metrics>() == 13 * 8 + MAX_METRIC_PROCESSES * (16 + MAX_NAME));
     assert!(HEAP_BASE + HEAP_MAX < STACK_TOP - MAX_STACK_PAGES * 4096);
@@ -433,4 +456,10 @@ pub mod plan {
     /// The Rhai shell: it serves the terminal, calls the llm service, may switch
     /// the scheduling policy, and needs a large stack for Rhai's recursion.
     pub const SHELL: &str = "shell caps=serve+call+policy pages=4096 stack_pages=512 burst_ms=5000";
+    /// The live `notes` component, run by the shared `comphost` program. Its
+    /// arguments (`version=` and the probation settings) go to the host.
+    pub const NOTES: &str = "notes program=comphost caps=serve+component pages=8192 stack_pages=512 burst_ms=20000 version=1";
+    /// As [`NOTES`], with probation ended by calls alone, so the M9a test runs the
+    /// same under KVM and TCG.
+    pub const NOTES_TEST: &str = "notes program=comphost caps=serve+component pages=8192 stack_pages=512 burst_ms=20000 version=1 probation_calls=3 probation_ms=0";
 }

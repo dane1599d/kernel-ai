@@ -57,6 +57,7 @@ pub const TEST_CASES: &[TestCase] = &[
     case("net", "test=net"),
     case("shell", "test=shell"),
     case("scripts", "test=scripts"),
+    case("live", "test=live"),
     TestCase {
         keys: TERMINAL_SCRIPT,
         expect: &[

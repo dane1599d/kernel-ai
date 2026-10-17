@@ -198,3 +198,46 @@ pub fn set_policy(id: u64) -> Result<u64, Error> {
 pub fn interrupted() -> bool {
     call(call::INTERRUPTED, [0; 6]).is_ok_and(|flag| flag != 0)
 }
+
+/// Copies version `label` of this process's component into `buf` when it fits;
+/// its length either way.
+pub fn comp_fetch(label: &str, buf: &mut [u8]) -> Result<usize, Error> {
+    call(
+        call::COMP_FETCH,
+        [
+            label.as_ptr() as u64,
+            label.len() as u64,
+            buf.as_mut_ptr() as u64,
+            buf.len() as u64,
+            0,
+            0,
+        ],
+    )
+    .map(|len| len as usize)
+}
+
+/// Reports a ledger event for this process's component.
+pub fn comp_event(event: &kabi::live::Event) -> Result<(), Error> {
+    call(
+        call::COMP_EVENT,
+        [event as *const kabi::live::Event as u64, 0, 0, 0, 0, 0],
+    )
+    .map(|_| ())
+}
+
+/// The component's ledger, and its checkpoint in `buf` when it fits; the
+/// checkpoint's length either way.
+pub fn comp_restore(restore: &mut kabi::live::Restore, buf: &mut [u8]) -> Result<usize, Error> {
+    call(
+        call::COMP_RESTORE,
+        [
+            restore as *mut kabi::live::Restore as u64,
+            buf.as_mut_ptr() as u64,
+            buf.len() as u64,
+            0,
+            0,
+            0,
+        ],
+    )
+    .map(|len| len as usize)
+}

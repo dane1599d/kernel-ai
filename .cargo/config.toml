@@ -3,3 +3,8 @@ xtask = "run --quiet -p xtask --"
 
 [target.x86_64-unknown-none]
 rustflags = ["-C", "relocation-model=static", "-C", "code-model=kernel", "-C", "force-frame-pointers=yes"]
+
+# Live components: a 64 KiB stack. Memory has no declared maximum: the host's limit
+# (memory_kib) is the one that applies, and growing past it is reported as memory.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "link-arg=-zstack-size=65536"]

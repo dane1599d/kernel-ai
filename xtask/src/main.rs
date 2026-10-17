@@ -14,10 +14,13 @@
 //! kernel reports success through QEMU's isa-debug-exit device.
 
 mod cases;
+mod components;
+mod esp;
 mod fluency;
 mod lines;
 mod mock_llm;
 mod qemu;
+mod smoke;
 mod strip;
 
 use sha2::{Digest, Sha256};
@@ -152,20 +155,28 @@ fn execute(options: &Options) -> Result<(), String> {
     let root = workspace_root();
     let kernel = build_kernel(&root, options)?;
     let programs = build_user(&root, options)?;
+    let versions = components::build(&root)?;
     if options.task == Task::Build {
         println!("xtask: kernel built at {}", kernel.display());
         println!("xtask: {} user programs built", programs.len());
+        println!("xtask: {} component versions built", versions.len());
         return Ok(());
     }
+    if options.task == Task::Test {
+        // The live-component scenario on the host first: a failure here is in the
+        // host or a version, not in the kernel.
+        smoke::run(&versions)?;
+    }
     let target_dir = root.join("target");
-    let modules = boot_modules(&kernel, &programs, &root)?;
+    let mut modules = esp::boot_modules(&kernel, &programs, &root)?;
+    modules.extend(versions);
     let efi = ensure_limine(&target_dir)?;
     let esp = target_dir.join("esp");
     let qemu = find_qemu()?;
     let accel = resolve_accel(options.accel);
     if options.task == Task::Run {
         let cmdline = llm_cmdline(options.llm.as_deref(), options.model.as_deref());
-        make_esp(&esp, &kernel, &modules, &efi, &cmdline)?;
+        esp::make_esp(&esp, &kernel, &modules, &efi, &cmdline)?;
         let firmware = find_firmware(&qemu, &target_dir)?;
         let args = qemu::args(&firmware, accel, false);
         println!("xtask: {} {}", qemu.display(), args.join(" "));
@@ -185,7 +196,7 @@ fn execute(options: &Options) -> Result<(), String> {
     for case in cases {
         let cmdline = format!("{} {llm_args}", case.cmdline);
         println!("xtask: test case {} ({cmdline})", case.name);
-        make_esp(&esp, &kernel, &modules, &efi, &cmdline)?;
+        esp::make_esp(&esp, &kernel, &modules, &efi, &cmdline)?;
         let firmware = find_firmware(&qemu, &target_dir)?;
         let monitor = qemu::free_port()?;
         let mut args = qemu::args(&firmware, accel, true);
@@ -330,6 +341,7 @@ const USER_PROGRAMS: &[&str] = &[
     "spinner",
     "hog",
     "probe",
+    "comphost",
 ];
 
 /// Builds every user program; returns (name, ELF path) pairs.
@@ -354,86 +366,6 @@ fn build_user(root: &Path, options: &Options) -> Result<Vec<(&'static str, PathB
         .iter()
         .map(|&name| (name, dir.join(name)))
         .collect())
-}
-
-/// A file Limine loads next to the kernel, at `boot/<path>` on the ESP.
-struct Module {
-    path: String,
-    bytes: Vec<u8>,
-}
-
-/// The kernel's line table, then each user program and its line table.
-fn boot_modules(
-    kernel: &Path,
-    programs: &[(&'static str, PathBuf)],
-    root: &Path,
-) -> Result<Vec<Module>, String> {
-    let mut modules = vec![Module {
-        path: "kernel.lines".into(),
-        bytes: lines::build(kernel, root, lines::Scope::All)?,
-    }];
-    for (name, elf) in programs {
-        let full = fs::read(elf).map_err(|e| format!("cannot read {}: {e}", elf.display()))?;
-        let bytes = strip::for_boot(&full).map_err(|e| format!("{name}: {e}"))?;
-        println!(
-            "xtask: {name} {} KiB on the boot drive ({} KiB with debug info)",
-            bytes.len() / 1024,
-            full.len() / 1024
-        );
-        modules.push(Module {
-            path: format!("user/{name}.elf"),
-            bytes,
-        });
-        modules.push(Module {
-            path: format!("user/{name}.lines"),
-            bytes: lines::build(elf, root, lines::Scope::Workspace)?,
-        });
-    }
-    Ok(modules)
-}
-
-fn limine_conf(cmdline: &str, module_paths: &[&str]) -> String {
-    let mut conf = format!(
-        "timeout: 0\n\n/Kernel AI\n    protocol: limine\n    path: boot():/boot/kernel\n    cmdline: {cmdline}\n"
-    );
-    for path in module_paths {
-        conf.push_str(&format!("    module_path: boot():/boot/{path}\n"));
-    }
-    conf
-}
-
-/// Lays out the EFI system partition that QEMU exposes as a virtual FAT drive.
-fn make_esp(
-    esp: &Path,
-    kernel: &Path,
-    modules: &[Module],
-    efi: &Path,
-    cmdline: &str,
-) -> Result<(), String> {
-    if esp.exists() {
-        fs::remove_dir_all(esp).map_err(|e| format!("cannot clear {}: {e}", esp.display()))?;
-    }
-    let boot_efi = esp.join("EFI").join("BOOT");
-    let limine_dir = esp.join("boot").join("limine");
-    let user_dir = esp.join("boot").join("user");
-    for dir in [&boot_efi, &limine_dir, &user_dir] {
-        fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
-    }
-    copy(efi, &boot_efi.join("BOOTX64.EFI"))?;
-    copy(kernel, &esp.join("boot").join("kernel"))?;
-    for module in modules {
-        fs::write(esp.join("boot").join(&module.path), &module.bytes)
-            .map_err(|e| format!("cannot write {}: {e}", module.path))?;
-    }
-    let paths: Vec<&str> = modules.iter().map(|m| m.path.as_str()).collect();
-    fs::write(limine_dir.join("limine.conf"), limine_conf(cmdline, &paths))
-        .map_err(|e| format!("cannot write limine.conf: {e}"))
-}
-
-fn copy(from: &Path, to: &Path) -> Result<(), String> {
-    fs::copy(from, to)
-        .map(|_| ())
-        .map_err(|e| format!("cannot copy {} to {}: {e}", from.display(), to.display()))
 }
 
 fn find_qemu() -> Result<PathBuf, String> {
@@ -500,7 +432,7 @@ fn find_firmware(qemu: &Path, target_dir: &Path) -> Result<Firmware, String> {
         .find(|(code, vars)| code.exists() && vars.exists())
         .ok_or("UEFI firmware not found: install OVMF or set OVMF_CODE and OVMF_VARS")?;
     let vars = target_dir.join("ovmf-vars.fd");
-    copy(&vars_template, &vars)?;
+    esp::copy(&vars_template, &vars)?;
     Ok(Firmware { code, vars })
 }
 
@@ -570,7 +502,7 @@ mod tests {
 
     #[test]
     fn limine_conf_carries_cmdline_and_modules() {
-        let conf = limine_conf("test", &["kernel.lines", "user/llm.elf"]);
+        let conf = esp::limine_conf("test", &["kernel.lines", "user/llm.elf"]);
         assert!(conf.contains("protocol: limine"));
         assert!(conf.contains("path: boot():/boot/kernel\n"));
         assert!(conf.contains("cmdline: test"));
