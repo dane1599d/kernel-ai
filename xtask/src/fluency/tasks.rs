@@ -65,23 +65,31 @@ const fn refuse(request: &'static str, reference: &'static str) -> Task {
     }
 }
 
-/// Words a refusal must contain one of.
+/// Phrases a refusal must contain one of, matched as whole words with at most one
+/// word between them ("have no" is in "have no network" and "have really no", not in
+/// "have now").
 pub const REFUSAL_WORDS: &[&str] = &[
     "cannot",
     "can't",
-    "unable",
-    "not possible",
-    "no access",
-    "not supported",
-    "not available",
-    "not able",
-    "impossible",
-    "isn't possible",
     "can not",
+    "unable",
+    "not able",
+    "not possible",
+    "isn't possible",
+    "impossible",
+    "not supported",
+    "isn't supported",
+    "not support",
+    "doesn't support",
+    "not available",
+    "unavailable",
+    "not allowed",
+    "not permitted",
+    "no access",
     "no way",
+    "no function",
+    "not have",
     "don't have",
-    "do not have",
-    "does not have",
     "doesn't have",
     "has no",
     "have no",
@@ -177,7 +185,7 @@ pub const TASKS: &[Task] = &[
     ),
     read(
         "Print the pids of the first two services.",
-        &["12", "2"],
+        &["12", "25"],
         "let p = processes();\nprint(p[0].pid + \" \" + p[1].pid);",
     ),
     read(
@@ -213,12 +221,12 @@ pub const TASKS: &[Task] = &[
     ),
     read(
         "Print the sum of the pids of all three services.",
-        &["33"],
+        &["56"],
         "let p = processes();\nprint(p[0].pid + p[1].pid + p[2].pid);",
     ),
     read(
         "Print the name of the service with the highest pid among the three.",
-        &["crasher"],
+        &["llm"],
         "let p = processes();\nlet best = p[0];\nif p[1].pid > best.pid { best = p[1]; }\nif p[2].pid > best.pid { best = p[2]; }\nprint(best.name);",
     ),
     read(
@@ -227,7 +235,7 @@ pub const TASKS: &[Task] = &[
         "let name = processes()[1].name;\nname.make_upper();\nprint(name);",
     ),
     read(
-        "Print the services and CPUs as a ratio like 3:7.",
+        "Print the services and CPUs as a ratio like 2:5.",
         &["3:7"],
         "print(processes().len() + \":\" + cpus());",
     ),
@@ -237,9 +245,9 @@ pub const TASKS: &[Task] = &[
         "let p = processes();\nprint(p[0].name.len() + p[1].name.len() + p[2].name.len());",
     ),
     read(
-        "Does the first service have a pid below 20? Print true or false.",
+        "Does the first service have a pid below 15? Print true or false.",
         &["true"],
-        "print(processes()[0].pid < 20);",
+        "print(processes()[0].pid < 15);",
     ),
     // Strings, arrays and maps.
     read(
@@ -306,14 +314,14 @@ pub const TASKS: &[Task] = &[
         "if cpus() < 8 { set_policy(\"round-robin\"); }",
     ),
     change(
-        "Make sure the scheduler uses the interactive policy.",
-        &[],
+        "Make sure the scheduler uses the interactive policy, then print the policy.",
+        &["interactive"],
         Policy::SetOrKeep("interactive"),
-        "if get_policy() != \"interactive\" { set_policy(\"interactive\"); }",
+        "if get_policy() != \"interactive\" { set_policy(\"interactive\"); }\nprint(get_policy());",
     ),
     change(
-        "Switch to round robin only if more than 100 MiB of memory is free.",
-        &[],
+        "Switch to round robin only if more than 100 MiB of memory is free, then print the policy.",
+        &["interactive"],
         Policy::Unchanged,
         "if memory().free_mib > 100 { set_policy(\"round-robin\"); }\nprint(\"policy: \" + get_policy());",
     ),

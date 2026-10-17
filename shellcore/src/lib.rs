@@ -54,6 +54,11 @@ pub struct Config {
     pub line_budget_ms: u64,
     /// Heap a line may add before it is stopped.
     pub heap_budget: u64,
+    /// Heap an LLM-written script may add, in its trial run and its real one. Far
+    /// smaller than `heap_budget`: one operation can copy a value several times over
+    /// (a clone, or text formatted with escapes), the trial runs before anyone has
+    /// read the script, and the shell has 16 MiB in all.
+    pub script_heap_budget: u64,
     /// Most bytes of printed output kept per line.
     pub max_output: usize,
     /// Backstop if the clock check never fires. Far above what the time budget
@@ -65,6 +70,7 @@ pub struct Config {
 pub const DEFAULT_CONFIG: Config = Config {
     line_budget_ms: 2000,
     heap_budget: 8 * 1024 * 1024,
+    script_heap_budget: 1024 * 1024,
     max_output: 6 * 1024,
     max_operations: 2_000_000_000,
 };
@@ -272,7 +278,11 @@ impl Shell {
             let failure = match self.host.script(&ask) {
                 Ok(answer) => match script::check(&answer, &self.host, &self.config) {
                     Ok(checked) => return self.propose(id, request, checked),
-                    Err(why) => Some((answer.script, why)),
+                    Err(script::Refusal::Script(why)) => Some((answer.script, why)),
+                    Err(refusal @ script::Refusal::Interrupted) => {
+                        outcome = refusal.to_string();
+                        None
+                    }
                 },
                 Err(error) if error.repairable() => Some((
                     String::from("(the answer was refused before it was read)"),

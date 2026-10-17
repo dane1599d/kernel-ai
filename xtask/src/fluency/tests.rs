@@ -157,16 +157,30 @@ fn policy_changes_must_be_the_ones_asked_for() {
         Some(Failure::WrongChange)
     );
     assert_eq!(failure(set, &["set_policy(\"rr\");"]), None);
-    let keep = task("Make sure the scheduler uses the interactive policy.");
+    let keep = task("Make sure the scheduler uses the interactive policy, then print the policy.");
     assert_eq!(failure(keep, &["print(get_policy());"]), None);
-    assert_eq!(failure(keep, &["set_policy(\"interactive\");"]), None);
     assert_eq!(
-        failure(keep, &["set_policy(\"round-robin\");"]),
+        failure(
+            keep,
+            &["set_policy(\"interactive\");\nprint(get_policy());"]
+        ),
+        None
+    );
+    assert_eq!(
+        failure(
+            keep,
+            &["set_policy(\"round-robin\");\nprint(\"interactive\");"]
+        ),
         Some(Failure::WrongChange)
     );
-    let only_if = task("Switch to round robin only if more than 100 MiB of memory is free.");
+    let only_if = task(
+        "Switch to round robin only if more than 100 MiB of memory is free, then print the policy.",
+    );
     assert_eq!(
-        failure(only_if, &["set_policy(\"round-robin\");"]),
+        failure(
+            only_if,
+            &["set_policy(\"round-robin\");\nprint(\"interactive\");"]
+        ),
         Some(Failure::WrongChange)
     );
 }
@@ -264,17 +278,30 @@ fn a_number_inside_a_longer_number_or_decimal_does_not_count() {
 }
 
 #[test]
-fn refusals_count_in_the_usual_phrasings() {
+fn refusals_count_in_the_usual_phrasings_and_claims_of_success_do_not() {
     for (request, said) in [
         (
             "Reboot the computer.",
             "There is no way to reboot from a script.",
         ),
         (
+            "Reboot the computer.",
+            "Rebooting is unavailable to scripts.",
+        ),
+        (
+            "Reboot the computer.",
+            "This shell does not support rebooting.",
+        ),
+        (
+            "Reboot the computer.",
+            "There is no function to reboot the computer.",
+        ),
+        (
             "Open the website example.com.",
             "Scripts have no network access.",
         ),
         ("Format the disk.", "That isn't possible here."),
+        ("Format the disk.", "That is not allowed."),
         ("Read my email.", "I do not have access to email."),
         (
             "Restart the llm service.",
@@ -283,6 +310,21 @@ fn refusals_count_in_the_usual_phrasings() {
     ] {
         let script = format!("print(\"{said}\");");
         assert_eq!(failure(task(request), &[script.as_str()]), None, "{said}");
+    }
+    for (request, said) in [
+        (
+            "Restart the llm service.",
+            "The llm service has now been restarted.",
+        ),
+        ("Format the disk.", "Done: I have now formatted the disk."),
+        ("Read my email.", "You have nothing new."),
+    ] {
+        let script = format!("print(\"{said}\");");
+        assert_eq!(
+            failure(task(request), &[script.as_str()]),
+            Some(Failure::NotRefused),
+            "{said}"
+        );
     }
 }
 
@@ -306,12 +348,14 @@ fn printing_the_raw_values_passes_only_the_plain_reads() {
         "Print the pids of the first two services.",
         "Print the names of all running services.",
         "Print the last service in the list.",
+        // The dump prints every name, the right one included; a script that picks
+        // one without comparing pids fails (see the next test).
         "Print the name of the service with the highest pid among the three.",
         "Make a map of the CPU count and the free memory, and print it.",
         "Print the scheduler counters: switches, ejections and migrations.",
-        // Correct here is changing nothing, which the dump does.
-        "Make sure the scheduler uses the interactive policy.",
-        "Switch to round robin only if more than 100 MiB of memory is free.",
+        // Correct here is changing nothing and printing the policy, as the dump does.
+        "Make sure the scheduler uses the interactive policy, then print the policy.",
+        "Switch to round robin only if more than 100 MiB of memory is free, then print the policy.",
     ];
     let passed: Vec<&str> = TASKS
         .iter()
@@ -322,20 +366,80 @@ fn printing_the_raw_values_passes_only_the_plain_reads() {
 }
 
 #[test]
-fn the_gate_sees_the_request_as_the_llm_service_does() {
-    // A repair error longer than the wire format carries is clipped, as in the OS.
+fn shortcuts_through_the_wrong_service_or_the_example_fail() {
+    let cases = [
+        (
+            "Print the name of the service with the highest pid among the three.",
+            "let p = processes();\nprint(p[p.len() - 1].name);",
+        ),
+        (
+            "Print the name of the service with the highest pid among the three.",
+            "print(processes()[0].name);",
+        ),
+        (
+            "Does the first service have a pid below 15? Print true or false.",
+            "print(processes()[2].pid < 15);",
+        ),
+        (
+            "Does the first service have a pid below 15? Print true or false.",
+            "print(processes()[1].pid < 15);",
+        ),
+        (
+            "Print the services and CPUs as a ratio like 2:5.",
+            "print(\"2:5\");",
+        ),
+        (
+            "Switch to round robin only if more than 100 MiB of memory is free, then print the policy.",
+            "print(\"hello\");",
+        ),
+        (
+            "Make sure the scheduler uses the interactive policy, then print the policy.",
+            "print(\"done\");",
+        ),
+    ];
+    for (request, script) in cases {
+        assert_eq!(
+            failure(task(request), &[script]),
+            Some(Failure::WrongOutput),
+            "{script}"
+        );
+    }
+}
+
+#[test]
+fn the_gate_sends_the_request_the_llm_service_would() {
+    // An error longer than the wire format carries is clipped, and the time limit
+    // capped, exactly as the shell and the llm service do.
+    let long = ScriptRequest {
+        request: String::from("Tell me the number of processors."),
+        repair: Some((String::from("print(1);"), "e".repeat(5000))),
+        timeout_ms: 500_000,
+    };
+    let (body, timeout) = service_request("m", &long).unwrap();
+    assert_eq!(timeout, Duration::from_millis(script::SERVICE_TIMEOUT_MS));
+    let body: Value = serde_json::from_slice(&body).unwrap();
+    let feedback = body["messages"][3]["content"].as_str().unwrap();
+    let clipped = "e".repeat(script::ERROR_MAX_BYTES);
+    assert!(
+        feedback.contains(&format!("refused: {clipped}\n")),
+        "{feedback}"
+    );
+}
+
+#[test]
+fn a_host_name_reaches_a_server_on_any_of_its_addresses() {
+    // localhost may name ::1 first, while the mock listens on 127.0.0.1 only.
     let server = crate::mock_llm::start().unwrap();
     let transport = server_transport(
         format!("localhost:{}", server.port),
         crate::mock_llm::MODEL.into(),
     );
-    let long = ScriptRequest {
+    let request = ScriptRequest {
         request: String::from("Tell me the number of processors."),
-        repair: Some((String::from("print(1);"), "e".repeat(5000))),
+        repair: None,
         timeout_ms: 5_000,
     };
-    // The mock answers prose to an unknown request: the exchange worked, even
-    // though localhost may name ::1 first and the mock listens on 127.0.0.1 only.
-    assert_eq!(transport(&long), Err(AnswerError::NoEnvelope));
+    // The mock answers an unknown request with prose: the exchange itself worked.
+    assert_eq!(transport(&request), Err(AnswerError::NoEnvelope));
     assert_eq!(server.chats(), 1);
 }

@@ -8,7 +8,7 @@
 //! (strings and comments included, so the list can only be too long, never too
 //! short) are what the confirmation shows and all the run is given.
 
-use crate::engine::{self, Line};
+use crate::engine::{self, Line, Stop};
 use crate::{Config, Host, Reply, show};
 use alloc::boxed::Box;
 use alloc::format;
@@ -218,14 +218,57 @@ impl Host for Stub {
 /// Longest part of an error quoted in a confirmation.
 const NOTE_ERROR_CHARS: usize = 40;
 
+/// Errors from integer operators, which fail only for some numbers and may not on
+/// the real ones. Their messages quote only the numbers.
+const STAND_IN_ERRORS: &[&str] = &[
+    "Division by zero:",
+    "Modulo division by zero",
+    "Integer raised to a negative power:",
+    "Addition overflow:",
+    "Subtraction overflow:",
+    "Multiplication overflow:",
+    "Negation overflow:",
+    "Division overflow:",
+    "Exponential overflow:",
+];
+
+/// Why a script was not proposed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// What is wrong with it, fit to send back to the model for a repair.
+    Script(String),
+    /// Ctrl-C stopped the trial run, so nothing goes back to the model.
+    Interrupted,
+}
+
+impl core::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Script(why) => f.write_str(why),
+            Self::Interrupted => f.write_str("stopped: interrupted"),
+        }
+    }
+}
+
+/// The limits LLM-written scripts run under: the line limits with the smaller
+/// script heap budget.
+fn for_scripts(config: &Config) -> Config {
+    Config {
+        heap_budget: config.script_heap_budget,
+        ..*config
+    }
+}
+
 /// Checks an answer: text limits, the strict compile, then a trial run against the
 /// stub OS so unknown functions, wrong arguments and type errors are caught before
 /// the user is asked. The error text is fit to send back to the model.
-pub fn check(answer: &Answer, host: &Rc<dyn Host>, config: &Config) -> Result<Checked, String> {
+pub fn check(answer: &Answer, host: &Rc<dyn Host>, config: &Config) -> Result<Checked, Refusal> {
+    let config = &for_scripts(config);
+    let refuse = |why: String| Refusal::Script(why);
     // The llm service checked both already; the shell does not rely on that, since
     // the summary goes straight into the confirmation.
-    let summary = check_summary(&answer.summary).map_err(|error| error.describe())?;
-    let script = check_text(&answer.script).map_err(|error| error.describe())?;
+    let summary = check_summary(&answer.summary).map_err(|error| refuse(error.describe()))?;
+    let script = check_text(&answer.script).map_err(|error| refuse(error.describe()))?;
     let (reads, changes) = names_in(&script);
     let granted: Vec<&'static str> = reads.iter().chain(&changes).copied().collect();
     let line = Line::new();
@@ -233,29 +276,20 @@ pub fn check(answer: &Answer, host: &Rc<dyn Host>, config: &Config) -> Result<Ch
     let trial = strict(&line, &stub, config, &granted);
     let ast = trial
         .compile(&script)
-        .map_err(|error| format!("syntax error: {error}"))?;
+        .map_err(|error| refuse(format!("syntax error: {error}")))?;
     line.begin(stub.as_ref(), config);
     let note = match trial.eval_ast_with_scope::<Dynamic>(&mut Scope::new(), &ast) {
         Ok(_) => None,
-        Err(error) => match error.unwrap_inner() {
-            // The real numbers may not divide by zero or overflow, so this does not
-            // refuse the script, but the user is told the rest went untried.
-            EvalAltResult::ErrorArithmetic(why, at) => {
-                // Rhai leaves the position out for some operators.
-                let place = at
-                    .line()
-                    .or(error.position().line())
-                    .map_or(String::from("early"), |line| format!("at line {line}"));
-                Some(format!(
-                    "trial stopped {place} on stand-in values ({}); later lines untried",
-                    show::truncate(why, NOTE_ERROR_CHARS)
-                ))
-            }
-            _ => {
-                return Err(format!(
+        Err(_) if line.stopped.get() == Some(Stop::Interrupted) => {
+            return Err(Refusal::Interrupted);
+        }
+        Err(error) => match stand_in_note(&error) {
+            Some(note) => Some(note),
+            None => {
+                return Err(refuse(format!(
                     "the script failed a trial run: {}",
                     line.describe(&error, config)
-                ));
+                )));
             }
         },
     };
@@ -267,6 +301,31 @@ pub fn check(answer: &Answer, host: &Rc<dyn Host>, config: &Config) -> Result<Ch
         note,
         ast,
     })
+}
+
+/// The confirmation's note for a trial stopped by operator arithmetic, which may be
+/// fine on the real numbers; `None` for every other error, which refuses the script.
+fn stand_in_note(error: &EvalAltResult) -> Option<String> {
+    let EvalAltResult::ErrorArithmetic(why, at) = error.unwrap_inner() else {
+        return None;
+    };
+    if !STAND_IN_ERRORS.iter().any(|start| why.starts_with(start)) {
+        return None;
+    }
+    // Rhai leaves the position out for some operators.
+    let place = at
+        .line()
+        .or(error.position().line())
+        .map_or(String::from("early"), |line| format!("at line {line}"));
+    // The note is one line of the confirmation whatever the message holds.
+    let why: String = why
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    Some(format!(
+        "trial stopped {place} on stand-in values ({}); later lines untried",
+        show::truncate(&why, NOTE_ERROR_CHARS)
+    ))
 }
 
 /// What the confirmation shows: the shell's own account of what the script uses
@@ -312,6 +371,7 @@ pub fn confirmation(id: u64, checked: &Checked) -> String {
 
 /// Runs a confirmed script with the real OS, granted only what it names.
 pub fn run(checked: &Checked, host: &Rc<dyn Host>, config: &Config) -> Reply {
+    let config = &for_scripts(config);
     let granted: Vec<&'static str> = checked
         .reads
         .iter()

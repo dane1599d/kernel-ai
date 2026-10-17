@@ -78,6 +78,7 @@ pub fn run(_: usize) {
         match line.strip_prefix(':') {
             Some(command) => kernel_command(command.trim()),
             None if line.is_empty() => {}
+            None if is_answer(line) => log!("! scripts are answered only at their own prompt"),
             None => confirming = shell_line(line),
         }
     }
@@ -141,11 +142,22 @@ fn show_shell_reply(reply: &[u8]) -> Option<u64> {
     REPLIES_SHOWN.fetch_add(1, Ordering::Relaxed);
     // A script runs only on a yes to all of it, so a confirmation asks nothing if
     // it lost characters or lines on the way, or cannot be read on one screen.
-    if confirm.is_some() && (clean != text || !fits_on_screen(body)) {
+    if let Some(id) = confirm
+        && (clean != text || !fits_on_screen(body))
+    {
         log!("! the confirmation could not be shown in full, so the script will not run");
-        return None;
+        // Decline it, so no later line can answer it.
+        return shell_line(&format!("answer {id} no"));
     }
     confirm
+}
+
+/// Whether a line typed at the `kai> ` prompt looks like an answer to a script,
+/// `answer <id> ...`, which only the confirm prompt may send.
+fn is_answer(line: &str) -> bool {
+    line.strip_prefix("answer ")
+        .and_then(|rest| rest.split(' ').next())
+        .is_some_and(|id| id.parse::<u64>().is_ok())
 }
 
 /// Whether `body`, printed with a two-character lead and followed by the prompt,

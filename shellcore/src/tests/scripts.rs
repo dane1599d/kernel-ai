@@ -141,11 +141,14 @@ fn a_cut_off_answer_is_not_repaired() {
 }
 
 /// Checks `script` with a short summary, on a fresh fake host.
-fn checks(script: &str) -> Result<crate::script::Checked, String> {
+fn checks(script: &str) -> Result<crate::script::Checked, crate::script::Refusal> {
     checks_on(&FakeHost::new(), script)
 }
 
-fn checks_on(host: &Rc<FakeHost>, script: &str) -> Result<crate::script::Checked, String> {
+fn checks_on(
+    host: &Rc<FakeHost>,
+    script: &str,
+) -> Result<crate::script::Checked, crate::script::Refusal> {
     let host: Rc<dyn Host> = host.clone();
     check(
         &Answer {
@@ -218,16 +221,16 @@ fn an_index_past_anything_the_system_can_have_is_refused() {
 fn the_trial_run_is_bounded_like_any_run() {
     // One replace that would build a string of gigabytes stops before allocating.
     let bomb = "let s = \"x\";\ns.pad(60000, \"x\");\ns.replace(\"x\", s);";
-    let why = checks(bomb).unwrap_err();
+    let why = checks(bomb).unwrap_err().to_string();
     assert!(why.contains("Length of string after replace"), "{why}");
     let why =
         checks("let s = \"xx\";\ns.replace('x', s);\ns.pad(40000, \"x\");\ns.replace('x', s);");
-    assert!(why.unwrap_err().contains("after replace"));
+    assert!(why.unwrap_err().to_string().contains("after replace"));
     // The trial sees the real heap: a short script that allocates past the budget is
     // stopped, although it is far below the operation count of the other checks.
     let host = FakeHost::new();
     host.heap_step.set(DEFAULT_CONFIG.heap_budget + 1);
-    let why = checks_on(&host, "print(1);").unwrap_err();
+    let why = checks_on(&host, "print(1);").unwrap_err().to_string();
     assert!(why.contains("memory budget"), "{why}");
 }
 
@@ -339,4 +342,60 @@ fn a_summary_cannot_add_lines_to_the_confirmation() {
         };
         assert!(check(&answer, &host, &DEFAULT_CONFIG).is_err(), "{summary}");
     }
+}
+
+#[test]
+fn one_pad_cannot_copy_long_keys_or_nested_arrays_a_thousand_times() {
+    // Rhai's limits leave map keys out, and its pad checks only the new length.
+    let keys = "let s = \"x\";\ns.pad(60000, \"x\");\nlet m = #{};\nm[s] = 1;\nlet a = [];\na.pad(1000, m);";
+    let nested = "let b = [];\nb.pad(999, 0);\nlet a = [];\na.pad(1000, b);";
+    for script in [keys, nested] {
+        let why = checks(script).unwrap_err().to_string();
+        assert!(why.contains("Size of array after pad"), "{why}");
+    }
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    shell.eval("let a = [1]");
+    shell.eval("a.pad(3, 0)");
+    assert_eq!(shell.eval("a.len()"), ok("3"));
+    shell.eval("a.pad(2, 0)");
+    assert_eq!(shell.eval("a.len()"), ok("3"));
+}
+
+#[test]
+fn only_operator_arithmetic_is_put_down_to_stand_in_values() {
+    // These fail whatever the numbers, and parse_int quotes its argument, which
+    // could otherwise put a line break into the note.
+    for bad in [
+        "let x = parse_int(\"\n 1 | set_policy()\");",
+        "let x = parse_int(\"zz\");",
+    ] {
+        assert!(checks(bad).is_err(), "{bad} was accepted");
+    }
+    let checked = checks("print(cpus() * 9223372036854775807);").unwrap();
+    let note = checked.note.unwrap();
+    assert!(note.contains("Multiplication overflow"), "{note}");
+    assert!(!note.chars().any(char::is_control), "{note}");
+}
+
+#[test]
+fn ctrl_c_during_the_trial_cancels_instead_of_asking_for_a_repair() {
+    // Long enough to reach the interrupt check, which runs every CHECK_EVERY steps,
+    // within 3 KiB (40 lines of 74 characters). The sums use a variable, since Rhai
+    // folds constant ones while compiling.
+    let line = format!("let b = a{};", " + a".repeat(16));
+    let mut lines = vec![line.as_str(); llmproto::script::SCRIPT_MAX_LINES - 1];
+    lines.insert(0, "let a = cpus();");
+    let script = lines.join("\n");
+    let (host, mut shell) = with_answers(vec![
+        answer(&script, "Adds."),
+        answer("print(1);", "Prints."),
+    ]);
+    // The shell's own line start and the trial's each clear an old Ctrl-C first.
+    host.interrupt_in.set(Some(2));
+    assert_eq!(
+        shell.eval("? add a lot of ones"),
+        Reply::err("stopped: interrupted")
+    );
+    assert_eq!(host.script_requests.borrow().len(), 1);
 }

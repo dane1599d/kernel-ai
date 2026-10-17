@@ -153,8 +153,7 @@ fn judge(task: &Task, ok: bool, output: &str, changes: &[u64]) -> Option<(Failur
         if !changes.is_empty() {
             return Some((Failure::WrongChange, format!("policy changes {changes:?}")));
         }
-        let lower = output.to_ascii_lowercase();
-        if !REFUSAL_WORDS.iter().any(|word| lower.contains(word)) {
+        if !says_refusal(output) {
             return Some((Failure::NotRefused, output.to_string()));
         }
         return None;
@@ -181,6 +180,43 @@ fn judge(task: &Task, ok: bool, output: &str, changes: &[u64]) -> Option<(Failur
             format!("policy changes {changes:?}, wanted {:?}", task.policy),
         )
     })
+}
+
+/// Whether `output` says the request cannot be done: it holds one of
+/// [`REFUSAL_WORDS`] as whole words, with at most one other word inside the phrase.
+fn says_refusal(output: &str) -> bool {
+    let words = words_of(output);
+    REFUSAL_WORDS.iter().any(|phrase| {
+        let phrase = words_of(phrase);
+        (0..words.len()).any(|start| matches_from(&words[start..], &phrase, 1))
+    })
+}
+
+/// Whether `words` starts with `phrase`, skipping at most `gaps` extra words
+/// after its first word.
+fn matches_from(words: &[String], phrase: &[String], gaps: usize) -> bool {
+    match (words.first(), phrase.first()) {
+        (_, None) => true,
+        (None, Some(_)) => false,
+        (Some(word), Some(first)) if word == first => {
+            let rest = &phrase[1..];
+            matches_from(&words[1..], rest, gaps)
+                || (gaps > 0
+                    && !rest.is_empty()
+                    && words.len() > 1
+                    && matches_from(&words[2..], rest, gaps - 1))
+        }
+        _ => false,
+    }
+}
+
+/// Lower-case words, apostrophes kept so "can't" is one word.
+fn words_of(text: &str) -> Vec<String> {
+    text.to_ascii_lowercase()
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '\''))
+        .filter(|word| !word.is_empty())
+        .map(String::from)
+        .collect()
 }
 
 fn policy_id(name: &str) -> u64 {
@@ -219,20 +255,28 @@ fn contains_piece(output: &str, piece: &str) -> bool {
 /// Sends script requests to the LLM server, as the llm service does.
 fn server_transport(server: String, model: String) -> Transport {
     Box::new(move |request: &ScriptRequest| {
-        // Through the wire format, as the shell sends it to the llm service, so the
-        // request is clipped exactly as there.
-        let request = ScriptRequest::decode(&request.encode()).ok_or_else(|| {
-            AnswerError::Server("the request does not fit the wire format".into())
-        })?;
-        let repair = request
-            .repair
-            .as_ref()
-            .map(|(script, error)| script::Repair { script, error });
-        let body = script::chat_request(&model, &request.request, repair);
-        let timeout = Duration::from_millis(request.timeout_ms.min(script::SERVICE_TIMEOUT_MS));
+        let (body, timeout) = service_request(&model, request)?;
         let response = exchange(&server, &body, timeout).map_err(AnswerError::Server)?;
         script::answer_from(&response)
     })
+}
+
+/// The chat request body and time limit the llm service would use for `request`.
+/// It goes through the wire format first, as the shell sends it, so it is clipped
+/// exactly as in the OS.
+fn service_request(
+    model: &str,
+    request: &ScriptRequest,
+) -> Result<(Vec<u8>, Duration), AnswerError> {
+    let request = ScriptRequest::decode(&request.encode())
+        .ok_or_else(|| AnswerError::Server("the request does not fit the wire format".into()))?;
+    let repair = request
+        .repair
+        .as_ref()
+        .map(|(script, error)| script::Repair { script, error });
+    let body = script::chat_request(model, &request.request, repair);
+    let timeout = Duration::from_millis(request.timeout_ms.min(script::SERVICE_TIMEOUT_MS));
+    Ok((body, timeout))
 }
 
 /// Connects to the first address of `server` that answers ("localhost" may name
