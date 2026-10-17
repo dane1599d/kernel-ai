@@ -166,6 +166,14 @@ impl Decoder {
         None
     }
 
+    /// Drops every queued key, still decoding each so Shift and the like stay in
+    /// step. Used before a question, so keys typed earlier cannot answer it.
+    pub fn discard_pending(&mut self) {
+        while let Some(scancode) = next_scancode() {
+            let _ = self.decode(scancode);
+        }
+    }
+
     /// Blocks the calling thread until a key produces a character.
     pub fn read_char(&mut self) -> char {
         loop {

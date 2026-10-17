@@ -130,7 +130,7 @@ pub fn run_test(
     run: &TestRun,
 ) -> Result<(), String> {
     let (accel, timeout, monitor) = (run.accel, run.timeout, run.monitor);
-    let keys: Vec<&'static str> = run.case.keys.to_vec();
+    let stages = run.case.keys;
     let expect = run.case.expect;
     let started = Instant::now();
     let mut child = Command::new(qemu)
@@ -143,11 +143,12 @@ pub fn run_test(
     let (ready_tx, ready_rx) = mpsc::channel();
     let reader = thread::spawn(move || {
         let mut measure_start = None;
+        let mut stage = 0;
         let mut missing: Vec<&'static str> = expect.to_vec();
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
             println!("  | {line}");
             missing.retain(|text| !line.contains(text));
-            // Text from ring 3 (`[name] ...`) or the shell (`= ...`, `! ...`) may
+            // Text from ring 3 (`[name] ...`) or the shell (`= ...`, `! ...`, `? ...`) may
             // say anything, so it never counts as a kernel marker.
             if from_programs(&line) {
                 continue;
@@ -155,8 +156,10 @@ pub fn run_test(
             if line.contains("boot-ok") {
                 let _ = ready_tx.send(started.elapsed());
             } else if line.contains("ready for keys") {
-                let keys = keys.clone();
-                thread::spawn(move || type_keys(monitor, &keys));
+                if let Some(&keys) = stages.get(stage) {
+                    stage += 1;
+                    thread::spawn(move || type_keys(monitor, keys));
+                }
             } else if line.contains("measure-start") {
                 measure_start = Some(Instant::now());
             } else if line.contains("measure-end")
@@ -203,14 +206,30 @@ pub fn run_test(
 }
 
 /// Whether a console line was written for a ring-3 program rather than by the
-/// kernel: `[name] ...` from a program's own output, `= ...` and `! ...` from the
-/// shell's answers, possibly after the terminal's `kai> ` prompts.
+/// kernel: `[name] ...` from a program's own output, `= ...`, `! ...` and `? ...` from
+/// the shell's answers, possibly after the terminal's `kai> ` and
+/// `run script N? yes/no> ` prompts.
 pub fn from_programs(line: &str) -> bool {
     let mut rest = line;
-    while let Some(after) = rest.strip_prefix("kai> ") {
+    while let Some(after) = rest
+        .strip_prefix("kai> ")
+        .or_else(|| strip_confirm_prompt(rest))
+    {
         rest = after;
     }
-    rest.starts_with('[') || rest.starts_with("= ") || rest.starts_with("! ")
+    ["[", "= ", "! ", "? "]
+        .iter()
+        .any(|lead| rest.starts_with(lead))
+}
+
+/// The text after a leading `run script N? yes/no> ` prompt.
+fn strip_confirm_prompt(line: &str) -> Option<&str> {
+    let after = line.strip_prefix("run script ")?;
+    let digits = after.bytes().take_while(u8::is_ascii_digit).count();
+    if digits == 0 {
+        return None;
+    }
+    after[digits..].strip_prefix("? yes/no> ")
 }
 
 #[cfg(test)]
@@ -226,5 +245,10 @@ mod tests {
         assert!(!from_programs("terminal: ready for keys"));
         assert!(!from_programs("kai> terminal: ready for keys"));
         assert!(!from_programs("boot-ok"));
+        assert!(from_programs("? run it? it CHANGES set_policy. yes/no"));
+        assert!(from_programs("run script 12? yes/no> = boot-ok"));
+        assert!(!from_programs(
+            "run script 1? yes/no> terminal: ready for keys"
+        ));
     }
 }

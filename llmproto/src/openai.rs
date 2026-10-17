@@ -6,31 +6,34 @@ use serde::{Deserialize, Serialize};
 
 pub const CHAT_PATH: &str = "/v1/chat/completions";
 
-#[derive(Serialize)]
-struct Message<'a> {
-    role: &'a str,
-    content: &'a str,
+/// One message of a conversation.
+#[derive(Serialize, Clone, Copy, Debug)]
+pub struct ChatMessage<'a> {
+    pub role: &'a str,
+    pub content: &'a str,
 }
 
 #[derive(Serialize)]
 struct ChatRequest<'a> {
     model: &'a str,
-    messages: Vec<Message<'a>>,
+    messages: Vec<ChatMessage<'a>>,
     max_tokens: u32,
     temperature: f32,
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response_format: Option<serde_json::Value>,
 }
 
 /// Serializes a chat request with an optional system prompt and one user turn.
 pub fn chat_request(model: &str, system: Option<&str>, user: &str, max_tokens: u32) -> Vec<u8> {
     let mut messages = Vec::new();
     if let Some(system) = system {
-        messages.push(Message {
+        messages.push(ChatMessage {
             role: "system",
             content: system,
         });
     }
-    messages.push(Message {
+    messages.push(ChatMessage {
         role: "user",
         content: user,
     });
@@ -40,6 +43,28 @@ pub fn chat_request(model: &str, system: Option<&str>, user: &str, max_tokens: u
         max_tokens,
         temperature: 0.2,
         stream: false,
+        response_format: None,
+    };
+    serde_json::to_vec(&request).unwrap_or_default()
+}
+
+/// Serializes a chat request for a whole conversation. `response_format`, if given,
+/// is sent as is (for example a `json_schema` object, which llama-server, Ollama
+/// and LM Studio all accept).
+pub fn chat_request_messages(
+    model: &str,
+    messages: &[ChatMessage<'_>],
+    max_tokens: u32,
+    temperature: f32,
+    response_format: Option<serde_json::Value>,
+) -> Vec<u8> {
+    let request = ChatRequest {
+        model,
+        messages: messages.to_vec(),
+        max_tokens,
+        temperature,
+        stream: false,
+        response_format,
     };
     serde_json::to_vec(&request).unwrap_or_default()
 }
@@ -55,6 +80,8 @@ struct ChatResponse {
 #[derive(Deserialize)]
 struct Choice {
     message: ReplyMessage,
+    #[serde(default)]
+    finish_reason: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -78,8 +105,15 @@ pub enum ReplyError {
     EmptyContent,
 }
 
-/// Extracts the assistant's text from a chat-completion response body.
-pub fn parse_chat_response(body: &[u8]) -> Result<String, ReplyError> {
+/// The assistant's answer and why the model stopped (`stop`, `length`, ...).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatReply {
+    pub content: String,
+    pub finish_reason: Option<String>,
+}
+
+/// Extracts the assistant's answer and the stop reason from a response body.
+pub fn parse_chat_reply(body: &[u8]) -> Result<ChatReply, ReplyError> {
     let response: ChatResponse = serde_json::from_slice(body).map_err(|_| ReplyError::NotJson)?;
     if let Some(error) = response.error {
         return Err(ReplyError::Server(error.message));
@@ -89,11 +123,20 @@ pub fn parse_chat_response(body: &[u8]) -> Result<String, ReplyError> {
         .into_iter()
         .next()
         .ok_or(ReplyError::NoChoices)?;
-    choice
+    let content = choice
         .message
         .content
         .filter(|content| !content.is_empty())
-        .ok_or(ReplyError::EmptyContent)
+        .ok_or(ReplyError::EmptyContent)?;
+    Ok(ChatReply {
+        content,
+        finish_reason: choice.finish_reason,
+    })
+}
+
+/// Extracts the assistant's text from a chat-completion response body.
+pub fn parse_chat_response(body: &[u8]) -> Result<String, ReplyError> {
+    parse_chat_reply(body).map(|reply| reply.content)
 }
 
 #[cfg(test)]

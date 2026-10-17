@@ -6,6 +6,10 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::cell::{Cell, RefCell};
 use kabi::{Metrics, policy};
+use llmproto::script::{Answer, AnswerError, ScriptRequest};
+use std::collections::VecDeque;
+
+mod scripts;
 
 /// A host whose clock moves `step_ns` on every reading.
 struct FakeHost {
@@ -14,9 +18,15 @@ struct FakeHost {
     /// Interrupt after this many polls.
     interrupt_in: Cell<Option<u32>>,
     heap: Cell<u64>,
+    /// Added to `heap` on every reading, to make a run look as if it allocates.
+    heap_step: Cell<u64>,
     policy: Cell<Option<u64>>,
     asked: RefCell<Vec<String>>,
     ask_takes_ns: u64,
+    /// Answers `script` gives, in order; afterwards it fails.
+    answers: RefCell<VecDeque<Result<Answer, AnswerError>>>,
+    script_requests: RefCell<Vec<ScriptRequest>>,
+    audit: RefCell<Vec<String>>,
 }
 
 impl FakeHost {
@@ -26,9 +36,13 @@ impl FakeHost {
             step_ns: Cell::new(1000),
             interrupt_in: Cell::new(None),
             heap: Cell::new(0),
+            heap_step: Cell::new(0),
             policy: Cell::new(None),
             asked: RefCell::new(Vec::new()),
             ask_takes_ns: 0,
+            answers: RefCell::new(VecDeque::new()),
+            script_requests: RefCell::new(Vec::new()),
+            audit: RefCell::new(Vec::new()),
         })
     }
 }
@@ -54,6 +68,7 @@ impl Host for FakeHost {
     }
 
     fn heap_bytes(&self) -> u64 {
+        self.heap.set(self.heap.get() + self.heap_step.get());
         self.heap.get()
     }
 
@@ -81,6 +96,18 @@ impl Host for FakeHost {
         self.clock.set(self.clock.get() + self.ask_takes_ns);
         Ok(String::from("Hello from the fake LLM."))
     }
+
+    fn script(&self, request: &ScriptRequest) -> Result<Answer, AnswerError> {
+        self.script_requests.borrow_mut().push(request.clone());
+        self.answers
+            .borrow_mut()
+            .pop_front()
+            .unwrap_or(Err(AnswerError::Server(String::from("no more answers"))))
+    }
+
+    fn audit(&self, text: &str) {
+        self.audit.borrow_mut().push(String::from(text));
+    }
 }
 
 fn shell(host: &Rc<FakeHost>) -> Shell {
@@ -91,6 +118,7 @@ fn ok(text: &str) -> Reply {
     Reply {
         ok: true,
         text: String::from(text),
+        confirm: None,
     }
 }
 
@@ -132,7 +160,7 @@ fn ctrl_c_and_memory_stop_a_line() {
     let mut shell = shell(&host);
     host.interrupt_in.set(Some(5));
     assert_eq!(shell.eval("loop { }").text, "stopped: interrupted");
-    host.heap.set(DEFAULT_CONFIG.heap_budget + 1);
+    host.heap_step.set(DEFAULT_CONFIG.heap_budget / 4);
     assert!(
         shell
             .eval("loop { }")

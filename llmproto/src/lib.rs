@@ -9,4 +9,5 @@ extern crate alloc;
 
 pub mod http;
 pub mod openai;
+pub mod script;
 pub mod text;

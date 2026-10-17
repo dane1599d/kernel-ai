@@ -687,6 +687,7 @@ name = "shellcore"
 version = "0.0.0"
 dependencies = [
  "kabi",
+ "llmproto",
  "rhai",
 ]
 
@@ -1041,9 +1042,12 @@ dependencies = [
  "addr2line",
  "kabi",
  "linetable",
+ "llmproto",
  "object",
  "rustc-demangle",
+ "serde_json",
  "sha2",
+ "shellcore",
  "uelf",
 ]
 

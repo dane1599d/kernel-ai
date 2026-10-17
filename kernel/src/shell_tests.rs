@@ -5,7 +5,7 @@
 use crate::{ipc, log, threads};
 use alloc::string::String;
 
-enum Expect {
+pub enum Expect {
     Exact(&'static str),
     StartsWith(&'static str),
     Contains(&'static str),
@@ -42,15 +42,20 @@ const LINES: &[(&str, Expect)] = &[
 const START_TIMEOUT_MS: u64 = 60_000;
 const LINE_TIMEOUT_MS: u64 = 30_000;
 
-pub fn check() -> Result<(), &'static str> {
+/// Waits for the shell and the llm service, and returns the shell's pid.
+pub fn start() -> Result<u64, &'static str> {
     for _ in 0..START_TIMEOUT_MS / 10 {
         if ipc::server_of("shell").is_some() && ipc::server_of("llm").is_some() {
             break;
         }
         threads::sleep_ms(10);
     }
-    let shell = ipc::server_of("shell").ok_or("shell: never came up")?;
-    for (line, expect) in LINES {
+    ipc::server_of("shell").ok_or("shell: never came up")
+}
+
+/// Sends each line to the shell and checks its reply.
+pub fn expect_lines(lines: &[(&str, Expect)]) -> Result<(), &'static str> {
+    for (line, expect) in lines {
         let reply = ipc::call("shell", line.as_bytes(), LINE_TIMEOUT_MS).map_err(|error| {
             log!("shell: no reply to {line:?}: {error:?}");
             "shell: a line got no reply"
@@ -66,6 +71,12 @@ pub fn check() -> Result<(), &'static str> {
             return Err("shell: a line got the wrong answer");
         }
     }
+    Ok(())
+}
+
+pub fn check() -> Result<(), &'static str> {
+    let shell = start()?;
+    expect_lines(LINES)?;
     if ipc::server_of("shell") != Some(shell) {
         return Err("shell: a different process answered by the end");
     }

@@ -1,6 +1,7 @@
 //! Framebuffer text console. Every `log!` line is mirrored here.
 
 use core::fmt::{self, Write};
+use core::sync::atomic::{AtomicUsize, Ordering};
 use limine::framebuffer::Framebuffer;
 use noto_sans_mono_bitmap::{FontWeight, RasterHeight, get_raster, get_raster_width};
 use spin::Mutex;
@@ -27,6 +28,17 @@ struct Console {
 unsafe impl Send for Console {}
 
 static CONSOLE: Mutex<Option<Console>> = Mutex::new(None);
+/// Text columns and rows of the framebuffer console; 0 when there is none.
+static COLS: AtomicUsize = AtomicUsize::new(0);
+static ROWS: AtomicUsize = AtomicUsize::new(0);
+
+/// Columns and rows of text the screen holds, if there is a framebuffer console.
+pub fn size() -> Option<(usize, usize)> {
+    match (COLS.load(Ordering::Relaxed), ROWS.load(Ordering::Relaxed)) {
+        (0, _) | (_, 0) => None,
+        size => Some(size),
+    }
+}
 
 /// Takes over a 32-bpp framebuffer. Returns false for other formats.
 pub fn init(fb: &Framebuffer) -> bool {
@@ -42,6 +54,8 @@ pub fn init(fb: &Framebuffer) -> bool {
         row: 0,
     };
     console.clear(fb.width as usize, fb.height as usize);
+    COLS.store(console.cols, Ordering::Relaxed);
+    ROWS.store(console.rows, Ordering::Relaxed);
     *CONSOLE.lock() = Some(console);
     true
 }
