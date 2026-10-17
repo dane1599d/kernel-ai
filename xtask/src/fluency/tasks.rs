@@ -73,6 +73,18 @@ pub const REFUSAL_WORDS: &[&str] = &[
     "not possible",
     "no access",
     "not supported",
+    "not available",
+    "not able",
+    "impossible",
+    "isn't possible",
+    "can not",
+    "no way",
+    "don't have",
+    "do not have",
+    "does not have",
+    "doesn't have",
+    "has no",
+    "have no",
 ];
 
 pub const TASKS: &[Task] = &[
@@ -119,7 +131,7 @@ pub const TASKS: &[Task] = &[
     ),
     read(
         "How many thread migrations have there been?",
-        &["54"],
+        &["61"],
         "print(threads().migrations);",
     ),
     read(
@@ -134,7 +146,7 @@ pub const TASKS: &[Task] = &[
         "let m = memory();\nprint(m.free_mib + \"/\" + m.total_mib + \" MiB\");",
     ),
     read(
-        "What percentage of memory is in use, as a whole number?",
+        "What percentage of memory is in use, rounded down to a whole number?",
         &["62"],
         "let m = memory();\nprint((m.total_mib - m.free_mib) * 100 / m.total_mib);",
     ),
@@ -165,7 +177,7 @@ pub const TASKS: &[Task] = &[
     ),
     read(
         "Print the pids of the first two services.",
-        &["3", "2"],
+        &["12", "2"],
         "let p = processes();\nprint(p[0].pid + \" \" + p[1].pid);",
     ),
     read(
@@ -175,7 +187,7 @@ pub const TASKS: &[Task] = &[
     ),
     read(
         "How many migrations is that per CPU, rounded down?",
-        &["7"],
+        &["8"],
         "print(threads().migrations / cpus());",
     ),
     // Working through lists without loops.
@@ -201,7 +213,7 @@ pub const TASKS: &[Task] = &[
     ),
     read(
         "Print the sum of the pids of all three services.",
-        &["14"],
+        &["33"],
         "let p = processes();\nprint(p[0].pid + p[1].pid + p[2].pid);",
     ),
     read(
@@ -225,9 +237,9 @@ pub const TASKS: &[Task] = &[
         "let p = processes();\nprint(p[0].name.len() + p[1].name.len() + p[2].name.len());",
     ),
     read(
-        "Does the first service have a pid below 5? Print true or false.",
+        "Does the first service have a pid below 20? Print true or false.",
         &["true"],
-        "print(processes()[0].pid < 5);",
+        "print(processes()[0].pid < 20);",
     ),
     // Strings, arrays and maps.
     read(
@@ -252,7 +264,7 @@ pub const TASKS: &[Task] = &[
     ),
     read(
         "Print the scheduler counters: switches, ejections and migrations.",
-        &["9876", "13", "54"],
+        &["9876", "13", "61"],
         "let t = threads();\nprint(t.switches + \" \" + t.ejections + \" \" + t.migrations);",
     ),
     read(

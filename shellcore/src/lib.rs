@@ -159,7 +159,14 @@ impl Shell {
     /// Runs one line and returns what to show.
     pub fn eval(&mut self, input: &str) -> Reply {
         let input = input.trim();
-        if let Some(rest) = input.strip_prefix("answer ") {
+        // `answer <id> <text>` comes from the terminal's confirm prompt. A line such as
+        // `answer + 1` is Rhai about a variable, so the id must be a number.
+        if let Some(rest) = input.strip_prefix("answer ")
+            && rest
+                .split(' ')
+                .next()
+                .is_some_and(|id| id.parse::<u64>().is_ok())
+        {
             return self.answer(rest);
         }
         // Anything but the answer leaves a proposed script unrun.
@@ -175,16 +182,13 @@ impl Shell {
             self.functions = AST::empty();
             return Reply::ok("variables and functions cleared");
         }
-        if let Some(rest) = input
-            .strip_prefix("log")
-            .filter(|r| r.is_empty() || r.starts_with(' '))
-        {
-            return self.show_log(rest.trim());
-        }
         if let Some(request) = input.strip_prefix('?') {
             return self.ask_for_script(request.trim());
         }
         if let Some((name, rest)) = split_command(input, |name| self.scope.contains(name)) {
+            if name == "log" {
+                return self.show_log(rest.trim());
+            }
             return match commands::run(self.host.as_ref(), name, rest) {
                 Ok(text) => Reply::ok(text),
                 Err(error) => Reply::err(error),
@@ -266,7 +270,7 @@ impl Shell {
                 timeout_ms: SCRIPT_ROUND_MS,
             };
             let failure = match self.host.script(&ask) {
-                Ok(answer) => match script::check(&answer, &self.config) {
+                Ok(answer) => match script::check(&answer, &self.host, &self.config) {
                     Ok(checked) => return self.propose(id, request, checked),
                     Err(why) => Some((answer.script, why)),
                 },

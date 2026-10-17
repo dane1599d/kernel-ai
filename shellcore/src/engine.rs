@@ -1,13 +1,14 @@
-//! The bounded Rhai engine every line and every script runs in: limits, captured
-//! output, and the time, interrupt and heap checks made every [`CHECK_EVERY`]
-//! operations.
+//! The bounded Rhai engine every line and every script runs in: limits (including a
+//! size-checked `replace`), captured output, the heap check on every operation, and
+//! the time and interrupt checks made every [`CHECK_EVERY`] operations.
 
 use crate::{CHECK_EVERY, Config, Host, show};
+use alloc::boxed::Box;
 use alloc::format;
 use alloc::rc::Rc;
 use alloc::string::{String, ToString};
 use core::cell::{Cell, RefCell};
-use rhai::{Dynamic, Engine, EvalAltResult};
+use rhai::{Dynamic, Engine, EvalAltResult, ImmutableString, Position};
 
 /// Why a run was stopped by the shell itself.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -106,6 +107,7 @@ pub(crate) fn bounded(line: &Rc<Line>, host: &Rc<dyn Host>, config: &Config) -> 
         .set_max_map_size(1000)
         .set_max_variables(256)
         .set_max_functions(256);
+    register_checked_replace(&mut engine);
     let capture = Rc::clone(line);
     let max_output = config.max_output;
     engine.on_print(move |text| capture_output(&capture, max_output, text));
@@ -115,18 +117,19 @@ pub(crate) fn bounded(line: &Rc<Line>, host: &Rc<dyn Host>, config: &Config) -> 
     let watch_host = Rc::clone(host);
     let heap_budget = config.heap_budget;
     engine.on_progress(move |operations| {
-        if !operations.is_multiple_of(CHECK_EVERY) {
-            return None;
-        }
+        // The heap is checked on every operation, since one statement can allocate
+        // a lot; the clock and Ctrl-C only every CHECK_EVERY operations.
         let used = watch_host
             .heap_bytes()
             .saturating_sub(watch.heap_start.get());
-        let stop = if watch_host.interrupted() {
+        let stop = if used > heap_budget {
+            Some(Stop::Memory)
+        } else if !operations.is_multiple_of(CHECK_EVERY) {
+            None
+        } else if watch_host.interrupted() {
             Some(Stop::Interrupted)
         } else if watch_host.now_ns() > watch.deadline_ns.get() {
             Some(Stop::TimeLimit)
-        } else if used > heap_budget {
-            Some(Stop::Memory)
         } else {
             None
         };
@@ -136,4 +139,50 @@ pub(crate) fn bounded(line: &Rc<Line>, host: &Rc<dyn Host>, config: &Config) -> 
         })
     });
     engine
+}
+
+/// Rhai's own `replace` builds the whole new string before any size check, so one
+/// call could grow a string far past the limit (and the heap past the shell's
+/// quota). These replace the two forms that can grow, checking the size first.
+fn register_checked_replace(engine: &mut Engine) {
+    let max = engine.max_string_size();
+    engine.register_fn(
+        "replace",
+        move |text: &mut ImmutableString, find: &str, with: &str| {
+            replace_within(text, find, with, max)
+        },
+    );
+    engine.register_fn(
+        "replace",
+        move |text: &mut ImmutableString, find: char, with: &str| {
+            replace_within(text, find.encode_utf8(&mut [0; 4]), with, max)
+        },
+    );
+}
+
+fn replace_within(
+    text: &mut ImmutableString,
+    find: &str,
+    with: &str,
+    max: usize,
+) -> Result<(), Box<EvalAltResult>> {
+    if text.is_empty() {
+        return Ok(());
+    }
+    // An empty pattern matches before every character and at the end.
+    let count = if find.is_empty() {
+        text.chars().count() + 1
+    } else {
+        text.matches(find).count()
+    };
+    let size = (text.len() - count * find.len()).saturating_add(count.saturating_mul(with.len()));
+    if max > 0 && size > max {
+        return Err(EvalAltResult::ErrorDataTooLarge(
+            "Length of string after replace".into(),
+            Position::NONE,
+        )
+        .into());
+    }
+    *text = text.replace(find, with).into();
+    Ok(())
 }

@@ -3,6 +3,7 @@
 //! `mock_llm`). The kernel checks every reply, that the policy changes only after a
 //! yes, and how many requests reached the llm service, which counts repair rounds.
 
+use crate::process::syscall::MIN_POLICY_INTERVAL_NS;
 use crate::shell_tests::Expect::{self, Contains, Exact, StartsWith};
 use crate::shell_tests::{expect_lines, start};
 use crate::{ipc, log, threads};
@@ -12,7 +13,7 @@ const DECLINE: &[(&str, Expect)] = &[
     (
         "? how many cpus are there",
         Exact(
-            "confirm 1 script 1: reads cpus\nmodel says: Prints the number of CPUs.\n 1 | print(\"CPUs: \" + cpus());\nrun it? yes/no",
+            "confirm 1 script 1: reads cpus\nmodel says: Prints the number of CPUs.\n 1 | print(\"CPUs: \" + cpus());\nrun it? it changes nothing. yes/no",
         ),
     ),
     ("answer 1 yes", StartsWith("ok CPUs: ")),
@@ -24,7 +25,8 @@ const DECLINE: &[(&str, Expect)] = &[
     ("answer 2 no", Exact("ok script 2 not run")),
 ];
 
-/// A yes runs the change, and the script sees it at once.
+/// A yes runs the change, and the script sees it at once: it reads the policy just
+/// before switching, so a stale metrics snapshot would print the old one.
 const ACCEPT: &[(&str, Expect)] = &[
     ("? switch to round robin", StartsWith("confirm 3 ")),
     ("answer 3 yes", Exact("ok policy: round-robin\n")),
@@ -82,6 +84,9 @@ pub fn check() -> Result<(), &'static str> {
     if !policy_is("round-robin") {
         return Err("scripts: an accepted script did not change the policy");
     }
+    // Policy switches are rate-limited; the last script switches back, so wait the
+    // limit out rather than rely on how long the lines in between take.
+    threads::sleep_ms(MIN_POLICY_INTERVAL_NS / 1_000_000 + 10);
     expect_lines(REST)?;
     if !policy_is("interactive") {
         return Err("scripts: the last script did not restore the policy");

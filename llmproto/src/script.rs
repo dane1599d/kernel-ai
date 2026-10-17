@@ -18,9 +18,12 @@ use serde::Deserialize;
 pub const SCRIPT_MAX_LINES: usize = 40;
 pub const SCRIPT_MAX_LINE_CHARS: usize = 120;
 pub const SCRIPT_MAX_BYTES: usize = 3 * 1024;
-pub const SUMMARY_MAX_CHARS: usize = 160;
+/// Short enough that `model says: <summary>` fits one row of the console.
+pub const SUMMARY_MAX_CHARS: usize = 100;
 pub const REQUEST_MAX_BYTES: usize = 512;
 pub const ERROR_MAX_BYTES: usize = 512;
+/// Longest the llm service spends on one script request, whatever the shell asks.
+pub const SERVICE_TIMEOUT_MS: u64 = 90_000;
 pub const SCRIPT_MAX_TOKENS: u32 = 1024;
 /// Sampling: low temperature and a fixed seed, so gate runs can be repeated.
 pub const TEMPERATURE: f32 = 0.2;
@@ -118,7 +121,7 @@ pub fn system_prompt() -> String {
         "You write short Rhai scripts for the shell of Kernel AI, a small operating system.\n\
          Answer with JSON only: {\"script\": \"...\", \"summary\": \"...\"}.\n\
          script: Rhai code, at most 40 lines of at most 120 characters, ASCII only.\n\
-         summary: one sentence saying what the script does.\n\
+         summary: one sentence of at most 100 characters saying what the script does.\n\
          \n\
          Rhai rules here:\n\
          - End statements with ';'. Declare variables with let.\n\

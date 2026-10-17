@@ -24,7 +24,7 @@ const NESTED_MARGIN_NS: u64 = 1_000_000_000;
 /// Longest a process waits for a service that is not up yet.
 const MAX_BIND_WAIT_NS: u64 = 5_000_000_000;
 /// Fastest policy switches may follow each other.
-const MIN_POLICY_INTERVAL_NS: u64 = 100_000_000;
+pub(crate) const MIN_POLICY_INTERVAL_NS: u64 = 100_000_000;
 
 /// Called by `entry::syscall_entry` with interrupts off.
 pub extern "C" fn dispatch(frame: &mut TrapFrame) {

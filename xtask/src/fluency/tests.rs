@@ -249,3 +249,93 @@ fn the_server_transport_carries_both_rounds() {
     assert_eq!(outcome.rounds, 2);
     assert_eq!(server.chats(), 2);
 }
+
+#[test]
+fn a_number_inside_a_longer_number_or_decimal_does_not_count() {
+    assert!(!contains_piece("4.321 s", "4"));
+    assert!(!contains_piece("62.5%", "62"));
+    assert!(!contains_piece("v1.62", "62"));
+    assert!(contains_piece("4.321", "4.321"));
+    assert!(contains_piece("It is 7.", "7"));
+    assert!(contains_piece("62%", "62"));
+    let seconds = task("Print the uptime in whole seconds.");
+    let decimals = "let ms = uptime_ms();\nprint(ms / 1000 + \".\" + ms % 1000);";
+    assert_eq!(failure(seconds, &[decimals]), Some(Failure::WrongOutput));
+}
+
+#[test]
+fn refusals_count_in_the_usual_phrasings() {
+    for (request, said) in [
+        (
+            "Reboot the computer.",
+            "There is no way to reboot from a script.",
+        ),
+        (
+            "Open the website example.com.",
+            "Scripts have no network access.",
+        ),
+        ("Format the disk.", "That isn't possible here."),
+        ("Read my email.", "I do not have access to email."),
+        (
+            "Restart the llm service.",
+            "Restarting services is not available to scripts.",
+        ),
+    ] {
+        let script = format!("print(\"{said}\");");
+        assert_eq!(failure(task(request), &[script.as_str()]), None, "{said}");
+    }
+}
+
+/// A script that prints every raw value passes only the tasks that ask for one;
+/// every task that asks for something computed must fail it.
+#[test]
+fn printing_the_raw_values_passes_only_the_plain_reads() {
+    const DUMP: &str = "print(cpus());\nprint(memory());\nprint(uptime_ms());\nprint(processes());\nprint(threads());\nprint(get_policy());";
+    const PLAIN: &[&str] = &[
+        "Tell me the number of processors.",
+        "How much free memory is there, in MiB?",
+        "What is the total memory in MiB?",
+        "How long has the system been up, in milliseconds?",
+        "Which scheduling policy is active?",
+        "How many context switches have happened so far?",
+        "How much kernel heap is in use, in KiB?",
+        "How many thread migrations have there been?",
+        "How many times has the scheduler watchdog ejected a policy?",
+        "Print the CPU count and the scheduling policy on one line.",
+        "Print the name of the first service in the list.",
+        "Print the pids of the first two services.",
+        "Print the names of all running services.",
+        "Print the last service in the list.",
+        "Print the name of the service with the highest pid among the three.",
+        "Make a map of the CPU count and the free memory, and print it.",
+        "Print the scheduler counters: switches, ejections and migrations.",
+        // Correct here is changing nothing, which the dump does.
+        "Make sure the scheduler uses the interactive policy.",
+        "Switch to round robin only if more than 100 MiB of memory is free.",
+    ];
+    let passed: Vec<&str> = TASKS
+        .iter()
+        .filter(|task| !task.refusal && failure(task, &[DUMP]).is_none())
+        .map(|task| task.request)
+        .collect();
+    assert_eq!(passed, PLAIN);
+}
+
+#[test]
+fn the_gate_sees_the_request_as_the_llm_service_does() {
+    // A repair error longer than the wire format carries is clipped, as in the OS.
+    let server = crate::mock_llm::start().unwrap();
+    let transport = server_transport(
+        format!("localhost:{}", server.port),
+        crate::mock_llm::MODEL.into(),
+    );
+    let long = ScriptRequest {
+        request: String::from("Tell me the number of processors."),
+        repair: Some((String::from("print(1);"), "e".repeat(5000))),
+        timeout_ms: 5_000,
+    };
+    // The mock answers prose to an unknown request: the exchange worked, even
+    // though localhost may name ::1 first and the mock listens on 127.0.0.1 only.
+    assert_eq!(transport(&long), Err(AnswerError::NoEnvelope));
+    assert_eq!(server.chats(), 1);
+}

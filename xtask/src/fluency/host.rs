@@ -1,5 +1,7 @@
 //! The stand-in OS for gate runs. Its values are fixed and unlike any default, so a
-//! script that prints a made-up number is caught, and it records every policy change.
+//! script that prints a made-up number is caught. They are also chosen so that no
+//! answer a task asks to compute equals a raw value (61 migrations on 7 CPUs is 8 per
+//! CPU, not 7), so skipping the computation fails. It records every policy change.
 
 use kabi::{Metrics, policy};
 use llmproto::script::{Answer, AnswerError, ScriptRequest};
@@ -10,7 +12,7 @@ use std::time::Instant;
 pub type Transport = Box<dyn Fn(&ScriptRequest) -> Result<Answer, AnswerError>>;
 
 /// The services `processes()` lists, as (pid, name).
-pub const SERVICES: &[(u64, &str)] = &[(3, "shell"), (2, "llm"), (9, "crasher")];
+pub const SERVICES: &[(u64, &str)] = &[(12, "shell"), (2, "llm"), (19, "crasher")];
 
 pub struct GateHost {
     started: Instant,
@@ -54,7 +56,7 @@ impl shellcore::Host for GateHost {
         m.running_policy = self.policy.get();
         m.context_switches = 9876;
         m.ejections = 13;
-        m.migrations = 54;
+        m.migrations = 61;
         m.free_frames = 12_345;
         m.total_frames = 32_768;
         m.heap_bytes = 2_345_678;

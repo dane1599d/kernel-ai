@@ -11,7 +11,7 @@ use crate::{hpet, ipc, llm, log, memory, net, serial, smp, threads};
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::String;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use llmproto::text::printable;
 use sched::{Interactive, RoundRobin};
 
@@ -30,6 +30,8 @@ const MAX_REPLY_LINES: usize = 64;
 
 /// Shell replies printed in full, for the self-test.
 static REPLIES_SHOWN: AtomicU64 = AtomicU64::new(0);
+/// Set while the terminal waits for the answer to a confirmation, for the self-test.
+static AWAITING_ANSWER: AtomicBool = AtomicBool::new(false);
 
 const HELP: &[(&str, &str)] = &[
     (":help", "this list"),
@@ -58,10 +60,16 @@ pub fn run(_: usize) {
     let mut confirming: Option<u64> = None;
     loop {
         match confirming {
-            Some(id) => print(format_args!("run script {id}? yes/no> ")),
+            Some(id) => {
+                print(format_args!("run script {id}? yes/no> "));
+                // Only keys typed once the question is on screen may answer it.
+                decoder.discard_pending();
+                AWAITING_ANSWER.store(true, Ordering::Release);
+            }
             None => print(format_args!("{PROMPT}")),
         }
         let line = read_line(&mut decoder);
+        AWAITING_ANSWER.store(false, Ordering::Release);
         let line = line.trim();
         if let Some(id) = confirming.take() {
             confirming = shell_line(&format!("answer {id} {line}"));
@@ -131,13 +139,22 @@ fn show_shell_reply(reply: &[u8]) -> Option<u64> {
     };
     show_lines(lead, body);
     REPLIES_SHOWN.fetch_add(1, Ordering::Relaxed);
-    // A script is only run on a yes to all of it, so a confirmation that lost
-    // characters or lines on the way to the screen asks nothing.
-    if confirm.is_some() && clean != text {
+    // A script runs only on a yes to all of it, so a confirmation asks nothing if
+    // it lost characters or lines on the way, or cannot be read on one screen.
+    if confirm.is_some() && (clean != text || !fits_on_screen(body)) {
         log!("! the confirmation could not be shown in full, so the script will not run");
         return None;
     }
     confirm
+}
+
+/// Whether `body`, printed with a two-character lead and followed by the prompt,
+/// fits the screen with every line on one row, so no line is split or wrapped
+/// (a wrapped piece could pass for a script line) and none scrolls away.
+fn fits_on_screen(body: &str) -> bool {
+    let (cols, rows) = crate::console::size().unwrap_or((usize::MAX, usize::MAX));
+    let width = PIECE_CHARS.min(cols.saturating_sub(2));
+    body.lines().all(|line| line.chars().count() <= width) && body.lines().count() + 1 < rows
 }
 
 fn show_lines(lead: &str, body: &str) {
@@ -275,6 +292,15 @@ pub fn self_test() -> Result<(), &'static str> {
     }
     threads::sleep_ms(200);
     log!("terminal: ready for keys");
+    // The answer is typed only once the question is on screen: keys typed earlier
+    // are dropped, so this shows the answer came from the prompt.
+    for _ in 0..TIMEOUT_MS / 10 {
+        if AWAITING_ANSWER.load(Ordering::Acquire) {
+            log!("terminal: ready for keys");
+            break;
+        }
+        threads::sleep_ms(10);
+    }
     // The installed policy on every CPU, not the active one: a watchdog fallback
     // also runs round-robin and must not count as the command having worked.
     let switched = || threads::installed_policy_everywhere("round-robin");

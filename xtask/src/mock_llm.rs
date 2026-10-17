@@ -118,8 +118,8 @@ const SCRIPTS: &[(&str, &str, &str, &str)] = &[
     ),
     (
         "switch to round robin",
-        "set_policy(\"round-robin\");\nprint(\"policy: \" + get_policy());",
-        "set_policy(\"round-robin\");\nprint(\"policy: \" + get_policy());",
+        RR_SCRIPT,
+        RR_SCRIPT,
         "Switches to round-robin and prints the policy.",
     ),
     (
@@ -143,6 +143,8 @@ const SCRIPTS: &[(&str, &str, &str, &str)] = &[
 ];
 
 const CPUS_SCRIPT: &str = "print(\"CPUs: \" + cpus());";
+/// Reads the policy right before switching, so a stale metrics snapshot would show.
+const RR_SCRIPT: &str = "if get_policy() != \"round-robin\" {\n    set_policy(\"round-robin\");\n}\nprint(\"policy: \" + get_policy());";
 
 /// What the model says: the fixed reply to a question, or for a script request
 /// the envelope from [`SCRIPTS`], and prose for any request not listed there.

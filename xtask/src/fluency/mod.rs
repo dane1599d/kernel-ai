@@ -192,51 +192,69 @@ fn policy_id(name: &str) -> u64 {
 }
 
 /// Whether `output` contains `piece`. A piece that starts or ends with a digit must
-/// not run into more digits there ("4" is not in "4321"), and a piece without
-/// capitals matches in any case.
+/// not run on into more of a number there: "4" is not in "4321" or "4.321", though
+/// it is in "4 s" and in "it is 4.". A piece without capitals matches in any case.
 fn contains_piece(output: &str, piece: &str) -> bool {
     let haystack = if piece.chars().any(|c| c.is_ascii_uppercase()) {
         output.to_string()
     } else {
         output.to_ascii_lowercase()
     };
-    let digit_at = |index: Option<usize>| {
-        index
-            .and_then(|i| haystack.as_bytes().get(i))
-            .is_some_and(u8::is_ascii_digit)
+    let bytes = haystack.as_bytes();
+    let digit = |index: usize| bytes.get(index).is_some_and(u8::is_ascii_digit);
+    let point = |index: usize| bytes.get(index) == Some(&b'.');
+    // A digit, or a decimal point with a digit beyond it, carries a number on.
+    let runs_on_after = |end: usize| digit(end) || (point(end) && digit(end + 1));
+    let runs_on_before = |start: usize| {
+        start > 0 && (digit(start - 1) || (start > 1 && point(start - 1) && digit(start - 2)))
     };
     let starts_digit = piece.starts_with(|c: char| c.is_ascii_digit());
     let ends_digit = piece.ends_with(|c: char| c.is_ascii_digit());
     haystack.match_indices(piece).any(|(start, _)| {
-        !(starts_digit && digit_at(start.checked_sub(1)))
-            && !(ends_digit && digit_at(Some(start + piece.len())))
+        !(starts_digit && runs_on_before(start))
+            && !(ends_digit && runs_on_after(start + piece.len()))
     })
 }
 
 /// Sends script requests to the LLM server, as the llm service does.
 fn server_transport(server: String, model: String) -> Transport {
     Box::new(move |request: &ScriptRequest| {
+        // Through the wire format, as the shell sends it to the llm service, so the
+        // request is clipped exactly as there.
+        let request = ScriptRequest::decode(&request.encode()).ok_or_else(|| {
+            AnswerError::Server("the request does not fit the wire format".into())
+        })?;
         let repair = request
             .repair
             .as_ref()
             .map(|(script, error)| script::Repair { script, error });
         let body = script::chat_request(&model, &request.request, repair);
-        let timeout = Duration::from_millis(request.timeout_ms);
+        let timeout = Duration::from_millis(request.timeout_ms.min(script::SERVICE_TIMEOUT_MS));
         let response = exchange(&server, &body, timeout).map_err(AnswerError::Server)?;
         script::answer_from(&response)
     })
 }
 
+/// Connects to the first address of `server` that answers ("localhost" may name
+/// ::1 first, while the server listens on 127.0.0.1 only).
+fn connect(server: &str) -> Result<TcpStream, String> {
+    let mut why = format!("{server}: no address");
+    for address in server
+        .to_socket_addrs()
+        .map_err(|error| format!("{server}: {error}"))?
+    {
+        match TcpStream::connect_timeout(&address, CONNECT_TIMEOUT) {
+            Ok(stream) => return Ok(stream),
+            Err(error) => why = format!("connect to {server} ({address}): {error}"),
+        }
+    }
+    Err(why)
+}
+
 /// One HTTP exchange with the server, finished within `timeout`.
 fn exchange(server: &str, body: &[u8], timeout: Duration) -> Result<http::Response, String> {
     let deadline = Instant::now() + timeout;
-    let address = server
-        .to_socket_addrs()
-        .map_err(|error| format!("{server}: {error}"))?
-        .next()
-        .ok_or_else(|| format!("{server}: no address"))?;
-    let mut stream = TcpStream::connect_timeout(&address, CONNECT_TIMEOUT)
-        .map_err(|error| format!("connect to {server}: {error}"))?;
+    let mut stream = connect(server)?;
     stream
         .set_write_timeout(Some(timeout))
         .map_err(|error| error.to_string())?;
@@ -378,6 +396,11 @@ fn show(number: usize, task: &Task, outcome: &Outcome, ms: u128) {
     }
 }
 
+/// The task file with LF line ends, as hashed into the report.
+fn tasks_text() -> String {
+    include_str!("tasks.rs").replace("\r\n", "\n")
+}
+
 /// `cargo xtask fluency`: runs every task, writes the runs, and fails below the gate.
 pub fn main(args: &[String], target_dir: &Path) -> Result<(), String> {
     let options = parse(args)?;
@@ -389,7 +412,8 @@ pub fn main(args: &[String], target_dir: &Path) -> Result<(), String> {
         "server": options.server,
         "repeat": options.repeat,
         "tasks": TASKS.len(),
-        "tasks_sha256": crate::sha256_hex(include_str!("tasks.rs").as_bytes()),
+        // Normalised, so CRLF and LF checkouts of one commit record the same hash.
+        "tasks_sha256": crate::sha256_hex(tasks_text().as_bytes()),
         "started_unix": started,
     })];
     println!(

@@ -26,8 +26,6 @@ const SYSTEM_PROMPT: &str = "You are the assistant built into Kernel AI, a small
 const MAX_TOKENS: u32 = 256;
 const CHAT_TIMEOUT_MS: u64 = 120_000;
 const HEALTH_TIMEOUT_MS: u64 = 5_000;
-/// Longest one script round may take, whatever the shell asks for.
-const SCRIPT_TIMEOUT_MS: u64 = 90_000;
 const MAX_REPLY_CHARS: usize = 4096;
 const MAX_REPLY_LINES: usize = 64;
 const MAX_ERROR_CHARS: usize = 160;
@@ -107,7 +105,7 @@ fn write_script(
         .map(|(script, error)| script::Repair { script, error });
     let body = script::chat_request(&config.model, &request.request, repair);
     let http_request = http::post_json(host, openai::CHAT_PATH, None, &body);
-    let timeout = request.timeout_ms.min(SCRIPT_TIMEOUT_MS);
+    let timeout = request.timeout_ms.min(script::SERVICE_TIMEOUT_MS);
     exchange(&http_request, timeout, response)
         .map_err(AnswerError::Server)
         .and_then(|reply| script::answer_from(&reply))

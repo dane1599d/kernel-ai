@@ -28,7 +28,7 @@ fn a_script_is_shown_in_full_and_runs_only_after_yes() {
     assert_eq!(reply.confirm, Some(1));
     assert_eq!(
         reply.text,
-        "script 1: reads cpus\nmodel says: Prints the CPUs.\n 1 | print(\"CPUs: \" + cpus());\nrun it? yes/no"
+        "script 1: reads cpus\nmodel says: Prints the CPUs.\n 1 | print(\"CPUs: \" + cpus());\nrun it? it changes nothing. yes/no"
     );
     assert_eq!(
         reply.to_wire().split_once(' ').map(|(kind, _)| kind),
@@ -140,6 +140,23 @@ fn a_cut_off_answer_is_not_repaired() {
     assert_eq!(host.script_requests.borrow().len(), 1);
 }
 
+/// Checks `script` with a short summary, on a fresh fake host.
+fn checks(script: &str) -> Result<crate::script::Checked, String> {
+    checks_on(&FakeHost::new(), script)
+}
+
+fn checks_on(host: &Rc<FakeHost>, script: &str) -> Result<crate::script::Checked, String> {
+    let host: Rc<dyn Host> = host.clone();
+    check(
+        &Answer {
+            summary: String::from("Does it."),
+            script: String::from(script),
+        },
+        &host,
+        &DEFAULT_CONFIG,
+    )
+}
+
 #[test]
 fn the_strict_profile_refuses_every_loop_closure_and_indirect_call() {
     for bad in [
@@ -156,40 +173,89 @@ fn the_strict_profile_refuses_every_loop_closure_and_indirect_call() {
         "print(no_such_function());",
         "set_policy(\"fastest\");",
     ] {
-        let result = check(
-            &Answer {
-                summary: String::new(),
-                script: String::from(bad),
-            },
-            &DEFAULT_CONFIG,
-        );
-        assert!(result.is_err(), "{bad} was accepted");
+        assert!(checks(bad).is_err(), "{bad} was accepted");
     }
 }
 
 #[test]
-fn a_trial_error_from_made_up_values_does_not_refuse() {
-    // The stub lists four services and two CPUs; the real system may differ.
-    for script in [
-        "print(processes()[9].name);",
-        "print(10 / (cpus() - 2));",
-        "print(get_policy()[40]);",
-    ] {
-        let answer = Answer {
-            summary: String::new(),
-            script: String::from(script),
-        };
-        assert!(
-            check(&answer, &DEFAULT_CONFIG).is_ok(),
-            "{script} was refused"
-        );
-    }
+fn a_division_by_zero_on_stand_in_values_is_noted_not_refused() {
+    // The stub has two CPUs; the real system may not.
+    let checked = checks("print(10 / (cpus() - 2));\nprint(no_such_function());").unwrap();
+    let note = checked.note.clone().unwrap();
+    assert!(
+        note.starts_with("trial stopped ") && note.contains("on stand-in values (Division by zero"),
+        "{note}"
+    );
+    let text = crate::script::confirmation(1, &checked);
+    assert_eq!(text.lines().nth(2), Some(note.as_str()));
     let (_host, mut shell) = with_answers(vec![answer("print(10 / (cpus() - 2));", "Divides.")]);
     shell.eval("? divide ten by the spare cpus");
     assert_eq!(shell.eval("answer 1 yes"), ok("5\n"));
-    let (_, mut shell) = with_answers(vec![answer("print(processes()[9].name);", "Ninth.")]);
-    shell.eval("? name the tenth service");
-    assert!(!shell.eval("answer 1 yes").ok);
+}
+
+#[test]
+fn an_index_past_anything_the_system_can_have_is_refused() {
+    // The stub lists as many services, with names as long, as the real system can,
+    // so an index it rejects is wrong everywhere.
+    for bad in [
+        "print(processes()[16].name);",
+        "print(processes()[0].name[30]);",
+        "print(get_policy()[40]);",
+        "let a = [][0];",
+    ] {
+        assert!(checks(bad).is_err(), "{bad} was accepted");
+    }
+    for good in [
+        "print(processes()[15].name);",
+        "print(processes()[0].name[20]);",
+    ] {
+        let checked = checks(good).unwrap();
+        assert_eq!(checked.note, None, "{good}");
+    }
+}
+
+#[test]
+fn the_trial_run_is_bounded_like_any_run() {
+    // One replace that would build a string of gigabytes stops before allocating.
+    let bomb = "let s = \"x\";\ns.pad(60000, \"x\");\ns.replace(\"x\", s);";
+    let why = checks(bomb).unwrap_err();
+    assert!(why.contains("Length of string after replace"), "{why}");
+    let why =
+        checks("let s = \"xx\";\ns.replace('x', s);\ns.pad(40000, \"x\");\ns.replace('x', s);");
+    assert!(why.unwrap_err().contains("after replace"));
+    // The trial sees the real heap: a short script that allocates past the budget is
+    // stopped, although it is far below the operation count of the other checks.
+    let host = FakeHost::new();
+    host.heap_step.set(DEFAULT_CONFIG.heap_budget + 1);
+    let why = checks_on(&host, "print(1);").unwrap_err();
+    assert!(why.contains("memory budget"), "{why}");
+}
+
+#[test]
+fn replace_still_works_within_the_limit() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    shell.eval("let s = \"hello\"");
+    shell.eval("s.replace(\"l\", \"L\")");
+    assert_eq!(shell.eval("s"), ok("heLLo"));
+    shell.eval("s.replace('o', \"00\")");
+    assert_eq!(shell.eval("s"), ok("heLL00"));
+    shell.eval("s.replace(\"\", \"-\")");
+    assert_eq!(shell.eval("s"), ok("-h-e-L-L-0-0-"));
+}
+
+#[test]
+fn answer_and_log_can_be_variable_names() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    assert_eq!(shell.eval("log"), ok("no LLM scripts yet"));
+    assert_eq!(shell.eval("answer 1 yes"), Reply::err("nothing to confirm"));
+    shell.eval("let answer = 41");
+    assert_eq!(shell.eval("answer + 1"), ok("42"));
+    assert_eq!(shell.eval("answer == 41"), ok("true"));
+    shell.eval("let log = 3");
+    assert_eq!(shell.eval("log * 2"), ok("6"));
+    assert_eq!(shell.eval("log"), ok("3"));
 }
 
 #[test]
@@ -207,25 +273,43 @@ fn the_capability_list_over_approximates() {
 }
 
 #[test]
-fn a_full_size_script_still_fits_the_confirmation_limits() {
+fn a_full_size_script_fits_one_screen_with_every_line_on_one_row() {
+    use llmproto::script::{
+        SCRIPT_MAX_BYTES, SCRIPT_MAX_LINE_CHARS, SCRIPT_MAX_LINES, SUMMARY_MAX_CHARS,
+    };
     // The most lines, each as long as the byte limit then allows.
-    let per_line = llmproto::script::SCRIPT_MAX_BYTES / llmproto::script::SCRIPT_MAX_LINES - 1;
+    let per_line = SCRIPT_MAX_BYTES / SCRIPT_MAX_LINES - 1;
     let line = format!("print(\"{}\");", "x".repeat(per_line - 10));
-    let script = std::iter::repeat_n(line.as_str(), llmproto::script::SCRIPT_MAX_LINES)
+    let script = std::iter::repeat_n(line.as_str(), SCRIPT_MAX_LINES)
         .collect::<Vec<_>>()
         .join("\n");
+    let host: Rc<dyn Host> = FakeHost::new();
     let checked = check(
         &Answer {
-            summary: "s".repeat(160),
+            summary: "s".repeat(SUMMARY_MAX_CHARS),
             script,
         },
+        &host,
         &DEFAULT_CONFIG,
     )
     .unwrap();
     let text = crate::script::confirmation(99, &checked);
     assert!(text.len() + 20 < kabi::MAX_MESSAGE, "{} bytes", text.len());
-    assert!(text.lines().count() <= 64);
-    assert!(text.ends_with("run it? yes/no"));
+    // A 1024-pixel console has 128 columns; the terminal adds a two-character lead.
+    let widest = text.lines().map(|l| l.chars().count()).max().unwrap();
+    assert!(widest <= 126, "a line is {widest} characters");
+    const { assert!(SCRIPT_MAX_LINE_CHARS + 5 <= 126) };
+    // A 768-pixel console has 48 rows; the prompt and a trial note need two more.
+    assert!(text.lines().count() + 2 < 48);
+    assert!(text.ends_with("\nrun it? it changes nothing. yes/no"));
+}
+
+#[test]
+fn the_question_repeats_what_the_script_changes() {
+    let checked = checks("print(get_policy());\nset_policy(\"rr\");").unwrap();
+    let text = crate::script::confirmation(3, &checked);
+    assert!(text.starts_with("script 3: reads get_policy; CHANGES set_policy\n"));
+    assert!(text.ends_with("\nrun it? it CHANGES set_policy. yes/no"));
 }
 
 #[test]
@@ -246,9 +330,13 @@ fn plain_english_goes_to_the_llm_and_near_miss_code_does_not() {
 
 #[test]
 fn a_summary_cannot_add_lines_to_the_confirmation() {
-    let answer = Answer {
-        summary: String::from("Prints 1.\n 2 | set_policy(\"rr\");"),
-        script: String::from("print(1);"),
-    };
-    assert!(check(&answer, &DEFAULT_CONFIG).is_err());
+    let host: Rc<dyn Host> = FakeHost::new();
+    let long = "s".repeat(llmproto::script::SUMMARY_MAX_CHARS + 1);
+    for summary in ["Prints 1.\n 2 | set_policy(\"rr\");", long.as_str()] {
+        let answer = Answer {
+            summary: String::from(summary),
+            script: String::from("print(1);"),
+        };
+        assert!(check(&answer, &host, &DEFAULT_CONFIG).is_err(), "{summary}");
+    }
 }

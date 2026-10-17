@@ -16,7 +16,7 @@ use alloc::rc::Rc;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::fmt::Write;
-use kabi::{Metrics, policy};
+use kabi::{MAX_METRIC_PROCESSES, Metrics, policy};
 use llmproto::script::{API, Answer, ApiFn, Effect, check_summary, check_text};
 use rhai::{AST, Array, Dynamic, Engine, EvalAltResult, INT, Map, Scope};
 
@@ -27,6 +27,8 @@ pub struct Checked {
     pub script: String,
     pub reads: Vec<&'static str>,
     pub changes: Vec<&'static str>,
+    /// Set when the trial run stopped early on a stand-in value.
+    pub note: Option<String>,
     ast: AST,
 }
 
@@ -161,21 +163,22 @@ pub fn names_in(script: &str) -> (Vec<&'static str>, Vec<&'static str>) {
     (pick(Effect::Read), pick(Effect::Change))
 }
 
-/// The services the stub lists, so a trial run gets past `processes()[1]`.
-const STUB_SERVICES: &[&str] = &["llm", "shell", "service", "service"];
-
-/// Stand-in for the OS during the trial run: plausible values, and nothing changes.
-struct Stub;
+/// Stand-in for the OS during the trial run. Nothing changes, and the time, heap and
+/// Ctrl-C checks use the real host, so the trial is bounded like any other run.
+/// Its numbers are all non-zero and its list is as long as the real one can be, with
+/// names as long as real names can be, so an index or a division that works on the
+/// real system works here too.
+struct Stub(Rc<dyn Host>);
 
 impl Host for Stub {
     fn now_ns(&self) -> u64 {
-        0
+        self.0.now_ns()
     }
     fn interrupted(&self) -> bool {
-        false
+        self.0.interrupted()
     }
     fn heap_bytes(&self) -> u64 {
-        0
+        self.0.heap_bytes()
     }
     fn metrics(&self) -> Result<Metrics, kabi::Error> {
         let mut m = Metrics::empty();
@@ -185,13 +188,14 @@ impl Host for Stub {
         m.heap_bytes = 64 * 1024;
         m.uptime_ns = 1_000_000_000;
         m.context_switches = 1;
-        for (index, name) in STUB_SERVICES.iter().enumerate() {
-            let slot = &mut m.processes[index];
+        m.ejections = 1;
+        m.migrations = 1;
+        for (index, slot) in m.processes.iter_mut().enumerate() {
             slot.pid = index as u64 + 2;
-            slot.name[..name.len()].copy_from_slice(name.as_bytes());
-            slot.name_len = name.len() as u64;
+            slot.name = [b'x'; kabi::MAX_NAME];
+            slot.name_len = kabi::MAX_NAME as u64;
         }
-        m.process_count = STUB_SERVICES.len() as u64;
+        m.process_count = MAX_METRIC_PROCESSES as u64;
         Ok(m)
     }
     fn set_policy(&self, _: u64) -> Result<(), kabi::Error> {
@@ -211,10 +215,13 @@ impl Host for Stub {
     fn audit(&self, _: &str) {}
 }
 
+/// Longest part of an error quoted in a confirmation.
+const NOTE_ERROR_CHARS: usize = 40;
+
 /// Checks an answer: text limits, the strict compile, then a trial run against the
 /// stub OS so unknown functions, wrong arguments and type errors are caught before
 /// the user is asked. The error text is fit to send back to the model.
-pub fn check(answer: &Answer, config: &Config) -> Result<Checked, String> {
+pub fn check(answer: &Answer, host: &Rc<dyn Host>, config: &Config) -> Result<Checked, String> {
     // The llm service checked both already; the shell does not rely on that, since
     // the summary goes straight into the confirmation.
     let summary = check_summary(&answer.summary).map_err(|error| error.describe())?;
@@ -222,42 +229,49 @@ pub fn check(answer: &Answer, config: &Config) -> Result<Checked, String> {
     let (reads, changes) = names_in(&script);
     let granted: Vec<&'static str> = reads.iter().chain(&changes).copied().collect();
     let line = Line::new();
-    let stub: Rc<dyn Host> = Rc::new(Stub);
+    let stub: Rc<dyn Host> = Rc::new(Stub(Rc::clone(host)));
     let trial = strict(&line, &stub, config, &granted);
     let ast = trial
         .compile(&script)
         .map_err(|error| format!("syntax error: {error}"))?;
     line.begin(stub.as_ref(), config);
-    // The stub clock never moves, so only the operation backstop bounds the trial.
-    if let Err(error) = trial.eval_ast_with_scope::<Dynamic>(&mut Scope::new(), &ast)
-        && !depends_on_values(&error)
-    {
-        return Err(format!("the script failed a trial run: {error}"));
-    }
+    let note = match trial.eval_ast_with_scope::<Dynamic>(&mut Scope::new(), &ast) {
+        Ok(_) => None,
+        Err(error) => match error.unwrap_inner() {
+            // The real numbers may not divide by zero or overflow, so this does not
+            // refuse the script, but the user is told the rest went untried.
+            EvalAltResult::ErrorArithmetic(why, at) => {
+                // Rhai leaves the position out for some operators.
+                let place = at
+                    .line()
+                    .or(error.position().line())
+                    .map_or(String::from("early"), |line| format!("at line {line}"));
+                Some(format!(
+                    "trial stopped {place} on stand-in values ({}); later lines untried",
+                    show::truncate(why, NOTE_ERROR_CHARS)
+                ))
+            }
+            _ => {
+                return Err(format!(
+                    "the script failed a trial run: {}",
+                    line.describe(&error, config)
+                ));
+            }
+        },
+    };
     Ok(Checked {
         summary,
         script,
         reads,
         changes,
+        note,
         ast,
     })
 }
 
-/// Trial errors that come from the stub's made-up values rather than the script: an
-/// index past the end, or a division by zero. The real values may not cause them,
-/// so they do not refuse a script; the real run reports them if they happen.
-fn depends_on_values(error: &EvalAltResult) -> bool {
-    matches!(
-        error.unwrap_inner(),
-        EvalAltResult::ErrorArrayBounds(..)
-            | EvalAltResult::ErrorStringBounds(..)
-            | EvalAltResult::ErrorBitFieldBounds(..)
-            | EvalAltResult::ErrorArithmetic(..)
-    )
-}
-
 /// What the confirmation shows: the shell's own account of what the script uses
-/// first, then what the model says, then every line, then the question last.
+/// first, then what the model says, then every line, then the question, which says
+/// again whether the script can change anything.
 pub fn confirmation(id: u64, checked: &Checked) -> String {
     let mut text = format!("script {id}: ");
     match (checked.reads.is_empty(), checked.changes.is_empty()) {
@@ -278,10 +292,21 @@ pub fn confirmation(id: u64, checked: &Checked) -> String {
         }
     }
     let _ = write!(text, "\nmodel says: {}", checked.summary);
+    if let Some(note) = &checked.note {
+        let _ = write!(text, "\n{note}");
+    }
     for (number, line) in checked.script.lines().enumerate() {
         let _ = write!(text, "\n{:>2} | {line}", number + 1);
     }
-    text.push_str("\nrun it? yes/no");
+    if checked.changes.is_empty() {
+        text.push_str("\nrun it? it changes nothing. yes/no");
+    } else {
+        let _ = write!(
+            text,
+            "\nrun it? it CHANGES {}. yes/no",
+            checked.changes.join(", ")
+        );
+    }
     text
 }
 
