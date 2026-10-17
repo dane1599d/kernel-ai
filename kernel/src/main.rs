@@ -16,6 +16,7 @@ extern crate alloc;
 
 mod apic;
 mod backtrace;
+mod build_service;
 mod console;
 mod cpu;
 mod entry;
@@ -185,6 +186,7 @@ extern "C" fn boot_continue() -> ! {
     // Not in kmain: configuring allocates, and the heap is mapped only by init_memory.
     if let Some(cmdline) = CMDLINE.response() {
         llm::configure(cmdline.cmdline());
+        build_service::configure(cmdline.cmdline());
     }
     match cpu::init(entry::syscall_entry as *const () as u64) {
         Ok(features) => log!(
@@ -422,6 +424,9 @@ fn start_user_space(test: SelfTest) {
         return;
     }
     if let Err(message) = process::supervision::start(plan) {
+        fail(message);
+    }
+    if let Err(message) = build_service::start_sync() {
         fail(message);
     }
 }

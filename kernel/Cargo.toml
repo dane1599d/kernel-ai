@@ -20,6 +20,7 @@ kabi = { path = "../kabi" }
 limine = "0.6.5"
 linetable = { path = "../linetable" }
 livecore = { path = "../livecore" }
+editcore = { path = "../editcore" }
 llmproto = { path = "../llmproto" }
 mm = { path = "../mm" }
 pc-keyboard = "0.9.0"

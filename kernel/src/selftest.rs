@@ -88,6 +88,10 @@ pub fn plan(test: SelfTest) -> Option<String> {
     if test == SelfTest::None {
         plan.push('\n');
         plan.push_str(kabi::plan::NOTES);
+        if let Some(edit) = crate::build_service::plan_line() {
+            plan.push('\n');
+            plan.push_str(&edit);
+        }
     }
     Some(plan)
 }

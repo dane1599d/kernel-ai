@@ -110,7 +110,11 @@ fn execute(options: &Options) -> Result<(), String> {
     };
     for case in cases {
         let cmdline = format!("{} {llm_args}", case.cmdline);
-        println!("xtask: test case {} ({})", case.name, buildsvc::redact(&cmdline));
+        println!(
+            "xtask: test case {} ({})",
+            case.name,
+            buildsvc::redact(&cmdline)
+        );
         esp::make_esp(&esp, &kernel, &modules, &efi, &cmdline)?;
         let firmware = find_firmware(&qemu, &target_dir)?;
         let monitor = qemu::free_port()?;
@@ -249,6 +253,7 @@ const USER_PROGRAMS: &[&str] = &[
     "hog",
     "probe",
     "comphost",
+    "edit",
 ];
 
 /// Builds every user program; returns (name, ELF path) pairs.

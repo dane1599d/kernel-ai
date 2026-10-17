@@ -53,7 +53,8 @@ pub mod call {
     pub const LIST: u64 = 16;
     /// `call(name_ptr, name_len, &CallRequest) -> reply len`: sends a request to
     /// another service and waits for its reply (needs [`super::cap::CALL`]). A
-    /// process may not call itself, nor a service that can itself call.
+    /// process may not call itself, a service that can itself call, nor the edit
+    /// service, which only the kernel drives.
     pub const CALL: u64 = 17;
     /// `metrics(&mut Metrics) -> 0`: scheduler, memory and process numbers.
     pub const METRICS: u64 = 18;

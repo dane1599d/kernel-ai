@@ -191,3 +191,10 @@ pub fn exchange(
     }
     result.map(|()| response)
 }
+
+/// `IPv4:PORT` from the kernel command line, such as `llm=` and `build=`; the
+/// kernel has no DNS.
+pub fn parse_endpoint(text: &str) -> Option<(Ipv4Addr, u16)> {
+    let (host, port) = text.rsplit_once(':')?;
+    Some((host.parse().ok()?, port.parse().ok().filter(|&p| p > 0)?))
+}

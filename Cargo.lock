@@ -436,6 +436,7 @@ name = "kernel"
 version = "0.0.0"
 dependencies = [
  "acpitables",
+ "editcore",
  "kabi",
  "limine",
  "linetable",
@@ -985,6 +986,7 @@ checksum = "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
 name = "user"
 version = "0.0.0"
 dependencies = [
+ "editcore",
  "kabi",
  "livecore",
  "llmproto",

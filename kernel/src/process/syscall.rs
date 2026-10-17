@@ -143,8 +143,23 @@ fn handle(slot: usize, number: u64, a: [u64; 6]) -> Result<u64, Error> {
         }
         call::HTTP => {
             need(slot, cap::NET)?;
-            http(slot, a[0])
+            let target = llm::target().map(|(ip, port, _)| (ip, port));
+            exchange_to(slot, a[0], target, || {})
         }
+        call::COMP_PUT => {
+            need(slot, cap::PUBLISH)?;
+            super::components::put(slot, a[0])
+        }
+        call::COMP_READ => {
+            need(slot, cap::PUBLISH)?;
+            super::components::read(slot, a[0])
+        }
+        call::BUILD => {
+            need(slot, cap::PUBLISH)?;
+            let target = crate::build_service::target();
+            exchange_to(slot, a[0], target, crate::build_service::count_exchange)
+        }
+        // COMP_CONTROL is reserved for M9c.
         _ => Err(Error::NotFound),
     }
 }
@@ -192,11 +207,18 @@ fn sleep(slot: usize, ms: u64) -> Result<u64, Error> {
     Ok(0)
 }
 
-/// Sends the request to the configured LLM server and returns what it answered up
-/// to closing the connection. The destination is the kernel's, not the caller's.
-fn http(slot: usize, request_ptr: u64) -> Result<u64, Error> {
+/// Sends the request to `target` (the LLM server for HTTP, the build service for
+/// BUILD) and returns what it answered up to closing the connection. The
+/// destination is the kernel's, never the caller's. `counted` runs once the
+/// exchange is under way.
+fn exchange_to(
+    slot: usize,
+    request_ptr: u64,
+    target: Option<(core::net::Ipv4Addr, u16)>,
+    counted: impl FnOnce(),
+) -> Result<u64, Error> {
     let call: HttpRequest = uaccess::read_struct(slot, request_ptr)?;
-    let (ip, port, _) = llm::target().ok_or(Error::NotFound)?;
+    let (ip, port) = target.ok_or(Error::NotFound)?;
     let request_len = usize::try_from(call.request_len).map_err(|_| Error::TooBig)?;
     if request_len > MAX_HTTP_REQUEST {
         return Err(Error::TooBig);
@@ -211,6 +233,7 @@ fn http(slot: usize, request_ptr: u64) -> Result<u64, Error> {
     request.resize(request_len, 0);
     uaccess::copy_from_user(slot, call.request_ptr, &mut request)?;
     let timeout = call.timeout_ms.clamp(1, MAX_HTTP_TIMEOUT_MS);
+    counted();
     let response = net::exchange((ip, port), &request, timeout, response_cap, || {
         super::killed(slot)
     })
@@ -254,6 +277,10 @@ fn service_call(slot: usize, name_ptr: u64, name_len: u64, request_ptr: u64) -> 
         return Err(Error::NotFound);
     }
     if super::has_cap_by_name(name, cap::CALL) {
+        return Err(Error::Permission);
+    }
+    // Only the kernel drives the publisher, whether or not it is running now.
+    if name == super::supervision::PUBLISHER || super::has_cap_by_name(name, cap::PUBLISH) {
         return Err(Error::Permission);
     }
     let call: kabi::CallRequest = uaccess::read_struct(slot, request_ptr)?;
