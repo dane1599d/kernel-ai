@@ -251,7 +251,7 @@ impl Ledger {
                 };
                 self.checkpoint = event.blob.clone();
                 self.counters.begins += 1;
-                return Ok(Some(format!("{active} -> {label} on probation")));
+                return Ok(Some(format!("{active} -> {label} swap begins")));
             }
             (
                 kind::COMMIT,

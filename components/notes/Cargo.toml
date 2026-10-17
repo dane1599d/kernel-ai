@@ -1,0 +1,20 @@
+[package]
+name = "comp-notes"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The live `notes` component: the code the edit loop (M9b) changes.
+[lib]
+crate-type = ["cdylib", "rlib"]
+doctest = false
+
+[features]
+default = ["exports"]
+# The WebAssembly exports; off when another component builds on this one.
+exports = []
+
+[dependencies]
+compsdk = { path = "../../compsdk" }
+minicbor = { version = "2.3.0", default-features = false, features = ["alloc", "derive"] }

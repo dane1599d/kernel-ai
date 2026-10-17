@@ -34,6 +34,12 @@ pub struct Slot<T>(UnsafeCell<Option<T>>);
 // SAFETY: wasm32 instances here are single-threaded and calls never overlap.
 unsafe impl<T> Sync for Slot<T> {}
 
+impl<T> Default for Slot<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<T> Slot<T> {
     pub const fn new() -> Self {
         Self(UnsafeCell::new(None))

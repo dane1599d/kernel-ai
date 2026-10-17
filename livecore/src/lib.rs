@@ -13,6 +13,7 @@ pub mod host;
 pub mod ledger;
 pub mod local;
 mod probation;
+pub mod scenario;
 pub mod settings;
 pub mod state;
 pub mod store;

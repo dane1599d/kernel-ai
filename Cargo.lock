@@ -105,6 +105,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 
 [[package]]
+name = "comp-notes"
+version = "0.0.0"
+dependencies = [
+ "compsdk",
+ "minicbor",
+]
+
+[[package]]
+name = "comp-notes-bad"
+version = "0.0.0"
+dependencies = [
+ "comp-notes",
+ "compsdk",
+]
+
+[[package]]
 name = "comp-notes-v1"
 version = "0.0.0"
 dependencies = [
@@ -1172,13 +1188,17 @@ dependencies = [
  "addr2line",
  "kabi",
  "linetable",
+ "livecore",
  "llmproto",
  "object",
  "rustc-demangle",
  "serde_json",
  "sha2",
  "shellcore",
+ "supervise",
  "uelf",
+ "wasmhost",
+ "wat",
 ]
 
 [[package]]
