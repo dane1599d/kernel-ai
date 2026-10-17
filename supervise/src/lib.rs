@@ -20,6 +20,8 @@ pub const DEFAULT_BURST_MS: u64 = 2000;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServiceSpec {
     pub name: String,
+    /// The program to run; the service name unless the plan says `program=`.
+    pub program: String,
     /// Arguments passed through to the program.
     pub args: String,
     pub limits: Limits,
@@ -34,8 +36,8 @@ pub struct Plan {
     pub errors: Vec<String>,
 }
 
-/// Reads the plan: one service per line, `name [pages=N] [stack_pages=N]
-/// [burst_ms=N] [caps=serve+net+call+policy] [backoff_max_ms=N] [max_restarts=N]
+/// Reads the plan: one service per line, `name [program=P] [pages=N] [stack_pages=N]
+/// [burst_ms=N] [caps=serve+net+call+policy+component] [backoff_max_ms=N] [max_restarts=N]
 /// [other=args ...]`. The supervisor keys set limits and policy; everything else is
 /// passed to the program. A bad line skips only that service, so one typo cannot
 /// keep every other service down.
@@ -53,8 +55,7 @@ pub fn parse_plan(text: &str) -> Plan {
 fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String> {
     let mut words = line.split_whitespace();
     let name = words.next().unwrap_or_default();
-    if name.len() > kabi::MAX_NAME || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
-    {
+    if !valid_name(name) {
         return Err(format!("bad service name {name:?}"));
     }
     if earlier.iter().any(|s| s.name == name) {
@@ -68,8 +69,19 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
     };
     let mut policy = POLICY;
     let mut args = Vec::new();
+    let mut program = name;
     for word in words {
         match word.split_once('=') {
+            Some(("program", value)) => {
+                if !valid_name(value) {
+                    return Err(format!("{name}: bad program name {value:?}"));
+                }
+                // The supervisor runs only as the kernel starts it.
+                if value == "supervisor" {
+                    return Err(format!("{name}: the supervisor cannot run as a service"));
+                }
+                program = value;
+            }
             Some(("pages", value)) => limits.max_pages = number(name, value)?,
             Some(("stack_pages", value)) => {
                 limits.stack_pages = number(name, value)?;
@@ -89,10 +101,18 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
     }
     Ok(ServiceSpec {
         name: name.to_string(),
+        program: program.to_string(),
         args: args.join(" "),
         limits,
         policy,
     })
+}
+
+/// A service or program name: letters, digits and '-', at most `MAX_NAME` bytes.
+fn valid_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= kabi::MAX_NAME
+        && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
 }
 
 fn number(service: &str, value: &str) -> Result<u64, String> {
@@ -109,6 +129,7 @@ fn caps(service: &str, value: &str) -> Result<u64, String> {
         "net" => Ok(bits | cap::NET),
         "call" => Ok(bits | cap::CALL),
         "policy" => Ok(bits | cap::POLICY),
+        "component" => Ok(bits | cap::COMPONENT),
         other => Err(format!("{service}: unknown capability {other:?}")),
     })
 }
@@ -414,5 +435,32 @@ mod tests {
         // State in an older layout reads as none rather than as shifted fields.
         assert!(decode(b"supervisor-state 2\nhog 2 0 0 7").is_empty());
         assert_eq!(decode(damaged.as_bytes()).len(), 1);
+    }
+
+    #[test]
+    fn program_names_the_program_and_is_not_passed_on() {
+        let plan = parse_plan(kabi::plan::NOTES_TEST);
+        assert!(plan.errors.is_empty(), "{:?}", plan.errors);
+        let notes = &plan.services[0];
+        assert_eq!(
+            (notes.name.as_str(), notes.program.as_str()),
+            ("notes", "comphost")
+        );
+        assert_eq!(notes.limits.caps, cap::SERVE | cap::COMPONENT);
+        assert_eq!(notes.limits.max_pages, 8192);
+        assert_eq!(notes.args, "version=1 probation_calls=3 probation_ms=0");
+        let notes = &parse_plan(kabi::plan::NOTES).services[0];
+        assert_eq!(notes.args, "version=1");
+        // Without the key, a service runs the program of its own name.
+        let shell = &parse_plan(kabi::plan::SHELL).services[0];
+        assert_eq!(shell.program, "shell");
+    }
+
+    #[test]
+    fn a_service_cannot_run_the_supervisor_or_a_bad_program_name() {
+        let plan = parse_plan("evil program=supervisor\nodd program=a/b\nok program=comphost");
+        assert_eq!(plan.services.len(), 1);
+        assert_eq!(plan.errors.len(), 2, "{:?}", plan.errors);
+        assert!(plan.errors[0].contains("supervisor"));
     }
 }

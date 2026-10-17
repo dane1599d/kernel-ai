@@ -30,6 +30,8 @@ const SUPERVISOR_LIMITS: Limits = Limits {
 /// Limits for a service spawned without its own.
 const DEFAULT_PAGES: u64 = 1024;
 const DEFAULT_BURST_MS: u64 = 2000;
+/// The one program that may hold `cap::COMPONENT`.
+pub const COMPONENT_HOST: &str = "comphost";
 /// Longest any supervision call may block.
 const MAX_WAIT_MS: u64 = 60_000;
 
@@ -191,7 +193,22 @@ pub fn spawn_service(slot: usize, request_ptr: u64) -> Result<u64, Error> {
     let mut args = [0u8; MAX_ARGS];
     copy_from_user(slot, request.args_ptr, &mut args[..args_len])?;
     let name = core::str::from_utf8(&name[..name_len]).map_err(|_| Error::Invalid)?;
-    if name == "supervisor" || request.limits.caps & !cap::GRANTABLE != 0 {
+    let program_len = usize::try_from(request.program_len).map_err(|_| Error::Invalid)?;
+    if program_len > MAX_NAME {
+        return Err(Error::TooBig);
+    }
+    let mut program = [0u8; MAX_NAME];
+    copy_from_user(slot, request.program_ptr, &mut program[..program_len])?;
+    let program = match program_len {
+        0 => name,
+        _ => core::str::from_utf8(&program[..program_len]).map_err(|_| Error::Invalid)?,
+    };
+    if name == "supervisor" || program == "supervisor" || request.limits.caps & !cap::GRANTABLE != 0
+    {
+        return Err(Error::Permission);
+    }
+    // Component versions and the ledger are only for the host that runs them.
+    if request.limits.caps & cap::COMPONENT != 0 && program != COMPONENT_HOST {
         return Err(Error::Permission);
     }
     let limits = Limits {
@@ -212,12 +229,17 @@ pub fn spawn_service(slot: usize, request_ptr: u64) -> Result<u64, Error> {
     let me = super::identity(slot).pid;
     let pid = spawn(&SpawnRequest {
         name,
+        program,
         args: &args[..args_len],
         limits,
         spawner: me,
         supervisor: false,
     })?;
-    log!("process {name} (pid {pid}) started by the supervisor");
+    if program == name {
+        log!("process {name} (pid {pid}) started by the supervisor");
+    } else {
+        log!("process {name} (pid {pid}, program {program}) started by the supervisor");
+    }
     Ok(pid)
 }
 
@@ -275,6 +297,14 @@ fn clear_state() {
     drop(old);
 }
 
+/// Whether the plan lists a service called `name`, whatever program it runs.
+pub fn planned(name: &str) -> bool {
+    PLAN.get().is_some_and(|plan| {
+        plan.lines()
+            .any(|line| line.split_whitespace().next() == Some(name))
+    })
+}
+
 pub fn plan(slot: usize, ptr: u64, cap: u64) -> Result<u64, Error> {
     let plan = PLAN.get().map_or("", String::as_str).as_bytes();
     let len = plan.len().min(usize::try_from(cap).unwrap_or(usize::MAX));
@@ -311,6 +341,7 @@ fn init_thread(_: usize) {
         REACHED_LOOP.store(false, Ordering::SeqCst);
         match spawn(&SpawnRequest {
             name: "supervisor",
+            program: "supervisor",
             args: b"",
             limits: SUPERVISOR_LIMITS,
             spawner: 0,

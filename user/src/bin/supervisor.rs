@@ -146,12 +146,15 @@ fn start(service: &mut Service, now: u64) {
     // The restart count goes to the program, so a restart is visible from outside.
     let args = format!("restart={} {}", service.record.restarts, service.spec.args);
     let name = service.spec.name.as_bytes();
+    let program = service.spec.program.as_bytes();
     let request = SpawnRequest {
         name_ptr: name.as_ptr() as u64,
         name_len: name.len() as u64,
         args_ptr: args.as_ptr() as u64,
         args_len: args.len() as u64,
         limits: service.spec.limits,
+        program_ptr: program.as_ptr() as u64,
+        program_len: program.len() as u64,
     };
     match sys::spawn(&request) {
         Ok(pid) => {

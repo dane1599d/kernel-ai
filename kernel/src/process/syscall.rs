@@ -238,7 +238,7 @@ fn service_call(slot: usize, name_ptr: u64, name_len: u64, request_ptr: u64) -> 
     if name == me.name.as_str() {
         return Err(Error::Invalid);
     }
-    if super::programs::find(name).is_none() {
+    if super::programs::find(name).is_none() && !super::supervision::planned(name) {
         return Err(Error::NotFound);
     }
     if super::has_cap_by_name(name, cap::CALL) {
