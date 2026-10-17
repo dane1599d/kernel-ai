@@ -26,7 +26,8 @@ const HELP: &[(&str, &str)] = &[
     ("threads", "scheduler statistics"),
     ("cpus", "CPUs online"),
     ("mem", "free memory and heap use"),
-    ("net", "network and LLM server status"),
+    ("net", "network, LLM server and llm service status"),
+    ("ps", "running processes"),
     ("uptime", "time since the clock started"),
     ("clear", "clear the screen"),
 ];
@@ -100,6 +101,7 @@ fn execute(line: &str) {
             );
         }
         "net" => net_status(),
+        "ps" => processes(),
         "uptime" => log!("{} s", hpet::nanos() / 1_000_000_000),
         "clear" => print(format_args!("{FORM_FEED}")),
         other => log!("unknown command: {other} (try help)"),
@@ -159,8 +161,12 @@ fn net_status() {
         None => log!("LLM server: not configured (boot with llm=IP:PORT)"),
         Some((ip, port, model)) => {
             log!("LLM server: {ip}:{port}, model {model}");
+            match crate::ipc::server_of("llm") {
+                Some(pid) => log!("llm service: pid {pid}"),
+                None => log!("llm service: not running"),
+            }
             match llm::health() {
-                Ok((status, rtt)) => log!("health: HTTP {status} in {rtt} ms"),
+                Ok(status) => log!("health: {status}"),
                 Err(error) => log!("health: {error}"),
             }
         }
@@ -172,6 +178,13 @@ fn net_status() {
 pub fn self_test() -> Result<(), &'static str> {
     const TIMEOUT_MS: u64 = 60_000;
     threads::spawn("terminal", run, 0)?;
+    // `ask` goes to the ring-3 llm service, so wait until it serves.
+    for _ in 0..TIMEOUT_MS / 10 {
+        if crate::ipc::server_of("llm").is_some() {
+            break;
+        }
+        threads::sleep_ms(10);
+    }
     threads::sleep_ms(200);
     log!("terminal: ready for keys");
     // The installed policy on every CPU, not the active one: a watchdog fallback
@@ -189,4 +202,19 @@ pub fn self_test() -> Result<(), &'static str> {
         return Err("terminal: the policy command did not switch to round-robin");
     }
     Err("terminal: no LLM reply was shown")
+}
+
+fn processes() {
+    let mut any = false;
+    crate::process::services(|pid, name| {
+        log!("  {pid:>5}  {}", name.as_str());
+        any = true;
+    });
+    match crate::process::supervision::supervisor_pid() {
+        0 => log!("  supervisor not running"),
+        pid => log!("  {pid:>5}  supervisor"),
+    }
+    if !any {
+        log!("  no services running");
+    }
 }

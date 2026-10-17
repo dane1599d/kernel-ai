@@ -1,22 +1,24 @@
-//! Builds the kernel's source-line table (see the `linetable` crate) from its DWARF data.
+//! Builds source-line tables (see the `linetable` crate) from ELF DWARF data, for
+//! the kernel and for each user program.
 
 use linetable::Builder;
 use object::{Object, ObjectSection, ObjectSymbol, SymbolKind};
 use std::fs;
 use std::path::Path;
 
-/// Reads the kernel ELF and returns the serialized line table.
-pub fn build(kernel: &Path, workspace: &Path) -> Result<Vec<u8>, String> {
-    let data = fs::read(kernel).map_err(|e| format!("cannot read {}: {e}", kernel.display()))?;
-    let file = object::File::parse(&*data).map_err(|e| format!("cannot parse kernel ELF: {e}"))?;
+/// Reads an ELF (the kernel or a user program) and returns its serialized line table.
+pub fn build(elf: &Path, workspace: &Path) -> Result<Vec<u8>, String> {
+    let data = fs::read(elf).map_err(|e| format!("cannot read {}: {e}", elf.display()))?;
+    let file =
+        object::File::parse(&*data).map_err(|e| format!("cannot parse {}: {e}", elf.display()))?;
     let text = file
         .section_by_name(".text")
-        .ok_or("kernel ELF has no .text section")?;
+        .ok_or_else(|| format!("{} has no .text section", elf.display()))?;
     let (low, high) = (text.address(), text.address() + text.size());
 
     let mut builder = Builder::new();
     let workspace = normalize(&workspace.to_string_lossy());
-    let loader = addr2line::Loader::new(kernel).map_err(|e| format!("cannot load DWARF: {e}"))?;
+    let loader = addr2line::Loader::new(elf).map_err(|e| format!("cannot load DWARF: {e}"))?;
     let rows = loader
         .find_location_range(low, high)
         .map_err(|e| format!("cannot read line rows: {e}"))?;
@@ -40,7 +42,8 @@ pub fn build(kernel: &Path, workspace: &Path) -> Result<Vec<u8>, String> {
     }
     let table = builder.finish();
     println!(
-        "xtask: line table {} KiB ({line_rows} rows, {symbols} symbols)",
+        "xtask: {} line table {} KiB ({line_rows} rows, {symbols} symbols)",
+        elf.file_name().unwrap_or_default().to_string_lossy(),
         table.len() / 1024
     );
     Ok(table)

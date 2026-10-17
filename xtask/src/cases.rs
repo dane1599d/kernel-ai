@@ -6,8 +6,8 @@ pub struct TestCase {
     pub cmdline: &'static str,
     /// QEMU `sendkey` names typed when the kernel logs "ready for keys".
     pub keys: &'static [&'static str],
-    /// Text that must appear on the serial console for the case to pass.
-    pub expect: Option<&'static str>,
+    /// Texts that must all appear on the serial console for the case to pass.
+    pub expect: &'static [&'static str],
 }
 
 const fn case(name: &'static str, cmdline: &'static str) -> TestCase {
@@ -15,7 +15,7 @@ const fn case(name: &'static str, cmdline: &'static str) -> TestCase {
         name,
         cmdline,
         keys: &[],
-        expect: None,
+        expect: &[],
     }
 }
 
@@ -50,7 +50,7 @@ pub const TEST_CASES: &[TestCase] = &[
     case("net", "test=net"),
     TestCase {
         keys: TERMINAL_SCRIPT,
-        expect: Some(crate::mock_llm::REPLY),
+        expect: &[crate::mock_llm::REPLY],
         ..case("terminal", "test=terminal")
     },
 ];

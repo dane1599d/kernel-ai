@@ -21,9 +21,10 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
-      - run: cargo clippy -p xtask -p linetable -p mm -p acpitables -p sched -p llmproto --all-targets --features linetable/alloc -- -D warnings
+      - run: cargo clippy -p xtask -p linetable -p mm -p acpitables -p sched -p llmproto -p kabi -p supervise -p uelf --all-targets --features linetable/alloc -- -D warnings
       - run: cargo clippy -p kernel --target x86_64-unknown-none --features spikes -- -D warnings
-      - run: cargo test -p xtask -p linetable -p mm -p acpitables -p sched -p llmproto --features linetable/alloc
+      - run: cargo clippy -p user --target x86_64-unknown-none --bins --lib -- -D warnings
+      - run: cargo test -p xtask -p linetable -p mm -p acpitables -p sched -p llmproto -p kabi -p supervise -p uelf --features linetable/alloc
 
   boot:
     name: Boot test (${{ matrix.accel }})

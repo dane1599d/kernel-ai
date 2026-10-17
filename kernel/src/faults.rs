@@ -1,41 +1,110 @@
-//! Fault reporting: the fault screen, plus deliberate faults for the M1 exit test.
+//! Fault reporting for the kernel: the fault screen, plus deliberate faults for the
+//! M1 and M7 exit tests. Faults in ring 3 never come here; they kill the process
+//! (see `process::user_fault`).
 
 use crate::backtrace;
+use crate::entry::TrapFrame;
 use crate::lines::{self, Describe};
 use crate::log;
 use crate::qemu::ExitCode;
 use core::fmt;
 use core::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
-use x86_64::structures::idt::{InterruptStackFrame, PageFaultErrorCode};
+use x86_64::registers::control::Cr2;
 
 /// Unmapped lower-half address used by the page-fault test.
 pub const PAGE_FAULT_TARGET: u64 = 0x0000_0DEA_D000_0000;
 /// Unmapped stack pointer used by the double-fault test.
 const BAD_STACK: u64 = 0x0000_0DEA_D000_1000;
 
+/// Page-fault error code bits.
+pub mod pf {
+    pub const PRESENT: u64 = 1 << 0;
+    pub const WRITE: u64 = 1 << 1;
+    pub const FETCH: u64 = 1 << 4;
+}
+
+/// A CPU exception, from its vector, error code and (for page faults) CR2.
 pub enum Exception {
-    DivideError,
-    InvalidOpcode,
-    GeneralProtection {
-        code: u64,
-    },
-    PageFault {
-        address: u64,
-        code: PageFaultErrorCode,
-    },
+    PageFault { address: u64, code: u64 },
+    GeneralProtection { code: u64 },
     DoubleFault,
+    Other { vector: u64, code: u64 },
+}
+
+impl Exception {
+    pub fn from_frame(frame: &TrapFrame) -> Self {
+        match frame.vector {
+            14 => Self::PageFault {
+                address: Cr2::read_raw(),
+                code: frame.error_code,
+            },
+            13 => Self::GeneralProtection {
+                code: frame.error_code,
+            },
+            8 => Self::DoubleFault,
+            vector => Self::Other {
+                vector,
+                code: frame.error_code,
+            },
+        }
+    }
+}
+
+pub fn vector_name(vector: u64) -> &'static str {
+    match vector {
+        0 => "DIVIDE ERROR",
+        1 => "DEBUG",
+        2 => "NMI",
+        3 => "BREAKPOINT",
+        4 => "OVERFLOW",
+        5 => "BOUND RANGE",
+        6 => "INVALID OPCODE",
+        7 => "DEVICE NOT AVAILABLE",
+        8 => "DOUBLE FAULT",
+        10 => "INVALID TSS",
+        11 => "SEGMENT NOT PRESENT",
+        12 => "STACK SEGMENT FAULT",
+        13 => "GENERAL PROTECTION",
+        14 => "PAGE FAULT",
+        16 => "X87 FLOATING POINT",
+        17 => "ALIGNMENT CHECK",
+        18 => "MACHINE CHECK",
+        19 => "SIMD FLOATING POINT",
+        21 => "CONTROL PROTECTION",
+        _ => "EXCEPTION",
+    }
 }
 
 impl fmt::Display for Exception {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::DivideError => f.write_str("DIVIDE ERROR"),
-            Self::InvalidOpcode => f.write_str("INVALID OPCODE"),
-            Self::GeneralProtection { code } => write!(f, "GENERAL PROTECTION (code {code:#x})"),
             Self::PageFault { address, code } => {
-                write!(f, "PAGE FAULT at {address:#018x} ({code:?})")
+                let access = if code & pf::FETCH != 0 {
+                    "fetch"
+                } else if code & pf::WRITE != 0 {
+                    "write"
+                } else {
+                    "read"
+                };
+                let why = if code & pf::PRESENT != 0 {
+                    "protection"
+                } else {
+                    "not present"
+                };
+                write!(
+                    f,
+                    "PAGE FAULT at {address:#018x} ({access}, {why}, code {code:#x})"
+                )
             }
+            Self::GeneralProtection { code } => write!(f, "GENERAL PROTECTION (code {code:#x})"),
             Self::DoubleFault => f.write_str("DOUBLE FAULT"),
+            Self::Other { vector, code } => {
+                write!(
+                    f,
+                    "{} (vector {vector}, code {code:#x})",
+                    vector_name(*vector)
+                )
+            }
         }
     }
 }
@@ -52,21 +121,26 @@ enum Expected {
 }
 
 static EXPECTED: AtomicU8 = AtomicU8::new(Expected::Nothing as u8);
-/// The address a write-protect test writes to, or the guard page a stack-overflow test hits.
+/// The address a write-protect test writes to, or the guard page a stack-overflow
+/// test hits.
 static EXPECTED_ADDRESS: AtomicU64 = AtomicU64::new(0);
 const PAGE: u64 = 4096;
 
+fn expect(kind: Expected, address: u64) {
+    EXPECTED_ADDRESS.store(address, Ordering::SeqCst);
+    EXPECTED.store(kind as u8, Ordering::SeqCst);
+}
+
 /// The next fault must be a write to the read-only page at `address`.
 pub fn expect_write_fault(address: u64) {
-    EXPECTED_ADDRESS.store(address, Ordering::SeqCst);
-    EXPECTED.store(Expected::WriteProtect as u8, Ordering::SeqCst);
+    expect(Expected::WriteProtect, address);
 }
 
 /// The next fault must be a double fault caused by running into the guard page at `guard`.
 pub fn expect_stack_overflow(guard: u64) {
-    EXPECTED_ADDRESS.store(guard, Ordering::SeqCst);
-    EXPECTED.store(Expected::StackOverflow as u8, Ordering::SeqCst);
+    expect(Expected::StackOverflow, guard);
 }
+
 static BREAKPOINTS: AtomicU32 = AtomicU32::new(0);
 
 pub fn breakpoint_count() -> u32 {
@@ -74,30 +148,39 @@ pub fn breakpoint_count() -> u32 {
 }
 
 /// Breakpoints are reported and then resumed.
-pub fn breakpoint(frame: &InterruptStackFrame) {
+pub fn breakpoint(frame: &TrapFrame) {
     BREAKPOINTS.fetch_add(1, Ordering::SeqCst);
     // int3 leaves RIP after the one-byte instruction.
-    let rip = frame.instruction_pointer.as_u64() - 1;
-    log!("breakpoint at {} (resuming)", Describe(rip));
+    log!("breakpoint at {} (resuming)", Describe(frame.rip - 1));
 }
 
 /// Shows the fault screen. In test mode, exits QEMU with pass if this fault was
 /// the expected one and its report is correct, and fail otherwise.
-pub fn fatal(fault: Exception, frame: &InterruptStackFrame, handler_rbp: u64) -> ! {
-    let rip = frame.instruction_pointer.as_u64();
+pub fn fatal(frame: &TrapFrame) -> ! {
+    let fault = Exception::from_frame(frame);
     crate::smp::begin_fatal_report();
     log!("");
     log!(
         "=== CPU EXCEPTION on cpu {}: {fault} ===",
         crate::percpu::index()
     );
-    log!("rip: {}", Describe(rip));
-    log!("rsp: {:#018x}", frame.stack_pointer.as_u64());
+    log!("rip: {}", Describe(frame.rip));
+    log!("rsp: {:#018x}", frame.rsp);
     log!("backtrace:");
-    // SAFETY: the handler's own frame begins with the interrupted code's saved RBP.
-    let interrupted_rbp = unsafe { (handler_rbp as *const u64).read() };
-    backtrace::print_from(interrupted_rbp);
+    backtrace::print_from(frame.rbp);
+    match verdict(&fault, frame) {
+        Ok(()) => {
+            log!("self-test: expected fault handled correctly");
+            crate::test_exit(ExitCode::Success)
+        }
+        Err(reason) => {
+            log!("self-test: {reason}");
+            crate::test_exit(ExitCode::Failure)
+        }
+    }
+}
 
+fn verdict(fault: &Exception, frame: &TrapFrame) -> Result<(), &'static str> {
     let expected = match EXPECTED.load(Ordering::SeqCst) {
         1 => Expected::PageFault,
         2 => Expected::DoubleFault,
@@ -106,21 +189,19 @@ pub fn fatal(fault: Exception, frame: &InterruptStackFrame, handler_rbp: u64) ->
         _ => Expected::Nothing,
     };
     let target = EXPECTED_ADDRESS.load(Ordering::SeqCst);
-    let rsp = frame.stack_pointer.as_u64();
-    let verdict = match (expected, &fault) {
+    let rip = frame.rip;
+    match (expected, fault) {
         (Expected::WriteProtect, Exception::PageFault { address, code }) => {
-            let write_to_present =
-                PageFaultErrorCode::PROTECTION_VIOLATION | PageFaultErrorCode::CAUSED_BY_WRITE;
             if *address != target {
                 Err("write-protect fault reported the wrong address")
-            } else if !code.contains(write_to_present) {
+            } else if code & (pf::PRESENT | pf::WRITE) != pf::PRESENT | pf::WRITE {
                 Err("write-protect fault was not a write to a present page")
             } else {
                 Ok(())
             }
         }
         (Expected::StackOverflow, Exception::DoubleFault) => {
-            if (target..target + 2 * PAGE).contains(&rsp) {
+            if (target..target + 2 * PAGE).contains(&frame.rsp) {
                 Ok(())
             } else {
                 Err("double fault did not come from the guard page")
@@ -137,16 +218,6 @@ pub fn fatal(fault: Exception, frame: &InterruptStackFrame, handler_rbp: u64) ->
         }
         (Expected::DoubleFault, Exception::DoubleFault) => Ok(()),
         _ => Err("unexpected CPU exception"),
-    };
-    match verdict {
-        Ok(()) => {
-            log!("self-test: expected fault handled correctly");
-            crate::test_exit(ExitCode::Success)
-        }
-        Err(reason) => {
-            log!("self-test: {reason}");
-            crate::test_exit(ExitCode::Failure)
-        }
     }
 }
 

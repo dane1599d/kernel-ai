@@ -16,6 +16,7 @@ pub mod heap;
 pub mod paging;
 pub mod selftest;
 pub mod stack;
+pub mod user;
 
 use crate::log;
 use limine::memmap::{Entry, MEMMAP_USABLE};
@@ -48,6 +49,13 @@ pub fn map_physical(phys: u64, len: u64, flags: PageTableFlags) -> Result<u64, &
 
 static MEMORY: Mutex<Option<Memory>> = Mutex::new(None);
 static HHDM_OFFSET: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+/// Physical address of the kernel PML4, readable without the MEMORY lock.
+static KERNEL_CR3: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// The page tables kernel threads run on.
+pub fn kernel_cr3() -> u64 {
+    KERNEL_CR3.load(core::sync::atomic::Ordering::Relaxed)
+}
 
 /// Offset of Limine's higher-half direct map: physical address + hhdm() is mapped.
 pub fn hhdm() -> u64 {
@@ -55,7 +63,15 @@ pub fn hhdm() -> u64 {
 }
 
 /// Runs `f` with the memory manager. Panics if called before [`init`].
+///
+/// Never call this with interrupts off once the scheduler runs: the holder may be
+/// waiting for a TLB shootdown that a CPU spinning here with interrupts off would
+/// never acknowledge.
 pub fn with<R>(f: impl FnOnce(&mut Memory) -> R) -> R {
+    debug_assert!(
+        !crate::threads::running() || x86_64::instructions::interrupts::are_enabled(),
+        "memory::with called with interrupts off"
+    );
     crate::threads::preempt_disable();
     let mut guard = MEMORY.lock();
     let result = f(guard.as_mut().expect("memory::init has run"));
@@ -98,6 +114,7 @@ pub fn init(entries: &[&Entry], hhdm: u64) -> Result<(), &'static str> {
     // SAFETY: Limine's page tables are live in CR3 and reachable through the HHDM.
     let mut memory = unsafe { Memory::adopt(bitmap, hhdm) };
     HHDM_OFFSET.store(hhdm, core::sync::atomic::Ordering::Relaxed);
+    KERNEL_CR3.store(memory.kernel_cr3(), core::sync::atomic::Ordering::Relaxed);
     let prepared = memory.prepare_kernel_half()?;
     heap::map(&mut memory)?;
     let (free, total) = (memory.free_frames(), memory.total_frames());
