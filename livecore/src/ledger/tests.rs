@@ -247,3 +247,54 @@ fn the_history_keeps_the_last_32_events_in_order() {
     assert_eq!(seqs, (10..42).collect::<Vec<_>>());
     assert_eq!(ledger.history.back().unwrap().kind, kind::ROLLBACK);
 }
+
+#[test]
+fn a_later_host_can_reset_a_disabled_component() {
+    let mut ledger = running(&[]);
+    ledger
+        .apply(
+            HOST,
+            &with_reason(event(kind::DISABLED, "", 1), Reason::Migrate),
+        )
+        .unwrap();
+    // The host that disabled it died; the next one loaded the active version.
+    assert_eq!(
+        ledger.apply(8, &event(kind::RESET, "", 0)),
+        Err(Error::Invalid)
+    );
+    ledger.fetched(8, "1");
+    assert!(ledger.apply(8, &event(kind::RESET, "", 0)).is_ok());
+    assert!(ledger.apply(8, &event(kind::RESTORED, "1", 1)).is_ok());
+    assert_eq!(ledger.host_pid, 8);
+}
+
+#[test]
+fn huge_counts_from_a_host_saturate_rather_than_overflow() {
+    let mut ledger = running(&["2"]);
+    for _ in 0..2 {
+        ledger.apply(HOST, &event(kind::BEGIN, "2", 1)).unwrap();
+        let mut rollback = with_reason(event(kind::ROLLBACK, "2", 1), Reason::Manual);
+        rollback.served = u64::MAX;
+        rollback.regressions = u64::MAX;
+        ledger.apply(HOST, &rollback).unwrap();
+    }
+    assert_eq!(
+        (ledger.counters.served, ledger.counters.regressions),
+        (u64::MAX, u64::MAX)
+    );
+}
+
+#[test]
+fn events_about_no_version_carry_no_label() {
+    let mut ledger = running(&[]);
+    for kind in [kind::FAULT, kind::DISABLED, kind::CHECKPOINT] {
+        let labelled = with_reason(event(kind, "\n\x1b[2J", 1), Reason::Trap);
+        assert_eq!(ledger.apply(HOST, &labelled), Err(Error::Invalid), "{kind}");
+    }
+    assert!(
+        ledger
+            .history
+            .iter()
+            .all(|entry| entry.label.is_empty() || entry.label == "1")
+    );
+}

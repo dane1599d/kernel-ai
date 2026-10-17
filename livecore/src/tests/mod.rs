@@ -229,20 +229,91 @@ fn a_candidate_that_traps_rolls_back_and_the_caller_gets_the_old_reply() {
 }
 
 #[test]
-fn when_both_versions_fail_the_request_is_blamed_not_the_candidate() {
+fn a_request_the_old_version_fails_is_not_given_to_the_candidate() {
     let kernel = kernel(&[V1, V2]);
     let mut host = host(&kernel);
     call(&mut host, "add");
     call(&mut host, "ctl swap 2");
     assert_eq!(
         call(&mut host, "poison"),
-        "err counter failed on this request"
+        "err counter failed on this request: trap"
     );
     let ledger = ledger(&kernel);
-    assert_eq!(ledger.is_bad("2"), None);
     assert_eq!((ledger.counters.faults, ledger.counters.restarts), (1, 1));
-    // The old version was reloaded from its checkpoint.
+    assert_eq!(
+        (ledger.candidate(), ledger.counters.rollbacks),
+        (Some("2"), 0)
+    );
+    // Both versions still hold what the kernel holds.
+    assert_eq!(call(&mut host, "get"), "ok 1 schema 2");
+    call(&mut host, "ctl rollback");
     assert_eq!(call(&mut host, "get"), "ok 1 schema 1");
+}
+
+#[test]
+fn a_write_the_old_version_fails_is_not_acknowledged_and_lost() {
+    // Version 1 traps on its second add; version 2 is the fix.
+    let kernel = kernel(&[broken_v1(Bug::TrapAt(2)), V2]);
+    let mut host = host(&kernel);
+    call(&mut host, "ctl swap 2");
+    assert_eq!(call(&mut host, "add"), "ok 1");
+    assert_eq!(
+        call(&mut host, "add"),
+        "err counter failed on this request: trap"
+    );
+    assert_eq!(ledger(&kernel).checkpoint, Vec::from([0x82, 1, 1]));
+    call(&mut host, "ctl rollback");
+    assert_eq!(call(&mut host, "get"), "ok 1 schema 1");
+}
+
+#[test]
+fn an_old_version_that_keeps_failing_ends_the_swap_without_blaming_the_candidate() {
+    let kernel = kernel(&[broken_v1(Bug::TrapAt(1)), V2]);
+    let mut host = host(&kernel);
+    call(&mut host, "ctl swap 2");
+    for _ in 0..3 {
+        call(&mut host, "add");
+    }
+    assert_eq!(host.handle(0, b"add").unwrap_err().code, EXIT_RESTARTS);
+    let ledger = ledger(&kernel);
+    assert_eq!((ledger.active(), ledger.candidate()), (Some("1"), None));
+    assert_eq!(ledger.is_bad("2"), None);
+}
+
+#[test]
+fn an_old_version_that_fails_to_write_an_older_schema_does_not_blame_the_candidate() {
+    let writer = Spec {
+        writes: &[1],
+        bug: Bug::ExportOlderTrap,
+        ..Spec { label: "2", ..V2 }
+    };
+    let kernel = kernel(&[V1, writer]);
+    let mut host = host_with(&kernel, 10, "version=2 probation_calls=3 probation_ms=0");
+    call(&mut host, "add");
+    let reply = call(&mut host, "ctl swap 1");
+    assert!(
+        reply.starts_with("err rolled back 1: export: 2 failed to write schema 1"),
+        "{reply}"
+    );
+    let ledger = ledger(&kernel);
+    assert_eq!(ledger.is_bad("1"), None);
+    assert_eq!(ledger.counters.restarts, 1);
+    assert_eq!(call(&mut host, "get"), "ok 1 schema 2");
+}
+
+#[test]
+fn a_candidate_that_fails_its_last_check_does_not_give_the_answer() {
+    let kernel = kernel(&[V1, broken("2", Bug::HealthAt(1))]);
+    let mut host = host_with(&kernel, 10, "version=1 probation_calls=2 probation_ms=0");
+    call(&mut host, "ctl swap 2");
+    call(&mut host, "add");
+    // The second call ends probation; the candidate's last health check fails.
+    assert_eq!(call(&mut host, "get"), "ok 1 schema 1");
+    assert_eq!(reason_count(&kernel, Reason::Health), 1);
+}
+
+fn broken_v1(bug: Bug) -> Spec {
+    Spec { bug, ..V1 }
 }
 
 #[test]

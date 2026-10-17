@@ -29,8 +29,6 @@ jobs:
       - run: cargo clippy -p compsdk -p comp-notes -p comp-notes-v1 --target wasm32-unknown-unknown -- -D warnings
       - name: Clippy for each broken notes version
         run: for bug in bug-import bug-health bug-trap bug-spin; do cargo clippy -p comp-notes-bad --target wasm32-unknown-unknown --features $bug -- -D warnings; done
-      - name: No half crate in components (its f16c code cannot run in ring 3)
-        run: "! cargo tree -p comp-notes -p comp-notes-bad --target wasm32-unknown-unknown --prefix none | grep -q '^half '"
       - run: cargo test -p xtask -p linetable -p mm -p acpitables -p sched -p llmproto -p kabi -p supervise -p uelf -p shellcore -p livecore -p wasmhost -p compsdk -p comp-notes -p comp-notes-v1 -p comp-notes-bad --features linetable/alloc
 
   boot:

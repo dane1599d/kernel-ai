@@ -132,6 +132,7 @@ dependencies = [
 name = "compsdk"
 version = "0.0.0"
 dependencies = [
+ "kabi",
  "minicbor",
  "talc",
 ]

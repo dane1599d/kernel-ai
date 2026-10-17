@@ -24,52 +24,60 @@ pub(crate) fn dual_run<E: Env>(
     mut probation: Probation<E::Instance>,
     request: &[u8],
 ) -> Step<E::Instance> {
-    let standby_reply = run_standby(core, &mut probation.standby, request)?;
+    let standby_reply = match run_standby(core, &mut probation.standby, request) {
+        Ok(reply) => reply,
+        Err(Stop::Exit(exit)) => return Err(exit),
+        Err(Stop::Fault(fault)) => return standby_failed(core, probation, &fault),
+    };
     match probation.candidate.instance.handle(request) {
         Ok(reply) => {
             probation.served += 1;
-            let regressed = reply.starts_with(b"err")
-                && standby_reply.as_ref().is_some_and(|r| r.starts_with(b"ok"));
-            if regressed {
+            if reply.starts_with(b"err") && standby_reply.starts_with(b"ok") {
                 probation.regressions += 1;
             }
-            Ok((end_if_due(core, probation)?, reply))
+            let (mode, rolled_back) = end_if_due(core, probation)?;
+            // A candidate that failed its last check does not give the answer.
+            Ok((mode, if rolled_back { standby_reply } else { reply }))
         }
         Err(fault) => {
-            // Both failed: the request is to blame, not the candidate.
-            let flags = if standby_reply.is_none() {
-                flag::POISON
-            } else {
-                0
-            };
-            let (mode, _) = roll_back(core, probation, &fault, flags)?;
-            let reply = standby_reply
-                .unwrap_or_else(|| text(format!("err {} failed on this request", core.name)));
-            Ok((mode, reply))
+            let (mode, _) = roll_back(core, probation, &fault, 0)?;
+            Ok((mode, standby_reply))
         }
     }
 }
 
-/// Runs a request on the standby and checkpoints its state. A standby fault
-/// reloads it from the last checkpoint; there is then no standby reply.
+/// Runs a request on the standby and checkpoints its state.
 fn run_standby<E: Env>(
     core: &mut Core<E>,
     standby: &mut Version<E::Instance>,
     request: &[u8],
-) -> Result<Option<Vec<u8>>, Exit> {
-    let result = standby
-        .instance
-        .handle(request)
-        .map_err(Stop::Fault)
-        .and_then(|reply| core.checkpoint(standby).map(|()| reply));
-    match result {
-        Ok(reply) => Ok(Some(reply)),
-        Err(Stop::Exit(exit)) => Err(exit),
-        Err(Stop::Fault(fault)) => {
-            core.reload_after(standby, &fault, true)?;
-            Ok(None)
-        }
+) -> Result<Vec<u8>, Stop> {
+    let reply = standby.instance.handle(request)?;
+    core.checkpoint(standby)?;
+    Ok(reply)
+}
+
+/// The old version failed on a request. The kernel still holds its state from
+/// before the request, so the old version is reloaded from that and the candidate
+/// is not given the request: both stay in step with what the kernel holds, and no
+/// write can be acknowledged that a rollback would lose.
+fn standby_failed<E: Env>(
+    core: &mut Core<E>,
+    mut probation: Probation<E::Instance>,
+    fault: &Fault,
+) -> Step<E::Instance> {
+    if let Err(exit) = core.reload_after(&mut probation.standby, fault, true) {
+        // Giving up on the old version: close the swap first, without blaming the
+        // candidate for what the old version did.
+        let _ = roll_back(core, probation, fault, flag::POISON);
+        return Err(exit);
     }
+    let reply = format!(
+        "err {} failed on this request: {}",
+        core.name,
+        fault.reason.name()
+    );
+    Ok((Mode::Probation(Box::new(probation)), text(reply)))
 }
 
 /// No request came: check the candidate, and commit it if its time is up.
@@ -80,7 +88,7 @@ pub(crate) fn tick<E: Env>(
     match health(&mut probation.candidate) {
         Ok(()) => {
             probation.health_ok += 1;
-            end_if_due(core, probation)
+            end_if_due(core, probation).map(|(mode, _)| mode)
         }
         Err(fault) => roll_back(core, probation, &fault, 0).map(|(mode, _)| mode),
     }
@@ -96,11 +104,12 @@ fn health<I: Instance>(version: &mut Version<I>) -> Result<(), Fault> {
     }
 }
 
-/// Commits the candidate if probation is over and it passes a last check.
+/// Commits the candidate if probation is over and it passes a last check; true
+/// when that check failed and the candidate was rolled back.
 fn end_if_due<E: Env>(
     core: &mut Core<E>,
     mut probation: Probation<E::Instance>,
-) -> Result<Mode<E::Instance>, Exit> {
+) -> Result<(Mode<E::Instance>, bool), Exit> {
     let settings = &core.settings;
     let elapsed = core.env.now_ms().saturating_sub(probation.began_ms);
     let served = probation.served >= settings.probation_calls && elapsed >= settings.probation_ms;
@@ -108,7 +117,7 @@ fn end_if_due<E: Env>(
         && elapsed >= settings.probation_ms.saturating_mul(4)
         && probation.health_ok >= 2;
     if !served && !idle {
-        return Ok(Mode::Probation(Box::new(probation)));
+        return Ok((Mode::Probation(Box::new(probation)), false));
     }
     let checked =
         health(&mut probation.candidate).and_then(|()| export_own(&mut probation.candidate));
@@ -121,9 +130,9 @@ fn end_if_due<E: Env>(
                 probation.served,
                 probation.regressions,
             )?;
-            Ok(Mode::Serving(probation.candidate))
+            Ok((Mode::Serving(probation.candidate), false))
         }
-        Err(fault) => roll_back(core, probation, &fault, 0).map(|(mode, _)| mode),
+        Err(fault) => roll_back(core, probation, &fault, 0).map(|(mode, _)| (mode, true)),
     }
 }
 

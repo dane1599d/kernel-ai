@@ -31,7 +31,9 @@ fn loader(settings: &Settings) -> Loader<WasmInstance> {
         memory_bytes: settings.memory_kib as usize * 1024,
     };
     Box::new(move |module, quiet| {
-        wasmhost::load(module, limits, (!quiet).then_some(print_log as fn(&str)))
+        let mut instance = wasmhost::load(module, limits, Some(print_log))?;
+        livecore::Instance::quiet(&mut instance, quiet);
+        Ok(instance)
     })
 }
 

@@ -133,7 +133,7 @@ fn show(name: &str) {
             "  #{} {} {} {reason}",
             entry.seq,
             kind::name(entry.kind),
-            entry.label
+            printable(&entry.label, kabi::live::MAX_LABEL, 1)
         );
     }
     if !ledger.last_detail.is_empty() {

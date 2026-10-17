@@ -63,3 +63,30 @@ fn health_finds_wrong_word_counts_and_ids() {
     next.state.next_id = 1;
     assert_eq!(next.health(), IDS_OUT_OF_ORDER);
 }
+
+#[test]
+fn the_state_and_the_replies_stay_within_what_the_host_keeps() {
+    let mut notes = Notes::init();
+    let text = "x ".repeat(2000);
+    let mut added = 0;
+    while notes
+        .handle(&alloc::format!("add {text}"))
+        .starts_with("ok")
+    {
+        added += 1;
+        assert!(added < 1000, "notes never filled up");
+    }
+    assert_eq!(
+        notes.handle(&alloc::format!("add {text}")),
+        "err notes are full"
+    );
+    assert!(notes.export(SCHEMA).unwrap().len() <= compsdk::MAX_STATE);
+    // Many matches: the reply is cut to fit.
+    let mut many = Notes::init();
+    for _ in 0..3000 {
+        many.add("x");
+    }
+    let reply = many.handle("find x");
+    assert!(reply.len() <= compsdk::MAX_REPLY, "{} bytes", reply.len());
+    assert!(reply.ends_with(" ..."));
+}

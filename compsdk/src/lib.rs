@@ -15,6 +15,11 @@ extern crate alloc;
 pub mod abi;
 pub mod state;
 
+/// Longest reply a request may get.
+pub const MAX_REPLY: usize = kabi::MAX_MESSAGE;
+/// Largest state a component may export.
+pub const MAX_STATE: usize = kabi::live::MAX_CHECKPOINT;
+
 use alloc::string::String;
 use alloc::vec::Vec;
 

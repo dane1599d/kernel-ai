@@ -79,14 +79,32 @@ pub(crate) fn swap<E: Env>(
     let interface = active.manifest.interface.clone();
     let mut candidate = match core.stage(label, artifact, Some(&interface), false) {
         Ok(candidate) => candidate,
-        Err(fault) => return refused(core, active, label, &fault),
+        Err(fault) => return refused(core, active, label, &fault, 0),
     };
-    if let Err(fault) = transfer(&mut active, &mut candidate, &blob) {
-        return refused(core, active, label, &fault);
+    match transfer(&mut active, &mut candidate, &blob) {
+        Ok(()) => {}
+        Err(Failed::Candidate(fault)) => return refused(core, active, label, &fault, 0),
+        Err(Failed::Active(fault)) => {
+            // The old version failed while writing an older schema: not the
+            // candidate's doing. Close the swap without blame, and reload it.
+            let why = Fault::new(
+                Reason::Export,
+                format!(
+                    "{} failed to write schema {}: {}",
+                    active.label, candidate.schema, fault.detail
+                ),
+            );
+            let step = refused(core, active, label, &why, flag::POISON)?;
+            let Mode::Serving(mut active) = step.0 else {
+                unreachable!("refused keeps the active version")
+            };
+            core.reload_after(&mut active, &fault, false)?;
+            return Ok((Mode::Serving(active), step.1));
+        }
     }
     let candidate_blob = match verify(&mut candidate) {
         Ok(blob) => blob,
-        Err(fault) => return refused(core, active, label, &fault),
+        Err(fault) => return refused(core, active, label, &fault, 0),
     };
     let settings = &core.settings;
     if settings.probation_calls == 0 && settings.probation_ms == 0 {
@@ -118,11 +136,13 @@ fn refused<E: Env>(
     active: Version<E::Instance>,
     label: &str,
     fault: &Fault,
+    flags: u64,
 ) -> Step<E::Instance> {
     core.report(&Report {
         reason: Some(fault.reason),
         label,
         detail: &fault.detail,
+        flags,
         ..Report::new(kind::ROLLBACK)
     })?;
     let reply = match fault.detail.is_empty() {
@@ -138,31 +158,39 @@ fn refused<E: Env>(
 
 /// Moves the state into the candidate: its own migration from the active schema,
 /// or, if it reads only an older schema, the active version's export in that one.
+/// Which side of a transfer failed.
+enum Failed {
+    Candidate(Fault),
+    /// The active version, while writing an older schema for the candidate.
+    Active(Fault),
+}
+
 fn transfer<I: Instance>(
     active: &mut Version<I>,
     candidate: &mut Version<I>,
     blob: &[u8],
-) -> Result<(), Fault> {
-    let migrate = |fault: Fault| Fault::new(Reason::Migrate, fault.detail);
+) -> Result<(), Failed> {
+    let migrate = |fault: Fault| Failed::Candidate(Fault::new(Reason::Migrate, fault.detail));
+    let refused = |schema: u32, code: u32, label: &str| {
+        Failed::Candidate(Fault::new(
+            Reason::Migrate,
+            format!("{label} refused schema {schema} state ({code})"),
+        ))
+    };
     let (from, to) = (active.schema, candidate.schema);
     match candidate.instance.import(blob, from).map_err(migrate)? {
         0 => return Ok(()),
         1 => {}
-        code => {
-            return Err(Fault::new(
-                Reason::Migrate,
-                format!("{} refused schema {from} state ({code})", candidate.label),
-            ));
-        }
+        code => return Err(refused(from, code, &candidate.label)),
     }
     let no_migration = || {
-        Fault::new(
+        Failed::Candidate(Fault::new(
             Reason::NoMigration,
             format!(
                 "{} cannot read schema {from} and {} cannot write schema {to}",
                 candidate.label, active.label
             ),
-        )
+        ))
     };
     if to >= from {
         return Err(no_migration());
@@ -170,14 +198,11 @@ fn transfer<I: Instance>(
     let older = active
         .instance
         .export(to)
-        .map_err(migrate)?
+        .map_err(Failed::Active)?
         .ok_or_else(no_migration)?;
     match candidate.instance.import(&older, to).map_err(migrate)? {
         0 => Ok(()),
-        code => Err(Fault::new(
-            Reason::Migrate,
-            format!("{} refused schema {to} state ({code})", candidate.label),
-        )),
+        code => Err(refused(to, code, &candidate.label)),
     }
 }
 

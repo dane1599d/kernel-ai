@@ -217,6 +217,15 @@ impl Ledger {
     fn rule(&mut self, pid: u64, event: &Event) -> Result<Option<String>, Error> {
         let label = event.label.as_str();
         let reason = Reason::from_raw(event.reason);
+        // Only events about a version carry a label, and those labels are checked
+        // against what the host fetched or the candidate; the rest carry none.
+        let labelled = matches!(
+            event.kind,
+            kind::RESTORED | kind::BEGIN | kind::COMMIT | kind::ROLLBACK
+        );
+        if !labelled && !label.is_empty() {
+            return Err(Error::Invalid);
+        }
         match (event.kind, &self.phase) {
             (kind::RESTORED, Phase::Empty) if !self.disabled => {}
             (kind::RESTORED, Phase::Steady { active }) if active == label && !self.disabled => {}
@@ -271,8 +280,9 @@ impl Ledger {
                 self.checkpoint = event.blob.clone();
                 self.generation += 1;
                 self.counters.commits += 1;
-                self.counters.served += event.served;
-                self.counters.regressions += event.regressions;
+                self.counters.served = self.counters.served.saturating_add(event.served);
+                self.counters.regressions =
+                    self.counters.regressions.saturating_add(event.regressions);
                 return Ok(Some(line));
             }
             (
@@ -308,8 +318,9 @@ impl Ledger {
                 };
                 self.counters.rollbacks += 1;
                 self.counters.by_reason[reason as usize] += 1;
-                self.counters.served += event.served;
-                self.counters.regressions += event.regressions;
+                self.counters.served = self.counters.served.saturating_add(event.served);
+                self.counters.regressions =
+                    self.counters.regressions.saturating_add(event.regressions);
                 return Ok(Some(line));
             }
             (kind::FAULT, Phase::Steady { active } | Phase::Swapping { active, .. })
@@ -341,7 +352,10 @@ impl Ledger {
                     reason.name()
                 )));
             }
-            (kind::RESET, Phase::Steady { active }) if self.disabled && pid == self.host_pid => {
+            // From the host that disabled it, or a later one that loaded the version.
+            (kind::RESET, Phase::Steady { active })
+                if self.disabled && (pid == self.host_pid || self.has_fetched(pid, active)) =>
+            {
                 let line = format!("{active} reset: its state was cleared");
                 self.disabled = false;
                 self.checkpoint.clear();

@@ -58,8 +58,11 @@ impl Env for SysEnv {
     }
 
     fn load(&mut self, module: &[u8], quiet: bool) -> Result<WasmInstance, Fault> {
-        let sink = (!quiet).then_some(version_log as fn(&str));
-        wasmhost::load(module, self.limits, sink)
+        // The sink stays attached; quiet only mutes it, so a standby that becomes
+        // the active version again logs as before.
+        let mut instance = wasmhost::load(module, self.limits, Some(version_log))?;
+        livecore::Instance::quiet(&mut instance, quiet);
+        Ok(instance)
     }
 
     fn now_ms(&self) -> u64 {

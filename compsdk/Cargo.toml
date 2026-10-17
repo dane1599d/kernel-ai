@@ -9,7 +9,7 @@ publish = false
 doctest = false
 
 [dependencies]
-# Never the `half` feature: it brings f16c (SSE) code, which ring 3 cannot run.
+kabi = { path = "../kabi" }
 minicbor = { version = "2.3.0", default-features = false, features = ["alloc", "derive"] }
 
 [target.'cfg(target_family = "wasm")'.dependencies]

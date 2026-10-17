@@ -26,6 +26,8 @@ pub enum Bug {
     ImportTrap,
     /// Its export claims the wrong schema.
     Export,
+    /// Writing an older schema traps.
+    ExportOlderTrap,
     /// `add` replies err.
     Regress,
 }
@@ -121,6 +123,7 @@ pub fn load(module: &[u8], quiet: bool) -> Result<Fake, Fault> {
         "SelfTest" => Bug::SelfTest,
         "ImportTrap" => Bug::ImportTrap,
         "Export" => Bug::Export,
+        "ExportOlderTrap" => Bug::ExportOlderTrap,
         "Regress" => Bug::Regress,
         other if other.starts_with("HealthAt(") => Bug::HealthAt(number_in(other)),
         other => Bug::TrapAt(number_in(other)),
@@ -184,6 +187,9 @@ impl Instance for Fake {
         };
         if schema != self.schema && !self.writes.contains(&schema) {
             return Ok(None);
+        }
+        if schema != self.schema && self.bug == Bug::ExportOlderTrap {
+            return Err(trap("export"));
         }
         let claimed = if self.bug == Bug::Export {
             schema + 10

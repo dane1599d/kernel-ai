@@ -46,6 +46,13 @@ impl Notes {
         id
     }
 
+    /// Whether a note with `text` still fits in the state the host can keep.
+    pub fn has_room_for(&self, text: &str) -> bool {
+        // The note's id, word count and framing take well under 24 bytes.
+        let size = compsdk::state::encode(SCHEMA, &self.state).len() + text.len() + 24;
+        size <= compsdk::MAX_STATE
+    }
+
     pub fn count(&self) -> String {
         let words: u32 = self.state.notes.iter().map(|note| note.words).sum();
         format!("ok {} notes, {words} words", self.state.notes.len())
@@ -105,7 +112,12 @@ impl Component for Notes {
         let (command, rest) = request.split_once(' ').unwrap_or((request, ""));
         let rest = rest.trim();
         match command {
-            "add" if !rest.is_empty() => format!("ok {}", self.add(rest)),
+            "add" if !rest.is_empty() => {
+                if !self.has_room_for(rest) {
+                    return String::from("err notes are full");
+                }
+                format!("ok {}", self.add(rest))
+            }
             "count" => self.count(),
             "get" => self.get(rest),
             "find" if !rest.is_empty() => {
@@ -113,8 +125,18 @@ impl Component for Notes {
                 if ids.is_empty() {
                     return String::from("ok none");
                 }
-                let ids: Vec<String> = ids.iter().map(u32::to_string).collect();
-                format!("ok {}", ids.join(" "))
+                let mut reply = String::from("ok");
+                for id in ids {
+                    let id = id.to_string();
+                    // Keep the reply within what one reply may hold.
+                    if reply.len() + id.len() + 5 > compsdk::MAX_REPLY {
+                        reply.push_str(" ...");
+                        break;
+                    }
+                    reply.push(' ');
+                    reply.push_str(&id);
+                }
+                reply
             }
             "about" => format!("ok notes {VERSION} schema {SCHEMA}"),
             _ => format!("err unknown request {command:?}"),
