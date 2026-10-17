@@ -11,6 +11,8 @@ use llmproto::text::printable;
 use spin::Once;
 
 const DEFAULT_MODEL: &str = "qwen3-8b";
+/// Keeps the llm service's argument string under kabi::MAX_ARGS.
+const MAX_MODEL_LEN: usize = 128;
 /// The service has 120 s for the chat itself; this adds time for it to come up.
 const ASK_TIMEOUT_MS: u64 = 150_000;
 const HEALTH_TIMEOUT_MS: u64 = 20_000;
@@ -35,7 +37,11 @@ pub fn configure(cmdline: &str) {
                 log!("llm: ignoring llm={value}: expected IPv4:PORT");
             }
         } else if let Some(value) = arg.strip_prefix("model=") {
-            model = value;
+            if value.len() <= MAX_MODEL_LEN {
+                model = value;
+            } else {
+                log!("llm: ignoring a model name longer than {MAX_MODEL_LEN} bytes");
+            }
         }
     }
     if let Some(server) = server {
@@ -58,17 +64,17 @@ pub fn target() -> Option<(Ipv4Addr, u16, &'static str)> {
         .map(|config| (config.server.0, config.server.1, config.model.as_str()))
 }
 
-/// The plan line for the `llm` service. Model names are passed on only if they are
-/// plain words, so they cannot add arguments of their own.
+/// The plan line for the `llm` service. The model name is one command-line word, so
+/// it holds no whitespace and cannot add arguments of its own; control characters
+/// are refused as well.
 pub fn plan_line() -> String {
     let mut line = String::from("llm caps=serve+net burst_ms=10000 pages=1024");
     if let Some((ip, port, model)) = target() {
         line.push_str(&format!(" host={ip}:{port}"));
-        if model
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"-_.:".contains(&b))
-        {
+        if model.chars().all(|c| !c.is_whitespace() && !c.is_control()) {
             line.push_str(&format!(" model={model}"));
+        } else {
+            log!("llm: the model name has control characters; using the service default");
         }
     }
     line

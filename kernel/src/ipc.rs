@@ -205,15 +205,8 @@ pub fn recv(slot: usize, buf: u64, cap: u64, timeout_ms: u64) -> Result<u64, Err
             }
             entry.server_pid = me.pid;
             BOUND[endpoint].store(me.pid, Ordering::SeqCst);
-            // A call taken before and never answered fails now.
-            let mut failed = None;
-            if let Some(old) = entry.current_call.take()
-                && CALL_STATE[old]
-                    .compare_exchange(TAKEN, FAILED, Ordering::SeqCst, Ordering::SeqCst)
-                    .is_ok()
-            {
-                failed = ipc.calls[old].as_ref().map(|c| c.caller);
-            }
+            // The next queued call, copied before any state changes, so running out
+            // of memory here leaves every call as it was.
             let next = (0..MAX_CALLS)
                 .filter(|&c| CALL_STATE[c].load(Ordering::SeqCst) == QUEUED)
                 .filter(|&c| {
@@ -222,30 +215,46 @@ pub fn recv(slot: usize, buf: u64, cap: u64, timeout_ms: u64) -> Result<u64, Err
                         .is_some_and(|call| call.endpoint == endpoint)
                 })
                 .min_by_key(|&c| ipc.calls[c].as_ref().map_or(u64::MAX, |call| call.id));
-            let taken = match next {
-                Some(c) => {
-                    let call = ipc.calls[c].as_mut().ok_or(Error::Busy)?;
+            let request = match next.and_then(|c| ipc.calls[c].as_ref()) {
+                Some(call) => {
                     let mut request = Vec::new();
                     request
                         .try_reserve_exact(call.request.len())
                         .map_err(|_| Error::NoMemory)?;
                     request.extend_from_slice(&call.request);
-                    call.taker = me.pid;
+                    Some(request)
+                }
+                None => None,
+            };
+            // A call taken before and never answered fails now.
+            let mut failed = None;
+            if let Some(old) = ipc.endpoints[endpoint]
+                .as_mut()
+                .and_then(|entry| entry.current_call.take())
+                && CALL_STATE[old]
+                    .compare_exchange(TAKEN, FAILED, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok()
+            {
+                failed = ipc.calls[old].as_ref().map(|c| c.caller);
+            }
+            match (next, &request) {
+                (Some(c), Some(_)) => {
+                    if let Some(call) = ipc.calls[c].as_mut() {
+                        call.taker = me.pid;
+                    }
                     CALL_STATE[c].store(TAKEN, Ordering::SeqCst);
                     PENDING[endpoint].fetch_sub(1, Ordering::SeqCst);
                     if let Some(entry) = ipc.endpoints[endpoint].as_mut() {
                         entry.current_call = Some(c);
                     }
-                    Some(request)
                 }
-                None => {
+                _ => {
                     if let Some(entry) = ipc.endpoints[endpoint].as_mut() {
                         entry.waiting = Some(tid);
                     }
-                    None
                 }
-            };
-            Ok((endpoint, taken, failed))
+            }
+            Ok((endpoint, request, failed))
         })?;
         wake(failed);
         if let Some(request) = taken {

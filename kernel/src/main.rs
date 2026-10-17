@@ -436,7 +436,8 @@ fn on_off(on: bool) -> &'static str {
 }
 
 /// Finds the ring-3 programs among the boot modules and, for the boots that use
-/// user space, starts supervision with the service plan.
+/// user space, starts supervision with the service plan. Not for `test`: its exact
+/// frame and heap leak checks must not race processes starting up.
 fn start_user_space(test: SelfTest) {
     let modules: &'static [&'static limine::file::File] =
         MODULES.response().map_or(&[], |r| r.modules());
@@ -448,10 +449,7 @@ fn start_user_space(test: SelfTest) {
     log!("process: {} programs loaded as modules", programs.len());
     let free = memory::with(|m| m.free_frames());
     process::set_page_budget(free / 2);
-    let wanted = matches!(
-        test,
-        SelfTest::None | SelfTest::Boot | SelfTest::Net | SelfTest::Terminal
-    );
+    let wanted = matches!(test, SelfTest::None | SelfTest::Net | SelfTest::Terminal);
     if !wanted || programs.is_empty() {
         return;
     }

@@ -116,7 +116,14 @@ fn write(slot: usize, ptr: u64, len: u64) -> Result<u64, Error> {
     uaccess::copy_from_user(slot, ptr, &mut buf[..len])?;
     let process = super::identity(slot);
     let name = process.name.as_str();
-    let text = core::str::from_utf8(&buf[..len]).unwrap_or("(not UTF-8)");
+    // A character cut by the size cap drops only that character, not the text.
+    let text = match core::str::from_utf8(&buf[..len]) {
+        Ok(text) => text,
+        Err(error) if error.error_len().is_none() => {
+            core::str::from_utf8(&buf[..error.valid_up_to()]).unwrap_or("")
+        }
+        Err(_) => "(not UTF-8)",
+    };
     let clean = llmproto::text::printable(text, MAX_WRITE, 64);
     for line in clean.lines() {
         let mut rest = line;

@@ -61,11 +61,15 @@ fn main() -> i32 {
             }
         };
         let text = core::str::from_utf8(&request[..len]).unwrap_or("");
-        let reply = match handle(&config, text, &mut response) {
+        let mut reply = match handle(&config, text, &mut response) {
             Ok(text) => format!("ok {text}"),
             Err(error) => format!("err {}", printable(&error, MAX_ERROR_CHARS, 1)),
         };
-        let _ = sys::svc_reply(reply.as_bytes());
+        // The character cap can still exceed the kernel's message size in bytes.
+        reply.truncate(reply.floor_char_boundary(kabi::MAX_MESSAGE));
+        if let Err(error) = sys::svc_reply(reply.as_bytes()) {
+            println!("svc_reply failed: {error:?}");
+        }
     }
 }
 

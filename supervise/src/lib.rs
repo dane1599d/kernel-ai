@@ -128,6 +128,9 @@ pub struct Record {
     /// The running instance's pid, or 0. Lets a restarted supervisor match exit
     /// records for instances started by its predecessor.
     pub pid: u64,
+    /// When the running instance started (boot-relative ms), so a restarted
+    /// supervisor can tell how long it ran.
+    pub started_ms: u64,
 }
 
 impl Record {
@@ -162,7 +165,7 @@ impl Record {
     }
 }
 
-const STATE_MAGIC: &str = "supervisor-state 2";
+const STATE_MAGIC: &str = "supervisor-state 3";
 
 /// Encodes records for the kernel-held state region.
 pub fn encode(records: &[Record]) -> String {
@@ -170,12 +173,13 @@ pub fn encode(records: &[Record]) -> String {
     for record in records {
         text.push('\n');
         text.push_str(&format!(
-            "{} {} {} {} {}",
+            "{} {} {} {} {} {}",
             record.name,
             record.restarts,
             record.quick_failures,
             u8::from(record.gave_up),
-            record.pid
+            record.pid,
+            record.started_ms
         ));
         for at in &record.recent {
             text.push_str(&format!(" {at}"));
@@ -202,6 +206,7 @@ pub fn decode(bytes: &[u8]) -> Vec<Record> {
             let quick_failures = words.next()?.parse().ok()?;
             let gave_up = words.next()? == "1";
             let pid = words.next()?.parse().ok()?;
+            let started_ms = words.next()?.parse().ok()?;
             let recent = words
                 .map(str::parse)
                 .collect::<Result<Vec<u64>, _>>()
@@ -213,6 +218,7 @@ pub fn decode(bytes: &[u8]) -> Vec<Record> {
                 recent,
                 gave_up,
                 pid,
+                started_ms,
             })
         })
         .collect()
@@ -328,6 +334,7 @@ mod tests {
                 recent: vec![10, 20, 30],
                 gave_up: false,
                 pid: 42,
+                started_ms: 1234,
             },
             Record {
                 name: "hog".into(),
@@ -336,13 +343,16 @@ mod tests {
                 recent: vec![],
                 gave_up: true,
                 pid: 0,
+                started_ms: 0,
             },
         ];
         assert_eq!(decode(encode(&records).as_bytes()), records);
         assert!(decode(b"").is_empty());
         assert!(decode(b"garbage").is_empty());
         assert!(decode(&[0xFF, 0xFE]).is_empty());
-        let damaged = alloc::format!("{STATE_MAGIC}\ncrasher x 1 0 0\nhog 2 0 0 7");
+        let damaged = alloc::format!("{STATE_MAGIC}\ncrasher x 1 0 0 0\nhog 2 0 0 7 99");
+        // State in an older layout reads as none rather than as shifted fields.
+        assert!(decode(b"supervisor-state 2\nhog 2 0 0 7").is_empty());
         assert_eq!(decode(damaged.as_bytes()).len(), 1);
     }
 }

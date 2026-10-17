@@ -28,21 +28,34 @@ fn each_page(
     if addr < MIN_USER_ADDRESS || end > USER_END {
         return Err(Error::Fault);
     }
-    with_space(slot, |space| {
-        let mut needed = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
-        if write {
-            needed |= PageTableFlags::WRITABLE;
-        }
+    let mut needed = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
+    if write {
+        needed |= PageTableFlags::WRITABLE;
+    }
+    // Pieces of the range, one per page: (address, length).
+    let pieces = move || {
         let mut at = addr;
-        while at < end {
-            let chunk = (end - at).min(PAGE_SIZE - at % PAGE_SIZE);
-            let (phys, flags) =
-                memory::with(|m| m.translate_user(space, at)).ok_or(Error::Fault)?;
-            if !flags.contains(needed) {
-                return Err(Error::Fault);
-            }
-            f(phys, (at - addr) as usize, chunk as usize);
-            at += chunk;
+        core::iter::from_fn(move || {
+            (at < end).then(|| {
+                let piece = (at, (end - at).min(PAGE_SIZE - at % PAGE_SIZE));
+                at += piece.1;
+                piece
+            })
+        })
+    };
+    // The space stays locked across both passes, so the check holds for the copy.
+    with_space(slot, |space| {
+        let page = |at: u64| {
+            memory::with(|m| m.translate_user(space, at))
+                .filter(|(_, flags)| flags.contains(needed))
+                .map(|(phys, _)| phys)
+                .ok_or(Error::Fault)
+        };
+        for (at, _) in pieces() {
+            page(at)?;
+        }
+        for (at, chunk) in pieces() {
+            f(page(at)?, (at - addr) as usize, chunk as usize);
         }
         Ok(())
     })

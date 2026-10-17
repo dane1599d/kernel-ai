@@ -61,11 +61,16 @@ fn main() -> i32 {
                 .cloned()
                 .unwrap_or_else(|| Record::new(&spec.name));
             let pid = (record.pid != 0).then_some(record.pid);
+            // Known from the saved state for an instance a predecessor started.
+            let started_ms = match record.started_ms {
+                0 => now,
+                at => at,
+            };
             Service {
                 spec,
                 record,
                 pid,
-                started_ms: now,
+                started_ms,
                 start_at_ms: None,
             }
         })
@@ -155,6 +160,7 @@ fn start(service: &mut Service, now: u64) {
             service.pid = Some(pid);
             service.record.pid = pid;
             service.started_ms = now;
+            service.record.started_ms = now;
             service.start_at_ms = None;
         }
         Err(error) => {
@@ -171,6 +177,7 @@ fn on_exit(services: &mut [Service], exit: &ExitRecord) {
     };
     service.pid = None;
     service.record.pid = 0;
+    service.record.started_ms = 0;
     let now = now_ms();
     let reason = ExitReason::from_raw(exit.reason).map_or("ended", ExitReason::name);
     let name = &service.spec.name;
