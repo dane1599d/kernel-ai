@@ -1,7 +1,7 @@
 //! Build and run tool for Kernel AI.
 //!
 //! cargo xtask build [--release] [--spikes]
-//! cargo xtask run   [--release] [--spikes] [--accel auto|kvm|whpx|tcg] [--llm IP:PORT] [--model NAME]
+//! cargo xtask run   [--release] [--spikes] [--accel auto|kvm|whpx|tcg] [--llm IP:PORT] [--model NAME] [--edit]
 //! cargo xtask test  [--release] [--accel auto|kvm|whpx|tcg] [--timeout SECS]
 //! cargo xtask soak  [--accel auto|kvm|whpx|tcg]   (10-minute storm, M5 exit test)
 //! cargo xtask fluency --llm HOST:PORT --model NAME [--repeat N]   (M8b script gate, host only)
@@ -13,10 +13,12 @@
 //! enabled. Each case passes only if the
 //! kernel reports success through QEMU's isa-debug-exit device.
 
+mod buildsvc;
 mod cases;
 mod components;
 mod esp;
 mod fluency;
+mod httpd;
 mod lines;
 mod mock_llm;
 mod options;
@@ -76,7 +78,19 @@ fn execute(options: &Options) -> Result<(), String> {
     let qemu = find_qemu()?;
     let accel = resolve_accel(options.accel);
     if options.task == Task::Run {
-        let cmdline = llm_cmdline(options.llm.as_deref(), options.model.as_deref());
+        let mut cmdline = llm_cmdline(options.llm.as_deref(), options.model.as_deref());
+        // Kept until QEMU exits: the build service runs on its threads.
+        let _service = if options.edit {
+            let service = buildsvc::start_dev(&root)?;
+            cmdline = format!("{cmdline} {}", buildsvc::cmdline(&service));
+            println!(
+                "xtask: build service on 127.0.0.1:{}, building in .live/repo; afterwards: git fetch .live/repo kai/notes",
+                service.port
+            );
+            Some(service)
+        } else {
+            None
+        };
         esp::make_esp(&esp, &kernel, &modules, &efi, &cmdline)?;
         let firmware = find_firmware(&qemu, &target_dir)?;
         let args = qemu::args(&firmware, accel, false);
@@ -96,7 +110,7 @@ fn execute(options: &Options) -> Result<(), String> {
     };
     for case in cases {
         let cmdline = format!("{} {llm_args}", case.cmdline);
-        println!("xtask: test case {} ({cmdline})", case.name);
+        println!("xtask: test case {} ({})", case.name, buildsvc::redact(&cmdline));
         esp::make_esp(&esp, &kernel, &modules, &efi, &cmdline)?;
         let firmware = find_firmware(&qemu, &target_dir)?;
         let monitor = qemu::free_port()?;

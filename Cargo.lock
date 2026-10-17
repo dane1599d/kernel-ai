@@ -1199,6 +1199,7 @@ name = "xtask"
 version = "0.0.0"
 dependencies = [
  "addr2line",
+ "editcore",
  "kabi",
  "linetable",
  "livecore",

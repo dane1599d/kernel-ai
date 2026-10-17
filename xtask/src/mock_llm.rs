@@ -3,13 +3,15 @@
 //! scripts in [`SCRIPTS`]) and `/health` with "ok". QEMU's user networking maps the
 //! guest's 10.0.2.2 to the host's 127.0.0.1, so the guest reaches it there.
 
+use crate::httpd::{self, HttpError};
 use serde_json::{Value, json};
-use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
-use std::time::Duration;
+
+/// Largest request body read: a chat request from the kernel is a few KiB.
+const MAX_BODY: usize = 256 * 1024;
 
 /// The text every question gets back. Tests look for it on the console.
 pub const REPLY: &str = "Hello from the mock LLM.";
@@ -50,39 +52,19 @@ pub fn start() -> Result<MockLlm, String> {
 }
 
 fn serve(stream: TcpStream, chats: &AtomicUsize) -> std::io::Result<()> {
-    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
-    let mut reader = BufReader::new(stream.try_clone()?);
-    let mut request_line = String::new();
-    reader.read_line(&mut request_line)?;
-    let mut content_length = 0;
-    loop {
-        let mut line = String::new();
-        if reader.read_line(&mut line)? == 0 || line == "\r\n" {
-            break;
-        }
-        if let Some((name, value)) = line.split_once(':')
-            && name.eq_ignore_ascii_case("content-length")
-        {
-            content_length = value.trim().parse().unwrap_or(0);
-        }
-    }
-    let mut body = vec![0; content_length];
-    reader.read_exact(&mut body)?;
-    let (status, reply) = route(&request_line, &body, chats);
-    let response = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
-        reply.len()
-    );
-    let mut stream = stream;
-    stream.write_all(response.as_bytes())?;
-    stream.flush()
+    let (status, reply) = match httpd::read_request(&stream, MAX_BODY) {
+        Ok(request) => route(&request.method, &request.path, &request.body, chats),
+        Err(HttpError::Io(error)) => return Err(error),
+        Err(HttpError::TooLarge) => ("413 Payload Too Large", String::new()),
+        Err(HttpError::Malformed(_)) => ("400 Bad Request", String::new()),
+    };
+    httpd::respond(&stream, status, "application/json", reply.as_bytes())
 }
 
-fn route(request_line: &str, body: &[u8], chats: &AtomicUsize) -> (&'static str, String) {
-    let mut parts = request_line.split_whitespace();
-    match (parts.next(), parts.next()) {
-        (Some("GET"), Some("/health")) => ("200 OK", r#"{"status":"ok"}"#.to_string()),
-        (Some("POST"), Some("/v1/chat/completions")) => {
+fn route(method: &str, path: &str, body: &[u8], chats: &AtomicUsize) -> (&'static str, String) {
+    match (method, path) {
+        ("GET", "/health") => ("200 OK", r#"{"status":"ok"}"#.to_string()),
+        ("POST", "/v1/chat/completions") => {
             chats.fetch_add(1, Ordering::SeqCst);
             match serde_json::from_slice::<Value>(body) {
                 Ok(request) if request["messages"].is_array() => {
@@ -192,6 +174,7 @@ fn completion(content: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
 
     fn exchange(port: u16, request: &str) -> String {
         let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();

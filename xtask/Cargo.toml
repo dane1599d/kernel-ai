@@ -8,6 +8,7 @@ publish = false
 [dependencies]
 kabi = { path = "../kabi" }
 livecore = { path = "../livecore" }
+editcore = { path = "../editcore" }
 llmproto = { path = "../llmproto" }
 linetable = { path = "../linetable", features = ["alloc"] }
 uelf = { path = "../uelf" }

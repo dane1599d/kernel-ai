@@ -32,6 +32,8 @@ pub struct Options {
     /// LLM server as HOST:PORT for `run`, for example the Mac mini on the LAN.
     pub llm: Option<String>,
     pub model: Option<String>,
+    /// `run --edit`: start the build service on the dev clone, so `:edit` works.
+    pub edit: bool,
 }
 
 pub fn parse_args(args: &[String]) -> Result<Options, String> {
@@ -58,6 +60,7 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
         }),
         llm: None,
         model: None,
+        edit: false,
     };
     let mut rest = args[1..].iter();
     while let Some(arg) = rest.next() {
@@ -91,6 +94,7 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
                 }
                 options.llm = Some(server.clone());
             }
+            "--edit" if task == Task::Run => options.edit = true,
             "--model" => {
                 let model = rest.next().ok_or("--model expects a model name")?;
                 if model.is_empty() || model.chars().any(char::is_whitespace) {
@@ -143,6 +147,12 @@ mod tests {
         assert!(!options.spikes);
         assert_eq!(options.accel, Accel::Tcg);
         assert_eq!(options.timeout, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn edit_is_for_run_only() {
+        assert!(parse_args(&args(&["run", "--edit"])).unwrap().edit);
+        assert!(parse_args(&args(&["test", "--edit"])).is_err());
     }
 
     #[test]

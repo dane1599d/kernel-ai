@@ -12,26 +12,42 @@ use std::{env, fs};
 
 pub const TARGET: &str = "wasm32-unknown-unknown";
 
-/// One version of a component.
-pub struct Version {
+/// How a component version is built.
+pub struct Recipe {
     pub component: &'static str,
-    pub label: &'static str,
     pub krate: &'static str,
     /// The crate's directory, and those of path dependencies whose source ships.
     pub dirs: &'static [&'static str],
     pub feature: Option<&'static str>,
 }
 
+/// One version on the boot drive.
+pub struct Version {
+    pub label: &'static str,
+    pub recipe: Recipe,
+}
+
 const NOTES: &str = "components/notes";
 const BAD: &str = "components/fixtures/notes-bad";
 
+/// `notes` from `components/notes`: version 2, and every upload the edit loop
+/// builds.
+pub const NOTES_RECIPE: Recipe = Recipe {
+    component: "notes",
+    krate: "comp-notes",
+    dirs: &[NOTES],
+    feature: None,
+};
+
 const fn bad(label: &'static str, feature: &'static str) -> Version {
     Version {
-        component: "notes",
         label,
-        krate: "comp-notes-bad",
-        dirs: &[BAD, NOTES],
-        feature: Some(feature),
+        recipe: Recipe {
+            component: "notes",
+            krate: "comp-notes-bad",
+            dirs: &[BAD, NOTES],
+            feature: Some(feature),
+        },
     }
 }
 
@@ -39,18 +55,17 @@ const fn bad(label: &'static str, feature: &'static str) -> Version {
 /// test expects to roll back.
 pub const VERSIONS: &[Version] = &[
     Version {
-        component: "notes",
         label: "1",
-        krate: "comp-notes-v1",
-        dirs: &["components/fixtures/notes-v1"],
-        feature: None,
+        recipe: Recipe {
+            component: "notes",
+            krate: "comp-notes-v1",
+            dirs: &["components/fixtures/notes-v1"],
+            feature: None,
+        },
     },
     Version {
-        component: "notes",
         label: "2",
-        krate: "comp-notes",
-        dirs: &[NOTES],
-        feature: None,
+        recipe: NOTES_RECIPE,
     },
     bad("3-import", "bug-import"),
     bad("3-health", "bug-health"),
@@ -91,14 +106,14 @@ fn build_one(root: &Path, version: &Version) -> Result<Module, String> {
             "build",
             "--quiet",
             "-p",
-            version.krate,
+            version.recipe.krate,
             "--target",
             TARGET,
             "--profile",
             "component",
         ])
         .env("KAI_VERSION", version.label);
-    if let Some(feature) = version.feature {
+    if let Some(feature) = version.recipe.feature {
         command.args(["--features", feature]);
     }
     let status = command
@@ -107,41 +122,41 @@ fn build_one(root: &Path, version: &Version) -> Result<Module, String> {
     if !status.success() {
         return Err(format!(
             "building {} {} failed",
-            version.component, version.label
+            version.recipe.component, version.label
         ));
     }
     let wasm = root
         .join("target")
         .join(TARGET)
         .join("component")
-        .join(format!("{}.wasm", version.krate.replace('-', "_")));
+        .join(format!("{}.wasm", version.recipe.krate.replace('-', "_")));
     let module = fs::read(&wasm).map_err(|e| format!("cannot read {}: {e}", wasm.display()))?;
-    let source = bundle_source(root, version.dirs)?;
+    let source = bundle_source(root, version.recipe.dirs)?;
     let (module_len, source_len) = (module.len(), source.len());
-    let bytes = pack(version, module, &source);
+    let bytes = pack(&version.recipe, version.label, module, &source);
     artifact::parse(&bytes)
-        .map_err(|why| format!("{} {}: {why}", version.component, version.label))?;
+        .map_err(|why| format!("{} {}: {why}", version.recipe.component, version.label))?;
     println!(
         "xtask: {} {} {} KiB ({} KiB module, {} KiB source)",
-        version.component,
+        version.recipe.component,
         version.label,
         bytes.len() / 1024,
         module_len / 1024,
         source_len / 1024
     );
     Ok(Module {
-        path: format!("comp/{}/{}.wasm", version.component, version.label),
+        path: format!("comp/{}/{}.wasm", version.recipe.component, version.label),
         bytes,
     })
 }
 
 /// The module with its manifest and source sections appended.
-pub fn pack(version: &Version, mut module: Vec<u8>, source: &[u8]) -> Vec<u8> {
+pub fn pack(recipe: &Recipe, label: &str, mut module: Vec<u8>, source: &[u8]) -> Vec<u8> {
     let manifest = Manifest {
-        component: version.component.into(),
-        version: version.label.into(),
-        interface: format!("{}@1", version.component),
-        features: version.feature.unwrap_or("-").into(),
+        component: recipe.component.into(),
+        version: label.into(),
+        interface: format!("{}@1", recipe.component),
+        features: recipe.feature.unwrap_or("-").into(),
         build: sha256_hex(&module),
         source: sha256_hex(source),
     };
@@ -151,7 +166,7 @@ pub fn pack(version: &Version, mut module: Vec<u8>, source: &[u8]) -> Vec<u8> {
 }
 
 /// Cargo.toml and everything under src/ in each directory, by workspace path.
-fn bundle_source(root: &Path, dirs: &[&str]) -> Result<Vec<u8>, String> {
+pub fn bundle_source(root: &Path, dirs: &[&str]) -> Result<Vec<u8>, String> {
     let mut files: Vec<(String, Vec<u8>)> = Vec::new();
     for dir in dirs {
         let manifest = format!("{dir}/Cargo.toml");
@@ -195,7 +210,7 @@ mod tests {
         for (index, version) in VERSIONS.iter().enumerate() {
             assert!(kabi::live::valid_label(version.label), "{}", version.label);
             assert!(VERSIONS[..index].iter().all(|v| v.label != version.label));
-            for dir in version.dirs {
+            for dir in version.recipe.dirs {
                 assert!(root.join(dir).join("Cargo.toml").exists(), "{dir}");
             }
         }
@@ -217,7 +232,12 @@ mod tests {
     fn a_packed_module_keeps_its_bytes_and_says_what_it_is() {
         let module = Vec::from(&b"\0asm\x01\0\0\0"[..]);
         let source = artifact::bundle(&[("components/notes/src/lib.rs", b"//")]);
-        let bytes = pack(&VERSIONS[2], module.clone(), &source);
+        let bytes = pack(
+            &VERSIONS[2].recipe,
+            VERSIONS[2].label,
+            module.clone(),
+            &source,
+        );
         let parsed = artifact::parse(&bytes).unwrap();
         assert!(bytes.starts_with(&module));
         assert_eq!(parsed.manifest.version, "3-import");
