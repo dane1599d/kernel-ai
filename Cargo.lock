@@ -882,7 +882,7 @@ version = "0.0.0"
 dependencies = [
  "kabi",
  "llmproto",
- "rhai",
+ "shellcore",
  "spin 0.12.3",
  "supervise",
  "talc",

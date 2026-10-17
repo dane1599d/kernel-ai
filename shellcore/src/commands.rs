@@ -17,7 +17,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("threads", "scheduler statistics"),
     ("uptime", "time since boot"),
     ("ps", "running services"),
-    ("policy", "show, or switch with `policy rr` / `policy interactive`"),
+    (
+        "policy",
+        "show, or switch with `policy rr` / `policy interactive`",
+    ),
     ("ask", "`ask <question>` sends the question to the LLM"),
 ];
 
@@ -28,10 +31,10 @@ const RHAI_AFTER_NAME: &str = "(=.[+-*/%<>!&|^?;,";
 /// If `line` is a plain command, its name and the rest of the line. A line is a
 /// command when its first word is one, that word is not a variable, and what
 /// follows is words rather than Rhai syntax.
-pub fn split_command<'a>(
-    line: &'a str,
+pub fn split_command(
+    line: &str,
     is_variable: impl Fn(&str) -> bool,
-) -> Option<(&'static str, &'a str)> {
+) -> Option<(&'static str, &str)> {
     let (word, rest) = match line.find(char::is_whitespace) {
         Some(at) => (&line[..at], line[at..].trim_start()),
         None => (line, ""),
@@ -84,7 +87,8 @@ fn help() -> String {
 }
 
 fn metrics(host: &dyn Host) -> Result<Metrics, String> {
-    host.metrics().map_err(|error| format!("metrics: {error:?}"))
+    host.metrics()
+        .map_err(|error| format!("metrics: {error:?}"))
 }
 
 fn mem(host: &dyn Host) -> Result<String, String> {
@@ -142,7 +146,10 @@ fn ps(host: &dyn Host) -> Result<String, String> {
 }
 
 fn current_policy(host: &dyn Host) -> Result<String, String> {
-    Ok(format!("scheduling policy: {}", policy_name(metrics(host)?.policy)))
+    Ok(format!(
+        "scheduling policy: {}",
+        policy_name(metrics(host)?.policy)
+    ))
 }
 
 fn set_policy(host: &dyn Host, name: &str) -> Result<String, String> {
@@ -172,11 +179,14 @@ pub(crate) fn register(engine: &mut Engine, host: &Rc<dyn Host>, line: &Rc<Line>
         engine.register_fn(name, move || -> Out { wrap(f(host.as_ref())) });
     }
     let h = Rc::clone(host);
-    engine.register_fn("cpus", move || -> Result<i64, alloc::boxed::Box<EvalAltResult>> {
-        metrics(h.as_ref())
-            .map(|m| m.cpus as i64)
-            .map_err(runtime_error)
-    });
+    engine.register_fn(
+        "cpus",
+        move || -> Result<i64, alloc::boxed::Box<EvalAltResult>> {
+            metrics(h.as_ref())
+                .map(|m| m.cpus as i64)
+                .map_err(runtime_error)
+        },
+    );
     let h = Rc::clone(host);
     engine.register_fn("policy", move |name: &str| -> Out {
         wrap(set_policy(h.as_ref(), name))

@@ -133,7 +133,12 @@ fn ctrl_c_and_memory_stop_a_line() {
     host.interrupt_in.set(Some(5));
     assert_eq!(shell.eval("loop { }").text, "stopped: interrupted");
     host.heap.set(DEFAULT_CONFIG.heap_budget + 1);
-    assert!(shell.eval("loop { }").text.starts_with("stopped: memory budget"));
+    assert!(
+        shell
+            .eval("loop { }")
+            .text
+            .starts_with("stopped: memory budget")
+    );
 }
 
 #[test]
@@ -141,7 +146,10 @@ fn an_old_ctrl_c_does_not_stop_the_next_line() {
     let host = FakeHost::new();
     let mut shell = shell(&host);
     host.interrupt_in.set(Some(0));
-    assert_eq!(shell.eval("let n = 0; for i in 0..5000 { n += 1 } n"), ok("5000"));
+    assert_eq!(
+        shell.eval("let n = 0; for i in 0..5000 { n += 1 } n"),
+        ok("5000")
+    );
 }
 
 #[test]
@@ -176,11 +184,23 @@ fn printed_output_is_capped() {
 fn commands_run_from_their_words() {
     let host = FakeHost::new();
     let mut shell = shell(&host);
-    assert_eq!(shell.eval("policy rr"), ok("scheduling policy: round-robin"));
+    assert_eq!(
+        shell.eval("policy rr"),
+        ok("scheduling policy: round-robin")
+    );
     assert_eq!(host.policy.get(), Some(policy::ROUND_ROBIN));
-    assert_eq!(shell.eval("policy(\"interactive\")"), ok("scheduling policy: interactive"));
-    assert_eq!(shell.eval("ask hello world"), ok("Hello from the fake LLM."));
-    assert_eq!(host.asked.borrow().last().map(String::as_str), Some("hello world"));
+    assert_eq!(
+        shell.eval("policy(\"interactive\")"),
+        ok("scheduling policy: interactive")
+    );
+    assert_eq!(
+        shell.eval("ask hello world"),
+        ok("Hello from the fake LLM.")
+    );
+    assert_eq!(
+        host.asked.borrow().last().map(String::as_str),
+        Some("hello world")
+    );
     assert!(shell.eval("mem").text.contains("MiB free"));
     assert_eq!(shell.eval("cpus"), ok("4"));
     assert_eq!(shell.eval("cpus() + 1"), ok("5"));
@@ -202,7 +222,10 @@ fn command_words_versus_rhai_syntax() {
     let none = |_: &str| false;
     assert_eq!(split_command("policy rr", none), Some(("policy", "rr")));
     assert_eq!(split_command("mem", none), Some(("mem", "")));
-    assert_eq!(split_command("ask why is the sky blue", none), Some(("ask", "why is the sky blue")));
+    assert_eq!(
+        split_command("ask why is the sky blue", none),
+        Some(("ask", "why is the sky blue"))
+    );
     assert_eq!(split_command("policy(\"rr\")", none), None);
     assert_eq!(split_command("policy = 2", none), None);
     assert_eq!(split_command("ask (x)", none), None);
@@ -243,5 +266,8 @@ fn reset_and_syntax_errors() {
     assert!(!shell.eval("f()").ok);
     let reply = shell.eval("let = ;");
     assert!(!reply.ok && reply.text.starts_with("syntax error"));
-    assert_eq!(reply.to_wire().split_once(' ').map(|(tag, _)| tag), Some("err"));
+    assert_eq!(
+        reply.to_wire().split_once(' ').map(|(tag, _)| tag),
+        Some("err")
+    );
 }

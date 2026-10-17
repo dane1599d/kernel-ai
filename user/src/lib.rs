@@ -14,7 +14,12 @@ pub mod sys;
 use core::fmt::{self, Write};
 
 #[global_allocator]
-static HEAP: heap::Allocator = heap::new();
+static HEAP: heap::Counting = heap::Counting::new();
+
+/// Bytes of heap this program has in use.
+pub fn heap_bytes() -> u64 {
+    HEAP.live_bytes()
+}
 
 /// Defines `_start`, which runs `main` and exits with its return value.
 #[macro_export]

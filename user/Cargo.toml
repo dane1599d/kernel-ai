@@ -16,6 +16,6 @@ bench = false
 kabi = { path = "../kabi" }
 llmproto = { path = "../llmproto" }
 supervise = { path = "../supervise" }
-rhai = { version = "1.26.1", default-features = false, features = ["no_std", "no_float", "no_custom_syntax"] }
+shellcore = { path = "../shellcore" }
 spin = "0.12.3"
 talc = "5.1.1"

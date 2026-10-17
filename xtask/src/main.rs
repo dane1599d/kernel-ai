@@ -312,7 +312,15 @@ fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 /// The ring-3 programs in the `user` crate, all shipped as boot modules.
-const USER_PROGRAMS: &[&str] = &["supervisor", "llm", "crasher", "spinner", "hog", "probe"];
+const USER_PROGRAMS: &[&str] = &[
+    "supervisor",
+    "llm",
+    "shell",
+    "crasher",
+    "spinner",
+    "hog",
+    "probe",
+];
 
 /// Builds every user program; returns (name, ELF path) pairs.
 fn build_user(root: &Path, options: &Options) -> Result<Vec<(&'static str, PathBuf)>, String> {

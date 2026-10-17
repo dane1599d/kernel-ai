@@ -1,35 +1,42 @@
-//! The M6 terminal: a prompt with line editing and a fixed set of built-in commands.
-//! A real REPL language arrives in M8; until then, commands are plain words.
+//! The terminal: a prompt with line editing. Each line goes to the ring-3 Rhai
+//! shell, whose answer is printed with a `= ` (result) or `! ` (error) lead that no
+//! kernel message uses, so shell output can never pass for kernel output. Lines
+//! starting with `:` are kernel commands, which work even when the shell is down.
 
 use crate::console::{BACKSPACE, FORM_FEED};
 use crate::keyboard::Decoder;
-use crate::{hpet, llm, log, memory, net, serial, smp, threads};
+use crate::{hpet, ipc, llm, log, memory, net, serial, smp, threads};
 use alloc::boxed::Box;
 use alloc::string::String;
-use core::sync::atomic::{AtomicU64, Ordering};
+use llmproto::text::printable;
 use sched::{Interactive, RoundRobin};
 
 const PROMPT: &str = "kai> ";
 const MAX_LINE: usize = 200;
 const DELETE: char = 127u8 as char;
-
-/// LLM replies shown so far; the terminal self-test watches it.
-static REPLIES: AtomicU64 = AtomicU64::new(0);
+/// Longest a shell line may take: the shell's own LLM wait (140 s) plus its
+/// two-second compute budget, with room to spare, so the shell always answers first.
+const SHELL_TIMEOUT_MS: u64 = 160_000;
+/// How long to wait for a shell that is starting or restarting.
+const SHELL_START_WAIT_NS: u64 = 3_000_000_000;
+/// Longest piece of a reply printed in one go (each print keeps interrupts off).
+const PIECE_CHARS: usize = 160;
+const MAX_REPLY_LINES: usize = 64;
 
 const HELP: &[(&str, &str)] = &[
-    ("help", "list commands"),
-    ("ask <text>", "send <text> to the LLM and show the reply"),
+    (":help", "this list"),
+    (":ask <text>", "send <text> straight to the llm service"),
     (
-        "policy [interactive|rr]",
+        ":policy [interactive|rr]",
         "show or switch the scheduling policy on every CPU",
     ),
-    ("threads", "scheduler statistics"),
-    ("cpus", "CPUs online"),
-    ("mem", "free memory and heap use"),
-    ("net", "network, LLM server and llm service status"),
-    ("ps", "running processes"),
-    ("uptime", "time since the clock started"),
-    ("clear", "clear the screen"),
+    (":threads", "scheduler statistics"),
+    (":cpus", "CPUs online"),
+    (":mem", "free memory and heap use"),
+    (":net", "network, LLM server and llm service status"),
+    (":ps", "running processes"),
+    (":uptime", "time since the clock started"),
+    (":clear", "clear the screen"),
 ];
 
 fn print(args: core::fmt::Arguments) {
@@ -39,11 +46,16 @@ fn print(args: core::fmt::Arguments) {
 /// Runs the terminal on the calling thread, forever.
 pub fn run(_: usize) {
     let mut decoder = Decoder::new();
-    log!("Kernel AI terminal. Type help for commands.");
+    log!("Kernel AI terminal. Lines are Rhai (try help); kernel commands start with ':'.");
     loop {
         print(format_args!("{PROMPT}"));
         let line = read_line(&mut decoder);
-        execute(line.trim());
+        let line = line.trim();
+        match line.strip_prefix(':') {
+            Some(command) => kernel_command(command.trim()),
+            None if line.is_empty() => {}
+            None => shell_line(line),
+        }
     }
 }
 
@@ -69,17 +81,55 @@ fn read_line(decoder: &mut Decoder) -> String {
     }
 }
 
-fn execute(line: &str) {
+/// Sends a line to the shell and prints its answer.
+fn shell_line(line: &str) {
+    let start_deadline = hpet::nanos() + SHELL_START_WAIT_NS;
+    if ipc::wait_bound("shell", start_deadline, || false).is_err() {
+        log!("shell not running; kernel commands start with ':' (try :help)");
+        return;
+    }
+    match ipc::call("shell", line.as_bytes(), SHELL_TIMEOUT_MS) {
+        Ok(reply) => show_shell_reply(&reply),
+        Err(error) => log!("shell: no answer ({error:?})"),
+    }
+}
+
+/// Prints `ok <text>` or `err <text>` with its lead, one complete line per piece.
+fn show_shell_reply(reply: &[u8]) {
+    let text = String::from_utf8_lossy(reply);
+    let clean = printable(&text, kabi::MAX_MESSAGE, MAX_REPLY_LINES);
+    let (lead, body) = match clean.split_once(' ').unwrap_or((clean.as_str(), "")) {
+        ("ok", body) => ("=", body),
+        ("err", body) => ("!", body),
+        _ => ("!", "the shell sent a malformed reply"),
+    };
+    for line in body.lines() {
+        let mut rest = line;
+        loop {
+            let cut = rest
+                .char_indices()
+                .nth(PIECE_CHARS)
+                .map_or(rest.len(), |(at, _)| at);
+            log!("{lead} {}", &rest[..cut]);
+            rest = &rest[cut..];
+            if rest.is_empty() {
+                break;
+            }
+        }
+    }
+}
+
+fn kernel_command(line: &str) {
     let (command, rest) = line.split_once(' ').unwrap_or((line, ""));
     let rest = rest.trim();
     match command {
-        "" => {}
-        "help" => {
+        "" | "help" => {
             for (usage, what) in HELP {
                 log!("  {usage:<26} {what}");
             }
+            log!("  any other line goes to the Rhai shell");
         }
-        "ask" if rest.is_empty() => log!("usage: ask <text>"),
+        "ask" if rest.is_empty() => log!("usage: :ask <text>"),
         "ask" => ask(rest),
         "policy" => policy(rest),
         "threads" => {
@@ -104,7 +154,7 @@ fn execute(line: &str) {
         "ps" => processes(),
         "uptime" => log!("{} s", hpet::nanos() / 1_000_000_000),
         "clear" => print(format_args!("{FORM_FEED}")),
-        other => log!("unknown command: {other} (try help)"),
+        other => log!("unknown kernel command :{other} (try :help)"),
     }
 }
 
@@ -112,29 +162,11 @@ fn ask(prompt: &str) {
     log!("(asking the LLM...)");
     match llm::ask(prompt) {
         Ok(reply) => {
-            show_reply(&reply);
-            REPLIES.fetch_add(1, Ordering::SeqCst);
+            for line in reply.lines() {
+                log!("ai: {}", printable(line, PIECE_CHARS, 1));
+            }
         }
         Err(error) => log!("error: {error}"),
-    }
-}
-
-/// Prints a reply a piece at a time: each print holds the line lock with interrupts
-/// off, so a long reply must not go out in one call.
-fn show_reply(reply: &str) {
-    const PIECE_CHARS: usize = 160;
-    print(format_args!("ai: "));
-    for line in reply.split('\n') {
-        let mut rest = line;
-        while !rest.is_empty() {
-            let cut = rest
-                .char_indices()
-                .nth(PIECE_CHARS)
-                .map_or(rest.len(), |(at, _)| at);
-            print(format_args!("{}", &rest[..cut]));
-            rest = &rest[cut..];
-        }
-        print(format_args!("\n"));
     }
 }
 
@@ -161,7 +193,7 @@ fn net_status() {
         None => log!("LLM server: not configured (boot with llm=IP:PORT)"),
         Some((ip, port, model)) => {
             log!("LLM server: {ip}:{port}, model {model}");
-            match crate::ipc::server_of("llm") {
+            match ipc::server_of("llm") {
                 Some(pid) => log!("llm service: pid {pid}"),
                 None => log!("llm service: not running"),
             }
@@ -171,37 +203,6 @@ fn net_status() {
             }
         }
     }
-}
-
-/// M6 exit test: the harness types "policy rr" and "ask hello"; the policy must
-/// change and an LLM reply must be shown.
-pub fn self_test() -> Result<(), &'static str> {
-    const TIMEOUT_MS: u64 = 60_000;
-    threads::spawn("terminal", run, 0)?;
-    // `ask` goes to the ring-3 llm service, so wait until it serves.
-    for _ in 0..TIMEOUT_MS / 10 {
-        if crate::ipc::server_of("llm").is_some() {
-            break;
-        }
-        threads::sleep_ms(10);
-    }
-    threads::sleep_ms(200);
-    log!("terminal: ready for keys");
-    // The installed policy on every CPU, not the active one: a watchdog fallback
-    // also runs round-robin and must not count as the command having worked.
-    let switched = || threads::installed_policy_everywhere("round-robin");
-    let replied = || REPLIES.load(Ordering::SeqCst) >= 1;
-    for _ in 0..TIMEOUT_MS / 10 {
-        if switched() && replied() {
-            log!("terminal: policy switched and LLM reply shown");
-            return Ok(());
-        }
-        threads::sleep_ms(10);
-    }
-    if !switched() {
-        return Err("terminal: the policy command did not switch to round-robin");
-    }
-    Err("terminal: no LLM reply was shown")
 }
 
 fn processes() {
@@ -217,4 +218,40 @@ fn processes() {
     if !any {
         log!("  no services running");
     }
+}
+
+/// M6 exit test, now through the shell: the harness types "policy rr" and "ask
+/// hello". The policy must be installed on every CPU, the llm service must have
+/// answered the shell, and the shell must have answered both lines. The counts come
+/// from the kernel's IPC layer, not from anything a program prints.
+pub fn self_test() -> Result<(), &'static str> {
+    const TIMEOUT_MS: u64 = 60_000;
+    threads::spawn("terminal", run, 0)?;
+    for _ in 0..TIMEOUT_MS / 10 {
+        if ipc::server_of("llm").is_some() && ipc::server_of("shell").is_some() {
+            break;
+        }
+        threads::sleep_ms(10);
+    }
+    threads::sleep_ms(200);
+    log!("terminal: ready for keys");
+    // The installed policy on every CPU, not the active one: a watchdog fallback
+    // also runs round-robin and must not count as the command having worked.
+    let switched = || threads::installed_policy_everywhere("round-robin");
+    let llm_answered_shell = || ipc::replies("llm").1 >= 1;
+    let shell_answered = || ipc::replies("shell").0 >= 2;
+    for _ in 0..TIMEOUT_MS / 10 {
+        if switched() && llm_answered_shell() && shell_answered() {
+            log!("terminal: policy switched and LLM reply shown through the shell");
+            return Ok(());
+        }
+        threads::sleep_ms(10);
+    }
+    if !switched() {
+        return Err("terminal: the policy command did not switch to round-robin");
+    }
+    if !llm_answered_shell() {
+        return Err("terminal: the llm service never answered the shell");
+    }
+    Err("terminal: the shell did not answer both lines")
 }

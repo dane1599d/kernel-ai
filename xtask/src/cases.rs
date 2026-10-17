@@ -48,6 +48,7 @@ pub const TEST_CASES: &[TestCase] = &[
     case("tlb", "test=tlb"),
     case("storm", "test=storm"),
     case("net", "test=net"),
+    case("shell", "test=shell"),
     TestCase {
         keys: TERMINAL_SCRIPT,
         expect: &[crate::mock_llm::REPLY],

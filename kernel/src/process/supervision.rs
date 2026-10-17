@@ -204,7 +204,10 @@ pub fn spawn_service(slot: usize, request_ptr: u64) -> Result<u64, Error> {
             ms => ms.max(10),
         },
         caps: request.limits.caps,
-        stack_pages: request.limits.stack_pages.min(kabi::layout::MAX_STACK_PAGES),
+        stack_pages: request
+            .limits
+            .stack_pages
+            .min(kabi::layout::MAX_STACK_PAGES),
     };
     let me = super::identity(slot).pid;
     let pid = spawn(&SpawnRequest {

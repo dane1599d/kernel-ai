@@ -286,8 +286,12 @@ fn set_policy(id: u64) -> Result<u64, Error> {
     use core::sync::atomic::{AtomicU64, Ordering};
     static LAST_SWITCH_NS: AtomicU64 = AtomicU64::new(0);
     let (name, make): (&str, fn() -> alloc::boxed::Box<dyn sched::SchedPolicy>) = match id {
-        kabi::policy::INTERACTIVE => ("interactive", || alloc::boxed::Box::new(sched::Interactive::new())),
-        kabi::policy::ROUND_ROBIN => ("round-robin", || alloc::boxed::Box::new(sched::RoundRobin::new())),
+        kabi::policy::INTERACTIVE => ("interactive", || {
+            alloc::boxed::Box::new(sched::Interactive::new())
+        }),
+        kabi::policy::ROUND_ROBIN => ("round-robin", || {
+            alloc::boxed::Box::new(sched::RoundRobin::new())
+        }),
         _ => return Err(Error::Invalid),
     };
     if threads::installed_policy_everywhere(name) {

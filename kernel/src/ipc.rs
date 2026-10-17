@@ -84,8 +84,7 @@ static CALL_STATE: [AtomicU8; MAX_CALLS] = [const { AtomicU8::new(FREE) }; MAX_C
 static PENDING: [AtomicU32; MAX_ENDPOINTS] = [const { AtomicU32::new(0) }; MAX_ENDPOINTS];
 static BOUND: [AtomicU64; MAX_ENDPOINTS] = [const { AtomicU64::new(0) }; MAX_ENDPOINTS];
 /// Replies each endpoint delivered to the kernel and to processes.
-static REPLIES_TO_KERNEL: [AtomicU64; MAX_ENDPOINTS] =
-    [const { AtomicU64::new(0) }; MAX_ENDPOINTS];
+static REPLIES_TO_KERNEL: [AtomicU64; MAX_ENDPOINTS] = [const { AtomicU64::new(0) }; MAX_ENDPOINTS];
 static REPLIES_TO_PROCESSES: [AtomicU64; MAX_ENDPOINTS] =
     [const { AtomicU64::new(0) }; MAX_ENDPOINTS];
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);

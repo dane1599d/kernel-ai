@@ -176,23 +176,6 @@ pub fn current_slot() -> Option<usize> {
     slot_of(threads::current_tid())
 }
 
-/// Marks the live process named `name` as interrupted (Ctrl-C) and wakes it, so a
-/// blocking call it is in returns. Returns its pid.
-pub fn interrupt(name: &str) -> Option<u64> {
-    let found = with_table(|table| {
-        table
-            .iter()
-            .position(|p| p.live() && p.state != State::Exiting && p.name.as_str() == name)
-            .map(|slot| (slot, table[slot].pid, table[slot].tid))
-    });
-    let (slot, pid, tid) = found?;
-    INTERRUPT[slot].store(true, Ordering::SeqCst);
-    if let Some(tid) = tid {
-        interrupts::without_interrupts(|| threads::wake(tid));
-    }
-    Some(pid)
-}
-
 /// Whether the process has a Ctrl-C pending, without clearing it.
 pub fn interrupt_pending(slot: usize) -> bool {
     INTERRUPT[slot].load(Ordering::SeqCst)
