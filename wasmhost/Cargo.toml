@@ -1,0 +1,21 @@
+[package]
+name = "wasmhost"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The only crate that uses wasmi. Built at opt-level 2 even in dev builds (see the
+# workspace Cargo.toml): wasmi's host-function glue crashes when unoptimised.
+[lib]
+doctest = false
+
+[dependencies]
+kabi = { path = "../kabi" }
+livecore = { path = "../livecore" }
+# portable-dispatch: the default tail-call dispatch grows the native stack with
+# every instruction when debug assertions are on, as they are in dev builds.
+wasmi = { version = "2.0.0", default-features = false, features = ["validate", "portable-dispatch"] }
+
+[dev-dependencies]
+wat = "1.262.0"
