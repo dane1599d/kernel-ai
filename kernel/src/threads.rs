@@ -606,6 +606,16 @@ pub fn stats() -> (&'static str, u32, u64) {
     total
 }
 
+/// The policy installed on CPU 0 (even while the watchdog runs its fallback).
+pub fn installed_policy_name() -> &'static str {
+    interrupts::without_interrupts(|| {
+        CORES[0]
+            .lock()
+            .as_ref()
+            .map_or("none", |core| core.installed_policy_name())
+    })
+}
+
 /// True if every online CPU has the policy `name` installed (whether or not the
 /// watchdog has it on the fallback for now).
 pub fn installed_policy_everywhere(name: &str) -> bool {

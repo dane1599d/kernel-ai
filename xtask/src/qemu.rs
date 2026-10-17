@@ -147,6 +147,11 @@ pub fn run_test(
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
             println!("  | {line}");
             missing.retain(|text| !line.contains(text));
+            // Text from ring 3 (`[name] ...`) or the shell (`= ...`, `! ...`) may
+            // say anything, so it never counts as a kernel marker.
+            if from_programs(&line) {
+                continue;
+            }
             if line.contains("boot-ok") {
                 let _ = ready_tx.send(started.elapsed());
             } else if line.contains("ready for keys") {
@@ -195,4 +200,31 @@ pub fn run_test(
     }
     println!("xtask: PASS");
     Ok(())
+}
+
+/// Whether a console line was written for a ring-3 program rather than by the
+/// kernel: `[name] ...` from a program's own output, `= ...` and `! ...` from the
+/// shell's answers, possibly after the terminal's `kai> ` prompts.
+pub fn from_programs(line: &str) -> bool {
+    let mut rest = line;
+    while let Some(after) = rest.strip_prefix("kai> ") {
+        rest = after;
+    }
+    rest.starts_with('[') || rest.starts_with("= ") || rest.starts_with("! ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::from_programs;
+
+    #[test]
+    fn program_output_is_told_apart_from_kernel_lines() {
+        assert!(from_programs("[llm] up (restart 0)"));
+        assert!(from_programs("kai> [shell] terminal: ready for keys"));
+        assert!(from_programs("= boot-ok"));
+        assert!(from_programs("kai> ! stopped: time limit"));
+        assert!(!from_programs("terminal: ready for keys"));
+        assert!(!from_programs("kai> terminal: ready for keys"));
+        assert!(!from_programs("boot-ok"));
+    }
 }

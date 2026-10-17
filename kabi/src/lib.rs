@@ -36,8 +36,8 @@ pub mod call {
     pub const STATE_LOAD: u64 = 11;
     /// `plan(buf, cap) -> len`: the services to run, one `name args...` per line.
     pub const PLAN: u64 = 12;
-    /// `svc_recv(buf, cap, timeout_ms) -> len`: the next request for this service
-    /// (needs [`super::cap::SERVE`]).
+    /// `svc_recv(buf, cap, timeout_ms, &mut caller_pid) -> len`: the next request for
+    /// this service, and who sent it (0 = the kernel) (needs [`super::cap::SERVE`]).
     pub const SVC_RECV: u64 = 13;
     /// `svc_reply(ptr, len)`: answers the request taken by the last `svc_recv`.
     pub const SVC_REPLY: u64 = 14;
@@ -48,6 +48,18 @@ pub mod call {
     /// `list(buf, cap) -> len`: running services, one `pid name` per line, so a
     /// restarted supervisor can find the services it already started.
     pub const LIST: u64 = 16;
+    /// `call(name_ptr, name_len, &CallRequest) -> reply len`: sends a request to
+    /// another service and waits for its reply (needs [`super::cap::CALL`]). A
+    /// process may not call itself, nor a service that can itself call.
+    pub const CALL: u64 = 17;
+    /// `metrics(&mut Metrics) -> 0`: scheduler, memory and process numbers.
+    pub const METRICS: u64 = 18;
+    /// `policy(id)`: installs scheduling policy [`super::policy`] `id` on every CPU
+    /// (needs [`super::cap::POLICY`]).
+    pub const POLICY: u64 = 19;
+    /// `interrupted() -> 1 or 0`: whether the user pressed Ctrl-C since the last
+    /// call; reading clears it.
+    pub const INTERRUPTED: u64 = 20;
 }
 
 /// Errors, returned in RAX as their negative value.
@@ -69,10 +81,14 @@ pub enum Error {
     TooBig = 9,
     /// The other side died before answering.
     Dead = 10,
+    /// The user pressed Ctrl-C.
+    Interrupted = 11,
+    /// The service is not running.
+    Unavailable = 12,
 }
 
 impl Error {
-    pub const ALL: [Error; 10] = [
+    pub const ALL: [Error; 12] = [
         Error::Permission,
         Error::Fault,
         Error::Invalid,
@@ -83,6 +99,8 @@ impl Error {
         Error::Network,
         Error::TooBig,
         Error::Dead,
+        Error::Interrupted,
+        Error::Unavailable,
     ];
 
     /// The value placed in RAX.
@@ -112,8 +130,12 @@ pub mod cap {
     pub const SERVE: u64 = 1 << 1;
     /// Make HTTP requests.
     pub const NET: u64 = 1 << 2;
+    /// Call other services.
+    pub const CALL: u64 = 1 << 3;
+    /// Change the scheduling policy.
+    pub const POLICY: u64 = 1 << 4;
     /// Every capability a supervisor may grant.
-    pub const GRANTABLE: u64 = SERVE | NET;
+    pub const GRANTABLE: u64 = SERVE | NET | CALL | POLICY;
 }
 
 /// Why a process ended, as reported to the supervisor.
@@ -188,6 +210,8 @@ pub struct Limits {
     pub max_burst_ms: u64,
     /// Capability bits; only [`cap::GRANTABLE`] ones are accepted.
     pub caps: u64,
+    /// Stack size in pages (0 = [`layout::STACK_PAGES`]), counted in `max_pages`.
+    pub stack_pages: u64,
 }
 
 /// Filled in by [`call::WAIT_CHILD`].
@@ -242,7 +266,10 @@ pub mod layout {
     pub const HEAP_MAX: u64 = 0x0000_0001_0000_0000;
     /// The stack grows down from here; the page below the stack stays unmapped.
     pub const STACK_TOP: u64 = 0x0000_7FFF_FFFF_0000;
+    /// Default stack size.
     pub const STACK_PAGES: u64 = 16;
+    /// Largest stack a process may ask for.
+    pub const MAX_STACK_PAGES: u64 = 1024;
     /// First address that is not user space.
     pub const USER_END: u64 = 0x0000_8000_0000_0000;
 }
@@ -305,6 +332,105 @@ const _: () = {
     assert!(IMAGE_BASE < HEAP_BASE && HEAP_BASE + HEAP_MAX < STACK_TOP - STACK_PAGES * 4096);
     assert!(STACK_TOP < USER_END);
     assert!(core::mem::size_of::<ExitRecord>() == 32 + MAX_NAME);
-    assert!(core::mem::size_of::<SpawnRequest>() == 7 * 8);
+    assert!(core::mem::size_of::<SpawnRequest>() == 8 * 8);
+    assert!(core::mem::size_of::<CallRequest>() == 5 * 8);
+    assert!(core::mem::size_of::<Metrics>() == 13 * 8 + MAX_METRIC_PROCESSES * (16 + MAX_NAME));
+    assert!(HEAP_BASE + HEAP_MAX < STACK_TOP - MAX_STACK_PAGES * 4096);
     assert!(core::mem::size_of::<HttpRequest>() == 5 * 8);
 };
+
+/// Argument of [`call::CALL`].
+#[derive(Clone, Copy, Debug, Default)]
+#[repr(C)]
+pub struct CallRequest {
+    pub request_ptr: u64,
+    pub request_len: u64,
+    pub reply_ptr: u64,
+    pub reply_cap: u64,
+    pub timeout_ms: u64,
+}
+
+/// Scheduling policies for [`call::POLICY`].
+pub mod policy {
+    pub const INTERACTIVE: u64 = 0;
+    pub const ROUND_ROBIN: u64 = 1;
+}
+
+pub const MAX_METRIC_PROCESSES: usize = 16;
+
+/// One running process in [`Metrics`].
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct ProcessInfo {
+    pub pid: u64,
+    pub name_len: u64,
+    pub name: [u8; MAX_NAME],
+}
+
+impl ProcessInfo {
+    pub const fn empty() -> Self {
+        Self {
+            pid: 0,
+            name_len: 0,
+            name: [0; MAX_NAME],
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        let len = (self.name_len as usize).min(MAX_NAME);
+        core::str::from_utf8(&self.name[..len]).unwrap_or("?")
+    }
+}
+
+/// Filled in by [`call::METRICS`]: a snapshot at most a few milliseconds old.
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct Metrics {
+    pub cpus: u64,
+    /// The installed policy on CPU 0, a [`policy`] id.
+    pub policy: u64,
+    /// The policy actually running on CPU 0 (the watchdog may have it on fallback).
+    pub running_policy: u64,
+    pub context_switches: u64,
+    pub ejections: u64,
+    pub migrations: u64,
+    pub free_frames: u64,
+    pub total_frames: u64,
+    pub heap_allocations: u64,
+    pub heap_bytes: u64,
+    pub uptime_ns: u64,
+    /// Entries of `processes` in use (the supervisor is not listed).
+    pub process_count: u64,
+    /// Processes left out because the list is full.
+    pub processes_omitted: u64,
+    pub processes: [ProcessInfo; MAX_METRIC_PROCESSES],
+}
+
+impl Metrics {
+    pub const fn empty() -> Self {
+        Self {
+            cpus: 0,
+            policy: 0,
+            running_policy: 0,
+            context_switches: 0,
+            ejections: 0,
+            migrations: 0,
+            free_frames: 0,
+            total_frames: 0,
+            heap_allocations: 0,
+            heap_bytes: 0,
+            uptime_ns: 0,
+            process_count: 0,
+            processes_omitted: 0,
+            processes: [ProcessInfo::empty(); MAX_METRIC_PROCESSES],
+        }
+    }
+}
+
+/// Plan lines the kernel gives the supervisor, kept here so the supervisor's
+/// host tests parse exactly what the kernel sends.
+pub mod plan {
+    /// The Rhai shell: it serves the terminal, calls the llm service, may switch
+    /// the scheduling policy, and needs a large stack for Rhai's recursion.
+    pub const SHELL: &str = "shell caps=serve+call+policy pages=4096 stack_pages=512 burst_ms=5000";
+}

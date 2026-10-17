@@ -44,13 +44,11 @@ fn main() -> i32 {
             return 1;
         }
     };
-    let specs = match supervise::parse_plan(&plan) {
-        Ok(specs) => specs,
-        Err(error) => {
-            println!("bad plan: {error}");
-            return 1;
-        }
-    };
+    let plan = supervise::parse_plan(&plan);
+    for error in &plan.errors {
+        println!("plan line skipped: {error}");
+    }
+    let specs = plan.services;
     let now = now_ms();
     let mut services: Vec<Service> = specs
         .into_iter()

@@ -1,7 +1,7 @@
 //! Raw system calls. Each wrapper returns the kernel's result decoded by
 //! `kabi::Error::from_raw`.
 
-use kabi::{Error, ExitRecord, HttpRequest, SpawnRequest, call};
+use kabi::{CallRequest, Error, ExitRecord, HttpRequest, Metrics, SpawnRequest, call};
 
 /// # Safety
 /// The arguments must be valid for call `number` as `kabi` documents it.
@@ -116,8 +116,21 @@ pub fn plan(buf: &mut [u8]) -> Result<usize, Error> {
     read_into(call::PLAN, buf, 0)
 }
 
-pub fn svc_recv(buf: &mut [u8], timeout_ms: u64) -> Result<usize, Error> {
-    read_into(call::SVC_RECV, buf, timeout_ms)
+/// The next request for this service; `caller` is set to the calling pid (0 for
+/// the kernel).
+pub fn svc_recv(buf: &mut [u8], timeout_ms: u64, caller: &mut u64) -> Result<usize, Error> {
+    call(
+        call::SVC_RECV,
+        [
+            buf.as_mut_ptr() as u64,
+            buf.len() as u64,
+            timeout_ms,
+            caller as *mut u64 as u64,
+            0,
+            0,
+        ],
+    )
+    .map(|len| len as usize)
 }
 
 pub fn svc_reply(bytes: &[u8]) -> Result<u64, Error> {
@@ -137,4 +150,51 @@ pub fn http(request: &HttpRequest) -> Result<usize, Error> {
 
 pub fn list(buf: &mut [u8]) -> Result<usize, Error> {
     read_into(call::LIST, buf, 0)
+}
+
+/// Sends `request` to the service `name` and returns the length of its reply,
+/// which is copied into `reply` (cut to fit).
+pub fn service_call(
+    name: &str,
+    request: &[u8],
+    reply: &mut [u8],
+    timeout_ms: u64,
+) -> Result<usize, Error> {
+    let argument = CallRequest {
+        request_ptr: request.as_ptr() as u64,
+        request_len: request.len() as u64,
+        reply_ptr: reply.as_mut_ptr() as u64,
+        reply_cap: reply.len() as u64,
+        timeout_ms,
+    };
+    call(
+        call::CALL,
+        [
+            name.as_ptr() as u64,
+            name.len() as u64,
+            &argument as *const CallRequest as u64,
+            0,
+            0,
+            0,
+        ],
+    )
+    .map(|len| len as usize)
+}
+
+pub fn metrics() -> Result<Metrics, Error> {
+    let mut metrics = Metrics::empty();
+    call(
+        call::METRICS,
+        [&mut metrics as *mut Metrics as u64, 0, 0, 0, 0, 0],
+    )?;
+    Ok(metrics)
+}
+
+pub fn set_policy(id: u64) -> Result<u64, Error> {
+    call(call::POLICY, [id, 0, 0, 0, 0, 0])
+}
+
+/// Whether the user asked to stop since the last call; reading clears it.
+pub fn interrupted() -> bool {
+    call(call::INTERRUPTED, [0; 6]).is_ok_and(|flag| flag != 0)
 }

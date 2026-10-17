@@ -27,49 +27,72 @@ pub struct ServiceSpec {
     pub policy: Policy,
 }
 
-/// Reads the plan: one service per line, `name [pages=N] [burst_ms=N]
-/// [caps=serve+net] [backoff_max_ms=N] [max_restarts=N] [other=args ...]`. The
-/// supervisor keys set limits and policy; everything else is passed to the program.
-pub fn parse_plan(text: &str) -> Result<Vec<ServiceSpec>, String> {
-    let mut services = Vec::new();
+/// A parsed plan: the services that parsed, and why any other line was skipped.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Plan {
+    pub services: Vec<ServiceSpec>,
+    pub errors: Vec<String>,
+}
+
+/// Reads the plan: one service per line, `name [pages=N] [stack_pages=N]
+/// [burst_ms=N] [caps=serve+net+call+policy] [backoff_max_ms=N] [max_restarts=N]
+/// [other=args ...]`. The supervisor keys set limits and policy; everything else is
+/// passed to the program. A bad line skips only that service, so one typo cannot
+/// keep every other service down.
+pub fn parse_plan(text: &str) -> Plan {
+    let mut plan = Plan::default();
     for line in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
-        let mut words = line.split_whitespace();
-        let name = words.next().unwrap_or_default();
-        if name.len() > kabi::MAX_NAME
-            || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
-        {
-            return Err(format!("bad service name {name:?}"));
+        match parse_line(line, &plan.services) {
+            Ok(spec) => plan.services.push(spec),
+            Err(error) => plan.errors.push(error),
         }
-        if services.iter().any(|s: &ServiceSpec| s.name == name) {
-            return Err(format!("service {name} listed twice"));
-        }
-        let mut limits = Limits {
-            max_pages: DEFAULT_PAGES,
-            max_burst_ms: DEFAULT_BURST_MS,
-            caps: 0,
-        };
-        let mut policy = POLICY;
-        let mut args = Vec::new();
-        for word in words {
-            match word.split_once('=') {
-                Some(("pages", value)) => limits.max_pages = number(name, value)?,
-                Some(("burst_ms", value)) => limits.max_burst_ms = number(name, value)?,
-                Some(("caps", value)) => limits.caps = caps(name, value)?,
-                Some(("backoff_max_ms", value)) => policy.max_backoff_ms = number(name, value)?,
-                Some(("max_restarts", value)) => {
-                    policy.max_restarts = number(name, value)? as usize
-                }
-                _ => args.push(word),
-            }
-        }
-        services.push(ServiceSpec {
-            name: name.to_string(),
-            args: args.join(" "),
-            limits,
-            policy,
-        });
     }
-    Ok(services)
+    plan
+}
+
+fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String> {
+    let mut words = line.split_whitespace();
+    let name = words.next().unwrap_or_default();
+    if name.len() > kabi::MAX_NAME || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    {
+        return Err(format!("bad service name {name:?}"));
+    }
+    if earlier.iter().any(|s| s.name == name) {
+        return Err(format!("service {name} listed twice"));
+    }
+    let mut limits = Limits {
+        max_pages: DEFAULT_PAGES,
+        max_burst_ms: DEFAULT_BURST_MS,
+        caps: 0,
+        stack_pages: 0,
+    };
+    let mut policy = POLICY;
+    let mut args = Vec::new();
+    for word in words {
+        match word.split_once('=') {
+            Some(("pages", value)) => limits.max_pages = number(name, value)?,
+            Some(("stack_pages", value)) => {
+                limits.stack_pages = number(name, value)?;
+                if limits.stack_pages > kabi::layout::MAX_STACK_PAGES {
+                    return Err(format!(
+                        "{name}: stack_pages over {}",
+                        kabi::layout::MAX_STACK_PAGES
+                    ));
+                }
+            }
+            Some(("burst_ms", value)) => limits.max_burst_ms = number(name, value)?,
+            Some(("caps", value)) => limits.caps = caps(name, value)?,
+            Some(("backoff_max_ms", value)) => policy.max_backoff_ms = number(name, value)?,
+            Some(("max_restarts", value)) => policy.max_restarts = number(name, value)? as usize,
+            _ => args.push(word),
+        }
+    }
+    Ok(ServiceSpec {
+        name: name.to_string(),
+        args: args.join(" "),
+        limits,
+        policy,
+    })
 }
 
 fn number(service: &str, value: &str) -> Result<u64, String> {
@@ -84,6 +107,8 @@ fn caps(service: &str, value: &str) -> Result<u64, String> {
     value.split('+').try_fold(0, |bits, name| match name {
         "serve" => Ok(bits | cap::SERVE),
         "net" => Ok(bits | cap::NET),
+        "call" => Ok(bits | cap::CALL),
+        "policy" => Ok(bits | cap::POLICY),
         other => Err(format!("{service}: unknown capability {other:?}")),
     })
 }
@@ -234,7 +259,7 @@ mod tests {
         let plan = parse_plan(
             "llm caps=serve+net server=10.0.2.2:8080 model=mock\n\n  spinner burst_ms=300\nhog pages=64",
         )
-        .unwrap();
+        .services;
         assert_eq!(plan.len(), 3);
         assert_eq!(plan[0].name, "llm");
         assert_eq!(plan[0].args, "server=10.0.2.2:8080 model=mock");
@@ -243,12 +268,13 @@ mod tests {
         assert_eq!(plan[1].limits.max_pages, DEFAULT_PAGES);
         assert_eq!(plan[2].limits.max_pages, 64);
         assert_eq!(plan[2].limits.caps, 0);
+        assert_eq!(plan[2].limits.stack_pages, 0);
         assert_eq!(plan[2].policy.max_restarts, POLICY.max_restarts);
     }
 
     #[test]
     fn plan_can_tune_the_restart_policy_per_service() {
-        let plan = parse_plan("crasher backoff_max_ms=200 max_restarts=1000 after_ms=150").unwrap();
+        let plan = parse_plan("crasher backoff_max_ms=200 max_restarts=1000 after_ms=150").services;
         assert_eq!(plan[0].policy.max_backoff_ms, 200);
         assert_eq!(plan[0].policy.max_restarts, 1000);
         assert_eq!(plan[0].policy.first_backoff_ms, POLICY.first_backoff_ms);
@@ -256,13 +282,47 @@ mod tests {
     }
 
     #[test]
+    fn the_plan_the_kernel_sends_parses() {
+        let text = alloc::format!(
+            "llm caps=serve+net burst_ms=10000 pages=1024 host=10.0.2.2:8080 model=org/model-7b\n{}",
+            kabi::plan::SHELL
+        );
+        let plan = parse_plan(&text);
+        assert_eq!(plan.errors, Vec::<String>::new());
+        let shell = &plan.services[1];
+        assert_eq!(shell.name, "shell");
+        assert_eq!(shell.limits.caps, cap::SERVE | cap::CALL | cap::POLICY);
+        assert_eq!(shell.limits.stack_pages, 512);
+        assert!(shell.limits.stack_pages < shell.limits.max_pages);
+        assert_eq!(
+            plan.services[0].args,
+            "host=10.0.2.2:8080 model=org/model-7b"
+        );
+    }
+
+    #[test]
+    fn a_bad_line_skips_only_its_service() {
+        let plan = parse_plan("llm caps=serve+net\nshell caps=serve+teleport\nhog pages=64");
+        let names: Vec<&str> = plan.services.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["llm", "hog"]);
+        assert_eq!(plan.errors.len(), 1);
+        assert!(plan.errors[0].contains("teleport"));
+    }
+
+    #[test]
     fn plan_rejects_bad_lines() {
-        assert!(parse_plan("a caps=supervise").is_err());
-        assert!(parse_plan("a pages=0").is_err());
-        assert!(parse_plan("a pages=x").is_err());
-        assert!(parse_plan("a\na").is_err());
-        assert!(parse_plan("bad/name").is_err());
-        assert!(parse_plan("a-very-long-service-name-indeed").is_err());
+        for bad in [
+            "a caps=supervise",
+            "a pages=0",
+            "a pages=x",
+            "a stack_pages=4096",
+            "bad/name",
+            "a-very-long-service-name-indeed",
+        ] {
+            let plan = parse_plan(bad);
+            assert!(plan.services.is_empty() && plan.errors.len() == 1, "{bad}");
+        }
+        assert_eq!(parse_plan("a\na").errors.len(), 1);
     }
 
     #[test]

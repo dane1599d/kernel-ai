@@ -16,6 +16,15 @@ const MAX_PIECE: usize = 160;
 const MAX_SLEEP_MS: u64 = 3_600_000;
 const MAX_HTTP_REQUEST: usize = 64 * 1024;
 const MAX_HTTP_TIMEOUT_MS: u64 = 300_000;
+/// Longest a process may wait for another service.
+const MAX_CALL_MS: u64 = 150_000;
+/// A process serving a call must hear back from its own call this long before the
+/// call it serves times out.
+const NESTED_MARGIN_NS: u64 = 1_000_000_000;
+/// Longest a process waits for a service that is not up yet.
+const MAX_BIND_WAIT_NS: u64 = 5_000_000_000;
+/// Fastest policy switches may follow each other.
+const MIN_POLICY_INTERVAL_NS: u64 = 100_000_000;
 
 /// Called by `entry::syscall_entry` with interrupts off.
 pub extern "C" fn dispatch(frame: &mut TrapFrame) {
@@ -93,12 +102,33 @@ fn handle(slot: usize, number: u64, a: [u64; 6]) -> Result<u64, Error> {
         }
         call::SVC_RECV => {
             need(slot, cap::SERVE)?;
-            ipc::recv(slot, a[0], a[1], a[2])
+            ipc::recv(slot, a[0], a[1], a[2], a[3])
         }
         call::SVC_REPLY => {
             need(slot, cap::SERVE)?;
             ipc::reply(slot, a[0], a[1])
         }
+        call::CALL => {
+            need(slot, cap::CALL)?;
+            service_call(slot, a[0], a[1], a[2])
+        }
+        call::METRICS => {
+            let metrics = crate::metrics::snapshot();
+            // SAFETY: Metrics is plain old data.
+            let bytes = unsafe {
+                core::slice::from_raw_parts(
+                    (&raw const metrics).cast::<u8>(),
+                    core::mem::size_of::<kabi::Metrics>(),
+                )
+            };
+            uaccess::copy_to_user(slot, a[0], bytes)?;
+            Ok(0)
+        }
+        call::POLICY => {
+            need(slot, cap::POLICY)?;
+            set_policy(a[0])
+        }
+        call::INTERRUPTED => Ok(u64::from(super::take_interrupt(slot))),
         call::HTTP => {
             need(slot, cap::NET)?;
             http(slot, a[0])
@@ -191,4 +221,89 @@ fn http(slot: usize, request_ptr: u64) -> Result<u64, Error> {
     }
     uaccess::copy_to_user(slot, call.response_ptr, &response)?;
     Ok(response.len() as u64)
+}
+
+/// Calls another service on behalf of the process. The target is named by the
+/// caller, but may not be the caller itself nor a service that can itself call, so
+/// calls never form a cycle and a service with CALL cannot be borrowed by another.
+fn service_call(slot: usize, name_ptr: u64, name_len: u64, request_ptr: u64) -> Result<u64, Error> {
+    let name_len = usize::try_from(name_len).map_err(|_| Error::Invalid)?;
+    if name_len == 0 || name_len > kabi::MAX_NAME {
+        return Err(Error::Invalid);
+    }
+    let mut name = [0u8; kabi::MAX_NAME];
+    uaccess::copy_from_user(slot, name_ptr, &mut name[..name_len])?;
+    let name = core::str::from_utf8(&name[..name_len]).map_err(|_| Error::Invalid)?;
+    let me = super::identity(slot);
+    if name == me.name.as_str() {
+        return Err(Error::Invalid);
+    }
+    if super::programs::find(name).is_none() {
+        return Err(Error::NotFound);
+    }
+    if super::has_cap_by_name(name, cap::CALL) {
+        return Err(Error::Permission);
+    }
+    let call: kabi::CallRequest = uaccess::read_struct(slot, request_ptr)?;
+    let request_len = usize::try_from(call.request_len).map_err(|_| Error::TooBig)?;
+    if request_len > kabi::MAX_MESSAGE {
+        return Err(Error::TooBig);
+    }
+    let mut request = Vec::new();
+    request
+        .try_reserve_exact(request_len)
+        .map_err(|_| Error::NoMemory)?;
+    request.resize(request_len, 0);
+    uaccess::copy_from_user(slot, call.request_ptr, &mut request)?;
+    let now = hpet::nanos();
+    let mut deadline = now + call.timeout_ms.clamp(1, MAX_CALL_MS) * 1_000_000;
+    if let Some(served) = ipc::serving_deadline(me.pid) {
+        deadline = deadline.min(served.saturating_sub(NESTED_MARGIN_NS));
+    }
+    let cancel = || super::killed(slot) || super::interrupt_pending(slot);
+    let result = ipc::wait_bound(name, deadline.min(now + MAX_BIND_WAIT_NS), cancel)
+        .and_then(|()| ipc::call_as(name, &request, me.pid, deadline, cancel));
+    drop(request);
+    let reply = result.map_err(|error| match error {
+        ipc::CallError::Cancelled if super::take_interrupt(slot) => Error::Interrupted,
+        ipc::CallError::Cancelled | ipc::CallError::ServiceDied => Error::Dead,
+        ipc::CallError::Unavailable => Error::Unavailable,
+        ipc::CallError::TimedOut => Error::TimedOut,
+        ipc::CallError::Busy => Error::Busy,
+        ipc::CallError::NoMemory => Error::NoMemory,
+        ipc::CallError::TooBig => Error::TooBig,
+    })?;
+    let len = reply
+        .len()
+        .min(usize::try_from(call.reply_cap).unwrap_or(usize::MAX));
+    uaccess::copy_to_user(slot, call.reply_ptr, &reply[..len])?;
+    Ok(reply.len() as u64)
+}
+
+/// Installs a scheduling policy on every CPU, unless it already is, or the last
+/// switch was too recent (a loop of switches would disturb every CPU).
+fn set_policy(id: u64) -> Result<u64, Error> {
+    use core::sync::atomic::{AtomicU64, Ordering};
+    static LAST_SWITCH_NS: AtomicU64 = AtomicU64::new(0);
+    let (name, make): (&str, fn() -> alloc::boxed::Box<dyn sched::SchedPolicy>) = match id {
+        kabi::policy::INTERACTIVE => ("interactive", || {
+            alloc::boxed::Box::new(sched::Interactive::new())
+        }),
+        kabi::policy::ROUND_ROBIN => ("round-robin", || {
+            alloc::boxed::Box::new(sched::RoundRobin::new())
+        }),
+        _ => return Err(Error::Invalid),
+    };
+    if threads::installed_policy_everywhere(name) {
+        return Ok(0);
+    }
+    let now = hpet::nanos();
+    let last = LAST_SWITCH_NS.load(Ordering::Relaxed);
+    if last != 0 && now.saturating_sub(last) < MIN_POLICY_INTERVAL_NS {
+        return Err(Error::Busy);
+    }
+    LAST_SWITCH_NS.store(now, Ordering::Relaxed);
+    threads::set_policy_all(make);
+    log!("sched: policy switched to {name} by a ring-3 request");
+    Ok(0)
 }

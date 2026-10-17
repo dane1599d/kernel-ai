@@ -16,6 +16,7 @@ mod cases;
 mod lines;
 mod mock_llm;
 mod qemu;
+mod strip;
 
 use sha2::{Digest, Sha256};
 
@@ -311,7 +312,15 @@ fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 /// The ring-3 programs in the `user` crate, all shipped as boot modules.
-const USER_PROGRAMS: &[&str] = &["supervisor", "llm", "crasher", "spinner", "hog", "probe"];
+const USER_PROGRAMS: &[&str] = &[
+    "supervisor",
+    "llm",
+    "shell",
+    "crasher",
+    "spinner",
+    "hog",
+    "probe",
+];
 
 /// Builds every user program; returns (name, ELF path) pairs.
 fn build_user(root: &Path, options: &Options) -> Result<Vec<(&'static str, PathBuf)>, String> {
@@ -351,17 +360,23 @@ fn boot_modules(
 ) -> Result<Vec<Module>, String> {
     let mut modules = vec![Module {
         path: "kernel.lines".into(),
-        bytes: lines::build(kernel, root)?,
+        bytes: lines::build(kernel, root, lines::Scope::All)?,
     }];
     for (name, elf) in programs {
-        let bytes = fs::read(elf).map_err(|e| format!("cannot read {}: {e}", elf.display()))?;
+        let full = fs::read(elf).map_err(|e| format!("cannot read {}: {e}", elf.display()))?;
+        let bytes = strip::for_boot(&full).map_err(|e| format!("{name}: {e}"))?;
+        println!(
+            "xtask: {name} {} KiB on the boot drive ({} KiB with debug info)",
+            bytes.len() / 1024,
+            full.len() / 1024
+        );
         modules.push(Module {
             path: format!("user/{name}.elf"),
             bytes,
         });
         modules.push(Module {
             path: format!("user/{name}.lines"),
-            bytes: lines::build(elf, root)?,
+            bytes: lines::build(elf, root, lines::Scope::Workspace)?,
         });
     }
     Ok(modules)

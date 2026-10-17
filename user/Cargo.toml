@@ -16,5 +16,6 @@ bench = false
 kabi = { path = "../kabi" }
 llmproto = { path = "../llmproto" }
 supervise = { path = "../supervise" }
+shellcore = { path = "../shellcore" }
 spin = "0.12.3"
 talc = "5.1.1"

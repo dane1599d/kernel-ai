@@ -51,7 +51,8 @@ fn main() -> i32 {
     let mut request = vec![0u8; kabi::MAX_MESSAGE];
     let mut response = vec![0u8; http::MAX_RESPONSE];
     loop {
-        let len = match sys::svc_recv(&mut request, 0) {
+        let mut caller = 0;
+        let len = match sys::svc_recv(&mut request, 0, &mut caller) {
             Ok(len) => len.min(request.len()),
             Err(kabi::Error::TimedOut) => continue,
             Err(error) => {

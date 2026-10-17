@@ -28,6 +28,7 @@ mod keyboard;
 mod lines;
 mod llm;
 mod memory;
+mod metrics;
 mod net;
 mod percpu;
 mod platform;
@@ -36,6 +37,7 @@ mod process;
 mod qemu;
 mod sched_tests;
 mod serial;
+mod shell_tests;
 mod smp;
 mod smp_tests;
 #[cfg(feature = "spikes")]
@@ -116,6 +118,8 @@ enum SelfTest {
     Storm(u64),
     Net,
     Terminal,
+    /// M8a: the Rhai shell answers a fixed list of lines correctly.
+    Shell,
 }
 
 const DEFAULT_STORM_SECONDS: u64 = 60;
@@ -137,6 +141,7 @@ fn self_test_from(cmdline: &str) -> SelfTest {
             "test=tlb" => Some(SelfTest::Tlb),
             "test=net" => Some(SelfTest::Net),
             "test=terminal" => Some(SelfTest::Terminal),
+            "test=shell" => Some(SelfTest::Shell),
             other => other.strip_prefix("test=storm").map(|rest| {
                 let seconds = rest.strip_prefix('-').and_then(|s| s.parse().ok());
                 SelfTest::Storm(seconds.unwrap_or(DEFAULT_STORM_SECONDS))
@@ -268,6 +273,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Storm(seconds) => run_case(|| smp_tests::storm_check(seconds)),
         SelfTest::Net => run_case(llm::self_test),
         SelfTest::Terminal => run_case(terminal::self_test),
+        SelfTest::Shell => run_case(shell_tests::check),
         SelfTest::Boot | SelfTest::None => {}
     }
 
@@ -449,11 +455,19 @@ fn start_user_space(test: SelfTest) {
     log!("process: {} programs loaded as modules", programs.len());
     let free = memory::with(|m| m.free_frames());
     process::set_page_budget(free / 2);
-    let wanted = matches!(test, SelfTest::None | SelfTest::Net | SelfTest::Terminal);
+    let wanted = matches!(
+        test,
+        SelfTest::None | SelfTest::Net | SelfTest::Terminal | SelfTest::Shell
+    );
     if !wanted || programs.is_empty() {
         return;
     }
-    let plan = llm::plan_line();
+    let mut plan = llm::plan_line();
+    // The net case checks only the llm path, so it runs without the shell.
+    if test != SelfTest::Net {
+        plan.push('\n');
+        plan.push_str(kabi::plan::SHELL);
+    }
     if let Err(message) = process::supervision::start(plan) {
         fail(message);
     }
