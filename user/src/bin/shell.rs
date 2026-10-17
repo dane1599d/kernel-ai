@@ -1,6 +1,6 @@
-//! The Rhai shell: answers each line the kernel terminal sends with `ok <text>` or
-//! `err <text>`. The evaluation itself lives in the host-tested `shellcore` crate;
-//! this program connects it to the system calls.
+//! The Rhai shell: answers each line the kernel terminal sends with `ok <text>`,
+//! `err <text>` or `confirm <id> <text>`. The evaluation itself lives in the
+//! host-tested `shellcore` crate; this program connects it to the system calls.
 
 #![no_std]
 #![no_main]
@@ -10,13 +10,16 @@ extern crate alloc;
 use alloc::rc::Rc;
 use alloc::string::{String, ToString};
 use alloc::vec;
-use shellcore::{DEFAULT_CONFIG, Host, Shell};
+use llmproto::script::{self, Answer, AnswerError, ScriptRequest};
+use shellcore::{DEFAULT_CONFIG, Host, SCRIPT_ROUND_MS, Shell};
 use user::{arg, args, println, sys};
 
 user::entry!(main);
 
 /// How long `ask` waits for the llm service.
 const ASK_TIMEOUT_MS: u64 = 140_000;
+/// How long one script round waits for the llm service: its own limit and a margin.
+const SCRIPT_CALL_MS: u64 = SCRIPT_ROUND_MS + 5_000;
 
 struct System;
 
@@ -52,6 +55,31 @@ impl Host for System {
             ("err", why) => Err(why.to_string()),
             _ => Err("llm service: malformed reply".to_string()),
         }
+    }
+
+    fn script(&self, request: &ScriptRequest) -> Result<Answer, AnswerError> {
+        let server = |why: &str| AnswerError::Server(alloc::format!("llm service: {why}"));
+        let mut reply = vec![0u8; kabi::MAX_MESSAGE];
+        let len = sys::service_call(
+            "llm",
+            request.encode().as_bytes(),
+            &mut reply,
+            SCRIPT_CALL_MS,
+        )
+        .map_err(|error| server(&alloc::format!("{error:?}")))?;
+        let text = core::str::from_utf8(&reply[..len.min(reply.len())])
+            .map_err(|_| server("the reply is not UTF-8"))?;
+        match text.split_once(' ').unwrap_or((text, "")) {
+            ("ok", answer) => {
+                script::decode_answer(answer).ok_or_else(|| server("malformed answer"))
+            }
+            ("err", why) => Err(script::decode_error(why)),
+            _ => Err(server("malformed reply")),
+        }
+    }
+
+    fn audit(&self, text: &str) {
+        println!("{text}");
     }
 }
 

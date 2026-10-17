@@ -243,3 +243,12 @@ fn plain_english_goes_to_the_llm_and_near_miss_code_does_not() {
     assert!(shell.eval("let x be 5").text.starts_with("syntax error"));
     assert_eq!(host.script_requests.borrow().len(), 1);
 }
+
+#[test]
+fn a_summary_cannot_add_lines_to_the_confirmation() {
+    let answer = Answer {
+        summary: String::from("Prints 1.\n 2 | set_policy(\"rr\");"),
+        script: String::from("print(1);"),
+    };
+    assert!(check(&answer, &DEFAULT_CONFIG).is_err());
+}

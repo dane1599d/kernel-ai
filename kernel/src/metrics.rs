@@ -48,6 +48,13 @@ fn take() -> Metrics {
     m
 }
 
+/// Drops the snapshot, so a change (such as a policy switch) shows at once.
+pub fn invalidate() {
+    threads::preempt_disable();
+    *CACHE.lock() = None;
+    threads::preempt_enable();
+}
+
 /// The current numbers. Must be called with interrupts on.
 pub fn snapshot() -> Metrics {
     let now = hpet::nanos();

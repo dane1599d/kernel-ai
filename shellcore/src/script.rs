@@ -17,7 +17,7 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::fmt::Write;
 use kabi::{Metrics, policy};
-use llmproto::script::{API, Answer, ApiFn, Effect, check_text};
+use llmproto::script::{API, Answer, ApiFn, Effect, check_summary, check_text};
 use rhai::{AST, Array, Dynamic, Engine, EvalAltResult, INT, Map, Scope};
 
 /// A script that passed every check, waiting for the user's answer.
@@ -215,6 +215,9 @@ impl Host for Stub {
 /// stub OS so unknown functions, wrong arguments and type errors are caught before
 /// the user is asked. The error text is fit to send back to the model.
 pub fn check(answer: &Answer, config: &Config) -> Result<Checked, String> {
+    // The llm service checked both already; the shell does not rely on that, since
+    // the summary goes straight into the confirmation.
+    let summary = check_summary(&answer.summary).map_err(|error| error.describe())?;
     let script = check_text(&answer.script).map_err(|error| error.describe())?;
     let (reads, changes) = names_in(&script);
     let granted: Vec<&'static str> = reads.iter().chain(&changes).copied().collect();
@@ -232,7 +235,7 @@ pub fn check(answer: &Answer, config: &Config) -> Result<Checked, String> {
         return Err(format!("the script failed a trial run: {error}"));
     }
     Ok(Checked {
-        summary: answer.summary.clone(),
+        summary,
         script,
         reads,
         changes,

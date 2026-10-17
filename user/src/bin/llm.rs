@@ -1,7 +1,8 @@
-//! The LLM client service: takes `ask <prompt>` and `health` requests from the
-//! kernel terminal, talks OpenAI-compatible chat JSON over HTTP to the LLM server,
-//! and answers `ok <text>` or `err <text>`. The kernel decides where the bytes go
-//! (the server on its command line); this program builds and parses them.
+//! The LLM client service. It takes `ask <prompt>`, `script ...` (see
+//! `llmproto::script`) and `health` requests from the kernel terminal and the shell,
+//! talks OpenAI-compatible chat JSON over HTTP to the LLM server, and answers
+//! `ok <text>` or `err <text>`. The kernel decides where the bytes go (the server on
+//! its command line); this program builds and parses them.
 
 #![no_std]
 #![no_main]
@@ -12,6 +13,7 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use kabi::HttpRequest;
+use llmproto::script::{self, AnswerError, ScriptRequest};
 use llmproto::text::printable;
 use llmproto::{http, openai};
 use user::{arg, args, println, sys};
@@ -24,6 +26,8 @@ const SYSTEM_PROMPT: &str = "You are the assistant built into Kernel AI, a small
 const MAX_TOKENS: u32 = 256;
 const CHAT_TIMEOUT_MS: u64 = 120_000;
 const HEALTH_TIMEOUT_MS: u64 = 5_000;
+/// Longest one script round may take, whatever the shell asks for.
+const SCRIPT_TIMEOUT_MS: u64 = 90_000;
 const MAX_REPLY_CHARS: usize = 4096;
 const MAX_REPLY_LINES: usize = 64;
 const MAX_ERROR_CHARS: usize = 160;
@@ -83,8 +87,32 @@ fn handle(config: &Config, text: &str, response: &mut [u8]) -> Result<String, St
     match command {
         "health" => health(host, response),
         "ask" if !rest.trim().is_empty() => ask(config, host, rest.trim(), response),
+        "script" => write_script(config, host, text, response),
         _ => Err(format!("unknown request {command:?}")),
     }
+}
+
+/// Asks the model for a script. The answer goes back framed by length, exactly as
+/// the model wrote it after the text checks; the shell checks it again and runs it.
+fn write_script(
+    config: &Config,
+    host: &str,
+    text: &str,
+    response: &mut [u8],
+) -> Result<String, String> {
+    let request = ScriptRequest::decode(text).ok_or("server malformed script request")?;
+    let repair = request
+        .repair
+        .as_ref()
+        .map(|(script, error)| script::Repair { script, error });
+    let body = script::chat_request(&config.model, &request.request, repair);
+    let http_request = http::post_json(host, openai::CHAT_PATH, None, &body);
+    let timeout = request.timeout_ms.min(SCRIPT_TIMEOUT_MS);
+    exchange(&http_request, timeout, response)
+        .map_err(AnswerError::Server)
+        .and_then(|reply| script::answer_from(&reply))
+        .map(|answer| script::encode_answer(&answer))
+        .map_err(|error| script::encode_error(&error))
 }
 
 fn exchange(

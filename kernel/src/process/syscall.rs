@@ -304,6 +304,8 @@ fn set_policy(id: u64) -> Result<u64, Error> {
     }
     LAST_SWITCH_NS.store(now, Ordering::Relaxed);
     threads::set_policy_all(make);
+    // A script that switches and then reads the policy must see the switch.
+    crate::metrics::invalidate();
     log!("sched: policy switched to {name} by a ring-3 request");
     Ok(0)
 }

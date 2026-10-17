@@ -234,3 +234,18 @@ fn options_need_a_server_and_a_model() {
     assert!(parse(&args(&["--llm", "h:1", "--model", "m", "--repeat", "0"])).is_err());
     assert!(parse(&args(&["--llm", "h:1", "--model", "m", "--fast"])).is_err());
 }
+
+#[test]
+fn the_server_transport_carries_both_rounds() {
+    // The mock answers requests it does not know with prose, so both rounds are
+    // refused, which takes a real HTTP exchange each time.
+    let server = crate::mock_llm::start().unwrap();
+    let transport = server_transport(
+        format!("127.0.0.1:{}", server.port),
+        crate::mock_llm::MODEL.into(),
+    );
+    let outcome = attempt(task("Tell me the number of processors."), transport);
+    assert_eq!(outcome.failure.map(|(k, _)| k), Some(Failure::Refused));
+    assert_eq!(outcome.rounds, 2);
+    assert_eq!(server.chats(), 2);
+}

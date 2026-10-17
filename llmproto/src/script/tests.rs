@@ -183,3 +183,23 @@ fn answers_frame_exactly_whatever_they_contain() {
     assert_eq!(decode_answer("5 3\nab"), None);
     let _ = vec![0u8; 1];
 }
+
+#[test]
+fn errors_cross_between_services_with_their_kind() {
+    for error in [
+        AnswerError::Server(String::from("HTTP 500: boom")),
+        AnswerError::CutOff,
+        AnswerError::NoEnvelope,
+        AnswerError::Rejected(String::from("line 3 is longer than 120 characters")),
+        AnswerError::NoScript(String::from("Cannot reboot from a script.")),
+    ] {
+        assert_eq!(decode_error(&encode_error(&error)), error);
+    }
+    // Text from an older or broken service is a server error, never repairable.
+    let unknown = decode_error("no LLM server configured (boot with llm=IP:PORT)");
+    assert!(!unknown.repairable());
+    assert_eq!(
+        unknown.describe(),
+        "LLM server: no LLM server configured (boot with llm=IP:PORT)"
+    );
+}

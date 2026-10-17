@@ -1,27 +1,35 @@
 //! The terminal: a prompt with line editing. Each line goes to the ring-3 Rhai
-//! shell, whose answer is printed with a `= ` (result) or `! ` (error) lead that no
-//! kernel message uses, so shell output can never pass for kernel output. Lines
-//! starting with `:` are kernel commands, which work even when the shell is down.
+//! shell, whose answer is printed with a `= ` (result), `! ` (error) or `? ` (a
+//! script waiting for a yes) lead that no kernel message uses, so shell output can
+//! never pass for kernel output. Lines starting with `:` are kernel commands, which
+//! work even when the shell is down. After a `? ` reply the prompt changes and the
+//! next line, whatever it is, answers the question; only `y` or `yes` runs the script.
 
 use crate::console::{BACKSPACE, FORM_FEED};
 use crate::keyboard::Decoder;
 use crate::{hpet, ipc, llm, log, memory, net, serial, smp, threads};
 use alloc::boxed::Box;
+use alloc::format;
 use alloc::string::String;
+use core::sync::atomic::{AtomicU64, Ordering};
 use llmproto::text::printable;
 use sched::{Interactive, RoundRobin};
 
 const PROMPT: &str = "kai> ";
 const MAX_LINE: usize = 200;
 const DELETE: char = 127u8 as char;
-/// Longest a shell line may take: the shell's own LLM wait (140 s) plus its
-/// two-second compute budget, with room to spare, so the shell always answers first.
+/// Longest a shell line may take: the shell's longest LLM wait (140 s for `ask`, two
+/// script rounds of 75 s) plus its compute budget, with room to spare, so the shell
+/// always answers first.
 const SHELL_TIMEOUT_MS: u64 = 160_000;
 /// How long to wait for a shell that is starting or restarting.
 const SHELL_START_WAIT_NS: u64 = 3_000_000_000;
 /// Longest piece of a reply printed in one go (each print keeps interrupts off).
 const PIECE_CHARS: usize = 160;
 const MAX_REPLY_LINES: usize = 64;
+
+/// Shell replies printed in full, for the self-test.
+static REPLIES_SHOWN: AtomicU64 = AtomicU64::new(0);
 
 const HELP: &[(&str, &str)] = &[
     (":help", "this list"),
@@ -47,14 +55,22 @@ fn print(args: core::fmt::Arguments) {
 pub fn run(_: usize) {
     let mut decoder = Decoder::new();
     log!("Kernel AI terminal. Lines are Rhai (try help); kernel commands start with ':'.");
+    let mut confirming: Option<u64> = None;
     loop {
-        print(format_args!("{PROMPT}"));
+        match confirming {
+            Some(id) => print(format_args!("run script {id}? yes/no> ")),
+            None => print(format_args!("{PROMPT}")),
+        }
         let line = read_line(&mut decoder);
         let line = line.trim();
+        if let Some(id) = confirming.take() {
+            confirming = shell_line(&format!("answer {id} {line}"));
+            continue;
+        }
         match line.strip_prefix(':') {
             Some(command) => kernel_command(command.trim()),
             None if line.is_empty() => {}
-            None => shell_line(line),
+            None => confirming = shell_line(line),
         }
     }
 }
@@ -81,28 +97,50 @@ fn read_line(decoder: &mut Decoder) -> String {
     }
 }
 
-/// Sends a line to the shell and prints its answer.
-fn shell_line(line: &str) {
+/// Sends a line to the shell and prints its answer. Returns the id of a script that
+/// waits for the user's yes.
+fn shell_line(line: &str) -> Option<u64> {
     let start_deadline = hpet::nanos() + SHELL_START_WAIT_NS;
     if ipc::wait_bound("shell", start_deadline, || false).is_err() {
         log!("shell not running; kernel commands start with ':' (try :help)");
-        return;
+        return None;
     }
     match ipc::call("shell", line.as_bytes(), SHELL_TIMEOUT_MS) {
         Ok(reply) => show_shell_reply(&reply),
-        Err(error) => log!("shell: no answer ({error:?})"),
+        Err(error) => {
+            log!("shell: no answer ({error:?})");
+            None
+        }
     }
 }
 
-/// Prints `ok <text>` or `err <text>` with its lead, one complete line per piece.
-fn show_shell_reply(reply: &[u8]) {
+/// Prints `ok <text>`, `err <text>` or `confirm <id> <text>` with its lead, one
+/// complete line per piece, and returns the id of a confirmation shown in full.
+fn show_shell_reply(reply: &[u8]) -> Option<u64> {
     let text = String::from_utf8_lossy(reply);
     let clean = printable(&text, kabi::MAX_MESSAGE, MAX_REPLY_LINES);
-    let (lead, body) = match clean.split_once(' ').unwrap_or((clean.as_str(), "")) {
-        ("ok", body) => ("=", body),
-        ("err", body) => ("!", body),
-        _ => ("!", "the shell sent a malformed reply"),
+    let (kind, rest) = clean.split_once(' ').unwrap_or((clean.as_str(), ""));
+    let (lead, body, confirm) = match kind {
+        "ok" => ("=", rest, None),
+        "err" => ("!", rest, None),
+        "confirm" => match rest.split_once(' ') {
+            Some((id, body)) => ("?", body, id.parse::<u64>().ok()),
+            None => ("!", "the shell sent a malformed reply", None),
+        },
+        _ => ("!", "the shell sent a malformed reply", None),
     };
+    show_lines(lead, body);
+    REPLIES_SHOWN.fetch_add(1, Ordering::Relaxed);
+    // A script is only run on a yes to all of it, so a confirmation that lost
+    // characters or lines on the way to the screen asks nothing.
+    if confirm.is_some() && clean != text {
+        log!("! the confirmation could not be shown in full, so the script will not run");
+        return None;
+    }
+    confirm
+}
+
+fn show_lines(lead: &str, body: &str) {
     for line in body.lines() {
         let mut rest = line;
         loop {
@@ -220,10 +258,12 @@ fn processes() {
     }
 }
 
-/// M6 exit test, now through the shell: the harness types "policy rr" and "ask
-/// hello". The policy must be installed on every CPU, the llm service must have
-/// answered the shell, and the shell must have answered both lines. The counts come
-/// from the kernel's IPC layer, not from anything a program prints.
+/// M6 exit test, now through the shell: the harness types "policy rr", "ask hello",
+/// a request in plain English and "yes" to the script proposed for it. The policy
+/// must be installed on every CPU, the llm service must have answered the shell
+/// twice (the question and the script request), and the terminal must have shown
+/// all four replies. The counts come from the kernel, not from anything a program
+/// prints; xtask checks the printed text.
 pub fn self_test() -> Result<(), &'static str> {
     const TIMEOUT_MS: u64 = 60_000;
     threads::spawn("terminal", run, 0)?;
@@ -238,11 +278,11 @@ pub fn self_test() -> Result<(), &'static str> {
     // The installed policy on every CPU, not the active one: a watchdog fallback
     // also runs round-robin and must not count as the command having worked.
     let switched = || threads::installed_policy_everywhere("round-robin");
-    let llm_answered_shell = || ipc::replies("llm").1 >= 1;
-    let shell_answered = || ipc::replies("shell").0 >= 2;
+    let llm_answered_shell = || ipc::replies("llm").1 >= 2;
+    let all_shown = || REPLIES_SHOWN.load(Ordering::Relaxed) >= 4;
     for _ in 0..TIMEOUT_MS / 10 {
-        if switched() && llm_answered_shell() && shell_answered() {
-            log!("terminal: policy switched and LLM reply shown through the shell");
+        if switched() && llm_answered_shell() && all_shown() {
+            log!("terminal: policy switched, LLM reply and a confirmed script shown");
             return Ok(());
         }
         threads::sleep_ms(10);
@@ -251,7 +291,7 @@ pub fn self_test() -> Result<(), &'static str> {
         return Err("terminal: the policy command did not switch to round-robin");
     }
     if !llm_answered_shell() {
-        return Err("terminal: the llm service never answered the shell");
+        return Err("terminal: the llm service did not answer the shell twice");
     }
-    Err("terminal: the shell did not answer both lines")
+    Err("terminal: not all four replies were shown")
 }

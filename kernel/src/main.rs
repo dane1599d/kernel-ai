@@ -36,6 +36,7 @@ mod port;
 mod process;
 mod qemu;
 mod sched_tests;
+mod script_tests;
 mod serial;
 mod shell_tests;
 mod smp;
@@ -120,6 +121,8 @@ enum SelfTest {
     Terminal,
     /// M8a: the Rhai shell answers a fixed list of lines correctly.
     Shell,
+    /// M8b: LLM-written scripts are checked, shown, and run only after a yes.
+    Scripts,
 }
 
 const DEFAULT_STORM_SECONDS: u64 = 60;
@@ -142,6 +145,7 @@ fn self_test_from(cmdline: &str) -> SelfTest {
             "test=net" => Some(SelfTest::Net),
             "test=terminal" => Some(SelfTest::Terminal),
             "test=shell" => Some(SelfTest::Shell),
+            "test=scripts" => Some(SelfTest::Scripts),
             other => other.strip_prefix("test=storm").map(|rest| {
                 let seconds = rest.strip_prefix('-').and_then(|s| s.parse().ok());
                 SelfTest::Storm(seconds.unwrap_or(DEFAULT_STORM_SECONDS))
@@ -274,6 +278,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Net => run_case(llm::self_test),
         SelfTest::Terminal => run_case(terminal::self_test),
         SelfTest::Shell => run_case(shell_tests::check),
+        SelfTest::Scripts => run_case(script_tests::check),
         SelfTest::Boot | SelfTest::None => {}
     }
 
@@ -457,7 +462,7 @@ fn start_user_space(test: SelfTest) {
     process::set_page_budget(free / 2);
     let wanted = matches!(
         test,
-        SelfTest::None | SelfTest::Net | SelfTest::Terminal | SelfTest::Shell
+        SelfTest::None | SelfTest::Net | SelfTest::Terminal | SelfTest::Shell | SelfTest::Scripts
     );
     if !wanted || programs.is_empty() {
         return;

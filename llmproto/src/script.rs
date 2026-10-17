@@ -301,7 +301,7 @@ pub fn check_text(script: &str) -> Result<String, AnswerError> {
 }
 
 /// Checks a summary: one line, printable, within the limit.
-fn check_summary(summary: &str) -> Result<String, AnswerError> {
+pub fn check_summary(summary: &str) -> Result<String, AnswerError> {
     let summary = summary.trim();
     if summary.chars().any(char::is_control) {
         return Err(AnswerError::Rejected(
@@ -440,6 +440,30 @@ pub fn decode_answer(text: &str) -> Option<Answer> {
         summary: body.get(..summary_len)?.to_string(),
         script: body.get(summary_len..)?.to_string(),
     })
+}
+
+/// `<kind> <text>`, so the shell can tell which errors are worth a repair round.
+pub fn encode_error(error: &AnswerError) -> String {
+    match error {
+        AnswerError::Server(why) => format!("server {why}"),
+        AnswerError::CutOff => "cutoff".into(),
+        AnswerError::NoEnvelope => "noenvelope".into(),
+        AnswerError::Rejected(why) => format!("rejected {why}"),
+        AnswerError::NoScript(summary) => format!("noscript {summary}"),
+    }
+}
+
+/// Reads [`encode_error`]'s text. Anything else is a server error.
+pub fn decode_error(text: &str) -> AnswerError {
+    let (kind, rest) = text.split_once(' ').unwrap_or((text, ""));
+    match kind {
+        "server" => AnswerError::Server(rest.into()),
+        "cutoff" => AnswerError::CutOff,
+        "noenvelope" => AnswerError::NoEnvelope,
+        "rejected" => AnswerError::Rejected(rest.into()),
+        "noscript" => AnswerError::NoScript(rest.into()),
+        _ => AnswerError::Server(text.into()),
+    }
 }
 
 #[cfg(test)]
