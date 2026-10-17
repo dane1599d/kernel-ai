@@ -47,7 +47,9 @@ pub struct Config {
     pub heap_budget: u64,
     /// Most bytes of printed output kept per line.
     pub max_output: usize,
-    /// Backstop if the clock check never fires.
+    /// Backstop if the clock check never fires. Far above what the time budget
+    /// allows on fast hardware (KVM runs over 10 million operations a second), so
+    /// the time limit is what normally stops a line.
     pub max_operations: u64,
 }
 
@@ -55,7 +57,7 @@ pub const DEFAULT_CONFIG: Config = Config {
     line_budget_ms: 2000,
     heap_budget: 8 * 1024 * 1024,
     max_output: 6 * 1024,
-    max_operations: 20_000_000,
+    max_operations: 2_000_000_000,
 };
 
 /// How often the time, interrupt and heap checks run, in operations.
