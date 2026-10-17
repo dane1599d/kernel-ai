@@ -1,0 +1,484 @@
+//! The ring-3 `edit` service over an environment trait: it opens a session on a
+//! version read from the kernel's store, runs the editor's commands, builds on the
+//! host and uploads what comes back, and relays the kernel's git syncs. It answers
+//! only the kernel; the kernel shows the change and asks before anything runs.
+
+use crate::command::{self, Command, USAGE};
+use crate::session::Session;
+use crate::wire::{self, BuildRequest, BuildResult, Ipc, Synced};
+use crate::{MAX_PRINTED, editable, rules};
+use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
+use kabi::Error;
+use kabi::live::Info;
+use livecore::{artifact, diff};
+use llmproto::http;
+
+/// How long a build may take, inside the kernel's wait for this service.
+pub const BUILD_TIMEOUT_MS: u64 = 150_000;
+/// How long a sync may take.
+pub const SYNC_TIMEOUT_MS: u64 = 30_000;
+/// Diagnostic lines a failed build shows.
+const DIAGNOSTICS: usize = 8;
+/// Lines `p` prints without a range.
+const PAGE: usize = 10;
+
+/// What the service needs from the kernel.
+pub trait Env {
+    fn info(&mut self, component: &str) -> Result<Info, Error>;
+    /// A version's artifact from the store.
+    fn artifact(&mut self, component: &str, label: &str) -> Result<Vec<u8>, Error>;
+    /// Uploads an artifact under the label the store assigns next.
+    fn put(
+        &mut self,
+        component: &str,
+        artifact: &[u8],
+        base: &str,
+        commit: &str,
+    ) -> Result<(), Error>;
+    /// Sends an HTTP request to the build service; the response.
+    fn build(&mut self, request: &[u8], timeout_ms: u64) -> Result<Vec<u8>, Error>;
+    fn log(&mut self, text: &str);
+}
+
+pub struct Service {
+    /// The build service, as `IP:PORT` for the Host header.
+    host: String,
+    token: String,
+    pub session: Option<Session>,
+}
+
+fn ok(text: impl AsRef<str>) -> String {
+    format!("ok {}", text.as_ref())
+}
+
+fn err(text: impl AsRef<str>) -> String {
+    format!("err {}", text.as_ref())
+}
+
+/// Cuts a reply to what one IPC reply holds.
+fn fit(mut reply: String) -> String {
+    let max = kabi::MAX_MESSAGE - 8;
+    if reply.len() > max {
+        reply.truncate(reply.floor_char_boundary(max));
+        reply.push_str("\n...");
+    }
+    reply
+}
+
+fn short(commit: &str) -> &str {
+    commit.get(..12).unwrap_or(commit)
+}
+
+impl Service {
+    pub fn new(host: &str, token: &str) -> Self {
+        Self {
+            host: host.to_string(),
+            token: token.to_string(),
+            session: None,
+        }
+    }
+
+    /// Answers one request from `caller` (0 is the kernel).
+    pub fn handle(&mut self, env: &mut dyn Env, caller: u64, request: &[u8]) -> String {
+        if caller != 0 {
+            return err("the edit service answers only the kernel");
+        }
+        let reply = match wire::decode_ipc(request) {
+            Ok(Ipc::Open { component, label }) => self.open(env, component, label),
+            Ok(Ipc::Cmd(line)) => self.command(env, line),
+            Ok(Ipc::Sync { seq, job }) => self.sync(env, seq, &job),
+            Err(why) => err(why),
+        };
+        fit(reply)
+    }
+
+    fn open(&mut self, env: &mut dyn Env, component: &str, label: Option<&str>) -> String {
+        let Some(editable) = editable(component) else {
+            return err(format!("{component} cannot be edited; notes can"));
+        };
+        let info = match env.info(component) {
+            Ok(info) => info,
+            Err(error) => return err(format!("no component {component} ({error:?})")),
+        };
+        let label = match label {
+            Some(label) => label.to_string(),
+            None if info.active().is_empty() => {
+                return err(format!("{component} has not started yet"));
+            }
+            None => info.active().to_string(),
+        };
+        let mut dropped = String::new();
+        if let Some(session) = &self.session {
+            if session.component == component && session.label == label {
+                let state = if session.changed() {
+                    ", with your edits"
+                } else {
+                    ""
+                };
+                return ok(format!("editing {component} {label} again{state}"));
+            }
+            if session.changed() && session.built.is_none() {
+                dropped = format!("; dropped the unbuilt edits to {}", session.label);
+            }
+        }
+        let bytes = match env.artifact(component, &label) {
+            Ok(bytes) => bytes,
+            Err(Error::NotFound) => return err(format!("no version {component} {label}")),
+            Err(error) => return err(format!("cannot read {component} {label}: {error:?}")),
+        };
+        let parsed = match artifact::parse(&bytes) {
+            Ok(parsed) => parsed,
+            Err(why) => return err(format!("{component} {label}: {why}")),
+        };
+        let files = artifact::source_files(parsed.source).unwrap_or_default();
+        let inside = format!("{}/", editable.dir);
+        let manifest = format!("{}/Cargo.toml", editable.dir);
+        let own = files.iter().all(|(path, _)| path.starts_with(&inside))
+            && files.iter().any(|(path, _)| *path == manifest);
+        if !own {
+            return err(format!(
+                "{component} {label} is not editable: its source is not {}",
+                editable.dir
+            ));
+        }
+        match Session::open(component, &label, parsed.source) {
+            Ok(session) => {
+                let reply = ok(format!(
+                    "editing {component} {label}: {} files; {}, {} lines{dropped}",
+                    session.files().len(),
+                    session.current().path,
+                    session.current().len()
+                ));
+                self.session = Some(session);
+                reply
+            }
+            Err(why) => err(why),
+        }
+    }
+
+    fn command(&mut self, env: &mut dyn Env, line: &str) -> String {
+        let command = match command::parse(line) {
+            Ok(command) => command,
+            Err(why) => return err(why),
+        };
+        if command == Command::Help {
+            return ok(format!("commands:\n{USAGE}"));
+        }
+        let Some(session) = self.session.as_mut() else {
+            return err("no file is open; :edit <component> first");
+        };
+        match command {
+            Command::Build => self.build(env),
+            command => run(session, command),
+        }
+    }
+
+    fn build(&mut self, env: &mut dyn Env) -> String {
+        let Some(session) = self.session.as_ref() else {
+            return err("no file is open");
+        };
+        let component = session.component.clone();
+        let base = session.label.clone();
+        if let Some(built) = &session.built {
+            return err(format!(
+                "{built} was built from this text already; :apply runs it"
+            ));
+        }
+        if !session.changed() {
+            return err(format!("nothing changed since {component} {base}"));
+        }
+        let bundle = session.to_bundle();
+        let Some(editable) = editable(&component) else {
+            return err(format!("{component} cannot be edited"));
+        };
+        if let Err(why) = rules::check(editable, session.original(), &bundle) {
+            return err(format!("not built: {why}"));
+        }
+        if bundle.len() > crate::MAX_BUNDLE {
+            return err(format!(
+                "not built: the source is over {} KiB",
+                crate::MAX_BUNDLE / 1024
+            ));
+        }
+        let next = match env.info(&component) {
+            Ok(info) => info.next().to_string(),
+            Err(error) => return err(format!("cannot read {component}: {error:?}")),
+        };
+        let body = wire::encode_build(&BuildRequest {
+            component: &component,
+            label: &next,
+            base: &base,
+            bundle: &bundle,
+        });
+        env.log(&format!(
+            "building {component} {next} from {base} on the host"
+        ));
+        let body = match self.post(env, "/build", &body, BUILD_TIMEOUT_MS) {
+            Ok(body) => body,
+            Err(why) => return err(format!("build service: {why}")),
+        };
+        let built = match wire::decode_built(&body) {
+            Ok(built) => built,
+            Err(why) => return err(format!("build service: a malformed reply ({why})")),
+        };
+        let log = String::from_utf8_lossy(built.log);
+        match built.result {
+            BuildResult::Refused => err(format!("build refused: {}", log.trim())),
+            BuildResult::Failed => self.failed(&log),
+            BuildResult::Ok => {
+                let checked = check_artifact(built.artifact, &component, &next, &bundle);
+                if let Err(why) = checked {
+                    return err(format!(
+                        "the build service returned the wrong artifact: {why}"
+                    ));
+                }
+                match env.put(&component, built.artifact, &base, built.commit) {
+                    Ok(()) => {}
+                    Err(Error::Invalid) => {
+                        return err(format!(
+                            "the store refused {next}: the next label or the active version changed; build again"
+                        ));
+                    }
+                    Err(Error::NoMemory) => {
+                        return err("the store has no room for another upload");
+                    }
+                    Err(error) => return err(format!("the store refused {next}: {error:?}")),
+                }
+                if let Some(session) = self.session.as_mut() {
+                    session.built = Some(next.clone());
+                }
+                ok(format!(
+                    "built {next} from {base} (commit {}); :apply runs it",
+                    short(built.commit)
+                ))
+            }
+        }
+    }
+
+    /// A failed build: its first errors, with the cursor on the first.
+    fn failed(&mut self, log: &str) -> String {
+        let lines: Vec<&str> = log
+            .lines()
+            .filter(|line| line.contains("error"))
+            .take(DIAGNOSTICS)
+            .collect();
+        if let Some(session) = self.session.as_mut()
+            && let Some((path, line)) = lines.iter().find_map(|line| location(line))
+            && session.goto(path, line)
+        {
+            let mut reply = err("build failed; the cursor is on the first error");
+            for line in &lines {
+                reply.push('\n');
+                reply.push_str(line);
+            }
+            return reply;
+        }
+        let mut reply = err("build failed");
+        for line in if lines.is_empty() {
+            log.lines().take(DIAGNOSTICS).collect()
+        } else {
+            lines
+        } {
+            reply.push('\n');
+            reply.push_str(line);
+        }
+        reply
+    }
+
+    fn sync(&mut self, env: &mut dyn Env, seq: u64, job: &wire::SyncRequest<'_>) -> String {
+        let body = wire::encode_sync(job);
+        let body = match self.post(env, "/sync", &body, SYNC_TIMEOUT_MS) {
+            Ok(body) => body,
+            Err(why) => return err(format!("build service: {why}")),
+        };
+        match wire::decode_synced(&body) {
+            Ok(Synced::Moved { sha, .. } | Synced::Recorded { sha, .. }) => {
+                ok(format!("synced {seq} {sha}"))
+            }
+            Ok(Synced::Untracked) => ok(format!("untracked {seq}")),
+            Err(why) => err(format!("build service: a malformed reply ({why})")),
+        }
+    }
+
+    /// POSTs to the build service; the body of a 200 response.
+    fn post(
+        &self,
+        env: &mut dyn Env,
+        path: &str,
+        body: &[u8],
+        timeout_ms: u64,
+    ) -> Result<Vec<u8>, String> {
+        let token = [("X-Kai-Token", self.token.as_str())];
+        let request = http::post(&self.host, path, "application/octet-stream", &token, body);
+        let response = env
+            .build(&request, timeout_ms)
+            .map_err(|error| format!("{error:?}"))?;
+        let response =
+            http::parse_response(&response, true).map_err(|error| format!("{error:?}"))?;
+        if response.status != 200 {
+            let body = String::from_utf8_lossy(&response.body);
+            let first = body.lines().next().unwrap_or("");
+            return Err(format!("HTTP {} {}", response.status, first));
+        }
+        Ok(response.body)
+    }
+}
+
+/// The built artifact must parse, name this component and the next label, and
+/// carry exactly the source that was sent.
+fn check_artifact(bytes: &[u8], component: &str, label: &str, bundle: &[u8]) -> Result<(), String> {
+    let parsed = artifact::parse(bytes)?;
+    let manifest = &parsed.manifest;
+    if manifest.component != component || manifest.version != label {
+        return Err(format!(
+            "it is {} {}, not {component} {label}",
+            manifest.component, manifest.version
+        ));
+    }
+    if parsed.source != bundle {
+        return Err("its source is not what was sent".into());
+    }
+    Ok(())
+}
+
+/// `path:line:col: ...` from a compiler message.
+fn location(line: &str) -> Option<(&str, usize)> {
+    let mut parts = line.splitn(4, ':');
+    let path = parts.next()?;
+    let line = parts.next()?.parse().ok()?;
+    parts.next()?.parse::<usize>().ok()?;
+    Some((path.trim(), line))
+}
+
+fn numbered(session: &Session, from: usize, to: usize) -> String {
+    let file = session.current();
+    let mut out = format!("{} lines {from} to {to} of {}", file.path, file.len());
+    for n in from..=to {
+        if let Some(text) = file.line(n) {
+            out.push_str(&format!("\n{n:>4} | {text}"));
+        }
+    }
+    out
+}
+
+fn at(session: &Session, n: usize) -> String {
+    let file = session.current();
+    format!("{}:{n}: {}", file.path, file.line(n).unwrap_or(""))
+}
+
+/// Every command but build, on the session.
+fn run(session: &mut Session, command: Command<'_>) -> String {
+    let result = match command {
+        Command::Files => {
+            let current = session.current().path.clone();
+            let mut out = format!("{} files; * changed, > current", session.files().len());
+            for (index, file) in session.files().iter().enumerate() {
+                let mark = match (session.file_changed(index), file.path == current) {
+                    (true, true) => "*>",
+                    (true, false) => "* ",
+                    (false, true) => " >",
+                    (false, false) => "  ",
+                };
+                out.push_str(&format!("\n{mark} {} ({} lines)", file.path, file.len()));
+            }
+            Ok(out)
+        }
+        Command::Open(name) => session.select(name).map(|()| {
+            format!(
+                "{}, {} lines",
+                session.current().path,
+                session.current().len()
+            )
+        }),
+        Command::Print { from, to } => {
+            let len = session.current().len();
+            let from = from.unwrap_or(session.line().max(1));
+            let to = to
+                .unwrap_or(from + PAGE - 1)
+                .min(len)
+                .min(from + MAX_PRINTED - 1);
+            if len == 0 || from > len {
+                Err(format!("{} has {len} lines", session.current().path))
+            } else {
+                let text = numbered(session, from, to);
+                let path = session.current().path.clone();
+                session.goto(&path, to + 1);
+                Ok(text)
+            }
+        }
+        Command::Find(text) => {
+            let found = session.find(text);
+            match found.first() {
+                None => Err(format!("no line holds {text:?}")),
+                Some(&(file, line)) => {
+                    let mut out = format!("{} lines hold {text:?}", found.len());
+                    for &(index, n) in found.iter().take(MAX_PRINTED) {
+                        let file = &session.files()[index];
+                        out.push_str(&format!(
+                            "\n{}:{n}: {}",
+                            file.path,
+                            file.line(n).unwrap_or("")
+                        ));
+                    }
+                    let path = session.files()[file].path.clone();
+                    session.goto(&path, line);
+                    Ok(out)
+                }
+            }
+        }
+        Command::Substitute { line, old, new } => {
+            session.substitute(line, old, new).map(|n| at(session, n))
+        }
+        Command::Change(n, text) => session.change(n, text).map(|()| at(session, n)),
+        Command::Insert(n, text) => session.insert(n, text).map(|()| at(session, n)),
+        Command::Append(n, text) => session.insert(n + 1, text).map(|()| at(session, n + 1)),
+        Command::Delete(from, to) => session.delete(from, to).map(|()| {
+            format!(
+                "deleted {} lines; {} has {}",
+                to - from + 1,
+                session.current().path,
+                session.current().len()
+            )
+        }),
+        Command::Undo => match session.undo() {
+            true => Ok(format!("undone; {}", at(session, session.line()))),
+            false => Err("nothing to undo".into()),
+        },
+        Command::Diff => {
+            let bundle = session.to_bundle();
+            match diff::changes(session.original(), &bundle) {
+                Ok(changes) if changes.is_empty() => Ok(format!(
+                    "no changes since {} {}",
+                    session.component, session.label
+                )),
+                Ok(changes) => {
+                    let lines = diff::render(&changes);
+                    let mut out = format!("changes since {} {}", session.component, session.label);
+                    for line in lines.iter().take(MAX_PRINTED) {
+                        out.push('\n');
+                        out.push_str(line);
+                    }
+                    if lines.len() > MAX_PRINTED {
+                        out.push_str(&format!("\n... {} more lines", lines.len() - MAX_PRINTED));
+                    }
+                    Ok(out)
+                }
+                Err(why) => Err(why.to_string()),
+            }
+        }
+        Command::Reset => {
+            session.reset();
+            Ok(format!(
+                "back to {} {} as opened",
+                session.component, session.label
+            ))
+        }
+        Command::Build | Command::Help => unreachable!("handled before"),
+    };
+    match result {
+        Ok(text) => ok(text),
+        Err(why) => err(why),
+    }
+}

@@ -1,0 +1,17 @@
+[package]
+name = "editcore"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The edit loop (M9b) without system calls: the editing session, its commands, the
+# edit rules both sides enforce, the build service's wire formats, the ring-3 edit
+# service over an environment trait, and the exit test as data.
+[lib]
+doctest = false
+
+[dependencies]
+kabi = { path = "../kabi" }
+livecore = { path = "../livecore" }
+llmproto = { path = "../llmproto" }

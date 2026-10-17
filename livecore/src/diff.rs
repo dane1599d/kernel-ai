@@ -122,8 +122,19 @@ pub enum ViewError {
 /// about. Empty when nothing changed.
 pub fn view(old: &[u8], new: &[u8], cols: usize, rows: usize) -> Result<Vec<String>, ViewError> {
     let changes = changes(old, new).map_err(ViewError::Bundle)?;
+    let out = render(&changes);
+    let needed = rows_needed(&out, cols);
+    if needed > rows {
+        return Err(ViewError::TooLarge(needed));
+    }
+    Ok(out)
+}
+
+/// The changes as lines: a header per file, then its lines marked `  | ` for
+/// context, `- | ` removed and `+ | ` added.
+pub fn render(changes: &[FileChange<'_>]) -> Vec<String> {
     let mut out = Vec::new();
-    for change in &changes {
+    for change in changes {
         out.push(header(change));
         let marked = [
             ("  | ", &change.before),
@@ -135,15 +146,16 @@ pub fn view(old: &[u8], new: &[u8], cols: usize, rows: usize) -> Result<Vec<Stri
             out.extend(lines.iter().map(|line| format!("{mark}{}", shown(line))));
         }
     }
+    out
+}
+
+/// Screen rows `lines` take `cols` wide, counting the rows long lines wrap to.
+pub fn rows_needed(lines: &[String], cols: usize) -> usize {
     let cols = cols.max(1);
-    let needed: usize = out
+    lines
         .iter()
         .map(|line| line.chars().count().div_ceil(cols).max(1))
-        .sum();
-    if needed > rows {
-        return Err(ViewError::TooLarge(needed));
-    }
-    Ok(out)
+        .sum()
 }
 
 fn header(change: &FileChange<'_>) -> String {
