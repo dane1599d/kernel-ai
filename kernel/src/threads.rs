@@ -373,9 +373,11 @@ pub fn yield_now() {
     transition(|core, now| core.yield_current(now));
 }
 
-/// Sleeps at least `ms` milliseconds; an early wake-up just sleeps again.
+/// Sleeps at least `ms` milliseconds; an early wake-up just sleeps again. Always
+/// gives up the CPU at least once: `sleep_ms(0)` sleeps until the next tick.
 pub fn sleep_ms(ms: u64) {
     let deadline = hpet::nanos().saturating_add(ms.saturating_mul(1_000_000));
+    transition(|core, now| core.sleep_current(deadline, now));
     while hpet::nanos() < deadline {
         sleep_until_unless(deadline, || false);
     }
