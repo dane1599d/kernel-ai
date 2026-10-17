@@ -62,6 +62,8 @@ Effort for M0 to M6 comes from the two research passes, which scoped the work di
 
 The fluency test in M8 can run on the dev host at any time, since it needs only the Mac mini. Running it early de-risks the choice of Rhai.
 
+**Open follow-up:** M7's exit test is not written yet; the founder will write it (see `docs/decisions.md`). M7 merged with all earlier exit tests passing and the `net` and `terminal` cases running through the ring-3 llm service.
+
 ## 4. Testing strategy
 
 - **Every milestone has an automated exit test** that runs in QEMU and reports pass or fail through `isa-debug-exit`.
