@@ -1,8 +1,8 @@
 [workspace]
 resolver = "3"
-members = ["acpitables", "kabi", "kernel", "linetable", "llmproto", "mm", "sched", "supervise", "uelf", "user", "xtask", "spikes/rhai", "spikes/wasmi"]
+members = ["acpitables", "kabi", "kernel", "linetable", "llmproto", "mm", "sched", "shellcore", "supervise", "uelf", "user", "xtask", "spikes/rhai", "spikes/wasmi"]
 # Host builds only build the xtask runner; the kernel, user programs and spikes are built by xtask for x86_64-unknown-none.
-default-members = ["acpitables", "kabi", "linetable", "llmproto", "mm", "sched", "supervise", "uelf", "xtask"]
+default-members = ["acpitables", "kabi", "linetable", "llmproto", "mm", "sched", "shellcore", "supervise", "uelf", "xtask"]
 
 [workspace.package]
 edition = "2024"

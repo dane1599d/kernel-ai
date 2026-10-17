@@ -6,8 +6,18 @@ use object::{Object, ObjectSection, ObjectSymbol, SymbolKind};
 use std::fs;
 use std::path::Path;
 
+/// Which source lines a table keeps.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    /// Every file: the kernel, whose faults may be anywhere.
+    All,
+    /// Only workspace files: user programs, whose dependencies (Rhai) would make
+    /// the table several megabytes.
+    Workspace,
+}
+
 /// Reads an ELF (the kernel or a user program) and returns its serialized line table.
-pub fn build(elf: &Path, workspace: &Path) -> Result<Vec<u8>, String> {
+pub fn build(elf: &Path, workspace: &Path, scope: Scope) -> Result<Vec<u8>, String> {
     let data = fs::read(elf).map_err(|e| format!("cannot read {}: {e}", elf.display()))?;
     let file =
         object::File::parse(&*data).map_err(|e| format!("cannot parse {}: {e}", elf.display()))?;
@@ -25,6 +35,9 @@ pub fn build(elf: &Path, workspace: &Path) -> Result<Vec<u8>, String> {
     let mut line_rows = 0usize;
     for (addr, len, location) in rows {
         if let (Some(path), Some(line)) = (location.file, location.line) {
+            if scope == Scope::Workspace && !normalize(path).starts_with(&workspace) {
+                continue;
+            }
             let len = u32::try_from(len).unwrap_or(u32::MAX);
             builder.add_line(addr, len, &shorten(path, &workspace), line);
             line_rows += 1;

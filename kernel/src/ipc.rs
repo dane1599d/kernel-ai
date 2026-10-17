@@ -1,18 +1,19 @@
-//! Service endpoints: the kernel (the terminal, for now) calls a ring-3 service by
-//! name and waits for its reply.
+//! Service endpoints: the kernel terminal, or a process with the CALL capability,
+//! calls a ring-3 service by name and waits for its reply.
 //!
 //! A service binds the endpoint named after its program on its first `svc_recv`; the
 //! name comes from the kernel's process table, never from the service, so one
-//! program cannot answer for another. Requests and replies are copied into kernel
-//! buffers and each side copies to or from its own memory on its own thread.
+//! program cannot answer for another. The server is told who called (0 = the
+//! kernel). Requests and replies are copied into kernel buffers and each side copies
+//! to or from its own memory on its own thread.
 //!
 //! A call moves Queued -> Taken -> Replied (or Failed if its server dies, or is
-//! dropped by the caller on timeout). Its state is an atomic, so the sleeping side's
-//! wake-up condition reads no lock; wakers publish the state, release the IPC lock,
-//! and only then call `wake`. When a server dies, calls it had taken fail at once and
-//! queued ones wait for the next instance.
+//! dropped by the caller on timeout or cancellation). Its state is an atomic, so the
+//! sleeping side's wake-up condition reads no lock; wakers publish the state, release
+//! the IPC lock, and only then call `wake`. When a server dies, calls it had taken
+//! fail at once and queued ones wait for the next instance.
 
-use crate::process::{self, Name, uaccess};
+use crate::process::{self, MAX_PROCESSES, Name, uaccess};
 use crate::{hpet, threads};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
@@ -21,8 +22,9 @@ use sched::Tid;
 use spin::Mutex;
 use x86_64::instructions::interrupts;
 
-const MAX_ENDPOINTS: usize = 4;
-const MAX_CALLS: usize = 4;
+const MAX_ENDPOINTS: usize = MAX_PROCESSES;
+/// Every process can have one call outstanding, plus the kernel's.
+const MAX_CALLS: usize = MAX_PROCESSES + 2;
 /// Longest a server waits in one `svc_recv`.
 const MAX_WAIT_MS: u64 = 60_000;
 /// How often a caller looks for a service that is not up yet.
@@ -43,6 +45,8 @@ pub enum CallError {
     TimedOut,
     /// The service died while handling the call.
     ServiceDied,
+    /// The caller gave up (killed, or Ctrl-C).
+    Cancelled,
     NoMemory,
     TooBig,
 }
@@ -61,6 +65,9 @@ struct Call {
     request: Vec<u8>,
     reply: Vec<u8>,
     caller: Tid,
+    /// The calling process, or 0 for the kernel.
+    caller_pid: u64,
+    deadline_ns: u64,
     taker: u64,
 }
 
@@ -76,6 +83,11 @@ static IPC: Mutex<Ipc> = Mutex::new(Ipc {
 static CALL_STATE: [AtomicU8; MAX_CALLS] = [const { AtomicU8::new(FREE) }; MAX_CALLS];
 static PENDING: [AtomicU32; MAX_ENDPOINTS] = [const { AtomicU32::new(0) }; MAX_ENDPOINTS];
 static BOUND: [AtomicU64; MAX_ENDPOINTS] = [const { AtomicU64::new(0) }; MAX_ENDPOINTS];
+/// Replies each endpoint delivered to the kernel and to processes.
+static REPLIES_TO_KERNEL: [AtomicU64; MAX_ENDPOINTS] =
+    [const { AtomicU64::new(0) }; MAX_ENDPOINTS];
+static REPLIES_TO_PROCESSES: [AtomicU64; MAX_ENDPOINTS] =
+    [const { AtomicU64::new(0) }; MAX_ENDPOINTS];
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 fn with_ipc<R>(f: impl FnOnce(&mut Ipc) -> R) -> R {
@@ -103,18 +115,72 @@ pub fn server_of(name: &str) -> Option<u64> {
     pid.filter(|&pid| pid != 0)
 }
 
-/// Sends `request` to the service `name` and waits for its reply, for at most
-/// `timeout_ms` in total (including waiting for the service to come up).
-pub fn call(name: &str, request: &[u8], timeout_ms: u64) -> Result<Vec<u8>, CallError> {
-    if request.len() > MAX_MESSAGE {
-        return Err(CallError::TooBig);
-    }
-    let deadline = hpet::nanos().saturating_add(timeout_ms.saturating_mul(1_000_000));
+/// Replies `name` has delivered so far: (to the kernel, to processes).
+pub fn replies(name: &str) -> (u64, u64) {
+    with_ipc(|ipc| find(ipc, name)).map_or((0, 0), |e| {
+        (
+            REPLIES_TO_KERNEL[e].load(Ordering::SeqCst),
+            REPLIES_TO_PROCESSES[e].load(Ordering::SeqCst),
+        )
+    })
+}
+
+/// Deadline of the call the process `pid` is serving right now, if any, so a call
+/// it makes in turn can be made to end first.
+pub fn serving_deadline(pid: u64) -> Option<u64> {
+    with_ipc(|ipc| {
+        let endpoint = ipc
+            .endpoints
+            .iter()
+            .flatten()
+            .find(|e| e.server_pid == pid)?;
+        let call = ipc.calls[endpoint.current_call?].as_ref()?;
+        Some(call.deadline_ns)
+    })
+}
+
+/// Waits until a server has bound `name`, `deadline_ns` passes, or `cancel()`.
+pub fn wait_bound(
+    name: &str,
+    deadline_ns: u64,
+    cancel: impl Fn() -> bool,
+) -> Result<(), CallError> {
     while server_of(name).is_none() {
-        if hpet::nanos() >= deadline {
+        if cancel() {
+            return Err(CallError::Cancelled);
+        }
+        if hpet::nanos() >= deadline_ns {
             return Err(CallError::Unavailable);
         }
         threads::sleep_ms(BIND_POLL_MS);
+    }
+    Ok(())
+}
+
+/// A call that was sent and not yet collected with [`finish`].
+pub struct Pending {
+    slot: usize,
+}
+
+impl Pending {
+    /// The reply (or a failure) is in.
+    pub fn done(&self) -> bool {
+        matches!(
+            CALL_STATE[self.slot].load(Ordering::SeqCst),
+            REPLIED | FAILED
+        )
+    }
+}
+
+/// Queues `request` for the bound service `name`.
+pub fn submit(
+    name: &str,
+    request: &[u8],
+    caller_pid: u64,
+    deadline_ns: u64,
+) -> Result<Pending, CallError> {
+    if request.len() > MAX_MESSAGE {
+        return Err(CallError::TooBig);
     }
     let mut copy = Vec::new();
     copy.try_reserve_exact(request.len())
@@ -122,7 +188,9 @@ pub fn call(name: &str, request: &[u8], timeout_ms: u64) -> Result<Vec<u8>, Call
     copy.extend_from_slice(request);
     let me = threads::current_tid();
     let (slot, server) = with_ipc(|ipc| {
-        let endpoint = find(ipc, name).ok_or(CallError::Unavailable)?;
+        let endpoint = find(ipc, name)
+            .filter(|&e| BOUND[e].load(Ordering::SeqCst) != 0)
+            .ok_or(CallError::Unavailable)?;
         let slot = ipc
             .calls
             .iter()
@@ -134,6 +202,8 @@ pub fn call(name: &str, request: &[u8], timeout_ms: u64) -> Result<Vec<u8>, Call
             request: copy,
             reply: Vec::new(),
             caller: me,
+            caller_pid,
+            deadline_ns,
             taker: 0,
         });
         CALL_STATE[slot].store(QUEUED, Ordering::SeqCst);
@@ -144,10 +214,13 @@ pub fn call(name: &str, request: &[u8], timeout_ms: u64) -> Result<Vec<u8>, Call
         Ok((slot, server))
     })?;
     wake(server);
-    let done = || matches!(CALL_STATE[slot].load(Ordering::SeqCst), REPLIED | FAILED);
-    while !done() && hpet::nanos() < deadline {
-        threads::sleep_until_unless(deadline, done);
-    }
+    Ok(Pending { slot })
+}
+
+/// Collects a call: its reply, or why there is none. A call still running is
+/// abandoned (its late reply is dropped) and reported as timed out.
+pub fn finish(pending: Pending) -> Result<Vec<u8>, CallError> {
+    let slot = pending.slot;
     let (call, state) = with_ipc(|ipc| {
         let call = ipc.calls[slot].take();
         let state = CALL_STATE[slot].swap(FREE, Ordering::SeqCst);
@@ -164,14 +237,57 @@ pub fn call(name: &str, request: &[u8], timeout_ms: u64) -> Result<Vec<u8>, Call
         (call, state)
     });
     match (call, state) {
-        (Some(call), REPLIED) => Ok(call.reply),
+        (Some(call), REPLIED) => {
+            let counter = if call.caller_pid == 0 {
+                &REPLIES_TO_KERNEL[call.endpoint]
+            } else {
+                &REPLIES_TO_PROCESSES[call.endpoint]
+            };
+            counter.fetch_add(1, Ordering::SeqCst);
+            Ok(call.reply)
+        }
         (_, FAILED) => Err(CallError::ServiceDied),
         _ => Err(CallError::TimedOut),
     }
 }
 
+/// Sends `request` to `name` on behalf of `caller_pid` and waits for the reply until
+/// `deadline_ns`, or until `cancel()` (checked whenever the caller wakes).
+pub fn call_as(
+    name: &str,
+    request: &[u8],
+    caller_pid: u64,
+    deadline_ns: u64,
+    cancel: impl Fn() -> bool,
+) -> Result<Vec<u8>, CallError> {
+    let pending = submit(name, request, caller_pid, deadline_ns)?;
+    while !pending.done() && !cancel() && hpet::nanos() < deadline_ns {
+        threads::sleep_until_unless(deadline_ns, || pending.done() || cancel());
+    }
+    let cancelled = !pending.done() && cancel();
+    match finish(pending) {
+        Err(CallError::TimedOut) if cancelled => Err(CallError::Cancelled),
+        other => other,
+    }
+}
+
+/// The kernel calls the service `name`, waiting up to `timeout_ms` in total
+/// (including waiting for the service to come up).
+pub fn call(name: &str, request: &[u8], timeout_ms: u64) -> Result<Vec<u8>, CallError> {
+    let deadline = hpet::nanos().saturating_add(timeout_ms.saturating_mul(1_000_000));
+    wait_bound(name, deadline, || false)?;
+    call_as(name, request, 0, deadline, || false)
+}
+
 /// The `svc_recv` system call: waits for the next request to this process's service.
-pub fn recv(slot: usize, buf: u64, cap: u64, timeout_ms: u64) -> Result<u64, Error> {
+/// Writes the caller's pid (0 for the kernel) to `caller_out` unless it is 0.
+pub fn recv(
+    slot: usize,
+    buf: u64,
+    cap: u64,
+    timeout_ms: u64,
+    caller_out: u64,
+) -> Result<u64, Error> {
     let me = process::identity(slot);
     let tid = threads::current_tid();
     let wait_ms = if timeout_ms == 0 {
@@ -222,7 +338,7 @@ pub fn recv(slot: usize, buf: u64, cap: u64, timeout_ms: u64) -> Result<u64, Err
                         .try_reserve_exact(call.request.len())
                         .map_err(|_| Error::NoMemory)?;
                     request.extend_from_slice(&call.request);
-                    Some(request)
+                    Some((request, call.caller_pid))
                 }
                 None => None,
             };
@@ -257,11 +373,14 @@ pub fn recv(slot: usize, buf: u64, cap: u64, timeout_ms: u64) -> Result<u64, Err
             Ok((endpoint, request, failed))
         })?;
         wake(failed);
-        if let Some(request) = taken {
+        if let Some((request, caller_pid)) = taken {
             let len = request
                 .len()
                 .min(usize::try_from(cap).unwrap_or(usize::MAX));
             uaccess::copy_to_user(slot, buf, &request[..len])?;
+            if caller_out != 0 {
+                uaccess::copy_to_user(slot, caller_out, &caller_pid.to_le_bytes())?;
+            }
             return Ok(request.len() as u64);
         }
         let ready = || PENDING[endpoint].load(Ordering::SeqCst) > 0 || process::killed(slot);

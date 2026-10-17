@@ -6,7 +6,9 @@ license.workspace = true
 publish = false
 
 [dependencies]
+kabi = { path = "../kabi" }
 linetable = { path = "../linetable", features = ["alloc"] }
+uelf = { path = "../uelf" }
 addr2line = { version = "0.27.1", features = ["loader"] }
 object = "0.40.0"
 rustc-demangle = "0.1.28"

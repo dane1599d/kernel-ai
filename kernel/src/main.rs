@@ -28,6 +28,7 @@ mod keyboard;
 mod lines;
 mod llm;
 mod memory;
+mod metrics;
 mod net;
 mod percpu;
 mod platform;

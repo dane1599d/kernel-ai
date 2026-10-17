@@ -25,6 +25,7 @@ const SUPERVISOR_LIMITS: Limits = Limits {
     max_pages: 2048,
     max_burst_ms: 2000,
     caps: cap::SUPERVISE,
+    stack_pages: 0,
 };
 /// Limits for a service spawned without its own.
 const DEFAULT_PAGES: u64 = 1024;
@@ -203,6 +204,7 @@ pub fn spawn_service(slot: usize, request_ptr: u64) -> Result<u64, Error> {
             ms => ms.max(10),
         },
         caps: request.limits.caps,
+        stack_pages: request.limits.stack_pages.min(kabi::layout::MAX_STACK_PAGES),
     };
     let me = super::identity(slot).pid;
     let pid = spawn(&SpawnRequest {

@@ -683,6 +683,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "shellcore"
+version = "0.0.0"
+dependencies = [
+ "kabi",
+ "rhai",
+]
+
+[[package]]
 name = "simd-adler32"
 version = "0.3.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -874,6 +882,7 @@ version = "0.0.0"
 dependencies = [
  "kabi",
  "llmproto",
+ "rhai",
  "spin 0.12.3",
  "supervise",
  "talc",
@@ -1030,10 +1039,12 @@ name = "xtask"
 version = "0.0.0"
 dependencies = [
  "addr2line",
+ "kabi",
  "linetable",
  "object",
  "rustc-demangle",
  "sha2",
+ "uelf",
 ]
 
 [[package]]

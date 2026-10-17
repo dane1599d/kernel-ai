@@ -25,8 +25,8 @@ use crate::entry::{self, TrapFrame};
 use crate::gdt::{USER_CODE, USER_DATA};
 use crate::memory::user::{Access, MIN_USER_ADDRESS, UserSpace};
 use crate::{hpet, log, memory, percpu, threads};
-use core::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
-use kabi::layout::{HEAP_BASE, STACK_PAGES, STACK_TOP, USER_END};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
+use kabi::layout::{HEAP_BASE, MAX_STACK_PAGES, STACK_PAGES, STACK_TOP, USER_END};
 use kabi::{ExitReason, Limits, MAX_ARGS, MAX_NAME};
 use mm::PAGE_SIZE;
 use sched::{MAX_THREADS, Tid};
@@ -114,6 +114,7 @@ impl Process {
             max_pages: 0,
             max_burst_ms: 0,
             caps: 0,
+            stack_pages: 0,
         },
         tid: None,
         supervisor: false,
@@ -146,6 +147,8 @@ static KILL_DETAIL: [AtomicU64; MAX_PROCESSES] = [const { AtomicU64::new(0) }; M
 /// CPU time since the process last blocked, and the limit on it.
 static BURST_NS: [AtomicU64; MAX_PROCESSES] = [const { AtomicU64::new(0) }; MAX_PROCESSES];
 static BURST_LIMIT_NS: [AtomicU64; MAX_PROCESSES] = [const { AtomicU64::new(0) }; MAX_PROCESSES];
+/// Set when the user presses Ctrl-C for this process; `interrupted` reads and clears it.
+static INTERRUPT: [AtomicBool; MAX_PROCESSES] = [const { AtomicBool::new(false) }; MAX_PROCESSES];
 
 /// Runs `f` on the process table with preemption off.
 pub fn with_table<R>(f: impl FnOnce(&mut [Process; MAX_PROCESSES]) -> R) -> R {
@@ -171,6 +174,33 @@ fn slot_of(tid: Tid) -> Option<usize> {
 /// The calling thread's process slot, if it is a process thread.
 pub fn current_slot() -> Option<usize> {
     slot_of(threads::current_tid())
+}
+
+/// Marks the live process named `name` as interrupted (Ctrl-C) and wakes it, so a
+/// blocking call it is in returns. Returns its pid.
+pub fn interrupt(name: &str) -> Option<u64> {
+    let found = with_table(|table| {
+        table
+            .iter()
+            .position(|p| p.live() && p.state != State::Exiting && p.name.as_str() == name)
+            .map(|slot| (slot, table[slot].pid, table[slot].tid))
+    });
+    let (slot, pid, tid) = found?;
+    INTERRUPT[slot].store(true, Ordering::SeqCst);
+    if let Some(tid) = tid {
+        interrupts::without_interrupts(|| threads::wake(tid));
+    }
+    Some(pid)
+}
+
+/// Whether the process has a Ctrl-C pending, without clearing it.
+pub fn interrupt_pending(slot: usize) -> bool {
+    INTERRUPT[slot].load(Ordering::SeqCst)
+}
+
+/// Reads and clears the process's Ctrl-C flag.
+pub fn take_interrupt(slot: usize) -> bool {
+    INTERRUPT[slot].swap(false, Ordering::SeqCst)
 }
 
 pub fn killed(slot: usize) -> bool {
@@ -351,6 +381,7 @@ pub fn spawn(request: &SpawnRequest) -> Result<u64, kabi::Error> {
         table[slot] = process;
         KILL[slot].store(0, Ordering::SeqCst);
         KILL_DETAIL[slot].store(0, Ordering::SeqCst);
+        INTERRUPT[slot].store(false, Ordering::SeqCst);
         BURST_NS[slot].store(0, Ordering::Relaxed);
         BURST_LIMIT_NS[slot].store(
             request.limits.max_burst_ms.saturating_mul(1_000_000),
@@ -460,7 +491,11 @@ fn load(slot: usize, name: &str, limits: &Limits) -> Result<UserEntry, &'static 
         write: true,
         execute: false,
     };
-    for page in 1..=STACK_PAGES {
+    let stack_pages = match limits.stack_pages {
+        0 => STACK_PAGES,
+        pages => pages.min(MAX_STACK_PAGES),
+    };
+    for page in 1..=stack_pages {
         map_page(slot, STACK_TOP - page * PAGE_SIZE, stack, limits.max_pages)?;
     }
     Ok(UserEntry {
@@ -611,4 +646,13 @@ pub fn services(mut f: impl FnMut(u64, &Name)) {
 /// Runs `f` on the slot's address space (for copying to and from user memory).
 pub fn with_space<R>(slot: usize, f: impl FnOnce(&UserSpace) -> R) -> Option<R> {
     SPACES[slot].lock().as_ref().map(f)
+}
+
+/// Whether a live process named `name` holds all the capability `bits`.
+pub fn has_cap_by_name(name: &str, bits: u64) -> bool {
+    with_table(|table| {
+        table
+            .iter()
+            .any(|p| p.live() && p.name.as_str() == name && p.limits.caps & bits == bits)
+    })
 }
