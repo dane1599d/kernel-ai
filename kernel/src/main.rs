@@ -19,6 +19,7 @@ mod backtrace;
 mod build_service;
 mod console;
 mod cpu;
+mod edit_mode;
 mod entry;
 mod faults;
 mod gdt;

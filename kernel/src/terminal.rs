@@ -4,10 +4,12 @@
 //! never pass for kernel output. Lines starting with `:` are kernel commands, which
 //! work even when the shell is down. After a `? ` reply the prompt changes and the
 //! next line, whatever it is, answers the question; only `y` or `yes` runs the script.
+//! In edit mode (`:edit`), plain lines go to the editor instead, and `:apply` asks
+//! the same way before an upload runs.
 
 use crate::console::{BACKSPACE, FORM_FEED};
 use crate::keyboard::Decoder;
-use crate::{hpet, ipc, llm, log, memory, net, serial, smp, threads};
+use crate::{edit_mode, hpet, ipc, llm, log, memory, net, serial, smp, threads};
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::String;
@@ -53,33 +55,65 @@ fn print(args: core::fmt::Arguments) {
     serial::_print(args);
 }
 
+/// A question the next line answers.
+enum Waiting {
+    /// A script the shell proposed.
+    Script(u64),
+    /// An upload `:apply` showed.
+    Apply(edit_mode::Proposal),
+}
+
 /// Runs the terminal on the calling thread, forever.
 pub fn run(_: usize) {
     let mut decoder = Decoder::new();
     log!("Kernel AI terminal. Lines are Rhai (try help); kernel commands start with ':'.");
-    let mut confirming: Option<u64> = None;
+    let mut waiting: Option<Waiting> = None;
     loop {
-        match confirming {
-            Some(id) => {
-                print(format_args!("run script {id}? yes/no> "));
+        match &waiting {
+            Some(question) => {
+                match question {
+                    Waiting::Script(id) => print(format_args!("run script {id}? yes/no> ")),
+                    Waiting::Apply(p) => {
+                        print(format_args!(
+                            "apply {} to {}? yes/no> ",
+                            p.label, p.component
+                        ));
+                    }
+                }
                 // Only keys typed once the question is on screen may answer it.
                 decoder.discard_pending();
                 AWAITING_ANSWER.store(true, Ordering::Release);
             }
-            None => print(format_args!("{PROMPT}")),
+            None => match edit_mode::prompt() {
+                Some(prompt) => print(format_args!("{prompt}")),
+                None => print(format_args!("{PROMPT}")),
+            },
         }
         let line = read_line(&mut decoder);
         AWAITING_ANSWER.store(false, Ordering::Release);
         let line = line.trim();
-        if let Some(id) = confirming.take() {
-            confirming = shell_line(&format!("answer {id} {line}"));
-            continue;
+        match waiting.take() {
+            Some(Waiting::Script(id)) => {
+                waiting = shell_line(&format!("answer {id} {line}")).map(Waiting::Script);
+                continue;
+            }
+            Some(Waiting::Apply(proposal)) => {
+                edit_mode::show(&edit_mode::answer(&proposal, line));
+                continue;
+            }
+            None => {}
         }
         match line.strip_prefix(':') {
-            Some(command) => kernel_command(command.trim()),
+            Some(command) => waiting = kernel_command(command.trim()),
             None if line.is_empty() => {}
+            None if edit_mode::editing().is_some() => {
+                if edit_mode::builds(line) {
+                    log!("(building on the host...)");
+                }
+                edit_mode::show(&edit_mode::editor_line(line));
+            }
             None if is_answer(line) => log!("! scripts are answered only at their own prompt"),
-            None => confirming = shell_line(line),
+            None => waiting = shell_line(line).map(Waiting::Script),
         }
     }
 }
@@ -186,12 +220,14 @@ fn show_lines(lead: &str, body: &str) {
     }
 }
 
-fn kernel_command(line: &str) {
+/// Runs a `:` command; a question it leaves for the next line.
+fn kernel_command(line: &str) -> Option<Waiting> {
     let (command, rest) = line.split_once(' ').unwrap_or((line, ""));
     let rest = rest.trim();
     match command {
         "" | "help" => {
-            for (usage, what) in HELP.iter().chain(crate::live_commands::HELP) {
+            let all = HELP.iter().chain(crate::live_commands::HELP);
+            for (usage, what) in all.chain(edit_mode::HELP) {
                 log!("  {usage:<26} {what}");
             }
             log!("  any other line goes to the Rhai shell");
@@ -222,8 +258,12 @@ fn kernel_command(line: &str) {
         "uptime" => log!("{} s", hpet::nanos() / 1_000_000_000),
         "clear" => print(format_args!("{FORM_FEED}")),
         other if crate::live_commands::run(other, rest) => {}
-        other => log!("unknown kernel command :{other} (try :help)"),
+        other => match edit_mode::command(other, rest) {
+            Some(proposal) => return proposal.map(Waiting::Apply),
+            None => log!("unknown kernel command :{other} (try :help)"),
+        },
     }
+    None
 }
 
 fn ask(prompt: &str) {
