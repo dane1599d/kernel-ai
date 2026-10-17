@@ -7,4 +7,5 @@ publish = false
 
 [dependencies]
 kabi = { path = "../kabi" }
+llmproto = { path = "../llmproto" }
 rhai = { version = "1.26.1", default-features = false, features = ["no_std", "no_float", "no_custom_syntax", "no_module"] }

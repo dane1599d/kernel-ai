@@ -1,7 +1,8 @@
 //! The OS functions the shell offers, both as Rhai functions (`mem()`) and as plain
 //! commands (`mem`, `policy rr`, `ask how many CPUs are there`).
 
-use crate::{Host, Line, runtime_error};
+use crate::engine::Line;
+use crate::{Host, runtime_error};
 use alloc::format;
 use alloc::rc::Rc;
 use alloc::string::String;
@@ -22,6 +23,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "show, or switch with `policy rr` / `policy interactive`",
     ),
     ("ask", "`ask <question>` sends the question to the LLM"),
+    ("log", "LLM scripts so far; `log <id>` shows one"),
 ];
 
 /// Characters that, right after a command's name, mean the line is Rhai code using

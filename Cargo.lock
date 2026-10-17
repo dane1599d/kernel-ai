@@ -687,6 +687,7 @@ name = "shellcore"
 version = "0.0.0"
 dependencies = [
  "kabi",
+ "llmproto",
  "rhai",
 ]
 
