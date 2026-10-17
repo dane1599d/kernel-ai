@@ -140,19 +140,21 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
 fn execute(options: &Options) -> Result<(), String> {
     let root = workspace_root();
     let kernel = build_kernel(&root, options)?;
+    let programs = build_user(&root, options)?;
     if options.task == Task::Build {
         println!("xtask: kernel built at {}", kernel.display());
+        println!("xtask: {} user programs built", programs.len());
         return Ok(());
     }
     let target_dir = root.join("target");
-    let line_table = lines::build(&kernel, &root)?;
+    let modules = boot_modules(&kernel, &programs, &root)?;
     let efi = ensure_limine(&target_dir)?;
     let esp = target_dir.join("esp");
     let qemu = find_qemu()?;
     let accel = resolve_accel(options.accel);
     if options.task == Task::Run {
         let cmdline = llm_cmdline(options.llm.as_deref(), options.model.as_deref());
-        make_esp(&esp, &kernel, &line_table, &efi, &cmdline)?;
+        make_esp(&esp, &kernel, &modules, &efi, &cmdline)?;
         let firmware = find_firmware(&qemu, &target_dir)?;
         let args = qemu::args(&firmware, accel, false);
         println!("xtask: {} {}", qemu.display(), args.join(" "));
@@ -172,7 +174,7 @@ fn execute(options: &Options) -> Result<(), String> {
     for case in cases {
         let cmdline = format!("{} {llm_args}", case.cmdline);
         println!("xtask: test case {} ({cmdline})", case.name);
-        make_esp(&esp, &kernel, &line_table, &efi, &cmdline)?;
+        make_esp(&esp, &kernel, &modules, &efi, &cmdline)?;
         let firmware = find_firmware(&qemu, &target_dir)?;
         let monitor = qemu::free_port()?;
         let mut args = qemu::args(&firmware, accel, true);
@@ -308,17 +310,78 @@ fn sha256_hex(bytes: &[u8]) -> String {
         .collect()
 }
 
-fn limine_conf(cmdline: &str) -> String {
-    format!(
-        "timeout: 0\n\n/Kernel AI\n    protocol: limine\n    path: boot():/boot/kernel\n    cmdline: {cmdline}\n    module_path: boot():/boot/kernel.lines\n"
-    )
+/// The ring-3 programs in the `user` crate, all shipped as boot modules.
+const USER_PROGRAMS: &[&str] = &["supervisor", "llm", "crasher", "spinner", "hog", "probe"];
+
+/// Builds every user program; returns (name, ELF path) pairs.
+fn build_user(root: &Path, options: &Options) -> Result<Vec<(&'static str, PathBuf)>, String> {
+    let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let mut command = Command::new(cargo);
+    command
+        .current_dir(root)
+        .args(["build", "-p", "user", "--bins", "--target", KERNEL_TARGET]);
+    if options.release {
+        command.arg("--release");
+    }
+    let status = command
+        .status()
+        .map_err(|e| format!("cannot run cargo: {e}"))?;
+    if !status.success() {
+        return Err("user program build failed".into());
+    }
+    let profile = if options.release { "release" } else { "debug" };
+    let dir = root.join("target").join(KERNEL_TARGET).join(profile);
+    Ok(USER_PROGRAMS
+        .iter()
+        .map(|&name| (name, dir.join(name)))
+        .collect())
+}
+
+/// A file Limine loads next to the kernel, at `boot/<path>` on the ESP.
+struct Module {
+    path: String,
+    bytes: Vec<u8>,
+}
+
+/// The kernel's line table, then each user program and its line table.
+fn boot_modules(
+    kernel: &Path,
+    programs: &[(&'static str, PathBuf)],
+    root: &Path,
+) -> Result<Vec<Module>, String> {
+    let mut modules = vec![Module {
+        path: "kernel.lines".into(),
+        bytes: lines::build(kernel, root)?,
+    }];
+    for (name, elf) in programs {
+        let bytes = fs::read(elf).map_err(|e| format!("cannot read {}: {e}", elf.display()))?;
+        modules.push(Module {
+            path: format!("user/{name}.elf"),
+            bytes,
+        });
+        modules.push(Module {
+            path: format!("user/{name}.lines"),
+            bytes: lines::build(elf, root)?,
+        });
+    }
+    Ok(modules)
+}
+
+fn limine_conf(cmdline: &str, module_paths: &[&str]) -> String {
+    let mut conf = format!(
+        "timeout: 0\n\n/Kernel AI\n    protocol: limine\n    path: boot():/boot/kernel\n    cmdline: {cmdline}\n"
+    );
+    for path in module_paths {
+        conf.push_str(&format!("    module_path: boot():/boot/{path}\n"));
+    }
+    conf
 }
 
 /// Lays out the EFI system partition that QEMU exposes as a virtual FAT drive.
 fn make_esp(
     esp: &Path,
     kernel: &Path,
-    line_table: &[u8],
+    modules: &[Module],
     efi: &Path,
     cmdline: &str,
 ) -> Result<(), String> {
@@ -327,14 +390,18 @@ fn make_esp(
     }
     let boot_efi = esp.join("EFI").join("BOOT");
     let limine_dir = esp.join("boot").join("limine");
-    for dir in [&boot_efi, &limine_dir] {
+    let user_dir = esp.join("boot").join("user");
+    for dir in [&boot_efi, &limine_dir, &user_dir] {
         fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
     }
     copy(efi, &boot_efi.join("BOOTX64.EFI"))?;
     copy(kernel, &esp.join("boot").join("kernel"))?;
-    fs::write(esp.join("boot").join("kernel.lines"), line_table)
-        .map_err(|e| format!("cannot write kernel.lines: {e}"))?;
-    fs::write(limine_dir.join("limine.conf"), limine_conf(cmdline))
+    for module in modules {
+        fs::write(esp.join("boot").join(&module.path), &module.bytes)
+            .map_err(|e| format!("cannot write {}: {e}", module.path))?;
+    }
+    let paths: Vec<&str> = modules.iter().map(|m| m.path.as_str()).collect();
+    fs::write(limine_dir.join("limine.conf"), limine_conf(cmdline, &paths))
         .map_err(|e| format!("cannot write limine.conf: {e}"))
 }
 
@@ -477,12 +544,13 @@ mod tests {
     }
 
     #[test]
-    fn limine_conf_carries_cmdline() {
-        let conf = limine_conf("test");
+    fn limine_conf_carries_cmdline_and_modules() {
+        let conf = limine_conf("test", &["kernel.lines", "user/llm.elf"]);
         assert!(conf.contains("protocol: limine"));
-        assert!(conf.contains("path: boot():/boot/kernel"));
+        assert!(conf.contains("path: boot():/boot/kernel\n"));
         assert!(conf.contains("cmdline: test"));
-        assert!(conf.contains("module_path: boot():/boot/kernel.lines"));
+        assert!(conf.contains("module_path: boot():/boot/kernel.lines\n"));
+        assert!(conf.contains("module_path: boot():/boot/user/llm.elf\n"));
     }
 
     #[test]

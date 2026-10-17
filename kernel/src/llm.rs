@@ -1,27 +1,21 @@
-//! LLM client: OpenAI-compatible chat completions over HTTP to the server named on
-//! the kernel command line (`llm=IP:PORT`, optional `model=NAME`), normally the Mac
-//! mini on the LAN. Must be called from a kernel thread.
+//! The kernel's side of the LLM: which server to use (`llm=IP:PORT`, optional
+//! `model=NAME` on the kernel command line), and calls to the ring-3 `llm` service,
+//! which builds and parses the HTTP and JSON itself. The kernel only carries bytes
+//! to the one server named here.
 
-use crate::{hpet, log, net};
+use crate::{hpet, ipc, log};
 use alloc::format;
 use alloc::string::{String, ToString};
 use core::net::Ipv4Addr;
-use llmproto::http::{self, ParseError};
-use llmproto::openai;
 use llmproto::text::printable;
 use spin::Once;
 
 const DEFAULT_MODEL: &str = "qwen3-8b";
-const SYSTEM_PROMPT: &str = "You are the assistant built into Kernel AI, a small experimental \
-                             operating system. Answer in a few short sentences.";
-const MAX_TOKENS: u32 = 256;
-const CHAT_TIMEOUT_MS: u64 = 120_000;
-const HEALTH_TIMEOUT_MS: u64 = 5_000;
-/// Limits on server text shown to the user; replies are also stripped of control
-/// characters (see `llmproto::text::printable`).
+/// The service has 120 s for the chat itself; this adds time for it to come up.
+const ASK_TIMEOUT_MS: u64 = 150_000;
+const HEALTH_TIMEOUT_MS: u64 = 20_000;
 const MAX_REPLY_CHARS: usize = 4096;
 const MAX_REPLY_LINES: usize = 64;
-const MAX_ERROR_CHARS: usize = 160;
 
 struct Config {
     server: (Ipv4Addr, u16),
@@ -64,86 +58,70 @@ pub fn target() -> Option<(Ipv4Addr, u16, &'static str)> {
         .map(|config| (config.server.0, config.server.1, config.model.as_str()))
 }
 
-fn config() -> Result<&'static Config, String> {
-    CONFIG
-        .get()
-        .ok_or_else(|| "no LLM server configured (boot with llm=IP:PORT)".to_string())
+/// The plan line for the `llm` service. Model names are passed on only if they are
+/// plain words, so they cannot add arguments of their own.
+pub fn plan_line() -> String {
+    let mut line = String::from("llm caps=serve+net burst_ms=10000 pages=1024");
+    if let Some((ip, port, model)) = target() {
+        line.push_str(&format!(" host={ip}:{port}"));
+        if model
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_.:".contains(&b))
+        {
+            line.push_str(&format!(" model={model}"));
+        }
+    }
+    line
 }
 
-fn host_header(config: &Config) -> String {
-    format!("{}:{}", config.server.0, config.server.1)
-}
-
-/// The response is complete once it parses, or once it can never parse.
-fn complete(response: &[u8], closed: bool) -> bool {
-    !matches!(
-        http::parse_response(response, closed),
-        Err(ParseError::Incomplete)
-    )
-}
-
-fn round_trip(config: &Config, request: &[u8], timeout_ms: u64) -> Result<http::Response, String> {
-    let raw = net::exchange(config.server, request, timeout_ms, complete).map_err(String::from)?;
-    http::parse_response(&raw, true).map_err(|error| format!("bad HTTP response: {error:?}"))
-}
-
-/// Checks the server answers `GET /health`; returns the HTTP status and round trip.
-pub fn health() -> Result<(u16, u64), String> {
-    let config = config()?;
-    let started = hpet::nanos();
-    let response = round_trip(
-        config,
-        &http::get(&host_header(config), "/health"),
-        HEALTH_TIMEOUT_MS,
-    )?;
-    Ok((response.status, (hpet::nanos() - started) / 1_000_000))
+/// Asks the `llm` service; returns its reply or why there is none.
+fn request(text: &str, timeout_ms: u64) -> Result<String, String> {
+    let reply = ipc::call("llm", text.as_bytes(), timeout_ms)
+        .map_err(|error| format!("llm service: {error:?}"))?;
+    let reply = core::str::from_utf8(&reply).unwrap_or("err reply is not UTF-8");
+    // Sanitised again here: the service is just another ring-3 program.
+    let clean = printable(reply, MAX_REPLY_CHARS + 4, MAX_REPLY_LINES);
+    match clean.split_once(' ').unwrap_or((clean.as_str(), "")) {
+        ("ok", text) => Ok(text.to_string()),
+        ("err", text) => Err(text.to_string()),
+        _ => Err("llm service: malformed reply".to_string()),
+    }
 }
 
 /// Sends one user message and returns the assistant's reply.
 pub fn ask(prompt: &str) -> Result<String, String> {
-    let config = config()?;
-    let body = openai::chat_request(&config.model, Some(SYSTEM_PROMPT), prompt, MAX_TOKENS);
-    let request = http::post_json(&host_header(config), openai::CHAT_PATH, None, &body);
-    let response = round_trip(config, &request, CHAT_TIMEOUT_MS)?;
-    if response.status != 200 {
-        let body = core::str::from_utf8(&response.body).unwrap_or("");
-        return Err(format!(
-            "server answered HTTP {}: {}",
-            response.status,
-            printable(body, MAX_ERROR_CHARS, 1)
-        ));
-    }
-    openai::parse_chat_response(&response.body)
-        .map(|reply| printable(&reply, MAX_REPLY_CHARS, MAX_REPLY_LINES))
-        .map_err(|error| {
-            let error = format!("{error:?}");
-            format!("bad chat reply: {}", printable(&error, MAX_ERROR_CHARS, 1))
-        })
+    request(&format!("ask {prompt}"), ASK_TIMEOUT_MS)
 }
 
-/// M6 exit test, network half: the server answers its health check and a chat request.
+/// Checks the server answers `GET /health`, through the service.
+pub fn health() -> Result<String, String> {
+    request("health", HEALTH_TIMEOUT_MS)
+}
+
+/// M6 exit test, network half, now through the ring-3 service: the server answers
+/// a health check and a chat request, and the service that answered is a process.
 pub fn self_test() -> Result<(), &'static str> {
-    if !net::is_up() {
+    if !crate::net::is_up() {
         return Err("llm: the network card did not come up");
     }
-    let (status, rtt) = health().map_err(|error| {
+    let started = hpet::nanos();
+    let status = health().map_err(|error| {
         log!("llm: health check failed: {error}");
         "llm: health check failed"
     })?;
-    log!("llm: GET /health -> HTTP {status} in {rtt} ms");
-    if status != 200 {
+    log!("llm: health via the ring-3 service: {status}");
+    if !status.starts_with("HTTP 200") {
         return Err("llm: health check did not return 200");
     }
-    let started = hpet::nanos();
+    let server = ipc::server_of("llm").ok_or("llm: no process serves llm")?;
     let reply = ask("Say hello.").map_err(|error| {
         log!("llm: chat failed: {error}");
         "llm: chat request failed"
     })?;
-    // One line only: a long reply in a single print would keep interrupts off.
     log!(
-        "llm: reply in {} ms: {}",
+        "llm: reply from pid {server} in {} ms: {}",
         (hpet::nanos() - started) / 1_000_000,
-        printable(&reply, MAX_ERROR_CHARS, 1)
+        printable(&reply, 160, 1)
     );
     Ok(())
 }

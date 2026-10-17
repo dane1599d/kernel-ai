@@ -11,17 +11,19 @@
 
 #![no_std]
 #![no_main]
-#![feature(abi_x86_interrupt)]
 
 extern crate alloc;
 
 mod apic;
 mod backtrace;
 mod console;
+mod cpu;
+mod entry;
 mod faults;
 mod gdt;
 mod hpet;
 mod idt;
+mod ipc;
 mod keyboard;
 mod lines;
 mod llm;
@@ -30,6 +32,7 @@ mod net;
 mod percpu;
 mod platform;
 mod port;
+mod process;
 mod qemu;
 mod sched_tests;
 mod serial;
@@ -223,6 +226,15 @@ extern "C" fn boot_continue() -> ! {
     if let Some(cmdline) = CMDLINE.response() {
         llm::configure(cmdline.cmdline());
     }
+    match cpu::init(entry::syscall_entry as *const () as u64) {
+        Ok(features) => log!(
+            "cpu: ring 3 ready; SMEP {}, SMAP {}, UMIP {}; x87 and SSE trap",
+            on_off(features.smep),
+            on_off(features.smap),
+            on_off(features.umip)
+        ),
+        Err(message) => fail(message),
+    }
     let platform = init_devices();
     if let Err(message) = threads::init() {
         fail(message);
@@ -231,6 +243,7 @@ extern "C" fn boot_continue() -> ! {
     if let Err(message) = net::init(platform) {
         log!("{message}");
     }
+    start_user_space(test);
 
     match test {
         SelfTest::PageFault => {
@@ -368,6 +381,9 @@ fn boot_self_test() {
         fail("line table did not resolve a known function to kernel/src/faults.rs");
     }
     log!("self-test: breakpoint resumed, source lookup ok");
+    if let Err(message) = cpu::same_on_every_cpu(smp::online()) {
+        fail(message);
+    }
     if let Err(message) = smp_tests::boot_check(REPORTED_CPUS.load(Ordering::Relaxed)) {
         fail(message);
     }
@@ -413,4 +429,34 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     log!("backtrace:");
     backtrace::print_from(backtrace::current_rbp());
     test_exit(ExitCode::Failure)
+}
+
+fn on_off(on: bool) -> &'static str {
+    if on { "on" } else { "off" }
+}
+
+/// Finds the ring-3 programs among the boot modules and, for the boots that use
+/// user space, starts supervision with the service plan.
+fn start_user_space(test: SelfTest) {
+    let modules: &'static [&'static limine::file::File] =
+        MODULES.response().map_or(&[], |r| r.modules());
+    process::programs::init(modules.iter().map(|file| {
+        let file: &'static limine::file::File = file;
+        (file.path(), file.data())
+    }));
+    let programs = process::programs::all();
+    log!("process: {} programs loaded as modules", programs.len());
+    let free = memory::with(|m| m.free_frames());
+    process::set_page_budget(free / 2);
+    let wanted = matches!(
+        test,
+        SelfTest::None | SelfTest::Boot | SelfTest::Net | SelfTest::Terminal
+    );
+    if !wanted || programs.is_empty() {
+        return;
+    }
+    let plan = llm::plan_line();
+    if let Err(message) = process::supervision::start(plan) {
+        fail(message);
+    }
 }

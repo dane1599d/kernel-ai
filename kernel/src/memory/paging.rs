@@ -13,15 +13,17 @@ use x86_64::{PhysAddr, VirtAddr};
 const KERNEL_HALF_FIRST_SLOT: usize = 256;
 
 pub struct Memory {
-    frames: FrameBitmap<'static>,
-    mapper: OffsetPageTable<'static>,
-    hhdm: u64,
+    pub(super) frames: FrameBitmap<'static>,
+    pub(super) mapper: OffsetPageTable<'static>,
+    pub(super) hhdm: u64,
+    /// Physical address of the kernel PML4 (Limine's), which kernel threads run on.
+    pub(super) kernel_pml4: u64,
 }
 
 /// Feeds new page-table frames to the x86_64 crate's mapper, zeroed.
-struct Frames<'a> {
-    bitmap: &'a mut FrameBitmap<'static>,
-    hhdm: u64,
+pub(super) struct Frames<'a> {
+    pub(super) bitmap: &'a mut FrameBitmap<'static>,
+    pub(super) hhdm: u64,
 }
 
 // SAFETY: hands out frames the bitmap marked used, so each is unique and unused.
@@ -34,7 +36,7 @@ unsafe impl FrameAllocator<Size4KiB> for Frames<'_> {
     }
 }
 
-fn zero_frame(hhdm: u64, frame: PhysFrame) {
+pub(super) fn zero_frame(hhdm: u64, frame: PhysFrame) {
     let ptr = (hhdm + frame.start_address().as_u64()) as *mut u8;
     // SAFETY: the frame is usable RAM, mapped by the HHDM, and owned by the caller.
     unsafe { core::ptr::write_bytes(ptr, 0, PAGE_SIZE as usize) };
@@ -53,6 +55,7 @@ impl Memory {
         // SAFETY: per the contract, l4 is the active PML4 mapped through the HHDM.
         let mapper = unsafe { OffsetPageTable::new(&mut *l4, VirtAddr::new(hhdm)) };
         Self {
+            kernel_pml4: l4_frame.start_address().as_u64(),
             frames,
             mapper,
             hhdm,

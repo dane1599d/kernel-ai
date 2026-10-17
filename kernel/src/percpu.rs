@@ -1,5 +1,9 @@
 //! Per-CPU data, reached through GS_BASE. Each CPU points GS at its own `PerCpu`,
 //! whose first field is its own address, so `gs:[0]` finds it in one instruction.
+//!
+//! While a CPU runs ring-3 code its kernel GS base sits in IA32_KERNEL_GS_BASE; every
+//! entry from ring 3 swaps it back with `swapgs` before any of this is used (see
+//! `entry.rs`).
 
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use x86_64::VirtAddr;
@@ -11,30 +15,56 @@ pub const MAX_CPUS: usize = 8;
 pub struct PerCpu {
     /// Must stay the first field: `this()` reads it at `gs:[0]`.
     self_ptr: AtomicU64,
+    /// Top of the running thread's kernel stack; the SYSCALL entry switches to it.
+    pub kernel_rsp: AtomicU64,
+    /// The user stack pointer, saved by the SYSCALL entry before it switches stacks.
+    pub user_rsp: AtomicU64,
     pub index: AtomicUsize,
     pub lapic_id: AtomicU32,
     pub preempt_count: AtomicU32,
     pub need_resched: AtomicBool,
     /// The thread that ran before the latest switch on this CPU.
     pub previous: AtomicUsize,
+    /// The thread running now.
+    pub current: AtomicUsize,
+    /// When CPU time was last charged to the running thread (HPET ns).
+    pub charged_at_ns: AtomicU64,
     pub ticks: AtomicU64,
     pub tick_start_ns: AtomicU64,
+    /// This CPU's task state segment, for updating its ring-0 stack pointer.
+    pub tss: AtomicU64,
+    /// Control registers and EFER as `cpu::init` left them, for cross-CPU checks.
+    pub cr0: AtomicU64,
+    pub cr4: AtomicU64,
+    pub efer: AtomicU64,
 }
 
 impl PerCpu {
     const fn new() -> Self {
         Self {
             self_ptr: AtomicU64::new(0),
+            kernel_rsp: AtomicU64::new(0),
+            user_rsp: AtomicU64::new(0),
             index: AtomicUsize::new(0),
             lapic_id: AtomicU32::new(0),
             preempt_count: AtomicU32::new(0),
             need_resched: AtomicBool::new(false),
             previous: AtomicUsize::new(0),
+            current: AtomicUsize::new(0),
+            charged_at_ns: AtomicU64::new(0),
             ticks: AtomicU64::new(0),
             tick_start_ns: AtomicU64::new(0),
+            tss: AtomicU64::new(0),
+            cr0: AtomicU64::new(0),
+            cr4: AtomicU64::new(0),
+            efer: AtomicU64::new(0),
         }
     }
 }
+
+/// Offsets used by the assembly entry stubs.
+pub const KERNEL_RSP_OFFSET: usize = core::mem::offset_of!(PerCpu, kernel_rsp);
+pub const USER_RSP_OFFSET: usize = core::mem::offset_of!(PerCpu, user_rsp);
 
 static CPUS: [PerCpu; MAX_CPUS] = [const { PerCpu::new() }; MAX_CPUS];
 /// Set once the boot CPU has a GS base, so early code can avoid `gs:[0]`.

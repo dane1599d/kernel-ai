@@ -94,14 +94,16 @@ fn next_port() -> u16 {
     FIRST_EPHEMERAL_PORT + port.wrapping_sub(FIRST_EPHEMERAL_PORT) % 16384
 }
 
-/// Sends `request` to `server`, then reads until `done(response so far, closed)`
-/// says the response is complete, the server closes, or `timeout_ms` passes.
-/// Must be called from a kernel thread (it sleeps between polls).
+/// Sends `request` to `server`, then reads until the server closes the connection,
+/// `max_response` bytes have arrived, `timeout_ms` passes, or `cancel()` says the
+/// caller is gone. Parsing what came back is the caller's business. Must be called
+/// from a thread (it sleeps between polls).
 pub fn exchange(
     server: (Ipv4Addr, u16),
     request: &[u8],
     timeout_ms: u64,
-    done: impl Fn(&[u8], bool) -> bool,
+    max_response: usize,
+    cancel: impl Fn() -> bool,
 ) -> Result<Vec<u8>, &'static str> {
     let handle = {
         let mut guard = NET.lock();
@@ -121,7 +123,7 @@ pub fn exchange(
             .map_err(|_| "net: cannot start the connection")?;
         net.sockets.add(socket)
     };
-    let deadline = hpet::nanos() + timeout_ms * 1_000_000;
+    let deadline = hpet::nanos().saturating_add(timeout_ms.saturating_mul(1_000_000));
     let mut sent = 0;
     let mut response = Vec::new();
     let mut connected = false;
@@ -140,15 +142,24 @@ pub fn exchange(
         if socket.can_send() && sent < request.len() {
             sent += socket.send_slice(&request[sent..]).unwrap_or(0);
         }
-        while socket.can_recv() {
-            match socket.recv_slice(&mut chunk) {
-                Ok(n) => response.extend_from_slice(&chunk[..n]),
+        let mut failed = None;
+        while socket.can_recv() && response.len() < max_response {
+            let room = (max_response - response.len()).min(chunk.len());
+            match socket.recv_slice(&mut chunk[..room]) {
+                Ok(n) if response.try_reserve(n).is_ok() => response.extend_from_slice(&chunk[..n]),
+                Ok(_) => {
+                    failed = Some("net: out of memory");
+                    break;
+                }
                 Err(_) => break,
             }
         }
+        if let Some(error) = failed {
+            break Err(error);
+        }
         // A close ends the exchange even with nothing received: no more data can come.
         let closed = connected && !socket.may_recv();
-        if closed || (!response.is_empty() && done(&response, closed)) {
+        if closed || response.len() >= max_response {
             break Ok(());
         }
         if matches!(socket.state(), tcp::State::Closed | tcp::State::TimeWait) {
@@ -157,6 +168,9 @@ pub fn exchange(
             } else {
                 Err("net: connection refused or timed out")
             };
+        }
+        if cancel() {
+            break Err("net: cancelled");
         }
         if hpet::nanos() > deadline {
             break Err("net: request timed out");

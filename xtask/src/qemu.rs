@@ -61,7 +61,8 @@ pub fn args(firmware: &Firmware, accel: Accel, headless: bool) -> Vec<String> {
     args.push("-drive".into());
     args.push("format=raw,file=fat:rw:esp".into());
     let (accel_name, cpu) = match accel {
-        Accel::Kvm => ("kvm", "host"),
+        // -cpu max exposes SMEP, SMAP and UMIP wherever the accelerator can.
+        Accel::Kvm => ("kvm", "max"),
         Accel::Whpx => ("whpx", "max"),
         Accel::Tcg | Accel::Auto => ("tcg", "max"),
     };
@@ -142,12 +143,10 @@ pub fn run_test(
     let (ready_tx, ready_rx) = mpsc::channel();
     let reader = thread::spawn(move || {
         let mut measure_start = None;
-        let mut expected_seen = expect.is_none();
+        let mut missing: Vec<&'static str> = expect.to_vec();
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
             println!("  | {line}");
-            if expect.is_some_and(|text| line.contains(text)) {
-                expected_seen = true;
-            }
+            missing.retain(|text| !line.contains(text));
             if line.contains("boot-ok") {
                 let _ = ready_tx.send(started.elapsed());
             } else if line.contains("ready for keys") {
@@ -164,7 +163,7 @@ pub fn run_test(
                 );
             }
         }
-        expected_seen
+        missing
     });
     let status = loop {
         if let Some(status) = child
@@ -180,7 +179,7 @@ pub fn run_test(
         }
         thread::sleep(Duration::from_millis(50));
     };
-    let expected_seen = reader.join().unwrap_or(false);
+    let missing = reader.join().unwrap_or_else(|_| expect.to_vec());
     if let Ok(elapsed) = ready_rx.try_recv() {
         println!(
             "xtask: boot-to-ready {} ms (accel {:?}, includes firmware)",
@@ -191,11 +190,8 @@ pub fn run_test(
     if status.code() != Some(QEMU_PASS) {
         return Err(format!("FAIL: QEMU exited with {status}"));
     }
-    if !expected_seen {
-        return Err(format!(
-            "FAIL: expected {:?} on the console",
-            expect.unwrap_or_default()
-        ));
+    if !missing.is_empty() {
+        return Err(format!("FAIL: never saw {missing:?} on the console"));
     }
     println!("xtask: PASS");
     Ok(())

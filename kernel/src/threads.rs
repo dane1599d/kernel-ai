@@ -38,6 +38,15 @@ static PINNED: [AtomicBool; MAX_THREADS] = [const { AtomicBool::new(false) }; MA
 static IN_USE: [AtomicBool; MAX_THREADS] = [const { AtomicBool::new(false) }; MAX_THREADS];
 /// Each thread slot keeps its guarded stack for reuse after the thread exits.
 static STACK_TOP: [AtomicU64; MAX_THREADS] = [const { AtomicU64::new(0) }; MAX_THREADS];
+/// Page tables each thread runs on: a process's PML4, or 0 for the kernel's.
+static THREAD_CR3: [AtomicU64; MAX_THREADS] = [const { AtomicU64::new(0) }; MAX_THREADS];
+/// Set once the boot thread is a scheduled thread.
+static RUNNING: AtomicBool = AtomicBool::new(false);
+
+/// True once the scheduler runs.
+pub fn running() -> bool {
+    RUNNING.load(Ordering::Acquire)
+}
 
 /// Saved stack pointer per thread, written by the context switch.
 struct SavedStacks(UnsafeCell<[u64; MAX_THREADS]>);
@@ -69,7 +78,9 @@ pub fn init() -> Result<(), &'static str> {
         core.adopt_running(BOOT_THREAD, "boot");
         LOAD[0].store(core.load(), Ordering::Relaxed);
         *CORES[0].lock() = Some(core);
+        percpu::this().current.store(BOOT_THREAD, Ordering::Relaxed);
     });
+    RUNNING.store(true, Ordering::Release);
     log!("threads: scheduler on, policy interactive, watchdog 200 ms");
     Ok(())
 }
@@ -88,6 +99,7 @@ pub fn prepare_ap(index: usize) -> Result<Tid, &'static str> {
 pub fn start_ap(index: usize, idle: Tid, report_online: impl FnOnce()) -> ! {
     let policy = new_policy();
     ON_CPU[idle].store(true, Ordering::Relaxed);
+    percpu::this().current.store(idle, Ordering::Relaxed);
     *CORES[index].lock() = Some(Core::new(policy, idle, WATCHDOG_NS, hpet::nanos()));
     report_online();
     idle_loop(0);
@@ -142,6 +154,8 @@ fn spawn_on(
         top => top,
     };
     let rsp = initial_frame(top, entry, arg);
+    // A reused slot must not inherit the previous thread's address space.
+    THREAD_CR3[tid].store(0, Ordering::Relaxed);
     let target = cpu.unwrap_or_else(least_loaded);
     PINNED[tid].store(cpu.is_some(), Ordering::Relaxed);
     OWNER[tid].store(target, Ordering::Release);
@@ -252,12 +266,74 @@ fn switch(from: Tid, to: Tid) {
     if from == to {
         return;
     }
-    percpu::this().previous.store(from, Ordering::Relaxed);
+    let cpu = percpu::this();
+    cpu.previous.store(from, Ordering::Relaxed);
     ON_CPU[to].store(true, Ordering::Relaxed);
+    crate::process::charge(from);
+    cpu.current.store(to, Ordering::Relaxed);
+    prepare_cpu_for(to);
     let table = SAVED_RSP.0.get();
     // SAFETY: interrupts are off; `to` is runnable here and its registers are saved.
     unsafe { switch_stacks(&raw mut (*table)[from], (*table)[to]) };
     finish_switch();
+}
+
+/// Points this CPU at `to`'s address space and kernel stack before switching to it:
+/// CR3 (a process's PML4, or the kernel's for kernel threads), the ring-0 stack used
+/// on entry from ring 3, the SYSCALL stack, and an empty user GS base so no process
+/// sees another's. Interrupts are off.
+fn prepare_cpu_for(to: Tid) {
+    let cr3 = match THREAD_CR3[to].load(Ordering::Relaxed) {
+        0 => crate::memory::kernel_cr3(),
+        cr3 => cr3,
+    };
+    load_cr3(cr3);
+    let top = STACK_TOP[to].load(Ordering::Relaxed);
+    if top != 0 {
+        crate::gdt::set_ring0_stack(top);
+        percpu::this().kernel_rsp.store(top, Ordering::Relaxed);
+    }
+    if THREAD_CR3[to].load(Ordering::Relaxed) != 0 {
+        // SAFETY: IA32_KERNEL_GS_BASE holds the inactive (user) GS base while in the
+        // kernel; ring 3 gets 0.
+        unsafe { x86_64::registers::model_specific::Msr::new(0xC000_0102).write(0) };
+    }
+}
+
+fn load_cr3(cr3: u64) {
+    let current: u64;
+    // SAFETY: reading CR3 has no side effects.
+    unsafe {
+        core::arch::asm!("mov {}, cr3", out(reg) current, options(nomem, nostack, preserves_flags))
+    };
+    if current & !0xFFF != cr3 {
+        // SAFETY: `cr3` is the kernel PML4 or a process PML4 sharing its kernel half,
+        // so the code and stack in use stay mapped.
+        unsafe { core::arch::asm!("mov cr3, {}", in(reg) cr3, options(nostack, preserves_flags)) };
+    }
+}
+
+/// Moves the calling thread onto the process page tables at `cr3`.
+pub fn enter_address_space(cr3: u64) {
+    interrupts::without_interrupts(|| {
+        // THREAD_CR3 first: a switch after this point reloads the same CR3.
+        THREAD_CR3[current_tid()].store(cr3, Ordering::Relaxed);
+        load_cr3(cr3);
+    });
+}
+
+/// Moves the calling thread back onto the kernel page tables, after which no CPU
+/// has its old process page tables loaded.
+pub fn leave_address_space() {
+    interrupts::without_interrupts(|| {
+        THREAD_CR3[current_tid()].store(0, Ordering::Relaxed);
+        load_cr3(crate::memory::kernel_cr3());
+    });
+}
+
+/// The calling thread, without taking a lock.
+pub fn current_tid() -> Tid {
+    percpu::this().current.load(Ordering::Relaxed)
 }
 
 /// Runs on the CPU right after a switch: the previous thread's registers are now
@@ -292,8 +368,43 @@ fn transition(change: impl FnOnce(&mut Core, u64) -> Tid) {
     });
 }
 
+/// Lets another runnable thread on this CPU run first.
+pub fn yield_now() {
+    transition(|core, now| core.yield_current(now));
+}
+
+/// Sleeps at least `ms` milliseconds; an early wake-up just sleeps again.
 pub fn sleep_ms(ms: u64) {
-    transition(|core, now| core.sleep_current(now + ms * 1_000_000, now));
+    let deadline = hpet::nanos().saturating_add(ms.saturating_mul(1_000_000));
+    while hpet::nanos() < deadline {
+        sleep_until_unless(deadline, || false);
+    }
+}
+
+/// Sleeps until `deadline_ns`, unless `ready()` is already true, or until a `wake`.
+/// `ready()` is checked under this CPU's core lock, as in [`block_unless`], so a
+/// waker that publishes its condition first and then calls `wake` is never missed.
+/// Callers re-check their own conditions: a return says nothing about why.
+pub fn sleep_until_unless(deadline_ns: u64, ready: impl Fn() -> bool) {
+    interrupts::without_interrupts(|| {
+        let me = percpu::index();
+        let (from, to) = {
+            let mut guard = CORES[me].lock();
+            if ready() {
+                return;
+            }
+            let core = guard.as_mut().expect("threads::init has run");
+            let now = hpet::nanos();
+            if now >= deadline_ns {
+                return;
+            }
+            let switch_to = (core.current(), core.sleep_current(deadline_ns, now));
+            LOAD[me].store(core.load(), Ordering::Relaxed);
+            switch_to
+        };
+        switch(from, to);
+        crate::process::blocked(from);
+    });
 }
 
 /// Ends the calling thread.
@@ -324,6 +435,7 @@ pub fn block_unless(ready: impl Fn() -> bool) -> bool {
             switch_to
         };
         switch(from, to);
+        crate::process::blocked(from);
         true
     })
 }

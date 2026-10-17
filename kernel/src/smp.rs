@@ -8,11 +8,14 @@ use limine::mp::MpInfo;
 use spin::Mutex;
 
 const START_TIMEOUT_NS: u64 = 2_000_000_000;
+/// Each application processor's boot and idle stack, guarded like every kernel stack.
+const AP_STACK_PAGES: u64 = 8;
 /// After this long a shootdown is logged as slow, but the wait continues.
 const SHOOTDOWN_SLOW_NS: u64 = 1_000_000_000;
 
 static ONLINE: AtomicUsize = AtomicUsize::new(1);
 static LAPIC_IDS: [AtomicU32; MAX_CPUS] = [const { AtomicU32::new(0) }; MAX_CPUS];
+static AP_STACK_TOP: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 
 pub fn online() -> usize {
     ONLINE.load(Ordering::Acquire)
@@ -35,6 +38,8 @@ pub fn start_aps(cpus: &[&MpInfo], bsp_lapic_id: u32) -> Result<usize, &'static 
         }
         LAPIC_IDS[index].store(cpu.lapic_id, Ordering::Relaxed);
         gdt::prepare_ap(index)?;
+        let stack = crate::memory::stack::GuardedStack::new(AP_STACK_PAGES)?;
+        AP_STACK_TOP[index].store(stack.top, Ordering::Release);
         let idle = threads::prepare_ap(index)?;
         cpu.bootstrap(ap_entry, ((idle as u64) << 32) | index as u64);
         let start = hpet::nanos();
@@ -49,7 +54,8 @@ pub fn start_aps(cpus: &[&MpInfo], bsp_lapic_id: u32) -> Result<usize, &'static 
 }
 
 /// Entry point for application processors. Limine runs it on its own stack with
-/// interrupts disabled and our page tables loaded.
+/// interrupts disabled and our page tables loaded; it moves straight onto a kernel
+/// stack of our own, so nothing later depends on where Limine put its stack.
 unsafe extern "C" fn ap_entry(info: &MpInfo) -> ! {
     let argument = info.extra_argument();
     let index = (argument & 0xFFFF_FFFF) as usize;
@@ -58,8 +64,29 @@ unsafe extern "C" fn ap_entry(info: &MpInfo) -> ! {
     percpu::this()
         .lapic_id
         .store(info.lapic_id, Ordering::Relaxed);
+    let top = AP_STACK_TOP[index].load(Ordering::Acquire);
+    // SAFETY: `top` is the top of a mapped guarded stack prepared for this CPU, and
+    // ap_continue never returns.
+    unsafe {
+        core::arch::asm!(
+            "mov rsp, {top}",
+            "xor rbp, rbp",
+            "call {next}",
+            top = in(reg) top,
+            in("rdi") index,
+            in("rsi") idle,
+            next = sym ap_continue,
+            options(noreturn)
+        )
+    }
+}
+
+extern "C" fn ap_continue(index: usize, idle: usize) -> ! {
     gdt::load_ap(index);
     idt::init();
+    if let Err(message) = crate::cpu::init(crate::entry::syscall_entry as *const () as u64) {
+        panic!("cpu {index}: {message}");
+    }
     apic::init_ap();
     timer::init_ap();
     threads::start_ap(index, idle, || {
