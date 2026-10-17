@@ -8,6 +8,7 @@
 //! user confirms must be exactly what runs.
 
 use crate::openai::{self, ReplyError};
+use crate::{http, text};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -345,6 +346,19 @@ pub fn parse_answer(body: &[u8]) -> Result<Answer, AnswerError> {
         return Err(AnswerError::NoScript(summary));
     }
     Ok(Answer { summary, script })
+}
+
+/// Reads a whole HTTP response as a script answer: the status first, then the body.
+pub fn answer_from(response: &http::Response) -> Result<Answer, AnswerError> {
+    if response.status != 200 {
+        let body = core::str::from_utf8(&response.body).unwrap_or("");
+        return Err(AnswerError::Server(format!(
+            "HTTP {}: {}",
+            response.status,
+            text::printable(body, SUMMARY_MAX_CHARS, 1)
+        )));
+    }
+    parse_answer(&response.body)
 }
 
 /// What the shell asks the llm service for.

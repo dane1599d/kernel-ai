@@ -168,6 +168,31 @@ fn the_strict_profile_refuses_every_loop_closure_and_indirect_call() {
 }
 
 #[test]
+fn a_trial_error_from_made_up_values_does_not_refuse() {
+    // The stub lists four services and two CPUs; the real system may differ.
+    for script in [
+        "print(processes()[9].name);",
+        "print(10 / (cpus() - 2));",
+        "print(get_policy()[40]);",
+    ] {
+        let answer = Answer {
+            summary: String::new(),
+            script: String::from(script),
+        };
+        assert!(
+            check(&answer, &DEFAULT_CONFIG).is_ok(),
+            "{script} was refused"
+        );
+    }
+    let (_host, mut shell) = with_answers(vec![answer("print(10 / (cpus() - 2));", "Divides.")]);
+    shell.eval("? divide ten by the spare cpus");
+    assert_eq!(shell.eval("answer 1 yes"), ok("5\n"));
+    let (_, mut shell) = with_answers(vec![answer("print(processes()[9].name);", "Ninth.")]);
+    shell.eval("? name the tenth service");
+    assert!(!shell.eval("answer 1 yes").ok);
+}
+
+#[test]
 fn the_capability_list_over_approximates() {
     assert_eq!(
         names_in("print(`${set_policy(\"rr\")}`);").1,

@@ -161,6 +161,9 @@ pub fn names_in(script: &str) -> (Vec<&'static str>, Vec<&'static str>) {
     (pick(Effect::Read), pick(Effect::Change))
 }
 
+/// The services the stub lists, so a trial run gets past `processes()[1]`.
+const STUB_SERVICES: &[&str] = &["llm", "shell", "service", "service"];
+
 /// Stand-in for the OS during the trial run: plausible values, and nothing changes.
 struct Stub;
 
@@ -182,10 +185,13 @@ impl Host for Stub {
         m.heap_bytes = 64 * 1024;
         m.uptime_ns = 1_000_000_000;
         m.context_switches = 1;
-        m.process_count = 1;
-        m.processes[0].pid = 1;
-        m.processes[0].name[..5].copy_from_slice(b"shell");
-        m.processes[0].name_len = 5;
+        for (index, name) in STUB_SERVICES.iter().enumerate() {
+            let slot = &mut m.processes[index];
+            slot.pid = index as u64 + 2;
+            slot.name[..name.len()].copy_from_slice(name.as_bytes());
+            slot.name_len = name.len() as u64;
+        }
+        m.process_count = STUB_SERVICES.len() as u64;
         Ok(m)
     }
     fn set_policy(&self, _: u64) -> Result<(), kabi::Error> {
@@ -220,7 +226,9 @@ pub fn check(answer: &Answer, config: &Config) -> Result<Checked, String> {
         .map_err(|error| format!("syntax error: {error}"))?;
     line.begin(stub.as_ref(), config);
     // The stub clock never moves, so only the operation backstop bounds the trial.
-    if let Err(error) = trial.eval_ast_with_scope::<Dynamic>(&mut Scope::new(), &ast) {
+    if let Err(error) = trial.eval_ast_with_scope::<Dynamic>(&mut Scope::new(), &ast)
+        && !depends_on_values(&error)
+    {
         return Err(format!("the script failed a trial run: {error}"));
     }
     Ok(Checked {
@@ -230,6 +238,19 @@ pub fn check(answer: &Answer, config: &Config) -> Result<Checked, String> {
         changes,
         ast,
     })
+}
+
+/// Trial errors that come from the stub's made-up values rather than the script: an
+/// index past the end, or a division by zero. The real values may not cause them,
+/// so they do not refuse a script; the real run reports them if they happen.
+fn depends_on_values(error: &EvalAltResult) -> bool {
+    matches!(
+        error.unwrap_inner(),
+        EvalAltResult::ErrorArrayBounds(..)
+            | EvalAltResult::ErrorStringBounds(..)
+            | EvalAltResult::ErrorBitFieldBounds(..)
+            | EvalAltResult::ErrorArithmetic(..)
+    )
 }
 
 /// What the confirmation shows: the shell's own account of what the script uses

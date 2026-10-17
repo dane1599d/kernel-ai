@@ -4,6 +4,7 @@
 //! cargo xtask run   [--release] [--spikes] [--accel auto|kvm|whpx|tcg] [--llm IP:PORT] [--model NAME]
 //! cargo xtask test  [--release] [--accel auto|kvm|whpx|tcg] [--timeout SECS]
 //! cargo xtask soak  [--accel auto|kvm|whpx|tcg]   (10-minute storm, M5 exit test)
+//! cargo xtask fluency --llm HOST:PORT --model NAME [--repeat N]   (M8b script gate, host only)
 //!
 //! `test` boots the kernel headless once per test case (boot and memory checks,
 //! page fault, double fault, write-protect, stack overflow, 60 s timer, keyboard,
@@ -13,6 +14,7 @@
 //! kernel reports success through QEMU's isa-debug-exit device.
 
 mod cases;
+mod fluency;
 mod lines;
 mod mock_llm;
 mod qemu;
@@ -62,7 +64,11 @@ struct Options {
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
-    let result = parse_args(&args).and_then(|options| execute(&options));
+    let result = if args.first().map(String::as_str) == Some("fluency") {
+        fluency::main(&args[1..], &workspace_root().join("target"))
+    } else {
+        parse_args(&args).and_then(|options| execute(&options))
+    };
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
@@ -78,7 +84,11 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         Some("run") => Task::Run,
         Some("test") => Task::Test,
         Some("soak") => Task::Soak,
-        other => return Err(format!("expected build, run, test or soak, got {other:?}")),
+        other => {
+            return Err(format!(
+                "expected build, run, test, soak or fluency, got {other:?}"
+            ));
+        }
     };
     let mut options = Options {
         task,
