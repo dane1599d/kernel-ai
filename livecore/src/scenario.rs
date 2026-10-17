@@ -23,7 +23,7 @@ pub enum Expect {
 }
 
 impl Expect {
-    fn matches(self, reply: &str) -> bool {
+    pub fn matches(self, reply: &str) -> bool {
         match self {
             Self::Exact(text) => reply == text,
             Self::StartsWith(text) => reply.starts_with(text),
@@ -48,7 +48,7 @@ pub enum Count {
 }
 
 impl Count {
-    fn read(self, ledger: &Ledger) -> u64 {
+    pub fn read(self, ledger: &Ledger) -> u64 {
         let c = &ledger.counters;
         match self {
             Self::Restores => c.restores,
@@ -210,77 +210,78 @@ pub const STEPS: &[Step] = &[
 pub fn run(driver: &mut dyn Driver) -> Result<(), String> {
     let mut host = driver.host_pid();
     for (index, step) in STEPS.iter().enumerate() {
-        let fail = |why: String| format!("live scenario step {}: {why}", index + 1);
-        match *step {
-            Part(name) => driver.log(&format!("live: {name}")),
-            Call(request, expect) | Spoof(request, expect) => {
-                let reply = match step {
-                    Call(..) => driver.call(request),
-                    _ => driver.spoof(request),
-                }
-                .map_err(fail)?;
-                if !expect.matches(&reply) {
-                    return Err(fail(format!(
-                        "{request:?} answered {reply:?}, expected {expect:?}"
-                    )));
+        run_step(driver, step, &mut host)
+            .map_err(|why| format!("live scenario step {}: {why}", index + 1))?;
+    }
+    Ok(())
+}
+
+/// Runs one step. `host` is the host pid the step expects, which a restart moves.
+pub fn run_step(driver: &mut dyn Driver, step: &Step, host: &mut u64) -> Result<(), String> {
+    match *step {
+        Part(name) => driver.log(&format!("live: {name}")),
+        Call(request, expect) | Spoof(request, expect) => {
+            let reply = match step {
+                Call(..) => driver.call(request),
+                _ => driver.spoof(request),
+            }?;
+            if !expect.matches(&reply) {
+                return Err(format!(
+                    "{request:?} answered {reply:?}, expected {expect:?}"
+                ));
+            }
+        }
+        Counts(counts) => {
+            let ledger = driver.ledger();
+            for (count, wanted) in counts {
+                let found = count.read(&ledger);
+                if found != *wanted {
+                    return Err(format!("{count:?} is {found}, expected {wanted}"));
                 }
             }
-            Counts(counts) => {
-                let ledger = driver.ledger();
-                for (count, wanted) in counts {
-                    let found = count.read(&ledger);
-                    if found != *wanted {
-                        return Err(fail(format!("{count:?} is {found}, expected {wanted}")));
-                    }
+        }
+        Active(label, schema) => {
+            let ledger = driver.ledger();
+            if ledger.active() != Some(label)
+                || ledger.schema != schema
+                || ledger.candidate().is_some()
+            {
+                return Err(format!(
+                    "active {:?} schema {} (swapping to {:?}), expected {label} schema {schema}",
+                    ledger.active(),
+                    ledger.schema,
+                    ledger.candidate()
+                ));
+            }
+        }
+        Bad(label, wanted) => {
+            if driver.ledger().is_bad(label).is_some() != wanted {
+                return Err(format!("{label} on the failed list should be {wanted}"));
+            }
+        }
+        Fetches(fetches) => {
+            for (label, wanted) in fetches {
+                let found = driver.fetches(label);
+                if found != *wanted {
+                    return Err(format!(
+                        "version {label} fetched {found} times, expected {wanted}"
+                    ));
                 }
             }
-            Active(label, schema) => {
-                let ledger = driver.ledger();
-                if ledger.active() != Some(label)
-                    || ledger.schema != schema
-                    || ledger.candidate().is_some()
-                {
-                    return Err(fail(format!(
-                        "active {:?} schema {} (swapping to {:?}), expected {label} schema {schema}",
-                        ledger.active(),
-                        ledger.schema,
-                        ledger.candidate()
-                    )));
-                }
+        }
+        SameHost => {
+            let now = driver.host_pid();
+            if now != *host {
+                return Err(format!("the host changed from pid {host} to {now}"));
             }
-            Bad(label, wanted) => {
-                if driver.ledger().is_bad(label).is_some() != wanted {
-                    return Err(fail(format!(
-                        "{label} on the failed list should be {wanted}"
-                    )));
-                }
+        }
+        Restart => {
+            driver.restart()?;
+            let now = driver.host_pid();
+            if now == *host {
+                return Err(format!("the host is still pid {host} after the restart"));
             }
-            Fetches(fetches) => {
-                for (label, wanted) in fetches {
-                    let found = driver.fetches(label);
-                    if found != *wanted {
-                        return Err(fail(format!(
-                            "version {label} fetched {found} times, expected {wanted}"
-                        )));
-                    }
-                }
-            }
-            SameHost => {
-                let now = driver.host_pid();
-                if now != host {
-                    return Err(fail(format!("the host changed from pid {host} to {now}")));
-                }
-            }
-            Restart => {
-                driver.restart().map_err(fail)?;
-                let now = driver.host_pid();
-                if now == host {
-                    return Err(fail(format!(
-                        "the host is still pid {host} after the restart"
-                    )));
-                }
-                host = now;
-            }
+            *host = now;
         }
     }
     Ok(())

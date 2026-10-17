@@ -11,7 +11,7 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use kabi::Error;
-use kabi::live::{Reason, flag, kind};
+use kabi::live::{LINEAGE, Reason, flag, kind};
 
 /// Entries kept in [`Ledger::history`].
 pub const HISTORY: usize = 32;
@@ -96,6 +96,9 @@ pub struct Ledger {
     pub history: VecDeque<HistoryEntry>,
     seq: u64,
     pub last_detail: String,
+    /// The last [`LINEAGE`] active versions, oldest first: each fresh start and
+    /// each commit adds one.
+    pub lineage: VecDeque<String>,
 }
 
 impl Default for Ledger {
@@ -134,7 +137,31 @@ impl Ledger {
             history: VecDeque::new(),
             seq: 0,
             last_detail: String::new(),
+            lineage: VecDeque::new(),
         }
+    }
+
+    fn add_lineage(&mut self, label: &str) {
+        if self.lineage.back().is_some_and(|last| last == label) {
+            return;
+        }
+        if self.lineage.len() == LINEAGE {
+            self.lineage.pop_front();
+        }
+        self.lineage.push_back(label.to_string());
+    }
+
+    /// The `n`th distinct version that was active before the current one (1 is
+    /// the one just before), from the lineage.
+    pub fn revert_target(&self, n: usize) -> Option<&str> {
+        let active = self.active();
+        let mut seen: Vec<&str> = Vec::new();
+        for label in self.lineage.iter().rev().map(String::as_str) {
+            if Some(label) != active && !seen.contains(&label) {
+                seen.push(label);
+            }
+        }
+        n.checked_sub(1).and_then(|index| seen.get(index).copied())
     }
 
     pub fn active(&self) -> Option<&str> {
@@ -280,6 +307,7 @@ impl Ledger {
                 self.checkpoint = event.blob.clone();
                 self.generation += 1;
                 self.counters.commits += 1;
+                self.add_lineage(label);
                 self.counters.served = self.counters.served.saturating_add(event.served);
                 self.counters.regressions =
                     self.counters.regressions.saturating_add(event.regressions);
@@ -372,7 +400,10 @@ impl Ledger {
         }
         Self::check_blob(&event.blob, event.schema)?;
         let line = match &self.phase {
-            Phase::Empty => format!("{label} started fresh"),
+            Phase::Empty => {
+                self.add_lineage(label);
+                format!("{label} started fresh")
+            }
             _ => format!("{label} restored from its checkpoint"),
         };
         self.phase = Phase::Steady {

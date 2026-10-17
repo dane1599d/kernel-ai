@@ -103,7 +103,7 @@ pub fn run(modules: &[Module]) -> Result<(), String> {
             .strip_prefix("comp/notes/")
             .and_then(|p| p.strip_suffix(".wasm"))
         {
-            component.add_version(label, Bytes::Heap(module.bytes.clone()))?;
+            component.add_version(label, Bytes::shared(module.bytes.clone()))?;
         }
     }
     let mut smoke = Smoke {

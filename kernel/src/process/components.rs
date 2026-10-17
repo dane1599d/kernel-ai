@@ -90,17 +90,14 @@ pub fn fetch(
 ) -> Result<u64, Error> {
     let label = copy_text(slot, label_ptr, label_len, MAX_LABEL)?;
     let (name, pid) = caller(slot);
+    // A shared handle, so an upload is copied out without holding the lock.
     let bytes = with(|all| {
         let component = all.iter().find(|c| c.name == name).ok_or(Error::NotFound)?;
-        match component.bytes(&label)? {
-            Bytes::Static(bytes) => Ok(*bytes),
-            // Uploaded versions come with the edit loop (M9b).
-            Bytes::Heap(_) => Err(Error::Invalid),
-        }
+        component.bytes(&label).cloned()
     })?;
-    let len = bytes.len() as u64;
+    let len = bytes.as_slice().len() as u64;
     if cap >= len {
-        copy_to_user(slot, buf, bytes)?;
+        copy_to_user(slot, buf, bytes.as_slice())?;
         with(|all| {
             if let Some(component) = all.iter_mut().find(|c| c.name == name) {
                 component.record_fetch(pid, &label);

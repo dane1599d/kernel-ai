@@ -73,8 +73,25 @@ pub mod call {
     /// `comp_restore(&mut live::Restore, buf, cap) -> len`: the ledger, and the
     /// active version's checkpoint copied into `buf` when it fits.
     pub const COMP_RESTORE: u64 = 23;
-    // 24 (COMP_PUT, uploads into the version store) and 25 (COMP_CONTROL, relayed
-    // control requests) are kept for the edit loop (M9b).
+    /// `comp_put(&live::Put) -> 0`: uploads a version of component `name` into the
+    /// store, under the label the store assigns next (`e1`, `e2`, ...), with the
+    /// label it was built from and the git commit holding its source. The kernel
+    /// checks the artifact against the upload rules (see [`crate::live::MAX_UPLOAD`]).
+    /// Needs [`super::cap::PUBLISH`].
+    pub const COMP_PUT: u64 = 24;
+    /// Reserved for relayed control requests (M9c). A PUBLISH holder's `ctl status`,
+    /// `ctl source` and `ctl try` would go to a component as from the kernel; swap,
+    /// rollback, reset and force never would. Returns NotFound until then.
+    pub const COMP_CONTROL: u64 = 25;
+    /// `comp_read(&live::Read) -> len`: a component's [`crate::live::Info`], or the bytes
+    /// of one of its versions copied into the buffer when they fit (the length
+    /// either way). A read is not a fetch: it gives no right to report events.
+    /// Needs [`super::cap::PUBLISH`].
+    pub const COMP_READ: u64 = 26;
+    /// `build(&HttpRequest) -> response len`: as [`HTTP`], but to the build service
+    /// named by `build=` on the kernel command line, never to the LLM server.
+    /// Needs [`super::cap::PUBLISH`].
+    pub const BUILD: u64 = 27;
 }
 
 /// Errors, returned in RAX as their negative value.
@@ -152,10 +169,12 @@ pub mod cap {
     /// Fetch versions of the component named like the process and report its ledger
     /// events. The kernel grants it only to processes running the `comphost` program.
     pub const COMPONENT: u64 = 1 << 5;
-    /// Reserved for the edit loop (M9b): upload versions and relay control requests.
+    /// Upload versions into the store, read any component's versions, and send to
+    /// the build service. The kernel grants it only to the service named `edit`
+    /// running the `edit` program, and only the kernel may call a holder.
     pub const PUBLISH: u64 = 1 << 6;
     /// Every capability a supervisor may grant.
-    pub const GRANTABLE: u64 = SERVE | NET | CALL | POLICY | COMPONENT;
+    pub const GRANTABLE: u64 = SERVE | NET | CALL | POLICY | COMPONENT | PUBLISH;
 }
 
 /// Why a process ended, as reported to the supervisor.

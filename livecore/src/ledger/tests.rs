@@ -298,3 +298,31 @@ fn events_about_no_version_carry_no_label() {
             .all(|entry| entry.label.is_empty() || entry.label == "1")
     );
 }
+
+#[test]
+fn the_lineage_holds_the_last_active_versions_for_revert() {
+    let mut ledger = running(&["2", "3", "4", "5", "6", "7"]);
+    assert_eq!(ledger.lineage, ["1"]);
+    assert_eq!(ledger.revert_target(1), None);
+    for label in ["2", "3", "2", "4", "5", "6", "7"] {
+        ledger.apply(HOST, &event(kind::BEGIN, label, 1)).unwrap();
+        ledger.apply(HOST, &event(kind::COMMIT, label, 1)).unwrap();
+    }
+    // At most six, oldest first; a rolled-back swap adds nothing.
+    assert_eq!(ledger.lineage, ["3", "2", "4", "5", "6", "7"]);
+    ledger.apply(HOST, &event(kind::BEGIN, "1", 1)).unwrap();
+    let rollback = with_reason(event(kind::ROLLBACK, "1", 1), Reason::Trap);
+    ledger.apply(HOST, &rollback).unwrap();
+    assert_eq!(ledger.lineage.len(), 6);
+    // The active version is skipped, and each earlier one counted once.
+    assert_eq!(ledger.revert_target(1), Some("6"));
+    assert_eq!(ledger.revert_target(4), Some("2"));
+    assert_eq!(ledger.revert_target(5), Some("3"));
+    assert_eq!(ledger.revert_target(6), None);
+    assert_eq!(ledger.revert_target(0), None);
+    // A host restoring the same version does not add it again.
+    ledger.fetched(8, "7");
+    ledger.apply(8, &event(kind::RESTORED, "7", 1)).unwrap();
+    assert_eq!(ledger.lineage.back().map(String::as_str), Some("7"));
+    assert_eq!(ledger.lineage.len(), 6);
+}

@@ -68,6 +68,13 @@ pub(crate) fn swap<E: Env>(
             let reply = format!("err {label} failed before; use ctl swap {label} force");
             return Ok((Mode::Serving(active), text(reply)));
         }
+        // The store evicted it between the fetch and the begin.
+        Err(Error::NotFound) => {
+            return Ok((
+                Mode::Serving(active),
+                text(format!("err no version {label}")),
+            ));
+        }
         Err(error) => {
             return Err(Exit {
                 code: crate::host::EXIT_REFUSED,
