@@ -7,7 +7,18 @@
 
 extern crate alloc;
 
+pub mod artifact;
+pub mod control;
+pub mod host;
+pub mod ledger;
+pub mod local;
+mod probation;
+pub mod settings;
 pub mod state;
+pub mod store;
+mod swap;
+#[cfg(test)]
+mod tests;
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -43,4 +54,6 @@ pub trait Instance {
     fn health(&mut self) -> Result<u32, Fault>;
     /// 0 when its own checks pass.
     fn self_test(&mut self) -> Result<u32, Fault>;
+    /// Drops (true) or keeps (false) its log lines; the standby on probation is quiet.
+    fn quiet(&mut self, quiet: bool);
 }

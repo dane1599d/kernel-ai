@@ -17,6 +17,8 @@ use wasmi::{
 struct HostState {
     limits: StoreLimits,
     log: Option<LogSink>,
+    /// Log lines are dropped while set.
+    quiet: bool,
     /// Log lines written during the current call.
     lines: u32,
 }
@@ -67,7 +69,7 @@ fn log(mut caller: Caller<'_, HostState>, ptr: i32, len: i32) -> Result<(), Erro
         .ok_or_else(|| Error::new("log: text outside memory"))?;
     let text = String::from_utf8_lossy(&bytes[..len.min(MAX_LOG_BYTES)]).into_owned();
     let state = caller.data_mut();
-    if let Some(sink) = state.log
+    if let Some(sink) = state.log.filter(|_| !state.quiet)
         && state.lines < MAX_LOG_LINES
     {
         state.lines += 1;
@@ -104,6 +106,7 @@ impl WasmInstance {
                 .trap_on_grow_failure(true)
                 .build(),
             log: log_sink,
+            quiet: false,
             lines: 0,
         };
         let mut store = Store::new(engine, state);
@@ -245,5 +248,10 @@ impl livecore::Instance for WasmInstance {
     #[inline(never)]
     fn self_test(&mut self) -> Result<u32, Fault> {
         self.code(self.self_test)
+    }
+
+    #[inline(never)]
+    fn quiet(&mut self, quiet: bool) {
+        self.store.data_mut().quiet = quiet;
     }
 }
