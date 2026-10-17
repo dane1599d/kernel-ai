@@ -238,15 +238,7 @@ pub fn store_upload(name: &str, bytes: Vec<u8>, base: &str, commit: &str) -> Res
             .iter_mut()
             .find(|c| c.name == name)
             .ok_or(Error::NotFound)?;
-        match &meta {
-            Ok(meta) => component.put(meta, bytes, base, commit, used_elsewhere),
-            Err(error) => {
-                if *error == Error::Invalid {
-                    component.uploads.rejected += 1;
-                }
-                Err(*error)
-            }
-        }
+        component.put(&meta, bytes, base, commit, used_elsewhere)
     })?;
     log!(
         "live: {name} {label} uploaded (built from {base}, commit {})",

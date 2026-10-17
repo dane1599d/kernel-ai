@@ -4,6 +4,7 @@
 //! cargo xtask run   [--release] [--spikes] [--accel auto|kvm|whpx|tcg] [--llm IP:PORT] [--model NAME] [--edit]
 //! cargo xtask test  [--release] [--accel auto|kvm|whpx|tcg] [--timeout SECS]
 //! cargo xtask soak  [--accel auto|kvm|whpx|tcg]   (10-minute storm, M5 exit test)
+//! cargo xtask smoke   (the live and edit scenarios on the host only, no QEMU)
 //! cargo xtask fluency --llm HOST:PORT --model NAME [--repeat N]   (M8b script gate, host only)
 //!
 //! `test` boots the kernel headless once per test case (boot and memory checks,
@@ -16,6 +17,7 @@
 mod buildsvc;
 mod cases;
 mod components;
+mod edit_smoke;
 mod esp;
 mod fluency;
 mod httpd;
@@ -56,6 +58,13 @@ fn main() -> ExitCode {
 
 fn execute(options: &Options) -> Result<(), String> {
     let root = workspace_root();
+    if options.task == Task::Smoke {
+        let before = buildsvc::verify::real_repo(&root)?;
+        let versions = components::build(&root)?;
+        smoke::run(&versions)?;
+        edit_smoke::run(&root, &versions)?;
+        return buildsvc::verify::unchanged(&root, &before);
+    }
     let kernel = build_kernel(&root, options)?;
     let programs = build_user(&root, options)?;
     let versions = components::build(&root)?;
@@ -65,10 +74,16 @@ fn execute(options: &Options) -> Result<(), String> {
         println!("xtask: {} component versions built", versions.len());
         return Ok(());
     }
+    // The founder's repository, which no part of a test run may change.
+    let real_repo = match options.task {
+        Task::Test => Some(buildsvc::verify::real_repo(&root)?),
+        _ => None,
+    };
     if options.task == Task::Test {
-        // The live-component scenario on the host first: a failure here is in the
-        // host or a version, not in the kernel.
+        // The live-component and edit scenarios on the host first: a failure here
+        // is in the host, a version, the editor or the builds, not in the kernel.
         smoke::run(&versions)?;
+        edit_smoke::run(&root, &versions)?;
     }
     let target_dir = root.join("target");
     let mut modules = esp::boot_modules(&kernel, &programs, &root)?;
@@ -109,7 +124,14 @@ fn execute(options: &Options) -> Result<(), String> {
         cases::TEST_CASES
     };
     for case in cases {
-        let cmdline = format!("{} {llm_args}", case.cmdline);
+        let service = match case.build {
+            true => Some(edit_smoke::service(&root, case.name)?),
+            false => None,
+        };
+        let mut cmdline = format!("{} {llm_args}", case.cmdline);
+        if let Some(service) = &service {
+            cmdline = format!("{cmdline} {}", buildsvc::cmdline(service));
+        }
         println!(
             "xtask: test case {} ({})",
             case.name,
@@ -127,10 +149,18 @@ fn execute(options: &Options) -> Result<(), String> {
             timeout: options.timeout,
             monitor,
         };
-        if let Err(message) = qemu::run_test(&qemu, &args, &target_dir, &run) {
+        let after = |service: &Option<buildsvc::BuildService>| match (case.after, service) {
+            (Some(check), Some(service)) => check(service),
+            _ => Ok(()),
+        };
+        let result = qemu::run_test(&qemu, &args, &target_dir, &run).and_then(|()| after(&service));
+        if let Err(message) = result {
             eprintln!("xtask: test case {}: {message}", case.name);
             failures.push(case.name);
         }
+    }
+    if let Some(before) = &real_repo {
+        buildsvc::verify::unchanged(&root, before)?;
     }
     println!(
         "xtask: the mock LLM server answered {} chat requests",

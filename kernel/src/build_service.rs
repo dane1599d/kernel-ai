@@ -124,7 +124,7 @@ fn sync_thread(_: usize) {
         });
         let result = ipc::call("edit", &message, SYNC_CALL_MS)
             .map_err(|error| format!("{error:?}"))
-            .and_then(|reply| acknowledgement(&reply, job.seq));
+            .and_then(|reply| wire::parse_ack(&reply, job.seq));
         match result {
             Ok(sha) => {
                 components::ack_sync(&name, job.seq, &sha);
@@ -144,30 +144,5 @@ fn sync_thread(_: usize) {
                 backoff = (backoff * 2).min(SYNC_BACKOFF_MAX_MS);
             }
         }
-    }
-}
-
-/// The commit git recorded for job `seq`: `ok synced <seq> <sha>`, or empty for
-/// `ok untracked <seq>`.
-fn acknowledgement(reply: &[u8], seq: u64) -> Result<String, String> {
-    let reply =
-        core::str::from_utf8(reply).map_err(|_| String::from("a reply that is not text"))?;
-    let mut words = reply.split(' ');
-    match (
-        words.next(),
-        words.next(),
-        words.next(),
-        words.next(),
-        words.next(),
-    ) {
-        (Some("ok"), Some("synced"), Some(n), Some(sha), None)
-            if n.parse() == Ok(seq) && kabi::live::valid_commit(sha) =>
-        {
-            Ok(sha.to_string())
-        }
-        (Some("ok"), Some("untracked"), Some(n), None, None) if n.parse() == Ok(seq) => {
-            Ok(String::new())
-        }
-        _ => Err(reply.to_string()),
     }
 }

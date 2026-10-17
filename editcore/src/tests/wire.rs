@@ -184,3 +184,13 @@ fn flipped_bytes_never_panic() {
         }
     }
 }
+
+#[test]
+fn acknowledgements_name_the_job_and_a_commit() {
+    let synced = format!("ok synced 4 {COMMIT}");
+    assert_eq!(parse_ack(synced.as_bytes(), 4), Ok(COMMIT.into()));
+    assert!(parse_ack(synced.as_bytes(), 5).is_err());
+    assert_eq!(parse_ack(b"ok untracked 4", 4), Ok(String::new()));
+    assert!(parse_ack(b"ok synced 4 abc", 4).is_err());
+    assert!(parse_ack(b"err build service: HTTP 403", 4).is_err());
+}

@@ -12,6 +12,8 @@ pub enum Task {
     Test,
     /// Long-running cases (the 10-minute storm), run on demand rather than on every PR.
     Soak,
+    /// Only the host scenarios (live components and the edit loop), without QEMU.
+    Smoke,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,9 +44,10 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
         Some("run") => Task::Run,
         Some("test") => Task::Test,
         Some("soak") => Task::Soak,
+        Some("smoke") => Task::Smoke,
         other => {
             return Err(format!(
-                "expected build, run, test, soak or fluency, got {other:?}"
+                "expected build, run, test, soak, smoke or fluency, got {other:?}"
             ));
         }
     };

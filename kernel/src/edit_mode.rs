@@ -13,9 +13,6 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use editcore::wire::{self, Ipc};
-use livecore::artifact;
-use livecore::diff::{self, ViewError};
-use livecore::store::Origin;
 use livecore::uploads;
 use llmproto::text::printable;
 use spin::Mutex;
@@ -119,45 +116,17 @@ pub struct Proposal {
 }
 
 /// `:apply`: the newest upload and its change against the active version, both
-/// read from the kernel's store; refused when it cannot be shown on one screen of
-/// `cols` by `rows`.
+/// read from the kernel's store, for a screen `cols` by `rows`.
 pub fn propose(name: &str, cols: usize, rows: usize) -> Result<Proposal, String> {
     let component =
         components::component(name).ok_or_else(|| format!("no live component {name}"))?;
-    let label = uploads::apply_candidate(&component)?;
-    let active = component.ledger.active().unwrap_or("").to_string();
-    let (Some(upload), Some(running)) = (component.version(&label), component.version(&active))
-    else {
-        return Err(format!("{name} {label} is no longer stored"));
-    };
-    let (base, commit) = match &upload.origin {
-        Origin::Upload { base, commit, .. } => (base.clone(), commit.clone()),
-        Origin::Boot => return Err(format!("{label} is not an upload")),
-    };
-    let source = |bytes: &[u8]| artifact::parse(bytes).map(|a| a.source.to_vec());
-    let new = source(upload.bytes.as_slice()).map_err(|why| format!("{label}: {why}"))?;
-    let old = source(running.bytes.as_slice()).map_err(|why| format!("{active}: {why}"))?;
-    let mut lines = alloc::vec![format!(
-        "apply {name} {label} (built from {base}, commit {}) over active {active}",
-        commit.get(..12).unwrap_or("")
-    )];
-    let too_large = || {
-        format!(
-            "{label}'s change does not fit one screen; review it with diff in :edit {name}, then :swap {name} {label}"
-        )
-    };
-    // Two leads per line, a header, and the prompt below.
-    match diff::view(&old, &new, cols.saturating_sub(2), rows.saturating_sub(2)) {
-        Ok(view) if view.is_empty() => lines.push(String::from("no source changes")),
-        Ok(view) => lines.extend(view),
-        Err(ViewError::TooLarge(_)) => return Err(too_large()),
-        Err(ViewError::Bundle(why)) => return Err(format!("{label}: {why}")),
-    }
+    // Each line is shown after a two-character lead.
+    let shown = uploads::proposal(&component, cols.saturating_sub(2), rows)?;
     Ok(Proposal {
         component: name.to_string(),
-        label,
-        active,
-        lines,
+        label: shown.label,
+        active: shown.active,
+        lines: shown.lines,
     })
 }
 

@@ -310,5 +310,55 @@ pub fn apply_candidate(component: &Component) -> Result<String, String> {
     Ok(newest.to_string())
 }
 
+/// What `:apply` shows before it asks.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Proposal {
+    /// The upload it would swap to.
+    pub label: String,
+    /// The version the change is computed against.
+    pub active: String,
+    /// A header, then the change, for a screen `cols` wide.
+    pub lines: Vec<String>,
+}
+
+/// The newest upload and its change against the active version, both from the
+/// store. Refused when it cannot be shown in full within `rows` by `cols`: a
+/// confirmation shows all of what it asks about.
+pub fn proposal(component: &Component, cols: usize, rows: usize) -> Result<Proposal, String> {
+    let name = &component.name;
+    let label = apply_candidate(component)?;
+    let active = component.ledger.active().unwrap_or("").to_string();
+    let (Some(upload), Some(running)) = (component.version(&label), component.version(&active))
+    else {
+        return Err(format!("{name} {label} is no longer stored"));
+    };
+    let Origin::Upload { base, commit, .. } = &upload.origin else {
+        return Err(format!("{label} is not an upload"));
+    };
+    let source = |bytes: &[u8]| artifact::parse(bytes).map(|a| a.source.to_vec());
+    let new = source(upload.bytes.as_slice()).map_err(|why| format!("{label}: {why}"))?;
+    let old = source(running.bytes.as_slice()).map_err(|why| format!("{active}: {why}"))?;
+    let mut lines = alloc::vec![format!(
+        "apply {name} {label} (built from {base}, commit {}) over active {active}",
+        commit.get(..12).unwrap_or("")
+    )];
+    // The header takes a row, and the prompt another.
+    match crate::diff::view(&old, &new, cols, rows.saturating_sub(2)) {
+        Ok(view) if view.is_empty() => lines.push(String::from("no source changes")),
+        Ok(view) => lines.extend(view),
+        Err(crate::diff::ViewError::TooLarge(_)) => {
+            return Err(format!(
+                "{label}'s change does not fit one screen; review it with diff in :edit {name}, then :swap {name} {label}"
+            ));
+        }
+        Err(crate::diff::ViewError::Bundle(why)) => return Err(format!("{label}: {why}")),
+    }
+    Ok(Proposal {
+        label,
+        active,
+        lines,
+    })
+}
+
 #[cfg(test)]
 mod tests;

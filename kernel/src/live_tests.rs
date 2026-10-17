@@ -14,10 +14,10 @@ const NAME: &str = "notes";
 const START_TIMEOUT_MS: u64 = 60_000;
 const CALL_TIMEOUT_MS: u64 = 60_000;
 /// The caller a spoofed control request claims to be.
-const SPOOF_PID: u64 = 4242;
+pub(crate) const SPOOF_PID: u64 = 4242;
 
-struct Kernel {
-    calls: u64,
+pub(crate) struct Kernel {
+    pub(crate) calls: u64,
 }
 
 fn text(reply: &[u8]) -> String {
@@ -25,7 +25,7 @@ fn text(reply: &[u8]) -> String {
 }
 
 /// Waits for `notes` to be served by a process other than `old`.
-fn wait_for_host(old: u64) -> Result<u64, String> {
+pub(crate) fn wait_for_host(old: u64) -> Result<u64, String> {
     for _ in 0..START_TIMEOUT_MS / 10 {
         if let Some(pid) = ipc::server_of(NAME)
             && pid != old

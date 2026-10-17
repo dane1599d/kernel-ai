@@ -20,6 +20,7 @@ mod build_service;
 mod console;
 mod cpu;
 mod edit_mode;
+mod edit_tests;
 mod entry;
 mod faults;
 mod gdt;
@@ -234,6 +235,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Shell => run_case(shell_tests::check),
         SelfTest::Scripts => run_case(script_tests::check),
         SelfTest::Live => run_case(live_tests::check),
+        SelfTest::Edit => run_case(edit_tests::check),
         SelfTest::Boot | SelfTest::None => {}
     }
 

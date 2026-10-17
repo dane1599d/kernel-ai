@@ -275,7 +275,9 @@ mod tests {
     #[test]
     fn edit_and_apply_prompts_are_stripped_too() {
         assert!(from_programs("edit notes> = ok built e1 from 2"));
-        assert!(from_programs("apply e1 to notes? yes/no> = ok probation e1 (3 calls)"));
+        assert!(from_programs(
+            "apply e1 to notes? yes/no> = ok probation e1 (3 calls)"
+        ));
         assert!(!from_programs("edit notes> boot-ok"));
         assert!(!from_programs("apply e1 to notes? yes/no> boot-ok"));
         assert!(!from_programs("edit Notes> = x"));

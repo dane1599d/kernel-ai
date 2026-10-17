@@ -54,7 +54,7 @@ fn put_bytes(
     base: &str,
     used: usize,
 ) -> Result<String, Error> {
-    let meta = meta(&bytes)?;
+    let meta = meta(&bytes);
     notes.put(&meta, Arc::new(bytes), base, COMMIT, used)
 }
 
@@ -137,16 +137,19 @@ fn every_rule_refuses_and_leaves_the_store_unchanged() {
         ),
     ];
     for (bytes, base, commit) in wrong {
-        let meta = meta(&bytes).unwrap();
+        let meta = meta(&bytes);
         let result = notes.put(&meta, Arc::new(bytes), base, commit, 0);
         assert_eq!(result, Err(Error::Invalid), "{meta:?} from {base} {commit}");
     }
     assert_eq!(meta(b"not an artifact"), Err(Error::Invalid));
+    let junk = b"not an artifact".to_vec();
+    let result = notes.put(&meta(&junk), Arc::new(junk), "2", COMMIT, 0);
+    assert_eq!(result, Err(Error::Invalid));
     let huge = artifact("notes", "e1", "notes@1", MAX_UPLOAD);
     assert_eq!(meta(&huge), Err(Error::TooBig));
     assert_eq!(labels(&notes), ["2"]);
     assert_eq!(notes.next_label(), "e1");
-    assert_eq!(notes.uploads.rejected, 6);
+    assert_eq!(notes.uploads.rejected, 7);
     // Nothing can be uploaded before a version runs: there is no interface to keep.
     let mut idle = Component::new("notes");
     idle.add_version("2", Bytes::shared(artifact("notes", "2", "notes@1", 0)))
@@ -307,4 +310,51 @@ fn a_full_outbox_drops_the_oldest_job_and_counts_it() {
     }
     assert_eq!((outbox.pending(), outbox.dropped), (OUTBOX, 1));
     assert_eq!(outbox.peek().map(|job| job.label.as_str()), Some("e1"));
+}
+
+#[test]
+fn the_proposal_shows_the_change_from_the_store_or_refuses() {
+    let mut notes = running();
+    let with_source = |label: &str, lib: &[u8]| {
+        let mut module = Vec::from(&b"\0asm\x01\0\0\0"[..]);
+        let manifest = Manifest {
+            component: "notes".into(),
+            version: label.into(),
+            interface: "notes@1".into(),
+            features: "-".into(),
+            build: "ab".into(),
+            source: "cd".into(),
+        };
+        append_custom_section(&mut module, MANIFEST_SECTION, manifest.format().as_bytes());
+        append_custom_section(&mut module, SOURCE_SECTION, &bundle(&[("src/lib.rs", lib)]));
+        module
+    };
+    assert!(
+        proposal(&notes, 80, 40)
+            .unwrap_err()
+            .contains("has no uploads")
+    );
+    put_bytes(
+        &mut notes,
+        with_source("e1", b"fn f() {}\nfn g() {}\n"),
+        "2",
+        0,
+    )
+    .unwrap();
+    let shown = proposal(&notes, 80, 40).unwrap();
+    assert_eq!((shown.label.as_str(), shown.active.as_str()), ("e1", "2"));
+    assert_eq!(
+        shown.lines,
+        [
+            "apply notes e1 (built from 2, commit 0123456789ab) over active 2",
+            "src/lib.rs line 2: 0 removed, 1 added",
+            "  | fn f() {}",
+            "+ | fn g() {}",
+        ]
+    );
+    assert!(
+        proposal(&notes, 80, 4)
+            .unwrap_err()
+            .contains("does not fit one screen")
+    );
 }

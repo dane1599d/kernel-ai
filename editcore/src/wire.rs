@@ -418,3 +418,28 @@ pub fn decode_ipc(bytes: &[u8]) -> Result<Ipc<'_>, &'static str> {
     }
     Err("an unknown request")
 }
+
+/// The edit service's answer to a sync of job `seq`: the commit git recorded, or
+/// empty when git tracks no commit for it. Anything else is an error to retry.
+pub fn parse_ack(reply: &[u8], seq: u64) -> Result<String, String> {
+    let reply =
+        core::str::from_utf8(reply).map_err(|_| String::from("a reply that is not text"))?;
+    let mut words = reply.split(' ');
+    match (
+        words.next(),
+        words.next(),
+        words.next(),
+        words.next(),
+        words.next(),
+    ) {
+        (Some("ok"), Some("synced"), Some(n), Some(sha), None)
+            if n.parse() == Ok(seq) && valid_commit(sha) =>
+        {
+            Ok(String::from(sha))
+        }
+        (Some("ok"), Some("untracked"), Some(n), None, None) if n.parse() == Ok(seq) => {
+            Ok(String::new())
+        }
+        _ => Err(String::from(reply)),
+    }
+}

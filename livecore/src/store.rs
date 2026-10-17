@@ -244,12 +244,13 @@ impl Component {
             .sum()
     }
 
-    /// Stores an upload whose manifest `meta` was read from `bytes` before taking
-    /// the lock. `used_elsewhere` is what other components' uploads hold. On any
-    /// refusal the store is unchanged; refusals by the rules count as rejected.
+    /// Stores an upload whose manifest `meta` was read from `bytes` (by
+    /// [`uploads::meta`]) before taking the lock. `used_elsewhere` is what other
+    /// components' uploads hold. On any refusal the store is unchanged; refusals by
+    /// the rules, an unreadable artifact among them, count as rejected.
     pub fn put(
         &mut self,
-        meta: &Meta,
+        meta: &Result<Meta, Error>,
         bytes: Arc<Vec<u8>>,
         base: &str,
         commit: &str,
@@ -257,15 +258,22 @@ impl Component {
     ) -> Result<String, Error> {
         let label = self.next_label();
         let active = self.ledger.active().and_then(|l| self.version(l));
-        let rule = uploads::check(meta, &self.name, &label, active, base, commit, |l| {
-            self.version(l).is_some()
-        });
-        if let Err(error) = rule {
-            if error == Error::Invalid {
-                self.uploads.rejected += 1;
+        let checked = match meta {
+            Ok(meta) => uploads::check(meta, &self.name, &label, active, base, commit, |l| {
+                self.version(l).is_some()
+            })
+            .map(|()| meta),
+            Err(error) => Err(*error),
+        };
+        let meta = match checked {
+            Ok(meta) => meta,
+            Err(error) => {
+                if error == Error::Invalid {
+                    self.uploads.rejected += 1;
+                }
+                return Err(error);
             }
-            return Err(error);
-        }
+        };
         let victims = uploads::victims(self, bytes.len(), used_elsewhere)?;
         if self.versions.len() - victims.len() >= MAX_VERSIONS {
             return Err(Error::Busy);

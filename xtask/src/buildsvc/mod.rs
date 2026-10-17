@@ -9,6 +9,7 @@ pub mod build;
 pub mod repo;
 #[cfg(test)]
 mod tests;
+pub mod verify;
 
 use crate::components::{self, NOTES_RECIPE, Recipe};
 use crate::httpd::{self, HttpError, Request};

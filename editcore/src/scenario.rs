@@ -83,7 +83,8 @@ pub enum Step {
     Snapshot,
     /// All of those are as the snapshot left them.
     Unchanged,
-    /// Exchanges with the build service.
+    /// Exchanges with the build service so far: builds, and the git syncs after each
+    /// commit and rollback.
     Builds(u64),
     /// The last job git acknowledged.
     Synced(&'static str, Outcome),
@@ -164,7 +165,8 @@ pub const STEPS: &[Step] = &[
         ],
     ),
     Unchanged,
-    Builds(2),
+    // e1, its sync, and this failed build.
+    Builds(3),
     Live(Part("D: an index out of bounds rolls back by itself")),
     Edit("reset", &[Exact("ok back to notes e1 as opened")]),
     Edit(EDIT_TRAP, &[Contains("lib.rs:58:")]),
@@ -188,7 +190,8 @@ pub const STEPS: &[Step] = &[
     Synced("e2", Outcome::Rollback(Reason::Trap)),
     ApplyRefused(StartsWith("e2 rolled back before (trap)")),
     Live(Counts(&[(Begins, 2)])),
-    Builds(3),
+    // Then e2 and the sync of its rollback.
+    Builds(5),
     Live(Part("E: a host killed while on an upload comes back on it")),
     Live(Restart),
     Live(Call("about", Exact("ok notes e1 schema 2, edited live"))),

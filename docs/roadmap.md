@@ -62,7 +62,7 @@ Effort for M0 to M6 comes from the two research passes, which scoped the work di
 
 The fluency test in M8 can run on the dev host at any time, since it needs only the Mac mini. Running it early de-risks the choice of Rhai.
 
-**M9 status:** M9a, the swap, migration, probation and rollback mechanism with prebuilt versions, is built and checked by the `live` boot case and the same scenario run on the host. M9b, the edit loop that makes new versions from in-OS edits, is next.
+**M9 status:** M9a, the swap, migration, probation and rollback mechanism with prebuilt versions, is built and checked by the `live` boot case and the same scenario run on the host. M9b, the edit loop, is built and checked by the `edit` boot case and the same scenario run on the host first with real builds: a component edited in the OS is built on the host, committed to git, shown and confirmed, and runs live with its state; a compile error changes nothing and a broken edit rolls back by itself. That meets the M9 exit. Next are M9c (LLM assist, behind a build sandbox) and M9d (source navigation and persistence).
 
 **M8 status:** the shell (M8a) and the LLM script path (M8b) are built and pass their CI cases against the mock server. The fluency gate and the 20-request exit test still need the real model on the Mac mini.
 

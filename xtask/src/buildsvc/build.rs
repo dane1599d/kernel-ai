@@ -10,9 +10,21 @@ use std::time::{Duration, Instant};
 
 /// A build that runs longer than this is killed.
 pub const BUILD_LIMIT: Duration = Duration::from_secs(120);
-/// Environment variables a build keeps; everything else is dropped.
+/// Environment variables a build keeps; everything else is dropped. On Windows the
+/// system paths stay too: without SYSTEMDRIVE, rustc cannot find the MSVC linker
+/// and takes whatever `link.exe` comes first on PATH.
 const KEPT: &[&str] = &[
     "PATH",
+    "SYSTEMDRIVE",
+    "ProgramFiles",
+    "ProgramFiles(x86)",
+    "ProgramData",
+    "LOCALAPPDATA",
+    "APPDATA",
+    "COMSPEC",
+    "PATHEXT",
+    "PROCESSOR_ARCHITECTURE",
+    "NUMBER_OF_PROCESSORS",
     "HOME",
     "USERPROFILE",
     "CARGO_HOME",

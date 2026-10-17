@@ -24,7 +24,7 @@ fn print_log(line: &str) {
     println!("  | [notes] {line}");
 }
 
-fn loader(settings: &Settings) -> Loader<WasmInstance> {
+pub fn loader(settings: &Settings) -> Loader<WasmInstance> {
     let limits = Limits {
         fuel_call: settings.fuel_call,
         fuel_life: settings.fuel_life,
