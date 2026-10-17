@@ -77,6 +77,7 @@ pub fn event_of(report: &Report<'_>) -> Result<Event, Error> {
 /// The ledger as [`Restore`] and the checkpoint, as the host reads them.
 pub fn restored_of(restore: &Restore, checkpoint: &[u8]) -> Restored {
     Restored {
+        name: restore.name().to_string(),
         phase: restore.phase,
         schema: restore.schema,
         disabled: restore.flags & Restore::DISABLED != 0,

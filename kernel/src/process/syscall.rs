@@ -129,6 +129,18 @@ fn handle(slot: usize, number: u64, a: [u64; 6]) -> Result<u64, Error> {
             set_policy(a[0])
         }
         call::INTERRUPTED => Ok(u64::from(super::take_interrupt(slot))),
+        call::COMP_FETCH => {
+            need(slot, cap::COMPONENT)?;
+            super::components::fetch(slot, a[0], a[1], a[2], a[3])
+        }
+        call::COMP_EVENT => {
+            need(slot, cap::COMPONENT)?;
+            super::components::event(slot, a[0])
+        }
+        call::COMP_RESTORE => {
+            need(slot, cap::COMPONENT)?;
+            super::components::restore(slot, a[0], a[1], a[2])
+        }
         call::HTTP => {
             need(slot, cap::NET)?;
             http(slot, a[0])

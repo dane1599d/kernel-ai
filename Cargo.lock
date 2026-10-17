@@ -429,6 +429,7 @@ dependencies = [
  "kabi",
  "limine",
  "linetable",
+ "livecore",
  "llmproto",
  "mm",
  "noto-sans-mono-bitmap",
@@ -975,11 +976,13 @@ name = "user"
 version = "0.0.0"
 dependencies = [
  "kabi",
+ "livecore",
  "llmproto",
  "shellcore",
  "spin 0.12.3",
  "supervise",
  "talc",
+ "wasmhost",
 ]
 
 [[package]]

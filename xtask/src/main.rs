@@ -341,6 +341,7 @@ const USER_PROGRAMS: &[&str] = &[
     "spinner",
     "hog",
     "probe",
+    "comphost",
 ];
 
 /// Builds every user program; returns (name, ELF path) pairs.

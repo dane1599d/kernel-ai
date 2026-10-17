@@ -16,6 +16,7 @@
 //! a context switch or `memory::with`. A slot's SPACE lock is only taken by the
 //! process's own thread, before MEMORY.
 
+pub mod components;
 pub mod programs;
 pub mod supervision;
 pub mod syscall;

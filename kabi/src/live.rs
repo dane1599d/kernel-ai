@@ -232,6 +232,9 @@ pub struct Restore {
     pub candidate_len: u64,
     pub active: [u8; MAX_LABEL],
     pub candidate: [u8; MAX_LABEL],
+    /// The component: the name of the process asking.
+    pub name_len: u64,
+    pub name: [u8; crate::MAX_NAME],
 }
 
 impl Restore {
@@ -248,6 +251,8 @@ impl Restore {
             candidate_len: 0,
             active: [0; MAX_LABEL],
             candidate: [0; MAX_LABEL],
+            name_len: 0,
+            name: [0; crate::MAX_NAME],
         }
     }
 
@@ -257,6 +262,11 @@ impl Restore {
 
     pub fn candidate(&self) -> &str {
         label_text(&self.candidate, self.candidate_len)
+    }
+
+    pub fn name(&self) -> &str {
+        let len = (self.name_len as usize).min(crate::MAX_NAME);
+        core::str::from_utf8(&self.name[..len]).unwrap_or("")
     }
 }
 
@@ -275,7 +285,7 @@ pub fn valid_label(label: &str) -> bool {
 
 const _: () = {
     assert!(core::mem::size_of::<Event>() == 12 * 8);
-    assert!(core::mem::size_of::<Restore>() == 7 * 8 + 2 * MAX_LABEL);
+    assert!(core::mem::size_of::<Restore>() == 8 * 8 + 2 * MAX_LABEL + crate::MAX_NAME);
 };
 
 #[cfg(test)]

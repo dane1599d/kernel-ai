@@ -50,6 +50,24 @@ pub struct Report<'a> {
 }
 
 impl Report<'_> {
+    /// The event as the COMP_EVENT call takes it, pointing into this report.
+    pub fn to_raw(&self) -> kabi::live::Event {
+        kabi::live::Event {
+            kind: self.kind,
+            reason: self.reason.map_or(0, |reason| reason as u64),
+            label_ptr: self.label.as_ptr() as u64,
+            label_len: self.label.len() as u64,
+            schema: self.schema,
+            served: self.served,
+            regressions: self.regressions,
+            flags: self.flags,
+            blob_ptr: self.blob.as_ptr() as u64,
+            blob_len: self.blob.len() as u64,
+            detail_ptr: self.detail.as_ptr() as u64,
+            detail_len: self.detail.len() as u64,
+        }
+    }
+
     pub const fn new(kind: u64) -> Self {
         Self {
             kind,
@@ -68,6 +86,8 @@ impl Report<'_> {
 /// The ledger as the host starts from.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Restored {
+    /// The component, named like the host process.
+    pub name: String,
     pub phase: u64,
     pub schema: u64,
     pub disabled: bool,

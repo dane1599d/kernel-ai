@@ -63,21 +63,33 @@ impl Component {
 
     /// Version `label` for process `pid`, when it fits in `cap` bytes; its length
     /// either way. Only a fetch that fits counts, and lets `pid` report on it.
-    pub fn fetch(&mut self, pid: u64, label: &str, cap: usize) -> Result<(&[u8], bool), Error> {
+    /// Version `label`'s bytes.
+    pub fn bytes(&self, label: &str) -> Result<&Bytes, Error> {
         if !valid_label(label) {
             return Err(Error::Invalid);
         }
-        let (_, bytes, count) = self
-            .versions
-            .iter_mut()
+        self.versions
+            .iter()
             .find(|(l, ..)| l == label)
-            .ok_or(Error::NotFound)?;
-        let fits = cap >= bytes.as_slice().len();
-        if fits {
+            .map(|(_, bytes, _)| bytes)
+            .ok_or(Error::NotFound)
+    }
+
+    /// Counts a fetch of `label` by `pid`, which may then report on it.
+    pub fn record_fetch(&mut self, pid: u64, label: &str) {
+        if let Some((.., count)) = self.versions.iter_mut().find(|(l, ..)| l == label) {
             *count += 1;
             self.ledger.fetched(pid, label);
         }
-        Ok((bytes.as_slice(), fits))
+    }
+
+    pub fn fetch(&mut self, pid: u64, label: &str, cap: usize) -> Result<(&[u8], bool), Error> {
+        let len = self.bytes(label)?.as_slice().len();
+        let fits = cap >= len;
+        if fits {
+            self.record_fetch(pid, label);
+        }
+        Ok((self.bytes(label)?.as_slice(), fits))
     }
 
     pub fn fetches(&self, label: &str) -> u64 {
@@ -115,6 +127,10 @@ impl Component {
         };
         restore.active_len = copy(&mut restore.active, ledger.active());
         restore.candidate_len = copy(&mut restore.candidate, ledger.candidate());
+        let name = self.name.as_bytes();
+        let len = name.len().min(kabi::MAX_NAME);
+        restore.name[..len].copy_from_slice(&name[..len]);
+        restore.name_len = len as u64;
         restore
     }
 
