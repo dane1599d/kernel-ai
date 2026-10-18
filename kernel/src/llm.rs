@@ -106,6 +106,7 @@ pub fn explain(facts: &str) -> Result<String, String> {
     if ipc::server_of("llm").is_none() {
         return Err(String::from("the llm service is not running"));
     }
+    log!("(asking the LLM...)");
     request(&format!("explain {facts}"), ASK_TIMEOUT_MS)
 }
 

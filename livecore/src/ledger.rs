@@ -75,8 +75,20 @@ pub struct HistoryEntry {
     pub kind: u64,
     pub reason: u64,
     pub label: String,
+}
+
+/// The latest rollback, kept apart from the history so it never ages out of it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Rollback {
+    /// The version dropped.
+    pub label: String,
+    /// The version that stayed active.
+    pub active: String,
+    pub reason: Reason,
     /// What the host said about it, if anything; `last_detail` may be newer.
     pub detail: String,
+    /// The active version failed, not the one dropped, which is not blamed.
+    pub not_blamed: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -98,6 +110,8 @@ pub struct Ledger {
     pub history: VecDeque<HistoryEntry>,
     seq: u64,
     pub last_detail: String,
+    /// The latest rollback; see [`Rollback`].
+    pub last_rollback: Option<Rollback>,
     /// The last [`LINEAGE`] active versions, oldest first: each fresh start and
     /// each commit adds one.
     pub lineage: VecDeque<String>,
@@ -139,6 +153,7 @@ impl Ledger {
             history: VecDeque::new(),
             seq: 0,
             last_detail: String::new(),
+            last_rollback: None,
             lineage: VecDeque::new(),
         }
     }
@@ -229,7 +244,6 @@ impl Ledger {
             kind: event.kind,
             reason: event.reason,
             label: event.label.clone(),
-            detail: event.detail.clone(),
         });
         if !event.detail.is_empty() {
             self.last_detail = event.detail.clone();
@@ -338,6 +352,13 @@ impl Ledger {
                 );
                 let blame = !matches!(reason, Reason::NoMigration | Reason::Manual)
                     && event.flags & flag::POISON == 0;
+                self.last_rollback = Some(Rollback {
+                    label: label.to_string(),
+                    active: active.clone(),
+                    reason,
+                    detail: event.detail.clone(),
+                    not_blamed: event.flags & flag::POISON != 0,
+                });
                 if blame && self.is_bad(label).is_none() {
                     if self.bad.len() == MAX_BAD {
                         self.bad.remove(0);

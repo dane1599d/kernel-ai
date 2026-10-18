@@ -52,24 +52,35 @@ pub fn answer_from(response: &http::Response) -> Result<String, String> {
             text::printable(body, MAX_ERROR_CHARS, 1)
         ));
     }
-    let none = || String::from("the model gave no explanation");
+    // A model that thinks anyway can spend every token before it answers.
+    let none = |cut_off: bool| match cut_off {
+        true => String::from("the model ran out of tokens before answering; is thinking off?"),
+        false => String::from("the model gave no explanation"),
+    };
     let reply = openai::parse_chat_reply(&response.body).map_err(|error| match error {
         ReplyError::Server(why) => format!(
             "the server said: {}",
             text::printable(&why, MAX_ERROR_CHARS, 1)
         ),
-        ReplyError::EmptyContent => none(),
+        ReplyError::EmptyContent => none(finished_at_length(&response.body)),
         other => format!("bad chat reply: {other:?}"),
     })?;
+    let cut_off = reply.finish_reason.as_deref() == Some("length");
     let content = text::without_thinking(&reply.content);
     let mut explanation = text::printable(content, MAX_CHARS, MAX_LINES);
     if explanation.trim().is_empty() {
-        return Err(none());
+        return Err(none(cut_off));
     }
-    if reply.finish_reason.as_deref() == Some("length") {
+    if cut_off {
         explanation.push_str(" (cut off)");
     }
     Ok(explanation)
+}
+
+/// Whether a reply with no content stopped at the token limit.
+fn finished_at_length(body: &[u8]) -> bool {
+    serde_json::from_slice::<serde_json::Value>(body)
+        .is_ok_and(|reply| reply["choices"][0]["finish_reason"] == "length")
 }
 
 #[cfg(test)]
@@ -145,7 +156,23 @@ mod tests {
                 Err(String::from("the model gave no explanation")),
                 "{content:?}"
             );
+            assert_eq!(
+                answer_from(&response(content, "length")),
+                Err(String::from(
+                    "the model ran out of tokens before answering; is thinking off?"
+                )),
+                "{content:?}"
+            );
         }
+        let thought_only = http::Response {
+            status: 200,
+            body: br#"{"choices":[{"message":{"content":null,"reasoning_content":"hmm"},"finish_reason":"length"}]}"#.to_vec(),
+        };
+        assert!(
+            answer_from(&thought_only)
+                .unwrap_err()
+                .starts_with("the model ran out")
+        );
         let refused = http::Response {
             status: 500,
             body: b"overloaded\nretry".to_vec(),

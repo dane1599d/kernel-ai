@@ -1,43 +1,33 @@
 //! The facts `:why` gives the model about a component's latest rollback, all from
-//! the kernel's ledger: which version was dropped and why, what that reason means,
-//! the detail the host gave, the versions that failed before and the recent
-//! events. The detail is text the host wrote, so every value is made printable
-//! ASCII on one line.
+//! the kernel's ledger: which version was dropped and why, which version failed,
+//! what the reason means, the detail the host gave, the versions that failed
+//! before and the recent events. The detail is text the host wrote, so every value
+//! is made printable ASCII on one line.
 
 use crate::Reason;
-use crate::ledger::Ledger;
+use crate::ledger::{HistoryEntry, Ledger, Rollback};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use kabi::live::kind;
 
-/// Recent events listed, checkpoints left out.
+/// Recent events listed.
 const RECENT: usize = 8;
 
 /// The version the latest rollback dropped, and its reason's name.
 pub fn latest_rollback(ledger: &Ledger) -> Option<(&str, &'static str)> {
-    let entry = ledger
-        .history
-        .iter()
-        .rev()
-        .find(|entry| entry.kind == kind::ROLLBACK)?;
-    let reason = Reason::from_raw(entry.reason).map_or("unknown", Reason::name);
-    Some((&entry.label, reason))
+    let rollback = ledger.last_rollback.as_ref()?;
+    Some((&rollback.label, rollback.reason.name()))
 }
 
 /// The facts about `name`'s latest rollback, one per line and at most `max`
 /// bytes; None when the ledger holds no rollback.
 pub fn facts(name: &str, ledger: &Ledger, max: usize) -> Option<String> {
-    let entry = ledger
-        .history
-        .iter()
-        .rev()
-        .find(|entry| entry.kind == kind::ROLLBACK)?;
-    let reason = Reason::from_raw(entry.reason);
-    let reason_name = reason.map_or("unknown", Reason::name);
-    let detail = match entry.detail.is_empty() {
+    let rollback = ledger.last_rollback.as_ref()?;
+    let (label, reason) = (plain(&rollback.label), rollback.reason.name());
+    let detail = match rollback.detail.is_empty() {
         true => String::from("none recorded"),
-        false => plain(&entry.detail),
+        false => plain(&rollback.detail),
     };
     let failed: Vec<String> = ledger
         .bad
@@ -47,25 +37,12 @@ pub fn facts(name: &str, ledger: &Ledger, max: usize) -> Option<String> {
     let recent: Vec<String> = ledger
         .history
         .iter()
-        .filter(|entry| entry.kind != kind::CHECKPOINT)
         .rev()
         .take(RECENT)
         .collect::<Vec<_>>()
         .into_iter()
         .rev()
-        .map(|entry| {
-            let mut event = format!(
-                "#{} {} {}",
-                entry.seq,
-                kind::name(entry.kind),
-                plain(&entry.label)
-            );
-            if let Some(why) = Reason::from_raw(entry.reason) {
-                event.push(' ');
-                event.push_str(why.name());
-            }
-            event
-        })
+        .map(event)
         .collect();
     let lines = [
         format!("component: {}", plain(name)),
@@ -73,11 +50,12 @@ pub fn facts(name: &str, ledger: &Ledger, max: usize) -> Option<String> {
             "active version: {}",
             plain(ledger.active().unwrap_or("none"))
         ),
-        format!("latest rollback: {} ({reason_name})", plain(&entry.label)),
         format!(
-            "what {reason_name} means: {}",
-            reason.map_or("the ledger does not say", meaning)
+            "latest rollback: {label} ({reason}), tried while {} was active",
+            plain(&rollback.active)
         ),
+        format!("what failed: {}", culprit(rollback)),
+        format!("what {reason} means: {}", meaning(rollback.reason)),
         format!("detail from the host: {detail}"),
         format!("versions that failed before: {}", list(&failed)),
         format!("recent events, oldest first: {}", recent.join("; ")),
@@ -95,6 +73,39 @@ pub fn facts(name: &str, ledger: &Ledger, max: usize) -> Option<String> {
         out.push('\n');
     }
     Some(out)
+}
+
+/// Which version the rollback's reason is about. When the active version failed
+/// (POISON), the one dropped was not to blame.
+fn culprit(rollback: &Rollback) -> String {
+    let (label, active) = (plain(&rollback.label), plain(&rollback.active));
+    if rollback.not_blamed {
+        format!("the active version {active}, not {label}, which is not blamed")
+    } else if rollback.reason == Reason::Manual {
+        format!("nothing; {label} was rolled back by hand")
+    } else {
+        format!("{label}, the version on trial")
+    }
+}
+
+/// One history entry; a fault is always the active version's.
+fn event(entry: &HistoryEntry) -> String {
+    let what = match entry.kind {
+        kind::FAULT => "fault of the active version",
+        other => kind::name(other),
+    };
+    let mut text = format!("#{} {what}", entry.seq);
+    for word in [plain(&entry.label), reason_name(entry.reason)] {
+        if !word.is_empty() {
+            text.push(' ');
+            text.push_str(&word);
+        }
+    }
+    text
+}
+
+fn reason_name(raw: u64) -> String {
+    Reason::from_raw(raw).map_or(String::new(), |reason| String::from(reason.name()))
 }
 
 fn list(items: &[String]) -> String {
@@ -130,7 +141,7 @@ fn meaning(reason: Reason) -> &'static str {
         Reason::SelfTest => "its own self-test failed",
         Reason::Health => "its health check failed",
         Reason::Trap => {
-            "it hit a WebAssembly trap, such as an out-of-bounds access or a panic, while serving a request"
+            "it hit a WebAssembly trap, such as an out-of-bounds access or a panic, in one of its calls: a request, its self-test, its health check or a state export"
         }
         Reason::Fuel => "it ran out of fuel: a loop that did not end",
         Reason::Memory => "it asked for more memory than its limit",

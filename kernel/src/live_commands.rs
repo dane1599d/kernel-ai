@@ -53,10 +53,7 @@ pub fn run(command: &str, rest: &str) -> bool {
             None => log!("no live component {name}"),
         },
         ("why", [name]) => match components::ledger(name) {
-            Some(ledger) => {
-                log!("(asking the LLM...)");
-                why(name, &ledger).iter().for_each(|line| log!("{line}"));
-            }
+            Some(ledger) => why(name, &ledger).iter().for_each(|line| log!("{line}")),
             None => log!("no live component {name}"),
         },
         ("call", [service, ..]) => {

@@ -1,95 +1,126 @@
 use super::*;
-use crate::ledger::{HistoryEntry, Phase};
+use crate::ledger::Event;
+use alloc::vec;
+use kabi::live::flag;
 
-fn entry(seq: u64, kind: u64, reason: Option<Reason>, label: &str, detail: &str) -> HistoryEntry {
-    HistoryEntry {
-        seq,
+const HOST: u64 = 7;
+
+fn event(kind: u64, label: &str) -> Event {
+    Event {
         kind,
-        reason: reason.map_or(0, |reason| reason as u64),
         label: label.into(),
-        detail: detail.into(),
+        schema: 1,
+        blob: vec![0x82, 1, 0x80],
+        ..Event::default()
     }
 }
 
-/// notes on 2 after 3-trap trapped on probation, then 2 failed on a request.
-fn ledger() -> Ledger {
+fn because(mut event: Event, reason: Reason, detail: &str) -> Event {
+    event.reason = reason as u64;
+    event.detail = detail.into();
+    event
+}
+
+/// A ledger whose host runs version 1 and has begun a swap to 2.
+fn swapping() -> Ledger {
     let mut ledger = Ledger::new();
-    ledger.phase = Phase::Steady { active: "2".into() };
-    ledger.bad.push(("3-trap".into(), Reason::Trap));
-    ledger.counters.rollbacks = 1;
-    ledger.counters.commits = 1;
-    ledger.history.extend([
-        entry(1, kind::RESTORED, None, "2", ""),
-        entry(2, kind::CHECKPOINT, None, "", ""),
-        entry(3, kind::BEGIN, None, "3-trap", ""),
-        entry(
-            4,
-            kind::ROLLBACK,
-            Some(Reason::Trap),
-            "3-trap",
-            "unreachable\x1b[2J executed",
-        ),
-        entry(5, kind::FAULT, Some(Reason::Fuel), "2", "a later fault"),
-    ]);
-    ledger.last_detail = "a later fault".into();
+    ledger.fetched(HOST, "1");
+    ledger.fetched(HOST, "2");
+    ledger.apply(HOST, &event(kind::RESTORED, "1")).unwrap();
+    ledger.apply(HOST, &event(kind::BEGIN, "2")).unwrap();
     ledger
+}
+
+fn rolled_back(reason: Reason, detail: &str, flags: u64) -> Ledger {
+    let mut ledger = swapping();
+    let mut rollback = because(event(kind::ROLLBACK, "2"), reason, detail);
+    rollback.flags = flags;
+    ledger.apply(HOST, &rollback).unwrap();
+    ledger
+}
+
+fn lines(ledger: &Ledger) -> Vec<String> {
+    let facts = facts("notes", ledger, 1024).unwrap();
+    assert!(facts.ends_with('\n'));
+    facts.lines().map(String::from).collect()
 }
 
 #[test]
 fn the_facts_name_the_latest_rollback_with_its_own_detail() {
-    let ledger = ledger();
-    assert_eq!(latest_rollback(&ledger), Some(("3-trap", "trap")));
-    let facts = facts("notes", &ledger, 1024).unwrap();
-    let lines: Vec<&str> = facts.lines().collect();
+    let mut ledger = rolled_back(Reason::Trap, "unreachable\x1b[2J executed", 0);
+    // A later fault of the active version leaves its own detail last.
+    let fault = because(event(kind::FAULT, ""), Reason::Fuel, "a later fault");
+    ledger.apply(HOST, &fault).unwrap();
+    assert_eq!(ledger.last_detail, "a later fault");
+    assert_eq!(latest_rollback(&ledger), Some(("2", "trap")));
     assert_eq!(
-        lines,
+        lines(&ledger),
         [
             "component: notes",
-            "active version: 2",
-            "latest rollback: 3-trap (trap)",
-            "what trap means: it hit a WebAssembly trap, such as an out-of-bounds access or a panic, while serving a request",
+            "active version: 1",
+            "latest rollback: 2 (trap), tried while 1 was active",
+            "what failed: 2, the version on trial",
+            "what trap means: it hit a WebAssembly trap, such as an out-of-bounds access or a panic, in one of its calls: a request, its self-test, its health check or a state export",
             "detail from the host: unreachable?[2J executed",
-            "versions that failed before: 3-trap (trap)",
-            "recent events, oldest first: #1 restored 2; #3 begin 3-trap; #4 rollback 3-trap trap; #5 fault 2 fuel",
-            "rollbacks so far: 1; commits: 1",
+            "versions that failed before: 2 (trap)",
+            "recent events, oldest first: #1 restored 1; #2 begin 2; #3 rollback 2 trap; #4 fault of the active version fuel",
+            "rollbacks so far: 1; commits: 0",
         ]
     );
-    assert!(facts.ends_with('\n'));
 }
 
 #[test]
-fn a_rollback_without_detail_or_earlier_failures_says_so() {
-    let mut ledger = Ledger::new();
-    ledger.phase = Phase::Steady { active: "2".into() };
-    ledger.history.push_back(entry(
-        9,
-        kind::ROLLBACK,
-        Some(Reason::HostRestart),
-        "3-spin",
-        "",
-    ));
-    let facts = facts("notes", &ledger, 1024).unwrap();
-    assert!(facts.contains("latest rollback: 3-spin (host-restart)\n"));
-    assert!(facts.contains("its host process stopped while it was on probation"));
-    assert!(facts.contains("detail from the host: none recorded\n"));
-    assert!(facts.contains("versions that failed before: none\n"));
+fn a_rollback_the_active_version_caused_does_not_blame_the_one_dropped() {
+    let ledger = rolled_back(Reason::Trap, "unreachable executed in add", flag::POISON);
+    let lines = lines(&ledger);
+    assert_eq!(
+        lines[3],
+        "what failed: the active version 1, not 2, which is not blamed"
+    );
+    assert_eq!(lines[6], "versions that failed before: none");
+}
+
+#[test]
+fn a_rollback_by_hand_or_without_detail_says_so() {
+    let ledger = rolled_back(Reason::Manual, "", 0);
+    let lines = lines(&ledger);
+    assert_eq!(lines[3], "what failed: nothing; 2 was rolled back by hand");
+    assert_eq!(lines[5], "detail from the host: none recorded");
+}
+
+#[test]
+fn the_latest_rollback_outlasts_the_history() {
+    let mut ledger = rolled_back(Reason::Health, "its health check returned 1", 0);
+    for _ in 0..crate::ledger::HISTORY + 4 {
+        let fault = because(event(kind::FAULT, ""), Reason::Trap, "again");
+        ledger.apply(HOST, &fault).unwrap();
+    }
+    assert!(ledger.history.iter().all(|e| e.kind != kind::ROLLBACK));
+    let lines = lines(&ledger);
+    assert_eq!(
+        lines[2],
+        "latest rollback: 2 (health), tried while 1 was active"
+    );
+    assert_eq!(
+        lines[5],
+        "detail from the host: its health check returned 1"
+    );
 }
 
 #[test]
 fn no_rollback_means_no_facts() {
-    let mut ledger = ledger();
-    ledger.history.retain(|entry| entry.kind != kind::ROLLBACK);
-    assert_eq!(facts("notes", &ledger, 1024), None);
-    assert_eq!(latest_rollback(&ledger), None);
+    assert_eq!(facts("notes", &swapping(), 1024), None);
+    assert_eq!(latest_rollback(&swapping()), None);
     assert_eq!(facts("notes", &Ledger::new(), 1024), None);
 }
 
 #[test]
 fn the_facts_stop_at_whole_lines_within_the_limit() {
-    let facts = facts("notes", &ledger(), 80).unwrap();
-    assert!(facts.len() <= 80, "{facts:?}");
+    let ledger = rolled_back(Reason::Trap, "x", 0);
+    let facts = facts("notes", &ledger, 100).unwrap();
+    assert!(facts.len() <= 100, "{facts:?}");
     assert_eq!(
         facts,
-        "component: notes\nactive version: 2\nlatest rollback: 3-trap (trap)\n"
+        "component: notes\nactive version: 1\nlatest rollback: 2 (trap), tried while 1 was active\n"
     );
 }
