@@ -8,6 +8,7 @@
 extern crate alloc;
 
 pub mod artifact;
+pub mod cbor;
 pub mod control;
 pub mod diff;
 pub mod host;

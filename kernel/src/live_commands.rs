@@ -9,6 +9,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use kabi::live::{Reason, kind};
+use livecore::ledger::Ledger;
 use livecore::store::Origin;
 use llmproto::text::printable;
 
@@ -26,6 +27,7 @@ pub const HELP: &[(&str, &str)] = &[
         ":source <name> [file]",
         "the active version's source; :edit changes it",
     ),
+    (":state <name>", "the state the component last saved"),
     (":call <service> <request>", "send a request to a service"),
 ];
 
@@ -40,11 +42,15 @@ pub fn run(command: &str, rest: &str) -> bool {
         ("rollback", [name]) => control(name, "rollback"),
         ("source", [name]) => control(name, "source"),
         ("source", [name, file]) => control(name, &format!("source {file}")),
+        ("state", [name]) => match components::ledger(name) {
+            Some(ledger) => state(name, &ledger).iter().for_each(|line| log!("{line}")),
+            None => log!("no live component {name}"),
+        },
         ("call", [service, ..]) => {
             let request = rest.trim_start().strip_prefix(service).unwrap_or("").trim();
             call(service, request);
         }
-        ("comp" | "swap" | "rollback" | "source" | "call", _) => {
+        ("comp" | "swap" | "rollback" | "source" | "state" | "call", _) => {
             let usage = HELP
                 .iter()
                 .find(|(usage, _)| usage[1..].starts_with(command));
@@ -53,6 +59,14 @@ pub fn run(command: &str, rest: &str) -> bool {
         _ => return false,
     }
     true
+}
+
+/// What `:state <name>` prints for `ledger`, fit to the screen: every line on one
+/// row, and none scrolled away before the prompt.
+pub fn state(name: &str, ledger: &Ledger) -> Vec<String> {
+    let (cols, rows) = crate::console::size().unwrap_or(crate::edit_mode::FALLBACK_SCREEN);
+    let width = crate::terminal::PIECE_CHARS.min(cols.saturating_sub(2));
+    livecore::state::lines(name, ledger, width, MAX_LINES.min(rows.saturating_sub(2)))
 }
 
 fn control(name: &str, verb: &str) {

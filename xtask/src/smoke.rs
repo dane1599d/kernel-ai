@@ -119,6 +119,14 @@ pub fn run(modules: &[Module]) -> Result<(), String> {
         println!("  | {line}");
     }
     result?;
+    // `:state notes` as the kernel prints it on the fallback screen.
+    let shown = livecore::state::lines("notes", &smoke.ledger(), 158, 48);
+    for line in &shown {
+        println!("  | {line}");
+    }
+    if !livecore::state::shows_schema(&shown, 2) {
+        return Err(String::from(":state notes does not show schema 2"));
+    }
     println!(
         "xtask: the live scenario passed on the host ({} steps, {} ms)",
         scenario::STEPS.len(),

@@ -103,5 +103,13 @@ pub fn check() -> Result<(), &'static str> {
         scenario::STEPS.len(),
         kernel.calls
     );
+    // `:state notes`: the restored state reads as notes 2's schema.
+    let shown = crate::live_commands::state(NAME, &kernel.ledger());
+    for line in &shown {
+        log!("{line}");
+    }
+    if !livecore::state::shows_schema(&shown, 2) {
+        return Err("live: :state notes does not show schema 2");
+    }
     Ok(())
 }
