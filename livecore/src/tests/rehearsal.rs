@@ -138,3 +138,21 @@ fn a_request_the_old_copy_fails_ends_the_replay_without_failing_the_try() {
         "{reply}"
     );
 }
+
+#[test]
+fn a_regression_before_the_old_copy_fails_still_fails_the_try() {
+    let trapping = Spec {
+        bug: Bug::TrapAt(4),
+        ..V1
+    };
+    let kernel = kernel(&[trapping, broken("3", Bug::Regress)]);
+    let mut host = host(&kernel);
+    call(&mut host, "add");
+    call(&mut host, "add");
+    // The old copy answers the first add (3) and fails the second (4); the
+    // candidate answered err to the first.
+    assert_eq!(
+        call(&mut host, "ctl try 3"),
+        "err try 3: 1 of 1 replayed requests answered err where 1 answered ok"
+    );
+}

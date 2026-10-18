@@ -100,13 +100,10 @@ fn replay<E: Env>(
     candidate: &mut Version<E::Instance>,
 ) -> Result<String, String> {
     let total = core.recent.len();
-    let mut regressions = 0;
-    for (done, request) in core.recent.iter().enumerate() {
+    let (mut done, mut regressions) = (0, 0);
+    for request in &core.recent {
         let Ok(before) = old.instance.handle(request) else {
-            return Ok(format!(
-                "{done} of {total} replayed ({} failed the next)",
-                old.label
-            ));
+            break;
         };
         let after = candidate.instance.handle(request).map_err(|fault| {
             format!(
@@ -115,13 +112,20 @@ fn replay<E: Env>(
                 failed(&fault)
             )
         })?;
+        done += 1;
         if regressed(&before, &after) {
             regressions += 1;
         }
     }
     if regressions > 0 {
         return Err(format!(
-            "{regressions} of {total} replayed requests answered err where {} answered ok",
+            "{regressions} of {done} replayed requests answered err where {} answered ok",
+            old.label
+        ));
+    }
+    if done < total {
+        return Ok(format!(
+            "{done} of {total} replayed ({} failed the next)",
             old.label
         ));
     }
