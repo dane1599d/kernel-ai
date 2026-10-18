@@ -24,6 +24,10 @@ pub const HELP: &[(&str, &str)] = &[
     ),
     (":rollback <name>", "drop the version on probation"),
     (
+        ":try <name> <version>",
+        "rehearse a swap on copies; changes nothing",
+    ),
+    (
         ":source <name> [file]",
         "the active version's source; :edit changes it",
     ),
@@ -40,6 +44,7 @@ pub fn run(command: &str, rest: &str) -> bool {
         ("swap", [name, label]) => control(name, &format!("swap {label}")),
         ("swap", [name, label, "force"]) => control(name, &format!("swap {label} force")),
         ("rollback", [name]) => control(name, "rollback"),
+        ("try", [name, label]) => control(name, &format!("try {label}")),
         ("source", [name]) => control(name, "source"),
         ("source", [name, file]) => control(name, &format!("source {file}")),
         ("state", [name]) => match components::ledger(name) {
@@ -50,7 +55,7 @@ pub fn run(command: &str, rest: &str) -> bool {
             let request = rest.trim_start().strip_prefix(service).unwrap_or("").trim();
             call(service, request);
         }
-        ("comp" | "swap" | "rollback" | "source" | "state" | "call", _) => {
+        ("comp" | "swap" | "rollback" | "try" | "source" | "state" | "call", _) => {
             let usage = HELP
                 .iter()
                 .find(|(usage, _)| usage[1..].starts_with(command));

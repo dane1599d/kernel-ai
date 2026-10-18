@@ -22,6 +22,7 @@ pub mod store;
 mod swap;
 #[cfg(test)]
 mod tests;
+mod try_run;
 pub mod uploads;
 
 use alloc::string::String;

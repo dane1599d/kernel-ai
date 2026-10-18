@@ -3,6 +3,7 @@
 extern crate std;
 
 mod fake;
+mod rehearsal;
 
 use crate::Reason;
 use crate::host::{EXIT_REFUSED, EXIT_RESTARTS, Host};

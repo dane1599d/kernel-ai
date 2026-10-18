@@ -32,7 +32,7 @@ pub(crate) fn dual_run<E: Env>(
     match probation.candidate.instance.handle(request) {
         Ok(reply) => {
             probation.served += 1;
-            if reply.starts_with(b"err") && standby_reply.starts_with(b"ok") {
+            if regressed(&standby_reply, &reply) {
                 probation.regressions += 1;
             }
             let (mode, rolled_back) = end_if_due(core, probation)?;
@@ -46,7 +46,13 @@ pub(crate) fn dual_run<E: Env>(
     }
 }
 
-/// Runs a request on the standby and checkpoints its state.
+/// Whether the new version answered `err` where the old one answered `ok`.
+pub(crate) fn regressed(old: &[u8], new: &[u8]) -> bool {
+    new.starts_with(b"err") && old.starts_with(b"ok")
+}
+
+/// Runs a request on the standby, checkpoints its state, and keeps the request
+/// for `ctl try`.
 fn run_standby<E: Env>(
     core: &mut Core<E>,
     standby: &mut Version<E::Instance>,
@@ -54,6 +60,7 @@ fn run_standby<E: Env>(
 ) -> Result<Vec<u8>, Stop> {
     let reply = standby.instance.handle(request)?;
     core.checkpoint(standby)?;
+    core.remember(request);
     Ok(reply)
 }
 

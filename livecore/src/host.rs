@@ -14,6 +14,7 @@ use crate::control::{self, Control};
 use crate::settings::Settings;
 use crate::{Fault, Instance, Reason};
 use alloc::boxed::Box;
+use alloc::collections::VecDeque;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -113,6 +114,8 @@ pub const EXIT_REFUSED: i32 = 4;
 /// In-place reloads allowed within [`RESTART_WINDOW_MS`] before the host gives up.
 pub const MAX_RESTARTS: usize = 3;
 pub const RESTART_WINDOW_MS: u64 = 60_000;
+/// Requests kept for `ctl try` to replay: the last ones served without a fault.
+pub const REPLAY: usize = 8;
 
 /// A loaded version.
 pub(crate) struct Version<I> {
@@ -153,6 +156,8 @@ pub(crate) struct Core<E> {
     /// The active version's state, as the kernel holds it.
     pub checkpoint: Vec<u8>,
     restarts: Vec<u64>,
+    /// The last [`REPLAY`] requests served, oldest first.
+    pub recent: VecDeque<Vec<u8>>,
 }
 
 pub struct Host<E: Env> {
@@ -276,6 +281,14 @@ impl<E: Env> Core<E> {
         }
     }
 
+    /// Keeps `request` for `ctl try`, dropping the oldest past [`REPLAY`].
+    pub fn remember(&mut self, request: &[u8]) {
+        if self.recent.len() == REPLAY {
+            self.recent.pop_front();
+        }
+        self.recent.push_back(request.to_vec());
+    }
+
     /// Counts an in-place reload; too many in a short time ends the host.
     pub fn note_restart(&mut self) -> Result<(), Exit> {
         let now = self.env.now_ms();
@@ -344,6 +357,7 @@ impl<E: Env> Host<E> {
             settings,
             checkpoint: Vec::new(),
             restarts: Vec::new(),
+            recent: VecDeque::new(),
         };
         let mut restored = core
             .env
@@ -503,7 +517,10 @@ impl<E: Env> Host<E> {
             .map_err(Stop::Fault)
             .and_then(|reply| self.core.checkpoint(&mut version).map(|()| reply));
         match result {
-            Ok(reply) => Ok((Mode::Serving(version), reply)),
+            Ok(reply) => {
+                self.core.remember(request);
+                Ok((Mode::Serving(version), reply))
+            }
             Err(Stop::Exit(exit)) => Err(exit),
             Err(Stop::Fault(fault)) => {
                 self.core.reload_after(&mut version, &fault, false)?;
@@ -539,8 +556,12 @@ impl<E: Env> Host<E> {
             (Control::Swap { label, force }, Mode::Serving(version)) => {
                 crate::swap::swap(&mut self.core, version, &label, force)?
             }
-            (Control::Swap { .. }, mode @ Mode::Probation(_)) => {
+            (Control::Swap { .. } | Control::Try { .. }, mode @ Mode::Probation(_)) => {
                 (mode, text("err busy: a version is on probation"))
+            }
+            (Control::Try { label }, Mode::Serving(version)) => {
+                let reply = crate::try_run::rehearse(&mut self.core, &version, &label);
+                (Mode::Serving(version), text(reply))
             }
             (Control::Rollback, Mode::Probation(probation)) => crate::probation::roll_back(
                 &mut self.core,
