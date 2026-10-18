@@ -26,6 +26,8 @@ struct Fake {
     put_result: Result<(), Error>,
     host: Host,
     requests: Vec<Vec<u8>>,
+    controls: Vec<(String, String)>,
+    control_reply: Result<&'static str, Error>,
 }
 
 impl Fake {
@@ -38,6 +40,8 @@ impl Fake {
             put_result: Ok(()),
             host: Host::Builds,
             requests: Vec::new(),
+            controls: Vec::new(),
+            control_reply: Ok("ok try e1: import ok"),
         }
     }
 
@@ -141,6 +145,11 @@ impl Env for Fake {
     fn build(&mut self, request: &[u8], _timeout_ms: u64) -> Result<Vec<u8>, Error> {
         self.requests.push(request.to_vec());
         Ok(self.respond(request))
+    }
+
+    fn control(&mut self, component: &str, request: &str) -> Result<Vec<u8>, Error> {
+        self.controls.push((component.into(), request.into()));
+        self.control_reply.map(|reply| reply.as_bytes().to_vec())
     }
 
     fn log(&mut self, _text: &str) {}
@@ -366,4 +375,35 @@ fn huge_line_numbers_are_refused_not_overflowed() {
         let reply = kernel(&mut service, &mut env, line);
         assert!(reply.starts_with("err "), "{line}: {reply}");
     }
+}
+
+#[test]
+fn try_has_the_kernel_rehearse_the_last_build() {
+    let (mut service, mut env) = opened("x\n");
+    let nothing = "err nothing is built from this text; build first, then try";
+    assert_eq!(kernel(&mut service, &mut env, "cmd try"), nothing);
+    kernel(&mut service, &mut env, "cmd c 1 y");
+    kernel(&mut service, &mut env, "cmd build");
+    assert_eq!(
+        kernel(&mut service, &mut env, "cmd try"),
+        "ok try e1: import ok"
+    );
+    assert_eq!(
+        env.controls,
+        [(String::from("notes"), String::from("try e1"))]
+    );
+    env.control_reply = Ok("rubbish");
+    assert_eq!(
+        kernel(&mut service, &mut env, "cmd try"),
+        "err notes answered \"rubbish\""
+    );
+    env.control_reply = Err(Error::NotFound);
+    assert_eq!(
+        kernel(&mut service, &mut env, "cmd try"),
+        "err cannot reach notes: NotFound"
+    );
+    // An edit after the build leaves nothing built from the text.
+    kernel(&mut service, &mut env, "cmd c 1 z");
+    assert_eq!(kernel(&mut service, &mut env, "cmd try"), nothing);
+    assert_eq!(env.controls.len(), 3);
 }

@@ -20,9 +20,9 @@ const MAX_HTTP_TIMEOUT_MS: u64 = 300_000;
 const MAX_CALL_MS: u64 = 150_000;
 /// A process serving a call must hear back from its own call this long before the
 /// call it serves times out.
-const NESTED_MARGIN_NS: u64 = 1_000_000_000;
+pub(super) const NESTED_MARGIN_NS: u64 = 1_000_000_000;
 /// Longest a process waits for a service that is not up yet.
-const MAX_BIND_WAIT_NS: u64 = 5_000_000_000;
+pub(super) const MAX_BIND_WAIT_NS: u64 = 5_000_000_000;
 /// Fastest policy switches may follow each other.
 pub(crate) const MIN_POLICY_INTERVAL_NS: u64 = 100_000_000;
 
@@ -157,7 +157,10 @@ fn handle(slot: usize, number: u64, a: [u64; 6]) -> Result<u64, Error> {
             need(slot, cap::PUBLISH)?;
             exchange_to(slot, a[0], Destination::Build)
         }
-        // COMP_CONTROL is reserved for M9c.
+        call::COMP_CONTROL => {
+            need(slot, cap::PUBLISH)?;
+            super::components::control(slot, a[0])
+        }
         _ => Err(Error::NotFound),
     }
 }
@@ -314,7 +317,17 @@ fn service_call(slot: usize, name_ptr: u64, name_len: u64, request_ptr: u64) -> 
     let result = ipc::wait_bound(name, deadline.min(now + MAX_BIND_WAIT_NS), cancel)
         .and_then(|()| ipc::call_as(name, &request, me.pid, deadline, cancel));
     drop(request);
-    let reply = result.map_err(|error| match error {
+    let reply = result.map_err(|error| call_error(slot, error))?;
+    let len = reply
+        .len()
+        .min(usize::try_from(call.reply_cap).unwrap_or(usize::MAX));
+    uaccess::copy_to_user(slot, call.reply_ptr, &reply[..len])?;
+    Ok(reply.len() as u64)
+}
+
+/// What a failed call made on a process's behalf returns to it.
+pub(super) fn call_error(slot: usize, error: ipc::CallError) -> Error {
+    match error {
         ipc::CallError::Cancelled if super::take_interrupt(slot) => Error::Interrupted,
         ipc::CallError::Cancelled | ipc::CallError::ServiceDied => Error::Dead,
         ipc::CallError::Unavailable => Error::Unavailable,
@@ -322,12 +335,7 @@ fn service_call(slot: usize, name_ptr: u64, name_len: u64, request_ptr: u64) -> 
         ipc::CallError::Busy => Error::Busy,
         ipc::CallError::NoMemory => Error::NoMemory,
         ipc::CallError::TooBig => Error::TooBig,
-    })?;
-    let len = reply
-        .len()
-        .min(usize::try_from(call.reply_cap).unwrap_or(usize::MAX));
-    uaccess::copy_to_user(slot, call.reply_ptr, &reply[..len])?;
-    Ok(reply.len() as u64)
+    }
 }
 
 /// Installs a scheduling policy on every CPU, unless it already is, or the last

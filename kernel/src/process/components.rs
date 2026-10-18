@@ -8,15 +8,17 @@
 //! only the `comphost` program holds the capability at all. Only the `edit`
 //! service may upload and read any component's versions.
 
+use super::syscall;
 use super::uaccess::{copy_from_user, copy_to_user, read_struct};
-use crate::{log, threads};
+use crate::{hpet, ipc, log, threads};
+use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use kabi::Error;
 use kabi::live::{
-    COMMIT_LEN, Event, Info, MAX_CHECKPOINT, MAX_COMPONENTS, MAX_DETAIL, MAX_LABEL, MAX_UPLOAD,
-    Put, Read, Restore, read,
+    COMMIT_LEN, Control, Event, Info, MAX_CHECKPOINT, MAX_COMPONENTS, MAX_CONTROL, MAX_DETAIL,
+    MAX_LABEL, MAX_UPLOAD, Put, Read, Restore, read,
 };
 use livecore::ledger::{self, Ledger};
 use livecore::store::{Bytes, Component};
@@ -24,6 +26,8 @@ use livecore::uploads::{self, SyncJob};
 use spin::Mutex;
 
 static COMPONENTS: Mutex<Vec<Component>> = Mutex::new(Vec::new());
+/// Longest a relayed control request may take.
+const CONTROL_MS: u64 = 60_000;
 
 fn with<R>(f: impl FnOnce(&mut Vec<Component>) -> R) -> R {
     threads::preempt_disable();
@@ -343,6 +347,44 @@ pub fn ack_sync(name: &str, seq: u64, sha: &str) {
 /// A copy of `name`'s record; versions' bytes are shared, not copied.
 pub fn component(name: &str) -> Option<Component> {
     with(|all| all.iter().find(|c| c.name == name).cloned())
+}
+
+/// `comp_control(&Control) -> len`: sends a request that changes nothing to a live
+/// component's host as the kernel, for a PUBLISH holder. As much of the reply as
+/// fits is copied; its whole length is returned.
+pub fn control(slot: usize, control_ptr: u64) -> Result<u64, Error> {
+    let raw: Control = read_struct(slot, control_ptr)?;
+    let name = copy_text(slot, raw.name_ptr, raw.name_len, kabi::MAX_NAME)?;
+    let request = copy_text(slot, raw.request_ptr, raw.request_len, MAX_CONTROL)?;
+    let request = control_request(&name, &request)?;
+    let now = hpet::nanos();
+    let mut deadline = now + CONTROL_MS * 1_000_000;
+    if let Some(served) = ipc::serving_deadline(super::identity(slot).pid) {
+        deadline = deadline.min(served.saturating_sub(syscall::NESTED_MARGIN_NS));
+    }
+    let cancel = || super::killed(slot) || super::interrupt_pending(slot);
+    let reply = ipc::wait_bound(&name, deadline.min(now + syscall::MAX_BIND_WAIT_NS), cancel)
+        .and_then(|()| ipc::call_as(&name, &request, 0, deadline, cancel))
+        .map_err(|error| syscall::call_error(slot, error))?;
+    let len = reply
+        .len()
+        .min(usize::try_from(raw.reply_cap).unwrap_or(usize::MAX));
+    copy_to_user(slot, raw.reply_ptr, &reply[..len])?;
+    Ok(reply.len() as u64)
+}
+
+/// `ctl <request>` for component `name`, when the kernel relays it for a PUBLISH
+/// holder: a request that changes nothing ([`kabi::live::relayable`]), to a live
+/// component's host. The kernel's own check, whatever the component would accept.
+pub fn control_request(name: &str, request: &str) -> Result<Vec<u8>, Error> {
+    if !kabi::live::relayable(request) {
+        return Err(Error::Invalid);
+    }
+    let live = with(|all| all.iter().any(|c| c.name == name));
+    if !live || !super::has_cap_by_name(name, kabi::cap::COMPONENT) {
+        return Err(Error::NotFound);
+    }
+    Ok(format!("{}{request}", kabi::live::CONTROL_PREFIX).into_bytes())
 }
 
 /// Gives up on job `seq` of `name`, which git keeps refusing.

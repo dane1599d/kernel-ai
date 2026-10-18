@@ -59,6 +59,7 @@ fn every_command_form_parses() {
         ("undo", Command::Undo),
         ("diff", Command::Diff),
         ("build", Command::Build),
+        ("try", Command::Try),
         ("reset", Command::Reset),
         ("help", Command::Help),
     ];

@@ -62,6 +62,13 @@ impl Env for Sys {
         Ok(self.response[..len.min(self.response.len())].to_vec())
     }
 
+    fn control(&mut self, component: &str, request: &str) -> Result<Vec<u8>, Error> {
+        let mut reply = vec![0u8; kabi::MAX_MESSAGE];
+        let len = sys::comp_control(component, request, &mut reply)?;
+        reply.truncate(len);
+        Ok(reply)
+    }
+
     fn log(&mut self, text: &str) {
         println!("{text}");
     }
