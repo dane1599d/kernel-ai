@@ -49,7 +49,7 @@ pub trait Driver: LiveDriver {
     fn revert(&mut self, args: &str) -> Result<String, String>;
     /// A copy of the store's record of notes.
     fn component(&mut self) -> Component;
-    /// Exchanges with the build service so far.
+    /// Builds sent to the build service so far.
     fn builds(&mut self) -> u64;
     /// Waits until the outbox is empty; the jobs git acknowledged.
     fn settle_sync(&mut self) -> Result<Vec<SyncJob>, String>;
@@ -83,8 +83,7 @@ pub enum Step {
     Snapshot,
     /// All of those are as the snapshot left them.
     Unchanged,
-    /// Exchanges with the build service so far: builds, and the git syncs after each
-    /// commit and rollback.
+    /// Builds sent to the build service so far.
     Builds(u64),
     /// The last job git acknowledged.
     Synced(&'static str, Outcome),
@@ -165,8 +164,7 @@ pub const STEPS: &[Step] = &[
         ],
     ),
     Unchanged,
-    // e1, its sync, and this failed build.
-    Builds(3),
+    Builds(2),
     Live(Part("D: an index out of bounds rolls back by itself")),
     Edit("reset", &[Exact("ok back to notes e1 as opened")]),
     Edit(EDIT_TRAP, &[Contains("lib.rs:58:")]),
@@ -190,8 +188,7 @@ pub const STEPS: &[Step] = &[
     Synced("e2", Outcome::Rollback(Reason::Trap)),
     ApplyRefused(StartsWith("e2 rolled back before (trap)")),
     Live(Counts(&[(Begins, 2)])),
-    // Then e2 and the sync of its rollback.
-    Builds(5),
+    Builds(3),
     Live(Part("E: a host killed while on an upload comes back on it")),
     Live(Restart),
     Live(Call("about", Exact("ok notes e1 schema 2, edited live"))),

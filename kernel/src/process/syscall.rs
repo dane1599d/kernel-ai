@@ -143,8 +143,7 @@ fn handle(slot: usize, number: u64, a: [u64; 6]) -> Result<u64, Error> {
         }
         call::HTTP => {
             need(slot, cap::NET)?;
-            let target = llm::target().map(|(ip, port, _)| (ip, port));
-            exchange_to(slot, a[0], target, || {})
+            exchange_to(slot, a[0], Destination::Llm)
         }
         call::COMP_PUT => {
             need(slot, cap::PUBLISH)?;
@@ -156,8 +155,7 @@ fn handle(slot: usize, number: u64, a: [u64; 6]) -> Result<u64, Error> {
         }
         call::BUILD => {
             need(slot, cap::PUBLISH)?;
-            let target = crate::build_service::target();
-            exchange_to(slot, a[0], target, crate::build_service::count_exchange)
+            exchange_to(slot, a[0], Destination::Build)
         }
         // COMP_CONTROL is reserved for M9c.
         _ => Err(Error::NotFound),
@@ -207,17 +205,23 @@ fn sleep(slot: usize, ms: u64) -> Result<u64, Error> {
     Ok(0)
 }
 
-/// Sends the request to `target` (the LLM server for HTTP, the build service for
-/// BUILD) and returns what it answered up to closing the connection. The
-/// destination is the kernel's, never the caller's. `counted` runs once the
-/// exchange is under way.
-fn exchange_to(
-    slot: usize,
-    request_ptr: u64,
-    target: Option<(core::net::Ipv4Addr, u16)>,
-    counted: impl FnOnce(),
-) -> Result<u64, Error> {
+/// Where a ring-3 exchange goes: the kernel picks the address, never the caller.
+enum Destination {
+    /// The LLM server, `llm=` (HTTP).
+    Llm,
+    /// The build service, `build=` (BUILD).
+    Build,
+}
+
+/// Sends the request to the destination and returns what it answered up to
+/// closing the connection. The reply to a build (`POST /build`) is kept, so the
+/// upload that follows can be checked against it.
+fn exchange_to(slot: usize, request_ptr: u64, destination: Destination) -> Result<u64, Error> {
     let call: HttpRequest = uaccess::read_struct(slot, request_ptr)?;
+    let target = match destination {
+        Destination::Llm => llm::target().map(|(ip, port, _)| (ip, port)),
+        Destination::Build => crate::build_service::target(),
+    };
     let (ip, port) = target.ok_or(Error::NotFound)?;
     let request_len = usize::try_from(call.request_len).map_err(|_| Error::TooBig)?;
     if request_len > MAX_HTTP_REQUEST {
@@ -233,7 +237,10 @@ fn exchange_to(
     request.resize(request_len, 0);
     uaccess::copy_from_user(slot, call.request_ptr, &mut request)?;
     let timeout = call.timeout_ms.clamp(1, MAX_HTTP_TIMEOUT_MS);
-    counted();
+    let builds = matches!(destination, Destination::Build) && request.starts_with(b"POST /build ");
+    if builds {
+        crate::build_service::count_build();
+    }
     let response = net::exchange((ip, port), &request, timeout, response_cap, || {
         super::killed(slot)
     })
@@ -255,7 +262,11 @@ fn exchange_to(
         return Err(Error::Dead);
     }
     uaccess::copy_to_user(slot, call.response_ptr, &response)?;
-    Ok(response.len() as u64)
+    let len = response.len() as u64;
+    if builds {
+        crate::build_service::keep_build_reply(response);
+    }
+    Ok(len)
 }
 
 /// Calls another service on behalf of the process. The target is named by the

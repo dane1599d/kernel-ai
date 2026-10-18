@@ -2,6 +2,7 @@
 //! kernel decides pass or fail and reports it through isa-debug-exit.
 
 use crate::buildsvc::BuildService;
+use std::time::Duration;
 
 /// A check on the host after a case passed.
 pub type AfterCheck = fn(&BuildService) -> Result<(), String>;
@@ -19,6 +20,9 @@ pub struct TestCase {
     pub build: bool,
     /// Checks on the host once the case has passed, given its build service.
     pub after: Option<AfterCheck>,
+    /// The case needs at least this long, whatever --timeout says: the edit case
+    /// waits on builds whose own limits nest inside 300 s.
+    pub min_timeout: Option<Duration>,
 }
 
 const fn case(name: &'static str, cmdline: &'static str) -> TestCase {
@@ -29,6 +33,7 @@ const fn case(name: &'static str, cmdline: &'static str) -> TestCase {
         expect: &[],
         build: false,
         after: None,
+        min_timeout: None,
     }
 }
 
@@ -73,6 +78,7 @@ pub const TEST_CASES: &[TestCase] = &[
     TestCase {
         build: true,
         after: Some(crate::buildsvc::verify::after_edit_case),
+        min_timeout: Some(Duration::from_secs(300)),
         ..case("edit", "test=edit")
     },
     TestCase {

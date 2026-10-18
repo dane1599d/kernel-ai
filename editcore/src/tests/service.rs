@@ -341,3 +341,26 @@ fn syncs_are_relayed_to_git_and_the_commit_comes_back() {
     env.host = Host::Forbidden;
     assert!(kernel(&mut service, &mut env, &job).starts_with("err build service: HTTP 403"));
 }
+
+#[test]
+fn a_base_that_is_no_longer_stored_is_not_built() {
+    let (mut service, mut env) = opened("x\n");
+    kernel(&mut service, &mut env, "cmd c 1 y");
+    env.artifacts.clear();
+    let reply = kernel(&mut service, &mut env, "cmd build");
+    assert!(reply.contains("is no longer stored"), "{reply}");
+    assert!(env.requests.is_empty());
+}
+
+#[test]
+fn huge_line_numbers_are_refused_not_overflowed() {
+    let (mut service, mut env) = opened("x\n");
+    for line in [
+        "cmd p 18446744073709551615",
+        "cmd a 18446744073709551615 x",
+        "cmd p 4001,4002",
+    ] {
+        let reply = kernel(&mut service, &mut env, line);
+        assert!(reply.starts_with("err "), "{line}: {reply}");
+    }
+}

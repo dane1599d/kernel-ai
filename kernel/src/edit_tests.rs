@@ -59,7 +59,7 @@ impl LiveDriver for Kernel {
 }
 
 fn screen() -> (usize, usize) {
-    crate::console::size().unwrap_or((usize::MAX, usize::MAX))
+    crate::console::size().unwrap_or(edit_mode::FALLBACK_SCREEN)
 }
 
 impl Driver for Kernel {
@@ -118,7 +118,7 @@ impl Driver for Kernel {
     }
 
     fn builds(&mut self) -> u64 {
-        build_service::exchanges()
+        build_service::builds()
     }
 
     fn settle_sync(&mut self) -> Result<Vec<SyncJob>, String> {
@@ -152,7 +152,7 @@ impl Driver for Kernel {
         let component = components::component(NAME).ok_or(Error::NotFound)?;
         let bytes = component.bytes(label)?.as_slice().to_vec();
         let commit = "0".repeat(kabi::live::COMMIT_LEN);
-        components::store_upload(NAME, bytes, label, &commit).map(|_| ())
+        components::upload(NAME, bytes, label, &commit).map(|_| ())
     }
 }
 
@@ -201,7 +201,7 @@ pub fn check() -> Result<(), &'static str> {
         "edit: {} steps passed in {} s: edited, built, applied, rolled back, restarted and reverted ({} builds)",
         scenario::STEPS.len(),
         (hpet::nanos() - started) / 1_000_000_000,
-        build_service::exchanges()
+        build_service::builds()
     );
     Ok(())
 }

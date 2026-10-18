@@ -3,12 +3,36 @@
 
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Longest request line or header line read.
 const MAX_LINE: usize = 8 * 1024;
 /// Most header lines read.
 const MAX_HEADERS: usize = 64;
+/// How long a whole request may take to arrive, and a response to be taken.
+const REQUEST_LIMIT: Duration = Duration::from_secs(30);
+
+/// Reads from a stream with a deadline for the whole request, not each read, so a
+/// client sending a byte at a time cannot hold a handler for ever.
+struct Deadline<'a> {
+    stream: &'a TcpStream,
+    until: Instant,
+}
+
+impl Read for Deadline<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let left = self.until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "the request took too long",
+            ));
+        }
+        self.stream.set_read_timeout(Some(left))?;
+        let mut stream = self.stream;
+        stream.read(buf)
+    }
+}
 
 pub struct Request {
     pub method: String,
@@ -55,8 +79,19 @@ fn read_line(reader: &mut impl BufRead) -> Result<String, HttpError> {
 
 /// Reads one request with a body of at most `max_body` bytes.
 pub fn read_request(stream: &TcpStream, max_body: usize) -> Result<Request, HttpError> {
-    stream.set_read_timeout(Some(Duration::from_secs(30)))?;
-    let mut reader = BufReader::new(stream);
+    read_request_within(stream, max_body, REQUEST_LIMIT)
+}
+
+fn read_request_within(
+    stream: &TcpStream,
+    max_body: usize,
+    limit: Duration,
+) -> Result<Request, HttpError> {
+    stream.set_write_timeout(Some(limit))?;
+    let mut reader = BufReader::new(Deadline {
+        stream,
+        until: Instant::now() + limit,
+    });
     let request_line = read_line(&mut reader)?;
     let mut parts = request_line.split(' ');
     let (Some(method), Some(path), Some(version), None) =
@@ -150,6 +185,28 @@ mod tests {
         );
         assert_eq!(request.header("x-kai-token"), Some("abc"));
         assert_eq!(request.body, b"xyz");
+    }
+
+    #[test]
+    fn a_request_that_trickles_in_runs_out_of_time() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let client = thread::spawn(move || {
+            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            for byte in b"GET /health HTTP/1.1\r\n" {
+                if stream.write_all(&[*byte]).is_err() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(40));
+            }
+        });
+        let (stream, _) = listener.accept().unwrap();
+        let started = Instant::now();
+        let request = read_request_within(&stream, 10, Duration::from_millis(300));
+        assert!(matches!(request, Err(HttpError::Io(_))));
+        assert!(started.elapsed() < Duration::from_secs(2));
+        drop(stream);
+        client.join().unwrap();
     }
 
     #[test]

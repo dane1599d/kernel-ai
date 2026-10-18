@@ -200,6 +200,11 @@ pub const LINEAGE: usize = 6;
 pub const COMMIT_LEN: usize = 40;
 /// Uploaded versions are labelled this and a number: `e1`, `e2`, ...
 pub const UPLOAD_PREFIX: &str = "e";
+/// An upload's source: at most this many bytes, files, and lines in a file. The
+/// editor keeps to the same limits, so the kernel's change view stays bounded.
+pub const UPLOAD_SOURCE_MAX: usize = 60 * 1024;
+pub const UPLOAD_FILES_MAX: usize = 16;
+pub const UPLOAD_LINES_MAX: usize = 4000;
 
 /// Argument of [`crate::call::COMP_EVENT`].
 #[derive(Clone, Copy, Debug, Default)]

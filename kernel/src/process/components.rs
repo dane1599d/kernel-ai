@@ -220,12 +220,35 @@ pub fn put(slot: usize, put_ptr: u64) -> Result<u64, Error> {
     bytes.try_reserve_exact(len).map_err(|_| Error::NoMemory)?;
     bytes.resize(len, 0);
     copy_from_user(slot, raw.artifact_ptr, &mut bytes)?;
-    store_upload(&name, bytes, &base, &commit)
+    upload(&name, bytes, &base, &commit)
 }
 
-/// Stores `bytes` as the next upload of `name`; also how the boot case checks that
-/// a boot artifact cannot pass as an upload.
-pub fn store_upload(name: &str, bytes: Vec<u8>, base: &str, commit: &str) -> Result<u64, Error> {
+/// Stores `bytes` as the next upload of `name` if they are exactly the artifact
+/// in the build service's reply to the latest build, so what the kernel shows and
+/// runs is what the host built, whatever the uploader says. Also how the boot case
+/// checks that a boot artifact cannot pass as an upload.
+pub fn upload(name: &str, bytes: Vec<u8>, base: &str, commit: &str) -> Result<u64, Error> {
+    let reply = crate::build_service::take_build_reply();
+    let bound = reply
+        .as_deref()
+        .map_or(Err("no build came before it"), |reply| {
+            editcore::wire::check_built_response(reply, &bytes, commit)
+        });
+    drop(reply);
+    if let Err(why) = bound {
+        let shown = llmproto::text::printable(name, kabi::MAX_NAME, 1);
+        log!("live: {shown} upload refused: {why}");
+        with(|all| {
+            if let Some(component) = all.iter_mut().find(|c| c.name == name) {
+                component.uploads.rejected += 1;
+            }
+        });
+        return Err(Error::Invalid);
+    }
+    store_upload(name, bytes, base, commit)
+}
+
+fn store_upload(name: &str, bytes: Vec<u8>, base: &str, commit: &str) -> Result<u64, Error> {
     let meta = uploads::meta(&bytes);
     let bytes = Arc::new(bytes);
     let label = with(|all| {
@@ -320,4 +343,13 @@ pub fn ack_sync(name: &str, seq: u64, sha: &str) {
 /// A copy of `name`'s record; versions' bytes are shared, not copied.
 pub fn component(name: &str) -> Option<Component> {
     with(|all| all.iter().find(|c| c.name == name).cloned())
+}
+
+/// Gives up on job `seq` of `name`, which git keeps refusing.
+pub fn drop_sync(name: &str, seq: u64) {
+    with(|all| {
+        if let Some(component) = all.iter_mut().find(|c| c.name == name) {
+            component.uploads.outbox.drop_head(seq);
+        }
+    });
 }

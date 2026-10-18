@@ -112,3 +112,24 @@ fn the_unchanged_option_env_line_is_fine_but_a_new_one_is_not() {
     let doubled = with_lib("a\noption_env!(\"KAI_VERSION\")\noption_env!(\"KAI_VERSION\")\nb\n");
     assert!(check(notes, &base, &doubled).is_err());
 }
+
+#[test]
+fn a_path_attribute_is_refused_however_it_is_written() {
+    for bad in [
+        r#"#[cfg_attr(all(), path = "C:/x.rs")] mod leak;"#,
+        r#"#[/**/path = "/tmp/x.rs"] mod x;"#,
+        r#"#[r#path = "/tmp/x.rs"] mod x;"#,
+        "let a = 1;\u{200e}",
+        "let a = 1;\u{c}",
+    ] {
+        assert!(check_line(bad).is_err(), "{bad}");
+    }
+    let notes = &EDITABLE[0];
+    let base = with_lib("fn a() {}\n");
+    for split in [
+        "fn a() {}\n#\n[path = \"/tmp/x.rs\"]\nmod x;\n",
+        "#\n![allow(unused)]\nfn a() {}\n",
+    ] {
+        assert!(check(notes, &base, &with_lib(split)).is_err(), "{split}");
+    }
+}

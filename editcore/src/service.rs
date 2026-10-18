@@ -202,6 +202,11 @@ impl Service {
                 crate::MAX_BUNDLE / 1024
             ));
         }
+        if let Err(Error::NotFound) = env.artifact(&component, &base) {
+            return err(format!(
+                "not built: {component} {base}, which these edits start from, is no longer stored; diff shows them, and :edit {component} starts again from the active version"
+            ));
+        }
         let next = match env.info(&component) {
             Ok(info) => info.next().to_string(),
             Err(error) => return err(format!("cannot read {component}: {error:?}")),
@@ -236,11 +241,7 @@ impl Service {
                 }
                 match env.put(&component, built.artifact, &base, built.commit) {
                     Ok(()) => {}
-                    Err(Error::Invalid) => {
-                        return err(format!(
-                            "the store refused {next}: the next label or the active version changed; build again"
-                        ));
-                    }
+                    Err(Error::Invalid) => return err(refusal(env, &component, &next, &base)),
                     Err(Error::NoMemory) => {
                         return err("the store has no room for another upload");
                     }
@@ -396,9 +397,9 @@ fn run(session: &mut Session, command: Command<'_>) -> String {
             let len = session.current().len();
             let from = from.unwrap_or(session.line().max(1));
             let to = to
-                .unwrap_or(from + PAGE - 1)
+                .unwrap_or(from.saturating_add(PAGE - 1))
                 .min(len)
-                .min(from + MAX_PRINTED - 1);
+                .min(from.saturating_add(MAX_PRINTED - 1));
             if len == 0 || from > len {
                 Err(format!("{} has {len} lines", session.current().path))
             } else {
@@ -480,5 +481,23 @@ fn run(session: &mut Session, command: Command<'_>) -> String {
     match result {
         Ok(text) => ok(text),
         Err(why) => err(why),
+    }
+}
+
+/// Why the store refused an upload it would have taken when the build began.
+fn refusal(env: &mut dyn Env, component: &str, next: &str, base: &str) -> String {
+    let now = env.info(component).map(|info| info.next().to_string());
+    if env.artifact(component, base).is_err() {
+        return format!(
+            "the store refused {next}: {base}, which it was built from, is no longer stored; :edit {component} starts again"
+        );
+    }
+    match now {
+        Ok(now) if now != next => {
+            format!("the store refused {next}: the next upload is now {now}; build again")
+        }
+        _ => format!(
+            "the store refused {next}: the active version changed, or the build service's reply did not match; build again"
+        ),
     }
 }

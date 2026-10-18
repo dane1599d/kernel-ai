@@ -146,7 +146,9 @@ fn execute(options: &Options) -> Result<(), String> {
         let run = qemu::TestRun {
             case,
             accel,
-            timeout: options.timeout,
+            timeout: case
+                .min_timeout
+                .map_or(options.timeout, |least| least.max(options.timeout)),
             monitor,
         };
         let after = |service: &Option<buildsvc::BuildService>| match (case.after, service) {

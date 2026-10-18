@@ -21,11 +21,11 @@ mod tests;
 pub mod wire;
 
 /// Most files in an editable bundle.
-pub const MAX_FILES: usize = 16;
+pub const MAX_FILES: usize = kabi::live::UPLOAD_FILES_MAX;
 /// Most lines in one file.
-pub const MAX_LINES: usize = 4000;
+pub const MAX_LINES: usize = kabi::live::UPLOAD_LINES_MAX;
 /// Largest source bundle sent to the build service.
-pub const MAX_BUNDLE: usize = 60 * 1024;
+pub const MAX_BUNDLE: usize = kabi::live::UPLOAD_SOURCE_MAX;
 /// Most compiler output the build service returns.
 pub const MAX_LOG: usize = 6 * 1024;
 /// Most lines one reply prints.

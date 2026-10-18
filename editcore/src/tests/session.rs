@@ -168,3 +168,15 @@ fn bundles_that_are_too_big_or_not_text_are_refused() {
     );
     assert!(Session::open("notes", "2", b"junk").is_err());
 }
+
+#[test]
+fn overlapping_matches_count_as_more_than_one() {
+    let mut session = open("x = 1000;\n");
+    assert!(
+        session
+            .substitute(None, "00", "01")
+            .unwrap_err()
+            .contains("2 times")
+    );
+    assert_eq!(lib_text(&session), "x = 1000;\n");
+}

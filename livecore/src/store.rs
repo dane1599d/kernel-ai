@@ -57,6 +57,8 @@ pub struct Version {
     pub interface: String,
     /// SHA-256 of the source bundle, from the manifest.
     pub source: String,
+    /// The source's file paths, sorted; an upload must keep them.
+    pub files: Vec<String>,
 }
 
 impl Version {
@@ -107,9 +109,13 @@ impl Component {
         if self.version(label).is_some() {
             return Err("version listed twice");
         }
-        let (interface, source) = match artifact::parse(bytes.as_slice()) {
-            Ok(parsed) => (parsed.manifest.interface, parsed.manifest.source),
-            Err(_) => (String::new(), String::new()),
+        let (interface, source, files) = match artifact::parse(bytes.as_slice()) {
+            Ok(parsed) => (
+                parsed.manifest.interface,
+                parsed.manifest.source,
+                uploads::source_paths(parsed.source).unwrap_or_default(),
+            ),
+            Err(_) => (String::new(), String::new(), Vec::new()),
         };
         self.versions.push(Version {
             label: label.to_string(),
@@ -118,6 +124,7 @@ impl Component {
             origin: Origin::Boot,
             interface,
             source,
+            files,
         });
         Ok(())
     }
@@ -293,6 +300,7 @@ impl Component {
             },
             interface: meta.interface.clone(),
             source: meta.source.clone(),
+            files: meta.files.clone(),
         });
         self.uploads.accepted += 1;
         Ok(label)

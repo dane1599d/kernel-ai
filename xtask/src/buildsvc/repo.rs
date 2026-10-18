@@ -35,6 +35,7 @@ pub fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
         .env_remove("GIT_INDEX_FILE")
         .env_remove("GIT_OBJECT_DIRECTORY")
         .env_remove("GIT_CEILING_DIRECTORIES")
+        .env_remove("GIT_DEFAULT_HASH")
         .output()
         .map_err(|e| format!("cannot run git: {e}"))?;
     if !output.status.success() {
@@ -142,7 +143,8 @@ pub fn snapshot(workspace: &Path, dest: &Path) -> Result<Repo, String> {
         }
         fs::copy(&from, &to).map_err(|e| format!("cannot copy {name}: {e}"))?;
     }
-    git(dest, &["init", "-q"])?;
+    // The kernel and the wire formats name commits by 40 hex digits.
+    git(dest, &["init", "-q", "--object-format=sha1"])?;
     configure_local(dest)?;
     git(dest, &["add", "-A"])?;
     commit(dest, "kai: snapshot of the working tree", &[])?;
@@ -200,6 +202,11 @@ pub fn dev(workspace: &Path, dest: &Path) -> Result<Repo, String> {
         base: String::new(),
         lock: Some(lock),
     };
+    if git(dest, &["rev-parse", "--show-object-format"])? != "sha1" {
+        return Err(String::from(
+            "live edits need a SHA-1 repository: the kernel names commits by 40 hex digits",
+        ));
+    }
     git(dest, &["fetch", "-q", "origin", "HEAD"])?;
     git(
         dest,
@@ -211,14 +218,24 @@ pub fn dev(workspace: &Path, dest: &Path) -> Result<Repo, String> {
 }
 
 /// Commits what is staged with the build service's identity; the new commit.
+/// The user's signing and hooks settings do not apply: these are the machine's
+/// commits, in a repository of its own.
 fn commit(repo: &Path, message: &str, trailers: &[(&str, &str)]) -> Result<String, String> {
     let name = format!("user.name={NAME}");
     let email = format!("user.email={EMAIL}");
+    let hooks = format!(
+        "core.hooksPath={}",
+        repo.join(".git").join("hooks").display()
+    );
     let mut args = vec![
         "-c",
         name.as_str(),
         "-c",
         email.as_str(),
+        "-c",
+        "commit.gpgsign=false",
+        "-c",
+        hooks.as_str(),
         "commit",
         "-q",
         "--allow-empty",

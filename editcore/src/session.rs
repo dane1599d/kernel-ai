@@ -296,7 +296,9 @@ impl Session {
         let mut hits = Vec::new();
         for (i, line) in file.lines.iter().enumerate() {
             if n.is_none_or(|n| n == i + 1) {
-                hits.extend(line.text.match_indices(old).map(|(at, _)| (i, at)));
+                let starts = line.text.char_indices().map(|(at, _)| at);
+                let found = starts.filter(|&at| line.text[at..].starts_with(old));
+                hits.extend(found.map(|at| (i, at)));
             }
         }
         let where_ = match n {

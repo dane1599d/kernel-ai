@@ -113,66 +113,105 @@ pub fn shown(line: &[u8]) -> String {
 pub enum ViewError {
     /// A bundle does not parse.
     Bundle(&'static str),
-    /// The view needs this many rows.
-    TooLarge(usize),
+    /// More lines than the rows to spare.
+    TooLarge,
+    /// A line wider than the screen: wrapped, its tail could pass for a line of
+    /// its own.
+    TooWide,
+    /// A line holds bytes that cannot be shown as they are: control characters
+    /// (tabs among them), text that is not UTF-8, or characters a terminal could
+    /// reorder.
+    Unshowable,
 }
 
-/// The change as lines for a screen `cols` wide with `rows` rows to spare, or
-/// TooLarge when it does not fit: a confirmation must show all of what it asks
-/// about. Empty when nothing changed.
+/// Bytes that cannot be shown as they are in the confirmation, so it refuses them.
+fn unshowable(line: &[u8]) -> bool {
+    match core::str::from_utf8(line) {
+        Err(_) => true,
+        Ok(text) => text.chars().any(|c| {
+            c.is_control()
+                || matches!(
+                    c,
+                    '\u{200e}' | '\u{200f}' | '\u{2028}' | '\u{2029}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+                )
+        }),
+    }
+}
+
+fn without_ending(line: &[u8]) -> &[u8] {
+    let line = line.strip_suffix(b"\n").unwrap_or(line);
+    line.strip_suffix(b"\r").unwrap_or(line)
+}
+
+/// The change as lines for a screen `cols` wide with `rows` rows to spare: a
+/// confirmation shows all of what it asks about, exactly, or nothing. It stops at
+/// the first line over the budget, so a huge change costs no more than one screen.
+/// Empty when nothing changed.
 pub fn view(old: &[u8], new: &[u8], cols: usize, rows: usize) -> Result<Vec<String>, ViewError> {
     let changes = changes(old, new).map_err(ViewError::Bundle)?;
-    let out = render(&changes);
-    let needed = rows_needed(&out, cols);
-    if needed > rows {
-        return Err(ViewError::TooLarge(needed));
+    let mut out = Vec::new();
+    let mut push = |line: String| {
+        if out.len() == rows {
+            return Err(ViewError::TooLarge);
+        }
+        if line.chars().count() > cols {
+            return Err(ViewError::TooWide);
+        }
+        out.push(line);
+        Ok(())
+    };
+    for change in &changes {
+        push(header(change))?;
+        for (mark, lines) in marked(change) {
+            for line in lines {
+                let line = without_ending(line);
+                if unshowable(line) {
+                    return Err(ViewError::Unshowable);
+                }
+                push(format!("{mark}{}", shown(line)))?;
+            }
+        }
     }
     Ok(out)
 }
 
+fn marked<'c, 'a>(change: &'c FileChange<'a>) -> [(&'static str, &'c Vec<&'a [u8]>); 4] {
+    [
+        ("  | ", &change.before),
+        ("- | ", &change.removed),
+        ("+ | ", &change.added),
+        ("  | ", &change.after),
+    ]
+}
+
 /// The changes as lines: a header per file, then its lines marked `  | ` for
-/// context, `- | ` removed and `+ | ` added.
+/// context, `- | ` removed and `+ | ` added. For the editor's own `diff`.
 pub fn render(changes: &[FileChange<'_>]) -> Vec<String> {
     let mut out = Vec::new();
     for change in changes {
         out.push(header(change));
-        let marked = [
-            ("  | ", &change.before),
-            ("- | ", &change.removed),
-            ("+ | ", &change.added),
-            ("  | ", &change.after),
-        ];
-        for (mark, lines) in marked {
+        for (mark, lines) in marked(change) {
             out.extend(lines.iter().map(|line| format!("{mark}{}", shown(line))));
         }
     }
     out
 }
 
-/// Screen rows `lines` take `cols` wide, counting the rows long lines wrap to.
-pub fn rows_needed(lines: &[String], cols: usize) -> usize {
-    let cols = cols.max(1);
-    lines
-        .iter()
-        .map(|line| line.chars().count().div_ceil(cols).max(1))
-        .sum()
-}
-
 fn header(change: &FileChange<'_>) -> String {
     let (removed, added) = (change.removed.len(), change.added.len());
+    let path = shown(change.path.as_bytes());
     match change.kind {
-        Kind::Added => format!("{}: added, {added} lines", change.path),
-        Kind::Removed => format!("{}: removed, {removed} lines", change.path),
+        Kind::Added => format!("{path}: added, {added} lines"),
+        Kind::Removed => format!("{path}: removed, {removed} lines"),
         Kind::Changed => {
             let endings_only = removed == added
                 && change
                     .removed
                     .iter()
                     .zip(&change.added)
-                    .all(|(old, new)| shown(old) == shown(new));
+                    .all(|(old, new)| without_ending(old) == without_ending(new));
             format!(
-                "{} line {}: {removed} removed, {added} added{}",
-                change.path,
+                "{path} line {}: {removed} removed, {added} added{}",
                 change.line,
                 if endings_only {
                     " (line endings only)"

@@ -21,13 +21,15 @@ use repo::Repo;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::net::{TcpListener, TcpStream};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
 
 /// Largest request body: a bundle and its header.
 const MAX_BODY: usize = MAX_BUNDLE + 1024;
+/// Connections served at once.
+const MAX_HANDLERS: usize = 8;
 
 #[derive(Default)]
 pub struct Counters {
@@ -132,13 +134,26 @@ pub fn start(repo: Repo, compiler: Box<dyn Compiler>) -> Result<BuildService, St
         Arc::clone(&service.state),
     );
     thread::spawn(move || {
+        let active = Arc::new(AtomicUsize::new(0));
         for stream in listener.incoming().map_while(Result::ok) {
-            let (token, counters, state) =
-                (token.clone(), Arc::clone(&counters), Arc::clone(&state));
+            // A few at a time: a build is one at a time anyway, and a flood of
+            // connections must not pile up threads in the xtask process.
+            if active.fetch_add(1, Ordering::SeqCst) >= MAX_HANDLERS {
+                active.fetch_sub(1, Ordering::SeqCst);
+                drop(stream);
+                continue;
+            }
+            let (token, counters, state, active) = (
+                token.clone(),
+                Arc::clone(&counters),
+                Arc::clone(&state),
+                Arc::clone(&active),
+            );
             thread::spawn(move || {
                 if let Err(error) = serve(&stream, &token, &counters, &state) {
                     eprintln!("xtask: build service: {error}");
                 }
+                active.fetch_sub(1, Ordering::SeqCst);
             });
         }
     });

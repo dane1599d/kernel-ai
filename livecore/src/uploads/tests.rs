@@ -358,3 +358,45 @@ fn the_proposal_shows_the_change_from_the_store_or_refuses() {
             .contains("does not fit one screen")
     );
 }
+
+fn with_files(label: &str, files: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut module = Vec::from(&b"\0asm\x01\0\0\0"[..]);
+    let manifest = Manifest {
+        component: "notes".into(),
+        version: label.into(),
+        interface: "notes@1".into(),
+        features: "-".into(),
+        build: "ab".into(),
+        source: "cd".into(),
+    };
+    append_custom_section(&mut module, MANIFEST_SECTION, manifest.format().as_bytes());
+    append_custom_section(&mut module, SOURCE_SECTION, &bundle(files));
+    module
+}
+
+#[test]
+fn an_upload_keeps_the_file_list_and_the_editor_limits() {
+    let mut notes = running();
+    let extra = with_files("e1", &[("src/lib.rs", b"x\n"), ("src/extra.rs", b"y\n")]);
+    assert_eq!(put_bytes(&mut notes, extra, "2", 0), Err(Error::Invalid));
+    let renamed = with_files("e1", &[("src/main.rs", b"x\n")]);
+    assert_eq!(put_bytes(&mut notes, renamed, "2", 0), Err(Error::Invalid));
+    let long = "x\n".repeat(kabi::live::UPLOAD_LINES_MAX + 1);
+    let tall = with_files("e1", &[("src/lib.rs", long.as_bytes())]);
+    assert_eq!(meta(&tall), Err(Error::Invalid));
+    let fine = with_files("e1", &[("src/lib.rs", b"x\n")]);
+    assert_eq!(put_bytes(&mut notes, fine, "2", 0), Ok("e1".into()));
+    assert_eq!(notes.uploads.rejected, 2);
+}
+
+#[test]
+fn a_job_git_keeps_refusing_can_be_dropped() {
+    let mut outbox = Outbox::new();
+    outbox.enable();
+    outbox.push("e1", Outcome::Commit, 1, String::new(), String::new());
+    outbox.push("e2", Outcome::Commit, 2, String::new(), String::new());
+    assert!(!outbox.drop_head(2));
+    assert!(outbox.drop_head(1));
+    assert_eq!((outbox.pending(), outbox.dropped), (1, 1));
+    assert_eq!(outbox.peek().map(|job| job.seq), Some(2));
+}

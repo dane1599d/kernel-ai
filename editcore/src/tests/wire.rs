@@ -181,6 +181,7 @@ fn flipped_bytes_never_panic() {
             let _ = decode_sync(&bytes);
             let _ = decode_synced(&bytes);
             let _ = decode_ipc(&bytes);
+            let _ = http_body(&bytes);
         }
     }
 }
@@ -193,4 +194,43 @@ fn acknowledgements_name_the_job_and_a_commit() {
     assert_eq!(parse_ack(b"ok untracked 4", 4), Ok(String::new()));
     assert!(parse_ack(b"ok synced 4 abc", 4).is_err());
     assert!(parse_ack(b"err build service: HTTP 403", 4).is_err());
+}
+
+fn http(body: &[u8]) -> Vec<u8> {
+    let mut out = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: x\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
+    out.extend_from_slice(body);
+    out
+}
+
+#[test]
+fn an_upload_must_be_the_build_reply_exactly() {
+    let reply = http(&built());
+    assert_eq!(check_built_response(&reply, b"\0asm", COMMIT), Ok(()));
+    assert!(check_built_response(&reply, b"\0asm2", COMMIT).is_err());
+    assert!(check_built_response(&reply, b"\0as", COMMIT).is_err());
+    let other = "1111111111111111111111111111111111111111";
+    assert!(check_built_response(&reply, b"\0asm", other).is_err());
+    let failed = encode_built(&Built {
+        result: BuildResult::Failed,
+        commit: "",
+        log: b"x",
+        artifact: &[],
+    });
+    assert!(check_built_response(&http(&failed), b"", "").is_err());
+    // The body must be exactly what the length says: no forged tail.
+    let mut padded = reply.clone();
+    padded.extend_from_slice(b"\0asm");
+    assert!(check_built_response(&padded, b"\0asm", COMMIT).is_err());
+    let not_ok = String::from_utf8_lossy(&reply).replacen("200 OK", "403 Forbidden", 1);
+    assert!(check_built_response(not_ok.as_bytes(), b"\0asm", COMMIT).is_err());
+    let chunked = String::from_utf8_lossy(&reply).replacen(
+        "Content-Type: x",
+        "Transfer-Encoding: chunked",
+        1,
+    );
+    assert!(check_built_response(chunked.as_bytes(), b"\0asm", COMMIT).is_err());
 }

@@ -43,6 +43,31 @@ struct StoreEnv {
     kernel: Kernel,
     port: u16,
     builds: u64,
+    /// The reply to the latest build, which the next upload must match, as the
+    /// kernel requires.
+    last_build: Option<Vec<u8>>,
+}
+
+impl StoreEnv {
+    /// What the kernel's COMP_PUT does: the upload must be the latest build's
+    /// artifact, then pass the store's rules.
+    fn upload(&mut self, artifact: &[u8], base: &str, commit: &str) -> Result<(), Error> {
+        let reply = self.last_build.take();
+        let bound = reply
+            .as_deref()
+            .map_or(Err("no build came before it"), |reply| {
+                wire::check_built_response(reply, artifact, commit)
+            });
+        let mut component = self.kernel.component.borrow_mut();
+        if bound.is_err() {
+            component.uploads.rejected += 1;
+            return Err(Error::Invalid);
+        }
+        let meta = uploads::meta(artifact);
+        component
+            .put(&meta, Arc::new(artifact.to_vec()), base, commit, 0)
+            .map(|_| ())
+    }
 }
 
 impl Env for StoreEnv {
@@ -70,15 +95,14 @@ impl Env for StoreEnv {
         base: &str,
         commit: &str,
     ) -> Result<(), Error> {
-        let meta = uploads::meta(artifact);
-        let mut component = self.kernel.component.borrow_mut();
-        component
-            .put(&meta, Arc::new(artifact.to_vec()), base, commit, 0)
-            .map(|_| ())
+        self.upload(artifact, base, commit)
     }
 
     fn build(&mut self, request: &[u8], timeout_ms: u64) -> Result<Vec<u8>, Error> {
-        self.builds += 1;
+        let builds = request.starts_with(b"POST /build ");
+        if builds {
+            self.builds += 1;
+        }
         let mut stream =
             TcpStream::connect(("127.0.0.1", self.port)).map_err(|_| Error::Network)?;
         stream
@@ -89,6 +113,9 @@ impl Env for StoreEnv {
         stream
             .read_to_end(&mut response)
             .map_err(|_| Error::TimedOut)?;
+        if builds {
+            self.last_build = Some(response.clone());
+        }
         Ok(response)
     }
 
@@ -285,12 +312,8 @@ impl Driver for EditSmoke {
             .bytes(label)?
             .as_slice()
             .to_vec();
-        let meta = uploads::meta(&bytes);
         let commit = "0".repeat(kabi::live::COMMIT_LEN);
-        let mut component = self.kernel.component.borrow_mut();
-        component
-            .put(&meta, Arc::new(bytes), label, &commit, 0)
-            .map(|_| ())
+        self.env.upload(&bytes, label, &commit)
     }
 }
 
@@ -334,6 +357,7 @@ pub fn run(root: &Path, modules: &[Module]) -> Result<(), String> {
             kernel,
             port: builds.port,
             builds: 0,
+            last_build: None,
         },
         editing: false,
     };

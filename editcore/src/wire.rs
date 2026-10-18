@@ -443,3 +443,56 @@ pub fn parse_ack(reply: &[u8], seq: u64) -> Result<String, String> {
         _ => Err(String::from(reply)),
     }
 }
+
+/// The body of a whole `200` response from the build service, without allocating:
+/// a `Content-Length` that covers exactly the bytes after the headers, and no
+/// other transfer encoding. The build service always answers this way.
+pub fn http_body(response: &[u8]) -> Result<&[u8], &'static str> {
+    if !response.starts_with(b"HTTP/1.1 200 ") {
+        return Err("the build reply is not a 200");
+    }
+    let end = response
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .ok_or("the build reply has no end of headers")?;
+    let head = core::str::from_utf8(&response[..end]).map_err(|_| "the headers are not text")?;
+    let body = &response[end + 4..];
+    let mut length = None;
+    for line in head.split("\r\n").skip(1) {
+        let (name, value) = line.split_once(':').ok_or("a header has no colon")?;
+        if name.eq_ignore_ascii_case("transfer-encoding") {
+            return Err("the build reply has a transfer encoding");
+        }
+        if name.eq_ignore_ascii_case("content-length") {
+            if length.is_some() {
+                return Err("the build reply has two lengths");
+            }
+            length = Some(value.trim().parse::<usize>().map_err(|_| "a bad length")?);
+        }
+    }
+    match length {
+        Some(length) if length == body.len() => Ok(body),
+        _ => Err("the build reply's length does not match its body"),
+    }
+}
+
+/// Whether `artifact` and `commit` are exactly what the build service answered in
+/// `response`, the raw reply to a `POST /build`. The kernel checks every upload
+/// this way, so what it shows and runs is what the host built.
+pub fn check_built_response(
+    response: &[u8],
+    artifact: &[u8],
+    commit: &str,
+) -> Result<(), &'static str> {
+    let built = decode_built(http_body(response)?)?;
+    if built.result != BuildResult::Ok {
+        return Err("the last build did not succeed");
+    }
+    if built.artifact != artifact {
+        return Err("the artifact is not the one the build service returned");
+    }
+    if built.commit != commit {
+        return Err("the commit is not the build's");
+    }
+    Ok(())
+}

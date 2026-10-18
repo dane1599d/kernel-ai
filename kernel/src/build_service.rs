@@ -9,10 +9,11 @@ use crate::process::components;
 use crate::{ipc, log, threads};
 use alloc::format;
 use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 use core::net::Ipv4Addr;
 use core::sync::atomic::{AtomicU64, Ordering};
 use editcore::wire::{self, Ipc, SyncRequest};
-use spin::Once;
+use spin::{Mutex, Once};
 
 /// The token is 32 hex digits.
 const TOKEN_LEN: usize = 32;
@@ -20,6 +21,8 @@ const TOKEN_LEN: usize = 32;
 const SYNC_CALL_MS: u64 = 35_000;
 const SYNC_POLL_MS: u64 = 250;
 const SYNC_BACKOFF_MAX_MS: u64 = 5_000;
+/// Refusals of one job before it is given up.
+const SYNC_REFUSALS: u32 = 5;
 
 struct Config {
     server: (Ipv4Addr, u16),
@@ -27,8 +30,10 @@ struct Config {
 }
 
 static CONFIG: Once<Config> = Once::new();
-/// BUILD exchanges that reached the network, for the tests.
-static EXCHANGES: AtomicU64 = AtomicU64::new(0);
+/// Builds (`POST /build` through BUILD) sent so far, for the tests.
+static BUILDS: AtomicU64 = AtomicU64::new(0);
+/// The build service's last reply to a build, which the next upload must match.
+static LAST_BUILD: Mutex<Option<Vec<u8>>> = Mutex::new(None);
 
 fn valid_token(token: &str) -> bool {
     token.len() == TOKEN_LEN
@@ -83,13 +88,30 @@ pub fn plan_line() -> Option<String> {
     ))
 }
 
-pub fn count_exchange() {
-    EXCHANGES.fetch_add(1, Ordering::SeqCst);
+pub fn count_build() {
+    BUILDS.fetch_add(1, Ordering::SeqCst);
 }
 
-/// BUILD exchanges so far.
-pub fn exchanges() -> u64 {
-    EXCHANGES.load(Ordering::SeqCst)
+/// Builds sent so far.
+pub fn builds() -> u64 {
+    BUILDS.load(Ordering::SeqCst)
+}
+
+fn with_last<R>(f: impl FnOnce(&mut Option<Vec<u8>>) -> R) -> R {
+    threads::preempt_disable();
+    let result = f(&mut LAST_BUILD.lock());
+    threads::preempt_enable();
+    result
+}
+
+/// Keeps the reply to the latest build, dropping the one before.
+pub fn keep_build_reply(reply: Vec<u8>) {
+    drop(with_last(|last| last.replace(reply)));
+}
+
+/// The reply to the latest build, once: each build can back one upload.
+pub fn take_build_reply() -> Option<Vec<u8>> {
+    with_last(Option::take)
 }
 
 /// Turns on the ledger outboxes and starts the thread that empties them.
@@ -102,9 +124,18 @@ pub fn start_sync() -> Result<(), &'static str> {
     Ok(())
 }
 
+/// Whether a failed sync will fail the same way again: the build service refused
+/// the request, or answered something that is not an acknowledgement. Transport
+/// errors and timeouts are worth retrying for as long as it takes.
+fn permanent(error: &str) -> bool {
+    error.starts_with("err build service: HTTP 4") || error.starts_with("ok ")
+}
+
 fn sync_thread(_: usize) {
     let mut backoff = SYNC_POLL_MS;
     let mut last_error = String::new();
+    // The job that failed, and how often it failed for good.
+    let mut refused: (u64, u32) = (0, 0);
     loop {
         let Some((name, job)) = components::next_sync() else {
             threads::sleep_ms(SYNC_POLL_MS);
@@ -132,8 +163,22 @@ fn sync_thread(_: usize) {
                 last_error.clear();
             }
             Err(error) => {
+                let clean = llmproto::text::printable(&error, 160, 1);
+                if permanent(&error) {
+                    refused = match refused {
+                        (seq, n) if seq == job.seq => (seq, n + 1),
+                        _ => (job.seq, 1),
+                    };
+                    if refused.1 >= SYNC_REFUSALS {
+                        log!(
+                            "build: git refused {name} {} {SYNC_REFUSALS} times ({clean}); dropped",
+                            job.label
+                        );
+                        components::drop_sync(&name, job.seq);
+                        continue;
+                    }
+                }
                 if error != last_error {
-                    let clean = llmproto::text::printable(&error, 160, 1);
                     log!(
                         "build: git sync of {name} {} failed: {clean}; retrying",
                         job.label

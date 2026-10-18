@@ -96,16 +96,16 @@ fn a_view_that_does_not_fit_is_refused() {
     let new = numbered(100, "!\n");
     assert_eq!(
         view(&one(&old), &one(&new), 80, 40),
-        Err(ViewError::TooLarge(201))
+        Err(ViewError::TooLarge)
     );
-    // Long lines count the rows they wrap to.
-    let long = "x".repeat(200);
+    // A line wider than the screen is refused rather than wrapped.
+    let long = "x".repeat(77);
     let new = old.replace("line 50\n", &format!("{long}\n"));
-    assert!(view(&one(&old), &one(&new), 80, 10).is_ok());
     assert_eq!(
-        view(&one(&old), &one(&new), 80, 8),
-        Err(ViewError::TooLarge(9))
+        view(&one(&old), &one(&new), 80, 10),
+        Err(ViewError::TooWide)
     );
+    assert!(view(&one(&old), &one(&new), 81, 10).is_ok());
     assert!(matches!(
         view(b"junk", &one(&old), 80, 40),
         Err(ViewError::Bundle(_))
@@ -113,10 +113,36 @@ fn a_view_that_does_not_fit_is_refused() {
 }
 
 #[test]
-fn control_characters_are_shown_safely() {
-    let new = "a\x1b[2J\tb\n";
-    let lines = view(&one("a\n"), &one(new), 80, 40).unwrap();
-    assert_eq!(lines[2], "+ | a?[2J b");
+fn lines_that_cannot_be_shown_exactly_are_refused() {
+    for new in ["a\x1b[2J\n", "a\tb\n", "a\u{202e}b\n"] {
+        assert_eq!(
+            view(&one("a\n"), &one(new), 80, 40),
+            Err(ViewError::Unshowable),
+            "{new:?}"
+        );
+    }
+    let latin = bundle(&[(PATH, b"a\n\xff\n")]);
+    assert_eq!(
+        view(&one("a\n"), &latin, 80, 40),
+        Err(ViewError::Unshowable)
+    );
+    // A tab that became a space is a change of text, not of line endings.
+    let lines = view(&one("a b\n"), &one("a c\n"), 80, 40).unwrap();
+    assert!(!lines[0].contains("line endings only"));
+}
+
+#[test]
+fn paths_in_headers_are_shown_safely() {
+    let change = FileChange {
+        path: "a\u{c}b.rs",
+        kind: Kind::Added,
+        line: 1,
+        before: Vec::new(),
+        removed: Vec::new(),
+        added: Vec::new(),
+        after: Vec::new(),
+    };
+    assert_eq!(header(&change), "a?b.rs: added, 0 lines");
 }
 
 #[test]

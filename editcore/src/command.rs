@@ -47,7 +47,7 @@ pub enum Command<'a> {
 fn number(text: &str) -> Result<usize, String> {
     text.parse()
         .ok()
-        .filter(|&n| n > 0)
+        .filter(|&n| n > 0 && n <= crate::MAX_LINES + 1)
         .ok_or_else(|| alloc::format!("{text:?} is not a line number"))
 }
 

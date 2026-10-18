@@ -18,7 +18,8 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use kabi::Error;
 use kabi::live::{
-    KEEP_UPLOADS, MAX_UPLOAD, MAX_UPLOAD_TOTAL, UPLOAD_PREFIX, valid_commit, valid_label,
+    KEEP_UPLOADS, MAX_UPLOAD, MAX_UPLOAD_TOTAL, UPLOAD_FILES_MAX, UPLOAD_LINES_MAX, UPLOAD_PREFIX,
+    UPLOAD_SOURCE_MAX, valid_commit, valid_label,
 };
 
 /// Sync jobs kept unacknowledged; the oldest is dropped when one more comes.
@@ -33,21 +34,44 @@ pub struct Meta {
     pub version: String,
     pub interface: String,
     pub source: String,
+    /// The source's file paths, sorted.
+    pub files: Vec<String>,
 }
 
-/// Reads an upload's manifest: TooBig over [`MAX_UPLOAD`], Invalid when the
-/// artifact does not parse.
+/// The sorted file paths of an artifact's source, when it is within the
+/// editor's limits: [`UPLOAD_SOURCE_MAX`] bytes, [`UPLOAD_FILES_MAX`] files and
+/// [`UPLOAD_LINES_MAX`] lines a file.
+pub fn source_paths(source: &[u8]) -> Option<Vec<String>> {
+    let files = artifact::source_files(source).ok()?;
+    let lines = |bytes: &[u8]| bytes.split(|&b| b == b'\n').count();
+    let fits = source.len() <= UPLOAD_SOURCE_MAX
+        && files.len() <= UPLOAD_FILES_MAX
+        && files
+            .iter()
+            .all(|(_, bytes)| lines(bytes) <= UPLOAD_LINES_MAX + 1);
+    if !fits {
+        return None;
+    }
+    let mut paths: Vec<String> = files.iter().map(|(path, _)| path.to_string()).collect();
+    paths.sort();
+    Some(paths)
+}
+
+/// Reads an upload's manifest and file list: TooBig over [`MAX_UPLOAD`], Invalid
+/// when the artifact does not parse or its source is over the editor's limits.
 pub fn meta(bytes: &[u8]) -> Result<Meta, Error> {
     if bytes.len() > MAX_UPLOAD {
         return Err(Error::TooBig);
     }
     let parsed = artifact::parse(bytes).map_err(|_| Error::Invalid)?;
+    let files = source_paths(parsed.source).ok_or(Error::Invalid)?;
     let manifest = parsed.manifest;
     Ok(Meta {
         component: manifest.component,
         version: manifest.version,
         interface: manifest.interface,
         source: manifest.source,
+        files,
     })
 }
 
@@ -66,6 +90,7 @@ pub(crate) fn check(
         && meta.version == next
         && !active.interface.is_empty()
         && meta.interface == active.interface
+        && meta.files == active.files
         && valid_label(base)
         && stored(base)
         && valid_commit(commit);
@@ -268,6 +293,17 @@ impl Outbox {
         true
     }
 
+    /// Gives up on job `seq`, the oldest pending one, which git keeps refusing;
+    /// counted as dropped. False if it is not the oldest.
+    pub fn drop_head(&mut self, seq: u64) -> bool {
+        if self.jobs.front().is_none_or(|job| job.seq != seq) {
+            return false;
+        }
+        self.jobs.pop_front();
+        self.dropped += 1;
+        true
+    }
+
     /// Acknowledged jobs, oldest first.
     pub fn synced(&self) -> impl Iterator<Item = &SyncJob> {
         self.synced.iter()
@@ -346,9 +382,14 @@ pub fn proposal(component: &Component, cols: usize, rows: usize) -> Result<Propo
     match crate::diff::view(&old, &new, cols, rows.saturating_sub(2)) {
         Ok(view) if view.is_empty() => lines.push(String::from("no source changes")),
         Ok(view) => lines.extend(view),
-        Err(crate::diff::ViewError::TooLarge(_)) => {
+        Err(crate::diff::ViewError::TooLarge | crate::diff::ViewError::TooWide) => {
             return Err(format!(
                 "{label}'s change does not fit one screen; review it with diff in :edit {name}, then :swap {name} {label}"
+            ));
+        }
+        Err(crate::diff::ViewError::Unshowable) => {
+            return Err(format!(
+                "{label}'s change holds characters the confirmation cannot show exactly; review it with diff in :edit {name}, then :swap {name} {label}"
             ));
         }
         Err(crate::diff::ViewError::Bundle(why)) => return Err(format!("{label}: {why}")),
