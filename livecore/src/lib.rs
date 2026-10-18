@@ -24,6 +24,7 @@ mod swap;
 mod tests;
 mod try_run;
 pub mod uploads;
+pub mod why;
 
 use alloc::string::String;
 use alloc::vec::Vec;

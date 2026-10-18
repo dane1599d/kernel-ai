@@ -21,6 +21,19 @@ pub fn printable(text: &str, max_chars: usize, max_lines: usize) -> String {
         .collect()
 }
 
+/// `text` trimmed and without the `<think>...</think>` block a model that thinks
+/// anyway puts first; empty when the block never ends.
+pub fn without_thinking(text: &str) -> &str {
+    let text = text.trim();
+    match text.strip_prefix("<think>") {
+        Some(rest) => rest
+            .split_once("</think>")
+            .map_or("", |(_, after)| after)
+            .trim(),
+        None => text,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

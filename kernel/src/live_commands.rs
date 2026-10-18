@@ -32,6 +32,7 @@ pub const HELP: &[(&str, &str)] = &[
         "the active version's source; :edit changes it",
     ),
     (":state <name>", "the state the component last saved"),
+    (":why <name>", "the model explains the latest rollback"),
     (":call <service> <request>", "send a request to a service"),
 ];
 
@@ -51,11 +52,18 @@ pub fn run(command: &str, rest: &str) -> bool {
             Some(ledger) => state(name, &ledger).iter().for_each(|line| log!("{line}")),
             None => log!("no live component {name}"),
         },
+        ("why", [name]) => match components::ledger(name) {
+            Some(ledger) => {
+                log!("(asking the LLM...)");
+                why(name, &ledger).iter().for_each(|line| log!("{line}"));
+            }
+            None => log!("no live component {name}"),
+        },
         ("call", [service, ..]) => {
             let request = rest.trim_start().strip_prefix(service).unwrap_or("").trim();
             call(service, request);
         }
-        ("comp" | "swap" | "rollback" | "try" | "source" | "state" | "call", _) => {
+        ("comp" | "swap" | "rollback" | "try" | "source" | "state" | "why" | "call", _) => {
             let usage = HELP
                 .iter()
                 .find(|(usage, _)| usage[1..].starts_with(command));
@@ -66,12 +74,61 @@ pub fn run(command: &str, rest: &str) -> bool {
     true
 }
 
+/// The width a line may have after a two-character lead, and the lines that fit
+/// above the prompt, so nothing printed wraps or scrolls away.
+fn screen() -> (usize, usize) {
+    let (cols, rows) = crate::console::size().unwrap_or(crate::edit_mode::FALLBACK_SCREEN);
+    let width = crate::terminal::PIECE_CHARS.min(cols.saturating_sub(2));
+    (width, MAX_LINES.min(rows.saturating_sub(2)))
+}
+
 /// What `:state <name>` prints for `ledger`, fit to the screen: every line on one
 /// row, and none scrolled away before the prompt.
 pub fn state(name: &str, ledger: &Ledger) -> Vec<String> {
-    let (cols, rows) = crate::console::size().unwrap_or(crate::edit_mode::FALLBACK_SCREEN);
-    let width = crate::terminal::PIECE_CHARS.min(cols.saturating_sub(2));
-    livecore::state::lines(name, ledger, width, MAX_LINES.min(rows.saturating_sub(2)))
+    let (width, rows) = screen();
+    livecore::state::lines(name, ledger, width, rows)
+}
+
+/// What `:why <name>` prints for `ledger`: the model's explanation of the latest
+/// rollback, asked with facts from the ledger alone. A kernel line says whose text
+/// follows; the model's lines have the shell's `= ` lead, cut to the screen's
+/// width, so none can pass for a line of the kernel's. Nothing waits on it.
+pub fn why(name: &str, ledger: &Ledger) -> Vec<String> {
+    let max = llmproto::explain::MAX_FACTS;
+    let (Some((label, reason)), Some(facts)) = (
+        livecore::why::latest_rollback(ledger),
+        livecore::why::facts(name, ledger, max),
+    ) else {
+        return Vec::from([format!("{name} has no rollback to explain")]);
+    };
+    let (width, _) = screen();
+    match crate::llm::explain(&facts) {
+        Ok(text) => {
+            let mut lines = Vec::from([format!(
+                "{name} {label} rolled back ({reason}); the model's explanation, which may be wrong:"
+            )]);
+            lines.extend(pieces("= ", &text, width));
+            lines
+        }
+        Err(error) => {
+            let mut lines = Vec::from([format!("{name}: no explanation")]);
+            lines.extend(pieces("! ", &error, width));
+            lines
+        }
+    }
+}
+
+/// Each line of `text` in pieces of at most `width` characters, each after `lead`.
+fn pieces(lead: &str, text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let chars: Vec<char> = line.chars().collect();
+        for piece in chars.chunks(width) {
+            out.push(format!("{lead}{}", piece.iter().collect::<String>()));
+        }
+    }
+    out
 }
 
 fn control(name: &str, verb: &str) {

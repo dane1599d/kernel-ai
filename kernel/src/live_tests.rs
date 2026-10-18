@@ -111,5 +111,35 @@ pub fn check() -> Result<(), &'static str> {
     if !livecore::state::shows_schema(&shown, 2) {
         return Err("live: :state notes does not show schema 2");
     }
+    // `:why notes`: the mock LLM repeats the rollback the ledger's facts named, the
+    // last one of the scenario, so the facts reached the model.
+    if let Err(why) = wait_for("llm") {
+        log!("{why}");
+        return Err("live: the llm service never came up");
+    }
+    let shown = crate::live_commands::why(NAME, &kernel.ledger());
+    for line in &shown {
+        log!("{line}");
+    }
+    let explained = shown
+        .iter()
+        .any(|line| line.starts_with("= ") && line.contains(LATEST_ROLLBACK));
+    if !explained {
+        return Err("live: :why notes does not explain the latest rollback");
+    }
     Ok(())
+}
+
+/// What the facts say about the scenario's last rollback, in part F.
+const LATEST_ROLLBACK: &str = "latest rollback: 3-spin (host-restart)";
+
+/// Waits for service `name` to be up.
+fn wait_for(name: &str) -> Result<(), String> {
+    for _ in 0..START_TIMEOUT_MS / 10 {
+        if ipc::server_of(name).is_some() {
+            return Ok(());
+        }
+        threads::sleep_ms(10);
+    }
+    Err(format!("no {name} service within {START_TIMEOUT_MS} ms"))
 }

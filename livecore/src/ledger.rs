@@ -75,6 +75,8 @@ pub struct HistoryEntry {
     pub kind: u64,
     pub reason: u64,
     pub label: String,
+    /// What the host said about it, if anything; `last_detail` may be newer.
+    pub detail: String,
 }
 
 #[derive(Clone, Debug)]
@@ -227,6 +229,7 @@ impl Ledger {
             kind: event.kind,
             reason: event.reason,
             label: event.label.clone(),
+            detail: event.detail.clone(),
         });
         if !event.detail.is_empty() {
             self.last_detail = event.detail.clone();
