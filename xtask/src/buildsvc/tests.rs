@@ -4,7 +4,7 @@
 use super::build::{Compiler, sanitize};
 use super::repo::{self, git};
 use super::*;
-use editcore::wire::{BuildRequest, SyncRequest};
+use editcore::wire::{BuildRequest, Origin, SyncRequest};
 use kabi::live::Reason;
 use livecore::artifact;
 use std::fs;
@@ -132,6 +132,7 @@ fn build(setup: &Setup, label: &str, base: &str, lib: &str) -> (u16, Vec<u8>) {
         component: "notes",
         label,
         base,
+        origin: Origin::Founder,
         bundle: &bundle(lib),
     });
     post(setup, "/build", &body)

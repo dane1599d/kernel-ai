@@ -73,6 +73,7 @@ impl Fake {
             return http("200 OK", &wire::encode_synced(&synced));
         }
         let request = wire::decode_build(body).unwrap();
+        assert_eq!(request.origin, wire::Origin::Founder);
         let built = match self.host {
             Host::Fails => wire::encode_built(&Built {
                 result: BuildResult::Failed,

@@ -5,7 +5,7 @@
 
 use crate::command::{self, Command, USAGE};
 use crate::session::Session;
-use crate::wire::{self, BuildRequest, BuildResult, Ipc, Synced};
+use crate::wire::{self, BuildRequest, BuildResult, Ipc, Origin, Synced};
 use crate::{MAX_PRINTED, editable, rules};
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -215,6 +215,8 @@ impl Service {
             component: &component,
             label: &next,
             base: &base,
+            // Founder until the session can hold a model draft (M9c step 4).
+            origin: Origin::Founder,
             bundle: &bundle,
         });
         env.log(&format!(
