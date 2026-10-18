@@ -16,8 +16,11 @@ extern crate alloc;
 
 mod apic;
 mod backtrace;
+mod build_service;
 mod console;
 mod cpu;
+mod edit_mode;
+mod edit_tests;
 mod entry;
 mod faults;
 mod gdt;
@@ -39,6 +42,7 @@ mod process;
 mod qemu;
 mod sched_tests;
 mod script_tests;
+mod selftest;
 mod serial;
 mod shell_tests;
 mod smp;
@@ -56,6 +60,7 @@ use limine::request::{
 };
 use limine::{BaseRevision, RequestsEndMarker, RequestsStartMarker};
 use qemu::ExitCode;
+use selftest::SelfTest;
 
 #[used]
 #[unsafe(link_section = ".requests_start_marker")]
@@ -103,62 +108,6 @@ static TEST_MODE: AtomicBool = AtomicBool::new(false);
 /// Number of CPUs Limine reported, for the boot check.
 static REPORTED_CPUS: AtomicUsize = AtomicUsize::new(1);
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum SelfTest {
-    None,
-    Boot,
-    PageFault,
-    DoubleFault,
-    WriteProtect,
-    StackOverflow,
-    Timer,
-    Keyboard,
-    Sched,
-    Watchdog,
-    Smp,
-    Tlb,
-    /// Spawn/exit/sleep storm for this many seconds.
-    Storm(u64),
-    Net,
-    Terminal,
-    /// M8a: the Rhai shell answers a fixed list of lines correctly.
-    Shell,
-    /// M8b: LLM-written scripts are checked, shown, and run only after a yes.
-    Scripts,
-    /// M9a: a live component swaps versions, migrates its state and rolls back.
-    Live,
-}
-
-const DEFAULT_STORM_SECONDS: u64 = 60;
-
-fn self_test_from(cmdline: &str) -> SelfTest {
-    cmdline
-        .split_whitespace()
-        .find_map(|arg| match arg {
-            "test" => Some(SelfTest::Boot),
-            "test=page-fault" => Some(SelfTest::PageFault),
-            "test=double-fault" => Some(SelfTest::DoubleFault),
-            "test=write-protect" => Some(SelfTest::WriteProtect),
-            "test=stack-overflow" => Some(SelfTest::StackOverflow),
-            "test=timer" => Some(SelfTest::Timer),
-            "test=keyboard" => Some(SelfTest::Keyboard),
-            "test=sched" => Some(SelfTest::Sched),
-            "test=watchdog" => Some(SelfTest::Watchdog),
-            "test=smp" => Some(SelfTest::Smp),
-            "test=tlb" => Some(SelfTest::Tlb),
-            "test=net" => Some(SelfTest::Net),
-            "test=terminal" => Some(SelfTest::Terminal),
-            "test=shell" => Some(SelfTest::Shell),
-            "test=scripts" => Some(SelfTest::Scripts),
-            "test=live" => Some(SelfTest::Live),
-            other => other.strip_prefix("test=storm").map(|rest| {
-                let seconds = rest.strip_prefix('-').and_then(|s| s.parse().ok());
-                SelfTest::Storm(seconds.unwrap_or(DEFAULT_STORM_SECONDS))
-            }),
-        })
-        .unwrap_or(SelfTest::None)
-}
-
 /// Runs one self-test case and reports its outcome to QEMU.
 fn run_case(check: impl FnOnce() -> Result<(), &'static str>) -> ! {
     if let Err(message) = check() {
@@ -174,7 +123,7 @@ extern "C" fn kmain() -> ! {
     serial::init();
     let test = CMDLINE
         .response()
-        .map_or(SelfTest::None, |r| self_test_from(r.cmdline()));
+        .map_or(SelfTest::None, |r| selftest::from_cmdline(r.cmdline()));
     TEST_MODE.store(test != SelfTest::None, Ordering::SeqCst);
 
     if !BASE_REVISION.is_supported() {
@@ -235,10 +184,11 @@ fn move_to_boot_stack() -> ! {
 extern "C" fn boot_continue() -> ! {
     let test = CMDLINE
         .response()
-        .map_or(SelfTest::None, |r| self_test_from(r.cmdline()));
+        .map_or(SelfTest::None, |r| selftest::from_cmdline(r.cmdline()));
     // Not in kmain: configuring allocates, and the heap is mapped only by init_memory.
     if let Some(cmdline) = CMDLINE.response() {
         llm::configure(cmdline.cmdline());
+        build_service::configure(cmdline.cmdline());
     }
     match cpu::init(entry::syscall_entry as *const () as u64) {
         Ok(features) => log!(
@@ -285,6 +235,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Shell => run_case(shell_tests::check),
         SelfTest::Scripts => run_case(script_tests::check),
         SelfTest::Live => run_case(live_tests::check),
+        SelfTest::Edit => run_case(edit_tests::check),
         SelfTest::Boot | SelfTest::None => {}
     }
 
@@ -453,8 +404,7 @@ fn on_off(on: bool) -> &'static str {
 }
 
 /// Finds the ring-3 programs among the boot modules and, for the boots that use
-/// user space, starts supervision with the service plan. Not for `test`: its exact
-/// frame and heap leak checks must not race processes starting up.
+/// user space, starts supervision with the service plan.
 fn start_user_space(test: SelfTest) {
     let modules: &'static [&'static limine::file::File] =
         MODULES.response().map_or(&[], |r| r.modules());
@@ -470,33 +420,16 @@ fn start_user_space(test: SelfTest) {
     log!("process: {} programs loaded as modules", programs.len());
     let free = memory::with(|m| m.free_frames());
     process::set_page_budget(free / 2);
-    let wanted = matches!(
-        test,
-        SelfTest::None
-            | SelfTest::Net
-            | SelfTest::Terminal
-            | SelfTest::Shell
-            | SelfTest::Scripts
-            | SelfTest::Live
-    );
-    if !wanted || programs.is_empty() {
+    let Some(plan) = selftest::plan(test) else {
+        return;
+    };
+    if programs.is_empty() {
         return;
     }
-    // The live case needs only its component, run with probation ended by calls.
-    let mut plan = match test {
-        SelfTest::Live => alloc::string::String::from(kabi::plan::NOTES_TEST),
-        _ => llm::plan_line(),
-    };
-    // The net case checks only the llm path, so it runs without the shell.
-    if !matches!(test, SelfTest::Net | SelfTest::Live) {
-        plan.push('\n');
-        plan.push_str(kabi::plan::SHELL);
-    }
-    if test == SelfTest::None {
-        plan.push('\n');
-        plan.push_str(kabi::plan::NOTES);
-    }
     if let Err(message) = process::supervision::start(plan) {
+        fail(message);
+    }
+    if let Err(message) = build_service::start_sync() {
         fail(message);
     }
 }

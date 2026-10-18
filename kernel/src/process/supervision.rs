@@ -32,6 +32,8 @@ const DEFAULT_PAGES: u64 = 1024;
 const DEFAULT_BURST_MS: u64 = 2000;
 /// The one program that may hold `cap::COMPONENT`.
 pub const COMPONENT_HOST: &str = "comphost";
+/// The one service, and program, that may hold `cap::PUBLISH`.
+pub const PUBLISHER: &str = "edit";
 /// Longest any supervision call may block.
 const MAX_WAIT_MS: u64 = 60_000;
 
@@ -211,6 +213,10 @@ pub fn spawn_service(slot: usize, request_ptr: u64) -> Result<u64, Error> {
     if request.limits.caps & cap::COMPONENT != 0 && program != COMPONENT_HOST {
         return Err(Error::Permission);
     }
+    // Uploading versions and reaching the build service are for the edit service.
+    if request.limits.caps & cap::PUBLISH != 0 && (name != PUBLISHER || program != PUBLISHER) {
+        return Err(Error::Permission);
+    }
     let limits = Limits {
         max_pages: match request.limits.max_pages {
             0 => DEFAULT_PAGES,
@@ -326,7 +332,7 @@ pub fn list(slot: usize, ptr: u64, cap: u64) -> Result<u64, Error> {
 pub fn start(plan: String) -> Result<(), &'static str> {
     log!("supervision: plan:");
     for line in plan.lines() {
-        log!("  {line}");
+        log!("  {}", redacted(line));
     }
     PLAN.call_once(|| plan);
     threads::spawn("init", init_thread, 0)?;
@@ -377,4 +383,17 @@ fn init_thread(_: usize) {
         log!("supervision: supervisor died; restarting it");
         threads::sleep_ms(100);
     }
+}
+
+/// A plan line with token values hidden, for the log.
+fn redacted(line: &str) -> String {
+    line.split(' ')
+        .map(|word| match word.split_once('=') {
+            Some((key, _)) if key == "token" || key.ends_with("_token") => {
+                alloc::format!("{key}=...")
+            }
+            _ => String::from(word),
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }

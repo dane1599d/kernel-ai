@@ -33,7 +33,7 @@ fn kernel(specs: &[Spec]) -> Kernel {
     let mut component = Component::new("counter");
     for spec in specs {
         component
-            .add_version(spec.label, Bytes::Heap(spec.artifact()))
+            .add_version(spec.label, Bytes::shared(spec.artifact()))
             .unwrap();
     }
     Kernel::new(component)
@@ -181,14 +181,14 @@ fn a_changed_interface_or_a_missing_source_is_a_manifest_failure() {
     };
     let mut component = Component::new("counter");
     component
-        .add_version("1", Bytes::Heap(V1.artifact()))
+        .add_version("1", Bytes::shared(V1.artifact()))
         .unwrap();
     component
-        .add_version("3", Bytes::Heap(other.artifact()))
+        .add_version("3", Bytes::shared(other.artifact()))
         .unwrap();
     let mut bare = Vec::from(&b"\0asm\x01\0\0\0"[..]);
     crate::artifact::append_custom_section(&mut bare, "fake", b"2 1 - counter@1 None");
-    component.add_version("4", Bytes::Heap(bare)).unwrap();
+    component.add_version("4", Bytes::shared(bare)).unwrap();
     let kernel = Kernel::new(component);
     let mut host = host(&kernel);
     assert!(call(&mut host, "ctl swap 3").contains("manifest: interface counter@2 differs"));

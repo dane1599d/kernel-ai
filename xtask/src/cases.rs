@@ -1,6 +1,12 @@
 //! The kernel self-test cases. Each boots the kernel once with a command line; the
 //! kernel decides pass or fail and reports it through isa-debug-exit.
 
+use crate::buildsvc::BuildService;
+use std::time::Duration;
+
+/// A check on the host after a case passed.
+pub type AfterCheck = fn(&BuildService) -> Result<(), String>;
+
 pub struct TestCase {
     pub name: &'static str,
     pub cmdline: &'static str,
@@ -9,6 +15,14 @@ pub struct TestCase {
     pub keys: &'static [&'static [&'static str]],
     /// Texts that must all appear on the serial console for the case to pass.
     pub expect: &'static [&'static str],
+    /// Boot with a build service (`build=` and `build_token=`) on a fresh snapshot
+    /// of the working tree.
+    pub build: bool,
+    /// Checks on the host once the case has passed, given its build service.
+    pub after: Option<AfterCheck>,
+    /// The case needs at least this long, whatever --timeout says: the edit case
+    /// waits on builds whose own limits nest inside 300 s.
+    pub min_timeout: Option<Duration>,
 }
 
 const fn case(name: &'static str, cmdline: &'static str) -> TestCase {
@@ -17,6 +31,9 @@ const fn case(name: &'static str, cmdline: &'static str) -> TestCase {
         cmdline,
         keys: &[],
         expect: &[],
+        build: false,
+        after: None,
+        min_timeout: None,
     }
 }
 
@@ -58,6 +75,12 @@ pub const TEST_CASES: &[TestCase] = &[
     case("shell", "test=shell"),
     case("scripts", "test=scripts"),
     case("live", "test=live"),
+    TestCase {
+        build: true,
+        after: Some(crate::buildsvc::verify::after_edit_case),
+        min_timeout: Some(Duration::from_secs(300)),
+        ..case("edit", "test=edit")
+    },
     TestCase {
         keys: TERMINAL_SCRIPT,
         expect: &[

@@ -1,9 +1,10 @@
 //! Build and run tool for Kernel AI.
 //!
 //! cargo xtask build [--release] [--spikes]
-//! cargo xtask run   [--release] [--spikes] [--accel auto|kvm|whpx|tcg] [--llm IP:PORT] [--model NAME]
+//! cargo xtask run   [--release] [--spikes] [--accel auto|kvm|whpx|tcg] [--llm IP:PORT] [--model NAME] [--edit]
 //! cargo xtask test  [--release] [--accel auto|kvm|whpx|tcg] [--timeout SECS]
 //! cargo xtask soak  [--accel auto|kvm|whpx|tcg]   (10-minute storm, M5 exit test)
+//! cargo xtask smoke   (the live and edit scenarios on the host only, no QEMU)
 //! cargo xtask fluency --llm HOST:PORT --model NAME [--repeat N]   (M8b script gate, host only)
 //!
 //! `test` boots the kernel headless once per test case (boot and memory checks,
@@ -13,57 +14,31 @@
 //! enabled. Each case passes only if the
 //! kernel reports success through QEMU's isa-debug-exit device.
 
+mod buildsvc;
 mod cases;
 mod components;
+mod edit_smoke;
 mod esp;
 mod fluency;
+mod httpd;
 mod lines;
 mod mock_llm;
+mod options;
 mod qemu;
 mod smoke;
 mod strip;
 
+use options::{Accel, Options, Task, parse_args};
 use sha2::{Digest, Sha256};
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
-use std::time::Duration;
 use std::{env, fs};
 
 const LIMINE_VERSION: &str = "12.9.3";
 const LIMINE_SHA256: &str = "9f42fe9ea2e84d71056529969b1d5c24ba9a2287ffcc01bcce58b0ef8aa98b1d";
 const KERNEL_TARGET: &str = "x86_64-unknown-none";
-const DEFAULT_TIMEOUT_SECS: u64 = 120;
-const SOAK_TIMEOUT_SECS: u64 = 900;
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Task {
-    Build,
-    Run,
-    Test,
-    /// Long-running cases (the 10-minute storm), run on demand rather than on every PR.
-    Soak,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Accel {
-    Auto,
-    Kvm,
-    Whpx,
-    Tcg,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-struct Options {
-    task: Task,
-    release: bool,
-    spikes: bool,
-    accel: Accel,
-    timeout: Duration,
-    /// LLM server as HOST:PORT for `run`, for example the Mac mini on the LAN.
-    llm: Option<String>,
-    model: Option<String>,
-}
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -81,78 +56,15 @@ fn main() -> ExitCode {
     }
 }
 
-fn parse_args(args: &[String]) -> Result<Options, String> {
-    let task = match args.first().map(String::as_str) {
-        Some("build") => Task::Build,
-        Some("run") => Task::Run,
-        Some("test") => Task::Test,
-        Some("soak") => Task::Soak,
-        other => {
-            return Err(format!(
-                "expected build, run, test, soak or fluency, got {other:?}"
-            ));
-        }
-    };
-    let mut options = Options {
-        task,
-        release: false,
-        spikes: task == Task::Test,
-        accel: Accel::Auto,
-        timeout: Duration::from_secs(if task == Task::Soak {
-            SOAK_TIMEOUT_SECS
-        } else {
-            DEFAULT_TIMEOUT_SECS
-        }),
-        llm: None,
-        model: None,
-    };
-    let mut rest = args[1..].iter();
-    while let Some(arg) = rest.next() {
-        match arg.as_str() {
-            "--release" => options.release = true,
-            "--spikes" => options.spikes = true,
-            "--accel" => {
-                options.accel = match rest.next().map(String::as_str) {
-                    Some("auto") => Accel::Auto,
-                    Some("kvm") => Accel::Kvm,
-                    Some("whpx") => Accel::Whpx,
-                    Some("tcg") => Accel::Tcg,
-                    other => {
-                        return Err(format!("--accel expects auto|kvm|whpx|tcg, got {other:?}"));
-                    }
-                }
-            }
-            "--timeout" => {
-                let secs = rest
-                    .next()
-                    .and_then(|s| s.parse::<u64>().ok())
-                    .ok_or("--timeout expects a number of seconds")?;
-                options.timeout = Duration::from_secs(secs);
-            }
-            "--llm" => {
-                let server = rest.next().ok_or("--llm expects HOST:PORT")?;
-                if !valid_host_port(server) {
-                    return Err(format!(
-                        "--llm expects HOST:PORT with an IPv4 host, got {server:?}"
-                    ));
-                }
-                options.llm = Some(server.clone());
-            }
-            "--model" => {
-                let model = rest.next().ok_or("--model expects a model name")?;
-                if model.is_empty() || model.chars().any(char::is_whitespace) {
-                    return Err("--model expects a name without spaces".into());
-                }
-                options.model = Some(model.clone());
-            }
-            other => return Err(format!("unknown option {other}")),
-        }
-    }
-    Ok(options)
-}
-
 fn execute(options: &Options) -> Result<(), String> {
     let root = workspace_root();
+    if options.task == Task::Smoke {
+        let before = buildsvc::verify::real_repo(&root)?;
+        let versions = components::build(&root)?;
+        smoke::run(&versions)?;
+        edit_smoke::run(&root, &versions)?;
+        return buildsvc::verify::unchanged(&root, &before);
+    }
     let kernel = build_kernel(&root, options)?;
     let programs = build_user(&root, options)?;
     let versions = components::build(&root)?;
@@ -162,10 +74,16 @@ fn execute(options: &Options) -> Result<(), String> {
         println!("xtask: {} component versions built", versions.len());
         return Ok(());
     }
+    // The founder's repository, which no part of a test run may change.
+    let real_repo = match options.task {
+        Task::Test => Some(buildsvc::verify::real_repo(&root)?),
+        _ => None,
+    };
     if options.task == Task::Test {
-        // The live-component scenario on the host first: a failure here is in the
-        // host or a version, not in the kernel.
+        // The live-component and edit scenarios on the host first: a failure here
+        // is in the host, a version, the editor or the builds, not in the kernel.
         smoke::run(&versions)?;
+        edit_smoke::run(&root, &versions)?;
     }
     let target_dir = root.join("target");
     let mut modules = esp::boot_modules(&kernel, &programs, &root)?;
@@ -175,7 +93,19 @@ fn execute(options: &Options) -> Result<(), String> {
     let qemu = find_qemu()?;
     let accel = resolve_accel(options.accel);
     if options.task == Task::Run {
-        let cmdline = llm_cmdline(options.llm.as_deref(), options.model.as_deref());
+        let mut cmdline = llm_cmdline(options.llm.as_deref(), options.model.as_deref());
+        // Kept until QEMU exits: the build service runs on its threads.
+        let _service = if options.edit {
+            let service = buildsvc::start_dev(&root)?;
+            cmdline = format!("{cmdline} {}", buildsvc::cmdline(&service));
+            println!(
+                "xtask: build service on 127.0.0.1:{}, building in .live/repo; afterwards: git fetch .live/repo kai/notes",
+                service.port
+            );
+            Some(service)
+        } else {
+            None
+        };
         esp::make_esp(&esp, &kernel, &modules, &efi, &cmdline)?;
         let firmware = find_firmware(&qemu, &target_dir)?;
         let args = qemu::args(&firmware, accel, false);
@@ -194,8 +124,19 @@ fn execute(options: &Options) -> Result<(), String> {
         cases::TEST_CASES
     };
     for case in cases {
-        let cmdline = format!("{} {llm_args}", case.cmdline);
-        println!("xtask: test case {} ({cmdline})", case.name);
+        let service = match case.build {
+            true => Some(edit_smoke::service(&root, case.name)?),
+            false => None,
+        };
+        let mut cmdline = format!("{} {llm_args}", case.cmdline);
+        if let Some(service) = &service {
+            cmdline = format!("{cmdline} {}", buildsvc::cmdline(service));
+        }
+        println!(
+            "xtask: test case {} ({})",
+            case.name,
+            buildsvc::redact(&cmdline)
+        );
         esp::make_esp(&esp, &kernel, &modules, &efi, &cmdline)?;
         let firmware = find_firmware(&qemu, &target_dir)?;
         let monitor = qemu::free_port()?;
@@ -205,13 +146,23 @@ fn execute(options: &Options) -> Result<(), String> {
         let run = qemu::TestRun {
             case,
             accel,
-            timeout: options.timeout,
+            timeout: case
+                .min_timeout
+                .map_or(options.timeout, |least| least.max(options.timeout)),
             monitor,
         };
-        if let Err(message) = qemu::run_test(&qemu, &args, &target_dir, &run) {
+        let after = |service: &Option<buildsvc::BuildService>| match (case.after, service) {
+            (Some(check), Some(service)) => check(service),
+            _ => Ok(()),
+        };
+        let result = qemu::run_test(&qemu, &args, &target_dir, &run).and_then(|()| after(&service));
+        if let Err(message) = result {
             eprintln!("xtask: test case {}: {message}", case.name);
             failures.push(case.name);
         }
+    }
+    if let Some(before) = &real_repo {
+        buildsvc::verify::unchanged(&root, before)?;
     }
     println!(
         "xtask: the mock LLM server answered {} chat requests",
@@ -235,14 +186,6 @@ fn llm_cmdline(llm: Option<&str>, model: Option<&str>) -> String {
         args.push(format!("model={model}"));
     }
     args.join(" ")
-}
-
-/// IPv4 address and port, for example 192.168.1.50:8080. The kernel has no DNS.
-fn valid_host_port(text: &str) -> bool {
-    let Some((host, port)) = text.rsplit_once(':') else {
-        return false;
-    };
-    host.parse::<std::net::Ipv4Addr>().is_ok() && port.parse::<u16>().is_ok_and(|p| p > 0)
 }
 
 fn workspace_root() -> PathBuf {
@@ -342,6 +285,7 @@ const USER_PROGRAMS: &[&str] = &[
     "hog",
     "probe",
     "comphost",
+    "edit",
 ];
 
 /// Builds every user program; returns (name, ELF path) pairs.
@@ -463,42 +407,6 @@ fn run_checked(command: &mut Command) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn args(list: &[&str]) -> Vec<String> {
-        list.iter().map(|s| s.to_string()).collect()
-    }
-
-    #[test]
-    fn test_task_enables_spikes_by_default() {
-        let options = parse_args(&args(&["test"])).unwrap();
-        assert_eq!(options.task, Task::Test);
-        assert!(options.spikes);
-        assert_eq!(options.accel, Accel::Auto);
-    }
-
-    #[test]
-    fn run_task_parses_flags() {
-        let options = parse_args(&args(&[
-            "run",
-            "--release",
-            "--accel",
-            "tcg",
-            "--timeout",
-            "5",
-        ]))
-        .unwrap();
-        assert!(options.release);
-        assert!(!options.spikes);
-        assert_eq!(options.accel, Accel::Tcg);
-        assert_eq!(options.timeout, Duration::from_secs(5));
-    }
-
-    #[test]
-    fn rejects_unknown_task_and_options() {
-        assert!(parse_args(&args(&["deploy"])).is_err());
-        assert!(parse_args(&args(&["run", "--fast"])).is_err());
-        assert!(parse_args(&args(&["run", "--accel", "hyperv"])).is_err());
-    }
 
     #[test]
     fn limine_conf_carries_cmdline_and_modules() {

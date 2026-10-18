@@ -9,6 +9,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use kabi::live::{Reason, kind};
+use livecore::store::Origin;
 use llmproto::text::printable;
 
 const TIMEOUT_MS: u64 = 60_000;
@@ -21,7 +22,10 @@ pub const HELP: &[(&str, &str)] = &[
         "swap a component to another version",
     ),
     (":rollback <name>", "drop the version on probation"),
-    (":source <name> [file]", "the active version's source"),
+    (
+        ":source <name> [file]",
+        "the active version's source; :edit changes it",
+    ),
     (":call <service> <request>", "send a request to a service"),
 ];
 
@@ -138,5 +142,50 @@ fn show(name: &str) {
     }
     if !ledger.last_detail.is_empty() {
         log!("  last detail: {}", printable(&ledger.last_detail, 120, 1));
+    }
+    show_uploads(name);
+}
+
+/// Uploads, where each came from, the next label, the lineage and git sync.
+fn show_uploads(name: &str) {
+    let Some(component) = components::component(name) else {
+        return;
+    };
+    for version in component.versions() {
+        if let Origin::Upload { base, commit, .. } = &version.origin {
+            log!(
+                "  upload {} from {base}, commit {}, {} KiB",
+                version.label,
+                commit.get(..12).unwrap_or(""),
+                version.bytes.as_slice().len() / 1024
+            );
+        }
+    }
+    let lineage: Vec<&str> = component
+        .ledger
+        .lineage
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let uploads = &component.uploads;
+    log!(
+        "  next upload {}; uploads accepted {} refused {} evicted {}; ran {}",
+        component.next_label(),
+        uploads.accepted,
+        uploads.rejected,
+        uploads.evicted,
+        lineage.join(" -> ")
+    );
+    let outbox = &uploads.outbox;
+    if outbox.enabled() {
+        let last = outbox.synced().last().map_or(String::from("none"), |job| {
+            let sha = job.sha.as_deref().unwrap_or("");
+            format!("{} at {}", job.label, sha.get(..12).unwrap_or("untracked"))
+        });
+        log!(
+            "  git sync: {} waiting, {} dropped; last {last}",
+            outbox.pending(),
+            outbox.dropped
+        );
     }
 }

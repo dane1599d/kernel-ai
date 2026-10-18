@@ -241,3 +241,67 @@ pub fn comp_restore(restore: &mut kabi::live::Restore, buf: &mut [u8]) -> Result
     )
     .map(|len| len as usize)
 }
+
+/// Uploads a version into the store (needs PUBLISH).
+pub fn comp_put(component: &str, artifact: &[u8], base: &str, commit: &str) -> Result<(), Error> {
+    let put = kabi::live::Put {
+        name_ptr: component.as_ptr() as u64,
+        name_len: component.len() as u64,
+        artifact_ptr: artifact.as_ptr() as u64,
+        artifact_len: artifact.len() as u64,
+        base_ptr: base.as_ptr() as u64,
+        base_len: base.len() as u64,
+        commit_ptr: commit.as_ptr() as u64,
+        commit_len: commit.len() as u64,
+    };
+    call(
+        call::COMP_PUT,
+        [&put as *const kabi::live::Put as u64, 0, 0, 0, 0, 0],
+    )
+    .map(|_| ())
+}
+
+fn comp_read(read: &kabi::live::Read) -> Result<usize, Error> {
+    call(
+        call::COMP_READ,
+        [read as *const kabi::live::Read as u64, 0, 0, 0, 0, 0],
+    )
+    .map(|len| len as usize)
+}
+
+/// A component's labels and the next upload label (needs PUBLISH).
+pub fn comp_read_info(component: &str) -> Result<kabi::live::Info, Error> {
+    let mut info = kabi::live::Info::empty();
+    comp_read(&kabi::live::Read {
+        what: kabi::live::read::INFO,
+        name_ptr: component.as_ptr() as u64,
+        name_len: component.len() as u64,
+        buf_ptr: &mut info as *mut kabi::live::Info as u64,
+        buf_cap: core::mem::size_of::<kabi::live::Info>() as u64,
+        ..kabi::live::Read::default()
+    })?;
+    Ok(info)
+}
+
+/// Version `label` of a component (the active one when empty) into `buf` when it
+/// fits; its length either way (needs PUBLISH).
+pub fn comp_read_artifact(component: &str, label: &str, buf: &mut [u8]) -> Result<usize, Error> {
+    comp_read(&kabi::live::Read {
+        what: kabi::live::read::ARTIFACT,
+        name_ptr: component.as_ptr() as u64,
+        name_len: component.len() as u64,
+        label_ptr: label.as_ptr() as u64,
+        label_len: label.len() as u64,
+        buf_ptr: buf.as_mut_ptr() as u64,
+        buf_cap: buf.len() as u64,
+    })
+}
+
+/// As [`http`], to the build service the kernel was booted with (needs PUBLISH).
+pub fn build(request: &HttpRequest) -> Result<usize, Error> {
+    call(
+        call::BUILD,
+        [request as *const HttpRequest as u64, 0, 0, 0, 0, 0],
+    )
+    .map(|len| len as usize)
+}

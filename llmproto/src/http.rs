@@ -35,6 +35,29 @@ pub fn post_json(host: &str, path: &str, api_key: Option<&str>, body: &[u8]) -> 
     request
 }
 
+/// Builds a POST request with any body and extra headers, such as the build
+/// service's token. Header values must not contain line breaks.
+pub fn post(
+    host: &str,
+    path: &str,
+    content_type: &str,
+    headers: &[(&str, &str)],
+    body: &[u8],
+) -> Vec<u8> {
+    let mut extra = alloc::string::String::new();
+    for (name, value) in headers {
+        extra.push_str(&format!("{name}: {value}\r\n"));
+    }
+    let mut request = format!(
+        "POST {path} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: kernel-ai\r\n\
+         Content-Type: {content_type}\r\nContent-Length: {}\r\n{extra}Connection: close\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
+    request.extend_from_slice(body);
+    request
+}
+
 /// Builds a GET request.
 pub fn get(host: &str, path: &str) -> Vec<u8> {
     format!(
@@ -171,6 +194,26 @@ mod tests {
         assert!(request.ends_with("\r\n\r\n{}"));
         let request = String::from_utf8(post_json("h", "/", None, b"")).unwrap();
         assert!(!request.contains("Authorization"));
+    }
+
+    #[test]
+    fn builds_post_with_any_body_and_extra_headers() {
+        let token = [("X-Kai-Token", "abc")];
+        let body = b"kai-build 1\n\0\xff";
+        let request = post(
+            "10.0.2.2:5000",
+            "/build",
+            "application/octet-stream",
+            &token,
+            body,
+        );
+        let text = String::from_utf8_lossy(&request);
+        assert!(text.starts_with("POST /build HTTP/1.1\r\nHost: 10.0.2.2:5000\r\n"));
+        assert!(text.contains("Content-Type: application/octet-stream\r\n"));
+        assert!(
+            text.contains("Content-Length: 14\r\nX-Kai-Token: abc\r\nConnection: close\r\n\r\n")
+        );
+        assert!(request.ends_with(body));
     }
 
     #[test]

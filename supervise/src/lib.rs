@@ -37,7 +37,7 @@ pub struct Plan {
 }
 
 /// Reads the plan: one service per line, `name [program=P] [pages=N] [stack_pages=N]
-/// [burst_ms=N] [caps=serve+net+call+policy+component] [backoff_max_ms=N] [max_restarts=N]
+/// [burst_ms=N] [caps=serve+net+call+policy+component+publish] [backoff_max_ms=N] [max_restarts=N]
 /// [other=args ...]`. The supervisor keys set limits and policy; everything else is
 /// passed to the program. A bad line skips only that service, so one typo cannot
 /// keep every other service down.
@@ -130,6 +130,7 @@ fn caps(service: &str, value: &str) -> Result<u64, String> {
         "call" => Ok(bits | cap::CALL),
         "policy" => Ok(bits | cap::POLICY),
         "component" => Ok(bits | cap::COMPONENT),
+        "publish" => Ok(bits | cap::PUBLISH),
         other => Err(format!("{service}: unknown capability {other:?}")),
     })
 }
@@ -450,7 +451,7 @@ mod tests {
         assert_eq!(notes.limits.max_pages, 8192);
         assert_eq!(notes.args, "version=1 probation_calls=3 probation_ms=0");
         let notes = &parse_plan(kabi::plan::NOTES).services[0];
-        assert_eq!(notes.args, "version=1");
+        assert_eq!(notes.args, "version=2");
         // Without the key, a service runs the program of its own name.
         let shell = &parse_plan(kabi::plan::SHELL).services[0];
         assert_eq!(shell.program, "shell");
@@ -462,5 +463,28 @@ mod tests {
         assert_eq!(plan.services.len(), 1);
         assert_eq!(plan.errors.len(), 2, "{:?}", plan.errors);
         assert!(plan.errors[0].contains("supervisor"));
+    }
+
+    #[test]
+    fn the_edit_service_and_its_test_plan_parse() {
+        let line = alloc::format!(
+            "{} host=10.0.2.2:5000 token=0123456789abcdef0123456789abcdef",
+            kabi::plan::EDIT_BASE
+        );
+        let plan = parse_plan(&line);
+        assert!(plan.errors.is_empty(), "{:?}", plan.errors);
+        let edit = &plan.services[0];
+        assert_eq!(
+            (edit.name.as_str(), edit.program.as_str()),
+            ("edit", "edit")
+        );
+        assert_eq!(edit.limits.caps, cap::SERVE | cap::PUBLISH);
+        assert_eq!(
+            edit.args,
+            "host=10.0.2.2:5000 token=0123456789abcdef0123456789abcdef"
+        );
+        let notes = &parse_plan(kabi::plan::NOTES_EDIT_TEST).services[0];
+        assert_eq!(notes.args, "version=2 probation_calls=3 probation_ms=0");
+        assert_eq!(notes.limits.caps, cap::SERVE | cap::COMPONENT);
     }
 }

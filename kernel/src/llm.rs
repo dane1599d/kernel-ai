@@ -32,7 +32,7 @@ pub fn configure(cmdline: &str) {
     let mut model = DEFAULT_MODEL;
     for arg in cmdline.split_whitespace() {
         if let Some(value) = arg.strip_prefix("llm=") {
-            server = parse_server(value);
+            server = crate::net::parse_endpoint(value);
             if server.is_none() {
                 log!("llm: ignoring llm={value}: expected IPv4:PORT");
             }
@@ -50,11 +50,6 @@ pub fn configure(cmdline: &str) {
             model: model.to_string(),
         });
     }
-}
-
-fn parse_server(text: &str) -> Option<(Ipv4Addr, u16)> {
-    let (host, port) = text.rsplit_once(':')?;
-    Some((host.parse().ok()?, port.parse().ok().filter(|&p| p > 0)?))
 }
 
 /// The configured server and model, if any.

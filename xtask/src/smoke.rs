@@ -24,7 +24,7 @@ fn print_log(line: &str) {
     println!("  | [notes] {line}");
 }
 
-fn loader(settings: &Settings) -> Loader<WasmInstance> {
+pub fn loader(settings: &Settings) -> Loader<WasmInstance> {
     let limits = Limits {
         fuel_call: settings.fuel_call,
         fuel_life: settings.fuel_life,
@@ -103,7 +103,7 @@ pub fn run(modules: &[Module]) -> Result<(), String> {
             .strip_prefix("comp/notes/")
             .and_then(|p| p.strip_suffix(".wasm"))
         {
-            component.add_version(label, Bytes::Heap(module.bytes.clone()))?;
+            component.add_version(label, Bytes::shared(module.bytes.clone()))?;
         }
     }
     let mut smoke = Smoke {

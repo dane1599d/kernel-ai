@@ -648,3 +648,13 @@ pub fn has_cap_by_name(name: &str, bits: u64) -> bool {
             .any(|p| p.live() && p.name.as_str() == name && p.limits.caps & bits == bits)
     })
 }
+
+/// The names of live processes holding all the capability `bits`.
+pub fn holders(bits: u64) -> alloc::vec::Vec<alloc::string::String> {
+    let table = with_table(|table| *table);
+    table
+        .iter()
+        .filter(|p| p.live() && p.limits.caps & bits == bits)
+        .map(|p| alloc::string::String::from(p.name.as_str()))
+        .collect()
+}

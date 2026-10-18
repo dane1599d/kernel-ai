@@ -143,8 +143,21 @@ fn handle(slot: usize, number: u64, a: [u64; 6]) -> Result<u64, Error> {
         }
         call::HTTP => {
             need(slot, cap::NET)?;
-            http(slot, a[0])
+            exchange_to(slot, a[0], Destination::Llm)
         }
+        call::COMP_PUT => {
+            need(slot, cap::PUBLISH)?;
+            super::components::put(slot, a[0])
+        }
+        call::COMP_READ => {
+            need(slot, cap::PUBLISH)?;
+            super::components::read(slot, a[0])
+        }
+        call::BUILD => {
+            need(slot, cap::PUBLISH)?;
+            exchange_to(slot, a[0], Destination::Build)
+        }
+        // COMP_CONTROL is reserved for M9c.
         _ => Err(Error::NotFound),
     }
 }
@@ -192,11 +205,24 @@ fn sleep(slot: usize, ms: u64) -> Result<u64, Error> {
     Ok(0)
 }
 
-/// Sends the request to the configured LLM server and returns what it answered up
-/// to closing the connection. The destination is the kernel's, not the caller's.
-fn http(slot: usize, request_ptr: u64) -> Result<u64, Error> {
+/// Where a ring-3 exchange goes: the kernel picks the address, never the caller.
+enum Destination {
+    /// The LLM server, `llm=` (HTTP).
+    Llm,
+    /// The build service, `build=` (BUILD).
+    Build,
+}
+
+/// Sends the request to the destination and returns what it answered up to
+/// closing the connection. The reply to a build (`POST /build`) is kept, so the
+/// upload that follows can be checked against it.
+fn exchange_to(slot: usize, request_ptr: u64, destination: Destination) -> Result<u64, Error> {
     let call: HttpRequest = uaccess::read_struct(slot, request_ptr)?;
-    let (ip, port, _) = llm::target().ok_or(Error::NotFound)?;
+    let target = match destination {
+        Destination::Llm => llm::target().map(|(ip, port, _)| (ip, port)),
+        Destination::Build => crate::build_service::target(),
+    };
+    let (ip, port) = target.ok_or(Error::NotFound)?;
     let request_len = usize::try_from(call.request_len).map_err(|_| Error::TooBig)?;
     if request_len > MAX_HTTP_REQUEST {
         return Err(Error::TooBig);
@@ -211,6 +237,10 @@ fn http(slot: usize, request_ptr: u64) -> Result<u64, Error> {
     request.resize(request_len, 0);
     uaccess::copy_from_user(slot, call.request_ptr, &mut request)?;
     let timeout = call.timeout_ms.clamp(1, MAX_HTTP_TIMEOUT_MS);
+    let builds = matches!(destination, Destination::Build) && request.starts_with(b"POST /build ");
+    if builds {
+        crate::build_service::count_build();
+    }
     let response = net::exchange((ip, port), &request, timeout, response_cap, || {
         super::killed(slot)
     })
@@ -232,7 +262,11 @@ fn http(slot: usize, request_ptr: u64) -> Result<u64, Error> {
         return Err(Error::Dead);
     }
     uaccess::copy_to_user(slot, call.response_ptr, &response)?;
-    Ok(response.len() as u64)
+    let len = response.len() as u64;
+    if builds {
+        crate::build_service::keep_build_reply(response);
+    }
+    Ok(len)
 }
 
 /// Calls another service on behalf of the process. The target is named by the
@@ -254,6 +288,10 @@ fn service_call(slot: usize, name_ptr: u64, name_len: u64, request_ptr: u64) -> 
         return Err(Error::NotFound);
     }
     if super::has_cap_by_name(name, cap::CALL) {
+        return Err(Error::Permission);
+    }
+    // Only the kernel drives the publisher, whether or not it is running now.
+    if name == super::supervision::PUBLISHER || super::has_cap_by_name(name, cap::PUBLISH) {
         return Err(Error::Permission);
     }
     let call: kabi::CallRequest = uaccess::read_struct(slot, request_ptr)?;

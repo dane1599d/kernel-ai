@@ -15,6 +15,7 @@ bench = false
 [dependencies]
 kabi = { path = "../kabi" }
 livecore = { path = "../livecore" }
+editcore = { path = "../editcore" }
 llmproto = { path = "../llmproto" }
 supervise = { path = "../supervise" }
 shellcore = { path = "../shellcore" }

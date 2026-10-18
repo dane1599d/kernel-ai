@@ -163,13 +163,41 @@ pub fn bundle(files: &[(&str, &[u8])]) -> Vec<u8> {
     out
 }
 
-/// The files in a source bundle, in order.
+/// Most files in a source bundle.
+pub const MAX_SOURCE_FILES: usize = 256;
+
+/// Whether `path` is a plain relative path: `/` between segments that are not
+/// empty, `.` or `..`, with no backslash, colon, whitespace or control character.
+pub fn valid_path(path: &str) -> Result<(), &'static str> {
+    if path.is_empty() || path.starts_with('/') {
+        return Err("not a relative path");
+    }
+    if path.contains('\\') || path.contains(':') {
+        return Err("backslashes and drive letters are not allowed");
+    }
+    if path.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err("spaces and control characters are not allowed");
+    }
+    if path
+        .split('/')
+        .any(|segment| segment.is_empty() || segment == "." || segment == "..")
+    {
+        return Err("empty, . and .. segments are not allowed");
+    }
+    Ok(())
+}
+
+/// The files in a source bundle, in order. Each path is plain (see
+/// [`valid_path`]) and appears once.
 pub fn source_files(bundle: &[u8]) -> Result<Vec<(&str, &[u8])>, &'static str> {
     let mut rest = bundle
         .strip_prefix(b"kai-source 1\n")
         .ok_or("not a kai-source 1 bundle")?;
-    let mut files = Vec::new();
+    let mut files: Vec<(&str, &[u8])> = Vec::new();
     while !rest.is_empty() {
+        if files.len() == MAX_SOURCE_FILES {
+            return Err("a bundle has too many files");
+        }
         let newline = rest
             .iter()
             .position(|&b| b == b'\n')
@@ -182,8 +210,12 @@ pub fn source_files(bundle: &[u8]) -> Result<Vec<(&str, &[u8])>, &'static str> {
             .ok_or("a file header is malformed")?;
         let len: usize = len.parse().map_err(|_| "a file length is not a number")?;
         let body = &rest[newline + 1..];
-        if path.is_empty() || len > body.len() {
+        if len > body.len() {
             return Err("a file runs past the bundle");
+        }
+        valid_path(path)?;
+        if files.iter().any(|(p, _)| *p == path) {
+            return Err("a file appears twice in the bundle");
         }
         files.push((path, &body[..len]));
         rest = &body[len..];
@@ -313,5 +345,31 @@ mod tests {
         assert!(source_files(b"kai-source 1\nfile 3\nabc").is_err());
         assert!(source_files(b"other").is_err());
         assert_eq!(source_files(b"kai-source 1\n").unwrap().len(), 0);
+    }
+
+    #[test]
+    fn bundle_paths_are_plain_and_appear_once() {
+        let bad_paths = [
+            "/abs.rs",
+            "a/../b.rs",
+            "a//b.rs",
+            "a\\b.rs",
+            "c:x.rs",
+            "a b.rs",
+            "\u{c}page.rs",
+        ];
+        for bad in bad_paths {
+            let one = bundle(&[(bad, b"")]);
+            assert!(source_files(&one).is_err(), "{bad:?}");
+        }
+        let twice = bundle(&[("a.rs", b"1"), ("a.rs", b"2")]);
+        assert_eq!(
+            source_files(&twice),
+            Err("a file appears twice in the bundle")
+        );
+        let many: Vec<String> = (0..=MAX_SOURCE_FILES).map(|n| format!("f{n}.rs")).collect();
+        let parts: Vec<(&str, &[u8])> = many.iter().map(|p| (p.as_str(), &b""[..])).collect();
+        assert!(source_files(&bundle(&parts)).is_err());
+        assert!(valid_path("components/notes/src/lib.rs").is_ok());
     }
 }
