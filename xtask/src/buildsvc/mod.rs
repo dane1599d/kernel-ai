@@ -28,8 +28,10 @@ use std::time::Instant;
 
 /// Largest request body: a bundle and its header.
 const MAX_BODY: usize = MAX_BUNDLE + 1024;
-/// Connections served at once.
-const MAX_HANDLERS: usize = 8;
+/// Connections served at once. Each must send its headers within 5 s, so a
+/// local process holding them all has to keep reconnecting; a determined one on
+/// the founder's own machine can still deny service, which is accepted.
+const MAX_HANDLERS: usize = 64;
 
 #[derive(Default)]
 pub struct Counters {
@@ -167,9 +169,15 @@ fn serve(
     state: &Mutex<State>,
 ) -> std::io::Result<()> {
     let text = "text/plain";
-    let request = match httpd::read_request(stream, MAX_BODY) {
+    // The token is checked as soon as the headers are in, before any body.
+    let allowed = |request: &Request| request.header("x-kai-token") == Some(token);
+    let request = match httpd::read_request(stream, MAX_BODY, allowed) {
         Ok(request) => request,
         Err(HttpError::Io(error)) => return Err(error),
+        Err(HttpError::Forbidden) => {
+            counters.bad.fetch_add(1, Ordering::SeqCst);
+            return httpd::respond(stream, "403 Forbidden", text, b"bad token");
+        }
         Err(HttpError::TooLarge) => {
             counters.bad.fetch_add(1, Ordering::SeqCst);
             return httpd::respond(stream, "413 Payload Too Large", text, b"too large");
@@ -179,10 +187,6 @@ fn serve(
             return httpd::respond(stream, "400 Bad Request", text, why.as_bytes());
         }
     };
-    if request.header("x-kai-token") != Some(token) {
-        counters.bad.fetch_add(1, Ordering::SeqCst);
-        return httpd::respond(stream, "403 Forbidden", text, b"bad token");
-    }
     let octets = "application/octet-stream";
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/health") => httpd::respond(stream, "200 OK", text, b"ok"),
@@ -191,7 +195,8 @@ fn serve(
             Err(why) => bad(stream, counters, why),
         },
         ("POST", "/sync") => match sync(&request, counters, state) {
-            Ok(reply) => httpd::respond(stream, "200 OK", octets, &reply),
+            Ok(Ok(reply)) => httpd::respond(stream, "200 OK", octets, &reply),
+            Ok(Err(why)) => httpd::respond(stream, "503 Service Unavailable", text, why.as_bytes()),
             Err(why) => bad(stream, counters, why),
         },
         _ => httpd::respond(stream, "404 Not Found", text, b"not found"),
@@ -206,6 +211,7 @@ fn bad(stream: &TcpStream, counters: &Counters, why: &str) -> std::io::Result<()
 fn reply(result: BuildResult, log: &str) -> Vec<u8> {
     wire::encode_built(&Built {
         result,
+        base: "",
         commit: "",
         log: log.as_bytes(),
         artifact: &[],
@@ -263,6 +269,7 @@ fn build(
             state.builds.insert(job.label.to_string(), commit.clone());
             Ok(wire::encode_built(&Built {
                 result: BuildResult::Ok,
+                base: job.base,
                 commit: &commit,
                 log: b"",
                 artifact: &artifact,
@@ -348,12 +355,11 @@ fn compile(
 }
 
 /// POST /sync: a commit moves the component's branch; a rollback gets its own ref.
-/// Repeating a sync changes nothing.
-fn sync(
-    request: &Request,
-    counters: &Counters,
-    state: &Mutex<State>,
-) -> Result<Vec<u8>, &'static str> {
+/// Repeating a sync changes nothing. The outer error is a bad request; the inner
+/// one a git failure worth retrying.
+type SyncResult = Result<Result<Vec<u8>, &'static str>, &'static str>;
+
+fn sync(request: &Request, counters: &Counters, state: &Mutex<State>) -> SyncResult {
     let job = wire::decode_sync(&request.body)?;
     let state = state
         .lock()
@@ -365,7 +371,7 @@ fn sync(
     } else if job.commit.is_empty() && job.source == state.boot_source {
         repo.base.clone()
     } else {
-        return Ok(wire::encode_synced(&Synced::Untracked));
+        return Ok(Ok(wire::encode_synced(&Synced::Untracked)));
     };
     let (component, label) = (job.component, job.label);
     let (reference, message) = match job.outcome {
@@ -386,7 +392,8 @@ fn sync(
     };
     if let Err(why) = repo.update_ref(&reference, &sha, &message) {
         eprintln!("xtask: build service: sync failed: {why}");
-        return Err("git refused the sync");
+        // Most likely a lock or a full disk for the moment: worth trying again.
+        return Ok(Err("git could not record the sync now"));
     }
     let synced = match job.outcome {
         Outcome::Commit => Synced::Moved {
@@ -398,7 +405,7 @@ fn sync(
             sha: &sha,
         },
     };
-    Ok(wire::encode_synced(&synced))
+    Ok(Ok(wire::encode_synced(&synced)))
 }
 
 /// The kernel command-line arguments that point the kernel at `service`.

@@ -11,6 +11,9 @@ const MAX_LINE: usize = 8 * 1024;
 const MAX_HEADERS: usize = 64;
 /// How long a whole request may take to arrive, and a response to be taken.
 const REQUEST_LIMIT: Duration = Duration::from_secs(30);
+/// How long the request line and headers may take: a caller that is not allowed
+/// in is turned away before its body, and a slow one soon.
+const HEAD_LIMIT: Duration = Duration::from_secs(5);
 
 /// Reads from a stream with a deadline for the whole request, not each read, so a
 /// client sending a byte at a time cannot hold a handler for ever.
@@ -57,6 +60,8 @@ pub enum HttpError {
     Malformed(&'static str),
     /// A body over the limit; answer 413.
     TooLarge,
+    /// The headers say the caller may not ask; answer 403.
+    Forbidden,
 }
 
 impl From<io::Error> for HttpError {
@@ -77,20 +82,27 @@ fn read_line(reader: &mut impl BufRead) -> Result<String, HttpError> {
     Ok(line.trim_end_matches(['\r', '\n']).to_string())
 }
 
-/// Reads one request with a body of at most `max_body` bytes.
-pub fn read_request(stream: &TcpStream, max_body: usize) -> Result<Request, HttpError> {
-    read_request_within(stream, max_body, REQUEST_LIMIT)
+/// Reads one request with a body of at most `max_body` bytes, if `allowed` says
+/// yes to its headers.
+pub fn read_request(
+    stream: &TcpStream,
+    max_body: usize,
+    allowed: impl Fn(&Request) -> bool,
+) -> Result<Request, HttpError> {
+    read_request_within(stream, max_body, (HEAD_LIMIT, REQUEST_LIMIT), allowed)
 }
 
 fn read_request_within(
     stream: &TcpStream,
     max_body: usize,
-    limit: Duration,
+    (head, limit): (Duration, Duration),
+    allowed: impl Fn(&Request) -> bool,
 ) -> Result<Request, HttpError> {
     stream.set_write_timeout(Some(limit))?;
+    let started = Instant::now();
     let mut reader = BufReader::new(Deadline {
         stream,
-        until: Instant::now() + limit,
+        until: started + head,
     });
     let request_line = read_line(&mut reader)?;
     let mut parts = request_line.split(' ');
@@ -122,6 +134,10 @@ fn read_request_within(
         headers,
         body: Vec::new(),
     };
+    if !allowed(&request) {
+        return Err(HttpError::Forbidden);
+    }
+    reader.get_mut().until = started + limit;
     let length = match request.header("content-length") {
         Some(value) => value
             .parse::<usize>()
@@ -167,7 +183,7 @@ mod tests {
             stream
         });
         let (stream, _) = listener.accept().unwrap();
-        let request = read_request(&stream, max);
+        let request = read_request(&stream, max, |_| true);
         drop(client.join().unwrap());
         request
     }
@@ -202,7 +218,8 @@ mod tests {
         });
         let (stream, _) = listener.accept().unwrap();
         let started = Instant::now();
-        let request = read_request_within(&stream, 10, Duration::from_millis(300));
+        let limits = (Duration::from_millis(300), Duration::from_secs(1));
+        let request = read_request_within(&stream, 10, limits, |_| true);
         assert!(matches!(request, Err(HttpError::Io(_))));
         assert!(started.elapsed() < Duration::from_secs(2));
         drop(stream);

@@ -105,15 +105,28 @@ pub(crate) fn check(repo: &Path, workspace: &Path, remotes_allowed: bool) -> Res
 
 /// Local settings that keep commits exactly the bytes built and keep the user's
 /// hooks and signing out of a test repository.
-fn configure_local(repo: &Path) -> Result<(), String> {
-    let hooks = repo.join(".git").join("hooks");
-    git(repo, &["config", "core.autocrlf", "false"])?;
+/// The hooks directory every git command here uses: one of the build service's
+/// own, empty, so no hook from the user's configuration or templates runs.
+pub fn hooks_dir(repo: &Path) -> PathBuf {
+    repo.join(".git").join("kai-hooks")
+}
+
+/// Settings for any repository the service builds in: no signing, and only its
+/// own (empty) hooks directory.
+fn configure_machine(repo: &Path) -> Result<(), String> {
+    let hooks = hooks_dir(repo);
+    fs::create_dir_all(&hooks).map_err(|e| format!("cannot create {}: {e}", hooks.display()))?;
     git(repo, &["config", "commit.gpgsign", "false"])?;
     git(
         repo,
         &["config", "core.hooksPath", &hooks.to_string_lossy()],
     )?;
     Ok(())
+}
+
+fn configure_local(repo: &Path) -> Result<(), String> {
+    git(repo, &["config", "core.autocrlf", "false"])?;
+    configure_machine(repo)
 }
 
 /// A fresh repository at `dest` holding the workspace's working tree.
@@ -184,6 +197,8 @@ pub fn dev(workspace: &Path, dest: &Path) -> Result<Repo, String> {
             ));
         }
     }
+    // The founder's line-ending settings stay as the clone was checked out.
+    configure_machine(dest)?;
     let lock = dest.join(".git").join("kai.lock");
     OpenOptions::new()
         .write(true)
@@ -223,10 +238,7 @@ pub fn dev(workspace: &Path, dest: &Path) -> Result<Repo, String> {
 fn commit(repo: &Path, message: &str, trailers: &[(&str, &str)]) -> Result<String, String> {
     let name = format!("user.name={NAME}");
     let email = format!("user.email={EMAIL}");
-    let hooks = format!(
-        "core.hooksPath={}",
-        repo.join(".git").join("hooks").display()
-    );
+    let hooks = format!("core.hooksPath={}", hooks_dir(repo).display());
     let mut args = vec![
         "-c",
         name.as_str(),

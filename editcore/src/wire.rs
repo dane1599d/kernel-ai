@@ -5,12 +5,12 @@
 //! ```text
 //! kai-build 1            kai-built 1               kai-sync 1           kai-synced 1
 //! component notes        result ok|failed|refused  component notes      result moved <ref> <sha>
-//! label e1               commit <40 hex>   (ok)    label e1             result recorded <ref> <sha>
-//! base 2                 log <len>                 outcome commit       result untracked
-//! bundle <len>           <bytes>                   outcome rollback trap
-//! <bytes>                artifact <len>    (ok)    generation 1
-//!                        <bytes>                   source <64 hex>|-
-//!                                                  commit <40 hex>|-
+//! label e1               base 2            (ok)    label e1             result recorded <ref> <sha>
+//! base 2                 commit <40 hex>   (ok)    outcome commit       result untracked
+//! bundle <len>           log <len>                 outcome rollback trap
+//! <bytes>                <bytes>                   generation 1
+//!                        artifact <len>    (ok)    source <64 hex>|-
+//!                        <bytes>                   commit <40 hex>|-
 //! ```
 
 use crate::{MAX_BUNDLE, MAX_LOG};
@@ -165,6 +165,8 @@ impl BuildResult {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Built<'a> {
     pub result: BuildResult,
+    /// The version the source was built from; ok only.
+    pub base: &'a str,
     /// The commit holding the source; ok only.
     pub commit: &'a str,
     pub log: &'a [u8],
@@ -175,7 +177,8 @@ pub struct Built<'a> {
 pub fn encode_built(built: &Built<'_>) -> Vec<u8> {
     let mut out = format!("kai-built 1\nresult {}\n", built.result.name()).into_bytes();
     if built.result == BuildResult::Ok {
-        out.extend_from_slice(format!("commit {}\n", built.commit).as_bytes());
+        let fields = format!("base {}\ncommit {}\n", built.base, built.commit);
+        out.extend_from_slice(fields.as_bytes());
     }
     out.extend_from_slice(format!("log {}\n", built.log.len()).as_bytes());
     out.extend_from_slice(built.log);
@@ -195,12 +198,14 @@ pub fn decode_built(bytes: &[u8]) -> Result<Built<'_>, &'static str> {
         _ => return Err("an unknown result"),
     };
     let ok = result == BuildResult::Ok;
-    let commit = if ok {
-        Some(reader.value("commit")?)
+    let (base, commit) = if ok {
+        let base = label(reader.value("base")?)?;
+        let commit = Some(reader.value("commit")?)
             .filter(|c| valid_commit(c))
-            .ok_or("the commit is malformed")?
+            .ok_or("the commit is malformed")?;
+        (base, commit)
     } else {
-        ""
+        ("", "")
     };
     let log = reader.bytes("log", MAX_LOG)?;
     let artifact = if ok {
@@ -211,6 +216,7 @@ pub fn decode_built(bytes: &[u8]) -> Result<Built<'_>, &'static str> {
     reader.end()?;
     Ok(Built {
         result,
+        base,
         commit,
         log,
         artifact,
@@ -476,12 +482,13 @@ pub fn http_body(response: &[u8]) -> Result<&[u8], &'static str> {
     }
 }
 
-/// Whether `artifact` and `commit` are exactly what the build service answered in
-/// `response`, the raw reply to a `POST /build`. The kernel checks every upload
-/// this way, so what it shows and runs is what the host built.
+/// Whether `artifact`, `base` and `commit` are exactly what the build service
+/// answered in `response`, the raw reply to a `POST /build`. The kernel checks
+/// every upload this way, so what it shows and runs is what the host built.
 pub fn check_built_response(
     response: &[u8],
     artifact: &[u8],
+    base: &str,
     commit: &str,
 ) -> Result<(), &'static str> {
     let built = decode_built(http_body(response)?)?;
@@ -490,6 +497,9 @@ pub fn check_built_response(
     }
     if built.artifact != artifact {
         return Err("the artifact is not the one the build service returned");
+    }
+    if built.base != base {
+        return Err("the base is not the build's");
     }
     if built.commit != commit {
         return Err("the commit is not the build's");

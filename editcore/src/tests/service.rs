@@ -76,6 +76,7 @@ impl Fake {
         let built = match self.host {
             Host::Fails => wire::encode_built(&Built {
                 result: BuildResult::Failed,
+                base: "",
                 commit: "",
                 log: b"error[E0277]: cannot add-assign `&str` to `u32`\n --> x\ncomponents/notes/src/lib.rs:2:5: error[E0277]: cannot add-assign\nerror: could not compile `comp-notes`\n",
                 artifact: &[],
@@ -89,6 +90,7 @@ impl Fake {
                 };
                 wire::encode_built(&Built {
                     result: BuildResult::Ok,
+                    base: request.base,
                     commit: COMMIT,
                     log: b"",
                     artifact: &artifact(request.component, label, &source),

@@ -114,7 +114,13 @@ fn a_view_that_does_not_fit_is_refused() {
 
 #[test]
 fn lines_that_cannot_be_shown_exactly_are_refused() {
-    for new in ["a\x1b[2J\n", "a\tb\n", "a\u{202e}b\n"] {
+    for new in [
+        "a\x1b[2J\n",
+        "a\tb\n",
+        "a\u{202e}b\n",
+        "a\u{e9}\n",
+        "a\u{200b}b\n",
+    ] {
         assert_eq!(
             view(&one("a\n"), &one(new), 80, 40),
             Err(ViewError::Unshowable),

@@ -56,7 +56,7 @@ impl StoreEnv {
         let bound = reply
             .as_deref()
             .map_or(Err("no build came before it"), |reply| {
-                wire::check_built_response(reply, artifact, commit)
+                wire::check_built_response(reply, artifact, base, commit)
             });
         let mut component = self.kernel.component.borrow_mut();
         if bound.is_err() {

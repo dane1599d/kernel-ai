@@ -232,7 +232,7 @@ pub fn upload(name: &str, bytes: Vec<u8>, base: &str, commit: &str) -> Result<u6
     let bound = reply
         .as_deref()
         .map_or(Err("no build came before it"), |reply| {
-            editcore::wire::check_built_response(reply, &bytes, commit)
+            editcore::wire::check_built_response(reply, &bytes, base, commit)
         });
     drop(reply);
     if let Err(why) = bound {

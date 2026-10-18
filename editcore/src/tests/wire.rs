@@ -18,6 +18,7 @@ fn build() -> Vec<u8> {
 fn built() -> Vec<u8> {
     encode_built(&Built {
         result: BuildResult::Ok,
+        base: "2",
         commit: COMMIT,
         log: b"warning: x",
         artifact: b"\0asm",
@@ -45,6 +46,7 @@ fn every_format_round_trips() {
     assert_eq!(encode_built(&decode_built(&reply).unwrap()), reply);
     let failed = Built {
         result: BuildResult::Failed,
+        base: "",
         commit: "",
         log: b"error[E0277]",
         artifact: &[],
@@ -209,28 +211,35 @@ fn http(body: &[u8]) -> Vec<u8> {
 #[test]
 fn an_upload_must_be_the_build_reply_exactly() {
     let reply = http(&built());
-    assert_eq!(check_built_response(&reply, b"\0asm", COMMIT), Ok(()));
-    assert!(check_built_response(&reply, b"\0asm2", COMMIT).is_err());
-    assert!(check_built_response(&reply, b"\0as", COMMIT).is_err());
+    assert_eq!(check_built_response(&reply, b"\0asm", "2", COMMIT), Ok(()));
+    assert!(check_built_response(&reply, b"\0asm2", "2", COMMIT).is_err());
+    assert!(check_built_response(&reply, b"\0as", "2", COMMIT).is_err());
     let other = "1111111111111111111111111111111111111111";
-    assert!(check_built_response(&reply, b"\0asm", other).is_err());
+    assert!(check_built_response(&reply, b"\0asm", "2", other).is_err());
     let failed = encode_built(&Built {
         result: BuildResult::Failed,
+        base: "",
         commit: "",
         log: b"x",
         artifact: &[],
     });
-    assert!(check_built_response(&http(&failed), b"", "").is_err());
+    assert!(check_built_response(&http(&failed), b"", "", "").is_err());
     // The body must be exactly what the length says: no forged tail.
     let mut padded = reply.clone();
     padded.extend_from_slice(b"\0asm");
-    assert!(check_built_response(&padded, b"\0asm", COMMIT).is_err());
+    assert!(check_built_response(&padded, b"\0asm", "2", COMMIT).is_err());
     let not_ok = String::from_utf8_lossy(&reply).replacen("200 OK", "403 Forbidden", 1);
-    assert!(check_built_response(not_ok.as_bytes(), b"\0asm", COMMIT).is_err());
+    assert!(check_built_response(not_ok.as_bytes(), b"\0asm", "2", COMMIT).is_err());
     let chunked = String::from_utf8_lossy(&reply).replacen(
         "Content-Type: x",
         "Transfer-Encoding: chunked",
         1,
     );
-    assert!(check_built_response(chunked.as_bytes(), b"\0asm", COMMIT).is_err());
+    assert!(check_built_response(chunked.as_bytes(), b"\0asm", "2", COMMIT).is_err());
+}
+
+#[test]
+fn an_upload_must_name_the_base_it_was_built_from() {
+    let reply = http(&built());
+    assert!(check_built_response(&reply, b"\0asm", "e1", COMMIT).is_err());
 }

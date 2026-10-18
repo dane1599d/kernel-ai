@@ -6,7 +6,7 @@
 //! acknowledges it.
 
 use crate::process::components;
-use crate::{ipc, log, threads};
+use crate::{hpet, ipc, log, threads};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -21,8 +21,9 @@ const TOKEN_LEN: usize = 32;
 const SYNC_CALL_MS: u64 = 35_000;
 const SYNC_POLL_MS: u64 = 250;
 const SYNC_BACKOFF_MAX_MS: u64 = 5_000;
-/// Refusals of one job before it is given up.
+/// Refusals of one job, over at least a minute, before it is given up.
 const SYNC_REFUSALS: u32 = 5;
+const SYNC_GIVE_UP_NS: u64 = 60_000_000_000;
 
 struct Config {
     server: (Ipv4Addr, u16),
@@ -124,18 +125,21 @@ pub fn start_sync() -> Result<(), &'static str> {
     Ok(())
 }
 
-/// Whether a failed sync will fail the same way again: the build service refused
-/// the request, or answered something that is not an acknowledgement. Transport
-/// errors and timeouts are worth retrying for as long as it takes.
+/// Whether a failed sync will fail the same way again: the build service called the
+/// request bad (400, 403, 413), or the answer is not an acknowledgement. Transport
+/// errors, timeouts and git being busy (503) are worth retrying as long as it takes.
 fn permanent(error: &str) -> bool {
-    error.starts_with("err build service: HTTP 4") || error.starts_with("ok ")
+    ["400", "403", "413"]
+        .iter()
+        .any(|status| error.starts_with(&format!("err build service: HTTP {status}")))
+        || error.starts_with("ok ")
 }
 
 fn sync_thread(_: usize) {
     let mut backoff = SYNC_POLL_MS;
     let mut last_error = String::new();
-    // The job that failed, and how often it failed for good.
-    let mut refused: (u64, u32) = (0, 0);
+    // The job that failed for good, how often, and since when.
+    let mut refused: (u64, u32, u64) = (0, 0, 0);
     loop {
         let Some((name, job)) = components::next_sync() else {
             threads::sleep_ms(SYNC_POLL_MS);
@@ -165,11 +169,13 @@ fn sync_thread(_: usize) {
             Err(error) => {
                 let clean = llmproto::text::printable(&error, 160, 1);
                 if permanent(&error) {
+                    let now = hpet::nanos();
                     refused = match refused {
-                        (seq, n) if seq == job.seq => (seq, n + 1),
-                        _ => (job.seq, 1),
+                        (seq, n, since) if seq == job.seq => (seq, n + 1, since),
+                        _ => (job.seq, 1, now),
                     };
-                    if refused.1 >= SYNC_REFUSALS {
+                    let long = now.saturating_sub(refused.2) >= SYNC_GIVE_UP_NS;
+                    if refused.1 >= SYNC_REFUSALS && long {
                         log!(
                             "build: git refused {name} {} {SYNC_REFUSALS} times ({clean}); dropped",
                             job.label

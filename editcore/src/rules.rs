@@ -30,9 +30,6 @@ pub const DENIED_WORDS: &[&str] = &[
     "naked_asm",
     "debugger_visualizer",
 ];
-/// Text the new lines of one change may not hold once whitespace is taken out,
-/// so an attribute split over lines is caught too.
-pub const DENIED_TEXT: &[&str] = &["#[path", "#!"];
 
 /// A relative path with `/` between plain segments.
 pub fn check_path(path: &str) -> Result<(), String> {
@@ -44,31 +41,21 @@ fn words(line: &str) -> impl Iterator<Item = &str> {
         .filter(|word| !word.is_empty())
 }
 
-/// Control characters other than tab, and the characters rustc reads as
-/// whitespace or the console could reorder, none of which a typed line holds.
+/// Anything but printable ASCII: the terminal types nothing else, and the
+/// kernel's confirmation shows nothing else exactly.
 fn odd(c: char) -> bool {
-    (c.is_control() && c != '\t')
-        || matches!(
-            c,
-            '\u{85}' | '\u{200e}' | '\u{200f}' | '\u{2028}' | '\u{2029}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
-        )
+    !(' '..='~').contains(&c)
 }
 
 /// Why a new line (without its ending) is refused, if it is.
 pub fn check_line(line: &str) -> Result<(), String> {
     if line.chars().any(odd) {
-        return Err(String::from("new lines may not hold control characters"));
+        return Err(String::from(
+            "new lines may hold only printable ASCII: no tabs or control characters",
+        ));
     }
-    if let Some(word) = words(line).find(|word| DENIED_WORDS.contains(word)) {
-        return Err(format!("new lines may not use {word}"));
-    }
-    squeezed_text(line)
-}
-
-fn squeezed_text(text: &str) -> Result<(), String> {
-    let squeezed: String = text.chars().filter(|c| !c.is_whitespace()).collect();
-    match DENIED_TEXT.iter().find(|denied| squeezed.contains(*denied)) {
-        Some(denied) => Err(format!("new lines may not hold {denied}")),
+    match words(line).find(|word| DENIED_WORDS.contains(word)) {
+        Some(word) => Err(format!("new lines may not use {word}")),
         None => Ok(()),
     }
 }
@@ -112,7 +99,6 @@ pub fn check(editable: &Editable, base: &[u8], edited: &[u8]) -> Result<(), Stri
         // only carries over (or moves) are not new text.
         let mut carried: Vec<&[u8]> = change.removed.clone();
         carried.sort_unstable();
-        let mut joined = String::new();
         for line in &change.added {
             if let Ok(at) = carried.binary_search(line) {
                 carried.remove(at);
@@ -120,9 +106,7 @@ pub fn check(editable: &Editable, base: &[u8], edited: &[u8]) -> Result<(), Stri
             }
             let line = text(line).map_err(|why| format!("{path}: {why}"))?;
             check_line(line).map_err(|why| format!("{path}: {why}"))?;
-            joined.push_str(line);
         }
-        squeezed_text(&joined).map_err(|why| format!("{path}: {why}"))?;
     }
     Ok(())
 }

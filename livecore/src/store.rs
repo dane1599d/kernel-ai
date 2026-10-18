@@ -266,10 +266,10 @@ impl Component {
         let label = self.next_label();
         let active = self.ledger.active().and_then(|l| self.version(l));
         let checked = match meta {
-            Ok(meta) => uploads::check(meta, &self.name, &label, active, base, commit, |l| {
-                self.version(l).is_some()
-            })
-            .map(|()| meta),
+            Ok(meta) => {
+                let from = valid_label(base).then(|| self.version(base)).flatten();
+                uploads::check(meta, &self.name, &label, active, from, commit).map(|()| meta)
+            }
             Err(error) => Err(*error),
         };
         let meta = match checked {

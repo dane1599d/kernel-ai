@@ -4,11 +4,11 @@
 //! calls. Every check reads the store, the ledger or the outbox, never a print.
 //!
 //! A. notes 2 builds state and its source opens in the editor. S. Only the kernel
-//! can drive the edit service, and the store refuses an upload that is not the next
-//! label. B. A working edit is built, declined once, then applied live with its
-//! state. C. A compile error changes nothing. D. An index out of bounds is built,
-//! applied, and rolls back by itself. E. A host restart comes back on the upload.
-//! K. `:revert` goes back to version 2.
+//! can drive the edit service, and the kernel refuses an upload that no build of
+//! the build service backs. B. A working edit is built, declined once, then applied
+//! live with its state. C. A compile error changes nothing. D. An index out of
+//! bounds is built, applied, and rolls back by itself. E. A host restart comes back
+//! on the upload. K. `:revert` goes back to version 2.
 
 use alloc::format;
 use alloc::string::String;
@@ -90,7 +90,7 @@ pub enum Step {
     /// Only `edit` holds PUBLISH and only `notes` COMPONENT (not on the host).
     Holders,
     SpoofEdit(&'static str, Expect),
-    /// The store refuses a boot artifact put as an upload.
+    /// The kernel refuses a boot artifact put as an upload: no build backs it.
     PutRefused(&'static str),
 }
 

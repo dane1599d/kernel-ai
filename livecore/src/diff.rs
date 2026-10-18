@@ -118,24 +118,16 @@ pub enum ViewError {
     /// A line wider than the screen: wrapped, its tail could pass for a line of
     /// its own.
     TooWide,
-    /// A line holds bytes that cannot be shown as they are: control characters
-    /// (tabs among them), text that is not UTF-8, or characters a terminal could
-    /// reorder.
+    /// A line holds something other than printable ASCII, which cannot be shown
+    /// exactly: control characters, tabs, other scripts, invisible characters.
     Unshowable,
 }
 
-/// Bytes that cannot be shown as they are in the confirmation, so it refuses them.
+/// Bytes the confirmation cannot show exactly, so it refuses them: anything but
+/// printable ASCII. The console font draws nothing else as itself, and invisible
+/// or reordering characters must not hide a change.
 fn unshowable(line: &[u8]) -> bool {
-    match core::str::from_utf8(line) {
-        Err(_) => true,
-        Ok(text) => text.chars().any(|c| {
-            c.is_control()
-                || matches!(
-                    c,
-                    '\u{200e}' | '\u{200f}' | '\u{2028}' | '\u{2029}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
-                )
-        }),
-    }
+    line.iter().any(|b| !(b' '..=b'~').contains(b))
 }
 
 fn without_ending(line: &[u8]) -> &[u8] {

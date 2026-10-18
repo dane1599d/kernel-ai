@@ -264,7 +264,7 @@ fn a_failed_compile_leaves_a_clean_tree_and_no_ref() {
 #[test]
 fn a_commit_git_refuses_returns_no_artifact() {
     let setup = setup("hook");
-    let hook = setup.repo.join(".git").join("hooks").join("pre-commit");
+    let hook = repo::hooks_dir(&setup.repo).join("pre-commit");
     fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
     #[cfg(unix)]
     {
@@ -397,5 +397,46 @@ fn the_edit_table_names_the_recipe_the_service_builds() {
     assert_eq!(
         (notes.component, notes.krate, NOTES_RECIPE.dirs),
         (NOTES_RECIPE.component, NOTES_RECIPE.krate, &[notes.dir][..])
+    );
+}
+
+#[test]
+fn a_git_failure_during_a_sync_is_worth_retrying() {
+    let setup = setup("busy");
+    let (_, body) = build(&setup, "e1", "2", EDITED);
+    let e1 = wire::decode_built(&body).unwrap().commit.to_string();
+    let source = crate::sha256_hex(&bundle(EDITED));
+    // Another git process holds the branch's lock.
+    let lock = setup
+        .repo
+        .join(".git")
+        .join("refs")
+        .join("heads")
+        .join("kai")
+        .join("notes.lock");
+    fs::create_dir_all(lock.parent().unwrap()).unwrap();
+    fs::write(&lock, "").unwrap();
+    let job = SyncRequest {
+        component: "notes",
+        label: "e1",
+        outcome: Outcome::Commit,
+        generation: 1,
+        source: &source,
+        commit: &e1,
+    };
+    let (status, _) = post(&setup, "/sync", &wire::encode_sync(&job));
+    assert_eq!(status, 503);
+    fs::remove_file(&lock).unwrap();
+    assert_eq!(post(&setup, "/sync", &wire::encode_sync(&job)).0, 200);
+}
+
+#[test]
+fn build_commits_use_the_service_hooks_not_the_users() {
+    let setup = setup("hooks");
+    let hooks = git(&setup.repo, &["config", "core.hooksPath"]).unwrap();
+    assert_eq!(PathBuf::from(hooks), repo::hooks_dir(&setup.repo));
+    assert_eq!(
+        git(&setup.repo, &["rev-parse", "--show-object-format"]).unwrap(),
+        "sha1"
     );
 }

@@ -86,7 +86,6 @@ fn changed_lines_may_not_read_files_or_the_environment() {
         r#"const H: Option<&str> = option_env!("PATH");"#,
         r#"#[path = "/tmp/x.rs"] mod x;"#,
         r#"# [ path = "/tmp/x.rs" ] mod x;"#,
-        "#![allow(unused)]",
         r#"core::arch::global_asm!(".incbin \"/etc/passwd\"");"#,
         "let r#include = 1;",
     ] {
@@ -97,6 +96,8 @@ fn changed_lines_may_not_read_files_or_the_environment() {
         "self.state.next_id += \"1\";",
         "let environment = 1; // not the word",
         "#[derive(Debug)]",
+        // An inner attribute reads no host file unless it names a denied word.
+        "#![allow(unused)]",
     ] {
         assert!(check_line(good).is_ok(), "{good}");
     }
@@ -121,15 +122,14 @@ fn a_path_attribute_is_refused_however_it_is_written() {
         r#"#[r#path = "/tmp/x.rs"] mod x;"#,
         "let a = 1;\u{200e}",
         "let a = 1;\u{c}",
+        "let a = 1;\t",
+        "let s = \"\u{e9}\";",
+        "let s = \"a\u{200b}b\";",
     ] {
         assert!(check_line(bad).is_err(), "{bad}");
     }
     let notes = &EDITABLE[0];
     let base = with_lib("fn a() {}\n");
-    for split in [
-        "fn a() {}\n#\n[path = \"/tmp/x.rs\"]\nmod x;\n",
-        "#\n![allow(unused)]\nfn a() {}\n",
-    ] {
-        assert!(check(notes, &base, &with_lib(split)).is_err(), "{split}");
-    }
+    let split = "fn a() {}\n#\n[path = \"/tmp/x.rs\"]\nmod x;\n";
+    assert!(check(notes, &base, &with_lib(split)).is_err());
 }

@@ -400,3 +400,15 @@ fn a_job_git_keeps_refusing_can_be_dropped() {
     assert_eq!((outbox.pending(), outbox.dropped), (1, 1));
     assert_eq!(outbox.peek().map(|job| job.seq), Some(2));
 }
+
+#[test]
+fn the_file_list_follows_the_base_not_the_active_version() {
+    let mut notes = running();
+    let one = with_files("1", &[("fixtures/v1/src/lib.rs", b"v1\n")]);
+    notes.add_version("1", Bytes::shared(one)).unwrap();
+    swap(&mut notes, "1", None);
+    let from_two = with_files("e1", &[("src/lib.rs", b"x\n")]);
+    assert_eq!(put_bytes(&mut notes, from_two, "2", 0), Ok("e1".into()));
+    let wrong = with_files("e2", &[("src/lib.rs", b"x\n")]);
+    assert_eq!(put_bytes(&mut notes, wrong, "1", 0), Err(Error::Invalid));
+}

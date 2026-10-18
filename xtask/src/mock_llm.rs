@@ -52,11 +52,12 @@ pub fn start() -> Result<MockLlm, String> {
 }
 
 fn serve(stream: TcpStream, chats: &AtomicUsize) -> std::io::Result<()> {
-    let (status, reply) = match httpd::read_request(&stream, MAX_BODY) {
+    let (status, reply) = match httpd::read_request(&stream, MAX_BODY, |_| true) {
         Ok(request) => route(&request.method, &request.path, &request.body, chats),
         Err(HttpError::Io(error)) => return Err(error),
         Err(HttpError::TooLarge) => ("413 Payload Too Large", String::new()),
         Err(HttpError::Malformed(_)) => ("400 Bad Request", String::new()),
+        Err(HttpError::Forbidden) => ("403 Forbidden", String::new()),
     };
     httpd::respond(&stream, status, "application/json", reply.as_bytes())
 }

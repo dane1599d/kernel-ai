@@ -19,7 +19,7 @@ use alloc::vec::Vec;
 use kabi::Error;
 use kabi::live::{
     KEEP_UPLOADS, MAX_UPLOAD, MAX_UPLOAD_TOTAL, UPLOAD_FILES_MAX, UPLOAD_LINES_MAX, UPLOAD_PREFIX,
-    UPLOAD_SOURCE_MAX, valid_commit, valid_label,
+    UPLOAD_SOURCE_MAX, valid_commit,
 };
 
 /// Sync jobs kept unacknowledged; the oldest is dropped when one more comes.
@@ -75,24 +75,24 @@ pub fn meta(bytes: &[u8]) -> Result<Meta, Error> {
     })
 }
 
-/// The upload rules, against the label the store assigns next.
+/// The upload rules, against the label the store assigns next: the active
+/// version's interface, and the file list of the stored version it was built from.
 pub(crate) fn check(
     meta: &Meta,
     name: &str,
     next: &str,
     active: Option<&Version>,
-    base: &str,
+    base: Option<&Version>,
     commit: &str,
-    stored: impl Fn(&str) -> bool,
 ) -> Result<(), Error> {
-    let active = active.ok_or(Error::Invalid)?;
+    let (Some(active), Some(base)) = (active, base) else {
+        return Err(Error::Invalid);
+    };
     let ok = meta.component == name
         && meta.version == next
         && !active.interface.is_empty()
         && meta.interface == active.interface
-        && meta.files == active.files
-        && valid_label(base)
-        && stored(base)
+        && meta.files == base.files
         && valid_commit(commit);
     if ok { Ok(()) } else { Err(Error::Invalid) }
 }
