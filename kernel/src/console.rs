@@ -252,9 +252,6 @@ impl Fb {
     }
 }
 
-/// ASCII backspace: moves the log position back one cell, to the end of the row
-/// above if it is at the start of a row.
-pub const BACKSPACE: char = 8u8 as char;
 /// ASCII form feed: clears the screen. Printed like any other text, so it is
 /// serialised with other output by the serial line lock.
 pub const FORM_FEED: char = 12u8 as char;

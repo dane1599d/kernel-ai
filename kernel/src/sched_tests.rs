@@ -5,6 +5,7 @@ use crate::keyboard::Decoder;
 use crate::{i8042, log, threads};
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use sched::{EnqueueReason, RoundRobin, SchedPolicy, Tid};
+use termcore::keys::Key;
 
 const HOGS: usize = 8;
 const LATENCY_LIMIT_NS: u64 = 20_000_000;
@@ -64,17 +65,23 @@ fn typist(_: usize) {
     let mut line = [0u8; 8];
     let mut len = 0;
     loop {
-        let ch = decoder.read_char();
-        crate::serial::_print(format_args!("{ch}"));
-        if matches!(ch, '\n' | '\r') {
-            if &line[..len] == b"kai" {
-                TYPED_LINE_DONE.store(true, Ordering::SeqCst);
-                return;
+        match decoder.read_key() {
+            Key::Enter => {
+                crate::serial::_print(format_args!("\n"));
+                if &line[..len] == b"kai" {
+                    TYPED_LINE_DONE.store(true, Ordering::SeqCst);
+                    return;
+                }
+                len = 0;
             }
-            len = 0;
-        } else if len < line.len() && ch.is_ascii() {
-            line[len] = ch as u8;
-            len += 1;
+            Key::Char(ch) => {
+                crate::serial::_print(format_args!("{ch}"));
+                if len < line.len() && ch.is_ascii() {
+                    line[len] = ch as u8;
+                    len += 1;
+                }
+            }
+            _ => {}
         }
     }
 }

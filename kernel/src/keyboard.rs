@@ -1,43 +1,32 @@
-//! PS/2 keyboard decoding, in normal kernel context, from the i8042 ring. Mouse
-//! bytes met on the way go to the pointer with the Ctrl state at that point in the
-//! ring, so a click knows whether Ctrl was held.
+//! PS/2 keyboard decoding, in normal kernel context, from the i8042 ring, through
+//! `termcore::keys`. Mouse bytes met on the way go to the pointer with the Ctrl state
+//! at that point in the ring, so a click knows whether Ctrl was held.
 
 use crate::i8042::{self, Input};
 use crate::{hpet, log, pointer, serial};
 use alloc::string::String;
-use pc_keyboard::layouts::Us104Key;
-use pc_keyboard::{DecodedKey, HandleControl, PS2Keyboard, ScancodeSet1};
+use termcore::keys::{self, Key};
 
-pub struct Decoder(PS2Keyboard<Us104Key, ScancodeSet1>);
+pub struct Decoder(keys::Decoder);
 
 impl Decoder {
     pub fn new() -> Self {
-        Self(PS2Keyboard::new(
-            ScancodeSet1::new(),
-            Us104Key,
-            HandleControl::Ignore,
-        ))
+        Self(keys::Decoder::new())
     }
 
-    fn decode(&mut self, input: Input) -> Option<char> {
+    fn decode(&mut self, input: Input) -> Option<Key> {
         if input.aux {
-            pointer::on_byte(input.byte, self.0.get_modifiers().is_ctrl());
+            pointer::on_byte(input.byte, self.0.ctrl());
             return None;
         }
-        match self.0.add_byte(input.byte) {
-            Ok(Some(event)) => match self.0.process_keyevent(event) {
-                Some(DecodedKey::Unicode(ch)) => Some(ch),
-                _ => None,
-            },
-            _ => None,
-        }
+        self.0.feed(input.byte)
     }
 
-    /// Decodes queued bytes until one produces a character.
-    pub fn next_char(&mut self) -> Option<char> {
+    /// Decodes queued bytes until one produces a key.
+    pub fn next_key(&mut self) -> Option<Key> {
         while let Some(input) = i8042::next() {
-            if let Some(ch) = self.decode(input) {
-                return Some(ch);
+            if let Some(key) = self.decode(input) {
+                return Some(key);
             }
         }
         None
@@ -51,11 +40,11 @@ impl Decoder {
         }
     }
 
-    /// Blocks the calling thread until a key produces a character.
-    pub fn read_char(&mut self) -> char {
+    /// Blocks the calling thread until a key comes.
+    pub fn read_key(&mut self) -> Key {
         loop {
-            if let Some(ch) = self.decode(i8042::wait()) {
-                return ch;
+            if let Some(key) = self.decode(i8042::wait()) {
+                return key;
             }
         }
     }
@@ -69,16 +58,21 @@ pub fn typing_check() -> Result<(), &'static str> {
     let mut line = String::new();
     let start = hpet::nanos();
     loop {
-        while let Some(ch) = decoder.next_char() {
-            serial::_print(format_args!("{ch}"));
-            if matches!(ch, '\n' | '\r') {
-                if line == "kai" {
-                    log!("keyboard: received \"kai\"");
-                    return Ok(());
+        while let Some(key) = decoder.next_key() {
+            match key {
+                Key::Enter => {
+                    serial::_print(format_args!("\n"));
+                    if line == "kai" {
+                        log!("keyboard: received \"kai\"");
+                        return Ok(());
+                    }
+                    line.clear();
                 }
-                line.clear();
-            } else {
-                line.push(ch);
+                Key::Char(ch) => {
+                    serial::_print(format_args!("{ch}"));
+                    line.push(ch);
+                }
+                _ => {}
             }
         }
         if hpet::nanos() - start > TIMEOUT_NS {

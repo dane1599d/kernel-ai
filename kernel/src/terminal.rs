@@ -7,7 +7,7 @@
 //! In edit mode (`:edit`), plain lines go to the editor instead, and `:apply` asks
 //! the same way before an upload runs.
 
-use crate::console::{self, BACKSPACE, FORM_FEED, Screen};
+use crate::console::{self, FORM_FEED, Screen};
 use crate::keyboard::Decoder;
 use crate::{edit_mode, hpet, ipc, llm, log, memory, net, serial, smp, threads};
 use alloc::boxed::Box;
@@ -16,10 +16,10 @@ use alloc::string::String;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use llmproto::text::printable;
 use sched::{Interactive, RoundRobin};
+use termcore::line::{Line, Outcome};
 
 const PROMPT: &str = "kai> ";
 const MAX_LINE: usize = 200;
-const DELETE: char = 127u8 as char;
 /// Longest a shell line may take: the shell's longest LLM wait (140 s for `ask`, two
 /// script rounds of 75 s) plus its compute budget, with room to spare, so the shell
 /// always answers first.
@@ -34,6 +34,8 @@ const MAX_REPLY_LINES: usize = 64;
 static REPLIES_SHOWN: AtomicU64 = AtomicU64::new(0);
 /// Set while the terminal waits for the answer to a confirmation, for the self-test.
 static AWAITING_ANSWER: AtomicBool = AtomicBool::new(false);
+/// Typed lines Ctrl-C dropped, for the self-test.
+static LINES_CLEARED: AtomicU64 = AtomicU64::new(0);
 
 const HELP: &[(&str, &str)] = &[
     (":help", "this list"),
@@ -78,6 +80,10 @@ pub fn run(_: usize) {
         }
         let line = read_line(&mut decoder, &prompt);
         AWAITING_ANSWER.store(false, Ordering::Release);
+        // Ctrl-C: prompt again, with a pending question still asked.
+        let Some(line) = line else {
+            continue;
+        };
         let line = line.trim();
         match waiting.take() {
             Some(Waiting::Script(id)) => {
@@ -105,25 +111,25 @@ pub fn run(_: usize) {
     }
 }
 
-/// Reads a line into the input region after `prompt`. Typed keys go only to the
-/// screen; serial gets the whole line, with its prompt, on Enter.
-fn read_line(decoder: &mut Decoder, prompt: &str) -> String {
-    let mut line = String::new();
+/// Reads a line into the input region after `prompt`, edited at the cursor. Typed
+/// keys go only to the screen; serial gets the whole line, with its prompt, on Enter.
+/// None when Ctrl-C clears it.
+fn read_line(decoder: &mut Decoder, prompt: &str) -> Option<String> {
+    let mut line = Line::new(MAX_LINE);
     loop {
-        match decoder.read_char() {
-            '\n' | '\r' => {
-                finish_line(prompt, &line, "");
-                return line;
+        match line.apply(decoder.read_key()) {
+            Outcome::Unchanged => {}
+            Outcome::Changed => console::show_input(prompt, line.text(), line.cursor()),
+            Outcome::Submitted(text) => {
+                finish_line(prompt, &text, "");
+                return Some(text);
             }
-            BACKSPACE | DELETE => {
-                if line.pop().is_none() {
-                    continue;
-                }
+            Outcome::Cleared(text) => {
+                LINES_CLEARED.fetch_add(1, Ordering::Relaxed);
+                finish_line(prompt, &text, "^C");
+                return None;
             }
-            ch if !ch.is_control() && line.len() < MAX_LINE => line.push(ch),
-            _ => continue,
         }
-        console::show_input(prompt, &line, line.chars().count());
     }
 }
 
@@ -322,9 +328,11 @@ fn processes() {
     }
 }
 
-/// M6 exit test, now through the shell, with M9d's console cells. The harness types
-/// "pol"; once it shows at the prompt the kernel logs a line, which must land above
-/// the typed line and leave it whole. The harness then finishes "policy rr" and types
+/// M6 exit test, now through the shell, with M9d's console cells and keys. The
+/// harness types "xyz" and Ctrl-C, which must clear the line, then "pol"; once it
+/// shows at the prompt the kernel logs a line, which must land above the typed line
+/// and leave it whole. The harness then makes "policy rr" of it with arrows, Home,
+/// End, Backspace and Delete (only that exact line switches the policy), and types
 /// "ask hello", a request in plain English and "yes" to the script proposed for it.
 /// The policy must be installed on every CPU, the llm service must have answered the
 /// shell twice (the question and the script request), and the terminal must have
@@ -332,6 +340,8 @@ fn processes() {
 /// program prints; xtask checks the printed text.
 pub fn self_test() -> Result<(), &'static str> {
     const TIMEOUT_MS: u64 = 60_000;
+    const NOT_CLEARED: &str = "terminal: Ctrl-C did not clear the typed line";
+    let cleared = || LINES_CLEARED.load(Ordering::Relaxed) >= 1;
     threads::spawn("terminal", run, 0)?;
     for _ in 0..TIMEOUT_MS / 10 {
         if ipc::server_of("llm").is_some() && ipc::server_of("shell").is_some() {
@@ -341,7 +351,14 @@ pub fn self_test() -> Result<(), &'static str> {
     }
     threads::sleep_ms(200);
     log!("terminal: ready for keys");
-    mid_typing_check()?;
+    match mid_typing_check() {
+        Ok(()) => {}
+        // Ctrl-C comes before "pol", so a Ctrl-C that failed shows up here first.
+        Err(NEVER_TYPED) if !cleared() => {
+            return Err("terminal: Ctrl-C cleared no line, and \"kai> pol\" never showed");
+        }
+        Err(error) => return Err(error),
+    }
     log!("terminal: ready for keys");
     // The answer is typed only once the question is on screen: keys typed earlier
     // are dropped, so this shows the answer came from the prompt.
@@ -358,11 +375,14 @@ pub fn self_test() -> Result<(), &'static str> {
     let llm_answered_shell = || ipc::replies("llm").1 >= 2;
     let all_shown = || REPLIES_SHOWN.load(Ordering::Relaxed) >= 4;
     for _ in 0..TIMEOUT_MS / 10 {
-        if switched() && llm_answered_shell() && all_shown() {
-            log!("terminal: policy switched, LLM reply and a confirmed script shown");
+        if cleared() && switched() && llm_answered_shell() && all_shown() {
+            log!("terminal: line cleared, policy switched, LLM reply and a confirmed script shown");
             return Ok(());
         }
         threads::sleep_ms(10);
+    }
+    if !cleared() {
+        return Err(NOT_CLEARED);
     }
     if !switched() {
         return Err("terminal: the policy command did not switch to round-robin");
@@ -377,6 +397,7 @@ pub fn self_test() -> Result<(), &'static str> {
 const TYPED: &str = "kai> pol";
 /// The line logged while it shows.
 const LOGGED: &str = "terminal: a log line while typing";
+const NEVER_TYPED: &str = "terminal: the typed keys never reached the prompt";
 
 /// Waits for `TYPED` at the prompt, logs a line, and checks that the line went above
 /// the typed one, which stayed whole with the cursor after it. CI boots get a 1280x800
@@ -400,7 +421,7 @@ fn mid_typing_check() -> Result<(), &'static str> {
         }
     }
     if !typed {
-        return Err("terminal: the typed keys never reached the prompt");
+        return Err(NEVER_TYPED);
     }
     log!("{LOGGED}");
     let whole = console::with_grid(|grid| {

@@ -23,7 +23,6 @@ livecore = { path = "../livecore" }
 editcore = { path = "../editcore" }
 llmproto = { path = "../llmproto" }
 mm = { path = "../mm" }
-pc-keyboard = "0.9.0"
 sched = { path = "../sched" }
 termcore = { path = "../termcore" }
 serde = { version = "1.0.229", default-features = false, features = ["alloc", "derive"] }

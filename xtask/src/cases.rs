@@ -57,16 +57,23 @@ const POINTER: &[&str] = &[
     "!mouse_button 0",
 ];
 
-/// "pol"; while it shows at the prompt the kernel logs a line, which must land above
-/// it. Then the rest of "policy rr", "ask hello" and "show me the cpus please" (plain
-/// English, so the shell asks the LLM for a script), each followed by Enter. Then,
-/// once the terminal shows the question, "yes" and Enter.
+/// "xyz", cleared with Ctrl-C, then "pol"; while it shows at the prompt the kernel
+/// logs a line, which must land above it. Then "cy rrxz", edited into "policy rr"
+/// (Home; Up, PgDn and Esc do nothing; Right three times, "i"; End, Backspace takes
+/// the z; Left, Delete takes the x, where a Backspace would take an r), "ask hello"
+/// and "show me the cpus please" (plain English, so the shell asks the LLM for a
+/// script), each followed by Enter. Then, once the terminal shows the question, "yes"
+/// and Enter. Kept unformatted so each row is one of those steps.
+#[rustfmt::skip]
 const TERMINAL_SCRIPT: &[&[&str]] = &[
-    &["p", "o", "l"],
+    &["x", "y", "z", "ctrl-c", "p", "o", "l"],
     &[
-        "i", "c", "y", "spc", "r", "r", "ret", "a", "s", "k", "spc", "h", "e", "l", "l", "o",
-        "ret", "s", "h", "o", "w", "spc", "m", "e", "spc", "t", "h", "e", "spc", "c", "p", "u",
-        "s", "spc", "p", "l", "e", "a", "s", "e", "ret",
+        "c", "y", "spc", "r", "r", "x", "z",
+        "home", "up", "pgdn", "esc", "right", "right", "right", "i",
+        "end", "backspace", "left", "delete", "ret",
+        "a", "s", "k", "spc", "h", "e", "l", "l", "o", "ret",
+        "s", "h", "o", "w", "spc", "m", "e", "spc", "t", "h", "e", "spc",
+        "c", "p", "u", "s", "spc", "p", "l", "e", "a", "s", "e", "ret",
     ],
     &["y", "e", "s", "ret"],
 ];
@@ -127,8 +134,10 @@ pub const TEST_CASES: &[TestCase] = &[
             "? run it? it changes nothing. yes/no",
             "run script 1? yes/no> ",
             "= CPUs: ",
-            // screenlog copies the typed text the screen shows.
+            // screenlog copies the typed text the screen shows. It matches the
+            // `policy rrxz` row too, so only the kernel's policy check proves the edits.
             "|kai> policy rr",
+            "kai> xyz^C",
         ],
         ..case("terminal", "test=terminal screenlog")
     },

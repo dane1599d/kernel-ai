@@ -444,7 +444,6 @@ dependencies = [
  "llmproto",
  "mm",
  "noto-sans-mono-bitmap",
- "pc-keyboard",
  "sched",
  "serde",
  "serde_json",
@@ -917,6 +916,9 @@ dependencies = [
 [[package]]
 name = "termcore"
 version = "0.0.0"
+dependencies = [
+ "pc-keyboard",
+]
 
 [[package]]
 name = "thin-vec"
