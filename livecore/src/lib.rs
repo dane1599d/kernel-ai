@@ -19,6 +19,7 @@ pub mod location;
 mod probation;
 pub mod scenario;
 pub mod settings;
+mod start;
 pub mod state;
 pub mod store;
 mod swap;
