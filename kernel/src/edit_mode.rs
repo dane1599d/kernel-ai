@@ -5,8 +5,10 @@
 //! source and the upload's, and swaps only on a yes typed at the kernel's prompt.
 //!
 //! Everything here returns text rather than printing, so the terminal and the
-//! boot case run the same code.
+//! boot case run the same code. Messages to the editor go through
+//! [`edit_session`], which journals them.
 
+use crate::edit_session::{self, call as call_editor};
 use crate::process::components;
 use crate::{ipc, log};
 use alloc::format;
@@ -21,8 +23,6 @@ use spin::Mutex;
 pub const EDIT_CALL_MS: u64 = 170_000;
 /// The kernel's wait for a component's host to answer a swap.
 const SWAP_CALL_MS: u64 = 60_000;
-/// How long to wait for an edit service that is restarting.
-const BIND_WAIT_NS: u64 = 3_000_000_000;
 /// The screen size when there is no framebuffer console.
 pub const FALLBACK_SCREEN: (usize, usize) = (160, 50);
 const MAX_LINES: usize = 64;
@@ -41,6 +41,10 @@ pub const HELP: &[(&str, &str)] = &[
         "swap back to the nth version that ran before",
     ),
     (":fault [name]", "open the source at the latest trap's line"),
+    (
+        ":journal",
+        "the edits a restarted editor gets back, or did not",
+    ),
     (":quit", "leave edit mode"),
 ];
 
@@ -54,24 +58,6 @@ pub fn editing() -> Option<String> {
 /// The prompt in edit mode.
 pub fn prompt() -> Option<String> {
     editing().map(|name| format!("edit {name}> "))
-}
-
-/// Sends one request to the edit service; its reply, made printable, or why there
-/// is none (as an `err` reply).
-fn call_editor(message: &[u8]) -> String {
-    // The supervisor restarts it within 1.6 s; longer means it is not coming back.
-    let bound = crate::hpet::nanos() + BIND_WAIT_NS;
-    if ipc::wait_bound("edit", bound, || false).is_err() {
-        return String::from("err the edit service is not running (see :ps)");
-    }
-    match ipc::call("edit", message, EDIT_CALL_MS) {
-        Ok(reply) => printable(
-            &String::from_utf8_lossy(&reply),
-            kabi::MAX_MESSAGE,
-            MAX_LINES,
-        ),
-        Err(error) => format!("err the edit service did not answer ({error:?})"),
-    }
 }
 
 /// `:edit <name> [version]`: opens (or resumes) a session; on success, lines go to
@@ -239,6 +225,7 @@ pub fn command(command: &str, rest: &str) -> Option<Option<Proposal>> {
         ("edit", [name, label]) => show(&open(name, Some(label))),
         ("edit", _) => usage(":edit <name> [version]"),
         ("quit", []) => show(&quit()),
+        ("journal", []) => show(&edit_session::journal()),
         ("fault", [name]) => show(&fault(name)),
         ("fault", []) => match editing() {
             Some(name) => show(&fault(&name)),
@@ -265,8 +252,8 @@ pub fn command(command: &str, rest: &str) -> Option<Option<Proposal>> {
             Ok(n) if (1..kabi::live::LINEAGE).contains(&n) => show(&revert(name, n)),
             _ => usage(":revert <name> [1 to 5]"),
         },
-        ("revert" | "apply" | "quit" | "fault", _) => {
-            usage(":apply [name], :revert <name> [n], :fault [name], :quit")
+        ("revert" | "apply" | "quit" | "fault" | "journal", _) => {
+            usage(":apply [name], :revert <name> [n], :fault [name], :journal, :quit")
         }
         _ => return None,
     }

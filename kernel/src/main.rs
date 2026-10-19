@@ -22,6 +22,7 @@ mod build_service;
 mod console;
 mod cpu;
 mod edit_mode;
+mod edit_session;
 mod edit_tests;
 mod entry;
 mod faults;

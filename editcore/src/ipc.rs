@@ -29,10 +29,12 @@ pub enum Ipc<'a> {
     Cmd(&'a str),
     /// Record outbox job `seq` in git.
     Sync { seq: u64, job: SyncRequest<'a> },
+    /// Journal entries from `from` on, one a line, for a restarted service.
+    Replay { from: usize, entries: &'a str },
 }
 
-/// `open <component> [<label>] [at <path>:<line>]`, `cmd <line>`, or `sync <seq>`
-/// and the job's fields.
+/// `open <component> [<label>] [at <path>:<line>]`, `cmd <line>`, `sync <seq>`
+/// and the job's fields, or `replay <from>` and the entries.
 pub fn encode_ipc(message: &Ipc<'_>) -> Vec<u8> {
     match message {
         Ipc::Open {
@@ -51,6 +53,7 @@ pub fn encode_ipc(message: &Ipc<'_>) -> Vec<u8> {
         }
         Ipc::Cmd(line) => format!("cmd {line}").into_bytes(),
         Ipc::Sync { seq, job } => format!("sync {seq}\n{}", sync_fields(job)).into_bytes(),
+        Ipc::Replay { from, entries } => format!("replay {from}\n{entries}").into_bytes(),
     }
 }
 
@@ -95,6 +98,13 @@ pub fn decode_ipc(bytes: &[u8]) -> Result<Ipc<'_>, &'static str> {
         let job = read_sync(&mut reader)?;
         reader.end()?;
         return Ok(Ipc::Sync { seq, job });
+    }
+    if let Some(rest) = text.strip_prefix("replay ") {
+        let (from, entries) = rest.split_once('\n').ok_or("a replay has no entries")?;
+        let from = from
+            .parse()
+            .map_err(|_| "the entry number is not a number")?;
+        return Ok(Ipc::Replay { from, entries });
     }
     Err("an unknown request")
 }

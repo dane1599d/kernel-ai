@@ -98,15 +98,19 @@ pub(crate) fn check(
 }
 
 /// The uploads to evict to make room for one of `size` bytes: failed ones first,
-/// then the oldest, never the active version or the candidate. Busy when the count
-/// cannot be met, NoMemory when the bytes cannot.
+/// then the oldest, never the active version, the candidate or the pinned base of
+/// an edit session. Busy when the count cannot be met, NoMemory when the bytes
+/// cannot.
 pub(crate) fn victims(
     component: &Component,
     size: usize,
     used_elsewhere: usize,
 ) -> Result<Vec<String>, Error> {
     let ledger = &component.ledger;
-    let keep = |label: &str| ledger.active() == Some(label) || ledger.candidate() == Some(label);
+    let pinned = component.uploads.pinned.as_deref();
+    let keep = |label: &str| {
+        ledger.active() == Some(label) || ledger.candidate() == Some(label) || pinned == Some(label)
+    };
     let mut uploads: Vec<(bool, u64, &Version)> = component
         .versions()
         .iter()
@@ -151,6 +155,8 @@ pub struct Uploads {
     pub rejected: u64,
     pub evicted: u64,
     pub outbox: Outbox,
+    /// The version the edit session is based on, which eviction spares.
+    pub pinned: Option<String>,
 }
 
 impl Default for Uploads {
@@ -167,6 +173,7 @@ impl Uploads {
             rejected: 0,
             evicted: 0,
             outbox: Outbox::new(),
+            pinned: None,
         }
     }
 

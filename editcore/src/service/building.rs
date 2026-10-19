@@ -13,6 +13,8 @@ use livecore::artifact;
 
 /// Diagnostic lines a failed build shows.
 const DIAGNOSTICS: usize = 8;
+/// How a failed build that moved the cursor begins, after `err `.
+pub(crate) const MOVED: &str = "build failed; the cursor is on the first error";
 
 impl Service {
     pub(super) fn build(&mut self, env: &mut dyn Env) -> String {
@@ -111,7 +113,7 @@ impl Service {
             && let Some((path, line)) = lines.iter().find_map(|line| location(line))
             && session.goto(path, line)
         {
-            let mut reply = err("build failed; the cursor is on the first error");
+            let mut reply = err(MOVED);
             for line in &lines {
                 reply.push('\n');
                 reply.push_str(line);
@@ -133,7 +135,12 @@ impl Service {
 
 /// The built artifact must parse, name this component and the next label, and
 /// carry exactly the source that was sent.
-fn check_artifact(bytes: &[u8], component: &str, label: &str, bundle: &[u8]) -> Result<(), String> {
+pub(super) fn check_artifact(
+    bytes: &[u8],
+    component: &str,
+    label: &str,
+    bundle: &[u8],
+) -> Result<(), String> {
     let parsed = artifact::parse(bytes)?;
     let manifest = &parsed.manifest;
     if manifest.component != component || manifest.version != label {
@@ -149,7 +156,7 @@ fn check_artifact(bytes: &[u8], component: &str, label: &str, bundle: &[u8]) -> 
 }
 
 /// `path:line:col: ...` from a compiler message.
-fn location(line: &str) -> Option<(&str, usize)> {
+pub(crate) fn location(line: &str) -> Option<(&str, usize)> {
     let mut parts = line.splitn(4, ':');
     let path = parts.next()?;
     let line = parts.next()?.parse().ok()?;

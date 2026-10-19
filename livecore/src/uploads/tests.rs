@@ -179,6 +179,24 @@ fn eviction_takes_failed_uploads_first_then_the_oldest_and_keeps_what_runs() {
 }
 
 #[test]
+fn eviction_spares_the_base_an_edit_session_is_pinned_to() {
+    let mut notes = running();
+    for label in ["e1", "e2", "e3", "e4", "e5"] {
+        put(&mut notes, label).unwrap();
+    }
+    notes.uploads.pinned = Some("e1".into());
+    put(&mut notes, "e6").unwrap();
+    // e1 is the oldest, but an edit session is based on it.
+    assert_eq!(labels(&notes), ["2", "e1", "e3", "e4", "e5", "e6"]);
+    put(&mut notes, "e7").unwrap();
+    assert_eq!(labels(&notes), ["2", "e1", "e4", "e5", "e6", "e7"]);
+    // Unpinned, it goes next.
+    notes.uploads.pinned = None;
+    put(&mut notes, "e8").unwrap();
+    assert_eq!(labels(&notes), ["2", "e4", "e5", "e6", "e7", "e8"]);
+}
+
+#[test]
 fn a_store_full_of_versions_that_cannot_be_evicted_is_busy() {
     let mut notes = Component::new("notes");
     for n in 1..=15 {

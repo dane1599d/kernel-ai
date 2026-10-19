@@ -17,6 +17,9 @@ use livecore::{artifact, diff};
 use llmproto::http;
 
 mod building;
+mod replay;
+
+pub(crate) use building::{MOVED, location};
 
 /// How long a build may take, inside the kernel's wait for this service.
 pub const BUILD_TIMEOUT_MS: u64 = 150_000;
@@ -93,6 +96,7 @@ impl Service {
             }) => self.open(env, component, label, at),
             Ok(Ipc::Cmd(line)) => self.command(env, line),
             Ok(Ipc::Sync { seq, job }) => self.sync(env, seq, &job),
+            Ok(Ipc::Replay { from, entries }) => self.replay(env, from, entries),
             Err(why) => err(why),
         };
         fit(reply)

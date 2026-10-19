@@ -6,10 +6,10 @@ use kabi::Error;
 use kabi::live::{Info, put_label};
 
 const COMMIT: &str = "1a2b3c4d5e6f0123456789abcdef0123456789ab";
-const TOKEN: &str = "0123456789abcdef0123456789abcdef";
+pub(super) const TOKEN: &str = "0123456789abcdef0123456789abcdef";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Host {
+pub(super) enum Host {
     Builds,
     Fails,
     WrongLabel,
@@ -18,20 +18,20 @@ enum Host {
     Garbage,
 }
 
-struct Fake {
+pub(super) struct Fake {
     active: &'static str,
     next: &'static str,
-    artifacts: Vec<(&'static str, Vec<u8>)>,
-    puts: Vec<(String, Vec<u8>, String, String)>,
+    pub(super) artifacts: Vec<(&'static str, Vec<u8>)>,
+    pub(super) puts: Vec<(String, Vec<u8>, String, String)>,
     put_result: Result<(), Error>,
-    host: Host,
-    requests: Vec<Vec<u8>>,
-    controls: Vec<(String, String)>,
+    pub(super) host: Host,
+    pub(super) requests: Vec<Vec<u8>>,
+    pub(super) controls: Vec<(String, String)>,
     control_reply: Result<&'static str, Error>,
 }
 
 impl Fake {
-    fn new(lib: &str) -> Self {
+    pub(super) fn new(lib: &str) -> Self {
         Self {
             active: "2",
             next: "e1",

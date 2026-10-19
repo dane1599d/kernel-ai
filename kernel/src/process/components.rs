@@ -344,6 +344,16 @@ pub fn ack_sync(name: &str, seq: u64, sha: &str) {
     });
 }
 
+/// Spares version `label` of `name` from eviction while an edit session is based
+/// on it; None lifts the pin.
+pub fn pin(name: &str, label: Option<&str>) {
+    with(|all| {
+        if let Some(component) = all.iter_mut().find(|c| c.name == name) {
+            component.uploads.pinned = label.map(String::from);
+        }
+    });
+}
+
 /// A copy of `name`'s record; versions' bytes are shared, not copied.
 pub fn component(name: &str) -> Option<Component> {
     with(|all| all.iter().find(|c| c.name == name).cloned())
