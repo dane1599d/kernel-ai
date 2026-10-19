@@ -1,5 +1,6 @@
 //! Qwen3 inference on the CPU, without std: the model's shape from GGUF metadata,
-//! every weight checked against it, and an f32 KV cache sized to a context cap.
+//! every weight checked against it, an f32 KV cache sized to a context cap, the
+//! forward pass over the Q8_0 weights in the file, and greedy generation.
 
 #![no_std]
 
@@ -7,14 +8,22 @@ extern crate alloc;
 
 mod config;
 pub mod fixture;
+mod generate;
 mod kv;
+mod model;
 mod weights;
 
+#[cfg(test)]
+mod forward_tests;
+#[cfg(test)]
+mod reference;
 #[cfg(test)]
 mod tests;
 
 pub use config::{Config, MAX_VOCAB};
+pub use generate::{Ended, Next, argmax, generate};
 pub use kv::{KvCache, Rope};
+pub use model::Model;
 pub use weights::{Layer, Weights, check};
 
 use alloc::string::String;
@@ -37,6 +46,16 @@ pub enum Error {
     UnknownKey(String),
     /// A context cap of zero or past what the model was trained for.
     Context,
+    /// Every position of the KV cache is used.
+    ContextFull,
+    /// A KV cache made for another model shape or a longer context.
+    CacheShape,
+    /// A prompt with no tokens.
+    EmptyPrompt,
+    /// A logits buffer that is not one value per vocabulary entry.
+    Logits,
+    /// A token id past the vocabulary.
+    Token(u32),
     OutOfMemory,
 }
 
@@ -53,6 +72,11 @@ impl core::fmt::Display for Error {
                 write!(f, "unknown metadata {key}, which the engine cannot honour")
             }
             Self::Context => f.write_str("the context cap is zero or too long for the model"),
+            Self::ContextFull => f.write_str("the context is full"),
+            Self::CacheShape => f.write_str("the KV cache was made for another model"),
+            Self::EmptyPrompt => f.write_str("the prompt is empty"),
+            Self::Logits => f.write_str("the logits buffer does not match the vocabulary"),
+            Self::Token(id) => write!(f, "token {id} is past the vocabulary"),
             Self::OutOfMemory => f.write_str("out of memory"),
         }
     }

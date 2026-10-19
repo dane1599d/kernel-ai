@@ -5,8 +5,8 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
-# Qwen3 inference: config and shape checks, the KV cache and RoPE table, plus
-# generated fixture models for tests.
+# Qwen3 inference: config and shape checks, the KV cache, the forward pass and
+# greedy generation, plus generated fixture models for tests and xtask.
 [lib]
 doctest = false
 

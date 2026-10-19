@@ -10,6 +10,7 @@ use alloc::vec::Vec;
 pub struct KvCache {
     keys: Vec<f32>,
     values: Vec<f32>,
+    kv_dim: usize,
     capacity: usize,
     len: usize,
 }
@@ -25,6 +26,7 @@ impl KvCache {
         Ok(Self {
             keys: zeros(n)?,
             values: zeros(n)?,
+            kv_dim: config.kv_dim(),
             capacity,
             len: 0,
         })
@@ -51,6 +53,34 @@ impl KvCache {
     /// Bytes the cache holds.
     pub fn bytes(&self) -> usize {
         (self.keys.len() + self.values.len()) * core::mem::size_of::<f32>()
+    }
+
+    /// Whether the cache was made for a model of this shape.
+    pub(crate) fn fits(&self, config: &Config) -> bool {
+        self.kv_dim == config.kv_dim()
+            && Some(self.keys.len()) == config.n_layer.checked_mul(self.kv_dim * self.capacity)
+    }
+
+    pub(crate) fn advance(&mut self) {
+        self.len += 1;
+    }
+
+    fn range(&self, layer: usize, pos: usize) -> core::ops::Range<usize> {
+        let start = (layer * self.capacity + pos) * self.kv_dim;
+        start..start + self.kv_dim
+    }
+
+    /// The key and value slots of `layer` at `pos`, to be filled.
+    pub(crate) fn slot_mut(&mut self, layer: usize, pos: usize) -> (&mut [f32], &mut [f32]) {
+        let range = self.range(layer, pos);
+        (&mut self.keys[range.clone()], &mut self.values[range])
+    }
+
+    /// Keys and values of `layer` for positions `0..=last`.
+    pub(crate) fn layer(&self, layer: usize, last: usize) -> (&[f32], &[f32]) {
+        let start = self.range(layer, 0).start;
+        let end = self.range(layer, last).end;
+        (&self.keys[start..end], &self.values[start..end])
     }
 }
 

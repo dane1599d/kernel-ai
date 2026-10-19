@@ -25,9 +25,14 @@ opt-level = 2
 # The inference engine crates at the same level: unoptimised, the Q8_0 matvec runs
 # about 100x slower in its AVX2 tier and 15-20x in its baseline, so the
 # generated-model tests and `model chat` would crawl. Level 2 matches wasmhost and
-# every dependency; level 3 measured no faster for the AVX2 tier.
+# every dependency; level 3 measured no faster for the AVX2 tier. quant also drops
+# overflow checks (its sums are bounded by construction) and debug assertions,
+# which also turns off Rust's precondition checks inside its unsafe SIMD loads;
+# together they cost a third of the speed. Its tests compare exact results.
 [profile.dev.package.quant]
 opt-level = 2
+overflow-checks = false
+debug-assertions = false
 
 [profile.dev.package.gguf]
 opt-level = 2
