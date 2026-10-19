@@ -1,6 +1,8 @@
 //! The gate's own checks: every reference script passes, and each way a model can
 //! get a task wrong is caught.
 
+use super::judge::contains_piece;
+use super::tasks::Policy;
 use super::*;
 use std::cell::RefCell;
 use std::collections::VecDeque;
