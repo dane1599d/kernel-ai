@@ -98,7 +98,7 @@ pub fn excerpt(bundle: &[u8], at: &Location, radius: u32, width: usize) -> Optio
         at.line.saturating_add(radius),
     );
     let lines = bytes
-        .split(|&b| b == b'\n')
+        .split_inclusive(|&b| b == b'\n')
         .zip(1u32..)
         .filter(|(_, n)| (first..=last).contains(n))
         .map(|(text, n)| {
@@ -133,7 +133,8 @@ pub fn fault_lines(component: &Component, width: usize) -> Result<Vec<String>, S
         .unwrap_or_default();
     let lines = excerpt(source, at, AROUND, width)
         .ok_or_else(|| format!("{name} {label} trapped at {place}; its source has no such file"))?;
-    let mut shown = Vec::from([format!("{name} {label} trapped at {place}:")]);
+    let header = format!("{name} {label} trapped at {place}:");
+    let mut shown = Vec::from([header.chars().take(width).collect()]);
     shown.extend(lines);
     Ok(shown)
 }
@@ -163,6 +164,59 @@ mod tests {
         };
         assert_eq!(excerpt(&source, &elsewhere, 2, 80), None);
         assert_eq!(excerpt(b"not a bundle", &first, 2, 80), None::<Vec<String>>);
+    }
+
+    #[test]
+    fn an_excerpt_ends_at_the_last_line_with_or_without_a_newline() {
+        let at = parse("panicked at src/lib.rs:5:1").unwrap();
+        for text in [
+            &b"1\n2\n3\nfour\nfive\n"[..],
+            b"1\r\n2\r\n3\r\nfour\r\nfive",
+        ] {
+            let source = crate::artifact::bundle(&[("src/lib.rs", text)]);
+            assert_eq!(
+                excerpt(&source, &at, 1, 80).unwrap(),
+                ["     4 | four", ">    5 | five"]
+            );
+        }
+    }
+
+    #[test]
+    fn fault_lines_name_the_trap_and_fit_the_width() {
+        use crate::artifact::{Manifest, append_custom_section};
+        use crate::store::Bytes;
+        use kabi::live::{MANIFEST_SECTION, SOURCE_SECTION};
+        let mut module = Vec::from(&b"\0asm\x01\0\0\0"[..]);
+        let manifest = Manifest {
+            component: "notes".into(),
+            version: "2".into(),
+            interface: "notes@1".into(),
+            features: "-".into(),
+            build: "ab".into(),
+            source: "cd".into(),
+        };
+        append_custom_section(&mut module, MANIFEST_SECTION, manifest.format().as_bytes());
+        let source =
+            crate::artifact::bundle(&[("components/notes/src/lib.rs", b"one\ntwo\nthree\n")]);
+        append_custom_section(&mut module, SOURCE_SECTION, &source);
+        let mut notes = Component::new("notes");
+        notes.add_version("2", Bytes::shared(module)).unwrap();
+        notes.ledger.last_located = Some(crate::ledger::Located {
+            label: String::from("2"),
+            at: parse("panicked at components/notes/src/lib.rs:3:1").unwrap(),
+        });
+        assert_eq!(
+            fault_lines(&notes, 80).unwrap(),
+            [
+                "notes 2 trapped at components/notes/src/lib.rs:3:",
+                "     1 | one",
+                "     2 | two",
+                ">    3 | three",
+            ]
+        );
+        let narrow = fault_lines(&notes, 12).unwrap();
+        assert_eq!(narrow[0], "notes 2 trap");
+        assert!(narrow.iter().all(|line| line.chars().count() <= 12));
     }
 
     #[test]

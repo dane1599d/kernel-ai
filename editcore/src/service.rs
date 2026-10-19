@@ -122,13 +122,12 @@ impl Service {
             None => info.active().to_string(),
         };
         let mut dropped = String::new();
+        // The session whose unbuilt edits an open-at keeps, if the version opens.
+        let mut kept = None;
         if let Some(session) = self.session.as_mut() {
             if session.component == component && session.label == label {
                 if let Some(at) = at {
-                    return match goto(session, at) {
-                        Ok(place) => ok(format!("editing {component} {label} at {place}")),
-                        Err(why) => err(why),
-                    };
+                    return goto_again(session, at);
                 }
                 let state = if session.changed() {
                     ", with your edits"
@@ -139,12 +138,10 @@ impl Service {
             }
             if session.changed() && session.built.is_none() {
                 if at.is_some() {
-                    return err(format!(
-                        "{} {} has edits that are not built; build them or reset before opening {component} {label} there",
-                        session.component, session.label
-                    ));
+                    kept = Some(format!("{} {}", session.component, session.label));
+                } else {
+                    dropped = format!("; dropped the unbuilt edits to {}", session.label);
                 }
-                dropped = format!("; dropped the unbuilt edits to {}", session.label);
             }
         }
         let bytes = match env.artifact(component, &label) {
@@ -167,27 +164,31 @@ impl Service {
                 editable.dir
             ));
         }
-        match Session::open(component, &label, parsed.source) {
-            Ok(mut session) => {
-                let files = session.files().len();
-                let reply = match at.map(|at| goto(&mut session, at)) {
-                    Some(Ok(place)) => ok(format!(
-                        "editing {component} {label} at {place}: {files} files{dropped}"
-                    )),
-                    Some(Err(why)) => ok(format!(
-                        "editing {component} {label}: {files} files; {why}{dropped}"
-                    )),
-                    None => ok(format!(
-                        "editing {component} {label}: {files} files; {}, {} lines{dropped}",
-                        session.current().path,
-                        session.current().len()
-                    )),
-                };
-                self.session = Some(session);
-                reply
-            }
-            Err(why) => err(why),
+        let mut session = match Session::open(component, &label, parsed.source) {
+            Ok(session) => session,
+            Err(why) => return err(why),
+        };
+        if let Some(kept) = kept {
+            return err(format!(
+                "{kept} has edits that are not built; build them or reset before opening {component} {label} there"
+            ));
         }
+        let files = session.files().len();
+        let reply = match at.map(|at| goto(&mut session, at)) {
+            Some(Ok(place)) => ok(format!(
+                "editing {component} {label} at {place}: {files} files{dropped}"
+            )),
+            Some(Err(why)) => ok(format!(
+                "editing {component} {label}: {files} files; {why}{dropped}"
+            )),
+            None => ok(format!(
+                "editing {component} {label}: {files} files; {}, {} lines{dropped}",
+                session.current().path,
+                session.current().len()
+            )),
+        };
+        self.session = Some(session);
+        reply
     }
 
     fn command(&mut self, env: &mut dyn Env, line: &str) -> String {
@@ -256,6 +257,28 @@ fn goto(session: &mut Session, at: At<'_>) -> Result<String, String> {
             "{} is not in {} {}",
             at.path, session.component, session.label
         ))
+    }
+}
+
+/// Moves the open session's cursor to `at`. A line in a file the founder changed
+/// is the stored version's, so the reply says it may have moved.
+fn goto_again(session: &mut Session, at: At<'_>) -> String {
+    let edited = session
+        .files()
+        .iter()
+        .position(|file| file.path == at.path)
+        .is_some_and(|index| session.file_changed(index));
+    let place = match goto(session, at) {
+        Ok(place) => place,
+        Err(why) => return err(why),
+    };
+    let (component, label) = (&session.component, &session.label);
+    if edited {
+        ok(format!(
+            "editing {component} {label} at {place}, with your edits; the line is {label}'s as stored, and your edits may have moved it"
+        ))
+    } else {
+        ok(format!("editing {component} {label} at {place}"))
     }
 }
 

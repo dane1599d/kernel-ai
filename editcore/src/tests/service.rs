@@ -450,3 +450,43 @@ fn open_at_a_line_never_drops_edits_that_are_not_built() {
     );
     assert_eq!(service.session.as_ref().unwrap().line(), 3);
 }
+
+#[test]
+fn open_at_a_version_that_cannot_open_says_why_and_keeps_unbuilt_edits() {
+    let (mut service, mut env) = opened("a\nb\n");
+    let fixture = bundle(&[
+        ("components/fixtures/notes-v1/Cargo.toml", b""),
+        ("components/fixtures/notes-v1/src/lib.rs", b""),
+    ]);
+    env.artifacts.push(("1", artifact("notes", "1", &fixture)));
+    kernel(&mut service, &mut env, "cmd c 1 changed");
+    assert_eq!(
+        kernel(&mut service, &mut env, &format!("open notes 1 at {LIB}:1")),
+        "err notes 1 is not editable: its source is not components/notes"
+    );
+    assert!(
+        kernel(&mut service, &mut env, &format!("open notes 7 at {LIB}:1"))
+            .contains("no version notes 7")
+    );
+    let session = service.session.as_ref().unwrap();
+    assert_eq!((session.label.as_str(), session.changed()), ("2", true));
+    assert!(kernel(&mut service, &mut env, "cmd diff").contains("+ | changed"));
+}
+
+#[test]
+fn open_at_a_line_in_an_edited_file_says_the_line_may_have_moved() {
+    let (mut service, mut env) = opened("a\nb\nc\n");
+    kernel(&mut service, &mut env, "cmd i 1 above");
+    assert_eq!(
+        kernel(&mut service, &mut env, &format!("open notes 2 at {LIB}:2")),
+        format!(
+            "ok editing notes 2 at {LIB}:2, with your edits; the line is 2's as stored, and your edits may have moved it"
+        )
+    );
+    assert_eq!(service.session.as_ref().unwrap().line(), 2);
+    // A file the edits left alone keeps the stored version's lines.
+    assert_eq!(
+        kernel(&mut service, &mut env, &format!("open notes 2 at {TOML}:1")),
+        format!("ok editing notes 2 at {TOML}:1")
+    );
+}
