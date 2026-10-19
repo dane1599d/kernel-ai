@@ -1,8 +1,8 @@
 //! M4 self-tests: threads sleep and wake, a woken interactive thread beats eight CPU
 //! hogs to the CPU, and a broken policy is ejected by the watchdog.
 
-use crate::keyboard::{self, Decoder};
-use crate::{log, threads};
+use crate::keyboard::Decoder;
+use crate::{i8042, log, threads};
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use sched::{EnqueueReason, RoundRobin, SchedPolicy, Tid};
 
@@ -89,7 +89,7 @@ pub fn latency_check() -> Result<(), &'static str> {
     if !wait_for(|| TYPED_LINE_DONE.load(Ordering::SeqCst), 30_000) {
         return Err("sched: the typed line never reached the interactive thread");
     }
-    let (wakes, worst) = keyboard::wake_latency();
+    let (wakes, worst) = i8042::wake_latency();
     let work: [u64; HOGS] = core::array::from_fn(|i| HOG_WORK[i].load(Ordering::Relaxed));
     let (policy, ejections, switches) = threads::stats();
     log!(

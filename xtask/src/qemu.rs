@@ -86,18 +86,23 @@ pub fn free_port() -> Result<u16, String> {
         .map_err(|e| format!("cannot find a free port for the QEMU monitor: {e}"))
 }
 
-/// Types keys into the guest through the QEMU monitor's `sendkey` command.
+/// Types keys into the guest through the QEMU monitor: a key name with
+/// `sendkey`, and a `!` line as the monitor command after the `!`.
 fn type_keys(port: u16, keys: &[&str]) {
     for _ in 0..50 {
         if let Ok(mut monitor) = TcpStream::connect(("127.0.0.1", port)) {
             thread::sleep(Duration::from_millis(200));
             for key in keys {
-                if writeln!(monitor, "sendkey {key}").is_err() {
+                let sent = match key.strip_prefix('!') {
+                    Some(command) => writeln!(monitor, "{command}"),
+                    None => writeln!(monitor, "sendkey {key}"),
+                };
+                if sent.is_err() {
                     break;
                 }
                 thread::sleep(Duration::from_millis(150));
             }
-            println!("xtask: typed {} keys through the QEMU monitor", keys.len());
+            println!("xtask: sent {} inputs through the QEMU monitor", keys.len());
             return;
         }
         thread::sleep(Duration::from_millis(100));

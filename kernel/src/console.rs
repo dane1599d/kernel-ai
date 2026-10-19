@@ -13,6 +13,8 @@ const SIZE: RasterHeight = RasterHeight::Size16;
 const CHAR_WIDTH: usize = get_raster_width(WEIGHT, SIZE);
 const CHAR_HEIGHT: usize = SIZE as usize;
 const REPLACEMENT: char = '\u{FFFD}';
+/// Width and height of a text cell in pixels.
+pub const CELL: (usize, usize) = (CHAR_WIDTH, CHAR_HEIGHT);
 
 struct Console {
     base: *mut u32,
@@ -31,10 +33,24 @@ static CONSOLE: Mutex<Option<Console>> = Mutex::new(None);
 /// Text columns and rows of the framebuffer console; 0 when there is none.
 static COLS: AtomicUsize = AtomicUsize::new(0);
 static ROWS: AtomicUsize = AtomicUsize::new(0);
+/// Framebuffer width and height in pixels; 0 when there is none.
+static WIDTH: AtomicUsize = AtomicUsize::new(0);
+static HEIGHT: AtomicUsize = AtomicUsize::new(0);
 
 /// Columns and rows of text the screen holds, if there is a framebuffer console.
 pub fn size() -> Option<(usize, usize)> {
     match (COLS.load(Ordering::Relaxed), ROWS.load(Ordering::Relaxed)) {
+        (0, _) | (_, 0) => None,
+        size => Some(size),
+    }
+}
+
+/// Width and height of the framebuffer in pixels, if there is a console on it.
+pub fn pixels() -> Option<(usize, usize)> {
+    match (
+        WIDTH.load(Ordering::Relaxed),
+        HEIGHT.load(Ordering::Relaxed),
+    ) {
         (0, _) | (_, 0) => None,
         size => Some(size),
     }
@@ -56,6 +72,8 @@ pub fn init(fb: &Framebuffer) -> bool {
     console.clear(fb.width as usize, fb.height as usize);
     COLS.store(console.cols, Ordering::Relaxed);
     ROWS.store(console.rows, Ordering::Relaxed);
+    WIDTH.store(fb.width as usize, Ordering::Relaxed);
+    HEIGHT.store(fb.height as usize, Ordering::Relaxed);
     *CONSOLE.lock() = Some(console);
     true
 }

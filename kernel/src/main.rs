@@ -2,12 +2,13 @@
 //!
 //! Boots through Limine, logs to COM1 and the framebuffer console, loads the GDT,
 //! TSS and IDT, sets up memory, then the APICs, HPET, a 1 kHz timer and the PS/2
-//! keyboard, starts the scheduler, and brings up every other CPU. Fault addresses
-//! resolve to source lines from the `kernel.lines` module. The kernel command line
-//! selects a self-test: `test` (boot checks), or `test=` one of `page-fault`,
-//! `double-fault`, `write-protect`, `stack-overflow`, `timer`, `keyboard`, `sched`,
-//! `watchdog`, `smp`, `tlb`, `storm`, `storm-SECONDS`, `net` or `terminal`. `llm=IP:PORT`
-//! and `model=NAME` point the LLM client at a server.
+//! keyboard and mouse, starts the scheduler, and brings up every other CPU. Fault
+//! addresses resolve to source lines from the `kernel.lines` module. The kernel
+//! command line selects a self-test: `test` (boot checks), or `test=` one of
+//! `page-fault`, `double-fault`, `write-protect`, `stack-overflow`, `timer`,
+//! `keyboard`, `pointer`, `sched`, `watchdog`, `smp`, `tlb`, `storm`, `storm-SECONDS`,
+//! `net` or `terminal`. `llm=IP:PORT` and `model=NAME` point the LLM client at a
+//! server; `pointerlog` logs every pointer move and click.
 
 #![no_std]
 #![no_main]
@@ -25,6 +26,7 @@ mod entry;
 mod faults;
 mod gdt;
 mod hpet;
+mod i8042;
 mod idt;
 mod ipc;
 mod keyboard;
@@ -37,6 +39,7 @@ mod metrics;
 mod net;
 mod percpu;
 mod platform;
+mod pointer;
 mod port;
 mod process;
 mod qemu;
@@ -189,6 +192,7 @@ extern "C" fn boot_continue() -> ! {
     if let Some(cmdline) = CMDLINE.response() {
         llm::configure(cmdline.cmdline());
         build_service::configure(cmdline.cmdline());
+        pointer::configure(cmdline.cmdline());
     }
     match cpu::init(entry::syscall_entry as *const () as u64) {
         Ok(features) => log!(
@@ -225,6 +229,7 @@ extern "C" fn boot_continue() -> ! {
         }
         SelfTest::Timer => run_case(timer::sixty_second_check),
         SelfTest::Keyboard => run_case(keyboard::typing_check),
+        SelfTest::Pointer => run_case(pointer::self_test),
         SelfTest::Sched => run_case(sched_tests::latency_check),
         SelfTest::Watchdog => run_case(sched_tests::watchdog_check),
         SelfTest::Smp => run_case(smp_tests::all_cpus_check),
@@ -269,7 +274,7 @@ fn start_other_cpus() {
     }
 }
 
-/// ACPI, local APIC, HPET, the 1 kHz timer and the keyboard, then interrupts on.
+/// ACPI, local APIC, HPET, the 1 kHz timer and the PS/2 ports, then interrupts on.
 fn init_devices() -> &'static acpitables::Platform {
     let hhdm = HHDM.response().map_or(0, |r| r.offset);
     let Some(rsdp) = RSDP.response().map(|r| r.address as u64) else {
@@ -283,7 +288,7 @@ fn init_devices() -> &'static acpitables::Platform {
             .ok_or("no HPET; a PIT fallback is not implemented yet")?;
         hpet::init(hpet)?;
         timer::init()?;
-        keyboard::init(platform, apic_id)?;
+        i8042::init(platform, apic_id)?;
         log!(
             "devices: local APIC id {apic_id}, {} I/O APIC(s), {} IRQ override(s)",
             platform.io_apics.len(),

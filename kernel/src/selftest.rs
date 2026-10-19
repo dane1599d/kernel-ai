@@ -14,6 +14,8 @@ pub enum SelfTest {
     StackOverflow,
     Timer,
     Keyboard,
+    /// M9d: mouse moves and clicks arrive in order with the keyboard's Ctrl.
+    Pointer,
     Sched,
     Watchdog,
     Smp,
@@ -45,6 +47,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=stack-overflow" => Some(SelfTest::StackOverflow),
             "test=timer" => Some(SelfTest::Timer),
             "test=keyboard" => Some(SelfTest::Keyboard),
+            "test=pointer" => Some(SelfTest::Pointer),
             "test=sched" => Some(SelfTest::Sched),
             "test=watchdog" => Some(SelfTest::Watchdog),
             "test=smp" => Some(SelfTest::Smp),

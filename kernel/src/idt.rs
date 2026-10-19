@@ -6,7 +6,7 @@
 
 use crate::entry::{self, TrapFrame};
 use crate::gdt::{DOUBLE_FAULT_IST_INDEX, KERNEL_CODE, MACHINE_CHECK_IST_INDEX, NMI_IST_INDEX};
-use crate::{apic, cpu, faults, keyboard, process, smp, threads, timer};
+use crate::{apic, cpu, faults, i8042, process, smp, threads, timer};
 use spin::LazyLock;
 use x86_64::VirtAddr;
 use x86_64::instructions::tables::lidt;
@@ -64,13 +64,14 @@ static IDT: LazyLock<Idt> = LazyLock::new(|| {
         };
         gates[vector] = Gate::new(*stub, ist);
     }
-    let devices: [(u8, unsafe extern "C" fn()); 6] = [
+    let devices: [(u8, unsafe extern "C" fn()); 7] = [
         (apic::TIMER_VECTOR, entry::vector_timer),
         (apic::KEYBOARD_VECTOR, entry::vector_keyboard),
         (apic::RESCHEDULE_VECTOR, entry::vector_reschedule),
         (apic::TLB_VECTOR, entry::vector_tlb),
         (apic::HALT_VECTOR, entry::vector_halt),
         (apic::SPURIOUS_VECTOR, entry::vector_spurious),
+        (apic::MOUSE_VECTOR, entry::vector_mouse),
     ];
     for (vector, stub) in devices {
         gates[usize::from(vector)] = Gate::new(stub, None);
@@ -97,8 +98,9 @@ pub extern "C" fn trap_dispatch(frame: &mut TrapFrame) {
             apic::end_of_interrupt();
             threads::on_tick();
         }
-        v if v == u64::from(apic::KEYBOARD_VECTOR) => {
-            let waiter = keyboard::on_interrupt();
+        // Both PS/2 ports: either interrupt drains whatever the controller holds.
+        v if v == u64::from(apic::KEYBOARD_VECTOR) || v == u64::from(apic::MOUSE_VECTOR) => {
+            let waiter = i8042::on_interrupt();
             apic::end_of_interrupt();
             if let Some(tid) = waiter {
                 threads::wake(tid);

@@ -10,8 +10,8 @@ pub type AfterCheck = fn(&BuildService) -> Result<(), String>;
 pub struct TestCase {
     pub name: &'static str,
     pub cmdline: &'static str,
-    /// QEMU `sendkey` names, in stages: stage N is typed when the kernel logs
-    /// "ready for keys" for the Nth time.
+    /// QEMU `sendkey` names, or `!` and a monitor command, in stages: stage N is
+    /// sent when the kernel logs "ready for keys" for the Nth time.
     pub keys: &'static [&'static [&'static str]],
     /// Texts that must all appear on the serial console for the case to pass.
     pub expect: &'static [&'static str],
@@ -40,6 +40,18 @@ const fn case(name: &'static str, cmdline: &'static str) -> TestCase {
 /// "kai" and Enter.
 const KAI: &[&str] = &["k", "a", "i", "ret"];
 
+/// Moves the mouse right 38 and down 40 and clicks; then holds Ctrl for 1.5 s and
+/// clicks again inside the hold. Mouse events skip the key queue that delays the
+/// Ctrl release, so the second click lands while Ctrl is down.
+const POINTER: &[&str] = &[
+    "!mouse_move 38 40",
+    "!mouse_button 1",
+    "!mouse_button 0",
+    "!sendkey ctrl 1500",
+    "!mouse_button 1",
+    "!mouse_button 0",
+];
+
 /// "policy rr", "ask hello" and "show me the cpus please" (plain English, so the
 /// shell asks the LLM for a script), each followed by Enter. Then, once the terminal
 /// shows the question, "yes" and Enter.
@@ -62,6 +74,11 @@ pub const TEST_CASES: &[TestCase] = &[
     TestCase {
         keys: &[KAI],
         ..case("keyboard", "test=keyboard")
+    },
+    TestCase {
+        keys: &[POINTER],
+        expect: &["pointer: at 38 40 cell 2 5", "pointer: click 1 ctrl"],
+        ..case("pointer", "test=pointer pointerlog")
     },
     TestCase {
         keys: &[KAI],

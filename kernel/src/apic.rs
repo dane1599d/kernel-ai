@@ -11,6 +11,7 @@ pub const KEYBOARD_VECTOR: u8 = 0x21;
 pub const RESCHEDULE_VECTOR: u8 = 0x22;
 pub const TLB_VECTOR: u8 = 0x23;
 pub const HALT_VECTOR: u8 = 0x24;
+pub const MOUSE_VECTOR: u8 = 0x25;
 pub const SPURIOUS_VECTOR: u8 = 0xFF;
 
 const IA32_APIC_BASE: u32 = 0x1B;

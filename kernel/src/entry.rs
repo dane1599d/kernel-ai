@@ -331,6 +331,7 @@ stub!(vector_reschedule, crate::apic::RESCHEDULE_VECTOR);
 stub!(vector_tlb, crate::apic::TLB_VECTOR);
 stub!(vector_halt, crate::apic::HALT_VECTOR);
 stub!(vector_spurious, crate::apic::SPURIOUS_VECTOR);
+stub!(vector_mouse, crate::apic::MOUSE_VECTOR);
 
 /// The 32 exception stubs, indexed by vector.
 pub const EXCEPTIONS: [unsafe extern "C" fn(); 32] = [

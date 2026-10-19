@@ -453,6 +453,7 @@ dependencies = [
  "spike-wasmi",
  "spin 0.12.3",
  "talc",
+ "termcore",
  "uelf",
  "virtio-drivers",
  "x86_64",
@@ -912,6 +913,10 @@ dependencies = [
  "allocator-api2 0.4.0",
  "lock_api",
 ]
+
+[[package]]
+name = "termcore"
+version = "0.0.0"
 
 [[package]]
 name = "thin-vec"
