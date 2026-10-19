@@ -18,6 +18,11 @@ A from-scratch x86_64 operating system in Rust, inspired by TempleOS, with a loc
 | `sched/` | Host-tested scheduler: mechanism, policies, watchdog and a simulator. |
 | `llmproto/` | Host-tested HTTP/1.1 and OpenAI chat protocol for the LLM client. |
 | `spikes/` | M0 proofs that Rhai and wasmi run on bare metal. |
+| `gguf/` | Zero-copy reader for GGUF model files, which it treats as hostile. |
+| `cpufeat/` | CPUID and XCR0: which vector instruction sets may run. |
+| `quant/` | Q8_0 quantisation and the matrix-vector product, in bit-identical tiers. |
+| `bpe/` | Qwen's tokenizer: byte-level BPE, the qwen2 pretokenizer and ChatML. |
+| `infer/` | The Qwen3 forward pass and greedy generation, plus generated test models. |
 
 ## Requirements
 
@@ -34,7 +39,16 @@ cargo xtask run --llm 192.168.1.50:8080 --model qwen3-8b  # with an LLM server
 cargo xtask test             # boots each self-test case headless (14 cases on 4 CPUs, with a mock LLM server)
 cargo xtask test --accel kvm # use KVM (Linux or WSL2)
 cargo xtask soak             # the 10-minute spawn/exit/sleep storm
-cargo test -p xtask -p linetable -p mm -p acpitables -p sched -p llmproto --features linetable/alloc  # host unit tests
+cargo test -p xtask -p gguf -p cpufeat -p quant -p bpe -p infer -p linetable -p mm -p acpitables -p sched -p llmproto --features linetable/alloc  # host unit tests
+```
+
+The local model, on the host, through Kernel AI's own engine (no QEMU needed):
+
+```bash
+cargo xtask setup            # check this PC, then download Qwen3-0.6B to D:\kai-models and check its SHA-256
+cargo xtask model chat "What does an operating system kernel do?"
+cargo xtask model check      # re-hash the file and compare with llama.cpp's ids
+cargo xtask bench quant      # measure the engine on this CPU
 ```
 
 ## Licence

@@ -50,7 +50,7 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
         Some("smoke") => Task::Smoke,
         other => {
             return Err(format!(
-                "expected build, run, test, soak, smoke or fluency, got {other:?}"
+                "expected build, run, test, soak, smoke, fluency, setup, model or bench, got {other:?}"
             ));
         }
     };

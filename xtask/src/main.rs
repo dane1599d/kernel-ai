@@ -6,6 +6,7 @@
 //! cargo xtask soak  [--accel auto|kvm|whpx|tcg]   (10-minute storm, M5 exit test)
 //! cargo xtask smoke   (the live, edit and boot manifest scenarios on the host only, no QEMU)
 //! cargo xtask fluency --llm HOST:PORT --model NAME [--repeat N]   (M8b script gate, host only)
+//! cargo xtask setup | model chat|check|pin | bench quant   (the local LLM on the host; see models/mod.rs)
 //!
 //! `test` boots the kernel headless once per test case (boot and memory checks,
 //! page fault, double fault, write-protect, stack overflow, 60 s timer, keyboard,
@@ -25,6 +26,7 @@ mod fluency;
 mod httpd;
 mod lines;
 mod mock_llm;
+mod models;
 mod options;
 mod qemu;
 mod smoke;
@@ -44,10 +46,10 @@ const KERNEL_TARGET: &str = "x86_64-unknown-none";
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
-    let result = if args.first().map(String::as_str) == Some("fluency") {
-        fluency::main(&args[1..], &workspace_root().join("target"))
-    } else {
-        parse_args(&args).and_then(|options| execute(&options))
+    let result = match args.first().map(String::as_str) {
+        Some("fluency") => fluency::main(&args[1..], &workspace_root().join("target")),
+        Some("setup" | "model" | "bench") => models::main(&args),
+        _ => parse_args(&args).and_then(|options| execute(&options)),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

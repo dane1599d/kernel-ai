@@ -1240,12 +1240,17 @@ name = "xtask"
 version = "0.0.0"
 dependencies = [
  "addr2line",
+ "bpe",
+ "cpufeat",
  "editcore",
+ "gguf",
+ "infer",
  "kabi",
  "linetable",
  "livecore",
  "llmproto",
  "object",
+ "quant",
  "rustc-demangle",
  "serde_json",
  "sha2",
