@@ -426,6 +426,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "infer"
+version = "0.0.0"
+dependencies = [
+ "bpe",
+ "gguf",
+ "libm",
+ "quant",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"

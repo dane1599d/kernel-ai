@@ -1,8 +1,8 @@
 [workspace]
 resolver = "3"
-members = ["acpitables", "bpe", "compsdk", "cpufeat", "editcore", "gguf", "livecore", "quant", "wasmhost", "components/notes", "components/fixtures/notes-v1", "components/fixtures/notes-bad", "kabi", "kernel", "linetable", "llmproto", "mm", "sched", "shellcore", "supervise", "termcore", "uelf", "user", "xtask", "spikes/rhai", "spikes/wasmi"]
+members = ["acpitables", "bpe", "compsdk", "cpufeat", "editcore", "gguf", "infer", "livecore", "quant", "wasmhost", "components/notes", "components/fixtures/notes-v1", "components/fixtures/notes-bad", "kabi", "kernel", "linetable", "llmproto", "mm", "sched", "shellcore", "supervise", "termcore", "uelf", "user", "xtask", "spikes/rhai", "spikes/wasmi"]
 # Host builds only build the xtask runner; the kernel, user programs and spikes are built by xtask for x86_64-unknown-none.
-default-members = ["acpitables", "bpe", "compsdk", "cpufeat", "editcore", "gguf", "livecore", "quant", "wasmhost", "components/notes", "components/fixtures/notes-v1", "components/fixtures/notes-bad", "kabi", "linetable", "llmproto", "mm", "sched", "shellcore", "supervise", "termcore", "uelf", "xtask"]
+default-members = ["acpitables", "bpe", "compsdk", "cpufeat", "editcore", "gguf", "infer", "livecore", "quant", "wasmhost", "components/notes", "components/fixtures/notes-v1", "components/fixtures/notes-bad", "kabi", "linetable", "llmproto", "mm", "sched", "shellcore", "supervise", "termcore", "uelf", "xtask"]
 
 [workspace.package]
 edition = "2024"
@@ -36,6 +36,9 @@ opt-level = 2
 opt-level = 2
 
 [profile.dev.package.bpe]
+opt-level = 2
+
+[profile.dev.package.infer]
 opt-level = 2
 
 [profile.release]
