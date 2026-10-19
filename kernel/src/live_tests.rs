@@ -127,8 +127,19 @@ pub fn check() -> Result<(), &'static str> {
     if !explained {
         return Err("live: :why notes does not explain the latest rollback");
     }
+    // `:fault notes` with no build service: the lines around 3-trap's panic, from
+    // the kernel's own store.
+    let shown = crate::edit_mode::fault(NAME);
+    crate::edit_mode::show(&shown);
+    let marked = shown.lines().any(|line| line.starts_with('>'));
+    if !shown.starts_with(FAULT_AT) || !marked {
+        return Err("live: :fault notes does not show 3-trap's line");
+    }
     Ok(())
 }
+
+/// What `:fault notes` names after the scenario: 3-trap's panic, in part C.
+const FAULT_AT: &str = "ok notes 3-trap trapped at components/fixtures/notes-bad/src/lib.rs:";
 
 /// What the facts say about the scenario's last rollback, in part F.
 const LATEST_ROLLBACK: &str = "latest rollback: 3-spin (host-restart)";

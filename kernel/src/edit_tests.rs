@@ -70,6 +70,10 @@ impl Driver for Kernel {
             self.edits += 1;
             return Ok(edit_mode::open(name, words.next()));
         }
+        if let Some(name) = line.strip_prefix(":fault ") {
+            self.edits += 1;
+            return Ok(edit_mode::fault(name));
+        }
         if line == ":quit" {
             return Ok(edit_mode::quit());
         }

@@ -407,3 +407,46 @@ fn try_has_the_kernel_rehearse_the_last_build() {
     assert_eq!(kernel(&mut service, &mut env, "cmd try"), nothing);
     assert_eq!(env.controls.len(), 3);
 }
+
+#[test]
+fn open_at_a_line_moves_the_cursor_there() {
+    let (mut service, mut env) = opened("a\nb\nc\n");
+    assert_eq!(
+        kernel(&mut service, &mut env, &format!("open notes 2 at {LIB}:2")),
+        format!("ok editing notes 2 at {LIB}:2")
+    );
+    assert!(kernel(&mut service, &mut env, "cmd p").contains("lines 2 to 3"));
+    // A line past the end is the last line.
+    assert_eq!(
+        kernel(&mut service, &mut env, &format!("open notes 2 at {LIB}:9")),
+        format!("ok editing notes 2 at {LIB}:3")
+    );
+    assert_eq!(
+        kernel(
+            &mut service,
+            &mut env,
+            "open notes 2 at components/notes/src/x.rs:1"
+        ),
+        "err components/notes/src/x.rs is not in notes 2"
+    );
+}
+
+#[test]
+fn open_at_a_line_never_drops_edits_that_are_not_built() {
+    let (mut service, mut env) = opened("a\nb\n");
+    env.artifacts
+        .push(("e1", artifact("notes", "e1", &small("x\ny\nz\n"))));
+    kernel(&mut service, &mut env, "cmd c 1 changed");
+    let refused = kernel(&mut service, &mut env, &format!("open notes e1 at {LIB}:3"));
+    assert!(
+        refused.starts_with("err notes 2 has edits that are not built"),
+        "{refused}"
+    );
+    assert!(service.session.as_ref().unwrap().changed());
+    kernel(&mut service, &mut env, "cmd reset");
+    assert_eq!(
+        kernel(&mut service, &mut env, &format!("open notes e1 at {LIB}:3")),
+        format!("ok editing notes e1 at {LIB}:3: 2 files")
+    );
+    assert_eq!(service.session.as_ref().unwrap().line(), 3);
+}

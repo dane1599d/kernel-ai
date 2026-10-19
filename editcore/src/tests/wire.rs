@@ -89,10 +89,28 @@ fn ipc_lines_round_trip() {
         Ipc::Open {
             component: "notes",
             label: None,
+            at: None,
         },
         Ipc::Open {
             component: "notes",
             label: Some("e1"),
+            at: None,
+        },
+        Ipc::Open {
+            component: "notes",
+            label: None,
+            at: Some(At {
+                path: "components/notes/src/lib.rs",
+                line: 58,
+            }),
+        },
+        Ipc::Open {
+            component: "notes",
+            label: Some("at"),
+            at: Some(At {
+                path: "src/lib.rs",
+                line: 1,
+            }),
         },
         Ipc::Cmd("s |a|b|"),
         Ipc::Cmd(""),
@@ -107,6 +125,12 @@ fn ipc_lines_round_trip() {
         &b"open"[..],
         b"open Notes",
         b"open notes ../x",
+        b"open notes at src/lib.rs",
+        b"open notes at src/lib.rs:0",
+        b"open notes at ../x.rs:3",
+        b"open notes at C:/x.rs:3",
+        b"open notes e1 at .../lib.rs:3",
+        b"open notes e1 at src/lib.rs:3 more",
         b"sync x\n",
         b"what",
         b"\xff",

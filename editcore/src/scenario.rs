@@ -203,6 +203,14 @@ pub const STEPS: &[Step] = &[
         "e2",
         StartsWith("panicked at components/notes/src/lib.rs:58:"),
     )),
+    // :fault opens e2 at that line.
+    Edit(
+        ":fault notes",
+        &[StartsWith(
+            "ok editing notes e2 at components/notes/src/lib.rs:58: 5 files",
+        )],
+    ),
+    Edit("p", &[Contains("self.state.notes[self.state.notes.len()]")]),
     Live(Call("about", Exact("ok notes e1 schema 2, edited live"))),
     Synced("e2", Outcome::Rollback(Reason::Trap)),
     ApplyRefused(StartsWith("e2 rolled back before (trap)")),

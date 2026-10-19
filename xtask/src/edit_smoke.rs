@@ -7,7 +7,7 @@
 use crate::buildsvc::{self, BuildService, build::CargoCompiler, repo};
 use crate::esp::Module;
 use crate::smoke::loader;
-use editcore::ipc::{self, Ipc};
+use editcore::ipc::{self, At, Ipc};
 use editcore::scenario::{self, Applied, Driver};
 use editcore::service::{Env, Service};
 use editcore::wire::{self, SyncRequest};
@@ -222,6 +222,26 @@ impl Driver for EditSmoke {
             let message = ipc::encode_ipc(&Ipc::Open {
                 component,
                 label: words.next(),
+                at: None,
+            });
+            let reply = self.editor(0, &message);
+            self.editing |= reply.starts_with("ok ");
+            return Ok(reply);
+        }
+        if let Some(component) = line.strip_prefix(":fault ") {
+            // As the kernel's :fault with a build service: open the trapped version
+            // at its line.
+            let located = self.kernel.component.borrow().ledger.last_located.clone();
+            let Some(located) = located else {
+                return Ok(format!("err {component} has no trap that names a line"));
+            };
+            let message = ipc::encode_ipc(&Ipc::Open {
+                component,
+                label: Some(&located.label),
+                at: Some(At {
+                    path: &located.at.path,
+                    line: located.at.line,
+                }),
             });
             let reply = self.editor(0, &message);
             self.editing |= reply.starts_with("ok ");

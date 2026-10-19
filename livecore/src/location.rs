@@ -5,8 +5,10 @@
 //! is cut to `.../<file name>`, so no host path reaches a log and no shown path
 //! can be opened outside the component's source.
 
+use crate::store::Component;
 use alloc::format;
 use alloc::string::String;
+use alloc::vec::Vec;
 
 /// What a located trap's detail starts with.
 pub const PANICKED_AT: &str = "panicked at ";
@@ -85,9 +87,83 @@ pub fn parse(detail: &str) -> Option<Location> {
     })
 }
 
+/// The lines of `at.path` in a source bundle from `radius` before `at.line` to
+/// `radius` after it, numbered, the line itself marked `>`, each printable and at
+/// most `width` characters; None when the bundle has no such file.
+pub fn excerpt(bundle: &[u8], at: &Location, radius: u32, width: usize) -> Option<Vec<String>> {
+    let files = crate::artifact::source_files(bundle).ok()?;
+    let (_, bytes) = files.iter().find(|(path, _)| *path == at.path)?;
+    let (first, last) = (
+        at.line.saturating_sub(radius).max(1),
+        at.line.saturating_add(radius),
+    );
+    let lines = bytes
+        .split(|&b| b == b'\n')
+        .zip(1u32..)
+        .filter(|(_, n)| (first..=last).contains(n))
+        .map(|(text, n)| {
+            let mark = if n == at.line { '>' } else { ' ' };
+            let line = format!("{mark}{n:>5} | {}", crate::diff::shown(text));
+            line.chars().take(width).collect()
+        })
+        .collect();
+    Some(lines)
+}
+
+/// Lines either side of a trap that `:fault` shows without an editor.
+pub const AROUND: u32 = 2;
+
+/// What `:fault` shows without an editor: the component's latest trap that named a
+/// line, and the lines around it from that version's own source in the store, each
+/// at most `width` characters.
+pub fn fault_lines(component: &Component, width: usize) -> Result<Vec<String>, String> {
+    let name = &component.name;
+    let located = component
+        .ledger
+        .last_located
+        .as_ref()
+        .ok_or_else(|| format!("{name} has no trap that names a line"))?;
+    let (label, at) = (&located.label, &located.at);
+    let place = format!("{}:{}", at.path, at.line);
+    let bytes = component
+        .bytes(label)
+        .map_err(|_| format!("{name} {label} trapped at {place}; it is no longer stored"))?;
+    let source = crate::artifact::parse(bytes.as_slice())
+        .map(|artifact| artifact.source)
+        .unwrap_or_default();
+    let lines = excerpt(source, at, AROUND, width)
+        .ok_or_else(|| format!("{name} {label} trapped at {place}; its source has no such file"))?;
+    let mut shown = Vec::from([format!("{name} {label} trapped at {place}:")]);
+    shown.extend(lines);
+    Ok(shown)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_excerpt_shows_the_lines_around_a_trap() {
+        let source = crate::artifact::bundle(&[(
+            "components/notes/src/lib.rs",
+            b"one\ntwo\nthree\tx\nfour\nfive\n",
+        )]);
+        let at = parse("panicked at components/notes/src/lib.rs:3:1").unwrap();
+        let lines = excerpt(&source, &at, 1, 80).unwrap();
+        assert_eq!(lines, ["     2 | two", ">    3 | three x", "     4 | four"]);
+        let first = Location {
+            line: 1,
+            ..at.clone()
+        };
+        assert_eq!(excerpt(&source, &first, 2, 80).unwrap().len(), 3);
+        assert_eq!(excerpt(&source, &at, 1, 6).unwrap()[1], ">    3");
+        let elsewhere = Location {
+            path: String::from("src/other.rs"),
+            ..at
+        };
+        assert_eq!(excerpt(&source, &elsewhere, 2, 80), None);
+        assert_eq!(excerpt(b"not a bundle", &first, 2, 80), None::<Vec<String>>);
+    }
 
     #[test]
     fn plain_workspace_paths_are_shown_with_forward_slashes() {

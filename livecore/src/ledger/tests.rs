@@ -326,3 +326,59 @@ fn the_lineage_holds_the_last_active_versions_for_revert() {
     assert_eq!(ledger.lineage.back().map(String::as_str), Some("7"));
     assert_eq!(ledger.lineage.len(), 6);
 }
+
+fn with_detail(mut event: Event, detail: &str) -> Event {
+    event.detail = detail.into();
+    event
+}
+
+#[test]
+fn the_latest_trap_with_a_line_names_the_version_that_holds_it() {
+    let mut ledger = swapping_to_2();
+    let at = "panicked at components/notes/src/lib.rs:58:47";
+    // The candidate trapped: the line is in 2's source.
+    let rollback = with_detail(with_reason(event(kind::ROLLBACK, "2", 1), Reason::Trap), at);
+    ledger.apply(HOST, &rollback).unwrap();
+    let located = ledger.last_located.clone().unwrap();
+    assert_eq!(
+        (
+            located.label.as_str(),
+            located.at.path.as_str(),
+            located.at.line
+        ),
+        ("2", "components/notes/src/lib.rs", 58)
+    );
+    // A fault with no line leaves it; one of the active version's moves it to 1.
+    let mut fault = with_detail(
+        with_reason(event(kind::FAULT, "", 1), Reason::Fuel),
+        "out of fuel",
+    );
+    fault.blob.clear();
+    ledger.apply(HOST, &fault).unwrap();
+    assert_eq!(ledger.last_located.as_ref().unwrap().label, "2");
+    fault = with_detail(
+        with_reason(event(kind::FAULT, "", 1), Reason::Trap),
+        "panicked at src/lib.rs:7:1",
+    );
+    fault.blob.clear();
+    ledger.apply(HOST, &fault).unwrap();
+    assert_eq!(
+        ledger
+            .last_located
+            .as_ref()
+            .map(|l| (l.label.as_str(), l.at.line)),
+        Some(("1", 7))
+    );
+}
+
+#[test]
+fn a_rollback_the_active_version_caused_locates_the_active_version() {
+    let mut ledger = swapping_to_2();
+    let mut rollback = with_detail(
+        with_reason(event(kind::ROLLBACK, "2", 1), Reason::Trap),
+        "panicked at src/lib.rs:3:9",
+    );
+    rollback.flags = kabi::live::flag::POISON;
+    ledger.apply(HOST, &rollback).unwrap();
+    assert_eq!(ledger.last_located.unwrap().label, "1");
+}

@@ -6,6 +6,7 @@
 //! The invariant: the checkpoint always belongs to the active version, so a host
 //! that dies at any moment restarts on the active version with its data.
 
+use crate::location::{self, Location};
 use alloc::collections::VecDeque;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -91,6 +92,14 @@ pub struct Rollback {
     pub not_blamed: bool,
 }
 
+/// The latest trap that named a source line, and the version whose source holds
+/// it, so `:fault` opens that version there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Located {
+    pub label: String,
+    pub at: Location,
+}
+
 #[derive(Clone, Debug)]
 pub struct Ledger {
     pub phase: Phase,
@@ -112,6 +121,8 @@ pub struct Ledger {
     pub last_detail: String,
     /// The latest rollback; see [`Rollback`].
     pub last_rollback: Option<Rollback>,
+    /// See [`Located`].
+    pub last_located: Option<Located>,
     /// The last [`LINEAGE`] active versions, oldest first: each fresh start and
     /// each commit adds one.
     pub lineage: VecDeque<String>,
@@ -121,6 +132,14 @@ impl Default for Ledger {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Version `label`'s trap, when its detail names a line that can be opened.
+fn located(label: &str, detail: &str) -> Option<Located> {
+    location::parse(detail).map(|at| Located {
+        label: label.to_string(),
+        at,
+    })
 }
 
 impl Ledger {
@@ -154,6 +173,7 @@ impl Ledger {
             seq: 0,
             last_detail: String::new(),
             last_rollback: None,
+            last_located: None,
             lineage: VecDeque::new(),
         }
     }
@@ -352,6 +372,16 @@ impl Ledger {
                 );
                 let blame = !matches!(reason, Reason::NoMigration | Reason::Manual)
                     && event.flags & flag::POISON == 0;
+                // The detail is about the active version when it, not the
+                // candidate, failed.
+                let failed = if event.flags & flag::POISON != 0 {
+                    active.as_str()
+                } else {
+                    label
+                };
+                if let Some(located) = located(failed, &event.detail) {
+                    self.last_located = Some(located);
+                }
                 self.last_rollback = Some(Rollback {
                     label: label.to_string(),
                     active: active.clone(),
@@ -380,6 +410,9 @@ impl Ledger {
             {
                 let reason = reason.ok_or(Error::Invalid)?;
                 self.counters.faults += 1;
+                if let Some(located) = located(active, &event.detail) {
+                    self.last_located = Some(located);
+                }
                 let restarted = event.flags & flag::RESTARTED != 0;
                 if restarted {
                     self.counters.restarts += 1;

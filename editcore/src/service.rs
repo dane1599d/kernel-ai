@@ -4,7 +4,7 @@
 //! only the kernel; the kernel shows the change and asks before anything runs.
 
 use crate::command::{self, Command, USAGE};
-use crate::ipc::{self, Ipc};
+use crate::ipc::{self, At, Ipc};
 use crate::session::Session;
 use crate::wire::{self, Synced};
 use crate::{MAX_PRINTED, editable};
@@ -86,7 +86,11 @@ impl Service {
             return err("the edit service answers only the kernel");
         }
         let reply = match ipc::decode_ipc(request) {
-            Ok(Ipc::Open { component, label }) => self.open(env, component, label),
+            Ok(Ipc::Open {
+                component,
+                label,
+                at,
+            }) => self.open(env, component, label, at),
             Ok(Ipc::Cmd(line)) => self.command(env, line),
             Ok(Ipc::Sync { seq, job }) => self.sync(env, seq, &job),
             Err(why) => err(why),
@@ -94,7 +98,15 @@ impl Service {
         fit(reply)
     }
 
-    fn open(&mut self, env: &mut dyn Env, component: &str, label: Option<&str>) -> String {
+    /// Opens or resumes a session; with `at`, the cursor goes there, and edits
+    /// that are not built are never dropped for it.
+    fn open(
+        &mut self,
+        env: &mut dyn Env,
+        component: &str,
+        label: Option<&str>,
+        at: Option<At<'_>>,
+    ) -> String {
         let Some(editable) = editable(component) else {
             return err(format!("{component} cannot be edited; notes can"));
         };
@@ -110,8 +122,14 @@ impl Service {
             None => info.active().to_string(),
         };
         let mut dropped = String::new();
-        if let Some(session) = &self.session {
+        if let Some(session) = self.session.as_mut() {
             if session.component == component && session.label == label {
+                if let Some(at) = at {
+                    return match goto(session, at) {
+                        Ok(place) => ok(format!("editing {component} {label} at {place}")),
+                        Err(why) => err(why),
+                    };
+                }
                 let state = if session.changed() {
                     ", with your edits"
                 } else {
@@ -120,6 +138,12 @@ impl Service {
                 return ok(format!("editing {component} {label} again{state}"));
             }
             if session.changed() && session.built.is_none() {
+                if at.is_some() {
+                    return err(format!(
+                        "{} {} has edits that are not built; build them or reset before opening {component} {label} there",
+                        session.component, session.label
+                    ));
+                }
                 dropped = format!("; dropped the unbuilt edits to {}", session.label);
             }
         }
@@ -144,13 +168,21 @@ impl Service {
             ));
         }
         match Session::open(component, &label, parsed.source) {
-            Ok(session) => {
-                let reply = ok(format!(
-                    "editing {component} {label}: {} files; {}, {} lines{dropped}",
-                    session.files().len(),
-                    session.current().path,
-                    session.current().len()
-                ));
+            Ok(mut session) => {
+                let files = session.files().len();
+                let reply = match at.map(|at| goto(&mut session, at)) {
+                    Some(Ok(place)) => ok(format!(
+                        "editing {component} {label} at {place}: {files} files{dropped}"
+                    )),
+                    Some(Err(why)) => ok(format!(
+                        "editing {component} {label}: {files} files; {why}{dropped}"
+                    )),
+                    None => ok(format!(
+                        "editing {component} {label}: {files} files; {}, {} lines{dropped}",
+                        session.current().path,
+                        session.current().len()
+                    )),
+                };
                 self.session = Some(session);
                 reply
             }
@@ -212,6 +244,18 @@ impl Service {
             return Err(format!("HTTP {} {}", response.status, first));
         }
         Ok(response.body)
+    }
+}
+
+/// Moves the cursor to `at`: where it is now, or why it cannot go there.
+fn goto(session: &mut Session, at: At<'_>) -> Result<String, String> {
+    if session.goto(at.path, at.line as usize) {
+        Ok(format!("{}:{}", at.path, session.line()))
+    } else {
+        Err(format!(
+            "{} is not in {} {}",
+            at.path, session.component, session.label
+        ))
     }
 }
 

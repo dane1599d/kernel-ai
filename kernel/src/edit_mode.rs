@@ -12,7 +12,7 @@ use crate::{ipc, log};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use editcore::ipc::{Ipc, encode_ipc};
+use editcore::ipc::{At, Ipc, encode_ipc};
 use livecore::uploads;
 use llmproto::text::printable;
 use spin::Mutex;
@@ -40,6 +40,7 @@ pub const HELP: &[(&str, &str)] = &[
         ":revert <name> [n]",
         "swap back to the nth version that ran before",
     ),
+    (":fault [name]", "open the source at the latest trap's line"),
     (":quit", "leave edit mode"),
 ];
 
@@ -82,12 +83,51 @@ pub fn open(name: &str, label: Option<&str>) -> String {
     let message = encode_ipc(&Ipc::Open {
         component: name,
         label,
+        at: None,
     });
     let reply = call_editor(&message);
     if reply.starts_with("ok ") {
         *EDITING.lock() = Some(name.to_string());
     }
     reply
+}
+
+/// `:fault [name]`: the version whose trap last named a line, opened in the editor
+/// at that line. With no build service, or when the editor cannot open it, the
+/// lines around it from the kernel's own store instead.
+pub fn fault(name: &str) -> String {
+    let Some(component) = components::component(name) else {
+        return format!("err no live component {name}");
+    };
+    let refused = match &component.ledger.last_located {
+        Some(located) if crate::build_service::target().is_some() => {
+            let message = encode_ipc(&Ipc::Open {
+                component: name,
+                label: Some(&located.label),
+                at: Some(At {
+                    path: &located.at.path,
+                    line: located.at.line,
+                }),
+            });
+            let reply = call_editor(&message);
+            if reply.starts_with("ok ") {
+                *EDITING.lock() = Some(name.to_string());
+                return reply;
+            }
+            Some(reply)
+        }
+        _ => None,
+    };
+    let (cols, _) = crate::console::size().unwrap_or(FALLBACK_SCREEN);
+    let width = crate::terminal::PIECE_CHARS.min(cols.saturating_sub(2));
+    match livecore::location::fault_lines(&component, width) {
+        // Unbuilt edits are the founder's to keep: say so, rather than show lines.
+        _ if refused.as_deref().is_some_and(|r| r.contains("not built")) => {
+            refused.unwrap_or_default()
+        }
+        Ok(lines) => format!("ok {}", lines.join("\n")),
+        Err(why) => format!("err {why}"),
+    }
 }
 
 /// A line typed in edit mode, sent to the editor.
@@ -199,6 +239,11 @@ pub fn command(command: &str, rest: &str) -> Option<Option<Proposal>> {
         ("edit", [name, label]) => show(&open(name, Some(label))),
         ("edit", _) => usage(":edit <name> [version]"),
         ("quit", []) => show(&quit()),
+        ("fault", [name]) => show(&fault(name)),
+        ("fault", []) => match editing() {
+            Some(name) => show(&fault(&name)),
+            None => usage(":fault <name>"),
+        },
         ("apply", []) | ("apply", [_]) => {
             let name = words.first().map(|s| s.to_string()).or_else(editing);
             let Some(name) = name else {
@@ -220,7 +265,9 @@ pub fn command(command: &str, rest: &str) -> Option<Option<Proposal>> {
             Ok(n) if (1..kabi::live::LINEAGE).contains(&n) => show(&revert(name, n)),
             _ => usage(":revert <name> [1 to 5]"),
         },
-        ("revert" | "apply" | "quit", _) => usage(":apply [name], :revert <name> [n], :quit"),
+        ("revert" | "apply" | "quit" | "fault", _) => {
+            usage(":apply [name], :revert <name> [n], :fault [name], :quit")
+        }
         _ => return None,
     }
     Some(None)

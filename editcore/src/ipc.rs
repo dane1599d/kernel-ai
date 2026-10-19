@@ -6,14 +6,24 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use kabi::live::valid_commit;
+use livecore::location;
+
+/// A line in a session's source: a plain workspace path, and a line from 1.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct At<'a> {
+    pub path: &'a str,
+    pub line: u32,
+}
 
 /// What the kernel sends the edit service.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Ipc<'a> {
-    /// Open (or resume) a session on a version; the active one by default.
+    /// Open (or resume) a session on a version, the active one by default, with
+    /// the cursor at a line if one is given.
     Open {
         component: &'a str,
         label: Option<&'a str>,
+        at: Option<At<'a>>,
     },
     /// One line typed in edit mode.
     Cmd(&'a str),
@@ -21,19 +31,36 @@ pub enum Ipc<'a> {
     Sync { seq: u64, job: SyncRequest<'a> },
 }
 
+/// `open <component> [<label>] [at <path>:<line>]`, `cmd <line>`, or `sync <seq>`
+/// and the job's fields.
 pub fn encode_ipc(message: &Ipc<'_>) -> Vec<u8> {
     match message {
         Ipc::Open {
             component,
-            label: Some(label),
-        } => format!("open {component} {label}").into_bytes(),
-        Ipc::Open {
-            component,
-            label: None,
-        } => format!("open {component}").into_bytes(),
+            label,
+            at,
+        } => {
+            let mut out = format!("open {component}");
+            if let Some(label) = label {
+                out.push_str(&format!(" {label}"));
+            }
+            if let Some(at) = at {
+                out.push_str(&format!(" at {}:{}", at.path, at.line));
+            }
+            out.into_bytes()
+        }
         Ipc::Cmd(line) => format!("cmd {line}").into_bytes(),
         Ipc::Sync { seq, job } => format!("sync {seq}\n{}", sync_fields(job)).into_bytes(),
     }
+}
+
+fn at(text: &str) -> Result<At<'_>, &'static str> {
+    let (path, line) = text.rsplit_once(':').ok_or("a place has no line")?;
+    let line = line.parse().ok().filter(|&n| n > 0).ok_or("a bad line")?;
+    if path.starts_with(".../") || location::shown_path(path) != path {
+        return Err("a path that is not plain");
+    }
+    Ok(At { path, line })
 }
 
 pub fn decode_ipc(bytes: &[u8]) -> Result<Ipc<'_>, &'static str> {
@@ -45,13 +72,19 @@ pub fn decode_ipc(bytes: &[u8]) -> Result<Ipc<'_>, &'static str> {
         return Ok(Ipc::Cmd(""));
     }
     if let Some(rest) = text.strip_prefix("open ") {
-        let mut parts = rest.split(' ');
-        let component = name(parts.next().unwrap_or(""))?;
-        let label = parts.next().map(label).transpose()?;
-        if parts.next().is_some() {
-            return Err("open takes a component and a label");
-        }
-        return Ok(Ipc::Open { component, label });
+        let words: Vec<&str> = rest.split(' ').collect();
+        let (component, label_text, at_text) = match words[..] {
+            [component] => (component, None, None),
+            [component, "at", place] => (component, None, Some(place)),
+            [component, label] => (component, Some(label), None),
+            [component, label, "at", place] => (component, Some(label), Some(place)),
+            _ => return Err("open takes a component, a label and a place"),
+        };
+        return Ok(Ipc::Open {
+            component: name(component)?,
+            label: label_text.map(label).transpose()?,
+            at: at_text.map(at).transpose()?,
+        });
     }
     if let Some(rest) = text.strip_prefix("sync ") {
         let (seq, fields) = rest.split_once('\n').ok_or("a sync has no fields")?;
