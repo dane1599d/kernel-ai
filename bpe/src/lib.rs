@@ -1,20 +1,28 @@
 //! Byte-level BPE, built from a GGUF file's `tokenizer.ggml.*` arrays.
 //!
-//! Token strings use GPT-2's byte alphabet ([`bytes`]), so every token stands for
-//! a run of bytes. Encoding a piece starts from one token per byte and merges
-//! adjacent pairs in the order the merge list ranks them. Merging never makes a
-//! control token such as `<|im_start|>` or a user-defined one such as `<think>`;
-//! [`Tokenizer::special`] finds them by name for prompts that need them.
+//! [`Tokenizer::encode`] first splits out user-defined tokens such as `<think>`,
+//! leftmost and longest first as Hugging Face does (the same as llama.cpp when no
+//! two names overlap, as in Qwen's vocabularies), then cuts the rest into pieces
+//! with the qwen2 pretokenizer ([`pretok`]). Token strings use GPT-2's byte alphabet ([`bytes`]),
+//! so every token stands for a run of bytes; a piece starts as one token per byte
+//! and adjacent pairs merge in the order the merge list ranks them. A control
+//! token such as `<|im_start|>` never comes from text: [`Tokenizer::special`]
+//! finds it by name, and [`chat`] builds the ChatML prompt with it.
 
 #![no_std]
 
 extern crate alloc;
 
 pub mod bytes;
+pub mod chat;
+mod marks;
 mod merge;
+pub mod pretok;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod text_tests;
 
 use alloc::vec::Vec;
 
@@ -35,6 +43,11 @@ pub enum Error {
     BadMerge(usize),
     /// No token stands for this single byte.
     MissingByte(u8),
+    /// `tokenizer.ggml.pre` is not `qwen2`, the only pretokenizer here.
+    Pretokenizer,
+    /// The vocabulary has no token with this text of the kind a chat needs (a
+    /// control token for the turn markers).
+    MissingSpecial(&'static str),
 }
 
 impl core::fmt::Display for Error {
@@ -46,6 +59,8 @@ impl core::fmt::Display for Error {
             Self::TypeCount => f.write_str("token types and tokens differ in number"),
             Self::BadMerge(rank) => write!(f, "merge {rank} does not join known tokens"),
             Self::MissingByte(b) => write!(f, "no token stands for byte {b:#04x}"),
+            Self::Pretokenizer => f.write_str("the pretokenizer is not qwen2"),
+            Self::MissingSpecial(name) => write!(f, "the vocabulary has no {name}"),
         }
     }
 }
@@ -90,6 +105,8 @@ pub struct Tokenizer {
     by_bytes: Vec<u32>,
     /// Control and user-defined tokens sorted by their text.
     specials: Vec<u32>,
+    /// User-defined tokens, longest first, which text can spell.
+    user_defined: Vec<u32>,
     byte_token: [u32; 256],
     /// `(left << 32 | right, rank, merged)`, sorted by the pair.
     merges: Vec<(u64, u32, u32)>,
@@ -101,6 +118,10 @@ impl Tokenizer {
         let model = header.get("tokenizer.ggml.model").and_then(|v| v.as_str());
         if model != Some("gpt2") {
             return Err(Error::NotGpt2);
+        }
+        let pre = header.get("tokenizer.ggml.pre").and_then(|v| v.as_str());
+        if pre != Some("qwen2") {
+            return Err(Error::Pretokenizer);
         }
         let array = |key: &'static str| {
             header
@@ -148,6 +169,7 @@ impl Tokenizer {
             kinds,
             by_bytes: Vec::new(),
             specials: Vec::new(),
+            user_defined: Vec::new(),
             byte_token: [0; 256],
             merges: Vec::new(),
         };
@@ -180,8 +202,16 @@ impl Tokenizer {
         specials.sort_by(|&a, &b| self.token_bytes(a).cmp(self.token_bytes(b)).then(a.cmp(&b)));
         bpe.shrink_to_fit();
         specials.shrink_to_fit();
+        let mut user_defined: Vec<u32> = specials
+            .iter()
+            .copied()
+            .filter(|&id| self.kind(id) == Kind::UserDefined && !self.token_bytes(id).is_empty())
+            .filter(|&id| core::str::from_utf8(self.token_bytes(id)).is_ok())
+            .collect();
+        user_defined.sort_by_key(|&id| core::cmp::Reverse(self.token_bytes(id).len()));
         self.by_bytes = bpe;
         self.specials = specials;
+        self.user_defined = user_defined;
         for b in 0..=255u8 {
             self.byte_token[b as usize] = self.find(&[b]).ok_or(Error::MissingByte(b))?;
         }
@@ -264,6 +294,53 @@ impl Tokenizer {
             .partition_point(|&id| self.token_bytes(id) < text);
         let id = *self.specials.get(at)?;
         (self.token_bytes(id) == text).then_some(id)
+    }
+
+    /// The tokens for `text`. User-defined tokens spelled in it become those
+    /// tokens; control tokens spelled in it stay text.
+    pub fn encode(&self, text: &str, out: &mut Vec<u32>) {
+        // Where each user-defined name next occurs; a name is searched again only
+        // once the cursor has passed its last place, so text full of tags stays
+        // linear.
+        let mut next: Vec<Option<usize>> = Vec::with_capacity(self.user_defined.len());
+        for &id in &self.user_defined {
+            next.push(text.find(self.user_defined_name(id)));
+        }
+        let mut from = 0;
+        loop {
+            let mut best: Option<(usize, usize)> = None;
+            for (i, &id) in self.user_defined.iter().enumerate() {
+                let name = self.user_defined_name(id);
+                if next[i].is_some_and(|at| at < from) {
+                    next[i] = text[from..].find(name).map(|at| at + from);
+                }
+                // Longest first in the list, so the first at a place wins.
+                if let Some(at) = next[i]
+                    && best.is_none_or(|(b, _)| at < b)
+                {
+                    best = Some((at, i));
+                }
+            }
+            let Some((at, i)) = best else {
+                break;
+            };
+            let id = self.user_defined[i];
+            self.encode_text(&text[from..at], out);
+            out.push(id);
+            from = at + self.user_defined_name(id).len();
+        }
+        self.encode_text(&text[from..], out);
+    }
+
+    /// A user-defined token's text; `index` keeps only non-empty UTF-8 names.
+    fn user_defined_name(&self, id: u32) -> &str {
+        core::str::from_utf8(self.token_bytes(id)).unwrap_or("\u{fffd}")
+    }
+
+    fn encode_text(&self, text: &str, out: &mut Vec<u32>) {
+        for piece in pretok::split(text) {
+            self.encode_piece(piece.as_bytes(), out);
+        }
     }
 
     /// The tokens for one piece of bytes, by byte-pair merging alone.

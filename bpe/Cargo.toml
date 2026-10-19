@@ -5,7 +5,8 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
-# Byte-level BPE from a GGUF file's vocabulary.
+# Byte-level BPE from a GGUF file's vocabulary, the qwen2 pretokenizer and the
+# ChatML prompt.
 [lib]
 doctest = false
 

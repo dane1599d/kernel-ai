@@ -298,6 +298,7 @@ fn builds_from_a_gguf_header() {
     let types: Vec<i32> = types.iter().map(|&t| t as i32).collect();
     let mut w = gguf::write::Writer::new();
     w.string("tokenizer.ggml.model", "gpt2")
+        .string("tokenizer.ggml.pre", "qwen2")
         .strings("tokenizer.ggml.tokens", &tokens)
         .i32s("tokenizer.ggml.token_type", &types)
         .strings("tokenizer.ggml.merges", &merges);
@@ -317,6 +318,18 @@ fn builds_from_a_gguf_header() {
 
     let mut w = gguf::write::Writer::new();
     w.string("tokenizer.ggml.model", "gpt2")
+        .string("tokenizer.ggml.pre", "llama3")
+        .strings("tokenizer.ggml.tokens", &tokens);
+    let file = w.finish();
+    let header = gguf::Header::parse(&file).unwrap();
+    assert_eq!(
+        Tokenizer::from_gguf(&header).err(),
+        Some(Error::Pretokenizer)
+    );
+
+    let mut w = gguf::write::Writer::new();
+    w.string("tokenizer.ggml.model", "gpt2")
+        .string("tokenizer.ggml.pre", "qwen2")
         .strings("tokenizer.ggml.tokens", &tokens)
         .string("tokenizer.ggml.merges", "h i");
     let file = w.finish();
@@ -327,6 +340,7 @@ fn builds_from_a_gguf_header() {
     // Tokens that are not strings, types that are not integers, and no types.
     let mut w = gguf::write::Writer::new();
     w.string("tokenizer.ggml.model", "gpt2")
+        .string("tokenizer.ggml.pre", "qwen2")
         .i32s("tokenizer.ggml.tokens", &[1, 2])
         .strings("tokenizer.ggml.merges", &merges);
     let file = w.finish();
@@ -335,6 +349,7 @@ fn builds_from_a_gguf_header() {
     assert_eq!(Tokenizer::from_gguf(&header).err(), Some(missing));
     let mut w = gguf::write::Writer::new();
     w.string("tokenizer.ggml.model", "gpt2")
+        .string("tokenizer.ggml.pre", "qwen2")
         .strings("tokenizer.ggml.tokens", &tokens)
         .strings("tokenizer.ggml.token_type", &tokens)
         .strings("tokenizer.ggml.merges", &merges);
@@ -344,6 +359,7 @@ fn builds_from_a_gguf_header() {
     assert_eq!(Tokenizer::from_gguf(&header).err(), Some(missing));
     let mut w = gguf::write::Writer::new();
     w.string("tokenizer.ggml.model", "gpt2")
+        .string("tokenizer.ggml.pre", "qwen2")
         .strings("tokenizer.ggml.tokens", &tokens)
         .strings("tokenizer.ggml.merges", &merges);
     let file = w.finish();

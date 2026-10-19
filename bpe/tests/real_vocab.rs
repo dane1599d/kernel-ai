@@ -55,3 +55,44 @@ fn qwen3_vocabulary_builds_and_merges_to_known_ids() {
     tok.decode(&piece("caf\u{e9} \u{65e5}\u{672c}"), &mut out);
     assert_eq!(out, "caf\u{e9} \u{65e5}\u{672c}".as_bytes());
 }
+
+#[test]
+#[ignore = "needs KAI_QWEN3_GGUF"]
+fn qwen3_text_and_chatml_encode_to_known_ids() {
+    let tok = qwen3();
+    let encode = |text: &str| {
+        let mut ids = Vec::new();
+        tok.encode(text, &mut ids);
+        ids
+    };
+    assert_eq!(encode("Hello, world!"), [9707, 11, 1879, 0]);
+    assert_eq!(
+        encode("You are a helpful assistant."),
+        [2610, 525, 264, 10950, 17847, 13]
+    );
+    assert_eq!(encode("a <think> b"), [64, 220, 151_667, 293]);
+    let chat = bpe::chat::Chat::new(&tok).unwrap();
+    assert_eq!(
+        chat.prompt(&tok, None, "Hello"),
+        [
+            151_644, 872, 198, 9707, 151_645, 198, 151_644, 77091, 198, 151_667, 271, 151_668, 271
+        ]
+    );
+    let system = chat.prompt(&tok, Some("You are a helpful assistant."), "Hello");
+    assert_eq!(
+        system[..11],
+        [
+            151_644, 8948, 198, 2610, 525, 264, 10950, 17847, 13, 151_645, 198
+        ]
+    );
+    for text in [
+        "caf\u{e9} na\u{ef}ve",
+        "\u{4f60}\u{597d}\u{ff0c}\u{4e16}\u{754c}",
+        "x  \n\n  y",
+        "\u{1f600}!",
+    ] {
+        let mut back = Vec::new();
+        tok.decode(&encode(text), &mut back);
+        assert_eq!(back, text.as_bytes());
+    }
+}
