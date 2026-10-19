@@ -1,8 +1,8 @@
 [workspace]
 resolver = "3"
-members = ["acpitables", "compsdk", "editcore", "gguf", "livecore", "wasmhost", "components/notes", "components/fixtures/notes-v1", "components/fixtures/notes-bad", "kabi", "kernel", "linetable", "llmproto", "mm", "sched", "shellcore", "supervise", "termcore", "uelf", "user", "xtask", "spikes/rhai", "spikes/wasmi"]
+members = ["acpitables", "compsdk", "cpufeat", "editcore", "gguf", "livecore", "quant", "wasmhost", "components/notes", "components/fixtures/notes-v1", "components/fixtures/notes-bad", "kabi", "kernel", "linetable", "llmproto", "mm", "sched", "shellcore", "supervise", "termcore", "uelf", "user", "xtask", "spikes/rhai", "spikes/wasmi"]
 # Host builds only build the xtask runner; the kernel, user programs and spikes are built by xtask for x86_64-unknown-none.
-default-members = ["acpitables", "compsdk", "editcore", "gguf", "livecore", "wasmhost", "components/notes", "components/fixtures/notes-v1", "components/fixtures/notes-bad", "kabi", "linetable", "llmproto", "mm", "sched", "shellcore", "supervise", "termcore", "uelf", "xtask"]
+default-members = ["acpitables", "compsdk", "cpufeat", "editcore", "gguf", "livecore", "quant", "wasmhost", "components/notes", "components/fixtures/notes-v1", "components/fixtures/notes-bad", "kabi", "linetable", "llmproto", "mm", "sched", "shellcore", "supervise", "termcore", "uelf", "xtask"]
 
 [workspace.package]
 edition = "2024"
@@ -12,13 +12,27 @@ license = "MPL-2.0"
 panic = "abort"
 
 # Dependencies build optimized even in dev builds: unoptimized wasmi needs more than
-# 252 KiB of stack to translate one small function. Our own crates stay unoptimized.
+# 252 KiB of stack to translate one small function. Our own crates stay unoptimized,
+# except wasmhost and the inference engine below.
 [profile.dev.package."*"]
 opt-level = 2
 
 # wasmi's host-function glue crashes when compiled without optimisation, and its
 # generics are instantiated in wasmhost (see wasmhost/src/lib.rs).
 [profile.dev.package.wasmhost]
+opt-level = 2
+
+# The inference engine crates at the same level: unoptimised, the Q8_0 matvec runs
+# about 100x slower in its AVX2 tier and 15-20x in its baseline, so the
+# generated-model tests and `model chat` would crawl. Level 2 matches wasmhost and
+# every dependency; level 3 measured no faster for the AVX2 tier.
+[profile.dev.package.quant]
+opt-level = 2
+
+[profile.dev.package.gguf]
+opt-level = 2
+
+[profile.dev.package.cpufeat]
 opt-level = 2
 
 [profile.release]
