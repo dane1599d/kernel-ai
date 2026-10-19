@@ -154,7 +154,8 @@ pub fn run_test(
             println!("  | {line}");
             missing.retain(|text| !line.contains(text));
             // Text from ring 3 (`[name] ...`) or the shell (`= ...`, `! ...`, `? ...`) may
-            // say anything, so it never counts as a kernel marker.
+            // say anything, and a `screen:` row copies whatever the screen shows, so
+            // none of them counts as a kernel marker.
             if from_programs(&line) {
                 continue;
             }
@@ -213,8 +214,13 @@ pub fn run_test(
 /// Whether a console line was written for a ring-3 program rather than by the
 /// kernel: `[name] ...` from a program's own output, `= ...`, `! ...` and `? ...` from
 /// the shell's answers, possibly after the terminal's `kai> `, `edit <name>> `,
-/// `run script N? yes/no> ` and `apply <label> to <name>? yes/no> ` prompts.
+/// `run script N? yes/no> ` and `apply <label> to <name>? yes/no> ` prompts, which
+/// start the line the terminal logs on Enter. `screenlog`'s `screen: ` lines count
+/// too: a screen row copies program text and kernel lines alike.
 pub fn from_programs(line: &str) -> bool {
+    if line.starts_with("screen: ") {
+        return true;
+    }
     let mut rest = line;
     while let Some(after) = rest
         .strip_prefix("kai> ")
@@ -275,6 +281,13 @@ mod tests {
         assert!(!from_programs(
             "run script 1? yes/no> terminal: ready for keys"
         ));
+    }
+
+    #[test]
+    fn screen_rows_never_count_as_kernel_lines() {
+        assert!(from_programs("screen: 4|terminal: ready for keys"));
+        assert!(from_programs("screen: cursor 4 8"));
+        assert!(!from_programs("terminal: ready for keys"));
     }
 
     #[test]

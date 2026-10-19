@@ -2,7 +2,7 @@
 
 use crate::port::{inb, outb};
 use core::fmt::{self, Write};
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use x86_64::instructions::interrupts;
 
 const COM1: u16 = 0x3F8;
@@ -35,6 +35,9 @@ fn write_byte(byte: u8) {
 
 pub struct Serial;
 
+/// Whether the last byte sent ended a line.
+static AT_LINE_START: AtomicBool = AtomicBool::new(true);
+
 impl Write for Serial {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         for byte in s.bytes() {
@@ -43,16 +46,26 @@ impl Write for Serial {
             }
             write_byte(byte);
         }
+        if let Some(&last) = s.as_bytes().last() {
+            AT_LINE_START.store(last == b'\n', Ordering::Relaxed);
+        }
         Ok(())
     }
+}
+
+/// Whether serial output is at the start of a line.
+pub fn at_line_start() -> bool {
+    AT_LINE_START.load(Ordering::Relaxed)
 }
 
 /// CPU index plus one of the CPU printing a line, or 0. Keeps lines from different
 /// CPUs apart. A CPU may re-enter (a fault while printing) without deadlocking.
 static LINE_OWNER: AtomicUsize = AtomicUsize::new(0);
 
-#[doc(hidden)]
-pub fn _print(args: fmt::Arguments) {
+/// Runs `f` with interrupts off while holding the line lock, so nothing it prints
+/// mixes with other CPUs' lines. Take it before the console lock, and allocate
+/// nothing under it.
+pub fn with_line<R>(f: impl FnOnce() -> R) -> R {
     interrupts::without_interrupts(|| {
         let me = crate::percpu::index() + 1;
         let reentered = LINE_OWNER.load(Ordering::Acquire) == me;
@@ -64,12 +77,20 @@ pub fn _print(args: fmt::Arguments) {
                 core::hint::spin_loop();
             }
         }
-        // Serial writes cannot fail; the Result exists only to satisfy fmt::Write.
-        let _ = Serial.write_fmt(args);
-        crate::console::print(args);
+        let result = f();
         if !reentered {
             LINE_OWNER.store(0, Ordering::Release);
         }
+        result
+    })
+}
+
+#[doc(hidden)]
+pub fn _print(args: fmt::Arguments) {
+    with_line(|| {
+        // Serial writes cannot fail; the Result exists only to satisfy fmt::Write.
+        let _ = Serial.write_fmt(args);
+        crate::console::print(args);
     });
 }
 

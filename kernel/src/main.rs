@@ -8,7 +8,8 @@
 //! `page-fault`, `double-fault`, `write-protect`, `stack-overflow`, `timer`,
 //! `keyboard`, `pointer`, `sched`, `watchdog`, `smp`, `tlb`, `storm`, `storm-SECONDS`,
 //! `net` or `terminal`. `llm=IP:PORT` and `model=NAME` point the LLM client at a
-//! server; `pointerlog` logs every pointer move and click.
+//! server; `pointerlog` logs every pointer move and click, and `screenlog` copies
+//! each console repaint to serial as `screen:` lines.
 
 #![no_std]
 #![no_main]
@@ -197,6 +198,7 @@ extern "C" fn boot_continue() -> ! {
         build_service::configure(cmdline.cmdline());
         boot_manifest::configure(cmdline.cmdline());
         pointer::configure(cmdline.cmdline());
+        console::configure(cmdline.cmdline());
     }
     match cpu::init(entry::syscall_entry as *const () as u64) {
         Ok(features) => log!(

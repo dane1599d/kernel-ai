@@ -57,14 +57,16 @@ const POINTER: &[&str] = &[
     "!mouse_button 0",
 ];
 
-/// "policy rr", "ask hello" and "show me the cpus please" (plain English, so the
-/// shell asks the LLM for a script), each followed by Enter. Then, once the terminal
-/// shows the question, "yes" and Enter.
+/// "pol"; while it shows at the prompt the kernel logs a line, which must land above
+/// it. Then the rest of "policy rr", "ask hello" and "show me the cpus please" (plain
+/// English, so the shell asks the LLM for a script), each followed by Enter. Then,
+/// once the terminal shows the question, "yes" and Enter.
 const TERMINAL_SCRIPT: &[&[&str]] = &[
+    &["p", "o", "l"],
     &[
-        "p", "o", "l", "i", "c", "y", "spc", "r", "r", "ret", "a", "s", "k", "spc", "h", "e", "l",
-        "l", "o", "ret", "s", "h", "o", "w", "spc", "m", "e", "spc", "t", "h", "e", "spc", "c",
-        "p", "u", "s", "spc", "p", "l", "e", "a", "s", "e", "ret",
+        "i", "c", "y", "spc", "r", "r", "ret", "a", "s", "k", "spc", "h", "e", "l", "l", "o",
+        "ret", "s", "h", "o", "w", "spc", "m", "e", "spc", "t", "h", "e", "spc", "c", "p", "u",
+        "s", "spc", "p", "l", "e", "a", "s", "e", "ret",
     ],
     &["y", "e", "s", "ret"],
 ];
@@ -125,8 +127,10 @@ pub const TEST_CASES: &[TestCase] = &[
             "? run it? it changes nothing. yes/no",
             "run script 1? yes/no> ",
             "= CPUs: ",
+            // screenlog copies the typed text the screen shows.
+            "|kai> policy rr",
         ],
-        ..case("terminal", "test=terminal")
+        ..case("terminal", "test=terminal screenlog")
     },
 ];
 
