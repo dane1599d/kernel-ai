@@ -94,6 +94,22 @@ pub fn ask(prompt: &str) -> Result<String, String> {
     request(&format!("ask {prompt}"), ASK_TIMEOUT_MS)
 }
 
+/// The model's explanation of a rollback from `facts`, or why there is none. With
+/// no server configured or no llm service running it says so at once, rather than
+/// waiting for a service that will not come.
+pub fn explain(facts: &str) -> Result<String, String> {
+    if target().is_none() {
+        return Err(String::from(
+            "no LLM server is configured (boot with llm=IP:PORT)",
+        ));
+    }
+    if ipc::server_of("llm").is_none() {
+        return Err(String::from("the llm service is not running"));
+    }
+    log!("(asking the LLM...)");
+    request(&format!("explain {facts}"), ASK_TIMEOUT_MS)
+}
+
 /// Checks the server answers `GET /health`, through the service.
 pub fn health() -> Result<String, String> {
     request("health", HEALTH_TIMEOUT_MS)

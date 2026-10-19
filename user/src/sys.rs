@@ -297,6 +297,25 @@ pub fn comp_read_artifact(component: &str, label: &str, buf: &mut [u8]) -> Resul
     })
 }
 
+/// Has the kernel send `ctl <request>` to a component, which it does only for a
+/// request that changes nothing; as much of the reply as fits goes into `reply`,
+/// and its whole length comes back (needs PUBLISH).
+pub fn comp_control(component: &str, request: &str, reply: &mut [u8]) -> Result<usize, Error> {
+    let control = kabi::live::Control {
+        name_ptr: component.as_ptr() as u64,
+        name_len: component.len() as u64,
+        request_ptr: request.as_ptr() as u64,
+        request_len: request.len() as u64,
+        reply_ptr: reply.as_mut_ptr() as u64,
+        reply_cap: reply.len() as u64,
+    };
+    call(
+        call::COMP_CONTROL,
+        [&control as *const kabi::live::Control as u64, 0, 0, 0, 0, 0],
+    )
+    .map(|len| len as usize)
+}
+
 /// As [`http`], to the build service the kernel was booted with (needs PUBLISH).
 pub fn build(request: &HttpRequest) -> Result<usize, Error> {
     call(

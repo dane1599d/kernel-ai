@@ -1,8 +1,9 @@
 //! The LLM client service. It takes `ask <prompt>`, `script ...` (see
-//! `llmproto::script`) and `health` requests from the kernel terminal and the shell,
-//! talks OpenAI-compatible chat JSON over HTTP to the LLM server, and answers
-//! `ok <text>` or `err <text>`. The kernel decides where the bytes go (the server on
-//! its command line); this program builds and parses them.
+//! `llmproto::script`), `explain <facts>` (see `llmproto::explain`) and `health`
+//! requests from the kernel terminal and the shell, talks OpenAI-compatible chat
+//! JSON over HTTP to the LLM server, and answers `ok <text>` or `err <text>`. The
+//! kernel decides where the bytes go (the server on its command line); this program
+//! builds and parses them.
 
 #![no_std]
 #![no_main]
@@ -13,6 +14,7 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use kabi::HttpRequest;
+use llmproto::explain;
 use llmproto::script::{self, AnswerError, ScriptRequest};
 use llmproto::text::printable;
 use llmproto::{http, openai};
@@ -86,6 +88,8 @@ fn handle(config: &Config, text: &str, response: &mut [u8]) -> Result<String, St
         "health" => health(host, response),
         "ask" if !rest.trim().is_empty() => ask(config, host, rest.trim(), response),
         "script" => write_script(config, host, text, response),
+        "explain" if rest.len() > explain::MAX_FACTS => Err(String::from("the facts are too long")),
+        "explain" if !rest.trim().is_empty() => explain(config, host, rest, response),
         _ => Err(format!("unknown request {command:?}")),
     }
 }
@@ -152,4 +156,17 @@ fn ask(config: &Config, host: &str, prompt: &str, response: &mut [u8]) -> Result
     openai::parse_chat_response(&reply.body)
         .map(|text| printable(&text, MAX_REPLY_CHARS, MAX_REPLY_LINES))
         .map_err(|error| format!("bad chat reply: {error:?}"))
+}
+
+/// Asks the model to explain a rollback from the kernel's facts; plain prose back.
+fn explain(
+    config: &Config,
+    host: &str,
+    facts: &str,
+    response: &mut [u8],
+) -> Result<String, String> {
+    let body = explain::chat_request(&config.model, facts);
+    let request = http::post_json(host, openai::CHAT_PATH, None, &body);
+    let reply = exchange(&request, CHAT_TIMEOUT_MS, response)?;
+    explain::answer_from(&reply)
 }

@@ -166,13 +166,13 @@ fn refused<E: Env>(
 /// Moves the state into the candidate: its own migration from the active schema,
 /// or, if it reads only an older schema, the active version's export in that one.
 /// Which side of a transfer failed.
-enum Failed {
+pub(crate) enum Failed {
     Candidate(Fault),
     /// The active version, while writing an older schema for the candidate.
     Active(Fault),
 }
 
-fn transfer<I: Instance>(
+pub(crate) fn transfer<I: Instance>(
     active: &mut Version<I>,
     candidate: &mut Version<I>,
     blob: &[u8],
@@ -214,7 +214,7 @@ fn transfer<I: Instance>(
 }
 
 /// The candidate's own checks, then its state in its own schema.
-fn verify<I: Instance>(candidate: &mut Version<I>) -> Result<Vec<u8>, Fault> {
+pub(crate) fn verify<I: Instance>(candidate: &mut Version<I>) -> Result<Vec<u8>, Fault> {
     match candidate.instance.self_test()? {
         0 => {}
         code => {

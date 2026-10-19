@@ -187,6 +187,8 @@ pub const MANIFEST_SECTION: &str = "kai.manifest";
 pub const SOURCE_SECTION: &str = "kai.source";
 /// Requests starting with this are control requests, accepted only from the kernel.
 pub const CONTROL_PREFIX: &str = "ctl ";
+/// Longest control request a PUBLISH holder may have relayed, after `ctl `.
+pub const MAX_CONTROL: usize = 128;
 /// Largest uploaded artifact (M9b); a notes artifact is about 72 KiB.
 pub const MAX_UPLOAD: usize = 192 * 1024;
 /// Uploads the store keeps per component: failed ones are evicted first, then the
@@ -425,12 +427,44 @@ pub fn valid_commit(text: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
+/// Argument of [`crate::call::COMP_CONTROL`].
+#[derive(Clone, Copy, Debug, Default)]
+#[repr(C)]
+pub struct Control {
+    /// The component.
+    pub name_ptr: u64,
+    pub name_len: u64,
+    /// What follows `ctl `, at most [`MAX_CONTROL`]; see [`relayable`].
+    pub request_ptr: u64,
+    pub request_len: u64,
+    /// Room for the reply; as much as fits is copied, and its length returned.
+    pub reply_ptr: u64,
+    pub reply_cap: u64,
+}
+
+/// Whether the kernel relays `ctl <request>` to a component for a PUBLISH holder:
+/// only `status`, `source [file]` and `try <version>`, which change nothing.
+/// `swap`, `rollback`, `reset` and anything else never pass, whatever the
+/// component's own parser would accept.
+pub fn relayable(request: &str) -> bool {
+    if request.len() > MAX_CONTROL || !request.bytes().all(|b| (b' '..=b'~').contains(&b)) {
+        return false;
+    }
+    let mut words = request.split_whitespace();
+    match (words.next(), words.next(), words.next()) {
+        (Some("status"), None, None) | (Some("source"), _, None) => true,
+        (Some("try"), Some(label), None) => valid_label(label),
+        _ => false,
+    }
+}
+
 const _: () = {
     assert!(core::mem::size_of::<Event>() == 12 * 8);
     assert!(core::mem::size_of::<Restore>() == 8 * 8 + 2 * MAX_LABEL + crate::MAX_NAME);
     assert!(core::mem::size_of::<Put>() == 8 * 8);
     assert!(core::mem::size_of::<Read>() == 7 * 8);
     assert!(core::mem::size_of::<Info>() == 7 * 8 + 3 * MAX_LABEL);
+    assert!(core::mem::size_of::<Control>() == 6 * 8);
 };
 
 #[cfg(test)]
@@ -455,6 +489,40 @@ mod tests {
         for bad in ["", "V2", "a b", "../x", "abcdefghijklmnopq", "x_y"] {
             assert!(!valid_label(bad), "{bad}");
         }
+    }
+
+    #[test]
+    fn only_requests_that_change_nothing_are_relayed() {
+        for good in [
+            "status",
+            "source",
+            "source src/lib.rs",
+            "try e1",
+            " try  3-trap ",
+        ] {
+            assert!(relayable(good), "{good}");
+        }
+        for bad in [
+            "swap e1",
+            "swap e1 force",
+            "rollback",
+            "reset",
+            "try",
+            "try ../x",
+            "try e1 force",
+            "status now",
+            "source a b",
+            "try\te1\n",
+            "",
+            "explode",
+        ] {
+            assert!(!relayable(bad), "{bad:?}");
+        }
+        let mut long = [b'a'; MAX_CONTROL + 1];
+        long[..7].copy_from_slice(b"source ");
+        let long = core::str::from_utf8(&long).unwrap();
+        assert!(relayable(&long[..MAX_CONTROL]));
+        assert!(!relayable(long));
     }
 
     #[test]

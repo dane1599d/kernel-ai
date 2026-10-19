@@ -1,6 +1,7 @@
 //! Which self-test the kernel command line selects, and the service plan each boot
 //! starts with.
 
+use alloc::format;
 use alloc::string::String;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -80,9 +81,10 @@ pub fn plan(test: SelfTest) -> Option<String> {
         return None;
     }
     // The live and edit cases need only their services, with probation ended by
-    // calls; the edit case also needs its build service.
+    // calls; the live case also needs llm for `:why`, and the edit case its build
+    // service.
     let mut plan = match test {
-        SelfTest::Live => String::from(kabi::plan::NOTES_TEST),
+        SelfTest::Live => format!("{}\n{}", kabi::plan::NOTES_TEST, crate::llm::plan_line()),
         SelfTest::Edit => {
             let mut plan = String::from(kabi::plan::NOTES_EDIT_TEST);
             if let Some(edit) = crate::build_service::plan_line() {

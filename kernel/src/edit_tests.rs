@@ -80,7 +80,12 @@ impl Driver for Kernel {
             log!("edit: (building on the host...)");
         }
         self.edits += 1;
-        Ok(edit_mode::editor_line(line))
+        let reply = edit_mode::editor_line(line);
+        // A try the kernel relayed reached notes as the kernel's own call.
+        if line == "try" && (reply.starts_with("ok try ") || reply.starts_with("err try ")) {
+            self.live.calls += 1;
+        }
+        Ok(reply)
     }
 
     fn apply(&mut self, answer: &str) -> Result<Applied, String> {
@@ -153,6 +158,15 @@ impl Driver for Kernel {
         let bytes = component.bytes(label)?.as_slice().to_vec();
         let commit = "0".repeat(kabi::live::COMMIT_LEN);
         components::upload(NAME, bytes, label, &commit).map(|_| ())
+    }
+
+    fn relay(&mut self, request: &str) -> Result<String, Error> {
+        let request = components::control_request(NAME, request)?;
+        self.live.calls += 1;
+        let deadline = hpet::nanos() + edit_mode::EDIT_CALL_MS * 1_000_000;
+        ipc::call_as(NAME, &request, 0, deadline, || false)
+            .map(|reply| String::from_utf8_lossy(&reply).into_owned())
+            .map_err(|_| Error::Dead)
     }
 }
 

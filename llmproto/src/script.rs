@@ -328,14 +328,7 @@ pub fn parse_answer(body: &[u8]) -> Result<Answer, AnswerError> {
     if reply.finish_reason.as_deref() == Some("length") {
         return Err(AnswerError::CutOff);
     }
-    let mut content = reply.content.trim();
-    // A model that thinks anyway puts its reasoning first.
-    if let Some(rest) = content.strip_prefix("<think>") {
-        content = rest
-            .split_once("</think>")
-            .map_or("", |(_, after)| after)
-            .trim();
-    }
+    let mut content = text::without_thinking(&reply.content);
     if let Some(fenced) = content
         .strip_prefix("```json")
         .or_else(|| content.strip_prefix("```"))

@@ -3,15 +3,18 @@
 //! every key in order once, and byte fields framed by their length.
 //!
 //! ```text
-//! kai-build 1            kai-built 1               kai-sync 1           kai-synced 1
+//! kai-build 2            kai-built 1               kai-sync 1           kai-synced 1
 //! component notes        result ok|failed|refused  component notes      result moved <ref> <sha>
 //! label e1               base 2            (ok)    label e1             result recorded <ref> <sha>
 //! base 2                 commit <40 hex>   (ok)    outcome commit       result untracked
-//! bundle <len>           log <len>                 outcome rollback trap
-//! <bytes>                <bytes>                   generation 1
-//!                        artifact <len>    (ok)    source <64 hex>|-
+//! origin founder|model   log <len>                 outcome rollback trap
+//! bundle <len>           <bytes>                   generation 1
+//! <bytes>                artifact <len>    (ok)    source <64 hex>|-
 //!                        <bytes>                   commit <40 hex>|-
 //! ```
+//!
+//! `origin` says who wrote the source: the founder, or the model (a draft was
+//! applied in the session). The host builds model source only in its sandbox.
 
 use crate::{MAX_BUNDLE, MAX_LOG};
 use alloc::format;
@@ -108,6 +111,30 @@ fn name(text: &str) -> Result<&str, &'static str> {
     }
 }
 
+/// Who wrote the source a build request carries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Origin {
+    Founder,
+    Model,
+}
+
+impl Origin {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Founder => "founder",
+            Self::Model => "model",
+        }
+    }
+
+    fn parse(text: &str) -> Result<Self, &'static str> {
+        match text {
+            "founder" => Ok(Self::Founder),
+            "model" => Ok(Self::Model),
+            _ => Err("an origin is neither founder nor model"),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BuildRequest<'a> {
     pub component: &'a str,
@@ -115,15 +142,17 @@ pub struct BuildRequest<'a> {
     pub label: &'a str,
     /// The version its source came from.
     pub base: &'a str,
+    pub origin: Origin,
     pub bundle: &'a [u8],
 }
 
 pub fn encode_build(request: &BuildRequest<'_>) -> Vec<u8> {
     let mut out = format!(
-        "kai-build 1\ncomponent {}\nlabel {}\nbase {}\nbundle {}\n",
+        "kai-build 2\ncomponent {}\nlabel {}\nbase {}\norigin {}\nbundle {}\n",
         request.component,
         request.label,
         request.base,
+        request.origin.name(),
         request.bundle.len()
     )
     .into_bytes();
@@ -131,12 +160,15 @@ pub fn encode_build(request: &BuildRequest<'_>) -> Vec<u8> {
     out
 }
 
+/// A request with no origin, or one this side does not know, does not decode:
+/// the host then refuses it rather than guess who wrote the source.
 pub fn decode_build(bytes: &[u8]) -> Result<BuildRequest<'_>, &'static str> {
-    let mut reader = Reader::new(bytes, "kai-build 1")?;
+    let mut reader = Reader::new(bytes, "kai-build 2")?;
     let request = BuildRequest {
         component: name(reader.value("component")?)?,
         label: label(reader.value("label")?)?,
         base: label(reader.value("base")?)?,
+        origin: Origin::parse(reader.value("origin")?)?,
         bundle: reader.bytes("bundle", MAX_BUNDLE)?,
     };
     reader.end()?;

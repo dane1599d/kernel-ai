@@ -4,9 +4,10 @@
 //! calls. Every check reads the store, the ledger or the outbox, never a print.
 //!
 //! A. notes 2 builds state and its source opens in the editor. S. Only the kernel
-//! can drive the edit service, and the kernel refuses an upload that no build of
-//! the build service backs. B. A working edit is built, declined once, then applied
-//! live with its state. C. A compile error changes nothing. D. An index out of
+//! can drive the edit service; the kernel refuses an upload that no build of the
+//! build service backs, and relays for it only control requests that change
+//! nothing. B. A working edit is built, tried on copies, declined once, then
+//! applied live with its state. C. A compile error changes nothing. D. An index out of
 //! bounds is built, applied, and rolls back by itself. E. A host restart comes back
 //! on the upload. K. `:revert` goes back to version 2.
 
@@ -59,6 +60,9 @@ pub trait Driver: LiveDriver {
     fn spoof_edit(&mut self, request: &str) -> Result<String, String>;
     /// The kernel puts boot version `label`'s own artifact as an upload.
     fn put_boot_artifact(&mut self, label: &str) -> Result<(), Error>;
+    /// Has the kernel send `ctl <request>` to notes as COMP_CONTROL does for the
+    /// edit service; the reply.
+    fn relay(&mut self, request: &str) -> Result<String, Error>;
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -92,6 +96,8 @@ pub enum Step {
     SpoofEdit(&'static str, Expect),
     /// The kernel refuses a boot artifact put as an upload: no build backs it.
     PutRefused(&'static str),
+    /// The kernel will not relay these control requests for the edit service.
+    RelayRefused(&'static [&'static str]),
 }
 
 use Count::*;
@@ -122,6 +128,7 @@ pub const STEPS: &[Step] = &[
     Holders,
     PutRefused("2"),
     UploadsRefused(1),
+    RelayRefused(&["swap e1", "swap 2 force", "rollback", "reset", "try ../x"]),
     Uploads(&[], "e1"),
     Live(Part("B: a working edit, declined once, then applied live")),
     Edit(
@@ -129,6 +136,13 @@ pub const STEPS: &[Step] = &[
         &[Contains("lib.rs:141:"), Contains("edited live")],
     ),
     Edit("build", &[StartsWith("ok built e1 from 2 (commit ")]),
+    Edit(
+        "try",
+        &[
+            StartsWith("ok try e1: import ok, self-test ok, health ok, export ok, "),
+            Contains(", reverse ok"),
+        ],
+    ),
     Uploads(&[("e1", "2")], "e2"),
     Builds(1),
     Live(Counts(&[(Begins, 0), (Generation, 0)])),
@@ -193,7 +207,7 @@ pub const STEPS: &[Step] = &[
     Live(Restart),
     Live(Call("about", Exact("ok notes e1 schema 2, edited live"))),
     Live(Call("count", Exact("ok 2 notes, 3 words"))),
-    Live(Fetches(&[("e1", 2)])),
+    Live(Fetches(&[("e1", 3)])),
     Live(Counts(&[(Restores, 2)])),
     Live(Part("K: revert goes back to version 2")),
     Revert("notes", Exact("ok probation 2 (3 calls)")),
@@ -363,6 +377,18 @@ fn run_step(
                 ));
             }
         },
+        RelayRefused(requests) => {
+            for request in requests {
+                match driver.relay(request) {
+                    Err(Error::Invalid) => {}
+                    other => {
+                        return Err(format!(
+                            "relaying {request:?} gave {other:?}, expected Invalid"
+                        ));
+                    }
+                }
+            }
+        }
     }
     Ok(())
 }

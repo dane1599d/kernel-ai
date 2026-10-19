@@ -5,7 +5,7 @@
 
 use crate::command::{self, Command, USAGE};
 use crate::session::Session;
-use crate::wire::{self, BuildRequest, BuildResult, Ipc, Synced};
+use crate::wire::{self, BuildRequest, BuildResult, Ipc, Origin, Synced};
 use crate::{MAX_PRINTED, editable, rules};
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -39,6 +39,9 @@ pub trait Env {
     ) -> Result<(), Error>;
     /// Sends an HTTP request to the build service; the response.
     fn build(&mut self, request: &[u8], timeout_ms: u64) -> Result<Vec<u8>, Error>;
+    /// Has the kernel send `ctl <request>` to a component; only a request that
+    /// changes nothing goes.
+    fn control(&mut self, component: &str, request: &str) -> Result<Vec<u8>, Error>;
     fn log(&mut self, text: &str);
 }
 
@@ -171,6 +174,7 @@ impl Service {
         };
         match command {
             Command::Build => self.build(env),
+            Command::Try => rehearse(env, session),
             command => run(session, command),
         }
     }
@@ -215,6 +219,8 @@ impl Service {
             component: &component,
             label: &next,
             base: &base,
+            // Founder until the session can hold a model draft (M9c step 4).
+            origin: Origin::Founder,
             bundle: &bundle,
         });
         env.log(&format!(
@@ -476,11 +482,31 @@ fn run(session: &mut Session, command: Command<'_>) -> String {
                 session.component, session.label
             ))
         }
-        Command::Build | Command::Help => unreachable!("handled before"),
+        Command::Build | Command::Try | Command::Help => unreachable!("handled before"),
     };
     match result {
         Ok(text) => ok(text),
         Err(why) => err(why),
+    }
+}
+
+/// `try`: the kernel sends `ctl try <built>` to the component, which rehearses the
+/// swap on copies of its state; its answer is passed on.
+fn rehearse(env: &mut dyn Env, session: &Session) -> String {
+    let component = &session.component;
+    let Some(built) = session.built.as_deref() else {
+        return err("nothing is built from this text; build first, then try");
+    };
+    match env.control(component, &format!("try {built}")) {
+        Ok(reply) => {
+            let reply = String::from_utf8_lossy(&reply).into_owned();
+            if reply.starts_with("ok ") || reply.starts_with("err ") {
+                reply
+            } else {
+                err(format!("{component} answered {reply:?}"))
+            }
+        }
+        Err(error) => err(format!("cannot reach {component}: {error:?}")),
     }
 }
 

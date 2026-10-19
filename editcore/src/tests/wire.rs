@@ -11,6 +11,7 @@ fn build() -> Vec<u8> {
         component: "notes",
         label: "e1",
         base: "2",
+        origin: Origin::Model,
         bundle: b"kai-source 1\nfile a.rs 3\nabc",
     })
 }
@@ -40,7 +41,10 @@ fn sync() -> SyncRequest<'static> {
 fn every_format_round_trips() {
     let request = build();
     let decoded = decode_build(&request).unwrap();
-    assert_eq!((decoded.label, decoded.base), ("e1", "2"));
+    assert_eq!(
+        (decoded.label, decoded.base, decoded.origin),
+        ("e1", "2", Origin::Model)
+    );
     assert_eq!(encode_build(&decoded), request);
     let reply = built();
     assert_eq!(encode_built(&decode_built(&reply).unwrap()), reply);
@@ -114,7 +118,10 @@ fn ipc_lines_round_trip() {
 fn malformed_messages_are_refused() {
     let request = String::from_utf8(build()).unwrap();
     for bad in [
-        request.replace("kai-build 1", "kai-build 2"),
+        request.replace("kai-build 2", "kai-build 1"),
+        request.replace("origin model\n", ""),
+        request.replace("origin model", "origin root"),
+        request.replace("origin model", "origin"),
         request.replace("label e1\nbase 2\n", "base 2\nlabel e1\n"),
         request.replace("bundle 28", "bundle 99"),
         request.replace("bundle 28", "bundle 27"),
@@ -128,6 +135,7 @@ fn malformed_messages_are_refused() {
         component: "notes",
         label: "e1",
         base: "2",
+        origin: Origin::Founder,
         bundle: &alloc::vec![b'x'; crate::MAX_BUNDLE + 1],
     });
     assert!(decode_build(&huge).is_err());

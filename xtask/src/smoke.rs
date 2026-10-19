@@ -119,11 +119,39 @@ pub fn run(modules: &[Module]) -> Result<(), String> {
         println!("  | {line}");
     }
     result?;
+    // `:state notes` as the kernel prints it on the fallback screen.
+    let shown = livecore::state::lines("notes", &smoke.ledger(), 158, 48);
+    for line in &shown {
+        println!("  | {line}");
+    }
+    if !livecore::state::shows_schema(&shown, 2) {
+        return Err(String::from(":state notes does not show schema 2"));
+    }
+    explain_latest_rollback(&smoke.ledger())?;
     println!(
         "xtask: the live scenario passed on the host ({} steps, {} ms)",
         scenario::STEPS.len(),
         started.elapsed().as_millis()
     );
+    Ok(())
+}
+
+/// `:why notes` as far as the model, without a network: the facts from the ledger,
+/// the request the llm service sends, and the mock's answer, which repeats the
+/// rollback the facts named. The kernel's `live` case checks the same line.
+fn explain_latest_rollback(ledger: &livecore::ledger::Ledger) -> Result<(), String> {
+    use llmproto::explain;
+    let facts = livecore::why::facts("notes", ledger, explain::MAX_FACTS)
+        .ok_or_else(|| String::from(":why notes found no rollback"))?;
+    let body = crate::mock_llm::answer(&explain::chat_request(crate::mock_llm::MODEL, &facts))?;
+    let explanation = explain::answer_from(&llmproto::http::Response {
+        status: 200,
+        body: body.into_bytes(),
+    })?;
+    println!("  | = {explanation}");
+    if !explanation.contains("latest rollback: 3-spin (host-restart)") {
+        return Err(format!(":why notes explained {explanation:?}"));
+    }
     Ok(())
 }
 

@@ -1,6 +1,7 @@
 //! A stand-in for the Mac mini's LLM server during tests: answers the OpenAI-style
 //! chat endpoint (questions with a fixed reply, script requests with the canned
-//! scripts in [`SCRIPTS`]) and `/health` with "ok". QEMU's user networking maps the
+//! scripts in [`SCRIPTS`], rollback explanations by repeating the rollback they
+//! were given) and `/health` with "ok". QEMU's user networking maps the
 //! guest's 10.0.2.2 to the host's 127.0.0.1, so the guest reaches it there.
 
 use crate::httpd::{self, HttpError};
@@ -16,6 +17,9 @@ const MAX_BODY: usize = 256 * 1024;
 /// The text every question gets back. Tests look for it on the console.
 pub const REPLY: &str = "Hello from the mock LLM.";
 pub const MODEL: &str = "mock";
+/// What every rollback explanation starts with; the rest repeats the facts'
+/// `latest rollback:` line, so a test sees the ledger's facts reached the model.
+pub const EXPLANATION: &str = "The mock LLM read the facts:";
 
 pub struct MockLlm {
     pub port: u16,
@@ -132,6 +136,9 @@ const RR_SCRIPT: &str = "if get_policy() != \"round-robin\" {\n    set_policy(\"
 /// What the model says: the fixed reply to a question, or for a script request
 /// the envelope from [`SCRIPTS`], and prose for any request not listed there.
 fn chat_content(request: &Value) -> String {
+    if request["messages"][0]["content"] == llmproto::explain::SYSTEM_PROMPT {
+        return explanation(request);
+    }
     let is_script = request["response_format"]["json_schema"]["name"] == "rhai_script";
     if !is_script {
         return REPLY.to_string();
@@ -156,6 +163,24 @@ fn chat_content(request: &Value) -> String {
         }
         None => "I am not sure what you mean.".to_string(),
     }
+}
+
+/// The server's answer to the chat request `body`, as the mock gives it over HTTP;
+/// lets the host scenarios check a request without a network.
+pub fn answer(body: &[u8]) -> Result<String, String> {
+    let request: Value =
+        serde_json::from_slice(body).map_err(|error| format!("not JSON: {error}"))?;
+    Ok(completion(&chat_content(&request)))
+}
+
+/// [`EXPLANATION`] and the facts' `latest rollback:` line.
+fn explanation(request: &Value) -> String {
+    let facts = request["messages"][1]["content"].as_str().unwrap_or("");
+    let rollback = facts
+        .lines()
+        .find(|line| line.starts_with("latest rollback: "))
+        .unwrap_or("no rollback");
+    format!("{EXPLANATION} {rollback}.")
 }
 
 fn completion(content: &str) -> String {
@@ -238,5 +263,25 @@ mod tests {
         let question =
             serde_json::from_slice(&llmproto::openai::chat_request(MODEL, None, "hi", 8)).unwrap();
         assert_eq!(chat_content(&question), REPLY);
+    }
+
+    #[test]
+    fn explains_a_rollback_by_repeating_the_one_it_was_given() {
+        use llmproto::explain;
+        let explained = |facts: &str| {
+            let body = answer(&explain::chat_request(MODEL, facts)).unwrap();
+            explain::answer_from(&llmproto::http::Response {
+                status: 200,
+                body: body.into_bytes(),
+            })
+        };
+        assert_eq!(
+            explained("component: notes\nlatest rollback: e2 (trap)\n"),
+            Ok(format!("{EXPLANATION} latest rollback: e2 (trap)."))
+        );
+        assert_eq!(
+            explained("component: notes\n"),
+            Ok(format!("{EXPLANATION} no rollback."))
+        );
     }
 }

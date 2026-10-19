@@ -80,9 +80,11 @@ pub mod call {
     /// checks the artifact against the upload rules (see [`crate::live::MAX_UPLOAD`]).
     /// Needs [`super::cap::PUBLISH`].
     pub const COMP_PUT: u64 = 24;
-    /// Reserved for relayed control requests (M9c). A PUBLISH holder's `ctl status`,
-    /// `ctl source` and `ctl try` would go to a component as from the kernel; swap,
-    /// rollback, reset and force never would. Returns NotFound until then.
+    /// `comp_control(&live::Control) -> reply len`: sends `ctl <request>` to a live
+    /// component as the kernel (caller 0), waiting at most 60 s. Only `status`,
+    /// `source [file]` and `try <version>` are relayed (see
+    /// [`crate::live::relayable`]); anything else is Invalid, and a name that is
+    /// not a live component's host is NotFound. Needs [`super::cap::PUBLISH`].
     pub const COMP_CONTROL: u64 = 25;
     /// `comp_read(&live::Read) -> len`: a component's [`crate::live::Info`], or the bytes
     /// of one of its versions copied into the buffer when they fit (the length

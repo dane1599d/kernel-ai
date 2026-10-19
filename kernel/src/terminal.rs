@@ -27,7 +27,7 @@ const SHELL_TIMEOUT_MS: u64 = 160_000;
 /// How long to wait for a shell that is starting or restarting.
 const SHELL_START_WAIT_NS: u64 = 3_000_000_000;
 /// Longest piece of a reply printed in one go (each print keeps interrupts off).
-const PIECE_CHARS: usize = 160;
+pub(crate) const PIECE_CHARS: usize = 160;
 const MAX_REPLY_LINES: usize = 64;
 
 /// Shell replies printed in full, for the self-test.

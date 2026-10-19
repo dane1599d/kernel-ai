@@ -46,6 +46,24 @@ struct StoreEnv {
     /// The reply to the latest build, which the next upload must match, as the
     /// kernel requires.
     last_build: Option<Vec<u8>>,
+    /// The notes host, lent while the edit service handles a message, so a
+    /// relayed control request reaches it.
+    host: Option<NotesHost>,
+}
+
+type NotesHost = Host<LocalEnv<WasmInstance>>;
+
+/// What the kernel's COMP_CONTROL does: its own check of the request, then
+/// `ctl <request>` to the notes host as the kernel.
+fn relay(host: Option<&mut NotesHost>, component: &str, request: &str) -> Result<Vec<u8>, Error> {
+    if !kabi::live::relayable(request) {
+        return Err(Error::Invalid);
+    }
+    let host = host
+        .filter(|_| component == "notes")
+        .ok_or(Error::NotFound)?;
+    let request = format!("{}{request}", kabi::live::CONTROL_PREFIX);
+    host.handle(0, request.as_bytes()).map_err(|_| Error::Dead)
 }
 
 impl StoreEnv {
@@ -119,6 +137,10 @@ impl Env for StoreEnv {
         Ok(response)
     }
 
+    fn control(&mut self, component: &str, request: &str) -> Result<Vec<u8>, Error> {
+        relay(self.host.as_mut(), component, request)
+    }
+
     fn log(&mut self, text: &str) {
         println!("  | [edit] {text}");
     }
@@ -128,7 +150,7 @@ struct EditSmoke {
     kernel: Kernel,
     settings: Settings,
     pid: u64,
-    host: Option<Host<LocalEnv<WasmInstance>>>,
+    host: Option<NotesHost>,
     service: Service,
     env: StoreEnv,
     editing: bool,
@@ -152,7 +174,10 @@ impl EditSmoke {
     }
 
     fn editor(&mut self, caller: u64, message: &[u8]) -> String {
-        self.service.handle(&mut self.env, caller, message)
+        self.env.host = self.host.take();
+        let reply = self.service.handle(&mut self.env, caller, message);
+        self.host = self.env.host.take();
+        reply
     }
 }
 
@@ -315,6 +340,11 @@ impl Driver for EditSmoke {
         let commit = "0".repeat(kabi::live::COMMIT_LEN);
         self.env.upload(&bytes, label, &commit)
     }
+
+    fn relay(&mut self, request: &str) -> Result<String, Error> {
+        relay(self.host.as_mut(), "notes", request)
+            .map(|reply| String::from_utf8_lossy(&reply).into_owned())
+    }
 }
 
 /// A build service on a fresh snapshot of the working tree at `target/edit-test/<phase>`.
@@ -358,6 +388,7 @@ pub fn run(root: &Path, modules: &[Module]) -> Result<(), String> {
             port: builds.port,
             builds: 0,
             last_build: None,
+            host: None,
         },
         editing: false,
     };

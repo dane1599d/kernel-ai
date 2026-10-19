@@ -8,6 +8,7 @@
 extern crate alloc;
 
 pub mod artifact;
+pub mod cbor;
 pub mod control;
 pub mod diff;
 pub mod host;
@@ -21,7 +22,9 @@ pub mod store;
 mod swap;
 #[cfg(test)]
 mod tests;
+mod try_run;
 pub mod uploads;
+pub mod why;
 
 use alloc::string::String;
 use alloc::vec::Vec;
