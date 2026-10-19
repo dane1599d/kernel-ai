@@ -103,7 +103,7 @@ pub enum Step {
 use Count::*;
 use Expect::*;
 use Step::*;
-use live::Step::{Active, Bad, Call, Counts, Fetches, Part, Restart, SameHost};
+use live::Step::{Active, Bad, Call, Counts, Fetches, Part, Restart, RolledBack, SameHost};
 
 pub const STEPS: &[Step] = &[
     Live(Part(
@@ -198,6 +198,11 @@ pub const STEPS: &[Step] = &[
         (Begins, 2),
     ])),
     Live(Bad("e2", true)),
+    // The trap names the line of part D's edit.
+    Live(RolledBack(
+        "e2",
+        StartsWith("panicked at components/notes/src/lib.rs:58:"),
+    )),
     Live(Call("about", Exact("ok notes e1 schema 2, edited live"))),
     Synced("e2", Outcome::Rollback(Reason::Trap)),
     ApplyRefused(StartsWith("e2 rolled back before (trap)")),

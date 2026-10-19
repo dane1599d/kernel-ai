@@ -14,6 +14,7 @@ pub mod diff;
 pub mod host;
 pub mod ledger;
 pub mod local;
+pub mod location;
 mod probation;
 pub mod scenario;
 pub mod settings;

@@ -156,3 +156,74 @@ fn a_long_loop_runs_on_a_small_native_stack() {
         .unwrap();
     assert_eq!(thread.join().unwrap(), Reason::Fuel);
 }
+
+const PANIC_IMPORT: &str = r#"(import "kai" "panic" (func $panic (param i32 i32 i32 i32)))"#;
+
+/// A module whose `kai_handle` announces a panic at `path:line:column` (the path
+/// stored at 64) when the request starts with `p` and then traps; for `r` it
+/// announces one and replies after all; anything else traps bare.
+fn panics_at(path: &str, line: i32, column: i32) -> Vec<u8> {
+    let announce = std::format!(
+        "(call $panic (i32.const 64) (i32.const {}) (i32.const {line}) (i32.const {column}))",
+        path.len()
+    );
+    let handle = std::format!(
+        "(if (i32.eq (i32.load8_u (local.get $p)) (i32.const 114))
+           (then {announce} (return {REPLY})))
+         (if (i32.eq (i32.load8_u (local.get $p)) (i32.const 112))
+           (then {announce}))
+         (unreachable)"
+    );
+    let data = std::format!("(data (i32.const 64) \"{}\")", path.replace('\\', "\\\\"));
+    module_with(PANIC_IMPORT, &handle, &data)
+}
+
+#[test]
+fn a_panic_names_its_file_and_line() {
+    let wasm = panics_at("components\\notes\\src\\lib.rs", 58, 47);
+    let mut instance = load(&wasm, LIMITS, Some(sink)).unwrap();
+    let fault = instance.handle(b"p").unwrap_err();
+    assert_eq!(
+        (fault.reason, fault.detail.as_str()),
+        (
+            Reason::Trap,
+            "panicked at components/notes/src/lib.rs:58:47"
+        )
+    );
+    // The location belongs to its call only: announced in a call that then replies,
+    // it says nothing of a bare trap in the next one.
+    assert_eq!(instance.handle(b"r").unwrap(), b"ok hi");
+    let bare = instance.handle(b"x").unwrap_err();
+    assert_eq!(bare.reason, Reason::Trap);
+    assert!(!bare.detail.starts_with("panicked at"), "{}", bare.detail);
+    // A rehearsal runs quiet, and still learns where it panicked.
+    instance.quiet(true);
+    let quiet = instance.handle(b"p").unwrap_err();
+    assert!(quiet.detail.starts_with("panicked at components/notes/"));
+}
+
+#[test]
+fn a_host_path_in_a_panic_is_cut_to_its_file_name() {
+    let registry = "C:\\Users\\someone\\.cargo\\registry\\src\\minicbor-2.3.0\\src\\decode.rs";
+    let wasm = panics_at(registry, 120, 9);
+    let fault = load(&wasm, LIMITS, None).unwrap().handle(b"p").unwrap_err();
+    assert_eq!(fault.detail, "panicked at .../decode.rs:120:9");
+    // Of a path over 256 bytes the end is read, so the name is still the file's.
+    let deep = std::format!(
+        "/home/ci/{}/crates/some-deep-crate/src/decoder/frames.rs",
+        "x".repeat(250)
+    );
+    let wasm = panics_at(&deep, 10, 5);
+    let fault = load(&wasm, LIMITS, None).unwrap().handle(b"p").unwrap_err();
+    assert_eq!(fault.detail, "panicked at .../frames.rs:10:5");
+}
+
+#[test]
+fn a_panic_path_outside_memory_leaves_the_plain_trap() {
+    let handle =
+        "(call $panic (i32.const -16) (i32.const 8) (i32.const 3) (i32.const 1)) (unreachable)";
+    let wasm = module_with(PANIC_IMPORT, handle, "");
+    let fault = load(&wasm, LIMITS, None).unwrap().handle(b"").unwrap_err();
+    assert_eq!(fault.reason, Reason::Trap);
+    assert!(!fault.detail.starts_with("panicked at"), "{}", fault.detail);
+}

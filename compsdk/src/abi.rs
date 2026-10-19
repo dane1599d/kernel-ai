@@ -11,8 +11,14 @@ use core::cell::UnsafeCell;
 static ALLOCATOR: talc::wasm::WasmDynamicTalc = talc::wasm::new_wasm_dynamic_allocator();
 
 /// A panic is a trap: the host rolls back or reloads; nothing here is trusted again.
+/// Where it happened goes to the host first, so the fault names the line.
 #[panic_handler]
-fn panic(_: &core::panic::PanicInfo) -> ! {
+fn panic(info: &core::panic::PanicInfo) -> ! {
+    if let Some(at) = info.location() {
+        let file = at.file();
+        // SAFETY: the host only reads `len` bytes at `ptr`, which `file` owns.
+        unsafe { kai_panic(file.as_ptr(), file.len(), at.line(), at.column()) }
+    }
     core::arch::wasm32::unreachable()
 }
 
@@ -20,6 +26,8 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
 unsafe extern "C" {
     #[link_name = "log"]
     fn kai_log(ptr: *const u8, len: usize);
+    #[link_name = "panic"]
+    fn kai_panic(ptr: *const u8, len: usize, line: u32, column: u32);
 }
 
 pub fn log(text: &str) {

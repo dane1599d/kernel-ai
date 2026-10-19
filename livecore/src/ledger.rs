@@ -385,8 +385,10 @@ impl Ledger {
                     self.counters.restarts += 1;
                 }
                 return Ok(Some(format!(
-                    "{active} failed ({}){}",
+                    "{active} failed ({}{}{}){}",
                     reason.name(),
+                    if event.detail.is_empty() { "" } else { ": " },
+                    event.detail,
                     if restarted {
                         "; reloaded from its checkpoint"
                     } else {

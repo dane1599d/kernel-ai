@@ -32,8 +32,12 @@
 //!     // 0 when the version's own checks pass. Read-only.
 //!     kai-self-test: func() -> u32;
 //! }
-//! // The only import: one log line, cut to 160 bytes.
+//! // One log line, cut to 160 bytes.
 //! kai.log: func(text: list<u8>);
+//! // Optional, called by a panic handler just before it traps: where the panic
+//! // happened, so the fault names the line. Of a longer path the last 256 bytes
+//! // are read.
+//! kai.panic: func(file: list<u8>, line: u32, column: u32);
 //! ```
 //!
 //! A component has no clock, no randomness and no access to other services, so
