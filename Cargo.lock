@@ -87,6 +87,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "bpe"
+version = "0.0.0"
+dependencies = [
+ "gguf",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
