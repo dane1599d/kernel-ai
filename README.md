@@ -30,7 +30,7 @@ A from-scratch x86_64 operating system in Rust, inspired by TempleOS, with a loc
 ```bash
 cargo xtask build            # build the kernel
 cargo xtask run              # boot to the terminal in a QEMU window
-cargo xtask run --llm 192.168.1.50:8080 --model qwen3-8b  # with the Mac mini LLM
+cargo xtask run --llm 192.168.1.50:8080 --model qwen3-8b  # with an LLM server
 cargo xtask test             # boots each self-test case headless (14 cases on 4 CPUs, with a mock LLM server)
 cargo xtask test --accel kvm # use KVM (Linux or WSL2)
 cargo xtask soak             # the 10-minute spawn/exit/sleep storm
@@ -43,10 +43,10 @@ MPL-2.0 (see `docs/decisions.md`).
 
 ## Talking to the LLM
 
-The kernel sends `ask` commands to any OpenAI-compatible server, such as llama.cpp's `llama-server` on the Mac mini. Start the server bound to the LAN, then boot with its address:
+Since 2026-10-19 the model is meant to run locally, inside Kernel AI (the Local LLM milestone in `docs/roadmap.md`). Until that lands, and afterwards as CI's test double, the kernel sends `ask` commands to any OpenAI-compatible server, such as llama.cpp's `llama-server`. Start the server bound to the LAN, then boot with its address:
 
 ```bash
 cargo xtask run --llm 192.168.1.50:8080 --model qwen3-8b
 ```
 
-QEMU's user-mode network lets the VM reach LAN addresses directly. Use the Mac's IP address, since the kernel has no DNS.
+QEMU's user-mode network lets the VM reach LAN addresses directly. Use the server's IP address, since the kernel has no DNS.
