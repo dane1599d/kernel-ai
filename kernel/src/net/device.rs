@@ -1,6 +1,6 @@
 //! smoltcp `Device` adapter over the virtio network card.
 
-use super::pci::Nic;
+use super::Nic;
 use crate::log;
 use core::cell::RefCell;
 use smoltcp::phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken};

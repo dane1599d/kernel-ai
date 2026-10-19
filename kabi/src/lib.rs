@@ -11,6 +11,7 @@
 extern crate alloc;
 
 pub mod live;
+pub mod model;
 pub mod plan;
 
 /// System-call numbers.

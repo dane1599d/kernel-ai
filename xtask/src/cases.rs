@@ -2,6 +2,7 @@
 //! kernel decides pass or fail and reports it through isa-debug-exit.
 
 use crate::buildsvc::BuildService;
+use crate::disk::Fixture;
 use std::time::Duration;
 
 /// A check on the host after a case passed.
@@ -27,6 +28,9 @@ pub struct TestCase {
     /// The case needs at least this long, whatever --timeout says: the edit case
     /// waits on builds whose own limits nest inside 300 s.
     pub min_timeout: Option<Duration>,
+    /// A fixture attached as the `kai-model` disk, with its length and hash on the
+    /// command line.
+    pub disk: Option<Fixture>,
 }
 
 const fn case(name: &'static str, cmdline: &'static str) -> TestCase {
@@ -39,6 +43,7 @@ const fn case(name: &'static str, cmdline: &'static str) -> TestCase {
         after: None,
         prepare: None,
         min_timeout: None,
+        disk: None,
     }
 }
 
@@ -140,6 +145,11 @@ pub const TEST_CASES: &[TestCase] = &[
             "kai> xyz^C",
         ],
         ..case("terminal", "test=terminal screenlog")
+    },
+    TestCase {
+        disk: Some(Fixture::Raw),
+        expect: &["blk: kai-model reads back byte for byte"],
+        ..case("blk", "test=blk")
     },
 ];
 

@@ -1,6 +1,7 @@
 //! Building QEMU command lines and running QEMU, interactively or as a test.
 
 use crate::cases::TestCase;
+use crate::disk::{BASE_MEMORY_MIB, ModelDisk};
 use crate::{Accel, Firmware};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
@@ -26,15 +27,23 @@ pub fn vm_cpus(accel: Accel) -> usize {
 }
 
 /// QEMU runs with `target/` as its working directory, so drive paths stay relative
-/// and free of drive-letter colons, which QEMU's option parser would misread.
+/// and free of drive-letter colons, which QEMU's option parser would misread. A
+/// model disk is the exception, attached by an absolute path in a JSON
+/// `-blockdev` (see `disk.rs`), with guest memory sized for it.
 /// Every VM gets a virtio network card on QEMU's user-mode network: the guest is
 /// 10.0.2.15, and 10.0.2.2 reaches the host's 127.0.0.1.
-pub fn args(firmware: &Firmware, accel: Accel, headless: bool) -> Vec<String> {
+pub fn args(
+    firmware: &Firmware,
+    accel: Accel,
+    headless: bool,
+    disk: Option<&ModelDisk>,
+) -> Vec<String> {
+    let memory = format!("{}M", disk.map_or(BASE_MEMORY_MIB, ModelDisk::memory_mib));
     let mut args: Vec<String> = [
         "-machine",
         "q35",
         "-m",
-        "512M",
+        memory.as_str(),
         "-no-reboot",
         "-serial",
         "stdio",
@@ -60,6 +69,9 @@ pub fn args(firmware: &Firmware, accel: Accel, headless: bool) -> Vec<String> {
     debug_assert!(firmware.vars.ends_with("ovmf-vars.fd"));
     args.push("-drive".into());
     args.push("format=raw,file=fat:rw:esp".into());
+    if let Some(disk) = disk {
+        args.extend(disk.qemu_args());
+    }
     let (accel_name, cpu) = match accel {
         // -cpu max exposes SMEP, SMAP and UMIP wherever the accelerator can.
         Accel::Kvm => ("kvm", "max"),

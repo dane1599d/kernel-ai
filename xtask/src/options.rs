@@ -1,5 +1,6 @@
 //! Command-line options for `cargo xtask build|run|test|soak`.
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
@@ -36,6 +37,8 @@ pub struct Options {
     pub model: Option<String>,
     /// `run --edit`: start the build service on the dev clone, so `:edit` works.
     pub edit: bool,
+    /// `run --model-disk PATH`: a raw file attached read-only as the `kai-model` disk.
+    pub model_disk: Option<PathBuf>,
 }
 
 pub fn parse_args(args: &[String]) -> Result<Options, String> {
@@ -64,6 +67,7 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
         llm: None,
         model: None,
         edit: false,
+        model_disk: None,
     };
     let mut rest = args[1..].iter();
     while let Some(arg) = rest.next() {
@@ -98,6 +102,12 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
                 options.llm = Some(server.clone());
             }
             "--edit" if task == Task::Run => options.edit = true,
+            "--model-disk" if task == Task::Run => {
+                let path = rest
+                    .next()
+                    .ok_or("--model-disk expects the path of a file")?;
+                options.model_disk = Some(PathBuf::from(path));
+            }
             "--model" => {
                 let model = rest.next().ok_or("--model expects a model name")?;
                 if model.is_empty() || model.chars().any(char::is_whitespace) {
@@ -156,6 +166,17 @@ mod tests {
     fn edit_is_for_run_only() {
         assert!(parse_args(&args(&["run", "--edit"])).unwrap().edit);
         assert!(parse_args(&args(&["test", "--edit"])).is_err());
+    }
+
+    #[test]
+    fn model_disk_is_for_run_only() {
+        let options = parse_args(&args(&["run", "--model-disk", r"D:\kai-models\m.gguf"])).unwrap();
+        assert_eq!(
+            options.model_disk,
+            Some(PathBuf::from(r"D:\kai-models\m.gguf"))
+        );
+        assert!(parse_args(&args(&["run", "--model-disk"])).is_err());
+        assert!(parse_args(&args(&["test", "--model-disk", "m.gguf"])).is_err());
     }
 
     #[test]

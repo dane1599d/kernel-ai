@@ -51,6 +51,8 @@ static MEMORY: Mutex<Option<Memory>> = Mutex::new(None);
 static HHDM_OFFSET: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 /// Physical address of the kernel PML4, readable without the MEMORY lock.
 static KERNEL_CR3: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+/// End of the tracked physical memory, readable without the MEMORY lock.
+static PHYS_END: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 /// The page tables kernel threads run on.
 pub fn kernel_cr3() -> u64 {
@@ -60,6 +62,12 @@ pub fn kernel_cr3() -> u64 {
 /// Offset of Limine's higher-half direct map: physical address + hhdm() is mapped.
 pub fn hhdm() -> u64 {
     HHDM_OFFSET.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+/// End of the physical memory the frame allocator tracks: every frame it hands out
+/// lies below this, and is reachable at `hhdm() + phys`.
+pub fn phys_end() -> u64 {
+    PHYS_END.load(core::sync::atomic::Ordering::Relaxed)
 }
 
 /// Runs `f` with the memory manager. Panics if called before [`init`].
@@ -115,6 +123,7 @@ pub fn init(entries: &[&Entry], hhdm: u64) -> Result<(), &'static str> {
     let mut memory = unsafe { Memory::adopt(bitmap, hhdm) };
     HHDM_OFFSET.store(hhdm, core::sync::atomic::Ordering::Relaxed);
     KERNEL_CR3.store(memory.kernel_cr3(), core::sync::atomic::Ordering::Relaxed);
+    PHYS_END.store(frames * PAGE_SIZE, core::sync::atomic::Ordering::Relaxed);
     let prepared = memory.prepare_kernel_half()?;
     heap::map(&mut memory)?;
     let (free, total) = (memory.free_frames(), memory.total_frames());

@@ -2,11 +2,13 @@
 //!
 //! - [`FrameBitmap`]: physical frame allocator, one bit per 4 KiB frame.
 //! - [`ReclaimPolicy`] and [`Clock`]: the swappable page-reclaim policy and its default.
+//! - [`dma`]: which buffers a device can reach unbounced, and sector-sized disk reads.
 
 #![no_std]
 
 extern crate alloc;
 
+pub mod dma;
 mod frames;
 mod reclaim;
 
