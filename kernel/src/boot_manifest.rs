@@ -1,11 +1,12 @@
 //! The boot manifest (M9d): which versions of notes committed in git this boot
 //! runs. xtask builds them from their commits, ships them as boot modules and
-//! names them on the command line ([`livecore::boot`]). notes starts on the plan's
-//! version; once it serves, a kernel thread swaps it to the manifest's version
-//! under normal probation. No yes is asked for: the founder decided that a version
-//! already committed needs none. Probation, rollback and the git outbox are the
-//! usual ones, so git records a rollback and that version is not built again, and
-//! a boot that ends during probation tries it again next time.
+//! names them on the command line ([`livecore::boot`]). notes starts on the good
+//! version, or on 2 when there is none or it cannot start; once it serves, a
+//! kernel thread swaps it to the pending version under normal probation. No yes
+//! is asked for: the founder decided that a version already committed needs none.
+//! Probation, rollback and the git outbox are the usual ones, so git records a
+//! rollback and that version is not built again, and a boot that ends during
+//! probation tries it again next time.
 
 use crate::process::components;
 use crate::{edit_mode, ipc, log, threads};

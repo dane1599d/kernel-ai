@@ -1,8 +1,9 @@
 //! The boot manifest's kernel arguments (M9d). xtask builds the versions of
 //! `notes` committed in git, ships them as boot modules and names them:
 //! `live_good=notes:<label>`, the last one a boot swapped to and committed, and
-//! `live_pending=notes:<label>`, the newest commit not proven yet. The kernel
-//! starts the plan's version and, once notes serves, swaps it to the manifest's.
+//! `live_pending=notes:<label>`, the newest commit not proven yet. notes starts on
+//! the good version, falling back to 2 if that one cannot start, and once it
+//! serves the kernel swaps it to the pending one.
 
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -65,9 +66,12 @@ impl Manifest {
     }
 
     /// The version notes starts on, and the one it falls back to when that one
-    /// cannot start.
+    /// cannot start: the good version and 2, or 2 alone.
     pub fn start(&self) -> (&str, Option<&str>) {
-        (BUILT_IN, None)
+        match &self.good {
+            Some(good) => (good, Some(BUILT_IN)),
+            None => (BUILT_IN, None),
+        }
     }
 
     /// The version to swap to once notes serves on `active`: the pending one.
@@ -134,15 +138,19 @@ mod tests {
     }
 
     #[test]
-    fn notes_starts_on_2_and_swaps_to_the_pending_version_unless_it_failed() {
+    fn notes_starts_on_good_and_swaps_to_the_pending_version_unless_it_failed() {
         let (manifest, _) =
             Manifest::parse(&format!("live_good=notes:{GOOD} live_pending=notes:{TIP}"));
-        assert_eq!(manifest.start(), ("2", None));
+        assert_eq!(manifest.start(), (GOOD, Some("2")));
+        assert_eq!(manifest.swap_to(GOOD, |_| false), Some(TIP));
+        // Good would not start, so notes runs 2: the swap still goes to the tip.
         assert_eq!(manifest.swap_to("2", |_| false), Some(TIP));
         assert_eq!(manifest.swap_to(TIP, |_| false), None);
         assert_eq!(manifest.swap_to("2", |label| label == TIP), None);
         let (good, _) = Manifest::parse(&format!("live_good=notes:{GOOD}"));
-        assert_eq!(good.swap_to("2", |_| false), None);
+        assert_eq!(good.swap_to(GOOD, |_| false), None);
+        let (tip, _) = Manifest::parse(&format!("live_pending=notes:{TIP}"));
+        assert_eq!(tip.start(), ("2", None));
         assert_eq!(Manifest::default().swap_to("2", |_| false), None);
     }
 }

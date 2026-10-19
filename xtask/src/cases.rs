@@ -111,6 +111,13 @@ pub const TEST_CASES: &[TestCase] = &[
         ..case("manifest", "test=manifest")
     },
     TestCase {
+        build: true,
+        prepare: Some(crate::boot_smoke::prepare_manifest_good),
+        after: Some(crate::boot_smoke::after_manifest_good),
+        min_timeout: Some(Duration::from_secs(300)),
+        ..case("manifest-good", "test=manifest-good")
+    },
+    TestCase {
         keys: TERMINAL_SCRIPT,
         expect: &[
             crate::mock_llm::REPLY,

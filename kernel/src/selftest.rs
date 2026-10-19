@@ -34,6 +34,8 @@ pub enum SelfTest {
     Edit,
     /// M9d: notes swaps to the version the boot manifest names.
     Manifest,
+    /// M9d: notes starts on the good version, and the swap rolls back.
+    ManifestGood,
 }
 
 const DEFAULT_STORM_SECONDS: u64 = 60;
@@ -61,6 +63,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=live" => Some(SelfTest::Live),
             "test=edit" => Some(SelfTest::Edit),
             "test=manifest" => Some(SelfTest::Manifest),
+            "test=manifest-good" => Some(SelfTest::ManifestGood),
             other => other.strip_prefix("test=storm").map(|rest| {
                 let seconds = rest.strip_prefix('-').and_then(|s| s.parse().ok());
                 SelfTest::Storm(seconds.unwrap_or(DEFAULT_STORM_SECONDS))
@@ -83,6 +86,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::Live
             | SelfTest::Edit
             | SelfTest::Manifest
+            | SelfTest::ManifestGood
     );
     if !wanted {
         return None;
@@ -92,7 +96,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
     // edit service, which syncs with git.
     let mut plan = match test {
         SelfTest::Live => format!("{}\n{}", kabi::plan::NOTES_TEST, crate::llm::plan_line()),
-        SelfTest::Edit | SelfTest::Manifest => {
+        SelfTest::Edit | SelfTest::Manifest | SelfTest::ManifestGood => {
             let mut plan = match test {
                 SelfTest::Edit => String::from(kabi::plan::NOTES_EDIT_TEST),
                 _ => format!(
@@ -112,7 +116,11 @@ pub fn plan(test: SelfTest) -> Option<String> {
     // The net case checks only the llm path, so it runs without the shell.
     if !matches!(
         test,
-        SelfTest::Net | SelfTest::Live | SelfTest::Edit | SelfTest::Manifest
+        SelfTest::Net
+            | SelfTest::Live
+            | SelfTest::Edit
+            | SelfTest::Manifest
+            | SelfTest::ManifestGood
     ) {
         plan.push('\n');
         plan.push_str(kabi::plan::SHELL);

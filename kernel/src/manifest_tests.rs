@@ -1,7 +1,9 @@
-//! M9d self-test (`test=manifest`): the boot manifest, on refs xtask prepared in a
-//! snapshot repository. notes starts on version 2, the kernel's own thread swaps
-//! it to the pending version without a yes, three calls end probation with a
-//! commit, and git acknowledges it. The case's host check then reads the good ref.
+//! M9d self-tests, on refs xtask prepared in a snapshot repository. In each, notes
+//! starts on the good version (or 2 when there is none) and the kernel's own thread
+//! swaps it to the pending one without a yes. `test=manifest`: three calls end
+//! probation with a commit. `test=manifest-good`: `count` traps on the pending
+//! version and it rolls back. Git must acknowledge either; the cases' host checks
+//! then read the good and failed refs.
 
 use crate::process::components;
 use crate::{boot_manifest, hpet, ipc, log, threads};
@@ -81,13 +83,20 @@ fn swapped_from(start: &str, pending: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn run() -> Result<(), String> {
-    let (_, Some(pending)) = boot_manifest::labels() else {
-        return Err(String::from(
-            "manifest: boot with live_pending=notes:<version>",
-        ));
-    };
-    swapped_from("2", &pending)?;
+/// The manifest's labels, which the test needs: the pending one, and the good
+/// one when `good` says the case has one.
+fn labels(good: bool) -> Result<(String, String), String> {
+    match boot_manifest::labels() {
+        (Some(label), Some(pending)) if good => Ok((label, pending)),
+        (None, Some(pending)) if !good => Ok((String::from("2"), pending)),
+        labels => Err(format!("manifest: the boot manifest is {labels:?}")),
+    }
+}
+
+/// `test=manifest`: three calls, and the pending version is committed.
+fn commits() -> Result<String, String> {
+    let (start, pending) = labels(false)?;
+    swapped_from(&start, &pending)?;
     for _ in 0..3 {
         let reply = call("about")?;
         if !reply.starts_with(&format!("ok notes {pending} ")) || !reply.contains("edited live") {
@@ -102,21 +111,50 @@ fn run() -> Result<(), String> {
             ledger.counters.commits
         ));
     }
+    Ok(format!(
+        "notes started on {start}, swapped to {pending} without a yes and committed it"
+    ))
+}
+
+/// `test=manifest-good`: `count` traps on the pending version, which rolls back
+/// to the good one.
+fn rolls_back() -> Result<String, String> {
+    let (good, pending) = labels(true)?;
+    swapped_from(&good, &pending)?;
+    let reply = call("count")?;
+    let ledger = ledger();
+    let trapped = ledger.is_bad(&pending) == Some(livecore::Reason::Trap);
+    if !reply.starts_with("ok ") || ledger.active() != Some(good.as_str()) || !trapped {
+        return Err(format!(
+            "manifest: count answered {reply:?}; notes runs {:?} ({})",
+            ledger.active(),
+            ledger.last_detail
+        ));
+    }
+    Ok(format!(
+        "notes started on {good}, swapped to {pending}, which trapped and rolled back"
+    ))
+}
+
+fn run(good: bool) -> Result<(), String> {
+    let done = if good { rolls_back()? } else { commits()? };
     settle_sync()?;
     let shown = boot_manifest::lines();
     for line in &shown {
         log!("{line}");
     }
-    if !shown[0].ends_with(&format!("pending {pending}")) {
+    let (_, pending) = boot_manifest::labels();
+    if !shown[0].ends_with(&format!("pending {}", pending.unwrap_or_default())) {
         return Err(String::from(
             "manifest: :boot does not show the pending version",
         ));
     }
-    log!("manifest: notes started on 2, swapped to {pending} without a yes and committed it");
+    log!("manifest: {done}");
     Ok(())
 }
 
-pub fn check() -> Result<(), &'static str> {
+/// `good` says whether the boot has a good version, whose swap then traps.
+fn check_case(good: bool) -> Result<(), &'static str> {
     if crate::build_service::target().is_none() {
         return Err("manifest: boot with build= and build_token=");
     }
@@ -124,8 +162,16 @@ pub fn check() -> Result<(), &'static str> {
         log!("{why}");
         return Err("manifest: the notes host never came up");
     }
-    run().map_err(|why| {
+    run(good).map_err(|why| {
         log!("{why}");
         "manifest: the boot manifest scenario failed"
     })
+}
+
+pub fn check() -> Result<(), &'static str> {
+    check_case(false)
+}
+
+pub fn check_good() -> Result<(), &'static str> {
+    check_case(true)
 }

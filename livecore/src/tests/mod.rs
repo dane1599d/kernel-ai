@@ -3,6 +3,7 @@
 extern crate std;
 
 mod fake;
+mod fallback;
 mod rehearsal;
 
 use crate::Reason;

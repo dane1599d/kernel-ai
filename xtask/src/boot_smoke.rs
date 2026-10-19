@@ -83,6 +83,17 @@ pub fn prepare_manifest(service: &BuildService) -> Result<(), String> {
     commit_edit(service, &service.base(), EDIT_ABOUT).map(|_| ())
 }
 
+/// Case `manifest-good`: part B's edit is good, as if a boot had committed it,
+/// and part D's edit on top is the tip, which the boot swaps to.
+pub fn prepare_manifest_good(service: &BuildService) -> Result<(), String> {
+    let about = commit_edit(service, &service.base(), EDIT_ABOUT)?;
+    git(
+        &service.repo_root(),
+        &["update-ref", &boot::good_ref("notes"), &about],
+    )?;
+    commit_edit(service, &about, EDIT_TRAP).map(|_| ())
+}
+
 /// For a case with a build service: its refs prepared, then the boot manifest's
 /// versions for the boot drive and the kernel arguments naming them.
 pub fn manifest_for(
@@ -212,7 +223,8 @@ impl Machine {
         self.kernel.component.borrow().ledger.clone()
     }
 
-    /// notes started on `start`; the kernel's swap, as its boot thread sends it.
+    /// notes started on `start`; then the kernel's swap, as its boot thread sends
+    /// it.
     fn swap(&mut self, start: &str) -> Result<String, String> {
         let ledger = self.ledger();
         let active = ledger.active().unwrap_or("");
@@ -319,26 +331,53 @@ pub fn run(root: &Path, modules: &[Module]) -> Result<(), String> {
         return Err(format!("boot 2's manifest is {:?}", manifest.labels()));
     }
     let mut machine = boot_on(modules, &manifest)?;
-    machine.swap("2")?;
+    machine.swap(&c_about)?;
     let reply = machine.call("count")?;
     let ledger = machine.ledger();
-    if !reply.starts_with("ok 0 notes") || ledger.is_bad(&c_trap) != Some(Reason::Trap) {
+    let rolled_back =
+        ledger.active() == Some(c_about.as_str()) && ledger.is_bad(&c_trap) == Some(Reason::Trap);
+    if !reply.starts_with("ok 0 notes") || !rolled_back {
         return Err(format!(
             "count answered {reply:?}; {c_trap} did not roll back by trap"
         ));
     }
     machine.sync(&service)?;
     after_manifest_good(&service)?;
-    // Boot 3: the failed tip is not tried again.
-    let manifest = service.boot_manifest(&cache)?;
+    for line in machine.kernel.log.borrow().iter() {
+        println!("  | {line}");
+    }
+    // Boot 3: the failed tip is not tried again, and a good version that will
+    // not stage (here it is version 2's artifact) starts 2 instead.
+    let mut manifest = service.boot_manifest(&cache)?;
     if manifest.labels() != (Some(c_about.as_str()), None) {
         return Err(format!("boot 3's manifest is {:?}", manifest.labels()));
+    }
+    let built_in = modules
+        .iter()
+        .find(|m| m.path == "comp/notes/2.wasm")
+        .ok_or("no notes 2 on the boot drive")?;
+    if let Some(good) = &mut manifest.good {
+        good.artifact = built_in.bytes.clone();
+    }
+    let machine = boot_on(modules, &manifest)?;
+    let ledger = machine.ledger();
+    let said = machine
+        .kernel
+        .log
+        .borrow()
+        .iter()
+        .any(|line| line.starts_with(&format!("cannot load version {c_about}: ")));
+    if ledger.active() != Some("2") || !said {
+        return Err(format!(
+            "a good version that will not stage started {:?}",
+            ledger.active()
+        ));
     }
     for line in machine.kernel.log.borrow().iter() {
         println!("  | {line}");
     }
     println!(
-        "xtask: the boot manifest passed on the host: {c_about} swapped in and good, {c_trap} rolled back and failed ({} s)",
+        "xtask: the boot manifest passed on the host: {c_about} swapped in and good, {c_trap} rolled back and failed, a broken good version fell back to 2 ({} s)",
         started.elapsed().as_secs()
     );
     Ok(())

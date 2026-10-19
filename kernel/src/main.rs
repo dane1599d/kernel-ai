@@ -245,6 +245,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Live => run_case(live_tests::check),
         SelfTest::Edit => run_case(edit_tests::check),
         SelfTest::Manifest => run_case(manifest_tests::check),
+        SelfTest::ManifestGood => run_case(manifest_tests::check_good),
         SelfTest::Boot | SelfTest::None => {}
     }
 
