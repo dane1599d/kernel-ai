@@ -189,7 +189,7 @@ pub fn answer(proposal: &Proposal, answer: &str) -> String {
     swap(&proposal.component, &proposal.label)
 }
 
-fn swap(name: &str, label: &str) -> String {
+pub(crate) fn swap(name: &str, label: &str) -> String {
     let request = format!("{}swap {label}", kabi::live::CONTROL_PREFIX);
     match ipc::call(name, request.as_bytes(), SWAP_CALL_MS) {
         Ok(reply) => printable(

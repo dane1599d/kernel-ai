@@ -3,8 +3,12 @@
 //! command line. It builds the source it is sent with the boot versions' toolchain,
 //! profile and packer, commits that source to its repository before the artifact
 //! leaves the host, and moves the component's branch when the kernel's ledger
-//! commits a version. It listens on 127.0.0.1 only, and builds one at a time.
+//! commits a version. Before the boot, it builds the versions the boot manifest
+//! names (`boot.rs`). It listens on 127.0.0.1 only, and builds one at a time.
 
+pub mod boot;
+#[cfg(test)]
+mod boot_tests;
 pub mod build;
 pub mod repo;
 #[cfg(test)]
@@ -61,10 +65,9 @@ impl Counters {
 struct State {
     repo: Repo,
     compiler: Box<dyn Compiler>,
-    /// This run's uploads: label to the commit holding its source.
-    builds: HashMap<String, String>,
-    /// The hash of the boot version's source bundle at the base commit.
-    boot_source: String,
+    /// The versions this run knows, 2, the boot manifest's and the uploads: label
+    /// to the commit holding its source and its source bundle's hash.
+    labels: HashMap<String, (String, String)>,
 }
 
 pub struct BuildService {
@@ -82,6 +85,24 @@ impl BuildService {
 
     pub fn base(&self) -> String {
         self.lock().repo.base.clone()
+    }
+
+    /// The boot manifest for the next boot ([`boot::choose`]), cached in `cache`.
+    /// The service then knows its versions, so builds from them and syncs of them
+    /// resolve to their commits.
+    pub fn boot_manifest(&self, cache: &std::path::Path) -> Result<boot::Manifest, String> {
+        let mut state = self.lock();
+        let State {
+            repo,
+            compiler,
+            labels,
+        } = &mut *state;
+        let manifest = boot::choose(repo, compiler.as_mut(), cache)?;
+        for version in manifest.versions() {
+            let known = (version.commit.clone(), version.source.clone());
+            labels.insert(version.label.clone(), known);
+        }
+        Ok(manifest)
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
@@ -114,11 +135,11 @@ fn new_token() -> String {
 pub fn start(repo: Repo, compiler: Box<dyn Compiler>) -> Result<BuildService, String> {
     let root = repo.root.clone();
     let source = components::bundle_source(&root, NOTES_RECIPE.dirs)?;
+    let built_in = (repo.base.clone(), sha256_hex(&source));
     let state = State {
         repo,
         compiler,
-        builds: HashMap::new(),
-        boot_source: sha256_hex(&source),
+        labels: HashMap::from([(String::from(livecore::boot::BUILT_IN), built_in)]),
     };
     let listener = TcpListener::bind(("127.0.0.1", 0))
         .map_err(|e| format!("cannot start the build service: {e}"))?;
@@ -252,9 +273,8 @@ fn build(
             "the recipe and the edit table disagree",
         )));
     }
-    let base = match state.builds.get(job.base) {
-        Some(commit) => commit.clone(),
-        None if job.base == "2" => state.repo.base.clone(),
+    let base = match state.labels.get(job.base) {
+        Some((commit, _)) => commit.clone(),
         None => return Ok(refuse(format!("unknown base {}", job.base))),
     };
     if !kabi::live::is_upload_label(job.label) {
@@ -273,7 +293,8 @@ fn build(
                 job.base,
                 &commit[..12]
             );
-            state.builds.insert(job.label.to_string(), commit.clone());
+            let known = (commit.clone(), sha256_hex(job.bundle));
+            state.labels.insert(job.label.to_string(), known);
             Ok(wire::encode_built(&Built {
                 result: BuildResult::Ok,
                 base: job.base,
@@ -362,8 +383,9 @@ fn compile(
 }
 
 /// POST /sync: a commit moves the component's branch; a rollback gets its own ref.
-/// Repeating a sync changes nothing. The outer error is a bad request; the inner
-/// one a git failure worth retrying.
+/// A version the boot manifest named also moves the good ref when committed, and
+/// gets a failed ref when rolled back. Repeating a sync changes nothing. The outer
+/// error is a bad request; the inner one a git failure worth retrying.
 type SyncResult = Result<Result<Vec<u8>, &'static str>, &'static str>;
 
 fn sync(request: &Request, counters: &Counters, state: &Mutex<State>) -> SyncResult {
@@ -373,14 +395,26 @@ fn sync(request: &Request, counters: &Counters, state: &Mutex<State>) -> SyncRes
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     counters.syncs.fetch_add(1, Ordering::SeqCst);
     let repo = &state.repo;
-    let sha = if !job.commit.is_empty() && repo.has_commit(job.commit) {
-        job.commit.to_string()
-    } else if job.commit.is_empty() && job.source == state.boot_source {
-        repo.base.clone()
-    } else {
-        return Ok(Ok(wire::encode_synced(&Synced::Untracked)));
+    // A boot version carries no commit: it is known by its label, if its source
+    // is the one built for that label.
+    let known = match job.commit.is_empty() {
+        true => state
+            .labels
+            .get(job.label)
+            .filter(|(_, s)| *s == job.source),
+        false => None,
+    };
+    let sha = match known {
+        Some((commit, _)) => commit.clone(),
+        None if !job.commit.is_empty() && repo.has_commit(job.commit) => job.commit.to_string(),
+        None => return Ok(Ok(wire::encode_synced(&Synced::Untracked))),
     };
     let (component, label) = (job.component, job.label);
+    let boot =
+        (known.is_some() && livecore::boot::is_commit_label(label)).then(|| match job.outcome {
+            Outcome::Commit => boot::good_ref(component),
+            Outcome::Rollback(_) => boot::failed_ref(component, &sha),
+        });
     let (reference, message) = match job.outcome {
         Outcome::Commit => (
             format!("refs/heads/kai/{component}"),
@@ -397,10 +431,12 @@ fn sync(request: &Request, counters: &Counters, state: &Mutex<State>) -> SyncRes
             format!("kai: {component} {label} rolled back ({})", reason.name()),
         ),
     };
-    if let Err(why) = repo.update_ref(&reference, &sha, &message) {
-        eprintln!("xtask: build service: sync failed: {why}");
-        // Most likely a lock or a full disk for the moment: worth trying again.
-        return Ok(Err("git could not record the sync now"));
+    for reference in std::iter::once(&reference).chain(&boot) {
+        if let Err(why) = repo.update_ref(reference, &sha, &message) {
+            eprintln!("xtask: build service: sync failed: {why}");
+            // Most likely a lock or a full disk for the moment: worth trying again.
+            return Ok(Err("git could not record the sync now"));
+        }
     }
     let synced = match job.outcome {
         Outcome::Commit => Synced::Moved {

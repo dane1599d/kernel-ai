@@ -17,6 +17,7 @@ extern crate alloc;
 
 mod apic;
 mod backtrace;
+mod boot_manifest;
 mod build_service;
 mod console;
 mod cpu;
@@ -34,6 +35,7 @@ mod lines;
 mod live_commands;
 mod live_tests;
 mod llm;
+mod manifest_tests;
 mod memory;
 mod metrics;
 mod net;
@@ -192,6 +194,7 @@ extern "C" fn boot_continue() -> ! {
     if let Some(cmdline) = CMDLINE.response() {
         llm::configure(cmdline.cmdline());
         build_service::configure(cmdline.cmdline());
+        boot_manifest::configure(cmdline.cmdline());
         pointer::configure(cmdline.cmdline());
     }
     match cpu::init(entry::syscall_entry as *const () as u64) {
@@ -241,6 +244,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Scripts => run_case(script_tests::check),
         SelfTest::Live => run_case(live_tests::check),
         SelfTest::Edit => run_case(edit_tests::check),
+        SelfTest::Manifest => run_case(manifest_tests::check),
         SelfTest::Boot | SelfTest::None => {}
     }
 
@@ -435,6 +439,9 @@ fn start_user_space(test: SelfTest) {
         fail(message);
     }
     if let Err(message) = build_service::start_sync() {
+        fail(message);
+    }
+    if let Err(message) = boot_manifest::start() {
         fail(message);
     }
 }

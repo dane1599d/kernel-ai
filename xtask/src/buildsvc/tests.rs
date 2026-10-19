@@ -12,11 +12,11 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicUsize;
 
-const LIB: &str = "components/notes/src/lib.rs";
+pub(super) const LIB: &str = "components/notes/src/lib.rs";
 const TOML: &str = "components/notes/Cargo.toml";
 
 /// A directory removed when the test ends.
-struct Scratch(PathBuf);
+pub(super) struct Scratch(pub(super) PathBuf);
 
 impl Drop for Scratch {
     fn drop(&mut self) {
@@ -24,7 +24,7 @@ impl Drop for Scratch {
     }
 }
 
-fn scratch(name: &str) -> Scratch {
+pub(super) fn scratch(name: &str) -> Scratch {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
     let n = NEXT.fetch_add(1, Ordering::SeqCst);
     let dir = std::env::temp_dir().join(format!("kai-buildsvc-{}-{n}-{name}", std::process::id()));
@@ -33,14 +33,14 @@ fn scratch(name: &str) -> Scratch {
     Scratch(dir)
 }
 
-fn write(root: &Path, path: &str, text: &str) {
+pub(super) fn write(root: &Path, path: &str, text: &str) {
     let to = root.join(path);
     fs::create_dir_all(to.parent().unwrap()).unwrap();
     fs::write(to, text).unwrap();
 }
 
 /// A workspace with one component, committed.
-fn workspace(root: &Path) -> PathBuf {
+pub(super) fn workspace(root: &Path) -> PathBuf {
     let ws = root.join("ws");
     write(&ws, ".cargo/config.toml", "[alias]\n");
     write(&ws, ".gitignore", "/target\n");
@@ -68,7 +68,7 @@ fn workspace(root: &Path) -> PathBuf {
 }
 
 /// Fails on a lib.rs holding BROKEN; otherwise returns a module.
-struct Fake;
+pub(super) struct Fake;
 
 impl Compiler for Fake {
     fn compile(&mut self, repo: &Path, krate: &str, label: &str) -> Result<Vec<u8>, String> {
@@ -84,13 +84,13 @@ impl Compiler for Fake {
     }
 }
 
-struct Setup {
+pub(super) struct Setup {
     _scratch: Scratch,
-    service: BuildService,
-    repo: PathBuf,
+    pub(super) service: BuildService,
+    pub(super) repo: PathBuf,
 }
 
-fn setup(name: &str) -> Setup {
+pub(super) fn setup(name: &str) -> Setup {
     let scratch = scratch(name);
     let ws = workspace(&scratch.0);
     let repo = repo::snapshot(&ws, &scratch.0.join("repo")).unwrap();
@@ -112,22 +112,22 @@ fn exchange(port: u16, raw: &[u8]) -> (u16, Vec<u8>) {
     (parsed.status, parsed.body)
 }
 
-fn post(setup: &Setup, path: &str, body: &[u8]) -> (u16, Vec<u8>) {
+pub(super) fn post(setup: &Setup, path: &str, body: &[u8]) -> (u16, Vec<u8>) {
     let token = [("X-Kai-Token", setup.service.token.as_str())];
     let request = llmproto::http::post("h", path, "application/octet-stream", &token, body);
     exchange(setup.service.port, &request)
 }
 
-fn bundle(lib: &str) -> Vec<u8> {
+pub(super) fn bundle(lib: &str) -> Vec<u8> {
     artifact::bundle(&[
         (TOML, b"[package]\nname = \"comp-notes\"\n"),
         (LIB, lib.as_bytes()),
     ])
 }
 
-const EDITED: &str = "fn about() -> &'static str {\n    \"notes, edited\"\n}\n";
+pub(super) const EDITED: &str = "fn about() -> &'static str {\n    \"notes, edited\"\n}\n";
 
-fn build(setup: &Setup, label: &str, base: &str, lib: &str) -> (u16, Vec<u8>) {
+pub(super) fn build(setup: &Setup, label: &str, base: &str, lib: &str) -> (u16, Vec<u8>) {
     build_as(setup, Origin::Founder, label, base, lib)
 }
 
@@ -142,7 +142,7 @@ fn build_as(setup: &Setup, origin: Origin, label: &str, base: &str, lib: &str) -
     post(setup, "/build", &body)
 }
 
-fn sync(setup: &Setup, job: &SyncRequest<'_>) -> String {
+pub(super) fn sync(setup: &Setup, job: &SyncRequest<'_>) -> String {
     let (status, body) = post(setup, "/sync", &wire::encode_sync(job));
     assert_eq!(status, 200);
     String::from_utf8(body).unwrap()
