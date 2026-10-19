@@ -128,11 +128,15 @@ fn bundle(lib: &str) -> Vec<u8> {
 const EDITED: &str = "fn about() -> &'static str {\n    \"notes, edited\"\n}\n";
 
 fn build(setup: &Setup, label: &str, base: &str, lib: &str) -> (u16, Vec<u8>) {
+    build_as(setup, Origin::Founder, label, base, lib)
+}
+
+fn build_as(setup: &Setup, origin: Origin, label: &str, base: &str, lib: &str) -> (u16, Vec<u8>) {
     let body = wire::encode_build(&BuildRequest {
         component: "notes",
         label,
         base,
-        origin: Origin::Founder,
+        origin,
         bundle: &bundle(lib),
     });
     post(setup, "/build", &body)
@@ -440,4 +444,23 @@ fn build_commits_use_the_service_hooks_not_the_users() {
         git(&setup.repo, &["rev-parse", "--show-object-format"]).unwrap(),
         "sha1"
     );
+}
+
+#[test]
+fn model_written_source_is_refused_until_a_sandbox_exists() {
+    let setup = setup("model");
+    let (status, body) = build_as(&setup, Origin::Model, "e1", "2", EDITED);
+    assert_eq!(status, 200);
+    let reply = wire::decode_built(&body).unwrap();
+    assert_eq!(reply.result, BuildResult::Refused);
+    assert_eq!(String::from_utf8_lossy(reply.log), MODEL_REFUSED);
+    assert_eq!(setup.service.counters.get().2, 1);
+    assert!(
+        git(&setup.repo, &["for-each-ref", "refs/kai"])
+            .unwrap()
+            .is_empty()
+    );
+    // What the founder typed still builds.
+    let (_, body) = build(&setup, "e1", "2", EDITED);
+    assert_eq!(wire::decode_built(&body).unwrap().result, BuildResult::Ok);
 }

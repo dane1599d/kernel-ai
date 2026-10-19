@@ -14,7 +14,7 @@ pub mod verify;
 use crate::components::{self, NOTES_RECIPE, Recipe};
 use crate::httpd::{self, HttpError, Request};
 use build::Compiler;
-use editcore::wire::{self, BuildResult, Built, Synced};
+use editcore::wire::{self, BuildResult, Built, Origin, Synced};
 use editcore::{MAX_BUNDLE, MAX_LOG, editable};
 use livecore::uploads::Outcome;
 use repo::Repo;
@@ -26,6 +26,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
 
+/// Why a build of model-written source is refused.
+pub const MODEL_REFUSED: &str = "the model wrote some of this source; it is built only in the build sandbox, which is not set up yet";
 /// Largest request body: a bundle and its header.
 const MAX_BODY: usize = MAX_BUNDLE + 1024;
 /// Connections served at once. Each must send its headers within 5 s, so a
@@ -236,6 +238,11 @@ fn build(
         );
         reply(BuildResult::Refused, &why)
     };
+    // Source a model wrote is built only inside a build sandbox, and this host
+    // has none yet: what the founder typed still builds, a draft does not.
+    if job.origin == Origin::Model {
+        return Ok(refuse(String::from(MODEL_REFUSED)));
+    }
     let recipe = &NOTES_RECIPE;
     let Some(editable) = editable(job.component) else {
         return Ok(refuse(format!("{} cannot be edited", job.component)));
