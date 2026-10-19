@@ -347,6 +347,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "gguf"
+version = "0.0.0"
+
+[[package]]
 name = "gimli"
 version = "0.34.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

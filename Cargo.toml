@@ -1,8 +1,8 @@
 [workspace]
 resolver = "3"
-members = ["acpitables", "compsdk", "editcore", "livecore", "wasmhost", "components/notes", "components/fixtures/notes-v1", "components/fixtures/notes-bad", "kabi", "kernel", "linetable", "llmproto", "mm", "sched", "shellcore", "supervise", "termcore", "uelf", "user", "xtask", "spikes/rhai", "spikes/wasmi"]
+members = ["acpitables", "compsdk", "editcore", "gguf", "livecore", "wasmhost", "components/notes", "components/fixtures/notes-v1", "components/fixtures/notes-bad", "kabi", "kernel", "linetable", "llmproto", "mm", "sched", "shellcore", "supervise", "termcore", "uelf", "user", "xtask", "spikes/rhai", "spikes/wasmi"]
 # Host builds only build the xtask runner; the kernel, user programs and spikes are built by xtask for x86_64-unknown-none.
-default-members = ["acpitables", "compsdk", "editcore", "livecore", "wasmhost", "components/notes", "components/fixtures/notes-v1", "components/fixtures/notes-bad", "kabi", "linetable", "llmproto", "mm", "sched", "shellcore", "supervise", "termcore", "uelf", "xtask"]
+default-members = ["acpitables", "compsdk", "editcore", "gguf", "livecore", "wasmhost", "components/notes", "components/fixtures/notes-v1", "components/fixtures/notes-bad", "kabi", "linetable", "llmproto", "mm", "sched", "shellcore", "supervise", "termcore", "uelf", "xtask"]
 
 [workspace.package]
 edition = "2024"
