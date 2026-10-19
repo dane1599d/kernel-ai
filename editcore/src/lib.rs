@@ -12,6 +12,7 @@
 extern crate alloc;
 
 pub mod command;
+pub mod ipc;
 pub mod rules;
 pub mod scenario;
 pub mod service;

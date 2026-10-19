@@ -12,7 +12,8 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::net::Ipv4Addr;
 use core::sync::atomic::{AtomicU64, Ordering};
-use editcore::wire::{self, Ipc, SyncRequest};
+use editcore::ipc::{Ipc, encode_ipc, parse_ack};
+use editcore::wire::SyncRequest;
 use spin::{Mutex, Once};
 
 /// The token is 32 hex digits.
@@ -153,13 +154,13 @@ fn sync_thread(_: usize) {
             source: &job.source,
             commit: &job.commit,
         };
-        let message = wire::encode_ipc(&Ipc::Sync {
+        let message = encode_ipc(&Ipc::Sync {
             seq: job.seq,
             job: request,
         });
         let result = ipc::call("edit", &message, SYNC_CALL_MS)
             .map_err(|error| format!("{error:?}"))
-            .and_then(|reply| wire::parse_ack(&reply, job.seq));
+            .and_then(|reply| parse_ack(&reply, job.seq));
         match result {
             Ok(sha) => {
                 components::ack_sync(&name, job.seq, &sha);

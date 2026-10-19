@@ -7,9 +7,10 @@
 use crate::buildsvc::{self, BuildService, build::CargoCompiler, repo};
 use crate::esp::Module;
 use crate::smoke::loader;
+use editcore::ipc::{self, Ipc};
 use editcore::scenario::{self, Applied, Driver};
 use editcore::service::{Env, Service};
-use editcore::wire::{self, Ipc, SyncRequest};
+use editcore::wire::{self, SyncRequest};
 use kabi::Error;
 use kabi::live::Info;
 use livecore::host::{Exit, Host};
@@ -218,7 +219,7 @@ impl Driver for EditSmoke {
         if let Some(rest) = line.strip_prefix(":edit ") {
             let mut words = rest.split(' ');
             let component = words.next().unwrap_or("");
-            let message = wire::encode_ipc(&Ipc::Open {
+            let message = ipc::encode_ipc(&Ipc::Open {
                 component,
                 label: words.next(),
             });
@@ -233,7 +234,7 @@ impl Driver for EditSmoke {
         if !self.editing {
             return Err(format!("{line:?} typed outside edit mode"));
         }
-        Ok(self.editor(0, &wire::encode_ipc(&Ipc::Cmd(line))))
+        Ok(self.editor(0, &ipc::encode_ipc(&Ipc::Cmd(line))))
     }
 
     fn apply(&mut self, answer: &str) -> Result<Applied, String> {
@@ -290,7 +291,7 @@ impl Driver for EditSmoke {
                 .peek()
                 .cloned();
             let Some(job) = job else { break };
-            let message = wire::encode_ipc(&Ipc::Sync {
+            let message = ipc::encode_ipc(&Ipc::Sync {
                 seq: job.seq,
                 job: SyncRequest {
                     component: "notes",
@@ -302,7 +303,7 @@ impl Driver for EditSmoke {
                 },
             });
             let reply = self.editor(0, &message);
-            let sha = wire::parse_ack(reply.as_bytes(), job.seq)?;
+            let sha = ipc::parse_ack(reply.as_bytes(), job.seq)?;
             self.kernel
                 .component
                 .borrow_mut()

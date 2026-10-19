@@ -12,7 +12,7 @@ use crate::{ipc, log};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use editcore::wire::{self, Ipc};
+use editcore::ipc::{Ipc, encode_ipc};
 use livecore::uploads;
 use llmproto::text::printable;
 use spin::Mutex;
@@ -79,7 +79,7 @@ pub fn open(name: &str, label: Option<&str>) -> String {
     if crate::build_service::target().is_none() {
         return String::from("err no build service; boot with build=IP:PORT build_token=HEX");
     }
-    let message = wire::encode_ipc(&Ipc::Open {
+    let message = encode_ipc(&Ipc::Open {
         component: name,
         label,
     });
@@ -92,7 +92,7 @@ pub fn open(name: &str, label: Option<&str>) -> String {
 
 /// A line typed in edit mode, sent to the editor.
 pub fn editor_line(line: &str) -> String {
-    call_editor(&wire::encode_ipc(&Ipc::Cmd(line)))
+    call_editor(&encode_ipc(&Ipc::Cmd(line)))
 }
 
 /// Whether an editor line will build on the host, which takes a while.
