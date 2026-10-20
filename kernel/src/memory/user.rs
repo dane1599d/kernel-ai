@@ -3,11 +3,13 @@
 //! created at boot and never changes. The lower half belongs to the process.
 //!
 //! TLB rules, which is why nothing here sends a shootdown:
-//! - Processes are single-threaded and kernel threads always run on the kernel PML4
-//!   (no lazy CR3), so only the CPU running the process thread has its CR3 loaded.
+//! - Kernel threads always run on the kernel PML4 (no lazy CR3), so only CPUs running
+//!   one of the process's threads (its main thread and, since L6, its workers) have
+//!   its CR3 loaded.
 //! - User pages are never GLOBAL and PCIDs are off, so any CR3 write flushes them.
-//! - Pages are only ever added while the process runs (not-present entries are never
-//!   cached), and the space is freed only after its CPU switched to the kernel PML4.
+//! - Pages are only ever added while the process lives (not-present entries are never
+//!   cached), never unmapped, and the space is freed only by its last thread out,
+//!   after every one of its threads switched its CPU to the kernel PML4.
 //!
 //! Every frame a space uses, page tables included, is counted against the process's
 //! page quota and in [`USER_FRAMES`], which must return to zero when every process

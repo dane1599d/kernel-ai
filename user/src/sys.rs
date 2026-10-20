@@ -140,6 +140,31 @@ pub fn svc_reply(bytes: &[u8]) -> Result<u64, Error> {
     )
 }
 
+/// Starts a worker thread running `entry(arg)`, pinned to CPU `cpu`, on a stack of
+/// `stack_pages` pages; returns its index (see `kabi::thread`). `entry` must never
+/// return: a worker ends with [`thread_exit`].
+pub fn thread_spawn(
+    entry: extern "C" fn(u64) -> !,
+    arg: u64,
+    cpu: usize,
+    stack_pages: u64,
+) -> Result<usize, Error> {
+    call(
+        call::THREAD_SPAWN,
+        [entry as usize as u64, arg, cpu as u64, stack_pages, 0, 0],
+    )
+    .map(|index| index as usize)
+}
+
+/// Ends the calling worker thread. Returns only if the kernel refused, with why:
+/// the main thread ends the process with [`exit`] instead.
+pub fn thread_exit() -> Error {
+    match call(call::THREAD_EXIT, [0; 6]) {
+        Err(error) => error,
+        Ok(_) => Error::Invalid,
+    }
+}
+
 /// Maps the model read-only at `kabi::layout::MODEL_BASE`; returns its length.
 pub fn model_map() -> Result<u64, Error> {
     call(call::MODEL_MAP, [0; 6])

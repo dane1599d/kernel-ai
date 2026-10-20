@@ -182,15 +182,16 @@ pub unsafe extern "C" fn syscall_entry() {
     )
 }
 
-/// Enters ring 3 for the first time at `rip` with stack `rsp`, every register zero
-/// and RFLAGS = IF. The frame is built at the top of the thread's kernel stack, which
-/// holds nothing else from here on. The caller has loaded the process's CR3.
+/// Enters ring 3 for the first time at `rip` with stack `rsp`, `arg` in RDI, every
+/// other register zero and RFLAGS = IF. The frame is built at the top of the
+/// thread's kernel stack, which holds nothing else from here on. The caller has
+/// loaded the process's CR3.
 ///
 /// # Safety
 /// `rip` and `rsp` must be valid user addresses in the loaded address space, and the
 /// thread must own nothing on its kernel stack (this never returns).
 #[unsafe(naked)]
-pub unsafe extern "C" fn enter_user(rip: u64, rsp: u64) -> ! {
+pub unsafe extern "C" fn enter_user(rip: u64, rsp: u64, arg: u64) -> ! {
     core::arch::naked_asm!(
         "cli",
         "mov rax, gs:[{kernel_rsp}]",
@@ -200,6 +201,7 @@ pub unsafe extern "C" fn enter_user(rip: u64, rsp: u64) -> ! {
         "push 0x202",
         "push {user_code}",
         "push rdi",
+        // Error code, vector, then RAX, RBX, RCX, RDX and RSI zero; RDI is `arg`.
         "push 0",
         "push 0",
         "push 0",
@@ -207,7 +209,7 @@ pub unsafe extern "C" fn enter_user(rip: u64, rsp: u64) -> ! {
         "push 0",
         "push 0",
         "push 0",
-        "push 0",
+        "push rdx",
         "push 0",
         "push 0",
         "push 0",

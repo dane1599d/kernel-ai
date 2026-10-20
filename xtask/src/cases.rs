@@ -206,6 +206,8 @@ pub const TEST_CASES: &[TestCase] = &[
         expect: &["live: :why notes was answered by the local model"],
         ..case("live-local", "test=live")
     },
+    // L6: worker threads in one address space.
+    case("threads", "test=threads"),
 ];
 
 /// "show me the cpus please" and Enter: plain English, so the shell asks llm for a

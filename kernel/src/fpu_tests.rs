@@ -209,7 +209,7 @@ fn start(name: &str, program: &str, args: &str) -> Result<u64, &'static str> {
 }
 
 /// Waits for a process the kernel started to end, and says how it did.
-fn wait_exit(pid: u64) -> Result<(ExitReason, u64), &'static str> {
+pub(crate) fn wait_exit(pid: u64) -> Result<(ExitReason, u64), &'static str> {
     for _ in 0..EXIT_TIMEOUT_MS / 10 {
         if let Some(exit) = supervision::kernel_child_exit(pid) {
             return Ok(exit);

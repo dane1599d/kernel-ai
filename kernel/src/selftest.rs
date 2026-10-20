@@ -48,6 +48,8 @@ pub enum SelfTest {
     Fpu,
     /// L2: the isolation probe; ops 0-2 complete and every other op is stopped.
     Probe,
+    /// L6: worker threads start, are refused, filtered and torn down.
+    Threads,
 }
 
 const DEFAULT_STORM_SECONDS: u64 = 60;
@@ -82,6 +84,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=local-script" => Some(SelfTest::LocalScript),
             "test=fpu" => Some(SelfTest::Fpu),
             "test=probe" => Some(SelfTest::Probe),
+            "test=threads" => Some(SelfTest::Threads),
             other => other.strip_prefix("test=storm").map(|rest| {
                 let seconds = rest.strip_prefix('-').and_then(|s| s.parse().ok());
                 SelfTest::Storm(seconds.unwrap_or(DEFAULT_STORM_SECONDS))

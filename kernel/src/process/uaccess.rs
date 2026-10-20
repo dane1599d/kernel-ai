@@ -1,8 +1,9 @@
 //! Copying between the kernel and a process's memory. The kernel never dereferences
 //! a user pointer: each page is looked up in the process's own page tables (it must
 //! be a user page, and writable for writes) and copied through the direct map. Only
-//! the process's own thread calls these, inside its own system call, so its pages
-//! cannot be unmapped while a copy runs.
+//! the process's own threads call these, inside their own system calls, and a
+//! process's pages are never unmapped while any of its threads lives, so they cannot
+//! go away while a copy runs.
 
 use super::with_space;
 use crate::memory;

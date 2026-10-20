@@ -55,6 +55,9 @@ fn need(slot: usize, bits: u64) -> Result<(), Error> {
 }
 
 fn handle(slot: usize, number: u64, a: [u64; 6]) -> Result<u64, Error> {
+    if super::workers::is_worker(threads::current_tid()) && !super::workers::worker_may(number) {
+        return Err(Error::Permission);
+    }
     match number {
         call::EXIT => super::exit_with(slot, a[0] & 0xFFFF_FFFF),
         call::WRITE => write(slot, a[0], a[1]),
@@ -165,6 +168,11 @@ fn handle(slot: usize, number: u64, a: [u64; 6]) -> Result<u64, Error> {
             need(slot, cap::MODEL)?;
             crate::model::map(slot)
         }
+        call::THREAD_SPAWN => {
+            need(slot, cap::THREADS)?;
+            super::workers::spawn(slot, a[0], a[1], a[2], a[3])
+        }
+        call::THREAD_EXIT => super::workers::exit_worker(),
         _ => Err(Error::NotFound),
     }
 }

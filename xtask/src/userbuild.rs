@@ -20,7 +20,7 @@ const USER_PROGRAMS: &[&str] = &[
 ];
 /// Ring-3 programs built for the hard-float target: `llm`, whose engine needs SSE and
 /// AVX, and the tests that check the kernel keeps vector state apart.
-const USER_FLOAT_PROGRAMS: &[&str] = &["llm", "probe", "vecstress"];
+const USER_FLOAT_PROGRAMS: &[&str] = &["llm", "probe", "vecstress", "workers"];
 /// The hard-float ring-3 target and the directory cargo builds it into. A JSON target
 /// has no prebuilt core or alloc, so they are built from rust-src.
 const USER_FLOAT_TARGET: &str = "user/x86_64-kai-user.json";

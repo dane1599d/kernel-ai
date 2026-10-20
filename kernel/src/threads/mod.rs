@@ -201,6 +201,14 @@ fn idle_loop(_: usize) {
     }
 }
 
+/// Thread slots in use now, for the tests that check none leaked.
+pub fn in_use() -> usize {
+    IN_USE
+        .iter()
+        .filter(|used| used.load(Ordering::Acquire))
+        .count()
+}
+
 /// The calling thread, without taking a lock. Safe with interrupts on: one load, so
 /// a migration cannot make it read another CPU's thread (see [`percpu::current`]).
 pub fn current_tid() -> Tid {

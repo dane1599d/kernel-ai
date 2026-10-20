@@ -1,20 +1,22 @@
-//! Ring-3 processes: one single-threaded process per kernel thread, each with its
-//! own address space, limits and capabilities.
+//! Ring-3 processes, each with its own address space, limits and capabilities, a
+//! main thread and, since L6, up to `kabi::thread::MAX_WORKERS` worker threads
+//! (`workers.rs`), each a kernel thread.
 //!
 //! Life of a process: `spawn` fills a table slot and starts a kernel thread running
-//! `process_main`, which loads the program and enters ring 3. Every way out goes
-//! through `exit_current` on the process's own thread with interrupts on: it fails
-//! the process's IPC calls, moves the thread to the kernel page tables, frees every
-//! user frame, then reports the exit to whoever supervises it.
+//! `process_main`, which loads the program and enters ring 3. Every thread leaves
+//! through `exit_current` on itself with interrupts on: it moves to the kernel page
+//! tables and leaves the process's thread count. The last one out fails the
+//! process's IPC calls, frees every user frame, then reports the exit to whoever
+//! supervises it.
 //!
 //! Killing is asynchronous and lock-free: `request_kill` records the first reason in
-//! per-slot atomics and wakes the thread. The thread acts on it when it next returns
-//! to ring 3 (a timer tick at most a millisecond later if it is spinning) or when a
-//! blocking system call sees it.
+//! per-slot atomics; `kill`, and any thread leaving a killed process, wakes every
+//! thread. Each acts on it when it next returns to ring 3 (a timer tick at most a
+//! millisecond later if it is spinning) or when a blocking system call sees it.
 //!
 //! Lock rules: the TABLE lock is held with preemption off and never across `wake`,
 //! a context switch or `memory::with`. A slot's SPACE lock is only taken by the
-//! process's own thread, before MEMORY.
+//! process's own threads, with preemption on, before TABLE and MEMORY.
 
 pub mod components;
 mod exit;
@@ -23,6 +25,7 @@ pub mod programs;
 pub mod supervision;
 pub mod syscall;
 pub mod uaccess;
+pub mod workers;
 
 pub use exit::{exit_current, exit_with};
 pub use loader::{grow_heap, map_shared};
@@ -33,11 +36,13 @@ use crate::memory::user::{MIN_USER_ADDRESS, UserSpace};
 use crate::{hpet, percpu, threads};
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use kabi::layout::{HEAP_BASE, USER_END};
+use kabi::thread::MAX_WORKERS;
 use kabi::{ExitReason, Limits, MAX_ARGS, MAX_NAME};
 use loader::process_main;
 use mm::PAGE_SIZE;
 use sched::{MAX_THREADS, Tid};
 use spin::Mutex;
+use workers::Worker;
 use x86_64::instructions::interrupts;
 
 pub const MAX_PROCESSES: usize = 16;
@@ -106,7 +111,15 @@ pub struct Process {
     args: [u8; MAX_ARGS],
     args_len: usize,
     pub limits: Limits,
+    /// The main thread.
     pub tid: Option<Tid>,
+    /// Worker threads by index (`kabi::thread`).
+    pub workers: [Worker; MAX_WORKERS],
+    /// Threads counted in the process: the main thread and every worker from the
+    /// moment THREAD_SPAWN reserves it. The thread that takes it to 0 tears down.
+    pub live_threads: u32,
+    /// The address space's PML4, once loaded, for workers to enter.
+    pub cr3: u64,
     /// The supervisor itself, which the kernel restarts.
     pub supervisor: bool,
     /// The pid that spawned it (0 for the kernel).
@@ -130,6 +143,9 @@ impl Process {
             stack_pages: 0,
         },
         tid: None,
+        workers: [Worker::FREE; MAX_WORKERS],
+        live_threads: 0,
+        cr3: 0,
         supervisor: false,
         spawner: 0,
         heap_end: HEAP_BASE,
@@ -215,22 +231,31 @@ pub fn request_kill(slot: usize, reason: ExitReason, detail: u64) -> bool {
     set
 }
 
-/// Kills the process `pid` from another thread and wakes it if it is blocked.
+/// Kills the process `pid` from another thread and wakes every thread it has.
 pub fn kill(pid: u64, reason: ExitReason) -> Result<(), kabi::Error> {
-    let found = with_table(|table| {
+    // The reason is recorded and the threads copied in one critical section: a
+    // worker registering later sees the kill itself, and a thread checking for it
+    // under its core lock either sees it or is woken.
+    let tids = with_table(|table| {
+        let slot = table
+            .iter()
+            .position(|p| p.live() && p.pid == pid && p.state != State::Exiting)?;
+        request_kill(slot, reason, 0);
+        Some(table[slot].thread_tids())
+    });
+    workers::wake_all(&tids.ok_or(kabi::Error::NotFound)?);
+    Ok(())
+}
+
+/// How many threads the live process `pid` has running (0 when it is gone), for
+/// the tests.
+pub fn thread_count(pid: u64) -> usize {
+    with_table(|table| {
         table
             .iter()
-            .position(|p| p.live() && p.pid == pid && p.state != State::Exiting)
-            .map(|slot| (slot, table[slot].tid))
-    });
-    let (slot, tid) = found.ok_or(kabi::Error::NotFound)?;
-    request_kill(slot, reason, 0);
-    // The reason is published before the wake, so a thread checking it under its
-    // core lock either sees it or is woken.
-    if let Some(tid) = tid {
-        interrupts::without_interrupts(|| threads::wake(tid));
-    }
-    Ok(())
+            .find(|p| p.live() && p.pid == pid)
+            .map_or(0, Process::thread_count)
+    })
 }
 
 /// Charges CPU time since the last charge on this CPU to `tid`. Interrupts are off
@@ -316,8 +341,10 @@ pub fn user_fault(frame: &TrapFrame) -> ! {
         address,
         rip: frame.rip,
     };
-    with_table(|table| table[slot].crash = Some(crash));
-    request_kill(slot, ExitReason::Crashed, frame.vector);
+    // Only the fault whose kill counts is reported, when threads fault at once.
+    if request_kill(slot, ExitReason::Crashed, frame.vector) {
+        with_table(|table| table[slot].crash = Some(crash));
+    }
     die()
 }
 
@@ -372,6 +399,7 @@ pub fn spawn(request: &SpawnRequest) -> Result<u64, kabi::Error> {
             name,
             program,
             limits: request.limits,
+            live_threads: 1,
             supervisor: request.supervisor,
             spawner: request.spawner,
             ..Process::FREE

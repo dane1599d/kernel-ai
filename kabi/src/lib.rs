@@ -14,6 +14,7 @@ pub mod live;
 pub mod model;
 pub mod plan;
 pub mod probe;
+pub mod thread;
 
 /// System-call numbers.
 pub mod call {
@@ -105,6 +106,16 @@ pub mod call {
     /// when no model is loaded, NoMemory when its page tables would pass the page
     /// quota. Needs [`super::cap::MODEL`].
     pub const MODEL_MAP: u64 = 28;
+    /// `thread_spawn(entry, arg, cpu, stack_pages) -> index`: starts a worker of this
+    /// process at `entry` with `arg` in RDI, pinned to CPU `cpu` (below the CPUs
+    /// online), on a stack of `stack_pages` pages (see [`super::thread`]). Only the
+    /// main thread of a holder of [`super::cap::THREADS`] may. Busy when it already
+    /// runs [`super::thread::MAX_WORKERS`] workers (for a moment also after one
+    /// exits) or the kernel's threads run out; NoMemory past the page quota.
+    pub const THREAD_SPAWN: u64 = 29;
+    /// `thread_exit() -> !`: ends the calling worker. Invalid from the main thread,
+    /// which ends the whole process with [`EXIT`].
+    pub const THREAD_EXIT: u64 = 30;
 }
 
 /// Errors, returned in RAX as their negative value.
@@ -189,8 +200,11 @@ pub mod cap {
     /// Map the model read-only. The kernel grants it only to the service named
     /// `llm` running the `llm` program.
     pub const MODEL: u64 = 1 << 7;
+    /// Start worker threads (L6). The kernel grants it only to the service named
+    /// `llm` running the `llm` program.
+    pub const THREADS: u64 = 1 << 8;
     /// Every capability a supervisor may grant.
-    pub const GRANTABLE: u64 = SERVE | NET | CALL | POLICY | COMPONENT | PUBLISH | MODEL;
+    pub const GRANTABLE: u64 = SERVE | NET | CALL | POLICY | COMPONENT | PUBLISH | MODEL | THREADS;
 }
 
 /// Why a process ended, as reported to the supervisor.

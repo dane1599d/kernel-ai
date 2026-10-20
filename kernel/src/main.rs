@@ -65,6 +65,7 @@ mod smp_tests;
 #[cfg(feature = "spikes")]
 mod spikes;
 mod terminal;
+mod thread_tests;
 mod threads;
 mod timer;
 mod virtio;
@@ -274,6 +275,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::LocalScript => run_case(|| local_tests::check_script(cmdline())),
         SelfTest::Fpu => run_case(fpu_tests::fpu_check),
         SelfTest::Probe => run_case(fpu_tests::probe_check),
+        SelfTest::Threads => run_case(thread_tests::check),
         SelfTest::Boot | SelfTest::None => {}
     }
 

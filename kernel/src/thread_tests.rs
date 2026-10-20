@@ -1,0 +1,127 @@
+//! L6 self-tests for worker threads, with `workers` processes the kernel starts
+//! itself (no supervisor).
+//!
+//! `test=threads`: `mode=basic` (a worker pinned on every CPU, the refusals, the
+//! call filter, then `exit` with workers still running) must exit 0; a worker that
+//! overflows its stack kills its process with a page fault (vector 14); a process
+//! that exits right after starting workers ends cleanly, and the next process,
+//! which may take its slot at once, is not disturbed; a process whose threads all
+//! sleep an hour at a time ends at once when the kernel kills it (kill wakes every
+//! thread); a process without `cap::THREADS` is refused. Every worker started on
+//! the CPU it was pinned to. Afterwards no user frame is left and every
+//! thread slot the processes took is free again.
+
+use crate::fpu_tests::wait_exit;
+use crate::memory::user::USER_FRAMES;
+use crate::process::{self, SpawnRequest};
+use crate::{hpet, log, smp, threads};
+use core::sync::atomic::Ordering;
+use kabi::{ExitReason, Limits, cap};
+
+/// Pages each test process may hold: its image, heap, stacks and their tables.
+const PAGES: u64 = 2048;
+/// How long thread slots may take to be released once the processes are gone.
+const SETTLE_MS: u64 = 5_000;
+
+/// Starts `workers` with `args` and `caps`, as the kernel's own child.
+fn start(name: &str, args: &str, caps: u64, burst_ms: u64) -> Result<u64, &'static str> {
+    process::spawn(&SpawnRequest {
+        name,
+        program: "workers",
+        args: args.as_bytes(),
+        limits: Limits {
+            max_pages: PAGES,
+            max_burst_ms: burst_ms,
+            caps,
+            stack_pages: 0,
+        },
+        spawner: 0,
+        supervisor: false,
+    })
+    .map_err(|error| {
+        log!("threads: cannot start {name}: {error:?}");
+        "threads: cannot start a workers process"
+    })
+}
+
+/// Runs one `workers` process to its end and checks how it ended.
+fn expect(name: &str, args: &str, caps: u64, want: (ExitReason, u64)) -> Result<(), &'static str> {
+    let pid = start(name, args, caps, 10_000)?;
+    let got = wait_exit(pid)?;
+    log!(
+        "threads: {name} ({args}) ended: {} ({})",
+        got.0.name(),
+        got.1
+    );
+    if got != want {
+        return Err("threads: a workers process ended the wrong way");
+    }
+    Ok(())
+}
+
+/// Waits until the thread table is back to `slots` threads in use.
+fn settle(slots: usize) -> Result<(), &'static str> {
+    let deadline = hpet::nanos() + SETTLE_MS * 1_000_000;
+    while threads::in_use() != slots {
+        if hpet::nanos() > deadline {
+            log!(
+                "threads: {} thread slots in use, {slots} before",
+                threads::in_use()
+            );
+            return Err("threads: thread slots were not released");
+        }
+        threads::sleep_ms(10);
+    }
+    Ok(())
+}
+
+/// Kills a process whose every thread sleeps an hour at a time: only `kill`
+/// waking each of them ends it.
+fn kill_sleepers(caps: u64) -> Result<(), &'static str> {
+    let count = smp::online() + 1;
+    let pid = start("sleepers", "mode=sleep", caps, 10_000)?;
+    let deadline = hpet::nanos() + SETTLE_MS * 1_000_000;
+    while process::thread_count(pid) < count {
+        if hpet::nanos() > deadline {
+            return Err("threads: the sleeping workers did not start");
+        }
+        threads::sleep_ms(10);
+    }
+    threads::sleep_ms(50);
+    let killed_at = hpet::nanos();
+    process::kill(pid, ExitReason::Killed).map_err(|_| "threads: the sleepers were gone")?;
+    let got = wait_exit(pid)?;
+    log!(
+        "threads: killed {count} sleeping threads; the process ended in {} ms",
+        (hpet::nanos() - killed_at) / 1_000_000
+    );
+    if got != (ExitReason::Killed, 0) {
+        return Err("threads: the sleepers ended the wrong way");
+    }
+    Ok(())
+}
+
+/// The `threads` case.
+pub fn check() -> Result<(), &'static str> {
+    let slots = threads::in_use();
+    let caps = cap::SERVE | cap::THREADS;
+    expect("threads", "mode=basic", caps, (ExitReason::Exited, 0))?;
+    expect("overflow", "mode=overflow", caps, (ExitReason::Crashed, 14))?;
+    expect("spawnexit", "mode=spawnexit", caps, (ExitReason::Exited, 0))?;
+    kill_sleepers(caps)?;
+    expect("nocap", "mode=nocap", cap::SERVE, (ExitReason::Exited, 0))?;
+    settle(slots)?;
+    let user_frames = USER_FRAMES.load(Ordering::SeqCst);
+    log!(
+        "threads: workers ran on {} CPUs; USER_FRAMES {user_frames}, {} thread slots in use as before",
+        smp::online(),
+        slots
+    );
+    if user_frames != 0 {
+        return Err("threads: user frames leaked");
+    }
+    if process::workers::misplaced() != 0 {
+        return Err("threads: a worker started on another CPU than its own");
+    }
+    Ok(())
+}

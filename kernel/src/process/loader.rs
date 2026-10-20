@@ -2,7 +2,7 @@
 
 use super::{SLOT_OF_TID, SPACES, State, exit_current, killed, programs, request_kill, with_table};
 use crate::entry;
-use crate::memory::user::{Access, MIN_USER_ADDRESS};
+use crate::memory::user::{Access, MIN_USER_ADDRESS, UserSpace};
 use crate::{log, memory, threads};
 use core::sync::atomic::Ordering;
 use kabi::layout::{HEAP_BASE, MAX_STACK_PAGES, STACK_PAGES, STACK_TOP};
@@ -41,13 +41,16 @@ pub(super) fn process_main(slot: usize) {
     if killed(slot) {
         exit_current();
     }
-    with_table(|table| table[slot].state = State::Running);
+    with_table(|table| {
+        table[slot].cr3 = entry.cr3;
+        table[slot].state = State::Running;
+    });
     threads::enter_address_space(entry.cr3);
     // Clean vector registers; interrupts stay off until the iretq.
     crate::fpu::enter_ring3();
     // SAFETY: the entry point and stack were mapped by `load`, CR3 is loaded, and
     // nothing on this stack needs dropping.
-    unsafe { entry::enter_user(entry.rip, entry.rsp) }
+    unsafe { entry::enter_user(entry.rip, entry.rsp, 0) }
 }
 
 const QUOTA: &str = "page quota exceeded";
@@ -56,6 +59,16 @@ const QUOTA: &str = "page quota exceeded";
 fn map_page(slot: usize, addr: u64, access: Access, max_pages: u64) -> Result<u64, &'static str> {
     let mut guard = SPACES[slot].lock();
     let space = guard.as_mut().ok_or("no address space")?;
+    map_page_in(space, addr, access, max_pages)
+}
+
+/// [`map_page`] with the space already locked.
+fn map_page_in(
+    space: &mut UserSpace,
+    addr: u64,
+    access: Access,
+    max_pages: u64,
+) -> Result<u64, &'static str> {
     if space.frames() >= max_pages {
         return Err(QUOTA);
     }
@@ -166,8 +179,12 @@ pub fn map_shared(slot: usize, base: u64, frames: &[u32], tables: u64) -> Result
 }
 
 /// Grows the calling process's heap by `bytes` (whole pages). Exceeding the quota
-/// kills the process; running the machine out of frames only fails the call.
+/// kills the process; running the machine out of frames only fails the call. The
+/// space stays locked from reading the heap's end to writing it back, so two
+/// threads growing the heap at once grow it one after the other.
 pub fn grow_heap(slot: usize, bytes: u64) -> Result<u64, kabi::Error> {
+    let mut guard = SPACES[slot].lock();
+    let space = guard.as_mut().ok_or(kabi::Error::Fault)?;
     let (end, limits) = with_table(|table| (table[slot].heap_end, table[slot].limits));
     if bytes == 0 {
         return Ok(end);
@@ -187,11 +204,12 @@ pub fn grow_heap(slot: usize, bytes: u64) -> Result<u64, kabi::Error> {
         (end..new_end)
             .step_by(PAGE_SIZE as usize)
             .try_for_each(|page| {
-                map_page(slot, page, heap, limits.max_pages)?;
+                map_page_in(space, page, heap, limits.max_pages)?;
                 mapped_to = page + PAGE_SIZE;
                 Ok(())
             });
     with_table(|table| table[slot].heap_end = mapped_to);
+    drop(guard);
     match result {
         Ok(()) => Ok(new_end),
         Err(error) if error == QUOTA => {
