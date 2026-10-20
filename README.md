@@ -51,6 +51,23 @@ cargo xtask model check      # re-hash the file and compare with llama.cpp's ids
 cargo xtask bench quant      # measure the engine on this CPU
 ```
 
+## Run it on your PC
+
+Kernel AI needs QEMU with a hardware accelerator to run at a usable speed, above all with the model inside. One command checks this PC and says what to do:
+
+```bash
+cargo xtask doctor
+```
+
+It changes nothing. It prints a ✓ or ✗ line for each requirement (CPU, RAM, free space, the model store, QEMU for Windows, the Windows Hypervisor Platform, WSL, KVM, QEMU and OVMF inside WSL, `nestedVirtualization`), the fix under each ✗, and then one recommended path and the next command. On Windows the preferred path is WSL2 with KVM, the QEMU and accelerator CI uses:
+
+```bash
+cargo xtask run --accel wsl --local qwen3-0.6b   # QEMU in WSL; its window through WSLg, the serial log here
+cargo xtask test --accel wsl                     # every boot test, as CI runs them
+```
+
+xtask still builds on Windows; only QEMU runs in the distro (WSL's default, or the one `KAI_WSL_DISTRO` names). A model is copied once into the distro's own disk, `~/.cache/kai-models`, so boots do not read it through `/mnt`. When WSL cannot get KVM, the doctor recommends QEMU for Windows with WHPX (`--accel whpx`) instead.
+
 ## Licence
 
 MPL-2.0 (see `docs/decisions.md`).
