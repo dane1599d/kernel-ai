@@ -205,12 +205,28 @@ fn a_vocabulary_too_large_for_the_budget_is_refused_before_it_is_built() {
     });
     // kabi::model::KV_BYTES, ENGINE_OTHER_BYTES and CONTEXT_CAP.
     let service = Budget {
-        kv_bytes: 448 << 20,
-        other_bytes: 24 << 20,
+        kv_bytes: 288 << 20,
+        other_bytes: 32 << 20,
     };
     let loaded = Engine::load(&wide, Tier::best(), 2048, service).unwrap();
     assert_eq!(loaded.about().context, 2048);
     assert_eq!(loaded.about().config.vocab, 151_936);
+    // Qwen3-4B fits it at the whole cap too: its 36 layers of f16 keys and
+    // values, and its shapes' scratch with this vocabulary and 7 MiB for the
+    // real merges.
+    let four_b = Config {
+        n_layer: 36,
+        n_embd: 2560,
+        n_ff: 9728,
+        n_head: 32,
+        n_head_kv: 8,
+        head_dim: 128,
+        ..loaded.about().config
+    };
+    assert!(four_b.kv_bytes(2048).unwrap() <= service.kv_bytes);
+    let file = Gguf::parse(&wide).unwrap();
+    let other = crate::chat::other_bytes(&file, &four_b, 2048) + (7 << 20);
+    assert!(other <= service.other_bytes, "{} MiB", other >> 20);
 }
 
 #[test]

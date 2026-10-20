@@ -1,11 +1,15 @@
 //! The local backend: the model the kernel mapped into this process, run by Kernel
 //! AI's own engine (`infer::chat`) through `llmproto::local`, exactly as xtask runs
 //! it on the host. It sizes the engine to the memory the plan line gives this
-//! service (`kabi::model`), sleeps 1 ms after every prompt token and every answer
-//! token, so the burst limit never sees one long run, keeps each request inside a
-//! deadline under its callers' timeouts, and measures the speed. The engine keeps
-//! its KV cache between requests, so a prompt that starts like the last one (the
-//! script system prompt, say) is not computed again.
+//! service (`kabi::model`), runs it on one worker per CPU online
+//! ([`super::workers`]), keeps each request inside a deadline under its callers'
+//! timeouts, and measures the speed. It sleeps 1 ms once per second of compute
+//! rather than after every token: a call it serves is not charged to the burst
+//! limit (L6), but one that waited while llm was busy can pass its deadline
+//! before the engine's own limit, and the sleep (which the workers, spinning only
+//! briefly, sleep through too) keeps every thread's burst short then. The engine
+//! keeps its KV cache between requests, so a prompt that starts like the last one
+//! (the script system prompt, say) is not computed again.
 
 use alloc::format;
 use alloc::string::String;
@@ -14,7 +18,7 @@ use infer::chat::{Budget, Engine, Step};
 use llmproto::chat::{self, Completion};
 use llmproto::local;
 use llmproto::script::{self, Answer, AnswerError, ScriptRequest};
-use quant::Tier;
+use quant::{Parallel, Tier};
 use user::sys;
 
 /// Longest one `ask` or `explain` may run: under the shell's 140 s and the
@@ -23,6 +27,9 @@ const DEADLINE_MS: u64 = 120_000;
 /// The prompt `:model` times, and how many tokens it may take.
 const TEST_PROMPT: &str = "Say hello in one short sentence.";
 const TEST_TOKENS: u32 = 32;
+/// Compute between two 1 ms sleeps: far under llm's 10 s burst limit, and a
+/// thousandth of the time.
+const SLEEP_EVERY_NS: u64 = 1_000_000_000;
 
 /// How fast an answer came, and how much of its prompt the cache held.
 #[derive(Clone, Copy)]
@@ -56,7 +63,8 @@ impl Speed {
     }
 }
 
-/// One request's clock: the deadline, a 1 ms sleep after every step, and what
+/// One request's clock: the deadline, checked after every step, a 1 ms sleep
+/// once [`SLEEP_EVERY_NS`] of compute has passed since the last, and what
 /// [`Speed`] reports.
 struct Clock {
     started: u64,
@@ -67,6 +75,7 @@ struct Clock {
     cached: usize,
     computed: usize,
     stopped: bool,
+    slept: u64,
 }
 
 impl Clock {
@@ -81,6 +90,7 @@ impl Clock {
             cached: 0,
             computed: 0,
             stopped: false,
+            slept: started,
         }
     }
 
@@ -95,8 +105,12 @@ impl Clock {
                 self.tokens += 1;
             }
         }
-        // A sleep blocks, which ends the burst the kernel is timing.
-        sys::sleep_ms(1);
+        // A sleep blocks, which ends the burst the kernel times for this thread,
+        // and the workers sleep on their futex meanwhile.
+        if now - self.slept >= SLEEP_EVERY_NS {
+            sys::sleep_ms(1);
+            self.slept = sys::time_ns();
+        }
         self.stopped = now >= self.deadline;
         match self.stopped {
             true => Next::Stop,
@@ -122,14 +136,16 @@ pub struct Local {
 }
 
 impl Local {
-    /// Loads the model in `bytes` on the best tier this CPU and the kernel allow.
-    pub fn load(bytes: &'static [u8]) -> Result<Self, String> {
+    /// Loads the model in `bytes` on the best tier this CPU and the kernel allow,
+    /// to run on `workers`.
+    pub fn load(bytes: &'static [u8], workers: &'static dyn Parallel) -> Result<Self, String> {
         let budget = Budget {
             kv_bytes: kabi::model::KV_BYTES as usize,
             other_bytes: kabi::model::ENGINE_OTHER_BYTES as usize,
         };
-        let engine = Engine::load(bytes, Tier::best(), kabi::model::CONTEXT_CAP, budget)
+        let mut engine = Engine::load(bytes, Tier::best(), kabi::model::CONTEXT_CAP, budget)
             .map_err(|error| format!("{error}"))?;
+        engine.set_parallel(workers);
         Ok(Self { engine, last: None })
     }
 
@@ -146,9 +162,10 @@ impl Local {
             |speed| format!("last answer {}", speed.describe()),
         );
         format!(
-            "local model {} ({} tier, context {}, {speed})",
+            "local model {} ({} tier, {} workers, context {}, {speed})",
             self.name(),
             about.tier.name(),
+            about.workers,
             about.context
         )
     }
@@ -189,7 +206,7 @@ impl Local {
         let licence = about.license.as_deref().unwrap_or("not stated in the file");
         let mut lines = format!(
             "model: {}, {len} bytes, licence {licence}\n\
-             engine: qwen3, {} layers, {} wide, {} tokens; context {} of {} ({} KiB of KV cache); {} tier\n",
+             engine: qwen3, {} layers, {} wide, {} tokens; context {} of {} ({} KiB of KV cache); {} tier, {} workers\n",
             self.name(),
             c.n_layer,
             c.n_embd,
@@ -197,7 +214,8 @@ impl Local {
             about.context,
             c.context_length,
             about.kv_bytes / 1024,
-            about.tier.name()
+            about.tier.name(),
+            about.workers
         );
         self.last = None;
         // No system prompt, so the test fits even a small model's context.

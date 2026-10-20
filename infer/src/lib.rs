@@ -8,6 +8,8 @@
 
 extern crate alloc;
 
+mod acts;
+mod attend;
 pub mod chat;
 mod config;
 pub mod fixture;
@@ -27,6 +29,10 @@ mod forward_tests;
 #[cfg(test)]
 mod json_tests;
 #[cfg(test)]
+mod kquant_tests;
+#[cfg(test)]
+mod prefill_tests;
+#[cfg(test)]
 mod reference;
 #[cfg(test)]
 mod reply_tests;
@@ -36,9 +42,9 @@ mod tests;
 pub use config::{Config, MAX_VOCAB};
 pub use generate::{Ended, Next, argmax, generate};
 pub use kv::{KvCache, Rope};
-pub use model::Model;
+pub use model::{Model, PREFILL_TOKENS};
 pub use sample::Sampler;
-pub use weights::{Layer, Weights, check};
+pub use weights::{Layer, Matrix, Weights, check};
 
 use alloc::string::String;
 

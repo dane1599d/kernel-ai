@@ -38,7 +38,7 @@ mod tests;
 
 pub use dot::matvec;
 pub use kquant::{q4_k_matvec, q6_k_matvec};
-pub use parallel::{MAX_PRODUCTS, Parallel, Product, Serial, matvec_parallel};
+pub use parallel::{MAX_PRODUCTS, Parallel, Product, Serial, for_each_chunk, matvec_parallel};
 pub use q8_0::{BLOCK_BYTES, BLOCK_LEN, QVec, dequantize_row, quantize_row, row_bytes};
 pub use q8k::{Q8KVec, SUPER_LEN};
 pub use tier::Tier;

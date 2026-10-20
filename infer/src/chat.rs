@@ -27,7 +27,7 @@ use bpe::Tokenizer;
 use bpe::chat::Chat;
 pub use bpe::chat::{Role, Turn};
 use gguf::Gguf;
-use quant::Tier;
+use quant::{Parallel, Tier};
 
 /// The fewest positions worth running: a short question and a short answer.
 pub const MIN_CONTEXT: usize = 32;
@@ -89,6 +89,8 @@ pub struct About {
     pub context: usize,
     pub kv_bytes: usize,
     pub tier: Tier,
+    /// Workers the matrix products and attention heads run on.
+    pub workers: usize,
 }
 
 /// One step of an answer, given to the callback once it is done.
@@ -96,7 +98,8 @@ pub struct About {
 pub enum Step {
     /// Once, first: this many prompt tokens were in the cache already.
     Cached(usize),
-    /// A prompt token went through the model.
+    /// A prompt token went through the model; a block of them (up to
+    /// [`crate::PREFILL_TOKENS`]) runs at once, then one step comes per token.
     Prompt,
     /// The model made this token of the answer.
     Token(u32),
@@ -216,6 +219,7 @@ impl<'a> Engine<'a> {
             context,
             kv_bytes: kv.bytes(),
             tier,
+            workers: 1,
         };
         Ok(Self {
             model,
@@ -229,6 +233,13 @@ impl<'a> Engine<'a> {
             spells_ascii,
             about,
         })
+    }
+
+    /// Runs the model on `par`'s workers from now on (one thread until this is
+    /// called), with the same bits.
+    pub fn set_parallel(&mut self, par: &'a dyn Parallel) {
+        self.model.set_parallel(par);
+        self.about.workers = par.workers();
     }
 
     pub fn about(&self) -> &About {
@@ -367,9 +378,11 @@ impl<'a> Engine<'a> {
 
     /// Runs `prompt` through the model after the longest start it shares with the
     /// tokens the cache holds, which stay; the last token runs whatever is cached,
-    /// for its logits. Returns how many tokens came from the cache, and whether
-    /// `on_step` said stop. Every check in `forward` comes before the cache
-    /// changes, so the tokens behind it stay exactly those it holds.
+    /// for its logits. The rest runs in blocks of [`crate::PREFILL_TOKENS`], with
+    /// a [`Step::Prompt`] per token after each block. Returns how many tokens came
+    /// from the cache, and whether `on_step` said stop. Every check in
+    /// `forward_batch` comes before the cache changes, so the tokens behind it
+    /// stay exactly those it holds.
     fn feed(
         &mut self,
         prompt: &[u32],
@@ -382,13 +395,16 @@ impl<'a> Engine<'a> {
         if on_step(Step::Cached(cached)) == Next::Stop {
             return Ok((cached, true));
         }
-        for (i, &token) in prompt.iter().enumerate().skip(cached) {
-            let last = i + 1 == prompt.len();
-            let logits = last.then_some(self.logits.as_mut_slice());
-            self.model.forward(&mut self.kv, token, logits)?;
-            self.cached.push(token);
-            if on_step(Step::Prompt) == Next::Stop {
-                return Ok((cached, true));
+        let rest = &prompt[cached..];
+        let blocks = rest.chunks(crate::PREFILL_TOKENS).count();
+        for (b, block) in rest.chunks(crate::PREFILL_TOKENS).enumerate() {
+            let logits = (b + 1 == blocks).then_some(self.logits.as_mut_slice());
+            self.model.forward_batch(&mut self.kv, block, logits)?;
+            self.cached.extend_from_slice(block);
+            for _ in block {
+                if on_step(Step::Prompt) == Next::Stop {
+                    return Ok((cached, true));
+                }
             }
         }
         Ok((cached, false))
@@ -434,7 +450,7 @@ impl<'a> Engine<'a> {
 /// buffer), the header's metadata map, one f32 logit and two token ids (for JSON
 /// shapes) per token, the RoPE table, the scratch vectors and one token id per
 /// position.
-fn other_bytes(file: &Gguf<'_>, config: &Config, positions: usize) -> usize {
+pub(crate) fn other_bytes(file: &Gguf<'_>, config: &Config, positions: usize) -> usize {
     let strings = |key: &str| -> (usize, usize) {
         file.get(key)
             .and_then(|value| value.as_array())
@@ -452,16 +468,8 @@ fn other_bytes(file: &Gguf<'_>, config: &Config, positions: usize) -> usize {
         .saturating_mul(3)
         .saturating_add(tokens.saturating_mul(4 + 1 + 3 * 4))
         .saturating_add(merges.saturating_mul(3 * 16));
-    let scratch = f32s(
-        config
-            .n_embd
-            .saturating_mul(5)
-            .saturating_add(config.q_dim().saturating_mul(2))
-            .saturating_add(config.kv_dim().saturating_mul(2))
-            .saturating_add(config.n_ff.saturating_mul(4))
-            // Attention scores, and the token behind each cached position.
-            .saturating_add(positions.saturating_mul(2)),
-    );
+    // The model's buffers, and the token behind each cached position.
+    let scratch = crate::model::scratch_bytes(config, positions).saturating_add(f32s(positions));
     let norms = f32s(
         config
             .n_layer

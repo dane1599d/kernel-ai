@@ -1,5 +1,5 @@
 {
-  "default": "qwen3-0.6b",
+  "default": "qwen3-4b-2507",
   "models": [
     {
       "decode": {
@@ -33,7 +33,7 @@
       "license": "Apache-2.0",
       "min_ram_gb": 4,
       "name": "Qwen3-0.6B Q8_0",
-      "note": "The MVP model: it proves the path, and its answers are short and often weak.",
+      "note": "The MVP model: it proves the path, and its answers are short and often weak. Never recommended since L6; name it to use it.",
       "repo": "Qwen/Qwen3-0.6B-GGUF",
       "revision": "23749fefcc72300e3a2ad315e1317431b06b590a",
       "sha256": "9465e63a22add5354d9bb4b99e90117043c7124007664907259bd16d043bb031",
@@ -89,9 +89,9 @@
       "file": "Qwen3-1.7B-Q4_K_M.gguf",
       "id": "qwen3-1.7b",
       "license": "Apache-2.0",
-      "min_ram_gb": 8,
+      "min_ram_gb": 4,
       "name": "Qwen3-1.7B Q4_K_M",
-      "note": "A step up from the MVP for 8 GB machines, once the engine runs K-quants (L6 engine part 2).",
+      "note": "For PCs with 4 to 8 GB of RAM: better answers than the 0.6B, about 1.1 GB.",
       "repo": "unsloth/Qwen3-1.7B-GGUF",
       "revision": "d7f544eead698dbd1f15126ef60b45a1e1933222",
       "sha256": "b139949c5bd74937ad8ed8c8cf3d9ffb1e99c866c823204dc42c0d91fa181897",
@@ -147,9 +147,9 @@
       "file": "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
       "id": "qwen3-4b-2507",
       "license": "Apache-2.0",
-      "min_ram_gb": 16,
+      "min_ram_gb": 8,
       "name": "Qwen3-4B-Instruct-2507 Q4_K_M",
-      "note": "L6's default once the engine runs K-quants (L6 engine part 2): far better answers than the 0.6B, about 2.5 GB.",
+      "note": "The default since L6, for PCs with 8 GB of RAM or more: far better answers and scripts than the 0.6B, about 2.5 GB.",
       "repo": "unsloth/Qwen3-4B-Instruct-2507-GGUF",
       "revision": "a06e946bb6b655725eafa393f4a9745d460374c9",
       "sha256": "3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597",

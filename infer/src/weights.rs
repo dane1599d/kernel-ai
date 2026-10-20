@@ -2,18 +2,22 @@
 //! [`check`] needs only the header, so `model pin` can refuse a file from its
 //! first megabytes; [`Weights::bind`] then borrows the data. A file with a
 //! missing, misshapen, mistyped or unknown tensor is refused, so nothing the
-//! forward pass ignores (a bias, say) can change what the model means.
+//! forward pass ignores (a bias, say) can change what the model means. Each
+//! matrix may be Q8_0, Q4_K or Q6_K, whatever the file says: a Q4_K_M file mixes
+//! the two K-quants.
 
 use crate::{Config, Error};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use gguf::{Gguf, Header, TensorType};
+use quant::{Product, Q8KVec, QVec, SUPER_LEN, q4_k, q6_k};
 
-/// One tensor the model needs: its name, its type and its dims, innermost first.
+/// One tensor the model needs: its name, its type (`None` for a matrix, which
+/// may be any type [`runs`] takes) and its dims, innermost first.
 struct Expected {
     name: String,
-    ty: TensorType,
+    ty: Option<TensorType>,
     dims: [usize; 2],
     rank: usize,
 }
@@ -21,7 +25,7 @@ struct Expected {
 fn matrix(name: String, input: usize, output: usize) -> Expected {
     Expected {
         name,
-        ty: TensorType::Q8_0,
+        ty: None,
         dims: [input, output],
         rank: 2,
     }
@@ -30,9 +34,19 @@ fn matrix(name: String, input: usize, output: usize) -> Expected {
 fn vector(name: String, len: usize) -> Expected {
     Expected {
         name,
-        ty: TensorType::F32,
+        ty: Some(TensorType::F32),
         dims: [len, 1],
         rank: 1,
+    }
+}
+
+/// Whether the kernels run a matrix of `ty` with rows of `cols` values: Q8_0
+/// rows are whole blocks of 32, K-quant rows whole super-blocks of 256.
+fn runs(ty: TensorType, cols: usize) -> bool {
+    match ty {
+        TensorType::Q8_0 => cols.is_multiple_of(quant::BLOCK_LEN),
+        TensorType::Q4_K | TensorType::Q6_K => cols.is_multiple_of(SUPER_LEN),
+        _ => false,
     }
 }
 
@@ -86,7 +100,11 @@ pub fn check(header: &Header<'_>, config: &Config) -> Result<(), Error> {
             }
             return Err(Error::Tensor(shown(&want.name), "missing"));
         };
-        if info.ty != want.ty {
+        let typed = match want.ty {
+            Some(ty) => info.ty == ty,
+            None => runs(info.ty, want.dims[0]),
+        };
+        if !typed {
             return Err(Error::Tensor(shown(&want.name), "has the wrong type"));
         }
         let dims = info.dims();
@@ -151,26 +169,76 @@ pub(crate) fn shown(name: &str) -> String {
     out
 }
 
-/// One block's weights. Matrices stay as Q8_0 bytes in the file; norms are copied
-/// out as f32, since the file gives them no alignment.
+/// A weight matrix as the file stores it: `rows` rows of `cols` values in blocks
+/// of `ty`, a type [`check`] found the kernels run for rows of `cols`.
+#[derive(Clone, Copy, Debug)]
+pub struct Matrix<'a> {
+    pub ty: TensorType,
+    pub data: &'a [u8],
+    pub rows: usize,
+    pub cols: usize,
+}
+
+impl<'a> Matrix<'a> {
+    fn row_bytes(&self) -> usize {
+        match self.ty {
+            TensorType::Q4_K => q4_k::row_bytes(self.cols),
+            TensorType::Q6_K => q6_k::row_bytes(self.cols),
+            _ => quant::row_bytes(self.cols),
+        }
+    }
+
+    /// Whether the matrix multiplies activations quantised to Q8_0 blocks
+    /// ([`QVec`]) rather than to K-quant super-blocks ([`Q8KVec`]).
+    pub fn takes_q8_0(&self) -> bool {
+        self.ty == TensorType::Q8_0
+    }
+
+    /// Row `row` widened to f32: `cols` values.
+    pub fn dequantize_row(&self, row: usize, out: &mut [f32]) {
+        let bytes = self.row_bytes();
+        let data = &self.data[row * bytes..][..bytes];
+        match self.ty {
+            TensorType::Q4_K => q4_k::dequantize_row(data, out),
+            TensorType::Q6_K => q6_k::dequantize_row(data, out),
+            _ => quant::dequantize_row(data, out),
+        }
+    }
+
+    /// This matrix times the vectors of the format it takes, one per token:
+    /// `q8` for Q8_0, `k8` for the K-quants. The other slice is not read.
+    pub fn product<'b>(&self, q8: &'b [QVec], k8: &'b [Q8KVec]) -> Product<'b>
+    where
+        'a: 'b,
+    {
+        match self.ty {
+            TensorType::Q4_K => Product::q4_k(self.data, self.rows, k8),
+            TensorType::Q6_K => Product::q6_k(self.data, self.rows, k8),
+            _ => Product::q8_0(self.data, self.rows, q8),
+        }
+    }
+}
+
+/// One block's weights. Matrices stay in the file's blocks; norms are copied out
+/// as f32, since the file gives them no alignment.
 pub struct Layer<'a> {
     pub attn_norm: Vec<f32>,
-    pub wq: &'a [u8],
-    pub wk: &'a [u8],
-    pub wv: &'a [u8],
+    pub wq: Matrix<'a>,
+    pub wk: Matrix<'a>,
+    pub wv: Matrix<'a>,
     pub q_norm: Vec<f32>,
     pub k_norm: Vec<f32>,
-    pub wo: &'a [u8],
+    pub wo: Matrix<'a>,
     pub ffn_norm: Vec<f32>,
-    pub w_gate: &'a [u8],
-    pub w_up: &'a [u8],
-    pub w_down: &'a [u8],
+    pub w_gate: Matrix<'a>,
+    pub w_up: Matrix<'a>,
+    pub w_down: Matrix<'a>,
 }
 
 pub struct Weights<'a> {
-    pub token_embd: &'a [u8],
+    pub token_embd: Matrix<'a>,
     /// `output.weight`, or the embeddings when the file ties them.
-    pub output: &'a [u8],
+    pub output: Matrix<'a>,
     pub output_norm: Vec<f32>,
     pub layers: Vec<Layer<'a>>,
 }
@@ -179,15 +247,23 @@ impl<'a> Weights<'a> {
     /// Borrows every tensor of a file [`check`] accepted.
     pub fn bind(file: &Gguf<'a>, config: &Config) -> Result<Self, Error> {
         check(file.header(), config)?;
-        let data = |name: &str| {
+        let tensor = |name: &str| {
             file.tensor(name)
-                .map(|t| t.data)
                 .ok_or_else(|| Error::Tensor(name.into(), "missing"))
         };
-        let floats = |name: &str| data(name).map(read_f32s);
+        let floats = |name: &str| tensor(name).map(|t| read_f32s(t.data));
+        // check() matched every matrix's dims to the config, so they fit usize.
+        let data = |name: &str| {
+            tensor(name).map(|t| Matrix {
+                ty: t.info.ty,
+                data: t.data,
+                rows: t.info.dims()[1] as usize,
+                cols: t.info.dims()[0] as usize,
+            })
+        };
         let token_embd = data("token_embd.weight")?;
         let output = match file.tensor(OUTPUT) {
-            Some(t) => t.data,
+            Some(_) => data(OUTPUT)?,
             None => token_embd,
         };
         let mut layers = Vec::with_capacity(config.n_layer);

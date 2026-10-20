@@ -56,7 +56,7 @@ impl Entry {
         let types = self.decode.types_not_run();
         (!types.is_empty()).then(|| {
             format!(
-                "{} has {} weights, which the engine runs from L6's engine part 2 on",
+                "{} has {} weights, which the engine does not run",
                 self.name,
                 types.join(" and ")
             )
@@ -219,7 +219,7 @@ mod tests {
     fn the_catalog_parses_and_pins_the_mvp_model() {
         let catalog = Catalog::load().unwrap();
         let entry = catalog.get("qwen3-0.6b").unwrap();
-        assert_eq!(catalog.default, "qwen3-0.6b");
+        assert_eq!(catalog.default, "qwen3-4b-2507");
         assert_eq!(entry.revision, "23749fefcc72300e3a2ad315e1317431b06b590a");
         assert_eq!(entry.size, 639_446_688);
         assert_eq!(
@@ -231,7 +231,12 @@ mod tests {
             "https://huggingface.co/Qwen/Qwen3-0.6B-GGUF/resolve/\
              23749fefcc72300e3a2ad315e1317431b06b590a/Qwen3-0.6B-Q8_0.gguf"
         );
-        assert_eq!(catalog.recommend(32).unwrap().id, "qwen3-0.6b");
+        // The 4B from 8 GB up, the 1.7B from 4 GB; the 0.6B only when named.
+        assert_eq!(catalog.recommend(32).unwrap().id, "qwen3-4b-2507");
+        assert_eq!(catalog.recommend(8).unwrap().id, "qwen3-4b-2507");
+        assert_eq!(catalog.recommend(7).unwrap().id, "qwen3-1.7b");
+        assert_eq!(catalog.recommend(4).unwrap().id, "qwen3-1.7b");
+        assert!(catalog.runnable().any(|e| e.id == "qwen3-0.6b"));
         assert!(catalog.recommend(2).is_none());
         let round_trip = Entry::from_json(&entry.to_json()).unwrap();
         assert_eq!(&round_trip, entry);

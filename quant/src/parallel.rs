@@ -252,6 +252,69 @@ pub fn matvec_parallel(
     left
 }
 
+/// The buffer [`for_each_chunk`] hands out in pieces.
+struct Pieces {
+    base: *mut f32,
+    len: usize,
+}
+
+// SAFETY: the pointer comes from a `&mut [f32]` that `for_each_chunk` holds for
+// its whole call; each piece index is taken once from a counter that never passes
+// the number of pieces, and pieces are disjoint ranges inside the buffer.
+unsafe impl Sync for Pieces {}
+
+/// Cuts `out` into pieces of `piece` values (the last possibly shorter) and calls
+/// `f(index, piece)` once for each, spread over `par`'s workers as
+/// [`matvec_parallel`] spreads rows; the caller runs whatever the pool leaves.
+/// What `f` writes into piece `index` must depend only on `index`, which makes the
+/// result the same for any number of workers. The attention heads use it.
+pub fn for_each_chunk(
+    par: &dyn Parallel,
+    out: &mut [f32],
+    piece: usize,
+    f: &(dyn Fn(usize, &mut [f32]) + Sync),
+) {
+    assert!(piece > 0, "pieces of no values");
+    let count = out.len().div_ceil(piece);
+    let pieces = &Pieces {
+        base: out.as_mut_ptr(),
+        len: out.len(),
+    };
+    let (next, done) = (Line(AtomicUsize::new(0)), Line(AtomicUsize::new(0)));
+    let job = |_: usize, _: usize| {
+        loop {
+            let mut seen = next.0.load(Ordering::Relaxed);
+            let index = loop {
+                if seen >= count {
+                    return;
+                }
+                let swap = Ordering::Relaxed;
+                match next.0.compare_exchange_weak(seen, seen + 1, swap, swap) {
+                    Ok(_) => break seen,
+                    Err(now) => seen = now,
+                }
+            };
+            let start = index * piece;
+            let len = piece.min(pieces.len - start);
+            // SAFETY: `index` came from the counter above, so no other call holds
+            // it, and `start..start + len` lies inside the buffer, apart from
+            // every other piece; see `Pieces`.
+            let y = unsafe { core::slice::from_raw_parts_mut(pieces.base.add(start), len) };
+            f(index, y);
+            done.0.fetch_add(1, Ordering::Release);
+        }
+    };
+    if count > 1 {
+        par.broadcast(&job);
+    }
+    job(0, 1);
+    assert_eq!(
+        done.0.load(Ordering::Acquire),
+        count,
+        "a piece was not finished"
+    );
+}
+
 /// Rows per chunk: about [`CHUNKS_PER_WORKER`] chunks per worker over all the
 /// rows, a whole number of [`CHUNK_ROWS`], at least one of them.
 pub(crate) fn chunk_rows(total_rows: usize, workers: usize) -> usize {

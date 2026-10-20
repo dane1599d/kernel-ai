@@ -123,7 +123,7 @@ fn the_tiny_fixture_loads() {
     let weights = Weights::bind(&file, &config).unwrap();
     assert_eq!(weights.layers.len(), 2);
     assert_eq!(weights.layers[1].q_norm.len(), 32);
-    assert!(core::ptr::eq(weights.output, weights.token_embd));
+    assert!(core::ptr::eq(weights.output.data, weights.token_embd.data));
     let tok = bpe::Tokenizer::from_gguf(file.header()).unwrap();
     assert_eq!(tok.len(), config.vocab);
 }
@@ -138,8 +138,8 @@ fn an_untied_output_is_used_and_checked() {
     let config = checked(&bytes).unwrap();
     let file = Gguf::parse(&bytes).unwrap();
     let weights = Weights::bind(&file, &config).unwrap();
-    assert!(!core::ptr::eq(weights.output, weights.token_embd));
-    assert_eq!(weights.output.len(), weights.token_embd.len());
+    assert!(!core::ptr::eq(weights.output.data, weights.token_embd.data));
+    assert_eq!(weights.output.data.len(), weights.token_embd.data.len());
     let output = |edit: fn(&mut Edit)| {
         checked(&rewrite(&bytes, keep, |t| {
             if t.name == "output.weight" {
@@ -341,11 +341,12 @@ fn the_kv_cache_is_sized_to_the_cap() {
     let kv = KvCache::new(&config, 100).unwrap();
     assert_eq!(kv.capacity(), 100);
     assert!(kv.is_empty());
-    assert_eq!(config.kv_bytes(100), Some(2 * 2 * 64 * 100 * 4));
+    assert_eq!(config.kv_bytes(100), Some(2 * 2 * 64 * 100 * 2));
     assert_eq!(Some(kv.bytes()), config.kv_bytes(100));
     assert_eq!(KvCache::new(&config, 0).err(), Some(Error::Context));
     assert_eq!(KvCache::new(&config, 513).err(), Some(Error::Context));
-    // The real 0.6B: 512 tokens of f32 context take 112 MiB.
+    // The real 0.6B: 512 tokens of f16 context take 56 MiB; the 4B (36 layers
+    // of the same 1,024-wide keys) takes 288 MiB for 2,048.
     let real = Config {
         n_layer: 28,
         n_embd: 1024,
@@ -358,7 +359,12 @@ fn the_kv_cache_is_sized_to_the_cap() {
         rope_theta: 1e6,
         rms_eps: 1e-6,
     };
-    assert_eq!(real.kv_bytes(512), Some(112 << 20));
+    assert_eq!(real.kv_bytes(512), Some(56 << 20));
+    let four_b = Config {
+        n_layer: 36,
+        ..real
+    };
+    assert_eq!(four_b.kv_bytes(2048), Some(288 << 20));
     assert_eq!(real.kv_bytes(usize::MAX), None);
 }
 

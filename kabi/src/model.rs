@@ -55,15 +55,16 @@ pub const fn table_pages(len: u64) -> u64 {
 /// few hundred tokens. Repairing a script near the 3 KiB limit can fill it; the
 /// shell is then told so.
 pub const CONTEXT_CAP: usize = 2048;
-/// Bytes the engine's f32 KV cache may take: [`CONTEXT_CAP`] positions of
-/// Qwen3-0.6B (28 layers of 1,024 keys and 1,024 values), 448 MiB. A model that
-/// needs more per position gets fewer positions.
-pub const KV_BYTES: u64 = 448 << 20;
+/// Bytes the engine's f16 KV cache may take (L6): [`CONTEXT_CAP`] positions of
+/// Qwen3-4B (36 layers of 1,024 keys and 1,024 values), 288 MiB; the 0.6B and
+/// 1.7B (28 such layers) take 224 MiB. A model that needs more per position gets
+/// fewer positions.
+pub const KV_BYTES: u64 = 288 << 20;
 /// Bytes for everything else the engine sizes from the file: the tokenizer while
-/// it is built, the logits, the RoPE table and the scratch vectors. The engine
-/// refuses a file whose header says it would need more; Qwen3's vocabulary is
-/// estimated at about 16 MiB.
-pub const ENGINE_OTHER_BYTES: u64 = 24 << 20;
+/// it is built, the logits, the RoPE table, one prefill block's scratch vectors
+/// and the attention heads' scratch. The engine refuses a file whose header says
+/// it would need more; Qwen3-4B's is estimated at about 25 MiB.
+pub const ENGINE_OTHER_BYTES: u64 = 32 << 20;
 /// Pages the llm plan line adds for the engine when a model is loaded.
 pub const ENGINE_PAGES: u64 = (KV_BYTES + ENGINE_OTHER_BYTES) / 4096;
 
@@ -209,10 +210,11 @@ mod tests {
     }
 
     #[test]
-    fn the_kv_budget_holds_the_mvp_model_at_the_context_cap() {
-        let (layers, kv_dim, f32_bytes) = (28u64, 1024u64, 4u64);
+    fn the_kv_budget_holds_the_4b_at_the_context_cap() {
+        // Qwen3-4B: 36 layers of 1,024 f16 keys and values (L6).
+        let (layers, kv_dim, f16_bytes) = (36u64, 1024u64, 2u64);
         assert_eq!(
-            layers * kv_dim * 2 * f32_bytes * CONTEXT_CAP as u64,
+            layers * kv_dim * 2 * f16_bytes * CONTEXT_CAP as u64,
             KV_BYTES
         );
         assert_eq!(ENGINE_PAGES * 4096, KV_BYTES + ENGINE_OTHER_BYTES);

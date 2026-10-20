@@ -82,7 +82,7 @@ fn q4_k_m(name: &str) -> TensorType {
 }
 
 #[test]
-fn a_k_quant_file_lists_its_groups_and_waits_for_part_2() {
+fn a_k_quant_file_lists_its_groups_and_runs() {
     let decode = decode_of(&header(q4_k_m, false, false, false)).unwrap();
     let mat = |ty, cols, rows| Mat { ty, cols, rows };
     let (q4, q6) = (TensorType::Q4_K, TensorType::Q6_K);
@@ -95,7 +95,7 @@ fn a_k_quant_file_lists_its_groups_and_waits_for_part_2() {
     assert_eq!(decode.layers, [Layers { count: 1, groups }]);
     // Tied: the output projection is the embeddings.
     assert_eq!((decode.embedding, &decode.output), (q6, &mat(q6, 256, 4)));
-    assert_eq!(decode.types_not_run(), ["Q4_K", "Q6_K"]);
+    assert!(decode.types_not_run().is_empty());
     assert_eq!(Decode::from_json(&decode.to_json()).unwrap(), decode);
     // Untied, with a Q8_0 output of its own.
     let untied = |name: &str| match name {

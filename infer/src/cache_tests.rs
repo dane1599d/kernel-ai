@@ -175,7 +175,7 @@ fn assert_cache_holds_its_tokens(bytes: &[u8], tier: Tier, engine: &Engine<'_>) 
     for &token in tokens {
         model.forward(&mut fresh, token, None).unwrap();
     }
-    let bits = |values: &[f32]| values.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+    let bits = |values: &[u16]| values.to_vec();
     for layer in 0..model.config().n_layer {
         let ((keys, values), (want_keys, want_values)) =
             (kv.layer(layer, last), fresh.layer(layer, last));
@@ -214,9 +214,10 @@ fn a_stop_in_the_prompt_keeps_what_ran() {
             .unwrap();
         assert_eq!(stopped.tokens, 0);
         assert_cache_holds_its_tokens(&bytes, tier, &warm);
-        // The next request runs on from the seven tokens that ran.
+        // The next request runs on from the whole block that ran, the stop
+        // coming after it.
         let next = ask(&mut warm, &SESSION[0]).unwrap();
-        assert_eq!(next.cached, 7);
+        assert_eq!(next.cached, crate::PREFILL_TOKENS);
         let mut fresh = Engine::load(&bytes, tier, 256, ROOMY).unwrap();
         assert!(same(&Ok(next), &ask(&mut fresh, &SESSION[0])));
         // A stop at the cache's own step keeps the cached prompt too.
@@ -283,7 +284,7 @@ fn truncating_the_cache_keeps_only_its_start() {
     assert!(kv.is_empty());
     let mut kv2 = KvCache::new(&config, 16).unwrap();
     for _ in 0..5 {
-        kv2.advance();
+        kv2.advance(1);
     }
     kv2.truncate(9);
     assert_eq!(kv2.len(), 5);

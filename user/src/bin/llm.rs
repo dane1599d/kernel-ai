@@ -21,6 +21,8 @@ extern crate alloc;
 mod local;
 #[path = "llm/remote.rs"]
 mod remote;
+#[path = "llm/workers.rs"]
+mod workers;
 
 use alloc::format;
 use alloc::string::String;
@@ -150,10 +152,11 @@ fn main() -> i32 {
     }
 }
 
-/// Starts the engine on the mapped model, logging how it went.
+/// Starts the engine on the mapped model, on one worker per CPU, logging how it
+/// went.
 fn load(bytes: &'static [u8]) -> Result<local::Local, String> {
     let started = sys::time_ns();
-    let loaded = local::Local::load(bytes);
+    let loaded = local::Local::load(bytes, workers::start());
     let ms = (sys::time_ns() - started) / 1_000_000;
     match &loaded {
         Ok(engine) => println!("local: {} ready in {ms} ms", engine.describe()),
