@@ -24,7 +24,7 @@ fn canned(scripts: &[&str]) -> Transport {
                 "finish_reason": "stop"
             }]
         });
-        script::answer_from(&http::Response {
+        script_answer(&http::Response {
             status: 200,
             body: body.to_string().into_bytes(),
         })

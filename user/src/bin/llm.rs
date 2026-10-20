@@ -19,22 +19,17 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use kabi::HttpRequest;
 use kabi::model::Fnv1a;
-use llmproto::explain;
-use llmproto::script::{self, AnswerError, ScriptRequest};
+use llmproto::openai::CompletionError;
+use llmproto::script::{self, ScriptRequest};
 use llmproto::text::printable;
-use llmproto::{http, openai};
+use llmproto::{chat, explain, http, openai};
 use user::{arg, args, println, sys};
 
 user::entry!(main);
 
 const DEFAULT_MODEL: &str = "qwen3-8b";
-const SYSTEM_PROMPT: &str = "You are the assistant built into Kernel AI, a small experimental \
-                             operating system. Answer in a few short sentences.";
-const MAX_TOKENS: u32 = 256;
 const CHAT_TIMEOUT_MS: u64 = 120_000;
 const HEALTH_TIMEOUT_MS: u64 = 5_000;
-const MAX_REPLY_CHARS: usize = 4096;
-const MAX_REPLY_LINES: usize = 64;
 const MAX_ERROR_CHARS: usize = 160;
 /// Bytes hashed between two 1 ms sleeps, so hashing a large model never runs into
 /// the burst limit.
@@ -166,8 +161,9 @@ fn write_script(
     let http_request = http::post_json(host, openai::CHAT_PATH, None, &body);
     let timeout = request.timeout_ms.min(script::SERVICE_TIMEOUT_MS);
     exchange(&http_request, timeout, response)
-        .map_err(AnswerError::Server)
-        .and_then(|reply| script::answer_from(&reply))
+        .map_err(script::AnswerError::Server)
+        .and_then(|reply| openai::completion(&reply).map_err(script::server_error))
+        .and_then(|completion| script::answer(&completion))
         .map(|answer| script::encode_answer(&answer))
         .map_err(|error| script::encode_error(&error))
 }
@@ -215,20 +211,24 @@ fn health(
 }
 
 fn ask(config: &Config, host: &str, prompt: &str, response: &mut [u8]) -> Result<String, String> {
-    let body = openai::chat_request(&config.model, Some(SYSTEM_PROMPT), prompt, MAX_TOKENS);
+    let body = openai::chat_request(&config.model, &chat::ask(prompt));
     let request = http::post_json(host, openai::CHAT_PATH, None, &body);
     let reply = exchange(&request, CHAT_TIMEOUT_MS, response)?;
-    if reply.status != 200 {
-        let body = core::str::from_utf8(&reply.body).unwrap_or("");
-        return Err(format!(
-            "server answered HTTP {}: {}",
-            reply.status,
-            printable(body, MAX_ERROR_CHARS, 1)
-        ));
+    let completion = openai::completion(&reply).map_err(|error| match error {
+        CompletionError::Status(status, body) => format!(
+            "server answered HTTP {status}: {}",
+            printable(&body, MAX_ERROR_CHARS, 1)
+        ),
+        CompletionError::Reply(error) => format!("bad chat reply: {error:?}"),
+    })?;
+    if completion.text.is_empty() {
+        return Err(String::from("bad chat reply: EmptyContent"));
     }
-    openai::parse_chat_response(&reply.body)
-        .map(|text| printable(&text, MAX_REPLY_CHARS, MAX_REPLY_LINES))
-        .map_err(|error| format!("bad chat reply: {error:?}"))
+    Ok(printable(
+        &completion.text,
+        chat::MAX_REPLY_CHARS,
+        chat::MAX_REPLY_LINES,
+    ))
 }
 
 /// Asks the model to explain a rollback from the kernel's facts; plain prose back.
@@ -241,5 +241,6 @@ fn explain(
     let body = explain::chat_request(&config.model, facts);
     let request = http::post_json(host, openai::CHAT_PATH, None, &body);
     let reply = exchange(&request, CHAT_TIMEOUT_MS, response)?;
-    explain::answer_from(&reply)
+    let completion = openai::completion(&reply).map_err(|error| explain::server_error(&error))?;
+    explain::answer(&completion)
 }

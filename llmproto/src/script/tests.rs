@@ -2,11 +2,23 @@ use super::*;
 use alloc::string::String;
 use alloc::vec;
 
-/// A chat-completion body whose content is `content`.
-fn body(content: &str, finish: &str) -> Vec<u8> {
-    let content = serde_json::to_string(content).unwrap();
-    format!(r#"{{"choices":[{{"message":{{"role":"assistant","content":{content}}},"finish_reason":"{finish}"}}]}}"#)
-        .into_bytes()
+/// A completion whose text is `content`, cut off when `finish` is `length`.
+fn body(content: &str, finish: &str) -> Completion {
+    Completion {
+        text: String::from(content),
+        cut_off: finish == "length",
+    }
+}
+
+/// A server's response body read as the llm service reads it.
+fn from_server(body: &[u8]) -> Result<Answer, AnswerError> {
+    let response = crate::http::Response {
+        status: 200,
+        body: body.to_vec(),
+    };
+    crate::openai::completion(&response)
+        .map_err(server_error)
+        .and_then(|completion| answer(&completion))
 }
 
 fn envelope(script: &str, summary: &str) -> String {
@@ -82,30 +94,48 @@ fn answers_are_read_from_plain_fenced_and_thinking_replies() {
         script: String::from("print(cpus());"),
     };
     let plain = envelope("print(cpus());", "Prints the CPUs.");
-    assert_eq!(parse_answer(&body(&plain, "stop")), Ok(wanted.clone()));
+    assert_eq!(answer(&body(&plain, "stop")), Ok(wanted.clone()));
     let fenced = format!("```json\n{plain}\n```");
-    assert_eq!(parse_answer(&body(&fenced, "stop")), Ok(wanted.clone()));
+    assert_eq!(answer(&body(&fenced, "stop")), Ok(wanted.clone()));
     let thinking = format!("<think>\nhmm\n</think>\n{plain}");
-    assert_eq!(parse_answer(&body(&thinking, "stop")), Ok(wanted));
+    assert_eq!(answer(&body(&thinking, "stop")), Ok(wanted));
 }
 
 #[test]
 fn cut_off_and_non_envelope_answers_are_refused() {
     let plain = envelope("print(1);", "x");
+    assert_eq!(answer(&body(&plain, "length")), Err(AnswerError::CutOff));
     assert_eq!(
-        parse_answer(&body(&plain, "length")),
-        Err(AnswerError::CutOff)
-    );
-    assert_eq!(
-        parse_answer(&body("print(1);", "stop")),
+        answer(&body("print(1);", "stop")),
         Err(AnswerError::NoEnvelope)
     );
+    assert_eq!(
+        from_server(b"{\"error\":{\"message\":\"no model\"}}"),
+        Err(AnswerError::Server(String::from("no model")))
+    );
+    let plain = envelope("print(cpus());", "Prints the CPUs.");
+    let reply = serde_json::json!({
+        "choices": [{ "message": { "content": plain }, "finish_reason": "stop" }]
+    });
+    assert_eq!(
+        from_server(reply.to_string().as_bytes()).map(|answer| answer.script),
+        Ok(String::from("print(cpus());"))
+    );
     assert!(matches!(
-        parse_answer(b"{\"error\":{\"message\":\"no model\"}}"),
+        answer(&body("", "stop")),
         Err(AnswerError::Server(_))
     ));
+    let refused = server_error(crate::openai::CompletionError::Status(
+        500,
+        String::from("overloaded\nretry"),
+    ));
     assert_eq!(
-        parse_answer(&body(&envelope("  \n", "I cannot do that."), "stop")),
+        refused,
+        AnswerError::Server(String::from("HTTP 500: overloaded"))
+    );
+    assert!(!refused.repairable());
+    assert_eq!(
+        answer(&body(&envelope("  \n", "I cannot do that."), "stop")),
         Err(AnswerError::NoScript(String::from("I cannot do that.")))
     );
 }
@@ -121,7 +151,7 @@ fn scripts_that_could_display_differently_are_refused() {
         format!("print(\"{rtl}\");"),
         String::from("print(\"caf\u{e9}\");"),
     ] {
-        let answer = parse_answer(&body(&envelope(&bad, "x"), "stop"));
+        let answer = answer(&body(&envelope(&bad, "x"), "stop"));
         assert!(matches!(answer, Err(AnswerError::Rejected(_))), "{bad:?}");
         assert!(answer.unwrap_err().repairable());
     }
@@ -140,12 +170,12 @@ fn oversized_scripts_and_summaries_are_refused_not_cut() {
     }
     let two_lines = envelope("print(1);", "Prints 1.\nrun it? yes/no");
     assert!(matches!(
-        parse_answer(&body(&two_lines, "stop")),
+        answer(&body(&two_lines, "stop")),
         Err(AnswerError::Rejected(_))
     ));
     let long_summary = envelope("print(1);", &"s".repeat(SUMMARY_MAX_CHARS + 1));
     assert!(matches!(
-        parse_answer(&body(&long_summary, "stop")),
+        answer(&body(&long_summary, "stop")),
         Err(AnswerError::Rejected(_))
     ));
 }
