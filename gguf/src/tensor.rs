@@ -6,14 +6,22 @@ use crate::cursor::Cursor;
 /// The most dimensions a tensor may have, as in ggml.
 pub const MAX_DIMS: usize = 4;
 
-/// Tensor types with a size rule. Any other type in a file is refused while parsing,
-/// so a file the engine cannot run never gets as far as its tensors.
+/// Tensor types with a size rule, the ones the engine's kernels run. Any other type
+/// in a file is refused while parsing; which of these the forward pass takes is
+/// `infer::check`'s call. The names are ggml's.
+#[allow(non_camel_case_types)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TensorType {
     F32,
     F16,
     /// Blocks of 32 values: an f16 scale, then 32 signed bytes.
     Q8_0,
+    /// Super-blocks of 256 values in 144 bytes: two f16 scales, twelve bytes of
+    /// 6-bit sub-block scales and minimums, then 4-bit codes.
+    Q4_K,
+    /// Super-blocks of 256 values in 210 bytes: 4-bit and 2-bit code parts,
+    /// sixteen 8-bit sub-block scales, then an f16 scale.
+    Q6_K,
 }
 
 impl TensorType {
@@ -22,6 +30,8 @@ impl TensorType {
             0 => Some(Self::F32),
             1 => Some(Self::F16),
             8 => Some(Self::Q8_0),
+            12 => Some(Self::Q4_K),
+            14 => Some(Self::Q6_K),
             _ => None,
         }
     }
@@ -31,6 +41,8 @@ impl TensorType {
             Self::F32 => 0,
             Self::F16 => 1,
             Self::Q8_0 => 8,
+            Self::Q4_K => 12,
+            Self::Q6_K => 14,
         }
     }
 
@@ -39,6 +51,8 @@ impl TensorType {
             Self::F32 => "F32",
             Self::F16 => "F16",
             Self::Q8_0 => "Q8_0",
+            Self::Q4_K => "Q4_K",
+            Self::Q6_K => "Q6_K",
         }
     }
 
@@ -47,6 +61,7 @@ impl TensorType {
         match self {
             Self::F32 | Self::F16 => 1,
             Self::Q8_0 => 32,
+            Self::Q4_K | Self::Q6_K => 256,
         }
     }
 
@@ -55,6 +70,8 @@ impl TensorType {
             Self::F32 => 4,
             Self::F16 => 2,
             Self::Q8_0 => 34,
+            Self::Q4_K => 144,
+            Self::Q6_K => 210,
         }
     }
 }

@@ -142,6 +142,38 @@ fn partial_block() {
     let mut w = Writer::new();
     w.raw_tensor("w", &[48, 2], TensorType::Q8_0.id(), 0);
     assert_eq!(Gguf::parse(&w.finish()).unwrap_err(), Error::PartialBlock);
+    // A K-quant row of 255, 300 or 32 values is not whole super-blocks.
+    for ty in [TensorType::Q4_K, TensorType::Q6_K] {
+        for row in [255, 300, 32] {
+            let mut w = Writer::new();
+            w.raw_tensor("w", &[row, 2], ty.id(), 0);
+            assert_eq!(Gguf::parse(&w.finish()).unwrap_err(), Error::PartialBlock);
+        }
+    }
+}
+
+#[test]
+fn k_quant_tensors_inside_and_past_the_end() {
+    // Whole super-blocks parse, and their data is the size rule's bytes; one
+    // byte short of that is past the end.
+    for (ty, bytes) in [(TensorType::Q4_K, 2 * 144), (TensorType::Q6_K, 2 * 210)] {
+        let mut w = Writer::new();
+        w.tensor("w", &[256, 2], ty, &vec![7; bytes]);
+        let file = w.finish();
+        let parsed = Gguf::parse(&file).unwrap();
+        let tensor = parsed.tensor("w").unwrap();
+        assert_eq!((tensor.info.ty, tensor.data.len()), (ty, bytes));
+        let cut = &file[..file.len() - 1];
+        assert_eq!(Gguf::parse(cut).unwrap_err(), Error::TensorPastEnd);
+    }
+    // A K row so long its bytes overflow nothing but the file: refused as past
+    // the end, through the checked start plus size.
+    let mut w = Writer::new();
+    w.raw_tensor("w", &[1 << 63], TensorType::Q4_K.id(), 0);
+    assert_eq!(Gguf::parse(&w.finish()).unwrap_err(), Error::TensorPastEnd);
+    let mut w = Writer::new();
+    w.raw_tensor("w", &[256, 1 << 56], TensorType::Q6_K.id(), 0);
+    assert_eq!(Gguf::parse(&w.finish()).unwrap_err(), Error::DimsOverflow);
 }
 
 #[test]
@@ -170,7 +202,8 @@ fn bad_alignment() {
 
 #[test]
 fn unknown_type() {
-    for id in [2, 12, 14, 30, 99, u32::MAX] {
+    // Q4_0, Q5_K, BF16, nothing, and the top id: Q4_K (12) and Q6_K (14) parse.
+    for id in [2, 13, 30, 99, u32::MAX] {
         let mut w = Writer::new();
         w.raw_tensor("w", &[256], id, 0);
         assert_eq!(
