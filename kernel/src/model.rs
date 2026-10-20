@@ -2,12 +2,22 @@
 //! service.
 //!
 //! At boot, before the process page budget is set, the kernel copies the disk into
-//! frames that belong to no process and are never freed, so they count against no
-//! quota and survive every restart of `llm`. It checks only the GGUF magic and
-//! version; ring 3 parses everything else, as untrusted input. MODEL_MAP maps the
-//! frames read-only and non-executable at `kabi::layout::MODEL_BASE` for the holder
-//! of `cap::MODEL`, without the OWNED bit, so tearing a process down never frees
-//! them.
+//! 2 MiB runs of physically contiguous, 2 MiB-aligned frames that belong to no
+//! process and are never freed, so they count against no quota and survive every
+//! restart of `llm`. It checks only the GGUF magic and version; ring 3 parses
+//! everything else, as untrusted input. The heap holds one u32 per run (2,560 for a
+//! 5 GiB model), and everything past the file in the last run is zeroed, since
+//! ring 3 can read the whole run.
+//!
+//! The kernel also builds, once, the page tables of the model's window (`window`):
+//! a PDPT and one directory per GiB mapping each run as one 2 MiB page, read-only
+//! and no-execute at every level. MODEL_MAP links that PDPT into the caller's PML4
+//! slot at `kabi::layout::MODEL_BASE` with one write; teardown unlinks it before
+//! freeing the process's tables, and never frees it, so a restarted llm maps the
+//! model at once and takes no frame for it.
+
+#[path = "model/window.rs"]
+pub mod window;
 
 use crate::virtio::blk::{self, Disk};
 use crate::{hpet, log, memory, process};
@@ -19,39 +29,44 @@ use kabi::Error;
 use kabi::model::{Attached, HeaderError, SERIAL};
 use mm::PAGE_SIZE;
 use mm::dma::{SECTOR, sectors_for};
+use mm::window::{RUN_BYTES, RUN_FRAMES, runs_for};
 use spin::Once;
 
 /// The one service, and program, that may map the model.
 pub const HOLDER: &str = "llm";
-/// Pages the llm service gets before the page tables of the model's mapping.
+/// Pages the llm service gets besides the engine's.
 pub const HOLDER_PAGES: u64 = 1024;
 
-/// Pages the llm service gets with a model of `len` bytes: its own, the page
-/// tables of the mapping, and the engine's KV cache and tokenizer.
-pub const fn holder_pages(len: u64) -> u64 {
-    HOLDER_PAGES + kabi::model::table_pages(len) + kabi::model::ENGINE_PAGES
+/// Pages the llm service gets with a model loaded: its own, its workers' stacks
+/// and the engine's KV cache and tokenizer. The model's window is the kernel's.
+pub const fn holder_pages() -> u64 {
+    HOLDER_PAGES + kabi::thread::POOL_PAGES + kabi::model::ENGINE_PAGES
 }
+
+// What the plan line grants llm must fit what one process may hold.
+const _: () = assert!(holder_pages() <= process::MAX_PAGES_PER_PROCESS);
 
 /// Pages the default plan's other services ask for, with room to spare: the
 /// supervisor, the shell, notes and edit take 16,384 together.
 const OTHER_SERVICES_PAGES: u64 = 20 * 1024;
 
-/// Frames that must stay free after copying a model of `len` bytes. Processes may
-/// hold half of what is free, so twice what llm and the other services ask for.
-const fn reserve_frames(len: u64) -> u64 {
-    2 * (OTHER_SERVICES_PAGES + holder_pages(len))
-}
+/// Frames that must stay free after copying the model. Processes may hold half of
+/// what is free, so twice what llm and the other services ask for.
+const RESERVE_FRAMES: u64 = 2 * (OTHER_SERVICES_PAGES + holder_pages());
 
 pub struct Model {
     len: u64,
-    /// Frame numbers, in file order; page `i` of the file is in `frames[i]`.
-    frames: Vec<u32>,
+    /// First frame number of each run, in file order; run `k` holds bytes
+    /// `k * 2 MiB` onwards.
+    runs: Vec<u32>,
 }
 
 static MODEL: Once<Model> = Once::new();
+/// The window's PDPT, once built: what MODEL_MAP links.
+static WINDOW: Once<u64> = Once::new();
 /// Why an attached `kai-model` disk was not kept, for `:model`.
 static REJECTED: Once<String> = Once::new();
-/// Copies made from the disk, and MODEL_MAP calls that mapped the model, so a test
+/// Copies made from the disk, and MODEL_MAP calls that linked the window, so a test
 /// can tell a restarted llm remapped the copy rather than having it made again.
 static LOADS: AtomicU64 = AtomicU64::new(0);
 static MAPS: AtomicU64 = AtomicU64::new(0);
@@ -71,7 +86,7 @@ pub fn rejected() -> Option<&'static str> {
     REJECTED.get().map(String::as_str)
 }
 
-/// How many MODEL_MAP calls mapped the model.
+/// How many MODEL_MAP calls linked the window.
 pub fn maps() -> u64 {
     MAPS.load(Ordering::SeqCst)
 }
@@ -82,36 +97,78 @@ impl Model {
         self.len
     }
 
-    /// Physical addresses of the frames, in file order.
+    /// Physical address of each run, in file order.
+    pub fn runs(&self) -> impl Iterator<Item = u64> + '_ {
+        self.runs.iter().map(|&frame| u64::from(frame) * PAGE_SIZE)
+    }
+
+    /// Physical address of each 4 KiB page of every run, in file order.
     pub fn frames(&self) -> impl Iterator<Item = u64> + '_ {
-        self.frames
-            .iter()
-            .map(|&frame| u64::from(frame) * PAGE_SIZE)
+        self.runs()
+            .flat_map(|run| (0..RUN_FRAMES).map(move |page| run + page * PAGE_SIZE))
+    }
+
+    /// The physical address of run `k`.
+    pub fn run(&self, k: u64) -> u64 {
+        u64::from(self.runs[k as usize]) * PAGE_SIZE
+    }
+
+    /// Runs the model takes.
+    pub fn run_count(&self) -> u64 {
+        self.runs.len() as u64
     }
 }
 
-/// Copies the `kai-model` disk into memory, if there is one and it holds a GGUF
-/// file. Anything else is logged and ignored: the system runs without a model.
+/// Checks the window's tables still hold exactly what was built.
+pub fn check_window() -> Result<(), &'static str> {
+    let (Some(model), Some(&pdpt)) = (MODEL.get(), WINDOW.get()) else {
+        return Err("model: no window to check");
+    };
+    window::check(pdpt, model.run_count(), |k| model.run(k))
+}
+
+/// Copies the `kai-model` disk into memory and builds its window, if there is a
+/// disk and it holds a GGUF file. Anything else is logged and ignored: the system
+/// runs without a model.
 pub fn load(cmdline: &str) {
     let attached = Attached::from_cmdline(cmdline);
     let started = hpet::nanos();
     match blk::with_disk(SERIAL, |disk| copy(disk, attached.len)) {
         None => {}
         Some(Ok(model)) => {
-            log!(
-                "model: {} bytes of GGUF v3 copied from the kai-model disk into {} frames in {} ms",
-                model.len,
-                model.frames.len(),
-                (hpet::nanos() - started) / 1_000_000
-            );
-            MODEL.call_once(|| model);
-            LOADS.fetch_add(1, Ordering::SeqCst);
+            let runs = model.runs.len() as u64;
+            match window::build(runs, |k| model.run(k)) {
+                Ok(pdpt) => {
+                    log!(
+                        "model: {} bytes of GGUF v3 copied from the kai-model disk into {runs} runs of 2 MiB in {} ms; window of {} page tables",
+                        model.len,
+                        (hpet::nanos() - started) / 1_000_000,
+                        mm::window::table_frames(runs)
+                    );
+                    WINDOW.call_once(|| pdpt);
+                    MODEL.call_once(|| model);
+                    LOADS.fetch_add(1, Ordering::SeqCst);
+                }
+                Err(why) => {
+                    log!("model: {why}; the kai-model disk is ignored");
+                    free_runs(&model.runs);
+                    REJECTED.call_once(|| String::from(why));
+                }
+            }
         }
         Some(Err(why)) => {
             log!("model: {why}; the kai-model disk is ignored");
             REJECTED.call_once(|| why);
         }
     }
+}
+
+fn free_runs(runs: &[u32]) {
+    memory::with(|m| {
+        for &frame in runs {
+            let _ = m.free_contiguous(u64::from(frame) * PAGE_SIZE, RUN_FRAMES);
+        }
+    });
 }
 
 fn copy(disk: &mut Disk, attached: Option<u64>) -> Result<Model, String> {
@@ -129,12 +186,6 @@ fn copy(disk: &mut Disk, attached: Option<u64>) -> Result<Model, String> {
     if len == 0 || len > kabi::layout::MODEL_MAX {
         return Err(format!("{len} bytes is no size for a model"));
     }
-    // llm must be able to hold the mapping's page tables and the engine.
-    if holder_pages(len) > process::MAX_PAGES_PER_PROCESS {
-        return Err(format!(
-            "{len} bytes need more page tables, with the engine, than llm may hold"
-        ));
-    }
     let first = disk.read(0, 1)?;
     let head = &first[..first.len().min(usize::try_from(len).unwrap_or(usize::MAX))];
     match kabi::model::check_header(head) {
@@ -148,75 +199,93 @@ fn copy(disk: &mut Disk, attached: Option<u64>) -> Result<Model, String> {
             ));
         }
     }
-    let pages = len.div_ceil(PAGE_SIZE);
+    let runs = runs_for(len);
+    let needed = runs * RUN_FRAMES + mm::window::table_frames(runs);
     let free = memory::with(|m| m.free_frames());
-    if pages.saturating_add(reserve_frames(len)) > free {
+    if needed.saturating_add(RESERVE_FRAMES) > free {
         return Err(format!(
             "{} MiB do not fit in {} MiB of free memory with {} MiB left for the services",
-            pages / 256,
+            needed / 256,
             free / 256,
-            reserve_frames(len) / 256
+            RESERVE_FRAMES / 256
         ));
     }
-    let mut frames = Vec::new();
-    let count = usize::try_from(pages).map_err(|_| "too many pages")?;
-    frames
-        .try_reserve_exact(count)
-        .map_err(|_| "no kernel heap for the frame list")?;
+    let count = usize::try_from(runs).map_err(|_| "too many runs")?;
+    let mut list: Vec<u32> = Vec::new();
+    list.try_reserve_exact(count)
+        .map_err(|_| "no kernel heap for the run list")?;
     let hhdm = memory::hhdm();
+    // Where the next piece of the file goes: its offset in the file.
+    let mut offset: u64 = 0;
     let copied = disk.stream(len, |_, bytes| {
-        // Each read starts on a page boundary (reads are 512 KiB), so every
-        // piece but the file's last is a whole page.
-        memory::with(|m| {
-            for piece in bytes.chunks(PAGE_SIZE as usize) {
-                let phys = m.allocate_frame().ok_or("out of frames")?;
-                let Ok(number) = u32::try_from(phys / PAGE_SIZE) else {
-                    let _ = m.free_frame(phys);
-                    return Err("a frame above 16 TiB");
-                };
-                frames.push(number);
-                let page = (hhdm + phys) as *mut u8;
-                // SAFETY: the frame was just allocated for the model alone and the
-                // direct map covers it; the copy and the zeroing stay inside it, so
-                // the tail of the last page holds zeros, never stale memory.
-                unsafe {
-                    core::ptr::copy_nonoverlapping(piece.as_ptr(), page, piece.len());
-                    core::ptr::write_bytes(
-                        page.add(piece.len()),
-                        0,
-                        PAGE_SIZE as usize - piece.len(),
-                    );
-                }
-            }
-            Ok(())
-        })
+        // Reads are 512 KiB and start on a page boundary, so a piece never crosses a
+        // run: four of them fill one.
+        if offset.is_multiple_of(RUN_BYTES) {
+            let phys = memory::with(|m| m.allocate_aligned(RUN_FRAMES, RUN_FRAMES))
+                .ok_or("no 2 MiB run of free memory")?;
+            let Ok(frame) = u32::try_from(phys / PAGE_SIZE) else {
+                memory::with(|m| m.free_contiguous(phys, RUN_FRAMES)).ok();
+                return Err("a run above 16 TiB");
+            };
+            list.push(frame);
+        }
+        let run = u64::from(*list.last().ok_or("no run")?) * PAGE_SIZE;
+        let at = offset % RUN_BYTES;
+        if at + bytes.len() as u64 > RUN_BYTES {
+            return Err("a disk read crossed a 2 MiB run");
+        }
+        // SAFETY: the run was allocated for the model alone and the direct map covers
+        // it; the copy stays inside it.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                bytes.as_ptr(),
+                (hhdm + run + at) as *mut u8,
+                bytes.len(),
+            )
+        };
+        offset += bytes.len() as u64;
+        Ok(())
     });
     if let Err(why) = copied {
-        memory::with(|m| {
-            for &frame in &frames {
-                let _ = m.free_frame(u64::from(frame) * PAGE_SIZE);
-            }
-        });
+        free_runs(&list);
         return Err(String::from(why));
     }
-    Ok(Model { len, frames })
+    if list.len() != count || offset != len {
+        free_runs(&list);
+        return Err(String::from("the disk did not yield the whole file"));
+    }
+    // Ring 3 can read the whole last run: no stale memory may follow the file.
+    let last = u64::from(list[count - 1]) * PAGE_SIZE;
+    let tail = len - (runs - 1) * RUN_BYTES;
+    // SAFETY: as above; the zeroing stays inside the last run.
+    unsafe {
+        core::ptr::write_bytes(
+            (hhdm + last + tail) as *mut u8,
+            0,
+            (RUN_BYTES - tail) as usize,
+        )
+    };
+    Ok(Model { len, runs: list })
 }
 
-/// The MODEL_MAP call: maps the model into the calling process and returns its
-/// length. Only the `llm` service running the `llm` program may, on top of the
-/// capability check the dispatcher made.
-pub fn map(slot: usize) -> Result<u64, Error> {
+/// Whether the process in `slot` may map the model: the `llm` service running the
+/// `llm` program, which only the supervisor's grant rule lets hold `cap::MODEL`, or
+/// a process the kernel started itself with that capability (its tests). The
+/// dispatcher checked the capability.
+fn may_map(slot: usize) -> bool {
     let me = process::identity(slot);
-    if me.name.as_str() != HOLDER || me.program.as_str() != HOLDER {
+    (me.name.as_str() == HOLDER && me.program.as_str() == HOLDER) || me.spawner == 0
+}
+
+/// The MODEL_MAP call: links the model's window into the calling process and
+/// returns the model's length. Takes no frame; calling it again changes nothing.
+pub fn map(slot: usize) -> Result<u64, Error> {
+    if !may_map(slot) {
         return Err(Error::Permission);
     }
     let model = MODEL.get().ok_or(Error::NotFound)?;
-    process::map_shared(
-        slot,
-        kabi::layout::MODEL_BASE,
-        &model.frames,
-        kabi::model::table_pages(model.len),
-    )?;
+    let pdpt = *WINDOW.get().ok_or(Error::NotFound)?;
+    process::link_window(slot, kabi::layout::MODEL_BASE, pdpt)?;
     MAPS.fetch_add(1, Ordering::SeqCst);
     Ok(model.len)
 }

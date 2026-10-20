@@ -5,8 +5,9 @@
 //! gone: it starts `llm` with `cap::MODEL`, whose `health` reports the length and
 //! FNV-1a hash of what it mapped; kills it and starts it again, and the new process
 //! maps the same bytes; then starts it without the capability, and nothing is
-//! mapped. With every process gone, `USER_FRAMES` is 0, while the model's frames
-//! are still allocated and still hold the file.
+//! mapped. With every process gone, `USER_FRAMES` is 0, while the model's runs are
+//! still allocated and still hold the file, every byte after it in the last 2 MiB
+//! run is zero, and the window's page tables hold exactly what was built (L6).
 
 use crate::memory::user::USER_FRAMES;
 use crate::process::{self, SpawnRequest};
@@ -32,14 +33,14 @@ pub fn check(cmdline: &str) -> Result<(), &'static str> {
         return Err("model: the frames do not hold the file xtask attached");
     }
     let expected = format!("model {len} bytes fnv1a64 {fnv:016x}");
-    let first = start_and_ask(cap::SERVE | cap::MODEL, model)?;
+    let first = start_and_ask(cap::SERVE | cap::MODEL)?;
     let shown = first.1.as_deref().unwrap_or("");
     log!("model: llm (pid {}) health: {shown}", first.0);
     if !shown.starts_with(&expected) {
         return Err("model: llm does not report the file's length and hash");
     }
     stop(first.0)?;
-    let second = start_and_ask(cap::SERVE | cap::MODEL, model)?;
+    let second = start_and_ask(cap::SERVE | cap::MODEL)?;
     if second
         .1
         .as_deref()
@@ -52,7 +53,7 @@ pub fn check(cmdline: &str) -> Result<(), &'static str> {
         second.0
     );
     stop(second.0)?;
-    let refused = start_and_ask(cap::SERVE, model)?;
+    let refused = start_and_ask(cap::SERVE)?;
     if refused.1.is_some() {
         return Err("model: llm without cap::MODEL still reports a model");
     }
@@ -73,12 +74,18 @@ pub fn check(cmdline: &str) -> Result<(), &'static str> {
     if !held || frames_hash(model) != fnv {
         return Err("model: a process's teardown touched the model's frames");
     }
+    model::check_window()?;
+    log!(
+        "model: {} runs of 2 MiB, window of {} page tables intact after every teardown",
+        model.run_count(),
+        kabi::model::table_pages(model.len())
+    );
     log!("model: mapped, remapped after a restart, refused without the capability, never freed");
     Ok(())
 }
 
-/// The FNV-1a hash of the model's bytes, read from its frames, or 0 when the
-/// rest of the last frame, which ring 3 can read too, is not all zero.
+/// The FNV-1a hash of the model's bytes, read from its runs, or 0 when the rest
+/// of the last run, which ring 3 can read too, is not all zero.
 fn frames_hash(model: &model::Model) -> u64 {
     let hhdm = memory::hhdm();
     let mut hash = Fnv1a::new();
@@ -101,13 +108,13 @@ fn frames_hash(model: &model::Model) -> u64 {
 
 /// Starts `llm` with `caps` and asks it for `health`: its pid, and the model part
 /// of the reply, `None` when it reports no model.
-fn start_and_ask(caps: u64, model: &model::Model) -> Result<(u64, Option<String>), &'static str> {
+fn start_and_ask(caps: u64) -> Result<(u64, Option<String>), &'static str> {
     let pid = process::spawn(&SpawnRequest {
         name: model::HOLDER,
         program: model::HOLDER,
         args: b"",
         limits: Limits {
-            max_pages: model::HOLDER_PAGES + kabi::model::table_pages(model.len()),
+            max_pages: model::HOLDER_PAGES,
             max_burst_ms: BURST_MS,
             caps,
             stack_pages: 0,

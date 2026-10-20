@@ -101,10 +101,11 @@ pub mod call {
     /// Needs [`super::cap::PUBLISH`].
     pub const BUILD: u64 = 27;
     /// `model_map() -> len`: maps the model the kernel loaded from the `kai-model`
-    /// disk at [`super::layout::MODEL_BASE`], read-only and not executable, and
-    /// returns its length in bytes; calling it again maps nothing new. NotFound
-    /// when no model is loaded, NoMemory when its page tables would pass the page
-    /// quota. Needs [`super::cap::MODEL`].
+    /// disk at [`super::layout::MODEL_BASE`], read-only and not executable, by
+    /// linking the kernel's window of 2 MiB pages, which takes nothing from the
+    /// page quota; returns its length in bytes, and calling it again maps nothing
+    /// new. NotFound when no model is loaded, Invalid if the window cannot be
+    /// linked. Needs [`super::cap::MODEL`].
     pub const MODEL_MAP: u64 = 28;
     /// `thread_spawn(entry, arg, cpu, stack_pages) -> index`: starts a worker of this
     /// process at `entry` with `arg` in RDI, pinned to CPU `cpu` (below the CPUs

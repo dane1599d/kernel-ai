@@ -178,15 +178,27 @@ impl Memory {
             .map(|frame| frame * PAGE_SIZE)
     }
 
+    /// Allocates `count` physically contiguous frames whose first frame number is a
+    /// multiple of `align` (512 for a 2 MiB run), not zeroed; returns the first
+    /// physical address.
+    pub fn allocate_aligned(&mut self, count: u64, align: u64) -> Option<u64> {
+        self.frames
+            .allocate_contiguous(count, align)
+            .map(|frame| frame * PAGE_SIZE)
+    }
+
+    /// Allocates one zeroed frame; returns its physical address.
+    pub fn allocate_zeroed_frame(&mut self) -> Option<u64> {
+        let number = self.frames.allocate()?;
+        let frame = PhysFrame::containing_address(PhysAddr::new(number * PAGE_SIZE));
+        zero_frame(self.hhdm, frame);
+        Some(number * PAGE_SIZE)
+    }
+
     pub fn free_contiguous(&mut self, phys: u64, count: u64) -> Result<(), &'static str> {
         self.frames
             .free_contiguous(phys / PAGE_SIZE, count)
             .map_err(|_| "contiguous frames were not allocated")
-    }
-
-    /// Allocates one frame, not zeroed; returns its physical address.
-    pub fn allocate_frame(&mut self) -> Option<u64> {
-        self.frames.allocate().map(|frame| frame * PAGE_SIZE)
     }
 
     /// Whether the frame at `phys` is allocated.

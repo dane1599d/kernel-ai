@@ -146,38 +146,16 @@ fn elf_error(error: uelf::Error) -> &'static str {
     }
 }
 
-/// Maps the kernel's `frames` (frame numbers) read-only from `base` up in the
-/// calling process, without making them its own (see `Memory::map_user_frame`).
-/// `base` starts a PML4 slot that holds nothing else, and `tables` is how many
-/// page tables the whole mapping takes there. The call fails with NoMemory, and
-/// kills nothing, if the tables still missing would pass the page quota. Pages
-/// already mapped stay as they are, so the call can be repeated.
-pub fn map_shared(slot: usize, base: u64, frames: &[u32], tables: u64) -> Result<(), kabi::Error> {
-    let limits = with_table(|table| table[slot].limits);
+/// Links the model's window, whose PDPT is at `pdpt`, at `base` in the calling
+/// process: one PML4 entry, no frame taken from its quota. Repeating it changes
+/// nothing.
+pub fn link_window(slot: usize, base: u64, pdpt: u64) -> Result<(), kabi::Error> {
     let mut guard = SPACES[slot].lock();
     let space = guard.as_mut().ok_or(kabi::Error::Fault)?;
-    // Tables a first call, or one cut short, already made are counted already.
-    let missing = tables.saturating_sub(memory::with(|m| m.tables_in_slot(space, base)));
-    if space.frames().saturating_add(missing) > limits.max_pages {
-        return Err(kabi::Error::NoMemory);
-    }
-    // One page table's worth under each MEMORY lock, so other CPUs are not held
-    // off for the whole model.
-    for (index, batch) in frames.chunks(512).enumerate() {
-        let first = base + (index * 512) as u64 * PAGE_SIZE;
-        memory::with(|m| {
-            batch.iter().enumerate().try_for_each(|(i, &frame)| {
-                let addr = first + i as u64 * PAGE_SIZE;
-                m.map_user_frame(space, addr, u64::from(frame) * PAGE_SIZE)
-                    .map(|_| ())
-            })
-        })
-        .map_err(|error| {
-            log!("process: mapping shared frames failed: {error}");
-            kabi::Error::NoMemory
-        })?;
-    }
-    Ok(())
+    memory::with(|m| m.link_window(space, base, pdpt)).map_err(|error| {
+        log!("process: linking the model window failed: {error}");
+        kabi::Error::Invalid
+    })
 }
 
 /// Grows the calling process's heap by `bytes` (whole pages). Exceeding the quota
