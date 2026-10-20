@@ -14,6 +14,9 @@
 //! typed through the QEMU monitor) with the spikes
 //! enabled. Each case passes only if the
 //! kernel reports success through QEMU's isa-debug-exit device.
+//!
+//! Every `build`, `run`, `test` and `soak` checks that the kernel ELF has no x87,
+//! MMX, SSE or AVX instruction (see floatguard.rs).
 
 mod boot_smoke;
 mod buildsvc;
@@ -22,6 +25,7 @@ mod components;
 mod disk;
 mod edit_smoke;
 mod esp;
+mod floatguard;
 mod fluency;
 mod httpd;
 mod lines;
@@ -71,6 +75,7 @@ fn execute(options: &Options) -> Result<(), String> {
         return buildsvc::verify::unchanged(&root, &before);
     }
     let kernel = build_kernel(&root, options)?;
+    floatguard::check(&kernel)?;
     let programs = build_user(&root, options)?;
     let versions = components::build(&root)?;
     if options.task == Task::Build {

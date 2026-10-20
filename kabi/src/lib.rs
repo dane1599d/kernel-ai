@@ -360,14 +360,16 @@ mod tests {
 }
 
 /// The isolation probe: a test program that, on its Nth start, tries operation
-/// `N % OPS.len()`, each of which ring 3 must not be allowed to do. The kernel's
-/// test checks each attempt was stopped by one of the listed exception vectors.
+/// `N % OPS.len()`. Ops 0-2 (x87, SSE and AVX) ring 3 may do since L2, and must
+/// complete; every other op it must not be allowed to do, and the kernel's test
+/// checks each attempt was stopped by one of the listed exception vectors.
 pub mod probe {
-    /// (operation, vectors that may stop it).
-    pub const OPS: [(&str, &[u64]); 17] = [
-        ("x87 instruction", &[7]),
-        ("SSE instruction", &[6]),
-        ("AVX instruction", &[6]),
+    /// (operation, vectors that may stop it); an empty list means it must complete.
+    pub const OPS: [(&str, &[u64]); 18] = [
+        ("x87 instruction", &[]),
+        ("SSE instruction", &[]),
+        // Completes when the kernel turned AVX on; a CPU without AVX raises #UD.
+        ("AVX instruction", &[]),
         ("cli", &[13]),
         ("hlt", &[13]),
         ("in from a port", &[13]),
@@ -384,7 +386,10 @@ pub mod probe {
         ("run own data", &[14]),
         ("read kernel memory", &[14]),
         ("syscall with a kernel stack pointer", &[13]),
+        // An x87 error kills only the process: CR0.NE makes it #MF, not an IRQ.
+        ("unmasked x87 exception", &[16]),
     ];
+    pub const AVX: usize = 2;
     pub const SGDT: usize = 8;
 }
 

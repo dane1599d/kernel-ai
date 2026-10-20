@@ -29,6 +29,7 @@ mod edit_session;
 mod edit_tests;
 mod entry;
 mod faults;
+mod fpu;
 mod gdt;
 mod hpet;
 mod i8042;
@@ -212,10 +213,17 @@ extern "C" fn boot_continue() -> ! {
     }
     match cpu::init(entry::syscall_entry as *const () as u64) {
         Ok(features) => log!(
-            "cpu: ring 3 ready; SMEP {}, SMAP {}, UMIP {}; x87 and SSE trap",
+            "cpu: ring 3 ready; SMEP {}, SMAP {}, UMIP {}; {} on, XCR0 {:#x}, XSAVE area {} bytes",
             on_off(features.smep),
             on_off(features.smap),
-            on_off(features.umip)
+            on_off(features.umip),
+            if fpu::xcr0() & cpufeat::XCR0_AVX != 0 {
+                "x87, SSE and AVX"
+            } else {
+                "x87 and SSE"
+            },
+            fpu::xcr0(),
+            fpu::area_size()
         ),
         Err(message) => fail(message),
     }

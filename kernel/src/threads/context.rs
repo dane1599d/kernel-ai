@@ -85,6 +85,8 @@ pub(super) fn switch(from: Tid, to: Tid) {
     crate::process::charge(from);
     cpu.current.store(to, Ordering::Relaxed);
     prepare_cpu_for(to);
+    // Ring-3 vector state, saved before finish_switch clears ON_CPU[from].
+    crate::fpu::switch(from, to);
     let table = SAVED_RSP.0.get();
     // SAFETY: interrupts are off; `to` is runnable here and its registers are saved.
     unsafe { switch_stacks(&raw mut (*table)[from], (*table)[to]) };

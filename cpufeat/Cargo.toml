@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
-# CPUID and XGETBV, without std: the engine picks its kernels with it, and in L2
-# the kernel will choose XCR0 with it.
+# CPUID and XGETBV, without std: the engine picks its kernels with it, and the
+# kernel chooses XCR0 and checks its XSAVE area size with it.
 [lib]
 doctest = false

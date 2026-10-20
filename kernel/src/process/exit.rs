@@ -29,6 +29,7 @@ pub fn exit_current() -> ! {
         table[slot]
     });
     crate::ipc::on_process_exit(process.pid);
+    crate::fpu::leave_ring3();
     threads::leave_address_space();
     let space = SPACES[slot].lock().take();
     let freed = space.map_or(0, |space| memory::with(|m| m.destroy_user_space(space)));

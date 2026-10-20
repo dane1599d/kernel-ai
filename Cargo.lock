@@ -461,6 +461,7 @@ name = "kernel"
 version = "0.0.0"
 dependencies = [
  "acpitables",
+ "cpufeat",
  "editcore",
  "kabi",
  "limine",

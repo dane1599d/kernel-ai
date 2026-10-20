@@ -43,6 +43,8 @@ pub(super) fn process_main(slot: usize) {
     }
     with_table(|table| table[slot].state = State::Running);
     threads::enter_address_space(entry.cr3);
+    // Clean vector registers; interrupts stay off until the iretq.
+    crate::fpu::enter_ring3();
     // SAFETY: the entry point and stack were mapped by `load`, CR3 is loaded, and
     // nothing on this stack needs dropping.
     unsafe { entry::enter_user(entry.rip, entry.rsp) }

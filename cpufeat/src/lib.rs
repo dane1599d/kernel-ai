@@ -16,6 +16,40 @@ pub const XCR0_ZMM_HI256: u64 = 1 << 6;
 pub const XCR0_HI16_ZMM: u64 = 1 << 7;
 const YMM_STATE: u64 = XCR0_SSE | XCR0_AVX;
 const ZMM_STATE: u64 = YMM_STATE | XCR0_OPMASK | XCR0_ZMM_HI256 | XCR0_HI16_ZMM;
+/// Bytes every XSAVE area starts with: the 512-byte legacy region (x87, MXCSR and
+/// xmm) and the 64-byte header.
+pub const XSAVE_LEGACY_AND_HEADER: usize = 576;
+
+/// The XCR0 the kernel turns on for ring 3: x87 and SSE, plus AVX when the CPU can
+/// save it. AVX-512 (L6) and every other component stay off. `supported` is
+/// CPUID.(0xD,0) EDX:EAX; None when XSAVE cannot hold x87 and SSE state at all.
+pub fn ring3_xcr0(supported: u64) -> Option<u64> {
+    let base = XCR0_X87 | XCR0_SSE;
+    (supported & base == base).then_some(supported & (base | XCR0_AVX))
+}
+
+/// The XSAVE area size an OS may trust for `xcr0`: `reported` is CPUID.(0xD,0) EBX
+/// read after XSETBV, `avx_end` is AVX's offset plus size (CPUID.(0xD,2) EBX + EAX),
+/// and `room` is what the OS reserved per thread. The area must hold the legacy
+/// region and header, and AVX's component when AVX is on, and fit in `room`.
+pub fn xsave_area_bytes(
+    xcr0: u64,
+    reported: u32,
+    avx_end: u32,
+    room: usize,
+) -> Result<usize, &'static str> {
+    let size = usize::try_from(reported).map_err(|_| "cpu: XSAVE area size overflows")?;
+    let avx_end = usize::try_from(avx_end).map_err(|_| "cpu: XSAVE AVX offset overflows")?;
+    if size < XSAVE_LEGACY_AND_HEADER {
+        Err("cpu: XSAVE area is smaller than its legacy region and header")
+    } else if xcr0 & XCR0_AVX != 0 && (avx_end <= XSAVE_LEGACY_AND_HEADER || size < avx_end) {
+        Err("cpu: XSAVE area does not hold the AVX state")
+    } else if size > room {
+        Err("cpu: XSAVE area is larger than the space reserved per thread")
+    } else {
+        Ok(size)
+    }
+}
 
 /// CPUID bits and XCR0 as read. Fields are what CPUID reports; use the methods to
 /// ask what may run.
@@ -40,6 +74,8 @@ pub struct Features {
     pub xcr0_supported: u64,
     /// Bytes of an XSAVE area for every supported component (CPUID.(0xD,0) ECX).
     pub xsave_size_max: u32,
+    /// Bytes of an XSAVE area for the components XCR0 enables now (CPUID.(0xD,0) EBX).
+    pub xsave_size: u32,
 }
 
 impl Features {
@@ -58,11 +94,11 @@ impl Features {
         let (_, ebx7, ecx7, _) = leaf7;
         let xsave = bit(ecx1, 26);
         let osxsave = bit(ecx1, 27);
-        let (xcr0_supported, xsave_size_max) = if xsave && max_leaf >= 0xd {
-            let (eax, _, ecx, edx) = cpuid(0xd, 0);
-            ((u64::from(edx) << 32) | u64::from(eax), ecx)
+        let (xcr0_supported, xsave_size_max, xsave_size) = if xsave && max_leaf >= 0xd {
+            let (eax, ebx, ecx, edx) = cpuid(0xd, 0);
+            ((u64::from(edx) << 32) | u64::from(eax), ecx, ebx)
         } else {
-            (0, 0)
+            (0, 0, 0)
         };
         Self {
             sse2: bit(edx1, 26),
@@ -80,6 +116,7 @@ impl Features {
             xcr0: if osxsave { unsafe { xgetbv0() } } else { 0 },
             xcr0_supported,
             xsave_size_max,
+            xsave_size,
         }
     }
 
@@ -195,6 +232,31 @@ mod tests {
         assert!(!no_fma.avx2_fma());
     }
 
+    #[test]
+    fn ring3_gets_x87_sse_and_avx_but_never_avx512() {
+        let everything = XCR0_X87 | YMM_STATE | ZMM_STATE | (1 << 9);
+        assert_eq!(ring3_xcr0(everything), Some(XCR0_X87 | XCR0_SSE | XCR0_AVX));
+        assert_eq!(ring3_xcr0(XCR0_X87 | XCR0_SSE), Some(XCR0_X87 | XCR0_SSE));
+        assert_eq!(ring3_xcr0(XCR0_X87 | XCR0_AVX), None);
+        assert_eq!(ring3_xcr0(XCR0_SSE), None);
+        assert_eq!(ring3_xcr0(0), None);
+    }
+
+    #[test]
+    fn xsave_sizes_are_checked_before_use() {
+        let ymm = XCR0_X87 | YMM_STATE;
+        let xmm = XCR0_X87 | XCR0_SSE;
+        assert_eq!(xsave_area_bytes(ymm, 832, 832, 4096), Ok(832));
+        assert_eq!(xsave_area_bytes(xmm, 576, 0, 4096), Ok(576));
+        // AVX-512's standard-format size on the 7700X still fits a 4 KiB slot.
+        assert_eq!(xsave_area_bytes(ymm, 2432, 832, 4096), Ok(2432));
+        assert!(xsave_area_bytes(xmm, 512, 0, 4096).is_err());
+        assert!(xsave_area_bytes(ymm, 576, 832, 4096).is_err());
+        assert!(xsave_area_bytes(ymm, 832, 0, 4096).is_err());
+        assert!(xsave_area_bytes(ymm, 8192, 832, 4096).is_err());
+        assert!(xsave_area_bytes(ymm, 4097, 832, 4096).is_err());
+    }
+
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn detect_agrees_with_std() {
@@ -215,7 +277,9 @@ mod tests {
         if cpu.osxsave {
             assert!(cpu.xcr0 & XCR0_X87 != 0);
             assert_eq!(cpu.xcr0 & !cpu.xcr0_supported, 0);
-            assert!(cpu.xsave_size_max >= 576);
+            assert!(cpu.xsave_size_max as usize >= XSAVE_LEGACY_AND_HEADER);
+            assert!(cpu.xsave_size as usize >= XSAVE_LEGACY_AND_HEADER);
+            assert!(cpu.xsave_size <= cpu.xsave_size_max);
         }
     }
 }
