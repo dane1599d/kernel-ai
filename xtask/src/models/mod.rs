@@ -10,10 +10,13 @@
 //! never with `--model`, which keeps meaning the model name sent to an LLM server.
 
 mod bench;
+mod bench_project;
 mod catalog;
 mod chat;
 mod check;
+mod decode;
 mod fetch;
+mod hostpool;
 mod machine;
 mod pin;
 mod setup;
@@ -144,6 +147,9 @@ impl Loaded {
         }
         let catalog = Catalog::load()?;
         let entry = args.entry(&catalog, false)?.clone();
+        if let Some(why) = entry.not_runnable() {
+            return Err(why);
+        }
         let path = store::resolve(args.store.as_deref())?.join(&entry.file);
         let bytes = fs::read(&path).map_err(|e| {
             format!(
@@ -189,6 +195,9 @@ impl Loaded {
 pub fn stored(id: &str, store: Option<&str>) -> Result<PathBuf, String> {
     let catalog = Catalog::load()?;
     let entry = catalog.get(id)?;
+    if let Some(why) = entry.not_runnable() {
+        return Err(why);
+    }
     let path = store::resolve(store)?.join(&entry.file);
     // The fix names the same store, so it fixes this store.
     let in_store = store.map_or_else(String::new, |dir| format!(" --store {dir}"));
@@ -254,6 +263,23 @@ mod tests {
                     || missing.contains("OneDrive"),
                 "{missing}"
             );
+        }
+    }
+
+    #[test]
+    fn models_the_engine_cannot_run_yet_are_refused() {
+        let catalog = Catalog::load().unwrap();
+        let waiting: Vec<&Entry> = catalog
+            .models
+            .iter()
+            .filter(|e| e.not_runnable().is_some())
+            .collect();
+        for entry in waiting {
+            let error = stored(&entry.id, None).unwrap_err();
+            assert!(error.contains("L6's engine part 2"), "{error}");
+            let args = ModelArgs::parse(&["--local", &entry.id]).unwrap();
+            let error = Loaded::open(&args).err().unwrap();
+            assert!(error.contains("L6's engine part 2"), "{error}");
         }
     }
 

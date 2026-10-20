@@ -57,6 +57,10 @@ pub fn run(args: &ModelArgs) -> Result<(), String> {
         entry.name,
         path.display()
     );
+    if let Some(why) = entry.not_runnable() {
+        println!("xtask: {why}; until then it waits in the store.");
+        return Ok(());
+    }
     let store_flag = if args.store.is_some() {
         format!(" --store \"{}\"", store.display())
     } else {
@@ -99,12 +103,7 @@ fn choose<'c>(
         }
         None => Err(format!(
             "{ram} GB of RAM is below every catalog model's minimum; the smallest needs {} GB",
-            catalog
-                .models
-                .iter()
-                .map(|e| e.min_ram_gb)
-                .min()
-                .unwrap_or(0)
+            catalog.runnable().map(|e| e.min_ram_gb).min().unwrap_or(0)
         )),
     }
 }
@@ -133,6 +132,19 @@ mod tests {
         assert!(choose(&catalog, &none, Some(1)).is_err());
         let named = ModelArgs::parse(&["qwen3-0.6b"]).unwrap();
         assert_eq!(choose(&catalog, &named, Some(1)).unwrap().id, "qwen3-0.6b");
+        // A model the engine cannot run yet is never recommended, whatever the
+        // RAM, but may be named.
+        for ram in [8, 16, 32, 1024] {
+            let picked = choose(&catalog, &none, Some(ram)).unwrap();
+            assert!(picked.not_runnable().is_none(), "{} at {ram} GB", picked.id);
+        }
+        let k = ModelArgs::parse(&["qwen3-4b-2507"]).unwrap();
+        assert!(
+            choose(&catalog, &k, Some(32))
+                .unwrap()
+                .not_runnable()
+                .is_some()
+        );
         let unknown = ModelArgs::parse(&["--local", "nope"]).unwrap();
         assert!(choose(&catalog, &unknown, Some(32)).is_err());
     }

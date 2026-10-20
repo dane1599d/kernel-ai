@@ -175,6 +175,27 @@ fn size_rules() {
         Err(Error::DimsOverflow)
     );
     assert_eq!(byte_size(TensorType::F32, &[0, 7]), Ok(0));
+    // K-quant rows are whole super-blocks of 256 values.
+    assert_eq!(byte_size(TensorType::Q4_K, &[2560, 3]), Ok(30 * 144));
+    assert_eq!(byte_size(TensorType::Q6_K, &[9728, 2]), Ok(76 * 210));
+    for ty in [TensorType::Q4_K, TensorType::Q6_K] {
+        for row in [32, 255, 300, 2560 + 128] {
+            assert_eq!(byte_size(ty, &[row, 4]), Err(Error::PartialBlock));
+        }
+        assert_eq!(ty.block_len(), 256);
+        assert_eq!(TensorType::from_id(ty.id()), Some(ty));
+    }
+    // Too many elements to count, then a count whose bytes still fit: the
+    // multiply by 144 or 210 per 256 values cannot overflow on its own.
+    assert_eq!(
+        byte_size(TensorType::Q4_K, &[256, 1 << 56]),
+        Err(Error::DimsOverflow)
+    );
+    assert_eq!(byte_size(TensorType::Q4_K, &[1 << 63, 1]), Ok(9 << 59));
+    assert_eq!(
+        byte_size(TensorType::Q6_K, &[1 << 63, 1]),
+        Ok((1 << 55) * 210)
+    );
 }
 
 #[test]
@@ -225,8 +246,10 @@ fn debug_output_never_holds_the_bytes() {
 
 #[test]
 fn errors_print_plainly() {
-    let text = alloc::format!("{}", Error::UnknownType(12));
-    assert_eq!(text, "tensor type 12 (Q4_K), which the engine cannot run");
+    let text = alloc::format!("{}", Error::UnknownType(13));
+    assert_eq!(text, "tensor type 13 (Q5_K), which the engine cannot run");
+    assert_eq!(type_name(TensorType::Q4_K.id()), TensorType::Q4_K.name());
+    assert_eq!(type_name(TensorType::Q6_K.id()), TensorType::Q6_K.name());
     assert_eq!(type_name(30), "BF16");
     assert_eq!(type_name(39), "MXFP4");
     assert_eq!(type_name(99), "unknown");

@@ -1,12 +1,14 @@
 //! `cargo xtask model pin REPO FILE`: fills a catalog entry from Hugging Face.
 //! The commit, size and SHA-256 come from the Hub's API, and the file's header
 //! comes from a range request of its first megabytes, so nothing large is
-//! downloaded. A file the engine cannot run is refused: a tensor type other than
-//! F32 or Q8_0, a shape or tensor qwen3 does not have, or a tokenizer other than
-//! byte-level BPE with the qwen2 pretokenizer.
+//! downloaded. A file the engine's kernels cannot run is refused: a matrix type
+//! other than Q8_0, Q4_K or Q6_K, norms that are not F32, a shape or tensor qwen3
+//! does not have, or a tokenizer other than byte-level BPE with the qwen2
+//! pretokenizer. The header also gives the entry's decode list.
 
 use super::ModelArgs;
-use super::catalog::{CATALOG_PATH, Entry, is_hex, plain_name};
+use super::catalog::{CATALOG_PATH, Entry, is_hex, plain_name, resolve_url};
+use super::decode::Decode;
 use serde_json::Value;
 use std::fs;
 use std::process::Command;
@@ -41,12 +43,13 @@ pub fn run(args: &ModelArgs) -> Result<(), String> {
     let tree = api(&format!(
         "https://huggingface.co/api/models/{repo}/tree/{commit}"
     ))?;
-    let entry = entry_from(repo, file, &commit, &info, &tree, args)?;
-    println!(
-        "xtask: {repo} at {commit}: {file}, {} bytes, SHA-256 {}",
-        entry.size, entry.sha256
-    );
-    engine_runs(&entry.url(), entry.size)?;
+    // The cheap refusals first, before any range request.
+    let (size, sha256) = lfs(&tree, repo, file, &commit)?;
+    licence(&info, file)?;
+    min_ram(args)?;
+    println!("xtask: {repo} at {commit}: {file}, {size} bytes, SHA-256 {sha256}");
+    let decode = engine_runs(&resolve_url(repo, &commit, file), size)?;
+    let entry = entry_from(repo, file, &commit, &info, &tree, args, decode)?;
     let json = serde_json::to_string_pretty(&entry.to_json()).map_err(|e| e.to_string())?;
     println!("{json}");
     if args.write {
@@ -68,26 +71,11 @@ fn entry_from(
     info: &Value,
     tree: &Value,
     args: &ModelArgs,
+    decode: Decode,
 ) -> Result<Entry, String> {
-    let item = tree
-        .as_array()
-        .and_then(|items| items.iter().find(|i| i["path"] == file))
-        .ok_or(format!("{repo} has no {file} at {commit}"))?;
-    let lfs = &item["lfs"];
-    let sha256 = lfs["oid"]
-        .as_str()
-        .filter(|s| is_hex(s, 64))
-        .ok_or("the file is not in LFS")?;
-    let size = lfs["size"].as_u64().ok_or("the Hub gave no size")?;
-    let license = spdx(info["cardData"]["license"].as_str().unwrap_or(""));
-    if license != "Apache-2.0" && license != "MIT" {
-        return Err(format!(
-            "{file} is under {license:?}; the project takes Apache-2.0 or MIT models only"
-        ));
-    }
-    let min_ram_gb = args
-        .min_ram
-        .ok_or("pass --min-ram GB, the least RAM to recommend this model for")?;
+    let (size, sha256) = lfs(tree, repo, file, commit)?;
+    let license = licence(info, file)?;
+    let min_ram_gb = min_ram(args)?;
     let stem = file.trim_end_matches(".gguf");
     let id = match &args.id {
         Some(id) => id.clone(),
@@ -104,13 +92,45 @@ fn entry_from(
         revision: commit.to_string(),
         file: file.to_string(),
         size,
-        sha256: sha256.to_string(),
+        sha256,
         license,
         min_ram_gb,
         note: String::new(),
+        decode,
     };
     entry.check()?;
     Ok(entry)
+}
+
+/// The file's size and SHA-256, from the Hub's tree.
+fn lfs(tree: &Value, repo: &str, file: &str, commit: &str) -> Result<(u64, String), String> {
+    let item = tree
+        .as_array()
+        .and_then(|items| items.iter().find(|i| i["path"] == file))
+        .ok_or(format!("{repo} has no {file} at {commit}"))?;
+    let lfs = &item["lfs"];
+    let sha256 = lfs["oid"]
+        .as_str()
+        .filter(|s| is_hex(s, 64))
+        .ok_or("the file is not in LFS")?;
+    let size = lfs["size"].as_u64().ok_or("the Hub gave no size")?;
+    Ok((size, sha256.to_string()))
+}
+
+/// The model card's licence, if the project takes it.
+fn licence(info: &Value, file: &str) -> Result<String, String> {
+    let license = spdx(info["cardData"]["license"].as_str().unwrap_or(""));
+    if license != "Apache-2.0" && license != "MIT" {
+        return Err(format!(
+            "{file} is under {license:?}; the project takes Apache-2.0 or MIT models only"
+        ));
+    }
+    Ok(license)
+}
+
+fn min_ram(args: &ModelArgs) -> Result<u64, String> {
+    args.min_ram
+        .ok_or_else(|| "pass --min-ram GB, the least RAM to recommend this model for".into())
 }
 
 /// A licence in SPDX spelling. Apache-2.0 and MIT are the ones the project takes.
@@ -143,9 +163,9 @@ fn api(url: &str) -> Result<Value, String> {
     serde_json::from_slice(&body).map_err(|e| format!("{url}: {e}"))
 }
 
-/// Reads the header from the start of the file and refuses anything the engine
-/// cannot run.
-fn engine_runs(url: &str, size: u64) -> Result<(), String> {
+/// Reads the header from the start of the file, refuses anything the engine's
+/// kernels cannot run, and lists what a decode step reads.
+fn engine_runs(url: &str, size: u64) -> Result<Decode, String> {
     if size < 64 {
         return Err(format!("a file of {size} bytes is no model"));
     }
@@ -158,23 +178,54 @@ fn engine_runs(url: &str, size: u64) -> Result<(), String> {
         match gguf::Header::parse(&bytes) {
             Ok(header) => {
                 header.check_extents(size).map_err(|e| e.to_string())?;
-                let config = infer::Config::from_gguf(&header).map_err(|e| e.to_string())?;
-                infer::check(&header, &config).map_err(|e| e.to_string())?;
+                let refused = |e: String| format!("refused: {e}");
+                let config =
+                    infer::Config::from_gguf(&header).map_err(|e| refused(e.to_string()))?;
+                let decode = Decode::from_header(&header, &config).map_err(refused)?;
+                let waiting = decode.types_not_run();
+                if waiting.is_empty() {
+                    infer::check(&header, &config).map_err(|e| refused(e.to_string()))?;
+                }
                 let tok = bpe::Tokenizer::from_gguf(&header).map_err(|e| e.to_string())?;
                 bpe::chat::Chat::new(&tok).map_err(|e| e.to_string())?;
                 if tok.len() != config.vocab {
                     return Err("the vocabulary and the embeddings differ in size".into());
                 }
                 println!(
-                    "xtask: the engine can run it: {} layers, {} wide, {} tokens",
-                    config.n_layer, config.n_embd, config.vocab
+                    "xtask: the engine's kernels run every tensor ({}): {} layers, {} wide, \
+                     {} tokens",
+                    type_counts(&header),
+                    config.n_layer,
+                    config.n_embd,
+                    config.vocab
                 );
-                return Ok(());
+                if !waiting.is_empty() {
+                    println!(
+                        "xtask: the forward pass runs {} from L6's engine part 2 on; until \
+                         then setup does not recommend it and run --local refuses it",
+                        waiting.join(" and ")
+                    );
+                }
+                return Ok(decode);
             }
             Err(e) if e.is_short() && want < MOST_BYTES.min(size) => want = (want * 2).min(size),
             Err(e) => return Err(format!("refused: {e}")),
         }
     }
+}
+
+/// "F32 145, Q4_K 216, Q6_K 37": how many tensors of each type, by type id.
+fn type_counts(header: &gguf::Header<'_>) -> String {
+    let mut counts: Vec<(u32, &str, usize)> = Vec::new();
+    for t in header.tensors() {
+        match counts.iter_mut().find(|c| c.0 == t.ty.id()) {
+            Some(c) => c.2 += 1,
+            None => counts.push((t.ty.id(), t.ty.name(), 1)),
+        }
+    }
+    counts.sort_unstable();
+    let parts: Vec<String> = counts.iter().map(|(_, n, c)| format!("{n} {c}")).collect();
+    parts.join(", ")
 }
 
 /// Adds or replaces `entry` in the catalog file.
@@ -221,18 +272,30 @@ mod tests {
             min_ram: Some(4),
             ..ModelArgs::default()
         };
-        let entry = entry_from("Qwen/Qwen3-0.6B-GGUF", file, commit, &info, &tree, &plain).unwrap();
+        let pinned = super::super::catalog::Catalog::load().unwrap();
+        let committed = pinned.get("qwen3-0.6b").unwrap();
+        let decode = committed.decode.clone();
+        let entry_from = |file: &str, info: &Value, args: &ModelArgs| {
+            entry_from(
+                "Qwen/Qwen3-0.6B-GGUF",
+                file,
+                commit,
+                info,
+                &tree,
+                args,
+                decode.clone(),
+            )
+        };
+        let entry = entry_from(file, &info, &plain).unwrap();
         assert_eq!(entry.id, "qwen3-0.6b-q8-0");
         assert_eq!(entry.name, "Qwen3-0.6B Q8_0");
         assert_eq!(entry.license, "Apache-2.0");
-        let pinned = super::super::catalog::Catalog::load().unwrap();
-        let committed = pinned.get("qwen3-0.6b").unwrap();
         let named = ModelArgs {
             id: Some("qwen3-0.6b".into()),
             min_ram: Some(4),
             ..ModelArgs::default()
         };
-        let entry = entry_from("Qwen/Qwen3-0.6B-GGUF", file, commit, &info, &tree, &named).unwrap();
+        let entry = entry_from(file, &info, &named).unwrap();
         assert_eq!(
             (
                 entry.id.as_str(),
@@ -247,20 +310,13 @@ mod tests {
                 committed.revision.as_str()
             )
         );
-        let missing = entry_from(
-            "Qwen/Qwen3-0.6B-GGUF",
-            "x.gguf",
-            commit,
-            &info,
-            &tree,
-            &plain,
-        );
+        let missing = entry_from("x.gguf", &info, &plain);
         assert!(missing.unwrap_err().contains("has no x.gguf"));
         let no_ram = ModelArgs::default();
-        let no_ram = entry_from("Qwen/Qwen3-0.6B-GGUF", file, commit, &info, &tree, &no_ram);
+        let no_ram = entry_from(file, &info, &no_ram);
         assert!(no_ram.unwrap_err().contains("--min-ram"));
         let other = serde_json::json!({"cardData": {"license": "llama3"}});
-        let refused = entry_from("Qwen/Qwen3-0.6B-GGUF", file, commit, &other, &tree, &plain);
+        let refused = entry_from(file, &other, &plain);
         assert!(refused.unwrap_err().contains("Apache-2.0 or MIT"));
     }
 

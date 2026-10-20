@@ -1,7 +1,9 @@
 //! The git-pinned model catalog, `xtask/models.json`. Each entry pins a file by
 //! repository commit, size and SHA-256, so a download is kept only if it is byte
-//! for byte the file reviewed here.
+//! for byte the file reviewed here, and lists what a decode step reads, so xtask
+//! knows whether the engine runs it yet.
 
+use super::decode::Decode;
 use serde_json::{Value, json};
 
 const CATALOG: &str = include_str!("../../models.json");
@@ -22,6 +24,8 @@ pub struct Entry {
     /// The least RAM, in GB, this model is recommended for.
     pub min_ram_gb: u64,
     pub note: String,
+    /// Every matrix a decode step reads, from the file's header.
+    pub decode: Decode,
 }
 
 impl Entry {
@@ -41,6 +45,21 @@ impl Entry {
             "license": self.license,
             "min_ram_gb": self.min_ram_gb,
             "note": self.note,
+            "decode": self.decode.to_json(),
+        })
+    }
+
+    /// Why the engine cannot run this model yet, if it cannot: a matrix type
+    /// its forward pass does not have. Such a model is pinned, and `setup ID`
+    /// downloads it, but it is never recommended, the default, or run.
+    pub fn not_runnable(&self) -> Option<String> {
+        let types = self.decode.types_not_run();
+        (!types.is_empty()).then(|| {
+            format!(
+                "{} has {} weights, which the engine runs from L6's engine part 2 on",
+                self.name,
+                types.join(" and ")
+            )
         })
     }
 
@@ -67,6 +86,10 @@ impl Entry {
             license: text("license")?,
             min_ram_gb: number("min_ram_gb")?,
             note: value["note"].as_str().unwrap_or("").to_string(),
+            decode: Decode::from_json(&value["decode"]).map_err(|e| {
+                let id = value["id"].as_str().unwrap_or("?");
+                format!("{id}: {e}; run model pin again")
+            })?,
         };
         entry.check()?;
         Ok(entry)
@@ -162,7 +185,9 @@ impl Catalog {
         }
         let default = root["default"].as_str().unwrap_or_default().to_string();
         let catalog = Self { default, models };
-        catalog.get(&catalog.default)?;
+        if let Some(why) = catalog.get(&catalog.default)?.not_runnable() {
+            return Err(format!("{CATALOG_PATH}: the default model must run: {why}"));
+        }
         Ok(catalog)
     }
 
@@ -173,12 +198,16 @@ impl Catalog {
         })
     }
 
-    /// The largest model recommended for this much RAM.
+    /// The largest model the engine runs that is recommended for this much RAM.
     pub fn recommend(&self, ram_gb: u64) -> Option<&Entry> {
-        self.models
-            .iter()
+        self.runnable()
             .filter(|e| e.min_ram_gb <= ram_gb)
             .max_by_key(|e| (e.min_ram_gb, e.size))
+    }
+
+    /// The models the engine runs now.
+    pub fn runnable(&self) -> impl Iterator<Item = &Entry> {
+        self.models.iter().filter(|e| e.not_runnable().is_none())
     }
 }
 
