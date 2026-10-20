@@ -201,9 +201,10 @@ fn idle_loop(_: usize) {
     }
 }
 
-/// The calling thread, without taking a lock.
+/// The calling thread, without taking a lock. Safe with interrupts on: one load, so
+/// a migration cannot make it read another CPU's thread (see [`percpu::current`]).
 pub fn current_tid() -> Tid {
-    percpu::this().current.load(Ordering::Relaxed)
+    percpu::current()
 }
 
 /// Runs a state change on this CPU's core and switches to whatever it picks.

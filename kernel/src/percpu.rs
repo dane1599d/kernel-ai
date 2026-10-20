@@ -82,7 +82,9 @@ pub fn init(index: usize) {
     READY.store(true, Ordering::Release);
 }
 
-/// This CPU's data. Only valid after [`init`] ran on this CPU.
+/// This CPU's data. Only valid after [`init`] ran on this CPU. With interrupts on,
+/// the thread may migrate right after this returns, so the reference can name the
+/// CPU it left; [`current`] and [`preempt_count_add`] avoid that.
 pub fn this() -> &'static PerCpu {
     let address: u64;
     // SAFETY: GS points at this CPU's PerCpu, whose first field is its own address.
@@ -103,6 +105,29 @@ pub fn index() -> usize {
 
 pub fn get(index: usize) -> &'static PerCpu {
     &CPUS[index]
+}
+
+/// The thread running on this CPU, which is the caller, read with one GS-relative
+/// instruction. Interrupts (and so migration) happen only between instructions, and
+/// every CPU names the thread it runs in `current`, so a thread that migrates still
+/// reads its own id. Before `init`, GS is not set up yet; returns 0, the value every
+/// `current` starts with.
+pub fn current() -> usize {
+    if !READY.load(Ordering::Acquire) {
+        return 0;
+    }
+    let tid: usize;
+    // SAFETY: GS points at this CPU's PerCpu; the field is an aligned 64-bit atomic,
+    // so the load is a single atomic read. Only this CPU writes it.
+    unsafe {
+        core::arch::asm!(
+            "mov {tid}, qword ptr gs:[{offset}]",
+            tid = out(reg) tid,
+            offset = const core::mem::offset_of!(PerCpu, current),
+            options(nostack, preserves_flags, readonly)
+        );
+    }
+    tid
 }
 
 /// Adds `delta` to this CPU's preempt count with one GS-relative instruction.
