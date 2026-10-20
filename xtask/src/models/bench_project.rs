@@ -13,9 +13,6 @@ use std::time::Duration;
 /// The KV cache's reach in these figures: the engine's context cap (kabi's
 /// CONTEXT_CAP), at f32 as the L1-L4 engine keeps it.
 const KV_POSITIONS: u64 = 512;
-/// The local-ask case's prompt: what a first answer waits for before its first
-/// token, at decode speed, since prefill is not batched yet.
-const PROMPT_TOKENS: f64 = 130.0;
 
 /// Memory read GB/s by thread count.
 pub struct Stream {
@@ -49,7 +46,7 @@ pub fn run(threads: &[usize], pools: &[Box<dyn Parallel>], stream: &Stream) -> R
     );
     let head: Vec<String> = threads.iter().map(|n| format!("{n:>3} thr")).collect();
     println!(
-        "  {:<32}{:<12}{}  ceiling",
+        "  {:<32}{:<12}{}  read rate",
         "model, bytes per token",
         "tier",
         head.join("  ")
@@ -84,19 +81,20 @@ pub fn run(threads: &[usize], pools: &[Box<dyn Parallel>], stream: &Stream) -> R
                 format!("{n}: {:.1}", 1.0 / (pass.as_secs_f64() + kv_time))
             })
             .collect();
-        let fastest = threads.iter().map(|&n| best_time(&rates, n)).min();
-        let first = fastest.unwrap_or(Duration::MAX).as_secs_f64() * PROMPT_TOKENS;
         println!(
-            "    with its f32 KV cache read at {KV_POSITIONS} positions (+{} MB a token): {} \
-             tokens/s; a {PROMPT_TOKENS}-token prompt one token at a time: {first:.1} s",
+            "    estimate, not measured: adding the f32 KV cache's {} MB a token at \
+             {KV_POSITIONS} positions at the read rate: {} tokens/s (attention does more \
+             than read it)",
             kv / 1_000_000,
             with_kv.join(", ")
         );
     }
     println!(
-        "  ceiling: the memory read rate on every thread over the bytes a token reads. \
-         Host-native threads and 4 KiB pages; a VM adds nested paging and exits on \
-         wake-ups, and CI or TCG numbers are no reference."
+        "  read rate: the memory read rate on the most threads over the bytes a token \
+         reads; the products' dynamic split can beat the read test's even one by up to \
+         a tenth. 16 threads oversubscribe the 16 logical CPUs while the host pool's \
+         caller spins. Host-native threads and 4 KiB pages; a VM adds nested paging \
+         and exits on wake-ups, and CI or TCG numbers are no reference."
     );
     Ok(())
 }

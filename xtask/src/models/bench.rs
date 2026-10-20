@@ -4,7 +4,8 @@
 //! weights far larger than the caches, the thread pool's cost per product, and
 //! then whole decode steps of every catalog model on generated weights of the
 //! model's real types and shapes, so nothing is downloaded. Every figure is the
-//! median of several runs after a warm-up, with the range beside it.
+//! median of several runs after a warm-up; the read and one-thread kernel figures
+//! show the range beside it.
 
 use super::bench_project::{self, Stream};
 use super::hostpool::HostPool;
@@ -37,7 +38,7 @@ pub fn run() -> Result<(), String> {
     );
     println!(
         "xtask: {} build; the engine crates are optimised either way. Figures are \
-         medians of {RUNS} runs after a warm-up, [min-max] beside them.",
+         medians of {RUNS} runs after a warm-up; [min-max] where shown.",
         if cfg!(debug_assertions) {
             "dev"
         } else {
@@ -253,10 +254,9 @@ fn calibrate(tier: Tier) -> Result<(), String> {
     println!(
         "\nCheck: the engine's whole forward pass on a generated model with Qwen3-0.6B's \
          shapes, one thread, {}: {rate:.1} tokens/s. The one-thread projection for \
-         qwen3-0.6b above leaves out norms, RoPE, attention and sampling, so it should \
-         come out at or above this; one-thread figures on a desktop vary by up to a \
-         fifth over a run (clocks, other programs), while those at 4 threads and more \
-         sit at the memory read rate.",
+         qwen3-0.6b above leaves out norms, RoPE and attention, so it should come out \
+         at or above this; one-thread figures on a desktop vary by up to a fifth over \
+         a run (clocks, other programs).",
         tier.name()
     );
     Ok(())

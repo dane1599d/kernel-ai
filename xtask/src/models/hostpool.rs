@@ -1,8 +1,8 @@
-//! A persistent thread pool on the host that works the way the guest's
-//! `user::pool::Pool` does, so `bench quant` times what Kernel AI will pay per
-//! matrix-vector product: workers started once, a generation counter they watch,
-//! a short spin before they park, and a caller that sleeps until every worker
-//! has finished.
+//! A persistent thread pool on the host, close to the guest's
+//! `user::pool::Pool`: workers started once, a generation counter they watch, and
+//! a short spin before they park. Unlike the guest's, its workers are not pinned
+//! and its caller spins briefly before it parks (the guest's sleeps at once), so
+//! its hand-off is somewhat cheaper than Kernel AI's will be.
 
 use quant::Parallel;
 use std::cell::UnsafeCell;
