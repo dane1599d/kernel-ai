@@ -69,6 +69,38 @@ fn starving() -> Box<dyn SchedPolicy> {
     Box::new(Starving(Interactive::new()))
 }
 
+/// Queues nothing and picks nothing: the Core ejects it at its first pick
+/// with a thread runnable, on every CPU.
+struct Refusing;
+
+impl SchedPolicy for Refusing {
+    fn name(&self) -> &'static str {
+        "refusing (deliberately broken)"
+    }
+    fn enqueue(&mut self, _: Tid, _: EnqueueReason) {}
+    fn dequeue(&mut self, _: Tid) {}
+    fn pick_next(&mut self) -> Option<Tid> {
+        None
+    }
+    fn tick(&mut self, _: Tid, _: u64) -> bool {
+        true
+    }
+    fn reset(&mut self) {}
+}
+
+fn refusing() -> Box<dyn SchedPolicy> {
+    Box::new(Refusing)
+}
+
+/// Every CPU runs `name`, installed and running, none on the fallback.
+fn running_everywhere(name: &str) -> bool {
+    (0..crate::smp::online()).all(|cpu| {
+        threads::with_core(cpu, |core, _| {
+            !core.on_fallback() && !core.in_trial() && core.policy_name() == name
+        }) == Some(true)
+    })
+}
+
 /// The pid of the live process named `name`, waiting up to 10 s for it.
 pub fn pid_named(name: &str) -> Result<u64, &'static str> {
     for _ in 0..200 {
@@ -199,6 +231,27 @@ pub fn revert_check() -> Result<(), &'static str> {
     }
     log!(
         "tune-revert: the guardrail reverted every CPU within 100 ms + 1 tick, before the watchdog"
+    );
+
+    // (b2) The other route: a candidate the watchdog ejects during the trial
+    // is reverted to the last good policy on every CPU, not left on the
+    // watchdog's round-robin.
+    let ejections = threads::stats().1;
+    let id = run(Candidate::Test(refusing), editor, Vec::new(), 1_000, 2)?;
+    let status = finished(id)?;
+    log!(
+        "tune-revert: (b2) refusing: reason {}; {} new ejections",
+        status.reason,
+        threads::stats().1 - ejections
+    );
+    if status.reason != reason::EJECTED || threads::stats().1 == ejections {
+        return Err("tune: an ejected candidate was not reverted for its ejection");
+    }
+    if !running_everywhere("interactive") {
+        return Err("tune: after an ejection a CPU is not running the last good policy");
+    }
+    log!(
+        "tune-revert: an ejection during the trial restored interactive on every CPU, not round-robin"
     );
 
     // (c)

@@ -190,6 +190,7 @@ pub const TEST_CASES: &[TestCase] = &[
     TestCase {
         expect: &[
             "tune-revert: the guardrail reverted every CPU within 100 ms + 1 tick, before the watchdog",
+            "tune-revert: an ejection during the trial restored interactive on every CPU, not round-robin",
             "tune-revert: (d) a policy switch cancelled the trial and won",
             "tune-revert: no workload process was killed as a runaway",
         ],
