@@ -59,7 +59,7 @@ fn an_answer_is_greedy_generation_on_the_chat_prompt() {
     let mut text = Vec::new();
     tok.decode(&want, &mut text);
     assert_eq!(reply.bytes, text);
-    // A second question starts from an empty context and gets the same answer.
+    // A second question takes its prompt from the cache and gets the same answer.
     assert_eq!(answer(&mut engine, "What does a kernel do?", 24).1, want);
 }
 
@@ -67,17 +67,22 @@ fn an_answer_is_greedy_generation_on_the_chat_prompt() {
 fn the_callback_runs_after_every_step_and_can_stop_anywhere() {
     let bytes = fixture::build(&Spec::tiny());
     let mut engine = engine(&bytes, 128);
-    let (mut prompted, mut made) = (0, 0);
+    let (mut cached, mut prompted, mut made) = (None, 0, 0);
     let reply = engine
         .answer(None, "hi", 5, |step| {
             match step {
+                Step::Cached(tokens) => cached = Some(tokens),
                 Step::Prompt => prompted += 1,
                 Step::Token(_) => made += 1,
             }
             Next::Continue
         })
         .unwrap();
+    assert_eq!(cached, Some(0));
     assert_eq!((prompted, made), (reply.prompt_tokens, reply.tokens));
+    // A fresh engine, so its prompt is not in the cache: the cache's step, then
+    // the prompt's first.
+    let mut engine = self::engine(&bytes, 128);
     let mut steps = 0;
     let stopped = engine
         .answer(None, "hi", 5, |_| {
@@ -119,8 +124,10 @@ fn the_context_ends_an_answer_and_a_longer_prompt_is_refused() {
     let long = "word ".repeat(40);
     let refused = engine.answer(None, &long, 8, |_| Next::Continue);
     assert_eq!(refused, Err(Error::ContextFull));
-    // The engine still answers after a refusal.
-    assert_eq!(answer_without_system(&mut engine, "hi", 1000).0, reply);
+    // The engine still answers after a refusal, with the prompt from its cache.
+    let again = answer_without_system(&mut engine, "hi", 1000).0;
+    assert_eq!(again.cached, prompt - 1);
+    assert_eq!(chat::Reply { cached: 0, ..again }, reply);
 }
 
 fn answer_without_system(

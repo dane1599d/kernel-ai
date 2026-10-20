@@ -6,6 +6,12 @@
 //! every step, prompt tokens included, is where the caller sleeps, keeps a
 //! deadline or stops.
 //!
+//! The KV cache outlives a request: the engine remembers the token at every
+//! position and runs a new prompt only from where it parts from them, as
+//! llama.cpp's `cache_prompt` does, so a system prompt every request starts with
+//! is computed once. Keys and values at a position depend only on the tokens up
+//! to it, so the answer is the one a fresh engine gives, bit for bit.
+//!
 //! [`Engine::load`] treats the file as hostile: before it allocates anything sized
 //! by the file it estimates what the tokenizer, the logits and the RoPE table will
 //! take and refuses a file that would not fit [`Budget::other_bytes`], so an
@@ -34,7 +40,8 @@ pub struct Budget {
     /// The KV cache: two f32 vectors per layer and position.
     pub kv_bytes: usize,
     /// Everything else sized by the file: the tokenizer while it is built, the
-    /// logits, the RoPE table and the scratch vectors.
+    /// logits, the RoPE table, the scratch vectors and the token at each cached
+    /// position.
     pub other_bytes: usize,
 }
 
@@ -87,6 +94,8 @@ pub struct About {
 /// One step of an answer, given to the callback once it is done.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Step {
+    /// Once, first: this many prompt tokens were in the cache already.
+    Cached(usize),
     /// A prompt token went through the model.
     Prompt,
     /// The model made this token of the answer.
@@ -116,6 +125,8 @@ pub enum Ending {
 pub struct Reply {
     pub bytes: Vec<u8>,
     pub prompt_tokens: usize,
+    /// Prompt tokens whose keys and values came from the cache, not the model.
+    pub cached: usize,
     /// Tokens made, the end token not counted.
     pub tokens: usize,
     pub ending: Ending,
@@ -139,6 +150,9 @@ pub struct Engine<'a> {
     tok: Tokenizer,
     chat: Chat,
     logits: Vec<f32>,
+    /// The token at each position of `kv`, so a prompt that starts like the last
+    /// one runs only from where they part.
+    cached: Vec<u32>,
     /// The tokens a JSON shape may ever allow: those of printable ASCII alone.
     ascii: Vec<u32>,
     /// The ones it allows at a step, room for all of them.
@@ -174,6 +188,10 @@ impl<'a> Engine<'a> {
         let chat = Chat::new(&tok).map_err(LoadError::Tokenizer)?;
         let model = Model::new(&file, tier, context).map_err(LoadError::Model)?;
         let kv = model.kv_cache().map_err(LoadError::Model)?;
+        let mut cached = Vec::new();
+        cached
+            .try_reserve_exact(kv.capacity())
+            .map_err(|_| LoadError::Model(Error::OutOfMemory))?;
         let mut logits = Vec::new();
         logits
             .try_reserve_exact(config.vocab)
@@ -205,6 +223,7 @@ impl<'a> Engine<'a> {
             tok,
             chat,
             logits,
+            cached,
             ascii,
             candidates,
             spells_ascii,
@@ -240,15 +259,16 @@ impl<'a> Engine<'a> {
         self.reply(turns, max_new, &mut Sampler::greedy(), None, on_step)
     }
 
-    /// The assistant's next turn after `turns`, starting from an empty context,
-    /// with at most `max_new` tokens picked by `sampler`. Under a `shape` (see
-    /// [`crate::json`]) every token keeps the answer a prefix of that object: it
-    /// ends when the object closes, at an [`Ending::Overflow`], or cut off when the
-    /// tokens or positions left are too few to close it, counting one per byte
-    /// (on the safe side); [`Error::NoRoom`] comes before anything runs when they
-    /// are too few from the start. `on_step` runs after each prompt token and each
-    /// token of the answer; when it says stop, the answer ends there. A prompt
-    /// longer than the context is [`Error::ContextFull`].
+    /// The assistant's next turn after `turns`, with at most `max_new` tokens
+    /// picked by `sampler`; the prompt runs from where it parts from the cache.
+    /// Under a `shape` (see [`crate::json`]) every token keeps the answer a prefix
+    /// of that object: it ends when the object closes, at an [`Ending::Overflow`],
+    /// or cut off when the tokens or positions left are too few to close it,
+    /// counting one per byte (on the safe side); [`Error::NoRoom`] comes before
+    /// anything runs when they are too few from the start. `on_step` gets
+    /// [`Step::Cached`] once, then runs after each prompt token the cache did not
+    /// hold and each token of the answer; when it says stop, the answer ends
+    /// there. A prompt longer than the context is [`Error::ContextFull`].
     pub fn reply(
         &mut self,
         turns: &[Turn<'_>],
@@ -279,21 +299,17 @@ impl<'a> Engine<'a> {
                 return Err(Error::NoRoom);
             }
         }
-        self.kv.clear();
+        let (cached, stopped) = self.feed(&prompt, &mut on_step)?;
         let mut reply = Reply {
             bytes: Vec::new(),
             prompt_tokens: prompt.len(),
+            cached,
             tokens: 0,
             ending: Ending::MaxTokens,
         };
-        for (i, &token) in prompt.iter().enumerate() {
-            let last = i + 1 == prompt.len();
-            let logits = last.then_some(self.logits.as_mut_slice());
-            self.model.forward(&mut self.kv, token, logits)?;
-            if on_step(Step::Prompt) == Next::Stop {
-                reply.ending = Ending::Stopped;
-                return Ok(reply);
-            }
+        if stopped {
+            reply.ending = Ending::Stopped;
+            return Ok(reply);
         }
         for made in 1..=max_new {
             let token = match (&grammar, &mut state) {
@@ -344,8 +360,38 @@ impl<'a> Engine<'a> {
             }
             self.model
                 .forward(&mut self.kv, token, Some(&mut self.logits))?;
+            self.cached.push(token);
         }
         Ok(reply)
+    }
+
+    /// Runs `prompt` through the model after the longest start it shares with the
+    /// tokens the cache holds, which stay; the last token runs whatever is cached,
+    /// for its logits. Returns how many tokens came from the cache, and whether
+    /// `on_step` said stop. Every check in `forward` comes before the cache
+    /// changes, so the tokens behind it stay exactly those it holds.
+    fn feed(
+        &mut self,
+        prompt: &[u32],
+        on_step: &mut impl FnMut(Step) -> Next,
+    ) -> Result<(usize, bool), Error> {
+        let shared = self.cached.iter().zip(prompt).take_while(|(a, b)| a == b);
+        let cached = shared.count().min(prompt.len() - 1);
+        self.kv.truncate(cached);
+        self.cached.truncate(cached);
+        if on_step(Step::Cached(cached)) == Next::Stop {
+            return Ok((cached, true));
+        }
+        for (i, &token) in prompt.iter().enumerate().skip(cached) {
+            let last = i + 1 == prompt.len();
+            let logits = last.then_some(self.logits.as_mut_slice());
+            self.model.forward(&mut self.kv, token, logits)?;
+            self.cached.push(token);
+            if on_step(Step::Prompt) == Next::Stop {
+                return Ok((cached, true));
+            }
+        }
+        Ok((cached, false))
     }
 
     /// The model's pick among the tokens `grammar` allows after `state`, which
@@ -370,6 +416,12 @@ impl<'a> Engine<'a> {
         }
     }
 
+    /// The tokens behind the cached positions, and the cache, for tests.
+    #[cfg(test)]
+    pub(crate) fn cache(&self) -> (&[u32], &KvCache) {
+        (&self.cached, &self.kv)
+    }
+
     /// The prompt's length in tokens, for a caller sizing `max_new`.
     pub fn prompt_tokens(&self, system: Option<&str>, user: &str) -> usize {
         self.chat.prompt(&self.tok, system, user).len()
@@ -380,7 +432,8 @@ impl<'a> Engine<'a> {
 /// cache, read from the header alone: the tokenizer while it is built (each
 /// growing vector counted three times over, for a doubling copy and its old
 /// buffer), the header's metadata map, one f32 logit and two token ids (for JSON
-/// shapes) per token, the RoPE table and the scratch vectors.
+/// shapes) per token, the RoPE table, the scratch vectors and one token id per
+/// position.
 fn other_bytes(file: &Gguf<'_>, config: &Config, positions: usize) -> usize {
     let strings = |key: &str| -> (usize, usize) {
         file.get(key)
@@ -406,7 +459,8 @@ fn other_bytes(file: &Gguf<'_>, config: &Config, positions: usize) -> usize {
             .saturating_add(config.q_dim().saturating_mul(2))
             .saturating_add(config.kv_dim().saturating_mul(2))
             .saturating_add(config.n_ff.saturating_mul(4))
-            .saturating_add(positions),
+            // Attention scores, and the token behind each cached position.
+            .saturating_add(positions.saturating_mul(2)),
     );
     let norms = f32s(
         config

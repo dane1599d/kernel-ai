@@ -19,6 +19,8 @@ mod sample;
 mod weights;
 
 #[cfg(test)]
+mod cache_tests;
+#[cfg(test)]
 mod chat_tests;
 #[cfg(test)]
 mod forward_tests;
