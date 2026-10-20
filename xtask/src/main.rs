@@ -5,6 +5,7 @@
 //! cargo xtask test  [--release] [--accel auto|kvm|whpx|tcg] [--timeout SECS] [--cpus N] [--mem SIZE]
 //! cargo xtask soak  [--accel auto|kvm|whpx|tcg]   (10-minute storm, M5 exit test)
 //! cargo xtask smoke   (the live, edit and boot manifest scenarios on the host only, no QEMU)
+//! cargo xtask icount [--shift N] [--boots N] [--timeout SECS]   (icount determinism, M10a-2)
 //! cargo xtask fluency --llm HOST:PORT --model NAME [--repeat N]   (M8b script gate, host only)
 //! cargo xtask fluency --local ID [--store DIR]   (the same gate on our own engine)
 //! cargo xtask setup | model chat|check|pin | bench quant   (the local LLM on the host; see models/mod.rs)
@@ -29,6 +30,7 @@ mod esp;
 mod floatguard;
 mod fluency;
 mod httpd;
+mod icount;
 mod lines;
 mod local_ask;
 mod local_script;
@@ -107,6 +109,9 @@ fn execute(options: &Options) -> Result<(), String> {
     let esp = target_dir.join("esp");
     let qemu = find_qemu()?;
     let accel = resolve_accel(options.accel);
+    if options.task == Task::Icount {
+        return icount::run(&qemu, &target_dir, &kernel, &modules, &efi, options);
+    }
     if options.task == Task::Run {
         let mut cmdline = llm_cmdline(options.llm.as_deref(), options.model.as_deref());
         let path = match (&options.model_disk, &options.local) {

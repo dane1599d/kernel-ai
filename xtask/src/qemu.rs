@@ -13,7 +13,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 /// QEMU exit status for `isa-debug-exit` value 0x10: (0x10 << 1) | 1.
-const QEMU_PASS: i32 = 33;
+pub(crate) const QEMU_PASS: i32 = 33;
 /// CPUs in the VM unless `--cpus` says otherwise. Emulation (TCG) gets no more CPUs
 /// than the host has cores: on an overcommitted host, virtual CPUs wait for host
 /// scheduling, which looks like guest latency the kernel cannot control. KVM

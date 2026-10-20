@@ -176,6 +176,12 @@ pub const TEST_CASES: &[TestCase] = &[
     },
     case("fpu", "test=fpu"),
     case("probe", "test=probe"),
+    // M10a-2's probe runs here too, so the case itself is gated under KVM and TCG;
+    // `cargo xtask icount` checks its determinism under icount.
+    TestCase {
+        expect: &["icount-probe: digest "],
+        ..case("icount-probe", "test=icount-probe")
+    },
     // L4's exit test: the model on the disk answers, inside Kernel AI, with no
     // server. xtask adds the golden answer's exact line and the health text.
     TestCase {

@@ -5,6 +5,8 @@ use std::time::Duration;
 
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
 const SOAK_TIMEOUT_SECS: u64 = 900;
+/// Per icount boot: OVMF alone takes minutes under single-threaded TCG with icount.
+const ICOUNT_TIMEOUT_SECS: u64 = 600;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Task {
@@ -15,6 +17,8 @@ pub enum Task {
     Soak,
     /// Only the host scenarios (live components and the edit loop), without QEMU.
     Smoke,
+    /// The icount measurement spike: the `icount-probe` case booted several times.
+    Icount,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,6 +51,10 @@ pub struct Options {
     /// `--cpus N` and `--mem SIZE`: the VM's vCPUs and memory, for `run`, `test`
     /// and `soak`.
     pub sizing: Sizing,
+    /// `icount --shift N`: each guest instruction takes 2^N virtual nanoseconds.
+    pub shift: u32,
+    /// `icount --boots N`: how many boots must print the same digest.
+    pub boots: usize,
 }
 
 /// The VM's size when given on the command line; xtask's defaults otherwise.
@@ -71,9 +79,11 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
         Some("test") => Task::Test,
         Some("soak") => Task::Soak,
         Some("smoke") => Task::Smoke,
+        Some("icount") => Task::Icount,
         other => {
             return Err(format!(
-                "expected build, run, test, soak, smoke, fluency, setup, model or bench, got {other:?}"
+                "expected build, run, test, soak, smoke, icount, fluency, setup, model or bench, \
+                 got {other:?}"
             ));
         }
     };
@@ -82,10 +92,10 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
         release: false,
         spikes: task == Task::Test,
         accel: Accel::Auto,
-        timeout: Duration::from_secs(if task == Task::Soak {
-            SOAK_TIMEOUT_SECS
-        } else {
-            DEFAULT_TIMEOUT_SECS
+        timeout: Duration::from_secs(match task {
+            Task::Soak => SOAK_TIMEOUT_SECS,
+            Task::Icount => ICOUNT_TIMEOUT_SECS,
+            _ => DEFAULT_TIMEOUT_SECS,
         }),
         llm: None,
         model: None,
@@ -94,6 +104,8 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
         local: None,
         store: None,
         sizing: Sizing::default(),
+        shift: crate::icount::DEFAULT_SHIFT,
+        boots: crate::icount::DEFAULT_BOOTS,
     };
     let mut rest = args[1..].iter();
     while let Some(arg) = rest.next() {
@@ -158,6 +170,23 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
                     .ok_or("--mem expects a size such as 6G or 2048M")?;
                 options.sizing.mem_mib = Some(parse_mem(size)?);
             }
+            "--shift" if task == Task::Icount => {
+                options.shift = rest
+                    .next()
+                    .and_then(|s| s.parse::<u32>().ok())
+                    .filter(|&shift| shift <= crate::icount::MAX_SHIFT)
+                    .ok_or(format!(
+                        "--shift expects 0 to {}: above that the 1 kHz tick cannot keep up",
+                        crate::icount::MAX_SHIFT
+                    ))?;
+            }
+            "--boots" if task == Task::Icount => {
+                options.boots = rest
+                    .next()
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .filter(|&boots| boots >= 2)
+                    .ok_or("--boots expects a number of at least 2")?;
+            }
             "--model" => {
                 let model = rest.next().ok_or("--model expects a model name")?;
                 if model.is_empty() || model.chars().any(char::is_whitespace) {
@@ -173,6 +202,14 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
     }
     if options.store.is_some() && options.local.is_none() {
         return Err("--store names where --local finds its model; give --local too".into());
+    }
+    if task == Task::Icount && matches!(options.accel, Accel::Kvm | Accel::Whpx) {
+        return Err(
+            "icount measures under single-threaded TCG only; --accel kvm or whpx is refused".into(),
+        );
+    }
+    if task == Task::Icount && (options.llm.is_some() || options.model.is_some()) {
+        return Err("icount boots with no network card, so --llm and --model are refused".into());
     }
     Ok(options)
 }
@@ -315,8 +352,31 @@ mod tests {
     }
 
     #[test]
+    fn icount_takes_shift_and_boots_and_refuses_kvm() {
+        let options = parse_args(&args(&["icount", "--shift", "6", "--boots", "3"])).unwrap();
+        assert_eq!(options.task, Task::Icount);
+        assert_eq!((options.shift, options.boots), (6, 3));
+        assert!(!options.spikes);
+        let defaults = parse_args(&args(&["icount"])).unwrap();
+        assert_eq!((defaults.shift, defaults.boots), (3, 2));
+        assert_eq!(defaults.timeout, Duration::from_secs(ICOUNT_TIMEOUT_SECS));
+        assert!(parse_args(&args(&["icount", "--accel", "tcg"])).is_ok());
+        assert!(parse_args(&args(&["icount", "--accel", "kvm"])).is_err());
+        assert!(parse_args(&args(&["icount", "--accel", "whpx"])).is_err());
+        assert!(parse_args(&args(&["icount", "--shift", "7"])).is_err());
+        assert!(parse_args(&args(&["icount", "--model", "q"])).is_err());
+        assert!(parse_args(&args(&["icount", "--boots", "1"])).is_err());
+        assert!(parse_args(&args(&["icount", "--llm", "10.0.2.2:80"])).is_err());
+        assert!(parse_args(&args(&["test", "--shift", "3"])).is_err());
+    }
+
+    #[test]
     fn rejects_unknown_task_and_options() {
-        assert!(parse_args(&args(&["deploy"])).is_err());
+        let unknown = parse_args(&args(&["deploy"])).unwrap_err();
+        assert!(
+            unknown.contains("icount") && !unknown.contains("  "),
+            "{unknown}"
+        );
         assert!(parse_args(&args(&["run", "--fast"])).is_err());
         assert!(parse_args(&args(&["run", "--accel", "hyperv"])).is_err());
     }

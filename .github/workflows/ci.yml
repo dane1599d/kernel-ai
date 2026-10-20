@@ -67,3 +67,25 @@ jobs:
       - name: Boot kernel with spikes and check pass/fail
         run: cargo xtask test --accel ${{ matrix.accel }} --timeout 300
     timeout-minutes: 30
+
+  # M10a-2's spike, not a gate: boots `icount-probe` twice under single-threaded
+  # TCG with icount and requires the same digest; it also prints host seconds per
+  # virtual second, which fixes shift and the trial's window length.
+  icount:
+    name: icount determinism probe (not a gate)
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install QEMU and OVMF
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 ovmf
+      - name: Install pinned toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Install the WebAssembly target for live components
+        run: rustup target add wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Boot icount-probe twice and compare digests
+        run: cargo xtask icount --shift 3 --boots 2 --timeout 900
+    timeout-minutes: 45

@@ -58,6 +58,8 @@ pub enum SelfTest {
     ComputeKeys,
     /// L6: the model window, aliased past 4 GiB, reads right and frees exactly.
     Bigmap,
+    /// M10a: a seeded probe whose digest must repeat from boot to boot under icount.
+    IcountProbe,
 }
 
 const DEFAULT_STORM_SECONDS: u64 = 60;
@@ -97,6 +99,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=matvec" => Some(SelfTest::Matvec),
             "test=compute-keys" => Some(SelfTest::ComputeKeys),
             "test=bigmap" => Some(SelfTest::Bigmap),
+            "test=icount-probe" => Some(SelfTest::IcountProbe),
             other => other.strip_prefix("test=storm").map(|rest| {
                 let seconds = rest.strip_prefix('-').and_then(|s| s.parse().ok());
                 SelfTest::Storm(seconds.unwrap_or(DEFAULT_STORM_SECONDS))

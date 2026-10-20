@@ -7,7 +7,7 @@
 //! command line selects a self-test: `test` (boot checks), or `test=` one of
 //! `page-fault`, `double-fault`, `write-protect`, `stack-overflow`, `timer`,
 //! `keyboard`, `pointer`, `sched`, `watchdog`, `smp`, `tlb`, `storm`, `storm-SECONDS`,
-//! `net`, `terminal`, `blk`, `model`, `fpu` or `probe`. `llm=IP:PORT` and `model=NAME` point the
+//! `net`, `terminal`, `blk`, `model`, `fpu`, `probe` or `icount-probe`. `llm=IP:PORT` and `model=NAME` point the
 //! LLM client at a server; `model_len=` and `model_fnv=` describe the file behind the
 //! `kai-model` disk; `pointerlog` logs every pointer move and click, and `screenlog` copies
 //! each console repaint to serial as `screen:` lines.
@@ -36,6 +36,7 @@ mod fpu_tests;
 mod gdt;
 mod hpet;
 mod i8042;
+mod icount_tests;
 mod idt;
 mod ipc;
 mod keyboard;
@@ -282,6 +283,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Matvec => run_case(compute_tests::matvec_check),
         SelfTest::ComputeKeys => run_case(compute_tests::keys_check),
         SelfTest::Bigmap => run_case(bigmap_tests::check),
+        SelfTest::IcountProbe => run_case(|| icount_tests::check(cmdline())),
         SelfTest::Boot | SelfTest::None => {}
     }
 
