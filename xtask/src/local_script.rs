@@ -61,13 +61,17 @@ pub fn prompts() -> String {
     local::system_prompts()
 }
 
-/// The engine the llm service runs on the model in `bytes`, on `tier`.
+/// The engine the llm service runs on the model in `bytes`, on `tier`, with the
+/// script system prompt in its cache as the service computes it after loading.
 pub fn engine(bytes: &'static [u8], tier: Tier) -> Result<Engine<'static>, String> {
     let budget = Budget {
         kv_bytes: kabi::model::KV_BYTES as usize,
         other_bytes: kabi::model::ENGINE_OTHER_BYTES as usize,
     };
-    Engine::load(bytes, tier, kabi::model::CONTEXT_CAP, budget).map_err(|e| e.to_string())
+    let mut engine =
+        Engine::load(bytes, tier, kabi::model::CONTEXT_CAP, budget).map_err(|e| e.to_string())?;
+    local::warm(&mut engine, |_| Next::Continue).map_err(|e| local::describe(&e))?;
+    Ok(engine)
 }
 
 /// The two replies on `tier`, from one shell and one engine as in the guest.

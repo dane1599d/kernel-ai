@@ -199,6 +199,26 @@ impl Local {
         answer
     }
 
+    /// Computes the script system prompt into the cache while no request waits
+    /// (`llmproto::local::warm`). It asks `waiting` whether a request came at
+    /// the start and then once a second of compute, in place of the 1 ms sleep;
+    /// if one did, it stops, and the request carries on from what was computed.
+    pub fn warm(&mut self, mut waiting: impl FnMut() -> bool) -> Result<(), String> {
+        let mut slept = 0;
+        local::warm(&mut self.engine, |_| {
+            if sys::time_ns() - slept < SLEEP_EVERY_NS {
+                return Next::Continue;
+            }
+            let came = waiting();
+            slept = sys::time_ns();
+            match came {
+                true => Next::Stop,
+                false => Next::Continue,
+            }
+        })
+        .map_err(|error| local::describe(&error))
+    }
+
     /// `:model`'s lines: the model, the engine, then one timed test prompt.
     pub fn report(&mut self, len: usize) -> String {
         let about = self.engine.about().clone();

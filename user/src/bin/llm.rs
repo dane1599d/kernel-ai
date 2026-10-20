@@ -128,9 +128,17 @@ fn main() -> i32 {
     };
     let mut request = vec![0u8; kabi::MAX_MESSAGE];
     let mut response = vec![0u8; http::MAX_RESPONSE];
+    // Whether the script system prompt may be missing from the engine's cache:
+    // at first, and after a request with another prompt.
+    let mut cold = true;
     loop {
         let mut caller = 0;
-        let len = match sys::svc_recv(&mut request, 0, &mut caller) {
+        let waiting = match (cold, &mut backends.local) {
+            (true, Some(Ok(local))) => warm(local, &mut request, &mut caller),
+            _ => None,
+        };
+        cold = false;
+        let len = match waiting.map_or_else(|| sys::svc_recv(&mut request, 0, &mut caller), Ok) {
             Ok(len) => len.min(request.len()),
             Err(kabi::Error::TimedOut) => continue,
             Err(error) => {
@@ -140,6 +148,7 @@ fn main() -> i32 {
             }
         };
         let text = core::str::from_utf8(&request[..len]).unwrap_or("");
+        cold = matches!(text.split(' ').next(), Some("ask" | "explain" | "model"));
         let mut reply = match handle(&mut backends, text, &mut response) {
             Ok(text) => format!("ok {text}"),
             Err(error) => format!("err {}", printable(&error, MAX_ERROR_CHARS, 1)),
@@ -165,6 +174,25 @@ fn load(bytes: &'static [u8]) -> Result<local::Local, String> {
     // Loading may be a long burst; a sleep ends it before the first request.
     sys::sleep_ms(1);
     loaded
+}
+
+/// Warms `local` for scripts until done or until a request comes, which is then
+/// in `request`: its length is returned. Waiting for one takes 1 ms, so the
+/// check ends the burst as the sleep it replaces would.
+fn warm(local: &mut local::Local, request: &mut [u8], caller: &mut u64) -> Option<usize> {
+    let started = sys::time_ns();
+    let mut came = None;
+    let warmed = local.warm(|| {
+        came = sys::svc_recv(request, 1, caller).ok();
+        came.is_some()
+    });
+    let ms = (sys::time_ns() - started) / 1_000_000;
+    match (warmed, came) {
+        (Err(why), _) => println!("local: the script prompt was not cached: {why}"),
+        (Ok(()), None) => println!("local: script prompt cached in {ms} ms"),
+        (Ok(()), Some(_)) => {}
+    }
+    came
 }
 
 fn handle(backends: &mut Backends, text: &str, response: &mut [u8]) -> Result<String, String> {

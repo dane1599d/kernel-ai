@@ -215,3 +215,27 @@ fn completions_are_the_engines_greedy_answers() {
         ["system", "user", "assistant", "user"]
     );
 }
+
+#[test]
+fn a_warmed_engine_answers_as_a_cold_one_computing_only_the_request() {
+    let bytes = &models()[0];
+    let request = &requests()[0];
+    let run = |engine: &mut Engine<'_>| {
+        let mut computed = 0;
+        let answer = script(engine, request, |step| {
+            computed += usize::from(step == Step::Prompt);
+            Next::Continue
+        });
+        (answer, computed)
+    };
+    let mut cold = Engine::load(bytes, Tier::best(), 4096, ROOMY).unwrap();
+    let mut warmed = Engine::load(bytes, Tier::best(), 4096, ROOMY).unwrap();
+    warm(&mut warmed, |_| Next::Continue).unwrap();
+    let (cold_answer, cold_computed) = run(&mut cold);
+    let (warm_answer, warm_computed) = run(&mut warmed);
+    assert_eq!(warm_answer, cold_answer);
+    assert!(
+        warm_computed * 4 < cold_computed,
+        "{warm_computed} of {cold_computed} prompt tokens computed after warming"
+    );
+}
