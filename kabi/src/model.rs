@@ -1,13 +1,57 @@
 //! The model disk, as the kernel, ring 3 and xtask all see it: its serial, what
-//! xtask tells the kernel about the file behind it, and the hash each side
-//! computes over its bytes, so a test can tell the guest read exactly the file
-//! the host attached.
+//! xtask tells the kernel about the file behind it, the kernel's whole check of
+//! that file, the page tables its mapping takes, and the hash each side computes
+//! over its bytes, so a test can tell the guest read exactly the file the host
+//! attached.
 
 use alloc::format;
 use alloc::string::String;
 
 /// The virtio-blk serial (device ID) of the disk holding the model file.
 pub const SERIAL: &str = "kai-model";
+/// The magic every GGUF file starts with.
+pub const MAGIC: [u8; 4] = *b"GGUF";
+/// The one GGUF version ring 3's reader takes.
+pub const VERSION: u32 = 3;
+
+/// Why the start of a disk is not a model the kernel will hold.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HeaderError {
+    /// Fewer than the 8 bytes of magic and version.
+    Short,
+    NoMagic,
+    Version(u32),
+}
+
+/// The kernel's whole check of a model file: the GGUF magic and version at the
+/// start of `head`. Everything after them is ring 3's to parse, as untrusted input.
+pub fn check_header(head: &[u8]) -> Result<(), HeaderError> {
+    let (Some(magic), Some(version)) = (head.get(..4), head.get(4..8)) else {
+        return Err(HeaderError::Short);
+    };
+    if magic != MAGIC {
+        return Err(HeaderError::NoMagic);
+    }
+    let version = u32::from_le_bytes([version[0], version[1], version[2], version[3]]);
+    if version != VERSION {
+        return Err(HeaderError::Version(version));
+    }
+    Ok(())
+}
+
+/// Page-table frames that mapping `len` bytes at [`crate::layout::MODEL_BASE`]
+/// takes: the tables of 4 KiB pages, the directories above them, and the one table
+/// under the window's PML4 entry. The window is a whole PML4 slot that holds
+/// nothing else, so the count is exact for a model up to
+/// [`crate::layout::MODEL_MAX`].
+pub const fn table_pages(len: u64) -> u64 {
+    if len == 0 {
+        return 0;
+    }
+    let tables = len.div_ceil(4096).div_ceil(512);
+    let directories = tables.div_ceil(512);
+    tables + directories + 1
+}
 
 /// What xtask tells the kernel about the file behind the model disk, on the kernel
 /// command line: `model_len=BYTES`, the file's exact length (the disk rounds it up
@@ -118,6 +162,36 @@ mod tests {
         let bad = Attached::from_cmdline("model_len=0 model_fnv=xyz model_lenx=4");
         assert_eq!(bad, Attached::default());
         assert_eq!(Attached::from_cmdline("model_len=-1").len, None);
+    }
+
+    #[test]
+    fn only_gguf_v3_passes_the_kernel_check() {
+        assert_eq!(check_header(b"GGUF\x03\0\0\0rest"), Ok(()));
+        assert_eq!(check_header(b"GGUF\x03\0\0\0"), Ok(()));
+        assert_eq!(
+            check_header(b"GGUF\x02\0\0\0"),
+            Err(HeaderError::Version(2))
+        );
+        assert_eq!(
+            check_header(b"GGUF\0\0\0\x03"),
+            Err(HeaderError::Version(0x0300_0000))
+        );
+        assert_eq!(check_header(b"Kernel AI blk"), Err(HeaderError::NoMagic));
+        assert_eq!(check_header(b"GGUF\x03"), Err(HeaderError::Short));
+        assert_eq!(check_header(b""), Err(HeaderError::Short));
+    }
+
+    #[test]
+    fn table_pages_count_every_level() {
+        assert_eq!(table_pages(0), 0);
+        assert_eq!(table_pages(1), 3);
+        assert_eq!(table_pages(2 * 1024 * 1024), 3);
+        assert_eq!(table_pages(2 * 1024 * 1024 + 1), 4);
+        assert_eq!(table_pages(1024 * 1024 * 1024 + 1), 513 + 2 + 1);
+        // Qwen3-0.6B Q8_0: 156,116 pages in 305 tables under one directory.
+        assert_eq!(table_pages(639_446_688), 305 + 1 + 1);
+        // The largest model: a full slot of 512 directories.
+        assert_eq!(table_pages(crate::layout::MODEL_MAX), 512 * 512 + 512 + 1);
     }
 
     #[test]

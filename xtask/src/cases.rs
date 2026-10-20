@@ -148,8 +148,20 @@ pub const TEST_CASES: &[TestCase] = &[
     },
     TestCase {
         disk: Some(Fixture::Raw),
-        expect: &["blk: kai-model reads back byte for byte"],
+        expect: &[
+            "blk: kai-model reads back byte for byte",
+            "model: no GGUF magic; the kai-model disk is ignored",
+        ],
         ..case("blk", "test=blk")
+    },
+    TestCase {
+        disk: Some(Fixture::Gguf),
+        expect: &[
+            "model: llm (pid",
+            "model: restarted llm (pid",
+            "model: every process gone; USER_FRAMES 0, model frames still allocated",
+        ],
+        ..case("model", "test=model")
     },
 ];
 

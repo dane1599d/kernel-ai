@@ -7,7 +7,7 @@
 //! command line selects a self-test: `test` (boot checks), or `test=` one of
 //! `page-fault`, `double-fault`, `write-protect`, `stack-overflow`, `timer`,
 //! `keyboard`, `pointer`, `sched`, `watchdog`, `smp`, `tlb`, `storm`, `storm-SECONDS`,
-//! `net`, `terminal` or `blk`. `llm=IP:PORT` and `model=NAME` point the LLM client at
+//! `net`, `terminal`, `blk` or `model`. `llm=IP:PORT` and `model=NAME` point the LLM client at
 //! a server; `model_len=` and `model_fnv=` describe the file behind the `kai-model`
 //! disk; `pointerlog` logs every pointer move and click, and `screenlog` copies
 //! each console repaint to serial as `screen:` lines.
@@ -42,6 +42,8 @@ mod llm;
 mod manifest_tests;
 mod memory;
 mod metrics;
+mod model;
+mod model_tests;
 mod net;
 mod percpu;
 mod platform;
@@ -223,6 +225,9 @@ extern "C" fn boot_continue() -> ! {
     }
     start_other_cpus();
     virtio::init(platform);
+    // Before start_user_space sets the page budget, so the model's frames are
+    // outside every quota.
+    model::load(cmdline());
     start_user_space(test);
 
     match test {
@@ -256,6 +261,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Manifest => run_case(manifest_tests::check),
         SelfTest::ManifestGood => run_case(manifest_tests::check_good),
         SelfTest::Blk => run_case(|| blk_tests::check(cmdline())),
+        SelfTest::Model => run_case(|| model_tests::check(cmdline())),
         SelfTest::Boot | SelfTest::None => {}
     }
 

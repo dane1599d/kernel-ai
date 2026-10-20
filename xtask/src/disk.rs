@@ -117,14 +117,20 @@ pub fn for_case(fixture: Option<Fixture>, target_dir: &Path) -> Result<Option<Mo
 /// The deterministic, odd-sized files the boot cases attach.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fixture {
-    /// Bytes without the GGUF magic, read raw by the `blk` case.
+    /// Bytes without the GGUF magic, read raw by the `blk` case, which the kernel
+    /// must not take for a model.
     Raw,
+    /// The GGUF v3 magic and version, then filler: the kernel checks only those
+    /// eight bytes, so the `model` case can map it into llm. (Not a model llm
+    /// could parse; L4 brings a generated one.)
+    Gguf,
 }
 
 impl Fixture {
     fn file_name(self) -> &'static str {
         match self {
             Fixture::Raw => "blk-raw.img",
+            Fixture::Gguf => "model.gguf",
         }
     }
 
@@ -132,6 +138,7 @@ impl Fixture {
     fn len(self) -> usize {
         match self {
             Fixture::Raw => 3 * MIB as usize + 777,
+            Fixture::Gguf => 2 * MIB as usize + 4093,
         }
     }
 
@@ -140,6 +147,10 @@ impl Fixture {
             Fixture::Raw => (
                 b"Kernel AI blk fixture, not a model\n",
                 0x6b61_692d_626c_6b00,
+            ),
+            Fixture::Gguf => (
+                b"GGUF\x03\0\0\0Kernel AI model fixture\n",
+                0x6b61_692d_6767_7566,
             ),
         };
         let mut bytes = Vec::with_capacity(self.len());
@@ -235,6 +246,18 @@ mod tests {
         assert_eq!(
             kabi::model::fnv1a(&bytes),
             kabi::model::fnv1a(&Fixture::Raw.bytes())
+        );
+    }
+
+    #[test]
+    fn the_model_fixture_passes_only_the_kernel_check() {
+        let bytes = Fixture::Gguf.bytes();
+        assert_eq!(bytes.len(), Fixture::Gguf.len());
+        assert_ne!(bytes.len() % 512, 0);
+        assert_eq!(kabi::model::check_header(&bytes), Ok(()));
+        assert_eq!(
+            kabi::model::check_header(&Fixture::Raw.bytes()),
+            Err(kabi::model::HeaderError::NoMagic)
         );
     }
 

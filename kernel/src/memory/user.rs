@@ -11,7 +11,9 @@
 //!
 //! Every frame a space uses, page tables included, is counted against the process's
 //! page quota and in [`USER_FRAMES`], which must return to zero when every process
-//! is gone.
+//! is gone. The one exception is a frame mapped with [`Memory::map_user_frame`]: it
+//! belongs to the kernel (the model), so only the tables above it are counted, and
+//! its entry lacks [`OWNED`], so teardown leaves it alone.
 
 use super::paging::{Frames, Memory};
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -156,6 +158,85 @@ impl Memory {
                 Err("page already mapped or out of frames for page tables")
             }
         }
+    }
+
+    /// Maps the kernel's frame at `phys` at `addr` in `space`, read-only and not
+    /// executable, without [`OWNED`]: teardown never frees it, and only the page
+    /// tables it needs count against the space. Returns false when `addr` already
+    /// maps that frame, so a repeated mapping changes nothing.
+    pub fn map_user_frame(
+        &mut self,
+        space: &mut UserSpace,
+        addr: u64,
+        phys: u64,
+    ) -> Result<bool, &'static str> {
+        if !is_user_page(addr) || !phys.is_multiple_of(PAGE_SIZE) {
+            return Err("not a user page address");
+        }
+        match self.translate_user(space, addr) {
+            Some((mapped, _)) if mapped == phys => return Ok(false),
+            Some(_) => return Err("page already mapped"),
+            None => {}
+        }
+        let flags =
+            PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::NO_EXECUTE;
+        let parents =
+            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
+        let mut tables = Counting {
+            inner: Frames {
+                bitmap: &mut self.frames,
+                hhdm: self.hhdm,
+            },
+            allocated: 0,
+        };
+        let hhdm = self.hhdm;
+        // SAFETY: the PML4 belongs to `space` and is reached through the HHDM.
+        let mut mapper = unsafe {
+            OffsetPageTable::new(
+                &mut *((hhdm + space.pml4) as *mut PageTable),
+                VirtAddr::new(hhdm),
+            )
+        };
+        let page = Page::<Size4KiB>::containing_address(VirtAddr::new(addr));
+        let frame = PhysFrame::containing_address(PhysAddr::new(phys));
+        // SAFETY: the page is in the user half of this space and unmapped; the
+        // frame is the kernel's, mapped read-only, so the process cannot change it.
+        // Not flushed: not-present entries are never cached.
+        let mapped =
+            unsafe { mapper.map_to_with_table_flags(page, frame, flags, parents, &mut tables) };
+        let new_tables = tables.allocated;
+        space.frames += new_tables;
+        USER_FRAMES.fetch_add(new_tables, Ordering::Relaxed);
+        match mapped {
+            Ok(flush) => {
+                flush.ignore();
+                Ok(true)
+            }
+            Err(_) => Err("out of frames for page tables"),
+        }
+    }
+
+    /// Page-table frames under `space`'s PML4 entry for the 512 GiB slot holding
+    /// `addr`: its PDPT, directories and tables. User spaces have no huge pages.
+    pub fn tables_in_slot(&self, space: &UserSpace, addr: u64) -> u64 {
+        let present = |entry: &x86_64::structures::paging::page_table::PageTableEntry| {
+            entry.flags().contains(PageTableFlags::PRESENT)
+        };
+        let slot = &self.table(space.pml4)[((addr >> 39) & 0x1FF) as usize];
+        if addr >= USER_END || !present(slot) {
+            return 0;
+        }
+        let mut count = 1;
+        for directory in self
+            .table(slot.addr().as_u64())
+            .iter()
+            .filter(|e| present(e))
+        {
+            count += 1;
+            let tables = self.table(directory.addr().as_u64());
+            count += tables.iter().filter(|e| present(e)).count() as u64;
+        }
+        count
     }
 
     /// Physical address and flags of a user address in `space`.
