@@ -1,5 +1,8 @@
 //! `cargo xtask tune --sim [--mix A|B] [--seed N] (--local ID | --answer FILE)
 //! [--store DIR] [--intent TEXT] [--yes] [--eval]`: the host rehearsal of M10a.
+//! In the OS (part 2): `tune demo` (the model at the terminal, [`demo`]), `tune
+//! check` (guest equals host, [`parity`]), `tune record` and `tune ab` (the
+//! exit test under icount, [`record`], [`abrun`], [`ab`]).
 //!
 //! The mix runs in the simulator on the real `sched` code under Interactive; code
 //! builds the summary (`llmproto::tune`); the model (or a canned answer) chooses;
@@ -10,11 +13,14 @@
 //! scheduler code on the host, not the running OS. `--eval` asks for each of five
 //! seeds of both mixes and counts how often the model's choice is kept.
 
+mod ab;
+mod abrun;
 mod ask;
 mod boot;
 mod demo;
 mod observe;
 pub mod parity;
+mod record;
 #[cfg(test)]
 mod tests;
 
@@ -108,6 +114,8 @@ pub fn main(args: &[String]) -> Result<(), String> {
     match args.first().map(String::as_str) {
         Some("check") => return parity::main(&args[1..]),
         Some("demo") => return demo::main(&args[1..]),
+        Some("ab") => return abrun::main(&args[1..]),
+        Some("record") => return record::main(&args[1..]),
         _ => {}
     }
     let args = parse(args)?;

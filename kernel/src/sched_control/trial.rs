@@ -68,6 +68,14 @@ pub(crate) struct Active {
     request: Request,
 }
 
+/// Serial bytes the latest trial's windows saw: 0 for a quiet measurement.
+static QUIET_BYTES: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// Serial bytes sent while the latest trial's windows ran.
+pub fn window_bytes() -> u64 {
+    QUIET_BYTES.load(Ordering::Relaxed)
+}
+
 /// The driver thread, plus one (0 = none).
 static DRIVER: AtomicUsize = AtomicUsize::new(0);
 
@@ -341,6 +349,7 @@ fn drive(id: usize) {
     let pids = processes(request.target_pid);
     let mut pairs = Vec::new();
     let mut ran = true;
+    let quiet_from = crate::serial::bytes_sent();
     for pair in 0..request.pairs {
         let Some(baseline) = window(&request, &pids) else {
             break;
@@ -358,6 +367,7 @@ fn drive(id: usize) {
             candidate,
         });
     }
+    QUIET_BYTES.store(crate::serial::bytes_sent() - quiet_from, Ordering::Relaxed);
     finish(id, &request, &pids, pairs, ran);
     DRIVER.store(0, Ordering::Release);
 }

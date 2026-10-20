@@ -68,6 +68,8 @@ pub enum SelfTest {
     TuneLocal,
     /// M10a-4: the founder's demo through the terminal (tune-model.yml).
     TuneDemo,
+    /// M10a-5: the exit test's observe or measure boot, under icount.
+    TuneAb,
 }
 
 const DEFAULT_STORM_SECONDS: u64 = 60;
@@ -112,6 +114,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=tune" => Some(SelfTest::Tune),
             "test=tune-local" => Some(SelfTest::TuneLocal),
             "test=tune-demo" => Some(SelfTest::TuneDemo),
+            "test=tune-ab" => Some(SelfTest::TuneAb),
             other => other.strip_prefix("test=storm").map(|rest| {
                 let seconds = rest.strip_prefix('-').and_then(|s| s.parse().ok());
                 SelfTest::Storm(seconds.unwrap_or(DEFAULT_STORM_SECONDS))
@@ -141,6 +144,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::Tune
             | SelfTest::TuneLocal
             | SelfTest::TuneDemo
+            | SelfTest::TuneAb
     );
     if !wanted {
         return None;

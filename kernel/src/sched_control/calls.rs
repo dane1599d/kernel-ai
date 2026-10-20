@@ -10,7 +10,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 use kabi::Error;
 use kabi::sched::{MAX_BACKGROUND, SchedStats, TrialRequest};
-use sched::spec::PolicyKind;
+use sched::spec::{PolicyKind, PolicySpec};
 
 /// Fastest policy switches may follow each other.
 pub const MIN_POLICY_INTERVAL_NS: u64 = 100_000_000;
@@ -56,19 +56,16 @@ pub fn stats(slot: usize, out: u64, window_ms: u64) -> Result<u64, Error> {
     Ok(stats.count)
 }
 
-/// SCHED_TRIAL: checks the request and starts the trial, owned by the kernel from
-/// then on. A label only with `classes`, at most 8, distinct, never the target,
-/// never a protected service; the target a live process that is not the
-/// supervisor.
-pub fn trial(slot: usize, request: u64) -> Result<u64, Error> {
-    let request: TrialRequest = uaccess::read_struct(slot, request)?;
-    let spec = spec_of(request.policy, request.preset).ok_or(Error::Invalid)?;
-    let count = usize::try_from(request.background_count).map_err(|_| Error::Invalid)?;
-    if count > MAX_BACKGROUND || (count > 0 && spec.policy != PolicyKind::Classes) {
+/// The checks every trial's spec, target and labels pass, from ring 3 or from
+/// the `tune-ab` command line: labels only with `classes`, at most 8, distinct,
+/// never the target, never a protected service; the target a live process that
+/// is not the supervisor.
+pub fn check(spec: PolicySpec, target: u64, background: &[u64]) -> Result<(), Error> {
+    if background.len() > MAX_BACKGROUND
+        || (!background.is_empty() && spec.policy != PolicyKind::Classes)
+    {
         return Err(Error::Invalid);
     }
-    let background: Vec<u64> = request.background[..count].to_vec();
-    let target = request.target_pid;
     match process::name_of(target) {
         Some((_, false)) => {}
         _ => return Err(Error::Invalid),
@@ -78,11 +75,28 @@ pub fn trial(slot: usize, request: u64) -> Result<u64, Error> {
             return Err(Error::Invalid);
         }
     }
+    Ok(())
+}
+
+/// SCHED_TRIAL: checks the request and starts the trial, owned by the kernel from
+/// then on. A label only with `classes`, at most 8, distinct, never the target,
+/// never a protected service; the target a live process that is not the
+/// supervisor.
+pub fn trial(slot: usize, request: u64) -> Result<u64, Error> {
+    let request: TrialRequest = uaccess::read_struct(slot, request)?;
+    let spec = spec_of(request.policy, request.preset).ok_or(Error::Invalid)?;
+    let count = usize::try_from(request.background_count).map_err(|_| Error::Invalid)?;
+    let background: Vec<u64> = request
+        .background
+        .get(..count)
+        .ok_or(Error::Invalid)?
+        .to_vec();
+    check(spec, request.target_pid, &background)?;
     let pairs = usize::try_from(request.pairs).map_err(|_| Error::Invalid)?;
     let starter_pid = process::identity(slot).pid;
     trial::start(Request {
         candidate: Candidate::Spec(spec),
-        target_pid: target,
+        target_pid: request.target_pid,
         background,
         window_ns: request.window_ms.saturating_mul(1_000_000),
         pairs,

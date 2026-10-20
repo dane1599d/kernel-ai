@@ -10,7 +10,7 @@
 //! cargo xtask fluency --llm HOST:PORT --model NAME [--repeat N]   (M8b script gate, host only)
 //! cargo xtask fluency --local ID [--store DIR]   (the same gate on our own engine)
 //! cargo xtask setup | model chat|check|pin | bench quant   (the local LLM on the host; see models/mod.rs)
-//! cargo xtask tune --sim [--mix A|B] [--seed N] (--local ID | --answer FILE) [--eval]   (M10a rehearsal)
+//! cargo xtask tune --sim ... | demo | check | record | ab   (M10a; see tune/mod.rs)
 //! cargo xtask doctor   (can this PC run Kernel AI in an accelerated VM, and what to fix; read-only)
 //!
 //! `test` boots the kernel headless once per test case (boot and memory checks,

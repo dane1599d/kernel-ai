@@ -73,6 +73,7 @@ mod terminal;
 mod thread_tests;
 mod threads;
 mod timer;
+mod tune_ab_tests;
 mod tune_local_tests;
 mod tune_tests;
 mod virtio;
@@ -293,6 +294,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Tune => run_case(tune_tests::shell_check),
         SelfTest::TuneLocal => run_case(|| tune_local_tests::local_check(cmdline())),
         SelfTest::TuneDemo => run_case(tune_local_tests::demo_check),
+        SelfTest::TuneAb => run_case(|| tune_ab_tests::check(cmdline())),
         SelfTest::Boot | SelfTest::None => {}
     }
 

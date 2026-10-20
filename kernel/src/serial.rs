@@ -23,7 +23,15 @@ pub fn init() {
     }
 }
 
+/// Bytes sent so far, for a measurement window that must stay quiet (M10a).
+static SENT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+pub fn bytes_sent() -> u64 {
+    SENT.load(core::sync::atomic::Ordering::Relaxed)
+}
+
 fn write_byte(byte: u8) {
+    SENT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     // SAFETY: polling the line status register and writing the data register of COM1.
     unsafe {
         while inb(LINE_STATUS) & TRANSMIT_EMPTY == 0 {

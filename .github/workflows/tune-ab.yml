@@ -1,0 +1,58 @@
+name: tune A/B (M10 exit test)
+
+# The M10 exit test under icount: `cargo xtask tune ab` boots mix A on seeds 1-5
+# and a canary repeat of seed 1, each running the kernel's trial of the recorded
+# decision, and applies the rule in xtask/src/tune/ab.rs. With
+# xtask/tune/decisions.json present (the real Qwen3-4B recording, from
+# tune-model.yml mode record) it first checks the recording's provenance with an
+# observe boot. Until then it runs the designers' hand-written spec, which
+# exercises the harness but does not declare M10 done. Mix B is reported only.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 * * 1"
+  pull_request:
+    types: [labeled, synchronize]
+  push:
+    branches: [main]
+    paths:
+      - "sched/**"
+      - "kernel/**"
+      - "user/src/bin/work.rs"
+      - "xtask/src/tune/**"
+      - "xtask/tune/**"
+
+permissions:
+  contents: read
+
+jobs:
+  ab:
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'tune')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install QEMU and OVMF
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 ovmf
+      - name: Install pinned toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Install the WebAssembly target for live components
+        run: rustup target add wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Mix A, five seeds and a canary
+        run: |
+          if [ -f xtask/tune/decisions.json ]; then
+            cargo xtask tune ab --timeout 900
+          else
+            cargo xtask tune ab --spec classes/firm:build-1,build-2,build-3,build-4 --timeout 900
+          fi
+      - name: Mix B, the control (reported, not gating)
+        run: cargo xtask tune ab --mix B --spec interactive --timeout 900
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tune-ab-report
+          path: target/tune-ab/
+          if-no-files-found: warn
