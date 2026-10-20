@@ -240,8 +240,10 @@ fn options_need_a_server_and_a_model() {
             "3"
         ])),
         Ok(Options {
-            server: "192.168.1.50:8080".into(),
-            model: "qwen3-8b".into(),
+            backend: Backend::Server {
+                server: "192.168.1.50:8080".into(),
+                model: "qwen3-8b".into(),
+            },
             repeat: 3,
         })
     );
@@ -249,6 +251,29 @@ fn options_need_a_server_and_a_model() {
     assert!(parse(&args(&["--model", "m"])).is_err());
     assert!(parse(&args(&["--llm", "h:1", "--model", "m", "--repeat", "0"])).is_err());
     assert!(parse(&args(&["--llm", "h:1", "--model", "m", "--fast"])).is_err());
+    assert!(parse(&args(&[])).is_err());
+}
+
+#[test]
+fn local_options_name_a_catalog_model_and_maybe_a_store() {
+    let args = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    assert_eq!(
+        parse(&args(&["--local", "qwen3-0.6b", "--store", "E:\\models"])),
+        Ok(Options {
+            backend: Backend::Local {
+                id: "qwen3-0.6b".into(),
+                store: Some("E:\\models".into()),
+            },
+            repeat: 1,
+        })
+    );
+    assert!(parse(&args(&["--local", "qwen3-0.6b", "--llm", "h:1"])).is_err());
+    assert!(parse(&args(&["--local", "qwen3-0.6b", "--model", "m"])).is_err());
+    assert!(parse(&args(&["--llm", "h:1", "--model", "m", "--store", "x"])).is_err());
+    assert!(parse(&args(&["--local"])).is_err());
+    // A local run is the same every time, so repeating it measures nothing.
+    assert!(parse(&args(&["--local", "qwen3-0.6b", "--repeat", "2"])).is_err());
+    assert!(parse(&args(&["--local", "qwen3-0.6b", "--repeat", "1"])).is_ok());
 }
 
 #[test]

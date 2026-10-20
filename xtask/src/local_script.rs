@@ -67,13 +67,13 @@ pub fn engine(bytes: &'static [u8], tier: Tier) -> Result<Engine<'static>, Strin
         kv_bytes: kabi::model::KV_BYTES as usize,
         other_bytes: kabi::model::ENGINE_OTHER_BYTES as usize,
     };
-    Engine::load(bytes, tier, kabi::model::CONTEXT_CAP, budget)
-        .map_err(|e| format!("the local-script model: {e}"))
+    Engine::load(bytes, tier, kabi::model::CONTEXT_CAP, budget).map_err(|e| e.to_string())
 }
 
 /// The two replies on `tier`, from one shell and one engine as in the guest.
 fn outcome(bytes: &'static [u8], tier: Tier) -> Result<Outcome, String> {
-    let engine = Rc::new(RefCell::new(engine(bytes, tier)?));
+    let engine = engine(bytes, tier).map_err(|e| format!("the local-script model: {e}"))?;
+    let engine = Rc::new(RefCell::new(engine));
     let transport = Box::new(move |request: &ScriptRequest| {
         served(&mut engine.borrow_mut(), request, |_| Next::Continue)
     });

@@ -1,15 +1,20 @@
-//! `cargo xtask fluency --llm HOST:PORT --model NAME [--repeat N]`
+//! `cargo xtask fluency --llm HOST:PORT --model NAME [--repeat N]`, or
+//! `cargo xtask fluency --local ID [--store DIR]`
 //!
-//! The M8b gate: does the model on the LLM server write scripts the shell accepts,
-//! and do they do what was asked? Each task goes through the OS's own path: the same
-//! chat request, answer parser, strict checks, one repair round, confirmation and
-//! sandboxed run. Only the transport (a host TCP socket) and the OS (a [`GateHost`]
-//! with fixed values) are stand-ins. The gate passes when [`FIRST_TRY_GATE`]% of runs
-//! pass on the model's first answer and [`REPAIRED_GATE`]% pass after at most one
-//! repair. Every run is written to `target/fluency/<unix time>.jsonl`.
+//! The M8b gate: does the model write scripts the shell accepts, and do they do
+//! what was asked? Each task goes through the OS's own path: the same chat
+//! request, answer parser, strict checks, one repair round, confirmation and
+//! sandboxed run. With `--llm` the model is on an LLM server and only the
+//! transport (a host TCP socket) is a stand-in; with `--local` it is a catalog
+//! model run by Kernel AI's own engine on this PC exactly as the llm service runs
+//! it ([`local`]). The OS is a [`GateHost`] with fixed values. The gate passes when
+//! [`FIRST_TRY_GATE`]% of runs pass on the model's first answer and
+//! [`REPAIRED_GATE`]% pass after at most one repair. Every run is written to
+//! `target/fluency/<unix time>.jsonl`.
 
 pub(crate) mod host;
 mod judge;
+mod local;
 mod tasks;
 #[cfg(test)]
 mod tests;
@@ -41,7 +46,7 @@ const DETAIL_CHARS: usize = 200;
 /// Why a run failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Failure {
-    /// The server failed or the answer was cut off.
+    /// The server or the local engine failed, or the answer was cut off.
     Server,
     /// The checks refused the script, and again after the repair.
     Refused,
@@ -215,35 +220,64 @@ fn exchange(server: &str, body: &[u8], timeout: Duration) -> Result<http::Respon
     }
 }
 
+/// What answers the script requests.
+#[derive(Debug, PartialEq, Eq)]
+enum Backend {
+    Server {
+        server: String,
+        model: String,
+    },
+    /// A catalog model in the store, run by Kernel AI's own engine.
+    Local {
+        id: String,
+        store: Option<String>,
+    },
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct Options {
-    server: String,
-    model: String,
+    backend: Backend,
     repeat: u32,
 }
 
 fn parse(args: &[String]) -> Result<Options, String> {
-    let (mut server, mut model, mut repeat) = (None, None, 1);
+    let (mut server, mut model, mut local, mut store, mut repeat) = (None, None, None, None, 1);
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
+        let mut value = |what: &str| rest.next().cloned().ok_or(format!("{arg} expects {what}"));
         match arg.as_str() {
-            "--llm" => server = Some(rest.next().ok_or("--llm expects HOST:PORT")?.clone()),
-            "--model" => model = Some(rest.next().ok_or("--model expects a model name")?.clone()),
+            "--llm" => server = Some(value("HOST:PORT")?),
+            "--model" => model = Some(value("a model name")?),
+            "--local" => local = Some(value("a catalog model id")?),
+            "--store" => store = Some(value("a directory")?),
             "--repeat" => {
-                repeat = rest
-                    .next()
-                    .and_then(|n| n.parse().ok())
+                repeat = value("a count")?
+                    .parse()
+                    .ok()
                     .filter(|n| (1..=MAX_REPEAT).contains(n))
                     .ok_or(format!("--repeat expects 1 to {MAX_REPEAT}"))?;
             }
             other => return Err(format!("unknown fluency option {other}")),
         }
     }
-    Ok(Options {
-        server: server.ok_or("fluency needs --llm HOST:PORT")?,
-        model: model.ok_or("fluency needs --model NAME")?,
-        repeat,
-    })
+    let backend = match (local, server, model) {
+        // Seeded draws on our engine give the same answers every run.
+        (Some(_), None, None) if repeat > 1 => {
+            return Err(
+                "--repeat goes with --llm: a --local run gives the same answers every time".into(),
+            );
+        }
+        (Some(id), None, None) => Backend::Local { id, store },
+        (Some(_), _, _) => return Err("--local takes no --llm or --model".into()),
+        (None, Some(_), Some(_)) if store.is_some() => {
+            return Err("--store goes with --local".into());
+        }
+        (None, server, model) => Backend::Server {
+            server: server.ok_or("fluency needs --llm HOST:PORT, or --local ID")?,
+            model: model.ok_or("fluency needs --model NAME")?,
+        },
+    };
+    Ok(Options { backend, repeat })
 }
 
 /// Pass counts over a set of runs.
@@ -336,9 +370,30 @@ pub fn main(args: &[String], target_dir: &Path) -> Result<(), String> {
     let started = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |since| since.as_secs());
+    // A transport for each attempt, and how the header names the backend.
+    let (transport, model, server): (Box<dyn Fn() -> Transport>, String, String) =
+        match &options.backend {
+            Backend::Server { server, model } => {
+                let (s, m) = (server.clone(), model.clone());
+                (
+                    Box::new(move || server_transport(s.clone(), m.clone())),
+                    model.clone(),
+                    server.clone(),
+                )
+            }
+            Backend::Local { id, store } => {
+                let (engine, line) = local::load(id, store.as_deref())?;
+                println!("xtask: fluency: local model {line}");
+                (
+                    Box::new(move || local::transport(engine.clone())),
+                    id.clone(),
+                    format!("local: {line}"),
+                )
+            }
+        };
     let mut records = vec![json!({
-        "model": options.model,
-        "server": options.server,
+        "model": model,
+        "server": server,
         "repeat": options.repeat,
         "tasks": TASKS.len(),
         // Normalised, so CRLF and LF checkouts of one commit record the same hash.
@@ -346,18 +401,15 @@ pub fn main(args: &[String], target_dir: &Path) -> Result<(), String> {
         "started_unix": started,
     })];
     println!(
-        "xtask: fluency gate, {} tasks x {} against {} ({})",
+        "xtask: fluency gate, {} tasks x {} against {server} ({model})",
         TASKS.len(),
         options.repeat,
-        options.server,
-        options.model
     );
     let mut outcomes = Vec::new();
     for repeat in 0..options.repeat {
         for (number, task) in TASKS.iter().enumerate() {
             let clock = Instant::now();
-            let transport = server_transport(options.server.clone(), options.model.clone());
-            let outcome = attempt(task, transport);
+            let outcome = attempt(task, transport());
             let ms = clock.elapsed().as_millis();
             show(number, task, &outcome, ms);
             records.push(record(number, repeat, task, &outcome, ms));

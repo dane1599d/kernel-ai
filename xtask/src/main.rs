@@ -6,6 +6,7 @@
 //! cargo xtask soak  [--accel auto|kvm|whpx|tcg]   (10-minute storm, M5 exit test)
 //! cargo xtask smoke   (the live, edit and boot manifest scenarios on the host only, no QEMU)
 //! cargo xtask fluency --llm HOST:PORT --model NAME [--repeat N]   (M8b script gate, host only)
+//! cargo xtask fluency --local ID [--store DIR]   (the same gate on our own engine)
 //! cargo xtask setup | model chat|check|pin | bench quant   (the local LLM on the host; see models/mod.rs)
 //!
 //! `test` boots the kernel headless once per test case (boot and memory checks,
