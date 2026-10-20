@@ -2,6 +2,7 @@
 
 use crate::cases::TestCase;
 use crate::disk::{BASE_MEMORY_MIB, ModelDisk};
+use crate::options::Sizing;
 use crate::{Accel, Firmware};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
@@ -13,17 +14,28 @@ use std::time::{Duration, Instant};
 
 /// QEMU exit status for `isa-debug-exit` value 0x10: (0x10 << 1) | 1.
 const QEMU_PASS: i32 = 33;
-/// CPUs in the VM. Emulation (TCG) gets no more CPUs than the host has cores: on an
-/// overcommitted host, virtual CPUs wait for host scheduling, which looks like
-/// guest latency the kernel cannot control. KVM tolerates overcommit far better.
-const MAX_CPUS: usize = 4;
+/// CPUs in the VM unless `--cpus` says otherwise. Emulation (TCG) gets no more CPUs
+/// than the host has cores: on an overcommitted host, virtual CPUs wait for host
+/// scheduling, which looks like guest latency the kernel cannot control. KVM
+/// tolerates overcommit far better. `--cpus` is taken as given, up to the kernel's 8.
+const DEFAULT_CPUS: usize = 4;
 
-pub fn vm_cpus(accel: Accel) -> usize {
+pub fn vm_cpus(accel: Accel, sizing: Sizing) -> usize {
+    if let Some(cpus) = sizing.cpus {
+        return cpus;
+    }
     let host = thread::available_parallelism().map_or(1, usize::from);
     match accel {
-        Accel::Tcg | Accel::Auto => MAX_CPUS.min(host.max(1)),
-        Accel::Kvm | Accel::Whpx => MAX_CPUS,
+        Accel::Tcg | Accel::Auto => DEFAULT_CPUS.min(host.max(1)),
+        Accel::Kvm | Accel::Whpx => DEFAULT_CPUS,
     }
+}
+
+/// Guest memory in MiB: `--mem` when given, but never less than the model disk
+/// (or the base 512 MiB without one) needs.
+pub fn vm_memory_mib(disk: Option<&ModelDisk>, sizing: Sizing) -> u64 {
+    let needed = disk.map_or(BASE_MEMORY_MIB, ModelDisk::memory_mib);
+    sizing.mem_mib.map_or(needed, |asked| asked.max(needed))
 }
 
 /// QEMU runs with `target/` as its working directory, so drive paths stay relative
@@ -37,8 +49,9 @@ pub fn args(
     accel: Accel,
     headless: bool,
     disk: Option<&ModelDisk>,
+    sizing: Sizing,
 ) -> Vec<String> {
-    let memory = format!("{}M", disk.map_or(BASE_MEMORY_MIB, ModelDisk::memory_mib));
+    let memory = format!("{}M", vm_memory_mib(disk, sizing));
     let mut args: Vec<String> = [
         "-machine",
         "q35",
@@ -58,7 +71,7 @@ pub fn args(
     .map(|s| s.to_string())
     .collect();
     args.push("-smp".into());
-    args.push(vm_cpus(accel).to_string());
+    args.push(vm_cpus(accel, sizing).to_string());
     args.push("-drive".into());
     args.push(format!(
         "if=pflash,format=raw,readonly=on,file={}",
@@ -170,15 +183,19 @@ pub fn run_test(
         .map_err(|e| format!("cannot start QEMU: {e}"))?;
     let stdout = child.stdout.take().ok_or("QEMU stdout was not captured")?;
     let (ready_tx, ready_rx) = mpsc::channel();
-    let all = (expect.clone(), exact.clone());
+    let all = (expect.clone(), exact.clone(), None);
     let reader = thread::spawn(move || {
         let mut measure_start = None;
         let mut stage = 0;
         let (mut missing, mut unseen) = (expect, exact);
+        let mut cpu_line = None;
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
             println!("  | {line}");
             missing.retain(|text| !line.contains(text.as_str()));
             unseen.retain(|text| line.trim_end_matches('\r') != text);
+            if cpu_line.is_none() && !from_programs(&line) && line.contains(CPU_LINE) {
+                cpu_line = Some(line.trim_end_matches('\r').to_string());
+            }
             // Text from ring 3 (`[name] ...`) or the shell (`= ...`, `! ...`, `? ...`) may
             // say anything, and a `screen:` row copies whatever the screen shows, so
             // none of them counts as a kernel marker.
@@ -203,7 +220,7 @@ pub fn run_test(
                 );
             }
         }
-        (missing, unseen)
+        (missing, unseen, cpu_line)
     });
     let status = loop {
         if let Some(status) = child
@@ -219,7 +236,10 @@ pub fn run_test(
         }
         thread::sleep(Duration::from_millis(50));
     };
-    let (missing, unseen) = reader.join().unwrap_or(all);
+    let (missing, unseen, cpu_line) = reader.join().unwrap_or(all);
+    if let Some(line) = cpu_line {
+        println!("xtask: guest {}", &line[line.find(CPU_LINE).unwrap_or(0)..]);
+    }
     if let Ok(elapsed) = ready_rx.try_recv() {
         println!(
             "xtask: boot-to-ready {} ms (accel {:?}, includes firmware)",
@@ -239,6 +259,10 @@ pub fn run_test(
     println!("xtask: PASS");
     Ok(())
 }
+
+/// The kernel's boot line naming the guest's vector features and XCR0, which a
+/// test repeats at its end.
+const CPU_LINE: &str = "cpu: vector features:";
 
 /// Whether a console line was written for a ring-3 program rather than by the
 /// kernel: `[name] ...` from a program's own output, `= ...`, `! ...` and `? ...` from

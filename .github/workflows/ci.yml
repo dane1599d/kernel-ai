@@ -49,6 +49,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends qemu-system-x86 ovmf
+      - name: Show the runner's CPU count and vector features
+        run: |
+          nproc
+          grep -m1 '^flags' /proc/cpuinfo | grep -o -w -E 'avx2|avx512f|avx512bw|avx512_vnni' | xargs echo
       - name: Allow KVM for the runner user
         if: matrix.accel == 'kvm'
         run: |
