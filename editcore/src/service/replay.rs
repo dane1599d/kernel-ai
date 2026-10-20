@@ -49,6 +49,7 @@ impl Service {
     pub(super) fn replay(&mut self, env: &mut dyn Env, from: usize, entries: &str) -> String {
         if from == 0 {
             self.session = None;
+            self.builds.moved = None;
         } else if self.session.is_none() {
             return err(format!("replay stopped at {from}: {NO_SESSION}"));
         }

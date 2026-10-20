@@ -15,7 +15,7 @@ use llmproto::http;
 /// Diagnostic lines a failed build shows.
 const DIAGNOSTICS: usize = 8;
 /// How a failed build that moved the cursor begins, after `err `.
-pub(crate) const MOVED: &str = "build failed; the cursor is on the first error";
+const MOVED: &str = "build failed; the cursor is on the first error";
 
 impl Service {
     /// A POST of `body` to the build service's `path`, with the token.
@@ -137,8 +137,10 @@ impl Service {
             .collect();
         if let Some(session) = self.session.as_mut()
             && let Some((path, line)) = lines.iter().find_map(|line| location(line))
+            && path.len() <= livecore::location::MAX_PATH
             && session.goto(path, line)
         {
+            self.builds.moved = Some(format!("{path}:{}", session.line()));
             let mut reply = err(MOVED);
             for line in &lines {
                 reply.push('\n');
@@ -182,7 +184,7 @@ pub(super) fn check_artifact(
 }
 
 /// `path:line:col: ...` from a compiler message.
-pub(crate) fn location(line: &str) -> Option<(&str, usize)> {
+fn location(line: &str) -> Option<(&str, usize)> {
     let mut parts = line.splitn(4, ':');
     let path = parts.next()?;
     let line = parts.next()?.parse().ok()?;

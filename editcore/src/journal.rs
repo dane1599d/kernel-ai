@@ -1,10 +1,11 @@
 //! The kernel's journal of the edit session (M9d), so an edit service that
 //! restarts gets the founder's session back. It holds the open, then every
 //! command the service answered `ok` except `build`, `try`, `help` and `status`,
-//! each with an FNV-64 digest of the reply. A build that stored an upload leaves
-//! `#built <label>`; one that failed and moved the cursor leaves `#at <path>:<line>`.
-//! A command that got no answer is never recorded, so the one that killed the
-//! service is never replayed.
+//! each with an FNV-64 digest of the reply. An upload the store took for the
+//! session's version leaves `#built <label>` (COMP_PUT tells it, [`Journal::built`]);
+//! a failed build that moved the cursor leaves `#at <path>:<line>`, from the line
+//! the next reply begins with ([`ipc::split_moved`]). A command that got no answer
+//! is never recorded, so the one that killed the service is never replayed.
 //!
 //! The service replays the entries (`service/replay.rs`) and stops at the first
 //! reply whose digest differs, dropping the session; the entries before it
@@ -12,7 +13,6 @@
 //! any session the service holds: the journal is what the founder was answered.
 
 use crate::ipc::{self, At, Ipc};
-use crate::service::{MOVED, location};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -73,6 +73,18 @@ fn message(entry: &str) -> &str {
 /// An entry's command word, when it holds a command.
 fn word(entry: &str) -> Option<&str> {
     message(entry).strip_prefix("cmd ")?.split(' ').next()
+}
+
+/// An entry that is a note rather than a message: `#built ...` or `#at ...`.
+fn note(text: &str) -> String {
+    format!("{:016x} {text}", digest(text.as_bytes()))
+}
+
+/// A place a moved cursor names, `<path>:<line>`, as a replay can go to it.
+fn place_ok(place: &str) -> bool {
+    place
+        .rsplit_once(':')
+        .is_some_and(|(path, line)| !path.is_empty() && line.parse::<usize>().is_ok())
 }
 
 /// How a restore went: what to tell the founder, and the commands that did not
@@ -136,17 +148,43 @@ impl Journal {
     }
 
     /// Records `message`, which the service answered `reply`; a warning, once,
-    /// when the journal is full.
+    /// when the journal is full. A cursor a build moved before the message is
+    /// recorded first, and the reply's digest leaves out the line that says so.
     pub fn record(&mut self, message: &[u8], reply: &[u8]) -> Option<String> {
-        let entry = match ipc::decode_ipc(message) {
+        let (moved, reply) = ipc::split_moved(reply);
+        let decoded = ipc::decode_ipc(message);
+        let edits = matches!(decoded, Ok(Ipc::Open { .. } | Ipc::Cmd(_)));
+        let mut warning = None;
+        if let Some(place) = moved.filter(|place| edits && place_ok(place))
+            && self.session.is_some()
+        {
+            warning = self.push(note(&format!("#at {place}")));
+        }
+        let entry = match decoded {
             Ok(Ipc::Open {
                 component,
                 label,
                 at,
-            }) => self.opened(component, label, at, reply)?,
-            Ok(Ipc::Cmd(line)) if self.session.is_some() => self.command(line, reply)?,
-            _ => return None,
+            }) => self.opened(component, label, at, reply),
+            Ok(Ipc::Cmd(line)) if self.session.is_some() => self.command(line, reply),
+            _ => None,
         };
+        let pushed = entry.and_then(|entry| self.push(entry));
+        warning.or(pushed)
+    }
+
+    /// An upload of `component` built from `base` was stored as `label`. The
+    /// session counts as built from it when it is based there; a replay checks
+    /// that the upload's source is the text at this point (`service/replay.rs`).
+    pub fn built(&mut self, component: &str, base: &str, label: &str) -> Option<String> {
+        if self.session() != Some((component, base)) {
+            return None;
+        }
+        self.push(note(&format!("#built {label}")))
+    }
+
+    /// Adds an entry; a warning, once, when the journal is full.
+    fn push(&mut self, entry: String) -> Option<String> {
         if self.full {
             return None;
         }
@@ -198,16 +236,6 @@ impl Journal {
         let word = line.split(' ').next().unwrap_or("");
         let digest = digest(reply);
         let text = core::str::from_utf8(reply).ok()?;
-        if word == "build" {
-            if let Some(label) = text.strip_prefix("ok built ") {
-                let label = label.split(' ').next()?;
-                return Some(format!("{digest:016x} #built {label}"));
-            }
-            // The cursor went to the first error that names a place.
-            text.strip_prefix("err ")?.strip_prefix(MOVED)?;
-            let (path, line) = text.lines().skip(1).find_map(location)?;
-            return Some(format!("{digest:016x} #at {path}:{line}"));
-        }
         if !text.starts_with("ok ") || SKIPPED.contains(&word) {
             return None;
         }

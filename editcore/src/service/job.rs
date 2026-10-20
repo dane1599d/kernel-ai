@@ -8,11 +8,17 @@ use alloc::string::String;
 pub(super) struct Builds {
     /// The answer the last build gave, once it finished.
     pub(super) last: Option<String>,
+    /// Where a failed build moved the cursor, for the next open or command's
+    /// reply to say ([`crate::ipc::with_moved`]).
+    pub(super) moved: Option<String>,
 }
 
 impl Builds {
     pub(super) const fn new() -> Self {
-        Self { last: None }
+        Self {
+            last: None,
+            moved: None,
+        }
     }
 }
 

@@ -36,8 +36,11 @@ fn a_failed_build_stores_nothing_and_moves_to_the_first_error() {
     kernel(&mut service, &mut env, "cmd s |c = 3|c = 4|");
     env.host = Host::Fails;
     let reply = kernel(&mut service, &mut env, "cmd build");
+    // The reply says where the cursor went first, for the kernel's journal.
+    let (moved, body) = crate::ipc::split_moved(reply.as_bytes());
+    assert_eq!(moved, Some("components/notes/src/lib.rs:2"));
     assert!(
-        reply.starts_with("err build failed; the cursor is on the first error"),
+        body.starts_with(b"err build failed; the cursor is on the first error"),
         "{reply}"
     );
     assert!(reply.contains("components/notes/src/lib.rs:2:5: error[E0277]"));

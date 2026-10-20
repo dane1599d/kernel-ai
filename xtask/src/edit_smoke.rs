@@ -85,6 +85,13 @@ impl EditSmoke {
             self.restored = Some(restore.notice);
         }
         let reply = self.service.handle(&mut self.env, caller, message);
+        // As the kernel's COMP_PUT hook: each upload stored meanwhile reaches the
+        // journal before the answer does.
+        for (component, base, label) in std::mem::take(&mut self.env.uploaded) {
+            if let Some(warning) = self.journal.built(&component, &base, &label) {
+                println!("xtask: edit: {warning}");
+            }
+        }
         if caller == 0
             && let Some(warning) = self.journal.record(message, reply.as_bytes())
         {
@@ -93,7 +100,8 @@ impl EditSmoke {
         let pinned = self.journal.session().map(|(_, label)| label.to_string());
         self.kernel.component.borrow_mut().uploads.pinned = pinned;
         self.host = self.env.host.take();
-        reply
+        // The line saying a build moved the cursor is for the journal alone.
+        String::from_utf8_lossy(ipc::split_moved(reply.as_bytes()).1).into_owned()
     }
 }
 
@@ -274,7 +282,7 @@ impl Driver for EditSmoke {
             .as_slice()
             .to_vec();
         let commit = "0".repeat(kabi::live::COMMIT_LEN);
-        self.env.upload(&bytes, label, &commit)
+        self.env.upload(&bytes, label, &commit).map(|_| ())
     }
 
     fn relay(&mut self, request: &str) -> Result<String, Error> {
@@ -335,6 +343,7 @@ pub fn run(root: &Path, modules: &[Module]) -> Result<(), String> {
             port: builds.port,
             builds: 0,
             last_build: None,
+            uploaded: Vec::new(),
             host: None,
         },
         editing: false,

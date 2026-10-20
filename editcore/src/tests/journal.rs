@@ -1,30 +1,12 @@
-use super::fake::{Fake, Host, TOKEN};
+use super::fake::{Fake, Host, restore, say, service};
 use super::*;
-use crate::ipc::{Ipc, decode_ipc, encode_ipc};
+use crate::ipc::{Ipc, decode_ipc, encode_ipc, with_moved};
 use crate::journal::{Journal, MAX_JOURNAL, Restore, digest};
 use crate::service::Service;
 use crate::wire::SyncRequest;
 use livecore::uploads::Outcome;
 
 const OPENED: &str = "ok editing notes 2: 2 files; components/notes/src/lib.rs, 12 lines";
-
-fn service() -> Service {
-    Service::new("10.0.2.2:5000", TOKEN)
-}
-
-/// Sends `message` as the kernel does, journaling the answer.
-fn say(service: &mut Service, env: &mut Fake, journal: &mut Journal, message: &str) -> String {
-    let reply = service.handle(env, 0, message.as_bytes());
-    journal.record(message.as_bytes(), reply.as_bytes());
-    reply
-}
-
-/// Gives a fresh service the journal's session, as the kernel does.
-fn restore(journal: &mut Journal, env: &mut Fake) -> (Service, Restore) {
-    let mut fresh = service();
-    let restore = journal.restore(&mut |m| Some(fresh.handle(env, 0, m).into_bytes()));
-    (fresh, restore)
-}
 
 /// The two sessions hold the same text, cursor and built upload, and undo the
 /// same edits in the same order.
@@ -93,14 +75,7 @@ fn the_journal_keeps_the_open_and_each_command_answered_ok() {
     }
     assert_eq!(
         journal.commands(),
-        [
-            ":edit notes 2",
-            "s |a|b|",
-            "p",
-            "(a build failed; the cursor went to components/notes/src/lib.rs:4)",
-            "(built e1)",
-            "undo",
-        ]
+        [":edit notes 2", "s |a|b|", "p", "undo",]
     );
     assert_eq!((journal.edits(), journal.counted()), (2, "2 edits".into()));
 }
@@ -390,4 +365,104 @@ fn a_newer_service_that_takes_over_mid_replay_gets_it_all_from_the_open() {
     });
     assert!(restore.lost.is_empty(), "{}", restore.notice);
     assert_same(&live, &newer);
+}
+
+#[test]
+fn a_build_is_journaled_from_the_store_only_for_its_own_session() {
+    let mut journal = Journal::new();
+    // No session: nothing.
+    assert_eq!(journal.built("notes", "2", "e1"), None);
+    assert!(journal.is_empty());
+    record(&mut journal, "open notes", OPENED);
+    // Another base or component, or a build's own answer, records nothing.
+    journal.built("notes", "e1", "e2");
+    journal.built("other", "2", "e1");
+    record(
+        &mut journal,
+        "cmd build",
+        "ok built e1 from 2 (commit 1a2b3c4d5e6f); :apply runs it",
+    );
+    assert_eq!(journal.len(), 1);
+    assert_eq!(journal.built("notes", "2", "e1"), None);
+    assert_eq!(journal.commands(), [":edit notes 2", "(built e1)"]);
+    // Past the cap it warns once, then records nothing.
+    let long = format!("cmd c 1 {}", "x".repeat(7000));
+    let mut warnings = 0;
+    for _ in 0..40 {
+        warnings += usize::from(record(&mut journal, &long, "ok x").is_some());
+        warnings += usize::from(journal.built("notes", "2", "e9").is_some());
+    }
+    assert_eq!(warnings, 1);
+}
+
+#[test]
+fn a_moved_cursor_rides_on_the_next_reply_and_is_journaled_before_it() {
+    let mut journal = Journal::new();
+    record(&mut journal, "open notes", OPENED);
+    let page = "ok lib.rs lines 4 to 12 of 12";
+    let marked = with_moved(&format!("{LIB}:4"), page);
+    record(&mut journal, "cmd p", &marked);
+    // A status or an err reply still carries it.
+    record(
+        &mut journal,
+        "cmd status",
+        &with_moved(&format!("{LIB}:5"), "ok notes 2"),
+    );
+    record(
+        &mut journal,
+        "cmd c 99 x",
+        &with_moved(&format!("{LIB}:6"), "err no line 99"),
+    );
+    let moved = |line: u32| format!("(a build failed; the cursor went to {LIB}:{line})");
+    assert_eq!(
+        journal.commands(),
+        [
+            ":edit notes 2".into(),
+            moved(4),
+            "p".into(),
+            moved(5),
+            moved(6)
+        ]
+    );
+    // The digest is over the reply without the line.
+    let entries = String::from_utf8(journal.messages(journal.len()).remove(0)).unwrap();
+    assert!(entries.contains(&format!("{:016x} cmd p", digest(page.as_bytes()))));
+    // A fresh open drops it with the old session; a resume keeps it.
+    let resumed = "ok editing notes 2 again";
+    record(
+        &mut journal,
+        "open notes",
+        &with_moved(&format!("{LIB}:7"), resumed),
+    );
+    assert_eq!(journal.commands().len(), 7);
+    let other = "ok editing notes e1: 2 files; components/notes/src/lib.rs, 3 lines";
+    record(
+        &mut journal,
+        "open notes e1",
+        &with_moved(&format!("{LIB}:8"), other),
+    );
+    assert_eq!(journal.commands(), [":edit notes e1"]);
+    // Only a reply's first line says it; a try's answer that ends with one does not.
+    record(&mut journal, "cmd try", &format!("ok try e1\n#at {LIB}:1"));
+    record(&mut journal, "cmd p", &format!("ok lib.rs\n#at {LIB}:1"));
+    assert_eq!(journal.commands(), [":edit notes e1", "p"]);
+}
+
+#[test]
+fn a_cursor_a_failed_build_moved_comes_back_after_a_restart() {
+    let mut env = Fake::new(&numbered(12, "\n"));
+    let (mut live, mut journal) = (service(), Journal::new());
+    for message in ["open notes", "cmd c 3 changed", "cmd p 9"] {
+        say(&mut live, &mut env, &mut journal, message);
+    }
+    env.host = Host::Fails;
+    say(&mut live, &mut env, &mut journal, "cmd build");
+    say(&mut live, &mut env, &mut journal, "cmd p");
+    let (replayed, restore) = restore(&mut journal, &mut env);
+    assert!(restore.lost.is_empty(), "{}", restore.notice);
+    assert_eq!(
+        replayed.session.as_ref().unwrap().line(),
+        live.session.as_ref().unwrap().line()
+    );
+    assert_same(&live, &replayed);
 }

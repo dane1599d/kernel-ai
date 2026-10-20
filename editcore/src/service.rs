@@ -19,8 +19,6 @@ mod building;
 mod job;
 mod replay;
 
-pub(crate) use building::{MOVED, location};
-
 /// How long a build may take, inside the kernel's wait for this service.
 pub const BUILD_TIMEOUT_MS: u64 = 150_000;
 /// How long a sync may take.
@@ -65,9 +63,10 @@ fn err(text: impl AsRef<str>) -> String {
     format!("err {}", text.as_ref())
 }
 
-/// Cuts a reply to what one IPC reply holds.
+/// Cuts a reply to what one IPC reply holds, with room for the line a moved
+/// cursor adds; every reply leaves it, so a replayed reply is cut as the live one.
 fn fit(mut reply: String) -> String {
-    let max = kabi::MAX_MESSAGE - 8;
+    let max = kabi::MAX_MESSAGE - 8 - ipc::MARK_ROOM;
     if reply.len() > max {
         reply.truncate(reply.floor_char_boundary(max));
         reply.push_str("\n...");
@@ -90,18 +89,31 @@ impl Service {
         if caller != 0 {
             return err("the edit service answers only the kernel");
         }
-        let reply = match ipc::decode_ipc(request) {
-            Ok(Ipc::Open {
+        let message = match ipc::decode_ipc(request) {
+            Ok(message) => message,
+            Err(why) => return fit(err(why)),
+        };
+        let edits = matches!(message, Ipc::Open { .. } | Ipc::Cmd(_));
+        let reply = fit(match message {
+            Ipc::Open {
                 component,
                 label,
                 at,
-            }) => self.open(env, component, label, at),
-            Ok(Ipc::Cmd(line)) => self.command(env, line),
-            Ok(Ipc::Sync { seq, job }) => self.sync(env, seq, &job),
-            Ok(Ipc::Replay { from, entries }) => self.replay(env, from, entries),
-            Err(why) => err(why),
+            } => self.open(env, component, label, at),
+            Ipc::Cmd(line) => self.command(env, line),
+            Ipc::Sync { seq, job } => self.sync(env, seq, &job),
+            Ipc::Replay { from, entries } => self.replay(env, from, entries),
+        });
+        // Only an open or a command carries a move, so the kernel journals it in order.
+        let moved = if edits {
+            self.builds.moved.take()
+        } else {
+            None
         };
-        fit(reply)
+        match moved {
+            Some(place) => ipc::with_moved(&place, &reply),
+            None => reply,
+        }
     }
 
     /// Opens or resumes a session; with `at`, the cursor goes there, and edits

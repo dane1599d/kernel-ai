@@ -25,6 +25,9 @@ pub(super) struct StoreEnv {
     /// The notes host, lent while the edit service handles a message, so a
     /// relayed control request reaches it.
     pub(super) host: Option<NotesHost>,
+    /// Uploads stored as (component, base, label), which the kernel's COMP_PUT
+    /// hook tells the journal.
+    pub(super) uploaded: Vec<(String, String, String)>,
 }
 
 pub(super) type NotesHost = Host<LocalEnv<WasmInstance>>;
@@ -54,7 +57,7 @@ impl StoreEnv {
         artifact: &[u8],
         base: &str,
         commit: &str,
-    ) -> Result<(), Error> {
+    ) -> Result<String, Error> {
         let reply = self.last_build.take();
         let bound = reply
             .as_deref()
@@ -67,9 +70,7 @@ impl StoreEnv {
             return Err(Error::Invalid);
         }
         let meta = uploads::meta(artifact);
-        component
-            .put(&meta, Arc::new(artifact.to_vec()), base, commit, 0)
-            .map(|_| ())
+        component.put(&meta, Arc::new(artifact.to_vec()), base, commit, 0)
     }
 }
 
@@ -93,12 +94,15 @@ impl Env for StoreEnv {
 
     fn put(
         &mut self,
-        _component: &str,
+        component: &str,
         artifact: &[u8],
         base: &str,
         commit: &str,
     ) -> Result<(), Error> {
-        self.upload(artifact, base, commit)
+        let label = self.upload(artifact, base, commit)?;
+        let stored = (component.to_string(), base.to_string(), label);
+        self.uploaded.push(stored);
+        Ok(())
     }
 
     fn build(&mut self, request: &[u8], timeout_ms: u64) -> Result<Vec<u8>, Error> {

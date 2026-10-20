@@ -1,5 +1,6 @@
 //! What the kernel sends the edit service, one IPC message each, and how the
-//! kernel reads the service's answer to a sync.
+//! kernel reads the service's answers: a sync's, and the line a reply begins with
+//! when a build moved the cursor.
 
 use crate::wire::{Reader, SyncRequest, label, name, read_sync, sync_fields};
 use alloc::format;
@@ -131,5 +132,33 @@ pub fn parse_ack(reply: &[u8], seq: u64) -> Result<String, String> {
             Ok(String::new())
         }
         _ => Err(String::from(reply)),
+    }
+}
+
+/// How a reply begins when a build moved the cursor since the last open or
+/// command: `#at <path>:<line>` on a line of its own. Replies proper begin `ok `
+/// or `err `, so nothing else begins this way.
+pub const MOVED_MARK: &str = "#at ";
+/// Room every reply leaves for that line, so a reply replayed from the journal is
+/// cut where the live one was.
+pub const MARK_ROOM: usize = 96;
+
+/// `reply`, begun with the place a build moved the cursor to.
+pub fn with_moved(place: &str, reply: &str) -> String {
+    format!("{MOVED_MARK}{place}\n{reply}")
+}
+
+/// The place a build moved the cursor to, when the reply begins with one, and the
+/// reply without it; any other reply comes back whole.
+pub fn split_moved(reply: &[u8]) -> (Option<&str>, &[u8]) {
+    let Some(rest) = reply.strip_prefix(MOVED_MARK.as_bytes()) else {
+        return (None, reply);
+    };
+    let Some(end) = rest.iter().position(|&byte| byte == b'\n') else {
+        return (None, reply);
+    };
+    match core::str::from_utf8(&rest[..end]) {
+        Ok(place) => (Some(place), &rest[end + 1..]),
+        Err(_) => (None, reply),
     }
 }

@@ -1,6 +1,7 @@
 //! A stand-in for the kernel and the build service, for the service tests.
 
 use super::*;
+use crate::journal::{Journal, Restore};
 use crate::service::{Env, Service};
 use crate::wire::{self, BuildResult, Built, Synced};
 use alloc::vec;
@@ -173,4 +174,33 @@ pub(super) fn opened(lib: &str) -> (Service, Fake) {
         )
     );
     (service, env)
+}
+
+pub(super) fn service() -> Service {
+    Service::new("10.0.2.2:5000", TOKEN)
+}
+
+/// Sends `message` as the kernel does: an upload stored meanwhile is told to the
+/// journal (COMP_PUT's hook), then the answer is journaled.
+pub(super) fn say(
+    service: &mut Service,
+    env: &mut Fake,
+    journal: &mut Journal,
+    message: &str,
+) -> String {
+    let stored = env.puts.len();
+    let reply = service.handle(env, 0, message.as_bytes());
+    for (component, bytes, base, _) in &env.puts[stored..] {
+        let label = livecore::artifact::parse(bytes).unwrap().manifest.version;
+        journal.built(component, base, &label);
+    }
+    journal.record(message.as_bytes(), reply.as_bytes());
+    reply
+}
+
+/// Gives a fresh service the journal's session, as the kernel does.
+pub(super) fn restore(journal: &mut Journal, env: &mut Fake) -> (Service, Restore) {
+    let mut fresh = service();
+    let restore = journal.restore(&mut |m| Some(fresh.handle(env, 0, m).into_bytes()));
+    (fresh, restore)
 }

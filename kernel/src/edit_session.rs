@@ -100,11 +100,23 @@ pub fn call(message: &[u8]) -> String {
         Some(Some(warning)) => log!("edit: {warning}"),
         Some(None) => {}
     }
+    // The line saying a build moved the cursor is for the journal alone.
+    let shown = editcore::ipc::split_moved(&reply).1;
     printable(
-        &String::from_utf8_lossy(&reply),
+        &String::from_utf8_lossy(shown),
         kabi::MAX_MESSAGE,
         MAX_LINES,
     )
+}
+
+/// COMP_PUT stored `component` `label`, built from `base`; the journal notes the
+/// session as built when it is based there ([`Journal::built`] decides). Runs in
+/// the edit service's COMP_PUT, perhaps while [`call`] waits for that service:
+/// [`call`] holds no lock while it waits, and this takes only the journal's.
+pub fn built(component: &str, base: &str, label: &str) {
+    if let Some(warning) = with(|state| state.journal.built(component, base, label)) {
+        log!("edit: {warning}");
+    }
 }
 
 /// Gives a new edit service the journal's session, if there is one.
@@ -131,6 +143,8 @@ fn restore_if_new() {
     let notice = printable(&restore.notice, kabi::MAX_MESSAGE, 1);
     log!("edit: {notice}");
     let new = with(|state| {
+        // No upload lands meanwhile: the new service takes a build's result only
+        // after an open or a command, which comes after this replay.
         state.journal = journal;
         // Not answered: the next message tries again.
         state.pid = if restore.again { 0 } else { taker };
