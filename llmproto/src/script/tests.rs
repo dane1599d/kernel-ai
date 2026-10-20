@@ -214,6 +214,9 @@ fn answers_frame_exactly_whatever_they_contain() {
     let _ = vec![0u8; 1];
 }
 
+/// What the llm service says when no backend writes scripts.
+const NO_BACKEND: &str = "plain-English requests need an LLM server";
+
 #[test]
 fn errors_cross_between_services_with_their_kind() {
     for error in [
@@ -222,9 +225,14 @@ fn errors_cross_between_services_with_their_kind() {
         AnswerError::NoEnvelope,
         AnswerError::Rejected(String::from("line 3 is longer than 120 characters")),
         AnswerError::NoScript(String::from("Cannot reboot from a script.")),
+        AnswerError::Unavailable(String::from(NO_BACKEND)),
     ] {
         assert_eq!(decode_error(&encode_error(&error)), error);
     }
+    // No backend is shown as the plain words it carries, and is never repaired.
+    let none = AnswerError::Unavailable(String::from(NO_BACKEND));
+    assert_eq!(none.describe(), NO_BACKEND);
+    assert!(!none.repairable());
     // Text from an older or broken service is a server error, never repairable.
     let unknown = decode_error("no LLM server configured (boot with llm=IP:PORT)");
     assert!(!unknown.repairable());

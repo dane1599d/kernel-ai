@@ -16,10 +16,12 @@ bench = false
 
 [dependencies]
 cpufeat = { path = "../cpufeat" }
+infer = { path = "../infer" }
 kabi = { path = "../kabi" }
 livecore = { path = "../livecore" }
 editcore = { path = "../editcore" }
 llmproto = { path = "../llmproto" }
+quant = { path = "../quant" }
 supervise = { path = "../supervise" }
 shellcore = { path = "../shellcore" }
 spin = "0.12.3"

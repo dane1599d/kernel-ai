@@ -71,10 +71,14 @@ impl ModelDisk {
         )
     }
 
-    /// Guest memory for a VM with this disk: the usual amount plus room for the
-    /// copy the kernel keeps, so processes get as much as without it.
+    /// Guest memory for a VM with this disk: the usual amount, room for the copy
+    /// the kernel keeps, and twice the pages llm's engine gets with a model, since
+    /// processes may hold half of what is free; so every other service gets as
+    /// much as without it.
     pub fn memory_mib(&self) -> u64 {
-        BASE_MEMORY_MIB + self.len.div_ceil(MIB).next_multiple_of(MEMORY_STEP_MIB)
+        let engine_mib = kabi::model::ENGINE_PAGES * 4096 / MIB;
+        let extra = self.len.div_ceil(MIB) + 2 * engine_mib;
+        BASE_MEMORY_MIB + extra.next_multiple_of(MEMORY_STEP_MIB)
     }
 
     /// The QEMU arguments that attach the file read-only.
@@ -214,16 +218,18 @@ mod tests {
     }
 
     #[test]
-    fn memory_grows_with_the_model() {
+    fn memory_grows_with_the_model_and_the_engine() {
+        // The engine's 136 MiB, twice: 272 MiB on top of the model.
+        assert_eq!(kabi::model::ENGINE_PAGES * 4096 / MIB, 136);
         assert_eq!(
             windows_disk("D:/m.gguf", 639_446_688).memory_mib(),
-            512 + 640
+            512 + 896
         );
         assert_eq!(
             windows_disk("D:/m.gguf", 3 * MIB + 777).memory_mib(),
-            512 + 64
+            512 + 320
         );
-        assert_eq!(windows_disk("D:/m.gguf", 1).memory_mib(), 512 + 64);
+        assert_eq!(windows_disk("D:/m.gguf", 1).memory_mib(), 512 + 320);
     }
 
     #[test]

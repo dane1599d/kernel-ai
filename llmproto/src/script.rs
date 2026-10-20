@@ -231,6 +231,9 @@ pub enum AnswerError {
     Rejected(String),
     /// The model wrote no script; the summary may say why.
     NoScript(String),
+    /// No backend can write scripts: there is no LLM server, and the local model
+    /// does not write them yet. The text says what to do, in plain words.
+    Unavailable(String),
 }
 
 impl AnswerError {
@@ -245,6 +248,7 @@ impl AnswerError {
             Self::NoEnvelope => "the answer was not the JSON object asked for".into(),
             Self::Rejected(why) => why.clone(),
             Self::NoScript(summary) => format!("the model wrote no script: {summary}"),
+            Self::Unavailable(why) => why.clone(),
         }
     }
 }
@@ -439,6 +443,7 @@ pub fn encode_error(error: &AnswerError) -> String {
         AnswerError::NoEnvelope => "noenvelope".into(),
         AnswerError::Rejected(why) => format!("rejected {why}"),
         AnswerError::NoScript(summary) => format!("noscript {summary}"),
+        AnswerError::Unavailable(why) => format!("unavailable {why}"),
     }
 }
 
@@ -451,6 +456,7 @@ pub fn decode_error(text: &str) -> AnswerError {
         "noenvelope" => AnswerError::NoEnvelope,
         "rejected" => AnswerError::Rejected(rest.into()),
         "noscript" => AnswerError::NoScript(rest.into()),
+        "unavailable" => AnswerError::Unavailable(rest.into()),
         _ => AnswerError::Server(text.into()),
     }
 }

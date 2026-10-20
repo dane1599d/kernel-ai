@@ -41,8 +41,9 @@ use spin::Mutex;
 use x86_64::instructions::interrupts;
 
 pub const MAX_PROCESSES: usize = 16;
-/// Most pages one process may be granted.
-pub const MAX_PAGES_PER_PROCESS: u64 = 16 * 1024;
+/// Most pages one process may be granted: 192 MiB, enough for the llm service's
+/// local engine with a model's page tables (`model::holder_pages`).
+pub const MAX_PAGES_PER_PROCESS: u64 = 48 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum State {

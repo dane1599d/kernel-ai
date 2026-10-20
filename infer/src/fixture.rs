@@ -21,8 +21,23 @@ pub struct Spec {
     pub context_length: usize,
     /// Write a separate `output.weight` instead of tying it to the embeddings.
     pub untied: bool,
+    /// Zero the `output.weight` rows of every token that does not stand for plain
+    /// text (ASCII letters, digits and spaces), so their logits are exactly 0 and
+    /// greedy decoding picks plain text (needs `untied`).
+    pub printable: bool,
+    /// `general.name`.
+    pub name: &'static str,
+    /// `general.license`, if any.
+    pub license: Option<&'static str>,
     pub seed: u64,
 }
+
+/// The name of the model the `local-ask` boot case answers from.
+pub const LOCAL_ASK_NAME: &str = "kai test model";
+/// Bytes after the local-ask model's last tensor. GGUF readers ignore what follows
+/// the tensor data; these make the file an odd number of bytes, not whole sectors,
+/// so a guest reading it must handle a partial last sector.
+const LOCAL_ASK_TAIL: &[u8] = b"\nKernel AI local-ask fixture: bytes after the last tensor.\n";
 
 impl Spec {
     /// A model of about 130 KB that answers in milliseconds. Queries are wider
@@ -38,6 +53,9 @@ impl Spec {
             vocab: 384,
             context_length: 512,
             untied: false,
+            printable: false,
+            name: "generated fixture",
+            license: None,
             seed: 1,
         }
     }
@@ -53,10 +71,45 @@ impl Spec {
             head_dim: 128,
             vocab: 151_936,
             context_length: 40_960,
-            untied: false,
-            seed: 1,
+            ..Self::tiny()
         }
     }
+
+    /// The model the `local-ask` boot case answers from: tiny's shapes, an output
+    /// that reaches only plain-text tokens, and a trained context of 152 positions.
+    /// `ask`'s prompt takes 130 of them, so the answer stops at the context's end
+    /// after 23 tokens, in seconds even when QEMU emulates the CPU.
+    pub fn local_ask() -> Self {
+        Self {
+            context_length: 152,
+            untied: true,
+            printable: true,
+            name: LOCAL_ASK_NAME,
+            license: Some("MPL-2.0"),
+            seed: 10,
+            ..Self::tiny()
+        }
+    }
+}
+
+/// The local-ask model file: [`Spec::local_ask`] and a short tail that makes its
+/// length odd.
+pub fn local_ask() -> Vec<u8> {
+    let mut bytes = build(&Spec::local_ask());
+    bytes.extend_from_slice(LOCAL_ASK_TAIL);
+    if bytes.len().is_multiple_of(2) {
+        bytes.push(b'\n');
+    }
+    bytes
+}
+
+/// Whether a token of [`vocabulary`] stands for plain text: a normal token whose
+/// bytes are all ASCII letters, digits and spaces.
+fn printable_token(text: &str, ty: i32) -> bool {
+    ty == 1
+        && text.chars().all(|c| {
+            bpe::bytes::from_char(c).is_some_and(|b| b == b' ' || b.is_ascii_alphanumeric())
+        })
 }
 
 /// Merges for common English pairs, so encoding text exercises them.
@@ -151,8 +204,11 @@ pub fn build(spec: &Spec) -> Vec<u8> {
     let mut w = Writer::new();
     let u32_of = |n: usize| n as u32;
     w.string("general.architecture", "qwen3")
-        .string("general.name", "generated fixture")
-        .u32("qwen3.block_count", u32_of(spec.n_layer))
+        .string("general.name", spec.name);
+    if let Some(license) = spec.license {
+        w.string("general.license", license);
+    }
+    w.u32("qwen3.block_count", u32_of(spec.n_layer))
         .u32("qwen3.context_length", u32_of(spec.context_length))
         .u32("qwen3.embedding_length", u32_of(spec.n_embd))
         .u32("qwen3.feed_forward_length", u32_of(spec.n_ff))
@@ -172,14 +228,29 @@ pub fn build(spec: &Spec) -> Vec<u8> {
     let mut rng = Rng(spec.seed);
     let (e, ff, hd) = (spec.n_embd, spec.n_ff, spec.head_dim);
     let (q, kv) = (spec.n_head * hd, spec.n_head_kv * hd);
+    let embeddings = [e as u64, spec.vocab as u64];
+    w.tensor(
+        "token_embd.weight",
+        &embeddings,
+        TensorType::Q8_0,
+        &rng.matrix(e, spec.vocab),
+    );
+    if spec.untied {
+        let mut output = rng.matrix(e, spec.vocab);
+        if spec.printable {
+            let rows = output.chunks_mut(quant::row_bytes(e));
+            for (row, (text, &ty)) in rows.zip(tokens.iter().zip(&types)) {
+                if !printable_token(text, ty) {
+                    row.fill(0);
+                }
+            }
+        }
+        w.tensor("output.weight", &embeddings, TensorType::Q8_0, &output);
+    }
     let mut matrix = |w: &mut Writer, name: &str, cols: usize, rows: usize| {
         let data = rng.matrix(cols, rows);
         w.tensor(name, &[cols as u64, rows as u64], TensorType::Q8_0, &data);
     };
-    matrix(&mut w, "token_embd.weight", e, spec.vocab);
-    if spec.untied {
-        matrix(&mut w, "output.weight", e, spec.vocab);
-    }
     let mut norms = Rng(spec.seed ^ 0x5555);
     let mut norm = |w: &mut Writer, name: &str, len: usize| {
         w.tensor(name, &[len as u64], TensorType::F32, &norms.norm(len));

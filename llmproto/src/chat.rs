@@ -1,9 +1,10 @@
 //! Chat requests and answers that do not depend on how the model is reached: the
 //! messages of a request, and what a model gave back, whether it came from an
 //! OpenAI-compatible server over HTTP ([`crate::openai`]) or from the engine inside
-//! the llm service. The answer checks in [`crate::explain`] and [`crate::script`]
-//! read a [`Completion`], so every backend shares them.
+//! the llm service. The answer checks here and in [`crate::explain`] and
+//! [`crate::script`] read a [`Completion`], so every backend shares them.
 
+use crate::text;
 use alloc::string::String;
 use alloc::vec::Vec;
 use serde::Serialize;
@@ -95,9 +96,39 @@ pub fn ask(question: &str) -> Request {
     Request::new(Some(ASK_SYSTEM_PROMPT), question, ASK_MAX_TOKENS)
 }
 
+/// The answer to an `ask`: without a thinking block, trimmed, printable and cut to
+/// [`MAX_REPLY_CHARS`] and [`MAX_REPLY_LINES`], with [`CUT_OFF`] after an answer
+/// the model did not end. An answer with nothing left to show is an error.
+pub fn answer(completion: &Completion) -> Result<String, String> {
+    let content = text::without_thinking(&completion.text);
+    let room = match completion.cut_off {
+        true => MAX_REPLY_CHARS - CUT_OFF.len(),
+        false => MAX_REPLY_CHARS,
+    };
+    let mut answer = String::from(text::printable(content, room, MAX_REPLY_LINES).trim_end());
+    if answer.trim().is_empty() {
+        return Err(match completion.cut_off {
+            true => String::from("the model ran out of tokens before answering"),
+            false => String::from("the model gave no answer"),
+        });
+    }
+    if completion.cut_off {
+        answer.push_str(CUT_OFF);
+    }
+    Ok(answer)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::format;
+
+    fn done(text: &str) -> Completion {
+        Completion {
+            text: String::from(text),
+            cut_off: false,
+        }
+    }
 
     #[test]
     fn a_single_turn_is_read_back_and_anything_else_is_not() {
@@ -130,5 +161,49 @@ mod tests {
             serde_json::to_string(&message).unwrap(),
             r#"{"role":"assistant","content":"hi \"there\""}"#
         );
+    }
+
+    #[test]
+    fn an_answer_is_cleaned_trimmed_and_marked_when_cut_off() {
+        assert_eq!(answer(&done(" Hello. \n")), Ok(String::from("Hello.")));
+        assert_eq!(
+            answer(&done("<think>hmm</think>\n\nHello.")),
+            Ok(String::from("Hello."))
+        );
+        assert_eq!(
+            answer(&done("It\x1b[2J works.\r")),
+            Ok(String::from("It[2J works."))
+        );
+        let cut = Completion {
+            text: String::from(" w300 w301"),
+            cut_off: true,
+        };
+        assert_eq!(answer(&cut), Ok(format!("w300 w301{CUT_OFF}")));
+        let long = Completion {
+            text: "x".repeat(2 * MAX_REPLY_CHARS),
+            cut_off: true,
+        };
+        assert_eq!(answer(&long).unwrap().chars().count(), MAX_REPLY_CHARS);
+        let many = "line\n".repeat(2 * MAX_REPLY_LINES);
+        assert_eq!(
+            answer(&done(&many)).unwrap().lines().count(),
+            MAX_REPLY_LINES
+        );
+    }
+
+    #[test]
+    fn nothing_to_show_is_an_error() {
+        for text in ["", " \n ", "<think>never ends", "\x1b\x07"] {
+            assert_eq!(
+                answer(&done(text)),
+                Err(String::from("the model gave no answer")),
+                "{text:?}"
+            );
+        }
+        let spent = Completion {
+            text: String::from("<think>still thinking"),
+            cut_off: true,
+        };
+        assert!(answer(&spent).unwrap_err().contains("ran out of tokens"));
     }
 }

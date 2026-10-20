@@ -1,11 +1,13 @@
 //! Qwen3 inference on the CPU, without std: the model's shape from GGUF metadata,
 //! every weight checked against it, an f32 KV cache sized to a context cap, the
-//! forward pass over the Q8_0 weights in the file, and greedy generation.
+//! forward pass over the Q8_0 weights in the file, greedy generation, and
+//! [`chat`], one answer to a question the way the llm service runs it.
 
 #![no_std]
 
 extern crate alloc;
 
+pub mod chat;
 mod config;
 pub mod fixture;
 mod generate;
@@ -13,6 +15,8 @@ mod kv;
 mod model;
 mod weights;
 
+#[cfg(test)]
+mod chat_tests;
 #[cfg(test)]
 mod forward_tests;
 #[cfg(test)]

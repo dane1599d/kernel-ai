@@ -60,15 +60,17 @@ pub fn target() -> Option<(Ipv4Addr, u16, &'static str)> {
 }
 
 /// The plan line for the `llm` service. With a model loaded it also gets
-/// `cap::MODEL` and pages for the mapping's tables; it keeps `net` and its burst
-/// limit, since script and explain still go to the server. The model name is one
+/// `cap::MODEL`, pages for the mapping's tables and pages for the engine (its KV
+/// cache and tokenizer, `kabi::model::ENGINE_PAGES`); it keeps `net`, since scripts
+/// still go to a server, and names its burst limit, so a long stretch of start-up
+/// work between two sleeps is not taken for a runaway. The model name is one
 /// command-line word, so it holds no whitespace and cannot add arguments of its
 /// own; control characters are refused as well.
 pub fn plan_line() -> String {
     let mut line = match crate::model::get() {
         Some(model) => format!(
             "llm caps=serve+net+model burst_ms=10000 pages={}",
-            crate::model::HOLDER_PAGES + kabi::model::table_pages(model.len())
+            crate::model::holder_pages(model.len())
         ),
         None => format!(
             "llm caps=serve+net burst_ms=10000 pages={}",
@@ -105,13 +107,13 @@ pub fn ask(prompt: &str) -> Result<String, String> {
     request(&format!("ask {prompt}"), ASK_TIMEOUT_MS)
 }
 
-/// The model's explanation of a rollback from `facts`, or why there is none. With
-/// no server configured or no llm service running it says so at once, rather than
-/// waiting for a service that will not come.
+/// The model's explanation of a rollback from `facts`, from the local model or the
+/// server, or why there is none. With neither, or no llm service running, it says
+/// so at once, rather than waiting for a service that will not come.
 pub fn explain(facts: &str) -> Result<String, String> {
-    if target().is_none() {
+    if target().is_none() && crate::model::get().is_none() {
         return Err(String::from(
-            "no LLM server is configured (boot with llm=IP:PORT)",
+            "no LLM server is configured (boot with llm=IP:PORT) and no model is loaded",
         ));
     }
     if ipc::server_of("llm").is_none() {

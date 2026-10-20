@@ -53,6 +53,20 @@ pub const fn table_pages(len: u64) -> u64 {
     tables + directories + 1
 }
 
+/// Positions of context the llm service's engine holds at most.
+pub const CONTEXT_CAP: usize = 512;
+/// Bytes the engine's f32 KV cache may take: [`CONTEXT_CAP`] positions of
+/// Qwen3-0.6B (28 layers of 1,024 keys and 1,024 values), 112 MiB. A model that
+/// needs more per position gets fewer positions.
+pub const KV_BYTES: u64 = 112 << 20;
+/// Bytes for everything else the engine sizes from the file: the tokenizer while
+/// it is built, the logits, the RoPE table and the scratch vectors. The engine
+/// refuses a file whose header says it would need more; Qwen3's vocabulary is
+/// estimated at about 16 MiB.
+pub const ENGINE_OTHER_BYTES: u64 = 24 << 20;
+/// Pages the llm plan line adds for the engine when a model is loaded.
+pub const ENGINE_PAGES: u64 = (KV_BYTES + ENGINE_OTHER_BYTES) / 4096;
+
 /// What xtask tells the kernel about the file behind the model disk, on the kernel
 /// command line: `model_len=BYTES`, the file's exact length (the disk rounds it up
 /// to whole sectors), and for test boots `model_fnv=HEX`, its [`Fnv1a`] hash.
@@ -192,6 +206,16 @@ mod tests {
         assert_eq!(table_pages(639_446_688), 305 + 1 + 1);
         // The largest model: a full slot of 512 directories.
         assert_eq!(table_pages(crate::layout::MODEL_MAX), 512 * 512 + 512 + 1);
+    }
+
+    #[test]
+    fn the_kv_budget_holds_the_mvp_model_at_the_context_cap() {
+        let (layers, kv_dim, f32_bytes) = (28u64, 1024u64, 4u64);
+        assert_eq!(
+            layers * kv_dim * 2 * f32_bytes * CONTEXT_CAP as u64,
+            KV_BYTES
+        );
+        assert_eq!(ENGINE_PAGES * 4096, KV_BYTES + ENGINE_OTHER_BYTES);
     }
 
     #[test]
