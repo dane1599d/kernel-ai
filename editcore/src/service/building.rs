@@ -1,23 +1,31 @@
-//! Building: the edited source goes to the host's build service, and what comes
-//! back is checked and uploaded, or the compiler's first errors are shown with the
-//! cursor on the first.
+//! Building: the edited source goes to the host's build service in the
+//! background, and `build` answers at once (`job.rs` follows the job). This file
+//! holds the checks before a build and what checking its result needs.
 
+use super::job::{Job, Running, busy_reply};
 use super::{BUILD_TIMEOUT_MS, Env, Service, err, ok};
-use crate::wire::{self, BuildRequest, BuildResult, Origin};
+use crate::wire::{self, BuildRequest, Origin};
 use crate::{editable, rules};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use kabi::Error;
 use livecore::artifact;
-
-/// Diagnostic lines a failed build shows.
-const DIAGNOSTICS: usize = 8;
-/// How a failed build that moved the cursor begins, after `err `.
-pub(crate) const MOVED: &str = "build failed; the cursor is on the first error";
+use llmproto::http;
 
 impl Service {
+    /// A POST of `body` to the build service's `path`, with the token.
+    pub(super) fn request(&self, path: &str, body: &[u8]) -> Vec<u8> {
+        let token = [("X-Kai-Token", self.token.as_str())];
+        http::post(&self.host, path, "application/octet-stream", &token, body)
+    }
+
+    /// `build`: starts building the session's text as the next upload, or says
+    /// why not; `ok building <next> from <base>` when it started.
     pub(super) fn build(&mut self, env: &mut dyn Env) -> String {
+        if let Some(label) = self.busy(env) {
+            return busy_reply(&label);
+        }
         let Some(session) = self.session.as_ref() else {
             return err("no file is open");
         };
@@ -61,75 +69,23 @@ impl Service {
             origin: Origin::Founder,
             bundle: &bundle,
         });
-        env.log(&format!(
-            "building {component} {next} from {base} on the host"
-        ));
-        let body = match self.post(env, "/build", &body, BUILD_TIMEOUT_MS) {
-            Ok(body) => body,
-            Err(why) => return err(format!("build service: {why}")),
-        };
-        let built = match wire::decode_built(&body) {
-            Ok(built) => built,
-            Err(why) => return err(format!("build service: a malformed reply ({why})")),
-        };
-        let log = String::from_utf8_lossy(built.log);
-        match built.result {
-            BuildResult::Refused => err(format!("build refused: {}", log.trim())),
-            BuildResult::Failed => self.failed(&log),
-            BuildResult::Ok => {
-                let checked = check_artifact(built.artifact, &component, &next, &bundle);
-                if let Err(why) = checked {
-                    return err(format!(
-                        "the build service returned the wrong artifact: {why}"
-                    ));
-                }
-                match env.put(&component, built.artifact, &base, built.commit) {
-                    Ok(()) => {}
-                    Err(Error::Invalid) => return err(refusal(env, &component, &next, &base)),
-                    Err(Error::NoMemory) => {
-                        return err("the store has no room for another upload");
-                    }
-                    Err(error) => return err(format!("the store refused {next}: {error:?}")),
-                }
-                if let Some(session) = self.session.as_mut() {
-                    session.built = Some(next.clone());
-                }
-                ok(format!(
-                    "built {next} from {base} (commit {}); :apply runs it",
-                    short(built.commit)
-                ))
+        let request = self.request("/build", &body);
+        // A build that starts makes the last one's answer stale.
+        self.builds.last = None;
+        match env.build_start(&request, BUILD_TIMEOUT_MS) {
+            Ok(()) => {
+                let reply = ok(format!("building {next} from {base}"));
+                self.builds.job = Some(Job::Running(Running {
+                    component,
+                    next,
+                    base,
+                    bundle,
+                }));
+                reply
             }
+            Err(Error::Busy) => busy_reply(&next),
+            Err(error) => err(format!("build service: {error:?}")),
         }
-    }
-
-    /// A failed build: its first errors, with the cursor on the first.
-    fn failed(&mut self, log: &str) -> String {
-        let lines: Vec<&str> = log
-            .lines()
-            .filter(|line| line.contains("error"))
-            .take(DIAGNOSTICS)
-            .collect();
-        if let Some(session) = self.session.as_mut()
-            && let Some((path, line)) = lines.iter().find_map(|line| location(line))
-            && session.goto(path, line)
-        {
-            let mut reply = err(MOVED);
-            for line in &lines {
-                reply.push('\n');
-                reply.push_str(line);
-            }
-            return reply;
-        }
-        let mut reply = err("build failed");
-        for line in if lines.is_empty() {
-            log.lines().take(DIAGNOSTICS).collect()
-        } else {
-            lines
-        } {
-            reply.push('\n');
-            reply.push_str(line);
-        }
-        reply
     }
 }
 
@@ -156,7 +112,7 @@ pub(super) fn check_artifact(
 }
 
 /// `path:line:col: ...` from a compiler message.
-pub(crate) fn location(line: &str) -> Option<(&str, usize)> {
+pub(super) fn location(line: &str) -> Option<(&str, usize)> {
     let mut parts = line.splitn(4, ':');
     let path = parts.next()?;
     let line = parts.next()?.parse().ok()?;
@@ -164,12 +120,12 @@ pub(crate) fn location(line: &str) -> Option<(&str, usize)> {
     Some((path.trim(), line))
 }
 
-fn short(commit: &str) -> &str {
+pub(super) fn short(commit: &str) -> &str {
     commit.get(..12).unwrap_or(commit)
 }
 
 /// Why the store refused an upload it would have taken when the build began.
-fn refusal(env: &mut dyn Env, component: &str, next: &str, base: &str) -> String {
+pub(super) fn refusal(env: &mut dyn Env, component: &str, next: &str, base: &str) -> String {
     let now = env.info(component).map(|info| info.next().to_string());
     if env.artifact(component, base).is_err() {
         return format!(
@@ -184,4 +140,15 @@ fn refusal(env: &mut dyn Env, component: &str, next: &str, base: &str) -> String
             "the store refused {next}: the active version changed, or the build service's reply did not match; build again"
         ),
     }
+}
+
+/// The body of the build service's `200` response, or what went wrong.
+pub(super) fn body_of(response: &[u8]) -> Result<Vec<u8>, String> {
+    let response = http::parse_response(response, true).map_err(|error| format!("{error:?}"))?;
+    if response.status != 200 {
+        let body = String::from_utf8_lossy(&response.body);
+        let first = body.lines().next().unwrap_or("");
+        return Err(format!("HTTP {} {}", response.status, first));
+    }
+    Ok(response.body)
 }

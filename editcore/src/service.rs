@@ -14,14 +14,12 @@ use alloc::vec::Vec;
 use kabi::Error;
 use kabi::live::Info;
 use livecore::{artifact, diff};
-use llmproto::http;
 
 mod building;
+mod job;
 mod replay;
 
-pub(crate) use building::{MOVED, location};
-
-/// How long a build may take, inside the kernel's wait for this service.
+/// How long the kernel's build thread waits for the build service's answer.
 pub const BUILD_TIMEOUT_MS: u64 = 150_000;
 /// How long a sync may take.
 pub const SYNC_TIMEOUT_MS: u64 = 30_000;
@@ -41,8 +39,14 @@ pub trait Env {
         base: &str,
         commit: &str,
     ) -> Result<(), Error>;
-    /// Sends an HTTP request to the build service; the response.
+    /// Sends a git sync to the build service; the response.
     fn build(&mut self, request: &[u8], timeout_ms: u64) -> Result<Vec<u8>, Error>;
+    /// Starts a build on the build service in the background (BUILD_START).
+    fn build_start(&mut self, request: &[u8], timeout_ms: u64) -> Result<(), Error>;
+    /// The background build's response (BUILD_POLL): Busy while it runs, NotFound
+    /// with none, its exchange's error once. Without `take` it only looks, and an
+    /// answer comes back empty.
+    fn build_poll(&mut self, take: bool) -> Result<Vec<u8>, Error>;
     /// Has the kernel send `ctl <request>` to a component; only a request that
     /// changes nothing goes.
     fn control(&mut self, component: &str, request: &str) -> Result<Vec<u8>, Error>;
@@ -54,6 +58,7 @@ pub struct Service {
     host: String,
     token: String,
     pub session: Option<Session>,
+    builds: job::Builds,
 }
 
 fn ok(text: impl AsRef<str>) -> String {
@@ -64,9 +69,10 @@ fn err(text: impl AsRef<str>) -> String {
     format!("err {}", text.as_ref())
 }
 
-/// Cuts a reply to what one IPC reply holds.
+/// Cuts a reply to what one IPC reply holds, with room for the line a moved
+/// cursor adds; every reply leaves it, so a replayed reply is cut as the live one.
 fn fit(mut reply: String) -> String {
-    let max = kabi::MAX_MESSAGE - 8;
+    let max = kabi::MAX_MESSAGE - 8 - ipc::MARK_ROOM;
     if reply.len() > max {
         reply.truncate(reply.floor_char_boundary(max));
         reply.push_str("\n...");
@@ -80,6 +86,7 @@ impl Service {
             host: host.to_string(),
             token: token.to_string(),
             session: None,
+            builds: job::Builds::new(),
         }
     }
 
@@ -88,18 +95,38 @@ impl Service {
         if caller != 0 {
             return err("the edit service answers only the kernel");
         }
-        let reply = match ipc::decode_ipc(request) {
-            Ok(Ipc::Open {
+        let message = match ipc::decode_ipc(request) {
+            Ok(message) => message,
+            Err(why) => return fit(err(why)),
+        };
+        let edits = matches!(message, Ipc::Open { .. } | Ipc::Cmd(_));
+        if edits {
+            self.decide();
+        }
+        // A replay never looks: between its messages nothing may be taken.
+        if !matches!(message, Ipc::Replay { .. }) {
+            self.poll(env);
+        }
+        let reply = fit(match message {
+            Ipc::Open {
                 component,
                 label,
                 at,
-            }) => self.open(env, component, label, at),
-            Ok(Ipc::Cmd(line)) => self.command(env, line),
-            Ok(Ipc::Sync { seq, job }) => self.sync(env, seq, &job),
-            Ok(Ipc::Replay { from, entries }) => self.replay(env, from, entries),
-            Err(why) => err(why),
+            } => self.open(env, component, label, at),
+            Ipc::Cmd(line) => self.command(env, line),
+            Ipc::Sync { seq, job } => self.sync(env, seq, &job),
+            Ipc::Replay { from, entries } => self.replay(env, from, entries),
+        });
+        // Only an open or a command carries a move, so the kernel journals it in order.
+        let moved = if edits {
+            self.builds.moved.take()
+        } else {
+            None
         };
-        fit(reply)
+        match moved {
+            Some(place) => ipc::with_moved(&place, &reply),
+            None => reply,
+        }
     }
 
     /// Opens or resumes a session; with `at`, the cursor goes there, and edits
@@ -203,6 +230,9 @@ impl Service {
         if command == Command::Help {
             return ok(format!("commands:\n{USAGE}"));
         }
+        if command == Command::Status {
+            return self.status(env);
+        }
         let Some(session) = self.session.as_mut() else {
             return err("no file is open; :edit <component> first");
         };
@@ -214,8 +244,15 @@ impl Service {
     }
 
     fn sync(&mut self, env: &mut dyn Env, seq: u64, job: &wire::SyncRequest<'_>) -> String {
-        let body = wire::encode_sync(job);
-        let body = match self.post(env, "/sync", &body, SYNC_TIMEOUT_MS) {
+        // The host's compile holds the lock a sync needs; the kernel retries.
+        if let Some(label) = self.busy(env) {
+            return job::busy_reply(&label);
+        }
+        let request = self.request("/sync", &wire::encode_sync(job));
+        let response = env
+            .build(&request, SYNC_TIMEOUT_MS)
+            .map_err(|error| format!("{error:?}"));
+        let body = match response.and_then(|response| building::body_of(&response)) {
             Ok(body) => body,
             Err(why) => return err(format!("build service: {why}")),
         };
@@ -226,29 +263,6 @@ impl Service {
             Ok(Synced::Untracked) => ok(format!("untracked {seq}")),
             Err(why) => err(format!("build service: a malformed reply ({why})")),
         }
-    }
-
-    /// POSTs to the build service; the body of a 200 response.
-    fn post(
-        &self,
-        env: &mut dyn Env,
-        path: &str,
-        body: &[u8],
-        timeout_ms: u64,
-    ) -> Result<Vec<u8>, String> {
-        let token = [("X-Kai-Token", self.token.as_str())];
-        let request = http::post(&self.host, path, "application/octet-stream", &token, body);
-        let response = env
-            .build(&request, timeout_ms)
-            .map_err(|error| format!("{error:?}"))?;
-        let response =
-            http::parse_response(&response, true).map_err(|error| format!("{error:?}"))?;
-        if response.status != 200 {
-            let body = String::from_utf8_lossy(&response.body);
-            let first = body.lines().next().unwrap_or("");
-            return Err(format!("HTTP {} {}", response.status, first));
-        }
-        Ok(response.body)
     }
 }
 
@@ -409,7 +423,9 @@ fn run(session: &mut Session, command: Command<'_>) -> String {
                 session.component, session.label
             ))
         }
-        Command::Build | Command::Try | Command::Help => unreachable!("handled before"),
+        Command::Build | Command::Try | Command::Help | Command::Status => {
+            unreachable!("handled before")
+        }
     };
     match result {
         Ok(text) => ok(text),

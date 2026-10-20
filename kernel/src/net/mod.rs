@@ -202,6 +202,15 @@ pub fn exchange(
     result.map(|()| response)
 }
 
+/// The error a system call reports for an [`exchange`] that failed.
+pub fn error_code(error: &str) -> kabi::Error {
+    match error {
+        "net: request timed out" => kabi::Error::TimedOut,
+        "net: out of memory" => kabi::Error::NoMemory,
+        _ => kabi::Error::Network,
+    }
+}
+
 /// `IPv4:PORT` from the kernel command line, such as `llm=` and `build=`; the
 /// kernel has no DNS.
 pub fn parse_endpoint(text: &str) -> Option<(Ipv4Addr, u16)> {

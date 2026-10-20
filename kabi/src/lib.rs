@@ -96,9 +96,9 @@ pub mod call {
     /// either way). A read is not a fetch: it gives no right to report events.
     /// Needs [`super::cap::PUBLISH`].
     pub const COMP_READ: u64 = 26;
-    /// `build(&HttpRequest) -> response len`: as [`HTTP`], but to the build service
-    /// named by `build=` on the kernel command line, never to the LLM server.
-    /// Needs [`super::cap::PUBLISH`].
+    /// `build(&HttpRequest) -> response len`: as [`HTTP`], to the build service named
+    /// by `build=` on the kernel command line, and only `POST /sync`; anything else
+    /// is Invalid (builds go through [`BUILD_START`]). Needs [`super::cap::PUBLISH`].
     pub const BUILD: u64 = 27;
     /// `model_map() -> len`: maps the model the kernel loaded from the `kai-model`
     /// disk at [`super::layout::MODEL_BASE`], read-only and not executable, by
@@ -125,6 +125,12 @@ pub mod call {
     /// `futex_wake(addr, count) -> woken`: wakes up to `count` threads of this
     /// process waiting on the word at `addr`.
     pub const FUTEX_WAKE: u64 = 32;
+    /// `build_start(&HttpRequest) -> 0`: sends a `POST /build` (only) to [`BUILD`]'s service
+    /// on a kernel thread, for at most 300 s. Busy until its reply is collected. Needs PUBLISH.
+    pub const BUILD_START: u64 = 35;
+    /// `build_poll(buf, cap) -> len`: copies the reply, ending the job, only if it fits (cap 0
+    /// looks). Busy while it runs, NotFound with none; an exchange error comes once. PUBLISH.
+    pub const BUILD_POLL: u64 = 36;
 }
 
 /// Errors, returned in RAX as their negative value.

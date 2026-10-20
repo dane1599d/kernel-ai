@@ -2,8 +2,11 @@
 
 extern crate std;
 
+mod building;
 mod command;
+mod fake;
 mod journal;
+mod restart;
 mod rules;
 mod scenario;
 mod service;

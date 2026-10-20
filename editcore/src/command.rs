@@ -15,8 +15,9 @@ a <n> <text>        add a line after line n
 d <n>[,<m>]         delete lines
 undo                take back the last edit
 diff                what changed since the version was opened
-build               build it on the host and store it as the next version
+build               build it on the host in the background, as the next version
 try                 rehearse that build on copies of the state; changes nothing
+status              what is open, and how the last build went
 reset               drop every edit
 help                this list; :apply runs a build, :quit leaves";
 
@@ -42,6 +43,7 @@ pub enum Command<'a> {
     Diff,
     Build,
     Try,
+    Status,
     Reset,
     Help,
 }
@@ -100,6 +102,7 @@ pub fn parse(line: &str) -> Result<Command<'_>, String> {
         "diff" => none(Command::Diff),
         "build" => none(Command::Build),
         "try" => none(Command::Try),
+        "status" => none(Command::Status),
         "reset" => none(Command::Reset),
         "help" => none(Command::Help),
         "open" if !rest.trim().is_empty() => Ok(Command::Open(rest.trim())),

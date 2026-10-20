@@ -22,6 +22,7 @@ mod backtrace;
 mod bigmap_tests;
 mod blk_tests;
 mod boot_manifest;
+mod build_job;
 mod build_service;
 mod compute_tests;
 mod console;

@@ -123,7 +123,11 @@ pub const TEST_CASES: &[TestCase] = &[
     case("scripts", "test=scripts"),
     case("live", "test=live"),
     TestCase {
-        expect: &["edit: the edit service restarted; restored notes e1 with 1 edit"],
+        expect: &[
+            "edit: the edit service restarted; restored notes e1 with 1 edit",
+            "edit: the edit service restarted; restored notes 2 with 1 edit",
+            "[edit] built e3 from 2 (commit ",
+        ],
         build: true,
         after: Some(crate::buildsvc::verify::after_edit_case),
         min_timeout: Some(Duration::from_secs(300)),

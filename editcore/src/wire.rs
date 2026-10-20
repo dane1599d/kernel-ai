@@ -398,6 +398,17 @@ pub fn decode_synced(bytes: &[u8]) -> Result<Synced<'_>, &'static str> {
     Ok(synced)
 }
 
+/// Whether `request` is a build, as `http::post` writes one: only BUILD_START
+/// sends these.
+pub fn is_build_request(request: &[u8]) -> bool {
+    request.starts_with(b"POST /build HTTP/1.1\r\n")
+}
+
+/// Whether `request` is a git sync, as `http::post` writes one.
+pub fn is_sync_request(request: &[u8]) -> bool {
+    request.starts_with(b"POST /sync HTTP/1.1\r\n")
+}
+
 /// The body of a whole `200` response from the build service, without allocating:
 /// a `Content-Length` that covers exactly the bytes after the headers, and no
 /// other transfer encoding. The build service always answers this way.

@@ -10,22 +10,19 @@ use crate::smoke::loader;
 use editcore::ipc::{self, At, Ipc};
 use editcore::journal::Journal;
 use editcore::scenario::{self, Applied, Driver};
-use editcore::service::{Env, Service};
-use editcore::wire::{self, SyncRequest};
+use editcore::service::Service;
+use editcore::wire::SyncRequest;
+use env::{NotesHost, StoreEnv, relay};
 use kabi::Error;
-use kabi::live::Info;
 use livecore::host::{Exit, Host};
-use livecore::local::{Kernel, LocalEnv};
+use livecore::local::Kernel;
 use livecore::scenario::Driver as LiveDriver;
 use livecore::settings::Settings;
 use livecore::store::{Bytes, Component};
 use livecore::uploads::{self, SyncJob};
-use std::io::{Read, Write};
-use std::net::TcpStream;
 use std::path::Path;
-use std::sync::Arc;
-use std::time::Duration;
-use wasmhost::WasmInstance;
+
+mod env;
 
 /// A width and height like the boot case's console.
 const SCREEN: (usize, usize) = (128, 48);
@@ -38,114 +35,6 @@ pub fn test_settings() -> Result<Settings, String> {
         .first()
         .ok_or("the edit test plan does not parse")?;
     Settings::parse(&notes.args)
-}
-
-/// The edit service's view of the fake kernel.
-struct StoreEnv {
-    kernel: Kernel,
-    port: u16,
-    builds: u64,
-    /// The reply to the latest build, which the next upload must match, as the
-    /// kernel requires.
-    last_build: Option<Vec<u8>>,
-    /// The notes host, lent while the edit service handles a message, so a
-    /// relayed control request reaches it.
-    host: Option<NotesHost>,
-}
-
-type NotesHost = Host<LocalEnv<WasmInstance>>;
-
-/// What the kernel's COMP_CONTROL does: its own check of the request, then
-/// `ctl <request>` to the notes host as the kernel.
-fn relay(host: Option<&mut NotesHost>, component: &str, request: &str) -> Result<Vec<u8>, Error> {
-    if !kabi::live::relayable(request) {
-        return Err(Error::Invalid);
-    }
-    let host = host
-        .filter(|_| component == "notes")
-        .ok_or(Error::NotFound)?;
-    let request = format!("{}{request}", kabi::live::CONTROL_PREFIX);
-    host.handle(0, request.as_bytes()).map_err(|_| Error::Dead)
-}
-
-impl StoreEnv {
-    /// What the kernel's COMP_PUT does: the upload must be the latest build's
-    /// artifact, then pass the store's rules.
-    fn upload(&mut self, artifact: &[u8], base: &str, commit: &str) -> Result<(), Error> {
-        let reply = self.last_build.take();
-        let bound = reply
-            .as_deref()
-            .map_or(Err("no build came before it"), |reply| {
-                wire::check_built_response(reply, artifact, base, commit)
-            });
-        let mut component = self.kernel.component.borrow_mut();
-        if bound.is_err() {
-            component.uploads.rejected += 1;
-            return Err(Error::Invalid);
-        }
-        let meta = uploads::meta(artifact);
-        component
-            .put(&meta, Arc::new(artifact.to_vec()), base, commit, 0)
-            .map(|_| ())
-    }
-}
-
-impl Env for StoreEnv {
-    fn info(&mut self, component: &str) -> Result<Info, Error> {
-        let store = self.kernel.component.borrow();
-        if store.name != component {
-            return Err(Error::NotFound);
-        }
-        Ok(store.info())
-    }
-
-    fn artifact(&mut self, _component: &str, label: &str) -> Result<Vec<u8>, Error> {
-        let component = self.kernel.component.borrow();
-        let label = match label {
-            "" => component.ledger.active().ok_or(Error::NotFound)?,
-            label => label,
-        };
-        Ok(component.bytes(label)?.as_slice().to_vec())
-    }
-
-    fn put(
-        &mut self,
-        _component: &str,
-        artifact: &[u8],
-        base: &str,
-        commit: &str,
-    ) -> Result<(), Error> {
-        self.upload(artifact, base, commit)
-    }
-
-    fn build(&mut self, request: &[u8], timeout_ms: u64) -> Result<Vec<u8>, Error> {
-        let builds = request.starts_with(b"POST /build ");
-        if builds {
-            self.builds += 1;
-        }
-        let mut stream =
-            TcpStream::connect(("127.0.0.1", self.port)).map_err(|_| Error::Network)?;
-        stream
-            .set_read_timeout(Some(Duration::from_millis(timeout_ms)))
-            .map_err(|_| Error::Network)?;
-        stream.write_all(request).map_err(|_| Error::Network)?;
-        let mut response = Vec::new();
-        stream
-            .read_to_end(&mut response)
-            .map_err(|_| Error::TimedOut)?;
-        if builds {
-            self.last_build = Some(response.clone());
-        }
-        Ok(response)
-    }
-
-    fn control(&mut self, component: &str, request: &str) -> Result<Vec<u8>, Error> {
-        relay(self.host.as_mut(), component, request)
-    }
-
-    fn log(&mut self, text: &str) {
-        println!("  | [edit] {text}");
-    }
 }
 
 struct EditSmoke {
@@ -196,6 +85,13 @@ impl EditSmoke {
             self.restored = Some(restore.notice);
         }
         let reply = self.service.handle(&mut self.env, caller, message);
+        // As the kernel's COMP_PUT hook: each upload stored meanwhile reaches the
+        // journal before the answer does.
+        for (component, base, label) in std::mem::take(&mut self.env.uploaded) {
+            if let Some(warning) = self.journal.built(&component, &base, &label) {
+                println!("xtask: edit: {warning}");
+            }
+        }
         if caller == 0
             && let Some(warning) = self.journal.record(message, reply.as_bytes())
         {
@@ -204,7 +100,8 @@ impl EditSmoke {
         let pinned = self.journal.session().map(|(_, label)| label.to_string());
         self.kernel.component.borrow_mut().uploads.pinned = pinned;
         self.host = self.env.host.take();
-        reply
+        // The line saying a build moved the cursor is for the journal alone.
+        String::from_utf8_lossy(ipc::split_moved(reply.as_bytes()).1).into_owned()
     }
 }
 
@@ -385,7 +282,7 @@ impl Driver for EditSmoke {
             .as_slice()
             .to_vec();
         let commit = "0".repeat(kabi::live::COMMIT_LEN);
-        self.env.upload(&bytes, label, &commit)
+        self.env.upload(&bytes, label, &commit).map(|_| ())
     }
 
     fn relay(&mut self, request: &str) -> Result<String, Error> {
@@ -401,6 +298,10 @@ impl Driver for EditSmoke {
 
     fn restored(&mut self) -> Option<String> {
         self.restored.clone()
+    }
+
+    fn wait(&mut self, ms: u64) {
+        std::thread::sleep(std::time::Duration::from_millis(ms));
     }
 }
 
@@ -446,6 +347,8 @@ pub fn run(root: &Path, modules: &[Module]) -> Result<(), String> {
             port: builds.port,
             builds: 0,
             last_build: None,
+            uploaded: Vec::new(),
+            job: None,
             host: None,
         },
         editing: false,

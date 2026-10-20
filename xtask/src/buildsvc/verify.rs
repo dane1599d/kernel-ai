@@ -39,8 +39,8 @@ fn parent(repo: &Path, commit: &str) -> Result<String, String> {
 }
 
 /// The service's repository after the scenario: e1 and e2 built on each other,
-/// the failed build nowhere, `kai/notes` back at the base after e1, and e2's
-/// rollback recorded.
+/// e3 (part F's) on the base, the failed build nowhere, `kai/notes` back at the
+/// base after e1, and e2's rollback recorded.
 pub fn after_edit_case(service: &BuildService) -> Result<(), String> {
     let repo = service.repo_root();
     let base = service.base();
@@ -53,13 +53,22 @@ pub fn after_edit_case(service: &BuildService) -> Result<(), String> {
             "refs/kai/builds/notes",
         ],
     )?;
-    if builds.lines().count() != 2 {
-        return Err(fail(format!("expected two builds, found {builds:?}")));
+    if builds.lines().count() != 3 {
+        return Err(fail(format!("expected three builds, found {builds:?}")));
     }
     let (_, e1) = one_ref(&repo, "refs/kai/builds/notes/e1-*").map_err(fail)?;
     let (_, e2) = one_ref(&repo, "refs/kai/builds/notes/e2-*").map_err(fail)?;
-    if parent(&repo, &e1)? != base || parent(&repo, &e2)? != e1 {
-        return Err(fail(String::from("e1 is not on the base, or e2 not on e1")));
+    let (_, e3) = one_ref(&repo, "refs/kai/builds/notes/e3-*").map_err(fail)?;
+    if parent(&repo, &e1)? != base || parent(&repo, &e2)? != e1 || parent(&repo, &e3)? != base {
+        return Err(fail(String::from(
+            "e1 is not on the base, e2 not on e1, or e3 not on the base",
+        )));
+    }
+    let lib3 = lib_at(&repo, &e3)?;
+    if lib3.contains(", edited live") || !lib3.contains(TRAP) || lib3.contains(COMPILE_ERROR) {
+        return Err(fail(String::from(
+            "e3's source is not part F's edit on the base",
+        )));
     }
     let (lib1, lib2) = (lib_at(&repo, &e1)?, lib_at(&repo, &e2)?);
     if !lib1.contains(", edited live") || lib1.contains(TRAP) || lib1.contains(COMPILE_ERROR) {
@@ -101,15 +110,15 @@ pub fn after_edit_case(service: &BuildService) -> Result<(), String> {
         )));
     }
     let (built, failed, _, syncs, _) = service.counters.get();
-    if (built, failed) != (2, 1) || syncs < 3 {
+    if (built, failed) != (3, 1) || syncs < 3 {
         return Err(fail(format!(
-            "the service built {built}, failed {failed} and synced {syncs} times; expected 2, 1 and 3"
+            "the service built {built}, failed {failed} and synced {syncs} times; expected 3, 1 and 3"
         )));
     }
     if !git(&repo, &["status", "--porcelain"])?.is_empty() {
         return Err(fail(String::from("the work tree is not clean")));
     }
-    println!("xtask: the edit case's repository holds e1 and e2, kai/notes and the rollback");
+    println!("xtask: the edit case's repository holds e1, e2 and e3, kai/notes and the rollback");
     Ok(())
 }
 

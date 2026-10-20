@@ -271,6 +271,8 @@ fn store_upload(name: &str, bytes: Vec<u8>, base: &str, commit: &str) -> Result<
         "live: {name} {label} uploaded (built from {base}, commit {})",
         commit.get(..12).unwrap_or("")
     );
+    // A build ends in the background, so its upload is how the journal hears of it.
+    crate::edit_session::built(name, base, &label);
     Ok(0)
 }
 

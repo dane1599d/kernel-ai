@@ -80,9 +80,6 @@ impl Driver for Kernel {
         if edit_mode::editing().is_none() {
             return Err(format!("{line:?} typed outside edit mode"));
         }
-        if edit_mode::builds(line) {
-            log!("edit: (building on the host...)");
-        }
         self.edits += 1;
         let reply = edit_mode::editor_line(line);
         // A try the kernel relayed reached notes as the kernel's own call.
@@ -182,6 +179,10 @@ impl Driver for Kernel {
 
     fn restored(&mut self) -> Option<String> {
         edit_session::restored()
+    }
+
+    fn wait(&mut self, ms: u64) {
+        threads::sleep_ms(ms);
     }
 }
 

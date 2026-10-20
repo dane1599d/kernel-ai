@@ -105,9 +105,6 @@ pub fn run(_: usize) {
             Some(command) => waiting = kernel_command(command.trim()),
             None if line.is_empty() => {}
             None if edit_mode::editing().is_some() => {
-                if edit_mode::builds(line) {
-                    log!("(building on the host...)");
-                }
                 edit_mode::show(&edit_mode::editor_line(line));
             }
             None if is_answer(line) => log!("! scripts are answered only at their own prompt"),

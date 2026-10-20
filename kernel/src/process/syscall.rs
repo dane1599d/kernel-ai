@@ -160,6 +160,14 @@ fn handle(slot: usize, number: u64, a: [u64; 6]) -> Result<u64, Error> {
             need(slot, cap::PUBLISH)?;
             exchange_to(slot, a[0], Destination::Build)
         }
+        call::BUILD_START => {
+            need(slot, cap::PUBLISH)?;
+            build_start(slot, a[0])
+        }
+        call::BUILD_POLL => {
+            need(slot, cap::PUBLISH)?;
+            build_poll(slot, a[0], a[1])
+        }
         call::COMP_CONTROL => {
             need(slot, cap::PUBLISH)?;
             super::components::control(slot, a[0])
@@ -230,16 +238,10 @@ enum Destination {
     Build,
 }
 
-/// Sends the request to the destination and returns what it answered up to
-/// closing the connection. The reply to a build (`POST /build`) is kept, so the
-/// upload that follows can be checked against it.
-fn exchange_to(slot: usize, request_ptr: u64, destination: Destination) -> Result<u64, Error> {
+/// A ring-3 HTTP request: the struct, the request copied in (at most 64 KiB), the
+/// timeout clamped to 300 s, and the reply's cap.
+fn read_http(slot: usize, request_ptr: u64) -> Result<(HttpRequest, Vec<u8>, u64, usize), Error> {
     let call: HttpRequest = uaccess::read_struct(slot, request_ptr)?;
-    let target = match destination {
-        Destination::Llm => llm::target().map(|(ip, port, _)| (ip, port)),
-        Destination::Build => crate::build_service::target(),
-    };
-    let (ip, port) = target.ok_or(Error::NotFound)?;
     let request_len = usize::try_from(call.request_len).map_err(|_| Error::TooBig)?;
     if request_len > MAX_HTTP_REQUEST {
         return Err(Error::TooBig);
@@ -254,10 +256,22 @@ fn exchange_to(slot: usize, request_ptr: u64, destination: Destination) -> Resul
     request.resize(request_len, 0);
     uaccess::copy_from_user(slot, call.request_ptr, &mut request)?;
     let timeout = call.timeout_ms.clamp(1, MAX_HTTP_TIMEOUT_MS);
-    let builds = matches!(destination, Destination::Build) && request.starts_with(b"POST /build ");
-    if builds {
-        crate::build_service::count_build();
-    }
+    Ok((call, request, timeout, response_cap))
+}
+
+/// Sends the request to the destination and returns what it answered up to
+/// closing the connection. The build service takes only git syncs this way;
+/// builds go through BUILD_START.
+fn exchange_to(slot: usize, request_ptr: u64, destination: Destination) -> Result<u64, Error> {
+    let (call, request, timeout, response_cap) = read_http(slot, request_ptr)?;
+    let target = match destination {
+        Destination::Llm => llm::target().map(|(ip, port, _)| (ip, port)),
+        Destination::Build if !editcore::wire::is_sync_request(&request) => {
+            return Err(Error::Invalid);
+        }
+        Destination::Build => crate::build_service::target(),
+    };
+    let (ip, port) = target.ok_or(Error::NotFound)?;
     let response = net::exchange((ip, port), &request, timeout, response_cap, || {
         super::killed(slot)
     })
@@ -268,22 +282,43 @@ fn exchange_to(slot: usize, request_ptr: u64, destination: Destination) -> Resul
                 super::identity(slot).name.as_str()
             );
         }
-        match error {
-            "net: request timed out" => Error::TimedOut,
-            "net: out of memory" => Error::NoMemory,
-            _ => Error::Network,
-        }
+        net::error_code(error)
     })?;
     drop(request);
     if super::killed(slot) {
         return Err(Error::Dead);
     }
     uaccess::copy_to_user(slot, call.response_ptr, &response)?;
-    let len = response.len() as u64;
-    if builds {
-        crate::build_service::keep_build_reply(response);
+    Ok(response.len() as u64)
+}
+
+/// BUILD_START: hands a build to the background job.
+fn build_start(slot: usize, request_ptr: u64) -> Result<u64, Error> {
+    let (_, request, timeout, response_cap) = read_http(slot, request_ptr)?;
+    crate::build_job::start(request, timeout, response_cap).map(|()| 0)
+}
+
+/// BUILD_POLL: the job's reply, copied outside the job's lock. A process being
+/// killed collects nothing, and a reply the copy fails on stays for the next poll.
+fn build_poll(slot: usize, buf: u64, cap: u64) -> Result<u64, Error> {
+    if super::killed(slot) {
+        return Err(Error::Dead);
     }
-    Ok(len)
+    let cap = usize::try_from(cap).unwrap_or(usize::MAX);
+    let (len, reply) = crate::build_job::take(cap)?;
+    if let Some(reply) = reply {
+        let copied = uaccess::copy_to_user(slot, buf, &reply);
+        let error = match copied {
+            Err(error) => Some(error),
+            Ok(()) if super::killed(slot) => Some(Error::Dead),
+            Ok(()) => None,
+        };
+        if let Some(error) = error {
+            crate::build_job::put_back(reply);
+            return Err(error);
+        }
+    }
+    Ok(len as u64)
 }
 
 /// Calls another service on behalf of the process. The target is named by the
