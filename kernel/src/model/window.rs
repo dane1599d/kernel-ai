@@ -1,14 +1,20 @@
 //! The model window's page tables in memory: built once from zeroed frames with
 //! `mm::window`'s host-tested encoder, every entry of every table written whole, and
-//! checked by reading them back. The frames are the kernel's and never freed.
+//! checked by reading them back against where they were built. The frames are the
+//! kernel's and never freed.
 
 use crate::memory;
 use alloc::vec::Vec;
 use mm::window::{self, directories_for};
 
-/// Builds the tables of a window of `runs` runs, run `k` at physical `run(k)`;
-/// returns the PDPT's physical address.
-pub fn build(runs: u64, run: impl Fn(u64) -> u64) -> Result<u64, &'static str> {
+/// A built window: its PDPT, which MODEL_MAP links, and its directories.
+pub struct Window {
+    pub pdpt: u64,
+    directories: Vec<u64>,
+}
+
+/// Builds the tables of a window of `runs` runs, run `k` at physical `run(k)`.
+pub fn build(runs: u64, run: impl Fn(u64) -> u64) -> Result<Window, &'static str> {
     let count = directories_for(runs);
     if runs == 0 || runs > window::MAX_RUNS {
         return Err("a model window must be 1 to 262,144 runs");
@@ -41,20 +47,28 @@ pub fn build(runs: u64, run: impl Fn(u64) -> u64) -> Result<u64, &'static str> {
     }
     let entries = window::pdpt(&directories).map_err(|_| "a window table is misplaced")?;
     write(pdpt, &entries);
-    check(pdpt, runs, &run)?;
-    Ok(pdpt)
+    let built = Window { pdpt, directories };
+    check(&built, runs, &run)?;
+    Ok(built)
 }
 
-/// Reads the window's tables back and compares every entry with the encoder's,
-/// ignoring the Accessed and Dirty bits the CPU sets.
-pub fn check(pdpt: u64, runs: u64, run: impl Fn(u64) -> u64) -> Result<(), &'static str> {
-    let top = read(pdpt);
-    let directories: Vec<u64> = top
-        .iter()
-        .take(directories_for(runs) as usize)
-        .map(|entry| entry & window::ADDRESS)
-        .collect();
-    if window::pdpt(&directories).map_err(|_| "the window's PDPT is broken")? != top {
+/// Reads the window's tables back and compares every entry with the encoder's for
+/// the frames it was built in, ignoring the Accessed and Dirty bits the CPU sets,
+/// and checks every one of those frames is still allocated: a table freed while
+/// still linked would otherwise go unnoticed until its frame was reused.
+pub fn check(built: &Window, runs: u64, run: impl Fn(u64) -> u64) -> Result<(), &'static str> {
+    let directories = &built.directories;
+    if directories.len() as u64 != directories_for(runs) {
+        return Err("the window has not as many directories as its runs need");
+    }
+    let held = memory::with(|m| {
+        m.frame_in_use(built.pdpt) && directories.iter().all(|&d| m.frame_in_use(d))
+    });
+    if !held {
+        return Err("a window table's frame was freed");
+    }
+    let want = window::pdpt(directories).map_err(|_| "the window's PDPT is broken")?;
+    if read(built.pdpt) != want {
         return Err("the window's PDPT is not what was built");
     }
     for (d, &directory) in directories.iter().enumerate() {

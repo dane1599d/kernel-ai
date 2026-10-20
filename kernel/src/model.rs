@@ -63,7 +63,9 @@ pub struct Model {
 
 static MODEL: Once<Model> = Once::new();
 /// The window's PDPT, once built: what MODEL_MAP links.
-static WINDOW: Once<u64> = Once::new();
+static WINDOW: Once<window::Window> = Once::new();
+/// Test only (`bigmap`): a longer window MODEL_MAP links instead.
+static TEST_WINDOW: Once<window::Window> = Once::new();
 /// Why an attached `kai-model` disk was not kept, for `:model`.
 static REJECTED: Once<String> = Once::new();
 /// Copies made from the disk, and MODEL_MAP calls that linked the window, so a test
@@ -121,10 +123,10 @@ impl Model {
 
 /// Checks the window's tables still hold exactly what was built.
 pub fn check_window() -> Result<(), &'static str> {
-    let (Some(model), Some(&pdpt)) = (MODEL.get(), WINDOW.get()) else {
+    let (Some(model), Some(built)) = (MODEL.get(), WINDOW.get()) else {
         return Err("model: no window to check");
     };
-    window::check(pdpt, model.run_count(), |k| model.run(k))
+    window::check(built, model.run_count(), |k| model.run(k))
 }
 
 /// Copies the `kai-model` disk into memory and builds its window, if there is a
@@ -138,14 +140,14 @@ pub fn load(cmdline: &str) {
         Some(Ok(model)) => {
             let runs = model.runs.len() as u64;
             match window::build(runs, |k| model.run(k)) {
-                Ok(pdpt) => {
+                Ok(built) => {
                     log!(
                         "model: {} bytes of GGUF v3 copied from the kai-model disk into {runs} runs of 2 MiB in {} ms; window of {} page tables",
                         model.len,
                         (hpet::nanos() - started) / 1_000_000,
                         mm::window::table_frames(runs)
                     );
-                    WINDOW.call_once(|| pdpt);
+                    WINDOW.call_once(|| built);
                     MODEL.call_once(|| model);
                     LOADS.fetch_add(1, Ordering::SeqCst);
                 }
@@ -284,8 +286,30 @@ pub fn map(slot: usize) -> Result<u64, Error> {
         return Err(Error::Permission);
     }
     let model = MODEL.get().ok_or(Error::NotFound)?;
-    let pdpt = *WINDOW.get().ok_or(Error::NotFound)?;
+    let pdpt = TEST_WINDOW
+        .get()
+        .or(WINDOW.get())
+        .ok_or(Error::NotFound)?
+        .pdpt;
     process::link_window(slot, kabi::layout::MODEL_BASE, pdpt)?;
     MAPS.fetch_add(1, Ordering::SeqCst);
     Ok(model.len)
+}
+
+/// Test only (`bigmap`): builds a window of `runs` runs, run `k` at physical
+/// `source(k)`, with the same builder as the model's, and has MODEL_MAP link it
+/// from now on. Once a boot.
+pub fn use_test_window(runs: u64, source: impl Fn(u64) -> u64) -> Result<(), &'static str> {
+    if TEST_WINDOW.get().is_some() {
+        return Err("model: the test window is built already");
+    }
+    let built = window::build(runs, source)?;
+    TEST_WINDOW.call_once(|| built);
+    Ok(())
+}
+
+/// Test only: checks the test window's tables still hold exactly what was built.
+pub fn check_test_window(runs: u64, source: impl Fn(u64) -> u64) -> Result<(), &'static str> {
+    let built = TEST_WINDOW.get().ok_or("model: no test window")?;
+    window::check(built, runs, source)
 }

@@ -187,6 +187,14 @@ impl Memory {
             .map(|frame| frame * PAGE_SIZE)
     }
 
+    /// As [`Self::allocate_aligned`], but the run starts at physical `lowest` or
+    /// above: for a test that needs memory above 4 GiB.
+    pub fn allocate_aligned_from(&mut self, lowest: u64, count: u64, align: u64) -> Option<u64> {
+        self.frames
+            .allocate_contiguous_from(lowest / PAGE_SIZE, count, align)
+            .map(|frame| frame * PAGE_SIZE)
+    }
+
     /// Allocates one zeroed frame; returns its physical address.
     pub fn allocate_zeroed_frame(&mut self) -> Option<u64> {
         let number = self.frames.allocate()?;

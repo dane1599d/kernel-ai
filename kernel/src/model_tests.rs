@@ -134,7 +134,8 @@ fn start_and_ask(caps: u64) -> Result<(u64, Option<String>), &'static str> {
     }
 }
 
-/// Kills `pid` and waits until its slot is free and its frames are back.
+/// Kills `pid`, waits until its slot is free and its frames are back, and checks
+/// its teardown left the model's window intact.
 fn stop(pid: u64) -> Result<(), &'static str> {
     process::kill(pid, ExitReason::Killed).map_err(|_| "model: cannot kill llm")?;
     let deadline = hpet::nanos() + EXIT_TIMEOUT_MS * 1_000_000;
@@ -142,7 +143,7 @@ fn stop(pid: u64) -> Result<(), &'static str> {
         let mut live = false;
         process::services(|other, _| live |= other == pid);
         if !live {
-            return Ok(());
+            return model::check_window();
         }
         threads::sleep_ms(10);
     }

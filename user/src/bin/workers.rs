@@ -18,12 +18,16 @@
 //!   kills the process (see `workers/futex.rs`).
 //! - `mode=matvec`: an f32 matrix-vector product over `user::pool` equals one
 //!   thread's, bit for bit (see `workers/matvec.rs`).
+//! - `mode=bigmap` and `mode=nomap`: the model window read past 4 GiB, and
+//!   MODEL_MAP refused without `cap::MODEL` (see `workers/bigmap.rs`).
 
 #![no_std]
 #![no_main]
 
 #[path = "workers/basic.rs"]
 mod basic;
+#[path = "workers/bigmap.rs"]
+mod bigmap;
 #[path = "workers/burst.rs"]
 mod burst;
 #[path = "workers/futex.rs"]
@@ -52,6 +56,8 @@ fn main() -> i32 {
         Some("park") => futex::park(),
         Some("spin") => futex::spin(),
         Some("matvec") => matvec::matvec(),
+        Some("bigmap") => bigmap::bigmap(&args),
+        Some("nomap") => bigmap::nomap(),
         other => {
             println!("workers: unknown mode {other:?}");
             1

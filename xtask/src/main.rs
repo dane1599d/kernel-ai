@@ -187,7 +187,11 @@ fn execute(options: &Options) -> Result<(), String> {
         modules.truncate(shared);
         let firmware = find_firmware(&qemu, &target_dir)?;
         let monitor = qemu::free_port()?;
-        let mut args = qemu::args(&firmware, accel, true, disk.as_ref(), options.sizing);
+        let sizing = options::Sizing {
+            mem_mib: options.sizing.mem_mib.max(case.memory_mib),
+            ..options.sizing
+        };
+        let mut args = qemu::args(&firmware, accel, true, disk.as_ref(), sizing);
         args.push("-monitor".into());
         args.push(format!("tcp:127.0.0.1:{monitor},server=on,wait=off"));
         let run = qemu::TestRun {

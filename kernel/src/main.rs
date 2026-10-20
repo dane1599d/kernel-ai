@@ -19,6 +19,7 @@ extern crate alloc;
 
 mod apic;
 mod backtrace;
+mod bigmap_tests;
 mod blk_tests;
 mod boot_manifest;
 mod build_service;
@@ -280,6 +281,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::ThreadsKill => run_case(thread_tests::kill_check),
         SelfTest::Matvec => run_case(compute_tests::matvec_check),
         SelfTest::ComputeKeys => run_case(compute_tests::keys_check),
+        SelfTest::Bigmap => run_case(bigmap_tests::check),
         SelfTest::Boot | SelfTest::None => {}
     }
 
