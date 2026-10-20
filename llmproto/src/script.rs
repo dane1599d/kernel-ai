@@ -111,6 +111,11 @@ const EXAMPLES: &[(&str, &str, &str)] = &[
         "Switches to round-robin if needed and prints the policy.",
     ),
     (
+        "print the names of all services",
+        "let names = \"\";\nfor p in processes() {\n    if names != \"\" {\n        names += \", \";\n    }\n    names += p.name;\n}\nprint(names);",
+        "Prints every service name, separated by commas.",
+    ),
+    (
         "delete all my files",
         "print(\"I cannot do that: scripts here have no access to files.\");",
         "Explains that there is no file access.",
@@ -127,12 +132,18 @@ pub fn system_prompt() -> String {
          \n\
          Rhai rules here:\n\
          - End statements with ';'. Declare variables with let.\n\
-         - Integers only, no floating point: for a percentage write x * 100 / y.\n\
-         - No loops (for, while, loop, do), no closures, no fn definitions, no eval.\n\
+         - Integers only: never write 1.5 or 100.0. Percent: x * 100 / y.\n\
+         - / rounds down (7 / 2 is 3), so rounded down needs nothing more.\n\
+         - Three decimals: let f = \"00\" + ms % 1000; print(ms / 1000 + \".\" + f.sub_string(f.len() - 3));\n\
+         - Loops: only for x in list { } or for i in 0..n { }. No while, loop or do.\n\
+         - No closures, no fn definitions, no eval.\n\
          - Join strings with +: \"a\" + b. print(value) prints one line.\n\
          - if needs braces: if a > b { print(\"yes\"); } else { print(\"no\"); }\n\
-         - Arrays: [1, 2], a.len(), a[0]. Maps: #{a: 1}, m.a, m[\"a\"].\n\
+         - Arrays: [1, 2], a.len(), a[0], a[a.len() - 1]. Maps: #{a: 1, b: 2}, m.a, m[\"a\"].\n\
+         - A field is a name after a dot: memory().free_mib, processes()[0].name.\n\
          - Call only the functions below and Rhai's built-in string, array and map methods.\n\
+         - Print exactly what is asked, in its format, with its words and units (MiB, KiB).\n\
+         - Do the steps in the order asked: print first if the request prints first.\n\
          - If the request cannot be done with these functions, print why instead.\n\
          \n\
          Functions:\n",

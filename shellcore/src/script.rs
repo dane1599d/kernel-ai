@@ -2,9 +2,11 @@
 //! shown in full, and run only after a yes, in a fresh engine that has only the
 //! functions the script names.
 //!
-//! The strict profile has no loops of any kind, no closures, no `fn`, no indirect
-//! calls (`Fn`, `call`, `curry`, `eval`) and no undefined variables, so a script
-//! can only reach an OS function by writing its name. The names found in the text
+//! The strict profile has no closures, no `fn`, no indirect calls (`Fn`, `call`,
+//! `curry`, `eval`) and no undefined variables, so a script can only reach an OS
+//! function by writing its name. Its only loop is `for x in <array, string or
+//! range>`, which ends by itself; `while`, `loop` and `do` stay off, and the
+//! operation, time and heap limits stop a `for` as they stop anything else. The names found in the text
 //! (strings and comments included, so the list can only be too long, never too
 //! short) are what the confirmation shows and all the run is given.
 
@@ -135,13 +137,15 @@ fn strict(
 ) -> Engine {
     let mut engine = engine::bounded(line, host, config);
     engine
-        .set_allow_looping(false)
         .set_allow_anonymous_fn(false)
         .set_strict_variables(true)
         .set_max_call_levels(8);
-    for symbol in ["fn", "Fn", "call", "curry", "eval"] {
+    for symbol in ["while", "loop", "do", "fn", "Fn", "call", "curry", "eval"] {
         engine.disable_symbol(symbol);
     }
+    // Numbers are integers only, so rounding one down leaves it as it is; models
+    // write `floor` for "rounded down" all the same.
+    engine.register_fn("floor", |x: INT| x);
     register(&mut engine, host, granted);
     engine
 }
