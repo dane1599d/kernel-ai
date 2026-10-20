@@ -389,7 +389,7 @@ pub fn spawn(request: &SpawnRequest) -> Result<u64, kabi::Error> {
     })?;
     if threads::spawn("user", process_main, slot).is_err() {
         with_table(|table| table[slot] = Process::FREE);
-        supervision::record_load_failure(pid, &name, request.supervisor);
+        supervision::record_load_failure(pid, &name, request.supervisor, request.spawner);
         return Err(Error::NoMemory);
     }
     Ok(pid)

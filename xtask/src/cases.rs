@@ -163,6 +163,8 @@ pub const TEST_CASES: &[TestCase] = &[
         ],
         ..case("model", "test=model")
     },
+    case("fpu", "test=fpu"),
+    case("probe", "test=probe"),
 ];
 
 /// The M5 exit test: a 10-minute spawn, exit and sleep storm.

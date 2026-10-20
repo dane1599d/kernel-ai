@@ -7,9 +7,9 @@
 //! command line selects a self-test: `test` (boot checks), or `test=` one of
 //! `page-fault`, `double-fault`, `write-protect`, `stack-overflow`, `timer`,
 //! `keyboard`, `pointer`, `sched`, `watchdog`, `smp`, `tlb`, `storm`, `storm-SECONDS`,
-//! `net`, `terminal`, `blk` or `model`. `llm=IP:PORT` and `model=NAME` point the LLM client at
-//! a server; `model_len=` and `model_fnv=` describe the file behind the `kai-model`
-//! disk; `pointerlog` logs every pointer move and click, and `screenlog` copies
+//! `net`, `terminal`, `blk`, `model`, `fpu` or `probe`. `llm=IP:PORT` and `model=NAME` point the
+//! LLM client at a server; `model_len=` and `model_fnv=` describe the file behind the
+//! `kai-model` disk; `pointerlog` logs every pointer move and click, and `screenlog` copies
 //! each console repaint to serial as `screen:` lines.
 
 #![no_std]
@@ -30,6 +30,7 @@ mod edit_tests;
 mod entry;
 mod faults;
 mod fpu;
+mod fpu_tests;
 mod gdt;
 mod hpet;
 mod i8042;
@@ -270,6 +271,8 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::ManifestGood => run_case(manifest_tests::check_good),
         SelfTest::Blk => run_case(|| blk_tests::check(cmdline())),
         SelfTest::Model => run_case(|| model_tests::check(cmdline())),
+        SelfTest::Fpu => run_case(fpu_tests::fpu_check),
+        SelfTest::Probe => run_case(fpu_tests::probe_check),
         SelfTest::Boot | SelfTest::None => {}
     }
 

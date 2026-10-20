@@ -328,6 +328,7 @@ const USER_PROGRAMS: &[&str] = &[
     "probe",
     "comphost",
     "edit",
+    "vecstress",
 ];
 
 /// Builds every user program; returns (name, ELF path) pairs.

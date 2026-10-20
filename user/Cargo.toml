@@ -13,6 +13,7 @@ test = false
 bench = false
 
 [dependencies]
+cpufeat = { path = "../cpufeat" }
 kabi = { path = "../kabi" }
 livecore = { path = "../livecore" }
 editcore = { path = "../editcore" }

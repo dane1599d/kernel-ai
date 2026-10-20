@@ -20,7 +20,8 @@
 //!   the enabled components comes from CPUID.(0xD,0).EBX after XSETBV, and boot fails
 //!   if it does not fit.
 
-use crate::{percpu, threads};
+use crate::percpu::{self, MAX_CPUS};
+use crate::threads;
 use core::arch::x86_64::__cpuid_count;
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -69,6 +70,12 @@ const fn init_image() -> [u8; AREA_BYTES] {
 
 /// Set from a thread's first ring-3 entry until it exits: its vector state is saved.
 static IN_RING3: [AtomicBool; MAX_THREADS] = [const { AtomicBool::new(false) }; MAX_THREADS];
+/// The CPU that last saved, or first loaded, each thread's state.
+static SAVED_ON: [AtomicUsize; MAX_THREADS] = [const { AtomicUsize::new(0) }; MAX_THREADS];
+/// Ring-3 states loaded on each CPU, and how many of them another CPU had saved: the
+/// `fpu` case's proof that state really moved.
+static RESTORES: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+static MOVED: AtomicU64 = AtomicU64::new(0);
 /// What the boot CPU chose, stored before any other CPU starts; the others must match.
 static XCR0: AtomicU64 = AtomicU64::new(0);
 static AREA_SIZE: AtomicUsize = AtomicUsize::new(0);
@@ -109,16 +116,22 @@ pub fn area_size() -> usize {
 /// entered ring 3. Called by `threads::switch` before the stack switch, with
 /// interrupts off.
 pub fn switch(from: Tid, to: Tid) {
+    let cpu = percpu::index();
     if IN_RING3[from].load(Ordering::Acquire) {
         // SAFETY: `from` is running on this CPU, so no other CPU touches its area,
         // which is 64-byte aligned and at least the CPU's XSAVE size; XSAVE is on.
         unsafe { xsave(area(from)) };
+        SAVED_ON[from].store(cpu, Ordering::Relaxed);
     }
     if IN_RING3[to].load(Ordering::Acquire) {
         // SAFETY: `to` is not running anywhere (ON_CPU was false when this CPU took
         // it), so its area holds what XSAVE last wrote for it, and nothing writes it
         // now.
         unsafe { restore(area(to)) };
+        RESTORES[cpu].fetch_add(1, Ordering::Relaxed);
+        if SAVED_ON[to].load(Ordering::Relaxed) != cpu {
+            MOVED.fetch_add(1, Ordering::Relaxed);
+        }
     }
 }
 
@@ -136,6 +149,7 @@ pub fn enter_ring3() {
     unsafe { core::ptr::copy_nonoverlapping(INIT.0.as_ptr(), area(tid), size) };
     // SAFETY: the area now holds the init image, a valid standard-format XSAVE area.
     unsafe { restore(area(tid)) };
+    SAVED_ON[tid].store(percpu::index(), Ordering::Relaxed);
     IN_RING3[tid].store(true, Ordering::Release);
 }
 
@@ -146,6 +160,12 @@ pub fn leave_ring3() {
     interrupts::without_interrupts(|| {
         IN_RING3[threads::current_tid()].store(false, Ordering::Release);
     });
+}
+
+/// Ring-3 states loaded per CPU since boot, and how many of them another CPU saved.
+pub fn restores() -> ([u64; MAX_CPUS], u64) {
+    let per_cpu = core::array::from_fn(|cpu| RESTORES[cpu].load(Ordering::Relaxed));
+    (per_cpu, MOVED.load(Ordering::Relaxed))
 }
 
 fn area(tid: Tid) -> *mut u8 {

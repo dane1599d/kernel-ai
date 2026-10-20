@@ -13,6 +13,7 @@ extern crate alloc;
 pub mod live;
 pub mod model;
 pub mod plan;
+pub mod probe;
 
 /// System-call numbers.
 pub mod call {
@@ -357,40 +358,6 @@ mod tests {
         }
         assert_eq!(ExitReason::from_raw(6), None);
     }
-}
-
-/// The isolation probe: a test program that, on its Nth start, tries operation
-/// `N % OPS.len()`. Ops 0-2 (x87, SSE and AVX) ring 3 may do since L2, and must
-/// complete; every other op it must not be allowed to do, and the kernel's test
-/// checks each attempt was stopped by one of the listed exception vectors.
-pub mod probe {
-    /// (operation, vectors that may stop it); an empty list means it must complete.
-    pub const OPS: [(&str, &[u64]); 18] = [
-        ("x87 instruction", &[]),
-        ("SSE instruction", &[]),
-        // Completes when the kernel turned AVX on; a CPU without AVX raises #UD.
-        ("AVX instruction", &[]),
-        ("cli", &[13]),
-        ("hlt", &[13]),
-        ("in from a port", &[13]),
-        ("rdmsr", &[13]),
-        ("write cr3", &[13]),
-        // Stopped only when UMIP is on; otherwise the probe exits normally.
-        ("sgdt", &[13]),
-        ("swapgs", &[13]),
-        ("int 0x80", &[11, 13]),
-        ("int3", &[13]),
-        // #GP on Intel (SYSENTER_CS is 0), #UD on AMD in long mode.
-        ("sysenter", &[6, 13]),
-        ("write own code", &[14]),
-        ("run own data", &[14]),
-        ("read kernel memory", &[14]),
-        ("syscall with a kernel stack pointer", &[13]),
-        // An x87 error kills only the process: CR0.NE makes it #MF, not an IRQ.
-        ("unmasked x87 exception", &[16]),
-    ];
-    pub const AVX: usize = 2;
-    pub const SGDT: usize = 8;
 }
 
 // The fixed layout must leave the image, heap and stack apart, inside user space,
