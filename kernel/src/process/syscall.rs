@@ -173,6 +173,8 @@ fn handle(slot: usize, number: u64, a: [u64; 6]) -> Result<u64, Error> {
             super::workers::spawn(slot, a[0], a[1], a[2], a[3])
         }
         call::THREAD_EXIT => super::workers::exit_worker(),
+        call::FUTEX_WAIT => super::futex::wait(slot, a[0], a[1], a[2]),
+        call::FUTEX_WAKE => super::futex::wake(slot, a[0], a[1]),
         _ => Err(Error::NotFound),
     }
 }

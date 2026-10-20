@@ -83,6 +83,8 @@ pub fn worker_may(number: u64) -> bool {
             | call::TIME
             | call::METRICS
             | call::THREAD_EXIT
+            | call::FUTEX_WAIT
+            | call::FUTEX_WAKE
     )
 }
 
@@ -115,7 +117,7 @@ impl Process {
 
 /// Wakes each of `tids`; a thread that is not blocked is not disturbed.
 pub fn wake_all(tids: &Tids) {
-    interrupts::without_interrupts(|| tids.iter().flatten().for_each(|&tid| threads::wake(tid)));
+    interrupts::without_interrupts(|| threads::wake_all(tids.iter().flatten().copied()));
 }
 
 /// The THREAD_SPAWN call.

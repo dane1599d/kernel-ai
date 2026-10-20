@@ -13,6 +13,9 @@
 //!   Permission (exit 0).
 //! - `mode=burst`, `mode=runaway`, `mode=serve`: per-thread burst accounting and
 //!   the compute allowance (see `workers/burst.rs`).
+//! - `mode=futex`: FUTEX_WAIT and FUTEX_WAKE; `mode=park` and `mode=spin`: every
+//!   thread waits on a futex, or the workers compute in ring 3, until the kernel
+//!   kills the process (see `workers/futex.rs`).
 
 #![no_std]
 #![no_main]
@@ -21,6 +24,8 @@
 mod basic;
 #[path = "workers/burst.rs"]
 mod burst;
+#[path = "workers/futex.rs"]
+mod futex;
 
 use user::{arg, args, println};
 
@@ -37,6 +42,9 @@ fn main() -> i32 {
         Some("burst") => burst::burst(),
         Some("runaway") => burst::runaway(),
         Some("serve") => burst::serve(),
+        Some("futex") => futex::futex(),
+        Some("park") => futex::park(),
+        Some("spin") => futex::spin(),
         other => {
             println!("workers: unknown mode {other:?}");
             1

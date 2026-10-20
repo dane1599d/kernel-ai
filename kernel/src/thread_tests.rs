@@ -14,12 +14,23 @@
 //! more than 500 ms together, all live, though main starts at once on tids the
 //! runaway may have left; and a service computing 1,500 ms for a kernel call answers
 //! it, then is killed once it computes with no call to serve. Afterwards no user
-//! frame is left and every thread slot the processes took is free again.
+//! frame is left and every thread slot the processes took is free again. Then
+//! `mode=futex`: ping-pong through FUTEX_WAIT and FUTEX_WAKE with a worker on
+//! every CPU, and the calls' answers for a stale value, a timeout, no waiter, a
+//! misaligned word and unmapped or kernel memory.
+//!
+//! `test=threads-kill`: the kernel kills a process whose main thread and workers
+//! all wait on futexes with no timeout, then one whose workers compute in ring 3;
+//! each ends Killed, after which USER_FRAMES is 0, every thread slot is free, and
+//! the free frames are exactly what they were before the process, counting the
+//! kernel stacks a new thread slot keeps. The futex ping-pong then passes again
+//! in a new process, likely in the same slot.
 
 use crate::fpu_tests::wait_exit;
+use crate::memory::stack;
 use crate::memory::user::USER_FRAMES;
 use crate::process::{self, SpawnRequest};
-use crate::{hpet, ipc, log, smp, threads};
+use crate::{hpet, ipc, log, memory, smp, threads};
 use core::sync::atomic::Ordering;
 use kabi::{ExitReason, Limits, cap};
 
@@ -145,6 +156,73 @@ fn serve_check() -> Result<(), &'static str> {
     Ok(())
 }
 
+/// How a `threads-kill` process waits for its kill.
+#[derive(Clone, Copy)]
+enum Waiting {
+    /// Main and every worker are in futex waits with no timeout.
+    Futex,
+    /// Main waits on a futex; the workers compute in ring 3.
+    Compute,
+}
+
+/// Starts `mode`, waits until every thread is in place, kills it, and checks it
+/// ended Killed with every frame and thread slot back.
+fn kill_mid_run(mode: &str, waiting: Waiting) -> Result<(), &'static str> {
+    let slots = threads::in_use();
+    let cpus = smp::online();
+    let before = memory::with(|m| m.free_frames());
+    let stacks = stack::frames_taken();
+    let pid = start(mode, &alloc::format!("mode={mode}"), cap::THREADS, 0)?;
+    let deadline = hpet::nanos() + SETTLE_MS * 1_000_000;
+    let ready = || match waiting {
+        Waiting::Futex => process::futex::waiters(pid) == cpus + 1,
+        Waiting::Compute => {
+            process::thread_count(pid) == cpus + 1 && process::futex::waiters(pid) == 1
+        }
+    };
+    while !ready() {
+        if hpet::nanos() > deadline {
+            return Err("threads-kill: the threads did not get in place");
+        }
+        threads::sleep_ms(10);
+    }
+    // Let computing workers run in ring 3 with their vector state live.
+    threads::sleep_ms(100);
+    process::kill(pid, ExitReason::Killed).map_err(|_| "threads-kill: the process was gone")?;
+    if wait_exit(pid)? != (ExitReason::Killed, 0) {
+        return Err("threads-kill: the process ended the wrong way");
+    }
+    settle(slots)?;
+    let after = memory::with(|m| m.free_frames());
+    let new_stacks = stack::frames_taken() - stacks;
+    let user_frames = USER_FRAMES.load(Ordering::SeqCst);
+    log!(
+        "threads-kill: {mode}: {} threads killed; free frames {before} before, {after} after, {new_stacks} taken by new kernel stacks; USER_FRAMES {user_frames}",
+        cpus + 1
+    );
+    if user_frames != 0 || after + new_stacks != before {
+        return Err("threads-kill: frames were not all freed");
+    }
+    Ok(())
+}
+
+/// The `threads-kill` case.
+pub fn kill_check() -> Result<(), &'static str> {
+    kill_mid_run("park", Waiting::Futex)?;
+    kill_mid_run("spin", Waiting::Compute)?;
+    expect(
+        "pingpong",
+        "mode=futex",
+        cap::THREADS,
+        (ExitReason::Exited, 0),
+    )?;
+    if process::workers::misplaced() != 0 {
+        return Err("threads-kill: a worker started on another CPU than its own");
+    }
+    log!("threads-kill: every thread woke for its kill, and every frame came back");
+    Ok(())
+}
+
 /// The `threads` case.
 pub fn check() -> Result<(), &'static str> {
     let slots = threads::in_use();
@@ -159,6 +237,7 @@ pub fn check() -> Result<(), &'static str> {
     let lived = (ExitReason::Exited, 0);
     expect_burst("burst", "mode=burst", caps, BURST_MS, lived)?;
     serve_check()?;
+    expect("futex", "mode=futex", caps, (ExitReason::Exited, 0))?;
     settle(slots)?;
     let user_frames = USER_FRAMES.load(Ordering::SeqCst);
     log!(

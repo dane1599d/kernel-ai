@@ -9,6 +9,14 @@ use x86_64::structures::paging::PageTableFlags;
 const SLOT_SIZE: u64 = 64 * PAGE_SIZE;
 
 static NEXT_SLOT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+/// Frames every guarded stack took, page tables included; stacks are never freed.
+static FRAMES: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// Frames all guarded stacks have taken since boot, so a test can tell a new
+/// thread slot's stack from a leak.
+pub fn frames_taken() -> u64 {
+    FRAMES.load(core::sync::atomic::Ordering::SeqCst)
+}
 
 pub struct GuardedStack {
     /// The unmapped page directly below the stack.
@@ -27,7 +35,11 @@ impl GuardedStack {
         let guard = STACKS_START + slot * SLOT_SIZE;
         let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
         super::with(|memory| {
-            (1..=pages).try_for_each(|i| memory.map(guard + i * PAGE_SIZE, flags))
+            let before = memory.free_frames();
+            let mapped = (1..=pages).try_for_each(|i| memory.map(guard + i * PAGE_SIZE, flags));
+            let taken = before - memory.free_frames();
+            FRAMES.fetch_add(taken, core::sync::atomic::Ordering::SeqCst);
+            mapped
         })?;
         Ok(Self {
             guard,

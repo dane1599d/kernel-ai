@@ -276,6 +276,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Fpu => run_case(fpu_tests::fpu_check),
         SelfTest::Probe => run_case(fpu_tests::probe_check),
         SelfTest::Threads => run_case(thread_tests::check),
+        SelfTest::ThreadsKill => run_case(thread_tests::kill_check),
         SelfTest::Boot | SelfTest::None => {}
     }
 

@@ -12,7 +12,9 @@ mod context;
 mod preempt;
 
 pub use context::{enter_address_space, leave_address_space};
-pub use preempt::{migrations, on_reschedule_ipi, on_tick, preempt_disable, preempt_enable, wake};
+pub use preempt::{
+    migrations, on_reschedule_ipi, on_tick, preempt_disable, preempt_enable, wake, wake_all,
+};
 
 use crate::memory::stack::GuardedStack;
 use crate::percpu::{self, MAX_CPUS};

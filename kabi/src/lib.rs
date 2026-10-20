@@ -116,6 +116,14 @@ pub mod call {
     /// `thread_exit() -> !`: ends the calling worker. Invalid from the main thread,
     /// which ends the whole process with [`EXIT`].
     pub const THREAD_EXIT: u64 = 30;
+    /// `futex_wait(addr, expected, timeout_ms) -> 0 or 1`: sleeps while the aligned
+    /// 32-bit word at `addr` in this process holds `expected`, until a
+    /// [`FUTEX_WAKE`] for it (0), `timeout_ms` (0, or more than an hour, means
+    /// none; TimedOut) or a kill (Dead); 1 at once when the word holds something else.
+    pub const FUTEX_WAIT: u64 = 31;
+    /// `futex_wake(addr, count) -> woken`: wakes up to `count` threads of this
+    /// process waiting on the word at `addr`.
+    pub const FUTEX_WAKE: u64 = 32;
 }
 
 /// Errors, returned in RAX as their negative value.

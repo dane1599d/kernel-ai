@@ -50,6 +50,8 @@ pub enum SelfTest {
     Probe,
     /// L6: worker threads start, are refused, filtered and torn down.
     Threads,
+    /// L6: processes killed mid-run, every thread blocked or computing, free every frame.
+    ThreadsKill,
 }
 
 const DEFAULT_STORM_SECONDS: u64 = 60;
@@ -85,6 +87,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=fpu" => Some(SelfTest::Fpu),
             "test=probe" => Some(SelfTest::Probe),
             "test=threads" => Some(SelfTest::Threads),
+            "test=threads-kill" => Some(SelfTest::ThreadsKill),
             other => other.strip_prefix("test=storm").map(|rest| {
                 let seconds = rest.strip_prefix('-').and_then(|s| s.parse().ok());
                 SelfTest::Storm(seconds.unwrap_or(DEFAULT_STORM_SECONDS))

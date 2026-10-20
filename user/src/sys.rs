@@ -1,6 +1,7 @@
 //! Raw system calls. Each wrapper returns the kernel's result decoded by
 //! `kabi::Error::from_raw`.
 
+use core::sync::atomic::AtomicU32;
 use kabi::{CallRequest, Error, ExitRecord, HttpRequest, Metrics, SpawnRequest, call};
 
 /// # Safety
@@ -163,6 +164,24 @@ pub fn thread_exit() -> Error {
         Err(error) => error,
         Ok(_) => Error::Invalid,
     }
+}
+
+/// Sleeps while the word at `word` holds `expected`, until a [`futex_wake`] for it,
+/// `timeout_ms` (0 = no limit) or a kill: Ok(0) when woken, Ok(1) at once when the
+/// word holds something else.
+pub fn futex_wait(word: *const AtomicU32, expected: u32, timeout_ms: u64) -> Result<u64, Error> {
+    call(
+        call::FUTEX_WAIT,
+        [word as u64, u64::from(expected), timeout_ms, 0, 0, 0],
+    )
+}
+
+/// Wakes up to `count` threads of this process waiting on `word`; returns how many.
+pub fn futex_wake(word: *const AtomicU32, count: u32) -> Result<u64, Error> {
+    call(
+        call::FUTEX_WAKE,
+        [word as u64, u64::from(count), 0, 0, 0, 0],
+    )
 }
 
 /// Maps the model read-only at `kabi::layout::MODEL_BASE`; returns its length.

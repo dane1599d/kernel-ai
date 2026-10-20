@@ -21,6 +21,7 @@
 pub mod burst;
 pub mod components;
 mod exit;
+pub mod futex;
 mod loader;
 pub mod programs;
 pub mod supervision;

@@ -208,6 +208,7 @@ pub const TEST_CASES: &[TestCase] = &[
     },
     // L6: worker threads in one address space.
     case("threads", "test=threads"),
+    case("threads-kill", "test=threads-kill"),
 ];
 
 /// "show me the cpus please" and Enter: plain English, so the shell asks llm for a

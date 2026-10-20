@@ -63,6 +63,23 @@ fn each_page(
     .unwrap_or(Err(Error::Fault))
 }
 
+/// The physical address of user address `addr` in the process, which must be
+/// mapped for ring 3; Fault otherwise. The page stays the process's until its last
+/// thread is gone, as pages are never unmapped while it lives.
+pub fn phys_of(slot: usize, addr: u64) -> Result<u64, Error> {
+    if !(MIN_USER_ADDRESS..USER_END).contains(&addr) {
+        return Err(Error::Fault);
+    }
+    let needed = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
+    with_space(slot, |space| {
+        memory::with(|m| m.translate_user(space, addr))
+            .filter(|(_, flags)| flags.contains(needed))
+            .map(|(phys, _)| phys)
+    })
+    .flatten()
+    .ok_or(Error::Fault)
+}
+
 /// Copies `out.len()` bytes from user address `addr`.
 pub fn copy_from_user(slot: usize, addr: u64, out: &mut [u8]) -> Result<(), Error> {
     let hhdm = memory::hhdm();
