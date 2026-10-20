@@ -163,6 +163,11 @@ pub fn plan(test: SelfTest) -> Option<String> {
         plan.push('\n');
         plan.push_str(kabi::plan::SHELL);
     }
+    let workload = crate::workload::plan_lines();
+    if !workload.is_empty() {
+        plan.push('\n');
+        plan.push_str(&workload);
+    }
     if test == SelfTest::None {
         plan.push('\n');
         plan.push_str(&crate::boot_manifest::plan_line());

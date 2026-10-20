@@ -37,7 +37,8 @@ impl Span {
         Self { low, high }
     }
 
-    fn draw(&self, rng: &mut Rng) -> u64 {
+    /// A length from the span, as the simulator and the `work` program draw it.
+    pub fn draw(&self, rng: &mut Rng) -> u64 {
         self.low + rng.below(self.high.saturating_sub(self.low) + 1)
     }
 }
@@ -85,8 +86,9 @@ impl Rng {
         if n == 0 { 0 } else { self.next_u64() % n }
     }
 
-    /// The stream for one purpose of one process.
-    fn stream(seed: u64, process: usize, purpose: u64) -> Self {
+    /// The stream for one purpose of one process: 1 for the CPU each burst needs,
+    /// 2 for sleeps and gaps. The `work` program draws from the same streams.
+    pub fn stream(seed: u64, process: usize, purpose: u64) -> Self {
         let mut mixer = Self(seed ^ ((process as u64 + 1) << 20) ^ (purpose << 52));
         Self(mixer.next_u64())
     }

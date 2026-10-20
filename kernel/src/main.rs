@@ -73,6 +73,7 @@ mod thread_tests;
 mod threads;
 mod timer;
 mod virtio;
+mod workload;
 
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use limine::request::{

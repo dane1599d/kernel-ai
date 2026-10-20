@@ -58,6 +58,19 @@ pub struct Options {
     /// `--accel wsl`: QEMU runs inside WSL2, started from Windows (`wsl/launch.rs`),
     /// and `accel` is KVM there.
     pub wsl: bool,
+    /// `run --workload A|B [--seed N]`: M10's mix, run as ring-3 `work` processes.
+    pub workload: Option<(String, u64)>,
+}
+
+impl Options {
+    /// The kernel command-line words for `--workload`, with a leading space.
+    pub fn workload_args(&self) -> String {
+        self.workload
+            .as_ref()
+            .map_or_else(String::new, |(mix, seed)| {
+                format!(" workload={mix} seed={seed}")
+            })
+    }
 }
 
 /// The VM's size when given on the command line; xtask's defaults otherwise.
@@ -110,6 +123,7 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
         shift: crate::icount::DEFAULT_SHIFT,
         boots: crate::icount::DEFAULT_BOOTS,
         wsl: false,
+        workload: None,
     };
     let mut rest = args[1..].iter();
     while let Some(arg) = rest.next() {
@@ -159,6 +173,16 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
                     .next()
                     .ok_or("--local expects a catalog id, such as qwen3-0.6b")?;
                 options.local = Some(id.clone());
+            }
+            "--workload" if task == Task::Run => {
+                let mix = rest.next().filter(|mix| matches!(mix.as_str(), "A" | "B"));
+                let mix = mix.ok_or("--workload expects the mix A or B")?;
+                options.workload = Some((mix.clone(), 1));
+            }
+            "--seed" if task == Task::Run && options.workload.is_some() => {
+                let seed = rest.next().and_then(|s| s.parse::<u64>().ok());
+                let seed = seed.ok_or("--seed expects a number")?;
+                options.workload.as_mut().expect("checked above").1 = seed;
             }
             "--store" if task == Task::Run => {
                 let dir = rest.next().ok_or("--store expects a directory")?;
@@ -279,6 +303,16 @@ mod tests {
         assert!(!options.spikes);
         assert_eq!(options.accel, Accel::Tcg);
         assert_eq!(options.timeout, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn workload_names_a_mix_for_run_only() {
+        let options = parse_args(&args(&["run", "--workload", "A", "--seed", "4"])).unwrap();
+        assert_eq!(options.workload_args(), " workload=A seed=4");
+        assert_eq!(parse_args(&args(&["run"])).unwrap().workload_args(), "");
+        assert!(parse_args(&args(&["run", "--workload", "C"])).is_err());
+        assert!(parse_args(&args(&["run", "--seed", "4"])).is_err());
+        assert!(parse_args(&args(&["test", "--workload", "A"])).is_err());
     }
 
     #[test]
