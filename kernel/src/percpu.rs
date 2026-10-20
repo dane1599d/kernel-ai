@@ -109,8 +109,9 @@ pub fn get(index: usize) -> &'static PerCpu {
 
 /// The thread running on this CPU, which is the caller, read with one GS-relative
 /// instruction. Interrupts (and so migration) happen only between instructions, and
-/// every CPU names the thread it runs in `current`, so a thread that migrates still
-/// reads its own id. Before `init`, GS is not set up yet; returns 0, the value every
+/// while interrupts are on every CPU's `current` names the thread it runs (`switch`
+/// changes it with them off), so a thread that migrates still reads its own id.
+/// Before the boot CPU's `init`, GS is not set up yet; returns 0, the value every
 /// `current` starts with.
 pub fn current() -> usize {
     if !READY.load(Ordering::Acquire) {
