@@ -98,16 +98,16 @@ fn k_quant_logits_match_the_reference() {
             model
                 .forward(&mut kv, tokens[i], Some(&mut logits))
                 .unwrap();
-            let want = reference.forward(tokens[i]);
+            let want = reference.forward_on(tokens[i], Some(&kv));
             let scale = want.iter().fold(0.0f32, |m, v| m.max(v.abs()));
             let diff = logits
                 .iter()
                 .zip(&want)
                 .fold(0.0f32, |m, (a, b)| m.max((a - b).abs()));
             // At these widths an activation now and then lands within float
-            // rounding of a step boundary, the two round it apart, and the
-            // logits move by about 2% from then on (Q8_0 at the same widths does
-            // the same). A wiring mistake moves them by far more; exact bits are
+            // rounding of a step boundary and the two round it apart, which moves
+            // that token's logits by about 2% (Q8_0 at the same widths does the
+            // same); the reference then takes the engine's cache. A wiring mistake moves them by far more; exact bits are
             // the tier and thread tests' job.
             let error = diff / scale;
             assert!(error < 0.05, "seed {}: error {error} at {i}", spec.seed);
@@ -119,7 +119,11 @@ fn k_quant_logits_match_the_reference() {
                 tokens.push(argmax(&logits));
             }
         }
-        assert!(close >= 5, "seed {}: only {close} close", spec.seed);
+        assert!(
+            close * 10 >= steps * 9,
+            "seed {}: {close} of {steps} close",
+            spec.seed
+        );
         made.sort_unstable();
         made.dedup();
         assert!(made.len() >= 2, "seed {}: only {made:?}", spec.seed);

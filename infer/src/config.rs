@@ -131,12 +131,12 @@ impl Config {
         self.n_head_kv * self.head_dim
     }
 
-    /// Bytes of f32 KV cache for `tokens` tokens of context.
+    /// Bytes of f16 KV cache for `tokens` tokens of context.
     pub fn kv_bytes(&self, tokens: usize) -> Option<usize> {
         self.n_layer
             .checked_mul(self.kv_dim())?
             .checked_mul(tokens)?
-            .checked_mul(2 * core::mem::size_of::<f32>())
+            .checked_mul(2 * core::mem::size_of::<u16>())
     }
 }
 

@@ -1,6 +1,47 @@
 //! IEEE half precision in software: 1 sign bit, 5 exponent bits (bias 15) and 10
 //! mantissa bits. Widening is exact; narrowing rounds to nearest, ties to even, as
 //! the F16C instructions do, so a scale quantised here matches llama.cpp's.
+//! [`widen`] widens a run of halves, with F16C in the SIMD tiers.
+
+use crate::tier::{Kind, Tier};
+
+/// Widens every half in `src` into `dst`, which has the same length. Widening is
+/// exact, so every tier gives [`to_f32`]'s bits, except that F16C may quieten a
+/// signalling NaN; [`from_f32`] never makes one.
+pub fn widen(tier: Tier, src: &[u16], dst: &mut [f32]) {
+    assert_eq!(src.len(), dst.len(), "widen lengths");
+    match tier.0 {
+        Kind::Baseline => {
+            for (d, &s) in dst.iter_mut().zip(src) {
+                *d = to_f32(s);
+            }
+        }
+        // SAFETY: every SIMD tier needs AVX2 and F16C with the OS saving ymm
+        // state (`tier::kinds`), and holding the tier proves the CPU has them.
+        #[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
+        Kind::Avx2 | Kind::Avx512 | Kind::Avx512Vnni => unsafe { widen_f16c(src, dst) },
+    }
+}
+
+/// [`widen`] eight halves at a time with VCVTPH2PS, the tail one by one.
+#[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
+#[target_feature(enable = "avx2,f16c")]
+unsafe fn widen_f16c(src: &[u16], dst: &mut [f32]) {
+    use core::arch::x86_64::{__m128i, _mm_loadu_si128, _mm256_cvtph_ps, _mm256_storeu_ps};
+    let (src8, src_tail) = src.as_chunks::<8>();
+    let (dst8, dst_tail) = dst.as_chunks_mut::<8>();
+    for (s, d) in src8.iter().zip(dst8) {
+        // SAFETY: `s` is 16 readable bytes and `d` 32 writable ones; both loads
+        // and stores are unaligned.
+        unsafe {
+            let halves = _mm_loadu_si128(s.as_ptr().cast::<__m128i>());
+            _mm256_storeu_ps(d.as_mut_ptr(), _mm256_cvtph_ps(halves));
+        }
+    }
+    for (d, &s) in dst_tail.iter_mut().zip(src_tail) {
+        *d = to_f32(s);
+    }
+}
 
 /// The f32 with the same value. NaN stays NaN.
 pub fn to_f32(h: u16) -> f32 {
@@ -90,6 +131,26 @@ mod tests {
         assert_eq!(from_f32(f32::from_bits(0x3f80_1000)), 0x3c00); // 1 + 2^-11, a tie
         assert_eq!(from_f32(f32::from_bits(0x3f80_3000)), 0x3c02); // 1 + 3 * 2^-11
         assert_eq!(from_f32(f32::NAN) & 0x7e00, 0x7e00);
+    }
+
+    #[test]
+    fn every_tier_widens_every_half_exactly() {
+        let src: alloc::vec::Vec<u16> = (0..=u16::MAX).collect();
+        let mut want = alloc::vec![0.0f32; src.len()];
+        widen(Tier::BASELINE, &src, &mut want);
+        for tier in Tier::all() {
+            // Odd lengths and offsets, so the tail and unaligned loads run too.
+            for skip in [0, 3] {
+                let src = &src[skip..src.len() - 5];
+                let mut got = alloc::vec![0.0f32; src.len()];
+                widen(tier, src, &mut got);
+                for (i, (&h, (g, w))) in src.iter().zip(got.iter().zip(&want[skip..])).enumerate() {
+                    let same = g.to_bits() == w.to_bits() || (g.is_nan() && w.is_nan());
+                    assert!(same, "{} half {h:#06x} at {i}", tier.name());
+                    assert_eq!(w.to_bits(), to_f32(h).to_bits());
+                }
+            }
+        }
     }
 
     #[test]

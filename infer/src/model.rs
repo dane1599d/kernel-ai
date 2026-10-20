@@ -1,13 +1,20 @@
-//! The qwen3 forward pass for one token: RMSNorm, projections in each matrix's
-//! own format (Q8_0, Q4_K or Q6_K), per-head QK-norm, NeoX RoPE, grouped-query
-//! attention over the f32 KV cache, a SwiGLU feed-forward block, and the output
-//! projection (tied to the embeddings in Qwen3-0.6B and 4B). Norms and softmax
-//! sum in f64 and the RoPE angles are built as llama.cpp builds them, so greedy
-//! answers follow llama.cpp's as closely as an f32 cache allows. Matrices that
-//! share an input run in one [`matvec_parallel`] call on the model's
-//! [`Parallel`] workers, with the same bits as one thread.
+//! The qwen3 forward pass over blocks of tokens: RMSNorm, projections in each
+//! matrix's own format (Q8_0, Q4_K or Q6_K), per-head QK-norm, NeoX RoPE,
+//! grouped-query attention over the f16 KV cache ([`crate::attend`]), a SwiGLU
+//! feed-forward block, and the output projection (tied to the embeddings in
+//! Qwen3-0.6B and 4B). Norms and softmax sum in f64 and the RoPE angles are built
+//! as llama.cpp builds them, so greedy answers follow llama.cpp's as closely as
+//! an f16 cache allows.
+//!
+//! A prompt runs in blocks of up to [`PREFILL_TOKENS`] tokens: each matrix row is
+//! read once per block and multiplied by every token's vector with the same
+//! kernel a single token uses, and each token attends over exactly the positions
+//! before it, so a block gives the bits of its tokens run one at a time.
+//! Matrices that share an input run in one [`matvec_parallel`] call on the
+//! model's [`Parallel`] workers, with the same bits as one thread.
 
 use crate::acts::Acts;
+use crate::attend::{attend, scratch_len};
 use crate::weights::Matrix;
 use crate::{Config, Error, KvCache, Rope, Weights};
 use alloc::vec;
@@ -15,7 +22,11 @@ use alloc::vec::Vec;
 use gguf::Gguf;
 use quant::{Parallel, Serial, Tier, matvec_parallel};
 
-/// Buffers for one token, allocated once.
+/// Tokens a prompt block runs at once.
+pub const PREFILL_TOKENS: usize = 32;
+
+/// Buffers for one block, allocated once; per-token vectors lie one after
+/// another.
 struct Scratch {
     x: Vec<f32>,
     xn: Vec<f32>,
@@ -23,10 +34,13 @@ struct Scratch {
     k: Vec<f32>,
     v: Vec<f32>,
     att: Vec<f32>,
-    scores: Vec<f32>,
     gate: Vec<f32>,
     up: Vec<f32>,
     out: Vec<f32>,
+    /// Products of a block, row by row, before they are laid out by token.
+    rows: Vec<f32>,
+    /// Each attention head's output and scores.
+    heads: Vec<f32>,
     q_embd: Acts,
     q_att: Acts,
     q_ff: Acts,
@@ -40,6 +54,11 @@ pub struct Model<'a> {
     rope: Rope,
     context: usize,
     s: Scratch,
+}
+
+/// Floats in [`Scratch::rows`]: the most rows a call multiplies at once.
+fn widest(c: &Config) -> usize {
+    (c.q_dim() + 2 * c.kv_dim()).max(2 * c.n_ff).max(c.n_embd)
 }
 
 impl<'a> Model<'a> {
@@ -57,20 +76,22 @@ impl<'a> Model<'a> {
             .iter()
             .flat_map(|l| [&l.wq, &l.wk, &l.wv, &l.w_gate, &l.w_up])
             .chain([&weights.output]);
+        let n = PREFILL_TOKENS;
         let s = Scratch {
-            x: vec![0.0; e],
-            xn: vec![0.0; e],
-            q: vec![0.0; q],
-            k: vec![0.0; kv],
-            v: vec![0.0; kv],
-            att: vec![0.0; q],
-            scores: vec![0.0; context],
-            gate: vec![0.0; ff],
-            up: vec![0.0; ff],
-            out: vec![0.0; e],
-            q_embd: Acts::new(e, 1, embd_readers),
-            q_att: Acts::new(q, 1, layers.iter().map(|l| &l.wo)),
-            q_ff: Acts::new(ff, 1, layers.iter().map(|l| &l.w_down)),
+            x: vec![0.0; n * e],
+            xn: vec![0.0; n * e],
+            q: vec![0.0; n * q],
+            k: vec![0.0; n * kv],
+            v: vec![0.0; n * kv],
+            att: vec![0.0; n * q],
+            gate: vec![0.0; n * ff],
+            up: vec![0.0; n * ff],
+            out: vec![0.0; n * e],
+            rows: vec![0.0; n * widest(&config)],
+            heads: vec![0.0; scratch_len(&config, context)],
+            q_embd: Acts::new(e, n, embd_readers),
+            q_att: Acts::new(q, n, layers.iter().map(|l| &l.wo)),
+            q_ff: Acts::new(ff, n, layers.iter().map(|l| &l.w_down)),
         };
         Ok(Self {
             config,
@@ -97,8 +118,8 @@ impl<'a> Model<'a> {
         self.tier
     }
 
-    /// Runs the matrix products on `par`'s workers from now on; [`Serial`] until
-    /// this is called. Any pool gives the same bits.
+    /// Runs the matrix products and attention heads on `par`'s workers from now
+    /// on; [`Serial`] until this is called. Any pool gives the same bits.
     pub fn set_parallel(&mut self, par: &'a dyn Parallel) {
         self.par = par;
     }
@@ -107,19 +128,34 @@ impl<'a> Model<'a> {
         self.context
     }
 
-    /// Runs `token` at the next position of `kv`, filling `logits` (one per
-    /// vocabulary entry) when it is given; prompt tokens before the last skip the
-    /// output projection, the largest matrix. Every check comes before the cache
-    /// changes, so an error leaves it as it was.
+    /// Runs `token` at the next position of `kv`: [`Model::forward_batch`] of one.
     pub fn forward(
         &mut self,
         kv: &mut KvCache,
         token: u32,
         logits: Option<&mut [f32]>,
     ) -> Result<(), Error> {
+        self.forward_batch(kv, &[token], logits)
+    }
+
+    /// Runs `tokens` at the next positions of `kv`, in blocks of
+    /// [`PREFILL_TOKENS`], filling `logits` (one per vocabulary entry) for the
+    /// last token when it is given; earlier tokens skip the output projection,
+    /// the largest matrix. The bits are those of running the tokens one at a
+    /// time. Every check comes before the cache changes, so an error leaves it as
+    /// it was.
+    pub fn forward_batch(
+        &mut self,
+        kv: &mut KvCache,
+        tokens: &[u32],
+        logits: Option<&mut [f32]>,
+    ) -> Result<(), Error> {
         let c = self.config;
-        if token as usize >= c.vocab {
-            return Err(Error::Token(token));
+        if tokens.is_empty() {
+            return Err(Error::EmptyPrompt);
+        }
+        if let Some(&bad) = tokens.iter().find(|&&t| t as usize >= c.vocab) {
+            return Err(Error::Token(bad));
         }
         if logits.as_deref().is_some_and(|l| l.len() != c.vocab) {
             return Err(Error::Logits);
@@ -127,22 +163,26 @@ impl<'a> Model<'a> {
         if !self.fits(kv) {
             return Err(Error::CacheShape);
         }
-        let pos = kv.len();
-        if pos >= kv.capacity() {
+        if tokens.len() > kv.capacity() - kv.len() {
             return Err(Error::ContextFull);
         }
-        let embd = self.weights.token_embd;
-        embd.dequantize_row(token as usize, &mut self.s.x);
-        for layer in 0..c.n_layer {
-            self.attention(kv, layer, pos);
-            self.feed_forward(layer);
+        let mut last = 0;
+        for block in tokens.chunks(PREFILL_TOKENS) {
+            self.block(kv, block);
+            last = block.len() - 1;
         }
-        kv.advance();
         if let Some(logits) = logits {
+            let e = c.n_embd;
             let (w, s) = (&self.weights, &mut self.s);
-            rms_norm(&s.x, &w.output_norm, c.rms_eps, &mut s.xn);
-            s.q_embd.quantize(0, &s.xn);
-            run(self.par, self.tier, &s.q_embd, &mut [(&w.output, logits)]);
+            rms_norm(
+                &s.x[last * e..][..e],
+                &w.output_norm,
+                c.rms_eps,
+                &mut s.xn[..e],
+            );
+            s.q_embd.quantize(0, &s.xn[..e]);
+            let jobs = &mut [(&w.output, logits)];
+            run(self.par, self.tier, &s.q_embd, 1, &mut s.rows, jobs);
         }
         Ok(())
     }
@@ -153,110 +193,173 @@ impl<'a> Model<'a> {
         kv.fits(&self.config) && kv.capacity() <= self.context
     }
 
-    fn attention(&mut self, kv: &mut KvCache, layer: usize, pos: usize) {
-        let c = self.config;
-        let (hd, kv_dim) = (c.head_dim, c.kv_dim());
-        let w = &self.weights.layers[layer];
-        let s = &mut self.s;
-        rms_norm(&s.x, &w.attn_norm, c.rms_eps, &mut s.xn);
-        s.q_embd.quantize(0, &s.xn);
-        let mut qkv = [(&w.wq, &mut s.q[..]), (&w.wk, &mut s.k), (&w.wv, &mut s.v)];
-        run(self.par, self.tier, &s.q_embd, &mut qkv);
-        for head in s.q.chunks_exact_mut(hd) {
-            rms_norm_in_place(head, &w.q_norm, c.rms_eps);
-            self.rope.apply(head, pos);
+    /// Runs one block of at most [`PREFILL_TOKENS`] checked tokens.
+    fn block(&mut self, kv: &mut KvCache, tokens: &[u32]) {
+        let e = self.config.n_embd;
+        let embd = self.weights.token_embd;
+        for (&token, x) in tokens.iter().zip(self.s.x.chunks_exact_mut(e)) {
+            embd.dequantize_row(token as usize, x);
         }
-        for head in s.k.chunks_exact_mut(hd) {
-            rms_norm_in_place(head, &w.k_norm, c.rms_eps);
-            self.rope.apply(head, pos);
+        for layer in 0..self.config.n_layer {
+            self.attention(kv, layer, tokens.len());
+            self.feed_forward(layer, tokens.len());
         }
-        let (k_slot, v_slot) = kv.slot_mut(layer, pos);
-        k_slot.copy_from_slice(&s.k);
-        v_slot.copy_from_slice(&s.v);
-        let (keys, values) = kv.layer(layer, pos);
-        let group = c.n_head / c.n_head_kv;
-        let scale = 1.0 / libm::sqrtf(hd as f32);
-        let scores = &mut s.scores[..=pos];
-        for (h, (q, out)) in
-            s.q.chunks_exact(hd)
-                .zip(s.att.chunks_exact_mut(hd))
-                .enumerate()
-        {
-            let at = h / group * hd;
-            for (t, score) in scores.iter_mut().enumerate() {
-                *score = dot(q, &keys[t * kv_dim + at..][..hd]) * scale;
+        kv.advance(tokens.len());
+    }
+
+    fn attention(&mut self, kv: &mut KvCache, layer: usize, n: usize) {
+        let Self {
+            config: c,
+            weights,
+            tier,
+            par,
+            rope,
+            context,
+            s,
+        } = self;
+        let (e, hd, qd, kvd) = (c.n_embd, c.head_dim, c.q_dim(), c.kv_dim());
+        let w = &weights.layers[layer];
+        let pos = kv.len();
+        for t in 0..n {
+            rms_norm(
+                &s.x[t * e..][..e],
+                &w.attn_norm,
+                c.rms_eps,
+                &mut s.xn[t * e..][..e],
+            );
+            s.q_embd.quantize(t, &s.xn[t * e..][..e]);
+        }
+        let qkv = &mut [
+            (&w.wq, &mut s.q[..n * qd]),
+            (&w.wk, &mut s.k[..n * kvd]),
+            (&w.wv, &mut s.v[..n * kvd]),
+        ];
+        run(*par, *tier, &s.q_embd, n, &mut s.rows, qkv);
+        for t in 0..n {
+            for head in s.q[t * qd..][..qd].chunks_exact_mut(hd) {
+                rms_norm_in_place(head, &w.q_norm, c.rms_eps);
+                rope.apply(head, pos + t);
             }
-            softmax(scores);
-            out.fill(0.0);
-            for (t, &p) in scores.iter().enumerate() {
-                for (o, &v) in out.iter_mut().zip(&values[t * kv_dim + at..][..hd]) {
-                    *o += p * v;
-                }
+            let k = &mut s.k[t * kvd..][..kvd];
+            for head in k.chunks_exact_mut(hd) {
+                rms_norm_in_place(head, &w.k_norm, c.rms_eps);
+                rope.apply(head, pos + t);
+            }
+            let (k_slot, v_slot) = kv.slot_mut(layer, pos + t);
+            for (slot, &k) in k_slot.iter_mut().zip(&*k) {
+                *slot = quant::f16::from_f32(k);
+            }
+            for (slot, &v) in v_slot.iter_mut().zip(&s.v[t * kvd..][..kvd]) {
+                *slot = quant::f16::from_f32(v);
             }
         }
-        s.q_att.quantize(0, &s.att);
+        let cache = kv.layer(layer, pos + n - 1);
+        for t in 0..n {
+            let (q, att) = (&s.q[t * qd..][..qd], &mut s.att[t * qd..][..qd]);
+            let heads = (&mut s.heads[..], *context);
+            attend(*par, *tier, c, q, cache, pos + t + 1, heads, att);
+            s.q_att.quantize(t, att);
+        }
         run(
-            self.par,
-            self.tier,
+            *par,
+            *tier,
             &s.q_att,
-            &mut [(&w.wo, &mut s.out[..])],
+            n,
+            &mut s.rows,
+            &mut [(&w.wo, &mut s.out[..n * e])],
         );
-        for (x, o) in s.x.iter_mut().zip(&s.out) {
+        for (x, o) in s.x[..n * e].iter_mut().zip(&s.out) {
             *x += o;
         }
     }
 
-    fn feed_forward(&mut self, layer: usize) {
-        let c = self.config;
+    fn feed_forward(&mut self, layer: usize, n: usize) {
+        let (c, e, ff) = (self.config, self.config.n_embd, self.config.n_ff);
         let w = &self.weights.layers[layer];
         let s = &mut self.s;
-        rms_norm(&s.x, &w.ffn_norm, c.rms_eps, &mut s.xn);
-        s.q_embd.quantize(0, &s.xn);
-        let mut gate_up = [(&w.w_gate, &mut s.gate[..]), (&w.w_up, &mut s.up)];
-        run(self.par, self.tier, &s.q_embd, &mut gate_up);
-        for (g, u) in s.gate.iter_mut().zip(&s.up) {
+        for t in 0..n {
+            rms_norm(
+                &s.x[t * e..][..e],
+                &w.ffn_norm,
+                c.rms_eps,
+                &mut s.xn[t * e..][..e],
+            );
+            s.q_embd.quantize(t, &s.xn[t * e..][..e]);
+        }
+        let gate_up = &mut [
+            (&w.w_gate, &mut s.gate[..n * ff]),
+            (&w.w_up, &mut s.up[..n * ff]),
+        ];
+        run(self.par, self.tier, &s.q_embd, n, &mut s.rows, gate_up);
+        for (g, u) in s.gate[..n * ff].iter_mut().zip(&s.up) {
             *g = *g / (1.0 + libm::expf(-*g)) * u;
         }
-        s.q_ff.quantize(0, &s.gate);
-        run(
-            self.par,
-            self.tier,
-            &s.q_ff,
-            &mut [(&w.w_down, &mut s.out[..])],
-        );
-        for (x, o) in s.x.iter_mut().zip(&s.out) {
+        for t in 0..n {
+            s.q_ff.quantize(t, &s.gate[t * ff..][..ff]);
+        }
+        let down = &mut [(&w.w_down, &mut s.out[..n * e])];
+        run(self.par, self.tier, &s.q_ff, n, &mut s.rows, down);
+        for (x, o) in s.x[..n * e].iter_mut().zip(&s.out) {
             *x += o;
         }
     }
 }
 
 /// An upper bound on the bytes [`Model::new`] allocates for `context` positions
-/// besides the norms: the scratch vectors, the activations in both formats and
-/// the attention scores.
+/// besides the norms and the RoPE table: one block's scratch vectors and
+/// activations in both formats, and the attention heads' scratch.
 pub(crate) fn scratch_bytes(c: &Config, context: usize) -> usize {
     let (e, q, kv, ff) = (c.n_embd, c.q_dim(), c.kv_dim(), c.n_ff);
-    let f32s = e
+    let per_token = e
         .saturating_mul(3)
         .saturating_add(q.saturating_mul(2))
         .saturating_add(kv.saturating_mul(2))
         .saturating_add(ff.saturating_mul(2))
-        .saturating_add(context);
-    let acts = Acts::bytes(e, 1)
-        .saturating_add(Acts::bytes(q, 1))
-        .saturating_add(Acts::bytes(ff, 1));
+        .saturating_add(widest(c));
+    let f32s = per_token
+        .saturating_mul(PREFILL_TOKENS)
+        .saturating_add(scratch_len(c, context));
+    let acts = Acts::bytes(e, PREFILL_TOKENS)
+        .saturating_add(Acts::bytes(q, PREFILL_TOKENS))
+        .saturating_add(Acts::bytes(ff, PREFILL_TOKENS));
     f32s.saturating_mul(4).saturating_add(acts)
 }
 
-/// Matrices that share the input `x` times its one token, each into its output,
-/// in one call on `par`.
+/// Matrices that share the input `x` times its first `n` tokens, in one call on
+/// `par`. Each output holds `rows * n` values, token by token; with more than one
+/// token the products go row by row through `rows` first.
 fn run<const N: usize>(
     par: &dyn Parallel,
     tier: Tier,
     x: &Acts,
+    n: usize,
+    rows: &mut [f32],
     jobs: &mut [(&Matrix<'_>, &mut [f32]); N],
 ) {
-    let mut items = jobs.each_mut().map(|(m, y)| (x.times(m, 1), &mut **y));
+    if n == 1 {
+        let mut items = jobs.each_mut().map(|(m, y)| (x.times(m, 1), &mut **y));
+        matvec_parallel(par, tier, &mut items);
+        return;
+    }
+    let mut rest = rows;
+    let mut parts: [&mut [f32]; N] = core::array::from_fn(|i| {
+        let (part, after) = core::mem::take(&mut rest).split_at_mut(jobs[i].0.rows * n);
+        rest = after;
+        part
+    });
+    let mut pairs = jobs.iter().zip(parts.iter_mut());
+    let mut items: [_; N] = core::array::from_fn(|_| {
+        let ((m, _), part) = pairs.next().expect("one part per job");
+        (x.times(m, n), &mut **part)
+    });
     matvec_parallel(par, tier, &mut items);
+    for ((m, y), part) in jobs.iter_mut().zip(&parts) {
+        for (r, row) in part.chunks_exact(n).enumerate() {
+            for (t, &v) in row.iter().enumerate() {
+                y[t * m.rows + r] = v;
+            }
+        }
+    }
 }
 
 /// `x / rms(x) * weight`; the sum of squares runs in f64, as in llama.cpp.
@@ -278,36 +381,4 @@ fn rms_scale(x: &[f32], eps: f32) -> f32 {
     let sum: f64 = x.iter().map(|&v| f64::from(v * v)).sum();
     let mean = (sum / x.len() as f64) as f32;
     1.0 / libm::sqrtf(mean + eps)
-}
-
-/// A dot product in eight running sums, so it vectorises while its order stays
-/// fixed in the source.
-fn dot(a: &[f32], b: &[f32]) -> f32 {
-    let mut sums = [0.0f32; 8];
-    let (a8, a_tail) = a.as_chunks::<8>();
-    let (b8, b_tail) = b.as_chunks::<8>();
-    for (a, b) in a8.iter().zip(b8) {
-        for i in 0..8 {
-            sums[i] += a[i] * b[i];
-        }
-    }
-    for (i, (x, y)) in a_tail.iter().zip(b_tail).enumerate() {
-        sums[i] += x * y;
-    }
-    ((sums[0] + sums[1]) + (sums[2] + sums[3])) + ((sums[4] + sums[5]) + (sums[6] + sums[7]))
-}
-
-/// Softmax in place: the largest score is subtracted first, and the sum runs in
-/// f64 as in llama.cpp.
-fn softmax(scores: &mut [f32]) {
-    let max = scores.iter().fold(f32::NEG_INFINITY, |m, &v| m.max(v));
-    let mut sum = 0.0f64;
-    for v in scores.iter_mut() {
-        *v = libm::expf(*v - max);
-        sum += f64::from(*v);
-    }
-    let inv = (1.0 / sum) as f32;
-    for v in scores.iter_mut() {
-        *v *= inv;
-    }
 }

@@ -36,9 +36,9 @@ pub fn generate(
     max_new: usize,
     mut on_token: impl FnMut(u32) -> Next,
 ) -> Result<Ended, Error> {
-    let Some((&last, before)) = prompt.split_last() else {
+    if prompt.is_empty() {
         return Err(Error::EmptyPrompt);
-    };
+    }
     let vocab = model.config().vocab;
     if let Some(&bad) = prompt.iter().find(|&&t| t as usize >= vocab) {
         return Err(Error::Token(bad));
@@ -54,10 +54,8 @@ pub fn generate(
         .try_reserve_exact(vocab)
         .map_err(|_| Error::OutOfMemory)?;
     logits.resize(vocab, 0.0f32);
-    for &token in before {
-        model.forward(kv, token, None)?;
-    }
-    model.forward(kv, last, Some(&mut logits))?;
+    // In blocks, with the bits of feeding the tokens one at a time.
+    model.forward_batch(kv, prompt, Some(&mut logits))?;
     for made in 1..=max_new {
         let token = argmax(&logits);
         if on_token(token) == Next::Stop {

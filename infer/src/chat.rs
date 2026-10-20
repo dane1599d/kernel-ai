@@ -96,7 +96,8 @@ pub struct About {
 pub enum Step {
     /// Once, first: this many prompt tokens were in the cache already.
     Cached(usize),
-    /// A prompt token went through the model.
+    /// A prompt token went through the model; a block of them (up to
+    /// [`crate::PREFILL_TOKENS`]) runs at once, then one step comes per token.
     Prompt,
     /// The model made this token of the answer.
     Token(u32),
@@ -367,9 +368,11 @@ impl<'a> Engine<'a> {
 
     /// Runs `prompt` through the model after the longest start it shares with the
     /// tokens the cache holds, which stay; the last token runs whatever is cached,
-    /// for its logits. Returns how many tokens came from the cache, and whether
-    /// `on_step` said stop. Every check in `forward` comes before the cache
-    /// changes, so the tokens behind it stay exactly those it holds.
+    /// for its logits. The rest runs in blocks of [`crate::PREFILL_TOKENS`], with
+    /// a [`Step::Prompt`] per token after each block. Returns how many tokens came
+    /// from the cache, and whether `on_step` said stop. Every check in
+    /// `forward_batch` comes before the cache changes, so the tokens behind it
+    /// stay exactly those it holds.
     fn feed(
         &mut self,
         prompt: &[u32],
@@ -382,13 +385,16 @@ impl<'a> Engine<'a> {
         if on_step(Step::Cached(cached)) == Next::Stop {
             return Ok((cached, true));
         }
-        for (i, &token) in prompt.iter().enumerate().skip(cached) {
-            let last = i + 1 == prompt.len();
-            let logits = last.then_some(self.logits.as_mut_slice());
-            self.model.forward(&mut self.kv, token, logits)?;
-            self.cached.push(token);
-            if on_step(Step::Prompt) == Next::Stop {
-                return Ok((cached, true));
+        let rest = &prompt[cached..];
+        let blocks = rest.chunks(crate::PREFILL_TOKENS).count();
+        for (b, block) in rest.chunks(crate::PREFILL_TOKENS).enumerate() {
+            let logits = (b + 1 == blocks).then_some(self.logits.as_mut_slice());
+            self.model.forward_batch(&mut self.kv, block, logits)?;
+            self.cached.extend_from_slice(block);
+            for _ in block {
+                if on_step(Step::Prompt) == Next::Stop {
+                    return Ok((cached, true));
+                }
             }
         }
         Ok((cached, false))

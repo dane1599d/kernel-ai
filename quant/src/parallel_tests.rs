@@ -327,3 +327,30 @@ fn an_output_of_the_wrong_size_is_refused() {
     let product = Product::q4_k(&[0; 3 * 144], 3, &x);
     matvec_parallel(&Serial, Tier::BASELINE, &mut [(product, &mut y)]);
 }
+
+#[test]
+fn every_piece_is_filled_once_whatever_the_pool() {
+    let pools: [&dyn Parallel; 6] = [
+        &Serial,
+        &Threads(3),
+        &Threads(8),
+        &Odd::Skips,
+        &Odd::Twice,
+        &Odd::Claims(64),
+    ];
+    for pool in pools {
+        for (len, piece) in [(0, 4), (1, 4), (12, 4), (13, 4), (130, 7)] {
+            let calls = AtomicUsize::new(0);
+            let mut out = vec![-1.0f32; len];
+            for_each_chunk(pool, &mut out, piece, &|index, y| {
+                calls.fetch_add(1, Ordering::Relaxed);
+                for (i, v) in y.iter_mut().enumerate() {
+                    *v = (index * piece + i) as f32;
+                }
+            });
+            assert_eq!(calls.into_inner(), len.div_ceil(piece));
+            let want: Vec<f32> = (0..len).map(|i| i as f32).collect();
+            assert_eq!(out, want);
+        }
+    }
+}

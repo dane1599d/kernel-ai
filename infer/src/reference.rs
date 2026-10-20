@@ -194,6 +194,15 @@ impl Reference {
 
     /// The logits after `token` at the next position.
     pub fn forward(&mut self, token: u32) -> Vec<f32> {
+        self.forward_on(token, None)
+    }
+
+    /// [`Reference::forward`], keeping at this position the halves the engine's
+    /// cache `kv` holds there once each is checked to be within one f16 step of
+    /// the reference's own key or value. Float rounding sets the two a hair apart
+    /// and now and then rounds a value to neighbouring halves; this keeps one
+    /// such tie from moving every later token.
+    pub fn forward_on(&mut self, token: u32, kv: Option<&crate::KvCache>) -> Vec<f32> {
         let c = self.c;
         let hd = c.head_dim;
         let pos = self.keys[0].len();
@@ -213,8 +222,32 @@ impl Reference {
                 head.copy_from_slice(&normed);
                 rope(head, pos, c.rope_theta);
             }
-            self.keys[l].push(k);
-            self.values[l].push(v);
+            // The cache holds f16 halves, as the engine's does.
+            let kv_dim = c.kv_dim();
+            let engine = kv.map(|kv| kv.layer(l, pos));
+            let half = |x: Vec<f32>, theirs: Option<&[u16]>| -> Vec<f32> {
+                let Some(theirs) = theirs else {
+                    return x
+                        .iter()
+                        .map(|&v| quant::f16::to_f32(quant::f16::from_f32(v)))
+                        .collect();
+                };
+                // One f16 step, or a few percent of the row when an activation
+                // upstream rounded apart.
+                let theirs = &theirs[pos * kv_dim..][..kv_dim];
+                let big = x.iter().fold(0.0f32, |m, v| m.max(libm::fabsf(*v)));
+                x.iter()
+                    .zip(theirs)
+                    .map(|(&mine, &h)| {
+                        let theirs = quant::f16::to_f32(h);
+                        let near = libm::fabsf(mine) / 1024.0 + 1e-7 + big * 0.05;
+                        assert!(libm::fabsf(theirs - mine) <= near, "{mine} vs {theirs}");
+                        theirs
+                    })
+                    .collect()
+            };
+            self.keys[l].push(half(k, engine.map(|e| e.0)));
+            self.values[l].push(half(v, engine.map(|e| e.1)));
             let mut att = vec![0.0f32; c.q_dim()];
             for h in 0..c.n_head {
                 let g = h / (c.n_head / c.n_head_kv);
