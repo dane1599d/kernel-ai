@@ -37,6 +37,11 @@ static AWAITING_ANSWER: AtomicBool = AtomicBool::new(false);
 /// Typed lines Ctrl-C dropped, for the self-test.
 static LINES_CLEARED: AtomicU64 = AtomicU64::new(0);
 
+/// Shell replies the terminal has printed in full, for the self-tests.
+pub fn replies_shown() -> u64 {
+    REPLIES_SHOWN.load(Ordering::Relaxed)
+}
+
 const HELP: &[(&str, &str)] = &[
     (":help", "this list"),
     (":ask <text>", "send <text> straight to the llm service"),
@@ -226,7 +231,8 @@ fn kernel_command(line: &str) -> Option<Waiting> {
     let rest = rest.trim();
     match command {
         "" | "help" => {
-            let all = HELP.iter().chain(crate::live_commands::HELP);
+            let all = HELP.iter().chain(crate::llm_commands::HELP);
+            let all = all.chain(crate::live_commands::HELP);
             for (usage, what) in all.chain(edit_mode::HELP) {
                 log!("  {usage:<26} {what}");
             }
@@ -257,6 +263,7 @@ fn kernel_command(line: &str) -> Option<Waiting> {
         "ps" => processes(),
         "uptime" => log!("{} s", hpet::nanos() / 1_000_000_000),
         "clear" => serial::_print(format_args!("{FORM_FEED}")),
+        other if crate::llm_commands::run(other, rest) => {}
         other if crate::live_commands::run(other, rest) => {}
         other => match edit_mode::command(other, rest) {
             Some(proposal) => return proposal.map(Waiting::Apply),
@@ -267,6 +274,13 @@ fn kernel_command(line: &str) -> Option<Waiting> {
 }
 
 fn ask(prompt: &str) {
+    if !llm::available() {
+        log!("{}", llmproto::chat::NO_MODEL);
+        if let Some(why) = crate::model::rejected() {
+            log!("(the kai-model disk was attached but not kept: {why})");
+        }
+        return;
+    }
     log!("(asking the LLM...)");
     match llm::ask(prompt) {
         Ok(reply) => {

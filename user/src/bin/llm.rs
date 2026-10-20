@@ -8,7 +8,8 @@
 //! own engine ([`local`]): `ask` and `explain` are answered here, on this CPU.
 //! Otherwise, or when the model cannot run, they go to the LLM server the kernel
 //! names (`llm=IP:PORT`, [`remote`]); `script` always does, until scripts run on
-//! the local model.
+//! the local model. With neither, they say how to set a model up
+//! (`llmproto::chat::NO_MODEL`).
 
 #![no_std]
 #![no_main]
@@ -26,7 +27,7 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use kabi::model::Fnv1a;
-use llmproto::chat;
+use llmproto::chat::{self, NO_MODEL};
 use llmproto::script::{self, AnswerError, ScriptRequest};
 use llmproto::text::printable;
 use llmproto::{explain, http};
@@ -50,14 +51,19 @@ struct Model {
 }
 
 impl Model {
-    /// Maps the model, if the kernel holds one and this process may map it.
-    fn map() -> Option<Model> {
-        let len = usize::try_from(sys::model_map().ok()?).ok()?;
+    /// Maps the model: none when the kernel holds no model or this process may
+    /// not map it, an error when the mapping failed.
+    fn map() -> Result<Option<Model>, kabi::Error> {
+        let len = match sys::model_map() {
+            Ok(len) => usize::try_from(len).map_err(|_| kabi::Error::TooBig)?,
+            Err(kabi::Error::NotFound | kabi::Error::Permission) => return Ok(None),
+            Err(error) => return Err(error),
+        };
         println!(
             "model: {len} bytes mapped read-only at {:#x}",
             kabi::layout::MODEL_BASE
         );
-        Some(Model { len, hash: None })
+        Ok(Some(Model { len, hash: None }))
     }
 
     fn bytes(&self) -> &'static [u8] {
@@ -103,8 +109,18 @@ fn main() -> i32 {
         ),
         None => println!("up; {NO_SERVER}"),
     }
-    let model = Model::map();
-    let local = model.as_ref().map(|model| load(model.bytes()));
+    let (model, local) = match Model::map() {
+        Ok(Some(model)) => {
+            let local = load(model.bytes());
+            (Some(model), Some(local))
+        }
+        Ok(None) => (None, None),
+        Err(error) => {
+            println!("model: MODEL_MAP failed: {error:?}");
+            let why = format!("the kernel holds a model this service could not map ({error:?})");
+            (None, Some(Err(why)))
+        }
+    };
     let mut backends = Backends {
         server,
         model,
@@ -157,7 +173,7 @@ fn handle(backends: &mut Backends, text: &str, response: &mut [u8]) -> Result<St
         "model" if rest.is_empty() => match (&backends.model, &mut backends.local) {
             (Some(model), Some(Ok(local))) => Ok(local.report(model.len)),
             (_, Some(Err(why))) => Err(format!("the model cannot run: {why}")),
-            _ => Err(String::from("no model is loaded")),
+            _ => Err(String::from(NO_MODEL)),
         },
         "ask" if !rest.trim().is_empty() => {
             let question = rest.trim();
@@ -195,7 +211,7 @@ fn answer(
         (Some(Ok(local)), _) => local.complete(request).and_then(|done| check(&done)),
         (_, Some(server)) => remote(server, response),
         (Some(Err(why)), None) => Err(format!("the model cannot run: {why}")),
-        (None, None) => Err(String::from(NO_SERVER)),
+        (None, None) => Err(String::from(NO_MODEL)),
     }
 }
 
@@ -208,7 +224,7 @@ fn script(backends: &Backends, text: &str, response: &mut [u8]) -> Result<String
     let why = match &backends.local {
         Some(Ok(_)) => String::from(SCRIPTS_NOT_LOCAL),
         Some(Err(why)) => format!("the model cannot run ({why}), and there is no LLM server"),
-        None => return Err(String::from(NO_SERVER)),
+        None => String::from(NO_MODEL),
     };
     Err(script::encode_error(&AnswerError::Unavailable(why)))
 }

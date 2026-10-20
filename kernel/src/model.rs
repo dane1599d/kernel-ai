@@ -14,6 +14,7 @@ use crate::{hpet, log, memory, process};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
 use kabi::Error;
 use kabi::model::{Attached, HeaderError, SERIAL};
 use mm::PAGE_SIZE;
@@ -48,10 +49,31 @@ pub struct Model {
 }
 
 static MODEL: Once<Model> = Once::new();
+/// Why an attached `kai-model` disk was not kept, for `:model`.
+static REJECTED: Once<String> = Once::new();
+/// Copies made from the disk, and MODEL_MAP calls that mapped the model, so a test
+/// can tell a restarted llm remapped the copy rather than having it made again.
+static LOADS: AtomicU64 = AtomicU64::new(0);
+static MAPS: AtomicU64 = AtomicU64::new(0);
 
 /// The loaded model, if the boot found one.
 pub fn get() -> Option<&'static Model> {
     MODEL.get()
+}
+
+/// How many times the model was copied from the disk: at most once a boot.
+pub fn loads() -> u64 {
+    LOADS.load(Ordering::SeqCst)
+}
+
+/// Why the boot did not keep the `kai-model` disk it found, if it found one.
+pub fn rejected() -> Option<&'static str> {
+    REJECTED.get().map(String::as_str)
+}
+
+/// How many MODEL_MAP calls mapped the model.
+pub fn maps() -> u64 {
+    MAPS.load(Ordering::SeqCst)
 }
 
 impl Model {
@@ -83,8 +105,12 @@ pub fn load(cmdline: &str) {
                 (hpet::nanos() - started) / 1_000_000
             );
             MODEL.call_once(|| model);
+            LOADS.fetch_add(1, Ordering::SeqCst);
         }
-        Some(Err(why)) => log!("model: {why}; the kai-model disk is ignored"),
+        Some(Err(why)) => {
+            log!("model: {why}; the kai-model disk is ignored");
+            REJECTED.call_once(|| why);
+        }
     }
 }
 
@@ -191,5 +217,6 @@ pub fn map(slot: usize) -> Result<u64, Error> {
         &model.frames,
         kabi::model::table_pages(model.len),
     )?;
+    MAPS.fetch_add(1, Ordering::SeqCst);
     Ok(model.len)
 }

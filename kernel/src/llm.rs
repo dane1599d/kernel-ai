@@ -1,12 +1,14 @@
 //! The kernel's side of the LLM: which server to use (`llm=IP:PORT`, optional
 //! `model=NAME` on the kernel command line), and calls to the ring-3 `llm` service,
-//! which builds and parses the HTTP and JSON itself. The kernel only carries bytes
-//! to the one server named here.
+//! which runs the model on the `kai-model` disk itself or builds and parses the
+//! HTTP and JSON for the server. The kernel only carries bytes to the one server
+//! named here.
 
 use crate::{hpet, ipc, log};
 use alloc::format;
 use alloc::string::{String, ToString};
 use core::net::Ipv4Addr;
+use llmproto::chat::NO_MODEL;
 use llmproto::text::printable;
 use spin::Once;
 
@@ -102,19 +104,35 @@ fn request(text: &str, timeout_ms: u64) -> Result<String, String> {
     }
 }
 
-/// Sends one user message and returns the assistant's reply.
+/// Whether anything can answer: a model from the `kai-model` disk or a server.
+pub fn available() -> bool {
+    target().is_some() || crate::model::get().is_some()
+}
+
+/// Sends one user message and returns the assistant's reply. With neither a model
+/// nor a server it says how to set one up, at once.
 pub fn ask(prompt: &str) -> Result<String, String> {
+    if !available() {
+        return Err(String::from(NO_MODEL));
+    }
     request(&format!("ask {prompt}"), ASK_TIMEOUT_MS)
+}
+
+/// The llm service's report on the local model for `:model`: its name, licence and
+/// shape from the file, and one timed test prompt.
+pub fn model_report() -> Result<String, String> {
+    if ipc::server_of("llm").is_none() {
+        return Err(String::from("the llm service is not running"));
+    }
+    request("model", ASK_TIMEOUT_MS)
 }
 
 /// The model's explanation of a rollback from `facts`, from the local model or the
 /// server, or why there is none. With neither, or no llm service running, it says
 /// so at once, rather than waiting for a service that will not come.
 pub fn explain(facts: &str) -> Result<String, String> {
-    if target().is_none() && crate::model::get().is_none() {
-        return Err(String::from(
-            "no LLM server is configured (boot with llm=IP:PORT) and no model is loaded",
-        ));
+    if !available() {
+        return Err(String::from(NO_MODEL));
     }
     if ipc::server_of("llm").is_none() {
         return Err(String::from("the llm service is not running"));

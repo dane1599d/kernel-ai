@@ -40,6 +40,8 @@ pub enum SelfTest {
     Blk,
     /// L3: the model is held in memory and mapped into `llm`, and survives it.
     Model,
+    /// L4: `ask` is answered by the model on the disk, with no LLM server.
+    LocalAsk,
     /// L2: processes keep their vector state across switches and CPUs, and start clean.
     Fpu,
     /// L2: the isolation probe; ops 0-2 complete and every other op is stopped.
@@ -74,6 +76,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=manifest-good" => Some(SelfTest::ManifestGood),
             "test=blk" => Some(SelfTest::Blk),
             "test=model" => Some(SelfTest::Model),
+            "test=local-ask" => Some(SelfTest::LocalAsk),
             "test=fpu" => Some(SelfTest::Fpu),
             "test=probe" => Some(SelfTest::Probe),
             other => other.strip_prefix("test=storm").map(|rest| {
@@ -99,6 +102,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::Edit
             | SelfTest::Manifest
             | SelfTest::ManifestGood
+            | SelfTest::LocalAsk
     );
     if !wanted {
         return None;

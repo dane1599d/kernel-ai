@@ -19,6 +19,9 @@ pub const MAX_REPLY_CHARS: usize = 4096;
 pub const MAX_REPLY_LINES: usize = 64;
 /// Added to an answer the model did not end itself.
 pub const CUT_OFF: &str = " (cut off)";
+/// What `ask`, `:why` and plain-English requests say when there is neither a
+/// model on the `kai-model` disk nor an LLM server.
+pub const NO_MODEL: &str = "No AI model is set up. Everything else works; type :setup";
 
 /// Who wrote a message.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
