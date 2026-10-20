@@ -7,6 +7,11 @@
 //! Policies run in interrupt context, so they must not allocate, block or take locks.
 //! The fixed-capacity [`Ring`] exists for that reason. [`Core`] also keeps
 //! per-thread accounting ([`stats`]), sized when it is built.
+//!
+//! For M10's policy agent: the [`classes`] policy and a bounded [`spec`], a seeded
+//! simulator that drives the real `Core` ([`sim`]), the workload mixes it runs
+//! ([`workload`]) and the trial [`judge`]. The simulator and the judge are host
+//! code that also compiles for the kernel, which never calls them.
 
 #![no_std]
 
@@ -15,9 +20,12 @@ extern crate alloc;
 pub mod burst;
 pub mod classes;
 mod core_state;
+pub mod judge;
 mod policy;
+pub mod sim;
 pub mod spec;
 pub mod stats;
+pub mod workload;
 
 pub use burst::BurstTable;
 pub use classes::Class;
