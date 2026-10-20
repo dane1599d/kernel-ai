@@ -354,3 +354,28 @@ fn every_piece_is_filled_once_whatever_the_pool() {
         }
     }
 }
+
+#[test]
+fn every_item_is_visited_once_whatever_the_pool() {
+    let pools: [&dyn Parallel; 6] = [
+        &Serial,
+        &Threads(3),
+        &Threads(8),
+        &Odd::Skips,
+        &Odd::Twice,
+        &Odd::Claims(64),
+    ];
+    for pool in pools {
+        for len in [0, 1, 2, 9, 33] {
+            let calls = AtomicUsize::new(0);
+            let mut items: Vec<Vec<usize>> = vec![Vec::new(); len];
+            for_each_mut(pool, &mut items, &|index, item| {
+                calls.fetch_add(1, Ordering::Relaxed);
+                item.push(index * 3);
+            });
+            assert_eq!(calls.into_inner(), len);
+            let want: Vec<Vec<usize>> = (0..len).map(|i| vec![i * 3]).collect();
+            assert_eq!(items, want);
+        }
+    }
+}

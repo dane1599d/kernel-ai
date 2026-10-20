@@ -18,12 +18,12 @@ fn tokens(len: usize, vocab: usize) -> Vec<u32> {
 /// and then `then` with `feed`.
 fn run(
     bytes: &[u8],
-    par: &dyn Parallel,
+    (tier, par): (Tier, &dyn Parallel),
     (first, then): (&[u32], &[u32]),
     batched: bool,
 ) -> (Vec<u32>, Vec<u16>) {
     let file = Gguf::parse(bytes).unwrap();
-    let mut model = Model::new(&file, Tier::best(), 160).unwrap();
+    let mut model = Model::new(&file, tier, 160).unwrap();
     model.set_parallel(par);
     let mut kv = model.kv_cache().unwrap();
     let mut logits = vec![0.0f32; model.config().vocab];
@@ -55,17 +55,16 @@ fn blocks_give_the_bits_of_one_token_at_a_time() {
         let prompt = tokens(2 * PREFILL_TOKENS + 7, spec.vocab);
         let more = tokens(5, spec.vocab);
         let parts = (&prompt[..], &more[..]);
-        let want = run(&bytes, &Serial, parts, false);
-        assert!(
-            run(&bytes, &Serial, parts, true) == want,
-            "seed {}",
-            spec.seed
-        );
-        assert!(
-            run(&bytes, &Threads(3), parts, true) == want,
-            "seed {}",
-            spec.seed
-        );
+        // One token at a time in the baseline tier is the reference; blocks
+        // run the batched kernels of every tier the CPU has, on one thread and
+        // on three.
+        let want = run(&bytes, (Tier::BASELINE, &Serial), parts, false);
+        for tier in Tier::all() {
+            for pool in [&Serial as &dyn Parallel, &Threads(3)] {
+                let got = run(&bytes, (tier, pool), parts, true);
+                assert!(got == want, "seed {}, {}", spec.seed, tier.name());
+            }
+        }
     }
 }
 

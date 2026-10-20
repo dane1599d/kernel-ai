@@ -6,7 +6,7 @@
 
 use crate::weights::Matrix;
 use alloc::vec::Vec;
-use quant::{Product, Q8KVec, QVec};
+use quant::{Parallel, Product, Q8KVec, QVec, for_each_mut};
 
 pub(crate) struct Acts {
     q8: Vec<QVec>,
@@ -49,6 +49,17 @@ impl Acts {
         if let Some(q) = self.k8.get_mut(t) {
             q.quantize(x);
         }
+    }
+
+    /// Quantises the first `n` tokens' vectors, which lie one after another in
+    /// `x`, into every format kept, a token at a time on `par`'s workers.
+    pub(crate) fn quantize_all(&mut self, par: &dyn Parallel, x: &[f32], n: usize) {
+        let len = x.len() / n.max(1);
+        let token = |t: usize| &x[t * len..][..len];
+        let q8 = n.min(self.q8.len());
+        for_each_mut(par, &mut self.q8[..q8], &|t, q| q.quantize(token(t)));
+        let k8 = n.min(self.k8.len());
+        for_each_mut(par, &mut self.k8[..k8], &|t, q| q.quantize(token(t)));
     }
 
     /// `m` times the first `tokens` vectors.

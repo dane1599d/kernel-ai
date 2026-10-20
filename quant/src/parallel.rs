@@ -307,6 +307,66 @@ pub fn for_each_chunk(
     );
 }
 
+/// The items [`for_each_mut`] hands out one at a time.
+struct Items<T> {
+    base: *mut T,
+    len: usize,
+}
+
+// SAFETY: the pointer comes from a `&mut [T]` that `for_each_mut` holds for its
+// whole call; each index is taken once from a counter that never passes the
+// number of items, so no two calls hold the same item, and `T: Send` lets an
+// item be used on another worker.
+unsafe impl<T: Send> Sync for Items<T> {}
+
+/// Calls `f(index, item)` once for each of `items`, spread over `par`'s workers
+/// as [`for_each_chunk`] spreads pieces; the caller runs whatever the pool
+/// leaves. What `f` does to item `index` must depend only on `index` and the
+/// item, which makes the result the same for any number of workers. The
+/// engine's prefill quantises each token's activations with it.
+pub fn for_each_mut<T: Send>(
+    par: &dyn Parallel,
+    items: &mut [T],
+    f: &(dyn Fn(usize, &mut T) + Sync),
+) {
+    let count = items.len();
+    let items = &Items {
+        base: items.as_mut_ptr(),
+        len: count,
+    };
+    let (next, done) = (Line(AtomicUsize::new(0)), Line(AtomicUsize::new(0)));
+    let job = |_: usize, _: usize| {
+        loop {
+            let mut seen = next.0.load(Ordering::Relaxed);
+            let index = loop {
+                if seen >= count {
+                    return;
+                }
+                let swap = Ordering::Relaxed;
+                match next.0.compare_exchange_weak(seen, seen + 1, swap, swap) {
+                    Ok(_) => break seen,
+                    Err(now) => seen = now,
+                }
+            };
+            assert!(index < items.len, "an item inside the slice");
+            // SAFETY: `index` came from the counter above, so no other call
+            // holds it, and it lies inside the slice; see `Items`.
+            let item = unsafe { &mut *items.base.add(index) };
+            f(index, item);
+            done.0.fetch_add(1, Ordering::Release);
+        }
+    };
+    if count > 1 {
+        par.broadcast(&job);
+    }
+    job(0, 1);
+    assert_eq!(
+        done.0.load(Ordering::Acquire),
+        count,
+        "an item was not finished"
+    );
+}
+
 /// Rows per chunk: about [`CHUNKS_PER_WORKER`] chunks per worker over all the
 /// rows, a whole number of [`CHUNK_ROWS`], at least one of them.
 pub(crate) fn chunk_rows(total_rows: usize, workers: usize) -> usize {
