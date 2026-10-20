@@ -30,6 +30,12 @@ pub struct Stocked {
     pub file: String,
     pub size: u64,
     pub held: Held,
+    /// The least RAM, in GB, the catalog recommends it for.
+    pub min_ram_gb: u64,
+    /// Whether the engine runs all its weight types (`Entry::not_runnable`).
+    pub runnable: bool,
+    /// Guest memory `run --local` gives a VM with it, in MiB.
+    pub vm_mib: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -37,6 +43,22 @@ pub struct Inventory {
     pub dir: PathBuf,
     pub default: String,
     pub models: Vec<Stocked>,
+}
+
+impl Inventory {
+    /// The model `setup` picks for this much RAM: the largest runnable one the
+    /// catalog recommends for it, else the default when the RAM is unknown.
+    pub fn recommend(&self, ram_bytes: Option<u64>) -> Option<&Stocked> {
+        let Some(bytes) = ram_bytes else {
+            return self.models.iter().find(|m| m.id == self.default);
+        };
+        // Rounded as `setup` rounds it: 31.9 GiB visible is 32 GB.
+        let ram_gb = (bytes + (1 << 29)) >> 30;
+        self.models
+            .iter()
+            .filter(|m| m.runnable && m.min_ram_gb <= ram_gb)
+            .max_by_key(|m| (m.min_ram_gb, m.size))
+    }
 }
 
 /// The store `setup` would use (`--store`, else `KAI_MODELS`, else the default)
@@ -53,6 +75,9 @@ pub fn inventory(store_flag: Option<&str>) -> Result<Inventory, String> {
             file: entry.file.clone(),
             size: entry.size,
             held: held(&dir, entry),
+            min_ram_gb: entry.min_ram_gb,
+            runnable: entry.not_runnable().is_none(),
+            vm_mib: crate::disk::memory_mib_for(entry.size),
         })
         .collect();
     Ok(Inventory {

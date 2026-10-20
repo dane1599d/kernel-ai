@@ -18,17 +18,51 @@ fn ubuntu(version: u32) -> Distro {
     }
 }
 
+fn model(id: &str, name: &str, file: &str, size: u64, min_ram_gb: u64, held: Held) -> Stocked {
+    Stocked {
+        id: id.into(),
+        name: name.into(),
+        file: file.into(),
+        size,
+        held,
+        min_ram_gb,
+        runnable: true,
+        vm_mib: crate::disk::memory_mib_for(size),
+    }
+}
+
+/// The catalog since L6: the 4B is the default, from 8 GB of RAM. `held` is
+/// the 4B's state; the others are not downloaded.
 fn store(held: Held) -> Inventory {
     Inventory {
-        dir: PathBuf::from("D:\\kai-models"),
-        default: "qwen3-0.6b".into(),
-        models: vec![Stocked {
-            id: "qwen3-0.6b".into(),
-            name: "Qwen3-0.6B Q8_0".into(),
-            file: "Qwen3-0.6B-Q8_0.gguf".into(),
-            size: 639_446_688,
-            held,
-        }],
+        dir: PathBuf::from(r"D:\kai-models"),
+        default: "qwen3-4b-2507".into(),
+        models: vec![
+            model(
+                "qwen3-0.6b",
+                "Qwen3-0.6B Q8_0",
+                "Qwen3-0.6B-Q8_0.gguf",
+                639_446_688,
+                4,
+                Held::Missing,
+            ),
+            model(
+                "qwen3-1.7b",
+                "Qwen3-1.7B Q4_K_M",
+                "Qwen3-1.7B-Q4_K_M.gguf",
+                1_107_409_472,
+                4,
+                Held::Missing,
+            ),
+            model(
+                "qwen3-4b-2507",
+                "Qwen3-4B-Instruct-2507 Q4_K_M",
+                "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+                2_497_281_120,
+                8,
+                held,
+            ),
+        ],
     }
 }
 
@@ -141,7 +175,7 @@ fn the_founders_pc_fails_on_nested_virtualization_and_packages() {
     let store = item(&list, "Model store");
     assert_eq!(
         store.fix[0].run.as_deref(),
-        Some("cargo xtask setup qwen3-0.6b")
+        Some("cargo xtask setup qwen3-4b-2507")
     );
     assert!(item(&list, "WSL").found.contains("VirtioProxy"));
 }
@@ -156,14 +190,14 @@ fn the_founder_is_sent_down_the_wsl_path_first() {
         [
             r#"notepad "C:\Users\user\.wslconfig""#,
             "wsl --shutdown",
-            "cargo xtask setup qwen3-0.6b",
+            "cargo xtask setup qwen3-4b-2507",
             "cargo xtask doctor",
         ]
     );
     assert!(advice.steps[0].say.contains("nestedVirtualization=true"));
     assert_eq!(
         advice.then,
-        "cargo xtask run --accel wsl --local qwen3-0.6b"
+        "cargo xtask run --accel wsl --local qwen3-4b-2507"
     );
 }
 
@@ -198,7 +232,7 @@ fn nested_set_without_a_flag_turns_to_whpx() {
     assert!(steps.iter().any(|s| s.starts_with("Dism /Online")));
     assert_eq!(
         advice.then,
-        "cargo xtask run --accel whpx --local qwen3-0.6b"
+        "cargo xtask run --accel whpx --local qwen3-4b-2507"
     );
     // The checklist agrees: the setting passes, and the flag points at WHPX.
     let list = items(&facts);
@@ -303,7 +337,10 @@ fn wsl_1_and_a_silent_distro_get_their_own_steps() {
     });
     assert_eq!(
         lines(&advise(&old))[..2],
-        ["wsl --set-version Ubuntu 2", "cargo xtask setup qwen3-0.6b"]
+        [
+            "wsl --set-version Ubuntu 2",
+            "cargo xtask setup qwen3-4b-2507"
+        ]
     );
     assert_eq!(items(&old).iter().filter(|i| i.name == "WSL").count(), 1);
     let silent = with_wsl(founder(), |w| {
@@ -324,12 +361,12 @@ fn the_store_item_names_each_state() {
         item(&items(&facts), "Model store").clone()
     };
     let verified = found(Held::Verified);
-    assert!(verified.ok && verified.found.contains("qwen3-0.6b verified"));
+    assert!(verified.ok && verified.found.contains("qwen3-4b-2507 verified"));
     let partial = found(Held::Partial(100_000_000));
-    assert!(!partial.ok && partial.fix[0].say.contains("at 100 of 639 MB"));
+    assert!(!partial.ok && partial.fix[0].say.contains("at 100 of 2497 MB"));
     let corrupt = found(Held::Corrupt("ab".into()));
     let delete = corrupt.fix[0].run.as_deref().unwrap();
-    assert!(delete.starts_with("del \"D:\\kai-models") && delete.ends_with("Q8_0.gguf\""));
+    assert!(delete.starts_with("del \"D:\\kai-models") && delete.ends_with("Q4_K_M.gguf\""));
     assert_eq!(found(Held::WrongSize(5)).fix.len(), 2);
     let unreadable = found(Held::Unreadable("os error 32".into()));
     assert!(unreadable.fix[0].say.starts_with("Close any program"));
@@ -354,7 +391,7 @@ fn a_linux_host_is_sent_to_kvm() {
     assert_eq!((advice.path, advice.steps.len()), (VmPath::Kvm, 0));
     assert_eq!(
         advice.then,
-        "cargo xtask run --accel kvm --local qwen3-0.6b"
+        "cargo xtask run --accel kvm --local qwen3-4b-2507"
     );
     let list = items(&facts);
     assert!(item(&list, "/dev/kvm").ok && item(&list, "QEMU").ok);
@@ -362,4 +399,61 @@ fn a_linux_host_is_sent_to_kvm() {
     let advice = lines(&advise(&facts));
     assert!(advice[0].contains("firmware (BIOS)"));
     assert_eq!(advice[1], "sudo apt-get update");
+}
+
+#[test]
+fn the_model_follows_the_ram_as_setup_picks_it() {
+    let inv = store(Held::Missing);
+    let gb = |n: u64| Some(n << 30);
+    assert_eq!(inv.recommend(gb(32)).unwrap().id, "qwen3-4b-2507");
+    assert_eq!(
+        inv.recommend(Some((8 << 30) - (1 << 28))).unwrap().id,
+        "qwen3-4b-2507"
+    );
+    assert_eq!(inv.recommend(gb(6)).unwrap().id, "qwen3-1.7b");
+    assert!(inv.recommend(gb(2)).is_none());
+    assert_eq!(inv.recommend(None).unwrap().id, "qwen3-4b-2507");
+    // The 0.6B alone, on a 32 GB PC: the store still asks for the 4B.
+    let mut facts = founder();
+    let mut small = store(Held::Missing);
+    small.models[0].held = Held::Verified;
+    facts.store = Ok(small);
+    let list = items(&facts);
+    let store_item = item(&list, "Model store");
+    assert!(
+        !store_item.ok
+            && store_item
+                .found
+                .contains("qwen3-4b-2507, the one for this RAM")
+    );
+    assert!(
+        item(&list, "RAM")
+            .found
+            .contains("Qwen3-4B-Instruct-2507 Q4_K_M (8 GB and up)")
+    );
+    assert_eq!(
+        advise(&facts).then,
+        "cargo xtask run --accel wsl --local qwen3-4b-2507"
+    );
+}
+
+#[test]
+fn the_vm_for_the_model_must_fit_in_wsl() {
+    // The 4B's guest: 512 MiB, the 2.4 GB model and the engine's 640 MiB.
+    assert_eq!(crate::disk::memory_mib_for(2_497_281_120), 3584);
+    let list = items(&founder());
+    let vm = item(&list, "VM size in WSL");
+    assert!(vm.ok, "{vm:?}");
+    assert!(
+        vm.found
+            .contains("3.5 GB guest with 8 vCPUs; WSL has 13.5 GB"),
+        "{vm:?}"
+    );
+    let tight = with_wsl(founder(), |w| {
+        w.probe = parse_report(&FOUNDER_PROBE.replace("mem_kib=14132508", "mem_kib=3900000"));
+    });
+    let list = items(&tight);
+    let vm = item(&list, "VM size in WSL");
+    assert!(!vm.ok);
+    assert!(vm.fix[0].say.contains("put the line memory=6GB"), "{vm:?}");
 }

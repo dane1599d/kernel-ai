@@ -65,10 +65,15 @@ pub fn advise(f: &Facts) -> Advice {
         ));
     }
     let local = match &f.store {
-        Ok(inv) => {
-            let verified = inv.models.iter().find(|m| m.held == Held::Verified);
-            format!(" --local {}", verified.map_or(&inv.default, |m| &m.id))
-        }
+        // The model setup picks for this RAM, else one already verified.
+        Ok(inv) => match inv.recommend(f.ram_bytes) {
+            Some(model) => format!(" --local {}", model.id),
+            None => inv
+                .models
+                .iter()
+                .find(|m| m.held == Held::Verified && m.runnable)
+                .map_or_else(String::new, |m| format!(" --local {}", m.id)),
+        },
         Err(_) => String::new(),
     };
     Advice {
@@ -216,16 +221,14 @@ fn kvm_steps(f: &Facts) -> Vec<Step> {
     }
 }
 
-/// What gets the default model into the store when none is verified there.
+/// What gets the model `setup` picks for this RAM (the 4B from 8 GB) into the
+/// store, unless it is verified there already.
 fn model_steps(f: &Facts) -> Vec<Step> {
     let inv = match &f.store {
         Ok(inv) => inv,
         Err(_) => return store_fix(f.windows, f.store_env.as_deref()),
     };
-    if inv.models.iter().any(|m| m.held == Held::Verified) {
-        return Vec::new();
-    }
-    let Some(model) = inv.models.iter().find(|m| m.id == inv.default) else {
+    let Some(model) = inv.recommend(f.ram_bytes) else {
         return Vec::new();
     };
     let setup = format!("cargo xtask setup {}", model.id);

@@ -3,9 +3,12 @@
 //! fails, and a failure carries the steps that fix it. The Linux side's items
 //! are `wsl::check`'s, the ones `--accel wsl` refuses a boot with.
 
-use crate::models::{Held, Inventory};
+use crate::models::{Held, Inventory, Stocked};
+use crate::options::MAX_VM_CPUS;
+use crate::wsl::HEADROOM_MIB;
 use crate::wsl::check::{
     Item, Needs, Place, Step, WslConfig, fail, firmware, linux, nested, pass, run, say, step,
+    wslconfig_steps,
 };
 use crate::wsl::probe::{Distro, NoDistro, Report};
 
@@ -220,7 +223,17 @@ fn cpu(f: &Facts) -> Item {
 
 fn ram(f: &Facts) -> Item {
     match f.ram_bytes {
-        Some(bytes) if bytes >= MIN_RAM_BYTES => pass("RAM", format!("{} usable", gb(bytes))),
+        Some(bytes) if bytes >= MIN_RAM_BYTES => {
+            let model = f
+                .store
+                .as_ref()
+                .ok()
+                .and_then(|inv| inv.recommend(Some(bytes)));
+            let tier = model.map_or_else(String::new, |m| {
+                format!("; enough for {} ({} GB and up)", m.name, m.min_ram_gb)
+            });
+            pass("RAM", format!("{} usable{tier}", gb(bytes)))
+        }
         Some(bytes) => fail(
             "RAM",
             format!(
@@ -269,6 +282,8 @@ fn store(f: &Facts) -> Item {
         .filter(|m| m.held == Held::Verified)
         .map(|m| m.id.as_str())
         .collect();
+    // The model setup picks for this RAM: the 4B from 8 GB.
+    let want = inv.recommend(f.ram_bytes).map(|m| m.id.as_str());
     let mut fix = Vec::new();
     let mut bad = Vec::new();
     for model in &inv.models {
@@ -276,7 +291,7 @@ fn store(f: &Facts) -> Item {
         let mb = |bytes: u64| bytes / 1_000_000;
         match &model.held {
             Held::Verified => {}
-            Held::Missing if model.id == inv.default && ready.is_empty() => fix.push(step(
+            Held::Missing if Some(model.id.as_str()) == want => fix.push(step(
                 format!(
                     "Download {} ({} MB) and check its SHA-256:",
                     model.name,
@@ -316,6 +331,10 @@ fn store(f: &Facts) -> Item {
             }
         }
     }
+    let missing = want.filter(|id| !ready.contains(id));
+    if let (Some(id), false) = (missing, ready.is_empty()) {
+        bad.push(format!("{id}, the one for this RAM, is not downloaded"));
+    }
     let found = match (ready.is_empty(), bad.is_empty()) {
         (false, true) => format!("{dir}: {} verified (size and SHA-256)", ready.join(", ")),
         (false, false) => format!("{dir}: {} verified; {}", ready.join(", "), bad.join("; ")),
@@ -323,7 +342,7 @@ fn store(f: &Facts) -> Item {
         (true, false) => format!("{dir}: {}", bad.join("; ")),
     };
     Item {
-        ok: !ready.is_empty() && bad.is_empty(),
+        ok: !ready.is_empty() && bad.is_empty() && missing.is_none(),
         name: name.into(),
         found,
         fix,
@@ -423,7 +442,37 @@ fn wsl(f: &Facts) -> Vec<Item> {
         loopback: true,
     };
     items.extend(linux(report, place, needs));
+    if let Some(model) = f.store.as_ref().ok().and_then(|i| i.recommend(f.ram_bytes)) {
+        items.push(vm_memory(model, report, &f.wslconfig));
+    }
     items
+}
+
+/// Whether WSL's VM holds the guest `run --local` gives the recommended model,
+/// as `--accel wsl` checks before a boot.
+fn vm_memory(model: &Stocked, report: &Report, config: &WslConfig) -> Item {
+    let name = "VM size in WSL";
+    let cpus = report
+        .cpus
+        .map_or(MAX_VM_CPUS, |n| (n as usize).min(MAX_VM_CPUS));
+    let vm = format!(
+        "{} gets a {} guest with {cpus} vCPUs",
+        model.name,
+        gb(model.vm_mib << 20)
+    );
+    let Some(kib) = report.mem_kib else {
+        return pass(name, vm);
+    };
+    let wsl_mib = kib / 1024;
+    if model.vm_mib + HEADROOM_MIB <= wsl_mib {
+        return pass(name, format!("{vm}; WSL has {}", gb(kib * 1024)));
+    }
+    let want_gb = (model.vm_mib + HEADROOM_MIB).div_ceil(1024) + 1;
+    fail(
+        name,
+        format!("{vm}, but WSL has only {}", gb(kib * 1024)),
+        wslconfig_steps(config, &format!("memory={want_gb}GB")),
+    )
 }
 
 /// A distro that did not answer: restart WSL, then let the distro show its error.

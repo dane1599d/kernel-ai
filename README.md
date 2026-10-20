@@ -62,7 +62,7 @@ cargo xtask doctor
 It changes nothing. It prints a ✓ or ✗ line for each requirement (CPU, RAM, free space, the model store, QEMU for Windows, the Windows Hypervisor Platform, WSL, KVM, QEMU and OVMF inside WSL, `nestedVirtualization`), the fix under each ✗, and then one recommended path and the next command. On Windows the preferred path is WSL2 with KVM, the QEMU and accelerator CI uses:
 
 ```bash
-cargo xtask run --accel wsl --local qwen3-0.6b   # QEMU in WSL; its window through WSLg, the serial log here
+cargo xtask run --accel wsl --local qwen3-4b-2507   # QEMU in WSL; its window through WSLg, the serial log here
 cargo xtask test --accel wsl                     # every boot test, as CI runs them
 ```
 

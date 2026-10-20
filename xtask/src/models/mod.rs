@@ -25,9 +25,7 @@ mod setup;
 mod store;
 
 use catalog::{Catalog, Entry};
-#[cfg(test)]
-pub use inventory::Stocked;
-pub use inventory::{Held, Inventory, inventory};
+pub use inventory::{Held, Inventory, Stocked, inventory};
 pub use machine::free_bytes;
 use std::fs;
 use std::path::PathBuf;

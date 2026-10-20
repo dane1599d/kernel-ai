@@ -12,3 +12,4 @@ pub mod probe;
 mod tests;
 
 pub use launch::{Wsl, command, firmware, wrap};
+pub use path::HEADROOM_MIB;
