@@ -62,7 +62,8 @@ pub fn run() -> Result<(), String> {
     }
     sync_line(&threads, &pools);
     bench_project::run(&threads, &pools, &stream)?;
-    calibrate(best)
+    calibrate(best)?;
+    super::bench_4b::run(&threads, &pools, best)
 }
 
 /// Median, min and max of `RUNS` timed calls after a warm-up call.

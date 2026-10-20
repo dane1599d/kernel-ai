@@ -97,6 +97,24 @@ impl Spec {
         }
     }
 
+    /// Qwen3-4B's shapes in its Q4_K_M file's mix, with `n_layer` of its 36
+    /// layers and random weights, for timing the engine without the real file:
+    /// about 57 MB a layer and 320 MB of embeddings.
+    pub fn qwen3_4b_layers(n_layer: usize) -> Self {
+        Self {
+            n_layer,
+            n_embd: 2560,
+            n_ff: 9728,
+            n_head: 32,
+            n_head_kv: 8,
+            head_dim: 128,
+            vocab: 151_936,
+            context_length: 40_960,
+            quant: Quant::KMix,
+            ..Self::tiny()
+        }
+    }
+
     /// tiny's layout at the narrowest widths K-quants take (rows of 256 values),
     /// in a Q4_K_M file's mix of Q4_K and Q6_K: about 750 KB.
     pub fn tiny_k() -> Self {
