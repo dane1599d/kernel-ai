@@ -60,6 +60,7 @@ fn every_command_form_parses() {
         ("diff", Command::Diff),
         ("build", Command::Build),
         ("try", Command::Try),
+        ("status", Command::Status),
         ("reset", Command::Reset),
         ("help", Command::Help),
     ];

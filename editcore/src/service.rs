@@ -14,9 +14,9 @@ use alloc::vec::Vec;
 use kabi::Error;
 use kabi::live::Info;
 use livecore::{artifact, diff};
-use llmproto::http;
 
 mod building;
+mod job;
 mod replay;
 
 pub(crate) use building::{MOVED, location};
@@ -54,6 +54,7 @@ pub struct Service {
     host: String,
     token: String,
     pub session: Option<Session>,
+    builds: job::Builds,
 }
 
 fn ok(text: impl AsRef<str>) -> String {
@@ -80,6 +81,7 @@ impl Service {
             host: host.to_string(),
             token: token.to_string(),
             session: None,
+            builds: job::Builds::new(),
         }
     }
 
@@ -203,6 +205,9 @@ impl Service {
         if command == Command::Help {
             return ok(format!("commands:\n{USAGE}"));
         }
+        if command == Command::Status {
+            return self.status();
+        }
         let Some(session) = self.session.as_mut() else {
             return err("no file is open; :edit <component> first");
         };
@@ -214,8 +219,11 @@ impl Service {
     }
 
     fn sync(&mut self, env: &mut dyn Env, seq: u64, job: &wire::SyncRequest<'_>) -> String {
-        let body = wire::encode_sync(job);
-        let body = match self.post(env, "/sync", &body, SYNC_TIMEOUT_MS) {
+        let request = self.request("/sync", &wire::encode_sync(job));
+        let response = env
+            .build(&request, SYNC_TIMEOUT_MS)
+            .map_err(|error| format!("{error:?}"));
+        let body = match response.and_then(|response| building::body_of(&response)) {
             Ok(body) => body,
             Err(why) => return err(format!("build service: {why}")),
         };
@@ -226,29 +234,6 @@ impl Service {
             Ok(Synced::Untracked) => ok(format!("untracked {seq}")),
             Err(why) => err(format!("build service: a malformed reply ({why})")),
         }
-    }
-
-    /// POSTs to the build service; the body of a 200 response.
-    fn post(
-        &self,
-        env: &mut dyn Env,
-        path: &str,
-        body: &[u8],
-        timeout_ms: u64,
-    ) -> Result<Vec<u8>, String> {
-        let token = [("X-Kai-Token", self.token.as_str())];
-        let request = http::post(&self.host, path, "application/octet-stream", &token, body);
-        let response = env
-            .build(&request, timeout_ms)
-            .map_err(|error| format!("{error:?}"))?;
-        let response =
-            http::parse_response(&response, true).map_err(|error| format!("{error:?}"))?;
-        if response.status != 200 {
-            let body = String::from_utf8_lossy(&response.body);
-            let first = body.lines().next().unwrap_or("");
-            return Err(format!("HTTP {} {}", response.status, first));
-        }
-        Ok(response.body)
     }
 }
 
@@ -409,7 +394,9 @@ fn run(session: &mut Session, command: Command<'_>) -> String {
                 session.component, session.label
             ))
         }
-        Command::Build | Command::Try | Command::Help => unreachable!("handled before"),
+        Command::Build | Command::Try | Command::Help | Command::Status => {
+            unreachable!("handled before")
+        }
     };
     match result {
         Ok(text) => ok(text),

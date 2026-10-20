@@ -1,4 +1,4 @@
-use super::service::{Fake, Host, TOKEN};
+use super::fake::{Fake, Host, TOKEN};
 use super::*;
 use crate::ipc::{Ipc, decode_ipc, encode_ipc};
 use crate::journal::{Journal, MAX_JOURNAL, Restore, digest};

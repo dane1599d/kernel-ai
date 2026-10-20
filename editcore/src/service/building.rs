@@ -10,6 +10,7 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use kabi::Error;
 use livecore::artifact;
+use llmproto::http;
 
 /// Diagnostic lines a failed build shows.
 const DIAGNOSTICS: usize = 8;
@@ -17,6 +18,12 @@ const DIAGNOSTICS: usize = 8;
 pub(crate) const MOVED: &str = "build failed; the cursor is on the first error";
 
 impl Service {
+    /// A POST of `body` to the build service's `path`, with the token.
+    pub(super) fn request(&self, path: &str, body: &[u8]) -> Vec<u8> {
+        let token = [("X-Kai-Token", self.token.as_str())];
+        http::post(&self.host, path, "application/octet-stream", &token, body)
+    }
+
     pub(super) fn build(&mut self, env: &mut dyn Env) -> String {
         let Some(session) = self.session.as_ref() else {
             return err("no file is open");
@@ -64,7 +71,26 @@ impl Service {
         env.log(&format!(
             "building {component} {next} from {base} on the host"
         ));
-        let body = match self.post(env, "/build", &body, BUILD_TIMEOUT_MS) {
+        let request = self.request("/build", &body);
+        let answer = self.send(env, &request, &component, &next, &base, &bundle);
+        self.builds.last = Some(answer.clone());
+        answer
+    }
+
+    /// Sends a build and stores what comes back; the answer.
+    fn send(
+        &mut self,
+        env: &mut dyn Env,
+        request: &[u8],
+        component: &str,
+        next: &str,
+        base: &str,
+        bundle: &[u8],
+    ) -> String {
+        let response = env
+            .build(request, BUILD_TIMEOUT_MS)
+            .map_err(|error| format!("{error:?}"));
+        let body = match response.and_then(|response| body_of(&response)) {
             Ok(body) => body,
             Err(why) => return err(format!("build service: {why}")),
         };
@@ -77,22 +103,22 @@ impl Service {
             BuildResult::Refused => err(format!("build refused: {}", log.trim())),
             BuildResult::Failed => self.failed(&log),
             BuildResult::Ok => {
-                let checked = check_artifact(built.artifact, &component, &next, &bundle);
+                let checked = check_artifact(built.artifact, component, next, bundle);
                 if let Err(why) = checked {
                     return err(format!(
                         "the build service returned the wrong artifact: {why}"
                     ));
                 }
-                match env.put(&component, built.artifact, &base, built.commit) {
+                match env.put(component, built.artifact, base, built.commit) {
                     Ok(()) => {}
-                    Err(Error::Invalid) => return err(refusal(env, &component, &next, &base)),
+                    Err(Error::Invalid) => return err(refusal(env, component, next, base)),
                     Err(Error::NoMemory) => {
                         return err("the store has no room for another upload");
                     }
                     Err(error) => return err(format!("the store refused {next}: {error:?}")),
                 }
                 if let Some(session) = self.session.as_mut() {
-                    session.built = Some(next.clone());
+                    session.built = Some(next.to_string());
                 }
                 ok(format!(
                     "built {next} from {base} (commit {}); :apply runs it",
@@ -184,4 +210,15 @@ fn refusal(env: &mut dyn Env, component: &str, next: &str, base: &str) -> String
             "the store refused {next}: the active version changed, or the build service's reply did not match; build again"
         ),
     }
+}
+
+/// The body of the build service's `200` response, or what went wrong.
+pub(super) fn body_of(response: &[u8]) -> Result<Vec<u8>, String> {
+    let response = http::parse_response(response, true).map_err(|error| format!("{error:?}"))?;
+    if response.status != 200 {
+        let body = String::from_utf8_lossy(&response.body);
+        let first = body.lines().next().unwrap_or("");
+        return Err(format!("HTTP {} {}", response.status, first));
+    }
+    Ok(response.body)
 }
