@@ -20,13 +20,18 @@ mod engine;
 mod log;
 pub mod script;
 mod show;
+mod tune;
 
+use alloc::boxed::Box;
 use alloc::format;
 use alloc::rc::Rc;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use engine::Line;
+use kabi::sched::{SchedStats, TrialRequest};
+use llmproto::chat::Completion;
 use llmproto::script::{Answer, AnswerError, ScriptRequest};
+use llmproto::tune::TuneRequest;
 use rhai::{AST, Dynamic, Engine, EvalAltResult, Scope};
 
 pub use commands::{COMMANDS, split_command};
@@ -46,6 +51,23 @@ pub trait Host {
     fn script(&self, request: &ScriptRequest) -> Result<Answer, AnswerError>;
     /// Writes one line to the console log.
     fn audit(&self, text: &str);
+    /// The scheduler's numbers over `window_ms` (0: the trial's status only).
+    fn sched_stats(&self, _window_ms: u64) -> Result<Box<SchedStats>, kabi::Error> {
+        Err(kabi::Error::Unavailable)
+    }
+    /// Starts a kernel-owned policy trial; its id.
+    fn sched_trial(&self, _request: &TrialRequest) -> Result<u64, kabi::Error> {
+        Err(kabi::Error::Unavailable)
+    }
+    /// Asks the LLM to tune; its raw completion.
+    fn tune(&self, _request: &TuneRequest) -> Result<Completion, String> {
+        Err(String::from("tuning is not available here"))
+    }
+    /// Installs policy `id` with a preset.
+    fn set_spec(&self, id: u64, _preset: u64) -> Result<(), kabi::Error> {
+        self.set_policy(id)
+    }
+    fn sleep_ms(&self, _ms: u64) {}
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -142,6 +164,7 @@ pub struct Shell {
     pending: Option<Pending>,
     next_id: u64,
     log: log::Log,
+    tuner: tune::Tuner,
 }
 
 impl Shell {
@@ -159,6 +182,7 @@ impl Shell {
             pending: None,
             next_id: 1,
             log: log::Log::default(),
+            tuner: tune::Tuner::default(),
         }
     }
 
@@ -175,7 +199,8 @@ impl Shell {
         {
             return self.answer(rest);
         }
-        // Anything but the answer leaves a proposed script unrun.
+        // Anything but the answer leaves a proposal unrun.
+        self.tuner.discard();
         if let Some(pending) = self.pending.take() {
             self.record(&pending, "discarded: another line came first");
         }
@@ -187,6 +212,11 @@ impl Shell {
             self.scope.clear();
             self.functions = AST::empty();
             return Reply::ok("variables and functions cleared");
+        }
+        if (input == "tune" || input.starts_with("tune ")) && !self.scope.contains("tune") {
+            let id = self.next_id;
+            self.next_id += 1;
+            return self.tuner.command(self.host.as_ref(), &input[4..], id);
         }
         if let Some(request) = input.strip_prefix('?') {
             return self.ask_for_script(request.trim());
@@ -332,6 +362,9 @@ impl Shell {
     fn answer(&mut self, rest: &str) -> Reply {
         let (id, text) = rest.split_once(' ').unwrap_or((rest, ""));
         let id = id.parse::<u64>().ok();
+        if id.is_some_and(|id| self.tuner.waiting(id)) {
+            return self.tuner.answer(self.host.as_ref(), text);
+        }
         let pending = match self.pending.take() {
             Some(pending) if Some(pending.id) == id => pending,
             other => {

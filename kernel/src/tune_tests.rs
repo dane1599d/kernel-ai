@@ -235,3 +235,115 @@ pub fn revert_check() -> Result<(), &'static str> {
     log!("tune-revert: no workload process was killed as a runaway");
     Ok(())
 }
+
+/// How long one shell line may take: an observe window and a whole trial.
+const SHELL_LINE_MS: u64 = 90_000;
+
+fn line(text: &str) -> Result<alloc::string::String, &'static str> {
+    let reply = crate::ipc::call("shell", text.as_bytes(), SHELL_LINE_MS).map_err(|error| {
+        log!("tune: no reply to {text:?}: {error:?}");
+        "tune: the shell did not answer"
+    })?;
+    let reply = alloc::string::String::from_utf8_lossy(&reply).into_owned();
+    log!("tune: {text:?} -> {:?}", reply.lines().next().unwrap_or(""));
+    Ok(reply)
+}
+
+/// The proposal id of a `confirm <id> ...` reply.
+fn proposal(reply: &str, plan: &str) -> Result<u64, &'static str> {
+    if !reply.contains(plan) {
+        log!("tune: expected {plan:?} in {reply:?}");
+        return Err("tune: the proposal card is not the expected one");
+    }
+    reply
+        .strip_prefix("confirm ")
+        .and_then(|rest| rest.split(' ').next())
+        .and_then(|id| id.parse().ok())
+        .ok_or("tune: the shell did not ask for a yes")
+}
+
+static ANSWER: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+fn answer_in_background(_: usize) {
+    let id = ANSWER.load(Ordering::SeqCst);
+    let request = alloc::format!("answer {id} yes");
+    let _ = crate::ipc::call("shell", request.as_bytes(), SHELL_LINE_MS);
+}
+
+/// M10a-4 (`test=tune workload=A`): the shell's `tune` with the mock server's
+/// canned answers, keyed by the founder's intent: a good pick is tried and its
+/// verdict is the judge's; round-robin is rolled back; an invalid answer keeps
+/// the policy and starts nothing; a shell killed mid-trial leaves the last good
+/// policy on every CPU.
+pub fn shell_check() -> Result<(), &'static str> {
+    crate::shell_tests::start()?;
+    pid_named("editor")?;
+    threads::sleep_ms(1_000);
+
+    // (a)
+    let id = proposal(&line("tune editor: good pick")?, "Plan: try classes/firm")?;
+    let verdict = line(&alloc::format!("answer {id} yes"))?;
+    let kept = verdict.starts_with("ok Kept classes/firm");
+    if !kept && !verdict.starts_with("ok Rolled back classes/firm") {
+        return Err("tune: the good pick got no verdict card");
+    }
+    if sched::judge::judge(&sched_control::last_pairs(), 0).kept != kept {
+        return Err("tune: the verdict card is not the judge's verdict");
+    }
+    if kept && line("tune undo")? != "ok back to interactive" {
+        return Err("tune: undo did not put interactive back");
+    }
+    log!("tune: (a) the good pick's verdict is the judge's");
+
+    // (b)
+    let id = proposal(&line("tune editor: round robin")?, "Plan: try round-robin")?;
+    if !line(&alloc::format!("answer {id} yes"))?.starts_with("ok Rolled back round-robin") {
+        return Err("tune: round-robin was not rolled back");
+    }
+    log!("tune: (b) round-robin was rolled back");
+
+    // (c)
+    let before = sched_control::status().id;
+    let reply = line("tune editor: invalid answer")?;
+    if !reply.starts_with("ok ")
+        || !reply.contains("Kept the current policy: the answer was not the JSON object asked for")
+        || sched_control::status().id != before
+        || !threads::installed_policy_everywhere("interactive")
+    {
+        return Err("tune: an invalid answer was not inert");
+    }
+    log!("tune: (c) an invalid answer kept the policy and started nothing");
+
+    // (d)
+    let shell = crate::shell_tests::start()?;
+    let id = proposal(&line("tune editor: slow pick")?, "Plan: try classes/gentle")?;
+    ANSWER.store(id, Ordering::SeqCst);
+    threads::spawn("tune-answer", answer_in_background, 0)?;
+    let running = (0..200).any(|_| {
+        threads::sleep_ms(50);
+        let status = sched_control::status();
+        status.id > before && status.state == state::RUNNING
+    });
+    if !running {
+        return Err("tune: the trial never started");
+    }
+    threads::sleep_ms(1_500);
+    process::kill(shell, kabi::ExitReason::Killed).map_err(|_| "tune: cannot kill the shell")?;
+    let status = finished(sched_control::status().id)?;
+    if status.reason != reason::STARTER_EXITED
+        || !threads::installed_policy_everywhere("interactive")
+    {
+        return Err("tune: a shell killed mid-trial did not leave the last good policy");
+    }
+    log!("tune: (d) the shell was killed mid-trial; every CPU is back on interactive");
+    for _ in 0..200 {
+        if crate::shell_tests::start().is_ok_and(|pid| pid != shell) {
+            break;
+        }
+        threads::sleep_ms(50);
+    }
+    if line("1 + 1")? != "ok 2" {
+        return Err("tune: the restarted shell does not answer");
+    }
+    Ok(())
+}

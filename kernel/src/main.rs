@@ -289,6 +289,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Bigmap => run_case(bigmap_tests::check),
         SelfTest::IcountProbe => run_case(|| icount_tests::check(cmdline())),
         SelfTest::TuneRevert => run_case(tune_tests::revert_check),
+        SelfTest::Tune => run_case(tune_tests::shell_check),
         SelfTest::Boot | SelfTest::None => {}
     }
 

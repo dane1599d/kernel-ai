@@ -152,6 +152,9 @@ fn chat_content(request: &Value) -> String {
     if request["messages"][0]["content"] == llmproto::explain::SYSTEM_PROMPT {
         return explanation(request);
     }
+    if request["response_format"]["json_schema"]["name"] == "sched_tune" {
+        return tune(request);
+    }
     let is_script = request["response_format"]["json_schema"]["name"] == "rhai_script";
     if !is_script {
         return REPLY.to_string();
@@ -175,6 +178,43 @@ fn chat_content(request: &Value) -> String {
             json!({ "script": script, "summary": summary }).to_string()
         }
         None => "I am not sure what you mean.".to_string(),
+    }
+}
+
+/// The canned answer to a `tune` request, keyed by the founder's intent in the
+/// summary: `good pick` labels the build jobs under classes/firm, `slow pick`
+/// the same under classes/gentle, `round robin` asks for round-robin, `invalid
+/// answer` is prose; anything else keeps.
+fn tune(request: &Value) -> String {
+    let summary = request["messages"][1]["content"].as_str().unwrap_or("");
+    let schema = &request["response_format"]["json_schema"]["schema"];
+    let builds: Vec<&str> = schema["properties"]["background"]["items"]["enum"]
+        .as_array()
+        .map_or(&[][..], Vec::as_slice)
+        .iter()
+        .filter_map(Value::as_str)
+        .filter(|name| name.starts_with("build-"))
+        .collect();
+    let answer = |action: &str, policy: &str, preset: &str, background: &[&str]| {
+        json!({
+            "reason": "The build jobs wake often and delay the editor.",
+            "action": action,
+            "policy": policy,
+            "preset": preset,
+            "background": background,
+        })
+        .to_string()
+    };
+    if summary.contains("good pick") {
+        answer("try", "classes", "firm", &builds)
+    } else if summary.contains("slow pick") {
+        answer("try", "classes", "gentle", &builds)
+    } else if summary.contains("round robin") {
+        answer("try", "round-robin", "gentle", &[])
+    } else if summary.contains("invalid answer") {
+        String::from("Sure! I would use classes for the builds.")
+    } else {
+        answer("keep", "interactive", "gentle", &[])
     }
 }
 
@@ -221,6 +261,34 @@ mod tests {
         let mut response = String::new();
         stream.read_to_string(&mut response).unwrap();
         response
+    }
+
+    #[test]
+    fn answers_tune_requests_by_intent() {
+        let request = |intent: &str| {
+            let text = format!(
+                "Founder: \"{intent}\"
+Keep \"editor\" responsive."
+            );
+            let wire = llmproto::tune::TuneRequest {
+                labelable: vec!["build-1".into(), "indexer".into()],
+                text,
+            };
+            String::from_utf8(wire.chat_body("mock")).unwrap()
+        };
+        let content = |intent: &str| {
+            let reply: Value =
+                serde_json::from_str(&answer(request(intent).as_bytes()).unwrap()).unwrap();
+            reply["choices"][0]["message"]["content"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        let good: Value = serde_json::from_str(&content("good pick")).unwrap();
+        assert_eq!(good["policy"], "classes");
+        assert_eq!(good["background"], json!(["build-1"]));
+        assert!(content("round robin").contains("\"round-robin\""));
+        assert!(serde_json::from_str::<Value>(&content("invalid answer")).is_err());
     }
 
     #[test]

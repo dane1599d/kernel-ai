@@ -104,10 +104,13 @@ fn mem(host: &dyn Host) -> Result<String, String> {
     ))
 }
 
-fn policy_name(id: u64) -> &'static str {
+pub(crate) fn policy_name(id: u64) -> &'static str {
     match id {
+        policy::INTERACTIVE => "interactive",
         policy::ROUND_ROBIN => "round-robin",
-        _ => "interactive",
+        policy::CLASSES => "classes",
+        policy::RESPONSIVE => "responsive",
+        _ => "a policy outside the catalog",
     }
 }
 

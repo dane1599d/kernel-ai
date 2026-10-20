@@ -195,6 +195,16 @@ pub const TEST_CASES: &[TestCase] = &[
         ],
         ..case("tune-revert", "test=tune-revert workload=A seed=1")
     },
+    // M10a-4: `tune` at the shell with the mock server's canned answers.
+    TestCase {
+        expect: &[
+            "tune: (a) the good pick's verdict is the judge's",
+            "tune: (b) round-robin was rolled back",
+            "tune: (c) an invalid answer kept the policy and started nothing",
+            "tune: (d) the shell was killed mid-trial; every CPU is back on interactive",
+        ],
+        ..case("tune", "test=tune workload=A seed=1")
+    },
     // L4's exit test: the model on the disk answers, inside Kernel AI, with no
     // server. xtask adds the golden answer's exact line and the health text.
     TestCase {

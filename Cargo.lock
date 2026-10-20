@@ -825,6 +825,7 @@ dependencies = [
  "kabi",
  "llmproto",
  "rhai",
+ "sched",
 ]
 
 [[package]]

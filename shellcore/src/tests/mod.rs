@@ -10,6 +10,7 @@ use llmproto::script::{Answer, AnswerError, ScriptRequest};
 use std::collections::VecDeque;
 
 mod scripts;
+mod tune;
 
 /// A host whose clock moves `step_ns` on every reading.
 struct FakeHost {
