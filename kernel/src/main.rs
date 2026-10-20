@@ -22,6 +22,7 @@ mod backtrace;
 mod blk_tests;
 mod boot_manifest;
 mod build_service;
+mod compute_tests;
 mod console;
 mod cpu;
 mod edit_mode;
@@ -277,6 +278,8 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Probe => run_case(fpu_tests::probe_check),
         SelfTest::Threads => run_case(thread_tests::check),
         SelfTest::ThreadsKill => run_case(thread_tests::kill_check),
+        SelfTest::Matvec => run_case(compute_tests::matvec_check),
+        SelfTest::ComputeKeys => run_case(compute_tests::keys_check),
         SelfTest::Boot | SelfTest::None => {}
     }
 

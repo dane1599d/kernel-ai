@@ -209,6 +209,12 @@ pub const TEST_CASES: &[TestCase] = &[
     // L6: worker threads in one address space.
     case("threads", "test=threads"),
     case("threads-kill", "test=threads-kill"),
+    case("matvec", "test=matvec"),
+    // The graft: keys still echo while every vCPU computes in ring 3.
+    TestCase {
+        keys: &[KAI],
+        ..case("compute-keys", "test=compute-keys")
+    },
 ];
 
 /// "show me the cpus please" and Enter: plain English, so the shell asks llm for a

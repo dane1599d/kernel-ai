@@ -17,6 +17,10 @@ pub const MAX_WORKERS: usize = 8;
 pub const MAX_STACK_PAGES: u64 = 256;
 /// Bytes of address space each worker's stack window spans.
 pub const WINDOW: u64 = 2 << 20;
+/// Pages a pool of [`MAX_WORKERS`] workers with 16-page stacks takes in its
+/// process's quota, page tables included (a PDPT, a directory and one table per
+/// window): what a service's plan line adds for `user::pool`.
+pub const POOL_PAGES: u64 = MAX_WORKERS as u64 * (16 + 1) + 2;
 /// Top of worker 0's window; the others lie below it, one window each.
 pub const STACKS_TOP: u64 = 0x0000_7F00_0000_0000;
 

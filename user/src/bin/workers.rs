@@ -16,6 +16,8 @@
 //! - `mode=futex`: FUTEX_WAIT and FUTEX_WAKE; `mode=park` and `mode=spin`: every
 //!   thread waits on a futex, or the workers compute in ring 3, until the kernel
 //!   kills the process (see `workers/futex.rs`).
+//! - `mode=matvec`: an f32 matrix-vector product over `user::pool` equals one
+//!   thread's, bit for bit (see `workers/matvec.rs`).
 
 #![no_std]
 #![no_main]
@@ -26,6 +28,10 @@ mod basic;
 mod burst;
 #[path = "workers/futex.rs"]
 mod futex;
+#[path = "workers/matvec.rs"]
+mod matvec;
+
+extern crate alloc;
 
 use user::{arg, args, println};
 
@@ -45,6 +51,7 @@ fn main() -> i32 {
         Some("futex") => futex::futex(),
         Some("park") => futex::park(),
         Some("spin") => futex::spin(),
+        Some("matvec") => matvec::matvec(),
         other => {
             println!("workers: unknown mode {other:?}");
             1
