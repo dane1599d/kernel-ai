@@ -3,6 +3,8 @@
 use super::fake::{Fake, Job, kernel, say, service};
 use super::numbered;
 use crate::journal::Journal;
+use alloc::format;
+use alloc::vec;
 use alloc::vec::Vec;
 use kabi::Error;
 
@@ -90,4 +92,117 @@ fn a_replay_into_a_live_service_takes_nothing_until_the_next_command() {
     say(&mut live, &mut env, &mut journal, "cmd status");
     assert_eq!(env.polls.last(), Some(&true));
     assert!(env.job.is_none() && env.puts.len() == 1);
+}
+
+const BUILT: &str = "ok built e1 from 2 (commit 1a2b3c4d5e6f); :apply runs it";
+
+/// A live service that opened notes, made `edits`, built and kept answering:
+/// its journal, with the build left in the kernel, done after `busy` polls.
+fn killed_while_building(env: &mut Fake, edits: &[&str], after: &[&str], busy: u32) -> Journal {
+    let (mut live, mut journal) = (service(), Journal::new());
+    say(&mut live, env, &mut journal, "open notes");
+    for edit in edits {
+        say(&mut live, env, &mut journal, edit);
+    }
+    env.busy_polls = 99;
+    say(&mut live, env, &mut journal, "cmd build");
+    for message in after {
+        say(&mut live, env, &mut journal, message);
+    }
+    env.job.as_mut().unwrap().busy = busy;
+    env.polls.clear();
+    journal
+}
+
+/// The journal replayed into a fresh service, with a git sync between messages.
+fn replayed(env: &mut Fake, journal: &Journal) -> crate::service::Service {
+    let mut fresh = service();
+    for message in journal.messages(journal.len()) {
+        assert!(fresh.handle(env, 0, &message).starts_with("ok replayed "));
+        kernel(&mut fresh, env, SYNC);
+    }
+    fresh
+}
+
+fn finds() -> Vec<&'static str> {
+    let mut edits = vec!["cmd c 1 x"];
+    edits.extend(core::iter::repeat_n("cmd find line", 300));
+    edits
+}
+
+#[test]
+fn a_restarted_service_adopts_a_job_built_from_the_replayed_text() {
+    let mut env = Fake::new(&numbered(12, "\n"));
+    let mut journal = killed_while_building(&mut env, &finds(), &[], 0);
+    assert!(journal.messages(journal.len()).len() >= 2);
+    let mut fresh = replayed(&mut env, &journal);
+    assert!(env.polls.iter().all(|took| !took) && env.job.is_some());
+    say(&mut fresh, &mut env, &mut journal, "cmd p 1");
+    let status = say(&mut fresh, &mut env, &mut journal, "cmd status");
+    assert_eq!(
+        status,
+        format!("ok notes 2: edited, built e1\nlast build: {BUILT}")
+    );
+    assert_eq!(env.logs.last().map(|log| log.as_str()), Some(&BUILT[3..]));
+    let (_, bytes, base, _) = &env.puts[0];
+    assert_eq!((base.as_str(), env.puts.len()), ("2", 1));
+    // The journal heard of it from the store: a second restart keeps it built.
+    env.artifacts.push(("e1", bytes.clone()));
+    let mut again = service();
+    let restore = journal.restore(&mut |m| Some(again.handle(&mut env, 0, m).into_bytes()));
+    assert!(restore.lost.is_empty(), "{}", restore.notice);
+    assert_eq!(again.session.unwrap().built.as_deref(), Some("e1"));
+}
+
+#[test]
+fn a_restarted_service_drops_a_job_from_other_text() {
+    let lib = numbered(3, "\n");
+    // An edit answered after the build: the replayed text is not what was built.
+    let mut env = Fake::new(&lib);
+    let journal = killed_while_building(&mut env, &["cmd c 1 x"], &["cmd c 2 y"], 0);
+    let mut fresh = replayed(&mut env, &journal);
+    let status = kernel(&mut fresh, &mut env, "cmd status");
+    assert!(
+        status.ends_with("last build: err dropped e1: it was built before the edit service restarted, from other text"),
+        "{status}"
+    );
+    // No session came back.
+    let mut env = Fake::new(&lib);
+    killed_while_building(&mut env, &["cmd c 1 x"], &[], 0);
+    let status = kernel(&mut service(), &mut env, "cmd status");
+    assert!(status.ends_with("and no session came back"), "{status}");
+    assert!(env.puts.is_empty() && env.job.is_none());
+}
+
+#[test]
+fn an_inherited_failed_build_only_logs() {
+    let mut env = Fake::new(&numbered(3, "\n"));
+    env.host = super::fake::Host::Fails;
+    let journal = killed_while_building(&mut env, &["cmd c 3 x"], &[], 0);
+    let mut fresh = replayed(&mut env, &journal);
+    let line = fresh.session.as_ref().unwrap().line();
+    let reply = kernel(&mut fresh, &mut env, "cmd status");
+    assert!(!reply.starts_with("#at "), "{reply}");
+    assert_eq!(fresh.session.as_ref().unwrap().line(), line);
+    assert_eq!(
+        env.logs.last().map(|log| log.as_str()),
+        Some("a build from before the restart failed; build again")
+    );
+}
+
+#[test]
+fn an_adopted_build_after_later_edits_is_stored_but_not_built() {
+    let mut env = Fake::new(&numbered(3, "\n"));
+    let journal = killed_while_building(&mut env, &["cmd c 1 x"], &[], 99);
+    let mut fresh = replayed(&mut env, &journal);
+    env.job.as_mut().unwrap().busy = 2;
+    kernel(&mut fresh, &mut env, "cmd status");
+    kernel(&mut fresh, &mut env, "cmd c 2 later");
+    let status = kernel(&mut fresh, &mut env, "cmd status");
+    assert!(
+        status.ends_with(&format!("{BUILT}; your edits since are not in it")),
+        "{status}"
+    );
+    assert_eq!(env.puts.len(), 1);
+    assert_eq!(fresh.session.unwrap().built, None);
 }

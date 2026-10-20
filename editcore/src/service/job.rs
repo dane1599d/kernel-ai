@@ -13,6 +13,7 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use kabi::Error;
+use livecore::artifact;
 
 /// Diagnostic lines a failed build shows.
 const DIAGNOSTICS: usize = 8;
@@ -46,6 +47,10 @@ pub(super) struct Builds {
     /// An open or command came since the session was replaced, so a finished
     /// build's result may be taken; before that, it is only looked at.
     pub(super) decided: bool,
+    /// The text the journal gave back, when an open or command first came after
+    /// the session was replaced with a build from before still unknown: a build
+    /// is adopted only if it was built from exactly this.
+    pub(super) restart_text: Option<Vec<u8>>,
     /// Where a failed build moved the cursor, for the next open or command's
     /// reply to say ([`crate::ipc::with_moved`]).
     pub(super) moved: Option<String>,
@@ -58,6 +63,7 @@ impl Builds {
             job: Some(Job::Inherited { busy: true }),
             last: None,
             decided: false,
+            restart_text: None,
             moved: None,
         }
     }
@@ -103,9 +109,16 @@ impl Service {
         )
     }
 
-    /// An open or a command arrived: from now on a result may be taken.
+    /// An open or a command arrived: from now on a result may be taken. The first
+    /// after a restart keeps the replayed text, which an inherited build must match.
     pub(super) fn decide(&mut self) {
+        if self.builds.decided {
+            return;
+        }
         self.builds.decided = true;
+        if matches!(self.builds.job, Some(Job::Inherited { .. })) {
+            self.builds.restart_text = self.session.as_ref().map(|session| session.to_bundle());
+        }
     }
 
     /// Looks at the build, and handles its result once it is in.
@@ -126,6 +139,9 @@ impl Service {
                     self.done(env, answer);
                 }
             },
+        }
+        if self.builds.job.is_none() {
+            self.builds.restart_text = None;
         }
     }
 
@@ -150,9 +166,66 @@ impl Service {
         }
     }
 
-    /// A result from before the restart, taken.
-    fn adopt(&mut self, _env: &mut dyn Env, _response: &[u8]) -> String {
-        err("a build from before the restart was dropped; build again")
+    /// A result from before the restart, taken: stored only if it was built on
+    /// the session's version from the text the journal gave back. It never moves
+    /// the cursor.
+    fn adopt(&mut self, env: &mut dyn Env, response: &[u8]) -> String {
+        let text = self.builds.restart_text.take();
+        let failed = |why: String| {
+            err(format!(
+                "a build from before the restart failed ({why}); build again"
+            ))
+        };
+        let body = match body_of(response) {
+            Ok(body) => body,
+            Err(why) => return failed(format!("build service: {why}")),
+        };
+        let built = match wire::decode_built(&body) {
+            Ok(built) => built,
+            Err(why) => return failed(format!("build service: a malformed reply ({why})")),
+        };
+        if built.result != BuildResult::Ok {
+            return err("a build from before the restart failed; build again");
+        }
+        let label = artifact::parse(built.artifact)
+            .map(|parsed| parsed.manifest.version)
+            .unwrap_or_else(|_| String::from("the upload"));
+        let dropped = |why: &str| {
+            err(format!(
+                "dropped {label}: it was built before the edit service restarted, {why}"
+            ))
+        };
+        let Some(session) = self.session.as_ref() else {
+            return dropped("and no session came back");
+        };
+        let (component, base) = (session.component.clone(), session.label.clone());
+        let next = match env.info(&component) {
+            Ok(info) => info.next().to_string(),
+            Err(error) => return err(format!("cannot read {component}: {error:?}")),
+        };
+        let Some(text) = text.filter(|text| {
+            built.base == base && check_artifact(built.artifact, &component, &next, text).is_ok()
+        }) else {
+            return dropped("from other text");
+        };
+        if let Err(why) = store(env, &component, built.artifact, &base, built.commit, &next) {
+            return err(why);
+        }
+        let unchanged = self
+            .session
+            .as_mut()
+            .filter(|session| session.to_bundle() == text);
+        let suffix = match unchanged {
+            Some(session) => {
+                session.built = Some(next.clone());
+                ""
+            }
+            None => "; your edits since are not in it",
+        };
+        ok(format!(
+            "built {next} from {base} (commit {}); :apply runs it{suffix}",
+            short(built.commit)
+        ))
     }
 
     /// A build ended: its answer is logged and kept for `status`.

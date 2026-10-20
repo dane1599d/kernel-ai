@@ -12,7 +12,8 @@
 //! bounds is built, applied, and rolls back by itself; before it is applied, the
 //! edit service is killed and the kernel's journal gives the new one the session
 //! back. E. A host restart comes back on the upload. K. `:revert` goes back to
-//! version 2.
+//! version 2. F. The edit service is killed while a build runs; the next one
+//! adopts it, because the journal gave it back the text that was built.
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -283,5 +284,33 @@ pub const STEPS: &[Step] = &[
     Synced("2", Outcome::Commit),
     Uploads(&[("e1", "2"), ("e2", "e1")], "e3"),
     UploadsRefused(1),
+    Live(Part(
+        "F: a build the killed edit service started is adopted by the next",
+    )),
+    Edit(":edit notes", &[StartsWith("ok editing notes 2: 5 files")]),
+    Edit(EDIT_TRAP, &[Contains("lib.rs:58:")]),
+    Edit("build", &[Exact("ok building e3 from 2")]),
+    // Killed while the host builds; the kernel's job outlives it.
+    RestartEditor,
+    Edit(
+        "p 58",
+        &[Contains("self.state.notes[self.state.notes.len()]")],
+    ),
+    Restored(Exact(
+        "the edit service restarted; restored notes 2 with 1 edit",
+    )),
+    BuildDone(&[StartsWith("ok built e3 from 2 (commit ")]),
+    Uploads(&[("e1", "2"), ("e2", "e1"), ("e3", "2")], "e4"),
+    Builds(4),
+    Edit(
+        "build",
+        &[Exact(
+            "err e3 was built from this text already; :apply runs it",
+        )],
+    ),
+    Edit(
+        "undo",
+        &[StartsWith("ok undone; components/notes/src/lib.rs:1: ")],
+    ),
     Edit(":quit", &[StartsWith("ok")]),
 ];

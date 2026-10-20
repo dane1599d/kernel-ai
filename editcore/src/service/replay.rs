@@ -61,6 +61,7 @@ impl Service {
             self.builds.moved = None;
             // The session is replaced: what was decided about a build is not.
             self.builds.decided = false;
+            self.builds.restart_text = None;
         } else if self.session.is_none() {
             return err(format!("replay stopped at {from}: {NO_SESSION}"));
         }
