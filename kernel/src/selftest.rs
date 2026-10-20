@@ -64,6 +64,10 @@ pub enum SelfTest {
     TuneRevert,
     /// M10a-4: the shell's `tune` with mock answers, through the kernel's trials.
     Tune,
+    /// M10a-4: `tune` on the generated model on the disk, golden from the host.
+    TuneLocal,
+    /// M10a-4: the founder's demo through the terminal (tune-model.yml).
+    TuneDemo,
 }
 
 const DEFAULT_STORM_SECONDS: u64 = 60;
@@ -106,6 +110,8 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=icount-probe" => Some(SelfTest::IcountProbe),
             "test=tune-revert" => Some(SelfTest::TuneRevert),
             "test=tune" => Some(SelfTest::Tune),
+            "test=tune-local" => Some(SelfTest::TuneLocal),
+            "test=tune-demo" => Some(SelfTest::TuneDemo),
             other => other.strip_prefix("test=storm").map(|rest| {
                 let seconds = rest.strip_prefix('-').and_then(|s| s.parse().ok());
                 SelfTest::Storm(seconds.unwrap_or(DEFAULT_STORM_SECONDS))
@@ -133,6 +139,8 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::LocalScript
             | SelfTest::TuneRevert
             | SelfTest::Tune
+            | SelfTest::TuneLocal
+            | SelfTest::TuneDemo
     );
     if !wanted {
         return None;

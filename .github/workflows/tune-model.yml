@@ -1,0 +1,83 @@
+name: tune with the real model
+
+# Manual only. M10a's founder gate: the real catalog model inside Kernel AI under
+# KVM on a GitHub runner, until a local accelerated VM exists. It downloads the
+# pinned model (checked by SHA-256), boots `test=tune-demo` with mix A, types
+# `tune editor` and `yes` at the terminal through QEMU's monitor, and uploads the
+# serial transcript and a screendump of the verdict. `cargo xtask tune check`
+# then requires every answer the guest gave to be the host engine's, byte for
+# byte, on the same file. Mode `record` makes the recording the M10 exit test
+# needs (`cargo xtask tune record`); commit its decisions.json after reading it.
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: Catalog id from xtask/models.json
+        default: qwen3-4b-2507
+      mode:
+        description: demo or record
+        default: demo
+
+permissions:
+  contents: read
+
+jobs:
+  tune:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install QEMU and OVMF
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 ovmf netpbm
+      - name: Allow KVM for the runner user
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Install pinned toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Install the WebAssembly target for live components
+        run: rustup target add wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Look up the catalog entry
+        id: entry
+        env:
+          MODEL: ${{ inputs.model }}
+        run: |
+          jq -e --arg id "$MODEL" '.models[] | select(.id == $id)' xtask/models.json > entry.json
+          echo "url=https://huggingface.co/$(jq -r .repo entry.json)/resolve/$(jq -r .revision entry.json)/$(jq -r .file entry.json)" >> "$GITHUB_OUTPUT"
+          echo "sha=$(jq -r .sha256 entry.json)" >> "$GITHUB_OUTPUT"
+          echo "file=$(jq -r .file entry.json)" >> "$GITHUB_OUTPUT"
+      - name: Download the pinned model into a model store and check its SHA-256
+        run: |
+          mkdir -p "$RUNNER_TEMP/models"
+          curl -fL --retry 5 -o "$RUNNER_TEMP/models/${{ steps.entry.outputs.file }}" "${{ steps.entry.outputs.url }}"
+          echo "${{ steps.entry.outputs.sha }}  $RUNNER_TEMP/models/${{ steps.entry.outputs.file }}" | sha256sum -c -
+      - name: Demo — tune editor, yes, verdict
+        if: inputs.mode == 'demo'
+        run: |
+          set -o pipefail
+          cargo xtask tune demo --local "${{ inputs.model }}" --store "$RUNNER_TEMP/models" --accel kvm 2>&1 | tee transcript.txt
+      - name: The guest's answers equal the host engine's
+        if: inputs.mode == 'demo'
+        run: cargo xtask tune check --log transcript.txt --local "${{ inputs.model }}" --store "$RUNNER_TEMP/models"
+      - name: Record the decision for the exit test
+        if: inputs.mode == 'record'
+        run: |
+          set -o pipefail
+          cargo xtask tune record --local "${{ inputs.model }}" --store "$RUNNER_TEMP/models" 2>&1 | tee transcript.txt
+      - name: Convert the screendump
+        if: always() && inputs.mode == 'demo'
+        run: test -f target/tune-demo.ppm && pnmtopng target/tune-demo.ppm > tune-demo.png || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tune-${{ inputs.mode }}-${{ inputs.model }}
+          path: |
+            transcript.txt
+            tune-demo.png
+            target/tune-demo.ppm
+            xtask/tune/decisions.json
+          if-no-files-found: warn

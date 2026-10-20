@@ -39,7 +39,7 @@ pub struct TestCase {
     pub memory_mib: Option<u64>,
 }
 
-const fn case(name: &'static str, cmdline: &'static str) -> TestCase {
+pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase {
     TestCase {
         name,
         cmdline,
@@ -204,6 +204,17 @@ pub const TEST_CASES: &[TestCase] = &[
             "tune: (d) the shell was killed mid-trial; every CPU is back on interactive",
         ],
         ..case("tune", "test=tune workload=A seed=1")
+    },
+    // M10a-4's fixture variant: the generated tune model on the disk, no server;
+    // the local answer must be the host engine's (local_golden=).
+    TestCase {
+        disk: Some(Fixture::LocalTune),
+        server: false,
+        expect: &[
+            "local-tune: the local model's tune answer equals the host engine's, byte for byte",
+            "local-tune: the shell's tune ran end to end on the local model",
+        ],
+        ..case("tune-local", "test=tune-local workload=A seed=1")
     },
     // L4's exit test: the model on the disk answers, inside Kernel AI, with no
     // server. xtask adds the golden answer's exact line and the health text.

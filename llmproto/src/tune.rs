@@ -20,13 +20,14 @@
 
 mod answer;
 mod card;
+pub mod replay;
 mod summary;
 mod wire;
 
 pub use answer::{Decision, FIELD_ORDER, UNCHANGED, decide, response_format, schema};
 pub use card::{CARD_MAX_COLUMNS, CARD_MAX_LINES, card, reason_text, verdict_card};
 pub use summary::{measured, summary, summary_with};
-pub use wire::{TuneRequest, decode_completion, encode_completion};
+pub use wire::{TuneRequest, decode_completion, encode_completion, example};
 
 use crate::chat;
 use alloc::format;

@@ -101,3 +101,46 @@ pub fn decode_completion(wire: &str) -> Option<Completion> {
         cut_off,
     })
 }
+
+/// A fixed request on mix A's numbers, for checks that need the same request on
+/// the host and in the guest (the `tune-local` case's golden answer).
+pub fn example() -> TuneRequest {
+    use super::{Label, Observation, ProcessRow};
+    let row = |name: &str, cpu_permille, wakes_per_s, mean_burst_us, p99: u64| ProcessRow {
+        name: name.to_string(),
+        threads: 1,
+        cpu_permille,
+        wakes_per_s,
+        mean_burst_us,
+        wait_p50_us: p99 / 4,
+        wait_p99_us: p99,
+        wait_max_us: p99 + p99 / 3,
+        label: Label::Normal,
+        protected: name == "shell" || name == "llm",
+    };
+    let observation = Observation {
+        target: 2,
+        intent: Some(String::from("make typing snappier while the build runs")),
+        current: sched::spec::PolicySpec::DEFAULT,
+        since_s: 60,
+        verdicts: Vec::new(),
+        cpus: 1,
+        busy_permille: 1000,
+        window_ms: 3000,
+        processes: alloc::vec![
+            row("shell", 2, 4, 90, 300),
+            row("llm", 0, 0, 0, 0),
+            row("editor", 12, 25, 520, 4_800),
+            row("build-1", 160, 140, 2_900, 1_900),
+            row("build-2", 155, 138, 2_900, 1_900),
+            row("build-3", 152, 137, 3_000, 2_000),
+            row("build-4", 150, 135, 2_900, 1_900),
+            row("indexer", 130, 410, 450, 900),
+            row("hog-1", 120, 0, 9_000, 14_000),
+            row("hog-2", 121, 0, 9_000, 14_000),
+        ],
+    };
+    super::summary(&observation)
+        .expect("the example's target is one of its processes")
+        .wire()
+}

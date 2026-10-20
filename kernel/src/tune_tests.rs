@@ -239,7 +239,7 @@ pub fn revert_check() -> Result<(), &'static str> {
 /// How long one shell line may take: an observe window and a whole trial.
 const SHELL_LINE_MS: u64 = 90_000;
 
-fn line(text: &str) -> Result<alloc::string::String, &'static str> {
+pub(crate) fn line(text: &str) -> Result<alloc::string::String, &'static str> {
     let reply = crate::ipc::call("shell", text.as_bytes(), SHELL_LINE_MS).map_err(|error| {
         log!("tune: no reply to {text:?}: {error:?}");
         "tune: the shell did not answer"

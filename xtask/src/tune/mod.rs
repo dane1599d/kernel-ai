@@ -11,7 +11,10 @@
 //! seeds of both mixes and counts how often the model's choice is kept.
 
 mod ask;
+mod boot;
+mod demo;
 mod observe;
+pub mod parity;
 #[cfg(test)]
 mod tests;
 
@@ -102,6 +105,11 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
 }
 
 pub fn main(args: &[String]) -> Result<(), String> {
+    match args.first().map(String::as_str) {
+        Some("check") => return parity::main(&args[1..]),
+        Some("demo") => return demo::main(&args[1..]),
+        _ => {}
+    }
     let args = parse(args)?;
     let mut asker: Box<dyn Ask> = match &args.source {
         Source::Answer(path) => Box::new(Canned::from_file(path)?),

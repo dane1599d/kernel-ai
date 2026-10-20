@@ -30,10 +30,11 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use kabi::model::Fnv1a;
+use llmproto::chat::Completion;
 use llmproto::chat::{self, NO_MODEL};
 use llmproto::script::{self, AnswerError, ScriptRequest};
 use llmproto::text::printable;
-use llmproto::tune::{self, TuneRequest};
+use llmproto::tune::{self, TuneRequest, replay};
 use llmproto::{explain, http};
 use user::{arg, args, println, sys};
 
@@ -97,6 +98,10 @@ struct Backends {
     server: Option<remote::Server>,
     model: Option<Model>,
     local: Option<Result<local::Local, String>>,
+    /// An `llmreplay` file on the model disk instead of a model.
+    replay: Option<&'static [u8]>,
+    /// `tune` requests traced so far.
+    traced: u64,
 }
 
 fn main() -> i32 {
@@ -111,22 +116,29 @@ fn main() -> i32 {
         ),
         None => println!("up; {NO_SERVER}"),
     }
-    let (model, local) = match Model::map() {
+    let (model, local, replay) = match Model::map() {
+        Ok(Some(model)) if model.bytes().starts_with(kabi::model::REPLAY_MAGIC) => {
+            println!("llmreplay: answering recorded tune prompts only");
+            let bytes = model.bytes();
+            (None, None, Some(bytes))
+        }
         Ok(Some(model)) => {
             let local = load(model.bytes());
-            (Some(model), Some(local))
+            (Some(model), Some(local), None)
         }
-        Ok(None) => (None, None),
+        Ok(None) => (None, None, None),
         Err(error) => {
             println!("model: MODEL_MAP failed: {error:?}");
             let why = format!("the kernel holds a model this service could not map ({error:?})");
-            (None, Some(Err(why)))
+            (None, Some(Err(why)), None)
         }
     };
     let mut backends = Backends {
         server,
         model,
         local,
+        replay,
+        traced: 0,
     };
     let mut request = vec![0u8; kabi::MAX_MESSAGE];
     let mut response = vec![0u8; http::MAX_RESPONSE];
@@ -272,13 +284,35 @@ fn script(backends: &mut Backends, text: &str, response: &mut [u8]) -> Result<St
 /// `response_format`.
 fn tune(backends: &mut Backends, text: &str, response: &mut [u8]) -> Result<String, String> {
     let request = TuneRequest::decode(text).ok_or("malformed tune request")?;
+    backends.traced += 1;
+    let seq = backends.traced;
+    for line in replay::trace("request", seq, &request.encode()) {
+        println!("{line}");
+    }
+    let answer = tune_answer(backends, &request, response).map(|c| tune::encode_completion(&c));
+    let traced = answer.as_deref().unwrap_or("");
+    for line in replay::trace("answer", seq, traced) {
+        println!("{line}");
+    }
+    answer
+}
+
+fn tune_answer(
+    backends: &mut Backends,
+    request: &TuneRequest,
+    response: &mut [u8],
+) -> Result<Completion, String> {
+    if let Some(file) = backends.replay {
+        return replay::answer(file, request).map_err(|error| error.describe());
+    }
+    let request = request.clone();
     let completion = match (&mut backends.local, &backends.server) {
         (Some(Ok(local)), _) => local.tune(&request)?,
         (_, Some(server)) => server.tune(&request, response)?,
         (Some(Err(why)), None) => return Err(format!("the model cannot run: {why}")),
         (None, None) => return Err(String::from(NO_MODEL)),
     };
-    Ok(tune::encode_completion(&completion))
+    Ok(completion)
 }
 
 /// The server's health first, then the model's and the engine's; either side may

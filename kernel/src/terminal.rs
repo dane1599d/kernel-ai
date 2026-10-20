@@ -40,6 +40,11 @@ pub fn replies_shown() -> u64 {
     REPLIES_SHOWN.load(Ordering::Relaxed)
 }
 
+/// Whether the terminal shows a confirmation and waits for its answer.
+pub fn awaiting_answer() -> bool {
+    AWAITING_ANSWER.load(Ordering::Acquire)
+}
+
 const HELP: &[(&str, &str)] = &[
     (":help", "this list"),
     (":ask <text>", "send <text> straight to the llm service"),
