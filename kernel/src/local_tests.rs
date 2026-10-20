@@ -54,6 +54,10 @@ pub fn check(cmdline: &str) -> Result<(), &'static str> {
     if !health.contains("local model ") {
         return Err("local-ask: health does not name a local model");
     }
+    // L6: the engine runs on one pool worker per CPU online.
+    if !health.contains(&alloc::format!("{} workers", crate::smp::online())) {
+        return Err("local-ask: the engine does not run one worker per CPU");
+    }
     typed_question()?;
     let answer = asked("the kernel's ask")?;
     if fnv1a(answer.as_bytes()) != golden {

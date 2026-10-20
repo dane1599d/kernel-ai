@@ -27,7 +27,7 @@ use bpe::Tokenizer;
 use bpe::chat::Chat;
 pub use bpe::chat::{Role, Turn};
 use gguf::Gguf;
-use quant::Tier;
+use quant::{Parallel, Tier};
 
 /// The fewest positions worth running: a short question and a short answer.
 pub const MIN_CONTEXT: usize = 32;
@@ -89,6 +89,8 @@ pub struct About {
     pub context: usize,
     pub kv_bytes: usize,
     pub tier: Tier,
+    /// Workers the matrix products and attention heads run on.
+    pub workers: usize,
 }
 
 /// One step of an answer, given to the callback once it is done.
@@ -217,6 +219,7 @@ impl<'a> Engine<'a> {
             context,
             kv_bytes: kv.bytes(),
             tier,
+            workers: 1,
         };
         Ok(Self {
             model,
@@ -230,6 +233,13 @@ impl<'a> Engine<'a> {
             spells_ascii,
             about,
         })
+    }
+
+    /// Runs the model on `par`'s workers from now on (one thread until this is
+    /// called), with the same bits.
+    pub fn set_parallel(&mut self, par: &'a dyn Parallel) {
+        self.model.set_parallel(par);
+        self.about.workers = par.workers();
     }
 
     pub fn about(&self) -> &About {
