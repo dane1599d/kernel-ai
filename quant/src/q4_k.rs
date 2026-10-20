@@ -140,22 +140,37 @@ pub(crate) fn packed_scales(packed: &[u8; 12]) -> (u64, u64) {
 /// Per super-block, `a` = sum over sub-blocks of sc * (codes . x) and `b` = sum of
 /// m * (sum of x's bytes), both exact, go to `sink` in super-block order.
 pub(crate) fn dot_baseline(row: &[u8], x: &Q8KVec, sink: &mut impl Sink) {
-    let blocks = row.as_chunks::<BLOCK_BYTES>().0.iter();
-    let xs = x.qs.as_chunks::<SUPER_LEN>().0;
-    let sums = x.sums.as_chunks::<16>().0;
-    for (((block, xq), sums), &dx) in blocks.zip(xs).zip(sums).zip(&x.scales) {
+    dot_baseline_n(row, core::array::from_ref(x), core::array::from_mut(sink));
+}
+
+/// One row against each of `xs`, as [`dot_baseline`] runs each, with every
+/// super-block's header read once for all of them.
+pub(crate) fn dot_baseline_n<const N: usize, S: Sink>(
+    row: &[u8],
+    xs: &[Q8KVec; N],
+    sinks: &mut [S; N],
+) {
+    for (b, block) in row.as_chunks::<BLOCK_BYTES>().0.iter().enumerate() {
         let (d, dmin, sc, m) = header(block);
         let runs = block[CODES..].as_chunks::<32>().0;
-        let mut a = 0i32;
-        for (g, (run, xq)) in runs.iter().zip(xq.as_chunks::<64>().0).enumerate() {
-            let (mut lo, mut hi) = (0i32, 0i32);
-            for (l, &q) in run.iter().enumerate() {
-                lo += i32::from(q & 15) * i32::from(xq[l]);
-                hi += i32::from(q >> 4) * i32::from(xq[l + 32]);
+        let a = xs.each_ref().map(|x| {
+            let xq = &x.qs.as_chunks::<SUPER_LEN>().0[b];
+            let mut a = 0i32;
+            for (g, (run, xq)) in runs.iter().zip(xq.as_chunks::<64>().0).enumerate() {
+                let (mut lo, mut hi) = (0i32, 0i32);
+                for (l, &q) in run.iter().enumerate() {
+                    lo += i32::from(q & 15) * i32::from(xq[l]);
+                    hi += i32::from(q >> 4) * i32::from(xq[l + 32]);
+                }
+                a += i32::from(sc[2 * g]) * lo + i32::from(sc[2 * g + 1]) * hi;
             }
-            a += i32::from(sc[2 * g]) * lo + i32::from(sc[2 * g + 1]) * hi;
-        }
-        sink.q4_k(d, dmin, dx, a, min_term(&m, sums));
+            a
+        });
+        let bias = xs
+            .each_ref()
+            .map(|x| min_term(&m, &x.sums.as_chunks::<16>().0[b]));
+        let dx = xs.each_ref().map(|x| x.scales[b]);
+        S::q4_k_each(sinks, d, dmin, &dx, &a, &bias);
     }
 }
 

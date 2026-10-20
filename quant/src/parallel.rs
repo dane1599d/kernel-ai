@@ -2,13 +2,18 @@
 //!
 //! A [`Product`] is one weight matrix and the activation vectors it multiplies,
 //! one per token, so batched prefill uses the same type as decoding. [`Product::run`]
-//! computes any range of its rows. [`matvec_parallel`] splits the rows of one or
-//! more products into chunks and hands them to the workers of a [`Parallel`]:
+//! computes any range of its rows, with the one-token kernels for one vector and
+//! the batched ones ([`crate::q4_k_matmul`] and the others) for several.
+//! [`matvec_parallel`] splits the rows of one or more products into chunks and
+//! hands them to the workers of a [`Parallel`]:
 //! every row is computed by the same code whoever computes it, so the result is
 //! the single-thread one bit for bit, for any number of workers.
 
 use crate::q8k::Q8KVec;
-use crate::{Tier, matvec, q4_k, q4_k_matvec, q6_k, q6_k_matvec, q8_0::QVec, row_bytes};
+use crate::{
+    Tier, matvec, q4_k, q4_k_matmul, q4_k_matvec, q6_k, q6_k_matmul, q6_k_matvec, q8_0::QVec,
+    q8_0_matmul, row_bytes,
+};
 use core::ops::Range;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -115,26 +120,13 @@ impl<'a> Product<'a> {
             "output size"
         );
         let w = &self.w[rows.start * self.row_bytes..rows.end * self.row_bytes];
-        if self.tokens == 1 {
-            return self.one(tier, w, 0, y);
-        }
-        let per_row = y.chunks_exact_mut(self.tokens);
-        for (w, y) in w.chunks_exact(self.row_bytes.max(1)).zip(per_row) {
-            for (t, y) in y.iter_mut().enumerate() {
-                self.one(tier, w, t, core::slice::from_mut(y));
-            }
-        }
-        if self.row_bytes == 0 {
-            y.fill(0.0);
-        }
-    }
-
-    /// The rows of `w` times vector `t`, one result each.
-    fn one(&self, tier: Tier, w: &[u8], t: usize, y: &mut [f32]) {
         match self.x {
-            Weights::Q8_0(x) => matvec(tier, w, &x[t], y),
-            Weights::Q4K(x) => q4_k_matvec(tier, w, &x[t], y),
-            Weights::Q6K(x) => q6_k_matvec(tier, w, &x[t], y),
+            Weights::Q8_0([x]) => matvec(tier, w, x, y),
+            Weights::Q4K([x]) => q4_k_matvec(tier, w, x, y),
+            Weights::Q6K([x]) => q6_k_matvec(tier, w, x, y),
+            Weights::Q8_0(x) => q8_0_matmul(tier, w, x, y),
+            Weights::Q4K(x) => q4_k_matmul(tier, w, x, y),
+            Weights::Q6K(x) => q6_k_matmul(tier, w, x, y),
         }
     }
 }

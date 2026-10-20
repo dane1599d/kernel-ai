@@ -17,7 +17,7 @@ use core::arch::x86_64::*;
 
 /// Which of the 16 scales each i16 lane of a 64-code product takes: half n,
 /// quarters 0-1 then 2-3, 8 lanes (16 codes) per scale.
-const SCALE_LANES: [[u16; 32]; 4] = {
+pub(crate) const SCALE_LANES: [[u16; 32]; 4] = {
     let mut lanes = [[0u16; 32]; 4];
     let mut v = 0;
     while v < 4 {
@@ -33,7 +33,7 @@ const SCALE_LANES: [[u16; 32]; 4] = {
 
 /// Shift counts that bring quarter k's bit pair of `qh` down to bits 0-1: the low
 /// 256 bits hold quarter 0 (or 2), the high 256 bits quarter 1 (or 3).
-const HIGH_SHIFTS: [[u16; 32]; 2] = {
+pub(crate) const HIGH_SHIFTS: [[u16; 32]; 2] = {
     let mut shifts = [[0u16; 32]; 2];
     let mut i = 0;
     while i < 32 {
@@ -106,53 +106,53 @@ q6_k_kernel!(
 
 /// The 16 i32 lanes added in pairs into 8, exactly.
 #[target_feature(enable = "avx512f")]
-fn fold(v: __m512i) -> __m256i {
+pub(crate) fn fold(v: __m512i) -> __m256i {
     _mm256_add_epi32(_mm512_castsi512_si256(v), _mm512_extracti64x4_epi64::<1>(v))
 }
 
 /// Bits 4-5 of each code: the bit pair of `qh` each lane's shift brings down.
 /// The shifts move 16-bit lanes, but the mask keeps every bit in its own byte.
 #[target_feature(enable = "avx512f,avx512bw")]
-fn high_bits(qh: __m512i, shifts: __m512i, pair: __m512i) -> __m512i {
+pub(crate) fn high_bits(qh: __m512i, shifts: __m512i, pair: __m512i) -> __m512i {
     let bits = _mm512_and_si512(_mm512_srlv_epi16(qh, shifts), pair);
     _mm512_slli_epi16::<4>(bits)
 }
 
 /// `acc` plus the i16 `pairs` times `scale`, summed in pairs into i32 lanes.
 #[target_feature(enable = "avx512f,avx512bw")]
-fn madd_add(acc: __m512i, pairs: __m512i, scale: __m512i) -> __m512i {
+pub(crate) fn madd_add(acc: __m512i, pairs: __m512i, scale: __m512i) -> __m512i {
     _mm512_add_epi32(acc, _mm512_madd_epi16(pairs, scale))
 }
 
 /// [`madd_add`] in one VNNI instruction.
 #[target_feature(enable = "avx512f,avx512vnni")]
-fn dpwssd(acc: __m512i, pairs: __m512i, scale: __m512i) -> __m512i {
+pub(crate) fn dpwssd(acc: __m512i, pairs: __m512i, scale: __m512i) -> __m512i {
     _mm512_dpwssd_epi32(acc, pairs, scale)
 }
 
 #[target_feature(enable = "avx")]
-fn load256(bytes: &[u8; 32]) -> __m256i {
+pub(crate) fn load256(bytes: &[u8; 32]) -> __m256i {
     // SAFETY: 32 readable bytes; loadu has no alignment rule. The AVX-512 tier
     // this runs in was dispatched only with AVX2.
     unsafe { _mm256_loadu_si256(bytes.as_ptr().cast()) }
 }
 
 #[target_feature(enable = "avx512f")]
-fn load512(bytes: &[u8; 64]) -> __m512i {
+pub(crate) fn load512(bytes: &[u8; 64]) -> __m512i {
     // SAFETY: 64 readable bytes; loadu has no alignment rule. The AVX-512 tier
     // this runs in was dispatched only with AVX-512 F.
     unsafe { _mm512_loadu_si512(bytes.as_ptr().cast()) }
 }
 
 #[target_feature(enable = "avx512f")]
-fn load512_i8(bytes: &[i8; 64]) -> __m512i {
+pub(crate) fn load512_i8(bytes: &[i8; 64]) -> __m512i {
     // SAFETY: 64 readable bytes; loadu has no alignment rule. The AVX-512 tier
     // this runs in was dispatched only with AVX-512 F.
     unsafe { _mm512_loadu_si512(bytes.as_ptr().cast()) }
 }
 
 #[target_feature(enable = "avx512f")]
-fn load512_u16(words: &[u16; 32]) -> __m512i {
+pub(crate) fn load512_u16(words: &[u16; 32]) -> __m512i {
     // SAFETY: 64 readable bytes; loadu has no alignment rule. The AVX-512 tier
     // this runs in was dispatched only with AVX-512 F.
     unsafe { _mm512_loadu_si512(words.as_ptr().cast()) }
