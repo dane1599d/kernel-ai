@@ -17,6 +17,13 @@
 //! model can no longer close in what is left is cut off, conservatively, since
 //! `Grammar::need` counts the bytes closing takes as one token each.
 //!
+//! A field may instead be a [`Choice`]: one of a fixed set of words, or with
+//! `list` an array of at most that many of them, `"name":["a","b"]`. Words are
+//! printable ASCII without quotes or backslashes, so a choice needs no escape,
+//! and only the bytes that keep it a prefix of some word may come; a list takes
+//! each word at most once. The reader still checks the answer. M10's `tune` answer
+//! is built this way: a reason, then enums and a list of the table's names.
+//!
 //! That needs a token of one byte for every printable ASCII byte, which
 //! byte-level vocabularies have.
 
@@ -40,10 +47,23 @@ pub struct Field {
     pub trim_start: bool,
 }
 
-/// The object: its fields, in order.
+/// Makes field `field` a choice among `words`: one of them, or with `list` an
+/// array of at most `list` of them. The field's string limits do not apply.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Choice<'a> {
+    pub field: usize,
+    pub words: &'a [&'a str],
+    pub list: Option<usize>,
+}
+
+/// Most words a choice may offer.
+pub const MAX_WORDS: usize = 64;
+
+/// The object: its fields, in order, and the fields that are choices.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Shape<'a> {
     pub fields: &'a [Field],
+    pub choices: &'a [Choice<'a>],
 }
 
 impl Shape<'_> {
@@ -65,8 +85,30 @@ impl Shape<'_> {
                 return Err(Error::Shape("has a string with no room for a character"));
             }
         }
+        for (i, choice) in self.choices.iter().enumerate() {
+            if choice.field >= self.fields.len()
+                || self.choices[..i].iter().any(|c| c.field == choice.field)
+            {
+                return Err(Error::Shape("has a choice for no field, or two for one"));
+            }
+            let plain = |w: &&str| !w.is_empty() && w.bytes().all(word_byte);
+            if choice.words.len() > MAX_WORDS
+                || (choice.words.is_empty() && choice.list.is_none())
+                || !choice.words.iter().all(plain)
+                || (1..choice.words.len()).any(|j| choice.words[..j].contains(&choice.words[j]))
+            {
+                return Err(Error::Shape(
+                    "has a choice whose words are not plain and distinct",
+                ));
+            }
+        }
         Ok(())
     }
+}
+
+/// A byte a choice's word may hold: printable ASCII but a quote or a backslash.
+fn word_byte(b: u8) -> bool {
+    matches!(b, b' '..=b'~') && b != b'"' && b != b'\\'
 }
 
 /// Which limit of a field a token went past.
@@ -101,6 +143,14 @@ enum At {
     Text,
     /// In the field's string, after a backslash.
     Escape,
+    /// In a list, after `[`: an item's quote or the closing `]`.
+    ItemNext,
+    /// In a list, after `,`: an item's quote.
+    ItemOpen,
+    /// In an item's word.
+    Item,
+    /// In a list, after an item: `,` or `]`.
+    ItemDone,
     /// The object is closed.
     Done,
 }
@@ -120,6 +170,11 @@ pub(crate) struct State {
     /// Spaces or newlines went past this limit: the string is over it unless
     /// nothing but more of them comes before its closing quote.
     tail: Option<Overflow>,
+    /// In a choice, the words the bytes so far begin, as a mask over its words.
+    alive: u64,
+    /// Items so far in a list, and the words they took.
+    items: usize,
+    used: u64,
 }
 
 impl State {
@@ -137,7 +192,18 @@ impl State {
             line_chars: 0,
             seen: false,
             tail: None,
+            alive: 0,
+            items: 0,
+            used: 0,
         }
+    }
+}
+
+/// The mask of the first `n` words.
+fn all_words(n: usize) -> u64 {
+    match n {
+        64.. => u64::MAX,
+        n => (1u64 << n) - 1,
     }
 }
 
@@ -154,6 +220,8 @@ pub(crate) enum Stop {
 /// A checked shape and the fewest bytes from each field's string to the end.
 pub(crate) struct Grammar<'s> {
     fields: &'s [Field],
+    /// Each field's choice, if it is one.
+    choices: Vec<Option<Choice<'s>>>,
     /// `suffix[k]`: the fewest bytes from the start of field k's string to the
     /// closed object, every string left empty; `suffix[fields.len()]` is 0.
     suffix: Vec<usize>,
@@ -168,25 +236,77 @@ impl<'s> Grammar<'s> {
             .try_reserve_exact(n + 1)
             .map_err(|_| Error::OutOfMemory)?;
         suffix.resize(n + 1, 0);
+        let mut choices = Vec::new();
+        choices
+            .try_reserve_exact(n)
+            .map_err(|_| Error::OutOfMemory)?;
+        choices.extend((0..n).map(|k| shape.choices.iter().find(|c| c.field == k).copied()));
         let mut grammar = Self {
             fields: shape.fields,
+            choices,
             suffix,
         };
         for k in (0..n).rev() {
-            grammar.suffix[k] = grammar.lead_len(k + 1) + grammar.suffix[k + 1];
+            let shortest = match grammar.choice(k) {
+                Some(c) if c.list.is_none() => c.words.iter().map(|w| w.len()).min().unwrap_or(0),
+                _ => 0,
+            };
+            grammar.suffix[k] = shortest + grammar.lead_len(k + 1) + grammar.suffix[k + 1];
         }
         Ok(grammar)
+    }
+
+    fn choice(&self, field: usize) -> Option<&Choice<'s>> {
+        self.choices.get(field)?.as_ref()
+    }
+
+    fn is_list(&self, field: usize) -> bool {
+        self.choice(field).is_some_and(|c| c.list.is_some())
+    }
+
+    /// The state at the start of field `field`'s value, after its literal.
+    fn content(&self, field: usize) -> State {
+        let fresh = State::lead(field, 0);
+        match self.choice(field) {
+            Some(c) if c.list.is_some() => State {
+                at: At::ItemNext,
+                ..fresh
+            },
+            Some(c) => State {
+                at: At::Text,
+                alive: all_words(c.words.len()),
+                ..fresh
+            },
+            None => State {
+                at: At::Text,
+                ..fresh
+            },
+        }
     }
 
     pub(crate) fn start(&self) -> State {
         State::lead(0, 0)
     }
 
+    /// The literal before field `field`, or the end past the last: a list's
+    /// closing `]` stands where a string's closing quote would.
     fn lead_parts(&self, field: usize) -> (&'static [u8], &'static [u8], &'static [u8]) {
+        let after_list = field > 0 && self.is_list(field - 1);
         match self.fields.get(field) {
+            None if after_list => (b"]}", b"", b""),
             None => (b"\"}", b"", b""),
-            Some(f) if field == 0 => (b"{\"", f.name.as_bytes(), b"\":\""),
-            Some(f) => (b"\",\"", f.name.as_bytes(), b"\":\""),
+            Some(f) => {
+                let open: &'static [u8] = match (field, after_list) {
+                    (0, _) => b"{\"",
+                    (_, true) => b"],\"",
+                    (_, false) => b"\",\"",
+                };
+                let close: &'static [u8] = match self.is_list(field) {
+                    true => b"\":[",
+                    false => b"\":\"",
+                };
+                (open, f.name.as_bytes(), close)
+            }
         }
     }
 
@@ -209,28 +329,106 @@ impl<'s> Grammar<'s> {
                 if self.lead_byte(state.field, at) != Some(byte) {
                     return Err(Stop::Masked);
                 }
-                let at = match at + 1 == self.lead_len(state.field) {
-                    false => At::Lead(at + 1),
-                    true if state.field == n => At::Done,
-                    true => At::Text,
-                };
-                Ok(State { at, ..state })
+                Ok(match at + 1 == self.lead_len(state.field) {
+                    false => State {
+                        at: At::Lead(at + 1),
+                        ..state
+                    },
+                    true if state.field == n => State {
+                        at: At::Done,
+                        ..state
+                    },
+                    true => self.content(state.field),
+                })
             }
-            At::Text => match byte {
-                b'"' => Ok(State::lead(state.field + 1, 1)),
-                b'\\' => Ok(State {
-                    at: At::Escape,
-                    ..state
-                }),
-                b' ' => Ok(self.blank(state, false)),
-                b'!'..=b'~' => self.character(state),
-                _ => Err(Stop::Masked),
+            At::Text => match self.choice(state.field) {
+                Some(choice) => self.choose(choice, state, byte),
+                None => self.text(state, byte),
             },
             At::Escape => match byte {
                 b'"' | b'\\' | b'/' => self.character(state),
                 b'n' => Ok(self.blank(state, true)),
                 _ => Err(Stop::Masked),
             },
+            At::ItemNext | At::ItemOpen | At::Item | At::ItemDone => self.item(state, byte),
+        }
+    }
+
+    /// A byte in a text field's string.
+    fn text(&self, state: State, byte: u8) -> Result<State, Stop> {
+        match byte {
+            b'"' => Ok(State::lead(state.field + 1, 1)),
+            b'\\' => Ok(State {
+                at: At::Escape,
+                ..state
+            }),
+            b' ' => Ok(self.blank(state, false)),
+            b'!'..=b'~' => self.character(state),
+            _ => Err(Stop::Masked),
+        }
+    }
+
+    /// A byte in a choice's word: the closing quote once a word is complete, or
+    /// a byte that keeps it the start of a word.
+    fn choose(&self, choice: &Choice<'_>, state: State, byte: u8) -> Result<State, Stop> {
+        let ends = |(i, w): (usize, &&str)| state.alive & (1 << i) != 0 && w.len() == state.chars;
+        if byte == b'"'
+            && let Some((word, _)) = choice.words.iter().enumerate().find(|&w| ends(w))
+        {
+            return Ok(match state.at {
+                At::Item => State {
+                    at: At::ItemDone,
+                    items: state.items + 1,
+                    used: state.used | 1 << word,
+                    ..state
+                },
+                _ => State::lead(state.field + 1, 1),
+            });
+        }
+        let begins = |(i, w): &(usize, &&str)| {
+            state.alive & (1 << i) != 0 && w.as_bytes().get(state.chars) == Some(&byte)
+        };
+        let alive = choice
+            .words
+            .iter()
+            .enumerate()
+            .filter(begins)
+            .fold(0, |mask, (i, _)| mask | 1 << i);
+        match alive {
+            0 => Err(Stop::Masked),
+            alive => Ok(State {
+                alive,
+                chars: state.chars + 1,
+                ..state
+            }),
+        }
+    }
+
+    /// A byte of a list: an item's quotes and word, the commas between, and the
+    /// closing `]`, which starts the literal after the list.
+    fn item(&self, state: State, byte: u8) -> Result<State, Stop> {
+        let Some(choice) = self.choice(state.field) else {
+            return Err(Stop::Masked);
+        };
+        // A word appears once in a list; the next item may take any other.
+        let unused = all_words(choice.words.len()) & !state.used;
+        let more = state.items < choice.list.unwrap_or(0) && unused != 0;
+        let open = State {
+            at: At::Item,
+            chars: 0,
+            alive: unused,
+            ..state
+        };
+        match (state.at, byte) {
+            (At::ItemNext, b'"') if more => Ok(open),
+            (At::ItemOpen, b'"') => Ok(open),
+            (At::ItemNext | At::ItemDone, b']') => Ok(State::lead(state.field + 1, 1)),
+            (At::ItemDone, b',') if more => Ok(State {
+                at: At::ItemOpen,
+                ..state
+            }),
+            (At::Item, _) => self.choose(choice, state, byte),
+            _ => Err(Stop::Masked),
         }
     }
 
@@ -319,11 +517,27 @@ impl<'s> Grammar<'s> {
     /// literal, an escape's last byte, the quotes and the literals after it.
     pub(crate) fn need(&self, state: &State) -> usize {
         let k = state.field;
+        let after = || self.lead_len(k + 1) + self.suffix[k + 1];
+        // The fewest bytes that finish a word the bytes so far begin.
+        let rest = |mask: u64, chars: usize| {
+            self.choice(k).map_or(0, |c| {
+                c.words
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| mask & (1 << i) != 0)
+                    .map(|(_, w)| w.len().saturating_sub(chars))
+                    .min()
+                    .unwrap_or(0)
+            })
+        };
         match state.at {
             At::Done => 0,
             At::Lead(at) => self.lead_len(k) - at + self.suffix[k],
-            At::Text => self.lead_len(k + 1) + self.suffix[k + 1],
-            At::Escape => 1 + self.lead_len(k + 1) + self.suffix[k + 1],
+            At::Text => rest(state.alive, state.chars) + after(),
+            At::Escape => 1 + after(),
+            At::ItemNext | At::ItemDone => after(),
+            At::ItemOpen => 2 + rest(!state.used, 0) + after(),
+            At::Item => rest(state.alive, state.chars) + 1 + after(),
         }
     }
 

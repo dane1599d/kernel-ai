@@ -21,10 +21,12 @@
 mod answer;
 mod card;
 mod summary;
+mod wire;
 
 pub use answer::{Decision, FIELD_ORDER, UNCHANGED, decide, response_format, schema};
 pub use card::{CARD_MAX_COLUMNS, CARD_MAX_LINES, card, reason_text, verdict_card};
 pub use summary::{measured, summary, summary_with};
+pub use wire::{TuneRequest, decode_completion, encode_completion};
 
 use crate::chat;
 use alloc::format;
@@ -115,6 +117,14 @@ pub struct Summary {
 }
 
 impl Summary {
+    /// What the shell sends the llm service.
+    pub fn wire(&self) -> TuneRequest {
+        TuneRequest {
+            labelable: self.labelable.clone(),
+            text: self.text.clone(),
+        }
+    }
+
     /// The process index behind a shown name.
     pub fn index_of(&self, name: &str) -> Option<usize> {
         self.shown

@@ -1,5 +1,6 @@
 //! The LLM service. It takes `ask <prompt>`, `explain <facts>` (see
-//! `llmproto::explain`), `script ...` (see `llmproto::script`), `health` and
+//! `llmproto::explain`), `script ...` (see `llmproto::script`), `tune ...` (see
+//! `llmproto::tune`, answered with the model's raw completion), `health` and
 //! `model` requests from the kernel terminal and the shell, and answers
 //! `ok <text>` or `err <text>`.
 //!
@@ -32,6 +33,7 @@ use kabi::model::Fnv1a;
 use llmproto::chat::{self, NO_MODEL};
 use llmproto::script::{self, AnswerError, ScriptRequest};
 use llmproto::text::printable;
+use llmproto::tune::{self, TuneRequest};
 use llmproto::{explain, http};
 use user::{arg, args, println, sys};
 
@@ -223,6 +225,7 @@ fn handle(backends: &mut Backends, text: &str, response: &mut [u8]) -> Result<St
             response,
         ),
         "script" => script(backends, text, response),
+        "tune" => tune(backends, text, response),
         _ => Err(format!("unknown request {command:?}")),
     }
 }
@@ -262,6 +265,20 @@ fn script(backends: &mut Backends, text: &str, response: &mut [u8]) -> Result<St
         (None, None) => String::from(NO_MODEL),
     };
     Err(script::encode_error(&AnswerError::Unavailable(why)))
+}
+
+/// The model's answer to a `tune` request, as it came: the shell checks it. The
+/// local model decodes it under the answer's schema, a server under
+/// `response_format`.
+fn tune(backends: &mut Backends, text: &str, response: &mut [u8]) -> Result<String, String> {
+    let request = TuneRequest::decode(text).ok_or("malformed tune request")?;
+    let completion = match (&mut backends.local, &backends.server) {
+        (Some(Ok(local)), _) => local.tune(&request)?,
+        (_, Some(server)) => server.tune(&request, response)?,
+        (Some(Err(why)), None) => return Err(format!("the model cannot run: {why}")),
+        (None, None) => return Err(String::from(NO_MODEL)),
+    };
+    Ok(tune::encode_completion(&completion))
 }
 
 /// The server's health first, then the model's and the engine's; either side may

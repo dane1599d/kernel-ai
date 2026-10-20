@@ -6,9 +6,11 @@
 use alloc::format;
 use alloc::string::{String, ToString};
 use kabi::HttpRequest;
+use llmproto::chat::Completion;
 use llmproto::openai::CompletionError;
 use llmproto::script::{self, ScriptRequest};
 use llmproto::text::printable;
+use llmproto::tune::TuneRequest;
 use llmproto::{chat, explain, http, openai};
 use user::{arg, sys};
 
@@ -82,6 +84,18 @@ impl Server {
             .and_then(|completion| script::answer(&completion))
             .map(|answer| script::encode_answer(&answer))
             .map_err(|error| script::encode_error(&error))
+    }
+
+    /// The model's answer to a `tune` request, under `response_format`.
+    pub fn tune(&self, request: &TuneRequest, response: &mut [u8]) -> Result<Completion, String> {
+        let reply = self.post(&request.chat_body(&self.model), CHAT_TIMEOUT_MS, response)?;
+        openai::completion(&reply).map_err(|error| match error {
+            CompletionError::Status(status, body) => format!(
+                "server answered HTTP {status}: {}",
+                printable(&body, MAX_ERROR_CHARS, 1)
+            ),
+            CompletionError::Reply(error) => format!("bad chat reply: {error:?}"),
+        })
     }
 
     fn post(

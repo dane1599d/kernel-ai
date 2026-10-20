@@ -245,3 +245,35 @@ fn the_prompt_and_the_longest_answer_fit_the_guests_context() {
     });
     assert!(estimate_tokens(&realistic.to_string()) <= ANSWER_TOKENS as usize);
 }
+
+#[test]
+fn the_wire_carries_the_summary_and_names_and_back_the_completion() {
+    let summary = summary(&mix_a()).unwrap();
+    let wire = summary.wire().encode();
+    assert!(wire.starts_with("tune build-1,build-2,build-3,build-4,indexer"));
+    let back = TuneRequest::decode(&wire).unwrap();
+    assert_eq!(back, summary.wire());
+    assert_eq!(back.chat(), request(&summary));
+    // A name no summary would make is refused, as is an empty summary.
+    assert_eq!(TuneRequest::decode("tune Editor\nx"), None);
+    assert_eq!(TuneRequest::decode("tune a,,b\nx"), None);
+    assert_eq!(TuneRequest::decode("tune a\n "), None);
+    assert_eq!(
+        TuneRequest::decode("tune \nsummary")
+            .unwrap()
+            .labelable
+            .len(),
+        0
+    );
+    let body = String::from_utf8(back.chat_body("m")).unwrap();
+    assert!(body.contains(r#""response_format":{"json_schema""#) || body.contains("sched_tune"));
+    for cut_off in [false, true] {
+        let completion = Completion {
+            text: answer("classes", "firm", &["build-1"]),
+            cut_off,
+        };
+        let wire = encode_completion(&completion);
+        assert_eq!(decode_completion(&wire), Some(completion));
+    }
+    assert_eq!(decode_completion("{}"), None);
+}

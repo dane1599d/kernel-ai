@@ -17,7 +17,7 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use infer::chat::{Ending, Engine, Step, Turn};
-use infer::json::{Field, Limit, Overflow, Shape};
+use infer::json::{Choice, Field, Limit, Overflow, Shape};
 use infer::{Next, Sampler};
 
 /// [`script::check_text`]'s limits, which it applies once the end is trimmed,
@@ -44,7 +44,38 @@ const SCRIPT_FIELDS: [Field; 2] = [
 /// knowing the code, as [`script::response_format`] asks a server.
 pub const SCRIPT_SHAPE: Shape<'static> = Shape {
     fields: &SCRIPT_FIELDS,
+    choices: &[],
 };
+
+/// One string field whose limits do not apply: the shape makes it a choice.
+const fn chosen(name: &'static str) -> Field {
+    Field {
+        name,
+        max_chars: 1,
+        max_lines: 1,
+        max_line_chars: 1,
+        trim_start: false,
+    }
+}
+
+/// `tune`'s answer, in [`crate::tune::FIELD_ORDER`]: a one-line reason of at
+/// most 160 characters (the reader trims both ends), then the enums.
+const TUNE_FIELDS: [Field; 5] = [
+    Field {
+        name: "reason",
+        max_chars: crate::tune::REASON_MAX_CHARS,
+        max_lines: 1,
+        max_line_chars: crate::tune::REASON_MAX_CHARS,
+        trim_start: true,
+    },
+    chosen("action"),
+    chosen("policy"),
+    chosen("preset"),
+    chosen("background"),
+];
+const ACTIONS: [&str; 2] = ["keep", "try"];
+const POLICIES: [&str; 4] = ["interactive", "round-robin", "classes", "responsive"];
+const PRESETS: [&str; 2] = ["gentle", "firm"];
 
 /// The system prompts the llm service sends a local model, for a generated test
 /// model whose vocabulary is trained on them (`infer::fixture::local_script`).
@@ -146,6 +177,62 @@ pub fn warm(
     engine
         .reply(&turns, 1, &mut Sampler::greedy(), None, on_step)
         .map(|_| ())
+}
+
+/// The model's answer to a `tune` request, greedy, under part 1's schema: the
+/// reason, `action`, `policy` and `preset` as enums, and `background` a list of
+/// at most 8 of the names the request may label. The shell checks it again with
+/// [`crate::tune::decide`]; a reason past its limit ends the answer, which the
+/// reader then refuses, so it changes nothing.
+pub fn tune(
+    engine: &mut Engine<'_>,
+    request: &crate::tune::TuneRequest,
+    on_step: impl FnMut(Step) -> Next,
+) -> Result<Completion, infer::Error> {
+    let names: Vec<&str> = request
+        .labelable
+        .iter()
+        .map(String::as_str)
+        .take(infer::json::MAX_WORDS)
+        .collect();
+    let choices = [
+        Choice {
+            field: 1,
+            words: &ACTIONS,
+            list: None,
+        },
+        Choice {
+            field: 2,
+            words: &POLICIES,
+            list: None,
+        },
+        Choice {
+            field: 3,
+            words: &PRESETS,
+            list: None,
+        },
+        Choice {
+            field: 4,
+            words: &names,
+            list: Some(crate::tune::MAX_BACKGROUND),
+        },
+    ];
+    let shape = Shape {
+        fields: &TUNE_FIELDS,
+        choices: &choices,
+    };
+    let asked = request.chat();
+    let reply = engine.reply(
+        &turns(&asked),
+        asked.max_tokens as usize,
+        &mut Sampler::greedy(),
+        Some(&shape),
+        on_step,
+    )?;
+    Ok(Completion {
+        text: reply.text(),
+        cut_off: reply.cut_off() || matches!(reply.ending, Ending::Stopped),
+    })
 }
 
 /// Why an answer that went past a limit is refused, in [`script::check_text`]'s
