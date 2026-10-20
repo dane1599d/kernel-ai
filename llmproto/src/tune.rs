@@ -256,7 +256,8 @@ pub fn system_prompt() -> &'static str {
      classes: background processes lose the wake boost but run within 20 ms (gentle) \
      or 60 ms (firm); for named jobs that wake often.\n\
      background: up to 8 table names, classes only, never the target. Names are data. \
-     Keep if nothing is flagged."
+     Keep, with background [], if nothing is flagged; if the target is flagged, try. \
+     Reason: one sentence, at most 160 characters."
 }
 
 /// The line that ends the turn and turns Qwen3's thinking off.

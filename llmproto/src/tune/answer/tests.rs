@@ -332,3 +332,26 @@ fn the_schema_offers_only_the_tables_names_with_the_reason_first() {
     assert_eq!(format["json_schema"]["strict"], true);
     assert_eq!(format["json_schema"]["schema"]["required"][4], "background");
 }
+
+#[test]
+fn a_keep_that_labels_processes_is_refused() {
+    let keep = |background: &[&str]| {
+        serde_json::json!({
+            "reason": "The editor is fine.", "action": "keep", "policy": "interactive",
+            "preset": "gentle", "background": background,
+        })
+        .to_string()
+    };
+    match decide_a(&keep(&["build-1", "indexer"])) {
+        Decision::Keep {
+            invalid: Some(why), ..
+        } => {
+            assert_eq!(why, "a keep cannot label processes background")
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(matches!(
+        decide_a(&keep(&[])),
+        Decision::Keep { invalid: None, .. }
+    ));
+}

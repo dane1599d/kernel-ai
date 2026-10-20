@@ -30,6 +30,7 @@ const SCRIPT_FIELDS: [Field; 2] = [
         max_lines: script::SCRIPT_MAX_LINES,
         max_line_chars: script::SCRIPT_MAX_LINE_CHARS,
         trim_start: false,
+        hard: false,
     },
     Field {
         name: "summary",
@@ -37,6 +38,7 @@ const SCRIPT_FIELDS: [Field; 2] = [
         max_lines: 1,
         max_line_chars: script::SUMMARY_MAX_CHARS,
         trim_start: true,
+        hard: false,
     },
 ];
 
@@ -55,6 +57,7 @@ const fn chosen(name: &'static str) -> Field {
         max_lines: 1,
         max_line_chars: 1,
         trim_start: false,
+        hard: false,
     }
 }
 
@@ -67,6 +70,7 @@ const TUNE_FIELDS: [Field; 5] = [
         max_lines: 1,
         max_line_chars: crate::tune::REASON_MAX_CHARS,
         trim_start: true,
+        hard: true,
     },
     chosen("action"),
     chosen("policy"),

@@ -139,6 +139,14 @@ pub fn decide(
     let reason = reason.to_string();
     match answer.action.as_str() {
         "keep" => {
+            // Labels are a change: a keep that names some contradicts itself.
+            let mut named = answer.background.clone();
+            named.sort();
+            let mut now = current_background.to_vec();
+            now.sort();
+            if !named.is_empty() && named != now {
+                return refuse("a keep cannot label processes background");
+            }
             return Decision::Keep {
                 reason,
                 invalid: None,

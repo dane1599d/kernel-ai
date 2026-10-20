@@ -45,6 +45,10 @@ pub struct Field {
     /// The reader trims spaces and newlines at the start as well as at the end,
     /// so they count for nothing there.
     pub trim_start: bool,
+    /// The limits steer: a byte past one is masked, so the model must close the
+    /// string instead of ending the answer there (`tune`'s reason, which a
+    /// model otherwise runs past and loses the whole answer to).
+    pub hard: bool,
 }
 
 /// Makes field `field` a choice among `words`: one of them, or with `list` an
@@ -320,8 +324,17 @@ impl<'s> Grammar<'s> {
         open.iter().chain(name).chain(close).nth(at).copied()
     }
 
-    /// The state after `byte`, or why it cannot come.
+    /// The state after `byte`, or why it cannot come. Past a hard field's limit
+    /// a byte is masked rather than ending the answer.
     pub(crate) fn step(&self, state: State, byte: u8) -> Result<State, Stop> {
+        let hard = self.fields.get(state.field).is_some_and(|f| f.hard);
+        match self.step_soft(state, byte) {
+            Err(Stop::Over(_)) if hard => Err(Stop::Masked),
+            other => other,
+        }
+    }
+
+    fn step_soft(&self, state: State, byte: u8) -> Result<State, Stop> {
         let n = self.fields.len();
         match state.at {
             At::Done => Err(Stop::Masked),

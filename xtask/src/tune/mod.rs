@@ -205,7 +205,7 @@ pub fn rehearse(
     let summary = asker
         .summarize(&observation)
         .ok_or("the target is not one of the observed processes")?;
-    let request = tune::request(&summary);
+    let request = summary.wire();
     writeln!(
         out,
         "xtask: mix {} seed {}, observed for 3 s under interactive:",
@@ -344,7 +344,7 @@ fn evaluate(args: &Args, asker: &mut dyn Ask, out: &mut dyn Write) -> Result<(),
             let summary = asker
                 .summarize(&observation)
                 .ok_or("the target is not one of the observed processes")?;
-            let (completion, how) = asker.ask(&tune::request(&summary))?;
+            let (completion, how) = asker.ask(&summary.wire())?;
             if provenance.is_none() {
                 writeln!(out, "xtask: answers from {how}").map_err(io)?;
                 provenance = Some(how);

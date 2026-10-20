@@ -22,6 +22,7 @@ pub(crate) const SCRIPT: [Field; 2] = [
         max_lines: 40,
         max_line_chars: 120,
         trim_start: false,
+        hard: false,
     },
     Field {
         name: "summary",
@@ -29,6 +30,7 @@ pub(crate) const SCRIPT: [Field; 2] = [
         max_lines: 1,
         max_line_chars: 100,
         trim_start: true,
+        hard: false,
     },
 ];
 pub(crate) const SCRIPT_SHAPE: Shape<'static> = Shape {
@@ -44,6 +46,7 @@ const SMALL: [Field; 2] = [
         max_lines: 3,
         max_line_chars: 3,
         trim_start: false,
+        hard: false,
     },
     Field {
         name: "b_1",
@@ -51,6 +54,7 @@ const SMALL: [Field; 2] = [
         max_lines: 2,
         max_line_chars: 3,
         trim_start: true,
+        hard: false,
     },
 ];
 
@@ -465,6 +469,7 @@ const CHOSEN: [Field; 3] = [
         max_lines: 1,
         max_line_chars: 1,
         trim_start: false,
+        hard: false,
     },
     Field {
         name: "bg",
@@ -472,6 +477,7 @@ const CHOSEN: [Field; 3] = [
         max_lines: 1,
         max_line_chars: 1,
         trim_start: false,
+        hard: false,
     },
 ];
 const WORDS: [&str; 3] = ["ab", "abc", "x"];
@@ -622,4 +628,35 @@ fn choices_are_checked() {
         choices: &twice,
     };
     assert!(Grammar::new(&shape).is_err());
+}
+
+#[test]
+fn a_hard_limit_masks_what_a_soft_one_lets_end_the_answer() {
+    let hard = [
+        Field {
+            hard: true,
+            ..SMALL[0]
+        },
+        SMALL[1],
+    ];
+    let grammar = Grammar::new(&Shape {
+        fields: &hard,
+        choices: &[],
+    })
+    .unwrap();
+    // "a" takes 3 characters a line: a fourth is masked, not an overflow.
+    let at = grammar.advance(grammar.start(), br#"{"a":"xyz"#).unwrap();
+    assert_eq!(grammar.step(at, b'w'), Err(Stop::Masked));
+    assert!(grammar.step(at, b'"').is_ok());
+    let soft = Grammar::new(&Shape {
+        fields: &SMALL,
+        choices: &[],
+    })
+    .unwrap();
+    let at = soft.advance(soft.start(), br#"{"a":"xyz"#).unwrap();
+    assert!(matches!(soft.step(at, b'w'), Err(Stop::Over(_))));
+    // Every state the hard shape takes can still close, at the distance `need` says.
+    for (state, distance) in &distances(&grammar) {
+        assert_eq!(Some(grammar.need(state)), *distance, "{state:?}");
+    }
 }
