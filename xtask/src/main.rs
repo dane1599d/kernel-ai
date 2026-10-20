@@ -35,6 +35,7 @@ mod options;
 mod qemu;
 mod smoke;
 mod strip;
+mod userbuild;
 
 use options::{Accel, Options, Task, parse_args};
 use sha2::{Digest, Sha256};
@@ -46,7 +47,7 @@ use std::{env, fs};
 
 const LIMINE_VERSION: &str = "12.9.3";
 const LIMINE_SHA256: &str = "9f42fe9ea2e84d71056529969b1d5c24ba9a2287ffcc01bcce58b0ef8aa98b1d";
-const KERNEL_TARGET: &str = "x86_64-unknown-none";
+pub(crate) const KERNEL_TARGET: &str = "x86_64-unknown-none";
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -76,7 +77,7 @@ fn execute(options: &Options) -> Result<(), String> {
     }
     let kernel = build_kernel(&root, options)?;
     floatguard::check(&kernel)?;
-    let programs = build_user(&root, options)?;
+    let programs = userbuild::build_user(&root, options)?;
     let versions = components::build(&root)?;
     if options.task == Task::Build {
         println!("xtask: kernel built at {}", kernel.display());
@@ -315,44 +316,6 @@ fn sha256_hex(bytes: &[u8]) -> String {
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect()
-}
-
-/// The ring-3 programs in the `user` crate, all shipped as boot modules.
-const USER_PROGRAMS: &[&str] = &[
-    "supervisor",
-    "llm",
-    "shell",
-    "crasher",
-    "spinner",
-    "hog",
-    "probe",
-    "comphost",
-    "edit",
-    "vecstress",
-];
-
-/// Builds every user program; returns (name, ELF path) pairs.
-fn build_user(root: &Path, options: &Options) -> Result<Vec<(&'static str, PathBuf)>, String> {
-    let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-    let mut command = Command::new(cargo);
-    command
-        .current_dir(root)
-        .args(["build", "-p", "user", "--bins", "--target", KERNEL_TARGET]);
-    if options.release {
-        command.arg("--release");
-    }
-    let status = command
-        .status()
-        .map_err(|e| format!("cannot run cargo: {e}"))?;
-    if !status.success() {
-        return Err("user program build failed".into());
-    }
-    let profile = if options.release { "release" } else { "debug" };
-    let dir = root.join("target").join(KERNEL_TARGET).join(profile);
-    Ok(USER_PROGRAMS
-        .iter()
-        .map(|&name| (name, dir.join(name)))
-        .collect())
 }
 
 fn find_qemu() -> Result<PathBuf, String> {

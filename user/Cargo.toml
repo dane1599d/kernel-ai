@@ -5,8 +5,10 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
-# Ring-3 programs and their runtime. Built by xtask for x86_64-unknown-none, linked
-# at kabi::layout::IMAGE_BASE by link.ld, and loaded by the kernel from Limine modules.
+# Ring-3 programs and their runtime, linked at kabi::layout::IMAGE_BASE by link.ld and
+# loaded by the kernel from Limine modules. xtask builds llm, probe and vecstress for
+# the hard-float x86_64-kai-user.json target (x87, SSE and AVX allowed) and the rest
+# for soft-float x86_64-unknown-none.
 
 [lib]
 test = false
