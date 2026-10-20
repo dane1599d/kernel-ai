@@ -15,7 +15,7 @@ use crate::sched_control::{self, PROTECTED};
 use crate::{log, process, threads};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use kabi::sched::{TrialStatus, reason, state};
 use sched::judge::GUARDRAIL_WAIT_NS;
 use sched::spec::{PolicyKind, PolicySpec, Preset};
@@ -25,6 +25,16 @@ const MS: u64 = 1_000_000;
 
 /// The thread the test policy never queues.
 static VICTIM: AtomicUsize = AtomicUsize::new(usize::MAX);
+/// The victim and its companion spin while this is set.
+static SPINNING: AtomicBool = AtomicBool::new(false);
+
+/// Spins, always runnable, until the case is done.
+fn spin(_: usize) {
+    let mut counter = 0u64;
+    while SPINNING.load(Ordering::Relaxed) {
+        counter = core::hint::black_box(counter.wrapping_add(1));
+    }
+}
 
 /// Interactive that silently drops the victim: the guardrail must catch it.
 struct Starving(Interactive);
@@ -150,25 +160,32 @@ pub fn revert_check() -> Result<(), &'static str> {
     }
 
     // (b)
-    let editor_tid = process::pids_by_tid()
-        .iter()
-        .position(|&pid| pid == editor)
-        .ok_or("tune: the editor has no thread")?;
-    VICTIM.store(editor_tid, Ordering::SeqCst);
+    // The victim spins on one CPU next to a companion that also spins, both
+    // pinned: the starving policy always has the companion to pick, so it is
+    // never ejected for picking nothing, and only the victim's wait grows. (With
+    // the editor as the victim, a CPU where it was the only runnable thread
+    // ejected the policy at once, which reverted, but by the ejection rule.)
+    let cpu = crate::smp::online() - 1;
+    SPINNING.store(true, Ordering::SeqCst);
+    let victim = threads::spawn_pinned(cpu, "tune-victim", spin, 0)?;
+    threads::spawn_pinned(cpu, "tune-companion", spin, 1)?;
+    VICTIM.store(victim, Ordering::SeqCst);
+    threads::sleep_ms(100);
     let ejections = threads::stats().1;
     let id = run(Candidate::Test(starving), editor, Vec::new(), 2_000, 2)?;
     let status = finished(id)?;
     let trip = crate::sched_control::guard::last_trip();
     VICTIM.store(usize::MAX, Ordering::SeqCst);
+    SPINNING.store(false, Ordering::SeqCst);
     log!(
-        "tune-revert: (b) starving: reason {} for pid {}; waited {} us at the revert, {} us at the tick before; {} new ejections",
+        "tune-revert: (b) starving thread {victim} on cpu {cpu}: reason {}, thread {}; waited {} us at the revert, {} us at the tick before; {} new ejections",
         status.reason,
-        status.reason_pid,
+        trip.tid,
         trip.wait_ns / 1000,
         trip.previous_wait_ns / 1000,
         threads::stats().1 - ejections
     );
-    if status.reason != reason::GUARDRAIL || status.reason_pid != editor {
+    if status.reason != reason::GUARDRAIL || trip.tid != victim as u64 {
         return Err("tune: the guardrail did not revert the starving policy");
     }
     if trip.previous_wait_ns > GUARDRAIL_WAIT_NS || trip.wait_ns <= GUARDRAIL_WAIT_NS {
