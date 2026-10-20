@@ -220,16 +220,13 @@ extern "C" fn boot_continue() -> ! {
             on_off(features.smep),
             on_off(features.smap),
             on_off(features.umip),
-            if fpu::xcr0() & cpufeat::XCR0_AVX != 0 {
-                "x87, SSE and AVX"
-            } else {
-                "x87 and SSE"
-            },
+            fpu::state_name(),
             fpu::xcr0(),
             fpu::area_size()
         ),
         Err(message) => fail(message),
     }
+    log!("{}", fpu::features_line());
     let platform = init_devices();
     if let Err(message) = threads::init() {
         fail(message);

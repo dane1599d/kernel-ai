@@ -4,9 +4,12 @@
 //!   register, MXCSR and the x87 unit through preemption, system calls and
 //!   migration, while pinned hogs move around the CPUs so the balancer keeps moving
 //!   them. Four more start while the first four's state is live on every CPU, and
-//!   each checks it started clean. The case fails if the CPU reports AVX2 and ymm
-//!   was not exercised with it, if a CPU never loaded a process's vector state, or
-//!   if no state ever moved between CPUs.
+//!   each checks it started clean. Where the CPU offers AVX-512 F and BW (KVM on
+//!   a runner with them; never TCG, which does not emulate AVX-512) the patterns
+//!   fill all 32 zmm registers and k0-7 too; elsewhere the case says zmm was not
+//!   checked. The case fails if the CPU reports AVX2 and ymm was not exercised with
+//!   it, if it offers AVX-512 and zmm state is off, if a CPU never loaded a
+//!   process's vector state, or if no state ever moved between CPUs.
 //! - `test=probe`: the isolation probe's ops 0-2 (x87, SSE, AVX) complete, and
 //!   every other op is stopped by the exception `kabi::probe` lists.
 
@@ -44,6 +47,13 @@ fn avx_expected(cpu: &cpufeat::Features) -> bool {
     cpu.avx && cpu.xcr0_supported & cpufeat::XCR0_AVX != 0
 }
 
+/// Whether zmm and opmask state should be on, with vecstress's zmm mode: the CPU
+/// has AVX-512 F and BW and XSAVE can hold all three of its components.
+fn avx512_expected(cpu: &cpufeat::Features) -> bool {
+    let all = cpufeat::XCR0_AVX512;
+    avx_expected(cpu) && cpu.avx512f && cpu.avx512bw && cpu.xcr0_supported & all == all
+}
+
 fn yes(on: bool) -> &'static str {
     if on { "yes" } else { "no" }
 }
@@ -53,12 +63,14 @@ pub fn fpu_check() -> Result<(), &'static str> {
     let cpu = cpufeat::Features::detect();
     let ymm = cpu.avx && cpu.ymm_enabled();
     let avx2 = cpu.avx2 && ymm;
+    let zmm = cpu.avx512();
     log!(
-        "fpu: XCR0 {:#x}, XSAVE area {} bytes; ymm {}, avx2 {}",
+        "fpu: XCR0 {:#x}, XSAVE area {} bytes; ymm {}, avx2 {}, zmm and opmask {}",
         fpu::xcr0(),
         fpu::area_size(),
         yes(ymm),
-        yes(avx2)
+        yes(avx2),
+        yes(zmm)
     );
     if Some(cpu.xcr0) != cpufeat::ring3_xcr0(cpu.xcr0_supported) || cpu.xcr0 != fpu::xcr0() {
         return Err("fpu: XCR0 is not the one cpufeat chooses for this CPU");
@@ -69,6 +81,12 @@ pub fn fpu_check() -> Result<(), &'static str> {
     if avx_expected(&cpu) != ymm {
         return Err("fpu: the CPU has AVX but ymm state is not on");
     }
+    if avx512_expected(&cpu) != zmm {
+        return Err("fpu: the CPU offers AVX-512 but zmm and opmask state is not on");
+    }
+    if !zmm {
+        log!("fpu: this CPU offers no AVX-512 F and BW; zmm and opmask state not checked");
+    }
     let cpus = smp::online();
     let (restores_before, moved_before) = fpu::restores();
     let migrations_before = threads::migrations();
@@ -77,11 +95,11 @@ pub fn fpu_check() -> Result<(), &'static str> {
     }
     let mut pids = [0; 2 * WAVE as usize];
     for seed in 1..=WAVE {
-        pids[seed as usize - 1] = start_vecstress(seed, ymm, avx2)?;
+        pids[seed as usize - 1] = start_vecstress(seed, ymm, avx2, zmm)?;
     }
     threads::sleep_ms(SECOND_WAVE_AFTER_MS);
     for seed in WAVE + 1..=2 * WAVE {
-        pids[seed as usize - 1] = start_vecstress(seed, ymm, avx2)?;
+        pids[seed as usize - 1] = start_vecstress(seed, ymm, avx2, zmm)?;
     }
     let outcome = pids.iter().try_for_each(|&pid| match wait_exit(pid)? {
         (ExitReason::Exited, 0) => Ok(()),
@@ -96,9 +114,10 @@ pub fn fpu_check() -> Result<(), &'static str> {
     let restores: [u64; MAX_CPUS] =
         core::array::from_fn(|i| restores_after[i] - restores_before[i]);
     let moved = moved_after - moved_before;
-    let mode = match (ymm, avx2) {
-        (true, true) => "ymm with AVX2",
-        (true, false) => "ymm",
+    let mode = match (ymm, avx2, zmm) {
+        (true, true, true) => "zmm and opmask with AVX-512",
+        (true, true, false) => "ymm with AVX2",
+        (true, false, _) => "ymm",
         _ => "xmm",
     };
     log!(
@@ -116,11 +135,12 @@ pub fn fpu_check() -> Result<(), &'static str> {
     Ok(())
 }
 
-fn start_vecstress(seed: u64, ymm: bool, avx2: bool) -> Result<u64, &'static str> {
+fn start_vecstress(seed: u64, ymm: bool, avx2: bool, zmm: bool) -> Result<u64, &'static str> {
     let args = format!(
-        "seed={seed} rounds={ROUNDS} spin={SPIN_CYCLES} ymm={} avx2={}",
+        "seed={seed} rounds={ROUNDS} spin={SPIN_CYCLES} ymm={} avx2={} zmm={}",
         u8::from(ymm),
-        u8::from(avx2)
+        u8::from(avx2),
+        u8::from(zmm)
     );
     start(&format!("vec{seed}"), "vecstress", &args)
 }

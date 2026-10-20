@@ -1,6 +1,7 @@
-//! Vector state for ring 3. Every CPU runs with x87, SSE and AVX on, and a thread
-//! that has entered ring 3 has its x87, SSE and AVX registers saved and restored
-//! eagerly at every thread switch, with XSAVE64 and XRSTOR64 in the standard format.
+//! Vector state for ring 3. Every CPU runs with x87, SSE and AVX on, and AVX-512's
+//! opmask and zmm state too when the CPU can save it (XCR0 0xE7), and a thread that
+//! has entered ring 3 has those registers saved and restored eagerly at every
+//! thread switch, with XSAVE64 and XRSTOR64 in the standard format.
 //!
 //! - The kernel itself is soft-float, so ring 3's vector registers pass untouched
 //!   through every interrupt and system call: only a thread switch needs to save
@@ -17,19 +18,22 @@
 //!   FIP, FDP and FOP only while an x87 exception is pending, and would otherwise keep
 //!   the previous thread's.
 //! - Each thread slot has a 4 KiB area reserved statically. The size the CPU needs for
-//!   the enabled components comes from CPUID.(0xD,0).EBX after XSETBV, and boot fails
-//!   if it does not fit.
+//!   the enabled components comes from CPUID.(0xD,0).EBX after XSETBV, checked to hold
+//!   every enabled component's offset plus size, and boot fails if it does not fit.
 
 use crate::percpu::{self, MAX_CPUS};
 use crate::threads;
+use alloc::format;
+use alloc::string::String;
+use alloc::vec::Vec;
 use core::arch::x86_64::__cpuid_count;
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use sched::{MAX_THREADS, Tid};
 use x86_64::instructions::interrupts;
 
-/// Bytes reserved per thread slot. AVX-512's standard format (L6) needs 2,432 on the
-/// 7700X; AMX, which needs 8 KiB more, is never turned on.
+/// Bytes reserved per thread slot. AVX-512's standard format needs 2,432 on Zen 4
+/// and 2,688 on Intel; AMX, which needs 8 KiB more, is never turned on.
 const AREA_BYTES: usize = 4096;
 /// Where MXCSR sits in the legacy region, and its value at reset: every exception masked.
 const MXCSR_OFFSET: usize = 24;
@@ -80,19 +84,27 @@ static MOVED: AtomicU64 = AtomicU64::new(0);
 static XCR0: AtomicU64 = AtomicU64::new(0);
 static AREA_SIZE: AtomicUsize = AtomicUsize::new(0);
 
-/// Turns on x87, SSE and AVX state on this CPU, whose CR4.OSXSAVE is already set:
+/// Turns on ring 3's vector state on this CPU, whose CR4.OSXSAVE is already set:
 /// XSETBV with the XCR0 `cpufeat` chooses from `supported` (CPUID.(0xD,0) EDX:EAX),
 /// then checks the XSAVE area the CPU needs for it. Returns XCR0.
 pub fn init_cpu(supported: u64) -> Result<u64, &'static str> {
     let xcr0 = cpufeat::ring3_xcr0(supported).ok_or("cpu: XSAVE cannot hold x87 and SSE state")?;
     // SAFETY: CR4.OSXSAVE is set, and XCR0 names only components the CPU supports,
-    // x87 and SSE among them, so XSETBV cannot fault. The kernel is soft-float, so
-    // which vector components exist changes nothing it relies on.
+    // x87 and SSE among them, with AVX-512's three only together and with AVX, so
+    // XSETBV cannot fault. The kernel is soft-float, so which vector components
+    // exist changes nothing it relies on.
     unsafe { xsetbv(xcr0) };
     let reported = __cpuid_count(0xd, 0).ebx;
-    let avx = __cpuid_count(0xd, 2);
-    let avx_end = avx.ebx.saturating_add(avx.eax);
-    let size = cpufeat::xsave_area_bytes(xcr0, reported, avx_end, AREA_BYTES)?;
+    // Where the last enabled component above SSE ends, in the standard format.
+    let extended_end = (2..64)
+        .filter(|&bit| xcr0 & (1 << bit) != 0)
+        .map(|bit| {
+            let component = __cpuid_count(0xd, bit);
+            component.ebx.saturating_add(component.eax)
+        })
+        .max()
+        .unwrap_or(0);
+    let size = cpufeat::xsave_area_bytes(xcr0, reported, extended_end, AREA_BYTES)?;
     if percpu::index() == 0 {
         XCR0.store(xcr0, Ordering::Relaxed);
         AREA_SIZE.store(size, Ordering::Relaxed);
@@ -110,6 +122,49 @@ pub fn xcr0() -> u64 {
 /// Bytes of XSAVE area each thread's state takes.
 pub fn area_size() -> usize {
     AREA_SIZE.load(Ordering::Relaxed)
+}
+
+/// The vector state ring 3 gets, in words.
+pub fn state_name() -> &'static str {
+    let xcr0 = xcr0();
+    if xcr0 & cpufeat::XCR0_AVX512 != 0 {
+        "x87, SSE, AVX and AVX-512"
+    } else if xcr0 & cpufeat::XCR0_AVX != 0 {
+        "x87, SSE and AVX"
+    } else {
+        "x87 and SSE"
+    }
+}
+
+/// The hypervisor this kernel runs under, in words, for the boot log and `:model`.
+pub fn hypervisor(cpu: &cpufeat::Features) -> &'static str {
+    match cpufeat::hypervisor_signature() {
+        Some(signature) => cpufeat::hypervisor_name(&signature),
+        None if cpu.hypervisor => "a hypervisor that gives no name",
+        None => "no hypervisor (bare metal)",
+    }
+}
+
+/// The boot log's CPU line, which xtask also prints at the end of each test: what
+/// CPUID offers, what ring 3 may use with this XCR0, and the hypervisor.
+pub fn features_line() -> String {
+    let cpu = cpufeat::Features::detect();
+    let list = |names: &mut dyn Iterator<Item = &'static str>| {
+        let names: Vec<&str> = names.collect();
+        if names.is_empty() {
+            String::from("none")
+        } else {
+            names.join(" ")
+        }
+    };
+    let hypervisor = hypervisor(&cpu);
+    format!(
+        "cpu: vector features: CPUID offers {}; ring 3 may use {}; XCR0 {:#x}, XSAVE area {} bytes; hypervisor {hypervisor}",
+        list(&mut cpu.offered()),
+        list(&mut cpu.usable()),
+        cpu.xcr0,
+        area_size()
+    )
 }
 
 /// Saves `from`'s ring-3 vector state and loads `to`'s, for each of them that has

@@ -6,16 +6,21 @@
 //! compiler-generated code ever touches the registers under test.
 //!
 //! Arguments: `seed=N` picks the pattern (each process gets its own), `rounds=N`,
-//! `spin=N` TSC cycles per spin, and `ymm=1` and `avx2=1` say what the kernel found,
-//! which the program checks against CPUID itself. With ymm it uses all 256 bits of
-//! every register; with avx2 it also adds the registers with VPADDD, and without
-//! ymm it adds the xmm registers with PADDD.
+//! `spin=N` TSC cycles per spin, and `ymm=1`, `avx2=1` and `zmm=1` say what the
+//! kernel found, which the program checks against CPUID itself. With ymm it uses all
+//! 256 bits of every register; with avx2 it also adds the registers with VPADDD, and
+//! without ymm it adds the xmm registers with PADDD. With zmm (AVX-512 F and BW, and
+//! XCR0's opmask and zmm state) it uses all 512 bits of all 32 registers, adding
+//! zmm31 to the others, and the eight opmask registers.
 //!
 //! Exit codes: 0 every round kept its state, 1 bad arguments, 2 dirty at start,
 //! 3 state lost, 4 the CPU disagrees with the kernel's arguments.
 
 #![no_std]
 #![no_main]
+
+#[path = "vecstress/round.rs"]
+mod round;
 
 use core::cell::UnsafeCell;
 use core::mem::offset_of;
@@ -28,15 +33,22 @@ const FCW_INIT: u16 = 0x037F;
 const FSW_CHECKED: u16 = 0x38FF;
 const YMM_LANES: usize = 8;
 const XMM_LANES: usize = 4;
+const ZMM_LANES: usize = 16;
 const REGS: usize = 16;
+const ZMM_REGS: usize = 32;
 
 /// What `_start` saved before any Rust code ran: FXSAVE64's 512 bytes (x87, MXCSR
-/// and xmm0-15), the upper halves of ymm0-15, and whether it could read them.
+/// and xmm0-15), the upper halves of ymm0-15, and whether it could read them; with
+/// AVX-512 also zmm16-31 whole, bits 256-511 of zmm0-15 and k0-7.
 #[repr(C, align(64))]
 struct Start {
     fx: [u8; 512],
     upper: [[u8; 16]; REGS],
+    hi16: [[u8; 64]; 16],
+    zupper: [[u8; 32]; REGS],
+    k: [u64; 8],
     has_upper: u8,
+    has_zmm: u8,
 }
 
 #[repr(transparent)]
@@ -49,7 +61,11 @@ unsafe impl Sync for StartCell {}
 static START: StartCell = StartCell(UnsafeCell::new(Start {
     fx: [0; 512],
     upper: [[0; 16]; REGS],
+    hi16: [[0; 64]; 16],
+    zupper: [[0; 32]; REGS],
+    k: [0; 8],
     has_upper: 0,
+    has_zmm: 0,
 }));
 
 /// Saves the vector state the kernel handed over, then runs `main`. GPRs are all zero
@@ -72,6 +88,7 @@ pub unsafe extern "C" fn _start() -> ! {
         "jne 2f",
         "xor ecx, ecx",
         "xgetbv",
+        "mov esi, eax",
         "and eax, 6",
         "cmp eax, 6",
         "jne 2f",
@@ -79,13 +96,38 @@ pub unsafe extern "C" fn _start() -> ! {
         "vextractf128 [rdi + {upper} + 16*\\reg], ymm\\reg, 1",
         ".endr",
         "mov byte ptr [rdi + {has_upper}], 1",
+        // zmm and k0-7 exist if XCR0 has opmask and both zmm components, and CPUID
+        // leaf 7 has AVX-512 F (EBX bit 16) and BW (bit 30), which KMOVQ needs.
+        "and esi, 0xE0",
+        "cmp esi, 0xE0",
+        "jne 2f",
+        "mov eax, 7",
+        "xor ecx, ecx",
+        "cpuid",
+        "and ebx, 0x40010000",
+        "cmp ebx, 0x40010000",
+        "jne 2f",
+        ".irp reg, 16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31",
+        "vmovdqu32 [rdi + {hi16} + 64*(\\reg-16)], zmm\\reg",
+        ".endr",
+        ".irp reg, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15",
+        "vextracti64x4 [rdi + {zupper} + 32*\\reg], zmm\\reg, 1",
+        ".endr",
+        ".irp reg, 0,1,2,3,4,5,6,7",
+        "kmovq [rdi + {k} + 8*\\reg], k\\reg",
+        ".endr",
+        "mov byte ptr [rdi + {has_zmm}], 1",
         "2:",
         "and rsp, -16",
         "call {run}",
         "ud2",
         start = sym START,
         upper = const offset_of!(Start, upper),
+        hi16 = const offset_of!(Start, hi16),
+        zupper = const offset_of!(Start, zupper),
+        k = const offset_of!(Start, k),
         has_upper = const offset_of!(Start, has_upper),
+        has_zmm = const offset_of!(Start, has_zmm),
         run = sym run,
     )
 }
@@ -94,12 +136,33 @@ extern "C" fn run() -> ! {
     sys::exit(main())
 }
 
+/// The zmm registers and then k0-7, as the zmm round loads and stores them.
+#[repr(C, align(64))]
+#[derive(Clone, Copy)]
+struct ZRegs {
+    zmm: [[u32; ZMM_LANES]; ZMM_REGS],
+    k: [u64; 8],
+}
+
+// The zmm round finds k0-7 at this fixed offset after the zmm registers.
+const _: () = assert!(offset_of!(ZRegs, k) == 2048);
+
+impl ZRegs {
+    const ZERO: ZRegs = ZRegs {
+        zmm: [[0; ZMM_LANES]; ZMM_REGS],
+        k: [0; 8],
+    };
+}
+
 /// One round's pattern, what came back, and the control values, at offsets the asm
-/// blocks name.
+/// blocks name. The xmm and ymm modes use `pattern` and `out`, the zmm mode `zin`
+/// and `zout`.
 #[repr(C, align(64))]
 struct Block {
     pattern: [[u32; YMM_LANES]; REGS],
     out: [[u32; YMM_LANES]; REGS],
+    zin: ZRegs,
+    zout: ZRegs,
     x87_in: i64,
     x87_out: i64,
     call: u64,
@@ -118,6 +181,7 @@ enum Mode {
     Xmm,
     Ymm,
     Avx2,
+    Zmm,
 }
 
 impl Mode {
@@ -126,6 +190,7 @@ impl Mode {
             Mode::Xmm => "xmm",
             Mode::Ymm => "ymm",
             Mode::Avx2 => "ymm with avx2",
+            Mode::Zmm => "zmm and opmask",
         }
     }
 }
@@ -143,12 +208,13 @@ fn main() -> i32 {
         println!("vecstress: needs seed=, rounds=, spin=, ymm= and avx2=");
         return 1;
     };
-    let mode = match (ymm, avx2) {
-        (0, 0) => Mode::Xmm,
-        (1, 0) => Mode::Ymm,
-        (1, 1) => Mode::Avx2,
+    let mode = match (ymm, avx2, number("zmm").unwrap_or(0)) {
+        (0, 0, 0) => Mode::Xmm,
+        (1, 0, 0) => Mode::Ymm,
+        (1, 1, 0) => Mode::Avx2,
+        (1, 1, 1) => Mode::Zmm,
         _ => {
-            println!("vecstress {seed}: avx2=1 needs ymm=1");
+            println!("vecstress {seed}: avx2=1 needs ymm=1, and zmm=1 needs avx2=1");
             return 1;
         }
     };
@@ -164,6 +230,8 @@ fn main() -> i32 {
     let mut block = Block {
         pattern: [[0; YMM_LANES]; REGS],
         out: [[0; YMM_LANES]; REGS],
+        zin: ZRegs::ZERO,
+        zout: ZRegs::ZERO,
         x87_in: 0,
         x87_out: 0,
         call: 0,
@@ -180,7 +248,7 @@ fn main() -> i32 {
         prepare(&mut block, seed, round);
         // SAFETY: `block` is a live, aligned Block; the asm block writes only its
         // `out`, `*_out` and `keep_*` fields and restores MXCSR and the control word.
-        unsafe { run_round(&mut block, spin, mode) };
+        unsafe { round::run_round(&mut block, spin, mode) };
         if let Some(lost) = lost(&block, mode) {
             println!("vecstress {seed}: round {round}: {lost}");
             return 3;
@@ -194,15 +262,26 @@ fn main() -> i32 {
 }
 
 /// The kernel's arguments must say what CPUID says, and `_start` must have read
-/// the upper ymm halves exactly when ymm state is on.
+/// the upper ymm halves exactly when ymm state is on, and zmm and k0-7 exactly when
+/// AVX-512 F and BW may run.
 fn agrees_with_cpu(seed: u64, mode: Mode, start: &Start) -> Result<(), i32> {
     let cpu = cpufeat::Features::detect();
     let ymm = cpu.avx && cpu.ymm_enabled();
-    let found = match (ymm, cpu.avx2 && ymm) {
-        (false, _) => Mode::Xmm,
-        (true, false) => Mode::Ymm,
-        (true, true) => Mode::Avx2,
+    let zmm = cpu.avx512();
+    let found = match (ymm, cpu.avx2 && ymm, zmm) {
+        (false, _, _) => Mode::Xmm,
+        (true, false, _) => Mode::Ymm,
+        (true, true, false) => Mode::Avx2,
+        (true, true, true) => Mode::Zmm,
     };
+    if (start.has_zmm != 0) != zmm {
+        println!(
+            "vecstress {seed}: zmm state was {} at _start but is {} now",
+            if start.has_zmm != 0 { "on" } else { "off" },
+            if zmm { "on" } else { "off" }
+        );
+        return Err(4);
+    }
     if found != mode {
         println!(
             "vecstress {seed}: the kernel said {}, CPUID says {}",
@@ -224,8 +303,9 @@ fn agrees_with_cpu(seed: u64, mode: Mode, start: &Start) -> Result<(), i32> {
 }
 
 /// What is not in its initial state, if anything: x87 control word 0x037F, status
-/// 0, every tag empty, no instruction or data pointer, ST0-7, xmm0-15 and the upper
-/// ymm halves zero, MXCSR 0x1F80. The pointer check cannot see AMD's leak on CPUs
+/// 0, every tag empty, no instruction or data pointer, ST0-7, xmm0-15, the upper
+/// ymm halves, zmm16-31, the upper zmm halves and k0-7 zero, MXCSR 0x1F80. The
+/// pointer check cannot see AMD's leak on CPUs
 /// without XSaveErPtr (their FXSAVE drops the pointers too, and TCG never stores
 /// them); the kernel's x87 reset covers that by construction.
 fn dirty_start(start: &Start) -> Option<&'static str> {
@@ -247,6 +327,12 @@ fn dirty_start(start: &Start) -> Option<&'static str> {
         Some("an xmm register")
     } else if start.upper.iter().flatten().any(|&b| b != 0) {
         Some("the upper half of a ymm register")
+    } else if start.hi16.iter().flatten().any(|&b| b != 0) {
+        Some("one of zmm16-31")
+    } else if start.zupper.iter().flatten().any(|&b| b != 0) {
+        Some("the upper half of a zmm register")
+    } else if start.k.iter().any(|&k| k != 0) {
+        Some("an opmask register")
     } else {
         None
     }
@@ -270,6 +356,14 @@ fn prepare(block: &mut Block, seed: u64, round: u64) {
             *value = mix(base ^ ((reg as u64) << 8) ^ lane as u64) as u32;
         }
     }
+    for (reg, lanes) in block.zin.zmm.iter_mut().enumerate() {
+        for (lane, value) in lanes.iter_mut().enumerate() {
+            *value = mix(base ^ (1 << 32) ^ ((reg as u64) << 8) ^ lane as u64) as u32;
+        }
+    }
+    for (index, mask) in block.zin.k.iter_mut().enumerate() {
+        *mask = mix(base ^ (2 << 32) ^ index as u64);
+    }
     let k = seed.wrapping_add(round);
     block.mxcsr_in = MXCSR_INIT | (((k % 4) as u32) << 13) | (((k / 4 % 2) as u32) << 15);
     let precision: u16 = [0b00, 0b10, 0b11][(k % 3) as usize];
@@ -286,29 +380,23 @@ fn prepare(block: &mut Block, seed: u64, round: u64) {
 
 /// What did not come back as loaded, if anything.
 fn lost(block: &Block, mode: Mode) -> Option<Lost> {
-    let lanes = match mode {
-        Mode::Xmm => XMM_LANES,
-        Mode::Ymm | Mode::Avx2 => YMM_LANES,
-    };
-    let added = mode != Mode::Ymm;
-    for reg in 0..REGS {
-        for lane in 0..lanes {
-            let mut want = block.pattern[reg][lane];
-            if added && reg < REGS - 1 {
-                want = want.wrapping_add(block.pattern[REGS - 1][lane]);
-            }
-            let got = block.out[reg][lane];
-            if got != want {
-                return Some(Lost::Lane {
-                    reg,
-                    lane,
-                    got,
-                    want,
-                });
-            }
+    let (pattern, out) = (&block.pattern, &block.out);
+    let vectors = match mode {
+        Mode::Xmm => lanes_lost(pattern, out, XMM_LANES, true),
+        Mode::Ymm => lanes_lost(pattern, out, YMM_LANES, false),
+        Mode::Avx2 => lanes_lost(pattern, out, YMM_LANES, true),
+        Mode::Zmm => {
+            let (zin, zout) = (&block.zin, &block.zout);
+            lanes_lost(&zin.zmm, &zout.zmm, ZMM_LANES, true).or_else(|| {
+                (0..zin.k.len())
+                    .find(|&i| zout.k[i] != zin.k[i])
+                    .map(|i| Lost::Opmask(i, zout.k[i], zin.k[i]))
+            })
         }
-    }
-    if block.mxcsr_out != block.mxcsr_in {
+    };
+    if vectors.is_some() {
+        vectors
+    } else if block.mxcsr_out != block.mxcsr_in {
         Some(Lost::Mxcsr(block.mxcsr_out, block.mxcsr_in))
     } else if block.fcw_out != block.fcw_in {
         Some(Lost::Fcw(block.fcw_out, block.fcw_in))
@@ -321,6 +409,35 @@ fn lost(block: &Block, mode: Mode) -> Option<Lost> {
     }
 }
 
+/// The first lane, of the first `lanes` in each register, that did not come back:
+/// each register as loaded, plus the last register's lane when `added`.
+fn lanes_lost<const N: usize>(
+    pattern: &[[u32; N]],
+    out: &[[u32; N]],
+    lanes: usize,
+    added: bool,
+) -> Option<Lost> {
+    let last = pattern.len() - 1;
+    for (reg, (loaded, stored)) in pattern.iter().zip(out).enumerate() {
+        for lane in 0..lanes {
+            let mut want = loaded[lane];
+            if added && reg < last {
+                want = want.wrapping_add(pattern[last][lane]);
+            }
+            let got = stored[lane];
+            if got != want {
+                return Some(Lost::Lane {
+                    reg,
+                    lane,
+                    got,
+                    want,
+                });
+            }
+        }
+    }
+    None
+}
+
 /// The first thing a round found changed.
 enum Lost {
     Lane {
@@ -329,6 +446,7 @@ enum Lost {
         got: u32,
         want: u32,
     },
+    Opmask(usize, u64, u64),
     Mxcsr(u32, u32),
     Fcw(u16, u16),
     Fsw(u16),
@@ -344,145 +462,11 @@ impl core::fmt::Display for Lost {
                 got,
                 want,
             } => write!(f, "register {reg} lane {lane} is {got:#x}, not {want:#x}"),
+            Lost::Opmask(k, got, want) => write!(f, "k{k} is {got:#x}, not {want:#x}"),
             Lost::Mxcsr(got, want) => write!(f, "MXCSR is {got:#x}, not {want:#x}"),
             Lost::Fcw(got, want) => write!(f, "x87 control word is {got:#x}, not {want:#x}"),
             Lost::Fsw(got) => write!(f, "x87 status word is {got:#x}"),
             Lost::X87(got, want) => write!(f, "x87 value is {got}, not {want}"),
-        }
-    }
-}
-
-/// One round in one asm block: keep the caller's MXCSR and control word, load the
-/// pattern into every register (and add register 15 to the others, except in plain
-/// ymm mode), load MXCSR, the control word and one x87 value, spin, make the system
-/// call, spin again, store everything back, then restore what was kept.
-macro_rules! round {
-    ($block:expr, $spin:expr, [$($load:literal),*], [$($add:literal),*], [$($store:literal),*]) => {
-        core::arch::asm!(
-            "stmxcsr [r12 + {keep_mxcsr}]",
-            "fnstcw [r12 + {keep_fcw}]",
-            $($load,)*
-            "ldmxcsr [r12 + {mxcsr_in}]",
-            "fldcw [r12 + {fcw_in}]",
-            "fild qword ptr [r12 + {x87_in}]",
-            $($add,)*
-            "rdtsc",
-            "shl rdx, 32",
-            "or rax, rdx",
-            "lea r8, [rax + r13]",
-            "2:",
-            "pause",
-            "rdtsc",
-            "shl rdx, 32",
-            "or rax, rdx",
-            "cmp rax, r8",
-            "jb 2b",
-            "mov rax, [r12 + {call}]",
-            "mov rdi, [r12 + {arg}]",
-            "syscall",
-            "rdtsc",
-            "shl rdx, 32",
-            "or rax, rdx",
-            "lea r8, [rax + r13]",
-            "3:",
-            "pause",
-            "rdtsc",
-            "shl rdx, 32",
-            "or rax, rdx",
-            "cmp rax, r8",
-            "jb 3b",
-            $($store,)*
-            "stmxcsr [r12 + {mxcsr_out}]",
-            "fnstcw [r12 + {fcw_out}]",
-            "fistp qword ptr [r12 + {x87_out}]",
-            "fnstsw word ptr [r12 + {fsw_out}]",
-            "ldmxcsr [r12 + {keep_mxcsr}]",
-            "fldcw [r12 + {keep_fcw}]",
-            keep_mxcsr = const offset_of!(Block, keep_mxcsr),
-            keep_fcw = const offset_of!(Block, keep_fcw),
-            mxcsr_in = const offset_of!(Block, mxcsr_in),
-            fcw_in = const offset_of!(Block, fcw_in),
-            x87_in = const offset_of!(Block, x87_in),
-            call = const offset_of!(Block, call),
-            arg = const offset_of!(Block, arg),
-            mxcsr_out = const offset_of!(Block, mxcsr_out),
-            fcw_out = const offset_of!(Block, fcw_out),
-            x87_out = const offset_of!(Block, x87_out),
-            fsw_out = const offset_of!(Block, fsw_out),
-            pattern = const offset_of!(Block, pattern),
-            out = const offset_of!(Block, out),
-            in("r12") $block,
-            in("r13") $spin,
-            clobber_abi("C"),
-            options(nostack),
-        )
-    };
-}
-
-/// # Safety
-/// `block` must point to a live Block, and `mode` must match what the CPU and XCR0
-/// allow (checked by `agrees_with_cpu`).
-unsafe fn run_round(block: *mut Block, spin: u64, mode: Mode) {
-    // SAFETY: the asm reads and writes only `*block` (through r12), keeps the x87
-    // stack empty at its end, restores MXCSR and the x87 control word, and the
-    // kernel preserves r12 and r13 across SYSCALL. The caller vouches for the mode.
-    unsafe {
-        match mode {
-            Mode::Avx2 => round!(
-                block,
-                spin,
-                [
-                    ".irp reg, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15",
-                    "vmovdqu ymm\\reg, [r12 + {pattern} + 32*\\reg]",
-                    ".endr"
-                ],
-                [
-                    ".irp reg, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14",
-                    "vpaddd ymm\\reg, ymm\\reg, ymm15",
-                    ".endr"
-                ],
-                [
-                    ".irp reg, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15",
-                    "vmovdqu [r12 + {out} + 32*\\reg], ymm\\reg",
-                    ".endr",
-                    "vzeroupper"
-                ]
-            ),
-            Mode::Ymm => round!(
-                block,
-                spin,
-                [
-                    ".irp reg, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15",
-                    "vmovdqu ymm\\reg, [r12 + {pattern} + 32*\\reg]",
-                    ".endr"
-                ],
-                [],
-                [
-                    ".irp reg, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15",
-                    "vmovdqu [r12 + {out} + 32*\\reg], ymm\\reg",
-                    ".endr",
-                    "vzeroupper"
-                ]
-            ),
-            Mode::Xmm => round!(
-                block,
-                spin,
-                [
-                    ".irp reg, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15",
-                    "movdqu xmm\\reg, [r12 + {pattern} + 32*\\reg]",
-                    ".endr"
-                ],
-                [
-                    ".irp reg, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14",
-                    "paddd xmm\\reg, xmm15",
-                    ".endr"
-                ],
-                [
-                    ".irp reg, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15",
-                    "movdqu [r12 + {out} + 32*\\reg], xmm\\reg",
-                    ".endr"
-                ]
-            ),
         }
     }
 }

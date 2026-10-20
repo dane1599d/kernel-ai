@@ -6,8 +6,9 @@
 //!   cleared; SYSENTER is disabled (IA32_SYSENTER_CS = 0).
 //! - x87, SSE and AVX are on for ring 3: CR0.EM and TS are clear and NE is set (x87
 //!   errors raise #MF), CR4.OSFXSR, OSXMMEXCPT (SIMD errors raise #XM) and OSXSAVE
-//!   are set, and XCR0 is x87|SSE|AVX as `cpufeat` chooses (see `fpu`, which saves
-//!   the state at thread switches). The kernel itself stays soft-float.
+//!   are set, and XCR0 is x87|SSE|AVX, plus AVX-512's opmask and zmm state when the
+//!   CPU can save them, as `cpufeat` chooses (see `fpu`, which saves the state at
+//!   thread switches). The kernel itself stays soft-float.
 //! - SMEP, SMAP and UMIP are turned on when the CPU has them. FSGSBASE, PCID, PKE,
 //!   PCE and CET stay off: with FSGSBASE off, ring 3 cannot choose its GS base.
 
