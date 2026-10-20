@@ -82,7 +82,7 @@ pub(super) fn switch(from: Tid, to: Tid) {
     let cpu = percpu::this();
     cpu.previous.store(from, Ordering::Relaxed);
     ON_CPU[to].store(true, Ordering::Relaxed);
-    crate::process::charge(from);
+    crate::process::burst::switched_out(from);
     cpu.current.store(to, Ordering::Relaxed);
     prepare_cpu_for(to);
     // Ring-3 vector state, saved before finish_switch clears ON_CPU[from].

@@ -8,13 +8,18 @@
 //! which may take its slot at once, is not disturbed; a process whose threads all
 //! sleep an hour at a time ends at once when the kernel kills it (kill wakes every
 //! thread); a process without `cap::THREADS` is refused. Every worker started on
-//! the CPU it was pinned to. Afterwards no user frame is left and every
-//! thread slot the processes took is free again.
+//! the CPU it was pinned to. With a 500 ms burst limit (L6's per-thread
+//! accounting): a worker computing forever kills its process as a runaway; a worker
+//! on every CPU and the main thread each computing 300 ms without blocking, far
+//! more than 500 ms together, all live, though main starts at once on tids the
+//! runaway may have left; and a service computing 1,500 ms for a kernel call answers
+//! it, then is killed once it computes with no call to serve. Afterwards no user
+//! frame is left and every thread slot the processes took is free again.
 
 use crate::fpu_tests::wait_exit;
 use crate::memory::user::USER_FRAMES;
 use crate::process::{self, SpawnRequest};
-use crate::{hpet, log, smp, threads};
+use crate::{hpet, ipc, log, smp, threads};
 use core::sync::atomic::Ordering;
 use kabi::{ExitReason, Limits, cap};
 
@@ -22,9 +27,14 @@ use kabi::{ExitReason, Limits, cap};
 const PAGES: u64 = 2048;
 /// How long thread slots may take to be released once the processes are gone.
 const SETTLE_MS: u64 = 5_000;
+/// The burst limit of the burst steps, and what their threads compute.
+const BURST_MS: u64 = 500;
+/// The serve step's request: three times the limit, for a caller that waits 20 s.
+const SERVE_REQUEST: &[u8] = b"spin 1500";
+const SERVE_WAIT_MS: u64 = 20_000;
 
 /// Starts `workers` with `args` and `caps`, as the kernel's own child.
-fn start(name: &str, args: &str, caps: u64, burst_ms: u64) -> Result<u64, &'static str> {
+pub(crate) fn start(name: &str, args: &str, caps: u64, burst_ms: u64) -> Result<u64, &'static str> {
     process::spawn(&SpawnRequest {
         name,
         program: "workers",
@@ -46,7 +56,18 @@ fn start(name: &str, args: &str, caps: u64, burst_ms: u64) -> Result<u64, &'stat
 
 /// Runs one `workers` process to its end and checks how it ended.
 fn expect(name: &str, args: &str, caps: u64, want: (ExitReason, u64)) -> Result<(), &'static str> {
-    let pid = start(name, args, caps, 10_000)?;
+    expect_burst(name, args, caps, 10_000, want)
+}
+
+/// [`expect`] with a burst limit of `burst_ms`.
+fn expect_burst(
+    name: &str,
+    args: &str,
+    caps: u64,
+    burst_ms: u64,
+    want: (ExitReason, u64),
+) -> Result<(), &'static str> {
+    let pid = start(name, args, caps, burst_ms)?;
     let got = wait_exit(pid)?;
     log!(
         "threads: {name} ({args}) ended: {} ({})",
@@ -60,7 +81,7 @@ fn expect(name: &str, args: &str, caps: u64, want: (ExitReason, u64)) -> Result<
 }
 
 /// Waits until the thread table is back to `slots` threads in use.
-fn settle(slots: usize) -> Result<(), &'static str> {
+pub(crate) fn settle(slots: usize) -> Result<(), &'static str> {
     let deadline = hpet::nanos() + SETTLE_MS * 1_000_000;
     while threads::in_use() != slots {
         if hpet::nanos() > deadline {
@@ -101,6 +122,29 @@ fn kill_sleepers(caps: u64) -> Result<(), &'static str> {
     Ok(())
 }
 
+/// The compute allowance: a service computes for longer than its limit while it
+/// serves the kernel's call, answers, and is a runaway once it computes for nobody.
+fn serve_check() -> Result<(), &'static str> {
+    let pid = start("compute", "mode=serve", cap::SERVE, BURST_MS)?;
+    let reply = ipc::call("compute", SERVE_REQUEST, SERVE_WAIT_MS).map_err(|error| {
+        log!("threads: the compute service did not answer: {error:?}");
+        "threads: a service computing for a call was not let finish"
+    })?;
+    if reply != b"ok spun" {
+        return Err("threads: the compute service answered something else");
+    }
+    let got = wait_exit(pid)?;
+    log!(
+        "threads: the compute service answered after 1500 ms with a {BURST_MS} ms limit, then ended: {} ({})",
+        got.0.name(),
+        got.1
+    );
+    if got != (ExitReason::Runaway, BURST_MS) {
+        return Err("threads: computing with no call to serve was not a runaway");
+    }
+    Ok(())
+}
+
 /// The `threads` case.
 pub fn check() -> Result<(), &'static str> {
     let slots = threads::in_use();
@@ -110,6 +154,11 @@ pub fn check() -> Result<(), &'static str> {
     expect("spawnexit", "mode=spawnexit", caps, (ExitReason::Exited, 0))?;
     kill_sleepers(caps)?;
     expect("nocap", "mode=nocap", cap::SERVE, (ExitReason::Exited, 0))?;
+    let runaway = (ExitReason::Runaway, BURST_MS);
+    expect_burst("runaway", "mode=runaway", caps, BURST_MS, runaway)?;
+    let lived = (ExitReason::Exited, 0);
+    expect_burst("burst", "mode=burst", caps, BURST_MS, lived)?;
+    serve_check()?;
     settle(slots)?;
     let user_frames = USER_FRAMES.load(Ordering::SeqCst);
     log!(

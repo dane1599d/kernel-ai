@@ -18,6 +18,7 @@
 //! a context switch or `memory::with`. A slot's SPACE lock is only taken by the
 //! process's own threads, with preemption on, before TABLE and MEMORY.
 
+pub mod burst;
 pub mod components;
 mod exit;
 mod loader;
@@ -27,13 +28,14 @@ pub mod syscall;
 pub mod uaccess;
 pub mod workers;
 
+pub use burst::blocked;
 pub use exit::{exit_current, exit_with};
 pub use loader::{grow_heap, map_shared};
 
 use crate::entry::TrapFrame;
 use crate::gdt::{USER_CODE, USER_DATA};
 use crate::memory::user::{MIN_USER_ADDRESS, UserSpace};
-use crate::{hpet, percpu, threads};
+use crate::{percpu, threads};
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use kabi::layout::{HEAP_BASE, USER_END};
 use kabi::thread::MAX_WORKERS;
@@ -173,9 +175,6 @@ static SLOT_OF_TID: [AtomicUsize; MAX_THREADS] = [const { AtomicUsize::new(0) };
 /// Kill reason plus one (0 = none); the first reason wins.
 static KILL: [AtomicU8; MAX_PROCESSES] = [const { AtomicU8::new(0) }; MAX_PROCESSES];
 static KILL_DETAIL: [AtomicU64; MAX_PROCESSES] = [const { AtomicU64::new(0) }; MAX_PROCESSES];
-/// CPU time since the process last blocked, and the limit on it.
-static BURST_NS: [AtomicU64; MAX_PROCESSES] = [const { AtomicU64::new(0) }; MAX_PROCESSES];
-static BURST_LIMIT_NS: [AtomicU64; MAX_PROCESSES] = [const { AtomicU64::new(0) }; MAX_PROCESSES];
 /// Set when the user presses Ctrl-C for this process; `interrupted` reads and clears it.
 static INTERRUPT: [AtomicBool; MAX_PROCESSES] = [const { AtomicBool::new(false) }; MAX_PROCESSES];
 
@@ -256,34 +255,6 @@ pub fn thread_count(pid: u64) -> usize {
             .find(|p| p.live() && p.pid == pid)
             .map_or(0, Process::thread_count)
     })
-}
-
-/// Charges CPU time since the last charge on this CPU to `tid`. Interrupts are off
-/// (called on every context switch and every tick).
-pub fn charge(tid: Tid) {
-    let now = hpet::nanos();
-    let since = percpu::this().charged_at_ns.swap(now, Ordering::Relaxed);
-    let Some(slot) = slot_of(tid) else {
-        return;
-    };
-    let used = now.saturating_sub(since);
-    let burst = BURST_NS[slot].fetch_add(used, Ordering::Relaxed) + used;
-    let limit = BURST_LIMIT_NS[slot].load(Ordering::Relaxed);
-    if limit != 0 && burst > limit {
-        request_kill(slot, ExitReason::Runaway, limit / 1_000_000);
-    }
-}
-
-/// Timer-tick hook: charges the running thread.
-pub fn on_tick() {
-    charge(threads::current_tid());
-}
-
-/// The thread `tid` just came back from blocking or sleeping: its burst starts over.
-pub fn blocked(tid: Tid) {
-    if let Some(slot) = slot_of(tid) {
-        BURST_NS[slot].store(0, Ordering::Relaxed);
-    }
 }
 
 /// RFLAGS bits ring 3 may keep: CF, PF, AF, ZF, SF, TF, DF, OF, RF and AC.
@@ -410,11 +381,7 @@ pub fn spawn(request: &SpawnRequest) -> Result<u64, kabi::Error> {
         KILL[slot].store(0, Ordering::SeqCst);
         KILL_DETAIL[slot].store(0, Ordering::SeqCst);
         INTERRUPT[slot].store(false, Ordering::SeqCst);
-        BURST_NS[slot].store(0, Ordering::Relaxed);
-        BURST_LIMIT_NS[slot].store(
-            request.limits.max_burst_ms.saturating_mul(1_000_000),
-            Ordering::Relaxed,
-        );
+        burst::start_process(slot, request.limits.max_burst_ms);
         Ok((slot, pid))
     })?;
     if threads::spawn("user", process_main, slot).is_err() {

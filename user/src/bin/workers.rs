@@ -11,12 +11,16 @@
 //! - `mode=sleep`: every thread sleeps an hour at a time until the kernel kills it.
 //! - `mode=nocap`: started without `cap::THREADS`; THREAD_SPAWN must say
 //!   Permission (exit 0).
+//! - `mode=burst`, `mode=runaway`, `mode=serve`: per-thread burst accounting and
+//!   the compute allowance (see `workers/burst.rs`).
 
 #![no_std]
 #![no_main]
 
 #[path = "workers/basic.rs"]
 mod basic;
+#[path = "workers/burst.rs"]
+mod burst;
 
 use user::{arg, args, println};
 
@@ -30,6 +34,9 @@ fn main() -> i32 {
         Some("spawnexit") => basic::spawn_exit(),
         Some("sleep") => basic::sleep(),
         Some("nocap") => basic::nocap(),
+        Some("burst") => burst::burst(),
+        Some("runaway") => burst::runaway(),
+        Some("serve") => burst::serve(),
         other => {
             println!("workers: unknown mode {other:?}");
             1

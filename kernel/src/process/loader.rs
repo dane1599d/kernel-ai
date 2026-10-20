@@ -20,6 +20,8 @@ struct UserEntry {
 /// The process thread: load the program, then enter ring 3 and never come back here.
 pub(super) fn process_main(slot: usize) {
     let me = threads::current_tid();
+    // Before the slot is published, from when on this thread is charged.
+    super::burst::start_thread(me);
     SLOT_OF_TID[me].store(slot + 1, Ordering::Release);
     let (name, program, limits) = with_table(|table| {
         table[slot].tid = Some(me);

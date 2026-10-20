@@ -81,6 +81,8 @@ static IPC: Mutex<Ipc> = Mutex::new(Ipc {
     calls: [const { None }; MAX_CALLS],
 });
 static CALL_STATE: [AtomicU8; MAX_CALLS] = [const { AtomicU8::new(FREE) }; MAX_CALLS];
+/// Each call slot's call id, so a server's compute allowance ends with its call.
+static CALL_ID: [AtomicU64; MAX_CALLS] = [const { AtomicU64::new(0) }; MAX_CALLS];
 static PENDING: [AtomicU32; MAX_ENDPOINTS] = [const { AtomicU32::new(0) }; MAX_ENDPOINTS];
 static BOUND: [AtomicU64; MAX_ENDPOINTS] = [const { AtomicU64::new(0) }; MAX_ENDPOINTS];
 /// Replies each endpoint delivered to the kernel and to processes.
@@ -195,8 +197,10 @@ pub fn submit(
             .iter()
             .position(Option::is_none)
             .ok_or(CallError::Busy)?;
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        CALL_ID[slot].store(id, Ordering::SeqCst);
         ipc.calls[slot] = Some(Call {
-            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+            id,
             endpoint,
             request: copy,
             reply: Vec::new(),
@@ -314,7 +318,7 @@ pub fn recv(
     };
     let deadline = hpet::nanos().saturating_add(wait_ms * 1_000_000);
     loop {
-        let (endpoint, taken, failed) = with_ipc(|ipc| {
+        let (endpoint, taken, failed, opened) = with_ipc(|ipc| {
             let endpoint = match find(ipc, me.name.as_str()) {
                 Some(endpoint) => endpoint,
                 None => {
@@ -355,7 +359,7 @@ pub fn recv(
                         .try_reserve_exact(call.request.len())
                         .map_err(|_| Error::NoMemory)?;
                     request.extend_from_slice(&call.request);
-                    Some((request, call.caller_pid))
+                    Some((request, call.caller_pid, (call.id, call.deadline_ns)))
                 }
                 None => None,
             };
@@ -370,8 +374,10 @@ pub fn recv(
             {
                 failed = ipc.calls[old].as_ref().map(|c| c.caller);
             }
+            let mut opened = None;
             match (next, &request) {
-                (Some(c), Some(_)) => {
+                (Some(c), Some((_, _, (id, deadline)))) => {
+                    opened = Some((c, *id, *deadline));
                     if let Some(call) = ipc.calls[c].as_mut() {
                         call.taker = me.pid;
                     }
@@ -387,10 +393,10 @@ pub fn recv(
                     }
                 }
             }
-            Ok((endpoint, request, failed))
+            Ok((endpoint, request, failed, opened))
         })?;
         wake(failed);
-        if let Some((request, caller_pid)) = taken {
+        if let Some((request, caller_pid, _)) = taken {
             let len = request
                 .len()
                 .min(usize::try_from(cap).unwrap_or(usize::MAX));
@@ -398,6 +404,8 @@ pub fn recv(
             if caller_out != 0 {
                 uaccess::copy_to_user(slot, caller_out, &caller_pid.to_le_bytes())?;
             }
+            // Only a request the server holds opens its compute allowance.
+            process::burst::serving(slot, opened);
             return Ok(request.len() as u64);
         }
         let ready = || PENDING[endpoint].load(Ordering::SeqCst) > 0 || process::killed(slot);
@@ -444,8 +452,17 @@ pub fn reply(slot: usize, ptr: u64, len: u64) -> Result<u64, Error> {
         CALL_STATE[c].store(REPLIED, Ordering::SeqCst);
         Ok(call.caller)
     })?;
+    process::burst::serving(slot, None);
     wake(Some(caller));
     Ok(len as u64)
+}
+
+/// Whether call slot `c` still holds call `id`, taken by its server and not yet
+/// answered or dropped. Lock-free, for the burst accounting on the tick.
+pub fn call_open(c: usize, id: u64) -> bool {
+    c < MAX_CALLS
+        && CALL_STATE[c].load(Ordering::SeqCst) == TAKEN
+        && CALL_ID[c].load(Ordering::SeqCst) == id
 }
 
 /// A process died: unbind its endpoints and fail the calls it had taken.
