@@ -15,7 +15,10 @@ pub const UNCHANGED: &str = "that is what runs now";
 
 /// The answer's fields in the order the model must write them: the reason first,
 /// so it is written before the choice it explains.
-pub const FIELD_ORDER: [&str; 5] = ["reason", "action", "policy", "preset", "background"];
+/// There is no `action`: greedy decoding committed to keep before choosing a
+/// policy (Qwen3-4B, 10 of 10), so code derives it: an answer that differs from
+/// what runs now is a try, one that matches is a keep.
+pub const FIELD_ORDER: [&str; 4] = ["reason", "policy", "preset", "background"];
 
 /// The answer's JSON Schema as JSON text, with `background` an enum of the
 /// summary's labelable names: for L5's constrained decoder, and inside OpenAI's
@@ -47,7 +50,7 @@ pub fn schema(labelable: &[String]) -> String {
     let presets = list(&mut Preset::ALL.iter().map(|preset| preset.name()));
     let order = list(&mut FIELD_ORDER.iter().copied());
     format!(
-        r#"{{"type":"object","properties":{{"reason":{{"type":"string","maxLength":{REASON_MAX_CHARS}}},"action":{{"type":"string","enum":["keep","try"]}},"policy":{{"type":"string","enum":[{policies}]}},"preset":{{"type":"string","enum":[{presets}]}},"background":{background}}},"required":[{order}],"additionalProperties":false}}"#
+        r#"{{"type":"object","properties":{{"reason":{{"type":"string","maxLength":{REASON_MAX_CHARS}}},"policy":{{"type":"string","enum":[{policies}]}},"preset":{{"type":"string","enum":[{presets}]}},"background":{background}}},"required":[{order}],"additionalProperties":false}}"#
     )
 }
 
@@ -80,7 +83,9 @@ pub enum Decision {
 #[serde(deny_unknown_fields)]
 struct Answer {
     reason: String,
-    action: String,
+    /// Not asked for any more; an older answer may still carry it.
+    #[serde(default)]
+    action: Option<String>,
     policy: String,
     preset: String,
     background: Vec<String>,
@@ -137,24 +142,11 @@ pub fn decide(
         return refuse("the reason was not one line of at most 160 characters");
     }
     let reason = reason.to_string();
-    match answer.action.as_str() {
-        "keep" => {
-            // Labels are a change: a keep that names some contradicts itself.
-            let mut named = answer.background.clone();
-            named.sort();
-            let mut now = current_background.to_vec();
-            now.sort();
-            if !named.is_empty() && named != now {
-                return refuse("a keep cannot label processes background");
-            }
-            return Decision::Keep {
-                reason,
-                invalid: None,
-            };
-        }
-        "try" => {}
-        _ => return refuse("the action was not keep or try"),
-    }
+    let said_keep = match answer.action.as_deref() {
+        None | Some("try") => false,
+        Some("keep") => true,
+        Some(_) => return refuse("the action was not keep or try"),
+    };
     let Ok(spec) = PolicySpec::parse(&answer.policy, &answer.preset) else {
         return refuse("the policy or preset is not in the catalog");
     };
@@ -171,11 +163,23 @@ pub fn decide(
     now.sort();
     let unchanged = spec.policy == current.policy
         && (!spec.policy.uses_labels() || (spec.preset == current.preset && asked == now));
-    if unchanged {
-        return Decision::Keep {
-            reason,
-            invalid: Some(String::from(UNCHANGED)),
-        };
+    match (unchanged, said_keep, answer.action.is_some()) {
+        // What runs now: a keep, the model's own unless it said try.
+        (true, _, false) | (true, true, _) => {
+            return Decision::Keep {
+                reason,
+                invalid: None,
+            };
+        }
+        (true, false, true) => {
+            return Decision::Keep {
+                reason,
+                invalid: Some(String::from(UNCHANGED)),
+            };
+        }
+        // A keep that asks for a change contradicts itself.
+        (false, true, _) => return refuse("a keep cannot ask for a change"),
+        (false, false, _) => {}
     }
     Decision::Try {
         reason,

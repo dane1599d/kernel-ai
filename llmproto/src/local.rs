@@ -63,7 +63,7 @@ const fn chosen(name: &'static str) -> Field {
 
 /// `tune`'s answer, in [`crate::tune::FIELD_ORDER`]: a one-line reason of at
 /// most 160 characters (the reader trims both ends), then the enums.
-const TUNE_FIELDS: [Field; 5] = [
+const TUNE_FIELDS: [Field; 4] = [
     Field {
         name: "reason",
         max_chars: crate::tune::REASON_MAX_CHARS,
@@ -72,12 +72,10 @@ const TUNE_FIELDS: [Field; 5] = [
         trim_start: true,
         hard: true,
     },
-    chosen("action"),
     chosen("policy"),
     chosen("preset"),
     chosen("background"),
 ];
-const ACTIONS: [&str; 2] = ["keep", "try"];
 const POLICIES: [&str; 4] = ["interactive", "round-robin", "classes", "responsive"];
 const PRESETS: [&str; 2] = ["gentle", "firm"];
 
@@ -202,21 +200,16 @@ pub fn tune(
     let choices = [
         Choice {
             field: 1,
-            words: &ACTIONS,
-            list: None,
-        },
-        Choice {
-            field: 2,
             words: &POLICIES,
             list: None,
         },
         Choice {
-            field: 3,
+            field: 2,
             words: &PRESETS,
             list: None,
         },
         Choice {
-            field: 4,
+            field: 3,
             words: &names,
             list: Some(crate::tune::MAX_BACKGROUND),
         },

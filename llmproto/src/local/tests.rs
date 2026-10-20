@@ -264,7 +264,6 @@ fn every_tune_answer_from_the_shape_is_the_schema_or_cut_off() {
             whole += 1;
             let value: serde_json::Value = serde_json::from_str(&completion.text).unwrap();
             let field = |name: &str| value[name].as_str().unwrap_or("").to_string();
-            assert!(ACTIONS.contains(&field("action").as_str()), "{value}");
             assert!(PRESETS.contains(&field("preset").as_str()), "{value}");
             let background = value["background"].as_array().unwrap();
             assert!(background.len() <= crate::tune::MAX_BACKGROUND);

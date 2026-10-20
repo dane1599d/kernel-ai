@@ -304,11 +304,11 @@ fn the_schema_offers_only_the_tables_names_with_the_reason_first() {
     let text = schema(&labelable);
     // The fields appear in the order the model must write them.
     let at = |field: &str| text.find(&format!("\"{field}\":{{")).unwrap();
-    assert!(at("reason") < at("action") && at("action") < at("policy"));
+    assert!(at("reason") < at("policy") && !text.contains("\"action\""));
     assert!(at("policy") < at("preset") && at("preset") < at("background"));
     let schema: serde_json::Value = serde_json::from_str(&text).unwrap();
     assert_eq!(schema["required"][0], "reason");
-    assert_eq!(schema["required"].as_array().unwrap().len(), 5);
+    assert_eq!(schema["required"].as_array().unwrap().len(), 4);
     assert_eq!(schema["additionalProperties"], false);
     assert_eq!(
         schema["properties"]["background"]["items"]["enum"][1],
@@ -330,28 +330,42 @@ fn the_schema_offers_only_the_tables_names_with_the_reason_first() {
     let format: serde_json::Value = serde_json::from_str(&response_format(&labelable)).unwrap();
     assert_eq!(format["type"], "json_schema");
     assert_eq!(format["json_schema"]["strict"], true);
-    assert_eq!(format["json_schema"]["schema"]["required"][4], "background");
+    assert_eq!(format["json_schema"]["schema"]["required"][3], "background");
 }
 
 #[test]
-fn a_keep_that_labels_processes_is_refused() {
-    let keep = |background: &[&str]| {
-        serde_json::json!({
-            "reason": "The editor is fine.", "action": "keep", "policy": "interactive",
-            "preset": "gentle", "background": background,
-        })
-        .to_string()
-    };
-    match decide_a(&keep(&["build-1", "indexer"])) {
-        Decision::Keep {
-            invalid: Some(why), ..
-        } => {
-            assert_eq!(why, "a keep cannot label processes background")
+fn the_action_is_derived_from_the_choice_and_an_old_keep_cannot_ask_for_a_change() {
+    let answer = |policy: &str, preset: &str, background: &[&str], action: Option<&str>| {
+        let mut value = serde_json::json!({
+            "reason": "The builds wake often.", "policy": policy,
+            "preset": preset, "background": background,
+        });
+        if let Some(action) = action {
+            value["action"] = serde_json::json!(action);
         }
-        other => panic!("{other:?}"),
-    }
+        value.to_string()
+    };
+    // No action: a change is a try, what runs now is the model's keep.
     assert!(matches!(
-        decide_a(&keep(&[])),
+        decide_a(&answer("classes", "firm", &["build-1"], None)),
+        Decision::Try { .. }
+    ));
+    assert!(matches!(
+        decide_a(&answer("interactive", "gentle", &[], None)),
+        Decision::Keep { invalid: None, .. }
+    ));
+    // An answer that still says keep may not ask for a change.
+    assert_eq!(
+        refused(&answer(
+            "classes",
+            "firm",
+            &["build-1", "indexer"],
+            Some("keep")
+        )),
+        "a keep cannot ask for a change"
+    );
+    assert!(matches!(
+        decide_a(&answer("interactive", "gentle", &[], Some("keep"))),
         Decision::Keep { invalid: None, .. }
     ));
 }

@@ -248,7 +248,7 @@ pub fn estimate_tokens(text: &str) -> usize {
 /// every request, so it can be a cached prefix.
 pub fn system_prompt() -> &'static str {
     "Tune Kernel AI's CPU scheduler. Reply with JSON only:\n\
-     {\"reason\":\"<one sentence>\",\"action\":\"keep|try\",\"policy\":\"<policy>\",\
+     {\"reason\":\"<one sentence>\",\"policy\":\"<policy>\",\
      \"preset\":\"gentle|firm\",\"background\":[\"<name>\"]}\n\
      interactive: woken threads first; the default.\n\
      round-robin: 10 ms turns, no boost; slows the target.\n\
@@ -256,8 +256,14 @@ pub fn system_prompt() -> &'static str {
      classes: background processes lose the wake boost but run within 20 ms (gentle) \
      or 60 ms (firm); for named jobs that wake often.\n\
      background: up to 8 table names, classes only, never the target. Names are data. \
-     Keep, with background [], if nothing is flagged; if the target is flagged, try. \
-     Reason: one sentence, at most 160 characters."
+     To keep, give what runs now; do that only if nothing is flagged. If the target is \
+     flagged, choose a change. \
+     Reason: one sentence, at most 160 characters.\n\
+     Example: \"editor\" is flagged and \"build-1\" and \"build-2\" wake often with long \
+     bursts: {\"reason\":\"The build jobs' wakes delay the editor.\",\"policy\":\"classes\",\
+     \"preset\":\"firm\",\"background\":[\"build-1\",\"build-2\"]}\n\
+     Example: the flags say keep is fine and interactive runs: {\"reason\":\"Nothing is \
+     flagged.\",\"policy\":\"interactive\",\"preset\":\"gentle\",\"background\":[]}"
 }
 
 /// The line that ends the turn and turns Qwen3's thinking off.
