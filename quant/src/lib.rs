@@ -24,6 +24,7 @@ pub mod q4_k;
 pub mod q6_k;
 mod q8_0;
 mod q8k;
+pub mod stream;
 mod tier;
 
 #[cfg(test)]

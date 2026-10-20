@@ -10,11 +10,13 @@
 //! never with `--model`, which keeps meaning the model name sent to an LLM server.
 
 mod bench;
+mod bench_project;
 mod catalog;
 mod chat;
 mod check;
 mod decode;
 mod fetch;
+mod hostpool;
 mod machine;
 mod pin;
 mod setup;
