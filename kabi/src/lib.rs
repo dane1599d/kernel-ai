@@ -14,124 +14,10 @@ pub mod live;
 pub mod model;
 pub mod plan;
 pub mod probe;
+pub mod sched;
 pub mod thread;
 
-/// System-call numbers.
-pub mod call {
-    /// `exit(code: i32) -> !`
-    pub const EXIT: u64 = 0;
-    /// `write(ptr, len) -> len`: text to the console, prefixed with the program name.
-    pub const WRITE: u64 = 1;
-    /// `sleep_ms(ms)`
-    pub const SLEEP: u64 = 2;
-    /// `yield()`
-    pub const YIELD: u64 = 3;
-    /// `brk(grow_bytes) -> heap end`: grows the heap by whole pages; 0 just reports.
-    pub const BRK: u64 = 4;
-    /// `time_ns() -> nanoseconds since boot`
-    pub const TIME: u64 = 5;
-    /// `args(buf, cap) -> len`: the argument string the program was started with.
-    pub const ARGS: u64 = 6;
-    /// `spawn(&SpawnRequest) -> pid` (needs [`super::cap::SUPERVISE`])
-    pub const SPAWN: u64 = 7;
-    /// `wait_child(&mut ExitRecord, timeout_ms) -> 1 if a record was written, 0 on timeout`
-    pub const WAIT_CHILD: u64 = 8;
-    /// `kill(pid)`
-    pub const KILL: u64 = 9;
-    /// `state_save(ptr, len)`: replaces the kernel-held supervisor state.
-    pub const STATE_SAVE: u64 = 10;
-    /// `state_load(buf, cap) -> len`
-    pub const STATE_LOAD: u64 = 11;
-    /// `plan(buf, cap) -> len`: the services to run, one `name args...` per line.
-    pub const PLAN: u64 = 12;
-    /// `svc_recv(buf, cap, timeout_ms, &mut caller_pid) -> len`: the next request for
-    /// this service, and who sent it (0 = the kernel) (needs [`super::cap::SERVE`]).
-    pub const SVC_RECV: u64 = 13;
-    /// `svc_reply(ptr, len)`: answers the request taken by the last `svc_recv`.
-    pub const SVC_REPLY: u64 = 14;
-    /// `http(&HttpRequest) -> response len`: sends the request bytes to the LLM
-    /// server and returns what it sends back before closing the connection
-    /// (needs [`super::cap::NET`]).
-    pub const HTTP: u64 = 15;
-    /// `list(buf, cap) -> len`: running services, one `pid name` per line, so a
-    /// restarted supervisor can find the services it already started.
-    pub const LIST: u64 = 16;
-    /// `call(name_ptr, name_len, &CallRequest) -> reply len`: sends a request to
-    /// another service and waits for its reply (needs [`super::cap::CALL`]). A
-    /// process may not call itself, a service that can itself call, nor the edit
-    /// service, which only the kernel drives.
-    pub const CALL: u64 = 17;
-    /// `metrics(&mut Metrics) -> 0`: scheduler, memory and process numbers.
-    pub const METRICS: u64 = 18;
-    /// `policy(id)`: installs scheduling policy [`super::policy`] `id` on every CPU
-    /// (needs [`super::cap::POLICY`]).
-    pub const POLICY: u64 = 19;
-    /// `interrupted() -> 1 or 0`: whether the user pressed Ctrl-C since the last
-    /// call; reading clears it.
-    pub const INTERRUPTED: u64 = 20;
-    /// `comp_fetch(label_ptr, label_len, buf, cap) -> len`: copies version `label` of
-    /// the caller's component into `buf` when it fits; the length either way.
-    /// Needs [`cap::COMPONENT`].
-    pub const COMP_FETCH: u64 = 21;
-    /// `comp_event(&live::Event) -> 0`: reports a ledger event; the kernel checks
-    /// it against the ledger rules and refuses what they do not allow.
-    pub const COMP_EVENT: u64 = 22;
-    /// `comp_restore(&mut live::Restore, buf, cap) -> len`: the ledger, and the
-    /// active version's checkpoint copied into `buf` when it fits.
-    pub const COMP_RESTORE: u64 = 23;
-    /// `comp_put(&live::Put) -> 0`: uploads a version of component `name` into the
-    /// store, under the label the store assigns next (`e1`, `e2`, ...), with the
-    /// label it was built from and the git commit holding its source. The kernel
-    /// checks the artifact against the upload rules (see [`crate::live::MAX_UPLOAD`]).
-    /// Needs [`super::cap::PUBLISH`].
-    pub const COMP_PUT: u64 = 24;
-    /// `comp_control(&live::Control) -> reply len`: sends `ctl <request>` to a live
-    /// component as the kernel (caller 0), waiting at most 60 s. Only `status`,
-    /// `source [file]` and `try <version>` are relayed (see
-    /// [`crate::live::relayable`]); anything else is Invalid, and a name that is
-    /// not a live component's host is NotFound. Needs [`super::cap::PUBLISH`].
-    pub const COMP_CONTROL: u64 = 25;
-    /// `comp_read(&live::Read) -> len`: a component's [`crate::live::Info`], or the bytes
-    /// of one of its versions copied into the buffer when they fit (the length
-    /// either way). A read is not a fetch: it gives no right to report events.
-    /// Needs [`super::cap::PUBLISH`].
-    pub const COMP_READ: u64 = 26;
-    /// `build(&HttpRequest) -> response len`: as [`HTTP`], to the build service named
-    /// by `build=` on the kernel command line, and only `POST /sync`; anything else
-    /// is Invalid (builds go through [`BUILD_START`]). Needs [`super::cap::PUBLISH`].
-    pub const BUILD: u64 = 27;
-    /// `model_map() -> len`: maps the model the kernel loaded from the `kai-model`
-    /// disk at [`super::layout::MODEL_BASE`], read-only and not executable, by
-    /// linking the kernel's window of 2 MiB pages, which takes nothing from the
-    /// page quota; returns its length in bytes, and calling it again maps nothing
-    /// new. NotFound when no model is loaded, Invalid if the window cannot be
-    /// linked. Needs [`super::cap::MODEL`].
-    pub const MODEL_MAP: u64 = 28;
-    /// `thread_spawn(entry, arg, cpu, stack_pages) -> index`: starts a worker of this
-    /// process at `entry` with `arg` in RDI, pinned to CPU `cpu` (below the CPUs
-    /// online), on a stack of `stack_pages` pages (see [`super::thread`]). Only the
-    /// main thread of a holder of [`super::cap::THREADS`] may. Busy when it already
-    /// runs [`super::thread::MAX_WORKERS`] workers (for a moment also after one
-    /// exits) or the kernel's threads run out; NoMemory past the page quota.
-    pub const THREAD_SPAWN: u64 = 29;
-    /// `thread_exit() -> !`: ends the calling worker. Invalid from the main thread,
-    /// which ends the whole process with [`EXIT`].
-    pub const THREAD_EXIT: u64 = 30;
-    /// `futex_wait(addr, expected, timeout_ms) -> 0 or 1`: sleeps while the aligned
-    /// 32-bit word at `addr` in this process holds `expected`, until a
-    /// [`FUTEX_WAKE`] for it (0), `timeout_ms` (0, or more than an hour, means
-    /// none; TimedOut) or a kill (Dead); 1 at once when the word holds something else.
-    pub const FUTEX_WAIT: u64 = 31;
-    /// `futex_wake(addr, count) -> woken`: wakes up to `count` threads of this
-    /// process waiting on the word at `addr`.
-    pub const FUTEX_WAKE: u64 = 32;
-    /// `build_start(&HttpRequest) -> 0`: sends a `POST /build` (only) to [`BUILD`]'s service
-    /// on a kernel thread, for at most 300 s. Busy until its reply is collected. Needs PUBLISH.
-    pub const BUILD_START: u64 = 35;
-    /// `build_poll(buf, cap) -> len`: copies the reply, ending the job, only if it fits (cap 0
-    /// looks). Busy while it runs, NotFound with none; an exchange error comes once. PUBLISH.
-    pub const BUILD_POLL: u64 = 36;
-}
+pub mod call;
 
 /// Errors, returned in RAX as their negative value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -420,6 +306,12 @@ pub struct CallRequest {
 pub mod policy {
     pub const INTERACTIVE: u64 = 0;
     pub const ROUND_ROBIN: u64 = 1;
+    /// `classes`, with a [`crate::sched::preset`] as the call's second argument.
+    pub const CLASSES: u64 = 2;
+    /// `responsive`, the rule-based baseline.
+    pub const RESPONSIVE: u64 = 3;
+    /// In [`crate::Metrics`] only: a policy outside the catalog, such as a test's.
+    pub const OTHER: u64 = 255;
 }
 
 pub const MAX_METRIC_PROCESSES: usize = 16;

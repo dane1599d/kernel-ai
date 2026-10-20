@@ -30,6 +30,22 @@ impl Core {
         self.policy.set_class(tid, class);
     }
 
+    /// Forgets a thread's label in both slots: for a thread slot that is reused,
+    /// on every Core, since a thread may later migrate to any of them.
+    pub fn clear_class(&mut self, tid: Tid) {
+        if tid >= MAX_THREADS {
+            return;
+        }
+        self.classes[tid] = Class::Normal;
+        self.standby_classes[tid] = Class::Normal;
+        self.policy.set_class(tid, Class::Normal);
+    }
+
+    /// The installed policy's labels.
+    pub fn class_table(&self) -> [Class; MAX_THREADS] {
+        self.classes
+    }
+
     pub fn class(&self, tid: Tid) -> Class {
         self.classes.get(tid).copied().unwrap_or_default()
     }
