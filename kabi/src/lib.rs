@@ -14,6 +14,7 @@ pub mod live;
 pub mod model;
 pub mod plan;
 pub mod probe;
+pub mod thread;
 
 /// System-call numbers.
 pub mod call {
@@ -100,11 +101,30 @@ pub mod call {
     /// Needs [`super::cap::PUBLISH`].
     pub const BUILD: u64 = 27;
     /// `model_map() -> len`: maps the model the kernel loaded from the `kai-model`
-    /// disk at [`super::layout::MODEL_BASE`], read-only and not executable, and
-    /// returns its length in bytes; calling it again maps nothing new. NotFound
-    /// when no model is loaded, NoMemory when its page tables would pass the page
-    /// quota. Needs [`super::cap::MODEL`].
+    /// disk at [`super::layout::MODEL_BASE`], read-only and not executable, by
+    /// linking the kernel's window of 2 MiB pages, which takes nothing from the
+    /// page quota; returns its length in bytes, and calling it again maps nothing
+    /// new. NotFound when no model is loaded, Invalid if the window cannot be
+    /// linked. Needs [`super::cap::MODEL`].
     pub const MODEL_MAP: u64 = 28;
+    /// `thread_spawn(entry, arg, cpu, stack_pages) -> index`: starts a worker of this
+    /// process at `entry` with `arg` in RDI, pinned to CPU `cpu` (below the CPUs
+    /// online), on a stack of `stack_pages` pages (see [`super::thread`]). Only the
+    /// main thread of a holder of [`super::cap::THREADS`] may. Busy when it already
+    /// runs [`super::thread::MAX_WORKERS`] workers (for a moment also after one
+    /// exits) or the kernel's threads run out; NoMemory past the page quota.
+    pub const THREAD_SPAWN: u64 = 29;
+    /// `thread_exit() -> !`: ends the calling worker. Invalid from the main thread,
+    /// which ends the whole process with [`EXIT`].
+    pub const THREAD_EXIT: u64 = 30;
+    /// `futex_wait(addr, expected, timeout_ms) -> 0 or 1`: sleeps while the aligned
+    /// 32-bit word at `addr` in this process holds `expected`, until a
+    /// [`FUTEX_WAKE`] for it (0), `timeout_ms` (0, or more than an hour, means
+    /// none; TimedOut) or a kill (Dead); 1 at once when the word holds something else.
+    pub const FUTEX_WAIT: u64 = 31;
+    /// `futex_wake(addr, count) -> woken`: wakes up to `count` threads of this
+    /// process waiting on the word at `addr`.
+    pub const FUTEX_WAKE: u64 = 32;
 }
 
 /// Errors, returned in RAX as their negative value.
@@ -189,8 +209,11 @@ pub mod cap {
     /// Map the model read-only. The kernel grants it only to the service named
     /// `llm` running the `llm` program.
     pub const MODEL: u64 = 1 << 7;
+    /// Start worker threads (L6). The kernel grants it only to the service named
+    /// `llm` running the `llm` program.
+    pub const THREADS: u64 = 1 << 8;
     /// Every capability a supervisor may grant.
-    pub const GRANTABLE: u64 = SERVE | NET | CALL | POLICY | COMPONENT | PUBLISH | MODEL;
+    pub const GRANTABLE: u64 = SERVE | NET | CALL | POLICY | COMPONENT | PUBLISH | MODEL | THREADS;
 }
 
 /// Why a process ended, as reported to the supervisor.

@@ -11,9 +11,11 @@
 
 extern crate alloc;
 
+pub mod burst;
 mod core_state;
 mod policy;
 
+pub use burst::BurstTable;
 pub use core_state::{Core, State};
 pub use policy::{Interactive, RoundRobin};
 

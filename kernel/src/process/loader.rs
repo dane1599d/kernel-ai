@@ -2,7 +2,7 @@
 
 use super::{SLOT_OF_TID, SPACES, State, exit_current, killed, programs, request_kill, with_table};
 use crate::entry;
-use crate::memory::user::{Access, MIN_USER_ADDRESS};
+use crate::memory::user::{Access, MIN_USER_ADDRESS, UserSpace};
 use crate::{log, memory, threads};
 use core::sync::atomic::Ordering;
 use kabi::layout::{HEAP_BASE, MAX_STACK_PAGES, STACK_PAGES, STACK_TOP};
@@ -20,6 +20,8 @@ struct UserEntry {
 /// The process thread: load the program, then enter ring 3 and never come back here.
 pub(super) fn process_main(slot: usize) {
     let me = threads::current_tid();
+    // Before the slot is published, from when on this thread is charged.
+    super::burst::start_thread(me);
     SLOT_OF_TID[me].store(slot + 1, Ordering::Release);
     let (name, program, limits) = with_table(|table| {
         table[slot].tid = Some(me);
@@ -41,13 +43,16 @@ pub(super) fn process_main(slot: usize) {
     if killed(slot) {
         exit_current();
     }
-    with_table(|table| table[slot].state = State::Running);
+    with_table(|table| {
+        table[slot].cr3 = entry.cr3;
+        table[slot].state = State::Running;
+    });
     threads::enter_address_space(entry.cr3);
     // Clean vector registers; interrupts stay off until the iretq.
     crate::fpu::enter_ring3();
     // SAFETY: the entry point and stack were mapped by `load`, CR3 is loaded, and
     // nothing on this stack needs dropping.
-    unsafe { entry::enter_user(entry.rip, entry.rsp) }
+    unsafe { entry::enter_user(entry.rip, entry.rsp, 0) }
 }
 
 const QUOTA: &str = "page quota exceeded";
@@ -56,6 +61,16 @@ const QUOTA: &str = "page quota exceeded";
 fn map_page(slot: usize, addr: u64, access: Access, max_pages: u64) -> Result<u64, &'static str> {
     let mut guard = SPACES[slot].lock();
     let space = guard.as_mut().ok_or("no address space")?;
+    map_page_in(space, addr, access, max_pages)
+}
+
+/// [`map_page`] with the space already locked.
+fn map_page_in(
+    space: &mut UserSpace,
+    addr: u64,
+    access: Access,
+    max_pages: u64,
+) -> Result<u64, &'static str> {
     if space.frames() >= max_pages {
         return Err(QUOTA);
     }
@@ -131,43 +146,25 @@ fn elf_error(error: uelf::Error) -> &'static str {
     }
 }
 
-/// Maps the kernel's `frames` (frame numbers) read-only from `base` up in the
-/// calling process, without making them its own (see `Memory::map_user_frame`).
-/// `base` starts a PML4 slot that holds nothing else, and `tables` is how many
-/// page tables the whole mapping takes there. The call fails with NoMemory, and
-/// kills nothing, if the tables still missing would pass the page quota. Pages
-/// already mapped stay as they are, so the call can be repeated.
-pub fn map_shared(slot: usize, base: u64, frames: &[u32], tables: u64) -> Result<(), kabi::Error> {
-    let limits = with_table(|table| table[slot].limits);
+/// Links the model's window, whose PDPT is at `pdpt`, at `base` in the calling
+/// process: one PML4 entry, no frame taken from its quota. Repeating it changes
+/// nothing.
+pub fn link_window(slot: usize, base: u64, pdpt: u64) -> Result<(), kabi::Error> {
     let mut guard = SPACES[slot].lock();
     let space = guard.as_mut().ok_or(kabi::Error::Fault)?;
-    // Tables a first call, or one cut short, already made are counted already.
-    let missing = tables.saturating_sub(memory::with(|m| m.tables_in_slot(space, base)));
-    if space.frames().saturating_add(missing) > limits.max_pages {
-        return Err(kabi::Error::NoMemory);
-    }
-    // One page table's worth under each MEMORY lock, so other CPUs are not held
-    // off for the whole model.
-    for (index, batch) in frames.chunks(512).enumerate() {
-        let first = base + (index * 512) as u64 * PAGE_SIZE;
-        memory::with(|m| {
-            batch.iter().enumerate().try_for_each(|(i, &frame)| {
-                let addr = first + i as u64 * PAGE_SIZE;
-                m.map_user_frame(space, addr, u64::from(frame) * PAGE_SIZE)
-                    .map(|_| ())
-            })
-        })
-        .map_err(|error| {
-            log!("process: mapping shared frames failed: {error}");
-            kabi::Error::NoMemory
-        })?;
-    }
-    Ok(())
+    memory::with(|m| m.link_window(space, base, pdpt)).map_err(|error| {
+        log!("process: linking the model window failed: {error}");
+        kabi::Error::Invalid
+    })
 }
 
 /// Grows the calling process's heap by `bytes` (whole pages). Exceeding the quota
-/// kills the process; running the machine out of frames only fails the call.
+/// kills the process; running the machine out of frames only fails the call. The
+/// space stays locked from reading the heap's end to writing it back, so two
+/// threads growing the heap at once grow it one after the other.
 pub fn grow_heap(slot: usize, bytes: u64) -> Result<u64, kabi::Error> {
+    let mut guard = SPACES[slot].lock();
+    let space = guard.as_mut().ok_or(kabi::Error::Fault)?;
     let (end, limits) = with_table(|table| (table[slot].heap_end, table[slot].limits));
     if bytes == 0 {
         return Ok(end);
@@ -187,11 +184,12 @@ pub fn grow_heap(slot: usize, bytes: u64) -> Result<u64, kabi::Error> {
         (end..new_end)
             .step_by(PAGE_SIZE as usize)
             .try_for_each(|page| {
-                map_page(slot, page, heap, limits.max_pages)?;
+                map_page_in(space, page, heap, limits.max_pages)?;
                 mapped_to = page + PAGE_SIZE;
                 Ok(())
             });
     with_table(|table| table[slot].heap_end = mapped_to);
+    drop(guard);
     match result {
         Ok(()) => Ok(new_end),
         Err(error) if error == QUOTA => {

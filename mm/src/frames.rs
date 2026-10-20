@@ -15,6 +15,9 @@ pub struct FrameBitmap<'a> {
     free: u64,
     /// Word index where the next search starts (next-fit).
     hint: usize,
+    /// No word below this one has a free frame: every free lowers it, and a
+    /// contiguous search that finds the first free frame raises it.
+    low: usize,
 }
 
 impl<'a> FrameBitmap<'a> {
@@ -35,6 +38,7 @@ impl<'a> FrameBitmap<'a> {
             frames,
             free: 0,
             hint: 0,
+            low: 0,
         }
     }
 
@@ -97,38 +101,124 @@ impl<'a> FrameBitmap<'a> {
     /// Finds `count` consecutive free frames whose first frame number is a multiple of
     /// `align`, marks them used, and returns the first. First fit from frame 0, so
     /// large early allocations (the heap, DMA rings) come from low memory.
+    ///
+    /// The search works a word (64 frames) at a time: it skips used words to the
+    /// next free frame, rounds up to the alignment, and checks the run from its end
+    /// backwards; a used frame in the run means no start up to that frame can work,
+    /// so the search resumes just past it. Thousands of 2 MiB runs (512 frames
+    /// aligned 512) in an 8 GiB bitmap take milliseconds, not minutes.
     pub fn allocate_contiguous(&mut self, count: u64, align: u64) -> Option<u64> {
+        self.search(self.low as u64 * 64, count, align, true)
+    }
+
+    /// As [`Self::allocate_contiguous`], but the run starts at frame `lowest` or
+    /// above: for a test that needs memory above 4 GiB.
+    pub fn allocate_contiguous_from(&mut self, lowest: u64, count: u64, align: u64) -> Option<u64> {
+        let from = lowest.max(self.low as u64 * 64);
+        self.search(from, count, align, from == self.low as u64 * 64)
+    }
+
+    /// The search behind both; `from_low` says the scan starts at the lower bound,
+    /// so the first free frame it meets may raise the bound.
+    fn search(&mut self, mut from: u64, count: u64, align: u64, from_low: bool) -> Option<u64> {
         if count == 0 || align == 0 || count > self.free {
             return None;
         }
-        let mut start = 0;
-        while start + count <= self.frames {
-            match (start..start + count).find(|&frame| !self.is_free(frame)) {
-                // Restart just past the used frame, rounded up to the alignment.
-                Some(used) => start = (used + 1).next_multiple_of(align),
+        let mut first_free_seen = !from_low;
+        loop {
+            let free = self.next_free(from)?;
+            if !first_free_seen {
+                // Every word below this one is full.
+                self.low = (free / 64) as usize;
+                first_free_seen = true;
+            }
+            let start = free.checked_next_multiple_of(align)?;
+            let end = start.checked_add(count).filter(|&end| end <= self.frames)?;
+            match self.last_used(start, end) {
+                Some(used) => from = used + 1,
                 None => {
-                    for frame in start..start + count {
-                        self.set(frame);
-                    }
+                    self.fill(start, end, true);
                     self.free -= count;
                     return Some(start);
                 }
             }
         }
-        None
     }
 
     /// Frees `count` frames starting at `first`, as allocated by `allocate_contiguous`.
     pub fn free_contiguous(&mut self, first: u64, count: u64) -> Result<(), FrameError> {
-        if first.checked_add(count).is_none_or(|end| end > self.frames) {
-            return Err(FrameError::OutOfRange);
-        }
-        if (first..first + count).any(|frame| self.is_free(frame)) {
+        let end = first
+            .checked_add(count)
+            .filter(|&end| end <= self.frames)
+            .ok_or(FrameError::OutOfRange)?;
+        if count != 0 && self.first_free(first, end).is_some() {
             return Err(FrameError::DoubleFree);
         }
-        (first..first + count).for_each(|frame| self.clear(frame));
+        self.fill(first, end, false);
         self.free += count;
         Ok(())
+    }
+
+    /// The first free frame at or after `from`, a word at a time.
+    fn next_free(&self, from: u64) -> Option<u64> {
+        if from >= self.frames {
+            return None;
+        }
+        let mut index = (from / 64) as usize;
+        // Frames below `from` in its word count as used.
+        let mut word = self.words[index] | low_bits(from % 64);
+        loop {
+            if word != u64::MAX {
+                let frame = index as u64 * 64 + u64::from((!word).trailing_zeros());
+                return (frame < self.frames).then_some(frame);
+            }
+            index += 1;
+            if index as u64 * 64 >= self.frames {
+                return None;
+            }
+            word = self.words[index];
+        }
+    }
+
+    /// The highest used frame in `start..end` (`start < end <= frames`), checking
+    /// whole words from the end.
+    fn last_used(&self, start: u64, end: u64) -> Option<u64> {
+        let mut index = ((end - 1) / 64) as usize;
+        loop {
+            let word = self.words[index] & range_bits(index, start, end);
+            if word != 0 {
+                return Some(index as u64 * 64 + 63 - u64::from(word.leading_zeros()));
+            }
+            if index as u64 * 64 <= start {
+                return None;
+            }
+            index -= 1;
+        }
+    }
+
+    /// The lowest free frame in `start..end` (`start < end <= frames`).
+    fn first_free(&self, start: u64, end: u64) -> Option<u64> {
+        let last = ((end - 1) / 64) as usize;
+        (start as usize / 64..=last).find_map(|index| {
+            let free = !self.words[index] & range_bits(index, start, end);
+            (free != 0).then(|| index as u64 * 64 + u64::from(free.trailing_zeros()))
+        })
+    }
+
+    /// Marks `start..end` used (`true`) or free, a word at a time.
+    fn fill(&mut self, start: u64, end: u64, used: bool) {
+        if start >= end {
+            return;
+        }
+        for index in start as usize / 64..=((end - 1) / 64) as usize {
+            let bits = range_bits(index, start, end);
+            if used {
+                self.words[index] |= bits;
+            } else {
+                self.words[index] &= !bits;
+                self.low = self.low.min(index);
+            }
+        }
     }
 
     pub fn free(&mut self, frame: u64) -> Result<(), FrameError> {
@@ -148,98 +238,25 @@ impl<'a> FrameBitmap<'a> {
     }
 
     fn clear(&mut self, frame: u64) {
-        self.words[(frame / 64) as usize] &= !(1 << (frame % 64));
+        let index = (frame / 64) as usize;
+        self.words[index] &= !(1 << (frame % 64));
+        self.low = self.low.min(index);
     }
+}
+
+/// The `n` lowest bits set (`n` < 64).
+const fn low_bits(n: u64) -> u64 {
+    (1 << n) - 1
+}
+
+/// The bits of word `index` that fall in frames `start..end`.
+fn range_bits(index: usize, start: u64, end: u64) -> u64 {
+    let base = index as u64 * 64;
+    let lo = start.saturating_sub(base).min(64);
+    let hi = end.saturating_sub(base).min(64);
+    let upto = |n: u64| if n == 64 { u64::MAX } else { low_bits(n) };
+    upto(hi) & !upto(lo)
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use alloc::vec;
-    use alloc::vec::Vec;
-
-    #[test]
-    fn starts_full_and_releases_ranges() {
-        let mut storage = vec![0; FrameBitmap::words_for(200)];
-        let mut bitmap = FrameBitmap::new(&mut storage, 200);
-        assert_eq!(bitmap.free_count(), 0);
-        assert_eq!(bitmap.allocate(), None);
-        bitmap.release_range(10, 5);
-        bitmap.release_range(12, 5); // overlap is counted once
-        assert_eq!(bitmap.free_count(), 7);
-        bitmap.release_range(195, 100); // clipped at the end
-        assert_eq!(bitmap.free_count(), 12);
-    }
-
-    #[test]
-    fn allocates_every_free_frame_once() {
-        let mut storage = vec![0; FrameBitmap::words_for(130)];
-        let mut bitmap = FrameBitmap::new(&mut storage, 130);
-        bitmap.release_range(0, 130);
-        bitmap.reserve_range(64, 2);
-        let mut got: Vec<u64> = core::iter::from_fn(|| bitmap.allocate()).collect();
-        got.sort_unstable();
-        assert_eq!(got.len(), 128);
-        assert!(!got.contains(&64) && !got.contains(&65));
-        assert!(got.iter().all(|&f| f < 130));
-        assert_eq!(bitmap.free_count(), 0);
-    }
-
-    #[test]
-    fn free_detects_double_free_and_range_errors() {
-        let mut storage = vec![0; 1];
-        let mut bitmap = FrameBitmap::new(&mut storage, 64);
-        bitmap.release_range(0, 64);
-        let frame = bitmap.allocate().unwrap();
-        assert_eq!(bitmap.free(frame), Ok(()));
-        assert_eq!(bitmap.free(frame), Err(FrameError::DoubleFree));
-        assert_eq!(bitmap.free(64), Err(FrameError::OutOfRange));
-        assert_eq!(bitmap.free_count(), 64);
-    }
-
-    #[test]
-    fn contiguous_allocation_skips_holes_and_honours_alignment() {
-        let mut storage = vec![0; FrameBitmap::words_for(256)];
-        let mut bitmap = FrameBitmap::new(&mut storage, 256);
-        bitmap.release_range(0, 256);
-        bitmap.reserve_range(5, 1); // a hole at frame 5
-        assert_eq!(bitmap.allocate_contiguous(8, 1), Some(6));
-        assert_eq!(bitmap.allocate_contiguous(4, 1), Some(0));
-        assert_eq!(bitmap.allocate_contiguous(16, 16), Some(16));
-        assert_eq!(bitmap.free_count(), 256 - 1 - 8 - 4 - 16);
-        assert!((16..32).all(|f| !bitmap.is_free(f)));
-        assert_eq!(bitmap.allocate_contiguous(1000, 1), None);
-        assert_eq!(bitmap.allocate_contiguous(0, 1), None);
-    }
-
-    #[test]
-    fn contiguous_free_restores_and_rejects_bad_ranges() {
-        let mut storage = vec![0; FrameBitmap::words_for(64)];
-        let mut bitmap = FrameBitmap::new(&mut storage, 64);
-        bitmap.release_range(0, 64);
-        let first = bitmap.allocate_contiguous(10, 2).unwrap();
-        assert_eq!(bitmap.free_contiguous(first, 10), Ok(()));
-        assert_eq!(bitmap.free_count(), 64);
-        assert_eq!(
-            bitmap.free_contiguous(first, 10),
-            Err(FrameError::DoubleFree)
-        );
-        assert_eq!(bitmap.free_contiguous(60, 10), Err(FrameError::OutOfRange));
-    }
-
-    #[test]
-    fn reuses_freed_frames_without_leaking() {
-        let mut storage = vec![0; FrameBitmap::words_for(256)];
-        let mut bitmap = FrameBitmap::new(&mut storage, 256);
-        bitmap.release_range(1, 255);
-        let before = bitmap.free_count();
-        for _ in 0..10_000 {
-            let a = bitmap.allocate().unwrap();
-            let b = bitmap.allocate().unwrap();
-            bitmap.free(a).unwrap();
-            bitmap.free(b).unwrap();
-        }
-        assert_eq!(bitmap.free_count(), before);
-        assert!(!bitmap.is_free(0));
-    }
-}
+mod tests;

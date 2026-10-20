@@ -94,7 +94,7 @@ pub extern "C" fn trap_dispatch(frame: &mut TrapFrame) {
     match frame.vector {
         v if v == u64::from(apic::TIMER_VECTOR) => {
             timer::on_tick();
-            process::on_tick();
+            process::burst::on_tick();
             apic::end_of_interrupt();
             threads::on_tick();
         }

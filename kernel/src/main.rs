@@ -19,9 +19,11 @@ extern crate alloc;
 
 mod apic;
 mod backtrace;
+mod bigmap_tests;
 mod blk_tests;
 mod boot_manifest;
 mod build_service;
+mod compute_tests;
 mod console;
 mod cpu;
 mod edit_mode;
@@ -65,6 +67,7 @@ mod smp_tests;
 #[cfg(feature = "spikes")]
 mod spikes;
 mod terminal;
+mod thread_tests;
 mod threads;
 mod timer;
 mod virtio;
@@ -220,16 +223,13 @@ extern "C" fn boot_continue() -> ! {
             on_off(features.smep),
             on_off(features.smap),
             on_off(features.umip),
-            if fpu::xcr0() & cpufeat::XCR0_AVX != 0 {
-                "x87, SSE and AVX"
-            } else {
-                "x87 and SSE"
-            },
+            fpu::state_name(),
             fpu::xcr0(),
             fpu::area_size()
         ),
         Err(message) => fail(message),
     }
+    log!("{}", fpu::features_line());
     let platform = init_devices();
     if let Err(message) = threads::init() {
         fail(message);
@@ -277,6 +277,11 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::LocalScript => run_case(|| local_tests::check_script(cmdline())),
         SelfTest::Fpu => run_case(fpu_tests::fpu_check),
         SelfTest::Probe => run_case(fpu_tests::probe_check),
+        SelfTest::Threads => run_case(thread_tests::check),
+        SelfTest::ThreadsKill => run_case(thread_tests::kill_check),
+        SelfTest::Matvec => run_case(compute_tests::matvec_check),
+        SelfTest::ComputeKeys => run_case(compute_tests::keys_check),
+        SelfTest::Bigmap => run_case(bigmap_tests::check),
         SelfTest::Boot | SelfTest::None => {}
     }
 

@@ -28,6 +28,16 @@ pub fn wake(tid: Tid) {
     }
 }
 
+/// Wakes each of `tids`, those another CPU owns first: waking one this CPU owns
+/// may switch to it at once, and the others would wait for the waker to run again.
+/// Interrupts must be off.
+pub fn wake_all(tids: impl Iterator<Item = Tid> + Clone) {
+    let me = percpu::index();
+    let mine = |tid: &Tid| OWNER[*tid].load(Ordering::Acquire) == me;
+    tids.clone().filter(|tid| !mine(tid)).for_each(wake);
+    tids.filter(mine).for_each(wake);
+}
+
 /// Reschedule-interrupt handler body.
 pub fn on_reschedule_ipi() {
     reschedule_here();

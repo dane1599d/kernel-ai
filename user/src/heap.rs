@@ -16,7 +16,9 @@ pub struct Brk {
     end: Option<NonNull<u8>>,
 }
 
-// SAFETY: a ring-3 program has one thread, and nothing is shared with another.
+// SAFETY: `Brk` lives inside the allocator's lock (TalcLock over a spin mutex), so
+// with worker threads (L6) only one thread at a time touches it, and the kernel
+// grows the heap one BRK call at a time; nothing in it is tied to a thread.
 unsafe impl Send for Brk {}
 
 // SAFETY: acquire only makes system calls and uses the `talc` it is given.

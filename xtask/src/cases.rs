@@ -34,6 +34,9 @@ pub struct TestCase {
     /// Boot with the mock LLM server on the command line (`llm=`). Without it, the
     /// case also fails if the mock gets any request while it runs.
     pub server: bool,
+    /// Guest memory in MiB when the case needs more than its disk does (`bigmap`
+    /// needs RAM above 4 GiB); `--mem` still wins if larger.
+    pub memory_mib: Option<u64>,
 }
 
 const fn case(name: &'static str, cmdline: &'static str) -> TestCase {
@@ -48,6 +51,7 @@ const fn case(name: &'static str, cmdline: &'static str) -> TestCase {
         min_timeout: None,
         disk: None,
         server: true,
+        memory_mib: None,
     }
 }
 
@@ -205,6 +209,22 @@ pub const TEST_CASES: &[TestCase] = &[
         server: false,
         expect: &["live: :why notes was answered by the local model"],
         ..case("live-local", "test=live")
+    },
+    // L6: worker threads in one address space.
+    case("threads", "test=threads"),
+    case("threads-kill", "test=threads-kill"),
+    case("matvec", "test=matvec"),
+    // The graft: the model window past 4 GiB, with RAM above 4 GiB for its copies.
+    TestCase {
+        disk: Some(Fixture::Gguf),
+        memory_mib: Some(4608),
+        expect: &["bigmap: 3 readers read past 4 GiB of the window"],
+        ..case("bigmap", "test=bigmap")
+    },
+    // The graft: keys still echo while every vCPU computes in ring 3.
+    TestCase {
+        keys: &[KAI],
+        ..case("compute-keys", "test=compute-keys")
     },
 ];
 

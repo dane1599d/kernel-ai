@@ -274,9 +274,11 @@ pub fn spawn_service(slot: usize, request_ptr: u64) -> Result<u64, Error> {
     if request.limits.caps & cap::PUBLISH != 0 && (name != PUBLISHER || program != PUBLISHER) {
         return Err(Error::Permission);
     }
-    // The model is mapped only into the llm service.
+    // The model is mapped, and worker threads run, only in the llm service.
     let holder = crate::model::HOLDER;
-    if request.limits.caps & cap::MODEL != 0 && (name != holder || program != holder) {
+    if request.limits.caps & (cap::MODEL | cap::THREADS) != 0
+        && (name != holder || program != holder)
+    {
         return Err(Error::Permission);
     }
     let limits = Limits {

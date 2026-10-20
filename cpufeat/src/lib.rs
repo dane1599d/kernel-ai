@@ -14,36 +14,48 @@ pub const XCR0_AVX: u64 = 1 << 2;
 pub const XCR0_OPMASK: u64 = 1 << 5;
 pub const XCR0_ZMM_HI256: u64 = 1 << 6;
 pub const XCR0_HI16_ZMM: u64 = 1 << 7;
+/// The three AVX-512 components, which XSETBV takes only all together, with AVX.
+pub const XCR0_AVX512: u64 = XCR0_OPMASK | XCR0_ZMM_HI256 | XCR0_HI16_ZMM;
 const YMM_STATE: u64 = XCR0_SSE | XCR0_AVX;
-const ZMM_STATE: u64 = YMM_STATE | XCR0_OPMASK | XCR0_ZMM_HI256 | XCR0_HI16_ZMM;
+const ZMM_STATE: u64 = YMM_STATE | XCR0_AVX512;
 /// Bytes every XSAVE area starts with: the 512-byte legacy region (x87, MXCSR and
 /// xmm) and the 64-byte header.
 pub const XSAVE_LEGACY_AND_HEADER: usize = 576;
 
-/// The XCR0 the kernel turns on for ring 3: x87 and SSE, plus AVX when the CPU can
-/// save it. AVX-512 (L6) and every other component stay off. `supported` is
+/// The XCR0 the kernel turns on for ring 3: x87 and SSE; AVX when the CPU can save
+/// it; and AVX-512's opmask and zmm components when it can save all three, which
+/// gives 0xE7. Every other component (MPX, PKRU, AMX) stays off. `supported` is
 /// CPUID.(0xD,0) EDX:EAX; None when XSAVE cannot hold x87 and SSE state at all.
+/// XSETBV faults on bits 5-7 set without AVX, or set only in part, so neither is
+/// ever returned.
 pub fn ring3_xcr0(supported: u64) -> Option<u64> {
     let base = XCR0_X87 | XCR0_SSE;
-    (supported & base == base).then_some(supported & (base | XCR0_AVX))
+    if supported & base != base {
+        return None;
+    }
+    let avx = supported & XCR0_AVX != 0;
+    let avx512 = avx && supported & XCR0_AVX512 == XCR0_AVX512;
+    Some(base | if avx { XCR0_AVX } else { 0 } | if avx512 { XCR0_AVX512 } else { 0 })
 }
 
 /// The XSAVE area size an OS may trust for `xcr0`: `reported` is CPUID.(0xD,0) EBX
-/// read after XSETBV, `avx_end` is AVX's offset plus size (CPUID.(0xD,2) EBX + EAX),
-/// and `room` is what the OS reserved per thread. The area must hold the legacy
-/// region and header, and AVX's component when AVX is on, and fit in `room`.
+/// read after XSETBV, `extended_end` is where the last enabled component above SSE
+/// ends (the largest CPUID.(0xD,i) EBX + EAX over those components, 0 if none), and
+/// `room` is what the OS reserved per thread. The area must hold the legacy region
+/// and header and every enabled component, and fit in `room`.
 pub fn xsave_area_bytes(
     xcr0: u64,
     reported: u32,
-    avx_end: u32,
+    extended_end: u32,
     room: usize,
 ) -> Result<usize, &'static str> {
     let size = usize::try_from(reported).map_err(|_| "cpu: XSAVE area size overflows")?;
-    let avx_end = usize::try_from(avx_end).map_err(|_| "cpu: XSAVE AVX offset overflows")?;
+    let end = usize::try_from(extended_end).map_err(|_| "cpu: XSAVE offset overflows")?;
+    let extended = xcr0 & !(XCR0_X87 | XCR0_SSE) != 0;
     if size < XSAVE_LEGACY_AND_HEADER {
         Err("cpu: XSAVE area is smaller than its legacy region and header")
-    } else if xcr0 & XCR0_AVX != 0 && (avx_end <= XSAVE_LEGACY_AND_HEADER || size < avx_end) {
-        Err("cpu: XSAVE area does not hold the AVX state")
+    } else if extended && (end <= XSAVE_LEGACY_AND_HEADER || size < end) {
+        Err("cpu: XSAVE area does not hold every enabled component")
     } else if size > room {
         Err("cpu: XSAVE area is larger than the space reserved per thread")
     } else {
@@ -150,15 +162,26 @@ impl Features {
     /// SSE2 is listed from CPUID alone: CR4.OSFXSR, which SSE also needs, cannot be
     /// seen from ring 3.
     pub fn usable(&self) -> impl Iterator<Item = &'static str> {
+        let (ymm, zmm) = (self.ymm_enabled(), self.zmm_enabled());
+        self.sets(ymm, zmm)
+    }
+
+    /// Names of the vector instruction sets CPUID reports, whether or not the OS
+    /// saves their registers.
+    pub fn offered(&self) -> impl Iterator<Item = &'static str> {
+        self.sets(true, true)
+    }
+
+    fn sets(&self, ymm: bool, zmm: bool) -> impl Iterator<Item = &'static str> {
         let list = [
             ("sse2", self.sse2),
-            ("avx", self.avx && self.ymm_enabled()),
-            ("avx2", self.avx2 && self.ymm_enabled()),
-            ("fma", self.fma && self.ymm_enabled()),
-            ("f16c", self.f16c && self.ymm_enabled()),
-            ("avx512f", self.avx512f && self.zmm_enabled()),
-            ("avx512bw", self.avx512bw && self.zmm_enabled()),
-            ("avx512vnni", self.avx512vnni && self.zmm_enabled()),
+            ("avx", self.avx && ymm),
+            ("avx2", self.avx2 && ymm),
+            ("fma", self.fma && ymm),
+            ("f16c", self.f16c && ymm),
+            ("avx512f", self.avx512f && zmm),
+            ("avx512bw", self.avx512bw && zmm),
+            ("avx512vnni", self.avx512vnni && zmm),
         ];
         list.into_iter().filter(|(_, on)| *on).map(|(name, _)| name)
     }
@@ -268,10 +291,17 @@ mod tests {
     }
 
     #[test]
-    fn ring3_gets_x87_sse_and_avx_but_never_avx512() {
-        let everything = XCR0_X87 | YMM_STATE | ZMM_STATE | (1 << 9);
-        assert_eq!(ring3_xcr0(everything), Some(XCR0_X87 | XCR0_SSE | XCR0_AVX));
-        assert_eq!(ring3_xcr0(XCR0_X87 | XCR0_SSE), Some(XCR0_X87 | XCR0_SSE));
+    fn ring3_gets_avx512_only_with_all_its_components_and_avx() {
+        let x87_sse = XCR0_X87 | XCR0_SSE;
+        // PKRU (bit 9) and MPX (bits 3-4) are never turned on.
+        let everything = XCR0_X87 | ZMM_STATE | (1 << 9) | (3 << 3);
+        assert_eq!(ring3_xcr0(everything), Some(0xE7));
+        assert_eq!(ring3_xcr0(XCR0_X87 | YMM_STATE), Some(0x7));
+        assert_eq!(ring3_xcr0(x87_sse), Some(x87_sse));
+        // Only part of AVX-512's state, or AVX-512 without AVX: no AVX-512.
+        let part = XCR0_X87 | YMM_STATE | XCR0_OPMASK | XCR0_ZMM_HI256;
+        assert_eq!(ring3_xcr0(part), Some(0x7));
+        assert_eq!(ring3_xcr0(x87_sse | XCR0_AVX512), Some(x87_sse));
         assert_eq!(ring3_xcr0(XCR0_X87 | XCR0_AVX), None);
         assert_eq!(ring3_xcr0(XCR0_SSE), None);
         assert_eq!(ring3_xcr0(0), None);
@@ -279,17 +309,39 @@ mod tests {
 
     #[test]
     fn xsave_sizes_are_checked_before_use() {
+        let zmm = 0xE7;
         let ymm = XCR0_X87 | YMM_STATE;
         let xmm = XCR0_X87 | XCR0_SSE;
         assert_eq!(xsave_area_bytes(ymm, 832, 832, 4096), Ok(832));
         assert_eq!(xsave_area_bytes(xmm, 576, 0, 4096), Ok(576));
-        // AVX-512's standard-format size on the 7700X still fits a 4 KiB slot.
-        assert_eq!(xsave_area_bytes(ymm, 2432, 832, 4096), Ok(2432));
+        // AMD Zen 4 (the 7700X, EPYC 9V74): Hi16_ZMM ends at 1408 + 1024.
+        assert_eq!(xsave_area_bytes(zmm, 2432, 2432, 4096), Ok(2432));
+        // Intel leaves MPX's 128 bytes in the standard layout: it ends at 2688.
+        assert_eq!(xsave_area_bytes(zmm, 2688, 2688, 4096), Ok(2688));
+        // A reported size short of the last component is refused.
+        assert!(xsave_area_bytes(zmm, 2432, 2688, 4096).is_err());
+        assert!(xsave_area_bytes(zmm, 832, 0, 4096).is_err());
         assert!(xsave_area_bytes(xmm, 512, 0, 4096).is_err());
         assert!(xsave_area_bytes(ymm, 576, 832, 4096).is_err());
         assert!(xsave_area_bytes(ymm, 832, 0, 4096).is_err());
         assert!(xsave_area_bytes(ymm, 8192, 832, 4096).is_err());
         assert!(xsave_area_bytes(ymm, 4097, 832, 4096).is_err());
+    }
+
+    #[test]
+    fn offered_lists_cpuid_even_when_the_os_saves_nothing() {
+        let cpu = Features {
+            sse2: true,
+            avx2: true,
+            avx512f: true,
+            xcr0: XCR0_X87 | XCR0_SSE,
+            ..Features::default()
+        };
+        assert_eq!(
+            cpu.offered().collect::<Vec<_>>(),
+            ["sse2", "avx2", "avx512f"]
+        );
+        assert_eq!(cpu.usable().collect::<Vec<_>>(), ["sse2"]);
     }
 
     #[test]

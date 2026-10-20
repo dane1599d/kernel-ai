@@ -59,6 +59,22 @@ fn spawn_hogs(count: usize) -> Result<[Tid; HOGS], &'static str> {
     Ok(tids)
 }
 
+/// Starts the interactive thread (pinned to `cpu` if given), says it is ready for
+/// keys, and waits up to 30 s for the typed line; returns the keyboard's wake-ups
+/// and its worst wake latency so far. `who` prefixes the log line.
+pub(crate) fn typed_line(cpu: Option<usize>, who: &str) -> Result<(u64, u64), &'static str> {
+    match cpu {
+        Some(cpu) => threads::spawn_pinned(cpu, "typist", typist, 0)?,
+        None => threads::spawn("typist", typist, 0)?,
+    };
+    threads::sleep_ms(100);
+    log!("{who}: ready for keys");
+    if !wait_for(|| TYPED_LINE_DONE.load(Ordering::SeqCst), 30_000) {
+        return Err("the typed line never reached the interactive thread");
+    }
+    Ok(i8042::wake_latency())
+}
+
 /// The interactive thread: blocks on the keyboard and records its wake latency.
 fn typist(_: usize) {
     let mut decoder = Decoder::new();

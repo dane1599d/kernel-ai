@@ -1,8 +1,8 @@
 //! Build and run tool for Kernel AI.
 //!
 //! cargo xtask build [--release] [--spikes]
-//! cargo xtask run   [--release] [--spikes] [--accel auto|kvm|whpx|tcg] [--llm IP:PORT] [--model NAME] [--edit] [--model-disk PATH | --local ID [--store DIR]]
-//! cargo xtask test  [--release] [--accel auto|kvm|whpx|tcg] [--timeout SECS]
+//! cargo xtask run   [--release] [--spikes] [--accel auto|kvm|whpx|tcg] [--cpus N] [--mem SIZE] [--llm IP:PORT] [--model NAME] [--edit] [--model-disk PATH | --local ID [--store DIR]]
+//! cargo xtask test  [--release] [--accel auto|kvm|whpx|tcg] [--timeout SECS] [--cpus N] [--mem SIZE]
 //! cargo xtask soak  [--accel auto|kvm|whpx|tcg]   (10-minute storm, M5 exit test)
 //! cargo xtask smoke   (the live, edit and boot manifest scenarios on the host only, no QEMU)
 //! cargo xtask fluency --llm HOST:PORT --model NAME [--repeat N]   (M8b script gate, host only)
@@ -138,7 +138,7 @@ fn execute(options: &Options) -> Result<(), String> {
         };
         esp::make_esp(&esp, &kernel, &modules, &efi, &cmdline)?;
         let firmware = find_firmware(&qemu, &target_dir)?;
-        let args = qemu::args(&firmware, accel, false, disk.as_ref());
+        let args = qemu::args(&firmware, accel, false, disk.as_ref(), options.sizing);
         println!("xtask: {} {}", qemu.display(), args.join(" "));
         return qemu::run_interactive(&qemu, &args, &target_dir);
     }
@@ -187,7 +187,11 @@ fn execute(options: &Options) -> Result<(), String> {
         modules.truncate(shared);
         let firmware = find_firmware(&qemu, &target_dir)?;
         let monitor = qemu::free_port()?;
-        let mut args = qemu::args(&firmware, accel, true, disk.as_ref());
+        let sizing = options::Sizing {
+            mem_mib: options.sizing.mem_mib.max(case.memory_mib),
+            ..options.sizing
+        };
+        let mut args = qemu::args(&firmware, accel, true, disk.as_ref(), sizing);
         args.push("-monitor".into());
         args.push(format!("tcp:127.0.0.1:{monitor},server=on,wait=off"));
         let run = qemu::TestRun {
@@ -456,9 +460,23 @@ mod tests {
             code: PathBuf::from("code.fd"),
             vars: PathBuf::from("target/ovmf-vars.fd"),
         };
-        let list = qemu::args(&firmware, Accel::Tcg, true, None);
+        let list = qemu::args(&firmware, Accel::Tcg, true, None, Default::default());
         assert!(list.contains(&"format=raw,file=fat:rw:esp".to_string()));
         assert!(list.windows(2).any(|w| w[0] == "-m" && w[1] == "512M"));
+        let sized = options::Sizing {
+            cpus: Some(8),
+            mem_mib: Some(6144),
+        };
+        let big = qemu::args(&firmware, Accel::Kvm, true, None, sized);
+        assert!(big.windows(2).any(|w| w[0] == "-m" && w[1] == "6144M"));
+        assert!(big.windows(2).any(|w| w[0] == "-smp" && w[1] == "8"));
+        let small = options::Sizing {
+            cpus: None,
+            mem_mib: Some(256),
+        };
+        // Never below what the base system (or a model disk) needs.
+        let floor = qemu::args(&firmware, Accel::Kvm, true, None, small);
+        assert!(floor.windows(2).any(|w| w[0] == "-m" && w[1] == "512M"));
         assert!(!list.iter().any(|arg| arg == "-blockdev"));
         assert!(list.contains(&"isa-debug-exit,iobase=0xf4,iosize=0x04".to_string()));
         assert!(list.windows(2).any(|w| w[0] == "-accel" && w[1] == "tcg"));

@@ -44,7 +44,25 @@ pub struct Options {
     pub local: Option<String>,
     /// `run --store DIR`: the model store `--local` reads, as `setup --store`.
     pub store: Option<String>,
+    /// `--cpus N` and `--mem SIZE`: the VM's vCPUs and memory, for `run`, `test`
+    /// and `soak`.
+    pub sizing: Sizing,
 }
+
+/// The VM's size when given on the command line; xtask's defaults otherwise.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Sizing {
+    /// vCPUs, 1 to the kernel's MAX_CPUS (8).
+    pub cpus: Option<usize>,
+    /// Guest memory in MiB; a model disk's need is a floor under it.
+    pub mem_mib: Option<u64>,
+}
+
+/// The kernel brings up at most this many CPUs (`kernel/src/percpu.rs` MAX_CPUS).
+pub const MAX_VM_CPUS: usize = 8;
+/// Guest memory bounds for `--mem`, in MiB.
+const MIN_MEM_MIB: u64 = 256;
+const MAX_MEM_MIB: u64 = 1 << 20;
 
 pub fn parse_args(args: &[String]) -> Result<Options, String> {
     let task = match args.first().map(String::as_str) {
@@ -75,6 +93,7 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
         model_disk: None,
         local: None,
         store: None,
+        sizing: Sizing::default(),
     };
     let mut rest = args[1..].iter();
     while let Some(arg) = rest.next() {
@@ -125,6 +144,20 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
                 let dir = rest.next().ok_or("--store expects a directory")?;
                 options.store = Some(dir.clone());
             }
+            "--cpus" if task != Task::Build && task != Task::Smoke => {
+                let cpus = rest
+                    .next()
+                    .and_then(|n| n.parse::<usize>().ok())
+                    .filter(|n| (1..=MAX_VM_CPUS).contains(n))
+                    .ok_or(format!("--cpus expects 1 to {MAX_VM_CPUS}"))?;
+                options.sizing.cpus = Some(cpus);
+            }
+            "--mem" if task != Task::Build && task != Task::Smoke => {
+                let size = rest
+                    .next()
+                    .ok_or("--mem expects a size such as 6G or 2048M")?;
+                options.sizing.mem_mib = Some(parse_mem(size)?);
+            }
             "--model" => {
                 let model = rest.next().ok_or("--model expects a model name")?;
                 if model.is_empty() || model.chars().any(char::is_whitespace) {
@@ -142,6 +175,24 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
         return Err("--store names where --local finds its model; give --local too".into());
     }
     Ok(options)
+}
+
+/// A memory size in MiB: `2048`, `2048M` or `6G` (any case).
+fn parse_mem(text: &str) -> Result<u64, String> {
+    let lower = text.to_ascii_lowercase();
+    let (digits, scale) = match lower.strip_suffix('g') {
+        Some(digits) => (digits, 1024),
+        None => (lower.strip_suffix('m').unwrap_or(&lower), 1),
+    };
+    digits
+        .parse::<u64>()
+        .ok()
+        .and_then(|n| n.checked_mul(scale))
+        .filter(|mib| (MIN_MEM_MIB..=MAX_MEM_MIB).contains(mib))
+        .ok_or(format!(
+            "--mem expects {MIN_MEM_MIB}M to {}G, such as 6G or 2048M, got {text:?}",
+            MAX_MEM_MIB / 1024
+        ))
 }
 
 /// IPv4 address and port, for example 192.168.1.50:8080. The kernel has no DNS.
@@ -229,6 +280,38 @@ mod tests {
         ];
         let options = parse_args(&args(&server)).unwrap();
         assert_eq!(options.model.as_deref(), Some("q"));
+    }
+
+    #[test]
+    fn cpus_and_mem_size_the_vm_for_run_and_test() {
+        let options = parse_args(&args(&["test", "--cpus", "8", "--mem", "6G"])).unwrap();
+        assert_eq!(
+            options.sizing,
+            Sizing {
+                cpus: Some(8),
+                mem_mib: Some(6144)
+            }
+        );
+        let run = parse_args(&args(&["run", "--mem", "2048"])).unwrap();
+        assert_eq!(run.sizing.mem_mib, Some(2048));
+        assert_eq!(parse_mem("512m"), Ok(512));
+        assert_eq!(
+            parse_args(&args(&["run"])).unwrap().sizing,
+            Sizing::default()
+        );
+        for bad in [
+            ["--cpus", "0"],
+            ["--cpus", "9"],
+            ["--mem", "100M"],
+            ["--mem", "x"],
+        ] {
+            assert!(
+                parse_args(&args(&["run", bad[0], bad[1]])).is_err(),
+                "{bad:?}"
+            );
+        }
+        assert!(parse_args(&args(&["build", "--cpus", "2"])).is_err());
+        assert!(parse_args(&args(&["run", "--mem"])).is_err());
     }
 
     #[test]

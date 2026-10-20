@@ -1,48 +1,56 @@
-//! Ring-3 processes: one single-threaded process per kernel thread, each with its
-//! own address space, limits and capabilities.
+//! Ring-3 processes, each with its own address space, limits and capabilities, a
+//! main thread and, since L6, up to `kabi::thread::MAX_WORKERS` worker threads
+//! (`workers.rs`), each a kernel thread.
 //!
 //! Life of a process: `spawn` fills a table slot and starts a kernel thread running
-//! `process_main`, which loads the program and enters ring 3. Every way out goes
-//! through `exit_current` on the process's own thread with interrupts on: it fails
-//! the process's IPC calls, moves the thread to the kernel page tables, frees every
-//! user frame, then reports the exit to whoever supervises it.
+//! `process_main`, which loads the program and enters ring 3. Every thread leaves
+//! through `exit_current` on itself with interrupts on: it moves to the kernel page
+//! tables and leaves the process's thread count. The last one out fails the
+//! process's IPC calls, frees every user frame, then reports the exit to whoever
+//! supervises it.
 //!
 //! Killing is asynchronous and lock-free: `request_kill` records the first reason in
-//! per-slot atomics and wakes the thread. The thread acts on it when it next returns
-//! to ring 3 (a timer tick at most a millisecond later if it is spinning) or when a
-//! blocking system call sees it.
+//! per-slot atomics; `kill`, and any thread leaving a killed process, wakes every
+//! thread. Each acts on it when it next returns to ring 3 (a timer tick at most a
+//! millisecond later if it is spinning) or when a blocking system call sees it.
 //!
 //! Lock rules: the TABLE lock is held with preemption off and never across `wake`,
 //! a context switch or `memory::with`. A slot's SPACE lock is only taken by the
-//! process's own thread, before MEMORY.
+//! process's own threads, with preemption on, before TABLE and MEMORY.
 
+pub mod burst;
 pub mod components;
 mod exit;
+pub mod futex;
 mod loader;
 pub mod programs;
 pub mod supervision;
 pub mod syscall;
 pub mod uaccess;
+pub mod workers;
 
+pub use burst::blocked;
 pub use exit::{exit_current, exit_with};
-pub use loader::{grow_heap, map_shared};
+pub use loader::{grow_heap, link_window};
 
 use crate::entry::TrapFrame;
 use crate::gdt::{USER_CODE, USER_DATA};
 use crate::memory::user::{MIN_USER_ADDRESS, UserSpace};
-use crate::{hpet, percpu, threads};
+use crate::{percpu, threads};
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use kabi::layout::{HEAP_BASE, USER_END};
+use kabi::thread::MAX_WORKERS;
 use kabi::{ExitReason, Limits, MAX_ARGS, MAX_NAME};
 use loader::process_main;
 use mm::PAGE_SIZE;
 use sched::{MAX_THREADS, Tid};
 use spin::Mutex;
+use workers::Worker;
 use x86_64::instructions::interrupts;
 
 pub const MAX_PROCESSES: usize = 16;
 /// Most pages one process may be granted: 512 MiB, enough for the llm service's
-/// local engine, its 2,048-position KV cache, with a model's page tables
+/// local engine with its 2,048-position KV cache and a pool of workers
 /// (`model::holder_pages`).
 pub const MAX_PAGES_PER_PROCESS: u64 = 128 * 1024;
 
@@ -106,7 +114,15 @@ pub struct Process {
     args: [u8; MAX_ARGS],
     args_len: usize,
     pub limits: Limits,
+    /// The main thread.
     pub tid: Option<Tid>,
+    /// Worker threads by index (`kabi::thread`).
+    pub workers: [Worker; MAX_WORKERS],
+    /// Threads counted in the process: the main thread and every worker from the
+    /// moment THREAD_SPAWN reserves it. The thread that takes it to 0 tears down.
+    pub live_threads: u32,
+    /// The address space's PML4, once loaded, for workers to enter.
+    pub cr3: u64,
     /// The supervisor itself, which the kernel restarts.
     pub supervisor: bool,
     /// The pid that spawned it (0 for the kernel).
@@ -130,6 +146,9 @@ impl Process {
             stack_pages: 0,
         },
         tid: None,
+        workers: [Worker::FREE; MAX_WORKERS],
+        live_threads: 0,
+        cr3: 0,
         supervisor: false,
         spawner: 0,
         heap_end: HEAP_BASE,
@@ -157,9 +176,6 @@ static SLOT_OF_TID: [AtomicUsize; MAX_THREADS] = [const { AtomicUsize::new(0) };
 /// Kill reason plus one (0 = none); the first reason wins.
 static KILL: [AtomicU8; MAX_PROCESSES] = [const { AtomicU8::new(0) }; MAX_PROCESSES];
 static KILL_DETAIL: [AtomicU64; MAX_PROCESSES] = [const { AtomicU64::new(0) }; MAX_PROCESSES];
-/// CPU time since the process last blocked, and the limit on it.
-static BURST_NS: [AtomicU64; MAX_PROCESSES] = [const { AtomicU64::new(0) }; MAX_PROCESSES];
-static BURST_LIMIT_NS: [AtomicU64; MAX_PROCESSES] = [const { AtomicU64::new(0) }; MAX_PROCESSES];
 /// Set when the user presses Ctrl-C for this process; `interrupted` reads and clears it.
 static INTERRUPT: [AtomicBool; MAX_PROCESSES] = [const { AtomicBool::new(false) }; MAX_PROCESSES];
 
@@ -215,50 +231,31 @@ pub fn request_kill(slot: usize, reason: ExitReason, detail: u64) -> bool {
     set
 }
 
-/// Kills the process `pid` from another thread and wakes it if it is blocked.
+/// Kills the process `pid` from another thread and wakes every thread it has.
 pub fn kill(pid: u64, reason: ExitReason) -> Result<(), kabi::Error> {
-    let found = with_table(|table| {
-        table
+    // The reason is recorded and the threads copied in one critical section: a
+    // worker registering later sees the kill itself, and a thread checking for it
+    // under its core lock either sees it or is woken.
+    let tids = with_table(|table| {
+        let slot = table
             .iter()
-            .position(|p| p.live() && p.pid == pid && p.state != State::Exiting)
-            .map(|slot| (slot, table[slot].tid))
+            .position(|p| p.live() && p.pid == pid && p.state != State::Exiting)?;
+        request_kill(slot, reason, 0);
+        Some(table[slot].thread_tids())
     });
-    let (slot, tid) = found.ok_or(kabi::Error::NotFound)?;
-    request_kill(slot, reason, 0);
-    // The reason is published before the wake, so a thread checking it under its
-    // core lock either sees it or is woken.
-    if let Some(tid) = tid {
-        interrupts::without_interrupts(|| threads::wake(tid));
-    }
+    workers::wake_all(&tids.ok_or(kabi::Error::NotFound)?);
     Ok(())
 }
 
-/// Charges CPU time since the last charge on this CPU to `tid`. Interrupts are off
-/// (called on every context switch and every tick).
-pub fn charge(tid: Tid) {
-    let now = hpet::nanos();
-    let since = percpu::this().charged_at_ns.swap(now, Ordering::Relaxed);
-    let Some(slot) = slot_of(tid) else {
-        return;
-    };
-    let used = now.saturating_sub(since);
-    let burst = BURST_NS[slot].fetch_add(used, Ordering::Relaxed) + used;
-    let limit = BURST_LIMIT_NS[slot].load(Ordering::Relaxed);
-    if limit != 0 && burst > limit {
-        request_kill(slot, ExitReason::Runaway, limit / 1_000_000);
-    }
-}
-
-/// Timer-tick hook: charges the running thread.
-pub fn on_tick() {
-    charge(threads::current_tid());
-}
-
-/// The thread `tid` just came back from blocking or sleeping: its burst starts over.
-pub fn blocked(tid: Tid) {
-    if let Some(slot) = slot_of(tid) {
-        BURST_NS[slot].store(0, Ordering::Relaxed);
-    }
+/// How many threads the live process `pid` has running (0 when it is gone), for
+/// the tests.
+pub fn thread_count(pid: u64) -> usize {
+    with_table(|table| {
+        table
+            .iter()
+            .find(|p| p.live() && p.pid == pid)
+            .map_or(0, Process::thread_count)
+    })
 }
 
 /// RFLAGS bits ring 3 may keep: CF, PF, AF, ZF, SF, TF, DF, OF, RF and AC.
@@ -316,8 +313,10 @@ pub fn user_fault(frame: &TrapFrame) -> ! {
         address,
         rip: frame.rip,
     };
-    with_table(|table| table[slot].crash = Some(crash));
-    request_kill(slot, ExitReason::Crashed, frame.vector);
+    // Only the fault whose kill counts is reported, when threads fault at once.
+    if request_kill(slot, ExitReason::Crashed, frame.vector) {
+        with_table(|table| table[slot].crash = Some(crash));
+    }
     die()
 }
 
@@ -372,6 +371,7 @@ pub fn spawn(request: &SpawnRequest) -> Result<u64, kabi::Error> {
             name,
             program,
             limits: request.limits,
+            live_threads: 1,
             supervisor: request.supervisor,
             spawner: request.spawner,
             ..Process::FREE
@@ -382,11 +382,7 @@ pub fn spawn(request: &SpawnRequest) -> Result<u64, kabi::Error> {
         KILL[slot].store(0, Ordering::SeqCst);
         KILL_DETAIL[slot].store(0, Ordering::SeqCst);
         INTERRUPT[slot].store(false, Ordering::SeqCst);
-        BURST_NS[slot].store(0, Ordering::Relaxed);
-        BURST_LIMIT_NS[slot].store(
-            request.limits.max_burst_ms.saturating_mul(1_000_000),
-            Ordering::Relaxed,
-        );
+        burst::start_process(slot, request.limits.max_burst_ms);
         Ok((slot, pid))
     })?;
     if threads::spawn("user", process_main, slot).is_err() {

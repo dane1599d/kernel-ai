@@ -12,7 +12,9 @@ mod context;
 mod preempt;
 
 pub use context::{enter_address_space, leave_address_space};
-pub use preempt::{migrations, on_reschedule_ipi, on_tick, preempt_disable, preempt_enable, wake};
+pub use preempt::{
+    migrations, on_reschedule_ipi, on_tick, preempt_disable, preempt_enable, wake, wake_all,
+};
 
 use crate::memory::stack::GuardedStack;
 use crate::percpu::{self, MAX_CPUS};
@@ -199,6 +201,14 @@ fn idle_loop(_: usize) {
     loop {
         interrupts::enable_and_hlt();
     }
+}
+
+/// Thread slots in use now, for the tests that check none leaked.
+pub fn in_use() -> usize {
+    IN_USE
+        .iter()
+        .filter(|used| used.load(Ordering::Acquire))
+        .count()
 }
 
 /// The calling thread, without taking a lock. Safe with interrupts on: one load, so

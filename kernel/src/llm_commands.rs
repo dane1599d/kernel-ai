@@ -62,17 +62,8 @@ fn model_command() {
 /// The machine check: the hypervisor, the vector state ring 3 gets, and memory.
 fn machine() {
     let cpu = cpufeat::Features::detect();
-    let host = match cpufeat::hypervisor_signature() {
-        Some(signature) => cpufeat::hypervisor_name(&signature),
-        None if cpu.hypervisor => "a hypervisor that gives no name",
-        None => "no hypervisor (bare metal)",
-    };
-    log!("machine: {host}");
-    let state = if crate::fpu::xcr0() & cpufeat::XCR0_AVX != 0 {
-        "x87, SSE and AVX"
-    } else {
-        "x87 and SSE"
-    };
+    log!("machine: {}", crate::fpu::hypervisor(&cpu));
+    let state = crate::fpu::state_name();
     let tier = if cpu.avx2_fma() {
         "the engine's avx2+fma tier"
     } else {

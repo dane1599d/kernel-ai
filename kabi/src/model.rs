@@ -39,18 +39,14 @@ pub fn check_header(head: &[u8]) -> Result<(), HeaderError> {
     Ok(())
 }
 
-/// Page-table frames that mapping `len` bytes at [`crate::layout::MODEL_BASE`]
-/// takes: the tables of 4 KiB pages, the directories above them, and the one table
-/// under the window's PML4 entry. The window is a whole PML4 slot that holds
-/// nothing else, so the count is exact for a model up to
-/// [`crate::layout::MODEL_MAX`].
+/// Page-table frames of the model's window for `len` bytes (L6): one directory of
+/// 2 MiB pages per GiB and the PDPT above them. The kernel builds them once and
+/// they count against no process.
 pub const fn table_pages(len: u64) -> u64 {
     if len == 0 {
         return 0;
     }
-    let tables = len.div_ceil(4096).div_ceil(512);
-    let directories = tables.div_ceil(512);
-    tables + directories + 1
+    len.div_ceil(1 << 30) + 1
 }
 
 /// Positions of context the llm service's engine holds at most: room for the
@@ -202,14 +198,14 @@ mod tests {
     #[test]
     fn table_pages_count_every_level() {
         assert_eq!(table_pages(0), 0);
-        assert_eq!(table_pages(1), 3);
-        assert_eq!(table_pages(2 * 1024 * 1024), 3);
-        assert_eq!(table_pages(2 * 1024 * 1024 + 1), 4);
-        assert_eq!(table_pages(1024 * 1024 * 1024 + 1), 513 + 2 + 1);
-        // Qwen3-0.6B Q8_0: 156,116 pages in 305 tables under one directory.
-        assert_eq!(table_pages(639_446_688), 305 + 1 + 1);
-        // The largest model: a full slot of 512 directories.
-        assert_eq!(table_pages(crate::layout::MODEL_MAX), 512 * 512 + 512 + 1);
+        assert_eq!(table_pages(1), 2);
+        assert_eq!(table_pages(1 << 30), 2);
+        assert_eq!(table_pages((1 << 30) + 1), 3);
+        // Qwen3-0.6B Q8_0: 305 runs of 2 MiB under one directory.
+        assert_eq!(table_pages(639_446_688), 2);
+        // A 5 GiB model, and the largest: a full slot of 512 directories.
+        assert_eq!(table_pages(5 << 30), 6);
+        assert_eq!(table_pages(crate::layout::MODEL_MAX), 512 + 1);
     }
 
     #[test]

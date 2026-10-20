@@ -1,6 +1,7 @@
 //! Raw system calls. Each wrapper returns the kernel's result decoded by
 //! `kabi::Error::from_raw`.
 
+use core::sync::atomic::AtomicU32;
 use kabi::{CallRequest, Error, ExitRecord, HttpRequest, Metrics, SpawnRequest, call};
 
 /// # Safety
@@ -137,6 +138,49 @@ pub fn svc_reply(bytes: &[u8]) -> Result<u64, Error> {
     call(
         call::SVC_REPLY,
         [bytes.as_ptr() as u64, bytes.len() as u64, 0, 0, 0, 0],
+    )
+}
+
+/// Starts a worker thread running `entry(arg)`, pinned to CPU `cpu`, on a stack of
+/// `stack_pages` pages; returns its index (see `kabi::thread`). `entry` must never
+/// return: a worker ends with [`thread_exit`].
+pub fn thread_spawn(
+    entry: extern "C" fn(u64) -> !,
+    arg: u64,
+    cpu: usize,
+    stack_pages: u64,
+) -> Result<usize, Error> {
+    call(
+        call::THREAD_SPAWN,
+        [entry as usize as u64, arg, cpu as u64, stack_pages, 0, 0],
+    )
+    .map(|index| index as usize)
+}
+
+/// Ends the calling worker thread. Returns only if the kernel refused, with why:
+/// the main thread ends the process with [`exit`] instead.
+pub fn thread_exit() -> Error {
+    match call(call::THREAD_EXIT, [0; 6]) {
+        Err(error) => error,
+        Ok(_) => Error::Invalid,
+    }
+}
+
+/// Sleeps while the word at `word` holds `expected`, until a [`futex_wake`] for it,
+/// `timeout_ms` (0 = no limit) or a kill: Ok(0) when woken, Ok(1) at once when the
+/// word holds something else.
+pub fn futex_wait(word: *const AtomicU32, expected: u32, timeout_ms: u64) -> Result<u64, Error> {
+    call(
+        call::FUTEX_WAIT,
+        [word as u64, u64::from(expected), timeout_ms, 0, 0, 0],
+    )
+}
+
+/// Wakes up to `count` threads of this process waiting on `word`; returns how many.
+pub fn futex_wake(word: *const AtomicU32, count: u32) -> Result<u64, Error> {
+    call(
+        call::FUTEX_WAKE,
+        [word as u64, u64::from(count), 0, 0, 0, 0],
     )
 }
 

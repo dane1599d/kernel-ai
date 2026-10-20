@@ -48,6 +48,16 @@ pub enum SelfTest {
     Fpu,
     /// L2: the isolation probe; ops 0-2 complete and every other op is stopped.
     Probe,
+    /// L6: worker threads start, are refused, filtered and torn down.
+    Threads,
+    /// L6: processes killed mid-run, every thread blocked or computing, free every frame.
+    ThreadsKill,
+    /// L6: a matvec over the thread pool equals the single-thread result.
+    Matvec,
+    /// L6: keys reach their thread within 20 ms while ring-3 workers compute.
+    ComputeKeys,
+    /// L6: the model window, aliased past 4 GiB, reads right and frees exactly.
+    Bigmap,
 }
 
 const DEFAULT_STORM_SECONDS: u64 = 60;
@@ -82,6 +92,11 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=local-script" => Some(SelfTest::LocalScript),
             "test=fpu" => Some(SelfTest::Fpu),
             "test=probe" => Some(SelfTest::Probe),
+            "test=threads" => Some(SelfTest::Threads),
+            "test=threads-kill" => Some(SelfTest::ThreadsKill),
+            "test=matvec" => Some(SelfTest::Matvec),
+            "test=compute-keys" => Some(SelfTest::ComputeKeys),
+            "test=bigmap" => Some(SelfTest::Bigmap),
             other => other.strip_prefix("test=storm").map(|rest| {
                 let seconds = rest.strip_prefix('-').and_then(|s| s.parse().ok());
                 SelfTest::Storm(seconds.unwrap_or(DEFAULT_STORM_SECONDS))
