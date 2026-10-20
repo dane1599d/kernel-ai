@@ -1,6 +1,6 @@
 # Kernel AI: roadmap
 
-Status: DRAFT for founder review, revision 2 (2026-10-14). Nothing is built until the founder approves this document.
+Status: revision 3 (2026-10-20). M0-M9 and the Local LLM milestone were approved and built. Section 3b, the product roadmap, is a DRAFT for founder approval; nothing in it is built until the founder approves it.
 
 - Decisions, settled and open: `docs/decisions.md`
 - Evidence: the five merged memos in `docs/research/`, each merged from two independent research passes
@@ -15,7 +15,7 @@ Kernel AI is our own operating system: a from-scratch x86_64 kernel in Rust, ins
 - The kernel's scheduler and memory reclaim use swappable policies. The LLM selects and tunes policies but never sits in the scheduling path.
 - The LLM runs locally, inside Kernel AI, on the CPU: the ring-3 `llm` service runs our own inference engine on a model file attached read-only. This replaced the remote Mac mini on 2026-10-19 (see the Local LLM milestone below).
 
-It is not a gaming OS in the foreseeable future. No from-scratch kernel runs modern games. The POC demonstrates AI-tuned scheduling and memory policy on synthetic workloads inside a VM.
+Since 2026-10-20 the goal is a production-grade OS that people have a reason to use, with the local AI able to operate everything in it (section 3b). The proof of concept (M0-M10) is its foundation. It is not a gaming OS in the foreseeable future: no from-scratch kernel runs modern games.
 
 ## 2. Architecture
 
@@ -43,7 +43,7 @@ The HTTP backend (`llm=IP:PORT`, an OpenAI-compatible server) stays only as CI's
 
 - **Policy hooks** are modelled on Linux sched_ext. The kernel owns run queues and context switching, a policy trait decides, and a watchdog with a round-robin fallback makes a bad policy survivable.
 - **Hints, not decisions.** The LLM picks pre-built policies and sets bounded parameters. Policies apply them in microseconds.
-- **Every LLM action is shown before it runs.** A generated script or policy change is displayed, confirmed, applied, and rolled back automatically if it faults during probation. Rollback never waits for the LLM.
+- **Every LLM action is shown before it runs.** A generated script or policy change is displayed, confirmed, applied, and rolled back automatically if it faults during probation. Rollback never waits for the LLM. From P1 (section 3b), actions run by risk tier instead: read-only and reversible ones at once, the rest after a yes, all of them logged.
 - **Never hot-swapped:** interrupt entry, context switch, page-table switching, the loader, the allocator, the fault path and the supervisor's core. Changing these means rebuild and reboot.
 
 ## 3. Milestones
@@ -105,6 +105,50 @@ The model runs on the CPU inside Kernel AI's ring-3 `llm` service, on our own cl
 - **L6 engine part 1 status (2026-10-20):** built (PR #28). `quant` runs Q4_K and Q6_K in baseline, avx2+fma, avx512 and avx512+vnni tiers, bit-identical to the baseline; `Product` runs any row range for one or more tokens, and `matvec_parallel` spreads products that share an input over a `Parallel` pool shaped like the kernel half's `user::pool::Pool`. `xtask/models.json` pins Qwen3-1.7B and Qwen3-4B-Instruct-2507 Q4_K_M, which setup does not recommend until part 2 runs K-quants. `cargo xtask bench quant` on the 7700X: the 4B's matrix products alone run at about 19-20 tokens/s on 4-8 host threads, against 21-22 from the memory read rate alone, and every kernel tier runs one matrix at or near the read rate from four threads on. Part 2 (below) built on it.
 - **L6 engine part 2 status (2026-10-20):** built (PR #31); Qwen3-4B-Instruct-2507 Q4_K_M is the default. The forward pass runs each matrix in its file's type (Q8_0, Q4_K or Q6_K), prompts run in blocks of 32 tokens with exactly the bits of one token at a time, the KV cache is f16 (288 MiB for the 4B's 2,048 positions), and the matrix products and attention heads run on the llm service's pool, one pinned worker per vCPU, with the bits of one thread; `health` names the workers. `cargo xtask setup` recommends the 4B from 8 GB of RAM and the 1.7B from 4 GB, and `run --local` gives the VM every host core up to 8 under KVM or WHPX. The `local-ask` and `local-script` fixtures are K-quant mixes, so CI runs the K-quant path in the guest under KVM and TCG. Measured on the 7700X with `cargo xtask bench quant`, on a generated model with the 4B's shapes (host threads, scaled from 12 layers to 36, not the real file): about 13 tokens/s decoding and 37 tokens/s prefill on 8 threads. The founder's checks: `cargo xtask setup` (it offers the 4B), then `cargo xtask fluency --local qwen3-4b-2507` (M8's gate, the real test of scripts) and `cargo xtask tune --sim --local qwen3-4b-2507` (M10a's rehearsal); in the OS, `cargo xtask run --local qwen3-4b-2507 --accel kvm` (or `--accel whpx`) once a local accelerated VM exists. Not yet measured: 4B greedy parity with llama.cpp and tokens/s next to llama-bench, both waiting for the real file.
 
+## 3b. Product roadmap (DRAFT for founder approval, 2026-10-20)
+
+On 2026-10-20 the founder set the goal beyond the proof of concept: a production-grade operating system that people have a reason to use, with the local AI able to operate everything in it. The founder also asked for no rushing and the least technical debt. The order follows from that:
+
+- **P0 decides first.** Every choice that is expensive to change later gets a written decision before code that depends on it.
+- **The agent core comes before the features.** Each feature is then built AI-operable from day one, not retrofitted.
+
+### Principles
+
+- **AI-native.** Every feature declares its actions to the agent core when it is built: name, arguments, risk tier and undo. No feature ships without them.
+- **Local and private.** The model runs inside Kernel AI. There is no cloud AI.
+- **One security model.** Capabilities cover processes, apps, files, the network and agent actions alike.
+- **Autonomy by tier, not blanket confirmation.** Read-only and reversible actions run immediately. Destructive, outbound or irreversible actions ask first, and some never run. Every action is logged and undoable where possible. From P1 on this replaces M8's "every action is shown before it runs".
+- **Stable interfaces.** The syscall ABI, the app ABI and on-disk formats are versioned from their first release.
+- **Design before building.** Each phase starts with a written design that is researched, judged and approved, as L1-L7 and M10 were.
+- **Finish what is open first.** That means M10a (kernel-ai#2), faster prefill (kernel-ai#4) and the script fluency gate.
+
+### Phases
+
+| Phase | Deliverable | Exit test | Rough size | Depends on |
+|---|---|---|---|---|
+| **P0 Foundations** | Written decisions (ADRs), researched and approved before code, on the choices that are expensive to change later:<ul><li>the capability and permission model;</li><li>the agent action schema and autonomy tiers;</li><li>the app model and app ABI (WebAssembly components with WIT interfaces, so an app's interface also describes its actions);</li><li>storage: the filesystem, on-disk format versioning, and copy-on-write snapshots so undo is cheap;</li><li>graphics: the compositor and surface protocol, weighed against Wayland so P6's Linux apps can display without a rewrite;</li><li>running existing software: a Linux ABI layer or a ported browser engine, decided by a spike;</li><li>the driver model: virtio first, then real hardware; in the kernel or in user space;</li><li>updates and recovery: signed, A/B, with rollback;</li><li>release, licence and contribution terms.</li></ul> | Each ADR approved by the founder, with a spike wherever a decision rests on a measurement. | weeks | none |
+| **P1 Agent core** | Everything the agent does goes through one layer:<ul><li>an action registry (name, description for the model, typed arguments, risk tier, undo);</li><li>constrained decoding into action calls;</li><li>tier enforcement in code;</li><li>an action log and `undo`.</li></ul>Today's levers are registered: system information, scheduler policy and `tune`, start/stop/restart of services and components, live edits and rollback, opening the editor at a line, and stopping a runaway program (ask). | Boot cases:<ul><li>plain-English requests become the right actions;</li><li>the auto tier runs without a prompt;</li><li>the ask tier prompts;</li><li>`undo` restores the previous state;</li><li>text the agent reads from data cannot raise an action's tier (prompt-injection test).</li></ul> | weeks (10-15 commits) | P0 |
+| **P2 Files and storage** | A writable virtio-blk disk (NVMe on real hardware in P7), P0's filesystem with snapshots, a home directory, and settings and the model store on disk. File actions: list, read and create run at once; move and overwrite ask, with undo; delete goes through a trash. | Data survives a reboot. A power cut in the middle of a write leaves the filesystem consistent. `undo` restores a deleted file. | weeks to months | P0, P1 |
+| **P3 Desktop** | virtio-gpu 2D in the VM (UEFI GOP on real hardware), a compositor, windows, fonts and text rendering, input focus, a launcher, an AI panel that is always available, and P0's app model with its UI API. | The OS boots to a desktop. Windows open, move and close. The agent opens apps and acts inside them. | months | P0, P1, P2 |
+| **P4 Built-in apps** | Terminal, files, notes, settings, system monitor and model manager, plus the full-screen editor (M9d steps 10-12 fold in here). Every app declares its actions. | Per-app action tests driven by the agent. | months, overlapping P3 | P3 |
+| **P5 Secure networking** | DNS, TLS 1.3 (rustls with a RustCrypto provider; the crates need approval), an HTTP client, verified downloads with resume, and in-OS model setup and download (L7 folds in here). Network permission is per app, and network actions are in the ask tier. | An HTTPS mock with a test CA: a cut connection resumes, and a bad certificate or bad hash is refused. | weeks to months | P0, P2 |
+| **P6 Running existing apps** | P0's chosen route: either a Linux ABI layer (dynamic ELF loading, the syscalls, signals, sockets, a filesystem view, and display through the P3 compositor) or a ported browser engine. | A static Linux binary runs, then a GUI app, then a browser plays a YouTube video in the VM. | many months to a year or more | P2, P3, P5, M10b |
+| **P7 Real hardware** | Boot on the founder's PC: UEFI GOP display, NVMe, USB (xHCI) keyboard and mouse, the board's network chip and ACPI power; then audio and basic GPU modesetting. GPU compute for the model comes much later. | v0.1 boots and runs on the founder's PC from a USB stick. | months for one PC; years for broad hardware | P2, P3 |
+| **P8 Production** | An installer, signed updates with A/B rollback, user accounts, fuzzing and a security review, crash reports, documentation, and licence and contributor terms. | A release checklist. | ongoing | all |
+
+Still on the list from the proof of concept: M10a's proof recording, M10b demand paging (before P6, which needs it), and M7's exit test (the founder's).
+
+### Releases
+
+- **v0.1 "an AI-native OS you can try"** (in a VM): P1-P4, with M10a.
+- **v0.2 "the internet and existing apps":** P5-P6.
+- **v0.3 "on real hardware":** P7 on the founder's PC.
+- **v1.0:** P8 and broader hardware.
+
+Production grade is a multi-year program. The long poles are P6 (a browser) and P7 (drivers). Estimates are revised at each phase's design.
+
+**Next step:** P0 begins with a researched, judged design pass after the weekly usage reset. The founder approves each decision before P1 starts.
+
 ## 4. Testing strategy
 
 - **Every milestone has an automated exit test** that runs in QEMU and reports pass or fail through `isa-debug-exit`.
@@ -128,7 +172,10 @@ The model runs on the CPU inside Kernel AI's ring-3 `llm` service, on our own cl
 | Small-model scripts are wrong or unsafe | Grammar plus re-parse, show-and-confirm, execution budgets, probation and rollback, and the fluency gate. |
 | Rhai's `smartstring` dependency is MPL-2.0 and unmaintained | Licence policy decided by M8; replace or vendor it if needed. |
 | WHPX bugs | KVM and TCG are the tested paths. |
-| Scope creep toward games or a desktop | Out of scope until M10 is done. |
+| Scope creep toward games | Out of scope. A desktop is in scope since 2026-10-20 (section 3b). |
+| Technical debt from early choices in a multi-year program | P0 decides the expensive-to-change designs first. ABIs and on-disk formats are versioned, and each phase starts with an approved design. |
+| An autonomous agent is tricked by text it reads (prompt injection) | Tiers are enforced by code from each action's declaration, never by the model, and text read from data cannot raise a tier. P1's exit test checks it. |
+| A browser and real-hardware drivers take years | v0.1 does not wait for them. P0's spike picks the cheapest route to a working browser, and P7 starts with one PC, the founder's. |
 
 ## 6. Next step after approval
 

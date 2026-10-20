@@ -184,3 +184,8 @@ Sources: the five merged memos in `docs/research/`. Milestones are defined in `d
 | M10 | Measurement mode | Single-thread TCG with icount. Report relative numbers only. |
 | Before the first outside contribution | Kernel licence and contributor terms | MPL-2.0 for the kernel with a CLA is the leading option, because only a CLA keeps commercial relicensing possible. Get legal advice before any commercial release. |
 | After M10 | Own language, native JIT | Deferred. |
+| Product, decided 2026-10-20 | Goal | A production-grade OS that people have a reason to use, with the local AI able to operate everything in it. The proof of concept (M0-M10) becomes its foundation. Founder: "I want this to be a production grade operating system that people actually have a reason to use it." Plan: `docs/roadmap.md` section 3b (draft). |
+| Product, decided 2026-10-20 | Order | P0 foundations first, then the agent core (P1), then the features, each declaring its actions as it is built. Founder: "Plan it out accordingly to cause the least technical debt in the future." |
+| Product, decided 2026-10-20 | Autonomy | Actions run by risk tier instead of always asking: the founder wants a request like "pull up my browser and go to youtube" to just happen. Tier boundaries are designed in P0 and enforced in code. This supersedes M8's "every action is confirmed" from P1 on. |
+| Product, open | Running existing software | A Linux ABI layer or a ported browser engine, decided by a P0 spike. |
+| Product, open | Licence | The repository is public since 2026-10-20 (dane1599d/kernel-ai) with no licence, so all rights are reserved. Choose one before inviting contributions (see "Kernel licence and contributor terms" above). |
