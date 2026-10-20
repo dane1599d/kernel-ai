@@ -1,17 +1,24 @@
 //! A naive f32 qwen3 for checking the engine. Every weight is widened to f32 up
-//! front by its own Q8_0 and f16 decoding, every step is a plain loop in the
-//! obvious order, the RoPE angle is computed afresh for each pair, and the cache
-//! is a list of vectors. Only the f16 rounding of an activation's scale is shared
-//! with the engine. Activations are rounded to Q8_0 before each matrix, as the
-//! engine does, so the two agree to float rounding and no more.
+//! front, Q8_0 by its own Q8_0 and f16 decoding, every step is a plain loop in
+//! the obvious order, the RoPE angle is computed afresh for each pair, and the
+//! cache is a list of vectors. Shared with the engine: the f16 rounding of an
+//! activation's scale, and quant's widening of Q4_K and Q6_K rows (checked
+//! against their definition in quant's own tests). Activations are rounded to
+//! Q8_0 blocks, or to K-quant super-blocks, before each matrix, as the engine
+//! does, so the two agree to float rounding and no more.
 
 use crate::Config;
 use alloc::vec;
 use alloc::vec::Vec;
-use gguf::Gguf;
+use gguf::{Gguf, TensorType};
 
-/// A matrix as rows of f32, `rows[out][in]`.
-type Matrix = Vec<Vec<f32>>;
+/// A matrix as rows of f32, `rows[out][in]`, and whether it is a K-quant, whose
+/// input is rounded in super-blocks of 256.
+#[derive(Clone)]
+struct Matrix {
+    rows: Vec<Vec<f32>>,
+    k: bool,
+}
 
 struct Layer {
     attn_norm: Vec<f32>,
@@ -56,14 +63,27 @@ fn matrix(file: &Gguf<'_>, name: &str) -> Matrix {
     let cols = t.info.dims()[0] as usize;
     let rows = t.info.dims()[1] as usize;
     let mut out = vec![vec![0.0; cols]; rows];
+    let k = t.info.ty != TensorType::Q8_0;
     for (r, row) in out.iter_mut().enumerate() {
-        for (i, v) in row.iter_mut().enumerate() {
-            let block = &t.data[(r * cols + i) / 32 * 34..][..34];
-            let q = block[2 + i % 32] as i8;
-            *v = half(u16::from_le_bytes([block[0], block[1]])) * f32::from(q);
+        match t.info.ty {
+            TensorType::Q4_K => {
+                let bytes = quant::q4_k::row_bytes(cols);
+                quant::q4_k::dequantize_row(&t.data[r * bytes..][..bytes], row);
+            }
+            TensorType::Q6_K => {
+                let bytes = quant::q6_k::row_bytes(cols);
+                quant::q6_k::dequantize_row(&t.data[r * bytes..][..bytes], row);
+            }
+            _ => {
+                for (i, v) in row.iter_mut().enumerate() {
+                    let block = &t.data[(r * cols + i) / 32 * 34..][..34];
+                    let q = block[2 + i % 32] as i8;
+                    *v = half(u16::from_le_bytes([block[0], block[1]])) * f32::from(q);
+                }
+            }
         }
     }
-    out
+    Matrix { rows: out, k }
 }
 
 fn vector(file: &Gguf<'_>, name: &str) -> Vec<f32> {
@@ -90,9 +110,27 @@ fn q8_round(x: &[f32]) -> Vec<f32> {
     out
 }
 
+/// What a K-quant matrix sees: each super-block of 256 rounded to steps of
+/// max|x| / 127, that step kept in f32, ties to even.
+fn q8k_round(x: &[f32]) -> Vec<f32> {
+    let mut out = Vec::with_capacity(x.len());
+    for block in x.chunks(256) {
+        let amax = block.iter().fold(0.0f32, |m, v| m.max(libm::fabsf(*v)));
+        let id = if amax == 0.0 { 0.0 } else { 127.0 / amax };
+        let d = if amax == 0.0 { 0.0 } else { 1.0 / id };
+        out.extend(
+            block
+                .iter()
+                .map(|v| d * libm::rintf(v * id).clamp(-127.0, 127.0)),
+        );
+    }
+    out
+}
+
 fn times(m: &Matrix, x: &[f32]) -> Vec<f32> {
-    let x = q8_round(x);
-    m.iter()
+    let x = if m.k { q8k_round(x) } else { q8_round(x) };
+    m.rows
+        .iter()
         .map(|row| row.iter().zip(&x).map(|(a, b)| a * b).sum())
         .collect()
 }
@@ -159,7 +197,7 @@ impl Reference {
         let c = self.c;
         let hd = c.head_dim;
         let pos = self.keys[0].len();
-        let mut x = self.embd[token as usize].clone();
+        let mut x = self.embd.rows[token as usize].clone();
         for (l, w) in self.layers.iter().enumerate() {
             let xn = rms_norm(&x, &w.attn_norm, c.rms_eps);
             let mut q = times(&w.wq, &xn);

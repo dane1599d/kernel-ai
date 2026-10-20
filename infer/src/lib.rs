@@ -8,6 +8,7 @@
 
 extern crate alloc;
 
+mod acts;
 pub mod chat;
 mod config;
 pub mod fixture;
@@ -27,6 +28,8 @@ mod forward_tests;
 #[cfg(test)]
 mod json_tests;
 #[cfg(test)]
+mod kquant_tests;
+#[cfg(test)]
 mod reference;
 #[cfg(test)]
 mod reply_tests;
@@ -38,7 +41,7 @@ pub use generate::{Ended, Next, argmax, generate};
 pub use kv::{KvCache, Rope};
 pub use model::Model;
 pub use sample::Sampler;
-pub use weights::{Layer, Weights, check};
+pub use weights::{Layer, Matrix, Weights, check};
 
 use alloc::string::String;
 

@@ -1,15 +1,19 @@
-//! The qwen3 forward pass for one token: RMSNorm, Q8_0 projections, per-head
-//! QK-norm, NeoX RoPE, grouped-query attention over the f32 KV cache, a SwiGLU
-//! feed-forward block, and the output projection (tied to the embeddings in
-//! Qwen3-0.6B). Norms and softmax sum in f64 and the RoPE angles are built as
-//! llama.cpp builds them, so greedy answers follow llama.cpp's as closely as an
-//! f32 cache allows.
+//! The qwen3 forward pass for one token: RMSNorm, projections in each matrix's
+//! own format (Q8_0, Q4_K or Q6_K), per-head QK-norm, NeoX RoPE, grouped-query
+//! attention over the f32 KV cache, a SwiGLU feed-forward block, and the output
+//! projection (tied to the embeddings in Qwen3-0.6B and 4B). Norms and softmax
+//! sum in f64 and the RoPE angles are built as llama.cpp builds them, so greedy
+//! answers follow llama.cpp's as closely as an f32 cache allows. Matrices that
+//! share an input run in one [`matvec_parallel`] call on the model's
+//! [`Parallel`] workers, with the same bits as one thread.
 
+use crate::acts::Acts;
+use crate::weights::Matrix;
 use crate::{Config, Error, KvCache, Rope, Weights};
 use alloc::vec;
 use alloc::vec::Vec;
 use gguf::Gguf;
-use quant::{QVec, Tier, dequantize_row, matvec, row_bytes};
+use quant::{Parallel, Serial, Tier, matvec_parallel};
 
 /// Buffers for one token, allocated once.
 struct Scratch {
@@ -23,15 +27,16 @@ struct Scratch {
     gate: Vec<f32>,
     up: Vec<f32>,
     out: Vec<f32>,
-    q_embd: QVec,
-    q_att: QVec,
-    q_ff: QVec,
+    q_embd: Acts,
+    q_att: Acts,
+    q_ff: Acts,
 }
 
 pub struct Model<'a> {
     config: Config,
     weights: Weights<'a>,
     tier: Tier,
+    par: &'a dyn Parallel,
     rope: Rope,
     context: usize,
     s: Scratch,
@@ -47,6 +52,11 @@ impl<'a> Model<'a> {
         let weights = Weights::bind(file, &config)?;
         let rope = Rope::new(&config, context)?;
         let (e, q, kv, ff) = (config.n_embd, config.q_dim(), config.kv_dim(), config.n_ff);
+        let layers = &weights.layers;
+        let embd_readers = layers
+            .iter()
+            .flat_map(|l| [&l.wq, &l.wk, &l.wv, &l.w_gate, &l.w_up])
+            .chain([&weights.output]);
         let s = Scratch {
             x: vec![0.0; e],
             xn: vec![0.0; e],
@@ -58,14 +68,15 @@ impl<'a> Model<'a> {
             gate: vec![0.0; ff],
             up: vec![0.0; ff],
             out: vec![0.0; e],
-            q_embd: QVec::new(e),
-            q_att: QVec::new(q),
-            q_ff: QVec::new(ff),
+            q_embd: Acts::new(e, 1, embd_readers),
+            q_att: Acts::new(q, 1, layers.iter().map(|l| &l.wo)),
+            q_ff: Acts::new(ff, 1, layers.iter().map(|l| &l.w_down)),
         };
         Ok(Self {
             config,
             weights,
             tier,
+            par: &Serial,
             rope,
             context,
             s,
@@ -84,6 +95,12 @@ impl<'a> Model<'a> {
 
     pub fn tier(&self) -> Tier {
         self.tier
+    }
+
+    /// Runs the matrix products on `par`'s workers from now on; [`Serial`] until
+    /// this is called. Any pool gives the same bits.
+    pub fn set_parallel(&mut self, par: &'a dyn Parallel) {
+        self.par = par;
     }
 
     pub fn context(&self) -> usize {
@@ -114,19 +131,18 @@ impl<'a> Model<'a> {
         if pos >= kv.capacity() {
             return Err(Error::ContextFull);
         }
-        let row = row_bytes(c.n_embd);
-        let start = token as usize * row;
-        dequantize_row(&self.weights.token_embd[start..start + row], &mut self.s.x);
+        let embd = self.weights.token_embd;
+        embd.dequantize_row(token as usize, &mut self.s.x);
         for layer in 0..c.n_layer {
             self.attention(kv, layer, pos);
             self.feed_forward(layer);
         }
         kv.advance();
         if let Some(logits) = logits {
-            let s = &mut self.s;
-            rms_norm(&s.x, &self.weights.output_norm, c.rms_eps, &mut s.xn);
-            s.q_embd.quantize(&s.xn);
-            matvec(self.tier, self.weights.output, &s.q_embd, logits);
+            let (w, s) = (&self.weights, &mut self.s);
+            rms_norm(&s.x, &w.output_norm, c.rms_eps, &mut s.xn);
+            s.q_embd.quantize(0, &s.xn);
+            run(self.par, self.tier, &s.q_embd, &mut [(&w.output, logits)]);
         }
         Ok(())
     }
@@ -143,10 +159,9 @@ impl<'a> Model<'a> {
         let w = &self.weights.layers[layer];
         let s = &mut self.s;
         rms_norm(&s.x, &w.attn_norm, c.rms_eps, &mut s.xn);
-        s.q_embd.quantize(&s.xn);
-        matvec(self.tier, w.wq, &s.q_embd, &mut s.q);
-        matvec(self.tier, w.wk, &s.q_embd, &mut s.k);
-        matvec(self.tier, w.wv, &s.q_embd, &mut s.v);
+        s.q_embd.quantize(0, &s.xn);
+        let mut qkv = [(&w.wq, &mut s.q[..]), (&w.wk, &mut s.k), (&w.wv, &mut s.v)];
+        run(self.par, self.tier, &s.q_embd, &mut qkv);
         for head in s.q.chunks_exact_mut(hd) {
             rms_norm_in_place(head, &w.q_norm, c.rms_eps);
             self.rope.apply(head, pos);
@@ -179,8 +194,13 @@ impl<'a> Model<'a> {
                 }
             }
         }
-        s.q_att.quantize(&s.att);
-        matvec(self.tier, w.wo, &s.q_att, &mut s.out);
+        s.q_att.quantize(0, &s.att);
+        run(
+            self.par,
+            self.tier,
+            &s.q_att,
+            &mut [(&w.wo, &mut s.out[..])],
+        );
         for (x, o) in s.x.iter_mut().zip(&s.out) {
             *x += o;
         }
@@ -191,18 +211,52 @@ impl<'a> Model<'a> {
         let w = &self.weights.layers[layer];
         let s = &mut self.s;
         rms_norm(&s.x, &w.ffn_norm, c.rms_eps, &mut s.xn);
-        s.q_embd.quantize(&s.xn);
-        matvec(self.tier, w.w_gate, &s.q_embd, &mut s.gate);
-        matvec(self.tier, w.w_up, &s.q_embd, &mut s.up);
+        s.q_embd.quantize(0, &s.xn);
+        let mut gate_up = [(&w.w_gate, &mut s.gate[..]), (&w.w_up, &mut s.up)];
+        run(self.par, self.tier, &s.q_embd, &mut gate_up);
         for (g, u) in s.gate.iter_mut().zip(&s.up) {
             *g = *g / (1.0 + libm::expf(-*g)) * u;
         }
-        s.q_ff.quantize(&s.gate);
-        matvec(self.tier, w.w_down, &s.q_ff, &mut s.out);
+        s.q_ff.quantize(0, &s.gate);
+        run(
+            self.par,
+            self.tier,
+            &s.q_ff,
+            &mut [(&w.w_down, &mut s.out[..])],
+        );
         for (x, o) in s.x.iter_mut().zip(&s.out) {
             *x += o;
         }
     }
+}
+
+/// An upper bound on the bytes [`Model::new`] allocates for `context` positions
+/// besides the norms: the scratch vectors, the activations in both formats and
+/// the attention scores.
+pub(crate) fn scratch_bytes(c: &Config, context: usize) -> usize {
+    let (e, q, kv, ff) = (c.n_embd, c.q_dim(), c.kv_dim(), c.n_ff);
+    let f32s = e
+        .saturating_mul(3)
+        .saturating_add(q.saturating_mul(2))
+        .saturating_add(kv.saturating_mul(2))
+        .saturating_add(ff.saturating_mul(2))
+        .saturating_add(context);
+    let acts = Acts::bytes(e, 1)
+        .saturating_add(Acts::bytes(q, 1))
+        .saturating_add(Acts::bytes(ff, 1));
+    f32s.saturating_mul(4).saturating_add(acts)
+}
+
+/// Matrices that share the input `x` times its one token, each into its output,
+/// in one call on `par`.
+fn run<const N: usize>(
+    par: &dyn Parallel,
+    tier: Tier,
+    x: &Acts,
+    jobs: &mut [(&Matrix<'_>, &mut [f32]); N],
+) {
+    let mut items = jobs.each_mut().map(|(m, y)| (x.times(m, 1), &mut **y));
+    matvec_parallel(par, tier, &mut items);
 }
 
 /// `x / rms(x) * weight`; the sum of squares runs in f64, as in llama.cpp.

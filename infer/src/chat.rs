@@ -452,16 +452,8 @@ fn other_bytes(file: &Gguf<'_>, config: &Config, positions: usize) -> usize {
         .saturating_mul(3)
         .saturating_add(tokens.saturating_mul(4 + 1 + 3 * 4))
         .saturating_add(merges.saturating_mul(3 * 16));
-    let scratch = f32s(
-        config
-            .n_embd
-            .saturating_mul(5)
-            .saturating_add(config.q_dim().saturating_mul(2))
-            .saturating_add(config.kv_dim().saturating_mul(2))
-            .saturating_add(config.n_ff.saturating_mul(4))
-            // Attention scores, and the token behind each cached position.
-            .saturating_add(positions.saturating_mul(2)),
-    );
+    // The model's buffers, and the token behind each cached position.
+    let scratch = crate::model::scratch_bytes(config, positions).saturating_add(f32s(positions));
     let norms = f32s(
         config
             .n_layer

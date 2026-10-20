@@ -123,7 +123,7 @@ fn the_tiny_fixture_loads() {
     let weights = Weights::bind(&file, &config).unwrap();
     assert_eq!(weights.layers.len(), 2);
     assert_eq!(weights.layers[1].q_norm.len(), 32);
-    assert!(core::ptr::eq(weights.output, weights.token_embd));
+    assert!(core::ptr::eq(weights.output.data, weights.token_embd.data));
     let tok = bpe::Tokenizer::from_gguf(file.header()).unwrap();
     assert_eq!(tok.len(), config.vocab);
 }
@@ -138,8 +138,8 @@ fn an_untied_output_is_used_and_checked() {
     let config = checked(&bytes).unwrap();
     let file = Gguf::parse(&bytes).unwrap();
     let weights = Weights::bind(&file, &config).unwrap();
-    assert!(!core::ptr::eq(weights.output, weights.token_embd));
-    assert_eq!(weights.output.len(), weights.token_embd.len());
+    assert!(!core::ptr::eq(weights.output.data, weights.token_embd.data));
+    assert_eq!(weights.output.data.len(), weights.token_embd.data.len());
     let output = |edit: fn(&mut Edit)| {
         checked(&rewrite(&bytes, keep, |t| {
             if t.name == "output.weight" {

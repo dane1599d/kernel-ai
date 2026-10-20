@@ -1,7 +1,8 @@
 //! Generated qwen3 models for tests and benchmarks, so CI never needs the real
 //! file. The vocabulary is GPT-2's 256 byte tokens, a few merges and the chat
-//! specials, padded with unused tokens; the weights are random Q8_0 blocks scaled
-//! so activations stay near unit size. A spec always gives the same bytes.
+//! specials, padded with unused tokens; the weights are random Q8_0 blocks, or a
+//! Q4_K_M file's mix of Q4_K and Q6_K ([`Quant::KMix`]), scaled so activations
+//! stay near unit size. A spec always gives the same bytes.
 
 mod vocab;
 
@@ -11,6 +12,32 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use gguf::TensorType;
 use gguf::write::Writer;
+
+/// The matrices' formats.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Quant {
+    /// Every matrix Q8_0, as Qwen3-0.6B's file has them.
+    Q8_0,
+    /// A Q4_K_M file's mix: Q6_K embeddings (and output), Q6_K attention values
+    /// and feed-forward down projections in even layers, Q4_K everywhere else.
+    /// Every matrix input must be a multiple of 256.
+    KMix,
+}
+
+impl Quant {
+    /// The type of matrix `part` of `layer`, or of a whole-model matrix with no
+    /// layer.
+    fn of(self, part: &str, layer: Option<usize>) -> TensorType {
+        match (self, layer) {
+            (Self::Q8_0, _) => TensorType::Q8_0,
+            (Self::KMix, None) => TensorType::Q6_K,
+            (Self::KMix, Some(i)) if i % 2 == 0 && (part == "attn_v" || part == "ffn_down") => {
+                TensorType::Q6_K
+            }
+            (Self::KMix, Some(_)) => TensorType::Q4_K,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct Spec {
@@ -32,6 +59,7 @@ pub struct Spec {
     /// strong, so under a JSON shape the model ends its strings within a few
     /// words.
     pub closes_strings: bool,
+    pub quant: Quant,
     /// `general.name`.
     pub name: &'static str,
     /// `general.license`, if any.
@@ -62,9 +90,23 @@ impl Spec {
             untied: false,
             printable: false,
             closes_strings: false,
+            quant: Quant::Q8_0,
             name: "generated fixture",
             license: None,
             seed: 1,
+        }
+    }
+
+    /// tiny's layout at the narrowest widths K-quants take (rows of 256 values),
+    /// in a Q4_K_M file's mix of Q4_K and Q6_K: about 750 KB.
+    pub fn tiny_k() -> Self {
+        Self {
+            n_embd: 256,
+            n_ff: 512,
+            head_dim: 64,
+            quant: Quant::KMix,
+            seed: 21,
+            ..Self::tiny()
         }
     }
 
@@ -217,6 +259,9 @@ pub fn vocabulary(size: usize) -> (Vec<String>, Vec<i32>) {
     (tokens, types)
 }
 
+/// Quantises a row of f32 into its blocks.
+type Quantizer = fn(&[f32], &mut [u8]);
+
 /// splitmix64.
 struct Rng(u64);
 
@@ -247,6 +292,46 @@ impl Rng {
                 let bits = self.next().to_le_bytes();
                 chunk.copy_from_slice(&bits[..chunk.len()]);
             }
+        }
+        out
+    }
+
+    /// A matrix of `ty` with each row `r` scaled by `scale(r)`, 0 for a row of
+    /// zeros. Q8_0 rows are [`Rng::matrix`]'s, their block scales multiplied; a
+    /// K-quant row is uniform values spread so its dot product with a unit-size
+    /// input is about unit size, quantised by quant's plain scheme.
+    fn matrix_of(
+        &mut self,
+        ty: TensorType,
+        cols: usize,
+        rows: usize,
+        scale: impl Fn(usize) -> f32,
+    ) -> Vec<u8> {
+        if ty == TensorType::Q8_0 {
+            let mut out = self.matrix(cols, rows);
+            for (r, row) in out.chunks_mut(quant::row_bytes(cols)).enumerate() {
+                let factor = scale(r);
+                if factor == 0.0 {
+                    row.fill(0);
+                } else if factor != 1.0 {
+                    strengthen(row, factor);
+                }
+            }
+            return out;
+        }
+        let (bytes, quantize): (usize, Quantizer) = match ty {
+            TensorType::Q4_K => (quant::q4_k::row_bytes(cols), quant::q4_k::quantize_row),
+            _ => (quant::q6_k::row_bytes(cols), quant::q6_k::quantize_row),
+        };
+        let spread = libm::sqrtf(3.0 / cols as f32);
+        let mut out = alloc::vec![0u8; bytes * rows];
+        let mut values = alloc::vec![0.0f32; cols];
+        for (r, row) in out.chunks_mut(bytes).enumerate() {
+            let factor = scale(r) * spread;
+            for v in values.iter_mut() {
+                *v = (2.0 * self.unit() - 1.0) * factor;
+            }
+            quantize(&values, row);
         }
         out
     }
@@ -301,29 +386,24 @@ fn build_with(
     let (e, ff, hd) = (spec.n_embd, spec.n_ff, spec.head_dim);
     let (q, kv) = (spec.n_head * hd, spec.n_head_kv * hd);
     let embeddings = [e as u64, spec.vocab as u64];
-    w.tensor(
-        "token_embd.weight",
-        &embeddings,
-        TensorType::Q8_0,
-        &rng.matrix(e, spec.vocab),
-    );
+    let whole = spec.quant.of("output", None);
+    let embd = rng.matrix_of(whole, e, spec.vocab, |_| 1.0);
+    w.tensor("token_embd.weight", &embeddings, whole, &embd);
     if spec.untied {
-        let mut output = rng.matrix(e, spec.vocab);
-        if spec.printable {
-            let rows = output.chunks_mut(quant::row_bytes(e));
-            for (row, (text, &ty)) in rows.zip(tokens.iter().zip(types)) {
-                if spec.closes_strings && text == "\"" {
-                    strengthen(row, 4.0);
-                } else if !printable_token(text, ty) {
-                    row.fill(0);
-                }
-            }
-        }
-        w.tensor("output.weight", &embeddings, TensorType::Q8_0, &output);
+        let scale = |r: usize| match (&tokens[r], types[r]) {
+            _ if !spec.printable => 1.0,
+            (text, _) if spec.closes_strings && text == "\"" => 4.0,
+            (text, ty) if printable_token(text, ty) => 1.0,
+            _ => 0.0,
+        };
+        let output = rng.matrix_of(whole, e, spec.vocab, scale);
+        w.tensor("output.weight", &embeddings, whole, &output);
     }
-    let mut matrix = |w: &mut Writer, name: &str, cols: usize, rows: usize| {
-        let data = rng.matrix(cols, rows);
-        w.tensor(name, &[cols as u64, rows as u64], TensorType::Q8_0, &data);
+    let mut matrix = |w: &mut Writer, layer: usize, part: &str, cols: usize, rows: usize| {
+        let ty = spec.quant.of(part, Some(layer));
+        let data = rng.matrix_of(ty, cols, rows, |_| 1.0);
+        let name = format!("blk.{layer}.{part}.weight");
+        w.tensor(&name, &[cols as u64, rows as u64], ty, &data);
     };
     let mut norms = Rng(spec.seed ^ 0x5555);
     let mut norm = |w: &mut Writer, name: &str, len: usize| {
@@ -333,16 +413,16 @@ fn build_with(
     for i in 0..spec.n_layer {
         let name = |part: &str| format!("blk.{i}.{part}.weight");
         norm(&mut w, &name("attn_norm"), e);
-        matrix(&mut w, &name("attn_q"), e, q);
-        matrix(&mut w, &name("attn_k"), e, kv);
-        matrix(&mut w, &name("attn_v"), e, kv);
+        matrix(&mut w, i, "attn_q", e, q);
+        matrix(&mut w, i, "attn_k", e, kv);
+        matrix(&mut w, i, "attn_v", e, kv);
         norm(&mut w, &name("attn_q_norm"), hd);
         norm(&mut w, &name("attn_k_norm"), hd);
-        matrix(&mut w, &name("attn_output"), q, e);
+        matrix(&mut w, i, "attn_output", q, e);
         norm(&mut w, &name("ffn_norm"), e);
-        matrix(&mut w, &name("ffn_gate"), e, ff);
-        matrix(&mut w, &name("ffn_up"), e, ff);
-        matrix(&mut w, &name("ffn_down"), ff, e);
+        matrix(&mut w, i, "ffn_gate", e, ff);
+        matrix(&mut w, i, "ffn_up", e, ff);
+        matrix(&mut w, i, "ffn_down", ff, e);
     }
     w.finish()
 }
