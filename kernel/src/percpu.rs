@@ -33,10 +33,11 @@ pub struct PerCpu {
     pub tick_start_ns: AtomicU64,
     /// This CPU's task state segment, for updating its ring-0 stack pointer.
     pub tss: AtomicU64,
-    /// Control registers and EFER as `cpu::init` left them, for cross-CPU checks.
+    /// Control registers, EFER and XCR0 as `cpu::init` left them, for cross-CPU checks.
     pub cr0: AtomicU64,
     pub cr4: AtomicU64,
     pub efer: AtomicU64,
+    pub xcr0: AtomicU64,
 }
 
 impl PerCpu {
@@ -58,6 +59,7 @@ impl PerCpu {
             cr0: AtomicU64::new(0),
             cr4: AtomicU64::new(0),
             efer: AtomicU64::new(0),
+            xcr0: AtomicU64::new(0),
         }
     }
 }

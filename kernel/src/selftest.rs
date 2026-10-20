@@ -40,6 +40,10 @@ pub enum SelfTest {
     Blk,
     /// L3: the model is held in memory and mapped into `llm`, and survives it.
     Model,
+    /// L2: processes keep their vector state across switches and CPUs, and start clean.
+    Fpu,
+    /// L2: the isolation probe; ops 0-2 complete and every other op is stopped.
+    Probe,
 }
 
 const DEFAULT_STORM_SECONDS: u64 = 60;
@@ -70,6 +74,8 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=manifest-good" => Some(SelfTest::ManifestGood),
             "test=blk" => Some(SelfTest::Blk),
             "test=model" => Some(SelfTest::Model),
+            "test=fpu" => Some(SelfTest::Fpu),
+            "test=probe" => Some(SelfTest::Probe),
             other => other.strip_prefix("test=storm").map(|rest| {
                 let seconds = rest.strip_prefix('-').and_then(|s| s.parse().ok());
                 SelfTest::Storm(seconds.unwrap_or(DEFAULT_STORM_SECONDS))

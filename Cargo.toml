@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["acpitables", "bpe", "compsdk", "cpufeat", "editcore", "gguf", "infer", "livecore", "quant", "wasmhost", "components/notes", "components/fixtures/notes-v1", "components/fixtures/notes-bad", "kabi", "kernel", "linetable", "llmproto", "mm", "sched", "shellcore", "supervise", "termcore", "uelf", "user", "xtask", "spikes/rhai", "spikes/wasmi"]
-# Host builds only build the xtask runner; the kernel, user programs and spikes are built by xtask for x86_64-unknown-none.
+# Host builds only build the xtask runner; the kernel, spikes and most user programs are built by xtask for x86_64-unknown-none, and llm, probe and vecstress for user/x86_64-kai-user.json.
 default-members = ["acpitables", "bpe", "compsdk", "cpufeat", "editcore", "gguf", "infer", "livecore", "quant", "wasmhost", "components/notes", "components/fixtures/notes-v1", "components/fixtures/notes-bad", "kabi", "linetable", "llmproto", "mm", "sched", "shellcore", "supervise", "termcore", "uelf", "xtask"]
 
 [workspace.package]

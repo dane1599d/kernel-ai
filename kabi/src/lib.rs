@@ -13,6 +13,7 @@ extern crate alloc;
 pub mod live;
 pub mod model;
 pub mod plan;
+pub mod probe;
 
 /// System-call numbers.
 pub mod call {
@@ -357,35 +358,6 @@ mod tests {
         }
         assert_eq!(ExitReason::from_raw(6), None);
     }
-}
-
-/// The isolation probe: a test program that, on its Nth start, tries operation
-/// `N % OPS.len()`, each of which ring 3 must not be allowed to do. The kernel's
-/// test checks each attempt was stopped by one of the listed exception vectors.
-pub mod probe {
-    /// (operation, vectors that may stop it).
-    pub const OPS: [(&str, &[u64]); 17] = [
-        ("x87 instruction", &[7]),
-        ("SSE instruction", &[6]),
-        ("AVX instruction", &[6]),
-        ("cli", &[13]),
-        ("hlt", &[13]),
-        ("in from a port", &[13]),
-        ("rdmsr", &[13]),
-        ("write cr3", &[13]),
-        // Stopped only when UMIP is on; otherwise the probe exits normally.
-        ("sgdt", &[13]),
-        ("swapgs", &[13]),
-        ("int 0x80", &[11, 13]),
-        ("int3", &[13]),
-        // #GP on Intel (SYSENTER_CS is 0), #UD on AMD in long mode.
-        ("sysenter", &[6, 13]),
-        ("write own code", &[14]),
-        ("run own data", &[14]),
-        ("read kernel memory", &[14]),
-        ("syscall with a kernel stack pointer", &[13]),
-    ];
-    pub const SGDT: usize = 8;
 }
 
 // The fixed layout must leave the image, heap and stack apart, inside user space,

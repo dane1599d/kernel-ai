@@ -27,7 +27,10 @@ jobs:
       - run: cargo clippy -p kernel --target x86_64-unknown-none --features spikes -- -D warnings
       - name: Clippy for the engine crates on the soft-float kernel target
         run: cargo clippy -p gguf -p cpufeat -p quant -p bpe -p infer --target x86_64-unknown-none -- -D warnings
-      - run: cargo clippy -p user --target x86_64-unknown-none --bins --lib -- -D warnings
+      - name: Clippy for the soft-float ring-3 programs
+        run: cargo clippy -p user --target x86_64-unknown-none --lib --bin supervisor --bin shell --bin crasher --bin spinner --bin hog --bin comphost --bin edit -- -D warnings
+      - name: Clippy for the hard-float ring-3 programs
+        run: cargo clippy -Zjson-target-spec -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem -p user --target user/x86_64-kai-user.json --lib --bin llm --bin probe --bin vecstress -- -D warnings
       - run: cargo clippy -p compsdk -p comp-notes -p comp-notes-v1 --target wasm32-unknown-unknown -- -D warnings
       - name: Clippy for each broken notes version
         run: for bug in bug-import bug-health bug-trap bug-spin; do cargo clippy -p comp-notes-bad --target wasm32-unknown-unknown --features $bug -- -D warnings; done

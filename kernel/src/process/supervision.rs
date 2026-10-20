@@ -6,6 +6,8 @@
 //!   the head until the next `wait_child` call (which acknowledges it); if the
 //!   supervisor dies first, its successor gets the record again.
 //! - The supervisor's saved state lives in a kernel buffer that outlives it.
+//! - Exits of processes the kernel started itself (self-tests) are kept briefly, so
+//!   the test that started one can see how it ended.
 
 use super::uaccess::{copy_from_user, copy_to_user, read_struct};
 use super::{Name, Process, SpawnRequest, spawn};
@@ -74,7 +76,34 @@ static STATE: Mutex<SavedState> = Mutex::new(SavedState {
 });
 static PLAN: Once<String> = Once::new();
 
-pub(super) fn record_load_failure(pid: u64, name: &Name, supervisor: bool) {
+/// How many exits of processes the kernel started are kept, oldest overwritten first.
+const KERNEL_EXITS: usize = 32;
+
+#[derive(Clone, Copy)]
+struct KernelExit {
+    pid: u64,
+    reason: ExitReason,
+    detail: u64,
+}
+
+/// The latest exits of processes the kernel started, and the next one to overwrite.
+struct KernelExits {
+    exits: [Option<KernelExit>; KERNEL_EXITS],
+    next: usize,
+}
+
+static KERNEL_CHILDREN: Mutex<KernelExits> = Mutex::new(KernelExits {
+    exits: [None; KERNEL_EXITS],
+    next: 0,
+});
+
+/// A process whose thread could not start. A service the supervisor started learns
+/// that from SPAWN's error, so only the supervisor and the kernel's own children
+/// are reported.
+pub(super) fn record_load_failure(pid: u64, name: &Name, supervisor: bool, spawner: u64) {
+    if spawner != 0 {
+        return;
+    }
     let process = Process {
         pid,
         name: *name,
@@ -85,7 +114,8 @@ pub(super) fn record_load_failure(pid: u64, name: &Name, supervisor: bool) {
 }
 
 /// Reports an ended process: to the init thread if it was the supervisor, to the
-/// exit queue if the supervisor started it.
+/// exit queue if the supervisor started it, and to [`kernel_child_exit`] if the
+/// kernel did.
 pub(super) fn on_exit(process: &Process, reason: ExitReason, detail: u64) {
     let wake = if process.supervisor {
         // A record it took but never acknowledged goes to its successor.
@@ -120,11 +150,38 @@ pub(super) fn on_exit(process: &Process, reason: ExitReason, detail: u64) {
         }
         WAITER.load(Ordering::SeqCst)
     } else {
+        threads::preempt_disable();
+        {
+            let mut children = KERNEL_CHILDREN.lock();
+            let next = children.next;
+            children.exits[next] = Some(KernelExit {
+                pid: process.pid,
+                reason,
+                detail,
+            });
+            children.next = (next + 1) % KERNEL_EXITS;
+        }
+        threads::preempt_enable();
         0
     };
     if wake != 0 {
         x86_64::instructions::interrupts::without_interrupts(|| threads::wake(wake - 1));
     }
+}
+
+/// How a process the kernel started ended, once it has: the reason and its detail
+/// (the exit code, or the vector that stopped it).
+pub fn kernel_child_exit(pid: u64) -> Option<(ExitReason, u64)> {
+    threads::preempt_disable();
+    let found = KERNEL_CHILDREN
+        .lock()
+        .exits
+        .iter()
+        .flatten()
+        .find(|exit| exit.pid == pid)
+        .map(|exit| (exit.reason, exit.detail));
+    threads::preempt_enable();
+    found
 }
 
 fn with_queue<R>(f: impl FnOnce(&mut ExitQueue) -> R) -> R {
