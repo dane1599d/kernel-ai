@@ -1,7 +1,8 @@
 //! Qwen3 inference on the CPU, without std: the model's shape from GGUF metadata,
 //! every weight checked against it, an f32 KV cache sized to a context cap, the
-//! forward pass over the Q8_0 weights in the file, greedy generation, and
-//! [`chat`], one answer to a question the way the llm service runs it.
+//! forward pass over the Q8_0 weights in the file, greedy generation, seeded
+//! sampling ([`Sampler`]), decoding constrained to a JSON shape ([`json`]), and
+//! [`chat`], one answer to a conversation the way the llm service runs it.
 
 #![no_std]
 
@@ -11,16 +12,24 @@ pub mod chat;
 mod config;
 pub mod fixture;
 mod generate;
+pub mod json;
 mod kv;
 mod model;
+mod sample;
 mod weights;
 
+#[cfg(test)]
+mod cache_tests;
 #[cfg(test)]
 mod chat_tests;
 #[cfg(test)]
 mod forward_tests;
 #[cfg(test)]
+mod json_tests;
+#[cfg(test)]
 mod reference;
+#[cfg(test)]
+mod reply_tests;
 #[cfg(test)]
 mod tests;
 
@@ -28,6 +37,7 @@ pub use config::{Config, MAX_VOCAB};
 pub use generate::{Ended, Next, argmax, generate};
 pub use kv::{KvCache, Rope};
 pub use model::Model;
+pub use sample::Sampler;
 pub use weights::{Layer, Weights, check};
 
 use alloc::string::String;
@@ -60,6 +70,10 @@ pub enum Error {
     Logits,
     /// A token id past the vocabulary.
     Token(u32),
+    /// A JSON shape that cannot be decoded, or a vocabulary that cannot spell it.
+    Shape(&'static str),
+    /// The token limit or the context leaves no room to close a JSON shape.
+    NoRoom,
     OutOfMemory,
 }
 
@@ -81,6 +95,10 @@ impl core::fmt::Display for Error {
             Self::EmptyPrompt => f.write_str("the prompt is empty"),
             Self::Logits => f.write_str("the logits buffer does not match the vocabulary"),
             Self::Token(id) => write!(f, "token {id} is past the vocabulary"),
+            Self::Shape(problem) => write!(f, "the JSON shape {problem}"),
+            Self::NoRoom => {
+                f.write_str("the token limit or the context leaves no room for the JSON answer")
+            }
             Self::OutOfMemory => f.write_str("out of memory"),
         }
     }

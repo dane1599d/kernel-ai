@@ -226,6 +226,9 @@ fn errors_cross_between_services_with_their_kind() {
         AnswerError::Rejected(String::from("line 3 is longer than 120 characters")),
         AnswerError::NoScript(String::from("Cannot reboot from a script.")),
         AnswerError::Unavailable(String::from(NO_BACKEND)),
+        AnswerError::Local(String::from(
+            "the request is too long for the model's context",
+        )),
     ] {
         assert_eq!(decode_error(&encode_error(&error)), error);
     }
@@ -233,6 +236,10 @@ fn errors_cross_between_services_with_their_kind() {
     let none = AnswerError::Unavailable(String::from(NO_BACKEND));
     assert_eq!(none.describe(), NO_BACKEND);
     assert!(!none.repairable());
+    // Nor is a failure of the local model, which says where it happened.
+    let local = AnswerError::Local(String::from("it ran out of time"));
+    assert_eq!(local.describe(), "local model: it ran out of time");
+    assert!(!local.repairable());
     // Text from an older or broken service is a server error, never repairable.
     let unknown = decode_error("no LLM server configured (boot with llm=IP:PORT)");
     assert!(!unknown.repairable());

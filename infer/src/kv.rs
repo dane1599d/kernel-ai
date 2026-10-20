@@ -50,6 +50,13 @@ impl KvCache {
         self.len = 0;
     }
 
+    /// Forgets the positions from `len` on and keeps those before it: the keys and
+    /// values at a position depend only on the tokens there and before, so they
+    /// hold for any prompt that starts with those tokens.
+    pub fn truncate(&mut self, len: usize) {
+        self.len = self.len.min(len);
+    }
+
     /// Bytes the cache holds.
     pub fn bytes(&self) -> usize {
         (self.keys.len() + self.values.len()) * core::mem::size_of::<f32>()

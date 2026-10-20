@@ -16,3 +16,7 @@ gguf = { path = "../gguf" }
 # expf, sqrtf, powf, sinf and cosf without std (founder-approved, 2026-10-19).
 libm = "0.2.16"
 quant = { path = "../quant" }
+
+[dev-dependencies]
+# Already in the tree through llmproto: the tests parse what the JSON shape decodes.
+serde_json = { version = "1.0.154", default-features = false, features = ["alloc"] }

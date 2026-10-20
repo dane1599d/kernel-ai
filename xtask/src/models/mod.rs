@@ -185,10 +185,12 @@ pub fn stored(id: &str, store: Option<&str>) -> Result<PathBuf, String> {
     let catalog = Catalog::load()?;
     let entry = catalog.get(id)?;
     let path = store::resolve(store)?.join(&entry.file);
+    // The fix names the same store, so it fixes this store.
+    let in_store = store.map_or_else(String::new, |dir| format!(" --store {dir}"));
     let len = fs::metadata(&path)
         .map_err(|e| {
             format!(
-                "{} is not there ({e}); run cargo xtask setup {} first",
+                "{} is not there ({e}); run cargo xtask setup {}{in_store} first",
                 path.display(),
                 entry.id
             )
@@ -196,7 +198,7 @@ pub fn stored(id: &str, store: Option<&str>) -> Result<PathBuf, String> {
         .len();
     if len != entry.size {
         return Err(format!(
-            "{} is {len} bytes, not the pinned {}; run cargo xtask model check {}",
+            "{} is {len} bytes, not the pinned {}; run cargo xtask model check {}{in_store}",
             path.display(),
             entry.size,
             entry.id

@@ -59,7 +59,7 @@ fn an_answer_is_greedy_generation_on_the_chat_prompt() {
     let mut text = Vec::new();
     tok.decode(&want, &mut text);
     assert_eq!(reply.bytes, text);
-    // A second question starts from an empty context and gets the same answer.
+    // A second question takes its prompt from the cache and gets the same answer.
     assert_eq!(answer(&mut engine, "What does a kernel do?", 24).1, want);
 }
 
@@ -67,17 +67,22 @@ fn an_answer_is_greedy_generation_on_the_chat_prompt() {
 fn the_callback_runs_after_every_step_and_can_stop_anywhere() {
     let bytes = fixture::build(&Spec::tiny());
     let mut engine = engine(&bytes, 128);
-    let (mut prompted, mut made) = (0, 0);
+    let (mut cached, mut prompted, mut made) = (None, 0, 0);
     let reply = engine
         .answer(None, "hi", 5, |step| {
             match step {
+                Step::Cached(tokens) => cached = Some(tokens),
                 Step::Prompt => prompted += 1,
                 Step::Token(_) => made += 1,
             }
             Next::Continue
         })
         .unwrap();
+    assert_eq!(cached, Some(0));
     assert_eq!((prompted, made), (reply.prompt_tokens, reply.tokens));
+    // A fresh engine, so its prompt is not in the cache: the cache's step, then
+    // the prompt's first.
+    let mut engine = self::engine(&bytes, 128);
     let mut steps = 0;
     let stopped = engine
         .answer(None, "hi", 5, |_| {
@@ -119,8 +124,10 @@ fn the_context_ends_an_answer_and_a_longer_prompt_is_refused() {
     let long = "word ".repeat(40);
     let refused = engine.answer(None, &long, 8, |_| Next::Continue);
     assert_eq!(refused, Err(Error::ContextFull));
-    // The engine still answers after a refusal.
-    assert_eq!(answer_without_system(&mut engine, "hi", 1000).0, reply);
+    // The engine still answers after a refusal, with the prompt from its cache.
+    let again = answer_without_system(&mut engine, "hi", 1000).0;
+    assert_eq!(again.cached, prompt - 1);
+    assert_eq!(chat::Reply { cached: 0, ..again }, reply);
 }
 
 fn answer_without_system(
@@ -188,19 +195,21 @@ fn a_vocabulary_too_large_for_the_budget_is_refused_before_it_is_built() {
         matches!(refused, Some(LoadError::TooLarge(n)) if n > 64 * 1024),
         "{refused:?}"
     );
-    // A vocabulary as large as Qwen3's fits the budget the llm service gets (its
-    // 151,387 merges add about 7 MiB more to the estimate).
+    // A vocabulary as large as Qwen3's fits the budget the llm service gets, at
+    // its whole context cap (its 151,387 merges add about 7 MiB more to the
+    // estimate).
     let wide = fixture::build(&Spec {
         vocab: 151_936,
+        context_length: 40_960,
         ..Spec::tiny()
     });
-    // kabi::model::KV_BYTES and ENGINE_OTHER_BYTES.
+    // kabi::model::KV_BYTES, ENGINE_OTHER_BYTES and CONTEXT_CAP.
     let service = Budget {
-        kv_bytes: 112 << 20,
+        kv_bytes: 448 << 20,
         other_bytes: 24 << 20,
     };
-    let loaded = Engine::load(&wide, Tier::best(), 512, service).unwrap();
-    assert_eq!(loaded.about().context, 512);
+    let loaded = Engine::load(&wide, Tier::best(), 2048, service).unwrap();
+    assert_eq!(loaded.about().context, 2048);
     assert_eq!(loaded.about().config.vocab, 151_936);
 }
 

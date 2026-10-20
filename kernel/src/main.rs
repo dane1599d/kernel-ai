@@ -274,6 +274,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Blk => run_case(|| blk_tests::check(cmdline())),
         SelfTest::Model => run_case(|| model_tests::check(cmdline())),
         SelfTest::LocalAsk => run_case(|| local_tests::check(cmdline())),
+        SelfTest::LocalScript => run_case(|| local_tests::check_script(cmdline())),
         SelfTest::Fpu => run_case(fpu_tests::fpu_check),
         SelfTest::Probe => run_case(fpu_tests::probe_check),
         SelfTest::Boot | SelfTest::None => {}

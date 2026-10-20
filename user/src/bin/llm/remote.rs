@@ -1,7 +1,7 @@
 //! The HTTP backend: OpenAI-compatible chat JSON to the LLM server the kernel names
-//! on its command line (`llm=IP:PORT`), today CI's test double and the only way to
-//! get scripts until they run on the local model. The kernel carries the bytes to
-//! that one server; this module builds and parses them.
+//! on its command line (`llm=IP:PORT`), asked only when no local model runs, which
+//! makes it CI's test double. The kernel carries the bytes to that one server;
+//! this module builds and parses them.
 
 use alloc::format;
 use alloc::string::{String, ToString};

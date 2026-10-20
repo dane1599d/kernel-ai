@@ -42,6 +42,8 @@ pub enum SelfTest {
     Model,
     /// L4: `ask` is answered by the model on the disk, with no LLM server.
     LocalAsk,
+    /// L5: the model on the disk writes a script the shell checks, with no server.
+    LocalScript,
     /// L2: processes keep their vector state across switches and CPUs, and start clean.
     Fpu,
     /// L2: the isolation probe; ops 0-2 complete and every other op is stopped.
@@ -77,6 +79,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=blk" => Some(SelfTest::Blk),
             "test=model" => Some(SelfTest::Model),
             "test=local-ask" => Some(SelfTest::LocalAsk),
+            "test=local-script" => Some(SelfTest::LocalScript),
             "test=fpu" => Some(SelfTest::Fpu),
             "test=probe" => Some(SelfTest::Probe),
             other => other.strip_prefix("test=storm").map(|rest| {
@@ -103,6 +106,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::Manifest
             | SelfTest::ManifestGood
             | SelfTest::LocalAsk
+            | SelfTest::LocalScript
     );
     if !wanted {
         return None;

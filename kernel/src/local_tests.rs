@@ -10,6 +10,8 @@
 //! and when llm is killed in the middle of an answer, the caller gets an error at
 //! once, the supervisor restarts llm, and the new process maps the model the boot
 //! copied, never a second copy, and answers the same.
+//!
+//! `test=local-script`, L5's exit test, is [`check_script`].
 
 use crate::{hpet, ipc, llm, log, model, process, terminal, threads};
 use kabi::ExitReason;
@@ -20,16 +22,25 @@ use kabi::model::fnv1a;
 const WAIT_MS: u64 = 60_000;
 /// The question the harness types, and the kernel asks again.
 const QUESTION: &str = "hi";
+/// What the harness types for `local-script`, and the kernel sends the shell again.
+const SCRIPT_REQUEST: &str = "show me the cpus please";
+/// How long one script request may take: two rounds of the shell's 70 s, with room.
+const SCRIPT_WAIT_MS: u64 = 150_000;
+
+/// The hash xtask put on the command line: of the golden answer for `local-ask`,
+/// of the shell's golden reply for `local-script`.
+fn golden(cmdline: &str) -> Option<u64> {
+    cmdline
+        .split_whitespace()
+        .find_map(|word| word.strip_prefix("local_golden="))
+        .and_then(|hex| u64::from_str_radix(hex, 16).ok())
+}
 
 pub fn check(cmdline: &str) -> Result<(), &'static str> {
     if llm::target().is_some() {
         return Err("local-ask: the boot names an LLM server; this case runs without one");
     }
-    let golden = cmdline
-        .split_whitespace()
-        .find_map(|word| word.strip_prefix("local_golden="))
-        .and_then(|hex| u64::from_str_radix(hex, 16).ok())
-        .ok_or("local-ask: the command line has no local_golden=")?;
+    let golden = golden(cmdline).ok_or("local-ask: the command line has no local_golden=")?;
     if model::get().is_none() {
         return Err("local-ask: the kai-model disk was not loaded");
     }
@@ -120,10 +131,79 @@ fn kill_mid_answer(golden: u64) -> Result<(), &'static str> {
     Ok(())
 }
 
+/// `test=local-script`: a plain-English request typed at the terminal reaches the
+/// shell, which asks llm for a script; llm writes it with the model on the
+/// `kai-model` disk, decoded as the JSON envelope, with no LLM server; the shell
+/// checks it and refuses or proposes it by its own rules, unchanged. xtask
+/// worked out that outcome on the host from the same file, checks the terminal
+/// showed exactly it, and that its mock server got no request. The kernel then
+/// sends the shell the same request itself, which the same llm process answers
+/// with the engine that kept its prompt cache, and checks the reply hashes to the
+/// one xtask put on the command line (`local_golden=`), in as many rounds, and
+/// that llm's last answer took prompt tokens from the cache.
+pub fn check_script(cmdline: &str) -> Result<(), &'static str> {
+    if llm::target().is_some() {
+        return Err("local-script: the boot names an LLM server; this case runs without one");
+    }
+    let golden = golden(cmdline).ok_or("local-script: the command line has no local_golden=")?;
+    if model::get().is_none() {
+        return Err("local-script: the kai-model disk was not loaded");
+    }
+    wait_for(|| ipc::server_of("llm").is_some() && ipc::server_of("shell").is_some())
+        .map_err(|_| "local-script: llm and the shell did not come up")?;
+    let health = llm::health().map_err(|_| "local-script: llm's health failed")?;
+    if !health.contains("local model ") {
+        return Err("local-script: health does not name a local model");
+    }
+    let (pid, maps) = (ipc::server_of("llm"), model::maps());
+    threads::spawn("terminal", terminal::run, 0)
+        .map_err(|_| "local-script: cannot start the terminal")?;
+    threads::sleep_ms(200);
+    let shown = terminal::replies_shown();
+    log!("local-script: ready for keys");
+    wait_within(SCRIPT_WAIT_MS, || terminal::replies_shown() > shown)
+        .map_err(|_| "local-script: the typed request was never answered")?;
+    let rounds = ipc::replies("llm").1;
+    log!("local-script: the typed request was answered in {rounds} script rounds");
+    let reply = ipc::call("shell", SCRIPT_REQUEST.as_bytes(), SCRIPT_WAIT_MS)
+        .map_err(|_| "local-script: the shell did not answer the kernel")?;
+    let text = core::str::from_utf8(&reply).unwrap_or("");
+    if fnv1a(text.as_bytes()) != golden {
+        log!("local-script: the shell answered the kernel: {text}");
+        return Err("local-script: the second request did not get the host's outcome");
+    }
+    if rounds == 0 || ipc::replies("llm").1 != 2 * rounds {
+        return Err("local-script: the second request took another number of rounds");
+    }
+    if (ipc::server_of("llm"), model::maps()) != (pid, maps) {
+        return Err("local-script: llm restarted between the requests, losing its cache");
+    }
+    let health = llm::health().map_err(|_| "local-script: llm's health failed")?;
+    log!("local-script: health: {health}");
+    if cached_prompt_tokens(&health).is_none_or(|cached| cached == 0) {
+        return Err("local-script: the second request computed its whole prompt again");
+    }
+    log!("local-script: the local model's script got the host's outcome, twice, with no server");
+    Ok(())
+}
+
+/// The prompt tokens llm's last answer took from its cache, from `health`'s
+/// `N of M prompt tokens from the cache`.
+fn cached_prompt_tokens(health: &str) -> Option<usize> {
+    let before = health.split(" prompt tokens from the cache").next()?;
+    let (count, _) = before.rsplit_once(" of ")?;
+    count.rsplit(' ').next()?.parse().ok()
+}
+
 /// Polls `done` every millisecond, so a call llm takes is seen while it runs, for
 /// up to [`WAIT_MS`].
 fn wait_for(done: impl Fn() -> bool) -> Result<(), ()> {
-    let deadline = hpet::nanos() + WAIT_MS * 1_000_000;
+    wait_within(WAIT_MS, done)
+}
+
+/// Polls `done` every millisecond for up to `ms`.
+fn wait_within(ms: u64, done: impl Fn() -> bool) -> Result<(), ()> {
+    let deadline = hpet::nanos() + ms * 1_000_000;
     while !done() {
         if hpet::nanos() >= deadline {
             return Err(());

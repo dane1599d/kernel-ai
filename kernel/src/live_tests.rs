@@ -112,7 +112,9 @@ pub fn check() -> Result<(), &'static str> {
         return Err("live: :state notes does not show schema 2");
     }
     // `:why notes`: the mock LLM repeats the rollback the ledger's facts named, the
-    // last one of the scenario, so the facts reached the model.
+    // last one of the scenario, so the facts reached the model. With no server
+    // (the `live-local` case) the model on the `kai-model` disk answers instead,
+    // and xtask checks its mock got no request.
     if let Err(why) = wait_for("llm") {
         log!("{why}");
         return Err("live: the llm service never came up");
@@ -121,11 +123,16 @@ pub fn check() -> Result<(), &'static str> {
     for line in &shown {
         log!("{line}");
     }
-    let explained = shown
-        .iter()
-        .any(|line| line.starts_with("= ") && line.contains(LATEST_ROLLBACK));
-    if !explained {
-        return Err("live: :why notes does not explain the latest rollback");
+    match crate::llm::target() {
+        Some(_) => {
+            let explained = shown
+                .iter()
+                .any(|line| line.starts_with("= ") && line.contains(LATEST_ROLLBACK));
+            if !explained {
+                return Err("live: :why notes does not explain the latest rollback");
+            }
+        }
+        None => why_answered_locally(&shown)?,
     }
     // `:fault notes` with no build service: the lines around 3-trap's panic, from
     // the kernel's own store.
@@ -135,6 +142,21 @@ pub fn check() -> Result<(), &'static str> {
     if !shown.starts_with(FAULT_AT) || !marked {
         return Err("live: :fault notes does not show 3-trap's line");
     }
+    Ok(())
+}
+
+/// `:why`'s answer came from the local model: llm runs one, and showed an
+/// explanation, whatever words the generated model chose.
+fn why_answered_locally(shown: &[String]) -> Result<(), &'static str> {
+    let health = crate::llm::health().map_err(|_| "live: llm's health failed")?;
+    log!("live: health: {health}");
+    if !health.contains("local model ") {
+        return Err("live: no server and no local model, yet :why was asked");
+    }
+    if !shown.iter().any(|line| line.starts_with("= ")) {
+        return Err("live: the local model did not explain the rollback");
+    }
+    log!("live: :why notes was answered by the local model");
     Ok(())
 }
 

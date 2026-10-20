@@ -5,6 +5,16 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+# `llmproto::local`: requests answered by Kernel AI's own engine, for the llm
+# service and xtask. The kernel builds without it.
+local = ["dep:infer"]
+
 [dependencies]
+infer = { path = "../infer", optional = true }
 serde = { version = "1.0.229", default-features = false, features = ["alloc", "derive"] }
 serde_json = { version = "1.0.154", default-features = false, features = ["alloc"] }
+
+[dev-dependencies]
+infer = { path = "../infer" }
+quant = { path = "../quant" }

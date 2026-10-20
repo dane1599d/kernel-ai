@@ -20,7 +20,7 @@ infer = { path = "../infer" }
 kabi = { path = "../kabi" }
 livecore = { path = "../livecore" }
 editcore = { path = "../editcore" }
-llmproto = { path = "../llmproto" }
+llmproto = { path = "../llmproto", features = ["local"] }
 quant = { path = "../quant" }
 supervise = { path = "../supervise" }
 shellcore = { path = "../shellcore" }
