@@ -10,12 +10,10 @@
 use crate::console::{self, FORM_FEED, Screen};
 use crate::keyboard::Decoder;
 use crate::{edit_mode, hpet, ipc, llm, log, memory, net, serial, smp, threads};
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::String;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use llmproto::text::printable;
-use sched::{Interactive, RoundRobin};
 use termcore::line::{Line, Outcome};
 
 const PROMPT: &str = "kai> ";
@@ -46,7 +44,7 @@ const HELP: &[(&str, &str)] = &[
     (":help", "this list"),
     (":ask <text>", "send <text> straight to the llm service"),
     (
-        ":policy [interactive|rr]",
+        ":policy [interactive|rr|classes firm]",
         "show or switch the scheduling policy on every CPU",
     ),
     (":threads", "scheduler statistics"),
@@ -290,12 +288,18 @@ fn ask(prompt: &str) {
 }
 
 fn policy(name: &str) {
-    match name {
-        "" => {}
-        "interactive" => threads::set_policy_all(|| Box::new(Interactive::new())),
-        "rr" | "round-robin" => threads::set_policy_all(|| Box::new(RoundRobin::new())),
-        other => {
-            log!("unknown policy {other}: use interactive or rr");
+    use sched::spec::PolicySpec;
+    let (kind, preset) = name.split_once(' ').unwrap_or((name, "gentle"));
+    let kind = if kind == "rr" { "round-robin" } else { kind };
+    match PolicySpec::parse(kind, preset) {
+        _ if name.is_empty() => {}
+        Ok(spec) => {
+            if let Err(error) = crate::sched_control::set_policy(spec) {
+                log!("cannot switch the policy: {error:?}");
+            }
+        }
+        Err(_) => {
+            log!("unknown policy {name}: use interactive, rr, responsive or classes gentle|firm");
             return;
         }
     }

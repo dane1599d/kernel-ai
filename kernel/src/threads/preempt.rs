@@ -82,13 +82,18 @@ pub fn on_tick() {
     let from = core.current();
     let now = hpet::nanos();
     // A wake-up that arrived while preemption was disabled still needs its switch.
-    let next = core.tick(now).or_else(|| {
+    let mut next = core.tick(now).or_else(|| {
         if deferred {
             core.preempt_if_pending(now)
         } else {
             None
         }
     });
+    // A trial's guardrail: reverts this CPU at once, then picks again.
+    if crate::sched_control::guard::guard(me, core, now) {
+        core.preempt(now);
+        next = (core.current() != from).then(|| core.current());
+    }
     let ejection = core.take_ejection();
     let policy = core.policy_name();
     LOAD[me].store(core.load(), Ordering::Relaxed);

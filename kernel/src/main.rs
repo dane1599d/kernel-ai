@@ -59,6 +59,7 @@ mod pointer;
 mod port;
 mod process;
 mod qemu;
+mod sched_control;
 mod sched_tests;
 mod script_tests;
 mod selftest;
@@ -72,6 +73,7 @@ mod terminal;
 mod thread_tests;
 mod threads;
 mod timer;
+mod tune_tests;
 mod virtio;
 mod workload;
 
@@ -286,6 +288,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::ComputeKeys => run_case(compute_tests::keys_check),
         SelfTest::Bigmap => run_case(bigmap_tests::check),
         SelfTest::IcountProbe => run_case(|| icount_tests::check(cmdline())),
+        SelfTest::TuneRevert => run_case(tune_tests::revert_check),
         SelfTest::Boot | SelfTest::None => {}
     }
 

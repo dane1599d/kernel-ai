@@ -355,6 +355,21 @@ pub fn installed_policy_everywhere(name: &str) -> bool {
     })
 }
 
+/// Runs `f` on CPU `cpu`'s scheduler core with interrupts off, given the time.
+/// `f` must not take a core lock (see the rules at the top).
+pub fn with_core<R>(cpu: usize, f: impl FnOnce(&mut Core, u64) -> R) -> Option<R> {
+    if cpu >= smp::online() {
+        return None;
+    }
+    interrupts::without_interrupts(|| {
+        let mut guard = CORES[cpu].lock();
+        let core = guard.as_mut()?;
+        let result = f(core, hpet::nanos());
+        LOAD[cpu].store(core.load(), Ordering::Relaxed);
+        Some(result)
+    })
+}
+
 /// Installs a fresh policy from `make` on every CPU. Old policies are dropped with
 /// interrupts enabled.
 pub fn set_policy_all(make: fn() -> Box<dyn SchedPolicy>) {

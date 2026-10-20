@@ -235,6 +235,7 @@ fn worker_main(packed: usize) {
     // Before the slot is published, from when on this thread is charged.
     super::burst::start_thread(me);
     SLOT_OF_TID[me].store(slot + 1, Ordering::Release);
+    super::thread_started(me, slot);
     // After registering: a kill that came before is seen here, and one that comes
     // after has this tid to wake.
     if killed(slot) {

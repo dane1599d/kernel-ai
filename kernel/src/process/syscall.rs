@@ -23,8 +23,6 @@ const MAX_CALL_MS: u64 = 150_000;
 pub(super) const NESTED_MARGIN_NS: u64 = 1_000_000_000;
 /// Longest a process waits for a service that is not up yet.
 pub(super) const MAX_BIND_WAIT_NS: u64 = 5_000_000_000;
-/// Fastest policy switches may follow each other.
-pub(crate) const MIN_POLICY_INTERVAL_NS: u64 = 100_000_000;
 
 /// Called by `entry::syscall_entry` with interrupts off.
 pub extern "C" fn dispatch(frame: &mut TrapFrame) {
@@ -129,7 +127,15 @@ fn handle(slot: usize, number: u64, a: [u64; 6]) -> Result<u64, Error> {
         }
         call::POLICY => {
             need(slot, cap::POLICY)?;
-            set_policy(a[0])
+            crate::sched_control::calls::policy(a[0], a[1])
+        }
+        call::SCHED_STATS => {
+            need(slot, cap::POLICY)?;
+            crate::sched_control::calls::stats(slot, a[0], a[1])
+        }
+        call::SCHED_TRIAL => {
+            need(slot, cap::POLICY)?;
+            crate::sched_control::calls::trial(slot, a[0])
         }
         call::INTERRUPTED => Ok(u64::from(super::take_interrupt(slot))),
         call::COMP_FETCH => {
@@ -385,34 +391,4 @@ pub(super) fn call_error(slot: usize, error: ipc::CallError) -> Error {
         ipc::CallError::NoMemory => Error::NoMemory,
         ipc::CallError::TooBig => Error::TooBig,
     }
-}
-
-/// Installs a scheduling policy on every CPU, unless it already is, or the last
-/// switch was too recent (a loop of switches would disturb every CPU).
-fn set_policy(id: u64) -> Result<u64, Error> {
-    use core::sync::atomic::{AtomicU64, Ordering};
-    static LAST_SWITCH_NS: AtomicU64 = AtomicU64::new(0);
-    let (name, make): (&str, fn() -> alloc::boxed::Box<dyn sched::SchedPolicy>) = match id {
-        kabi::policy::INTERACTIVE => ("interactive", || {
-            alloc::boxed::Box::new(sched::Interactive::new())
-        }),
-        kabi::policy::ROUND_ROBIN => ("round-robin", || {
-            alloc::boxed::Box::new(sched::RoundRobin::new())
-        }),
-        _ => return Err(Error::Invalid),
-    };
-    if threads::installed_policy_everywhere(name) {
-        return Ok(0);
-    }
-    let now = hpet::nanos();
-    let last = LAST_SWITCH_NS.load(Ordering::Relaxed);
-    if last != 0 && now.saturating_sub(last) < MIN_POLICY_INTERVAL_NS {
-        return Err(Error::Busy);
-    }
-    LAST_SWITCH_NS.store(now, Ordering::Relaxed);
-    threads::set_policy_all(make);
-    // A script that switches and then reads the policy must see the switch.
-    crate::metrics::invalidate();
-    log!("sched: policy switched to {name} by a ring-3 request");
-    Ok(0)
 }
