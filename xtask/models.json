@@ -2,6 +2,32 @@
   "default": "qwen3-0.6b",
   "models": [
     {
+      "decode": {
+        "embedding": "Q8_0",
+        "layers": [
+          {
+            "count": 28,
+            "groups": [
+              [
+                "Q8_0 1024x2048",
+                "Q8_0 1024x1024",
+                "Q8_0 1024x1024"
+              ],
+              [
+                "Q8_0 2048x1024"
+              ],
+              [
+                "Q8_0 1024x3072",
+                "Q8_0 1024x3072"
+              ],
+              [
+                "Q8_0 3072x1024"
+              ]
+            ]
+          }
+        ],
+        "output": "Q8_0 1024x151936"
+      },
       "file": "Qwen3-0.6B-Q8_0.gguf",
       "id": "qwen3-0.6b",
       "license": "Apache-2.0",
@@ -12,6 +38,122 @@
       "revision": "23749fefcc72300e3a2ad315e1317431b06b590a",
       "sha256": "9465e63a22add5354d9bb4b99e90117043c7124007664907259bd16d043bb031",
       "size": 639446688
+    },
+    {
+      "decode": {
+        "embedding": "Q6_K",
+        "layers": [
+          {
+            "count": 14,
+            "groups": [
+              [
+                "Q4_K 2048x2048",
+                "Q4_K 2048x1024",
+                "Q6_K 2048x1024"
+              ],
+              [
+                "Q4_K 2048x2048"
+              ],
+              [
+                "Q4_K 2048x6144",
+                "Q4_K 2048x6144"
+              ],
+              [
+                "Q6_K 6144x2048"
+              ]
+            ]
+          },
+          {
+            "count": 14,
+            "groups": [
+              [
+                "Q4_K 2048x2048",
+                "Q4_K 2048x1024",
+                "Q4_K 2048x1024"
+              ],
+              [
+                "Q4_K 2048x2048"
+              ],
+              [
+                "Q4_K 2048x6144",
+                "Q4_K 2048x6144"
+              ],
+              [
+                "Q4_K 6144x2048"
+              ]
+            ]
+          }
+        ],
+        "output": "Q6_K 2048x151936"
+      },
+      "file": "Qwen3-1.7B-Q4_K_M.gguf",
+      "id": "qwen3-1.7b",
+      "license": "Apache-2.0",
+      "min_ram_gb": 8,
+      "name": "Qwen3-1.7B Q4_K_M",
+      "note": "A step up from the MVP for 8 GB machines, once the engine runs K-quants (L6 engine part 2).",
+      "repo": "unsloth/Qwen3-1.7B-GGUF",
+      "revision": "d7f544eead698dbd1f15126ef60b45a1e1933222",
+      "sha256": "b139949c5bd74937ad8ed8c8cf3d9ffb1e99c866c823204dc42c0d91fa181897",
+      "size": 1107409472
+    },
+    {
+      "decode": {
+        "embedding": "Q6_K",
+        "layers": [
+          {
+            "count": 18,
+            "groups": [
+              [
+                "Q4_K 2560x4096",
+                "Q4_K 2560x1024",
+                "Q6_K 2560x1024"
+              ],
+              [
+                "Q4_K 4096x2560"
+              ],
+              [
+                "Q4_K 2560x9728",
+                "Q4_K 2560x9728"
+              ],
+              [
+                "Q6_K 9728x2560"
+              ]
+            ]
+          },
+          {
+            "count": 18,
+            "groups": [
+              [
+                "Q4_K 2560x4096",
+                "Q4_K 2560x1024",
+                "Q4_K 2560x1024"
+              ],
+              [
+                "Q4_K 4096x2560"
+              ],
+              [
+                "Q4_K 2560x9728",
+                "Q4_K 2560x9728"
+              ],
+              [
+                "Q4_K 9728x2560"
+              ]
+            ]
+          }
+        ],
+        "output": "Q6_K 2560x151936"
+      },
+      "file": "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+      "id": "qwen3-4b-2507",
+      "license": "Apache-2.0",
+      "min_ram_gb": 16,
+      "name": "Qwen3-4B-Instruct-2507 Q4_K_M",
+      "note": "L6's default once the engine runs K-quants (L6 engine part 2): far better answers than the 0.6B, about 2.5 GB.",
+      "repo": "unsloth/Qwen3-4B-Instruct-2507-GGUF",
+      "revision": "a06e946bb6b655725eafa393f4a9745d460374c9",
+      "sha256": "3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597",
+      "size": 2497281120
     }
   ]
 }

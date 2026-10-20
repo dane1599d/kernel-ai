@@ -37,6 +37,10 @@ pub fn run(args: &ModelArgs) -> Result<(), String> {
         println!("xtask: checking {} against the catalog", path.display());
         fetch::verify(&path, entry)?;
         println!("xtask: size and SHA-256 match the pinned file");
+        if let Some(why) = entry.not_runnable() {
+            println!("xtask: {why}; the rest of the check waits until then");
+            return Ok(());
+        }
         let args = ModelArgs {
             local: Some(entry.id.clone()),
             store: args.store.clone(),
