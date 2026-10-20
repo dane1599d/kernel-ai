@@ -31,6 +31,30 @@ pub fn vm_cpus(accel: Accel, sizing: Sizing) -> usize {
     }
 }
 
+/// The VM `run` boots: [`model_sizing`] on this host with a model disk.
+pub fn run_sizing(accel: Accel, sizing: Sizing, model: bool) -> Sizing {
+    match model {
+        true => {
+            let host = thread::available_parallelism().map_or(1, usize::from);
+            model_sizing(accel, sizing, host)
+        }
+        false => sizing,
+    }
+}
+
+/// `run` with a model disk (L6): unless `--cpus` says otherwise, every host core
+/// up to the kernel's 8 under KVM or WHPX, since the engine runs one worker per
+/// vCPU; emulation keeps [`vm_cpus`]'s default.
+fn model_sizing(accel: Accel, sizing: Sizing, host: usize) -> Sizing {
+    match (sizing.cpus, accel) {
+        (None, Accel::Kvm | Accel::Whpx) => Sizing {
+            cpus: Some(host.clamp(1, crate::options::MAX_VM_CPUS)),
+            ..sizing
+        },
+        _ => sizing,
+    }
+}
+
 /// Guest memory in MiB: `--mem` when given, but never less than the model disk
 /// (or the base 512 MiB without one) needs.
 pub fn vm_memory_mib(disk: Option<&ModelDisk>, sizing: Sizing) -> u64 {
@@ -318,7 +342,9 @@ fn strip_confirm_prompt(line: &str) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
-    use super::from_programs;
+    use super::{from_programs, model_sizing};
+    use crate::Accel;
+    use crate::options::Sizing;
 
     #[test]
     fn program_output_is_told_apart_from_kernel_lines() {
@@ -352,5 +378,22 @@ mod tests {
         assert!(!from_programs("edit notes> boot-ok"));
         assert!(!from_programs("apply e1 to notes? yes/no> boot-ok"));
         assert!(!from_programs("edit Notes> = x"));
+    }
+
+    #[test]
+    fn a_model_gets_every_host_core_up_to_eight_under_acceleration() {
+        let none = Sizing {
+            cpus: None,
+            mem_mib: None,
+        };
+        let cpus = |accel, host| model_sizing(accel, none, host).cpus;
+        assert_eq!(cpus(Accel::Kvm, 16), Some(8));
+        assert_eq!(cpus(Accel::Whpx, 6), Some(6));
+        assert_eq!(cpus(Accel::Tcg, 16), None);
+        let asked = Sizing {
+            cpus: Some(2),
+            ..none
+        };
+        assert_eq!(model_sizing(Accel::Kvm, asked, 16).cpus, Some(2));
     }
 }

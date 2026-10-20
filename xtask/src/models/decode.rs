@@ -12,9 +12,10 @@
 use gguf::{Header, TensorType};
 use serde_json::{Value, json};
 
-/// The matrix types the engine's forward pass runs now. L6's engine part 2 adds
-/// Q4_K and Q6_K, which the quant kernels already run.
-pub const ENGINE_TYPES: [&str; 1] = ["Q8_0"];
+/// The matrix types the engine's forward pass runs: all the quant kernels run,
+/// since L6's engine part 2. A catalog model with any other type is pinned but
+/// never recommended or run.
+pub const ENGINE_TYPES: [&str; 3] = ["Q8_0", "Q4_K", "Q6_K"];
 
 /// The matrix types the quant kernels run, so the only ones a catalog model may
 /// use; its norms are F32.

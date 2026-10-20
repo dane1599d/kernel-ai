@@ -146,7 +146,8 @@ fn execute(options: &Options) -> Result<(), String> {
         };
         esp::make_esp(&esp, &kernel, &modules, &efi, &cmdline)?;
         let firmware = find_firmware(&qemu, &target_dir)?;
-        let args = qemu::args(&firmware, accel, false, disk.as_ref(), options.sizing);
+        let sizing = qemu::run_sizing(accel, options.sizing, disk.is_some());
+        let args = qemu::args(&firmware, accel, false, disk.as_ref(), sizing);
         println!("xtask: {} {}", qemu.display(), args.join(" "));
         return qemu::run_interactive(&qemu, &args, &target_dir);
     }

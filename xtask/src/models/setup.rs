@@ -26,7 +26,6 @@ pub fn run(args: &ModelArgs) -> Result<(), String> {
         "xtask: model: {} ({size_mb} MB, {}). {}",
         entry.name, entry.license, entry.note
     );
-    println!("        Qwen3-4B becomes the default in L6, once the engine runs Q4_K and threads.");
     let target = store.join(&entry.file);
     if !target.exists() {
         if let Some(free) = pc.free_bytes
@@ -127,23 +126,26 @@ mod tests {
     fn the_model_follows_the_command_line_then_the_ram() {
         let catalog = Catalog::load().unwrap();
         let none = ModelArgs::default();
-        assert_eq!(choose(&catalog, &none, Some(32)).unwrap().id, "qwen3-0.6b");
+        assert_eq!(
+            choose(&catalog, &none, Some(32)).unwrap().id,
+            "qwen3-4b-2507"
+        );
+        assert_eq!(choose(&catalog, &none, Some(6)).unwrap().id, "qwen3-1.7b");
         assert_eq!(choose(&catalog, &none, None).unwrap().id, catalog.default);
         assert!(choose(&catalog, &none, Some(1)).is_err());
         let named = ModelArgs::parse(&["qwen3-0.6b"]).unwrap();
         assert_eq!(choose(&catalog, &named, Some(1)).unwrap().id, "qwen3-0.6b");
-        // A model the engine cannot run yet is never recommended, whatever the
-        // RAM, but may be named.
-        for ram in [8, 16, 32, 1024] {
+        // Every model the catalog recommends runs, and so does the default.
+        for ram in [4, 8, 16, 32, 1024] {
             let picked = choose(&catalog, &none, Some(ram)).unwrap();
             assert!(picked.not_runnable().is_none(), "{} at {ram} GB", picked.id);
         }
         let k = ModelArgs::parse(&["qwen3-4b-2507"]).unwrap();
         assert!(
-            choose(&catalog, &k, Some(32))
+            choose(&catalog, &k, Some(1))
                 .unwrap()
                 .not_runnable()
-                .is_some()
+                .is_none()
         );
         let unknown = ModelArgs::parse(&["--local", "nope"]).unwrap();
         assert!(choose(&catalog, &unknown, Some(32)).is_err());

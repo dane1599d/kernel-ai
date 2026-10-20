@@ -450,7 +450,7 @@ impl<'a> Engine<'a> {
 /// buffer), the header's metadata map, one f32 logit and two token ids (for JSON
 /// shapes) per token, the RoPE table, the scratch vectors and one token id per
 /// position.
-fn other_bytes(file: &Gguf<'_>, config: &Config, positions: usize) -> usize {
+pub(crate) fn other_bytes(file: &Gguf<'_>, config: &Config, positions: usize) -> usize {
     let strings = |key: &str| -> (usize, usize) {
         file.get(key)
             .and_then(|value| value.as_array())

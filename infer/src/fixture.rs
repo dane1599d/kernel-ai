@@ -125,10 +125,12 @@ impl Spec {
         }
     }
 
-    /// The model the `local-ask` boot case answers from: tiny's shapes, an output
-    /// that reaches only plain-text tokens, and a trained context of 152 positions.
-    /// `ask`'s prompt takes 130 of them, so the answer stops at the context's end
-    /// after 23 tokens, in seconds even when QEMU emulates the CPU.
+    /// The model the `local-ask` boot case answers from: one layer of
+    /// [`Spec::tiny_k`]'s shapes in its Q4_K and Q6_K mix (L6), so CI runs the
+    /// K-quant path, an output that reaches only plain-text tokens, and a trained
+    /// context of 152 positions. `ask`'s prompt takes 130 of them, so the answer
+    /// stops at the context's end after 23 tokens, in seconds even when QEMU
+    /// emulates the CPU.
     pub fn local_ask() -> Self {
         Self {
             context_length: 152,
@@ -137,11 +139,13 @@ impl Spec {
             name: LOCAL_ASK_NAME,
             license: Some("MPL-2.0"),
             seed: 10,
-            ..Self::tiny()
+            n_layer: 1,
+            n_ff: 256,
+            ..Self::tiny_k()
         }
     }
 
-    /// The model the `local-script` and `live-local` boot cases ask: tiny's
+    /// The model the `local-script` and `live-local` boot cases ask: local-ask's
     /// shapes, the llm service's whole context cap, an output that reaches only
     /// words and the quote, which ends its strings, and room in the vocabulary
     /// for merges trained on the system prompts ([`local_script`]).
