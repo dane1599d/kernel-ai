@@ -75,6 +75,8 @@ pub struct Features {
     pub avx512f: bool,
     pub avx512bw: bool,
     pub avx512vnni: bool,
+    /// AVX-512 VL: the AVX-512 instructions on xmm and ymm registers too.
+    pub avx512vl: bool,
     pub xsave: bool,
     /// CR4.OSXSAVE as CPUID reflects it: the OS has turned XSAVE on.
     pub osxsave: bool,
@@ -121,6 +123,7 @@ impl Features {
             avx512f: bit(ebx7, 16),
             avx512bw: bit(ebx7, 30),
             avx512vnni: bit(ecx7, 11),
+            avx512vl: bit(ebx7, 31),
             xsave,
             osxsave,
             hypervisor: bit(ecx1, 31),
@@ -377,6 +380,10 @@ mod tests {
             cpu.avx512(),
             std::is_x86_feature_detected!("avx512f") && std::is_x86_feature_detected!("avx512bw")
         );
+        if cpu.avx512() {
+            assert_eq!(cpu.avx512vl, std::is_x86_feature_detected!("avx512vl"));
+            assert_eq!(cpu.avx512vnni, std::is_x86_feature_detected!("avx512vnni"));
+        }
         if cpu.osxsave {
             assert!(cpu.xcr0 & XCR0_X87 != 0);
             assert_eq!(cpu.xcr0 & !cpu.xcr0_supported, 0);

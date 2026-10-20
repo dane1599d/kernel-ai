@@ -1,4 +1,5 @@
-//! The Q8_0 matrix-vector product, in a baseline tier and an AVX2 tier.
+//! The Q8_0 matrix-vector product, in a baseline tier and an AVX2 tier, which
+//! the AVX-512 tiers also run.
 //!
 //! Both tiers compute each block's dot product as an exact i32 (32 products of
 //! at most 128 * 127), then add `(d_w * d_x) * sum` to the row's total block by
@@ -6,55 +7,9 @@
 //! integer part differs between tiers, so every tier gives the same bits.
 
 use crate::f16;
+use crate::kquant::canonical;
 use crate::q8_0::{BLOCK_BYTES, BLOCK_LEN, QVec, row_bytes};
-
-/// A matvec implementation this CPU can run. Only [`Tier::BASELINE`] and what
-/// [`Tier::avx2`] and [`Tier::best`] detect exist, so holding a tier proves the
-/// CPU runs it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Tier(Kind);
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Kind {
-    Baseline,
-    #[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
-    Avx2,
-}
-
-impl Tier {
-    /// Plain Rust, for any CPU.
-    pub const BASELINE: Self = Self(Kind::Baseline);
-
-    /// The fastest tier this CPU runs.
-    pub fn best() -> Self {
-        Self::avx2().unwrap_or(Self::BASELINE)
-    }
-
-    /// AVX2 and FMA, when the CPU has them and the OS saves ymm state. Targets
-    /// without SSE (the soft-float kernel target) never get it.
-    pub(crate) fn avx2() -> Option<Self> {
-        if !cpufeat::Features::detect().avx2_fma() {
-            return None;
-        }
-        #[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
-        return Some(Self(Kind::Avx2));
-        #[cfg(not(all(target_arch = "x86_64", target_feature = "sse2")))]
-        None
-    }
-
-    /// Every tier this CPU runs, the baseline first.
-    pub fn all() -> impl Iterator<Item = Self> {
-        core::iter::once(Self::BASELINE).chain(Self::avx2())
-    }
-
-    pub fn name(self) -> &'static str {
-        match self.0 {
-            Kind::Baseline => "baseline",
-            #[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
-            Kind::Avx2 => "avx2+fma",
-        }
-    }
-}
+use crate::tier::{Kind, Tier};
 
 /// `y[r]` = row `r` of `w` times `x`, for every row. `w` holds `y.len()` rows of
 /// Q8_0 blocks, `x.len()` values each. A row that comes to NaN gives the one
@@ -73,18 +28,14 @@ pub fn matvec(tier: Tier, w: &[u8], x: &QVec, y: &mut [f32]) {
             }
         }
         #[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
-        Kind::Avx2 => {
+        Kind::Avx2 | Kind::Avx512 | Kind::Avx512Vnni => {
             for (w, y) in w.chunks_exact(row).zip(y) {
-                // SAFETY: a Kind::Avx2 tier exists only when the CPU has AVX2
-                // and FMA and the OS saves ymm state.
+                // SAFETY: every one of these tiers exists only when the CPU has
+                // AVX2 and FMA and the OS saves ymm state.
                 *y = canonical(unsafe { avx2::dot(w, x) });
             }
         }
     }
-}
-
-fn canonical(v: f32) -> f32 {
-    if v.is_nan() { f32::NAN } else { v }
 }
 
 fn scale(block: &[u8]) -> f32 {

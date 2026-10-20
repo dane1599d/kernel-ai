@@ -324,6 +324,8 @@ fn tiers_are_named_and_the_baseline_comes_first() {
     #[cfg(target_arch = "x86_64")]
     assert_eq!(
         Tier::avx2().is_some(),
-        std::is_x86_feature_detected!("avx2") && std::is_x86_feature_detected!("fma")
+        std::is_x86_feature_detected!("avx2")
+            && std::is_x86_feature_detected!("fma")
+            && std::is_x86_feature_detected!("f16c")
     );
 }

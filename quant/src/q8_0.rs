@@ -29,7 +29,7 @@ fn quantize_block(x: &[f32], q: &mut [i8]) -> u16 {
 
 /// Nearest integer, ties to even, for |v| up to 2^22 (NaN stays NaN, and a NaN
 /// cast to i8 is 0). Adding and taking away 1.5 * 2^23 leaves no fraction bits.
-fn round_even(v: f32) -> f32 {
+pub(crate) fn round_even(v: f32) -> f32 {
     const MAGIC: f32 = 12_582_912.0;
     if v.abs() < 4_194_304.0 {
         (v + MAGIC) - MAGIC
