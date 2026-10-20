@@ -433,6 +433,7 @@ dependencies = [
  "gguf",
  "libm",
  "quant",
+ "serde_json",
 ]
 
 [[package]]

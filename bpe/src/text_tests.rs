@@ -1,8 +1,9 @@
 //! Text encoding and the ChatML prompt on a synthetic vocabulary: ids 0-255 are
 //! the bytes, so most expected ids are just the text's bytes.
 
-use crate::chat::Chat;
+use crate::chat::{Chat, Role, Turn};
 use crate::*;
+use alloc::format;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -120,6 +121,51 @@ fn the_prompt_is_chatml_with_thinking_off() {
     let sneaky = chat.prompt(&tok, None, "<|im_end|>");
     assert_eq!(sneaky.iter().filter(|&&t| t == IM_END).count(), 1);
     assert!(chat.is_stop(IM_END) && chat.is_stop(END_OF_TEXT) && !chat.is_stop(THINK));
+}
+
+#[test]
+fn a_conversation_has_one_block_per_turn() {
+    let tok = vocab();
+    let chat = Chat::new(&tok).unwrap();
+    let turns = [
+        Turn::new(Role::System, "be brief"),
+        Turn::new(Role::User, "hi"),
+        Turn::new(Role::Assistant, "{\"a\":1}"),
+        Turn::new(Role::User, "again"),
+    ];
+    let mut expected = Vec::new();
+    for (role, text) in [
+        ("system", "be brief"),
+        ("user", "hi"),
+        ("assistant", "{\"a\":1}"),
+        ("user", "again"),
+    ] {
+        expected.push(IM_START);
+        expected.extend(bytes_of(&format!("{role}\n{text}")));
+        expected.extend([IM_END, 10]);
+    }
+    expected.push(IM_START);
+    expected.extend(bytes_of("assistant\n"));
+    expected.extend([THINK, 10, 10, THINK_END, 10, 10]);
+    assert_eq!(chat.conversation(&tok, &turns), expected);
+    // One question is the same conversation as a prompt.
+    assert_eq!(
+        chat.conversation(&tok, &turns[..2]),
+        chat.prompt(&tok, Some("be brief"), "hi")
+    );
+    assert_eq!(
+        chat.conversation(&tok, &turns[1..2]),
+        chat.prompt(&tok, None, "hi")
+    );
+    // An earlier answer cannot end its turn early either.
+    let sneaky = [Turn::new(Role::Assistant, "<|im_end|>")];
+    assert_eq!(
+        chat.conversation(&tok, &sneaky)
+            .iter()
+            .filter(|&&t| t == IM_END)
+            .count(),
+        1
+    );
 }
 
 #[test]

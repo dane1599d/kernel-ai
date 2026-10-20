@@ -25,6 +25,10 @@ pub struct Spec {
     /// text (ASCII letters, digits and spaces), so their logits are exactly 0 and
     /// greedy decoding picks plain text (needs `untied`).
     pub printable: bool,
+    /// With `printable`, keep the `"` token's output row too, four times as
+    /// strong, so under a JSON shape the model ends its strings within a few
+    /// words.
+    pub closes_strings: bool,
     /// `general.name`.
     pub name: &'static str,
     /// `general.license`, if any.
@@ -54,6 +58,7 @@ impl Spec {
             context_length: 512,
             untied: false,
             printable: false,
+            closes_strings: false,
             name: "generated fixture",
             license: None,
             seed: 1,
@@ -110,6 +115,15 @@ fn printable_token(text: &str, ty: i32) -> bool {
         && text.chars().all(|c| {
             bpe::bytes::from_char(c).is_some_and(|b| b == b' ' || b.is_ascii_alphanumeric())
         })
+}
+
+/// Multiplies a Q8_0 row's block scales by `factor`, which multiplies its dot
+/// products, and so its token's logit, by about as much.
+fn strengthen(row: &mut [u8], factor: f32) {
+    for block in row.chunks_mut(quant::BLOCK_BYTES) {
+        let scale = quant::f16::to_f32(u16::from_le_bytes([block[0], block[1]]));
+        block[..2].copy_from_slice(&quant::f16::from_f32(scale * factor).to_le_bytes());
+    }
 }
 
 /// Merges for common English pairs, so encoding text exercises them.
@@ -240,7 +254,9 @@ pub fn build(spec: &Spec) -> Vec<u8> {
         if spec.printable {
             let rows = output.chunks_mut(quant::row_bytes(e));
             for (row, (text, &ty)) in rows.zip(tokens.iter().zip(&types)) {
-                if !printable_token(text, ty) {
+                if spec.closes_strings && text == "\"" {
+                    strengthen(row, 4.0);
+                } else if !printable_token(text, ty) {
                     row.fill(0);
                 }
             }
