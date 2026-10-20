@@ -524,6 +524,8 @@ dependencies = [
 name = "llmproto"
 version = "0.0.0"
 dependencies = [
+ "infer",
+ "quant",
  "serde",
  "serde_json",
 ]

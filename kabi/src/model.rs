@@ -53,12 +53,16 @@ pub const fn table_pages(len: u64) -> u64 {
     tables + directories + 1
 }
 
-/// Positions of context the llm service's engine holds at most.
-pub const CONTEXT_CAP: usize = 512;
+/// Positions of context the llm service's engine holds at most: room for the
+/// script system prompt (about 650 Qwen tokens), a request and a whole answer of
+/// `llmproto::script::SCRIPT_MAX_TOKENS`, or a repair round of a script of a
+/// few hundred tokens. Repairing a script near the 3 KiB limit can fill it; the
+/// shell is then told so.
+pub const CONTEXT_CAP: usize = 2048;
 /// Bytes the engine's f32 KV cache may take: [`CONTEXT_CAP`] positions of
-/// Qwen3-0.6B (28 layers of 1,024 keys and 1,024 values), 112 MiB. A model that
+/// Qwen3-0.6B (28 layers of 1,024 keys and 1,024 values), 448 MiB. A model that
 /// needs more per position gets fewer positions.
-pub const KV_BYTES: u64 = 112 << 20;
+pub const KV_BYTES: u64 = 448 << 20;
 /// Bytes for everything else the engine sizes from the file: the tokenizer while
 /// it is built, the logits, the RoPE table and the scratch vectors. The engine
 /// refuses a file whose header says it would need more; Qwen3's vocabulary is

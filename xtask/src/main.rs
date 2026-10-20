@@ -30,6 +30,7 @@ mod fluency;
 mod httpd;
 mod lines;
 mod local_ask;
+mod local_script;
 mod mock_llm;
 mod models;
 mod options;

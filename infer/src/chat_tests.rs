@@ -195,19 +195,21 @@ fn a_vocabulary_too_large_for_the_budget_is_refused_before_it_is_built() {
         matches!(refused, Some(LoadError::TooLarge(n)) if n > 64 * 1024),
         "{refused:?}"
     );
-    // A vocabulary as large as Qwen3's fits the budget the llm service gets (its
-    // 151,387 merges add about 7 MiB more to the estimate).
+    // A vocabulary as large as Qwen3's fits the budget the llm service gets, at
+    // its whole context cap (its 151,387 merges add about 7 MiB more to the
+    // estimate).
     let wide = fixture::build(&Spec {
         vocab: 151_936,
+        context_length: 40_960,
         ..Spec::tiny()
     });
-    // kabi::model::KV_BYTES and ENGINE_OTHER_BYTES.
+    // kabi::model::KV_BYTES, ENGINE_OTHER_BYTES and CONTEXT_CAP.
     let service = Budget {
-        kv_bytes: 112 << 20,
+        kv_bytes: 448 << 20,
         other_bytes: 24 << 20,
     };
-    let loaded = Engine::load(&wide, Tier::best(), 512, service).unwrap();
-    assert_eq!(loaded.about().context, 512);
+    let loaded = Engine::load(&wide, Tier::best(), 2048, service).unwrap();
+    assert_eq!(loaded.about().context, 2048);
     assert_eq!(loaded.about().config.vocab, 151_936);
 }
 

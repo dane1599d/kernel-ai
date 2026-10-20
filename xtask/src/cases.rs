@@ -185,6 +185,35 @@ pub const TEST_CASES: &[TestCase] = &[
         ],
         ..case("local-ask", "test=local-ask")
     },
+    // L5's exit test: the model on the disk writes the script for a plain-English
+    // request, and the shell checks it, with no server. xtask adds the shell's
+    // reply, worked out on the host, as an exact line.
+    TestCase {
+        disk: Some(Fixture::LocalScript),
+        server: false,
+        keys: &[SHOW_CPUS],
+        expect: &[
+            "kai> show me the cpus please",
+            "local-script: the local model's script got the host's outcome, twice, with no server",
+        ],
+        ..case("local-script", "test=local-script")
+    },
+    // The live scenario with the model on the disk and no server: `:why` is
+    // answered by the local model.
+    TestCase {
+        disk: Some(Fixture::LiveLocal),
+        server: false,
+        expect: &["live: :why notes was answered by the local model"],
+        ..case("live-local", "test=live")
+    },
+];
+
+/// "show me the cpus please" and Enter: plain English, so the shell asks llm for a
+/// script.
+#[rustfmt::skip]
+const SHOW_CPUS: &[&str] = &[
+    "s", "h", "o", "w", "spc", "m", "e", "spc", "t", "h", "e", "spc",
+    "c", "p", "u", "s", "spc", "p", "l", "e", "a", "s", "e", "ret",
 ];
 
 /// The M5 exit test: a 10-minute spawn, exit and sleep storm.

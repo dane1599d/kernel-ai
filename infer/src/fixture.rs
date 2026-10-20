@@ -3,6 +3,9 @@
 //! specials, padded with unused tokens; the weights are random Q8_0 blocks scaled
 //! so activations stay near unit size. A spec always gives the same bytes.
 
+mod vocab;
+
+use alloc::collections::BTreeSet;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -95,6 +98,51 @@ impl Spec {
             ..Self::tiny()
         }
     }
+
+    /// The model the `local-script` and `live-local` boot cases ask: tiny's
+    /// shapes, the llm service's whole context cap, an output that reaches only
+    /// words and the quote, which ends its strings, and room in the vocabulary
+    /// for merges trained on the system prompts ([`local_script`]).
+    pub fn local_script() -> Self {
+        Self {
+            context_length: 2048,
+            vocab: 3072,
+            closes_strings: true,
+            seed: 11,
+            ..Self::local_ask()
+        }
+    }
+}
+
+/// The local-script model file: [`Spec::local_script`], with a vocabulary of the
+/// bytes, the chat specials and byte-pair merges learned from `text` (the system
+/// prompts the llm service sends), filled up with filler words. Its prompts then
+/// take a few hundred tokens rather than one per byte.
+pub fn local_script(text: &str) -> Vec<u8> {
+    let spec = Spec::local_script();
+    let mut tokens: Vec<String> = (0..=255u8).map(|b| bpe::bytes::to_char(b).into()).collect();
+    let mut types = alloc::vec![1; tokens.len()];
+    for (text, ty) in SPECIALS {
+        tokens.push(text.into());
+        types.push(ty);
+    }
+    let (merges, made) = vocab::train(text, spec.vocab - tokens.len());
+    for token in made {
+        assert!(
+            !SPECIALS.iter().any(|(name, _)| *name == token),
+            "a merge spells {token}"
+        );
+        tokens.push(token);
+        types.push(1);
+    }
+    let taken: BTreeSet<String> = tokens.iter().cloned().collect();
+    let fillers = (0..)
+        .map(|i| format!("\u{120}w{i}"))
+        .filter(|name| !taken.contains(name));
+    let room = spec.vocab - tokens.len();
+    tokens.extend(fillers.take(room));
+    types.resize(tokens.len(), 1);
+    build_with(&spec, &tokens, &types, &merges)
 }
 
 /// The local-ask model file: [`Spec::local_ask`] and a short tail that makes its
@@ -214,6 +262,16 @@ impl Rng {
 /// The GGUF file for `spec`.
 pub fn build(spec: &Spec) -> Vec<u8> {
     let (tokens, types) = vocabulary(spec.vocab);
+    build_with(spec, &tokens, &types, &MERGES)
+}
+
+/// The GGUF file for `spec` with this vocabulary.
+fn build_with(
+    spec: &Spec,
+    tokens: &[String],
+    types: &[i32],
+    merges: &[impl AsRef<str>],
+) -> Vec<u8> {
     let eos = tokens.iter().position(|t| t == "<|im_end|>").unwrap_or(0);
     let mut w = Writer::new();
     let u32_of = |n: usize| n as u32;
@@ -234,9 +292,9 @@ pub fn build(spec: &Spec) -> Vec<u8> {
         .u32("qwen3.attention.value_length", u32_of(spec.head_dim))
         .string("tokenizer.ggml.model", "gpt2")
         .string("tokenizer.ggml.pre", "qwen2")
-        .strings("tokenizer.ggml.tokens", &tokens)
-        .i32s("tokenizer.ggml.token_type", &types)
-        .strings("tokenizer.ggml.merges", &MERGES)
+        .strings("tokenizer.ggml.tokens", tokens)
+        .i32s("tokenizer.ggml.token_type", types)
+        .strings("tokenizer.ggml.merges", merges)
         .u32("tokenizer.ggml.eos_token_id", u32_of(eos))
         .bool("tokenizer.ggml.add_bos_token", false);
     let mut rng = Rng(spec.seed);
@@ -253,7 +311,7 @@ pub fn build(spec: &Spec) -> Vec<u8> {
         let mut output = rng.matrix(e, spec.vocab);
         if spec.printable {
             let rows = output.chunks_mut(quant::row_bytes(e));
-            for (row, (text, &ty)) in rows.zip(tokens.iter().zip(&types)) {
+            for (row, (text, &ty)) in rows.zip(tokens.iter().zip(types)) {
                 if spec.closes_strings && text == "\"" {
                     strengthen(row, 4.0);
                 } else if !printable_token(text, ty) {

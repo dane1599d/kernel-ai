@@ -28,8 +28,20 @@ pub struct ModelDisk {
     len: u64,
     /// The host's hash, passed on for a test boot to check against.
     fnv: Option<u64>,
-    /// The answer the model must give to `ask hi`, for the `local-ask` case.
-    golden: Option<String>,
+    /// What a boot from a generated model must show, worked out on the host.
+    golden: Option<Golden>,
+}
+
+/// What the `local-ask` and `local-script` cases' model must make the guest show.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Golden {
+    /// Hashed onto the command line (`local_golden=`) for the kernel to compare:
+    /// the answer to the kernel's `ask hi`, or the shell's reply to the kernel's
+    /// script request.
+    hashed: String,
+    /// Console lines that must appear whole: the terminal's reply to the typed
+    /// line.
+    lines: Vec<String>,
 }
 
 impl ModelDisk {
@@ -117,18 +129,18 @@ impl ModelDisk {
         match &self.golden {
             Some(golden) => format!(
                 "{attached} local_golden={:016x}",
-                kabi::model::fnv1a(golden.as_bytes())
+                kabi::model::fnv1a(golden.hashed.as_bytes())
             ),
             None => attached,
         }
     }
 
     /// Console lines a boot with this disk must show exactly: the terminal's
-    /// answer to `ask hi`.
+    /// reply to what the harness typed.
     pub fn exact_lines(&self) -> Vec<String> {
         self.golden
-            .as_deref()
-            .map_or_else(Vec::new, crate::local_ask::terminal_lines)
+            .as_ref()
+            .map_or_else(Vec::new, |golden| golden.lines.clone())
     }
 
     /// Text such a boot's console must contain: health naming the local model.
@@ -163,6 +175,13 @@ pub enum Fixture {
     /// The generated model `local-ask` answers from (`infer::fixture::local_ask`),
     /// with the golden answer xtask computes for it.
     LocalAsk,
+    /// The generated model `local-script` asks for a script, whose vocabulary is
+    /// trained on the system prompts (`infer::fixture::local_script`), with the
+    /// shell's replies xtask computes for it.
+    LocalScript,
+    /// The same model for `live-local`, whose `:why` it answers with no golden:
+    /// what it says depends on the scenario's facts.
+    LiveLocal,
 }
 
 impl Fixture {
@@ -171,6 +190,8 @@ impl Fixture {
             Fixture::Raw => "blk-raw.img",
             Fixture::Gguf => "model.gguf",
             Fixture::LocalAsk => "local-ask.gguf",
+            Fixture::LocalScript => "local-script.gguf",
+            Fixture::LiveLocal => "live-local.gguf",
         }
     }
 
@@ -189,6 +210,9 @@ impl Fixture {
                 GGUF_LEN,
             ),
             Fixture::LocalAsk => return infer::fixture::local_ask(),
+            Fixture::LocalScript | Fixture::LiveLocal => {
+                return infer::fixture::local_script(&crate::local_script::prompts());
+            }
         };
         let mut bytes = Vec::with_capacity(len);
         bytes.extend_from_slice(lead);
@@ -215,9 +239,23 @@ impl Fixture {
         hash.update(&bytes);
         let mut disk = ModelDisk::open(&path)?;
         disk.fnv = Some(hash.finish());
-        if self == Fixture::LocalAsk {
-            disk.golden = Some(crate::local_ask::golden(&bytes)?);
-        }
+        disk.golden = match self {
+            Fixture::LocalAsk => {
+                let answer = crate::local_ask::golden(&bytes)?;
+                Some(Golden {
+                    lines: crate::local_ask::terminal_lines(&answer),
+                    hashed: answer,
+                })
+            }
+            Fixture::LocalScript => {
+                let outcome = crate::local_script::golden(&bytes)?;
+                Some(Golden {
+                    lines: crate::local_script::reply_lines(&outcome.typed),
+                    hashed: outcome.again,
+                })
+            }
+            Fixture::Raw | Fixture::Gguf | Fixture::LiveLocal => None,
+        };
         Ok(disk)
     }
 }
@@ -256,17 +294,18 @@ mod tests {
 
     #[test]
     fn memory_grows_with_the_model_and_the_engine() {
-        // The engine's 136 MiB, twice: 272 MiB on top of the model.
-        assert_eq!(kabi::model::ENGINE_PAGES * 4096 / MIB, 136);
+        // The engine's 472 MiB, twice: 944 MiB on top of the model. Qwen3-0.6B
+        // takes a guest of about 2.1 GB.
+        assert_eq!(kabi::model::ENGINE_PAGES * 4096 / MIB, 472);
         assert_eq!(
             windows_disk("D:/m.gguf", 639_446_688).memory_mib(),
-            512 + 896
+            512 + 1600
         );
         assert_eq!(
             windows_disk("D:/m.gguf", 3 * MIB + 777).memory_mib(),
-            512 + 320
+            512 + 960
         );
-        assert_eq!(windows_disk("D:/m.gguf", 1).memory_mib(), 512 + 320);
+        assert_eq!(windows_disk("D:/m.gguf", 1).memory_mib(), 512 + 960);
     }
 
     #[test]
@@ -324,6 +363,22 @@ mod tests {
                 .starts_with(&format!("model_len={}", disk.len))
         );
         assert_eq!(disk.exact_lines(), [format!("= {golden}")]);
+        assert_eq!(disk.console_text(), ["; local model kai test model ("]);
+        // local-script's: the shell's typed reply on the console, and its second
+        // reply's hash on the command line.
+        let disk = Fixture::LocalScript.write(&dir).unwrap();
+        let _ = fs::remove_dir_all(&dir);
+        let bytes = infer::fixture::local_script(&crate::local_script::prompts());
+        let outcome = crate::local_script::golden(&bytes).unwrap();
+        let hash = kabi::model::fnv1a(outcome.again.as_bytes());
+        assert!(
+            disk.cmdline()
+                .ends_with(&format!(" local_golden={hash:016x}"))
+        );
+        assert_eq!(
+            disk.exact_lines(),
+            crate::local_script::reply_lines(&outcome.typed)
+        );
         assert_eq!(disk.console_text(), ["; local model kai test model ("]);
         // The other fixtures have no answer to check.
         let raw = windows_disk("D:/m.gguf", 5);

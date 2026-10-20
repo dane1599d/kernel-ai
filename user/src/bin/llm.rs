@@ -5,11 +5,11 @@
 //!
 //! When the kernel holds a model from the `kai-model` disk and grants this service
 //! `cap::MODEL`, it maps the model read-only at start and runs it with Kernel AI's
-//! own engine ([`local`]): `ask` and `explain` are answered here, on this CPU.
-//! Otherwise, or when the model cannot run, they go to the LLM server the kernel
-//! names (`llm=IP:PORT`, [`remote`]); `script` always does, until scripts run on
-//! the local model. With neither, they say how to set a model up
-//! (`llmproto::chat::NO_MODEL`).
+//! own engine ([`local`]): `ask`, `explain` and `script` are answered here, on this
+//! CPU, a script decoded as the JSON envelope the shell reads. Otherwise, or when
+//! the model cannot run, they go to the LLM server the kernel names
+//! (`llm=IP:PORT`, [`remote`]), which is CI's test double. With neither, they say
+//! how to set a model up (`llmproto::chat::NO_MODEL`).
 
 #![no_std]
 #![no_main]
@@ -40,8 +40,6 @@ const MAX_ERROR_CHARS: usize = 160;
 /// the burst limit.
 const HASH_PIECE: usize = 16 * 1024 * 1024;
 const NO_SERVER: &str = "no LLM server configured (boot with llm=IP:PORT)";
-const SCRIPTS_NOT_LOCAL: &str = "plain-English requests need an LLM server (llm=IP:PORT) \
-                                 until scripts run on the local model; ask works";
 
 /// The model the kernel mapped into this process.
 struct Model {
@@ -199,7 +197,7 @@ fn handle(backends: &mut Backends, text: &str, response: &mut [u8]) -> Result<St
 }
 
 /// Answers `request` on the local model when it runs, through `check`; otherwise
-/// on the server with `remote`.
+/// on the server with `remote`. Scripts pick their backend the same way.
 fn answer(
     backends: &mut Backends,
     request: &chat::Request,
@@ -215,16 +213,22 @@ fn answer(
     }
 }
 
-/// A script comes only from the server, until the local model writes them.
-fn script(backends: &Backends, text: &str, response: &mut [u8]) -> Result<String, String> {
+/// A script from the local model when it runs, as [`answer`] picks; the answer
+/// goes back framed by length, and the shell checks it again before showing it.
+fn script(backends: &mut Backends, text: &str, response: &mut [u8]) -> Result<String, String> {
     let request = ScriptRequest::decode(text).ok_or("server malformed script request")?;
-    if let Some(server) = &backends.server {
-        return server.script(&request, response);
-    }
-    let why = match &backends.local {
-        Some(Ok(_)) => String::from(SCRIPTS_NOT_LOCAL),
-        Some(Err(why)) => format!("the model cannot run ({why}), and there is no LLM server"),
-        None => String::from(NO_MODEL),
+    let why = match (&mut backends.local, &backends.server) {
+        (Some(Ok(local)), _) => {
+            return local
+                .script(&request)
+                .map(|answer| script::encode_answer(&answer))
+                .map_err(|error| script::encode_error(&error));
+        }
+        (_, Some(server)) => return server.script(&request, response),
+        (Some(Err(why)), None) => {
+            format!("the model cannot run ({why}), and there is no LLM server")
+        }
+        (None, None) => String::from(NO_MODEL),
     };
     Err(script::encode_error(&AnswerError::Unavailable(why)))
 }

@@ -8,7 +8,7 @@
 //! pass on the model's first answer and [`REPAIRED_GATE`]% pass after at most one
 //! repair. Every run is written to `target/fluency/<unix time>.jsonl`.
 
-mod host;
+pub(crate) mod host;
 mod judge;
 mod tasks;
 #[cfg(test)]

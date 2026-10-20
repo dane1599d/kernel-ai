@@ -26,7 +26,8 @@ pub const ERROR_MAX_BYTES: usize = 512;
 /// Longest the llm service spends on one script request, whatever the shell asks.
 pub const SERVICE_TIMEOUT_MS: u64 = 90_000;
 pub const SCRIPT_MAX_TOKENS: u32 = 1024;
-/// Sampling: low temperature and a fixed seed, so gate runs can be repeated.
+/// Sampling: low temperature and a fixed seed, so gate runs can be repeated. The
+/// local model (`crate::local`) draws with the same two.
 pub const TEMPERATURE: f32 = 0.2;
 pub const SEED: u64 = 42;
 
@@ -231,9 +232,11 @@ pub enum AnswerError {
     Rejected(String),
     /// The model wrote no script; the summary may say why.
     NoScript(String),
-    /// No backend can write scripts: there is no LLM server, and the local model
-    /// does not write them yet. The text says what to do, in plain words.
+    /// No backend can write scripts: neither a local model nor an LLM server. The
+    /// text says what to do, in plain words.
     Unavailable(String),
+    /// The local model failed or ran out of time.
+    Local(String),
 }
 
 impl AnswerError {
@@ -244,6 +247,7 @@ impl AnswerError {
     pub fn describe(&self) -> String {
         match self {
             Self::Server(why) => format!("LLM server: {why}"),
+            Self::Local(why) => format!("local model: {why}"),
             Self::CutOff => "the answer was cut off at the token limit".into(),
             Self::NoEnvelope => "the answer was not the JSON object asked for".into(),
             Self::Rejected(why) => why.clone(),
@@ -444,6 +448,7 @@ pub fn encode_error(error: &AnswerError) -> String {
         AnswerError::Rejected(why) => format!("rejected {why}"),
         AnswerError::NoScript(summary) => format!("noscript {summary}"),
         AnswerError::Unavailable(why) => format!("unavailable {why}"),
+        AnswerError::Local(why) => format!("local {why}"),
     }
 }
 
@@ -457,6 +462,7 @@ pub fn decode_error(text: &str) -> AnswerError {
         "rejected" => AnswerError::Rejected(rest.into()),
         "noscript" => AnswerError::NoScript(rest.into()),
         "unavailable" => AnswerError::Unavailable(rest.into()),
+        "local" => AnswerError::Local(rest.into()),
         _ => AnswerError::Server(text.into()),
     }
 }

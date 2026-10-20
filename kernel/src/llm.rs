@@ -63,11 +63,11 @@ pub fn target() -> Option<(Ipv4Addr, u16, &'static str)> {
 
 /// The plan line for the `llm` service. With a model loaded it also gets
 /// `cap::MODEL`, pages for the mapping's tables and pages for the engine (its KV
-/// cache and tokenizer, `kabi::model::ENGINE_PAGES`); it keeps `net`, since scripts
-/// still go to a server, and names its burst limit, so a long stretch of start-up
-/// work between two sleeps is not taken for a runaway. The model name is one
-/// command-line word, so it holds no whitespace and cannot add arguments of its
-/// own; control characters are refused as well.
+/// cache and tokenizer, `kabi::model::ENGINE_PAGES`); it keeps `net` for an LLM
+/// server named as well (CI's test double), and names its burst limit, so a long
+/// stretch of start-up work between two sleeps is not taken for a runaway. The
+/// model name is one command-line word, so it holds no whitespace and cannot add
+/// arguments of its own; control characters are refused as well.
 pub fn plan_line() -> String {
     let mut line = match crate::model::get() {
         Some(model) => format!(

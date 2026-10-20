@@ -15,8 +15,15 @@ pub(super) fn no_proposal(
     let failure = match last {
         Some(Err(AnswerError::NoScript(_))) if task.refusal => return None,
         Some(Err(AnswerError::NoScript(_))) => Failure::NoScript,
-        Some(Err(AnswerError::Server(_) | AnswerError::CutOff)) | None => Failure::Server,
-        Some(_) => Failure::Refused,
+        // The backend failed, not the model's script.
+        Some(Err(
+            AnswerError::Server(_)
+            | AnswerError::CutOff
+            | AnswerError::Local(_)
+            | AnswerError::Unavailable(_),
+        ))
+        | None => Failure::Server,
+        Some(Err(AnswerError::NoEnvelope | AnswerError::Rejected(_)) | Ok(_)) => Failure::Refused,
     };
     Some((failure, text.to_string()))
 }
