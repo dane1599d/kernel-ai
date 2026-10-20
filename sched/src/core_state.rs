@@ -1,8 +1,9 @@
 //! The scheduling mechanism for one CPU: thread states, sleep and wake, migration
 //! and the watchdog. It never allocates after construction, so the kernel can call
 //! it from interrupts. Thread IDs are global; each CPU's `Core` tracks the threads
-//! it currently owns.
+//! it currently owns, and accounts for them while it does ([`crate::stats`]).
 
+use crate::stats::{Snapshot, Stats};
 use crate::{EnqueueReason, MAX_THREADS, RoundRobin, SchedPolicy, Tid};
 use alloc::boxed::Box;
 
@@ -38,6 +39,7 @@ pub struct Core {
     switches: u64,
     /// A wake-up asked for a reschedule that no switch has consumed yet.
     resched_pending: bool,
+    stats: Stats,
 }
 
 impl Core {
@@ -61,6 +63,7 @@ impl Core {
             pending_ejection: None,
             switches: 0,
             resched_pending: false,
+            stats: Stats::new(),
         }
     }
 
@@ -113,6 +116,37 @@ impl Core {
             .count()
     }
 
+    pub fn stats(&self) -> &Stats {
+        &self.stats
+    }
+
+    /// Every thread's counters at `now` into `out`, counting the run and the waits
+    /// still in progress. Allocation-free, and small on the stack.
+    pub fn snapshot_into(&self, now: u64, out: &mut Snapshot) {
+        out.at = now;
+        for tid in 0..MAX_THREADS {
+            out.threads[tid] = self.stats.counters(tid);
+            if let State::Runnable { since } = self.states[tid] {
+                let waiting = &mut out.threads[tid];
+                waiting.window_max_wait_ns =
+                    waiting.window_max_wait_ns.max(now.saturating_sub(since));
+            }
+        }
+        out.threads[self.current].cpu_ns += now.saturating_sub(self.slice_start);
+    }
+
+    /// [`Core::snapshot_into`] returning the snapshot: for host code.
+    pub fn snapshot(&self, now: u64) -> Snapshot {
+        let mut out = Snapshot::EMPTY;
+        self.snapshot_into(now, &mut out);
+        out
+    }
+
+    /// Restarts the window maxima (longest wait and latency). Allocation-free.
+    pub fn begin_window(&mut self) {
+        self.stats.begin_window();
+    }
+
     /// The reason for the latest ejection, once, so the caller can log it.
     pub fn take_ejection(&mut self) -> Option<&'static str> {
         self.pending_ejection.take()
@@ -141,7 +175,11 @@ impl Core {
     /// Gives up the longest-waiting runnable thread that `skip` allows, for migration
     /// to another CPU. The caller must not move a thread that is still on a CPU.
     pub fn detach_runnable(&mut self, skip: impl Fn(Tid) -> bool) -> Option<(Tid, &'static str)> {
-        let (_, tid) = self
+        self.detach_oldest(skip).map(|(tid, name, _)| (tid, name))
+    }
+
+    fn detach_oldest(&mut self, skip: impl Fn(Tid) -> bool) -> Option<(Tid, &'static str, u64)> {
+        let (since, tid) = self
             .states
             .iter()
             .enumerate()
@@ -152,7 +190,7 @@ impl Core {
             .min()?;
         self.active().dequeue(tid);
         self.states[tid] = State::Free;
-        Some((tid, self.names[tid]))
+        Some((tid, self.names[tid], since))
     }
 
     /// Frees an exited thread's slot once it is completely off the CPU.
@@ -222,10 +260,14 @@ impl Core {
     /// Returns the new thread if it differs from the current one.
     pub fn preempt(&mut self, now: u64) -> Option<Tid> {
         let previous = self.current;
-        if previous != self.idle && self.states[previous] == State::Running {
+        let was_running = previous != self.idle && self.states[previous] == State::Running;
+        if was_running {
             self.make_runnable(previous, EnqueueReason::Preempted, now);
         }
         let next = self.pick(now);
+        if was_running && next != previous {
+            self.stats.preempted(previous);
+        }
         (next != previous).then_some(next)
     }
 
@@ -278,6 +320,8 @@ impl Core {
     }
 
     fn pick(&mut self, now: u64) -> Tid {
+        self.stats
+            .ran(self.current, now.saturating_sub(self.slice_start));
         let next = loop {
             match self.active().pick_next() {
                 Some(tid) if self.is_runnable(tid) => break tid,
@@ -289,6 +333,9 @@ impl Core {
                 None => break self.idle,
             }
         };
+        if let State::Runnable { since } = self.states[next] {
+            self.stats.picked(next, now.saturating_sub(since));
+        }
         if next != self.idle {
             self.states[next] = State::Running;
         }
@@ -327,6 +374,7 @@ impl Core {
 
     fn make_runnable(&mut self, tid: Tid, reason: EnqueueReason, now: u64) {
         self.states[tid] = State::Runnable { since: now };
+        self.stats.runnable(tid, reason);
         self.active().enqueue(tid, reason);
     }
 
@@ -360,5 +408,8 @@ impl Core {
     }
 }
 
+mod migrate;
 #[cfg(test)]
 mod tests;
+
+pub use migrate::Detached;

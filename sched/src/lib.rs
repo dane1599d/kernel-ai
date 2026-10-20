@@ -5,7 +5,8 @@
 //! thread goes next. A policy that misbehaves is ejected and [`RoundRobin`] takes over.
 //!
 //! Policies run in interrupt context, so they must not allocate, block or take locks.
-//! The fixed-capacity [`Ring`] exists for that reason.
+//! The fixed-capacity [`Ring`] exists for that reason. [`Core`] also keeps
+//! per-thread accounting ([`stats`]), sized when it is built.
 
 #![no_std]
 
@@ -14,9 +15,10 @@ extern crate alloc;
 pub mod burst;
 mod core_state;
 mod policy;
+pub mod stats;
 
 pub use burst::BurstTable;
-pub use core_state::{Core, State};
+pub use core_state::{Core, Detached, State};
 pub use policy::{Interactive, RoundRobin};
 
 /// Thread identifier: an index into fixed-size tables.

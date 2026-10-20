@@ -312,3 +312,136 @@ fn idle_cpu_picks_up_adopted_work_on_request() {
     core.adopt(5, "new", EnqueueReason::New, 0);
     assert_eq!(core.preempt_if_pending(0), Some(5));
 }
+
+#[test]
+fn per_thread_accounting_matches_the_simulators_own_measurements() {
+    let (sim, hogs) = hogs_and_one_reactive(Box::new(Interactive::new()));
+    let snapshot = sim.core.snapshot(sim.now);
+    for (tid, counters) in snapshot.threads.iter().enumerate() {
+        assert_eq!(counters.cpu_ns, sim.cpu[tid], "CPU time of thread {tid}");
+    }
+    let reactive = (0..MAX_THREADS)
+        .find(|&tid| matches!(sim.kinds[tid], Some(Kind::Reactive { .. })))
+        .unwrap();
+    let counters = snapshot.threads[reactive];
+    assert_eq!(counters.samples, sim.latencies.len() as u64);
+    assert!(counters.wakes >= counters.samples && counters.wakes <= counters.samples + 1);
+    assert_eq!(
+        counters.preemptions, 0,
+        "a 300 us burst never outlives its slice"
+    );
+    let mut samples = alloc::vec![0u32; sim.latencies.len()];
+    let count = sim
+        .core
+        .stats()
+        .samples(reactive, 0, counters.samples, &mut samples)
+        .unwrap();
+    let recorded: Vec<u64> = samples[..count].iter().map(|&ns| u64::from(ns)).collect();
+    assert_eq!(recorded, sim.latencies);
+    assert_eq!(
+        counters.window_max_latency_ns,
+        sim.max_latency(),
+        "the window has been open since boot"
+    );
+    assert!(
+        hogs.iter()
+            .all(|&hog| snapshot.threads[hog].preemptions > 10)
+    );
+}
+
+#[test]
+fn windows_cover_only_their_own_time() {
+    let (mut sim, hogs) = hogs_and_one_reactive(Box::new(Interactive::new()));
+    let cpu_before = sim.cpu;
+    sim.core.begin_window();
+    let start = sim.core.snapshot(sim.now);
+    sim.run(500 * MS);
+    let window = sim.core.snapshot(sim.now).since(&start);
+    assert_eq!(window.ns, 500 * MS);
+    for tid in 0..MAX_THREADS {
+        assert_eq!(window.threads[tid].cpu_ns, sim.cpu[tid] - cpu_before[tid]);
+    }
+    let total: u64 = window.threads.iter().map(|t| t.cpu_ns).sum();
+    assert_eq!(total, 500 * MS, "every nanosecond is charged to one thread");
+    // Eight hogs with 10 ms slices: each waits about 70 ms for its turn.
+    let waits: Vec<u64> = hogs
+        .iter()
+        .map(|&hog| window.threads[hog].max_wait_ns)
+        .collect();
+    assert!(
+        waits
+            .iter()
+            .all(|&wait| (30 * MS..=100 * MS).contains(&wait)),
+        "{waits:?}"
+    );
+}
+
+#[test]
+fn a_waiting_thread_counts_in_the_snapshot_before_it_runs() {
+    let mut core = Core::new(Box::new(RoundRobin::new()), 0, WATCHDOG, 0);
+    core.adopt(3, "hog", EnqueueReason::New, 0);
+    core.adopt(4, "waiter", EnqueueReason::New, 0);
+    assert_eq!(core.preempt(0), Some(3));
+    let snapshot = core.snapshot(7 * MS);
+    assert_eq!(snapshot.threads[3].cpu_ns, 7 * MS);
+    assert_eq!(snapshot.threads[4].window_max_wait_ns, 7 * MS);
+    assert_eq!(snapshot.threads[4].cpu_ns, 0);
+}
+
+#[test]
+fn a_new_window_forgets_the_waits_before_it() {
+    let mut core = Core::new(Box::new(RoundRobin::new()), 0, WATCHDOG, 0);
+    core.adopt(3, "a", EnqueueReason::New, 0);
+    core.adopt(4, "b", EnqueueReason::New, 0);
+    assert_eq!(core.preempt(0), Some(3));
+    // Thread 4 waits 10 ms before the window starts.
+    assert_eq!(core.preempt(10 * MS), Some(4));
+    assert_eq!(
+        core.snapshot(10 * MS).threads[4].window_max_wait_ns,
+        10 * MS
+    );
+    core.begin_window();
+    let start = core.snapshot(10 * MS);
+    assert_eq!(core.preempt(12 * MS), Some(3));
+    let window = core.snapshot(12 * MS).since(&start);
+    assert_eq!(window.threads[4].max_wait_ns, 0);
+    assert_eq!(window.threads[3].max_wait_ns, 2 * MS);
+}
+
+#[test]
+fn a_preemption_counts_only_when_another_thread_runs() {
+    let mut core = Core::new(Box::new(RoundRobin::new()), 0, WATCHDOG, 0);
+    core.adopt(3, "alone", EnqueueReason::New, 0);
+    assert_eq!(core.preempt(0), Some(3));
+    assert_eq!(core.preempt(MS), None);
+    assert_eq!(core.snapshot(MS).threads[3].preemptions, 0);
+    core.adopt(4, "other", EnqueueReason::New, MS);
+    assert_eq!(core.preempt(2 * MS), Some(4));
+    assert_eq!(core.snapshot(2 * MS).threads[3].preemptions, 1);
+}
+
+#[test]
+fn a_migrated_thread_keeps_its_wait_and_its_wake() {
+    // Round-robin never preempts on wake, so the typist waits on CPU A.
+    let mut a = Core::new(Box::new(RoundRobin::new()), 0, WATCHDOG, 0);
+    let mut b = Core::new(Box::new(Interactive::new()), 1, WATCHDOG, 0);
+    a.adopt(5, "hog", EnqueueReason::New, 0);
+    a.adopt(6, "typist", EnqueueReason::New, 0);
+    assert_eq!(a.preempt(0), Some(5));
+    assert_eq!(a.preempt(MS), Some(6));
+    assert_eq!(a.block_current(MS), 5);
+    assert!(!a.wake(6, 2 * MS));
+    // It woke at 2 ms and moves at 5 ms; the wait so far counts on A.
+    let moved = a.detach_waiting(|tid| tid == 5, 5 * MS).unwrap();
+    assert_eq!(moved.tid, 6);
+    assert_eq!(a.snapshot(5 * MS).threads[6].window_max_wait_ns, 3 * MS);
+    b.adopt_detached(moved, 5 * MS);
+    assert_eq!(b.preempt_if_pending(6 * MS), Some(6));
+    // B records the whole wake-to-run time: 3 ms on A and 1 ms on B.
+    let counters = b.snapshot(6 * MS).threads[6];
+    assert_eq!((counters.samples, counters.latency_sum_ns), (1, 4 * MS));
+    assert_eq!(counters.window_max_wait_ns, 4 * MS);
+    assert_eq!(a.snapshot(6 * MS).threads[6].samples, 0);
+    // The plain path still works and records nothing it cannot know.
+    assert!(a.detach_waiting(|_| false, 7 * MS).is_none());
+}
