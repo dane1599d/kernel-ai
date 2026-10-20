@@ -135,8 +135,15 @@ fn server_transport(server: String, model: String) -> Transport {
     Box::new(move |request: &ScriptRequest| {
         let (body, timeout) = service_request(&model, request)?;
         let response = exchange(&server, &body, timeout).map_err(AnswerError::Server)?;
-        script::answer_from(&response)
+        script_answer(&response)
     })
+}
+
+/// A server's response read as the llm service reads it.
+fn script_answer(response: &http::Response) -> Result<script::Answer, AnswerError> {
+    openai::completion(response)
+        .map_err(script::server_error)
+        .and_then(|completion| script::answer(&completion))
 }
 
 /// The chat request body and time limit the llm service would use for `request`.

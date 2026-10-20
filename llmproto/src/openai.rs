@@ -1,72 +1,33 @@
-//! OpenAI-compatible chat completions, non-streaming.
+//! OpenAI-compatible chat completions over HTTP, non-streaming: the body for a
+//! [`chat::Request`] and the [`chat::Completion`] in a server's response.
 
+use crate::chat::{self, Completion, Message};
+use crate::http;
 use alloc::string::String;
 use alloc::vec::Vec;
 use serde::{Deserialize, Serialize};
 
 pub const CHAT_PATH: &str = "/v1/chat/completions";
 
-/// One message of a conversation.
-#[derive(Serialize, Clone, Copy, Debug)]
-pub struct ChatMessage<'a> {
-    pub role: &'a str,
-    pub content: &'a str,
-}
-
 #[derive(Serialize)]
 struct ChatRequest<'a> {
     model: &'a str,
-    messages: Vec<ChatMessage<'a>>,
+    messages: &'a [Message],
     max_tokens: u32,
     temperature: f32,
     stream: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    response_format: Option<serde_json::Value>,
 }
 
-/// Serializes a chat request with an optional system prompt and one user turn.
-pub fn chat_request(model: &str, system: Option<&str>, user: &str, max_tokens: u32) -> Vec<u8> {
-    let mut messages = Vec::new();
-    if let Some(system) = system {
-        messages.push(ChatMessage {
-            role: "system",
-            content: system,
-        });
-    }
-    messages.push(ChatMessage {
-        role: "user",
-        content: user,
-    });
-    let request = ChatRequest {
+/// Serializes `request` for `model`, at temperature 0.2, as `ask` sends it.
+pub fn chat_request(model: &str, request: &chat::Request) -> Vec<u8> {
+    let body = ChatRequest {
         model,
-        messages,
-        max_tokens,
+        messages: &request.messages,
+        max_tokens: request.max_tokens,
         temperature: 0.2,
         stream: false,
-        response_format: None,
     };
-    serde_json::to_vec(&request).unwrap_or_default()
-}
-
-/// Serializes a chat request for a whole conversation. `response_format`, if given,
-/// is sent as is (for example a `json_schema` object, which llama-server, Ollama
-/// and LM Studio all accept).
-pub fn chat_request_messages(
-    model: &str,
-    messages: &[ChatMessage<'_>],
-    max_tokens: u32,
-    temperature: f32,
-    response_format: Option<serde_json::Value>,
-) -> Vec<u8> {
-    let request = ChatRequest {
-        model,
-        messages: messages.to_vec(),
-        max_tokens,
-        temperature,
-        stream: false,
-        response_format,
-    };
-    serde_json::to_vec(&request).unwrap_or_default()
+    serde_json::to_vec(&body).unwrap_or_default()
 }
 
 #[derive(Deserialize)]
@@ -102,18 +63,21 @@ pub enum ReplyError {
     /// The server answered with an error object.
     Server(String),
     NoChoices,
-    EmptyContent,
 }
 
-/// The assistant's answer and why the model stopped (`stop`, `length`, ...).
+/// Why a response holds no completion.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ChatReply {
-    pub content: String,
-    pub finish_reason: Option<String>,
+pub enum CompletionError {
+    /// The server answered with a status other than 200; its body, as text (empty
+    /// when it is not UTF-8).
+    Status(u16, String),
+    /// A 200 whose body is not a chat completion.
+    Reply(ReplyError),
 }
 
-/// Extracts the assistant's answer and the stop reason from a response body.
-pub fn parse_chat_reply(body: &[u8]) -> Result<ChatReply, ReplyError> {
+/// The completion in a chat-completion response body. A missing or empty content
+/// is an empty text; `cut_off` is a `length` finish.
+pub fn parse_completion(body: &[u8]) -> Result<Completion, ReplyError> {
     let response: ChatResponse = serde_json::from_slice(body).map_err(|_| ReplyError::NotJson)?;
     if let Some(error) = response.error {
         return Err(ReplyError::Server(error.message));
@@ -123,35 +87,41 @@ pub fn parse_chat_reply(body: &[u8]) -> Result<ChatReply, ReplyError> {
         .into_iter()
         .next()
         .ok_or(ReplyError::NoChoices)?;
-    let content = choice
-        .message
-        .content
-        .filter(|content| !content.is_empty())
-        .ok_or(ReplyError::EmptyContent)?;
-    Ok(ChatReply {
-        content,
-        finish_reason: choice.finish_reason,
+    Ok(Completion {
+        text: choice.message.content.unwrap_or_default(),
+        cut_off: choice.finish_reason.as_deref() == Some("length"),
     })
 }
 
-/// Extracts the assistant's text from a chat-completion response body.
-pub fn parse_chat_response(body: &[u8]) -> Result<String, ReplyError> {
-    parse_chat_reply(body).map(|reply| reply.content)
+/// The completion in a whole HTTP response: the status first, then the body.
+pub fn completion(response: &http::Response) -> Result<Completion, CompletionError> {
+    if response.status != 200 {
+        let body = core::str::from_utf8(&response.body).unwrap_or("");
+        return Err(CompletionError::Status(response.status, String::from(body)));
+    }
+    parse_completion(&response.body).map_err(CompletionError::Reply)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn ok(body: &[u8]) -> http::Response {
+        http::Response {
+            status: 200,
+            body: body.to_vec(),
+        }
+    }
+
     #[test]
     fn request_has_the_fields_servers_expect() {
-        let body = chat_request("qwen3-8b", Some("be brief"), "hi \"there\"", 64);
+        let request = chat::Request::new(Some("be brief"), "hi \"there\"", 64);
+        let body = chat_request("qwen3-8b", &request);
         let text = core::str::from_utf8(&body).unwrap();
-        assert!(text.contains(r#""model":"qwen3-8b""#));
-        assert!(text.contains(r#"{"role":"system","content":"be brief"}"#));
-        assert!(text.contains(r#"{"role":"user","content":"hi \"there\""}"#));
-        assert!(text.contains(r#""max_tokens":64"#));
-        assert!(text.contains(r#""stream":false"#));
+        assert_eq!(
+            text,
+            r#"{"model":"qwen3-8b","messages":[{"role":"system","content":"be brief"},{"role":"user","content":"hi \"there\""}],"max_tokens":64,"temperature":0.2,"stream":false}"#
+        );
     }
 
     #[test]
@@ -162,27 +132,62 @@ mod tests {
             r#"{{"id":"x","choices":[{{"index":0,"message":{{"role":"assistant","content":"Hi {b}u00e9 {b}ud83d{b}ude00{b}nok"}},"finish_reason":"stop"}}]}}"#,
             b = char::from(92u8)
         );
-        let body = body.as_bytes();
+        let reply = completion(&ok(body.as_bytes())).unwrap();
+        assert_eq!(reply.text, "Hi \u{e9} \u{1F600}\nok");
+        assert!(!reply.cut_off);
+    }
+
+    #[test]
+    fn a_length_finish_is_cut_off_and_no_content_is_empty_text() {
+        let cut = completion(&ok(
+            br#"{"choices":[{"message":{"content":"Hi"},"finish_reason":"length"}]}"#,
+        ))
+        .unwrap();
         assert_eq!(
-            parse_chat_response(body).unwrap(),
-            "Hi \u{e9} \u{1F600}\nok"
+            cut,
+            Completion {
+                text: String::from("Hi"),
+                cut_off: true
+            }
         );
+        let thought_only = completion(&ok(
+            br#"{"choices":[{"message":{"content":null,"reasoning_content":"hmm"},"finish_reason":"length"}]}"#,
+        ))
+        .unwrap();
+        assert_eq!(thought_only.text, "");
+        assert!(thought_only.cut_off);
+        let empty = completion(&ok(
+            br#"{"choices":[{"message":{"role":"assistant","content":""}}]}"#,
+        ))
+        .unwrap();
+        assert_eq!(empty, Completion::default());
     }
 
     #[test]
     fn reports_server_errors_and_bad_bodies() {
         assert_eq!(
-            parse_chat_response(br#"{"error":{"message":"model not found","type":"x"}}"#),
-            Err(ReplyError::Server("model not found".into()))
+            completion(&ok(
+                br#"{"error":{"message":"model not found","type":"x"}}"#
+            )),
+            Err(CompletionError::Reply(ReplyError::Server(
+                "model not found".into()
+            )))
         );
         assert_eq!(
-            parse_chat_response(br#"{"choices":[]}"#),
-            Err(ReplyError::NoChoices)
+            completion(&ok(br#"{"choices":[]}"#)),
+            Err(CompletionError::Reply(ReplyError::NoChoices))
         );
         assert_eq!(
-            parse_chat_response(br#"{"choices":[{"message":{"role":"assistant","content":""}}]}"#),
-            Err(ReplyError::EmptyContent)
+            completion(&ok(b"<html>")),
+            Err(CompletionError::Reply(ReplyError::NotJson))
         );
-        assert_eq!(parse_chat_response(b"<html>"), Err(ReplyError::NotJson));
+        let refused = http::Response {
+            status: 503,
+            body: b"busy".to_vec(),
+        };
+        assert_eq!(
+            completion(&refused),
+            Err(CompletionError::Status(503, String::from("busy")))
+        );
     }
 }

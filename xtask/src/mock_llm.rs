@@ -24,11 +24,18 @@ pub const EXPLANATION: &str = "The mock LLM read the facts:";
 pub struct MockLlm {
     pub port: u16,
     chats: Arc<AtomicUsize>,
+    /// Connections accepted, whatever they asked for.
+    requests: Arc<AtomicUsize>,
 }
 
 impl MockLlm {
     pub fn chats(&self) -> usize {
         self.chats.load(Ordering::SeqCst)
+    }
+
+    /// Every connection so far, so a case can show it never reached the server.
+    pub fn requests(&self) -> usize {
+        self.requests.load(Ordering::SeqCst)
     }
 }
 
@@ -41,9 +48,11 @@ pub fn start() -> Result<MockLlm, String> {
         .map_err(|e| format!("mock LLM server has no address: {e}"))?
         .port();
     let chats = Arc::new(AtomicUsize::new(0));
-    let counter = Arc::clone(&chats);
+    let requests = Arc::new(AtomicUsize::new(0));
+    let (counter, accepted) = (Arc::clone(&chats), Arc::clone(&requests));
     thread::spawn(move || {
         for stream in listener.incoming().map_while(Result::ok) {
+            accepted.fetch_add(1, Ordering::SeqCst);
             let counter = Arc::clone(&counter);
             thread::spawn(move || {
                 if let Err(error) = serve(stream, &counter) {
@@ -52,7 +61,11 @@ pub fn start() -> Result<MockLlm, String> {
             });
         }
     });
-    Ok(MockLlm { port, chats })
+    Ok(MockLlm {
+        port,
+        chats,
+        requests,
+    })
 }
 
 fn serve(stream: TcpStream, chats: &AtomicUsize) -> std::io::Result<()> {
@@ -228,17 +241,20 @@ mod tests {
         assert_eq!(server.chats(), 1);
         let missing = exchange(server.port, "GET /nope HTTP/1.1\r\n\r\n");
         assert!(missing.starts_with("HTTP/1.1 404"));
+        assert_eq!(server.requests(), 3);
     }
 
     /// The requests the kernel's `test=scripts` case makes, built and read by the
     /// same code the llm service uses.
     #[test]
     fn answers_script_requests_and_repairs() {
+        use llmproto::openai::parse_completion;
         use llmproto::script::{self, AnswerError, Repair};
         let ask = |text: &str, repair: Option<Repair<'_>>| {
             let request =
                 serde_json::from_slice(&script::chat_request(MODEL, text, repair)).unwrap();
-            script::parse_answer(completion(&chat_content(&request)).as_bytes())
+            let reply = parse_completion(completion(&chat_content(&request)).as_bytes()).unwrap();
+            script::answer(&reply)
         };
         assert_eq!(
             ask("how many cpus are there", None).unwrap().script,
@@ -260,20 +276,18 @@ mod tests {
             ask("tell me a story please", None),
             Err(AnswerError::NoEnvelope)
         );
+        let asked = llmproto::chat::ask("hi");
         let question =
-            serde_json::from_slice(&llmproto::openai::chat_request(MODEL, None, "hi", 8)).unwrap();
+            serde_json::from_slice(&llmproto::openai::chat_request(MODEL, &asked)).unwrap();
         assert_eq!(chat_content(&question), REPLY);
     }
 
     #[test]
     fn explains_a_rollback_by_repeating_the_one_it_was_given() {
-        use llmproto::explain;
+        use llmproto::{explain, openai};
         let explained = |facts: &str| {
             let body = answer(&explain::chat_request(MODEL, facts)).unwrap();
-            explain::answer_from(&llmproto::http::Response {
-                status: 200,
-                body: body.into_bytes(),
-            })
+            explain::answer(&openai::parse_completion(body.as_bytes()).unwrap())
         };
         assert_eq!(
             explained("component: notes\nlatest rollback: e2 (trap)\n"),

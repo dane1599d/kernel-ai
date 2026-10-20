@@ -7,8 +7,9 @@
 //! character the console could not show faithfully, is refused, because what the
 //! user confirms must be exactly what runs.
 
-use crate::openai::{self, ReplyError};
-use crate::{http, text};
+use crate::chat::{self, Completion, Message, Role};
+use crate::openai::{CompletionError, ReplyError};
+use crate::text;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -174,40 +175,32 @@ pub struct Repair<'a> {
     pub error: &'a str,
 }
 
-/// The chat request for `request` (and, for a repair, the refused answer).
-pub fn chat_request(model: &str, request: &str, repair: Option<Repair<'_>>) -> Vec<u8> {
-    let system = system_prompt();
+/// The conversation for `request`: the system prompt and the request, then, for a
+/// repair, the refused answer and why it was refused.
+pub fn request(request: &str, repair: Option<Repair<'_>>) -> chat::Request {
     let user = format!("Request: {request}\n/no_think");
-    let mut messages = Vec::from([
-        openai::ChatMessage {
-            role: "system",
-            content: &system,
-        },
-        openai::ChatMessage {
-            role: "user",
-            content: &user,
-        },
-    ]);
-    let (previous, feedback);
+    let mut asked = chat::Request::new(Some(&system_prompt()), &user, SCRIPT_MAX_TOKENS);
     if let Some(repair) = repair {
-        previous = serde_json::json!({ "script": repair.script, "summary": "" }).to_string();
-        feedback = format!(
+        let previous = serde_json::json!({ "script": repair.script, "summary": "" }).to_string();
+        let feedback = format!(
             "That script was refused: {}\nWrite a corrected script.\n/no_think",
             repair.error
         );
-        messages.push(openai::ChatMessage {
-            role: "assistant",
-            content: &previous,
-        });
-        messages.push(openai::ChatMessage {
-            role: "user",
-            content: &feedback,
-        });
+        asked
+            .messages
+            .push(Message::new(Role::Assistant, &previous));
+        asked.messages.push(Message::new(Role::User, &feedback));
     }
+    asked
+}
+
+/// The chat request body for `request` (and, for a repair, the refused answer).
+pub fn chat_request(model: &str, request: &str, repair: Option<Repair<'_>>) -> Vec<u8> {
+    let asked = self::request(request, repair);
     let body = serde_json::json!({
         "model": model,
-        "messages": messages,
-        "max_tokens": SCRIPT_MAX_TOKENS,
+        "messages": asked.messages,
+        "max_tokens": asked.max_tokens,
         "temperature": TEMPERATURE,
         "seed": SEED,
         "stream": false,
@@ -238,6 +231,9 @@ pub enum AnswerError {
     Rejected(String),
     /// The model wrote no script; the summary may say why.
     NoScript(String),
+    /// No backend can write scripts: there is no LLM server, and the local model
+    /// does not write them yet. The text says what to do, in plain words.
+    Unavailable(String),
 }
 
 impl AnswerError {
@@ -252,6 +248,7 @@ impl AnswerError {
             Self::NoEnvelope => "the answer was not the JSON object asked for".into(),
             Self::Rejected(why) => why.clone(),
             Self::NoScript(summary) => format!("the model wrote no script: {summary}"),
+            Self::Unavailable(why) => why.clone(),
         }
     }
 }
@@ -319,16 +316,17 @@ pub fn check_summary(summary: &str) -> Result<String, AnswerError> {
     Ok(summary.to_string())
 }
 
-/// Reads a chat-completion response body as a script answer.
-pub fn parse_answer(body: &[u8]) -> Result<Answer, AnswerError> {
-    let reply = openai::parse_chat_reply(body).map_err(|error| match error {
-        ReplyError::Server(why) => AnswerError::Server(why),
-        other => AnswerError::Server(format!("{other:?}")),
-    })?;
-    if reply.finish_reason.as_deref() == Some("length") {
+/// Reads a completion as a script answer.
+pub fn answer(completion: &Completion) -> Result<Answer, AnswerError> {
+    if completion.cut_off {
         return Err(AnswerError::CutOff);
     }
-    let mut content = text::without_thinking(&reply.content);
+    if completion.text.is_empty() {
+        return Err(AnswerError::Server(String::from(
+            "the reply had no content",
+        )));
+    }
+    let mut content = text::without_thinking(&completion.text);
     if let Some(fenced) = content
         .strip_prefix("```json")
         .or_else(|| content.strip_prefix("```"))
@@ -344,17 +342,16 @@ pub fn parse_answer(body: &[u8]) -> Result<Answer, AnswerError> {
     Ok(Answer { summary, script })
 }
 
-/// Reads a whole HTTP response as a script answer: the status first, then the body.
-pub fn answer_from(response: &http::Response) -> Result<Answer, AnswerError> {
-    if response.status != 200 {
-        let body = core::str::from_utf8(&response.body).unwrap_or("");
-        return Err(AnswerError::Server(format!(
-            "HTTP {}: {}",
-            response.status,
-            text::printable(body, SUMMARY_MAX_CHARS, 1)
-        )));
+/// Why a server's response held no script answer.
+pub fn server_error(error: CompletionError) -> AnswerError {
+    match error {
+        CompletionError::Status(status, body) => AnswerError::Server(format!(
+            "HTTP {status}: {}",
+            text::printable(&body, SUMMARY_MAX_CHARS, 1)
+        )),
+        CompletionError::Reply(ReplyError::Server(why)) => AnswerError::Server(why),
+        CompletionError::Reply(other) => AnswerError::Server(format!("{other:?}")),
     }
-    parse_answer(&response.body)
 }
 
 /// What the shell asks the llm service for.
@@ -446,6 +443,7 @@ pub fn encode_error(error: &AnswerError) -> String {
         AnswerError::NoEnvelope => "noenvelope".into(),
         AnswerError::Rejected(why) => format!("rejected {why}"),
         AnswerError::NoScript(summary) => format!("noscript {summary}"),
+        AnswerError::Unavailable(why) => format!("unavailable {why}"),
     }
 }
 
@@ -458,6 +456,7 @@ pub fn decode_error(text: &str) -> AnswerError {
         "noenvelope" => AnswerError::NoEnvelope,
         "rejected" => AnswerError::Rejected(rest.into()),
         "noscript" => AnswerError::NoScript(rest.into()),
+        "unavailable" => AnswerError::Unavailable(rest.into()),
         _ => AnswerError::Server(text.into()),
     }
 }

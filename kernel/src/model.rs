@@ -14,6 +14,7 @@ use crate::{hpet, log, memory, process};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
 use kabi::Error;
 use kabi::model::{Attached, HeaderError, SERIAL};
 use mm::PAGE_SIZE;
@@ -24,9 +25,22 @@ use spin::Once;
 pub const HOLDER: &str = "llm";
 /// Pages the llm service gets before the page tables of the model's mapping.
 pub const HOLDER_PAGES: u64 = 1024;
-/// Frames that must stay free after the copy: 192 MiB. Processes may hold half of
-/// what is free, and the default plan's services can ask for about 70 MiB.
-const RESERVE_FRAMES: u64 = 48 * 1024;
+
+/// Pages the llm service gets with a model of `len` bytes: its own, the page
+/// tables of the mapping, and the engine's KV cache and tokenizer.
+pub const fn holder_pages(len: u64) -> u64 {
+    HOLDER_PAGES + kabi::model::table_pages(len) + kabi::model::ENGINE_PAGES
+}
+
+/// Pages the default plan's other services ask for, with room to spare: the
+/// supervisor, the shell, notes and edit take 16,384 together.
+const OTHER_SERVICES_PAGES: u64 = 20 * 1024;
+
+/// Frames that must stay free after copying a model of `len` bytes. Processes may
+/// hold half of what is free, so twice what llm and the other services ask for.
+const fn reserve_frames(len: u64) -> u64 {
+    2 * (OTHER_SERVICES_PAGES + holder_pages(len))
+}
 
 pub struct Model {
     len: u64,
@@ -35,10 +49,31 @@ pub struct Model {
 }
 
 static MODEL: Once<Model> = Once::new();
+/// Why an attached `kai-model` disk was not kept, for `:model`.
+static REJECTED: Once<String> = Once::new();
+/// Copies made from the disk, and MODEL_MAP calls that mapped the model, so a test
+/// can tell a restarted llm remapped the copy rather than having it made again.
+static LOADS: AtomicU64 = AtomicU64::new(0);
+static MAPS: AtomicU64 = AtomicU64::new(0);
 
 /// The loaded model, if the boot found one.
 pub fn get() -> Option<&'static Model> {
     MODEL.get()
+}
+
+/// How many times the model was copied from the disk: at most once a boot.
+pub fn loads() -> u64 {
+    LOADS.load(Ordering::SeqCst)
+}
+
+/// Why the boot did not keep the `kai-model` disk it found, if it found one.
+pub fn rejected() -> Option<&'static str> {
+    REJECTED.get().map(String::as_str)
+}
+
+/// How many MODEL_MAP calls mapped the model.
+pub fn maps() -> u64 {
+    MAPS.load(Ordering::SeqCst)
 }
 
 impl Model {
@@ -70,8 +105,12 @@ pub fn load(cmdline: &str) {
                 (hpet::nanos() - started) / 1_000_000
             );
             MODEL.call_once(|| model);
+            LOADS.fetch_add(1, Ordering::SeqCst);
         }
-        Some(Err(why)) => log!("model: {why}; the kai-model disk is ignored"),
+        Some(Err(why)) => {
+            log!("model: {why}; the kai-model disk is ignored");
+            REJECTED.call_once(|| why);
+        }
     }
 }
 
@@ -90,10 +129,10 @@ fn copy(disk: &mut Disk, attached: Option<u64>) -> Result<Model, String> {
     if len == 0 || len > kabi::layout::MODEL_MAX {
         return Err(format!("{len} bytes is no size for a model"));
     }
-    // llm must be able to hold the mapping's page tables in its quota.
-    if HOLDER_PAGES + kabi::model::table_pages(len) > process::MAX_PAGES_PER_PROCESS {
+    // llm must be able to hold the mapping's page tables and the engine.
+    if holder_pages(len) > process::MAX_PAGES_PER_PROCESS {
         return Err(format!(
-            "{len} bytes need more page tables than one process may hold"
+            "{len} bytes need more page tables, with the engine, than llm may hold"
         ));
     }
     let first = disk.read(0, 1)?;
@@ -111,11 +150,12 @@ fn copy(disk: &mut Disk, attached: Option<u64>) -> Result<Model, String> {
     }
     let pages = len.div_ceil(PAGE_SIZE);
     let free = memory::with(|m| m.free_frames());
-    if pages.saturating_add(RESERVE_FRAMES) > free {
+    if pages.saturating_add(reserve_frames(len)) > free {
         return Err(format!(
-            "{} MiB do not fit in {} MiB of free memory",
+            "{} MiB do not fit in {} MiB of free memory with {} MiB left for the services",
             pages / 256,
-            free / 256
+            free / 256,
+            reserve_frames(len) / 256
         ));
     }
     let mut frames = Vec::new();
@@ -177,5 +217,6 @@ pub fn map(slot: usize) -> Result<u64, Error> {
         &model.frames,
         kabi::model::table_pages(model.len),
     )?;
+    MAPS.fetch_add(1, Ordering::SeqCst);
     Ok(model.len)
 }

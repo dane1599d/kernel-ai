@@ -1,51 +1,47 @@
-//! The LLM client service. It takes `ask <prompt>`, `script ...` (see
-//! `llmproto::script`), `explain <facts>` (see `llmproto::explain`) and `health`
-//! requests from the kernel terminal and the shell, talks OpenAI-compatible chat
-//! JSON over HTTP to the LLM server, and answers `ok <text>` or `err <text>`. The
-//! kernel decides where the bytes go (the server on its command line); this program
-//! builds and parses them.
+//! The LLM service. It takes `ask <prompt>`, `explain <facts>` (see
+//! `llmproto::explain`), `script ...` (see `llmproto::script`), `health` and
+//! `model` requests from the kernel terminal and the shell, and answers
+//! `ok <text>` or `err <text>`.
 //!
 //! When the kernel holds a model from the `kai-model` disk and grants this service
-//! `cap::MODEL`, it maps the model read-only at start, and `health` reports its
-//! length and FNV-1a hash. Answering from it comes in L4.
+//! `cap::MODEL`, it maps the model read-only at start and runs it with Kernel AI's
+//! own engine ([`local`]): `ask` and `explain` are answered here, on this CPU.
+//! Otherwise, or when the model cannot run, they go to the LLM server the kernel
+//! names (`llm=IP:PORT`, [`remote`]); `script` always does, until scripts run on
+//! the local model. With neither, they say how to set a model up
+//! (`llmproto::chat::NO_MODEL`).
 
 #![no_std]
 #![no_main]
 
 extern crate alloc;
 
+// A program's crate root sits in src/bin, so its modules are named by path.
+#[path = "llm/local.rs"]
+mod local;
+#[path = "llm/remote.rs"]
+mod remote;
+
 use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec;
-use kabi::HttpRequest;
+use alloc::vec::Vec;
 use kabi::model::Fnv1a;
-use llmproto::explain;
+use llmproto::chat::{self, NO_MODEL};
 use llmproto::script::{self, AnswerError, ScriptRequest};
 use llmproto::text::printable;
-use llmproto::{http, openai};
+use llmproto::{explain, http};
 use user::{arg, args, println, sys};
 
 user::entry!(main);
 
-const DEFAULT_MODEL: &str = "qwen3-8b";
-const SYSTEM_PROMPT: &str = "You are the assistant built into Kernel AI, a small experimental \
-                             operating system. Answer in a few short sentences.";
-const MAX_TOKENS: u32 = 256;
-const CHAT_TIMEOUT_MS: u64 = 120_000;
-const HEALTH_TIMEOUT_MS: u64 = 5_000;
-const MAX_REPLY_CHARS: usize = 4096;
-const MAX_REPLY_LINES: usize = 64;
 const MAX_ERROR_CHARS: usize = 160;
 /// Bytes hashed between two 1 ms sleeps, so hashing a large model never runs into
 /// the burst limit.
 const HASH_PIECE: usize = 16 * 1024 * 1024;
 const NO_SERVER: &str = "no LLM server configured (boot with llm=IP:PORT)";
-
-struct Config {
-    /// `IP:PORT` of the server, for the Host header only.
-    host: Option<String>,
-    model: String,
-}
+const SCRIPTS_NOT_LOCAL: &str = "plain-English requests need an LLM server (llm=IP:PORT) \
+                                 until scripts run on the local model; ask works";
 
 /// The model the kernel mapped into this process.
 struct Model {
@@ -55,17 +51,22 @@ struct Model {
 }
 
 impl Model {
-    /// Maps the model, if the kernel holds one and this process may map it.
-    fn map() -> Option<Model> {
-        let len = usize::try_from(sys::model_map().ok()?).ok()?;
+    /// Maps the model: none when the kernel holds no model or this process may
+    /// not map it, an error when the mapping failed.
+    fn map() -> Result<Option<Model>, kabi::Error> {
+        let len = match sys::model_map() {
+            Ok(len) => usize::try_from(len).map_err(|_| kabi::Error::TooBig)?,
+            Err(kabi::Error::NotFound | kabi::Error::Permission) => return Ok(None),
+            Err(error) => return Err(error),
+        };
         println!(
             "model: {len} bytes mapped read-only at {:#x}",
             kabi::layout::MODEL_BASE
         );
-        Some(Model { len, hash: None })
+        Ok(Some(Model { len, hash: None }))
     }
 
-    fn bytes(&self) -> &[u8] {
+    fn bytes(&self) -> &'static [u8] {
         // SAFETY: MODEL_MAP mapped `len` readable bytes at MODEL_BASE for the rest of
         // this process's life, and nothing writes or unmaps them.
         unsafe { core::slice::from_raw_parts(kabi::layout::MODEL_BASE as *const u8, self.len) }
@@ -88,21 +89,43 @@ impl Model {
     }
 }
 
+/// What can answer: the server, the mapped model and the engine running it (or why
+/// it cannot), in any combination.
+struct Backends {
+    server: Option<remote::Server>,
+    model: Option<Model>,
+    local: Option<Result<local::Local, String>>,
+}
+
 fn main() -> i32 {
     let args = args();
-    let config = Config {
-        host: arg(&args, "host").map(ToString::to_string),
-        model: arg(&args, "model").unwrap_or(DEFAULT_MODEL).to_string(),
-    };
-    match &config.host {
-        Some(host) => println!(
-            "up (restart {}); server {host}, model {}",
+    let server = remote::Server::from_args(&args);
+    match &server {
+        Some(server) => println!(
+            "up (restart {}); server {}, model {}",
             arg(&args, "restart").unwrap_or("0"),
-            config.model
+            server.host,
+            server.model
         ),
         None => println!("up; {NO_SERVER}"),
     }
-    let mut model = Model::map();
+    let (model, local) = match Model::map() {
+        Ok(Some(model)) => {
+            let local = load(model.bytes());
+            (Some(model), Some(local))
+        }
+        Ok(None) => (None, None),
+        Err(error) => {
+            println!("model: MODEL_MAP failed: {error:?}");
+            let why = format!("the kernel holds a model this service could not map ({error:?})");
+            (None, Some(Err(why)))
+        }
+    };
+    let mut backends = Backends {
+        server,
+        model,
+        local,
+    };
     let mut request = vec![0u8; kabi::MAX_MESSAGE];
     let mut response = vec![0u8; http::MAX_RESPONSE];
     loop {
@@ -117,7 +140,7 @@ fn main() -> i32 {
             }
         };
         let text = core::str::from_utf8(&request[..len]).unwrap_or("");
-        let mut reply = match handle(&config, &mut model, text, &mut response) {
+        let mut reply = match handle(&mut backends, text, &mut response) {
             Ok(text) => format!("ok {text}"),
             Err(error) => format!("err {}", printable(&error, MAX_ERROR_CHARS, 1)),
         };
@@ -129,117 +152,105 @@ fn main() -> i32 {
     }
 }
 
-fn handle(
-    config: &Config,
-    model: &mut Option<Model>,
-    text: &str,
-    response: &mut [u8],
-) -> Result<String, String> {
-    let (command, rest) = text.split_once(' ').unwrap_or((text, ""));
-    if command == "health" {
-        return health(config.host.as_deref(), model.as_mut(), response);
+/// Starts the engine on the mapped model, logging how it went.
+fn load(bytes: &'static [u8]) -> Result<local::Local, String> {
+    let started = sys::time_ns();
+    let loaded = local::Local::load(bytes);
+    let ms = (sys::time_ns() - started) / 1_000_000;
+    match &loaded {
+        Ok(engine) => println!("local: {} ready in {ms} ms", engine.describe()),
+        Err(why) => println!("local: the model cannot run: {why}"),
     }
-    let host = config.host.as_deref().ok_or(NO_SERVER)?;
+    // Loading may be a long burst; a sleep ends it before the first request.
+    sys::sleep_ms(1);
+    loaded
+}
+
+fn handle(backends: &mut Backends, text: &str, response: &mut [u8]) -> Result<String, String> {
+    let (command, rest) = text.split_once(' ').unwrap_or((text, ""));
     match command {
-        "ask" if !rest.trim().is_empty() => ask(config, host, rest.trim(), response),
-        "script" => write_script(config, host, text, response),
+        "health" => health(backends, response),
+        "model" if rest.is_empty() => match (&backends.model, &mut backends.local) {
+            (Some(model), Some(Ok(local))) => Ok(local.report(model.len)),
+            (_, Some(Err(why))) => Err(format!("the model cannot run: {why}")),
+            _ => Err(String::from(NO_MODEL)),
+        },
+        "ask" if !rest.trim().is_empty() => {
+            let question = rest.trim();
+            answer(
+                backends,
+                &chat::ask(question),
+                chat::answer,
+                |server, response| server.ask(question, response),
+                response,
+            )
+        }
         "explain" if rest.len() > explain::MAX_FACTS => Err(String::from("the facts are too long")),
-        "explain" if !rest.trim().is_empty() => explain(config, host, rest, response),
+        "explain" if !rest.trim().is_empty() => answer(
+            backends,
+            &explain::request(rest),
+            explain::answer,
+            |server, response| server.explain(rest, response),
+            response,
+        ),
+        "script" => script(backends, text, response),
         _ => Err(format!("unknown request {command:?}")),
     }
 }
 
-/// Asks the model for a script. The answer goes back framed by length, exactly as
-/// the model wrote it after the text checks; the shell checks it again and runs it.
-fn write_script(
-    config: &Config,
-    host: &str,
-    text: &str,
+/// Answers `request` on the local model when it runs, through `check`; otherwise
+/// on the server with `remote`.
+fn answer(
+    backends: &mut Backends,
+    request: &chat::Request,
+    check: fn(&chat::Completion) -> Result<String, String>,
+    remote: impl FnOnce(&remote::Server, &mut [u8]) -> Result<String, String>,
     response: &mut [u8],
 ) -> Result<String, String> {
+    match (&mut backends.local, &backends.server) {
+        (Some(Ok(local)), _) => local.complete(request).and_then(|done| check(&done)),
+        (_, Some(server)) => remote(server, response),
+        (Some(Err(why)), None) => Err(format!("the model cannot run: {why}")),
+        (None, None) => Err(String::from(NO_MODEL)),
+    }
+}
+
+/// A script comes only from the server, until the local model writes them.
+fn script(backends: &Backends, text: &str, response: &mut [u8]) -> Result<String, String> {
     let request = ScriptRequest::decode(text).ok_or("server malformed script request")?;
-    let repair = request
-        .repair
-        .as_ref()
-        .map(|(script, error)| script::Repair { script, error });
-    let body = script::chat_request(&config.model, &request.request, repair);
-    let http_request = http::post_json(host, openai::CHAT_PATH, None, &body);
-    let timeout = request.timeout_ms.min(script::SERVICE_TIMEOUT_MS);
-    exchange(&http_request, timeout, response)
-        .map_err(AnswerError::Server)
-        .and_then(|reply| script::answer_from(&reply))
-        .map(|answer| script::encode_answer(&answer))
-        .map_err(|error| script::encode_error(&error))
-}
-
-fn exchange(
-    request: &[u8],
-    timeout_ms: u64,
-    response: &mut [u8],
-) -> Result<http::Response, String> {
-    let call = HttpRequest {
-        request_ptr: request.as_ptr() as u64,
-        request_len: request.len() as u64,
-        response_ptr: response.as_mut_ptr() as u64,
-        response_cap: response.len() as u64,
-        timeout_ms,
+    if let Some(server) = &backends.server {
+        return server.script(&request, response);
+    }
+    let why = match &backends.local {
+        Some(Ok(_)) => String::from(SCRIPTS_NOT_LOCAL),
+        Some(Err(why)) => format!("the model cannot run ({why}), and there is no LLM server"),
+        None => String::from(NO_MODEL),
     };
-    let len = sys::http(&call).map_err(|error| format!("network: {error:?}"))?;
-    http::parse_response(&response[..len.min(response.len())], true)
-        .map_err(|error| format!("bad HTTP response: {error:?}"))
+    Err(script::encode_error(&AnswerError::Unavailable(why)))
 }
 
-/// The server's health, then the model's: either may be missing, not both.
-fn health(
-    host: Option<&str>,
-    model: Option<&mut Model>,
-    response: &mut [u8],
-) -> Result<String, String> {
-    let local = model.map(Model::describe);
-    let Some(host) = host else {
+/// The server's health first, then the model's and the engine's; either side may
+/// be missing, not both.
+fn health(backends: &mut Backends, response: &mut [u8]) -> Result<String, String> {
+    let mut local: Vec<String> = Vec::new();
+    if let Some(model) = &mut backends.model {
+        local.push(model.describe());
+    }
+    match &backends.local {
+        Some(Ok(engine)) => local.push(engine.describe()),
+        Some(Err(why)) => local.push(format!("the model cannot run: {why}")),
+        None => {}
+    }
+    let local = (!local.is_empty()).then(|| local.join("; "));
+    let Some(server) = &backends.server else {
         return local
             .map(|local| format!("{local}; {NO_SERVER}"))
             .ok_or_else(|| String::from(NO_SERVER));
     };
-    let started = sys::time_ns();
-    let reply = match exchange(&http::get(host, "/health"), HEALTH_TIMEOUT_MS, response) {
-        Ok(reply) => reply,
-        Err(error) => return Err(local.map_or(error.clone(), |local| format!("{error}; {local}"))),
-    };
-    let rtt_ms = (sys::time_ns() - started) / 1_000_000;
-    let server = format!("HTTP {} in {rtt_ms} ms", reply.status);
-    Ok(match local {
-        Some(local) => format!("{server}; {local}"),
-        None => server,
-    })
-}
-
-fn ask(config: &Config, host: &str, prompt: &str, response: &mut [u8]) -> Result<String, String> {
-    let body = openai::chat_request(&config.model, Some(SYSTEM_PROMPT), prompt, MAX_TOKENS);
-    let request = http::post_json(host, openai::CHAT_PATH, None, &body);
-    let reply = exchange(&request, CHAT_TIMEOUT_MS, response)?;
-    if reply.status != 200 {
-        let body = core::str::from_utf8(&reply.body).unwrap_or("");
-        return Err(format!(
-            "server answered HTTP {}: {}",
-            reply.status,
-            printable(body, MAX_ERROR_CHARS, 1)
-        ));
+    match (server.health(response), local) {
+        (Ok(server), Some(local)) => Ok(format!("{server}; {local}")),
+        (Ok(server), None) => Ok(server),
+        (Err(error), Some(local)) => Err(format!("{error}; {local}")),
+        (Err(error), None) => Err(error),
     }
-    openai::parse_chat_response(&reply.body)
-        .map(|text| printable(&text, MAX_REPLY_CHARS, MAX_REPLY_LINES))
-        .map_err(|error| format!("bad chat reply: {error:?}"))
-}
-
-/// Asks the model to explain a rollback from the kernel's facts; plain prose back.
-fn explain(
-    config: &Config,
-    host: &str,
-    facts: &str,
-    response: &mut [u8],
-) -> Result<String, String> {
-    let body = explain::chat_request(&config.model, facts);
-    let request = http::post_json(host, openai::CHAT_PATH, None, &body);
-    let reply = exchange(&request, CHAT_TIMEOUT_MS, response)?;
-    explain::answer_from(&reply)
 }

@@ -164,6 +164,41 @@ impl Features {
     }
 }
 
+/// The hypervisor's 12-byte vendor signature (CPUID leaf 0x40000000, EBX, ECX and
+/// EDX), when CPUID says a hypervisor is present and it fills the leaf.
+#[cfg(target_arch = "x86_64")]
+pub fn hypervisor_signature() -> Option<[u8; 12]> {
+    if cpuid(1, 0).2 & (1 << 31) == 0 {
+        return None;
+    }
+    let (max_leaf, ebx, ecx, edx) = cpuid(0x4000_0000, 0);
+    let mut signature = [0; 12];
+    signature[..4].copy_from_slice(&ebx.to_le_bytes());
+    signature[4..8].copy_from_slice(&ecx.to_le_bytes());
+    signature[8..].copy_from_slice(&edx.to_le_bytes());
+    (max_leaf >= 0x4000_0000 && signature != [0; 12]).then_some(signature)
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+pub fn hypervisor_signature() -> Option<[u8; 12]> {
+    None
+}
+
+/// What a hypervisor signature names, in plain words.
+pub fn hypervisor_name(signature: &[u8; 12]) -> &'static str {
+    match signature {
+        b"KVMKVMKVM\0\0\0" => "KVM",
+        b"TCGTCGTCGTCG" => "QEMU emulating the CPU (TCG)",
+        b"Microsoft Hv" => "Hyper-V",
+        b"VMwareVMware" => "VMware",
+        b"VBoxVBoxVBox" => "VirtualBox",
+        b"XenVMMXenVMM" => "Xen",
+        b" lrpepyh  vr" => "Parallels",
+        b"bhyve bhyve " => "bhyve",
+        _ => "a hypervisor this list does not name",
+    }
+}
+
 /// EAX, EBX, ECX and EDX of one CPUID leaf.
 #[cfg(target_arch = "x86_64")]
 fn cpuid(leaf: u32, subleaf: u32) -> (u32, u32, u32, u32) {
@@ -255,6 +290,22 @@ mod tests {
         assert!(xsave_area_bytes(ymm, 832, 0, 4096).is_err());
         assert!(xsave_area_bytes(ymm, 8192, 832, 4096).is_err());
         assert!(xsave_area_bytes(ymm, 4097, 832, 4096).is_err());
+    }
+
+    #[test]
+    fn hypervisors_are_named_from_their_signature() {
+        assert_eq!(hypervisor_name(b"KVMKVMKVM\0\0\0"), "KVM");
+        assert_eq!(hypervisor_name(b"Microsoft Hv"), "Hyper-V");
+        assert!(hypervisor_name(b"TCGTCGTCGTCG").contains("TCG"));
+        assert_eq!(
+            hypervisor_name(b"KVMKVMKVMKVM"),
+            "a hypervisor this list does not name"
+        );
+        // The signature is read only when CPUID says there is a hypervisor.
+        if let Some(signature) = hypervisor_signature() {
+            assert_ne!(signature, [0; 12]);
+            assert!(Features::detect().hypervisor);
+        }
     }
 
     #[cfg(target_arch = "x86_64")]

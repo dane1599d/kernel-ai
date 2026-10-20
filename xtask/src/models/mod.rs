@@ -178,6 +178,34 @@ impl Loaded {
     }
 }
 
+/// The stored file of catalog model `id`, for `run --local`: in the model store
+/// (`--store`, else `KAI_MODELS`, else the default, as for `setup`), and of the
+/// pinned size.
+pub fn stored(id: &str, store: Option<&str>) -> Result<PathBuf, String> {
+    let catalog = Catalog::load()?;
+    let entry = catalog.get(id)?;
+    let path = store::resolve(store)?.join(&entry.file);
+    let len = fs::metadata(&path)
+        .map_err(|e| {
+            format!(
+                "{} is not there ({e}); run cargo xtask setup {} first",
+                path.display(),
+                entry.id
+            )
+        })?
+        .len();
+    if len != entry.size {
+        return Err(format!(
+            "{} is {len} bytes, not the pinned {}; run cargo xtask model check {}",
+            path.display(),
+            entry.size,
+            entry.id
+        ));
+    }
+    println!("xtask: {} from the catalog, {}", entry.name, path.display());
+    Ok(path)
+}
+
 pub fn fixture_spec(name: &str) -> Result<infer::fixture::Spec, String> {
     match name {
         "tiny" => Ok(infer::fixture::Spec::tiny()),
@@ -203,6 +231,23 @@ mod tests {
         assert!(ModelArgs::parse(&["--store"]).is_err());
         assert!(ModelArgs::parse(&["--fast"]).is_err());
         assert!(main(&["model".into(), "talk".into()]).is_err());
+    }
+
+    #[test]
+    fn run_local_needs_a_known_id_and_the_stored_file() {
+        let unknown = stored("qwen3-9b", None).unwrap_err();
+        assert!(unknown.contains("no model"), "{unknown}");
+        // The store on a dev PC or a CI runner holds no model; the message says
+        // how to get it (or the store is refused, on a PC whose temp is on C:).
+        if let Err(missing) = stored("qwen3-0.6b", None) {
+            assert!(
+                missing.contains("cargo xtask setup qwen3-0.6b")
+                    || missing.contains("model check")
+                    || missing.contains("C:")
+                    || missing.contains("OneDrive"),
+                "{missing}"
+            );
+        }
     }
 
     #[test]

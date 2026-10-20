@@ -72,6 +72,10 @@ pub fn run(args: &ModelArgs) -> Result<(), String> {
         "  cargo xtask model chat{local}{store_flag} \"What does an operating system kernel do?\""
     );
     println!("  cargo xtask model check {}{store_flag}", entry.id);
+    println!(
+        "  cargo xtask run --local {}{store_flag}   (Kernel AI with the model inside; then: ask ...)",
+        entry.id
+    );
     Ok(())
 }
 

@@ -2,9 +2,10 @@
 //! from facts the kernel takes from its own ledger. The answer is prose, shown only
 //! under a line saying it is the model's, and nothing acts on it.
 
-use crate::openai::{self, ReplyError};
+use crate::chat::{self, Completion};
+use crate::openai::{CompletionError, ReplyError};
 use crate::script::{SEED, TEMPERATURE};
-use crate::{http, text};
+use crate::text;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -23,16 +24,20 @@ pub const MAX_LINES: usize = 8;
 /// Error text from the server, cut to one console row.
 const MAX_ERROR_CHARS: usize = 160;
 
-/// The chat request for `facts`: thinking off, a fixed seed, plain text back.
-pub fn chat_request(model: &str, facts: &str) -> Vec<u8> {
+/// The request for `facts`: the explainer's system prompt, then the facts with
+/// thinking turned off.
+pub fn request(facts: &str) -> chat::Request {
     let user = format!("Facts:\n{facts}\n/no_think");
+    chat::Request::new(Some(SYSTEM_PROMPT), &user, MAX_TOKENS)
+}
+
+/// The chat request body for `facts`: thinking off, a fixed seed, plain text back.
+pub fn chat_request(model: &str, facts: &str) -> Vec<u8> {
+    let request = request(facts);
     let body = serde_json::json!({
         "model": model,
-        "messages": [
-            { "role": "system", "content": SYSTEM_PROMPT },
-            { "role": "user", "content": user },
-        ],
-        "max_tokens": MAX_TOKENS,
+        "messages": request.messages,
+        "max_tokens": request.max_tokens,
         "temperature": TEMPERATURE,
         "seed": SEED,
         "stream": false,
@@ -41,51 +46,43 @@ pub fn chat_request(model: &str, facts: &str) -> Vec<u8> {
     serde_json::to_vec(&body).unwrap_or_default()
 }
 
-/// The explanation in a chat-completion response, made printable and cut to
-/// [`MAX_CHARS`] and [`MAX_LINES`]; marked when the model ran out of room.
-pub fn answer_from(response: &http::Response) -> Result<String, String> {
-    if response.status != 200 {
-        let body = core::str::from_utf8(&response.body).unwrap_or("");
-        return Err(format!(
-            "the server answered HTTP {}: {}",
-            response.status,
-            text::printable(body, MAX_ERROR_CHARS, 1)
-        ));
-    }
-    // A model that thinks anyway can spend every token before it answers.
-    let none = |cut_off: bool| match cut_off {
-        true => String::from("the model ran out of tokens before answering; is thinking off?"),
-        false => String::from("the model gave no explanation"),
-    };
-    let reply = openai::parse_chat_reply(&response.body).map_err(|error| match error {
-        ReplyError::Server(why) => format!(
-            "the server said: {}",
-            text::printable(&why, MAX_ERROR_CHARS, 1)
-        ),
-        ReplyError::EmptyContent => none(finished_at_length(&response.body)),
-        other => format!("bad chat reply: {other:?}"),
-    })?;
-    let cut_off = reply.finish_reason.as_deref() == Some("length");
-    let content = text::without_thinking(&reply.content);
+/// The explanation in a completion, made printable and cut to [`MAX_CHARS`] and
+/// [`MAX_LINES`]; marked when the model ran out of room.
+pub fn answer(completion: &Completion) -> Result<String, String> {
+    let content = text::without_thinking(&completion.text);
     let mut explanation = text::printable(content, MAX_CHARS, MAX_LINES);
     if explanation.trim().is_empty() {
-        return Err(none(cut_off));
+        // A model that thinks anyway can spend every token before it answers.
+        return Err(match completion.cut_off {
+            true => String::from("the model ran out of tokens before answering; is thinking off?"),
+            false => String::from("the model gave no explanation"),
+        });
     }
-    if cut_off {
-        explanation.push_str(" (cut off)");
+    if completion.cut_off {
+        explanation.push_str(chat::CUT_OFF);
     }
     Ok(explanation)
 }
 
-/// Whether a reply with no content stopped at the token limit.
-fn finished_at_length(body: &[u8]) -> bool {
-    serde_json::from_slice::<serde_json::Value>(body)
-        .is_ok_and(|reply| reply["choices"][0]["finish_reason"] == "length")
+/// Why a server's response held no explanation, in one console row.
+pub fn server_error(error: &CompletionError) -> String {
+    match error {
+        CompletionError::Status(status, body) => format!(
+            "the server answered HTTP {status}: {}",
+            text::printable(body, MAX_ERROR_CHARS, 1)
+        ),
+        CompletionError::Reply(ReplyError::Server(why)) => format!(
+            "the server said: {}",
+            text::printable(why, MAX_ERROR_CHARS, 1)
+        ),
+        CompletionError::Reply(other) => format!("bad chat reply: {other:?}"),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{http, openai};
     use alloc::vec;
 
     /// A response whose content is `content`.
@@ -100,13 +97,22 @@ mod tests {
         }
     }
 
+    /// The explanation in an HTTP response, as the llm service reads one.
+    fn answer_from(response: &http::Response) -> Result<String, String> {
+        openai::completion(response)
+            .map_err(|error| server_error(&error))
+            .and_then(|completion| answer(&completion))
+    }
+
     #[test]
     fn the_request_carries_the_facts_with_thinking_off_and_no_schema() {
         let facts = "component: notes\nlatest rollback: e2 (trap)";
         let request: serde_json::Value =
             serde_json::from_slice(&chat_request("qwen3-8b", facts)).unwrap();
         assert_eq!(request["model"], "qwen3-8b");
+        assert_eq!(request["messages"][0]["role"], "system");
         assert_eq!(request["messages"][0]["content"], SYSTEM_PROMPT);
+        assert_eq!(request["messages"][1]["role"], "user");
         assert_eq!(
             request["messages"][1]["content"],
             format!("Facts:\n{facts}\n/no_think")
@@ -115,6 +121,13 @@ mod tests {
         assert_eq!(request["max_tokens"], MAX_TOKENS);
         assert_eq!(request["chat_template_kwargs"]["enable_thinking"], false);
         assert!(request.get("response_format").is_none());
+        assert_eq!(
+            super::request(facts).single_turn(),
+            Some((
+                Some(SYSTEM_PROMPT),
+                format!("Facts:\n{facts}\n/no_think").as_str()
+            ))
+        );
     }
 
     #[test]
@@ -197,6 +210,18 @@ mod tests {
             answer_from(&garbage)
                 .unwrap_err()
                 .starts_with("bad chat reply")
+        );
+    }
+
+    #[test]
+    fn a_completion_from_any_backend_reads_the_same() {
+        let local = Completion {
+            text: String::from(" The candidate trapped in count.\n"),
+            cut_off: false,
+        };
+        assert_eq!(
+            answer(&local),
+            Ok(String::from("The candidate trapped in count."))
         );
     }
 }

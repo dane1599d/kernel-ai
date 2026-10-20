@@ -18,6 +18,8 @@ pub const BASE_MEMORY_MIB: u64 = 512;
 const MIB: u64 = 1024 * 1024;
 /// The model's share of guest memory is rounded up to a multiple of this.
 const MEMORY_STEP_MIB: u64 = 64;
+const RAW_LEN: usize = 3 * MIB as usize + 777;
+const GGUF_LEN: usize = 2 * MIB as usize + 4093;
 
 pub struct ModelDisk {
     path: PathBuf,
@@ -26,6 +28,8 @@ pub struct ModelDisk {
     len: u64,
     /// The host's hash, passed on for a test boot to check against.
     fnv: Option<u64>,
+    /// The answer the model must give to `ask hi`, for the `local-ask` case.
+    golden: Option<String>,
 }
 
 impl ModelDisk {
@@ -58,6 +62,7 @@ impl ModelDisk {
             filename,
             len: meta.len(),
             fnv: None,
+            golden: None,
         })
     }
 
@@ -71,10 +76,14 @@ impl ModelDisk {
         )
     }
 
-    /// Guest memory for a VM with this disk: the usual amount plus room for the
-    /// copy the kernel keeps, so processes get as much as without it.
+    /// Guest memory for a VM with this disk: the usual amount, room for the copy
+    /// the kernel keeps, and twice the pages llm's engine gets with a model, since
+    /// processes may hold half of what is free; so every other service gets as
+    /// much as without it.
     pub fn memory_mib(&self) -> u64 {
-        BASE_MEMORY_MIB + self.len.div_ceil(MIB).next_multiple_of(MEMORY_STEP_MIB)
+        let engine_mib = kabi::model::ENGINE_PAGES * 4096 / MIB;
+        let extra = self.len.div_ceil(MIB) + 2 * engine_mib;
+        BASE_MEMORY_MIB + extra.next_multiple_of(MEMORY_STEP_MIB)
     }
 
     /// The QEMU arguments that attach the file read-only.
@@ -97,13 +106,41 @@ impl ModelDisk {
         ]
     }
 
-    /// The kernel command-line words that describe the file.
+    /// The kernel command-line words that describe the file, and the hash of the
+    /// golden answer when there is one.
     pub fn cmdline(&self) -> String {
-        Attached {
+        let attached = Attached {
             len: Some(self.len),
             fnv: self.fnv,
         }
-        .to_cmdline()
+        .to_cmdline();
+        match &self.golden {
+            Some(golden) => format!(
+                "{attached} local_golden={:016x}",
+                kabi::model::fnv1a(golden.as_bytes())
+            ),
+            None => attached,
+        }
+    }
+
+    /// Console lines a boot with this disk must show exactly: the terminal's
+    /// answer to `ask hi`.
+    pub fn exact_lines(&self) -> Vec<String> {
+        self.golden
+            .as_deref()
+            .map_or_else(Vec::new, crate::local_ask::terminal_lines)
+    }
+
+    /// Text such a boot's console must contain: health naming the local model.
+    pub fn console_text(&self) -> Vec<String> {
+        match self.golden {
+            // After the model's length and hash: llm's start-up line has no `; `.
+            Some(_) => vec![format!(
+                "; local model {} (",
+                infer::fixture::LOCAL_ASK_NAME
+            )],
+            None => Vec::new(),
+        }
     }
 }
 
@@ -121,9 +158,11 @@ pub enum Fixture {
     /// must not take for a model.
     Raw,
     /// The GGUF v3 magic and version, then filler: the kernel checks only those
-    /// eight bytes, so the `model` case can map it into llm. (Not a model llm
-    /// could parse; L4 brings a generated one.)
+    /// eight bytes, so the `model` case can map it into llm, which cannot run it.
     Gguf,
+    /// The generated model `local-ask` answers from (`infer::fixture::local_ask`),
+    /// with the golden answer xtask computes for it.
+    LocalAsk,
 }
 
 impl Fixture {
@@ -131,39 +170,37 @@ impl Fixture {
         match self {
             Fixture::Raw => "blk-raw.img",
             Fixture::Gguf => "model.gguf",
+            Fixture::LocalAsk => "local-ask.gguf",
         }
     }
 
-    /// A few MiB, and not a whole number of 512-byte sectors.
-    fn len(self) -> usize {
-        match self {
-            Fixture::Raw => 3 * MIB as usize + 777,
-            Fixture::Gguf => 2 * MIB as usize + 4093,
-        }
-    }
-
+    /// Every fixture is an odd number of bytes, not whole 512-byte sectors; the
+    /// filler ones are a few MiB.
     fn bytes(self) -> Vec<u8> {
-        let (lead, seed): (&[u8], u64) = match self {
+        let (lead, seed, len): (&[u8], u64, usize) = match self {
             Fixture::Raw => (
                 b"Kernel AI blk fixture, not a model\n",
                 0x6b61_692d_626c_6b00,
+                RAW_LEN,
             ),
             Fixture::Gguf => (
                 b"GGUF\x03\0\0\0Kernel AI model fixture\n",
                 0x6b61_692d_6767_7566,
+                GGUF_LEN,
             ),
+            Fixture::LocalAsk => return infer::fixture::local_ask(),
         };
-        let mut bytes = Vec::with_capacity(self.len());
+        let mut bytes = Vec::with_capacity(len);
         bytes.extend_from_slice(lead);
         let mut state = seed;
-        while bytes.len() < self.len() {
+        while bytes.len() < len {
             // xorshift64: cheap, fixed, and every byte value appears.
             state ^= state << 13;
             state ^= state >> 7;
             state ^= state << 17;
             bytes.extend_from_slice(&state.to_le_bytes());
         }
-        bytes.truncate(self.len());
+        bytes.truncate(len);
         bytes
     }
 
@@ -178,6 +215,9 @@ impl Fixture {
         hash.update(&bytes);
         let mut disk = ModelDisk::open(&path)?;
         disk.fnv = Some(hash.finish());
+        if self == Fixture::LocalAsk {
+            disk.golden = Some(crate::local_ask::golden(&bytes)?);
+        }
         Ok(disk)
     }
 }
@@ -192,6 +232,7 @@ mod tests {
             filename: path.to_string(),
             len,
             fnv: None,
+            golden: None,
         }
     }
 
@@ -214,16 +255,18 @@ mod tests {
     }
 
     #[test]
-    fn memory_grows_with_the_model() {
+    fn memory_grows_with_the_model_and_the_engine() {
+        // The engine's 136 MiB, twice: 272 MiB on top of the model.
+        assert_eq!(kabi::model::ENGINE_PAGES * 4096 / MIB, 136);
         assert_eq!(
             windows_disk("D:/m.gguf", 639_446_688).memory_mib(),
-            512 + 640
+            512 + 896
         );
         assert_eq!(
             windows_disk("D:/m.gguf", 3 * MIB + 777).memory_mib(),
-            512 + 64
+            512 + 320
         );
-        assert_eq!(windows_disk("D:/m.gguf", 1).memory_mib(), 512 + 64);
+        assert_eq!(windows_disk("D:/m.gguf", 1).memory_mib(), 512 + 320);
     }
 
     #[test]
@@ -240,7 +283,7 @@ mod tests {
     #[test]
     fn fixtures_are_odd_sized_stable_and_not_gguf() {
         let bytes = Fixture::Raw.bytes();
-        assert_eq!(bytes.len(), Fixture::Raw.len());
+        assert_eq!(bytes.len(), RAW_LEN);
         assert_ne!(bytes.len() % 512, 0);
         assert!(!bytes.starts_with(b"GGUF"));
         assert_eq!(
@@ -252,13 +295,39 @@ mod tests {
     #[test]
     fn the_model_fixture_passes_only_the_kernel_check() {
         let bytes = Fixture::Gguf.bytes();
-        assert_eq!(bytes.len(), Fixture::Gguf.len());
+        assert_eq!(bytes.len(), GGUF_LEN);
         assert_ne!(bytes.len() % 512, 0);
         assert_eq!(kabi::model::check_header(&bytes), Ok(()));
         assert_eq!(
             kabi::model::check_header(&Fixture::Raw.bytes()),
             Err(kabi::model::HeaderError::NoMagic)
         );
+    }
+
+    #[test]
+    fn the_local_ask_disk_carries_its_golden_answer() {
+        let dir = std::env::temp_dir().join(format!("kai-local-ask-{}", std::process::id()));
+        let disk = Fixture::LocalAsk.write(&dir).unwrap();
+        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(disk.len % 2, 1);
+        assert_ne!(disk.len % 512, 0);
+        let golden = crate::local_ask::golden(&infer::fixture::local_ask()).unwrap();
+        let hash = kabi::model::fnv1a(golden.as_bytes());
+        assert!(
+            disk.cmdline()
+                .ends_with(&format!(" local_golden={hash:016x}")),
+            "{}",
+            disk.cmdline()
+        );
+        assert!(
+            disk.cmdline()
+                .starts_with(&format!("model_len={}", disk.len))
+        );
+        assert_eq!(disk.exact_lines(), [format!("= {golden}")]);
+        assert_eq!(disk.console_text(), ["; local model kai test model ("]);
+        // The other fixtures have no answer to check.
+        let raw = windows_disk("D:/m.gguf", 5);
+        assert!(raw.exact_lines().is_empty() && raw.console_text().is_empty());
     }
 
     #[test]

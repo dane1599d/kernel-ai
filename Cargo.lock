@@ -1028,9 +1028,11 @@ version = "0.0.0"
 dependencies = [
  "cpufeat",
  "editcore",
+ "infer",
  "kabi",
  "livecore",
  "llmproto",
+ "quant",
  "shellcore",
  "spin 0.12.3",
  "supervise",
