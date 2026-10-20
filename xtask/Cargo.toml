@@ -19,6 +19,7 @@ uelf = { path = "../uelf" }
 addr2line = { version = "0.27.1", features = ["loader"] }
 object = "0.40.0"
 quant = { path = "../quant" }
+sched = { path = "../sched" }
 rustc-demangle = "0.1.28"
 serde_json = "1.0.154"
 sha2 = "0.11.1"

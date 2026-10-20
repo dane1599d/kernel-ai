@@ -194,51 +194,47 @@ fn worst_case() -> Observation {
 
 #[test]
 fn the_prompt_and_the_longest_answer_fit_the_guests_context() {
-    let budget = |observation: &Observation| {
-        let summary = summary(observation).unwrap();
-        let request = request(&summary);
-        // Counted as the summary counts: line by line.
-        let tokens: usize = request
+    // Counted as the summary counts: line by line.
+    let tokens = |summary: &Summary| -> usize {
+        let request = request(summary);
+        let prompt: usize = request
             .messages
             .iter()
             .flat_map(|m| m.content.lines())
             .map(estimate_tokens)
             .sum();
-        (summary, tokens + TEMPLATE_TOKENS + ANSWER_TOKENS as usize)
+        prompt + TEMPLATE_TOKENS + ANSWER_TOKENS as usize
     };
-    let (a, a_tokens) = budget(&mix_a());
-    println!("mix A: about {a_tokens} tokens with the answer");
-    assert_eq!(a.omitted, 0, "mix A shows every process");
-    let (worst, worst_tokens) = budget(&worst_case());
-    println!(
-        "worst case: about {worst_tokens} tokens, {} processes left out",
-        worst.omitted
-    );
-    for tokens in [a_tokens, worst_tokens] {
-        assert!(tokens <= 512, "{tokens} estimated tokens");
-    }
-    // Hostile names cost so many tokens that only the target fits; the model is
-    // told how many were left out, and they cannot be labelled.
-    assert!(worst.shown.len() == 1 && worst.omitted == 19);
-    assert!(worst.labelable.is_empty());
-    // Sixteen ordinary processes: seven fit in 512 tokens. Showing all
-    // sixteen needs a larger context (f16 KV in L6, or a KV_BYTES raise).
     let mut many = mix_a();
     many.processes = (0..16)
         .map(|i| row(&format!("svc-{i}"), 60, 120, 1_500, 2_500))
         .collect();
-    let (busy, busy_tokens) = budget(&many);
-    println!(
-        "16 services: about {busy_tokens} tokens, {} shown",
-        busy.shown.len()
+    // At the guest's 2,048 positions every process fits, hostile names too.
+    for (label, observation) in [
+        ("mix A", mix_a()),
+        ("16 services", many.clone()),
+        ("hostile", worst_case()),
+    ] {
+        let summary = summary(&observation).unwrap();
+        println!("{label}: about {} tokens with the answer", tokens(&summary));
+        assert!(tokens(&summary) <= CONTEXT_TOKENS, "{label}");
+        assert_eq!(
+            summary.shown.len(),
+            observation.processes.len().min(MAX_PROCESSES),
+            "{label}"
+        );
+    }
+    // In a smaller context, L4's 512, rows are dropped and counted.
+    let small = 512 - ANSWER_TOKENS as usize - TEMPLATE_TOKENS;
+    let hostile = summary_with(&worst_case(), &estimate_tokens, small).unwrap();
+    assert!(hostile.shown.len() == 1 && hostile.omitted == 19 && hostile.labelable.is_empty());
+    let busy = summary_with(&many, &estimate_tokens, small).unwrap();
+    println!("16 services in 512: {} shown", busy.shown.len());
+    assert!(busy.shown.len() >= 7 && busy.omitted == 16 - busy.shown.len());
+    assert!(
+        busy.text
+            .contains("more processes not shown; they cannot be labelled")
     );
-    assert!(busy_tokens <= 512 && busy.shown.len() >= 7);
-    // The longest valid answer fits its token limit even at a token per letter.
-    let names: Vec<String> = (0..8).map(|i| format!("{i}abcdefghijklmn{i}")).collect();
-    let longest = serde_json::json!({
-        "reason": "x".repeat(REASON_MAX_CHARS), "action": "try", "policy": "round-robin",
-        "preset": "gentle", "background": names,
-    });
     // A pathological answer (every name a rare 16-letter word) can pass the
     // answer limit and is then cut off and refused; a realistic one fits, as
     // measured with the real tokenizer (80 tokens).
@@ -248,5 +244,4 @@ fn the_prompt_and_the_longest_answer_fit_the_guests_context() {
         "background": ["build-1", "build-2", "build-3", "build-4", "build-5", "build-6", "build-7", "build-8"],
     });
     assert!(estimate_tokens(&realistic.to_string()) <= ANSWER_TOKENS as usize);
-    let _ = longest;
 }

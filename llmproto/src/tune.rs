@@ -12,17 +12,17 @@
 //! `[a-z0-9-]`, at most 16 characters, quoted as data, and made unique.
 //!
 //! The prompt and the answer must fit the guest's context
-//! (`kabi::model::CONTEXT_CAP`, 512 tokens). Rows are added only while the prompt
+//! (`kabi::model::CONTEXT_CAP`, 2,048 tokens since L5). Rows are added only while the prompt
 //! stays inside [`PROMPT_BUDGET`], counted by an estimate calibrated against
 //! Qwen3's tokenizer, or, where the model is at hand, by its tokenizer itself
 //! ([`summary_with`]); the processes left out are counted, and cannot be labelled.
-//! Mix A's prompt measures 389 tokens with the real tokenizer.
+//! Mix A's prompt measures 377 tokens with the real tokenizer.
 
 mod answer;
 mod card;
 mod summary;
 
-pub use answer::{Decision, FIELD_ORDER, decide, response_format, schema};
+pub use answer::{Decision, FIELD_ORDER, UNCHANGED, decide, response_format, schema};
 pub use card::{CARD_MAX_COLUMNS, CARD_MAX_LINES, card, reason_text, verdict_card};
 pub use summary::{measured, summary, summary_with};
 
@@ -46,7 +46,7 @@ pub const ANSWER_TOKENS: u32 = 96;
 /// Qwen3 writes when thinking is off and `/no_think`: measured at 29.
 pub const TEMPLATE_TOKENS: usize = 32;
 /// The guest's context (`kabi::model::CONTEXT_CAP`), which xtask checks.
-pub const CONTEXT_TOKENS: usize = 512;
+pub const CONTEXT_TOKENS: usize = 2048;
 /// Estimated prompt tokens allowed: the context less the answer and the template.
 pub const PROMPT_BUDGET: usize = CONTEXT_TOKENS - ANSWER_TOKENS as usize - TEMPLATE_TOKENS;
 /// The target's p99 wait at which the summary flags it.

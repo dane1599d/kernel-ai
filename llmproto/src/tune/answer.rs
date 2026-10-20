@@ -10,6 +10,9 @@ use alloc::vec::Vec;
 use sched::spec::{PolicyKind, PolicySpec, Preset};
 use serde::Deserialize;
 
+/// Why an answer that asks for exactly what runs now is a keep.
+pub const UNCHANGED: &str = "that is what runs now";
+
 /// The answer's fields in the order the model must write them: the reason first,
 /// so it is written before the choice it explains.
 pub const FIELD_ORDER: [&str; 5] = ["reason", "action", "policy", "preset", "background"];
@@ -163,7 +166,7 @@ pub fn decide(
     if unchanged {
         return Decision::Keep {
             reason,
-            invalid: Some(String::from("that is what runs now")),
+            invalid: Some(String::from(UNCHANGED)),
         };
     }
     Decision::Try {
