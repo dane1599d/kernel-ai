@@ -4,12 +4,14 @@
 //! cargo xtask run   [--release] [--spikes] [--accel auto|kvm|whpx|tcg] [--cpus N] [--mem SIZE] [--llm IP:PORT] [--model NAME] [--edit] [--model-disk PATH | --local ID [--store DIR]]
 //! cargo xtask test  [--release] [--accel auto|kvm|whpx|tcg] [--timeout SECS] [--cpus N] [--mem SIZE]
 //! cargo xtask soak  [--accel auto|kvm|whpx|tcg]   (10-minute storm, M5 exit test)
+//! (`--accel wsl` on Windows: QEMU with KVM inside WSL2; see wsl/launch.rs)
 //! cargo xtask smoke   (the live, edit and boot manifest scenarios on the host only, no QEMU)
 //! cargo xtask icount [--shift N] [--boots N] [--timeout SECS]   (icount determinism, M10a-2)
 //! cargo xtask fluency --llm HOST:PORT --model NAME [--repeat N]   (M8b script gate, host only)
 //! cargo xtask fluency --local ID [--store DIR]   (the same gate on our own engine)
 //! cargo xtask setup | model chat|check|pin | bench quant   (the local LLM on the host; see models/mod.rs)
 //! cargo xtask tune --sim [--mix A|B] [--seed N] (--local ID | --answer FILE) [--eval]   (M10a rehearsal)
+//! cargo xtask doctor   (can this PC run Kernel AI in an accelerated VM, and what to fix; read-only)
 //!
 //! `test` boots the kernel headless once per test case (boot and memory checks,
 //! page fault, double fault, write-protect, stack overflow, 60 s timer, keyboard,
@@ -26,6 +28,7 @@ mod buildsvc;
 mod cases;
 mod components;
 mod disk;
+mod doctor;
 mod edit_smoke;
 mod esp;
 mod floatguard;
@@ -43,6 +46,7 @@ mod smoke;
 mod strip;
 mod tune;
 mod userbuild;
+mod wsl;
 
 use options::{Accel, Options, Task, parse_args};
 use sha2::{Digest, Sha256};
@@ -62,6 +66,7 @@ fn main() -> ExitCode {
         Some("fluency") => fluency::main(&args[1..], &workspace_root().join("target")),
         Some("setup" | "model" | "bench") => models::main(&args),
         Some("tune") => tune::main(&args[1..]),
+        Some("doctor") => doctor::main(&args[1..]),
         _ => parse_args(&args).and_then(|options| execute(&options)),
     };
     match result {
@@ -110,7 +115,11 @@ fn execute(options: &Options) -> Result<(), String> {
     modules.extend(versions);
     let efi = ensure_limine(&target_dir)?;
     let esp = target_dir.join("esp");
-    let qemu = find_qemu()?;
+    // `--accel wsl`: QEMU runs inside WSL2, behind wsl.exe (wsl/launch.rs).
+    let wsl = wsl::Wsl::for_options(options, &target_dir)?;
+    let qemu = wsl
+        .as_ref()
+        .map_or_else(find_qemu, |wsl| Ok(wsl.program()))?;
     let accel = resolve_accel(options.accel);
     if options.task == Task::Icount {
         return icount::run(&qemu, &target_dir, &kernel, &modules, &efi, options);
@@ -145,9 +154,10 @@ fn execute(options: &Options) -> Result<(), String> {
             None
         };
         esp::make_esp(&esp, &kernel, &modules, &efi, &cmdline)?;
-        let firmware = find_firmware(&qemu, &target_dir)?;
+        let firmware = wsl::firmware(wsl.as_ref(), &qemu, &target_dir)?;
         let sizing = qemu::run_sizing(accel, options.sizing, disk.is_some());
         let args = qemu::args(&firmware, accel, false, disk.as_ref(), sizing);
+        let args = wsl::wrap(wsl.as_ref(), args)?;
         println!("xtask: {} {}", qemu.display(), args.join(" "));
         return qemu::run_interactive(&qemu, &args, &target_dir);
     }
@@ -194,7 +204,7 @@ fn execute(options: &Options) -> Result<(), String> {
         );
         esp::make_esp(&esp, &kernel, &modules, &efi, &cmdline)?;
         modules.truncate(shared);
-        let firmware = find_firmware(&qemu, &target_dir)?;
+        let firmware = wsl::firmware(wsl.as_ref(), &qemu, &target_dir)?;
         let monitor = qemu::free_port()?;
         let sizing = options::Sizing {
             mem_mib: options.sizing.mem_mib.max(case.memory_mib),
@@ -203,6 +213,7 @@ fn execute(options: &Options) -> Result<(), String> {
         let mut args = qemu::args(&firmware, accel, true, disk.as_ref(), sizing);
         args.push("-monitor".into());
         args.push(format!("tcp:127.0.0.1:{monitor},server=on,wait=off"));
+        let args = wsl::wrap(wsl.as_ref(), args)?;
         let run = qemu::TestRun {
             case,
             accel,
@@ -384,24 +395,7 @@ fn find_firmware(qemu: &Path, target_dir: &Path) -> Result<Firmware, String> {
     if let (Ok(code), Ok(vars)) = (env::var("OVMF_CODE"), env::var("OVMF_VARS")) {
         candidates.push((code.into(), vars.into()));
     }
-    for (code, vars) in [
-        (
-            "/usr/share/OVMF/OVMF_CODE_4M.fd",
-            "/usr/share/OVMF/OVMF_VARS_4M.fd",
-        ),
-        (
-            "/usr/share/OVMF/OVMF_CODE.fd",
-            "/usr/share/OVMF/OVMF_VARS.fd",
-        ),
-        (
-            "/usr/share/edk2/x64/OVMF_CODE.4m.fd",
-            "/usr/share/edk2/x64/OVMF_VARS.4m.fd",
-        ),
-        (
-            "/usr/share/edk2/ovmf/OVMF_CODE.fd",
-            "/usr/share/edk2/ovmf/OVMF_VARS.fd",
-        ),
-    ] {
+    for (code, vars) in wsl::probe::LINUX_OVMF {
         candidates.push((code.into(), vars.into()));
     }
     candidates.push((

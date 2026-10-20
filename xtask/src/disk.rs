@@ -93,9 +93,7 @@ impl ModelDisk {
     /// processes may hold half of what is free; so every other service gets as
     /// much as without it.
     pub fn memory_mib(&self) -> u64 {
-        let engine_mib = kabi::model::ENGINE_PAGES * 4096 / MIB;
-        let extra = self.len.div_ceil(MIB) + 2 * engine_mib;
-        BASE_MEMORY_MIB + extra.next_multiple_of(MEMORY_STEP_MIB)
+        memory_mib_for(self.len)
     }
 
     /// The QEMU arguments that attach the file read-only.
@@ -154,6 +152,14 @@ impl ModelDisk {
             None => Vec::new(),
         }
     }
+}
+
+/// Guest memory, in MiB, for a VM with a model file of `len` bytes (see
+/// [`ModelDisk::memory_mib`]); `cargo xtask doctor` sizes WSL by it.
+pub fn memory_mib_for(len: u64) -> u64 {
+    let engine_mib = kabi::model::ENGINE_PAGES * 4096 / MIB;
+    let extra = len.div_ceil(MIB) + 2 * engine_mib;
+    BASE_MEMORY_MIB + extra.next_multiple_of(MEMORY_STEP_MIB)
 }
 
 /// The disk a test case attaches, written under `target/fixtures/`, if it has one.

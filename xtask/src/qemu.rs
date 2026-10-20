@@ -199,7 +199,7 @@ pub fn run_test(
     let expect = [expect, run.contains.clone()].concat();
     let exact = run.exact.clone();
     let started = Instant::now();
-    let mut child = Command::new(qemu)
+    let mut child = crate::wsl::command(qemu)
         .current_dir(target_dir)
         .args(args)
         .stdout(Stdio::piped())

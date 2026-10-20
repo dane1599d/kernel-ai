@@ -55,6 +55,9 @@ pub struct Options {
     pub shift: u32,
     /// `icount --boots N`: how many boots must print the same digest.
     pub boots: usize,
+    /// `--accel wsl`: QEMU runs inside WSL2, started from Windows (`wsl/launch.rs`),
+    /// and `accel` is KVM there.
+    pub wsl: bool,
 }
 
 /// The VM's size when given on the command line; xtask's defaults otherwise.
@@ -82,8 +85,8 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
         Some("icount") => Task::Icount,
         other => {
             return Err(format!(
-                "expected build, run, test, soak, smoke, icount, fluency, setup, model or bench, \
-                 got {other:?}"
+                "expected build, run, test, soak, smoke, icount, fluency, setup, model, bench or \
+                 doctor, got {other:?}"
             ));
         }
     };
@@ -106,6 +109,7 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
         sizing: Sizing::default(),
         shift: crate::icount::DEFAULT_SHIFT,
         boots: crate::icount::DEFAULT_BOOTS,
+        wsl: false,
     };
     let mut rest = args[1..].iter();
     while let Some(arg) = rest.next() {
@@ -113,13 +117,17 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
             "--release" => options.release = true,
             "--spikes" => options.spikes = true,
             "--accel" => {
-                options.accel = match rest.next().map(String::as_str) {
+                let name = rest.next().map(String::as_str);
+                options.wsl = name == Some("wsl");
+                options.accel = match name {
                     Some("auto") => Accel::Auto,
-                    Some("kvm") => Accel::Kvm,
+                    Some("kvm" | "wsl") => Accel::Kvm,
                     Some("whpx") => Accel::Whpx,
                     Some("tcg") => Accel::Tcg,
                     other => {
-                        return Err(format!("--accel expects auto|kvm|whpx|tcg, got {other:?}"));
+                        return Err(format!(
+                            "--accel expects auto|kvm|whpx|tcg|wsl, got {other:?}"
+                        ));
                     }
                 }
             }
@@ -368,6 +376,19 @@ mod tests {
         assert!(parse_args(&args(&["icount", "--boots", "1"])).is_err());
         assert!(parse_args(&args(&["icount", "--llm", "10.0.2.2:80"])).is_err());
         assert!(parse_args(&args(&["test", "--shift", "3"])).is_err());
+    }
+
+    #[test]
+    fn accel_wsl_is_kvm_inside_wsl() {
+        let options = parse_args(&args(&["test", "--accel", "wsl"])).unwrap();
+        assert!(options.wsl);
+        assert_eq!(options.accel, Accel::Kvm);
+        assert!(parse_args(&args(&["run", "--accel", "wsl"])).unwrap().wsl);
+        // The last --accel wins, and plain kvm is the host's own.
+        let later = parse_args(&args(&["run", "--accel", "wsl", "--accel", "tcg"])).unwrap();
+        assert!(!later.wsl);
+        assert_eq!(later.accel, Accel::Tcg);
+        assert!(!parse_args(&args(&["run", "--accel", "kvm"])).unwrap().wsl);
     }
 
     #[test]
