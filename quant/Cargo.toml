@@ -1,0 +1,13 @@
+[package]
+name = "quant"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Software f16, Q8_0 blocks and the Q8_0 matvec in tiers picked at runtime.
+[lib]
+doctest = false
+
+[dependencies]
+cpufeat = { path = "../cpufeat" }

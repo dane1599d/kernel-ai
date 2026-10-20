@@ -87,6 +87,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "bpe"
+version = "0.0.0"
+dependencies = [
+ "gguf",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -186,6 +193,10 @@ checksum = "0667304c32ea56cb4cd6d2d7c0cfe9a2f8041229db8c033af7f8d69492429def"
 dependencies = [
  "cfg-if",
 ]
+
+[[package]]
+name = "cpufeat"
+version = "0.0.0"
 
 [[package]]
 name = "cpufeatures"
@@ -347,6 +358,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "gguf"
+version = "0.0.0"
+
+[[package]]
 name = "gimli"
 version = "0.34.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -408,6 +423,16 @@ checksum = "cc4e190f5d26ca7051642629da2c52fc03bde85a03197c99408dcd291734c855"
 dependencies = [
  "equivalent",
  "hashbrown 0.17.1",
+]
+
+[[package]]
+name = "infer"
+version = "0.0.0"
+dependencies = [
+ "bpe",
+ "gguf",
+ "libm",
+ "quant",
 ]
 
 [[package]]
@@ -638,6 +663,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "quant"
+version = "0.0.0"
+dependencies = [
+ "cpufeat",
 ]
 
 [[package]]
@@ -1208,12 +1240,17 @@ name = "xtask"
 version = "0.0.0"
 dependencies = [
  "addr2line",
+ "bpe",
+ "cpufeat",
  "editcore",
+ "gguf",
+ "infer",
  "kabi",
  "linetable",
  "livecore",
  "llmproto",
  "object",
+ "quant",
  "rustc-demangle",
  "serde_json",
  "sha2",

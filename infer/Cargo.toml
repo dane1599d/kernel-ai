@@ -1,0 +1,18 @@
+[package]
+name = "infer"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Qwen3 inference: config and shape checks, the KV cache, the forward pass and
+# greedy generation, plus generated fixture models for tests and xtask.
+[lib]
+doctest = false
+
+[dependencies]
+bpe = { path = "../bpe" }
+gguf = { path = "../gguf" }
+# expf, sqrtf, powf, sinf and cosf without std (founder-approved, 2026-10-19).
+libm = "0.2.16"
+quant = { path = "../quant" }

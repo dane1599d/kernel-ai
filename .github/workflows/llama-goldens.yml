@@ -1,0 +1,107 @@
+name: llama.cpp goldens
+
+# Manual: records llama.cpp's tokenizer and greedy ids for a catalog model, the
+# reference `cargo xtask model check` compares Kernel AI's engine against. It
+# builds a pinned llama.cpp tag on the runner, so no llama.cpp binary ever runs
+# on the dev PC. Commit the artifact's goldens.json as xtask/goldens/<id>.json.
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: Catalog id from xtask/models.json
+        default: qwen3-0.6b
+
+permissions:
+  contents: read
+
+env:
+  # b11399, 2026-10-04.
+  LLAMA_TAG: b11399
+  LLAMA_COMMIT: 2ca15f5404760548c39e7b92bd43116a09414a1a
+
+jobs:
+  goldens:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Look up the catalog entry
+        id: entry
+        env:
+          MODEL: ${{ inputs.model }}
+        run: |
+          jq -e --arg id "$MODEL" '.models[] | select(.id == $id)' xtask/models.json > entry.json
+          echo "url=https://huggingface.co/$(jq -r .repo entry.json)/resolve/$(jq -r .revision entry.json)/$(jq -r .file entry.json)" >> "$GITHUB_OUTPUT"
+          echo "sha=$(jq -r .sha256 entry.json)" >> "$GITHUB_OUTPUT"
+      - name: Download the pinned model and check its SHA-256
+        run: |
+          curl -fL --retry 5 -o model.gguf "${{ steps.entry.outputs.url }}"
+          echo "${{ steps.entry.outputs.sha }}  model.gguf" | sha256sum -c -
+      - name: Build llama-server at the pinned tag
+        run: |
+          git clone --depth 1 --branch "$LLAMA_TAG" https://github.com/ggml-org/llama.cpp
+          test "$(git -C llama.cpp rev-parse HEAD)" = "$LLAMA_COMMIT"
+          cmake -S llama.cpp -B build -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF -DLLAMA_BUILD_TESTS=OFF
+          cmake --build build --target llama-server -j "$(nproc)"
+      - name: Record tokenizer and greedy ids
+        env:
+          MODEL: ${{ inputs.model }}
+        run: |
+          # An f32 KV cache and no flash attention, as Kernel AI's engine computes.
+          ./build/bin/llama-server -m model.gguf --port 8080 -c 4096 -np 1 -t "$(nproc)" \
+            -ctk f32 -ctv f32 -fa off &
+          for i in $(seq 120); do curl -sf localhost:8080/health && break; sleep 2; done
+          python3 - <<'EOF'
+          import json, os, urllib.request
+
+          def post(path, body):
+              req = urllib.request.Request(
+                  "http://localhost:8080" + path,
+                  data=json.dumps(body).encode(),
+                  headers={"Content-Type": "application/json"},
+              )
+              with urllib.request.urlopen(req, timeout=600) as r:
+                  return json.load(r)
+
+          def tokenize(text, special):
+              return post("/tokenize", {"content": text, "add_special": False,
+                                        "parse_special": special})["tokens"]
+
+          inputs = json.load(open("xtask/goldens/inputs.json"))
+          # A greedy run ends at the chat's end tokens, as `model check`'s does.
+          stops = {tokenize("<|im_end|>", True)[0], tokenize("<|endoftext|>", True)[0]}
+          prompts = []
+          for question in inputs["prompts"]:
+              text = ("<|im_start|>user\n" + question + "<|im_end|>\n"
+                      "<|im_start|>assistant\n<think>\n\n</think>\n\n")
+              done = post("/completion", {
+                  "prompt": text, "n_predict": inputs["greedy_tokens"],
+                  "samplers": ["top_k"], "top_k": 1, "temperature": 0,
+                  "cache_prompt": False, "return_tokens": True, "seed": 1,
+              })
+              tokens = done["tokens"]
+              # Any end-of-generation token is the last one; drop it.
+              if done.get("stop_type") == "eos" and tokens:
+                  tokens = tokens[:-1]
+              greedy = []
+              for token in tokens:
+                  if token in stops:
+                      break
+                  greedy.append(token)
+              prompts.append({"prompt_ids": tokenize(text, True), "greedy": greedy})
+          entry = json.load(open("entry.json"))
+          out = {
+              "llama_cpp": os.environ["LLAMA_TAG"],
+              "server": "-ctk f32 -ctv f32 -fa off -np 1",
+              "model": os.environ["MODEL"],
+              "sha256": entry["sha256"],
+              "tokenize": [tokenize(s, False) for s in inputs["strings"]],
+              "prompts": prompts,
+          }
+          json.dump(out, open("goldens.json", "w"), indent=2)
+          print(json.dumps(out)[:2000])
+          EOF
+      - uses: actions/upload-artifact@v4
+        with:
+          name: goldens-${{ inputs.model }}
+          path: goldens.json
