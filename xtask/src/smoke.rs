@@ -128,6 +128,15 @@ pub fn run(modules: &[Module]) -> Result<(), String> {
         return Err(String::from(":state notes does not show schema 2"));
     }
     explain_latest_rollback(&smoke.ledger())?;
+    // `:fault notes` with no editor: the lines around 3-trap's panic, from the store.
+    let shown = livecore::location::fault_lines(&smoke.kernel.component.borrow(), 158)?;
+    for line in &shown {
+        println!("  | = {line}");
+    }
+    let at = "notes 3-trap trapped at components/fixtures/notes-bad/src/lib.rs:";
+    if !shown[0].starts_with(at) || !shown.iter().any(|line| line.starts_with('>')) {
+        return Err(format!(":fault notes showed {shown:?}"));
+    }
     println!(
         "xtask: the live scenario passed on the host ({} steps, {} ms)",
         scenario::STEPS.len(),

@@ -8,6 +8,9 @@ use kabi::live::valid_label;
 pub struct Settings {
     /// The version to start when the ledger has none.
     pub version: String,
+    /// The version started instead when that one cannot be fetched, staged or
+    /// started.
+    pub fallback: Option<String>,
     /// Requests a candidate must answer before it can be committed.
     pub probation_calls: u64,
     /// Time a candidate must spend on probation before it can be committed. 0 means
@@ -26,6 +29,7 @@ pub struct Settings {
 impl Settings {
     pub const DEFAULT: Settings = Settings {
         version: String::new(),
+        fallback: None,
         probation_calls: 16,
         probation_ms: 30_000,
         health_ms: 1000,
@@ -52,6 +56,8 @@ impl Settings {
             match key {
                 "version" if valid_label(value) => settings.version = value.to_string(),
                 "version" => return Err(format!("bad version label {value:?}")),
+                "fallback" if valid_label(value) => settings.fallback = Some(value.to_string()),
+                "fallback" => return Err(format!("bad fallback label {value:?}")),
                 "probation_calls" => settings.probation_calls = number(0, 1000)?,
                 "probation_ms" => settings.probation_ms = number(0, 600_000)?,
                 "health_ms" => settings.health_ms = number(10, 60_000)?,
@@ -81,6 +87,9 @@ mod tests {
         assert_eq!((settings.probation_calls, settings.probation_ms), (3, 0));
         assert_eq!(settings.fuel_call, Settings::DEFAULT.fuel_call);
         assert_eq!(Settings::parse("version=2").unwrap().probation_calls, 16);
+        let settings = Settings::parse("version=c-0123456789ab fallback=2").unwrap();
+        assert_eq!(settings.fallback.as_deref(), Some("2"));
+        assert_eq!(Settings::parse("version=2").unwrap().fallback, None);
     }
 
     #[test]
@@ -93,6 +102,7 @@ mod tests {
             "version=1 fuel_call=0",
             "version=1 colour=blue",
             "version=1 loose",
+            "version=1 fallback=../2",
         ] {
             assert!(Settings::parse(bad).is_err(), "{bad}");
         }

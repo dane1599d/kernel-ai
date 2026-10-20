@@ -8,15 +8,18 @@
 extern crate alloc;
 
 pub mod artifact;
+pub mod boot;
 pub mod cbor;
 pub mod control;
 pub mod diff;
 pub mod host;
 pub mod ledger;
 pub mod local;
+pub mod location;
 mod probation;
 pub mod scenario;
 pub mod settings;
+mod start;
 pub mod state;
 pub mod store;
 mod swap;

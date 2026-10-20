@@ -23,8 +23,8 @@ livecore = { path = "../livecore" }
 editcore = { path = "../editcore" }
 llmproto = { path = "../llmproto" }
 mm = { path = "../mm" }
-pc-keyboard = "0.9.0"
 sched = { path = "../sched" }
+termcore = { path = "../termcore" }
 serde = { version = "1.0.229", default-features = false, features = ["alloc", "derive"] }
 serde_json = { version = "1.0.154", default-features = false, features = ["alloc"] }
 smoltcp = { version = "0.14.0", default-features = false, features = ["alloc", "medium-ethernet", "proto-ipv4", "socket-tcp"] }

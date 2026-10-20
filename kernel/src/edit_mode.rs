@@ -5,14 +5,16 @@
 //! source and the upload's, and swaps only on a yes typed at the kernel's prompt.
 //!
 //! Everything here returns text rather than printing, so the terminal and the
-//! boot case run the same code.
+//! boot case run the same code. Messages to the editor go through
+//! [`edit_session`], which journals them.
 
+use crate::edit_session::{self, call as call_editor};
 use crate::process::components;
 use crate::{ipc, log};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use editcore::wire::{self, Ipc};
+use editcore::ipc::{At, Ipc, encode_ipc};
 use livecore::uploads;
 use llmproto::text::printable;
 use spin::Mutex;
@@ -21,8 +23,6 @@ use spin::Mutex;
 pub const EDIT_CALL_MS: u64 = 170_000;
 /// The kernel's wait for a component's host to answer a swap.
 const SWAP_CALL_MS: u64 = 60_000;
-/// How long to wait for an edit service that is restarting.
-const BIND_WAIT_NS: u64 = 3_000_000_000;
 /// The screen size when there is no framebuffer console.
 pub const FALLBACK_SCREEN: (usize, usize) = (160, 50);
 const MAX_LINES: usize = 64;
@@ -40,6 +40,11 @@ pub const HELP: &[(&str, &str)] = &[
         ":revert <name> [n]",
         "swap back to the nth version that ran before",
     ),
+    (":fault [name]", "open the source at the latest trap's line"),
+    (
+        ":journal",
+        "the edits a restarted editor gets back, or did not",
+    ),
     (":quit", "leave edit mode"),
 ];
 
@@ -55,33 +60,16 @@ pub fn prompt() -> Option<String> {
     editing().map(|name| format!("edit {name}> "))
 }
 
-/// Sends one request to the edit service; its reply, made printable, or why there
-/// is none (as an `err` reply).
-fn call_editor(message: &[u8]) -> String {
-    // The supervisor restarts it within 1.6 s; longer means it is not coming back.
-    let bound = crate::hpet::nanos() + BIND_WAIT_NS;
-    if ipc::wait_bound("edit", bound, || false).is_err() {
-        return String::from("err the edit service is not running (see :ps)");
-    }
-    match ipc::call("edit", message, EDIT_CALL_MS) {
-        Ok(reply) => printable(
-            &String::from_utf8_lossy(&reply),
-            kabi::MAX_MESSAGE,
-            MAX_LINES,
-        ),
-        Err(error) => format!("err the edit service did not answer ({error:?})"),
-    }
-}
-
 /// `:edit <name> [version]`: opens (or resumes) a session; on success, lines go to
 /// the editor from now on.
 pub fn open(name: &str, label: Option<&str>) -> String {
     if crate::build_service::target().is_none() {
         return String::from("err no build service; boot with build=IP:PORT build_token=HEX");
     }
-    let message = wire::encode_ipc(&Ipc::Open {
+    let message = encode_ipc(&Ipc::Open {
         component: name,
         label,
+        at: None,
     });
     let reply = call_editor(&message);
     if reply.starts_with("ok ") {
@@ -90,9 +78,47 @@ pub fn open(name: &str, label: Option<&str>) -> String {
     reply
 }
 
+/// `:fault [name]`: the version whose trap last named a line, opened in the editor
+/// at that line. With no build service, or when the editor cannot open it, the
+/// lines around it from the kernel's own store instead.
+pub fn fault(name: &str) -> String {
+    let Some(component) = components::component(name) else {
+        return format!("err no live component {name}");
+    };
+    let refused = match &component.ledger.last_located {
+        Some(located) if crate::build_service::target().is_some() => {
+            let message = encode_ipc(&Ipc::Open {
+                component: name,
+                label: Some(&located.label),
+                at: Some(At {
+                    path: &located.at.path,
+                    line: located.at.line,
+                }),
+            });
+            let reply = call_editor(&message);
+            if reply.starts_with("ok ") {
+                *EDITING.lock() = Some(name.to_string());
+                return reply;
+            }
+            Some(reply)
+        }
+        _ => None,
+    };
+    let (cols, _) = crate::console::size().unwrap_or(FALLBACK_SCREEN);
+    let width = crate::terminal::PIECE_CHARS.min(cols.saturating_sub(2));
+    match livecore::location::fault_lines(&component, width) {
+        // Unbuilt edits are the founder's to keep: say so, rather than show lines.
+        _ if refused.as_deref().is_some_and(|r| r.contains("not built")) => {
+            refused.unwrap_or_default()
+        }
+        Ok(lines) => format!("ok {}", lines.join("\n")),
+        Err(why) => format!("err {why}"),
+    }
+}
+
 /// A line typed in edit mode, sent to the editor.
 pub fn editor_line(line: &str) -> String {
-    call_editor(&wire::encode_ipc(&Ipc::Cmd(line)))
+    call_editor(&encode_ipc(&Ipc::Cmd(line)))
 }
 
 /// Whether an editor line will build on the host, which takes a while.
@@ -149,7 +175,7 @@ pub fn answer(proposal: &Proposal, answer: &str) -> String {
     swap(&proposal.component, &proposal.label)
 }
 
-fn swap(name: &str, label: &str) -> String {
+pub(crate) fn swap(name: &str, label: &str) -> String {
     let request = format!("{}swap {label}", kabi::live::CONTROL_PREFIX);
     match ipc::call(name, request.as_bytes(), SWAP_CALL_MS) {
         Ok(reply) => printable(
@@ -199,6 +225,12 @@ pub fn command(command: &str, rest: &str) -> Option<Option<Proposal>> {
         ("edit", [name, label]) => show(&open(name, Some(label))),
         ("edit", _) => usage(":edit <name> [version]"),
         ("quit", []) => show(&quit()),
+        ("journal", []) => show(&edit_session::journal()),
+        ("fault", [name]) => show(&fault(name)),
+        ("fault", []) => match editing() {
+            Some(name) => show(&fault(&name)),
+            None => usage(":fault <name>"),
+        },
         ("apply", []) | ("apply", [_]) => {
             let name = words.first().map(|s| s.to_string()).or_else(editing);
             let Some(name) = name else {
@@ -220,7 +252,9 @@ pub fn command(command: &str, rest: &str) -> Option<Option<Proposal>> {
             Ok(n) if (1..kabi::live::LINEAGE).contains(&n) => show(&revert(name, n)),
             _ => usage(":revert <name> [1 to 5]"),
         },
-        ("revert" | "apply" | "quit", _) => usage(":apply [name], :revert <name> [n], :quit"),
+        ("revert" | "apply" | "quit" | "fault" | "journal", _) => {
+            usage(":apply [name], :revert <name> [n], :fault [name], :journal, :quit")
+        }
         _ => return None,
     }
     Some(None)

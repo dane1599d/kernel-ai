@@ -8,8 +8,10 @@
 //! build service backs, and relays for it only control requests that change
 //! nothing. B. A working edit is built, tried on copies, declined once, then
 //! applied live with its state. C. A compile error changes nothing. D. An index out of
-//! bounds is built, applied, and rolls back by itself. E. A host restart comes back
-//! on the upload. K. `:revert` goes back to version 2.
+//! bounds is built, applied, and rolls back by itself; before it is applied, the
+//! edit service is killed and the kernel's journal gives the new one the session
+//! back. E. A host restart comes back on the upload. K. `:revert` goes back to
+//! version 2.
 
 use alloc::format;
 use alloc::string::String;
@@ -63,6 +65,10 @@ pub trait Driver: LiveDriver {
     /// Has the kernel send `ctl <request>` to notes as COMP_CONTROL does for the
     /// edit service; the reply.
     fn relay(&mut self, request: &str) -> Result<String, Error>;
+    /// Kills the edit service; returns once a new one serves.
+    fn restart_editor(&mut self) -> Result<(), String>;
+    /// What the kernel said when it last gave a restarted edit service the session.
+    fn restored(&mut self) -> Option<String>;
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -98,12 +104,16 @@ pub enum Step {
     PutRefused(&'static str),
     /// The kernel will not relay these control requests for the edit service.
     RelayRefused(&'static [&'static str]),
+    /// The edit service is killed, and the supervisor starts it again.
+    RestartEditor,
+    /// What the kernel said when it replayed the journal into the new service.
+    Restored(Expect),
 }
 
 use Count::*;
 use Expect::*;
 use Step::*;
-use live::Step::{Active, Bad, Call, Counts, Fetches, Part, Restart, SameHost};
+use live::Step::{Active, Bad, Call, Counts, Fetches, Part, Restart, RolledBack, SameHost};
 
 pub const STEPS: &[Step] = &[
     Live(Part(
@@ -183,6 +193,26 @@ pub const STEPS: &[Step] = &[
     Edit("reset", &[Exact("ok back to notes e1 as opened")]),
     Edit(EDIT_TRAP, &[Contains("lib.rs:58:")]),
     Edit("build", &[StartsWith("ok built e2 from e1 (commit ")]),
+    // The edit service dies; the next line brings the session back, built.
+    RestartEditor,
+    Edit(
+        "p 58",
+        &[Contains("self.state.notes[self.state.notes.len()]")],
+    ),
+    Restored(Exact(
+        "the edit service restarted; restored notes e1 with 1 edit",
+    )),
+    Edit(
+        "build",
+        &[Exact(
+            "err e2 was built from this text already; :apply runs it",
+        )],
+    ),
+    Edit(
+        "undo",
+        &[StartsWith("ok undone; components/notes/src/lib.rs:1: ")],
+    ),
+    Edit("p 58", &[Contains("self.state.notes.len())")]),
     Apply {
         answer: "yes",
         view: Contains("components/notes/src/lib.rs line 58: 1 removed, 1 added"),
@@ -198,6 +228,19 @@ pub const STEPS: &[Step] = &[
         (Begins, 2),
     ])),
     Live(Bad("e2", true)),
+    // The trap names the line of part D's edit.
+    Live(RolledBack(
+        "e2",
+        StartsWith("panicked at components/notes/src/lib.rs:58:"),
+    )),
+    // :fault opens e2 at that line.
+    Edit(
+        ":fault notes",
+        &[StartsWith(
+            "ok editing notes e2 at components/notes/src/lib.rs:58: 5 files",
+        )],
+    ),
+    Edit("p", &[Contains("self.state.notes[self.state.notes.len()]")]),
     Live(Call("about", Exact("ok notes e1 schema 2, edited live"))),
     Synced("e2", Outcome::Rollback(Reason::Trap)),
     ApplyRefused(StartsWith("e2 rolled back before (trap)")),
@@ -377,6 +420,11 @@ fn run_step(
                 ));
             }
         },
+        RestartEditor => driver.restart_editor()?,
+        Restored(expect) => {
+            let said = driver.restored().ok_or("the kernel restored no session")?;
+            expect_all("the restore", &said, &[expect])?;
+        }
         RelayRefused(requests) => {
             for request in requests {
                 match driver.relay(request) {

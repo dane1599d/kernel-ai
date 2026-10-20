@@ -1,6 +1,6 @@
-//! What passes between the edit service and the host's build service, and the
-//! lines the kernel sends the edit service. Each format is strict: a header, then
-//! every key in order once, and byte fields framed by their length.
+//! What passes between the edit service and the host's build service (the lines
+//! the kernel sends the edit service are in [`crate::ipc`]). Each format is strict:
+//! a header, then every key in order once, and byte fields framed by their length.
 //!
 //! ```text
 //! kai-build 2            kai-built 1               kai-sync 1           kai-synced 1
@@ -32,8 +32,8 @@ pub fn valid_hash(text: &str) -> bool {
 }
 
 /// Reads `key value\n` lines and length-framed byte fields, in order.
-struct Reader<'a> {
-    rest: &'a [u8],
+pub(crate) struct Reader<'a> {
+    pub(crate) rest: &'a [u8],
 }
 
 impl<'a> Reader<'a> {
@@ -81,7 +81,7 @@ impl<'a> Reader<'a> {
         Ok(field)
     }
 
-    fn end(&self) -> Result<(), &'static str> {
+    pub(crate) fn end(&self) -> Result<(), &'static str> {
         if self.rest.is_empty() {
             Ok(())
         } else {
@@ -90,7 +90,7 @@ impl<'a> Reader<'a> {
     }
 }
 
-fn label(text: &str) -> Result<&str, &'static str> {
+pub(crate) fn label(text: &str) -> Result<&str, &'static str> {
     if valid_label(text) {
         Ok(text)
     } else {
@@ -98,7 +98,7 @@ fn label(text: &str) -> Result<&str, &'static str> {
     }
 }
 
-fn name(text: &str) -> Result<&str, &'static str> {
+pub(crate) fn name(text: &str) -> Result<&str, &'static str> {
     let ok = !text.is_empty()
         && text.len() <= kabi::MAX_NAME
         && text
@@ -291,7 +291,7 @@ fn parse_outcome(text: &str) -> Result<Outcome, &'static str> {
         .ok_or("an unknown reason")
 }
 
-fn sync_fields(request: &SyncRequest<'_>) -> String {
+pub(crate) fn sync_fields(request: &SyncRequest<'_>) -> String {
     format!(
         "component {}\nlabel {}\noutcome {}\ngeneration {}\nsource {}\ncommit {}\n",
         request.component,
@@ -307,7 +307,7 @@ pub fn encode_sync(request: &SyncRequest<'_>) -> Vec<u8> {
     format!("kai-sync 1\n{}", sync_fields(request)).into_bytes()
 }
 
-fn read_sync<'a>(reader: &mut Reader<'a>) -> Result<SyncRequest<'a>, &'static str> {
+pub(crate) fn read_sync<'a>(reader: &mut Reader<'a>) -> Result<SyncRequest<'a>, &'static str> {
     let component = name(reader.value("component")?)?;
     let label = label(reader.value("label")?)?;
     let outcome = parse_outcome(reader.value("outcome")?)?;
@@ -396,90 +396,6 @@ pub fn decode_synced(bytes: &[u8]) -> Result<Synced<'_>, &'static str> {
         _ => return Err("an unknown result"),
     };
     Ok(synced)
-}
-
-/// What the kernel sends the edit service.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Ipc<'a> {
-    /// Open (or resume) a session on a version; the active one by default.
-    Open {
-        component: &'a str,
-        label: Option<&'a str>,
-    },
-    /// One line typed in edit mode.
-    Cmd(&'a str),
-    /// Record outbox job `seq` in git.
-    Sync { seq: u64, job: SyncRequest<'a> },
-}
-
-pub fn encode_ipc(message: &Ipc<'_>) -> Vec<u8> {
-    match message {
-        Ipc::Open {
-            component,
-            label: Some(label),
-        } => format!("open {component} {label}").into_bytes(),
-        Ipc::Open {
-            component,
-            label: None,
-        } => format!("open {component}").into_bytes(),
-        Ipc::Cmd(line) => format!("cmd {line}").into_bytes(),
-        Ipc::Sync { seq, job } => format!("sync {seq}\n{}", sync_fields(job)).into_bytes(),
-    }
-}
-
-pub fn decode_ipc(bytes: &[u8]) -> Result<Ipc<'_>, &'static str> {
-    let text = core::str::from_utf8(bytes).map_err(|_| "not text")?;
-    if let Some(rest) = text.strip_prefix("cmd ") {
-        return Ok(Ipc::Cmd(rest));
-    }
-    if text == "cmd" {
-        return Ok(Ipc::Cmd(""));
-    }
-    if let Some(rest) = text.strip_prefix("open ") {
-        let mut parts = rest.split(' ');
-        let component = name(parts.next().unwrap_or(""))?;
-        let label = parts.next().map(label).transpose()?;
-        if parts.next().is_some() {
-            return Err("open takes a component and a label");
-        }
-        return Ok(Ipc::Open { component, label });
-    }
-    if let Some(rest) = text.strip_prefix("sync ") {
-        let (seq, fields) = rest.split_once('\n').ok_or("a sync has no fields")?;
-        let seq = seq.parse().map_err(|_| "the job number is not a number")?;
-        let mut reader = Reader {
-            rest: fields.as_bytes(),
-        };
-        let job = read_sync(&mut reader)?;
-        reader.end()?;
-        return Ok(Ipc::Sync { seq, job });
-    }
-    Err("an unknown request")
-}
-
-/// The edit service's answer to a sync of job `seq`: the commit git recorded, or
-/// empty when git tracks no commit for it. Anything else is an error to retry.
-pub fn parse_ack(reply: &[u8], seq: u64) -> Result<String, String> {
-    let reply =
-        core::str::from_utf8(reply).map_err(|_| String::from("a reply that is not text"))?;
-    let mut words = reply.split(' ');
-    match (
-        words.next(),
-        words.next(),
-        words.next(),
-        words.next(),
-        words.next(),
-    ) {
-        (Some("ok"), Some("synced"), Some(n), Some(sha), None)
-            if n.parse() == Ok(seq) && valid_commit(sha) =>
-        {
-            Ok(String::from(sha))
-        }
-        (Some("ok"), Some("untracked"), Some(n), None, None) if n.parse() == Ok(seq) => {
-            Ok(String::new())
-        }
-        _ => Err(String::from(reply)),
-    }
 }
 
 /// The body of a whole `200` response from the build service, without allocating:

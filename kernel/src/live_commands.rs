@@ -34,6 +34,10 @@ pub const HELP: &[(&str, &str)] = &[
     (":state <name>", "the state the component last saved"),
     (":why <name>", "the model explains the latest rollback"),
     (":call <service> <request>", "send a request to a service"),
+    (
+        ":boot",
+        "the boot manifest: committed versions this boot runs",
+    ),
 ];
 
 /// Runs `command` if it is one of these; false otherwise.
@@ -60,7 +64,13 @@ pub fn run(command: &str, rest: &str) -> bool {
             let request = rest.trim_start().strip_prefix(service).unwrap_or("").trim();
             call(service, request);
         }
-        ("comp" | "swap" | "rollback" | "try" | "source" | "state" | "why" | "call", _) => {
+        ("boot", []) => crate::boot_manifest::lines()
+            .iter()
+            .for_each(|line| log!("{line}")),
+        (
+            "comp" | "swap" | "rollback" | "try" | "source" | "state" | "why" | "call" | "boot",
+            _,
+        ) => {
             let usage = HELP
                 .iter()
                 .find(|(usage, _)| usage[1..].starts_with(command));

@@ -7,7 +7,7 @@
 //! In edit mode (`:edit`), plain lines go to the editor instead, and `:apply` asks
 //! the same way before an upload runs.
 
-use crate::console::{BACKSPACE, FORM_FEED};
+use crate::console::{self, FORM_FEED, Screen};
 use crate::keyboard::Decoder;
 use crate::{edit_mode, hpet, ipc, llm, log, memory, net, serial, smp, threads};
 use alloc::boxed::Box;
@@ -16,10 +16,10 @@ use alloc::string::String;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use llmproto::text::printable;
 use sched::{Interactive, RoundRobin};
+use termcore::line::{Line, Outcome};
 
 const PROMPT: &str = "kai> ";
 const MAX_LINE: usize = 200;
-const DELETE: char = 127u8 as char;
 /// Longest a shell line may take: the shell's longest LLM wait (140 s for `ask`, two
 /// script rounds of 75 s) plus its compute budget, with room to spare, so the shell
 /// always answers first.
@@ -34,6 +34,8 @@ const MAX_REPLY_LINES: usize = 64;
 static REPLIES_SHOWN: AtomicU64 = AtomicU64::new(0);
 /// Set while the terminal waits for the answer to a confirmation, for the self-test.
 static AWAITING_ANSWER: AtomicBool = AtomicBool::new(false);
+/// Typed lines Ctrl-C dropped, for the self-test.
+static LINES_CLEARED: AtomicU64 = AtomicU64::new(0);
 
 const HELP: &[(&str, &str)] = &[
     (":help", "this list"),
@@ -51,10 +53,6 @@ const HELP: &[(&str, &str)] = &[
     (":clear", "clear the screen"),
 ];
 
-fn print(args: core::fmt::Arguments) {
-    serial::_print(args);
-}
-
 /// A question the next line answers.
 enum Waiting {
     /// A script the shell proposed.
@@ -69,28 +67,23 @@ pub fn run(_: usize) {
     log!("Kernel AI terminal. Lines are Rhai (try help); kernel commands start with ':'.");
     let mut waiting: Option<Waiting> = None;
     loop {
-        match &waiting {
-            Some(question) => {
-                match question {
-                    Waiting::Script(id) => print(format_args!("run script {id}? yes/no> ")),
-                    Waiting::Apply(p) => {
-                        print(format_args!(
-                            "apply {} to {}? yes/no> ",
-                            p.label, p.component
-                        ));
-                    }
-                }
-                // Only keys typed once the question is on screen may answer it.
-                decoder.discard_pending();
-                AWAITING_ANSWER.store(true, Ordering::Release);
-            }
-            None => match edit_mode::prompt() {
-                Some(prompt) => print(format_args!("{prompt}")),
-                None => print(format_args!("{PROMPT}")),
-            },
+        let prompt = match &waiting {
+            Some(Waiting::Script(id)) => format!("run script {id}? yes/no> "),
+            Some(Waiting::Apply(p)) => format!("apply {} to {}? yes/no> ", p.label, p.component),
+            None => edit_mode::prompt().unwrap_or_else(|| PROMPT.into()),
+        };
+        console::show_input(&prompt, "", 0);
+        if waiting.is_some() {
+            // Only keys typed once the question is on screen may answer it.
+            decoder.discard_pending();
+            AWAITING_ANSWER.store(true, Ordering::Release);
         }
-        let line = read_line(&mut decoder);
+        let line = read_line(&mut decoder, &prompt);
         AWAITING_ANSWER.store(false, Ordering::Release);
+        // Ctrl-C: prompt again, with a pending question still asked.
+        let Some(line) = line else {
+            continue;
+        };
         let line = line.trim();
         match waiting.take() {
             Some(Waiting::Script(id)) => {
@@ -118,26 +111,33 @@ pub fn run(_: usize) {
     }
 }
 
-fn read_line(decoder: &mut Decoder) -> String {
-    let mut line = String::new();
+/// Reads a line into the input region after `prompt`, edited at the cursor. Typed
+/// keys go only to the screen; serial gets the whole line, with its prompt, on Enter.
+/// None when Ctrl-C clears it.
+fn read_line(decoder: &mut Decoder, prompt: &str) -> Option<String> {
+    let mut line = Line::new(MAX_LINE);
     loop {
-        match decoder.read_char() {
-            '\n' | '\r' => {
-                print(format_args!("\n"));
-                return line;
+        match line.apply(decoder.read_key()) {
+            Outcome::Unchanged => {}
+            Outcome::Changed => console::show_input(prompt, line.text(), line.cursor()),
+            Outcome::Submitted(text) => {
+                finish_line(prompt, &text, "");
+                return Some(text);
             }
-            BACKSPACE | DELETE => {
-                if line.pop().is_some() {
-                    print(format_args!("{BACKSPACE} {BACKSPACE}"));
-                }
+            Outcome::Cleared(text) => {
+                LINES_CLEARED.fetch_add(1, Ordering::Relaxed);
+                finish_line(prompt, &text, "^C");
+                return None;
             }
-            ch if !ch.is_control() && line.len() < MAX_LINE => {
-                line.push(ch);
-                print(format_args!("{ch}"));
-            }
-            _ => {}
         }
     }
+}
+
+/// Ends a typed line: the input region goes, and the line is logged in its place
+/// with its prompt and `mark` after it.
+fn finish_line(prompt: &str, text: &str, mark: &str) {
+    console::hide_input();
+    log!("{prompt}{text}{mark}");
 }
 
 /// Sends a line to the shell and prints its answer. Returns the id of a script that
@@ -256,7 +256,7 @@ fn kernel_command(line: &str) -> Option<Waiting> {
         "net" => net_status(),
         "ps" => processes(),
         "uptime" => log!("{} s", hpet::nanos() / 1_000_000_000),
-        "clear" => print(format_args!("{FORM_FEED}")),
+        "clear" => serial::_print(format_args!("{FORM_FEED}")),
         other if crate::live_commands::run(other, rest) => {}
         other => match edit_mode::command(other, rest) {
             Some(proposal) => return proposal.map(Waiting::Apply),
@@ -328,14 +328,20 @@ fn processes() {
     }
 }
 
-/// M6 exit test, now through the shell: the harness types "policy rr", "ask hello",
-/// a request in plain English and "yes" to the script proposed for it. The policy
-/// must be installed on every CPU, the llm service must have answered the shell
-/// twice (the question and the script request), and the terminal must have shown
-/// all four replies. The counts come from the kernel, not from anything a program
-/// prints; xtask checks the printed text.
+/// M6 exit test, now through the shell, with M9d's console cells and keys. The
+/// harness types "xyz" and Ctrl-C, which must clear the line, then "pol"; once it
+/// shows at the prompt the kernel logs a line, which must land above the typed line
+/// and leave it whole. The harness then makes "policy rr" of it with arrows, Home,
+/// End, Backspace and Delete (only that exact line switches the policy), and types
+/// "ask hello", a request in plain English and "yes" to the script proposed for it.
+/// The policy must be installed on every CPU, the llm service must have answered the
+/// shell twice (the question and the script request), and the terminal must have
+/// shown all four replies. The counts come from the kernel, not from anything a
+/// program prints; xtask checks the printed text.
 pub fn self_test() -> Result<(), &'static str> {
     const TIMEOUT_MS: u64 = 60_000;
+    const NOT_CLEARED: &str = "terminal: Ctrl-C did not clear the typed line";
+    let cleared = || LINES_CLEARED.load(Ordering::Relaxed) >= 1;
     threads::spawn("terminal", run, 0)?;
     for _ in 0..TIMEOUT_MS / 10 {
         if ipc::server_of("llm").is_some() && ipc::server_of("shell").is_some() {
@@ -344,6 +350,15 @@ pub fn self_test() -> Result<(), &'static str> {
         threads::sleep_ms(10);
     }
     threads::sleep_ms(200);
+    log!("terminal: ready for keys");
+    match mid_typing_check() {
+        Ok(()) => {}
+        // Ctrl-C comes before "pol", so a Ctrl-C that failed shows up here first.
+        Err(NEVER_TYPED) if !cleared() => {
+            return Err("terminal: Ctrl-C cleared no line, and \"kai> pol\" never showed");
+        }
+        Err(error) => return Err(error),
+    }
     log!("terminal: ready for keys");
     // The answer is typed only once the question is on screen: keys typed earlier
     // are dropped, so this shows the answer came from the prompt.
@@ -360,11 +375,14 @@ pub fn self_test() -> Result<(), &'static str> {
     let llm_answered_shell = || ipc::replies("llm").1 >= 2;
     let all_shown = || REPLIES_SHOWN.load(Ordering::Relaxed) >= 4;
     for _ in 0..TIMEOUT_MS / 10 {
-        if switched() && llm_answered_shell() && all_shown() {
-            log!("terminal: policy switched, LLM reply and a confirmed script shown");
+        if cleared() && switched() && llm_answered_shell() && all_shown() {
+            log!("terminal: line cleared, policy switched, LLM reply and a confirmed script shown");
             return Ok(());
         }
         threads::sleep_ms(10);
+    }
+    if !cleared() {
+        return Err(NOT_CLEARED);
     }
     if !switched() {
         return Err("terminal: the policy command did not switch to round-robin");
@@ -373,4 +391,45 @@ pub fn self_test() -> Result<(), &'static str> {
         return Err("terminal: the llm service did not answer the shell twice");
     }
     Err("terminal: not all four replies were shown")
+}
+
+/// What the harness types first, at the prompt.
+const TYPED: &str = "kai> pol";
+/// The line logged while it shows.
+const LOGGED: &str = "terminal: a log line while typing";
+const NEVER_TYPED: &str = "terminal: the typed keys never reached the prompt";
+
+/// Waits for `TYPED` at the prompt, logs a line, and checks that the line went above
+/// the typed one, which stayed whole with the cursor after it. CI boots get a 1280x800
+/// framebuffer even with `-display none`, so there is always a console to check.
+fn mid_typing_check() -> Result<(), &'static str> {
+    const TIMEOUT_MS: u64 = 30_000;
+    /// The cursor's row, if it reads exactly `TYPED` with the cursor after it.
+    fn typed_row(grid: &Screen) -> Option<usize> {
+        let (row, col) = grid.cursor()?;
+        (col == TYPED.len() && grid.row_reads(row, TYPED)).then_some(row)
+    }
+    let mut typed = false;
+    for _ in 0..TIMEOUT_MS / 10 {
+        match console::with_grid(|grid| typed_row(grid).is_some()) {
+            None => return Err("terminal: no console to check"),
+            Some(true) => {
+                typed = true;
+                break;
+            }
+            Some(false) => threads::sleep_ms(10),
+        }
+    }
+    if !typed {
+        return Err(NEVER_TYPED);
+    }
+    log!("{LOGGED}");
+    let whole = console::with_grid(|grid| {
+        typed_row(grid).is_some_and(|row| (0..row).any(|above| grid.row_reads(above, LOGGED)))
+    });
+    if whole != Some(true) {
+        return Err("terminal: the log line split the typed line");
+    }
+    log!("terminal: a log line arrived mid-typing; the typed line stayed whole below it");
+    Ok(())
 }

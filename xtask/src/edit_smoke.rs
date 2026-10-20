@@ -7,9 +7,11 @@
 use crate::buildsvc::{self, BuildService, build::CargoCompiler, repo};
 use crate::esp::Module;
 use crate::smoke::loader;
+use editcore::ipc::{self, At, Ipc};
+use editcore::journal::Journal;
 use editcore::scenario::{self, Applied, Driver};
 use editcore::service::{Env, Service};
-use editcore::wire::{self, Ipc, SyncRequest};
+use editcore::wire::{self, SyncRequest};
 use kabi::Error;
 use kabi::live::Info;
 use livecore::host::{Exit, Host};
@@ -152,8 +154,14 @@ struct EditSmoke {
     pid: u64,
     host: Option<NotesHost>,
     service: Service,
+    /// The build service's address and token, for a new edit service.
+    builds: (String, String),
     env: StoreEnv,
     editing: bool,
+    /// The kernel's journal of the session, and whether the edit service is new.
+    journal: Journal,
+    restarted: bool,
+    restored: Option<String>,
 }
 
 fn failed(exit: Exit) -> String {
@@ -173,9 +181,28 @@ impl EditSmoke {
         Ok(String::from_utf8_lossy(&reply).into_owned())
     }
 
+    /// A message to the edit service, as the kernel's edit session sends it: a
+    /// new service gets the journal first, and each answer is journaled.
     fn editor(&mut self, caller: u64, message: &[u8]) -> String {
         self.env.host = self.host.take();
+        // As the kernel, only before an open or a command, and only with a journal.
+        let edits = matches!(ipc::decode_ipc(message), Ok(Ipc::Open { .. } | Ipc::Cmd(_)));
+        if caller == 0 && edits && std::mem::take(&mut self.restarted) && !self.journal.is_empty() {
+            let (service, env) = (&mut self.service, &mut self.env);
+            let mut send = |m: &[u8]| Some(service.handle(env, 0, m).into_bytes());
+            let restore = self.journal.restore(&mut send);
+            println!("xtask: edit: {}", restore.notice);
+            self.restarted = restore.again;
+            self.restored = Some(restore.notice);
+        }
         let reply = self.service.handle(&mut self.env, caller, message);
+        if caller == 0
+            && let Some(warning) = self.journal.record(message, reply.as_bytes())
+        {
+            println!("xtask: edit: {warning}");
+        }
+        let pinned = self.journal.session().map(|(_, label)| label.to_string());
+        self.kernel.component.borrow_mut().uploads.pinned = pinned;
         self.host = self.env.host.take();
         reply
     }
@@ -218,9 +245,29 @@ impl Driver for EditSmoke {
         if let Some(rest) = line.strip_prefix(":edit ") {
             let mut words = rest.split(' ');
             let component = words.next().unwrap_or("");
-            let message = wire::encode_ipc(&Ipc::Open {
+            let message = ipc::encode_ipc(&Ipc::Open {
                 component,
                 label: words.next(),
+                at: None,
+            });
+            let reply = self.editor(0, &message);
+            self.editing |= reply.starts_with("ok ");
+            return Ok(reply);
+        }
+        if let Some(component) = line.strip_prefix(":fault ") {
+            // As the kernel's :fault with a build service: open the trapped version
+            // at its line.
+            let located = self.kernel.component.borrow().ledger.last_located.clone();
+            let Some(located) = located else {
+                return Ok(format!("err {component} has no trap that names a line"));
+            };
+            let message = ipc::encode_ipc(&Ipc::Open {
+                component,
+                label: Some(&located.label),
+                at: Some(At {
+                    path: &located.at.path,
+                    line: located.at.line,
+                }),
             });
             let reply = self.editor(0, &message);
             self.editing |= reply.starts_with("ok ");
@@ -233,7 +280,7 @@ impl Driver for EditSmoke {
         if !self.editing {
             return Err(format!("{line:?} typed outside edit mode"));
         }
-        Ok(self.editor(0, &wire::encode_ipc(&Ipc::Cmd(line))))
+        Ok(self.editor(0, &ipc::encode_ipc(&Ipc::Cmd(line))))
     }
 
     fn apply(&mut self, answer: &str) -> Result<Applied, String> {
@@ -290,7 +337,7 @@ impl Driver for EditSmoke {
                 .peek()
                 .cloned();
             let Some(job) = job else { break };
-            let message = wire::encode_ipc(&Ipc::Sync {
+            let message = ipc::encode_ipc(&Ipc::Sync {
                 seq: job.seq,
                 job: SyncRequest {
                     component: "notes",
@@ -302,7 +349,7 @@ impl Driver for EditSmoke {
                 },
             });
             let reply = self.editor(0, &message);
-            let sha = wire::parse_ack(reply.as_bytes(), job.seq)?;
+            let sha = ipc::parse_ack(reply.as_bytes(), job.seq)?;
             self.kernel
                 .component
                 .borrow_mut()
@@ -345,6 +392,16 @@ impl Driver for EditSmoke {
         relay(self.host.as_mut(), "notes", request)
             .map(|reply| String::from_utf8_lossy(&reply).into_owned())
     }
+
+    fn restart_editor(&mut self) -> Result<(), String> {
+        self.service = Service::new(&self.builds.0, &self.builds.1);
+        self.restarted = true;
+        Ok(())
+    }
+
+    fn restored(&mut self) -> Option<String> {
+        self.restored.clone()
+    }
 }
 
 /// A build service on a fresh snapshot of the working tree at `target/edit-test/<phase>`.
@@ -383,6 +440,7 @@ pub fn run(root: &Path, modules: &[Module]) -> Result<(), String> {
         pid: 3,
         host: None,
         service: Service::new(&host, &builds.token),
+        builds: (host.clone(), builds.token.clone()),
         env: StoreEnv {
             kernel,
             port: builds.port,
@@ -391,6 +449,9 @@ pub fn run(root: &Path, modules: &[Module]) -> Result<(), String> {
             host: None,
         },
         editing: false,
+        journal: Journal::new(),
+        restarted: false,
+        restored: None,
     };
     smoke.start()?;
     let started = std::time::Instant::now();

@@ -4,7 +4,7 @@
 //! cargo xtask run   [--release] [--spikes] [--accel auto|kvm|whpx|tcg] [--llm IP:PORT] [--model NAME] [--edit]
 //! cargo xtask test  [--release] [--accel auto|kvm|whpx|tcg] [--timeout SECS]
 //! cargo xtask soak  [--accel auto|kvm|whpx|tcg]   (10-minute storm, M5 exit test)
-//! cargo xtask smoke   (the live and edit scenarios on the host only, no QEMU)
+//! cargo xtask smoke   (the live, edit and boot manifest scenarios on the host only, no QEMU)
 //! cargo xtask fluency --llm HOST:PORT --model NAME [--repeat N]   (M8b script gate, host only)
 //!
 //! `test` boots the kernel headless once per test case (boot and memory checks,
@@ -14,6 +14,7 @@
 //! enabled. Each case passes only if the
 //! kernel reports success through QEMU's isa-debug-exit device.
 
+mod boot_smoke;
 mod buildsvc;
 mod cases;
 mod components;
@@ -63,6 +64,7 @@ fn execute(options: &Options) -> Result<(), String> {
         let versions = components::build(&root)?;
         smoke::run(&versions)?;
         edit_smoke::run(&root, &versions)?;
+        boot_smoke::run(&root, &versions)?;
         return buildsvc::verify::unchanged(&root, &before);
     }
     let kernel = build_kernel(&root, options)?;
@@ -84,6 +86,7 @@ fn execute(options: &Options) -> Result<(), String> {
         // is in the host, a version, the editor or the builds, not in the kernel.
         smoke::run(&versions)?;
         edit_smoke::run(&root, &versions)?;
+        boot_smoke::run(&root, &versions)?;
     }
     let target_dir = root.join("target");
     let mut modules = esp::boot_modules(&kernel, &programs, &root)?;
@@ -97,7 +100,13 @@ fn execute(options: &Options) -> Result<(), String> {
         // Kept until QEMU exits: the build service runs on its threads.
         let _service = if options.edit {
             let service = buildsvc::start_dev(&root)?;
-            cmdline = format!("{cmdline} {}", buildsvc::cmdline(&service));
+            let manifest = service.boot_manifest(&buildsvc::boot::cache_dir(&root))?;
+            modules.extend(manifest.modules());
+            cmdline = format!(
+                "{cmdline} {} {}",
+                buildsvc::cmdline(&service),
+                manifest.cmdline()
+            );
             println!(
                 "xtask: build service on 127.0.0.1:{}, building in .live/repo; afterwards: git fetch .live/repo kai/notes",
                 service.port
@@ -129,8 +138,12 @@ fn execute(options: &Options) -> Result<(), String> {
             false => None,
         };
         let mut cmdline = format!("{} {llm_args}", case.cmdline);
+        // The boot manifest's versions join the boot drive for this case only.
+        let shared = modules.len();
         if let Some(service) = &service {
-            cmdline = format!("{cmdline} {}", buildsvc::cmdline(service));
+            let (versions, live) = boot_smoke::manifest_for(case, service)?;
+            modules.extend(versions);
+            cmdline = format!("{cmdline} {} {live}", buildsvc::cmdline(service));
         }
         println!(
             "xtask: test case {} ({})",
@@ -138,6 +151,7 @@ fn execute(options: &Options) -> Result<(), String> {
             buildsvc::redact(&cmdline)
         );
         esp::make_esp(&esp, &kernel, &modules, &efi, &cmdline)?;
+        modules.truncate(shared);
         let firmware = find_firmware(&qemu, &target_dir)?;
         let monitor = qemu::free_port()?;
         let mut args = qemu::args(&firmware, accel, true);

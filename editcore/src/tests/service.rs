@@ -6,10 +6,10 @@ use kabi::Error;
 use kabi::live::{Info, put_label};
 
 const COMMIT: &str = "1a2b3c4d5e6f0123456789abcdef0123456789ab";
-const TOKEN: &str = "0123456789abcdef0123456789abcdef";
+pub(super) const TOKEN: &str = "0123456789abcdef0123456789abcdef";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Host {
+pub(super) enum Host {
     Builds,
     Fails,
     WrongLabel,
@@ -18,20 +18,20 @@ enum Host {
     Garbage,
 }
 
-struct Fake {
+pub(super) struct Fake {
     active: &'static str,
     next: &'static str,
-    artifacts: Vec<(&'static str, Vec<u8>)>,
-    puts: Vec<(String, Vec<u8>, String, String)>,
+    pub(super) artifacts: Vec<(&'static str, Vec<u8>)>,
+    pub(super) puts: Vec<(String, Vec<u8>, String, String)>,
     put_result: Result<(), Error>,
-    host: Host,
-    requests: Vec<Vec<u8>>,
-    controls: Vec<(String, String)>,
+    pub(super) host: Host,
+    pub(super) requests: Vec<Vec<u8>>,
+    pub(super) controls: Vec<(String, String)>,
     control_reply: Result<&'static str, Error>,
 }
 
 impl Fake {
-    fn new(lib: &str) -> Self {
+    pub(super) fn new(lib: &str) -> Self {
         Self {
             active: "2",
             next: "e1",
@@ -406,4 +406,87 @@ fn try_has_the_kernel_rehearse_the_last_build() {
     kernel(&mut service, &mut env, "cmd c 1 z");
     assert_eq!(kernel(&mut service, &mut env, "cmd try"), nothing);
     assert_eq!(env.controls.len(), 3);
+}
+
+#[test]
+fn open_at_a_line_moves_the_cursor_there() {
+    let (mut service, mut env) = opened("a\nb\nc\n");
+    assert_eq!(
+        kernel(&mut service, &mut env, &format!("open notes 2 at {LIB}:2")),
+        format!("ok editing notes 2 at {LIB}:2")
+    );
+    assert!(kernel(&mut service, &mut env, "cmd p").contains("lines 2 to 3"));
+    // A line past the end is the last line.
+    assert_eq!(
+        kernel(&mut service, &mut env, &format!("open notes 2 at {LIB}:9")),
+        format!("ok editing notes 2 at {LIB}:3")
+    );
+    assert_eq!(
+        kernel(
+            &mut service,
+            &mut env,
+            "open notes 2 at components/notes/src/x.rs:1"
+        ),
+        "err components/notes/src/x.rs is not in notes 2"
+    );
+}
+
+#[test]
+fn open_at_a_line_never_drops_edits_that_are_not_built() {
+    let (mut service, mut env) = opened("a\nb\n");
+    env.artifacts
+        .push(("e1", artifact("notes", "e1", &small("x\ny\nz\n"))));
+    kernel(&mut service, &mut env, "cmd c 1 changed");
+    let refused = kernel(&mut service, &mut env, &format!("open notes e1 at {LIB}:3"));
+    assert!(
+        refused.starts_with("err notes 2 has edits that are not built"),
+        "{refused}"
+    );
+    assert!(service.session.as_ref().unwrap().changed());
+    kernel(&mut service, &mut env, "cmd reset");
+    assert_eq!(
+        kernel(&mut service, &mut env, &format!("open notes e1 at {LIB}:3")),
+        format!("ok editing notes e1 at {LIB}:3: 2 files")
+    );
+    assert_eq!(service.session.as_ref().unwrap().line(), 3);
+}
+
+#[test]
+fn open_at_a_version_that_cannot_open_says_why_and_keeps_unbuilt_edits() {
+    let (mut service, mut env) = opened("a\nb\n");
+    let fixture = bundle(&[
+        ("components/fixtures/notes-v1/Cargo.toml", b""),
+        ("components/fixtures/notes-v1/src/lib.rs", b""),
+    ]);
+    env.artifacts.push(("1", artifact("notes", "1", &fixture)));
+    kernel(&mut service, &mut env, "cmd c 1 changed");
+    assert_eq!(
+        kernel(&mut service, &mut env, &format!("open notes 1 at {LIB}:1")),
+        "err notes 1 is not editable: its source is not components/notes"
+    );
+    assert!(
+        kernel(&mut service, &mut env, &format!("open notes 7 at {LIB}:1"))
+            .contains("no version notes 7")
+    );
+    let session = service.session.as_ref().unwrap();
+    assert_eq!((session.label.as_str(), session.changed()), ("2", true));
+    assert!(kernel(&mut service, &mut env, "cmd diff").contains("+ | changed"));
+}
+
+#[test]
+fn open_at_a_line_in_an_edited_file_says_the_line_may_have_moved() {
+    let (mut service, mut env) = opened("a\nb\nc\n");
+    kernel(&mut service, &mut env, "cmd i 1 above");
+    assert_eq!(
+        kernel(&mut service, &mut env, &format!("open notes 2 at {LIB}:2")),
+        format!(
+            "ok editing notes 2 at {LIB}:2, with your edits; the line is 2's as stored, and your edits may have moved it"
+        )
+    );
+    assert_eq!(service.session.as_ref().unwrap().line(), 2);
+    // A file the edits left alone keeps the stored version's lines.
+    assert_eq!(
+        kernel(&mut service, &mut env, &format!("open notes 2 at {TOML}:1")),
+        format!("ok editing notes 2 at {TOML}:1")
+    );
 }

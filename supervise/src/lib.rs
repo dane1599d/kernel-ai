@@ -450,7 +450,7 @@ mod tests {
         assert_eq!(notes.limits.caps, cap::SERVE | cap::COMPONENT);
         assert_eq!(notes.limits.max_pages, 8192);
         assert_eq!(notes.args, "version=1 probation_calls=3 probation_ms=0");
-        let notes = &parse_plan(kabi::plan::NOTES).services[0];
+        let notes = &parse_plan(&kabi::plan::notes("2", None)).services[0];
         assert_eq!(notes.args, "version=2");
         // Without the key, a service runs the program of its own name.
         let shell = &parse_plan(kabi::plan::SHELL).services[0];

@@ -14,6 +14,8 @@ pub enum SelfTest {
     StackOverflow,
     Timer,
     Keyboard,
+    /// M9d: mouse moves and clicks arrive in order with the keyboard's Ctrl.
+    Pointer,
     Sched,
     Watchdog,
     Smp,
@@ -30,6 +32,10 @@ pub enum SelfTest {
     Live,
     /// M9b: a component is edited, built on the host and swapped in live.
     Edit,
+    /// M9d: notes swaps to the version the boot manifest names.
+    Manifest,
+    /// M9d: notes starts on the good version, and the swap rolls back.
+    ManifestGood,
 }
 
 const DEFAULT_STORM_SECONDS: u64 = 60;
@@ -45,6 +51,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=stack-overflow" => Some(SelfTest::StackOverflow),
             "test=timer" => Some(SelfTest::Timer),
             "test=keyboard" => Some(SelfTest::Keyboard),
+            "test=pointer" => Some(SelfTest::Pointer),
             "test=sched" => Some(SelfTest::Sched),
             "test=watchdog" => Some(SelfTest::Watchdog),
             "test=smp" => Some(SelfTest::Smp),
@@ -55,6 +62,8 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=scripts" => Some(SelfTest::Scripts),
             "test=live" => Some(SelfTest::Live),
             "test=edit" => Some(SelfTest::Edit),
+            "test=manifest" => Some(SelfTest::Manifest),
+            "test=manifest-good" => Some(SelfTest::ManifestGood),
             other => other.strip_prefix("test=storm").map(|rest| {
                 let seconds = rest.strip_prefix('-').and_then(|s| s.parse().ok());
                 SelfTest::Storm(seconds.unwrap_or(DEFAULT_STORM_SECONDS))
@@ -76,17 +85,26 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::Scripts
             | SelfTest::Live
             | SelfTest::Edit
+            | SelfTest::Manifest
+            | SelfTest::ManifestGood
     );
     if !wanted {
         return None;
     }
-    // The live and edit cases need only their services, with probation ended by
-    // calls; the live case also needs llm for `:why`, and the edit case its build
-    // service.
+    // The live, edit and manifest cases need only their services, with probation
+    // ended by calls; the live case also needs llm for `:why`, and the others the
+    // edit service, which syncs with git.
     let mut plan = match test {
         SelfTest::Live => format!("{}\n{}", kabi::plan::NOTES_TEST, crate::llm::plan_line()),
-        SelfTest::Edit => {
-            let mut plan = String::from(kabi::plan::NOTES_EDIT_TEST);
+        SelfTest::Edit | SelfTest::Manifest | SelfTest::ManifestGood => {
+            let mut plan = match test {
+                SelfTest::Edit => String::from(kabi::plan::NOTES_EDIT_TEST),
+                _ => format!(
+                    "{} {}",
+                    crate::boot_manifest::plan_line(),
+                    kabi::plan::CALLS_ONLY
+                ),
+            };
             if let Some(edit) = crate::build_service::plan_line() {
                 plan.push('\n');
                 plan.push_str(&edit);
@@ -96,13 +114,20 @@ pub fn plan(test: SelfTest) -> Option<String> {
         _ => crate::llm::plan_line(),
     };
     // The net case checks only the llm path, so it runs without the shell.
-    if !matches!(test, SelfTest::Net | SelfTest::Live | SelfTest::Edit) {
+    if !matches!(
+        test,
+        SelfTest::Net
+            | SelfTest::Live
+            | SelfTest::Edit
+            | SelfTest::Manifest
+            | SelfTest::ManifestGood
+    ) {
         plan.push('\n');
         plan.push_str(kabi::plan::SHELL);
     }
     if test == SelfTest::None {
         plan.push('\n');
-        plan.push_str(kabi::plan::NOTES);
+        plan.push_str(&crate::boot_manifest::plan_line());
         if let Some(edit) = crate::build_service::plan_line() {
             plan.push('\n');
             plan.push_str(&edit);

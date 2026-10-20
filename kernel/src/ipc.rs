@@ -216,9 +216,10 @@ pub fn submit(
     Ok(Pending { slot })
 }
 
-/// Collects a call: its reply, or why there is none. A call still running is
-/// abandoned (its late reply is dropped) and reported as timed out.
-pub fn finish(pending: Pending) -> Result<Vec<u8>, CallError> {
+/// Collects a call: its reply and the pid that answered, or why there is none. A
+/// call still running is abandoned (its late reply is dropped) and reported as
+/// timed out.
+pub fn finish(pending: Pending) -> Result<(Vec<u8>, u64), CallError> {
     let slot = pending.slot;
     let (call, state) = with_ipc(|ipc| {
         let call = ipc.calls[slot].take();
@@ -243,7 +244,7 @@ pub fn finish(pending: Pending) -> Result<Vec<u8>, CallError> {
                 &REPLIES_TO_PROCESSES[call.endpoint]
             };
             counter.fetch_add(1, Ordering::SeqCst);
-            Ok(call.reply)
+            Ok((call.reply, call.taker))
         }
         (_, FAILED) => Err(CallError::ServiceDied),
         _ => Err(CallError::TimedOut),
@@ -259,6 +260,17 @@ pub fn call_as(
     deadline_ns: u64,
     cancel: impl Fn() -> bool,
 ) -> Result<Vec<u8>, CallError> {
+    call_as_from(name, request, caller_pid, deadline_ns, cancel).map(|(reply, _)| reply)
+}
+
+/// [`call_as`], with the pid that answered.
+fn call_as_from(
+    name: &str,
+    request: &[u8],
+    caller_pid: u64,
+    deadline_ns: u64,
+    cancel: impl Fn() -> bool,
+) -> Result<(Vec<u8>, u64), CallError> {
     let pending = submit(name, request, caller_pid, deadline_ns)?;
     while !pending.done() && !cancel() && hpet::nanos() < deadline_ns {
         threads::sleep_until_unless(deadline_ns, || pending.done() || cancel());
@@ -273,9 +285,15 @@ pub fn call_as(
 /// The kernel calls the service `name`, waiting up to `timeout_ms` in total
 /// (including waiting for the service to come up).
 pub fn call(name: &str, request: &[u8], timeout_ms: u64) -> Result<Vec<u8>, CallError> {
+    call_from(name, request, timeout_ms).map(|(reply, _)| reply)
+}
+
+/// [`call`], with the pid that answered: a service restarted while the call was
+/// queued answers as its new process.
+pub fn call_from(name: &str, request: &[u8], timeout_ms: u64) -> Result<(Vec<u8>, u64), CallError> {
     let deadline = hpet::nanos().saturating_add(timeout_ms.saturating_mul(1_000_000));
     wait_bound(name, deadline, || false)?;
-    call_as(name, request, 0, deadline, || false)
+    call_as_from(name, request, 0, deadline, || false)
 }
 
 /// The `svc_recv` system call: waits for the next request to this process's service.

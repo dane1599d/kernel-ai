@@ -4,9 +4,10 @@
 //! only the kernel; the kernel shows the change and asks before anything runs.
 
 use crate::command::{self, Command, USAGE};
+use crate::ipc::{self, At, Ipc};
 use crate::session::Session;
-use crate::wire::{self, BuildRequest, BuildResult, Ipc, Origin, Synced};
-use crate::{MAX_PRINTED, editable, rules};
+use crate::wire::{self, Synced};
+use crate::{MAX_PRINTED, editable};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -15,12 +16,15 @@ use kabi::live::Info;
 use livecore::{artifact, diff};
 use llmproto::http;
 
+mod building;
+mod replay;
+
+pub(crate) use building::{MOVED, location};
+
 /// How long a build may take, inside the kernel's wait for this service.
 pub const BUILD_TIMEOUT_MS: u64 = 150_000;
 /// How long a sync may take.
 pub const SYNC_TIMEOUT_MS: u64 = 30_000;
-/// Diagnostic lines a failed build shows.
-const DIAGNOSTICS: usize = 8;
 /// Lines `p` prints without a range.
 const PAGE: usize = 10;
 
@@ -70,10 +74,6 @@ fn fit(mut reply: String) -> String {
     reply
 }
 
-fn short(commit: &str) -> &str {
-    commit.get(..12).unwrap_or(commit)
-}
-
 impl Service {
     pub fn new(host: &str, token: &str) -> Self {
         Self {
@@ -88,16 +88,29 @@ impl Service {
         if caller != 0 {
             return err("the edit service answers only the kernel");
         }
-        let reply = match wire::decode_ipc(request) {
-            Ok(Ipc::Open { component, label }) => self.open(env, component, label),
+        let reply = match ipc::decode_ipc(request) {
+            Ok(Ipc::Open {
+                component,
+                label,
+                at,
+            }) => self.open(env, component, label, at),
             Ok(Ipc::Cmd(line)) => self.command(env, line),
             Ok(Ipc::Sync { seq, job }) => self.sync(env, seq, &job),
+            Ok(Ipc::Replay { from, entries }) => self.replay(env, from, entries),
             Err(why) => err(why),
         };
         fit(reply)
     }
 
-    fn open(&mut self, env: &mut dyn Env, component: &str, label: Option<&str>) -> String {
+    /// Opens or resumes a session; with `at`, the cursor goes there, and edits
+    /// that are not built are never dropped for it.
+    fn open(
+        &mut self,
+        env: &mut dyn Env,
+        component: &str,
+        label: Option<&str>,
+        at: Option<At<'_>>,
+    ) -> String {
         let Some(editable) = editable(component) else {
             return err(format!("{component} cannot be edited; notes can"));
         };
@@ -113,8 +126,13 @@ impl Service {
             None => info.active().to_string(),
         };
         let mut dropped = String::new();
-        if let Some(session) = &self.session {
+        // The session whose unbuilt edits an open-at keeps, if the version opens.
+        let mut kept = None;
+        if let Some(session) = self.session.as_mut() {
             if session.component == component && session.label == label {
+                if let Some(at) = at {
+                    return goto_again(session, at);
+                }
                 let state = if session.changed() {
                     ", with your edits"
                 } else {
@@ -123,7 +141,11 @@ impl Service {
                 return ok(format!("editing {component} {label} again{state}"));
             }
             if session.changed() && session.built.is_none() {
-                dropped = format!("; dropped the unbuilt edits to {}", session.label);
+                if at.is_some() {
+                    kept = Some(format!("{} {}", session.component, session.label));
+                } else {
+                    dropped = format!("; dropped the unbuilt edits to {}", session.label);
+                }
             }
         }
         let bytes = match env.artifact(component, &label) {
@@ -146,19 +168,31 @@ impl Service {
                 editable.dir
             ));
         }
-        match Session::open(component, &label, parsed.source) {
-            Ok(session) => {
-                let reply = ok(format!(
-                    "editing {component} {label}: {} files; {}, {} lines{dropped}",
-                    session.files().len(),
-                    session.current().path,
-                    session.current().len()
-                ));
-                self.session = Some(session);
-                reply
-            }
-            Err(why) => err(why),
+        let mut session = match Session::open(component, &label, parsed.source) {
+            Ok(session) => session,
+            Err(why) => return err(why),
+        };
+        if let Some(kept) = kept {
+            return err(format!(
+                "{kept} has edits that are not built; build them or reset before opening {component} {label} there"
+            ));
         }
+        let files = session.files().len();
+        let reply = match at.map(|at| goto(&mut session, at)) {
+            Some(Ok(place)) => ok(format!(
+                "editing {component} {label} at {place}: {files} files{dropped}"
+            )),
+            Some(Err(why)) => ok(format!(
+                "editing {component} {label}: {files} files; {why}{dropped}"
+            )),
+            None => ok(format!(
+                "editing {component} {label}: {files} files; {}, {} lines{dropped}",
+                session.current().path,
+                session.current().len()
+            )),
+        };
+        self.session = Some(session);
+        reply
     }
 
     fn command(&mut self, env: &mut dyn Env, line: &str) -> String {
@@ -177,121 +211,6 @@ impl Service {
             Command::Try => rehearse(env, session),
             command => run(session, command),
         }
-    }
-
-    fn build(&mut self, env: &mut dyn Env) -> String {
-        let Some(session) = self.session.as_ref() else {
-            return err("no file is open");
-        };
-        let component = session.component.clone();
-        let base = session.label.clone();
-        if let Some(built) = &session.built {
-            return err(format!(
-                "{built} was built from this text already; :apply runs it"
-            ));
-        }
-        if !session.changed() {
-            return err(format!("nothing changed since {component} {base}"));
-        }
-        let bundle = session.to_bundle();
-        let Some(editable) = editable(&component) else {
-            return err(format!("{component} cannot be edited"));
-        };
-        if let Err(why) = rules::check(editable, session.original(), &bundle) {
-            return err(format!("not built: {why}"));
-        }
-        if bundle.len() > crate::MAX_BUNDLE {
-            return err(format!(
-                "not built: the source is over {} KiB",
-                crate::MAX_BUNDLE / 1024
-            ));
-        }
-        if let Err(Error::NotFound) = env.artifact(&component, &base) {
-            return err(format!(
-                "not built: {component} {base}, which these edits start from, is no longer stored; diff shows them, and :edit {component} starts again from the active version"
-            ));
-        }
-        let next = match env.info(&component) {
-            Ok(info) => info.next().to_string(),
-            Err(error) => return err(format!("cannot read {component}: {error:?}")),
-        };
-        let body = wire::encode_build(&BuildRequest {
-            component: &component,
-            label: &next,
-            base: &base,
-            // Founder until the session can hold a model draft (M9c step 4).
-            origin: Origin::Founder,
-            bundle: &bundle,
-        });
-        env.log(&format!(
-            "building {component} {next} from {base} on the host"
-        ));
-        let body = match self.post(env, "/build", &body, BUILD_TIMEOUT_MS) {
-            Ok(body) => body,
-            Err(why) => return err(format!("build service: {why}")),
-        };
-        let built = match wire::decode_built(&body) {
-            Ok(built) => built,
-            Err(why) => return err(format!("build service: a malformed reply ({why})")),
-        };
-        let log = String::from_utf8_lossy(built.log);
-        match built.result {
-            BuildResult::Refused => err(format!("build refused: {}", log.trim())),
-            BuildResult::Failed => self.failed(&log),
-            BuildResult::Ok => {
-                let checked = check_artifact(built.artifact, &component, &next, &bundle);
-                if let Err(why) = checked {
-                    return err(format!(
-                        "the build service returned the wrong artifact: {why}"
-                    ));
-                }
-                match env.put(&component, built.artifact, &base, built.commit) {
-                    Ok(()) => {}
-                    Err(Error::Invalid) => return err(refusal(env, &component, &next, &base)),
-                    Err(Error::NoMemory) => {
-                        return err("the store has no room for another upload");
-                    }
-                    Err(error) => return err(format!("the store refused {next}: {error:?}")),
-                }
-                if let Some(session) = self.session.as_mut() {
-                    session.built = Some(next.clone());
-                }
-                ok(format!(
-                    "built {next} from {base} (commit {}); :apply runs it",
-                    short(built.commit)
-                ))
-            }
-        }
-    }
-
-    /// A failed build: its first errors, with the cursor on the first.
-    fn failed(&mut self, log: &str) -> String {
-        let lines: Vec<&str> = log
-            .lines()
-            .filter(|line| line.contains("error"))
-            .take(DIAGNOSTICS)
-            .collect();
-        if let Some(session) = self.session.as_mut()
-            && let Some((path, line)) = lines.iter().find_map(|line| location(line))
-            && session.goto(path, line)
-        {
-            let mut reply = err("build failed; the cursor is on the first error");
-            for line in &lines {
-                reply.push('\n');
-                reply.push_str(line);
-            }
-            return reply;
-        }
-        let mut reply = err("build failed");
-        for line in if lines.is_empty() {
-            log.lines().take(DIAGNOSTICS).collect()
-        } else {
-            lines
-        } {
-            reply.push('\n');
-            reply.push_str(line);
-        }
-        reply
     }
 
     fn sync(&mut self, env: &mut dyn Env, seq: u64, job: &wire::SyncRequest<'_>) -> String {
@@ -333,30 +252,38 @@ impl Service {
     }
 }
 
-/// The built artifact must parse, name this component and the next label, and
-/// carry exactly the source that was sent.
-fn check_artifact(bytes: &[u8], component: &str, label: &str, bundle: &[u8]) -> Result<(), String> {
-    let parsed = artifact::parse(bytes)?;
-    let manifest = &parsed.manifest;
-    if manifest.component != component || manifest.version != label {
-        return Err(format!(
-            "it is {} {}, not {component} {label}",
-            manifest.component, manifest.version
-        ));
+/// Moves the cursor to `at`: where it is now, or why it cannot go there.
+fn goto(session: &mut Session, at: At<'_>) -> Result<String, String> {
+    if session.goto(at.path, at.line as usize) {
+        Ok(format!("{}:{}", at.path, session.line()))
+    } else {
+        Err(format!(
+            "{} is not in {} {}",
+            at.path, session.component, session.label
+        ))
     }
-    if parsed.source != bundle {
-        return Err("its source is not what was sent".into());
-    }
-    Ok(())
 }
 
-/// `path:line:col: ...` from a compiler message.
-fn location(line: &str) -> Option<(&str, usize)> {
-    let mut parts = line.splitn(4, ':');
-    let path = parts.next()?;
-    let line = parts.next()?.parse().ok()?;
-    parts.next()?.parse::<usize>().ok()?;
-    Some((path.trim(), line))
+/// Moves the open session's cursor to `at`. A line in a file the founder changed
+/// is the stored version's, so the reply says it may have moved.
+fn goto_again(session: &mut Session, at: At<'_>) -> String {
+    let edited = session
+        .files()
+        .iter()
+        .position(|file| file.path == at.path)
+        .is_some_and(|index| session.file_changed(index));
+    let place = match goto(session, at) {
+        Ok(place) => place,
+        Err(why) => return err(why),
+    };
+    let (component, label) = (&session.component, &session.label);
+    if edited {
+        ok(format!(
+            "editing {component} {label} at {place}, with your edits; the line is {label}'s as stored, and your edits may have moved it"
+        ))
+    } else {
+        ok(format!("editing {component} {label} at {place}"))
+    }
 }
 
 fn numbered(session: &Session, from: usize, to: usize) -> String {
@@ -507,23 +434,5 @@ fn rehearse(env: &mut dyn Env, session: &Session) -> String {
             }
         }
         Err(error) => err(format!("cannot reach {component}: {error:?}")),
-    }
-}
-
-/// Why the store refused an upload it would have taken when the build began.
-fn refusal(env: &mut dyn Env, component: &str, next: &str, base: &str) -> String {
-    let now = env.info(component).map(|info| info.next().to_string());
-    if env.artifact(component, base).is_err() {
-        return format!(
-            "the store refused {next}: {base}, which it was built from, is no longer stored; :edit {component} starts again"
-        );
-    }
-    match now {
-        Ok(now) if now != next => {
-            format!("the store refused {next}: the next upload is now {now}; build again")
-        }
-        _ => format!(
-            "the store refused {next}: the active version changed, or the build service's reply did not match; build again"
-        ),
     }
 }

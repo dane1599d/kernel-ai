@@ -21,7 +21,13 @@ struct HostState {
     quiet: bool,
     /// Log lines written during the current call.
     lines: u32,
+    /// Where the current call panicked, from `kai.panic`; kept while quiet, so a
+    /// rehearsal reports it too.
+    panic_at: Option<String>,
 }
+
+/// Most bytes of a panic's file path read from the version.
+const MAX_PANIC_PATH: usize = 256;
 
 /// A running version: its store (which owns the engine and compiled code) and the
 /// exports the contract names.
@@ -78,6 +84,39 @@ fn log(mut caller: Caller<'_, HostState>, ptr: i32, len: i32) -> Result<(), Erro
     Ok(())
 }
 
+/// `kai.panic(file_ptr, file_len, line, column)`: where the version is about to trap.
+/// Of a long path only the end is read, which holds the file name a long path is
+/// cut to. A path outside memory is ignored; the trap that follows is reported
+/// either way.
+fn panic(
+    mut caller: Caller<'_, HostState>,
+    ptr: i32,
+    len: i32,
+    line: i32,
+    column: i32,
+) -> Result<(), Error> {
+    let memory = caller.get_export("memory").and_then(Extern::into_memory);
+    let (start, len) = (ptr as u32 as usize, len as u32 as usize);
+    let end = start.saturating_add(len);
+    let from = end.saturating_sub(len.min(MAX_PANIC_PATH));
+    let path = memory.and_then(|memory| {
+        let bytes = memory.data(&caller).get(from..end)?;
+        Some(String::from_utf8_lossy(bytes).into_owned())
+    });
+    caller.data_mut().panic_at =
+        path.map(|path| livecore::location::panicked(&path, line as u32, column as u32));
+    Ok(())
+}
+
+/// A failed call's fault; a trap the version announced with `kai.panic` names
+/// where it panicked.
+fn fault(error: &Error, panic_at: Option<String>) -> Fault {
+    match (error.as_trap_code(), panic_at) {
+        (Some(TrapCode::UnreachableCodeReached), Some(at)) => Fault::new(Reason::Trap, at),
+        _ => classify(error),
+    }
+}
+
 fn export<P: WasmParams, R: WasmResults>(
     instance: &wasmi::Instance,
     store: &Store<HostState>,
@@ -108,6 +147,7 @@ impl WasmInstance {
             log: log_sink,
             quiet: false,
             lines: 0,
+            panic_at: None,
         };
         let mut store = Store::new(engine, state);
         store.limiter(|state| &mut state.limits);
@@ -117,6 +157,7 @@ impl WasmInstance {
         let mut linker = Linker::<HostState>::new(engine);
         linker
             .func_wrap("kai", "log", log)
+            .and_then(|linker| linker.func_wrap("kai", "panic", panic))
             .map_err(|error| Fault::new(Reason::Host, error.to_string()))?;
         let instance =
             linker
@@ -154,9 +195,11 @@ impl WasmInstance {
         self.store
             .set_fuel(fuel)
             .map_err(|error| Fault::new(Reason::Host, error.to_string()))?;
-        self.store.data_mut().lines = 0;
+        let state = self.store.data_mut();
+        state.lines = 0;
+        state.panic_at = None;
         func.call(&mut self.store, params)
-            .map_err(|error| classify(&error))
+            .map_err(|error| fault(&error, self.store.data_mut().panic_at.take()))
     }
 
     /// Copies `bytes` into memory the version allocated; (ptr, len).

@@ -86,6 +86,8 @@ pub enum Step {
     SameHost,
     /// Kill the host; the supervisor starts a new one.
     Restart,
+    /// The latest rollback dropped this version, with a detail like this.
+    RolledBack(&'static str, Expect),
 }
 
 /// What the scenario can do and see.
@@ -149,6 +151,10 @@ pub const STEPS: &[Step] = &[
     Call("add sixth note", Exact("ok 6")),
     // Version 3-trap overruns its array on the seventh note; 2 answers instead.
     Call("add seventh", Exact("ok 7")),
+    RolledBack(
+        "3-trap",
+        StartsWith("panicked at components/fixtures/notes-bad/src/lib.rs:"),
+    ),
     Call("about", Exact("ok notes 2 schema 2")),
     Call("ctl swap 3-spin", Exact("ok probation 3-spin (3 calls)")),
     // Version 3-spin loops until its fuel runs out; 2 answers instead.
@@ -264,6 +270,17 @@ pub fn run_step(driver: &mut dyn Driver, step: &Step, host: &mut u64) -> Result<
         Bad(label, wanted) => {
             if driver.ledger().is_bad(label).is_some() != wanted {
                 return Err(format!("{label} on the failed list should be {wanted}"));
+            }
+        }
+        RolledBack(label, expect) => {
+            let ledger = driver.ledger();
+            match &ledger.last_rollback {
+                Some(rollback) if rollback.label == label && expect.matches(&rollback.detail) => {}
+                other => {
+                    return Err(format!(
+                        "the latest rollback is {other:?}, expected {label} with {expect:?}"
+                    ));
+                }
             }
         }
         Fetches(fetches) => {

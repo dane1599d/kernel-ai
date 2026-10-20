@@ -10,7 +10,7 @@
 //! checks, never from time, so a slow machine cannot cause one.
 
 use crate::artifact::{self, Manifest};
-use crate::control::{self, Control};
+use crate::control;
 use crate::settings::Settings;
 use crate::{Fault, Instance, Reason};
 use alloc::boxed::Box;
@@ -19,7 +19,7 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use kabi::Error;
-use kabi::live::{flag, kind, phase};
+use kabi::live::{flag, kind};
 
 /// What the host needs from the kernel and the runtime.
 pub trait Env {
@@ -187,7 +187,7 @@ pub(crate) fn text(reply: impl Into<String>) -> Vec<u8> {
     reply.into().into_bytes()
 }
 
-fn exit(code: i32, why: impl Into<String>) -> Exit {
+pub(crate) fn exit(code: i32, why: impl Into<String>) -> Exit {
     Exit {
         code,
         why: why.into(),
@@ -195,6 +195,17 @@ fn exit(code: i32, why: impl Into<String>) -> Exit {
 }
 
 impl<E: Env> Core<E> {
+    pub(crate) fn new(env: E, name: &str, settings: Settings) -> Self {
+        Self {
+            env,
+            name: name.to_string(),
+            settings,
+            checkpoint: Vec::new(),
+            restarts: Vec::new(),
+            recent: VecDeque::new(),
+        }
+    }
+
     /// Reports an event; a refusal ends the host.
     pub fn report(&mut self, event: &Report<'_>) -> Result<(), Exit> {
         self.env.report(event).map_err(|error| {
@@ -347,114 +358,8 @@ pub(crate) fn export_own<I: Instance>(version: &mut Version<I>) -> Result<Vec<u8
     }
 }
 
+/// [`Host::start`] is in `start.rs`; `ctl` requests are in `control.rs`.
 impl<E: Env> Host<E> {
-    /// Starts from the kernel's ledger: finishes a swap a dead host left open,
-    /// restores the active version, or starts the configured one fresh.
-    pub fn start(env: E, name: &str, settings: Settings) -> Result<Self, Exit> {
-        let mut core = Core {
-            env,
-            name: name.to_string(),
-            settings,
-            checkpoint: Vec::new(),
-            restarts: Vec::new(),
-            recent: VecDeque::new(),
-        };
-        let mut restored = core
-            .env
-            .restore()
-            .map_err(|error| exit(EXIT_REFUSED, format!("cannot read the ledger: {error:?}")))?;
-        if restored.phase == phase::SWAPPING {
-            core.report(&Report {
-                reason: Some(Reason::HostRestart),
-                label: &restored.candidate,
-                ..Report::new(kind::ROLLBACK)
-            })?;
-            restored.phase = phase::STEADY;
-        }
-        let label = match restored.phase {
-            phase::EMPTY => core.settings.version.clone(),
-            _ => restored.active.clone(),
-        };
-        let artifact = core.env.fetch(&label).map_err(|error| {
-            exit(
-                EXIT_NO_VERSION,
-                format!("cannot fetch version {label}: {error:?}"),
-            )
-        })?;
-        let mut version = core.stage(&label, artifact, None, false).map_err(|fault| {
-            exit(
-                EXIT_NO_VERSION,
-                format!("cannot load version {label}: {}", fault.detail),
-            )
-        })?;
-        let mode = if restored.phase == phase::EMPTY {
-            Self::fresh(&mut core, version)?
-        } else if restored.disabled {
-            Mode::Disabled {
-                version,
-                why: String::from("it was disabled before this host started"),
-            }
-        } else {
-            core.checkpoint = restored.checkpoint;
-            match restore_into(&mut version, &core.checkpoint, restored.schema) {
-                Ok(blob) => {
-                    core.report(&Report {
-                        label: &label,
-                        schema: u64::from(version.schema),
-                        blob: &blob,
-                        ..Report::new(kind::RESTORED)
-                    })?;
-                    core.checkpoint = blob;
-                    Mode::Serving(version)
-                }
-                Err(fault) => {
-                    core.report(&Report {
-                        reason: Some(fault.reason),
-                        detail: &fault.detail,
-                        ..Report::new(kind::DISABLED)
-                    })?;
-                    Mode::Disabled {
-                        version,
-                        why: format!("{}: {}", fault.reason.name(), fault.detail),
-                    }
-                }
-            }
-        };
-        Ok(Self { core, mode })
-    }
-
-    /// Starts `version` empty.
-    fn fresh(
-        core: &mut Core<E>,
-        mut version: Version<E::Instance>,
-    ) -> Result<Mode<E::Instance>, Exit> {
-        let fail = |why: String| exit(EXIT_NO_VERSION, why);
-        match version.instance.init() {
-            Ok(0) => {}
-            Ok(code) => {
-                return Err(fail(format!(
-                    "version {} failed to start ({code})",
-                    version.label
-                )));
-            }
-            Err(fault) => {
-                return Err(fail(format!(
-                    "version {} failed to start: {}",
-                    version.label, fault.detail
-                )));
-            }
-        }
-        let blob = export_own(&mut version).map_err(|fault| fail(fault.detail))?;
-        core.report(&Report {
-            label: &version.label,
-            schema: u64::from(version.schema),
-            blob: &blob,
-            ..Report::new(kind::RESTORED)
-        })?;
-        core.checkpoint = blob;
-        Ok(Mode::Serving(version))
-    }
-
     /// Answers one request from `caller` (0 is the kernel).
     pub fn handle(&mut self, caller: u64, request: &[u8]) -> Result<Vec<u8>, Exit> {
         let mode = core::mem::replace(&mut self.mode, Mode::Moving);
@@ -533,147 +438,5 @@ impl<E: Env> Host<E> {
                 Ok((Mode::Serving(version), text(reply)))
             }
         }
-    }
-
-    fn control(
-        &mut self,
-        mode: Mode<E::Instance>,
-        control: Control,
-    ) -> Result<(Mode<E::Instance>, Vec<u8>), Exit> {
-        let name = self.core.name.clone();
-        Ok(match (control, mode) {
-            (Control::Status, mode) => {
-                let status = status(&name, &mode, &self.core.settings);
-                (mode, text(status))
-            }
-            (Control::Source { file }, mode) => {
-                let reply = match active(&mode) {
-                    Some(version) => source(version, file.as_deref()),
-                    None => String::from("err no active version"),
-                };
-                (mode, text(reply))
-            }
-            (Control::Swap { label, force }, Mode::Serving(version)) => {
-                crate::swap::swap(&mut self.core, version, &label, force)?
-            }
-            (Control::Swap { .. } | Control::Try { .. }, mode @ Mode::Probation(_)) => {
-                (mode, text("err busy: a version is on probation"))
-            }
-            (Control::Try { label }, Mode::Serving(version)) => {
-                let reply = crate::try_run::rehearse(&mut self.core, &version, &label);
-                (Mode::Serving(version), text(reply))
-            }
-            (Control::Rollback, Mode::Probation(probation)) => crate::probation::roll_back(
-                &mut self.core,
-                *probation,
-                &Fault::new(Reason::Manual, ""),
-                0,
-            )
-            .map(|(mode, label)| (mode, text(format!("ok rolled back {label}"))))?,
-            (Control::Rollback, mode) => (mode, text("err nothing is on probation")),
-            (Control::Reset, Mode::Disabled { version, .. }) => self.reset(version)?,
-            (Control::Reset, mode) => (mode, text(format!("err {name} is not disabled"))),
-            (_, mode @ Mode::Disabled { .. }) => (
-                mode,
-                text(format!("err {name} is disabled; ctl reset starts fresh")),
-            ),
-            (_, Mode::Moving) => unreachable!("a request found the host between modes"),
-        })
-    }
-
-    /// `ctl reset`: forget the state and start the active version empty.
-    fn reset(
-        &mut self,
-        version: Version<E::Instance>,
-    ) -> Result<(Mode<E::Instance>, Vec<u8>), Exit> {
-        self.core.report(&Report::new(kind::RESET))?;
-        let label = version.label.clone();
-        let fresh = self
-            .core
-            .stage(&label, version.artifact, None, false)
-            .map_err(|fault| exit(EXIT_NO_VERSION, fault.detail))?;
-        let mode = Self::fresh(&mut self.core, fresh)?;
-        Ok((
-            mode,
-            text(format!(
-                "ok {} started fresh on version {label}",
-                self.core.name
-            )),
-        ))
-    }
-}
-
-/// Imports `checkpoint` into `version` and re-exports it in the version's schema.
-fn restore_into<I: Instance>(
-    version: &mut Version<I>,
-    checkpoint: &[u8],
-    schema: u64,
-) -> Result<Vec<u8>, Fault> {
-    let from =
-        u32::try_from(schema).map_err(|_| Fault::new(Reason::Migrate, "schema out of range"))?;
-    match version.instance.import(checkpoint, from)? {
-        0 => export_own(version),
-        code => Err(Fault::new(
-            Reason::Migrate,
-            format!("version {} refused the checkpoint ({code})", version.label),
-        )),
-    }
-}
-
-fn active<I>(mode: &Mode<I>) -> Option<&Version<I>> {
-    match mode {
-        Mode::Serving(version) | Mode::Disabled { version, .. } => Some(version),
-        Mode::Probation(probation) => Some(&probation.standby),
-        Mode::Moving => None,
-    }
-}
-
-fn status<I>(name: &str, mode: &Mode<I>, settings: &Settings) -> String {
-    match mode {
-        Mode::Serving(version) => format!("ok {name} {} schema {}", version.label, version.schema),
-        Mode::Probation(p) => format!(
-            "ok {name} {} schema {}; probation {} schema {}: {} of {} calls",
-            p.standby.label,
-            p.standby.schema,
-            p.candidate.label,
-            p.candidate.schema,
-            p.served,
-            settings.probation_calls
-        ),
-        Mode::Disabled { version, why } => format!("ok {name} {} disabled ({why})", version.label),
-        Mode::Moving => String::from("err busy"),
-    }
-}
-
-/// `ctl source`: the files and sizes, or one file cut to fit a reply.
-fn source<I>(version: &Version<I>, file: Option<&str>) -> String {
-    let Ok(parsed) = artifact::parse(&version.artifact) else {
-        return String::from("err the artifact has no readable source");
-    };
-    let Ok(files) = artifact::source_files(parsed.source) else {
-        return String::from("err the source bundle is damaged");
-    };
-    let limit = kabi::MAX_MESSAGE - 64;
-    match file {
-        None => {
-            let mut list = format!(
-                "ok {} {} ({}):",
-                version.manifest.component,
-                version.label,
-                version.manifest.build.get(..12).unwrap_or("")
-            );
-            for (path, bytes) in files {
-                list.push_str(&format!("\n{path} {}", bytes.len()));
-            }
-            list
-        }
-        Some(wanted) => match files.iter().find(|(path, _)| *path == wanted) {
-            Some((_, bytes)) => {
-                let text = String::from_utf8_lossy(bytes);
-                let cut = text.floor_char_boundary(limit);
-                format!("ok {}", &text[..cut])
-            }
-            None => format!("err no file {wanted} in version {}", version.label),
-        },
     }
 }

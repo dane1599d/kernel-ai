@@ -3,6 +3,7 @@
 extern crate std;
 
 mod command;
+mod journal;
 mod rules;
 mod scenario;
 mod service;

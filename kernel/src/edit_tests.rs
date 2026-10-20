@@ -6,12 +6,12 @@
 
 use crate::live_tests::{self, SPOOF_PID};
 use crate::process::{self, components};
-use crate::{build_service, edit_mode, hpet, ipc, log, threads};
+use crate::{build_service, edit_mode, edit_session, hpet, ipc, log, threads};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use editcore::scenario::{self, Applied, Driver};
-use kabi::{Error, cap};
+use kabi::{Error, ExitReason, cap};
 use livecore::ledger::Ledger;
 use livecore::scenario::Driver as LiveDriver;
 use livecore::store::Component;
@@ -69,6 +69,10 @@ impl Driver for Kernel {
             let name = words.next().unwrap_or("");
             self.edits += 1;
             return Ok(edit_mode::open(name, words.next()));
+        }
+        if let Some(name) = line.strip_prefix(":fault ") {
+            self.edits += 1;
+            return Ok(edit_mode::fault(name));
         }
         if line == ":quit" {
             return Ok(edit_mode::quit());
@@ -168,23 +172,35 @@ impl Driver for Kernel {
             .map(|reply| String::from_utf8_lossy(&reply).into_owned())
             .map_err(|_| Error::Dead)
     }
+
+    fn restart_editor(&mut self) -> Result<(), String> {
+        let old = ipc::server_of("edit").ok_or("no edit service is running")?;
+        process::kill(old, ExitReason::Killed)
+            .map_err(|error| format!("cannot kill pid {old}: {error:?}"))?;
+        wait_for_edit(old)
+    }
+
+    fn restored(&mut self) -> Option<String> {
+        edit_session::restored()
+    }
 }
 
-fn wait_for_edit() -> Result<(), String> {
+/// Waits for an edit service other than pid `old`.
+fn wait_for_edit(old: u64) -> Result<(), String> {
     for _ in 0..START_TIMEOUT_MS / 10 {
-        if ipc::server_of("edit").is_some() {
+        if ipc::server_of("edit").is_some_and(|pid| pid != old) {
             return Ok(());
         }
         threads::sleep_ms(10);
     }
-    Err(format!("no edit service within {START_TIMEOUT_MS} ms"))
+    Err(format!("no new edit service within {START_TIMEOUT_MS} ms"))
 }
 
 pub fn check() -> Result<(), &'static str> {
     if build_service::target().is_none() {
         return Err("edit: boot with build= and build_token=");
     }
-    if let Err(why) = live_tests::wait_for_host(0).and_then(|_| wait_for_edit()) {
+    if let Err(why) = live_tests::wait_for_host(0).and_then(|_| wait_for_edit(0)) {
         log!("{why}");
         return Err("edit: the notes host or the edit service never came up");
     }
