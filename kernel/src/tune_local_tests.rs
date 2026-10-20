@@ -32,6 +32,12 @@ pub fn local_check(cmdline: &str) -> Result<(), &'static str> {
         return Err("local-tune: the kai-model disk was not loaded");
     }
     crate::shell_tests::start()?;
+    // xtask checks this line names the generated model, as for local-ask.
+    let health = llm::health().map_err(|_| "local-tune: llm's health failed")?;
+    log!("local-tune: health: {health}");
+    if !health.contains("local model ") {
+        return Err("local-tune: health does not name a local model");
+    }
     let request = llmproto::tune::example().encode();
     let reply = ipc::call("llm", request.as_bytes(), ANSWER_MS)
         .map_err(|_| "local-tune: llm did not answer the tune request")?;

@@ -117,8 +117,12 @@ pub fn revert_check() -> Result<(), &'static str> {
         .map(|name| pid_named(name))
         .collect::<Result<Vec<_>, _>>()?;
     for name in PROTECTED {
-        let pid = pid_named(name)?;
-        if sched_control::labelable(pid) {
+        // The service list leaves the supervisor out; the kernel knows its pid.
+        let pid = match name {
+            "supervisor" => process::supervision::supervisor_pid(),
+            _ => pid_named(name)?,
+        };
+        if pid == 0 || sched_control::labelable(pid) {
             return Err("tune: a protected service could be labelled");
         }
     }
