@@ -3,6 +3,7 @@
 //! it from interrupts. Thread IDs are global; each CPU's `Core` tracks the threads
 //! it currently owns, and accounts for them while it does ([`crate::stats`]).
 
+use crate::classes::Class;
 use crate::stats::{Snapshot, Stats};
 use crate::{EnqueueReason, MAX_THREADS, RoundRobin, SchedPolicy, Tid};
 use alloc::boxed::Box;
@@ -40,6 +41,20 @@ pub struct Core {
     /// A wake-up asked for a reschedule that no switch has consumed yet.
     resched_pending: bool,
     stats: Stats,
+    /// Labels for the installed policy, and for the staged one (see standby.rs).
+    classes: [Class; MAX_THREADS],
+    standby: Option<Box<dyn SchedPolicy>>,
+    standby_classes: [Class; MAX_THREADS],
+    in_trial: bool,
+    /// The standby slot holds a candidate that may be flipped in (not just the
+    /// last good policy a person's choice left behind).
+    staged: bool,
+    /// When the installed policy was put in by `flip` or `revert`: the watchdog
+    /// judges it only on waits since then, not on the waits its predecessor caused.
+    installed_at: u64,
+    /// The thread's runnable period began with a wake, so a policy switch hands
+    /// it over as woken and it keeps the boost it is owed.
+    woke: [bool; MAX_THREADS],
 }
 
 impl Core {
@@ -64,6 +79,13 @@ impl Core {
             switches: 0,
             resched_pending: false,
             stats: Stats::new(),
+            classes: [Class::Normal; MAX_THREADS],
+            standby: None,
+            standby_classes: [Class::Normal; MAX_THREADS],
+            in_trial: false,
+            staged: false,
+            installed_at: 0,
+            woke: [false; MAX_THREADS],
         }
     }
 
@@ -162,6 +184,12 @@ impl Core {
     /// Takes ownership of a runnable thread: a new one, or one migrated here.
     pub fn adopt(&mut self, tid: Tid, name: &'static str, reason: EnqueueReason, now: u64) {
         self.names[tid] = name;
+        if reason == EnqueueReason::New {
+            // A new thread in a reused slot does not inherit the old one's label.
+            self.classes[tid] = Class::Normal;
+            self.standby_classes[tid] = Class::Normal;
+            self.policy.set_class(tid, Class::Normal);
+        }
         self.make_runnable(tid, reason, now);
     }
 
@@ -293,13 +321,18 @@ impl Core {
         self.pick(now)
     }
 
-    /// Installs a new policy, hands it every runnable thread, and returns the old one
-    /// so the caller can drop it outside interrupt-disabled code.
+    /// Installs a new policy, replays the labels into it, hands it every runnable
+    /// thread, and returns the old one so the caller can drop it outside
+    /// interrupt-disabled code. A trial in progress ends: the person wins.
     pub fn set_policy(&mut self, policy: Box<dyn SchedPolicy>) -> Box<dyn SchedPolicy> {
         let old = core::mem::replace(&mut self.policy, policy);
-        self.on_fallback = false;
-        self.fallback.reset();
-        self.requeue_runnable_into_active();
+        if core::mem::take(&mut self.in_trial) {
+            // The trial's labels go with it; the last good policy stays in the
+            // slot for the caller to take.
+            core::mem::swap(&mut self.classes, &mut self.standby_classes);
+            self.staged = false;
+        }
+        self.install_active();
         old
     }
 
@@ -356,7 +389,8 @@ impl Core {
         self.requeue_runnable_into_active();
     }
 
-    /// Re-queues runnable threads into the active policy, longest-waiting first.
+    /// Re-queues runnable threads into the active policy, longest-waiting first;
+    /// threads that woke and have not run yet are handed over as woken.
     fn requeue_runnable_into_active(&mut self) {
         let mut waiting = [(u64::MAX, 0); MAX_THREADS];
         let mut count = 0;
@@ -368,12 +402,17 @@ impl Core {
         }
         waiting[..count].sort_unstable();
         for &(_, tid) in &waiting[..count] {
-            self.active().enqueue(tid, EnqueueReason::Preempted);
+            let reason = match self.woke[tid] {
+                true => EnqueueReason::Woken,
+                false => EnqueueReason::Preempted,
+            };
+            self.active().enqueue(tid, reason);
         }
     }
 
     fn make_runnable(&mut self, tid: Tid, reason: EnqueueReason, now: u64) {
         self.states[tid] = State::Runnable { since: now };
+        self.woke[tid] = reason == EnqueueReason::Woken;
         self.stats.runnable(tid, reason);
         self.active().enqueue(tid, reason);
     }
@@ -392,7 +431,9 @@ impl Core {
         self.states
             .iter()
             .filter_map(|s| match s {
-                State::Runnable { since } => Some(now.saturating_sub(*since)),
+                State::Runnable { since } => {
+                    Some(now.saturating_sub((*since).max(self.installed_at)))
+                }
                 _ => None,
             })
             .max()
@@ -409,6 +450,7 @@ impl Core {
 }
 
 mod migrate;
+mod standby;
 #[cfg(test)]
 mod tests;
 
