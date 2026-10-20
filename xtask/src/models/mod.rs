@@ -166,6 +166,11 @@ impl Loaded {
         })
     }
 
+    /// The file's bytes, for an engine that outlives this value.
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.bytes
+    }
+
     pub fn gguf(&self) -> Result<gguf::Gguf<'_>, String> {
         gguf::Gguf::parse(&self.bytes).map_err(|e| format!("{}: {e}", self.label))
     }

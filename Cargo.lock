@@ -526,6 +526,7 @@ version = "0.0.0"
 dependencies = [
  "infer",
  "quant",
+ "sched",
  "serde",
  "serde_json",
 ]
@@ -1259,6 +1260,7 @@ dependencies = [
  "object",
  "quant",
  "rustc-demangle",
+ "sched",
  "serde_json",
  "sha2",
  "shellcore",

@@ -5,9 +5,11 @@
 //! cargo xtask test  [--release] [--accel auto|kvm|whpx|tcg] [--timeout SECS] [--cpus N] [--mem SIZE]
 //! cargo xtask soak  [--accel auto|kvm|whpx|tcg]   (10-minute storm, M5 exit test)
 //! cargo xtask smoke   (the live, edit and boot manifest scenarios on the host only, no QEMU)
+//! cargo xtask icount [--shift N] [--boots N] [--timeout SECS]   (icount determinism, M10a-2)
 //! cargo xtask fluency --llm HOST:PORT --model NAME [--repeat N]   (M8b script gate, host only)
 //! cargo xtask fluency --local ID [--store DIR]   (the same gate on our own engine)
 //! cargo xtask setup | model chat|check|pin | bench quant   (the local LLM on the host; see models/mod.rs)
+//! cargo xtask tune --sim [--mix A|B] [--seed N] (--local ID | --answer FILE) [--eval]   (M10a rehearsal)
 //!
 //! `test` boots the kernel headless once per test case (boot and memory checks,
 //! page fault, double fault, write-protect, stack overflow, 60 s timer, keyboard,
@@ -29,6 +31,7 @@ mod esp;
 mod floatguard;
 mod fluency;
 mod httpd;
+mod icount;
 mod lines;
 mod local_ask;
 mod local_script;
@@ -38,6 +41,7 @@ mod options;
 mod qemu;
 mod smoke;
 mod strip;
+mod tune;
 mod userbuild;
 
 use options::{Accel, Options, Task, parse_args};
@@ -57,6 +61,7 @@ fn main() -> ExitCode {
     let result = match args.first().map(String::as_str) {
         Some("fluency") => fluency::main(&args[1..], &workspace_root().join("target")),
         Some("setup" | "model" | "bench") => models::main(&args),
+        Some("tune") => tune::main(&args[1..]),
         _ => parse_args(&args).and_then(|options| execute(&options)),
     };
     match result {
@@ -107,6 +112,9 @@ fn execute(options: &Options) -> Result<(), String> {
     let esp = target_dir.join("esp");
     let qemu = find_qemu()?;
     let accel = resolve_accel(options.accel);
+    if options.task == Task::Icount {
+        return icount::run(&qemu, &target_dir, &kernel, &modules, &efi, options);
+    }
     if options.task == Task::Run {
         let mut cmdline = llm_cmdline(options.llm.as_deref(), options.model.as_deref());
         let path = match (&options.model_disk, &options.local) {

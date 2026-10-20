@@ -5,18 +5,31 @@
 //! thread goes next. A policy that misbehaves is ejected and [`RoundRobin`] takes over.
 //!
 //! Policies run in interrupt context, so they must not allocate, block or take locks.
-//! The fixed-capacity [`Ring`] exists for that reason.
+//! The fixed-capacity [`Ring`] exists for that reason. [`Core`] also keeps
+//! per-thread accounting ([`stats`]), sized when it is built.
+//!
+//! For M10's policy agent: the [`classes`] policy and a bounded [`spec`], a seeded
+//! simulator that drives the real `Core` ([`sim`]), the workload mixes it runs
+//! ([`workload`]) and the trial [`judge`]. The simulator and the judge are host
+//! code that also compiles for the kernel, which never calls them.
 
 #![no_std]
 
 extern crate alloc;
 
 pub mod burst;
+pub mod classes;
 mod core_state;
+pub mod judge;
 mod policy;
+pub mod sim;
+pub mod spec;
+pub mod stats;
+pub mod workload;
 
 pub use burst::BurstTable;
-pub use core_state::{Core, State};
+pub use classes::Class;
+pub use core_state::{Core, Detached, State};
 pub use policy::{Interactive, RoundRobin};
 
 /// Thread identifier: an index into fixed-size tables.
@@ -57,6 +70,9 @@ pub trait SchedPolicy: Send {
     fn preempt_on_wake(&self, _woken: Tid, _current: Tid) -> bool {
         false
     }
+
+    /// A thread's label changed. Only `classes` uses labels; the rest ignore them.
+    fn set_class(&mut self, _tid: Tid, _class: Class) {}
 
     /// Forgets every queued thread.
     fn reset(&mut self);
@@ -109,6 +125,16 @@ impl Ring {
         Some(tid)
     }
 
+    /// The oldest entry, left in place.
+    pub fn front(&self) -> Option<Tid> {
+        (self.len > 0).then(|| self.items[self.head])
+    }
+
+    /// The entries from oldest to newest.
+    pub fn iter(&self) -> impl Iterator<Item = Tid> + '_ {
+        (0..self.len).map(|i| self.items[(self.head + i) % MAX_THREADS])
+    }
+
     pub fn contains(&self, tid: Tid) -> bool {
         (0..self.len).any(|i| self.items[(self.head + i) % MAX_THREADS] == tid)
     }
@@ -143,11 +169,14 @@ mod tests {
         let mut ring = Ring::default();
         assert!(ring.push_back(3) && ring.push_back(5) && ring.push_back(7));
         assert!(!ring.push_back(5));
+        assert_eq!(ring.iter().collect::<alloc::vec::Vec<_>>(), [3, 5, 7]);
         assert!(ring.remove(5));
         assert!(!ring.remove(9));
+        assert_eq!(ring.front(), Some(3));
         assert_eq!(ring.pop_front(), Some(3));
         assert_eq!(ring.pop_front(), Some(7));
         assert_eq!(ring.pop_front(), None);
+        assert_eq!(ring.front(), None);
     }
 
     #[test]
