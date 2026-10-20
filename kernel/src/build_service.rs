@@ -32,7 +32,7 @@ struct Config {
 }
 
 static CONFIG: Once<Config> = Once::new();
-/// Builds (`POST /build` through BUILD) sent so far, for the tests.
+/// Builds started (BUILD_START) so far, for the tests.
 static BUILDS: AtomicU64 = AtomicU64::new(0);
 /// The build service's last reply to a build, which the next upload must match.
 static LAST_BUILD: Mutex<Option<Vec<u8>>> = Mutex::new(None);

@@ -3,6 +3,7 @@
 //! the kernel was booted with, checks what comes back and uploads it. Its logic is
 //! `editcore::service`, tested on the host; this program only binds it to the
 //! system calls. It answers only the kernel, and only the kernel may call it.
+//! Builds run in the background (M9d): while one runs, it looks every 250 ms.
 
 #![no_std]
 #![no_main]
@@ -19,8 +20,24 @@ use user::{arg, args, println, sys};
 
 user::entry!(main);
 
+/// How often a running build is looked at between requests.
+const POLL_MS: u64 = 250;
+
 struct Sys {
     response: Vec<u8>,
+}
+
+impl Sys {
+    /// The kernel's argument for an HTTP request, the reply going to `response`.
+    fn http(&mut self, request: &[u8], timeout_ms: u64) -> HttpRequest {
+        HttpRequest {
+            request_ptr: request.as_ptr() as u64,
+            request_len: request.len() as u64,
+            response_ptr: self.response.as_mut_ptr() as u64,
+            response_cap: self.response.len() as u64,
+            timeout_ms,
+        }
+    }
 }
 
 impl Env for Sys {
@@ -51,14 +68,25 @@ impl Env for Sys {
     }
 
     fn build(&mut self, request: &[u8], timeout_ms: u64) -> Result<Vec<u8>, Error> {
-        let call = HttpRequest {
-            request_ptr: request.as_ptr() as u64,
-            request_len: request.len() as u64,
-            response_ptr: self.response.as_mut_ptr() as u64,
-            response_cap: self.response.len() as u64,
-            timeout_ms,
-        };
+        let call = self.http(request, timeout_ms);
         let len = sys::build(&call)?;
+        Ok(self.response[..len.min(self.response.len())].to_vec())
+    }
+
+    fn build_start(&mut self, request: &[u8], timeout_ms: u64) -> Result<(), Error> {
+        sys::build_start(&self.http(request, timeout_ms))
+    }
+
+    fn build_poll(&mut self, take: bool) -> Result<Vec<u8>, Error> {
+        if !take {
+            return sys::build_poll(&mut []).map(|_| Vec::new());
+        }
+        // The kernel keeps at most MAX_RESPONSE bytes, so the reply fits; if it
+        // did not, nothing was copied and the job is the kernel's still.
+        let len = sys::build_poll(&mut self.response)?;
+        if len > self.response.len() {
+            return Err(Error::TooBig);
+        }
         Ok(self.response[..len.min(self.response.len())].to_vec())
     }
 
@@ -91,9 +119,14 @@ fn main() -> i32 {
     let mut request = vec![0u8; kabi::MAX_MESSAGE];
     loop {
         let mut caller = 0;
-        let len = match sys::svc_recv(&mut request, 0, &mut caller) {
+        // 0 waits the longest the kernel allows; nothing needs a look meanwhile.
+        let wait = if service.polling() { POLL_MS } else { 0 };
+        let len = match sys::svc_recv(&mut request, wait, &mut caller) {
             Ok(len) => len.min(request.len()),
-            Err(Error::TimedOut) => continue,
+            Err(Error::TimedOut) => {
+                service.poll(&mut env);
+                continue;
+            }
             Err(error) => {
                 println!("svc_recv failed: {error:?}");
                 sys::sleep_ms(100);

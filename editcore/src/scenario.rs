@@ -7,7 +7,8 @@
 //! can drive the edit service; the kernel refuses an upload that no build of the
 //! build service backs, and relays for it only control requests that change
 //! nothing. B. A working edit is built, tried on copies, declined once, then
-//! applied live with its state. C. A compile error changes nothing. D. An index out of
+//! applied live with its state; it builds in the background, and BuildDone asks
+//! `status` until it is done. C. A compile error changes nothing. D. An index out of
 //! bounds is built, applied, and rolls back by itself; before it is applied, the
 //! edit service is killed and the kernel's journal gives the new one the session
 //! back. E. A host restart comes back on the upload. K. `:revert` goes back to
@@ -71,6 +72,8 @@ pub trait Driver: LiveDriver {
     fn restart_editor(&mut self) -> Result<(), String>;
     /// What the kernel said when it last gave a restarted edit service the session.
     fn restored(&mut self) -> Option<String>;
+    /// Waits `ms` milliseconds; BuildDone waits between its status checks.
+    fn wait(&mut self, ms: u64);
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -78,6 +81,9 @@ pub enum Step {
     Live(live::Step),
     /// A line typed in edit mode; the reply holds every expectation.
     Edit(&'static str, &'static [Expect]),
+    /// `status` until no build runs; the last build's answer holds every
+    /// expectation.
+    BuildDone(&'static [Expect]),
     /// `:apply`, answered; the view and then the outcome.
     Apply {
         answer: &'static str,
@@ -147,7 +153,11 @@ pub const STEPS: &[Step] = &[
         EDIT_ABOUT,
         &[Contains("lib.rs:141:"), Contains("edited live")],
     ),
-    Edit("build", &[StartsWith("ok built e1 from 2 (commit ")]),
+    Edit("build", &[Exact("ok building e1 from 2")]),
+    // Answered while the host compiles.
+    Edit("p 141", &[Contains("edited live")]),
+    Edit("status", &[Exact("ok notes 2: edited; building e1 from 2")]),
+    BuildDone(&[StartsWith("ok built e1 from 2 (commit ")]),
     Edit(
         "try",
         &[
@@ -180,22 +190,31 @@ pub const STEPS: &[Step] = &[
     Live(Part("C: a compile error changes nothing")),
     Edit(":edit notes", &[StartsWith("ok editing notes e1: 5 files")]),
     Edit(EDIT_COMPILE, &[Contains("lib.rs:40:")]),
-    Snapshot,
+    // Off line 40 first, so only the failed build can bring the cursor back.
     Edit(
-        "build",
-        &[
-            StartsWith("err build failed"),
-            Contains("error[E0277]"),
-            Contains("components/notes/src/lib.rs:40:"),
-        ],
+        "open Cargo.toml",
+        &[StartsWith("ok components/notes/Cargo.toml, ")],
+    ),
+    Snapshot,
+    Edit("build", &[Exact("ok building e2 from e1")]),
+    BuildDone(&[
+        StartsWith("err build failed; the cursor is on the first error"),
+        Contains("error[E0277]"),
+        Contains("components/notes/src/lib.rs:40:"),
+    ]),
+    Edit(
+        "p",
+        &[StartsWith("ok components/notes/src/lib.rs lines 40 to ")],
     ),
     Unchanged,
     Builds(2),
     Live(Part("D: an index out of bounds rolls back by itself")),
     Edit("reset", &[Exact("ok back to notes e1 as opened")]),
     Edit(EDIT_TRAP, &[Contains("lib.rs:58:")]),
-    Edit("build", &[StartsWith("ok built e2 from e1 (commit ")]),
-    // The edit service dies; the next line brings the session back, built.
+    Edit("build", &[Exact("ok building e2 from e1")]),
+    BuildDone(&[StartsWith("ok built e2 from e1 (commit ")]),
+    // The edit service dies after the build; the journal heard of e2 from the
+    // store, so the next line brings the session back, built.
     RestartEditor,
     Edit(
         "p 58",

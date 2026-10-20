@@ -31,6 +31,23 @@ pub(super) struct Fake {
     pub(super) requests: Vec<Vec<u8>>,
     pub(super) controls: Vec<(String, String)>,
     pub(super) control_reply: Result<&'static str, Error>,
+    /// The background build the kernel holds.
+    pub(super) job: Option<Job>,
+    /// Polls a new build answers Busy before its result is in.
+    pub(super) busy_polls: u32,
+    /// What a new build's exchange comes to, when it fails.
+    pub(super) exchange: Result<(), Error>,
+    /// Each poll: whether it took.
+    pub(super) polls: Vec<bool>,
+    /// Polls answered Fault, the reply kept, before the others.
+    pub(super) fault_polls: u32,
+    pub(super) logs: Vec<String>,
+}
+
+/// A background build in the kernel: its result, after `busy` more polls.
+pub(super) struct Job {
+    pub(super) reply: Result<Vec<u8>, Error>,
+    pub(super) busy: u32,
 }
 
 impl Fake {
@@ -45,10 +62,16 @@ impl Fake {
             requests: Vec::new(),
             controls: Vec::new(),
             control_reply: Ok("ok try e1: import ok"),
+            job: None,
+            busy_polls: 0,
+            exchange: Ok(()),
+            polls: Vec::new(),
+            fault_polls: 0,
+            logs: Vec::new(),
         }
     }
 
-    fn respond(&self, request: &[u8]) -> Vec<u8> {
+    pub(super) fn respond(&self, request: &[u8]) -> Vec<u8> {
         let split = request.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
         let head = String::from_utf8_lossy(&request[..split]);
         let body = &request[split + 4..];
@@ -146,8 +169,50 @@ impl Env for Fake {
     }
 
     fn build(&mut self, request: &[u8], _timeout_ms: u64) -> Result<Vec<u8>, Error> {
+        if !wire::is_sync_request(request) {
+            return Err(Error::Invalid);
+        }
         self.requests.push(request.to_vec());
         Ok(self.respond(request))
+    }
+
+    fn build_start(&mut self, request: &[u8], _timeout_ms: u64) -> Result<(), Error> {
+        if !wire::is_build_request(request) {
+            return Err(Error::Invalid);
+        }
+        if self.job.is_some() {
+            return Err(Error::Busy);
+        }
+        self.requests.push(request.to_vec());
+        let reply = self.exchange.map(|()| self.respond(request));
+        let busy = self.busy_polls;
+        self.job = Some(Job { reply, busy });
+        Ok(())
+    }
+
+    fn build_poll(&mut self, take: bool) -> Result<Vec<u8>, Error> {
+        self.polls.push(take);
+        let job = self.job.as_mut().ok_or(Error::NotFound)?;
+        if self.fault_polls > 0 {
+            self.fault_polls -= 1;
+            return Err(Error::Fault);
+        }
+        if job.busy > 0 {
+            job.busy -= 1;
+            return Err(Error::Busy);
+        }
+        match &job.reply {
+            Err(error) => {
+                let error = *error;
+                self.job = None;
+                Err(error)
+            }
+            Ok(_) if !take => Ok(Vec::new()),
+            Ok(_) => self
+                .job
+                .take()
+                .map_or(Err(Error::NotFound), |job| job.reply),
+        }
     }
 
     fn control(&mut self, component: &str, request: &str) -> Result<Vec<u8>, Error> {
@@ -155,7 +220,9 @@ impl Env for Fake {
         self.control_reply.map(|reply| reply.as_bytes().to_vec())
     }
 
-    fn log(&mut self, _text: &str) {}
+    fn log(&mut self, text: &str) {
+        self.logs.push(text.into());
+    }
 }
 
 pub(super) fn kernel(service: &mut Service, env: &mut Fake, request: &str) -> String {
@@ -203,4 +270,27 @@ pub(super) fn restore(journal: &mut Journal, env: &mut Fake) -> (Service, Restor
     let mut fresh = service();
     let restore = journal.restore(&mut |m| Some(fresh.handle(env, 0, m).into_bytes()));
     (fresh, restore)
+}
+
+/// `status` until no build runs; the reply, without the line a moved cursor adds.
+pub(super) fn status_until_done(service: &mut Service, env: &mut Fake) -> String {
+    for _ in 0..20 {
+        let reply = kernel(service, env, "cmd status");
+        let shown = String::from_utf8_lossy(crate::ipc::split_moved(reply.as_bytes()).1);
+        if !shown.lines().next().unwrap_or("").contains("building") {
+            return shown.into_owned();
+        }
+    }
+    panic!("the build never finished");
+}
+
+/// `build`, then `status` until it is done; the last build's answer.
+pub(super) fn build_now(service: &mut Service, env: &mut Fake) -> String {
+    let started = kernel(service, env, "cmd build");
+    assert!(started.starts_with("ok building "), "{started}");
+    let status = status_until_done(service, env);
+    let (_, last) = status
+        .split_once("\nlast build: ")
+        .unwrap_or_else(|| panic!("no last build in {status:?}"));
+    last.into()
 }

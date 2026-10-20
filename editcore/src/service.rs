@@ -19,7 +19,7 @@ mod building;
 mod job;
 mod replay;
 
-/// How long a build may take, inside the kernel's wait for this service.
+/// How long the kernel's build thread waits for the build service's answer.
 pub const BUILD_TIMEOUT_MS: u64 = 150_000;
 /// How long a sync may take.
 pub const SYNC_TIMEOUT_MS: u64 = 30_000;
@@ -39,8 +39,14 @@ pub trait Env {
         base: &str,
         commit: &str,
     ) -> Result<(), Error>;
-    /// Sends an HTTP request to the build service; the response.
+    /// Sends a git sync to the build service; the response.
     fn build(&mut self, request: &[u8], timeout_ms: u64) -> Result<Vec<u8>, Error>;
+    /// Starts a build on the build service in the background (BUILD_START).
+    fn build_start(&mut self, request: &[u8], timeout_ms: u64) -> Result<(), Error>;
+    /// The background build's response (BUILD_POLL): Busy while it runs, NotFound
+    /// with none, its exchange's error once. Without `take` it only looks, and an
+    /// answer comes back empty.
+    fn build_poll(&mut self, take: bool) -> Result<Vec<u8>, Error>;
     /// Has the kernel send `ctl <request>` to a component; only a request that
     /// changes nothing goes.
     fn control(&mut self, component: &str, request: &str) -> Result<Vec<u8>, Error>;
@@ -94,6 +100,13 @@ impl Service {
             Err(why) => return fit(err(why)),
         };
         let edits = matches!(message, Ipc::Open { .. } | Ipc::Cmd(_));
+        if edits {
+            self.decide();
+        }
+        // A replay never looks: between its messages nothing may be taken.
+        if !matches!(message, Ipc::Replay { .. }) {
+            self.poll(env);
+        }
         let reply = fit(match message {
             Ipc::Open {
                 component,
@@ -218,7 +231,7 @@ impl Service {
             return ok(format!("commands:\n{USAGE}"));
         }
         if command == Command::Status {
-            return self.status();
+            return self.status(env);
         }
         let Some(session) = self.session.as_mut() else {
             return err("no file is open; :edit <component> first");
@@ -231,6 +244,10 @@ impl Service {
     }
 
     fn sync(&mut self, env: &mut dyn Env, seq: u64, job: &wire::SyncRequest<'_>) -> String {
+        // The host's compile holds the lock a sync needs; the kernel retries.
+        if let Some(label) = self.busy(env) {
+            return job::busy_reply(&label);
+        }
         let request = self.request("/sync", &wire::encode_sync(job));
         let response = env
             .build(&request, SYNC_TIMEOUT_MS)

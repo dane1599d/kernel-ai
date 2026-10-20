@@ -1,4 +1,4 @@
-use super::fake::{COMMIT, Fake, Host, TOKEN, kernel, opened};
+use super::fake::{COMMIT, Fake, Host, TOKEN, build_now, kernel, opened};
 use super::*;
 use crate::service::Service;
 use kabi::Error;
@@ -10,7 +10,7 @@ fn a_good_build_uploads_exactly_what_came_back() {
         kernel(&mut service, &mut env, "cmd s |b = 2|b = 3|"),
         format!("ok {LIB}:2: let b = 3;")
     );
-    let reply = kernel(&mut service, &mut env, "cmd build");
+    let reply = build_now(&mut service, &mut env);
     assert_eq!(
         reply,
         "ok built e1 from 2 (commit 1a2b3c4d5e6f); :apply runs it"
@@ -35,12 +35,9 @@ fn a_failed_build_stores_nothing_and_moves_to_the_first_error() {
     let (mut service, mut env) = opened("let a = 1;\nlet b = 2;\nlet c = 3;\n");
     kernel(&mut service, &mut env, "cmd s |c = 3|c = 4|");
     env.host = Host::Fails;
-    let reply = kernel(&mut service, &mut env, "cmd build");
-    // The reply says where the cursor went first, for the kernel's journal.
-    let (moved, body) = crate::ipc::split_moved(reply.as_bytes());
-    assert_eq!(moved, Some("components/notes/src/lib.rs:2"));
+    let reply = build_now(&mut service, &mut env);
     assert!(
-        body.starts_with(b"err build failed; the cursor is on the first error"),
+        reply.starts_with("err build failed; the cursor is on the first error"),
         "{reply}"
     );
     assert!(reply.contains("components/notes/src/lib.rs:2:5: error[E0277]"));
@@ -66,7 +63,7 @@ fn a_wrong_artifact_or_a_bad_reply_is_refused() {
         let (mut service, mut env) = opened("x\n");
         kernel(&mut service, &mut env, "cmd c 1 y");
         env.host = host;
-        let reply = kernel(&mut service, &mut env, "cmd build");
+        let reply = build_now(&mut service, &mut env);
         assert!(reply.contains(wanted), "{reply}");
         assert!(env.puts.is_empty());
     }
@@ -77,7 +74,7 @@ fn a_store_that_moved_on_says_to_build_again() {
     let (mut service, mut env) = opened("x\n");
     kernel(&mut service, &mut env, "cmd c 1 y");
     env.put_result = Err(Error::Invalid);
-    let reply = kernel(&mut service, &mut env, "cmd build");
+    let reply = build_now(&mut service, &mut env);
     assert!(reply.contains("build again"), "{reply}");
     assert_eq!(service.session.as_ref().unwrap().built, None);
 }
@@ -216,7 +213,7 @@ fn try_has_the_kernel_rehearse_the_last_build() {
     let nothing = "err nothing is built from this text; build first, then try";
     assert_eq!(kernel(&mut service, &mut env, "cmd try"), nothing);
     kernel(&mut service, &mut env, "cmd c 1 y");
-    kernel(&mut service, &mut env, "cmd build");
+    build_now(&mut service, &mut env);
     assert_eq!(
         kernel(&mut service, &mut env, "cmd try"),
         "ok try e1: import ok"

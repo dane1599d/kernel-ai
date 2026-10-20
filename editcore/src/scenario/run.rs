@@ -59,6 +59,7 @@ fn run_step(
     match *step {
         Live(step) => live::run_step(driver, &step, host)?,
         Edit(line, expects) => expect_all(line, &driver.edit(line)?, expects)?,
+        BuildDone(expects) => build_done(driver, expects)?,
         Apply {
             answer,
             view,
@@ -184,4 +185,27 @@ fn run_step(
         }
     }
     Ok(())
+}
+
+/// How often BuildDone asks `status`.
+const POLL_MS: u64 = 250;
+/// Its checks outlast the longest build the kernel waits for.
+const BUILD_POLLS: u64 = (crate::service::BUILD_TIMEOUT_MS + 20_000) / POLL_MS;
+
+/// `status` until no build runs; the last build's answer holds every expectation.
+fn build_done(driver: &mut dyn Driver, expects: &[Expect]) -> Result<(), String> {
+    for _ in 0..BUILD_POLLS {
+        let reply = driver.edit("status")?;
+        if reply.lines().next().unwrap_or("").contains("building") {
+            driver.wait(POLL_MS);
+            continue;
+        }
+        let (_, last) = reply
+            .split_once("\nlast build: ")
+            .ok_or_else(|| format!("status answered {reply:?}, with no last build"))?;
+        return expect_all("the last build", last, expects);
+    }
+    Err(format!(
+        "the build did not finish after {BUILD_POLLS} status checks"
+    ))
 }

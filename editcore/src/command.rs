@@ -15,7 +15,7 @@ a <n> <text>        add a line after line n
 d <n>[,<m>]         delete lines
 undo                take back the last edit
 diff                what changed since the version was opened
-build               build it on the host and store it as the next version
+build               build it on the host in the background, as the next version
 try                 rehearse that build on copies of the state; changes nothing
 status              what is open, and how the last build went
 reset               drop every edit

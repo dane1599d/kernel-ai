@@ -96,9 +96,9 @@ pub mod call {
     /// either way). A read is not a fetch: it gives no right to report events.
     /// Needs [`super::cap::PUBLISH`].
     pub const COMP_READ: u64 = 26;
-    /// `build(&HttpRequest) -> response len`: as [`HTTP`], but to the build service
-    /// named by `build=` on the kernel command line, never to the LLM server.
-    /// Needs [`super::cap::PUBLISH`].
+    /// `build(&HttpRequest) -> response len`: as [`HTTP`], to the build service named
+    /// by `build=` on the kernel command line, and only `POST /sync`; anything else
+    /// is Invalid (builds go through [`BUILD_START`]). Needs [`super::cap::PUBLISH`].
     pub const BUILD: u64 = 27;
     /// `model_map() -> len`: maps the model the kernel loaded from the `kai-model`
     /// disk at [`super::layout::MODEL_BASE`], read-only and not executable, by

@@ -299,6 +299,10 @@ impl Driver for EditSmoke {
     fn restored(&mut self) -> Option<String> {
         self.restored.clone()
     }
+
+    fn wait(&mut self, ms: u64) {
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+    }
 }
 
 /// A build service on a fresh snapshot of the working tree at `target/edit-test/<phase>`.
@@ -344,6 +348,7 @@ pub fn run(root: &Path, modules: &[Module]) -> Result<(), String> {
             builds: 0,
             last_build: None,
             uploaded: Vec::new(),
+            job: None,
             host: None,
         },
         editing: false,

@@ -14,7 +14,8 @@ use kabi::Error;
 use kabi::live::Info;
 
 /// A replay reads the store and logs; it never builds, uploads or reaches a
-/// component, so neither `build` nor `try` can run in one.
+/// component, so neither `build` nor `try` can run in one. It never looks at a
+/// build either (`handle` polls before every message but a replay).
 struct Replaying<'a>(&'a mut dyn Env);
 
 impl Env for Replaying<'_> {
@@ -34,6 +35,14 @@ impl Env for Replaying<'_> {
         Err(Error::Permission)
     }
 
+    fn build_start(&mut self, _: &[u8], _: u64) -> Result<(), Error> {
+        Err(Error::Permission)
+    }
+
+    fn build_poll(&mut self, _: bool) -> Result<Vec<u8>, Error> {
+        Err(Error::Permission)
+    }
+
     fn control(&mut self, _: &str, _: &str) -> Result<Vec<u8>, Error> {
         Err(Error::Permission)
     }
@@ -50,6 +59,8 @@ impl Service {
         if from == 0 {
             self.session = None;
             self.builds.moved = None;
+            // The session is replaced: what was decided about a build is not.
+            self.builds.decided = false;
         } else if self.session.is_none() {
             return err(format!("replay stopped at {from}: {NO_SESSION}"));
         }

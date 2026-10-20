@@ -260,19 +260,18 @@ fn read_http(slot: usize, request_ptr: u64) -> Result<(HttpRequest, Vec<u8>, u64
 }
 
 /// Sends the request to the destination and returns what it answered up to
-/// closing the connection. The reply to a build (`POST /build`) is kept, so the
-/// upload that follows can be checked against it.
+/// closing the connection. The build service takes only git syncs this way;
+/// builds go through BUILD_START.
 fn exchange_to(slot: usize, request_ptr: u64, destination: Destination) -> Result<u64, Error> {
     let (call, request, timeout, response_cap) = read_http(slot, request_ptr)?;
     let target = match destination {
         Destination::Llm => llm::target().map(|(ip, port, _)| (ip, port)),
+        Destination::Build if !editcore::wire::is_sync_request(&request) => {
+            return Err(Error::Invalid);
+        }
         Destination::Build => crate::build_service::target(),
     };
     let (ip, port) = target.ok_or(Error::NotFound)?;
-    let builds = matches!(destination, Destination::Build) && request.starts_with(b"POST /build ");
-    if builds {
-        crate::build_service::count_build();
-    }
     let response = net::exchange((ip, port), &request, timeout, response_cap, || {
         super::killed(slot)
     })
@@ -290,11 +289,7 @@ fn exchange_to(slot: usize, request_ptr: u64, destination: Destination) -> Resul
         return Err(Error::Dead);
     }
     uaccess::copy_to_user(slot, call.response_ptr, &response)?;
-    let len = response.len() as u64;
-    if builds {
-        crate::build_service::keep_build_reply(response);
-    }
-    Ok(len)
+    Ok(response.len() as u64)
 }
 
 /// BUILD_START: hands a build to the background job.

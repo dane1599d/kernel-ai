@@ -172,6 +172,7 @@ fn a_replay_matches_the_live_session_text_cursor_undo_and_build() {
     say(&mut live, &mut env, "cmd p");
     env.host = Host::Builds;
     say(&mut live, &mut env, "cmd build");
+    say(&mut live, &mut env, "cmd status");
     let built = env.puts[0].1.clone();
     env.artifacts.push(("e1", built));
     for _ in 0..300 {
@@ -248,7 +249,7 @@ fn a_replay_stops_at_a_digest_that_differs_and_keeps_what_came_before() {
 fn a_replay_cannot_build_or_reach_a_component() {
     let mut env = Fake::new(&numbered(3, "\n"));
     let (mut live, mut journal) = (service(), Journal::new());
-    for message in ["open notes", "cmd c 1 x", "cmd build"] {
+    for message in ["open notes", "cmd c 1 x", "cmd build", "cmd status"] {
         say(&mut live, &mut env, &mut journal, message);
     }
     let built = env.puts[0].1.clone();
@@ -274,7 +275,7 @@ fn a_replay_cannot_build_or_reach_a_component() {
 fn built_comes_back_only_for_a_stored_upload_of_this_text() {
     let mut env = Fake::new(&numbered(3, "\n"));
     let (mut live, mut journal) = (service(), Journal::new());
-    for message in ["open notes", "cmd c 1 x", "cmd build"] {
+    for message in ["open notes", "cmd c 1 x", "cmd build", "cmd status"] {
         say(&mut live, &mut env, &mut journal, message);
     }
     let built = env.puts[0].1.clone();

@@ -19,8 +19,9 @@ use livecore::uploads;
 use llmproto::text::printable;
 use spin::Mutex;
 
-/// The kernel's wait for the edit service: its build may take 150 s.
-pub const EDIT_CALL_MS: u64 = 170_000;
+/// The kernel's wait for the edit service. Builds run in the background, so its
+/// longest answer is `try` (COMP_CONTROL, 60 s), maybe behind a 30 s git sync.
+pub const EDIT_CALL_MS: u64 = 100_000;
 /// The kernel's wait for a component's host to answer a swap.
 const SWAP_CALL_MS: u64 = 60_000;
 /// The screen size when there is no framebuffer console.
@@ -119,11 +120,6 @@ pub fn fault(name: &str) -> String {
 /// A line typed in edit mode, sent to the editor.
 pub fn editor_line(line: &str) -> String {
     call_editor(&encode_ipc(&Ipc::Cmd(line)))
-}
-
-/// Whether an editor line will build on the host, which takes a while.
-pub fn builds(line: &str) -> bool {
-    line.trim() == "build"
 }
 
 /// `:quit`.
