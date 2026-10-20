@@ -140,6 +140,11 @@ pub fn svc_reply(bytes: &[u8]) -> Result<u64, Error> {
     )
 }
 
+/// Maps the model read-only at `kabi::layout::MODEL_BASE`; returns its length.
+pub fn model_map() -> Result<u64, Error> {
+    call(call::MODEL_MAP, [0; 6])
+}
+
 pub fn http(request: &HttpRequest) -> Result<usize, Error> {
     call(
         call::HTTP,

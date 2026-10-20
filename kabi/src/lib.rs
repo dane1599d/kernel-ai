@@ -11,6 +11,7 @@
 extern crate alloc;
 
 pub mod live;
+pub mod model;
 pub mod plan;
 
 /// System-call numbers.
@@ -97,6 +98,12 @@ pub mod call {
     /// named by `build=` on the kernel command line, never to the LLM server.
     /// Needs [`super::cap::PUBLISH`].
     pub const BUILD: u64 = 27;
+    /// `model_map() -> len`: maps the model the kernel loaded from the `kai-model`
+    /// disk at [`super::layout::MODEL_BASE`], read-only and not executable, and
+    /// returns its length in bytes; calling it again maps nothing new. NotFound
+    /// when no model is loaded, NoMemory when its page tables would pass the page
+    /// quota. Needs [`super::cap::MODEL`].
+    pub const MODEL_MAP: u64 = 28;
 }
 
 /// Errors, returned in RAX as their negative value.
@@ -178,8 +185,11 @@ pub mod cap {
     /// the build service. The kernel grants it only to the service named `edit`
     /// running the `edit` program, and only the kernel may call a holder.
     pub const PUBLISH: u64 = 1 << 6;
+    /// Map the model read-only. The kernel grants it only to the service named
+    /// `llm` running the `llm` program.
+    pub const MODEL: u64 = 1 << 7;
     /// Every capability a supervisor may grant.
-    pub const GRANTABLE: u64 = SERVE | NET | CALL | POLICY | COMPONENT | PUBLISH;
+    pub const GRANTABLE: u64 = SERVE | NET | CALL | POLICY | COMPONENT | PUBLISH | MODEL;
 }
 
 /// Why a process ended, as reported to the supervisor.
@@ -318,6 +328,11 @@ pub mod layout {
     pub const STACK_PAGES: u64 = 16;
     /// Largest stack a process may ask for.
     pub const MAX_STACK_PAGES: u64 = 1024;
+    /// The model is mapped here, read-only: the start of a PML4 slot of its own,
+    /// so its page tables hold nothing else.
+    pub const MODEL_BASE: u64 = 0x0000_2000_0000_0000;
+    /// Largest model that fits the window: one PML4 slot, 512 GiB.
+    pub const MODEL_MAX: u64 = 0x0000_0080_0000_0000;
     /// First address that is not user space.
     pub const USER_END: u64 = 0x0000_8000_0000_0000;
 }
@@ -384,6 +399,8 @@ const _: () = {
     assert!(core::mem::size_of::<CallRequest>() == 5 * 8);
     assert!(core::mem::size_of::<Metrics>() == 13 * 8 + MAX_METRIC_PROCESSES * (16 + MAX_NAME));
     assert!(HEAP_BASE + HEAP_MAX < STACK_TOP - MAX_STACK_PAGES * 4096);
+    assert!(HEAP_BASE + HEAP_MAX <= MODEL_BASE && MODEL_BASE.is_multiple_of(MODEL_MAX));
+    assert!(MODEL_MAX == 1 << 39 && MODEL_BASE + MODEL_MAX <= STACK_TOP - MAX_STACK_PAGES * 4096);
     assert!(core::mem::size_of::<HttpRequest>() == 5 * 8);
 };
 

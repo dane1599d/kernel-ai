@@ -3,9 +3,8 @@
 //! exchange used by the LLM client.
 
 mod device;
-mod hal;
-mod pci;
 
+use crate::virtio::hal::KernelHal;
 use crate::{hpet, log, threads};
 use alloc::vec;
 use alloc::vec::Vec;
@@ -17,6 +16,8 @@ use smoltcp::socket::tcp;
 use smoltcp::time::{Duration, Instant};
 use smoltcp::wire::{EthernetAddress, HardwareAddress, IpAddress, IpCidr};
 use spin::Mutex;
+use virtio_drivers::device::net::VirtIONet;
+use virtio_drivers::transport::pci::PciTransport;
 
 const GUEST_IP: Ipv4Addr = Ipv4Addr::new(10, 0, 2, 15);
 const GATEWAY: Ipv4Addr = Ipv4Addr::new(10, 0, 2, 2);
@@ -26,6 +27,13 @@ const TX_BUFFER: usize = 16 * 1024;
 /// Longest wait between polls: without interrupts this bounds how late a frame is seen.
 const MAX_POLL_GAP_MS: u64 = 2;
 const FIRST_EPHEMERAL_PORT: u16 = 49152;
+/// Receive and transmit queue depth: a power of two, kept small because the driver
+/// builds its queue arrays on the stack.
+const QUEUE_SIZE: usize = 16;
+/// Per-packet buffer: at least 1526 bytes and a multiple of 8.
+const BUFFER_LEN: usize = 2048;
+
+type Nic = VirtIONet<KernelHal, PciTransport, QUEUE_SIZE>;
 
 struct Net {
     device: NicDevice,
@@ -44,9 +52,11 @@ fn now() -> Instant {
     Instant::from_millis((hpet::nanos() / 1_000_000) as i64)
 }
 
-/// Finds the network card and configures the interface.
-pub fn init(platform: &acpitables::Platform) -> Result<(), &'static str> {
-    let nic = pci::probe(platform)?;
+/// Brings up the network card the PCI probe found, polled, and configures the
+/// interface.
+pub fn init(transport: PciTransport) -> Result<(), &'static str> {
+    let mut nic = Nic::new(transport, BUFFER_LEN).map_err(|_| "net: virtio-net setup failed")?;
+    nic.disable_interrupts();
     let mut device = NicDevice::new(nic);
     let mac = device.mac();
     let mut config = Config::new(HardwareAddress::Ethernet(EthernetAddress(mac)));

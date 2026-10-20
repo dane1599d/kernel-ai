@@ -1,7 +1,7 @@
 //! Build and run tool for Kernel AI.
 //!
 //! cargo xtask build [--release] [--spikes]
-//! cargo xtask run   [--release] [--spikes] [--accel auto|kvm|whpx|tcg] [--llm IP:PORT] [--model NAME] [--edit]
+//! cargo xtask run   [--release] [--spikes] [--accel auto|kvm|whpx|tcg] [--llm IP:PORT] [--model NAME] [--edit] [--model-disk PATH]
 //! cargo xtask test  [--release] [--accel auto|kvm|whpx|tcg] [--timeout SECS]
 //! cargo xtask soak  [--accel auto|kvm|whpx|tcg]   (10-minute storm, M5 exit test)
 //! cargo xtask smoke   (the live, edit and boot manifest scenarios on the host only, no QEMU)
@@ -18,6 +18,7 @@ mod boot_smoke;
 mod buildsvc;
 mod cases;
 mod components;
+mod disk;
 mod edit_smoke;
 mod esp;
 mod fluency;
@@ -97,6 +98,15 @@ fn execute(options: &Options) -> Result<(), String> {
     let accel = resolve_accel(options.accel);
     if options.task == Task::Run {
         let mut cmdline = llm_cmdline(options.llm.as_deref(), options.model.as_deref());
+        let disk = options
+            .model_disk
+            .as_deref()
+            .map(disk::ModelDisk::open)
+            .transpose()?;
+        if let Some(disk) = &disk {
+            cmdline = format!("{cmdline} {}", disk.cmdline());
+            println!("xtask: {}", disk.describe());
+        }
         // Kept until QEMU exits: the build service runs on its threads.
         let _service = if options.edit {
             let service = buildsvc::start_dev(&root)?;
@@ -117,7 +127,7 @@ fn execute(options: &Options) -> Result<(), String> {
         };
         esp::make_esp(&esp, &kernel, &modules, &efi, &cmdline)?;
         let firmware = find_firmware(&qemu, &target_dir)?;
-        let args = qemu::args(&firmware, accel, false);
+        let args = qemu::args(&firmware, accel, false, disk.as_ref());
         println!("xtask: {} {}", qemu.display(), args.join(" "));
         return qemu::run_interactive(&qemu, &args, &target_dir);
     }
@@ -138,6 +148,17 @@ fn execute(options: &Options) -> Result<(), String> {
             false => None,
         };
         let mut cmdline = format!("{} {llm_args}", case.cmdline);
+        let disk = match disk::for_case(case.disk, &target_dir) {
+            Ok(disk) => disk,
+            Err(message) => {
+                eprintln!("xtask: test case {}: {message}", case.name);
+                failures.push(case.name);
+                continue;
+            }
+        };
+        if let Some(disk) = &disk {
+            cmdline = format!("{cmdline} {}", disk.cmdline());
+        }
         // The boot manifest's versions join the boot drive for this case only.
         let shared = modules.len();
         if let Some(service) = &service {
@@ -154,7 +175,7 @@ fn execute(options: &Options) -> Result<(), String> {
         modules.truncate(shared);
         let firmware = find_firmware(&qemu, &target_dir)?;
         let monitor = qemu::free_port()?;
-        let mut args = qemu::args(&firmware, accel, true);
+        let mut args = qemu::args(&firmware, accel, true, disk.as_ref());
         args.push("-monitor".into());
         args.push(format!("tcp:127.0.0.1:{monitor},server=on,wait=off"));
         let run = qemu::TestRun {
@@ -446,8 +467,10 @@ mod tests {
             code: PathBuf::from("code.fd"),
             vars: PathBuf::from("target/ovmf-vars.fd"),
         };
-        let list = qemu::args(&firmware, Accel::Tcg, true);
+        let list = qemu::args(&firmware, Accel::Tcg, true, None);
         assert!(list.contains(&"format=raw,file=fat:rw:esp".to_string()));
+        assert!(list.windows(2).any(|w| w[0] == "-m" && w[1] == "512M"));
+        assert!(!list.iter().any(|arg| arg == "-blockdev"));
         assert!(list.contains(&"isa-debug-exit,iobase=0xf4,iosize=0x04".to_string()));
         assert!(list.windows(2).any(|w| w[0] == "-accel" && w[1] == "tcg"));
         assert!(

@@ -59,11 +59,22 @@ pub fn target() -> Option<(Ipv4Addr, u16, &'static str)> {
         .map(|config| (config.server.0, config.server.1, config.model.as_str()))
 }
 
-/// The plan line for the `llm` service. The model name is one command-line word, so
-/// it holds no whitespace and cannot add arguments of its own; control characters
-/// are refused as well.
+/// The plan line for the `llm` service. With a model loaded it also gets
+/// `cap::MODEL` and pages for the mapping's tables; it keeps `net` and its burst
+/// limit, since script and explain still go to the server. The model name is one
+/// command-line word, so it holds no whitespace and cannot add arguments of its
+/// own; control characters are refused as well.
 pub fn plan_line() -> String {
-    let mut line = String::from("llm caps=serve+net burst_ms=10000 pages=1024");
+    let mut line = match crate::model::get() {
+        Some(model) => format!(
+            "llm caps=serve+net+model burst_ms=10000 pages={}",
+            crate::model::HOLDER_PAGES + kabi::model::table_pages(model.len())
+        ),
+        None => format!(
+            "llm caps=serve+net burst_ms=10000 pages={}",
+            crate::model::HOLDER_PAGES
+        ),
+    };
     if let Some((ip, port, model)) = target() {
         line.push_str(&format!(" host={ip}:{port}"));
         if model.chars().all(|c| !c.is_whitespace() && !c.is_control()) {
@@ -110,9 +121,12 @@ pub fn explain(facts: &str) -> Result<String, String> {
     request(&format!("explain {facts}"), ASK_TIMEOUT_MS)
 }
 
-/// Checks the server answers `GET /health`, through the service.
+/// Checks the server answers `GET /health`, and what model the service mapped,
+/// through the service. Its first health hashes the whole model, so the wait
+/// grows by a second for every 8 MiB of it.
 pub fn health() -> Result<String, String> {
-    request("health", HEALTH_TIMEOUT_MS)
+    let hashing_ms = crate::model::get().map_or(0, |model| model.len() / (8 << 20) * 1000);
+    request("health", HEALTH_TIMEOUT_MS + hashing_ms)
 }
 
 /// M6 exit test, network half, now through the ring-3 service: the server answers

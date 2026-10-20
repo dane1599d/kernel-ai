@@ -36,6 +36,10 @@ pub enum SelfTest {
     Manifest,
     /// M9d: notes starts on the good version, and the swap rolls back.
     ManifestGood,
+    /// L3: the `kai-model` disk reads back exactly the file xtask attached.
+    Blk,
+    /// L3: the model is held in memory and mapped into `llm`, and survives it.
+    Model,
 }
 
 const DEFAULT_STORM_SECONDS: u64 = 60;
@@ -64,6 +68,8 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=edit" => Some(SelfTest::Edit),
             "test=manifest" => Some(SelfTest::Manifest),
             "test=manifest-good" => Some(SelfTest::ManifestGood),
+            "test=blk" => Some(SelfTest::Blk),
+            "test=model" => Some(SelfTest::Model),
             other => other.strip_prefix("test=storm").map(|rest| {
                 let seconds = rest.strip_prefix('-').and_then(|s| s.parse().ok());
                 SelfTest::Storm(seconds.unwrap_or(DEFAULT_STORM_SECONDS))

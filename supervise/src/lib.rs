@@ -131,6 +131,7 @@ fn caps(service: &str, value: &str) -> Result<u64, String> {
         "policy" => Ok(bits | cap::POLICY),
         "component" => Ok(bits | cap::COMPONENT),
         "publish" => Ok(bits | cap::PUBLISH),
+        "model" => Ok(bits | cap::MODEL),
         other => Err(format!("{service}: unknown capability {other:?}")),
     })
 }
@@ -292,6 +293,15 @@ mod tests {
         assert_eq!(plan[2].limits.caps, 0);
         assert_eq!(plan[2].limits.stack_pages, 0);
         assert_eq!(plan[2].policy.max_restarts, POLICY.max_restarts);
+    }
+
+    #[test]
+    fn the_local_llm_line_names_the_model_capability() {
+        let plan = parse_plan("llm caps=serve+net+model burst_ms=10000 pages=1331").services;
+        assert_eq!(plan[0].limits.caps, cap::SERVE | cap::NET | cap::MODEL);
+        assert_eq!(plan[0].limits.max_burst_ms, 10_000);
+        assert_eq!(plan[0].limits.max_pages, 1331);
+        assert_eq!(plan[0].args, "");
     }
 
     #[test]

@@ -1,20 +1,13 @@
 //! PCIe configuration access through the ECAM window from the MCFG table, and the
-//! probe that finds the virtio network card.
+//! one pass over bus 0 that finds the virtio devices: the network card and the
+//! block devices.
 
 use super::hal::{DEVICE, KernelHal};
 use crate::{log, memory};
-use virtio_drivers::device::net::VirtIONet;
+use alloc::vec::Vec;
 use virtio_drivers::transport::DeviceType;
 use virtio_drivers::transport::pci::bus::{Command, ConfigurationAccess, DeviceFunction, PciRoot};
 use virtio_drivers::transport::pci::{PciTransport, virtio_device_type};
-
-/// Receive and transmit queue depth: a power of two, kept small because the driver
-/// builds its queue arrays on the stack.
-pub const QUEUE_SIZE: usize = 16;
-/// Per-packet buffer: at least 1526 bytes and a multiple of 8.
-pub const BUFFER_LEN: usize = 2048;
-
-pub type Nic = VirtIONet<KernelHal, PciTransport, QUEUE_SIZE>;
 
 /// Configuration space for bus `start_bus` onwards, `buses` buses mapped.
 #[derive(Clone, Copy)]
@@ -61,14 +54,25 @@ impl ConfigurationAccess for EcamAccess {
     }
 }
 
-/// Finds the first virtio network card on bus 0 and brings it up, polled.
-pub fn probe(platform: &acpitables::Platform) -> Result<Nic, &'static str> {
+/// The virtio devices on bus 0, each with its transport set up.
+pub struct Found {
+    /// The first network card; any other is left alone.
+    pub net: Option<PciTransport>,
+    /// A network card was there, but its transport could not be set up.
+    pub net_failed: bool,
+    /// Every block device, in bus order.
+    pub disks: Vec<PciTransport>,
+}
+
+/// Enumerates bus 0 once and sets up a transport for each virtio network card and
+/// block device on it.
+pub fn probe(platform: &acpitables::Platform) -> Result<Found, &'static str> {
     let ecam = platform
         .ecam
         .iter()
         .find(|window| window.segment == 0)
-        .ok_or("net: no PCIe configuration window (MCFG) for segment 0")?;
-    // On q35 the virtio card sits on the root bus; one bus is 1 MiB of ECAM. The
+        .ok_or("pci: no PCIe configuration window (MCFG) for segment 0")?;
+    // On q35 the virtio devices sit on the root bus; one bus is 1 MiB of ECAM. The
     // MCFG base is where bus 0 would be, even if the window starts at a later bus.
     let buses = 1;
     let first_bus = ecam.base + (u64::from(ecam.start_bus) << 20);
@@ -78,27 +82,45 @@ pub fn probe(platform: &acpitables::Platform) -> Result<Nic, &'static str> {
         start_bus: ecam.start_bus,
         buses,
     });
-    for (function, info) in root.enumerate_bus(ecam.start_bus) {
-        if virtio_device_type(&info) != Some(DeviceType::Network) {
-            continue;
-        }
-        log!(
-            "net: virtio-net at {function} (id {:04x}:{:04x})",
-            info.vendor_id,
-            info.device_id
-        );
-        // Firmware assigned the BARs; make sure the card decodes them and may DMA.
+    let wanted: Vec<(DeviceFunction, DeviceType, u16)> = root
+        .enumerate_bus(ecam.start_bus)
+        .filter_map(|(function, info)| match virtio_device_type(&info) {
+            Some(kind @ (DeviceType::Network | DeviceType::Block)) => {
+                Some((function, kind, info.device_id))
+            }
+            _ => None,
+        })
+        .collect();
+    let mut found = Found {
+        net: None,
+        net_failed: false,
+        disks: Vec::new(),
+    };
+    for (function, kind, device_id) in wanted {
+        let name = match kind {
+            DeviceType::Network if found.net.is_some() => {
+                log!("pci: ignoring a second virtio network card at {function}");
+                continue;
+            }
+            DeviceType::Network => "virtio-net",
+            _ => "virtio-blk",
+        };
+        log!("pci: {name} at {function} (id 1af4:{device_id:04x})");
+        // Firmware assigned the BARs; make sure the device decodes them and may DMA.
         let (_, command) = root.get_status_command(function);
         root.set_command(
             function,
             command | Command::MEMORY_SPACE | Command::BUS_MASTER,
         );
-        let transport = PciTransport::new::<KernelHal, _>(&mut root, function)
-            .map_err(|_| "net: virtio PCI transport setup failed")?;
-        let mut nic =
-            Nic::new(transport, BUFFER_LEN).map_err(|_| "net: virtio-net setup failed")?;
-        nic.disable_interrupts();
-        return Ok(nic);
+        let Ok(transport) = PciTransport::new::<KernelHal, _>(&mut root, function) else {
+            log!("pci: {name} at {function}: transport setup failed");
+            found.net_failed |= kind == DeviceType::Network;
+            continue;
+        };
+        match kind {
+            DeviceType::Network => found.net = Some(transport),
+            _ => found.disks.push(transport),
+        }
     }
-    Err("net: no virtio network card found")
+    Ok(found)
 }

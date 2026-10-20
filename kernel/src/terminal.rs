@@ -292,6 +292,17 @@ fn policy(name: &str) {
 }
 
 fn net_status() {
+    // A model needs no network; with no server, only the llm service can say what
+    // it mapped.
+    if let Some(model) = crate::model::get() {
+        log!("model: {} bytes held from the kai-model disk", model.len());
+        if llm::target().is_none() {
+            match llm::health() {
+                Ok(status) => log!("health: {status}"),
+                Err(error) => log!("health: {error}"),
+            }
+        }
+    }
     if !net::is_up() {
         log!("network: no card");
         return;

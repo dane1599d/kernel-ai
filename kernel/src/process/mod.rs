@@ -25,7 +25,7 @@ pub mod syscall;
 pub mod uaccess;
 
 pub use exit::{exit_current, exit_with};
-pub use loader::grow_heap;
+pub use loader::{grow_heap, map_shared};
 
 use crate::entry::TrapFrame;
 use crate::gdt::{USER_CODE, USER_DATA};

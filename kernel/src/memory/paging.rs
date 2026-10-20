@@ -184,6 +184,16 @@ impl Memory {
             .map_err(|_| "contiguous frames were not allocated")
     }
 
+    /// Allocates one frame, not zeroed; returns its physical address.
+    pub fn allocate_frame(&mut self) -> Option<u64> {
+        self.frames.allocate().map(|frame| frame * PAGE_SIZE)
+    }
+
+    /// Whether the frame at `phys` is allocated.
+    pub fn frame_in_use(&self, phys: u64) -> bool {
+        !self.frames.is_free(phys / PAGE_SIZE)
+    }
+
     pub fn free_frame(&mut self, phys: u64) -> Result<(), &'static str> {
         self.frames
             .free(phys / PAGE_SIZE)

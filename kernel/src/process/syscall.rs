@@ -161,6 +161,10 @@ fn handle(slot: usize, number: u64, a: [u64; 6]) -> Result<u64, Error> {
             need(slot, cap::PUBLISH)?;
             super::components::control(slot, a[0])
         }
+        call::MODEL_MAP => {
+            need(slot, cap::MODEL)?;
+            crate::model::map(slot)
+        }
         _ => Err(Error::NotFound),
     }
 }
