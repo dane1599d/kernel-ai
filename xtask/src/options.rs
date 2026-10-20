@@ -85,8 +85,8 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
         Some("icount") => Task::Icount,
         other => {
             return Err(format!(
-                "expected build, run, test, soak, smoke, icount, fluency, setup, model or bench, \
-                 got {other:?}"
+                "expected build, run, test, soak, smoke, icount, fluency, setup, model, bench or \
+                 doctor, got {other:?}"
             ));
         }
     };

@@ -18,14 +18,20 @@ mod check;
 mod decode;
 mod fetch;
 mod hostpool;
+mod inventory;
 mod machine;
 mod pin;
 mod setup;
 mod store;
 
 use catalog::{Catalog, Entry};
+#[cfg(test)]
+pub use inventory::Stocked;
+pub use inventory::{Held, Inventory, inventory};
+pub use machine::free_bytes;
 use std::fs;
 use std::path::PathBuf;
+pub use store::ENV as STORE_ENV;
 
 const USAGE: &str = "expected setup, model chat|check|pin or bench quant";
 

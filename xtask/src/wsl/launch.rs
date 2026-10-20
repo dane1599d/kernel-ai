@@ -56,7 +56,7 @@ pub struct Wsl {
 
 impl Wsl {
     /// The distro for `--accel wsl`, or None without it. Refuses, with the
-    /// fixes, when the boot would need something the distro lacks.
+    /// doctor's fixes, when the boot would need something the distro lacks.
     pub fn for_options(options: &Options, target_dir: &Path) -> Result<Option<Self>, String> {
         if !options.wsl {
             return Ok(None);
@@ -110,7 +110,8 @@ impl Wsl {
         if !blockers.is_empty() {
             check::print_items(&blockers);
             return Err(format!(
-                "{distro} in WSL cannot boot Kernel AI yet; the fixes are above"
+                "{distro} in WSL cannot boot Kernel AI yet; the fixes are above, and \
+                 cargo xtask doctor shows the whole checklist"
             ));
         }
         // A junction (target -> D:\...) is followed, so the distro reads the real drive.

@@ -11,6 +11,7 @@
 //! cargo xtask fluency --local ID [--store DIR]   (the same gate on our own engine)
 //! cargo xtask setup | model chat|check|pin | bench quant   (the local LLM on the host; see models/mod.rs)
 //! cargo xtask tune --sim [--mix A|B] [--seed N] (--local ID | --answer FILE) [--eval]   (M10a rehearsal)
+//! cargo xtask doctor   (can this PC run Kernel AI in an accelerated VM, and what to fix; read-only)
 //!
 //! `test` boots the kernel headless once per test case (boot and memory checks,
 //! page fault, double fault, write-protect, stack overflow, 60 s timer, keyboard,
@@ -27,6 +28,7 @@ mod buildsvc;
 mod cases;
 mod components;
 mod disk;
+mod doctor;
 mod edit_smoke;
 mod esp;
 mod floatguard;
@@ -64,6 +66,7 @@ fn main() -> ExitCode {
         Some("fluency") => fluency::main(&args[1..], &workspace_root().join("target")),
         Some("setup" | "model" | "bench") => models::main(&args),
         Some("tune") => tune::main(&args[1..]),
+        Some("doctor") => doctor::main(&args[1..]),
         _ => parse_args(&args).and_then(|options| execute(&options)),
     };
     match result {

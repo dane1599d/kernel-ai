@@ -222,3 +222,12 @@ fn nested_virtualization_and_loopback_fixes_follow_the_config() {
     assert!(native[0].fix[0].say.contains("firmware (BIOS)"));
     assert_eq!(native[2].fix[0].run.as_deref(), Some("sudo apt-get update"));
 }
+
+/// CI's runner checks that the script itself runs under `sh` and ends.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_probe_script_runs_under_sh() {
+    let report = super::probe::ask_native().unwrap();
+    assert!(!report.user.is_empty() && report.cpus.unwrap_or(0) > 0);
+    assert_eq!(report.loopback, None);
+}

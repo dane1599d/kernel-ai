@@ -1,7 +1,7 @@
 //! What a Linux system offers for running Kernel AI, found by one shell script:
 //! /dev/kvm, the CPU's virtualization flag, QEMU and its window, OVMF, memory, and
-//! (inside WSL) whether the distro reaches Windows' 127.0.0.1. `--accel wsl`
-//! refuses to start without what it needs. The script
+//! (inside WSL) whether the distro reaches Windows' 127.0.0.1. `cargo xtask doctor`
+//! reports it, and `--accel wsl` refuses to start without what it needs. The script
 //! runs in a WSL2 distro through `wsl.exe -e`, or natively on a Linux host. It only
 //! reads: no package, setting or file is changed.
 
@@ -407,6 +407,13 @@ pub fn find() -> Result<Distro, NoDistro> {
     choose(&distros, wanted.as_deref()).cloned()
 }
 
+/// WSL's own version line, from `wsl --version` (missing before WSL 1.0).
+pub fn version() -> Option<String> {
+    let out = run(wsl().arg("--version"), SHORT_LIMIT).ok()?;
+    let line = out.stdout.lines().next()?.trim().to_string();
+    (out.success && !line.is_empty()).then_some(line)
+}
+
 /// Runs the probe in `distro`, starting it if needed, and checks that it reaches a
 /// listener on Windows' 127.0.0.1. Returns the report and what WSL said on stderr.
 pub fn ask(distro: &str) -> Result<(Report, Option<String>), String> {
@@ -435,6 +442,15 @@ pub fn ask(distro: &str) -> Result<(Report, Option<String>), String> {
     report.loopback = report.loopback.map(|reached| reached && arrived);
     let note = out.stderr.trim();
     Ok((report, (!note.is_empty()).then(|| note.to_string())))
+}
+
+/// Runs the probe on this Linux host itself.
+pub fn ask_native() -> Result<Report, String> {
+    let out = run(
+        Command::new("sh").args(["-c", &script(), "sh", "0"]),
+        SHORT_LIMIT,
+    )?;
+    parse_report(&out.stdout).map_err(|e| format!("{e}: {}", first_line(&out.stdout, &out.stderr)))
 }
 
 /// The first line of stderr, else of stdout: the useful part of a failure.
