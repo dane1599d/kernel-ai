@@ -373,3 +373,19 @@ pub fn build(request: &HttpRequest) -> Result<usize, Error> {
     )
     .map(|len| len as usize)
 }
+
+/// Starts a build on the build service in the background; [`build_poll`]
+/// collects it (needs PUBLISH).
+pub fn build_start(request: &HttpRequest) -> Result<(), Error> {
+    call(
+        call::BUILD_START,
+        [request as *const HttpRequest as u64, 0, 0, 0, 0, 0],
+    )
+    .map(|_| ())
+}
+
+/// The background build's reply length, its bytes copied into `buf` (ending the
+/// job) only when they fit; an empty `buf` only looks (needs PUBLISH).
+pub fn build_poll(buf: &mut [u8]) -> Result<usize, Error> {
+    read_into(call::BUILD_POLL, buf, 0)
+}

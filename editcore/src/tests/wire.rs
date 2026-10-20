@@ -276,3 +276,20 @@ fn an_upload_must_name_the_base_it_was_built_from() {
     let reply = http(&built());
     assert!(check_built_response(&reply, b"\0asm", "e1", COMMIT).is_err());
 }
+
+#[test]
+fn builds_and_syncs_are_told_apart_by_their_exact_request_line() {
+    use crate::wire::{is_build_request, is_sync_request};
+    let build = llmproto::http::post("h", "/build", "application/octet-stream", &[], b"x");
+    let sync = llmproto::http::post("h", "/sync", "application/octet-stream", &[], b"x");
+    assert!(is_build_request(&build) && !is_sync_request(&build));
+    assert!(is_sync_request(&sync) && !is_build_request(&sync));
+    for other in [
+        &b"POST /builds HTTP/1.1\r\n"[..],
+        b"GET /build HTTP/1.1\r\n",
+        b"post /build HTTP/1.1\r\n",
+        b"POST /sync HTTP/1.0\r\n",
+    ] {
+        assert!(!is_build_request(other) && !is_sync_request(other));
+    }
+}
