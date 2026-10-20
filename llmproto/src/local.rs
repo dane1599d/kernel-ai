@@ -132,6 +132,22 @@ pub fn script(
     }
 }
 
+/// Computes the script system prompt into `engine`'s cache, so the next script
+/// request starts from it instead of paying for it inside its own time limit.
+/// It answers the system turn alone with one token, which the next request's
+/// user turn replaces. `on_step` may stop it early; the keys and values computed
+/// by then stay in the cache.
+pub fn warm(
+    engine: &mut Engine<'_>,
+    on_step: impl FnMut(Step) -> Next,
+) -> Result<(), infer::Error> {
+    let system = script::system_prompt();
+    let turns = [Turn::new(infer::chat::Role::System, &system)];
+    engine
+        .reply(&turns, 1, &mut Sampler::greedy(), None, on_step)
+        .map(|_| ())
+}
+
 /// Why an answer that went past a limit is refused, in [`script::check_text`]'s
 /// and [`script::check_summary`]'s words where they can be: the counts they
 /// quote are not known when the answer stops.

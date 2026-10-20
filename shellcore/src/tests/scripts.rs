@@ -161,12 +161,12 @@ fn checks_on(
 }
 
 #[test]
-fn the_strict_profile_refuses_every_loop_closure_and_indirect_call() {
+fn the_strict_profile_refuses_every_open_loop_closure_and_indirect_call() {
     for bad in [
         "loop { }",
         "while true { }",
         "do { } until false;",
-        "for i in 0..3 { }",
+        "let n = 0; for i in 0..3 { while true { } }",
         "let f = |x| x; f(1)",
         "fn f() { 1 } f()",
         "Fn(\"cpus\")",
@@ -398,4 +398,23 @@ fn ctrl_c_during_the_trial_cancels_instead_of_asking_for_a_repair() {
         Reply::err("stopped: interrupted")
     );
     assert_eq!(host.script_requests.borrow().len(), 1);
+}
+
+#[test]
+fn a_for_loop_over_a_list_and_floor_run_after_a_yes() {
+    let script = "let names = \"\";\nfor p in processes() {\n    names += p.name + \" \";\n}\n\
+                  for i in 0..2 {\n    names += i;\n}\nprint(names + \" \" + floor(7 / 2));";
+    let checked = checks(script).unwrap();
+    assert_eq!(checked.reads, ["processes"]);
+    let (_host, mut shell) = with_answers(vec![answer(script, "Lists names.")]);
+    shell.eval("? name every service");
+    assert_eq!(shell.eval("answer 1 yes"), ok("llm 01 3\n"));
+}
+
+#[test]
+fn the_prompts_three_decimals_form_runs() {
+    let script = "let ms = 4021;\nlet f = \"00\" + ms % 1000;\nprint(ms / 1000 + \".\" + f.sub_string(f.len() - 3));";
+    let (_host, mut shell) = with_answers(vec![answer(script, "Prints seconds.")]);
+    shell.eval("? uptime with three decimals");
+    assert_eq!(shell.eval("answer 1 yes"), ok("4.021\n"));
 }

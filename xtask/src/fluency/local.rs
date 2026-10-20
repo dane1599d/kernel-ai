@@ -5,7 +5,9 @@
 //! context cap, memory budget and tier choice, within the same time limit (but
 //! without the 1 ms pause the service takes after every step, so a request near
 //! the limit passes here sooner than in the OS). One engine serves every task, so
-//! the system prompt is computed once and reused from its cache, as in the OS.
+//! the system prompt is computed once, before the first task and outside its
+//! time limit as the service computes it after loading, and reused from the
+//! cache, as in the OS.
 //! The draws are seeded, so a second run gives the same answers: `--repeat` is
 //! for servers.
 
@@ -32,7 +34,7 @@ pub fn load(id: &str, store: Option<&str>) -> Result<(Shared, String), String> {
         .map_err(|e| format!("{} cannot run: {e}", path.display()))?;
     let about = engine.about();
     let line = format!(
-        "{} ({} tier, context {}), loaded in {} ms from {}",
+        "{} ({} tier, context {}), loaded and warmed in {} ms from {}",
         about.name.as_deref().unwrap_or(id),
         about.tier.name(),
         about.context,
