@@ -1,7 +1,7 @@
 //! Build and run tool for Kernel AI.
 //!
 //! cargo xtask build [--release] [--spikes]
-//! cargo xtask run   [--release] [--spikes] [--accel auto|kvm|whpx|tcg] [--llm IP:PORT] [--model NAME] [--edit] [--model-disk PATH]
+//! cargo xtask run   [--release] [--spikes] [--accel auto|kvm|whpx|tcg] [--llm IP:PORT] [--model NAME] [--edit] [--model-disk PATH | --local ID [--store DIR]]
 //! cargo xtask test  [--release] [--accel auto|kvm|whpx|tcg] [--timeout SECS]
 //! cargo xtask soak  [--accel auto|kvm|whpx|tcg]   (10-minute storm, M5 exit test)
 //! cargo xtask smoke   (the live, edit and boot manifest scenarios on the host only, no QEMU)
@@ -29,6 +29,7 @@ mod floatguard;
 mod fluency;
 mod httpd;
 mod lines;
+mod local_ask;
 mod mock_llm;
 mod models;
 mod options;
@@ -106,11 +107,11 @@ fn execute(options: &Options) -> Result<(), String> {
     let accel = resolve_accel(options.accel);
     if options.task == Task::Run {
         let mut cmdline = llm_cmdline(options.llm.as_deref(), options.model.as_deref());
-        let disk = options
-            .model_disk
-            .as_deref()
-            .map(disk::ModelDisk::open)
-            .transpose()?;
+        let path = match (&options.model_disk, &options.local) {
+            (_, Some(id)) => Some(models::stored(id, options.store.as_deref())?),
+            (path, None) => path.clone(),
+        };
+        let disk = path.as_deref().map(disk::ModelDisk::open).transpose()?;
         if let Some(disk) = &disk {
             cmdline = format!("{cmdline} {}", disk.cmdline());
             println!("xtask: {}", disk.describe());
@@ -155,7 +156,8 @@ fn execute(options: &Options) -> Result<(), String> {
             true => Some(edit_smoke::service(&root, case.name)?),
             false => None,
         };
-        let mut cmdline = format!("{} {llm_args}", case.cmdline);
+        let server = if case.server { llm_args.as_str() } else { "" };
+        let mut cmdline = format!("{} {server}", case.cmdline);
         let disk = match disk::for_case(case.disk, &target_dir) {
             Ok(disk) => disk,
             Err(message) => {
@@ -193,12 +195,26 @@ fn execute(options: &Options) -> Result<(), String> {
                 .min_timeout
                 .map_or(options.timeout, |least| least.max(options.timeout)),
             monitor,
+            exact: disk
+                .as_ref()
+                .map_or_else(Vec::new, disk::ModelDisk::exact_lines),
+            contains: disk
+                .as_ref()
+                .map_or_else(Vec::new, disk::ModelDisk::console_text),
         };
+        let requests = mock.requests();
         let after = |service: &Option<buildsvc::BuildService>| match (case.after, service) {
             (Some(check), Some(service)) => check(service),
             _ => Ok(()),
         };
-        let result = qemu::run_test(&qemu, &args, &target_dir, &run).and_then(|()| after(&service));
+        let result = qemu::run_test(&qemu, &args, &target_dir, &run)
+            .and_then(|()| after(&service))
+            .and_then(|()| match mock.requests() - requests {
+                sent if !case.server && sent > 0 => Err(format!(
+                    "FAIL: booted without a server, yet the mock LLM got {sent} requests"
+                )),
+                _ => Ok(()),
+            });
         if let Err(message) = result {
             eprintln!("xtask: test case {}: {message}", case.name);
             failures.push(case.name);

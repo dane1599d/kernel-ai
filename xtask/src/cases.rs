@@ -31,6 +31,9 @@ pub struct TestCase {
     /// A fixture attached as the `kai-model` disk, with its length and hash on the
     /// command line.
     pub disk: Option<Fixture>,
+    /// Boot with the mock LLM server on the command line (`llm=`). Without it, the
+    /// case also fails if the mock gets any request while it runs.
+    pub server: bool,
 }
 
 const fn case(name: &'static str, cmdline: &'static str) -> TestCase {
@@ -44,11 +47,15 @@ const fn case(name: &'static str, cmdline: &'static str) -> TestCase {
         prepare: None,
         min_timeout: None,
         disk: None,
+        server: true,
     }
 }
 
 /// "kai" and Enter.
 const KAI: &[&str] = &["k", "a", "i", "ret"];
+
+/// "ask hi" and Enter, at the terminal, which sends it through the shell to llm.
+const ASK_HI: &[&str] = &["a", "s", "k", "spc", "h", "i", "ret"];
 
 /// Moves the mouse right 38 and down 40 and clicks; then holds Ctrl for 1.5 s and
 /// clicks again inside the hold. Mouse events skip the key queue that delays the
@@ -165,6 +172,19 @@ pub const TEST_CASES: &[TestCase] = &[
     },
     case("fpu", "test=fpu"),
     case("probe", "test=probe"),
+    // L4's exit test: the model on the disk answers, inside Kernel AI, with no
+    // server. xtask adds the golden answer's exact line and the health text.
+    TestCase {
+        disk: Some(Fixture::LocalAsk),
+        server: false,
+        keys: &[ASK_HI],
+        expect: &[
+            "kai> ask hi",
+            "local-ask: the kernel's ask got the golden answer",
+            "local-ask: answered locally; the restarted llm remapped the model, not reloaded it",
+        ],
+        ..case("local-ask", "test=local-ask")
+    },
 ];
 
 /// The M5 exit test: a 10-minute spawn, exit and sleep storm.

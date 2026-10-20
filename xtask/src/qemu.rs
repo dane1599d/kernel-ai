@@ -138,6 +138,11 @@ pub struct TestRun<'a> {
     pub timeout: Duration,
     /// TCP port of the QEMU human monitor, used to inject keystrokes.
     pub monitor: u16,
+    /// Lines the console must show exactly, worked out on the host (the
+    /// `local-ask` case's golden answer).
+    pub exact: Vec<String>,
+    /// More text the console must contain, besides the case's own.
+    pub contains: Vec<String>,
 }
 
 pub fn run_test(
@@ -148,7 +153,14 @@ pub fn run_test(
 ) -> Result<(), String> {
     let (accel, timeout, monitor) = (run.accel, run.timeout, run.monitor);
     let stages = run.case.keys;
-    let expect = run.case.expect;
+    let expect: Vec<String> = run
+        .case
+        .expect
+        .iter()
+        .map(|text| text.to_string())
+        .collect();
+    let expect = [expect, run.contains.clone()].concat();
+    let exact = run.exact.clone();
     let started = Instant::now();
     let mut child = Command::new(qemu)
         .current_dir(target_dir)
@@ -158,13 +170,15 @@ pub fn run_test(
         .map_err(|e| format!("cannot start QEMU: {e}"))?;
     let stdout = child.stdout.take().ok_or("QEMU stdout was not captured")?;
     let (ready_tx, ready_rx) = mpsc::channel();
+    let all = (expect.clone(), exact.clone());
     let reader = thread::spawn(move || {
         let mut measure_start = None;
         let mut stage = 0;
-        let mut missing: Vec<&'static str> = expect.to_vec();
+        let (mut missing, mut unseen) = (expect, exact);
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
             println!("  | {line}");
-            missing.retain(|text| !line.contains(text));
+            missing.retain(|text| !line.contains(text.as_str()));
+            unseen.retain(|text| line.trim_end_matches('\r') != text);
             // Text from ring 3 (`[name] ...`) or the shell (`= ...`, `! ...`, `? ...`) may
             // say anything, and a `screen:` row copies whatever the screen shows, so
             // none of them counts as a kernel marker.
@@ -189,7 +203,7 @@ pub fn run_test(
                 );
             }
         }
-        missing
+        (missing, unseen)
     });
     let status = loop {
         if let Some(status) = child
@@ -205,7 +219,7 @@ pub fn run_test(
         }
         thread::sleep(Duration::from_millis(50));
     };
-    let missing = reader.join().unwrap_or_else(|_| expect.to_vec());
+    let (missing, unseen) = reader.join().unwrap_or(all);
     if let Ok(elapsed) = ready_rx.try_recv() {
         println!(
             "xtask: boot-to-ready {} ms (accel {:?}, includes firmware)",
@@ -218,6 +232,9 @@ pub fn run_test(
     }
     if !missing.is_empty() {
         return Err(format!("FAIL: never saw {missing:?} on the console"));
+    }
+    if !unseen.is_empty() {
+        return Err(format!("FAIL: never saw the exact lines {unseen:?}"));
     }
     println!("xtask: PASS");
     Ok(())

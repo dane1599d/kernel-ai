@@ -39,6 +39,11 @@ pub struct Options {
     pub edit: bool,
     /// `run --model-disk PATH`: a raw file attached read-only as the `kai-model` disk.
     pub model_disk: Option<PathBuf>,
+    /// `run --local ID`: the catalog model `ID`, from the model store, attached the
+    /// same way. `--model` keeps meaning the model name sent to an LLM server.
+    pub local: Option<String>,
+    /// `run --store DIR`: the model store `--local` reads, as `setup --store`.
+    pub store: Option<String>,
 }
 
 pub fn parse_args(args: &[String]) -> Result<Options, String> {
@@ -68,6 +73,8 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
         model: None,
         edit: false,
         model_disk: None,
+        local: None,
+        store: None,
     };
     let mut rest = args[1..].iter();
     while let Some(arg) = rest.next() {
@@ -108,6 +115,16 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
                     .ok_or("--model-disk expects the path of a file")?;
                 options.model_disk = Some(PathBuf::from(path));
             }
+            "--local" if task == Task::Run => {
+                let id = rest
+                    .next()
+                    .ok_or("--local expects a catalog id, such as qwen3-0.6b")?;
+                options.local = Some(id.clone());
+            }
+            "--store" if task == Task::Run => {
+                let dir = rest.next().ok_or("--store expects a directory")?;
+                options.store = Some(dir.clone());
+            }
             "--model" => {
                 let model = rest.next().ok_or("--model expects a model name")?;
                 if model.is_empty() || model.chars().any(char::is_whitespace) {
@@ -117,6 +134,12 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
             }
             other => return Err(format!("unknown option {other}")),
         }
+    }
+    if options.local.is_some() && options.model_disk.is_some() {
+        return Err("--local and --model-disk both name the model disk; give one".into());
+    }
+    if options.store.is_some() && options.local.is_none() {
+        return Err("--store names where --local finds its model; give --local too".into());
     }
     Ok(options)
 }
@@ -177,6 +200,35 @@ mod tests {
         );
         assert!(parse_args(&args(&["run", "--model-disk"])).is_err());
         assert!(parse_args(&args(&["test", "--model-disk", "m.gguf"])).is_err());
+    }
+
+    #[test]
+    fn local_names_a_catalog_model_for_run_only() {
+        let options = parse_args(&args(&["run", "--local", "qwen3-0.6b"])).unwrap();
+        assert_eq!(options.local.as_deref(), Some("qwen3-0.6b"));
+        assert_eq!(options.model, None);
+        assert!(parse_args(&args(&["run", "--local"])).is_err());
+        assert!(parse_args(&args(&["test", "--local", "qwen3-0.6b"])).is_err());
+        let both = ["run", "--local", "qwen3-0.6b", "--model-disk", "m.gguf"];
+        assert!(parse_args(&args(&both)).is_err());
+        let stored = ["run", "--local", "qwen3-0.6b", "--store", r"E:\models"];
+        assert_eq!(
+            parse_args(&args(&stored)).unwrap().store.as_deref(),
+            Some(r"E:\models")
+        );
+        assert!(parse_args(&args(&["run", "--store", "E:/m"])).is_err());
+        // --model still names the server's model, beside a local one.
+        let server = [
+            "run",
+            "--local",
+            "qwen3-0.6b",
+            "--llm",
+            "10.0.0.2:8080",
+            "--model",
+            "q",
+        ];
+        let options = parse_args(&args(&server)).unwrap();
+        assert_eq!(options.model.as_deref(), Some("q"));
     }
 
     #[test]
