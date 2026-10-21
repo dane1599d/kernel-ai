@@ -13,11 +13,11 @@
   "mix": "A",
   "model": "qwen3-4b-2507",
   "model_sha256": "3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597",
-  "prompt_hash": "4a93e3666c05891a",
+  "prompt_hash": "208521d30256fb4a",
   "raw_output": "{\"reason\":\"Background builds wake frequently and consume CPU, risking editor responsiveness.\",\"policy\":\"classes\",\"preset\":\"firm\",\"background\":[\"build-1\",\"build-2\",\"build-3\",\"build-4\"]}",
   "seed": 0,
   "shift": 3,
-  "summary": "Goal: keep \"editor\" responsive; background work must progress.\nNow: interactive; trials: none; 1 CPU, 100% busy.\nname cpu% wakes/s burst-ms label\n\"editor\" 0.7 24 0.28 target\n\"build-1\" 27 390 0.7 normal\n\"build-2\" 24 370 0.64 normal\n\"build-3\" 22 350 0.64 normal\n\"build-4\" 16 310 0.52 normal\n\"indexer\" 5.9 250 0.24 normal\n\"hog-1\" 1.5 0 91 normal\n\"hog-2\" 1.5 0 91 normal\n\"shell\" 0.8 0 13 protected\n\"llm\" 0 0 0 protected\nFlags: \"editor\" waits under 2 ms; keep is fine (p50 0.53, max 2.8).",
-  "summary_sha256": "b66fb7d165d919ea545dbae75ec1163a646e3b3292f2f491dcb5cc6f320a16ee",
+  "summary": "Goal: keep \"editor\" responsive; background work must progress.\nNow: interactive; trials: none; 1 CPU, 100% busy.\nname cpu% wakes/s burst-ms label\n\"editor\" 0.7 25 0.28 target\n\"build-1\" 28 390 0.71 normal\n\"build-2\" 24 370 0.64 normal\n\"build-3\" 22 350 0.64 normal\n\"build-4\" 16 310 0.52 normal\n\"indexer\" 5.7 240 0.24 normal\n\"hog-1\" 1.4 0 100 normal\n\"hog-2\" 1.4 0 100 normal\n\"shell\" 0.8 0 12 protected\n\"llm\" 0 0 0 protected\nFlags: \"editor\" waits under 2 ms; keep is fine (p50 0.47, max 3.1).",
+  "summary_sha256": "50f01acfb640241ed076ae36e76a9a59054635ca1491ffbdabdb0988287c0ea5",
   "target": "editor"
 }
