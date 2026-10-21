@@ -13,7 +13,7 @@ use crate::{edit_mode, hpet, ipc, llm, log, memory, net, serial, smp, threads};
 use alloc::format;
 use alloc::string::String;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use llmproto::text::printable;
+use llmproto::text::{printable, wrap};
 use termcore::line::{Line, Outcome};
 
 const PROMPT: &str = "kai> ";
@@ -72,7 +72,9 @@ enum Waiting {
 /// Runs the terminal on the calling thread, forever.
 pub fn run(_: usize) {
     let mut decoder = Decoder::new();
-    log!("Kernel AI terminal. Lines are Rhai (try help); kernel commands start with ':'.");
+    log!(
+        "Kernel AI terminal. Talk to the AI or type Rhai (try help); kernel commands start with ':'."
+    );
     let mut waiting: Option<Waiting> = None;
     loop {
         let prompt = match &waiting {
@@ -208,19 +210,14 @@ fn fits_on_screen(body: &str) -> bool {
     body.lines().all(|line| line.chars().count() <= width) && body.lines().count() + 1 < rows
 }
 
+/// Prints each line of `body` after `lead`, wrapped at spaces to the screen's
+/// width so no word is split across rows.
 fn show_lines(lead: &str, body: &str) {
+    let (cols, _) = crate::console::size().unwrap_or((usize::MAX, usize::MAX));
+    let width = PIECE_CHARS.min(cols.saturating_sub(2));
     for line in body.lines() {
-        let mut rest = line;
-        loop {
-            let cut = rest
-                .char_indices()
-                .nth(PIECE_CHARS)
-                .map_or(rest.len(), |(at, _)| at);
-            log!("{lead} {}", &rest[..cut]);
-            rest = &rest[cut..];
-            if rest.is_empty() {
-                break;
-            }
+        for row in wrap(line, width) {
+            log!("{lead} {row}");
         }
     }
 }
@@ -364,10 +361,12 @@ fn processes() {
 /// shows at the prompt the kernel logs a line, which must land above the typed line
 /// and leave it whole. The harness then makes "policy rr" of it with arrows, Home,
 /// End, Backspace and Delete (only that exact line switches the policy), and types
-/// "ask hello", a request in plain English and "yes" to the script proposed for it.
-/// The policy must be installed on every CPU, the llm service must have answered the
-/// shell twice (the question and the script request), and the terminal must have
-/// shown all four replies. The counts come from the kernel, not from anything a
+/// "ask hello" and a read-only request in plain English, whose script runs at once.
+/// Then it types "hello", which the AI answers in words, and a request whose script
+/// changes the policy, which waits for its question; the harness answers "no". The
+/// policy must be round-robin on every CPU, the llm service must have answered the
+/// shell four times (the question and three script requests), and the terminal must
+/// have shown all six replies. The counts come from the kernel, not from anything a
 /// program prints; xtask checks the printed text.
 pub fn self_test() -> Result<(), &'static str> {
     const TIMEOUT_MS: u64 = 60_000;
@@ -391,6 +390,14 @@ pub fn self_test() -> Result<(), &'static str> {
         Err(error) => return Err(error),
     }
     log!("terminal: ready for keys");
+    // The read-only script ran with no question: its reply is the third shown.
+    for _ in 0..TIMEOUT_MS / 10 {
+        if REPLIES_SHOWN.load(Ordering::Relaxed) >= 3 && !AWAITING_ANSWER.load(Ordering::Acquire) {
+            log!("terminal: ready for keys");
+            break;
+        }
+        threads::sleep_ms(10);
+    }
     // The answer is typed only once the question is on screen: keys typed earlier
     // are dropped, so this shows the answer came from the prompt.
     for _ in 0..TIMEOUT_MS / 10 {
@@ -403,11 +410,13 @@ pub fn self_test() -> Result<(), &'static str> {
     // The installed policy on every CPU, not the active one: a watchdog fallback
     // also runs round-robin and must not count as the command having worked.
     let switched = || threads::installed_policy_everywhere("round-robin");
-    let llm_answered_shell = || ipc::replies("llm").1 >= 2;
-    let all_shown = || REPLIES_SHOWN.load(Ordering::Relaxed) >= 4;
+    let llm_answered_shell = || ipc::replies("llm").1 >= 4;
+    let all_shown = || REPLIES_SHOWN.load(Ordering::Relaxed) >= 6;
     for _ in 0..TIMEOUT_MS / 10 {
         if cleared() && switched() && llm_answered_shell() && all_shown() {
-            log!("terminal: line cleared, policy switched, LLM reply and a confirmed script shown");
+            log!(
+                "terminal: line cleared, policy switched, LLM replies shown, a read-only script ran and a changing one was declined"
+            );
             return Ok(());
         }
         threads::sleep_ms(10);
@@ -419,9 +428,9 @@ pub fn self_test() -> Result<(), &'static str> {
         return Err("terminal: the policy command did not switch to round-robin");
     }
     if !llm_answered_shell() {
-        return Err("terminal: the llm service did not answer the shell twice");
+        return Err("terminal: the llm service did not answer the shell four times");
     }
-    Err("terminal: not all four replies were shown")
+    Err("terminal: not all six replies were shown")
 }
 
 /// What the harness types first, at the prompt.
