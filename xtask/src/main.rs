@@ -16,10 +16,9 @@
 //!
 //! `test` boots the kernel headless once per test case (boot and memory checks,
 //! page fault, double fault, write-protect, stack overflow, 60 s timer, keyboard,
-//! scheduling latency under load, policy watchdog; keys are
-//! typed through the QEMU monitor) with the spikes
-//! enabled. Each case passes only if the
-//! kernel reports success through QEMU's isa-debug-exit device.
+//! scheduling latency under load, policy watchdog; keys are typed through the QEMU
+//! monitor) with the spikes enabled. Each case passes only if the kernel reports
+//! success through QEMU's isa-debug-exit device.
 //!
 //! Every `build`, `run`, `test` and `soak` checks that the kernel ELF has no x87,
 //! MMX, SSE or AVX instruction (see floatguard.rs).

@@ -24,10 +24,13 @@ mod exit;
 pub mod futex;
 mod loader;
 pub mod programs;
+mod space;
 pub mod supervision;
 pub mod syscall;
 pub mod uaccess;
 pub mod workers;
+
+pub(crate) use space::lock_space;
 
 pub use burst::blocked;
 pub use exit::{exit_current, exit_with};
@@ -168,47 +171,6 @@ static TABLE: Mutex<[Process; MAX_PROCESSES]> = Mutex::new([Process::FREE; MAX_P
 static SPACES: [Mutex<Option<UserSpace>>; MAX_PROCESSES] =
     [const { Mutex::new(None) }; MAX_PROCESSES];
 
-/// A locked address space, with preemption off until it is dropped. SPACES is a
-/// spinlock: a holder preempted while holding it could be kept off every CPU by
-/// the threads spinning for it (an llm with 8 workers in FUTEX_WAIT did exactly
-/// that under VirtualBox). No holder sleeps, so none needs preemption.
-pub(crate) struct SpaceGuard {
-    /// Always Some until `drop` releases it.
-    guard: Option<spin::MutexGuard<'static, Option<UserSpace>>>,
-}
-
-/// Locks process `slot`'s address space; see [`SpaceGuard`].
-pub(crate) fn lock_space(slot: usize) -> SpaceGuard {
-    crate::threads::preempt_disable();
-    SpaceGuard {
-        guard: Some(SPACES[slot].lock()),
-    }
-}
-
-impl core::ops::Deref for SpaceGuard {
-    type Target = Option<UserSpace>;
-    fn deref(&self) -> &Option<UserSpace> {
-        self.guard
-            .as_ref()
-            .expect("a SpaceGuard holds its lock until dropped")
-    }
-}
-
-impl core::ops::DerefMut for SpaceGuard {
-    fn deref_mut(&mut self) -> &mut Option<UserSpace> {
-        self.guard
-            .as_mut()
-            .expect("a SpaceGuard holds its lock until dropped")
-    }
-}
-
-impl Drop for SpaceGuard {
-    fn drop(&mut self) {
-        // Unlock first: preemption comes back on only once nobody can wait on us.
-        drop(self.guard.take());
-        crate::threads::preempt_enable();
-    }
-}
 static NEXT_PID: AtomicU64 = AtomicU64::new(1);
 /// Pages all live processes together may be granted; set at start-up.
 static PAGE_BUDGET: AtomicU64 = AtomicU64::new(0);
