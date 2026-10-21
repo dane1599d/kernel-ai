@@ -40,6 +40,9 @@ pub struct TestCase {
     /// Attach the disk as an NVMe controller (`-device nvme`) instead of
     /// virtio-blk.
     pub nvme: bool,
+    /// Boot from the GPT disk image (`image/`) built from the ESP, not from QEMU's
+    /// directory ESP.
+    pub image: bool,
 }
 
 pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase {
@@ -56,6 +59,7 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         server: true,
         memory_mib: None,
         nvme: false,
+        image: false,
     }
 }
 
@@ -271,6 +275,13 @@ pub const TEST_CASES: &[TestCase] = &[
         nvme: true,
         expect: &["nvme: namespace 1, ", "model: llm (pid"],
         ..case("nvme-model", "test=model")
+    },
+    // The boot disk VirtualBox gets: Limine and the kernel on a FAT32 ESP in a GPT
+    // image, written by xtask, booted the way firmware boots a real disk.
+    TestCase {
+        image: true,
+        expect: &["boot-ok"],
+        ..case("image", "test")
     },
     // L6: worker threads in one address space.
     case("threads", "test=threads"),

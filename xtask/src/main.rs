@@ -35,6 +35,7 @@ mod floatguard;
 mod fluency;
 mod httpd;
 mod icount;
+mod image;
 mod lines;
 mod local_ask;
 mod local_script;
@@ -212,6 +213,9 @@ fn execute(options: &Options) -> Result<(), String> {
             ..options.sizing
         };
         let mut args = qemu::args(&firmware, accel, true, disk.as_ref(), sizing);
+        if case.image {
+            qemu::boot_from_image(&mut args, &esp, &target_dir)?;
+        }
         args.push("-monitor".into());
         args.push(format!("tcp:127.0.0.1:{monitor},server=on,wait=off"));
         let args = wsl::wrap(wsl.as_ref(), args)?;
