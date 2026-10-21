@@ -1,98 +1,109 @@
 # Kernel AI
 
-A from-scratch x86_64 operating system in Rust, inspired by TempleOS, with a local LLM built into how the system is used and tuned. Status: milestone M6 (network and terminal: virtio-net, TCP/IP, an LLM client and a command prompt). `cargo xtask run` boots to a command prompt; type `help`. M10a, the local model tuning the scheduler (`tune editor` at the prompt), is built but not yet declared done: its exit test waits for the founder's Qwen3-4B recording (see docs/roadmap.md).
+**An operating system with a local AI built in.** Kernel AI is a from-scratch x86_64 OS written in Rust. A language model (Qwen3-4B) runs inside the OS, on the CPU, through our own inference engine. There is no cloud and no external server. You talk to the system at one prompt, `kai>`, and the model can answer questions, write scripts that act on the system, and tune the scheduler.
 
-- Plan: [docs/roadmap.md](docs/roadmap.md)
-- Decisions: [docs/decisions.md](docs/decisions.md)
-- Research: [docs/research/](docs/research/)
+![The kai> prompt: the local model proposes a scheduler change, asks before trying it, and its guard rolls the trial back](docs/images/tune-demo.png)
 
-## Layout
+*An early `tune editor` run. The model proposes a policy and explains why. The OS asks before it runs a trial, measures the result, and rolls the change back by itself when a guard fails.*
 
-| Path | What it is |
-|---|---|
-| `kernel/` | The kernel. Boots through Limine and logs to the serial port. |
-| `xtask/` | Host tool that builds the kernel and its line table, fetches Limine, and runs QEMU. |
-| `linetable/` | Address-to-source table format shared by xtask and the kernel. |
-| `mm/` | Host-tested memory logic: frame bitmap and the CLOCK reclaim policy. |
-| `acpitables/` | Host-tested ACPI reader for the MADT and HPET tables. |
-| `sched/` | Host-tested scheduler: mechanism, policies, watchdog and a simulator. |
-| `llmproto/` | Host-tested HTTP/1.1 and OpenAI chat protocol for the LLM client. |
-| `spikes/` | M0 proofs that Rhai and wasmi run on bare metal. |
-| `gguf/` | Zero-copy reader for GGUF model files, which it treats as hostile. |
-| `cpufeat/` | CPUID and XCR0: which vector instruction sets may run. |
-| `quant/` | Q8_0 quantisation and the matrix-vector product, in bit-identical tiers. |
-| `bpe/` | Qwen's tokenizer: byte-level BPE, the qwen2 pretokenizer and ChatML. |
-| `infer/` | The Qwen3 forward pass and greedy generation, plus generated test models. |
+## What it does
 
-## Requirements
+- **One prompt for everything.** The shell is a REPL. Built-in commands, scripts in [Rhai](https://rhai.rs) and plain English all go to `kai>`.
+- **The AI acts, within limits.** Plain-English requests become scripts. The OS parses each script again and shows it to you. A script that only reads runs at once; one that changes anything runs only after you type yes. Every script is logged.
+- **The AI tunes the OS.** `tune` lets the model choose a scheduler policy for a program. The kernel runs it as a measured trial with guardrails and reverts it on any regression. The model never sits in the scheduling path. This is milestone M10, and it passes its exit test: across 5 seeds the editor's p99 latency fell to 0.44-0.67x of the default's, with background work unharmed.
+- **Live-editable, as in TempleOS.** User-mode components carry their own source. A component edited in the OS rebuilds and reloads without a reboot, keeps its state, and rolls back by itself if the new version breaks. Faults and stack frames point to source lines.
+- **Our own engine.** The GGUF reader, tokenizer, quantised kernels (AVX2, AVX-512, VNNI) and Qwen3 forward pass are written for this project. Every SIMD tier is tested to give the same bits as the plain one.
 
-- Rust via rustup. The pinned nightly in `rust-toolchain.toml` installs automatically.
-- QEMU (`qemu-system-x86_64`) and OVMF UEFI firmware. On Windows, the official QEMU installer includes OVMF. Set `QEMU`, `OVMF_CODE` and `OVMF_VARS` if they are not found automatically.
-- `curl` and `tar` to fetch Limine on the first run.
+## Status
 
-## Commands
+Kernel AI is a **proof of concept**, complete through milestone M10. It runs in a VM only (QEMU or VirtualBox). It has no GUI, no browser, no writable disk and no real-hardware drivers yet.
 
-```bash
-cargo xtask build            # build the kernel
-cargo xtask run              # boot to the terminal in a QEMU window
-cargo xtask run --llm 192.168.1.50:8080 --model qwen3-8b  # with an LLM server
-cargo xtask test             # boots each self-test case headless (14 cases on 4 CPUs, with a mock LLM server)
-cargo xtask test --accel kvm # use KVM (Linux or WSL2)
-cargo xtask soak             # the 10-minute spawn/exit/sleep storm
-cargo test -p xtask -p gguf -p cpufeat -p quant -p bpe -p infer -p linetable -p mm -p acpitables -p sched -p llmproto --features linetable/alloc  # host unit tests
-```
+The next goal is a production-grade OS people have a reason to use, with the local AI able to operate everything in it. That plan is the [product roadmap](docs/roadmap.md#3b-product-roadmap-draft-for-founder-approval-2026-10-20): a desktop, files, networking, existing apps and real hardware. It is a draft and a multi-year program.
 
-The local model, on the host, through Kernel AI's own engine (no QEMU needed):
+## Try it
 
-```bash
-cargo xtask setup            # check this PC, then download Qwen3-0.6B to D:\kai-models and check its SHA-256
-cargo xtask model chat "What does an operating system kernel do?"
-cargo xtask model check      # re-hash the file and compare with llama.cpp's ids
-cargo xtask bench quant      # measure the engine on this CPU
-```
+### Requirements
 
-## Run it on your PC
+- **CPU:** x86_64 with AVX2, FMA and F16C (most PCs from the last ten years). AVX-512 is used when present.
+- **RAM:** 8 GB or more for Qwen3-4B (the VM gets about 3.5-6 GB). With 4 GB, `setup` offers the smaller Qwen3-1.7B.
+- **Disk:** about 2.5 GB for the model, plus a few GB for the build.
+- **Software:** Rust through [rustup](https://rustup.rs) (the pinned nightly in `rust-toolchain.toml` installs itself), `curl` and `tar`, and either VirtualBox 7 or QEMU with OVMF.
 
-Kernel AI needs QEMU with a hardware accelerator to run at a usable speed, above all with the model inside. One command checks this PC and says what to do:
+The tooling is developed on Windows; the QEMU path also runs on Linux. First, check your PC. This changes nothing; it prints a ✓ or ✗ for each requirement, the fix for each ✗, and the path it recommends:
 
 ```bash
 cargo xtask doctor
 ```
 
-It changes nothing. It prints a ✓ or ✗ line for each requirement (CPU, RAM, free space, the model store, QEMU for Windows, the Windows Hypervisor Platform, WSL, KVM, QEMU and OVMF inside WSL, `nestedVirtualization`), the fix under each ✗, and then one recommended path and the next command. On Windows the preferred path is WSL2 with KVM, the QEMU and accelerator CI uses:
+Then download the model. `setup` recommends the largest model your RAM can run, asks, downloads it with resume and checks its SHA-256:
 
 ```bash
-cargo xtask run --accel wsl --local qwen3-4b-2507   # QEMU in WSL; its window through WSLg, the serial log here
-cargo xtask test --accel wsl                     # every boot test, as CI runs them
+cargo xtask setup
 ```
 
-xtask still builds on Windows; only QEMU runs in the distro (WSL's default, or the one `KAI_WSL_DISTRO` names). A model is copied once into the distro's own disk, `~/.cache/kai-models`, so boots do not read it through `/mnt`. When WSL cannot get KVM, the doctor recommends QEMU for Windows with WHPX (`--accel whpx`) instead.
-
-## Run it in VirtualBox
-
-With VirtualBox 7 installed (`cargo xtask doctor` checks it), two commands build Kernel AI and boot it with the local model:
+### VirtualBox (simplest on Windows)
 
 ```bash
 cargo xtask vbox            # build the release kernel and its boot disk; create or update the VM "Kernel AI"
-cargo xtask vbox --start    # boot it in a VirtualBox window (--start --headless for no window)
+cargo xtask vbox --start    # boot it in a VirtualBox window (--start --headless for none)
 ```
 
-The VM is a modern PC: EFI, the ICH9 chipset, HPET, I/O APIC, PS/2 keyboard and mouse, a virtio-net card on NAT, 6 GB of RAM, one vCPU per host core up to 8, and one NVMe controller. Port 0 holds the OS disk, a GPT image with a FAT32 EFI partition that xtask writes itself and converts to a VDI. Port 1 holds the model, by default the catalog's Qwen3-4B from `D:\kai-models` (`--local ID`, `--model-disk PATH` or `--no-model` pick another or none). The model is read in place through a VMDK descriptor and is never copied, so it must be on the same drive as the VM folder. The VM, its disks and its serial log (`serial.log`) live in `D:\kai-vbox`, or in `KAI_VBOX_DIR`. Power the VM off before running `cargo xtask vbox` again. Nothing touches VirtualBox's global settings or any other VM.
+The VM is EFI with NVMe disks: one for the OS, one for the model, which is read in place and never copied, so keep the model store on the same drive as the VM folder (`KAI_VBOX_DIR`). Power the VM off before running `cargo xtask vbox` again. `--name NAME` makes a separate VM, and nothing else in VirtualBox is touched. On a Ryzen 7 7700X with 8 vCPUs the model loads in 5-10 s and answers at 11-12 tokens/s.
 
-`--name NAME` works on a separate VM in `D:\kai-vbox-<name>`, leaving "Kernel AI" alone, and `--cmdline WORDS` adds kernel command-line words (for example `llm=10.0.2.2:8080` for an LLM server on the host, which the VM's NAT reaches).
+### QEMU
 
-With Windows' hypervisor on (WSL2 needs it), VirtualBox runs on the Windows Hypervisor Platform. That works, but every HPET read and every local APIC timer interrupt is a trip into VirtualBox's device emulation, and 8 vCPUs ticking at 1 kHz leave the guest almost no CPU time. So the VM boots with `clock=tsc hz=250`: the kernel's clock comes from the TSC (checked against the HPET and the rate VirtualBox reports), and the tick runs at 250 Hz. Measured on the dev PC (Ryzen 7 7700X, 8 vCPUs): the model loads from NVMe in 5 to 10 s, with a progress line every 10%. `ask` answers locally, and `:model` decodes 11 to 12 tokens/s with the first token after about 0.7 s. The host bench runs at about 13 tokens/s, and the rest of the gap is VirtualBox's overhead.
+QEMU needs a hardware accelerator to be usable with the model: KVM on Linux, KVM inside WSL2 on Windows (what CI uses), or WHPX. `cargo xtask doctor` says which you have and the steps for the rest. Then, for example:
+
+```bash
+cargo xtask run --accel kvm --local qwen3-4b-2507   # Linux
+cargo xtask run --accel wsl --local qwen3-4b-2507   # Windows, QEMU in WSL2
+cargo xtask run --accel kvm --local qwen3-4b-2507 --workload A   # with the demo workload for `tune editor`
+```
+
+### Things to type at `kai>`
+
+| Type | What happens |
+|---|---|
+| `help` and `:help` | The commands and the terminal's own `:` commands. |
+| `show me the cpus please` | The model writes a read-only script; it is shown and runs at once. |
+| `ask What does an operating system kernel do?` | The local model answers. |
+| `:model` | The model, its CPU tier, and one timed prompt with tokens/s. |
+| `let x = 6; fn sq(n) { n * n }; sq(x)` | Rhai, run directly. |
+| `threads`, `policy`, `ps`, `mem` | Scheduler statistics, the current policy, services, memory. |
+| `tune editor` | With `--workload A`: the model proposes a scheduler change, you type yes, the kernel trials it. `tune undo` reverts. |
+
+With no model attached, everything except the AI works, and `:setup` prints the steps.
+
+## How it's built
+
+The kernel boots through Limine on UEFI. Services, the shell and the model run in ring 3 under a supervisor that restarts them when they crash. xtask builds everything and drives QEMU and VirtualBox.
+
+| Path | What it is |
+|---|---|
+| `kernel/` | The kernel: memory, interrupts, SMP scheduler, virtio and NVMe drivers, syscalls, terminal. |
+| `user/` | Ring-3 programs, including the `llm` service that runs the model. |
+| `xtask/` | Host tool: build, run, boot tests, model setup, benchmarks, `doctor`, `vbox`, `tune`. |
+| `gguf/`, `bpe/`, `quant/`, `infer/`, `cpufeat/` | The inference engine: model files, tokenizer, quantised SIMD kernels, Qwen3 forward pass, CPU features. |
+| `shellcore/`, `termcore/`, `llmproto/` | The shell and its AI script path, terminal logic, the protocol to the `llm` service. |
+| `sched/`, `mm/` | Scheduler policies, watchdog and simulator; memory and reclaim logic. |
+| `livecore/`, `wasmhost/`, `compsdk/`, `components/`, `editcore/` | Live-editable WebAssembly components and the edit loop. |
+| `supervise/`, `kabi/`, `uelf/`, `nvme/`, `acpitables/`, `linetable/` | Supervisor, kernel ABI, ELF loading, NVMe, ACPI, address-to-source tables. |
+
+Most logic lives in `no_std` crates with host unit tests. CI ([.github/workflows](.github/workflows)) runs format, lint and those tests, then boots the kernel in QEMU under both KVM and TCG for every boot case. The cases cover faults, timers, scheduling latency, SMP storms, live edits, and the model path on generated test models. Separate workflows run the 10-minute soak, the deterministic (icount) A/B test of `tune`, and real-model jobs.
+
+```bash
+cargo xtask test --accel kvm   # every boot case (Linux or WSL2), as CI runs them
+cargo xtask soak               # the 10-minute spawn/exit/sleep storm
+cargo xtask bench quant        # the engine's speed on this CPU
+cargo xtask model chat "What does an operating system kernel do?"   # the engine on the host, no VM
+```
+
+More:
+
+- [docs/roadmap.md](docs/roadmap.md): what is built, milestone by milestone, and the product roadmap.
+- [docs/decisions.md](docs/decisions.md): design decisions, settled and open.
+- [docs/research/](docs/research/): the research behind them.
 
 ## Licence
 
-MPL-2.0 (see `docs/decisions.md`).
-
-## Talking to the LLM
-
-Since 2026-10-19 the model is meant to run locally, inside Kernel AI (the Local LLM milestone in `docs/roadmap.md`). Until that lands, and afterwards as CI's test double, the kernel sends `ask` commands to any OpenAI-compatible server, such as llama.cpp's `llama-server`. Start the server bound to the LAN, then boot with its address:
-
-```bash
-cargo xtask run --llm 192.168.1.50:8080 --model qwen3-8b
-```
-
-QEMU's user-mode network lets the VM reach LAN addresses directly. Use the server's IP address, since the kernel has no DNS.
+None yet: all rights reserved. A licence and contribution terms are being decided (see [docs/decisions.md](docs/decisions.md)). Until then, please open an issue rather than a pull request. The models are third-party and keep their own licences (Qwen3: Apache-2.0).
