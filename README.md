@@ -68,6 +68,19 @@ cargo xtask test --accel wsl                     # every boot test, as CI runs t
 
 xtask still builds on Windows; only QEMU runs in the distro (WSL's default, or the one `KAI_WSL_DISTRO` names). A model is copied once into the distro's own disk, `~/.cache/kai-models`, so boots do not read it through `/mnt`. When WSL cannot get KVM, the doctor recommends QEMU for Windows with WHPX (`--accel whpx`) instead.
 
+## Run it in VirtualBox
+
+With VirtualBox 7 installed (`cargo xtask doctor` checks it), two commands build Kernel AI and boot it with the local model:
+
+```bash
+cargo xtask vbox            # build the release kernel and its boot disk; create or update the VM "Kernel AI"
+cargo xtask vbox --start    # boot it in a VirtualBox window (--start --headless for no window)
+```
+
+The VM is a modern PC: EFI, the ICH9 chipset, HPET, I/O APIC, PS/2 keyboard and mouse, a virtio-net card on NAT, 6 GB of RAM, one vCPU per host core up to 8, and one NVMe controller. Port 0 holds the OS disk, a GPT image with a FAT32 EFI partition that xtask writes itself and converts to a VDI. Port 1 holds the model, by default the catalog's Qwen3-4B from `D:\kai-models` (`--local ID`, `--model-disk PATH` or `--no-model` pick another or none). The model is read in place through a VMDK descriptor and is never copied, so it must be on the same drive as the VM folder. The VM, its disks and its serial log (`serial.log`) live in `D:\kai-vbox`, or in `KAI_VBOX_DIR`. Power the VM off before running `cargo xtask vbox` again. Nothing touches VirtualBox's global settings or any other VM.
+
+With Windows' hypervisor on (WSL2 needs it), VirtualBox runs on the Windows Hypervisor Platform. It works, but each HPET read costs about 10 µs there, so the VM boots with `clock=tsc`: the kernel's clock comes from the TSC, measured against the HPET at boot. Measured on the dev PC (Ryzen 7 7700X, 8 vCPUs): the model loads from NVMe in 30 to 70 s, `ask` answers locally, and `:model` decodes 3.7 tokens/s.
+
 ## Licence
 
 MPL-2.0 (see `docs/decisions.md`).
