@@ -39,6 +39,7 @@ mod image;
 mod lines;
 mod local_ask;
 mod local_script;
+mod mock_dns;
 mod mock_llm;
 mod models;
 mod options;
@@ -169,6 +170,7 @@ fn execute(options: &Options) -> Result<(), String> {
     // Tests talk to a local stand-in for the LLM server, reached from the guest at
     // 10.0.2.2 through QEMU's user-mode network.
     let mock = mock_llm::start()?;
+    let mock_dns = mock_dns::start()?;
     let llm = format!("10.0.2.2:{}", mock.port);
     let llm_args = llm_cmdline(Some(&llm), Some(mock_llm::MODEL));
     let mut failures = Vec::new();
@@ -190,6 +192,9 @@ fn execute(options: &Options) -> Result<(), String> {
         };
         let server = if case.server { llm_args.as_str() } else { "" };
         let mut cmdline = format!("{} {server}", case.cmdline);
+        if case.dns {
+            cmdline = format!("{cmdline} {}", mock_dns.cmdline());
+        }
         let disk = match disk::for_case(case, &target_dir) {
             Ok(disk) => disk,
             Err(message) => {
@@ -264,8 +269,9 @@ fn execute(options: &Options) -> Result<(), String> {
         buildsvc::verify::unchanged(&root, before)?;
     }
     println!(
-        "xtask: the mock LLM server answered {} chat requests",
-        mock.chats()
+        "xtask: the mock LLM server answered {} chat requests; the mock DNS server got {} queries",
+        mock.chats(),
+        mock_dns.queries()
     );
     if failures.is_empty() {
         println!("xtask: all {} test cases passed", cases.len());

@@ -470,6 +470,7 @@ dependencies = [
  "livecore",
  "llmproto",
  "mm",
+ "netcore",
  "noto-sans-mono-bitmap",
  "nvme",
  "sched",
@@ -602,6 +603,13 @@ dependencies = [
 [[package]]
 name = "mm"
 version = "0.0.0"
+
+[[package]]
+name = "netcore"
+version = "0.0.0"
+dependencies = [
+ "smoltcp",
+]
 
 [[package]]
 name = "no-std-compat"
@@ -1265,6 +1273,7 @@ dependencies = [
  "linetable",
  "livecore",
  "llmproto",
+ "netcore",
  "object",
  "quant",
  "rustc-demangle",

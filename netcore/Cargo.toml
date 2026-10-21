@@ -1,0 +1,15 @@
+[package]
+name = "netcore"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The network setup's logic without a network card, tested on the host: the
+# command line's address settings, DNS queries and replies (smoltcp's DNS wire
+# format), the resolver's TTL cache, and ping statistics. The kernel drives them.
+[lib]
+doctest = false
+
+[dependencies]
+smoltcp = { version = "0.14.0", default-features = false, features = ["alloc", "proto-ipv4", "proto-dns"] }

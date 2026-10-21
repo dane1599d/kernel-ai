@@ -58,7 +58,12 @@ const HELP: &[(&str, &str)] = &[
     (":threads", "scheduler statistics"),
     (":cpus", "CPUs online"),
     (":mem", "free memory and heap use"),
-    (":net", "network, LLM server and llm service status"),
+    (
+        ":net",
+        "address, gateway, DNS, lease, LLM server and llm service",
+    ),
+    (":resolve <host>", "look up a host name's IPv4 addresses"),
+    (":ping <host|ip> [n]", "ICMP echo, n times (4 by default)"),
     (":ps", "running processes"),
     (":uptime", "time since the clock started"),
     (":clear", "clear the screen"),
@@ -285,6 +290,10 @@ fn kernel_command(line: &str) -> Option<Waiting> {
             );
         }
         "net" => net_status(),
+        "resolve" if rest.is_empty() => log!("usage: :resolve <host>"),
+        "resolve" => crate::net_commands::resolve(rest),
+        "ping" if rest.is_empty() => log!("usage: :ping <host|ip> [count]"),
+        "ping" => crate::net_commands::ping(rest),
         "ps" => processes(),
         "uptime" => log!("{} s", hpet::nanos() / 1_000_000_000),
         "clear" => serial::_print(format_args!("{FORM_FEED}")),
@@ -355,7 +364,7 @@ fn net_status() {
         log!("network: no card");
         return;
     }
-    log!("network: 10.0.2.15/24 via 10.0.2.2");
+    crate::net_commands::status();
     match llm::target() {
         None => log!("LLM server: not configured (boot with llm=IP:PORT)"),
         Some((ip, port, model)) => {

@@ -54,6 +54,8 @@ mod metrics;
 mod model;
 mod model_tests;
 mod net;
+mod net_commands;
+mod net_tests;
 mod nvme;
 mod percpu;
 mod platform;
@@ -218,6 +220,7 @@ extern "C" fn boot_continue() -> ! {
         .map_or(SelfTest::None, |r| selftest::from_cmdline(r.cmdline()));
     // Not in kmain: configuring allocates, and the heap is mapped only by init_memory.
     if let Some(cmdline) = CMDLINE.response() {
+        net::setup::configure(cmdline.cmdline());
         llm::configure(cmdline.cmdline());
         build_service::configure(cmdline.cmdline());
         boot_manifest::configure(cmdline.cmdline());
@@ -295,6 +298,9 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::TuneLocal => run_case(|| tune_local_tests::local_check(cmdline())),
         SelfTest::TuneDemo => run_case(tune_local_tests::demo_check),
         SelfTest::TuneAb => run_case(|| tune_ab_tests::check(cmdline())),
+        SelfTest::NetSetup => run_case(net_tests::setup_check),
+        SelfTest::NetFallback => run_case(net_tests::fallback_check),
+        SelfTest::NetStatic => run_case(net_tests::static_check),
         SelfTest::Boot | SelfTest::None => {}
     }
 

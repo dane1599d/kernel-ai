@@ -123,3 +123,12 @@ pub const BUILD_START: u64 = 35;
 /// `build_poll(buf, cap) -> len`: copies the reply, ending the job, only if it fits (cap 0
 /// looks). Busy while it runs, NotFound with none; an exchange error comes once. PUBLISH.
 pub const BUILD_POLL: u64 = 36;
+/// `resolve(host_ptr, host_len, out_ptr, out_cap) -> addresses`: the IPv4
+/// addresses of `host`, a host name or a dotted address, from the kernel's DNS
+/// resolver and its TTL cache. Up to `out_cap` of them are written to `out_ptr`,
+/// four bytes each in network order, and the number the answer had (at most
+/// [`super::net::MAX_ADDRESSES`]) is returned. Invalid for a malformed name or one
+/// longer than [`super::net::MAX_HOST`], NotFound for a host with no IPv4 address,
+/// Unavailable with no DNS server, TimedOut after
+/// [`super::net::RESOLVE_TIMEOUT_MS`], Interrupted on Ctrl-C. Needs [`super::cap::NET`].
+pub const RESOLVE: u64 = 37;
