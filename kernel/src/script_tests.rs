@@ -1,22 +1,23 @@
 //! M8b self-test (`test=scripts`): LLM-written scripts end to end. The shell asks the
 //! llm service, which asks the mock LLM server (its answers are in xtask's
-//! `mock_llm`). The kernel checks every reply, that the policy changes only after a
-//! yes, and how many requests reached the llm service, which counts repair rounds.
+//! `mock_llm`). The kernel checks every reply, that a script that only reads runs
+//! at once, that the policy changes only after a yes, and how many requests reached
+//! the llm service, which counts repair rounds.
 
 use crate::sched_control::calls::MIN_POLICY_INTERVAL_NS;
 use crate::shell_tests::Expect::{self, Contains, Exact, StartsWith};
 use crate::shell_tests::{expect_lines, start};
 use crate::{ipc, log, threads};
 
-/// A script is shown in full and runs once; a no runs nothing.
+/// A script that only reads is shown in full and runs at once, with nothing left to
+/// confirm; one that changes anything waits, and a no runs nothing.
 const DECLINE: &[(&str, Expect)] = &[
     (
         "? how many cpus are there",
-        Exact(
-            "confirm 1 script 1: reads cpus\nmodel says: Prints the number of CPUs.\n 1 | print(\"CPUs: \" + cpus());\nrun it? it changes nothing. yes/no",
+        StartsWith(
+            "ok script 1: reads cpus\nmodel says: Prints the number of CPUs.\n 1 | print(\"CPUs: \" + cpus());\nran it (read-only):\nCPUs: ",
         ),
     ),
-    ("answer 1 yes", StartsWith("ok CPUs: ")),
     ("answer 1 yes", Exact("err nothing to confirm")),
     (
         "? switch to round robin",
@@ -34,14 +35,12 @@ const ACCEPT: &[(&str, Expect)] = &[
 
 const REST: &[(&str, Expect)] = &[
     // The first answer calls a function that does not exist; the repair fixes it.
-    (
-        "? how much memory is free",
-        StartsWith("confirm 4 script 4: reads memory\n"),
-    ),
-    ("answer 4 yes", Contains(" MiB free")),
+    // The output, which the script's own text (`" MiB free");`) cannot match.
+    ("? how much memory is free", Contains(" MiB free\n")),
+    // No script: the model answers in words.
     (
         "? reboot the computer",
-        Exact("err the model wrote no script: There is no way to reboot from a script."),
+        Exact("ok There is no way to reboot from a script."),
     ),
     // Plain English that is not Rhai goes to the LLM too. The mock answers it with
     // prose instead of the JSON envelope, so the shell gives up after one repair.
@@ -54,7 +53,7 @@ const REST: &[(&str, Expect)] = &[
     (
         "log",
         StartsWith(
-            "ok #1 how many cpus are there: ran\n#2 switch to round robin: declined\n#3 switch to round robin: ran\n#4 how much memory is free: ran\n#5 reboot the computer: refused: ",
+            "ok #1 how many cpus are there: ran read-only\n#2 switch to round robin: declined\n#3 switch to round robin: ran\n#4 how much memory is free: ran read-only\n#5 reboot the computer: answered in words\n#6 tell me a story please: refused: ",
         ),
     ),
 ];

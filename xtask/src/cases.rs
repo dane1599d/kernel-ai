@@ -86,8 +86,10 @@ const POINTER: &[&str] = &[
 /// (Home; Up, PgDn and Esc do nothing; Right three times, "i"; End, Backspace takes
 /// the z; Left, Delete takes the x, where a Backspace would take an r), "ask hello"
 /// and "show me the cpus please" (plain English, so the shell asks the LLM for a
-/// script), each followed by Enter. Then, once the terminal shows the question, "yes"
-/// and Enter. Kept unformatted so each row is one of those steps.
+/// script, which only reads and runs at once), each followed by Enter. Once that
+/// reply shows, "hello" (a word the AI answers) and "go back to interactive" (a
+/// script that changes the policy, so it asks). Then, once the terminal shows the
+/// question, "no" and Enter. Kept unformatted so each row is one of those steps.
 #[rustfmt::skip]
 const TERMINAL_SCRIPT: &[&[&str]] = &[
     &["x", "y", "z", "ctrl-c", "p", "o", "l"],
@@ -99,7 +101,12 @@ const TERMINAL_SCRIPT: &[&[&str]] = &[
         "s", "h", "o", "w", "spc", "m", "e", "spc", "t", "h", "e", "spc",
         "c", "p", "u", "s", "spc", "p", "l", "e", "a", "s", "e", "ret",
     ],
-    &["y", "e", "s", "ret"],
+    &[
+        "h", "e", "l", "l", "o", "ret",
+        "g", "o", "spc", "b", "a", "c", "k", "spc", "t", "o", "spc",
+        "i", "n", "t", "e", "r", "a", "c", "t", "i", "v", "e", "ret",
+    ],
+    &["n", "o", "ret"],
 ];
 
 pub const TEST_CASES: &[TestCase] = &[
@@ -159,9 +166,14 @@ pub const TEST_CASES: &[TestCase] = &[
         keys: TERMINAL_SCRIPT,
         expect: &[
             crate::mock_llm::REPLY,
-            "? run it? it changes nothing. yes/no",
-            "run script 1? yes/no> ",
+            // The read-only script ran without a question.
+            "= ran it (read-only):",
             "= CPUs: ",
+            "kai> hello",
+            crate::mock_llm::HELLO,
+            "? run it? it CHANGES set_policy. yes/no",
+            "run script 3? yes/no> no",
+            "= script 3 not run",
             // screenlog copies the typed text the screen shows. It matches the
             // `policy rrxz` row too, so only the kernel's policy check proves the edits.
             "|kai> policy rr",

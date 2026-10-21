@@ -1,6 +1,6 @@
 //! LLM-written scripts: checked in a strict profile, tried against stub functions,
-//! shown in full, and run only after a yes, in a fresh engine that has only the
-//! functions the script names.
+//! shown in full, and run in a fresh engine that has only the functions the script
+//! names: at once if it only reads, after a yes if it changes anything.
 //!
 //! The strict profile has no closures, no `fn`, no indirect calls (`Fn`, `call`,
 //! `curry`, `eval`) and no undefined variables, so a script can only reach an OS
@@ -332,10 +332,25 @@ fn stand_in_note(error: &EvalAltResult) -> Option<String> {
     ))
 }
 
-/// What the confirmation shows: the shell's own account of what the script uses
-/// first, then what the model says, then every line, then the question, which says
-/// again whether the script can change anything.
+/// What the confirmation shows: the script as [`shown`], then the question, which
+/// says again whether the script can change anything.
 pub fn confirmation(id: u64, checked: &Checked) -> String {
+    let mut text = shown(id, checked);
+    if checked.changes.is_empty() {
+        text.push_str("\nrun it? it changes nothing. yes/no");
+    } else {
+        let _ = write!(
+            text,
+            "\nrun it? it CHANGES {}. yes/no",
+            checked.changes.join(", ")
+        );
+    }
+    text
+}
+
+/// A script as the user sees it: the shell's own account of what it uses first,
+/// then what the model says, then every line.
+pub fn shown(id: u64, checked: &Checked) -> String {
     let mut text = format!("script {id}: ");
     match (checked.reads.is_empty(), checked.changes.is_empty()) {
         (true, true) => text.push_str("uses no OS functions"),
@@ -360,15 +375,6 @@ pub fn confirmation(id: u64, checked: &Checked) -> String {
     }
     for (number, line) in checked.script.lines().enumerate() {
         let _ = write!(text, "\n{:>2} | {line}", number + 1);
-    }
-    if checked.changes.is_empty() {
-        text.push_str("\nrun it? it changes nothing. yes/no");
-    } else {
-        let _ = write!(
-            text,
-            "\nrun it? it CHANGES {}. yes/no",
-            checked.changes.join(", ")
-        );
     }
     text
 }
