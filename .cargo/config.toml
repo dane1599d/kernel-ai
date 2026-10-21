@@ -8,3 +8,12 @@ rustflags = ["-C", "relocation-model=static", "-C", "code-model=kernel", "-C", "
 # (memory_kib) is the one that applies, and growing past it is reported as memory.
 [target.wasm32-unknown-unknown]
 rustflags = ["-C", "link-arg=-zstack-size=65536"]
+
+# Reproducible builds: rhai's no_std feature turns on ahash's compile-time RNG,
+# which bakes random hash keys into every build through const-random. Different
+# keys gave different kernels and shells on different machines, so the M10 exit
+# test's icount observe boot built a different summary on each runner. A fixed
+# seed makes the keys public; they only key the shell's Rhai maps, whose scripts
+# come from the user and the local model.
+[env]
+CONST_RANDOM_SEED = "kernel-ai"
