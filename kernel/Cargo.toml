@@ -24,6 +24,7 @@ livecore = { path = "../livecore" }
 editcore = { path = "../editcore" }
 llmproto = { path = "../llmproto" }
 mm = { path = "../mm" }
+nvme = { path = "../nvme" }
 sched = { path = "../sched" }
 termcore = { path = "../termcore" }
 serde = { version = "1.0.229", default-features = false, features = ["alloc", "derive"] }

@@ -180,7 +180,7 @@ fn execute(options: &Options) -> Result<(), String> {
         };
         let server = if case.server { llm_args.as_str() } else { "" };
         let mut cmdline = format!("{} {server}", case.cmdline);
-        let disk = match disk::for_case(case.disk, &target_dir) {
+        let disk = match disk::for_case(case, &target_dir) {
             Ok(disk) => disk,
             Err(message) => {
                 eprintln!("xtask: test case {}: {message}", case.name);

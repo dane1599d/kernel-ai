@@ -30,6 +30,8 @@ pub struct ModelDisk {
     fnv: Option<u64>,
     /// What a boot from a generated model must show, worked out on the host.
     golden: Option<Golden>,
+    /// Attached as an NVMe controller rather than virtio-blk.
+    nvme: bool,
 }
 
 /// What the `local-ask` and `local-script` cases' model must make the guest show.
@@ -75,7 +77,13 @@ impl ModelDisk {
             len: meta.len(),
             fnv: None,
             golden: None,
+            nvme: false,
         })
+    }
+
+    /// The same file, attached as an NVMe controller whose serial is `kai-model`.
+    pub fn on_nvme(self) -> Self {
+        Self { nvme: true, ..self }
     }
 
     /// What `run` prints about the disk.
@@ -108,11 +116,15 @@ impl ModelDisk {
                 "read-only": true,
             },
         });
+        let device = match self.nvme {
+            true => format!("nvme,drive={SERIAL},serial={SERIAL}"),
+            false => format!("virtio-blk-pci,drive={SERIAL},serial={SERIAL}"),
+        };
         vec![
             "-blockdev".into(),
             blockdev.to_string(),
             "-device".into(),
-            format!("virtio-blk-pci,drive={SERIAL},serial={SERIAL}"),
+            device,
         ]
     }
 
@@ -163,10 +175,15 @@ pub fn memory_mib_for(len: u64) -> u64 {
 }
 
 /// The disk a test case attaches, written under `target/fixtures/`, if it has one.
-pub fn for_case(fixture: Option<Fixture>, target_dir: &Path) -> Result<Option<ModelDisk>, String> {
-    fixture
+pub fn for_case(
+    case: &crate::cases::TestCase,
+    target_dir: &Path,
+) -> Result<Option<ModelDisk>, String> {
+    let disk = case
+        .disk
         .map(|fixture| fixture.write(&target_dir.join("fixtures")))
-        .transpose()
+        .transpose()?;
+    Ok(disk.map(|disk| if case.nvme { disk.on_nvme() } else { disk }))
 }
 
 /// The deterministic, odd-sized files the boot cases attach.
@@ -294,6 +311,7 @@ mod tests {
             len,
             fnv: None,
             golden: None,
+            nvme: false,
         }
     }
 
@@ -313,6 +331,9 @@ mod tests {
         assert_eq!(spec["file"]["read-only"], true);
         assert_eq!(args[2], "-device");
         assert_eq!(args[3], "virtio-blk-pci,drive=kai-model,serial=kai-model");
+        let nvme = windows_disk(path, 639_446_688).on_nvme().qemu_args();
+        assert_eq!(nvme[1], args[1]);
+        assert_eq!(nvme[3], "nvme,drive=kai-model,serial=kai-model");
     }
 
     #[test]

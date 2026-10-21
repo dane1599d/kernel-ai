@@ -4,15 +4,16 @@
 //! contiguous frames and used through the direct map, so the device writes into
 //! it in place (see `hal.rs`). Every read is checked against the disk and the
 //! buffer before it reaches the driver, which panics on a length that is not a
-//! whole number of sectors. Nothing here writes to a disk.
+//! whole number of sectors. Nothing here writes to a disk. The disks go to
+//! `block`, which the model loader and the tests reach them through.
 
 use super::hal::KernelHal;
-use crate::{log, memory};
+use crate::{block, log, memory};
+use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 use mm::PAGE_SIZE;
 use mm::dma::{self, ReadError, SECTOR};
-use spin::Mutex;
 use virtio_drivers::device::blk::VirtIOBlk;
 use virtio_drivers::transport::pci::PciTransport;
 
@@ -36,11 +37,9 @@ pub struct Disk {
     staging: &'static mut [u8],
 }
 
-// SAFETY: a Disk is only used under the DISKS mutex, by one thread at a time; its
-// registers and staging buffer are not tied to a particular CPU.
+// SAFETY: a Disk is only used under the block list's mutex, by one thread at a
+// time; its registers and staging buffer are not tied to a particular CPU.
 unsafe impl Send for Disk {}
-
-static DISKS: Mutex<Vec<Disk>> = Mutex::new(Vec::new());
 
 impl Disk {
     fn new(transport: PciTransport) -> Result<Disk, &'static str> {
@@ -67,19 +66,32 @@ impl Disk {
             staging,
         })
     }
+}
+
+impl block::Device for Disk {
+    fn kind(&self) -> &'static str {
+        "blk"
+    }
+
+    fn serial(&self) -> &str {
+        &self.serial
+    }
 
     /// Whether the device refuses writes (QEMU's read-only attach).
-    pub fn read_only(&self) -> bool {
+    fn read_only(&self) -> bool {
         self.read_only
     }
 
-    /// Size in 512-byte sectors.
-    pub fn sectors(&self) -> u64 {
+    fn sectors(&self) -> u64 {
         self.sectors
     }
 
+    fn max_sectors(&self) -> u64 {
+        MAX_SECTORS
+    }
+
     /// Reads `sectors` sectors from `sector` into the staging buffer.
-    pub fn read(&mut self, sector: u64, sectors: u64) -> Result<&[u8], &'static str> {
+    fn read(&mut self, sector: u64, sectors: u64) -> Result<&[u8], &'static str> {
         let bytes = dma::check_read(sector, sectors, self.sectors, STAGING_BYTES as u64).map_err(
             |error| match error {
                 ReadError::Empty => "blk: a read of no sectors",
@@ -95,59 +107,14 @@ impl Disk {
             .map_err(|_| "blk: the device failed a read")?;
         Ok(&self.staging[..bytes])
     }
-
-    /// Passes the first `len` bytes of the disk to `f(offset, bytes)` in order, one
-    /// read at a time. An image that is not a whole number of sectors is padded to
-    /// one by QEMU; that padding must read as zero and is not passed on.
-    pub fn stream(
-        &mut self,
-        len: u64,
-        mut f: impl FnMut(u64, &[u8]) -> Result<(), &'static str>,
-    ) -> Result<(), &'static str> {
-        if dma::sectors_for(len) > self.sectors {
-            return Err("blk: the image is longer than the disk");
-        }
-        for chunk in dma::chunks(len, MAX_SECTORS) {
-            let data = self.read(chunk.sector, chunk.sectors)?;
-            // keep <= sectors * SECTOR, the length of `data`.
-            let (image, padding) = data.split_at(chunk.keep as usize);
-            if padding.iter().any(|&byte| byte != 0) {
-                return Err("blk: the padding after the image is not zero");
-            }
-            f(chunk.offset, image)?;
-        }
-        Ok(())
-    }
 }
 
-/// Sets up each block device the probe found, and logs it.
+/// Sets up each block device the probe found and hands it to `block`.
 pub fn init(transports: Vec<PciTransport>) {
     for transport in transports {
         match Disk::new(transport) {
-            Ok(disk) => {
-                log!(
-                    "blk: disk {:?}, {} sectors ({} KiB), {}",
-                    disk.serial,
-                    disk.sectors,
-                    disk.sectors / 2,
-                    if disk.read_only {
-                        "read-only"
-                    } else {
-                        "writable (used read-only)"
-                    }
-                );
-                DISKS.lock().push(disk);
-            }
+            Ok(disk) => block::register(Box::new(disk)),
             Err(message) => log!("{message}"),
         }
     }
-}
-
-/// Runs `f` on the disk whose serial is `serial`, if there is one. The disk list
-/// stays locked while `f` runs, polled reads and all; today only the boot thread
-/// and the self-tests call this, one at a time. A second, concurrent user would
-/// need the lock taken per read instead.
-pub fn with_disk<R>(serial: &str, f: impl FnOnce(&mut Disk) -> R) -> Option<R> {
-    let mut disks = DISKS.lock();
-    disks.iter_mut().find(|disk| disk.serial == serial).map(f)
 }

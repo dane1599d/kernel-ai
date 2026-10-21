@@ -471,6 +471,7 @@ dependencies = [
  "llmproto",
  "mm",
  "noto-sans-mono-bitmap",
+ "nvme",
  "sched",
  "serde",
  "serde_json",
@@ -622,6 +623,10 @@ dependencies = [
  "autocfg",
  "libm",
 ]
+
+[[package]]
+name = "nvme"
+version = "0.0.0"
 
 [[package]]
 name = "object"
