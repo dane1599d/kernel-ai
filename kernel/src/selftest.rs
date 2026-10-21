@@ -60,6 +60,16 @@ pub enum SelfTest {
     Bigmap,
     /// M10a: a seeded probe whose digest must repeat from boot to boot under icount.
     IcountProbe,
+    /// M10a-3: kernel-owned trials on the workload revert or keep by the rules.
+    TuneRevert,
+    /// M10a-4: the shell's `tune` with mock answers, through the kernel's trials.
+    Tune,
+    /// M10a-4: `tune` on the generated model on the disk, golden from the host.
+    TuneLocal,
+    /// M10a-4: the founder's demo through the terminal (tune-model.yml).
+    TuneDemo,
+    /// M10a-5: the exit test's observe or measure boot, under icount.
+    TuneAb,
 }
 
 const DEFAULT_STORM_SECONDS: u64 = 60;
@@ -100,6 +110,11 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=compute-keys" => Some(SelfTest::ComputeKeys),
             "test=bigmap" => Some(SelfTest::Bigmap),
             "test=icount-probe" => Some(SelfTest::IcountProbe),
+            "test=tune-revert" => Some(SelfTest::TuneRevert),
+            "test=tune" => Some(SelfTest::Tune),
+            "test=tune-local" => Some(SelfTest::TuneLocal),
+            "test=tune-demo" => Some(SelfTest::TuneDemo),
+            "test=tune-ab" => Some(SelfTest::TuneAb),
             other => other.strip_prefix("test=storm").map(|rest| {
                 let seconds = rest.strip_prefix('-').and_then(|s| s.parse().ok());
                 SelfTest::Storm(seconds.unwrap_or(DEFAULT_STORM_SECONDS))
@@ -125,6 +140,11 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::ManifestGood
             | SelfTest::LocalAsk
             | SelfTest::LocalScript
+            | SelfTest::TuneRevert
+            | SelfTest::Tune
+            | SelfTest::TuneLocal
+            | SelfTest::TuneDemo
+            | SelfTest::TuneAb
     );
     if !wanted {
         return None;
@@ -162,6 +182,11 @@ pub fn plan(test: SelfTest) -> Option<String> {
     ) {
         plan.push('\n');
         plan.push_str(kabi::plan::SHELL);
+    }
+    let workload = crate::workload::plan_lines();
+    if !workload.is_empty() {
+        plan.push('\n');
+        plan.push_str(&workload);
     }
     if test == SelfTest::None {
         plan.push('\n');

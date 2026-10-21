@@ -27,6 +27,7 @@ pub(super) fn process_main(slot: usize) {
         table[slot].tid = Some(me);
         (table[slot].name, table[slot].program, table[slot].limits)
     });
+    super::thread_started(me, slot);
     let entry = match load(slot, program.as_str(), &limits) {
         Ok(entry) => entry,
         Err(error) => {

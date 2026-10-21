@@ -195,6 +195,11 @@ impl Loaded {
     }
 }
 
+/// The SHA-256 the catalog pins for model `id` (M10's recording checks it).
+pub fn pinned_sha256(id: &str) -> Result<String, String> {
+    Ok(Catalog::load()?.get(id)?.sha256.clone())
+}
+
 /// The stored file of catalog model `id`, for `run --local`: in the model store
 /// (`--store`, else `KAI_MODELS`, else the default, as for `setup`), and of the
 /// pinned size.

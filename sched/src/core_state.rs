@@ -164,6 +164,21 @@ impl Core {
         out
     }
 
+    /// The longest a runnable thread has waited, counted from when the installed
+    /// policy was put in, and which thread: what the watchdog checks, and a trial's
+    /// guardrail too. `(0, idle)` when nothing waits.
+    pub fn longest_wait(&self, now: u64) -> (u64, Tid) {
+        (0..MAX_THREADS)
+            .filter_map(|tid| match self.states[tid] {
+                State::Runnable { since } => {
+                    Some((now.saturating_sub(since.max(self.installed_at)), tid))
+                }
+                _ => None,
+            })
+            .max_by_key(|&(wait, tid)| (wait, usize::MAX - tid))
+            .unwrap_or((0, self.idle))
+    }
+
     /// Restarts the window maxima (longest wait and latency). Allocation-free.
     pub fn begin_window(&mut self) {
         self.stats.begin_window();
@@ -244,7 +259,7 @@ impl Core {
                 reschedule |= self.should_preempt_for(tid);
             }
         }
-        if !self.on_fallback && self.oldest_runnable_wait(now) > self.watchdog_ns {
+        if !self.on_fallback && self.longest_wait(now).0 > self.watchdog_ns {
             self.eject("a runnable thread waited longer than the watchdog limit");
             reschedule = true;
         }
@@ -425,19 +440,6 @@ impl Core {
         self.states
             .iter()
             .any(|s| matches!(s, State::Runnable { .. }))
-    }
-
-    fn oldest_runnable_wait(&self, now: u64) -> u64 {
-        self.states
-            .iter()
-            .filter_map(|s| match s {
-                State::Runnable { since } => {
-                    Some(now.saturating_sub((*since).max(self.installed_at)))
-                }
-                _ => None,
-            })
-            .max()
-            .unwrap_or(0)
     }
 
     fn active(&mut self) -> &mut dyn SchedPolicy {

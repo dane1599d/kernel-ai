@@ -1,20 +1,20 @@
 //! Where the answer comes from: a canned file (tests, CI, replays) or the real
 //! model run by Kernel AI's own engine on the host, with the guest's context cap
-//! and memory budget, so it decides as the llm service would. Until L5's
-//! constrained decoder lands the model decodes greedily and the strict check in
-//! `llmproto::tune::decide` makes any malformed answer a keep.
+//! and memory budget, decoded greedily under the answer's schema exactly as the
+//! llm service decodes it (`llmproto::local::tune`), so it decides as the OS
+//! would. `llmproto::tune::decide` still checks every answer.
 
 use infer::Next;
 use infer::chat::{Budget, Engine};
-use llmproto::chat::{Completion, Request};
-use llmproto::tune::{self, ANSWER_TOKENS, Observation, Summary, TEMPLATE_TOKENS};
+use llmproto::chat::Completion;
+use llmproto::tune::{self, ANSWER_TOKENS, Observation, Summary, TEMPLATE_TOKENS, TuneRequest};
 use quant::Tier;
 use std::path::PathBuf;
 
 /// Something that answers a tune request.
 pub trait Ask {
     /// The model's answer, and a line about how it was made.
-    fn ask(&mut self, request: &Request) -> Result<(Completion, String), String>;
+    fn ask(&mut self, request: &TuneRequest) -> Result<(Completion, String), String>;
 
     /// The summary to ask about: by the token estimate, unless the asker has the
     /// model's tokenizer and can count exactly.
@@ -41,7 +41,7 @@ impl Canned {
 }
 
 impl Ask for Canned {
-    fn ask(&mut self, _: &Request) -> Result<(Completion, String), String> {
+    fn ask(&mut self, _: &TuneRequest) -> Result<(Completion, String), String> {
         let completion = Completion {
             text: self.text.clone(),
             cut_off: false,
@@ -84,8 +84,9 @@ impl Ask for Local {
         tune::summary_with(observation, &count, budget)
     }
 
-    fn ask(&mut self, request: &Request) -> Result<(Completion, String), String> {
-        let (system, user) = request.single_turn().ok_or("a tune request is one turn")?;
+    fn ask(&mut self, request: &TuneRequest) -> Result<(Completion, String), String> {
+        let chat = request.chat();
+        let (system, user) = chat.single_turn().ok_or("a tune request is one turn")?;
         let budget = Budget {
             kv_bytes: kabi::model::KV_BYTES as usize,
             other_bytes: kabi::model::ENGINE_OTHER_BYTES as usize,
@@ -95,32 +96,25 @@ impl Ask for Local {
             .map_err(|e| format!("{}: {e}", self.label))?;
         let context = engine.about().context;
         let prompt = engine.prompt_tokens(system, user);
-        let room = context.saturating_sub(prompt);
         let note = format!(
-            "{} on the {} tier: a {prompt}-token prompt, {room} of the guest's {context} \
-             positions left for an answer of up to {ANSWER_TOKENS} tokens (the summary \
-             budgets {TEMPLATE_TOKENS} for the template); greedy, no constrained decoder yet",
+            "{} on the {} tier: a {prompt}-token prompt in the guest's {context} positions, \
+             up to {ANSWER_TOKENS} answer tokens (the summary budgets {TEMPLATE_TOKENS} for the \
+             template); greedy under the answer's schema, as the llm service decodes",
             self.label,
             self.tier.name()
         );
-        if room == 0 {
-            let completion = Completion {
-                text: String::new(),
-                cut_off: true,
-            };
-            return Ok((completion, format!("{note}; the prompt fills the context")));
+        // A prompt that leaves no room is no answer, which `decide` makes a keep,
+        // as the llm service's error is in the OS.
+        match llmproto::local::tune(&mut engine, request, |_| Next::Continue) {
+            Ok(completion) => Ok((completion, note)),
+            Err(infer::Error::ContextFull | infer::Error::NoRoom) => {
+                let completion = Completion {
+                    text: String::new(),
+                    cut_off: true,
+                };
+                Ok((completion, format!("{note}; the prompt fills the context")))
+            }
+            Err(e) => Err(format!("{}: {}", self.label, llmproto::local::describe(&e))),
         }
-        let max_new = (ANSWER_TOKENS as usize).min(room);
-        let reply = engine
-            .answer(system, user, max_new, |_| Next::Continue)
-            .map_err(|e| format!("{}: {e}", self.label))?;
-        let completion = Completion {
-            text: reply.text(),
-            cut_off: reply.cut_off(),
-        };
-        Ok((
-            completion,
-            format!("{note}; it wrote {} tokens", reply.tokens),
-        ))
     }
 }

@@ -1,7 +1,7 @@
 //! Build and run tool for Kernel AI.
 //!
 //! cargo xtask build [--release] [--spikes]
-//! cargo xtask run   [--release] [--spikes] [--accel auto|kvm|whpx|tcg] [--cpus N] [--mem SIZE] [--llm IP:PORT] [--model NAME] [--edit] [--model-disk PATH | --local ID [--store DIR]]
+//! cargo xtask run   [--release] [--spikes] [--accel auto|kvm|whpx|tcg] [--cpus N] [--mem SIZE] [--llm IP:PORT] [--model NAME] [--edit] [--model-disk PATH | --local ID [--store DIR]] [--workload A|B [--seed N]]
 //! cargo xtask test  [--release] [--accel auto|kvm|whpx|tcg] [--timeout SECS] [--cpus N] [--mem SIZE]
 //! cargo xtask soak  [--accel auto|kvm|whpx|tcg]   (10-minute storm, M5 exit test)
 //! (`--accel wsl` on Windows: QEMU with KVM inside WSL2; see wsl/launch.rs)
@@ -10,7 +10,7 @@
 //! cargo xtask fluency --llm HOST:PORT --model NAME [--repeat N]   (M8b script gate, host only)
 //! cargo xtask fluency --local ID [--store DIR]   (the same gate on our own engine)
 //! cargo xtask setup | model chat|check|pin | bench quant   (the local LLM on the host; see models/mod.rs)
-//! cargo xtask tune --sim [--mix A|B] [--seed N] (--local ID | --answer FILE) [--eval]   (M10a rehearsal)
+//! cargo xtask tune --sim ... | demo | check | record | ab   (M10a; see tune/mod.rs)
 //! cargo xtask doctor   (can this PC run Kernel AI in an accelerated VM, and what to fix; read-only)
 //!
 //! `test` boots the kernel headless once per test case (boot and memory checks,
@@ -125,7 +125,8 @@ fn execute(options: &Options) -> Result<(), String> {
         return icount::run(&qemu, &target_dir, &kernel, &modules, &efi, options);
     }
     if options.task == Task::Run {
-        let mut cmdline = llm_cmdline(options.llm.as_deref(), options.model.as_deref());
+        let mut cmdline = llm_cmdline(options.llm.as_deref(), options.model.as_deref())
+            + options.workload_args().as_str();
         let path = match (&options.model_disk, &options.local) {
             (_, Some(id)) => Some(models::stored(id, options.store.as_deref())?),
             (path, None) => path.clone(),

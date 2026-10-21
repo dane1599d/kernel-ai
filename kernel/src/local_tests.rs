@@ -29,7 +29,7 @@ const SCRIPT_WAIT_MS: u64 = 150_000;
 
 /// The hash xtask put on the command line: of the golden answer for `local-ask`,
 /// of the shell's golden reply for `local-script`.
-fn golden(cmdline: &str) -> Option<u64> {
+pub(crate) fn golden(cmdline: &str) -> Option<u64> {
     cmdline
         .split_whitespace()
         .find_map(|word| word.strip_prefix("local_golden="))

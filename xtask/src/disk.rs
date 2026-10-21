@@ -188,6 +188,9 @@ pub enum Fixture {
     /// The same model for `live-local`, whose `:why` it answers with no golden:
     /// what it says depends on the scenario's facts.
     LiveLocal,
+    /// A generated model trained on the tune prompt, for `tune-local`, with the
+    /// host engine's answer to `llmproto::tune::example()` as its golden.
+    LocalTune,
 }
 
 impl Fixture {
@@ -198,6 +201,7 @@ impl Fixture {
             Fixture::LocalAsk => "local-ask.gguf",
             Fixture::LocalScript => "local-script.gguf",
             Fixture::LiveLocal => "live-local.gguf",
+            Fixture::LocalTune => "local-tune.gguf",
         }
     }
 
@@ -218,6 +222,11 @@ impl Fixture {
             Fixture::LocalAsk => return infer::fixture::local_ask(),
             Fixture::LocalScript | Fixture::LiveLocal => {
                 return infer::fixture::local_script(&crate::local_script::prompts());
+            }
+            Fixture::LocalTune => {
+                let example = llmproto::tune::example();
+                let text = format!("{}\n{}", llmproto::tune::system_prompt(), example.text);
+                return infer::fixture::local_script(&text);
             }
         };
         let mut bytes = Vec::with_capacity(len);
@@ -258,6 +267,14 @@ impl Fixture {
                 Some(Golden {
                     lines: crate::local_script::reply_lines(&outcome.typed),
                     hashed: outcome.again,
+                })
+            }
+            Fixture::LocalTune => {
+                let example = llmproto::tune::example();
+                let answer = crate::tune::parity::host_answer(&bytes, &example)?;
+                Some(Golden {
+                    lines: Vec::new(),
+                    hashed: llmproto::tune::encode_completion(&answer),
                 })
             }
             Fixture::Raw | Fixture::Gguf | Fixture::LiveLocal => None,

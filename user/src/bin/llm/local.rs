@@ -18,6 +18,7 @@ use infer::chat::{Budget, Engine, Step};
 use llmproto::chat::{self, Completion};
 use llmproto::local;
 use llmproto::script::{self, Answer, AnswerError, ScriptRequest};
+use llmproto::tune::TuneRequest;
 use quant::{Parallel, Tier};
 use user::sys;
 
@@ -217,6 +218,14 @@ impl Local {
             }
         })
         .map_err(|error| local::describe(&error))
+    }
+
+    /// The model's answer to a `tune` request, under the answer's schema.
+    pub fn tune(&mut self, request: &TuneRequest) -> Result<Completion, String> {
+        let mut clock = Clock::new(DEADLINE_MS);
+        let done = local::tune(&mut self.engine, request, |step| clock.step(step));
+        self.last = clock.speed().or(self.last);
+        done.map_err(|error| format!("the local model failed: {}", local::describe(&error)))
     }
 
     /// `:model`'s lines: the model, the engine, then one timed test prompt.

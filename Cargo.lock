@@ -825,6 +825,7 @@ dependencies = [
  "kabi",
  "llmproto",
  "rhai",
+ "sched",
 ]
 
 [[package]]
@@ -1037,6 +1038,7 @@ dependencies = [
  "livecore",
  "llmproto",
  "quant",
+ "sched",
  "shellcore",
  "spin 0.12.3",
  "supervise",

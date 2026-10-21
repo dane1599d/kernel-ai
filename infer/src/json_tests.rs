@@ -22,6 +22,7 @@ pub(crate) const SCRIPT: [Field; 2] = [
         max_lines: 40,
         max_line_chars: 120,
         trim_start: false,
+        hard: false,
     },
     Field {
         name: "summary",
@@ -29,9 +30,13 @@ pub(crate) const SCRIPT: [Field; 2] = [
         max_lines: 1,
         max_line_chars: 100,
         trim_start: true,
+        hard: false,
     },
 ];
-pub(crate) const SCRIPT_SHAPE: Shape<'static> = Shape { fields: &SCRIPT };
+pub(crate) const SCRIPT_SHAPE: Shape<'static> = Shape {
+    fields: &SCRIPT,
+    choices: &[],
+};
 
 /// Small limits, so every state can be searched.
 const SMALL: [Field; 2] = [
@@ -41,6 +46,7 @@ const SMALL: [Field; 2] = [
         max_lines: 3,
         max_line_chars: 3,
         trim_start: false,
+        hard: false,
     },
     Field {
         name: "b_1",
@@ -48,6 +54,7 @@ const SMALL: [Field; 2] = [
         max_lines: 2,
         max_line_chars: 3,
         trim_start: true,
+        hard: false,
     },
 ];
 
@@ -90,7 +97,11 @@ fn distances(grammar: &Grammar<'_>) -> BTreeMap<State, Option<usize>> {
 fn need_is_the_true_distance_from_every_state() {
     let mirrored = [SMALL[1], SMALL[0]];
     for fields in [&SMALL[..], &SMALL[1..], &SMALL[..1], &mirrored[..]] {
-        let grammar = Grammar::new(&Shape { fields }).unwrap();
+        let grammar = Grammar::new(&Shape {
+            fields,
+            choices: &[],
+        })
+        .unwrap();
         let states = distances(&grammar);
         assert!(states.len() > 15, "{}", states.len());
         for (state, distance) in &states {
@@ -228,7 +239,11 @@ fn shapes_that_cannot_be_decoded_are_refused() {
         ),
     ] {
         assert_eq!(
-            Grammar::new(&Shape { fields }).err(),
+            Grammar::new(&Shape {
+                fields,
+                choices: &[]
+            })
+            .err(),
             Some(Error::Shape(why))
         );
     }
@@ -377,7 +392,13 @@ fn every_answer_closes_stops_at_a_limit_or_is_cut_off() {
     assert!(ascii.len() < tok.len());
     let mut candidates = Vec::new();
     let mut endings = [0usize; 3];
-    for shape in [SCRIPT_SHAPE, Shape { fields: &SMALL }] {
+    for shape in [
+        SCRIPT_SHAPE,
+        Shape {
+            fields: &SMALL,
+            choices: &[],
+        },
+    ] {
         let grammar = Grammar::new(&shape).unwrap();
         let least = grammar.need(&grammar.start());
         for round in 0..300 {
@@ -437,4 +458,205 @@ fn every_tokenizer_spells_every_ascii_byte() {
     assert!(spells_ascii(&tok, &ascii));
     assert_eq!(ascii.len(), 95 + 1);
     assert!(!spells_ascii(&tok, &ascii[1..]));
+}
+
+/// A text field, a choice and a list of choices, as M10's `tune` answer has.
+const CHOSEN: [Field; 3] = [
+    SMALL[0],
+    Field {
+        name: "p",
+        max_chars: 1,
+        max_lines: 1,
+        max_line_chars: 1,
+        trim_start: false,
+        hard: false,
+    },
+    Field {
+        name: "bg",
+        max_chars: 1,
+        max_lines: 1,
+        max_line_chars: 1,
+        trim_start: false,
+        hard: false,
+    },
+];
+const WORDS: [&str; 3] = ["ab", "abc", "x"];
+const NAMES: [&str; 2] = ["u", "vw"];
+const CHOICES: [crate::json::Choice<'static>; 2] = [
+    crate::json::Choice {
+        field: 1,
+        words: &WORDS,
+        list: None,
+    },
+    crate::json::Choice {
+        field: 2,
+        words: &NAMES,
+        list: Some(2),
+    },
+];
+
+fn takes(grammar: &Grammar<'_>, text: &str) -> Result<State, Stop> {
+    grammar.advance(grammar.start(), text.as_bytes())
+}
+
+#[test]
+fn choices_take_only_their_words_and_lists_only_their_length() {
+    let shape = Shape {
+        fields: &CHOSEN,
+        choices: &CHOICES,
+    };
+    let grammar = Grammar::new(&shape).unwrap();
+    for whole in [
+        r#"{"a":"hi","p":"abc","bg":["u","vw"]}"#,
+        r#"{"a":"","p":"ab","bg":[]}"#,
+        r#"{"a":"","p":"x","bg":["vw"]}"#,
+    ] {
+        assert!(takes(&grammar, whole).unwrap().is_done(), "{whole}");
+    }
+    for refused in [
+        r#"{"a":"","p":"a""#,
+        r#"{"a":"","p":"abcd"#,
+        r#"{"a":"","p":"y"#,
+        r#"{"a":"","p":"x","bg":["u","vw","#,
+        r#"{"a":"","p":"x","bg":["u",]"#,
+        r#"{"a":"","p":"x","bg":["v"]"#,
+        r#"{"a":"","p":"x","bg":[,"#,
+        r#"{"a":"","p":"x","bg":"u"#,
+        r#"{"a":"","p":"x","bg":["u"]"}"#,
+        r#"{"a":"","p":"\"#,
+    ] {
+        assert_eq!(
+            takes(&grammar, refused).err(),
+            Some(Stop::Masked),
+            "{refused}"
+        );
+    }
+    // A list takes a word once: with both taken, only the end may come.
+    let repeat = r#"{"a":"","p":"x","bg":["u","u"#;
+    assert_eq!(takes(&grammar, repeat).err(), Some(Stop::Masked));
+    let mut more = CHOICES[1];
+    more.list = Some(5);
+    let roomy = [CHOICES[0], more];
+    let grammar = Grammar::new(&Shape {
+        fields: &CHOSEN,
+        choices: &roomy,
+    })
+    .unwrap();
+    let both = r#"{"a":"","p":"x","bg":["vw","u","#;
+    assert_eq!(takes(&grammar, both).err(), Some(Stop::Masked));
+}
+
+#[test]
+fn need_is_the_true_distance_with_choices() {
+    let only_list = [CHOICES[1]];
+    let first = [crate::json::Choice {
+        field: 0,
+        ..CHOICES[0]
+    }];
+    for (fields, choices) in [
+        (&CHOSEN[..], &CHOICES[..]),
+        (&CHOSEN[..], &only_list[..]),
+        (&CHOSEN[1..2], &first[..]),
+    ] {
+        let grammar = Grammar::new(&Shape { fields, choices }).unwrap();
+        let states = distances(&grammar);
+        for (state, distance) in &states {
+            assert_eq!(Some(grammar.need(state)), *distance, "{state:?}");
+        }
+    }
+}
+
+#[test]
+fn choices_are_checked() {
+    let bad = |choice: crate::json::Choice<'static>| {
+        let choices = [choice];
+        Grammar::new(&Shape {
+            fields: &CHOSEN,
+            choices: &choices,
+        })
+        .err()
+    };
+    let wrong = Some(Error::Shape(
+        "has a choice whose words are not plain and distinct",
+    ));
+    assert_eq!(
+        bad(crate::json::Choice {
+            words: &["a", "a"],
+            ..CHOICES[0]
+        }),
+        wrong
+    );
+    assert_eq!(
+        bad(crate::json::Choice {
+            words: &["a\"b"],
+            ..CHOICES[0]
+        }),
+        wrong
+    );
+    assert_eq!(
+        bad(crate::json::Choice {
+            words: &[""],
+            ..CHOICES[0]
+        }),
+        wrong
+    );
+    assert_eq!(
+        bad(crate::json::Choice {
+            words: &[],
+            ..CHOICES[0]
+        }),
+        wrong
+    );
+    // An empty list is fine: the answer can only be `[]`.
+    assert!(
+        bad(crate::json::Choice {
+            words: &[],
+            ..CHOICES[1]
+        })
+        .is_none()
+    );
+    assert_eq!(
+        bad(crate::json::Choice {
+            field: 3,
+            ..CHOICES[0]
+        }),
+        Some(Error::Shape("has a choice for no field, or two for one"))
+    );
+    let twice = [CHOICES[0], CHOICES[0]];
+    let shape = Shape {
+        fields: &CHOSEN,
+        choices: &twice,
+    };
+    assert!(Grammar::new(&shape).is_err());
+}
+
+#[test]
+fn a_hard_limit_masks_what_a_soft_one_lets_end_the_answer() {
+    let hard = [
+        Field {
+            hard: true,
+            ..SMALL[0]
+        },
+        SMALL[1],
+    ];
+    let grammar = Grammar::new(&Shape {
+        fields: &hard,
+        choices: &[],
+    })
+    .unwrap();
+    // "a" takes 3 characters a line: a fourth is masked, not an overflow.
+    let at = grammar.advance(grammar.start(), br#"{"a":"xyz"#).unwrap();
+    assert_eq!(grammar.step(at, b'w'), Err(Stop::Masked));
+    assert!(grammar.step(at, b'"').is_ok());
+    let soft = Grammar::new(&Shape {
+        fields: &SMALL,
+        choices: &[],
+    })
+    .unwrap();
+    let at = soft.advance(soft.start(), br#"{"a":"xyz"#).unwrap();
+    assert!(matches!(soft.step(at, b'w'), Err(Stop::Over(_))));
+    // Every state the hard shape takes can still close, at the distance `need` says.
+    for (state, distance) in &distances(&grammar) {
+        assert_eq!(Some(grammar.need(state)), *distance, "{state:?}");
+    }
 }

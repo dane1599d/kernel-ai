@@ -279,16 +279,20 @@ fn asking_for_what_runs_now_is_not_counted_as_invalid() {
 
 #[test]
 fn the_local_engine_decodes_when_the_prompt_fits() {
+    let request = llmproto::tune::example();
+    let text = format!("{}\n{}", llmproto::tune::system_prompt(), request.text);
     let mut tiny = Local::new(
-        String::from("the tiny fixture"),
-        infer::fixture::build(&infer::fixture::Spec::tiny()),
+        String::from("the tune fixture"),
+        infer::fixture::local_script(&text),
         quant::Tier::BASELINE,
     )
     .unwrap();
-    let request = llmproto::chat::Request::new(Some("s"), "hi", 8);
     let (completion, how) = tiny.ask(&request).unwrap();
-    assert!(how.contains("it wrote"), "{how}");
-    assert!(completion.cut_off || !completion.text.is_empty());
+    assert!(how.contains("under the answer's schema"), "{how}");
+    assert!(
+        completion.text.starts_with("{\"reason\":\""),
+        "{completion:?}"
+    );
 }
 
 #[test]

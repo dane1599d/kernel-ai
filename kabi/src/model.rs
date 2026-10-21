@@ -23,9 +23,17 @@ pub enum HeaderError {
     Version(u32),
 }
 
+/// The start of an `llmreplay` file (M10a): recorded answers the llm service
+/// replays, keyed by prompt hash, instead of a model (see `llmproto::tune`).
+pub const REPLAY_MAGIC: &[u8] = b"KAIREPLAY1\n";
+
 /// The kernel's whole check of a model file: the GGUF magic and version at the
-/// start of `head`. Everything after them is ring 3's to parse, as untrusted input.
+/// start of `head`, or the replay magic. Everything after them is ring 3's to
+/// parse, as untrusted input.
 pub fn check_header(head: &[u8]) -> Result<(), HeaderError> {
+    if head.starts_with(REPLAY_MAGIC) {
+        return Ok(());
+    }
     let (Some(magic), Some(version)) = (head.get(..4), head.get(4..8)) else {
         return Err(HeaderError::Short);
     };
@@ -194,6 +202,8 @@ mod tests {
         assert_eq!(check_header(b"Kernel AI blk"), Err(HeaderError::NoMagic));
         assert_eq!(check_header(b"GGUF\x03"), Err(HeaderError::Short));
         assert_eq!(check_header(b""), Err(HeaderError::Short));
+        assert_eq!(check_header(b"KAIREPLAY1\nabc"), Ok(()));
+        assert_eq!(check_header(b"KAIREPLAY2\n"), Err(HeaderError::NoMagic));
     }
 
     #[test]

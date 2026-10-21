@@ -3,7 +3,7 @@
 //! `mock_llm`). The kernel checks every reply, that the policy changes only after a
 //! yes, and how many requests reached the llm service, which counts repair rounds.
 
-use crate::process::syscall::MIN_POLICY_INTERVAL_NS;
+use crate::sched_control::calls::MIN_POLICY_INTERVAL_NS;
 use crate::shell_tests::Expect::{self, Contains, Exact, StartsWith};
 use crate::shell_tests::{expect_lines, start};
 use crate::{ipc, log, threads};

@@ -239,3 +239,41 @@ fn a_warmed_engine_answers_as_a_cold_one_computing_only_the_request() {
         "{warm_computed} of {cold_computed} prompt tokens computed after warming"
     );
 }
+
+#[test]
+fn every_tune_answer_from_the_shape_is_the_schema_or_cut_off() {
+    let request = crate::tune::TuneRequest {
+        labelable: ["build-1", "build-2", "indexer"].map(String::from).to_vec(),
+        text: String::from("Keep \"editor\" responsive; background work must still make progress."),
+    };
+    let names: Vec<&str> = POLICIES.to_vec();
+    let kinds: Vec<&str> = sched::spec::PolicyKind::ALL
+        .iter()
+        .map(|k| k.name())
+        .collect();
+    assert_eq!(names, kinds, "the shape's policies are the catalog");
+    let mut whole = 0;
+    for bytes in models() {
+        let mut engine = Engine::load(&bytes, Tier::best(), 4096, ROOMY).unwrap();
+        let completion = tune(&mut engine, &request, |_| Next::Continue).unwrap();
+        assert!(
+            completion.text.starts_with(r#"{"reason":""#),
+            "{completion:?}"
+        );
+        if completion.text.ends_with('}') && !completion.cut_off {
+            whole += 1;
+            let value: serde_json::Value = serde_json::from_str(&completion.text).unwrap();
+            let field = |name: &str| value[name].as_str().unwrap_or("").to_string();
+            assert!(PRESETS.contains(&field("preset").as_str()), "{value}");
+            let background = value["background"].as_array().unwrap();
+            assert!(background.len() <= crate::tune::MAX_BACKGROUND);
+            for name in background {
+                assert!(
+                    request.labelable.iter().any(|n| name == n.as_str()),
+                    "{value}"
+                );
+            }
+        }
+    }
+    std::println!("{whole} whole tune answers");
+}

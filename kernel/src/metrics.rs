@@ -2,20 +2,14 @@
 //! [`MAX_AGE_NS`] old, so a program calling it in a loop cannot keep taking the
 //! scheduler, memory and process-table locks.
 
+use crate::sched_control::policy_id;
 use crate::{hpet, memory, process, smp, threads};
-use kabi::{MAX_METRIC_PROCESSES, Metrics, policy};
+use kabi::{MAX_METRIC_PROCESSES, Metrics};
 use spin::Mutex;
 
 const MAX_AGE_NS: u64 = 10_000_000;
 
 static CACHE: Mutex<Option<(u64, Metrics)>> = Mutex::new(None);
-
-fn policy_id(name: &str) -> u64 {
-    match name {
-        "round-robin" => policy::ROUND_ROBIN,
-        _ => policy::INTERACTIVE,
-    }
-}
 
 fn take() -> Metrics {
     let mut m = Metrics::empty();

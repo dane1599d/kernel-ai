@@ -17,6 +17,7 @@ const USER_PROGRAMS: &[&str] = &[
     "hog",
     "comphost",
     "edit",
+    "work",
 ];
 /// Ring-3 programs built for the hard-float target: `llm`, whose engine needs SSE and
 /// AVX, and the tests that check the kernel keeps vector state apart.

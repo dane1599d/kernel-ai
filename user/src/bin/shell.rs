@@ -7,10 +7,14 @@
 
 extern crate alloc;
 
+use alloc::boxed::Box;
 use alloc::rc::Rc;
 use alloc::string::{String, ToString};
 use alloc::vec;
+use kabi::sched::{SchedStats, TrialRequest};
+use llmproto::chat::Completion;
 use llmproto::script::{self, Answer, AnswerError, ScriptRequest};
+use llmproto::tune::{self, TuneRequest};
 use shellcore::{DEFAULT_CONFIG, Host, SCRIPT_ROUND_MS, Shell};
 use user::{arg, args, println, sys};
 
@@ -80,6 +84,42 @@ impl Host for System {
 
     fn audit(&self, text: &str) {
         println!("{text}");
+    }
+
+    fn sched_stats(&self, window_ms: u64) -> Result<Box<SchedStats>, kabi::Error> {
+        let mut stats = Box::new(SchedStats::empty());
+        sys::sched_stats(&mut stats, window_ms)?;
+        Ok(stats)
+    }
+
+    fn sched_trial(&self, request: &TrialRequest) -> Result<u64, kabi::Error> {
+        sys::sched_trial(request)
+    }
+
+    fn set_spec(&self, id: u64, preset: u64) -> Result<(), kabi::Error> {
+        sys::set_spec(id, preset).map(|_| ())
+    }
+
+    fn sleep_ms(&self, ms: u64) {
+        sys::sleep_ms(ms);
+    }
+
+    fn tune(&self, request: &TuneRequest) -> Result<Completion, String> {
+        let mut reply = vec![0u8; kabi::MAX_MESSAGE];
+        let len = sys::service_call(
+            "llm",
+            request.encode().as_bytes(),
+            &mut reply,
+            ASK_TIMEOUT_MS,
+        )
+        .map_err(|error| alloc::format!("llm service: {error:?}"))?;
+        let text = String::from_utf8_lossy(&reply[..len.min(reply.len())]).into_owned();
+        match text.split_once(' ').unwrap_or((text.as_str(), "")) {
+            ("ok", completion) => tune::decode_completion(completion)
+                .ok_or_else(|| "llm service: malformed answer".to_string()),
+            ("err", why) => Err(why.to_string()),
+            _ => Err("llm service: malformed reply".to_string()),
+        }
     }
 }
 

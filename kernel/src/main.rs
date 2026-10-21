@@ -59,6 +59,7 @@ mod pointer;
 mod port;
 mod process;
 mod qemu;
+mod sched_control;
 mod sched_tests;
 mod script_tests;
 mod selftest;
@@ -72,7 +73,11 @@ mod terminal;
 mod thread_tests;
 mod threads;
 mod timer;
+mod tune_ab_tests;
+mod tune_local_tests;
+mod tune_tests;
 mod virtio;
+mod workload;
 
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use limine::request::{
@@ -285,6 +290,11 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::ComputeKeys => run_case(compute_tests::keys_check),
         SelfTest::Bigmap => run_case(bigmap_tests::check),
         SelfTest::IcountProbe => run_case(|| icount_tests::check(cmdline())),
+        SelfTest::TuneRevert => run_case(tune_tests::revert_check),
+        SelfTest::Tune => run_case(tune_tests::shell_check),
+        SelfTest::TuneLocal => run_case(|| tune_local_tests::local_check(cmdline())),
+        SelfTest::TuneDemo => run_case(tune_local_tests::demo_check),
+        SelfTest::TuneAb => run_case(|| tune_ab_tests::check(cmdline())),
         SelfTest::Boot | SelfTest::None => {}
     }
 

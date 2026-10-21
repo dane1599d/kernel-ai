@@ -22,6 +22,7 @@ livecore = { path = "../livecore" }
 editcore = { path = "../editcore" }
 llmproto = { path = "../llmproto", features = ["local"] }
 quant = { path = "../quant" }
+sched = { path = "../sched" }
 supervise = { path = "../supervise" }
 shellcore = { path = "../shellcore" }
 spin = "0.12.3"

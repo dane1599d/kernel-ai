@@ -243,6 +243,23 @@ pub fn set_policy(id: u64) -> Result<u64, Error> {
     call(call::POLICY, [id, 0, 0, 0, 0, 0])
 }
 
+/// Policy `id` with a `kabi::sched::preset` (it matters only for `classes`).
+pub fn set_spec(id: u64, preset: u64) -> Result<u64, Error> {
+    call(call::POLICY, [id, preset, 0, 0, 0, 0])
+}
+
+/// The scheduler's numbers over `window_ms` into `out`; how many threads.
+pub fn sched_stats(out: &mut kabi::sched::SchedStats, window_ms: u64) -> Result<u64, Error> {
+    let out = out as *mut kabi::sched::SchedStats as u64;
+    call(call::SCHED_STATS, [out, window_ms, 0, 0, 0, 0])
+}
+
+/// Starts a kernel-owned policy trial; its id.
+pub fn sched_trial(request: &kabi::sched::TrialRequest) -> Result<u64, Error> {
+    let request = request as *const kabi::sched::TrialRequest as u64;
+    call(call::SCHED_TRIAL, [request, 0, 0, 0, 0, 0])
+}
+
 /// Whether the user asked to stop since the last call; reading clears it.
 pub fn interrupted() -> bool {
     call(call::INTERRUPTED, [0; 6]).is_ok_and(|flag| flag != 0)

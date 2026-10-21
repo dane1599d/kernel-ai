@@ -1,5 +1,8 @@
 //! `cargo xtask tune --sim [--mix A|B] [--seed N] (--local ID | --answer FILE)
 //! [--store DIR] [--intent TEXT] [--yes] [--eval]`: the host rehearsal of M10a.
+//! In the OS (part 2): `tune demo` (the model at the terminal, [`demo`]), `tune
+//! check` (guest equals host, [`parity`]), `tune record` and `tune ab` (the
+//! exit test under icount, [`record`], [`abrun`], [`ab`]).
 //!
 //! The mix runs in the simulator on the real `sched` code under Interactive; code
 //! builds the summary (`llmproto::tune`); the model (or a canned answer) chooses;
@@ -10,8 +13,14 @@
 //! scheduler code on the host, not the running OS. `--eval` asks for each of five
 //! seeds of both mixes and counts how often the model's choice is kept.
 
+mod ab;
+mod abrun;
 mod ask;
+mod boot;
+mod demo;
 mod observe;
+pub mod parity;
+mod record;
 #[cfg(test)]
 mod tests;
 
@@ -102,6 +111,13 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
 }
 
 pub fn main(args: &[String]) -> Result<(), String> {
+    match args.first().map(String::as_str) {
+        Some("check") => return parity::main(&args[1..]),
+        Some("demo") => return demo::main(&args[1..]),
+        Some("ab") => return abrun::main(&args[1..]),
+        Some("record") => return record::main(&args[1..]),
+        _ => {}
+    }
     let args = parse(args)?;
     let mut asker: Box<dyn Ask> = match &args.source {
         Source::Answer(path) => Box::new(Canned::from_file(path)?),
@@ -189,7 +205,7 @@ pub fn rehearse(
     let summary = asker
         .summarize(&observation)
         .ok_or("the target is not one of the observed processes")?;
-    let request = tune::request(&summary);
+    let request = summary.wire();
     writeln!(
         out,
         "xtask: mix {} seed {}, observed for 3 s under interactive:",
@@ -328,7 +344,7 @@ fn evaluate(args: &Args, asker: &mut dyn Ask, out: &mut dyn Write) -> Result<(),
             let summary = asker
                 .summarize(&observation)
                 .ok_or("the target is not one of the observed processes")?;
-            let (completion, how) = asker.ask(&tune::request(&summary))?;
+            let (completion, how) = asker.ask(&summary.wire())?;
             if provenance.is_none() {
                 writeln!(out, "xtask: answers from {how}").map_err(io)?;
                 provenance = Some(how);

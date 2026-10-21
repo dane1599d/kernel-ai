@@ -406,6 +406,34 @@ pub fn services(mut f: impl FnMut(u64, &Name)) {
     }
 }
 
+/// The process owning each thread slot: its pid, or 0 for kernel threads.
+pub fn pids_by_tid() -> [u64; MAX_THREADS] {
+    let mut pids = [0; MAX_THREADS];
+    let table = with_table(|table| *table);
+    for process in table.iter().filter(|p| p.live()) {
+        for tid in process.thread_tids().into_iter().flatten() {
+            pids[tid] = process.pid;
+        }
+    }
+    pids
+}
+
+/// The name of the live process `pid`, and whether it is the supervisor.
+pub fn name_of(pid: u64) -> Option<(Name, bool)> {
+    with_table(|table| {
+        table
+            .iter()
+            .find(|p| p.live() && p.pid == pid && p.state != State::Exiting)
+            .map(|p| (p.name, p.supervisor))
+    })
+}
+
+/// A thread of process slot `slot` starts: the scheduler applies its label.
+pub(super) fn thread_started(tid: Tid, slot: usize) {
+    let pid = with_table(|table| table[slot].pid);
+    crate::sched_control::on_thread_start(tid, pid);
+}
+
 /// Runs `f` on the slot's address space (for copying to and from user memory).
 pub fn with_space<R>(slot: usize, f: impl FnOnce(&UserSpace) -> R) -> Option<R> {
     SPACES[slot].lock().as_ref().map(f)

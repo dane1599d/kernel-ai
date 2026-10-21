@@ -59,6 +59,7 @@ pub fn exit_current() -> ! {
     let space = SPACES[slot].lock().take();
     let freed = space.map_or(0, |space| memory::with(|m| m.destroy_user_space(space)));
     report_exit(&process, reason, detail, freed);
+    crate::sched_control::on_process_exit(process.pid, reason);
     with_table(|table| table[slot] = Process::FREE);
     supervision::on_exit(&process, reason, detail);
     threads::exit()

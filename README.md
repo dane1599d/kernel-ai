@@ -1,6 +1,6 @@
 # Kernel AI
 
-A from-scratch x86_64 operating system in Rust, inspired by TempleOS, with a local LLM built into how the system is used and tuned. Status: milestone M6 (network and terminal: virtio-net, TCP/IP, an LLM client and a command prompt). `cargo xtask run` boots to a command prompt; type `help`.
+A from-scratch x86_64 operating system in Rust, inspired by TempleOS, with a local LLM built into how the system is used and tuned. Status: milestone M6 (network and terminal: virtio-net, TCP/IP, an LLM client and a command prompt). `cargo xtask run` boots to a command prompt; type `help`. M10a, the local model tuning the scheduler (`tune editor` at the prompt), is built but not yet declared done: its exit test waits for the founder's Qwen3-4B recording (see docs/roadmap.md).
 
 - Plan: [docs/roadmap.md](docs/roadmap.md)
 - Decisions: [docs/decisions.md](docs/decisions.md)

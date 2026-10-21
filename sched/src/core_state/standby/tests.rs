@@ -277,3 +277,29 @@ fn labels_are_replayed_into_every_new_policy_and_a_new_thread_starts_normal() {
     core.adopt(4, "new", EnqueueReason::New, 4 * MS);
     assert_eq!(core.class(4), Class::Normal);
 }
+
+#[test]
+fn clear_class_forgets_both_slots_and_longest_wait_counts_from_install() {
+    let mut core = Core::new(Box::new(Interactive::new()), 0, WATCHDOG, 0);
+    core.adopt_running(1, "boot");
+    let a = core.spawn("a", 0).unwrap();
+    let b = core.spawn("b", 0).unwrap();
+    core.set_class(a, Class::Background);
+    let mut staged = NORMAL;
+    staged[a] = Class::Background;
+    assert!(core.stage(Box::new(RoundRobin::new()), staged).is_ok());
+    core.clear_class(a);
+    assert_eq!(core.class(a), Class::Normal);
+    assert!(core.flip(5 * MS));
+    assert_eq!(
+        core.class(a),
+        Class::Normal,
+        "the staged table forgot it too"
+    );
+    // a and b have been runnable since 0; the flip at 5 ms restarts the count.
+    assert_eq!(core.longest_wait(12 * MS), (7 * MS, a));
+    assert!(core.revert(12 * MS));
+    assert_eq!(core.longest_wait(12 * MS), (0, a));
+    let _ = b;
+    core.clear_class(MAX_THREADS);
+}
