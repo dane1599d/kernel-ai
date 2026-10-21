@@ -72,6 +72,21 @@ pub fn ticks() -> u64 {
     TICKS.load(Ordering::Relaxed)
 }
 
+/// Halts until the next tick, so the caller goes on at the first instruction
+/// after a timer interrupt. Under icount that puts what follows at the same place
+/// against the ticks on every boot, however long the host-timed firmware and disk
+/// reads before it took. Interrupts end as they began.
+pub fn align_to_tick() {
+    let enabled = x86_64::instructions::interrupts::are_enabled();
+    let edge = ticks();
+    while ticks() == edge {
+        x86_64::instructions::interrupts::enable_and_hlt();
+    }
+    if !enabled {
+        x86_64::instructions::interrupts::disable();
+    }
+}
+
 /// Sleeps (halting between interrupts) until `ticks` more ticks have passed or
 /// `timeout_ns` of HPET time has elapsed. Returns the HPET time it took.
 pub fn wait_ticks(ticks: u64, timeout_ns: u64) -> Result<u64, &'static str> {

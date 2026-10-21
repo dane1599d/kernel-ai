@@ -116,6 +116,7 @@ pub fn main(args: &[String]) -> Result<(), String> {
         Some("demo") => return demo::main(&args[1..]),
         Some("ab") => return abrun::main(&args[1..]),
         Some("record") => return record::main(&args[1..]),
+        Some("observe") => return record::same_main(&args[1..]),
         _ => {}
     }
     let args = parse(args)?;

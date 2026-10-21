@@ -33,7 +33,12 @@ const SEED: u64 = 1;
 
 /// The QEMU command line of the measurement mode.
 pub fn measure_args(firmware: &crate::Firmware, shift: u32) -> Vec<String> {
-    let memory = format!("{}M", crate::disk::BASE_MEMORY_MIB);
+    measure_args_with(firmware, shift, crate::disk::BASE_MEMORY_MIB)
+}
+
+/// [`measure_args`] with `memory_mib` of guest memory, for a boot with a disk.
+pub fn measure_args_with(firmware: &crate::Firmware, shift: u32, memory_mib: u64) -> Vec<String> {
+    let memory = format!("{memory_mib}M");
     let mut args: Vec<String> = [
         "-machine",
         "q35",

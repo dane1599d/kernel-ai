@@ -115,11 +115,7 @@ pub fn check(cmdline: &str) -> Result<(), &'static str> {
     )?;
     let marked = hpet::nanos();
     log!("icount-probe: seed {seed}; measure-start");
-    // Start on a tick edge: the first instruction after a timer interrupt.
-    let edge = timer::ticks();
-    while timer::ticks() == edge {
-        x86_64::instructions::interrupts::enable_and_hlt();
-    }
+    timer::align_to_tick();
     START_TICK.store(timer::ticks(), Ordering::SeqCst);
     START_NS.store(hpet::nanos(), Ordering::SeqCst);
     STARTED.store(true, Ordering::SeqCst);

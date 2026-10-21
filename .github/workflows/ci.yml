@@ -89,3 +89,47 @@ jobs:
       - name: Boot icount-probe twice and compare digests
         run: cargo xtask icount --shift 3 --boots 2 --timeout 900
     timeout-minutes: 45
+
+  # The M10 exit test's recording names the summary an observe boot built, and
+  # `tune ab` refuses it unless a new observe boot builds it again, on another
+  # runner. Each of two runners boots observe twice; all four summaries must match.
+  observe:
+    name: Observe determinism (${{ matrix.runner }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [first, second]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install QEMU and OVMF
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 ovmf
+      - name: Install pinned toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Install the WebAssembly target for live components
+        run: rustup target add wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Boot observe twice and compare summaries
+        run: |
+          set -o pipefail
+          cargo xtask tune observe --mix A --boots 2 --timeout 900 | tee observe.txt
+          grep -o 'built the same summary [0-9a-f]*' observe.txt | awk '{print $5}' > summary-sha.txt
+          test -s summary-sha.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: observe-${{ matrix.runner }}
+          path: summary-sha.txt
+    timeout-minutes: 45
+
+  observe-compare:
+    name: Observe determinism across runners
+    runs-on: ubuntu-24.04
+    needs: observe
+    steps:
+      - uses: actions/download-artifact@v4
+      - name: Both runners built the same summary
+        run: |
+          cat observe-first/summary-sha.txt observe-second/summary-sha.txt
+          cmp observe-first/summary-sha.txt observe-second/summary-sha.txt
