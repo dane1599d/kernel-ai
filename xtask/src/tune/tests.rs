@@ -41,8 +41,8 @@ fn run(text: &str) -> (Outcome, String) {
 
 #[test]
 fn a_good_pick_is_kept() {
-    let builds = ["build-1", "build-2", "build-3", "build-4"];
-    let (outcome, report) = run(&answer("classes", "firm", &builds));
+    let labels = ["build-1", "build-2", "build-3", "build-4", "indexer"];
+    let (outcome, report) = run(&answer("classes", "firm", &labels));
     println!("{report}");
     let (choice, verdict) = outcome.trial.expect("a trial ran");
     assert_eq!(choice, sched::workload::MIX_A.oracle_choice());
@@ -113,7 +113,7 @@ fn eval_runs_both_mixes_with_a_canned_answer() {
     let builds = answer(
         "classes",
         "firm",
-        &["build-1", "build-2", "build-3", "build-4"],
+        &["build-1", "build-2", "build-3", "build-4", "indexer"],
     );
     let mut eval = args("x");
     eval.eval = true;

@@ -454,5 +454,6 @@ pub fn best(scores: &[Score]) -> Option<&Score> {
         .min_by_key(|score| score.mean_ratio_permille())
 }
 
+pub mod separate;
 #[cfg(test)]
 mod tests;

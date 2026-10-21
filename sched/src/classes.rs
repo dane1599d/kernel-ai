@@ -1,17 +1,21 @@
 //! Two policies built on Interactive's rules for M10's policy agent.
 //!
 //! [`Classes`] is Interactive with per-thread labels. A thread labelled
-//! [`Class::Background`] loses the wake boost's place in the queue and never
-//! preempts on wake: it waits in the normal ring instead of the woken one. Once it
-//! runs, it keeps what Interactive gives any thread that woke, a 2 ms slice that a
-//! wake cannot cut short; without that, the builds it is meant to slow a little
-//! lose their CPU to whatever wakes next. So a label can only demote: no labelled
-//! thread overtakes an unlabelled one that Interactive would run first, and it
-//! preempts only where Interactive would. Two bounded parameters come from a
-//! preset ([`ClassParams`]): the normal ring's slice, and a maximum wait. A
-//! background thread whose runnable period began with a wake, and which has waited
-//! that long, is picked before any thread woken after it: exactly where Interactive
-//! would have put it, so the floor caps the demotion without ever promoting.
+//! [`Class::Background`] gives up only its wake's place ahead of unlabelled wakes:
+//! it waits in a ring of its own, after every unlabelled thread that woke and
+//! before the normal ring (preempted threads, and hogs that never sleep), and it
+//! preempts on wake exactly where Interactive would. So it never loses CPU to an
+//! always-runnable unlabelled thread that Interactive would have run after it (the
+//! founder's rule of 2026-10-21: the builds lost half their CPU to the hogs when a
+//! label put their wakes in the normal ring). Once it runs, it keeps what
+//! Interactive gives any thread that woke, a 2 ms slice that a wake cannot cut
+//! short. So a label can only demote: no labelled thread overtakes an unlabelled
+//! one that Interactive would run first, and it preempts only where Interactive
+//! would. Two bounded parameters come from a preset ([`ClassParams`]): the normal
+//! ring's slice, and a maximum wait. A background thread whose runnable period
+//! began with a wake, and which has waited that long, is picked before any thread
+//! woken after it: exactly where Interactive would have put it, so the floor caps
+//! the demotion without ever promoting.
 //!
 //! [`Responsive`] is the honest rule-based baseline: Interactive, except that a
 //! woken thread is boosted, and may preempt, only if its last run burst was short.
@@ -71,7 +75,9 @@ impl ClassParams {
 
 /// Interactive with background labels and a bounded wait.
 pub struct Classes {
+    /// Unlabelled threads that woke, labelled ones that woke, and the rest.
     woken: Ring,
+    background_woken: Ring,
     normal: Ring,
     boosted: [bool; MAX_THREADS],
     background: [bool; MAX_THREADS],
@@ -91,6 +97,7 @@ impl Classes {
     pub fn new(params: ClassParams) -> Self {
         Self {
             woken: Ring::default(),
+            background_woken: Ring::default(),
             normal: Ring::default(),
             boosted: [false; MAX_THREADS],
             background: [false; MAX_THREADS],
@@ -117,13 +124,9 @@ impl Classes {
     /// can fire late by those.
     fn oldest_due(&self) -> Option<Tid> {
         let limit = self.max_wait_ticks();
-        self.normal
+        self.background_woken
             .iter()
-            .filter(|&tid| {
-                self.background[tid]
-                    && self.wake_started[tid]
-                    && self.ticks.saturating_sub(self.queued_tick[tid]) > limit
-            })
+            .filter(|&tid| self.ticks.saturating_sub(self.queued_tick[tid]) > limit)
             .min_by_key(|&tid| self.order[tid])
     }
 
@@ -168,15 +171,16 @@ impl SchedPolicy for Classes {
         self.queued_tick[tid] = self.ticks;
         self.order[tid] = self.next_order;
         self.next_order += 1;
-        if self.boosted[tid] {
-            self.woken.push_back(tid);
-        } else {
-            self.normal.push_back(tid);
-        }
+        match (woke, self.background[tid]) {
+            (true, false) => self.woken.push_back(tid),
+            (true, true) => self.background_woken.push_back(tid),
+            (false, _) => self.normal.push_back(tid),
+        };
     }
 
     fn dequeue(&mut self, tid: Tid) {
         self.woken.remove(tid);
+        self.background_woken.remove(tid);
         self.normal.remove(tid);
     }
 
@@ -187,11 +191,14 @@ impl SchedPolicy for Classes {
                 .front()
                 .is_none_or(|first| self.order[due] < self.order[first]);
             if before_woken {
-                self.normal.remove(due);
+                self.background_woken.remove(due);
                 return Some(due);
             }
         }
-        self.woken.pop_front().or_else(|| self.normal.pop_front())
+        self.woken
+            .pop_front()
+            .or_else(|| self.background_woken.pop_front())
+            .or_else(|| self.normal.pop_front())
     }
 
     fn tick(&mut self, current: Tid, slice_ns: u64) -> bool {
@@ -202,15 +209,17 @@ impl SchedPolicy for Classes {
         } else {
             self.params.normal_slice_ns
         };
-        let queued = !(self.woken.is_empty() && self.normal.is_empty());
+        let queued =
+            !(self.woken.is_empty() && self.background_woken.is_empty() && self.normal.is_empty());
         // A due thread would have been boosted under Interactive, so, like a wake,
         // it preempts only a thread that is not shielded.
         (slice_ns >= limit && queued) || (!shielded && self.oldest_due().is_some())
     }
 
-    fn preempt_on_wake(&self, woken: Tid, current: Tid) -> bool {
-        let background = self.background.get(woken).copied().unwrap_or(true);
-        !background && !self.shielded(current)
+    /// As Interactive: a wake preempts a thread that is not shielded, labelled
+    /// or not, so a labelled build still cuts a hog's slice short.
+    fn preempt_on_wake(&self, _woken: Tid, current: Tid) -> bool {
+        !self.shielded(current)
     }
 
     fn set_class(&mut self, tid: Tid, class: Class) {
@@ -220,15 +229,16 @@ impl SchedPolicy for Classes {
         *label = class == Class::Background;
         let woke = self.wake_started[tid];
         if *label && self.boosted[tid] {
-            // A thread that loses its boost moves to the normal ring, in order.
+            // A thread that loses its boost moves behind the unlabelled wakes, in
+            // order.
             self.boosted[tid] = false;
             if self.woken.remove(tid) {
-                self.normal = self.insert_in_order(&self.normal, tid);
+                self.background_woken = self.insert_in_order(&self.background_woken, tid);
             }
         } else if !*label && woke && !self.boosted[tid] {
             // Unlabelled, a thread that woke gets back what Interactive gives it.
             self.boosted[tid] = true;
-            if self.normal.remove(tid) {
+            if self.background_woken.remove(tid) {
                 self.woken = self.insert_in_order(&self.woken, tid);
             }
         }
@@ -236,6 +246,7 @@ impl SchedPolicy for Classes {
 
     fn reset(&mut self) {
         self.woken.clear();
+        self.background_woken.clear();
         self.normal.clear();
         self.boosted = [false; MAX_THREADS];
         self.wake_started = [false; MAX_THREADS];

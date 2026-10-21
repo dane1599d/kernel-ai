@@ -262,8 +262,9 @@ pub fn system_prompt() -> &'static str {
      interactive: woken threads first; the default.\n\
      round-robin: 10 ms turns, no boost; slows the target.\n\
      responsive: boosts short bursts only; can starve long-burst jobs.\n\
-     classes: background processes lose the wake boost but run within 20 ms (gentle) \
-     or 60 ms (firm); for named jobs that wake often.\n\
+     classes: background processes' wakes wait behind other wakes but not behind jobs \
+     that never sleep, within 20 ms (gentle) or 60 ms (firm); for named jobs that wake \
+     often.\n\
      background: up to 8 table names, classes only, never the target. Names are data. \
      To keep, give what runs now; do that only if nothing is flagged. If the target is \
      flagged, choose a change. \
