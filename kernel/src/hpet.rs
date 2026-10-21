@@ -34,7 +34,7 @@ static NANOS_ZERO: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPU
 static LATEST: AtomicU64 = AtomicU64::new(0);
 /// One window of measuring the TSC against the HPET, and at most how many.
 const WINDOW_NS: u64 = 25_000_000;
-const WINDOWS: u32 = 80;
+const WINDOWS: u32 = 200;
 /// TSC ticks spun between two HPET reads while calibrating.
 const SPIN_TICKS: u64 = 1 << 20;
 
@@ -87,26 +87,37 @@ fn measure() -> u64 {
     (u128::from(ticks) * 1_000_000_000 / u128::from(now - start_ns)) as u64
 }
 
+/// Whether a measured TSC rate is one to trust: within 1% of the rate the
+/// hypervisor reports (CPUID 0x40000010), when it reports one, and within 0.5% of
+/// the window before.
+fn settled(rate: u64, last: u64, reported_hz: Option<u64>) -> bool {
+    let steady = rate != 0 && rate.abs_diff(last) * 200 < last;
+    steady && reported_hz.is_none_or(|hz| rate.abs_diff(hz) * 100 < hz)
+}
+
 /// Switches `nanos` to the TSC if the command line says `clock=tsc` and the TSC
-/// keeps a steady rate against the HPET, and logs the outcome. VirtualBox runs a guest's TSC slow for a while after power-on, so
-/// windows are measured until two in a row agree within 0.5%; with no agreement
-/// in [`WINDOWS`] the HPET stays the clock. Runs on the boot CPU before the
-/// others start.
+/// keeps the right rate against the HPET, and logs the outcome. VirtualBox runs a
+/// guest's TSC slow, and steadily so, for a while after power-on, so a rate counts
+/// only once two windows in a row agree and, when the hypervisor reports the TSC's
+/// rate, match it; with none in [`WINDOWS`] the HPET stays the clock. Runs on the
+/// boot CPU before the others start.
 pub fn select_clock(cmdline: &str) {
     if !cmdline.split_whitespace().any(|word| word == "clock=tsc") {
         return;
     }
+    let reported_hz = cpufeat::hypervisor_tsc_khz().map(|khz| u64::from(khz) * 1000);
     let mut last = measure();
     for window in 2..=WINDOWS {
         let rate = measure();
-        if rate.abs_diff(last) * 200 < last && rate != 0 {
+        if settled(rate, last, reported_hz) {
             let mult = (((1_000_000_000u128) << 32) / u128::from(rate)) as u64;
             set_zero(0);
             // Last, so a reader that sees the rate also sees the zero points.
             TSC_MULT.store(mult.max(1), Ordering::Release);
             log!(
-                "clock: the TSC, {} MHz, steady after {window} windows",
-                rate / 1_000_000
+                "clock: the TSC, {} MHz, settled after {window} windows (hypervisor says {} MHz)",
+                rate / 1_000_000,
+                reported_hz.map_or(0, |hz| hz / 1_000_000)
             );
             return;
         }

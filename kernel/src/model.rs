@@ -16,6 +16,8 @@
 //! freeing the process's tables, and never frees it, so a restarted llm maps the
 //! model at once and takes no frame for it.
 
+#[path = "model/progress.rs"]
+mod progress;
 #[path = "model/window.rs"]
 pub mod window;
 
@@ -219,7 +221,9 @@ fn copy(disk: &mut dyn Device, attached: Option<u64>) -> Result<Model, String> {
     let hhdm = memory::hhdm();
     // Where the next piece of the file goes: its offset in the file.
     let mut offset: u64 = 0;
+    let mut progress = progress::Progress::new(len);
     let copied = block::stream(disk, len, |_, bytes| {
+        let started = hpet::nanos();
         // Reads are 512 KiB and start on a page boundary, so a piece never crosses a
         // run: four of them fill one.
         if offset.is_multiple_of(RUN_BYTES) {
@@ -246,6 +250,7 @@ fn copy(disk: &mut dyn Device, attached: Option<u64>) -> Result<Model, String> {
             )
         };
         offset += bytes.len() as u64;
+        progress.piece(offset, hpet::nanos() - started);
         Ok(())
     });
     if let Err(why) = copied {

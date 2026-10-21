@@ -210,6 +210,22 @@ pub fn hypervisor_signature() -> Option<[u8; 12]> {
     None
 }
 
+/// The TSC's rate in kHz as the hypervisor reports it (CPUID 0x40000010, the
+/// timing leaf VMware and VirtualBox fill), when a hypervisor offers that leaf.
+#[cfg(target_arch = "x86_64")]
+pub fn hypervisor_tsc_khz() -> Option<u32> {
+    if cpuid(1, 0).2 & (1 << 31) == 0 || cpuid(0x4000_0000, 0).0 < 0x4000_0010 {
+        return None;
+    }
+    let khz = cpuid(0x4000_0010, 0).0;
+    (khz != 0).then_some(khz)
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+pub fn hypervisor_tsc_khz() -> Option<u32> {
+    None
+}
+
 /// What a hypervisor signature names, in plain words.
 pub fn hypervisor_name(signature: &[u8; 12]) -> &'static str {
     match signature {

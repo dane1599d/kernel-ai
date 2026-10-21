@@ -13,7 +13,9 @@
 //! - Stack pages are never unmapped while the process lives (no shootdown is
 //!   needed); a later worker with the same index reuses them.
 
-use super::{MAX_PROCESSES, Process, SLOT_OF_TID, SPACES, State, exit_current, killed, with_table};
+use super::{
+    MAX_PROCESSES, Process, SLOT_OF_TID, State, exit_current, killed, lock_space, with_table,
+};
 use crate::memory::user::{Access, MIN_USER_ADDRESS};
 use crate::{entry, memory, smp, threads};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -188,7 +190,7 @@ fn map_stack(
         write: true,
         execute: false,
     };
-    let mut guard = SPACES[slot].lock();
+    let mut guard = lock_space(slot);
     let space = guard.as_mut().ok_or(Error::Dead)?;
     for have in mapped..pages {
         if space.frames() >= max_pages {

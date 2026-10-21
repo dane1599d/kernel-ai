@@ -141,7 +141,8 @@ pub fn hypervisor(cpu: &cpufeat::Features) -> &'static str {
     match cpufeat::hypervisor_signature() {
         Some(signature) => cpufeat::hypervisor_name(&signature),
         None if cpu.hypervisor => "a hypervisor that gives no name",
-        None => "no hypervisor (bare metal)",
+        // VirtualBox with no paravirtualization interface hides itself like this.
+        None => "none reported by CPUID (bare metal, or a hypervisor that hides itself)",
     }
 }
 

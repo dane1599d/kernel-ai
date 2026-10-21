@@ -78,6 +78,7 @@ mod timer;
 mod tune_ab_tests;
 mod tune_local_tests;
 mod tune_tests;
+mod version;
 mod virtio;
 mod workload;
 
@@ -167,7 +168,7 @@ extern "C" fn kmain() -> ! {
         .and_then(|r| r.framebuffers().first().copied())
     {
         let ready = console::init(fb);
-        log!("Kernel AI {} (M6)", env!("CARGO_PKG_VERSION"));
+        log!("{}", version::Banner);
         log!(
             "framebuffer: {}x{} {} bpp, console: {}",
             fb.width,
@@ -176,10 +177,7 @@ extern "C" fn kmain() -> ! {
             ready
         );
     } else {
-        log!(
-            "Kernel AI {} (M6), no framebuffer",
-            env!("CARGO_PKG_VERSION")
-        );
+        log!("{}, no framebuffer", version::Banner);
     }
 
     load_line_table();
