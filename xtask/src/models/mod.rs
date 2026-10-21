@@ -203,6 +203,11 @@ pub fn pinned_sha256(id: &str) -> Result<String, String> {
 /// The stored file of catalog model `id`, for `run --local`: in the model store
 /// (`--store`, else `KAI_MODELS`, else the default, as for `setup`), and of the
 /// pinned size.
+/// The catalog's default model ID.
+pub fn default_id() -> Result<String, String> {
+    Ok(Catalog::load()?.default.clone())
+}
+
 pub fn stored(id: &str, store: Option<&str>) -> Result<PathBuf, String> {
     let catalog = Catalog::load()?;
     let entry = catalog.get(id)?;

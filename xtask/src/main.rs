@@ -12,6 +12,7 @@
 //! cargo xtask setup | model chat|check|pin | bench quant   (the local LLM on the host; see models/mod.rs)
 //! cargo xtask tune --sim ... | demo | check | record | ab   (M10a; see tune/mod.rs)
 //! cargo xtask doctor   (can this PC run Kernel AI in an accelerated VM, and what to fix; read-only)
+//! cargo xtask vbox [--start [--headless]]   (the VirtualBox VM "Kernel AI"; see vbox/mod.rs)
 //!
 //! `test` boots the kernel headless once per test case (boot and memory checks,
 //! page fault, double fault, write-protect, stack overflow, 60 s timer, keyboard,
@@ -47,6 +48,7 @@ mod smoke;
 mod strip;
 mod tune;
 mod userbuild;
+mod vbox;
 mod wsl;
 
 use options::{Accel, Options, Task, parse_args};
@@ -68,6 +70,7 @@ fn main() -> ExitCode {
         Some("setup" | "model" | "bench") => models::main(&args),
         Some("tune") => tune::main(&args[1..]),
         Some("doctor") => doctor::main(&args[1..]),
+        Some("vbox") => vbox::main(&args[1..]),
         _ => parse_args(&args).and_then(|options| execute(&options)),
     };
     match result {
@@ -278,14 +281,14 @@ fn llm_cmdline(llm: Option<&str>, model: Option<&str>) -> String {
     args.join(" ")
 }
 
-fn workspace_root() -> PathBuf {
+pub(crate) fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("xtask lives one level below the workspace root")
         .to_path_buf()
 }
 
-fn build_kernel(root: &Path, options: &Options) -> Result<PathBuf, String> {
+pub(crate) fn build_kernel(root: &Path, options: &Options) -> Result<PathBuf, String> {
     let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     let mut command = Command::new(cargo);
     command
@@ -312,7 +315,7 @@ fn build_kernel(root: &Path, options: &Options) -> Result<PathBuf, String> {
 }
 
 /// Downloads Limine's prebuilt binaries once, verifies the pinned checksum, and returns BOOTX64.EFI.
-fn ensure_limine(target_dir: &Path) -> Result<PathBuf, String> {
+pub(crate) fn ensure_limine(target_dir: &Path) -> Result<PathBuf, String> {
     let dir = target_dir.join(format!("limine-{LIMINE_VERSION}"));
     let efi = dir.join("limine-binary").join("BOOTX64.EFI");
     if efi.exists() {
