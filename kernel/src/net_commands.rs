@@ -82,9 +82,9 @@ pub fn resolve(host: &str) {
                 true => alloc::format!("cached, {} s left", found.ttl_s),
                 false => alloc::format!("TTL {} s", found.ttl_s),
             };
-            log!("{host}: {} ({ttl})", addresses.join(", "));
+            log!("resolve: {host} is {} ({ttl})", addresses.join(", "));
         }
-        Err(error) => log!("resolve {host}: {error}"),
+        Err(error) => log!("resolve: {host}: {error}"),
     }
 }
 
@@ -106,17 +106,17 @@ pub fn ping(args: &str) {
     let target = match resolve::resolve(host, DEFAULT_TIMEOUT_MS, || false) {
         Ok(found) => found.addresses[0],
         Err(error) => {
-            log!("ping {host}: {error}");
+            log!("ping: {host}: {error}");
             return;
         }
     };
-    log!("PING {host} ({target}): {count} echo requests");
+    log!("ping: {host} ({target}), {count} echo requests");
     let each = |seq: u16, outcome: Outcome| match outcome {
-        Outcome::Reply(us) => log!("reply from {target}: seq {seq}, {} ms", millis(us)),
-        Outcome::Lost => log!("seq {seq}: no reply within {} ms", ping::INTERVAL_MS),
+        Outcome::Reply(us) => log!("ping: reply from {target}, seq {seq}, {} ms", millis(us)),
+        Outcome::Lost => log!("ping: seq {seq}, no reply within {} ms", ping::INTERVAL_MS),
     };
     match ping::ping(target, count, each, || false) {
-        Ok(stats) => log!("ping {host}: {}", stats.summary()),
-        Err(error) => log!("ping {host}: {error}"),
+        Ok(stats) => log!("ping: {host}: {}", stats.summary()),
+        Err(error) => log!("ping: {host}: {error}"),
     }
 }

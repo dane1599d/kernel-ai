@@ -325,9 +325,9 @@ pub const TEST_CASES: &[TestCase] = &[
             "net-setup: the 4 s lease was renewed: still leased after 10 s, none lost",
             "network: 10.0.2.15/24 via 10.0.2.2, from the DHCP server at 10.0.2.2",
             "lease: 4s, granted ",
-            "alias.kai.test: 10.0.2.99 (cached, ",
-            "reply from 10.0.2.2: seq 0, ",
-            "ping 10.0.2.2: 1 sent, 1 received, 0% lost",
+            "resolve: alias.kai.test is 10.0.2.99 (cached, ",
+            "ping: reply from 10.0.2.2, seq 0, ",
+            "ping: 10.0.2.2: 1 sent, 1 received, 0% lost",
         ],
         ..case("net-setup", "test=net-setup dhcp_max_lease_s=4")
     },
