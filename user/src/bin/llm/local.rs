@@ -18,9 +18,9 @@ use infer::chat::{Budget, Engine, Step};
 use llmproto::chat::{self, Completion};
 use llmproto::local;
 use llmproto::script::{self, Answer, AnswerError, ScriptRequest};
-use llmproto::tune::TuneRequest;
+use llmproto::tune::{self, TuneRequest};
 use quant::{Parallel, Tier};
-use user::sys;
+use user::{println, sys};
 
 /// Longest one `ask` or `explain` may run: under the shell's 140 s and the
 /// kernel's 150 s. A script request gets the shell's own limit for a round.
@@ -49,6 +49,24 @@ impl Speed {
     fn per_second(&self) -> Option<f64> {
         (self.tokens > 0 && self.decode_ns > 0)
             .then(|| self.tokens as f64 * 1e9 / self.decode_ns as f64)
+    }
+
+    /// `tune`'s line: the prompt, the first token and the answer's rate.
+    fn timing(&self) -> String {
+        format!(
+            "{} prompt tokens ({} from the cache), first token after {} ms, {}",
+            self.cached + self.computed,
+            self.cached,
+            self.first_ns / 1_000_000,
+            self.rate()
+        )
+    }
+
+    fn rate(&self) -> String {
+        match self.per_second() {
+            Some(rate) => format!("{} more tokens at {rate:.2} tokens/s", self.tokens),
+            None => String::from("too short to time"),
+        }
     }
 
     fn describe(&self) -> String {
@@ -220,11 +238,24 @@ impl Local {
         .map_err(|error| local::describe(&error))
     }
 
-    /// The model's answer to a `tune` request, under the answer's schema.
+    /// The model's answer to a `tune` request, under the answer's schema, within
+    /// `tune::SERVICE_TIMEOUT_MS`. It prints how long the answer took, so a slow
+    /// machine's demo shows its own speed.
     pub fn tune(&mut self, request: &TuneRequest) -> Result<Completion, String> {
-        let mut clock = Clock::new(DEADLINE_MS);
+        let mut clock = Clock::new(tune::SERVICE_TIMEOUT_MS);
         let done = local::tune(&mut self.engine, request, |step| clock.step(step));
         self.last = clock.speed().or(self.last);
+        let timing = clock
+            .speed()
+            .map_or_else(|| String::from("no answer token"), |speed| speed.timing());
+        let limit = match clock.stopped {
+            true => format!(
+                "; stopped at the {} s limit",
+                tune::SERVICE_TIMEOUT_MS / 1000
+            ),
+            false => String::new(),
+        };
+        println!("tune: {timing}{limit}");
         done.map_err(|error| format!("the local model failed: {}", local::describe(&error)))
     }
 

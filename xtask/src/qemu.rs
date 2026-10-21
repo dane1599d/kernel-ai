@@ -228,6 +228,8 @@ pub fn run_test(
             }
             if line.contains("boot-ok") {
                 let _ = ready_tx.send(started.elapsed());
+            } else if line.contains("skip keys") {
+                stage += 1;
             } else if line.contains("ready for keys") {
                 if let Some(&keys) = stages.get(stage) {
                     stage += 1;

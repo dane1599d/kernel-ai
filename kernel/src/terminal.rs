@@ -18,10 +18,12 @@ use termcore::line::{Line, Outcome};
 
 const PROMPT: &str = "kai> ";
 const MAX_LINE: usize = 200;
-/// Longest a shell line may take: the shell's longest LLM wait (140 s for `ask`, two
-/// script rounds of 75 s) plus its compute budget, with room to spare, so the shell
-/// always answers first.
-const SHELL_TIMEOUT_MS: u64 = 160_000;
+/// Longest a shell line may take: the shell's longest LLM wait (`tune`: a 3 s
+/// window, then `llmproto::tune::CALL_TIMEOUT_MS` for the answer; 140 s for `ask`;
+/// two script rounds of 70 s) plus its compute budget, with room to spare, so the
+/// shell always answers first.
+const SHELL_TIMEOUT_MS: u64 = 310_000;
+const _: () = assert!(llmproto::tune::CALL_TIMEOUT_MS + 10_000 <= SHELL_TIMEOUT_MS);
 /// How long to wait for a shell that is starting or restarting.
 const SHELL_START_WAIT_NS: u64 = 3_000_000_000;
 /// Longest piece of a reply printed in one go (each print keeps interrupts off).

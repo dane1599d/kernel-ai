@@ -110,7 +110,7 @@ impl Host for System {
             "llm",
             request.encode().as_bytes(),
             &mut reply,
-            ASK_TIMEOUT_MS,
+            tune::CALL_TIMEOUT_MS,
         )
         .map_err(|error| alloc::format!("llm service: {error:?}"))?;
         let text = String::from_utf8_lossy(&reply[..len.min(reply.len())]).into_owned();

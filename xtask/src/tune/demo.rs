@@ -2,7 +2,7 @@
 //! [--timeout SECS]`: the founder's first view of the model tuning Kernel AI
 //! itself. Boots `test=tune-demo` with mix A and the catalog model on the
 //! `kai-model` disk, types `tune editor` at the terminal, `yes` once the
-//! proposal card waits for it, and has QEMU save a screendump
+//! proposal card waits for it (only then), and has QEMU save a screendump
 //! (`target/tune-demo.ppm`) after the verdict. Pipe the output to a file, then
 //! `cargo xtask tune check --log FILE --local ID` requires every answer the guest
 //! gave to be the host engine's. `tune-model.yml` runs both on a KVM runner.

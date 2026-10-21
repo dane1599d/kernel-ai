@@ -9,7 +9,8 @@
 //!
 //! `test=tune-demo workload=A`: the founder's demo, for `tune-model.yml` with the
 //! real model on the disk. The harness types `tune editor` at the terminal, `yes`
-//! once the proposal card waits for it, and asks QEMU for a screendump after the
+//! once the proposal card waits for it (with no card, the kernel says `skip keys`
+//! and the harness passes over it), and asks QEMU for a screendump after the
 //! verdict. The llm service traces every request and answer, and `cargo xtask
 //! tune check` requires the guest's answer to be the host engine's.
 
@@ -107,9 +108,8 @@ pub fn demo_check() -> Result<(), &'static str> {
         );
     } else {
         log!("tune-demo: the model kept the current policy");
-        // The harness's `yes` still comes; the shell just reports it as no command.
-        log!("tune-demo: ready for keys");
-        threads::sleep_ms(2_000);
+        // No proposal waits, so the harness passes over its `yes`.
+        log!("tune-demo: skip keys");
     }
     log!("tune-demo: ready for keys");
     threads::sleep_ms(3_000);
