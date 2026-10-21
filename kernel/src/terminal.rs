@@ -91,6 +91,7 @@ impl Confirm {
 
 /// Runs the terminal on the calling thread, forever.
 pub fn run(_: usize) {
+    console::status::start();
     let mut decoder = Decoder::new();
     log!(
         "Kernel AI terminal. Talk to the AI or type Rhai (try help); kernel commands start with ':'."
@@ -176,7 +177,10 @@ fn shell_line(line: &str) -> Option<Confirm> {
         log!("shell not running; kernel commands start with ':' (try :help)");
         return None;
     }
-    match ipc::call("shell", line.as_bytes(), SHELL_TIMEOUT_MS) {
+    console::status::set_busy(true);
+    let reply = ipc::call("shell", line.as_bytes(), SHELL_TIMEOUT_MS);
+    console::status::set_busy(false);
+    match reply {
         Ok(reply) => show_shell_reply(&reply),
         Err(error) => {
             log!("shell: no answer ({error:?})");
@@ -303,7 +307,10 @@ fn ask(prompt: &str) {
         return;
     }
     log!("(asking the LLM...)");
-    match llm::ask(prompt) {
+    console::status::set_busy(true);
+    let reply = llm::ask(prompt);
+    console::status::set_busy(false);
+    match reply {
         Ok(reply) => {
             for line in reply.lines() {
                 log!("ai: {}", printable(line, PIECE_CHARS, 1));

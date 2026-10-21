@@ -290,3 +290,26 @@ fn a_log_row_scrolled_away_by_a_tall_input_starts_again_at_the_top() {
     grid.log("cd\n");
     assert!(grid.row_reads(0, "cd"));
 }
+
+#[test]
+fn the_input_span_covers_its_wrapped_rows_and_names_the_prompt() {
+    let mut grid = grid();
+    grid.log("one\n");
+    assert_eq!(grid.input_span(), None);
+    grid.set_input("kai> ", "a long line that wraps", 22);
+    assert_eq!(grid.input_span(), Some((1, 3, 5)));
+    grid.hide_input();
+    assert_eq!(grid.input_span(), None);
+}
+
+#[test]
+fn the_spare_row_is_the_blank_log_row_while_the_input_hides() {
+    let mut grid = grid();
+    grid.log("one\n");
+    assert_eq!(grid.spare_row(), Some(1));
+    grid.set_input("kai> ", "", 0);
+    assert_eq!(grid.spare_row(), None, "the input takes it");
+    grid.hide_input();
+    grid.log("half");
+    assert_eq!(grid.spare_row(), None, "a line is under way");
+}
