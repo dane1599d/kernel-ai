@@ -3,8 +3,8 @@
 //!
 //! The M8b gate: does the model write scripts the shell accepts, and do they do
 //! what was asked? Each task goes through the OS's own path: the same chat
-//! request, answer parser, strict checks, one repair round, confirmation and
-//! sandboxed run. With `--llm` the model is on an LLM server and only the
+//! request, answer parser, strict checks, one repair round, tier and sandboxed
+//! run. With `--llm` the model is on an LLM server and only the
 //! transport (a host TCP socket) is a stand-in; with `--local` it is a catalog
 //! model run by Kernel AI's own engine on this PC exactly as the llm service runs
 //! it ([`local`]). The OS is a [`GateHost`] with fixed values. The gate passes when
@@ -105,23 +105,19 @@ impl Outcome {
 }
 
 /// Runs `task` through the shell the way a user would: `? <request>`, then `yes`
-/// to a script that changes anything; one that only reads runs at once.
+/// to a script that asks; a run-tier one runs at once.
 pub fn attempt(task: &Task, transport: Transport) -> Outcome {
     let host = Rc::new(GateHost::new(transport));
     let mut shell = Shell::new(host.clone(), DEFAULT_CONFIG);
     let proposal = shell.eval(&format!("? {}", task.request));
     let answers = host.answers.borrow().clone();
     let rounds = answers.len();
-    let ran_at_once = match (proposal.confirm, answers.last()) {
-        (None, Some(Ok(_))) => proposal.text.split_once(shellcore::RAN_READ_ONLY),
-        _ => None,
-    };
     let script = answers
         .iter()
         .rev()
         .find_map(|answer| answer.as_ref().ok())
         .map(|answer| answer.script.clone());
-    if let Some((_, output)) = ran_at_once {
+    if let Some(output) = shell.last_output() {
         let failure = judge(task, proposal.ok, output, &host.changes.borrow());
         return Outcome {
             rounds,
@@ -140,11 +136,13 @@ pub fn attempt(task: &Task, transport: Transport) -> Outcome {
         };
     };
     let reply = shell.eval(&format!("answer {id} yes"));
-    let failure = judge(task, reply.ok, &reply.text, &host.changes.borrow());
+    // The script's own output, without the shell's line saying what changed.
+    let output = shell.last_output().unwrap_or(&reply.text).to_string();
+    let failure = judge(task, reply.ok, &output, &host.changes.borrow());
     Outcome {
         rounds,
         script,
-        output: reply.text,
+        output,
         failure,
     }
 }

@@ -5,9 +5,10 @@
 //! the value of the last expression is echoed. Plain commands (`mem`, `policy rr`,
 //! `ask why is the sky blue`) are recognised from their first word and run directly.
 //! A line starting with `?`, or plain words that do not run as Rhai, go to the LLM,
-//! which answers in words or with a script. A script is checked and shown in full;
-//! one that only reads runs at once, and one that changes anything runs only after
-//! a yes (see `script`).
+//! which answers in words or with a script. A script is checked, then its tier
+//! (`tiers`) decides: one whose every function can be undone runs at once and the
+//! reply says what happened; one that cannot asks one short question first (see
+//! `actions`). `undo` reverts the last run, and `show` or `why` shows its script.
 //!
 //! Every run is bounded: by time (checked every [`CHECK_EVERY`] operations), by an
 //! operation count, by heap use, and by Rhai's own size and depth limits. A run that
@@ -17,13 +18,17 @@
 
 extern crate alloc;
 
+mod actions;
 mod commands;
 mod engine;
 mod log;
 pub mod script;
 mod show;
+pub mod tiers;
 mod tune;
+mod undo;
 
+use actions::{Pending, Undoable};
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::rc::Rc;
@@ -35,6 +40,7 @@ use llmproto::chat::Completion;
 use llmproto::script::{Answer, AnswerError, ScriptRequest};
 use llmproto::tune::TuneRequest;
 use rhai::{AST, Dynamic, Engine, EvalAltResult, Scope};
+use tiers::Tier;
 
 pub use commands::{COMMANDS, split_command};
 
@@ -104,10 +110,6 @@ pub const CHECK_EVERY: u64 = 1024;
 /// Time the llm service gets for one script request; two rounds (an answer and one
 /// repair) must fit in the terminal's wait for a line (310 s since the M10 demo).
 pub const SCRIPT_ROUND_MS: u64 = 70_000;
-/// What separates a read-only script, shown in full, from its output.
-pub const RAN_READ_ONLY: &str = "\nran it (read-only):\n";
-/// How long a proposed script waits for its answer.
-const CONFIRM_EXPIRY_NS: u64 = 120_000_000_000;
 /// First words that mark a line as Rhai even when it does not parse.
 const RHAI_WORDS: &[&str] = &[
     "let", "const", "fn", "if", "else", "for", "while", "loop", "return", "print", "throw", "try",
@@ -119,7 +121,7 @@ const RHAI_WORDS: &[&str] = &[
 pub struct Reply {
     pub ok: bool,
     pub text: String,
-    /// Set when the reply asks the user to confirm script `id`.
+    /// Set when the reply asks the user about script `id`.
     pub confirm: Option<u64>,
 }
 
@@ -149,14 +151,6 @@ impl Reply {
     }
 }
 
-/// A script waiting for the user's answer.
-struct Pending {
-    id: u64,
-    request: String,
-    checked: script::Checked,
-    created_ns: u64,
-}
-
 pub struct Shell {
     engine: Engine,
     scope: Scope<'static>,
@@ -169,10 +163,27 @@ pub struct Shell {
     next_id: u64,
     log: log::Log,
     tuner: tune::Tuner,
+    /// Each script API function's tier.
+    tiers: &'static [(&'static str, Tier)],
+    /// The last run's changes, for `undo`.
+    undo: Option<Undoable>,
+    /// The last script as `show` prints it.
+    shown: Option<String>,
+    /// What the script run by the last line printed.
+    last_output: Option<String>,
 }
 
 impl Shell {
     pub fn new(host: Rc<dyn Host>, config: Config) -> Self {
+        Self::with_tiers(host, config, tiers::TIERS)
+    }
+
+    /// A shell whose scripts are tiered by `tiers` instead of [`tiers::TIERS`].
+    pub fn with_tiers(
+        host: Rc<dyn Host>,
+        config: Config,
+        tiers: &'static [(&'static str, Tier)],
+    ) -> Self {
         let line = Line::new();
         let mut engine = engine::bounded(&line, &host, &config);
         commands::register(&mut engine, &host, &line, config.line_budget_ms);
@@ -187,12 +198,23 @@ impl Shell {
             next_id: 1,
             log: log::Log::default(),
             tuner: tune::Tuner::default(),
+            tiers,
+            undo: None,
+            shown: None,
+            last_output: None,
         }
+    }
+
+    /// What the script the last line ran printed, then its error if it failed;
+    /// `None` if the line ran no script.
+    pub fn last_output(&self) -> Option<&str> {
+        self.last_output.as_deref()
     }
 
     /// Runs one line and returns what to show.
     pub fn eval(&mut self, input: &str) -> Reply {
         let input = input.trim();
+        self.last_output = None;
         // `answer <id> <text>` comes from the terminal's confirm prompt. A line such as
         // `answer + 1` is Rhai about a variable, so the id must be a number.
         if let Some(rest) = input.strip_prefix("answer ")
@@ -203,10 +225,19 @@ impl Shell {
         {
             return self.answer(rest);
         }
+        if let Some(reply) = self.answer_bare(input) {
+            return reply;
+        }
         // Anything but the answer leaves a proposal unrun.
         self.tuner.discard();
         if let Some(pending) = self.pending.take() {
-            self.record(&pending, "discarded: another line came first");
+            let outcome = "discarded: another line came first";
+            self.record(
+                pending.id,
+                &pending.request,
+                &pending.checked.script,
+                outcome,
+            );
         }
         self.line.begin(self.host.as_ref(), &self.config);
         if input.is_empty() {
@@ -216,6 +247,13 @@ impl Shell {
             self.scope.clear();
             self.functions = AST::empty();
             return Reply::ok("variables and functions cleared");
+        }
+        if !self.scope.contains(input) {
+            match input {
+                "undo" => return self.undo(),
+                "show" | "why" => return self.show_last(),
+                _ => {}
+            }
         }
         if (input == "tune" || input.starts_with("tune ")) && !self.scope.contains("tune") {
             let id = self.next_id;
@@ -291,16 +329,6 @@ impl Shell {
         }
     }
 
-    fn record(&mut self, pending: &Pending, outcome: &str) {
-        self.log.record(
-            pending.id,
-            &pending.request,
-            &pending.checked.script,
-            outcome,
-        );
-        self.host.audit(&format!("script {} {outcome}", pending.id));
-    }
-
     /// Asks the LLM for a script for `request`, checks it, and proposes it. A refused
     /// answer goes back to the model once, with the reason.
     fn ask_for_script(&mut self, request: &str) -> Reply {
@@ -327,7 +355,13 @@ impl Shell {
                     return self.say(id, request, reply);
                 }
                 Ok(answer) => match script::check(&answer, &self.host, &self.config) {
-                    Ok(checked) => return self.propose(id, request, checked),
+                    Ok(checked) => match self.tier_of(&checked) {
+                        (Tier::Never, at) => Some((
+                            answer.script,
+                            format!("{} may not be used in scripts here", at.join(", ")),
+                        )),
+                        tier => return self.propose(id, request, checked, tier),
+                    },
                     Err(script::Refusal::Script(why)) => Some((answer.script, why)),
                     Err(refusal @ script::Refusal::Interrupted) => {
                         outcome = refusal.to_string();
@@ -362,75 +396,6 @@ impl Shell {
         self.log.record(id, request, "", "answered in words");
         self.host.audit(&format!("script {id} answered in words"));
         Reply::ok(reply)
-    }
-
-    /// Runs a script that only reads at once, shown in full above its output, as
-    /// the founder decided on 2026-10-20 (docs/decisions.md, Autonomy). A script
-    /// that changes anything waits for a yes.
-    fn propose(&mut self, id: u64, request: &str, checked: script::Checked) -> Reply {
-        if checked.changes.is_empty() {
-            self.host
-                .audit(&format!("script {id} only reads; running it"));
-            let ran = script::run(&checked, &self.host, &self.config);
-            let outcome = if ran.ok {
-                "ran read-only"
-            } else {
-                "failed read-only"
-            };
-            self.log.record(id, request, &checked.script, outcome);
-            self.host.audit(&format!("script {id} {outcome}"));
-            let shown = script::shown(id, &checked);
-            let text = format!("{shown}{RAN_READ_ONLY}{}", ran.text);
-            return Reply { text, ..ran };
-        }
-        let text = script::confirmation(id, &checked);
-        self.host.audit(&format!(
-            "script {id} proposed ({} lines)",
-            checked.script.lines().count()
-        ));
-        self.pending = Some(Pending {
-            id,
-            request: request.to_string(),
-            checked,
-            created_ns: self.host.now_ns(),
-        });
-        Reply {
-            ok: true,
-            text,
-            confirm: Some(id),
-        }
-    }
-
-    /// `answer <id> <text>` from the terminal: only `y` or `yes` for the script
-    /// waiting under `id` runs it.
-    fn answer(&mut self, rest: &str) -> Reply {
-        let (id, text) = rest.split_once(' ').unwrap_or((rest, ""));
-        let id = id.parse::<u64>().ok();
-        if id.is_some_and(|id| self.tuner.waiting(id)) {
-            return self.tuner.answer(self.host.as_ref(), text);
-        }
-        let pending = match self.pending.take() {
-            Some(pending) if Some(pending.id) == id => pending,
-            other => {
-                self.pending = other;
-                return Reply::err("nothing to confirm");
-            }
-        };
-        if self.host.now_ns().saturating_sub(pending.created_ns) > CONFIRM_EXPIRY_NS {
-            self.record(&pending, "expired");
-            return Reply::err("the script expired; ask again");
-        }
-        let yes = matches!(text.trim().to_ascii_lowercase().as_str(), "y" | "yes");
-        if !yes {
-            self.record(&pending, "declined");
-            return Reply::ok(format!("script {} not run", pending.id));
-        }
-        self.host
-            .audit(&format!("script {} confirmed; running it", pending.id));
-        let reply = script::run(&pending.checked, &self.host, &self.config);
-        let outcome = if reply.ok { "ran" } else { "failed" };
-        self.record(&pending, outcome);
-        reply
     }
 
     /// Every `let` adds a scope entry, even for a name that exists: keep only the

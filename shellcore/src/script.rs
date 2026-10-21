@@ -1,6 +1,7 @@
 //! LLM-written scripts: checked in a strict profile, tried against stub functions,
-//! shown in full, and run in a fresh engine that has only the functions the script
-//! names: at once if it only reads, after a yes if it changes anything.
+//! and run in a fresh engine that has only the functions the script names: at
+//! once if every function it names is run-tier, after a yes if one asks (see
+//! `tiers`). Each change records the value it replaced, for `undo`.
 //!
 //! The strict profile has no closures, no `fn`, no indirect calls (`Fn`, `call`,
 //! `curry`, `eval`) and no undefined variables, so a script can only reach an OS
@@ -8,10 +9,11 @@
 //! range>`, which ends by itself; `while`, `loop` and `do` stay off, and the
 //! operation, time and heap limits stop a `for` as they stop anything else. The names found in the text
 //! (strings and comments included, so the list can only be too long, never too
-//! short) are what the confirmation shows and all the run is given.
+//! short) decide the tier, and are what `show` lists and all the run is given.
 
 use crate::engine::{self, Line, Stop};
-use crate::{Config, Host, Reply, show};
+use crate::undo::{self, Done, Inverse, Journal};
+use crate::{Config, Host, show};
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::rc::Rc;
@@ -54,8 +56,9 @@ fn policy_name(id: u64) -> &'static str {
     }
 }
 
-/// Registers the API functions in `granted` on `engine`, backed by `host`.
-fn register(engine: &mut Engine, host: &Rc<dyn Host>, granted: &[&'static str]) {
+/// Registers the API functions in `granted` on `engine`, backed by `host`. Each
+/// change goes into `journal` with how to undo it.
+fn register(engine: &mut Engine, host: &Rc<dyn Host>, granted: &[&'static str], journal: &Journal) {
     for &name in granted {
         let h = Rc::clone(host);
         match name {
@@ -113,14 +116,32 @@ fn register(engine: &mut Engine, host: &Rc<dyn Host>, granted: &[&'static str]) 
                 });
             }
             "set_policy" => {
+                let journal = Rc::clone(journal);
                 engine.register_fn(name, move |which: &str| -> RhaiResult<()> {
                     let id = match which {
                         "round-robin" | "rr" => policy::ROUND_ROBIN,
                         "interactive" => policy::INTERACTIVE,
                         other => return Err(rhai_error(format!("unknown policy {other:?}"))),
                     };
+                    // No undo, no change: the tier promises one.
+                    let (was, preset) = undo::current_spec(h.as_ref()).ok_or_else(|| {
+                        rhai_error("set_policy: the installed policy could not be put back, so it was left as it is")
+                    })?;
                     h.set_policy(id)
-                        .map_err(|error| rhai_error(format!("set_policy: {error:?}")))
+                        .map_err(|error| rhai_error(format!("set_policy: {error:?}")))?;
+                    journal.borrow_mut().push(Done {
+                        function: "set_policy",
+                        what: format!(
+                            "policy {} (was {})",
+                            policy_name(id),
+                            undo::spec_name(was, preset)
+                        ),
+                        inverse: Some(Inverse::Spec {
+                            policy: was,
+                            preset,
+                        }),
+                    });
+                    Ok(())
                 });
             }
             _ => {}
@@ -154,6 +175,7 @@ fn strict(
     host: &Rc<dyn Host>,
     config: &Config,
     granted: &[&'static str],
+    journal: &Journal,
 ) -> Engine {
     let mut engine = engine::bounded(line, host, config);
     engine
@@ -167,7 +189,7 @@ fn strict(
     // write `floor` for "rounded down" all the same.
     engine.register_fn("floor", |x: INT| x);
     engine.register_fn("fixed", fixed);
-    register(&mut engine, host, granted);
+    register(&mut engine, host, granted, journal);
     engine
 }
 
@@ -298,7 +320,7 @@ pub fn check(answer: &Answer, host: &Rc<dyn Host>, config: &Config) -> Result<Ch
     let granted: Vec<&'static str> = reads.iter().chain(&changes).copied().collect();
     let line = Line::new();
     let stub: Rc<dyn Host> = Rc::new(Stub(Rc::clone(host)));
-    let trial = strict(&line, &stub, config, &granted);
+    let trial = strict(&line, &stub, config, &granted, &Journal::default());
     let ast = trial
         .compile(&script)
         .map_err(|error| refuse(format!("syntax error: {error}")))?;
@@ -353,20 +375,15 @@ fn stand_in_note(error: &EvalAltResult) -> Option<String> {
     ))
 }
 
-/// What the confirmation shows: the script as [`shown`], then the question, which
-/// says again whether the script can change anything.
-pub fn confirmation(id: u64, checked: &Checked) -> String {
-    let mut text = shown(id, checked);
-    if checked.changes.is_empty() {
-        text.push_str("\nrun it? it changes nothing. yes/no");
-    } else {
-        let _ = write!(
-            text,
-            "\nrun it? it CHANGES {}. yes/no",
-            checked.changes.join(", ")
-        );
-    }
-    text
+/// The one question a script that asks gets: what the model says it does, then
+/// the shell's own account of the functions it calls that have no undo. Two
+/// short lines; `show` has the rest.
+pub fn question(id: u64, checked: &Checked, asking: &[&str]) -> String {
+    format!(
+        "script {id}: {}\nIt changes {} (no undo). Go ahead? y/n, or show",
+        checked.summary,
+        asking.join(", ")
+    )
 }
 
 /// A script as the user sees it: the shell's own account of what it uses first,
@@ -400,8 +417,16 @@ pub fn shown(id: u64, checked: &Checked) -> String {
     text
 }
 
-/// Runs a confirmed script with the real OS, granted only what it names.
-pub fn run(checked: &Checked, host: &Rc<dyn Host>, config: &Config) -> Reply {
+/// What a run printed, how it ended, and what it changed.
+pub struct Ran {
+    pub ok: bool,
+    /// The script's output, then its error if it failed.
+    pub text: String,
+    pub done: Vec<Done>,
+}
+
+/// Runs a script with the real OS, granted only what it names.
+pub fn run(checked: &Checked, host: &Rc<dyn Host>, config: &Config) -> Ran {
     let config = &for_scripts(config);
     let granted: Vec<&'static str> = checked
         .reads
@@ -410,20 +435,23 @@ pub fn run(checked: &Checked, host: &Rc<dyn Host>, config: &Config) -> Reply {
         .copied()
         .collect();
     let line = Line::new();
-    let engine = strict(&line, host, config, &granted);
+    let journal = Journal::default();
+    let engine = strict(&line, host, config, &granted, &journal);
     line.begin(host.as_ref(), config);
     let result = engine.eval_ast_with_scope::<Dynamic>(&mut Scope::new(), &checked.ast);
     let mut text = line.take_output();
-    match result {
+    let ok = match result {
         Ok(value) => {
             if !value.is_unit() {
                 text.push_str(&show::value(&value));
             }
-            Reply::ok(text)
+            true
         }
         Err(error) => {
             text.push_str(&line.describe(&error, config));
-            Reply::err(text)
+            false
         }
-    }
+    };
+    let done = journal.take();
+    Ran { ok, text, done }
 }

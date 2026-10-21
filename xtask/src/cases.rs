@@ -106,7 +106,7 @@ const TERMINAL_SCRIPT: &[&[&str]] = &[
         "g", "o", "spc", "b", "a", "c", "k", "spc", "t", "o", "spc",
         "i", "n", "t", "e", "r", "a", "c", "t", "i", "v", "e", "ret",
     ],
-    &["n", "o", "ret"],
+    &["u", "n", "d", "o", "ret"],
 ];
 
 pub const TEST_CASES: &[TestCase] = &[
@@ -166,14 +166,14 @@ pub const TEST_CASES: &[TestCase] = &[
         keys: TERMINAL_SCRIPT,
         expect: &[
             crate::mock_llm::REPLY,
-            // The read-only script ran without a question.
-            "= ran it (read-only):",
+            // The read-only script ran without a question, showing only its output.
             "= CPUs: ",
             "kai> hello",
             crate::mock_llm::HELLO,
-            "? run it? it CHANGES set_policy. yes/no",
-            "run script 3? yes/no> no",
-            "= script 3 not run",
+            // So did the switch, which says what it did and how to undo it.
+            "= Done: policy interactive (was round-robin) (undo: `undo`)",
+            "kai> undo",
+            "= Undone: policy back to round-robin",
             // screenlog copies the typed text the screen shows. It matches the
             // `policy rrxz` row too, so only the kernel's policy check proves the edits.
             "|kai> policy rr",

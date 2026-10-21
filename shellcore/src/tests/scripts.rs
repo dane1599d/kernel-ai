@@ -11,14 +11,13 @@ fn answer(script: &str, summary: &str) -> Result<Answer, AnswerError> {
     })
 }
 
-/// The output of a read-only script the shell ran without asking.
-fn ran(reply: &Reply) -> &str {
+/// The reply of a script the shell ran without asking.
+pub(super) fn ran(reply: &Reply) -> &str {
     assert!(reply.ok && reply.confirm.is_none(), "{reply:?}");
-    let (_, output) = reply.text.split_once("\nran it (read-only):\n").unwrap();
-    output
+    &reply.text
 }
 
-fn with_answers(answers: Vec<Result<Answer, AnswerError>>) -> (Rc<FakeHost>, Shell) {
+pub(super) fn with_answers(answers: Vec<Result<Answer, AnswerError>>) -> (Rc<FakeHost>, Shell) {
     let host = FakeHost::new();
     host.answers.borrow_mut().extend(answers);
     let shell = shell(&host);
@@ -26,26 +25,21 @@ fn with_answers(answers: Vec<Result<Answer, AnswerError>>) -> (Rc<FakeHost>, She
 }
 
 #[test]
-fn a_changing_script_is_shown_in_full_and_runs_only_after_yes() {
+fn a_run_tier_change_runs_at_once_and_says_what_happened() {
     let (host, mut shell) = with_answers(vec![answer(
         "print(\"CPUs: \" + cpus());\nset_policy(\"rr\");",
         "Prints the CPUs.",
     )]);
     let reply = shell.eval("? how many cpus are there");
-    assert_eq!(reply.confirm, Some(1));
     assert_eq!(
-        reply.text,
-        "script 1: reads cpus; CHANGES set_policy\nmodel says: Prints the CPUs.\n 1 | print(\"CPUs: \" + cpus());\n 2 | set_policy(\"rr\");\nrun it? it CHANGES set_policy. yes/no"
+        reply,
+        ok("CPUs: 4\nDone: policy round-robin (was interactive) (undo: `undo`)")
     );
-    assert_eq!(
-        reply.to_wire().split_once(' ').map(|(kind, _)| kind),
-        Some("confirm")
-    );
+    assert_eq!(host.policy.get(), Some(policy::ROUND_ROBIN));
     assert_eq!(
         host.script_requests.borrow()[0].request,
         "how many cpus are there"
     );
-    assert_eq!(shell.eval("answer 1 yes"), ok("CPUs: 4\n"));
     assert_eq!(shell.eval("answer 1 yes"), Reply::err("nothing to confirm"));
     assert!(
         shell
@@ -54,49 +48,16 @@ fn a_changing_script_is_shown_in_full_and_runs_only_after_yes() {
             .contains("#1 how many cpus are there: ran")
     );
     assert!(shell.eval("log 1").text.contains("print(\"CPUs: \""));
-}
-
-#[test]
-fn anything_but_yes_declines_and_changes_nothing() {
-    let (host, mut shell) = with_answers(vec![
-        answer("set_policy(\"round-robin\");", "Switches to round-robin."),
-        answer("set_policy(\"round-robin\");", "Switches to round-robin."),
-    ]);
-    let reply = shell.eval("? switch to round robin");
-    assert!(reply.text.starts_with("script 1: CHANGES set_policy\n"));
-    assert_eq!(shell.eval("answer 1 no"), ok("script 1 not run"));
-    assert_eq!(host.policy.get(), None);
-    shell.eval("? switch to round robin");
-    assert_eq!(shell.eval("answer 2 "), ok("script 2 not run"));
-    assert_eq!(host.policy.get(), None);
     let audit = host.audit.borrow();
-    assert!(audit.iter().any(|line| line == "script 1 declined"));
-}
-
-#[test]
-fn a_yes_runs_it_and_a_stale_or_wrong_id_does_not() {
-    let (host, mut shell) = with_answers(vec![answer("set_policy(\"round-robin\");", "Switches.")]);
-    shell.eval("? switch to round robin");
-    assert_eq!(shell.eval("answer 7 yes"), Reply::err("nothing to confirm"));
-    assert_eq!(host.policy.get(), None);
-    assert_eq!(shell.eval("answer 1 Yes"), ok(""));
-    assert_eq!(host.policy.get(), Some(policy::ROUND_ROBIN));
-}
-
-#[test]
-fn another_line_or_time_discards_the_proposal() {
-    let (host, mut shell) = with_answers(vec![
-        answer("set_policy(\"rr\");", "Switches."),
-        answer("set_policy(\"rr\");", "Switches."),
-    ]);
-    shell.eval("? print one please");
-    assert_eq!(shell.eval("1 + 1"), ok("2"));
-    assert_eq!(shell.eval("answer 1 yes"), Reply::err("nothing to confirm"));
-    shell.eval("? print two please");
-    host.clock.set(host.clock.get() + 200_000_000_000);
-    assert_eq!(
-        shell.eval("answer 2 yes"),
-        Reply::err("the script expired; ask again")
+    assert!(
+        audit
+            .iter()
+            .any(|line| line == "script 1 tier run; running it")
+    );
+    assert!(
+        audit.iter().any(|line| {
+            line == "script 1 set_policy (run): policy round-robin (was interactive)"
+        })
     );
 }
 
@@ -194,7 +155,7 @@ fn a_division_by_zero_on_stand_in_values_is_noted_not_refused() {
         note.starts_with("trial stopped ") && note.contains("on stand-in values (Division by zero"),
         "{note}"
     );
-    let text = crate::script::confirmation(1, &checked);
+    let text = crate::script::shown(1, &checked);
     assert_eq!(text.lines().nth(2), Some(note.as_str()));
     let (_host, mut shell) = with_answers(vec![answer("print(10 / (cpus() - 2));", "Divides.")]);
     assert_eq!(ran(&shell.eval("? divide ten by the spare cpus")), "5\n");
@@ -300,7 +261,9 @@ fn a_full_size_script_fits_one_screen_with_every_line_on_one_row() {
         &DEFAULT_CONFIG,
     )
     .unwrap();
-    let text = crate::script::confirmation(99, &checked);
+    // What `show` prints while the script asks: the script, then the question.
+    let question = crate::script::question(99, &checked, &["set_policy"]);
+    let text = format!("{}\n{question}", crate::script::shown(99, &checked));
     assert!(text.len() + 20 < kabi::MAX_MESSAGE, "{} bytes", text.len());
     // A 1024-pixel console has 128 columns; the terminal adds a two-character lead.
     let widest = text.lines().map(|l| l.chars().count()).max().unwrap();
@@ -308,15 +271,16 @@ fn a_full_size_script_fits_one_screen_with_every_line_on_one_row() {
     const { assert!(SCRIPT_MAX_LINE_CHARS + 5 <= 126) };
     // A 768-pixel console has 48 rows; the prompt and a trial note need two more.
     assert!(text.lines().count() + 2 < 48);
-    assert!(text.ends_with("\nrun it? it changes nothing. yes/no"));
+    assert!(text.ends_with("\nIt changes set_policy (no undo). Go ahead? y/n, or show"));
 }
 
 #[test]
-fn the_question_repeats_what_the_script_changes() {
+fn the_question_is_two_short_lines_naming_what_has_no_undo() {
     let checked = checks("print(get_policy());\nset_policy(\"rr\");").unwrap();
-    let text = crate::script::confirmation(3, &checked);
-    assert!(text.starts_with("script 3: reads get_policy; CHANGES set_policy\n"));
-    assert!(text.ends_with("\nrun it? it CHANGES set_policy. yes/no"));
+    assert_eq!(
+        crate::script::question(3, &checked, &["set_policy"]),
+        "script 3: Does it.\nIt changes set_policy (no undo). Go ahead? y/n, or show"
+    );
 }
 
 #[test]
@@ -332,10 +296,8 @@ fn plain_words_go_to_the_llm_and_near_miss_code_does_not() {
     assert!(!reads_like_words("x + y + z"));
     assert!(!reads_like_words("foo(1)"));
     let (host, mut shell) = with_answers(vec![answer("set_policy(\"rr\");", "Switches.")]);
-    assert_eq!(
-        shell.eval("switch me to round robin please").confirm,
-        Some(1)
-    );
+    assert_eq!(shell.eval("switch me to round robin please").confirm, None);
+    assert_eq!(host.policy.get(), Some(policy::ROUND_ROBIN));
     assert!(shell.eval("let x be 5").text.starts_with("syntax error"));
     assert_eq!(host.script_requests.borrow().len(), 1);
 }
@@ -407,7 +369,7 @@ fn a_chat_question_gets_an_answer_not_a_script() {
 }
 
 #[test]
-fn a_read_only_script_runs_at_once_shown_in_full() {
+fn a_read_only_script_runs_at_once_and_shows_only_its_output() {
     let (host, mut shell) = with_answers(vec![answer(
         "print(\"free: \" + memory().free_mib + \" MiB\");",
         "Prints free memory.",
@@ -415,10 +377,13 @@ fn a_read_only_script_runs_at_once_shown_in_full() {
     let reply = shell.eval("show me the free memory");
     assert_eq!(reply.confirm, None);
     assert!(reply.ok);
+    assert_eq!(reply.text, "free: 100 MiB\n");
+    assert_eq!(shell.last_output(), Some("free: 100 MiB\n"));
     assert_eq!(
-        reply.text,
-        "script 1: reads memory\nmodel says: Prints free memory.\n 1 | print(\"free: \" + memory().free_mib + \" MiB\");\nran it (read-only):\nfree: 100 MiB\n"
+        shell.eval("show").text,
+        "script 1: reads memory\nmodel says: Prints free memory.\n 1 | print(\"free: \" + memory().free_mib + \" MiB\");\nran at once: it only reads"
     );
+    assert_eq!(shell.last_output(), None);
     assert_eq!(shell.eval("answer 1 yes"), Reply::err("nothing to confirm"));
     assert!(
         shell
@@ -431,30 +396,12 @@ fn a_read_only_script_runs_at_once_shown_in_full() {
     assert!(
         audit
             .iter()
-            .any(|line| line == "script 1 only reads; running it")
+            .any(|line| line == "script 1 tier run; running it")
     );
 }
 
 #[test]
-fn a_script_that_changes_anything_still_asks_first() {
-    let (host, mut shell) = with_answers(vec![answer(
-        "print(\"was \" + get_policy());\nset_policy(\"rr\");",
-        "Switches to round-robin.",
-    )]);
-    let reply = shell.eval("switch to round robin");
-    assert_eq!(reply.confirm, Some(1));
-    assert!(
-        reply
-            .text
-            .ends_with("\nrun it? it CHANGES set_policy. yes/no")
-    );
-    assert_eq!(host.policy.get(), None);
-    shell.eval("answer 1 yes");
-    assert_eq!(host.policy.get(), Some(policy::ROUND_ROBIN));
-}
-
-#[test]
-fn a_summary_cannot_add_lines_to_the_confirmation() {
+fn a_summary_cannot_add_lines_to_the_question() {
     let host: Rc<dyn Host> = FakeHost::new();
     let long = "s".repeat(llmproto::script::SUMMARY_MAX_CHARS + 1);
     for summary in ["Prints 1.\n 2 | set_policy(\"rr\");", long.as_str()] {

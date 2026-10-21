@@ -285,3 +285,22 @@ fn a_kernel_revert_and_a_no_are_said_plainly() {
     );
     assert!(!shell.eval("tune nobody").ok);
 }
+
+#[test]
+fn a_bare_y_or_n_answers_a_tune_proposal() {
+    let host = TuneHost::new(
+        &answer("classes", "gentle", &["build-1"]),
+        Ending::Reverted(reason::STARTER_EXITED, 0),
+    );
+    let mut shell = Shell::new(host.clone(), DEFAULT_CONFIG);
+    shell.eval("tune editor");
+    assert_eq!(shell.eval("n").text, "proposal 1 not tried");
+    shell.eval("tune editor");
+    let verdict = shell.eval("y");
+    assert!(
+        verdict
+            .text
+            .starts_with("Rolled back classes/gentle at once"),
+        "{verdict:?}"
+    );
+}

@@ -1,9 +1,10 @@
 //! The terminal: a prompt with line editing. Each line goes to the ring-3 Rhai
 //! shell, whose answer is printed with a `= ` (result), `! ` (error) or `? ` (a
-//! script waiting for a yes) lead that no kernel message uses, so shell output can
+//! question waiting for y/n) lead that no kernel message uses, so shell output can
 //! never pass for kernel output. Lines starting with `:` are kernel commands, which
-//! work even when the shell is down. After a `? ` reply the prompt changes and the
-//! next line, whatever it is, answers the question; only `y` or `yes` runs the script.
+//! work even when the shell is down. Most scripts run at once; after a `? ` reply
+//! the prompt changes and the next line, whatever it is, answers the question:
+//! only `y` or `yes` runs the script, and `show` prints it and asks again.
 //! In edit mode (`:edit`), plain lines go to the editor instead, and `:apply` asks
 //! the same way before an upload runs.
 
@@ -83,7 +84,7 @@ impl Confirm {
     fn prompt(self) -> String {
         match self.tune {
             true => format!("start trial {}? yes/no> ", self.id),
-            false => format!("run script {}? yes/no> ", self.id),
+            false => format!("run script {}? y/n> ", self.id),
         }
     }
 }
@@ -386,11 +387,12 @@ fn processes() {
 /// End, Backspace and Delete (only that exact line switches the policy), and types
 /// "ask hello" and a read-only request in plain English, whose script runs at once.
 /// Then it types "hello", which the AI answers in words, and a request whose script
-/// changes the policy, which waits for its question; the harness answers "no". The
-/// policy must be round-robin on every CPU, the llm service must have answered the
-/// shell four times (the question and three script requests), and the terminal must
-/// have shown all six replies. The counts come from the kernel, not from anything a
-/// program prints; xtask checks the printed text.
+/// switches the policy to interactive, which runs at once too; then "undo", which
+/// puts round-robin back. The policy must be round-robin on every CPU, the llm
+/// service must have answered the shell four times (the question and three script
+/// requests), and the terminal must have shown all six replies. The counts come
+/// from the kernel, not from anything a program prints; xtask checks the printed
+/// text.
 pub fn self_test() -> Result<(), &'static str> {
     const TIMEOUT_MS: u64 = 60_000;
     const NOT_CLEARED: &str = "terminal: Ctrl-C did not clear the typed line";
@@ -421,10 +423,9 @@ pub fn self_test() -> Result<(), &'static str> {
         }
         threads::sleep_ms(10);
     }
-    // The answer is typed only once the question is on screen: keys typed earlier
-    // are dropped, so this shows the answer came from the prompt.
+    // `undo` is typed once the switch it undoes was shown, with no question asked.
     for _ in 0..TIMEOUT_MS / 10 {
-        if AWAITING_ANSWER.load(Ordering::Acquire) {
+        if REPLIES_SHOWN.load(Ordering::Relaxed) >= 5 && !AWAITING_ANSWER.load(Ordering::Acquire) {
             log!("terminal: ready for keys");
             break;
         }
@@ -438,7 +439,7 @@ pub fn self_test() -> Result<(), &'static str> {
     for _ in 0..TIMEOUT_MS / 10 {
         if cleared() && switched() && llm_answered_shell() && all_shown() {
             log!(
-                "terminal: line cleared, policy switched, LLM replies shown, a read-only script ran and a changing one was declined"
+                "terminal: line cleared, policy switched, LLM replies shown, scripts ran at once and undo put the policy back"
             );
             return Ok(());
         }
