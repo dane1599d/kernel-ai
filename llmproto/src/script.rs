@@ -65,7 +65,7 @@ pub const API: &[ApiFn] = &[
         name: "uptime_ms",
         signature: "uptime_ms() -> int",
         effect: Effect::Read,
-        doc: "milliseconds since boot",
+        doc: "milliseconds since boot (1000 ms is 1 s)",
     },
     ApiFn {
         name: "processes",
@@ -145,14 +145,17 @@ pub fn system_prompt() -> String {
          - End statements with ';'. Declare variables with let.\n\
          - Integers only: never write 1.5 or 100.0. Percent: x * 100 / y.\n\
          - / rounds down (7 / 2 is 3), so rounded down needs nothing more.\n\
-         - Three decimals: let f = \"00\" + ms % 1000; print(ms / 1000 + \".\" + f.sub_string(f.len() - 3));\n\
+         - Decimals: fixed(n, places) is n / 10^places as text with that many decimals: fixed(4321, 3) is \"4.321\".\n\
+         - uptime_ms() is milliseconds: seconds are uptime_ms() / 1000; of s seconds, s / 60 are minutes, s % 60 seconds.\n\
+         - Digits or characters of a number n: n.to_string().len(), never a loop.\n\
          - Loops: only for x in list { } or for i in 0..n { }. No while, loop or do.\n\
+         - The first two items of a list are p[0] and p[1]: no loop needed.\n\
          - No closures, no fn definitions, no eval.\n\
          - Join strings with +: \"a\" + b. print(value) prints one line.\n\
          - if needs braces: if a > b { print(\"yes\"); } else { print(\"no\"); }\n\
-         - Arrays: [1, 2], a.len(), a[0], a[a.len() - 1]. Maps: #{a: 1, b: 2}, m.a, m[\"a\"].\n\
+         - Arrays: [1, 2], a.len(), a[0], a[a.len() - 1]. Maps: #{a: 1, b: 2}, one key per value asked for; m.a, m[\"a\"].\n\
          - A field is a name after a dot: memory().free_mib, processes()[0].name.\n\
-         - Call only the functions below and Rhai's built-in string, array and map methods.\n\
+         - Call only the functions below, fixed, and Rhai's built-in string, array and map methods.\n\
          - Print exactly what is asked, in its format, with its words and units (MiB, KiB).\n\
          - Do the steps in the order asked: print first if the request prints first.\n\
          - If the request cannot be done with these functions, print why instead.\n\
