@@ -11,7 +11,9 @@
 //! one 8-lane register per sum vector.
 
 use crate::f16;
-use crate::tier::{Kind, Tier};
+#[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
+use crate::tier::Kind;
+use crate::tier::Tier;
 
 /// `scores[h * context + t]` = query head h of `q` (heads of `hd` values one
 /// after another) times key t, times `scale`, for t in `0..positions`. Key t is
