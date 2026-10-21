@@ -27,6 +27,7 @@ pub fn init(rsdp: u64, hhdm: u64) -> Result<&'static Platform, &'static str> {
         acpitables::Error::BadRsdp => "ACPI: RSDP signature missing",
         acpitables::Error::BadChecksum(_) => "ACPI: table checksum mismatch",
         acpitables::Error::NoMadt => "ACPI: no MADT, cannot find the APICs",
+        acpitables::Error::TableTooLong => "ACPI: a table claims to be longer than 1 MiB",
     })?;
     Ok(PLATFORM.call_once(|| platform))
 }

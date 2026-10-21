@@ -17,6 +17,7 @@
 
 use super::{TuneRequest, decode_completion, encode_completion};
 use crate::chat::Completion;
+use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -150,10 +151,16 @@ pub fn trace(kind: &str, seq: u64, text: &str) -> Vec<String> {
         .collect()
 }
 
+/// A message being rebuilt: its seq, its piece count and the pieces seen, numbered.
+type Traced = (u64, usize, Vec<(usize, String)>);
+
 /// Every complete traced message of `kind` in a transcript, by `seq`, in order;
-/// any prefix before `tune-trace` on a line is ignored.
+/// any prefix before `tune-trace` on a line is ignored. A later piece with the
+/// same number replaces an earlier one. Pieces are kept as they come, so memory
+/// follows the transcript's size whatever piece counts its lines claim.
 pub fn untrace<'a>(lines: impl Iterator<Item = &'a str>, kind: &str) -> Vec<(u64, String)> {
-    let mut found: Vec<(u64, Vec<Option<String>>)> = Vec::new();
+    let mut found: Vec<Traced> = Vec::new();
+    let mut by_seq: BTreeMap<u64, usize> = BTreeMap::new();
     for line in lines {
         let Some(at) = line.find("tune-trace ") else {
             continue;
@@ -173,21 +180,28 @@ pub fn untrace<'a>(lines: impl Iterator<Item = &'a str>, kind: &str) -> Vec<(u64
         if k != kind || i == 0 || i > n || n > 10_000 {
             continue;
         }
-        let entry = match found.iter_mut().find(|(s, _)| *s == seq) {
-            Some(entry) => entry,
-            None => {
-                found.push((seq, alloc::vec![None; n]));
-                found.last_mut().expect("just pushed")
-            }
-        };
-        if let Some(slot) = entry.1.get_mut(i - 1) {
-            *slot = Some(String::from(piece.unwrap_or("").trim_end()));
+        let at = *by_seq.entry(seq).or_insert_with(|| {
+            found.push((seq, n, Vec::new()));
+            found.len() - 1
+        });
+        let (_, count, pieces) = &mut found[at];
+        // The count the message's first line gave holds.
+        if i <= *count {
+            pieces.push((i, String::from(piece.unwrap_or("").trim_end())));
         }
     }
     found
         .into_iter()
-        .filter_map(|(seq, pieces)| {
-            let hex: String = pieces.into_iter().collect::<Option<Vec<_>>>()?.concat();
+        .filter_map(|(seq, count, mut pieces)| {
+            // Latest first, so that the stable sort and dedup keep the latest.
+            pieces.reverse();
+            pieces.sort_by_key(|&(i, _)| i);
+            pieces.dedup_by_key(|&mut (i, _)| i);
+            // Numbers 1 to count, each once: complete.
+            if pieces.len() != count {
+                return None;
+            }
+            let hex: String = pieces.into_iter().map(|(_, piece)| piece).collect();
             let bytes: Option<Vec<u8>> = (0..hex.len())
                 .step_by(2)
                 .map(|i| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok())
