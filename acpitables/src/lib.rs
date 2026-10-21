@@ -1,10 +1,13 @@
 //! Minimal ACPI reader: walks RSDP, then XSDT or RSDT, and extracts what the kernel
 //! needs from the MADT (local APIC, I/O APICs, ISA interrupt overrides, CPUs) and the
-//! HPET table. No AML. Host-tested against synthetic tables.
+//! HPET table. No AML. Host-tested against synthetic tables. [`hpet_counter`]
+//! reads the HPET's main counter so a device that splits the read never tears it.
 
 #![no_std]
 
 extern crate alloc;
+
+pub mod hpet_counter;
 
 use alloc::vec::Vec;
 
