@@ -30,6 +30,11 @@ use alloc::vec::Vec;
 /// marker.
 pub const MAX_TOKENS: usize = 1 << 24;
 
+/// The most user-defined tokens a vocabulary may have. [`Tokenizer::encode`]
+/// searches the text for every one of them, so a file with millions would make
+/// each prompt take minutes; Qwen3's have a few dozen.
+pub const MAX_USER_DEFINED: usize = 1 << 12;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
     /// `tokenizer.ggml.model` is not `gpt2`, the byte-level BPE this crate runs.
@@ -45,6 +50,8 @@ pub enum Error {
     MissingByte(u8),
     /// `tokenizer.ggml.pre` is not `qwen2`, the only pretokenizer here.
     Pretokenizer,
+    /// More than [`MAX_USER_DEFINED`] user-defined tokens.
+    TooManyUserDefined,
     /// The vocabulary has no token with this text of the kind a chat needs (a
     /// control token for the turn markers).
     MissingSpecial(&'static str),
@@ -60,6 +67,9 @@ impl core::fmt::Display for Error {
             Self::BadMerge(rank) => write!(f, "merge {rank} does not join known tokens"),
             Self::MissingByte(b) => write!(f, "no token stands for byte {b:#04x}"),
             Self::Pretokenizer => f.write_str("the pretokenizer is not qwen2"),
+            Self::TooManyUserDefined => {
+                f.write_str("the vocabulary has too many user-defined tokens")
+            }
             Self::MissingSpecial(name) => write!(f, "the vocabulary has no {name}"),
         }
     }
@@ -208,6 +218,9 @@ impl Tokenizer {
             .filter(|&id| self.kind(id) == Kind::UserDefined && !self.token_bytes(id).is_empty())
             .filter(|&id| core::str::from_utf8(self.token_bytes(id)).is_ok())
             .collect();
+        if user_defined.len() > MAX_USER_DEFINED {
+            return Err(Error::TooManyUserDefined);
+        }
         user_defined.sort_by_key(|&id| core::cmp::Reverse(self.token_bytes(id).len()));
         self.by_bytes = bpe;
         self.specials = specials;

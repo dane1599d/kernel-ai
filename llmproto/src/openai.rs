@@ -75,9 +75,48 @@ pub enum CompletionError {
     Reply(ReplyError),
 }
 
+/// The deepest a reply's arrays and objects may nest. Real replies nest six deep
+/// at most (`choices[].logprobs.content[].top_logprobs[]`); serde_json would
+/// otherwise skip unknown fields 128 levels deep, recursing on the llm service's
+/// 64 KiB stack.
+pub const MAX_JSON_DEPTH: usize = 32;
+
+/// Whether no array or object in `json` nests deeper than `max`. Brackets inside
+/// strings do not count; anything that is not JSON is left to the parser.
+fn nesting_within(json: &[u8], max: usize) -> bool {
+    let (mut depth, mut in_string, mut escaped) = (0usize, false, false);
+    for &b in json {
+        if in_string {
+            match b {
+                _ if escaped => escaped = false,
+                b'\\' => escaped = true,
+                b'"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        match b {
+            b'"' => in_string = true,
+            b'[' | b'{' => {
+                depth += 1;
+                if depth > max {
+                    return false;
+                }
+            }
+            b']' | b'}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    true
+}
+
 /// The completion in a chat-completion response body. A missing or empty content
-/// is an empty text; `cut_off` is a `length` finish.
+/// is an empty text; `cut_off` is a `length` finish. A body nested deeper than
+/// [`MAX_JSON_DEPTH`] is not JSON this reads.
 pub fn parse_completion(body: &[u8]) -> Result<Completion, ReplyError> {
+    if !nesting_within(body, MAX_JSON_DEPTH) {
+        return Err(ReplyError::NotJson);
+    }
     let response: ChatResponse = serde_json::from_slice(body).map_err(|_| ReplyError::NotJson)?;
     if let Some(error) = response.error {
         return Err(ReplyError::Server(error.message));

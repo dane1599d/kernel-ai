@@ -16,12 +16,23 @@ pub trait PhysMem {
     fn read(&self, phys: u64, len: usize) -> Option<&[u8]>;
 }
 
+/// `len` bytes at `phys`: a shorter slice from `mem` is unreadable, never indexed
+/// past.
+fn read_exact(mem: &impl PhysMem, phys: u64, len: usize) -> Result<&[u8], Error> {
+    mem.read(phys, len)
+        .filter(|bytes| bytes.len() == len)
+        .ok_or(Error::Unreadable)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
     Unreadable,
     BadRsdp,
     BadChecksum(&'static str),
     NoMadt,
+    /// A table's length is more than [`MAX_TABLE_LEN`], which would map that much
+    /// physical memory.
+    TableTooLong,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,8 +113,15 @@ impl Platform {
 
 const SDT_HEADER_LEN: usize = 36;
 
+/// The longest table read. The MADT of a machine with a thousand CPUs is under
+/// 20 KiB; a table's length is a u32, so firmware could otherwise claim 4 GiB.
+pub const MAX_TABLE_LEN: usize = 1 << 20;
+
+/// The MADT's header, local APIC address and flags, before its entries.
+const MADT_ENTRIES: usize = SDT_HEADER_LEN + 8;
+
 pub fn parse(mem: &impl PhysMem, rsdp: u64) -> Result<Platform, Error> {
-    let head = mem.read(rsdp, 20).ok_or(Error::Unreadable)?;
+    let head = read_exact(mem, rsdp, 20)?;
     if &head[..8] != b"RSD PTR " {
         return Err(Error::BadRsdp);
     }
@@ -113,7 +131,7 @@ pub fn parse(mem: &impl PhysMem, rsdp: u64) -> Result<Platform, Error> {
     let revision = head[15];
     let rsdt = u64::from(u32_at(head, 16));
     let (root, entry_size) = if revision >= 2 {
-        let full = mem.read(rsdp, 36).ok_or(Error::Unreadable)?;
+        let full = read_exact(mem, rsdp, 36)?;
         if !checksum_ok(full) {
             return Err(Error::BadChecksum("extended RSDP"));
         }
@@ -131,7 +149,7 @@ pub fn parse(mem: &impl PhysMem, rsdp: u64) -> Result<Platform, Error> {
         } else {
             u64::from(u32_at(chunk, 0))
         };
-        let Some(signature) = mem.read(address, 4) else {
+        let Ok(signature) = read_exact(mem, address, 4) else {
             continue;
         };
         match signature {
@@ -158,12 +176,15 @@ pub fn parse(mem: &impl PhysMem, rsdp: u64) -> Result<Platform, Error> {
 
 /// Returns a whole SDT after checking its length and checksum.
 fn table(mem: &impl PhysMem, address: u64) -> Result<&[u8], Error> {
-    let header = mem.read(address, SDT_HEADER_LEN).ok_or(Error::Unreadable)?;
+    let header = read_exact(mem, address, SDT_HEADER_LEN)?;
     let len = u32_at(header, 4) as usize;
     if len < SDT_HEADER_LEN {
         return Err(Error::BadChecksum("table length"));
     }
-    let bytes = mem.read(address, len).ok_or(Error::Unreadable)?;
+    if len > MAX_TABLE_LEN {
+        return Err(Error::TableTooLong);
+    }
+    let bytes = read_exact(mem, address, len)?;
     if checksum_ok(bytes) {
         Ok(bytes)
     } else {
@@ -172,8 +193,12 @@ fn table(mem: &impl PhysMem, address: u64) -> Result<&[u8], Error> {
 }
 
 fn parse_madt(madt: &[u8], platform: &mut Platform) {
-    platform.local_apic = u64::from(u32_at(madt, 36));
-    let mut offset = 44;
+    // A MADT too short for its fixed fields has no entries either.
+    if madt.len() < MADT_ENTRIES {
+        return;
+    }
+    platform.local_apic = u64::from(u32_at(madt, SDT_HEADER_LEN));
+    let mut offset = MADT_ENTRIES;
     while offset + 2 <= madt.len() {
         let (kind, len) = (madt[offset], madt[offset + 1] as usize);
         if len < 2 || offset + len > madt.len() {
