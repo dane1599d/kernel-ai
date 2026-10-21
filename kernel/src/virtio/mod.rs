@@ -5,6 +5,7 @@
 pub mod blk;
 pub mod hal;
 mod pci;
+pub mod split;
 
 use crate::log;
 

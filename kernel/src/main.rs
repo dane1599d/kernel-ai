@@ -343,6 +343,7 @@ fn init_devices() -> &'static acpitables::Platform {
             .hpet
             .ok_or("no HPET; a PIT fallback is not implemented yet")?;
         hpet::init(hpet)?;
+        hpet::select_clock(cmdline());
         timer::init()?;
         i8042::init(platform, apic_id)?;
         log!(

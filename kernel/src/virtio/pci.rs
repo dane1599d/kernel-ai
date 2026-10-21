@@ -3,6 +3,7 @@
 //! block devices) and the NVMe controllers.
 
 use super::hal::{DEVICE, KernelHal};
+use super::split::{self, SplitTransport};
 use crate::{log, memory};
 use alloc::format;
 use alloc::vec::Vec;
@@ -60,7 +61,7 @@ impl ConfigurationAccess for EcamAccess {
 /// The virtio devices on bus 0, each with its transport set up.
 pub struct Found {
     /// The first network card; any other is left alone.
-    pub net: Option<PciTransport>,
+    pub net: Option<SplitTransport>,
     /// A network card was there, but its transport could not be set up.
     pub net_failed: bool,
     /// Every block device, in bus order.
@@ -85,11 +86,12 @@ pub fn probe(platform: &acpitables::Platform) -> Result<Found, &'static str> {
     let buses = 1;
     let first_bus = ecam.base + (u64::from(ecam.start_bus) << 20);
     let base = memory::map_physical(first_bus, u64::from(buses) << 20, DEVICE)?;
-    let mut root = PciRoot::new(EcamAccess {
+    let access = EcamAccess {
         base,
         start_bus: ecam.start_bus,
         buses,
-    });
+    };
+    let mut root = PciRoot::new(access);
     let functions: Vec<_> = root.enumerate_bus(ecam.start_bus).collect();
     let nvme: Vec<DeviceFunction> = functions
         .iter()
@@ -133,7 +135,13 @@ pub fn probe(platform: &acpitables::Platform) -> Result<Found, &'static str> {
             continue;
         };
         match kind {
-            DeviceType::Network => found.net = Some(transport),
+            DeviceType::Network => match split_transport(&access, function, transport) {
+                Ok(transport) => found.net = Some(transport),
+                Err(message) => {
+                    log!("pci: {name} at {function}: {message}");
+                    found.net_failed = true;
+                }
+            },
             _ => found.disks.push(transport),
         }
     }
@@ -154,6 +162,17 @@ pub fn probe(platform: &acpitables::Platform) -> Result<Found, &'static str> {
         }
     }
     Ok(found)
+}
+
+/// The network card's transport, with its queue addresses written in halves.
+fn split_transport(
+    access: &EcamAccess,
+    function: DeviceFunction,
+    transport: PciTransport,
+) -> Result<SplitTransport, &'static str> {
+    let phys = split::common_cfg(access, function).ok_or("no common configuration found")?;
+    let common = memory::map_physical(phys, split::COMMON_CFG_BYTES, DEVICE)?;
+    Ok(SplitTransport::new(transport, common))
 }
 
 /// BAR0 of an NVMe controller, with memory decoding and bus mastering turned on.

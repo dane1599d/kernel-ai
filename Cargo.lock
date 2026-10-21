@@ -484,6 +484,7 @@ dependencies = [
  "uelf",
  "virtio-drivers",
  "x86_64",
+ "zerocopy",
 ]
 
 [[package]]
