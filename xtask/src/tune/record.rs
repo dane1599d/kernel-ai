@@ -142,6 +142,10 @@ pub fn main(args: &[String]) -> Result<(), String> {
         "decision": spec_text(&decision).unwrap_or_else(|| String::from("keep")),
     });
     let path = default_path();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    }
     let text = serde_json::to_string_pretty(&record).unwrap_or_default() + "\n";
     std::fs::write(&path, text).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
     println!(
