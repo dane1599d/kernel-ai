@@ -104,13 +104,32 @@ impl Outcome {
     }
 }
 
-/// Runs `task` through the shell the way a user would: `? <request>`, then `yes`.
+/// Runs `task` through the shell the way a user would: `? <request>`, then `yes`
+/// to a script that changes anything; one that only reads runs at once.
 pub fn attempt(task: &Task, transport: Transport) -> Outcome {
     let host = Rc::new(GateHost::new(transport));
     let mut shell = Shell::new(host.clone(), DEFAULT_CONFIG);
     let proposal = shell.eval(&format!("? {}", task.request));
     let answers = host.answers.borrow().clone();
     let rounds = answers.len();
+    let ran_at_once = match (proposal.confirm, answers.last()) {
+        (None, Some(Ok(_))) => proposal.text.split_once(shellcore::RAN_READ_ONLY),
+        _ => None,
+    };
+    let script = answers
+        .iter()
+        .rev()
+        .find_map(|answer| answer.as_ref().ok())
+        .map(|answer| answer.script.clone());
+    if let Some((_, output)) = ran_at_once {
+        let failure = judge(task, proposal.ok, output, &host.changes.borrow());
+        return Outcome {
+            rounds,
+            script,
+            output: output.to_string(),
+            failure,
+        };
+    }
     let Some(id) = proposal.confirm else {
         let failure = no_proposal(task, answers.last(), &proposal.text);
         return Outcome {
@@ -120,11 +139,6 @@ pub fn attempt(task: &Task, transport: Transport) -> Outcome {
             failure,
         };
     };
-    let script = answers
-        .iter()
-        .rev()
-        .find_map(|answer| answer.as_ref().ok())
-        .map(|answer| answer.script.clone());
     let reply = shell.eval(&format!("answer {id} yes"));
     let failure = judge(task, reply.ok, &reply.text, &host.changes.borrow());
     Outcome {

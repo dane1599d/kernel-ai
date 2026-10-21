@@ -11,6 +11,13 @@ fn answer(script: &str, summary: &str) -> Result<Answer, AnswerError> {
     })
 }
 
+/// The output of a read-only script the shell ran without asking.
+fn ran(reply: &Reply) -> &str {
+    assert!(reply.ok && reply.confirm.is_none(), "{reply:?}");
+    let (_, output) = reply.text.split_once("\nran it (read-only):\n").unwrap();
+    output
+}
+
 fn with_answers(answers: Vec<Result<Answer, AnswerError>>) -> (Rc<FakeHost>, Shell) {
     let host = FakeHost::new();
     host.answers.borrow_mut().extend(answers);
@@ -19,16 +26,16 @@ fn with_answers(answers: Vec<Result<Answer, AnswerError>>) -> (Rc<FakeHost>, She
 }
 
 #[test]
-fn a_script_is_shown_in_full_and_runs_only_after_yes() {
+fn a_changing_script_is_shown_in_full_and_runs_only_after_yes() {
     let (host, mut shell) = with_answers(vec![answer(
-        "print(\"CPUs: \" + cpus());",
+        "print(\"CPUs: \" + cpus());\nset_policy(\"rr\");",
         "Prints the CPUs.",
     )]);
     let reply = shell.eval("? how many cpus are there");
     assert_eq!(reply.confirm, Some(1));
     assert_eq!(
         reply.text,
-        "script 1: reads cpus\nmodel says: Prints the CPUs.\n 1 | print(\"CPUs: \" + cpus());\nrun it? it changes nothing. yes/no"
+        "script 1: reads cpus; CHANGES set_policy\nmodel says: Prints the CPUs.\n 1 | print(\"CPUs: \" + cpus());\n 2 | set_policy(\"rr\");\nrun it? it CHANGES set_policy. yes/no"
     );
     assert_eq!(
         reply.to_wire().split_once(' ').map(|(kind, _)| kind),
@@ -79,8 +86,8 @@ fn a_yes_runs_it_and_a_stale_or_wrong_id_does_not() {
 #[test]
 fn another_line_or_time_discards_the_proposal() {
     let (host, mut shell) = with_answers(vec![
-        answer("print(1);", "Prints 1."),
-        answer("print(2);", "Prints 2."),
+        answer("set_policy(\"rr\");", "Switches."),
+        answer("set_policy(\"rr\");", "Switches."),
     ]);
     shell.eval("? print one please");
     assert_eq!(shell.eval("1 + 1"), ok("2"));
@@ -100,14 +107,12 @@ fn a_refused_script_is_repaired_once_with_the_reason() {
         answer("print(memory().free_mib);", "Prints free memory."),
     ]);
     let reply = shell.eval("? how much memory is free");
-    assert_eq!(reply.confirm, Some(1), "{reply:?}");
+    assert_eq!(ran(&reply), "100\n");
     let requests = host.script_requests.borrow();
     assert_eq!(requests.len(), 2);
     let (script, error) = requests[1].repair.clone().unwrap();
     assert_eq!(script, "print(memory_free());");
     assert!(error.contains("memory_free"), "{error}");
-    drop(requests);
-    assert_eq!(shell.eval("answer 1 yes"), ok("100\n"));
 }
 
 #[test]
@@ -192,8 +197,7 @@ fn a_division_by_zero_on_stand_in_values_is_noted_not_refused() {
     let text = crate::script::confirmation(1, &checked);
     assert_eq!(text.lines().nth(2), Some(note.as_str()));
     let (_host, mut shell) = with_answers(vec![answer("print(10 / (cpus() - 2));", "Divides.")]);
-    shell.eval("? divide ten by the spare cpus");
-    assert_eq!(shell.eval("answer 1 yes"), ok("5\n"));
+    assert_eq!(ran(&shell.eval("? divide ten by the spare cpus")), "5\n");
 }
 
 #[test]
@@ -316,19 +320,137 @@ fn the_question_repeats_what_the_script_changes() {
 }
 
 #[test]
-fn plain_english_goes_to_the_llm_and_near_miss_code_does_not() {
-    assert!(reads_like_english("how much memory is free"));
-    assert!(reads_like_english(
+fn plain_words_go_to_the_llm_and_near_miss_code_does_not() {
+    assert!(reads_like_words("how much memory is free"));
+    assert!(reads_like_words(
         "switch the scheduler to round robin please"
     ));
-    assert!(!reads_like_english("let x be 5"));
-    assert!(!reads_like_english("print hello world"));
-    assert!(!reads_like_english("x + y + z"));
-    assert!(!reads_like_english("mem"));
-    let (host, mut shell) = with_answers(vec![answer("print(1);", "Prints 1.")]);
-    assert_eq!(shell.eval("show me a number please").confirm, Some(1));
+    assert!(reads_like_words("hello"));
+    assert!(reads_like_words("what can u do"));
+    assert!(!reads_like_words("let x be 5"));
+    assert!(!reads_like_words("print hello world"));
+    assert!(!reads_like_words("x + y + z"));
+    assert!(!reads_like_words("foo(1)"));
+    let (host, mut shell) = with_answers(vec![answer("set_policy(\"rr\");", "Switches.")]);
+    assert_eq!(
+        shell.eval("switch me to round robin please").confirm,
+        Some(1)
+    );
     assert!(shell.eval("let x be 5").text.starts_with("syntax error"));
     assert_eq!(host.script_requests.borrow().len(), 1);
+}
+
+#[test]
+fn a_word_rhai_takes_for_a_variable_goes_to_the_llm() {
+    let (host, mut shell) = with_answers(vec![
+        Err(AnswerError::NoScript(String::from(
+            "Hello! Ask me anything.",
+        ))),
+        Err(AnswerError::NoScript(String::from("Testing works."))),
+    ]);
+    assert_eq!(shell.eval("hello"), ok("Hello! Ask me anything."));
+    assert_eq!(shell.eval("testing"), ok("Testing works."));
+    let requests = host.script_requests.borrow();
+    assert_eq!(requests[0].request, "hello");
+    assert_eq!(requests[1].request, "testing");
+    assert!(
+        shell
+            .eval("log")
+            .text
+            .contains("#1 hello: answered in words")
+    );
+}
+
+#[test]
+fn real_code_that_fails_keeps_its_error() {
+    let (host, mut shell) = with_answers(vec![]);
+    // A missing variable in code, a missing function, and a runtime error after
+    // output: none of them is plain words.
+    assert!(
+        shell
+            .eval("hello + 1")
+            .text
+            .contains("Variable not found: hello")
+    );
+    assert!(
+        shell
+            .eval("nothing_here()")
+            .text
+            .contains("Function not found")
+    );
+    assert!(!shell.eval("print(\"a\"); hello").ok);
+    assert!(shell.eval("let x = 1 +").text.starts_with("syntax error"));
+    for name in ["x", "n2", "max_len"] {
+        assert!(
+            shell.eval(name).text.contains("Variable not found"),
+            "{name}"
+        );
+    }
+    assert!(host.script_requests.borrow().is_empty());
+    // Commands and `ask` work as before.
+    assert!(shell.eval("ask hi").ok);
+    assert_eq!(host.asked.borrow().as_slice(), ["hi"]);
+}
+
+#[test]
+fn a_chat_question_gets_an_answer_not_a_script() {
+    let (host, mut shell) = with_answers(vec![Err(AnswerError::NoScript(String::from(
+        "I answer questions and run scripts that read the system.",
+    )))]);
+    let reply = shell.eval("what can u do");
+    assert_eq!(
+        reply,
+        ok("I answer questions and run scripts that read the system.")
+    );
+    assert_eq!(reply.confirm, None);
+    assert_eq!(host.script_requests.borrow()[0].request, "what can u do");
+}
+
+#[test]
+fn a_read_only_script_runs_at_once_shown_in_full() {
+    let (host, mut shell) = with_answers(vec![answer(
+        "print(\"free: \" + memory().free_mib + \" MiB\");",
+        "Prints free memory.",
+    )]);
+    let reply = shell.eval("show me the free memory");
+    assert_eq!(reply.confirm, None);
+    assert!(reply.ok);
+    assert_eq!(
+        reply.text,
+        "script 1: reads memory\nmodel says: Prints free memory.\n 1 | print(\"free: \" + memory().free_mib + \" MiB\");\nran it (read-only):\nfree: 100 MiB\n"
+    );
+    assert_eq!(shell.eval("answer 1 yes"), Reply::err("nothing to confirm"));
+    assert!(
+        shell
+            .eval("log")
+            .text
+            .contains("#1 show me the free memory: ran read-only")
+    );
+    assert!(shell.eval("log 1").text.contains("memory().free_mib"));
+    let audit = host.audit.borrow();
+    assert!(
+        audit
+            .iter()
+            .any(|line| line == "script 1 only reads; running it")
+    );
+}
+
+#[test]
+fn a_script_that_changes_anything_still_asks_first() {
+    let (host, mut shell) = with_answers(vec![answer(
+        "print(\"was \" + get_policy());\nset_policy(\"rr\");",
+        "Switches to round-robin.",
+    )]);
+    let reply = shell.eval("switch to round robin");
+    assert_eq!(reply.confirm, Some(1));
+    assert!(
+        reply
+            .text
+            .ends_with("\nrun it? it CHANGES set_policy. yes/no")
+    );
+    assert_eq!(host.policy.get(), None);
+    shell.eval("answer 1 yes");
+    assert_eq!(host.policy.get(), Some(policy::ROUND_ROBIN));
 }
 
 #[test]
@@ -401,20 +523,18 @@ fn ctrl_c_during_the_trial_cancels_instead_of_asking_for_a_repair() {
 }
 
 #[test]
-fn a_for_loop_over_a_list_and_floor_run_after_a_yes() {
+fn a_for_loop_over_a_list_and_floor_run() {
     let script = "let names = \"\";\nfor p in processes() {\n    names += p.name + \" \";\n}\n\
                   for i in 0..2 {\n    names += i;\n}\nprint(names + \" \" + floor(7 / 2));";
     let checked = checks(script).unwrap();
     assert_eq!(checked.reads, ["processes"]);
     let (_host, mut shell) = with_answers(vec![answer(script, "Lists names.")]);
-    shell.eval("? name every service");
-    assert_eq!(shell.eval("answer 1 yes"), ok("llm 01 3\n"));
+    assert_eq!(ran(&shell.eval("? name every service")), "llm 01 3\n");
 }
 
 #[test]
 fn the_prompts_three_decimals_form_runs() {
     let script = "let ms = 4021;\nlet f = \"00\" + ms % 1000;\nprint(ms / 1000 + \".\" + f.sub_string(f.len() - 3));";
     let (_host, mut shell) = with_answers(vec![answer(script, "Prints seconds.")]);
-    shell.eval("? uptime with three decimals");
-    assert_eq!(shell.eval("answer 1 yes"), ok("4.021\n"));
+    assert_eq!(ran(&shell.eval("? uptime with three decimals")), "4.021\n");
 }
