@@ -1,23 +1,23 @@
 {
   "cut_off": false,
-  "decision": "classes/firm:build-1,build-2,build-3,build-4",
+  "decision": "classes/firm:build-1,build-2,build-3,build-4,indexer",
   "labelable": [
-    "build-1",
-    "build-2",
-    "build-3",
-    "build-4",
     "indexer",
+    "build-3",
+    "build-1",
+    "build-4",
+    "build-2",
     "hog-1",
     "hog-2"
   ],
   "mix": "A",
   "model": "qwen3-4b-2507",
   "model_sha256": "3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597",
-  "prompt_hash": "208521d30256fb4a",
-  "raw_output": "{\"reason\":\"Background builds wake frequently and consume CPU, risking editor responsiveness.\",\"policy\":\"classes\",\"preset\":\"firm\",\"background\":[\"build-1\",\"build-2\",\"build-3\",\"build-4\"]}",
+  "prompt_hash": "908d77b3c38212f9",
+  "raw_output": "{\"reason\":\"The editor's latency is high due to background work interference.\",\"policy\":\"classes\",\"preset\":\"firm\",\"background\":[\"build-1\",\"build-2\",\"build-3\",\"build-4\",\"indexer\"]}",
   "seed": 0,
   "shift": 3,
-  "summary": "Goal: keep \"editor\" responsive; background work must progress.\nNow: interactive; trials: none; 1 CPU, 100% busy.\nname cpu% wakes/s burst-ms label\n\"editor\" 0.7 25 0.28 target\n\"build-1\" 28 390 0.71 normal\n\"build-2\" 24 370 0.64 normal\n\"build-3\" 22 350 0.64 normal\n\"build-4\" 16 310 0.52 normal\n\"indexer\" 5.7 240 0.24 normal\n\"hog-1\" 1.4 0 100 normal\n\"hog-2\" 1.4 0 100 normal\n\"shell\" 0.8 0 12 protected\n\"llm\" 0 0 0 protected\nFlags: \"editor\" waits under 2 ms; keep is fine (p50 0.47, max 3.1).",
-  "summary_sha256": "50f01acfb640241ed076ae36e76a9a59054635ca1491ffbdabdb0988287c0ea5",
+  "summary": "Goal: keep \"editor\" responsive; background work must progress.\nNow: interactive; trials: none; 1 CPU, 100% busy.\nname cpu% wakes/s burst-ms label\n\"editor\" 1.8 25 0.73 target\n\"indexer\" 18 270 0.67 normal\n\"build-3\" 15 39 3.7 normal\n\"build-1\" 14 37 3.8 normal\n\"build-4\" 13 36 3.7 normal\n\"build-2\" 13 35 3.8 normal\n\"hog-1\" 10 0 320 normal\n\"hog-2\" 10 0 310 normal\n\"shell\" 4 6 6.3 protected\n\"llm\" 0 0 0 protected\nFlags: \"editor\" waits 3.9 ms at p99 (p50 0, max 3.9).",
+  "summary_sha256": "da62717e2c58cdf34f1301cf19b89d61379d5b536da58af3a20e96cee30e8e7e",
   "target": "editor"
 }
