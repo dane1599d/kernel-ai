@@ -49,7 +49,7 @@ fn screen_cursor() -> Cursor {
 /// Takes one mouse byte. `ctrl` says whether Ctrl was held at its place in the ring.
 pub fn on_byte(byte: u8, ctrl: bool) {
     let log = LOG.load(Ordering::Relaxed);
-    let (cell_width, cell_height) = console::CELL;
+    let (cell_width, cell_height) = console::cell();
     let mut pointer = POINTER.lock();
     let Some(packet) = pointer.decoder.push(byte) else {
         return;

@@ -191,6 +191,15 @@ fn spawn_on(
     Ok(tid)
 }
 
+/// CPUs with a thread running or waiting to run, the caller's own CPU counted only
+/// when something besides the caller wants it. The status bar samples it.
+pub fn busy_cpus() -> usize {
+    let me = percpu::index();
+    (0..smp::online())
+        .filter(|&cpu| LOAD[cpu].load(Ordering::Relaxed) > usize::from(cpu == me))
+        .count()
+}
+
 fn least_loaded() -> usize {
     (0..smp::online())
         .min_by_key(|&cpu| LOAD[cpu].load(Ordering::Relaxed))

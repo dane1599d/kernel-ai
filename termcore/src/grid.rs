@@ -223,6 +223,24 @@ impl<const CELLS: usize> Grid<CELLS> {
         (row < self.rows).then_some((row, at % self.cols))
     }
 
+    /// While the input shows: its first row, the row after its last (at most the
+    /// row count), and how many cells of it are prompt.
+    pub fn input_span(&self) -> Option<(usize, usize, usize)> {
+        if !self.input.shown || self.cols == 0 {
+            return None;
+        }
+        let end = (self.input_top + self.input_rows()).min(self.rows);
+        Some((self.input_top, end, self.input.prompt))
+    }
+
+    /// The row the next log line starts on, while the input is hidden and that row
+    /// is blank: room for a note that is not part of the text, such as a busy sign.
+    pub fn spare_row(&self) -> Option<usize> {
+        let (row, col) = self.log;
+        let free = !self.input.shown && self.cols > 0 && col == 0 && self.row_width(row) == 0;
+        free.then_some(row)
+    }
+
     /// The damage since the last call. A cursor that moved, by an edit or a scroll,
     /// damages the row it left and the row it is on.
     pub fn take_damage(&mut self) -> Damage {
