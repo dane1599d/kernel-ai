@@ -90,13 +90,19 @@ pub fn parse(lines: &[String]) -> Result<SideRun, String> {
             _ => {}
         }
     }
-    if run.side.is_empty() || !guard || run.digest.is_empty() || run.samples.is_empty() {
+    if run.side.is_empty() || !guard || run.digest.is_empty() {
         return Err("the boot printed no complete tune-ab report".into());
     }
     Ok(run)
 }
 
 impl SideRun {
+    /// Whether the editor ran often enough to have a p99: the trial judge's
+    /// minimum of samples.
+    pub fn measured(&self) -> bool {
+        self.samples.len() >= sched::judge::MIN_SAMPLES
+    }
+
     /// The editor's nearest-rank 99th percentile over every window.
     pub fn p99_us(&self) -> u64 {
         let mut values = self.samples.clone();
@@ -109,6 +115,7 @@ impl SideRun {
             "side": self.side,
             "spec": self.spec,
             "editor_p99_us": self.p99_us(),
+            "editor_samples": self.samples.len(),
             "ejections": self.ejections,
             "max_wait_under_100ms": self.max_wait_us < GUARDRAIL_US,
             "runaways": self.runaways,
@@ -146,10 +153,22 @@ fn worst_process(default: &SideRun, candidate: &SideRun) -> Option<(String, u64)
 
 /// Applies the rule to one seed.
 pub fn judge(default: SideRun, candidate: SideRun) -> Seed {
-    let ratio = sched::judge::permille(candidate.p99_us(), default.p99_us());
+    // A default under which the editor hardly ran left it waiting longer than
+    // any p99 can say: whatever the candidate measures is under 0.7x of it.
+    let ratio = match default.measured() {
+        true => sched::judge::permille(candidate.p99_us(), default.p99_us()),
+        false => 0,
+    };
     let background = sched::judge::permille(candidate.background_cpu_ns, default.background_cpu_ns);
     let worst = worst_process(&default, &candidate);
     let mut failures = Vec::new();
+    if !candidate.measured() {
+        failures.push(format!(
+            "the editor ran {} times under the candidate, under {}",
+            candidate.samples.len(),
+            sched::judge::MIN_SAMPLES
+        ));
+    }
     if candidate.ejections > 0 {
         failures.push(String::from("the candidate was ejected"));
     }
@@ -196,15 +215,19 @@ impl Seed {
 
     /// One line for the console: both sides' numbers and the outcome.
     pub fn line(&self) -> String {
+        let p99 = |side: &SideRun| match side.measured() {
+            true => format!("p99 {} us", side.p99_us()),
+            false => format!("the editor ran {} times", side.samples.len()),
+        };
         let ejected = match self.default.ejections {
             0 => String::from("no ejection"),
             n => format!("{n} ejection(s), so it counts as failing"),
         };
         format!(
-            "seed {}: default p99 {} us, {ejected}; candidate p99 {} us ({}/1000), background {}/1000, {} ejection(s): {}",
+            "seed {}: default {}, {ejected}; candidate {} ({}/1000), background {}/1000, {} ejection(s): {}",
             self.default.seed,
-            self.default.p99_us(),
-            self.candidate.p99_us(),
+            p99(&self.default),
+            p99(&self.candidate),
             self.ratio_permille,
             self.background_permille,
             self.candidate.ejections,
@@ -284,9 +307,11 @@ pub fn evaluate(seeds: Vec<Seed>, canary: Option<(SideRun, SideRun)>) -> Report 
 mod tests {
     use super::*;
 
-    /// One side's console: `p99` for most samples, `ejections` in window 0, and
-    /// `builds` ns of CPU for build-1.
+    /// One side's console: 30 editor samples whose p99 is `p99`, `ejections` in
+    /// window 0, and `builds` ns of CPU for build-1.
     fn lines(seed: u64, side: &str, p99: u64, ejections: u64, builds: u64) -> Vec<String> {
+        let samples = [vec![100; 25], vec![p99; 5]].concat();
+        let samples: Vec<String> = samples.iter().map(u64::to_string).collect();
         let spec = if side == "default" {
             "interactive"
         } else {
@@ -299,7 +324,7 @@ mod tests {
                 "tune-ab: window 0 p99_us {p99} samples 3 background_cpu_ns {} max_wait_us 900 ejections {ejections}",
                 builds + 100
             ),
-            format!("tune-ab: samples 0 {p99} {p99} 100"),
+            format!("tune-ab: samples 0 {}", samples.join(" ")),
             format!("tune-ab: cpu build-1 {builds} of 1000"),
             String::from("tune-ab: cpu hog-1 100 of 1000"),
             String::from("tune-ab: guard runaways 0 quiet_bytes 0"),
@@ -327,7 +352,8 @@ mod tests {
         let seeds: Vec<Seed> = (1..=5)
             .map(|s| seed(s, (5000, 0), (2000, 0, 790)))
             .collect();
-        assert_eq!(seeds[0].default.samples, [5000, 5000, 100]);
+        assert_eq!(seeds[0].default.samples.len(), 30);
+        assert_eq!(seeds[0].default.p99_us(), 5000);
         assert_eq!(seeds[0].default.digest, "default1");
         assert_eq!(seeds[0].ratio_permille, 400);
         assert_eq!(seeds[0].default.cpu_ns["build-1"], 800);
@@ -374,6 +400,27 @@ mod tests {
         );
         assert_eq!(late.default.ejections, 1);
         assert!(late.pass(), "{:?}", late.failures);
+    }
+
+    #[test]
+    fn an_editor_that_hardly_ran_is_measured_as_such() {
+        // Under the default the editor never ran: any measured candidate is under
+        // 0.7x of it. A candidate under which it never ran fails.
+        let mut starved = lines(2, "default", 5000, 0, 800);
+        starved.retain(|l| !l.contains("samples 0"));
+        let default = parse(&starved).unwrap();
+        assert!(!default.measured());
+        let won = judge(
+            default.clone(),
+            parse(&lines(2, "candidate", 6000, 0, 790)).unwrap(),
+        );
+        assert_eq!(won.ratio_permille, 0);
+        assert!(won.pass(), "{:?}", won.failures);
+        assert!(won.line().contains("the editor ran 0 times"));
+        let mut idle = lines(2, "candidate", 6000, 0, 790);
+        idle.retain(|l| !l.contains("samples 0"));
+        let lost = judge(default, parse(&idle).unwrap());
+        assert!(lost.failures[0].contains("ran 0 times under the candidate"));
         assert!(parse(&[String::from("tune-ab: seed 1 side default spec x labels")]).is_err());
     }
 }
