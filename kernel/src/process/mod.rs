@@ -24,10 +24,13 @@ mod exit;
 pub mod futex;
 mod loader;
 pub mod programs;
+mod space;
 pub mod supervision;
 pub mod syscall;
 pub mod uaccess;
 pub mod workers;
+
+pub(crate) use space::lock_space;
 
 pub use burst::blocked;
 pub use exit::{exit_current, exit_with};
@@ -167,6 +170,7 @@ impl Process {
 static TABLE: Mutex<[Process; MAX_PROCESSES]> = Mutex::new([Process::FREE; MAX_PROCESSES]);
 static SPACES: [Mutex<Option<UserSpace>>; MAX_PROCESSES] =
     [const { Mutex::new(None) }; MAX_PROCESSES];
+
 static NEXT_PID: AtomicU64 = AtomicU64::new(1);
 /// Pages all live processes together may be granted; set at start-up.
 static PAGE_BUDGET: AtomicU64 = AtomicU64::new(0);
@@ -451,7 +455,7 @@ pub(super) fn thread_started(tid: Tid, slot: usize) {
 
 /// Runs `f` on the slot's address space (for copying to and from user memory).
 pub fn with_space<R>(slot: usize, f: impl FnOnce(&UserSpace) -> R) -> Option<R> {
-    SPACES[slot].lock().as_ref().map(f)
+    lock_space(slot).as_ref().map(f)
 }
 
 /// Whether a live process named `name` holds all the capability `bits`.

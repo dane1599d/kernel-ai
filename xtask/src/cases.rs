@@ -37,6 +37,12 @@ pub struct TestCase {
     /// Guest memory in MiB when the case needs more than its disk does (`bigmap`
     /// needs RAM above 4 GiB); `--mem` still wins if larger.
     pub memory_mib: Option<u64>,
+    /// Attach the disk as an NVMe controller (`-device nvme`) instead of
+    /// virtio-blk.
+    pub nvme: bool,
+    /// Boot from the GPT disk image (`image/`) built from the ESP, not from QEMU's
+    /// directory ESP.
+    pub image: bool,
 }
 
 pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase {
@@ -52,6 +58,8 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         disk: None,
         server: true,
         memory_mib: None,
+        nvme: false,
+        image: false,
     }
 }
 
@@ -78,8 +86,10 @@ const POINTER: &[&str] = &[
 /// (Home; Up, PgDn and Esc do nothing; Right three times, "i"; End, Backspace takes
 /// the z; Left, Delete takes the x, where a Backspace would take an r), "ask hello"
 /// and "show me the cpus please" (plain English, so the shell asks the LLM for a
-/// script), each followed by Enter. Then, once the terminal shows the question, "yes"
-/// and Enter. Kept unformatted so each row is one of those steps.
+/// script, which only reads and runs at once), each followed by Enter. Once that
+/// reply shows, "hello" (a word the AI answers) and "go back to interactive" (a
+/// script that changes the policy, so it asks). Then, once the terminal shows the
+/// question, "no" and Enter. Kept unformatted so each row is one of those steps.
 #[rustfmt::skip]
 const TERMINAL_SCRIPT: &[&[&str]] = &[
     &["x", "y", "z", "ctrl-c", "p", "o", "l"],
@@ -91,7 +101,12 @@ const TERMINAL_SCRIPT: &[&[&str]] = &[
         "s", "h", "o", "w", "spc", "m", "e", "spc", "t", "h", "e", "spc",
         "c", "p", "u", "s", "spc", "p", "l", "e", "a", "s", "e", "ret",
     ],
-    &["y", "e", "s", "ret"],
+    &[
+        "h", "e", "l", "l", "o", "ret",
+        "g", "o", "spc", "b", "a", "c", "k", "spc", "t", "o", "spc",
+        "i", "n", "t", "e", "r", "a", "c", "t", "i", "v", "e", "ret",
+    ],
+    &["n", "o", "ret"],
 ];
 
 pub const TEST_CASES: &[TestCase] = &[
@@ -151,9 +166,14 @@ pub const TEST_CASES: &[TestCase] = &[
         keys: TERMINAL_SCRIPT,
         expect: &[
             crate::mock_llm::REPLY,
-            "? run it? it changes nothing. yes/no",
-            "run script 1? yes/no> ",
+            // The read-only script ran without a question.
+            "= ran it (read-only):",
             "= CPUs: ",
+            "kai> hello",
+            crate::mock_llm::HELLO,
+            "? run it? it CHANGES set_policy. yes/no",
+            "run script 3? yes/no> no",
+            "= script 3 not run",
             // screenlog copies the typed text the screen shows. It matches the
             // `policy rrxz` row too, so only the kernel's policy check proves the edits.
             "|kai> policy rr",
@@ -250,6 +270,30 @@ pub const TEST_CASES: &[TestCase] = &[
         server: false,
         expect: &["live: :why notes was answered by the local model"],
         ..case("live-local", "test=live")
+    },
+    // The same disk checks over NVMe, the driver VirtualBox and real PCs need.
+    TestCase {
+        disk: Some(Fixture::Raw),
+        nvme: true,
+        expect: &[
+            "blk: read 3146505 bytes of 6146 sectors over nvme",
+            "blk: kai-model reads back byte for byte",
+            "model: no GGUF magic; the kai-model disk is ignored",
+        ],
+        ..case("nvme", "test=blk")
+    },
+    TestCase {
+        disk: Some(Fixture::Gguf),
+        nvme: true,
+        expect: &["nvme: namespace 1, ", "model: llm (pid"],
+        ..case("nvme-model", "test=model")
+    },
+    // The boot disk VirtualBox gets: Limine and the kernel on a FAT32 ESP in a GPT
+    // image, written by xtask, booted the way firmware boots a real disk.
+    TestCase {
+        image: true,
+        expect: &["boot-ok"],
+        ..case("image", "test")
     },
     // L6: worker threads in one address space.
     case("threads", "test=threads"),

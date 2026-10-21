@@ -116,6 +116,16 @@ const EXAMPLES: &[(&str, &str, &str)] = &[
         "Prints every service name, separated by commas.",
     ),
     (
+        "hello",
+        "",
+        "Hello! Ask me about this system, or tell me what to do.",
+    ),
+    (
+        "what can you do?",
+        "",
+        "I answer questions and run scripts that read CPUs, memory, uptime and services, or set the policy.",
+    ),
+    (
         "delete all my files",
         "print(\"I cannot do that: scripts here have no access to files.\");",
         "Explains that there is no file access.",
@@ -129,6 +139,7 @@ pub fn system_prompt() -> String {
          Answer with JSON only: {\"script\": \"...\", \"summary\": \"...\"}.\n\
          script: Rhai code, at most 40 lines of at most 120 characters, ASCII only.\n\
          summary: one sentence of at most 100 characters saying what the script does.\n\
+         Greeting, chat or a question about you that needs no function: an empty script, your reply in summary.\n\
          \n\
          Rhai rules here:\n\
          - End statements with ';'. Declare variables with let.\n\

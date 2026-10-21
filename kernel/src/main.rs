@@ -21,6 +21,7 @@ mod apic;
 mod backtrace;
 mod bigmap_tests;
 mod blk_tests;
+mod block;
 mod boot_manifest;
 mod build_job;
 mod build_service;
@@ -53,6 +54,7 @@ mod metrics;
 mod model;
 mod model_tests;
 mod net;
+mod nvme;
 mod percpu;
 mod platform;
 mod pointer;
@@ -76,6 +78,7 @@ mod timer;
 mod tune_ab_tests;
 mod tune_local_tests;
 mod tune_tests;
+mod version;
 mod virtio;
 mod workload;
 
@@ -165,7 +168,7 @@ extern "C" fn kmain() -> ! {
         .and_then(|r| r.framebuffers().first().copied())
     {
         let ready = console::init(fb);
-        log!("Kernel AI {} (M6)", env!("CARGO_PKG_VERSION"));
+        log!("{}", version::Banner);
         log!(
             "framebuffer: {}x{} {} bpp, console: {}",
             fb.width,
@@ -174,10 +177,7 @@ extern "C" fn kmain() -> ! {
             ready
         );
     } else {
-        log!(
-            "Kernel AI {} (M6), no framebuffer",
-            env!("CARGO_PKG_VERSION")
-        );
+        log!("{}, no framebuffer", version::Banner);
     }
 
     load_line_table();
@@ -341,6 +341,7 @@ fn init_devices() -> &'static acpitables::Platform {
             .hpet
             .ok_or("no HPET; a PIT fallback is not implemented yet")?;
         hpet::init(hpet)?;
+        hpet::select_clock(cmdline());
         timer::init()?;
         i8042::init(platform, apic_id)?;
         log!(

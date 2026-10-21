@@ -4,8 +4,10 @@
 //! Like TempleOS's prompt, every line is code: variables and functions persist, and
 //! the value of the last expression is echoed. Plain commands (`mem`, `policy rr`,
 //! `ask why is the sky blue`) are recognised from their first word and run directly.
-//! A line starting with `?`, or plain English that is not Rhai, asks the LLM for a
-//! script, which is checked, shown in full and run only after a yes (see `script`).
+//! A line starting with `?`, or plain words that do not run as Rhai, go to the LLM,
+//! which answers in words or with a script. A script is checked and shown in full;
+//! one that only reads runs at once, and one that changes anything runs only after
+//! a yes (see `script`).
 //!
 //! Every run is bounded: by time (checked every [`CHECK_EVERY`] operations), by an
 //! operation count, by heap use, and by Rhai's own size and depth limits. A run that
@@ -102,6 +104,8 @@ pub const CHECK_EVERY: u64 = 1024;
 /// Time the llm service gets for one script request; two rounds (an answer and one
 /// repair) must fit in the terminal's wait for a line (310 s since the M10 demo).
 pub const SCRIPT_ROUND_MS: u64 = 70_000;
+/// What separates a read-only script, shown in full, from its output.
+pub const RAN_READ_ONLY: &str = "\nran it (read-only):\n";
 /// How long a proposed script waits for its answer.
 const CONFIRM_EXPIRY_NS: u64 = 120_000_000_000;
 /// First words that mark a line as Rhai even when it does not parse.
@@ -232,7 +236,7 @@ impl Shell {
         }
         let ast = match self.engine.compile_with_scope(&self.scope, input) {
             Ok(ast) => ast,
-            Err(_) if reads_like_english(input) => return self.ask_for_script(input),
+            Err(_) if reads_like_words(input) => return self.ask_for_script(input),
             Err(error) => return Reply::err(format!("syntax error: {error}")),
         };
         let program = self.functions.merge(&ast);
@@ -248,6 +252,18 @@ impl Shell {
                     text.push_str(&show::value(&value));
                 }
                 Reply::ok(text)
+            }
+            // A word Rhai took for a variable, in a line of plain words: `hello`.
+            // A one-letter or code-like name (`x`, `n2`, `max_len`) stays an error.
+            Err(error)
+                if text.is_empty()
+                    && reads_like_words(input)
+                    && matches!(
+                        error.unwrap_inner(),
+                        EvalAltResult::ErrorVariableNotFound(name, _) if is_word(name)
+                    ) =>
+            {
+                self.ask_for_script(input)
             }
             Err(error) => {
                 text.push_str(&self.describe(&error));
@@ -306,6 +322,10 @@ impl Shell {
                 timeout_ms: SCRIPT_ROUND_MS,
             };
             let failure = match self.host.script(&ask) {
+                // No script: the model answered in words.
+                Err(AnswerError::NoScript(reply)) if !reply.is_empty() => {
+                    return self.say(id, request, reply);
+                }
                 Ok(answer) => match script::check(&answer, &self.host, &self.config) {
                     Ok(checked) => return self.propose(id, request, checked),
                     Err(script::Refusal::Script(why)) => Some((answer.script, why)),
@@ -338,7 +358,31 @@ impl Shell {
         Reply::err(outcome)
     }
 
+    fn say(&mut self, id: u64, request: &str, reply: String) -> Reply {
+        self.log.record(id, request, "", "answered in words");
+        self.host.audit(&format!("script {id} answered in words"));
+        Reply::ok(reply)
+    }
+
+    /// Runs a script that only reads at once, shown in full above its output, as
+    /// the founder decided on 2026-10-20 (docs/decisions.md, Autonomy). A script
+    /// that changes anything waits for a yes.
     fn propose(&mut self, id: u64, request: &str, checked: script::Checked) -> Reply {
+        if checked.changes.is_empty() {
+            self.host
+                .audit(&format!("script {id} only reads; running it"));
+            let ran = script::run(&checked, &self.host, &self.config);
+            let outcome = if ran.ok {
+                "ran read-only"
+            } else {
+                "failed read-only"
+            };
+            self.log.record(id, request, &checked.script, outcome);
+            self.host.audit(&format!("script {id} {outcome}"));
+            let shown = script::shown(id, &checked);
+            let text = format!("{shown}{RAN_READ_ONLY}{}", ran.text);
+            return Reply { text, ..ran };
+        }
         let text = script::confirmation(id, &checked);
         self.host.audit(&format!(
             "script {id} proposed ({} lines)",
@@ -420,12 +464,11 @@ impl Shell {
     }
 }
 
-/// A line that failed to parse is sent to the LLM if it reads like a request in
-/// English: at least three words of mostly letters, no code punctuation, and not
-/// starting with a Rhai keyword.
-pub fn reads_like_english(line: &str) -> bool {
+/// A line that does not run as Rhai is sent to the LLM if it reads like words: mostly
+/// letters, no code punctuation, and not starting with a Rhai keyword.
+pub fn reads_like_words(line: &str) -> bool {
     let words: Vec<&str> = line.split_whitespace().collect();
-    if words.len() < 3 || RHAI_WORDS.contains(&words[0]) {
+    if words.is_empty() || RHAI_WORDS.contains(&words[0]) {
         return false;
     }
     if line.chars().any(|c| "(){}[];=\"`#$".contains(c)) {
@@ -437,6 +480,11 @@ pub fn reads_like_english(line: &str) -> bool {
         .filter(|c| !c.is_alphabetic() && !c.is_whitespace())
         .count();
     letters >= 4 * others
+}
+
+/// A name that reads as a word, not as code: two or more letters and nothing else.
+fn is_word(name: &str) -> bool {
+    name.chars().count() > 1 && name.chars().all(char::is_alphabetic)
 }
 
 /// A Rhai error from a message.

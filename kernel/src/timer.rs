@@ -1,14 +1,28 @@
-//! 1 kHz tick from the local APIC timer in one-shot mode.
+//! The tick from the local APIC timer in one-shot mode: 1 kHz, or the rate `hz=`
+//! on the command line gives (100 to 1000).
 //!
 //! Each tick re-arms the timer for an absolute deadline measured on the HPET, so
 //! interrupt latency never accumulates into drift. The same one-shot mechanism
-//! will later allow tickless idle.
+//! will later allow tickless idle. Under VirtualBox on Hyper-V every tick costs two
+//! exits to VirtualBox's local APIC emulation, and 8 vCPUs ticking at 1 kHz leave
+//! the guest a few percent of its CPU time; `cargo xtask vbox` boots with `hz=250`.
 
 use crate::{apic, hpet, log, percpu};
 use core::sync::atomic::{AtomicU64, Ordering};
 
+/// The default tick rate, and the range `hz=` may pick from.
 pub const HZ: u64 = 1000;
-const PERIOD_NS: u64 = 1_000_000_000 / HZ;
+const MIN_HZ: u64 = 100;
+static RATE_HZ: AtomicU64 = AtomicU64::new(HZ);
+
+/// The tick rate in use.
+pub fn rate_hz() -> u64 {
+    RATE_HZ.load(Ordering::Relaxed)
+}
+
+fn period_ns() -> u64 {
+    1_000_000_000 / rate_hz()
+}
 const CALIBRATION_NS: u64 = 10_000_000;
 
 /// CPU 0's tick count: the system-wide clock the tests measure.
@@ -22,12 +36,18 @@ pub fn init_ap() {
     apic::timer_configure();
     let now = hpet::nanos();
     percpu::this().tick_start_ns.store(now, Ordering::Relaxed);
-    arm(now + PERIOD_NS);
+    arm(now + period_ns());
 }
 
 /// Calibrates the local APIC timer against the HPET and starts ticking.
 /// Interrupts must still be disabled.
 pub fn init() -> Result<(), &'static str> {
+    let asked = crate::cmdline()
+        .split_whitespace()
+        .find_map(|word| word.strip_prefix("hz=")?.parse::<u64>().ok());
+    if let Some(hz) = asked {
+        RATE_HZ.store(hz.clamp(MIN_HZ, HZ), Ordering::Relaxed);
+    }
     apic::timer_configure();
     apic::timer_start(u32::MAX);
     let start = hpet::nanos();
@@ -43,11 +63,12 @@ pub fn init() -> Result<(), &'static str> {
     APIC_PER_MS.store(per_ms, Ordering::Relaxed);
     let now = hpet::nanos();
     percpu::this().tick_start_ns.store(now, Ordering::Relaxed);
-    arm(now + PERIOD_NS);
+    arm(now + period_ns());
     log!(
-        "timer: APIC {} counts/ms, HPET {} Hz, ticking at {HZ} Hz",
+        "timer: APIC {} counts/ms, HPET {} Hz, ticking at {} Hz",
         per_ms,
-        hpet::frequency_hz()
+        hpet::frequency_hz(),
+        rate_hz()
     );
     Ok(())
 }
@@ -59,7 +80,7 @@ pub fn on_tick() {
     if percpu::index() == 0 {
         TICKS.fetch_add(1, Ordering::Relaxed);
     }
-    arm(cpu.tick_start_ns.load(Ordering::Relaxed) + (ticks + 1) * PERIOD_NS);
+    arm(cpu.tick_start_ns.load(Ordering::Relaxed) + (ticks + 1) * period_ns());
 }
 
 fn arm(deadline_ns: u64) {
@@ -100,21 +121,25 @@ pub fn wait_ticks(ticks: u64, timeout_ns: u64) -> Result<u64, &'static str> {
     Ok(hpet::nanos() - start)
 }
 
-/// Boot check: 100 ticks take 100 ms of HPET time, within 20%.
+/// Boot check: 100 ms of ticks take 100 ms of HPET time, within 20%.
 pub fn boot_check() -> Result<(), &'static str> {
-    let elapsed = wait_ticks(100, 2_000_000_000)?;
+    let ticks = rate_hz() / 10;
+    let elapsed = wait_ticks(ticks, 2_000_000_000)?;
     if !(80_000_000..=120_000_000).contains(&elapsed) {
-        return Err("timer: 100 ticks did not take about 100 ms");
+        return Err("timer: 100 ms of ticks did not take about 100 ms");
     }
-    log!("self-test: 100 ticks in {} us of HPET time", elapsed / 1000);
+    log!(
+        "self-test: {ticks} ticks in {} us of HPET time",
+        elapsed / 1000
+    );
     Ok(())
 }
 
 /// M3 exit test: 60 000 ticks must take 60 s of HPET time, within 2%.
 pub fn sixty_second_check() -> Result<(), &'static str> {
-    const TICKS_60S: u64 = 60 * HZ;
-    log!("timer: measure-start, counting {TICKS_60S} ticks");
-    let elapsed = wait_ticks(TICKS_60S, 90_000_000_000)?;
+    let ticks_60s = 60 * rate_hz();
+    log!("timer: measure-start, counting {ticks_60s} ticks");
+    let elapsed = wait_ticks(ticks_60s, 90_000_000_000)?;
     log!(
         "timer: measure-end, {} ms of HPET time",
         elapsed / 1_000_000

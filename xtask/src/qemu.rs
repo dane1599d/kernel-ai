@@ -105,7 +105,7 @@ pub fn args(
     args.push("if=pflash,format=raw,file=ovmf-vars.fd".into());
     debug_assert!(firmware.vars.ends_with("ovmf-vars.fd"));
     args.push("-drive".into());
-    args.push("format=raw,file=fat:rw:esp".into());
+    args.push(ESP_DRIVE.into());
     if let Some(disk) = disk {
         args.extend(disk.qemu_args());
     }
@@ -126,6 +126,24 @@ pub fn args(
     }
     args
 }
+
+/// The image case: builds the GPT disk image of `esp` as `target/boot.img` and
+/// boots from it in place of the directory ESP.
+pub fn boot_from_image(args: &mut [String], esp: &Path, target_dir: &Path) -> Result<(), String> {
+    let bytes = crate::image::build(esp, &target_dir.join(IMAGE))?;
+    println!("xtask: boot image {IMAGE}, {} MiB", bytes >> 20);
+    let drive = args
+        .iter_mut()
+        .find(|arg| *arg == ESP_DRIVE)
+        .ok_or("no directory ESP drive to replace")?;
+    *drive = format!("format=raw,file={IMAGE}");
+    Ok(())
+}
+
+/// The directory ESP, as QEMU's virtual FAT drive.
+const ESP_DRIVE: &str = "format=raw,file=fat:rw:esp";
+/// The image case's disk, in `target/`.
+const IMAGE: &str = "boot.img";
 
 /// Asks the OS for a free local port. QEMU binds it right after, so a clash is unlikely.
 pub fn free_port() -> Result<u16, String> {

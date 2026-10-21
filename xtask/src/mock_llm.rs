@@ -16,6 +16,8 @@ const MAX_BODY: usize = 256 * 1024;
 
 /// The text every question gets back. Tests look for it on the console.
 pub const REPLY: &str = "Hello from the mock LLM.";
+/// The model's answer in words, with no script, to the script request "hello".
+pub const HELLO: &str = "Hello! Ask me about this system, or tell me what to do.";
 pub const MODEL: &str = "mock";
 /// What every rollback explanation starts with; the rest repeats the facts'
 /// `latest rollback:` line, so a test sees the ledger's facts reached the model.
@@ -128,6 +130,7 @@ const SCRIPTS: &[(&str, &str, &str, &str)] = &[
         "print(memory().free_mib + \" MiB free\");",
         "Prints free memory.",
     ),
+    ("hello", "", "", HELLO),
     (
         "reboot the computer",
         "",

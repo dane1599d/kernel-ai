@@ -45,24 +45,18 @@ pub fn golden(bytes: &[u8]) -> Result<String, String> {
 }
 
 /// The console lines the terminal prints for the shell's answer `text`: each line
-/// in pieces of at most 160 characters, after the shell's `= ` lead.
+/// wrapped at spaces to at most 160 characters (CI's screen is wider), after the
+/// shell's `= ` lead.
 pub fn terminal_lines(text: &str) -> Vec<String> {
     shown_lines("=", text)
 }
 
 /// The console lines the terminal prints for a reply `text` after `lead`.
 pub fn shown_lines(lead: &str, text: &str) -> Vec<String> {
-    let mut lines = Vec::new();
-    for line in text.lines() {
-        let chars: Vec<char> = line.chars().collect();
-        if chars.is_empty() {
-            lines.push(format!("{lead} "));
-        }
-        for piece in chars.chunks(PIECE_CHARS) {
-            lines.push(format!("{lead} {}", piece.iter().collect::<String>()));
-        }
-    }
-    lines
+    text.lines()
+        .flat_map(|line| llmproto::text::wrap(line, PIECE_CHARS))
+        .map(|row| format!("{lead} {row}"))
+        .collect()
 }
 
 #[cfg(test)]

@@ -24,7 +24,15 @@ pub fn main(args: &[String]) -> Result<(), String> {
     println!("xtask: checking this PC for running Kernel AI in an accelerated VM (read-only)");
     let facts = facts::gather();
     println!();
-    print_items(&checks::items(&facts));
+    let mut items = checks::items(&facts);
+    if facts.windows {
+        let version = crate::vbox::manage::version();
+        items.push(crate::vbox::doctor::item(
+            version.as_deref(),
+            facts.hypervisor,
+        ));
+    }
+    print_items(&items);
     let advice = advice::advise(&facts);
     println!();
     println!("Recommended: {}", advice.path.title());

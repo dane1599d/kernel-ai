@@ -3,7 +3,7 @@
 //! supervisor why.
 
 use super::{
-    KILL, KILL_DETAIL, Process, SLOT_OF_TID, SPACES, State, killed, programs, request_kill,
+    KILL, KILL_DETAIL, Process, SLOT_OF_TID, State, killed, lock_space, programs, request_kill,
     slot_of, supervision, with_table, workers,
 };
 use crate::{log, memory, threads};
@@ -56,7 +56,7 @@ pub fn exit_current() -> ! {
             .unwrap_or(ExitReason::Killed);
     let detail = KILL_DETAIL[slot].load(Ordering::SeqCst);
     crate::ipc::on_process_exit(process.pid);
-    let space = SPACES[slot].lock().take();
+    let space = lock_space(slot).take();
     let freed = space.map_or(0, |space| memory::with(|m| m.destroy_user_space(space)));
     report_exit(&process, reason, detail, freed);
     crate::sched_control::on_process_exit(process.pid, reason);
