@@ -270,8 +270,9 @@ pub fn storm_check(seconds: u64) -> Result<(), &'static str> {
     );
     let (_, _, switches) = threads::stats();
     log!(
-        "storm: measure-end, {spawned} spawned, {finished} finished, table full {} times, {switches} switches",
-        STORM_FULL.load(Ordering::Relaxed)
+        "storm: measure-end, {spawned} spawned, {finished} finished, table full {} times, {switches} switches, {} split HPET reads",
+        STORM_FULL.load(Ordering::Relaxed),
+        hpet::split_reads()
     );
     if !drained {
         threads::log_in_use();

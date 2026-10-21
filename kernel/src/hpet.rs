@@ -38,9 +38,43 @@ const WINDOWS: u32 = 200;
 /// TSC ticks spun between two HPET reads while calibrating.
 const SPIN_TICKS: u64 = 1 << 20;
 
+/// The last main-counter value read without tearing, by any CPU.
+static LAST_TICKS: AtomicU64 = AtomicU64::new(0);
+/// Main-counter reads that were not near the last good value, so the halves were
+/// read instead: torn reads, which QEMU before 10.0 gives at each 43 s wrap of
+/// the low half.
+static SPLIT_READS: AtomicU64 = AtomicU64::new(0);
+
 fn read(offset: u64) -> u64 {
     // SAFETY: BASE maps the HPET register block uncached.
     unsafe { ((BASE.load(Ordering::Relaxed) + offset) as *const u64).read_volatile() }
+}
+
+fn read32(offset: u64) -> u32 {
+    // SAFETY: as in read; the register block allows 32-bit reads.
+    unsafe { ((BASE.load(Ordering::Relaxed) + offset) as *const u32).read_volatile() }
+}
+
+/// The main counter, never torn (see [`acpitables::hpet_counter`]). A torn read
+/// once put a sleeping thread 43 s in the future and lost it from the storm case.
+fn main_counter() -> u64 {
+    let last = LAST_TICKS.load(Ordering::Relaxed);
+    let (ticks, split) = acpitables::hpet_counter::read(
+        || read(MAIN_COUNTER),
+        || read32(MAIN_COUNTER),
+        || read32(MAIN_COUNTER + 4),
+        last,
+    );
+    if split {
+        SPLIT_READS.fetch_add(1, Ordering::Relaxed);
+    }
+    LAST_TICKS.fetch_max(ticks, Ordering::Relaxed);
+    ticks
+}
+
+/// Main-counter reads so far that had to fall back to reading the halves.
+pub fn split_reads() -> u64 {
+    SPLIT_READS.load(Ordering::Relaxed)
 }
 
 fn write(offset: u64, value: u64) {
@@ -161,7 +195,7 @@ pub fn nanos() -> u64 {
 }
 
 fn hpet_nanos() -> u64 {
-    let ticks = u128::from(read(MAIN_COUNTER));
+    let ticks = u128::from(main_counter());
     (ticks * u128::from(PERIOD_FS.load(Ordering::Relaxed)) / FEMTOS_PER_NANO) as u64
 }
 
