@@ -11,7 +11,10 @@
 //! kernel a single token uses, and each token attends over exactly the positions
 //! before it, so a block gives the bits of its tokens run one at a time.
 //! Matrices that share an input run in one [`matvec_parallel`] call on the
-//! model's [`Parallel`] workers, with the same bits as one thread.
+//! model's [`Parallel`] workers, with the same bits as one thread; in a block of
+//! several tokens the work done token by token (norms, RoPE, SwiGLU, quantising
+//! activations, laying the products out by token) runs a token to a worker,
+//! which gives the same bits too.
 
 use crate::acts::Acts;
 use crate::attend::{attend, scratch_len};
@@ -20,7 +23,7 @@ use crate::{Config, Error, KvCache, Rope, Weights};
 use alloc::vec;
 use alloc::vec::Vec;
 use gguf::Gguf;
-use quant::{Parallel, Serial, Tier, matvec_parallel};
+use quant::{Parallel, Serial, Tier, for_each_chunk, matvec_parallel};
 
 /// Tokens a prompt block runs at once.
 pub const PREFILL_TOKENS: usize = 32;
@@ -220,33 +223,36 @@ impl<'a> Model<'a> {
         let (e, hd, qd, kvd) = (c.n_embd, c.head_dim, c.q_dim(), c.kv_dim());
         let w = &weights.layers[layer];
         let pos = kv.len();
-        for t in 0..n {
-            rms_norm(
-                &s.x[t * e..][..e],
-                &w.attn_norm,
-                c.rms_eps,
-                &mut s.xn[t * e..][..e],
-            );
-            s.q_embd.quantize(t, &s.xn[t * e..][..e]);
-        }
+        norm_all(
+            *par,
+            &s.x[..n * e],
+            &w.attn_norm,
+            c.rms_eps,
+            &mut s.xn[..n * e],
+        );
+        s.q_embd.quantize_all(*par, &s.xn[..n * e], n);
         let qkv = &mut [
             (&w.wq, &mut s.q[..n * qd]),
             (&w.wk, &mut s.k[..n * kvd]),
             (&w.wv, &mut s.v[..n * kvd]),
         ];
         run(*par, *tier, &s.q_embd, n, &mut s.rows, qkv);
+        let rope = &*rope;
+        for (heads, norm, width) in [
+            (&mut s.q[..n * qd], &w.q_norm, qd),
+            (&mut s.k[..n * kvd], &w.k_norm, kvd),
+        ] {
+            for_each_chunk(*par, heads, width, &|t, heads| {
+                for head in heads.chunks_exact_mut(hd) {
+                    rms_norm_in_place(head, norm, c.rms_eps);
+                    rope.apply(head, pos + t);
+                }
+            });
+        }
         for t in 0..n {
-            for head in s.q[t * qd..][..qd].chunks_exact_mut(hd) {
-                rms_norm_in_place(head, &w.q_norm, c.rms_eps);
-                rope.apply(head, pos + t);
-            }
-            let k = &mut s.k[t * kvd..][..kvd];
-            for head in k.chunks_exact_mut(hd) {
-                rms_norm_in_place(head, &w.k_norm, c.rms_eps);
-                rope.apply(head, pos + t);
-            }
+            let k = &s.k[t * kvd..][..kvd];
             let (k_slot, v_slot) = kv.slot_mut(layer, pos + t);
-            for (slot, &k) in k_slot.iter_mut().zip(&*k) {
+            for (slot, &k) in k_slot.iter_mut().zip(k) {
                 *slot = quant::f16::from_f32(k);
             }
             for (slot, &v) in v_slot.iter_mut().zip(&s.v[t * kvd..][..kvd]) {
@@ -258,8 +264,8 @@ impl<'a> Model<'a> {
             let (q, att) = (&s.q[t * qd..][..qd], &mut s.att[t * qd..][..qd]);
             let heads = (&mut s.heads[..], *context);
             attend(*par, *tier, c, q, cache, pos + t + 1, heads, att);
-            s.q_att.quantize(t, att);
         }
+        s.q_att.quantize_all(*par, &s.att[..n * qd], n);
         run(
             *par,
             *tier,
@@ -276,29 +282,29 @@ impl<'a> Model<'a> {
     fn feed_forward(&mut self, layer: usize, n: usize) {
         let (c, e, ff) = (self.config, self.config.n_embd, self.config.n_ff);
         let w = &self.weights.layers[layer];
-        let s = &mut self.s;
-        for t in 0..n {
-            rms_norm(
-                &s.x[t * e..][..e],
-                &w.ffn_norm,
-                c.rms_eps,
-                &mut s.xn[t * e..][..e],
-            );
-            s.q_embd.quantize(t, &s.xn[t * e..][..e]);
-        }
+        let (s, par) = (&mut self.s, self.par);
+        norm_all(
+            par,
+            &s.x[..n * e],
+            &w.ffn_norm,
+            c.rms_eps,
+            &mut s.xn[..n * e],
+        );
+        s.q_embd.quantize_all(par, &s.xn[..n * e], n);
         let gate_up = &mut [
             (&w.w_gate, &mut s.gate[..n * ff]),
             (&w.w_up, &mut s.up[..n * ff]),
         ];
-        run(self.par, self.tier, &s.q_embd, n, &mut s.rows, gate_up);
-        for (g, u) in s.gate[..n * ff].iter_mut().zip(&s.up) {
-            *g = *g / (1.0 + libm::expf(-*g)) * u;
-        }
-        for t in 0..n {
-            s.q_ff.quantize(t, &s.gate[t * ff..][..ff]);
-        }
+        run(par, self.tier, &s.q_embd, n, &mut s.rows, gate_up);
+        let up = &s.up;
+        for_each_chunk(par, &mut s.gate[..n * ff], ff, &|t, gate| {
+            for (g, u) in gate.iter_mut().zip(&up[t * ff..]) {
+                *g = *g / (1.0 + libm::expf(-*g)) * u;
+            }
+        });
+        s.q_ff.quantize_all(par, &s.gate[..n * ff], n);
         let down = &mut [(&w.w_down, &mut s.out[..n * e])];
-        run(self.par, self.tier, &s.q_ff, n, &mut s.rows, down);
+        run(par, self.tier, &s.q_ff, n, &mut s.rows, down);
         for (x, o) in s.x[..n * e].iter_mut().zip(&s.out) {
             *x += o;
         }
@@ -354,12 +360,21 @@ fn run<const N: usize>(
     });
     matvec_parallel(par, tier, &mut items);
     for ((m, y), part) in jobs.iter_mut().zip(&parts) {
-        for (r, row) in part.chunks_exact(n).enumerate() {
-            for (t, &v) in row.iter().enumerate() {
-                y[t * m.rows + r] = v;
+        let part: &[f32] = part;
+        for_each_chunk(par, &mut y[..m.rows * n], m.rows, &|t, y| {
+            for (r, v) in y.iter_mut().enumerate() {
+                *v = part[r * n + t];
             }
-        }
+        });
     }
+}
+
+/// [`rms_norm`] of each token's vector in `x` into `out`, a token to a worker.
+fn norm_all(par: &dyn Parallel, x: &[f32], weight: &[f32], eps: f32, out: &mut [f32]) {
+    let e = weight.len();
+    for_each_chunk(par, out, e, &|t, out| {
+        rms_norm(&x[t * e..][..e], weight, eps, out)
+    });
 }
 
 /// `x / rms(x) * weight`; the sum of squares runs in f64, as in llama.cpp.

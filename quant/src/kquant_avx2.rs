@@ -111,7 +111,7 @@ pub fn q6_k_dot(row: &[u8], x: &Q8KVec, sink: &mut impl Sink) {
 /// A shuffle that fills the low 128-bit lane with i16 lane `low` of its own
 /// lane, and the high one with i16 lane `high` of its own.
 #[target_feature(enable = "avx2")]
-fn lane_of(low: usize, high: usize) -> __m256i {
+pub(crate) fn lane_of(low: usize, high: usize) -> __m256i {
     let pick = |i: usize| (2 * i as i16) | ((2 * i as i16 + 1) << 8);
     _mm256_inserti128_si256::<1>(
         _mm256_castsi128_si256(_mm_set1_epi16(pick(low))),
@@ -135,13 +135,13 @@ pub(crate) fn half(h: u16) -> f32 {
 }
 
 #[target_feature(enable = "avx")]
-fn load(bytes: &[u8; 32]) -> __m256i {
+pub(crate) fn load(bytes: &[u8; 32]) -> __m256i {
     // SAFETY: 32 readable bytes; loadu has no alignment rule. AVX was dispatched.
     unsafe { _mm256_loadu_si256(bytes.as_ptr().cast()) }
 }
 
 #[target_feature(enable = "avx")]
-fn load_i8(bytes: &[i8; 32]) -> __m256i {
+pub(crate) fn load_i8(bytes: &[i8; 32]) -> __m256i {
     // SAFETY: 32 readable bytes; loadu has no alignment rule. AVX was dispatched.
     unsafe { _mm256_loadu_si256(bytes.as_ptr().cast()) }
 }

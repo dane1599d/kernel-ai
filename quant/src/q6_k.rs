@@ -98,20 +98,32 @@ pub fn quantize_row(x: &[f32], out: &mut [u8]) {
 /// super-block, `s` = sum over sub-blocks of sc * ((codes - 32) . x), exact, goes
 /// to `sink` in super-block order.
 pub(crate) fn dot_baseline(row: &[u8], x: &Q8KVec, sink: &mut impl Sink) {
-    let blocks = row.as_chunks::<BLOCK_BYTES>().0.iter();
-    let xs = x.qs.as_chunks::<SUPER_LEN>().0;
-    let sums = x.sums.as_chunks::<16>().0;
-    for (((block, xq), sums), &dx) in blocks.zip(xs).zip(sums).zip(&x.scales) {
+    dot_baseline_n(row, core::array::from_ref(x), core::array::from_mut(sink));
+}
+
+/// One row against each of `xs`, as [`dot_baseline`] runs each, with every
+/// super-block's codes and scales read once for all of them.
+pub(crate) fn dot_baseline_n<const N: usize, S: Sink>(
+    row: &[u8],
+    xs: &[Q8KVec; N],
+    sinks: &mut [S; N],
+) {
+    for (b, block) in row.as_chunks::<BLOCK_BYTES>().0.iter().enumerate() {
         let (d, sc) = header(block);
-        let mut s = 0i32;
-        for (j, xq) in xq.as_chunks::<16>().0.iter().enumerate() {
-            let dot: i32 = (0..16)
-                .map(|l| i32::from(code(block, 16 * j + l)) * i32::from(xq[l]))
-                .sum();
-            s += i32::from(sc[j]) * dot;
-        }
-        s -= 32 * offset_term(&sc, sums);
-        sink.q6_k(d, dx, s);
+        let codes: [u8; SUPER_LEN] = core::array::from_fn(|i| code(block, i));
+        let s = xs.each_ref().map(|x| {
+            let xq = &x.qs.as_chunks::<SUPER_LEN>().0[b];
+            let mut s = 0i32;
+            for (j, xq) in xq.as_chunks::<16>().0.iter().enumerate() {
+                let dot: i32 = (0..16)
+                    .map(|l| i32::from(codes[16 * j + l]) * i32::from(xq[l]))
+                    .sum();
+                s += i32::from(sc[j]) * dot;
+            }
+            s - 32 * offset_term(&sc, &x.sums.as_chunks::<16>().0[b])
+        });
+        let dx = xs.each_ref().map(|x| x.scales[b]);
+        S::q6_k_each(sinks, d, &dx, &s);
     }
 }
 

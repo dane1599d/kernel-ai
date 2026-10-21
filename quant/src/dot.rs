@@ -38,27 +38,36 @@ pub fn matvec(tier: Tier, w: &[u8], x: &QVec, y: &mut [f32]) {
     }
 }
 
-fn scale(block: &[u8]) -> f32 {
+pub(crate) fn scale(block: &[u8]) -> f32 {
     f16::to_f32(u16::from_le_bytes([block[0], block[1]]))
 }
 
 fn dot_baseline(row: &[u8], x: &QVec) -> f32 {
-    let mut total = 0.0f32;
-    let blocks = row.as_chunks::<BLOCK_BYTES>().0.iter();
-    let xs = x.qs.as_chunks::<BLOCK_LEN>().0;
-    for ((w, xq), &dx) in blocks.zip(xs).zip(&x.scales) {
-        let mut sum = 0i32;
-        for (&a, &b) in w[2..].iter().zip(xq) {
-            sum += i32::from(a as i8) * i32::from(b);
+    dot_baseline_n(row, core::array::from_ref(x))[0]
+}
+
+/// One row against each of `xs`, as [`dot_baseline`] runs each, with every
+/// block's scale widened once for all of them.
+pub(crate) fn dot_baseline_n<const N: usize>(row: &[u8], xs: &[QVec; N]) -> [f32; N] {
+    let mut totals = [0.0f32; N];
+    for (b, w) in row.as_chunks::<BLOCK_BYTES>().0.iter().enumerate() {
+        let dw = scale(w);
+        for (x, total) in xs.iter().zip(&mut totals) {
+            let mut sum = 0i32;
+            for (&a, &q) in w[2..].iter().zip(&x.qs.as_chunks::<BLOCK_LEN>().0[b]) {
+                sum += i32::from(a as i8) * i32::from(q);
+            }
+            *total += (dw * x.scales[b]) * sum as f32;
         }
-        total += (scale(w) * dx) * sum as f32;
     }
-    total
+    totals
 }
 
 #[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
-mod avx2 {
+pub(crate) mod avx2 {
     use super::scale;
+    use crate::batch_avx2::hsums;
+    use crate::kquant::{Sink, Total};
     use crate::q8_0::{BLOCK_BYTES, BLOCK_LEN, QVec};
     use core::arch::x86_64::*;
 
@@ -90,8 +99,41 @@ mod avx2 {
         total
     }
 
+    /// One row against each of `xs`, as [`dot`] runs each: per block, the
+    /// codes are loaded, their signs taken and the scale widened once for all
+    /// the tokens, eight tokens' lanes are summed by one tree of adds, and four
+    /// tokens' float tails `(d_w * d_x) * sum` run in one SSE register (Q6_K's
+    /// tail, [`Sink::q6_k_each`], is the same arithmetic).
+    #[target_feature(enable = "avx2,fma")]
+    pub fn dot_n<const N: usize>(row: &[u8], xs: &[QVec; N]) -> [f32; N] {
+        let ones = _mm256_set1_epi16(1);
+        let blocks = row.as_chunks::<BLOCK_BYTES>().0;
+        // Each token's bytes and scales cut to the row's blocks once, so the
+        // block loop indexes them without further bounds checks.
+        let qs: [&[[i8; BLOCK_LEN]]; N] =
+            core::array::from_fn(|t| &xs[t].qs.as_chunks().0[..blocks.len()]);
+        let scales: [&[f32]; N] = core::array::from_fn(|t| &xs[t].scales[..blocks.len()]);
+        let mut totals = xs.each_ref().map(|_| Total(0.0));
+        for (b, w) in blocks.iter().enumerate() {
+            let qw: &[u8; 32] = w[2..].try_into().expect("32 code bytes");
+            // SAFETY: 32 readable bytes; loadu has no alignment rule. AVX2 was
+            // dispatched.
+            let wv = unsafe { _mm256_loadu_si256(qw.as_ptr().cast()) };
+            let abs_w = _mm256_sign_epi8(wv, wv);
+            let lanes: [__m256i; N] = core::array::from_fn(|t| {
+                // SAFETY: as above, 32 bytes.
+                let xv = unsafe { _mm256_loadu_si256(qs[t][b].as_ptr().cast()) };
+                let pairs = _mm256_maddubs_epi16(abs_w, _mm256_sign_epi8(xv, wv));
+                _mm256_madd_epi16(pairs, ones)
+            });
+            let dx = core::array::from_fn(|t| scales[t][b]);
+            Total::q6_k_each(&mut totals, scale(w), &dx, &hsums(&lanes));
+        }
+        totals.map(|t| t.0)
+    }
+
     #[target_feature(enable = "avx2")]
-    fn hsum(v: __m256i) -> i32 {
+    pub(crate) fn hsum(v: __m256i) -> i32 {
         let s = _mm_add_epi32(_mm256_castsi256_si128(v), _mm256_extracti128_si256::<1>(v));
         let s = _mm_add_epi32(s, _mm_shuffle_epi32::<0b01_00_11_10>(s));
         let s = _mm_add_epi32(s, _mm_shuffle_epi32::<0b10_11_00_01>(s));

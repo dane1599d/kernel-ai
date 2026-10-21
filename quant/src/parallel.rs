@@ -2,13 +2,18 @@
 //!
 //! A [`Product`] is one weight matrix and the activation vectors it multiplies,
 //! one per token, so batched prefill uses the same type as decoding. [`Product::run`]
-//! computes any range of its rows. [`matvec_parallel`] splits the rows of one or
-//! more products into chunks and hands them to the workers of a [`Parallel`]:
+//! computes any range of its rows, with the one-token kernels for one vector and
+//! the batched ones ([`crate::q4_k_matmul`] and the others) for several.
+//! [`matvec_parallel`] splits the rows of one or more products into chunks and
+//! hands them to the workers of a [`Parallel`]:
 //! every row is computed by the same code whoever computes it, so the result is
 //! the single-thread one bit for bit, for any number of workers.
 
 use crate::q8k::Q8KVec;
-use crate::{Tier, matvec, q4_k, q4_k_matvec, q6_k, q6_k_matvec, q8_0::QVec, row_bytes};
+use crate::{
+    Tier, matvec, q4_k, q4_k_matmul, q4_k_matvec, q6_k, q6_k_matmul, q6_k_matvec, q8_0::QVec,
+    q8_0_matmul, row_bytes,
+};
 use core::ops::Range;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -115,26 +120,13 @@ impl<'a> Product<'a> {
             "output size"
         );
         let w = &self.w[rows.start * self.row_bytes..rows.end * self.row_bytes];
-        if self.tokens == 1 {
-            return self.one(tier, w, 0, y);
-        }
-        let per_row = y.chunks_exact_mut(self.tokens);
-        for (w, y) in w.chunks_exact(self.row_bytes.max(1)).zip(per_row) {
-            for (t, y) in y.iter_mut().enumerate() {
-                self.one(tier, w, t, core::slice::from_mut(y));
-            }
-        }
-        if self.row_bytes == 0 {
-            y.fill(0.0);
-        }
-    }
-
-    /// The rows of `w` times vector `t`, one result each.
-    fn one(&self, tier: Tier, w: &[u8], t: usize, y: &mut [f32]) {
         match self.x {
-            Weights::Q8_0(x) => matvec(tier, w, &x[t], y),
-            Weights::Q4K(x) => q4_k_matvec(tier, w, &x[t], y),
-            Weights::Q6K(x) => q6_k_matvec(tier, w, &x[t], y),
+            Weights::Q8_0([x]) => matvec(tier, w, x, y),
+            Weights::Q4K([x]) => q4_k_matvec(tier, w, x, y),
+            Weights::Q6K([x]) => q6_k_matvec(tier, w, x, y),
+            Weights::Q8_0(x) => q8_0_matmul(tier, w, x, y),
+            Weights::Q4K(x) => q4_k_matmul(tier, w, x, y),
+            Weights::Q6K(x) => q6_k_matmul(tier, w, x, y),
         }
     }
 }
@@ -312,6 +304,66 @@ pub fn for_each_chunk(
         done.0.load(Ordering::Acquire),
         count,
         "a piece was not finished"
+    );
+}
+
+/// The items [`for_each_mut`] hands out one at a time.
+struct Items<T> {
+    base: *mut T,
+    len: usize,
+}
+
+// SAFETY: the pointer comes from a `&mut [T]` that `for_each_mut` holds for its
+// whole call; each index is taken once from a counter that never passes the
+// number of items, so no two calls hold the same item, and `T: Send` lets an
+// item be used on another worker.
+unsafe impl<T: Send> Sync for Items<T> {}
+
+/// Calls `f(index, item)` once for each of `items`, spread over `par`'s workers
+/// as [`for_each_chunk`] spreads pieces; the caller runs whatever the pool
+/// leaves. What `f` does to item `index` must depend only on `index` and the
+/// item, which makes the result the same for any number of workers. The
+/// engine's prefill quantises each token's activations with it.
+pub fn for_each_mut<T: Send>(
+    par: &dyn Parallel,
+    items: &mut [T],
+    f: &(dyn Fn(usize, &mut T) + Sync),
+) {
+    let count = items.len();
+    let items = &Items {
+        base: items.as_mut_ptr(),
+        len: count,
+    };
+    let (next, done) = (Line(AtomicUsize::new(0)), Line(AtomicUsize::new(0)));
+    let job = |_: usize, _: usize| {
+        loop {
+            let mut seen = next.0.load(Ordering::Relaxed);
+            let index = loop {
+                if seen >= count {
+                    return;
+                }
+                let swap = Ordering::Relaxed;
+                match next.0.compare_exchange_weak(seen, seen + 1, swap, swap) {
+                    Ok(_) => break seen,
+                    Err(now) => seen = now,
+                }
+            };
+            assert!(index < items.len, "an item inside the slice");
+            // SAFETY: `index` came from the counter above, so no other call
+            // holds it, and it lies inside the slice; see `Items`.
+            let item = unsafe { &mut *items.base.add(index) };
+            f(index, item);
+            done.0.fetch_add(1, Ordering::Release);
+        }
+    };
+    if count > 1 {
+        par.broadcast(&job);
+    }
+    job(0, 1);
+    assert_eq!(
+        done.0.load(Ordering::Acquire),
+        count,
+        "an item was not finished"
     );
 }
 

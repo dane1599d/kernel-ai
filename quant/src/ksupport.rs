@@ -87,7 +87,7 @@ impl Format {
     }
 }
 
-struct Ints(Vec<(i32, i32)>);
+pub(crate) struct Ints(pub Vec<(i32, i32)>);
 
 impl Sink for Ints {
     fn q4_k(&mut self, _: f32, _: f32, _: f32, a: i32, b: i32) {

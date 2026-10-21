@@ -3,7 +3,9 @@
 //! decode step. It times memory reads (the roofline), every kernel tier on
 //! weights far larger than the caches, the thread pool's cost per product, and
 //! then whole decode steps of every catalog model on generated weights of the
-//! model's real types and shapes, so nothing is downloaded. Every figure is the
+//! model's real types and shapes, so nothing is downloaded, and one prompt
+//! block of the 4B's products with the one-token and the batched kernels
+//! (`bench_prefill`). Every figure is the
 //! median of several runs after a warm-up; the read and one-thread kernel figures
 //! show the range beside it.
 
@@ -62,6 +64,7 @@ pub fn run() -> Result<(), String> {
     }
     sync_line(&threads, &pools);
     bench_project::run(&threads, &pools, &stream)?;
+    super::bench_prefill::run(&threads, &pools)?;
     calibrate(best)?;
     super::bench_4b::run(&threads, &pools, best)
 }
