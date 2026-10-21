@@ -16,6 +16,8 @@ pub enum SelfTest {
     Keyboard,
     /// M9d: mouse moves and clicks arrive in order with the keyboard's Ctrl.
     Pointer,
+    /// P3: the display shows a test pattern exactly, and virtio-gpu moves its cursor.
+    Display,
     Sched,
     Watchdog,
     Smp,
@@ -92,6 +94,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=timer" => Some(SelfTest::Timer),
             "test=keyboard" => Some(SelfTest::Keyboard),
             "test=pointer" => Some(SelfTest::Pointer),
+            "test=display" => Some(SelfTest::Display),
             "test=sched" => Some(SelfTest::Sched),
             "test=watchdog" => Some(SelfTest::Watchdog),
             "test=smp" => Some(SelfTest::Smp),

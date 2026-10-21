@@ -8,6 +8,9 @@
 //! text the grid holds, which serial and the tests read, is exactly what was
 //! printed. A status bar runs across the top (`status`), outside the grid.
 //!
+//! It draws into the display's back buffer (`crate::display`) and flushes the rows
+//! each repaint touched: a no-op on GOP, a rectangle transfer on virtio-gpu.
+//!
 //! Every access takes the serial line lock and then the console lock, so a reader
 //! never makes another CPU's line miss the screen.
 
@@ -16,11 +19,12 @@ mod layout;
 pub mod status;
 mod theme;
 
+use crate::display::Surface;
 use crate::serial::{self, Serial};
 use core::fmt::{self, Write};
-use core::ptr::NonNull;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use fb::Fb;
+use gfxcore::Rect;
 use layout::Layout;
 use limine::framebuffer::Framebuffer;
 use spin::Mutex;
@@ -112,20 +116,20 @@ pub fn cell() -> (usize, usize) {
 
 /// Takes over a 32-bpp framebuffer. Returns false for other formats.
 pub fn init(fb: &Framebuffer) -> bool {
-    let Some(base) = NonNull::new(fb.address().cast::<u32>()) else {
-        return false;
-    };
-    if fb.bpp != 32 {
-        return false;
-    }
-    let (width, height) = (fb.width as usize, fb.height as usize);
+    crate::display::init_gop(fb).is_some_and(attach)
+}
+
+/// Draws on `surface` from now on, starting from a blank screen.
+pub fn attach(surface: Surface) -> bool {
+    let (width, height) = (surface.width, surface.height);
     let screen = Fb {
-        base,
-        stride: (fb.pitch / 4) as usize,
+        base: surface.base,
+        stride: surface.stride,
     };
     let mut layout = Layout::new(width, height);
     screen.fill(0, 0, width, height, theme::INK);
     status::paint_brand(screen, &layout);
+    let _ = crate::display::flush(Rect::screen(width as u32, height as u32));
     let (cols, rows) = serial::with_line(|| {
         let mut console = CONSOLE.lock();
         let size = console.grid.resize(layout.cols, layout.rows);
@@ -148,6 +152,12 @@ pub fn init(fb: &Framebuffer) -> bool {
     CELL_WIDTH.store(layout.font.width, Ordering::Relaxed);
     CELL_HEIGHT.store(layout.font.height, Ordering::Relaxed);
     true
+}
+
+/// Stops drawing, for a test that draws on the display itself; text still goes
+/// to serial.
+pub fn detach() {
+    serial::with_line(|| CONSOLE.lock().out = None);
 }
 
 /// Reads `screenlog` from the command line.
@@ -186,15 +196,23 @@ fn update(change: impl FnOnce(&mut Screen)) {
     });
 }
 
-/// Runs `f` on the console's framebuffer and layout, and on the console itself.
-fn draw(f: impl FnOnce(&mut Console, Output)) {
+/// Runs `f` on the console's framebuffer and layout, and on the console itself,
+/// then flushes the rectangle it returns.
+fn draw(f: impl FnOnce(&mut Console, Output) -> Rect) {
     serial::with_line(|| {
         if let Some(mut console) = CONSOLE.try_lock()
             && let Some(out) = console.out
         {
-            f(&mut console, out);
+            let _ = crate::display::flush(f(&mut console, out));
         }
     });
+}
+
+/// The pixels of text rows `first..=last`, the whole width across.
+fn rows_rect(layout: &Layout, first: usize, last: usize) -> Rect {
+    let top = layout.top + first * layout.pitch;
+    let height = (last + 1 - first) * layout.pitch;
+    Rect::new(0, top as u32, layout.width as u32, height as u32)
 }
 
 /// Runs `f` on the screen's text, with no line drawn meanwhile. None without a
@@ -236,6 +254,7 @@ impl Console {
         for row in (0..rows).filter(|&row| damage.has(row) || sign == Some(row)) {
             self.paint_row(out, row, input);
         }
+        let mut dirty = damage.rows | sign.map_or(0, |row| 1 << row);
         if let Some((row, col)) = self.grid.cursor() {
             let layout = out.layout;
             let (x, y) = layout.cell(row, col);
@@ -244,6 +263,15 @@ impl Console {
             out.fb
                 .glyph(font, (x, y), ch, (theme::INK, false), theme::EMBER);
             self.painted[row].width = self.painted[row].width.max(col + 1);
+            dirty |= 1 << row;
+        }
+        if damage.scrolled > 0 {
+            dirty = u128::MAX;
+        }
+        if dirty != 0 && rows > 0 {
+            let first = (dirty.trailing_zeros() as usize).min(rows - 1);
+            let last = (127 - dirty.leading_zeros() as usize).min(rows - 1);
+            let _ = crate::display::flush(rows_rect(&out.layout, first, last));
         }
         if damage.rows != 0 && SCREENLOG.load(Ordering::Relaxed) {
             // Only `:clear`'s bare form feed leaves serial mid-line.
@@ -320,13 +348,15 @@ pub fn show_sign(frame: usize, label: &str) {
         let Some(row) = console.grid.spare_row() else {
             return console.hide_sign(out);
         };
+        let mut hidden = Rect::default();
         if console.sign != Some(row) {
-            console.hide_sign(out);
+            hidden = console.hide_sign(out);
             paint_frame(out, row, theme::look(Kind::of(&[])));
             console.painted[row] = UNKNOWN;
             console.sign = Some(row);
         }
         status::paint_sign(out.fb, &out.layout, row, frame, label);
+        hidden.union(rows_rect(&out.layout, row, row))
     });
 }
 
@@ -337,15 +367,21 @@ pub fn hide_sign() {
 
 /// Paints the status bar's right side.
 pub fn show_status(field: &status::Field) {
-    draw(|_, out| status::paint_field(out.fb, &out.layout, field));
+    draw(|_, out| {
+        status::paint_field(out.fb, &out.layout, field);
+        Rect::new(0, 0, out.layout.width as u32, out.layout.bar as u32)
+    });
 }
 
 impl Console {
-    fn hide_sign(&mut self, out: Output) {
-        if let Some(row) = self.sign.take() {
-            let input = self.grid.input_span();
-            self.paint_row(out, row, input);
-        }
+    /// Repaints the busy sign's row as text; returns the pixels that changed.
+    fn hide_sign(&mut self, out: Output) -> Rect {
+        let Some(row) = self.sign.take() else {
+            return Rect::default();
+        };
+        let input = self.grid.input_span();
+        self.paint_row(out, row, input);
+        rows_rect(&out.layout, row, row)
     }
 }
 

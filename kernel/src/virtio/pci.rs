@@ -1,6 +1,6 @@
 //! PCIe configuration access through the ECAM window from the MCFG table, and the
-//! one pass over bus 0 that finds the virtio devices (the network card and the
-//! block devices) and the NVMe controllers.
+//! one pass over bus 0 that finds the virtio devices (the network card, the block
+//! devices and the GPU) and the NVMe controllers.
 
 use super::hal::{DEVICE, KernelHal};
 use super::split::{self, SplitTransport};
@@ -66,6 +66,8 @@ pub struct Found {
     pub net_failed: bool,
     /// Every block device, in bus order.
     pub disks: Vec<PciTransport>,
+    /// The first virtio-gpu; any other is left alone.
+    pub gpu: Option<SplitTransport>,
     /// Every NVMe controller, in bus order.
     pub nvme: Vec<crate::nvme::Function>,
 }
@@ -73,8 +75,8 @@ pub struct Found {
 /// PCI class, subclass and programming interface of an NVMe controller.
 const NVME_CLASS: (u8, u8, u8) = (0x01, 0x08, 0x02);
 
-/// Enumerates bus 0 once and sets up a transport for each virtio network card and
-/// block device on it.
+/// Enumerates bus 0 once and sets up a transport for each virtio network card,
+/// block device and GPU on it.
 pub fn probe(platform: &acpitables::Platform) -> Result<Found, &'static str> {
     let ecam = platform
         .ecam
@@ -101,7 +103,7 @@ pub fn probe(platform: &acpitables::Platform) -> Result<Found, &'static str> {
     let wanted: Vec<(DeviceFunction, DeviceType, u16)> = functions
         .into_iter()
         .filter_map(|(function, info)| match virtio_device_type(&info) {
-            Some(kind @ (DeviceType::Network | DeviceType::Block)) => {
+            Some(kind @ (DeviceType::Network | DeviceType::Block | DeviceType::GPU)) => {
                 Some((function, kind, info.device_id))
             }
             _ => None,
@@ -111,6 +113,7 @@ pub fn probe(platform: &acpitables::Platform) -> Result<Found, &'static str> {
         net: None,
         net_failed: false,
         disks: Vec::new(),
+        gpu: None,
         nvme: Vec::new(),
     };
     for (function, kind, device_id) in wanted {
@@ -120,6 +123,11 @@ pub fn probe(platform: &acpitables::Platform) -> Result<Found, &'static str> {
                 continue;
             }
             DeviceType::Network => "virtio-net",
+            DeviceType::GPU if found.gpu.is_some() => {
+                log!("pci: ignoring a second virtio-gpu at {function}");
+                continue;
+            }
+            DeviceType::GPU => "virtio-gpu",
             _ => "virtio-blk",
         };
         log!("pci: {name} at {function} (id 1af4:{device_id:04x})");
@@ -141,6 +149,10 @@ pub fn probe(platform: &acpitables::Platform) -> Result<Found, &'static str> {
                     log!("pci: {name} at {function}: {message}");
                     found.net_failed = true;
                 }
+            },
+            DeviceType::GPU => match split_transport(&access, function, transport) {
+                Ok(transport) => found.gpu = Some(transport),
+                Err(message) => log!("pci: {name} at {function}: {message}"),
             },
             _ => found.disks.push(transport),
         }
@@ -164,7 +176,8 @@ pub fn probe(platform: &acpitables::Platform) -> Result<Found, &'static str> {
     Ok(found)
 }
 
-/// The network card's transport, with its queue addresses written in halves.
+/// A transport with its queue addresses written in halves (the network card's
+/// and the GPU's).
 fn split_transport(
     access: &EcamAccess,
     function: DeviceFunction,

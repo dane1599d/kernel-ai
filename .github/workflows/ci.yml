@@ -28,7 +28,7 @@ jobs:
         run: rustup target add wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
-      - run: cargo clippy -p xtask -p gguf -p cpufeat -p quant -p bpe -p infer -p linetable -p mm -p netcore -p nvme -p acpitables -p sched -p llmproto -p kabi -p supervise -p uelf -p shellcore -p livecore -p editcore -p termcore -p wasmhost -p compsdk -p comp-notes -p comp-notes-v1 -p comp-notes-bad --all-targets --features linetable/alloc -- -D warnings
+      - run: cargo clippy -p xtask -p gguf -p cpufeat -p quant -p bpe -p infer -p linetable -p mm -p netcore -p nvme -p acpitables -p sched -p llmproto -p kabi -p supervise -p uelf -p shellcore -p livecore -p editcore -p gfxcore -p termcore -p wasmhost -p compsdk -p comp-notes -p comp-notes-v1 -p comp-notes-bad --all-targets --features linetable/alloc -- -D warnings
       - run: cargo clippy -p kernel --target x86_64-unknown-none --features spikes -- -D warnings
       - name: Clippy for the engine crates on the soft-float kernel target
         run: cargo clippy -p gguf -p cpufeat -p quant -p bpe -p infer --target x86_64-unknown-none -- -D warnings
@@ -39,7 +39,7 @@ jobs:
       - run: cargo clippy -p compsdk -p comp-notes -p comp-notes-v1 --target wasm32-unknown-unknown -- -D warnings
       - name: Clippy for each broken notes version
         run: for bug in bug-import bug-health bug-trap bug-spin; do cargo clippy -p comp-notes-bad --target wasm32-unknown-unknown --features $bug -- -D warnings; done
-      - run: cargo test -p xtask -p gguf -p cpufeat -p quant -p bpe -p infer -p linetable -p mm -p netcore -p nvme -p acpitables -p sched -p llmproto -p kabi -p supervise -p uelf -p shellcore -p livecore -p editcore -p termcore -p wasmhost -p compsdk -p comp-notes -p comp-notes-v1 -p comp-notes-bad --features linetable/alloc
+      - run: cargo test -p xtask -p gguf -p cpufeat -p quant -p bpe -p infer -p linetable -p mm -p netcore -p nvme -p acpitables -p sched -p llmproto -p kabi -p supervise -p uelf -p shellcore -p livecore -p editcore -p gfxcore -p termcore -p wasmhost -p compsdk -p comp-notes -p comp-notes-v1 -p comp-notes-bad --features linetable/alloc
 
   # Every case boots under both KVM and TCG; `--shard K/3` deals the cases out in
   # turn across three runners per accelerator, and shard 1 also runs the host smokes.

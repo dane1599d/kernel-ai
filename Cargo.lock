@@ -358,6 +358,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "gfxcore"
+version = "0.0.0"
+
+[[package]]
 name = "gguf"
 version = "0.0.0"
 
@@ -464,6 +468,7 @@ dependencies = [
  "acpitables",
  "cpufeat",
  "editcore",
+ "gfxcore",
  "kabi",
  "limine",
  "linetable",
@@ -1267,6 +1272,7 @@ dependencies = [
  "bpe",
  "cpufeat",
  "editcore",
+ "gfxcore",
  "gguf",
  "infer",
  "kabi",
