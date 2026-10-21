@@ -16,17 +16,19 @@
 //! freeing the process's tables, and never frees it, so a restarted llm maps the
 //! model at once and takes no frame for it.
 
+#[path = "model/progress.rs"]
+mod progress;
 #[path = "model/window.rs"]
 pub mod window;
 
-use crate::virtio::blk::{self, Disk};
+use crate::block::{self, Device};
 use crate::{hpet, log, memory, process};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 use kabi::Error;
-use kabi::model::{Attached, HeaderError, SERIAL};
+use kabi::model::{Attached, HeaderError};
 use mm::PAGE_SIZE;
 use mm::dma::{SECTOR, sectors_for};
 use mm::window::{RUN_BYTES, RUN_FRAMES, runs_for};
@@ -135,7 +137,7 @@ pub fn check_window() -> Result<(), &'static str> {
 pub fn load(cmdline: &str) {
     let attached = Attached::from_cmdline(cmdline);
     let started = hpet::nanos();
-    match blk::with_disk(SERIAL, |disk| copy(disk, attached.len)) {
+    match block::with_model_disk(|disk| copy(disk, attached.len)) {
         None => {}
         Some(Ok(model)) => {
             let runs = model.runs.len() as u64;
@@ -173,7 +175,7 @@ fn free_runs(runs: &[u32]) {
     });
 }
 
-fn copy(disk: &mut Disk, attached: Option<u64>) -> Result<Model, String> {
+fn copy(disk: &mut dyn Device, attached: Option<u64>) -> Result<Model, String> {
     let sectors = disk.sectors();
     // QEMU rounds the file up to whole sectors; model_len= says where it ends.
     let len = match attached {
@@ -219,7 +221,9 @@ fn copy(disk: &mut Disk, attached: Option<u64>) -> Result<Model, String> {
     let hhdm = memory::hhdm();
     // Where the next piece of the file goes: its offset in the file.
     let mut offset: u64 = 0;
-    let copied = disk.stream(len, |_, bytes| {
+    let mut progress = progress::Progress::new(len);
+    let copied = block::stream(disk, len, |_, bytes| {
+        let started = hpet::nanos();
         // Reads are 512 KiB and start on a page boundary, so a piece never crosses a
         // run: four of them fill one.
         if offset.is_multiple_of(RUN_BYTES) {
@@ -246,6 +250,7 @@ fn copy(disk: &mut Disk, attached: Option<u64>) -> Result<Model, String> {
             )
         };
         offset += bytes.len() as u64;
+        progress.piece(offset, hpet::nanos() - started);
         Ok(())
     });
     if let Err(why) = copied {

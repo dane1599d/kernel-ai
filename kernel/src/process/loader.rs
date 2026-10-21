@@ -1,6 +1,8 @@
 //! Loading a program into a fresh address space, and growing its heap.
 
-use super::{SLOT_OF_TID, SPACES, State, exit_current, killed, programs, request_kill, with_table};
+use super::{
+    SLOT_OF_TID, State, exit_current, killed, lock_space, programs, request_kill, with_table,
+};
 use crate::entry;
 use crate::memory::user::{Access, MIN_USER_ADDRESS, UserSpace};
 use crate::{log, memory, threads};
@@ -60,7 +62,7 @@ const QUOTA: &str = "page quota exceeded";
 
 /// Maps a fresh page into the process's address space, within its page quota.
 fn map_page(slot: usize, addr: u64, access: Access, max_pages: u64) -> Result<u64, &'static str> {
-    let mut guard = SPACES[slot].lock();
+    let mut guard = lock_space(slot);
     let space = guard.as_mut().ok_or("no address space")?;
     map_page_in(space, addr, access, max_pages)
 }
@@ -88,7 +90,7 @@ fn load(slot: usize, name: &str, limits: &Limits) -> Result<UserEntry, &'static 
     let image = uelf::parse(program.elf, MIN_USER_ADDRESS..HEAP_BASE).map_err(elf_error)?;
     let space = memory::with(|m| m.new_user_space())?;
     let cr3 = space.cr3();
-    *SPACES[slot].lock() = Some(space);
+    *lock_space(slot) = Some(space);
     let hhdm = memory::hhdm();
     for segment in image.segments() {
         let access = Access {
@@ -151,7 +153,7 @@ fn elf_error(error: uelf::Error) -> &'static str {
 /// process: one PML4 entry, no frame taken from its quota. Repeating it changes
 /// nothing.
 pub fn link_window(slot: usize, base: u64, pdpt: u64) -> Result<(), kabi::Error> {
-    let mut guard = SPACES[slot].lock();
+    let mut guard = lock_space(slot);
     let space = guard.as_mut().ok_or(kabi::Error::Fault)?;
     memory::with(|m| m.link_window(space, base, pdpt)).map_err(|error| {
         log!("process: linking the model window failed: {error}");
@@ -164,7 +166,7 @@ pub fn link_window(slot: usize, base: u64, pdpt: u64) -> Result<(), kabi::Error>
 /// space stays locked from reading the heap's end to writing it back, so two
 /// threads growing the heap at once grow it one after the other.
 pub fn grow_heap(slot: usize, bytes: u64) -> Result<u64, kabi::Error> {
-    let mut guard = SPACES[slot].lock();
+    let mut guard = lock_space(slot);
     let space = guard.as_mut().ok_or(kabi::Error::Fault)?;
     let (end, limits) = with_table(|table| (table[slot].heap_end, table[slot].limits));
     if bytes == 0 {

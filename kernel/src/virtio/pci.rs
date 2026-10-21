@@ -1,12 +1,16 @@
 //! PCIe configuration access through the ECAM window from the MCFG table, and the
-//! one pass over bus 0 that finds the virtio devices: the network card and the
-//! block devices.
+//! one pass over bus 0 that finds the virtio devices (the network card and the
+//! block devices) and the NVMe controllers.
 
 use super::hal::{DEVICE, KernelHal};
+use super::split::{self, SplitTransport};
 use crate::{log, memory};
+use alloc::format;
 use alloc::vec::Vec;
 use virtio_drivers::transport::DeviceType;
-use virtio_drivers::transport::pci::bus::{Command, ConfigurationAccess, DeviceFunction, PciRoot};
+use virtio_drivers::transport::pci::bus::{
+    BarInfo, Command, ConfigurationAccess, DeviceFunction, PciRoot,
+};
 use virtio_drivers::transport::pci::{PciTransport, virtio_device_type};
 
 /// Configuration space for bus `start_bus` onwards, `buses` buses mapped.
@@ -57,12 +61,17 @@ impl ConfigurationAccess for EcamAccess {
 /// The virtio devices on bus 0, each with its transport set up.
 pub struct Found {
     /// The first network card; any other is left alone.
-    pub net: Option<PciTransport>,
+    pub net: Option<SplitTransport>,
     /// A network card was there, but its transport could not be set up.
     pub net_failed: bool,
     /// Every block device, in bus order.
     pub disks: Vec<PciTransport>,
+    /// Every NVMe controller, in bus order.
+    pub nvme: Vec<crate::nvme::Function>,
 }
+
+/// PCI class, subclass and programming interface of an NVMe controller.
+const NVME_CLASS: (u8, u8, u8) = (0x01, 0x08, 0x02);
 
 /// Enumerates bus 0 once and sets up a transport for each virtio network card and
 /// block device on it.
@@ -77,13 +86,20 @@ pub fn probe(platform: &acpitables::Platform) -> Result<Found, &'static str> {
     let buses = 1;
     let first_bus = ecam.base + (u64::from(ecam.start_bus) << 20);
     let base = memory::map_physical(first_bus, u64::from(buses) << 20, DEVICE)?;
-    let mut root = PciRoot::new(EcamAccess {
+    let access = EcamAccess {
         base,
         start_bus: ecam.start_bus,
         buses,
-    });
-    let wanted: Vec<(DeviceFunction, DeviceType, u16)> = root
-        .enumerate_bus(ecam.start_bus)
+    };
+    let mut root = PciRoot::new(access);
+    let functions: Vec<_> = root.enumerate_bus(ecam.start_bus).collect();
+    let nvme: Vec<DeviceFunction> = functions
+        .iter()
+        .filter(|(_, info)| (info.class, info.subclass, info.prog_if) == NVME_CLASS)
+        .map(|&(function, _)| function)
+        .collect();
+    let wanted: Vec<(DeviceFunction, DeviceType, u16)> = functions
+        .into_iter()
         .filter_map(|(function, info)| match virtio_device_type(&info) {
             Some(kind @ (DeviceType::Network | DeviceType::Block)) => {
                 Some((function, kind, info.device_id))
@@ -95,6 +111,7 @@ pub fn probe(platform: &acpitables::Platform) -> Result<Found, &'static str> {
         net: None,
         net_failed: false,
         disks: Vec::new(),
+        nvme: Vec::new(),
     };
     for (function, kind, device_id) in wanted {
         let name = match kind {
@@ -118,9 +135,64 @@ pub fn probe(platform: &acpitables::Platform) -> Result<Found, &'static str> {
             continue;
         };
         match kind {
-            DeviceType::Network => found.net = Some(transport),
+            DeviceType::Network => match split_transport(&access, function, transport) {
+                Ok(transport) => found.net = Some(transport),
+                Err(message) => {
+                    log!("pci: {name} at {function}: {message}");
+                    found.net_failed = true;
+                }
+            },
             _ => found.disks.push(transport),
         }
     }
+    for function in nvme {
+        match nvme_bar(&mut root, function) {
+            Ok((bar, bar_len)) => {
+                log!(
+                    "pci: nvme at {function}, BAR0 {bar:#x} ({} KiB)",
+                    bar_len / 1024
+                );
+                found.nvme.push(crate::nvme::Function {
+                    name: format!("{function}"),
+                    bar,
+                    bar_len,
+                });
+            }
+            Err(message) => log!("pci: nvme at {function}: {message}"),
+        }
+    }
     Ok(found)
+}
+
+/// The network card's transport, with its queue addresses written in halves.
+fn split_transport(
+    access: &EcamAccess,
+    function: DeviceFunction,
+    transport: PciTransport,
+) -> Result<SplitTransport, &'static str> {
+    let phys = split::common_cfg(access, function).ok_or("no common configuration found")?;
+    let common = memory::map_physical(phys, split::COMMON_CFG_BYTES, DEVICE)?;
+    Ok(SplitTransport::new(transport, common))
+}
+
+/// BAR0 of an NVMe controller, with memory decoding and bus mastering turned on.
+fn nvme_bar(
+    root: &mut PciRoot<EcamAccess>,
+    function: DeviceFunction,
+) -> Result<(u64, u64), &'static str> {
+    let (_, command) = root.get_status_command(function);
+    // Sizing a BAR rewrites it: keep decoding off meanwhile.
+    root.set_command(function, command - Command::MEMORY_SPACE);
+    let bar = root.bar_info(function, 0);
+    root.set_command(
+        function,
+        command | Command::MEMORY_SPACE | Command::BUS_MASTER,
+    );
+    match bar {
+        Ok(Some(BarInfo::Memory { address, size, .. })) if address != 0 && size != 0 => {
+            Ok((address, size))
+        }
+        Ok(_) => Err("BAR0 is not an assigned memory BAR"),
+        Err(_) => Err("BAR0 cannot be read"),
+    }
 }

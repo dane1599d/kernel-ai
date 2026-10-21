@@ -12,13 +12,13 @@
 //! cargo xtask setup | model chat|check|pin | bench quant   (the local LLM on the host; see models/mod.rs)
 //! cargo xtask tune --sim ... | demo | check | record | ab   (M10a; see tune/mod.rs)
 //! cargo xtask doctor   (can this PC run Kernel AI in an accelerated VM, and what to fix; read-only)
+//! cargo xtask vbox [--start [--headless]]   (the VirtualBox VM "Kernel AI"; see vbox/mod.rs)
 //!
 //! `test` boots the kernel headless once per test case (boot and memory checks,
 //! page fault, double fault, write-protect, stack overflow, 60 s timer, keyboard,
-//! scheduling latency under load, policy watchdog; keys are
-//! typed through the QEMU monitor) with the spikes
-//! enabled. Each case passes only if the
-//! kernel reports success through QEMU's isa-debug-exit device.
+//! scheduling latency under load, policy watchdog; keys are typed through the QEMU
+//! monitor) with the spikes enabled. Each case passes only if the kernel reports
+//! success through QEMU's isa-debug-exit device.
 //!
 //! Every `build`, `run`, `test` and `soak` checks that the kernel ELF has no x87,
 //! MMX, SSE or AVX instruction (see floatguard.rs).
@@ -35,6 +35,7 @@ mod floatguard;
 mod fluency;
 mod httpd;
 mod icount;
+mod image;
 mod lines;
 mod local_ask;
 mod local_script;
@@ -46,6 +47,7 @@ mod smoke;
 mod strip;
 mod tune;
 mod userbuild;
+mod vbox;
 mod wsl;
 
 use options::{Accel, Options, Task, parse_args};
@@ -67,6 +69,7 @@ fn main() -> ExitCode {
         Some("setup" | "model" | "bench") => models::main(&args),
         Some("tune") => tune::main(&args[1..]),
         Some("doctor") => doctor::main(&args[1..]),
+        Some("vbox") => vbox::main(&args[1..]),
         _ => parse_args(&args).and_then(|options| execute(&options)),
     };
     match result {
@@ -180,7 +183,7 @@ fn execute(options: &Options) -> Result<(), String> {
         };
         let server = if case.server { llm_args.as_str() } else { "" };
         let mut cmdline = format!("{} {server}", case.cmdline);
-        let disk = match disk::for_case(case.disk, &target_dir) {
+        let disk = match disk::for_case(case, &target_dir) {
             Ok(disk) => disk,
             Err(message) => {
                 eprintln!("xtask: test case {}: {message}", case.name);
@@ -212,6 +215,9 @@ fn execute(options: &Options) -> Result<(), String> {
             ..options.sizing
         };
         let mut args = qemu::args(&firmware, accel, true, disk.as_ref(), sizing);
+        if case.image {
+            qemu::boot_from_image(&mut args, &esp, &target_dir)?;
+        }
         args.push("-monitor".into());
         args.push(format!("tcp:127.0.0.1:{monitor},server=on,wait=off"));
         let args = wsl::wrap(wsl.as_ref(), args)?;
@@ -274,18 +280,19 @@ fn llm_cmdline(llm: Option<&str>, model: Option<&str>) -> String {
     args.join(" ")
 }
 
-fn workspace_root() -> PathBuf {
+pub(crate) fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("xtask lives one level below the workspace root")
         .to_path_buf()
 }
 
-fn build_kernel(root: &Path, options: &Options) -> Result<PathBuf, String> {
+pub(crate) fn build_kernel(root: &Path, options: &Options) -> Result<PathBuf, String> {
     let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     let mut command = Command::new(cargo);
     command
         .current_dir(root)
+        .env("KAI_COMMIT", esp::commit_id(root))
         .args(["build", "-p", "kernel", "--target", KERNEL_TARGET]);
     if options.release {
         command.arg("--release");
@@ -308,7 +315,7 @@ fn build_kernel(root: &Path, options: &Options) -> Result<PathBuf, String> {
 }
 
 /// Downloads Limine's prebuilt binaries once, verifies the pinned checksum, and returns BOOTX64.EFI.
-fn ensure_limine(target_dir: &Path) -> Result<PathBuf, String> {
+pub(crate) fn ensure_limine(target_dir: &Path) -> Result<PathBuf, String> {
     let dir = target_dir.join(format!("limine-{LIMINE_VERSION}"));
     let efi = dir.join("limine-binary").join("BOOTX64.EFI");
     if efi.exists() {

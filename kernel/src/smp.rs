@@ -88,6 +88,7 @@ extern "C" fn ap_continue(index: usize, idle: usize) -> ! {
         panic!("cpu {index}: {message}");
     }
     apic::init_ap();
+    crate::hpet::start_cpu(index);
     timer::init_ap();
     threads::start_ap(index, idle, || {
         ONLINE.fetch_add(1, Ordering::Release);
