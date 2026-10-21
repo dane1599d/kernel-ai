@@ -533,8 +533,23 @@ fn a_for_loop_over_a_list_and_floor_run() {
 }
 
 #[test]
-fn the_prompts_three_decimals_form_runs() {
-    let script = "let ms = 4021;\nlet f = \"00\" + ms % 1000;\nprint(ms / 1000 + \".\" + f.sub_string(f.len() - 3));";
+fn fixed_writes_decimals_with_leading_zeros() {
+    let script = "print(fixed(4021, 3) + \" \" + fixed(-5, 2) + \" \" + fixed(7, 0) + \" \" + fixed(123, 1));";
     let (_host, mut shell) = with_answers(vec![answer(script, "Prints seconds.")]);
-    assert_eq!(ran(&shell.eval("? uptime with three decimals")), "4.021\n");
+    assert_eq!(
+        ran(&shell.eval("? uptime with three decimals")),
+        "4.021 -0.05 7 12.3\n"
+    );
+}
+
+#[test]
+fn fixed_refuses_too_many_places() {
+    let (host, mut shell) = with_answers(vec![
+        answer("print(fixed(1, 10));", "Prints a number."),
+        answer("print(fixed(1, 9));", "Prints a number."),
+    ]);
+    assert_eq!(ran(&shell.eval("? a tiny number")), "0.000000001\n");
+    let requests = host.script_requests.borrow();
+    let (_, error) = requests[1].repair.clone().unwrap();
+    assert!(error.contains("places must be 0 to 9"), "{error}");
 }

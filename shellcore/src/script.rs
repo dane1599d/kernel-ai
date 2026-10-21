@@ -128,6 +128,26 @@ fn register(engine: &mut Engine, host: &Rc<dyn Host>, granted: &[&'static str]) 
     }
 }
 
+/// Most decimals [`fixed`] writes.
+const MAX_FIXED_PLACES: INT = 9;
+
+/// `n / 10^places` as text with exactly `places` decimals: `fixed(4321, 3)` is
+/// "4.321". Numbers are integers only, so this is how a script shows a fraction.
+fn fixed(n: INT, places: INT) -> RhaiResult<String> {
+    if !(0..=MAX_FIXED_PLACES).contains(&places) {
+        return Err(rhai_error(format!(
+            "fixed: places must be 0 to {MAX_FIXED_PLACES}, not {places}"
+        )));
+    }
+    let scale = 10u64.pow(places as u32);
+    let sign = if n < 0 { "-" } else { "" };
+    let (whole, part) = (n.unsigned_abs() / scale, n.unsigned_abs() % scale);
+    Ok(match places {
+        0 => format!("{sign}{whole}"),
+        _ => format!("{sign}{whole}.{part:0width$}", width = places as usize),
+    })
+}
+
 /// The strict engine for LLM-written scripts, with only `granted` OS functions.
 fn strict(
     line: &Rc<Line>,
@@ -146,6 +166,7 @@ fn strict(
     // Numbers are integers only, so rounding one down leaves it as it is; models
     // write `floor` for "rounded down" all the same.
     engine.register_fn("floor", |x: INT| x);
+    engine.register_fn("fixed", fixed);
     register(&mut engine, host, granted);
     engine
 }
