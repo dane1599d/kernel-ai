@@ -1,13 +1,15 @@
 //! `cargo xtask vbox [--model-disk PATH | --local ID [--store DIR] | --no-model]`
 //! builds the release kernel and its boot image and creates, or updates, the
 //! VirtualBox VM "Kernel AI" to boot it. `cargo xtask vbox --start [--headless]`
-//! then boots that VM as it is.
+//! then boots that VM as it is. `--cmdline WORDS` adds kernel command-line words.
+//! `--name NAME` works on another VM instead, in its own folder
+//! (`D:\kai-vbox-<name>`), so a test VM leaves "Kernel AI" alone.
 //!
 //! The VM is a modern PC: EFI, the ICH9 chipset (PCIe, so MCFG), HPET, IOAPIC,
 //! xAPIC, PS/2 keyboard and mouse, a virtio-net card on NAT, and one NVMe
 //! controller with the OS disk (the image as a VDI) on port 0 and the model on
 //! port 1. The model is read in place through a VMDK descriptor (`vmdk.rs`), never
-//! copied. The VM, its disks and the serial log live in `KAI_VBOX_DIR`
+//! copied. The vm(), its disks and the serial log live in `KAI_VBOX_DIR`
 //! (`D:\kai-vbox` by default). The model runs inside the VM only.
 
 pub mod doctor;
@@ -15,7 +17,7 @@ pub mod manage;
 mod vmdk;
 
 use crate::{components, disk, esp, floatguard, image, models, options, userbuild};
-use manage::{CONTROLLER, VM, step};
+use manage::{CONTROLLER, step, vm};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -25,10 +27,15 @@ const OS_DISK: &str = "kai-os.vdi";
 const MODEL_DISK: &str = "kai-model.vmdk";
 const MODEL_TAIL: &str = "kai-model.tail";
 const SERIAL_LOG: &str = "serial.log";
-/// The kernel's clock in the VM (see kernel/src/hpet.rs).
-const CLOCK: &str = "clock=tsc";
+/// The kernel's clock and tick rate in the VM: HPET reads and APIC timer exits are
+/// slow under VirtualBox on Hyper-V (kernel/src/hpet.rs and timer.rs).
+const CLOCK: &str = "clock=tsc hz=250";
 
 struct Args {
+    /// `--name`: the VM to create or boot, "Kernel AI" by default.
+    name: String,
+    /// `--cmdline WORDS`: more kernel command-line words, such as `llm=HOST:PORT`.
+    cmdline: String,
     start: bool,
     headless: bool,
     model: Model,
@@ -43,6 +50,8 @@ enum Model {
 
 fn parse(args: &[String]) -> Result<Args, String> {
     let mut parsed = Args {
+        name: manage::DEFAULT_VM.into(),
+        cmdline: String::new(),
         start: false,
         headless: false,
         model: Model::Default,
@@ -57,6 +66,8 @@ fn parse(args: &[String]) -> Result<Args, String> {
         };
         match arg.as_str() {
             "--start" => parsed.start = true,
+            "--name" => parsed.name = value()?,
+            "--cmdline" => parsed.cmdline = value()?,
             "--headless" => parsed.headless = true,
             "--no-model" => parsed.model = Model::None,
             "--model-disk" => parsed.model = Model::Path(PathBuf::from(value()?)),
@@ -86,7 +97,8 @@ fn parse(args: &[String]) -> Result<Args, String> {
 
 pub fn main(args: &[String]) -> Result<(), String> {
     let args = parse(args)?;
-    let dir = vm_dir();
+    manage::set_vm(&args.name);
+    let dir = vm_dir(&args.name);
     if args.start {
         return start(args.headless, &dir);
     }
@@ -98,11 +110,10 @@ pub fn main(args: &[String]) -> Result<(), String> {
     fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
     let model = model_path(&args.model)?;
     let disk = model.as_deref().map(disk::ModelDisk::open).transpose()?;
-    // The TSC clock: HPET reads are too slow under VirtualBox on Hyper-V (hpet.rs).
     let model_words = disk
         .as_ref()
         .map_or_else(String::new, disk::ModelDisk::cmdline);
-    let cmdline = format!("{CLOCK} {model_words}");
+    let cmdline = format!("{CLOCK} {model_words} {}", args.cmdline);
     let esp = build_esp(&cmdline)?;
     let raw = dir.join("kai-os.img");
     let bytes = image::build(&esp, &raw)?;
@@ -112,7 +123,14 @@ pub fn main(args: &[String]) -> Result<(), String> {
         .map_or(MEMORY_MIB, |d| d.memory_mib().max(MEMORY_MIB));
     configure(&dir, &raw, model.as_deref(), memory)?;
     let _ = fs::remove_file(&raw);
-    println!("xtask: the VM {VM:?} is ready; boot it with: cargo xtask vbox --start");
+    let name = match vm() {
+        manage::DEFAULT_VM => String::new(),
+        other => format!(" --name \"{other}\""),
+    };
+    println!(
+        "xtask: the VM {:?} is ready; boot it with: cargo xtask vbox --start{name}",
+        vm()
+    );
     println!(
         "xtask: its serial console goes to {}",
         dir.join(SERIAL_LOG).display()
@@ -120,9 +138,28 @@ pub fn main(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// `KAI_VBOX_DIR`, or `D:\kai-vbox`: never C:, which is short of space.
-fn vm_dir() -> PathBuf {
-    std::env::var_os("KAI_VBOX_DIR").map_or_else(|| PathBuf::from(r"D:\kai-vbox"), PathBuf::from)
+/// `KAI_VBOX_DIR`, or `D:\kai-vbox` for "Kernel AI" and `D:\kai-vbox-<name>` for
+/// another VM: never C:, which is short of space.
+fn vm_dir(name: &str) -> PathBuf {
+    if let Some(dir) = std::env::var_os("KAI_VBOX_DIR") {
+        return PathBuf::from(dir);
+    }
+    match name {
+        manage::DEFAULT_VM => PathBuf::from(r"D:\kai-vbox"),
+        other => {
+            let slug: String = other
+                .chars()
+                .map(|c| {
+                    if c.is_ascii_alphanumeric() {
+                        c.to_ascii_lowercase()
+                    } else {
+                        '-'
+                    }
+                })
+                .collect();
+            PathBuf::from(format!(r"D:\kai-vbox-{slug}"))
+        }
+    }
 }
 
 fn model_path(model: &Model) -> Result<Option<PathBuf>, String> {
@@ -167,7 +204,7 @@ fn configure(dir: &Path, raw: &Path, model: Option<&Path>, memory: u64) -> Resul
             step(&[
                 "createvm",
                 "--name",
-                VM,
+                vm(),
                 "--ostype",
                 "Other_64",
                 "--basefolder",
@@ -182,7 +219,8 @@ fn configure(dir: &Path, raw: &Path, model: Option<&Path>, memory: u64) -> Resul
         .filter(|s| *s != "poweroff" && *s != "aborted")
     {
         return Err(format!(
-            "the VM is {state}: power it off first (VBoxManage controlvm \"{VM}\" poweroff)"
+            "the VM is {state}: power it off first (VBoxManage controlvm \"{}\" poweroff)",
+            vm()
         ));
     }
     let has_controller = info.values().any(|v| v == CONTROLLER);
@@ -191,7 +229,7 @@ fn configure(dir: &Path, raw: &Path, model: Option<&Path>, memory: u64) -> Resul
         for port in ["0", "1"] {
             let _ = manage::run(&[
                 "storageattach",
-                VM,
+                vm(),
                 "--storagectl",
                 CONTROLLER,
                 "--port",
@@ -220,7 +258,7 @@ fn configure(dir: &Path, raw: &Path, model: Option<&Path>, memory: u64) -> Resul
     if !has_controller {
         step(&[
             "storagectl",
-            VM,
+            vm(),
             "--name",
             CONTROLLER,
             "--add",
@@ -240,7 +278,9 @@ fn configure(dir: &Path, raw: &Path, model: Option<&Path>, memory: u64) -> Resul
         // registered one naming the same extents is kept, registration and all.
         let old = fs::read_to_string(&model_disk).unwrap_or_default();
         let registered = old.contains("ddb.uuid.image");
-        if !registered || vmdk::extents(&old) != vmdk::extents(&vmdk.descriptor) {
+        if registered && vmdk::extents(&old) == vmdk::extents(&vmdk.descriptor) {
+            manage::forget_children(&model_disk, dir)?;
+        } else {
             manage::forget(&model_disk, dir)?;
             if let Some(tail) = vmdk.tail {
                 fs::write(dir.join(MODEL_TAIL), tail)
@@ -261,7 +301,7 @@ fn configure(dir: &Path, raw: &Path, model: Option<&Path>, memory: u64) -> Resul
 fn attach(port: &str, medium: &Path, kind: &str) -> Result<(), String> {
     step(&[
         "storageattach",
-        VM,
+        vm(),
         "--storagectl",
         CONTROLLER,
         "--port",
@@ -285,26 +325,27 @@ fn modify(dir: &Path, memory: u64) -> Result<(), String> {
     let serial = dir.join(SERIAL_LOG);
     #[rustfmt::skip]
     let args = [
-        "modifyvm", VM,
+        "modifyvm", vm(),
         "--firmware", "efi", "--chipset", "ich9", "--hpet", "on", "--ioapic", "on",
         "--x2apic", "off", "--apic", "on", "--cpus", &cpus, "--memory", &memory, "--vram", "16",
         "--graphicscontroller", "vmsvga", "--mouse", "ps2", "--keyboard", "ps2",
-        "--nic1", "nat", "--nictype1", "virtio",
+        "--nic1", "nat", "--nictype1", "virtio", "--nat-localhostreachable1", "on",
         "--uart1", "0x3F8", "4", "--uartmode1", "file", path_str(&serial)?,
         "--boot1", "disk", "--boot2", "none", "--boot3", "none", "--boot4", "none",
         "--audio-enabled", "off", "--usbohci", "off", "--usbehci", "off", "--usbxhci", "off",
-        "--paravirtprovider", "none", "--rtcuseutc", "on",
+        "--paravirtprovider", "minimal", "--rtcuseutc", "on",
     ];
     step(&args).map(|_| ())
 }
 
 fn start(headless: bool, dir: &Path) -> Result<(), String> {
-    let info = manage::vm_info().ok_or("no VM \"Kernel AI\" yet: run cargo xtask vbox first")?;
+    let info = manage::vm_info()
+        .ok_or_else(|| format!("no VM {:?} yet: run cargo xtask vbox first", vm()))?;
     if info.get("VMState").is_some_and(|s| s == "running") {
         return Err("the VM is already running".into());
     }
     let kind = if headless { "headless" } else { "gui" };
-    step(&["startvm", VM, "--type", kind])?;
+    step(&["startvm", vm(), "--type", kind])?;
     println!(
         "xtask: booting; the serial console is in {}",
         dir.join(SERIAL_LOG).display()
@@ -348,6 +389,22 @@ mod tests {
             Model::Local { ref id, .. } if id.is_empty()
         ));
         assert!(args(&["--model-disk"]).is_err());
+        assert_eq!(
+            args(&["--name", "Kernel AI test"]).unwrap().name,
+            "Kernel AI test"
+        );
+        assert_eq!(args(&[]).unwrap().name, "Kernel AI");
+        assert_eq!(
+            args(&["--cmdline", "llm=10.0.2.2:8080"]).unwrap().cmdline,
+            "llm=10.0.2.2:8080"
+        );
+        if std::env::var_os("KAI_VBOX_DIR").is_none() {
+            assert_eq!(vm_dir("Kernel AI"), PathBuf::from(r"D:\kai-vbox"));
+            assert_eq!(
+                vm_dir("Kernel AI test"),
+                PathBuf::from(r"D:\kai-vbox-kernel-ai-test")
+            );
+        }
         assert!(args(&["--bogus"]).is_err());
     }
 }

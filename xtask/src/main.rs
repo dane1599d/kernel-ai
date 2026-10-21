@@ -293,6 +293,7 @@ pub(crate) fn build_kernel(root: &Path, options: &Options) -> Result<PathBuf, St
     let mut command = Command::new(cargo);
     command
         .current_dir(root)
+        .env("KAI_COMMIT", esp::commit_id(root))
         .args(["build", "-p", "kernel", "--target", KERNEL_TARGET]);
     if options.release {
         command.arg("--release");

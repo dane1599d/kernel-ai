@@ -83,6 +83,28 @@ pub fn make_esp(
         .map_err(|e| format!("cannot write limine.conf: {e}"))
 }
 
+/// The commit the kernel is built from, for its banner: the short hash, and
+/// `-dirty` with uncommitted changes; "unknown" without git.
+pub fn commit_id(root: &Path) -> String {
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .current_dir(root)
+            .args(args)
+            .output()
+            .ok()
+            .filter(|out| out.status.success())
+            .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    };
+    match (
+        git(&["rev-parse", "--short=12", "HEAD"]),
+        git(&["status", "--porcelain"]),
+    ) {
+        (Some(hash), Some(changes)) if !changes.is_empty() => format!("{hash}-dirty"),
+        (Some(hash), _) => hash,
+        (None, _) => "unknown".into(),
+    }
+}
+
 pub fn copy(from: &Path, to: &Path) -> Result<(), String> {
     fs::copy(from, to)
         .map(|_| ())

@@ -1,11 +1,23 @@
-//! VBoxManage, run for the one VM xtask owns, "Kernel AI". Nothing here changes
-//! VirtualBox's global settings or any other VM.
+//! VBoxManage, run for the one VM xtask works on: "Kernel AI", or the one
+//! `--name` names. Nothing here changes VirtualBox's global settings or any other
+//! VM.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-pub const VM: &str = "Kernel AI";
+pub const DEFAULT_VM: &str = "Kernel AI";
+static NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// The VM this run works on.
+pub fn vm() -> &'static str {
+    NAME.get().map_or(DEFAULT_VM, String::as_str)
+}
+
+/// Picks the VM for this run (`--name`); once, before any VBoxManage call.
+pub fn set_vm(name: &str) {
+    let _ = NAME.set(name.to_string());
+}
 /// The storage controller xtask adds: NVMe, as on a modern PC.
 pub const CONTROLLER: &str = "NVMe";
 
@@ -51,7 +63,7 @@ pub fn version() -> Option<String> {
 /// `showvminfo --machinereadable` as keys and unquoted values, or None when the
 /// VM is not registered.
 pub fn vm_info() -> Option<HashMap<String, String>> {
-    let text = run(&["showvminfo", VM, "--machinereadable"]).ok()?;
+    let text = run(&["showvminfo", vm(), "--machinereadable"]).ok()?;
     Some(parse_info(&text))
 }
 
@@ -109,6 +121,17 @@ pub fn parse_hdds(text: &str) -> Vec<Hdd> {
 /// when they lie in `owned` (the VM's folder); the disk itself is only
 /// unregistered, never deleted, since its extent may be the model file.
 pub fn forget(location: &Path, owned: &Path) -> Result<(), String> {
+    forget_below(location, owned, false)
+}
+
+/// Unregisters only the differencing disks below the disk at `location`, as
+/// [`forget`] does, keeping the disk itself registered: each boot of an immutable
+/// disk leaves one behind.
+pub fn forget_children(location: &Path, owned: &Path) -> Result<(), String> {
+    forget_below(location, owned, true)
+}
+
+fn forget_below(location: &Path, owned: &Path, keep_base: bool) -> Result<(), String> {
     let hdds = parse_hdds(&run(&["list", "hdds"])?);
     let Some(base) = hdds.iter().find(|hdd| Path::new(&hdd.location) == location) else {
         return Ok(());
@@ -136,6 +159,9 @@ pub fn forget(location: &Path, owned: &Path) -> Result<(), String> {
             std::fs::remove_file(child)
                 .map_err(|e| format!("cannot delete {}: {e}", child.display()))?;
         }
+    }
+    if keep_base {
+        return Ok(());
     }
     step(&["closemedium", "disk", &base.uuid]).map(|_| ())
 }
