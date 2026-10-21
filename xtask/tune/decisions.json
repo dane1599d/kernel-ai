@@ -1,0 +1,23 @@
+{
+  "cut_off": false,
+  "decision": "classes/firm:build-1,build-2,build-3,build-4,indexer",
+  "labelable": [
+    "build-2",
+    "build-1",
+    "build-3",
+    "build-4",
+    "indexer",
+    "hog-2",
+    "hog-1"
+  ],
+  "mix": "A",
+  "model": "qwen3-4b-2507",
+  "model_sha256": "3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597",
+  "prompt_hash": "46a8dc91d5645ba3",
+  "raw_output": "{\"reason\":\"Background builds wake frequently and consume CPU, risking editor responsiveness.\",\"policy\":\"classes\",\"preset\":\"firm\",\"background\":[\"build-1\",\"build-2\",\"build-3\",\"build-4\",\"indexer\"]}",
+  "seed": 0,
+  "shift": 3,
+  "summary": "Goal: keep \"editor\" responsive; background work must progress.\nNow: interactive; trials: none; 1 CPU, 100% busy.\nname cpu% wakes/s burst-ms label\n\"editor\" 0.6 25 0.25 target\n\"build-2\" 27 350 0.76 normal\n\"build-1\" 26 380 0.68 normal\n\"build-3\" 21 340 0.6 normal\n\"build-4\" 20 320 0.6 normal\n\"indexer\" 5.3 240 0.22 normal\n\"shell\" 0.3 0 20 protected\n\"hog-2\" 0.3 0 40 normal\n\"hog-1\" 0.2 0 36 normal\n\"llm\" 0 0 0 protected\nFlags: \"editor\" waits under 2 ms; keep is fine (p50 0.6, max 2).",
+  "summary_sha256": "30a54381cb957ba9d6362e258cb67dc975d2fe007535fbe43b22eebb1e1b50eb",
+  "target": "editor"
+}
