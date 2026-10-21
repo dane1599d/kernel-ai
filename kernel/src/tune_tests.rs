@@ -310,8 +310,11 @@ pub fn revert_check() -> Result<(), &'static str> {
     Ok(())
 }
 
-/// How long one shell line may take: an observe window and a whole trial.
-const SHELL_LINE_MS: u64 = 90_000;
+/// How long one shell line may take: an observe window and the wait for the
+/// model's answer, as the terminal allows, or a whole trial. On one CPU under
+/// icount, mix A keeps llm's thread waiting behind woken ones, so even a replayed
+/// answer took about 90 s of virtual time to come back.
+const SHELL_LINE_MS: u64 = llmproto::tune::CALL_TIMEOUT_MS + 10_000;
 
 pub(crate) fn line(text: &str) -> Result<alloc::string::String, &'static str> {
     let reply = crate::ipc::call("shell", text.as_bytes(), SHELL_LINE_MS).map_err(|error| {
