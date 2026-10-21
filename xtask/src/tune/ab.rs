@@ -134,12 +134,14 @@ pub struct Seed {
     pub background_permille: u64,
     /// The background process whose share fell most, with its share.
     pub worst: Option<(String, u64)>,
+    /// Every background process the floor applies to, with its share.
+    pub shares: Vec<(String, u64)>,
     pub failures: Vec<String>,
 }
 
-/// The background process (1% or more of the default's time) whose CPU fell
-/// most under the candidate, with its share in thousandths.
-fn worst_process(default: &SideRun, candidate: &SideRun) -> Option<(String, u64)> {
+/// Each background process with 1% or more of the default's time, with its CPU
+/// under the candidate over the default's, in thousandths.
+fn shares(default: &SideRun, candidate: &SideRun) -> Vec<(String, u64)> {
     default
         .cpu_ns
         .iter()
@@ -148,7 +150,7 @@ fn worst_process(default: &SideRun, candidate: &SideRun) -> Option<(String, u64)
             let now = candidate.cpu_ns.get(name)?;
             Some((name.clone(), sched::judge::permille(*now, *ns)))
         })
-        .min_by_key(|(name, share)| (*share, name.clone()))
+        .collect()
 }
 
 /// Applies the rule to one seed.
@@ -160,7 +162,11 @@ pub fn judge(default: SideRun, candidate: SideRun) -> Seed {
         false => 0,
     };
     let background = sched::judge::permille(candidate.background_cpu_ns, default.background_cpu_ns);
-    let worst = worst_process(&default, &candidate);
+    let shares = shares(&default, &candidate);
+    let worst = shares
+        .iter()
+        .min_by_key(|(name, share)| (*share, name.clone()))
+        .cloned();
     let mut failures = Vec::new();
     if !candidate.measured() {
         failures.push(format!(
@@ -204,6 +210,7 @@ pub fn judge(default: SideRun, candidate: SideRun) -> Seed {
         ratio_permille: ratio,
         background_permille: background,
         worst,
+        shares,
         failures,
     }
 }
@@ -223,13 +230,19 @@ impl Seed {
             0 => String::from("no ejection"),
             n => format!("{n} ejection(s), so it counts as failing"),
         };
+        let shares: Vec<String> = self
+            .shares
+            .iter()
+            .map(|(name, share)| format!("{name} {share}"))
+            .collect();
         format!(
-            "seed {}: default {}, {ejected}; candidate {} ({}/1000), background {}/1000, {} ejection(s): {}",
+            "seed {}: default {}, {ejected}; candidate {} ({}/1000), background {}/1000 ({}), {} ejection(s): {}",
             self.default.seed,
             p99(&self.default),
             p99(&self.candidate),
             self.ratio_permille,
             self.background_permille,
+            shares.join(", "),
             self.candidate.ejections,
             if self.pass() {
                 "the candidate wins"
@@ -247,6 +260,7 @@ impl Seed {
             "editor_p99_ratio_permille": self.ratio_permille,
             "background_permille": self.background_permille,
             "worst_background": self.worst.as_ref().map(|(n, s)| serde_json::json!({"process": n, "permille": s})),
+            "background_shares_permille": self.shares.iter().map(|(n, s)| (n.clone(), serde_json::json!(s))).collect::<serde_json::Map<_, _>>(),
             "default": self.default.json(),
             "candidate": self.candidate.json(),
         })
