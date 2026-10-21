@@ -87,7 +87,14 @@ pub fn all_cpus_check() -> Result<(), &'static str> {
     for cpu in 0..cpus {
         threads::spawn_pinned(cpu, "pinned-reporter", pinned_reporter, cpu)?;
     }
-    if cpus > 1 {
+    // Every CPU runs a worker before CPU 0 is overloaded: once the hogs are there,
+    // the balancer may rightly pull CPU 0's workers away before they ever ran
+    // (seen under TCG), and nothing would move one back.
+    let spread = wait_for(
+        || (0..cpus).all(|cpu| WORK_ON_CPU[cpu].load(Ordering::Relaxed) > 0),
+        2_000,
+    );
+    if cpus > 1 && spread {
         for _ in 0..CPU0_EXTRA_HOGS {
             threads::spawn_pinned(0, "pinned-hog", pinned_hog, 0)?;
         }
