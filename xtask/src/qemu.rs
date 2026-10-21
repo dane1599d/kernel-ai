@@ -332,9 +332,12 @@ fn strip_edit_prompt(line: &str) -> Option<&str> {
     (is_word(label) && is_word(name)).then_some(rest)
 }
 
-/// The text after a leading `run script N? yes/no> ` prompt.
+/// The text after a leading `run script N? yes/no> ` or `start trial N? yes/no> `
+/// prompt.
 fn strip_confirm_prompt(line: &str) -> Option<&str> {
-    let after = line.strip_prefix("run script ")?;
+    let after = line
+        .strip_prefix("run script ")
+        .or_else(|| line.strip_prefix("start trial "))?;
     let digits = after.bytes().take_while(u8::is_ascii_digit).count();
     if digits == 0 {
         return None;
@@ -361,6 +364,12 @@ mod tests {
         assert!(from_programs("run script 12? yes/no> = boot-ok"));
         assert!(!from_programs(
             "run script 1? yes/no> terminal: ready for keys"
+        ));
+        assert!(from_programs(
+            "start trial 2? yes/no> [shell] tune 2: trial 1 started"
+        ));
+        assert!(!from_programs(
+            "start trial 2? yes/no> tune-demo: ready for keys"
         ));
     }
 

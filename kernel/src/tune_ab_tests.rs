@@ -6,16 +6,20 @@
 //!   recording is made from), and answers it from an `llmreplay` disk when there
 //!   is one, which only works if the guest's prompt is byte for byte the recorded
 //!   one. A proposal is declined: nothing is measured here.
-//! - `phase=measure tune_spec=classes/firm:build-1,build-2,...`: the recorded
-//!   decision, checked by the same rules as SCHED_TRIAL, run by the same trial
-//!   code (3 pairs of 3 s windows, the editor as the target) between
-//!   `measure-start` and `measure-end`. Nothing prints while it runs; afterwards
-//!   the windows, the editor's exact samples, the verdict, the guardrail counts
-//!   and a digest of all of it, which an identical repeat must reproduce.
+//! - `phase=run tune_spec=default` or `tune_spec=classes/firm:build-1,...`: one
+//!   side of a seed (the founder's rule of 2026-10-21): from the same point in a
+//!   fresh boot, the default as it runs, or the recorded decision (checked by the
+//!   same rules as SCHED_TRIAL) installed with its labels, then, once every
+//!   workload process has printed its start-up line, 3 windows of 3 s
+//!   measured as a trial's are, the editor as the target, between
+//!   `measure-start` and `measure-end`. Nothing prints while it runs unless the
+//!   watchdog ejects the policy; afterwards the windows, the editor's exact
+//!   samples, each process's CPU, the ejections since the policy was put in
+//!   place, the guardrail counts and a digest of all of it, which an identical repeat must reproduce.
 
-use crate::sched_control::trial::{self, Candidate, Request};
+use crate::sched_control::trial;
 use crate::sched_control::{self, calls};
-use crate::tune_tests::{finished, line, pid_named};
+use crate::tune_tests::{line, pid_named};
 use crate::{log, threads};
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -23,7 +27,11 @@ use kabi::model::Fnv1a;
 use sched::spec::PolicySpec;
 
 const WINDOW_MS: u64 = 3_000;
-const PAIRS: usize = 3;
+/// Windows each side is measured for: as long as a trial's candidate side.
+const WINDOWS: usize = 3;
+/// How often to look whether the workload has started, and the longest wait.
+const SETTLE_STEP_MS: u64 = 10;
+const SETTLE_MAX_MS: u64 = 30_000;
 /// Samples per report line.
 const PER_LINE: usize = 40;
 
@@ -49,8 +57,8 @@ pub fn check(cmdline: &str) -> Result<(), &'static str> {
     threads::sleep_ms(1_000);
     match word(cmdline, "phase") {
         Some("observe") => observe(seed),
-        Some("measure") => measure(cmdline, seed, editor),
-        _ => Err("tune-ab: phase= must be observe or measure"),
+        Some("run") => run(cmdline, seed, editor),
+        _ => Err("tune-ab: phase= must be observe or run"),
     }
 }
 
@@ -71,86 +79,98 @@ fn observe(seed: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
-fn measure(cmdline: &str, seed: &str, editor: u64) -> Result<(), &'static str> {
-    let text = word(cmdline, "tune_spec").ok_or("tune-ab: measure needs tune_spec=")?;
-    let (spec, names) = parse_spec(text).ok_or("tune-ab: tune_spec= is not a spec")?;
+fn run(cmdline: &str, seed: &str, editor: u64) -> Result<(), &'static str> {
+    let text = word(cmdline, "tune_spec").ok_or("tune-ab: run needs tune_spec=")?;
+    let (side, spec, names) = match text {
+        "default" => ("default", PolicySpec::DEFAULT, Vec::new()),
+        text => {
+            let (spec, names) = parse_spec(text).ok_or("tune-ab: tune_spec= is not a spec")?;
+            ("candidate", spec, names)
+        }
+    };
     let background = names
         .iter()
         .map(|name| pid_named(name))
         .collect::<Result<Vec<_>, _>>()?;
     calls::check(spec, editor, &background).map_err(|_| "tune-ab: the spec breaks the rules")?;
     let runaways = sched_control::runaways();
+    let ejections = ejections_so_far();
+    if side == "candidate" {
+        sched_control::install(spec, background)
+            .map_err(|_| "tune-ab: the candidate did not install")?;
+    }
+    let settle_ms = settle();
     log!("measure-start");
-    let id = trial::start(Request {
-        candidate: Candidate::Spec(spec),
-        target_pid: editor,
-        background,
-        window_ns: WINDOW_MS * 1_000_000,
-        pairs: PAIRS,
-        starter_pid: 0,
-    })
-    .map_err(|_| "tune-ab: the kernel refused the trial")?;
-    let status = finished(id)?;
+    let (windows, pids, quiet_bytes) = trial::measure_only(editor, WINDOW_MS * 1_000_000, WINDOWS)
+        .ok_or("tune-ab: the measurement was interrupted")?;
     log!("measure-end");
+    let ejected = ejections_so_far() - ejections;
     let mut digest = Fnv1a::new();
     let mut report = |text: String| {
         digest.update(text.as_bytes());
         log!("tune-ab: {text}");
     };
     report(alloc::format!(
-        "seed {seed} spec {} labels {}",
+        "seed {seed} side {side} spec {} labels {}",
         spec.label(),
         names.join(",")
     ));
-    for (i, w) in status
-        .windows
-        .iter()
-        .take(status.windows_done as usize)
-        .enumerate()
-    {
-        let side = if w.candidate == 1 {
-            "candidate"
-        } else {
-            "baseline"
-        };
+    for (i, w) in windows.iter().enumerate() {
         report(alloc::format!(
-            "window {i} {side} p99_us {} samples {} background_cpu_ns {} max_wait_us {} ejections {}",
-            w.target_p99_ns / 1000,
-            w.target_samples,
-            w.background_cpu_ns,
-            w.max_wait_ns / 1000,
+            "window {i} p99_us {} samples {} background_cpu_ns {} max_wait_us {} ejections {}",
+            w.p99() / 1000,
+            w.target_excess_ns.len(),
+            w.cpu_ns.iter().skip(1).sum::<u64>(),
+            w.max_wait_ns.iter().copied().max().unwrap_or(0) / 1000,
             w.ejections
         ));
-    }
-    for (pair, p) in sched_control::last_pairs().iter().enumerate() {
-        for (side, w) in [("baseline", &p.baseline), ("candidate", &p.candidate)] {
-            for chunk in w.target_excess_ns.chunks(PER_LINE) {
-                let us: Vec<String> = chunk
-                    .iter()
-                    .map(|ns| alloc::format!("{}", ns / 1000))
-                    .collect();
-                report(alloc::format!("samples {pair} {side} {}", us.join(" ")));
-            }
+        for chunk in w.target_excess_ns.chunks(PER_LINE) {
+            let us: Vec<String> = chunk
+                .iter()
+                .map(|ns| alloc::format!("{}", ns / 1000))
+                .collect();
+            report(alloc::format!("samples {i} {}", us.join(" ")));
         }
+    }
+    let span_ns: u64 = windows.iter().map(|w| w.to - w.from).sum();
+    for (index, pid) in pids.iter().enumerate().skip(1) {
+        let name = crate::process::name_of(*pid)
+            .map_or(String::from("?"), |(n, _)| String::from(n.as_str()));
+        let cpu: u64 = windows.iter().map(|w| w.cpu_ns[index]).sum();
+        report(alloc::format!("cpu {name} {cpu} of {span_ns}"));
     }
     report(alloc::format!(
-        "verdict state {} reason {} baseline_p99_us {} candidate_p99_us {} background_permille {} worst_permille {}",
-        status.state,
-        status.reason,
-        status.baseline_p99_ns / 1000,
-        status.candidate_p99_ns / 1000,
-        status.background_permille,
-        if status.worst_pid == 0 {
-            1000
-        } else {
-            status.worst_permille
-        }
+        "run ejections {ejected} settle_ms {settle_ms}"
     ));
     report(alloc::format!(
-        "guard runaways {} quiet_bytes {}",
-        sched_control::runaways() - runaways,
-        trial::window_bytes()
+        "guard runaways {} quiet_bytes {quiet_bytes}",
+        sched_control::runaways() - runaways
     ));
     log!("tune-ab: digest {:016x}", digest.finish());
     Ok(())
+}
+
+/// Watchdog ejections on every CPU since boot.
+fn ejections_so_far() -> u64 {
+    (0..crate::smp::online())
+        .filter_map(|cpu| threads::with_core(cpu, |core, _| u64::from(core.ejections())))
+        .sum()
+}
+
+/// Waits until the workload has started: every process but the protected
+/// services has printed its start-up line (a `work` process prints once it has
+/// calibrated), at most `SETTLE_MAX_MS`. Returns how long it waited.
+fn settle() -> u64 {
+    let mut workload = Vec::new();
+    crate::process::services(|pid, name| {
+        if !sched_control::PROTECTED.contains(&name.as_str()) {
+            workload.push(pid);
+        }
+    });
+    let mut waited = 0;
+    while waited < SETTLE_MAX_MS && !workload.iter().all(|&pid| crate::process::has_written(pid)) {
+        threads::sleep_ms(SETTLE_STEP_MS);
+        waited += SETTLE_STEP_MS;
+    }
+    waited
 }

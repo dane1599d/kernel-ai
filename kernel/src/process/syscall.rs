@@ -227,6 +227,8 @@ fn write(slot: usize, ptr: u64, len: u64) -> Result<u64, Error> {
             }
         }
     }
+    // After the text is out, so whoever waits on it sees it printed.
+    super::mark_wrote(slot);
     Ok(len as u64)
 }
 

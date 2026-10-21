@@ -178,6 +178,20 @@ static KILL: [AtomicU8; MAX_PROCESSES] = [const { AtomicU8::new(0) }; MAX_PROCES
 static KILL_DETAIL: [AtomicU64; MAX_PROCESSES] = [const { AtomicU64::new(0) }; MAX_PROCESSES];
 /// Set when the user presses Ctrl-C for this process; `interrupted` reads and clears it.
 static INTERRUPT: [AtomicBool; MAX_PROCESSES] = [const { AtomicBool::new(false) }; MAX_PROCESSES];
+/// Set once the process has printed anything: the M10 exit test waits for every
+/// `work` process's start-up line before it measures.
+static WROTE: [AtomicBool; MAX_PROCESSES] = [const { AtomicBool::new(false) }; MAX_PROCESSES];
+
+/// The process in `slot` printed.
+pub fn mark_wrote(slot: usize) {
+    WROTE[slot].store(true, Ordering::Relaxed);
+}
+
+/// Whether the live process `pid` has printed anything yet.
+pub fn has_written(pid: u64) -> bool {
+    with_table(|table| table.iter().position(|p| p.live() && p.pid == pid))
+        .is_some_and(|slot| WROTE[slot].load(Ordering::Relaxed))
+}
 
 /// Runs `f` on the process table with preemption off.
 pub fn with_table<R>(f: impl FnOnce(&mut [Process; MAX_PROCESSES]) -> R) -> R {
@@ -382,6 +396,7 @@ pub fn spawn(request: &SpawnRequest) -> Result<u64, kabi::Error> {
         KILL[slot].store(0, Ordering::SeqCst);
         KILL_DETAIL[slot].store(0, Ordering::SeqCst);
         INTERRUPT[slot].store(false, Ordering::SeqCst);
+        WROTE[slot].store(false, Ordering::SeqCst);
         burst::start_process(slot, request.limits.max_burst_ms);
         Ok((slot, pid))
     })?;

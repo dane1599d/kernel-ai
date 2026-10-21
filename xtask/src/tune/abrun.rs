@@ -1,9 +1,10 @@
 //! `cargo xtask tune ab [--spec SPEC | --decisions FILE] [--mix A|B] [--seeds K]
-//! [--shift N] [--timeout SECS]`: the M10 exit test. Boots `test=tune-ab
-//! phase=measure` under icount (single-threaded TCG, one CPU, no NIC, a fresh
-//! variable store each boot) on seeds 1 to K and once more on seed 1 as the
-//! canary, then applies [`super::ab`]'s rule and writes
-//! `target/tune-ab/report.json`. The boots run one after another.
+//! [--shift N] [--timeout SECS]`: the M10 exit test. On each of seeds 1 to K it
+//! boots `test=tune-ab phase=run` twice under icount (single-threaded TCG, one
+//! CPU, no NIC, a fresh variable store each boot), once on the default and once
+//! on the decision, then repeats seed 1's two boots as the canary, applies
+//! [`super::ab`]'s rule and writes `target/tune-ab/report-<mix>.json`. The boots
+//! run one after another.
 //!
 //! The decision comes from `xtask/tune/decisions.json`, a provenance-checked
 //! recording of the real model (`cargo xtask tune record`), unless `--spec`
@@ -11,7 +12,7 @@
 //! run exercises the harness but is not the M10 exit test, and says so.
 //! Mix B is the control: it is reported, never gating.
 
-use super::ab::{self, SeedRun};
+use super::ab;
 use super::boot::{Booter, split};
 use crate::icount;
 use std::path::PathBuf;
@@ -74,24 +75,32 @@ pub fn main(args: &[String]) -> Result<(), String> {
             "xtask: a hand-written --spec: this exercises the harness; it is not the M10 exit test"
         );
     }
-    let measure = |seed: u64| -> Result<SeedRun, String> {
+    let side = |seed: u64, tune_spec: &str| -> Result<ab::SideRun, String> {
         let cmdline =
-            format!("test=tune-ab phase=measure workload={mix} seed={seed} tune_spec={spec}");
+            format!("test=tune-ab phase=run workload={mix} seed={seed} tune_spec={tune_spec}");
         ab::parse(&icount_boot(&booter, &cmdline, shift)?)
     };
-    let runs = (1..=seeds).map(measure).collect::<Result<Vec<_>, _>>()?;
-    let canary = Some(measure(1)?);
-    let report = ab::evaluate(runs, canary);
+    let pair = |seed: u64| -> Result<(ab::SideRun, ab::SideRun), String> {
+        Ok((side(seed, "default")?, side(seed, &spec)?))
+    };
+    let seeds = (1..=seeds)
+        .map(|seed| pair(seed).map(|(d, c)| ab::judge(d, c)))
+        .collect::<Result<Vec<_>, _>>()?;
+    let canary = Some(pair(1)?);
+    let report = ab::evaluate(seeds, canary);
     let dir = booter.target().join("tune-ab");
     std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
     let path = dir.join(format!("report-{mix}.json"));
     let text = serde_json::to_string_pretty(&report.json()).unwrap_or_default();
     std::fs::write(&path, text).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
     println!(
-        "xtask: tune ab, mix {mix}, {seeds} seeds and a canary: pooled editor p99 {}/1000 of the baseline's; report at {}",
-        report.pooled_ratio_permille,
+        "xtask: tune ab, mix {mix}, {} seeds and a canary; report at {}",
+        report.seeds.len(),
         path.display()
     );
+    for seed in &report.seeds {
+        println!("xtask:   {}", seed.line());
+    }
     for failure in &report.failures {
         println!("xtask:   {failure}");
     }
