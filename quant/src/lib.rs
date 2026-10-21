@@ -8,12 +8,16 @@
 //! runs any range of a matrix's rows against one token's vector or a batch of
 //! them (the batched kernels unpack each block once for several tokens), and
 //! [`matvec_parallel`] spreads the rows over a [`Parallel`]'s workers with the
-//! same bits as one thread.
+//! same bits as one thread. [`attn`] holds attention's products over an f16 KV
+//! cache, tiered the same way.
 
 #![no_std]
 
 extern crate alloc;
 
+pub mod attn;
+#[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
+mod attn_avx2;
 mod batch;
 #[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
 mod batch_avx2;
