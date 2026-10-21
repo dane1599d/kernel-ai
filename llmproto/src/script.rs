@@ -145,9 +145,7 @@ pub fn system_prompt() -> String {
          - End statements with ';'. Declare variables with let.\n\
          - Integers only: never write 1.5 or 100.0. Percent: x * 100 / y.\n\
          - / rounds down (7 / 2 is 3), so rounded down needs nothing more.\n\
-         - Decimals: fixed(n, places) is n / 10^places as text with that many decimals: fixed(4321, 3) is \"4.321\", so fixed(ms, 3) is ms in seconds.\n\
-         - Upper case: let s = text; s.make_upper(); print(s); there is no to_uppercase.\n\
-         - Total length of names: add each name.len(), not the length of a joined string.\n\
+         - Decimals: fixed(n, places) is n / 10^places as text with that many decimals: fixed(4321, 3) is \"4.321\".\n\
          - uptime_ms() is milliseconds: seconds are uptime_ms() / 1000; of s seconds, s / 60 are minutes, s % 60 seconds.\n\
          - Digits or characters of a number n: n.to_string().len(), never a loop.\n\
          - Loops: only for x in list { } or for i in 0..n { }. No while, loop or do.\n\
