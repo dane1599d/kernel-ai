@@ -5,7 +5,7 @@
 //!
 //! Nothing on this path is ever cut short: an answer over a limit, or with a
 //! character the console could not show faithfully, is refused, because what the
-//! user confirms must be exactly what runs.
+//! user is asked about, or sees with `show`, must be exactly what runs.
 
 use crate::chat::{self, Completion, Message, Role};
 use crate::openai::{CompletionError, ReplyError};

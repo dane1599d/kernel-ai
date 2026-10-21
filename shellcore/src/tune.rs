@@ -70,7 +70,7 @@ pub(crate) struct Tuner {
     verdicts: Vec<String>,
 }
 
-fn spec_of(policy: u64, preset: u64) -> PolicySpec {
+pub(crate) fn spec_of(policy: u64, preset: u64) -> PolicySpec {
     let kind = match policy {
         kabi::policy::ROUND_ROBIN => PolicyKind::RoundRobin,
         kabi::policy::CLASSES => PolicyKind::Classes,
@@ -193,6 +193,11 @@ impl Tuner {
     /// A line other than the answer came: the proposal lapses.
     pub(crate) fn discard(&mut self) {
         self.pending = None;
+    }
+
+    /// Whether a proposal waits for its answer.
+    pub(crate) fn proposing(&self) -> bool {
+        self.pending.is_some()
     }
 
     pub(crate) fn waiting(&self, id: u64) -> bool {

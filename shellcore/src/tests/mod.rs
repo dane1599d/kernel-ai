@@ -9,6 +9,7 @@ use kabi::{Metrics, policy};
 use llmproto::script::{Answer, AnswerError, ScriptRequest};
 use std::collections::VecDeque;
 
+mod actions;
 mod scripts;
 mod tune;
 
@@ -22,6 +23,8 @@ struct FakeHost {
     /// Added to `heap` on every reading, to make a run look as if it allocates.
     heap_step: Cell<u64>,
     policy: Cell<Option<u64>>,
+    /// Set to make policy switches fail, as the kernel's rate limit does.
+    policy_busy: Cell<bool>,
     asked: RefCell<Vec<String>>,
     ask_takes_ns: u64,
     /// Answers `script` gives, in order; afterwards it fails.
@@ -39,6 +42,7 @@ impl FakeHost {
             heap: Cell::new(0),
             heap_step: Cell::new(0),
             policy: Cell::new(None),
+            policy_busy: Cell::new(false),
             asked: RefCell::new(Vec::new()),
             ask_takes_ns: 0,
             answers: RefCell::new(VecDeque::new()),
@@ -88,6 +92,9 @@ impl Host for FakeHost {
     }
 
     fn set_policy(&self, id: u64) -> Result<(), kabi::Error> {
+        if self.policy_busy.get() {
+            return Err(kabi::Error::Busy);
+        }
         self.policy.set(Some(id));
         Ok(())
     }

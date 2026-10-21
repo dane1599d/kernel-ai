@@ -311,7 +311,7 @@ const CPU_LINE: &str = "cpu: vector features:";
 /// Whether a console line was written for a ring-3 program rather than by the
 /// kernel: `[name] ...` from a program's own output, `= ...`, `! ...` and `? ...` from
 /// the shell's answers, possibly after the terminal's `kai> `, `edit <name>> `,
-/// `run script N? yes/no> ` and `apply <label> to <name>? yes/no> ` prompts, which
+/// `run script N? y/n> ` and `apply <label> to <name>? yes/no> ` prompts, which
 /// start the line the terminal logs on Enter. `screenlog`'s `screen: ` lines count
 /// too: a screen row copies program text and kernel lines alike.
 pub fn from_programs(line: &str) -> bool {
@@ -350,7 +350,7 @@ fn strip_edit_prompt(line: &str) -> Option<&str> {
     (is_word(label) && is_word(name)).then_some(rest)
 }
 
-/// The text after a leading `run script N? yes/no> ` or `start trial N? yes/no> `
+/// The text after a leading `run script N? y/n> ` or `start trial N? yes/no> `
 /// prompt.
 fn strip_confirm_prompt(line: &str) -> Option<&str> {
     let after = line
@@ -360,7 +360,10 @@ fn strip_confirm_prompt(line: &str) -> Option<&str> {
     if digits == 0 {
         return None;
     }
-    after[digits..].strip_prefix("? yes/no> ")
+    let after = &after[digits..];
+    after
+        .strip_prefix("? yes/no> ")
+        .or_else(|| after.strip_prefix("? y/n> "))
 }
 
 #[cfg(test)]
@@ -378,10 +381,12 @@ mod tests {
         assert!(!from_programs("terminal: ready for keys"));
         assert!(!from_programs("kai> terminal: ready for keys"));
         assert!(!from_programs("boot-ok"));
-        assert!(from_programs("? run it? it CHANGES set_policy. yes/no"));
-        assert!(from_programs("run script 12? yes/no> = boot-ok"));
+        assert!(from_programs(
+            "? It changes set_policy (no undo). Go ahead? y/n, or show"
+        ));
+        assert!(from_programs("run script 12? y/n> = boot-ok"));
         assert!(!from_programs(
-            "run script 1? yes/no> terminal: ready for keys"
+            "run script 1? y/n> terminal: ready for keys"
         ));
         assert!(from_programs(
             "start trial 2? yes/no> [shell] tune 2: trial 1 started"

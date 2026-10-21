@@ -1,37 +1,44 @@
 //! M8b self-test (`test=scripts`): LLM-written scripts end to end. The shell asks the
 //! llm service, which asks the mock LLM server (its answers are in xtask's
-//! `mock_llm`). The kernel checks every reply, that a script that only reads runs
-//! at once, that the policy changes only after a yes, and how many requests reached
-//! the llm service, which counts repair rounds.
+//! `mock_llm`). The kernel checks every reply: run-tier scripts run at once and say
+//! what they did, `show` prints the last script, `undo` puts the policy back, and
+//! the number of requests that reached the llm service counts repair rounds.
 
 use crate::sched_control::calls::MIN_POLICY_INTERVAL_NS;
 use crate::shell_tests::Expect::{self, Contains, Exact, StartsWith};
 use crate::shell_tests::{expect_lines, start};
 use crate::{ipc, log, threads};
 
-/// A script that only reads is shown in full and runs at once, with nothing left to
-/// confirm; one that changes anything waits, and a no runs nothing.
-const DECLINE: &[(&str, Expect)] = &[
-    (
-        "? how many cpus are there",
-        StartsWith(
-            "ok script 1: reads cpus\nmodel says: Prints the number of CPUs.\n 1 | print(\"CPUs: \" + cpus());\nran it (read-only):\nCPUs: ",
-        ),
-    ),
+/// A script that only reads runs at once and shows only its output; `show` has the
+/// script. A policy switch is run-tier too, and the script sees it at once: it
+/// reads the policy just before switching, so a stale metrics snapshot would print
+/// the old one.
+const RUN: &[(&str, Expect)] = &[
+    ("? how many cpus are there", StartsWith("ok CPUs: ")),
     ("answer 1 yes", Exact("err nothing to confirm")),
     (
-        "? switch to round robin",
-        StartsWith("confirm 2 script 2: reads get_policy; CHANGES set_policy\n"),
+        "show",
+        Exact(
+            "ok script 1: reads cpus\nmodel says: Prints the number of CPUs.\n 1 | print(\"CPUs: \" + cpus());\nran at once: it only reads",
+        ),
     ),
-    ("answer 2 no", Exact("ok script 2 not run")),
+    (
+        "? switch to round robin",
+        Exact("ok policy: round-robin\nDone: policy round-robin (was interactive) (undo: `undo`)"),
+    ),
 ];
 
-/// A yes runs the change, and the script sees it at once: it reads the policy just
-/// before switching, so a stale metrics snapshot would print the old one.
-const ACCEPT: &[(&str, Expect)] = &[
-    ("? switch to round robin", StartsWith("confirm 3 ")),
-    ("answer 3 yes", Exact("ok policy: round-robin\n")),
+/// `undo` puts the policy back once; a bare `y` with nothing asked answers nothing.
+const UNDO: &[(&str, Expect)] = &[
+    ("undo", Exact("ok Undone: policy back to interactive")),
+    ("undo", Exact("err nothing to undo")),
+    ("y", Exact("err nothing to answer")),
 ];
+
+const AGAIN: &[(&str, Expect)] = &[(
+    "? switch to round robin",
+    Contains("Done: policy round-robin"),
+)];
 
 const REST: &[(&str, Expect)] = &[
     // The first answer calls a function that does not exist; the repair fixes it.
@@ -48,12 +55,14 @@ const REST: &[(&str, Expect)] = &[
         "tell me a story please",
         Exact("err gave up after one repair: the answer was not the JSON object asked for"),
     ),
-    ("? go back to interactive", StartsWith("confirm 7 ")),
-    ("answer 7 yes", Exact("ok ")),
+    (
+        "? go back to interactive",
+        Exact("ok Done: policy interactive (was round-robin) (undo: `undo`)"),
+    ),
     (
         "log",
-        StartsWith(
-            "ok #1 how many cpus are there: ran read-only\n#2 switch to round robin: declined\n#3 switch to round robin: ran\n#4 how much memory is free: ran read-only\n#5 reboot the computer: answered in words\n#6 tell me a story please: refused: ",
+        Exact(
+            "ok #1 how many cpus are there: ran read-only\n#2 switch to round robin: ran\n#3 switch to round robin: ran\n#4 how much memory is free: ran read-only\n#5 reboot the computer: answered in words\n#6 tell me a story please: refused: gave up after one repair: the answer was not the JSON object asked for\n#7 go back to interactive: ran",
         ),
     ),
 ];
@@ -72,20 +81,30 @@ fn policy_is(name: &str) -> bool {
     false
 }
 
+/// Policy switches are rate-limited, so wait the limit out between lines that
+/// switch rather than rely on how long the lines in between take.
+fn after_switch() {
+    threads::sleep_ms(MIN_POLICY_INTERVAL_NS / 1_000_000 + 10);
+}
+
 pub fn check() -> Result<(), &'static str> {
     let shell = start()?;
     let before = ipc::replies("llm").1;
-    expect_lines(DECLINE)?;
-    if !policy_is("interactive") {
-        return Err("scripts: a declined script changed the policy");
-    }
-    expect_lines(ACCEPT)?;
+    expect_lines(RUN)?;
     if !policy_is("round-robin") {
-        return Err("scripts: an accepted script did not change the policy");
+        return Err("scripts: a run-tier script did not switch the policy at once");
     }
-    // Policy switches are rate-limited; the last script switches back, so wait the
-    // limit out rather than rely on how long the lines in between take.
-    threads::sleep_ms(MIN_POLICY_INTERVAL_NS / 1_000_000 + 10);
+    after_switch();
+    expect_lines(UNDO)?;
+    if !policy_is("interactive") {
+        return Err("scripts: undo did not put the policy back");
+    }
+    after_switch();
+    expect_lines(AGAIN)?;
+    if !policy_is("round-robin") {
+        return Err("scripts: the second switch did not change the policy");
+    }
+    after_switch();
     expect_lines(REST)?;
     if !policy_is("interactive") {
         return Err("scripts: the last script did not restore the policy");
@@ -99,7 +118,7 @@ pub fn check() -> Result<(), &'static str> {
         return Err("scripts: a different shell process answered by the end");
     }
     log!(
-        "scripts: proposed, declined, accepted and repaired scripts all behaved (shell pid {shell})"
+        "scripts: run-tier scripts ran at once, show, undo and repairs all behaved (shell pid {shell})"
     );
     Ok(())
 }
