@@ -266,8 +266,8 @@ fn labels_are_replayed_into_every_new_policy_and_a_new_thread_starts_normal() {
     assert_eq!(core.preempt(0), Some(3));
     assert_eq!(core.preempt(MS), Some(4));
     assert_eq!(core.block_current(MS), 3);
-    // A background thread's wake never preempts.
-    assert!(!core.wake(4, 2 * MS));
+    // A background thread's wake still cuts a hog short, as Interactive's would.
+    assert!(core.wake(4, 2 * MS));
     assert_eq!(core.class(4), Class::Background);
     assert_eq!(core.class(MAX_THREADS), Class::Normal);
     // The thread exits; a new one in its slot is not labelled.

@@ -5,12 +5,13 @@
 //! sleep 1 ms, so Interactive boosts every one of their wakes and the editor's key
 //! presses queue behind them. The indexer wakes as often as a fast typist types
 //! and runs bursts as short as the editor's, so a rule that looks only at burst
-//! length treats it like the editor. Labelling it background would cost it most
-//! of its CPU (short, frequent bursts live on the wake boost), which the judge
-//! does not allow; the right pick labels the build jobs by name and leaves the
-//! indexer alone, while the burst rule, which cannot read names, demotes the
-//! builds too far. Two hogs never sleep. Mix B is the control: the editor and six
-//! hogs, where Interactive already does as well as anything can.
+//! length treats it like the editor. Two hogs never sleep. Since `classes` keeps
+//! a labelled wake ahead of the normal ring (2026-10-21), the right pick labels
+//! the build jobs and the indexer by name: with the builds alone, the indexer's
+//! wakes go before them and take about a fifth more CPU, all of it from the
+//! hogs, which then fall near the judge's 0.8x floor. The burst rule, which
+//! cannot read names, demotes the builds too far. Mix B is the control: the
+//! editor and six hogs, where Interactive already does as well as anything can.
 
 use crate::judge::Choice;
 use crate::sim::{Behavior, MS, ProcSpec, Span, US};
@@ -68,7 +69,7 @@ pub const MIX_A: Mix = Mix {
         proc("hog-2", Behavior::Hog),
     ],
     target: 0,
-    oracle: &["build-1", "build-2", "build-3", "build-4"],
+    oracle: &["build-1", "build-2", "build-3", "build-4", "indexer"],
 };
 
 pub const MIX_B: Mix = Mix {

@@ -1,8 +1,9 @@
 name: tune A/B (M10 exit test)
 
-# The M10 exit test under icount: `cargo xtask tune ab` boots mix A on seeds 1-5
-# and a canary repeat of seed 1, each running the kernel's trial of the recorded
-# decision, and applies the rule in xtask/src/tune/ab.rs. With
+# The M10 exit test under icount: `cargo xtask tune ab` boots mix A twice on each
+# of seeds 1-5, once on the default and once on the recorded decision (the
+# founder's rule of 2026-10-21), repeats seed 1's two boots as the canary, and
+# applies the rule in xtask/src/tune/ab.rs. With
 # xtask/tune/decisions.json present (the real Qwen3-4B recording, from
 # tune-model.yml mode record) it first checks the recording's provenance with an
 # observe boot. Until then it runs the designers' hand-written spec, which

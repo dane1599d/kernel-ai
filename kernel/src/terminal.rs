@@ -18,10 +18,12 @@ use termcore::line::{Line, Outcome};
 
 const PROMPT: &str = "kai> ";
 const MAX_LINE: usize = 200;
-/// Longest a shell line may take: the shell's longest LLM wait (140 s for `ask`, two
-/// script rounds of 75 s) plus its compute budget, with room to spare, so the shell
-/// always answers first.
-const SHELL_TIMEOUT_MS: u64 = 160_000;
+/// Longest a shell line may take: the shell's longest LLM wait (`tune`: a 3 s
+/// window, then `llmproto::tune::CALL_TIMEOUT_MS` for the answer; 140 s for `ask`;
+/// two script rounds of 70 s) plus its compute budget, with room to spare, so the
+/// shell always answers first.
+const SHELL_TIMEOUT_MS: u64 = 310_000;
+const _: () = assert!(llmproto::tune::CALL_TIMEOUT_MS + 10_000 <= SHELL_TIMEOUT_MS);
 /// How long to wait for a shell that is starting or restarting.
 const SHELL_START_WAIT_NS: u64 = 3_000_000_000;
 /// Longest piece of a reply printed in one go (each print keeps interrupts off).
@@ -63,10 +65,27 @@ const HELP: &[(&str, &str)] = &[
 
 /// A question the next line answers.
 enum Waiting {
-    /// A script the shell proposed.
-    Script(u64),
+    /// A script or a tune trial the shell proposed.
+    Confirm(Confirm),
     /// An upload `:apply` showed.
     Apply(edit_mode::Proposal),
+}
+
+/// A confirmation the shell is waiting for: its id, and whether it proposes a
+/// tune trial (its card starts `Tune "`) rather than a script (`script N:`).
+#[derive(Clone, Copy)]
+struct Confirm {
+    id: u64,
+    tune: bool,
+}
+
+impl Confirm {
+    fn prompt(self) -> String {
+        match self.tune {
+            true => format!("start trial {}? yes/no> ", self.id),
+            false => format!("run script {}? yes/no> ", self.id),
+        }
+    }
 }
 
 /// Runs the terminal on the calling thread, forever.
@@ -78,7 +97,7 @@ pub fn run(_: usize) {
     let mut waiting: Option<Waiting> = None;
     loop {
         let prompt = match &waiting {
-            Some(Waiting::Script(id)) => format!("run script {id}? yes/no> "),
+            Some(Waiting::Confirm(confirm)) => confirm.prompt(),
             Some(Waiting::Apply(p)) => format!("apply {} to {}? yes/no> ", p.label, p.component),
             None => edit_mode::prompt().unwrap_or_else(|| PROMPT.into()),
         };
@@ -96,8 +115,9 @@ pub fn run(_: usize) {
         };
         let line = line.trim();
         match waiting.take() {
-            Some(Waiting::Script(id)) => {
-                waiting = shell_line(&format!("answer {id} {line}")).map(Waiting::Script);
+            Some(Waiting::Confirm(confirm)) => {
+                waiting =
+                    shell_line(&format!("answer {} {line}", confirm.id)).map(Waiting::Confirm);
                 continue;
             }
             Some(Waiting::Apply(proposal)) => {
@@ -113,7 +133,7 @@ pub fn run(_: usize) {
                 edit_mode::show(&edit_mode::editor_line(line));
             }
             None if is_answer(line) => log!("! scripts are answered only at their own prompt"),
-            None => waiting = shell_line(line).map(Waiting::Script),
+            None => waiting = shell_line(line).map(Waiting::Confirm),
         }
     }
 }
@@ -149,7 +169,7 @@ fn finish_line(prompt: &str, text: &str, mark: &str) {
 
 /// Sends a line to the shell and prints its answer. Returns the id of a script that
 /// waits for the user's yes.
-fn shell_line(line: &str) -> Option<u64> {
+fn shell_line(line: &str) -> Option<Confirm> {
     let start_deadline = hpet::nanos() + SHELL_START_WAIT_NS;
     if ipc::wait_bound("shell", start_deadline, || false).is_err() {
         log!("shell not running; kernel commands start with ':' (try :help)");
@@ -165,8 +185,8 @@ fn shell_line(line: &str) -> Option<u64> {
 }
 
 /// Prints `ok <text>`, `err <text>` or `confirm <id> <text>` with its lead, one
-/// complete line per piece, and returns the id of a confirmation shown in full.
-fn show_shell_reply(reply: &[u8]) -> Option<u64> {
+/// complete line per piece, and returns a confirmation shown in full.
+fn show_shell_reply(reply: &[u8]) -> Option<Confirm> {
     let text = String::from_utf8_lossy(reply);
     let clean = printable(&text, kabi::MAX_MESSAGE, MAX_REPLY_LINES);
     let (kind, rest) = clean.split_once(' ').unwrap_or((clean.as_str(), ""));
@@ -186,11 +206,14 @@ fn show_shell_reply(reply: &[u8]) -> Option<u64> {
     if let Some(id) = confirm
         && (clean != text || !fits_on_screen(body))
     {
-        log!("! the confirmation could not be shown in full, so the script will not run");
+        log!("! the confirmation could not be shown in full, so it will not run");
         // Decline it, so no later line can answer it.
         return shell_line(&format!("answer {id} no"));
     }
-    confirm
+    confirm.map(|id| Confirm {
+        id,
+        tune: body.starts_with("Tune \""),
+    })
 }
 
 /// Whether a line typed at the `kai> ` prompt looks like an answer to a script,

@@ -183,18 +183,19 @@ fn a_label_never_moves_a_thread_ahead_of_where_interactive_puts_it() {
 }
 
 #[test]
-fn a_background_wake_neither_boosts_nor_preempts() {
+fn a_background_wake_goes_after_unlabelled_wakes_and_before_the_normal_ring() {
     let mut policy = Classes::new(params(6 * MS, 20 * MS));
     policy.set_class(3, Class::Background);
     policy.enqueue(1, EnqueueReason::New);
     assert_eq!(policy.pick_next(), Some(1));
     policy.enqueue(2, EnqueueReason::New);
     policy.enqueue(3, EnqueueReason::Woken);
-    assert!(!policy.preempt_on_wake(3, 1));
+    // It still cuts short a thread Interactive would let it cut short (a hog)...
+    assert!(policy.preempt_on_wake(3, 1));
     policy.enqueue(4, EnqueueReason::Woken);
     assert!(policy.preempt_on_wake(4, 1));
-    // The unlabelled wake goes first, then the normal ring in order.
-    assert_eq!(drain(&mut policy), [4, 2, 3]);
+    // ...but the unlabelled wake goes first; the never-woken thread goes last.
+    assert_eq!(drain(&mut policy), [4, 3, 2]);
 }
 
 #[test]
@@ -233,12 +234,13 @@ fn a_due_thread_waits_for_wakes_that_came_before_it() {
 }
 
 #[test]
-fn a_label_moves_a_queued_boosted_thread_to_the_normal_ring() {
+fn a_label_moves_a_queued_boosted_thread_behind_unlabelled_wakes_only() {
     let mut policy = Classes::new(params(6 * MS, 20 * MS));
     policy.enqueue(2, EnqueueReason::New);
     policy.enqueue(3, EnqueueReason::Woken);
+    policy.enqueue(4, EnqueueReason::Woken);
     policy.set_class(3, Class::Background);
-    assert_eq!(drain(&mut policy), [2, 3]);
+    assert_eq!(drain(&mut policy), [4, 3, 2]);
     policy.set_class(MAX_THREADS, Class::Background);
 }
 

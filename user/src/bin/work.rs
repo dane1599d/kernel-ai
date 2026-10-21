@@ -10,7 +10,8 @@
 //!
 //! "Compute for N ns" means a calibrated count of loop iterations, not a wall-clock
 //! wait, so a burst needs the same CPU however often it is preempted. Calibration
-//! takes the fastest of several short timed runs, which leaves out preemption. The
+//! takes the fastest of many timed runs, each a fraction of a tick, so at least
+//! one ran unpreempted even while every process of the mix calibrates at once. The
 //! program prints one line at start and nothing while it runs, so measurement
 //! windows stay quiet.
 
@@ -24,9 +25,12 @@ use user::{arg, args, println, sys};
 user::entry!(main);
 
 const MS: u64 = 1_000_000;
-/// Iterations per calibration run, and how many runs.
-const CALIBRATION_ITERS: u64 = 20_000;
-const CALIBRATION_RUNS: usize = 8;
+/// Iterations per calibration run, and how many runs. A run must be far shorter
+/// than a tick: with 20,000-iteration runs (about 20 ms) every run of mix A's
+/// eight processes, all calibrating at once on one CPU, was preempted, so the
+/// speed came out about 4x low and a 2-4 ms build burst ran for 0.7 ms (M10).
+const CALIBRATION_ITERS: u64 = 200;
+const CALIBRATION_RUNS: usize = 64;
 
 fn main() -> i32 {
     let args = args();

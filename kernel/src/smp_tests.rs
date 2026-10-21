@@ -274,6 +274,7 @@ pub fn storm_check(seconds: u64) -> Result<(), &'static str> {
         STORM_FULL.load(Ordering::Relaxed)
     );
     if !drained {
+        threads::log_in_use();
         return Err("storm: some spawned threads never finished");
     }
     Ok(())

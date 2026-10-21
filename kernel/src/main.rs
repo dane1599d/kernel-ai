@@ -486,6 +486,11 @@ fn start_user_space(test: SelfTest) {
     if programs.is_empty() {
         return;
     }
+    // The icount boots start their services on a tick edge, after every boot-time
+    // disk read, so nothing host-timed comes before them (the M10 exit test).
+    if test == SelfTest::TuneAb {
+        timer::align_to_tick();
+    }
     if let Err(message) = process::supervision::start(plan) {
         fail(message);
     }

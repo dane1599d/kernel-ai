@@ -440,13 +440,13 @@ fn every_candidate_is_tried_and_the_best_is_reported() {
         kept.len(),
         scores.len()
     );
-    // The best is the build jobs labelled background. On mix A the presets act
-    // alike (the floor never fires and the indexer's wakes cut the hogs' turns
-    // short of either slice), so gentle wins the tie by coming first.
-    let builds = MIX_A.oracle_choice().background;
+    // The best is the build jobs and the indexer labelled background. On mix A
+    // the presets act alike (the floor never fires and the wakes cut the hogs'
+    // turns short of either slice), so gentle wins the tie by coming first.
+    let oracle = MIX_A.oracle_choice().background;
     assert_eq!(
         best.choice,
-        Choice::new(spec(PolicyKind::Classes, Preset::Gentle), builds)
+        Choice::new(spec(PolicyKind::Classes, Preset::Gentle), oracle)
     );
     let firm = scores
         .iter()
@@ -454,10 +454,12 @@ fn every_candidate_is_tried_and_the_best_is_reported() {
         .unwrap();
     assert_eq!(firm.verdicts, best.verdicts);
     assert!(best.mean_ratio_permille() <= MIX_A_ORACLE_RATIO_LIMIT);
-    // Labelling the indexer, whose bursts look like the editor's, always costs it
-    // its CPU share.
-    let indexer = MIX_A.index("indexer").unwrap();
-    assert!(kept.iter().all(|s| !s.choice.labelled(indexer)));
+    // Labelling the builds alone is not kept everywhere: the indexer's wakes then
+    // go before theirs and the hogs pay for its extra CPU.
+    let builds = MIX_A
+        .mask(&["build-1", "build-2", "build-3", "build-4"])
+        .unwrap();
+    assert!(kept.iter().all(|s| s.choice.background != builds));
 }
 
 /// The oracle's measured mean ratio is about 0.47; the best can be no worse.

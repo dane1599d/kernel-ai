@@ -68,14 +68,6 @@ pub(crate) struct Active {
     request: Request,
 }
 
-/// Serial bytes the latest trial's windows saw: 0 for a quiet measurement.
-static QUIET_BYTES: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-
-/// Serial bytes sent while the latest trial's windows ran.
-pub fn window_bytes() -> u64 {
-    QUIET_BYTES.load(Ordering::Relaxed)
-}
-
 /// The driver thread, plus one (0 = none).
 static DRIVER: AtomicUsize = AtomicUsize::new(0);
 
@@ -242,8 +234,26 @@ fn aborted() -> bool {
     ABORT.load(Ordering::Acquire)
 }
 
+/// `count` windows of `window_ns` of whatever policy runs, measured as a trial's
+/// are, with `target_pid` as the target: the M10 exit test measures the default
+/// and the candidate in separate boots this way. Also returns the processes in
+/// the order the measures list them (target first) and the serial bytes sent
+/// meanwhile; `None` if a trial or a person's switch got in the way.
+pub fn measure_only(
+    target_pid: u64,
+    window_ns: u64,
+    count: usize,
+) -> Option<(Vec<WindowMeasure>, Vec<u64>, u64)> {
+    let pids = processes(target_pid);
+    let quiet_from = crate::serial::bytes_sent();
+    let windows = (0..count)
+        .map(|_| window(target_pid, window_ns, &pids))
+        .collect::<Option<Vec<_>>>()?;
+    Some((windows, pids, crate::serial::bytes_sent() - quiet_from))
+}
+
 /// Measures one window from now; `None` if the trial ended meanwhile.
-fn window(request: &Request, pids: &[u64]) -> Option<WindowMeasure> {
+fn window(target_pid: u64, window_ns: u64, pids: &[u64]) -> Option<WindowMeasure> {
     let start = hpet::nanos();
     for cpu in 0..smp::online() {
         threads::with_core(cpu, |core, _| core.begin_window());
@@ -257,10 +267,10 @@ fn window(request: &Request, pids: &[u64]) -> Option<WindowMeasure> {
     let mut after = Snapshots::new();
     before.take();
     let by_tid = process::pids_by_tid();
-    let target = |tid: Tid| by_tid[tid] == request.target_pid;
+    let target = |tid: Tid| by_tid[tid] == target_pid;
     let mut drain = Drain::start();
     let mut samples = vec![Vec::new(); MAX_THREADS];
-    let end = start + request.window_ns;
+    let end = start + window_ns;
     if aborted() || !wait_draining(end, &mut drain, target, &mut samples, aborted) {
         return None;
     }
@@ -349,14 +359,13 @@ fn drive(id: usize) {
     let pids = processes(request.target_pid);
     let mut pairs = Vec::new();
     let mut ran = true;
-    let quiet_from = crate::serial::bytes_sent();
     for pair in 0..request.pairs {
-        let Some(baseline) = window(&request, &pids) else {
+        let Some(baseline) = window(request.target_pid, request.window_ns, &pids) else {
             break;
         };
         with(|control| record(control, 2 * pair, &baseline, false));
         ran &= switch_all(id, true);
-        let candidate = window(&request, &pids);
+        let candidate = window(request.target_pid, request.window_ns, &pids);
         ran &= switch_all(id, false);
         let Some(candidate) = candidate else {
             break;
@@ -367,7 +376,6 @@ fn drive(id: usize) {
             candidate,
         });
     }
-    QUIET_BYTES.store(crate::serial::bytes_sent() - quiet_from, Ordering::Relaxed);
     finish(id, &request, &pids, pairs, ran);
     DRIVER.store(0, Ordering::Release);
 }

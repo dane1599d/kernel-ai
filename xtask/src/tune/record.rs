@@ -22,6 +22,43 @@ use llmproto::tune::{self, Decision, Summary, TuneRequest, replay};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
+/// `cargo xtask tune observe [--mix A] [--boots N] [--shift N]`: the observe
+/// boot `boots` times (2 by default), requiring the same summary every time, so
+/// a recording made on one runner checks on another.
+pub fn same_main(args: &[String]) -> Result<(), String> {
+    let (own, rest) = split(args, &["--mix", "--boots", "--shift"]);
+    let value = |name: &str| own.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone());
+    let mix = value("--mix").unwrap_or_else(|| String::from("A"));
+    let boots: usize = value("--boots").map_or(Ok(2), |s| s.parse().map_err(|_| SAME_USAGE))?;
+    let shift: u32 = value("--shift").map_or(Ok(crate::icount::DEFAULT_SHIFT), |s| {
+        s.parse().map_err(|_| SAME_USAGE)
+    })?;
+    if boots < 2 {
+        return Err(SAME_USAGE.into());
+    }
+    let booter = Booter::build(&icount_flags(rest))?;
+    let mut shas = Vec::new();
+    for boot in 1..=boots {
+        let (request, _) = observe(&booter, &mix, shift, &[])?;
+        let sha = sha256(request.text.as_bytes());
+        println!("xtask: observe boot {boot} of {boots}: summary SHA-256 {sha}");
+        shas.push(sha);
+    }
+    if shas.iter().any(|sha| *sha != shas[0]) {
+        return Err(format!(
+            "FAIL: the observe boots built different summaries: {}",
+            shas.join(", ")
+        ));
+    }
+    println!(
+        "xtask: PASS: {boots} observe boots of mix {mix} built the same summary {}",
+        shas[0]
+    );
+    Ok(())
+}
+
+const SAME_USAGE: &str = "usage: cargo xtask tune observe [--mix A] [--boots N] [--shift N]";
+
 /// The model whose recording declares M10 done.
 pub const EXIT_MODEL: &str = "qwen3-4b-2507";
 /// The held-out seed the observe boot runs.
@@ -36,23 +73,38 @@ fn sha256(text: &[u8]) -> String {
     crate::sha256_hex(text)
 }
 
-/// The observe boot, with a replay disk if given; the request llm got.
+/// Bytes of every observe boot's replay disk: the file, padded with empty lines
+/// (which a replay skips), so a recording and its check boot the same command
+/// line, memory and disk.
+const OBSERVE_DISK_BYTES: usize = 4096;
+
+/// The observe boot, with a replay disk holding `entries` (none when recording);
+/// the request llm got.
 fn observe(
     booter: &Booter,
     mix: &str,
     shift: u32,
-    replay_disk: Option<&Path>,
+    entries: &[(u64, Completion)],
 ) -> Result<(TuneRequest, Vec<String>), String> {
-    let mut cmdline = format!("test=tune-ab phase=observe workload={mix} seed={OBSERVE_SEED}");
-    let disk = replay_disk.map(ModelDisk::open).transpose()?;
-    if let Some(disk) = &disk {
-        cmdline = format!("{cmdline} {}", disk.cmdline());
+    let mut file = replay::encode(entries).into_bytes();
+    if file.len() > OBSERVE_DISK_BYTES {
+        return Err(format!(
+            "the replay file is {} bytes, more than the observe disk's {OBSERVE_DISK_BYTES}",
+            file.len()
+        ));
     }
+    file.resize(OBSERVE_DISK_BYTES, b'\n');
+    let path = booter.target().join("tune-ab").join("replay.bin");
+    std::fs::create_dir_all(path.parent().unwrap_or(booter.target())).map_err(|e| e.to_string())?;
+    std::fs::write(&path, file).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+    let disk = ModelDisk::open(&path)?;
+    let cmdline = format!(
+        "test=tune-ab phase=observe workload={mix} seed={OBSERVE_SEED} {}",
+        disk.cmdline()
+    );
     let firmware = booter.prepare(&cmdline)?;
-    let mut args = crate::icount::measure_args(&firmware, shift);
-    if let Some(disk) = &disk {
-        args.extend(disk.qemu_args());
-    }
+    let mut args = crate::icount::measure_args_with(&firmware, shift, disk.memory_mib());
+    args.extend(disk.qemu_args());
     println!("xtask: observe boot: {cmdline}");
     let captured =
         crate::icount::run_capture(&booter.qemu, &args, booter.target(), booter.options.timeout)?;
@@ -123,7 +175,7 @@ pub fn main(args: &[String]) -> Result<(), String> {
         return Err(format!("{id}'s file does not have the catalog's SHA-256"));
     }
     let booter = Booter::build(&icount_flags(rest))?;
-    let (request, _) = observe(&booter, &mix, shift, None)?;
+    let (request, _) = observe(&booter, &mix, shift, &[])?;
     let completion = super::parity::host_answer(&bytes, &request)?;
     let decision = decide(&request, &completion.text, completion.cut_off);
     let record = json!({
@@ -142,6 +194,10 @@ pub fn main(args: &[String]) -> Result<(), String> {
         "decision": spec_text(&decision).unwrap_or_else(|| String::from("keep")),
     });
     let path = default_path();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    }
     let text = serde_json::to_string_pretty(&record).unwrap_or_default() + "\n";
     std::fs::write(&path, text).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
     println!(
@@ -202,15 +258,12 @@ pub fn verified_spec(booter: &Booter, path: &Path, shift: u32) -> Result<String,
         ));
     }
     // The guest must still build the very summary the model answered.
-    let file = replay::encode(&[(
+    let entry = (
         replay::prompt_hash(&recorded),
         Completion { text: raw, cut_off },
-    )]);
-    let disk = booter.target().join("tune-ab").join("replay.bin");
-    std::fs::create_dir_all(disk.parent().unwrap_or(booter.target())).map_err(|e| e.to_string())?;
-    std::fs::write(&disk, file).map_err(|e| format!("cannot write {}: {e}", disk.display()))?;
+    );
     let mix = field("mix");
-    let (now, lines) = observe(booter, &mix, shift, Some(&disk))?;
+    let (now, lines) = observe(booter, &mix, shift, &[entry])?;
     if now != recorded {
         return Err(format!(
             "the guest's summary changed since the recording (SHA-256 {} now, {} recorded); re-record with cargo xtask tune record --local {EXIT_MODEL}",

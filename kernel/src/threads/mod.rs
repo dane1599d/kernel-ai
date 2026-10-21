@@ -203,6 +203,36 @@ fn idle_loop(_: usize) {
     }
 }
 
+/// Logs every thread slot in use that is not running on a CPU now: its owner, its
+/// flags and each CPU core's view of it. For a test that lost a thread.
+pub fn log_in_use() {
+    let cpus = smp::online();
+    for tid in 0..MAX_THREADS {
+        if !IN_USE[tid].load(Ordering::Acquire) || PINNED[tid].load(Ordering::Relaxed) {
+            continue;
+        }
+        let views: alloc::vec::Vec<alloc::string::String> = (0..cpus)
+            .filter_map(|cpu| {
+                with_core(cpu, |core, now| match core.state(tid) {
+                    sched::State::Free => None,
+                    state => Some(alloc::format!(
+                        "cpu {cpu}: {} {state:?} (now {now}, current {})",
+                        core.name(tid),
+                        core.current()
+                    )),
+                })
+                .flatten()
+            })
+            .collect();
+        log!(
+            "threads: tid {tid} owner {} on_cpu {} views [{}]",
+            OWNER[tid].load(Ordering::Relaxed),
+            ON_CPU[tid].load(Ordering::Relaxed),
+            views.join("; ")
+        );
+    }
+}
+
 /// Thread slots in use now, for the tests that check none leaked.
 pub fn in_use() -> usize {
     IN_USE

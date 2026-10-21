@@ -102,7 +102,7 @@ pub const DEFAULT_CONFIG: Config = Config {
 /// How often the time, interrupt and heap checks run, in operations.
 pub const CHECK_EVERY: u64 = 1024;
 /// Time the llm service gets for one script request; two rounds (an answer and one
-/// repair) must fit in the terminal's 160 s wait for a line.
+/// repair) must fit in the terminal's wait for a line (310 s since the M10 demo).
 pub const SCRIPT_ROUND_MS: u64 = 70_000;
 /// What separates a read-only script, shown in full, from its output.
 pub const RAN_READ_ONLY: &str = "\nran it (read-only):\n";

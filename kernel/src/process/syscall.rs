@@ -16,8 +16,10 @@ const MAX_PIECE: usize = 160;
 const MAX_SLEEP_MS: u64 = 3_600_000;
 const MAX_HTTP_REQUEST: usize = 64 * 1024;
 const MAX_HTTP_TIMEOUT_MS: u64 = 300_000;
-/// Longest a process may wait for another service.
-const MAX_CALL_MS: u64 = 150_000;
+/// Longest a process may wait for another service: the shell's wait for a tune
+/// answer, the longest call there is.
+const MAX_CALL_MS: u64 = 300_000;
+const _: () = assert!(llmproto::tune::CALL_TIMEOUT_MS <= MAX_CALL_MS);
 /// A process serving a call must hear back from its own call this long before the
 /// call it serves times out.
 pub(super) const NESTED_MARGIN_NS: u64 = 1_000_000_000;
@@ -225,6 +227,8 @@ fn write(slot: usize, ptr: u64, len: u64) -> Result<u64, Error> {
             }
         }
     }
+    // After the text is out, so whoever waits on it sees it printed.
+    super::mark_wrote(slot);
     Ok(len as u64)
 }
 

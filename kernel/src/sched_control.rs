@@ -183,6 +183,29 @@ pub fn set_policy(spec: PolicySpec) -> Result<(), Error> {
     Ok(())
 }
 
+/// Installs `spec` with `background` labelled, as a kept trial would, for the M10
+/// exit test's candidate boot: `set_policy`, then the labels on every thread of
+/// those processes on every CPU. Thread context only.
+pub fn install(spec: PolicySpec, background: Vec<u64>) -> Result<(), Error> {
+    set_policy(spec)?;
+    with(|control| {
+        let table = class_table(&background);
+        for cpu in 0..smp::online() {
+            threads::with_core(cpu, |core, _| {
+                for (tid, class) in table.iter().enumerate() {
+                    core.clear_class(tid);
+                    if *class == Class::Background {
+                        core.set_class(tid, Class::Background);
+                    }
+                }
+            });
+        }
+        control.background = background;
+    });
+    metrics::invalidate();
+    Ok(())
+}
+
 /// A thread of process `pid` starts: it gets the process's installed label on
 /// every CPU, or none while a trial runs.
 pub fn on_thread_start(tid: Tid, pid: u64) {
