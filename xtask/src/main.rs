@@ -2,7 +2,7 @@
 //!
 //! cargo xtask build [--release] [--spikes]
 //! cargo xtask run   [--release] [--spikes] [--accel auto|kvm|whpx|tcg] [--cpus N] [--mem SIZE] [--llm IP:PORT] [--model NAME] [--edit] [--model-disk PATH | --local ID [--store DIR]] [--workload A|B [--seed N]]
-//! cargo xtask test  [--release] [--accel auto|kvm|whpx|tcg] [--timeout SECS] [--cpus N] [--mem SIZE]
+//! cargo xtask test  [--release] [--accel auto|kvm|whpx|tcg] [--timeout SECS] [--cpus N] [--mem SIZE] [--shard K/N]
 //! cargo xtask soak  [--accel auto|kvm|whpx|tcg]   (10-minute storm, M5 exit test)
 //! (`--accel wsl` on Windows: QEMU with KVM inside WSL2; see wsl/launch.rs)
 //! cargo xtask smoke   (the live, edit and boot manifest scenarios on the host only, no QEMU)
@@ -106,7 +106,8 @@ fn execute(options: &Options) -> Result<(), String> {
         Task::Test => Some(buildsvc::verify::real_repo(&root)?),
         _ => None,
     };
-    if options.task == Task::Test {
+    // With `--shard`, shard 1 alone runs the host scenarios.
+    if options.task == Task::Test && options.shard.is_none_or(|(k, _)| k == 1) {
         // The live-component and edit scenarios on the host first: a failure here
         // is in the host, a version, the editor or the builds, not in the kernel.
         smoke::run(&versions)?;
@@ -176,7 +177,13 @@ fn execute(options: &Options) -> Result<(), String> {
     } else {
         cases::TEST_CASES
     };
-    for case in cases {
+    let cases = cases
+        .iter()
+        .enumerate()
+        .filter(|&(index, _)| options::in_shard(options.shard, index))
+        .map(|(_, case)| case)
+        .collect::<Vec<_>>();
+    for &case in &cases {
         let service = match case.build {
             true => Some(edit_smoke::service(&root, case.name)?),
             false => None,

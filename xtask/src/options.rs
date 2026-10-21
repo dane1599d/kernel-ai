@@ -60,6 +60,9 @@ pub struct Options {
     pub wsl: bool,
     /// `run --workload A|B [--seed N]`: M10's mix, run as ring-3 `work` processes.
     pub workload: Option<(String, u64)>,
+    /// `test --shard K/N`: boot only shard K (from 1) of N; CI splits the cases
+    /// across parallel jobs this way.
+    pub shard: Option<(usize, usize)>,
 }
 
 impl Options {
@@ -124,6 +127,7 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
         boots: crate::icount::DEFAULT_BOOTS,
         wsl: false,
         workload: None,
+        shard: None,
     };
     let mut rest = args[1..].iter();
     while let Some(arg) = rest.next() {
@@ -219,6 +223,10 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
                     .filter(|&boots| boots >= 2)
                     .ok_or("--boots expects a number of at least 2")?;
             }
+            "--shard" if task == Task::Test => {
+                let text = rest.next().ok_or("--shard expects K/N, such as 1/3")?;
+                options.shard = Some(parse_shard(text)?);
+            }
             "--model" => {
                 let model = rest.next().ok_or("--model expects a model name")?;
                 if model.is_empty() || model.chars().any(char::is_whitespace) {
@@ -244,6 +252,20 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
         return Err("icount boots with no network card, so --llm and --model are refused".into());
     }
     Ok(options)
+}
+
+/// `K/N` with 1 <= K <= N.
+fn parse_shard(text: &str) -> Result<(usize, usize), String> {
+    text.split_once('/')
+        .and_then(|(k, n)| Some((k.parse::<usize>().ok()?, n.parse::<usize>().ok()?)))
+        .filter(|&(k, n)| k >= 1 && k <= n)
+        .ok_or_else(|| format!("--shard expects K/N with 1 <= K <= N, got {text:?}"))
+}
+
+/// Whether test case `index` (from 0) boots in `shard`: the cases are dealt out
+/// in turn, so each is in exactly one of the N shards, and all are without one.
+pub fn in_shard(shard: Option<(usize, usize)>, index: usize) -> bool {
+    shard.is_none_or(|(k, n)| index % n == k - 1)
 }
 
 /// A memory size in MiB: `2048`, `2048M` or `6G` (any case).
@@ -313,6 +335,24 @@ mod tests {
         assert!(parse_args(&args(&["run", "--workload", "C"])).is_err());
         assert!(parse_args(&args(&["run", "--seed", "4"])).is_err());
         assert!(parse_args(&args(&["test", "--workload", "A"])).is_err());
+    }
+
+    #[test]
+    fn shards_split_the_cases_exactly_once() {
+        let options = parse_args(&args(&["test", "--shard", "2/3"])).unwrap();
+        assert_eq!(options.shard, Some((2, 3)));
+        for bad in ["0/3", "4/3", "3", "a/b", "1/0"] {
+            assert!(
+                parse_args(&args(&["test", "--shard", bad])).is_err(),
+                "{bad}"
+            );
+        }
+        assert!(parse_args(&args(&["run", "--shard", "1/2"])).is_err());
+        for index in 0..40 {
+            let hits = (1..=3).filter(|&k| in_shard(Some((k, 3)), index)).count();
+            assert_eq!(hits, 1);
+            assert!(in_shard(None, index));
+        }
     }
 
     #[test]

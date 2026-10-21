@@ -11,6 +11,11 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
 
+# A new push to a pull request cancels that PR's older run; runs on main all finish.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   lint-and-unit:
     name: Format, lint, host unit tests
@@ -36,13 +41,16 @@ jobs:
         run: for bug in bug-import bug-health bug-trap bug-spin; do cargo clippy -p comp-notes-bad --target wasm32-unknown-unknown --features $bug -- -D warnings; done
       - run: cargo test -p xtask -p gguf -p cpufeat -p quant -p bpe -p infer -p linetable -p mm -p nvme -p acpitables -p sched -p llmproto -p kabi -p supervise -p uelf -p shellcore -p livecore -p editcore -p termcore -p wasmhost -p compsdk -p comp-notes -p comp-notes-v1 -p comp-notes-bad --features linetable/alloc
 
+  # Every case boots under both KVM and TCG; `--shard K/3` deals the cases out in
+  # turn across three runners per accelerator, and shard 1 also runs the host smokes.
   boot:
-    name: Boot test (${{ matrix.accel }})
+    name: Boot test (${{ matrix.accel }}, shard ${{ matrix.shard }}/3)
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
         accel: [kvm, tcg]
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v4
       - name: Install QEMU and OVMF
@@ -64,9 +72,12 @@ jobs:
       - name: Install the WebAssembly target for live components
         run: rustup target add wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: qemu
+          save-if: ${{ matrix.accel == 'kvm' && matrix.shard == 1 }}
       - name: Boot kernel with spikes and check pass/fail
-        run: cargo xtask test --accel ${{ matrix.accel }} --timeout 300
-    timeout-minutes: 30
+        run: cargo xtask test --accel ${{ matrix.accel }} --timeout 300 --shard ${{ matrix.shard }}/3
+    timeout-minutes: 20
 
   # M10a-2's spike, not a gate: boots `icount-probe` twice under single-threaded
   # TCG with icount and requires the same digest; it also prints host seconds per
@@ -86,6 +97,9 @@ jobs:
       - name: Install the WebAssembly target for live components
         run: rustup target add wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: qemu
+          save-if: false
       - name: Boot icount-probe twice and compare digests
         run: cargo xtask icount --shift 3 --boots 2 --timeout 900
     timeout-minutes: 45
@@ -111,6 +125,9 @@ jobs:
       - name: Install the WebAssembly target for live components
         run: rustup target add wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: qemu
+          save-if: false
       - name: Boot observe twice and compare summaries
         run: |
           set -o pipefail
