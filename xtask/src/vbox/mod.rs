@@ -6,11 +6,16 @@
 //! (`D:\kai-vbox-<name>`), so a test VM leaves "Kernel AI" alone.
 //!
 //! The VM is a modern PC: EFI, the ICH9 chipset (PCIe, so MCFG), HPET, IOAPIC,
-//! xAPIC, PS/2 keyboard and mouse, a virtio-net card on NAT, and one NVMe
-//! controller with the OS disk (the image as a VDI) on port 0 and the model on
-//! port 1. The model is read in place through a VMDK descriptor (`vmdk.rs`), never
-//! copied. The vm(), its disks and the serial log live in `KAI_VBOX_DIR`
+//! xAPIC, a USB keyboard and tablet on an xHCI controller (PS/2 stays as the
+//! fallback until the kernel configures them), a virtio-net card on NAT, and
+//! one NVMe controller with the OS disk (the image as a VDI) on port 0 and the
+//! model on port 1. The model is read in place through a VMDK descriptor
+//! (`vmdk.rs`), never copied. The vm(), its disks and the serial log live in `KAI_VBOX_DIR`
 //! (`D:\kai-vbox` by default). The model runs inside the VM only.
+//!
+//! The tablet ends VirtualBox's mouse capture: the pointer moves in and out of
+//! the window without Right Ctrl. Since VirtualBox 7.0.0 the xHCI controller is
+//! in the base package, so it needs no Oracle Extension Pack.
 
 pub mod doctor;
 pub mod manage;
@@ -328,11 +333,11 @@ fn modify(dir: &Path, memory: u64) -> Result<(), String> {
         "modifyvm", vm(),
         "--firmware", "efi", "--chipset", "ich9", "--hpet", "on", "--ioapic", "on",
         "--x2apic", "off", "--apic", "on", "--cpus", &cpus, "--memory", &memory, "--vram", "16",
-        "--graphicscontroller", "vmsvga", "--mouse", "ps2", "--keyboard", "ps2",
+        "--graphicscontroller", "vmsvga", "--mouse", "usbtablet", "--keyboard", "usb",
         "--nic1", "nat", "--nictype1", "virtio", "--nat-localhostreachable1", "on",
         "--uart1", "0x3F8", "4", "--uartmode1", "file", path_str(&serial)?,
         "--boot1", "disk", "--boot2", "none", "--boot3", "none", "--boot4", "none",
-        "--audio-enabled", "off", "--usbohci", "off", "--usbehci", "off", "--usbxhci", "off",
+        "--audio-enabled", "off", "--usbohci", "off", "--usbehci", "off", "--usbxhci", "on",
         "--paravirtprovider", "minimal", "--rtcuseutc", "on",
     ];
     step(&args).map(|_| ())

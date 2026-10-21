@@ -242,6 +242,8 @@ fn execute(options: &Options) -> Result<(), String> {
         }
         args.push("-monitor".into());
         args.push(format!("tcp:127.0.0.1:{monitor},server=on,wait=off"));
+        let (input, qmp) = qemu::input_args(case)?;
+        args.extend(input);
         let args = wsl::wrap(wsl.as_ref(), args)?;
         let run = qemu::TestRun {
             case,
@@ -250,6 +252,7 @@ fn execute(options: &Options) -> Result<(), String> {
                 .min_timeout
                 .map_or(options.timeout, |least| least.max(options.timeout)),
             monitor,
+            qmp,
             exact: disk
                 .as_ref()
                 .map_or_else(Vec::new, disk::ModelDisk::exact_lines),

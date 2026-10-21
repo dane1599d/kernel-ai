@@ -58,6 +58,7 @@ pub fn main(args: &[String]) -> Result<(), String> {
         accel: booter.accel,
         timeout: booter.options.timeout.max(LEAST),
         monitor,
+        qmp: None,
         exact: Vec::new(),
         contains: Vec::new(),
     };

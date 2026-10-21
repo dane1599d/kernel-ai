@@ -490,6 +490,7 @@ dependencies = [
  "uelf",
  "virtio-drivers",
  "x86_64",
+ "xhci",
  "zerocopy",
 ]
 
@@ -1263,6 +1264,10 @@ dependencies = [
  "rustversion",
  "volatile",
 ]
+
+[[package]]
+name = "xhci"
+version = "0.0.0"
 
 [[package]]
 name = "xtask"

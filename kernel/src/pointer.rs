@@ -2,6 +2,9 @@
 //! `termcore::mouse`; the pointer starts at the top-left corner, stays on the
 //! framebuffer, and sits over the console cell its pixel falls in. With
 //! `pointerlog` on the command line each move and button press is logged.
+//!
+//! Every pointing device, PS/2 or USB, also queues its reports as [`Event`]s,
+//! which `:mouse` and the USB self-test read.
 
 use crate::{console, hpet, i8042, keyboard, log};
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -71,6 +74,16 @@ pub fn on_byte(byte: u8, ctrl: bool) {
         }
     }
     pointer.buttons = packet.buttons;
+    drop(pointer);
+    let held = |button, bit| if packet.buttons.held(button) { bit } else { 0 };
+    push(Event {
+        source: Source::Ps2,
+        motion: Motion::Relative {
+            dx: i32::from(packet.dx),
+            dy: -i32::from(packet.dy),
+        },
+        buttons: held(Button::Left, 1) | held(Button::Right, 2) | held(Button::Middle, 4),
+    });
 }
 
 /// M9d pointer spike: the harness moves the mouse right 38 and down 40 and clicks,
@@ -114,4 +127,139 @@ pub fn self_test() -> Result<(), &'static str> {
         return Err("pointer: Ctrl was not held for the second click alone");
     }
     Ok(())
+}
+
+/// Where a pointer event came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Source {
+    Ps2,
+    UsbMouse,
+    UsbTablet,
+}
+
+impl Source {
+    pub fn name(self) -> &'static str {
+        match self {
+            Source::Ps2 => "PS/2 mouse",
+            Source::UsbMouse => "USB mouse",
+            Source::UsbTablet => "USB tablet",
+        }
+    }
+}
+
+/// How the pointer moved: by a distance (screen-down positive), or to a
+/// position out of a device range.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Motion {
+    Relative {
+        dx: i32,
+        dy: i32,
+    },
+    Absolute {
+        x: u32,
+        y: u32,
+        x_max: u32,
+        y_max: u32,
+    },
+}
+
+/// One pointer report, from any pointing device.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Event {
+    pub source: Source,
+    pub motion: Motion,
+    /// Bit 0 left, bit 1 right, bit 2 middle.
+    pub buttons: u8,
+}
+
+/// Events kept for a reader; older ones are dropped first.
+const QUEUE: usize = 64;
+
+/// The event queue, and where the last event left the pointer in pixels.
+struct Queue {
+    events: [Option<Event>; QUEUE],
+    head: usize,
+    len: usize,
+    last: Option<Event>,
+    pixel: (u32, u32),
+}
+
+static EVENTS: Mutex<Queue> = Mutex::new(Queue {
+    events: [None; QUEUE],
+    head: 0,
+    len: 0,
+    last: None,
+    pixel: (0, 0),
+});
+
+/// Queues `event`. Safe from interrupt handlers: the lock is only ever held with
+/// interrupts off.
+pub fn push(event: Event) {
+    let (width, height) = console::pixels().unwrap_or((1, 1));
+    let (width, height) = (width.max(1) as u64, height.max(1) as u64);
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let mut queue = EVENTS.lock();
+        queue.pixel = match event.motion {
+            Motion::Absolute { x, y, x_max, y_max } => (
+                (u64::from(x) * width / (u64::from(x_max) + 1)) as u32,
+                (u64::from(y) * height / (u64::from(y_max) + 1)) as u32,
+            ),
+            Motion::Relative { dx, dy } => {
+                let step = |at: u32, by: i32, size: u64| {
+                    (i64::from(at) + i64::from(by)).clamp(0, size as i64 - 1) as u32
+                };
+                (
+                    step(queue.pixel.0, dx, width),
+                    step(queue.pixel.1, dy, height),
+                )
+            }
+        };
+        let at = (queue.head + queue.len) % QUEUE;
+        queue.events[at] = Some(event);
+        if queue.len == QUEUE {
+            queue.head = (queue.head + 1) % QUEUE;
+        } else {
+            queue.len += 1;
+        }
+        queue.last = Some(event);
+    });
+}
+
+/// The oldest queued event, if any.
+pub fn next_event() -> Option<Event> {
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let mut queue = EVENTS.lock();
+        if queue.len == 0 {
+            return None;
+        }
+        let head = queue.head;
+        queue.head = (head + 1) % QUEUE;
+        queue.len -= 1;
+        queue.events[head].take()
+    })
+}
+
+/// The `:mouse` command: the last pointer event and where it left the pointer.
+pub fn show() {
+    let (last, pixel) = x86_64::instructions::interrupts::without_interrupts(|| {
+        let queue = EVENTS.lock();
+        (queue.last, queue.pixel)
+    });
+    let Some(event) = last else {
+        log!("mouse: no pointer input yet");
+        return;
+    };
+    let motion = match event.motion {
+        Motion::Relative { dx, dy } => alloc::format!("moved {dx} {dy}"),
+        Motion::Absolute { x, y, x_max, y_max } => {
+            alloc::format!("at {x} {y} of {x_max} {y_max}")
+        }
+    };
+    log!(
+        "mouse: {} {motion}, buttons {:03b}; pointer at pixel {} {}",
+        event.source.name(),
+        event.buttons,
+        pixel.0,
+        pixel.1
+    );
 }

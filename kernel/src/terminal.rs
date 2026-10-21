@@ -66,6 +66,10 @@ const HELP: &[(&str, &str)] = &[
     (":ping <host|ip> [n]", "ICMP echo, n times (4 by default)"),
     (":ps", "running processes"),
     (":uptime", "time since the clock started"),
+    (
+        ":mouse",
+        "the last pointer report and where it left the pointer",
+    ),
     (":clear", "clear the screen"),
 ];
 
@@ -296,6 +300,7 @@ fn kernel_command(line: &str) -> Option<Waiting> {
         "ping" => crate::net_commands::ping(rest),
         "ps" => processes(),
         "uptime" => log!("{} s", hpet::nanos() / 1_000_000_000),
+        "mouse" => crate::pointer::show(),
         "clear" => serial::_print(format_args!("{FORM_FEED}")),
         other if crate::llm_commands::run(other, rest) => {}
         other if crate::live_commands::run(other, rest) => {}
