@@ -1,6 +1,6 @@
 # ADR 0000: Execution plan for P1-P8
 
-Proposed, 2026-10-21. For the founder's approval.
+Proposed, 2026-10-21. Updated 2026-10-22 with the founder's first answers (section 2.1).
 
 This is the order of work once the founder approves ADRs 0001-0012. It decides nothing that an ADR decides; it sequences them. Repo lines are cited on main at ec5ecff. Nothing was built, run or measured for this plan. Sizes marked "est." are estimates. The P0 decision sheet (2026-10-21) wins where it differs from a single ADR.
 
@@ -12,8 +12,9 @@ These need no new approval and come first, because every lane rebases on them.
 
 | Item | Action | Why first |
 |---|---|---|
-| #16 DHCP, DNS, ping (`origin/dane/net-dhcp-dns-b5bdb7`) | Merge with ADR 0001's change: call 37 gated on a new `cap::RESOLVE` bit, not `cap::NET` (a yes to that one item is enough) | Otherwise `llm` can carry data out in DNS names (0001, "Changes") |
-| #18 virtio-gpu 2D, #19 USB input over xHCI | Merge unchanged; no ADR asks for a change | S05-1 needs #18; S07-1 needs #19 |
+| #16 DHCP, DNS, ping (merged 2026-10-21) | Follow-up PR with ADR 0001's change: call 37 gated on a new `cap::RESOLVE` bit, not `cap::NET` (a yes to that one item is enough) | Otherwise `llm` can carry data out in DNS names (0001, "Changes") |
+| #18 virtio-gpu 2D, #19 USB input over xHCI (both merged) | No change; no ADR asks for one | S05-1 needs #18; S07-1 needs #19 |
+| #21 a quieter screen (open) | Merge as it is; its log-only channel and `:log` are where P1's action log shows first (0002) | Fewer conflicts in the shell's audit code for P1 |
 | Follow-up to #15 (seamless actions) | One PR of about 150 lines (est.): 0001's `fixed`/`floor` rows and audit words, 0002's compare-and-set undo and interim consent check, 0003's non-`'static` names in `of_script`, the new Ask wording | P1's registry inherits these; doing them now keeps P1 smaller |
 | Follow-up to #17 (Ember terminal) | `Kind::of` returns `Log` for rows starting with `[`; ring-3 pieces cut to fit `PIECE_CHARS`; busy sign painted at once (0001, 0002) | The ask tier rests on ring 3 never drawing a prompt |
 | Follow-up to #14 (decode speed) | Jump-forward in `infer/src/chat.rs` with a warm-against-fresh test (0002) | Largest latency lever for calls, and it helps today's envelope |
@@ -32,6 +33,8 @@ An ADR can be approved before its spike runs. Each ADR states its pass and fail 
 | 2, the system underneath | [0004](0004-storage.md), [0007](0007-drivers.md), [0008](0008-updates.md), [0011](0011-packages.md), the rest of [0009](0009-licence.md) (D1-D8, before any outside PR) | P2, and the driver and update lanes inside P1 | During P1 |
 | 3, the surface | [0005](0005-graphics.md) after S05-1's screendumps (question 1, the look); [0012](0012-terminal-compiler.md) after S12-1 | P3, P4's `c>` | Before P3 |
 | 4, existing software | [0006](0006-existing-software.md) after spike P0-06 (questions 1, 3, 4) | P6's full build | Before P6's hypervisor merges |
+
+**Answered 2026-10-22.** Batch 0's licence questions are answered, except whether copied permissive source files count as free (0009 question 4), so the four spikes in 2.3 can start. In batch 1, the founder answered 0002 questions 1, 4, 5 and 6 (an Allow / Deny menu with "always allow" rules; "Taken as" for vague requests; English-only consent; pasted text is the user's), 0010 question 1 (3,072 positions), 0011 question 1 (named installs run) and 0003 question 4 (a Wasm-first hybrid). The OS licence (0009 question 1) is deferred to before v0.1, with no outside contributions until then. Batch 1 still needs: approval of ADRs 0001, 0002, 0003 and 0010 as a whole, and 0002 questions 2 and 9 (named sites; moves and overwrites).
 
 Founder questions that do not block a phase stay open until their phase: for example 0004 question 4 (encryption, P8) and 0009 question 7 (a company, before v1.0).
 
@@ -57,7 +60,7 @@ Spikes are throwaway branches named `spike/*`, never merged. They add no product
 | S07-1 ring-3 driver | 0007 | GitHub Actions KVM and TCG | about 2 weeks (est.), after #19 merges | `usbd` in ring 3, or xHCI stays in the kernel |
 | S12-3 Grain gate | 0012 | Host tests and a KVM boot case | days (est.) | Rhai 1.27.0's Grain or AST by default |
 
-### 2.3 Spikes that wait for one licence answer (batch 0)
+### 2.3 Spikes that waited for one licence answer (batch 0, answered 2026-10-22)
 
 | Spike | ADR | Waits on | Where | Rough length |
 |---|---|---|---|---|

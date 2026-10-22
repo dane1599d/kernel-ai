@@ -1,6 +1,14 @@
 # ADR 0002: The agent action schema and autonomy tiers
 
-Proposed, 2026-10-21. For the founder's approval; nothing here is decided until approved.
+Proposed, 2026-10-21. The founder decided the points below on 2026-10-22; they are marked "decided 2026-10-22" where they appear. The rest of this ADR still waits for approval.
+
+**Decided by the founder, 2026-10-22:**
+- A no-undo action you plainly ask for asks once, with an Allow / Deny prompt and arrow-key choices to always allow that kind of action. "Always allow" becomes a standing rule you can list and remove (D2a).
+- A vague request runs the AI's best reading and says `Taken as: ... undo` (D3).
+- Pasted text counts as your own request once you press Enter (D3).
+- In v0.1, a request that is not in English always asks first (D3).
+- A package your own line names installs at once with undo. It asks only when it wants a new permission, and a package the AI picks always asks (D3, [ADR 0011](0011-packages.md)).
+- The context grows to 3,072 positions ([ADR 0010](0010-skill-pack.md)), and Rhai's `smartstring` (MPL-2.0) stays ([ADR 0009](0009-licence.md)).
 
 Repo citations are `path:line` on main at ec5ecff unless a branch is named. "Est." marks arithmetic from measured rates, not a measurement. "Unverified" marks what could not be read at the source.
 
@@ -11,7 +19,8 @@ The founder: "if i tell it to do something it should just do it." A request like
 What is on main today:
 
 - **The model writes a script.** It answers `{"script":"...","summary":"..."}` under a token mask (`llmproto/src/local.rs:26-50`, `infer/src/json.rs`). Scripts call seven functions in `llmproto::script::API` (`llmproto/src/script.rs:51-94`), each marked only `Read` or `Change` (`:36-39`), with no typed arguments, tier or undo.
-- **Seamless actions (#15, merged).** `shellcore::tiers::TIERS` puts all seven at `Run` (`shellcore/src/tiers.rs:35-44`); an unlisted function asks (`:47-52`); a script takes its strictest function's tier (`:55-67`). A run-tier script runs at once and replies `` Done: policy round-robin (was interactive) (undo: `undo`) `` (`shellcore/src/actions.rs:128-139`). `undo` is one slot deep (`:31-34`, `:111-118`), and `revert` reinstalls the old policy without checking that nothing changed since (`shellcore/src/undo.rs:48-55`).
+- **Seamless actions (#15, merged).** It already has the run/ask/never tier table that this ADR formalises. `shellcore::tiers::TIERS` puts all seven at `Run` (`shellcore/src/tiers.rs:35-44`); an unlisted function asks (`:47-52`); a script takes its strictest function's tier (`:55-67`). A run-tier script runs at once and replies `` Done: policy round-robin (was interactive) (undo: `undo`) `` (`shellcore/src/actions.rs:128-139`). `undo` is one slot deep (`:31-34`, `:111-118`), and `revert` reinstalls the old policy without checking that nothing changed since (`shellcore/src/undo.rs:48-55`).
+- **A quieter screen (#21, open, branch `dane/quiet-screen`).** It moves the shell's audit trail to a log-only channel. `WRITE` gains a `WRITE_LOG_ONLY` flag, the kernel keeps a 64-line log book (`kernel/src/logbook.rs` on that branch), and `:log [n]` shows the latest lines. The screen then shows only the request and its result. Word answers may run to 300 characters (`REPLY_MAX_CHARS`). D7's `actlog 1` is the durable successor of that channel: `:log` keeps showing system lines, and P1 adds the action entries.
 - **Gaps.** Nothing in code notices a change the model adds to a read: the fluency judge checks it for read tasks only (`xtask/src/fluency/judge.rs:61-65`). `names_in` counts names inside comments and strings (`shellcore/src/script.rs:197-211`). Two `policy_name` functions disagree (`shellcore/src/script.rs:51-57`, `shellcore/src/commands.rs:107-115`). There are three undo stores: `tune undo` (`shellcore/src/tune.rs:68`), the script slot, and `:revert` with 6 versions (`kabi/src/live.rs:211`). Logs live in memory and are lost when the shell restarts (`shellcore/src/log.rs:9`).
 - **Who can act.** The shell answers only caller 0, the kernel terminal (`user/src/bin/shell.rs:142-147`). The `llm` process holds no POLICY or CALL bit (`kernel/src/llm.rs:74-80`). The model never sees what a script reads. Each request is one shot: plan first, then run.
 - **Decoder and context.** Fields are strings or choices of at most 64 words (`infer/src/json.rs:20-25`, `:64`) in one fixed order. Every decoded token, forced bytes included, costs one `forward` step (`infer/src/chat.rs:325-375`, `:373`); only prompts use `forward_batch` (`:402`). The context is 2,048 positions (`kabi/src/model.rs:65`); [ADR 0010](0010-skill-pack.md) raises it to 3,072 from P1.
@@ -119,21 +128,46 @@ pub enum Inverse { Read, Restore, Compensate(&'static str), Snapshot, Trash, Hol
 | Inverse `None`, or an open-world change with a `Payload` (data going out) | Ask |
 | A `never` value, `min_tier = Never`, a name outside the registry | Never (refused; the model is told once) |
 
-`min_tier` only raises. Nobody writes a tier by hand, so a new row cannot be run-tier without an inverse, and every run-tier row needs a test that its undo restores. Today's never-tier precedents become rows: `PROTECTED` targets (`shellcore/src/tune.rs:39`, `kernel/src/sched_control.rs:30`) and changes to the registry, tiers, log, snapshots or grants. Typed lines are the user's own: a typed call goes through the same door with consent `typed`, so it is logged and undoable, and never asks (typing is consent, as `:revert` already treats it, `kernel/src/edit_mode.rs:187`); never-tier rows still refuse.
+`min_tier` only raises. Nobody writes a tier by hand, so a new row cannot be run-tier without an inverse, and every run-tier row needs a test that its undo restores. Today's never-tier precedents become rows: `PROTECTED` targets (`shellcore/src/tune.rs:39`, `kernel/src/sched_control.rs:30`) and changes to the registry, tiers, log, snapshots or grants (removing a standing rule, which only narrows, is the exception; D2a). Typed lines are the user's own: a typed call goes through the same door with consent `typed`, so it is logged and undoable, and never asks (typing is consent, as `:revert` already treats it, `kernel/src/edit_mode.rs:187`); never-tier rows still refuse.
 
-An ask-tier call gets a `ONCE` handle from ADR 0001, minted by the trusted path on the user's `y`, with a badge digest over the entry id, the action name and the arguments exactly as the question showed them. A never-tier call gets no handle.
+An ask-tier call gets a `ONCE` handle from ADR 0001, minted by the trusted path on the user's Allow, with a badge digest over the entry id, the action name and the arguments exactly as the question showed them. A never-tier call gets no handle.
+
+### D2a. The ask prompt and standing rules (decided 2026-10-22)
+
+The founder: "ask once, but have a thing like claude does where it just pops up with an allow or deny, and or furhter arrow options to always allow".
+
+- **The prompt is a short menu**, drawn by the trusted path: the kernel terminal until P3, then the compositor's system layer ([ADR 0005](0005-graphics.md)), so no app or model output can draw one.
+
+  ```
+  Stop process "build-3"? It has no undo.
+  > Allow
+    Deny
+    Always allow stopping processes
+    Always allow stopping "build-3"
+  ```
+
+  Arrow keys move and Enter chooses. `y` and `n` still mean Allow and Deny, and Esc or Ctrl-C means Deny. Keys typed before the menu appeared are dropped, as `discard_pending` does today. The highlight starts on Allow for a call you plainly asked for, and on Deny for one the AI added or that data steered.
+- **Allow** mints the `ONCE` handle above. **Deny** logs the entry as `state=denied` and tells the model once.
+- **"Always allow" writes a standing rule.** The rule is a grant record in `kai-grants 1` ([ADR 0001](0001-capabilities.md)) with origin `user`. It holds the action name (the kind) and, when the row has a `Target` argument, an optional target: a service or process name, a path prefix under `/home`, or a host. Only the trusted path writes a rule, on your keystroke. The model, and anything it reads, cannot create, widen or extend one, because no row does that: grant changes are Never-tier (D2). The one rule row, `rules_remove`, only narrows.
+- **What a rule can waive.** A rule waives only the ask that comes from the row itself: no undo, or a fetch from a grounded host. It never waives an ask caused by the AI adding an action you did not ask for (D3), by `Data` steering the call (D6), or by a never value. So text injected into a page or file cannot use your rules. A call that sends data out (P-F) can be ruled only per destination. When a rule cannot waive the ask, the menu shows only Allow and Deny.
+- **Listing and removing.** `rules` lists them (a read row, run tier). `rules_remove <n>` removes one (run tier; `undo` puts it back). Both can be typed or asked of the AI, and from P4 the Settings app shows the rules beside each app's grants. Removing a rule revokes its grant node at once (ADR 0001). Rules live in memory in P1 and on disk in `/system/grants` from P2.
+- **Every use is logged.** The log entry records `consent=rule:<id>`, so you can see what ran under which rule.
 
 ### D3. Consent: the user's line is the permission
 
 The rule is Anthropic's for Claude Code's auto mode: "The prompt establishes what is authorized; everything the agent chooses on its own is unauthorized until the user says otherwise." It is code with unit tests per row, not a model.
 
 - A read-only, closed-world call is always consented.
+- **The user's line** is what was typed or pasted at the prompt when Enter was pressed. Pasted text counts as the user's own words (decided 2026-10-22). Text the AI reads afterwards (files, pages, app content, the State line) stays `Data` (D6).
+- **English only in v0.1 (decided 2026-10-22).** The cues and the word folding are English. A line that is not English gets no consent for changes: every change in it asks first, with the reading shown. "Not English" means a line written in a non-Latin script, or one where most words are not in the shipped English word list. Reads still run.
 - A change call is **asked for** only when (a) one of its `cues` starts a word of the user's line, not within three words after `don't`, `not`, `never` or `no`; and (b) every `from_request` argument is literal in the line after folding case, spaces and hyphens ("round robin" is `round-robin`), or is a declared alias, or is one of ADR 0010's symbols `focused`, `selected`, `here` when the line says "this", "it", "here" or "selected" (the OS resolves those from system state, labelled System).
 - A `Host` is **grounded** only if the user typed it, or it is the entry for a request word in a curated host table shipped with the registry ("youtube" to `www.youtube.com`), or the user said yes to it before (a grant record under ADR 0001). A label match is not enough: `youtube.xyz` and `youtube.ru` would pass it.
 - A host on the OS's own source list is also grounded, when the bytes fetched from it are checked against signed metadata before use: the TUF repository `dane1599d/kernel-ai-updates` and its Pages host (ADR 0008), the pinned Hugging Face revision for models, and the Debian mirrors for ADR 0006's layer (apt's signed release files). The user's line need not name it. So ADR 0008's `model_fetch` derives Run (undo deletes the new blob), with `min_tier = Ask` only if 0008's question 3 says large background downloads ask; ADR 0006's `linux_upgrade` and ADR 0011's `pkg_install` and `pkg_upgrade` (P5) are grounded the same way.
 - Anything else is **added**, and it asks, whatever else the plan contains: `You asked for X. It also wants to set the policy to round-robin. Do that too? y/n, or show`.
 - `clarify` asks the model's question; the reply is appended to the original line and the plan is redone, since both are the user's words.
-- Plainly asked and undoable: runs at once. Plainly asked with no undo: asks once (question 1). An indirect request ("make it snappier") has no cue, so it asks until question 4 says otherwise. A package the user's own line names installs without asking when no new grant choice is needed (generation undo); this departs from the brief's "ask" and is ADR 0011's question.
+- Plainly asked and undoable: runs at once. Plainly asked with no undo: asks once with D2a's menu, unless a standing rule covers it (decided 2026-10-22).
+- **Vague requests (decided 2026-10-22).** A line with no cue for the call ("make it snappier") runs the model's best reading when that reading is one undoable, closed-world call with no `Data` argument. The result line says what was taken: `Taken as: set the policy to interactive (was classes/firm). undo`. A reading with no undo, an open-world call, or more than one change asks instead, showing the same "Taken as" text. A request the model cannot read gets `clarify`. The limits mean the worst a misreading can do, even one steered by a State value, is an undoable local change named in the result line.
+- **Installs (decided 2026-10-22).** A package the user's own line names installs at once, with generation undo. It asks only when the package wants a new permission. A package the AI picks always asks ([ADR 0011](0011-packages.md)).
 
 ### D4. What the model emits: one tagged call
 
@@ -253,7 +287,7 @@ Thresholds are relative or token-based on purpose: on the same runner a one-sent
 
 | Phase | What it needs from this ADR |
 |---|---|
-| P1 agent core | All of D1-D8: `agentabi`, consent, tagged decoder and jump-forward, prompt from the registry (with ADR 0010), `scriptrun` and handles (ADR 0001), in-memory log and undo, `Data` with `note_read`. Rows: the seven M8 functions, `tune`, service start/stop/restart, component apply and revert, editor open at a line, process stop (ask), `system_about` ([ADR 0009](0009-licence.md)), `device_list`, `device_restart`, `device_disable`, `device_enable`, `power_reboot`, `power_off` ([ADR 0007](0007-drivers.md) §11), `update_check`, `update_status`, `update_stage`, `update_restart`, `system_slots`, `system_rollback`, `model_use`, `model_fetch` (ADR 0008 §11), `pkg_*` rows (ADR 0011). Boot cases `act-plain`, `act-run`, `act-ask`, `act-undo`, `act-rollback`, `act-inject`, `act-never` with mock answers keyed by request; the action gate (S02-1) on a runner. |
+| P1 agent core | All of D1-D8: `agentabi`, consent, tagged decoder and jump-forward, prompt from the registry (with ADR 0010), `scriptrun` and handles (ADR 0001), in-memory log and undo, `Data` with `note_read`. Rows: the seven M8 functions, `tune`, service start/stop/restart, component apply and revert, editor open at a line, process stop (ask), `system_about` ([ADR 0009](0009-licence.md)), `device_list`, `device_restart`, `device_disable`, `device_enable`, `power_reboot`, `power_off` ([ADR 0007](0007-drivers.md) §11), `update_check`, `update_status`, `update_stage`, `update_restart`, `system_slots`, `system_rollback`, `model_use`, `model_fetch` (ADR 0008 §11), `pkg_*` rows (ADR 0011). Boot cases `act-plain`, `act-run`, `act-ask`, `act-undo`, `act-rollback`, `act-inject`, `act-never` with mock answers keyed by request, plus `act-rule` (an always-allow rule waives a no-undo ask; `rules_remove` brings the ask back; an injected or added call still asks under the rule) and `act-vague` (a vague line runs with `Taken as`; a non-English line asks); the action gate (S02-1) on a runner. |
 | P2 files and storage | `Snapshot` and `Trash` inverses through ADR 0004 transactions; `/system/log` on disk; file rows. |
 | P3 desktop | `ui_windows`, `ui_view`, `ui_open`, `ui_focus`, `ui_act`, `window_close`, `appearance_set` (ADR 0005; `window_close` is one row for native and Linux windows, shared with ADR 0006); unbound UI nodes ask; the panel shows the result line, an Undo button and inline answers from `Outcome`. |
 | P4 built-in apps | Rows from each app's `kai-actions 1` (ADR 0003) as `<app>_<function>`; app groups within 768 tokens; per-app action tests driven by the agent. |
@@ -268,29 +302,30 @@ Thresholds are relative or token-based on purpose: on the same runner a one-sent
   - `shellcore/src/undo.rs:13-18`, `:48-55`: `Inverse::Spec` also records the spec after the change (still `Copy`). `revert` reads the current spec (`current_spec`, `:34-40`) and returns "moved" if it differs, and `shellcore/src/actions.rs:221-243` then asks `The policy changed since (now X); put Y back anyway? y/n`. A `Busy` is retried once after 100 ms through `Host::sleep_ms` (`shellcore/src/lib.rs:78`). Why: today `undo` silently overwrites a typed `policy` switch, and P1 would inherit it.
   - `shellcore/src/actions.rs:52-96`: an interim consent check for `set_policy`: it asks unless the request contains `polic`, `schedul`, `round robin`, `round-robin` or `interactive`. Why: today a read request whose script also switches the policy runs at once, which breaks "ask only for what the model adds".
   - `shellcore/src/tiers.rs:16`: `Ask` reads "Runs only after a yes: it has no undo, the model added it, or it brings new code or grants". ADR 0011 lists the same rewording, ADR 0001 adds `fixed` and `floor` rows to the table, and ADR 0003 changes `of_script` (`:55`) to take names that are not `'static`; all can share this PR.
-  - Keep `Tier`, strictest wins, `show`/`why`, bare `y`/`n` and the `run script N? y/n> ` string xtask parses (`kernel/src/terminal.rs:87`, `xtask/src/qemu.rs:353-357`); P1 reuses it with N the log entry id.
+  - Keep `Tier`, strictest wins, `show`/`why`, bare `y`/`n` and the `run script N? y/n> ` string xtask parses (`kernel/src/terminal.rs:87`, `xtask/src/qemu.rs:353-357`); P1 reuses it with N the log entry id. D2a's menu replaces the bare `y/n` in P1 but keeps `y` and `n` as keys, so xtask's boot cases keep typing them.
   - Docs: mark `docs/decisions.md:82` superseded by :203 and :205; fix the stale "runs it only after a yes" in `llmproto/src/local.rs:11-12`, `docs/roadmap.md:84` and `:112`.
   - P1 then replaces `TIERS` with derived tiers and the one-deep `Undoable` with the log.
 - **#14 faster decode (merged).** A follow-up PR adds jump-forward in `infer/src/chat.rs:325-375`, feeding grammar-forced runs through the `forward_batch` path (`:402`), with a warm-against-fresh equivalence test, and logs decoded and forced token counts per answer. Why: it is the largest latency lever for calls and already helps today's envelope.
 - **#17 terminal look (merged).** A follow-up PR makes `console::status::set_busy(true)` (`kernel/src/console/status.rs:41-47`) paint the busy sign at once or wake the status thread. Why: the thread looks every `TICK_MS` = 125 ms (`:21`), so the sign can appear up to 125 ms after Enter (`kernel/src/terminal.rs:180`), over the 100 ms budget (not measured). P1 changes the result line to `Done: X (was Y). undo`, still a `= ` reply row for `termcore/src/style.rs:18`. Questions stay at most two lines so `fits_on_screen` (`kernel/src/terminal.rs:235-239`) holds at the new font size.
 - **#13 parser hardening (merged).** Each P1 PR that adds a parser adds its hostile tests with `testkit/hostile.rs`: the call reader, the tagged decoder's state machine, the AST analyser (fuzz property: every live call is in the static set) and the `actlog` reader.
-- **#16 DHCP and DNS (open, `origin/dane/net-dhcp-dns-b5bdb7`).** No change. `:resolve` and `:ping` stay typed kernel commands; typing is consent. In P5 they become open-world read rows.
-- **#18 virtio-gpu (open, `origin/dane/virtio-gpu-a5daaa`).** No change.
-- **#19 USB input (open, `origin/dane/usb-input-83eb7c`).** No change: USB keys become PS/2 set 1 scancodes in the i8042 ring (`kernel/src/usb.rs:3-4` on the branch), so they pass the same `Decoder`, and `discard_pending` (`kernel/src/terminal.rs:109`) still drops a typed-ahead `y`. When xHCI moves to a ring-3 `usbd` ([ADR 0007](0007-drivers.md)), keys must still reach the terminal through that one decoder.
+- **#21 a quieter screen (open, `dane/quiet-screen`).** No change; merge it as it is. Its log-only `WRITE` flag and `:log` are where P1's action entries show first. When `actlog 1` lands, `:log` reads both the kernel's log book and the action log, so there is one place to look.
+- **#16 DHCP and DNS (merged).** No change here. `:resolve` and `:ping` stay typed kernel commands; typing is consent. In P5 they become open-world read rows. (ADR 0001 asks for RESOLVE's own capability bit in a follow-up.)
+- **#18 virtio-gpu (merged).** No change.
+- **#19 USB input (merged).** No change: USB keys become PS/2 set 1 scancodes in the i8042 ring (`kernel/src/usb.rs:3-4` on the branch), so they pass the same `Decoder`, and `discard_pending` (`kernel/src/terminal.rs:109`) still drops a typed-ahead `y`. When xHCI moves to a ring-3 `usbd` ([ADR 0007](0007-drivers.md)), keys must still reach the terminal through that one decoder.
 - **PR #10 (merged).** Its 50-task gate stays as the `script` regression gate; S02-1's action gate runs beside it.
 
 ## Open questions for the founder
 
-1. When you plainly ask for something with no undo (stop a program, restart a service, later "empty the trash"), should it still ask once? The roadmap says yes (roadmap.md:130, :140); your words "if i tell it to do something it should just do it" read as no. This ADR asks until you decide.
+1. **Decided 2026-10-22:** a plainly asked action with no undo asks once, with an Allow / Deny menu and "always allow" choices that become standing rules (D2a).
 2. Network: roadmap.md:144 puts network actions in the ask tier. Proposal: opening or fetching a site you named runs; anything that sends your data out, or goes to a site you did not name, asks. "Named" means a host you typed, one from a shipped table of well-known names, or one you said yes to before. The OS's own signed sources (updates, models, packages, the Linux layer's mirrors) count as named (D3). Approve the change?
 3. Sending messages: always ask before sending, or send after a short hold (for example 10 s) with `undo`, like Gmail's undo-send?
-4. Indirect requests ("make it snappier"): run the AI's reading with "taken as ... undo", or ask first? This ADR asks until you decide.
-5. In v0.1 the "did you ask for it" check reads English only, so requests in other languages always ask. Acceptable for v0.1?
-6. Text you paste into the prompt counts as your own request. Acceptable?
+4. **Decided 2026-10-22:** a vague request runs the AI's best reading and says `Taken as: ... undo` (D3).
+5. **Decided 2026-10-22:** in v0.1, requests that are not in English always ask first (D3).
+6. **Decided 2026-10-22:** pasted text counts as your own request once you press Enter (D3).
 7. Is running existing MCP tools (from Linux software or other vendors) a product goal for v0.2? It decides how much of the bridge in D9 to build.
 8. The action log stores your requests on disk from P2. How long should it keep them, and should there be a `forget` command?
 9. Moves and overwrites you plainly ask for would run at once with undo; roadmap.md:141 says they ask. Approve the change?
-10. Rhai stays the script language, so its required `smartstring` 1.0.1 dependency (MPL-2.0+; unmaintained per RUSTSEC-2026-0249, 2026-05-03) stays. Rhai 1.27.0, released 2026-10-21, still lists `smartstring ^1.0.0` as required; `compact_str` is only an optional feature (crates.io, read 2026-10-21), so upgrading does not remove it. Is MPL-2.0 acceptable for this one dependency? ADR 0009's question 3 asks the same; one answer covers both.
+10. **Decided 2026-10-22:** Rhai's required `smartstring` 1.0.1 dependency (MPL-2.0+; unmaintained per RUSTSEC-2026-0249, 2026-05-03) stays. Rhai 1.27.0 still requires it (`compact_str` is only an optional feature), so the upgrade does not remove it.
 
 No permissive crate needs approval here. The Rhai 1.27.0 step brings rhai_codegen 3.3.0 (MIT OR Apache-2.0); ADR 0012's PR lists both. If S02-1 or P5 adds one (rmcp 3.6.0 is Apache-2.0), the PR lists it with its licence.
 

@@ -1,6 +1,6 @@
 # ADR 0007: The driver model
 
-Proposed, 2026-10-21. For the founder's approval; nothing here is decided until approved.
+Proposed, 2026-10-21. The founder allowed C code in the kernel build on 2026-10-22 (question 1). The rest waits for approval.
 
 Design only. Nothing was built, run or measured for this ADR, and no model ran anywhere. Repo facts are `path:line` on main at ec5ecff unless a branch is named; open PRs were read with `git show` at #16 131aa77, #18 af7635d and #19 0717caa. Licences marked "checked" were read at the source on 2026-10-21 by this topic's research and judge; uACPI, ACPICA, `acpi`, `pci_types`, virtio-drivers, FreeBSD's AMD IOMMU and igc, OpenBSD rge and its microcode, and NVIDIA's COPYING were checked again for this ADR the same day. Shared names and owners follow the P0 decision sheet: `Shm` and handles are [ADR 0001](0001-capabilities.md)'s, action names and tiers are [ADR 0002](0002-agent-actions.md)'s, licence classes are [ADR 0009](0009-licence.md)'s.
 
@@ -320,7 +320,7 @@ Sequencing: the PCI PR starts only after #18 and #19 merge, since all three rewr
 
 ## Open questions for the founder
 
-1. **C in the kernel.** May Kernel AI include uACPI (MIT, about 35,000 lines of C, count unverified) in the kernel, and need clang to build (on Windows that means installing LLVM)? Without it, power-off, the power button and sleep do not work on real PCs; reboot still does. ACPICA (BSD-3-Clause) is also C. This is ADR 0009's question 4 applied to drivers.
+1. **Decided 2026-10-22:** C code in the build is allowed, so uACPI (MIT) goes into the kernel, built with clang, after spike S07-3. On Windows that means installing LLVM.
 2. **Ported files and firmware blobs.** May drivers port permissive source files: FreeBSD's AMD IOMMU (BSD-2-Clause) and igc (BSD-2-Clause and BSD-3-Clause), OpenBSD's rge (ISC), Redox code (MIT)? This half is ADR 0009's question 4. May the image ship non-open, redistributable firmware: Realtek's RTL8125 microcode (distribution only) and, after v1.0, NVIDIA's GSP firmware? Without the microcode there is no 2.5 GbE wired network on many AM5 boards.
 3. **Your hardware.** Please send your board's model and the output of `Get-PnpDevice -PresentOnly | Where-Object InstanceId -like 'PCI*' | Select-Object FriendlyName, InstanceId` in PowerShell. It only reads IDs; nothing of Kernel AI runs. Can the firmware's IOMMU (AMD-Vi) stay on? With `iommu=require`, ring-3 drivers do not start without it.
 4. **Graphics.** Is a GOP-only display on the RTX 4070 Ti through v1.0 acceptable: one fixed mode, no refresh-rate or multi-monitor control? Or would you plug the monitor into the board's own output (the 7700X's integrated GPU) for Kernel AI? ADR 0005's question on CPU-only graphics is the same choice.

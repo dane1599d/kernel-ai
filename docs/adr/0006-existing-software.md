@@ -1,6 +1,6 @@
 # ADR 0006: Running existing software: the browser path
 
-Proposed, 2026-10-21. For the founder's approval; nothing here is decided until approved.
+Proposed, 2026-10-21. The founder settled the build-tool licences on 2026-10-22 (question 2). The route waits for its spike and approval.
 
 Repo citations are `path:line` on main at ec5ecff unless a branch is named. External facts were read or rechecked on 2026-10-21 by the topic's research, design and judge passes, or by this ADR's author; anything not rechecked says "unverified". Nothing was built, run or spiked for this ADR, and no model ran anywhere. Effort figures are the designs' estimates.
 
@@ -243,7 +243,7 @@ Decision rule: choose C if S06-1 to S06-3 pass and the founder answers questions
 ## Open questions for the founder
 
 1. **Licence.** The guest carries a GPL-2.0 kernel, GPL apt and dpkg, LGPL glibc and Firefox's mixed licences. Should Kernel AI ship the guest image, with its source-offer duties, or should each PC assemble it from Debian's own mirrors at first use? ADR 0011's question 2 and ADR 0009's question 8 ask the same; one answer covers all three. The OS itself stays free of GPL and LGPL either way. This is not legal advice.
-2. **Licence: tools and C.** Allow mmdebstrap (MIT) and `mke2fs` (GPL-2), non-crate tools that run only in CI, to build the image, and musl (MIT, C) linked into `kai-guest`, which ships in the image? ADR 0009's question 4 asks the general rule; one answer covers both.
+2. **Decided 2026-10-22:** mmdebstrap (MIT) and `mke2fs` (GPL-2) may run in CI to build the image and never ship; musl (MIT, C) may be linked into `kai-guest`, since C code in the build is allowed.
 3. **Product.** Does "a static Linux binary runs" mean natively on Kernel AI, or is running inside the bundled guest enough?
 4. **Risk.** The in-VM browser is fast only where nested virtualisation works: likely CI under KVM, not VirtualBox on Hyper-V, and on your PC only on real hardware (P7). Is that acceptable for v0.2, or must v0.2 play video in your VirtualBox? If it must, fallback A costs about 20 PM against C's 7-15.
 5. **Product.** Is Firefox ESR acceptable as "my browser", or do you mean Chrome? In a Debian guest, Chromium is a package and Google ships Chrome as a `.deb`; neither has been tried in our guest.

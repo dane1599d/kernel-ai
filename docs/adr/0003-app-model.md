@@ -1,6 +1,6 @@
 # ADR 0003: The app model and app ABI
 
-Proposed, 2026-10-21. For the founder's approval; nothing here is decided until approved.
+Proposed, 2026-10-21. The founder decided two points on 2026-10-22: the Wasm-first hybrid (section 1) and BlueOak-1.0.0 in the free licence class (question 6). The rest waits for approval.
 
 Repo citations are `path:line` on main at `ec5ecff`. Open PRs are cited as `branch@commit`. External facts were read at the source on 2026-10-21 unless marked unverified. Figures marked "est." are estimates; nothing here was built, run or measured.
 
@@ -80,7 +80,12 @@ In detail: base design C. Grafts: A's per-app `kai.actions` extraction, semver l
 - **Apps and live components are one thing.** Notes becomes the first app. A system component without UI uses the smaller `component` world (section 3).
 - **One ring-3 `comphost` process per app.** There are two instances only during probation, and apps never share a process. The reason is Spectre: V8 concluded that the only effective mitigation is to keep sensitive data out of the process (v8.dev/blog/spectre, 2019-04-23).
 - **Linux apps are a foreign class** outside `kai:app`: they run in ADR [0006](0006-existing-software.md)'s micro-VM and show, in v0.2, as one foreign `Surface` (ADR 0005).
-- **Apps are Wasm only.** Native code is for system services, drivers and the Linux programs inside P6's micro-VM (founder question 4).
+- **A Wasm-first hybrid (decided 2026-10-22).** The founder asked: "Isn't there a way to combine them or do a both mixture to make it the best?? if not do the wasm-only". The combination is sound, and it is what this ADR builds:
+  - **Kernel AI apps are Wasm components**, first-party and third-party alike: each sealed in its own process, with its actions described in WIT.
+  - **Native code is only for first-party system services and drivers**, as ring-3 processes under ADR [0001](0001-capabilities.md)'s handles or in the kernel, **and for existing Linux programs**, which run inside ADR 0006's micro-VM, each VM its own sandbox.
+  - **Speed comes from a second engine.** Wasmtime joins on the triggers in section 2. Before v1.0 it runs Pulley bytecode, or native code that Cranelift compiled ahead of time in CI for signed first-party packages. The kernel maps that code read-execute when it loads it, as it maps an ELF; the app process never gets a way to make memory executable. A true JIT, compiling on the device inside the app's process, is reconsidered after v1.0 under the same gate as ADR [0012](0012-terminal-compiler.md)'s native tier.
+  - **Third-party native apps** are reconsidered after v1.0.
+  - **One adjustment** to the proposal as relayed: it named "a Wasmtime/Cranelift JIT later". An in-process JIT before v1.0 would break the rule ADRs 0006 and 0012 propose, that no memory is made executable at run time before v1.0 (open as that ADR's question). Ahead-of-time code uses the same compiler, Cranelift, so the speed is similar for code known at build time. The cost is one new kernel path, a loader for signed code images, added only when the Wasmtime trigger fires.
 - **The artifact** is the module plus custom sections, read by livecore's existing section reader. That reader requires the core-module header (livecore/src/artifact.rs:10, :44), which apps keep, so no second wasmparser ships. This ADR owns the artifact and its list of sections; each section's format has the owner below.
 
 | Section | Format | Format owner | Holds |
@@ -122,7 +127,7 @@ In detail: base design C. Grafts: A's per-app `kai.actions` extraction, semver l
   - an app needs `async`, streams or futures; or
   - a wanted language's toolchain emits only components (JavaScript through jco, Python through componentize-py).
 
-  Before v1.0 it runs Pulley bytecode only, because ADRs 0006 and 0012 allow no executable memory created at run time before v1.0. The `.wasm` stays the truth and a host-made `.cwasm` is a cache, accepted only from the build service or a signed package.
+  Before v1.0 it runs Pulley bytecode, or Cranelift code compiled ahead of time in CI for signed first-party packages (section 1), because ADRs 0006 and 0012 allow no executable memory created at run time before v1.0. The `.wasm` stays the truth and a host-made `.cwasm` is a cache, accepted only from the build service or a signed package.
 
 ### 3. WIT packages and versions
 
@@ -298,9 +303,9 @@ The spike also records the call-loop, the switch-loop and indirect-threaded disp
 1. Row docs/decisions.md:15 is yours. It would read: "Apps and live components are WIT worlds compiled to canonical-ABI core modules on wasmi; Wasmtime may join later behind the same ABI." Approve?
 2. Will people outside the project write apps for v1.0, and must they install them without our servers? This sets when `kai:app` freezes, and rules out any design that needs a host-made binary per OS version. (ADR 0001 asks the same.)
 3. What do we promise app authors: freeze `kai:app@1.0.0` at v0.1, or keep 0.x, frozen per release, until v1.0 (recommended)?
-4. Apps are Wasm only; native code is for system services, drivers and the Linux programs inside P6's micro-VM. Is that acceptable, or must third-party native apps exist?
+4. **Decided 2026-10-22:** a Wasm-first hybrid (section 1). Kernel AI apps are Wasm; native code is for first-party system services, drivers and Linux programs in P6's micro-VM; third-party native apps are reconsidered after v1.0.
 5. Which app languages matter after Rust: C, Python, JavaScript? Python or JavaScript would pull the Wasmtime backend forward.
-6. Every app's state code uses minicbor 2.3.0, under BlueOak-1.0.0. ADR 0009 asks whether BlueOak joins the free class. If not, compsdk gets a small CBOR writer of our own (size unmeasured).
+6. **Decided 2026-10-22:** BlueOak-1.0.0 joins the free class, so minicbor 2.3.0 stays for every app's state code.
 
 Crates this ADR adds, all in the free class (listed in each PR, no ask): wit-bindgen 0.63.0; wit-parser, wit-component, wasm-encoder and wasmparser 0.262.0 (host only); wasm-wave 0.262.0 with logos 0.16.1 and thiserror 2; wasmtime 50.0.0 (dev-dependency); wasmtime 48.0.7 (spike branch only). The PRs list the full transitive set.
 

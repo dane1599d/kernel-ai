@@ -1,6 +1,10 @@
 # ADR 0009: Release, licence, contribution and reuse terms
 
-Proposed, 2026-10-21. For the founder's approval; nothing here is decided until approved.
+Proposed, 2026-10-21. The founder answered part of it on 2026-10-22:
+
+- **Decided:** the reuse classes (D4, with the wider free class), keeping `smartstring` (MPL-2.0) and the OFL fonts, C code in the build (uACPI, xcc), and GPL tools in CI only, never shipped.
+- **Deferred to before v0.1:** the OS's own licence (D1-D3). Until then the repository stays "all rights reserved" (`README.md:107-109` stays) and no outside contributions are accepted.
+- The rest waits for approval.
 
 Not legal advice. Item 6 of the open questions lists what needs a lawyer. Repo facts are `path:line` on main at ec5ecff unless a branch is named. Nothing was built or run for this ADR: only git, grep, `cargo tree --offline` (dependency metadata, no build), crates.io API reads and the web pages under Sources, on 2026-10-21, on the founder's PC, with no model.
 
@@ -33,7 +37,7 @@ Not legal advice. Item 6 of the open questions lists what needs a lawyer. Repo f
 
 **The name.** `git grep -n 'Kernel AI'` gives 112 lines in 53 files, 66 of them in 40 `.rs` files. These include the model's system prompts (`llmproto/src/chat.rs:13`, `script.rs:138`, `explain.rs:14`, `tune.rs:259`), the banner (`version.rs:20`), the boot entry (`esp.rs:45`) and the VM name (`xtask/src/vbox/manage.rs:9`). HI LLC's KERNEL registration (reported in a search snippet; the record itself is unverified) and kernel.sh (hosted browsers for AI agents) are close marks.
 
-**Rows this ADR touches.** `docs/decisions.md:12` ("no code is reused"), `:30` (engine clean-room), `:32` (no other new crates), `:52` ("Borrow ideas only, clean-room"), `:53` (MPL-2.0 as the working choice), `:84` (model licences), `:85` and `:124` (smartstring and minicbor, open), `:199` (MPL-2.0 with a CLA as the leading option) and `:207` (no licence). The founder's 2026-10-20 relaxation of reuse is not yet recorded. The founder's 2026-10-21 rule is: MIT, Apache-2.0, BSD, ISC or zlib crates may be added without asking if each PR lists them and their licences; GPL, LGPL and now MPL-2.0 need his OK.
+**Rows this ADR touches.** `docs/decisions.md:12` ("no code is reused"), `:30` (engine clean-room), `:32` (no other new crates), `:52` ("Borrow ideas only, clean-room"), `:53` (MPL-2.0 as the working choice), `:84` (model licences), `:85` and `:124` (smartstring and minicbor, open), `:199` (MPL-2.0 with a CLA as the leading option) and `:207` (no licence). The founder's 2026-10-20 relaxation of reuse is not yet recorded. The founder's 2026-10-21 rule is: MIT, Apache-2.0, BSD, ISC or zlib crates may be added without asking if each PR lists them and their licences; GPL, LGPL and now MPL-2.0 need the founder's OK.
 
 **Roadmap.** P0 lists release, licence and contribution terms (`docs/roadmap.md:139`), P8 lists licence and contributor terms and a release checklist (`:147`), and v0.1 is P1-P4 in a VM (`:153`).
 
@@ -66,15 +70,17 @@ Grafts: from A, the 0BSD worked examples, `kai.notices`, model `.LICENSE` sideca
 
 ## Decision
 
-Kernel AI stays under MPL-2.0, the licence its workspace manifest already names. Anyone who changes our files and ships the result must publish those changed files, but apps built on top may use any licence they like. Outside contributors add a one-line sign-off to each commit (`git commit -s`) instead of signing a contract with us. Every image and release carries a complete, CI-checked list of the third-party code inside it and where to get our source.
+**The founder's call, 2026-10-22:** decide the OS licence later, before v0.1. Until then the code stays "all rights reserved" and outside contributions are not accepted. D1-D3 are the proposal for that later decision. D4-D6 hold now.
 
-**D1. Outbound licence.**
-- Every file we write is `MPL-2.0`, with no Exhibit B, so MPL s3.3's secondary-licence route stays open. A root `LICENSE` holds the MPL-2.0 text. Docs are MPL-2.0 too. `README.md:107-109` is replaced.
+The proposal: Kernel AI stays under MPL-2.0, the licence its workspace manifest already names. Anyone who changes our files and ships the result must publish those changed files, but apps built on top may use any licence they like. Outside contributors add a one-line sign-off to each commit (`git commit -s`) instead of signing a contract with us. Every image and release carries a complete, CI-checked list of the third-party code inside it and where to get our source.
+
+**D1. Outbound licence (proposed; the founder decides before v0.1).**
+- Every file we write is `MPL-2.0`, with no Exhibit B, so MPL s3.3's secondary-licence route stays open. A root `LICENSE` holds the MPL-2.0 text. Docs are MPL-2.0 too. `README.md:107-109` ("all rights reserved") stays until the founder decides; it is replaced then.
 - `kabi`, `compsdk` and future WIT files (ADR [0003](0003-app-model.md)) become `MIT OR Apache-2.0`, because third-party programs compile them in. This is free today: every line in them is the founder's.
 - Worked examples that the model copies into users' scripts are `0BSD`, so AI output carries no notice duty. Today that is `EXAMPLES` at `llmproto/src/script.rs:97`, moved to `llmproto/src/examples.rs`. From P1 it is the skill pack's examples (ADR [0010](0010-skill-pack.md)).
 - What the AI writes for the user belongs to the user. The OS claims nothing and shows no licence screen.
 
-**D2. Inbound terms: DCO 1.1, inbound equals outbound, no CLA.**
+**D2. Inbound terms: DCO 1.1, inbound equals outbound, no CLA (proposed; applies only once outside contributions open, after the licence decision).**
 - `CONTRIBUTING.md` links DCO 1.1. Every non-maintainer commit carries `Signed-off-by: Name <email>` matching the author, with a known identity, as Linux's submitting-patches page asks.
 - A `dco` job in `.github/workflows/ci.yml` (`fetch-depth: 0`, about 30 lines of shell) checks each non-merge commit in `base..head`. An author listed in `MAINTAINERS` passes. Any other author needs a sign-off with the same email.
 - `MAINTAINERS` lists the founder's two commit identities, which are exempt. Any later maintainer signs off.
@@ -84,16 +90,18 @@ Kernel AI stays under MPL-2.0, the licence its workspace manifest already names.
 
 **D3. AI-assisted work.** Every commit has a human author. AI tools never add `Signed-off-by`, following Linux's rule ("AI agents MUST NOT add Signed-off-by tags", docs 7.3.0). The human records AI help with `Co-Authored-By: <model>` (the sessions' default today) or `Assisted-by: <model>`, and answers for the code. Neither trailer counts as a sign-off. Copyright in AI-assisted code is open (US Copyright Office Part 2, 2025-01-29); a CLA would not change that, because it can grant only what exists.
 
-**D4. Reuse classes.** This applies the founder's 2026-10-21 rule.
+**D4. Reuse classes (decided 2026-10-22).** This applies the founder's 2026-10-21 rule and their 2026-10-22 answers.
 
 | Class | SPDX ids | Rule |
 |---|---|---|
-| free | MIT, Apache-2.0, Apache-2.0 WITH LLVM-exception, BSD-2-Clause, BSD-3-Clause, ISC, Zlib | Add without asking. The PR lists each new crate with its licence. Notices are kept and generated (D6). |
-| proposed free | 0BSD, MIT-0, Unlicense, BSL-1.0, Unicode-3.0, CC0-1.0, BlueOak-1.0.0, BSD-2-Clause-Patent | Ask until the founder approves the list (question 2), then free. CC0-1.0 grants no patent licence; noted, accepted. |
-| ask | MPL-2.0 (file by file, usually approvable); OFL-1.1 (font data only); GPL-\*, LGPL-\*, AGPL-\*; firmware blobs; everything else (EPL, CDDL, EUPL, SSPL, BUSL-1.1, CC-BY-SA, non-commercial, custom, none) | Not adopted until a founder-signed `docs/decisions.md` row names the item. An approved MPL file stays whole and MPL; an OFL font keeps its copyright line and text, is never sold alone and drops any Reserved Font Name once converted. Linux, glibc and GPL drivers stay ideas only. |
+| free | MIT, Apache-2.0, Apache-2.0 WITH LLVM-exception, BSD-2-Clause, BSD-3-Clause, ISC, Zlib; and, decided 2026-10-22, 0BSD, MIT-0, Unlicense, BSL-1.0, Unicode-3.0, CC0-1.0, BlueOak-1.0.0, BSD-2-Clause-Patent | Add without asking. The PR lists each new crate with its licence. Notices are kept and generated (D6). CC0-1.0 grants no patent licence; noted, accepted. |
+| approved items | `smartstring` (MPL-2.0+, required by Rhai); OFL-1.1 font data: Noto Sans Mono and the fonts ADR [0005](0005-graphics.md) names (decided 2026-10-22: "keep smartstring (MPL-2.0) and the OFL fonts"; read here as OFL approved for fonts) | Kept with their notices. An OFL font keeps its copyright line and text, is never sold alone and drops any Reserved Font Name once converted. |
+| ask | MPL-2.0 other than `smartstring` (file by file, usually approvable; one row per item); OFL-1.1 for anything but font data; GPL-\*, LGPL-\*, AGPL-\*; firmware blobs; everything else (EPL, CDDL, EUPL, SSPL, BUSL-1.1, CC-BY-SA, non-commercial, custom, none) | Not adopted until a founder-signed `docs/decisions.md` row names the item. An approved MPL file stays whole and MPL; an OFL font keeps its copyright line and text, is never sold alone and drops any Reserved Font Name once converted. Linux, glibc and GPL drivers stay ideas only. |
 
 - MPL-2.0 being "ask" for dependencies is a separate matter from our own licence (D1).
-- The free class covers crates. Whether it also covers copied files, C code compiled into the image and host-only tools is question 4. Until he answers, those ask.
+- **C code in the build is allowed** (decided 2026-10-22), under the same classes: uACPI ([ADR 0007](0007-drivers.md)), xcc ([ADR 0012](0012-terminal-compiler.md)) and musl in ADR 0006's `kai-guest`.
+- **GPL and other ask-class tools may run in CI, never shipped** (decided 2026-10-22): QEMU, e2fsprogs and blklogwrites (ADR 0004), `mke2fs` (ADR 0006), virt-firmware (ADR 0008). Nothing they produce links GPL code into the OS.
+- **Still open (question 4):** copied source files under free licences, such as the RedoxFS allocator, FreeBSD's AMD-Vi and igc files, and Tock. Until the founder answers, each import asks, with one row per import.
 - Models are a separate rule and unchanged: Apache-2.0 or MIT only (`:84`, `pin.rs:123`).
 - **Import record.** A copied file keeps its upstream licence, including our later edits, so fixes can go back upstream. Its header carries the upstream SPDX id, the upstream copyright, our copyright line and `Upstream: <url> @ <commit> <path>`. The commit adds a trailer `Imported-from: <url>@<commit> (<SPDX id>)` and says why. Whole trees go to `third_party/<name>/` with an `UPSTREAM.toml` (name, url, commit, spdx, copyright, files, changes, why).
 
@@ -105,7 +113,7 @@ Kernel AI stays under MPL-2.0, the licence its workspace manifest already names.
 - `cargo xtask licences check` (our code, about 150 lines, no new crate) fails CI on a tracked file with no header and no `REUSE.toml` match, on an id with no text in `LICENSES/`, or on an id outside the free class with no approving row.
 
 **D6. Dependency gate and notices.**
-- **`deny.toml`, run with cargo-deny 0.20.2 in `lint-and-unit` (`ci.yml:20`).** `allow` is the free class, plus the proposed free ids once approved. `exceptions` names each approved ask-class crate: smartstring (MPL-2.0+), if question 3 approves it. `clarify` (pinned by file hash) sets noto-sans-mono-bitmap to `MIT AND OFL-1.1` and fixes slash-form strings if needed. `private.ignore = true`. Graph targets are `x86_64-unknown-none` and `wasm32-unknown-unknown`. `[advisories]` ignores RUSTSEC-2026-0249 with a reason that names a review date of 2027-01-31. ADR [0012](0012-terminal-compiler.md) owns the Rhai 1.27 upgrade and Rhai's string type; 1.27.0's `compact_str` feature changes the type but still requires smartstring.
+- **`deny.toml`, run with cargo-deny 0.20.2 in `lint-and-unit` (`ci.yml:20`).** `allow` is the free class, plus the proposed free ids once approved. `exceptions` names each approved ask-class crate: smartstring (MPL-2.0+), approved 2026-10-22. `clarify` (pinned by file hash) sets noto-sans-mono-bitmap to `MIT AND OFL-1.1` and fixes slash-form strings if needed. `private.ignore = true`. Graph targets are `x86_64-unknown-none` and `wasm32-unknown-unknown`. `[advisories]` ignores RUSTSEC-2026-0249 with a reason that names a review date of 2027-01-31. ADR [0012](0012-terminal-compiler.md) owns the Rhai 1.27 upgrade and Rhai's string type; 1.27.0's `compact_str` feature changes the type but still requires smartstring.
 - **`cargo xtask notices [--check]`** merges these inputs:
   1. cargo-about 0.9.2 output for the two shipped targets, with no build or dev dependencies;
   2. a hand list, `xtask/notices.json` (a build input beside `xtask/models.json`, not a runtime manifest): `core`, `alloc`, `compiler_builtins` from the pinned rust-src; Limine's `LICENSE` and `3RDPARTY.md` verbatim from the hash-pinned tarball; Noto Sans Mono's copyright line and OFL-1.1; Unicode-3.0 for `bpe/src/marks.rs`;
@@ -231,11 +239,11 @@ Follow-up PRs, in order:
 
 ## Open questions for the founder
 
-1. **Business model.** Do you want to keep the option to sell commercial licences or take contributed code closed later? Yes means a CLA for future contributions (A's terms, drafted by counsel). No means D2 as written. And is a closed fork by a competitor acceptable? Yes would favour B (Apache-2.0 OR MIT).
-2. **Proposed free class.** Approve 0BSD, MIT-0, Unlicense, BSL-1.0, Unicode-3.0, CC0-1.0, BlueOak-1.0.0 and BSD-2-Clause-Patent? Five already ship: 0BSD (smoltcp, managed, parts of Limine), BlueOak-1.0.0 (minicbor in every component), Unicode-3.0 (`bpe/src/marks.rs`), and CC0-1.0 and BSD-2-Clause-Patent (inside Limine's `BOOTX64.EFI`). A "no" means replacing that part before v0.1. Should PicoEFI's BSD-Source-Code-no-disclaimer, which S09-1's coverage check may find in `BOOTX64.EFI`, join them?
-3. **Ask-class items that already ship.** smartstring (MPL-2.0+, required by Rhai 1.26.1 and 1.27.0) and the Noto glyphs (OFL-1.1). Approve both as standing rows? And should MPL-2.0 file by file be a standing yes (Asterinas files, Servo, pubgrub if 0011 adopts it) or one row per item?
-4. **Beyond crates.** Does your free rule also cover copied source files under free licences, C code compiled into the image (uACPI MIT in 0007, xcc MIT in 0012), and host-only tools that never ship (QEMU GPL today; e2fsprogs and blklogwrites in 0004; mmdebstrap, `mke2fs` and musl in 0006's question 2; virt-firmware in 0008; the `reuse` tool)?
-5. **Outside contributions written with AI help.** Accept them under a human sign-off (Linux, Zephyr) or refuse them (Redox)? Open pull requests to outsiders at v0.1, or keep "issues only" until counsel has read the terms?
+1. **Business model. Deferred by the founder, 2026-10-22:** the OS licence is decided later, before v0.1. Until then the code stays "all rights reserved". The question stands for that decision: keep the option to relicense (a CLA), MPL-2.0 with the DCO (D1-D2), or Apache-2.0 OR MIT if a competitor's closed fork is acceptable.
+2. **Decided 2026-10-22:** 0BSD, MIT-0, Unlicense, BSL-1.0, Unicode-3.0, CC0-1.0, BlueOak-1.0.0 and BSD-2-Clause-Patent join the free class.
+3. **Decided 2026-10-22:** keep `smartstring` (MPL-2.0+) and the OFL fonts. Other MPL-2.0 items stay "ask", one row per item (for example `psl` in ADR 0001, pubgrub in ADR 0011).
+4. **Partly decided 2026-10-22:** C code compiled into the image is allowed, and GPL tools may run in CI but never ship. Still open: do copied source files under free licences (the RedoxFS allocator, FreeBSD's AMD-Vi and igc, OpenBSD's rge, Tock, libabr) count as free, or does each import need a row?
+5. **Deferred by the founder, 2026-10-22:** no outside contributions before v0.1. Whether to accept AI-assisted contributions under a human sign-off is asked again when contributions open.
 6. **The name and counsel.** Keep "Kernel AI" pending a clearance search, or rename before v0.1? What budget for counsel: name, AI authorship, MPL source duty for images and updates, the 23-hour MPL README, CRA, export?
 7. **Ownership.** Should a company hold your copyright and the mark, now or before v1.0? Contributors keep theirs.
 8. **GPL and LGPL in P6.** A standing policy for the Linux guest, or case by case (0006's question 1)?

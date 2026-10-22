@@ -1,6 +1,6 @@
 # ADR 0004: Storage: filesystem, format versioning, snapshots, crash consistency
 
-Proposed, 2026-10-21. For the founder's approval; nothing here is decided until approved.
+Proposed, 2026-10-21. The founder settled two of its questions on 2026-10-22 (licences: questions 5 and 7). The design itself waits for approval.
 
 Repo citations are `path:line` on main at ec5ecff (origin/main on 2026-10-21) unless a branch is named. External facts were read at the source on 2026-10-21 by this topic's research and judge passes, or by this ADR's check (crates.io API, RedoxFS on GitLab, GitHub releases, Fxfs on googlesource, QEMU source, the VirtualBox manual); anything not checked says "unverified". Nothing was built, run, spiked or measured for this ADR, and no model ran. "Estimate" means judgement, not measurement.
 
@@ -264,9 +264,9 @@ No follow-up PR is needed now. Exactly what later PRs change:
 2. **Dual boot.** Do you plan to dual-boot Linux beside Kernel AI on your PC in P7? If yes, ext4 import matters more.
 3. **Undo history.** Keep 30 days, and drop the oldest when the disk is under 10 % free, without asking? Emptying the trash would be the one file action that asks (0002's question 1 too).
 4. **Encryption at rest.** Is P8 (v1.0), with a passphrase at boot, soon enough, or must v0.1 have it?
-5. **Licences beyond crates** (0009's question 4, for this ADR): QEMU's blklogwrites and, later, e2fsprogs for ext4 import test images are GPL tools run in CI only, never linked or shipped. The RedoxFS allocator is copied MIT source, not a crate. Are both fine?
+5. **Partly decided 2026-10-22:** GPL tools (QEMU's blklogwrites, e2fsprogs) may run in CI, never shipped. The copied RedoxFS allocator (MIT source, not a crate) waits on ADR 0009's question 4.
 6. **Risk.** v0.1's filesystem would be new code, proven by crash tests in CI and in VMs only, with real disks from P7. Is that acceptable for a VM release?
-7. **CBOR.** `kai-fs 1`, settings and `info.cbor` need a CBOR coder. Use minicbor 2.3.0 (BlueOak-1.0.0, already used inside components, docs/decisions.md:124; BlueOak is in the sheet's proposed free class), or hand-write a small coder as livecore/src/cbor.rs does?
+7. **Decided 2026-10-22:** BlueOak-1.0.0 is in the free class, so `kai-fs 1`, settings and `info.cbor` use minicbor 2.3.0.
 
 ## Sources
 

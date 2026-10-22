@@ -1,6 +1,6 @@
 # ADR 0008: Updates and recovery
 
-Proposed, 2026-10-21. For the founder's approval; nothing here is decided until approved.
+Proposed, 2026-10-21. The founder settled part of question 6 on 2026-10-22 (GPL tools in CI only). The rest waits for approval.
 
 This ADR owns the slot layout of the disk (with [0004](0004-storage.md) for `kai-data`), the boot record, the one TUF repository and root, and the `kaituf` client that [0011](0011-packages.md) also uses. Citations are `path:line` on main at ec5ecff unless a branch is named. Nothing was built or run for it.
 
@@ -279,7 +279,7 @@ On approval, decision rows :49 (a fresh variable store every boot), :118 (the un
 3. **Restarts and downloads.** May Kernel AI restart itself to apply an update at a time you set once, or when idle, or only when you say "restart"? May it download a 2.5 GB model in the background without asking?
 4. **Secure Boot.** User-enrolled keys only, which means each user changes a firmware setting, and no Microsoft-signed shim (that needs a legal entity, and review "can reach 2-3 months")? Or plan a company for shim review before v1.0?
 5. **Disk.** Reserve about 2.3 GiB on every install for the recovery slot and two system slots?
-6. **Code and tools outside the crate rule.** 0009's question 4 sets the general rule; these are the cases. Ported files: libabr's A/B flow (Fuchsia, two-clause BSD-style), and only if a spike needs them, `olpc-cjson` 0.1.4 (MIT OR Apache-2.0, S08-3) or Bottlerocket's `gptprio.rs` (MIT OR Apache-2.0, S08-1). Host-only tools, never shipped: tuf-on-ci 0.21.0 (MIT, Python, runs only in `kernel-ai-updates`'s Actions), sbctl 0.18 (MIT, P8), and virt-firmware 26.10 (GPLv2) for P8's Secure Boot test cases, which as GPL needs your OK.
+6. **Partly decided 2026-10-22:** host-only tools may run in CI, never shipped, GPL ones included: virt-firmware 26.10 (GPLv2) for P8's Secure Boot cases, tuf-on-ci 0.21.0 (MIT) and sbctl 0.18 (MIT). Still open, under ADR 0009's question 4: ported files such as libabr's A/B flow (Fuchsia, two-clause BSD-style), and `olpc-cjson` or Bottlerocket's `gptprio.rs` if a spike needs them.
 
 Listed, not asked (MIT, Apache-2.0 or BSD crates, per the 2026-10-21 rule): `p256` 0.14.0, `ecdsa` 0.17.0, `ed25519-compact` 2.6.0, `sha2` 0.11.1 (new to the kernel and ring 3), `tough` 0.24.0 (host tests only), `blake2` 0.11.0 and `fatfs` 0.3.6 (P8). The version scheme is 0009's. 0011's question on GitHub and Hugging Face seeing users' IP addresses covers updates too.
 

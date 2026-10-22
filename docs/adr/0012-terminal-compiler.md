@@ -1,12 +1,12 @@
 # ADR 0012: The compiler in the terminal
 
-Proposed, 2026-10-21. For the founder's approval; nothing here is decided until approved.
+Proposed, 2026-10-21. The founder allowed C code in the build on 2026-10-22, which settles question 5. The rest waits for approval.
 
 Repo citations are `path:line` on main at ec5ecff unless a branch is named. "Est." marks an estimate, not a measurement. "Unverified" marks what could not be read at the source. Design only: nothing was built, run or measured for this ADR. Facts were read on 2026-10-21 from the repo, the local cargo registry, crates.io, docs.rs and GitHub, on the founder's PC. No model ran anywhere.
 
 ## Context
 
-The founder liked TempleOS's terminal, where every line is compiled and runs at once, and asked for that idea. He added that it is "not necessary if you can find a good open source one that fits the project". He did not ask for the HolyC language.
+The founder liked TempleOS's terminal, where every line is compiled and runs at once, and asked for that idea, adding that it is "not necessary if you can find a good open source one that fits the project". The founder did not ask for the HolyC language.
 
 What is on main today:
 
@@ -250,7 +250,7 @@ Spike ids carry this ADR's number, so they do not collide with other ADRs' spike
 2. **Model-written programs.** Once S12-2 passes, may the model compile and run its own C at the run tier when you ask for a program? Or should a model-written program always be shown first?
 3. **Native code.** Do you accept "no executable memory created at run time before v1.0", as ADR 0006 also proposes? It trades TempleOS's native speed (perhaps 10x, unmeasured) for a smaller attack surface.
 4. **Builds in the OS.** May components built on the machine be applied without a git commit, under the source-hash provenance line? This relaxes decisions.md:98 and touches 0008's and 0011's signing.
-5. **xcc and its tools.** If your answer to ADR 0009's question 4 covers C compiled into the image and host-only tools, nothing more is needed here. If not: do you approve xcc (MIT), compiled to Wasm, in the image; and gcc or clang, and possibly node.js, npm and `llvm-ar`, in CI and in WSL2 on your PC?
+5. **Decided 2026-10-22:** C code in the build is allowed and build tools may run in CI and WSL2, so xcc (MIT) ships compiled to Wasm, and gcc or clang, node.js, npm and `llvm-ar` may build it. None of those tools ships.
 
 New crates in the shipped graph need no question under your 2026-10-21 rule and will be listed in their PRs: wasm-encoder 0.262.0 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT) and leb128fmt 0.1.0 (MIT OR Apache-2.0), wasmparser 0.228.0 (same as wasm-encoder) as a direct dependency, rhai 1.27.0 and rhai_codegen 3.3.0 (MIT OR Apache-2.0), and compact_str 0.10.0 (MIT) if D9's patch is used. smartstring stays under ADR 0009's question 3.
 

@@ -1,6 +1,6 @@
 # ADR 0011: Packages and the package manager
 
-Proposed, 2026-10-21. For the founder's approval; nothing here is decided until approved.
+Proposed, 2026-10-21. The founder decided the install rule on 2026-10-22 (question 1), and the CI-only tools follow from their licence answers (question 3). The rest waits for approval.
 
 Repo citations are `path:line` on main at ec5ecff unless a branch is named. External facts were read on 2026-10-21 by the topic's research and judge passes, and the riskiest (licences, versions, dates, GitHub limits) were checked again the same day from the dev PC with read-only web and API requests; anything not rechecked says "unverified". Nothing was built, run or spiked for this ADR, and no model ran.
 
@@ -140,7 +140,7 @@ A leading `sudo` is dropped with a one-time note ("no sudo needed: the question 
 | `pkg_purge`, `pkg_gc` | ask: they destroy data or rollback points | none |
 | `pkg_repo_add`, `pkg_trust_key` | never for the AI; the user types them | none |
 
-This **departs from the brief's "install is ask tier"**. A user-named install runs because it has an exact, cheap undo (a generation switch), ADR 0002's consent rule counts the user's own line as consent, and the founder said "if i tell it to do something it should just do it". An install the AI chose still asks once, because it brings in new code the user did not name: `Install pdfview 0.3.1 (1.2 MB, MIT)? It opens files you give it; no network. y/n`. "Pull up my browser and go to youtube" with no browser installed is `pkg_search` (run), `pkg_install` (one ask), then `browser_open` (run). A package's actions join the registry, and its action group joins ADR 0010's skill pack, when its generation becomes current; they leave when it stops being current. Index text (summaries, action names) is data and can never raise a tier.
+This **departs from the brief's "install is ask tier"**, and the founder approved it on 2026-10-22. A user-named install runs because it has an exact, cheap undo (a generation switch), ADR 0002's consent rule counts the user's own line as consent, and the founder said "if i tell it to do something it should just do it". An install the AI chose still asks once, because it brings in new code the user did not name: `Install pdfview 0.3.1 (1.2 MB, MIT)? It opens files you give it; no network. y/n`. "Pull up my browser and go to youtube" with no browser installed is `pkg_search` (run), `pkg_install` (one ask), then `browser_open` (run). A package's actions join the registry, and its action group joins ADR 0010's skill pack, when its generation becomes current; they leave when it stops being current. Index text (summaries, action names) is data and can never raise a tier.
 
 **11. Kinds beyond apps.**
 - `tool` is reserved in format 1. It would add a terminal command, but ADR 0003 defines only the `component` and `app` worlds and no command interface. It opens when ADR 0003 adds a `kai:app/tool` world (a `run(args) -> result` export, importing `log` and `effects`); that is a new kind value, which older `pkg` refuses with the same named error. Until then a command ships as an `app` with actions.
@@ -224,12 +224,12 @@ None runs a model. Nothing runs on the founder's PC.
 
 ## Open questions for the founder
 
-1. **Risk: installs.** A package you name ("install notes") would install at once, with undo, instead of asking as the brief said. Do you accept that? And when the AI picks a package you did not name ("pull up my browser" with none installed), should it ask once (recommended) or install without asking?
+1. **Decided 2026-10-22:** a package you name installs at once, with undo. It asks only when the package wants a new permission, and a package the AI picks always asks.
 2. **Licence.**
    - Linux layer: is it acceptable to run the guest's GPL package manager (Debian's apt and dpkg) and GPL programs as separate programs inside it? This joins ADR 0006's question 1.
    - Will the official repository accept GPL or LGPL packages at all (ADR 0009's "ask" class)?
    - When a real solver is needed: approve pubgrub 0.4.0 (MPL-2.0, with priority-queue under MPL-2.0), or stay permissive with resolvo 0.12.2 (BSD-3-Clause), which is larger and not no_std?
-3. **Licence: CI-only tools.** tuf-conformance (MIT), python-tuf (Apache-2.0 and MIT), tuf-on-ci (MIT) and ORAS (Apache-2.0) are non-crate tools; tuftool, a crate, needs aws-lc-rs, which builds the C library aws-lc on the CI host. None ships in the OS. Allowed?
+3. **Decided 2026-10-22 (by the licence answers):** tuf-conformance, python-tuf, tuf-on-ci, ORAS and tuftool (which builds the C library aws-lc on the CI host) may run in CI. None ships in the OS.
 4. **Keys.** ADR 0008 asks about the YubiKeys and a KMS account. Here: should each package publish need your YubiKey touch until others can publish (recommended), or may CI publish packages with an online key?
 5. **Publishers.** Should only Kernel AI's own packages be published until v1.0? Opening it to others brings a review policy and liability.
 6. **Hosting and privacy.** Do you accept depending on GitHub (Pages, Releases, later GHCR) and Hugging Face, which see users' IP addresses and what they install? Should we fund a second mirror before v1.0?

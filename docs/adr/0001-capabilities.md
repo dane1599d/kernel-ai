@@ -1,6 +1,6 @@
 # ADR 0001: The capability and permission model
 
-Proposed, 2026-10-21. For the founder's approval; nothing here is decided until approved.
+Proposed, 2026-10-21. One point was decided by the founder on 2026-10-22: "always allow" choices become standing rules (D8). The rest waits for approval.
 
 Repo lines are cited on main at ec5ecff unless a branch is named. Open PRs were read with `git show` on their branches: #16 at 131aa77, #18 at af7635d, #19 at 0717caa. Nothing was built or run for this ADR. It follows the topic 01 research, the three designs and the judge's decision (all 2026-10-21), and the P0 decision sheet, which wins where they differ.
 
@@ -146,6 +146,13 @@ grant 41 app=notes kind=dir object=/home/user/notes rights=read+write+enumerate 
 ```
 
 - `41` is a u32 id, never reused; [ADR 0011](0011-packages.md)'s generations name grants by it. `app` is the package name. `object` is an absolute path or a host. `from` is `install`, `picker`, `request:<n>` or `settings`. `signer` is `-` until P8, then the SHA-256 of the package signer's key; a grant whose signer no longer matches is dropped. `session` lines are dropped at boot.
+- **Standing rules (decided 2026-10-22).** An "always allow" choice in [ADR 0002](0002-agent-actions.md)'s ask menu (D2a) writes a `rule` line, here in the same file:
+
+```
+rule 57 action=proc_stop target=build-3 from=prompt:212 made=2026-11-02T10:20:00Z
+```
+
+  `action` is a registry name. `target` is `-` or a pattern for the row's `Target` argument: a service or process name, a path prefix under `/home`, or a host. `from=prompt:<n>` names the log entry whose menu made it. Only the trusted path writes a `rule` line, and only on the keystroke; `powerbox` refuses one from anywhere else. Each rule is a persistent node under `user`. A call the rule covers gets its handle under that node instead of a `ONCE` handle. ADR 0002 says which asks a rule may waive. `rules` lists the rules and `rules_remove` revokes the node and deletes the line, at once.
 - `powerbox` re-derives handles under a fresh node per grant at each start. Like `kai-manifest 1`, the parser refuses unknown or reordered keys, so a new key means `kai-grants 2`.
 
 ### D9. `kai-app 1`
@@ -237,20 +244,20 @@ No spike runs a real model anywhere. Boot cases use CI's LLM test double.
   - `shellcore/src/tests/actions.rs:37-50`: check every function the strict engine registers (shellcore/src/script.rs:190-192), not only `API`, and let the two pure helpers pass the second loop.
   - `shellcore/src/actions.rs:104-109`: the audit line gains the D7 word: `script 4 set_policy (run, sched.set): policy round-robin (was interactive)`. A const map beside `TIERS` gives `sys.read` (cpus, memory, uptime_ms, get_policy), `proc.list` (processes, threads) and `sched.set` (set_policy).
   - Why: every callable then has a row, and the audit log speaks the words Settings will show. At P1, ADR 0002's `agentabi` rows carry `needs: (Kind, Rights)`, and `set_policy` runs on a per-request `Sched` handle instead of the shell's standing POLICY bit.
-- **#16 DHCP, DNS and ping (open, 131aa77).** Before it merges, keep call 37 but gate it on a new bit:
+- **#16 DHCP, DNS and ping (merged at 131aa77, where the lines below are cited).** A follow-up PR keeps call 37 but gates it on a new bit:
   - kabi/src/lib.rs: `cap::RESOLVE` at the next free bit, added to `GRANTABLE` (:108 on main); kabi/src/call.rs:133 on the branch: "Needs `cap::RESOLVE`".
   - kernel/src/process/syscall.rs:159-160 on the branch: `need(slot, cap::RESOLVE)` in place of `cap::NET`.
   - supervise/src/lib.rs:126-138: parse `resolve`.
   - kernel/src/net_tests.rs:195 and :202 on the branch: `netcheck` gets `cap::RESOLVE`, plus a case that NET alone is refused.
-  - The branch's decisions.md row "DNS resolver and RESOLVE (37)": "gated by `cap::RESOLVE`".
+  - The decisions.md row "DNS resolver and RESOLVE (37)", now on main: "gated by `cap::RESOLVE`".
   - No plan line grants it; `llm` keeps its bits, `serve+net` plus `model+threads` when a model is loaded (kernel/src/llm.rs:75, :79).
   - Why: as written, NET lets `llm` look up any name, and a lookup of `<data>.attacker.example` carries data out. `:resolve` and `:ping` are typed kernel commands and are unaffected. In P5 the bit becomes the RESOLVE right on a `NetDest`.
 - **#17 terminal look (merged).** Keep `discard_pending` (kernel/src/terminal.rs:109) and the `answer` refusal (:137). Found by reading the code, not run: ring-3 text can take the prompt and question styles. Row kinds come from a row's text alone (termcore/src/style.rs:1-3, :58-78). A ring-3 row such as `[app] run script 9? y/n> ` matches `prompt_width` (:112-120) and is painted as a prompt. And a WRITE piece is 160 characters after a `[name] ` prefix of up to 27 (kernel/src/process/syscall.rs:15, :216-224), while the console guarantees only 162 columns (kernel/src/console/layout.rs:17). The grid wraps the excess onto a new row (termcore/src/grid.rs:273-276), whose text ring 3 chose and which may start with `? `. A follow-up PR:
   - termcore/src/style.rs: `Kind::of` returns `Log` for any row that starts with `[`, before every other check, with tests for both cases above. No kernel line starts with `[` (kernel/src/process/syscall.rs:198-200).
   - kernel/src/process/syscall.rs:216-224: cut pieces so `[name] ` plus the piece fits in `terminal::PIECE_CHARS`, so ring-3 text never starts a row. Model text in `ai:` lines has the same overflow (kernel/src/terminal.rs:316, 4 + 160 characters); cut it to `PIECE_CHARS - 4`.
   - Why: the ask tier and the USER root rest on ring 3 never drawing a question or a prompt.
-- **#19 USB input (open, 0717caa).** No change now. Keys become PS/2 set 1 scancodes in the i8042 ring (kernel/src/usb.rs:1-5 on the branch), so `discard_pending` still applies. When xHCI moves to a ring-3 `usbd` (ADR 0007, in P2 after S07-1), its keys must still enter that one kernel path, through the key sink (an `Input` handle with WRITE, D2) that only `usbd` holds. That makes `usbd` part of the trusted path for ADR 0007's review. The `Hal` trait (xhci/src/hal.rs:102 on the branch) is where `Device` handles plug in.
-- **#18 virtio-gpu (open, af7635d).** No change now. In P3 its buffers are `Shm` surfaces, and a top layer is reserved for the trusted path (ADR 0005).
+- **#19 USB input (merged, cited at 0717caa).** No change now. Keys become PS/2 set 1 scancodes in the i8042 ring (kernel/src/usb.rs:1-5 on the branch), so `discard_pending` still applies. When xHCI moves to a ring-3 `usbd` (ADR 0007, in P2 after S07-1), its keys must still enter that one kernel path, through the key sink (an `Input` handle with WRITE, D2) that only `usbd` holds. That makes `usbd` part of the trusted path for ADR 0007's review. The `Hal` trait (xhci/src/hal.rs:102 on the branch) is where `Device` handles plug in.
+- **#18 virtio-gpu (merged, cited at af7635d).** No change now. In P3 its buffers are `Shm` surfaces, and a top layer is reserved for the trusted path (ADR 0005).
 - **#13 parser hardening (merged).** When they land, add hostile tests with testkit/hostile.rs for the `kai-grants 1` and `kai-app 1` parsers and the RECV_H message, and extend uelf/tests/hostile.rs to mutate the "KAI" note.
 - **#14 faster decode (merged).** None.
 

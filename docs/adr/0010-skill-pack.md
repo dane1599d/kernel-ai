@@ -1,6 +1,6 @@
 # ADR 0010: The agent's OS skill pack
 
-Proposed, 2026-10-21. For the founder's approval; nothing here is decided until approved.
+Proposed, 2026-10-21. The founder decided the context size on 2026-10-22 (question 1: 3,072 positions, a 3,840 MiB VM). The rest waits for approval.
 
 Repo citations are `path:line` on main at ec5ecff unless a branch is named. External facts were read or rechecked on 2026-10-21 by the topic's research and judge passes, and the riskiest were checked again at the source in review (crates.io, GitHub, Hugging Face, BFCL's CSV, arXiv); anything not rechecked says "unverified". "Est." marks arithmetic, not a measurement. Nothing was built, run or spiked for this ADR, and no model ran. For it, the size of today's prompt was recomputed from source, and rhai 1.27.0's dependency list was read on crates.io.
 
@@ -258,7 +258,7 @@ This is an excerpt; the method list shown is a hand draft that the generated one
 
 ## Open questions for the founder
 
-1. **Memory.** A 3,072-position context costs llm 144 MiB more and needs about 288 MiB more free RAM when the model loads; the VM for the 4B grows from 3,584 to 3,840 MiB (est.). The 4B's "8 GB of RAM" recommendation stays. Accept this for v0.1, or keep 2,048 and accept that the AI sees fewer actions at once? Recommended: accept.
+1. **Decided 2026-10-22:** the context grows from 2,048 to 3,072 positions from P1. llm uses 144 MiB more, model load needs about 288 MiB more free, and the 4B's VM grows to 3,840 MiB (est.). The 4B's "8 GB of RAM" recommendation stays.
 2. **Privacy of the live snapshot.** The AI would see the focused app, open window titles (cut to 40 characters), the current folder and the selection. All of it stays on the machine, and the pack stores none of it. Allowed in v0.1? Should a setting turn it off? Recommended: allowed, with an off setting.
 3. **App descriptions in the AI's prompt.** An installed app's action descriptions (at most 60 bytes each, re-rendered by the OS) are text the AI reads. A hostile app could word them to steer the AI. Tiers stay in code, so it cannot raise its own permissions. Packages come from three places: apps we sign (through 0008's one TUF repository); apps the user builds in the terminal (0012's `cc build`), which install from 0011's `local` repository, signed by an Ed25519 device key made on this machine; and other publishers' repositories that the user adds and trusts (`pkg_repo_add`, `pkg_trust_key`, 0011). Which of them may put action descriptions in the prompt before P8's security review? Recommended: our signed apps and `local`. `local` is the user's own code, built by the user on this machine, and without it a v0.1 app made with `cc build` would install with no rows the AI can see. Other publishers' apps still install and run, but their action groups stay out of the pack until P8.
 4. **Fine-tuning later.** Training Qwen3-4B on our pack format (its Apache-2.0 licence allows it) could add accuracy, but it fixes the format and costs paid GPU time (not costed here). Rule it in for after v0.1, or out? Recommended: out until S10-1 shows a gap that prompts cannot close.

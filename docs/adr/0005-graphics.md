@@ -1,6 +1,6 @@
 # ADR 0005: Graphics: compositor, surface protocol and visual direction
 
-Status: Proposed, 2026-10-21. For the founder's approval; nothing here is decided until approved.
+Status: Proposed, 2026-10-21. The founder settled the font and Unicode-3.0 licences on 2026-10-22 (question 2). The design and the look wait for approval.
 
 Repo citations are `path:line` on main at `ec5ecff`. Open work is cited at its branch tip: #18 virtio-gpu (`origin/dane/virtio-gpu-a5daaa`, `7603e54` plus merge `af7635d`), #19 USB input (`origin/dane/usb-input-83eb7c`, `0717caa`) and #16 networking (`origin/dane/net-dhcp-dns-b5bdb7`). Nothing was built or run for this ADR, and no model ran anywhere. Crate versions, licences, features and dependencies were re-read on crates.io on 2026-10-21 from the founder's PC (web reads only), as were the repo citations against `ec5ecff`; contrast ratios are WCAG 2.2 arithmetic.
 
@@ -340,7 +340,7 @@ The order of work is in [0000](0000-execution-plan.md).
 ## Open questions for the founder
 
 1. **The look.** After S05-1's screendumps, do you approve dark-first "Ember Workbench", with the bottom `kai>` line as the AI panel and launcher? Or do you prefer light-first "Daylight Document": flat pages, Atkinson type, an AI column on the right?
-2. **Licences for the text stack.** Inter, JetBrains Mono and Atkinson Hyperlegible Next are SIL OFL-1.1, an "ask" licence. OFL lets them ship inside the OS but not be sold on their own. Noto Sans Mono under OFL already ships in the kernel (docs/third-party-notices.md:6-17; [ADR 0009](0009-licence.md) question 3). The font crates also need `yoke` and `zerofrom` under Unicode-3.0 (0009 question 2). Do you approve the three fonts, and Unicode-3.0 for these crates? A no to OFL sends the type back for a re-judge; a no to Unicode-3.0 pins older font crates (section 5). Only if 0006 falls back to `lxabi` would Smithay bring C libxkbcommon, with HPND licences, into the build; that would come back to you.
+2. **Decided 2026-10-22:** the OFL fonts are kept and Unicode-3.0 is in the free class, so Inter, JetBrains Mono and Atkinson Hyperlegible Next ship under OFL-1.1, and the font crates' `yoke` and `zerofrom` are free. (The answer was "keep ... the OFL fonts"; read here as covering these three. Say if it was meant for Noto only.) C libxkbcommon's HPND files would still come back to you, only if ADR 0006 falls back to `lxabi`.
 3. **Linux apps and the agent in v0.2.** The agent can open, focus and close the Linux window and use 0006's browser rows, but cannot press buttons inside Linux apps. That needs accessibility inside the guest carried out by the bridge, or synthetic input at the ask tier. Is window-level control plus the browser rows enough for v0.2?
 4. **CPU-only graphics.** GOP on the RTX 4070 Ti through v1.0 (0007's question 4) means no blur or glass, 4K that may animate at 30 Hz, and 1440p at most in VirtualBox. Is that acceptable, or should GPU work move earlier, at a cost of years?
 5. **Who draws questions.** Ask cards are drawn by the ring-3 compositor, not the kernel; `:apply` stays kernel-drawn. Does that meet your bar for "an app cannot fake a yes"?
