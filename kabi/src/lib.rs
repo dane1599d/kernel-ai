@@ -105,8 +105,13 @@ pub mod cap {
     /// Start worker threads (L6). The kernel grants it only to the service named
     /// `llm` running the `llm` program.
     pub const THREADS: u64 = 1 << 8;
+    /// Look up host names through [`super::call::RESOLVE`] (ADR 0001). Apart from
+    /// `NET`, so a process that may make HTTP requests to its one server cannot
+    /// carry data out in the names it looks up (`<data>.attacker.example`).
+    pub const RESOLVE: u64 = 1 << 9;
     /// Every capability a supervisor may grant.
-    pub const GRANTABLE: u64 = SERVE | NET | CALL | POLICY | COMPONENT | PUBLISH | MODEL | THREADS;
+    pub const GRANTABLE: u64 =
+        SERVE | NET | CALL | POLICY | COMPONENT | PUBLISH | MODEL | THREADS | RESOLVE;
 }
 
 /// Why a process ended, as reported to the supervisor.

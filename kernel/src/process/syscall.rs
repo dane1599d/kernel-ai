@@ -155,7 +155,7 @@ fn handle(slot: usize, number: u64, a: [u64; 6]) -> Result<u64, Error> {
             exchange_to(slot, a[0], Destination::Llm)
         }
         call::RESOLVE => {
-            need(slot, cap::NET)?;
+            need(slot, cap::RESOLVE)?;
             resolve(slot, a[0], a[1], a[2], a[3])
         }
         call::COMP_PUT => {

@@ -28,6 +28,9 @@ fn the_local_llm_line_names_the_model_capability() {
     assert_eq!(plan[0].args, "");
     let plan = parse_plan("llm caps=serve+model+threads").services;
     assert_eq!(plan[0].limits.caps, cap::SERVE | cap::MODEL | cap::THREADS);
+    let plan = parse_plan("netcheck caps=resolve").services;
+    assert_eq!(plan[0].limits.caps, cap::RESOLVE);
+    assert_ne!(cap::GRANTABLE & cap::RESOLVE, 0);
 }
 
 #[test]

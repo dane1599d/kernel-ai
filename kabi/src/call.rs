@@ -135,5 +135,5 @@ pub const BUILD_POLL: u64 = 36;
 /// [`super::net::MAX_ADDRESSES`]) is returned. Invalid for a malformed name or one
 /// longer than [`super::net::MAX_HOST`], NotFound for a host with no IPv4 address,
 /// Unavailable with no DNS server, TimedOut after
-/// [`super::net::RESOLVE_TIMEOUT_MS`], Interrupted on Ctrl-C. Needs [`super::cap::NET`].
+/// [`super::net::RESOLVE_TIMEOUT_MS`], Interrupted on Ctrl-C. Needs [`super::cap::RESOLVE`].
 pub const RESOLVE: u64 = 37;
