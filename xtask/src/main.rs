@@ -11,6 +11,7 @@
 //! cargo xtask fluency --local ID [--store DIR]   (the same gate on our own engine)
 //! cargo xtask setup | model chat|check|pin | bench quant   (the local LLM on the host; see models/mod.rs)
 //! cargo xtask tune --sim ... | demo | check | record | ab   (M10a; see tune/mod.rs)
+//! cargo xtask tokens --gguf PATH   (S10-0: real token counts of the prompt parts; see tokens.rs)
 //! cargo xtask doctor   (can this PC run Kernel AI in an accelerated VM, and what to fix; read-only)
 //! cargo xtask vbox [--start [--headless]]   (the VirtualBox VM "Kernel AI"; see vbox/mod.rs)
 //!
@@ -47,6 +48,7 @@ mod qemu;
 mod screen;
 mod smoke;
 mod strip;
+mod tokens;
 mod tune;
 mod userbuild;
 mod vbox;
@@ -70,6 +72,7 @@ fn main() -> ExitCode {
         Some("fluency") => fluency::main(&args[1..], &workspace_root().join("target")),
         Some("setup" | "model" | "bench") => models::main(&args),
         Some("tune") => tune::main(&args[1..]),
+        Some("tokens") => tokens::main(&args[1..]),
         Some("doctor") => doctor::main(&args[1..]),
         Some("vbox") => vbox::main(&args[1..]),
         _ => parse_args(&args).and_then(|options| execute(&options)),
