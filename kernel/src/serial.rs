@@ -107,6 +107,8 @@ pub fn _print_quiet(args: fmt::Arguments) {
     with_line(|| {
         let _ = Serial.write_fmt(args);
         crate::logbook::record(args);
+        // EXPERIMENT: draw as before, to see whether observe determinism returns.
+        crate::console::print(args);
     });
 }
 
