@@ -154,15 +154,21 @@ pub fn free_port() -> Result<u16, String> {
 }
 
 /// Types keys into the guest through the QEMU monitor: a key name with
-/// `sendkey`, and a `!` line as the monitor command after the `!`.
-fn type_keys(port: u16, keys: &[&str]) {
+/// `sendkey`, a `!` line as the monitor command after the `!`, and an `@` line
+/// as a QMP command on `qmp`.
+fn type_keys(port: u16, qmp: Option<u16>, keys: &[&str]) {
+    let mut qmp = qmp.map(Qmp::new);
     for _ in 0..50 {
         if let Ok(mut monitor) = TcpStream::connect(("127.0.0.1", port)) {
             thread::sleep(Duration::from_millis(200));
             for key in keys {
-                let sent = match key.strip_prefix('!') {
-                    Some(command) => writeln!(monitor, "{command}"),
-                    None => writeln!(monitor, "sendkey {key}"),
+                let sent = match (key.strip_prefix('!'), key.strip_prefix('@')) {
+                    (Some(command), _) => writeln!(monitor, "{command}"),
+                    (_, Some(command)) => match qmp.as_mut() {
+                        Some(qmp) => qmp.run(command),
+                        None => Err(std::io::Error::other("no QMP socket for an @ line")),
+                    },
+                    _ => writeln!(monitor, "sendkey {key}"),
                 };
                 if sent.is_err() {
                     break;
@@ -175,6 +181,77 @@ fn type_keys(port: u16, keys: &[&str]) {
         thread::sleep(Duration::from_millis(100));
     }
     eprintln!("xtask: could not reach the QEMU monitor on port {port}");
+}
+
+/// A QMP connection, opened on first use: QMP takes one client at a time and
+/// wants its capabilities negotiated first.
+struct Qmp {
+    port: u16,
+    stream: Option<BufReader<TcpStream>>,
+}
+
+impl Qmp {
+    fn new(port: u16) -> Self {
+        Self { port, stream: None }
+    }
+
+    /// Sends one command and waits for its answer, skipping events. The first
+    /// command connects and negotiates capabilities.
+    fn run(&mut self, command: &str) -> std::io::Result<()> {
+        if self.stream.is_none() {
+            let stream = TcpStream::connect(("127.0.0.1", self.port))?;
+            stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+            let mut reader = BufReader::new(stream);
+            let mut greeting = String::new();
+            reader.read_line(&mut greeting)?;
+            Self::send(&mut reader, r#"{"execute":"qmp_capabilities"}"#)?;
+            self.stream = Some(reader);
+        }
+        let reader = self.stream.as_mut().expect("connected just above");
+        Self::send(reader, command)
+    }
+
+    fn send(reader: &mut BufReader<TcpStream>, command: &str) -> std::io::Result<()> {
+        writeln!(reader.get_mut(), "{command}")?;
+        loop {
+            let mut line = String::new();
+            if reader.read_line(&mut line)? == 0 {
+                return Err(std::io::Error::other("QMP closed the connection"));
+            }
+            if line.contains("\"return\"") {
+                return Ok(());
+            }
+            if line.contains("\"error\"") {
+                return Err(std::io::Error::other(format!("QMP: {}", line.trim())));
+            }
+        }
+    }
+}
+
+/// The `qemu-xhci` controller with the case's USB devices, and a QMP socket
+/// when the case sends `@` lines; the port goes to the test run.
+pub fn input_args(case: &TestCase) -> Result<(Vec<String>, Option<u16>), String> {
+    let mut args = Vec::new();
+    if !case.usb.is_empty() {
+        args.extend(["-device".into(), "qemu-xhci,id=xhci".into()]);
+        for device in case.usb {
+            args.extend(["-device".into(), format!("{device},bus=xhci.0")]);
+        }
+    }
+    let wants_qmp = case
+        .keys
+        .iter()
+        .flat_map(|stage| stage.iter())
+        .any(|key| key.starts_with('@'));
+    if !wants_qmp {
+        return Ok((args, None));
+    }
+    let port = free_port()?;
+    args.extend([
+        "-qmp".into(),
+        format!("tcp:127.0.0.1:{port},server=on,wait=off"),
+    ]);
+    Ok((args, Some(port)))
 }
 
 pub fn run_interactive(qemu: &Path, args: &[String], target_dir: &Path) -> Result<(), String> {
@@ -193,6 +270,8 @@ pub struct TestRun<'a> {
     pub timeout: Duration,
     /// TCP port of the QEMU human monitor, used to inject keystrokes.
     pub monitor: u16,
+    /// TCP port of QMP, for the case's `@` lines.
+    pub qmp: Option<u16>,
     /// Lines the console must show exactly, worked out on the host (the
     /// `local-ask` case's golden answer).
     pub exact: Vec<String>,
@@ -206,7 +285,7 @@ pub fn run_test(
     target_dir: &Path,
     run: &TestRun,
 ) -> Result<(), String> {
-    let (accel, timeout, monitor) = (run.accel, run.timeout, run.monitor);
+    let (accel, timeout, monitor, qmp) = (run.accel, run.timeout, run.monitor, run.qmp);
     let stages = run.case.keys;
     let expect: Vec<String> = run
         .case
@@ -251,7 +330,7 @@ pub fn run_test(
             } else if line.contains("ready for keys") {
                 if let Some(&keys) = stages.get(stage) {
                     stage += 1;
-                    thread::spawn(move || type_keys(monitor, keys));
+                    thread::spawn(move || type_keys(monitor, qmp, keys));
                 }
             } else if line.contains("measure-start") {
                 measure_start = Some(Instant::now());

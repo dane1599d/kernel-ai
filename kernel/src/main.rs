@@ -82,6 +82,7 @@ mod timer;
 mod tune_ab_tests;
 mod tune_local_tests;
 mod tune_tests;
+mod usb;
 mod version;
 mod virtio;
 mod workload;
@@ -271,6 +272,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Keyboard => run_case(keyboard::typing_check),
         SelfTest::Pointer => run_case(pointer::self_test),
         SelfTest::Display => run_case(display_tests::check),
+        SelfTest::Usb => run_case(usb::self_test),
         SelfTest::Sched => run_case(sched_tests::latency_check),
         SelfTest::Watchdog => run_case(sched_tests::watchdog_check),
         SelfTest::Smp => run_case(smp_tests::all_cpus_check),

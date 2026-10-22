@@ -13,8 +13,9 @@ pub type Prepare = fn(&BuildService) -> Result<(), String>;
 pub struct TestCase {
     pub name: &'static str,
     pub cmdline: &'static str,
-    /// QEMU `sendkey` names, or `!` and a monitor command, in stages: stage N is
-    /// sent when the kernel logs "ready for keys" for the Nth time.
+    /// QEMU `sendkey` names, `!` and a monitor command, or `@` and a QMP command,
+    /// in stages: stage N is sent when the kernel logs "ready for keys" for the
+    /// Nth time.
     pub keys: &'static [&'static [&'static str]],
     /// Texts that must all appear on the serial console for the case to pass.
     pub expect: &'static [&'static str],
@@ -50,6 +51,9 @@ pub struct TestCase {
     pub gpu: bool,
     /// Check the screendump the keys take (`screen.rs`) once the case has passed.
     pub screen: Option<crate::screen::Expect>,
+    /// USB devices (`usb-kbd`, `usb-tablet`, `usb-mouse`) on a `qemu-xhci`
+    /// controller; none and no controller when empty.
+    pub usb: &'static [&'static str],
 }
 
 pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase {
@@ -70,6 +74,7 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         dns: false,
         gpu: false,
         screen: None,
+        usb: &[],
     }
 }
 
@@ -87,6 +92,30 @@ const POINTER: &[&str] = &[
     "!mouse_button 1",
     "!mouse_button 0",
     "!sendkey ctrl 1500",
+    "!mouse_button 1",
+    "!mouse_button 0",
+];
+
+/// "kai" and Enter on the USB keyboard, then, through QMP, the USB tablet moves
+/// to the middle of its X range and a quarter down, and the left button clicks.
+const USB_TABLET: &[&str] = &[
+    "k",
+    "a",
+    "i",
+    "ret",
+    r#"@{"execute":"input-send-event","arguments":{"events":[{"type":"abs","data":{"axis":"x","value":16384}},{"type":"abs","data":{"axis":"y","value":8192}}]}}"#,
+    r#"@{"execute":"input-send-event","arguments":{"events":[{"type":"btn","data":{"down":true,"button":"left"}}]}}"#,
+    r#"@{"execute":"input-send-event","arguments":{"events":[{"type":"btn","data":{"down":false,"button":"left"}}]}}"#,
+];
+
+/// "kai" and Enter on the USB keyboard, then the USB mouse moves right 38 and
+/// down 40 and clicks.
+const USB_MOUSE: &[&str] = &[
+    "k",
+    "a",
+    "i",
+    "ret",
+    "!mouse_move 38 40",
     "!mouse_button 1",
     "!mouse_button 0",
 ];
@@ -134,6 +163,32 @@ pub const TEST_CASES: &[TestCase] = &[
         keys: &[POINTER],
         expect: &["pointer: at 38 40 cell 2 5", "pointer: click 1 ctrl"],
         ..case("pointer", "test=pointer pointerlog")
+    },
+    // P7: a keyboard and a tablet on xHCI. QEMU sends keys to the USB keyboard
+    // and absolute moves to the tablet; the kernel checks the keys came over USB.
+    TestCase {
+        usb: &["usb-kbd", "usb-tablet"],
+        keys: &[USB_TABLET],
+        expect: &[
+            ": keyboard 0627:0001, ",
+            ": tablet 0627:0001, ",
+            "usb: USB tablet at 16384 8192 of 32767 32767, buttons 0",
+            "usb: USB tablet at 16384 8192 of 32767 32767, buttons 1",
+            "usb: received \"kai\" over USB",
+        ],
+        ..case("usb-tablet", "test=usb")
+    },
+    // P7: a keyboard and a relative mouse (boot protocol) on xHCI.
+    TestCase {
+        usb: &["usb-kbd", "usb-mouse"],
+        keys: &[USB_MOUSE],
+        expect: &[
+            ": mouse 0627:0001, ",
+            "usb: USB mouse moved 38 40, buttons 0",
+            "usb: USB mouse moved 0 0, buttons 1",
+            "usb: received \"kai\" over USB",
+        ],
+        ..case("usb-mouse", "test=usb")
     },
     TestCase {
         keys: &[KAI],

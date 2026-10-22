@@ -6,7 +6,7 @@
 
 use crate::entry::{self, TrapFrame};
 use crate::gdt::{DOUBLE_FAULT_IST_INDEX, KERNEL_CODE, MACHINE_CHECK_IST_INDEX, NMI_IST_INDEX};
-use crate::{apic, cpu, faults, i8042, process, smp, threads, timer};
+use crate::{apic, cpu, faults, i8042, process, smp, threads, timer, usb};
 use spin::LazyLock;
 use x86_64::VirtAddr;
 use x86_64::instructions::tables::lidt;
@@ -95,7 +95,11 @@ pub extern "C" fn trap_dispatch(frame: &mut TrapFrame) {
         v if v == u64::from(apic::TIMER_VECTOR) => {
             timer::on_tick();
             process::burst::on_tick();
+            let waiter = usb::on_tick();
             apic::end_of_interrupt();
+            if let Some(tid) = waiter {
+                threads::wake(tid);
+            }
             threads::on_tick();
         }
         // Both PS/2 ports: either interrupt drains whatever the controller holds.

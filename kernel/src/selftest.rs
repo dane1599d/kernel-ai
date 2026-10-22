@@ -18,6 +18,8 @@ pub enum SelfTest {
     Pointer,
     /// P3: the display shows a test pattern exactly, and virtio-gpu moves its cursor.
     Display,
+    /// P7: keys and pointer reports arrive from a USB keyboard, mouse or tablet.
+    Usb,
     Sched,
     Watchdog,
     Smp,
@@ -95,6 +97,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=keyboard" => Some(SelfTest::Keyboard),
             "test=pointer" => Some(SelfTest::Pointer),
             "test=display" => Some(SelfTest::Display),
+            "test=usb" => Some(SelfTest::Usb),
             "test=sched" => Some(SelfTest::Sched),
             "test=watchdog" => Some(SelfTest::Watchdog),
             "test=smp" => Some(SelfTest::Smp),
