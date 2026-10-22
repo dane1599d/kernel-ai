@@ -4,6 +4,7 @@
 
 use crate::chat::{Budget, Engine, Reply, Role, Step, Turn};
 use crate::fixture::{self, Spec};
+use crate::json::Shape;
 use crate::json_tests::SCRIPT_SHAPE;
 use crate::{Config, Error, KvCache, Next, Sampler};
 use alloc::vec::Vec;
@@ -24,8 +25,16 @@ struct Asked {
     repair: bool,
     max_new: usize,
     shaped: bool,
+    /// Under the shape, with jump-forward.
+    jump: bool,
     stop_at: Option<usize>,
 }
+
+/// [`SCRIPT_SHAPE`] with jump-forward on.
+const JUMP_SHAPE: Shape<'static> = Shape {
+    jump_forward: true,
+    ..SCRIPT_SHAPE
+};
 
 const fn asked(system: Option<&'static str>, user: &'static str) -> Asked {
     Asked {
@@ -34,6 +43,7 @@ const fn asked(system: Option<&'static str>, user: &'static str) -> Asked {
         repair: false,
         max_new: 60,
         shaped: true,
+        jump: false,
         stop_at: None,
     }
 }
@@ -59,7 +69,11 @@ impl Asked {
 /// The reply to `asked`, checking the callback saw what the reply says.
 fn ask(engine: &mut Engine<'_>, asked: &Asked) -> Result<Reply, Error> {
     let mut sampler = Sampler::seeded(0.2, 42);
-    let shape = asked.shaped.then_some(&SCRIPT_SHAPE);
+    let shape = match asked.jump {
+        true => &JUMP_SHAPE,
+        false => &SCRIPT_SHAPE,
+    };
+    let shape = asked.shaped.then_some(shape);
     let (mut made, mut cached, mut computed) = (0, None, 0);
     let reply = engine.reply(&asked.turns(), asked.max_new, &mut sampler, shape, |step| {
         match step {
@@ -159,6 +173,53 @@ fn a_warm_engine_answers_as_a_fresh_one_on_every_tier() {
         // The repair again, after other requests: only what is still shared.
         assert!(reused[7] < 10, "{reused:?}");
     }
+}
+
+#[test]
+fn with_jump_forward_a_warm_engine_answers_as_a_fresh_one_and_caches_exactly() {
+    // The forced literals go to the model as blocks; the answers are the same
+    // from a warm cache and a fresh one, and the cache holds, bit for bit, what
+    // one token at a time from an empty cache gives.
+    let bytes = fixture::build(&Spec::tiny());
+    let session = SESSION.map(|asked| Asked {
+        jump: true,
+        ..asked
+    });
+    for tier in Tier::all() {
+        let mut warm = Engine::load(&bytes, tier, 256, ROOMY).unwrap();
+        let mut forced = 0;
+        for asked in &session {
+            let mut engine = Engine::load(&bytes, tier, 256, ROOMY).unwrap();
+            let expected = ask(&mut engine, asked);
+            let got = ask(&mut warm, asked);
+            assert!(same(&got, &expected), "{got:?} vs {expected:?}");
+            assert_cache_holds_its_tokens(&bytes, tier, &warm);
+            if let Ok(reply) = &got {
+                assert!(reply.forced <= reply.tokens);
+                forced += reply.forced;
+            }
+        }
+        assert!(forced > 0, "nothing was forced");
+    }
+}
+
+#[test]
+fn jump_forward_forces_the_opening_and_closing_literals() {
+    let bytes = fixture::build(&Spec::tiny());
+    let mut engine = Engine::load(&bytes, Tier::all().next().unwrap(), 256, ROOMY).unwrap();
+    let reply = ask(
+        &mut engine,
+        &Asked {
+            jump: true,
+            ..SESSION[0]
+        },
+    )
+    .unwrap();
+    assert!(reply.text().starts_with("{\"script\":\""), "{reply:?}");
+    // Without it, every token is the model's pick.
+    let mut engine = Engine::load(&bytes, Tier::all().next().unwrap(), 256, ROOMY).unwrap();
+    assert_eq!(ask(&mut engine, &SESSION[0]).unwrap().forced, 0);
+    assert!(reply.forced > 0, "{reply:?}");
 }
 
 /// Checks the cache holds a key and value per token behind it, the ones the model

@@ -132,6 +132,8 @@ pub struct Reply {
     pub cached: usize,
     /// Tokens made, the end token not counted.
     pub tokens: usize,
+    /// Of `tokens`, the ones jump-forward fed as a block (see [`Shape`]).
+    pub forced: usize,
     pub ending: Ending,
 }
 
@@ -162,6 +164,8 @@ pub struct Engine<'a> {
     candidates: Vec<u32>,
     /// Every printable ASCII byte has a token of its own, as a shape needs.
     spells_ascii: bool,
+    /// Tokens jump-forward fed in the last reply.
+    forced: usize,
     about: About,
 }
 
@@ -231,6 +235,7 @@ impl<'a> Engine<'a> {
             ascii,
             candidates,
             spells_ascii,
+            forced: 0,
             about,
         })
     }
@@ -302,6 +307,7 @@ impl<'a> Engine<'a> {
         if prompt.len() > self.kv.capacity() {
             return Err(Error::ContextFull);
         }
+        self.forced = 0;
         let mut state = grammar.as_ref().map(Grammar::start);
         if let (Some(grammar), Some(start)) = (&grammar, &state) {
             // Room to close the object: one token per byte, and one position per
@@ -316,13 +322,31 @@ impl<'a> Engine<'a> {
             prompt_tokens: prompt.len(),
             cached,
             tokens: 0,
+            forced: 0,
             ending: Ending::MaxTokens,
         };
         if stopped {
             reply.ending = Ending::Stopped;
             return Ok(reply);
         }
-        for made in 1..=max_new {
+        let jump = shape.is_some_and(|shape| shape.jump_forward);
+        // The tokens the next model step runs: the one just picked, then any the
+        // shape forces after it.
+        let mut block = Vec::new();
+        // The object's opening literal is forced too, right after the prompt.
+        if jump && let (Some(grammar), Some(state)) = (&grammar, &mut state) {
+            if let Some(ending) = self.jump(grammar, state, &mut reply, &mut block, &mut on_step) {
+                reply.ending = ending;
+                return Ok(reply);
+            }
+            if !block.is_empty() {
+                self.model
+                    .forward_batch(&mut self.kv, &block, Some(&mut self.logits))?;
+                self.cached.extend_from_slice(&block);
+            }
+        }
+        let mut made = reply.tokens;
+        while made < max_new {
             let token = match (&grammar, &mut state) {
                 (Some(grammar), Some(state)) => match self.shaped(grammar, state, sampler)? {
                     Ok(token) => token,
@@ -340,6 +364,7 @@ impl<'a> Engine<'a> {
                     token
                 }
             };
+            made += 1;
             self.tok.decode(&[token], &mut reply.bytes);
             reply.tokens += 1;
             let next = on_step(Step::Token(token));
@@ -365,15 +390,79 @@ impl<'a> Engine<'a> {
             if made == max_new {
                 break;
             }
-            if self.kv.len() >= self.kv.capacity() {
+            block.clear();
+            block.push(token);
+            // `need` held above, so the forced tokens fit the tokens and positions
+            // left: each is at least one of the bytes it counted.
+            if jump && let (Some(grammar), Some(state)) = (&grammar, &mut state) {
+                if let Some(ending) =
+                    self.jump(grammar, state, &mut reply, &mut block, &mut on_step)
+                {
+                    reply.ending = ending;
+                    return Ok(reply);
+                }
+                made = reply.tokens;
+            }
+            if self.kv.len() + block.len() > self.kv.capacity() {
                 reply.ending = Ending::ContextFull;
                 return Ok(reply);
             }
-            self.model
-                .forward(&mut self.kv, token, Some(&mut self.logits))?;
-            self.cached.push(token);
+            match block[..] {
+                [one] => self
+                    .model
+                    .forward(&mut self.kv, one, Some(&mut self.logits))?,
+                _ => self
+                    .model
+                    .forward_batch(&mut self.kv, &block, Some(&mut self.logits))?,
+            }
+            self.cached.extend_from_slice(&block);
         }
         Ok(reply)
+    }
+
+    /// Jump-forward: the bytes `grammar` forces after `state`, as the tokenizer
+    /// splits them, are taken as the answer's next tokens without asking the
+    /// model, appended to `block` for one model step, and `state` moves past
+    /// them. Nothing happens if they are none, or if a token is not one the shape
+    /// allows (step decoding then makes them). `Some` when the answer ends in
+    /// them: the object closed there, or `on_step` said stop.
+    fn jump(
+        &mut self,
+        grammar: &Grammar<'_>,
+        state: &mut crate::json::State,
+        reply: &mut Reply,
+        block: &mut Vec<u32>,
+        on_step: &mut impl FnMut(Step) -> Next,
+    ) -> Option<Ending> {
+        let mut bytes = Vec::new();
+        grammar.forced(state, &mut bytes);
+        let text = core::str::from_utf8(&bytes)
+            .ok()
+            .filter(|text| !text.is_empty())?;
+        let start = block.len();
+        self.tok.encode(text, block);
+        let mut next = *state;
+        for &id in &block[start..] {
+            let allowed = self.ascii.binary_search(&id).is_ok();
+            match grammar.advance(next, self.tok.token_bytes(id)) {
+                Ok(after) if allowed => next = after,
+                _ => {
+                    block.truncate(start);
+                    return None;
+                }
+            }
+        }
+        *state = next;
+        for &id in &block[start..] {
+            self.tok.decode(&[id], &mut reply.bytes);
+            reply.tokens += 1;
+            reply.forced += 1;
+            self.forced += 1;
+            if on_step(Step::Token(id)) == Next::Stop {
+                return Some(Ending::Stopped);
+            }
+        }
+        state.is_done().then_some(Ending::EndToken)
     }
 
     /// Runs `prompt` through the model after the longest start it shares with the
@@ -436,6 +525,11 @@ impl<'a> Engine<'a> {
     #[cfg(test)]
     pub(crate) fn cache(&self) -> (&[u32], &KvCache) {
         (&self.cached, &self.kv)
+    }
+
+    /// Tokens jump-forward fed in the last reply, of those it made.
+    pub fn forced(&self) -> usize {
+        self.forced
     }
 
     /// The prompt's length in tokens, for a caller sizing `max_new`.

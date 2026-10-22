@@ -43,6 +43,8 @@ struct Speed {
     /// Prompt tokens taken from the cache, and computed.
     cached: usize,
     computed: usize,
+    /// Answer tokens jump-forward fed as blocks, not decoded one by one.
+    forced: usize,
 }
 
 impl Speed {
@@ -74,8 +76,12 @@ impl Speed {
             Some(rate) => format!("{rate:.1} tokens/s"),
             None => String::from("too short to time"),
         };
+        let forced = match self.forced {
+            0 => String::new(),
+            n => format!(", {n} of {} answer tokens forced", self.tokens + 1),
+        };
         format!(
-            "{rate}, {} of {} prompt tokens from the cache",
+            "{rate}, {} of {} prompt tokens from the cache{forced}",
             self.cached,
             self.cached + self.computed
         )
@@ -145,6 +151,7 @@ impl Clock {
             decode_ns: self.last - first,
             cached: self.cached,
             computed: self.computed,
+            forced: 0,
         })
     }
 }
@@ -214,7 +221,11 @@ impl Local {
     pub fn script(&mut self, request: &ScriptRequest) -> Result<Answer, AnswerError> {
         let mut clock = Clock::new(request.timeout_ms.min(script::SERVICE_TIMEOUT_MS));
         let answer = local::script(&mut self.engine, request, |step| clock.step(step));
-        self.last = clock.speed().or(self.last);
+        let forced = self.engine.forced();
+        self.last = clock
+            .speed()
+            .map(|speed| Speed { forced, ..speed })
+            .or(self.last);
         answer
     }
 

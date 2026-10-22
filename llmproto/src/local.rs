@@ -49,6 +49,11 @@ const SCRIPT_FIELDS: [Field; 2] = [
 pub const SCRIPT_SHAPE: Shape<'static> = Shape {
     fields: &SCRIPT_FIELDS,
     choices: &[],
+    // The literals between fields go as one block (jump-forward). They take the
+    // tokenizer's own split, which may differ from the model's picks, so an
+    // answer can differ from step decoding's; it is the same from a warm cache or
+    // a fresh one and on every tier. S02-1 measures the effect on accuracy.
+    jump_forward: true,
 };
 
 /// One string field whose limits do not apply: the shape makes it a choice.
@@ -219,6 +224,9 @@ pub fn tune(
     let shape = Shape {
         fields: &TUNE_FIELDS,
         choices: &choices,
+        // Off, so `tune` answers stay the ones M10's recording and `tune check`
+        // were made with.
+        jump_forward: false,
     };
     let asked = request.chat();
     let reply = engine.reply(

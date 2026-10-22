@@ -68,6 +68,12 @@ pub const MAX_WORDS: usize = 64;
 pub struct Shape<'a> {
     pub fields: &'a [Field],
     pub choices: &'a [Choice<'a>],
+    /// Jump-forward (SGLang's): the bytes the shape alone decides, the literals
+    /// between the fields and at either end, go to the model as one block of
+    /// their own tokens instead of one decode step each. The tokens may differ
+    /// from the ones step decoding would pick, so the answer may too; it is the
+    /// same answer every time, from a warm cache or a fresh one.
+    pub jump_forward: bool,
 }
 
 impl Shape<'_> {
@@ -524,6 +530,16 @@ impl<'s> Grammar<'s> {
         bytes
             .iter()
             .try_fold(state, |state, &byte| self.step(state, byte))
+    }
+
+    /// Fills `out` with the bytes the shape alone decides after `state`: the rest
+    /// of the literal it is in (`","summary":"`), or none outside a literal.
+    pub(crate) fn forced(&self, state: &State, out: &mut Vec<u8>) {
+        out.clear();
+        if let At::Lead(at) = state.at {
+            let (open, name, close) = self.lead_parts(state.field);
+            out.extend(open.iter().chain(name).chain(close).skip(at));
+        }
     }
 
     /// The fewest bytes that close the object from `state`: the rest of the
