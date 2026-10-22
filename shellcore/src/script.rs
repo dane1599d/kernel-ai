@@ -129,6 +129,8 @@ fn register(engine: &mut Engine, host: &Rc<dyn Host>, granted: &[&'static str], 
                     })?;
                     h.set_policy(id)
                         .map_err(|error| rhai_error(format!("set_policy: {error:?}")))?;
+                    // What runs now, so `undo` can tell whether it moved since.
+                    let after = undo::current_spec(h.as_ref()).unwrap_or((id, preset));
                     journal.borrow_mut().push(Done {
                         function: "set_policy",
                         what: format!(
@@ -139,6 +141,7 @@ fn register(engine: &mut Engine, host: &Rc<dyn Host>, granted: &[&'static str], 
                         inverse: Some(Inverse::Spec {
                             policy: was,
                             preset,
+                            after,
                         }),
                     });
                     Ok(())
@@ -169,6 +172,10 @@ fn fixed(n: INT, places: INT) -> RhaiResult<String> {
     })
 }
 
+/// The pure functions every strict engine has besides the OS functions it is
+/// granted. They touch nothing, so they are run-tier rows in `tiers::TIERS`.
+pub const HELPERS: &[&str] = &["floor", "fixed"];
+
 /// The strict engine for LLM-written scripts, with only `granted` OS functions.
 fn strict(
     line: &Rc<Line>,
@@ -186,7 +193,7 @@ fn strict(
         engine.disable_symbol(symbol);
     }
     // Numbers are integers only, so rounding one down leaves it as it is; models
-    // write `floor` for "rounded down" all the same.
+    // write `floor` for "rounded down" all the same. Both are in `HELPERS`.
     engine.register_fn("floor", |x: INT| x);
     engine.register_fn("fixed", fixed);
     register(&mut engine, host, granted, journal);
@@ -376,11 +383,16 @@ fn stand_in_note(error: &EvalAltResult) -> Option<String> {
 }
 
 /// The one question a script that asks gets: what the model says it does, then
-/// the shell's own account of the functions it calls that have no undo. Two
-/// short lines; `show` has the rest.
-pub fn question(id: u64, checked: &Checked, asking: &[&str]) -> String {
+/// the shell's own account of the functions it calls that ask, and why: they have
+/// no undo, or (`added`) the request did not ask for them. Two short lines; `show`
+/// has the rest.
+pub fn question(id: u64, checked: &Checked, asking: &[&str], added: bool) -> String {
+    let why = match added {
+        true => ", which the request did not ask for",
+        false => " (no undo)",
+    };
     format!(
-        "script {id}: {}\nIt changes {} (no undo). Go ahead? y/n, or show",
+        "script {id}: {}\nIt changes {}{why}. Go ahead? y/n, or show",
         checked.summary,
         asking.join(", ")
     )

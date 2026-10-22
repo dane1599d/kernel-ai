@@ -25,6 +25,12 @@ struct FakeHost {
     policy: Cell<Option<u64>>,
     /// Set to make policy switches fail, as the kernel's rate limit does.
     policy_busy: Cell<bool>,
+    /// Set to make the next policy switch fail as too soon, and only that one.
+    busy_once: Cell<bool>,
+    /// Policy switches made.
+    switches: Cell<u32>,
+    /// Every `sleep_ms`, in order.
+    slept: RefCell<Vec<u64>>,
     asked: RefCell<Vec<String>>,
     ask_takes_ns: u64,
     /// Answers `script` gives, in order; afterwards it fails.
@@ -43,6 +49,9 @@ impl FakeHost {
             heap_step: Cell::new(0),
             policy: Cell::new(None),
             policy_busy: Cell::new(false),
+            busy_once: Cell::new(false),
+            switches: Cell::new(0),
+            slept: RefCell::new(Vec::new()),
             asked: RefCell::new(Vec::new()),
             ask_takes_ns: 0,
             answers: RefCell::new(VecDeque::new()),
@@ -92,11 +101,16 @@ impl Host for FakeHost {
     }
 
     fn set_policy(&self, id: u64) -> Result<(), kabi::Error> {
-        if self.policy_busy.get() {
+        if self.policy_busy.get() || self.busy_once.replace(false) {
             return Err(kabi::Error::Busy);
         }
         self.policy.set(Some(id));
+        self.switches.set(self.switches.get() + 1);
         Ok(())
+    }
+
+    fn sleep_ms(&self, ms: u64) {
+        self.slept.borrow_mut().push(ms);
     }
 
     fn ask(&self, prompt: &str) -> Result<String, String> {

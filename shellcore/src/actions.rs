@@ -9,7 +9,7 @@
 
 use crate::script::{self, Checked};
 use crate::tiers::{self, Tier};
-use crate::undo::{self, Done};
+use crate::undo::{self, Done, Refused};
 use crate::{Reply, Shell};
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -47,16 +47,25 @@ fn is_show(text: &str) -> bool {
 }
 
 impl Shell {
-    /// The tier of a checked script, from every function it names, and the
-    /// functions at that tier.
-    pub(crate) fn tier_of(&self, checked: &Checked) -> (Tier, Vec<&'static str>) {
+    /// The tier of a checked script written for `request`, from every function it
+    /// names, and the functions at that tier.
+    pub(crate) fn tier_of(&self, request: &str, checked: &Checked) -> (Tier, Vec<&'static str>) {
         let names: Vec<&'static str> = checked
             .reads
             .iter()
             .chain(&checked.changes)
             .copied()
             .collect();
-        tiers::of_script(self.tiers, &names)
+        tiers::of_script(self.tiers, request, &names)
+    }
+
+    /// The question for a script that asks about `asking`: added by the model if
+    /// every one of them is run-tier in the table, or else for having no undo.
+    fn question(&self, id: u64, checked: &Checked, asking: &[&str]) -> String {
+        let added = asking
+            .iter()
+            .all(|name| tiers::of(self.tiers, name) == Tier::Run);
+        script::question(id, checked, asking, added)
     }
 
     /// Runs a run-tier script at once, or asks about one that is not.
@@ -70,6 +79,12 @@ impl Shell {
         let why = match (tier, checked.changes.is_empty()) {
             (Tier::Run, true) => String::from("ran at once: it only reads"),
             (Tier::Run, false) => String::from("ran at once: its changes can be undone"),
+            _ if at
+                .iter()
+                .all(|name| tiers::of(self.tiers, name) == Tier::Run) =>
+            {
+                format!("asked first: the request did not ask for {}", at.join(", "))
+            }
             _ => format!("asked first: {} has no undo", at.join(", ")),
         };
         self.shown = Some(format!("{}\n{why}", script::shown(id, &checked)));
@@ -80,7 +95,7 @@ impl Shell {
         }
         self.host
             .audit(&format!("script {id} tier ask ({}); asking", at.join(", ")));
-        let text = script::question(id, &checked, &at);
+        let text = self.question(id, &checked, &at);
         self.pending = Some(Pending {
             id,
             request: request.to_string(),
@@ -165,6 +180,15 @@ impl Shell {
         if yes.is_some() && self.tuner.proposing() {
             return Some(self.tuner.answer(self.host.as_ref(), input));
         }
+        if let Some(yes) = yes
+            && let Some(undoable) = self.undo_asking.take()
+        {
+            self.undo = Some(undoable);
+            return Some(match yes {
+                true => self.undo_with(true),
+                false => Reply::ok("Not undone; `undo` asks again"),
+            });
+        }
         if self.pending.is_some() {
             return Some(self.answer_pending(input));
         }
@@ -198,7 +222,7 @@ impl Shell {
             return Reply::err("the script expired; ask again");
         }
         if is_show(text) {
-            let question = script::question(id, &pending.checked, &pending.asking);
+            let question = self.question(id, &pending.checked, &pending.asking);
             let shown = script::shown(id, &pending.checked);
             self.pending = Some(pending);
             return Reply {
@@ -219,6 +243,12 @@ impl Shell {
     /// `undo`: puts back what the last run changed, newest change first. A change
     /// that cannot be put back yet stays for another `undo`.
     pub(crate) fn undo(&mut self) -> Reply {
+        self.undo_with(false)
+    }
+
+    /// `undo`, and a yes to its question: a change that something else moved since
+    /// is put back only `anyway`; otherwise the user is asked, with `y` or `n`.
+    fn undo_with(&mut self, anyway: bool) -> Reply {
         let Some(mut undoable) = self.undo.take() else {
             return Reply::err("nothing to undo");
         };
@@ -228,9 +258,24 @@ impl Shell {
             let Some(inverse) = done.inverse else {
                 continue;
             };
-            match undo::revert(self.host.as_ref(), inverse) {
+            match undo::revert(self.host.as_ref(), inverse, anyway) {
                 Ok(text) => said.push(text),
-                Err(why) => {
+                Err(Refused::Moved(now)) => {
+                    undoable.done.push(done);
+                    self.undo_asking = Some(undoable);
+                    self.host
+                        .audit(&format!("script {id} undo asks: changed since (now {now})"));
+                    let mut text = match said.is_empty() {
+                        true => String::new(),
+                        false => format!("Undone: {}\n", said.join("; ")),
+                    };
+                    text.push_str(&format!(
+                        "The policy changed since (now {now}); put {} back anyway? y/n",
+                        undo::target(inverse)
+                    ));
+                    return Reply::ok(text);
+                }
+                Err(Refused::Failed(why)) => {
                     undoable.done.push(done);
                     self.undo = Some(undoable);
                     self.host.audit(&format!("script {id} undo failed: {why}"));
