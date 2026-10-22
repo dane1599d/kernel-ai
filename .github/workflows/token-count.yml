@@ -1,0 +1,78 @@
+# Spike S10-0 (ADR 0010): real token counts with Qwen3-4B's tokenizer, counting
+# only, no inference. It downloads the pinned qwen3-4b-2507 file named in
+# xtask/models.json, checks its SHA-256, and runs `cargo xtask tokens`, which
+# reads only the file's vocabulary and counts today's script prompt, each script
+# API card, the chat template and the draft `dsl-1` pack. The table goes to the
+# run's summary and an artifact. Runs on pull requests that change what it
+# counts, and by hand (Actions tab, "Token counts", Run workflow).
+name: Token counts
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/token-count.yml
+      - xtask/src/tokens.rs
+      - xtask/tokens/**
+      - llmproto/src/script.rs
+      - bpe/src/**
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  MODEL_ID: qwen3-4b-2507
+
+jobs:
+  tokens:
+    name: Token counts (qwen3-4b-2507 tokenizer)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read the pinned file from the catalog
+        id: pin
+        run: |
+          jq -e --arg id "$MODEL_ID" '.models[] | select(.id == $id)' xtask/models.json > "$RUNNER_TEMP/entry.json"
+          {
+            echo "file=$(jq -r .file "$RUNNER_TEMP/entry.json")"
+            echo "sha256=$(jq -r .sha256 "$RUNNER_TEMP/entry.json")"
+            echo "url=https://huggingface.co/$(jq -r .repo "$RUNNER_TEMP/entry.json")/resolve/$(jq -r .revision "$RUNNER_TEMP/entry.json")/$(jq -r .file "$RUNNER_TEMP/entry.json")"
+          } >> "$GITHUB_OUTPUT"
+      # The same cache key as the fluency gate, so either workflow can fill it.
+      - name: Reuse the model file from an earlier run
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/kai-models
+          key: model-${{ steps.pin.outputs.sha256 }}
+      - name: Download the model and check its SHA-256
+        env:
+          KAI_MODELS: ${{ runner.temp }}/kai-models
+          FILE: ${{ steps.pin.outputs.file }}
+          SHA256: ${{ steps.pin.outputs.sha256 }}
+          URL: ${{ steps.pin.outputs.url }}
+        run: |
+          mkdir -p "$KAI_MODELS"
+          if [ ! -f "$KAI_MODELS/$FILE" ]; then
+            curl -fL --retry 3 -o "$KAI_MODELS/$FILE" "$URL"
+          fi
+          echo "$SHA256  $KAI_MODELS/$FILE" | sha256sum -c -
+      - name: Install pinned toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Count the tokens
+        env:
+          GGUF: ${{ runner.temp }}/kai-models/${{ steps.pin.outputs.file }}
+        run: |
+          set -o pipefail
+          cargo xtask tokens --gguf "$GGUF" | tee token-counts.md
+          {
+            echo "Model: $MODEL_ID, SHA-256 ${{ steps.pin.outputs.sha256 }}, commit $GITHUB_SHA."
+            echo
+            cat token-counts.md
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: token-counts
+          path: token-counts.md
