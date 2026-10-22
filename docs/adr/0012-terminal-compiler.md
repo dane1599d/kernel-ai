@@ -82,7 +82,7 @@ The `kai>` prompt stays as it is, and a second mode, `c>`, lets you type C that 
 | `promptcore` | no_std crate, host-tested | splits entries, applies the conveniences, writes the prelude, balances braces, keeps symbols, slots and the undo and source journals, renders `kai.h` | 800-1,200 |
 | `cc` | ring-3 program and service | holds two wasmi Stores: the compiler's (a fresh instance per compile from one cached module) and the session's | 400-700 |
 
-- **Plan line:** `cc caps=serve pages=24576 stack_pages=512 burst_ms=5000`. 96 MiB is a ceiling until spike S1; then it becomes the measured peak plus 25%.
+- **Plan line:** `cc caps=serve pages=24576 stack_pages=512 burst_ms=5000`. 96 MiB is a ceiling until spike S12-1; then it becomes the measured peak plus 25%.
 - `cc` is built for the hard-float target, like `llm` (add it to `USER_FLOAT_PROGRAMS`, xtask/src/userbuild.rs:24), because the compiler's own code may use floats.
 - **Total:** about 5k-8k lines of our Rust in 8 PRs (est.).
 
@@ -123,7 +123,7 @@ The `kai>` prompt stays as it is, and a second mode, `c>`, lets you type C that 
   - So a program sees its own results, and every effect gets 0002's tier, consent, log and undo.
 - **Transactions.** One entry, or one model program run, is one ADR 0002 transaction and one `actlog 1` entry. A trap or error rolls back its OS changes. Outbound effects flush only on success.
 - **Data labels.** A C value cannot carry ADR 0002's `Data` label. So `cc` labels the run instead: after any call that returns Content, every later undo-less or outbound call in that run counts as Data-controlled and asks.
-- **Fuel and Ctrl-C.** wasmi 2.0.0 exports `ResumableCallOutOfFuel` (src/lib.rs:193), so a run can be resumed slice by slice (S1 confirms). Between slices `cc` checks the deadline and the INTERRUPTED call (kernel/src/process/syscall.rs:142). Ctrl-C delivery, which main lacks, is also needed by ADR 0002's rollback; whichever PR comes first adds it: the terminal reads keys during a call and sets the flag of the process running the request.
+- **Fuel and Ctrl-C.** wasmi 2.0.0 exports `ResumableCallOutOfFuel` (src/lib.rs:193), so a run can be resumed slice by slice (S12-1 confirms). Between slices `cc` checks the deadline and the INTERRUPTED call (kernel/src/process/syscall.rs:142). Ctrl-C delivery, which main lacks, is also needed by ADR 0002's rollback; whichever PR comes first adds it: the terminal reads keys during a call and sets the flag of the process running the request.
 - **Model-written C** runs in a fresh session per request, after a trial run on stub imports. `:keep` copies its definitions into the user's session after showing them.
 - **NX.** A boot check that EFER.NXE is set on every CPU (D9), because W^X rests on it.
 
@@ -136,20 +136,20 @@ The `kai>` prompt stays as it is, and a second mode, `c>`, lets you type C that 
 ### D7. Components built in the OS
 
 - `cc build <component>` compiles C sources in `/w` (from P2, the component's directory), links standalone (its own memory, imports by [ADR 0003](0003-app-model.md)'s world), and writes 0003's artifact unchanged: `kai.manifest` (`kai-manifest 2`, `engine wasmi`), `kai.source`, `kai.actions`, `kai.app` and `kai.notices`, which carries xcc's MIT notice for `kairt`.
-- **v0.1 scope:** components and apps on the in-tree worlds `kai:app/component` and `kai:app/app`. Their C bindings are generated on the host by wit-bindgen 0.63.0's C generator and shipped read-only in `/kai`. An app with its own `app:<name>` actions needs bindings and `kai.actions` from the host build service; generating them in the OS needs WIT tools built for our target (unverified) and is not in v0.1.
+- **v0.1 scope:** components on the in-tree world `kai:app/component`, and apps that declare no actions of their own. `kai:app/app` alone exports only `events`, and ADR 0003 §5 requires every app world to export `actions` (it may be empty) and has the build service refuse a world without it. So an app built in the OS exports an empty `actions` interface. Both C bindings, for `kai:app/component` and for a world that includes `kai:app/app` and exports an empty `actions`, are generated on the host by wit-bindgen 0.63.0's C generator and shipped read-only in `/kai`. `cc build` writes a `kai.actions` with its header and world line and no action rows. An app with its own `app:<name>` actions needs bindings and `kai.actions` from the host build service; generating them in the OS needs WIT tools built for our target (unverified) and is not in v0.1.
 - **Provenance.** The ledger records `built-by cc <xcc commit> source <sha256>` where decisions.md:98 requires a 40-hex git commit (founder question 4). The ledger-to-git outbox (decisions.md:103) commits the build once a host is connected. Installing it as an app uses [ADR 0011](0011-packages.md)'s local repository `local`, signed by an Ed25519 device key.
 - Rust components keep the host build service. Both kinds run on the same `wasmhost`.
 
 ### D8. The AI
 
-- The model writes Kai C only when asked for a program or component, and only after spike S2 passes. Plain requests stay on 0002's tagged calls and `script(code)` in Rhai.
-- Route: 0002's `script` pseudo-action gains `lang` (`rhai` by default; `c` enters the grammar only after S2). Same tiers, transaction and log. ADR 0002 owns that change.
+- The model writes Kai C only when asked for a program or component, and only after spike S12-2 passes. Plain requests stay on 0002's tagged calls and `script(code)` in Rhai.
+- Route: 0002's `script` pseudo-action gains `lang` (`rhai` by default; `c` enters the grammar only after S12-2). Same tiers, transaction and log. ADR 0002 owns that change.
 - Compiler errors are the reason given in the one repair round (decisions.md:75). Type errors are caught before anything runs.
-- The prompt card: a Kai C card rendered by ADR [0010](0010-skill-pack.md)'s `llmproto::pack::render` from the same registry, as a new `Format` (`c-1`), used only for program requests. S2 measures its token cost against 0010's budget.
+- The prompt card: a Kai C card rendered by ADR [0010](0010-skill-pack.md)'s `llmproto::pack::render` from the same registry, as a new `Format` (`c-1`), used only for program requests. S12-2 measures its token cost against 0010's budget.
 
 ### D9. Grafts on Rhai and the terminal
 
-- **Rhai `=1.27.0`** in shellcore/Cargo.toml:12 and spikes/rhai/Cargo.toml:12, at the start of P1 so ADR 0002's analyser is written once against it. A redefinition test (none exists). Grain becomes the default only if S3 passes.
+- **Rhai `=1.27.0`** in shellcore/Cargo.toml:12 and spikes/rhai/Cargo.toml:12, at the start of P1 so ADR 0002's analyser is written once against it. A redefinition test (none exists). Grain becomes the default only if S12-3 passes.
 - **Rhai's string type** (ADR 0009 hands this to this ADR). 1.27.0 still requires smartstring, which RUSTSEC-2026-0249 (dated 2026-05-03, published 2026-08-10) marks unmaintained; `compact_str` (0.10.0, MIT) is optional only. We offer Rhai upstream a small PR that makes smartstring optional when `compact_str` is on. If no release has it by 0009's review date, 2027-01-31, we patch Rhai with that one change (`[patch.crates-io]`, `third_party/rhai/UPSTREAM.toml`). Whether `compact_str` builds for our target is unverified; that PR checks it. Until then smartstring ships under 0009's question 3.
 - **`more` replies** from the shell, so the terminal draws `..> ` in both modes.
 - **The EFER.NXE boot check.**
@@ -194,7 +194,9 @@ Ring-3 Cranelift in a single-thread process, with two one-way calls: map pages w
 
 ## Spikes that settle it
 
-**S1 `cc-wasm`.** Branch `spike/cc-wasm`, never merged. GitHub Actions only, under KVM and TCG with `-cpu max`, as boot case `test=ccspike`, plus host tests. No model runs and nothing runs on the founder's PC.
+Spike ids carry this ADR's number, so they do not collide with other ADRs' spikes.
+
+**S12-1 `cc-wasm`.** Branch `spike/cc-wasm`, never merged. GitHub Actions only, under KVM and TCG with `-cpu max`, as boot case `test=ccspike`, plus host tests. No model runs and nothing runs on the founder's PC.
 
 - **Build:** xtask builds `cc.wasm` from a pinned xcc commit and records which host tools it needed (gcc, `llvm-ar`, node); a minimal `wasihost` and `kailink`; a corpus of 20 entries from 1 to 150 lines, each with preludes of 0, 200 and 1,000 lines; the `notes` component's logic ported to C; a 1,000,000 sieve and a 10-million-step sum, in Kai C and in Rhai 1.26.1 AST and 1.27.0 Grain at `kai>`.
 - **Measure:**
@@ -205,26 +207,26 @@ Ring-3 Cranelift in a single-thread process, with two one-way calls: map pages w
   - (e) the speed ratio against Rhai;
   - (f) the need/resume round trip, shell to `cc` and back;
   - (g) a redefinition switching an existing caller and a stored function pointer;
-  - (h) report only: whether wcc compiles wit-bindgen 0.63.0's C output for `kai:app/component`.
+  - (h) report only: whether wcc compiles wit-bindgen 0.63.0's C output for `kai:app/component` and for D7's app world with an empty `actions`.
   - Run (b)-(e) under both wasmi dispatch modes ADR 0003's spike compares, and use the one 0003 picks. `portable-dispatch` alone is today's (decisions.md:93).
 - **Pass (all, under KVM):** (a) holds; 200-line prelude p50 at most 150 ms and p95 at most 400 ms; 1,000-line prelude p50 at most 400 ms; compiler memory at most 32 MiB; Kai C at least 10x faster than Rhai AST on both loops; need/resume median at most 100 µs; (g) passes. TCG figures are reported only.
 - **Fail:** p50 above 500 ms, memory above 64 MiB, or (a) false. Fallbacks in order, each keeping the rest of the design: a warm compiler instance restored from a memory snapshot; a prelude cache; our own C-subset front end on wasm-encoder. Between the pass and fail bars, the founder decides.
 
-**S2 C fluency.** `fluency-model.yml` on a GitHub runner (decisions.md:185), never the founder's PC. The 50 M8 tasks are ported to Kai C against a generated `kai.h`; each answer is compiled by `cc.wasm` on the host and run against the stand-in OS. Bar: 70% first try and 90% after one repair before the model may write C programs. Replacing Rhai as the action language would need C to beat Rhai's 47/50; that is not proposed.
+**S12-2 C fluency.** `fluency-model.yml` on a GitHub runner (decisions.md:185), never the founder's PC. The 50 M8 tasks are ported to Kai C against a generated `kai.h`; each answer is compiled by `cc.wasm` on the host and run against the stand-in OS. Bar: 70% first try and 90% after one repair before the model may write C programs. Replacing Rhai as the action language would need C to beat Rhai's 47/50; that is not proposed.
 
-**S3 Grain gate.** Host tests on a GitHub runner plus a KVM boot case in CI. Pass: 0 mismatches between AST and Grain over the 50 reference scripts and the fuzz corpus, and at least 1.2x on the shell's micro-benchmarks. Otherwise AST stays the default.
+**S12-3 Grain gate.** Host tests on a GitHub runner plus a KVM boot case in CI. Pass: 0 mismatches between AST and Grain over the 50 reference scripts and the fuzz corpus, and at least 1.2x on the shell's micro-benchmarks. Otherwise AST stays the default.
 
 ## Phases that depend on it
 
 | Phase | What it needs |
 |---|---|
-| P1 | Rhai 1.27.0 and S3; `more` replies; the NXE check; S1; `agentabi` rows (0002) from which `kai.h` and the bindings are generated; `agentcore::execute` as the one door; Ctrl-C delivery (also 0002's); `wasihost` and `kailink` begin as host-tested crates |
+| P1 | Rhai 1.27.0 and S12-3; `more` replies; the NXE check; S12-1; `agentabi` rows (0002) from which `kai.h` and the bindings are generated; `agentcore::execute` as the one door; Ctrl-C delivery (also 0002's); `wasihost` and `kailink` begin as host-tested crates |
 | P2 | `promptcore`; files for `#include`, `:save` and `:load`; source journals on disk (0004) |
 | P3 | Multi-line input in the terminal app on ADR [0005](0005-graphics.md)'s surfaces |
-| P4 (v0.1) | The `c>` prompt, sessions, `:dis`, `undo`, `cc build` beside the terminal and editor, `kai.notices` in built artifacts, installs from `local` (0011); model-written C only if S2 passes |
+| P4 (v0.1) | The `c>` prompt, sessions, `:dis`, `undo`, `cc build` beside the terminal and editor, `kai.notices` in built artifacts, installs from `local` (0011); model-written C only if S12-2 passes |
 | P5 | Nothing new: network actions reach C as `kai` imports at 0002's tiers |
 | P6 | None: JITs, rustc and clang run only inside the Linux guest (0006) |
-| P7 | S1's numbers re-measured on the founder's PC (no model involved) |
+| P7 | S12-1's numbers re-measured on the founder's PC (no model involved) |
 | P8 | Fuzzing `kailink`, `wasihost` and `promptcore`; a security review of the `cc` boundary; wasmi and xcc advisories tracked; the native-tier question at v1.0 |
 
 ## Changes to recently merged and open work
@@ -237,7 +239,7 @@ Ring-3 Cranelift in a single-thread process, with two one-way calls: map pages w
 | #14 AVX2 attention (merged) | None | - | Unrelated |
 | #16 DHCP and DNS (open, RESOLVE = 37) | None | - | This ADR adds no system call |
 | #18 virtio-gpu, #19 USB input (open) | None | - | Neither touches the shell, the prompt or memory protection |
-| PR #10 (merged) | Record 47/50 (94%), run 39675848260, as a row after decisions.md:185 | docs/decisions.md | S2's baseline is in a PR body only |
+| PR #10 (merged) | Record 47/50 (94%), run 39675848260, as a row after decisions.md:185 | docs/decisions.md | S12-2's baseline is in a PR body only |
 | Test builds | `spikes: false` by default; keep `--spikes`; update the test | xtask/src/options.rs:112, :136, :306-309 | `cargo xtask test` (ci.yml:79) links Rhai and wasmi into ring 0 (kernel/Cargo.toml:14-15), against "No JIT or compiler in ring 0" (compiler-in-terminal.md:58) |
 | Boot checks | Fail boot if EFER.NXE is clear; the equality check then covers every CPU | kernel/src/cpu.rs:122-123, :163-178 | W^X rests on NX, which only Limine sets today |
 | Decision rows, on approval | decisions.md:15 gains the C mode; :83 records how the slot rule is met; :200 becomes "C through xcc to Wasm adopted; native tier deferred past v1.0"; :98 gains the provenance line if question 4 is yes; roadmap.md:143 adds the `c>` prompt and in-OS builds to P4 | docs/decisions.md, docs/roadmap.md | Keep the record true |
@@ -245,7 +247,7 @@ Ring-3 Cranelift in a single-thread process, with two one-way calls: map pages w
 ## Open questions for the founder
 
 1. **The prompt language.** Is "C with HolyC's conveniences and type names" what you meant by TempleOS's terminal compiler? Or do you want real HolyC syntax (design A), at the cost of a 37k-line C fork and a language the model barely knows?
-2. **Model-written programs.** Once S2 passes, may the model compile and run its own C at the run tier when you ask for a program? Or should a model-written program always be shown first?
+2. **Model-written programs.** Once S12-2 passes, may the model compile and run its own C at the run tier when you ask for a program? Or should a model-written program always be shown first?
 3. **Native code.** Do you accept "no executable memory created at run time before v1.0", as ADR 0006 also proposes? It trades TempleOS's native speed (perhaps 10x, unmeasured) for a smaller attack surface.
 4. **Builds in the OS.** May components built on the machine be applied without a git commit, under the source-hash provenance line? This relaxes decisions.md:98 and touches 0008's and 0011's signing.
 5. **xcc and its tools.** If your answer to ADR 0009's question 4 covers C compiled into the image and host-only tools, nothing more is needed here. If not: do you approve xcc (MIT), compiled to Wasm, in the image; and gcc or clang, and possibly node.js, npm and `llvm-ar`, in CI and in WSL2 on your PC?

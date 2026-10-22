@@ -25,7 +25,7 @@ Not legal advice. Item 6 of the open questions lists what needs a lawyer. Repo f
 | BlueOak-1.0.0 | 1 | minicbor 2.3.0, in every component (`compsdk/Cargo.toml:13`) |
 
 - Outside Cargo.lock: `core`, `alloc` and `compiler_builtins` (the last is `MIT AND Apache-2.0 WITH LLVM-exception AND (MIT OR Apache-2.0)`). The console glyphs in `noto-sans-mono-bitmap` are Noto Sans Mono under OFL-1.1, "Copyright 2022 The Noto Project Authors", although the crate's metadata says MIT only. The 250-range table in `bpe/src/marks.rs:1-6` is derived from Unicode data (Unicode-3.0).
-- rhai 1.27.0 was published 2026-10-21 13:05 UTC (MIT OR Apache-2.0). It still lists `smartstring ^1.0.0` as a required, non-optional dependency; `compact_str` is optional only (crates.io API, read 2026-10-21). Upgrading Rhai does not remove the MPL dependency. RUSTSEC-2026-0249 (issued 2026-08-10) marks smartstring unmaintained.
+- rhai 1.27.0 was published 2026-10-21 13:05 UTC (MIT OR Apache-2.0). It still lists `smartstring ^1.0.0` as a required, non-optional dependency; `compact_str` is optional only (crates.io API, read 2026-10-21). Upgrading Rhai does not remove the MPL dependency. RUSTSEC-2026-0249 (dated 2026-05-03, added to the database 2026-08-10) marks smartstring unmaintained.
 
 **Models.** `xtask/models.json:33,91,149` pins three Apache-2.0 models. `xtask/src/models/pin.rs:123-125` refuses any other licence than Apache-2.0 or MIT (`docs/decisions.md:84`). `:model` shows the GGUF's licence in the OS (`user/src/bin/llm/local.rs:266`). No weights are redistributed: `xtask setup` downloads them. The unsloth GGUF repo pinned for Qwen3-4B-Instruct-2507 holds no LICENSE file; the base repo's LICENSE is Apache-2.0, "Copyright 2024 Alibaba Cloud".
 
@@ -261,7 +261,7 @@ External, read 2026-10-21 unless dated:
 - Tock CONTRIBUTING.md, "AI Policy" (no DCO; PR text not AI-written): https://github.com/tock/tock/blob/master/.github/CONTRIBUTING.md
 - seL4 DCO page (no CLA): https://sel4.systems/Contribute/dco.html; Redox CONTRIBUTING.md, "AI Policy" (no LLM-generated contributions): https://gitlab.redox-os.org/redox-os/redox/-/blob/master/CONTRIBUTING.md
 - Fuchsia open source licensing policies (MPL-2.0 for development targets only; page updated 2025-07-31): https://fuchsia.dev/docs/contribute/governance/policy/open-source-licensing-policies
-- RUSTSEC-2026-0249 (issued 2026-08-10): https://rustsec.org/advisories/RUSTSEC-2026-0249.html; `reuse` 6.2.0 on PyPI: https://pypi.org/project/reuse/6.2.0/
+- RUSTSEC-2026-0249, smartstring unmaintained (dated 2026-05-03, added to the database 2026-08-10): https://rustsec.org/advisories/RUSTSEC-2026-0249.html; `reuse` 6.2.0 on PyPI: https://pypi.org/project/reuse/6.2.0/
 - GitLab's switch to the DCO (2017-11-01): https://about.gitlab.com/blog/gitlab-switches-to-dco-license/
 - HashiCorp BSL (2023-08-10): https://www.hashicorp.com/en/blog/hashicorp-adopts-business-source-license; Redis FAQ (2024): https://redis.io/blog/redis-adopts-dual-source-available-licensing/
 - OpenStreetMap ODbL move: https://wiki.openstreetmap.org/wiki/Open_Database_License

@@ -43,7 +43,7 @@ Open-source reuse weighed (licences read from crates.io, LICENSE files or SPDX h
 | Genode session routing | AGPLv3 with a linking exception | Label-based routing; destroying a session revokes its capabilities | Idea only |
 | Flatpak document portal | LGPL-2.1-or-later | Per-app file grants with a `persistent` flag | Idea only |
 | Hubris leases | MPL-2.0 | Call-scoped grants | Idea only |
-| CaMeL, Progent, FIDES, AgentDojo | Apache-2.0, MIT, MIT, MIT | Value labels; "narrowing runs, widening asks"; injection test patterns | Ideas, via ADR 0002 and spike S2 |
+| CaMeL, Progent, FIDES, AgentDojo | Apache-2.0, MIT, MIT, MIT | Value labels; "narrowing runs, widening asks"; injection test patterns | Ideas, via ADR 0002 and spike S01-2 |
 | regorus 0.13.0, cedar-policy 4.14.0, biscuit-auth 6.0.0 | MIT AND Apache-2.0 AND BSD-3-Clause; Apache-2.0; Apache-2.0 | Policy engines and signed tokens | Not adopted: a table suffices; cedar and biscuit need `std` (cedar unverified) |
 
 ## Decision
@@ -70,19 +70,21 @@ In design terms: base design A, with C's app-facing routes and B's user-facing w
 | `Grant` | a node in the grant tree | MINT, REVOKE, INSPECT | P1 | this ADR |
 | `Sched`, `Model` | the scheduler policy; the model window | READ, SET_POLICY; MAP | P1 | this ADR |
 | `Component`, `Store`, `Build` | one live component's versions and ledger; the store; the build service | READ, WRITE, CONNECT | P1 | this ADR |
-| `NetDest` | address and port ranges, a protocol, host-name suffixes | CONNECT, RESOLVE | P1 (fixed `llm=`, `build=`), P5 per app | this ADR |
+| `NetDest` | address and port ranges, a protocol, host-name suffixes | CONNECT, RESOLVE | P1 (fixed `llm=`, `build=`), v0.1 (fixed `pkgrepo=`, for `pkg`), P5 per app | this ADR |
 | `Shm` | shared pages (D4) | MAP, READ, WRITE | P1 | this ADR |
 | `Dir`, `File` | filesystem objects served by `fs`; badge (volume, object id) | READ, WRITE, ENUMERATE, CREATE, DELETE | P2 | [ADR 0004](0004-storage.md) |
 | `Partition` | a `kai-data` partition | READ, WRITE | P2 | [ADR 0004](0004-storage.md) |
-| `Device` | an MMIO range, an IRQ, a DMA pool | MAP, WAIT | after ADR 0007's spikes | [ADR 0007](0007-drivers.md) |
+| `Update` | the A/B slot partitions and boot record; `updated` only | WRITE | P2 (slot writes, the update disk, `:reinstall`) | [ADR 0008](0008-updates.md) |
+| `Device` | an MMIO range, an IRQ, a DMA pool | MAP, WAIT | P2 for `usbd` after ADR 0007's S07-1 (unconfined under `iommu=prefer`); P7 confined | [ADR 0007](0007-drivers.md) |
+| `Display` | the screen; held only by `desktop` | MAP, WRITE | P3 | [ADR 0005](0005-graphics.md) |
+| `Input` | the kernel's one input queue. READ for `desktop`'s INPUT_READ. The key sink is an `Input` handle with WRITE, the push right for ADR 0007's INPUT_PUSH, given at spawn only to the service whose `devmatch` row has `input` (`usbd`) | READ; WRITE (key sink) | P3 | [ADR 0005](0005-graphics.md), [ADR 0007](0007-drivers.md) |
 | `Vm` | one micro-VM | per ADR 0006 | P6 | [ADR 0006](0006-existing-software.md) |
-| `Update` | the A/B slot partitions and boot record | WRITE | P8 | [ADR 0008](0008-updates.md) |
 
 Server-backed kinds (`Dir`, `File`, an app's action routes) point at the server's endpoint with a badge. The kernel enforces kind, rights, subset and revocation; the server reads the badge and the rights used, as seL4 badges work.
 
 ### D3. The bitmask becomes the kind ceiling
 
-- `Limits.caps` keeps its nine bits and their values. Each bit now means "may ever hold this kind", like Zircon job policy. A transfer to a process whose ceiling lacks the kind fails. A new kind granted at spawn gets the next free bit in claim order, whichever PR lands first: `cap::RESOLVE` (the #16 follow-up below), ADR 0007's Device, 0004's Partition, 0008's Update and 0006's Vm. ADRs do not fix those numbers.
+- `Limits.caps` keeps its nine bits and their values. Each bit now means "may ever hold this kind", like Zircon job policy. A transfer to a process whose ceiling lacks the kind fails. A new kind granted at spawn gets the next free bit in claim order, whichever PR lands first: `cap::RESOLVE` (the #16 follow-up below), ADR 0007's Device, 0004's Partition, 0008's Update, 0005's Display and Input, and 0006's Vm. ADRs do not fix those numbers.
 - At spawn the kernel turns the bits into startup handles, read with STARTUP, as Fuchsia gives a new process numbered handles. Ring 3 changes nothing at first.
 
 | Bit today | Startup handle |
@@ -96,6 +98,7 @@ Server-backed kinds (`Dir`, `File`, an app's action routes) point at the server'
 | PUBLISH | `Store` (READ, WRITE) and `Build` (the `build=` destination) |
 | MODEL, THREADS | `Model` (MAP); its own `Process` handle with THREADS |
 | RESOLVE (new) | `NetDest` with RESOLVE only |
+| none: the plan's `pkg` line | `NetDest` for `pkgrepo=` (CONNECT), the third fixed destination. `pkg` gets no cap bit ([ADR 0011](0011-packages.md)). In P5, 0011's per-host grant replaces it |
 
 - Old calls keep working: `need(slot, cap::X)` becomes "holds a live handle of kind K with right R". Closing it drops the right for good (Capsicum's one-way rule).
 - The SPAWN name rules (supervision.rs:265-283) become ceiling rules applied on every spawn path, the kernel's own included. That closes the gaps at thread_tests.rs:229 and model.rs:284.
@@ -106,7 +109,7 @@ Server-backed kinds (`Dir`, `File`, an app's action routes) point at the server'
 - One kernel object for shared pages, owned here and used by [ADR 0004](0004-storage.md) (bulk file data), [ADR 0005](0005-graphics.md) (a `Surface` is an `Shm` with a 4 KiB header page; 0005 owns `Surface`), [ADR 0006](0006-existing-software.md) (guest memory) and [ADR 0007](0007-drivers.md) (0007 owns the KRNG v1 ring format laid over an `Shm`). There is no other shared-buffer call, and 0004's fallback "shared-buffer call" is this object.
 - SHM_CREATE(pages) returns a handle with MAP, READ, WRITE, DUPLICATE, TRANSFER and INSPECT. The pages count against the creator's page quota (decisions.md:69) until freed.
 - SHM_MAP(handle, rights) maps read-only (MAP and READ) or read-write (MAP, READ and WRITE), never executable. SHM_UNMAP removes a mapping. Frames are freed when the last handle and mapping are gone.
-- Revoking the node a holder's handle came through unmaps the pages from that holder on every CPU and maps a private zero page in their place. The holder keeps running but sees and shares nothing. Spike S1-M6 measures it.
+- Revoking the node a holder's handle came through unmaps the pages from that holder on every CPU and maps a private zero page in their place. The holder keeps running but sees and shares nothing. Spike S01-1 M6 measures it.
 - The page quota is 512 MiB per process (kernel/src/process/mod.rs:55-58). ADR 0006's guest memory needs more for its `vmm`; raising it is ADR 0006's call.
 
 ### D5. Grants and revocation
@@ -120,7 +123,7 @@ Server-backed kinds (`Dir`, `File`, an app's action routes) point at the server'
 - **The trusted path** holds the `user` root with USER: the kernel terminal now, the compositor's system layer from P3 ([ADR 0005](0005-graphics.md)). The three caller-0 checks become "the handle used has USER". RECV_H reports the badge, the rights used and the caller's pid, so pid 0 is no longer the user's identity.
 - **One node per request.** Each typed line makes a node `request N` under `user`. It is revoked when the result line is written, so nothing a request was given outlives it.
 - **A single tagged call** ([ADR 0002](0002-agent-actions.md)) runs from the agent core (`shell` today) through a handle duplicated under `request N` and narrowed to the objects the call names.
-- **A `script`** runs in its own `scriptrun` process, holding only run-tier handles narrowed under `request N`, with ADR 0002's effect analysis and one transaction per script. The agent core starts it through a `Job` that may start only `scriptrun`. It is pooled if S1-M3 says so. `cc` ([ADR 0012](0012-terminal-compiler.md)) is the same kind of process: handles, no cap bit.
+- **A `script`** runs in its own `scriptrun` process, holding only run-tier handles narrowed under `request N`, with ADR 0002's effect analysis and one transaction per script. The agent core starts it through a `Job` that may start only `scriptrun`. It is pooled if S01-1 M3 says so. `cc` ([ADR 0012](0012-terminal-compiler.md)) is the same kind of process: handles, no cap bit.
 - **Ask tier.** No handle exists until the user's `y`. The trusted path then mints a `ONCE` handle under `request N`. Its badge names a kernel-held SHA-256 over the log entry id, the action name and the arguments exactly as the question showed them (ADR 0002). A 64-bit digest in the badge alone could be collided in about 2^32 tries, so the full digest stays in the kernel. The owner refuses a call whose digest differs. What was shown is what runs, once.
 - **Never tier.** No process the agent can reach holds such a handle, so there is nothing to call.
 - **Data never mints.** Only the trusted path and `powerbox` mint under `user`, and only on a keystroke, a pick or a typed request. Values carry a provenance label, `user` or `data`; [ADR 0002](0002-agent-actions.md) owns the labels and the rule that a `data` argument to an outbound, destructive or undo-less action asks. Labels can only raise a tier.
@@ -128,7 +131,7 @@ Server-backed kinds (`Dir`, `File`, an app's action routes) point at the server'
 
 ### D7. Words users see
 
-- Each (kind, rights) pair has one word in `kabi::perm`, for example `files.read`, `files.write`, `net.connect`, `sched.set`, `sys.read`, `proc.list`, and a class: `normal` (granted at install, never asked), `user` (needs a request, a pick or a yes), `special` (Settings only) or `system` (one named holder, never the agent). v0.1 needs at most 40 words (spike S2 checks).
+- Each (kind, rights) pair has one word in `kabi::perm`, for example `files.read`, `files.write`, `net.connect`, `sched.set`, `sys.read`, `proc.list`, and a class: `normal` (granted at install, never asked), `user` (needs a request, a pick or a yes), `special` (Settings only) or `system` (one named holder, never the agent). v0.1 needs at most 40 words (spike S01-2 checks).
 - Words appear only in `kai-app 1`, questions, Settings and the logs. The kernel never matches strings.
 - Words have a dot on purpose. They are not action names, which are snake_case with no dots so scripts can call them (sheet). A dot is not a Rhai or C identifier character, so a word can never be read as a call.
 - Lifetimes are `request`, `session` and `persistent`. A persistent grant needs an explicit user choice ("always").
@@ -177,7 +180,7 @@ expose kai:notes/actions@1.0
 - **Handles do not stop misuse inside a grant.** An injected argument can still pick a bad but undoable policy, or the wrong file in a granted folder. ADR 0002's labels and consent rules are still needed.
 - **Browsers need a broad grant.** Per-site grants cannot work for the web, so the browser's micro-VM gets one network grant (founder question 3).
 - **Denials are harder to debug** than a named permission. `handle_info`, a `grants` command, and `show`/`why` listing "could: read processes; set the scheduling policy (undo)" are part of the work.
-- **Slots.** `scriptrun` and one process per app use process slots. [ADR 0003](0003-app-model.md) raises `MAX_PROCESSES` from 16 (kernel/src/process/mod.rs:54) to 64; S1-M5 reports the memory cost. Linux programs keep their file descriptors inside the guest (ADR 0006), so the `vmm` needs few handles.
+- **Slots.** `scriptrun` and one process per app use process slots. [ADR 0003](0003-app-model.md) raises `MAX_PROCESSES` from 16 (kernel/src/process/mod.rs:54) to 64; S01-1 M5 reports the memory cost. Linux programs keep their file descriptors inside the guest (ADR 0006), so the `vmm` needs few handles.
 - **Revocation is new code with no proof.** Zircon has no revoke call and seL4's is GPL. `captable` carries property tests (rights never grow; a revoked or stale value never resolves) and loom-style interleaving tests. A server that ignores revoke notices gets no more calls through dead handles, and a boot case kills one that keeps using them.
 - **decisions.md rows.** :79 ("A coarse capability set") is superseded; :78 ("Minimal for LLM-written scripts") is met by request nodes; :71 ("ring 3 never chooses a destination") is generalised by `NetDest`. The Tock and cap-std ports rest on [ADR 0009](0009-licence.md) replacing :52 ("Borrow ideas only, clean-room") and are listed in docs/third-party-notices.md.
 
@@ -197,7 +200,7 @@ expose kai:notes/actions@1.0
 
 No spike runs a real model anywhere. Boot cases use CI's LLM test double.
 
-**S1 "handle-run".** On a branch, build `captable`, the kernel wiring for `Sched`, `Service` and `Shm`, request nodes, `ONCE` with its digest, and `scriptrun` running the seamless-actions `set_policy` script through handles. It runs as boot cases on GitHub Actions: KVM for absolute numbers, TCG with icount for relative ones. TCG also runs locally in WSL2.
+**S01-1 "handle-run".** On a branch, build `captable`, the kernel wiring for `Sched`, `Service` and `Shm`, request nodes, `ONCE` with its digest, and `scriptrun` running the seamless-actions `set_policy` script through handles. It runs as boot cases on GitHub Actions: KVM for absolute numbers, TCG with icount for relative ones. TCG also runs locally in WSL2.
 
 | Measure | Pass | Fail |
 |---|---|---|
@@ -210,22 +213,22 @@ No spike runs a real model anywhere. Boot cases use CI's LLM test double.
 
 30 ms is about 1-1.5% of the sheet's 2-4 s target for a plain action under KVM (ADR 0002's budget, to be confirmed by its in-guest spike). If M3 lands between 30 and 150 ms, `scriptrun` is pooled: one long-lived process that receives `request N`'s handles and has them revoked after. If it fails pooled, scripts stay in `shell` under request nodes, and this ADR records that the Rhai engine is then the only bound on the script itself.
 
-**S2 "tier corpus"** (B's permsim, re-aimed at handles and labels; shared with ADR 0002). A host crate in `spikes/` with 150 fixed cases: the 50 M8 fluency tasks, 50 new P1-P5 requests and 50 injected cases in AgentDojo's style. Pass: ≤ 5 prompts per 100 benign cases; 0 of 50 adversarial cases reach an action the user did not name without asking; ≤ 40 words in `kabi::perm`. Fail: any adversarial run (fix the rule, not the threshold), or more than 15 prompts per 100 benign cases (the request is then not enough consent, and that area needs pickers). Runs as host tests in GitHub Actions. No model.
+**S01-2 "tier corpus"** (B's permsim, re-aimed at handles and labels; shared with ADR 0002). A host crate in `spikes/` with 150 fixed cases: the 50 M8 fluency tasks, 50 new P1-P5 requests and 50 injected cases in AgentDojo's style. Pass: ≤ 5 prompts per 100 benign cases; 0 of 50 adversarial cases reach an action the user did not name without asking; ≤ 40 words in `kabi::perm`. Fail: any adversarial run (fix the rule, not the threshold), or more than 15 prompts per 100 benign cases (the request is then not enough consent, and that area needs pickers). Runs as host tests in GitHub Actions. No model.
 
-**S3 "WIT on wasmi"** belongs to [ADR 0003](0003-app-model.md). This ADR needs only its output, a binding from WIT resources to handles, not a particular result.
+**S03-1 "same bytes, two engines"** (WIT on wasmi) belongs to [ADR 0003](0003-app-model.md). This ADR needs only its output, a binding from WIT resources to handles, not a particular result.
 
 ## Phases that depend on it
 
 | Phase | What it needs from this ADR |
 |---|---|
 | P1 agent core | Steps 1-6, before the rest of the agent core: (1) `kabi::handle`, `Rights`, the errors, ABI_INFO and the "KAI" note; (2) `captable`; (3) per-slot tables, startup handles from `caps`, `need()` on handles; (4) handle IPC, `uses=`, call-by-name retired; (5) grants, request nodes, cancel on revoke; (6) `ONCE`, `scriptrun`, `Shm`. Exit test roadmap.md:140 rests on 5-6. |
-| P2 files | `Dir`, `File` and `Partition` (ADR 0004); the `powerbox` service; `kai-grants 1` on disk |
-| P3 desktop | `Surface` on `Shm` (ADR 0005); the picker and the USER root in the compositor's system layer; `kai-app 1` from artifacts |
+| P2 files | `Dir`, `File` and `Partition` (ADR 0004); the `Update` kind (ADR 0008); `Device` for `usbd` after ADR 0007's S07-1; the `powerbox` service; `kai-grants 1` on disk |
+| P3 desktop | `Display`, `Input` and `Surface` on `Shm` (ADR 0005); the key sink for `usbd` (ADR 0007); the picker and the USER root in the compositor's system layer; `kai-app 1` from artifacts |
 | P4 built-in apps | Settings "what each app can do" in the words of D7; revoke from Settings and from `undo` |
-| P5 networking | `NetDest` per app (Tock port), RESOLVE as a right on it, HTTP and connect on handles, `psl` if approved |
+| P5 networking | `NetDest` per app (Tock port), RESOLVE as a right on it, HTTP and connect on handles, ADR 0011's per-host grant in place of `pkgrepo=`, `psl` if approved |
 | P6 existing apps | the `Vm` kind and one network grant per VM (ADR 0006) |
-| P7 real hardware | `Device` kinds, only with ring-3 drivers and an IOMMU (ADR 0007) |
-| P8 production | signer-bound grants, the `Update` kind (ADR 0008), fuzzing of every parser here, a security review of the trusted path |
+| P7 real hardware | AMD-Vi confinement of `Device` holders and `iommu=require` (ADR 0007) |
+| P8 production | signer-bound grants, fuzzing of every parser here, a security review of the trusted path |
 
 ## Changes to recently merged and open work
 
@@ -246,7 +249,7 @@ No spike runs a real model anywhere. Boot cases use CI's LLM test double.
   - termcore/src/style.rs: `Kind::of` returns `Log` for any row that starts with `[`, before every other check, with tests for both cases above. No kernel line starts with `[` (kernel/src/process/syscall.rs:198-200).
   - kernel/src/process/syscall.rs:216-224: cut pieces so `[name] ` plus the piece fits in `terminal::PIECE_CHARS`, so ring-3 text never starts a row. Model text in `ai:` lines has the same overflow (kernel/src/terminal.rs:316, 4 + 160 characters); cut it to `PIECE_CHARS - 4`.
   - Why: the ask tier and the USER root rest on ring 3 never drawing a question or a prompt.
-- **#19 USB input (open, 0717caa).** No change now. Keys become PS/2 set 1 scancodes in the i8042 ring (kernel/src/usb.rs:1-5 on the branch), so `discard_pending` still applies. When xHCI moves to a ring-3 `usbd` (ADR 0007, after its spike), its keys must still enter that one kernel path, through a key-sink handle only `usbd` holds. That makes `usbd` part of the trusted path for ADR 0007's review. The `Hal` trait (xhci/src/hal.rs:102 on the branch) is where `Device` handles plug in.
+- **#19 USB input (open, 0717caa).** No change now. Keys become PS/2 set 1 scancodes in the i8042 ring (kernel/src/usb.rs:1-5 on the branch), so `discard_pending` still applies. When xHCI moves to a ring-3 `usbd` (ADR 0007, in P2 after S07-1), its keys must still enter that one kernel path, through the key sink (an `Input` handle with WRITE, D2) that only `usbd` holds. That makes `usbd` part of the trusted path for ADR 0007's review. The `Hal` trait (xhci/src/hal.rs:102 on the branch) is where `Device` handles plug in.
 - **#18 virtio-gpu (open, af7635d).** No change now. In P3 its buffers are `Shm` surfaces, and a top layer is reserved for the trusted path (ADR 0005).
 - **#13 parser hardening (merged).** When they land, add hostile tests with testkit/hostile.rs for the `kai-grants 1` and `kai-app 1` parsers and the RECV_H message, and extend uelf/tests/hostile.rs to mutate the "KAI" note.
 - **#14 faster decode (merged).** None.

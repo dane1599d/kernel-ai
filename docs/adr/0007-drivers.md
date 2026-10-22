@@ -73,13 +73,14 @@ A driver runs in ring 0 if it is needed before the supervisor starts or on the m
 |---|---|---|---|
 | APICs, HPET or TSC, PCI config, the vector table, the IOMMU | ring 0 | now | mechanism |
 | ACPI tables and AML (uACPI) | ring 0 | P1 tables, P3 AML | S07-3 for AML |
+| Hardware watchdog: i6300esb (QEMU), the AMD TCO timer (P7; unverified on the founder's board) | ring 0 | P2 for QEMU, P7 for the board | mechanism; ADR [0008](0008-updates.md)'s fault path uses it |
 | NVMe, virtio-blk, virtio-net, virtio-gpu, GOP, PS/2 | ring 0 | now | boot path or hypervisor device |
 | xHCI and USB HID, later hubs | ring 3, `usbd` | P2, in v0.1 | S07-1; on a fail it stays in ring 0 on MSI-X |
 | Audio: virtio-snd (P6), HD Audio or USB Audio Class (P7) | ring 3, `audiod` | P6, v0.2 | S07-1's teardown result |
 | The P7 NIC (RTL8125 or I226-V) | ring 3, `netd` | P7, v0.3 | S07-4; on a fail it stays in ring 0 behind the same contract |
 | RTX 4070 Ti beyond GOP | ring 3 | after v1.0 | founder question 2 |
 
-v0.1 gets everything above except `amdvi`, `netd` and `audiod`.
+v0.1 gets everything above except `amdvi`, `netd`, `audiod` and the board's TCO watchdog.
 
 ### 2. One contract, two hosts: `devkit`
 
@@ -154,7 +155,7 @@ It feeds DEV_LIST and P1's `device_list` action. A driver whose device the IOMMU
 ### 6. Kernel drivers: lifecycle and faults
 
 - Panic stays abort (docs/decisions.md:54). B's panic containment is rejected.
-- Each kernel driver runs on its own kernel thread. A watchdog calls `reset()` on a command timeout (NVMe 5 s, kernel/src/nvme/controller.rs:19), on a fatal status (NVMe CSTS.CFS, xHCI USBSTS.HCE or HSE, virtio DEVICE_NEEDS_RESET) or after 2 s with work queued and no progress. If `reset()` fails, the device is marked `Failed` and its clients get errors.
+- Each kernel driver runs on its own kernel thread. A software watchdog (not the hardware one in section 1) calls `reset()` on a command timeout (NVMe 5 s, kernel/src/nvme/controller.rs:19), on a fatal status (NVMe CSTS.CFS, xHCI USBSTS.HCE or HSE, virtio DEVICE_NEEDS_RESET) or after 2 s with work queued and no progress. If `reset()` fails, the device is marked `Failed` and its clients get errors.
 - Every reset is logged as a system event the agent can read, in ADR 0002's `actlog 1`.
 
 ### 7. Ring-3 drivers: the device ABI
@@ -175,7 +176,7 @@ It feeds DEV_LIST and P1's `device_list` action. A driver whose device the IOMMU
 | RING_ATTACH | shm, bit -> 0 | Doorbells on this ring set `bit` for the caller. |
 | RING_NOTIFY | shm -> 0 | Sets the bit of every other process attached to the ring. |
 
-- **Not built:** DEV_PORTS (its one user in design C was a ring-3 `acpid`; ring 3 keeps IOPL 0 and no I/O bitmap) and DEV_DMA_FREE (user pages are never unmapped while a process lives, kernel/src/memory/user.rs:10-11; drivers keep pools until user unmapping with TLB shootdown exists, which ADR [0006](0006-existing-software.md) adds).
+- **Not built:** DEV_PORTS (its one user in design C was a ring-3 `acpid`; ring 3 keeps IOPL 0 and no I/O bitmap) and DEV_DMA_FREE (user pages are never unmapped while a process lives, kernel/src/memory/user.rs:10-11; drivers keep pools until user unmapping with TLB shootdown exists, which ADR [0001](0001-capabilities.md)'s `Shm` work adds in P1 (step 6); DEV_DMA_FREE may land with or after it).
 - NOTIFY_WAIT and the two RING calls serve every KRNG user, not only drivers. If ADR 0001 adds a general wait on handles with the WAIT right, NOTIFY_WAIT becomes that call.
 - **KRNG v1**, the one ring format for bulk data, over one `Shm` object (ADR 0001). Users: ring-3 drivers, ADR [0005](0005-graphics.md)'s `kai-surface 1` transport, ADR 0006's `vmm` exit ring, and ADR 0004's file service if its spike S2 moves bulk data off copied IPC.
   - Layout: a 64-byte header at offset 0; then `entries` 64-byte requests; then `entries` 16-byte responses; then a data area.
@@ -183,7 +184,7 @@ It feeds DEV_LIST and P1's `device_list` action. A driver whose device the IOMMU
   - Request: `tag: u64, op: u16, flags: u16, buffer: u32, offset: u64, len: u32, _r: u32, args: [u64; 4]`. `buffer` 0 is the ring's own data area; 1 to 15 name further `Shm` objects passed with the ring, so bulk data never crosses IPC.
   - Response: `tag: u64, status: i32` (0 or a negative `kabi::Error`), `len: u32`.
   - One producer and one consumer per direction. A producer writes an entry, then publishes its head with release ordering; the consumer reads the head with acquire ordering.
-  - `kind` numbers live in `kabi::ring`, claimed in order: BLOCK (ops READ, WRITE, FLUSH; semantics ADR 0004's, which needs no FUA), FRAME (net), MSG (ADR 0005's messages, at most 4,096 bytes in the data area), PCM (audio). A peer refuses any other version.
+  - `kind` numbers live in `kabi::ring`, claimed in order: BLOCK (ops READ, WRITE, FLUSH; semantics ADR 0004's, which needs no FUA), FRAME (net), MSG (ADR 0005's messages, at most 4,096 bytes in the data area), PCM (audio), VMEXIT (ADR 0006's exits and doorbells; read data is returned in the data area). A peer refuses any other version.
 - **Teardown.** When a driver process exits, for any reason, the kernel does this before the supervisor sees the exit record: masks its vectors; clears Bus Master and Memory Space and reads the command register back; issues a Function Level Reset when the device offers one; drops the IOMMU domain after `COMPLETION_WAIT`; and only then frees the ledger. No frame is freed while a device can still reach it.
 - **Restart.** Calls the driver had taken fail at once (kernel/src/ipc.rs:13-14). Ring requests in flight complete with `Dead` when the client re-attaches, and block clients resend. The supervisor restarts with today's policy, and the new instance resets the controller from scratch (#19's `Controller::start` already does, xhci/src/driver/mod.rs:132 on the branch).
 - `usbd` takes one of today's 16 process slots (kernel/src/process/mod.rs:54). ADR [0003](0003-app-model.md) owns that limit and raises it to 64 in the first PR that needs more.
@@ -292,12 +293,12 @@ All four run on GitHub Actions ubuntu-24.04 with apt QEMU 8.2 (.github/workflows
 | Phase | Needs from this ADR |
 |---|---|
 | P1 | `pci` and `devmatch`, the vector allocator and MSI-X, `devkit` and `Zone::Below4G`, DeviceRecords and DEV_LIST, FADT reboot, and the action rows in section 11. |
-| P2 | Block write, flush, info, queues and MSI-X completions for NVMe and virtio-blk (with ADR 0004); resend after a reset; the device ABI, KRNG v1 and `usbd` after S07-1. |
+| P2 | Block write, flush, info, queues and MSI-X completions for NVMe and virtio-blk (with ADR 0004); resend after a reset; the device ABI, KRNG v1 and `usbd` after S07-1; the i6300esb watchdog for ADR 0008's fault path. |
 | P3 | `Display` for ADR 0005's compositor; typed input events from PS/2 and `usbd`; KRNG for `kai-surface 1`; uACPI power-off and the power button after S07-3. |
 | P4 | DeviceRecords for the system monitor and settings apps. Nothing new in drivers. |
 | P5 | virtio-net on MSI-X with the NAPI budget, for TLS downloads. |
 | P6 | `audiod` on virtio-snd for the Linux micro-VM's audio (guest to `vmm` to `audiod`, ADR 0006); network throughput for video; KRNG for `vmm`'s exit ring. |
-| P7 | PCI behind bridges on a real board, `amdvi` and `iommu=require`, `usbd` hubs and hot-plug for the AMD controllers, `netd` (rge or igc) after S07-4, `audiod` for HD Audio or USB Audio Class, x2APIC and more than 8 CPUs, the FADT 8042 flag, GOP on the RTX 4070 Ti. |
+| P7 | PCI behind bridges on a real board, `amdvi` and `iommu=require`, `usbd` hubs and hot-plug for the AMD controllers, `netd` (rge or igc) after S07-4, `audiod` for HD Audio or USB Audio Class, x2APIC and more than 8 CPUs, the FADT 8042 flag, GOP on the RTX 4070 Ti, the board's AMD TCO watchdog (unverified on the founder's board). |
 | P8 | Fuzzing of every device-facing parser and the DEV_CFG filter; the security review of the device ABI and teardown. |
 
 The order of work after approval is in [0000-execution-plan.md](0000-execution-plan.md): S0; `pci` and `devmatch` (after #18 and #19 merge); vectors and MSI-X; `devkit` and zones; block write, flush and queues (with ADR 0004); the device ABI with `usbd`; uACPI; `amdvi` before P7. Design C's estimate for v0.1 is 4,500-6,000 lines in 10-12 PRs over P1-P3 (an estimate, not a measurement).

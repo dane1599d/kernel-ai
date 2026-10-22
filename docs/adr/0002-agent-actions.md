@@ -40,7 +40,7 @@ Three designs were written and judged on 2026-10-21. A fourth axis, open-source 
 | **B. Scripts with effect analysis** | The model keeps writing Rhai. Code walks the syntax tree, labels every value (Literal < System < Content), derives tiers from effects and runs each script as one transaction. | For: the most rigorous provenance and the all-or-nothing transaction, needed anyway for multi-step requests; lowest decoder risk; about 3,500 lines. Against: every request still decodes free text, and a failed compile or trial costs a whole repair round (task 19 took 50.4 s); its "not asked for" rule had a hole: "Tell me the number of processors" plus a model-added `set_policy` matched no rule and ran; rollback did not handle `Busy` within 100 ms of a switch (`kernel/src/sched_control/calls.rs:16-35`); reinterprets roadmap.md:140. | 7 | **Lost as the base; its analyser and transactions are grafted on.** |
 | **C. MCP-shaped actions** | Every action is an MCP `Tool` with JSON Schema arguments and annotations; the model answers in Qwen's `<tool_call>` form; providers speak JSON-RPC over IPC from P3. | For: best reuse (rmcp as an oracle, the conformance suite); a public vocabulary. Against: Qwen's JSON tool block for today's 7 functions is 1,364 bytes against 553 for today's lines (2.5 times; C's count, the 553 rechecked by the judge) in a 2,048-position context; ties the app ABI at P3 to a spec revised four times from 2025-03-26 to 2026-07-28 whose tools page says clients SHOULD confirm operations; every MCP request carries `_meta` bytes against an 8,192-byte message (`kabi/src/lib.rs:160`); the interop payoff arrives at P5/P6 at the earliest, since roadmap.md:128 keeps the AI local ("There is no cloud AI"); keeps `names_in`. About 4,100 lines plus about 1,500 for IPC. | 6 | **Lost; its naming, row consistency checks and P5 bridge plan are grafted on.** |
 
-Also weighed and not taken: a second model call that judges "did the user ask for this" (Anthropic measured 17% of real over-eager actions missed by its classifier pipeline, and a second decode costs seconds here); scripts as the only form (kept as the fallback if spike S1 fails); JSON-RPC between first-party processes in v0.1.
+Also weighed and not taken: a second model call that judges "did the user ask for this" (Anthropic measured 17% of real over-eager actions missed by its classifier pipeline, and a second decode costs seconds here); scripts as the only form (kept as the fallback if spike S02-1 fails); JSON-RPC between first-party processes in v0.1.
 
 Open-source reuse, licences checked 2026-10-21:
 
@@ -50,17 +50,17 @@ Open-source reuse, licences checked 2026-10-21:
 | rmcp 3.6.0 (2026-10-20), the official Rust SDK | Apache-2.0 | Host-side conformance oracle for a P5/P6 bridge, in xtask only | Deferred to P5; free class, listed in that PR |
 | FIDES (microsoft/fides), arXiv 2505.23643 v2 | MIT | The two policies P-T and P-F; typed quarantined reads | Taken as ideas (the repo is one notebook) |
 | CaMeL (google-research/camel-prompt-injection), arXiv 2503.18813 v2 | Apache-2.0 | Labels on values checked before each call; plan before data | Ideas only; its Python interpreter is unmaintained |
-| AgentDojo 0.1.35 (ethz-spylab/agentdojo) | MIT | Test structure (user task, injection placed in data, check the injected action never ran) and its strings, with attribution | Taken for boot cases and S1 |
+| AgentDojo 0.1.35 (ethz-spylab/agentdojo) | MIT | Test structure (user task, injection placed in data, check the injected action never ran) and its strings, with attribution | Taken for boot cases and S02-1 |
 | BFCL (ShishirPatil/gorilla) | Apache-2.0 repo; data licence unverified | Category names `simple`, `multiple`, `irrelevance` | Names only; no data copied |
-| Qwen3-4B-Instruct-2507 chat template | Apache-2.0 | `name`/`arguments` key names; `<tools>` rendering as S1's second arm | Taken; whether it helps is measured, not assumed |
-| Rhai 1.26.1 | MIT OR Apache-2.0, already a dependency | `internals` feature: `AST::walk` (`src/ast/ast.rs:779-786`), custom types for `Data` | Taken; the feature is `internals = []` in its Cargo.toml, so no crate is added |
+| Qwen3-4B-Instruct-2507 chat template | Apache-2.0 | `name`/`arguments` key names; `<tools>` rendering as S02-1's second arm | Taken; whether it helps is measured, not assumed |
+| Rhai 1.27.0 (2026-10-21), with rhai_codegen 3.3.0 | MIT OR Apache-2.0, both; Rhai is already a dependency (1.26.1 today; ADR 0012 D9 pins `=1.27.0` at the start of P1) | `internals` feature: `AST::walk` (`src/ast/ast.rs:780-787` at tag v1.27.0), custom types for `Data` | Taken; the feature is `internals = []` (`Cargo.toml:68`), so no crate is added |
 | llguidance 1.9.1 (2026-09-30) | MIT | A general grammar engine | Not taken: `std` throughout; extending `infer/src/json.rs` is cheaper for tens of rows |
 | outlines-core 0.2.14 (2026-01-09), XGrammar | Apache-2.0 | Same | Not taken: `regex` and per-token indexes; C++ |
 | Wassette `component2json` | MIT (version unverified) | WIT to JSON Schema | Not needed here; [ADR 0003](0003-app-model.md) extracts `kai-actions 1` itself |
 | GoEX (gorilla `goex/`) | Apache-2.0, dormant since 2024-07 | Per-action inverse table | Idea only; model-written inverses are refused for the run tier |
 | Snapper | GPL-2.0 | Pre/post snapshots around changes | Idea only; no code |
 
-Rhai, rmcp, llguidance and outlines-core versions, dates and licences were rechecked on crates.io on 2026-10-21; the other licences on each project's GitHub LICENSE. No GPL, LGPL or MPL code enters through this ADR. Rhai's existing `smartstring` dependency is MPL-2.0+; see question 10.
+Rhai, rhai_codegen, rmcp, llguidance and outlines-core versions, dates and licences were rechecked on crates.io on 2026-10-21; the other licences on each project's GitHub LICENSE. No GPL, LGPL or MPL code enters through this ADR. Rhai's existing `smartstring` dependency is MPL-2.0+; see question 10.
 
 ## Decision
 
@@ -82,6 +82,7 @@ pub struct Action {
     pub inverse: Inverse,
     pub cues: &'static [&'static str],  // request stems that ask for it: "polic", "schedul"
     pub returns: Returns,               // System, or Content(source): what a read hands back
+    pub ret: RetType,                   // the result's shape: #{free_mib: int, total_mib: int, ...}
     pub owner: Owner,                   // Kernel | Service(name) | App(id): who executes it and its inverse
     pub needs: Needs,                   // handle kind and rights (ADR 0001)
     pub min_tier: Tier,                 // Run, Ask or Never: the derived tier is at least this
@@ -91,15 +92,17 @@ pub struct Arg { pub name: &'static str, pub ty: ArgType, pub role: Role, pub fr
                  pub never: &'static [&'static str], pub aliases: &'static [(&'static str, &'static str)] }
 pub enum ArgType { Enum(&'static [&'static str]), Int { min: i64, max: i64 }, Text { max: u16 }, Path, Host,
                    List(&'static ArgType, u8), Opt(&'static ArgType) }
+pub enum RetType { Unit, Of(ArgType), Record(&'static [(&'static str, RetType)]), List(&'static RetType), Data }
 pub enum Role { Target, Payload, Option }
 pub enum Inverse { Read, Restore, Compensate(&'static str), Snapshot, Trash, Hold { ms: u32 }, None(&'static str) }
 ```
 
 - **Facts** use MCP's pessimistic defaults: not read-only, destructive, not idempotent, open-world. A `const` check refuses an inconsistent row: read-only with an inverse other than `Read`; not destructive with `None`; closed-world with a `Host` argument; a `never` value that is also an alias.
 - **`needs`** replaces the judgement's `cap` field: [ADR 0001](0001-capabilities.md) turns today's bits (`kabi/src/lib.rs:82-108`) into kind-ceiling bits and handles. **`min_tier`** is the judgement's `ceiling`, renamed so it does not clash with 0001's kind ceiling.
+- **`ret`** is the result type, for results only: the `ArgType` set plus records, lists of them and `Data`. ADR 0010's `dsl-1` renders it (`memory() -> #{free_mib: int, total_mib: int, heap_kib: int}`), so a script knows `memory().free_mib`, and ADR 0012's `kai.h` lowers it to structs. `returns` keeps the provenance label. A `Content` row's result is `Data` or holds it; the consistency check refuses one whose `ret` does not.
 - **`Inverse`** is the declared kind. The runtime record stays a small `Copy` enum in the shell (`shellcore/src/undo.rs:13-18`) and gains one variant per owner: `Spec` today, `Fs { txn }` ([ADR 0004](0004-storage.md)), `Slot { release_seq }` ([ADR 0008](0008-updates.md)), a generation for packages ([ADR 0011](0011-packages.md)).
 - **Names.** Apps use `<app>_<function>` ([ADR 0003](0003-app-model.md)). Scripts call the registry name as it is, never a module path; shellcore builds Rhai with `no_module` (`shellcore/Cargo.toml:12`). No dots anywhere.
-- **The seven M8 names** (`cpus`, `memory`, `uptime_ms`, `processes`, `threads`, `get_policy`, `set_policy`) stay in `REGISTRY_VERSION = 1`. A rename (for example `set_policy` to `sched_set_policy`) lands only when the fluency gate, run through `script` on a GitHub runner with the new names, scores at least 45/50 and no more than one task below the old names, at seed 42 and two more seeds. The row then keeps `old_name` as a second binding for one version, so logged scripts and typed habits still work, and `REGISTRY_VERSION` becomes 2.
+- **The seven M8 names** (`cpus`, `memory`, `uptime_ms`, `processes`, `threads`, `get_policy`, `set_policy`) stay in `REGISTRY_VERSION = 1`. A rename (for example `set_policy` to `sched_set_policy`) lands only when the fluency gate, run through `script` on a GitHub runner with the new names, scores at least 45/50 and no more than one task below the old names, at seed 42 and two more seeds. The row then keeps `old_name` as a second binding for one version, so logged scripts and typed habits still work, and `REGISTRY_VERSION` becomes 2. Argument keys keep their names too: `set_policy` takes `name` (`set_policy(name: string)`, `llmproto/src/script.rs:90`), as ADR 0010 renders it. Changing a key rides the same gated rename: at least 45/50 on a runner, and the old key kept for one version.
 - **Arguments** are limited to the types above, the ones the decoder can steer. ADR 0003's WIT exports map onto them; anything else does not register.
 - **Where rows come from.** OS rows are `const` in `agentabi`. App and package rows are read from the artifact's `kai.actions` section (`kai-actions 1`, ADR 0003) into the same fields with owned strings, pass the same consistency check when loaded, and join or leave the registry with the package generation (ADR 0011).
 
@@ -127,31 +130,33 @@ The rule is Anthropic's for Claude Code's auto mode: "The prompt establishes wha
 - A read-only, closed-world call is always consented.
 - A change call is **asked for** only when (a) one of its `cues` starts a word of the user's line, not within three words after `don't`, `not`, `never` or `no`; and (b) every `from_request` argument is literal in the line after folding case, spaces and hyphens ("round robin" is `round-robin`), or is a declared alias, or is one of ADR 0010's symbols `focused`, `selected`, `here` when the line says "this", "it", "here" or "selected" (the OS resolves those from system state, labelled System).
 - A `Host` is **grounded** only if the user typed it, or it is the entry for a request word in a curated host table shipped with the registry ("youtube" to `www.youtube.com`), or the user said yes to it before (a grant record under ADR 0001). A label match is not enough: `youtube.xyz` and `youtube.ru` would pass it.
+- A host on the OS's own source list is also grounded, when the bytes fetched from it are checked against signed metadata before use: the TUF repository `dane1599d/kernel-ai-updates` and its Pages host (ADR 0008), the pinned Hugging Face revision for models, and the Debian mirrors for ADR 0006's layer (apt's signed release files). The user's line need not name it. So ADR 0008's `model_fetch` derives Run (undo deletes the new blob), with `min_tier = Ask` only if 0008's question 3 says large background downloads ask; ADR 0006's `linux_upgrade` and ADR 0011's `pkg_install` and `pkg_upgrade` (P5) are grounded the same way.
 - Anything else is **added**, and it asks, whatever else the plan contains: `You asked for X. It also wants to set the policy to round-robin. Do that too? y/n, or show`.
 - `clarify` asks the model's question; the reply is appended to the original line and the plan is redone, since both are the user's words.
 - Plainly asked and undoable: runs at once. Plainly asked with no undo: asks once (question 1). An indirect request ("make it snappier") has no cue, so it asks until question 4 says otherwise. A package the user's own line names installs without asking when no new grant choice is needed (generation undo); this departs from the brief's "ask" and is ADR 0011's question.
 
 ### D4. What the model emits: one tagged call
 
-Every answer is `{"name":"<action>","arguments":{...}}`, the key names inside Qwen3-4B-Instruct-2507's `<tool_call>` template. `name` is a choice over registry names plus three pseudo-actions: `say(text)` (at most 240 bytes; replaces the empty-script reply, `llmproto/src/script.rs:349-371`), `clarify(question, options)` (at most 6 options) and `script(code)` (today's limits: 40 lines of 120 characters, 3 KiB, `llmproto/src/script.rs:19-21`). Once `name` closes, `arguments` takes that row's fields in declared order.
+Every answer is `{"name":"<action>","arguments":{...}}`, the key names inside Qwen3-4B-Instruct-2507's `<tool_call>` template. `name` is a choice over registry names plus three pseudo-actions: `say(text)` (at most 240 bytes; replaces the empty-script reply, `llmproto/src/script.rs:349-371`), `clarify(question, options)` (at most 6 options) and `script(code, lang?)` (today's limits: 40 lines of 120 characters, 3 KiB, `llmproto/src/script.rs:19-21`). Once `name` closes, `arguments` takes that row's fields in declared order.
 
+- **`lang`** is `rhai` (the default) or `c`. `c` stays masked out of the grammar until ADR 0012's C fluency gate passes on a runner (70% first try, 90% after one repair); a `c` script then goes to 0012's `cc`. Same tiers, transaction and log either way. ADR 0012 D8 asked for this field; this ADR owns it.
 - **No model summary.** Code writes the result from the log: `Done: policy round-robin (was interactive). undo`. This replaces the `{script, summary}` envelope from P1 and drops up to 100 characters of decoding (`SUMMARY_MAX_CHARS`, `llmproto/src/script.rs:23`). #15's behaviour (plain requests run at once, `undo`, `show`) is kept and generalised.
-- **Decoder work** in `infer/src/json.rs` (604 lines): a tagged shape (first field a choice, each word selecting the next fields), one nested object, bounded `Int`, `List` and `Opt`, and a name choice past 64 words. **Jump-forward** in `infer/src/chat.rs`: when the grammar allows exactly one continuation (`","arguments":{"policy":"`), its tokens are fed as one `forward_batch` block instead of one decode step each (SGLang's jump-forward). Keys and values at a position depend only on the tokens up to it (decisions.md:148), so the cache stays exact; the tokens fed may differ from what step decoding would pick, which S1 measures.
-- **Prompt.** One compact line per row, rendered by ADR 0010's `dsl-1`. Qwen's `<tools>` JSON replaces it only if S1 shows it at least 3 points more accurate within the budget, and by more than the spread between seeds. The plain `ask` mode moves behind the same pack prefix so the one prefix cache stays warm.
+- **Decoder work** in `infer/src/json.rs` (604 lines): a tagged shape (first field a choice, each word selecting the next fields), one nested object, bounded `Int`, `List` and `Opt`, and a name choice past 64 words. **Jump-forward** in `infer/src/chat.rs`: when the grammar allows exactly one continuation (`","arguments":{"name":"` after `set_policy`), its tokens are fed as one `forward_batch` block instead of one decode step each (SGLang's jump-forward). Keys and values at a position depend only on the tokens up to it (decisions.md:148), so the cache stays exact; the tokens fed may differ from what step decoding would pick, which S02-1 measures.
+- **Prompt.** One compact line per row, rendered by ADR 0010's `dsl-1`. Qwen's `<tools>` JSON replaces it only if S02-1 shows it at least 3 points more accurate within the budget, and by more than the spread between seeds. The plain `ask` mode moves behind the same pack prefix so the one prefix cache stays warm.
 - **Budget** (`CONTEXT_CAP` 3,072, owned by ADR 0010): core rules plus OS rows at most 1,024 tokens; app groups at most 768; State line at most 64; request at most 160; answer reserve 1,024.
 
 ### D5. Scripts: analysed, isolated, all or nothing
 
-`script(code)` keeps the strict profile (`shellcore/src/script.rs:173-194`) and the trial run on stub values.
+`script(code, lang?)` keeps the strict profile (`shellcore/src/script.rs:173-194`) and the trial run on stub values. What follows is for `rhai`; a `c` script gets ADR 0012's run-level label instead, since a C value cannot carry `Data`.
 
-- **Analyser.** B's AST walk replaces `names_in`, with Rhai `internals` enabled and the version pinned (`=1.26.1`; the book calls internals "volatile"). Each call becomes an effect with labels Literal < System < Content, joined through `let`, assignment, indexing, `if` and `for`; anything unproven is Content. A name in a comment no longer triggers a question.
-- **Isolation.** The script runs in ADR 0001's `scriptrun` process, holding only run-tier handles narrowed under the request's grant node. If 0001's spike says a pooled `scriptrun` is still too slow, scripts stay in `shell` under request nodes. ADR 0001's `user` label is Literal or System here; its `data` label is Content.
+- **Analyser.** B's AST walk replaces `names_in`, with Rhai `internals` enabled and the version pinned (`=1.27.0`; the book calls internals "volatile"). ADR 0012 D9, which owns the Rhai upgrade, moves to 1.27.0 at the start of P1, so the analyser is written once against it. Each call becomes an effect with labels Literal < System < Content, joined through `let`, assignment, indexing, `if` and `for`; anything unproven is Content. A name in a comment no longer triggers a question.
+- **Isolation.** The script runs in ADR 0001's `scriptrun` process, holding only run-tier handles narrowed under the request's grant node. If 0001's S01-1 says a pooled `scriptrun` is still too slow, scripts stay in `shell` under request nodes. ADR 0001's `user` label is Literal or System here; its `data` label is Content.
 - **One transaction per script.** Snapshots are taken lazily at the first change to each resource. Every live call is re-checked against the approved effect set: the same action, the same literal arguments, System-derived values inside the resource's scope. Any error, limit or Ctrl-C rolls back newest first and replies `Nothing changed: <error>`, replacing "Changed before the error" (`shellcore/src/actions.rs:133-137`). Outbound effects are queued and flushed only on success (the transactional outbox pattern).
 - **One door.** Tagged calls, script host functions, typed calls, ADR 0003's queued app effects and ADR 0012's `cc` need/resume all reach `agentcore::execute(call, consent) -> Outcome`. `Outcome` is structured (tier, consent, done records, undoable), so the P3 panel ([ADR 0005](0005-graphics.md)) reads states, not text.
 
 ### D6. Data labels: what read data cannot do
 
-A read whose row returns `Content(source)` hands back an opaque Rhai custom type `Data`, with no `to_string`, comparison or conversion registered. In Rhai 1.26.1 `string + item` formats through `to_string` and `Display` of a custom type writes only its type name, so content cannot become a plain value. How `==` behaves between `Data` and a string is unverified; either way it carries no content. `show(d)` prints it to the user.
+A read whose row returns `Content(source)` hands back an opaque Rhai custom type `Data`, with no `to_string`, comparison or conversion registered. In Rhai 1.27.0, as in 1.26.1, `string + item` formats through `to_string` (`src/packages/string_more.rs:24-29`) and `Display` of a custom type writes only its type name (`src/types/dynamic.rs:563`), so content cannot become a plain value. How `==` behaves between `Data` and a string is unverified; either way it carries no content. `show(d)` prints it to the user.
 
 - **P-T (integrity).** A `Data` value in the Target or Payload of a call whose inverse is `None` or `Hold`, or controlling such a call, makes it ask, and the question names the source (`the target came from note "todo"`).
 - **P-F (confidentiality).** A `Data` payload to an open-world call goes out only to a destination the user's line names; otherwise it asks. Values labelled secret (P8 accounts) never leave.
@@ -169,8 +174,11 @@ R 21
 switch to round robin
 D 17.1 set_policy owner=kernel res=policy before=interactive after=round-robin inv=restore
 U 18 of=17 state=done
+S 19 t=1792618860000000000 owner=kernel 33
+nvme0 reset after 5 s timeout, ok
 ```
 
+- **System events.** An `S` record (`S <id> t=<ns> owner=<service> <length>`, then the text) logs what no request caused: a driver reset (ADR 0007 §6), a trash empty or snapshot expiry (ADR 0004), a package GC run (ADR 0011). The agent can read them; `undo` skips them. The record is in `actlog 1` from P1, before the log reaches disk in P2, so the format does not change then.
 - **Where.** 64 entries in memory in P1. From P2, appended to `/system/log` in the same commit as the action (ADR 0004). `pack=` is ADR 0010's `pack_id`; `reg=` is the registry version, so entries stay readable across updates (ADR 0008).
 - **`undo`** reverts the newest live entry, its calls newest first. Each inverse is compare-and-set: it runs only if the resource still reads `after`. If it moved, scalar state asks (`The policy changed since (now classes/firm); put interactive back anyway? y/n`) and files are restored beside the changed path as `name (restored)` (ADR 0004). Undo never silently overwrites a later change.
 - An undo is itself an entry, as in Emacs, so `undo` again redoes. `undo N` runs only if no later live entry touched the same resource key; otherwise it names those entries. `Busy` from the 100 ms policy limit is retried once after 100 ms.
@@ -179,7 +187,7 @@ U 18 of=17 state=done
 
 ### D8. Time from typing to done
 
-Single plain call, warm pack in the prefix cache. Rates are measured on the 7700X host with generated weights (decisions.md:171, :174); token counts are estimates until S1 counts them; guest numbers wait for S2.
+Single plain call, warm pack in the prefix cache. Rates are measured on the 7700X host with generated weights (decisions.md:171, :174); token counts are estimates until S02-1 counts them; guest numbers wait for S02-2.
 
 | Step | Tokens (est.) | 7700X, 4-8 host threads (est.) | Budget |
 |---|---|---|---|
@@ -188,7 +196,7 @@ Single plain call, warm pack in the prefix cache. Rates are measured on the 7700
 | Free decode: name, argument values, close | at most 12 | 0.75-1.05 s at 11.5-16.2 tokens/s | 12 tokens |
 | Forced bytes as one block (jump-forward) | about 12 | 0.13-0.23 s at prefill rates; 0.75-1.05 s as decode steps | none |
 | Consent, tier, execute, log, result line | 0 | milliseconds (unmeasured) | 50 ms |
-| **Total** | | **about 1.3-3.0 s** | target about 2-4 s under KVM, set by S2 |
+| **Total** | | **about 1.3-3.0 s** | target about 2-4 s under KVM, set by S02-2 |
 
 In a guest, decode near VirtualBox's 11-12 tokens/s (decisions.md:211, model not named) puts a call at the slow end of the range. Today the same request takes 21.7 s through a script on a 4-vCPU runner, a slower machine than the 7700X, so the two are not directly comparable. A `script` answer stays the slow path. Mask cost per step is unmeasured.
 
@@ -198,7 +206,7 @@ Field names follow MCP, so P5/P6 can add an MCP client and a bridge for third-pa
 
 ## Consequences
 
-- A plain, undoable request runs with no card and one code-written line, est. 1.3-3.0 s on 7700X host threads. Today the same request took 21.7 s through a script on a 4-vCPU runner; the two are not directly comparable, and S1 compares both on one runner. Questions come only for added actions, actions with no undo or that send data out, ungrounded hosts, `Data` steering a risky call, and real ambiguity.
+- A plain, undoable request runs with no card and one code-written line, est. 1.3-3.0 s on 7700X host threads. Today the same request took 21.7 s through a script on a 4-vCPU runner; the two are not directly comparable, and S02-1 compares both on one runner. Questions come only for added actions, actions with no undo or that send data out, ungrounded hosts, `Data` steering a risky call, and real ambiguity.
 - One row makes a feature AI-operable: prompt line, decoder choice, binding, tier and undo. P2-P4 add rows, not mechanisms.
 - One log and one undo replace three undo slots and the script log. Undo is compare-and-set, so it cannot overwrite the user's later change.
 - Prompt injection is held by data flow, not a detector: the plan is fixed from the user's line before any data is read, and `Data` cannot reach the choices that matter. Detectors are weak ground: adaptive attacks beat 12 published defences, most at over 90% success (arXiv 2510.09023).
@@ -221,7 +229,7 @@ Field names follow MCP, so P5/P6 can add an MCP client and a bridge for third-pa
 
 None runs a real model on the founder's PC. Real-model runs use the host engine on a GitHub runner, as `fluency-model.yml` does (decisions.md:185), or the OS in a KVM guest on a GitHub runner.
 
-**S1, action gate** (`spikes/act-gate`, not merged; one harness with ADR 0010's S10-1, beside ADR 0001's host-only tier corpus). Build: a prototype tagged decoder with jump-forward, a mock registry of 40 rows (the 7 real ones plus stubs for P1-P5 levers, `browser_open` included), the consent code and B's analyser, host-side in xtask beside `fluency --local`. Tasks (150): 60 single plain, 20 multi-step (expect `script`), 20 ambiguous, 20 irrelevant (expect `say`), 20 over-eager bait (including ungrounded hosts), 10 negations; plus the 50 fluency tasks through `script`. Two renderings: `dsl-1` lines and Qwen `<tools>` JSON. Real Qwen3-4B Q4_K_M, seeds 42, 1 and 2, on the 4-vCPU GitHub runner.
+**S02-1, action gate** (`spikes/act-gate`, not merged; one harness with ADR 0010's S10-1, beside ADR 0001's host-only tier corpus S01-2). Build: a prototype tagged decoder with jump-forward, a mock registry of 40 rows (the 7 real ones plus stubs for P1-P5 levers, `browser_open` included), the consent code and B's analyser, host-side in xtask beside `fluency --local`. Tasks (150): 60 single plain, 20 multi-step (expect `script`), 20 ambiguous, 20 irrelevant (expect `say`), 20 over-eager bait (including ungrounded hosts), 10 negations; plus the 50 fluency tasks through `script`. Two renderings: `dsl-1` lines and Qwen `<tools>` JSON. Real Qwen3-4B Q4_K_M, seeds 42, 1 and 2, on the 4-vCPU GitHub runner.
 
 | Measure | Pass | Fail means |
 |---|---|---|
@@ -237,20 +245,20 @@ None runs a real model on the founder's PC. Real-model runs use the host engine 
 
 Thresholds are relative or token-based on purpose: on the same runner a one-sentence refusal already took 7.8-9.1 s, so an absolute seconds bar there would measure the runner, not the design.
 
-**S2, in-guest latency** (one KVM job on a GitHub runner, shared with ADR 0010's S10-3). The real model in the guest; log prefill and decode tokens/s, mask cost per step in µs, tokens saved by jump-forward, Enter to busy sign, and Enter to done for 10 single calls. Pass: busy sign within 100 ms; mask at most 2% of a decode step. The median single call confirms or replaces D8's 2-4 s target; over 4 s means a profile before the P1 call path merges, not a design change.
+**S02-2, in-guest latency** (one KVM job on a GitHub runner, shared with ADR 0010's S10-3). The real model in the guest; log prefill and decode tokens/s, mask cost per step in µs, tokens saved by jump-forward, Enter to busy sign, and Enter to done for 10 single calls. Pass: busy sign within 100 ms; mask at most 2% of a decode step. The median single call confirms or replaces D8's 2-4 s target; over 4 s means a profile before the P1 call path merges, not a design change.
 
-**S3, undo and rollback** (mock model, boot cases on KVM and TCG in GitHub Actions, TCG locally in WSL2). Cases: compare-and-set after a typed `policy` switch; rollback of a script that switches and then throws; undo within 100 ms of a switch (`Busy` retry); `tune` keep, then `undo`. Pass: every case restores, and none overwrites a later change.
+**S02-3, undo and rollback** (mock model, boot cases on KVM and TCG in GitHub Actions, TCG locally in WSL2). Cases: compare-and-set after a typed `policy` switch; rollback of a script that switches and then throws; undo within 100 ms of a switch (`Busy` retry); `tune` keep, then `undo`. Pass: every case restores, and none overwrites a later change.
 
 ## Phases that depend on it
 
 | Phase | What it needs from this ADR |
 |---|---|
-| P1 agent core | All of D1-D8: `agentabi`, consent, tagged decoder and jump-forward, prompt from the registry (with ADR 0010), `scriptrun` and handles (ADR 0001), in-memory log and undo, `Data` with `note_read`. Rows: the seven M8 functions, `tune`, service start/stop/restart, component apply and revert, editor open at a line, process stop (ask), `system_about` ([ADR 0009](0009-licence.md)), update rows (ADR 0008), `pkg_*` rows (ADR 0011). Boot cases `act-plain`, `act-run`, `act-ask`, `act-undo`, `act-rollback`, `act-inject`, `act-never` with mock answers keyed by request; the action gate on a runner. |
+| P1 agent core | All of D1-D8: `agentabi`, consent, tagged decoder and jump-forward, prompt from the registry (with ADR 0010), `scriptrun` and handles (ADR 0001), in-memory log and undo, `Data` with `note_read`. Rows: the seven M8 functions, `tune`, service start/stop/restart, component apply and revert, editor open at a line, process stop (ask), `system_about` ([ADR 0009](0009-licence.md)), `device_list`, `device_restart`, `device_disable`, `device_enable`, `power_reboot`, `power_off` ([ADR 0007](0007-drivers.md) §11), `update_check`, `update_status`, `update_stage`, `update_restart`, `system_slots`, `system_rollback`, `model_use`, `model_fetch` (ADR 0008 §11), `pkg_*` rows (ADR 0011). Boot cases `act-plain`, `act-run`, `act-ask`, `act-undo`, `act-rollback`, `act-inject`, `act-never` with mock answers keyed by request; the action gate (S02-1) on a runner. |
 | P2 files and storage | `Snapshot` and `Trash` inverses through ADR 0004 transactions; `/system/log` on disk; file rows. |
-| P3 desktop | `ui_windows`, `ui_view`, `ui_open`, `ui_focus`, `ui_act`, `ui_close` (ADR 0005); unbound UI nodes ask; the panel shows the result line, an Undo button and inline answers from `Outcome`. |
+| P3 desktop | `ui_windows`, `ui_view`, `ui_open`, `ui_focus`, `ui_act`, `window_close`, `appearance_set` (ADR 0005; `window_close` is one row for native and Linux windows, shared with ADR 0006); unbound UI nodes ask; the panel shows the result line, an Undo button and inline answers from `Outcome`. |
 | P4 built-in apps | Rows from each app's `kai-actions 1` (ADR 0003) as `<app>_<function>`; app groups within 768 tokens; per-app action tests driven by the agent. |
 | P5 networking | Open-world rows, the host table, `Hold`, P-F, quarantined reads; `:resolve` and `:ping` become read rows; online `pkg_install`; an MCP client if question 7 says so. |
-| P6 existing apps | `browser_open`, `window_close`, `media_play`, `media_pause`, `vm_start` at Run with undo, acting on the Linux guest in its micro-VM; typing into pages, form submits and downloads ask; guest text is `Data` (ADR 0006). |
+| P6 existing apps | The rows in ADR 0006 item 7, at the tiers that table derives, acting on the Linux guest in its micro-VM: `vm_start`, `browser_open` (a named site), `browser_read` (returns `Data`), `window_close` (Linux windows), `media_play`, `media_pause`, `app_open`, `app_close` and `linux_upgrade` run with undo; `browser_type`, `browser_submit`, `browser_download` and `linux_run` ask (inverse `None`). Guest text is `Data`. |
 | P7 real hardware | No schema change; device rows declare like any other. |
 | P8 production | Fuzzing of the call reader, analyser and `actlog` reader; a security review of consent; per-account logs and the secret label. |
 
@@ -269,12 +277,12 @@ Thresholds are relative or token-based on purpose: on the same runner a one-sent
 - **#16 DHCP and DNS (open, `origin/dane/net-dhcp-dns-b5bdb7`).** No change. `:resolve` and `:ping` stay typed kernel commands; typing is consent. In P5 they become open-world read rows.
 - **#18 virtio-gpu (open, `origin/dane/virtio-gpu-a5daaa`).** No change.
 - **#19 USB input (open, `origin/dane/usb-input-83eb7c`).** No change: USB keys become PS/2 set 1 scancodes in the i8042 ring (`kernel/src/usb.rs:3-4` on the branch), so they pass the same `Decoder`, and `discard_pending` (`kernel/src/terminal.rs:109`) still drops a typed-ahead `y`. When xHCI moves to a ring-3 `usbd` ([ADR 0007](0007-drivers.md)), keys must still reach the terminal through that one decoder.
-- **PR #10 (merged).** Its 50-task gate stays as the `script` regression gate; S1's action gate runs beside it.
+- **PR #10 (merged).** Its 50-task gate stays as the `script` regression gate; S02-1's action gate runs beside it.
 
 ## Open questions for the founder
 
 1. When you plainly ask for something with no undo (stop a program, restart a service, later "empty the trash"), should it still ask once? The roadmap says yes (roadmap.md:130, :140); your words "if i tell it to do something it should just do it" read as no. This ADR asks until you decide.
-2. Network: roadmap.md:144 puts network actions in the ask tier. Proposal: opening or fetching a site you named runs; anything that sends your data out, or goes to a site you did not name, asks. "Named" means a host you typed, one from a shipped table of well-known names, or one you said yes to before. Approve the change?
+2. Network: roadmap.md:144 puts network actions in the ask tier. Proposal: opening or fetching a site you named runs; anything that sends your data out, or goes to a site you did not name, asks. "Named" means a host you typed, one from a shipped table of well-known names, or one you said yes to before. The OS's own signed sources (updates, models, packages, the Linux layer's mirrors) count as named (D3). Approve the change?
 3. Sending messages: always ask before sending, or send after a short hold (for example 10 s) with `undo`, like Gmail's undo-send?
 4. Indirect requests ("make it snappier"): run the AI's reading with "taken as ... undo", or ask first? This ADR asks until you decide.
 5. In v0.1 the "did you ask for it" check reads English only, so requests in other languages always ask. Acceptable for v0.1?
@@ -284,7 +292,7 @@ Thresholds are relative or token-based on purpose: on the same runner a one-sent
 9. Moves and overwrites you plainly ask for would run at once with undo; roadmap.md:141 says they ask. Approve the change?
 10. Rhai stays the script language, so its required `smartstring` 1.0.1 dependency (MPL-2.0+; unmaintained per RUSTSEC-2026-0249, 2026-05-03) stays. Rhai 1.27.0, released 2026-10-21, still lists `smartstring ^1.0.0` as required; `compact_str` is only an optional feature (crates.io, read 2026-10-21), so upgrading does not remove it. Is MPL-2.0 acceptable for this one dependency? ADR 0009's question 3 asks the same; one answer covers both.
 
-No permissive crate needs approval here. If S1 or P5 adds one (rmcp 3.6.0 is Apache-2.0), the PR lists it with its licence.
+No permissive crate needs approval here. The Rhai 1.27.0 step brings rhai_codegen 3.3.0 (MIT OR Apache-2.0); ADR 0012's PR lists both. If S02-1 or P5 adds one (rmcp 3.6.0 is Apache-2.0), the PR lists it with its licence.
 
 ## Sources
 
@@ -303,7 +311,7 @@ External, read 2026-10-21 unless dated otherwise:
 - SGLang compressed FSM and jump-forward, 2024-02-05: https://lmsys.org/blog/2024-02-05-compressed-fsm/
 - Saga pattern, 2025-02-25: https://learn.microsoft.com/en-us/azure/architecture/patterns/saga; compensating transaction, 2026-04-16: https://learn.microsoft.com/en-us/azure/architecture/patterns/compensating-transaction
 - Transactional outbox: https://microservices.io/patterns/data/transactional-outbox.html; Gmail undo send: https://support.google.com/mail/answer/2819488; Emacs undo: https://www.gnu.org/software/emacs/manual/html_node/emacs/Undo.html
-- Rhai 1.26.1 (https://crates.io/crates/rhai/1.26.1), source `Cargo.toml` and `src/ast/ast.rs:779-786`; Rhai features: https://rhai.rs/book/start/features.html; Rhai 1.27.0 dependencies: https://crates.io/api/v1/crates/rhai/1.27.0/dependencies
+- Rhai 1.27.0 (2026-10-21T13:05Z, MIT OR Apache-2.0): https://crates.io/crates/rhai/1.27.0; source at tag v1.27.0, `Cargo.toml:68`, `src/ast/ast.rs:780-787`, `src/packages/string_more.rs:24-29`, `src/types/dynamic.rs:563`: https://github.com/rhaiscript/rhai/tree/v1.27.0; dependencies: https://crates.io/api/v1/crates/rhai/1.27.0/dependencies; rhai_codegen 3.3.0 (2026-10-21T13:04Z, MIT OR Apache-2.0): https://crates.io/crates/rhai_codegen/3.3.0; Rhai features: https://rhai.rs/book/start/features.html
 - smartstring 1.0.1 (2022-03-24, MPL-2.0+): https://crates.io/crates/smartstring; RUSTSEC-2026-0249 (2026-05-03): https://rustsec.org/advisories/RUSTSEC-2026-0249.html
 - rmcp 3.6.0 (2026-10-20, Apache-2.0): https://crates.io/crates/rmcp
 - llguidance 1.9.1 (2026-09-30, MIT): https://crates.io/crates/llguidance, https://github.com/guidance-ai/llguidance; outlines-core 0.2.14 (2026-01-09, Apache-2.0): https://crates.io/crates/outlines-core
