@@ -30,7 +30,7 @@ fn a_run_tier_change_runs_at_once_and_says_what_happened() {
         "print(\"CPUs: \" + cpus());\nset_policy(\"rr\");",
         "Prints the CPUs.",
     )]);
-    let reply = shell.eval("? how many cpus are there");
+    let reply = shell.eval("? how many cpus are there, then use round robin");
     assert_eq!(
         reply,
         ok("CPUs: 4\nDone: policy round-robin (was interactive) (undo: `undo`)")
@@ -38,14 +38,14 @@ fn a_run_tier_change_runs_at_once_and_says_what_happened() {
     assert_eq!(host.policy.get(), Some(policy::ROUND_ROBIN));
     assert_eq!(
         host.script_requests.borrow()[0].request,
-        "how many cpus are there"
+        "how many cpus are there, then use round robin"
     );
     assert_eq!(shell.eval("answer 1 yes"), Reply::err("nothing to confirm"));
     assert!(
         shell
             .eval("log")
             .text
-            .contains("#1 how many cpus are there: ran")
+            .contains("#1 how many cpus are there, then use round robin: ran")
     );
     assert!(shell.eval("log 1").text.contains("print(\"CPUs: \""));
     let audit = host.audit.borrow();
@@ -261,8 +261,9 @@ fn a_full_size_script_fits_one_screen_with_every_line_on_one_row() {
         &DEFAULT_CONFIG,
     )
     .unwrap();
-    // What `show` prints while the script asks: the script, then the question.
-    let question = crate::script::question(99, &checked, &["set_policy"]);
+    // What `show` prints while the script asks: the script, then the question,
+    // in its longer wording.
+    let question = crate::script::question(99, &checked, &["set_policy"], true);
     let text = format!("{}\n{question}", crate::script::shown(99, &checked));
     assert!(text.len() + 20 < kabi::MAX_MESSAGE, "{} bytes", text.len());
     // A 1024-pixel console has 128 columns; the terminal adds a two-character lead.
@@ -271,15 +272,21 @@ fn a_full_size_script_fits_one_screen_with_every_line_on_one_row() {
     const { assert!(SCRIPT_MAX_LINE_CHARS + 5 <= 126) };
     // A 768-pixel console has 48 rows; the prompt and a trial note need two more.
     assert!(text.lines().count() + 2 < 48);
-    assert!(text.ends_with("\nIt changes set_policy (no undo). Go ahead? y/n, or show"));
+    assert!(text.ends_with(
+        "\nIt changes set_policy, which the request did not ask for. Go ahead? y/n, or show"
+    ));
 }
 
 #[test]
-fn the_question_is_two_short_lines_naming_what_has_no_undo() {
+fn the_question_is_two_short_lines_naming_what_asks_and_why() {
     let checked = checks("print(get_policy());\nset_policy(\"rr\");").unwrap();
     assert_eq!(
-        crate::script::question(3, &checked, &["set_policy"]),
+        crate::script::question(3, &checked, &["set_policy"], false),
         "script 3: Does it.\nIt changes set_policy (no undo). Go ahead? y/n, or show"
+    );
+    assert_eq!(
+        crate::script::question(3, &checked, &["set_policy"], true),
+        "script 3: Does it.\nIt changes set_policy, which the request did not ask for. Go ahead? y/n, or show"
     );
 }
 

@@ -4,7 +4,9 @@
 //! this table and the functions the script names, never from the model's prompt.
 //!
 //! The table is data so P1's action registry can take it over: one row per script
-//! API function. A function missing from it asks.
+//! API function and per helper the strict engine adds. A function missing from it
+//! asks. Until P1's consent check, a run-tier change also asks when the request
+//! does not name what it changes (`CUES`): the model may not add a change.
 
 use alloc::vec::Vec;
 
@@ -13,7 +15,8 @@ use alloc::vec::Vec;
 pub enum Tier {
     /// Runs at once: it only reads, or the shell records how to undo it.
     Run,
-    /// Runs only after a yes: it has no undo.
+    /// Runs only after a yes: it has no undo, the model added it, or it brings new
+    /// code or grants.
     Ask,
     /// Refused, and the model is told so.
     Never,
@@ -41,7 +44,32 @@ pub const TIERS: &[(&str, Tier)] = &[
     ("get_policy", Tier::Run),
     // The previous policy is recorded first, so `undo` puts it back.
     ("set_policy", Tier::Run),
+    // Pure helpers every strict engine has (`script::HELPERS`).
+    ("fixed", Tier::Run),
+    ("floor", Tier::Run),
 ];
+
+/// Words a request must contain, any case, for a run-tier change to run at once;
+/// without one, the model added the change and it asks. A function with no row
+/// here needs none. Interim, until P1 derives consent from the action registry.
+pub const CUES: &[(&str, &[&str])] = &[(
+    "set_policy",
+    &[
+        "polic",
+        "schedul",
+        "round robin",
+        "round-robin",
+        "interactive",
+    ],
+)];
+
+/// Whether `request` names what `function` changes (see [`CUES`]).
+pub fn asked_for(request: &str, function: &str) -> bool {
+    let request = request.to_ascii_lowercase();
+    CUES.iter()
+        .find(|(name, _)| *name == function)
+        .is_none_or(|(_, cues)| cues.iter().any(|cue| request.contains(cue)))
+}
 
 /// The tier of `function` in `table`; one not listed asks.
 pub fn of(table: &[(&str, Tier)], function: &str) -> Tier {
@@ -51,17 +79,32 @@ pub fn of(table: &[(&str, Tier)], function: &str) -> Tier {
         .map_or(Tier::Ask, |&(_, tier)| tier)
 }
 
-/// The strictest tier among `functions`, and the functions at that tier.
-pub fn of_script(table: &[(&str, Tier)], functions: &[&'static str]) -> (Tier, Vec<&'static str>) {
+/// The tier of `function` in a script written for `request`: its row's, raised to
+/// `Ask` when the request did not ask for it.
+pub fn for_request(table: &[(&str, Tier)], request: &str, function: &str) -> Tier {
+    match of(table, function) {
+        Tier::Run if !asked_for(request, function) => Tier::Ask,
+        tier => tier,
+    }
+}
+
+/// The strictest tier among `functions` in a script written for `request`, and
+/// the functions at that tier.
+pub fn of_script<'a>(
+    table: &[(&str, Tier)],
+    request: &str,
+    functions: &[&'a str],
+) -> (Tier, Vec<&'a str>) {
+    let tier_of = |name: &str| for_request(table, request, name);
     let tier = functions
         .iter()
-        .map(|name| of(table, name))
+        .map(|name| tier_of(name))
         .max()
         .unwrap_or(Tier::Run);
     let at = functions
         .iter()
         .copied()
-        .filter(|name| of(table, name) == tier)
+        .filter(|name| tier_of(name) == tier)
         .collect();
     (tier, at)
 }

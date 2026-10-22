@@ -10,11 +10,30 @@ use alloc::vec::Vec;
 use core::cell::RefCell;
 use kabi::policy;
 
+/// How long to wait before trying a refused switch once more: the kernel takes a
+/// policy switch at most every 100 ms.
+const BUSY_RETRY_MS: u64 = 100;
+
 /// How to put one change back.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Inverse {
-    /// Install this policy and preset again.
-    Spec { policy: u64, preset: u64 },
+    /// Install `policy` and `preset` again, but only while `after` (the policy and
+    /// preset the change installed) is still what runs.
+    Spec {
+        policy: u64,
+        preset: u64,
+        after: (u64, u64),
+    },
+}
+
+/// Why a change was not put back.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Refused {
+    /// Something else changed it since, to this (in the user's words); putting the
+    /// old value back would overwrite that, so the user is asked first.
+    Moved(String),
+    /// It could not be put back yet.
+    Failed(String),
 }
 
 /// One change a script made.
@@ -44,12 +63,38 @@ pub fn spec_name(policy: u64, preset: u64) -> String {
     format!("{}", spec_of(policy, preset).label())
 }
 
-/// Puts one change back; what it did, or why it could not.
-pub fn revert(host: &dyn Host, inverse: Inverse) -> Result<String, String> {
+/// What `inverse` puts back, in the user's words: `interactive`.
+pub fn target(inverse: Inverse) -> String {
     match inverse {
-        Inverse::Spec { policy, preset } => host
-            .set_spec(policy, preset)
-            .map(|()| format!("policy back to {}", spec_name(policy, preset)))
-            .map_err(|error| format!("cannot switch the policy back yet ({error:?})")),
+        Inverse::Spec { policy, preset, .. } => spec_name(policy, preset),
+    }
+}
+
+/// Puts one change back; what it did, or why it did not. Compare-and-set: a value
+/// that moved since the change is left alone unless `anyway`. A switch the kernel
+/// refuses as too soon is tried once more after [`BUSY_RETRY_MS`].
+pub fn revert(host: &dyn Host, inverse: Inverse, anyway: bool) -> Result<String, Refused> {
+    match inverse {
+        Inverse::Spec {
+            policy,
+            preset,
+            after,
+        } => {
+            let now = current_spec(host);
+            if !anyway && now != Some(after) {
+                let now = now.map_or_else(|| String::from("unknown"), |(p, s)| spec_name(p, s));
+                return Err(Refused::Moved(now));
+            }
+            let mut result = host.set_spec(policy, preset);
+            if result == Err(kabi::Error::Busy) {
+                host.sleep_ms(BUSY_RETRY_MS);
+                result = host.set_spec(policy, preset);
+            }
+            result
+                .map(|()| format!("policy back to {}", spec_name(policy, preset)))
+                .map_err(|error| {
+                    Refused::Failed(format!("cannot switch the policy back yet ({error:?})"))
+                })
+        }
     }
 }

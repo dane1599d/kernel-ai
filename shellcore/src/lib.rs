@@ -167,6 +167,8 @@ pub struct Shell {
     tiers: &'static [(&'static str, Tier)],
     /// The last run's changes, for `undo`.
     undo: Option<Undoable>,
+    /// An `undo` waiting for a yes, because something changed it since.
+    undo_asking: Option<Undoable>,
     /// The last script as `show` prints it.
     shown: Option<String>,
     /// What the script run by the last line printed.
@@ -200,6 +202,7 @@ impl Shell {
             tuner: tune::Tuner::default(),
             tiers,
             undo: None,
+            undo_asking: None,
             shown: None,
             last_output: None,
         }
@@ -228,8 +231,11 @@ impl Shell {
         if let Some(reply) = self.answer_bare(input) {
             return reply;
         }
-        // Anything but the answer leaves a proposal unrun.
+        // Anything but the answer leaves a proposal unrun, and an undo for later.
         self.tuner.discard();
+        if let Some(undoable) = self.undo_asking.take() {
+            self.undo = Some(undoable);
+        }
         if let Some(pending) = self.pending.take() {
             let outcome = "discarded: another line came first";
             self.record(
@@ -355,7 +361,7 @@ impl Shell {
                     return self.say(id, request, reply);
                 }
                 Ok(answer) => match script::check(&answer, &self.host, &self.config) {
-                    Ok(checked) => match self.tier_of(&checked) {
+                    Ok(checked) => match self.tier_of(request, &checked) {
                         (Tier::Never, at) => Some((
                             answer.script,
                             format!("{} may not be used in scripts here", at.join(", ")),
