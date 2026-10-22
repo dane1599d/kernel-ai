@@ -1,6 +1,6 @@
 # P1 plan: the agent core
 
-Status: proposed, 2026-10-22, for the founder's approval. It plans the work that the accepted ADRs (`docs/adr/`, accepted 2026-10-22) and the execution plan ([ADR 0000](../adr/0000-execution-plan.md)) put in P1. It adds one design of its own, conversation memory (section 4), because no ADR covers it. Nothing here was built or run; sizes marked "est." are estimates.
+Status: accepted by the founder, 2026-10-22. It plans the work that the accepted ADRs (`docs/adr/`, accepted 2026-10-22) and the execution plan ([ADR 0000](../adr/0000-execution-plan.md)) put in P1. It adds one design of its own, conversation memory (section 4), because no ADR covers it. Nothing here was built or run; sizes marked "est." are estimates.
 
 ## 1. Goal and exit
 
