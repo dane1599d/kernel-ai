@@ -16,6 +16,10 @@ pub enum SelfTest {
     Keyboard,
     /// M9d: mouse moves and clicks arrive in order with the keyboard's Ctrl.
     Pointer,
+    /// P3: the display shows a test pattern exactly, and virtio-gpu moves its cursor.
+    Display,
+    /// P7: keys and pointer reports arrive from a USB keyboard, mouse or tablet.
+    Usb,
     Sched,
     Watchdog,
     Smp,
@@ -70,6 +74,12 @@ pub enum SelfTest {
     TuneDemo,
     /// M10a-5: the exit test's observe or measure boot, under icount.
     TuneAb,
+    /// P5: DHCP, ping, the resolver and its cache, RESOLVE from ring 3, renewal.
+    NetSetup,
+    /// P5: the fallback address when DHCP is silent.
+    NetFallback,
+    /// P5: `ip=static` at boot.
+    NetStatic,
 }
 
 const DEFAULT_STORM_SECONDS: u64 = 60;
@@ -86,6 +96,8 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=timer" => Some(SelfTest::Timer),
             "test=keyboard" => Some(SelfTest::Keyboard),
             "test=pointer" => Some(SelfTest::Pointer),
+            "test=display" => Some(SelfTest::Display),
+            "test=usb" => Some(SelfTest::Usb),
             "test=sched" => Some(SelfTest::Sched),
             "test=watchdog" => Some(SelfTest::Watchdog),
             "test=smp" => Some(SelfTest::Smp),
@@ -115,6 +127,9 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=tune-local" => Some(SelfTest::TuneLocal),
             "test=tune-demo" => Some(SelfTest::TuneDemo),
             "test=tune-ab" => Some(SelfTest::TuneAb),
+            "test=net-setup" => Some(SelfTest::NetSetup),
+            "test=net-fallback" => Some(SelfTest::NetFallback),
+            "test=net-static" => Some(SelfTest::NetStatic),
             other => other.strip_prefix("test=storm").map(|rest| {
                 let seconds = rest.strip_prefix('-').and_then(|s| s.parse().ok());
                 SelfTest::Storm(seconds.unwrap_or(DEFAULT_STORM_SECONDS))

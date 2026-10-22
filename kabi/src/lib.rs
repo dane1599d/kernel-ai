@@ -12,6 +12,7 @@ extern crate alloc;
 
 pub mod live;
 pub mod model;
+pub mod net;
 pub mod plan;
 pub mod probe;
 pub mod sched;

@@ -1,7 +1,7 @@
 //! Build and run tool for Kernel AI.
 //!
 //! cargo xtask build [--release] [--spikes]
-//! cargo xtask run   [--release] [--spikes] [--accel auto|kvm|whpx|tcg] [--cpus N] [--mem SIZE] [--llm IP:PORT] [--model NAME] [--edit] [--model-disk PATH | --local ID [--store DIR]] [--workload A|B [--seed N]]
+//! cargo xtask run   [--release] [--spikes] [--accel auto|kvm|whpx|tcg] [--cpus N] [--mem SIZE] [--llm IP:PORT] [--model NAME] [--edit] [--gpu] [--model-disk PATH | --local ID [--store DIR]] [--workload A|B [--seed N]]
 //! cargo xtask test  [--release] [--accel auto|kvm|whpx|tcg] [--timeout SECS] [--cpus N] [--mem SIZE] [--shard K/N]
 //! cargo xtask soak  [--accel auto|kvm|whpx|tcg]   (10-minute storm, M5 exit test)
 //! (`--accel wsl` on Windows: QEMU with KVM inside WSL2; see wsl/launch.rs)
@@ -39,10 +39,12 @@ mod image;
 mod lines;
 mod local_ask;
 mod local_script;
+mod mock_dns;
 mod mock_llm;
 mod models;
 mod options;
 mod qemu;
+mod screen;
 mod smoke;
 mod strip;
 mod tune;
@@ -161,7 +163,10 @@ fn execute(options: &Options) -> Result<(), String> {
         esp::make_esp(&esp, &kernel, &modules, &efi, &cmdline)?;
         let firmware = wsl::firmware(wsl.as_ref(), &qemu, &target_dir)?;
         let sizing = qemu::run_sizing(accel, options.sizing, disk.is_some());
-        let args = qemu::args(&firmware, accel, false, disk.as_ref(), sizing);
+        let mut args = qemu::args(&firmware, accel, false, disk.as_ref(), sizing);
+        if options.gpu {
+            args.extend(["-vga", "none", "-device", "virtio-gpu-pci"].map(String::from));
+        }
         let args = wsl::wrap(wsl.as_ref(), args)?;
         println!("xtask: {} {}", qemu.display(), args.join(" "));
         return qemu::run_interactive(&qemu, &args, &target_dir);
@@ -169,6 +174,7 @@ fn execute(options: &Options) -> Result<(), String> {
     // Tests talk to a local stand-in for the LLM server, reached from the guest at
     // 10.0.2.2 through QEMU's user-mode network.
     let mock = mock_llm::start()?;
+    let mock_dns = mock_dns::start()?;
     let llm = format!("10.0.2.2:{}", mock.port);
     let llm_args = llm_cmdline(Some(&llm), Some(mock_llm::MODEL));
     let mut failures = Vec::new();
@@ -190,6 +196,9 @@ fn execute(options: &Options) -> Result<(), String> {
         };
         let server = if case.server { llm_args.as_str() } else { "" };
         let mut cmdline = format!("{} {server}", case.cmdline);
+        if case.dns {
+            cmdline = format!("{cmdline} {}", mock_dns.cmdline());
+        }
         let disk = match disk::for_case(case, &target_dir) {
             Ok(disk) => disk,
             Err(message) => {
@@ -225,8 +234,16 @@ fn execute(options: &Options) -> Result<(), String> {
         if case.image {
             qemu::boot_from_image(&mut args, &esp, &target_dir)?;
         }
+        if case.gpu {
+            args.extend(screen::gpu_args());
+        }
+        if case.screen.is_some() {
+            screen::clear(&target_dir);
+        }
         args.push("-monitor".into());
         args.push(format!("tcp:127.0.0.1:{monitor},server=on,wait=off"));
+        let (input, qmp) = qemu::input_args(case)?;
+        args.extend(input);
         let args = wsl::wrap(wsl.as_ref(), args)?;
         let run = qemu::TestRun {
             case,
@@ -235,6 +252,7 @@ fn execute(options: &Options) -> Result<(), String> {
                 .min_timeout
                 .map_or(options.timeout, |least| least.max(options.timeout)),
             monitor,
+            qmp,
             exact: disk
                 .as_ref()
                 .map_or_else(Vec::new, disk::ModelDisk::exact_lines),
@@ -249,6 +267,10 @@ fn execute(options: &Options) -> Result<(), String> {
         };
         let result = qemu::run_test(&qemu, &args, &target_dir, &run)
             .and_then(|()| after(&service))
+            .and_then(|()| match case.screen {
+                Some(expect) => screen::check(&target_dir, expect),
+                None => Ok(()),
+            })
             .and_then(|()| match mock.requests() - requests {
                 sent if !case.server && sent > 0 => Err(format!(
                     "FAIL: booted without a server, yet the mock LLM got {sent} requests"
@@ -264,8 +286,9 @@ fn execute(options: &Options) -> Result<(), String> {
         buildsvc::verify::unchanged(&root, before)?;
     }
     println!(
-        "xtask: the mock LLM server answered {} chat requests",
-        mock.chats()
+        "xtask: the mock LLM server answered {} chat requests; the mock DNS server got {} queries",
+        mock.chats(),
+        mock_dns.queries()
     );
     if failures.is_empty() {
         println!("xtask: all {} test cases passed", cases.len());

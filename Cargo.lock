@@ -358,6 +358,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "gfxcore"
+version = "0.0.0"
+
+[[package]]
 name = "gguf"
 version = "0.0.0"
 
@@ -464,12 +468,14 @@ dependencies = [
  "acpitables",
  "cpufeat",
  "editcore",
+ "gfxcore",
  "kabi",
  "limine",
  "linetable",
  "livecore",
  "llmproto",
  "mm",
+ "netcore",
  "noto-sans-mono-bitmap",
  "nvme",
  "sched",
@@ -484,6 +490,7 @@ dependencies = [
  "uelf",
  "virtio-drivers",
  "x86_64",
+ "xhci",
  "zerocopy",
 ]
 
@@ -602,6 +609,13 @@ dependencies = [
 [[package]]
 name = "mm"
 version = "0.0.0"
+
+[[package]]
+name = "netcore"
+version = "0.0.0"
+dependencies = [
+ "smoltcp",
+]
 
 [[package]]
 name = "no-std-compat"
@@ -1252,6 +1266,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "xhci"
+version = "0.0.0"
+
+[[package]]
 name = "xtask"
 version = "0.0.0"
 dependencies = [
@@ -1259,12 +1277,14 @@ dependencies = [
  "bpe",
  "cpufeat",
  "editcore",
+ "gfxcore",
  "gguf",
  "infer",
  "kabi",
  "linetable",
  "livecore",
  "llmproto",
+ "netcore",
  "object",
  "quant",
  "rustc-demangle",

@@ -160,17 +160,43 @@ pub fn on_interrupt() -> Option<usize> {
         // SAFETY: the status register says a byte is waiting.
         let byte = unsafe { inb(DATA) };
         let tag = if status & FROM_AUX != 0 { AUX_TAG } else { 0 };
-        let head = HEAD.load(Ordering::Relaxed);
-        if head.wrapping_sub(TAIL.load(Ordering::Acquire)) < RING {
-            ENTRIES[head % RING].store(u16::from(byte) | tag, Ordering::Relaxed);
-            ARRIVED_NS[head % RING].store(hpet::nanos(), Ordering::Relaxed);
-            HEAD.store(head.wrapping_add(1), Ordering::Release);
-        }
+        enqueue(u16::from(byte) | tag);
     }
+    take_waiter()
+}
+
+/// Queues one ring entry, dropping it if the ring is full.
+fn enqueue(entry: u16) {
+    let head = HEAD.load(Ordering::Relaxed);
+    if head.wrapping_sub(TAIL.load(Ordering::Acquire)) < RING {
+        ENTRIES[head % RING].store(entry, Ordering::Relaxed);
+        ARRIVED_NS[head % RING].store(hpet::nanos(), Ordering::Relaxed);
+        HEAD.store(head.wrapping_add(1), Ordering::Release);
+    }
+}
+
+fn take_waiter() -> Option<usize> {
     match WAITER.swap(NO_WAITER, Ordering::AcqRel) {
         NO_WAITER => None,
         tid => Some(tid),
     }
+}
+
+/// Queues keyboard bytes that came another way (a USB keyboard's keys as set 1
+/// scancodes), as if the keyboard port had sent them. Must run on the CPU that
+/// takes IRQ1, with interrupts off, so it never races [`on_interrupt`]: the
+/// ring has one producer. Returns the thread to wake, as `on_interrupt` does.
+pub fn inject(bytes: &[u8]) -> Option<usize> {
+    // All or nothing: an E0 prefix queued without its code would change the
+    // meaning of the next key.
+    let used = HEAD
+        .load(Ordering::Relaxed)
+        .wrapping_sub(TAIL.load(Ordering::Acquire));
+    if used + bytes.len() > RING {
+        return None;
+    }
+    bytes.iter().for_each(|&byte| enqueue(u16::from(byte)));
+    take_waiter()
 }
 
 fn has_input() -> bool {

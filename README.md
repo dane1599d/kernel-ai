@@ -48,7 +48,7 @@ cargo xtask vbox            # build the release kernel and its boot disk; create
 cargo xtask vbox --start    # boot it in a VirtualBox window (--start --headless for none)
 ```
 
-The VM is EFI with NVMe disks: one for the OS, one for the model, which is read in place and never copied, so keep the model store on the same drive as the VM folder (`KAI_VBOX_DIR`). Power the VM off before running `cargo xtask vbox` again. `--name NAME` makes a separate VM, and nothing else in VirtualBox is touched. On a Ryzen 7 7700X with 8 vCPUs the model loads in 5-10 s and answers at 11-12 tokens/s.
+The VM is EFI with NVMe disks: one for the OS, one for the model, which is read in place and never copied, so keep the model store on the same drive as the VM folder (`KAI_VBOX_DIR`). Power the VM off before running `cargo xtask vbox` again. `--name NAME` makes a separate VM, and nothing else in VirtualBox is touched. Input is a USB keyboard and tablet on the VM's xHCI controller, so the pointer moves in and out of the window without being captured (no Right Ctrl). The xHCI controller is in VirtualBox's base package since 7.0, so no Extension Pack is needed; `:mouse` at the terminal shows the last pointer report. On a Ryzen 7 7700X with 8 vCPUs the model loads in 5-10 s and answers at 11-12 tokens/s.
 
 ### QEMU
 

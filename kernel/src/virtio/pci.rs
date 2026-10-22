@@ -1,6 +1,6 @@
 //! PCIe configuration access through the ECAM window from the MCFG table, and the
-//! one pass over bus 0 that finds the virtio devices (the network card and the
-//! block devices) and the NVMe controllers.
+//! one pass over bus 0 that finds the virtio devices (the network card, the block
+//! devices and the GPU), the NVMe controllers and the xHCI (USB 3) controllers.
 
 use super::hal::{DEVICE, KernelHal};
 use super::split::{self, SplitTransport};
@@ -66,15 +66,21 @@ pub struct Found {
     pub net_failed: bool,
     /// Every block device, in bus order.
     pub disks: Vec<PciTransport>,
+    /// The first virtio-gpu; any other is left alone.
+    pub gpu: Option<SplitTransport>,
     /// Every NVMe controller, in bus order.
     pub nvme: Vec<crate::nvme::Function>,
+    /// Every xHCI controller, in bus order.
+    pub usb: Vec<crate::usb::Function>,
 }
 
 /// PCI class, subclass and programming interface of an NVMe controller.
 const NVME_CLASS: (u8, u8, u8) = (0x01, 0x08, 0x02);
+/// PCI class, subclass and programming interface of an xHCI controller.
+const XHCI_CLASS: (u8, u8, u8) = (0x0C, 0x03, 0x30);
 
-/// Enumerates bus 0 once and sets up a transport for each virtio network card and
-/// block device on it.
+/// Enumerates bus 0 once and sets up a transport for each virtio network card,
+/// block device and GPU on it.
 pub fn probe(platform: &acpitables::Platform) -> Result<Found, &'static str> {
     let ecam = platform
         .ecam
@@ -93,15 +99,19 @@ pub fn probe(platform: &acpitables::Platform) -> Result<Found, &'static str> {
     };
     let mut root = PciRoot::new(access);
     let functions: Vec<_> = root.enumerate_bus(ecam.start_bus).collect();
-    let nvme: Vec<DeviceFunction> = functions
-        .iter()
-        .filter(|(_, info)| (info.class, info.subclass, info.prog_if) == NVME_CLASS)
-        .map(|&(function, _)| function)
-        .collect();
+    let of_class = |class| -> Vec<DeviceFunction> {
+        functions
+            .iter()
+            .filter(|(_, info)| (info.class, info.subclass, info.prog_if) == class)
+            .map(|&(function, _)| function)
+            .collect()
+    };
+    let nvme = of_class(NVME_CLASS);
+    let xhci = of_class(XHCI_CLASS);
     let wanted: Vec<(DeviceFunction, DeviceType, u16)> = functions
         .into_iter()
         .filter_map(|(function, info)| match virtio_device_type(&info) {
-            Some(kind @ (DeviceType::Network | DeviceType::Block)) => {
+            Some(kind @ (DeviceType::Network | DeviceType::Block | DeviceType::GPU)) => {
                 Some((function, kind, info.device_id))
             }
             _ => None,
@@ -111,7 +121,9 @@ pub fn probe(platform: &acpitables::Platform) -> Result<Found, &'static str> {
         net: None,
         net_failed: false,
         disks: Vec::new(),
+        gpu: None,
         nvme: Vec::new(),
+        usb: Vec::new(),
     };
     for (function, kind, device_id) in wanted {
         let name = match kind {
@@ -120,6 +132,11 @@ pub fn probe(platform: &acpitables::Platform) -> Result<Found, &'static str> {
                 continue;
             }
             DeviceType::Network => "virtio-net",
+            DeviceType::GPU if found.gpu.is_some() => {
+                log!("pci: ignoring a second virtio-gpu at {function}");
+                continue;
+            }
+            DeviceType::GPU => "virtio-gpu",
             _ => "virtio-blk",
         };
         log!("pci: {name} at {function} (id 1af4:{device_id:04x})");
@@ -142,11 +159,15 @@ pub fn probe(platform: &acpitables::Platform) -> Result<Found, &'static str> {
                     found.net_failed = true;
                 }
             },
+            DeviceType::GPU => match split_transport(&access, function, transport) {
+                Ok(transport) => found.gpu = Some(transport),
+                Err(message) => log!("pci: {name} at {function}: {message}"),
+            },
             _ => found.disks.push(transport),
         }
     }
     for function in nvme {
-        match nvme_bar(&mut root, function) {
+        match memory_bar0(&mut root, function) {
             Ok((bar, bar_len)) => {
                 log!(
                     "pci: nvme at {function}, BAR0 {bar:#x} ({} KiB)",
@@ -161,10 +182,27 @@ pub fn probe(platform: &acpitables::Platform) -> Result<Found, &'static str> {
             Err(message) => log!("pci: nvme at {function}: {message}"),
         }
     }
+    for function in xhci {
+        match memory_bar0(&mut root, function) {
+            Ok((bar, bar_len)) => {
+                log!(
+                    "pci: xhci at {function}, BAR0 {bar:#x} ({} KiB)",
+                    bar_len / 1024
+                );
+                found.usb.push(crate::usb::Function {
+                    name: format!("{function}"),
+                    bar,
+                    bar_len,
+                });
+            }
+            Err(message) => log!("pci: xhci at {function}: {message}"),
+        }
+    }
     Ok(found)
 }
 
-/// The network card's transport, with its queue addresses written in halves.
+/// A transport with its queue addresses written in halves (the network card's
+/// and the GPU's).
 fn split_transport(
     access: &EcamAccess,
     function: DeviceFunction,
@@ -175,8 +213,9 @@ fn split_transport(
     Ok(SplitTransport::new(transport, common))
 }
 
-/// BAR0 of an NVMe controller, with memory decoding and bus mastering turned on.
-fn nvme_bar(
+/// BAR0 of an NVMe or xHCI controller, with memory decoding and bus mastering
+/// turned on.
+fn memory_bar0(
     root: &mut PciRoot<EcamAccess>,
     function: DeviceFunction,
 ) -> Result<(u64, u64), &'static str> {

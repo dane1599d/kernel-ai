@@ -156,6 +156,10 @@ fn handle(slot: usize, number: u64, a: [u64; 6]) -> Result<u64, Error> {
             need(slot, cap::NET)?;
             exchange_to(slot, a[0], Destination::Llm)
         }
+        call::RESOLVE => {
+            need(slot, cap::NET)?;
+            resolve(slot, a[0], a[1], a[2], a[3])
+        }
         call::COMP_PUT => {
             need(slot, cap::PUBLISH)?;
             super::components::put(slot, a[0])
@@ -300,6 +304,41 @@ fn exchange_to(slot: usize, request_ptr: u64, destination: Destination) -> Resul
     }
     uaccess::copy_to_user(slot, call.response_ptr, &response)?;
     Ok(response.len() as u64)
+}
+
+/// RESOLVE: the host name copied in (at most `kabi::net::MAX_HOST` bytes), looked up
+/// by the kernel's resolver, and its addresses copied out.
+fn resolve(
+    slot: usize,
+    host_ptr: u64,
+    host_len: u64,
+    out: u64,
+    out_cap: u64,
+) -> Result<u64, Error> {
+    let host_len = usize::try_from(host_len).map_err(|_| Error::Invalid)?;
+    if host_len == 0 || host_len > kabi::net::MAX_HOST + 1 {
+        return Err(Error::Invalid);
+    }
+    let mut host = [0u8; kabi::net::MAX_HOST + 1];
+    uaccess::copy_from_user(slot, host_ptr, &mut host[..host_len])?;
+    let host = core::str::from_utf8(&host[..host_len]).map_err(|_| Error::Invalid)?;
+    let cancel = || super::killed(slot) || super::interrupt_pending(slot);
+    let found =
+        net::resolve::resolve(host, kabi::net::RESOLVE_TIMEOUT_MS, cancel).map_err(|error| {
+            match error {
+                "net: cancelled" => call_error(slot, ipc::CallError::Cancelled),
+                other => net::error_code(other),
+            }
+        })?;
+    let cap = usize::try_from(out_cap).unwrap_or(usize::MAX);
+    let bytes: Vec<u8> = found
+        .addresses
+        .iter()
+        .take(cap)
+        .flat_map(|ip| ip.octets())
+        .collect();
+    uaccess::copy_to_user(slot, out, &bytes)?;
+    Ok(found.addresses.len() as u64)
 }
 
 /// BUILD_START: hands a build to the background job.

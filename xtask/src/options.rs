@@ -41,6 +41,8 @@ pub struct Options {
     pub model: Option<String>,
     /// `run --edit`: start the build service on the dev clone, so `:edit` works.
     pub edit: bool,
+    /// `run --gpu`: a virtio-gpu in place of the VGA card, the display P3 builds on.
+    pub gpu: bool,
     /// `run --model-disk PATH`: a raw file attached read-only as the `kai-model` disk.
     pub model_disk: Option<PathBuf>,
     /// `run --local ID`: the catalog model `ID`, from the model store, attached the
@@ -119,6 +121,7 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
         llm: None,
         model: None,
         edit: false,
+        gpu: false,
         model_disk: None,
         local: None,
         store: None,
@@ -166,6 +169,7 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
                 options.llm = Some(server.clone());
             }
             "--edit" if task == Task::Run => options.edit = true,
+            "--gpu" if task == Task::Run => options.gpu = true,
             "--model-disk" if task == Task::Run => {
                 let path = rest
                     .next()

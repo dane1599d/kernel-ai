@@ -13,7 +13,9 @@ infer = { path = "../infer" }
 kabi = { path = "../kabi" }
 livecore = { path = "../livecore" }
 editcore = { path = "../editcore" }
+gfxcore = { path = "../gfxcore" }
 llmproto = { path = "../llmproto", features = ["local"] }
+netcore = { path = "../netcore" }
 linetable = { path = "../linetable", features = ["alloc"] }
 uelf = { path = "../uelf" }
 addr2line = { version = "0.27.1", features = ["loader"] }

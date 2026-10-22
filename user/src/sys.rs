@@ -406,3 +406,20 @@ pub fn build_start(request: &HttpRequest) -> Result<(), Error> {
 pub fn build_poll(buf: &mut [u8]) -> Result<usize, Error> {
     read_into(call::BUILD_POLL, buf, 0)
 }
+
+/// The IPv4 addresses of `host` from the kernel's resolver, as many as fit
+/// written into `out`; returns how many the answer had (needs NET).
+pub fn resolve(host: &str, out: &mut [[u8; 4]]) -> Result<usize, Error> {
+    call(
+        call::RESOLVE,
+        [
+            host.as_ptr() as u64,
+            host.len() as u64,
+            out.as_mut_ptr() as u64,
+            out.len() as u64,
+            0,
+            0,
+        ],
+    )
+    .map(|count| count as usize)
+}

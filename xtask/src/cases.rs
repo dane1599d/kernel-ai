@@ -13,8 +13,9 @@ pub type Prepare = fn(&BuildService) -> Result<(), String>;
 pub struct TestCase {
     pub name: &'static str,
     pub cmdline: &'static str,
-    /// QEMU `sendkey` names, or `!` and a monitor command, in stages: stage N is
-    /// sent when the kernel logs "ready for keys" for the Nth time.
+    /// QEMU `sendkey` names, `!` and a monitor command, or `@` and a QMP command,
+    /// in stages: stage N is sent when the kernel logs "ready for keys" for the
+    /// Nth time.
     pub keys: &'static [&'static [&'static str]],
     /// Texts that must all appear on the serial console for the case to pass.
     pub expect: &'static [&'static str],
@@ -43,6 +44,16 @@ pub struct TestCase {
     /// Boot from the GPT disk image (`image/`) built from the ESP, not from QEMU's
     /// directory ESP.
     pub image: bool,
+    /// Point the kernel at the mock DNS server (`dns=`), which answers the
+    /// `netcore::fixture` zone.
+    pub dns: bool,
+    /// Boot with a virtio-gpu (`-device virtio-gpu-pci`) and no VGA.
+    pub gpu: bool,
+    /// Check the screendump the keys take (`screen.rs`) once the case has passed.
+    pub screen: Option<crate::screen::Expect>,
+    /// USB devices (`usb-kbd`, `usb-tablet`, `usb-mouse`) on a `qemu-xhci`
+    /// controller; none and no controller when empty.
+    pub usb: &'static [&'static str],
 }
 
 pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase {
@@ -60,6 +71,10 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         memory_mib: None,
         nvme: false,
         image: false,
+        dns: false,
+        gpu: false,
+        screen: None,
+        usb: &[],
     }
 }
 
@@ -77,6 +92,30 @@ const POINTER: &[&str] = &[
     "!mouse_button 1",
     "!mouse_button 0",
     "!sendkey ctrl 1500",
+    "!mouse_button 1",
+    "!mouse_button 0",
+];
+
+/// "kai" and Enter on the USB keyboard, then, through QMP, the USB tablet moves
+/// to the middle of its X range and a quarter down, and the left button clicks.
+const USB_TABLET: &[&str] = &[
+    "k",
+    "a",
+    "i",
+    "ret",
+    r#"@{"execute":"input-send-event","arguments":{"events":[{"type":"abs","data":{"axis":"x","value":16384}},{"type":"abs","data":{"axis":"y","value":8192}}]}}"#,
+    r#"@{"execute":"input-send-event","arguments":{"events":[{"type":"btn","data":{"down":true,"button":"left"}}]}}"#,
+    r#"@{"execute":"input-send-event","arguments":{"events":[{"type":"btn","data":{"down":false,"button":"left"}}]}}"#,
+];
+
+/// "kai" and Enter on the USB keyboard, then the USB mouse moves right 38 and
+/// down 40 and clicks.
+const USB_MOUSE: &[&str] = &[
+    "k",
+    "a",
+    "i",
+    "ret",
+    "!mouse_move 38 40",
     "!mouse_button 1",
     "!mouse_button 0",
 ];
@@ -124,6 +163,32 @@ pub const TEST_CASES: &[TestCase] = &[
         keys: &[POINTER],
         expect: &["pointer: at 38 40 cell 2 5", "pointer: click 1 ctrl"],
         ..case("pointer", "test=pointer pointerlog")
+    },
+    // P7: a keyboard and a tablet on xHCI. QEMU sends keys to the USB keyboard
+    // and absolute moves to the tablet; the kernel checks the keys came over USB.
+    TestCase {
+        usb: &["usb-kbd", "usb-tablet"],
+        keys: &[USB_TABLET],
+        expect: &[
+            ": keyboard 0627:0001, ",
+            ": tablet 0627:0001, ",
+            "usb: USB tablet at 16384 8192 of 32767 32767, buttons 0",
+            "usb: USB tablet at 16384 8192 of 32767 32767, buttons 1",
+            "usb: received \"kai\" over USB",
+        ],
+        ..case("usb-tablet", "test=usb")
+    },
+    // P7: a keyboard and a relative mouse (boot protocol) on xHCI.
+    TestCase {
+        usb: &["usb-kbd", "usb-mouse"],
+        keys: &[USB_MOUSE],
+        expect: &[
+            ": mouse 0627:0001, ",
+            "usb: USB mouse moved 38 40, buttons 0",
+            "usb: USB mouse moved 0 0, buttons 1",
+            "usb: received \"kai\" over USB",
+        ],
+        ..case("usb-mouse", "test=usb")
     },
     TestCase {
         keys: &[KAI],
@@ -295,6 +360,41 @@ pub const TEST_CASES: &[TestCase] = &[
         expect: &["boot-ok"],
         ..case("image", "test")
     },
+    // P3: the test pattern on virtio-gpu, in the mode the kernel picks, and the
+    // hardware cursor set and moved; then in the mode `display=` asks for; then on
+    // GOP, the fallback without the device.
+    TestCase {
+        gpu: true,
+        keys: &[crate::screen::KEYS],
+        expect: &[
+            "display: virtio-gpu offers ",
+            "display: cursor moved to 300 200",
+        ],
+        screen: Some(crate::screen::Expect {
+            size: None,
+            cursor: true,
+        }),
+        ..case("display", "test=display")
+    },
+    TestCase {
+        gpu: true,
+        keys: &[crate::screen::KEYS],
+        expect: &["; 1024x768 (display=)", "display: virtio-gpu 1024x768"],
+        screen: Some(crate::screen::Expect {
+            size: Some((1024, 768)),
+            cursor: true,
+        }),
+        ..case("display-mode", "test=display display=1024x768")
+    },
+    TestCase {
+        keys: &[crate::screen::KEYS],
+        expect: &["display: gop "],
+        screen: Some(crate::screen::Expect {
+            size: None,
+            cursor: false,
+        }),
+        ..case("display-gop", "test=display")
+    },
     // L6: worker threads in one address space.
     case("threads", "test=threads"),
     case("threads-kill", "test=threads-kill"),
@@ -305,6 +405,49 @@ pub const TEST_CASES: &[TestCase] = &[
         memory_mib: Some(4608),
         expect: &["bigmap: 3 readers read past 4 GiB of the window"],
         ..case("bigmap", "test=bigmap")
+    },
+    // P5: DHCP from slirp, ping to its gateway, the resolver against the mock DNS
+    // server, RESOLVE from ring 3, and renewal of a lease capped at 4 s.
+    TestCase {
+        dns: true,
+        server: false,
+        expect: &[
+            "net: DHCP lease 10.0.2.15/24 via 10.0.2.2 from 10.0.2.2, DNS 10.0.2.3, lease 4s",
+            "net-setup: 3 of 3 pings to the gateway answered",
+            "net-setup: kai.test resolved to 10.0.2.99 (TTL 300 s), then from the cache",
+            "net-setup: silent.kai.test timed out after 1500 ms as asked",
+            "[netcheck] resolved kai.test to 10.0.2.99",
+            "[netcheck-nocap] resolve kai.test refused: no NET capability",
+            "net-setup: the 4 s lease was renewed: still leased after 10 s, none lost",
+            "network: 10.0.2.15/24 via 10.0.2.2, from the DHCP server at 10.0.2.2",
+            "lease: 4s, granted ",
+            "resolve: alias.kai.test is 10.0.2.99 (cached, ",
+            "ping: reply from 10.0.2.2, seq 0, ",
+            "ping: 10.0.2.2: 1 sent, 1 received, 0% lost",
+        ],
+        ..case("net-setup", "test=net-setup dhcp_max_lease_s=4")
+    },
+    // P5: DHCP sent where nobody serves it; the fallback comes after 1.5 s.
+    TestCase {
+        server: false,
+        expect: &[
+            "net: no DHCP answer in 1500 ms; using 10.0.2.15/24 via 10.0.2.2 while asking on",
+            "net-fallback: 3 of 3 pings to the gateway answered",
+            "network: 10.0.2.15/24 via 10.0.2.2, the fallback",
+        ],
+        ..case(
+            "net-fallback",
+            "test=net-fallback dhcp_port=6767 dhcp_wait_ms=1500",
+        )
+    },
+    TestCase {
+        dns: true,
+        server: false,
+        expect: &[
+            "static 10.0.2.15/24 via 10.0.2.2",
+            "net-static: 3 of 3 pings to the gateway answered",
+        ],
+        ..case("net-static", "test=net-static ip=static")
     },
     // The graft: keys still echo while every vCPU computes in ring 3.
     TestCase {
