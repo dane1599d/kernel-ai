@@ -37,6 +37,19 @@ static REPLIES_SHOWN: AtomicU64 = AtomicU64::new(0);
 static AWAITING_ANSWER: AtomicBool = AtomicBool::new(false);
 /// Typed lines Ctrl-C dropped, for the self-test.
 static LINES_CLEARED: AtomicU64 = AtomicU64::new(0);
+/// When the last line was entered and when the last shell reply was on screen, in
+/// HPET nanoseconds, for the latency case.
+static ENTERED_NS: AtomicU64 = AtomicU64::new(0);
+static REPLIED_NS: AtomicU64 = AtomicU64::new(0);
+
+/// When the last line was entered, and when the last shell reply was shown in
+/// full, in HPET nanoseconds.
+pub fn last_times() -> (u64, u64) {
+    (
+        ENTERED_NS.load(Ordering::Relaxed),
+        REPLIED_NS.load(Ordering::Relaxed),
+    )
+}
 
 /// Shell replies the terminal has printed in full, for the self-tests.
 pub fn replies_shown() -> u64 {
@@ -166,6 +179,7 @@ fn read_line(decoder: &mut Decoder, prompt: &str) -> Option<String> {
             Outcome::Unchanged => {}
             Outcome::Changed => console::show_input(prompt, line.text(), line.cursor()),
             Outcome::Submitted(text) => {
+                ENTERED_NS.store(hpet::nanos(), Ordering::Relaxed);
                 finish_line(prompt, &text, "");
                 return Some(text);
             }
@@ -221,6 +235,7 @@ fn show_shell_reply(reply: &[u8]) -> Option<Confirm> {
         _ => ("!", "the shell sent a malformed reply", None),
     };
     show_lines(lead, body);
+    REPLIED_NS.store(hpet::nanos(), Ordering::Relaxed);
     REPLIES_SHOWN.fetch_add(1, Ordering::Relaxed);
     // A script runs only on a yes to all of it, so a confirmation asks nothing if
     // it lost characters or lines on the way, or cannot be read on one screen.

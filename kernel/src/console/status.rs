@@ -37,8 +37,20 @@ pub struct Field {
 static BUSY_SINCE: AtomicU64 = AtomicU64::new(0);
 static STARTED: AtomicBool = AtomicBool::new(false);
 
+/// When the busy sign was first painted in the current or last wait, in HPET
+/// nanoseconds; 0 until then. For the latency case.
+static SIGN_PAINTED: AtomicU64 = AtomicU64::new(0);
+
+/// When the busy sign was first painted in the current or last wait; 0 if not.
+pub fn sign_painted_ns() -> u64 {
+    SIGN_PAINTED.load(Ordering::Relaxed)
+}
+
 /// Marks the terminal as waiting for the shell or the model, or done waiting.
 pub fn set_busy(busy: bool) {
+    if busy {
+        SIGN_PAINTED.store(0, Ordering::Relaxed);
+    }
     let since = if busy { hpet::nanos().max(1) } else { 0 };
     BUSY_SINCE.store(since, Ordering::Relaxed);
     if !busy {
@@ -77,6 +89,9 @@ fn run(_: usize) {
         if let Some(seconds) = waited {
             let label = format!("thinking {seconds}s");
             super::show_sign(tick as usize, &format!("{label:LABEL$}"));
+            if SIGN_PAINTED.load(Ordering::Relaxed) == 0 {
+                SIGN_PAINTED.store(hpet::nanos(), Ordering::Relaxed);
+            }
         }
         if tick.is_multiple_of(REFRESH_TICKS) || waited.is_some() != was_busy {
             let field = field(waited, busy_cpus, samples);

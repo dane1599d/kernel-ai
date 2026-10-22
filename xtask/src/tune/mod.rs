@@ -16,7 +16,7 @@
 mod ab;
 mod abrun;
 mod ask;
-mod boot;
+pub(crate) mod boot;
 mod demo;
 mod observe;
 pub mod parity;

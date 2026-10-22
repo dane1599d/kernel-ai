@@ -12,6 +12,7 @@
 //! cargo xtask setup | model chat|check|pin | bench quant   (the local LLM on the host; see models/mod.rs)
 //! cargo xtask tune --sim ... | demo | check | record | ab   (M10a; see tune/mod.rs)
 //! cargo xtask tokens --gguf PATH   (S10-0: real token counts of the prompt parts; see tokens.rs)
+//! cargo xtask latency --local ID [--store DIR] [--accel kvm]   (S02-2: Enter to busy sign and to done, real model in the guest)
 //! cargo xtask doctor   (can this PC run Kernel AI in an accelerated VM, and what to fix; read-only)
 //! cargo xtask vbox [--start [--headless]]   (the VirtualBox VM "Kernel AI"; see vbox/mod.rs)
 //!
@@ -37,6 +38,7 @@ mod fluency;
 mod httpd;
 mod icount;
 mod image;
+mod latency;
 mod lines;
 mod local_ask;
 mod local_script;
@@ -73,6 +75,7 @@ fn main() -> ExitCode {
         Some("setup" | "model" | "bench") => models::main(&args),
         Some("tune") => tune::main(&args[1..]),
         Some("tokens") => tokens::main(&args[1..]),
+        Some("latency") => latency::main(&args[1..]),
         Some("doctor") => doctor::main(&args[1..]),
         Some("vbox") => vbox::main(&args[1..]),
         _ => parse_args(&args).and_then(|options| execute(&options)),

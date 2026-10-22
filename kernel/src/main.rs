@@ -44,6 +44,7 @@ mod icount_tests;
 mod idt;
 mod ipc;
 mod keyboard;
+mod latency_tests;
 mod lines;
 mod live_commands;
 mod live_tests;
@@ -294,6 +295,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Model => run_case(|| model_tests::check(cmdline())),
         SelfTest::LocalAsk => run_case(|| local_tests::check(cmdline())),
         SelfTest::LocalScript => run_case(|| local_tests::check_script(cmdline())),
+        SelfTest::Latency => run_case(latency_tests::check),
         SelfTest::Fpu => run_case(fpu_tests::fpu_check),
         SelfTest::Probe => run_case(fpu_tests::probe_check),
         SelfTest::Threads => run_case(thread_tests::check),
