@@ -8,6 +8,9 @@ name: tune with the real model
 # then requires every answer the guest gave to be the host engine's, byte for
 # byte, on the same file. Mode `record` makes the recording the M10 exit test
 # needs (`cargo xtask tune record`); commit its decisions.json after reading it.
+# Mode `latency` is spike S02-2's baseline (`cargo xtask latency`): it types five
+# plain requests at the terminal and reports, by the guest's clock, Enter to the
+# busy sign and Enter to the reply, in the run's summary.
 on:
   workflow_dispatch:
     inputs:
@@ -15,7 +18,7 @@ on:
         description: Catalog id from xtask/models.json
         default: qwen3-4b-2507
       mode:
-        description: demo or record
+        description: demo, record or latency
         default: demo
 
 permissions:
@@ -68,6 +71,18 @@ jobs:
         run: |
           set -o pipefail
           cargo xtask tune record --local "${{ inputs.model }}" --store "$RUNNER_TEMP/models" 2>&1 | tee transcript.txt
+      - name: Latency — five plain requests, Enter to busy sign and to done
+        if: inputs.mode == 'latency'
+        run: |
+          set -o pipefail
+          cargo xtask latency --local "${{ inputs.model }}" --store "$RUNNER_TEMP/models" --accel kvm 2>&1 | tee transcript.txt
+          {
+            echo "S02-2 baseline, ${{ inputs.model }}, commit $GITHUB_SHA, $(nproc) CPUs:"
+            echo
+            echo '```'
+            grep -E 'latency: |\[llm\] local: ' transcript.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Convert the screendump
         if: always() && inputs.mode == 'demo'
         run: test -f target/tune-demo.ppm && pnmtopng target/tune-demo.ppm > tune-demo.png || true

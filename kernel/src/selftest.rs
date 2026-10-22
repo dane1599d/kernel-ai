@@ -48,6 +48,8 @@ pub enum SelfTest {
     LocalAsk,
     /// L5: the model on the disk writes a script the shell checks, with no server.
     LocalScript,
+    /// S02-2: Enter to the busy sign and to done, with the model on the disk.
+    Latency,
     /// L2: processes keep their vector state across switches and CPUs, and start clean.
     Fpu,
     /// L2: the isolation probe; ops 0-2 complete and every other op is stopped.
@@ -114,6 +116,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=model" => Some(SelfTest::Model),
             "test=local-ask" => Some(SelfTest::LocalAsk),
             "test=local-script" => Some(SelfTest::LocalScript),
+            "test=latency" => Some(SelfTest::Latency),
             "test=fpu" => Some(SelfTest::Fpu),
             "test=probe" => Some(SelfTest::Probe),
             "test=threads" => Some(SelfTest::Threads),
@@ -155,6 +158,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::ManifestGood
             | SelfTest::LocalAsk
             | SelfTest::LocalScript
+            | SelfTest::Latency
             | SelfTest::TuneRevert
             | SelfTest::Tune
             | SelfTest::TuneLocal
