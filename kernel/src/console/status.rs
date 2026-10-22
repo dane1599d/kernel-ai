@@ -36,6 +36,8 @@ pub struct Field {
 /// When the terminal started waiting, in HPET nanoseconds; 0 while it is not.
 static BUSY_SINCE: AtomicU64 = AtomicU64::new(0);
 static STARTED: AtomicBool = AtomicBool::new(false);
+/// Set once the status thread runs, so there is a sign to paint.
+static RUNNING: AtomicBool = AtomicBool::new(false);
 
 /// When the busy sign was first painted in the current or last wait, in HPET
 /// nanoseconds; 0 until then. For the latency case.
@@ -47,14 +49,21 @@ pub fn sign_painted_ns() -> u64 {
 }
 
 /// Marks the terminal as waiting for the shell or the model, or done waiting.
+/// The busy sign is painted at once, not at the status thread's next look, which
+/// can be up to [`TICK_MS`] later.
 pub fn set_busy(busy: bool) {
     if busy {
         SIGN_PAINTED.store(0, Ordering::Relaxed);
     }
     let since = if busy { hpet::nanos().max(1) } else { 0 };
     BUSY_SINCE.store(since, Ordering::Relaxed);
-    if !busy {
-        super::hide_sign();
+    match busy {
+        true if RUNNING.load(Ordering::Acquire) => {
+            super::show_sign(0, &format!("{:LABEL$}", "thinking 0s"));
+            SIGN_PAINTED.store(hpet::nanos(), Ordering::Relaxed);
+        }
+        true => {}
+        false => super::hide_sign(),
     }
 }
 
@@ -71,8 +80,9 @@ pub fn start() {
     if super::size().is_none() || STARTED.swap(true, Ordering::AcqRel) {
         return;
     }
-    if let Err(why) = threads::spawn("status", run, 0) {
-        log!("status: the status bar has no thread ({why})");
+    match threads::spawn("status", run, 0) {
+        Ok(_) => RUNNING.store(true, Ordering::Release),
+        Err(why) => log!("status: the status bar has no thread ({why})"),
     }
 }
 

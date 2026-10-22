@@ -29,6 +29,8 @@ const _: () = assert!(llmproto::tune::CALL_TIMEOUT_MS + 10_000 <= SHELL_TIMEOUT_
 const SHELL_START_WAIT_NS: u64 = 3_000_000_000;
 /// Longest piece of a reply printed in one go (each print keeps interrupts off).
 pub(crate) const PIECE_CHARS: usize = 160;
+/// Characters of the `ai: ` an `:ask` answer's rows start with.
+const AI_LEAD: usize = 4;
 const MAX_REPLY_LINES: usize = 64;
 
 /// Shell replies printed in full, for the self-test.
@@ -349,8 +351,13 @@ fn ask(prompt: &str) {
     console::status::set_busy(false);
     match reply {
         Ok(reply) => {
+            // Rows of `ai: ` plus at most `PIECE_CHARS - 4`, so model text never
+            // wraps onto a row of its own, which it could make look like a prompt.
             for line in reply.lines() {
-                log!("ai: {}", printable(line, PIECE_CHARS, 1));
+                let line = printable(line, kabi::MAX_MESSAGE, 1);
+                for row in wrap(&line, PIECE_CHARS - AI_LEAD) {
+                    log!("ai: {row}");
+                }
             }
         }
         Err(error) => log!("error: {error}"),
