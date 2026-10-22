@@ -108,6 +108,23 @@ pub fn align_to_tick() {
     }
 }
 
+/// Halts until the tick count reaches the next whole second, and returns that
+/// tick. Like [`align_to_tick`], but every boot whose host-timed start-up ends
+/// within the same second goes on at the same tick, so at the same absolute
+/// virtual time too: aligning to the next tick alone let the M10 observe boots
+/// start at tick 221 on one boot and 222 on another, and run apart from there.
+pub fn align_to_second() -> u64 {
+    let enabled = x86_64::instructions::interrupts::are_enabled();
+    let edge = (ticks() / rate_hz() + 1) * rate_hz();
+    while ticks() < edge {
+        x86_64::instructions::interrupts::enable_and_hlt();
+    }
+    if !enabled {
+        x86_64::instructions::interrupts::disable();
+    }
+    edge
+}
+
 /// Sleeps (halting between interrupts) until `ticks` more ticks have passed or
 /// `timeout_ns` of HPET time has elapsed. Returns the HPET time it took.
 pub fn wait_ticks(ticks: u64, timeout_ns: u64) -> Result<u64, &'static str> {
