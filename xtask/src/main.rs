@@ -185,12 +185,12 @@ fn execute(options: &Options) -> Result<(), String> {
     let llm_args = llm_cmdline(Some(&llm), Some(mock_llm::MODEL));
     let mut failures = Vec::new();
     let cases = if options.task == Task::Soak {
-        cases::SOAK_CASES
+        cases::SOAK_CASES.iter().collect()
     } else {
-        cases::TEST_CASES
+        cases::test_cases()
     };
     let cases = cases
-        .iter()
+        .into_iter()
         .enumerate()
         .filter(|&(index, _)| options::in_shard(options.shard, index))
         .map(|(_, case)| case)
