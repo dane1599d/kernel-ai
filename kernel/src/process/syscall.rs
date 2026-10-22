@@ -11,8 +11,6 @@ use x86_64::instructions::interrupts;
 
 /// Most bytes one `write` prints.
 const MAX_WRITE: usize = 4096;
-/// Longest piece of a line printed in one go (each print keeps interrupts off).
-const MAX_PIECE: usize = 160;
 const MAX_SLEEP_MS: u64 = 3_600_000;
 const MAX_HTTP_REQUEST: usize = 64 * 1024;
 const MAX_HTTP_TIMEOUT_MS: u64 = 300_000;
@@ -213,6 +211,9 @@ fn write(slot: usize, ptr: u64, len: u64, flags: u64) -> Result<u64, Error> {
     uaccess::copy_from_user(slot, ptr, &mut buf[..len])?;
     let process = super::identity(slot);
     let name = process.name.as_str();
+    // Each piece is printed in one go (each print keeps interrupts off), and with
+    // its `[name] ` fits one row, so ring-3 text never starts a row of its own.
+    let piece = crate::terminal::PIECE_CHARS.saturating_sub(name.chars().count() + 3);
     // A character cut by the size cap drops only that character, not the text.
     let text = match core::str::from_utf8(&buf[..len]) {
         Ok(text) => text,
@@ -227,7 +228,7 @@ fn write(slot: usize, ptr: u64, len: u64, flags: u64) -> Result<u64, Error> {
         loop {
             let cut = rest
                 .char_indices()
-                .nth(MAX_PIECE)
+                .nth(piece.max(1))
                 .map_or(rest.len(), |(at, _)| at);
             if log_only {
                 quiet!("[{name}] {}", &rest[..cut]);

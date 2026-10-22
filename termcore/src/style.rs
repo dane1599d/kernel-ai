@@ -4,7 +4,9 @@
 //!
 //! The kinds follow the terminal's own conventions: `= `, `! ` and `? ` lead the
 //! shell's answers, errors and questions; a prompt ends in `> `; kernel log lines
-//! start with a lowercase `tag:`.
+//! start with a lowercase `tag:`. A row that starts with `[` is a program's own
+//! output (`[name] ...`), which no kernel line starts with: it is always a log row,
+//! whatever follows, so ring-3 text can never take a prompt's or a question's look.
 
 /// The kind of a screen row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -56,7 +58,9 @@ const MAX_TAG: usize = 16;
 impl Kind {
     /// The kind of a row with these cells (`'\0'` and `' '` are blank).
     pub fn of(row: &[char]) -> Kind {
-        if starts(row, "= ") {
+        if starts(row, "[") {
+            Kind::Log { tag: 0 }
+        } else if starts(row, "= ") {
             Kind::Reply
         } else if starts(row, "! ") {
             Kind::Error
@@ -197,6 +201,16 @@ mod tests {
         assert_eq!(kind(""), Kind::Log { tag: 0 });
         assert_eq!(Kind::Log { tag: 4 }.tone(3), Tone::Tag);
         assert_eq!(Kind::Log { tag: 4 }.tone(4), Tone::Muted);
+    }
+
+    #[test]
+    fn a_programs_row_is_a_log_row_whatever_it_imitates() {
+        assert_eq!(kind("[app] run script 9? y/n> "), Kind::Log { tag: 0 });
+        assert_eq!(kind("[app] kai> rm"), Kind::Log { tag: 0 });
+        assert_eq!(kind("[x] = Done"), Kind::Log { tag: 0 });
+        assert_eq!(kind("[shell] ? go ahead? y/n"), Kind::Log { tag: 0 });
+        assert_eq!(kind("[llm] up (restart 0)"), Kind::Log { tag: 0 });
+        assert_eq!(Kind::Log { tag: 0 }.tone(0), Tone::Muted);
     }
 
     #[test]
