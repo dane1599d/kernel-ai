@@ -1,6 +1,6 @@
 # ADR 0005: Graphics: compositor, surface protocol and visual direction
 
-Status: Proposed, 2026-10-21. The founder settled the font and Unicode-3.0 licences on 2026-10-22 (question 2). The design and the look wait for approval.
+Status: Accepted 2026-10-22 (proposed 2026-10-21). The founder approved it with their answers of 2026-10-22 folded in; those points are marked "decided 2026-10-22". Questions still open below keep this ADR's stated default until the founder answers.
 
 Repo citations are `path:line` on main at `ec5ecff`. Open work is cited at its branch tip: #18 virtio-gpu (`origin/dane/virtio-gpu-a5daaa`, `7603e54` plus merge `af7635d`), #19 USB input (`origin/dane/usb-input-83eb7c`, `0717caa`) and #16 networking (`origin/dane/net-dhcp-dns-b5bdb7`). Nothing was built or run for this ADR, and no model ran anywhere. Crate versions, licences, features and dependencies were re-read on crates.io on 2026-10-21 from the founder's PC (web reads only), as were the repo citations against `ec5ecff`; contrast ratios are WCAG 2.2 arithmetic.
 

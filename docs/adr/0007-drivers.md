@@ -1,6 +1,6 @@
 # ADR 0007: The driver model
 
-Proposed, 2026-10-21. The founder allowed C code in the kernel build on 2026-10-22 (question 1). The rest waits for approval.
+Accepted 2026-10-22 (proposed 2026-10-21). The founder approved it with their answers of 2026-10-22 folded in; those points are marked "decided 2026-10-22". Questions still open below keep this ADR's stated default until the founder answers.
 
 Design only. Nothing was built, run or measured for this ADR, and no model ran anywhere. Repo facts are `path:line` on main at ec5ecff unless a branch is named; open PRs were read with `git show` at #16 131aa77, #18 af7635d and #19 0717caa. Licences marked "checked" were read at the source on 2026-10-21 by this topic's research and judge; uACPI, ACPICA, `acpi`, `pci_types`, virtio-drivers, FreeBSD's AMD IOMMU and igc, OpenBSD rge and its microcode, and NVIDIA's COPYING were checked again for this ADR the same day. Shared names and owners follow the P0 decision sheet: `Shm` and handles are [ADR 0001](0001-capabilities.md)'s, action names and tiers are [ADR 0002](0002-agent-actions.md)'s, licence classes are [ADR 0009](0009-licence.md)'s.
 

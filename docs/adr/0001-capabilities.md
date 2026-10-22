@@ -1,6 +1,6 @@
 # ADR 0001: The capability and permission model
 
-Proposed, 2026-10-21. One point was decided by the founder on 2026-10-22: "always allow" choices become standing rules (D8). The rest waits for approval.
+Accepted 2026-10-22 (proposed 2026-10-21). The founder approved it with their answers of 2026-10-22 folded in; those points are marked "decided 2026-10-22". Questions still open below keep this ADR's stated default until the founder answers.
 
 Repo lines are cited on main at ec5ecff unless a branch is named. Open PRs were read with `git show` on their branches: #16 at 131aa77, #18 at af7635d, #19 at 0717caa. Nothing was built or run for this ADR. It follows the topic 01 research, the three designs and the judge's decision (all 2026-10-21), and the P0 decision sheet, which wins where they differ.
 

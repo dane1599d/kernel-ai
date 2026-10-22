@@ -1,6 +1,6 @@
 # ADR 0012: The compiler in the terminal
 
-Proposed, 2026-10-21. The founder allowed C code in the build on 2026-10-22, which settles question 5. The rest waits for approval.
+Accepted 2026-10-22 (proposed 2026-10-21). The founder approved it with their answers of 2026-10-22 folded in; those points are marked "decided 2026-10-22". Questions still open below keep this ADR's stated default until the founder answers.
 
 Repo citations are `path:line` on main at ec5ecff unless a branch is named. "Est." marks an estimate, not a measurement. "Unverified" marks what could not be read at the source. Design only: nothing was built, run or measured for this ADR. Facts were read on 2026-10-21 from the repo, the local cargo registry, crates.io, docs.rs and GitHub, on the founder's PC. No model ran anywhere.
 

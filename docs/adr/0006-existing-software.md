@@ -1,6 +1,6 @@
 # ADR 0006: Running existing software: the browser path
 
-Proposed, 2026-10-21. The founder settled the build-tool licences on 2026-10-22 (question 2). The route waits for its spike and approval.
+Accepted 2026-10-22 (proposed 2026-10-21). The founder approved it with their answers of 2026-10-22 folded in; those points are marked "decided 2026-10-22". Questions still open below keep this ADR's stated default until the founder answers.
 
 Repo citations are `path:line` on main at ec5ecff unless a branch is named. External facts were read or rechecked on 2026-10-21 by the topic's research, design and judge passes, or by this ADR's author; anything not rechecked says "unverified". Nothing was built, run or spiked for this ADR, and no model ran anywhere. Effort figures are the designs' estimates.
 

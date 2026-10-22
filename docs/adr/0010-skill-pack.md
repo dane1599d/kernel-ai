@@ -1,6 +1,6 @@
 # ADR 0010: The agent's OS skill pack
 
-Proposed, 2026-10-21. The founder decided the context size on 2026-10-22 (question 1: 3,072 positions, a 3,840 MiB VM). The rest waits for approval.
+Accepted 2026-10-22 (proposed 2026-10-21). The founder approved it with their answers of 2026-10-22 folded in; those points are marked "decided 2026-10-22". Questions still open below keep this ADR's stated default until the founder answers.
 
 Repo citations are `path:line` on main at ec5ecff unless a branch is named. External facts were read or rechecked on 2026-10-21 by the topic's research and judge passes, and the riskiest were checked again at the source in review (crates.io, GitHub, Hugging Face, BFCL's CSV, arXiv); anything not rechecked says "unverified". "Est." marks arithmetic, not a measurement. Nothing was built, run or spiked for this ADR, and no model ran. For it, the size of today's prompt was recomputed from source, and rhai 1.27.0's dependency list was read on crates.io.
 

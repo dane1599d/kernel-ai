@@ -1,10 +1,10 @@
 # ADR 0009: Release, licence, contribution and reuse terms
 
-Proposed, 2026-10-21. The founder answered part of it on 2026-10-22:
+Accepted 2026-10-22 (proposed 2026-10-21), except the OS licence.
 
-- **Decided:** the reuse classes (D4, with the wider free class), keeping `smartstring` (MPL-2.0) and the OFL fonts, C code in the build (uACPI, xcc), and GPL tools in CI only, never shipped.
-- **Deferred to before v0.1:** the OS's own licence (D1-D3). Until then the repository stays "all rights reserved" (`README.md:107-109` stays) and no outside contributions are accepted.
-- The rest waits for approval.
+- **Accepted:** the reuse policy and licence classes (D4, with the founder's 2026-10-22 answers), headers and third-party notices (D5-D6), the sign-off and AI-assistance rules (D2's DCO and D3, which apply once outside contributions open), and the release terms (D7 onward).
+- **Deferred:** the OS licence choice (D1, and D2's inbound-equals-outbound clause that rests on it). It is decided before v0.1. Until then the repository is "all rights reserved" (`README.md:107-109` stays) and no outside contributions are accepted.
+- Questions still open below keep this ADR's stated default until the founder answers.
 
 Not legal advice. Item 6 of the open questions lists what needs a lawyer. Repo facts are `path:line` on main at ec5ecff unless a branch is named. Nothing was built or run for this ADR: only git, grep, `cargo tree --offline` (dependency metadata, no build), crates.io API reads and the web pages under Sources, on 2026-10-21, on the founder's PC, with no model.
 
@@ -70,17 +70,17 @@ Grafts: from A, the 0BSD worked examples, `kai.notices`, model `.LICENSE` sideca
 
 ## Decision
 
-**The founder's call, 2026-10-22:** decide the OS licence later, before v0.1. Until then the code stays "all rights reserved" and outside contributions are not accepted. D1-D3 are the proposal for that later decision. D4-D6 hold now.
+**The founder's call, 2026-10-22:** decide the OS licence later, before v0.1. Until then the code stays "all rights reserved" and outside contributions are not accepted. D1 is the proposal for that later decision. The rest is accepted: D2's DCO sign-off and D3 apply once contributions open, and D4 onward hold now.
 
 The proposal: Kernel AI stays under MPL-2.0, the licence its workspace manifest already names. Anyone who changes our files and ships the result must publish those changed files, but apps built on top may use any licence they like. Outside contributors add a one-line sign-off to each commit (`git commit -s`) instead of signing a contract with us. Every image and release carries a complete, CI-checked list of the third-party code inside it and where to get our source.
 
-**D1. Outbound licence (proposed; the founder decides before v0.1).**
+**D1. Outbound licence (deferred: decided before v0.1; all rights reserved until then).**
 - Every file we write is `MPL-2.0`, with no Exhibit B, so MPL s3.3's secondary-licence route stays open. A root `LICENSE` holds the MPL-2.0 text. Docs are MPL-2.0 too. `README.md:107-109` ("all rights reserved") stays until the founder decides; it is replaced then.
 - `kabi`, `compsdk` and future WIT files (ADR [0003](0003-app-model.md)) become `MIT OR Apache-2.0`, because third-party programs compile them in. This is free today: every line in them is the founder's.
 - Worked examples that the model copies into users' scripts are `0BSD`, so AI output carries no notice duty. Today that is `EXAMPLES` at `llmproto/src/script.rs:97`, moved to `llmproto/src/examples.rs`. From P1 it is the skill pack's examples (ADR [0010](0010-skill-pack.md)).
 - What the AI writes for the user belongs to the user. The OS claims nothing and shows no licence screen.
 
-**D2. Inbound terms: DCO 1.1, inbound equals outbound, no CLA (proposed; applies only once outside contributions open, after the licence decision).**
+**D2. Inbound terms: DCO 1.1, inbound equals outbound, no CLA (the DCO sign-off is accepted and applies once outside contributions open; inbound-equals-outbound waits for D1).**
 - `CONTRIBUTING.md` links DCO 1.1. Every non-maintainer commit carries `Signed-off-by: Name <email>` matching the author, with a known identity, as Linux's submitting-patches page asks.
 - A `dco` job in `.github/workflows/ci.yml` (`fetch-depth: 0`, about 30 lines of shell) checks each non-merge commit in `base..head`. An author listed in `MAINTAINERS` passes. Any other author needs a sign-off with the same email.
 - `MAINTAINERS` lists the founder's two commit identities, which are exempt. Any later maintainer signs off.

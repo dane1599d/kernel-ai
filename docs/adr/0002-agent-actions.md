@@ -1,6 +1,6 @@
 # ADR 0002: The agent action schema and autonomy tiers
 
-Proposed, 2026-10-21. The founder decided the points below on 2026-10-22; they are marked "decided 2026-10-22" where they appear. The rest of this ADR still waits for approval.
+Accepted 2026-10-22 (proposed 2026-10-21). The founder approved it with their answers of 2026-10-22 folded in; those points are marked "decided 2026-10-22". Questions still open below keep this ADR's stated default until the founder answers.
 
 **Decided by the founder, 2026-10-22:**
 - A no-undo action you plainly ask for asks once, with an Allow / Deny prompt and arrow-key choices to always allow that kind of action. "Always allow" becomes a standing rule you can list and remove (D2a).

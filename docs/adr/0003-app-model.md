@@ -1,6 +1,6 @@
 # ADR 0003: The app model and app ABI
 
-Proposed, 2026-10-21. The founder decided two points on 2026-10-22: the Wasm-first hybrid (section 1) and BlueOak-1.0.0 in the free licence class (question 6). The rest waits for approval.
+Accepted 2026-10-22 (proposed 2026-10-21). The founder approved it with their answers of 2026-10-22 folded in; those points are marked "decided 2026-10-22". Questions still open below keep this ADR's stated default until the founder answers.
 
 Repo citations are `path:line` on main at `ec5ecff`. Open PRs are cited as `branch@commit`. External facts were read at the source on 2026-10-21 unless marked unverified. Figures marked "est." are estimates; nothing here was built, run or measured.
 

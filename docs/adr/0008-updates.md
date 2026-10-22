@@ -1,6 +1,6 @@
 # ADR 0008: Updates and recovery
 
-Proposed, 2026-10-21. The founder settled part of question 6 on 2026-10-22 (GPL tools in CI only). The rest waits for approval.
+Accepted 2026-10-22 (proposed 2026-10-21). The founder approved it with their answers of 2026-10-22 folded in; those points are marked "decided 2026-10-22". Questions still open below keep this ADR's stated default until the founder answers.
 
 This ADR owns the slot layout of the disk (with [0004](0004-storage.md) for `kai-data`), the boot record, the one TUF repository and root, and the `kaituf` client that [0011](0011-packages.md) also uses. Citations are `path:line` on main at ec5ecff unless a branch is named. Nothing was built or run for it.
 

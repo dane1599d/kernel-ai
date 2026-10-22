@@ -1,6 +1,6 @@
 # ADR 0004: Storage: filesystem, format versioning, snapshots, crash consistency
 
-Proposed, 2026-10-21. The founder settled two of its questions on 2026-10-22 (licences: questions 5 and 7). The design itself waits for approval.
+Accepted 2026-10-22 (proposed 2026-10-21). The founder approved it with their answers of 2026-10-22 folded in; those points are marked "decided 2026-10-22". Questions still open below keep this ADR's stated default until the founder answers.
 
 Repo citations are `path:line` on main at ec5ecff (origin/main on 2026-10-21) unless a branch is named. External facts were read at the source on 2026-10-21 by this topic's research and judge passes, or by this ADR's check (crates.io API, RedoxFS on GitLab, GitHub releases, Fxfs on googlesource, QEMU source, the VirtualBox manual); anything not checked says "unverified". Nothing was built, run, spiked or measured for this ADR, and no model ran. "Estimate" means judgement, not measurement.
 

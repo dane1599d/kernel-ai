@@ -1,6 +1,6 @@
 # ADR 0000: Execution plan for P1-P8
 
-Proposed, 2026-10-21. Updated 2026-10-22 with the founder's first answers (section 2.1).
+Accepted 2026-10-22 (proposed 2026-10-21; updated 2026-10-22 with the founder's answers, section 2.1). The founder approved P0 on 2026-10-22.
 
 This is the order of work once the founder approves ADRs 0001-0012. It decides nothing that an ADR decides; it sequences them. Repo lines are cited on main at ec5ecff. Nothing was built, run or measured for this plan. Sizes marked "est." are estimates. The P0 decision sheet (2026-10-21) wins where it differs from a single ADR.
 
