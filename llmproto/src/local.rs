@@ -49,10 +49,11 @@ const SCRIPT_FIELDS: [Field; 2] = [
 pub const SCRIPT_SHAPE: Shape<'static> = Shape {
     fields: &SCRIPT_FIELDS,
     choices: &[],
-    // Off until the fluency gate and S02-1 measure it on the real model: with it
-    // the forced literals take the tokenizer's own tokens, not the model's picks,
-    // so answers can change.
-    jump_forward: false,
+    // The literals between fields go as one block (jump-forward). They take the
+    // tokenizer's own split, which may differ from the model's picks, so an
+    // answer can differ from step decoding's; it is the same from a warm cache or
+    // a fresh one and on every tier. S02-1 measures the effect on accuracy.
+    jump_forward: true,
 };
 
 /// One string field whose limits do not apply: the shape makes it a choice.

@@ -172,7 +172,9 @@ impl Spec {
             context_length: 2048,
             vocab: 3072,
             closes_strings: true,
-            seed: 11,
+            // Seed 11 closed its script at once under jump-forward, so the
+            // local-script case no longer reached the shell's checks; 12 does.
+            seed: 12,
             ..Self::local_ask()
         }
     }
