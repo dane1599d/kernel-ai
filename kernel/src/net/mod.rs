@@ -1,8 +1,15 @@
-//! Networking: a polled virtio-net card under smoltcp, on QEMU's user-mode network
-//! (static 10.0.2.15/24, gateway 10.0.2.2), and a one-request-per-connection HTTP
-//! exchange used by the LLM client.
+//! Networking: a polled virtio-net card under smoltcp, set up by DHCP (or a static
+//! address, see `setup`), with a DNS resolver (`resolve`), ICMP echo (`ping`), and
+//! a one-request-per-connection HTTP exchange used by the LLM client.
+//!
+//! Every user of the interface polls it through [`Net::poll`], which also hands
+//! the DHCP client's news to `setup`, so a lease is never missed whoever polled.
+//! Between those, the `net` thread polls it on its own.
 
 mod device;
+pub mod ping;
+pub mod resolve;
+pub mod setup;
 
 use crate::virtio::hal::KernelHal;
 use crate::virtio::split::SplitTransport;
@@ -15,13 +22,10 @@ use device::NicDevice;
 use smoltcp::iface::{Config, Interface, SocketSet, SocketStorage};
 use smoltcp::socket::tcp;
 use smoltcp::time::{Duration, Instant};
-use smoltcp::wire::{EthernetAddress, HardwareAddress, IpAddress, IpCidr};
+use smoltcp::wire::{EthernetAddress, HardwareAddress, IpAddress};
 use spin::Mutex;
 use virtio_drivers::device::net::VirtIONet;
 
-const GUEST_IP: Ipv4Addr = Ipv4Addr::new(10, 0, 2, 15);
-const GATEWAY: Ipv4Addr = Ipv4Addr::new(10, 0, 2, 2);
-const PREFIX_LEN: u8 = 24;
 const RX_BUFFER: usize = 64 * 1024;
 const TX_BUFFER: usize = 16 * 1024;
 /// Longest wait between polls: without interrupts this bounds how late a frame is seen.
@@ -39,11 +43,21 @@ struct Net {
     device: NicDevice,
     iface: Interface,
     sockets: SocketSet<'static>,
+    setup: setup::Setup,
 }
 
 // SAFETY: the network state is only ever used under the NET mutex, by one thread at
 // a time; nothing in it is tied to a particular CPU.
 unsafe impl Send for Net {}
+
+impl Net {
+    /// Moves frames both ways and applies whatever the DHCP client learned.
+    fn poll(&mut self) {
+        self.iface.poll(now(), &mut self.device, &mut self.sockets);
+        self.setup
+            .after_poll(&mut self.iface, &mut self.sockets, hpet::nanos());
+    }
+}
 
 static NET: Mutex<Option<Net>> = Mutex::new(None);
 static NEXT_PORT: AtomicU16 = AtomicU16::new(FIRST_EPHEMERAL_PORT);
@@ -52,8 +66,8 @@ fn now() -> Instant {
     Instant::from_millis((hpet::nanos() / 1_000_000) as i64)
 }
 
-/// Brings up the network card the PCI probe found, polled, and configures the
-/// interface.
+/// Brings up the network card the PCI probe found, polled, and starts setting up
+/// its address the way the command line said (see [`setup::configure`]).
 pub fn init(transport: SplitTransport) -> Result<(), &'static str> {
     let mut nic = Nic::new(transport, BUFFER_LEN).map_err(|_| "net: virtio-net setup failed")?;
     nic.disable_interrupts();
@@ -64,34 +78,31 @@ pub fn init(transport: SplitTransport) -> Result<(), &'static str> {
     config.random_seed = hpet::nanos()
         ^ u64::from_le_bytes([mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], 0x4B, 0x41]);
     let mut iface = Interface::new(config, &mut device, now());
-    iface.update_ip_addrs(|addresses| {
-        let _ = addresses.push(IpCidr::new(IpAddress::Ipv4(GUEST_IP), PREFIX_LEN));
-    });
-    iface
-        .routes_mut()
-        .add_default_ipv4_route(GATEWAY)
-        .map_err(|_| "net: route table full")?;
     // Ports start at a boot-dependent place, so a new boot does not reuse a flow
     // the host may still remember from the previous one.
     NEXT_PORT.store(
         FIRST_EPHEMERAL_PORT + (hpet::nanos() % 8192) as u16,
         Ordering::Relaxed,
     );
-    let sockets = SocketSet::new(Vec::<SocketStorage<'static>>::new());
-    *NET.lock() = Some(Net {
-        device,
-        iface,
-        sockets,
-    });
+    let mut sockets = SocketSet::new(Vec::<SocketStorage<'static>>::new());
+    let setup = setup::Setup::start(&mut iface, &mut sockets, hpet::nanos())?;
     log!(
-        "net: up as {GUEST_IP}/{PREFIX_LEN} via {GATEWAY}, MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+        "net: card up, MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}; {}",
         mac[0],
         mac[1],
         mac[2],
         mac[3],
         mac[4],
-        mac[5]
+        mac[5],
+        setup.describe_start()
     );
+    *NET.lock() = Some(Net {
+        device,
+        iface,
+        sockets,
+        setup,
+    });
+    threads::spawn("net", setup::run, 0)?;
     Ok(())
 }
 
@@ -104,10 +115,33 @@ fn next_port() -> u16 {
     FIRST_EPHEMERAL_PORT + port.wrapping_sub(FIRST_EPHEMERAL_PORT) % 16384
 }
 
+/// Polls until the interface has an address, the deadline passes, or `cancel()`
+/// says the caller is gone. Must be called from a thread.
+fn wait_for_address(deadline_ns: u64, cancel: &impl Fn() -> bool) -> Result<(), &'static str> {
+    loop {
+        {
+            let mut guard = NET.lock();
+            let net = guard.as_mut().ok_or("net: no network card")?;
+            net.poll();
+            if net.setup.status().address.is_some() {
+                return Ok(());
+            }
+        }
+        if cancel() {
+            return Err("net: cancelled");
+        }
+        if hpet::nanos() > deadline_ns {
+            return Err("net: no address yet");
+        }
+        threads::sleep_ms(setup::UNCONFIGURED_POLL_MS);
+    }
+}
+
 /// Sends `request` to `server`, then reads until the server closes the connection,
 /// `max_response` bytes have arrived, `timeout_ms` passes, or `cancel()` says the
 /// caller is gone. Parsing what came back is the caller's business. Must be called
-/// from a thread (it sleeps between polls).
+/// from a thread (it sleeps between polls). Waits for an address first, within the
+/// same time.
 pub fn exchange(
     server: (Ipv4Addr, u16),
     request: &[u8],
@@ -115,6 +149,11 @@ pub fn exchange(
     max_response: usize,
     cancel: impl Fn() -> bool,
 ) -> Result<Vec<u8>, &'static str> {
+    let deadline = hpet::nanos().saturating_add(timeout_ms.saturating_mul(1_000_000));
+    wait_for_address(deadline, &cancel).map_err(|error| match error {
+        "net: no address yet" => "net: request timed out",
+        other => other,
+    })?;
     let handle = {
         let mut guard = NET.lock();
         let net = guard.as_mut().ok_or("net: no network card")?;
@@ -133,7 +172,6 @@ pub fn exchange(
             .map_err(|_| "net: cannot start the connection")?;
         net.sockets.add(socket)
     };
-    let deadline = hpet::nanos().saturating_add(timeout_ms.saturating_mul(1_000_000));
     let mut sent = 0;
     let mut response = Vec::new();
     let mut connected = false;
@@ -141,7 +179,7 @@ pub fn exchange(
     let result = loop {
         let mut guard = NET.lock();
         let net = guard.as_mut().ok_or("net: no network card")?;
-        net.iface.poll(now(), &mut net.device, &mut net.sockets);
+        net.poll();
         let socket = net.sockets.get_mut::<tcp::Socket>(handle);
         if matches!(
             socket.state(),
@@ -196,24 +234,33 @@ pub fn exchange(
         } else {
             socket.abort();
         }
-        net.iface.poll(now(), &mut net.device, &mut net.sockets);
+        net.poll();
         net.sockets.remove(handle);
     }
     result.map(|()| response)
 }
 
-/// The error a system call reports for an [`exchange`] that failed.
+/// The error a system call reports for an [`exchange`] or a resolve that failed.
 pub fn error_code(error: &str) -> kabi::Error {
     match error {
-        "net: request timed out" => kabi::Error::TimedOut,
+        "net: request timed out" | "dns: timed out" => kabi::Error::TimedOut,
         "net: out of memory" => kabi::Error::NoMemory,
+        "dns: no such host" | "dns: the host has no IPv4 address" => kabi::Error::NotFound,
+        "dns: no DNS server known" | "net: no network card" => kabi::Error::Unavailable,
+        _ if error.starts_with("dns: host name") || error == "dns: empty host name" => {
+            kabi::Error::Invalid
+        }
         _ => kabi::Error::Network,
     }
 }
 
-/// `IPv4:PORT` from the kernel command line, such as `llm=` and `build=`; the
-/// kernel has no DNS.
+/// `IPv4:PORT` from the kernel command line, such as `llm=` and `build=`.
 pub fn parse_endpoint(text: &str) -> Option<(Ipv4Addr, u16)> {
     let (host, port) = text.rsplit_once(':')?;
     Some((host.parse().ok()?, port.parse().ok().filter(|&p| p > 0)?))
+}
+
+/// The network's current setup, for `:net` and the tests.
+pub fn status() -> Option<setup::Status> {
+    NET.lock().as_ref().map(|net| net.setup.status())
 }

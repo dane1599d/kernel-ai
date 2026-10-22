@@ -24,12 +24,13 @@ livecore = { path = "../livecore" }
 editcore = { path = "../editcore" }
 llmproto = { path = "../llmproto" }
 mm = { path = "../mm" }
+netcore = { path = "../netcore" }
 nvme = { path = "../nvme" }
 sched = { path = "../sched" }
 termcore = { path = "../termcore" }
 serde = { version = "1.0.229", default-features = false, features = ["alloc", "derive"] }
 serde_json = { version = "1.0.154", default-features = false, features = ["alloc"] }
-smoltcp = { version = "0.14.0", default-features = false, features = ["alloc", "medium-ethernet", "proto-ipv4", "socket-tcp"] }
+smoltcp = { version = "0.14.0", default-features = false, features = ["alloc", "medium-ethernet", "proto-ipv4", "proto-dhcpv4", "proto-dns", "socket-tcp", "socket-udp", "socket-icmp", "socket-dhcpv4"] }
 virtio-drivers = { version = "0.13.0", default-features = false, features = ["alloc"] }
 talc = "5.1.1"
 noto-sans-mono-bitmap = { version = "0.3.2", default-features = false, features = ["regular", "bold", "size_16", "size_20", "size_24", "size_32", "unicode-basic-latin", "unicode-specials"] }
