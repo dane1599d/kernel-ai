@@ -5,7 +5,7 @@
 //! - `test=net-setup`: DHCP gives 10.0.2.15/24 via 10.0.2.2 with DNS 10.0.2.3; the
 //!   gateway answers pings; names resolve, CNAMEs too, from the cache within their
 //!   TTL and from the server after it; NXDOMAIN and silence fail the right way;
-//!   ring 3 resolves through RESOLVE with the NET capability and is refused
+//!   ring 3 resolves through RESOLVE with the RESOLVE capability and is refused
 //!   without it; and the lease, capped at 4 s, is renewed rather than lost.
 //! - `test=net-fallback`: with DHCP sent to a port nobody serves, the fallback
 //!   address comes after `dhcp_wait_ms` and the gateway answers on it.
@@ -192,15 +192,17 @@ fn resolve_checks() -> Result<(), &'static str> {
 const NETCHECK_LIMITS: Limits = Limits {
     max_pages: 256,
     max_burst_ms: 10_000,
-    caps: cap::NET,
+    caps: cap::RESOLVE,
     stack_pages: 0,
 };
 
-/// `netcheck` resolves kai.test through RESOLVE with NET, and is refused without.
+/// `netcheck` resolves kai.test through RESOLVE with its own capability, and is
+/// refused without it, NET alone included: NET is for HTTP to the one server.
 fn ring3_checks() -> Result<(), &'static str> {
     let runs = [
-        ("netcheck", cap::NET, "host=kai.test expect=10.0.2.99"),
+        ("netcheck", cap::RESOLVE, "host=kai.test expect=10.0.2.99"),
         ("netcheck-nocap", 0, "host=kai.test expect=permission"),
+        ("netcheck-net", cap::NET, "host=kai.test expect=permission"),
     ];
     for (name, caps, args) in runs {
         let pid = process::spawn(&SpawnRequest {
@@ -219,6 +221,6 @@ fn ring3_checks() -> Result<(), &'static str> {
             return Err("net-setup: netcheck did not get what it expected");
         }
     }
-    log!("net-setup: ring 3 resolved kai.test with NET and was refused without it");
+    log!("net-setup: ring 3 resolved kai.test with RESOLVE and was refused with NET alone or none");
     Ok(())
 }

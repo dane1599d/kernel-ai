@@ -37,7 +37,7 @@ pub struct Plan {
 }
 
 /// Reads the plan: one service per line, `name [program=P] [pages=N] [stack_pages=N]
-/// [burst_ms=N] [caps=serve+net+call+policy+component+publish+model+threads] [backoff_max_ms=N] [max_restarts=N]
+/// [burst_ms=N] [caps=serve+net+call+policy+component+publish+model+threads+resolve] [backoff_max_ms=N] [max_restarts=N]
 /// [other=args ...]`. The supervisor keys set limits and policy; everything else is
 /// passed to the program. A bad line skips only that service, so one typo cannot
 /// keep every other service down.
@@ -133,6 +133,7 @@ fn caps(service: &str, value: &str) -> Result<u64, String> {
         "publish" => Ok(bits | cap::PUBLISH),
         "model" => Ok(bits | cap::MODEL),
         "threads" => Ok(bits | cap::THREADS),
+        "resolve" => Ok(bits | cap::RESOLVE),
         other => Err(format!("{service}: unknown capability {other:?}")),
     })
 }
