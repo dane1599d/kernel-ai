@@ -46,6 +46,14 @@ pub fn set_busy(busy: bool) {
     }
 }
 
+/// Keeps the status thread from starting: for the M10 exit test's icount boots.
+/// It wakes on its own 125 ms beat from when the terminal starts, which is before
+/// those boots' tick-aligned start, so its wakeups would land at a different point
+/// in each boot and nudge the numbers they measure.
+pub fn keep_off() {
+    STARTED.store(true, Ordering::Release);
+}
+
 /// Starts the status thread, once, if there is a framebuffer console.
 pub fn start() {
     if super::size().is_none() || STARTED.swap(true, Ordering::AcqRel) {

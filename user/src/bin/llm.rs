@@ -44,7 +44,6 @@ const MAX_ERROR_CHARS: usize = 160;
 /// Bytes hashed between two 1 ms sleeps, so hashing a large model never runs into
 /// the burst limit.
 const HASH_PIECE: usize = 16 * 1024 * 1024;
-const NO_SERVER: &str = "no LLM server configured (boot with llm=IP:PORT)";
 
 /// The model the kernel mapped into this process.
 struct Model {
@@ -107,14 +106,13 @@ struct Backends {
 fn main() -> i32 {
     let args = args();
     let server = remote::Server::from_args(&args);
+    let restart = arg(&args, "restart").unwrap_or("0");
     match &server {
         Some(server) => println!(
-            "up (restart {}); server {}, model {}",
-            arg(&args, "restart").unwrap_or("0"),
-            server.host,
-            server.model
+            "up (restart {restart}); server {}, model {}",
+            server.host, server.model
         ),
-        None => println!("up; {NO_SERVER}"),
+        None => println!("up (restart {restart})"),
     }
     let (model, local, replay) = match Model::map() {
         Ok(Some(model)) if model.bytes().starts_with(kabi::model::REPLAY_MAGIC) => {
@@ -271,9 +269,7 @@ fn script(backends: &mut Backends, text: &str, response: &mut [u8]) -> Result<St
                 .map_err(|error| script::encode_error(&error));
         }
         (_, Some(server)) => return server.script(&request, response),
-        (Some(Err(why)), None) => {
-            format!("the model cannot run ({why}), and there is no LLM server")
-        }
+        (Some(Err(why)), None) => format!("the model cannot run ({why})"),
         (None, None) => String::from(NO_MODEL),
     };
     Err(script::encode_error(&AnswerError::Unavailable(why)))
@@ -329,9 +325,7 @@ fn health(backends: &mut Backends, response: &mut [u8]) -> Result<String, String
     }
     let local = (!local.is_empty()).then(|| local.join("; "));
     let Some(server) = &backends.server else {
-        return local
-            .map(|local| format!("{local}; {NO_SERVER}"))
-            .ok_or_else(|| String::from(NO_SERVER));
+        return local.ok_or_else(|| String::from(NO_MODEL));
     };
     match (server.health(response), local) {
         (Ok(server), Some(local)) => Ok(format!("{server}; {local}")),

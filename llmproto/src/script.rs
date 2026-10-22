@@ -21,6 +21,9 @@ pub const SCRIPT_MAX_LINE_CHARS: usize = 120;
 pub const SCRIPT_MAX_BYTES: usize = 3 * 1024;
 /// Short enough that `model says: <summary>` fits one row of the console.
 pub const SUMMARY_MAX_CHARS: usize = 100;
+/// Longest reply when the model answers in words (an empty script): the summary
+/// then holds the answer itself, which the terminal wraps.
+pub const REPLY_MAX_CHARS: usize = 300;
 pub const REQUEST_MAX_BYTES: usize = 512;
 pub const ERROR_MAX_BYTES: usize = 512;
 /// Longest the llm service spends on one script request, whatever the shell asks.
@@ -123,12 +126,12 @@ const EXAMPLES: &[(&str, &str, &str)] = &[
     (
         "what can you do?",
         "",
-        "I answer questions and run scripts that read CPUs, memory, uptime and services, or set the policy.",
+        "I answer questions and run scripts that read CPUs, memory, uptime and services, or set the policy. Try: how much memory is free? or use round robin.",
     ),
     (
         "delete all my files",
         "print(\"I cannot do that: scripts here have no access to files.\");",
-        "Explains that there is no file access.",
+        "Prints why it cannot be done.",
     ),
 ];
 
@@ -138,8 +141,8 @@ pub fn system_prompt() -> String {
         "You write short Rhai scripts for the shell of Kernel AI, a small operating system.\n\
          Answer with JSON only: {\"script\": \"...\", \"summary\": \"...\"}.\n\
          script: Rhai code, at most 40 lines of at most 120 characters, ASCII only.\n\
-         summary: one sentence of at most 100 characters saying what the script does.\n\
-         Greeting, chat or a question about you that needs no function: an empty script, your reply in summary.\n\
+         summary: for a script, one sentence of at most 100 characters saying what it does.\n\
+         No function needed (greeting, chat, a question you can answer): an empty script, and the summary is your answer to the user, at most 300 characters, never a description of it.\n\
          \n\
          Rhai rules here:\n\
          - End statements with ';'. Declare variables with let.\n\
@@ -329,20 +332,29 @@ pub fn check_text(script: &str) -> Result<String, AnswerError> {
     Ok(normal)
 }
 
-/// Checks a summary: one line, printable, within the limit.
+/// Checks a script's summary: one line, printable, within the limit.
 pub fn check_summary(summary: &str) -> Result<String, AnswerError> {
-    let summary = summary.trim();
-    if summary.chars().any(char::is_control) {
+    check_line(summary, SUMMARY_MAX_CHARS)
+}
+
+/// Checks a reply in words: one line, printable, within its longer limit.
+pub fn check_reply(reply: &str) -> Result<String, AnswerError> {
+    check_line(reply, REPLY_MAX_CHARS)
+}
+
+fn check_line(text: &str, max_chars: usize) -> Result<String, AnswerError> {
+    let text = text.trim();
+    if text.chars().any(char::is_control) {
         return Err(AnswerError::Rejected(
             "the summary must be one line of plain text".into(),
         ));
     }
-    if summary.chars().count() > SUMMARY_MAX_CHARS {
+    if text.chars().count() > max_chars {
         return Err(AnswerError::Rejected(format!(
-            "the summary is longer than {SUMMARY_MAX_CHARS} characters"
+            "the summary is longer than {max_chars} characters"
         )));
     }
-    Ok(summary.to_string())
+    Ok(text.to_string())
 }
 
 /// Reads a completion as a script answer.
@@ -363,11 +375,11 @@ pub fn answer(completion: &Completion) -> Result<Answer, AnswerError> {
         content = fenced.trim().strip_suffix("```").unwrap_or(fenced).trim();
     }
     let envelope: Envelope = serde_json::from_str(content).map_err(|_| AnswerError::NoEnvelope)?;
-    let summary = check_summary(&envelope.summary)?;
     let script = check_text(&envelope.script)?;
     if script.trim().is_empty() {
-        return Err(AnswerError::NoScript(summary));
+        return Err(AnswerError::NoScript(check_reply(&envelope.summary)?));
     }
+    let summary = check_summary(&envelope.summary)?;
     Ok(Answer { summary, script })
 }
 

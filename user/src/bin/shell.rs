@@ -16,7 +16,7 @@ use llmproto::chat::Completion;
 use llmproto::script::{self, Answer, AnswerError, ScriptRequest};
 use llmproto::tune::{self, TuneRequest};
 use shellcore::{DEFAULT_CONFIG, Host, SCRIPT_ROUND_MS, Shell};
-use user::{arg, args, println, sys};
+use user::{arg, args, logln, println, sys};
 
 user::entry!(main);
 
@@ -82,8 +82,9 @@ impl Host for System {
         }
     }
 
+    /// The audit trail goes to the log, not the screen: the reply says what happened.
     fn audit(&self, text: &str) {
-        println!("{text}");
+        logln!("{text}");
     }
 
     fn sched_stats(&self, window_ms: u64) -> Result<Box<SchedStats>, kabi::Error> {

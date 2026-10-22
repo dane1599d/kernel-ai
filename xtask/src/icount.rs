@@ -107,10 +107,19 @@ pub fn run_capture(
         .map_err(|e| format!("cannot start QEMU: {e}"))?;
     let stdout = child.stdout.take().ok_or("QEMU stdout was not captured")?;
     let (done_tx, done_rx) = mpsc::channel();
+    // The echo runs apart from the reader, so a slow terminal or CI log never
+    // stops QEMU's output being read. A full pipe would make the guest's serial
+    // writes wait on the host, and its timing differ from boot to boot.
+    let (echo_tx, echo_rx) = mpsc::channel::<String>();
+    let echo = thread::spawn(move || {
+        for line in echo_rx {
+            println!("  | {line}");
+        }
+    });
     let reader = thread::spawn(move || {
         let (mut lines, mut start, mut measured) = (Vec::new(), None, None);
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            println!("  | {line}");
+            let _ = echo_tx.send(line.clone());
             let line = line.trim_end_matches('\r').to_string();
             if !crate::qemu::from_programs(&line) {
                 if line.contains("measure-start") {
@@ -140,6 +149,8 @@ pub fn run_capture(
     };
     let _ = done_rx.recv_timeout(Duration::from_secs(5));
     let (lines, measure_host_ms) = reader.join().unwrap_or_default();
+    // The reader's sender is gone, so the echo ends once it has printed the rest.
+    let _ = echo.join();
     Ok(Captured {
         lines,
         passed: status.code() == Some(crate::qemu::QEMU_PASS),

@@ -4,7 +4,7 @@
 
 use super::{supervision, uaccess};
 use crate::entry::TrapFrame;
-use crate::{cpu, hpet, ipc, llm, log, net, threads};
+use crate::{cpu, hpet, ipc, llm, log, net, quiet, threads};
 use alloc::vec::Vec;
 use kabi::{Error, HttpRequest, MAX_ARGS, call, cap};
 use x86_64::instructions::interrupts;
@@ -60,7 +60,7 @@ fn handle(slot: usize, number: u64, a: [u64; 6]) -> Result<u64, Error> {
     }
     match number {
         call::EXIT => super::exit_with(slot, a[0] & 0xFFFF_FFFF),
-        call::WRITE => write(slot, a[0], a[1]),
+        call::WRITE => write(slot, a[0], a[1], a[2]),
         call::SLEEP => sleep(slot, a[0]),
         call::YIELD => {
             threads::yield_now();
@@ -201,8 +201,13 @@ fn handle(slot: usize, number: u64, a: [u64; 6]) -> Result<u64, Error> {
 
 /// Prints the process's text, without control characters, one prefixed line at a
 /// time. Lines start with `[name] `, which no kernel line does, so a program can
-/// never imitate kernel output.
-fn write(slot: usize, ptr: u64, len: u64) -> Result<u64, Error> {
+/// never imitate kernel output. With [`call::WRITE_LOG_ONLY`] they go to the log
+/// only, not the screen.
+fn write(slot: usize, ptr: u64, len: u64, flags: u64) -> Result<u64, Error> {
+    if flags & !call::WRITE_LOG_ONLY != 0 {
+        return Err(Error::Invalid);
+    }
+    let log_only = flags & call::WRITE_LOG_ONLY != 0;
     let len = usize::try_from(len).unwrap_or(usize::MAX).min(MAX_WRITE);
     let mut buf = [0u8; MAX_WRITE];
     uaccess::copy_from_user(slot, ptr, &mut buf[..len])?;
@@ -224,7 +229,11 @@ fn write(slot: usize, ptr: u64, len: u64) -> Result<u64, Error> {
                 .char_indices()
                 .nth(MAX_PIECE)
                 .map_or(rest.len(), |(at, _)| at);
-            log!("[{name}] {}", &rest[..cut]);
+            if log_only {
+                quiet!("[{name}] {}", &rest[..cut]);
+            } else {
+                log!("[{name}] {}", &rest[..cut]);
+            }
             rest = &rest[cut..];
             if rest.is_empty() {
                 break;

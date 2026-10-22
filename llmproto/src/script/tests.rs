@@ -39,7 +39,11 @@ fn the_prompt_lists_every_function_and_never_changes() {
 fn every_example_passes_the_text_checks() {
     for (_, script, summary) in EXAMPLES {
         assert_eq!(check_text(script).unwrap(), *script);
-        assert_eq!(check_summary(summary).unwrap(), *summary);
+        let checked = match script.is_empty() {
+            true => check_reply(summary),
+            false => check_summary(summary),
+        };
+        assert_eq!(checked.unwrap(), *summary);
     }
     // A chat example answers with no script, its reply in the summary.
     assert!(EXAMPLES.iter().any(|(_, script, _)| script.is_empty()));
@@ -179,6 +183,26 @@ fn oversized_scripts_and_summaries_are_refused_not_cut() {
     let long_summary = envelope("print(1);", &"s".repeat(SUMMARY_MAX_CHARS + 1));
     assert!(matches!(
         answer(&body(&long_summary, "stop")),
+        Err(AnswerError::Rejected(_))
+    ));
+}
+
+#[test]
+fn a_reply_in_words_may_be_longer_than_a_scripts_summary() {
+    let reply = "r".repeat(REPLY_MAX_CHARS);
+    assert_eq!(
+        answer(&body(&envelope("", &reply), "stop")),
+        Err(AnswerError::NoScript(reply))
+    );
+    let too_long = envelope("", &"r".repeat(REPLY_MAX_CHARS + 1));
+    assert!(matches!(
+        answer(&body(&too_long, "stop")),
+        Err(AnswerError::Rejected(_))
+    ));
+    // With a script, the summary keeps the shorter limit `show` lays out for.
+    let wordy = envelope("print(1);", &"s".repeat(SUMMARY_MAX_CHARS + 1));
+    assert!(matches!(
+        answer(&body(&wordy, "stop")),
         Err(AnswerError::Rejected(_))
     ));
 }

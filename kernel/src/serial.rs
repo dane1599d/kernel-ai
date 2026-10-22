@@ -102,6 +102,14 @@ pub fn _print(args: fmt::Arguments) {
     });
 }
 
+#[doc(hidden)]
+pub fn _print_quiet(args: fmt::Arguments) {
+    with_line(|| {
+        let _ = Serial.write_fmt(args);
+        crate::logbook::record(args);
+    });
+}
+
 /// Releases the line lock unconditionally. Only for fatal-error reporting, after the
 /// other CPUs were halted, possibly while holding it.
 pub fn break_line_lock() {
@@ -113,5 +121,14 @@ pub fn break_line_lock() {
 macro_rules! log {
     ($($arg:tt)*) => {
         $crate::serial::_print(format_args!("{}\n", format_args!($($arg)*)))
+    };
+}
+
+/// Prints a line to COM1 and the log book (`:log`), not the framebuffer: an audit
+/// trail or a note the person at the screen did not ask for.
+#[macro_export]
+macro_rules! quiet {
+    ($($arg:tt)*) => {
+        $crate::serial::_print_quiet(format_args!("{}\n", format_args!($($arg)*)))
     };
 }
