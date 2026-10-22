@@ -222,6 +222,9 @@ extern "C" fn boot_continue() -> ! {
     let test = CMDLINE
         .response()
         .map_or(SelfTest::None, |r| selftest::from_cmdline(r.cmdline()));
+    if test == SelfTest::TuneAb {
+        serial::draw_quiet_lines();
+    }
     // Not in kmain: configuring allocates, and the heap is mapped only by init_memory.
     if let Some(cmdline) = CMDLINE.response() {
         net::setup::configure(cmdline.cmdline());
