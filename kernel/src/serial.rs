@@ -102,26 +102,11 @@ pub fn _print(args: fmt::Arguments) {
     });
 }
 
-/// Whether `quiet!` lines are drawn on the screen as well.
-static DRAW_QUIET: AtomicBool = AtomicBool::new(false);
-
-/// Draws `quiet!` lines on the screen too, as every line was before they existed.
-/// Only for the M10 exit test's icount boots: their summary is the same from
-/// boot to boot and runner to runner with these lines drawn, and is not without
-/// them, because something host-timed still reaches those boots. Until that is
-/// found, they keep the timing they were measured with.
-pub fn draw_quiet_lines() {
-    DRAW_QUIET.store(true, Ordering::Relaxed);
-}
-
 #[doc(hidden)]
 pub fn _print_quiet(args: fmt::Arguments) {
     with_line(|| {
         let _ = Serial.write_fmt(args);
         crate::logbook::record(args);
-        if DRAW_QUIET.load(Ordering::Relaxed) {
-            crate::console::print(args);
-        }
     });
 }
 
