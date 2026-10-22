@@ -28,6 +28,8 @@ mod build_service;
 mod compute_tests;
 mod console;
 mod cpu;
+mod display;
+mod display_tests;
 mod edit_mode;
 mod edit_session;
 mod edit_tests;
@@ -245,7 +247,7 @@ extern "C" fn boot_continue() -> ! {
         fail(message);
     }
     start_other_cpus();
-    virtio::init(platform);
+    virtio::init(platform, cmdline());
     // Before start_user_space sets the page budget, so the model's frames are
     // outside every quota.
     model::load(cmdline());
@@ -268,6 +270,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Timer => run_case(timer::sixty_second_check),
         SelfTest::Keyboard => run_case(keyboard::typing_check),
         SelfTest::Pointer => run_case(pointer::self_test),
+        SelfTest::Display => run_case(display_tests::check),
         SelfTest::Sched => run_case(sched_tests::latency_check),
         SelfTest::Watchdog => run_case(sched_tests::watchdog_check),
         SelfTest::Smp => run_case(smp_tests::all_cpus_check),

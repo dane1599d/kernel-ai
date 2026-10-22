@@ -28,6 +28,7 @@ netcore = { path = "../netcore" }
 nvme = { path = "../nvme" }
 sched = { path = "../sched" }
 termcore = { path = "../termcore" }
+gfxcore = { path = "../gfxcore" }
 serde = { version = "1.0.229", default-features = false, features = ["alloc", "derive"] }
 serde_json = { version = "1.0.154", default-features = false, features = ["alloc"] }
 smoltcp = { version = "0.14.0", default-features = false, features = ["alloc", "medium-ethernet", "proto-ipv4", "proto-dhcpv4", "proto-dns", "socket-tcp", "socket-udp", "socket-icmp", "socket-dhcpv4"] }

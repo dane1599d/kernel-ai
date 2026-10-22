@@ -1,7 +1,7 @@
 //! Build and run tool for Kernel AI.
 //!
 //! cargo xtask build [--release] [--spikes]
-//! cargo xtask run   [--release] [--spikes] [--accel auto|kvm|whpx|tcg] [--cpus N] [--mem SIZE] [--llm IP:PORT] [--model NAME] [--edit] [--model-disk PATH | --local ID [--store DIR]] [--workload A|B [--seed N]]
+//! cargo xtask run   [--release] [--spikes] [--accel auto|kvm|whpx|tcg] [--cpus N] [--mem SIZE] [--llm IP:PORT] [--model NAME] [--edit] [--gpu] [--model-disk PATH | --local ID [--store DIR]] [--workload A|B [--seed N]]
 //! cargo xtask test  [--release] [--accel auto|kvm|whpx|tcg] [--timeout SECS] [--cpus N] [--mem SIZE] [--shard K/N]
 //! cargo xtask soak  [--accel auto|kvm|whpx|tcg]   (10-minute storm, M5 exit test)
 //! (`--accel wsl` on Windows: QEMU with KVM inside WSL2; see wsl/launch.rs)
@@ -44,6 +44,7 @@ mod mock_llm;
 mod models;
 mod options;
 mod qemu;
+mod screen;
 mod smoke;
 mod strip;
 mod tune;
@@ -162,7 +163,10 @@ fn execute(options: &Options) -> Result<(), String> {
         esp::make_esp(&esp, &kernel, &modules, &efi, &cmdline)?;
         let firmware = wsl::firmware(wsl.as_ref(), &qemu, &target_dir)?;
         let sizing = qemu::run_sizing(accel, options.sizing, disk.is_some());
-        let args = qemu::args(&firmware, accel, false, disk.as_ref(), sizing);
+        let mut args = qemu::args(&firmware, accel, false, disk.as_ref(), sizing);
+        if options.gpu {
+            args.extend(["-vga", "none", "-device", "virtio-gpu-pci"].map(String::from));
+        }
         let args = wsl::wrap(wsl.as_ref(), args)?;
         println!("xtask: {} {}", qemu.display(), args.join(" "));
         return qemu::run_interactive(&qemu, &args, &target_dir);
@@ -230,6 +234,12 @@ fn execute(options: &Options) -> Result<(), String> {
         if case.image {
             qemu::boot_from_image(&mut args, &esp, &target_dir)?;
         }
+        if case.gpu {
+            args.extend(screen::gpu_args());
+        }
+        if case.screen.is_some() {
+            screen::clear(&target_dir);
+        }
         args.push("-monitor".into());
         args.push(format!("tcp:127.0.0.1:{monitor},server=on,wait=off"));
         let args = wsl::wrap(wsl.as_ref(), args)?;
@@ -254,6 +264,10 @@ fn execute(options: &Options) -> Result<(), String> {
         };
         let result = qemu::run_test(&qemu, &args, &target_dir, &run)
             .and_then(|()| after(&service))
+            .and_then(|()| match case.screen {
+                Some(expect) => screen::check(&target_dir, expect),
+                None => Ok(()),
+            })
             .and_then(|()| match mock.requests() - requests {
                 sent if !case.server && sent > 0 => Err(format!(
                     "FAIL: booted without a server, yet the mock LLM got {sent} requests"

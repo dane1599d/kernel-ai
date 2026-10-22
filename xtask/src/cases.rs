@@ -46,6 +46,10 @@ pub struct TestCase {
     /// Point the kernel at the mock DNS server (`dns=`), which answers the
     /// `netcore::fixture` zone.
     pub dns: bool,
+    /// Boot with a virtio-gpu (`-device virtio-gpu-pci`) and no VGA.
+    pub gpu: bool,
+    /// Check the screendump the keys take (`screen.rs`) once the case has passed.
+    pub screen: Option<crate::screen::Expect>,
 }
 
 pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase {
@@ -64,6 +68,8 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         nvme: false,
         image: false,
         dns: false,
+        gpu: false,
+        screen: None,
     }
 }
 
@@ -298,6 +304,41 @@ pub const TEST_CASES: &[TestCase] = &[
         image: true,
         expect: &["boot-ok"],
         ..case("image", "test")
+    },
+    // P3: the test pattern on virtio-gpu, in the mode the kernel picks, and the
+    // hardware cursor set and moved; then in the mode `display=` asks for; then on
+    // GOP, the fallback without the device.
+    TestCase {
+        gpu: true,
+        keys: &[crate::screen::KEYS],
+        expect: &[
+            "display: virtio-gpu offers ",
+            "display: cursor moved to 300 200",
+        ],
+        screen: Some(crate::screen::Expect {
+            size: None,
+            cursor: true,
+        }),
+        ..case("display", "test=display")
+    },
+    TestCase {
+        gpu: true,
+        keys: &[crate::screen::KEYS],
+        expect: &["; 1024x768 (display=)", "display: virtio-gpu 1024x768"],
+        screen: Some(crate::screen::Expect {
+            size: Some((1024, 768)),
+            cursor: true,
+        }),
+        ..case("display-mode", "test=display display=1024x768")
+    },
+    TestCase {
+        keys: &[crate::screen::KEYS],
+        expect: &["display: gop "],
+        screen: Some(crate::screen::Expect {
+            size: None,
+            cursor: false,
+        }),
+        ..case("display-gop", "test=display")
     },
     // L6: worker threads in one address space.
     case("threads", "test=threads"),
