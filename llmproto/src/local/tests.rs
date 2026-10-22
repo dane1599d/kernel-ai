@@ -40,12 +40,13 @@ fn models() -> Vec<Vec<u8>> {
 }
 
 /// Why a script past one of the limits is refused.
-const LIMITS: [&str; 5] = [
+const LIMITS: [&str; 6] = [
     "the script is longer than 3072 bytes",
     "the script has more than 40 lines",
     " is longer than 120 characters",
     "the summary must be one line of plain text",
     "the summary is longer than 100 characters",
+    "the summary is longer than 300 characters",
 ];
 
 fn requests() -> Vec<ScriptRequest> {

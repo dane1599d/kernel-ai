@@ -29,6 +29,7 @@ use layout::Layout;
 use limine::framebuffer::Framebuffer;
 use spin::Mutex;
 use termcore::grid::{Grid, MAX_ROWS};
+use termcore::plain::Plainly;
 use termcore::style::Kind;
 
 /// Cells the screen holds: 176 by 42 on CI's 1280x800, 168 by 37 on 1920x1080. The
@@ -167,11 +168,12 @@ pub fn configure(cmdline: &str) {
 }
 
 /// Writes log text to the console if it is free; `serial::_print` calls it under the
-/// line lock. A fault raised while the console is mid-write skips the console instead
-/// of deadlocking; serial still gets the text.
+/// line lock. Emoji go in as the font can show them (`termcore::plain`). A fault
+/// raised while the console is mid-write skips the console instead of deadlocking;
+/// serial still gets the text.
 pub fn print(args: fmt::Arguments) {
     if let Some(mut console) = CONSOLE.try_lock() {
-        let _ = console.grid.write_fmt(args);
+        let _ = Plainly(&mut console.grid).write_fmt(args);
         console.flush();
     }
 }

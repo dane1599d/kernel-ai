@@ -50,6 +50,7 @@ mod live_tests;
 mod llm;
 mod llm_commands;
 mod local_tests;
+mod logbook;
 mod manifest_tests;
 mod memory;
 mod metrics;

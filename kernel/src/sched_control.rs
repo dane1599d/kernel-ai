@@ -17,7 +17,7 @@ mod ledger;
 mod measure;
 
 use crate::process::{self, Name};
-use crate::{hpet, log, metrics, smp, threads};
+use crate::{hpet, metrics, quiet, smp, threads};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use kabi::sched::{MAX_BACKGROUND, SchedStats, TrialStatus};
@@ -179,7 +179,7 @@ pub fn set_policy(spec: PolicySpec) -> Result<(), Error> {
         trial::wake_driver();
     }
     metrics::invalidate();
-    log!("sched: policy set to {}", spec.label());
+    quiet!("sched: policy set to {}", spec.label());
     Ok(())
 }
 

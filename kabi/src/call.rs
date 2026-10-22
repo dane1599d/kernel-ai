@@ -2,8 +2,13 @@
 
 /// `exit(code: i32) -> !`
 pub const EXIT: u64 = 0;
-/// `write(ptr, len) -> len`: text to the console, prefixed with the program name.
+/// `write(ptr, len, flags) -> len`: text to the console, prefixed with the program
+/// name. With [`WRITE_LOG_ONLY`] in `flags` it goes to the log (serial and the
+/// terminal's `:log`) and not the screen.
 pub const WRITE: u64 = 1;
+/// [`WRITE`]'s flag for text that belongs in the log rather than on the screen: an
+/// audit trail, a progress note nobody asked to see.
+pub const WRITE_LOG_ONLY: u64 = 1 << 0;
 /// `sleep_ms(ms)`
 pub const SLEEP: u64 = 2;
 /// `yield()`
