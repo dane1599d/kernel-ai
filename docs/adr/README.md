@@ -1,0 +1,25 @@
+# Architecture decision records
+
+Phase P0 of the product roadmap (`docs/roadmap.md` section 3b) writes down the choices that are expensive to change later, before code depends on them. Each record gives the context, the options with their evidence, the decision, its consequences, what changing it later would cost, the spikes that settle anything resting on a measurement, and the phases that depend on it.
+
+**Status:** every record here is **proposed** (2026-10-21) and waits for the founder's approval. A record becomes "approved" only on the founder's word; a later record that replaces one marks it "superseded" and links to its successor. Records are not edited after approval except to mark them superseded.
+
+**How they were made:** for each topic, one pass read the code on main and one read prior art and current documentation; then two to four competing designs were written, at least one reusing an existing open-source project; a judge checked their claims against the code and the sources and picked a base with grafts; a cross-topic sheet settled shared names, numbers and owners; each record was checked again against main (ec5ecff) and against the others. Nothing was built and no model was run for them.
+
+| ADR | Topic | Proposed decision, in one line | Needed by |
+|---|---|---|---|
+| [0000](0000-execution-plan.md) | Execution plan | The order of work after approval: approval in batches, the spikes that can start now, fourteen parallel lanes, and the first five PRs of each phase. | all |
+| [0001](0001-capabilities.md) | Capabilities and permissions | Per-process handles with rights that can only shrink, a revocable grant tree, a grant node per typed request for the AI, and a one-use key for each "yes"; `kabi::ABI` (1, 0). | P1 |
+| [0002](0002-agent-actions.md) | Agent actions and autonomy tiers | One generated action registry (`agentabi`); code decides the tier: what you plainly asked for and can undo runs at once, while actions the AI added, actions with no undo and anything that sends data out ask; every action is logged and undo never overwrites a later change. | P1 |
+| [0003](0003-app-model.md) | App model and app ABI | Apps are WIT worlds compiled to canonical-ABI WebAssembly modules on wasmi, one process each, declaring their actions in WIT; Wasmtime can join later behind the same ABI. | P1, P3 |
+| [0004](0004-storage.md) | Storage | Our own copy-on-write filesystem, kaifs, in a ring-3 `fs` service: crash-safe without a journal, versioned format 1, and snapshots that make every file action undoable. | P2 |
+| [0005](0005-graphics.md) | Graphics and visual direction | A ring-3 compositor with our own Wayland-shaped protocol, `kai-surface 1`; apps also describe their UI as an accessibility tree the AI reads and acts on; the dark "Ember Workbench" look with the AI as a bottom `kai>` line. | P3 |
+| [0006](0006-existing-software.md) | Running existing software | Linux in a small VM under our own hypervisor runs Firefox ESR; a helper inside it gives the AI browser and media actions; fallback a Linux ABI layer; the Ladybird port is rejected. | P6 |
+| [0007](0007-drivers.md) | Driver model | Boot-critical drivers stay in the kernel; USB, the real PC's network chip and audio move to ring 3 behind one `devkit` interface; uACPI (MIT, C) for power if approved; no GPL code. | P2, P3, P7 |
+| [0008](0008-updates.md) | Updates and recovery | A/B system slots plus a recovery slot, boot counting and automatic rollback; one TUF repository with an offline hardware-key root for images, models and packages. | P2, P4, P5 |
+| [0009](0009-licence.md) | Licence, contribution and reuse | MPL-2.0 for the OS with a DCO sign-off instead of a CLA; `kabi`, `compsdk` and WIT under MIT OR Apache-2.0; licence classes for reuse; CI-checked notices; release terms. | before v0.1 |
+| [0010](0010-skill-pack.md) | The agent's OS skill pack | Generated from the registry as one terse typed line per action (`dsl-1`), kept in the KV prefix cache, with a short State line per request; the format is settled by measurement on GitHub runners. | P1 |
+| [0011](0011-packages.md) | Packages | `install` (and `apt install`) with signed `.kpkg` packages, a TUF-signed static index, a content-addressed store and generations for undo; offline in v0.1, online in v0.2, real apt inside P6's Linux guest. | P1, P2, P4, P5 |
+| [0012](0012-terminal-compiler.md) | The compiler in the terminal | A `c>` prompt compiles C with HolyC's conveniences through xcc running as WebAssembly; no native code is generated at run time before v1.0; Rhai stays the action language. | P1, P4 |
+
+Spikes are named `S<adr>-<n>` (for example S04-1); spike branches are `spike/*` and are never merged. Spikes that need a real model run on GitHub Actions runners, never on the founder's PC.
