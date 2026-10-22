@@ -45,6 +45,22 @@ pub fn write(bytes: &[u8]) -> Result<u64, Error> {
     )
 }
 
+/// Like [`write`], but for the log only: serial and the terminal's `:log`, not the
+/// screen.
+pub fn write_log(bytes: &[u8]) -> Result<u64, Error> {
+    call(
+        call::WRITE,
+        [
+            bytes.as_ptr() as u64,
+            bytes.len() as u64,
+            call::WRITE_LOG_ONLY,
+            0,
+            0,
+            0,
+        ],
+    )
+}
+
 pub fn sleep_ms(ms: u64) {
     let _ = call(call::SLEEP, [ms, 0, 0, 0, 0, 0]);
 }

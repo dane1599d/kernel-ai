@@ -60,7 +60,7 @@ const HELP: &[(&str, &str)] = &[
     (":mem", "free memory and heap use"),
     (
         ":net",
-        "address, gateway, DNS, lease, LLM server and llm service",
+        "address, gateway, DNS, lease and the model's health",
     ),
     (":resolve <host>", "look up a host name's IPv4 addresses"),
     (":ping <host|ip> [n]", "ICMP echo, n times (4 by default)"),
@@ -70,8 +70,15 @@ const HELP: &[(&str, &str)] = &[
         ":mouse",
         "the last pointer report and where it left the pointer",
     ),
+    (
+        ":log [n]",
+        "the latest n lines kept off the screen (30 by default)",
+    ),
     (":clear", "clear the screen"),
 ];
+
+/// Lines `:log` shows when it is not given a number.
+const LOG_LINES: usize = 30;
 
 /// A question the next line answers.
 enum Waiting {
@@ -294,6 +301,7 @@ fn kernel_command(line: &str) -> Option<Waiting> {
             );
         }
         "net" => net_status(),
+        "log" => crate::logbook::show(rest.parse().unwrap_or(LOG_LINES)),
         "resolve" if rest.is_empty() => log!("usage: :resolve <host>"),
         "resolve" => crate::net_commands::resolve(rest),
         "ping" if rest.is_empty() => log!("usage: :ping <host|ip> [count]"),
@@ -370,18 +378,16 @@ fn net_status() {
         return;
     }
     crate::net_commands::status();
-    match llm::target() {
-        None => log!("LLM server: not configured (boot with llm=IP:PORT)"),
-        Some((ip, port, model)) => {
-            log!("LLM server: {ip}:{port}, model {model}");
-            match ipc::server_of("llm") {
-                Some(pid) => log!("llm service: pid {pid}"),
-                None => log!("llm service: not running"),
-            }
-            match llm::health() {
-                Ok(status) => log!("health: {status}"),
-                Err(error) => log!("health: {error}"),
-            }
+    // An LLM server is a test double (`llm=`); without one there is nothing to say.
+    if let Some((ip, port, model)) = llm::target() {
+        log!("LLM server: {ip}:{port}, model {model}");
+        match ipc::server_of("llm") {
+            Some(pid) => log!("llm service: pid {pid}"),
+            None => log!("llm service: not running"),
+        }
+        match llm::health() {
+            Ok(status) => log!("health: {status}"),
+            Err(error) => log!("health: {error}"),
         }
     }
 }

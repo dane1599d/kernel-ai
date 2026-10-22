@@ -5,7 +5,7 @@
 use super::trial::{self, Candidate, Request};
 use super::{installed, labelable, spec_of};
 use crate::process::{self, uaccess};
-use crate::{hpet, log, threads};
+use crate::{hpet, quiet, threads};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 use kabi::Error;
@@ -35,7 +35,8 @@ pub fn policy(id: u64, preset: u64) -> Result<u64, Error> {
     }
     LAST_SWITCH_NS.store(now, Ordering::Relaxed);
     super::set_policy(spec)?;
-    log!(
+    // The shell's reply says what changed; the note is for the log.
+    quiet!(
         "sched: policy switched to {} by a ring-3 request",
         spec.label()
     );

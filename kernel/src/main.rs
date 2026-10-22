@@ -50,6 +50,7 @@ mod live_tests;
 mod llm;
 mod llm_commands;
 mod local_tests;
+mod logbook;
 mod manifest_tests;
 mod memory;
 mod metrics;
@@ -221,6 +222,9 @@ extern "C" fn boot_continue() -> ! {
     let test = CMDLINE
         .response()
         .map_or(SelfTest::None, |r| selftest::from_cmdline(r.cmdline()));
+    if test == SelfTest::TuneAb {
+        console::status::keep_off();
+    }
     // Not in kmain: configuring allocates, and the heap is mapped only by init_memory.
     if let Some(cmdline) = CMDLINE.response() {
         net::setup::configure(cmdline.cmdline());

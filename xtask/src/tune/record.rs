@@ -38,13 +38,22 @@ pub fn same_main(args: &[String]) -> Result<(), String> {
     }
     let booter = Booter::build(&icount_flags(rest))?;
     let mut shas = Vec::new();
+    let mut texts = Vec::new();
     for boot in 1..=boots {
         let (request, _) = observe(&booter, &mix, shift, &[])?;
         let sha = sha256(request.text.as_bytes());
         println!("xtask: observe boot {boot} of {boots}: summary SHA-256 {sha}");
         shas.push(sha);
+        texts.push(request.text);
     }
-    if shas.iter().any(|sha| *sha != shas[0]) {
+    if let Some(boot) = shas.iter().position(|sha| *sha != shas[0]) {
+        // The lines that differ say which number moved, and so what to look at.
+        for (first, other) in texts[0].lines().zip(texts[boot].lines()) {
+            if first != other {
+                println!("xtask: boot 1 summary:      {first}");
+                println!("xtask: boot {} summary:      {other}", boot + 1);
+            }
+        }
         return Err(format!(
             "FAIL: the observe boots built different summaries: {}",
             shas.join(", ")

@@ -21,8 +21,10 @@ use infer::json::{Choice, Field, Limit, Overflow, Shape};
 use infer::{Next, Sampler};
 
 /// [`script::check_text`]'s limits, which it applies once the end is trimmed,
-/// and [`script::check_summary`]'s, which it applies to the summary trimmed at
-/// both ends.
+/// and [`script::check_reply`]'s, which it applies to the summary trimmed at both
+/// ends: the longer of the summary's two limits, since the field cannot know yet
+/// whether the script was empty. [`script::answer`] holds a script's summary to
+/// the shorter one.
 const SCRIPT_FIELDS: [Field; 2] = [
     Field {
         name: "script",
@@ -34,9 +36,9 @@ const SCRIPT_FIELDS: [Field; 2] = [
     },
     Field {
         name: "summary",
-        max_chars: script::SUMMARY_MAX_CHARS,
+        max_chars: script::REPLY_MAX_CHARS,
         max_lines: 1,
-        max_line_chars: script::SUMMARY_MAX_CHARS,
+        max_line_chars: script::REPLY_MAX_CHARS,
         trim_start: true,
         hard: false,
     },
@@ -253,7 +255,7 @@ fn past(overflow: &Overflow) -> String {
         (_, Limit::Lines) => String::from("the summary must be one line of plain text"),
         _ => format!(
             "the summary is longer than {} characters",
-            script::SUMMARY_MAX_CHARS
+            script::REPLY_MAX_CHARS
         ),
     }
 }
