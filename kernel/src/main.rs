@@ -501,10 +501,12 @@ fn start_user_space(test: SelfTest) {
     if programs.is_empty() {
         return;
     }
-    // The icount boots start their services on a tick edge, after every boot-time
-    // disk read, so nothing host-timed comes before them (the M10 exit test).
+    // The icount boots start their services on a whole second of ticks, after
+    // every boot-time disk read, so nothing host-timed comes before them and every
+    // boot starts them at the same virtual time (the M10 exit test).
     if test == SelfTest::TuneAb {
-        timer::align_to_tick();
+        let edge = timer::align_to_second();
+        log!("tune-ab: services start at tick {edge}");
     }
     if let Err(message) = process::supervision::start(plan) {
         fail(message);

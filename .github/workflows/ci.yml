@@ -107,13 +107,9 @@ jobs:
   # The M10 exit test's recording names the summary an observe boot built, and
   # `tune ab` refuses it unless a new observe boot builds it again, on another
   # runner. Each of two runners boots observe twice; all four summaries must match.
-  # Not a gate for now (founder, 2026-10-22): something host-timed still reaches
-  # these boots, and the summary can flip between two results. A follow-up finds
-  # it and makes both jobs gates again.
   observe:
-    name: Observe determinism (${{ matrix.runner }}, not a gate until fixed)
+    name: Observe determinism (${{ matrix.runner }})
     runs-on: ubuntu-24.04
-    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
@@ -145,9 +141,8 @@ jobs:
     timeout-minutes: 45
 
   observe-compare:
-    name: Observe determinism across runners (not a gate until fixed)
+    name: Observe determinism across runners
     runs-on: ubuntu-24.04
-    continue-on-error: true
     needs: observe
     steps:
       - uses: actions/download-artifact@v4
