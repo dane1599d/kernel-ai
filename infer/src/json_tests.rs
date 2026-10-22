@@ -36,6 +36,7 @@ pub(crate) const SCRIPT: [Field; 2] = [
 pub(crate) const SCRIPT_SHAPE: Shape<'static> = Shape {
     fields: &SCRIPT,
     choices: &[],
+    jump_forward: false,
 };
 
 /// Small limits, so every state can be searched.
@@ -100,6 +101,7 @@ fn need_is_the_true_distance_from_every_state() {
         let grammar = Grammar::new(&Shape {
             fields,
             choices: &[],
+            jump_forward: false,
         })
         .unwrap();
         let states = distances(&grammar);
@@ -241,7 +243,8 @@ fn shapes_that_cannot_be_decoded_are_refused() {
         assert_eq!(
             Grammar::new(&Shape {
                 fields,
-                choices: &[]
+                choices: &[],
+                jump_forward: false,
             })
             .err(),
             Some(Error::Shape(why))
@@ -397,6 +400,7 @@ fn every_answer_closes_stops_at_a_limit_or_is_cut_off() {
         Shape {
             fields: &SMALL,
             choices: &[],
+            jump_forward: false,
         },
     ] {
         let grammar = Grammar::new(&shape).unwrap();
@@ -504,6 +508,7 @@ fn choices_take_only_their_words_and_lists_only_their_length() {
     let shape = Shape {
         fields: &CHOSEN,
         choices: &CHOICES,
+        jump_forward: false,
     };
     let grammar = Grammar::new(&shape).unwrap();
     for whole in [
@@ -540,6 +545,7 @@ fn choices_take_only_their_words_and_lists_only_their_length() {
     let grammar = Grammar::new(&Shape {
         fields: &CHOSEN,
         choices: &roomy,
+        jump_forward: false,
     })
     .unwrap();
     let both = r#"{"a":"","p":"x","bg":["vw","u","#;
@@ -558,7 +564,12 @@ fn need_is_the_true_distance_with_choices() {
         (&CHOSEN[..], &only_list[..]),
         (&CHOSEN[1..2], &first[..]),
     ] {
-        let grammar = Grammar::new(&Shape { fields, choices }).unwrap();
+        let grammar = Grammar::new(&Shape {
+            fields,
+            choices,
+            jump_forward: false,
+        })
+        .unwrap();
         let states = distances(&grammar);
         for (state, distance) in &states {
             assert_eq!(Some(grammar.need(state)), *distance, "{state:?}");
@@ -573,6 +584,7 @@ fn choices_are_checked() {
         Grammar::new(&Shape {
             fields: &CHOSEN,
             choices: &choices,
+            jump_forward: false,
         })
         .err()
     };
@@ -626,6 +638,7 @@ fn choices_are_checked() {
     let shape = Shape {
         fields: &CHOSEN,
         choices: &twice,
+        jump_forward: false,
     };
     assert!(Grammar::new(&shape).is_err());
 }
@@ -642,6 +655,7 @@ fn a_hard_limit_masks_what_a_soft_one_lets_end_the_answer() {
     let grammar = Grammar::new(&Shape {
         fields: &hard,
         choices: &[],
+        jump_forward: false,
     })
     .unwrap();
     // "a" takes 3 characters a line: a fourth is masked, not an overflow.
@@ -651,6 +665,7 @@ fn a_hard_limit_masks_what_a_soft_one_lets_end_the_answer() {
     let soft = Grammar::new(&Shape {
         fields: &SMALL,
         choices: &[],
+        jump_forward: false,
     })
     .unwrap();
     let at = soft.advance(soft.start(), br#"{"a":"xyz"#).unwrap();

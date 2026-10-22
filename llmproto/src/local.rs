@@ -49,6 +49,10 @@ const SCRIPT_FIELDS: [Field; 2] = [
 pub const SCRIPT_SHAPE: Shape<'static> = Shape {
     fields: &SCRIPT_FIELDS,
     choices: &[],
+    // Off until the fluency gate and S02-1 measure it on the real model: with it
+    // the forced literals take the tokenizer's own tokens, not the model's picks,
+    // so answers can change.
+    jump_forward: false,
 };
 
 /// One string field whose limits do not apply: the shape makes it a choice.
@@ -219,6 +223,9 @@ pub fn tune(
     let shape = Shape {
         fields: &TUNE_FIELDS,
         choices: &choices,
+        // Off, so `tune` answers stay the ones M10's recording and `tune check`
+        // were made with.
+        jump_forward: false,
     };
     let asked = request.chat();
     let reply = engine.reply(
