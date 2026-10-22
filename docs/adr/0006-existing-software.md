@@ -139,7 +139,7 @@ In plain words: Kernel AI runs a small, hidden Linux system inside itself, and t
 | Stage | Budget | Basis |
 |---|---|---|
 | Enter to status line | at most 100 ms | ADR 0002 |
-| Prefill of State and request, decode of the tagged call | about 2-4 s for the whole warm action | measured on the founder's 7700X with generated 4B-shaped weights, no real model (docs/decisions.md:171, :174): prefill about 91 tokens/s on 8 threads, decode about 11-13 tokens/s; ADR 0002's S2 measures it in Kernel AI under KVM on a GitHub runner |
+| Prefill of State and request, decode of the tagged call | about 2-4 s for the whole warm action | measured on the founder's 7700X with generated 4B-shaped weights, no real model (docs/decisions.md:171, :174): prefill about 91 tokens/s on 8 threads, decode about 11-13 tokens/s; ADR 0002's S02-2 measures it in Kernel AI under KVM on a GitHub runner |
 | `OpenUrl` on a running VM to the tab's first frame | at most 1 s | S06-2 measures |
 | `vm_start` when the VM is down, to the first frame | at most 10 s | S06-2 bar |
 

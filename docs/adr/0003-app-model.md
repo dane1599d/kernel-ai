@@ -118,7 +118,7 @@ In detail: base design C. Grafts: A's per-app `kai.actions` extraction, semver l
 - **`livecore::Instance` gains `call(func, &[Val]) -> Result<Vec<Val>, Fault>`** (today's trait is livecore/src/lib.rs:53-68). `handle` goes when `lifecycle 1` goes.
 - **The oracle test, on every PR.** The same guest bytes are wrapped by wit-component 0.262.0 and run on Wasmtime 50's component runtime, a host dev-dependency that never ships. They are also run on wasmi with `appabi`. Results are compared as WAVE text over generated values, and the required result is 0 differences.
 - **A second backend, only on a trigger.** Wasmtime's no_std runtime (LTS 48 line, features `runtime`, `component-model`, `pulley`) becomes a second `Instance` backend, chosen per app by `engine wasmtime`. It is adopted only when:
-  - an S3-1 threshold fails (see Spikes); or
+  - an S03-1 threshold fails (see Spikes); or
   - an app needs `async`, streams or futures; or
   - a wanted language's toolchain emits only components (JavaScript through jco, Python through componentize-py).
 
@@ -198,8 +198,8 @@ end
 
 ### 6. Speed, limits and languages
 
-- **comphost moves to the hard-float target** (amends docs/decisions.md:140). The wasmi dispatch mode becomes S3-1's best mode that is safe with debug assertions. Text shaping, raster, crypto, compression and the model stay native host functions. Each call and each event gets its own fuel: 5 M as today (livecore/src/settings.rs:36), tunable per app.
-- **This ADR owns the table limits.** `MAX_PROCESSES` goes from 16 to 64, `MAX_THREADS` from 64 to 256 and `MAX_COMPONENTS` from 8 to 32 (sizes from designs A and C, est.). They rise in the first PR that needs them: P1's `scriptrun` or P3's apps. ADR 0001's spike S1 (measure M5) reports the kernel memory cost. Each thread slot also has a 4 KiB vector-state area in .bss (docs/decisions.md:138), so 256 slots take 1 MiB.
+- **comphost moves to the hard-float target** (amends docs/decisions.md:140). The wasmi dispatch mode becomes S03-1's best mode that is safe with debug assertions. Text shaping, raster, crypto, compression and the model stay native host functions. Each call and each event gets its own fuel: 5 M as today (livecore/src/settings.rs:36), tunable per app.
+- **This ADR owns the table limits.** `MAX_PROCESSES` goes from 16 to 64, `MAX_THREADS` from 64 to 256 and `MAX_COMPONENTS` from 8 to 32 (sizes from designs A and C, est.). They rise in the first PR that needs them: P1's `scriptrun` or P3's apps. ADR 0001's spike S01-1 (measure M5) reports the kernel memory cost. Each thread slot also has a 4 KiB vector-state area in .bss (docs/decisions.md:138), so 256 slots take 1 MiB.
 - **Languages.** Rust is the v0.1 language. C and C++ are freestanding through `wit-bindgen c` and `cpp`, and in the OS through ADR 0012's `cc`. Other languages come after the Wasmtime backend.
 
 ## Consequences
@@ -207,13 +207,13 @@ end
 - Every app is live-editable with probation and rollback, including apps with effects. Undo of app state needs no app code.
 - The toolchain enforces "every app declares its actions". The registry and the prompt pack are generated from `kai.actions`, not kept by hand.
 - Apps are validated bytecode with fuel and memory limits. There are no executable pages, no `unsafe` loading of native code, and no binary tied to an engine build.
-- The ABI that apps see is the standard canonical ABI from the first app. An engine change needs no app rebuilt, if S3-1's wrapping check passes.
+- The ABI that apps see is the standard canonical ABI from the first app. An engine change needs no app rebuilt, if S03-1's wrapping check passes.
 - **Costs.** We own `appabi` (est. 1,500-2,000 lines plus resources). There are no async apps in v0.1. wasmi is reported at 2.5-5.2x slower than baseline JITs and about 10x slower than native code (secondary sources, docs/research/live-editable-system.md:54; not measured by us), so heavy work must stay native. CI compiles Wasmtime, and the time this costs is unmeasured.
 - **Probation is still blind to whether an effect is right.** A candidate that queues a different effect is logged as a regression, not rolled back, unless it faults.
 - **Rows amended when this is approved:**
   - docs/decisions.md:15 (founder's, question 1);
   - :90, where `kai-lifecycle-1` and "kai.log the only import" give way to `kai:live` and `lifecycle 2`;
-  - :93, the dispatch mode after S3-1;
+  - :93, the dispatch mode after S03-1;
   - :140, comphost becomes hard-float;
   - docs/research/live-editable-system.md:84 ("Wasmtime AOT only after a component is measured too slow") is widened: Wasmtime comes on a measured need or on one of the two other triggers in section 2.
 
@@ -234,7 +234,7 @@ end
 
 No model runs in any spike, on any machine.
 
-**S3-1 "same bytes, two engines"**, a 2-week throwaway branch. It is the spike ADR 0001 calls "S3 WIT on wasmi".
+**S03-1 "same bytes, two engines"**, a 2-week throwaway branch. ADR 0001 refers to it as S03-1.
 
 What to build:
 1. `kai:probe@0.1.0`: 24 functions covering the subset, nested two levels, plus one resource with own and borrow.
@@ -249,7 +249,7 @@ Where it runs: host tests on a GitHub Actions ubuntu runner; a ring-3 comphost b
 
 | Measure | Pass | Fail, and what follows |
 |---|---|---|
-| Oracle differences over 10,000 generated calls | 0 | Any left after one more week: the Wasmtime backend comes into v0.1, if S3-2 passes |
+| Oracle differences over 10,000 generated calls | 0 | Any left after one more week: the Wasmtime backend comes into v0.1, if S03-2 passes |
 | wit-component wraps the unmodified module | yes | no: "no guest rebuild" fails; re-judge A against C |
 | Guest size against hand-bound notes (about 72 KiB, kabi/src/live.rs:203) | at most +20 KiB | over +40 KiB |
 | 1 KiB string in and out, against `kai_handle` | at most 1.5x | over 3x |
@@ -259,7 +259,7 @@ Where it runs: host tests on a GitHub Actions ubuntu runner; a ring-3 comphost b
 
 The spike also records the call-loop, the switch-loop and indirect-threaded dispatch, with soft and hard float. These are reported as relative figures (docs/decisions.md:198).
 
-**S3-2 "Wasmtime in our ring 3"**, 1 week, on the same runners.
+**S03-2 "Wasmtime in our ring 3"**, 1 week, on the same runners.
 - Build `apphost-spike` for `user/x86_64-kai-user.json` with wasmtime 48.0.7 (`runtime`, `component-model`, `pulley`) and TLS as a static. Run the notes-like guest from a Pulley `.cwasm` precompiled on the host.
 - Pass: it builds with at most 200 lines of patches and no fork; the stripped ELF is at most 4 MiB; instantiation takes at most 20 ms; fuel stops a loop; Pulley reaches at least 0.8x wasmi's best mode.
 - It does not decide the base. It decides whether the backend is ready when a trigger fires.

@@ -21,7 +21,7 @@ These need no new approval and come first, because every lane rebases on them.
 
 ## 2. What must be approved first, and the spikes that come first
 
-### 2.1 Approval in four batches
+### 2.1 Approval in five batches (0 to 4)
 
 An ADR can be approved before its spike runs. Each ADR states its pass and fail rules in advance, so approving the ADR also approves its fallback. The batches follow what each phase needs.
 
@@ -47,8 +47,8 @@ Spikes are throwaway branches named `spike/*`, never merged. They add no product
 | S10-0 token count | 0010 | GitHub Actions, tokeniser only | 2-3 days (est.) | Real pack sizes against the budget |
 | S02-1 action gate with S10-1 | 0002, 0010 | GitHub runner, real Qwen3-4B on the host engine; about 24 runner-hours (0010's est.) | about 2 weeks to build (est.) | Tagged call or script only; `dsl-1` or another format |
 | S02-2 with S10-3, in-guest latency | 0002, 0010 | One KVM job on a GitHub runner, real model in the guest | 2-3 days (est.) | The 2-4 s typing-to-done target; whether the KV file moves up |
-| S3-1 same bytes, two engines | 0003 | Host tests and a comphost boot case, GitHub Actions KVM | 2 weeks | wasmi plus `appabi`, or Wasmtime in v0.1 |
-| S3-2 Wasmtime in ring 3 | 0003 | Same runners | 1 week | Whether the second backend is ready when a trigger fires |
+| S03-1 same bytes, two engines | 0003 | Host tests and a comphost boot case, GitHub Actions KVM | 2 weeks | wasmi plus `appabi`, or Wasmtime in v0.1 |
+| S03-2 Wasmtime in ring 3 | 0003 | Same runners | 1 week | Whether the second backend is ready when a trigger fires |
 | S08-1 efi-ab | 0008 | GitHub Actions (300 KVM, 100 TCG cycles); founder's VirtualBox VM with no model disk | about 2 weeks (est.) | Limine one-shot, or our own EFI stage |
 | S08-3 with S11-1 kaituf-0 | 0008, 0011 | GitHub Actions, host tests and `tuf-bench` | about 1 week | One TUF client; JSON or line format |
 | S09-1 release dry run with S08-2 | 0009, 0008 | GitHub Actions, ubuntu-24.04 and one windows-2025 job | about 1 week (est.); under 30 min a run | Notices, reproducible slot images under 256 MiB |
@@ -95,7 +95,7 @@ Later spikes, run at their phase: S02-3 (P1 boot cases), S04-2 and S04-3 (P2's f
 
 | Phase | Starts when | Must have before its exit | Rough size (roadmap.md:139-147) |
 |---|---|---|---|
-| P1 Agent core | Batch 1 approved; section 1 merged | S01-1, S01-2, S02-1, S10-0, S10-1, S3-1 results | weeks (10-15 commits) |
+| P1 Agent core | Batch 1 approved; section 1 merged | S01-1, S01-2, S02-1, S10-0, S10-1, S03-1 results | weeks (10-15 commits) |
 | P2 Files and storage | P1's handle steps 1-3 merged; S04-1 passed; batch 2 approved | S04-2, S04-3, S11-2 | weeks to months |
 | P3 Desktop | P1's `Shm` merged; P2's `fs` serving files; batch 3 approved | S05-1 passed; S07-3 for power-off | months |
 | P4 Built-in apps | P3's `uikit` drawing one window | S12-1 for `c>`; S12-2 for model-written C | months, overlapping P3 |
@@ -160,7 +160,7 @@ Each row is one PR. "Case" means a boot case run under KVM and TCG in GitHub Act
 | 4 | `agentcore::execute`, consent, the tagged decoder with jump-forward, the in-memory `actlog 1` and `undo` | 0002 | `shellcore/`, `infer/`, `user/src/bin/shell*` | Cases `act-plain`, `act-run`, `act-ask`, `act-undo`, `act-rollback`, `act-inject`, `act-never` with mock answers (roadmap.md:140's exit) | P1 exit; every later row |
 | 5 | Handle IPC, grants and request nodes, `ONCE`, `scriptrun`, `Shm` with user unmap and TLB shootdown (0001 steps 4-6) | 0001 | lane K files, `kernel/src/memory/user.rs` with lane M's agreement | S01-1's M2-M6 thresholds as cases | P3 surfaces, P6 guest memory, P2 bulk path |
 
-Beside these, in other lanes: `appabi` and `wit/` after S3-1 (lane C); `pci`, `devmatch`, MSI-X and `devkit` (lane D, about 4,500-6,000 lines over P1-P3 by 0007's est.); `bootslot` and `efi.rs` (lane U); `pkg_*`, update, model and `system_about` rows (lane A); Rhai 1.27.0 (lane A), then `wasihost` and `kailink` (lane T); `cpufeat` SVM bits (lane V); the `dco`, `deny` and `licences check` gates (lane L).
+Beside these, in other lanes: `appabi` and `wit/` after S03-1 (lane C); `pci`, `devmatch`, MSI-X and `devkit` (lane D, about 4,500-6,000 lines over P1-P3 by 0007's est.); `bootslot` and `efi.rs` (lane U); `pkg_*`, update, model and `system_about` rows (lane A); Rhai 1.27.0 (lane A), then `wasihost` and `kailink` (lane T); `cpufeat` SVM bits (lane V); the `dco`, `deny` and `licences check` gates (lane L).
 
 ### P2 Files and storage
 
@@ -265,7 +265,7 @@ Each fallback was set in its ADR before the spike runs. None changes the phase o
 | S01-2 adversarial case | Fix the rule, not the threshold; over 15 prompts per 100 benign cases, add pickers (0001) | Blocks P1 exit until fixed |
 | S02-1 under 90% exact | v0.1 keeps `script` as the only form; tiers, consent, labels and the log stand (0002) | None to the order |
 | S02-2 over 4 s | Profile before P1's call path merges (0002) | Weeks inside P1 |
-| S3-1 differences or over 16.7 ms | Wasmtime backend into v0.1 if S3-2 passes; if wit-component fails, re-judge A against C (0003) | Lane C slips; others continue |
+| S03-1 differences or over 16.7 ms | Wasmtime backend into v0.1 if S03-2 passes; if wit-component fails, re-judge A against C (0003) | Lane C slips; others continue |
 | S04-1 | RedoxFS fork, B's 5-day spike; everything above the engine stays (0004) | 1-2 weeks in P2 |
 | S04-2 under 50 MB/s | `Shm` with KRNG v1 rings for bulk data in P2 (0004) | Weeks in P2 |
 | S04-3 on VirtualBox | Set a flush key if one exists, else document VirtualBox as not power-safe (0004) | None |

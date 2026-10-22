@@ -158,7 +158,7 @@ This is an excerpt; the method list shown is a hand draft that the generated one
 - `pack_id` = FNV-1a 64 (kabi/src/model.rs:145) over the format name, the SHA-256 of the GGUF's tokenizer arrays and the rendered bytes, printed as 16 hex digits. It is a label, not a security check.
 - It is recorded in every fluency and actbench report header (with the commit, seed and real token count), in each `actlog 1` entry and in the KV file's key.
 - P2 KV file: the pack's KV saved to disk, keyed by (`pack_id`, model SHA-256, engine tier) and holding the token ids. Restore compares the tokens, so a key collision cannot load wrong values. At most two files are kept, in `/system/models/cache/` (0004: rebuildable, no undo snapshots). Size: 144 KiB a position, about 250 MiB for a full 1,792-token pack (est.).
-- Scoring: the M8 50 plus 0002's S1 action set, extended ("actbench"), on GitHub runners only (docs/decisions.md:185).
+- Scoring: the M8 50 plus 0002's S02-1 action set, extended ("actbench"), on GitHub runners only (docs/decisions.md:185).
 - Task sets are versioned with the pack. P6, when a browser exists, moves "Open the website example.com." (xtask/src/fluency/tasks.rs:340) from refusal to action, and the report's `tasks_sha256` records the change.
 
 ## Consequences
@@ -193,17 +193,17 @@ This is an excerpt; the method list shown is a hand draft that the generated one
 ## Spikes that settle it
 
 **S10-0, count before deciding (P1 week 1; tokenising only, no inference).**
-- Build: renderers for `M8`, `dsl-1`, `hermes-1` and `prose-1` over 0002's 40-row S1 registry and a draft v0.1 registry; a `workflow_dispatch` job that downloads the pinned GGUF, checks its SHA-256 and counts every pack and the template with `bpe`.
+- Build: renderers for `M8`, `dsl-1`, `hermes-1` and `prose-1` over 0002's 40-row S02-1 registry and a draft v0.1 registry; a `workflow_dispatch` job that downloads the pinned GGUF, checks its SHA-256 and counts every pack and the template with `bpe`.
 - Measure: real tokens per part, and the estimator's error on code and JSON lines.
 - Pass: the estimator is within ±10% per format, and the host budget test uses it with that margin. Fail: the job writes checked-in real counts, and the test reads those.
 - Also: if the v0.1 draft goes over a budget, the index level ships in v0.1. `hermes-1`'s bytes are checked against llama.cpp's own template rendering in the existing goldens job. llama-server's `/apply-template` documents only `messages` (README at b11802), so whether it takes a tool list is unverified; if not, the fallback is transformers, which needs the founder's OK.
 - Where: GitHub Actions ubuntu-24.04. Never on the founder's PC.
 
-**S10-1, format and scale (inside 0002's S1 harness `spikes/act-gate`, not a second benchmark).**
+**S10-1, format and scale (inside 0002's S02-1 harness `spikes/act-gate`, not a second benchmark).**
 - Build: `fluency --local` gains `--pack ARM` and `--seed`; 20 new state tasks (10 saying "this", "it", "here" or "selected", 10 with hostile values in `State:`).
 - Arms: (a) reference: today's prompt and envelope, byte for byte; (A0) the same without `/no_think` and the empty think block; (b) `dsl-1`; (c) `hermes-1`; (d) `prose-1`, seed 42 only. Arms b-d answer in 0002's tagged call.
-- Scales: 40 rows (S1's mock registry) for every arm; 80 rows (v0.1's estimated 55 plus 25 distractors) for `dsl-1` and any arm that beats it.
-- Tasks: the M8 50, S1's 150 and the 20 state tasks, 220 in all; seeds 42, 1 and 2. The host engine runs at `CONTEXT_CAP` 4,096, so every arm fits.
+- Scales: 40 rows (S02-1's mock registry) for every arm; 80 rows (v0.1's estimated 55 plus 25 distractors) for `dsl-1` and any arm that beats it.
+- Tasks: the M8 50, S02-1's 150 and the 20 state tasks, 220 in all; seeds 42, 1 and 2. The host engine runs at `CONTEXT_CAP` 4,096, so every arm fits.
 - Measure: first-try and after-repair success, overall and per category; real pack tokens; positions left; `ContextFull` count at 3,072; cold prefill seconds; ms per task. Also 20 `ask` answers under both layouts, kept for review.
 
 | Check | Pass | Fail means |
@@ -223,7 +223,7 @@ This is an excerpt; the method list shown is a hand draft that the generated one
 - Fail: flat with a larger context (a founder memory question), keeping the segment store.
 - Where: GitHub Actions ubuntu-24.04, host engine.
 
-**S10-3, in the guest (one KVM job, shared with 0002's S2).**
+**S10-3, in the guest (one KVM job, shared with 0002's S02-2).**
 - Record: the pack's cold prefill in seconds; the State-plus-request prefill per request; the restore time of a 300-position segment. Re-measure after PR #14's attention kernels.
 - No absolute bar until a guest baseline exists. If the cold prefill takes more than 10 s, the P2 KV file moves ahead of other P2 work.
 - Where: a GitHub Actions runner with KVM, the real model in the guest. Never on the founder's PC.
