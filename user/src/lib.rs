@@ -57,6 +57,20 @@ macro_rules! println {
     };
 }
 
+#[doc(hidden)]
+pub fn _log(args: fmt::Arguments) {
+    let text = alloc::fmt::format(args);
+    let _ = sys::write_log(text.as_bytes());
+}
+
+/// Prints a line to the log only: serial and the terminal's `:log`, not the screen.
+#[macro_export]
+macro_rules! logln {
+    ($($arg:tt)*) => {
+        $crate::_log(format_args!("{}\n", format_args!($($arg)*)))
+    };
+}
+
 /// The argument string this program was started with.
 pub fn args() -> alloc::string::String {
     let mut buf = [0u8; kabi::MAX_ARGS];

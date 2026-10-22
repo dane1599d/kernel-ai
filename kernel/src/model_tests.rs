@@ -125,8 +125,8 @@ fn start_and_ask(caps: u64) -> Result<(u64, Option<String>), &'static str> {
     .map_err(|_| "model: cannot start llm")?;
     match llm::health() {
         Ok(text) if text.starts_with("model ") => Ok((pid, Some(text))),
-        // With no server configured for it and no model, llm says so.
-        Err(text) if text.starts_with("no LLM server configured") => Ok((pid, None)),
+        // With no model and no server, llm says how to set a model up.
+        Err(text) if text == llmproto::chat::NO_MODEL => Ok((pid, None)),
         Ok(text) | Err(text) => {
             log!("model: llm (pid {pid}) health: {text}");
             Err("model: llm's health reply is not the expected one")
