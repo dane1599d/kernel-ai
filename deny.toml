@@ -1,0 +1,52 @@
+# The dependency gate (ADR 0009 D6), run in CI by cargo-deny 0.20.2:
+# `cargo deny check licenses advisories`.
+
+[graph]
+# The shipped graphs: the kernel and ring-3 programs, and the components.
+# `user/x86_64-kai-user.json` is a custom target; x86_64-unknown-none stands in for it.
+targets = ["x86_64-unknown-none", "wasm32-unknown-unknown"]
+
+[licenses]
+# The free class (ADR 0009 D4, decided 2026-10-22): added without asking.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "0BSD",
+    "MIT-0",
+    "Unlicense",
+    "BSL-1.0",
+    "Unicode-3.0",
+    "CC0-1.0",
+    "BlueOak-1.0.0",
+    "BSD-2-Clause-Patent",
+]
+confidence-threshold = 0.93
+# The whole free class is listed, used yet or not.
+unused-allowed-license = "allow"
+# Approved items, each named: no other crate gets these licences.
+exceptions = [
+    # Required by Rhai; kept with its notice (decided 2026-10-22).
+    { crate = "smartstring", allow = ["MPL-2.0"] },
+    # The console glyphs are Noto Sans Mono font data (decided 2026-10-22).
+    { crate = "noto-sans-mono-bitmap", allow = ["OFL-1.1"] },
+]
+
+[licenses.private]
+# Our own crates are all `publish = false`; their licence is ADR 0009 D1's, deferred.
+ignore = true
+
+# The crate's metadata says MIT, but its glyphs are Noto Sans Mono under OFL-1.1.
+[[licenses.clarify]]
+crate = "noto-sans-mono-bitmap"
+expression = "MIT AND OFL-1.1"
+license-files = [{ path = "LICENSE", hash = 0xe4fab402 }]
+
+[advisories]
+ignore = [
+    { id = "RUSTSEC-2026-0249", reason = "smartstring is unmaintained but required by Rhai; ADR 0012 owns the Rhai upgrade. Review by 2027-01-31." },
+]
