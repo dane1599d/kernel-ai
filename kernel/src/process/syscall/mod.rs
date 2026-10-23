@@ -4,6 +4,7 @@
 
 mod component;
 mod core;
+mod handle;
 mod net;
 mod sched;
 mod service;
@@ -44,12 +45,10 @@ pub extern "C" fn dispatch(frame: &mut TrapFrame) {
     super::return_to_user(frame);
 }
 
+/// A call that needs capability bits `bits` needs a live handle of each bit's
+/// kind and right (ADR 0001 D3): closing the handle drops the right for good.
 fn need(slot: usize, bits: u64) -> Result<(), Error> {
-    if super::identity(slot).limits.caps & bits == bits {
-        Ok(())
-    } else {
-        Err(Error::Permission)
-    }
+    crate::handle::need(slot, bits)
 }
 
 /// One area's calls (see the files beside this one).
@@ -64,6 +63,7 @@ const AREAS: &[Area] = &[
     sched::handle,
     component::handle,
     net::handle,
+    handle::handle,
 ];
 
 fn handle(slot: usize, number: u64, a: [u64; 6]) -> Result<u64, Error> {

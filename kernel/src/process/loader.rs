@@ -88,6 +88,7 @@ fn map_page_in(
 fn load(slot: usize, name: &str, limits: &Limits) -> Result<UserEntry, &'static str> {
     let program = programs::find(name).ok_or("no such program")?;
     let image = uelf::parse(program.elf, MIN_USER_ADDRESS..HEAP_BASE).map_err(elf_error)?;
+    check_abi(image.abi)?;
     let space = memory::with(|m| m.new_user_space())?;
     let cr3 = space.cr3();
     *lock_space(slot) = Some(space);
@@ -138,6 +139,18 @@ fn load(slot: usize, name: &str, limits: &Limits) -> Result<UserEntry, &'static 
     })
 }
 
+/// The program's "KAI" note must name this kernel's major ABI version and a minor
+/// no newer than its own (ADR 0001 D10).
+fn check_abi(abi: Option<(u32, u32)>) -> Result<(), &'static str> {
+    let (major, minor) = kabi::handle::ABI;
+    match abi {
+        None => Err("no KAI note with the ABI version"),
+        Some((m, _)) if m != major => Err("built for another major ABI version"),
+        Some((_, n)) if n > minor => Err("built for a newer ABI version"),
+        Some(_) => Ok(()),
+    }
+}
+
 fn elf_error(error: uelf::Error) -> &'static str {
     match error {
         uelf::Error::SegmentOutOfRange => "a segment lies outside user memory",
@@ -145,6 +158,7 @@ fn elf_error(error: uelf::Error) -> &'static str {
         uelf::Error::Overlap => "segments overlap",
         uelf::Error::BadEntry => "the entry point is not in executable code",
         uelf::Error::Unsupported => "dynamic linking, an interpreter or TLS",
+        uelf::Error::BadNote => "a note runs past its segment",
         _ => "not a valid x86-64 executable",
     }
 }

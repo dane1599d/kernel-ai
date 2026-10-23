@@ -23,10 +23,15 @@ pub enum Error {
     Interrupted = 11,
     /// The service is not running.
     Unavailable = 12,
+    /// The handle is forged, stale (closed, or its slot reused) or of the wrong
+    /// kind. Old programs read it as `Invalid`.
+    BadHandle = 13,
+    /// The handle's grant was revoked. Old programs read it as `Invalid`.
+    Revoked = 14,
 }
 
 impl Error {
-    pub const ALL: [Error; 12] = [
+    pub const ALL: [Error; 14] = [
         Error::Permission,
         Error::Fault,
         Error::Invalid,
@@ -39,6 +44,8 @@ impl Error {
         Error::Dead,
         Error::Interrupted,
         Error::Unavailable,
+        Error::BadHandle,
+        Error::Revoked,
     ];
 
     /// The value placed in RAX.

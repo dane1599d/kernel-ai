@@ -20,6 +20,15 @@ pub(super) const CASES: &[TestCase] = &[
     case("storm", "test=storm"),
     case("fpu", "test=fpu"),
     case("probe", "test=probe"),
+    // P1 task 5: handle tables, startup handles and need() on handles, from the
+    // kernel and from ring 3; also spike S01-1's M1.
+    TestCase {
+        expect: &[
+            "[handles] handles: every check passed",
+            "handles: M1: bit check ",
+        ],
+        ..case("handles", "test=handles")
+    },
     // M10a-2's probe runs here too, so the case itself is gated under KVM and TCG;
     // `cargo xtask icount` checks its determinism under icount.
     TestCase {

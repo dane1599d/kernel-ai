@@ -207,3 +207,66 @@ fn hostile_tables_and_segments() {
         assert_eq!(check(&data), Err(Error::BadEntry), "{entry:#x}");
     }
 }
+
+/// The sample with a fourth program header: a `PT_NOTE` at 0x2800 holding a GNU
+/// note and then the "KAI" note with ABI 1.0.
+fn with_kai_note() -> (Vec<u8>, std::ops::Range<usize>) {
+    let mut notes = Vec::new();
+    for (name, kind, desc) in [
+        (&b"GNU\0"[..], 3u32, &[7u8; 20][..]),
+        (b"KAI\0", 1, &[1, 0, 0, 0, 0, 0, 0, 0]),
+    ] {
+        notes.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        notes.extend_from_slice(&(desc.len() as u32).to_le_bytes());
+        notes.extend_from_slice(&kind.to_le_bytes());
+        notes.extend_from_slice(name);
+        notes.extend_from_slice(desc);
+    }
+    let range = 0x2800..0x2800 + notes.len();
+    let mut data = elf(
+        0x40_0010,
+        &[
+            load(PF_X | PF_R, 0x1000, 0x40_0000, 0x100, 0x100),
+            load(PF_R, 0x1800, 0x40_1000, 0x40, 0x40),
+            load(PF_W | PF_R, 0x2000, 0x40_2000, 0x80, 0x2000),
+            Ph {
+                kind: 4,
+                flags: PF_R,
+                offset: range.start as u64,
+                vaddr: 0,
+                filesz: notes.len() as u64,
+                memsz: 0,
+            },
+        ],
+        0x3000,
+    );
+    data[range.clone()].copy_from_slice(&notes);
+    (data, range)
+}
+
+#[test]
+fn a_mutated_kai_note_parses_or_fails_and_never_panics() {
+    let (data, notes) = with_kai_note();
+    assert_eq!(
+        parse(&data, ALLOWED).map(|image| image.abi),
+        Ok(Some((1, 0)))
+    );
+    // Every field of both notes at every extreme, and random mutations of them.
+    hostile::sweep_fields(&data, notes.clone(), |_, mutated| {
+        let _ = check(mutated);
+    });
+    for seed in [3, 0x9e37_79b9_7f4a_7c15] {
+        hostile::fuzz(&data[notes.clone()], seed, 4000, |mutated| {
+            let mut whole = data.clone();
+            let end = (notes.start + mutated.len()).min(whole.len());
+            whole[notes.start..end].copy_from_slice(&mutated[..end - notes.start]);
+            let _ = check(&whole);
+        });
+    }
+    // Cut anywhere inside the notes, the segment runs past the file's end.
+    hostile::truncations(&data[..notes.end], |cut, prefix| {
+        if cut < notes.end {
+            assert!(check(prefix).is_err(), "cut at {cut}");
+        }
+    });
+}

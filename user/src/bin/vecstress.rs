@@ -37,6 +37,8 @@ const ZMM_LANES: usize = 16;
 const REGS: usize = 16;
 const ZMM_REGS: usize = 32;
 
+user::abi_note!();
+
 /// What `_start` saved before any Rust code ran: FXSAVE64's 512 bytes (x87, MXCSR
 /// and xmm0-15), the upper halves of ymm0-15, and whether it could read them; with
 /// AVX-512 also zmm16-31 whole, bits 256-511 of zmm0-15 and k0-7.

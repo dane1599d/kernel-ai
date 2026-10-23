@@ -8,6 +8,7 @@ PHDRS
     text PT_LOAD FLAGS(5);
     rodata PT_LOAD FLAGS(4);
     data PT_LOAD FLAGS(6);
+    note PT_NOTE FLAGS(4);
 }
 
 SECTIONS
@@ -17,6 +18,8 @@ SECTIONS
 
     . = ALIGN(4096);
     .rodata : { *(.rodata .rodata.*) } :rodata
+    /* The "KAI" note with the ABI version (ADR 0001 D10), in its own PT_NOTE. */
+    .note.kai : { KEEP(*(.note.kai)) } :rodata :note
 
     . = ALIGN(4096);
     .data : { *(.data .data.*) } :data
