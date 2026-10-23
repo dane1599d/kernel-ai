@@ -80,9 +80,7 @@ pub fn revoke(node: GrantRef) -> Result<usize, kabi::Error> {
     let mut freed = [false; NODES];
     let count = {
         let mut tree = TREE.lock();
-        let count = tree
-            .revoke(node, |n| freed[usize::from(n)] = true)
-            .map_err(tree_error)?;
+        let count = tree.revoke(node, &mut freed).map_err(tree_error)?;
         for (index, gone) in freed.iter().enumerate() {
             if *gone {
                 GENERATIONS[index].store(tree.generation(index), Ordering::Release);

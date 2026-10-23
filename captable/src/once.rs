@@ -52,7 +52,7 @@ impl Book {
 
     /// Holds `digest` for a `ONCE` handle under `grant`; the badge that names
     /// it, never reused. `None` when all [`DIGESTS`] are held by live grants.
-    pub fn hold(&mut self, grant: GrantRef, digest: [u8; 32], live: &impl Live) -> Option<u64> {
+    pub fn hold(&mut self, grant: GrantRef, digest: [u8; 32], live: &dyn Live) -> Option<u64> {
         let free = self
             .held
             .iter()
@@ -69,7 +69,7 @@ impl Book {
 
     /// Whether the call the owner got, digested as `digest`, is the one shown
     /// for `badge`. A match uses the digest up, so it matches once.
-    pub fn check(&mut self, badge: u64, digest: &[u8; 32], live: &impl Live) -> Verdict {
+    pub fn check(&mut self, badge: u64, digest: &[u8; 32], live: &dyn Live) -> Verdict {
         let Some(slot) = self
             .held
             .iter()
@@ -119,7 +119,8 @@ mod tests {
         assert_eq!(book.check(badge, &shown, &*tree), Verdict::Match);
         assert_eq!(book.check(badge, &shown, &*tree), Verdict::Unknown);
         let badge = book.hold(request, shown, &*tree).unwrap();
-        tree.revoke(request, |_| {}).unwrap();
+        tree.revoke(request, &mut [false; crate::grant::NODES])
+            .unwrap();
         assert_eq!(book.check(badge, &shown, &*tree), Verdict::Revoked);
     }
 }

@@ -167,7 +167,7 @@ impl Table {
     }
 
     /// The entry `handle` names, if it is open and its grant node alive.
-    pub fn live(&self, handle: Handle, live: &impl Live) -> Result<Entry, Error> {
+    pub fn live(&self, handle: Handle, live: &dyn Live) -> Result<Entry, Error> {
         let entry = *self.get(handle)?;
         match entry.grant {
             Some(grant) if !live.alive(grant) => Err(Error::Revoked),
@@ -183,7 +183,7 @@ impl Table {
         handle: Handle,
         kind: Kind,
         rights: Rights,
-        live: &impl Live,
+        live: &dyn Live,
     ) -> Result<Entry, Error> {
         let entry = self.live(handle, live)?;
         if entry.kind != kind {
@@ -200,7 +200,7 @@ impl Table {
 
     /// An open handle of `kind` that carries every right in `rights`, with a live
     /// grant, the first by index; `ONCE` handles are never picked this way.
-    pub fn find(&self, kind: Kind, rights: Rights, live: &impl Live) -> Option<Handle> {
+    pub fn find(&self, kind: Kind, rights: Rights, live: &dyn Live) -> Option<Handle> {
         self.iter().find_map(|(handle, entry)| {
             let fits = entry.kind == kind
                 && entry.rights.contains(rights)
@@ -212,7 +212,7 @@ impl Table {
 
     /// Whether some open handle of `kind` with a live grant carries every right
     /// in `rights`.
-    pub fn holds(&self, kind: Kind, rights: Rights, live: &impl Live) -> bool {
+    pub fn holds(&self, kind: Kind, rights: Rights, live: &dyn Live) -> bool {
         self.find(kind, rights, live).is_some()
     }
 
@@ -222,7 +222,7 @@ impl Table {
         &mut self,
         handle: Handle,
         rights: Rights,
-        live: &impl Live,
+        live: &dyn Live,
     ) -> Result<Handle, Error> {
         let entry = self.dup_source(handle, rights, live)?;
         self.insert(Entry { rights, ..entry })
@@ -236,7 +236,7 @@ impl Table {
         handle: Handle,
         rights: Rights,
         grant: GrantRef,
-        live: &impl Live,
+        live: &dyn Live,
     ) -> Result<Handle, Error> {
         let entry = self.dup_source(handle, rights, live)?;
         if !live.alive(grant) {
@@ -250,7 +250,7 @@ impl Table {
     }
 
     /// The entry a duplicate of `handle` with `rights` copies, if allowed.
-    fn dup_source(&self, handle: Handle, rights: Rights, live: &impl Live) -> Result<Entry, Error> {
+    fn dup_source(&self, handle: Handle, rights: Rights, live: &dyn Live) -> Result<Entry, Error> {
         let entry = self.live(handle, live)?;
         if !entry.rights.contains(Rights::DUPLICATE) {
             return Err(Error::Permission);
@@ -267,7 +267,7 @@ impl Table {
         &mut self,
         handle: Handle,
         rights: Rights,
-        live: &impl Live,
+        live: &dyn Live,
     ) -> Result<Handle, Error> {
         let entry = self.close(handle)?;
         if entry.grant.is_some_and(|grant| !live.alive(grant)) {
