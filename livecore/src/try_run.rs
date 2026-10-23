@@ -46,9 +46,9 @@ fn run<E: Env>(
         Error::NotFound => format!("no version {label}"),
         error => format!("cannot fetch {label}: {error:?}"),
     })?;
-    let interface = active.manifest.interface.clone();
+    let world = active.manifest.world.clone();
     let mut candidate = core
-        .stage(label, artifact, Some(&interface), true)
+        .stage(label, artifact, Some(&world), true)
         .map_err(|fault| failed(&fault))?;
     let mut old = copy_of(core, active).map_err(|fault| {
         format!(

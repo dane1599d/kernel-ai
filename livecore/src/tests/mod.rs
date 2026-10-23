@@ -176,9 +176,9 @@ fn failures_before_probation_name_the_step() {
 }
 
 #[test]
-fn a_changed_interface_or_a_missing_source_is_a_manifest_failure() {
+fn an_incompatible_world_or_a_missing_source_is_a_manifest_failure() {
     let other = Spec {
-        interface: "counter@2",
+        world: "app:counter/counter@2.0.0",
         ..Spec { label: "3", ..V2 }
     };
     let mut component = Component::new("counter");
@@ -193,7 +193,10 @@ fn a_changed_interface_or_a_missing_source_is_a_manifest_failure() {
     component.add_version("4", Bytes::shared(bare)).unwrap();
     let kernel = Kernel::new(component);
     let mut host = host(&kernel);
-    assert!(call(&mut host, "ctl swap 3").contains("manifest: interface counter@2 differs"));
+    assert!(
+        call(&mut host, "ctl swap 3")
+            .contains("manifest: world app:counter/counter@2.0.0 is not compatible")
+    );
     assert!(call(&mut host, "ctl swap 4").contains("manifest: no kai.manifest"));
     assert_eq!(reason_count(&kernel, Reason::Manifest), 2);
 }

@@ -32,7 +32,7 @@ const SYNCED: usize = 16;
 pub struct Meta {
     pub component: String,
     pub version: String,
-    pub interface: String,
+    pub world: String,
     pub source: String,
     /// The source's file paths, sorted.
     pub files: Vec<String>,
@@ -69,14 +69,14 @@ pub fn meta(bytes: &[u8]) -> Result<Meta, Error> {
     Ok(Meta {
         component: manifest.component,
         version: manifest.version,
-        interface: manifest.interface,
+        world: manifest.world,
         source: manifest.source,
         files,
     })
 }
 
 /// The upload rules, against the label the store assigns next: the active
-/// version's interface, and the file list of the stored version it was built from.
+/// version's world (the upload's must be compatible), and the file list of the stored version it was built from.
 pub(crate) fn check(
     meta: &Meta,
     name: &str,
@@ -90,8 +90,8 @@ pub(crate) fn check(
     };
     let ok = meta.component == name
         && meta.version == next
-        && !active.interface.is_empty()
-        && meta.interface == active.interface
+        && !active.world.is_empty()
+        && crate::manifest::compatible(&active.world, &meta.world)
         && meta.files == base.files
         && valid_commit(commit);
     if ok { Ok(()) } else { Err(Error::Invalid) }

@@ -54,7 +54,7 @@ pub struct Version {
     pub origin: Origin,
     /// From the manifest, read once when the version was added; empty when it has
     /// none (the host then refuses to load it).
-    pub interface: String,
+    pub world: String,
     /// SHA-256 of the source bundle, from the manifest.
     pub source: String,
     /// The source's file paths, sorted; an upload must keep them.
@@ -109,9 +109,9 @@ impl Component {
         if self.version(label).is_some() {
             return Err("version listed twice");
         }
-        let (interface, source, files) = match artifact::parse(bytes.as_slice()) {
+        let (world, source, files) = match artifact::parse(bytes.as_slice()) {
             Ok(parsed) => (
-                parsed.manifest.interface,
+                parsed.manifest.world,
                 parsed.manifest.source,
                 uploads::source_paths(parsed.source).unwrap_or_default(),
             ),
@@ -122,7 +122,7 @@ impl Component {
             bytes,
             fetches: 0,
             origin: Origin::Boot,
-            interface,
+            world,
             source,
             files,
         });
@@ -298,7 +298,7 @@ impl Component {
                 base: base.to_string(),
                 commit: commit.to_string(),
             },
-            interface: meta.interface.clone(),
+            world: meta.world.clone(),
             source: meta.source.clone(),
             files: meta.files.clone(),
         });
