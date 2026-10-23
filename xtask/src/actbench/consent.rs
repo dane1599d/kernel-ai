@@ -12,7 +12,10 @@
 //! - no cue at all is the vague path: one undoable closed-world change runs
 //!   `Taken as`, unless a value of it came from the State line (data), when it
 //!   asks; anything else asks;
-//! - a negated cue, a non-English line or an unknown name never runs.
+//! - a negated cue, a non-English line or an unknown name never runs, and a
+//!   line with any negation takes no vague reading;
+//! - a kind word ("the service", "the file", "it") is not a name, so it does
+//!   not count as literal.
 //!
 //! A script takes its strictest call, from the row names in its code (today's
 //! `names_in`, not B's analyser, which is task 11).
@@ -50,6 +53,29 @@ impl Decision {
 const NEGATIONS: &[&str] = &["don't", "dont", "do not", "not", "never", "no"];
 const SYMBOLS: &[&str] = &["focused", "selected", "here"];
 const DEICTIC: &[&str] = &["this", "it", "here", "selected", "that"];
+/// Words that name a kind of thing, not one: "stop the service" names no
+/// service, so `service_stop("service")` is not literal in the line.
+const KIND_WORDS: &[&str] = &[
+    "service",
+    "program",
+    "process",
+    "package",
+    "device",
+    "component",
+    "file",
+    "server",
+    "host",
+    "site",
+    "website",
+    "model",
+    "rule",
+    "note",
+    "thing",
+    "it",
+    "that",
+    "this",
+    "one",
+];
 
 /// Ends a clause for negation: a comma, a semicolon or a full stop.
 const CLAUSE: &str = "|";
@@ -156,7 +182,8 @@ fn decide_row(row: &Row, args: &Value, line: &str, state: &str) -> Decision {
         };
         let value = text(value);
         let symbol = SYMBOLS.contains(&value.as_str()) && deictic;
-        let typed = literal(&folded, &value)
+        let named = !KIND_WORDS.contains(&fold(&value).as_str());
+        let typed = (named && literal(&folded, &value))
             || symbol
             || (matches!(arg.ty, Ty::Enum(_))
                 && literal(&folded.replace(' ', ""), &value.replace('-', "")));
@@ -174,12 +201,16 @@ fn decide_row(row: &Row, args: &Value, line: &str, state: &str) -> Decision {
     if !english(line) {
         return Decision::Ask;
     }
+    let negation = NEGATIONS
+        .iter()
+        .any(|n| format!(" {folded} ").contains(&format!(" {n} ")));
     match cue(row, &words) {
         Cue::Negated => Decision::Ask,
         Cue::Plain if !grounded => Decision::Ask,
         Cue::Plain if row.undo == Undo::None => Decision::Ask,
         Cue::Plain => Decision::Run,
-        Cue::None if row.undo == Undo::Restore && !row.open_world && !from_data => {
+        // A line that says not to do something takes no reading it did not name.
+        Cue::None if row.undo == Undo::Restore && !row.open_world && !from_data && !negation => {
             Decision::TakenAs
         }
         Cue::None => Decision::Ask,
@@ -288,6 +319,8 @@ mod tests {
         );
         let steered = decide(&rows(40), &policy, "what is here?", "here=interactive");
         assert_eq!(steered, Decision::Ask);
+        let negated = json!({"name":"rules_remove","arguments":{"n":1}});
+        assert_eq!(decided(negated, "do not remove notes"), Decision::Ask);
         let off = json!({"name":"power_off","arguments":{}});
         assert_eq!(decided(off, "make it quieter"), Decision::Ask);
     }
@@ -303,6 +336,9 @@ mod tests {
             decided(ping("8.8.8.8"), "is the internet up?"),
             Decision::Ask
         );
+        assert_eq!(decided(ping("server"), "ping the server"), Decision::Ask);
+        let stop = json!({"name":"service_stop","arguments":{"name":"service"}});
+        assert_eq!(decided(stop, "stop the service"), Decision::Ask);
     }
 
     #[test]

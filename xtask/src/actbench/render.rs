@@ -44,6 +44,8 @@ if a > b { print(\"yes\"); } else { print(\"no\"); }   // braces always; end sta
 string: len() to_upper() to_lower() trim() contains(t) index_of(t) split(t) replace(a, b)
 array: len() push(x) pop() contains(x) index_of(x) sort() reverse() join(t)
 map: keys() values() contains(k) len()   int: to_string() abs()   floor(n) is n
+// Digits of n: n.to_string().len(). The first two items: p[0], p[1]. A map: one key per value.
+// Do the steps in the order asked: print first if the request prints first.
 // Print exactly what is asked, in its order, with its words and units (MiB, KiB).
 // If the functions below cannot do it, print why instead.
 // A script may call any row; a row's call alone does just that one thing.

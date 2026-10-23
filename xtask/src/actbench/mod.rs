@@ -515,6 +515,9 @@ fn run_arm(
 /// S02-1 is a measurement, so the gates are read from the summary (task 18
 /// makes them fail the job).
 pub fn main(args: &[String], target_dir: &Path) -> Result<(), String> {
+    if let Some(("--rescore", files)) = args.split_first().map(|(a, r)| (a.as_str(), r)) {
+        return files.iter().try_for_each(|file| rescore(Path::new(file)));
+    }
     let options = parse(args)?;
     let path = crate::models::stored(&options.id, options.store.as_deref())?;
     let bytes = fs::read(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
@@ -534,6 +537,60 @@ pub fn main(args: &[String], target_dir: &Path) -> Result<(), String> {
     }
     for line in results {
         println!("xtask: actbench {line}");
+    }
+    Ok(())
+}
+
+/// `cargo xtask actbench --rescore FILE..`: a tagged arm's recorded answers
+/// judged again with today's consent and scoring, no model needed. The M8 tasks
+/// keep their recorded result.
+fn rescore(path: &Path) -> Result<(), String> {
+    let text = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let lines: Vec<Value> = text
+        .lines()
+        .map(serde_json::from_str)
+        .collect::<Result<_, _>>()
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    let header = lines.first().ok_or("an empty run")?;
+    let rows = registry::rows(header["rows"].as_u64().unwrap_or(40) as usize);
+    let mut scored = Vec::new();
+    let (mut m8, mut m8_runs) = (0, 0);
+    for record in &lines[1..] {
+        match record["cat"].as_str() {
+            Some("m8") => {
+                m8_runs += 1;
+                m8 += usize::from(record["passed"] == true);
+            }
+            Some(cat) => {
+                let line = record["line"].as_str().unwrap_or("");
+                let Some(task) = TASKS.iter().find(|t| t.cat.name() == cat && t.line == line)
+                else {
+                    continue;
+                };
+                let answer = record["answer"].as_str().unwrap_or("");
+                let call: Option<Value> = serde_json::from_str(answer).ok();
+                let decision = call.as_ref().map_or(consent::Decision::Never, |c| {
+                    consent::decide(&rows, c, task.line, task.state)
+                });
+                let free = (record["tokens"].as_u64().unwrap_or(0)
+                    - record["forced"].as_u64().unwrap_or(0)) as usize;
+                scored.push(score::score(&rows, task, call.as_ref(), decision, free));
+            }
+            None => {}
+        }
+    }
+    println!(
+        "{} ({} seed {}):",
+        path.display(),
+        header["arm"],
+        header["seed"]
+    );
+    for gate in score::gates(&scored, (m8_runs > 0).then_some((m8, m8_runs))) {
+        let mark = if gate.passes { "pass" } else { "FAIL" };
+        println!(
+            "  {mark} {:<36} {:>7}  (pass {})",
+            gate.name, gate.value, gate.bar
+        );
     }
     Ok(())
 }
