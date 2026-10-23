@@ -216,7 +216,23 @@ fn bind(
                     "nvme" => found
                         .nvme
                         .push(crate::nvme::Function { name, bar, bar_len }),
-                    _ => found.usb.push(crate::usb::Function { name, bar, bar_len }),
+                    _ => {
+                        let address = pci::PciAddress::new(0, at.bus, at.device, at.function);
+                        let vector = match enable_msix(access, address, crate::usb::on_interrupt) {
+                            Ok(vector) => Some(vector),
+                            Err(why) => {
+                                log!("pci: {driver} at {at}: {why}; polled from the timer");
+                                None
+                            }
+                        };
+                        let function = crate::usb::Function {
+                            name,
+                            bar,
+                            bar_len,
+                            vector,
+                        };
+                        found.usb.push(function);
+                    }
                 }
             }
             Err(message) => log!("pci: {driver} at {at}: {message}"),
@@ -263,6 +279,42 @@ fn bind(
         },
         _ => found.disks.push(transport),
     }
+}
+
+/// Gives the function's first MSI-X entry a vector of its own, delivered to the
+/// boot CPU, and turns MSI-X on with legacy INTx off. The device then raises
+/// that vector, and `handler` runs for it.
+fn enable_msix(
+    access: &EcamAccess,
+    address: pci::PciAddress,
+    handler: crate::irq::Handler,
+) -> Result<u8, &'static str> {
+    use pci::msix::{self, ENTRY_BYTES};
+    let msix = msix::msix(access, address).ok_or("no MSI-X")?;
+    let bar = msix::bar_address(access, address, msix.table_bar)
+        .ok_or("its MSI-X table is not in a memory BAR")?;
+    let table = memory::map_physical(bar + u64::from(msix.table_offset), ENTRY_BYTES, DEVICE)?;
+    let vector = crate::irq::allocate(handler).ok_or("no free interrupt vector")?;
+    let boot_apic = crate::percpu::get(0)
+        .lapic_id
+        .load(core::sync::atomic::Ordering::Relaxed);
+    let (message, data) = msix::message(boot_apic as u8, vector);
+    let words = [message as u32, (message >> 32) as u32, data, 0];
+    for (i, word) in words.into_iter().enumerate() {
+        // SAFETY: `table` maps the first entry of the table uncached; the last
+        // word clears its mask bit.
+        unsafe { (table as *mut u32).add(i).write_volatile(word) };
+    }
+    // Command register bit 10: no legacy INTx while MSI-X is on. The status half
+    // is written as zeros, which leaves its write-1-to-clear bits alone.
+    // SAFETY: offset 0x04 of this function's configuration space.
+    unsafe {
+        use pci::ConfigRegionAccess;
+        let command = access.read(address, 0x04) & 0xFFFF;
+        access.write(address, 0x04, command | 1 << 10);
+    }
+    msix.enable(access, address, true);
+    Ok(vector)
 }
 
 /// A transport with its queue addresses written in halves (the network card's

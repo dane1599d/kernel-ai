@@ -6,7 +6,7 @@
 
 use crate::entry::{self, TrapFrame};
 use crate::gdt::{DOUBLE_FAULT_IST_INDEX, KERNEL_CODE, MACHINE_CHECK_IST_INDEX, NMI_IST_INDEX};
-use crate::{apic, cpu, faults, i8042, process, smp, threads, timer, usb};
+use crate::{apic, cpu, faults, i8042, irq, process, smp, threads, timer, usb};
 use spin::LazyLock;
 use x86_64::VirtAddr;
 use x86_64::instructions::tables::lidt;
@@ -37,7 +37,11 @@ impl Gate {
 
     /// A present 64-bit interrupt gate, DPL 0. `ist` is a TSS IST index, or None.
     fn new(handler: unsafe extern "C" fn(), ist: Option<u16>) -> Gate {
-        let address = handler as usize as u64;
+        Gate::at(handler as usize as u64, ist)
+    }
+
+    /// A present gate to the code at `address`.
+    fn at(address: u64, ist: Option<u16>) -> Gate {
         Gate {
             offset_low: address as u16,
             selector: KERNEL_CODE,
@@ -75,6 +79,12 @@ static IDT: LazyLock<Idt> = LazyLock::new(|| {
     ];
     for (vector, stub) in devices {
         gates[usize::from(vector)] = Gate::new(stub, None);
+    }
+    // MSI-X vectors (`irq`): every one is present, so a stray one is counted.
+    let first_stub = (entry::device_vectors as *const () as u64).next_multiple_of(16);
+    for vector in irq::FIRST..=irq::LAST {
+        let stub = first_stub + u64::from(vector - irq::FIRST) * entry::DEVICE_STUB_BYTES;
+        gates[usize::from(vector)] = Gate::at(stub, None);
     }
     Idt(gates)
 });
@@ -122,6 +132,9 @@ pub extern "C" fn trap_dispatch(frame: &mut TrapFrame) {
         }
         // Another CPU hit a fatal error: stop here so its report is not interleaved.
         v if v == u64::from(apic::HALT_VECTOR) => crate::halt_forever(),
+        v if (u64::from(irq::FIRST)..=u64::from(irq::LAST)).contains(&v) => {
+            irq::on_interrupt(v as u8);
+        }
         0..=31 => exception(frame),
         _ => faults::fatal(frame),
     }

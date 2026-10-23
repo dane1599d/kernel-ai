@@ -45,6 +45,7 @@ mod i8042;
 mod icount_tests;
 mod idt;
 mod ipc;
+mod irq;
 mod keyboard;
 mod latency_tests;
 mod lines;

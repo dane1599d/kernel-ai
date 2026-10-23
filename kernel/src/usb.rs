@@ -1,6 +1,7 @@
 //! USB keyboards, mice and tablets on xHCI controllers, through the host-tested
-//! `xhci` crate. The PCI code has no MSI support yet, so the boot CPU polls
-//! each controller's event ring from its timer tick. Keys become PS/2 set 1
+//! `xhci` crate. A controller with MSI-X polls its event ring when its interrupt
+//! arrives (ADR 0007 section 4); one without is polled by the boot CPU from its
+//! timer tick. Keys become PS/2 set 1
 //! scancodes in the i8042 ring, so the keyboard path cannot tell them apart;
 //! pointer reports go to `pointer`'s event queue.
 
@@ -18,6 +19,8 @@ pub struct Function {
     pub name: String,
     pub bar: u64,
     pub bar_len: u64,
+    /// Its MSI-X vector, delivered to the boot CPU; `None` to be polled.
+    pub vector: Option<u8>,
 }
 
 /// BAR0 bytes mapped at most: registers, runtime and doorbells of every
@@ -27,6 +30,7 @@ const BAR_MAP_BYTES: u64 = 64 * 1024;
 struct KernelHal {
     regs: u64,
     mapped: usize,
+    interrupts: bool,
 }
 
 impl Hal for KernelHal {
@@ -67,15 +71,22 @@ impl Hal for KernelHal {
     fn now_ns(&self) -> u64 {
         hpet::nanos()
     }
+
+    fn interrupts(&self) -> bool {
+        self.interrupts
+    }
 }
 
-static CONTROLLERS: Mutex<Vec<Controller<KernelHal>>> = Mutex::new(Vec::new());
+/// The running controllers, and whether each takes its MSI-X interrupt.
+static CONTROLLERS: Mutex<Vec<(Controller<KernelHal>, bool)>> = Mutex::new(Vec::new());
 /// Set once the controllers are running, so the tick polls them.
 static READY: AtomicBool = AtomicBool::new(false);
 /// What was attached at boot, and what came since, for the self-test.
 static KEYBOARDS: AtomicU64 = AtomicU64::new(0);
 static POINTERS: AtomicU64 = AtomicU64::new(0);
 static KEYS: AtomicU64 = AtomicU64::new(0);
+/// MSI-X interrupts taken, for the self-test.
+static INTERRUPTS: AtomicU64 = AtomicU64::new(0);
 
 /// Brings up each controller and the devices on its root ports. A controller
 /// that fails is logged, and the kernel runs on without it.
@@ -83,7 +94,7 @@ pub fn init(functions: Vec<Function>) {
     let mut running = Vec::new();
     for function in functions {
         match start(&function) {
-            Ok(controller) => running.push(controller),
+            Ok(controller) => running.push((controller, function.vector.is_some())),
             Err(message) => log!("usb: {} at {}", message, function.name),
         }
     }
@@ -92,6 +103,12 @@ pub fn init(functions: Vec<Function>) {
     }
     *CONTROLLERS.lock() = running;
     READY.store(true, Ordering::Release);
+    // An interrupt that came while the controllers started found nothing to
+    // poll and left IMAN.IP set, which holds back every later one: poll once.
+    let waiter = x86_64::instructions::interrupts::without_interrupts(|| poll(true));
+    if let Some(tid) = waiter {
+        x86_64::instructions::interrupts::without_interrupts(|| crate::threads::wake(tid));
+    }
 }
 
 fn start(function: &Function) -> Result<Controller<KernelHal>, &'static str> {
@@ -100,6 +117,7 @@ fn start(function: &Function) -> Result<Controller<KernelHal>, &'static str> {
     let hal = KernelHal {
         regs,
         mapped: mapped as usize,
+        interrupts: function.vector.is_some(),
     };
     let caps = xhci::regs::Capabilities::parse(|offset| hal.read32(offset));
     if caps.span() > hal.mapped {
@@ -107,12 +125,16 @@ fn start(function: &Function) -> Result<Controller<KernelHal>, &'static str> {
     }
     let mut controller = Controller::start(hal).map_err(xhci::Error::text)?;
     log!(
-        "usb: xHCI {}.{:02x} at {}, {} ports, {} slots",
+        "usb: xHCI {}.{:02x} at {}, {} ports, {} slots, {}",
         caps.version >> 8,
         caps.version & 0xFF,
         function.name,
         caps.max_ports,
-        caps.max_slots
+        caps.max_slots,
+        match function.vector {
+            Some(vector) => alloc::format!("interrupts on MSI-X vector {vector:#x}"),
+            None => String::from("polled from the timer"),
+        }
     );
     controller.enumerate(|report| match report.outcome {
         Ok(device) => {
@@ -146,15 +168,33 @@ fn start(function: &Function) -> Result<Controller<KernelHal>, &'static str> {
 }
 
 /// Called from the timer interrupt: the boot CPU, which also takes IRQ1, polls
-/// the controllers. Returns a thread to wake once the interrupt is acknowledged.
+/// the controllers without MSI-X. Returns a thread to wake once the interrupt is
+/// acknowledged.
 pub fn on_tick() -> Option<usize> {
-    if !READY.load(Ordering::Acquire) || percpu::index() != 0 {
+    if percpu::index() != 0 {
+        return None;
+    }
+    poll(false)
+}
+
+/// The MSI-X handler (`irq`) of every controller that has one.
+pub fn on_interrupt() -> Option<usize> {
+    INTERRUPTS.fetch_add(1, Ordering::Relaxed);
+    poll(true)
+}
+
+/// Polls the controllers that take interrupts (`interrupts`) or the others.
+fn poll(interrupts: bool) -> Option<usize> {
+    if !READY.load(Ordering::Acquire) {
         return None;
     }
     let mut controllers = CONTROLLERS.try_lock()?;
     let mut bytes = [0u8; 64];
     let mut len = 0;
-    for controller in controllers.iter_mut() {
+    let mine = controllers
+        .iter_mut()
+        .filter(|(_, on_irq)| *on_irq == interrupts);
+    for (controller, _) in mine {
         controller.poll(|input| match input {
             Input::Key { usage, pressed } => {
                 if let Some(code) = xhci::hid::set1(usage, pressed)
@@ -253,6 +293,15 @@ pub fn self_test() -> Result<(), &'static str> {
         return Err("usb: the line came from another keyboard, not over USB");
     }
     log!("usb: received \"kai\" over USB ({keys} key changes) and a left click");
+    let taken = INTERRUPTS.load(Ordering::Relaxed);
+    let on_irq = CONTROLLERS.lock().iter().any(|(_, on_irq)| *on_irq);
+    if on_irq && taken == 0 {
+        return Err("usb: the controller has MSI-X but took no interrupt");
+    }
+    log!(
+        "usb: {taken} MSI-X interrupts, {} stray vectors",
+        crate::irq::stray()
+    );
     pointer::show();
     Ok(())
 }
