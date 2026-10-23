@@ -169,5 +169,24 @@ pub const RECV_H: u64 = 45;
 /// `reply_h(ptr, len, handles_ptr, handles_len) -> len`: as [`SVC_REPLY`],
 /// moving up to [`super::handle::MAX_TRANSFER`] handles to the caller.
 pub const REPLY_H: u64 = 46;
+/// `grant_new(parent, life, label_ptr, label_len) -> handle`: a new node of the
+/// grant tree under the node the `Grant` handle `parent` names, which needs MINT;
+/// `life` is 0 (request), 1 (session) or 2 (persistent), the label at most 24
+/// bytes. Returns a `Grant` handle to the new node with MINT, REVOKE, INSPECT,
+/// DUPLICATE and TRANSFER, which itself dies with the node (ADR 0001 D5).
+pub const GRANT_NEW: u64 = 47;
+/// `grant_revoke(grant) -> nodes`: revokes the node the `Grant` handle names
+/// (needs REVOKE) and every node below it. Every handle given under them answers
+/// Revoked from then on, and calls in flight through them fail with Revoked.
+pub const GRANT_REVOKE: u64 = 48;
+/// `grant_dup(handle, rights, grant) -> handle`: as [`HANDLE_DUP`], with the new
+/// handle given under the node the `Grant` handle `grant` names (needs MINT), so
+/// revoking that node revokes it.
+pub const GRANT_DUP: u64 = 49;
+/// `once_check(badge, digest_ptr) -> 0`: whether the 32-byte digest at
+/// `digest_ptr` is the one the trusted path holds for the `ONCE` badge `badge`
+/// (ADR 0001 D6). A match uses it up. Invalid for another digest, NotFound for
+/// no digest under the badge, Revoked once its request ended.
+pub const ONCE_CHECK: u64 = 50;
 /// The highest call number.
-pub const MAX: u64 = REPLY_H;
+pub const MAX: u64 = ONCE_CHECK;

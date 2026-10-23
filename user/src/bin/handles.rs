@@ -20,6 +20,14 @@
 //! server may not hold, and more than four handles are refused, and that a
 //! forged route or a handle of another kind used as a route is BadHandle.
 //!
+//! With `mode=grants` (task 13), started with SUPERVISE and POLICY, it makes a
+//! grant node under `system`, gives a handle under it, revokes it, and checks
+//! that the handle and the node's own handle answer Revoked from then on. With
+//! `mode=hold` and `mode=revoke` a pair checks that revoking a grant ends a call
+//! in flight through a route given under it: the server holds the call, the
+//! kernel revokes the client's node, and the client's CALL_H fails with Revoked
+//! long before the server would answer.
+//!
 //! It prints `handles: every check passed` and exits 0, or names the first check
 //! that failed and exits 1.
 
@@ -41,6 +49,9 @@ fn main() -> i32 {
     let run = match arg(&args, "mode") {
         Some("server") => server,
         Some("client") => client,
+        Some("grants") => grants,
+        Some("hold") => hold,
+        Some("revoke") => revoke,
         _ => checks,
     };
     match run() {
@@ -101,6 +112,98 @@ fn server() -> Result<(), &'static str> {
         Error::BadHandle,
         "the handle sent back",
     )?;
+    Ok(())
+}
+
+/// The startup `Grant` handle on the `system` root, which SUPERVISE gives.
+fn system_grant() -> Result<Handle, &'static str> {
+    startup_handle(Kind::Grant).ok_or("no Grant handle on the system root")
+}
+
+/// Grant nodes from ring 3; see the module's comment.
+fn grants() -> Result<(), &'static str> {
+    let root = system_grant()?;
+    let sched = startup_handle(Kind::Sched).ok_or("no Sched handle")?;
+    let node = sys::grant_new(root, 0, "test").map_err(|_| "grant_new failed")?;
+    let given = sys::grant_dup(sched, Rights::READ | Rights::DUPLICATE, node)
+        .map_err(|_| "grant_dup failed")?;
+    let deeper =
+        sys::handle_dup(given, Rights::READ).map_err(|_| "a dup of the given handle failed")?;
+    expect(
+        sys::grant_new(root, 9, "x"),
+        Error::Invalid,
+        "an unknown life",
+    )?;
+    expect(
+        sys::grant_revoke(root),
+        Error::Permission,
+        "revoking the system root",
+    )?;
+    expect(
+        sys::grant_dup(sched, Rights::MAP, node),
+        Error::Invalid,
+        "a widening grant_dup",
+    )?;
+    if sys::grant_revoke(node) != Ok(1) {
+        return Err("grant_revoke did not revoke exactly its node");
+    }
+    expect(
+        sys::handle_dup(given, Rights::READ),
+        Error::Revoked,
+        "the handle given under it",
+    )?;
+    expect(
+        sys::handle_dup(deeper, Rights::READ),
+        Error::Revoked,
+        "a dup of that handle",
+    )?;
+    expect(
+        sys::grant_revoke(node),
+        Error::Revoked,
+        "the revoked node's own handle",
+    )?;
+    expect(
+        sys::grant_dup(sched, Rights::READ, node),
+        Error::Revoked,
+        "a grant_dup under it",
+    )?;
+    if sys::handle_dup(sched, Rights::READ).is_err() {
+        return Err("the startup handle went with the node");
+    }
+    expect(
+        sys::once_check(0x7777, &[0; 32]),
+        Error::NotFound,
+        "a ONCE badge never held",
+    )?;
+    Ok(())
+}
+
+/// Takes one call and holds it for 3 s before answering.
+fn hold() -> Result<(), &'static str> {
+    let mut buf = [0u8; 16];
+    let mut info = RecvInfo::default();
+    sys::recv_h(&mut buf, 30_000, &mut info).map_err(|_| "recv_h failed")?;
+    sys::sleep_ms(3000);
+    // The caller is gone by now; the answer goes nowhere.
+    let _ = sys::reply_h(b"late", &[]);
+    Ok(())
+}
+
+/// Calls the holding server through a route given under its own grant node, which
+/// the kernel revokes mid-call.
+fn revoke() -> Result<(), &'static str> {
+    let node = sys::grant_new(system_grant()?, 0, "call").map_err(|_| "grant_new failed")?;
+    let route = user::route(0).ok_or("no route to the server")?;
+    let given = sys::grant_dup(route, Rights::CALL, node).map_err(|_| "grant_dup failed")?;
+    let mut reply = [0u8; 16];
+    let started = sys::time_ns();
+    let result = sys::call_h(given, b"wait", &mut reply, 20_000, &[], &mut []);
+    let took_ms = (sys::time_ns() - started) / 1_000_000;
+    expect(result, Error::Revoked, "a call through a revoked route")?;
+    if took_ms >= 2500 {
+        return Err("the revoked call waited for the server");
+    }
+    println!("handles: a revoke ended a call in flight after {took_ms} ms");
     Ok(())
 }
 
