@@ -1,5 +1,5 @@
-//! Virtio devices on PCI: the DMA layer the drivers share, the one pass over the
-//! bus that finds them, and the read-only block driver. The network card's own
+//! Virtio devices on PCI: the DMA layer the drivers share, the one walk over the
+//! buses that finds them, and the read-only block driver. The network card's own
 //! code is in `net` and the GPU's in `display`; the same pass finds the NVMe
 //! controllers for `nvme` and the xHCI controllers for `usb`.
 
@@ -14,7 +14,7 @@ use crate::log;
 /// which becomes the console's display. A device that is missing or fails is
 /// logged, and the kernel runs on without it (on GOP, for the GPU).
 pub fn init(platform: &acpitables::Platform, cmdline: &str) {
-    let found = match pci::probe(platform) {
+    let found = match pci::probe(platform, cmdline) {
         Ok(found) => found,
         Err(message) => {
             log!("{message}");

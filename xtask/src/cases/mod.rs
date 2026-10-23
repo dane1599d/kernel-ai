@@ -61,6 +61,9 @@ pub struct TestCase {
     /// USB devices (`usb-kbd`, `usb-tablet`, `usb-mouse`) on a `qemu-xhci`
     /// controller; none and no controller when empty.
     pub usb: &'static [&'static str],
+    /// Put the network card behind a PCIe root port, on bus 1, so the kernel
+    /// reaches it only by walking the bridge.
+    pub bridge: bool,
 }
 
 pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase {
@@ -82,6 +85,7 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         gpu: false,
         screen: None,
         usb: &[],
+        bridge: false,
     }
 }
 

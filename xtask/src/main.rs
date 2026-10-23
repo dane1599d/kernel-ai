@@ -249,6 +249,9 @@ fn execute(options: &Options) -> Result<(), String> {
         if case.gpu {
             args.extend(screen::gpu_args());
         }
+        if case.bridge {
+            qemu::net_behind_bridge(&mut args);
+        }
         if case.screen.is_some() {
             screen::clear(&target_dir);
         }
