@@ -416,3 +416,16 @@ fn a_revert_after_a_stall_with_an_ejected_candidate_keeps_the_last_good_policy()
     assert_eq!(core.policy_name(), "interactive");
     assert_eq!(core.ejections(), 1);
 }
+
+#[test]
+fn a_resync_forgets_a_stall_before_it() {
+    let mut core = busy_core();
+    ticks(&mut core, 0, 10 * MS);
+    // A host-timed wait before an aligned start: the next tick would see a
+    // stall, but the resync makes that start the first tick.
+    core.resync_ticks(300 * MS);
+    core.tick(301 * MS);
+    assert_eq!(core.take_stall(), None);
+    // Waits still count from before it, as they would with no stall rule.
+    assert!(core.longest_wait(301 * MS).0 > WATCHDOG);
+}

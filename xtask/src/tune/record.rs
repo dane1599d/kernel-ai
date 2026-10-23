@@ -59,6 +59,11 @@ pub fn same_main(args: &[String]) -> Result<(), String> {
             shas.join(", ")
         ));
     }
+    // Printed so two runners' logs show which line differs when their
+    // summaries do (CI's observe-compare job sees only the hashes).
+    for line in texts[0].lines() {
+        println!("xtask: summary: {line}");
+    }
     println!(
         "xtask: PASS: {boots} observe boots of mix {mix} built the same summary {}",
         shas[0]

@@ -512,7 +512,11 @@ fn start_user_space(test: SelfTest) {
     // every boot-time disk read, so nothing host-timed comes before them and every
     // boot starts them at the same virtual time (the M10 exit test).
     if test == SelfTest::TuneAb {
+        // The waits before the edge were host-timed: the Cores forget them on
+        // both sides of it, so no stall carries over (sched::Core::resync_ticks).
+        threads::resync_ticks();
         let edge = timer::align_to_second();
+        threads::resync_ticks();
         log!("tune-ab: services start at tick {edge}");
     }
     if let Err(message) = process::supervision::start(plan) {

@@ -127,7 +127,7 @@ impl Core {
         core::mem::swap(&mut self.classes, &mut self.standby_classes);
         // The policy coming back may still hold the queue it had when it left.
         self.policy.reset();
-        self.waits_from = now;
+        self.installed_at = now;
         self.install_active();
     }
 

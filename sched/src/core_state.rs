@@ -54,11 +54,12 @@ pub struct Core {
     /// The standby slot holds a candidate that may be flipped in (not just the
     /// last good policy a person's choice left behind).
     staged: bool,
-    /// Waits count from here: when the installed policy was put in by `flip` or
-    /// `revert`, or the end of the latest stall. The watchdog and a trial's
-    /// guardrail judge a policy only on waits it caused, not on its predecessor's
-    /// or on a CPU that was held off its ticks.
-    waits_from: u64,
+    /// When the installed policy was put in by `flip` or `revert`: the watchdog
+    /// judges it only on waits since then, not on the waits its predecessor caused.
+    installed_at: u64,
+    /// The end of the latest stall: waits before it were for the CPU, not the
+    /// policy, so the watchdog and the guardrail count from here too.
+    stall_end: u64,
     /// The latest tick, and the length of a stall the caller has not logged yet.
     last_tick: u64,
     pending_stall: Option<u64>,
@@ -94,7 +95,8 @@ impl Core {
             standby_classes: [Class::Normal; MAX_THREADS],
             in_trial: false,
             staged: false,
-            waits_from: 0,
+            installed_at: 0,
+            stall_end: 0,
             last_tick: now,
             pending_stall: None,
             woke: [false; MAX_THREADS],
@@ -183,9 +185,10 @@ impl Core {
     pub fn longest_wait(&self, now: u64) -> (u64, Tid) {
         (0..MAX_THREADS)
             .filter_map(|tid| match self.states[tid] {
-                State::Runnable { since } => {
-                    Some((now.saturating_sub(since.max(self.waits_from)), tid))
-                }
+                State::Runnable { since } => Some((
+                    now.saturating_sub(since.max(self.installed_at).max(self.stall_end)),
+                    tid,
+                )),
                 _ => None,
             })
             .max_by_key(|&(wait, tid)| (wait, usize::MAX - tid))
@@ -206,6 +209,15 @@ impl Core {
     /// can log it.
     pub fn take_stall(&mut self) -> Option<u64> {
         self.pending_stall.take()
+    }
+
+    /// Forgets the ticks and stalls so far, as if this tick at `now` were the
+    /// first: for a boot that must run the same from an aligned start whatever
+    /// host-timed waits came before it (the M10 observe boots under icount).
+    pub fn resync_ticks(&mut self, now: u64) {
+        self.last_tick = now;
+        self.stall_end = 0;
+        self.pending_stall = None;
     }
 
     /// Makes `tid` the running thread; used once for the code that boots the CPU.
@@ -270,7 +282,7 @@ impl Core {
     pub fn tick(&mut self, now: u64) -> Option<Tid> {
         let gap = now.saturating_sub(core::mem::replace(&mut self.last_tick, now));
         if gap > STALL_NS && self.any_runnable() {
-            self.waits_from = now;
+            self.stall_end = now;
             self.pending_stall = Some(gap);
         }
         // A wake-up whose reschedule interrupt has not arrived yet is delivered here.
