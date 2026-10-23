@@ -67,8 +67,8 @@ impl Wsl {
         };
         // A boot xtask reads ends by itself within the longest case's time limit.
         let cases = match options.task {
-            Task::Soak => crate::cases::SOAK_CASES,
-            _ => crate::cases::TEST_CASES,
+            Task::Soak => crate::cases::SOAK_CASES.iter().collect(),
+            _ => crate::cases::test_cases(),
         };
         let longest = cases
             .iter()
