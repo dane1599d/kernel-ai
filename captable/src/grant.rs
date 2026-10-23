@@ -6,7 +6,9 @@
 //! 24-byte label, a life (`request`, `session` or `persistent`) and an expiry.
 //! Each slot keeps a generation that a [`GrantRef`] carries: revoking bumps the
 //! generation of the node and of every descendant and frees them, so checking a
-//! handle is one comparison of generations. A revoke scans the tree once.
+//! handle is one comparison of generations. A revoke scans the tree once, through
+//! a compact array of parent links (2 bytes a node, apart from the rest of each
+//! node) and only up to the highest slot ever used, so it reads little memory.
 
 /// Nodes in the tree.
 pub const NODES: usize = 1024;
@@ -86,9 +88,16 @@ pub enum Error {
     Invalid,
 }
 
+/// A free slot in [`Tree`]'s parent links.
+const FREE: u16 = u16::MAX;
+
 pub struct Tree {
     nodes: [Option<Node>; NODES],
+    /// Each node's parent, or [`FREE`]: what a revoke and `alive` read.
+    links: [u16; NODES],
     generations: [u32; NODES],
+    /// One past the highest slot ever used; slots from here on are all free.
+    top: usize,
 }
 
 impl Default for Tree {
@@ -120,9 +129,15 @@ impl Tree {
         nodes[KERNEL as usize] = root(b"kernel");
         nodes[SYSTEM as usize] = root(b"system");
         nodes[USER as usize] = root(b"user");
+        let mut links = [FREE; NODES];
+        links[KERNEL as usize] = KERNEL;
+        links[SYSTEM as usize] = KERNEL;
+        links[USER as usize] = KERNEL;
         Tree {
             nodes,
+            links,
             generations: [1; NODES],
+            top: USER as usize + 1,
         }
     }
 
@@ -136,7 +151,7 @@ impl Tree {
 
     pub fn alive(&self, grant: GrantRef) -> bool {
         let index = usize::from(grant.node);
-        index < NODES && self.nodes[index].is_some() && self.generations[index] == grant.generation
+        index < NODES && self.links[index] != FREE && self.generations[index] == grant.generation
     }
 
     /// A slot's generation, for a lock-free copy of the tree's liveness.
@@ -152,7 +167,10 @@ impl Tree {
 
     /// Nodes in use, the roots included.
     pub fn len(&self) -> usize {
-        self.nodes.iter().filter(|n| n.is_some()).count()
+        self.links[..self.top]
+            .iter()
+            .filter(|l| **l != FREE)
+            .count()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -172,10 +190,12 @@ impl Tree {
             return Err(Error::Revoked);
         }
         let index = self
-            .nodes
+            .links
             .iter()
-            .position(Option::is_none)
+            .position(|l| *l == FREE)
             .ok_or(Error::Full)?;
+        self.links[index] = parent.node;
+        self.top = self.top.max(index + 1);
         let mut bytes = [0u8; LABEL];
         let n = label.len().min(LABEL);
         bytes[..n].copy_from_slice(&label[..n]);
@@ -215,9 +235,10 @@ impl Tree {
             if at == ancestor.node {
                 return true;
             }
-            match self.nodes[usize::from(at)] {
-                Some(n) if at != KERNEL => at = n.parent,
-                _ => return false,
+            match self.links[usize::from(at)] {
+                FREE => return false,
+                _ if at == KERNEL => return false,
+                parent => at = parent,
             }
         }
         false
@@ -236,8 +257,8 @@ impl Tree {
         }
         // Mark first, then free, so a freed parent does not hide a descendant.
         let mut doomed = [false; NODES];
-        for index in 0..NODES {
-            if self.nodes[index].is_none() {
+        for index in 0..self.top {
+            if self.links[index] == FREE {
                 continue;
             }
             let mut at = index as u16;
@@ -246,16 +267,17 @@ impl Tree {
                     doomed[index] = true;
                     break;
                 }
-                match self.nodes[usize::from(at)] {
-                    Some(n) if at > USER => at = n.parent,
+                match self.links[usize::from(at)] {
+                    parent if at > USER && parent != FREE => at = parent,
                     _ => break,
                 }
             }
         }
         let mut count = 0;
-        for (index, doomed) in doomed.iter().enumerate() {
+        for (index, doomed) in doomed[..self.top].iter().enumerate() {
             if *doomed {
                 self.nodes[index] = None;
+                self.links[index] = FREE;
                 // 0 is never a generation a reference carries.
                 self.generations[index] = self.generations[index].wrapping_add(1).max(1);
                 freed[count] = index as u16;
