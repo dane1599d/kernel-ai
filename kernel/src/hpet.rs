@@ -45,12 +45,22 @@ static LAST_TICKS: AtomicU64 = AtomicU64::new(0);
 /// the low half.
 static SPLIT_READS: AtomicU64 = AtomicU64::new(0);
 
+/// HPET register reads, each a VM exit under a hypervisor (diagnostic).
+static READS: AtomicU64 = AtomicU64::new(0);
+
+/// HPET register reads so far.
+pub fn reads() -> u64 {
+    READS.load(Ordering::Relaxed)
+}
+
 fn read(offset: u64) -> u64 {
+    READS.fetch_add(1, Ordering::Relaxed);
     // SAFETY: BASE maps the HPET register block uncached.
     unsafe { ((BASE.load(Ordering::Relaxed) + offset) as *const u64).read_volatile() }
 }
 
 fn read32(offset: u64) -> u32 {
+    READS.fetch_add(1, Ordering::Relaxed);
     // SAFETY: as in read; the register block allows 32-bit reads.
     unsafe { ((BASE.load(Ordering::Relaxed) + offset) as *const u32).read_volatile() }
 }

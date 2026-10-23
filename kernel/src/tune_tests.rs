@@ -256,6 +256,7 @@ pub fn revert_check() -> Result<(), &'static str> {
 
     // (c)
     threads::take_max_tick_gap();
+    let reads = crate::hpet::reads();
     let id = run(
         spec(PolicyKind::Classes, Preset::Firm),
         editor,
@@ -266,8 +267,9 @@ pub fn revert_check() -> Result<(), &'static str> {
     let status = finished(id)?;
     let (gap, gap_cpu) = threads::take_max_tick_gap();
     log!(
-        "tune-revert: (c) longest gap between scheduler ticks: {} us on cpu {gap_cpu}",
-        gap / 1000
+        "tune-revert: (c) longest gap between scheduler ticks: {} us on cpu {gap_cpu}; {} HPET reads in its 6 windows",
+        gap / 1000,
+        crate::hpet::reads() - reads
     );
     let pairs = sched_control::last_pairs();
     let verdict = sched::judge::judge(&pairs, 0);
