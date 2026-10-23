@@ -29,6 +29,8 @@ sha2 = "0.11.1"
 shellcore = { path = "../shellcore", features = ["grain"] }
 supervise = { path = "../supervise" }
 wasmhost = { path = "../wasmhost" }
+wit-parser = { version = "=0.262.0", default-features = false, features = ["std"] }
+semver = "1.0.28"
 
 [dev-dependencies]
 wat = "1.262.0"

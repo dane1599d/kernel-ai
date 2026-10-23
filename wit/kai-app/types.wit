@@ -1,0 +1,96 @@
+/// What apps and live components may import from the OS (ADR 0003, section 3).
+/// An app never reaches anything outside itself directly: reads are answered from
+/// the snapshot taken before the call, writes stay in the app's own scope, and
+/// everything else is a queued effect the agent core runs under its tier.
+package kai:app@0.1.0;
+
+interface types {
+    /// A rectangle in pixels, as `gfxcore::Rect`.
+    record rect {
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+    }
+
+    /// A path under the app's view of the file system (ADR 0004).
+    type path = string;
+    /// A host name, such as `www.youtube.com`.
+    type host = string;
+}
+
+interface log {
+    /// One log line, cut to 160 bytes.
+    write: func(text: string);
+    /// Called just before a panic traps: where it happened, so the fault names
+    /// the line.
+    panic: func(file: string, line: u32, column: u32);
+}
+
+interface clock {
+    /// Milliseconds since the Unix epoch, fixed for the whole call.
+    now-ms: func() -> u64;
+    /// A random seed, fixed for the whole call, so two versions given the same
+    /// call compute the same thing.
+    seed: func() -> u64;
+}
+
+interface storage {
+    /// The value under `key` in the app's own scope, as it was when the call began.
+    get: func(key: string) -> option<list<u8>>;
+    /// Sets `key`; the write commits with the call's checkpoint.
+    put: func(key: string, value: list<u8>);
+    /// Removes `key`; the removal commits with the call's checkpoint.
+    delete: func(key: string);
+}
+
+interface effects {
+    /// A call to a registry action: its name and its arguments as a WAVE record.
+    record action-call {
+        name: string,
+        args: string,
+    }
+
+    /// Something outside the app, run by the agent core after the call.
+    variant effect {
+        call(action-call),
+        notify(string),
+    }
+
+    /// Queues `e`; its ticket, which `events.on-event` reports back.
+    request: func(e: effect) -> u32;
+}
+
+interface events {
+    /// What the OS tells an app.
+    variant event {
+        /// The app started.
+        started,
+        /// A queued effect finished.
+        effect-done(effect-result),
+    }
+
+    /// The outcome of the effect with this ticket.
+    record effect-result {
+        ticket: u32,
+        outcome: result<string, string>,
+    }
+
+    on-event: func(e: event);
+}
+
+/// A live component with no UI: it logs, and implements the lifecycle.
+world component {
+    import log;
+    export kai:live/lifecycle@0.1.0;
+}
+
+/// An app. `kai:ui` joins it in P3 (ADR 0005 owns its body), as an `@since`
+/// addition. Every app world also exports an `actions` interface of its own.
+world app {
+    include component;
+    import clock;
+    import storage;
+    import effects;
+    export events;
+}

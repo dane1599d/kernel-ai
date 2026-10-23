@@ -1,0 +1,28 @@
+/// The contract every live version implements (ADR 0003, section 3): the
+/// lifecycle that `kai-lifecycle-1` bound by hand, renamed off WIT keywords.
+/// State is CBOR `[schema, body]`, at most 64 KiB, written by any version.
+package kai:live@0.1.0;
+
+interface lifecycle {
+    /// Why a version could not start from given state.
+    enum start-error {
+        /// The state's schema is one this version cannot read.
+        unsupported-schema,
+        /// The state is not valid for its schema.
+        bad-state,
+    }
+
+    /// The state schema this version reads and writes (at least 1).
+    schema: func() -> u32;
+    /// Start empty.
+    init: func() -> result<_, start-error>;
+    /// Start from `state` written under `from-schema`: this is the migration.
+    migrate: func(state: list<u8>, from-schema: u32) -> result<_, start-error>;
+    /// The state written as `to-schema` (0: its own), or none if it cannot write
+    /// that schema. Read-only.
+    save: func(to-schema: u32) -> option<list<u8>>;
+    /// 0 healthy, otherwise a reason above 0. Read-only.
+    health: func() -> u32;
+    /// 0 when the version's own checks pass. Read-only.
+    self-test: func() -> u32;
+}
