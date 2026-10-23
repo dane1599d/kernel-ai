@@ -415,7 +415,17 @@ fn run_arm(
             for task in chosen(options.limit) {
                 let clock = Instant::now();
                 let turns = task_turns(&pack, task, arm.no_think);
-                let decoded = decode(&mut loaded.engine.borrow_mut(), &grammar, &turns, seed)?;
+                // An engine error fails this task, not the run.
+                let decoded = decode(&mut loaded.engine.borrow_mut(), &grammar, &turns, seed)
+                    .unwrap_or_else(|error| Decoded {
+                        text: format!("error: {error}"),
+                        call: None,
+                        tokens: 0,
+                        forced: 0,
+                        ending: Ending::Stopped,
+                        prompt_tokens: 0,
+                        cached: 0,
+                    });
                 let ms = clock.elapsed().as_millis();
                 let decision = decoded.call.as_ref().map_or(consent::Decision::Never, |c| {
                     consent::decide(&rows, c, task.line, task.state)

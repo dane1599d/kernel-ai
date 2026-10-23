@@ -455,15 +455,23 @@ impl<'a> Engine<'a> {
         let start = block.len();
         self.tok.encode(text, block);
         let mut next = *state;
+        // The state before the last forced token, for token healing.
+        let mut before_last = next;
         for &id in &block[start..] {
             let allowed = self.ascii.binary_search(&id).is_ok();
             match grammar.advance(next, self.tok.token_bytes(id)) {
-                Ok(after) if allowed => next = after,
+                Ok(after) if allowed => (before_last, next) = (next, after),
                 _ => {
                     block.truncate(start);
                     return None;
                 }
             }
+        }
+        if grammar.heals() && !grammar.is_done(&next) {
+            // The model picks the last forced token itself, so it may take a
+            // longer one that runs on into what follows (`"/` for `"` then `/`).
+            block.pop();
+            next = before_last;
         }
         *state = next;
         for &id in &block[start..] {

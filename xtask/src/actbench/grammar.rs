@@ -182,6 +182,11 @@ fn character(ty: &Ty, mut s: Scalar, newline: bool) -> Result<Took, Stop> {
     Ok(Took::Into(s))
 }
 
+/// Whether an escape can still finish: room for one more character.
+fn escapable(ty: &Ty, s: &Scalar) -> bool {
+    character(ty, *s, false).is_ok() || (*ty == Ty::Code && character(ty, *s, true).is_ok())
+}
+
 fn scalar(ty: &Ty, s: Scalar, b: u8) -> Result<Took, Stop> {
     match ty {
         Ty::Int { min, max } => {
@@ -239,7 +244,11 @@ fn scalar(ty: &Ty, s: Scalar, b: u8) -> Result<Took, Stop> {
                 Ok(Took::Into(Scalar { stage: 2, ..s }))
             }
             b'"' => Err(Stop::Masked),
-            b'\\' if *ty != Ty::Host => Ok(Took::Into(Scalar { escape: true, ..s })),
+            // Only with room for the character it makes, or it is a dead end.
+            b'\\' if *ty != Ty::Host && escapable(ty, &s) => {
+                Ok(Took::Into(Scalar { escape: true, ..s }))
+            }
+            b'\\' => Err(Stop::Masked),
             _ if *ty == Ty::Host && !host_byte(b) => Err(Stop::Masked),
             b' '..=b'~' if b != b'\\' => character(ty, s, false),
             _ => Err(Stop::Masked),
@@ -494,6 +503,10 @@ impl Constraint for Tagged {
         }
     }
 
+    fn heals(&self) -> bool {
+        true
+    }
+
     fn need(&self, state: &State) -> usize {
         // From a whole name to the end: its closing quote leads segment 0.
         let finish = |row: usize| self.tail[row][0];
@@ -587,6 +600,14 @@ mod tests {
             "a".repeat(241)
         );
         assert_eq!(takes(&g, &long), Err(Stop::Masked));
+        // At the limit an escape could make no character: only the quote may come.
+        let full = format!(
+            r#"{{"name":"say","arguments":{{"text":"{}"#,
+            "a".repeat(240)
+        );
+        let at = takes(&g, &full).unwrap();
+        assert_eq!(g.step(at, b'\\'), Err(Stop::Masked));
+        assert!(g.step(at, b'"').is_ok());
     }
 
     #[test]

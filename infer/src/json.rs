@@ -605,6 +605,13 @@ pub trait Constraint {
     /// The fewest bytes that finish the answer from `state`.
     fn need(&self, state: &Self::State) -> usize;
 
+    /// Token healing for jump-forward: the last token of a forced run is left
+    /// to the model (under the grammar), unless the run ends the answer. Off
+    /// for a [`Shape`], so its answers stay the ones its gates recorded.
+    fn heals(&self) -> bool {
+        false
+    }
+
     /// The state after all of `bytes`, or why the first one that cannot come
     /// cannot.
     fn advance(&self, state: Self::State, bytes: &[u8]) -> Result<Self::State, Stop> {
