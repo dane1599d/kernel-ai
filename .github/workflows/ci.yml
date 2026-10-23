@@ -28,6 +28,12 @@ jobs:
         run: rustup target add wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
+      - name: Dependency licences and advisories (deny.toml, ADR 0009 D6)
+        run: |
+          cargo install --locked cargo-deny --version 0.20.2
+          cargo deny check licenses advisories
+      - name: Every licence in the tree and graph is allowed and has its text (ADR 0009 D5)
+        run: cargo xtask licences check
       - run: cargo clippy -p agentabi -p xtask -p captable -p gguf -p cpufeat -p quant -p bpe -p infer -p linetable -p mm -p netcore -p nvme -p xhci -p acpitables -p sched -p llmproto -p kabi -p supervise -p uelf -p shellcore -p livecore -p editcore -p gfxcore -p termcore -p wasmhost -p compsdk -p comp-notes -p comp-notes-v1 -p comp-notes-bad --all-targets --features linetable/alloc -- -D warnings
       - run: cargo clippy -p kernel --target x86_64-unknown-none --features spikes -- -D warnings
       - name: Clippy for the engine crates on the soft-float kernel target
