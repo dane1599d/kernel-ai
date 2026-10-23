@@ -38,4 +38,6 @@ processes() -> [#{pid: int, name: string}]  // the running services
 threads() -> #{switches: int, ejections: int, migrations: int}  // scheduler counters since boot
 get_policy() -> Policy  // the scheduling policy
 set_policy(name: Policy) [undo]  // every CPU
-tune(intent: string) [ask]  // the model proposes a policy trial; the user keeps or undoes it
+tune(target: string?, intent: string?) [ask]  // proposes a scheduler trial for a process
+tune_undo() [undo]  // puts back the policy a kept trial replaced
+component_revert(component: string, back: int 1..6?) [undo]  // a live component back n versions

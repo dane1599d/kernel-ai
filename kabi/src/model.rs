@@ -57,17 +57,18 @@ pub const fn table_pages(len: u64) -> u64 {
     len.div_ceil(1 << 30) + 1
 }
 
-/// Positions of context the llm service's engine holds at most: room for the
-/// script system prompt (about 650 Qwen tokens), a request and a whole answer of
-/// `llmproto::script::SCRIPT_MAX_TOKENS`, or a repair round of a script of a
-/// few hundred tokens. Repairing a script near the 3 KiB limit can fill it; the
-/// shell is then told so.
-pub const CONTEXT_CAP: usize = 2048;
+/// Positions of context the llm service's engine holds at most (ADR 0010 §4,
+/// decided 2026-10-22): the pack and its MODE turn (at most 1,024 tokens; today's
+/// script prompt is 1,071 with its template, S10-0), conversation memory (at
+/// most 512), the State line (64), a request (160) and a whole answer of
+/// `llmproto::script::SCRIPT_MAX_TOKENS` (1,024). A repair round of a script
+/// near the 3 KiB limit can still fill it; the shell is then told so.
+pub const CONTEXT_CAP: usize = 3072;
 /// Bytes the engine's f16 KV cache may take (L6): [`CONTEXT_CAP`] positions of
-/// Qwen3-4B (36 layers of 1,024 keys and 1,024 values), 288 MiB; the 0.6B and
-/// 1.7B (28 such layers) take 224 MiB. A model that needs more per position gets
-/// fewer positions.
-pub const KV_BYTES: u64 = 288 << 20;
+/// Qwen3-4B (36 layers of 1,024 keys and 1,024 values, 144 KiB a position),
+/// 432 MiB; the 0.6B and 1.7B (28 such layers) take 336 MiB. A model that needs
+/// more per position gets fewer positions.
+pub const KV_BYTES: u64 = 432 << 20;
 /// Bytes for everything else the engine sizes from the file: the tokenizer while
 /// it is built, the logits, the RoPE table, one prefill block's scratch vectors
 /// and the attention heads' scratch. The engine refuses a file whose header says

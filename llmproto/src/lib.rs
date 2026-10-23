@@ -15,6 +15,7 @@ pub mod http;
 #[cfg(any(feature = "local", test))]
 pub mod local;
 pub mod openai;
+pub mod pack;
 pub mod script;
 pub mod text;
 pub mod tune;
