@@ -1,6 +1,6 @@
-//! The boot drive: the ESP with Limine, the kernel and its modules.
+//! The boot drive: the ESP with Limine, the kernel and its modules, and `NOTICES.txt`.
 
-use crate::{lines, strip};
+use crate::{lines, notices, strip};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -80,7 +80,16 @@ pub fn make_esp(
     }
     let paths: Vec<&str> = modules.iter().map(|m| m.path.as_str()).collect();
     fs::write(limine_dir.join("limine.conf"), limine_conf(cmdline, &paths))
-        .map_err(|e| format!("cannot write limine.conf: {e}"))
+        .map_err(|e| format!("cannot write limine.conf: {e}"))?;
+    // The notices the image owes (ADR 0009 D6), under a line naming this build.
+    let root = crate::workspace_root();
+    let text = fs::read_to_string(root.join(notices::FILE))
+        .map_err(|e| format!("cannot read {}: {e}", notices::FILE))?;
+    fs::write(
+        esp.join(notices::FILE),
+        notices::image_line(&root) + text.replace("\r\n", "\n").as_str(),
+    )
+    .map_err(|e| format!("cannot write {}: {e}", notices::FILE))
 }
 
 /// The commit the kernel is built from, for its banner: the short hash, and

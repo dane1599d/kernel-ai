@@ -189,7 +189,7 @@ expose kai:notes/actions@1.0
 - **Denials are harder to debug** than a named permission. `handle_info`, a `grants` command, and `show`/`why` listing "could: read processes; set the scheduling policy (undo)" are part of the work.
 - **Slots.** `scriptrun` and one process per app use process slots. [ADR 0003](0003-app-model.md) raises `MAX_PROCESSES` from 16 (kernel/src/process/mod.rs:54) to 64; S01-1 M5 reports the memory cost. Linux programs keep their file descriptors inside the guest (ADR 0006), so the `vmm` needs few handles.
 - **Revocation is new code with no proof.** Zircon has no revoke call and seL4's is GPL. `captable` carries property tests (rights never grow; a revoked or stale value never resolves) and loom-style interleaving tests. A server that ignores revoke notices gets no more calls through dead handles, and a boot case kills one that keeps using them.
-- **decisions.md rows.** :79 ("A coarse capability set") is superseded; :78 ("Minimal for LLM-written scripts") is met by request nodes; :71 ("ring 3 never chooses a destination") is generalised by `NetDest`. The Tock and cap-std ports rest on [ADR 0009](0009-licence.md) replacing :52 ("Borrow ideas only, clean-room") and are listed in docs/third-party-notices.md.
+- **decisions.md rows.** :79 ("A coarse capability set") is superseded; :78 ("Minimal for LLM-written scripts") is met by request nodes; :71 ("ring 3 never chooses a destination") is generalised by `NetDest`. The Tock and cap-std ports rest on [ADR 0009](0009-licence.md) replacing :52 ("Borrow ideas only, clean-room") and are listed in `xtask/notices.json`, which `NOTICES.txt` is made from.
 
 ## What it costs to change later
 

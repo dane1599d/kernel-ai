@@ -1,0 +1,41 @@
+{
+  "parts": [
+    {
+      "name": "core and alloc",
+      "version": "rust-src of the pinned toolchain",
+      "licence": "MIT OR Apache-2.0",
+      "copyright": ["Copyright (c) The Rust Project Contributors"],
+      "in": "the kernel, the ring-3 programs and the components"
+    },
+    {
+      "name": "compiler_builtins",
+      "version": "rust-src of the pinned toolchain",
+      "licence": "MIT AND Apache-2.0 WITH LLVM-exception AND (MIT OR Apache-2.0)",
+      "copyright": ["Copyright (c) The Rust Project Contributors", "Copyright (c) LLVM Project contributors"],
+      "in": "the kernel, the ring-3 programs and the components"
+    },
+    {
+      "name": "Limine",
+      "version": "12.9.3",
+      "licence": "BSD-2-Clause",
+      "copyright": [],
+      "in": "EFI/BOOT/BOOTX64.EFI",
+      "verbatim": ["LICENSE", "3RDPARTY.md"]
+    },
+    {
+      "name": "Noto Sans Mono",
+      "version": "as rasterised by noto-sans-mono-bitmap 0.3.2",
+      "licence": "OFL-1.1",
+      "crate": "noto-sans-mono-bitmap",
+      "copyright": ["Copyright 2022 The Noto Project Authors (https://github.com/notofonts/latin-greek-cyrillic)"],
+      "in": "the console glyphs in the kernel"
+    },
+    {
+      "name": "Unicode Character Database",
+      "version": "16.0",
+      "licence": "Unicode-3.0",
+      "copyright": ["Copyright (c) 1991-2024 Unicode, Inc."],
+      "in": "the table in bpe/src/marks.rs"
+    }
+  ]
+}

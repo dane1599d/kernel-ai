@@ -16,6 +16,7 @@
 //! cargo xtask doctor   (can this PC run Kernel AI in an accelerated VM, and what to fix; read-only)
 //! cargo xtask vbox [--start [--headless]]   (the VirtualBox VM "Kernel AI"; see vbox/mod.rs)
 //! cargo xtask licences check   (every licence in the tree and the dependency graph is allowed and has its text; see licences.rs)
+//! cargo xtask notices [--check]   (writes or checks NOTICES.txt, the third-party notices the image carries; see notices.rs)
 //!
 //! `test` boots the kernel headless once per test case (boot and memory checks,
 //! page fault, double fault, write-protect, stack overflow, 60 s timer, keyboard,
@@ -47,6 +48,7 @@ mod local_script;
 mod mock_dns;
 mod mock_llm;
 mod models;
+mod notices;
 mod options;
 mod qemu;
 mod screen;
@@ -66,7 +68,7 @@ use std::process::{Command, ExitCode, Stdio};
 
 use std::{env, fs};
 
-const LIMINE_VERSION: &str = "12.9.3";
+pub(crate) const LIMINE_VERSION: &str = "12.9.3";
 const LIMINE_SHA256: &str = "9f42fe9ea2e84d71056529969b1d5c24ba9a2287ffcc01bcce58b0ef8aa98b1d";
 pub(crate) const KERNEL_TARGET: &str = "x86_64-unknown-none";
 
@@ -81,6 +83,7 @@ fn main() -> ExitCode {
         Some("doctor") => doctor::main(&args[1..]),
         Some("vbox") => vbox::main(&args[1..]),
         Some("licences") => licences::main(&args[1..]),
+        Some("notices") => notices::main(&args[1..]),
         _ => parse_args(&args).and_then(|options| execute(&options)),
     };
     match result {
@@ -400,7 +403,7 @@ fn tar_program() -> &'static str {
     }
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
         .iter()
         .map(|b| format!("{b:02x}"))
