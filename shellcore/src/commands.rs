@@ -84,7 +84,12 @@ fn help() -> String {
         let _ = writeln!(text, "{name:<8} {what}");
     }
     text.push_str("Anything else is Rhai: let x = 6; fn sq(n) { n * n }; sq(x).\n");
-    text.push_str("Functions see only their parameters. `reset` clears everything.");
+    text.push_str("Functions see only their parameters. `reset` clears everything.\n");
+    // From the action registry, as the AI's scripts see them.
+    text.push_str("The AI's scripts can call:");
+    for row in agentabi::SCRIPT_API.iter().chain(&agentabi::HELPERS) {
+        let _ = write!(text, "\n  {}: {}", row.signature(), row.doc);
+    }
     text
 }
 

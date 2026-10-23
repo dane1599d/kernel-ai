@@ -29,7 +29,8 @@ fn envelope(script: &str, summary: &str) -> String {
 fn the_prompt_lists_every_function_and_never_changes() {
     let prompt = system_prompt();
     for function in API {
-        assert!(prompt.contains(function.signature), "{}", function.name);
+        let signature = function.signature().to_string();
+        assert!(prompt.contains(&signature), "{}", function.name);
     }
     assert_eq!(prompt, system_prompt());
     assert!(prompt.len() < 4000, "prompt is {} bytes", prompt.len());

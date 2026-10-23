@@ -117,7 +117,7 @@ const CALLS: &[(&str, &str, &str)] = &[("set_policy", "set_policy(\"rr\");", "ch
 
 #[test]
 fn every_run_tier_change_records_how_to_undo_it() {
-    let changes = API.iter().filter(|f| f.effect == Effect::Change);
+    let changes = API.iter().filter(|f| f.effect() == Effect::Change);
     for function in changes.filter(|f| tiers::of(TIERS, f.name) == Tier::Run) {
         let (_, call, request) = CALLS
             .iter()
@@ -378,4 +378,36 @@ fn a_never_tier_function_is_refused_and_sent_back_once() {
         Reply::err("gave up after one repair: set_policy may not be used in scripts here")
     );
     assert_eq!(host.policy.get(), None);
+}
+
+/// #15's table (`shellcore/src/tiers.rs` on main at 57d7120), now generated from
+/// the action registry with the same tiers.
+#[test]
+fn the_generated_tier_table_is_the_seamless_actions_one() {
+    let before = [
+        ("cpus", Tier::Run),
+        ("memory", Tier::Run),
+        ("uptime_ms", Tier::Run),
+        ("processes", Tier::Run),
+        ("threads", Tier::Run),
+        ("get_policy", Tier::Run),
+        ("set_policy", Tier::Run),
+        ("fixed", Tier::Run),
+        ("floor", Tier::Run),
+    ];
+    assert_eq!(TIERS, before);
+    assert_eq!(HELPERS, ["fixed", "floor"]);
+}
+
+#[test]
+fn every_script_api_row_has_a_binding_and_help_lists_it() {
+    let host = FakeHost::new();
+    let shared: Rc<dyn Host> = host.clone();
+    assert!(crate::script::unbound(&shared).is_empty());
+    let mut shell = shell(&host);
+    let help = shell.eval("help").text;
+    for row in API {
+        let signature = alloc::format!("{}: {}", row.signature(), row.doc);
+        assert!(help.contains(&signature), "{signature}");
+    }
 }

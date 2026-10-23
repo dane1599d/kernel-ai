@@ -11,6 +11,7 @@ publish = false
 local = ["dep:infer"]
 
 [dependencies]
+agentabi = { path = "../agentabi" }
 infer = { path = "../infer", optional = true }
 sched = { path = "../sched" }
 serde = { version = "1.0.229", default-features = false, features = ["alloc", "derive"] }
