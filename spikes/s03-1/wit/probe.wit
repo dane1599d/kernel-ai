@@ -1,0 +1,64 @@
+/// Spike S03-1's probe: one function per part of the canonical-ABI subset
+/// `appabi` covers, nested two levels, and one resource with own and borrow.
+package kai:probe@0.1.0;
+
+interface api {
+    enum color { red, green, blue }
+
+    flags perms { read, write, exec, admin }
+
+    record point { x: s32, y: s32 }
+
+    /// Nested two levels: a record holding a list of records and an enum.
+    record shape {
+        name: string,
+        corners: list<point>,
+        color: color,
+        tag: option<string>,
+    }
+
+    variant value {
+        none,
+        int(s64),
+        real(f64),
+        text(string),
+        pt(point),
+    }
+
+    resource counter {
+        constructor(start: u32);
+        add: func(n: u32) -> u32;
+        get: func() -> u32;
+    }
+
+    f-bool: func(a: bool) -> bool;
+    f-u8: func(a: u8, b: u8) -> u8;
+    f-s16: func(a: s16) -> s16;
+    f-u32: func(a: u32, b: u32) -> u32;
+    f-s64: func(a: s64) -> s64;
+    f-u64: func(a: u64) -> u64;
+    f-f32: func(a: f32) -> f32;
+    f-f64: func(a: f64, b: f64) -> f64;
+    f-char: func(c: char) -> char;
+    f-string: func(s: string) -> string;
+    f-bytes: func(b: list<u8>) -> list<u8>;
+    f-strings: func(l: list<string>) -> list<string>;
+    f-record: func(p: point) -> point;
+    f-tuple: func(t: tuple<u8, string, s64>) -> tuple<s64, string, u8>;
+    f-variant: func(v: value) -> value;
+    f-enum: func(c: color) -> color;
+    f-option: func(o: option<string>) -> option<u32>;
+    f-result: func(r: result<u32, string>) -> result<string, u32>;
+    f-flags: func(p: perms) -> perms;
+    f-shape: func(s: shape) -> shape;
+    f-shapes: func(l: list<shape>) -> list<u32>;
+    /// More than 16 flat parameters, so they go through memory.
+    f-many: func(a: u8, b: u16, c: u32, d: u64, e: s8, f: s16, g: s32, h: s64, i: f32, j: f64, k: char, l: bool, m: string, n: point, o: point, p: u32) -> u64;
+    make-counter: func(start: u32) -> counter;
+    peek: func(c: borrow<counter>) -> u32;
+    consume: func(c: counter) -> u32;
+}
+
+world probe {
+    export api;
+}

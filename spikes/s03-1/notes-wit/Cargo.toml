@@ -1,0 +1,27 @@
+[package]
+name = "notes-wit"
+version = "0.0.0"
+edition = "2024"
+license = "MPL-2.0"
+publish = false
+
+# Today's notes logic bound by wit-bindgen instead of by hand: S03-1's size
+# measure. Built alone for wasm32-unknown-unknown by the oracle tests.
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+comp-notes = { path = "../../../components/notes", default-features = false }
+compsdk = { path = "../../../compsdk" }
+wit-bindgen = { version = "=0.63.0", default-features = false, features = ["macros", "realloc"] }
+
+# The same settings as the workspace's `component` profile, which builds notes.
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+debug = false
+strip = "debuginfo"
+panic = "abort"

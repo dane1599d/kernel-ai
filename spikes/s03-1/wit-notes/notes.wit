@@ -1,0 +1,13 @@
+/// Today's notes requests on `kai:app/component`, for S03-1's size and string
+/// measures. `deps/` holds copies of `wit/kai-live` and `wit/kai-app` from #40.
+package kai:probe-notes@0.1.0;
+
+interface requests {
+    /// Answers one request with `ok ...` or `err ...`, as `kai_handle` does.
+    handle: func(request: string) -> string;
+}
+
+world notes {
+    include kai:app/component@0.1.0;
+    export requests;
+}
