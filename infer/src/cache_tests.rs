@@ -224,7 +224,7 @@ fn jump_forward_forces_the_opening_and_closing_literals() {
 
 /// Checks the cache holds a key and value per token behind it, the ones the model
 /// gives those tokens from an empty cache, bit for bit.
-fn assert_cache_holds_its_tokens(bytes: &[u8], tier: Tier, engine: &Engine<'_>) {
+pub(crate) fn assert_cache_holds_its_tokens(bytes: &[u8], tier: Tier, engine: &Engine<'_>) {
     let (tokens, kv) = engine.cache();
     assert_eq!(tokens.len(), kv.len());
     let Some(last) = tokens.len().checked_sub(1) else {

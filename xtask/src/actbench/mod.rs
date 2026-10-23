@@ -79,6 +79,11 @@ struct Arm {
     kind: Kind,
     rows: usize,
     no_think: bool,
+    /// `+rules`: the M8 prompt's Rhai rules as the card.
+    rules: bool,
+    /// `+m8script`: a `script` call's code comes from today's script prompt
+    /// and envelope (the plan's fallback for M8-style requests).
+    m8script: bool,
 }
 
 impl Arm {
@@ -89,6 +94,8 @@ impl Arm {
                     kind: Kind::M8,
                     rows: 40,
                     no_think: true,
+                    rules: false,
+                    m8script: false,
                 });
             }
             "m8-a0" => {
@@ -96,6 +103,8 @@ impl Arm {
                     kind: Kind::M8,
                     rows: 40,
                     no_think: false,
+                    rules: false,
+                    m8script: false,
                 });
             }
             _ => {}
@@ -110,6 +119,16 @@ impl Arm {
             Some(arm) => (arm, true),
             None => (text, false),
         };
+        let (mut text, mut rules, mut m8script) = (text, false, false);
+        loop {
+            if let Some(arm) = text.strip_suffix("+rules") {
+                (text, rules) = (arm, true);
+            } else if let Some(arm) = text.strip_suffix("+m8script") {
+                (text, m8script) = (arm, true);
+            } else {
+                break;
+            }
+        }
         let format = Format::parse(text).ok_or(format!(
             "unknown arm {text}: dsl-1, hermes-1, prose-1, m8 or m8-a0"
         ))?;
@@ -117,6 +136,8 @@ impl Arm {
             kind: Kind::Tagged(format),
             rows,
             no_think,
+            rules,
+            m8script,
         })
     }
 
@@ -125,8 +146,10 @@ impl Arm {
             Kind::M8 if self.no_think => "m8".into(),
             Kind::M8 => "m8-a0".into(),
             Kind::Tagged(format) => format!(
-                "{}{}@{}",
+                "{}{}{}{}@{}",
                 format.name(),
+                if self.rules { "+rules" } else { "" },
+                if self.m8script { "+m8script" } else { "" },
                 if self.no_think { ":no-think" } else { "" },
                 self.rows
             ),
@@ -143,13 +166,15 @@ struct Options {
     /// Run only the first this many tasks of each category (and of the M8 50).
     limit: Option<usize>,
     m8: bool,
+    /// Only the M8 tasks, for an arm that changes only the script path.
+    only_m8: bool,
 }
 
 fn parse(args: &[String]) -> Result<Options, String> {
     let (mut id, mut store, mut limit) = (None, None, None);
     let mut arms = vec![Arm::parse("dsl-1")?];
     let mut seeds = SEEDS.to_vec();
-    let mut m8 = true;
+    let (mut m8, mut only_m8) = (true, false);
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
         let mut value = |what: &str| rest.next().cloned().ok_or(format!("{arg} expects {what}"));
@@ -176,6 +201,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
                 );
             }
             "--no-m8" => m8 = false,
+            "--only-m8" => only_m8 = true,
             other => return Err(format!("unknown actbench option {other}")),
         }
     }
@@ -186,6 +212,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         seeds,
         limit,
         m8,
+        only_m8,
     })
 }
 
@@ -388,7 +415,7 @@ fn run_arm(
             ))
         }
         Kind::Tagged(format) => {
-            let pack = render::pack(format, &rows);
+            let pack = render::pack_card(format, &rows, arm.rules);
             let mut ids = Vec::new();
             loaded.tokenizer.encode(&pack, &mut ids);
             header["format"] = json!(format.name());
@@ -402,7 +429,7 @@ fn run_arm(
                 ids.len(),
                 header["pack_id"]
             );
-            let grammar = Rc::new(Tagged::new(&rows));
+            let grammar = Rc::new(grammar::tagged(&rows));
             let clock = Instant::now();
             let base = base_turns(&pack);
             let warm: Vec<Turn<'_>> = base.iter().map(|(r, t)| Turn::new(*r, t)).collect();
@@ -412,7 +439,12 @@ fn run_arm(
                     .borrow_mut()
                     .reply(&warm, 1, &mut Sampler::greedy(), None, |_| Next::Continue);
             header["cold_prefill_ms"] = json!(clock.elapsed().as_millis());
-            for task in chosen(options.limit) {
+            let tasks = if options.only_m8 {
+                Vec::new()
+            } else {
+                chosen(options.limit)
+            };
+            for task in tasks {
                 let clock = Instant::now();
                 let turns = task_turns(&pack, task, arm.no_think);
                 // An engine error fails this task, not the run.
@@ -456,8 +488,9 @@ fn run_arm(
                 let m8_rows = registry::m8_rows();
                 let tagging = Rc::new(m8::Tagging {
                     engine: loaded.engine.clone(),
-                    grammar: Rc::new(Tagged::new(&m8_rows)),
-                    pack: Rc::new(render::pack(format, &m8_rows)),
+                    grammar: Rc::new(grammar::tagged(&m8_rows)),
+                    pack: Rc::new(render::pack_card(format, &m8_rows, arm.rules)),
+                    m8script: arm.m8script,
                     seed,
                     no_think: arm.no_think,
                 });
@@ -471,6 +504,7 @@ fn run_arm(
     };
     let gates = match arm.kind {
         Kind::M8 => score::gates(&[], m8).split_off(7),
+        Kind::Tagged(_) if options.only_m8 => score::gates(&[], m8).split_off(7),
         Kind::Tagged(_) => score::gates(&scored, m8),
     };
     let categories: serde_json::Map<String, Value> = Cat::ALL
@@ -619,6 +653,13 @@ mod tests {
         assert!(parse(&args("--local q --arm dsl-2")).is_err());
         assert!(parse(&args("--local q --arm dsl-1@60")).is_err());
         assert_eq!(parse(&args("--local q")).unwrap().seeds, SEEDS);
+        let o = parse(&args(
+            "--local q --arm dsl-1+rules,dsl-1+m8script@80 --only-m8",
+        ))
+        .unwrap();
+        let labels: Vec<String> = o.arms.iter().map(Arm::label).collect();
+        assert_eq!(labels, ["dsl-1+rules@40", "dsl-1+m8script@80"]);
+        assert!(o.only_m8 && o.arms[0].rules && o.arms[1].m8script);
     }
 
     #[test]
@@ -654,7 +695,7 @@ mod tests {
         let bytes: &'static [u8] = Box::leak(bytes.into_boxed_slice());
         let loaded = load(bytes, "fixture").unwrap();
         let rows = registry::rows(40);
-        let grammar = Tagged::new(&rows);
+        let grammar = grammar::tagged(&rows);
         let pack = render::pack(Format::Dsl1, &rows);
         let task = &TASKS[0];
         let turns = task_turns(&pack, task, false);

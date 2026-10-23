@@ -5,9 +5,11 @@
 # engine for the arms and seeds asked for, and uploads each run's jsonl (headed
 # by its pack_id). One job at a time, started by hand only: Actions tab, "Action
 # accuracy on the real model", Run workflow; or, before this file is on main, by
-# adding the label `actbench` to a pull request, which runs S02-1's full set as
-# three jobs: dsl-1 and hermes-1 at seeds 42, 1 and 2, then A0 (dsl-1:no-think),
-# prose-1 and the 80-row scale at seed 42.
+# adding the label `actbench` to a pull request, which runs the matrix below:
+# today task 6's choice for the M8 tasks, dsl-1 with the M8 prompt's Rhai rules
+# (`+rules`, every task) against script calls written by today's prompt
+# (`+m8script`, the M8 tasks only), at seeds 42, 1 and 2. S02-1's full set was
+# dsl-1 and hermes-1 at three seeds, then dsl-1:no-think, prose-1 and dsl-1@80.
 # The run reports; task 18 turns it into a gate that fails the job.
 name: Action accuracy on the real model
 
@@ -45,7 +47,7 @@ jobs:
       fail-fast: false
       max-parallel: 3
       matrix:
-        include: ${{ fromJSON(github.event_name == 'workflow_dispatch' && format('[{{"arms":"{0}","seeds":"{1}"}}]', inputs.arms, inputs.seeds) || '[{"arms":"dsl-1","seeds":"42,1,2"},{"arms":"hermes-1","seeds":"42,1,2"},{"arms":"dsl-1:no-think,prose-1,dsl-1@80","seeds":"42"}]') }}
+        include: ${{ fromJSON(github.event_name == 'workflow_dispatch' && format('[{{"arms":"{0}","seeds":"{1}","extra":""}}]', inputs.arms, inputs.seeds) || '[{"arms":"dsl-1+rules","seeds":"42,1,2","extra":""},{"arms":"dsl-1+m8script","seeds":"42,1,2","extra":"--only-m8"}]') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 240
     steps:
@@ -89,10 +91,12 @@ jobs:
           KAI_MODELS: ${{ runner.temp }}/kai-models
           ARMS: ${{ matrix.arms }}
           SEEDS: ${{ matrix.seeds }}
+          EXTRA: ${{ matrix.extra }}
           LIMIT: ${{ inputs.limit }}
         run: |
           set -- --local "$MODEL_ID" --arm "$ARMS" --seed "$SEEDS"
           if [ -n "$LIMIT" ]; then set -- "$@" --limit "$LIMIT"; fi
+          if [ -n "$EXTRA" ]; then set -- "$@" $EXTRA; fi
           cargo xtask actbench "$@"
       - name: Upload the runs
         if: always()
