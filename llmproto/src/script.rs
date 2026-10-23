@@ -35,66 +35,14 @@ pub const TEMPERATURE: f32 = 0.2;
 pub const SEED: u64 = 42;
 
 /// Whether calling a function only reads the system or changes it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Effect {
-    Read,
-    Change,
-}
+pub use agentabi::Effect;
 
-/// One function LLM-written scripts may call.
-#[derive(Clone, Copy, Debug)]
-pub struct ApiFn {
-    pub name: &'static str,
-    pub signature: &'static str,
-    pub effect: Effect,
-    pub doc: &'static str,
-}
+/// One function LLM-written scripts may call: a row of the action registry.
+pub type ApiFn = agentabi::Action;
 
-/// Every function an LLM-written script may call; each has one arity and one effect.
-pub const API: &[ApiFn] = &[
-    ApiFn {
-        name: "cpus",
-        signature: "cpus() -> int",
-        effect: Effect::Read,
-        doc: "number of CPUs online",
-    },
-    ApiFn {
-        name: "memory",
-        signature: "memory() -> #{free_mib: int, total_mib: int, heap_kib: int}",
-        effect: Effect::Read,
-        doc: "free and total memory in MiB, and the kernel heap in use in KiB",
-    },
-    ApiFn {
-        name: "uptime_ms",
-        signature: "uptime_ms() -> int",
-        effect: Effect::Read,
-        doc: "milliseconds since boot (1000 ms is 1 s)",
-    },
-    ApiFn {
-        name: "processes",
-        signature: "processes() -> [#{pid: int, name: string}]",
-        effect: Effect::Read,
-        doc: "the running services",
-    },
-    ApiFn {
-        name: "threads",
-        signature: "threads() -> #{switches: int, ejections: int, migrations: int}",
-        effect: Effect::Read,
-        doc: "scheduler counters since boot",
-    },
-    ApiFn {
-        name: "get_policy",
-        signature: "get_policy() -> string",
-        effect: Effect::Read,
-        doc: "the scheduling policy, \"interactive\" or \"round-robin\"",
-    },
-    ApiFn {
-        name: "set_policy",
-        signature: "set_policy(name: string)",
-        effect: Effect::Change,
-        doc: "switches every CPU to \"interactive\" or \"round-robin\"",
-    },
-];
+/// Every function an LLM-written script may call, generated from the action
+/// registry (`agentabi::SCRIPT_API`); each has one arity and one effect.
+pub const API: &[ApiFn] = &agentabi::SCRIPT_API;
 
 /// Worked examples shown to the model: (request, script, summary).
 const EXAMPLES: &[(&str, &str, &str)] = &[
@@ -166,7 +114,7 @@ pub fn system_prompt() -> String {
          Functions:\n",
     );
     for function in API {
-        let _ = writeln!(prompt, "- {}: {}", function.signature, function.doc);
+        let _ = writeln!(prompt, "- {}: {}", function.signature(), function.doc);
     }
     prompt.push_str("\nExamples:\n");
     for (request, script, summary) in EXAMPLES {

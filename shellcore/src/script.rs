@@ -56,10 +56,29 @@ fn policy_name(id: u64) -> &'static str {
     }
 }
 
-/// Registers the API functions in `granted` on `engine`, backed by `host`. Each
-/// change goes into `journal` with how to undo it.
+/// Registers the registry's script API rows named in `granted` on `engine`, backed
+/// by `host`. Each change goes into `journal` with how to undo it.
 fn register(engine: &mut Engine, host: &Rc<dyn Host>, granted: &[&'static str], journal: &Journal) {
-    for &name in granted {
+    for row in API.iter().filter(|row| granted.contains(&row.name)) {
+        bind(engine, row.name, host, journal);
+    }
+}
+
+/// The script API rows the shell has no binding for, tried on a bare engine; the
+/// tests keep it empty.
+pub fn unbound(host: &Rc<dyn Host>) -> Vec<&'static str> {
+    let mut engine = Engine::new_raw();
+    let journal = Journal::default();
+    API.iter()
+        .map(|row| row.name)
+        .filter(|&name| !bind(&mut engine, name, host, &journal))
+        .collect()
+}
+
+/// Binds the script API row `name`, with the arguments and result its row declares;
+/// false if the shell has no implementation for it.
+fn bind(engine: &mut Engine, name: &'static str, host: &Rc<dyn Host>, journal: &Journal) -> bool {
+    {
         let h = Rc::clone(host);
         match name {
             "cpus" => {
@@ -147,9 +166,10 @@ fn register(engine: &mut Engine, host: &Rc<dyn Host>, granted: &[&'static str], 
                     Ok(())
                 });
             }
-            _ => {}
+            _ => return false,
         }
     }
+    true
 }
 
 /// Most decimals [`fixed`] writes.
@@ -173,8 +193,19 @@ fn fixed(n: INT, places: INT) -> RhaiResult<String> {
 }
 
 /// The pure functions every strict engine has besides the OS functions it is
-/// granted. They touch nothing, so they are run-tier rows in `tiers::TIERS`.
-pub const HELPERS: &[&str] = &["floor", "fixed"];
+/// granted, from the registry's helper rows. They touch nothing, so they are
+/// run-tier rows in `tiers::TIERS`.
+pub const HELPERS: &[&str] = &helper_names();
+
+const fn helper_names() -> [&'static str; agentabi::HELPERS.len()] {
+    let mut out = [""; agentabi::HELPERS.len()];
+    let mut i = 0;
+    while i < out.len() {
+        out[i] = agentabi::HELPERS[i].name;
+        i += 1;
+    }
+    out
+}
 
 /// The strict engine for LLM-written scripts, with only `granted` OS functions.
 fn strict(
@@ -194,8 +225,8 @@ fn strict(
     }
     // Numbers are integers only, so rounding one down leaves it as it is; models
     // write `floor` for "rounded down" all the same. Both are in `HELPERS`.
-    engine.register_fn("floor", |x: INT| x);
-    engine.register_fn("fixed", fixed);
+    engine.register_fn(agentabi::FLOOR.name, |x: INT| x);
+    engine.register_fn(agentabi::FIXED.name, fixed);
     register(&mut engine, host, granted, journal);
     engine
 }
@@ -209,7 +240,7 @@ pub fn names_in(script: &str) -> (Vec<&'static str>, Vec<&'static str>) {
     let used = |f: &&ApiFn| words.contains(&f.name);
     let pick = |effect| {
         API.iter()
-            .filter(|f| f.effect == effect)
+            .filter(|f| f.effect() == effect)
             .filter(used)
             .map(|f| f.name)
             .collect()

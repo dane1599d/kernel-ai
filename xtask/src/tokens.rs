@@ -133,7 +133,7 @@ pub fn report(tok: &Tokenizer, chat: &Chat) -> String {
         api.part(
             tok,
             &format!("`{}`", function.name),
-            &format!("- {}: {}\n", function.signature, function.doc),
+            &format!("- {}: {}\n", function.signature(), function.doc),
         );
     }
     out.push_str(&api.text);

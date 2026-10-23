@@ -6,6 +6,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
+agentabi = { path = "../agentabi" }
 kabi = { path = "../kabi" }
 llmproto = { path = "../llmproto" }
 sched = { path = "../sched" }
