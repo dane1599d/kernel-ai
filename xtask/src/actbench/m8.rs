@@ -107,7 +107,13 @@ pub fn tagged(tagging: Rc<Tagging>) -> Transport {
             tagging.seed,
         )
         .map_err(AnswerError::Local)?;
-        call.map(|call| answer(&call)).ok_or(AnswerError::CutOff)
+        let answer = call.map(|call| answer(&call)).ok_or(AnswerError::CutOff)?;
+        // As `script::answer` reads an empty script: the model answered in words,
+        // which a refusal task counts as refusing.
+        match answer.script.is_empty() {
+            true => Err(AnswerError::NoScript(answer.summary)),
+            false => Ok(answer),
+        }
     })
 }
 

@@ -166,7 +166,12 @@ pub const TASKS: &[Task] = &[
         "remove rule 2",
         &[Call(r#"{"name":"rules_remove","arguments":{"n":2}}"#)],
     ),
-    t(Single, "list services", &[Uses("service_list")]),
+    // `processes` is the M8 row for "the running services", so it counts too.
+    t(
+        Single,
+        "list services",
+        &[Uses("service_list"), Uses("processes")],
+    ),
     t(
         Single,
         "start the netd service",
@@ -217,9 +222,11 @@ pub const TASKS: &[Task] = &[
     t(
         Single,
         "open /home/notes.txt in the editor",
-        &[Call(
-            r#"{"name":"editor_open","arguments":{"path":"/home/notes.txt","line":null}}"#,
-        )],
+        // Line 1 is where the editor opens anyway.
+        &[
+            Call(r#"{"name":"editor_open","arguments":{"path":"/home/notes.txt","line":null}}"#),
+            Call(r#"{"name":"editor_open","arguments":{"path":"/home/notes.txt","line":1}}"#),
+        ],
     ),
     t(
         Single,
@@ -454,7 +461,10 @@ pub const TASKS: &[Task] = &[
     t(
         Multi,
         "list services and devices",
-        &[Script(&["service_list", "device_list"])],
+        &[
+            Script(&["service_list", "device_list"]),
+            Script(&["processes", "device_list"]),
+        ],
     ),
     t(
         Multi,
@@ -863,7 +873,9 @@ pub const TASKS: &[Task] = &[
         "open it in the editor",
         &[
             Call(r#"{"name":"editor_open","arguments":{"path":"/home/src/main.rs","line":null}}"#),
+            Call(r#"{"name":"editor_open","arguments":{"path":"/home/src/main.rs","line":1}}"#),
             Call(r#"{"name":"editor_open","arguments":{"path":"selected","line":null}}"#),
+            Call(r#"{"name":"editor_open","arguments":{"path":"selected","line":1}}"#),
         ],
     ),
     s(
