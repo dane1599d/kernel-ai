@@ -107,6 +107,7 @@ impl Shell {
             ok: true,
             text,
             confirm: Some(id),
+            more: false,
         }
     }
 
@@ -162,6 +163,7 @@ impl Shell {
             ok: ran.ok,
             text,
             confirm: None,
+            more: false,
         }
     }
 
@@ -229,6 +231,7 @@ impl Shell {
                 ok: true,
                 text: format!("{shown}\n{question}"),
                 confirm: Some(id),
+                more: false,
             };
         }
         if yes_or_no(text) != Some(true) {

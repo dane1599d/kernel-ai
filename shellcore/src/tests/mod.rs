@@ -10,6 +10,7 @@ use llmproto::script::{Answer, AnswerError, ScriptRequest};
 use std::collections::VecDeque;
 
 mod actions;
+mod more;
 mod scripts;
 mod tune;
 
@@ -141,6 +142,7 @@ fn ok(text: &str) -> Reply {
         ok: true,
         text: String::from(text),
         confirm: None,
+        more: false,
     }
 }
 

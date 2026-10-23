@@ -332,7 +332,7 @@ pub fn check(answer: &Answer, host: &Rc<dyn Host>, config: &Config) -> Result<Ch
         .compile(&script)
         .map_err(|error| refuse(format!("syntax error: {error}")))?;
     line.begin(stub.as_ref(), config);
-    let note = match trial.eval_ast_with_scope::<Dynamic>(&mut Scope::new(), &ast) {
+    let note = match engine::eval(&trial, &mut Scope::new(), &ast, config.exec) {
         Ok(_) => None,
         Err(_) if line.stopped.get() == Some(Stop::Interrupted) => {
             return Err(Refusal::Interrupted);
@@ -450,7 +450,7 @@ pub fn run(checked: &Checked, host: &Rc<dyn Host>, config: &Config) -> Ran {
     let journal = Journal::default();
     let engine = strict(&line, host, config, &granted, &journal);
     line.begin(host.as_ref(), config);
-    let result = engine.eval_ast_with_scope::<Dynamic>(&mut Scope::new(), &checked.ast);
+    let result = engine::eval(&engine, &mut Scope::new(), &checked.ast, config.exec);
     let mut text = line.take_output();
     let ok = match result {
         Ok(value) => {
