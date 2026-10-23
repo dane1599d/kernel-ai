@@ -272,6 +272,7 @@ impl Tuner {
             ok: true,
             text: lines.join("\n"),
             confirm: Some(id),
+            more: false,
         }
     }
 

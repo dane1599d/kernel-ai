@@ -12,6 +12,8 @@
 //! [`REPAIRED_GATE`]% pass after at most one repair. Every run is written to
 //! `target/fluency/<unix time>.jsonl`.
 
+#[cfg(test)]
+mod grain;
 pub(crate) mod host;
 mod judge;
 mod local;

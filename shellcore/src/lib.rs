@@ -13,12 +13,16 @@
 //! Every run is bounded: by time (checked every [`CHECK_EVERY`] operations), by an
 //! operation count, by heap use, and by Rhai's own size and depth limits. A run that
 //! hits a bound returns an error and leaves the shell running.
+//!
+//! An entry with a brace, bracket or parenthesis still open is kept, and the reply
+//! is `more`: the next line continues it (the terminal shows `..> `).
 
 #![no_std]
 
 extern crate alloc;
 
 mod actions;
+mod brackets;
 mod commands;
 mod engine;
 mod log;
@@ -34,6 +38,7 @@ use alloc::format;
 use alloc::rc::Rc;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+pub use engine::Exec;
 use engine::Line;
 use kabi::sched::{SchedStats, TrialRequest};
 use llmproto::chat::Completion;
@@ -95,6 +100,8 @@ pub struct Config {
     /// allows on fast hardware (KVM runs over 10 million operations a second), so
     /// the time limit is what normally stops a line.
     pub max_operations: u64,
+    /// How typed lines and scripts are run.
+    pub exec: Exec,
 }
 
 pub const DEFAULT_CONFIG: Config = Config {
@@ -103,7 +110,14 @@ pub const DEFAULT_CONFIG: Config = Config {
     script_heap_budget: 1024 * 1024,
     max_output: 6 * 1024,
     max_operations: 2_000_000_000,
+    exec: Exec::Ast,
 };
+
+/// Longest entry the shell gathers over continuation lines (ADR 0012, "Modes").
+pub const MAX_ENTRY: usize = 4 * 1024;
+/// What the terminal sends when Ctrl-C clears a continuation line: the entry so far
+/// is dropped. A typed line cannot hold a control character.
+pub const CANCEL_ENTRY: &str = "\u{3}";
 
 /// How often the time, interrupt and heap checks run, in operations.
 pub const CHECK_EVERY: u64 = 1024;
@@ -123,6 +137,9 @@ pub struct Reply {
     pub text: String,
     /// Set when the reply asks the user about script `id`.
     pub confirm: Option<u64>,
+    /// Set when a brace, bracket or parenthesis is still open: the next line
+    /// continues this entry, and the terminal shows `..> `.
+    pub more: bool,
 }
 
 impl Reply {
@@ -131,6 +148,7 @@ impl Reply {
             ok: true,
             text: text.into(),
             confirm: None,
+            more: false,
         }
     }
 
@@ -139,12 +157,22 @@ impl Reply {
             ok: false,
             text: text.into(),
             confirm: None,
+            more: false,
         }
     }
 
-    /// `ok <text>`, `err <text>` or `confirm <id> <text>`, as sent to the terminal.
+    fn more() -> Self {
+        Self {
+            more: true,
+            ..Self::ok("")
+        }
+    }
+
+    /// `ok <text>`, `err <text>`, `confirm <id> <text>` or `more`, as sent to the
+    /// terminal.
     pub fn to_wire(&self) -> String {
         match self.confirm {
+            _ if self.more => String::from("more"),
             Some(id) => format!("confirm {id} {}", self.text),
             None => format!("{} {}", if self.ok { "ok" } else { "err" }, self.text),
         }
@@ -173,6 +201,9 @@ pub struct Shell {
     shown: Option<String>,
     /// What the script run by the last line printed.
     last_output: Option<String>,
+    /// An entry with a brace, bracket or parenthesis still open, waiting for its
+    /// next line.
+    partial: Option<String>,
 }
 
 impl Shell {
@@ -205,6 +236,7 @@ impl Shell {
             undo_asking: None,
             shown: None,
             last_output: None,
+            partial: None,
         }
     }
 
@@ -216,6 +248,9 @@ impl Shell {
 
     /// Runs one line and returns what to show.
     pub fn eval(&mut self, input: &str) -> Reply {
+        if let Some(entry) = self.partial.take() {
+            return self.continue_entry(entry, input);
+        }
         let input = input.trim();
         self.last_output = None;
         // `answer <id> <text>` comes from the terminal's confirm prompt. A line such as
@@ -278,15 +313,49 @@ impl Shell {
                 Err(error) => Reply::err(error),
             };
         }
+        if brackets::open(input) {
+            return self.gather(String::from(input));
+        }
+        self.run_code(input)
+    }
+
+    /// The next line of an entry left open: it is added, and the whole entry runs
+    /// once everything it opened is closed.
+    fn continue_entry(&mut self, mut entry: String, input: &str) -> Reply {
+        self.last_output = None;
+        if input == CANCEL_ENTRY {
+            return Reply::ok("");
+        }
+        entry.push('\n');
+        entry.push_str(input.trim_end());
+        if entry.len() > MAX_ENTRY {
+            return Reply::err(format!(
+                "dropped: an entry may be at most {} KiB",
+                MAX_ENTRY / 1024
+            ));
+        }
+        if brackets::open(&entry) {
+            return self.gather(entry);
+        }
+        self.line.begin(self.host.as_ref(), &self.config);
+        self.run_code(&entry)
+    }
+
+    /// Keeps `entry` for the next line and asks the terminal for it.
+    fn gather(&mut self, entry: String) -> Reply {
+        self.partial = Some(entry);
+        Reply::more()
+    }
+
+    /// Compiles and runs typed Rhai; plain words that do not run go to the LLM.
+    fn run_code(&mut self, input: &str) -> Reply {
         let ast = match self.engine.compile_with_scope(&self.scope, input) {
             Ok(ast) => ast,
             Err(_) if reads_like_words(input) => return self.ask_for_script(input),
             Err(error) => return Reply::err(format!("syntax error: {error}")),
         };
         let program = self.functions.merge(&ast);
-        let result = self
-            .engine
-            .eval_ast_with_scope::<Dynamic>(&mut self.scope, &program);
+        let result = engine::eval(&self.engine, &mut self.scope, &program, self.config.exec);
         self.compact_scope();
         let mut text = self.line.take_output();
         match result {

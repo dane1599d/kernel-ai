@@ -95,13 +95,22 @@ const HELP: &[(&str, &str)] = &[
 /// Lines `:log` shows when it is not given a number.
 const LOG_LINES: usize = 30;
 
-/// A question the next line answers.
+/// What the next line is for, when it is not a new line at the prompt.
 enum Waiting {
     /// A script or a tune trial the shell proposed.
     Confirm(Confirm),
     /// An upload `:apply` showed.
     Apply(edit_mode::Proposal),
+    /// The shell replied `more`: the entry has a bracket open, and the next line
+    /// continues it.
+    More,
 }
+
+/// The prompt for a line that continues an open entry (ADR 0012).
+const CONTINUE_PROMPT: &str = "..> ";
+/// Sent to the shell when Ctrl-C clears a continuation line; it drops the entry
+/// (`shellcore::CANCEL_ENTRY`).
+const CANCEL_ENTRY: &str = "\u{3}";
 
 /// A confirmation the shell is waiting for: its id, and whether it proposes a
 /// tune trial (its card starts `Tune "`) rather than a script (`script N:`).
@@ -132,29 +141,37 @@ pub fn run(_: usize) {
         let prompt = match &waiting {
             Some(Waiting::Confirm(confirm)) => confirm.prompt(),
             Some(Waiting::Apply(p)) => format!("apply {} to {}? yes/no> ", p.label, p.component),
+            Some(Waiting::More) => CONTINUE_PROMPT.into(),
             None => edit_mode::prompt().unwrap_or_else(|| PROMPT.into()),
         };
         console::show_input(&prompt, "", 0);
-        if waiting.is_some() {
+        if matches!(waiting, Some(Waiting::Confirm(_) | Waiting::Apply(_))) {
             // Only keys typed once the question is on screen may answer it.
             decoder.discard_pending();
             AWAITING_ANSWER.store(true, Ordering::Release);
         }
         let line = read_line(&mut decoder, &prompt);
         AWAITING_ANSWER.store(false, Ordering::Release);
-        // Ctrl-C: prompt again, with a pending question still asked.
+        // Ctrl-C: prompt again, with a pending question still asked; an open entry
+        // is dropped.
         let Some(line) = line else {
+            if let Some(Waiting::More) = waiting {
+                waiting = shell_line(CANCEL_ENTRY);
+            }
             continue;
         };
         let line = line.trim();
         match waiting.take() {
             Some(Waiting::Confirm(confirm)) => {
-                waiting =
-                    shell_line(&format!("answer {} {line}", confirm.id)).map(Waiting::Confirm);
+                waiting = shell_line(&format!("answer {} {line}", confirm.id));
                 continue;
             }
             Some(Waiting::Apply(proposal)) => {
                 edit_mode::show(&edit_mode::answer(&proposal, line));
+                continue;
+            }
+            Some(Waiting::More) => {
+                waiting = shell_line(line);
                 continue;
             }
             None => {}
@@ -166,7 +183,7 @@ pub fn run(_: usize) {
                 edit_mode::show(&edit_mode::editor_line(line));
             }
             None if is_answer(line) => log!("! scripts are answered only at their own prompt"),
-            None => waiting = shell_line(line).map(Waiting::Confirm),
+            None => waiting = shell_line(line),
         }
     }
 }
@@ -201,9 +218,9 @@ fn finish_line(prompt: &str, text: &str, mark: &str) {
     log!("{prompt}{text}{mark}");
 }
 
-/// Sends a line to the shell and prints its answer. Returns the id of a script that
-/// waits for the user's yes.
-fn shell_line(line: &str) -> Option<Confirm> {
+/// Sends a line to the shell and prints its answer. Returns what the next line is
+/// for: a script that waits for the user's yes, or the rest of an open entry.
+fn shell_line(line: &str) -> Option<Waiting> {
     let start_deadline = hpet::nanos() + SHELL_START_WAIT_NS;
     if ipc::wait_bound("shell", start_deadline, || false).is_err() {
         log!("shell not running; kernel commands start with ':' (try :help)");
@@ -222,8 +239,12 @@ fn shell_line(line: &str) -> Option<Confirm> {
 }
 
 /// Prints `ok <text>`, `err <text>` or `confirm <id> <text>` with its lead, one
-/// complete line per piece, and returns a confirmation shown in full.
-fn show_shell_reply(reply: &[u8]) -> Option<Confirm> {
+/// complete line per piece, and returns a confirmation shown in full. `more` prints
+/// nothing and asks for the entry's next line.
+fn show_shell_reply(reply: &[u8]) -> Option<Waiting> {
+    if reply == b"more" {
+        return Some(Waiting::More);
+    }
     let text = String::from_utf8_lossy(reply);
     let clean = printable(&text, kabi::MAX_MESSAGE, MAX_REPLY_LINES);
     let (kind, rest) = clean.split_once(' ').unwrap_or((clean.as_str(), ""));
@@ -248,9 +269,11 @@ fn show_shell_reply(reply: &[u8]) -> Option<Confirm> {
         // Decline it, so no later line can answer it.
         return shell_line(&format!("answer {id} no"));
     }
-    confirm.map(|id| Confirm {
-        id,
-        tune: body.starts_with("Tune \""),
+    confirm.map(|id| {
+        Waiting::Confirm(Confirm {
+            id,
+            tune: body.starts_with("Tune \""),
+        })
     })
 }
 

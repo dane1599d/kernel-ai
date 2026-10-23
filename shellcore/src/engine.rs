@@ -1,6 +1,8 @@
 //! The bounded Rhai engine every line and every script runs in: limits (including a
 //! size-checked `replace` and `pad`), captured output, the heap check on every
 //! operation, and the time and interrupt checks made every [`CHECK_EVERY`] operations.
+//! [`eval`] runs compiled code by walking its AST, or on Rhai's Grain bytecode VM when
+//! the `grain` feature is on and [`Exec::Grain`] is chosen.
 
 use crate::{CHECK_EVERY, Config, Host, show};
 use alloc::boxed::Box;
@@ -8,7 +10,39 @@ use alloc::format;
 use alloc::rc::Rc;
 use alloc::string::{String, ToString};
 use core::cell::{Cell, RefCell};
-use rhai::{Array, Blob, Dynamic, Engine, EvalAltResult, INT, ImmutableString, Map, Position};
+use rhai::{
+    AST, Array, Blob, Dynamic, Engine, EvalAltResult, INT, ImmutableString, Map, Position, Scope,
+};
+
+/// How compiled code is run. AST stays the default until spike S12-3 shows that Grain
+/// gives the same results on the 50 reference scripts and the fuzz corpus and is at
+/// least 1.2x faster on the shell's micro-benchmarks (ADR 0012 D9).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Exec {
+    /// Rhai's tree-walking interpreter.
+    Ast,
+    /// Rhai Grain: the AST lowered to bytecode and run on Grain's VM. What Grain
+    /// cannot lower yet goes back to the AST interpreter, so the meaning is the same.
+    #[cfg(feature = "grain")]
+    Grain,
+}
+
+/// Runs `ast` in `scope` the way `exec` says.
+pub(crate) fn eval(
+    engine: &Engine,
+    scope: &mut Scope,
+    ast: &AST,
+    exec: Exec,
+) -> Result<Dynamic, Box<EvalAltResult>> {
+    match exec {
+        Exec::Ast => engine.eval_ast_with_scope::<Dynamic>(scope, ast),
+        #[cfg(feature = "grain")]
+        Exec::Grain => {
+            let program = rhai::grain::Compiler::new().compile(ast);
+            rhai::grain::Vm::new(engine).eval_with_scope(scope, &program)
+        }
+    }
+}
 
 /// Why a run was stopped by the shell itself.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
