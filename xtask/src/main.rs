@@ -12,6 +12,7 @@
 //! cargo xtask setup | model chat|check|pin | bench quant   (the local LLM on the host; see models/mod.rs)
 //! cargo xtask tune --sim ... | demo | check | record | ab   (M10a; see tune/mod.rs)
 //! cargo xtask tokens --gguf PATH   (S10-0: real token counts of the prompt parts; see tokens.rs)
+//! cargo xtask actbench --local ID [--arm ARM,..] [--seed N,..] [--limit N]   (S02-1 and S10-1 on our engine; GitHub only; see actbench/mod.rs)
 //! cargo xtask latency --local ID [--store DIR] [--accel kvm]   (S02-2: Enter to busy sign and to done, real model in the guest)
 //! cargo xtask doctor   (can this PC run Kernel AI in an accelerated VM, and what to fix; read-only)
 //! cargo xtask vbox [--start [--headless]]   (the VirtualBox VM "Kernel AI"; see vbox/mod.rs)
@@ -27,6 +28,7 @@
 //! Every `build`, `run`, `test` and `soak` checks that the kernel ELF has no x87,
 //! MMX, SSE or AVX instruction (see floatguard.rs).
 
+mod actbench;
 mod boot_smoke;
 mod buildsvc;
 mod cases;
@@ -79,6 +81,7 @@ fn main() -> ExitCode {
         Some("setup" | "model" | "bench") => models::main(&args),
         Some("tune") => tune::main(&args[1..]),
         Some("tokens") => tokens::main(&args[1..]),
+        Some("actbench") => actbench::main(&args[1..], &workspace_root().join("target")),
         Some("latency") => latency::main(&args[1..]),
         Some("doctor") => doctor::main(&args[1..]),
         Some("vbox") => vbox::main(&args[1..]),

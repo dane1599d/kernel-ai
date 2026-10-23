@@ -219,7 +219,7 @@ fn all_words(n: usize) -> u64 {
 
 /// Why a byte cannot come next.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Stop {
+pub enum Stop {
     /// It does not fit the shape: never allowed.
     Masked,
     /// It goes past a limit of the field: allowed, and picking it ends the
@@ -587,6 +587,80 @@ impl<'s> Grammar<'s> {
                 !matches!(self.advance(*state, tok.token_bytes(id)), Err(Stop::Masked))
             }),
         );
+    }
+}
+
+/// A byte-level grammar the engine steers an answer by: its tokens must keep the
+/// answer a prefix of something the grammar accepts, and the answer ends when
+/// the grammar is done. Only printable ASCII bytes ever come.
+pub trait Constraint {
+    type State: Copy;
+    fn start(&self) -> Self::State;
+    /// The state after `byte`, or why it cannot come.
+    fn step(&self, state: Self::State, byte: u8) -> Result<Self::State, Stop>;
+    fn is_done(&self, state: &Self::State) -> bool;
+    /// Fills `out` with the bytes the grammar alone decides after `state`, for
+    /// jump-forward; none when the model has a choice.
+    fn forced(&self, state: &Self::State, out: &mut Vec<u8>);
+    /// The fewest bytes that finish the answer from `state`.
+    fn need(&self, state: &Self::State) -> usize;
+
+    /// Token healing for jump-forward: the last token of a forced run is left
+    /// to the model (under the grammar), unless the run ends the answer. Off
+    /// for a [`Shape`], so its answers stay the ones its gates recorded.
+    fn heals(&self) -> bool {
+        false
+    }
+
+    /// The state after all of `bytes`, or why the first one that cannot come
+    /// cannot.
+    fn advance(&self, state: Self::State, bytes: &[u8]) -> Result<Self::State, Stop> {
+        bytes
+            .iter()
+            .try_fold(state, |state, &byte| self.step(state, byte))
+    }
+
+    /// Fills `out` with the ids of `tokens` that may come after `state`: those
+    /// whose bytes fit, past a limit included.
+    fn allowed(&self, state: &Self::State, tok: &Tokenizer, tokens: &[u32], out: &mut Vec<u32>) {
+        out.clear();
+        out.extend(
+            tokens.iter().copied().filter(|&id| {
+                !matches!(self.advance(*state, tok.token_bytes(id)), Err(Stop::Masked))
+            }),
+        );
+    }
+}
+
+impl Constraint for Grammar<'_> {
+    type State = State;
+
+    fn start(&self) -> State {
+        Grammar::start(self)
+    }
+
+    fn step(&self, state: State, byte: u8) -> Result<State, Stop> {
+        Grammar::step(self, state, byte)
+    }
+
+    fn is_done(&self, state: &State) -> bool {
+        state.is_done()
+    }
+
+    fn forced(&self, state: &State, out: &mut Vec<u8>) {
+        Grammar::forced(self, state, out);
+    }
+
+    fn need(&self, state: &State) -> usize {
+        Grammar::need(self, state)
+    }
+
+    fn advance(&self, state: State, bytes: &[u8]) -> Result<State, Stop> {
+        Grammar::advance(self, state, bytes)
+    }
+
+    fn allowed(&self, state: &State, tok: &Tokenizer, tokens: &[u32], out: &mut Vec<u32>) {
+        Grammar::allowed(self, state, tok, tokens, out);
     }
 }
 
