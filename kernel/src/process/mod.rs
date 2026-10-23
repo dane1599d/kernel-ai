@@ -355,6 +355,8 @@ pub struct SpawnRequest<'a> {
     /// The pid asking (0 for the kernel).
     pub spawner: u64,
     pub supervisor: bool,
+    /// The services it gets a route to, with CALL (the plan's `uses=`).
+    pub uses: &'a [&'a str],
 }
 
 /// Starts a process. At most one live process per service name.
@@ -405,7 +407,7 @@ pub fn spawn(request: &SpawnRequest) -> Result<u64, kabi::Error> {
         Ok((slot, pid))
     })?;
     // Its startup handles, before it can run (ADR 0001 D3).
-    if let Err(error) = crate::handle::create(slot, request.limits.caps, pid) {
+    if let Err(error) = crate::handle::create(slot, request.limits.caps, pid, request.uses) {
         with_table(|table| table[slot] = Process::FREE);
         return Err(error);
     }

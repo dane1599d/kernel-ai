@@ -28,6 +28,7 @@ const LIMITS: Limits = Limits {
 pub fn check() -> Result<(), &'static str> {
     startup_handles()?;
     ring3()?;
+    routes()?;
     m1();
     log!("handles: tables, startup handles and need() on handles all behaved");
     Ok(())
@@ -37,7 +38,7 @@ pub fn check() -> Result<(), &'static str> {
 fn startup_handles() -> Result<(), &'static str> {
     let slot = MAX_PROCESSES - 1;
     let all = cap::GRANTABLE | cap::SUPERVISE;
-    handle::create(slot, all, 99).map_err(|_| "handles: cannot make a table")?;
+    handle::create(slot, all, 99, &[]).map_err(|_| "handles: cannot make a table")?;
     let result = (|| {
         for bit in (0..64).map(|n| 1u64 << n).filter(|bit| all & bit != 0) {
             let (kind, rights) =
@@ -59,7 +60,7 @@ fn startup_handles() -> Result<(), &'static str> {
     if handle::need(slot, cap::POLICY).is_ok() {
         return Err("handles: a destroyed table still grants a right");
     }
-    handle::create(slot, cap::NET, 99).map_err(|_| "handles: cannot make a table")?;
+    handle::create(slot, cap::NET, 99, &[]).map_err(|_| "handles: cannot make a table")?;
     let refused = handle::need(slot, cap::RESOLVE).is_err()
         && handle::need(slot, cap::NET | cap::POLICY).is_err()
         && handle::need(slot, cap::NET).is_ok()
@@ -81,6 +82,7 @@ fn ring3() -> Result<(), &'static str> {
         limits: LIMITS,
         spawner: 0,
         supervisor: false,
+        uses: &[],
     })
     .map_err(|_| "handles: cannot start the handles program")?;
     match wait_exit(pid)? {
@@ -89,11 +91,42 @@ fn ring3() -> Result<(), &'static str> {
     }
 }
 
+/// Task 12: `handles mode=client`, with a route to `hsrv`, sends a request and a
+/// handle to `handles mode=server` through CALL_H and gets both back.
+fn routes() -> Result<(), &'static str> {
+    let start = |name, args: &'static str, caps, uses: &'static [&'static str]| {
+        process::spawn(&SpawnRequest {
+            name,
+            program: "handles",
+            args: args.as_bytes(),
+            limits: Limits { caps, ..LIMITS },
+            spawner: 0,
+            supervisor: false,
+            uses,
+        })
+        .map_err(|_| "handles: cannot start the route pair")
+    };
+    let server = start("hsrv", "mode=server", cap::SERVE | cap::POLICY, &[])?;
+    let client = start(
+        "hcli",
+        "mode=client",
+        cap::CALL | cap::POLICY | cap::NET,
+        &["hsrv"],
+    )?;
+    for pid in [client, server] {
+        if wait_exit(pid)? != (ExitReason::Exited, 0) {
+            return Err("handles: the route pair's checks failed");
+        }
+    }
+    log!("handles: CALL_H, RECV_H and REPLY_H moved a request and a handle there and back");
+    Ok(())
+}
+
 /// M1: nanoseconds per check, the old bit check (a copy of the process under the
 /// table lock, as `need` did) against the handle check `need` does now.
 fn m1() {
     let slot = MAX_PROCESSES - 1;
-    if handle::create(slot, cap::GRANTABLE | cap::SUPERVISE, 99).is_err() {
+    if handle::create(slot, cap::GRANTABLE | cap::SUPERVISE, 99, &[]).is_err() {
         log!("handles: M1 not measured: no table");
         return;
     }

@@ -25,6 +25,9 @@ pub struct ServiceSpec {
     /// Arguments passed through to the program.
     pub args: String,
     pub limits: Limits,
+    /// The services it may call, from `uses=`: one route each, in this order
+    /// (ADR 0001 D3). Each is listed earlier in the plan, so routes form no cycle.
+    pub uses: Vec<String>,
     /// Restart policy; the plan may change `max_backoff_ms` and `max_restarts`.
     pub policy: Policy,
 }
@@ -37,10 +40,10 @@ pub struct Plan {
 }
 
 /// Reads the plan: one service per line, `name [program=P] [pages=N] [stack_pages=N]
-/// [burst_ms=N] [caps=serve+net+call+policy+component+publish+model+threads+resolve] [backoff_max_ms=N] [max_restarts=N]
-/// [other=args ...]`. The supervisor keys set limits and policy; everything else is
-/// passed to the program. A bad line skips only that service, so one typo cannot
-/// keep every other service down.
+/// [burst_ms=N] [caps=serve+net+call+policy+component+publish+model+threads+resolve] [uses=A+B]
+/// [backoff_max_ms=N] [max_restarts=N] [other=args ...]`. The supervisor keys set limits,
+/// routes and policy; everything else is passed to the program. A bad line skips only
+/// that service, so one typo cannot keep every other service down.
 pub fn parse_plan(text: &str) -> Plan {
     let mut plan = Plan::default();
     for line in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
@@ -70,6 +73,7 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
     let mut policy = POLICY;
     let mut args = Vec::new();
     let mut program = name;
+    let mut uses = Vec::new();
     for word in words {
         match word.split_once('=') {
             Some(("program", value)) => {
@@ -94,18 +98,48 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
             }
             Some(("burst_ms", value)) => limits.max_burst_ms = number(name, value)?,
             Some(("caps", value)) => limits.caps = caps(name, value)?,
+            Some(("uses", value)) => uses = routes(name, value, earlier)?,
             Some(("backoff_max_ms", value)) => policy.max_backoff_ms = number(name, value)?,
             Some(("max_restarts", value)) => policy.max_restarts = number(name, value)? as usize,
             _ => args.push(word),
         }
+    }
+    if !uses.is_empty() && limits.caps & cap::CALL == 0 {
+        return Err(format!("{name}: uses= needs the call capability"));
     }
     Ok(ServiceSpec {
         name: name.to_string(),
         program: program.to_string(),
         args: args.join(" "),
         limits,
+        uses,
         policy,
     })
+}
+
+/// Services nobody may call: the shell takes only the terminal's lines, and the
+/// edit service only the kernel's (ADR 0001 D3).
+pub const UNCALLABLE: &[&str] = &["shell", "edit"];
+
+/// The routes in `uses=A+B`: each a service listed before this one, so routes
+/// form no cycle, never itself, `shell` or `edit`, and each once.
+fn routes(service: &str, value: &str, earlier: &[ServiceSpec]) -> Result<Vec<String>, String> {
+    let mut uses: Vec<String> = Vec::new();
+    for target in value.split('+') {
+        if UNCALLABLE.contains(&target) || target == service {
+            return Err(format!("{service}: no route may go to {target}"));
+        }
+        if !earlier.iter().any(|s| s.name == target) {
+            return Err(format!(
+                "{service}: uses {target}, which is not listed before it"
+            ));
+        }
+        if uses.iter().any(|u| u == target) {
+            return Err(format!("{service}: uses {target} twice"));
+        }
+        uses.push(target.to_string());
+    }
+    Ok(uses)
 }
 
 /// A service or program name: letters, digits and '-', at most `MAX_NAME` bytes.

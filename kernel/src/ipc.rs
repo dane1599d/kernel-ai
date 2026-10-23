@@ -1,5 +1,7 @@
-//! Service endpoints: the kernel terminal, or a process with the CALL capability,
-//! calls a ring-3 service by name and waits for its reply.
+//! Service endpoints: the kernel calls a ring-3 service by name, and a process
+//! calls one through a route handle (`CALL_H`), and each waits for its reply.
+//! A call from a process carries its route's badge and rights, and may move
+//! handles each way ([`Extra`]); the system-call layer checks and moves them.
 //!
 //! A service binds the endpoint named after its program on its first `svc_recv`; the
 //! name comes from the kernel's process table, never from the service, so one
@@ -16,6 +18,7 @@
 use crate::process::{self, MAX_PROCESSES, Name, uaccess};
 use crate::{hpet, threads};
 use alloc::vec::Vec;
+use captable::Entry;
 use core::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
 use kabi::{Error, MAX_MESSAGE};
 use sched::Tid;
@@ -51,6 +54,16 @@ pub enum CallError {
     TooBig,
 }
 
+/// What a call from a process carries besides its bytes (ADR 0001 D1, D6).
+#[derive(Debug, Default)]
+pub struct Extra {
+    /// The badge and rights of the route it came through.
+    pub badge: u64,
+    pub rights: u32,
+    /// Handles moved with the request, already out of the caller's table.
+    pub handles: Vec<Entry>,
+}
+
 struct Endpoint {
     name: Name,
     server_pid: u64,
@@ -69,6 +82,9 @@ struct Call {
     caller_pid: u64,
     deadline_ns: u64,
     taker: u64,
+    extra: Extra,
+    /// Handles moved with the reply, already out of the server's table.
+    reply_handles: Vec<Entry>,
 }
 
 struct Ipc {
@@ -180,6 +196,17 @@ pub fn submit(
     caller_pid: u64,
     deadline_ns: u64,
 ) -> Result<Pending, CallError> {
+    submit_with(name, request, caller_pid, deadline_ns, Extra::default())
+}
+
+/// [`submit`], with what a handle call carries.
+fn submit_with(
+    name: &str,
+    request: &[u8],
+    caller_pid: u64,
+    deadline_ns: u64,
+    extra: Extra,
+) -> Result<Pending, CallError> {
     if request.len() > MAX_MESSAGE {
         return Err(CallError::TooBig);
     }
@@ -208,6 +235,8 @@ pub fn submit(
             caller_pid,
             deadline_ns,
             taker: 0,
+            extra,
+            reply_handles: Vec::new(),
         });
         CALL_STATE[slot].store(QUEUED, Ordering::SeqCst);
         PENDING[endpoint].fetch_add(1, Ordering::SeqCst);
@@ -224,6 +253,11 @@ pub fn submit(
 /// call still running is abandoned (its late reply is dropped) and reported as
 /// timed out.
 pub fn finish(pending: Pending) -> Result<(Vec<u8>, u64), CallError> {
+    finish_with(pending).map(|(reply, taker, _)| (reply, taker))
+}
+
+/// [`finish`], with the handles the reply moved.
+fn finish_with(pending: Pending) -> Result<(Vec<u8>, u64, Vec<Entry>), CallError> {
     let slot = pending.slot;
     let (call, state) = with_ipc(|ipc| {
         let call = ipc.calls[slot].take();
@@ -248,7 +282,7 @@ pub fn finish(pending: Pending) -> Result<(Vec<u8>, u64), CallError> {
                 &REPLIES_TO_PROCESSES[call.endpoint]
             };
             counter.fetch_add(1, Ordering::SeqCst);
-            Ok((call.reply, call.taker))
+            Ok((call.reply, call.taker, call.reply_handles))
         }
         (_, FAILED) => Err(CallError::ServiceDied),
         _ => Err(CallError::TimedOut),
@@ -275,12 +309,33 @@ fn call_as_from(
     deadline_ns: u64,
     cancel: impl Fn() -> bool,
 ) -> Result<(Vec<u8>, u64), CallError> {
-    let pending = submit(name, request, caller_pid, deadline_ns)?;
+    call_with(
+        name,
+        request,
+        caller_pid,
+        deadline_ns,
+        cancel,
+        Extra::default(),
+    )
+    .map(|(reply, taker, _)| (reply, taker))
+}
+
+/// A handle call (`CALL_H`): [`call_as`] carrying `extra`; the reply, the pid
+/// that answered and the handles the reply moved.
+pub fn call_with(
+    name: &str,
+    request: &[u8],
+    caller_pid: u64,
+    deadline_ns: u64,
+    cancel: impl Fn() -> bool,
+    extra: Extra,
+) -> Result<(Vec<u8>, u64, Vec<Entry>), CallError> {
+    let pending = submit_with(name, request, caller_pid, deadline_ns, extra)?;
     while !pending.done() && !cancel() && hpet::nanos() < deadline_ns {
         threads::sleep_until_unless(deadline_ns, || pending.done() || cancel());
     }
     let cancelled = !pending.done() && cancel();
-    match finish(pending) {
+    match finish_with(pending) {
         Err(CallError::TimedOut) if cancelled => Err(CallError::Cancelled),
         other => other,
     }
@@ -302,6 +357,8 @@ pub fn call_from(name: &str, request: &[u8], timeout_ms: u64) -> Result<(Vec<u8>
 
 /// The `svc_recv` system call: waits for the next request to this process's service.
 /// Writes the caller's pid (0 for the kernel) to `caller_out` unless it is 0.
+/// Handles the request moved are dropped: a server that takes handles uses
+/// `RECV_H` ([`recv_with`]).
 pub fn recv(
     slot: usize,
     buf: u64,
@@ -309,6 +366,21 @@ pub fn recv(
     timeout_ms: u64,
     caller_out: u64,
 ) -> Result<u64, Error> {
+    let (len, caller_pid, _) = recv_with(slot, buf, cap, timeout_ms)?;
+    if caller_out != 0 {
+        uaccess::copy_to_user(slot, caller_out, &caller_pid.to_le_bytes())?;
+    }
+    Ok(len)
+}
+
+/// Waits for the next request to this process's service, as `svc_recv` does; its
+/// length, the caller's pid and what the call carried.
+pub fn recv_with(
+    slot: usize,
+    buf: u64,
+    cap: u64,
+    timeout_ms: u64,
+) -> Result<(u64, u64, Extra), Error> {
     let me = process::identity(slot);
     let tid = threads::current_tid();
     let wait_ms = if timeout_ms == 0 {
@@ -318,7 +390,7 @@ pub fn recv(
     };
     let deadline = hpet::nanos().saturating_add(wait_ms * 1_000_000);
     loop {
-        let (endpoint, taken, failed, opened) = with_ipc(|ipc| {
+        let (endpoint, taken, failed, opened, extra) = with_ipc(|ipc| {
             let endpoint = match find(ipc, me.name.as_str()) {
                 Some(endpoint) => endpoint,
                 None => {
@@ -375,11 +447,13 @@ pub fn recv(
                 failed = ipc.calls[old].as_ref().map(|c| c.caller);
             }
             let mut opened = None;
+            let mut extra = Extra::default();
             match (next, &request) {
                 (Some(c), Some((_, _, (id, deadline)))) => {
                     opened = Some((c, *id, *deadline));
                     if let Some(call) = ipc.calls[c].as_mut() {
                         call.taker = me.pid;
+                        extra = core::mem::take(&mut call.extra);
                     }
                     CALL_STATE[c].store(TAKEN, Ordering::SeqCst);
                     PENDING[endpoint].fetch_sub(1, Ordering::SeqCst);
@@ -393,7 +467,7 @@ pub fn recv(
                     }
                 }
             }
-            Ok((endpoint, request, failed, opened))
+            Ok((endpoint, request, failed, opened, extra))
         })?;
         wake(failed);
         if let Some((request, caller_pid, _)) = taken {
@@ -401,12 +475,9 @@ pub fn recv(
                 .len()
                 .min(usize::try_from(cap).unwrap_or(usize::MAX));
             uaccess::copy_to_user(slot, buf, &request[..len])?;
-            if caller_out != 0 {
-                uaccess::copy_to_user(slot, caller_out, &caller_pid.to_le_bytes())?;
-            }
             // Only a request the server holds opens its compute allowance.
             process::burst::serving(slot, opened);
-            return Ok(request.len() as u64);
+            return Ok((request.len() as u64, caller_pid, extra));
         }
         let ready = || PENDING[endpoint].load(Ordering::SeqCst) > 0 || process::killed(slot);
         if !ready() && hpet::nanos() < deadline {
@@ -428,6 +499,27 @@ pub fn recv(
 
 /// The `svc_reply` system call: answers the call taken by the last `svc_recv`.
 pub fn reply(slot: usize, ptr: u64, len: u64) -> Result<u64, Error> {
+    reply_with(slot, ptr, len, Vec::new())
+}
+
+/// The caller of the call this process took and has not answered: its pid (0 for
+/// the kernel), for checking the handles a reply would move to it.
+pub fn current_caller(slot: usize) -> Result<u64, Error> {
+    let me = process::identity(slot);
+    with_ipc(|ipc| {
+        let endpoint = find(ipc, me.name.as_str()).ok_or(Error::NotFound)?;
+        let entry = ipc.endpoints[endpoint].as_ref().ok_or(Error::NotFound)?;
+        let c = entry.current_call.ok_or(Error::NotFound)?;
+        let call = ipc.calls[c].as_ref().ok_or(Error::NotFound)?;
+        match call.taker == me.pid && CALL_STATE[c].load(Ordering::SeqCst) == TAKEN {
+            true => Ok(call.caller_pid),
+            false => Err(Error::NotFound),
+        }
+    })
+}
+
+/// [`reply`], moving `handles` (already out of the server's table) to the caller.
+pub fn reply_with(slot: usize, ptr: u64, len: u64, handles: Vec<Entry>) -> Result<u64, Error> {
     let len = usize::try_from(len).map_err(|_| Error::TooBig)?;
     if len > MAX_MESSAGE {
         return Err(Error::TooBig);
@@ -449,6 +541,7 @@ pub fn reply(slot: usize, ptr: u64, len: u64) -> Result<u64, Error> {
             return Err(Error::NotFound);
         }
         call.reply = reply;
+        call.reply_handles = handles;
         CALL_STATE[c].store(REPLIED, Ordering::SeqCst);
         Ok(call.caller)
     })?;

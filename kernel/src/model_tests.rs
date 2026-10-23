@@ -121,6 +121,7 @@ fn start_and_ask(caps: u64) -> Result<(u64, Option<String>), &'static str> {
         },
         spawner: 0,
         supervisor: false,
+        uses: &[],
     })
     .map_err(|_| "model: cannot start llm")?;
     match llm::health() {

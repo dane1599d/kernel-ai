@@ -503,6 +503,7 @@ dependencies = [
  "spike-rhai",
  "spike-wasmi",
  "spin 0.12.3",
+ "supervise",
  "talc",
  "termcore",
  "uelf",

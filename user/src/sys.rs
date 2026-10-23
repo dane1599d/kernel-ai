@@ -2,8 +2,8 @@
 //! `kabi::Error::from_raw`.
 
 use core::sync::atomic::AtomicU32;
-use kabi::handle::{AbiInfo, Handle, HandleInfo, Rights};
-use kabi::{CallRequest, Error, ExitRecord, HttpRequest, Metrics, SpawnRequest, call};
+use kabi::handle::{AbiInfo, CallH, Handle, HandleInfo, RecvInfo, Rights};
+use kabi::{Error, ExitRecord, HttpRequest, Metrics, SpawnRequest, call};
 
 /// # Safety
 /// The arguments must be valid for call `number` as `kabi` documents it.
@@ -218,33 +218,84 @@ pub fn list(buf: &mut [u8]) -> Result<usize, Error> {
     read_into(call::LIST, buf, 0)
 }
 
-/// Sends `request` to the service `name` and returns the length of its reply,
+/// Sends `request` through the route `route` and returns the length of its reply,
 /// which is copied into `reply` (cut to fit).
-pub fn service_call(
-    name: &str,
+pub fn call_route(
+    route: Handle,
     request: &[u8],
     reply: &mut [u8],
     timeout_ms: u64,
 ) -> Result<usize, Error> {
-    let argument = CallRequest {
+    call_h(route, request, reply, timeout_ms, &[], &mut []).map(|(len, _)| len)
+}
+
+/// [`call_route`], moving `send` to the server; the handles the reply moved are
+/// written to `received` (0 past them). Returns the reply's length and how many
+/// handles came back.
+pub fn call_h(
+    route: Handle,
+    request: &[u8],
+    reply: &mut [u8],
+    timeout_ms: u64,
+    send: &[Handle],
+    received: &mut [Handle],
+) -> Result<(usize, usize), Error> {
+    let argument = CallH {
         request_ptr: request.as_ptr() as u64,
         request_len: request.len() as u64,
         reply_ptr: reply.as_mut_ptr() as u64,
         reply_cap: reply.len() as u64,
         timeout_ms,
+        handles_ptr: send.as_ptr() as u64,
+        handles_len: send.len() as u64,
+        handles_out_ptr: received.as_mut_ptr() as u64,
+        handles_out_cap: received.len() as u64,
     };
-    call(
-        call::CALL,
+    let len = call(
+        call::CALL_H,
         [
-            name.as_ptr() as u64,
-            name.len() as u64,
-            &argument as *const CallRequest as u64,
+            u64::from(route.0),
+            &argument as *const CallH as u64,
             0,
+            0,
+            0,
+            0,
+        ],
+    )?;
+    let came = received.iter().filter(|h| **h != Handle::NONE).count();
+    Ok((len as usize, came))
+}
+
+/// Waits for the next request to this process's service, as [`svc_recv`] does,
+/// with who sent it, its route's badge and rights, and the handles it moved.
+pub fn recv_h(buf: &mut [u8], timeout_ms: u64, info: &mut RecvInfo) -> Result<usize, Error> {
+    call(
+        call::RECV_H,
+        [
+            buf.as_mut_ptr() as u64,
+            buf.len() as u64,
+            timeout_ms,
+            info as *mut RecvInfo as u64,
             0,
             0,
         ],
     )
     .map(|len| len as usize)
+}
+
+/// Answers the request taken by the last receive, moving `handles` to the caller.
+pub fn reply_h(bytes: &[u8], handles: &[Handle]) -> Result<u64, Error> {
+    call(
+        call::REPLY_H,
+        [
+            bytes.as_ptr() as u64,
+            bytes.len() as u64,
+            handles.as_ptr() as u64,
+            handles.len() as u64,
+            0,
+            0,
+        ],
+    )
 }
 
 pub fn metrics() -> Result<Metrics, Error> {

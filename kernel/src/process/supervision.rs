@@ -297,6 +297,9 @@ pub fn spawn_service(slot: usize, request_ptr: u64) -> Result<u64, Error> {
             .min(kabi::layout::MAX_STACK_PAGES),
     };
     let me = super::identity(slot).pid;
+    // Its routes come from the kernel's own copy of the plan, never the request.
+    let uses = uses_of(name);
+    let uses: Vec<&str> = uses.iter().map(String::as_str).collect();
     let pid = spawn(&SpawnRequest {
         name,
         program,
@@ -304,6 +307,7 @@ pub fn spawn_service(slot: usize, request_ptr: u64) -> Result<u64, Error> {
         limits,
         spawner: me,
         supervisor: false,
+        uses: &uses,
     })?;
     if program == name {
         log!("process {name} (pid {pid}) started by the supervisor");
@@ -367,12 +371,17 @@ fn clear_state() {
     drop(old);
 }
 
-/// Whether the plan lists a service called `name`, whatever program it runs.
-pub fn planned(name: &str) -> bool {
-    PLAN.get().is_some_and(|plan| {
-        plan.lines()
-            .any(|line| line.split_whitespace().next() == Some(name))
-    })
+/// The services the plan's line for `name` gives it routes to (`uses=`); none
+/// for a service the plan does not list, or whose line does not parse.
+pub fn uses_of(name: &str) -> Vec<String> {
+    PLAN.get()
+        .and_then(|plan| {
+            supervise::parse_plan(plan)
+                .services
+                .into_iter()
+                .find(|service| service.name == name)
+        })
+        .map_or_else(Vec::new, |service| service.uses)
 }
 
 pub fn plan(slot: usize, ptr: u64, cap: u64) -> Result<u64, Error> {
@@ -416,6 +425,7 @@ fn init_thread(_: usize) {
             limits: SUPERVISOR_LIMITS,
             spawner: 0,
             supervisor: true,
+            uses: &[],
         }) {
             Ok(pid) => {
                 SUPERVISOR_PID.store(pid, Ordering::SeqCst);
