@@ -452,10 +452,12 @@ fn run_arm(
                 scored.push(one);
             }
             options.m8.then(|| {
+                // The gate's shell has only the M8 functions, so the pack says so.
+                let m8_rows = registry::m8_rows();
                 let tagging = Rc::new(m8::Tagging {
                     engine: loaded.engine.clone(),
-                    grammar: grammar.clone(),
-                    pack: Rc::new(pack.clone()),
+                    grammar: Rc::new(Tagged::new(&m8_rows)),
+                    pack: Rc::new(render::pack(format, &m8_rows)),
                     seed,
                     no_think: arm.no_think,
                 });

@@ -5,7 +5,9 @@
 # engine for the arms and seeds asked for, and uploads each run's jsonl (headed
 # by its pack_id). One job at a time, started by hand only: Actions tab, "Action
 # accuracy on the real model", Run workflow; or, before this file is on main, by
-# adding the label `actbench` to a pull request (the default arms and seed 42).
+# adding the label `actbench` to a pull request, which runs S02-1's full set as
+# three jobs: dsl-1 and hermes-1 at seeds 42, 1 and 2, then A0 (dsl-1:no-think),
+# prose-1 and the 80-row scale at seed 42.
 # The run reports; task 18 turns it into a gate that fails the job.
 name: Action accuracy on the real model
 
@@ -37,8 +39,13 @@ env:
 
 jobs:
   actbench:
-    name: actbench (qwen3-4b-2507, local engine)
+    name: actbench ${{ matrix.arms }} seeds ${{ matrix.seeds }}
     if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'actbench'
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include: ${{ fromJSON(github.event_name == 'workflow_dispatch' && format('[{{"arms":"{0}","seeds":"{1}"}}]', inputs.arms, inputs.seeds) || '[{"arms":"dsl-1","seeds":"42,1,2"},{"arms":"hermes-1","seeds":"42,1,2"},{"arms":"dsl-1:no-think,prose-1,dsl-1@80","seeds":"42"}]') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 240
     steps:
@@ -80,8 +87,8 @@ jobs:
       - name: Run the arms on the local engine
         env:
           KAI_MODELS: ${{ runner.temp }}/kai-models
-          ARMS: ${{ inputs.arms || 'dsl-1,hermes-1,m8,m8-a0' }}
-          SEEDS: ${{ inputs.seeds || '42' }}
+          ARMS: ${{ matrix.arms }}
+          SEEDS: ${{ matrix.seeds }}
           LIMIT: ${{ inputs.limit }}
         run: |
           set -- --local "$MODEL_ID" --arm "$ARMS" --seed "$SEEDS"
@@ -91,6 +98,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: actbench-${{ env.MODEL_ID }}-${{ github.run_id }}
+          name: actbench-${{ env.MODEL_ID }}-${{ github.run_id }}-${{ strategy.job-index }}
           path: target/actbench/*.jsonl
           if-no-files-found: warn

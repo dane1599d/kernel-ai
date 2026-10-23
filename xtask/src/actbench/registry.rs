@@ -138,7 +138,7 @@ pub const ROWS: &[Row] = &[
     ),
     change(
         "tune",
-        "the model proposes a policy trial; keep or undo it",
+        "proposes a scheduler trial for a workload; keep or undo it",
         &[arg("intent", Ty::Text(120))],
         Undo::None,
         &["tune", "tuning"],
@@ -165,21 +165,21 @@ pub const ROWS: &[Row] = &[
     ),
     change(
         "service_start",
-        "start a stopped service",
+        "start a stopped service (a background program) by name",
         &[req("name", NAME)],
         Undo::Restore,
         &["start", "launch"],
     ),
     change(
         "service_stop",
-        "stop a service",
+        "stop a service by name",
         &[req("name", NAME)],
         Undo::Restore,
         &["stop", "shut"],
     ),
     change(
         "service_restart",
-        "restart a service",
+        "restart a service by name",
         &[req("name", NAME)],
         Undo::None,
         &["restart"],
@@ -187,14 +187,14 @@ pub const ROWS: &[Row] = &[
     read("component_list", "live components and versions", "[string]"),
     change(
         "component_apply",
-        "apply the edited component",
+        "apply a live OS component's edited code, by name",
         &[req("name", NAME)],
         Undo::Restore,
         &["apply"],
     ),
     change(
         "component_revert",
-        "put the previous version back",
+        "put a live component's previous version back",
         &[req("name", NAME)],
         Undo::Restore,
         &["revert", "roll back"],
@@ -217,7 +217,7 @@ pub const ROWS: &[Row] = &[
     ),
     change(
         "process_stop",
-        "stop a running program",
+        "stop (kill) a running program by name",
         &[req("name", NAME)],
         Undo::None,
         &["stop", "kill", "end"],
@@ -286,7 +286,7 @@ pub const ROWS: &[Row] = &[
     ),
     change(
         "model_use",
-        "switch the AI model",
+        "switch the AI model, by model name",
         &[req("name", Ty::Enum(MODELS))],
         Undo::Restore,
         &["model"],
@@ -539,6 +539,12 @@ pub fn rows(scale: usize) -> Vec<&'static Row> {
         .chain(extra)
         .chain([&SAY, &CLARIFY, &SCRIPT])
         .collect()
+}
+
+/// The M8 world: the seven functions the fluency gate's shell has, and the
+/// pseudo-actions, so the M8 tasks are answered from a pack of what exists there.
+pub fn m8_rows() -> Vec<&'static Row> {
+    ROWS[..7].iter().chain([&SAY, &CLARIFY, &SCRIPT]).collect()
 }
 
 pub fn find<'r>(rows: &[&'r Row], name: &str) -> Option<&'r Row> {
