@@ -38,6 +38,7 @@ Parts
 - num-traits 0.2.19: MIT OR Apache-2.0.
 - once_cell 1.21.4: MIT OR Apache-2.0.
 - pc-keyboard 0.9.0: MIT OR Apache-2.0.
+- pci_types 0.10.1: MIT OR Apache-2.0.
 - portable-atomic 1.15.0: Apache-2.0 OR MIT.
 - rhai 1.27.0: MIT OR Apache-2.0.
 - safe-mmio 0.3.2: MIT OR Apache-2.0.
@@ -2851,6 +2852,32 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 --------------------------------------------------------------------------------
+MIT: pci_types 0.10.1
+--------------------------------------------------------------------------------
+
+The MIT License (MIT)
+
+Copyright (c) 2018 Isaac Woods
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+--------------------------------------------------------------------------------
 MIT: x86_64 0.15.5
 --------------------------------------------------------------------------------
 
@@ -3289,4 +3316,4 @@ the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 
 --------------------------------------------------------------------------------
-Cargo.lock SHA-256: 2c2bbf19ca057d43efc3be3844cca6b569b43b8072b228517974e7e51df70c94
+Cargo.lock SHA-256: df645541797b80d71b707bb703e006119f317a5dd2bfd3dbb34d6bcc8b317f0e

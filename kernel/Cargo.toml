@@ -18,6 +18,7 @@ spikes = ["dep:spike-rhai", "dep:spike-wasmi"]
 acpitables = { path = "../acpitables" }
 captable = { path = "../captable" }
 cpufeat = { path = "../cpufeat" }
+devmatch = { path = "../devmatch" }
 kabi = { path = "../kabi" }
 limine = "0.6.5"
 linetable = { path = "../linetable" }
@@ -27,6 +28,7 @@ llmproto = { path = "../llmproto" }
 mm = { path = "../mm" }
 netcore = { path = "../netcore" }
 nvme = { path = "../nvme" }
+pci = { path = "../pci" }
 sched = { path = "../sched" }
 supervise = { path = "../supervise" }
 termcore = { path = "../termcore" }

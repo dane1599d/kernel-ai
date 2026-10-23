@@ -44,6 +44,15 @@ pub fn main(args: &[String]) -> Result<(), String> {
                 .unwrap_or_default()
                 .replace("\r\n", "\n");
             if committed != text {
+                // The first lines that differ, so a stale file can be fixed from
+                // CI's log alone.
+                let pairs = committed.lines().zip(text.lines()).enumerate();
+                for (at, (old, new)) in pairs.filter(|(_, (o, n))| o != n).take(8) {
+                    println!("xtask: {FILE}:{}: committed: {old}", at + 1);
+                    println!("xtask: {FILE}:{}: generated: {new}", at + 1);
+                }
+                let (old, new) = (committed.lines().count(), text.lines().count());
+                println!("xtask: {FILE}: {old} lines committed, {new} generated");
                 return Err(format!(
                     "{FILE} is stale: run `cargo xtask notices` and commit it"
                 ));

@@ -89,7 +89,7 @@ pub fn args(
         "-netdev",
         "user,id=net0",
         "-device",
-        "virtio-net-pci,netdev=net0",
+        NET_DEVICE,
     ]
     .iter()
     .map(|s| s.to_string())
@@ -225,6 +225,21 @@ impl Qmp {
                 return Err(std::io::Error::other(format!("QMP: {}", line.trim())));
             }
         }
+    }
+}
+
+/// The network card's `-device` value.
+const NET_DEVICE: &str = "virtio-net-pci,netdev=net0";
+
+/// Moves the network card behind a PCIe root port of its own (bus 1).
+pub fn net_behind_bridge(args: &mut Vec<String>) {
+    if let Some(at) = args.iter().position(|arg| arg == NET_DEVICE) {
+        args[at] = format!("{NET_DEVICE},bus=kai-rp0");
+        let port = [
+            "pcie-root-port,id=kai-rp0,chassis=1".into(),
+            "-device".into(),
+        ];
+        args.splice(at..at, port);
     }
 }
 

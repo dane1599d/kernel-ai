@@ -49,6 +49,17 @@ pub(super) const CASES: &[TestCase] = &[
         expect: &["pointer: at 38 40 cell 2 5", "pointer: click 1 ctrl"],
         ..case("pointer", "test=pointer pointerlog")
     },
+    // ADR 0007: the PCI walk follows bridges, and devmatch binds what it finds.
+    TestCase {
+        bridge: true,
+        dns: true,
+        server: false,
+        expect: &[
+            "pci: virtio-net at 01:00.0 (id 1af4:",
+            "net-static: 3 of 3 pings to the gateway answered",
+        ],
+        ..case("pci-bridge", "test=net-static ip=static")
+    },
     // P7: a keyboard and a tablet on xHCI. QEMU sends keys to the USB keyboard
     // and absolute moves to the tablet; the kernel checks the keys came over USB.
     TestCase {
