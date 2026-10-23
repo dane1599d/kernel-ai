@@ -10,6 +10,9 @@
 
 #![no_std]
 
+extern crate alloc;
+
+pub mod consent;
 mod rows;
 mod show;
 
