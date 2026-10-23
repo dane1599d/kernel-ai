@@ -8,7 +8,8 @@
 //! and its `clarify` entries fix crates whose metadata is incomplete.
 //!
 //! The tree's ids are those in `SPDX-License-Identifier:` header lines of
-//! tracked files, and in `REUSE.toml` once it exists. The dependency graph is
+//! tracked files, in `REUSE.toml` once it exists, and in the hand list of
+//! `xtask/notices.json`. The dependency graph is
 //! the whole of `cargo metadata`, host tools included. Where an expression
 //! offers a choice, the alternative earliest in `allow` is taken.
 //!
@@ -34,7 +35,7 @@ pub fn main(args: &[String]) -> Result<(), String> {
 
 /// What `deny.toml` allows.
 #[derive(Debug, Default, PartialEq)]
-struct Rules {
+pub struct Rules {
     /// The free class, in order of preference.
     allow: Vec<String>,
     /// Crate name to the extra ids it alone may use.
@@ -60,15 +61,23 @@ impl Rules {
     }
 }
 
-fn check(root: &Path) -> Result<(), String> {
+/// The rules in `deny.toml`.
+pub fn rules(root: &Path) -> Result<Rules, String> {
     let deny = fs::read_to_string(root.join("deny.toml")).map_err(|e| format!("deny.toml: {e}"))?;
-    let rules = parse_rules(&deny)?;
+    parse_rules(&deny)
+}
+
+fn check(root: &Path) -> Result<(), String> {
+    let rules = rules(root)?;
     let mut problems = Vec::new();
     // Who uses an expression, the crate an exception may name, the expression.
     let mut uses: Vec<(String, Option<String>, String)> = tree_expressions(root)?
         .into_iter()
         .map(|(path, expression)| (path, None, expression))
         .collect();
+    for (name, krate, expression) in crate::notices::hand_expressions(root)? {
+        uses.push((format!("xtask/notices.json: {name}"), krate, expression));
+    }
     for (name, version, expression) in graph(root)? {
         match rules.clarify.get(&name).cloned().or(expression) {
             Some(e) => uses.push((format!("{name} {version}"), Some(name), e)),
@@ -168,7 +177,7 @@ fn quoted(line: &str) -> Vec<String> {
 
 /// The ids `expression` needs under `rules`: the preferred alternative of each
 /// `OR`, every operand of each `AND`, both halves of a `WITH`.
-fn choose(expression: &str, rules: &Rules, krate: Option<&str>) -> Result<Vec<String>, String> {
+pub fn choose(expression: &str, rules: &Rules, krate: Option<&str>) -> Result<Vec<String>, String> {
     let spaced = expression
         .replace('(', " ( ")
         .replace(')', " ) ")

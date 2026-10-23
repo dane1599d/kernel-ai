@@ -57,7 +57,7 @@ Base: design A, kaifs. Grafts from B: the flush rule, handles that survive a res
 
 - `kaifs` is a `no_std` + `alloc` crate, host-tested like `nvme` and `supervise`.
 - 4 KiB blocks. One copy-on-write B+tree per volume, with 4 KiB nodes.
-- A buddy allocator with levels 0-9, so runs of 4 KiB to 2 MiB are naturally aligned. It is adapted from RedoxFS `src/allocator.rs`, with the MIT notice kept and listed in docs/third-party-notices.md.
+- A buddy allocator with levels 0-9, so runs of 4 KiB to 2 MiB are naturally aligned. It is adapted from RedoxFS `src/allocator.rs`, with the MIT notice kept and listed in `xtask/notices.json` (so in `NOTICES.txt`).
 - File data sits in records of up to 128 KiB. Sealed blobs use 2 MiB records.
 - A `BlockDev` trait (`read`, `write`, `flush`, `info`) runs the same code in `fs`, in xtask over an image file, and in tests over a recording disk. No GPL code.
 
