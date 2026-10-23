@@ -98,7 +98,7 @@ pub fn system_prompts() -> String {
 }
 
 /// A request's conversation as the engine's turns.
-fn turns(request: &chat::Request) -> Vec<Turn<'_>> {
+pub(crate) fn turns(request: &chat::Request) -> Vec<Turn<'_>> {
     request
         .messages
         .iter()
@@ -287,6 +287,8 @@ pub fn describe(error: &infer::Error) -> String {
         other => other.to_string(),
     }
 }
+
+pub mod act;
 
 #[cfg(test)]
 mod tests;

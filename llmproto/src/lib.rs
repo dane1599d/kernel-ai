@@ -9,6 +9,7 @@
 
 extern crate alloc;
 
+pub mod act;
 pub mod chat;
 pub mod explain;
 pub mod http;
