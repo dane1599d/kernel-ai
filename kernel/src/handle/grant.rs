@@ -13,7 +13,6 @@
 
 use super::HANDLES;
 use crate::threads;
-use alloc::format;
 use captable::grant::{self, GrantRef, Life, Live, NODES, Tree};
 use captable::once::{Book, Verdict};
 use captable::{Entry, Table};
@@ -70,21 +69,35 @@ pub fn create(
 
 /// The node for typed request `n` under `user`, for the trusted path.
 pub fn new_request(n: u64) -> Result<GrantRef, kabi::Error> {
-    let user = root(grant::USER);
-    create(user, 0, Life::Request, format!("request {n}").as_bytes())
+    // "request N", written without the heap: the trusted path makes one per line.
+    let mut label = [0u8; grant::LABEL];
+    label[..8].copy_from_slice(b"request ");
+    let mut digits = [0u8; 20];
+    let mut at = digits.len();
+    let mut rest = n;
+    loop {
+        at -= 1;
+        digits[at] = b'0' + (rest % 10) as u8;
+        rest /= 10;
+        if rest == 0 {
+            break;
+        }
+    }
+    let len = (8 + digits.len() - at).min(grant::LABEL);
+    label[8..len].copy_from_slice(&digits[at..at + len - 8]);
+    create(root(grant::USER), 0, Life::Request, &label[..len])
 }
 
 /// Revokes `node` and everything below it; how many nodes went. Calls in
 /// flight through routes under any of them are woken and fail.
 pub fn revoke(node: GrantRef) -> Result<usize, kabi::Error> {
-    let mut freed = [false; NODES];
+    let mut freed = [0u16; NODES];
     let count = {
         let mut tree = TREE.lock();
         let count = tree.revoke(node, &mut freed).map_err(tree_error)?;
-        for (index, gone) in freed.iter().enumerate() {
-            if *gone {
-                GENERATIONS[index].store(tree.generation(index), Ordering::Release);
-            }
+        for &index in &freed[..count] {
+            let index = usize::from(index);
+            GENERATIONS[index].store(tree.generation(index), Ordering::Release);
         }
         count
     };

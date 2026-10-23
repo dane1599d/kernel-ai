@@ -303,8 +303,7 @@ fn a_handle_under_a_revoked_grant_answers_revoked_and_is_never_found() {
             .check(given, Kind::Sched, Rights::READ, &*tree)
             .is_ok()
     );
-    tree.revoke(request, &mut [false; crate::grant::NODES])
-        .unwrap();
+    tree.revoke(request, &mut [0; crate::grant::NODES]).unwrap();
     for gone in [given, deeper] {
         assert_eq!(
             table.check(gone, Kind::Sched, Rights::READ, &*tree),
@@ -387,9 +386,7 @@ fn m4_no_attack_succeeds() {
                 .unwrap()
         })
         .collect();
-    let freed = tree
-        .revoke(request, &mut [false; crate::grant::NODES])
-        .unwrap();
+    let freed = tree.revoke(request, &mut [0; crate::grant::NODES]).unwrap();
     for handle in &doomed {
         attempt(
             table

@@ -119,8 +119,7 @@ mod tests {
         assert_eq!(book.check(badge, &shown, &*tree), Verdict::Match);
         assert_eq!(book.check(badge, &shown, &*tree), Verdict::Unknown);
         let badge = book.hold(request, shown, &*tree).unwrap();
-        tree.revoke(request, &mut [false; crate::grant::NODES])
-            .unwrap();
+        tree.revoke(request, &mut [0; crate::grant::NODES]).unwrap();
         assert_eq!(book.check(badge, &shown, &*tree), Verdict::Revoked);
     }
 }

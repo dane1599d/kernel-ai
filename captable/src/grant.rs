@@ -225,9 +225,9 @@ impl Tree {
 
     /// Revokes `grant` and every node below it: each is freed and its slot's
     /// generation bumped, so no handle given under any of them works again.
-    /// Marks each node freed in `freed`. Roots stay. Not generic, so it runs as
-    /// compiled here (optimised) whoever calls it.
-    pub fn revoke(&mut self, grant: GrantRef, freed: &mut [bool; NODES]) -> Result<usize, Error> {
+    /// Writes the freed nodes to `freed[..count]`. Roots stay. Not generic, so
+    /// it runs as compiled here (optimised) whoever calls it.
+    pub fn revoke(&mut self, grant: GrantRef, freed: &mut [u16; NODES]) -> Result<usize, Error> {
         if !self.alive(grant) {
             return Err(Error::Revoked);
         }
@@ -258,7 +258,7 @@ impl Tree {
                 self.nodes[index] = None;
                 // 0 is never a generation a reference carries.
                 self.generations[index] = self.generations[index].wrapping_add(1).max(1);
-                freed[index] = true;
+                freed[count] = index as u16;
                 count += 1;
             }
         }
@@ -291,17 +291,14 @@ mod tests {
             .create(user, 0, Life::Request, b"request 2", 0)
             .unwrap();
         assert!(tree.within(grandchild, request) && !tree.within(other, request));
-        let mut freed = [false; NODES];
+        let mut freed = [0u16; NODES];
         assert_eq!(tree.revoke(request, &mut freed), Ok(3));
-        assert_eq!(freed.iter().filter(|f| **f).count(), 3);
+        assert_eq!(freed[..3], [request.node, child.node, grandchild.node]);
         for gone in [request, child, grandchild] {
             assert!(!tree.alive(gone));
         }
         assert!(tree.alive(other) && tree.alive(user));
-        assert_eq!(
-            tree.revoke(request, &mut [false; NODES]),
-            Err(Error::Revoked)
-        );
+        assert_eq!(tree.revoke(request, &mut [0; NODES]), Err(Error::Revoked));
         assert_eq!(
             tree.create(request, 0, Life::Request, b"x", 0),
             Err(Error::Revoked)
@@ -318,7 +315,7 @@ mod tests {
         let mut tree = Box::new(Tree::new());
         for root in [KERNEL, SYSTEM, USER] {
             let r = tree.root(root);
-            assert_eq!(tree.revoke(r, &mut [false; NODES]), Err(Error::Invalid));
+            assert_eq!(tree.revoke(r, &mut [0; NODES]), Err(Error::Invalid));
         }
         let user = tree.root(USER);
         for _ in 3..NODES {
