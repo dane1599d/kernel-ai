@@ -70,6 +70,7 @@ pub enum SelfTest {
     IcountProbe,
     /// M10a-3: kernel-owned trials on the workload revert or keep by the rules.
     TuneRevert,
+    TuneStall,
     /// M10a-4: the shell's `tune` with mock answers, through the kernel's trials.
     Tune,
     /// M10a-4: `tune` on the generated model on the disk, golden from the host.
@@ -129,6 +130,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=bigmap" => Some(SelfTest::Bigmap),
             "test=icount-probe" => Some(SelfTest::IcountProbe),
             "test=tune-revert" => Some(SelfTest::TuneRevert),
+            "test=tune-stall" => Some(SelfTest::TuneStall),
             "test=tune" => Some(SelfTest::Tune),
             "test=tune-local" => Some(SelfTest::TuneLocal),
             "test=tune-demo" => Some(SelfTest::TuneDemo),
@@ -163,6 +165,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::LocalScript
             | SelfTest::Latency
             | SelfTest::TuneRevert
+            | SelfTest::TuneStall
             | SelfTest::Tune
             | SelfTest::TuneLocal
             | SelfTest::TuneDemo
