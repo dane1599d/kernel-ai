@@ -37,6 +37,11 @@ debug-assertions = false
 [profile.dev.package.gguf]
 opt-level = 2
 
+# The handle table: a lookup on most system calls (ADR 0001's M1), unoptimised
+# the main cost of a handle check over a bit check.
+[profile.dev.package.captable]
+opt-level = 2
+
 [profile.dev.package.cpufeat]
 opt-level = 2
 

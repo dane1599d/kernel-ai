@@ -201,6 +201,7 @@ fn start(name: &str, program: &str, args: &str) -> Result<u64, &'static str> {
         limits: LIMITS,
         spawner: 0,
         supervisor: false,
+        uses: &[],
     })
     .map_err(|error| {
         log!("self-test: cannot start {name}: {error:?}");

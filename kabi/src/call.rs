@@ -43,10 +43,8 @@ pub const HTTP: u64 = 15;
 /// `list(buf, cap) -> len`: running services, one `pid name` per line, so a
 /// restarted supervisor can find the services it already started.
 pub const LIST: u64 = 16;
-/// `call(name_ptr, name_len, &CallRequest) -> reply len`: sends a request to
-/// another service and waits for its reply (needs [`super::cap::CALL`]). A
-/// process may not call itself, a service that can itself call, nor the edit
-/// service, which only the kernel drives.
+/// Retired: calling a service by name. The number stays taken and answers
+/// NotFound; [`CALL_H`] calls through a route handle instead (ADR 0001 D3).
 pub const CALL: u64 = 17;
 /// `metrics(&mut Metrics) -> 0`: scheduler, memory and process numbers.
 pub const METRICS: u64 = 18;
@@ -157,5 +155,19 @@ pub const HANDLE_REPLACE: u64 = 42;
 /// `handle_close(handle) -> 0`: closes a handle for good. The right it carried is
 /// gone: a call that needs it fails with Permission from then on.
 pub const HANDLE_CLOSE: u64 = 43;
+/// `call_h(route, &handle::CallH) -> reply len`: sends a request through a
+/// `Service` route with CALL and waits for the reply, moving up to
+/// [`super::handle::MAX_TRANSFER`] handles each way (each needs TRANSFER, and
+/// the receiver's capability bits must allow its kind; Permission otherwise,
+/// and nothing moves). The handles the reply carries are written to
+/// `handles_out`, the rest of it zero.
+pub const CALL_H: u64 = 44;
+/// `recv_h(buf, cap, timeout_ms, &mut handle::RecvInfo) -> request len`: as
+/// [`SVC_RECV`], also reporting the caller's pid (0 for the kernel), the route's
+/// badge and rights, and the handles the request carried, now in this process.
+pub const RECV_H: u64 = 45;
+/// `reply_h(ptr, len, handles_ptr, handles_len) -> len`: as [`SVC_REPLY`],
+/// moving up to [`super::handle::MAX_TRANSFER`] handles to the caller.
+pub const REPLY_H: u64 = 46;
 /// The highest call number.
-pub const MAX: u64 = HANDLE_CLOSE;
+pub const MAX: u64 = REPLY_H;

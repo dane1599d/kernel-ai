@@ -6,11 +6,17 @@
 //! and right (`need`), so closing the handle drops the right for good. The table
 //! goes when the process's last thread leaves.
 //!
+//! A process with CALL gets one `Service` route per service its plan line names in
+//! `uses=` (ADR 0001 D3), in that order; a route names its service by an id from
+//! [`route_id`]. Handles move between tables only through handle IPC, each with
+//! TRANSFER and into a process whose capability bits allow its kind
+//! ([`take_for`]).
+//!
 //! Tables live here rather than in `Process`, which is `Copy` and copied under the
 //! process table's lock. Lock order: a slot's SPACE, then HANDLES, then TABLE; this
 //! module never takes TABLE while holding a table.
 
-use crate::process::MAX_PROCESSES;
+use crate::process::{MAX_PROCESSES, Name};
 use alloc::vec::Vec;
 use captable::{Entry, Table};
 use kabi::cap;
@@ -26,14 +32,45 @@ pub struct Handles {
 static HANDLES: [Mutex<Option<Handles>>; MAX_PROCESSES] =
     [const { Mutex::new(None) }; MAX_PROCESSES];
 
-/// Rights every startup handle carries besides its own: it can be inspected and
-/// narrowed into a second handle.
-const BASE: Rights = Rights::DUPLICATE.union(Rights::INSPECT);
+/// Rights every startup handle carries besides its own: it can be inspected,
+/// narrowed into a second handle and moved to another process.
+const BASE: Rights = Rights::DUPLICATE
+    .union(Rights::INSPECT)
+    .union(Rights::TRANSFER);
+
+/// Services routes can name: the id of a route's service is its index here, plus 1.
+const MAX_ROUTE_NAMES: usize = 32;
+static ROUTE_NAMES: Mutex<[Option<Name>; MAX_ROUTE_NAMES]> =
+    Mutex::new([const { None }; MAX_ROUTE_NAMES]);
+
+/// The id routes to the service `name` carry as their object, made on first use.
+pub fn route_id(name: &str) -> Result<u64, kabi::Error> {
+    let name = Name::new(name).ok_or(kabi::Error::Invalid)?;
+    let mut names = ROUTE_NAMES.lock();
+    let index = match names.iter().position(|n| *n == Some(name)) {
+        Some(index) => index,
+        None => {
+            let free = names
+                .iter()
+                .position(Option::is_none)
+                .ok_or(kabi::Error::NoMemory)?;
+            names[free] = Some(name);
+            free
+        }
+    };
+    Ok(index as u64 + 1)
+}
+
+/// The service a route with object `id` names.
+pub fn route_name(id: u64) -> Option<Name> {
+    let index = usize::try_from(id).ok()?.checked_sub(1)?;
+    *ROUTE_NAMES.lock().get(index)?
+}
 
 /// The startup handles for capability bits `caps` (ADR 0001 D3's table), for the
-/// process `pid`. CALL gives one route that still calls by name until handle IPC.
+/// process `pid`. CALL gives a route only through `uses=`, so none here.
 pub fn startup(caps: u64, pid: u64) -> Vec<Entry> {
-    let rows: [(u64, Kind, Rights, u64); 11] = [
+    let rows: [(u64, Kind, Rights, u64); 10] = [
         (
             cap::SUPERVISE,
             Kind::Job,
@@ -46,7 +83,6 @@ pub fn startup(caps: u64, pid: u64) -> Vec<Entry> {
             Rights::RECV.union(Rights::MINT),
             pid,
         ),
-        (cap::CALL, Kind::Service, Rights::CALL, 0),
         (cap::NET, Kind::NetDest, Rights::CONNECT, netdest::LLM),
         (
             cap::POLICY,
@@ -100,15 +136,47 @@ pub fn required(bit: u64) -> Option<(Kind, Rights)> {
     })
 }
 
+/// The kinds a process with capability bits `caps` may hold (its kind ceiling,
+/// ADR 0001 D3). A kind no bit stands for yet (`Grant`, `Shm`) is not limited.
+pub fn ceiling_allows(caps: u64, kind: Kind) -> bool {
+    let bits = [
+        (Kind::Job, cap::SUPERVISE),
+        (Kind::Endpoint, cap::SERVE),
+        (Kind::Service, cap::CALL),
+        (Kind::Sched, cap::POLICY),
+        (Kind::Component, cap::COMPONENT),
+        (Kind::Store, cap::PUBLISH),
+        (Kind::Build, cap::PUBLISH),
+        (Kind::Model, cap::MODEL),
+        (Kind::Process, cap::THREADS),
+        (Kind::NetDest, cap::NET | cap::RESOLVE),
+    ];
+    bits.iter()
+        .find(|(k, _)| *k == kind)
+        .is_none_or(|(_, bit)| caps & bit != 0)
+}
+
+/// A route to `service` with CALL, for a startup table or a kernel test.
+pub fn route(service: &str) -> Result<Entry, kabi::Error> {
+    Ok(Entry::new(
+        Kind::Service,
+        Rights::CALL | BASE,
+        route_id(service)?,
+    ))
+}
+
 /// Builds the table for a process about to start in `slot`: its startup handles
-/// from `caps`. Before the process runs, so nothing races it.
-pub fn create(slot: usize, caps: u64, pid: u64) -> Result<(), kabi::Error> {
+/// from `caps`, then a route to each service in `uses` (CALL only). Before the
+/// process runs, so nothing races it.
+pub fn create(slot: usize, caps: u64, pid: u64, uses: &[&str]) -> Result<(), kabi::Error> {
     let mut table = Table::new().map_err(kabi::Error::from)?;
     let mut startup = Vec::new();
     startup
         .try_reserve_exact(MAX_STARTUP)
         .map_err(|_| kabi::Error::NoMemory)?;
-    for entry in self::startup(caps, pid) {
+    let routes = uses.iter().filter(|_| caps & cap::CALL != 0);
+    let routes: Result<Vec<Entry>, kabi::Error> = routes.map(|name| route(name)).collect();
+    for entry in self::startup(caps, pid).into_iter().chain(routes?) {
         startup.push(table.insert(entry).map_err(kabi::Error::from)?);
     }
     *HANDLES[slot].lock() = Some(Handles { table, startup });
@@ -152,6 +220,51 @@ pub fn need(slot: usize, bits: u64) -> Result<(), kabi::Error> {
         }
     }
     Ok(())
+}
+
+/// Takes `handles` out of `slot`'s table to move them to a process with
+/// capability bits `to_caps`: each must be open (BadHandle), carry TRANSFER and be
+/// of a kind the receiver may hold (Permission), and appear once (Invalid). On any
+/// refusal nothing is taken.
+pub fn take_for(slot: usize, handles: &[Handle], to_caps: u64) -> Result<Vec<Entry>, kabi::Error> {
+    let mut guard = HANDLES[slot].lock();
+    let table = &mut guard.as_mut().ok_or(kabi::Error::BadHandle)?.table;
+    for (i, &handle) in handles.iter().enumerate() {
+        let entry = table.get(handle).map_err(kabi::Error::from)?;
+        if !entry.rights.contains(Rights::TRANSFER) || !ceiling_allows(to_caps, entry.kind) {
+            return Err(kabi::Error::Permission);
+        }
+        if handles[..i].contains(&handle) {
+            return Err(kabi::Error::Invalid);
+        }
+    }
+    handles
+        .iter()
+        .map(|&handle| table.close(handle).map_err(kabi::Error::from))
+        .collect()
+}
+
+/// Puts moved `entries` into `slot`'s table; their new handles. One that does not
+/// fit is dropped, and its handle is 0.
+pub fn give(slot: usize, entries: Vec<Entry>) -> Vec<Handle> {
+    let mut guard = HANDLES[slot].lock();
+    let Some(handles) = guard.as_mut() else {
+        return alloc::vec![Handle::NONE; entries.len()];
+    };
+    entries
+        .into_iter()
+        .map(|entry| handles.table.insert(entry).unwrap_or(Handle::NONE))
+        .collect()
+}
+
+/// The capability bits of the live process `pid`; `None` for none (the kernel).
+pub fn caps_of(pid: u64) -> Option<u64> {
+    crate::process::with_table(|table| {
+        table
+            .iter()
+            .find(|p| p.live() && p.pid == pid && pid != 0)
+            .map(|p| p.limits.caps)
+    })
 }
 
 /// A handle as ring 3 sees it.

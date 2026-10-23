@@ -215,6 +215,7 @@ fn ring3_checks() -> Result<(), &'static str> {
             },
             spawner: 0,
             supervisor: false,
+            uses: &[],
         })
         .map_err(|_| "net-setup: cannot start netcheck")?;
         if !matches!(wait_exit(pid)?, (ExitReason::Exited, 0)) {

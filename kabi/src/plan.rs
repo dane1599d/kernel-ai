@@ -4,9 +4,11 @@
 use alloc::format;
 use alloc::string::String;
 
-/// The Rhai shell: it serves the terminal, calls the llm service, may switch
-/// the scheduling policy, and needs a large stack for Rhai's recursion.
-pub const SHELL: &str = "shell caps=serve+call+policy pages=4096 stack_pages=512 burst_ms=5000";
+/// The Rhai shell: it serves the terminal, calls the llm service through its one
+/// route, may switch the scheduling policy, and needs a large stack for Rhai's
+/// recursion.
+pub const SHELL: &str =
+    "shell caps=serve+call+policy uses=llm pages=4096 stack_pages=512 burst_ms=5000";
 /// The live `notes` component, run by the shared `comphost` program, without its
 /// arguments.
 const NOTES_BASE: &str =

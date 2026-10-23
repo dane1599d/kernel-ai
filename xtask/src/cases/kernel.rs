@@ -20,11 +20,13 @@ pub(super) const CASES: &[TestCase] = &[
     case("storm", "test=storm"),
     case("fpu", "test=fpu"),
     case("probe", "test=probe"),
-    // P1 task 5: handle tables, startup handles and need() on handles, from the
-    // kernel and from ring 3; also spike S01-1's M1.
+    // P1 tasks 5 and 12: handle tables, startup handles and need() on handles, from
+    // the kernel and from ring 3; handle IPC through a route; spike S01-1's M1.
     TestCase {
         expect: &[
             "[handles] handles: every check passed",
+            "[hcli] handles: a request and a handle went to the server and back through a route",
+            "handles: CALL_H, RECV_H and REPLY_H moved a request and a handle there and back",
             "handles: M1: bit check ",
         ],
         ..case("handles", "test=handles")

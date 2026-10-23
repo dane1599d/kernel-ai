@@ -53,6 +53,7 @@ fn the_plan_the_kernel_sends_parses() {
     let shell = &plan.services[1];
     assert_eq!(shell.name, "shell");
     assert_eq!(shell.limits.caps, cap::SERVE | cap::CALL | cap::POLICY);
+    assert_eq!(shell.uses, ["llm"]);
     assert_eq!(shell.limits.stack_pages, 512);
     assert!(shell.limits.stack_pages < shell.limits.max_pages);
     assert_eq!(
@@ -192,7 +193,12 @@ fn program_names_the_program_and_is_not_passed_on() {
     let notes = &parse_plan(&kabi::plan::notes("2", None)).services[0];
     assert_eq!(notes.args, "version=2");
     // Without the key, a service runs the program of its own name.
-    let shell = &parse_plan(kabi::plan::SHELL).services[0];
+    let plan = parse_plan(&alloc::format!(
+        "llm caps=serve
+{}",
+        kabi::plan::SHELL
+    ));
+    let shell = &plan.services[1];
     assert_eq!(shell.program, "shell");
 }
 
@@ -225,4 +231,44 @@ fn the_edit_service_and_its_test_plan_parse() {
     let notes = &parse_plan(kabi::plan::NOTES_EDIT_TEST).services[0];
     assert_eq!(notes.args, "version=2 probation_calls=3 probation_ms=0");
     assert_eq!(notes.limits.caps, cap::SERVE | cap::COMPONENT);
+}
+
+#[test]
+fn uses_gives_routes_to_services_listed_before() {
+    let plan = parse_plan("llm caps=serve\nnotes caps=serve\nshell caps=serve+call uses=llm+notes");
+    assert_eq!(plan.errors, Vec::<String>::new());
+    assert_eq!(plan.services[2].uses, ["llm", "notes"]);
+    assert!(plan.services[0].uses.is_empty());
+    assert_eq!(plan.services[2].args, "");
+}
+
+#[test]
+fn routes_form_no_cycle_and_never_reach_the_shell_or_edit() {
+    for (bad, why) in [
+        (
+            "a caps=serve+call uses=b\nb caps=serve+call uses=a",
+            "not listed before",
+        ),
+        ("a caps=serve+call uses=a", "no route may go to a"),
+        (
+            "shell caps=serve\nx caps=call uses=shell",
+            "no route may go to shell",
+        ),
+        (
+            "edit caps=serve\nx caps=call uses=edit",
+            "no route may go to edit",
+        ),
+        ("llm caps=serve\nx caps=call uses=llm+llm", "twice"),
+        (
+            "llm caps=serve\nx caps=serve uses=llm",
+            "needs the call capability",
+        ),
+    ] {
+        let plan = parse_plan(bad);
+        assert!(
+            plan.errors.iter().any(|e| e.contains(why)),
+            "{bad}: {:?}",
+            plan.errors
+        );
+    }
 }

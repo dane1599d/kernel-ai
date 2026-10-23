@@ -27,6 +27,12 @@ const SCRIPT_CALL_MS: u64 = SCRIPT_ROUND_MS + 5_000;
 
 struct System;
 
+/// The route to the llm service: the shell's plan line has `uses=llm`, its only
+/// route.
+fn llm() -> kabi::handle::Handle {
+    user::route(0).unwrap_or(kabi::handle::Handle::NONE)
+}
+
 impl Host for System {
     fn now_ns(&self) -> u64 {
         sys::time_ns()
@@ -51,7 +57,7 @@ impl Host for System {
     fn ask(&self, prompt: &str) -> Result<String, String> {
         let request = alloc::format!("ask {prompt}");
         let mut reply = vec![0u8; kabi::MAX_MESSAGE];
-        let len = sys::service_call("llm", request.as_bytes(), &mut reply, ASK_TIMEOUT_MS)
+        let len = sys::call_route(llm(), request.as_bytes(), &mut reply, ASK_TIMEOUT_MS)
             .map_err(|error| alloc::format!("llm service: {error:?}"))?;
         let text = String::from_utf8_lossy(&reply[..len.min(reply.len())]).into_owned();
         match text.split_once(' ').unwrap_or((text.as_str(), "")) {
@@ -64,8 +70,8 @@ impl Host for System {
     fn script(&self, request: &ScriptRequest) -> Result<Answer, AnswerError> {
         let server = |why: &str| AnswerError::Server(alloc::format!("llm service: {why}"));
         let mut reply = vec![0u8; kabi::MAX_MESSAGE];
-        let len = sys::service_call(
-            "llm",
+        let len = sys::call_route(
+            llm(),
             request.encode().as_bytes(),
             &mut reply,
             SCRIPT_CALL_MS,
@@ -107,8 +113,8 @@ impl Host for System {
 
     fn tune(&self, request: &TuneRequest) -> Result<Completion, String> {
         let mut reply = vec![0u8; kabi::MAX_MESSAGE];
-        let len = sys::service_call(
-            "llm",
+        let len = sys::call_route(
+            llm(),
             request.encode().as_bytes(),
             &mut reply,
             tune::CALL_TIMEOUT_MS,

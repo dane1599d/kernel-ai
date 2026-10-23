@@ -58,6 +58,7 @@ pub(crate) fn start(name: &str, args: &str, caps: u64, burst_ms: u64) -> Result<
         },
         spawner: 0,
         supervisor: false,
+        uses: &[],
     })
     .map_err(|error| {
         log!("threads: cannot start {name}: {error:?}");

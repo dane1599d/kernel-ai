@@ -108,6 +108,18 @@ macro_rules! logln {
     };
 }
 
+/// The process's `n`th route, counting from 0 in the order of its plan line's
+/// `uses=` (ADR 0001 D3): the `n`th `Service` handle among its startup handles.
+pub fn route(n: usize) -> Option<kabi::handle::Handle> {
+    let mut list = [kabi::handle::HandleInfo::default(); kabi::handle::MAX_STARTUP];
+    let count = sys::startup(&mut list).ok()?.min(list.len());
+    list[..count]
+        .iter()
+        .filter(|info| info.kind() == Some(kabi::handle::Kind::Service))
+        .nth(n)
+        .map(|info| kabi::handle::Handle(info.handle))
+}
+
 /// The argument string this program was started with.
 pub fn args() -> alloc::string::String {
     let mut buf = [0u8; kabi::MAX_ARGS];

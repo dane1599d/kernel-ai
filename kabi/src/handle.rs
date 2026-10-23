@@ -188,6 +188,41 @@ impl HandleInfo {
     }
 }
 
+/// Most handles one message moves.
+pub const MAX_TRANSFER: usize = 4;
+
+/// Argument of [`crate::call::CALL_H`].
+#[derive(Clone, Copy, Debug, Default)]
+#[repr(C)]
+pub struct CallH {
+    pub request_ptr: u64,
+    pub request_len: u64,
+    pub reply_ptr: u64,
+    pub reply_cap: u64,
+    pub timeout_ms: u64,
+    /// Handles to move to the server: `handles_len` u32 values.
+    pub handles_ptr: u64,
+    pub handles_len: u64,
+    /// Where the handles the reply carries go: room for `handles_out_cap` u32s.
+    pub handles_out_ptr: u64,
+    pub handles_out_cap: u64,
+}
+
+/// Filled in by [`crate::call::RECV_H`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct RecvInfo {
+    /// The calling process, or 0 for the kernel.
+    pub caller_pid: u64,
+    /// The badge of the route the call came through; 0 from the kernel.
+    pub badge: u64,
+    /// The rights of that route.
+    pub rights: u32,
+    /// How many of `handles` the request carried.
+    pub handle_count: u32,
+    pub handles: [u32; MAX_TRANSFER],
+}
+
 /// Fixed network destinations (ADR 0001 D2 `NetDest`): the object a `NetDest`
 /// handle names.
 pub mod netdest {
@@ -201,6 +236,8 @@ const _: () = {
     assert!(TABLE_MAX == 1 << INDEX_BITS);
     assert!(core::mem::size_of::<AbiInfo>() == 16);
     assert!(core::mem::size_of::<HandleInfo>() == 16);
+    assert!(core::mem::size_of::<CallH>() == 9 * 8);
+    assert!(core::mem::size_of::<RecvInfo>() == 24 + 4 * MAX_TRANSFER);
 };
 
 #[cfg(test)]

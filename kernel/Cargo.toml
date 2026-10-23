@@ -28,6 +28,7 @@ mm = { path = "../mm" }
 netcore = { path = "../netcore" }
 nvme = { path = "../nvme" }
 sched = { path = "../sched" }
+supervise = { path = "../supervise" }
 termcore = { path = "../termcore" }
 gfxcore = { path = "../gfxcore" }
 serde = { version = "1.0.229", default-features = false, features = ["alloc", "derive"] }
