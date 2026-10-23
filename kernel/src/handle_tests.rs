@@ -34,11 +34,12 @@ pub fn check() -> Result<(), &'static str> {
     Ok(())
 }
 
-/// The startup handles each capability bit gives, in a spare slot's table.
+/// The startup handles each capability bit gives, in a spare slot's table, with
+/// one route for CALL.
 fn startup_handles() -> Result<(), &'static str> {
     let slot = MAX_PROCESSES - 1;
     let all = cap::GRANTABLE | cap::SUPERVISE;
-    handle::create(slot, all, 99, &[]).map_err(|_| "handles: cannot make a table")?;
+    handle::create(slot, all, 99, &["llm"]).map_err(|_| "handles: cannot make a table")?;
     let result = (|| {
         for bit in (0..64).map(|n| 1u64 << n).filter(|bit| all & bit != 0) {
             let (kind, rights) =
@@ -49,7 +50,8 @@ fn startup_handles() -> Result<(), &'static str> {
             handle::need(slot, bit).map_err(|_| "handles: need() refused a held right")?;
         }
         let count = handle::with(slot, |handles| handles.startup().count()).unwrap_or(0);
-        // PUBLISH gives two handles, every other bit one.
+        // PUBLISH gives two handles, CALL one route (to llm here), every other
+        // bit one handle.
         if count != all.count_ones() as usize + 1 {
             return Err("handles: the wrong number of startup handles");
         }
