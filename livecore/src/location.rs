@@ -188,10 +188,13 @@ mod tests {
         use kabi::live::{MANIFEST_SECTION, SOURCE_SECTION};
         let mut module = Vec::from(&b"\0asm\x01\0\0\0"[..]);
         let manifest = Manifest {
+            lifecycle: 1,
             component: "notes".into(),
             version: "2".into(),
-            interface: "notes@1".into(),
+            world: "app:notes/notes@1.0.0".into(),
+            engine: "wasmi".into(),
             features: "-".into(),
+            licence: "MPL-2.0".into(),
             build: "ab".into(),
             source: "cd".into(),
         };

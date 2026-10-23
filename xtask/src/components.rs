@@ -153,10 +153,14 @@ fn build_one(root: &Path, version: &Version) -> Result<Module, String> {
 /// The module with its manifest and source sections appended.
 pub fn pack(recipe: &Recipe, label: &str, mut module: Vec<u8>, source: &[u8]) -> Vec<u8> {
     let manifest = Manifest {
+        lifecycle: 1,
         component: recipe.component.into(),
         version: label.into(),
-        interface: format!("{}@1", recipe.component),
+        world: format!("app:{0}/{0}@1.0.0", recipe.component),
+        engine: "wasmi".into(),
         features: recipe.feature.unwrap_or("-").into(),
+        // The workspace licence (Cargo.toml), which every in-tree component uses.
+        licence: "MPL-2.0".into(),
         build: sha256_hex(&module),
         source: sha256_hex(source),
     };

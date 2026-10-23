@@ -9,13 +9,16 @@ use kabi::live::{MANIFEST_SECTION, SOURCE_SECTION, kind};
 const HOST: u64 = 7;
 const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
 
-fn artifact(component: &str, version: &str, interface: &str, pad: usize) -> Vec<u8> {
+fn artifact(component: &str, version: &str, world: &str, pad: usize) -> Vec<u8> {
     let mut module = Vec::from(&b"\0asm\x01\0\0\0"[..]);
     let manifest = Manifest {
+        lifecycle: 1,
         component: component.into(),
         version: version.into(),
-        interface: interface.into(),
+        world: world.into(),
+        engine: "wasmi".into(),
         features: "-".into(),
+        licence: "MPL-2.0".into(),
         build: "ab".into(),
         source: format!("src-{version}"),
     };
@@ -41,7 +44,7 @@ fn event(kind: u64, label: &str) -> Event {
 /// `notes` with boot version 2 running on host pid 7.
 fn running() -> Component {
     let mut notes = Component::new("notes");
-    let two = artifact("notes", "2", "notes@1", 0);
+    let two = artifact("notes", "2", "app:notes/notes@1.0.0", 0);
     notes.add_version("2", Bytes::shared(two)).unwrap();
     notes.record_fetch(HOST, "2");
     notes.event(HOST, &event(kind::RESTORED, "2")).unwrap();
@@ -59,7 +62,12 @@ fn put_bytes(
 }
 
 fn put(notes: &mut Component, version: &str) -> Result<String, Error> {
-    put_bytes(notes, artifact("notes", version, "notes@1", 0), "2", 0)
+    put_bytes(
+        notes,
+        artifact("notes", version, "app:notes/notes@1.0.0", 0),
+        "2",
+        0,
+    )
 }
 
 /// Swaps to `label` and commits it, or rolls it back with `reason`.
@@ -125,13 +133,33 @@ fn labels_start_at_e1_and_advance_only_on_a_successful_upload() {
 fn every_rule_refuses_and_leaves_the_store_unchanged() {
     let mut notes = running();
     let wrong = [
-        (artifact("other", "e1", "notes@1", 0), "2", COMMIT),
-        (artifact("notes", "e1", "notes@2", 0), "2", COMMIT),
-        (artifact("notes", "e1", "notes@1", 0), "9", COMMIT),
-        (artifact("notes", "e1", "notes@1", 0), "../x", COMMIT),
-        (artifact("notes", "e1", "notes@1", 0), "2", "0123ABCDEF"),
         (
-            artifact("notes", "e1", "notes@1", 0),
+            artifact("other", "e1", "app:notes/notes@1.0.0", 0),
+            "2",
+            COMMIT,
+        ),
+        (
+            artifact("notes", "e1", "app:notes/notes@2.0.0", 0),
+            "2",
+            COMMIT,
+        ),
+        (
+            artifact("notes", "e1", "app:notes/notes@1.0.0", 0),
+            "9",
+            COMMIT,
+        ),
+        (
+            artifact("notes", "e1", "app:notes/notes@1.0.0", 0),
+            "../x",
+            COMMIT,
+        ),
+        (
+            artifact("notes", "e1", "app:notes/notes@1.0.0", 0),
+            "2",
+            "0123ABCDEF",
+        ),
+        (
+            artifact("notes", "e1", "app:notes/notes@1.0.0", 0),
             "2",
             "0123456789ABCDEF0123456789abcdef01234567",
         ),
@@ -145,15 +173,18 @@ fn every_rule_refuses_and_leaves_the_store_unchanged() {
     let junk = b"not an artifact".to_vec();
     let result = notes.put(&meta(&junk), Arc::new(junk), "2", COMMIT, 0);
     assert_eq!(result, Err(Error::Invalid));
-    let huge = artifact("notes", "e1", "notes@1", MAX_UPLOAD);
+    let huge = artifact("notes", "e1", "app:notes/notes@1.0.0", MAX_UPLOAD);
     assert_eq!(meta(&huge), Err(Error::TooBig));
     assert_eq!(labels(&notes), ["2"]);
     assert_eq!(notes.next_label(), "e1");
     assert_eq!(notes.uploads.rejected, 7);
-    // Nothing can be uploaded before a version runs: there is no interface to keep.
+    // Nothing can be uploaded before a version runs: there is no world to keep.
     let mut idle = Component::new("notes");
-    idle.add_version("2", Bytes::shared(artifact("notes", "2", "notes@1", 0)))
-        .unwrap();
+    idle.add_version(
+        "2",
+        Bytes::shared(artifact("notes", "2", "app:notes/notes@1.0.0", 0)),
+    )
+    .unwrap();
     assert_eq!(put(&mut idle, "e1"), Err(Error::Invalid));
 }
 
@@ -201,15 +232,15 @@ fn a_store_full_of_versions_that_cannot_be_evicted_is_busy() {
     let mut notes = Component::new("notes");
     for n in 1..=15 {
         let label = format!("{n}");
-        let bytes = artifact("notes", &label, "notes@1", 0);
+        let bytes = artifact("notes", &label, "app:notes/notes@1.0.0", 0);
         notes.add_version(&label, Bytes::shared(bytes)).unwrap();
     }
     notes.record_fetch(HOST, "1");
     notes.event(HOST, &event(kind::RESTORED, "1")).unwrap();
-    let e1 = artifact("notes", "e1", "notes@1", 0);
+    let e1 = artifact("notes", "e1", "app:notes/notes@1.0.0", 0);
     assert_eq!(put_bytes(&mut notes, e1, "1", 0), Ok("e1".into()));
     swap(&mut notes, "e1", None);
-    let e2 = artifact("notes", "e2", "notes@1", 0);
+    let e2 = artifact("notes", "e2", "app:notes/notes@1.0.0", 0);
     assert_eq!(put_bytes(&mut notes, e2, "1", 0), Err(Error::Busy));
     assert_eq!(notes.next_label(), "e2");
 }
@@ -217,7 +248,7 @@ fn a_store_full_of_versions_that_cannot_be_evicted_is_busy() {
 #[test]
 fn uploads_stay_within_the_total_budget() {
     let mut notes = running();
-    let big = |label: &str| artifact("notes", label, "notes@1", 100_000);
+    let big = |label: &str| artifact("notes", label, "app:notes/notes@1.0.0", 100_000);
     put_bytes(&mut notes, big("e1"), "2", 0).unwrap();
     put_bytes(&mut notes, big("e2"), "2", 0).unwrap();
     let size = big("e3").len();
@@ -336,10 +367,13 @@ fn the_proposal_shows_the_change_from_the_store_or_refuses() {
     let with_source = |label: &str, lib: &[u8]| {
         let mut module = Vec::from(&b"\0asm\x01\0\0\0"[..]);
         let manifest = Manifest {
+            lifecycle: 1,
             component: "notes".into(),
             version: label.into(),
-            interface: "notes@1".into(),
+            world: "app:notes/notes@1.0.0".into(),
+            engine: "wasmi".into(),
             features: "-".into(),
+            licence: "MPL-2.0".into(),
             build: "ab".into(),
             source: "cd".into(),
         };
@@ -380,10 +414,13 @@ fn the_proposal_shows_the_change_from_the_store_or_refuses() {
 fn with_files(label: &str, files: &[(&str, &[u8])]) -> Vec<u8> {
     let mut module = Vec::from(&b"\0asm\x01\0\0\0"[..]);
     let manifest = Manifest {
+        lifecycle: 1,
         component: "notes".into(),
         version: label.into(),
-        interface: "notes@1".into(),
+        world: "app:notes/notes@1.0.0".into(),
+        engine: "wasmi".into(),
         features: "-".into(),
+        licence: "MPL-2.0".into(),
         build: "ab".into(),
         source: "cd".into(),
     };

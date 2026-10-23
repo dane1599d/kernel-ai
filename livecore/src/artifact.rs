@@ -3,15 +3,13 @@
 //! ship as a boot module now and will be uploaded by the edit loop (M9b).
 
 use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec::Vec;
-use kabi::live::{MANIFEST_SECTION, MAX_ARTIFACT, SOURCE_SECTION, valid_label};
+use kabi::live::{MANIFEST_SECTION, MAX_ARTIFACT, SOURCE_SECTION};
 
 const MAGIC: &[u8] = b"\0asm\x01\0\0\0";
 /// Largest source bundle.
 pub const MAX_SOURCE: usize = 256 * 1024;
-/// The lifecycle contract this host implements.
-pub const LIFECYCLE: &str = "1";
 
 /// Reads an unsigned LEB128 `u32` from `bytes` at `*at`.
 fn leb128(bytes: &[u8], at: &mut usize) -> Result<u32, &'static str> {
@@ -84,74 +82,7 @@ pub fn append_custom_section(module: &mut Vec<u8>, name: &str, payload: &[u8]) {
     module.extend_from_slice(&body);
 }
 
-/// What a version says about itself.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Manifest {
-    pub component: String,
-    pub version: String,
-    /// The service interface, such as `notes@1`; a swap keeps it.
-    pub interface: String,
-    /// Cargo features it was built with, `-` for none.
-    pub features: String,
-    /// SHA-256 of the module before the sections were added.
-    pub build: String,
-    /// SHA-256 of the source bundle.
-    pub source: String,
-}
-
-const MANIFEST_KEYS: [&str; 7] = [
-    "lifecycle",
-    "component",
-    "version",
-    "interface",
-    "features",
-    "build",
-    "source",
-];
-
-impl Manifest {
-    pub fn format(&self) -> String {
-        format!(
-            "kai-manifest 1\nlifecycle {LIFECYCLE}\ncomponent {}\nversion {}\ninterface {}\nfeatures {}\nbuild {}\nsource {}\n",
-            self.component, self.version, self.interface, self.features, self.build, self.source
-        )
-    }
-
-    /// Reads a manifest: the header, then every key in order, once each.
-    pub fn parse(text: &str) -> Result<Self, String> {
-        let mut lines = text.lines();
-        if lines.next() != Some("kai-manifest 1") {
-            return Err("not a kai-manifest 1".into());
-        }
-        let mut values: Vec<&str> = Vec::new();
-        for key in MANIFEST_KEYS {
-            let line = lines.next().ok_or_else(|| format!("no {key} line"))?;
-            let value = line
-                .strip_prefix(key)
-                .and_then(|rest| rest.strip_prefix(' '))
-                .filter(|value| !value.is_empty() && !value.contains(' '))
-                .ok_or_else(|| format!("expected {key}, got {line:?}"))?;
-            values.push(value);
-        }
-        if lines.next().is_some() {
-            return Err("text after the source line".into());
-        }
-        if values[0] != LIFECYCLE {
-            return Err(format!("lifecycle {} is not {LIFECYCLE}", values[0]));
-        }
-        if !valid_label(values[2]) {
-            return Err(format!("bad version label {:?}", values[2]));
-        }
-        Ok(Self {
-            component: values[1].to_string(),
-            version: values[2].to_string(),
-            interface: values[3].to_string(),
-            features: values[4].to_string(),
-            build: values[5].to_string(),
-            source: values[6].to_string(),
-        })
-    }
-}
+pub use crate::manifest::{LIFECYCLE, Manifest};
 
 /// A source bundle: `kai-source 1`, then `file <path> <len>` and the bytes, per file.
 pub fn bundle(files: &[(&str, &[u8])]) -> Vec<u8> {
@@ -258,14 +189,7 @@ mod tests {
     use alloc::vec;
 
     fn manifest() -> Manifest {
-        Manifest {
-            component: "notes".into(),
-            version: "2".into(),
-            interface: "notes@1".into(),
-            features: "-".into(),
-            build: "ab12".into(),
-            source: "cd34".into(),
-        }
+        crate::manifest::tests::manifest()
     }
 
     /// A module with one ordinary section, then the two custom sections.
@@ -322,21 +246,6 @@ mod tests {
             manifest().format().as_bytes(),
         );
         assert!(parse(&no_source).unwrap_err().contains("kai.source"));
-    }
-
-    #[test]
-    fn a_manifest_must_have_every_key_in_order() {
-        let text = manifest().format();
-        assert_eq!(Manifest::parse(&text), Ok(manifest()));
-        for bad in [
-            text.replace("lifecycle 1", "lifecycle 2"),
-            text.replace("version 2", "version V2"),
-            text.replace("interface notes@1\n", ""),
-            text.replace("features -", "features"),
-            text.clone() + "extra 1\n",
-        ] {
-            assert!(Manifest::parse(&bad).is_err(), "{bad}");
-        }
     }
 
     #[test]

@@ -83,8 +83,8 @@ pub(crate) fn swap<E: Env>(
         }
     }
     core.checkpoint = blob.clone();
-    let interface = active.manifest.interface.clone();
-    let mut candidate = match core.stage(label, artifact, Some(&interface), false) {
+    let world = active.manifest.world.clone();
+    let mut candidate = match core.stage(label, artifact, Some(&world), false) {
         Ok(candidate) => candidate,
         Err(fault) => return refused(core, active, label, &fault, 0),
     };

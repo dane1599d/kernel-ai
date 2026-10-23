@@ -64,10 +64,13 @@ pub fn numbered(count: usize, ending: &str) -> String {
 pub fn artifact(component: &str, version: &str, source: &[u8]) -> Vec<u8> {
     let mut module = Vec::from(&b"\0asm\x01\0\0\0"[..]);
     let manifest = Manifest {
+        lifecycle: 1,
         component: component.into(),
         version: version.into(),
-        interface: format!("{component}@1"),
+        world: format!("app:{component}/{component}@1.0.0"),
+        engine: "wasmi".into(),
         features: "-".into(),
+        licence: "MPL-2.0".into(),
         build: "ab".into(),
         source: "cd".into(),
     };

@@ -219,13 +219,13 @@ impl<E: Env> Core<E> {
         })
     }
 
-    /// Fetches, checks and loads a version. `interface` is the active version's,
-    /// which the candidate must keep.
+    /// Fetches, checks and loads a version. `world` is the active version's, to
+    /// which the candidate's must be compatible.
     pub fn stage(
         &mut self,
         label: &str,
         artifact: Vec<u8>,
-        interface: Option<&str>,
+        world: Option<&str>,
         quiet: bool,
     ) -> Result<Version<E::Instance>, Fault> {
         let manifest = artifact::parse(&artifact)
@@ -240,14 +240,17 @@ impl<E: Env> Core<E> {
                 ),
             ));
         }
-        if let Some(interface) = interface
-            && manifest.interface != interface
+        if let Some(why) = manifest.unloadable() {
+            return Err(Fault::new(Reason::Manifest, why));
+        }
+        if let Some(world) = world
+            && !crate::manifest::compatible(world, &manifest.world)
         {
             return Err(Fault::new(
                 Reason::Manifest,
                 format!(
-                    "interface {} differs from {interface}; that needs a restart",
-                    manifest.interface
+                    "world {} is not compatible with {world}; that needs a restart",
+                    manifest.world
                 ),
             ));
         }

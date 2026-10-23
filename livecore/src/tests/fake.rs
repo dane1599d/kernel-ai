@@ -41,7 +41,7 @@ pub struct Spec {
     pub reads: &'static [u32],
     /// Older schemas it can export.
     pub writes: &'static [u32],
-    pub interface: &'static str,
+    pub world: &'static str,
     pub bug: Bug,
 }
 
@@ -52,7 +52,7 @@ impl Spec {
             schema,
             reads: &[],
             writes: &[],
-            interface: "counter@1",
+            world: "app:counter/counter@1.0.0",
             bug: Bug::None,
         }
     }
@@ -64,15 +64,18 @@ impl Spec {
             self.schema,
             list(self.reads),
             list(self.writes),
-            self.interface,
+            self.world,
             self.bug
         );
         append_custom_section(&mut module, "fake", config.as_bytes());
         let manifest = Manifest {
+            lifecycle: 1,
             component: "counter".into(),
             version: self.label.into(),
-            interface: self.interface.into(),
+            world: self.world.into(),
+            engine: "wasmi".into(),
             features: "-".into(),
+            licence: "MPL-2.0".into(),
             build: "0123456789abcdef".into(),
             source: "fedcba9876543210".into(),
         };
