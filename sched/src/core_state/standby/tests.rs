@@ -5,7 +5,7 @@ extern crate std;
 
 use super::super::Core;
 use crate::classes::{Class, ClassParams, Classes, MS};
-use crate::{EnqueueReason, Interactive, MAX_THREADS, RoundRobin, SchedPolicy, State};
+use crate::{EnqueueReason, Interactive, MAX_THREADS, RoundRobin, SchedPolicy, State, Tid};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use std::alloc::{GlobalAlloc, Layout, System};
@@ -62,8 +62,48 @@ fn classes() -> Box<dyn SchedPolicy> {
     Box::new(Classes::new(ClassParams::new(4 * MS, 60 * MS).unwrap()))
 }
 
+/// Round-robin that never takes the CPU back from the running thread, so the
+/// others wait until the watchdog ejects it.
+struct Hogging(RoundRobin);
+
+impl SchedPolicy for Hogging {
+    fn name(&self) -> &'static str {
+        "hogging"
+    }
+    fn enqueue(&mut self, tid: Tid, reason: EnqueueReason) {
+        self.0.enqueue(tid, reason);
+    }
+    fn dequeue(&mut self, tid: Tid) {
+        self.0.dequeue(tid);
+    }
+    fn pick_next(&mut self) -> Option<Tid> {
+        self.0.pick_next()
+    }
+    fn tick(&mut self, _: Tid, _: u64) -> bool {
+        false
+    }
+    fn reset(&mut self) {
+        self.0.reset();
+    }
+}
+
+fn hogging() -> Box<dyn SchedPolicy> {
+    Box::new(Hogging(RoundRobin::new()))
+}
+
+/// Ticks every millisecond from `from` to `to`, as the timer does.
+fn ticks(core: &mut Core, from: u64, to: u64) {
+    for now in (from..=to).step_by(MS as usize) {
+        core.tick(now);
+    }
+}
+
 fn busy_core() -> Core {
-    let mut core = Core::new(Box::new(Interactive::new()), 0, WATCHDOG, 0);
+    busy_core_with(Box::new(Interactive::new()))
+}
+
+fn busy_core_with(policy: Box<dyn SchedPolicy>) -> Core {
+    let mut core = Core::new(policy, 0, WATCHDOG, 0);
     for tid in 3..7 {
         core.adopt(tid, "worker", EnqueueReason::New, 0);
     }
@@ -76,8 +116,8 @@ fn the_slot_never_allocates() {
     let mut core = busy_core();
     let mut labels = NORMAL;
     labels[4] = Class::Background;
-    let (candidate, spare) = (classes(), classes());
-    let mut dropped: Vec<Option<Box<dyn SchedPolicy>>> = Vec::with_capacity(4);
+    let (candidate, hog, spare) = (classes(), hogging(), classes());
+    let mut dropped: Vec<Option<Box<dyn SchedPolicy>>> = Vec::with_capacity(6);
     let made = allocations(|| {
         dropped.push(core.stage(candidate, labels).ok().flatten());
         for round in 0..3u64 {
@@ -90,9 +130,11 @@ fn the_slot_never_allocates() {
             assert_eq!(core.policy_name(), "interactive");
             assert_eq!(core.class(4), Class::Normal);
         }
+        dropped.push(core.take_standby());
         // A guardrail's path: an ejection during a trial, then revert.
+        dropped.push(core.stage(hog, labels).ok().flatten());
         assert!(core.flip(20 * MS));
-        core.tick(20 * MS + WATCHDOG + MS);
+        ticks(&mut core, 20 * MS, 20 * MS + WATCHDOG + MS);
         assert!(core.on_fallback());
         assert!(core.revert(20 * MS + WATCHDOG + MS));
         dropped.push(core.take_standby());
@@ -105,7 +147,15 @@ fn the_slot_never_allocates() {
         .iter()
         .map(|p| p.as_ref().map(|p| p.name()))
         .collect();
-    assert_eq!(names, [None, Some("classes"), None, Some("interactive")]);
+    let expected = [
+        None,
+        Some("classes"),
+        None,
+        Some("hogging"),
+        None,
+        Some("interactive"),
+    ];
+    assert_eq!(names, expected);
     assert!(!core.in_trial());
     assert_eq!(core.class(4), Class::Background);
 }
@@ -139,9 +189,9 @@ fn the_slot_refuses_what_does_not_fit_the_trial_state() {
 #[test]
 fn an_ejected_candidate_cannot_be_committed_only_reverted() {
     let mut core = busy_core();
-    let _ = core.stage(Box::new(RoundRobin::new()), NORMAL);
+    let _ = core.stage(hogging(), NORMAL);
     assert!(core.flip(0));
-    core.tick(WATCHDOG + MS);
+    ticks(&mut core, 0, WATCHDOG + MS);
     assert!(core.on_fallback());
     assert!(core.commit().is_none());
     assert!(core.in_trial());
@@ -152,8 +202,8 @@ fn an_ejected_candidate_cannot_be_committed_only_reverted() {
 
 #[test]
 fn an_ejected_policy_is_not_a_last_good_one_to_return_to() {
-    let mut core = busy_core();
-    core.tick(WATCHDOG + MS);
+    let mut core = busy_core_with(hogging());
+    ticks(&mut core, 0, WATCHDOG + MS);
     assert!(core.on_fallback());
     let _ = core.stage(classes(), NORMAL);
     assert!(!core.flip(WATCHDOG + 2 * MS));
@@ -162,10 +212,10 @@ fn an_ejected_policy_is_not_a_last_good_one_to_return_to() {
 #[test]
 fn the_restored_policy_is_judged_only_on_its_own_waits() {
     let mut core = busy_core();
-    let _ = core.stage(Box::new(RoundRobin::new()), NORMAL);
+    let _ = core.stage(hogging(), NORMAL);
     assert!(core.flip(0));
     // Three threads wait past the watchdog under the candidate.
-    core.tick(WATCHDOG + MS);
+    ticks(&mut core, 0, WATCHDOG + MS);
     assert!(core.on_fallback());
     assert!(core.revert(WATCHDOG + MS));
     // The next ticks do not eject Interactive for waits the candidate caused.
@@ -302,4 +352,80 @@ fn clear_class_forgets_both_slots_and_longest_wait_counts_from_install() {
     assert_eq!(core.longest_wait(12 * MS), (0, a));
     let _ = b;
     core.clear_class(MAX_THREADS);
+}
+
+#[test]
+fn a_stall_is_not_blamed_on_the_policy() {
+    let mut core = busy_core();
+    ticks(&mut core, 0, 10 * MS);
+    // The CPU runs no tick for 300 ms (preemption held), with three threads
+    // waiting: they waited for the CPU, so Interactive is not ejected.
+    core.tick(310 * MS);
+    assert_eq!(core.take_stall(), Some(300 * MS));
+    assert_eq!(core.take_stall(), None);
+    ticks(&mut core, 311 * MS, 400 * MS);
+    assert!(!core.on_fallback());
+    assert_eq!(core.ejections(), 0);
+}
+
+#[test]
+fn the_watchdog_still_ejects_a_policy_that_starves_after_a_stall() {
+    let mut core = busy_core_with(hogging());
+    ticks(&mut core, 0, 10 * MS);
+    core.tick(310 * MS);
+    assert!(!core.on_fallback(), "the stall itself is forgiven");
+    ticks(&mut core, 311 * MS, 310 * MS + WATCHDOG);
+    assert!(
+        !core.on_fallback(),
+        "not before the watchdog limit of its own waits"
+    );
+    ticks(
+        &mut core,
+        310 * MS + WATCHDOG + MS,
+        310 * MS + WATCHDOG + 2 * MS,
+    );
+    assert!(core.on_fallback());
+    assert!(core.take_ejection().unwrap().contains("watchdog"));
+}
+
+#[test]
+fn a_stall_with_nothing_waiting_is_not_reported() {
+    let mut core = Core::new(Box::new(Interactive::new()), 0, WATCHDOG, 0);
+    core.tick(MS);
+    core.tick(500 * MS);
+    assert_eq!(core.take_stall(), None);
+}
+
+#[test]
+fn a_revert_after_a_stall_with_an_ejected_candidate_keeps_the_last_good_policy() {
+    // The tune-revert race: the candidate is ejected, the trial's driver
+    // reverts the CPU from another CPU while this one is held off its ticks,
+    // and the threads that waited through the hold must not get Interactive
+    // ejected when the ticks resume.
+    let mut core = busy_core();
+    let _ = core.stage(hogging(), NORMAL);
+    assert!(core.flip(0));
+    ticks(&mut core, 0, WATCHDOG + MS);
+    assert!(core.on_fallback());
+    // Held off from here; the revert comes from elsewhere 20 ms in.
+    assert!(core.revert(WATCHDOG + 21 * MS));
+    core.tick(WATCHDOG + 260 * MS);
+    ticks(&mut core, WATCHDOG + 261 * MS, WATCHDOG + 400 * MS);
+    assert!(!core.on_fallback());
+    assert!(!core.in_trial());
+    assert_eq!(core.policy_name(), "interactive");
+    assert_eq!(core.ejections(), 1);
+}
+
+#[test]
+fn a_resync_forgets_a_stall_before_it() {
+    let mut core = busy_core();
+    ticks(&mut core, 0, 10 * MS);
+    // A host-timed wait before an aligned start: the next tick would see a
+    // stall, but the resync makes that start the first tick.
+    core.resync_ticks(300 * MS);
+    core.tick(301 * MS);
+    assert_eq!(core.take_stall(), None);
+    // Waits still count from before it, as they would with no stall rule.
+    assert!(core.longest_wait(301 * MS).0 > WATCHDOG);
 }

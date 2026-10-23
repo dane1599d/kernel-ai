@@ -75,6 +75,16 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("tune-revert", "test=tune-revert workload=A seed=1")
     },
+    // A CPU held off its ticks is not a policy fault, also when a trial's revert
+    // lands during the hold (the race that made tune-revert flaky).
+    TestCase {
+        expect: &[
+            "tune-stall: (a) a 300 ms hold on cpu ",
+            "with threads waiting; their waits count from now",
+            "tune-stall: (b) three held-off reverts left every CPU on interactive",
+        ],
+        ..case("tune-stall", "test=tune-stall workload=A seed=1")
+    },
     // M10a-4: `tune` at the shell with the mock server's canned answers.
     TestCase {
         expect: &[

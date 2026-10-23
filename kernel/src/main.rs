@@ -85,6 +85,7 @@ mod threads;
 mod timer;
 mod tune_ab_tests;
 mod tune_local_tests;
+mod tune_stall_tests;
 mod tune_tests;
 mod usb;
 mod version;
@@ -308,6 +309,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Bigmap => run_case(bigmap_tests::check),
         SelfTest::IcountProbe => run_case(|| icount_tests::check(cmdline())),
         SelfTest::TuneRevert => run_case(tune_tests::revert_check),
+        SelfTest::TuneStall => run_case(tune_stall_tests::check),
         SelfTest::Tune => run_case(tune_tests::shell_check),
         SelfTest::TuneLocal => run_case(|| tune_local_tests::local_check(cmdline())),
         SelfTest::TuneDemo => run_case(tune_local_tests::demo_check),
@@ -510,7 +512,11 @@ fn start_user_space(test: SelfTest) {
     // every boot-time disk read, so nothing host-timed comes before them and every
     // boot starts them at the same virtual time (the M10 exit test).
     if test == SelfTest::TuneAb {
+        // The waits before the edge were host-timed: the Cores forget them on
+        // both sides of it, so no stall carries over (sched::Core::resync_ticks).
+        threads::resync_ticks();
         let edge = timer::align_to_second();
+        threads::resync_ticks();
         log!("tune-ab: services start at tick {edge}");
     }
     if let Err(message) = process::supervision::start(plan) {

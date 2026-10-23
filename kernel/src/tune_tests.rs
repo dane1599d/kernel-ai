@@ -88,12 +88,12 @@ impl SchedPolicy for Refusing {
     fn reset(&mut self) {}
 }
 
-fn refusing() -> Box<dyn SchedPolicy> {
+pub(crate) fn refusing() -> Box<dyn SchedPolicy> {
     Box::new(Refusing)
 }
 
 /// Every CPU runs `name`, installed and running, none on the fallback.
-fn running_everywhere(name: &str) -> bool {
+pub(crate) fn running_everywhere(name: &str) -> bool {
     (0..crate::smp::online()).all(|cpu| {
         threads::with_core(cpu, |core, _| {
             !core.on_fallback() && !core.in_trial() && core.policy_name() == name
@@ -130,7 +130,7 @@ pub fn finished(id: u64) -> Result<TrialStatus, &'static str> {
     Err("tune: a trial never ended")
 }
 
-fn run(
+pub(crate) fn run(
     candidate: Candidate,
     target: u64,
     background: Vec<u64>,

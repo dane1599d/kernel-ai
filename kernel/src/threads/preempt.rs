@@ -63,6 +63,10 @@ fn reschedule_here() {
     }
 }
 
+/// A stall this long is logged: long enough that it is the kernel's own doing
+/// (preemption held), not a host's.
+const LOGGED_STALL_NS: u64 = 100_000_000;
+
 /// Called from the timer interrupt after the APIC is acknowledged.
 pub fn on_tick() {
     let cpu = percpu::this();
@@ -95,11 +99,19 @@ pub fn on_tick() {
         next = (core.current() != from).then(|| core.current());
     }
     let ejection = core.take_ejection();
+    let stall = core.take_stall();
     let policy = core.policy_name();
     LOAD[me].store(core.load(), Ordering::Relaxed);
     drop(guard);
     if let Some(reason) = ejection {
         log!("sched: cpu {me}: policy ejected ({reason}); now running {policy}");
+    }
+    // Shorter stalls happen when a host does not run the vCPU for a while.
+    if let Some(ns) = stall.filter(|ns| *ns >= LOGGED_STALL_NS) {
+        log!(
+            "sched: cpu {me}: no scheduler tick for {} ms with threads waiting; their waits count from now",
+            ns / 1_000_000
+        );
     }
     if let Some(to) = next {
         switch(from, to);

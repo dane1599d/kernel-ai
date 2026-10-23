@@ -409,6 +409,13 @@ pub fn with_core<R>(cpu: usize, f: impl FnOnce(&mut Core, u64) -> R) -> Option<R
     })
 }
 
+/// Every CPU's Core forgets its ticks and stalls so far (`Core::resync_ticks`).
+pub fn resync_ticks() {
+    for cpu in 0..smp::online() {
+        with_core(cpu, |core, now| core.resync_ticks(now));
+    }
+}
+
 /// Installs a fresh policy from `make` on every CPU. Old policies are dropped with
 /// interrupts enabled.
 pub fn set_policy_all(make: fn() -> Box<dyn SchedPolicy>) {

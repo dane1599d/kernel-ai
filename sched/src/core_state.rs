@@ -8,6 +8,11 @@ use crate::stats::{Snapshot, Stats};
 use crate::{EnqueueReason, MAX_THREADS, RoundRobin, SchedPolicy, Tid};
 use alloc::boxed::Box;
 
+/// A gap between two ticks longer than this is a stall: the CPU did not run its
+/// scheduler (preemption held, or the host did not run the vCPU), so threads
+/// waited for the CPU, not for the policy. 20 ticks at 1 kHz.
+pub const STALL_NS: u64 = 20_000_000;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {
     /// Not owned by this CPU.
@@ -52,6 +57,12 @@ pub struct Core {
     /// When the installed policy was put in by `flip` or `revert`: the watchdog
     /// judges it only on waits since then, not on the waits its predecessor caused.
     installed_at: u64,
+    /// The end of the latest stall: waits before it were for the CPU, not the
+    /// policy, so the watchdog and the guardrail count from here too.
+    stall_end: u64,
+    /// The latest tick, and the length of a stall the caller has not logged yet.
+    last_tick: u64,
+    pending_stall: Option<u64>,
     /// The thread's runnable period began with a wake, so a policy switch hands
     /// it over as woken and it keeps the boost it is owed.
     woke: [bool; MAX_THREADS],
@@ -85,6 +96,9 @@ impl Core {
             in_trial: false,
             staged: false,
             installed_at: 0,
+            stall_end: 0,
+            last_tick: now,
+            pending_stall: None,
             woke: [false; MAX_THREADS],
         }
     }
@@ -165,14 +179,16 @@ impl Core {
     }
 
     /// The longest a runnable thread has waited, counted from when the installed
-    /// policy was put in, and which thread: what the watchdog checks, and a trial's
-    /// guardrail too. `(0, idle)` when nothing waits.
+    /// policy was put in or the CPU last came out of a stall, and which thread:
+    /// what the watchdog checks, and a trial's guardrail too. `(0, idle)` when
+    /// nothing waits.
     pub fn longest_wait(&self, now: u64) -> (u64, Tid) {
         (0..MAX_THREADS)
             .filter_map(|tid| match self.states[tid] {
-                State::Runnable { since } => {
-                    Some((now.saturating_sub(since.max(self.installed_at)), tid))
-                }
+                State::Runnable { since } => Some((
+                    now.saturating_sub(since.max(self.installed_at).max(self.stall_end)),
+                    tid,
+                )),
                 _ => None,
             })
             .max_by_key(|&(wait, tid)| (wait, usize::MAX - tid))
@@ -187,6 +203,21 @@ impl Core {
     /// The reason for the latest ejection, once, so the caller can log it.
     pub fn take_ejection(&mut self) -> Option<&'static str> {
         self.pending_ejection.take()
+    }
+
+    /// The length of the latest stall with threads waiting, once, so the caller
+    /// can log it.
+    pub fn take_stall(&mut self) -> Option<u64> {
+        self.pending_stall.take()
+    }
+
+    /// Forgets the ticks and stalls so far, as if this tick at `now` were the
+    /// first: for a boot that must run the same from an aligned start whatever
+    /// host-timed waits came before it (the M10 observe boots under icount).
+    pub fn resync_ticks(&mut self, now: u64) {
+        self.last_tick = now;
+        self.stall_end = 0;
+        self.pending_stall = None;
     }
 
     /// Makes `tid` the running thread; used once for the code that boots the CPU.
@@ -249,6 +280,11 @@ impl Core {
     /// Timer tick: wakes sleepers, runs the watchdog, asks the policy about preemption.
     /// Returns the thread to switch to, if the current one should change.
     pub fn tick(&mut self, now: u64) -> Option<Tid> {
+        let gap = now.saturating_sub(core::mem::replace(&mut self.last_tick, now));
+        if gap > STALL_NS && self.any_runnable() {
+            self.stall_end = now;
+            self.pending_stall = Some(gap);
+        }
         // A wake-up whose reschedule interrupt has not arrived yet is delivered here.
         let mut reschedule = self.resched_pending;
         for tid in 0..MAX_THREADS {
