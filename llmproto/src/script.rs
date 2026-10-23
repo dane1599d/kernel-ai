@@ -155,12 +155,20 @@ pub struct Repair<'a> {
 /// The conversation for `request`: the system prompt and the request, then, for a
 /// repair, the refused answer and why it was refused.
 pub fn request(request: &str, repair: Option<Repair<'_>>) -> chat::Request {
-    let user = format!("Request: {request}\n/no_think");
+    request_with(request, repair, true)
+}
+
+/// [`request`], with the `/no_think` tag on each user turn only when `no_think`.
+/// Without it is spike S10-1's arm A0 (ADR 0010), which decides whether the tag
+/// stays for Qwen3-4B-Instruct-2507.
+pub fn request_with(request: &str, repair: Option<Repair<'_>>, no_think: bool) -> chat::Request {
+    let tag = if no_think { "\n/no_think" } else { "" };
+    let user = format!("Request: {request}{tag}");
     let mut asked = chat::Request::new(Some(&system_prompt()), &user, SCRIPT_MAX_TOKENS);
     if let Some(repair) = repair {
         let previous = serde_json::json!({ "script": repair.script, "summary": "" }).to_string();
         let feedback = format!(
-            "That script was refused: {}\nWrite a corrected script.\n/no_think",
+            "That script was refused: {}\nWrite a corrected script.{tag}",
             repair.error
         );
         asked

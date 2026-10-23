@@ -19,7 +19,7 @@
 //! cache then gets as many positions as [`Budget::kv_bytes`] holds, at most the
 //! context cap and the model's trained context.
 
-use crate::json::{Grammar, Overflow, Shape, Stop, ascii_tokens, spells_ascii};
+use crate::json::{Constraint, Grammar, Overflow, Shape, Stop, ascii_tokens, spells_ascii};
 use crate::{Config, Error, KvCache, Model, Next, Sampler};
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -291,15 +291,29 @@ impl<'a> Engine<'a> {
         max_new: usize,
         sampler: &mut Sampler,
         shape: Option<&Shape<'_>>,
+        on_step: impl FnMut(Step) -> Next,
+    ) -> Result<Reply, Error> {
+        let grammar = shape.map(Grammar::new).transpose()?;
+        let jump = shape.is_some_and(|shape| shape.jump_forward);
+        self.reply_under(turns, max_new, sampler, grammar.as_ref(), jump, on_step)
+    }
+
+    /// [`Engine::reply`] under any [`Constraint`], not only a [`Shape`]'s, with
+    /// jump-forward when `jump`: the bytes `grammar` forces go to the model as
+    /// one block of their own tokens. It needs a token for every printable
+    /// ASCII byte, as a shape does.
+    pub fn reply_under<G: Constraint>(
+        &mut self,
+        turns: &[Turn<'_>],
+        max_new: usize,
+        sampler: &mut Sampler,
+        grammar: Option<&G>,
+        jump: bool,
         mut on_step: impl FnMut(Step) -> Next,
     ) -> Result<Reply, Error> {
-        let grammar = match shape {
-            Some(_) if !self.spells_ascii => {
-                return Err(Error::Shape("needs a token for every printable ASCII byte"));
-            }
-            Some(shape) => Some(Grammar::new(shape)?),
-            None => None,
-        };
+        if grammar.is_some() && !self.spells_ascii {
+            return Err(Error::Shape("needs a token for every printable ASCII byte"));
+        }
         let prompt = self.chat.conversation(&self.tok, turns);
         if prompt.is_empty() {
             return Err(Error::EmptyPrompt);
@@ -308,8 +322,8 @@ impl<'a> Engine<'a> {
             return Err(Error::ContextFull);
         }
         self.forced = 0;
-        let mut state = grammar.as_ref().map(Grammar::start);
-        if let (Some(grammar), Some(start)) = (&grammar, &state) {
+        let mut state = grammar.map(G::start);
+        if let (Some(grammar), Some(start)) = (grammar, &state) {
             // Room to close the object: one token per byte, and one position per
             // token but the last.
             if grammar.need(start) > max_new.min(self.kv.capacity() - prompt.len() + 1) {
@@ -329,12 +343,11 @@ impl<'a> Engine<'a> {
             reply.ending = Ending::Stopped;
             return Ok(reply);
         }
-        let jump = shape.is_some_and(|shape| shape.jump_forward);
         // The tokens the next model step runs: the one just picked, then any the
         // shape forces after it.
         let mut block = Vec::new();
         // The object's opening literal is forced too, right after the prompt.
-        if jump && let (Some(grammar), Some(state)) = (&grammar, &mut state) {
+        if jump && let (Some(grammar), Some(state)) = (grammar, &mut state) {
             if let Some(ending) = self.jump(grammar, state, &mut reply, &mut block, &mut on_step) {
                 reply.ending = ending;
                 return Ok(reply);
@@ -347,7 +360,7 @@ impl<'a> Engine<'a> {
         }
         let mut made = reply.tokens;
         while made < max_new {
-            let token = match (&grammar, &mut state) {
+            let token = match (grammar, &mut state) {
                 (Some(grammar), Some(state)) => match self.shaped(grammar, state, sampler)? {
                     Ok(token) => token,
                     Err(overflow) => {
@@ -368,8 +381,8 @@ impl<'a> Engine<'a> {
             self.tok.decode(&[token], &mut reply.bytes);
             reply.tokens += 1;
             let next = on_step(Step::Token(token));
-            if let (Some(grammar), Some(state)) = (&grammar, &state) {
-                if state.is_done() {
+            if let (Some(grammar), Some(state)) = (grammar, &state) {
+                if grammar.is_done(state) {
                     reply.ending = Ending::EndToken;
                     return Ok(reply);
                 }
@@ -394,7 +407,7 @@ impl<'a> Engine<'a> {
             block.push(token);
             // `need` held above, so the forced tokens fit the tokens and positions
             // left: each is at least one of the bytes it counted.
-            if jump && let (Some(grammar), Some(state)) = (&grammar, &mut state) {
+            if jump && let (Some(grammar), Some(state)) = (grammar, &mut state) {
                 if let Some(ending) =
                     self.jump(grammar, state, &mut reply, &mut block, &mut on_step)
                 {
@@ -426,10 +439,10 @@ impl<'a> Engine<'a> {
     /// them. Nothing happens if they are none, or if a token is not one the shape
     /// allows (step decoding then makes them). `Some` when the answer ends in
     /// them: the object closed there, or `on_step` said stop.
-    fn jump(
+    fn jump<G: Constraint>(
         &mut self,
-        grammar: &Grammar<'_>,
-        state: &mut crate::json::State,
+        grammar: &G,
+        state: &mut G::State,
         reply: &mut Reply,
         block: &mut Vec<u32>,
         on_step: &mut impl FnMut(Step) -> Next,
@@ -462,7 +475,7 @@ impl<'a> Engine<'a> {
                 return Some(Ending::Stopped);
             }
         }
-        state.is_done().then_some(Ending::EndToken)
+        grammar.is_done(state).then_some(Ending::EndToken)
     }
 
     /// Runs `prompt` through the model after the longest start it shares with the
@@ -501,10 +514,10 @@ impl<'a> Engine<'a> {
 
     /// The model's pick among the tokens `grammar` allows after `state`, which
     /// moves on past it, or the limit the pick went past.
-    fn shaped(
+    fn shaped<G: Constraint>(
         &mut self,
-        grammar: &Grammar<'_>,
-        state: &mut crate::json::State,
+        grammar: &G,
+        state: &mut G::State,
         sampler: &mut Sampler,
     ) -> Result<Result<u32, Overflow>, Error> {
         grammar.allowed(state, &self.tok, &self.ascii, &mut self.candidates);

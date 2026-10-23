@@ -140,11 +140,22 @@ pub fn script(
     request: &ScriptRequest,
     on_step: impl FnMut(Step) -> Next,
 ) -> Result<Answer, AnswerError> {
+    script_with(engine, request, true, on_step)
+}
+
+/// [`script`], with the `/no_think` tag only when `no_think` (see
+/// [`script::request_with`]).
+pub fn script_with(
+    engine: &mut Engine<'_>,
+    request: &ScriptRequest,
+    no_think: bool,
+    on_step: impl FnMut(Step) -> Next,
+) -> Result<Answer, AnswerError> {
     let repair = request
         .repair
         .as_ref()
         .map(|(script, error)| script::Repair { script, error });
-    let asked = script::request(&request.request, repair);
+    let asked = script::request_with(&request.request, repair, no_think);
     let mut sampler = Sampler::seeded(script::TEMPERATURE, script::SEED);
     let reply = engine
         .reply(
