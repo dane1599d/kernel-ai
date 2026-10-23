@@ -100,7 +100,7 @@ pub extern "C" fn trap_dispatch(frame: &mut TrapFrame) {
             if let Some(tid) = waiter {
                 threads::wake(tid);
             }
-            threads::on_tick();
+            threads::on_tick(frame.rip, frame.rbp);
         }
         // Both PS/2 ports: either interrupt drains whatever the controller holds.
         v if v == u64::from(apic::KEYBOARD_VECTOR) || v == u64::from(apic::MOUSE_VECTOR) => {

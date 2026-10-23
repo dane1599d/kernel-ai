@@ -67,8 +67,9 @@ fn reschedule_here() {
 /// (preemption held), not a host's.
 const LOGGED_STALL_NS: u64 = 100_000_000;
 
-/// Called from the timer interrupt after the APIC is acknowledged.
-pub fn on_tick() {
+/// Called from the timer interrupt after the APIC is acknowledged, with where it
+/// interrupted (`rip`, `rbp`), so a long stall's log can name what held it.
+pub fn on_tick(rip: u64, rbp: u64) {
     let cpu = percpu::this();
     if cpu.preempt_count.load(Ordering::Relaxed) > 0 {
         cpu.need_resched.store(true, Ordering::Relaxed);
@@ -112,6 +113,9 @@ pub fn on_tick() {
             "sched: cpu {me}: no scheduler tick for {} ms with threads waiting; their waits count from now",
             ns / 1_000_000
         );
+        // The tick that ends a hold lands just after whatever held it.
+        log!("  at {}", crate::lines::Describe(rip));
+        crate::backtrace::print_from(rbp);
     }
     if let Some(to) = next {
         switch(from, to);

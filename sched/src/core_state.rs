@@ -63,6 +63,8 @@ pub struct Core {
     /// The latest tick, and the length of a stall the caller has not logged yet.
     last_tick: u64,
     pending_stall: Option<u64>,
+    /// The longest gap between two ticks since `take_max_gap`.
+    max_gap: u64,
     /// The thread's runnable period began with a wake, so a policy switch hands
     /// it over as woken and it keeps the boost it is owed.
     woke: [bool; MAX_THREADS],
@@ -99,6 +101,7 @@ impl Core {
             stall_end: 0,
             last_tick: now,
             pending_stall: None,
+            max_gap: 0,
             woke: [false; MAX_THREADS],
         }
     }
@@ -211,6 +214,11 @@ impl Core {
         self.pending_stall.take()
     }
 
+    /// The longest gap between two ticks since the last call, which restarts it.
+    pub fn take_max_gap(&mut self) -> u64 {
+        core::mem::take(&mut self.max_gap)
+    }
+
     /// Forgets the ticks and stalls so far, as if this tick at `now` were the
     /// first: for a boot that must run the same from an aligned start whatever
     /// host-timed waits came before it (the M10 observe boots under icount).
@@ -281,6 +289,7 @@ impl Core {
     /// Returns the thread to switch to, if the current one should change.
     pub fn tick(&mut self, now: u64) -> Option<Tid> {
         let gap = now.saturating_sub(core::mem::replace(&mut self.last_tick, now));
+        self.max_gap = self.max_gap.max(gap);
         if gap > STALL_NS && self.any_runnable() {
             self.stall_end = now;
             self.pending_stall = Some(gap);

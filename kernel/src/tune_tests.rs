@@ -255,6 +255,7 @@ pub fn revert_check() -> Result<(), &'static str> {
     );
 
     // (c)
+    threads::take_max_tick_gap();
     let id = run(
         spec(PolicyKind::Classes, Preset::Firm),
         editor,
@@ -263,6 +264,11 @@ pub fn revert_check() -> Result<(), &'static str> {
         3,
     )?;
     let status = finished(id)?;
+    let (gap, gap_cpu) = threads::take_max_tick_gap();
+    log!(
+        "tune-revert: (c) longest gap between scheduler ticks: {} us on cpu {gap_cpu}",
+        gap / 1000
+    );
     let pairs = sched_control::last_pairs();
     let verdict = sched::judge::judge(&pairs, 0);
     log!(

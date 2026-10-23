@@ -409,6 +409,15 @@ pub fn with_core<R>(cpu: usize, f: impl FnOnce(&mut Core, u64) -> R) -> Option<R
     })
 }
 
+/// The longest gap between two scheduler ticks on any CPU since the last call,
+/// and that CPU; every CPU's count restarts.
+pub fn take_max_tick_gap() -> (u64, usize) {
+    (0..smp::online())
+        .filter_map(|cpu| with_core(cpu, |core, _| (core.take_max_gap(), cpu)))
+        .max()
+        .unwrap_or((0, 0))
+}
+
 /// Every CPU's Core forgets its ticks and stalls so far (`Core::resync_ticks`).
 pub fn resync_ticks() {
     for cpu in 0..smp::online() {
