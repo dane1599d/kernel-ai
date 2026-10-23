@@ -552,3 +552,53 @@ pub fn handle_replace(handle: Handle, rights: Rights) -> Result<Handle, Error> {
 pub fn handle_close(handle: Handle) -> Result<(), Error> {
     call(call::HANDLE_CLOSE, [u64::from(handle.0), 0, 0, 0, 0, 0]).map(|_| ())
 }
+
+/// A new node of the grant tree under the one `parent` names (a `Grant` handle
+/// with MINT); `life` 0 is a request, 1 a session, 2 persistent. A `Grant`
+/// handle to the new node.
+pub fn grant_new(parent: Handle, life: u64, label: &str) -> Result<Handle, Error> {
+    call(
+        call::GRANT_NEW,
+        [
+            u64::from(parent.0),
+            life,
+            label.as_ptr() as u64,
+            label.len() as u64,
+            0,
+            0,
+        ],
+    )
+    .map(|raw| Handle(raw as u32))
+}
+
+/// Revokes the node `grant` names and every node below it; how many went.
+pub fn grant_revoke(grant: Handle) -> Result<u64, Error> {
+    call(call::GRANT_REVOKE, [u64::from(grant.0), 0, 0, 0, 0, 0])
+}
+
+/// A second handle to `handle`'s object with `rights`, given under the node
+/// `grant` names, so revoking that node revokes it.
+pub fn grant_dup(handle: Handle, rights: Rights, grant: Handle) -> Result<Handle, Error> {
+    call(
+        call::GRANT_DUP,
+        [
+            u64::from(handle.0),
+            u64::from(rights.bits()),
+            u64::from(grant.0),
+            0,
+            0,
+            0,
+        ],
+    )
+    .map(|raw| Handle(raw as u32))
+}
+
+/// Whether `digest` is the one the trusted path holds for the `ONCE` badge
+/// `badge`; a match uses it up.
+pub fn once_check(badge: u64, digest: &[u8; 32]) -> Result<(), Error> {
+    call(
+        call::ONCE_CHECK,
+        [badge, digest.as_ptr() as u64, 0, 0, 0, 0],
+    )
+    .map(|_| ())
+}

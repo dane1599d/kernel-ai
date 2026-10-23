@@ -61,6 +61,7 @@ pub fn exit_current() -> ! {
     report_exit(&process, reason, detail, freed);
     crate::sched_control::on_process_exit(process.pid, reason);
     crate::handle::destroy(slot);
+    crate::handle::grant::revoke_owned(process.pid);
     with_table(|table| table[slot] = Process::FREE);
     supervision::on_exit(&process, reason, detail);
     threads::exit()

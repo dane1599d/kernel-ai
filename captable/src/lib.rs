@@ -11,12 +11,22 @@
 //! handle, so a closed handle never resolves again, even after its slot is reused.
 //! A slot whose generation would wrap is retired, never reused. The table starts
 //! with [`TABLE_START`] slots and grows on demand to [`TABLE_MAX`].
+//!
+//! A handle may also record a node of the grant tree ([`grant`], ADR 0001 D5).
+//! Once that node is revoked the handle answers `Revoked` to every use, and
+//! [`Table::find`] passes it over; whether a node is alive comes from a [`Live`],
+//! the kernel's view of the tree. A `ONCE` handle's badge names a digest the
+//! kernel holds ([`once`]).
 
 #![no_std]
 
 extern crate alloc;
 
+pub mod grant;
+pub mod once;
+
 use alloc::vec::Vec;
+pub use grant::{GrantRef, Live};
 use kabi::handle::{Flags, Handle, INDEX_BITS, Kind, Rights, TABLE_MAX, TABLE_START};
 
 /// The highest generation a slot reaches before it is retired.
@@ -32,6 +42,9 @@ pub struct Entry {
     pub object: u64,
     /// Read by the object's server; the kernel never interprets it.
     pub badge: u64,
+    /// The grant node it was given under; `None` for one that lives as long as
+    /// its process (a startup handle).
+    pub grant: Option<GrantRef>,
 }
 
 impl Entry {
@@ -42,6 +55,7 @@ impl Entry {
             flags: Flags::empty(),
             object,
             badge: 0,
+            grant: None,
         }
     }
 }
@@ -57,6 +71,8 @@ pub enum Error {
     Invalid,
     /// The table is full, at [`TABLE_MAX`] or out of memory.
     Full,
+    /// The grant node it was given under was revoked.
+    Revoked,
 }
 
 impl From<Error> for kabi::Error {
@@ -66,6 +82,7 @@ impl From<Error> for kabi::Error {
             Error::Permission => kabi::Error::Permission,
             Error::Invalid => kabi::Error::Invalid,
             Error::Full => kabi::Error::NoMemory,
+            Error::Revoked => kabi::Error::Revoked,
         }
     }
 }
@@ -149,11 +166,26 @@ impl Table {
         }
     }
 
-    /// The entry `handle` names, which must be of `kind` (BadHandle otherwise)
-    /// and carry every right in `rights` (Permission otherwise). A `ONCE` handle
-    /// is closed by this use.
-    pub fn check(&mut self, handle: Handle, kind: Kind, rights: Rights) -> Result<Entry, Error> {
+    /// The entry `handle` names, if it is open and its grant node alive.
+    pub fn live(&self, handle: Handle, live: &dyn Live) -> Result<Entry, Error> {
         let entry = *self.get(handle)?;
+        match entry.grant {
+            Some(grant) if !live.alive(grant) => Err(Error::Revoked),
+            _ => Ok(entry),
+        }
+    }
+
+    /// The entry `handle` names, which must be of `kind` (BadHandle otherwise),
+    /// carry every right in `rights` (Permission otherwise) and have a live grant
+    /// (Revoked otherwise). A `ONCE` handle is closed by this use.
+    pub fn check(
+        &mut self,
+        handle: Handle,
+        kind: Kind,
+        rights: Rights,
+        live: &dyn Live,
+    ) -> Result<Entry, Error> {
+        let entry = self.live(handle, live)?;
         if entry.kind != kind {
             return Err(Error::BadHandle);
         }
@@ -166,38 +198,81 @@ impl Table {
         Ok(entry)
     }
 
-    /// An open handle of `kind` that carries every right in `rights`, the first
-    /// by index; `ONCE` handles are never picked this way.
-    pub fn find(&self, kind: Kind, rights: Rights) -> Option<Handle> {
+    /// An open handle of `kind` that carries every right in `rights`, with a live
+    /// grant, the first by index; `ONCE` handles are never picked this way.
+    pub fn find(&self, kind: Kind, rights: Rights, live: &dyn Live) -> Option<Handle> {
         self.iter().find_map(|(handle, entry)| {
             let fits = entry.kind == kind
                 && entry.rights.contains(rights)
-                && !entry.flags.contains(Flags::ONCE);
+                && !entry.flags.contains(Flags::ONCE)
+                && entry.grant.is_none_or(|grant| live.alive(grant));
             fits.then_some(handle)
         })
     }
 
-    /// Whether some open handle of `kind` carries every right in `rights`.
-    pub fn holds(&self, kind: Kind, rights: Rights) -> bool {
-        self.find(kind, rights).is_some()
+    /// Whether some open handle of `kind` with a live grant carries every right
+    /// in `rights`.
+    pub fn holds(&self, kind: Kind, rights: Rights, live: &dyn Live) -> bool {
+        self.find(kind, rights, live).is_some()
     }
 
-    /// A second handle to `handle`'s object with `rights`, a subset of its own.
-    pub fn dup(&mut self, handle: Handle, rights: Rights) -> Result<Handle, Error> {
-        let entry = *self.get(handle)?;
+    /// A second handle to `handle`'s object with `rights`, a subset of its own,
+    /// under the same grant node.
+    pub fn dup(
+        &mut self,
+        handle: Handle,
+        rights: Rights,
+        live: &dyn Live,
+    ) -> Result<Handle, Error> {
+        let entry = self.dup_source(handle, rights, live)?;
+        self.insert(Entry { rights, ..entry })
+    }
+
+    /// [`Table::dup`], under the grant node `grant` instead, so revoking it
+    /// revokes the new handle (ADR 0001 D5, D6). The caller checks that it may
+    /// give handles under `grant`.
+    pub fn dup_under(
+        &mut self,
+        handle: Handle,
+        rights: Rights,
+        grant: GrantRef,
+        live: &dyn Live,
+    ) -> Result<Handle, Error> {
+        let entry = self.dup_source(handle, rights, live)?;
+        if !live.alive(grant) {
+            return Err(Error::Revoked);
+        }
+        self.insert(Entry {
+            rights,
+            grant: Some(grant),
+            ..entry
+        })
+    }
+
+    /// The entry a duplicate of `handle` with `rights` copies, if allowed.
+    fn dup_source(&self, handle: Handle, rights: Rights, live: &dyn Live) -> Result<Entry, Error> {
+        let entry = self.live(handle, live)?;
         if !entry.rights.contains(Rights::DUPLICATE) {
             return Err(Error::Permission);
         }
         if !entry.rights.contains(rights) {
             return Err(Error::Invalid);
         }
-        self.insert(Entry { rights, ..entry })
+        Ok(entry)
     }
 
     /// Swaps `handle` for one with `rights`, a subset of its own. The old handle
-    /// is closed even when the new rights are refused.
-    pub fn replace(&mut self, handle: Handle, rights: Rights) -> Result<Handle, Error> {
+    /// is closed even when the new rights are refused or its grant was revoked.
+    pub fn replace(
+        &mut self,
+        handle: Handle,
+        rights: Rights,
+        live: &dyn Live,
+    ) -> Result<Handle, Error> {
         let entry = self.close(handle)?;
+        if entry.grant.is_some_and(|grant| !live.alive(grant)) {
+            return Err(Error::Revoked);
+        }
         if !entry.rights.contains(rights) {
             return Err(Error::Invalid);
         }

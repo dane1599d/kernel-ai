@@ -5,9 +5,11 @@
 
 use super::{MAX_BIND_WAIT_NS, MAX_CALL_MS, NESTED_MARGIN_NS, call_error, need};
 use crate::handle;
+use crate::handle::grant::{self as grants, Kernel};
 use crate::process::uaccess;
 use crate::{hpet, ipc};
 use alloc::vec::Vec;
+use captable::Live;
 use kabi::handle::{CallH, Handle, Kind, MAX_TRANSFER, RecvInfo, Rights};
 use kabi::{Error, call, cap};
 
@@ -72,9 +74,11 @@ fn call_h(slot: usize, route: u64, args_ptr: u64) -> Result<u64, Error> {
         .filter(|&r| r != 0)
         .map(Handle)
         .ok_or(Error::BadHandle)?;
-    let entry = handle::with(slot, |h| h.table.check(route, Kind::Service, Rights::CALL))
-        .map_err(|_| Error::BadHandle)?
-        .map_err(Error::from)?;
+    let entry = handle::with(slot, |h| {
+        h.table.check(route, Kind::Service, Rights::CALL, &Kernel)
+    })
+    .map_err(|_| Error::BadHandle)?
+    .map_err(Error::from)?;
     let name = handle::route_name(entry.object).ok_or(Error::NotFound)?;
     let name = name.as_str();
     let args: CallH = uaccess::read_struct(slot, args_ptr)?;
@@ -98,7 +102,10 @@ fn call_h(slot: usize, route: u64, args_ptr: u64) -> Result<u64, Error> {
     if let Some(served) = ipc::serving_deadline(me.pid) {
         deadline = deadline.min(served.saturating_sub(NESTED_MARGIN_NS));
     }
-    let cancel = || crate::process::killed(slot) || crate::process::interrupt_pending(slot);
+    // A call through a route given under a grant ends when the grant is revoked.
+    let revoked = || entry.grant.is_some_and(|grant| !Kernel.alive(grant));
+    let cancel =
+        || crate::process::killed(slot) || crate::process::interrupt_pending(slot) || revoked();
     ipc::wait_bound(name, deadline.min(now + MAX_BIND_WAIT_NS), cancel)
         .map_err(|error| call_error(slot, error))?;
     // The handles go only to a server whose capability bits allow their kinds.
@@ -114,9 +121,14 @@ fn call_h(slot: usize, route: u64, args_ptr: u64) -> Result<u64, Error> {
         rights: entry.rights.bits(),
         handles: moved,
     };
+    let tracked = entry.grant.and_then(grants::track);
     let result = ipc::call_with(name, &request, me.pid, deadline, cancel, extra);
+    grants::untrack(tracked);
     drop(request);
-    let (reply, _, came) = result.map_err(|error| call_error(slot, error))?;
+    let (reply, _, came) = result.map_err(|error| match revoked() {
+        true => Error::Revoked,
+        false => call_error(slot, error),
+    })?;
     let len = reply
         .len()
         .min(usize::try_from(args.reply_cap).unwrap_or(usize::MAX));

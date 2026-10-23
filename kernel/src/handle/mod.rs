@@ -29,6 +29,8 @@ pub struct Handles {
     startup: Vec<Handle>,
 }
 
+pub mod grant;
+
 static HANDLES: [Mutex<Option<Handles>>; MAX_PROCESSES] =
     [const { Mutex::new(None) }; MAX_PROCESSES];
 
@@ -70,7 +72,18 @@ pub fn route_name(id: u64) -> Option<Name> {
 /// The startup handles for capability bits `caps` (ADR 0001 D3's table), for the
 /// process `pid`. CALL gives a route only through `uses=`, so none here.
 pub fn startup(caps: u64, pid: u64) -> Vec<Entry> {
-    let rows: [(u64, Kind, Rights, u64); 10] = [
+    let rows: [(u64, Kind, Rights, u64); 11] = [
+        // MINT under the `system` root, which is never revoked (ADR 0001 D3).
+        (
+            cap::SUPERVISE,
+            Kind::Grant,
+            Rights::MINT,
+            captable::GrantRef {
+                node: captable::grant::SYSTEM,
+                generation: 1,
+            }
+            .pack(),
+        ),
         (
             cap::SUPERVISE,
             Kind::Job,
@@ -202,7 +215,7 @@ pub fn holds(slot: usize, kind: Kind, rights: Rights) -> bool {
     HANDLES[slot]
         .lock()
         .as_ref()
-        .is_some_and(|handles| handles.table.holds(kind, rights))
+        .is_some_and(|handles| handles.table.holds(kind, rights, &grant::Kernel))
 }
 
 /// What a call that needed capability bits `bits` now needs: for each bit, a live
@@ -215,7 +228,7 @@ pub fn need(slot: usize, bits: u64) -> Result<(), kabi::Error> {
         let bit = rest.isolate_lowest_one();
         rest &= !bit;
         let (kind, rights) = required(bit).ok_or(kabi::Error::Permission)?;
-        if !table.holds(kind, rights) {
+        if !table.holds(kind, rights, &grant::Kernel) {
             return Err(kabi::Error::Permission);
         }
     }

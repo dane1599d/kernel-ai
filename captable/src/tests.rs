@@ -1,6 +1,7 @@
 extern crate std;
 
 use super::*;
+use crate::grant::Always;
 use std::collections::HashMap;
 use std::vec;
 
@@ -26,17 +27,21 @@ fn check_wants_the_kind_and_every_right() {
     let handle = table
         .insert(sched(Rights::READ | Rights::SET_POLICY))
         .unwrap();
-    assert!(table.check(handle, Kind::Sched, Rights::SET_POLICY).is_ok());
+    assert!(
+        table
+            .check(handle, Kind::Sched, Rights::SET_POLICY, &Always)
+            .is_ok()
+    );
     assert_eq!(
-        table.check(handle, Kind::Model, Rights::empty()),
+        table.check(handle, Kind::Model, Rights::empty(), &Always),
         Err(Error::BadHandle)
     );
     assert_eq!(
-        table.check(handle, Kind::Sched, Rights::MAP),
+        table.check(handle, Kind::Sched, Rights::MAP, &Always),
         Err(Error::Permission)
     );
-    assert!(table.holds(Kind::Sched, Rights::READ));
-    assert!(!table.holds(Kind::Sched, Rights::WRITE));
+    assert!(table.holds(Kind::Sched, Rights::READ, &Always));
+    assert!(!table.holds(Kind::Sched, Rights::WRITE, &Always));
 }
 
 #[test]
@@ -50,8 +55,8 @@ fn a_closed_handle_never_resolves_even_after_its_slot_is_reused() {
     assert_ne!(first, second);
     assert_eq!(table.get(first), Err(Error::BadHandle));
     assert!(
-        !table.holds(Kind::Sched, Rights::READ)
-            || table.find(Kind::Sched, Rights::READ) == Some(second)
+        !table.holds(Kind::Sched, Rights::READ, &Always)
+            || table.find(Kind::Sched, Rights::READ, &Always) == Some(second)
     );
 }
 
@@ -61,14 +66,20 @@ fn dup_needs_duplicate_and_a_subset() {
     let plain = table
         .insert(sched(Rights::READ | Rights::SET_POLICY))
         .unwrap();
-    assert_eq!(table.dup(plain, Rights::READ), Err(Error::Permission));
+    assert_eq!(
+        table.dup(plain, Rights::READ, &Always),
+        Err(Error::Permission)
+    );
     let source = table
         .insert(sched(Rights::DUPLICATE | Rights::READ | Rights::SET_POLICY))
         .unwrap();
-    let narrow = table.dup(source, Rights::READ).unwrap();
+    let narrow = table.dup(source, Rights::READ, &Always).unwrap();
     assert_eq!(table.get(narrow).unwrap().rights, Rights::READ);
-    assert_eq!(table.dup(source, Rights::MAP), Err(Error::Invalid));
-    assert_eq!(table.dup(narrow, Rights::READ), Err(Error::Permission));
+    assert_eq!(table.dup(source, Rights::MAP, &Always), Err(Error::Invalid));
+    assert_eq!(
+        table.dup(narrow, Rights::READ, &Always),
+        Err(Error::Permission)
+    );
 }
 
 #[test]
@@ -77,10 +88,13 @@ fn replace_narrows_and_closes_the_old_handle_even_when_refused() {
     let old = table
         .insert(sched(Rights::READ | Rights::SET_POLICY))
         .unwrap();
-    let new = table.replace(old, Rights::READ).unwrap();
+    let new = table.replace(old, Rights::READ, &Always).unwrap();
     assert_eq!(table.get(old), Err(Error::BadHandle));
     assert_eq!(table.get(new).unwrap().rights, Rights::READ);
-    assert_eq!(table.replace(new, Rights::SET_POLICY), Err(Error::Invalid));
+    assert_eq!(
+        table.replace(new, Rights::SET_POLICY, &Always),
+        Err(Error::Invalid)
+    );
     assert_eq!(table.get(new), Err(Error::BadHandle));
     assert!(table.is_empty());
 }
@@ -94,10 +108,14 @@ fn a_once_handle_is_closed_by_its_first_use_and_never_found() {
             ..sched(Rights::SET_POLICY)
         })
         .unwrap();
-    assert_eq!(table.find(Kind::Sched, Rights::SET_POLICY), None);
-    assert!(table.check(once, Kind::Sched, Rights::SET_POLICY).is_ok());
+    assert_eq!(table.find(Kind::Sched, Rights::SET_POLICY, &Always), None);
+    assert!(
+        table
+            .check(once, Kind::Sched, Rights::SET_POLICY, &Always)
+            .is_ok()
+    );
     assert_eq!(
-        table.check(once, Kind::Sched, Rights::SET_POLICY),
+        table.check(once, Kind::Sched, Rights::SET_POLICY, &Always),
         Err(Error::BadHandle)
     );
 }
@@ -188,7 +206,10 @@ fn rights_never_grow_and_dead_handles_never_resolve() {
                 }
                 1 => {
                     let handle = pick(&mut rng, &open, &dead);
-                    match (table.dup(handle, rights), open.get(&handle).copied()) {
+                    match (
+                        table.dup(handle, rights, &Always),
+                        open.get(&handle).copied(),
+                    ) {
                         (Ok(new), Some(source)) => {
                             assert!(source.rights.contains(Rights::DUPLICATE));
                             assert!(source.rights.contains(rights), "seed {seed}: dup widened");
@@ -201,7 +222,7 @@ fn rights_never_grow_and_dead_handles_never_resolve() {
                 2 => {
                     let handle = pick(&mut rng, &open, &dead);
                     let source = open.remove(&handle);
-                    match (table.replace(handle, rights), source) {
+                    match (table.replace(handle, rights, &Always), source) {
                         (Ok(new), Some(source)) => {
                             assert!(
                                 source.rights.contains(rights),
@@ -231,7 +252,7 @@ fn rights_never_grow_and_dead_handles_never_resolve() {
                     let handle = pick(&mut rng, &open, &dead);
                     let kind = Kind::ALL[rng.below(12) as usize];
                     let asked = rights & Rights::from_bits_truncate(rng.next() as u32);
-                    let got = table.check(handle, kind, asked);
+                    let got = table.check(handle, kind, asked, &Always);
                     match open.get(&handle).copied() {
                         Some(want) if want.kind == kind && want.rights.contains(asked) => {
                             assert_eq!(got, Ok(want));
@@ -255,4 +276,166 @@ fn rights_never_grow_and_dead_handles_never_resolve() {
             assert_eq!(table.get(*handle), Ok(want), "seed {seed}");
         }
     }
+}
+
+#[test]
+fn a_handle_under_a_revoked_grant_answers_revoked_and_is_never_found() {
+    let mut tree = std::boxed::Box::new(crate::grant::Tree::new());
+    let request = tree
+        .create(
+            tree.root(crate::grant::USER),
+            0,
+            crate::grant::Life::Request,
+            b"request 1",
+            0,
+        )
+        .unwrap();
+    let mut table = Table::new().unwrap();
+    let plain = table
+        .insert(sched(Rights::DUPLICATE | Rights::READ | Rights::SET_POLICY))
+        .unwrap();
+    let given = table
+        .dup_under(plain, Rights::DUPLICATE | Rights::READ, request, &*tree)
+        .unwrap();
+    let deeper = table.dup(given, Rights::READ, &*tree).unwrap();
+    assert!(
+        table
+            .check(given, Kind::Sched, Rights::READ, &*tree)
+            .is_ok()
+    );
+    tree.revoke(request, &mut [0; crate::grant::NODES]).unwrap();
+    for gone in [given, deeper] {
+        assert_eq!(
+            table.check(gone, Kind::Sched, Rights::READ, &*tree),
+            Err(Error::Revoked)
+        );
+        assert_eq!(table.dup(gone, Rights::READ, &*tree), Err(Error::Revoked));
+    }
+    // The startup-like handle with no grant is untouched; find skips the dead.
+    assert_eq!(table.find(Kind::Sched, Rights::READ, &*tree), Some(plain));
+    assert_eq!(
+        table.dup_under(plain, Rights::READ, request, &*tree),
+        Err(Error::Revoked)
+    );
+    assert_eq!(
+        table.replace(given, Rights::READ, &*tree),
+        Err(Error::Revoked)
+    );
+    assert_eq!(table.get(given), Err(Error::BadHandle));
+}
+
+/// Spike S01-1's M4 (ADR 0001): hand-made attacks on the table, the grant tree
+/// and `ONCE`; none may succeed. Forged and stale handles, widening and
+/// unpermitted duplicates, use after a revoke, a reused `ONCE` handle, a call
+/// with no handle of the kind it needs, and a digest that is not the one shown.
+/// (Kind-ceiling breaches and injected text are kernel-side, in `test=handles`.)
+#[test]
+fn m4_no_attack_succeeds() {
+    use crate::grant::{Life, Tree, USER};
+    use crate::once::{Book, Verdict};
+    let mut tree = std::boxed::Box::new(Tree::new());
+    let mut book = Book::new();
+    let mut rng = Rng(0x5eed_0004);
+    let mut table = Table::new().unwrap();
+    let request = tree
+        .create(tree.root(USER), 0, Life::Request, b"request 9", 0)
+        .unwrap();
+    let owned = Rights::DUPLICATE | Rights::READ;
+    let source = table.insert(sched(owned)).unwrap();
+    let narrow = table.insert(sched(Rights::READ)).unwrap();
+    let (mut tried, mut succeeded) = (0, 0);
+    let mut attempt = |ok: bool| {
+        tried += 1;
+        succeeded += usize::from(ok);
+    };
+    // 64 forged values, none of them an open handle.
+    for _ in 0..64 {
+        let forged = Handle(rng.next() as u32 | 1 << 31);
+        attempt(
+            table
+                .check(forged, Kind::Sched, Rights::READ, &*tree)
+                .is_ok(),
+        );
+    }
+    // 32 stale handles: closed, their slots reused.
+    for _ in 0..32 {
+        let stale = table.insert(sched(Rights::READ)).unwrap();
+        table.close(stale).unwrap();
+        let reuse = table.insert(sched(Rights::READ)).unwrap();
+        attempt(
+            table
+                .check(stale, Kind::Sched, Rights::READ, &*tree)
+                .is_ok(),
+        );
+        table.close(reuse).unwrap();
+    }
+    // 32 widening duplicates, 16 without DUPLICATE.
+    for _ in 0..32 {
+        let wider =
+            owned | Rights::from_bits_truncate(rng.next() as u32 & !owned.bits()) | Rights::WRITE;
+        attempt(table.dup(source, wider, &*tree).is_ok());
+    }
+    for _ in 0..16 {
+        attempt(table.dup(narrow, Rights::READ, &*tree).is_ok());
+    }
+    // 16 uses after a revoke, and 8 grants under a revoked node.
+    let doomed: std::vec::Vec<Handle> = (0..16)
+        .map(|_| {
+            table
+                .dup_under(source, Rights::READ, request, &*tree)
+                .unwrap()
+        })
+        .collect();
+    let freed = tree.revoke(request, &mut [0; crate::grant::NODES]).unwrap();
+    for handle in &doomed {
+        attempt(
+            table
+                .check(*handle, Kind::Sched, Rights::READ, &*tree)
+                .is_ok(),
+        );
+    }
+    for _ in 0..8 {
+        attempt(
+            table
+                .dup_under(source, Rights::READ, request, &*tree)
+                .is_ok(),
+        );
+    }
+    // 16 reused ONCE handles: the second use of each.
+    for _ in 0..16 {
+        let once = table
+            .insert(Entry {
+                flags: Flags::ONCE,
+                ..sched(Rights::READ)
+            })
+            .unwrap();
+        assert!(table.check(once, Kind::Sched, Rights::READ, &*tree).is_ok());
+        attempt(table.check(once, Kind::Sched, Rights::READ, &*tree).is_ok());
+    }
+    // 16 asks with no handle of the kind the call needs.
+    for kind in Kind::ALL
+        .iter()
+        .filter(|k| **k != Kind::Sched)
+        .cycle()
+        .take(16)
+    {
+        attempt(table.check(source, *kind, Rights::empty(), &*tree).is_ok());
+    }
+    // 16 digests that are not the one shown, and 16 used twice.
+    let live = tree
+        .create(tree.root(USER), 0, Life::Request, b"request 10", 0)
+        .unwrap();
+    for i in 0..16u8 {
+        let shown = [i; 32];
+        let badge = book.hold(live, shown, &*tree).unwrap();
+        let mut other = shown;
+        other[usize::from(i) % 32] ^= 1 << (i % 8);
+        attempt(book.check(badge, &other, &*tree) == Verdict::Match);
+        assert_eq!(book.check(badge, &shown, &*tree), Verdict::Match);
+        attempt(book.check(badge, &shown, &*tree) == Verdict::Match);
+    }
+    std::println!("M4: {tried} attacks, {succeeded} succeeded");
+    assert_eq!(tried, 232);
+    assert_eq!(succeeded, 0);
+    assert_eq!(freed, 1);
 }
