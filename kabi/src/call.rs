@@ -137,3 +137,25 @@ pub const BUILD_POLL: u64 = 36;
 /// Unavailable with no DNS server, TimedOut after
 /// [`super::net::RESOLVE_TIMEOUT_MS`], Interrupted on Ctrl-C. Needs [`super::cap::RESOLVE`].
 pub const RESOLVE: u64 = 37;
+/// `abi_info(&mut handle::AbiInfo) -> 0`: the ABI version, the highest call
+/// number and the handle table's size (ADR 0001 D10). Needs nothing.
+pub const ABI_INFO: u64 = 38;
+/// `startup(out: &mut [handle::HandleInfo], cap) -> count`: the handles the
+/// process got at spawn from its capability bits, up to `cap` of them written to
+/// `out`; still open ones only. Needs nothing.
+pub const STARTUP: u64 = 39;
+/// `handle_info(handle, &mut handle::HandleInfo) -> 0`: a handle's kind, rights
+/// and flags. BadHandle for one that is not open.
+pub const HANDLE_INFO: u64 = 40;
+/// `handle_dup(handle, rights) -> handle`: a second handle to the same object
+/// with `rights`, which must be a subset of the source's (Invalid otherwise).
+/// Needs DUPLICATE on the source.
+pub const HANDLE_DUP: u64 = 41;
+/// `handle_replace(handle, rights) -> handle`: swaps a handle for one with fewer
+/// `rights` (a subset; Invalid otherwise); the old one is closed either way.
+pub const HANDLE_REPLACE: u64 = 42;
+/// `handle_close(handle) -> 0`: closes a handle for good. The right it carried is
+/// gone: a call that needs it fails with Permission from then on.
+pub const HANDLE_CLOSE: u64 = 43;
+/// The highest call number.
+pub const MAX: u64 = HANDLE_CLOSE;

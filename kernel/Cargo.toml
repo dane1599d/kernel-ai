@@ -16,6 +16,7 @@ spikes = ["dep:spike-rhai", "dep:spike-wasmi"]
 
 [dependencies]
 acpitables = { path = "../acpitables" }
+captable = { path = "../captable" }
 cpufeat = { path = "../cpufeat" }
 kabi = { path = "../kabi" }
 limine = "0.6.5"

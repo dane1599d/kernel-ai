@@ -38,6 +38,8 @@ mod faults;
 mod fpu;
 mod fpu_tests;
 mod gdt;
+mod handle;
+mod handle_tests;
 mod hpet;
 mod i8042;
 mod icount_tests;
@@ -298,6 +300,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Latency => run_case(latency_tests::check),
         SelfTest::Fpu => run_case(fpu_tests::fpu_check),
         SelfTest::Probe => run_case(fpu_tests::probe_check),
+        SelfTest::Handles => run_case(handle_tests::check),
         SelfTest::Threads => run_case(thread_tests::check),
         SelfTest::ThreadsKill => run_case(thread_tests::kill_check),
         SelfTest::Matvec => run_case(compute_tests::matvec_check),

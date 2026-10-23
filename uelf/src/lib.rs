@@ -5,7 +5,8 @@
 //! to [`MAX_SEGMENTS`] `PT_LOAD` segments inside the allowed range, none both
 //! writable and executable, none overlapping (after rounding to pages), and the
 //! entry point inside an executable segment. Interpreters, dynamic linking and TLS
-//! are refused.
+//! are refused. A `PT_NOTE` named "KAI" carries the ABI version the program was
+//! built for ([`Image::abi`]); the loader decides what to accept.
 
 #![no_std]
 
@@ -20,7 +21,11 @@ const MAX_PROGRAM_HEADERS: usize = 16;
 const PT_LOAD: u32 = 1;
 const PT_DYNAMIC: u32 = 2;
 const PT_INTERP: u32 = 3;
+const PT_NOTE: u32 = 4;
 const PT_TLS: u32 = 7;
+/// The note that carries the ABI version: name "KAI", type 1, two u32s.
+const KAI_NOTE_NAME: &[u8] = b"KAI\0";
+const KAI_NOTE_TYPE: u32 = 1;
 const PF_X: u32 = 1;
 const PF_W: u32 = 2;
 
@@ -39,6 +44,8 @@ pub enum Error {
     Overlap,
     NoSegments,
     BadEntry,
+    /// A note runs past its segment or the file.
+    BadNote,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
@@ -63,6 +70,8 @@ impl Segment {
 #[derive(Debug)]
 pub struct Image {
     pub entry: u64,
+    /// The (major, minor) ABI version in the "KAI" note; `None` without one.
+    pub abi: Option<(u32, u32)>,
     segments: [Segment; MAX_SEGMENTS],
     count: usize,
 }
@@ -122,6 +131,7 @@ pub fn parse(data: &[u8], allowed: Range<u64>) -> Result<Image, Error> {
     }
     let mut image = Image {
         entry,
+        abi: None,
         segments: Default::default(),
         count: 0,
     };
@@ -129,6 +139,18 @@ pub fn parse(data: &[u8], allowed: Range<u64>) -> Result<Image, Error> {
         let at = ph_offset + index * PH_SIZE;
         match u32_at(data, at) {
             PT_LOAD => {}
+            PT_NOTE => {
+                let offset = u64_at(data, at + 8);
+                let filesz = u64_at(data, at + 32);
+                let end = offset
+                    .checked_add(filesz)
+                    .filter(|&end| end <= data.len() as u64)
+                    .ok_or(Error::BadNote)?;
+                if let Some(abi) = kai_note(&data[offset as usize..end as usize])? {
+                    image.abi = Some(abi);
+                }
+                continue;
+            }
             PT_DYNAMIC | PT_INTERP | PT_TLS => return Err(Error::Unsupported),
             _ => continue,
         }
@@ -182,6 +204,31 @@ pub fn parse(data: &[u8], allowed: Range<u64>) -> Result<Image, Error> {
         return Err(Error::BadEntry);
     }
     Ok(image)
+}
+
+/// The ABI version in the "KAI" note among the notes in `notes`, if any.
+fn kai_note(mut notes: &[u8]) -> Result<Option<(u32, u32)>, Error> {
+    let mut found = None;
+    while !notes.is_empty() {
+        if notes.len() < 12 {
+            return Err(Error::BadNote);
+        }
+        let name_len = u32_at(notes, 0) as usize;
+        let desc_len = u32_at(notes, 4) as usize;
+        let kind = u32_at(notes, 8);
+        let name_end = 12usize.checked_add(name_len).ok_or(Error::BadNote)?;
+        let desc_start = name_end.checked_next_multiple_of(4).ok_or(Error::BadNote)?;
+        let desc_end = desc_start.checked_add(desc_len).ok_or(Error::BadNote)?;
+        let next = desc_end.checked_next_multiple_of(4).ok_or(Error::BadNote)?;
+        if desc_end > notes.len() {
+            return Err(Error::BadNote);
+        }
+        if &notes[12..name_end] == KAI_NOTE_NAME && kind == KAI_NOTE_TYPE && desc_len == 8 {
+            found = Some((u32_at(notes, desc_start), u32_at(notes, desc_start + 4)));
+        }
+        notes = &notes[next.min(notes.len())..];
+    }
+    Ok(found)
 }
 
 #[cfg(test)]
@@ -343,5 +390,65 @@ mod tests {
         let mut elf = sample();
         elf[56..58].copy_from_slice(&0u16.to_le_bytes());
         assert_eq!(parse(&elf, ALLOWED).unwrap_err(), Error::NoSegments);
+    }
+
+    /// `sample` with a third program header, a `PT_NOTE` over `notes` at 0x2800.
+    fn with_notes(notes: &[u8]) -> Vec<u8> {
+        let mut elf = sample();
+        elf[56..58].copy_from_slice(&3u16.to_le_bytes());
+        set_segment(&mut elf, 2, PT_NOTE, 4, 0x2800, 0, notes.len() as u64, 0);
+        elf[0x2800..0x2800 + notes.len()].copy_from_slice(notes);
+        elf
+    }
+
+    fn note(name: &[u8], kind: u32, desc: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(desc.len() as u32).to_le_bytes());
+        out.extend_from_slice(&kind.to_le_bytes());
+        out.extend_from_slice(name);
+        out.resize(out.len().next_multiple_of(4), 0);
+        out.extend_from_slice(desc);
+        out.resize(out.len().next_multiple_of(4), 0);
+        out
+    }
+
+    fn abi(major: u32, minor: u32) -> Vec<u8> {
+        [major.to_le_bytes(), minor.to_le_bytes()].concat()
+    }
+
+    #[test]
+    fn reads_the_abi_version_from_the_kai_note() {
+        assert_eq!(parse(&sample(), ALLOWED).unwrap().abi, None);
+        let kai = note(b"KAI\0", 1, &abi(1, 2));
+        assert_eq!(parse(&with_notes(&kai), ALLOWED).unwrap().abi, Some((1, 2)));
+        // Other notes are skipped, before or after it.
+        let gnu = note(b"GNU\0", 3, &[7; 20]);
+        let both = [gnu.clone(), kai.clone(), gnu].concat();
+        assert_eq!(
+            parse(&with_notes(&both), ALLOWED).unwrap().abi,
+            Some((1, 2))
+        );
+        // A note named KAI of another type or size is not it.
+        let other = [note(b"KAI\0", 2, &abi(9, 9)), note(b"KAI\0", 1, &[1; 4])].concat();
+        assert_eq!(parse(&with_notes(&other), ALLOWED).unwrap().abi, None);
+    }
+
+    #[test]
+    fn rejects_a_note_that_runs_past_its_segment() {
+        let mut kai = note(b"KAI\0", 1, &abi(1, 0));
+        kai[4..8].copy_from_slice(&64u32.to_le_bytes());
+        assert_eq!(
+            parse(&with_notes(&kai), ALLOWED).unwrap_err(),
+            Error::BadNote
+        );
+        let kai = note(b"KAI\0", 1, &abi(1, 0));
+        assert_eq!(
+            parse(&with_notes(&kai[..10]), ALLOWED).unwrap_err(),
+            Error::BadNote
+        );
+        let mut elf = with_notes(&kai);
+        set_segment(&mut elf, 2, PT_NOTE, 4, 0x2FFC, 0, 0x100, 0);
+        assert_eq!(parse(&elf, ALLOWED).unwrap_err(), Error::BadNote);
     }
 }

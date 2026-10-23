@@ -22,10 +22,47 @@ pub fn heap_bytes() -> u64 {
     HEAP.live_bytes()
 }
 
-/// Defines `_start`, which runs `main` and exits with its return value.
+/// The "KAI" ELF note: the ABI version a program was built for (ADR 0001 D10),
+/// which the loader checks before it runs the program.
+#[doc(hidden)]
+#[repr(C, align(4))]
+pub struct AbiNote {
+    name_len: u32,
+    desc_len: u32,
+    kind: u32,
+    name: [u8; 4],
+    major: u32,
+    minor: u32,
+}
+
+#[doc(hidden)]
+pub const ABI_NOTE: AbiNote = AbiNote {
+    name_len: 4,
+    desc_len: 8,
+    kind: kabi::handle::NOTE_TYPE,
+    name: *kabi::handle::NOTE_NAME,
+    major: kabi::handle::ABI.0,
+    minor: kabi::handle::ABI.1,
+};
+
+/// Defines the program's "KAI" note, which `link.ld` keeps in a `PT_NOTE`
+/// segment. [`entry!`] does; a program with its own `_start` calls it itself.
+#[macro_export]
+macro_rules! abi_note {
+    () => {
+        #[used]
+        #[unsafe(link_section = ".note.kai")]
+        static KAI_NOTE: $crate::AbiNote = $crate::ABI_NOTE;
+    };
+}
+
+/// Defines `_start`, which runs `main` and exits with its return value, and the
+/// program's "KAI" note.
 #[macro_export]
 macro_rules! entry {
     ($main:path) => {
+        $crate::abi_note!();
+
         #[unsafe(no_mangle)]
         pub extern "C" fn _start() -> ! {
             $crate::sys::exit($main())

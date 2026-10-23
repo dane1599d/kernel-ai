@@ -404,7 +404,13 @@ pub fn spawn(request: &SpawnRequest) -> Result<u64, kabi::Error> {
         burst::start_process(slot, request.limits.max_burst_ms);
         Ok((slot, pid))
     })?;
+    // Its startup handles, before it can run (ADR 0001 D3).
+    if let Err(error) = crate::handle::create(slot, request.limits.caps, pid) {
+        with_table(|table| table[slot] = Process::FREE);
+        return Err(error);
+    }
     if threads::spawn("user", process_main, slot).is_err() {
+        crate::handle::destroy(slot);
         with_table(|table| table[slot] = Process::FREE);
         supervision::record_load_failure(pid, &name, request.supervisor, request.spawner);
         return Err(Error::NoMemory);

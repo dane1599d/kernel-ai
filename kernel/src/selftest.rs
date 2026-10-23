@@ -54,6 +54,8 @@ pub enum SelfTest {
     Fpu,
     /// L2: the isolation probe; ops 0-2 complete and every other op is stopped.
     Probe,
+    /// P1: handle tables, startup handles and need() on handles.
+    Handles,
     /// L6: worker threads start, are refused, filtered and torn down.
     Threads,
     /// L6: processes killed mid-run, every thread blocked or computing, free every frame.
@@ -119,6 +121,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=latency" => Some(SelfTest::Latency),
             "test=fpu" => Some(SelfTest::Fpu),
             "test=probe" => Some(SelfTest::Probe),
+            "test=handles" => Some(SelfTest::Handles),
             "test=threads" => Some(SelfTest::Threads),
             "test=threads-kill" => Some(SelfTest::ThreadsKill),
             "test=matvec" => Some(SelfTest::Matvec),

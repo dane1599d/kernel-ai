@@ -2,6 +2,7 @@
 //! `kabi::Error::from_raw`.
 
 use core::sync::atomic::AtomicU32;
+use kabi::handle::{AbiInfo, Handle, HandleInfo, Rights};
 use kabi::{CallRequest, Error, ExitRecord, HttpRequest, Metrics, SpawnRequest, call};
 
 /// # Safety
@@ -438,4 +439,65 @@ pub fn resolve(host: &str, out: &mut [[u8; 4]]) -> Result<usize, Error> {
         ],
     )
     .map(|count| count as usize)
+}
+
+/// The kernel's ABI version, highest call number and handle table size.
+pub fn abi_info() -> Result<AbiInfo, Error> {
+    let mut info = AbiInfo::default();
+    call(
+        call::ABI_INFO,
+        [&mut info as *mut AbiInfo as u64, 0, 0, 0, 0, 0],
+    )?;
+    Ok(info)
+}
+
+/// The handles this process got at spawn and still holds, as many as fit written
+/// into `out`; returns how many there are.
+pub fn startup(out: &mut [HandleInfo]) -> Result<usize, Error> {
+    call(
+        call::STARTUP,
+        [out.as_mut_ptr() as u64, out.len() as u64, 0, 0, 0, 0],
+    )
+    .map(|count| count as usize)
+}
+
+/// A handle's kind, rights and flags.
+pub fn handle_info(handle: Handle) -> Result<HandleInfo, Error> {
+    let mut info = HandleInfo::default();
+    call(
+        call::HANDLE_INFO,
+        [
+            u64::from(handle.0),
+            &mut info as *mut HandleInfo as u64,
+            0,
+            0,
+            0,
+            0,
+        ],
+    )?;
+    Ok(info)
+}
+
+/// A second handle to `handle`'s object with `rights`, a subset of its own.
+pub fn handle_dup(handle: Handle, rights: Rights) -> Result<Handle, Error> {
+    call(
+        call::HANDLE_DUP,
+        [u64::from(handle.0), u64::from(rights.bits()), 0, 0, 0, 0],
+    )
+    .map(|raw| Handle(raw as u32))
+}
+
+/// Swaps `handle` for one with `rights`, a subset of its own; the old one is
+/// closed either way.
+pub fn handle_replace(handle: Handle, rights: Rights) -> Result<Handle, Error> {
+    call(
+        call::HANDLE_REPLACE,
+        [u64::from(handle.0), u64::from(rights.bits()), 0, 0, 0, 0],
+    )
+    .map(|raw| Handle(raw as u32))
+}
+
+/// Closes `handle` for good.
+pub fn handle_close(handle: Handle) -> Result<(), Error> {
+    call(call::HANDLE_CLOSE, [u64::from(handle.0), 0, 0, 0, 0, 0]).map(|_| ())
 }

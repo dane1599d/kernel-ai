@@ -1,6 +1,6 @@
 //! Shrinks a user program for the boot drive: the kernel's loader reads only the
-//! ELF header, the program headers and the loadable segments, so everything after
-//! the last of them (debug info, section headers) is cut off. The line table is
+//! ELF header, the program headers, the loadable segments and the "KAI" note, so
+//! everything after the last of them (debug info, section headers) is cut off. The line table is
 //! built from the full file on the host before this.
 
 /// Returns `elf` truncated after its last loadable byte, without section headers.
@@ -20,8 +20,8 @@ pub fn for_boot(elf: &[u8]) -> Result<Vec<u8>, String> {
     let mut end = ph_offset + ph_size * ph_count;
     for index in 0..ph_count {
         let at = (ph_offset + index * ph_size) as usize;
-        // PT_LOAD
-        if read(at, 4)? == 1 {
+        // PT_LOAD, and PT_NOTE for the ABI version.
+        if matches!(read(at, 4)?, 1 | 4) {
             end = end.max(read(at + 8, 8)? + read(at + 32, 8)?);
         }
     }
