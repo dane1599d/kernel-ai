@@ -60,6 +60,7 @@ mod tokens;
 mod tune;
 mod userbuild;
 mod vbox;
+mod wit;
 mod wsl;
 
 use options::{Accel, Options, Task, parse_args};
@@ -87,6 +88,7 @@ fn main() -> ExitCode {
         Some("vbox") => vbox::main(&args[1..]),
         Some("licences") => licences::main(&args[1..]),
         Some("notices") => notices::main(&args[1..]),
+        Some("wit-check") => wit::main(&args[1..]),
         _ => parse_args(&args).and_then(|options| execute(&options)),
     };
     match result {
