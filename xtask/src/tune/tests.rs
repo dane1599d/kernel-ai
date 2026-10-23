@@ -169,7 +169,9 @@ fn options_parse_and_need_a_source() {
 
 #[test]
 fn the_summary_budgets_for_the_guests_context() {
-    assert_eq!(tune::CONTEXT_TOKENS, kabi::model::CONTEXT_CAP);
+    // `tune` keeps the budget M10 recorded with, inside the guest's context.
+    const { assert!(tune::CONTEXT_TOKENS <= kabi::model::CONTEXT_CAP) };
+    assert_eq!(tune::CONTEXT_TOKENS, 2048);
 }
 
 /// Opt-in, as bpe's real-vocabulary test: with the real Qwen3 tokenizer, mix A's
@@ -189,7 +191,7 @@ fn the_real_tokenizer_fits_every_summary_in_the_guests_context() {
         tok.encode(text, &mut ids);
         ids.len()
     };
-    let budget = kabi::model::CONTEXT_CAP - tune::ANSWER_TOKENS as usize - tune::TEMPLATE_TOKENS;
+    let budget = tune::PROMPT_BUDGET;
     let prompt_tokens = |summary: &tune::Summary| {
         let request = tune::request(summary);
         let (system, user) = request.single_turn().unwrap();

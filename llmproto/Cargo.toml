@@ -13,6 +13,7 @@ local = ["dep:infer"]
 [dependencies]
 agentabi = { path = "../agentabi" }
 infer = { path = "../infer", optional = true }
+kabi = { path = "../kabi" }
 sched = { path = "../sched" }
 serde = { version = "1.0.229", default-features = false, features = ["alloc", "derive"] }
 serde_json = { version = "1.0.154", default-features = false, features = ["alloc"] }

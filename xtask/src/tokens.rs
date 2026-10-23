@@ -2,9 +2,11 @@
 //! inference. With the vocabulary in a GGUF file (the whole file or its first
 //! 32 MiB), it prints a Markdown table of the real token count of each part of
 //! today's script prompt, of each script API card, of the chat template, and of
-//! a hand-drafted `dsl-1` pack (`xtask/tokens/dsl-1-draft.txt`), with bytes per
-//! token for the estimator, and the conversation-memory budget the draft leaves
-//! (P1 plan section 4). The token-count workflow runs it on GitHub's runner.
+//! the `dsl-1` pack `llmproto::pack` renders from the registry, with bytes per
+//! token against the pack's estimator, and the conversation-memory budget the
+//! pack leaves (P1 plan section 4). It fails when the pack and MODE go over
+//! `llmproto::pack::PACK_BUDGET` real tokens or the estimate undercounts them.
+//! The token-count workflow runs it on GitHub's runner.
 
 use bpe::Tokenizer;
 use bpe::chat::{Chat, Role, Turn};
@@ -16,11 +18,7 @@ use std::io::Read;
 /// Bytes of the GGUF file read: the header and the whole vocabulary of a Qwen3
 /// model fit in the first 8 MB, so this leaves room.
 const HEAD_BYTES: u64 = 32 * 1024 * 1024;
-/// The draft pack, rendered by hand until P1 task 4's renderer exists.
-pub const DSL1_DRAFT: &str = include_str!("../tokens/dsl-1-draft.txt");
-/// A draft `act` MODE turn (ADR 0010 §3; at most 64 tokens).
-const MODE_ACT: &str =
-    "Mode: act. Answer with exactly one call from the pack: a row, script, say or clarify.";
+use llmproto::pack::{self, Format, MODE_ACT, PACK_BUDGET};
 /// A plain request, as today's user turn carries it.
 const REQUEST: &str = "switch to round robin";
 /// ADR 0010 §4 and P1 plan §4.
@@ -43,7 +41,24 @@ pub fn main(args: &[String]) -> Result<(), String> {
     let tok = Tokenizer::from_gguf(&header).map_err(|error| format!("{path}: {error:?}"))?;
     let chat = Chat::new(&tok).map_err(|error| format!("{path}: {error:?}"))?;
     print!("{}", report(&tok, &chat));
-    Ok(())
+    check_budget(&tok)
+}
+
+/// The pack and MODE within the budget in real tokens, and the estimate the
+/// host test uses not under the real count.
+fn check_budget(tok: &Tokenizer) -> Result<(), String> {
+    let text = pack::render(Format::Dsl1);
+    let real = count(tok, &text) + count(tok, MODE_ACT);
+    let estimate = pack::estimate_tokens(&text) + pack::estimate_tokens(MODE_ACT);
+    match (real <= PACK_BUDGET, estimate >= real) {
+        (true, true) => Ok(()),
+        (false, _) => Err(format!(
+            "the pack and MODE take {real} tokens, over {PACK_BUDGET}"
+        )),
+        (true, false) => Err(format!(
+            "the pack estimate ({estimate}) undercounts the real {real} tokens"
+        )),
+    }
 }
 
 /// Tokens in `text` on its own, as one segment.
@@ -138,18 +153,18 @@ pub fn report(tok: &Tokenizer, chat: &Chat) -> String {
     }
     out.push_str(&api.text);
 
+    let dsl1 = pack::render(Format::Dsl1);
     // The template: what the chat turns add around their text.
     let user = format!("Request: {REQUEST}\n/no_think");
     let one_turn = chat.prompt(tok, Some(&system), &user).len();
     let template = one_turn - whole - count(tok, &user);
     let pack_turns = [
-        Turn::new(Role::System, DSL1_DRAFT),
+        Turn::new(Role::System, &dsl1),
         Turn::new(Role::System, MODE_ACT),
         Turn::new(Role::User, &user),
     ];
     let three_turns = chat.conversation(tok, &pack_turns).len();
-    let three_template =
-        three_turns - count(tok, DSL1_DRAFT) - count(tok, MODE_ACT) - count(tok, &user);
+    let three_template = three_turns - count(tok, &dsl1) - count(tok, MODE_ACT) - count(tok, &user);
     let mut turns = Table::new("Chat template and turns");
     turns.tokens(
         "template, system + user (today, with the empty think block)",
@@ -164,22 +179,19 @@ pub fn report(tok: &Tokenizer, chat: &Chat) -> String {
         "user turn: `Request: switch to round robin` + `/no_think`",
         &user,
     );
-    turns.part(tok, "draft `act` MODE", MODE_ACT);
+    turns.part(tok, "`act` MODE", MODE_ACT);
     turns.tokens("**today's whole script request**", one_turn);
     out.push_str(&turns.text);
 
-    // The draft pack, by section.
-    let mut dsl = Table::new("Draft `dsl-1` pack (xtask/tokens/dsl-1-draft.txt)");
-    for (heading, text) in sections(DSL1_DRAFT) {
+    // The pack, by section.
+    let mut dsl = Table::new("`dsl-1` pack (llmproto::pack, golden llmproto/src/pack/dsl-1.txt)");
+    for (heading, text) in sections(&dsl1) {
         dsl.part(tok, &format!("`{heading}`"), text);
     }
-    let pack = count(tok, DSL1_DRAFT);
-    dsl.row("**whole pack**", DSL1_DRAFT.len(), pack);
+    let pack = count(tok, &dsl1);
+    dsl.row("**whole pack**", dsl1.len(), pack);
     out.push_str(&dsl.text);
-    let longest = DSL1_DRAFT
-        .lines()
-        .map(|line| (count(tok, line), line))
-        .max();
+    let longest = dsl1.lines().map(|line| (count(tok, line), line)).max();
     if let Some((tokens, line)) = longest {
         let _ = writeln!(
             out,
@@ -188,7 +200,7 @@ pub fn report(tok: &Tokenizer, chat: &Chat) -> String {
         );
     }
 
-    // What the draft leaves for conversation memory.
+    // What the pack leaves for conversation memory.
     let left = CONTEXT_CAP.saturating_sub(
         pack + three_template
             + STATE_TOKENS
@@ -199,12 +211,13 @@ pub fn report(tok: &Tokenizer, chat: &Chat) -> String {
     let history = left.min(HISTORY_MAX);
     let _ = writeln!(
         out,
-        "\n### Budgets\n\n- ADR 0010's core-plus-OS-rows bar is 1,024 tokens: the draft pack plus MODE takes {}.\n- History: {CONTEXT_CAP} − pack {pack} − template {three_template} − MODE {} − State {STATE_TOKENS} − request {REQUEST_TOKENS} − answer {ANSWER_TOKENS} leaves {left}, so `HISTORY_BUDGET` = min({HISTORY_MAX}, {left}) = **{history}**.\n- Bytes per token over every counted part: {:.2} (the draft pack alone: {:.2}).",
+        "\n### Budgets\n\n- ADR 0010's core-plus-OS-rows bar is 1,024 tokens: the pack plus MODE takes {} (estimated {}).\n- History: {CONTEXT_CAP} − pack {pack} − template {three_template} − MODE {} − State {STATE_TOKENS} − request {REQUEST_TOKENS} − answer {ANSWER_TOKENS} leaves {left}, so `HISTORY_BUDGET` = min({HISTORY_MAX}, {left}) = **{history}**.\n- Bytes per token over every counted part: {:.2} (the pack alone: {:.2}).",
         pack + count(tok, MODE_ACT),
+        pack::estimate_tokens(&dsl1) + pack::estimate_tokens(MODE_ACT),
         count(tok, MODE_ACT),
         (m8.tok_bytes.1 + dsl.tok_bytes.1) as f64
             / (m8.tok_bytes.0 + dsl.tok_bytes.0).max(1) as f64,
-        DSL1_DRAFT.len() as f64 / pack.max(1) as f64,
+        dsl1.len() as f64 / pack.max(1) as f64,
     );
     out
 }
@@ -214,31 +227,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_draft_pack_is_printable_ascii_in_lines_of_at_most_120() {
-        for line in DSL1_DRAFT.lines() {
+    fn the_pack_is_printable_ascii_in_lines_of_at_most_120() {
+        for line in pack::render(Format::Dsl1).lines() {
             assert!(line.len() <= 120, "{line}");
             assert!(line.bytes().all(|b| (b' '..=b'~').contains(&b)), "{line}");
         }
     }
 
     #[test]
-    fn the_draft_pack_splits_into_its_four_kinds_of_section() {
-        let headings: Vec<&str> = sections(DSL1_DRAFT).iter().map(|(h, _)| *h).collect();
+    fn the_pack_splits_into_its_four_kinds_of_section() {
+        let text = pack::render(Format::Dsl1);
+        let headings: Vec<&str> = sections(&text).iter().map(|(h, _)| *h).collect();
         assert_eq!(headings.len(), 4, "{headings:?}");
         assert!(headings[0].starts_with("## Rhai"));
         assert!(headings[1].starts_with("## Calls"));
         assert_eq!(headings[2], "## Examples");
         assert_eq!(headings[3], "## system");
-        let joined: String = sections(DSL1_DRAFT).iter().map(|(_, t)| *t).collect();
-        assert_eq!(joined, DSL1_DRAFT);
+        let joined: String = sections(&text).iter().map(|(_, t)| *t).collect();
+        assert_eq!(joined, text);
     }
 
-    /// Every OS function a script may call has a row in the draft.
+    /// Every OS function a script may call has a row in the pack.
     #[test]
-    fn the_draft_pack_has_a_row_for_every_api_function() {
+    fn the_pack_has_a_row_for_every_api_function() {
         for function in API {
             assert!(
-                DSL1_DRAFT.contains(&format!("\n{}(", function.name)),
+                pack::render(Format::Dsl1).contains(&format!("\n{}(", function.name)),
                 "{}",
                 function.name
             );

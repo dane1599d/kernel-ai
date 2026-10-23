@@ -80,7 +80,7 @@ impl Ask for Local {
             self.tok.encode(text, &mut ids);
             ids.len()
         };
-        let budget = kabi::model::CONTEXT_CAP - ANSWER_TOKENS as usize - TEMPLATE_TOKENS;
+        let budget = tune::PROMPT_BUDGET;
         tune::summary_with(observation, &count, budget)
     }
 

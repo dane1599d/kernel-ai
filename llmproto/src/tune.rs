@@ -11,8 +11,10 @@
 //! plain words. Process names are untrusted text, so they are reduced to
 //! `[a-z0-9-]`, at most 16 characters, quoted as data, and made unique.
 //!
-//! The prompt and the answer must fit the guest's context
-//! (`kabi::model::CONTEXT_CAP`, 2,048 tokens since L5). Rows are added only while the prompt
+//! The prompt and the answer must fit [`CONTEXT_TOKENS`], the 2,048 positions
+//! the guest's context had when M10 recorded its answers; the context grew to
+//! 3,072 in P1 (`kabi::model::CONTEXT_CAP`), and `tune` keeps its own prompt,
+//! so it keeps that budget too. Rows are added only while the prompt
 //! stays inside [`PROMPT_BUDGET`], counted by an estimate calibrated against
 //! Qwen3's tokenizer, or, where the model is at hand, by its tokenizer itself
 //! ([`summary_with`]); the processes left out are counted, and cannot be labelled.
@@ -57,7 +59,8 @@ pub const CALL_TIMEOUT_MS: u64 = SERVICE_TIMEOUT_MS + 10_000;
 /// The chat template's own tokens around the two turns, the empty thinking block
 /// Qwen3 writes when thinking is off and `/no_think`: measured at 29.
 pub const TEMPLATE_TOKENS: usize = 32;
-/// The guest's context (`kabi::model::CONTEXT_CAP`), which xtask checks.
+/// The context `tune`'s prompt budgets for: the guest's before P1, at most
+/// `kabi::model::CONTEXT_CAP`, which xtask checks.
 pub const CONTEXT_TOKENS: usize = 2048;
 /// Estimated prompt tokens allowed: the context less the answer and the template.
 pub const PROMPT_BUDGET: usize = CONTEXT_TOKENS - ANSWER_TOKENS as usize - TEMPLATE_TOKENS;

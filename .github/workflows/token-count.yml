@@ -2,7 +2,8 @@
 # only, no inference. It downloads the pinned qwen3-4b-2507 file named in
 # xtask/models.json, checks its SHA-256, and runs `cargo xtask tokens`, which
 # reads only the file's vocabulary and counts today's script prompt, each script
-# API card, the chat template and the draft `dsl-1` pack. The table goes to the
+# API card, the chat template and the `dsl-1` pack `llmproto::pack` renders,
+# and fails if the pack and MODE go over 1,024 real tokens. The table goes to the
 # run's summary and an artifact. Runs on pull requests that change what it
 # counts, and by hand (Actions tab, "Token counts", Run workflow).
 name: Token counts
@@ -13,8 +14,9 @@ on:
     paths:
       - .github/workflows/token-count.yml
       - xtask/src/tokens.rs
-      - xtask/tokens/**
       - llmproto/src/script.rs
+      - llmproto/src/pack/**
+      - agentabi/src/**
       - bpe/src/**
 
 permissions:
