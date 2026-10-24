@@ -215,6 +215,12 @@ const ACTS: &[(&str, &str)] = &[
         "cambia la política a round robin",
         r#"{"name":"set_policy","arguments":{"name":"round-robin"}}"#,
     ),
+    // The trial's stand-in lists the full 16 processes, a booted guest fewer, so this
+    // switches and then throws only on the real run (`act-rollback`).
+    (
+        "switch to round robin then stop",
+        r#"{"name":"script","arguments":{"code":"set_policy(\"round-robin\");\nif processes().len() < 16 { throw \"stopped after the switch\"; }"}}"#,
+    ),
 ];
 
 /// The call for an `act` request: the last message is `Request: <line>`.
@@ -415,5 +421,17 @@ Keep \"editor\" responsive."
             explained("component: notes\n"),
             Ok(format!("{EXPLANATION} no rollback."))
         );
+    }
+}
+
+#[cfg(test)]
+mod act_tests {
+    use super::ACTS;
+
+    #[test]
+    fn every_canned_call_is_a_call() {
+        for (line, call) in ACTS {
+            assert!(llmproto::act::parse(call).is_ok(), "{line}: {call}");
+        }
     }
 }

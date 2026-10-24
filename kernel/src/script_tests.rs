@@ -28,10 +28,10 @@ const RUN: &[(&str, Expect)] = &[
     ),
 ];
 
-/// `undo` puts the policy back once; a bare `y` with nothing asked answers nothing.
+/// `undo` puts the policy back; a bare `y` with nothing asked answers nothing.
+/// (A second `undo` would redo: the undo is an entry of its own, `act-undo`.)
 const UNDO: &[(&str, Expect)] = &[
     ("undo", Exact("ok Undone: policy back to interactive")),
-    ("undo", Exact("err nothing to undo")),
     ("y", Exact("err nothing to answer")),
 ];
 
@@ -62,7 +62,7 @@ const REST: &[(&str, Expect)] = &[
     (
         "log",
         Exact(
-            "ok #1 how many cpus are there: ran read-only\n#2 switch to round robin: ran\n#3 switch to round robin: ran\n#4 how much memory is free: ran read-only\n#5 reboot the computer: answered in words\n#6 tell me a story please: refused: gave up after one repair: the answer was not the JSON object asked for\n#7 go back to interactive: ran",
+            "ok #1 how many cpus are there: ran read-only\n#2 switch to round robin: ran\n#3 undo of #2: done\n#4 switch to round robin: ran\n#5 how much memory is free: ran read-only\n#6 reboot the computer: answered in words\n#7 tell me a story please: refused: gave up after one repair: the answer was not the JSON object asked for\n#8 go back to interactive: ran",
         ),
     ),
 ];

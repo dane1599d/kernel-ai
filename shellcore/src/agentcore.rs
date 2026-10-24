@@ -16,6 +16,8 @@
 //! code through today's script checks. If no call comes back (no model, or a
 //! server with no answer), today's script request runs instead.
 
+use crate::actions::How;
+use crate::actlog::Form;
 use crate::script::{self, Checked};
 use crate::tiers::Tier;
 use crate::{Reply, SCRIPT_ROUND_MS, Shell};
@@ -65,7 +67,20 @@ impl Shell {
         };
         self.host
             .audit(&format!("request {id}: the model called {}", call.text()));
-        Some(self.execute(id, request, &call).reply)
+        let outcome = self.execute(id, request, &call);
+        // A turn that asked is remembered once it is answered (`actions`).
+        match &mut self.pending {
+            Some(pending) if outcome.reply.confirm == Some(id) => {
+                pending.call = Some(call.text());
+            }
+            _ => remember(
+                self.host.as_ref(),
+                request,
+                &call.text(),
+                &outcome.reply.text,
+            ),
+        }
+        Some(outcome.reply)
     }
 
     /// The one door: what `call`, made for the user's `request`, may do, and doing
@@ -180,7 +195,16 @@ impl Shell {
         let reply = match decision.tier {
             Tier::Run => {
                 self.shown = Some(script::shown(id, &checked));
-                self.finish(id, request, &checked, decision.why == Why::TakenAs)
+                let consent = match decision.why {
+                    Why::TakenAs => "taken-as",
+                    _ => "asked",
+                };
+                let how = How {
+                    form: Form::Call,
+                    tier: Tier::Run,
+                    consent,
+                };
+                self.finish(id, request, &checked, how)
             }
             _ => self.ask_call(id, request, checked, decision.why),
         };
@@ -209,6 +233,12 @@ impl Shell {
             checked,
             asking: changes,
             created_ns: self.host.now_ns(),
+            how: How {
+                form: Form::Call,
+                tier: Tier::Ask,
+                consent: "asked",
+            },
+            call: None,
         });
         Reply {
             ok: true,
@@ -223,6 +253,22 @@ impl Shell {
         let reply = Reply::err(format!("Refused {}: {detail}", call.name));
         outcome(Tier::Never, why, reply)
     }
+}
+
+/// Longest result line llm keeps for a turn.
+const RESULT_MAX_BYTES: usize = 300;
+
+/// Sends a finished model turn to llm's conversation memory: the user's line, the
+/// call as `act` returned it, and the result line, its last line of at most 300
+/// bytes (`Done: …`, `Taken as: …`, `Refused …`, `Not run: …`).
+pub(crate) fn remember(host: &dyn crate::Host, line: &str, call: &str, reply: &str) {
+    let last = reply
+        .lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("");
+    let result = &last[..last.floor_char_boundary(RESULT_MAX_BYTES)];
+    host.remember(line, call, result);
 }
 
 fn outcome(tier: Tier, why: Why, reply: Reply) -> Outcome {

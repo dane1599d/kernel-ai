@@ -370,6 +370,22 @@ fn show_lines(lead: &str, body: &str) {
     }
 }
 
+/// The shell's action log (`log`) after the log book: what each request did, so
+/// `:log` is the one place to look.
+fn show_actions() {
+    if ipc::server_of("shell").is_none() {
+        return;
+    }
+    match ipc::call("shell", b"log", SHELL_TIMEOUT_MS) {
+        Ok(reply) => {
+            let text = String::from_utf8_lossy(&reply);
+            log!("actions:");
+            show_lines(" ", text.strip_prefix("ok ").unwrap_or(&text));
+        }
+        Err(error) => log!("actions: the shell did not answer ({error:?})"),
+    }
+}
+
 /// Runs a `:` command; a question it leaves for the next line.
 fn kernel_command(line: &str) -> Option<Waiting> {
     let (command, rest) = line.split_once(' ').unwrap_or((line, ""));
@@ -405,7 +421,10 @@ fn kernel_command(line: &str) -> Option<Waiting> {
             );
         }
         "net" => net_status(),
-        "log" => crate::logbook::show(rest.parse().unwrap_or(LOG_LINES)),
+        "log" => {
+            crate::logbook::show(rest.parse().unwrap_or(LOG_LINES));
+            show_actions();
+        }
         "resolve" if rest.is_empty() => log!("usage: :resolve <host>"),
         "resolve" => crate::net_commands::resolve(rest),
         "ping" if rest.is_empty() => log!("usage: :ping <host|ip> [count]"),

@@ -7,9 +7,10 @@
 //! from the kernel terminal alone (see the `shell` program), so text a script
 //! reads never starts an action.
 
+use crate::actlog::{Entry, Form, State};
 use crate::script::{self, Checked};
 use crate::tiers::{self, Tier};
-use crate::undo::{self, Done, Refused};
+use crate::undo::{self, Done};
 use crate::{Reply, Shell};
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -18,6 +19,15 @@ use alloc::vec::Vec;
 /// How long a question waits for its answer.
 const CONFIRM_EXPIRY_NS: u64 = 120_000_000_000;
 
+/// How a run came to be, for its log entry.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct How {
+    pub form: Form,
+    pub tier: Tier,
+    /// `asked`, `taken-as`, `yes`, `-`.
+    pub consent: &'static str,
+}
+
 /// A script waiting for the user's answer.
 pub(crate) struct Pending {
     pub id: u64,
@@ -25,12 +35,9 @@ pub(crate) struct Pending {
     pub checked: Checked,
     pub asking: Vec<&'static str>,
     pub created_ns: u64,
-}
-
-/// The last run's changes, for `undo`.
-pub(crate) struct Undoable {
-    pub id: u64,
-    pub done: Vec<Done>,
+    pub how: How,
+    /// The model's call, when a tagged call asked, for llm's conversation memory.
+    pub call: Option<String>,
 }
 
 /// `y`, `n`, `yes` or `no`, any case.
@@ -91,7 +98,12 @@ impl Shell {
         if tier == Tier::Run {
             self.host
                 .audit(&format!("script {id} tier run; running it"));
-            return self.finish(id, request, &checked, false);
+            let how = How {
+                form: Form::Script,
+                tier,
+                consent: "asked",
+            };
+            return self.finish(id, request, &checked, how);
         }
         self.host
             .audit(&format!("script {id} tier ask ({}); asking", at.join(", ")));
@@ -102,6 +114,12 @@ impl Shell {
             checked,
             asking: at,
             created_ns: self.host.now_ns(),
+            how: How {
+                form: Form::Script,
+                tier,
+                consent: "asked",
+            },
+            call: None,
         });
         Reply {
             ok: true,
@@ -111,33 +129,24 @@ impl Shell {
         }
     }
 
-    /// Runs a script the user asked for, records what it changed, and says what
+    /// Runs a script the user asked for, logs what it changed, and says what
     /// happened in a line or two after its output: `Done: policy round-robin (was
-    /// interactive). undo`, or `Taken as: …` when it ran a vague line's reading.
-    pub(crate) fn finish(
-        &mut self,
-        id: u64,
-        request: &str,
-        checked: &Checked,
-        taken_as: bool,
-    ) -> Reply {
+    /// interactive). undo`, or `Taken as: …` when it ran a vague line's reading. A
+    /// run that fails after a change puts the change back: `Nothing changed: …`.
+    pub(crate) fn finish(&mut self, id: u64, request: &str, checked: &Checked, how: How) -> Reply {
         let ran = script::run(checked, &self.host, &self.config);
         for done in &ran.done {
-            let tier = tiers::of(self.tiers, done.function);
+            let tier = tiers::of(self.tiers, &done.action);
             self.host.audit(&format!(
                 "script {id} {} ({}): {}",
-                done.function,
+                done.action,
                 tier.name(),
-                done.what
+                done.what()
             ));
         }
-        let undoable = !ran.done.is_empty() && ran.done.iter().all(|d| d.inverse.is_some());
-        if !ran.done.is_empty() {
-            // `undo` is for the last action only, so one with no undo clears it.
-            self.undo = undoable.then(|| Undoable {
-                id,
-                done: ran.done.clone(),
-            });
+        self.last_output = Some(ran.text.clone());
+        if !ran.ok && !ran.done.is_empty() {
+            return self.roll_back(id, request, checked, how, ran);
         }
         let outcome = match (ran.ok, checked.changes.is_empty()) {
             (true, true) => "ran read-only",
@@ -145,18 +154,17 @@ impl Shell {
             (true, false) => "ran",
             (false, false) => "failed",
         };
-        self.record(id, request, &checked.script, outcome);
-        self.last_output = Some(ran.text.clone());
+        let undoable = !ran.done.is_empty() && ran.done.iter().all(|d| d.inverse.is_some());
         let mut text = ran.text;
         if !ran.done.is_empty() {
             if !text.is_empty() && !text.ends_with('\n') {
                 text.push('\n');
             }
-            let what: Vec<&str> = ran.done.iter().map(|d| d.what.as_str()).collect();
-            let lead = match (ran.ok, taken_as) {
-                (true, true) => "Taken as",
-                (true, false) => "Done",
-                (false, _) => "Changed before the error",
+            let what: Vec<String> = ran.done.iter().map(Done::what).collect();
+            let lead = if how.consent == "taken-as" {
+                "Taken as"
+            } else {
+                "Done"
             };
             let tail = if undoable { ". undo" } else { "" };
             text.push_str(&format!("{lead}: {}{tail}", what.join("; ")));
@@ -166,6 +174,11 @@ impl Shell {
                 false => format!("Done: {}", checked.summary),
             };
         }
+        let state = match ran.ok {
+            true => State::Done,
+            false => State::Nothing,
+        };
+        self.log_entry(id, request, checked, how, state, outcome, ran.done);
         Reply {
             ok: ran.ok,
             text,
@@ -174,9 +187,107 @@ impl Shell {
         }
     }
 
-    pub(crate) fn record(&mut self, id: u64, request: &str, script: &str, outcome: &str) {
-        self.log.record(id, request, script, outcome);
+    /// A run that failed after changing something: its changes go back, newest
+    /// first, so the script was all or nothing.
+    fn roll_back(
+        &mut self,
+        id: u64,
+        request: &str,
+        checked: &Checked,
+        how: How,
+        ran: script::Ran,
+    ) -> Reply {
+        let mut left = ran.done.clone();
+        while let Some(change) = left.last() {
+            let put_back = change
+                .inverse
+                .is_some_and(|inverse| undo::revert(self.host.as_ref(), inverse, false).is_ok());
+            if !put_back {
+                break;
+            }
+            left.pop();
+        }
+        let error = ran.text.lines().last().unwrap_or("it failed").to_string();
+        if left.is_empty() {
+            self.host.audit(&format!("script {id} failed; rolled back"));
+            self.log_entry(
+                id,
+                request,
+                checked,
+                how,
+                State::Nothing,
+                "failed; nothing changed",
+                Vec::new(),
+            );
+            // The output before the error, then the error once, as what changed nothing.
+            let output = ran
+                .text
+                .trim_end()
+                .rsplit_once('\n')
+                .map_or("", |(before, _)| before);
+            let text = match output.is_empty() {
+                true => format!("Nothing changed: {error}"),
+                false => format!("{output}\nNothing changed: {error}"),
+            };
+            return Reply::err(text);
+        }
+        let what: Vec<String> = left.iter().map(Done::what).collect();
+        self.log_entry(id, request, checked, how, State::Done, "failed", left);
+        Reply::err(format!(
+            "{}\nChanged before the error, and could not be put back: {}. undo",
+            ran.text.trim_end(),
+            what.join("; ")
+        ))
+    }
+
+    /// Logs a run with its changes.
+    #[allow(clippy::too_many_arguments)]
+    fn log_entry(
+        &mut self,
+        id: u64,
+        request: &str,
+        checked: &Checked,
+        how: How,
+        state: State,
+        outcome: &str,
+        changes: Vec<Done>,
+    ) {
         self.host.audit(&format!("script {id} {outcome}"));
+        self.log.push(Entry {
+            id,
+            t_ns: self.host.now_ns(),
+            form: how.form,
+            of: None,
+            tier: Some(how.tier),
+            consent: String::from(how.consent),
+            state,
+            request: String::from(request),
+            script: checked.script.clone(),
+            outcome: String::from(outcome),
+            changes,
+        });
+    }
+
+    /// Logs a request that ran nothing: refused, declined, answered in words.
+    pub(crate) fn record(&mut self, id: u64, request: &str, script: &str, outcome: &str) {
+        self.host.audit(&format!("script {id} {outcome}"));
+        let form = match script.is_empty() {
+            true => Form::Words,
+            false => Form::Script,
+        };
+        self.log.push(Entry {
+            id,
+            t_ns: self.host.now_ns(),
+            form,
+            of: None,
+            tier: None,
+            consent: String::from("-"),
+            state: State::Nothing,
+            request: String::from(request),
+            script: String::from(script),
+            outcome: String::from(outcome),
+            changes: Vec::new(),
+        });
     }
 
     /// A bare `y`, `n`, `yes`, `no`, `show` or `why` while a question waits answers
@@ -187,16 +298,14 @@ impl Shell {
             return None;
         }
         if yes.is_some() && self.tuner.proposing() {
-            return Some(self.tuner.answer(self.host.as_ref(), input));
+            let reply = self.tuner.answer(self.host.as_ref(), input);
+            self.log_kept_trial();
+            return Some(reply);
         }
         if let Some(yes) = yes
-            && let Some(undoable) = self.undo_asking.take()
+            && let Some(id) = self.undo_asking.take()
         {
-            self.undo = Some(undoable);
-            return Some(match yes {
-                true => self.undo_with(true),
-                false => Reply::ok("Not undone; `undo` asks again"),
-            });
+            return Some(self.undo_answer(id, yes));
         }
         if self.pending.is_some() {
             return Some(self.answer_pending(input));
@@ -211,7 +320,9 @@ impl Shell {
         let (id, text) = rest.split_once(' ').unwrap_or((rest, ""));
         let id = id.parse::<u64>().ok();
         if id.is_some_and(|id| self.tuner.waiting(id)) {
-            return self.tuner.answer(self.host.as_ref(), text);
+            let reply = self.tuner.answer(self.host.as_ref(), text);
+            self.log_kept_trial();
+            return reply;
         }
         match &self.pending {
             Some(pending) if Some(pending.id) == id => self.answer_pending(text),
@@ -228,6 +339,7 @@ impl Shell {
         let id = pending.id;
         if self.host.now_ns().saturating_sub(pending.created_ns) > CONFIRM_EXPIRY_NS {
             self.record(id, &pending.request, &pending.checked.script, "expired");
+            self.remember(&pending, "Not run: the question expired");
             return Reply::err("the script expired; ask again");
         }
         if is_show(text) {
@@ -243,58 +355,25 @@ impl Shell {
         }
         if yes_or_no(text) != Some(true) {
             self.record(id, &pending.request, &pending.checked.script, "declined");
+            self.remember(&pending, "Not run: declined");
             return Reply::ok(format!("script {id} not run"));
         }
         self.host
             .audit(&format!("script {id} confirmed; running it"));
-        self.finish(id, &pending.request, &pending.checked, false)
-    }
-
-    /// `undo`: puts back what the last run changed, newest change first. A change
-    /// that cannot be put back yet stays for another `undo`.
-    pub(crate) fn undo(&mut self) -> Reply {
-        self.undo_with(false)
-    }
-
-    /// `undo`, and a yes to its question: a change that something else moved since
-    /// is put back only `anyway`; otherwise the user is asked, with `y` or `n`.
-    fn undo_with(&mut self, anyway: bool) -> Reply {
-        let Some(mut undoable) = self.undo.take() else {
-            return Reply::err("nothing to undo");
+        let how = How {
+            consent: "yes",
+            ..pending.how
         };
-        let id = undoable.id;
-        let mut said = Vec::new();
-        while let Some(done) = undoable.done.pop() {
-            let Some(inverse) = done.inverse else {
-                continue;
-            };
-            match undo::revert(self.host.as_ref(), inverse, anyway) {
-                Ok(text) => said.push(text),
-                Err(Refused::Moved(now)) => {
-                    undoable.done.push(done);
-                    self.undo_asking = Some(undoable);
-                    self.host
-                        .audit(&format!("script {id} undo asks: changed since (now {now})"));
-                    let mut text = match said.is_empty() {
-                        true => String::new(),
-                        false => format!("Undone: {}\n", said.join("; ")),
-                    };
-                    text.push_str(&format!(
-                        "The policy changed since (now {now}); put {} back anyway? y/n",
-                        undo::target(inverse)
-                    ));
-                    return Reply::ok(text);
-                }
-                Err(Refused::Failed(why)) => {
-                    undoable.done.push(done);
-                    self.undo = Some(undoable);
-                    self.host.audit(&format!("script {id} undo failed: {why}"));
-                    return Reply::err(format!("{why}; try undo again"));
-                }
-            }
+        let reply = self.finish(id, &pending.request, &pending.checked, how);
+        self.remember(&pending, &reply.text);
+        reply
+    }
+
+    /// Tells llm how a model turn that asked ended, for its conversation memory.
+    fn remember(&self, pending: &Pending, result: &str) {
+        if let Some(call) = &pending.call {
+            crate::agentcore::remember(self.host.as_ref(), &pending.request, call, result);
         }
-        self.host.audit(&format!("script {id} undone"));
-        Reply::ok(format!("Undone: {}", said.join("; ")))
     }
 
     /// `show` or `why`: the last script in full, with why it ran or asked.

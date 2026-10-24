@@ -60,12 +60,20 @@ struct Ban {
     at_ns: u64,
 }
 
+/// A kept trial: the policy and preset it replaced and the ones it installed.
+pub(crate) struct Kept {
+    pub id: u64,
+    pub target: String,
+    pub before: (u64, u64),
+    pub after: (u64, u64),
+}
+
 #[derive(Default)]
 pub(crate) struct Tuner {
     pending: Option<Proposal>,
     bans: Vec<Ban>,
-    /// The policy a kept trial replaced, for `tune undo`.
-    undo: Option<(u64, u64, String)>,
+    /// A trial the kernel kept, for the shell to log so `undo` can put it back.
+    kept: Option<Kept>,
     /// The last verdicts, for the summary.
     verdicts: Vec<String>,
 }
@@ -204,13 +212,11 @@ impl Tuner {
         self.pending.as_ref().is_some_and(|p| p.id == id)
     }
 
-    /// `tune [process][: intent]` or `tune undo`, as proposal `id`.
+    /// `tune [process][: intent]`, as proposal `id`. `tune undo` is the action
+    /// log's (the shell undoes the newest kept trial).
     pub(crate) fn command(&mut self, host: &dyn Host, args: &str, id: u64) -> Reply {
         self.pending = None;
         let args = args.trim();
-        if args == "undo" {
-            return self.undo(host);
-        }
         let (target, intent) = match args.split_once(':') {
             Some((target, intent)) => (target.trim(), Some(intent.trim())),
             None => (args, None),
@@ -434,8 +440,12 @@ impl Tuner {
         background.sort();
         let short = match kept {
             true => {
-                let before = spec_of(p.previous.0, p.previous.1);
-                self.undo = Some((p.previous.0, p.previous.1, format!("{}", before.label())));
+                self.kept = Some(Kept {
+                    id: p.id,
+                    target: p.target.clone(),
+                    before: p.previous,
+                    after: ids_of(p.spec),
+                });
                 format!("kept {} for \"{}\"", p.spec.label(), p.target)
             }
             false => {
@@ -456,17 +466,9 @@ impl Tuner {
         Reply::ok(text)
     }
 
-    fn undo(&mut self, host: &dyn Host) -> Reply {
-        let Some((policy, preset, label)) = self.undo.take() else {
-            return Reply::err("nothing to undo: no trial kept a policy");
-        };
-        match host.set_spec(policy, preset) {
-            Ok(()) => Reply::ok(format!("back to {label}")),
-            Err(error) => {
-                self.undo = Some((policy, preset, label));
-                Reply::err(format!("cannot switch back: {error:?}"))
-            }
-        }
+    /// The trial the kernel kept since the last call, once.
+    pub(crate) fn take_kept(&mut self) -> Option<Kept> {
+        self.kept.take()
     }
 }
 

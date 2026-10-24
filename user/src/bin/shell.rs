@@ -25,6 +25,8 @@ user::entry!(main);
 const ASK_TIMEOUT_MS: u64 = 140_000;
 /// How long one script round waits for the llm service: its own limit and a margin.
 const SCRIPT_CALL_MS: u64 = SCRIPT_ROUND_MS + 5_000;
+/// How long `remember` and `new` wait for llm, which only stores the turn.
+const MEMORY_CALL_MS: u64 = 5_000;
 
 struct System;
 
@@ -106,6 +108,25 @@ impl Host for System {
             ("err", why) => Err(unavailable(why)),
             _ => Err(unavailable("malformed reply")),
         }
+    }
+
+    /// A finished model turn for llm's conversation memory, in #55's wire form. An
+    /// llm without memory answers that it does not know the request; that is fine.
+    fn remember(&self, line: &str, call: &str, result: &str) {
+        let request = alloc::format!(
+            "remember {} {} {}
+{line}{call}{result}",
+            line.len(),
+            call.len(),
+            result.len()
+        );
+        let mut reply = vec![0u8; 256];
+        let _ = sys::call_route(llm(), request.as_bytes(), &mut reply, MEMORY_CALL_MS);
+    }
+
+    fn forget(&self) {
+        let mut reply = vec![0u8; 256];
+        let _ = sys::call_route(llm(), b"new", &mut reply, MEMORY_CALL_MS);
     }
 
     /// The audit trail goes to the log, not the screen: the reply says what happened.

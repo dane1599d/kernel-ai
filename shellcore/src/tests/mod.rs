@@ -12,6 +12,7 @@ use std::collections::VecDeque;
 
 mod act;
 mod actions;
+mod log;
 mod more;
 mod scripts;
 mod tune;
@@ -42,6 +43,9 @@ struct FakeHost {
     /// Calls `act` gives, in order; afterwards there is none.
     calls: RefCell<VecDeque<Result<Call, ActError>>>,
     act_lines: RefCell<Vec<String>>,
+    /// Turns sent to the conversation memory, and how often it was forgotten.
+    remembered: RefCell<Vec<(String, String, String)>>,
+    forgot: Cell<u32>,
     audit: RefCell<Vec<String>>,
 }
 
@@ -64,6 +68,8 @@ impl FakeHost {
             script_requests: RefCell::new(Vec::new()),
             calls: RefCell::new(VecDeque::new()),
             act_lines: RefCell::new(Vec::new()),
+            remembered: RefCell::new(Vec::new()),
+            forgot: Cell::new(0),
             audit: RefCell::new(Vec::new()),
         })
     }
@@ -133,6 +139,16 @@ impl Host for FakeHost {
             .borrow_mut()
             .pop_front()
             .unwrap_or(Err(AnswerError::Server(String::from("no more answers"))))
+    }
+
+    fn remember(&self, line: &str, call: &str, result: &str) {
+        self.remembered
+            .borrow_mut()
+            .push((line.into(), call.into(), result.into()));
+    }
+
+    fn forget(&self) {
+        self.forgot.set(self.forgot.get() + 1);
     }
 
     fn act(&self, request: &ActRequest) -> Result<Call, ActError> {

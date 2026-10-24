@@ -131,7 +131,7 @@ fn every_run_tier_change_records_how_to_undo_it() {
 }
 
 #[test]
-fn undo_puts_the_last_change_back_once() {
+fn undo_puts_the_last_change_back_and_undo_again_redoes() {
     let (host, mut shell) = with_answers(vec![answer(SWITCH, "Switches to round-robin.")]);
     assert_eq!(
         ran(&shell.eval("use round robin")),
@@ -140,12 +140,14 @@ fn undo_puts_the_last_change_back_once() {
     assert_eq!(host.policy.get(), Some(policy::ROUND_ROBIN));
     assert_eq!(shell.eval("undo"), ok("Undone: policy back to interactive"));
     assert_eq!(host.policy.get(), Some(policy::INTERACTIVE));
-    assert_eq!(shell.eval("undo"), Reply::err("nothing to undo"));
+    // An undo is an entry too, so undo again redoes.
+    assert_eq!(shell.eval("undo"), ok("Undone: policy back to round-robin"));
+    assert_eq!(host.policy.get(), Some(policy::ROUND_ROBIN));
     assert!(
         host.audit
             .borrow()
             .iter()
-            .any(|line| line == "script 1 undone")
+            .any(|line| line == "undo #2: undid #1")
     );
 }
 
@@ -195,16 +197,14 @@ fn undo_asks_before_overwriting_a_later_change() {
     assert_eq!(shell.eval("Yes"), ok("Undone: policy back to interactive"));
     assert_eq!(host.switches.get(), switches + 1);
     assert_eq!(host.policy.get(), Some(policy::INTERACTIVE));
-    assert_eq!(shell.eval("undo"), Reply::err("nothing to undo"));
     assert!(
         host.audit
             .borrow()
             .iter()
-            .any(|l| l == "script 1 undo asks: changed since (now interactive)")
+            .any(|l| l == "undo #1 asks: changed since (now interactive)")
     );
-    // Unmoved, it does not ask.
-    shell.eval("use round robin");
-    assert_eq!(shell.eval("undo"), ok("Undone: policy back to interactive"));
+    // Unmoved, it does not ask: the redo puts round-robin back at once.
+    assert_eq!(shell.eval("undo"), ok("Undone: policy back to round-robin"));
 }
 
 #[test]
@@ -225,20 +225,19 @@ fn two_switches_undo_newest_first_to_the_first_policy() {
 }
 
 #[test]
-fn a_run_that_fails_after_a_change_says_so_and_can_be_undone() {
+fn a_run_that_fails_after_a_change_is_rolled_back() {
     // The trial's stand-in has two CPUs; the fake host has four.
     let script = "set_policy(\"rr\");\nprint(10 / (cpus() - 4));";
     let (host, mut shell) = with_answers(vec![answer(script, "Switches and divides.")]);
     let reply = shell.eval("switch the policy then divide please");
     assert!(!reply.ok);
-    assert!(
-        reply
-            .text
-            .ends_with("\nChanged before the error: policy round-robin (was interactive). undo"),
-        "{reply:?}"
+    assert_eq!(
+        reply.text,
+        "Nothing changed: Division by zero: 10 / 0 (line 2, position 10)"
     );
-    assert!(shell.eval("undo").ok);
+    // The switch was put back at once, so there is nothing left to undo.
     assert_eq!(host.policy.get(), Some(policy::INTERACTIVE));
+    assert_eq!(shell.eval("undo"), Reply::err("nothing to undo"));
 }
 
 #[test]

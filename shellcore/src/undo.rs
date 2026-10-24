@@ -36,14 +36,8 @@ pub enum Refused {
     Failed(String),
 }
 
-/// One change a script made.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Done {
-    pub function: &'static str,
-    /// What changed, in code's words: `policy round-robin (was interactive)`.
-    pub what: String,
-    pub inverse: Option<Inverse>,
-}
+/// One change a script made, as the action log records it.
+pub type Done = crate::actlog::Change;
 
 /// The changes of one run, in order.
 pub type Journal = Rc<RefCell<Vec<Done>>>;
@@ -96,5 +90,20 @@ pub fn revert(host: &dyn Host, inverse: Inverse, anyway: bool) -> Result<String,
                     Refused::Failed(format!("cannot switch the policy back yet ({error:?})"))
                 })
         }
+    }
+}
+
+/// How to put back what reverting with `inverse` did: the redo.
+pub fn reverse(inverse: Inverse) -> Inverse {
+    match inverse {
+        Inverse::Spec {
+            policy,
+            preset,
+            after,
+        } => Inverse::Spec {
+            policy: after.0,
+            preset: after.1,
+            after: (policy, preset),
+        },
     }
 }
