@@ -523,7 +523,10 @@ fn start_user_space(test: SelfTest) {
         threads::resync_ticks();
         let edge = timer::align_to_second();
         threads::resync_ticks();
-        log!("tune-ab: services start at tick {edge}");
+        log!(
+            "tune-ab: services start at tick {edge} (diag: HPET {} ns)",
+            hpet::nanos()
+        );
     }
     if let Err(message) = process::supervision::start(plan) {
         fail(message);
