@@ -1,6 +1,13 @@
 //! `act` answered by the engine: the registry's pack rows and the three
 //! pseudo-actions as `infer::tagged` actions, decoded at the script
 //! temperature and seed with jump-forward and token healing.
+//!
+//! A `script` call's code is then written by today's script prompt and
+//! envelope ([`super::script_with`], without `/no_think`), the plan's fallback
+//! for M8-style requests: on the M8 50 that scored 48/50 on seeds 42, 1 and 2,
+//! against 44-46 for code written inside the call (task 6, run 40028123981).
+//! The pack and the script prompt share one cache slot, so a script request
+//! pays the script prompt's prefill and the next `act` the pack's.
 
 use crate::act::{self, ActError, ActRequest, Call, LANGS};
 use crate::script;
@@ -120,6 +127,40 @@ pub fn grammar() -> Result<Tagged<'static>, infer::Error> {
     Tagged::new(Vec::leak(actions(&crate::pack::rows())))
 }
 
+/// [`act`], with a `script` call's code written by today's script prompt
+/// (see the module's note). Words in its envelope's summary instead of code
+/// become `say`. `on_step` keeps one time limit over both decodes.
+pub fn routed(
+    engine: &mut Engine<'_>,
+    grammar: &Tagged<'_>,
+    request: &ActRequest,
+    mut on_step: impl FnMut(Step) -> Next,
+) -> Result<Call, ActError> {
+    let call = act(engine, grammar, request, &mut on_step)?;
+    if call.name != "script" {
+        return Ok(call);
+    }
+    let asked = script::ScriptRequest {
+        request: request.line.clone(),
+        repair: None,
+        timeout_ms: request.timeout_ms,
+    };
+    let (name, key, value) = match super::script_with(engine, &asked, false, on_step) {
+        Ok(answer) => ("script", "code", answer.script),
+        Err(script::AnswerError::NoScript(words)) => ("say", "text", words),
+        Err(error) => return Err(ActError::Local(error.describe())),
+    };
+    let mut arguments = serde_json::Map::new();
+    arguments.insert(key.into(), serde_json::Value::String(value));
+    if name == "script" {
+        arguments.insert("lang".into(), serde_json::Value::String("rhai".into()));
+    }
+    Ok(Call {
+        name: name.into(),
+        arguments,
+    })
+}
+
 /// One call for `request` under `grammar`. `on_step` stops it only when time
 /// is up.
 pub fn act(
@@ -207,7 +248,7 @@ mod tests {
         let mut first = None;
         for tier in quant::Tier::all() {
             let mut engine = Engine::load(&bytes, tier, 3072, budget).unwrap();
-            let answer = act(&mut engine, &g, &request, |_| Next::Continue);
+            let answer = routed(&mut engine, &g, &request, |_| Next::Continue);
             assert!(
                 matches!(answer, Ok(_) | Err(ActError::CutOff)),
                 "{answer:?}"

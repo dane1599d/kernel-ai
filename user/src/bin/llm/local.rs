@@ -239,10 +239,11 @@ impl Local {
     }
 
     /// One tagged call for the shell's `request`, within the time it gives and
-    /// at most `act::SERVICE_TIMEOUT_MS`.
+    /// at most `act::SERVICE_TIMEOUT_MS`; a script's code comes from the script
+    /// prompt (`llmproto::local::act::routed`).
     pub fn act(&mut self, request: &ActRequest) -> Result<Call, ActError> {
         let mut clock = Clock::new(request.timeout_ms.min(act::SERVICE_TIMEOUT_MS));
-        let call = local::act::act(&mut self.engine, &self.grammar, request, |step| {
+        let call = local::act::routed(&mut self.engine, &self.grammar, request, |step| {
             clock.step(step)
         });
         let forced = self.engine.forced();
