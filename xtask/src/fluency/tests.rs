@@ -470,3 +470,24 @@ fn a_host_name_reaches_a_server_on_any_of_its_addresses() {
     assert_eq!(transport(&request), Err(AnswerError::NoEnvelope));
     assert_eq!(server.chats(), 1);
 }
+
+/// Through the one door a refusal comes back as `say`, which counts as the
+/// words today's empty script gives; a task that needs a script still fails.
+#[test]
+fn a_say_through_the_one_door_refuses_and_only_refuses() {
+    use llmproto::act::ActRequest;
+    let say = || -> host::ActTransport {
+        Box::new(|_: &ActRequest| {
+            llmproto::act::parse(r#"{"name":"say","arguments":{"text":"I cannot do that here."}}"#)
+        })
+    };
+    let refusal = TASKS.iter().find(|t| t.refusal).unwrap();
+    let outcome = attempt_on(refusal, GateHost::with_act(canned(&[]), say()));
+    assert!(outcome.failure.is_none(), "{:?}", outcome.failure);
+    let plain = TASKS.iter().find(|t| !t.refusal).unwrap();
+    let outcome = attempt_on(plain, GateHost::with_act(canned(&[]), say()));
+    assert_eq!(
+        outcome.failure.map(|(kind, _)| kind),
+        Some(Failure::NoScript)
+    );
+}
