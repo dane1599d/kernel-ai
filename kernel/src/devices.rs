@@ -1,14 +1,28 @@
 //! The bound devices (ADR 0007 section 3): one `kabi::device::DeviceRecord` for
 //! each PCI function a driver took, kept as the probe binds them, read by
 //! DEV_LIST. An interrupt count is read from the vector when a record is read.
+//!
+//! The list is a fixed table, not a heap vector: the probe runs before the M10
+//! observe boots' aligned start, where an allocation's place depends on how
+//! host-timed boot work interleaved, and a heap shaped differently would make
+//! the instruction-timed part after it run differently.
 
 use crate::irq;
-use alloc::vec::Vec;
 use kabi::device::{DeviceRecord, MAX_RECORDS, VERSION, irq_mode, place, state};
 use spin::Mutex;
 
-/// The records, and the MSI-X vector of each record that has one.
-static RECORDS: Mutex<Vec<(DeviceRecord, Option<u8>)>> = Mutex::new(Vec::new());
+/// The records in use, then the MSI-X vector of each record that has one.
+struct Table {
+    count: usize,
+    records: [DeviceRecord; MAX_RECORDS],
+    vectors: [Option<u8>; MAX_RECORDS],
+}
+
+static TABLE: Mutex<Table> = Mutex::new(Table {
+    count: 0,
+    records: [DeviceRecord::EMPTY; MAX_RECORDS],
+    vectors: [None; MAX_RECORDS],
+});
 
 /// What a bind attempt found, for its record.
 pub enum Outcome {
@@ -26,18 +40,18 @@ pub mod error {
     pub const BAR: u32 = 2;
 }
 
-/// Records `driver` taking the function at `address`; nothing once
-/// [`MAX_RECORDS`] are kept.
+/// Records `driver` taking `function`; nothing once [`MAX_RECORDS`] are kept.
 pub fn bind(function: &pci::Function, driver: &str, outcome: Outcome) {
-    let mut records = RECORDS.lock();
-    if records.len() == MAX_RECORDS {
+    let mut table = TABLE.lock();
+    let index = table.count;
+    if index == MAX_RECORDS {
         return;
     }
     let address = function.address;
     let (class, subclass, interface) = function.class;
     let mut record = DeviceRecord {
         version: VERSION,
-        index: records.len() as u16,
+        index: index as u16,
         segment: address.segment(),
         bus: address.bus(),
         devfn: address.device() << 3 | address.function(),
@@ -63,18 +77,21 @@ pub fn bind(function: &pci::Function, driver: &str, outcome: Outcome) {
             None
         }
     };
-    records.push((record, vector));
+    table.records[index] = record;
+    table.vectors[index] = vector;
+    table.count += 1;
 }
 
 /// Copies the records into `out`, with their interrupt counts now; returns how
 /// many it copied.
 pub fn list(out: &mut [DeviceRecord]) -> usize {
-    let records = RECORDS.lock();
-    for (slot, (record, vector)) in out.iter_mut().zip(records.iter()) {
+    let table = TABLE.lock();
+    let count = out.len().min(table.count);
+    for (i, slot) in out[..count].iter_mut().enumerate() {
         *slot = DeviceRecord {
-            interrupts: vector.map_or(0, irq::count),
-            ..*record
+            interrupts: table.vectors[i].map_or(0, irq::count),
+            ..table.records[i]
         };
     }
-    out.len().min(records.len())
+    count
 }

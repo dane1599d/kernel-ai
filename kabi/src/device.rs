@@ -70,6 +70,29 @@ pub struct DeviceRecord {
 const _: () = assert!(core::mem::size_of::<DeviceRecord>() == 64);
 
 impl DeviceRecord {
+    /// Every field zero, for a static table.
+    pub const EMPTY: DeviceRecord = DeviceRecord {
+        version: 0,
+        index: 0,
+        segment: 0,
+        bus: 0,
+        devfn: 0,
+        vendor: 0,
+        device: 0,
+        class: [0; 3],
+        place: 0,
+        state: 0,
+        irq_mode: 0,
+        iommu: 0,
+        _r: 0,
+        driver: [0; DRIVER_BYTES],
+        resets: 0,
+        interrupts: 0,
+        dma_pages: 0,
+        last_error: 0,
+        _pad: [0; 8],
+    };
+
     /// The driver's name, up to its first zero byte.
     pub fn driver(&self) -> &str {
         let end = self
