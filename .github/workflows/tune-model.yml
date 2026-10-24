@@ -77,10 +77,10 @@ jobs:
           set -o pipefail
           cargo xtask latency --local "${{ inputs.model }}" --store "$RUNNER_TEMP/models" --accel kvm 2>&1 | tee transcript.txt
           {
-            echo "S02-2 baseline, ${{ inputs.model }}, commit $GITHUB_SHA, $(nproc) CPUs:"
+            echo "S02-2, ${{ inputs.model }}, commit $GITHUB_SHA, $(nproc) CPUs:"
             echo
             echo '```'
-            grep -E 'latency: |\[llm\] local: ' transcript.txt
+            grep -E 'latency: |\[llm\] (local|act): ' transcript.txt
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Convert the screendump
