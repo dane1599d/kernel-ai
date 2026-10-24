@@ -426,6 +426,30 @@ fn a_resync_forgets_a_stall_before_it() {
     core.resync_ticks(300 * MS);
     core.tick(301 * MS);
     assert_eq!(core.take_stall(), None);
-    // Waits still count from before it, as they would with no stall rule.
-    assert!(core.longest_wait(301 * MS).0 > WATCHDOG);
+    // The waits restart at the resync too: a thread runnable since before it
+    // has waited only since it.
+    assert_eq!(core.longest_wait(301 * MS).0, MS);
+    assert!(!core.on_fallback());
+}
+
+#[test]
+fn a_resync_restarts_the_running_slice() {
+    // Interactive preempts after a 10 ms slice when others wait: a slice begun
+    // at a host-timed moment before the resync must not count.
+    let mut core = busy_core();
+    ticks(&mut core, 0, 5 * MS);
+    let running = core.current();
+    core.resync_ticks(6 * MS);
+    for now in (7..=15).map(|ms| ms * MS) {
+        assert_eq!(
+            core.tick(now),
+            None,
+            "preempted at {now} ns, before 10 ms of slice"
+        );
+    }
+    assert_eq!(core.current(), running);
+    assert!(
+        core.tick(16 * MS).is_some(),
+        "preempted once 10 ms have run since the resync"
+    );
 }
