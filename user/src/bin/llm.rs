@@ -237,7 +237,7 @@ fn handle(backends: &mut Backends, text: &str, response: &mut [u8]) -> Result<St
             response,
         ),
         "script" => script(backends, text, response),
-        "act" => act(backends, text),
+        "act" => act(backends, text, response),
         "tune" => tune(backends, text, response),
         _ => Err(format!("unknown request {command:?}")),
     }
@@ -278,16 +278,17 @@ fn script(backends: &mut Backends, text: &str, response: &mut [u8]) -> Result<St
     Err(script::encode_error(&AnswerError::Unavailable(why)))
 }
 
-/// One tagged call from the local model. A server answers scripts only: the
-/// tagged call needs this engine's decoder.
-fn act(backends: &mut Backends, text: &str) -> Result<String, String> {
+/// One tagged call: the local model's decoder when it runs, else a server's
+/// answer to the same prompt, read only if it is exactly a call.
+fn act(backends: &mut Backends, text: &str, response: &mut [u8]) -> Result<String, String> {
     let request = ActRequest::decode(text).ok_or("malformed act request")?;
-    let answer = match &mut backends.local {
-        Some(Ok(local)) => local.act(&request),
-        Some(Err(why)) => Err(ActError::Unavailable(format!(
+    let answer = match (&mut backends.local, &backends.server) {
+        (Some(Ok(local)), _) => local.act(&request),
+        (_, Some(server)) => server.act(&request, response),
+        (Some(Err(why)), None) => Err(ActError::Unavailable(format!(
             "the model cannot run ({why})"
         ))),
-        None => Err(ActError::Unavailable(String::from(NO_MODEL))),
+        (None, None) => Err(ActError::Unavailable(String::from(NO_MODEL))),
     };
     Ok(llmproto::act::encode_answer(&answer))
 }

@@ -4,6 +4,15 @@
 use alloc::format;
 use alloc::string::String;
 
+/// Which of the one door's boot cases runs (`test=act-*`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ActCase {
+    Plain,
+    Run,
+    Never,
+    Vague,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum SelfTest {
     None,
@@ -32,6 +41,11 @@ pub enum SelfTest {
     Shell,
     /// M8b: LLM-written scripts are checked, shown, and run only after a yes.
     Scripts,
+    /// P1 task 7: one tagged call through the one door. `act-plain`: plain
+    /// requests become the right calls; `act-run`: the run tier runs with no prompt
+    /// and writes the result line; `act-never`: never-tier calls are refused;
+    /// `act-vague`: a vague line runs as `Taken as`, a line not in English asks.
+    Act(ActCase),
     /// M9a: a live component swaps versions, migrates its state and rolls back.
     Live,
     /// M9b: a component is edited, built on the host and swapped in live.
@@ -112,6 +126,10 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=terminal" => Some(SelfTest::Terminal),
             "test=shell" => Some(SelfTest::Shell),
             "test=scripts" => Some(SelfTest::Scripts),
+            "test=act-plain" => Some(SelfTest::Act(ActCase::Plain)),
+            "test=act-run" => Some(SelfTest::Act(ActCase::Run)),
+            "test=act-never" => Some(SelfTest::Act(ActCase::Never)),
+            "test=act-vague" => Some(SelfTest::Act(ActCase::Vague)),
             "test=live" => Some(SelfTest::Live),
             "test=edit" => Some(SelfTest::Edit),
             "test=manifest" => Some(SelfTest::Manifest),
@@ -159,6 +177,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::Terminal
             | SelfTest::Shell
             | SelfTest::Scripts
+            | SelfTest::Act(_)
             | SelfTest::Live
             | SelfTest::Edit
             | SelfTest::Manifest

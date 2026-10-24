@@ -125,7 +125,7 @@ fn every_run_tier_change_records_how_to_undo_it() {
             .unwrap_or_else(|| panic!("add a call to {} to CALLS", function.name));
         let (_host, mut shell) = with_answers(vec![answer(call, "Changes it.")]);
         let reply = shell.eval(&format!("? {request}"));
-        assert!(reply.text.ends_with("(undo: `undo`)"), "{reply:?}");
+        assert!(reply.text.ends_with(". undo"), "{reply:?}");
         assert!(shell.eval("undo").ok, "{}", function.name);
     }
 }
@@ -135,7 +135,7 @@ fn undo_puts_the_last_change_back_once() {
     let (host, mut shell) = with_answers(vec![answer(SWITCH, "Switches to round-robin.")]);
     assert_eq!(
         ran(&shell.eval("use round robin")),
-        "Done: policy round-robin (was interactive) (undo: `undo`)"
+        "Done: policy round-robin (was interactive). undo"
     );
     assert_eq!(host.policy.get(), Some(policy::ROUND_ROBIN));
     assert_eq!(shell.eval("undo"), ok("Undone: policy back to interactive"));
@@ -232,9 +232,9 @@ fn a_run_that_fails_after_a_change_says_so_and_can_be_undone() {
     let reply = shell.eval("switch the policy then divide please");
     assert!(!reply.ok);
     assert!(
-        reply.text.ends_with(
-            "\nChanged before the error: policy round-robin (was interactive) (undo: `undo`)"
-        ),
+        reply
+            .text
+            .ends_with("\nChanged before the error: policy round-robin (was interactive). undo"),
         "{reply:?}"
     );
     assert!(shell.eval("undo").ok);
@@ -281,7 +281,7 @@ fn an_ask_tier_script_asks_one_short_question_and_runs_on_y() {
     // The undo offered is whatever the run recorded, whatever the tier.
     assert_eq!(
         shell.eval("Y"),
-        ok("Done: policy round-robin (was interactive) (undo: `undo`)")
+        ok("Done: policy round-robin (was interactive). undo")
     );
     assert_eq!(host.policy.get(), Some(policy::ROUND_ROBIN));
     let audit = host.audit.borrow();

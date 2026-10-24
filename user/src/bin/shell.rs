@@ -12,6 +12,7 @@ use alloc::rc::Rc;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use kabi::sched::{SchedStats, TrialRequest};
+use llmproto::act::{self, ActError, ActRequest, Call};
 use llmproto::chat::Completion;
 use llmproto::script::{self, Answer, AnswerError, ScriptRequest};
 use llmproto::tune::{self, TuneRequest};
@@ -85,6 +86,25 @@ impl Host for System {
             }
             ("err", why) => Err(script::decode_error(why)),
             _ => Err(server("malformed reply")),
+        }
+    }
+
+    fn act(&self, request: &ActRequest) -> Result<Call, ActError> {
+        let unavailable = |why: &str| ActError::Unavailable(alloc::format!("llm service: {why}"));
+        let mut reply = vec![0u8; kabi::MAX_MESSAGE];
+        let len = sys::call_route(
+            llm(),
+            request.encode().as_bytes(),
+            &mut reply,
+            SCRIPT_CALL_MS,
+        )
+        .map_err(|error| unavailable(&alloc::format!("{error:?}")))?;
+        let text = core::str::from_utf8(&reply[..len.min(reply.len())])
+            .map_err(|_| unavailable("the reply is not UTF-8"))?;
+        match text.split_once(' ').unwrap_or((text, "")) {
+            ("ok", answer) => act::decode_answer(answer),
+            ("err", why) => Err(unavailable(why)),
+            _ => Err(unavailable("malformed reply")),
         }
     }
 

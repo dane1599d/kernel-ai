@@ -91,7 +91,7 @@ impl Shell {
         if tier == Tier::Run {
             self.host
                 .audit(&format!("script {id} tier run; running it"));
-            return self.finish(id, request, &checked);
+            return self.finish(id, request, &checked, false);
         }
         self.host
             .audit(&format!("script {id} tier ask ({}); asking", at.join(", ")));
@@ -112,8 +112,15 @@ impl Shell {
     }
 
     /// Runs a script the user asked for, records what it changed, and says what
-    /// happened in a line or two after its output.
-    fn finish(&mut self, id: u64, request: &str, checked: &Checked) -> Reply {
+    /// happened in a line or two after its output: `Done: policy round-robin (was
+    /// interactive). undo`, or `Taken as: …` when it ran a vague line's reading.
+    pub(crate) fn finish(
+        &mut self,
+        id: u64,
+        request: &str,
+        checked: &Checked,
+        taken_as: bool,
+    ) -> Reply {
         let ran = script::run(checked, &self.host, &self.config);
         for done in &ran.done {
             let tier = tiers::of(self.tiers, done.function);
@@ -146,12 +153,12 @@ impl Shell {
                 text.push('\n');
             }
             let what: Vec<&str> = ran.done.iter().map(|d| d.what.as_str()).collect();
-            let lead = if ran.ok {
-                "Done"
-            } else {
-                "Changed before the error"
+            let lead = match (ran.ok, taken_as) {
+                (true, true) => "Taken as",
+                (true, false) => "Done",
+                (false, _) => "Changed before the error",
             };
-            let tail = if undoable { " (undo: `undo`)" } else { "" };
+            let tail = if undoable { ". undo" } else { "" };
             text.push_str(&format!("{lead}: {}{tail}", what.join("; ")));
         } else if text.is_empty() && ran.ok {
             text = match checked.summary.is_empty() {
@@ -240,7 +247,7 @@ impl Shell {
         }
         self.host
             .audit(&format!("script {id} confirmed; running it"));
-        self.finish(id, &pending.request, &pending.checked)
+        self.finish(id, &pending.request, &pending.checked, false)
     }
 
     /// `undo`: puts back what the last run changed, newest change first. A change

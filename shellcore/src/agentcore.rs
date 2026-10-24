@@ -1,0 +1,298 @@
+//! The one door (ADR 0002 D2, D3 and D5): a request goes to the model as `act`
+//! and comes back as one tagged call, and [`Shell::execute`] decides what it may
+//! do. Code, never the model, decides:
+//!
+//! - **Consent** comes from the user's line (`agentabi::consent`): a row's cues
+//!   with no negation in reach, `from_request` values literal in the line or
+//!   aliased, the English check, and the vague path. Pasted text is part of the
+//!   line: the terminal sends whatever was in it when Enter was pressed.
+//! - **The tier** is the stricter of the row's derived tier and consent's.
+//! - **The result line** is written from what ran: `Done: policy round-robin (was
+//!   interactive). undo`, or `Taken as: …` for a vague line.
+//!
+//! A call to a script API row runs through the same strict engine, journal and
+//! `undo` as a script, as a one-line script written by code. `say` answers in
+//! words, `clarify` asks and joins the reply to the line, and `script` runs its
+//! code through today's script checks. If no call comes back (no model, or a
+//! server with no answer), today's script request runs instead.
+
+use crate::script::{self, Checked};
+use crate::tiers::Tier;
+use crate::{Reply, SCRIPT_ROUND_MS, Shell};
+use agentabi::consent::{self, Call as Planned, Label, Value as Consented, Why};
+use agentabi::{Action, ArgType};
+use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
+use llmproto::act::{ActRequest, Call};
+use llmproto::script::Answer;
+use serde_json::Value;
+
+/// What a call did, in code's terms; the reply is made from it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Outcome {
+    /// The tier it ran, asked or was refused at.
+    pub tier: Tier,
+    /// Why, from consent and the row.
+    pub why: Why,
+    pub reply: Reply,
+}
+
+/// How a call's arguments read as consent sees them, and as Rhai literals.
+struct Arguments {
+    values: Vec<(&'static str, String)>,
+    rhai: Vec<String>,
+}
+
+impl Shell {
+    /// Asks the model for one call for `request` and executes it; `None` when no
+    /// call came back, so the caller falls back to today's script request.
+    pub(crate) fn try_act(&mut self, id: u64, request: &str) -> Option<Reply> {
+        let asked = ActRequest {
+            line: request.to_string(),
+            state: String::new(),
+            timeout_ms: SCRIPT_ROUND_MS,
+        };
+        let call = match self.host.act(&asked) {
+            Ok(call) => call,
+            Err(error) => {
+                self.host.audit(&format!(
+                    "request {id}: no call ({}); asking for a script",
+                    error.describe()
+                ));
+                return None;
+            }
+        };
+        self.host
+            .audit(&format!("request {id}: the model called {}", call.text()));
+        Some(self.execute(id, request, &call).reply)
+    }
+
+    /// The one door: what `call`, made for the user's `request`, may do, and doing
+    /// it.
+    pub(crate) fn execute(&mut self, id: u64, request: &str, call: &Call) -> Outcome {
+        match call.name.as_str() {
+            "say" => self.pseudo_say(id, request, call),
+            "clarify" => self.pseudo_clarify(id, request, call),
+            "script" => self.pseudo_script(id, request, call),
+            name => match agentabi::find(&agentabi::ROWS, name) {
+                Some(row) => self.call_row(id, request, row, call),
+                None => self.refuse(id, request, call, Why::Unknown, "no such action"),
+            },
+        }
+    }
+
+    fn pseudo_say(&mut self, id: u64, request: &str, call: &Call) -> Outcome {
+        let text = text_arg(call, "text");
+        let reply = self.say(id, request, text);
+        outcome(Tier::Run, Why::Read, reply)
+    }
+
+    /// `clarify`: the question, with its options; the next line joins the request.
+    fn pseudo_clarify(&mut self, id: u64, request: &str, call: &Call) -> Outcome {
+        let question = text_arg(call, "question");
+        let options: Vec<&str> = call
+            .arguments
+            .get("options")
+            .and_then(Value::as_array)
+            .map(|list| list.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        self.record(id, request, "", "asked the user to clarify");
+        self.clarifying = Some(request.to_string());
+        let text = match options.is_empty() {
+            true => question,
+            false => format!("{question} ({})", options.join(", ")),
+        };
+        outcome(Tier::Run, Why::Read, Reply::ok(text))
+    }
+
+    /// `script`: code written by today's script prompt, checked and tiered as
+    /// today's scripts are. No model summary: the card shows the code.
+    fn pseudo_script(&mut self, id: u64, request: &str, call: &Call) -> Outcome {
+        let answer = Answer {
+            script: text_arg(call, "code"),
+            summary: String::new(),
+        };
+        let checked = match script::check(&answer, &self.host, &self.config) {
+            Ok(checked) => checked,
+            Err(refusal) => {
+                let why = refusal.to_string();
+                self.record(id, request, &answer.script, &format!("refused: {why}"));
+                return outcome(Tier::Never, Why::Unknown, Reply::err(why));
+            }
+        };
+        let (tier, at) = self.tier_of(request, &checked);
+        if tier == Tier::Never {
+            let why = format!("{} may not be used in scripts here", at.join(", "));
+            self.record(id, request, &checked.script, &format!("refused: {why}"));
+            return outcome(Tier::Never, Why::NeverValue, Reply::err(why));
+        }
+        let reply = self.propose(id, request, checked, (tier, at));
+        outcome(tier, Why::Asked, reply)
+    }
+
+    /// A registry row: consent decides, then the row runs as a one-line script.
+    fn call_row(&mut self, id: u64, request: &str, row: &'static Action, call: &Call) -> Outcome {
+        let args = match arguments(row, call) {
+            Ok(args) => args,
+            Err(why) => return self.refuse(id, request, call, Why::Unknown, &why),
+        };
+        let values: Vec<(&str, Consented)> = args
+            .values
+            .iter()
+            .map(|(name, text)| {
+                let value = Consented {
+                    text,
+                    label: Label::Literal,
+                };
+                (*name, value)
+            })
+            .collect();
+        let planned = [Planned {
+            name: row.name,
+            args: &values,
+            control: Label::Literal,
+        }];
+        let decision = consent::decide(request, &planned, &agentabi::ROWS)[0];
+        if decision.tier == Tier::Never {
+            return self.refuse(id, request, call, decision.why, "it is never run");
+        }
+        if !agentabi::SCRIPT_API.iter().any(|r| r.name == row.name) {
+            let why = format!("{} is typed at the prompt for now, not called", row.name);
+            return self.refuse(id, request, call, decision.why, &why);
+        }
+        let answer = Answer {
+            script: format!("{}({});", row.name, args.rhai.join(", ")),
+            summary: String::new(),
+        };
+        let checked = match script::check(&answer, &self.host, &self.config) {
+            Ok(checked) => checked,
+            Err(refusal) => {
+                return self.refuse(id, request, call, decision.why, &refusal.to_string());
+            }
+        };
+        self.host.audit(&format!(
+            "request {id}: {} is {} ({:?})",
+            row.name,
+            decision.tier.name(),
+            decision.why
+        ));
+        let reply = match decision.tier {
+            Tier::Run => {
+                self.shown = Some(script::shown(id, &checked));
+                self.finish(id, request, &checked, decision.why == Why::TakenAs)
+            }
+            _ => self.ask_call(id, request, checked, decision.why),
+        };
+        outcome(decision.tier, decision.why, reply)
+    }
+
+    /// An ask-tier call waits for `y` or `n`, as an asking script does.
+    fn ask_call(&mut self, id: u64, request: &str, checked: Checked, why: Why) -> Reply {
+        let reason = match why {
+            Why::NotEnglish => String::from("the request is not in English, so it asks first"),
+            Why::Added => String::from("the request did not ask for it"),
+            Why::NoUndo => String::from("it has no undo"),
+            Why::Steered(source) | Why::Outbound(source) => format!("{source} chose it"),
+            Why::Ungrounded => String::from("the request did not name that site"),
+            _ => String::from("it asks first"),
+        };
+        let call = checked.script.trim_end_matches(';').to_string();
+        let changes: Vec<&'static str> = checked.changes.clone();
+        self.shown = Some(format!(
+            "{}\nasked first: {reason}",
+            script::shown(id, &checked)
+        ));
+        self.pending = Some(crate::actions::Pending {
+            id,
+            request: request.to_string(),
+            checked,
+            asking: changes,
+            created_ns: self.host.now_ns(),
+        });
+        Reply {
+            ok: true,
+            text: format!("Run {call}? {reason}. y/n, or show"),
+            confirm: Some(id),
+            more: false,
+        }
+    }
+
+    fn refuse(&mut self, id: u64, request: &str, call: &Call, why: Why, detail: &str) -> Outcome {
+        self.record(id, request, &call.text(), &format!("refused: {detail}"));
+        let reply = Reply::err(format!("Refused {}: {detail}", call.name));
+        outcome(Tier::Never, why, reply)
+    }
+}
+
+fn outcome(tier: Tier, why: Why, reply: Reply) -> Outcome {
+    Outcome { tier, why, reply }
+}
+
+/// A string argument, or "" when the model left it out.
+fn text_arg(call: &Call, name: &str) -> String {
+    call.arguments
+        .get(name)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// A call's arguments in the row's order, checked against its types: as text for
+/// consent and as Rhai literals for the one-line script.
+fn arguments(row: &'static Action, call: &Call) -> Result<Arguments, String> {
+    if let Some(extra) = call
+        .arguments
+        .keys()
+        .find(|key| !row.args.iter().any(|arg| arg.name == key.as_str()))
+    {
+        return Err(format!("{} has no argument {extra:?}", row.name));
+    }
+    let mut args = Arguments {
+        values: Vec::new(),
+        rhai: Vec::new(),
+    };
+    for arg in row.args {
+        let Some(value) = call.arguments.get(arg.name) else {
+            if matches!(arg.ty, ArgType::Opt(_)) {
+                continue;
+            }
+            return Err(format!("{} needs its {} argument", row.name, arg.name));
+        };
+        let (text, rhai) = literal(&arg.ty, value)
+            .ok_or_else(|| format!("{} is not a valid {}", value, arg.name))?;
+        args.values.push((arg.name, text));
+        args.rhai.push(rhai);
+    }
+    Ok(args)
+}
+
+/// `value` as text and as a Rhai literal, if it has the type `ty` allows.
+fn literal(ty: &ArgType, value: &Value) -> Option<(String, String)> {
+    match (ty, value) {
+        (ArgType::Opt(inner), value) => literal(inner, value),
+        (ArgType::Int { min, max }, Value::Number(n)) => {
+            let n = n.as_i64().filter(|n| (*min..=*max).contains(n))?;
+            Some((n.to_string(), n.to_string()))
+        }
+        (ArgType::Enum(words), Value::String(s)) if words.contains(&s.as_str()) => {
+            Some((s.clone(), quote(s)?))
+        }
+        (ArgType::Text { max }, Value::String(s)) if s.chars().count() <= usize::from(*max) => {
+            Some((s.clone(), quote(s)?))
+        }
+        (ArgType::Path | ArgType::Host, Value::String(s)) => Some((s.clone(), quote(s)?)),
+        _ => None,
+    }
+}
+
+/// A Rhai string literal for plain one-line text.
+fn quote(s: &str) -> Option<String> {
+    if s.chars().any(char::is_control) {
+        return None;
+    }
+    Some(format!(
+        "\"{}\"",
+        s.replace('\\', "\\\\").replace('"', "\\\"")
+    ))
+}

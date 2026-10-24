@@ -24,7 +24,7 @@ const RUN: &[(&str, Expect)] = &[
     ),
     (
         "? switch to round robin",
-        Exact("ok policy: round-robin\nDone: policy round-robin (was interactive) (undo: `undo`)"),
+        Exact("ok policy: round-robin\nDone: policy round-robin (was interactive). undo"),
     ),
 ];
 
@@ -57,7 +57,7 @@ const REST: &[(&str, Expect)] = &[
     ),
     (
         "? go back to interactive",
-        Exact("ok Done: policy interactive (was round-robin) (undo: `undo`)"),
+        Exact("ok Done: policy interactive (was round-robin). undo"),
     ),
     (
         "log",
@@ -67,9 +67,10 @@ const REST: &[(&str, Expect)] = &[
     ),
 ];
 
-/// Script requests the lines above make: one each, and two for the repaired ones
-/// (4 and 6).
-const LLM_REQUESTS: u64 = 9;
+/// Requests the lines above make of the llm service: for each of the seven, an
+/// `act` request the mock answers with no call, then the script request, which is
+/// two for the repaired ones (4 and 6).
+const LLM_REQUESTS: u64 = 16;
 
 fn policy_is(name: &str) -> bool {
     for _ in 0..500 {

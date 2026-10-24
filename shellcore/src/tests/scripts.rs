@@ -33,7 +33,7 @@ fn a_run_tier_change_runs_at_once_and_says_what_happened() {
     let reply = shell.eval("? how many cpus are there, then use round robin");
     assert_eq!(
         reply,
-        ok("CPUs: 4\nDone: policy round-robin (was interactive) (undo: `undo`)")
+        ok("CPUs: 4\nDone: policy round-robin (was interactive). undo")
     );
     assert_eq!(host.policy.get(), Some(policy::ROUND_ROBIN));
     assert_eq!(

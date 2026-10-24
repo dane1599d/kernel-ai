@@ -155,6 +155,9 @@ fn chat_content(request: &Value) -> String {
     if request["messages"][0]["content"] == llmproto::explain::SYSTEM_PROMPT {
         return explanation(request);
     }
+    if request["messages"][1]["content"] == llmproto::pack::MODE_ACT {
+        return act(request);
+    }
     if request["response_format"]["json_schema"]["name"] == "sched_tune" {
         return tune(request);
     }
@@ -181,6 +184,50 @@ fn chat_content(request: &Value) -> String {
             json!({ "script": script, "summary": summary }).to_string()
         }
         None => "I am not sure what you mean.".to_string(),
+    }
+}
+
+/// Tagged calls the mock makes for `act` requests (ADR 0002 D4), keyed by the
+/// request line. Any other line gets words that are not a call, so the shell asks
+/// for a script as it did before `act`.
+const ACTS: &[(&str, &str)] = &[
+    (
+        "turn on round robin scheduling",
+        r#"{"name":"set_policy","arguments":{"name":"round-robin"}}"#,
+    ),
+    (
+        "how many processors do I have",
+        r#"{"name":"cpus","arguments":{}}"#,
+    ),
+    (
+        "please tune the shell process",
+        r#"{"name":"tune","arguments":{"target":"shell"}}"#,
+    ),
+    (
+        "please tune the llm service",
+        r#"{"name":"tune","arguments":{"target":"llm"}}"#,
+    ),
+    (
+        "make it snappier",
+        r#"{"name":"set_policy","arguments":{"name":"interactive"}}"#,
+    ),
+    (
+        "cambia la política a round robin",
+        r#"{"name":"set_policy","arguments":{"name":"round-robin"}}"#,
+    ),
+];
+
+/// The call for an `act` request: the last message is `Request: <line>`.
+fn act(request: &Value) -> String {
+    let line = request["messages"]
+        .as_array()
+        .and_then(|messages| messages.last())
+        .and_then(|m| m["content"].as_str())
+        .and_then(|text| text.rsplit("Request: ").next())
+        .unwrap_or("");
+    match ACTS.iter().find(|(asked, _)| *asked == line) {
+        Some((_, call)) => call.to_string(),
+        None => "I would write a script for that.".to_string(),
     }
 }
 

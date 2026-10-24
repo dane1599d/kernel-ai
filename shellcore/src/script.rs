@@ -450,7 +450,10 @@ pub fn shown(id: u64, checked: &Checked) -> String {
             );
         }
     }
-    let _ = write!(text, "\nmodel says: {}", checked.summary);
+    // Calls and act scripts have no model summary: the code says what they do.
+    if !checked.summary.is_empty() {
+        let _ = write!(text, "\nmodel says: {}", checked.summary);
+    }
     if let Some(note) = &checked.note {
         let _ = write!(text, "\n{note}");
     }

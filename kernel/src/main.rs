@@ -17,6 +17,7 @@
 
 extern crate alloc;
 
+mod act_tests;
 mod apic;
 mod backtrace;
 mod bigmap_tests;
@@ -292,6 +293,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Terminal => run_case(terminal::self_test),
         SelfTest::Shell => run_case(shell_tests::check),
         SelfTest::Scripts => run_case(script_tests::check),
+        SelfTest::Act(which) => run_case(|| act_tests::check(which)),
         SelfTest::Live => run_case(live_tests::check),
         SelfTest::Edit => run_case(edit_tests::check),
         SelfTest::Manifest => run_case(manifest_tests::check),

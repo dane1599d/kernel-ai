@@ -6,6 +6,7 @@
 use alloc::format;
 use alloc::string::{String, ToString};
 use kabi::HttpRequest;
+use llmproto::act::{self, ActError, ActRequest, Call};
 use llmproto::chat::Completion;
 use llmproto::openai::CompletionError;
 use llmproto::script::{self, ScriptRequest};
@@ -96,6 +97,16 @@ impl Server {
             ),
             CompletionError::Reply(error) => format!("bad chat reply: {error:?}"),
         })
+    }
+
+    /// One tagged call: the `act` prompt, and the reply's text read as a call.
+    pub fn act(&self, request: &ActRequest, response: &mut [u8]) -> Result<Call, ActError> {
+        let body = openai::chat_request(&self.model, &act::request(request));
+        let reply = self
+            .post(&body, CHAT_TIMEOUT_MS, response)
+            .map_err(ActError::Unavailable)?;
+        let completion = openai::completion(&reply).map_err(|_| ActError::NotACall)?;
+        act::parse(completion.text.trim())
     }
 
     fn post(
