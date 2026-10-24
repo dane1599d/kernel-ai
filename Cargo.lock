@@ -287,6 +287,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "devkit"
+version = "0.0.0"
+
+[[package]]
 name = "devmatch"
 version = "0.0.0"
 
@@ -508,6 +512,7 @@ dependencies = [
  "acpitables",
  "captable",
  "cpufeat",
+ "devkit",
  "devmatch",
  "editcore",
  "gfxcore",
@@ -1349,6 +1354,9 @@ dependencies = [
 [[package]]
 name = "xhci"
 version = "0.0.0"
+dependencies = [
+ "devkit",
+]
 
 [[package]]
 name = "xtask"

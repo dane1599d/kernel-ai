@@ -29,6 +29,7 @@ mod build_service;
 mod compute_tests;
 mod console;
 mod cpu;
+mod devhost;
 mod device_tests;
 mod devices;
 mod display;

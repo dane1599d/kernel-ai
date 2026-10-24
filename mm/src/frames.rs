@@ -108,19 +108,40 @@ impl<'a> FrameBitmap<'a> {
     /// so the search resumes just past it. Thousands of 2 MiB runs (512 frames
     /// aligned 512) in an 8 GiB bitmap take milliseconds, not minutes.
     pub fn allocate_contiguous(&mut self, count: u64, align: u64) -> Option<u64> {
-        self.search(self.low as u64 * 64, count, align, true)
+        self.search(self.low as u64 * 64, count, align, true, self.frames)
+    }
+
+    /// As [`Self::allocate_contiguous`], but the whole run ends at or below frame
+    /// `limit`: DMA for a device that cannot address memory above it (4 GiB is
+    /// frame 1 << 20, ADR 0007's `Zone::Below4G`).
+    pub fn allocate_contiguous_below(&mut self, limit: u64, count: u64, align: u64) -> Option<u64> {
+        self.search(self.low as u64 * 64, count, align, true, limit)
     }
 
     /// As [`Self::allocate_contiguous`], but the run starts at frame `lowest` or
     /// above: for a test that needs memory above 4 GiB.
     pub fn allocate_contiguous_from(&mut self, lowest: u64, count: u64, align: u64) -> Option<u64> {
         let from = lowest.max(self.low as u64 * 64);
-        self.search(from, count, align, from == self.low as u64 * 64)
+        self.search(
+            from,
+            count,
+            align,
+            from == self.low as u64 * 64,
+            self.frames,
+        )
     }
 
-    /// The search behind both; `from_low` says the scan starts at the lower bound,
-    /// so the first free frame it meets may raise the bound.
-    fn search(&mut self, mut from: u64, count: u64, align: u64, from_low: bool) -> Option<u64> {
+    /// The search behind all three; `from_low` says the scan starts at the lower
+    /// bound, so the first free frame it meets may raise the bound. The run must
+    /// end at or below `limit`.
+    fn search(
+        &mut self,
+        mut from: u64,
+        count: u64,
+        align: u64,
+        from_low: bool,
+        limit: u64,
+    ) -> Option<u64> {
         if count == 0 || align == 0 || count > self.free {
             return None;
         }
@@ -133,7 +154,9 @@ impl<'a> FrameBitmap<'a> {
                 first_free_seen = true;
             }
             let start = free.checked_next_multiple_of(align)?;
-            let end = start.checked_add(count).filter(|&end| end <= self.frames)?;
+            let end = start
+                .checked_add(count)
+                .filter(|&end| end <= self.frames.min(limit))?;
             match self.last_used(start, end) {
                 Some(used) => from = used + 1,
                 None => {
