@@ -74,6 +74,12 @@ pub(super) const CASES: &[TestCase] = &[
         ..case("act-rollback", "test=act-rollback")
     },
     TestCase {
+        expect: &[
+            "act-ask: the menu's Allow ran a call once through its ONCE; none, a typed y, a reused one and one for other arguments did not",
+        ],
+        ..case("act-ask", "test=act-ask")
+    },
+    TestCase {
         keys: TERMINAL_SCRIPT,
         expect: &[
             crate::mock_llm::REPLY,

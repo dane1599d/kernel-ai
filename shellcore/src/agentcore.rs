@@ -18,17 +18,19 @@
 
 use crate::actions::How;
 use crate::actlog::Form;
+use crate::rules::Offer;
 use crate::script::{self, Checked};
 use crate::tiers::Tier;
 use crate::{Reply, SCRIPT_ROUND_MS, Shell};
 use agentabi::consent::{self, Call as Planned, Label, Value as Consented, Why};
-use agentabi::{Action, ArgType};
+use agentabi::{Action, ArgType, Role};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use llmproto::act::{ActRequest, Call};
 use llmproto::script::Answer;
 use serde_json::Value;
+use termcore::menu::{Menu, Origin};
 
 /// What a call did, in code's terms; the reply is made from it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -192,8 +194,10 @@ impl Shell {
             decision.tier.name(),
             decision.why
         ));
-        let reply = match decision.tier {
-            Tier::Run => {
+        let offer = offer(row, &args, decision.why);
+        let ruled = offer.as_ref().and_then(|offer| self.rules.covering(offer));
+        let reply = match (decision.tier, ruled) {
+            (Tier::Run, _) => {
                 self.shown = Some(script::shown(id, &checked));
                 let consent = match decision.why {
                     Why::TakenAs => "taken-as",
@@ -202,17 +206,42 @@ impl Shell {
                 let how = How {
                     form: Form::Call,
                     tier: Tier::Run,
-                    consent,
+                    consent: String::from(consent),
                 };
                 self.finish(id, request, &checked, how)
             }
-            _ => self.ask_call(id, request, checked, decision.why),
+            // A standing rule waives the ask the row itself makes (ADR 0002 D2a).
+            (_, Some(rule)) => {
+                self.shown = Some(format!(
+                    "{}\nran under rule #{rule}",
+                    script::shown(id, &checked)
+                ));
+                self.host.audit(&format!(
+                    "request {id}: {} runs under rule #{rule}",
+                    row.name
+                ));
+                let how = How {
+                    form: Form::Call,
+                    tier: decision.tier,
+                    consent: format!("rule:{rule}"),
+                };
+                self.finish(id, request, &checked, how)
+            }
+            _ => self.ask_call(id, request, checked, decision.why, offer),
         };
         outcome(decision.tier, decision.why, reply)
     }
 
-    /// An ask-tier call waits for `y` or `n`, as an asking script does.
-    fn ask_call(&mut self, id: u64, request: &str, checked: Checked, why: Why) -> Reply {
+    /// An ask-tier call waits for an answer from the Allow / Deny menu, or for `y`
+    /// or `n` when its question cannot be shown as a menu.
+    fn ask_call(
+        &mut self,
+        id: u64,
+        request: &str,
+        checked: Checked,
+        why: Why,
+        offer: Option<Offer>,
+    ) -> Reply {
         let reason = match why {
             Why::NotEnglish => String::from("the request is not in English, so it asks first"),
             Why::Added => String::from("the request did not ask for it"),
@@ -236,15 +265,34 @@ impl Shell {
             how: How {
                 form: Form::Call,
                 tier: Tier::Ask,
-                consent: "asked",
+                consent: String::from("asked"),
             },
             call: None,
+            offer: offer.clone(),
+            menu: None,
         });
-        Reply {
-            ok: true,
-            text: format!("Run {call}? {reason}. y/n, or show"),
-            confirm: Some(id),
-            more: false,
+        // The highlight starts on Allow only for a call the line plainly asked for.
+        let origin = match why {
+            Why::NoUndo | Why::Ungrounded => Origin::Asked,
+            _ => Origin::Added,
+        };
+        let (kind, target) = offer.map(|o| o.labels()).unwrap_or_default();
+        let question = format!("Run {call}? {}.", capitalised(&reason));
+        match Menu::new(id, &question, Some(&kind), Some(&target), origin) {
+            Ok(_) => {
+                let text = Menu::encode(id, origin, &question, &kind, &target);
+                if let Some(pending) = &mut self.pending {
+                    pending.menu = Some(question);
+                }
+                Reply::menu(id, text)
+            }
+            // Too long, or not plain ASCII, for the menu: the y/n question shows it.
+            Err(_) => Reply {
+                ok: true,
+                text: format!("Run {call}? {reason}. y/n, or show"),
+                confirm: Some(id),
+                more: false,
+            },
         }
     }
 
@@ -252,6 +300,40 @@ impl Shell {
         self.record(id, request, &call.text(), &format!("refused: {detail}"));
         let reply = Reply::err(format!("Refused {}: {detail}", call.name));
         outcome(Tier::Never, why, reply)
+    }
+}
+
+/// The standing rules a menu may offer for a call that asks for `why`: the row's
+/// own ask (no undo) takes a rule for the action or for its target; a host nobody
+/// named takes one for that host only. Asks from consent take none.
+fn offer(row: &'static Action, args: &Arguments, why: Why) -> Option<Offer> {
+    let target = row
+        .args
+        .iter()
+        .find(|arg| arg.role == Role::Target)
+        .and_then(|arg| args.values.iter().find(|(name, _)| *name == arg.name))
+        .map(|(_, text)| text.clone());
+    match why {
+        Why::NoUndo => Some(Offer {
+            action: row.name,
+            target,
+            kind: true,
+        }),
+        Why::Ungrounded => target.map(|target| Offer {
+            action: row.name,
+            target: Some(target),
+            kind: false,
+        }),
+        _ => None,
+    }
+}
+
+/// `text` with its first letter in capitals, to start the menu's sentence.
+fn capitalised(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
     }
 }
 
