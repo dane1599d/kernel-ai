@@ -228,3 +228,4 @@ S02-2's pass marks: the busy sign appears within 100 ms of Enter, and masking co
   - ADR 0002's question 9 (moves and overwrites run with undo; the default is ask);
   - question 8 (how long the log keeps requests, and `forget`);
   - question 3 (sending messages).
+- **Lane D or P7:** paravirtual steal-time accounting (the KVM steal-time MSR), so the scheduler does not charge threads for time the host took; it helps every VM user, VirtualBox included (decisions row "KVM CI stalls are host steal time").
