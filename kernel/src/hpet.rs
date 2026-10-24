@@ -6,6 +6,14 @@
 //! device emulation, and with 8 vCPUs ticking at 1 kHz those trips take all the
 //! CPU time there is. `cargo xtask vbox` boots with `clock=tsc`; QEMU keeps the
 //! HPET.
+//!
+//! With `clock=icount`, `nanos` reads the TSC at exactly 1 GHz, unmeasured: under
+//! QEMU's `-icount` the TSC is the virtual clock in nanoseconds, a fixed number per
+//! instruction. The icount boots use it because the HPET's 10 ns counts do not
+//! line up with icount's 8 ns steps, so what an HPET read returns depends on the
+//! absolute virtual time, which the host-timed firmware and boot-drive reads set
+//! before the kernel starts: the M10 observe boots reached their aligned start at
+//! the same HPET time but different TSCs, and built different summaries.
 
 use crate::percpu::{self, MAX_CPUS};
 use crate::{log, memory};
@@ -136,6 +144,15 @@ fn settled(rate: u64, last: u64, reported_hz: Option<u64>) -> bool {
 /// rate, match it; with none in [`WINDOWS`] the HPET stays the clock. Runs on the
 /// boot CPU before the others start.
 pub fn select_clock(cmdline: &str) {
+    if cmdline
+        .split_whitespace()
+        .any(|word| word == "clock=icount")
+    {
+        set_zero(0);
+        TSC_MULT.store(1 << 32, Ordering::Release);
+        log!("clock: the TSC at 1 GHz, as QEMU's icount runs it");
+        return;
+    }
     if !cmdline.split_whitespace().any(|word| word == "clock=tsc") {
         return;
     }
