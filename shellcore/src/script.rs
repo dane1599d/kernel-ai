@@ -1,27 +1,33 @@
-//! LLM-written scripts: checked in a strict profile, tried against stub functions,
-//! and run in a fresh engine that has only the functions the script names: at
-//! once if every function it names is run-tier, after a yes if one asks (see
-//! `tiers`). Each change records the value it replaced, for `undo`.
+//! LLM-written scripts: checked in a strict profile, analysed, tried against stub
+//! functions, and run in a fresh engine that has only the functions the script
+//! calls: at once if consent and the tiers let every call run, after a yes if one
+//! asks. Each run is one transaction (ADR 0002 D5): the first change to each
+//! resource records the value it replaced, every live call is re-checked against
+//! the analysed plan, a failure puts every change back, and outbound effects wait
+//! in an outbox until the run succeeds.
 //!
 //! The strict profile has no closures, no `fn`, no indirect calls (`Fn`, `call`,
 //! `curry`, `eval`) and no undefined variables, so a script can only reach an OS
-//! function by writing its name. Its only loop is `for x in <array, string or
+//! function by writing a call of it. Its only loop is `for x in <array, string or
 //! range>`, which ends by itself; `while`, `loop` and `do` stay off, and the
-//! operation, time and heap limits stop a `for` as they stop anything else. The names found in the text
-//! (strings and comments included, so the list can only be too long, never too
-//! short) decide the tier, and are what `show` lists and all the run is given.
+//! operation, time and heap limits stop a `for` as they stop anything else. The
+//! analyser (`analyse`) finds every call in the compiled AST and where its
+//! arguments came from; those calls decide the tier, and are what `show` lists and
+//! all the run is given.
 
+use crate::analyse::{self, Plan};
 use crate::engine::{self, Line, Stop};
 use crate::undo::{self, Done, Inverse, Journal};
-use crate::{Config, Host, show};
+use crate::{Config, Host, data, show};
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::rc::Rc;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use core::cell::RefCell;
 use core::fmt::Write;
 use kabi::{MAX_METRIC_PROCESSES, Metrics, policy};
-use llmproto::script::{API, Answer, ApiFn, Effect, check_summary, check_text};
+use llmproto::script::{API, Answer, Effect, check_summary, check_text};
 use rhai::{AST, Array, Dynamic, Engine, EvalAltResult, INT, Map, Scope};
 
 /// A script that passed every check, waiting for the user's answer.
@@ -31,6 +37,8 @@ pub struct Checked {
     pub script: String,
     pub reads: Vec<&'static str>,
     pub changes: Vec<&'static str>,
+    /// Every call the script can make, and where its values come from.
+    pub plan: Rc<Plan>,
     /// Set when the trial run stopped early on a stand-in value.
     pub note: Option<String>,
     ast: AST,
@@ -56,11 +64,79 @@ fn policy_name(id: u64) -> &'static str {
     }
 }
 
-/// Registers the registry's script API rows named in `granted` on `engine`, backed
-/// by `host`. Each change goes into `journal` with how to undo it.
-fn register(engine: &mut Engine, host: &Rc<dyn Host>, granted: &[&'static str], journal: &Journal) {
+/// An outbound effect, sent only once the whole run has succeeded.
+pub struct Queued {
+    pub action: &'static str,
+    pub send: Box<dyn FnOnce() -> Result<(), String>>,
+}
+
+/// The effects a run queued to leave the machine (the transactional outbox).
+pub type Outbox = Rc<RefCell<Vec<Queued>>>;
+
+/// What one run's bindings share: the OS, the changes made so far, the plan each
+/// live call is checked against, and the effects waiting to go out.
+#[derive(Clone)]
+struct Tx {
+    host: Rc<dyn Host>,
+    journal: Journal,
+    plan: Rc<Plan>,
+    outbox: Outbox,
+}
+
+impl Tx {
+    fn new(host: &Rc<dyn Host>, plan: &Rc<Plan>) -> Self {
+        Self {
+            host: Rc::clone(host),
+            journal: Journal::default(),
+            plan: Rc::clone(plan),
+            outbox: Outbox::default(),
+        }
+    }
+
+    /// Refuses a live call the analysed plan does not have: one more check that
+    /// what runs is what was approved.
+    fn approved(&self, name: &str, live: &[&str]) -> RhaiResult<()> {
+        match self.plan.allows(name, live) {
+            true => Ok(()),
+            false => Err(rhai_error(format!(
+                "{name}({}) is not a call the checked script makes",
+                live.join(", ")
+            ))),
+        }
+    }
+
+    /// Records a change, or, for a resource this run changed already, keeps the
+    /// first value it replaced: the snapshot is taken once, at the first change.
+    fn changed(&self, done: Done) {
+        let mut journal = self.journal.borrow_mut();
+        match journal
+            .iter_mut()
+            .find(|d| d.owner == done.owner && d.res == done.res)
+        {
+            Some(first) => {
+                first.after = done.after;
+                first.inverse = match (first.inverse, done.inverse) {
+                    (
+                        Some(Inverse::Spec { policy, preset, .. }),
+                        Some(Inverse::Spec { after, .. }),
+                    ) => Some(Inverse::Spec {
+                        policy,
+                        preset,
+                        after,
+                    }),
+                    _ => None,
+                };
+            }
+            None => journal.push(done),
+        }
+    }
+}
+
+/// Registers the registry's script API rows named in `granted` on `engine`, each
+/// checked against `tx`'s plan when it runs.
+fn register(engine: &mut Engine, granted: &[&'static str], tx: &Tx) {
     for row in API.iter().filter(|row| granted.contains(&row.name)) {
-        bind(engine, row.name, host, journal);
+        bind(engine, row.name, tx);
     }
 }
 
@@ -68,26 +144,28 @@ fn register(engine: &mut Engine, host: &Rc<dyn Host>, granted: &[&'static str], 
 /// tests keep it empty.
 pub fn unbound(host: &Rc<dyn Host>) -> Vec<&'static str> {
     let mut engine = Engine::new_raw();
-    let journal = Journal::default();
+    let tx = Tx::new(host, &Rc::default());
     API.iter()
         .map(|row| row.name)
-        .filter(|&name| !bind(&mut engine, name, host, &journal))
+        .filter(|&name| !bind(&mut engine, name, &tx))
         .collect()
 }
 
 /// Binds the script API row `name`, with the arguments and result its row declares;
 /// false if the shell has no implementation for it.
-fn bind(engine: &mut Engine, name: &'static str, host: &Rc<dyn Host>, journal: &Journal) -> bool {
+fn bind(engine: &mut Engine, name: &'static str, tx: &Tx) -> bool {
     {
-        let h = Rc::clone(host);
+        let (h, tx) = (Rc::clone(&tx.host), tx.clone());
         match name {
             "cpus" => {
                 engine.register_fn(name, move || -> RhaiResult<INT> {
+                    tx.approved(name, &[])?;
                     Ok(metrics(h.as_ref())?.cpus as INT)
                 });
             }
             "memory" => {
                 engine.register_fn(name, move || -> RhaiResult<Map> {
+                    tx.approved(name, &[])?;
                     let m = metrics(h.as_ref())?;
                     let mut map = Map::new();
                     map.insert(
@@ -104,11 +182,13 @@ fn bind(engine: &mut Engine, name: &'static str, host: &Rc<dyn Host>, journal: &
             }
             "uptime_ms" => {
                 engine.register_fn(name, move || -> RhaiResult<INT> {
+                    tx.approved(name, &[])?;
                     Ok((metrics(h.as_ref())?.uptime_ns / 1_000_000) as INT)
                 });
             }
             "processes" => {
                 engine.register_fn(name, move || -> RhaiResult<Array> {
+                    tx.approved(name, &[])?;
                     let m = metrics(h.as_ref())?;
                     let list = m.processes.iter().take(m.process_count as usize).map(|p| {
                         let mut map = Map::new();
@@ -121,6 +201,7 @@ fn bind(engine: &mut Engine, name: &'static str, host: &Rc<dyn Host>, journal: &
             }
             "threads" => {
                 engine.register_fn(name, move || -> RhaiResult<Map> {
+                    tx.approved(name, &[])?;
                     let m = metrics(h.as_ref())?;
                     let mut map = Map::new();
                     map.insert("switches".into(), (m.context_switches as INT).into());
@@ -131,12 +212,13 @@ fn bind(engine: &mut Engine, name: &'static str, host: &Rc<dyn Host>, journal: &
             }
             "get_policy" => {
                 engine.register_fn(name, move || -> RhaiResult<String> {
+                    tx.approved(name, &[])?;
                     Ok(policy_name(metrics(h.as_ref())?.policy).into())
                 });
             }
             "set_policy" => {
-                let journal = Rc::clone(journal);
                 engine.register_fn(name, move |which: &str| -> RhaiResult<()> {
+                    tx.approved(name, &[which])?;
                     let id = match which {
                         "round-robin" | "rr" => policy::ROUND_ROBIN,
                         "interactive" => policy::INTERACTIVE,
@@ -150,7 +232,7 @@ fn bind(engine: &mut Engine, name: &'static str, host: &Rc<dyn Host>, journal: &
                         .map_err(|error| rhai_error(format!("set_policy: {error:?}")))?;
                     // What runs now, so `undo` can tell whether it moved since.
                     let after = undo::current_spec(h.as_ref()).unwrap_or((id, preset));
-                    journal.borrow_mut().push(Done {
+                    tx.changed(Done {
                         action: "set_policy".into(),
                         owner: "kernel".into(),
                         res: "policy".into(),
@@ -207,14 +289,8 @@ const fn helper_names() -> [&'static str; agentabi::HELPERS.len()] {
 }
 
 /// The strict engine for LLM-written scripts, with only `granted` OS functions.
-fn strict(
-    line: &Rc<Line>,
-    host: &Rc<dyn Host>,
-    config: &Config,
-    granted: &[&'static str],
-    journal: &Journal,
-) -> Engine {
-    let mut engine = engine::bounded(line, host, config);
+fn strict(line: &Rc<Line>, config: &Config, granted: &[&'static str], tx: &Tx) -> Engine {
+    let mut engine = engine::bounded(line, &tx.host, config);
     engine
         .set_allow_anonymous_fn(false)
         .set_strict_variables(true)
@@ -226,21 +302,17 @@ fn strict(
     // write `floor` for "rounded down" all the same. Both are in `HELPERS`.
     engine.register_fn(agentabi::FLOOR.name, |x: INT| x);
     engine.register_fn(agentabi::FIXED.name, fixed);
-    register(&mut engine, host, granted, journal);
+    data::register(&mut engine, line, config.max_output);
+    register(&mut engine, granted, tx);
     engine
 }
 
-/// The API functions named anywhere in `script`, reads and changes apart.
-pub fn names_in(script: &str) -> (Vec<&'static str>, Vec<&'static str>) {
-    let words: Vec<&str> = script
-        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-        .filter(|word| !word.is_empty())
-        .collect();
-    let used = |f: &&ApiFn| words.contains(&f.name);
+/// The plan's calls, reads and changes apart, each in the registry's order.
+fn split(plan: &Plan) -> (Vec<&'static str>, Vec<&'static str>) {
+    let names = plan.names();
     let pick = |effect| {
         API.iter()
-            .filter(|f| f.effect() == effect)
-            .filter(used)
+            .filter(|f| f.effect() == effect && names.contains(&f.name))
             .map(|f| f.name)
             .collect()
     };
@@ -353,14 +425,15 @@ pub fn check(answer: &Answer, host: &Rc<dyn Host>, config: &Config) -> Result<Ch
     // the summary goes straight into the confirmation.
     let summary = check_summary(&answer.summary).map_err(|error| refuse(error.describe()))?;
     let script = check_text(&answer.script).map_err(|error| refuse(error.describe()))?;
-    let (reads, changes) = names_in(&script);
-    let granted: Vec<&'static str> = reads.iter().chain(&changes).copied().collect();
     let line = Line::new();
     let stub: Rc<dyn Host> = Rc::new(Stub(Rc::clone(host)));
-    let trial = strict(&line, &stub, config, &granted, &Journal::default());
-    let ast = trial
+    let ast = strict(&line, config, &[], &Tx::new(&stub, &Rc::default()))
         .compile(&script)
         .map_err(|error| refuse(format!("syntax error: {error}")))?;
+    let plan = Rc::new(analyse::analyse(&ast, &agentabi::SCRIPT_API));
+    let (reads, changes) = split(&plan);
+    let granted = plan.names();
+    let trial = strict(&line, config, &granted, &Tx::new(&stub, &plan));
     line.begin(stub.as_ref(), config);
     let note = match engine::eval(&trial, &mut Scope::new(), &ast, config.exec) {
         Ok(_) => None,
@@ -382,6 +455,7 @@ pub fn check(answer: &Answer, host: &Rc<dyn Host>, config: &Config) -> Result<Ch
         script,
         reads,
         changes,
+        plan,
         note,
         ast,
     })
@@ -413,16 +487,13 @@ fn stand_in_note(error: &EvalAltResult) -> Option<String> {
 }
 
 /// The one question a script that asks gets: what the model says it does, then
-/// the shell's own account of the functions it calls that ask, and why: they have
-/// no undo, or (`added`) the request did not ask for them. Two short lines; `show`
-/// has the rest.
-pub fn question(id: u64, checked: &Checked, asking: &[&str], added: bool) -> String {
-    let why = match added {
-        true => ", which the request did not ask for",
-        false => " (no undo)",
-    };
+/// the shell's own account of the calls that ask, and `why`: they have no undo,
+/// the request did not ask for them, or content picks their target. Two short
+/// lines; `show` has the rest.
+pub fn question(id: u64, checked: &Checked, asking: &[&str], why: &str) -> String {
     format!(
-        "script {id}: {}\nIt changes {}{why}. Go ahead? y/n, or show",
+        "script {id}: {}
+It changes {}{why}. Go ahead? y/n, or show",
         checked.summary,
         asking.join(", ")
     )
@@ -467,25 +538,22 @@ pub struct Ran {
     pub ok: bool,
     /// The script's output, then its error if it failed.
     pub text: String,
+    /// The first change to each resource, with the value it replaced. The caller
+    /// puts them back when `ok` is false.
     pub done: Vec<Done>,
 }
 
-/// Runs a script with the real OS, granted only what it names.
+/// Runs a script with the real OS, granted only the calls the plan found. Its
+/// outbound effects go out only if the whole run succeeded.
 pub fn run(checked: &Checked, host: &Rc<dyn Host>, config: &Config) -> Ran {
     let config = &for_scripts(config);
-    let granted: Vec<&'static str> = checked
-        .reads
-        .iter()
-        .chain(&checked.changes)
-        .copied()
-        .collect();
     let line = Line::new();
-    let journal = Journal::default();
-    let engine = strict(&line, host, config, &granted, &journal);
+    let tx = Tx::new(host, &checked.plan);
+    let engine = strict(&line, config, &checked.plan.names(), &tx);
     line.begin(host.as_ref(), config);
     let result = engine::eval(&engine, &mut Scope::new(), &checked.ast, config.exec);
     let mut text = line.take_output();
-    let ok = match result {
+    let mut ok = match result {
         Ok(value) => {
             if !value.is_unit() {
                 text.push_str(&show::value(&value));
@@ -497,6 +565,21 @@ pub fn run(checked: &Checked, host: &Rc<dyn Host>, config: &Config) -> Ran {
             false
         }
     };
-    let done = journal.take();
+    let queued = core::mem::take(&mut *tx.outbox.borrow_mut());
+    if ok {
+        ok = flush(queued, &mut text);
+    }
+    let done = tx.journal.take();
     Ran { ok, text, done }
+}
+
+/// Sends what a successful run queued, in order, stopping at the first that fails.
+pub(crate) fn flush(queued: Vec<Queued>, text: &mut String) -> bool {
+    for effect in queued {
+        if let Err(why) = (effect.send)() {
+            let _ = write!(text, "{}: not sent: {why}", effect.action);
+            return false;
+        }
+    }
+    true
 }

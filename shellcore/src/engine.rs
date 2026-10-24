@@ -117,7 +117,7 @@ impl Line {
     }
 }
 
-fn capture_output(line: &Line, max: usize, text: &str) {
+pub(crate) fn capture_output(line: &Line, max: usize, text: &str) {
     let mut output = line.output.borrow_mut();
     if output.len() + text.len() < max {
         output.push_str(text);
