@@ -9,7 +9,8 @@
 //! The pack and the script prompt share one cache slot, so a script request
 //! pays the script prompt's prefill and the next `act` the pack's.
 
-use crate::act::{self, ActError, ActRequest, Call, LANGS};
+use crate::act::{self, ActError, ActRequest, Call, History, LANGS, Turn};
+use crate::chat;
 use crate::script;
 use agentabi::ArgType;
 use alloc::boxed::Box;
@@ -134,9 +135,10 @@ pub fn routed(
     engine: &mut Engine<'_>,
     grammar: &Tagged<'_>,
     request: &ActRequest,
+    history: &History,
     mut on_step: impl FnMut(Step) -> Next,
 ) -> Result<Call, ActError> {
-    let call = act(engine, grammar, request, &mut on_step)?;
+    let call = act(engine, grammar, request, history, &mut on_step)?;
     if call.name != "script" {
         return Ok(call);
     }
@@ -161,15 +163,16 @@ pub fn routed(
     })
 }
 
-/// One call for `request` under `grammar`. `on_step` stops it only when time
-/// is up.
+/// One call for `request` after `history`, under `grammar`. `on_step` stops it
+/// only when time is up.
 pub fn act(
     engine: &mut Engine<'_>,
     grammar: &Tagged<'_>,
     request: &ActRequest,
+    history: &History,
     on_step: impl FnMut(Step) -> Next,
 ) -> Result<Call, ActError> {
-    let asked = act::request(request);
+    let asked = act::request(request, history);
     let turns = super::turns(&asked);
     let mut sampler = Sampler::seeded(script::TEMPERATURE, script::SEED);
     let reply = engine
@@ -192,6 +195,61 @@ pub fn act(
         ))),
         Ending::MaxTokens | Ending::Overflow(_) => Err(ActError::CutOff),
     }
+}
+
+/// The tokens the pack and its MODE turn take in `engine`'s prompt.
+pub fn pack_tokens(engine: &Engine<'_>) -> usize {
+    let prefix = chat::Request {
+        messages: act::prefix(&History::new()),
+        max_tokens: 1,
+    };
+    engine.conversation_tokens(&super::turns(&prefix))
+}
+
+/// History's budget in `engine`: `act::history::budget` of its context.
+pub fn history_budget(engine: &Engine<'_>) -> usize {
+    act::history::budget(engine.about().context, pack_tokens(engine))
+}
+
+/// The tokens `turn` adds to the prompt, template included (a little over,
+/// since the assistant's start is counted too).
+pub fn turn_tokens(engine: &Engine<'_>, turn: &Turn) -> usize {
+    let messages = chat::Request {
+        messages: turn.messages().into(),
+        max_tokens: 1,
+    };
+    engine.conversation_tokens(&super::turns(&messages))
+}
+
+/// Keeps `turn` in `history` within `engine`'s budget. Returns whether older
+/// turns were dropped.
+pub fn remember(engine: &Engine<'_>, history: &mut History, turn: Turn) -> bool {
+    let cost = turn_tokens(engine, &turn);
+    history.push(turn, cost, history_budget(engine))
+}
+
+/// Compaction (P1 plan section 4): computes the pack, the MODE turn and the
+/// history into the cache while no request waits, so the next request
+/// prefills only its own turn. `on_step` may stop it early; what was computed
+/// stays.
+pub fn warm(
+    engine: &mut Engine<'_>,
+    history: &History,
+    on_step: impl FnMut(Step) -> Next,
+) -> Result<(), infer::Error> {
+    let prefix = chat::Request {
+        messages: act::prefix(history),
+        max_tokens: 1,
+    };
+    engine
+        .reply(
+            &super::turns(&prefix),
+            1,
+            &mut Sampler::greedy(),
+            None,
+            on_step,
+        )
+        .map(|_| ())
 }
 
 #[cfg(test)]
@@ -248,7 +306,9 @@ mod tests {
         let mut first = None;
         for tier in quant::Tier::all() {
             let mut engine = Engine::load(&bytes, tier, 3072, budget).unwrap();
-            let answer = routed(&mut engine, &g, &request, |_| Next::Continue);
+            let answer = routed(&mut engine, &g, &request, &History::new(), |_| {
+                Next::Continue
+            });
             assert!(
                 matches!(answer, Ok(_) | Err(ActError::CutOff)),
                 "{answer:?}"
@@ -258,5 +318,69 @@ mod tests {
                 Some(seen) => assert_eq!(&answer, seen, "{} tier", tier.name()),
             }
         }
+    }
+
+    /// History in the engine: the budget from its context and pack, turns costed
+    /// by the real template, and compaction leaves the next request to prefill
+    /// only its own turn, with the same answer as a cold engine.
+    #[test]
+    fn history_is_budgeted_compacted_and_changes_no_answer_but_by_its_text() {
+        let text = [
+            crate::local::system_prompts(),
+            crate::pack::render(crate::pack::Format::Dsl1),
+        ]
+        .join(
+            "
+",
+        );
+        let bytes = infer::fixture::local_script(&text);
+        let budget = infer::chat::Budget {
+            kv_bytes: 64 << 20,
+            other_bytes: 64 << 20,
+        };
+        let g = grammar().unwrap();
+        let mut engine = Engine::load(&bytes, quant::Tier::best(), 3072, budget).unwrap();
+        // The fixture's trained context is 2,048, which leaves history nothing;
+        // the budget is the plan's formula over this engine's numbers.
+        let (context, pack) = (engine.about().context, pack_tokens(&engine));
+        assert_eq!(history_budget(&engine), act::history::budget(context, pack));
+        assert!(pack > 100, "{pack}");
+        let mut history = History::new();
+        let turn = Turn {
+            line: "switch to round robin".into(),
+            call: r#"{"name":"set_policy","arguments":{"name":"round-robin"}}"#.into(),
+            result: "Done: policy round-robin (was interactive). undo".into(),
+        };
+        let cost = turn_tokens(&engine, &turn);
+        assert!(cost > 10 && cost < 100, "{cost}");
+        assert!(!history.push(turn, cost, act::history::HISTORY_MAX));
+        warm(&mut engine, &history, |_| Next::Continue).unwrap();
+        let request = ActRequest {
+            line: "undo that".into(),
+            state: String::new(),
+            timeout_ms: 1,
+        };
+        let mut cached = 0;
+        let warm_answer = act(&mut engine, &g, &request, &history, |step| {
+            if let Step::Cached(n) = step {
+                cached = n;
+            }
+            Next::Continue
+        });
+        // Everything but the new turn came from the cache: all of the warmed
+        // prefix but the generation prompt it ended with (the assistant's start
+        // and the empty think block, which the next request's turn replaces).
+        let prefix = chat::Request {
+            messages: act::prefix(&history),
+            max_tokens: 1,
+        };
+        let warmed = engine.conversation_tokens(&super::super::turns(&prefix));
+        assert!(cached + 16 >= warmed, "{cached} of {warmed}");
+        let mut cold = Engine::load(&bytes, quant::Tier::best(), 3072, budget).unwrap();
+        let cold_answer = act(&mut cold, &g, &request, &history, |_| Next::Continue);
+        assert_eq!(warm_answer, cold_answer);
+        // `new`: history gone, and the request is the plain one again.
+        history.clear();
+        assert_eq!(act::request(&request, &history).messages.len(), 3);
     }
 }

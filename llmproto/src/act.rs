@@ -10,7 +10,12 @@ use crate::chat::{self, Message, Role};
 use crate::pack::{self, Format, MODE_ACT};
 use alloc::format;
 use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 use serde_json::{Map, Value};
+
+pub mod history;
+
+pub use history::{History, Turn};
 
 /// The answer reserve (ADR 0002 D4).
 pub const ACT_MAX_TOKENS: u32 = 1024;
@@ -76,17 +81,26 @@ pub fn user_text(state: &str, line: &str) -> String {
     }
 }
 
-/// The conversation: the `dsl-1` pack, the `act` MODE turn and the request.
-pub fn request(act: &ActRequest) -> chat::Request {
-    let mut asked = chat::Request::new(
-        Some(&pack::render(Format::Dsl1)),
-        &user_text(&act.state, &act.line),
-        ACT_MAX_TOKENS,
-    );
-    asked
-        .messages
-        .insert(1, Message::new(Role::System, MODE_ACT));
-    asked
+/// What every `act` prompt starts with: the `dsl-1` pack, the `act` MODE turn,
+/// then the history turns. The llm service warms the cache with it while idle.
+pub fn prefix(history: &History) -> Vec<Message> {
+    let mut messages = alloc::vec![
+        Message::new(Role::System, &pack::render(Format::Dsl1)),
+        Message::new(Role::System, MODE_ACT),
+    ];
+    messages.extend(history.messages());
+    messages
+}
+
+/// The conversation: [`prefix`], then the request with its State line. Only
+/// this last turn is the user's line; history is context, never consent.
+pub fn request(act: &ActRequest, history: &History) -> chat::Request {
+    let mut messages = prefix(history);
+    messages.push(Message::new(Role::User, &user_text(&act.state, &act.line)));
+    chat::Request {
+        messages,
+        max_tokens: ACT_MAX_TOKENS,
+    }
 }
 
 /// A decoded call: a name and its arguments, as the model wrote them.
@@ -193,11 +207,14 @@ mod tests {
 
     #[test]
     fn the_layout_is_pack_mode_then_state_and_request_with_no_think_tag() {
-        let asked = request(&ActRequest {
-            line: "stop this".into(),
-            state: "focused=build-3".into(),
-            timeout_ms: 1,
-        });
+        let asked = request(
+            &ActRequest {
+                line: "stop this".into(),
+                state: "focused=build-3".into(),
+                timeout_ms: 1,
+            },
+            &History::new(),
+        );
         assert_eq!(asked.messages.len(), 3);
         assert_eq!(asked.messages[0].content, pack::render(Format::Dsl1));
         assert_eq!(asked.messages[1].content, MODE_ACT);
@@ -206,6 +223,29 @@ mod tests {
             "State: focused=build-3\nRequest: stop this"
         );
         assert!(!asked.messages[2].content.contains("/no_think"));
+        // History goes between the MODE turn and the request.
+        let mut history = History::new();
+        let turn = Turn {
+            line: "switch to round robin".into(),
+            call: r#"{"name":"set_policy","arguments":{"name":"round-robin"}}"#.into(),
+            result: "Done: policy round-robin (was interactive). undo".into(),
+        };
+        history.push(turn, 40, 512);
+        let request = ActRequest {
+            line: "undo that".into(),
+            state: String::new(),
+            timeout_ms: 1,
+        };
+        let asked = request_with(&request, &history);
+        assert_eq!(asked.messages.len(), 6);
+        assert_eq!(asked.messages[2].content, "Request: switch to round robin");
+        assert_eq!(asked.messages[3].role, Role::Assistant);
+        assert_eq!(asked.messages[5].content, "Request: undo that");
+        assert_eq!(prefix(&history).len(), 5);
+    }
+
+    fn request_with(act: &ActRequest, history: &History) -> chat::Request {
+        request(act, history)
     }
 
     #[test]

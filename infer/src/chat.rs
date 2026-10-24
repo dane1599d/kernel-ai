@@ -557,6 +557,12 @@ impl<'a> Engine<'a> {
     pub fn prompt_tokens(&self, system: Option<&str>, user: &str) -> usize {
         self.chat.prompt(&self.tok, system, user).len()
     }
+
+    /// The tokens of `turns` as a prompt, the assistant's start included: what a
+    /// caller budgeting the context (conversation memory) counts.
+    pub fn conversation_tokens(&self, turns: &[Turn<'_>]) -> usize {
+        self.chat.conversation(&self.tok, turns).len()
+    }
 }
 
 /// An upper bound on the bytes the engine allocates for `file` besides the KV
