@@ -10,7 +10,7 @@ use super::{Decoded, Tagged, base_turns, decode, user_text};
 use crate::fluency::host::{GateHost, Transport};
 use crate::fluency::local::Shared;
 use infer::Next;
-use llmproto::act::{self, ActError, ActRequest};
+use llmproto::act::{self, ActError, ActRequest, History};
 use llmproto::local;
 use llmproto::script::{Answer, AnswerError, ScriptRequest};
 use serde_json::{Value, json};
@@ -46,9 +46,14 @@ pub fn shipping(engine: Shared, grammar: Rc<infer::tagged::Tagged<'static>>) -> 
     let act_engine = engine.clone();
     let act = Box::new(move |request: &ActRequest| {
         let request = ActRequest::decode(&request.encode()).ok_or(ActError::NotACall)?;
-        let call = local::act::routed(&mut act_engine.borrow_mut(), &grammar, &request, |_| {
-            Next::Continue
-        });
+        // Each M8 task is one turn on a fresh host: no history.
+        let call = local::act::routed(
+            &mut act_engine.borrow_mut(),
+            &grammar,
+            &request,
+            &History::new(),
+            |_| Next::Continue,
+        );
         act::decode_answer(&act::encode_answer(&call))
     });
     GateHost::with_act(reference(engine, true), act)
