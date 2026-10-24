@@ -64,7 +64,7 @@ pub(super) const CASES: &[TestCase] = &[
     // port 0xCF9), and through the 8042 when told to skip it.
     TestCase {
         resets: true,
-        expect: &["power: rebooting through the FADT reset register (write 0x6 to I/O port 0xcf9)"],
+        expect: &["power: rebooting through the FADT reset register (write 0xf to I/O port 0xcf9)"],
         ..case("reboot", "test=reboot")
     },
     TestCase {

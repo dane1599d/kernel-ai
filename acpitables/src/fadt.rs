@@ -86,13 +86,13 @@ mod tests {
         t[RESET_REG] = space;
         t[RESET_REG + 1] = 8;
         t[RESET_REG + 4..RESET_REG + 12].copy_from_slice(&address.to_le_bytes());
-        t[RESET_VALUE] = 0x06;
+        t[RESET_VALUE] = 0x0F;
         t
     }
 
     #[test]
     fn q35s_reset_register_and_8042_are_read() {
-        // QEMU q35: reset by writing 6 to port 0xCF9; an 8042 is present.
+        // QEMU q35: reset by writing 0xF to port 0xCF9; an 8042 is present.
         let mut platform = Platform::default();
         apply(
             &fadt(5, BOOT_ARCH_8042, RESET_REG_SUP, 1, 0xCF9),
@@ -102,7 +102,7 @@ mod tests {
         assert_eq!(reset.register.space, Space::Io);
         assert_eq!(reset.register.address, 0xCF9);
         assert_eq!(reset.register.width, 8);
-        assert_eq!(reset.value, 6);
+        assert_eq!(reset.value, 0x0F);
         assert!(!platform.no_8042);
     }
 
