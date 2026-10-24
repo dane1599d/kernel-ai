@@ -17,6 +17,7 @@ pub type Handler = fn() -> Option<usize>;
 
 /// Each vector's handler as an address, 0 while free.
 static HANDLERS: [AtomicUsize; COUNT] = [const { AtomicUsize::new(0) }; COUNT];
+static COUNTS: [AtomicU64; COUNT] = [const { AtomicU64::new(0) }; COUNT];
 static STRAY: AtomicU64 = AtomicU64::new(0);
 
 /// A free vector, now owned by `handler`; `None` when all are taken.
@@ -37,6 +38,7 @@ pub fn on_interrupt(vector: u8) {
         STRAY.fetch_add(1, Ordering::Relaxed);
         None
     } else {
+        COUNTS[index].fetch_add(1, Ordering::Relaxed);
         // SAFETY: only `allocate` stores a nonzero value, and it stores a `Handler`.
         let handler: Handler = unsafe { core::mem::transmute::<usize, Handler>(address) };
         handler()
@@ -44,6 +46,14 @@ pub fn on_interrupt(vector: u8) {
     apic::end_of_interrupt();
     if let Some(tid) = waiter {
         threads::wake(tid);
+    }
+}
+
+/// Interrupts `vector` has taken.
+pub fn count(vector: u8) -> u64 {
+    match vector.checked_sub(FIRST).map(usize::from) {
+        Some(index) if index < COUNT => COUNTS[index].load(Ordering::Relaxed),
+        _ => 0,
     }
 }
 

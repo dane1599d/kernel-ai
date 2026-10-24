@@ -84,6 +84,7 @@ pub enum SelfTest {
     IcountProbe,
     /// M10a-3: kernel-owned trials on the workload revert or keep by the rules.
     Reboot,
+    Devices,
     TuneRevert,
     TuneStall,
     /// M10a-4: the shell's `tune` with mock answers, through the kernel's trials.
@@ -149,6 +150,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=bigmap" => Some(SelfTest::Bigmap),
             "test=icount-probe" => Some(SelfTest::IcountProbe),
             "test=reboot" => Some(SelfTest::Reboot),
+            "test=devices" => Some(SelfTest::Devices),
             "test=tune-revert" => Some(SelfTest::TuneRevert),
             "test=tune-stall" => Some(SelfTest::TuneStall),
             "test=tune" => Some(SelfTest::Tune),

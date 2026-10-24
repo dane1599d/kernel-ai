@@ -4,6 +4,7 @@
 
 mod component;
 mod core;
+mod device;
 mod handle;
 mod net;
 mod sched;
@@ -64,6 +65,7 @@ const AREAS: &[Area] = &[
     component::handle,
     net::handle,
     handle::handle,
+    device::handle,
 ];
 
 fn handle(slot: usize, number: u64, a: [u64; 6]) -> Result<u64, Error> {
