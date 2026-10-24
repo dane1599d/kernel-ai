@@ -5,13 +5,15 @@
 //! scancodes in the i8042 ring, so the keyboard path cannot tell them apart;
 //! pointer reports go to `pointer`'s event queue.
 
-use crate::{hpet, i8042, keyboard, log, memory, percpu, pointer};
+use crate::devhost::KernelHost;
+use crate::{hpet, i8042, keyboard, log, percpu, pointer};
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::ptr::NonNull;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use devkit::Host;
 use spin::Mutex;
-use xhci::{Controller, DeviceKind, Dma, Hal, Input};
+use xhci::host::HostHal;
+use xhci::{Controller, DeviceKind, Hal, Input};
 
 /// An xHCI controller the PCI probe found, with its BAR0 assigned by firmware.
 pub struct Function {
@@ -27,55 +29,8 @@ pub struct Function {
 /// controller seen so far fit in 64 KiB.
 const BAR_MAP_BYTES: u64 = 64 * 1024;
 
-struct KernelHal {
-    regs: u64,
-    mapped: usize,
-    interrupts: bool,
-}
-
-impl Hal for KernelHal {
-    fn dma(&mut self, pages: usize, below_4g: bool) -> Option<Dma> {
-        let phys = memory::with(|m| m.allocate_contiguous(pages as u64))?;
-        let len = pages * xhci::PAGE;
-        if below_4g && phys + len as u64 > 1 << 32 {
-            // Left allocated: one page or so, on a controller that is rare.
-            return None;
-        }
-        let virt = NonNull::new((memory::hhdm() + phys) as *mut u8)?;
-        // SAFETY: the frames were just allocated for this driver alone and the direct
-        // map covers them; zeroed here, they are never freed.
-        unsafe {
-            core::ptr::write_bytes(virt.as_ptr(), 0, len);
-            Some(Dma::new(phys, virt, len))
-        }
-    }
-
-    fn read32(&self, offset: usize) -> u32 {
-        assert!(
-            offset + 4 <= self.mapped,
-            "usb: a register past the mapping"
-        );
-        // SAFETY: `regs` maps BAR0 uncached for `mapped` bytes, checked above.
-        unsafe { ((self.regs + offset as u64) as *const u32).read_volatile() }
-    }
-
-    fn write32(&self, offset: usize, value: u32) {
-        assert!(
-            offset + 4 <= self.mapped,
-            "usb: a register past the mapping"
-        );
-        // SAFETY: as in read32.
-        unsafe { ((self.regs + offset as u64) as *mut u32).write_volatile(value) }
-    }
-
-    fn now_ns(&self) -> u64 {
-        hpet::nanos()
-    }
-
-    fn interrupts(&self) -> bool {
-        self.interrupts
-    }
-}
+/// The controller's driver, on the kernel's `devkit` host.
+type KernelHal = HostHal<KernelHost>;
 
 /// The running controllers, and whether each takes its MSI-X interrupt.
 static CONTROLLERS: Mutex<Vec<(Controller<KernelHal>, bool)>> = Mutex::new(Vec::new());
@@ -113,14 +68,13 @@ pub fn init(functions: Vec<Function>) {
 
 fn start(function: &Function) -> Result<Controller<KernelHal>, &'static str> {
     let mapped = function.bar_len.min(BAR_MAP_BYTES);
-    let regs = memory::map_physical(function.bar, mapped, crate::virtio::hal::DEVICE)?;
-    let hal = KernelHal {
-        regs,
-        mapped: mapped as usize,
-        interrupts: function.vector.is_some(),
-    };
+    let mut host = KernelHost::new((function.bar, function.bar_len), function.vector);
+    let regs = host
+        .mmio(0, 0, mapped)
+        .map_err(|_| "BAR0 cannot be mapped")?;
+    let hal = KernelHal::new(host, regs, function.vector.is_some());
     let caps = xhci::regs::Capabilities::parse(|offset| hal.read32(offset));
-    if caps.span() > hal.mapped {
+    if caps.span() > hal.mapped() {
         return Err("the registers lie past BAR0");
     }
     let mut controller = Controller::start(hal).map_err(xhci::Error::text)?;

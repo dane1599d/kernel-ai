@@ -212,3 +212,20 @@ fn reuses_freed_frames_without_leaking() {
     assert_eq!(bitmap.free_count(), before);
     assert!(!bitmap.is_free(0));
 }
+
+#[test]
+fn a_run_below_a_limit_ends_at_or_below_it() {
+    let mut storage = vec![0; FrameBitmap::words_for(300)];
+    let mut bitmap = FrameBitmap::new(&mut storage, 300);
+    bitmap.release_range(0, 300);
+    bitmap.reserve_range(0, 90);
+    // 10 frames left below 100: a run of 10 fits exactly, one of 11 does not.
+    assert_eq!(bitmap.allocate_contiguous_below(100, 11, 1), None);
+    assert_eq!(bitmap.allocate_contiguous_below(100, 10, 1), Some(90));
+    assert_eq!(bitmap.allocate_contiguous_below(100, 1, 1), None);
+    // Without the limit the same request is served above it.
+    assert_eq!(bitmap.allocate_contiguous(1, 1), Some(100));
+    // A limit past the bitmap is the bitmap's end.
+    assert_eq!(bitmap.allocate_contiguous_below(u64::MAX, 4, 4), Some(104));
+    assert_eq!(bitmap.free_count(), 300 - 90 - 10 - 1 - 4);
+}

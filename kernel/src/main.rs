@@ -31,6 +31,7 @@ mod console;
 mod cpu;
 mod device_tests;
 mod devices;
+mod devhost;
 mod display;
 mod display_tests;
 mod edit_mode;

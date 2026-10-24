@@ -178,6 +178,15 @@ impl Memory {
             .map(|frame| frame * PAGE_SIZE)
     }
 
+    /// As [`Self::allocate_contiguous`], with the whole run below physical `limit`:
+    /// DMA for a device that cannot address memory above it (ADR 0007's
+    /// `Zone::Below4G`).
+    pub fn allocate_contiguous_below(&mut self, limit: u64, count: u64) -> Option<u64> {
+        self.frames
+            .allocate_contiguous_below(limit / PAGE_SIZE, count, 1)
+            .map(|frame| frame * PAGE_SIZE)
+    }
+
     /// Allocates `count` physically contiguous frames whose first frame number is a
     /// multiple of `align` (512 for a 2 MiB run), not zeroed; returns the first
     /// physical address.

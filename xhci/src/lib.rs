@@ -27,6 +27,7 @@ pub mod descriptor;
 mod driver;
 pub mod hal;
 pub mod hid;
+pub mod host;
 pub mod regs;
 pub mod ring;
 pub mod trb;
