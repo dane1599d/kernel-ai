@@ -1016,7 +1016,7 @@ const INSTALL_NOTES: Turn = turn(
 
 #[cfg(test)]
 mod tests {
-    use super::super::grammar::Tagged;
+    use super::super::grammar::tagged;
     use super::super::registry::rows;
     use super::*;
     use infer::json::Constraint;
@@ -1029,7 +1029,7 @@ mod tests {
 
     #[test]
     fn every_expected_call_and_history_call_is_one_the_decoder_can_make() {
-        let g = Tagged::new(&rows(40));
+        let g = tagged(&rows(40));
         let can = |text: &str| {
             g.advance(g.start(), text.as_bytes())
                 .is_ok_and(|s| g.is_done(&s))

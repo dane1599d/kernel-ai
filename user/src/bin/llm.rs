@@ -1,6 +1,7 @@
 //! The LLM service. It takes `ask <prompt>`, `explain <facts>` (see
 //! `llmproto::explain`), `script ...` (see `llmproto::script`), `tune ...` (see
-//! `llmproto::tune`, answered with the model's raw completion), `health` and
+//! `llmproto::tune`, answered with the model's raw completion), `act ...` (see
+//! `llmproto::act`, one tagged call, local model only), `health` and
 //! `model` requests from the kernel terminal and the shell, and answers
 //! `ok <text>` or `err <text>`.
 //!
@@ -30,6 +31,7 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use kabi::model::Fnv1a;
+use llmproto::act::{ActError, ActRequest};
 use llmproto::chat::Completion;
 use llmproto::chat::{self, NO_MODEL};
 use llmproto::script::{self, AnswerError, ScriptRequest};
@@ -235,6 +237,7 @@ fn handle(backends: &mut Backends, text: &str, response: &mut [u8]) -> Result<St
             response,
         ),
         "script" => script(backends, text, response),
+        "act" => act(backends, text),
         "tune" => tune(backends, text, response),
         _ => Err(format!("unknown request {command:?}")),
     }
@@ -273,6 +276,20 @@ fn script(backends: &mut Backends, text: &str, response: &mut [u8]) -> Result<St
         (None, None) => String::from(NO_MODEL),
     };
     Err(script::encode_error(&AnswerError::Unavailable(why)))
+}
+
+/// One tagged call from the local model. A server answers scripts only: the
+/// tagged call needs this engine's decoder.
+fn act(backends: &mut Backends, text: &str) -> Result<String, String> {
+    let request = ActRequest::decode(text).ok_or("malformed act request")?;
+    let answer = match &mut backends.local {
+        Some(Ok(local)) => local.act(&request),
+        Some(Err(why)) => Err(ActError::Unavailable(format!(
+            "the model cannot run ({why})"
+        ))),
+        None => Err(ActError::Unavailable(String::from(NO_MODEL))),
+    };
+    Ok(llmproto::act::encode_answer(&answer))
 }
 
 /// The model's answer to a `tune` request, as it came: the shell checks it. The

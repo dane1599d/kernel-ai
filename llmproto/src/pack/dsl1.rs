@@ -28,7 +28,7 @@ const CALLS: &str = "\
 ## Calls (no mark: reads; [undo]: runs, undo puts it back; [ask]: asks first)
 say(text: string)  // answer in words: a greeting, chat, or a question you can answer
 clarify(question: string, options: [string])  // the request has two readings
-script(code: string)  // Rhai, at most 40 lines of at most 120 characters
+script(code: string, lang: \"rhai\"?)  // Rhai, at most 40 lines of at most 120 characters
 ";
 
 /// (request, the tagged call answering it).

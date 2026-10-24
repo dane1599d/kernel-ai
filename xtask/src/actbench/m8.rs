@@ -22,6 +22,8 @@ pub struct Tagging {
     pub pack: Rc<String>,
     pub seed: u64,
     pub no_think: bool,
+    /// A `script` call's code comes from today's prompt (arm `+m8script`).
+    pub m8script: bool,
 }
 
 /// Today's path: `llmproto::local::script`, with or without `/no_think`.
@@ -107,7 +109,19 @@ pub fn tagged(tagging: Rc<Tagging>) -> Transport {
             tagging.seed,
         )
         .map_err(AnswerError::Local)?;
-        let answer = call.map(|call| answer(&call)).ok_or(AnswerError::CutOff)?;
+        let call = call.ok_or(AnswerError::CutOff)?;
+        if tagging.m8script && call["name"] == "script" {
+            // The tagged call chose a script; today's prompt and envelope write it.
+            let request = ScriptRequest::decode(&request.encode())
+                .ok_or_else(|| AnswerError::Server("malformed script request".into()))?;
+            return local::script_with(
+                &mut tagging.engine.borrow_mut(),
+                &request,
+                tagging.no_think,
+                |_| Next::Continue,
+            );
+        }
+        let answer = answer(&call);
         // As `script::answer` reads an empty script: the model answered in words,
         // which a refusal task counts as refusing.
         match answer.script.is_empty() {

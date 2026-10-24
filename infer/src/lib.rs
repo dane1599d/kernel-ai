@@ -18,6 +18,7 @@ pub mod json;
 mod kv;
 mod model;
 mod sample;
+pub mod tagged;
 mod weights;
 
 #[cfg(test)]

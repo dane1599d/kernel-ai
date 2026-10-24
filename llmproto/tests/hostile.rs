@@ -259,3 +259,43 @@ fn traces_that_promise_many_pieces_cost_only_their_bytes() {
         [(1, String::from("b"))]
     );
 }
+
+/// The `act` wire and the call reader (P1 task 6): whatever decodes encodes
+/// back the same, every prefix and mutation either reads or is refused, and
+/// a call is read in memory that follows its input.
+#[test]
+fn act_requests_and_calls_parse_or_fail() {
+    use llmproto::act::{self, ActRequest};
+    let request = ActRequest {
+        line: String::from("stop this, then \u{e9}"),
+        state: String::from("focused=build-3 here=/home"),
+        timeout_ms: 90_000,
+    };
+    let wire = request.encode();
+    hostile::fuzz(wire.as_bytes(), 29, 4000, |mutated| {
+        let text = String::from_utf8_lossy(mutated);
+        if let Some(back) = ActRequest::decode(&text) {
+            assert_eq!(ActRequest::decode(&back.encode()), Some(back));
+        }
+    });
+    hostile::truncations(wire.as_bytes(), |_, prefix| {
+        let _ = ActRequest::decode(&String::from_utf8_lossy(prefix));
+    });
+    let answer = act::encode_answer(&act::parse(
+        r#"{"name":"clarify","arguments":{"question":"Which?","options":["a","b"]}}"#,
+    ));
+    assert!(answer.starts_with("ok "));
+    hostile::fuzz(answer.as_bytes(), 31, 4000, |mutated| {
+        let text = String::from_utf8_lossy(mutated);
+        let (call, peak) = hostile::peak_alloc(|| act::decode_answer(&text));
+        assert!(peak <= 64 * text.len() + ALLOC_FLOOR, "{peak} bytes");
+        if let Ok(call) = call {
+            assert_eq!(act::parse(&call.text()), Ok(call));
+        }
+    });
+    hostile::truncations(answer.as_bytes(), |_, prefix| {
+        let _ = act::decode_answer(&String::from_utf8_lossy(prefix));
+    });
+    let deep = format!("ok {{\"name\":\"x\",\"arguments\":{}}}", "[".repeat(10_000));
+    assert!(act::decode_answer(&deep).is_err());
+}

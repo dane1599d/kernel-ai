@@ -252,8 +252,30 @@ fn only_calls(rows: &[&Row], answer: &str) -> bool {
 }
 
 /// The pack's text in `format` over `rows`.
+#[cfg(test)]
 pub fn pack(format: Format, rows: &[&Row]) -> String {
-    let mut out = String::from(RHAI);
+    pack_card(format, rows, false)
+}
+
+/// The M8 prompt's own Rhai rules, the ones its 48/50 rests on, as a card:
+/// `llmproto::script::system_prompt`'s list between "Rhai rules here:" and
+/// "Functions:".
+fn m8_card() -> String {
+    let prompt = llmproto::script::system_prompt();
+    let rules = prompt
+        .split_once("Rhai rules here:\n")
+        .and_then(|(_, rest)| rest.split_once("\nFunctions:"))
+        .map_or("", |(rules, _)| rules);
+    format!("## Rhai (for script)\n{}\n", rules.trim_end_matches('\n'))
+}
+
+/// [`pack`], with the M8 prompt's Rhai rules as the card when `m8_rules`
+/// (task 6's arm `+rules`).
+pub fn pack_card(format: Format, rows: &[&Row], m8_rules: bool) -> String {
+    let mut out = match m8_rules {
+        true => m8_card(),
+        false => String::from(RHAI),
+    };
     out.push_str(RULES);
     match format {
         Format::Dsl1 => {
@@ -338,6 +360,14 @@ mod tests {
         assert!(!m8.contains("process_stop(") && !m8.contains("service_restart"));
         assert!(m8.contains("set_policy(") && m8.contains("> hello"));
         assert!(pack(Format::Dsl1, &rows(40)).contains("process_stop(\\\"web-2"));
+    }
+
+    #[test]
+    fn the_m8_card_is_the_m8_prompts_rules() {
+        let text = pack_card(Format::Dsl1, &rows(40), true);
+        assert!(text.starts_with("## Rhai (for script)\n- End statements with ';'."));
+        let last = "- If the request cannot be done with these functions, print why instead.\n";
+        assert!(text.contains(&format!("{last}## Rules")));
     }
 
     #[test]

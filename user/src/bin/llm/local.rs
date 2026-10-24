@@ -15,6 +15,8 @@ use alloc::format;
 use alloc::string::String;
 use infer::Next;
 use infer::chat::{Budget, Engine, Step};
+use infer::tagged::Tagged;
+use llmproto::act::{self, ActError, ActRequest, Call};
 use llmproto::chat::{self, Completion};
 use llmproto::local;
 use llmproto::script::{self, Answer, AnswerError, ScriptRequest};
@@ -158,6 +160,8 @@ impl Clock {
 
 pub struct Local {
     engine: Engine<'static>,
+    /// The tagged call's grammar over the pack's rows, built once.
+    grammar: Tagged<'static>,
     last: Option<Speed>,
 }
 
@@ -172,7 +176,12 @@ impl Local {
         let mut engine = Engine::load(bytes, Tier::best(), kabi::model::CONTEXT_CAP, budget)
             .map_err(|error| format!("{error}"))?;
         engine.set_parallel(workers);
-        Ok(Self { engine, last: None })
+        let grammar = local::act::grammar().map_err(|error| format!("{error}"))?;
+        Ok(Self {
+            engine,
+            grammar,
+            last: None,
+        })
     }
 
     /// The name the file gives the model.
@@ -227,6 +236,22 @@ impl Local {
             .map(|speed| Speed { forced, ..speed })
             .or(self.last);
         answer
+    }
+
+    /// One tagged call for the shell's `request`, within the time it gives and
+    /// at most `act::SERVICE_TIMEOUT_MS`; a script's code comes from the script
+    /// prompt (`llmproto::local::act::routed`).
+    pub fn act(&mut self, request: &ActRequest) -> Result<Call, ActError> {
+        let mut clock = Clock::new(request.timeout_ms.min(act::SERVICE_TIMEOUT_MS));
+        let call = local::act::routed(&mut self.engine, &self.grammar, request, |step| {
+            clock.step(step)
+        });
+        let forced = self.engine.forced();
+        self.last = clock
+            .speed()
+            .map(|speed| Speed { forced, ..speed })
+            .or(self.last);
+        call
     }
 
     /// Computes the script system prompt into the cache while no request waits
