@@ -152,8 +152,12 @@ fn main() -> i32 {
     loop {
         let mut caller = 0;
         let waiting = match (stale, cold, &mut backends.local) {
-            (true, _, Some(Ok(local))) => warm_act(local, &mut request, &mut caller),
-            (_, true, Some(Ok(local))) => warm(local, &mut request, &mut caller),
+            // Scripts and `act` share the act prefix's start (the pack), so one
+            // warm-up serves both: at first, after another prompt, and after
+            // history changed.
+            (true, _, Some(Ok(local))) | (_, true, Some(Ok(local))) => {
+                warm_act(local, &mut request, &mut caller)
+            }
             _ => None,
         };
         (cold, stale) = (false, false);
@@ -206,25 +210,6 @@ fn warm_act(local: &mut local::Local, request: &mut [u8], caller: &mut u64) -> O
         came.is_some()
     }) {
         println!("local: the act prefix was not cached: {why}");
-    }
-    came
-}
-
-/// Warms `local` for scripts until done or until a request comes, which is then
-/// in `request`: its length is returned. Waiting for one takes 1 ms, so the
-/// check ends the burst as the sleep it replaces would.
-fn warm(local: &mut local::Local, request: &mut [u8], caller: &mut u64) -> Option<usize> {
-    let started = sys::time_ns();
-    let mut came = None;
-    let warmed = local.warm(|| {
-        came = sys::svc_recv(request, 1, caller).ok();
-        came.is_some()
-    });
-    let ms = (sys::time_ns() - started) / 1_000_000;
-    match (warmed, came) {
-        (Err(why), _) => println!("local: the script prompt was not cached: {why}"),
-        (Ok(()), None) => println!("local: script prompt cached in {ms} ms"),
-        (Ok(()), Some(_)) => {}
     }
     came
 }

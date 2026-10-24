@@ -26,7 +26,7 @@ use agentabi::{Action, ArgType};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use llmproto::act::{ActRequest, Call};
+use llmproto::act::{ActError, ActRequest, Call};
 use llmproto::script::Answer;
 use serde_json::Value;
 
@@ -57,6 +57,17 @@ impl Shell {
         };
         let call = match self.host.act(&asked) {
             Ok(call) => call,
+            // A model that answered but ran out of time, or cut its call off,
+            // gets no second, slower try as a script request (S02-2): that
+            // request pays its own prompt and the same time limit again.
+            Err(error @ (ActError::Local(_) | ActError::CutOff)) => {
+                self.host
+                    .audit(&format!("request {id}: no call ({})", error.describe()));
+                return Some(Reply::err(format!(
+                    "the model gave no call: {}",
+                    error.describe()
+                )));
+            }
             Err(error) => {
                 self.host.audit(&format!(
                     "request {id}: no call ({}); asking for a script",

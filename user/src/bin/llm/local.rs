@@ -340,30 +340,10 @@ impl Local {
     }
 
     /// Computes the `act` prefix (pack, MODE turn, history) into the cache while
-    /// no request waits; `waiting` as for [`Local::warm`].
+    /// no request waits; it asks `waiting` once a second whether a request came, and stops if one did.
     pub fn warm_act(&mut self, mut waiting: impl FnMut() -> bool) -> Result<(), String> {
         let mut slept = 0;
         local::act::warm(&mut self.engine, &self.history, |_| {
-            if sys::time_ns() - slept < SLEEP_EVERY_NS {
-                return Next::Continue;
-            }
-            let came = waiting();
-            slept = sys::time_ns();
-            match came {
-                true => Next::Stop,
-                false => Next::Continue,
-            }
-        })
-        .map_err(|error| local::describe(&error))
-    }
-
-    /// Computes the script system prompt into the cache while no request waits
-    /// (`llmproto::local::warm`). It asks `waiting` whether a request came at
-    /// the start and then once a second of compute, in place of the 1 ms sleep;
-    /// if one did, it stops, and the request carries on from what was computed.
-    pub fn warm(&mut self, mut waiting: impl FnMut() -> bool) -> Result<(), String> {
-        let mut slept = 0;
-        local::warm(&mut self.engine, |_| {
             if sys::time_ns() - slept < SLEEP_EVERY_NS {
                 return Next::Continue;
             }

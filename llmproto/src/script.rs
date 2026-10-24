@@ -165,6 +165,16 @@ pub fn request_with(request: &str, repair: Option<Repair<'_>>, no_think: bool) -
     let tag = if no_think { "\n/no_think" } else { "" };
     let user = format!("Request: {request}{tag}");
     let mut asked = chat::Request::new(Some(&system_prompt()), &user, SCRIPT_MAX_TOKENS);
+    // The skill pack goes first, so a script request starts with the `act`
+    // prompt's cached prefix (one cache slot serves both, S02-2), and the script
+    // prompt follows it as a second system turn.
+    asked.messages.insert(
+        0,
+        Message::new(
+            Role::System,
+            &crate::pack::render(crate::pack::Format::Dsl1),
+        ),
+    );
     if let Some(repair) = repair {
         let previous = serde_json::json!({ "script": repair.script, "summary": "" }).to_string();
         let feedback = format!(

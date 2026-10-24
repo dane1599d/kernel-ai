@@ -90,6 +90,8 @@ const PRESETS: [&str; 2] = ["gentle", "firm"];
 /// model whose vocabulary is trained on them (`infer::fixture::local_script`).
 pub fn system_prompts() -> String {
     [
+        crate::pack::render(crate::pack::Format::Dsl1).as_str(),
+        crate::pack::MODE_ACT,
         script::system_prompt().as_str(),
         crate::explain::SYSTEM_PROMPT,
         chat::ASK_SYSTEM_PROMPT,
@@ -192,8 +194,9 @@ pub fn warm(
     engine: &mut Engine<'_>,
     on_step: impl FnMut(Step) -> Next,
 ) -> Result<(), infer::Error> {
-    let system = script::system_prompt();
-    let turns = [Turn::new(infer::chat::Role::System, &system)];
+    // The prefix scripts and `act` share: the skill pack (`script::request_with`).
+    let pack = crate::pack::render(crate::pack::Format::Dsl1);
+    let turns = [Turn::new(infer::chat::Role::System, &pack)];
     engine
         .reply(&turns, 1, &mut Sampler::greedy(), None, on_step)
         .map(|_| ())
