@@ -134,7 +134,15 @@ pub fn attempt_on(task: &Task, host: GateHost) -> Outcome {
         };
     }
     let Some(id) = proposal.confirm else {
-        let failure = no_proposal(task, answers.last(), &proposal.text);
+        // Through the one door, words come back as `say` (or `clarify`), not as
+        // an empty script: the same answer in words as today's `NoScript`.
+        let worded = host.calls.borrow().last().and_then(|call| match call {
+            Ok(call) if answers.is_empty() && matches!(call.name.as_str(), "say" | "clarify") => {
+                Some(Err(AnswerError::NoScript(proposal.text.clone())))
+            }
+            _ => None,
+        });
+        let failure = no_proposal(task, worded.as_ref().or(answers.last()), &proposal.text);
         return Outcome {
             rounds,
             script: None,
