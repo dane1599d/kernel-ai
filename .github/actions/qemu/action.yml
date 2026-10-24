@@ -1,0 +1,28 @@
+name: QEMU for CI
+description: >-
+  QEMU built by ci.yml's `qemu` job from a pinned, SHA-256-checked source
+  tarball (Ubuntu 24.04's 8.2 crashed under TCG), restored from the cache, with
+  OVMF and QEMU's runtime libraries from apt, and on PATH. Bump `version` and
+  `sha256` here and in the `qemu` job together.
+inputs:
+  version:
+    description: The QEMU release.
+    default: "11.0.5"
+runs:
+  using: composite
+  steps:
+    - name: Restore QEMU ${{ inputs.version }}
+      uses: actions/cache/restore@v4
+      with:
+        path: ~/qemu
+        key: qemu-${{ inputs.version }}-ubuntu-24.04-v1
+        fail-on-cache-miss: true
+    - name: OVMF and QEMU's runtime libraries
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends ovmf libpixman-1-0 libslirp0 libglib2.0-0t64 libfdt1
+        echo "$HOME/qemu/bin" >> "$GITHUB_PATH"
+    - name: Which QEMU
+      shell: bash
+      run: qemu-system-x86_64 --version
