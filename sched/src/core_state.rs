@@ -211,13 +211,22 @@ impl Core {
         self.pending_stall.take()
     }
 
-    /// Forgets the ticks and stalls so far, as if this tick at `now` were the
-    /// first: for a boot that must run the same from an aligned start whatever
-    /// host-timed waits came before it (the M10 observe boots under icount).
+    /// Forgets the timing so far, as if `now` were the start: the ticks and
+    /// stalls, the running thread's slice and how long runnable threads have
+    /// waited. For a boot that must run the same from an aligned start whatever
+    /// host-timed work came before it (the M10 observe boots under icount): a
+    /// slice or a wait begun at a host-timed moment would otherwise move the
+    /// first preemption after the start.
     pub fn resync_ticks(&mut self, now: u64) {
         self.last_tick = now;
         self.stall_end = 0;
         self.pending_stall = None;
+        self.slice_start = now;
+        for state in self.states.iter_mut() {
+            if let State::Runnable { since } = state {
+                *since = now;
+            }
+        }
     }
 
     /// Makes `tid` the running thread; used once for the code that boots the CPU.
