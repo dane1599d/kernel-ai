@@ -524,8 +524,10 @@ fn start_user_space(test: SelfTest) {
         let edge = timer::align_to_second();
         threads::resync_ticks();
         log!(
-            "tune-ab: services start at tick {edge} (diag: HPET {} ns)",
-            hpet::nanos()
+            "tune-ab: services start at tick {edge} (diag: HPET {} ns, TSC {})",
+            hpet::nanos(),
+            // SAFETY: rdtsc only reads the time-stamp counter.
+            unsafe { core::arch::x86_64::_rdtsc() }
         );
     }
     if let Err(message) = process::supervision::start(plan) {
