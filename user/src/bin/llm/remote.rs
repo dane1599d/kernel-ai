@@ -6,7 +6,7 @@
 use alloc::format;
 use alloc::string::{String, ToString};
 use kabi::HttpRequest;
-use llmproto::act::{self, ActError, ActRequest, Call};
+use llmproto::act::{self, ActError, ActRequest, Call, History};
 use llmproto::chat::Completion;
 use llmproto::openai::CompletionError;
 use llmproto::script::{self, ScriptRequest};
@@ -99,9 +99,10 @@ impl Server {
         })
     }
 
-    /// One tagged call: the `act` prompt, and the reply's text read as a call.
+    /// One tagged call: the `act` prompt, and the reply's text read as a call. A
+    /// server keeps no conversation memory: that is the local model's.
     pub fn act(&self, request: &ActRequest, response: &mut [u8]) -> Result<Call, ActError> {
-        let body = openai::chat_request(&self.model, &act::request(request));
+        let body = openai::chat_request(&self.model, &act::request(request, &History::new()));
         let reply = self
             .post(&body, CHAT_TIMEOUT_MS, response)
             .map_err(ActError::Unavailable)?;
