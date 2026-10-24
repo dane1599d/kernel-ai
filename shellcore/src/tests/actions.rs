@@ -1,7 +1,7 @@
 //! Tiers, undo, show and bare answers: what the user sees when a script runs at
 //! once, asks, or is refused.
 
-use super::scripts::{ran, with_answers};
+use super::scripts::{checks, ran, with_answers};
 use super::*;
 use crate::script::HELPERS;
 use crate::tiers::{self, TIERS, Tier};
@@ -51,41 +51,39 @@ fn every_function_a_script_can_call_has_a_tier_and_no_row_names_a_missing_one() 
         assert_eq!(tiers::of(TIERS, helper), Tier::Run, "{helper}");
     }
     assert_eq!(tiers::of(TIERS, "kill"), Tier::Ask);
+    let checked = checks("print(cpus());\nset_policy(\"rr\");").unwrap();
     assert_eq!(
-        tiers::of_script(TIERS, "use round robin", &["cpus", "set_policy"]),
+        shell(&FakeHost::new()).tier_of("use round robin", &checked),
         (Tier::Run, vec!["cpus", "set_policy"])
     );
     assert_eq!(
-        tiers::of_script(
-            policy_at(Tier::Ask),
-            "use round robin",
-            &["cpus", "set_policy"]
-        ),
+        asking(vec![]).1.tier_of("use round robin", &checked),
         (Tier::Ask, vec!["set_policy"])
     );
 }
 
 #[test]
-fn a_run_tier_change_the_request_does_not_name_asks() {
-    for request in [
-        "show the Policy",
-        "which scheduler is this",
-        "use Round Robin",
-        "go round-robin",
-        "back to interactive",
+fn a_change_runs_only_when_the_request_names_it_and_its_value() {
+    let tier = |request: &str, script: &str| {
+        let checked = checks(script).unwrap();
+        shell(&FakeHost::new()).tier_of(request, &checked).0
+    };
+    for (request, script) in [
+        ("use Round Robin", SWITCH),
+        ("go round-robin", "set_policy(\"rr\");"),
+        ("back to interactive", "set_policy(\"interactive\");"),
     ] {
-        assert!(tiers::asked_for(request, "set_policy"), "{request}");
+        assert_eq!(tier(request, script), Tier::Run, "{request}");
     }
-    assert!(!tiers::asked_for("how many cpus are there", "set_policy"));
-    // Only changes with cues need them.
-    assert!(tiers::asked_for("anything", "cpus"));
+    // The cue without the value, or a negated cue, is not asking for it.
+    for request in ["show the Policy", "don't switch to round robin"] {
+        assert_eq!(tier(request, SWITCH), Tier::Ask, "{request}");
+    }
+    // No line makes a never-tier function run.
+    let never = Shell::with_tiers(FakeHost::new(), DEFAULT_CONFIG, policy_at(Tier::Never));
+    let checked = checks(SWITCH).unwrap();
     assert_eq!(
-        tiers::of_script(TIERS, "how many cpus", &["cpus", "set_policy"]),
-        (Tier::Ask, vec!["set_policy"])
-    );
-    // No cue makes an ask-tier or never-tier function run.
-    assert_eq!(
-        tiers::for_request(policy_at(Tier::Never), "set the policy", "set_policy"),
+        never.tier_of("set the policy to round robin", &checked).0,
         Tier::Never
     );
 }
@@ -113,7 +111,11 @@ fn a_change_the_model_added_to_a_read_asks_and_says_why() {
 
 /// A call to each run-tier function that changes anything, and a request that
 /// names it.
-const CALLS: &[(&str, &str, &str)] = &[("set_policy", "set_policy(\"rr\");", "change the policy")];
+const CALLS: &[(&str, &str, &str)] = &[(
+    "set_policy",
+    "set_policy(\"rr\");",
+    "change the policy to round robin",
+)];
 
 #[test]
 fn every_run_tier_change_records_how_to_undo_it() {
@@ -208,19 +210,16 @@ fn undo_asks_before_overwriting_a_later_change() {
 }
 
 #[test]
-fn two_switches_undo_newest_first_to_the_first_policy() {
+fn a_resource_changed_again_keeps_its_first_value() {
+    // The snapshot is taken at the first change, so undo goes straight back to it.
     let script = "set_policy(\"rr\");\nset_policy(\"interactive\");\nset_policy(\"rr\");";
     let (host, mut shell) = with_answers(vec![answer(script, "Flips.")]);
-    let reply = shell.eval("flip the policy about");
-    assert!(
-        reply
-            .text
-            .starts_with("Done: policy round-robin (was interactive); ")
-    );
+    let reply = shell.eval("go round robin, then interactive, then round robin");
     assert_eq!(
-        shell.eval("undo").text,
-        "Undone: policy back to interactive; policy back to round-robin; policy back to interactive"
+        reply,
+        ok("Done: policy round-robin (was interactive). undo")
     );
+    assert_eq!(shell.eval("undo"), ok("Undone: policy back to interactive"));
     assert_eq!(host.policy.get(), Some(policy::INTERACTIVE));
 }
 
@@ -229,7 +228,7 @@ fn a_run_that_fails_after_a_change_is_rolled_back() {
     // The trial's stand-in has two CPUs; the fake host has four.
     let script = "set_policy(\"rr\");\nprint(10 / (cpus() - 4));";
     let (host, mut shell) = with_answers(vec![answer(script, "Switches and divides.")]);
-    let reply = shell.eval("switch the policy then divide please");
+    let reply = shell.eval("switch the policy to round robin then divide please");
     assert!(!reply.ok);
     assert_eq!(
         reply.text,

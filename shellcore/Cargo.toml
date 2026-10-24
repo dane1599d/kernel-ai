@@ -11,7 +11,7 @@ kabi = { path = "../kabi" }
 llmproto = { path = "../llmproto" }
 sched = { path = "../sched" }
 serde_json = { version = "1.0.154", default-features = false, features = ["alloc"] }
-rhai = { version = "=1.27.0", default-features = false, features = ["no_std", "no_float", "no_custom_syntax", "no_module"] }
+rhai = { version = "=1.27.0", default-features = false, features = ["no_std", "no_float", "no_custom_syntax", "no_module", "internals"] }
 
 [features]
 # Rhai Grain, the bytecode VM, for `Exec::Grain` (ADR 0012 D9; off until S12-3 passes).

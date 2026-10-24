@@ -15,6 +15,7 @@ mod actions;
 mod log;
 mod more;
 mod scripts;
+mod transaction;
 mod tune;
 
 /// A host whose clock moves `step_ns` on every reading.

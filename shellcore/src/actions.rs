@@ -12,6 +12,7 @@ use crate::script::{self, Checked};
 use crate::tiers::{self, Tier};
 use crate::undo::{self, Done};
 use crate::{Reply, Shell};
+use agentabi::consent::{Decision, Why};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -49,30 +50,65 @@ fn yes_or_no(text: &str) -> Option<bool> {
     }
 }
 
+/// Each call of `checked`'s plan with its consent for `request`.
+fn decided(request: &str, checked: &Checked) -> Vec<(&'static str, Decision)> {
+    let decisions = checked.plan.decide(request, &agentabi::ROWS);
+    checked
+        .plan
+        .sites
+        .iter()
+        .map(|site| site.name)
+        .zip(decisions)
+        .collect()
+}
+
 fn is_show(text: &str) -> bool {
     matches!(text.trim(), "show" | "why")
 }
 
 impl Shell {
-    /// The tier of a checked script written for `request`, from every function it
-    /// names, and the functions at that tier.
+    /// The tier of a checked script written for `request`: each call's consent from
+    /// the line and the labels of its values (ADR 0002 D3, D6), raised to its row's
+    /// tier in the table, and the calls at that tier.
     pub(crate) fn tier_of(&self, request: &str, checked: &Checked) -> (Tier, Vec<&'static str>) {
-        let names: Vec<&'static str> = checked
-            .reads
-            .iter()
-            .chain(&checked.changes)
-            .copied()
+        let tiered: Vec<(&'static str, Tier)> = decided(request, checked)
+            .into_iter()
+            .map(|(name, decision)| (name, decision.tier.max(tiers::of(self.tiers, name))))
             .collect();
-        tiers::of_script(self.tiers, request, &names)
+        let tier = tiered
+            .iter()
+            .map(|&(_, tier)| tier)
+            .max()
+            .unwrap_or(Tier::Run);
+        let mut at = Vec::new();
+        for &(name, at_tier) in &tiered {
+            if at_tier == tier && !at.contains(&name) {
+                at.push(name);
+            }
+        }
+        (tier, at)
     }
 
-    /// The question for a script that asks about `asking`: added by the model if
-    /// every one of them is run-tier in the table, or else for having no undo.
-    fn question(&self, id: u64, checked: &Checked, asking: &[&str]) -> String {
+    /// The question for a script that asks about `asking`: the content that steers
+    /// a call, or added by the model if every one of them is run-tier in the table,
+    /// or else for having no undo.
+    fn question(&self, id: u64, request: &str, checked: &Checked, asking: &[&str]) -> String {
+        let steered =
+            decided(request, checked)
+                .into_iter()
+                .find_map(|(_, decision)| match decision.why {
+                    Why::Steered(source) | Why::Outbound(source) => Some(source),
+                    _ => None,
+                });
         let added = asking
             .iter()
             .all(|name| tiers::of(self.tiers, name) == Tier::Run);
-        script::question(id, checked, asking, added)
+        let why = match (steered, added) {
+            (Some(source), _) => format!(" (the target came from {source})"),
+            (None, true) => String::from(", which the request did not ask for"),
+            (None, false) => String::from(" (no undo)"),
+        };
+        script::question(id, checked, asking, &why)
     }
 
     /// Runs a run-tier script at once, or asks about one that is not.
@@ -98,16 +134,26 @@ impl Shell {
         if tier == Tier::Run {
             self.host
                 .audit(&format!("script {id} tier run; running it"));
+            let taken_as = matches!(
+                decided(request, &checked).as_slice(),
+                [(
+                    _,
+                    Decision {
+                        why: Why::TakenAs,
+                        ..
+                    }
+                )]
+            );
             let how = How {
                 form: Form::Script,
                 tier,
-                consent: "asked",
+                consent: if taken_as { "taken-as" } else { "asked" },
             };
             return self.finish(id, request, &checked, how);
         }
         self.host
             .audit(&format!("script {id} tier ask ({}); asking", at.join(", ")));
-        let text = self.question(id, &checked, &at);
+        let text = self.question(id, request, &checked, &at);
         self.pending = Some(Pending {
             id,
             request: request.to_string(),
@@ -343,7 +389,7 @@ impl Shell {
             return Reply::err("the script expired; ask again");
         }
         if is_show(text) {
-            let question = self.question(id, &pending.checked, &pending.asking);
+            let question = self.question(id, &pending.request, &pending.checked, &pending.asking);
             let shown = script::shown(id, &pending.checked);
             self.pending = Some(pending);
             return Reply {

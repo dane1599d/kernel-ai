@@ -1,7 +1,7 @@
 //! The LLM script path: routing, the strict checks, repair, confirmation and runs.
 
 use super::*;
-use crate::script::{check, names_in};
+use crate::script::check;
 use alloc::vec;
 
 fn answer(script: &str, summary: &str) -> Result<Answer, AnswerError> {
@@ -107,7 +107,7 @@ fn a_cut_off_answer_is_not_repaired() {
 }
 
 /// Checks `script` with a short summary, on a fresh fake host.
-fn checks(script: &str) -> Result<crate::script::Checked, crate::script::Refusal> {
+pub(super) fn checks(script: &str) -> Result<crate::script::Checked, crate::script::Refusal> {
     checks_on(&FakeHost::new(), script)
 }
 
@@ -227,17 +227,14 @@ fn answer_and_log_can_be_variable_names() {
 }
 
 #[test]
-fn the_capability_list_over_approximates() {
-    assert_eq!(
-        names_in("print(`${set_policy(\"rr\")}`);").1,
-        ["set_policy"]
-    );
-    assert_eq!(names_in("\"rr\".set_policy();").1, ["set_policy"]);
-    assert_eq!(
-        names_in("// memory() is not called\nprint(1);").0,
-        ["memory"]
-    );
-    assert_eq!(names_in("let set_policy_x = 1;").1, Vec::<&str>::new());
+fn the_capability_list_is_the_calls_the_analyser_finds() {
+    let changes = |script: &str| checks(script).unwrap().changes;
+    assert_eq!(changes("print(`${set_policy(\"rr\")}`);"), ["set_policy"]);
+    assert_eq!(changes("\"rr\".set_policy();"), ["set_policy"]);
+    // A name in a comment or a string is no call (ADR 0002 D5).
+    let quiet = checks("// memory() is not called\nprint(\"cpus\");").unwrap();
+    assert!(quiet.reads.is_empty(), "{:?}", quiet.reads);
+    assert!(changes("let set_policy_x = 1;").is_empty());
 }
 
 #[test]
@@ -263,7 +260,12 @@ fn a_full_size_script_fits_one_screen_with_every_line_on_one_row() {
     .unwrap();
     // What `show` prints while the script asks: the script, then the question,
     // in its longer wording.
-    let question = crate::script::question(99, &checked, &["set_policy"], true);
+    let question = crate::script::question(
+        99,
+        &checked,
+        &["set_policy"],
+        ", which the request did not ask for",
+    );
     let text = format!("{}\n{question}", crate::script::shown(99, &checked));
     assert!(text.len() + 20 < kabi::MAX_MESSAGE, "{} bytes", text.len());
     // A 1024-pixel console has 128 columns; the terminal adds a two-character lead.
@@ -281,11 +283,16 @@ fn a_full_size_script_fits_one_screen_with_every_line_on_one_row() {
 fn the_question_is_two_short_lines_naming_what_asks_and_why() {
     let checked = checks("print(get_policy());\nset_policy(\"rr\");").unwrap();
     assert_eq!(
-        crate::script::question(3, &checked, &["set_policy"], false),
+        crate::script::question(3, &checked, &["set_policy"], " (no undo)"),
         "script 3: Does it.\nIt changes set_policy (no undo). Go ahead? y/n, or show"
     );
     assert_eq!(
-        crate::script::question(3, &checked, &["set_policy"], true),
+        crate::script::question(
+            3,
+            &checked,
+            &["set_policy"],
+            ", which the request did not ask for"
+        ),
         "script 3: Does it.\nIt changes set_policy, which the request did not ask for. Go ahead? y/n, or show"
     );
 }
