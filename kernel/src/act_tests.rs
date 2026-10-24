@@ -97,7 +97,7 @@ const MOVED_UNDO: &[(&str, Expect)] = &[
 const ROLLBACK: &[(&str, Expect)] = &[
     (
         "switch to round robin then stop",
-        StartsWith("err Nothing changed: stopped after the switch"),
+        StartsWith("err Nothing changed: Runtime error: stopped after the switch"),
     ),
     ("undo", Exact("err nothing to undo")),
 ];
