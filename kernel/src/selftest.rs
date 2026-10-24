@@ -11,6 +11,8 @@ pub enum ActCase {
     Run,
     Never,
     Vague,
+    Undo,
+    Rollback,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -131,6 +133,8 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=act-run" => Some(SelfTest::Act(ActCase::Run)),
             "test=act-never" => Some(SelfTest::Act(ActCase::Never)),
             "test=act-vague" => Some(SelfTest::Act(ActCase::Vague)),
+            "test=act-undo" => Some(SelfTest::Act(ActCase::Undo)),
+            "test=act-rollback" => Some(SelfTest::Act(ActCase::Rollback)),
             "test=live" => Some(SelfTest::Live),
             "test=edit" => Some(SelfTest::Edit),
             "test=manifest" => Some(SelfTest::Manifest),

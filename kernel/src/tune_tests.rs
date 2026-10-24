@@ -367,7 +367,7 @@ pub fn shell_check() -> Result<(), &'static str> {
     if sched::judge::judge(&sched_control::last_pairs(), 0).kept != kept {
         return Err("tune: the verdict card is not the judge's verdict");
     }
-    if kept && line("tune undo")? != "ok back to interactive" {
+    if kept && line("tune undo")? != "ok Undone: policy back to interactive" {
         return Err("tune: undo did not put interactive back");
     }
     log!("tune: (a) the good pick's verdict is the judge's");

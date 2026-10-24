@@ -64,6 +64,16 @@ pub(super) const CASES: &[TestCase] = &[
         ..case("act-vague", "test=act-vague")
     },
     TestCase {
+        expect: &[
+            "act-undo: undo put back, undo again redid, and a typed switch was not overwritten",
+        ],
+        ..case("act-undo", "test=act-undo")
+    },
+    TestCase {
+        expect: &["act-rollback: a script that switched and then threw left nothing changed"],
+        ..case("act-rollback", "test=act-rollback")
+    },
+    TestCase {
         keys: TERMINAL_SCRIPT,
         expect: &[
             crate::mock_llm::REPLY,

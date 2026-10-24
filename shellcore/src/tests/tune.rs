@@ -216,7 +216,10 @@ fn a_good_pick_is_proposed_tried_after_yes_and_kept() {
     drop(audit);
     // Undo puts back what ran before.
     host.spec.set((policy::CLASSES, 1));
-    assert_eq!(shell.eval("tune undo").text, "back to interactive");
+    assert_eq!(
+        shell.eval("tune undo").text,
+        "Undone: policy back to interactive"
+    );
     assert_eq!(host.spec.get(), (policy::INTERACTIVE, 0));
     assert!(!shell.eval("tune undo").ok);
 }

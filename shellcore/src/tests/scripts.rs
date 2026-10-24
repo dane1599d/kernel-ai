@@ -216,7 +216,7 @@ fn replace_still_works_within_the_limit() {
 fn answer_and_log_can_be_variable_names() {
     let host = FakeHost::new();
     let mut shell = shell(&host);
-    assert_eq!(shell.eval("log"), ok("no LLM scripts yet"));
+    assert_eq!(shell.eval("log"), ok("nothing logged yet"));
     assert_eq!(shell.eval("answer 1 yes"), Reply::err("nothing to confirm"));
     shell.eval("let answer = 41");
     assert_eq!(shell.eval("answer + 1"), ok("42"));

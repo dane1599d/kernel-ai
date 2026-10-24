@@ -22,18 +22,19 @@
 extern crate alloc;
 
 mod actions;
+pub mod actlog;
 mod agentcore;
 mod brackets;
 mod commands;
 mod engine;
-mod log;
 pub mod script;
 mod show;
 pub mod tiers;
 mod tune;
 mod undo;
+mod undoing;
 
-use actions::{Pending, Undoable};
+use actions::Pending;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::rc::Rc;
@@ -69,6 +70,11 @@ pub trait Host {
     fn act(&self, _request: &ActRequest) -> Result<Call, ActError> {
         Err(ActError::Unavailable(String::from("no tagged calls here")))
     }
+    /// Keeps a finished model turn in llm's conversation memory (P1 task 10): the
+    /// user's line, the call as `act` returned it, and the result line.
+    fn remember(&self, _line: &str, _call: &str, _result: &str) {}
+    /// Forgets the conversation (`new`).
+    fn forget(&self) {}
     /// Writes one line to the console log.
     fn audit(&self, text: &str);
     /// The scheduler's numbers over `window_ms` (0: the trial's status only).
@@ -196,14 +202,13 @@ pub struct Shell {
     config: Config,
     pending: Option<Pending>,
     next_id: u64,
-    log: log::Log,
+    /// The action log: every request, what it changed, and its undo.
+    log: actlog::ActLog,
     tuner: tune::Tuner,
     /// Each script API function's tier.
     tiers: &'static [(&'static str, Tier)],
-    /// The last run's changes, for `undo`.
-    undo: Option<Undoable>,
-    /// An `undo` waiting for a yes, because something changed it since.
-    undo_asking: Option<Undoable>,
+    /// The entry an `undo` waits on a yes for, because something changed it since.
+    undo_asking: Option<u64>,
     /// The last script as `show` prints it.
     shown: Option<String>,
     /// What the script run by the last line printed.
@@ -238,10 +243,9 @@ impl Shell {
             config,
             pending: None,
             next_id: 1,
-            log: log::Log::default(),
+            log: actlog::ActLog::default(),
             tuner: tune::Tuner::default(),
             tiers,
-            undo: None,
             undo_asking: None,
             shown: None,
             last_output: None,
@@ -278,9 +282,7 @@ impl Shell {
         }
         // Anything but the answer leaves a proposal unrun, and an undo for later.
         self.tuner.discard();
-        if let Some(undoable) = self.undo_asking.take() {
-            self.undo = Some(undoable);
-        }
+        self.undo_asking = None;
         if let Some(pending) = self.pending.take() {
             let outcome = "discarded: another line came first";
             self.record(
@@ -309,10 +311,18 @@ impl Shell {
         }
         if !self.scope.contains(input) {
             match input {
-                "undo" => return self.undo(),
+                "undo" => return self.undo_command(""),
+                "tune undo" => return self.tune_undo(),
+                "new" => return self.forget(),
                 "show" | "why" => return self.show_last(),
                 _ => {}
             }
+        }
+        if let Some(which) = input.strip_prefix("undo ")
+            && !self.scope.contains("undo")
+            && which.trim().trim_start_matches('#').parse::<u64>().is_ok()
+        {
+            return self.undo_command(which);
         }
         if (input == "tune" || input.starts_with("tune ")) && !self.scope.contains("tune") {
             let id = self.next_id;
@@ -408,8 +418,10 @@ impl Shell {
     }
 
     fn show_log(&self, which: &str) -> Reply {
-        if which.is_empty() {
-            return Reply::ok(self.log.list());
+        match which {
+            "" => return Reply::ok(self.log.list()),
+            "actlog" => return Reply::ok(self.log.text()),
+            _ => {}
         }
         match which
             .trim_start_matches('#')
@@ -479,8 +491,7 @@ impl Shell {
                 None => break,
             }
         }
-        self.log
-            .record(id, request, "", &format!("refused: {outcome}"));
+        self.record(id, request, "", &format!("refused: {outcome}"));
         self.host.audit(&format!(
             "script {id} refused: {}",
             show::truncate(&outcome, 120)
@@ -489,8 +500,7 @@ impl Shell {
     }
 
     fn say(&mut self, id: u64, request: &str, reply: String) -> Reply {
-        self.log.record(id, request, "", "answered in words");
-        self.host.audit(&format!("script {id} answered in words"));
+        self.record(id, request, "", "answered in words");
         Reply::ok(reply)
     }
 
@@ -517,6 +527,14 @@ impl Shell {
             }
         }
         self.scope = scope;
+    }
+
+    /// `new`: llm forgets the conversation. The action log and `undo` stay: what
+    /// was done can still be undone.
+    fn forget(&mut self) -> Reply {
+        self.host.forget();
+        self.clarifying = None;
+        Reply::ok("A new conversation: earlier turns are forgotten; `log` and `undo` still work")
     }
 
     /// How many variables and functions the shell holds.

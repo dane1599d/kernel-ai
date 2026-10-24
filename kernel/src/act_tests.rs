@@ -68,6 +68,40 @@ const NOT_ENGLISH: &[(&str, Expect)] = &[
     ("n", Contains("not run")),
 ];
 
+/// S02-3 (ADR 0002): `undo` right after a switch, inside the kernel's 100 ms
+/// limit, so the first try is refused as too soon and the retry puts it back.
+const UNDO_AT_ONCE: &[(&str, Expect)] = &[
+    (
+        "turn on round robin scheduling",
+        Exact("ok Done: policy round-robin (was interactive). undo"),
+    ),
+    ("undo", Exact("ok Undone: policy back to interactive")),
+];
+
+/// The undo is an entry of its own, so `undo` again redoes.
+const REDO: &[(&str, Expect)] = &[("undo", Exact("ok Undone: policy back to round-robin"))];
+
+/// A typed switch moves the policy; `undo` then asks rather than overwrite it,
+/// and a no leaves the typed switch alone (compare-and-set).
+const MOVED: &[(&str, Expect)] = &[("policy interactive", StartsWith("ok "))];
+
+const MOVED_UNDO: &[(&str, Expect)] = &[
+    (
+        "undo",
+        Exact("ok The policy changed since (now interactive); put interactive back anyway? y/n"),
+    ),
+    ("n", Exact("ok Not undone; `undo` asks again")),
+];
+
+/// A script that switches and then throws leaves nothing changed.
+const ROLLBACK: &[(&str, Expect)] = &[
+    (
+        "switch to round robin then stop",
+        StartsWith("err Nothing changed: stopped after the switch"),
+    ),
+    ("undo", Exact("err nothing to undo")),
+];
+
 fn policy_is(name: &str) -> bool {
     for _ in 0..500 {
         if threads::installed_policy_everywhere(name) {
@@ -91,6 +125,8 @@ pub fn check(which: ActCase) -> Result<(), &'static str> {
         ActCase::Run => run(),
         ActCase::Never => never(),
         ActCase::Vague => vague(),
+        ActCase::Undo => undo(),
+        ActCase::Rollback => rollback(),
     }
 }
 
@@ -142,5 +178,38 @@ fn vague() -> Result<(), &'static str> {
         return Err("act-vague: the line not in English changed the policy without a yes");
     }
     log!("act-vague: a vague line ran as Taken as, and a line not in English asked");
+    Ok(())
+}
+
+fn undo() -> Result<(), &'static str> {
+    expect_lines(UNDO_AT_ONCE)?;
+    if !policy_is("interactive") {
+        return Err("act-undo: undo inside the rate limit did not put the policy back");
+    }
+    after_switch();
+    expect_lines(REDO)?;
+    if !policy_is("round-robin") {
+        return Err("act-undo: undo again did not redo the switch");
+    }
+    after_switch();
+    expect_lines(MOVED)?;
+    if !policy_is("interactive") {
+        return Err("act-undo: the typed switch did not happen");
+    }
+    after_switch();
+    expect_lines(MOVED_UNDO)?;
+    if !policy_is("interactive") {
+        return Err("act-undo: undo overwrote the typed switch");
+    }
+    log!("act-undo: undo put back, undo again redid, and a typed switch was not overwritten");
+    Ok(())
+}
+
+fn rollback() -> Result<(), &'static str> {
+    expect_lines(ROLLBACK)?;
+    if !policy_is("interactive") {
+        return Err("act-rollback: the failed script left its switch in place");
+    }
+    log!("act-rollback: a script that switched and then threw left nothing changed");
     Ok(())
 }

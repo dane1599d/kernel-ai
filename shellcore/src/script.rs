@@ -151,12 +151,11 @@ fn bind(engine: &mut Engine, name: &'static str, host: &Rc<dyn Host>, journal: &
                     // What runs now, so `undo` can tell whether it moved since.
                     let after = undo::current_spec(h.as_ref()).unwrap_or((id, preset));
                     journal.borrow_mut().push(Done {
-                        function: "set_policy",
-                        what: format!(
-                            "policy {} (was {})",
-                            policy_name(id),
-                            undo::spec_name(was, preset)
-                        ),
+                        action: "set_policy".into(),
+                        owner: "kernel".into(),
+                        res: "policy".into(),
+                        before: undo::spec_name(was, preset),
+                        after: policy_name(id).into(),
                         inverse: Some(Inverse::Spec {
                             policy: was,
                             preset,
