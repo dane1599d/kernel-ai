@@ -7,7 +7,9 @@
 //! asked for when one of its row's cues starts a word of the line, not within three
 //! words after a negation, and every `from_request` argument is literal in the line,
 //! a declared alias, or `focused`/`selected`/`here` for "this", "it", "here" or
-//! "selected". Anything else is added and asks, except the vague path: a plan of one
+//! "selected". A literal counts only if it names a thing: "the service", "that
+//! program" or "it" is a kind word, not a name, so `service_stop("service")` from
+//! "stop the service" was not asked for. Anything else is added and asks, except the vague path: a plan of one
 //! undoable local change, from a line that names no action at all, runs and says
 //! what it was taken as. Values read from content (`Label::Content`) cannot steer
 //! an undo-less or outbound call, and a line that is not English gets no consent
@@ -100,6 +102,48 @@ const NEGATION_REACH: usize = 3;
 /// Words that point at what the OS has focused or selected.
 const POINTERS: &[&str] = &["this", "it", "here", "selected"];
 const SYMBOLS: &[&str] = &["focused", "selected", "here"];
+/// Words for a kind of thing, or for one in passing, that name none: "stop the
+/// service" names no service. Plurals are listed, not derived, so the app `notes`
+/// stays a name.
+const KIND_WORDS: &[&str] = &[
+    "service",
+    "services",
+    "program",
+    "programs",
+    "app",
+    "apps",
+    "application",
+    "process",
+    "processes",
+    "package",
+    "packages",
+    "device",
+    "component",
+    "file",
+    "files",
+    "folder",
+    "server",
+    "host",
+    "site",
+    "website",
+    "page",
+    "model",
+    "rule",
+    "note",
+    "thing",
+    "things",
+    "it",
+    "that",
+    "this",
+    "one",
+    "them",
+    "those",
+    "these",
+];
+/// Words that only lead into a name.
+const DETERMINERS: &[&str] = &[
+    "the", "a", "an", "my", "your", "our", "its", "some", "any", "that", "this",
+];
 
 /// Decides every call of `plan`, made for the user's `line`, against `rows`.
 pub fn decide(line: &str, plan: &[Call], rows: &[Action]) -> Vec<Decision> {
@@ -253,7 +297,7 @@ fn arguments_in_line(words: &[Word], row: &Action, call: &Call) -> bool {
         if matches!(value.label, Label::Content(_)) {
             return false;
         }
-        !matches(words, value.text, false).is_empty()
+        (names_a_thing(value.text) && !matches(words, value.text, false).is_empty())
             || arg.aliases.iter().any(|(written, means)| {
                 fold_eq(means, value.text) && !matches(words, written, false).is_empty()
             })
@@ -271,12 +315,22 @@ fn hosts_grounded(words: &[Word], row: &Action, call: &Call) -> bool {
         .all(|arg| {
             value_of(call, arg.name).is_some_and(|value| {
                 !matches!(value.label, Label::Content(_))
-                    && (!matches(words, value.text, false).is_empty()
+                    && ((names_a_thing(value.text)
+                        && !matches(words, value.text, false).is_empty())
                         || HOSTS.iter().any(|(word, host)| {
                             *host == value.text && words.iter().any(|w| w.text == *word)
                         }))
             })
         })
+}
+
+/// Whether `text` names a thing: some word of it is neither a kind word nor a
+/// determiner. "notes" and "the llm service" do; "the service" and "it" do not.
+fn names_a_thing(text: &str) -> bool {
+    words(text).iter().any(|w| {
+        let w = w.text.as_str();
+        !KIND_WORDS.contains(&w) && !DETERMINERS.contains(&w)
+    })
 }
 
 /// One word of the line, lower case.
