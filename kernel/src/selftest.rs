@@ -69,6 +69,7 @@ pub enum SelfTest {
     /// M10a: a seeded probe whose digest must repeat from boot to boot under icount.
     IcountProbe,
     /// M10a-3: kernel-owned trials on the workload revert or keep by the rules.
+    Reboot,
     TuneRevert,
     TuneStall,
     /// M10a-4: the shell's `tune` with mock answers, through the kernel's trials.
@@ -129,6 +130,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=compute-keys" => Some(SelfTest::ComputeKeys),
             "test=bigmap" => Some(SelfTest::Bigmap),
             "test=icount-probe" => Some(SelfTest::IcountProbe),
+            "test=reboot" => Some(SelfTest::Reboot),
             "test=tune-revert" => Some(SelfTest::TuneRevert),
             "test=tune-stall" => Some(SelfTest::TuneStall),
             "test=tune" => Some(SelfTest::Tune),

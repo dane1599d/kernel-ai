@@ -18,6 +18,11 @@ impl PhysMem for KernelPhys {
     }
 }
 
+/// The parsed tables, once `init` ran.
+pub fn get() -> Option<&'static Platform> {
+    PLATFORM.get()
+}
+
 /// Parses the ACPI tables. `rsdp` is what Limine reported, which may be a physical
 /// address or an HHDM address depending on the base revision.
 pub fn init(rsdp: u64, hhdm: u64) -> Result<&'static Platform, &'static str> {
