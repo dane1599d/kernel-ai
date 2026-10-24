@@ -6,7 +6,9 @@
 //! the prompt changes and the next line, whatever it is, answers the question:
 //! only `y` or `yes` runs the script, and `show` prints it and asks again.
 //! In edit mode (`:edit`), plain lines go to the editor instead, and `:apply` asks
-//! the same way before an upload runs.
+//! the same way before an upload runs. A call that asks shows the Allow / Deny
+//! menu (`termcore::menu`), drawn here and nowhere else: the shell replies
+//! `menu ...`, keys pick a choice, and the terminal answers `answer <id> <word>`.
 
 use crate::console::{self, FORM_FEED, Screen};
 use crate::keyboard::Decoder;
@@ -16,6 +18,7 @@ use alloc::string::String;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use llmproto::text::{printable, wrap};
 use termcore::line::{Line, Outcome};
+use termcore::menu::{self, Answer, Menu, Step};
 
 const PROMPT: &str = "kai> ";
 const MAX_LINE: usize = 200;
@@ -104,6 +107,8 @@ enum Waiting {
     /// The shell replied `more`: the entry has a bracket open, and the next line
     /// continues it.
     More,
+    /// A call that asks: the Allow / Deny menu.
+    Menu(Menu),
 }
 
 /// The prompt for a line that continues an open entry (ADR 0012).
@@ -138,11 +143,15 @@ pub fn run(_: usize) {
     );
     let mut waiting: Option<Waiting> = None;
     loop {
+        if let Some(Waiting::Menu(menu)) = waiting {
+            waiting = choose(&mut decoder, menu);
+            continue;
+        }
         let prompt = match &waiting {
             Some(Waiting::Confirm(confirm)) => confirm.prompt(),
             Some(Waiting::Apply(p)) => format!("apply {} to {}? yes/no> ", p.label, p.component),
             Some(Waiting::More) => CONTINUE_PROMPT.into(),
-            None => edit_mode::prompt().unwrap_or_else(|| PROMPT.into()),
+            Some(Waiting::Menu(_)) | None => edit_mode::prompt().unwrap_or_else(|| PROMPT.into()),
         };
         console::show_input(&prompt, "", 0);
         if matches!(waiting, Some(Waiting::Confirm(_) | Waiting::Apply(_))) {
@@ -174,7 +183,7 @@ pub fn run(_: usize) {
                 waiting = shell_line(line);
                 continue;
             }
-            None => {}
+            Some(Waiting::Menu(_)) | None => {}
         }
         match line.strip_prefix(':') {
             Some(command) => waiting = kernel_command(command.trim()),
@@ -186,6 +195,33 @@ pub fn run(_: usize) {
             None => waiting = shell_line(line),
         }
     }
+}
+
+/// Shows `menu` and reads keys until one picks a choice, then sends the answer.
+/// Keys typed before the menu showed are dropped; Ctrl-C and Esc are Deny.
+fn choose(decoder: &mut Decoder, mut menu: Menu) -> Option<Waiting> {
+    for row in menu.rows() {
+        log!("{row}");
+    }
+    let (prompt, text) = menu.input();
+    console::show_input(prompt, &text, text.chars().count());
+    decoder.discard_pending();
+    menu.arm();
+    AWAITING_ANSWER.store(true, Ordering::Release);
+    let answer = loop {
+        match menu.apply(decoder.read_key()) {
+            Step::Ignored => {}
+            Step::Moved => {
+                let (prompt, text) = menu.input();
+                console::show_input(prompt, &text, text.chars().count());
+            }
+            Step::Chosen(answer) => break answer,
+        }
+    };
+    AWAITING_ANSWER.store(false, Ordering::Release);
+    let (prompt, _) = menu.input();
+    finish_line(prompt, answer.word(), "");
+    shell_line(&menu::answer_line(menu.id, answer))
 }
 
 /// Reads a line into the input region after `prompt`, edited at the cursor. Typed
@@ -245,6 +281,9 @@ fn show_shell_reply(reply: &[u8]) -> Option<Waiting> {
     if reply == b"more" {
         return Some(Waiting::More);
     }
+    if reply.starts_with(b"menu ") {
+        return menu_reply(reply);
+    }
     let text = String::from_utf8_lossy(reply);
     let clean = printable(&text, kabi::MAX_MESSAGE, MAX_REPLY_LINES);
     let (kind, rest) = clean.split_once(' ').unwrap_or((clean.as_str(), ""));
@@ -275,6 +314,31 @@ fn show_shell_reply(reply: &[u8]) -> Option<Waiting> {
             tune: body.starts_with("Tune \""),
         })
     })
+}
+
+/// A `menu` reply: shown only if it decodes and every row is shown exactly as
+/// sent and fits the screen; otherwise the call is denied, as a confirmation
+/// that cannot be shown in full is declined.
+fn menu_reply(reply: &[u8]) -> Option<Waiting> {
+    REPLIED_NS.store(hpet::nanos(), Ordering::Relaxed);
+    REPLIES_SHOWN.fetch_add(1, Ordering::Relaxed);
+    let text = core::str::from_utf8(reply).unwrap_or("");
+    match Menu::decode(text) {
+        Ok(menu) if fits_on_screen(&menu.rows().join("\n")) => Some(Waiting::Menu(menu)),
+        Ok(menu) => {
+            log!("! the question could not be shown in full, so it was denied");
+            shell_line(&menu::answer_line(menu.id, Answer::Deny))
+        }
+        Err(why) => {
+            log!("! the shell sent a menu that cannot be shown ({why:?})");
+            // An id that still reads gets its Deny, so no later key can answer it.
+            let id = text
+                .strip_prefix("menu ")
+                .and_then(|rest| rest.split(' ').next())
+                .and_then(|id| id.parse::<u64>().ok());
+            id.and_then(|id| shell_line(&menu::answer_line(id, Answer::Deny)))
+        }
+    }
 }
 
 /// Whether a line typed at the `kai> ` prompt looks like an answer to a script,
