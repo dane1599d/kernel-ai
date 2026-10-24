@@ -113,7 +113,8 @@ fn observe(
     std::fs::write(&path, file).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
     let disk = ModelDisk::open(&path)?;
     let cmdline = format!(
-        "test=tune-ab phase=observe workload={mix} seed={OBSERVE_SEED} {}",
+        "test=tune-ab phase=observe workload={mix} seed={OBSERVE_SEED} {} {}",
+        crate::icount::CLOCK,
         disk.cmdline()
     );
     let firmware = booter.prepare(&cmdline)?;

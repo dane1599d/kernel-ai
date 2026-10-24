@@ -39,6 +39,9 @@ const CONSOLE: &str = "icount-console.log";
 /// The probe's seed. Determinism is checked by repeating one seed.
 const SEED: u64 = 1;
 
+/// The clock every icount boot runs on (kernel/src/hpet.rs says why).
+pub const CLOCK: &str = "clock=icount";
+
 /// The QEMU command line of the measurement mode.
 pub fn measure_args(firmware: &crate::Firmware, shift: u32) -> Vec<String> {
     measure_args_with(firmware, shift, crate::disk::BASE_MEMORY_MIB)
@@ -287,7 +290,7 @@ pub fn run(
     options: &crate::Options,
 ) -> Result<(), String> {
     let (shift, boots) = (options.shift, options.boots);
-    let cmdline = format!("test=icount-probe seed={SEED}");
+    let cmdline = format!("test=icount-probe seed={SEED} {CLOCK}");
     let esp_dir = target_dir.join("esp");
     let mut probes = Vec::new();
     for boot in 1..=boots {
