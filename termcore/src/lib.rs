@@ -16,6 +16,7 @@ pub mod keys;
 pub mod line;
 pub mod menu;
 pub mod mouse;
+pub mod once;
 pub mod plain;
 pub mod screenlog;
 pub mod style;

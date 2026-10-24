@@ -48,6 +48,21 @@ struct FakeHost {
     remembered: RefCell<Vec<(String, String, String)>>,
     forgot: Cell<u32>,
     audit: RefCell<Vec<String>>,
+    /// The trusted path's ONCE book: badge, digest, and whether it was used.
+    once: RefCell<Vec<(u64, [u8; 32], bool)>>,
+    /// Rule handles revoked.
+    revoked: RefCell<Vec<u32>>,
+}
+
+impl FakeHost {
+    /// What the kernel terminal does on Allow: a ONCE badge for menu `id`'s
+    /// `question`, as shown.
+    fn mint(&self, id: u64, question: &str) -> u64 {
+        let mut book = self.once.borrow_mut();
+        let badge = 0x0ce0 + book.len() as u64;
+        book.push((badge, termcore::once::digest(id, question), false));
+        badge
+    }
 }
 
 impl FakeHost {
@@ -72,6 +87,8 @@ impl FakeHost {
             remembered: RefCell::new(Vec::new()),
             forgot: Cell::new(0),
             audit: RefCell::new(Vec::new()),
+            once: RefCell::new(Vec::new()),
+            revoked: RefCell::new(Vec::new()),
         })
     }
 }
@@ -150,6 +167,27 @@ impl Host for FakeHost {
 
     fn forget(&self) {
         self.forgot.set(self.forgot.get() + 1);
+    }
+
+    fn once_check(&self, badge: u64, digest: &[u8; 32]) -> Result<(), String> {
+        let mut book = self.once.borrow_mut();
+        let entry = book
+            .iter_mut()
+            .find(|(b, _, _)| *b == badge)
+            .ok_or_else(|| String::from("NotFound"))?;
+        match entry {
+            (_, _, true) => Err(String::from("NotFound")),
+            (_, held, _) if held != digest => Err(String::from("Invalid")),
+            (_, _, used) => {
+                *used = true;
+                Ok(())
+            }
+        }
+    }
+
+    fn revoke_rule(&self, handle: u32) -> Result<(), String> {
+        self.revoked.borrow_mut().push(handle);
+        Ok(())
     }
 
     fn act(&self, request: &ActRequest) -> Result<Call, ActError> {

@@ -13,6 +13,7 @@ pub enum ActCase {
     Vague,
     Undo,
     Rollback,
+    Ask,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -135,6 +136,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=act-vague" => Some(SelfTest::Act(ActCase::Vague)),
             "test=act-undo" => Some(SelfTest::Act(ActCase::Undo)),
             "test=act-rollback" => Some(SelfTest::Act(ActCase::Rollback)),
+            "test=act-ask" => Some(SelfTest::Act(ActCase::Ask)),
             "test=live" => Some(SelfTest::Live),
             "test=edit" => Some(SelfTest::Edit),
             "test=manifest" => Some(SelfTest::Manifest),

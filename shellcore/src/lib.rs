@@ -29,6 +29,7 @@ mod brackets;
 mod commands;
 pub mod data;
 mod engine;
+mod rules;
 pub mod script;
 mod show;
 pub mod tiers;
@@ -77,6 +78,17 @@ pub trait Host {
     fn remember(&self, _line: &str, _call: &str, _result: &str) {}
     /// Forgets the conversation (`new`).
     fn forget(&self) {}
+    /// Whether `digest` is the one the trusted path holds for the `ONCE` badge
+    /// `badge` (ONCE_CHECK); a match uses it up. A host without the trusted path
+    /// has no Allow to check, so an asked call does not run on its menu.
+    fn once_check(&self, _badge: u64, _digest: &[u8; 32]) -> Result<(), String> {
+        Err(String::from("there is no trusted path here"))
+    }
+    /// Revokes a standing rule's grant node, through the `Grant` handle the
+    /// trusted path gave for it.
+    fn revoke_rule(&self, _handle: u32) -> Result<(), String> {
+        Ok(())
+    }
     /// Writes one line to the console log.
     fn audit(&self, text: &str);
     /// The scheduler's numbers over `window_ms` (0: the trial's status only).
@@ -183,11 +195,23 @@ impl Reply {
         }
     }
 
-    /// `ok <text>`, `err <text>`, `confirm <id> <text>` or `more`, as sent to the
-    /// terminal.
+    /// The Allow / Deny menu for call `id`, drawn by the terminal: `text` is
+    /// `termcore::menu::Menu::encode`'s.
+    fn menu(id: u64, text: String) -> Self {
+        Self {
+            ok: true,
+            text,
+            confirm: Some(id),
+            more: false,
+        }
+    }
+
+    /// `ok <text>`, `err <text>`, `confirm <id> <text>`, `menu <id> ...` or `more`,
+    /// as sent to the terminal.
     pub fn to_wire(&self) -> String {
         match self.confirm {
             _ if self.more => String::from("more"),
+            Some(_) if self.text.starts_with("menu ") => self.text.clone(),
             Some(id) => format!("confirm {id} {}", self.text),
             None => format!("{} {}", if self.ok { "ok" } else { "err" }, self.text),
         }
@@ -211,6 +235,8 @@ pub struct Shell {
     tiers: &'static [(&'static str, Tier)],
     /// The entry an `undo` waits on a yes for, because something changed it since.
     undo_asking: Option<u64>,
+    /// Standing rules the menu's "Always allow" wrote.
+    rules: rules::Rules,
     /// The last script as `show` prints it.
     shown: Option<String>,
     /// What the script run by the last line printed.
@@ -249,6 +275,7 @@ impl Shell {
             tuner: tune::Tuner::default(),
             tiers,
             undo_asking: None,
+            rules: rules::Rules::default(),
             shown: None,
             last_output: None,
             partial: None,
@@ -316,9 +343,15 @@ impl Shell {
                 "undo" => return self.undo_command(""),
                 "tune undo" => return self.tune_undo(),
                 "new" => return self.forget(),
+                "rules" => return Reply::ok(self.rules.list()),
                 "show" | "why" => return self.show_last(),
                 _ => {}
             }
+        }
+        if let Some(which) = input.strip_prefix("rules_remove ")
+            && !self.scope.contains("rules_remove")
+        {
+            return self.remove_rule(which);
         }
         if let Some(which) = input.strip_prefix("undo ")
             && !self.scope.contains("undo")

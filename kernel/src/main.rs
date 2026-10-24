@@ -18,6 +18,7 @@
 extern crate alloc;
 
 mod act_tests;
+mod allow;
 mod apic;
 mod backtrace;
 mod bigmap_tests;

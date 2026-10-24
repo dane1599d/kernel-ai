@@ -53,7 +53,7 @@ fn a_vague_line_runs_its_one_undoable_reading_and_says_what_it_took() {
 }
 
 #[test]
-fn a_line_that_is_not_english_asks_and_runs_only_on_a_yes() {
+fn a_line_that_is_not_english_asks_and_runs_only_on_an_allow() {
     let (host, mut shell) = with_calls(vec![call(RR), call(RR)]);
     let reply = shell.eval("cambia la política a round robin");
     assert_eq!(reply.confirm, Some(1), "{reply:?}");
@@ -62,7 +62,13 @@ fn a_line_that_is_not_english_asks_and_runs_only_on_a_yes() {
     assert_eq!(shell.eval("n").text, "script 1 not run");
     let reply = shell.eval("cambia la política a round robin");
     assert_eq!(reply.confirm, Some(2));
-    assert!(shell.eval("y").text.starts_with("Done: policy round-robin"));
+    let allow = format!("answer 2 allow once={}", host.mint(2, shown(2)));
+    assert!(
+        shell
+            .eval(&allow)
+            .text
+            .starts_with("Done: policy round-robin")
+    );
     assert_eq!(host.policy.get(), Some(policy::ROUND_ROBIN));
 }
 
@@ -155,4 +161,100 @@ fn with_no_call_the_shell_asks_for_a_script_as_before() {
     );
     assert_eq!(host.act_lines.borrow().len(), 1);
     assert_eq!(host.script_requests.borrow().len(), 1);
+}
+
+#[test]
+fn an_asking_call_is_the_allow_deny_menu_and_its_answers_decide() {
+    let line = "cambia la política a round robin";
+    let (host, mut shell) = with_calls(vec![call(RR), call(RR), call(RR)]);
+    let reply = shell.eval(line);
+    // The terminal draws it; an ask from consent offers no standing rule, and the
+    // highlight starts on Deny.
+    assert_eq!(
+        reply.to_wire(),
+        "menu 1 added\nRun set_policy(\"round-robin\")? The request is not in English, so it asks first.\n\n"
+    );
+    let menu = termcore::menu::Menu::decode(&reply.to_wire()).unwrap();
+    assert_eq!(menu.selected(), termcore::menu::Answer::Deny);
+    assert_eq!(shell.eval("answer 1 deny"), ok("script 1 not run"));
+    assert_eq!(host.policy.get(), None);
+}
+
+/// The menu's question for asked call `id` from `cambia la política…`.
+fn shown(_id: u64) -> &'static str {
+    "Run set_policy(\"round-robin\")? The request is not in English, so it asks first."
+}
+
+#[test]
+fn an_allow_runs_only_with_its_own_once_and_only_once() {
+    let line = "cambia la política a round robin";
+    let (host, mut shell) = with_calls((0..7).map(|_| call(RR)).collect());
+    let not_run = |id: u64, why: &str| ok(&format!("script {id} not run: {why}"));
+    // No ONCE, or a typed y: nothing runs.
+    shell.eval(line);
+    assert_eq!(
+        shell.eval("answer 1 allow"),
+        not_run(1, "the Allow came without its ONCE")
+    );
+    shell.eval(line);
+    assert_eq!(
+        shell.eval("y"),
+        not_run(2, "a menu is answered on the menu")
+    );
+    // A ONCE minted for another question, or another entry, does not check.
+    shell.eval(line);
+    let other = host.mint(
+        3,
+        "Run set_policy(\"interactive\")? The request is not in English, so it asks first.",
+    );
+    assert_eq!(
+        shell.eval(&format!("answer 3 allow once={other}")),
+        not_run(3, "its Allow did not check (Invalid)")
+    );
+    shell.eval(line);
+    let early = host.mint(3, shown(3));
+    assert_eq!(
+        shell.eval(&format!("answer 4 allow once={early}")),
+        not_run(4, "its Allow did not check (Invalid)")
+    );
+    assert_eq!(host.policy.get(), None);
+    // Its own ONCE runs it, once.
+    shell.eval(line);
+    let once = host.mint(5, shown(5));
+    assert_eq!(
+        shell.eval(&format!("answer 5 allow once={once}")),
+        ok("Done: policy round-robin (was interactive). undo")
+    );
+    assert_eq!(host.policy.get(), Some(policy::ROUND_ROBIN));
+    shell.eval(line);
+    assert_eq!(
+        shell.eval(&format!("answer 6 allow once={once}")),
+        not_run(6, "its Allow did not check (NotFound)")
+    );
+    // A rule that was not offered is not written, even with a good ONCE.
+    shell.eval(line);
+    let once = host.mint(7, shown(7));
+    assert_eq!(
+        shell.eval(&format!("answer 7 always-kind once={once} rule=9")),
+        not_run(7, "no rule can cover it")
+    );
+    assert_eq!(
+        shell.eval("rules"),
+        ok("no rules: asks are answered one at a time")
+    );
+    let audit = host.audit.borrow();
+    assert!(
+        audit.iter().any(|l| l == "script 3 ONCE refused: Invalid"),
+        "{audit:?}"
+    );
+}
+
+#[test]
+fn rules_remove_needs_a_rule_that_is_there() {
+    let (_host, mut shell) = with_calls(vec![]);
+    assert_eq!(shell.eval("rules_remove 1"), Reply::err("no rule #1"));
+    assert_eq!(
+        shell.eval("rules_remove x"),
+        Reply::err("usage: rules_remove <rule number>")
+    );
 }

@@ -207,6 +207,11 @@ impl Menu {
         (PROMPT, format!("{} {label}", self.selected + 1))
     }
 
+    /// The question, exactly as shown: what an Allow's `ONCE` digest names.
+    pub fn question(&self) -> &str {
+        &self.question
+    }
+
     /// The highlighted choice.
     pub fn selected(&self) -> Answer {
         self.choices[self.selected].0
@@ -254,6 +259,44 @@ impl Menu {
 /// The terminal's answer line.
 pub fn answer_line(id: u64, answer: Answer) -> String {
     format!("answer {id} {}", answer.word())
+}
+
+/// What the trusted path minted for a choice (ADR 0001 D6): the `ONCE` badge an
+/// Allow gives, and the `Grant` handle in the shell's table for the rule node an
+/// "Always allow" made.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Granted {
+    pub once: Option<u64>,
+    pub rule: Option<u32>,
+}
+
+/// The answer line with what was minted: `answer <id> allow once=<badge>`, and
+/// ` rule=<handle>` after an "Always allow".
+pub fn granted_line(id: u64, answer: Answer, granted: Granted) -> String {
+    let mut line = answer_line(id, answer);
+    if let Some(badge) = granted.once {
+        line.push_str(&format!(" once={badge}"));
+    }
+    if let Some(handle) = granted.rule {
+        line.push_str(&format!(" rule={handle}"));
+    }
+    line
+}
+
+/// Reads what follows `answer <id> `: the choice, then what was minted. `None`
+/// for anything else, so a typed `y` stays a typed `y`.
+pub fn read_answer(text: &str) -> Option<(Answer, Granted)> {
+    let mut words = text.split(' ');
+    let answer = Answer::from_word(words.next()?)?;
+    let mut granted = Granted::default();
+    for word in words {
+        match word.split_once('=') {
+            Some(("once", n)) if granted.once.is_none() => granted.once = Some(n.parse().ok()?),
+            Some(("rule", n)) if granted.rule.is_none() => granted.rule = Some(n.parse().ok()?),
+            _ => return None,
+        }
+    }
+    Some((answer, granted))
 }
 
 #[cfg(test)]
@@ -427,6 +470,37 @@ mod tests {
                 );
                 assert!(menu.rows().len() >= 3 && menu.rows().len() <= 5);
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod granted_tests {
+    use super::*;
+
+    #[test]
+    fn what_was_minted_rides_on_the_answer_line_and_reads_back() {
+        let granted = Granted {
+            once: Some(0x1234),
+            rule: Some(7),
+        };
+        let line = granted_line(3, Answer::AlwaysKind, granted);
+        assert_eq!(line, "answer 3 always-kind once=4660 rule=7");
+        let rest = line.strip_prefix("answer 3 ").unwrap();
+        assert_eq!(read_answer(rest), Some((Answer::AlwaysKind, granted)));
+        assert_eq!(
+            read_answer("deny"),
+            Some((Answer::Deny, Granted::default()))
+        );
+        for bad in [
+            "y",
+            "allow once=x",
+            "allow once=1 once=2",
+            "allow when=1",
+            "",
+            "allow  once=1",
+        ] {
+            assert_eq!(read_answer(bad), None, "{bad:?}");
         }
     }
 }
