@@ -61,7 +61,9 @@ const VAGUE_READING: &[(&str, Expect)] = &[(
 const NOT_ENGLISH: &[(&str, Expect)] = &[
     (
         "cambia la política a round robin",
-        Contains("the request is not in English, so it asks first. y/n, or show"),
+        Exact(
+            "confirm 3 Run set_policy(\"round-robin\")? the request is not in English, so it asks first. y/n, or show",
+        ),
     ),
     ("n", Contains("not run")),
 ];
