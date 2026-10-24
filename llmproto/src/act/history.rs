@@ -134,20 +134,26 @@ pub fn encode_remember(turn: &Turn) -> String {
     )
 }
 
+/// Longest line `remember` takes on the wire; it keeps the first
+/// `act::LINE_MAX_BYTES` of it.
+const LINE_WIRE_BYTES: usize = 4096;
+
 pub fn decode_remember(text: &str) -> Option<Turn> {
     let (header, body) = text.split_once('\n')?;
     let mut words = header.strip_prefix("remember ")?.split(' ');
     let mut number = || words.next()?.parse::<usize>().ok();
     let (line, call, result) = (number()?, number()?, number()?);
     if body.len() != line.checked_add(call)?.checked_add(result)?
-        || line > super::LINE_MAX_BYTES
+        || line > LINE_WIRE_BYTES
         || call > CALL_MAX_BYTES
         || result > RESULT_MAX_BYTES
     {
         return None;
     }
+    // The line is kept to the `act` request's own limit, as that request clips it.
+    let typed = body.get(..line)?;
     let turn = Turn {
-        line: body.get(..line)?.to_string(),
+        line: typed[..typed.floor_char_boundary(super::LINE_MAX_BYTES)].to_string(),
         call: body.get(line..line + call)?.to_string(),
         result: body.get(line + call..)?.to_string(),
     };
@@ -226,9 +232,17 @@ mod tests {
         assert_eq!(decode_remember(&encode_remember(&not_a_call)), None);
         let long = Turn {
             result: "x".repeat(RESULT_MAX_BYTES + 1),
-            ..t
+            ..t.clone()
         };
         assert_eq!(decode_remember(&encode_remember(&long)), None);
+        // A long line is kept to the request's own limit, at a character boundary.
+        let wordy = Turn {
+            line: "\u{e9}".repeat(400),
+            ..t
+        };
+        let kept = decode_remember(&encode_remember(&wordy)).unwrap();
+        let max = crate::act::LINE_MAX_BYTES;
+        assert!(kept.line.len() <= max && kept.line.len() >= max - 1);
         for bad in [
             "",
             "remember",
