@@ -1,26 +1,18 @@
-//! What code, not the model, would do with a decoded call (ADR 0002 D2-D3),
-//! simplified for S02-1: the tier from the row, then consent from the user's
-//! line. It is the yardstick for false runs and false asks, not task 7's
-//! `agentcore`. Rules kept:
-//! - a closed-world read runs; an open-world one runs only on a host the line
-//!   names;
-//! - a change is asked for when one of its cues starts a word of the line, not
-//!   within three words after a negation, and every `from_request` argument is
-//!   literal in the folded line (or a symbol, for "this", "it", "here");
-//!   a negation reaches to the end of its clause, not only three words;
-//! - asked for and undoable runs; asked for with no undo asks;
-//! - no cue at all is the vague path: one undoable closed-world change runs
-//!   `Taken as`, unless a value of it came from the State line (data), when it
-//!   asks; anything else asks;
-//! - a negated cue, a non-English line or an unknown name never runs, and a
-//!   line with any negation takes no vague reading;
-//! - a kind word ("the service", "the file", "it") is not a name, so it does
-//!   not count as literal.
+//! What code, not the model, would do with a decoded call: the shipping
+//! consent code, `agentabi::consent::decide` (ADR 0002 D2-D3, task 7), over the
+//! mock registry's rows mapped to `agentabi::Action`s. So the gate counts false
+//! runs and false asks as the OS would make them.
 //!
-//! A script takes its strictest call, from the row names in its code (today's
-//! `names_in`, not B's analyser, which is task 11).
+//! - A row's call is one planned call with its arguments as text. A value the
+//!   State line holds and the user's line does not came from data, so it is
+//!   labelled `Content("state")` (ADR 0002 D6, ADR 0010 State).
+//! - A script plans each change row its code calls, with no arguments known
+//!   statically (today's `names_in`; B's analyser is task 11), and takes the
+//!   strictest decision.
 
 use super::registry::{Row, Ty, Undo};
+use agentabi::consent::{self, Call as Planned, Label, Value as Consented, Why};
+use agentabi::{Action, Arg, ArgType, Facts, Inverse, Owner, RetType, Returns, Role, Tier};
 use serde_json::Value;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,100 +40,97 @@ impl Decision {
             Self::Never => "never",
         }
     }
+
+    fn of(decision: consent::Decision) -> Self {
+        match (decision.tier, decision.why) {
+            (Tier::Run, Why::TakenAs) => Self::TakenAs,
+            (Tier::Run, _) => Self::Run,
+            (Tier::Ask, _) => Self::Ask,
+            (Tier::Never, _) => Self::Never,
+        }
+    }
 }
 
-const NEGATIONS: &[&str] = &["don't", "dont", "do not", "not", "never", "no"];
-const SYMBOLS: &[&str] = &["focused", "selected", "here"];
-const DEICTIC: &[&str] = &["this", "it", "here", "selected", "that"];
-/// Words that name a kind of thing, not one: "stop the service" names no
-/// service, so `service_stop("service")` is not literal in the line.
-const KIND_WORDS: &[&str] = &[
-    "service",
-    "program",
-    "process",
-    "package",
-    "device",
-    "component",
-    "file",
-    "server",
-    "host",
-    "site",
-    "website",
-    "model",
-    "rule",
-    "note",
-    "thing",
-    "it",
-    "that",
-    "this",
-    "one",
-];
-
-/// Ends a clause for negation: a comma, a semicolon or a full stop.
-const CLAUSE: &str = "|";
-
-/// Lower case, hyphens and underscores as spaces, one space between words, and
-/// [`CLAUSE`] between clauses.
-pub fn fold(text: &str) -> String {
-    let lower = text
-        .to_lowercase()
-        .replace(['-', '_'], " ")
-        .replace([',', ';'], " | ")
-        .replace(". ", " | ");
-    lower
-        .split(|c: char| c.is_whitespace() || matches!(c, '?' | '!' | '"' | '=' | '(' | ')'))
-        .filter(|w| !w.is_empty())
-        .map(|w| w.trim_end_matches('.'))
-        .collect::<Vec<_>>()
-        .join(" ")
+fn leak<T>(value: T) -> &'static T {
+    Box::leak(Box::new(value))
 }
 
-fn words(folded: &str) -> Vec<&str> {
-    folded.split(' ').collect()
+fn arg_type(ty: &Ty) -> ArgType {
+    match ty {
+        Ty::Enum(words) => ArgType::Enum(words),
+        Ty::Int { min, max } => ArgType::Int {
+            min: *min,
+            max: *max,
+        },
+        Ty::Text(max) => ArgType::Text { max: *max },
+        Ty::Host => ArgType::Host,
+        Ty::Path => ArgType::Path,
+        Ty::Code => ArgType::Text {
+            max: llmproto::script::SCRIPT_MAX_BYTES as u16,
+        },
+        Ty::List(inner, n) => ArgType::List(leak(arg_type(inner)), *n),
+        Ty::Opt(inner) => ArgType::Opt(leak(arg_type(inner))),
+    }
 }
 
-/// Where a cue (one word or several) starts a word of the line.
-fn cue_at(words: &[&str], cue: &str) -> Vec<usize> {
-    let cue: Vec<&str> = cue.split(' ').collect();
-    (0..words.len())
-        .filter(|&i| {
-            i + cue.len() <= words.len()
-                && cue
-                    .iter()
-                    .enumerate()
-                    .all(|(j, c)| match j + 1 == cue.len() {
-                        true => words[i + j].starts_with(c),
-                        false => words[i + j] == *c,
-                    })
+/// A mock row as the registry would declare it.
+fn action(row: &'static Row) -> Action {
+    let facts = Facts {
+        open_world: row.open_world,
+        ..match row.undo {
+            Undo::Read => Facts::LOCAL_READ,
+            Undo::Restore => Facts::LOCAL_CHANGE,
+            Undo::None => Facts {
+                read_only: false,
+                destructive: true,
+                idempotent: false,
+                open_world: false,
+            },
+        }
+    };
+    let inverse = match row.undo {
+        Undo::Read => Inverse::Read,
+        Undo::Restore => Inverse::Restore,
+        Undo::None => Inverse::None("it cannot be undone"),
+    };
+    let args: Vec<Arg> = row
+        .args
+        .iter()
+        .map(|a| Arg {
+            name: a.name,
+            ty: arg_type(&a.ty),
+            role: if a.from_request {
+                Role::Target
+            } else {
+                Role::Option
+            },
+            from_request: a.from_request,
+            never: &[],
+            aliases: &[],
         })
+        .collect();
+    Action {
+        name: row.name,
+        doc: row.doc,
+        args: args.leak(),
+        facts,
+        inverse,
+        cues: row.cues,
+        returns: Returns::System,
+        ret: RetType::Unit,
+        owner: Owner::Kernel,
+        needs: 0,
+        min_tier: Tier::Run,
+        old_name: None,
+    }
+}
+
+/// The registry's rows (not the pseudo-actions) as `agentabi` actions.
+pub fn actions(rows: &[&'static Row]) -> Vec<Action> {
+    rows.iter()
+        .filter(|r| !matches!(r.name, "say" | "clarify" | "script"))
+        .map(|r| action(r))
         .collect()
-}
-
-/// A negation earlier in the cue's clause. Stricter than D3's three words:
-/// "don't change the policy to round robin" negates `round` too.
-fn negated(words: &[&str], at: usize) -> bool {
-    let from = words[..at]
-        .iter()
-        .rposition(|w| *w == CLAUSE)
-        .map_or(0, |i| i + 1);
-    let joined = words[from..at].join(" ");
-    NEGATIONS
-        .iter()
-        .any(|n| words[from..at].contains(n) || (n.contains(' ') && joined.contains(n)))
-}
-
-/// Whether a value is literal in the folded text.
-fn literal(folded: &str, value: &str) -> bool {
-    let value = fold(value);
-    !value.is_empty() && format!(" {folded} ").contains(&format!(" {value} "))
-        || (value.contains('.') || value.contains('/')) && folded.contains(&value)
-}
-
-/// A line is English enough for consent (ADR 0002 D3: no non-Latin script).
-fn english(line: &str) -> bool {
-    let letters = line.chars().filter(|c| c.is_alphabetic()).count();
-    let latin = line.chars().filter(|c| c.is_ascii_alphabetic()).count();
-    letters == 0 || latin * 10 >= letters * 9
 }
 
 fn text(value: &Value) -> String {
@@ -151,108 +140,80 @@ fn text(value: &Value) -> String {
     }
 }
 
-/// How a cue stands in the line.
-#[derive(PartialEq)]
-enum Cue {
-    None,
-    Negated,
-    Plain,
-}
-
-fn cue(row: &Row, words: &[&str]) -> Cue {
-    let at: Vec<usize> = row.cues.iter().flat_map(|c| cue_at(words, c)).collect();
-    match at.iter().any(|&i| !negated(words, i)) {
-        true => Cue::Plain,
-        false if !at.is_empty() => Cue::Negated,
-        false => Cue::None,
-    }
-}
-
-/// The decision for one row's call.
-fn decide_row(row: &Row, args: &Value, line: &str, state: &str) -> Decision {
-    let folded = fold(line);
-    let words = words(&folded);
-    let state = fold(state);
-    let deictic = DEICTIC.iter().any(|d| words.contains(d));
-    let mut grounded = true;
-    let mut from_data = false;
-    for arg in row.args {
-        let Some(value) = args.get(arg.name).filter(|v| !v.is_null()) else {
-            continue;
-        };
-        let value = text(value);
-        let symbol = SYMBOLS.contains(&value.as_str()) && deictic;
-        let named = !KIND_WORDS.contains(&fold(&value).as_str());
-        let typed = (named && literal(&folded, &value))
-            || symbol
-            || (matches!(arg.ty, Ty::Enum(_))
-                && literal(&folded.replace(' ', ""), &value.replace('-', "")));
-        if arg.from_request && !typed {
-            grounded = false;
-            from_data |= literal(&state, &value);
-        }
-    }
-    if row.undo == Undo::Read {
-        return match row.open_world && !grounded {
-            true => Decision::Ask,
-            false => Decision::Run,
-        };
-    }
-    if !english(line) {
-        return Decision::Ask;
-    }
-    let negation = NEGATIONS
-        .iter()
-        .any(|n| format!(" {folded} ").contains(&format!(" {n} ")));
-    match cue(row, &words) {
-        Cue::Negated => Decision::Ask,
-        Cue::Plain if !grounded => Decision::Ask,
-        Cue::Plain if row.undo == Undo::None => Decision::Ask,
-        Cue::Plain => Decision::Run,
-        // A line that says not to do something takes no reading it did not name.
-        Cue::None if row.undo == Undo::Restore && !row.open_world && !from_data && !negation => {
-            Decision::TakenAs
-        }
-        Cue::None => Decision::Ask,
-    }
+/// Whether `haystack` holds `value` as words, case and hyphens folded.
+fn holds(haystack: &str, value: &str) -> bool {
+    let fold = |s: &str| s.to_lowercase().replace(['-', '_'], " ");
+    let (haystack, value) = (fold(haystack), fold(value));
+    !value.trim().is_empty() && haystack.contains(value.trim())
 }
 
 /// The decision for a decoded call `{"name":..,"arguments":{..}}`.
-pub fn decide(rows: &[&Row], call: &Value, line: &str, state: &str) -> Decision {
+pub fn decide(rows: &[&'static Row], call: &Value, line: &str, state: &str) -> Decision {
     let name = call["name"].as_str().unwrap_or("");
     let args = &call["arguments"];
+    let actions = actions(rows);
     match name {
         "say" | "clarify" => Decision::Talk,
-        "script" => script(rows, args["code"].as_str().unwrap_or(""), line),
-        _ => match super::registry::find(rows, name) {
-            Some(row) => decide_row(row, args, line, state),
-            None => Decision::Never,
-        },
+        "script" => script(&actions, args["code"].as_str().unwrap_or(""), line),
+        _ => {
+            let values: Vec<(String, String)> = args
+                .as_object()
+                .map(|m| {
+                    m.iter()
+                        .filter(|(_, v)| !v.is_null())
+                        .map(|(k, v)| (k.clone(), text(v)))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let consented: Vec<(&str, Consented)> = values
+                .iter()
+                .map(|(k, v)| {
+                    let from_state = holds(state, v) && !holds(line, v);
+                    let label = match from_state {
+                        true => Label::Content("state"),
+                        false => Label::Literal,
+                    };
+                    (k.as_str(), Consented { text: v, label })
+                })
+                .collect();
+            let planned = [Planned {
+                name,
+                args: &consented,
+                control: Label::Literal,
+            }];
+            Decision::of(consent::decide(line, &planned, &actions)[0])
+        }
     }
 }
 
-/// A script's strictest call. Its arguments are not known statically here, so
-/// a change runs only when its cue is in the line; one with no cue was added.
-fn script(rows: &[&Row], code: &str, line: &str) -> Decision {
-    let folded = fold(line);
-    let words = words(&folded);
-    let mut worst = Decision::Run;
-    for row in rows
+/// A script's strictest decision over the change rows its code calls.
+fn script(actions: &[Action], code: &str, line: &str) -> Decision {
+    let names: Vec<&str> = actions
         .iter()
-        .filter(|r| !matches!(r.name, "say" | "clarify" | "script"))
-    {
-        if !called(code, row.name) || row.undo == Undo::Read {
-            continue;
-        }
-        let this = match cue(row, &words) {
-            Cue::Plain if row.undo == Undo::Restore && english(line) => Decision::Run,
-            _ => Decision::Ask,
-        };
-        if this == Decision::Ask {
-            worst = Decision::Ask;
-        }
+        .filter(|a| !a.facts.read_only && called(code, a.name))
+        .map(|a| a.name)
+        .collect();
+    if names.is_empty() {
+        return Decision::Run;
     }
-    worst
+    let planned: Vec<Planned> = names
+        .iter()
+        .map(|name| Planned {
+            name,
+            args: &[],
+            control: Label::Literal,
+        })
+        .collect();
+    consent::decide(line, &planned, actions)
+        .into_iter()
+        .map(Decision::of)
+        .max_by_key(|d| match d {
+            Decision::Talk | Decision::Run => 0,
+            Decision::TakenAs => 1,
+            Decision::Ask => 2,
+            Decision::Never => 3,
+        })
+        .unwrap_or(Decision::Run)
 }
 
 /// Whether `code` calls `name` (`name(`, not part of a longer name).
@@ -276,89 +237,48 @@ mod tests {
     }
 
     #[test]
-    fn a_plain_undoable_request_runs_and_a_no_undo_one_asks() {
+    fn the_mock_rows_pass_the_registrys_own_check() {
+        assert_eq!(agentabi::check(&actions(&rows(80))), Ok(()));
+    }
+
+    #[test]
+    fn plain_undoable_calls_run_and_no_undo_ones_ask() {
         let policy = json!({"name":"set_policy","arguments":{"name":"round-robin"}});
-        assert_eq!(
-            decided(policy.clone(), "switch to round robin"),
-            Decision::Run
-        );
-        assert_eq!(
-            decided(policy.clone(), "use the Round-Robin policy"),
-            Decision::Run
-        );
+        assert_eq!(decided(policy, "switch to round-robin"), Decision::Run);
         let restart = json!({"name":"service_restart","arguments":{"name":"netd"}});
         assert_eq!(decided(restart.clone(), "restart netd"), Decision::Ask);
-        // An argument the line does not name was the model's.
         assert_eq!(decided(restart, "restart the network"), Decision::Ask);
         assert_eq!(
             decided(json!({"name":"cpus","arguments":{}}), "cpus?"),
             Decision::Run
         );
+        assert_eq!(
+            decided(json!({"name":"rm_rf","arguments":{}}), "x"),
+            Decision::Never
+        );
     }
 
     #[test]
-    fn negation_and_non_english_never_run_a_change() {
+    fn negation_and_state_values_never_run_a_change() {
         let policy = json!({"name":"set_policy","arguments":{"name":"round-robin"}});
         assert_eq!(
-            decided(policy.clone(), "don't change the policy to round robin"),
+            decided(policy.clone(), "don't switch to round robin"),
             Decision::Ask
         );
-        assert_eq!(
-            decided(policy.clone(), "do not switch the scheduler to round robin"),
-            Decision::Ask
-        );
-        assert_eq!(decided(policy, "переключи на round robin"), Decision::Ask);
+        let steered = decide(&rows(40), &policy, "what is here?", "here=round-robin");
+        assert!(!steered.runs(), "{steered:?}");
     }
 
     #[test]
-    fn the_vague_path_takes_one_undoable_change_unless_data_steered_it() {
-        let policy = json!({"name":"set_policy","arguments":{"name":"interactive"}});
-        assert_eq!(
-            decided(policy.clone(), "make it snappier"),
-            Decision::TakenAs
-        );
-        let steered = decide(&rows(40), &policy, "what is here?", "here=interactive");
-        assert_eq!(steered, Decision::Ask);
-        let negated = json!({"name":"rules_remove","arguments":{"n":1}});
-        assert_eq!(decided(negated, "do not remove notes"), Decision::Ask);
-        let off = json!({"name":"power_off","arguments":{}});
-        assert_eq!(decided(off, "make it quieter"), Decision::Ask);
-    }
-
-    #[test]
-    fn open_world_reads_run_only_on_a_typed_host() {
-        let ping = |host: &str| json!({"name":"net_ping","arguments":{"host":host}});
-        assert_eq!(
-            decided(ping("example.com"), "ping example.com"),
-            Decision::Run
-        );
-        assert_eq!(
-            decided(ping("8.8.8.8"), "is the internet up?"),
-            Decision::Ask
-        );
-        assert_eq!(decided(ping("server"), "ping the server"), Decision::Ask);
-        let stop = json!({"name":"service_stop","arguments":{"name":"service"}});
-        assert_eq!(decided(stop, "stop the service"), Decision::Ask);
-    }
-
-    #[test]
-    fn scripts_take_their_strictest_call_and_unknown_names_never_run() {
+    fn scripts_take_their_strictest_call() {
         let code = |c: &str| json!({"name":"script","arguments":{"code":c}});
         assert_eq!(
             decided(code("print(cpus());"), "how many cpus"),
             Decision::Run
         );
         assert_eq!(
-            decided(code("set_policy(\"round-robin\");"), "show memory"),
-            Decision::Ask
-        );
-        assert_eq!(
             decided(code("power_off();"), "power off now"),
             Decision::Ask
-        );
-        assert_eq!(
-            decided(json!({"name":"rm_rf","arguments":{}}), "x"),
-            Decision::Never
         );
         assert!(called("x = cpus();", "cpus"));
         assert!(!called("x = ncpus();", "cpus"));

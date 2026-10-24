@@ -109,7 +109,12 @@ impl Outcome {
 /// Runs `task` through the shell the way a user would: `? <request>`, then `yes`
 /// to a script that asks; a run-tier one runs at once.
 pub fn attempt(task: &Task, transport: Transport) -> Outcome {
-    let host = Rc::new(GateHost::new(transport));
+    attempt_on(task, GateHost::new(transport))
+}
+
+/// [`attempt`] on `host`, which may answer `act` requests too.
+pub fn attempt_on(task: &Task, host: GateHost) -> Outcome {
+    let host = Rc::new(host);
     let mut shell = Shell::new(host.clone(), DEFAULT_CONFIG);
     let proposal = shell.eval(&format!("? {}", task.request));
     let answers = host.answers.borrow().clone();
@@ -129,7 +134,15 @@ pub fn attempt(task: &Task, transport: Transport) -> Outcome {
         };
     }
     let Some(id) = proposal.confirm else {
-        let failure = no_proposal(task, answers.last(), &proposal.text);
+        // Through the one door, words come back as `say` (or `clarify`), not as
+        // an empty script: the same answer in words as today's `NoScript`.
+        let worded = host.calls.borrow().last().and_then(|call| match call {
+            Ok(call) if answers.is_empty() && matches!(call.name.as_str(), "say" | "clarify") => {
+                Some(Err(AnswerError::NoScript(proposal.text.clone())))
+            }
+            _ => None,
+        });
+        let failure = no_proposal(task, worded.as_ref().or(answers.last()), &proposal.text);
         return Outcome {
             rounds,
             script: None,
