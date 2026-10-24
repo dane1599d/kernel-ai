@@ -1,6 +1,7 @@
 //! The `local-script` boot case's outcome, worked out on the host: the shell
 //! (`shellcore`) asks the generated model `infer::fixture::local_script` for a
-//! script through the same engine, context cap, memory budget, sampler and JSON
+//! tagged call (`act`, through `llmproto::local::act::routed`), and for a script
+//! when no call comes back, through the same engine, context cap, memory budget, sampler and JSON
 //! shape the llm service uses (`llmproto::local::script`), and the same wire in
 //! between ([`served`]), then checks the answer and refuses or proposes it
 //! exactly as the guest's shell does. The harness types
@@ -11,11 +12,13 @@
 use crate::fluency::host::GateHost;
 use infer::Next;
 use infer::chat::{Budget, Engine, Step};
+use infer::tagged::Tagged;
+use llmproto::act::{self, ActError, ActRequest, Call};
 use llmproto::local;
 use llmproto::script::{self, Answer, AnswerError, ScriptRequest};
 use llmproto::text::printable;
 use quant::Tier;
-use shellcore::{DEFAULT_CONFIG, Shell};
+use shellcore::{DEFAULT_CONFIG, Host, Shell};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -78,11 +81,18 @@ pub fn engine(bytes: &'static [u8], tier: Tier) -> Result<Engine<'static>, Strin
 fn outcome(bytes: &'static [u8], tier: Tier) -> Result<Outcome, String> {
     let engine = engine(bytes, tier).map_err(|e| format!("the local-script model: {e}"))?;
     let engine = Rc::new(RefCell::new(engine));
+    let scripts = Rc::clone(&engine);
     let transport = Box::new(move |request: &ScriptRequest| {
-        served(&mut engine.borrow_mut(), request, |_| Next::Continue)
+        served(&mut scripts.borrow_mut(), request, |_| Next::Continue)
     });
     let host = Rc::new(GateHost::new(transport));
-    let mut shell = Shell::new(host.clone(), DEFAULT_CONFIG);
+    let grammar = local::act::grammar().map_err(|e| local::describe(&e))?;
+    let acting: Rc<dyn Host> = Rc::new(Acting {
+        gate: Rc::clone(&host),
+        engine,
+        grammar,
+    });
+    let mut shell = Shell::new(acting, DEFAULT_CONFIG);
     let typed = shell.eval(REQUEST).to_wire();
     let first = host.answers.borrow().len();
     let again = shell.eval(REQUEST).to_wire();
@@ -92,6 +102,62 @@ fn outcome(bytes: &'static [u8], tier: Tier) -> Result<Outcome, String> {
         again,
         rounds: [first, second],
     })
+}
+
+/// The gate's stand-in OS, with `act` answered as the llm service answers it: the
+/// tagged call on the same engine (`llmproto::local::act::routed`), through the
+/// same wire, so a call that fails comes back as the guest's shell sees it.
+struct Acting {
+    gate: Rc<GateHost>,
+    engine: Rc<RefCell<Engine<'static>>>,
+    grammar: Tagged<'static>,
+}
+
+impl Host for Acting {
+    fn now_ns(&self) -> u64 {
+        self.gate.now_ns()
+    }
+
+    fn interrupted(&self) -> bool {
+        self.gate.interrupted()
+    }
+
+    fn heap_bytes(&self) -> u64 {
+        self.gate.heap_bytes()
+    }
+
+    fn metrics(&self) -> Result<kabi::Metrics, kabi::Error> {
+        self.gate.metrics()
+    }
+
+    fn set_policy(&self, id: u64) -> Result<(), kabi::Error> {
+        self.gate.set_policy(id)
+    }
+
+    fn ask(&self, prompt: &str) -> Result<String, String> {
+        self.gate.ask(prompt)
+    }
+
+    fn script(&self, request: &ScriptRequest) -> Result<Answer, AnswerError> {
+        self.gate.script(request)
+    }
+
+    fn act(&self, request: &ActRequest) -> Result<Call, ActError> {
+        let Some(request) = ActRequest::decode(&request.encode()) else {
+            return Err(ActError::NotACall);
+        };
+        let call = local::act::routed(
+            &mut self.engine.borrow_mut(),
+            &self.grammar,
+            &request,
+            |_| Next::Continue,
+        );
+        act::decode_answer(&act::encode_answer(&call))
+    }
+
+    fn audit(&self, text: &str) {
+        self.gate.audit(text);
+    }
 }
 
 /// The guest's outcome on the model in `bytes`.
@@ -134,19 +200,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_shell_refuses_the_models_script_after_checking_it_twice() {
+    fn the_shell_refuses_the_models_call_the_same_way_twice() {
         let bytes = infer::fixture::local_script(&prompts());
         let outcome = golden(&bytes).unwrap();
         println!("typed: {}\nagain: {}", outcome.typed, outcome.again);
         assert_eq!(golden(&bytes).unwrap(), outcome);
-        // The script reached the shell's own checks, which refused it, and the
-        // repair round did not save it.
-        assert_eq!(outcome.rounds, [2, 2]);
+        // The generated model's tagged call names a row the shell cannot call
+        // yet, so the one door refuses it in code, and no script is asked for.
+        assert_eq!(outcome.rounds, [0, 0]);
         for reply in [&outcome.typed, &outcome.again] {
-            assert!(
-                reply.starts_with("err gave up after one repair: syntax error: "),
-                "{reply}"
-            );
+            assert!(reply.starts_with("err Refused "), "{reply}");
         }
         let lines = reply_lines(&outcome.typed);
         assert_eq!(lines, [format!("! {}", &outcome.typed[4..])]);

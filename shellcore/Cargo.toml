@@ -10,6 +10,7 @@ agentabi = { path = "../agentabi" }
 kabi = { path = "../kabi" }
 llmproto = { path = "../llmproto" }
 sched = { path = "../sched" }
+serde_json = { version = "1.0.154", default-features = false, features = ["alloc"] }
 rhai = { version = "=1.27.0", default-features = false, features = ["no_std", "no_float", "no_custom_syntax", "no_module"] }
 
 [features]

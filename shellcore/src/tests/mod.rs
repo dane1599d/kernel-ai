@@ -6,9 +6,11 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::cell::{Cell, RefCell};
 use kabi::{Metrics, policy};
+use llmproto::act::{ActError, ActRequest, Call};
 use llmproto::script::{Answer, AnswerError, ScriptRequest};
 use std::collections::VecDeque;
 
+mod act;
 mod actions;
 mod more;
 mod scripts;
@@ -37,6 +39,9 @@ struct FakeHost {
     /// Answers `script` gives, in order; afterwards it fails.
     answers: RefCell<VecDeque<Result<Answer, AnswerError>>>,
     script_requests: RefCell<Vec<ScriptRequest>>,
+    /// Calls `act` gives, in order; afterwards there is none.
+    calls: RefCell<VecDeque<Result<Call, ActError>>>,
+    act_lines: RefCell<Vec<String>>,
     audit: RefCell<Vec<String>>,
 }
 
@@ -57,6 +62,8 @@ impl FakeHost {
             ask_takes_ns: 0,
             answers: RefCell::new(VecDeque::new()),
             script_requests: RefCell::new(Vec::new()),
+            calls: RefCell::new(VecDeque::new()),
+            act_lines: RefCell::new(Vec::new()),
             audit: RefCell::new(Vec::new()),
         })
     }
@@ -126,6 +133,14 @@ impl Host for FakeHost {
             .borrow_mut()
             .pop_front()
             .unwrap_or(Err(AnswerError::Server(String::from("no more answers"))))
+    }
+
+    fn act(&self, request: &ActRequest) -> Result<Call, ActError> {
+        self.act_lines.borrow_mut().push(request.line.clone());
+        self.calls
+            .borrow_mut()
+            .pop_front()
+            .unwrap_or(Err(ActError::Unavailable(String::from("no more calls"))))
     }
 
     fn audit(&self, text: &str) {

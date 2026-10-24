@@ -910,6 +910,7 @@ dependencies = [
  "llmproto",
  "rhai",
  "sched",
+ "serde_json",
 ]
 
 [[package]]

@@ -46,6 +46,23 @@ pub(super) const CASES: &[TestCase] = &[
     case("net", "test=net"),
     case("shell", "test=shell"),
     case("scripts", "test=scripts"),
+    // P1 task 7: the one door, with the mock server's calls keyed by request.
+    TestCase {
+        expect: &["act-plain: plain requests became the right calls, and undo put the policy back"],
+        ..case("act-plain", "test=act-plain")
+    },
+    TestCase {
+        expect: &["act-run: the run tier ran with no prompt and wrote the result line"],
+        ..case("act-run", "test=act-run")
+    },
+    TestCase {
+        expect: &["act-never: never-tier calls were refused and changed nothing"],
+        ..case("act-never", "test=act-never")
+    },
+    TestCase {
+        expect: &["act-vague: a vague line ran as Taken as, and a line not in English asked"],
+        ..case("act-vague", "test=act-vague")
+    },
     TestCase {
         keys: TERMINAL_SCRIPT,
         expect: &[
@@ -55,7 +72,7 @@ pub(super) const CASES: &[TestCase] = &[
             "kai> hello",
             crate::mock_llm::HELLO,
             // So did the switch, which says what it did and how to undo it.
-            "= Done: policy interactive (was round-robin) (undo: `undo`)",
+            "= Done: policy interactive (was round-robin). undo",
             "kai> undo",
             "= Undone: policy back to round-robin",
             // screenlog copies the typed text the screen shows. It matches the

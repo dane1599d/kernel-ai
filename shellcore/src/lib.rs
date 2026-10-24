@@ -22,6 +22,7 @@
 extern crate alloc;
 
 mod actions;
+mod agentcore;
 mod brackets;
 mod commands;
 mod engine;
@@ -41,6 +42,7 @@ use alloc::vec::Vec;
 pub use engine::Exec;
 use engine::Line;
 use kabi::sched::{SchedStats, TrialRequest};
+use llmproto::act::{ActError, ActRequest, Call};
 use llmproto::chat::Completion;
 use llmproto::script::{Answer, AnswerError, ScriptRequest};
 use llmproto::tune::TuneRequest;
@@ -62,6 +64,11 @@ pub trait Host {
     fn ask(&self, prompt: &str) -> Result<String, String>;
     /// Asks the LLM for a script.
     fn script(&self, request: &ScriptRequest) -> Result<Answer, AnswerError>;
+    /// Asks the LLM for one tagged call (ADR 0002 D4). Without one, the shell asks
+    /// for a script instead.
+    fn act(&self, _request: &ActRequest) -> Result<Call, ActError> {
+        Err(ActError::Unavailable(String::from("no tagged calls here")))
+    }
     /// Writes one line to the console log.
     fn audit(&self, text: &str);
     /// The scheduler's numbers over `window_ms` (0: the trial's status only).
@@ -204,6 +211,8 @@ pub struct Shell {
     /// An entry with a brace, bracket or parenthesis still open, waiting for its
     /// next line.
     partial: Option<String>,
+    /// A request the model asked to clarify: the next line is joined to it.
+    clarifying: Option<String>,
 }
 
 impl Shell {
@@ -237,6 +246,7 @@ impl Shell {
             shown: None,
             last_output: None,
             partial: None,
+            clarifying: None,
         }
     }
 
@@ -283,6 +293,14 @@ impl Shell {
         self.line.begin(self.host.as_ref(), &self.config);
         if input.is_empty() {
             return Reply::ok("");
+        }
+        // The answer to a clarifying question joins the request it clarifies; a typed
+        // command or Rhai line instead leaves it.
+        if let Some(request) = self.clarifying.take()
+            && reads_like_words(input)
+            && split_command(input, |name| self.scope.contains(name)).is_none()
+        {
+            return self.ask_for_script(&format!("{request} {input}"));
         }
         if input == "reset" {
             self.scope.clear();
@@ -416,6 +434,9 @@ impl Shell {
             "script {id} requested: {}",
             show::truncate(request, 60)
         ));
+        if let Some(reply) = self.try_act(id, request) {
+            return reply;
+        }
         let mut repair: Option<(String, String)> = None;
         let mut outcome = String::new();
         for round in 0..2 {

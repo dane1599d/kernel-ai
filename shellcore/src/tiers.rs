@@ -64,10 +64,12 @@ pub fn of(table: &[(&str, Tier)], function: &str) -> Tier {
 }
 
 /// The tier of `function` in a script written for `request`: its row's, raised to
-/// `Ask` when the request did not ask for it.
+/// `Ask` when the request did not ask for it, or is not in English.
 pub fn for_request(table: &[(&str, Tier)], request: &str, function: &str) -> Tier {
     match of(table, function) {
         Tier::Run if !asked_for(request, function) => Tier::Ask,
+        // v0.1 gives a line that is not English no consent for changes (ADR 0002 D3).
+        Tier::Run if changes(function) && !agentabi::consent::is_english_line(request) => Tier::Ask,
         tier => tier,
     }
 }
@@ -91,4 +93,10 @@ pub fn of_script<'a>(
         .filter(|name| tier_of(name) == tier)
         .collect();
     (tier, at)
+}
+
+/// Whether `function` is a script API row that changes something.
+fn changes(function: &str) -> bool {
+    agentabi::find(&agentabi::SCRIPT_API, function)
+        .is_some_and(|row| row.effect() == Effect::Change)
 }
