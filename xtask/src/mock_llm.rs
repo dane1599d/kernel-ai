@@ -215,11 +215,11 @@ const ACTS: &[(&str, &str)] = &[
         "cambia la política a round robin",
         r#"{"name":"set_policy","arguments":{"name":"round-robin"}}"#,
     ),
-    // The trial's stand-in has been up 1000 ms, a booted guest longer, so this
+    // The trial's stand-in lists the full 16 processes, a booted guest fewer, so this
     // switches and then throws only on the real run (`act-rollback`).
     (
         "switch to round robin then stop",
-        r#"{"name":"script","arguments":{"code":"set_policy(\"round-robin\");\nif uptime_ms() > 1000 { throw \"stopped after the switch\"; }"}}"#,
+        r#"{"name":"script","arguments":{"code":"set_policy(\"round-robin\");\nif processes().len() < 16 { throw \"stopped after the switch\"; }"}}"#,
     ),
 ];
 
