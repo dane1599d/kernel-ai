@@ -21,6 +21,7 @@ cpufeat = { path = "../cpufeat" }
 devkit = { path = "../devkit" }
 devmatch = { path = "../devmatch" }
 kabi = { path = "../kabi" }
+kaibundle = { path = "../kaibundle" }
 limine = "0.6.5"
 linetable = { path = "../linetable" }
 livecore = { path = "../livecore" }

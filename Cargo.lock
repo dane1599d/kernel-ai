@@ -506,6 +506,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "kaibundle"
+version = "0.0.0"
+dependencies = [
+ "sha2",
+]
+
+[[package]]
 name = "kernel"
 version = "0.10.0"
 dependencies = [
@@ -517,6 +524,7 @@ dependencies = [
  "editcore",
  "gfxcore",
  "kabi",
+ "kaibundle",
  "limine",
  "linetable",
  "livecore",
@@ -1376,6 +1384,7 @@ dependencies = [
  "gguf",
  "infer",
  "kabi",
+ "kaibundle",
  "linetable",
  "livecore",
  "llmproto",

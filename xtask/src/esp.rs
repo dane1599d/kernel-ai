@@ -40,6 +40,9 @@ pub fn boot_modules(
     Ok(modules)
 }
 
+/// The one module Limine loads besides the kernel, under `boot/`.
+pub const BUNDLE: &str = "kai.bundle";
+
 pub fn limine_conf(cmdline: &str, module_paths: &[&str]) -> String {
     let mut conf = format!(
         "timeout: 0\n\n/Kernel AI\n    protocol: limine\n    path: boot():/boot/kernel\n    cmdline: {cmdline}\n"
@@ -69,18 +72,21 @@ pub fn make_esp<M: core::borrow::Borrow<Module>>(
     }
     copy(efi, &boot_efi.join("BOOTX64.EFI"))?;
     copy(kernel, &esp.join("boot").join("kernel"))?;
-    for module in modules.iter().map(M::borrow) {
-        let path = esp.join("boot").join(&module.path);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
-        }
-        fs::write(&path, &module.bytes)
-            .map_err(|e| format!("cannot write {}: {e}", module.path))?;
-    }
-    let paths: Vec<&str> = modules.iter().map(|m| m.borrow().path.as_str()).collect();
-    fs::write(limine_dir.join("limine.conf"), limine_conf(cmdline, &paths))
-        .map_err(|e| format!("cannot write limine.conf: {e}"))?;
+    // Every module goes into one `kai-bundle 1` (ADR 0008), so adding a program
+    // never changes limine.conf.
+    let files: Vec<(&str, &[u8])> = modules
+        .iter()
+        .map(M::borrow)
+        .map(|m| (m.path.as_str(), m.bytes.as_slice()))
+        .collect();
+    let bundle = kaibundle::build(&files).map_err(|e| format!("kai.bundle: {e:?}"))?;
+    fs::write(esp.join("boot").join(BUNDLE), &bundle)
+        .map_err(|e| format!("cannot write {BUNDLE}: {e}"))?;
+    fs::write(
+        limine_dir.join("limine.conf"),
+        limine_conf(cmdline, &[BUNDLE]),
+    )
+    .map_err(|e| format!("cannot write limine.conf: {e}"))?;
     // The notices the image owes (ADR 0009 D6), under a line naming this build.
     let root = crate::workspace_root();
     let text = fs::read_to_string(root.join(notices::FILE))

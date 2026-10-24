@@ -202,14 +202,9 @@ impl Source<'_> {
     }
 }
 
-/// The `kai.model` boot module, if Limine loaded one.
+/// The `kai.model` file on the boot drive (in `kai.bundle`), if there is one.
 fn boot_module() -> Option<&'static [u8]> {
-    crate::MODULES
-        .response()?
-        .modules()
-        .iter()
-        .find(|file| file.path().ends_with(MODULE))
-        .map(|file| -> &'static [u8] { file.data() })
+    crate::bootfiles::find(MODULE)
 }
 
 /// Copies the model into memory and builds its window: from the `kai.model` boot
