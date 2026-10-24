@@ -16,7 +16,7 @@ use alloc::string::String;
 use infer::Next;
 use infer::chat::{Budget, Engine, Step};
 use infer::tagged::Tagged;
-use llmproto::act::{self, ActError, ActRequest, Call};
+use llmproto::act::{self, ActError, ActRequest, Call, History, Turn};
 use llmproto::chat::{self, Completion};
 use llmproto::local;
 use llmproto::script::{self, Answer, AnswerError, ScriptRequest};
@@ -162,6 +162,8 @@ pub struct Local {
     engine: Engine<'static>,
     /// The tagged call's grammar over the pack's rows, built once.
     grammar: Tagged<'static>,
+    /// Conversation memory for `act`, in RAM only (P1 plan section 4).
+    history: History,
     last: Option<Speed>,
 }
 
@@ -180,6 +182,7 @@ impl Local {
         Ok(Self {
             engine,
             grammar,
+            history: History::new(),
             last: None,
         })
     }
@@ -243,15 +246,55 @@ impl Local {
     /// prompt (`llmproto::local::act::routed`).
     pub fn act(&mut self, request: &ActRequest) -> Result<Call, ActError> {
         let mut clock = Clock::new(request.timeout_ms.min(act::SERVICE_TIMEOUT_MS));
-        let call = local::act::routed(&mut self.engine, &self.grammar, request, |step| {
-            clock.step(step)
-        });
+        let call = local::act::routed(
+            &mut self.engine,
+            &self.grammar,
+            request,
+            &self.history,
+            |step| clock.step(step),
+        );
         let forced = self.engine.forced();
         self.last = clock
             .speed()
             .map(|speed| Speed { forced, ..speed })
             .or(self.last);
         call
+    }
+
+    /// Keeps a finished turn the shell wrote (`remember`), within history's
+    /// budget. Returns a line for the log.
+    pub fn remember(&mut self, turn: Turn) -> String {
+        let dropped = local::act::remember(&self.engine, &mut self.history, turn);
+        let budget = local::act::history_budget(&self.engine);
+        let kept = self.history.len();
+        let tokens = self.history.tokens();
+        match dropped {
+            true => format!("{kept} turns, {tokens} of {budget} tokens (the older half went)"),
+            false => format!("{kept} turns, {tokens} of {budget} tokens"),
+        }
+    }
+
+    /// `new`: forgets the conversation.
+    pub fn forget(&mut self) {
+        self.history.clear();
+    }
+
+    /// Computes the `act` prefix (pack, MODE turn, history) into the cache while
+    /// no request waits; `waiting` as for [`Local::warm`].
+    pub fn warm_act(&mut self, mut waiting: impl FnMut() -> bool) -> Result<(), String> {
+        let mut slept = 0;
+        local::act::warm(&mut self.engine, &self.history, |_| {
+            if sys::time_ns() - slept < SLEEP_EVERY_NS {
+                return Next::Continue;
+            }
+            let came = waiting();
+            slept = sys::time_ns();
+            match came {
+                true => Next::Stop,
+                false => Next::Continue,
+            }
+        })
+        .map_err(|error| local::describe(&error))
     }
 
     /// Computes the script system prompt into the cache while no request waits

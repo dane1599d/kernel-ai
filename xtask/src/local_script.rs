@@ -13,7 +13,7 @@ use crate::fluency::host::GateHost;
 use infer::Next;
 use infer::chat::{Budget, Engine, Step};
 use infer::tagged::Tagged;
-use llmproto::act::{self, ActError, ActRequest, Call};
+use llmproto::act::{self, ActError, ActRequest, Call, History};
 use llmproto::local;
 use llmproto::script::{self, Answer, AnswerError, ScriptRequest};
 use llmproto::text::printable;
@@ -91,6 +91,7 @@ fn outcome(bytes: &'static [u8], tier: Tier) -> Result<Outcome, String> {
         gate: Rc::clone(&host),
         engine,
         grammar,
+        history: RefCell::new(History::new()),
     });
     let mut shell = Shell::new(acting, DEFAULT_CONFIG);
     let typed = shell.eval(REQUEST).to_wire();
@@ -106,11 +107,14 @@ fn outcome(bytes: &'static [u8], tier: Tier) -> Result<Outcome, String> {
 
 /// The gate's stand-in OS, with `act` answered as the llm service answers it: the
 /// tagged call on the same engine (`llmproto::local::act::routed`), through the
-/// same wire, so a call that fails comes back as the guest's shell sees it.
+/// same wire, so a call that fails comes back as the guest's shell sees it. It
+/// keeps conversation memory as llm does (`remember`, `new`), so a second request
+/// carries the first turn as the guest's does.
 struct Acting {
     gate: Rc<GateHost>,
     engine: Rc<RefCell<Engine<'static>>>,
     grammar: Tagged<'static>,
+    history: RefCell<History>,
 }
 
 impl Host for Acting {
@@ -150,9 +154,26 @@ impl Host for Acting {
             &mut self.engine.borrow_mut(),
             &self.grammar,
             &request,
+            &self.history.borrow(),
             |_| Next::Continue,
         );
         act::decode_answer(&act::encode_answer(&call))
+    }
+
+    /// As llm takes it: through the wire, and kept within its budget.
+    fn remember(&self, line: &str, call: &str, result: &str) {
+        let turn = act::Turn {
+            line: line.to_string(),
+            call: call.to_string(),
+            result: result.to_string(),
+        };
+        if let Some(turn) = act::history::decode_remember(&act::history::encode_remember(&turn)) {
+            local::act::remember(&self.engine.borrow(), &mut self.history.borrow_mut(), turn);
+        }
+    }
+
+    fn forget(&self) {
+        self.history.borrow_mut().clear();
     }
 
     fn audit(&self, text: &str) {

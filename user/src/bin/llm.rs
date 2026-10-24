@@ -1,7 +1,8 @@
 //! The LLM service. It takes `ask <prompt>`, `explain <facts>` (see
 //! `llmproto::explain`), `script ...` (see `llmproto::script`), `tune ...` (see
 //! `llmproto::tune`, answered with the model's raw completion), `act ...` (see
-//! `llmproto::act`, one tagged call, local model only), `health` and
+//! `llmproto::act`, one tagged call, local model only), `remember ...` (a turn
+//! for its conversation memory, `llmproto::act::history`), `new`, `health` and
 //! `model` requests from the kernel terminal and the shell, and answers
 //! `ok <text>` or `err <text>`.
 //!
@@ -31,7 +32,7 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use kabi::model::Fnv1a;
-use llmproto::act::{ActError, ActRequest};
+use llmproto::act::{ActError, ActRequest, history};
 use llmproto::chat::Completion;
 use llmproto::chat::{self, NO_MODEL};
 use llmproto::script::{self, AnswerError, ScriptRequest};
@@ -145,13 +146,17 @@ fn main() -> i32 {
     // Whether the script system prompt may be missing from the engine's cache:
     // at first, and after a request with another prompt.
     let mut cold = true;
+    // Whether the `act` prefix changed (a remembered turn, `new`): compacted,
+    // that is computed again, while no request waits.
+    let mut stale = false;
     loop {
         let mut caller = 0;
-        let waiting = match (cold, &mut backends.local) {
-            (true, Some(Ok(local))) => warm(local, &mut request, &mut caller),
+        let waiting = match (stale, cold, &mut backends.local) {
+            (true, _, Some(Ok(local))) => warm_act(local, &mut request, &mut caller),
+            (_, true, Some(Ok(local))) => warm(local, &mut request, &mut caller),
             _ => None,
         };
-        cold = false;
+        (cold, stale) = (false, false);
         let len = match waiting.map_or_else(|| sys::svc_recv(&mut request, 0, &mut caller), Ok) {
             Ok(len) => len.min(request.len()),
             Err(kabi::Error::TimedOut) => continue,
@@ -162,7 +167,9 @@ fn main() -> i32 {
             }
         };
         let text = core::str::from_utf8(&request[..len]).unwrap_or("");
-        cold = matches!(text.split(' ').next(), Some("ask" | "explain" | "model"));
+        let command = text.split([' ', '\n']).next();
+        cold = matches!(command, Some("ask" | "explain" | "model"));
+        stale = matches!(command, Some("remember" | "new"));
         let mut reply = match handle(&mut backends, text, &mut response) {
             Ok(text) => format!("ok {text}"),
             Err(error) => format!("err {}", printable(&error, MAX_ERROR_CHARS, 1)),
@@ -188,6 +195,19 @@ fn load(bytes: &'static [u8]) -> Result<local::Local, String> {
     // Loading may be a long burst; a sleep ends it before the first request.
     sys::sleep_ms(1);
     loaded
+}
+
+/// Compacts history: the `act` prefix into the cache, as [`warm`] does the script
+/// prompt.
+fn warm_act(local: &mut local::Local, request: &mut [u8], caller: &mut u64) -> Option<usize> {
+    let mut came = None;
+    if let Err(why) = local.warm_act(|| {
+        came = sys::svc_recv(request, 1, caller).ok();
+        came.is_some()
+    }) {
+        println!("local: the act prefix was not cached: {why}");
+    }
+    came
 }
 
 /// Warms `local` for scripts until done or until a request comes, which is then
@@ -238,6 +258,18 @@ fn handle(backends: &mut Backends, text: &str, response: &mut [u8]) -> Result<St
         ),
         "script" => script(backends, text, response),
         "act" => act(backends, text, response),
+        "remember" => match (&mut backends.local, history::decode_remember(text)) {
+            (Some(Ok(local)), Some(turn)) => Ok(local.remember(turn)),
+            (Some(Ok(_)), None) => Err(String::from("malformed remember request")),
+            _ => Err(String::from(NO_MODEL)),
+        },
+        "new" if rest.is_empty() => match &mut backends.local {
+            Some(Ok(local)) => {
+                local.forget();
+                Ok(String::from("conversation cleared"))
+            }
+            _ => Ok(String::from("no conversation")),
+        },
         "tune" => tune(backends, text, response),
         _ => Err(format!("unknown request {command:?}")),
     }
