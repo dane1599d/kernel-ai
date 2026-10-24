@@ -2,15 +2,20 @@
 //! script that prints a made-up number is caught. They are also chosen so that no
 //! answer a task asks to compute equals a raw value (61 migrations on 7 CPUs is 8 per
 //! CPU, not 7; the highest pid is not the last), so skipping the computation fails.
-//! It records every policy change.
+//! It records every policy change. With an `act` transport it answers tagged calls
+//! too, so the shell's one door runs as in the OS (actbench's gate); without one
+//! the shell asks for scripts only, as the fluency gate measures.
 
 use kabi::{Metrics, policy};
+use llmproto::act::{ActError, ActRequest, Call};
 use llmproto::script::{Answer, AnswerError, ScriptRequest};
 use std::cell::{Cell, RefCell};
 use std::time::Instant;
 
 /// Where script requests go: the LLM server, or canned answers in tests.
 pub type Transport = Box<dyn Fn(&ScriptRequest) -> Result<Answer, AnswerError>>;
+/// Where `act` requests go.
+pub type ActTransport = Box<dyn Fn(&ActRequest) -> Result<Call, ActError>>;
 
 /// The services `processes()` lists, as (pid, name).
 pub const SERVICES: &[(u64, &str)] = &[(12, "shell"), (25, "llm"), (19, "crasher")];
@@ -22,7 +27,10 @@ pub struct GateHost {
     pub changes: RefCell<Vec<u64>>,
     /// What each round returned.
     pub answers: RefCell<Vec<Result<Answer, AnswerError>>>,
+    /// What each `act` returned.
+    pub calls: RefCell<Vec<Result<Call, ActError>>>,
     transport: Transport,
+    act: Option<ActTransport>,
 }
 
 impl GateHost {
@@ -32,7 +40,17 @@ impl GateHost {
             policy: Cell::new(policy::INTERACTIVE),
             changes: RefCell::new(Vec::new()),
             answers: RefCell::new(Vec::new()),
+            calls: RefCell::new(Vec::new()),
             transport,
+            act: None,
+        }
+    }
+
+    /// A host that answers `act` requests with `act` as well.
+    pub fn with_act(transport: Transport, act: ActTransport) -> Self {
+        Self {
+            act: Some(act),
+            ..Self::new(transport)
         }
     }
 }
@@ -85,6 +103,15 @@ impl shellcore::Host for GateHost {
         let answer = (self.transport)(request);
         self.answers.borrow_mut().push(answer.clone());
         answer
+    }
+
+    fn act(&self, request: &ActRequest) -> Result<Call, ActError> {
+        let Some(act) = &self.act else {
+            return Err(ActError::Unavailable(String::from("no tagged calls here")));
+        };
+        let call = act(request);
+        self.calls.borrow_mut().push(call.clone());
+        call
     }
 
     fn audit(&self, _: &str) {}
