@@ -397,7 +397,8 @@ pub fn run_test(
             accel
         );
     }
-    if status.code() != Some(QEMU_PASS) {
+    let reset = run.case.resets && status.code() == Some(0);
+    if status.code() != Some(QEMU_PASS) && !reset {
         return Err(format!("FAIL: QEMU exited with {status}"));
     }
     if !missing.is_empty() {

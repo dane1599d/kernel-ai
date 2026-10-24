@@ -60,6 +60,18 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("pci-bridge", "test=net-static ip=static")
     },
+    // ADR 0007 section 8: reboot through the FADT's reset register (q35 has
+    // port 0xCF9), and through the 8042 when told to skip it.
+    TestCase {
+        resets: true,
+        expect: &["power: rebooting through the FADT reset register (write 0x6 to I/O port 0xcf9)"],
+        ..case("reboot", "test=reboot")
+    },
+    TestCase {
+        resets: true,
+        expect: &["power: rebooting through the 8042 reset line"],
+        ..case("reboot-8042", "test=reboot reboot=8042")
+    },
     // P7: a keyboard and a tablet on xHCI. QEMU sends keys to the USB keyboard
     // and absolute moves to the tablet; the kernel checks the keys came over USB,
     // through the controller's MSI-X interrupt.

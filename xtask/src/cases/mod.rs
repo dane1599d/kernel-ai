@@ -64,6 +64,9 @@ pub struct TestCase {
     /// Put the network card behind a PCIe root port, on bus 1, so the kernel
     /// reaches it only by walking the bridge.
     pub bridge: bool,
+    /// The case passes by resetting the machine: under `-no-reboot` QEMU then
+    /// exits with status 0 instead of the isa-debug-exit code.
+    pub resets: bool,
 }
 
 pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase {
@@ -86,6 +89,7 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         screen: None,
         usb: &[],
         bridge: false,
+        resets: false,
     }
 }
 
@@ -120,6 +124,6 @@ mod tests {
         let cases = test_cases();
         let names: HashSet<&str> = cases.iter().map(|case| case.name).collect();
         assert_eq!(names.len(), cases.len());
-        assert_eq!(cases.len(), 51);
+        assert_eq!(cases.len(), 53);
     }
 }

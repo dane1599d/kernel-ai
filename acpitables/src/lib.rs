@@ -1,12 +1,14 @@
 //! Minimal ACPI reader: walks RSDP, then XSDT or RSDT, and extracts what the kernel
 //! needs from the MADT (local APIC, I/O APICs, ISA interrupt overrides, CPUs) and the
-//! HPET table. No AML. Host-tested against synthetic tables. [`hpet_counter`]
+//! HPET table, and from the FADT the reset register and the 8042 flag ([`fadt`]).
+//! No AML. Host-tested against synthetic tables. [`hpet_counter`]
 //! reads the HPET's main counter so a device that splits the read never tears it.
 
 #![no_std]
 
 extern crate alloc;
 
+pub mod fadt;
 pub mod hpet_counter;
 
 use alloc::vec::Vec;
@@ -74,6 +76,10 @@ pub struct Platform {
     pub hpet: Option<u64>,
     /// PCIe configuration windows, if the firmware has an MCFG table.
     pub ecam: Vec<Ecam>,
+    /// The FADT's reset register, if it has one it supports.
+    pub reset: Option<fadt::Reset>,
+    /// The FADT says the machine has no 8042 keyboard controller.
+    pub no_8042: bool,
 }
 
 /// How an ISA IRQ reaches the I/O APIC.
@@ -164,6 +170,7 @@ pub fn parse(mem: &impl PhysMem, rsdp: u64) -> Result<Platform, Error> {
                 }
             }
             b"MCFG" => parse_mcfg(table(mem, address)?, &mut platform),
+            b"FACP" => fadt::apply(table(mem, address)?, &mut platform),
             _ => {}
         }
     }

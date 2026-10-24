@@ -68,6 +68,7 @@ mod percpu;
 mod platform;
 mod pointer;
 mod port;
+mod power;
 mod process;
 mod qemu;
 mod sched_control;
@@ -309,6 +310,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::ComputeKeys => run_case(compute_tests::keys_check),
         SelfTest::Bigmap => run_case(bigmap_tests::check),
         SelfTest::IcountProbe => run_case(|| icount_tests::check(cmdline())),
+        SelfTest::Reboot => power::reboot(),
         SelfTest::TuneRevert => run_case(tune_tests::revert_check),
         SelfTest::TuneStall => run_case(tune_stall_tests::check),
         SelfTest::Tune => run_case(tune_tests::shell_check),
@@ -366,7 +368,12 @@ fn init_devices() -> &'static acpitables::Platform {
         hpet::init(hpet)?;
         hpet::select_clock(cmdline());
         timer::init()?;
-        i8042::init(platform, apic_id)?;
+        // ADR 0007 section 8: no 8042 when the FADT says the machine has none.
+        if platform.no_8042 {
+            log!("i8042: the FADT says this machine has no 8042; skipped");
+        } else {
+            i8042::init(platform, apic_id)?;
+        }
         log!(
             "devices: local APIC id {apic_id}, {} I/O APIC(s), {} IRQ override(s)",
             platform.io_apics.len(),
