@@ -109,7 +109,12 @@ impl Outcome {
 /// Runs `task` through the shell the way a user would: `? <request>`, then `yes`
 /// to a script that asks; a run-tier one runs at once.
 pub fn attempt(task: &Task, transport: Transport) -> Outcome {
-    let host = Rc::new(GateHost::new(transport));
+    attempt_on(task, GateHost::new(transport))
+}
+
+/// [`attempt`] on `host`, which may answer `act` requests too.
+pub fn attempt_on(task: &Task, host: GateHost) -> Outcome {
+    let host = Rc::new(host);
     let mut shell = Shell::new(host.clone(), DEFAULT_CONFIG);
     let proposal = shell.eval(&format!("? {}", task.request));
     let answers = host.answers.borrow().clone();

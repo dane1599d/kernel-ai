@@ -1,28 +1,38 @@
-# Spikes S02-1 (the action gate, ADR 0002) and S10-1 (pack format and scale,
-# ADR 0010) on the real model, on GitHub's machine instead of a PC: it downloads
-# the pinned qwen3-4b-2507 file named in xtask/models.json, checks its SHA-256,
+# The actbench gate (P1 task 18; spikes S02-1 and S10-1, ADR 0002 and ADR 0010)
+# on the real model, on GitHub's machine instead of a PC. It downloads the
+# pinned qwen3-4b-2507 file named in xtask/models.json, checks its SHA-256 and
 # runs `cargo xtask actbench --local qwen3-4b-2507` through Kernel AI's own
-# engine for the arms and seeds asked for, and uploads each run's jsonl (headed
-# by its pack_id). One job at a time, started by hand only: Actions tab, "Action
-# accuracy on the real model", Run workflow; or, before this file is on main, by
-# adding the label `actbench` to a pull request, which runs what ships: the
-# tagged call in dsl-1 with scripts written by today's prompt (`+m8script`) at
-# seeds 42, 1 and 2, beside hermes-1 at seed 42. The run reports; task 18 turns
-# it into a gate that fails the job.
-name: Action accuracy on the real model
+# engine.
+#
+# The gate (the label `actbench` on a pull request, or Run workflow with
+# arms "act" and gate on): arm `act`, what ships, at seeds 42, 1 and 2, one job
+# each in parallel. Its 190 tasks decode with `infer::tagged` on the dsl-1 pack
+# and are judged by `agentabi::consent`; its M8 50 go through the shell's one
+# door with llm's own `act` path on the OS pack. A job fails when its seed
+# misses a bar of the P1 plan's section 6; each writes its bars, pack_id and
+# OS pack_id to the job summary and uploads its jsonl. About 45 minutes a seed.
+#
+# Run workflow with other arms is for measurements (dsl-1, hermes-1, prose-1,
+# :no-think, @80, +rules, +m8script, m8, m8-a0), one job, gate off by default.
+# Started by hand only, one run at a time; never on every PR.
+name: actbench gate on the real model
 
 on:
   workflow_dispatch:
     inputs:
       arms:
-        description: "Arms, comma-separated: dsl-1, hermes-1, prose-1 (add :no-think, @80), m8, m8-a0"
-        default: "dsl-1,hermes-1,m8,m8-a0"
+        description: "Arms, comma-separated: act (what ships), dsl-1, hermes-1, prose-1 (add :no-think, @80, +rules, +m8script), m8, m8-a0"
+        default: "act"
       seeds:
         description: "Seeds, comma-separated"
-        default: "42"
+        default: "42,1,2"
       limit:
         description: "Only the first N tasks of each category (empty for all)"
         default: ""
+      gate:
+        description: "Fail the job when a bar is missed"
+        type: boolean
+        default: true
   pull_request:
     types: [labeled]
 
@@ -45,7 +55,7 @@ jobs:
       fail-fast: false
       max-parallel: 3
       matrix:
-        include: ${{ fromJSON(github.event_name == 'workflow_dispatch' && format('[{{"arms":"{0}","seeds":"{1}","extra":""}}]', inputs.arms, inputs.seeds) || '[{"arms":"dsl-1+m8script","seeds":"42,1,2","extra":""},{"arms":"hermes-1","seeds":"42","extra":""}]') }}
+        include: ${{ fromJSON(github.event_name == 'workflow_dispatch' && format('[{{"arms":"{0}","seeds":"{1}","extra":"{2}"}}]', inputs.arms, inputs.seeds, inputs.gate && '--gate' || '') || '[{"arms":"act","seeds":"42","extra":"--gate"},{"arms":"act","seeds":"1","extra":"--gate"},{"arms":"act","seeds":"2","extra":"--gate"}]') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 240
     steps:

@@ -12,7 +12,7 @@
 //! cargo xtask setup | model chat|check|pin | bench quant   (the local LLM on the host; see models/mod.rs)
 //! cargo xtask tune --sim ... | demo | check | record | ab   (M10a; see tune/mod.rs)
 //! cargo xtask tokens --gguf PATH   (S10-0: real token counts of the prompt parts; see tokens.rs)
-//! cargo xtask actbench --local ID [--arm ARM,..] [--seed N,..] [--limit N]   (S02-1 and S10-1 on our engine; GitHub only; see actbench/mod.rs)
+//! cargo xtask actbench --local ID [--arm act,..] [--seed N,..] [--limit N] [--gate]   (task 18 gate, S02-1, S10-1; GitHub only; see actbench/mod.rs)
 //! cargo xtask latency --local ID [--store DIR] [--accel kvm]   (S02-2: Enter to busy sign and to done, real model in the guest)
 //! cargo xtask doctor   (can this PC run Kernel AI in an accelerated VM, and what to fix; read-only)
 //! cargo xtask vbox [--start [--headless]]   (the VirtualBox VM "Kernel AI"; see vbox/mod.rs)

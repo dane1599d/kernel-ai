@@ -7,9 +7,10 @@
 //! a row's call as a one-line script that makes it.
 
 use super::{Decoded, Tagged, base_turns, decode, user_text};
-use crate::fluency::host::Transport;
+use crate::fluency::host::{GateHost, Transport};
 use crate::fluency::local::Shared;
 use infer::Next;
+use llmproto::act::{self, ActError, ActRequest};
 use llmproto::local;
 use llmproto::script::{Answer, AnswerError, ScriptRequest};
 use serde_json::{Value, json};
@@ -35,6 +36,22 @@ pub fn reference(engine: Shared, no_think: bool) -> Transport {
             Next::Continue
         })
     })
+}
+
+/// The OS's own path: the shell's one door asks `act` first, answered as llm
+/// answers it (`llmproto::local::act::routed` on the OS pack, through the wire
+/// both ways), and scripts (the fallback and repair rounds) as llm
+/// answers them today.
+pub fn shipping(engine: Shared, grammar: Rc<infer::tagged::Tagged<'static>>) -> GateHost {
+    let act_engine = engine.clone();
+    let act = Box::new(move |request: &ActRequest| {
+        let request = ActRequest::decode(&request.encode()).ok_or(ActError::NotACall)?;
+        let call = local::act::routed(&mut act_engine.borrow_mut(), &grammar, &request, |_| {
+            Next::Continue
+        });
+        act::decode_answer(&act::encode_answer(&call))
+    });
+    GateHost::with_act(reference(engine, true), act)
 }
 
 /// A Rhai literal for an argument value.
