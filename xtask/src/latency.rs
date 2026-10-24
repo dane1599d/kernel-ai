@@ -12,8 +12,8 @@ use crate::disk::ModelDisk;
 use crate::tune::boot::{Booter, split};
 use std::time::Duration;
 
-/// Plain requests on today's script path: three reads and two policy switches,
-/// each of which names the policy, so all run at once.
+/// Plain requests, on the act path since task 7 (scripts before): three reads and
+/// two policy switches, each of which names the policy, so all run at once.
 pub const REQUESTS: [&str; 5] = [
     "how many cpus are there",
     "switch to round robin",
