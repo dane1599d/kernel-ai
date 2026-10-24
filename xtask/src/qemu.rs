@@ -320,13 +320,23 @@ pub fn run_test(
     let stdout = child.stdout.take().ok_or("QEMU stdout was not captured")?;
     let (ready_tx, ready_rx) = mpsc::channel();
     let all = (expect.clone(), exact.clone(), None);
+    // The echo runs apart from the reader, as in icount.rs: printing to a slow CI
+    // log must never stop QEMU's output being read. A full pipe makes QEMU hold
+    // the serial port busy, and the guest then waits for it with interrupts off,
+    // so its CPUs miss ticks (#46 measured stalls of 100-770 ms under KVM).
+    let (echo_tx, echo_rx) = mpsc::channel::<String>();
+    let echo = thread::spawn(move || {
+        for line in echo_rx {
+            println!("  | {line}");
+        }
+    });
     let reader = thread::spawn(move || {
         let mut measure_start = None;
         let mut stage = 0;
         let (mut missing, mut unseen) = (expect, exact);
         let mut cpu_line = None;
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            println!("  | {line}");
+            let _ = echo_tx.send(line.clone());
             missing.retain(|text| !line.contains(text.as_str()));
             unseen.retain(|text| line.trim_end_matches('\r') != text);
             if cpu_line.is_none() && !from_programs(&line) && line.contains(CPU_LINE) {
@@ -375,6 +385,8 @@ pub fn run_test(
         thread::sleep(Duration::from_millis(50));
     };
     let (missing, unseen, cpu_line) = reader.join().unwrap_or(all);
+    // Every echoed line is out before the verdict.
+    let _ = echo.join();
     if let Some(line) = cpu_line {
         println!("xtask: guest {}", &line[line.find(CPU_LINE).unwrap_or(0)..]);
     }
