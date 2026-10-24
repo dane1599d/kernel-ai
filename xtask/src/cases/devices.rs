@@ -61,7 +61,8 @@ pub(super) const CASES: &[TestCase] = &[
         ..case("pci-bridge", "test=net-static ip=static")
     },
     // P7: a keyboard and a tablet on xHCI. QEMU sends keys to the USB keyboard
-    // and absolute moves to the tablet; the kernel checks the keys came over USB.
+    // and absolute moves to the tablet; the kernel checks the keys came over USB,
+    // through the controller's MSI-X interrupt.
     TestCase {
         usb: &["usb-kbd", "usb-tablet"],
         keys: &[USB_TABLET],
@@ -71,6 +72,9 @@ pub(super) const CASES: &[TestCase] = &[
             "usb: USB tablet at 16384 8192 of 32767 32767, buttons 0",
             "usb: USB tablet at 16384 8192 of 32767 32767, buttons 1",
             "usb: received \"kai\" over USB",
+            // ADR 0007: the controller interrupts on MSI-X; nothing polls it.
+            "slots, interrupts on MSI-X vector 0x30",
+            " MSI-X interrupts, 0 stray vectors",
         ],
         ..case("usb-tablet", "test=usb")
     },

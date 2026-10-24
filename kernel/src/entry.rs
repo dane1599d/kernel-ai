@@ -335,6 +335,30 @@ stub!(vector_halt, crate::apic::HALT_VECTOR);
 stub!(vector_spurious, crate::apic::SPURIOUS_VECTOR);
 stub!(vector_mouse, crate::apic::MOUSE_VECTOR);
 
+/// Bytes between two device-vector stubs.
+pub const DEVICE_STUB_BYTES: u64 = 16;
+
+/// One stub per device vector, `irq::FIRST` to `irq::LAST`, each at a 16-byte
+/// boundary from this function's address rounded up to 16: it pushes a zero
+/// error code and its vector and joins `common_entry`, as `stub!` does.
+#[unsafe(naked)]
+pub unsafe extern "C" fn device_vectors() {
+    core::arch::naked_asm!(
+        ".set kai_device_vector, {first}",
+        ".rept {count}",
+        ".balign 16",
+        "pushq $0",
+        "pushq $kai_device_vector",
+        "jmp {entry}",
+        ".set kai_device_vector, kai_device_vector + 1",
+        ".endr",
+        first = const crate::irq::FIRST,
+        count = const (crate::irq::LAST - crate::irq::FIRST) as usize + 1,
+        entry = sym common_entry,
+        options(att_syntax),
+    )
+}
+
 /// The 32 exception stubs, indexed by vector.
 pub const EXCEPTIONS: [unsafe extern "C" fn(); 32] = [
     vector_0, vector_1, vector_2, vector_3, vector_4, vector_5, vector_6, vector_7, vector_8,

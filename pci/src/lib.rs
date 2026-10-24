@@ -3,10 +3,13 @@
 //! firmware set. BARs stay as firmware assigned them; nothing here writes
 //! configuration space. The kernel supplies the configuration access (ECAM,
 //! mapping each bus as the walk first reads it); host tests use a fake one.
+//! [`msix`] reads capabilities and sets up MSI-X.
 
 #![no_std]
 
 extern crate alloc;
+
+pub mod msix;
 
 use alloc::vec::Vec;
 pub use pci_types::{ConfigRegionAccess, PciAddress};
