@@ -188,5 +188,10 @@ pub const GRANT_DUP: u64 = 49;
 /// (ADR 0001 D6). A match uses it up. Invalid for another digest, NotFound for
 /// no digest under the badge, Revoked once its request ended.
 pub const ONCE_CHECK: u64 = 50;
+/// `dev_list(buf, cap) -> len`: the bound devices, one
+/// [`crate::device::DeviceRecord`] of 64 bytes each, as many whole records as
+/// fit in `cap` bytes; returns the bytes written. ADR 0007 section 3: no
+/// handle needed yet, as for METRICS (ADR 0001's INSPECT check comes to both).
+pub const DEV_LIST: u64 = 51;
 /// The highest call number.
-pub const MAX: u64 = ONCE_CHECK;
+pub const MAX: u64 = DEV_LIST;

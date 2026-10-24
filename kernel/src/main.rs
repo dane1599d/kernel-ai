@@ -29,6 +29,8 @@ mod build_service;
 mod compute_tests;
 mod console;
 mod cpu;
+mod device_tests;
+mod devices;
 mod display;
 mod display_tests;
 mod edit_mode;
@@ -313,6 +315,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Bigmap => run_case(bigmap_tests::check),
         SelfTest::IcountProbe => run_case(|| icount_tests::check(cmdline())),
         SelfTest::Reboot => power::reboot(),
+        SelfTest::Devices => run_case(device_tests::check),
         SelfTest::TuneRevert => run_case(tune_tests::revert_check),
         SelfTest::TuneStall => run_case(tune_stall_tests::check),
         SelfTest::Tune => run_case(tune_tests::shell_check),

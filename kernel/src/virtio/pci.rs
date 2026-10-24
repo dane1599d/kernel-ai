@@ -5,6 +5,7 @@
 
 use super::hal::{DEVICE, KernelHal};
 use super::split::{self, SplitTransport};
+use crate::devices::{Outcome, error};
 use crate::{log, memory};
 use alloc::collections::BTreeMap;
 use alloc::format;
@@ -189,13 +190,16 @@ pub fn probe(platform: &acpitables::Platform, cmdline: &str) -> Result<Found, &'
                 );
                 continue;
             }
-            bind(&mut found, &mut root, &access, row.driver, at, ids);
+            if let Some(outcome) = bind(&mut found, &mut root, &access, row.driver, at, ids) {
+                crate::devices::bind(&f, row.driver, outcome);
+            }
         }
     }
     Ok(found)
 }
 
-/// Sets up the function at `at` for `driver`.
+/// Sets up the function at `at` for `driver`, and says how that went for its
+/// device record; `None` for a function no driver took.
 fn bind(
     found: &mut Found,
     root: &mut PciRoot<EcamAccess>,
@@ -203,9 +207,9 @@ fn bind(
     driver: &'static str,
     at: DeviceFunction,
     ids: Ids,
-) {
+) -> Option<Outcome> {
     if matches!(driver, "nvme" | "xhci") {
-        match memory_bar0(root, at) {
+        return match memory_bar0(root, at) {
             Ok((bar, bar_len)) => {
                 log!(
                     "pci: {driver} at {at}, BAR0 {bar:#x} ({} KiB)",
@@ -213,9 +217,12 @@ fn bind(
                 );
                 let name = format!("{at}");
                 match driver {
-                    "nvme" => found
-                        .nvme
-                        .push(crate::nvme::Function { name, bar, bar_len }),
+                    "nvme" => {
+                        found
+                            .nvme
+                            .push(crate::nvme::Function { name, bar, bar_len });
+                        Some(Outcome::Running(None))
+                    }
                     _ => {
                         let address = pci::PciAddress::new(0, at.bus, at.device, at.function);
                         let vector = match enable_msix(access, address, crate::usb::on_interrupt) {
@@ -232,12 +239,15 @@ fn bind(
                             vector,
                         };
                         found.usb.push(function);
+                        Some(Outcome::Running(vector))
                     }
                 }
             }
-            Err(message) => log!("pci: {driver} at {at}: {message}"),
-        }
-        return;
+            Err(message) => {
+                log!("pci: {driver} at {at}: {message}");
+                Some(Outcome::Failed(error::BAR))
+            }
+        };
     }
     let kind = match driver {
         "virtio-net" => DeviceType::Network,
@@ -245,16 +255,16 @@ fn bind(
         "virtio-blk" => DeviceType::Block,
         _ => {
             log!("pci: no kernel driver called {driver} for {at}");
-            return;
+            return None;
         }
     };
     if kind == DeviceType::Network && found.net.is_some() {
         log!("pci: ignoring a second virtio network card at {at}");
-        return;
+        return None;
     }
     if kind == DeviceType::GPU && found.gpu.is_some() {
         log!("pci: ignoring a second virtio-gpu at {at}");
-        return;
+        return None;
     }
     log!("pci: {driver} at {at} (id 1af4:{:04x})", ids.device);
     // Firmware assigned the BARs; make sure the device decodes them and may DMA.
@@ -263,22 +273,25 @@ fn bind(
     let Ok(transport) = PciTransport::new::<KernelHal, _>(root, at) else {
         log!("pci: {driver} at {at}: transport setup failed");
         found.net_failed |= kind == DeviceType::Network;
-        return;
+        return Some(Outcome::Failed(error::TRANSPORT));
     };
-    match kind {
-        DeviceType::Network => match split_transport(access, at, transport) {
-            Ok(transport) => found.net = Some(transport),
-            Err(message) => {
-                log!("pci: {driver} at {at}: {message}");
-                found.net_failed = true;
-            }
-        },
-        DeviceType::GPU => match split_transport(access, at, transport) {
-            Ok(transport) => found.gpu = Some(transport),
-            Err(message) => log!("pci: {driver} at {at}: {message}"),
-        },
-        _ => found.disks.push(transport),
+    let split = match kind {
+        DeviceType::Network | DeviceType::GPU => split_transport(access, at, transport),
+        _ => {
+            found.disks.push(transport);
+            return Some(Outcome::Running(None));
+        }
+    };
+    match (kind, split) {
+        (DeviceType::Network, Ok(transport)) => found.net = Some(transport),
+        (_, Ok(transport)) => found.gpu = Some(transport),
+        (kind, Err(message)) => {
+            log!("pci: {driver} at {at}: {message}");
+            found.net_failed |= kind == DeviceType::Network;
+            return Some(Outcome::Failed(error::TRANSPORT));
+        }
     }
+    Some(Outcome::Running(None))
 }
 
 /// Gives the function's first MSI-X entry a vector of its own, delivered to the

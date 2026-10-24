@@ -72,6 +72,16 @@ pub(super) const CASES: &[TestCase] = &[
         expect: &["power: rebooting through the 8042 reset line"],
         ..case("reboot-8042", "test=reboot reboot=8042")
     },
+    // ADR 0007 section 3: a record per bound device, read by DEV_LIST from ring 3.
+    TestCase {
+        usb: &["usb-kbd"],
+        expect: &[
+            "devices: DEV_LIST from ring 3 lists them too",
+            "virtio-net in the kernel, running, polled, 0 interrupts",
+            "class 0c0330 xhci in the kernel, running, MSI-X, ",
+        ],
+        ..case("devices", "test=devices")
+    },
     // P7: a keyboard and a tablet on xHCI. QEMU sends keys to the USB keyboard
     // and absolute moves to the tablet; the kernel checks the keys came over USB,
     // through the controller's MSI-X interrupt.

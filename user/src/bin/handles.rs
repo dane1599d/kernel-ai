@@ -52,6 +52,7 @@ fn main() -> i32 {
         Some("grants") => grants,
         Some("hold") => hold,
         Some("revoke") => revoke,
+        Some("devlist") => devlist,
         _ => checks,
     };
     match run() {
@@ -360,5 +361,60 @@ fn checks() -> Result<(), &'static str> {
         Error::BadHandle,
         "a handle a refused replace closed",
     )?;
+    Ok(())
+}
+
+/// `handles mode=devlist`: DEV_LIST from ring 3 (ADR 0007), one line a device.
+fn devlist() -> Result<(), &'static str> {
+    use kabi::device::{DeviceRecord, MAX_RECORDS, irq_mode, place, state};
+    let mut records = [DeviceRecord::default(); MAX_RECORDS];
+    let count = sys::dev_list(&mut records).map_err(|_| "DEV_LIST failed")?;
+    if count == 0 {
+        return Err("DEV_LIST listed no device");
+    }
+    for r in &records[..count] {
+        let place = match r.place {
+            place::KERNEL => "kernel",
+            _ => "user",
+        };
+        let state = match r.state {
+            state::RUNNING => "running",
+            state::FAILED => "failed",
+            _ => "bound",
+        };
+        let irq = match r.irq_mode {
+            irq_mode::MSI_X => "MSI-X",
+            irq_mode::MSI => "MSI",
+            _ => "polled",
+        };
+        println!(
+            "devlist: {} {:02x}:{:02x}.{} {:04x}:{:04x} class {:02x}{:02x}{:02x} {} in the {place}, {state}, {irq}, {} interrupts",
+            r.index,
+            r.bus,
+            r.device_number(),
+            r.function(),
+            r.vendor,
+            r.device,
+            r.class[0],
+            r.class[1],
+            r.class[2],
+            r.driver(),
+            r.interrupts
+        );
+    }
+    let mut one = [DeviceRecord::default(); 1];
+    let first = DeviceRecord {
+        interrupts: one[0].interrupts,
+        ..records[0]
+    };
+    if sys::dev_list(&mut one) != Ok(1)
+        || one[0]
+            != (DeviceRecord {
+                interrupts: one[0].interrupts,
+                ..first
+            })
+    {
+        return Err("DEV_LIST into a one-record buffer did not give the first record");
+    }
     Ok(())
 }

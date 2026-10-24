@@ -298,6 +298,13 @@ pub fn reply_h(bytes: &[u8], handles: &[Handle]) -> Result<u64, Error> {
     )
 }
 
+/// The bound devices into `out`; how many it filled.
+pub fn dev_list(out: &mut [kabi::device::DeviceRecord]) -> Result<usize, Error> {
+    let bytes = core::mem::size_of_val(out) as u64;
+    let len = call(call::DEV_LIST, [out.as_mut_ptr() as u64, bytes, 0, 0, 0, 0])?;
+    Ok(len as usize / core::mem::size_of::<kabi::device::DeviceRecord>())
+}
+
 pub fn metrics() -> Result<Metrics, Error> {
     let mut metrics = Metrics::empty();
     call(
