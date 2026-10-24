@@ -24,6 +24,7 @@ mod bigmap_tests;
 mod blk_tests;
 mod block;
 mod boot_manifest;
+mod bootfiles;
 mod build_job;
 mod build_service;
 mod compute_tests;
@@ -409,16 +410,14 @@ fn init_memory() {
 }
 
 fn load_line_table() {
-    let module = MODULES.response().and_then(|r| {
-        r.modules()
-            .iter()
-            .find(|file| file.path().ends_with("kernel.lines"))
-    });
-    let Some(module) = module else {
-        log!("lines: kernel.lines module not loaded; faults will show raw addresses");
+    if let Err(message) = bootfiles::open() {
+        fail(message);
+    }
+    let Some(table) = bootfiles::find("kernel.lines") else {
+        log!("lines: kernel.lines not on the boot drive; faults will show raw addresses");
         return;
     };
-    match lines::init(module.data()) {
+    match lines::init(table) {
         Ok(()) => {
             if let Some(table) = lines::table() {
                 log!(
@@ -502,16 +501,9 @@ fn on_off(on: bool) -> &'static str {
 /// Finds the ring-3 programs among the boot modules and, for the boots that use
 /// user space, starts supervision with the service plan.
 fn start_user_space(test: SelfTest) {
-    let modules: &'static [&'static limine::file::File] =
-        MODULES.response().map_or(&[], |r| r.modules());
-    process::components::init(modules.iter().map(|file| {
-        let file: &'static limine::file::File = file;
-        (file.path(), file.data())
-    }));
-    process::programs::init(modules.iter().map(|file| {
-        let file: &'static limine::file::File = file;
-        (file.path(), file.data())
-    }));
+    bootfiles::init();
+    process::components::init(bootfiles::all());
+    process::programs::init(bootfiles::all());
     let programs = process::programs::all();
     log!("process: {} programs loaded as modules", programs.len());
     let free = memory::with(|m| m.free_frames());
@@ -531,7 +523,12 @@ fn start_user_space(test: SelfTest) {
         threads::resync_ticks();
         let edge = timer::align_to_second();
         threads::resync_ticks();
-        log!("tune-ab: services start at tick {edge}");
+        log!(
+            "tune-ab: services start at tick {edge} (diag: HPET {} ns, TSC {})",
+            hpet::nanos(),
+            // SAFETY: rdtsc only reads the time-stamp counter.
+            unsafe { core::arch::x86_64::_rdtsc() }
+        );
     }
     if let Err(message) = process::supervision::start(plan) {
         fail(message);
