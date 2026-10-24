@@ -75,6 +75,11 @@ fn observe(seed: &str) -> Result<(), &'static str> {
         let id = rest.split(' ').next().unwrap_or("");
         line(&alloc::format!("answer {id} no"))?;
     }
+    let counts: alloc::vec::Vec<u64> = crate::timer::DIAG_COUNTS
+        .iter()
+        .map(|c| c.load(core::sync::atomic::Ordering::Relaxed))
+        .collect();
+    log!("tune-ab: diag APIC counts from tick 1000: {counts:?}");
     log!("tune-ab: observe done");
     Ok(())
 }

@@ -83,9 +83,16 @@ pub fn on_tick() {
     arm(cpu.tick_start_ns.load(Ordering::Relaxed) + (ticks + 1) * period_ns());
 }
 
+/// DIAG (not for merge): the APIC counts armed for ticks 1000..1064.
+pub static DIAG_COUNTS: [AtomicU64; 64] = [const { AtomicU64::new(0) }; 64];
+
 fn arm(deadline_ns: u64) {
     let remaining = deadline_ns.saturating_sub(hpet::nanos());
     let count = remaining * APIC_PER_MS.load(Ordering::Relaxed) / 1_000_000;
+    let at = ticks().wrapping_sub(1000);
+    if percpu::index() == 0 && at < 64 {
+        DIAG_COUNTS[at as usize].store(count, Ordering::Relaxed);
+    }
     apic::timer_start(count.clamp(1, u64::from(u32::MAX)) as u32);
 }
 
