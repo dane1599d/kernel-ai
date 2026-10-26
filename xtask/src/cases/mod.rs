@@ -3,6 +3,7 @@
 //! (ADR 0000 section 4) keeps its cases in a table of its own, joined in [`LANES`].
 
 mod agent;
+mod compiler;
 mod components;
 mod devices;
 mod kernel;
@@ -104,6 +105,7 @@ const LANES: &[&[TestCase]] = &[
     agent::CASES,
     components::CASES,
     network::CASES,
+    compiler::CASES,
 ];
 
 /// The cases `cargo xtask test` boots.
@@ -124,6 +126,6 @@ mod tests {
         let cases = test_cases();
         let names: HashSet<&str> = cases.iter().map(|case| case.name).collect();
         assert_eq!(names.len(), cases.len());
-        assert_eq!(cases.len(), 61);
+        assert_eq!(cases.len(), 63);
     }
 }

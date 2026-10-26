@@ -13,6 +13,7 @@ pub mod compiler;
 pub mod corpus;
 pub mod engine;
 pub mod rhai_bench;
+pub mod run;
 pub mod session;
 
 /// Nanoseconds from some fixed point.

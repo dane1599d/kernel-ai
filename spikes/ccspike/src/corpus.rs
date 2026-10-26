@@ -94,7 +94,7 @@ pub const CORPUS: &[Entry] = &[
     ),
     entry("struct", ENTRY_STRUCT, Some(("__kai_run_8", 30))),
     entry("fib", ENTRY_FIB, Some(("__kai_run_9", 6765))),
-    entry("switch", ENTRY_SWITCH, Some(("__kai_run_10", 3))),
+    entry("switch", ENTRY_SWITCH, Some(("__kai_run_10", 5))),
     entry("array", ENTRY_ARRAY, Some(("__kai_run_11", 4950))),
     entry("fnptr", ENTRY_FNPTR, Some(("__kai_run_12", 21))),
     entry(
@@ -316,7 +316,7 @@ I64 __kai_run_20(void) { return sq(7) + counter + fib(20); }
 
 /// The `notes` component's logic (components/notes/src/lib.rs) in C, with fixed
 /// arrays instead of heap strings: add, count, find, get and the request switch.
-const ENTRY_NOTES: &str = r#"#define MAX_NOTES 32
+pub const ENTRY_NOTES: &str = r#"#define MAX_NOTES 32
 #define MAX_TEXT 96
 #define MAX_REPLY 160
 typedef struct Note {

@@ -25,6 +25,8 @@ quant = { path = "../quant" }
 sched = { path = "../sched" }
 supervise = { path = "../supervise" }
 shellcore = { path = "../shellcore" }
+# Spike S12-1 only (spike/cc-wasm, never merged).
+spike-ccspike = { path = "../spikes/ccspike" }
 spin = "0.12.3"
 talc = "5.1.1"
 wasmhost = { path = "../wasmhost" }

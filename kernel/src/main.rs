@@ -27,6 +27,7 @@ mod block;
 mod boot_manifest;
 mod build_job;
 mod build_service;
+mod cc_tests;
 mod compute_tests;
 mod console;
 mod cpu;
@@ -309,6 +310,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Latency => run_case(latency_tests::check),
         SelfTest::Fpu => run_case(fpu_tests::fpu_check),
         SelfTest::Probe => run_case(fpu_tests::probe_check),
+        SelfTest::CcSpike => run_case(|| cc_tests::check(cmdline())),
         SelfTest::Handles => run_case(handle_tests::check),
         SelfTest::Threads => run_case(thread_tests::check),
         SelfTest::ThreadsKill => run_case(thread_tests::kill_check),

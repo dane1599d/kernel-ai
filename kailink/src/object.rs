@@ -1,6 +1,8 @@
 //! Reads a relocatable object (Linking.md) into the parts the linker needs. Only
 //! what `wcc -c` writes is accepted: memory, table and globals are imported, and
-//! there are no start, element, tag or exception sections.
+//! there are no start, tag or exception sections. wcc's element section lists the
+//! functions whose address is taken; it is skipped, since every such use carries a
+//! `TABLE_INDEX` relocation and the linker gives those functions their slots.
 
 use crate::{Error, FuncType, ValType};
 use alloc::format;
@@ -95,7 +97,7 @@ impl<'a> Object<'a> {
                         relocs: Vec::new(),
                     });
                 }
-                Payload::DataCountSection { .. } => {}
+                Payload::DataCountSection { .. } | Payload::ElementSection(_) => {}
                 Payload::CustomSection(custom) => match custom.as_known() {
                     KnownCustom::Linking(reader) => {
                         saw_linking = true;
@@ -114,7 +116,6 @@ impl<'a> Object<'a> {
                 other => {
                     let name = match other {
                         Payload::StartSection { .. } => "a start section",
-                        Payload::ElementSection(_) => "an element section",
                         Payload::TagSection(_) => "exceptions (setjmp)",
                         Payload::MemorySection(_) => "a memory of its own",
                         Payload::TableSection(_) => "a table of its own",

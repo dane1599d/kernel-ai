@@ -338,7 +338,9 @@ impl<'a> Plan<'a> {
                 return Err(Error::Parse("table index of a non-function".into()));
             };
             if self.slots[index as usize].is_none() {
-                debug_assert!(index as usize >= obj.func_imports.len());
+                if (index as usize) < obj.func_imports.len() {
+                    return Err(Error::Unsupported("the address of a host import".into()));
+                }
                 self.slots[index as usize] = Some(self.new_slot(session)?);
             }
         }

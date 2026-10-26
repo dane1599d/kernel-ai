@@ -6,7 +6,7 @@ use crate::{Clock, engine};
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use alloc::{format, vec};
-use wasihost::{Errno, Limits, Stop, Tree, Wasi};
+use wasihost::{Limits, Stop, Tree, Wasi};
 use wasmi::{
     CompilationMode, Engine, Error, Extern, FuncType, Linker, Module, ResumableCall, Store, Val,
     ValType,
@@ -59,6 +59,16 @@ impl Compiler {
             slice: 10_000_000,
         };
         Ok((compiler, ns))
+    }
+
+    /// The same compiler with fuel slices of `slice`.
+    pub fn with_slice(&self, slice: u64) -> Self {
+        Self {
+            engine: self.engine.clone(),
+            module: self.module.clone(),
+            kai: self.kai.clone(),
+            slice,
+        }
     }
 
     /// Compiles `source` as `/w/entry.c` to `/w/entry.o`; on failure, wcc's
@@ -208,9 +218,4 @@ fn run_sliced(
             }
         }
     }
-}
-
-#[allow(dead_code)]
-fn errno_text(e: Errno) -> String {
-    format!("errno {}", e.0)
 }

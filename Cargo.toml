@@ -34,6 +34,17 @@ opt-level = 2
 overflow-checks = false
 debug-assertions = false
 
+# Spike S12-1: wasmi's generics are instantiated in the spike's harness, and the
+# compiler and linker are measured, so all three build optimised.
+[profile.dev.package.spike-ccspike]
+opt-level = 2
+
+[profile.dev.package.kailink]
+opt-level = 2
+
+[profile.dev.package.wasihost]
+opt-level = 2
+
 [profile.dev.package.gguf]
 opt-level = 2
 
