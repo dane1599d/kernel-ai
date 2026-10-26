@@ -1,7 +1,7 @@
 //! The trusted path's side of the Allow / Deny menu (ADR 0001 D6, ADR 0002 D2a).
 //! On Allow it makes request node `request N` for the menu's log entry and mints
 //! a `ONCE` handle into the shell's table, whose kernel-held digest names the
-//! question exactly as shown (`termcore::once::digest`). The shell checks that
+//! call exactly as shown (`termcore::once::digest_call`). The shell checks that
 //! digest with ONCE_CHECK before the call runs, and a match uses it up. On
 //! "Always allow" it also makes the rule's persistent node under `user` and gives
 //! the shell a `Grant` handle that can only revoke it, for `rules_remove`.
@@ -28,9 +28,9 @@ fn slot_of(pid: u64) -> Option<usize> {
     process::with_table(|table| table.iter().position(|p| p.live() && p.pid == pid))
 }
 
-/// Mints what `answer` to menu `id`, which showed `question`, grants the shell.
+/// Mints what `answer` to menu `id`, which showed `call`, grants the shell.
 /// Deny grants nothing.
-pub fn allow(id: u64, question: &str, answer: Answer) -> Result<Option<Allowed>, kabi::Error> {
+pub fn allow(id: u64, call: &str, answer: Answer) -> Result<Option<Allowed>, kabi::Error> {
     if answer == Answer::Deny {
         return Ok(None);
     }
@@ -38,7 +38,7 @@ pub fn allow(id: u64, question: &str, answer: Answer) -> Result<Option<Allowed>,
         .and_then(slot_of)
         .ok_or(kabi::Error::NotFound)?;
     let request = grants::new_request(id)?;
-    let digest = termcore::once::digest(id, question);
+    let digest = termcore::once::digest_call(id, call);
     let once =
         grants::mint_once(shell, Kind::Grant, Rights::empty(), 0, request, digest).and_then(|h| {
             handle::with(shell, |t| t.table.get(h).map(|e| e.badge))?.map_err(kabi::Error::from)

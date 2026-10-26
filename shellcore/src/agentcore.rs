@@ -278,11 +278,13 @@ impl Shell {
         };
         let (kind, target) = offer.map(|o| o.labels()).unwrap_or_default();
         let question = format!("Run {call}? {}.", capitalised(&reason));
-        match Menu::new(id, &question, Some(&kind), Some(&target), origin) {
+        let menu = Menu::new(id, &question, Some(&kind), Some(&target), origin)
+            .and_then(|menu| menu.with_call(&call));
+        match menu {
             Ok(_) => {
-                let text = Menu::encode(id, origin, &question, &kind, &target);
+                let text = Menu::encode(id, origin, &question, &kind, &target, &call);
                 if let Some(pending) = &mut self.pending {
-                    pending.menu = Some(question);
+                    pending.menu = Some(call);
                 }
                 Reply::menu(id, text)
             }
@@ -414,13 +416,8 @@ fn literal(ty: &ArgType, value: &Value) -> Option<(String, String)> {
     }
 }
 
-/// A Rhai string literal for plain one-line text.
+/// A Rhai string literal for plain one-line text, quoted as the canonical call
+/// text the ONCE digest names (`termcore::once::quote`).
 fn quote(s: &str) -> Option<String> {
-    if s.chars().any(char::is_control) {
-        return None;
-    }
-    Some(format!(
-        "\"{}\"",
-        s.replace('\\', "\\\\").replace('"', "\\\"")
-    ))
+    termcore::once::quote(s)
 }
