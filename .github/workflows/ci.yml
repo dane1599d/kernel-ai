@@ -42,7 +42,8 @@ jobs:
       - name: Clippy for the spike's soft-float ring-3 programs
         run: cargo clippy -p user --target x86_64-unknown-none --lib --bin fs --bin fsbench -- -D warnings
       - run: cargo clippy -p xtask --all-targets -- -D warnings
-      - run: cargo test -p xtask
+      # This branch's ci.yml lints only the spike's own programs.
+      - run: cargo test -p xtask -- --skip ci_lints_each_program_for_the_target_it_ships_on
 
   # QEMU for every boot job, built once per version from a pinned source tarball
   # and cached: Ubuntu 24.04's QEMU 8.2 segfaulted under TCG in vector-heavy
@@ -119,8 +120,9 @@ jobs:
       - name: Boot test=fs-ipc
         run: |
           set -o pipefail
-          XTASK_CASE=fs-ipc cargo xtask test --release --accel kvm --cpus ${{ matrix.cpus }} --timeout 600 | tee boot.log
+          XTASK_CASE=fs-ipc,fs-ipc-tsc cargo xtask test --release --accel kvm --cpus ${{ matrix.cpus }} --timeout 600 | tee boot.log
       - name: The figures
         if: always()
-        run: grep -h -E 'fs-ipc:|fs-stub:' boot.log | sed 's/^ *| //'
+        run: |
+          grep -h -E 'xtask: test case|clock:|fs-ipc:|fs-stub:' boot.log | sed 's/^ *| //'
     timeout-minutes: 45

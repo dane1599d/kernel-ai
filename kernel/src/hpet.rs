@@ -52,6 +52,8 @@ static LAST_TICKS: AtomicU64 = AtomicU64::new(0);
 /// read instead: torn reads, which QEMU before 10.0 gives at each 43 s wrap of
 /// the low half.
 static SPLIT_READS: AtomicU64 = AtomicU64::new(0);
+/// Spike S04-2: every main-counter read, to see what the clock costs an IPC call.
+static READS: AtomicU64 = AtomicU64::new(0);
 
 fn read(offset: u64) -> u64 {
     // SAFETY: BASE maps the HPET register block uncached.
@@ -66,6 +68,7 @@ fn read32(offset: u64) -> u32 {
 /// The main counter, never torn (see [`acpitables::hpet_counter`]). A torn read
 /// once put a sleeping thread 43 s in the future and lost it from the storm case.
 fn main_counter() -> u64 {
+    READS.fetch_add(1, Ordering::Relaxed);
     let last = LAST_TICKS.load(Ordering::Relaxed);
     let (ticks, split) = acpitables::hpet_counter::read(
         || read(MAIN_COUNTER),
@@ -78,6 +81,11 @@ fn main_counter() -> u64 {
     }
     LAST_TICKS.fetch_max(ticks, Ordering::Relaxed);
     ticks
+}
+
+/// Spike S04-2: main-counter reads so far.
+pub fn reads() -> u64 {
+    READS.load(Ordering::Relaxed)
 }
 
 /// Main-counter reads so far that had to fall back to reading the halves.

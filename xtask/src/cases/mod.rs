@@ -126,6 +126,6 @@ mod tests {
         let cases = test_cases();
         let names: HashSet<&str> = cases.iter().map(|case| case.name).collect();
         assert_eq!(names.len(), cases.len());
-        assert_eq!(cases.len(), 63);
+        assert_eq!(cases.len(), 64);
     }
 }

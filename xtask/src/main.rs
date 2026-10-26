@@ -205,8 +205,11 @@ fn execute(options: &Options) -> Result<(), String> {
         .enumerate()
         .filter(|&(index, _)| options::in_shard(options.shard, index))
         .map(|(_, case)| case)
-        // Spike S04-2: `XTASK_CASE=name` boots only that case.
-        .filter(|case| env::var("XTASK_CASE").map_or(true, |only| only == case.name))
+        // Spike S04-2: `XTASK_CASE=a,b` boots only those cases.
+        .filter(|case| {
+            env::var("XTASK_CASE")
+                .map_or(true, |only| only.split(',').any(|name| name == case.name))
+        })
         .collect::<Vec<_>>();
     for &case in &cases {
         let service = match case.build {

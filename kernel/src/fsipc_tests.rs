@@ -3,8 +3,8 @@
 //! when both exit 0; the figures are `fsbench`'s lines. Never merged.
 
 use crate::fpu_tests::wait_exit;
-use crate::log;
 use crate::process::{self, SpawnRequest};
+use crate::{hpet, ipc, log, threads};
 use kabi::{ExitReason, Limits, cap};
 
 /// The stub holds the 64 MiB file and two message buffers.
@@ -23,7 +23,16 @@ const BENCH_LIMITS: Limits = Limits {
     stack_pages: 0,
 };
 
+/// HPET main-counter reads a second with nothing running, from timer ticks alone.
+fn idle_reads_per_second() -> u64 {
+    let (reads, start) = (hpet::reads(), hpet::nanos());
+    threads::sleep_ms(1_000);
+    (hpet::reads() - reads) * 1_000_000_000 / (hpet::nanos() - start).max(1)
+}
+
 pub fn check() -> Result<(), &'static str> {
+    let idle = idle_reads_per_second();
+    let (reads, started) = (hpet::reads(), hpet::nanos());
     let start = |name, limits, uses: &'static [&'static str]| {
         process::spawn(&SpawnRequest {
             name,
@@ -46,6 +55,15 @@ pub fn check() -> Result<(), &'static str> {
             return Err("fs-ipc: the stub or its client failed");
         }
     }
+    let elapsed = hpet::nanos() - started;
+    let read = hpet::reads() - reads;
+    let calls = ipc::replies("fs").1.max(1);
+    let ticks = idle * elapsed / 1_000_000_000;
+    log!(
+        "fs-ipc: {read} HPET reads in {} ms for {calls} calls; {idle} a second when idle, so about {} a call",
+        elapsed / 1_000_000,
+        read.saturating_sub(ticks) / calls
+    );
     log!("fs-ipc: the stub fs answered every call");
     Ok(())
 }

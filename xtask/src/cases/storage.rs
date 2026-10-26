@@ -3,9 +3,19 @@
 
 use super::{TestCase, case};
 
-pub(super) const CASES: &[TestCase] = &[TestCase {
-    expect: &["fs-ipc: done", "fs-stub: answered"],
-    server: false,
-    memory_mib: Some(1024),
-    ..case("fs-ipc", "test=fs-ipc")
-}];
+pub(super) const CASES: &[TestCase] = &[
+    TestCase {
+        expect: &["fs-ipc: done", "fs-stub: answered"],
+        server: false,
+        memory_mib: Some(1024),
+        ..case("fs-ipc", "test=fs-ipc")
+    },
+    // The same with the TSC as the kernel's clock (as `cargo xtask vbox` boots),
+    // to see what HPET reads cost each call.
+    TestCase {
+        expect: &["fs-ipc: done", "fs-stub: answered", "clock: the TSC"],
+        server: false,
+        memory_mib: Some(1024),
+        ..case("fs-ipc-tsc", "test=fs-ipc clock=tsc")
+    },
+];
