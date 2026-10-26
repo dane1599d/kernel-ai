@@ -14,16 +14,19 @@ use wasmi::{
 };
 
 /// What host functions see of the instance.
-struct HostState {
-    limits: StoreLimits,
-    log: Option<LogSink>,
+pub(crate) struct HostState {
+    pub(crate) limits: StoreLimits,
+    pub(crate) log: Option<LogSink>,
     /// Log lines are dropped while set.
-    quiet: bool,
+    pub(crate) quiet: bool,
     /// Log lines written during the current call.
-    lines: u32,
+    pub(crate) lines: u32,
     /// Where the current call panicked, from `kai.panic`; kept while quiet, so a
     /// rehearsal reports it too.
-    panic_at: Option<String>,
+    pub(crate) panic_at: Option<String>,
+    /// `kai:app/clock`'s time and seed, fixed for the call (lifecycle 2).
+    pub(crate) now_ms: u64,
+    pub(crate) seed: u64,
 }
 
 /// Most bytes of a panic's file path read from the version.
@@ -50,7 +53,7 @@ fn abi(detail: impl Into<String>) -> Fault {
 }
 
 /// What a failed call into a version means.
-fn classify(error: &Error) -> Fault {
+pub(crate) fn classify(error: &Error) -> Fault {
     let reason = match (error.as_trap_code(), error.kind()) {
         (Some(TrapCode::OutOfFuel), _) => Reason::Fuel,
         (Some(TrapCode::GrowthOperationLimited | TrapCode::OutOfSystemMemory), _) => Reason::Memory,
@@ -63,7 +66,7 @@ fn classify(error: &Error) -> Fault {
 }
 
 /// `kai.log(ptr, len)`: one line from the version, cut to [`MAX_LOG_BYTES`].
-fn log(mut caller: Caller<'_, HostState>, ptr: i32, len: i32) -> Result<(), Error> {
+pub(crate) fn log(mut caller: Caller<'_, HostState>, ptr: i32, len: i32) -> Result<(), Error> {
     let memory = caller
         .get_export("memory")
         .and_then(Extern::into_memory)
@@ -88,7 +91,7 @@ fn log(mut caller: Caller<'_, HostState>, ptr: i32, len: i32) -> Result<(), Erro
 /// Of a long path only the end is read, which holds the file name a long path is
 /// cut to. A path outside memory is ignored; the trap that follows is reported
 /// either way.
-fn panic(
+pub(crate) fn panic(
     mut caller: Caller<'_, HostState>,
     ptr: i32,
     len: i32,
@@ -110,7 +113,7 @@ fn panic(
 
 /// A failed call's fault; a trap the version announced with `kai.panic` names
 /// where it panicked.
-fn fault(error: &Error, panic_at: Option<String>) -> Fault {
+pub(crate) fn fault(error: &Error, panic_at: Option<String>) -> Fault {
     match (error.as_trap_code(), panic_at) {
         (Some(TrapCode::UnreachableCodeReached), Some(at)) => Fault::new(Reason::Trap, at),
         _ => classify(error),
@@ -148,6 +151,8 @@ impl WasmInstance {
             quiet: false,
             lines: 0,
             panic_at: None,
+            now_ms: 0,
+            seed: 0,
         };
         let mut store = Store::new(engine, state);
         store.limiter(|state| &mut state.limits);

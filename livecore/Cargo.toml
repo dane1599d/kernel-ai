@@ -12,4 +12,5 @@ publish = false
 doctest = false
 
 [dependencies]
+appabi = { path = "../appabi" }
 kabi = { path = "../kabi" }

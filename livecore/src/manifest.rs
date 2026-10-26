@@ -16,8 +16,7 @@
 //! ```
 //!
 //! `lifecycle` is the contract the module implements: `1` is today's hand-bound
-//! `kai-lifecycle-1`, `2` is `kai:live` through the canonical ABI, which this host
-//! cannot load yet. `world` replaces version 1's `interface`: a swap keeps a
+//! `kai-lifecycle-1`, `2` is `kai:live` through the canonical ABI. `world` replaces version 1's `interface`: a swap keeps a
 //! compatible world (the same package and world, and a version that links: the
 //! same `0.minor` while 0.x, then the same major, never older). `kai-manifest 1` is
 //! still read for one release, and its `interface` becomes the world.
@@ -27,8 +26,9 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use kabi::live::valid_label;
 
-/// The lifecycle contracts this host can load.
-pub const LIFECYCLE: u32 = 1;
+/// The lifecycle contracts this host can load: `kai-lifecycle-1` and, through
+/// `appabi`, `kai:live`.
+pub const LIFECYCLES_LOADED: [u32; 2] = [1, 2];
 /// The lifecycle values a manifest may name.
 const LIFECYCLES: [u32; 2] = [1, 2];
 /// The engines this host has.
@@ -169,12 +169,8 @@ impl Manifest {
 
     /// Why this host cannot load the version, if it cannot.
     pub fn unloadable(&self) -> Option<String> {
-        (self.lifecycle != LIFECYCLE).then(|| {
-            format!(
-                "lifecycle {} is not one this host loads yet (it loads {LIFECYCLE})",
-                self.lifecycle
-            )
-        })
+        (!LIFECYCLES_LOADED.contains(&self.lifecycle))
+            .then(|| format!("lifecycle {} is not one this host loads", self.lifecycle))
     }
 }
 
@@ -341,13 +337,18 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn only_lifecycle_1_loads_here_for_now() {
+    fn lifecycles_1_and_2_load_here() {
         assert_eq!(manifest().unloadable(), None);
         let two = Manifest {
             lifecycle: 2,
             ..manifest()
         };
-        assert!(two.unloadable().unwrap().contains("lifecycle 2"));
+        assert_eq!(two.unloadable(), None);
+        let three = Manifest {
+            lifecycle: 3,
+            ..manifest()
+        };
+        assert!(three.unloadable().unwrap().contains("lifecycle 3"));
     }
 
     #[test]

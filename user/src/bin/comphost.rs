@@ -17,7 +17,7 @@ use livecore::host::{Env, Host, Report, Restored};
 use livecore::local::restored_of;
 use livecore::settings::Settings;
 use user::{arg, args, println, sys};
-use wasmhost::{Limits, WasmInstance};
+use wasmhost::{Limits, LiveInstance};
 
 user::entry!(main);
 
@@ -30,7 +30,7 @@ fn version_log(line: &str) {
 }
 
 impl Env for SysEnv {
-    type Instance = WasmInstance;
+    type Instance = LiveInstance;
 
     fn fetch(&mut self, label: &str) -> Result<Vec<u8>, Error> {
         // The length first (a fetch that does not fit is not counted), then the bytes.
@@ -57,10 +57,11 @@ impl Env for SysEnv {
         Ok(restored_of(&restore, &checkpoint))
     }
 
-    fn load(&mut self, module: &[u8], quiet: bool) -> Result<WasmInstance, Fault> {
+    fn load(&mut self, module: &[u8], quiet: bool) -> Result<LiveInstance, Fault> {
         // The sink stays attached; quiet only mutes it, so a standby that becomes
         // the active version again logs as before.
-        let mut instance = wasmhost::load(module, self.limits, Some(version_log))?;
+        // The manifest's `lifecycle` picks the contract: 1 hand-bound, 2 kai:live.
+        let mut instance = wasmhost::load_live(module, self.limits, Some(version_log))?;
         livecore::Instance::quiet(&mut instance, quiet);
         Ok(instance)
     }

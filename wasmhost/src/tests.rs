@@ -275,7 +275,7 @@ const CANONICAL: &str = r#"(module
 
 #[test]
 fn a_canonical_module_answers_through_appabi() {
-    let mut guest = load_core(&wat::parse_str(CANONICAL).unwrap(), LIMITS).unwrap();
+    let mut guest = load_core(&wat::parse_str(CANONICAL).unwrap(), LIMITS, None).unwrap();
     let func = appabi::Func {
         export: String::from("squares"),
         params: alloc::vec![appabi::Ty::U32],
@@ -287,16 +287,16 @@ fn a_canonical_module_answers_through_appabi() {
     use appabi::Guest;
     assert_eq!(guest.realloc(0, 0, 4, 16).unwrap(), 1024);
     assert!(guest.read(65_530, 10).is_err());
-    assert!(guest.call("missing", &[]).is_err());
+    assert!(Guest::call(&mut guest, "missing", &[]).is_err());
 }
 
 #[test]
 fn every_call_gets_its_own_fuel() {
-    let mut guest = load_core(&wat::parse_str(CANONICAL).unwrap(), LIMITS).unwrap();
+    let mut guest = load_core(&wat::parse_str(CANONICAL).unwrap(), LIMITS, None).unwrap();
     use appabi::Guest;
-    assert!(guest.call("spin", &[]).is_err());
+    assert!(Guest::call(&mut guest, "spin", &[]).is_err());
     // The loop spent its call's fuel, not the next call's.
-    assert!(guest.call("squares", &[appabi::Core::I32(3)]).is_ok());
+    assert!(Guest::call(&mut guest, "squares", &[appabi::Core::I32(3)]).is_ok());
 }
 
 #[test]
@@ -305,7 +305,7 @@ fn a_canonical_module_with_imports_is_refused_for_now() {
         r#"(module (import "kai:app/log" "write" (func)) (memory (export "memory") 1))"#,
     )
     .unwrap();
-    assert_eq!(reason(load_core(&wasm, LIMITS)), Reason::Link);
+    assert_eq!(reason(load_core(&wasm, LIMITS, None)), Reason::Link);
 }
 
 /// The view guest `appbench` runs (components/fixtures/viewbench), when it has been
@@ -320,7 +320,7 @@ fn the_view_guest_rebuilds_300_nodes() {
         std::eprintln!("skipped: build comp-viewbench for wasm32 first");
         return;
     };
-    let mut guest = load_core(&wasm, LIMITS).unwrap();
+    let mut guest = load_core(&wasm, LIMITS, None).unwrap();
     use appabi::{Func, Ty, Val};
     let s = String::from;
     let node = Ty::Record(alloc::vec![
@@ -374,4 +374,145 @@ fn the_view_guest_rebuilds_300_nodes() {
         rows.iter()
             .all(|r| matches!(r, Val::String(t) if t.len() <= 240))
     );
+}
+
+/// A `lifecycle 2` version in WAT: `kai:live/lifecycle@0.1.0` on the canonical ABI,
+/// logging through `kai:app/log` and reading `kai:app/clock`. `save` returns the
+/// 3 bytes "abc" (or none for schema 9); `migrate` fails with `bad-state` on empty
+/// state; `health` returns the clock's seed.
+fn lifecycle2(extra_imports: &str) -> Vec<u8> {
+    let text = std::format!(
+        r#"(module
+  (import "kai:app/log@0.1.0" "write" (func $log (param i32 i32)))
+  (import "kai:app/clock@0.1.2" "seed" (func $seed (result i64)))
+  {extra_imports}
+  (memory (export "memory") 1)
+  (data (i32.const 16) "abc")
+  (data (i32.const 32) "hello")
+  (global $top (mut i32) (i32.const 4096))
+  (func (export "cabi_realloc") (param i32 i32 i32 i32) (result i32)
+    (local $at i32)
+    global.get $top
+    local.set $at
+    global.get $top
+    local.get 3
+    i32.add
+    global.set $top
+    local.get $at)
+  (func (export "kai:live/lifecycle@0.1.0#schema") (result i32)
+    i32.const 32
+    i32.const 5
+    call $log
+    i32.const 3)
+  (func (export "kai:live/lifecycle@0.1.0#init") (result i32)
+    i32.const 64
+    i32.const 0
+    i32.store8
+    i32.const 64)
+  (func (export "kai:live/lifecycle@0.1.0#migrate") (param i32 i32 i32) (result i32)
+    i32.const 64
+    local.get 1
+    i32.eqz
+    i32.store8
+    i32.const 65
+    i32.const 1
+    i32.store8
+    i32.const 64)
+  (func (export "kai:live/lifecycle@0.1.0#save") (param i32) (result i32)
+    i32.const 80
+    local.get 0
+    i32.const 9
+    i32.ne
+    i32.store8
+    i32.const 84
+    i32.const 16
+    i32.store
+    i32.const 88
+    i32.const 3
+    i32.store
+    i32.const 80)
+  (func (export "kai:live/lifecycle@0.1.0#health") (result i32)
+    call $seed
+    i32.wrap_i64)
+  (func (export "kai:live/lifecycle@0.1.0#self-test") (result i32)
+    i32.const 0))"#
+    );
+    wat::parse_str(&text).unwrap()
+}
+
+#[test]
+fn a_lifecycle_2_version_serves_the_lifecycle() {
+    LOGGED.lock().unwrap().clear();
+    let mut v = load_core(&lifecycle2(""), LIMITS, Some(sink)).unwrap();
+    assert_eq!(v.schema(), Ok(3));
+    assert!(LOGGED.lock().unwrap().iter().any(|l| l == "hello"));
+    assert_eq!(v.init(), Ok(0));
+    assert_eq!(v.import(b"state", 3), Ok(0));
+    assert_eq!(v.import(b"", 3), Ok(2), "bad-state is case 1, so 2");
+    assert_eq!(v.export(0), Ok(Some(b"abc".to_vec())));
+    assert_eq!(v.export(9), Ok(None));
+    v.set_call_inputs(1_000, 42);
+    assert_eq!(v.health(), Ok(42));
+    assert_eq!(v.self_test(), Ok(0));
+    assert_eq!(reason(v.handle(b"count")), Reason::Abi);
+}
+
+#[test]
+fn lifecycle_2_imports_link_only_by_name_type_and_version() {
+    let storage = r#"(import "kai:app/storage@0.1.0" "delete" (func (param i32 i32)))"#;
+    assert_eq!(
+        reason(load_core(&lifecycle2(storage), LIMITS, None)),
+        Reason::Link
+    );
+    let wrong_type = r#"(import "kai:app/log@0.1.0" "panic" (func (param i32)))"#;
+    assert_eq!(
+        reason(load_core(&lifecycle2(wrong_type), LIMITS, None)),
+        Reason::Link
+    );
+    let newer = r#"(import "kai:app/log@0.2.0" "write" (func (param i32 i32)))"#;
+    assert_eq!(
+        reason(load_core(&lifecycle2(newer), LIMITS, None)),
+        Reason::Link
+    );
+    let unknown = r#"(import "kai:app/log@0.1.0" "shout" (func (param i32 i32)))"#;
+    assert_eq!(
+        reason(load_core(&lifecycle2(unknown), LIMITS, None)),
+        Reason::Link
+    );
+}
+
+#[test]
+fn load_live_picks_the_lifecycle_from_the_manifest() {
+    // A raw module has no manifest: lifecycle 1.
+    assert!(matches!(
+        load_live(&module("i64.const 0", ""), LIMITS, None),
+        Ok(LiveInstance::V1(_))
+    ));
+    // A lifecycle 1 module named as lifecycle 2 does not link as one.
+    let manifest = livecore::artifact::Manifest {
+        lifecycle: 2,
+        component: String::from("probe"),
+        version: String::from("1"),
+        world: String::from("app:probe/probe@1.0.0"),
+        engine: String::from("wasmi"),
+        features: String::from("-"),
+        licence: String::from("MPL-2.0"),
+        build: String::from("ab12"),
+        source: String::from("cd34"),
+    };
+    let mut artifact = lifecycle2("");
+    use livecore::artifact::{append_custom_section, bundle};
+    append_custom_section(
+        &mut artifact,
+        kabi::live::MANIFEST_SECTION,
+        manifest.format().as_bytes(),
+    );
+    append_custom_section(
+        &mut artifact,
+        kabi::live::SOURCE_SECTION,
+        &bundle(&[("src/lib.wat", b"")]),
+    );
+    let mut live = load_live(&artifact, LIMITS, None).unwrap();
+    assert!(matches!(live, LiveInstance::V2(_)));
+    assert_eq!(live.schema(), Ok(3));
 }
