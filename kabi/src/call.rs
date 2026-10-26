@@ -259,8 +259,9 @@ pub const THREAD_PIN: u64 = 63;
 /// holds every region.
 pub const MODEL_KV_LOAD: u64 = 64;
 /// **Interim**, as [`MODEL_KV_LOAD`]: `model_kv_save(region, offset, buf, len,
-/// flush) -> len` writes `len` bytes of `buf` there; `flush` = 1 then makes every
-/// write so far durable. Permission when the disk cannot be written.
+/// flush) -> len` writes `len` bytes of `buf` there; `flush` is 0, or 1 to make
+/// every write so far durable after it, and anything else is Invalid.
+/// Permission when the disk cannot be written.
 pub const MODEL_KV_SAVE: u64 = 65;
 /// The highest call number.
 pub const MAX: u64 = MODEL_KV_SAVE;
