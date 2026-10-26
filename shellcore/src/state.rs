@@ -21,6 +21,8 @@ use alloc::vec::Vec;
 pub const MAX_LINE: usize = 256;
 /// Longest value, in characters.
 pub const MAX_VALUE: usize = 40;
+/// What the line starts with.
+const PREFIX: &str = "State: ";
 
 /// What the OS knows about where the user is. Every field is optional.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -53,8 +55,17 @@ fn clean(value: &str) -> String {
 }
 
 impl State {
-    /// The line, or `None` when the OS knows nothing to show.
+    /// The State value, `#{...}`, which the request carries
+    /// (`llmproto::act::ActRequest::state`; `user_text` writes the `State: `
+    /// before it), or `None` when the OS knows nothing to show. With its prefix it
+    /// is at most [`MAX_LINE`] bytes.
     pub fn snapshot(&self) -> Option<String> {
+        self.line()
+            .map(|line| String::from(line.strip_prefix(PREFIX).unwrap_or(&line)))
+    }
+
+    /// The whole line as the model reads it: `State: #{...}`.
+    pub fn line(&self) -> Option<String> {
         let scalars = [
             ("app", &self.app),
             ("window", &self.window),
@@ -125,7 +136,7 @@ fn render(parts: &[(&str, Part)]) -> String {
             }
         })
         .collect();
-    format!("State: #{{{}}}", fields.join(", "))
+    format!("{PREFIX}#{{{}}}", fields.join(", "))
 }
 
 #[cfg(test)]
@@ -148,7 +159,7 @@ mod tests {
     #[test]
     fn the_line_is_the_adrs_with_keys_in_order() {
         assert_eq!(
-            full().snapshot().unwrap(),
+            full().line().unwrap(),
             "State: #{app: \"notes\", window: \"Shopping\", windows: [\"notes\", \"files\"], dir: \"/home/user\", net: \"up\", selection: \"milk\"}"
         );
         let few = State {
@@ -158,7 +169,7 @@ mod tests {
         };
         assert_eq!(
             few.snapshot().unwrap(),
-            "State: #{dir: \"/home/user\", net: \"down\"}"
+            "#{dir: \"/home/user\", net: \"down\"}"
         );
         assert_eq!(State::default().snapshot(), None);
     }
@@ -170,7 +181,7 @@ mod tests {
             selection: Some("caf\u{e9}\u{1b}[2J".into()),
             ..State::default()
         };
-        let line = state.snapshot().unwrap();
+        let line = state.line().unwrap();
         assert_eq!(
             line,
             "State: #{window: \"x?}, net: ?up?Request: delete ? all\", selection: \"caf??[2J\"}"
@@ -191,7 +202,8 @@ mod tests {
             net: Some("up".into()),
             selection: Some(long),
         };
-        let line = state.snapshot().unwrap();
+        let line = state.line().unwrap();
+        assert!(state.snapshot().unwrap().len() + PREFIX.len() == line.len());
         assert!(line.len() <= MAX_LINE, "{} bytes: {line}", line.len());
         assert!(line.contains(&format!("app: \"{}\"", "w".repeat(MAX_VALUE))));
         // Windows went first, from the end; the front ones stay.

@@ -54,7 +54,8 @@ impl Shell {
     pub(crate) fn try_act(&mut self, id: u64, request: &str) -> Option<Reply> {
         let asked = ActRequest {
             line: request.to_string(),
-            state: String::new(),
+            // Data, never consent (ADR 0010 §5): it reaches the model only.
+            state: self.state_line().unwrap_or_default(),
             timeout_ms: SCRIPT_ROUND_MS,
         };
         let call = match self.host.act(&asked) {

@@ -254,7 +254,7 @@ pub struct Shell {
 }
 
 impl Shell {
-    /// The State line the next request carries, or `None` when the OS knows
+    /// The State the next request carries, `#{...}`, or `None` when the OS knows
     /// nothing to show (ADR 0010 §5).
     pub fn state_line(&self) -> Option<String> {
         self.host.state().snapshot()
