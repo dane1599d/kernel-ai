@@ -46,6 +46,21 @@ fn write_fixtures() {
         sources.push((format!("redefine{i}"), source.to_string()));
     }
     sources.push(("sum".into(), corpus::SUM.into()));
+    // sq again with another type, and a static data pointer to a global.
+    sources.push((
+        "sq_i64".into(),
+        "I64 sq(I64 x) { return x * x; }
+"
+        .into(),
+    ));
+    sources.push((
+        "data_ptr".into(),
+        "I32 cells[4] = {1, 2, 3, 4};
+I32 *third = &cells[2];
+I64 __kai_run_p(void) { return *third + cells[3]; }
+"
+        .into(),
+    ));
     for (name, source) in sources {
         let out = cc
             .compile(&format!("{}{source}", corpus::prelude(0)), now)
