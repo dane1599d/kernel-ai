@@ -62,10 +62,16 @@ pub struct Io<D> {
     pub alloc: Buddy,
     /// The generation being built: the last commit's plus one.
     pub txn: u64,
-    /// Blocks replaced in this transaction, and whether they are metadata that no
-    /// snapshot can hold (the volume table).
+    /// Blocks replaced in this transaction, and whether each may be reused at
+    /// G+2: decided when it is replaced, since a later restore can make a block
+    /// that a snapshot held live again.
     freed: Vec<(BlockPtr, bool)>,
+    /// Replacing volume-table blocks, which no snapshot holds.
     meta: bool,
+    /// The newest snapshot's generation, 0 with none.
+    newest_snap: u64,
+    /// [`Faults::ignore_snapshots`].
+    ignore_snapshots: bool,
     /// [`Faults::reuse_now`].
     pub reuse_now: bool,
 }
@@ -141,7 +147,8 @@ impl<D: BlockDev> Store for Io<D> {
             self.alloc.free_now(run_of(&ptr));
             return;
         }
-        self.freed.push((ptr, self.meta));
+        let reusable = self.meta || ptr.birth > self.newest_snap || self.ignore_snapshots;
+        self.freed.push((ptr, reusable));
     }
 
     fn store(&mut self, block: &Block, level: u8) -> Result<BlockPtr, Error> {
@@ -218,6 +225,8 @@ impl<D: BlockDev> Fs<D> {
                 txn: 1,
                 freed: Vec::new(),
                 meta: false,
+                newest_snap: 0,
+                ignore_snapshots: false,
                 reuse_now: false,
             },
             uuid,
@@ -279,6 +288,8 @@ impl<D: BlockDev> Fs<D> {
             txn: sb.generation + 1,
             freed: Vec::new(),
             meta: false,
+            newest_snap: 0,
+            ignore_snapshots: false,
             reuse_now: false,
         };
         let loaded = (|| {
@@ -299,6 +310,7 @@ impl<D: BlockDev> Fs<D> {
             None => return Err((io.dev, Error::Corrupt("no live root"))),
         };
         io.alloc.release(io.txn);
+        io.newest_snap = snaps.values().map(|s| s.generation).max().unwrap_or(0);
         let next_snap = snaps.keys().next_back().map_or(1, |id| id + 1);
         Ok(Fs {
             io,
@@ -405,6 +417,7 @@ impl<D: BlockDev> Fs<D> {
             generation: self.io.txn,
         };
         self.snaps.insert(id, snap);
+        self.io.newest_snap = self.newest_snapshot();
         self.io.meta = true;
         let result = self
             .volumes
@@ -417,6 +430,7 @@ impl<D: BlockDev> Fs<D> {
         if self.snaps.remove(&id).is_none() {
             return Ok(false);
         }
+        self.io.newest_snap = self.newest_snapshot();
         self.io.meta = true;
         let result = self.volumes.remove(id, &mut self.io);
         self.io.meta = false;
@@ -455,9 +469,8 @@ impl<D: BlockDev> Fs<D> {
             .volumes
             .write_out(&mut self.io)?
             .ok_or(Error::Corrupt("empty volume table"))?;
-        let newest = self.newest_snapshot();
-        for (ptr, meta) in core::mem::take(&mut self.io.freed) {
-            if meta || ptr.birth > newest || self.faults.ignore_snapshots {
+        for (ptr, reusable) in core::mem::take(&mut self.io.freed) {
+            if reusable {
                 self.io.alloc.free_later(generation, run_of(&ptr));
             }
         }
@@ -521,6 +534,12 @@ impl<D: BlockDev> Fs<D> {
 
     pub fn alloc_chain(&self) -> &[BlockPtr] {
         &self.alloc_chain
+    }
+
+    /// Turns on [`Faults::ignore_snapshots`].
+    pub fn set_ignore_snapshots(&mut self, on: bool) {
+        self.faults.ignore_snapshots = on;
+        self.io.ignore_snapshots = on;
     }
 
     /// Whether nothing has changed since the last commit.

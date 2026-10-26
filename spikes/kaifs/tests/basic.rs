@@ -82,3 +82,36 @@ fn snapshots_restore_and_gc() {
     assert_eq!(after.leaked_blocks, 0);
     assert_eq!(after.live, before.snaps[&snap]);
 }
+
+/// Found by S04-1's batch workloads: blocks replaced while a snapshot held them,
+/// then made live again by restoring that snapshot and dropping it, must not be
+/// freed. Whether a replaced block may be reused is decided when it is replaced.
+#[test]
+fn restore_then_drop_keeps_the_restored_blocks() {
+    let mut fs = fresh(8192);
+    for key in 0..300u64 {
+        fs.put(key, b"base").unwrap();
+    }
+    fs.commit().unwrap();
+    let snap = fs.snapshot().unwrap();
+    fs.commit().unwrap();
+    for key in 0..300u64 {
+        fs.put(key, b"changed").unwrap();
+    }
+    assert!(fs.restore(snap).unwrap());
+    assert!(fs.drop_snapshot(snap).unwrap());
+    fs.commit().unwrap();
+    let report = check::check(&mut fs, &mut Cache::default()).unwrap();
+    assert_eq!(report.live.1, 300);
+    // The freed blocks wait two commits; after them, nothing reachable was reused.
+    for key in 300..900u64 {
+        fs.put(key, b"more").unwrap();
+        if key % 100 == 0 {
+            fs.commit().unwrap();
+        }
+    }
+    fs.commit().unwrap();
+    let mut fs = remount(fs);
+    check::check(&mut fs, &mut Cache::default()).unwrap();
+    assert_eq!(fs.get(5).unwrap(), Some(Value::Inline(b"base".to_vec())));
+}
