@@ -7,25 +7,50 @@ use crate::blklog::{Data, Expect};
 const VIRTIO: Data = Data {
     nvme: false,
     log: None,
+    gpt: true,
+};
+const NVME: Data = Data {
+    nvme: true,
+    ..VIRTIO
+};
+/// S04-3's commits fill a raw disk.
+const RAW: Data = Data {
+    gpt: false,
+    ..VIRTIO
+};
+
+/// Boot 2 of `blk-write`: what boot 1 wrote and flushed reads back.
+const REREAD: TestCase = TestCase {
+    expect: &["blk-write: boot 1's writes read back"],
+    server: false,
+    data: Some(VIRTIO),
+    ..case("blk-write (boot 2)", "test=blk-write reread")
+};
+const REREAD_NVME: TestCase = TestCase {
+    data: Some(NVME),
+    ..REREAD
 };
 
 pub(super) const CASES: &[TestCase] = &[
     TestCase {
-        expect: &["blk-write: kai-data over blk takes writes and a flush"],
+        expect: &[
+            "block: kai-data is ",
+            "block: kai-cache is ",
+            "blk-write: kai-data over blk takes writes and a flush",
+        ],
         server: false,
         data: Some(VIRTIO),
+        then: Some(&REREAD),
         ..case("blk-write", "test=blk-write")
     },
     TestCase {
         expect: &[
             "blk-write: kai-data over nvme takes writes and a flush",
-            "volatile write cache",
+            ", volatile write cache, AWUPF",
         ],
         server: false,
-        data: Some(Data {
-            nvme: true,
-            ..VIRTIO
-        }),
+        data: Some(NVME),
+        then: Some(&REREAD_NVME),
         ..case("blk-write-nvme", "test=blk-write")
     },
     // S04-3 raw: 200 commits shaped like kaifs's, every flush point replayed.
@@ -34,7 +59,7 @@ pub(super) const CASES: &[TestCase] = &[
         server: false,
         data: Some(Data {
             log: Some(Expect::Clean),
-            ..VIRTIO
+            ..RAW
         }),
         ..case("blk-flush", "test=blk-flush")
     },
@@ -45,7 +70,7 @@ pub(super) const CASES: &[TestCase] = &[
         server: false,
         data: Some(Data {
             log: Some(Expect::Caught),
-            ..VIRTIO
+            ..RAW
         }),
         ..case("blk-flush-bug", "test=blk-flush blkbug=noflush")
     },

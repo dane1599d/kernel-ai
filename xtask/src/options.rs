@@ -65,6 +65,11 @@ pub struct Options {
     /// `test --shard K/N`: boot only shard K (from 1) of N; CI splits the cases
     /// across parallel jobs this way.
     pub shard: Option<(usize, usize)>,
+    /// `run --data-disk PATH`: the `kai-data` disk, kept across runs; by default
+    /// `target/kai-data.img`.
+    pub data_disk: Option<PathBuf>,
+    /// `run --fresh-data`: start the data disk over.
+    pub fresh_data: bool,
 }
 
 impl Options {
@@ -131,6 +136,8 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
         wsl: false,
         workload: None,
         shard: None,
+        data_disk: None,
+        fresh_data: false,
     };
     let mut rest = args[1..].iter();
     while let Some(arg) = rest.next() {
@@ -169,6 +176,13 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
                 options.llm = Some(server.clone());
             }
             "--edit" if task == Task::Run => options.edit = true,
+            "--fresh-data" if task == Task::Run => options.fresh_data = true,
+            "--data-disk" if task == Task::Run => {
+                let path = rest
+                    .next()
+                    .ok_or("--data-disk expects the path of a file")?;
+                options.data_disk = Some(PathBuf::from(path));
+            }
             "--gpu" if task == Task::Run => options.gpu = true,
             "--model-disk" if task == Task::Run => {
                 let path = rest
@@ -329,6 +343,15 @@ mod tests {
         assert!(!options.spikes);
         assert_eq!(options.accel, Accel::Tcg);
         assert_eq!(options.timeout, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn the_data_disk_flags_are_for_run() {
+        let options = parse_args(&args(&["run", "--data-disk", "d.img", "--fresh-data"])).unwrap();
+        assert_eq!(options.data_disk, Some(PathBuf::from("d.img")));
+        assert!(options.fresh_data);
+        assert!(parse_args(&args(&["test", "--fresh-data"])).is_err());
+        assert!(parse_args(&args(&["run", "--data-disk"])).is_err());
     }
 
     #[test]

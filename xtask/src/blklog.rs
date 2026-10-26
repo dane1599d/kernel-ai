@@ -89,15 +89,78 @@ pub struct Data {
     pub nvme: bool,
     /// Behind blklogwrites, its log replayed once the case has passed.
     pub log: Option<Expect>,
+    /// A GPT with `kai-data` and `kai-cache` partitions, which the kernel finds
+    /// by type GUID; otherwise the raw disk S04-3's commits fill.
+    pub gpt: bool,
+}
+
+/// `kai-data` starts at 2 MiB (P2 plan section 4.1).
+pub const DATA_FIRST: u64 = 4096;
+/// `kai-cache` takes the last 8 MiB of the CI disk.
+pub const CACHE_SECTORS: u64 = 8 * 2048;
+
+/// The partitions of a GPT data disk of `sectors`.
+pub fn partitions(sectors: u64) -> [diskmap::Spec<'static>; 2] {
+    let last = diskmap::last_usable(sectors);
+    let cache_first = last + 1 - CACHE_SECTORS;
+    let guid = |label: &str| diskmap::Guid(crate::image::gpt::guid(label));
+    [
+        diskmap::Spec {
+            kind: diskmap::KAI_DATA_TYPE,
+            guid: guid("ci kai-data partition"),
+            first: DATA_FIRST,
+            last: cache_first - 1,
+            name: "kai-data",
+        },
+        diskmap::Spec {
+            kind: diskmap::KAI_CACHE_TYPE,
+            guid: guid("ci kai-cache partition"),
+            first: cache_first,
+            last,
+            name: "kai-cache",
+        },
+    ]
 }
 
 /// Makes a zeroed (sparse) data disk and an empty log for QEMU to fill.
-pub fn prepare(target: &Path) -> Result<(), String> {
-    let image = fs::File::create(target.join(IMAGE)).map_err(|e| format!("{IMAGE}: {e}"))?;
+pub fn prepare(target: &Path, data: Data) -> Result<(), String> {
+    make_disk(&target.join(IMAGE), data.gpt)?;
+    fs::write(target.join(LOG), b"").map_err(|e| format!("{LOG}: {e}"))
+}
+
+/// A zeroed (sparse) 64 MiB data disk at `path`, with the `kai-data` and
+/// `kai-cache` GPT when `gpt`.
+pub fn make_disk(path: &Path, gpt: bool) -> Result<(), String> {
+    use std::io::{Seek, SeekFrom, Write as _};
+    let name = path.display();
+    let mut image = fs::File::create(path).map_err(|e| format!("{name}: {e}"))?;
     image
         .set_len(DISK_BYTES)
-        .map_err(|e| format!("{IMAGE}: {e}"))?;
-    fs::write(target.join(LOG), b"").map_err(|e| format!("{LOG}: {e}"))
+        .map_err(|e| format!("{name}: {e}"))?;
+    if gpt {
+        let sectors = DISK_BYTES / SECTOR as u64;
+        let disk_guid = crate::image::gpt::guid("ci kai-data disk");
+        let layout = diskmap::layout(sectors, diskmap::Guid(disk_guid), &partitions(sectors))
+            .map_err(|e| format!("{name}: {e:?}"))?;
+        for (lba, bytes) in layout {
+            image
+                .seek(SeekFrom::Start(lba * SECTOR as u64))
+                .and_then(|_| image.write_all(&bytes))
+                .map_err(|e| format!("{name}: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
+/// `run`'s data disk: the file at `path`, on virtio-blk, kept across runs.
+pub fn run_args(path: &str) -> Vec<String> {
+    [
+        String::from("-blockdev"),
+        format!("driver=file,filename={path},node-name=kai-data-file"),
+        String::from("-device"),
+        format!("virtio-blk-pci,drive=kai-data-file,serial={SERIAL},write-cache=on"),
+    ]
+    .to_vec()
 }
 
 /// The QEMU arguments: the disk with a write-back cache (write-cache=on, so the

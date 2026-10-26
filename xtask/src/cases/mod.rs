@@ -70,6 +70,8 @@ pub struct TestCase {
     pub resets: bool,
     /// A fresh writable `kai-data` disk (ADR 0004).
     pub data: Option<crate::blklog::Data>,
+    /// A second boot, once this one has passed, on the same data disk.
+    pub then: Option<&'static TestCase>,
 }
 
 pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase {
@@ -94,6 +96,7 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         bridge: false,
         resets: false,
         data: None,
+        then: None,
     }
 }
 
