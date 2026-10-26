@@ -6,7 +6,7 @@
 //! Writes `target/ccwasm/cc.wasm`, its SHA-256 and xcc's `include/` tree, and prints
 //! the host tools the build used. Linux only (GitHub Actions): it needs `git`, `make`,
 //! a host C compiler (`cc`), `llvm-ar` for wcc's libc, and for gen3 `node` and `npm`
-//! (`tool/runwasi` runs gen2 on @wasmer/wasi).
+//! (`tool/runwasi` runs gen2 on @wasmer/wasi and needs `commander`, a dev dependency).
 
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -36,7 +36,7 @@ pub fn main(args: &[String], target: &Path) -> Result<(), String> {
     fetch(&src)?;
     run(&src, "make", &["-j4", "wcc-gen2"])?;
     if gen3 {
-        run(&src, "npm", &["ci", "--omit=dev", "--ignore-scripts"])?;
+        run(&src, "npm", &["ci", "--ignore-scripts"])?;
         // Upstream's `wcc-gen3` passes compiler flags to tool/run-gen2wcc.sh without
         // a `--`, and the script refuses `-ansi` as its own option; the same make
         // rule with the `--` added.
