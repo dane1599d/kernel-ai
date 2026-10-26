@@ -221,7 +221,21 @@ fn choose(decoder: &mut Decoder, mut menu: Menu) -> Option<Waiting> {
     AWAITING_ANSWER.store(false, Ordering::Release);
     let (prompt, _) = menu.input();
     finish_line(prompt, answer.word(), "");
-    shell_line(&menu::answer_line(menu.id, answer))
+    // Allow mints the call's ONCE (and an "Always allow" its rule node); the
+    // request ends once the shell has answered, so the ONCE cannot be used later.
+    match crate::allow::allow(menu.id, menu.question(), answer) {
+        Ok(Some(allowed)) => {
+            let line = menu::granted_line(menu.id, answer, allowed.granted);
+            let waiting = shell_line(&line);
+            crate::allow::end(&allowed);
+            waiting
+        }
+        Ok(None) => shell_line(&menu::answer_line(menu.id, answer)),
+        Err(error) => {
+            log!("! the Allow could not be granted ({error:?}), so it was denied");
+            shell_line(&menu::answer_line(menu.id, Answer::Deny))
+        }
+    }
 }
 
 /// Reads a line into the input region after `prompt`, edited at the cursor. Typed

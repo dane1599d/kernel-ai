@@ -8,6 +8,7 @@
 extern crate alloc;
 
 use alloc::boxed::Box;
+use alloc::format;
 use alloc::rc::Rc;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -127,6 +128,16 @@ impl Host for System {
     fn forget(&self) {
         let mut reply = vec![0u8; 256];
         let _ = sys::call_route(llm(), b"new", &mut reply, MEMORY_CALL_MS);
+    }
+
+    fn once_check(&self, badge: u64, digest: &[u8; 32]) -> Result<(), String> {
+        sys::once_check(badge, digest).map_err(|error| format!("{error:?}"))
+    }
+
+    fn revoke_rule(&self, handle: u32) -> Result<(), String> {
+        sys::grant_revoke(kabi::handle::Handle(handle))
+            .map(|_| ())
+            .map_err(|error| format!("{error:?}"))
     }
 
     /// The audit trail goes to the log, not the screen: the reply says what happened.

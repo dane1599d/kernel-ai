@@ -8,6 +8,7 @@
 //! reads never starts an action.
 
 use crate::actlog::{Entry, Form, State};
+use crate::rules::Offer;
 use crate::script::{self, Checked};
 use crate::tiers::{self, Tier};
 use crate::undo::{self, Done};
@@ -16,17 +17,18 @@ use agentabi::consent::{Decision, Why};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use termcore::menu::{Answer, read_answer};
 
 /// How long a question waits for its answer.
 const CONFIRM_EXPIRY_NS: u64 = 120_000_000_000;
 
 /// How a run came to be, for its log entry.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct How {
     pub form: Form,
     pub tier: Tier,
-    /// `asked`, `taken-as`, `yes`, `-`.
-    pub consent: &'static str,
+    /// `asked`, `taken-as`, `yes`, `rule:<id>`, `-`.
+    pub consent: String,
 }
 
 /// A script waiting for the user's answer.
@@ -39,6 +41,11 @@ pub(crate) struct Pending {
     pub how: How,
     /// The model's call, when a tagged call asked, for llm's conversation memory.
     pub call: Option<String>,
+    /// The standing rules its menu offers, when a rule may waive its ask.
+    pub offer: Option<Offer>,
+    /// The question its Allow / Deny menu showed, which the Allow's `ONCE`
+    /// digest must name; `None` for a y/n question.
+    pub menu: Option<String>,
 }
 
 /// `y`, `n`, `yes` or `no`, any case.
@@ -147,7 +154,7 @@ impl Shell {
             let how = How {
                 form: Form::Script,
                 tier,
-                consent: if taken_as { "taken-as" } else { "asked" },
+                consent: String::from(if taken_as { "taken-as" } else { "asked" }),
             };
             return self.finish(id, request, &checked, how);
         }
@@ -163,9 +170,11 @@ impl Shell {
             how: How {
                 form: Form::Script,
                 tier,
-                consent: "asked",
+                consent: String::from("asked"),
             },
             call: None,
+            offer: None,
+            menu: None,
         });
         Reply {
             ok: true,
@@ -305,7 +314,7 @@ impl Shell {
             form: how.form,
             of: None,
             tier: Some(how.tier),
-            consent: String::from(how.consent),
+            consent: how.consent.clone(),
             state,
             request: String::from(request),
             script: checked.script.clone(),
@@ -399,20 +408,106 @@ impl Shell {
                 more: false,
             };
         }
-        if yes_or_no(text) != Some(true) {
-            self.record(id, &pending.request, &pending.checked.script, "declined");
-            self.remember(&pending, "Not run: declined");
-            return Reply::ok(format!("script {id} not run"));
+        let consent = match self.consent_from(&pending, text) {
+            Ok(consent) => consent,
+            Err(note) => {
+                self.record(id, &pending.request, &pending.checked.script, "declined");
+                self.remember(&pending, "Not run: declined");
+                return Reply::ok(format!("script {id} not run{note}"));
+            }
+        };
+        match consent.as_str() {
+            "yes" => self
+                .host
+                .audit(&format!("script {id} confirmed; running it")),
+            rule => self
+                .host
+                .audit(&format!("script {id} confirmed, {rule}; running it")),
         }
-        self.host
-            .audit(&format!("script {id} confirmed; running it"));
+        let lead = match consent.strip_prefix("rule:") {
+            Some(rule) => format!(
+                "Rule #{rule} added; `rules` lists it.
+"
+            ),
+            None => String::new(),
+        };
         let how = How {
-            consent: "yes",
+            consent,
             ..pending.how
         };
         let reply = self.finish(id, &pending.request, &pending.checked, how);
         self.remember(&pending, &reply.text);
-        reply
+        Reply {
+            text: format!("{lead}{}", reply.text),
+            ..reply
+        }
+    }
+
+    /// The consent an answer gives: `y`/`yes` or the menu's Allow give `yes`; an
+    /// "Always allow" choice writes the rule its menu offered and gives
+    /// `rule:<id>`. Anything else, or a rule that was not offered, declines, with a
+    /// note on why when there is one.
+    ///
+    /// A menu's yes must come with the `ONCE` the trusted path minted for it, and
+    /// that `ONCE` must check, through the kernel, against the question exactly as
+    /// shown; a match uses it up. A typed `y` cannot answer a menu.
+    fn consent_from(&mut self, pending: &Pending, text: &str) -> Result<String, String> {
+        let Some((answer, granted)) = read_answer(text.trim()) else {
+            return match (yes_or_no(text), &pending.menu) {
+                (Some(true), None) => Ok(String::from("yes")),
+                (Some(true), Some(_)) => Err(String::from(": a menu is answered on the menu")),
+                _ => Err(String::new()),
+            };
+        };
+        if answer == Answer::Deny {
+            return Err(String::new());
+        }
+        let Some(question) = &pending.menu else {
+            return Err(String::from(": that question was not a menu"));
+        };
+        let badge = granted.once.ok_or(": the Allow came without its ONCE")?;
+        let digest = termcore::once::digest(pending.id, question);
+        if let Err(why) = self.host.once_check(badge, &digest) {
+            self.host
+                .audit(&format!("script {} ONCE refused: {why}", pending.id));
+            return Err(format!(": its Allow did not check ({why})"));
+        }
+        let always = match answer {
+            Answer::AlwaysKind => false,
+            Answer::AlwaysTarget => true,
+            _ => return Ok(String::from("yes")),
+        };
+        let offer = pending.offer.as_ref().ok_or(": no rule can cover it")?;
+        match self.rules.add(offer, always, granted.rule) {
+            Ok(rule) => {
+                self.host
+                    .audit(&format!("rule #{rule} added from menu {}", pending.id));
+                Ok(format!("rule:{rule}"))
+            }
+            Err(why) => Err(format!(": {why}")),
+        }
+    }
+
+    /// `rules_remove <n>`: the rule goes at once; what ran under it stays.
+    pub(crate) fn remove_rule(&mut self, which: &str) -> Reply {
+        let Ok(id) = which.trim().trim_start_matches('#').parse::<u64>() else {
+            return Reply::err("usage: rules_remove <rule number>");
+        };
+        match self.rules.remove(id) {
+            Ok(rule) => {
+                // Its grant node goes too; nothing waits on it.
+                if let Some(Err(why)) = rule.grant.map(|h| self.host.revoke_rule(h)) {
+                    self.host
+                        .audit(&format!("rule #{id}: its node was not revoked: {why}"));
+                }
+                self.host.audit(&format!("rule #{id} removed"));
+                Reply::ok(format!(
+                    "Removed rule #{id} ({}); it asks again",
+                    rule.action
+                ))
+            }
+            Err(why) => Reply::err(why),
+        }
     }
 
     /// Tells llm how a model turn that asked ended, for its conversation memory.

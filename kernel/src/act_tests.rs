@@ -8,7 +8,10 @@ use crate::sched_control::calls::MIN_POLICY_INTERVAL_NS;
 use crate::selftest::ActCase;
 use crate::shell_tests::Expect::{self, Contains, Exact, StartsWith};
 use crate::shell_tests::{expect_lines, start};
-use crate::{log, threads};
+use crate::{allow, ipc, log, threads};
+use alloc::format;
+use alloc::string::String;
+use termcore::menu::{self, Answer, Granted};
 
 /// Plain requests become the right calls: a change the line asks for, a read, and
 /// `undo` of the change.
@@ -61,8 +64,9 @@ const VAGUE_READING: &[(&str, Expect)] = &[(
 const NOT_ENGLISH: &[(&str, Expect)] = &[
     (
         "cambia la política a round robin",
+        // The Allow / Deny menu, highlight on Deny, with no rule offered.
         Exact(
-            "confirm 3 Run set_policy(\"round-robin\")? the request is not in English, so it asks first. y/n, or show",
+            "menu 3 added\nRun set_policy(\"round-robin\")? The request is not in English, so it asks first.\n\n",
         ),
     ),
     ("n", Contains("not run")),
@@ -127,6 +131,7 @@ pub fn check(which: ActCase) -> Result<(), &'static str> {
         ActCase::Vague => vague(),
         ActCase::Undo => undo(),
         ActCase::Rollback => rollback(),
+        ActCase::Ask => ask(),
     }
 }
 
@@ -211,5 +216,87 @@ fn rollback() -> Result<(), &'static str> {
         return Err("act-rollback: the failed script left its switch in place");
     }
     log!("act-rollback: a script that switched and then threw left nothing changed");
+    Ok(())
+}
+
+/// The shell's raw reply to `line`.
+fn reply_to(line: &str) -> Result<String, &'static str> {
+    let reply = ipc::call("shell", line.as_bytes(), 30_000).map_err(|_| "act-ask: no reply")?;
+    Ok(String::from_utf8_lossy(&reply).into_owned())
+}
+
+/// Asks the not-English switch, which must come back as the Allow / Deny menu;
+/// its log entry id and the question as the menu would show it.
+fn asked() -> Result<(u64, String), &'static str> {
+    let reply = reply_to("cambia la política a round robin")?;
+    let menu = menu::Menu::decode(&reply).map_err(|_| {
+        log!("act-ask: not a menu: {reply:?}");
+        "act-ask: an asking call did not get the menu"
+    })?;
+    Ok((menu.id, String::from(menu.question())))
+}
+
+/// The answer to an asked call must say it did not run, with `why`.
+fn refused(line: &str, why: &str) -> Result<(), &'static str> {
+    let reply = reply_to(line)?;
+    if !(reply.starts_with("ok script ") && reply.contains("not run") && reply.contains(why)) {
+        log!("act-ask: {line:?} answered {reply:?}");
+        return Err("act-ask: an Allow that should not run did");
+    }
+    Ok(())
+}
+
+/// The Allow / Deny menu on handles (ADR 0001 D6, ADR 0002 D2a): the trusted
+/// path's Allow mints a ONCE whose kernel-held digest names the question as
+/// shown, and the call runs only when the shell's ONCE_CHECK matches, once.
+fn ask() -> Result<(), &'static str> {
+    // No ONCE, a typed yes, or a Deny: nothing runs.
+    let (id, _) = asked()?;
+    refused(&format!("answer {id} allow"), "without its ONCE")?;
+    let (id, _) = asked()?;
+    refused("y", "answered on the menu")?;
+    let (id2, _) = asked()?;
+    if id2 == id || reply_to(&format!("answer {id2} deny"))? != format!("ok script {id2} not run") {
+        return Err("act-ask: Deny did not decline");
+    }
+    if !policy_is("interactive") {
+        return Err("act-ask: a call ran without its Allow");
+    }
+    // Allow: the trusted path mints, the shell checks, the call runs.
+    let (id, question) = asked()?;
+    let allowed = allow::allow(id, &question, Answer::Allow)
+        .ok()
+        .flatten()
+        .ok_or("act-ask: the trusted path could not mint a ONCE")?;
+    let reply = reply_to(&menu::granted_line(id, Answer::Allow, allowed.granted))?;
+    allow::end(&allowed);
+    if reply != "ok Done: policy round-robin (was interactive). undo" || !policy_is("round-robin") {
+        log!("act-ask: the Allow answered {reply:?}");
+        return Err("act-ask: an Allow with its ONCE did not run");
+    }
+    // The same ONCE again, after its request ended: refused.
+    let (replay, _) = asked()?;
+    let line = menu::granted_line(replay, Answer::Allow, allowed.granted);
+    refused(&line, "did not check")?;
+    // A ONCE minted for other arguments: its digest differs, so refused.
+    let (id, question) = asked()?;
+    let other = question.replace("round-robin", "interactive");
+    let wrong = allow::allow(id, &other, Answer::Allow)
+        .ok()
+        .flatten()
+        .ok_or("act-ask: the trusted path could not mint a ONCE")?;
+    let line = menu::granted_line(
+        id,
+        Answer::Allow,
+        Granted {
+            rule: None,
+            ..wrong.granted
+        },
+    );
+    refused(&line, "did not check (Invalid)")?;
+    allow::end(&wrong);
+    log!(
+        "act-ask: the menu's Allow ran a call once through its ONCE; none, a typed y, a reused one and one for other arguments did not"
+    );
     Ok(())
 }
