@@ -52,9 +52,8 @@ use workers::Worker;
 use x86_64::instructions::interrupts;
 
 pub const MAX_PROCESSES: usize = 16;
-/// Most pages one process may be granted: 512 MiB, enough for the llm service's
-/// local engine with its 2,048-position KV cache and a pool of workers
-/// (`model::holder_pages`).
+/// Most pages one process may be granted: 512 MiB (ADR 0001 D4). The model's
+/// holder alone may get `kabi::model::MAX_PAGES_HOLDER`, for its engine.
 pub const MAX_PAGES_PER_PROCESS: u64 = 128 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -367,7 +366,8 @@ pub fn spawn(request: &SpawnRequest) -> Result<u64, kabi::Error> {
     }
     let name = Name::new(request.name).ok_or(Error::Invalid)?;
     let program = Name::new(request.program).ok_or(Error::Invalid)?;
-    if request.args.len() > MAX_ARGS || request.limits.max_pages > MAX_PAGES_PER_PROCESS {
+    let max_pages = kabi::model::max_pages(request.name, request.program, MAX_PAGES_PER_PROCESS);
+    if request.args.len() > MAX_ARGS || request.limits.max_pages > max_pages {
         return Err(Error::TooBig);
     }
     let budget = PAGE_BUDGET.load(Ordering::Relaxed);
@@ -423,6 +423,17 @@ pub fn spawn(request: &SpawnRequest) -> Result<u64, kabi::Error> {
 /// The calling process's name and argument string.
 pub fn identity(slot: usize) -> Process {
     with_table(|table| table[slot])
+}
+
+/// The live processes named `name`: their pids, and whether a process (the
+/// supervisor) started each rather than the kernel.
+pub fn named(name: &str) -> alloc::vec::Vec<(u64, bool)> {
+    let table = with_table(|table| *table);
+    table
+        .iter()
+        .filter(|p| p.live() && p.name.as_str() == name)
+        .map(|p| (p.pid, p.spawner != 0 || p.supervisor))
+        .collect()
 }
 
 /// Pids and names of live processes, excluding the supervisor.

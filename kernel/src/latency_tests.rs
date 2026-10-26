@@ -3,8 +3,9 @@
 //! disk run by the ring-3 llm service. The harness (`cargo xtask latency`) types
 //! one request at each `ready for keys`; for each, the kernel logs, by its own
 //! clock, Enter to the busy sign's first paint and Enter to the reply on screen.
-//! The first request is typed while llm may still be caching the script prompt,
-//! so it is reported apart. Nothing here passes or fails on the numbers: this is
+//! The first request is typed while llm may still be caching its prompts, so it
+//! is reported apart; the rest wait until llm has both cached (`warm`), as a user
+//! who did not type at once finds it. Nothing here passes or fails on the numbers: this is
 //! a measurement, and the marks (100 ms to the busy sign; 2-4 s to done) are read
 //! from its output.
 
@@ -17,6 +18,11 @@ pub const REQUESTS: usize = 5;
 const START_WAIT_MS: u64 = 120_000;
 /// How long one request may take: two rounds of the shell's 70 s, with room.
 const REQUEST_WAIT_MS: u64 = 150_000;
+/// How long llm gets to cache both prompts after the first request: about
+/// 2,000 tokens at a slow guest's 10 tokens/s, with room.
+const WARM_WAIT_MS: u64 = 300_000;
+/// How often the warm wait asks: each ask pauses a warm-up for a moment.
+const WARM_POLL_MS: u64 = 2_000;
 
 /// One request's times, in microseconds after Enter.
 #[derive(Clone, Copy)]
@@ -41,6 +47,13 @@ pub fn check() -> Result<(), &'static str> {
     threads::sleep_ms(200);
     let mut times = Vec::with_capacity(REQUESTS);
     for n in 1..=REQUESTS {
+        if n == 2 {
+            let started = crate::hpet::nanos();
+            wait_every(WARM_WAIT_MS, WARM_POLL_MS, llm::warm)
+                .map_err(|_| "latency: llm never cached both prompts")?;
+            let waited = (crate::hpet::nanos() - started) / 1_000_000;
+            log!("latency: both prompts cached {waited} ms after request 1");
+        }
         let shown = terminal::replies_shown();
         log!("latency: ready for keys");
         wait_within(REQUEST_WAIT_MS, || terminal::replies_shown() > shown)
@@ -106,12 +119,17 @@ fn sign_text(us: Option<u64>) -> alloc::string::String {
     us.map_or_else(|| "not painted".into(), ms)
 }
 
-fn wait_within(ms: u64, mut done: impl FnMut() -> bool) -> Result<(), ()> {
-    for _ in 0..ms / 10 {
+fn wait_within(ms: u64, done: impl FnMut() -> bool) -> Result<(), ()> {
+    wait_every(ms, 10, done)
+}
+
+/// Asks `done` every `every_ms` until it holds or about `ms` have passed.
+fn wait_every(ms: u64, every_ms: u64, mut done: impl FnMut() -> bool) -> Result<(), ()> {
+    for _ in 0..ms / every_ms {
         if done() {
             return Ok(());
         }
-        threads::sleep_ms(10);
+        threads::sleep_ms(every_ms);
     }
     Err(())
 }

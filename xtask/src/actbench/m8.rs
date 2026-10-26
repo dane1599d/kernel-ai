@@ -52,6 +52,8 @@ pub fn shipping(engine: Shared, grammar: Rc<infer::tagged::Tagged<'static>>) -> 
             &grammar,
             &request,
             &History::new(),
+            local::act::Slots::ONE,
+            |_| true,
             |_| Next::Continue,
         );
         act::decode_answer(&act::encode_answer(&call))

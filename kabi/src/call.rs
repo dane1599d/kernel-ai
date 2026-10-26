@@ -21,7 +21,9 @@ pub const TIME: u64 = 5;
 pub const ARGS: u64 = 6;
 /// `spawn(&SpawnRequest) -> pid` (needs [`super::cap::SUPERVISE`])
 pub const SPAWN: u64 = 7;
-/// `wait_child(&mut ExitRecord, timeout_ms) -> 1 if a record was written, 0 on timeout`
+/// `wait_child(&mut ExitRecord, timeout_ms) -> 1 if a record was written, 0 on
+/// timeout, 2 if a request waits for the caller's own service` (the supervisor
+/// serves `supervisor` between exits; it takes the request with `svc_recv`)
 pub const WAIT_CHILD: u64 = 8;
 /// `kill(pid)`
 pub const KILL: u64 = 9;
@@ -193,5 +195,12 @@ pub const ONCE_CHECK: u64 = 50;
 /// fit in `cap` bytes; returns the bytes written. ADR 0007 section 3: no
 /// handle needed yet, as for METRICS (ADR 0001's INSPECT check comes to both).
 pub const DEV_LIST: u64 = 51;
+/// `proc_stop(name_ptr, name_len) -> count`: stops every live process named
+/// exactly `name` (ExitReason Killed) and returns how many went. Needs a Job
+/// handle with STOP ([`super::cap::STOP`]). Permission for the protected names
+/// (`shell`, `supervisor`, `llm`) and the caller's own; Invalid for a service the
+/// supervisor runs (stop those through the supervisor's `stop <name>`); NotFound
+/// when no process has the name.
+pub const PROC_STOP: u64 = 52;
 /// The highest call number.
-pub const MAX: u64 = DEV_LIST;
+pub const MAX: u64 = PROC_STOP;

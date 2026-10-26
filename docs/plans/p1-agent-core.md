@@ -201,7 +201,7 @@ S02-2's pass marks: the busy sign appears within 100 ms of Enter, and masking co
 | Handles are bigger than estimated (about 5,000 lines) | They are not on the first half of the critical path. Tasks 7-11 run on today's bits and switch to handles at tasks 13-14. If S01-1 fails, scripts stay in `shell` under request nodes. |
 | English-only consent asks too often | Widen the aliases; S01-2 counts false asks (at most 5 per 100 benign cases). |
 | Memory steers the AI wrongly ("do it again" taken the wrong way) | Consent never comes from history. The vague path runs only one undoable local change, and says `Taken as`. actbench's two-turn tasks measure it. |
-| 3,072 positions strain small VMs | The 4B needs a 3,840 MiB VM; `setup` keeps recommending it from 8 GB. The 1.7B stays the fallback. |
+| 3,072 positions strain small VMs | The 4B needs a 4,160 MiB VM (two KV slots of 2,048, founder 2026-10-26; 3,840 with one 3,072 slot before); `setup` keeps recommending it from 8 GB. The 1.7B stays the fallback. |
 | GitHub Actions minutes or billing (M10a's jobs were once refused) | One real-model job at a time. Real-model gates run on prompt or decoder changes only. Record every run. |
 | Hot-file conflicts | Task 1 first, the lane ownership in section 3.3, call numbers at merge. |
 

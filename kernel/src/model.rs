@@ -35,7 +35,7 @@ use mm::window::{RUN_BYTES, RUN_FRAMES, runs_for};
 use spin::Once;
 
 /// The one service, and program, that may map the model.
-pub const HOLDER: &str = "llm";
+pub const HOLDER: &str = kabi::model::HOLDER;
 /// Pages the llm service gets besides the engine's.
 pub const HOLDER_PAGES: u64 = 1024;
 
@@ -45,8 +45,8 @@ pub const fn holder_pages() -> u64 {
     HOLDER_PAGES + kabi::thread::POOL_PAGES + kabi::model::ENGINE_PAGES
 }
 
-// What the plan line grants llm must fit what one process may hold.
-const _: () = assert!(holder_pages() <= process::MAX_PAGES_PER_PROCESS);
+// What the plan line grants llm must fit what its holder may hold.
+const _: () = assert!(holder_pages() <= kabi::model::MAX_PAGES_HOLDER);
 
 /// Pages the default plan's other services ask for, with room to spare: the
 /// supervisor, the shell, notes and edit take 16,384 together.

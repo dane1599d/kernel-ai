@@ -105,6 +105,12 @@ fn request(text: &str, timeout_ms: u64) -> Result<String, String> {
     }
 }
 
+/// Whether llm has the act prefix and the script prompt in their KV slots, so a
+/// request pays neither (`test=latency` waits for it before its warm requests).
+pub fn warm() -> bool {
+    request("warm", HEALTH_TIMEOUT_MS).is_ok_and(|reply| reply == "yes")
+}
+
 /// Whether anything can answer: a model from the `kai-model` disk or a server.
 pub fn available() -> bool {
     target().is_some() || crate::model::get().is_some()

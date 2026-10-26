@@ -57,18 +57,21 @@ pub const fn table_pages(len: u64) -> u64 {
     len.div_ceil(1 << 30) + 1
 }
 
-/// Positions of context the llm service's engine holds at most (ADR 0010 §4,
-/// decided 2026-10-22): the pack and its MODE turn (at most 1,024 tokens; today's
-/// script prompt is 1,071 with its template, S10-0), conversation memory (at
-/// most 512), the State line (64), a request (160) and a whole answer of
-/// `llmproto::script::SCRIPT_MAX_TOKENS` (1,024). A repair round of a script
-/// near the 3 KiB limit can still fill it; the shell is then told so.
-pub const CONTEXT_CAP: usize = 3072;
-/// Bytes the engine's f16 KV cache may take (L6): [`CONTEXT_CAP`] positions of
-/// Qwen3-4B (36 layers of 1,024 keys and 1,024 values, 144 KiB a position),
-/// 432 MiB; the 0.6B and 1.7B (28 such layers) take 336 MiB. A model that needs
-/// more per position gets fewer positions.
-pub const KV_BYTES: u64 = 432 << 20;
+/// Positions of context in each of the llm service's [`KV_SLOTS`] KV slots. The
+/// act slot holds the pack and its MODE turn (at most 1,024 tokens), conversation
+/// memory (at most 512), the State line (64), a request (160) and a call (256);
+/// the script slot holds today's script prompt (1,071 with its template, S10-0),
+/// a request and a script answer, and serves `tune`, `ask` and `explain` (whose
+/// prompts budget for 2,048). Two slots, so neither prompt evicts the other
+/// (S02-2: one shared slot cost 53-67 s of prefill a request in the guest).
+pub const CONTEXT_CAP: usize = 2048;
+/// The llm service's KV slots: the act prefix's and the script prompt's.
+pub const KV_SLOTS: usize = 2;
+/// Bytes the engine's f16 KV caches may take (L6): [`KV_SLOTS`] slots of
+/// [`CONTEXT_CAP`] positions of Qwen3-4B (36 layers of 1,024 keys and 1,024
+/// values, 144 KiB a position), 576 MiB; the 0.6B and 1.7B (28 such layers) take
+/// 448 MiB. A model that needs more per position gets fewer positions.
+pub const KV_BYTES: u64 = 576 << 20;
 /// Bytes for everything else the engine sizes from the file: the tokenizer while
 /// it is built, the logits, the RoPE table, one prefill block's scratch vectors
 /// and the attention heads' scratch. The engine refuses a file whose header says
@@ -76,6 +79,22 @@ pub const KV_BYTES: u64 = 432 << 20;
 pub const ENGINE_OTHER_BYTES: u64 = 32 << 20;
 /// Pages the llm plan line adds for the engine when a model is loaded.
 pub const ENGINE_PAGES: u64 = (KV_BYTES + ENGINE_OTHER_BYTES) / 4096;
+
+/// The one service, and program, that may map the model.
+pub const HOLDER: &str = "llm";
+/// Most pages the model's holder may be granted: 768 MiB, for the engine's two
+/// KV slots (608 MiB) and a pool of workers. Every other process keeps the
+/// kernel's per-process cap (512 MiB, ADR 0001 D4).
+pub const MAX_PAGES_HOLDER: u64 = 192 * 1024;
+
+/// The most pages a process named `name` running `program` may be granted:
+/// [`MAX_PAGES_HOLDER`] for the holder, `per_process` for anything else.
+pub fn max_pages(name: &str, program: &str, per_process: u64) -> u64 {
+    match name == HOLDER && program == HOLDER {
+        true => MAX_PAGES_HOLDER,
+        false => per_process,
+    }
+}
 
 /// What xtask tells the kernel about the file behind the model disk, on the kernel
 /// command line: `model_len=BYTES`, the file's exact length (the disk rounds it up
@@ -151,6 +170,15 @@ pub fn fnv1a(bytes: &[u8]) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_the_holder_gets_the_holders_page_cap() {
+        let per_process = 128 * 1024;
+        assert_eq!(super::max_pages("llm", "llm", per_process), 192 * 1024);
+        for (name, program) in [("shell", "shell"), ("llm", "shell"), ("work", "llm")] {
+            assert_eq!(super::max_pages(name, program, per_process), per_process);
+        }
+    }
+
     use super::*;
 
     #[test]
@@ -225,7 +253,7 @@ mod tests {
         // Qwen3-4B: 36 layers of 1,024 f16 keys and values (L6).
         let (layers, kv_dim, f16_bytes) = (36u64, 1024u64, 2u64);
         assert_eq!(
-            layers * kv_dim * 2 * f16_bytes * CONTEXT_CAP as u64,
+            layers * kv_dim * 2 * f16_bytes * (CONTEXT_CAP * KV_SLOTS) as u64,
             KV_BYTES
         );
         assert_eq!(ENGINE_PAGES * 4096, KV_BYTES + ENGINE_OTHER_BYTES);

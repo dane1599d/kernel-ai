@@ -17,8 +17,10 @@ pub mod history;
 
 pub use history::{History, Turn};
 
-/// The answer reserve (ADR 0002 D4).
-pub const ACT_MAX_TOKENS: u32 = 1024;
+/// The answer reserve for a call: a row with its arguments, `say` (240 bytes) or
+/// `clarify` (six options). A script call carries no code (llm writes it with
+/// the script prompt), so 256 is room to spare.
+pub const ACT_MAX_TOKENS: u32 = 256;
 /// Longest the llm service spends on one call.
 pub const SERVICE_TIMEOUT_MS: u64 = 90_000;
 pub const LINE_MAX_BYTES: usize = 512;
@@ -158,20 +160,32 @@ pub fn parse(text: &str) -> Result<Call, ActError> {
     }
 }
 
-/// `ok <call>` or `err <why>` on the wire back to the shell.
+/// `ok <call>`, or `err <kind> [why]` on the wire back to the shell: the kind
+/// survives, since the shell falls back to a script only for some (S02-2).
 pub fn encode_answer(answer: &Result<Call, ActError>) -> String {
     match answer {
         Ok(call) => format!("ok {}", call.text()),
-        Err(error) => format!("err {}", error.describe()),
+        Err(ActError::CutOff) => "err cutoff".into(),
+        Err(ActError::NotACall) => "err notacall".into(),
+        Err(ActError::Local(why)) => format!("err local {why}"),
+        Err(ActError::Unavailable(why)) => format!("err unavailable {why}"),
     }
 }
 
 pub fn decode_answer(text: &str) -> Result<Call, ActError> {
-    match text.split_once(' ') {
-        Some(("ok", call)) => parse(call),
-        Some(("err", why)) => Err(ActError::Local(why.to_string())),
-        _ => Err(ActError::NotACall),
-    }
+    let Some(("err", error)) = text.split_once(' ') else {
+        return match text.split_once(' ') {
+            Some(("ok", call)) => parse(call),
+            _ => Err(ActError::NotACall),
+        };
+    };
+    Err(match error.split_once(' ').unwrap_or((error, "")) {
+        ("cutoff", "") => ActError::CutOff,
+        ("notacall", "") => ActError::NotACall,
+        ("local", why) => ActError::Local(why.to_string()),
+        ("unavailable", why) => ActError::Unavailable(why.to_string()),
+        _ => ActError::Local(error.to_string()),
+    })
 }
 
 #[cfg(test)]
@@ -269,5 +283,20 @@ mod tests {
                 "the call was cut off at the token limit".into()
             ))
         );
+        // Every error keeps its kind across the wire, and a local one its one
+        // "local model: " prefix.
+        for error in [
+            ActError::CutOff,
+            ActError::NotACall,
+            ActError::Local("it ran out of time".into()),
+            ActError::Unavailable("no model".into()),
+        ] {
+            assert_eq!(
+                decode_answer(&encode_answer(&Err(error.clone()))),
+                Err(error)
+            );
+        }
+        let local = decode_answer(&encode_answer(&Err(ActError::Local("x".into()))));
+        assert_eq!(local.unwrap_err().describe(), "local model: x");
     }
 }

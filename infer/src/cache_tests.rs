@@ -354,3 +354,61 @@ fn truncating_the_cache_keeps_only_its_start() {
     kv2.clear();
     assert_eq!(kv2.len(), 0);
 }
+
+/// Two KV slots (S02-2): prompts that share no start each stay computed in
+/// their own slot, and every answer is the one a fresh engine gives, bit for
+/// bit, on every tier.
+#[test]
+fn two_slots_each_keep_their_own_prompt_and_answer_as_a_fresh_engine() {
+    let bytes = fixture::build(&Spec::tiny());
+    let one = asked(Some(SYSTEM), "how many cpus");
+    let other = Asked {
+        shaped: false,
+        max_new: 20,
+        ..asked(Some("Something else entirely."), "how many cpus")
+    };
+    for tier in Tier::all() {
+        let mut engine = Engine::load(&bytes, tier, 256, ROOMY).unwrap();
+        let second = engine.add_slot().unwrap();
+        assert_eq!((second, engine.slot()), (1, 0));
+        let fresh = |asked: &Asked| {
+            let mut engine = Engine::load(&bytes, tier, 256, ROOMY).unwrap();
+            ask(&mut engine, asked)
+        };
+        let first = ask(&mut engine, &one).unwrap();
+        engine.use_slot(second);
+        assert!(same(&ask(&mut engine, &other), &fresh(&other)));
+        assert_cache_holds_its_tokens(&bytes, tier, &engine);
+        // Back in slot 0, the first prompt is still all there.
+        engine.use_slot(0);
+        let again = ask(&mut engine, &one).unwrap();
+        assert_eq!(again.cached, first.prompt_tokens - 1);
+        assert!(same(&Ok(again), &fresh(&one)));
+        assert_cache_holds_its_tokens(&bytes, tier, &engine);
+        // And slot 1 kept its own.
+        engine.use_slot(second);
+        assert_eq!(
+            ask(&mut engine, &other).unwrap().cached,
+            fresh(&other).unwrap().prompt_tokens - 1
+        );
+        // An unknown slot changes nothing.
+        engine.use_slot(7);
+        assert_eq!(engine.slot(), second);
+    }
+}
+
+/// What a prompt would compute: all of it on a fresh slot, its last token once
+/// it is cached (the last token always runs, for its logits).
+#[test]
+fn uncached_tokens_counts_what_the_cache_lacks() {
+    let bytes = fixture::build(&Spec::tiny());
+    let mut engine = Engine::load(&bytes, Tier::all().next().unwrap(), 256, ROOMY).unwrap();
+    let one = asked(Some(SYSTEM), "how many cpus");
+    let whole = engine.conversation_tokens(&one.turns());
+    assert_eq!(engine.uncached_tokens(&one.turns()), whole);
+    ask(&mut engine, &one).unwrap();
+    assert_eq!(engine.uncached_tokens(&one.turns()), 1);
+    let second = engine.add_slot().unwrap();
+    engine.use_slot(second);
+    assert_eq!(engine.uncached_tokens(&one.turns()), whole);
+}

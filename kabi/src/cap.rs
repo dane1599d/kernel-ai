@@ -28,6 +28,9 @@ pub const THREADS: u64 = 1 << 8;
 /// `NET`, so a process that may make HTTP requests to its one server cannot
 /// carry data out in the names it looks up (`<data>.attacker.example`).
 pub const RESOLVE: u64 = 1 << 9;
+/// Stop processes the supervisor does not run, by name ([`super::call::PROC_STOP`]):
+/// a Job handle with STOP. The kernel grants it only to the service named `shell`.
+pub const STOP: u64 = 1 << 10;
 /// Every capability a supervisor may grant.
 pub const GRANTABLE: u64 =
-    SERVE | NET | CALL | POLICY | COMPONENT | PUBLISH | MODEL | THREADS | RESOLVE;
+    SERVE | NET | CALL | POLICY | COMPONENT | PUBLISH | MODEL | THREADS | RESOLVE | STOP;
