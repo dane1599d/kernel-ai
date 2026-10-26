@@ -4,8 +4,13 @@
 //! each worker the rows [`share`] says, so the result does not depend on how many
 //! workers there are or which finishes first.
 //!
-//! Between jobs a worker spins briefly on the job counter, then sleeps on it with
-//! FUTEX_WAIT; the caller sleeps on the count of finished workers. The process needs
+//! Between jobs a worker spins briefly on the job counter, then yields the CPU
+//! while it looks (so a caller woken on its CPU runs at once), and only after
+//! [`YIELDS`] of those sleeps on it with FUTEX_WAIT. The caller yields while it
+//! waits for the count of finished workers in the same way. A decode step makes a
+//! few hundred broadcasts a token, and in a KVM guest a futex sleep and wake cost
+//! about 370 us each way (S02-2), against a few microseconds for a yield. The
+//! process needs
 //! `cap::THREADS`, and its quota pays for each worker's stack. A pool is meant to
 //! live as long as its process: dropping it waits for its workers to exit, and its
 //! few hundred bytes of shared state are not given back.
@@ -24,8 +29,11 @@ use kabi::thread::MAX_WORKERS;
 
 /// Stack pages for each worker: 64 KiB.
 pub const STACK_PAGES: u64 = 16;
-/// Looks at the job counter before a worker goes to sleep on it.
-const SPINS: u32 = 2_000;
+/// Looks at a counter with PAUSE before yielding while it waits.
+const SPINS: u32 = 64;
+/// Yields while waiting before sleeping on the futex: about a millisecond or two
+/// in a guest, longer than the gap between a decode step's broadcasts.
+const YIELDS: u32 = 1_000;
 /// How long `Pool::new` retries a Busy THREAD_SPAWN: a worker that just exited
 /// holds its index until the kernel has let its thread go.
 const BUSY_RETRY_MS: u64 = 1_000;
@@ -56,6 +64,11 @@ struct Shared {
     finished: AtomicU32,
     /// Workers started and not yet about to exit; `Drop` sleeps on it.
     live: AtomicU32,
+    /// Workers asleep (or about to be) on `generation`; a broadcast wakes them
+    /// only when there are some.
+    sleepers: AtomicU32,
+    /// Set while the caller sleeps (or is about to) on `finished`.
+    caller_asleep: AtomicBool,
     stop: AtomicBool,
     /// Set while a broadcast runs, to catch a second one at run time too.
     busy: AtomicBool,
@@ -117,6 +130,8 @@ impl Pool {
             generation: AtomicU32::new(0),
             finished: AtomicU32::new(0),
             live: AtomicU32::new(0),
+            sleepers: AtomicU32::new(0),
+            caller_asleep: AtomicBool::new(false),
             stop: AtomicBool::new(false),
             busy: AtomicBool::new(false),
             workers,
@@ -167,15 +182,32 @@ impl Pool {
         // reads the cell now; the generation bump below publishes the write.
         unsafe { *shared.job.get() = Some(job) };
         shared.finished.store(0, Ordering::Release);
-        shared.generation.fetch_add(1, Ordering::Release);
-        let _ = sys::futex_wake(&shared.generation, u32::MAX);
+        // SeqCst with the sleepers count: a worker that counts itself asleep
+        // after this bump still sees it before it sleeps.
+        shared.generation.fetch_add(1, Ordering::SeqCst);
+        if shared.sleepers.load(Ordering::SeqCst) > 0 {
+            let _ = sys::futex_wake(&shared.generation, u32::MAX);
+        }
         let workers = shared.workers as u32;
+        let mut waits = 0;
         loop {
             let finished = shared.finished.load(Ordering::Acquire);
             if finished == workers {
                 break;
             }
-            let _ = sys::futex_wait(&shared.finished, finished, 0);
+            waits += 1;
+            match waits {
+                n if n <= SPINS => core::hint::spin_loop(),
+                n if n <= SPINS + YIELDS => sys::yield_now(),
+                _ => {
+                    // SeqCst with the last worker's count, as for `sleepers`.
+                    shared.caller_asleep.store(true, Ordering::SeqCst);
+                    if shared.finished.load(Ordering::SeqCst) == finished {
+                        let _ = sys::futex_wait(&shared.finished, finished, 0);
+                    }
+                    shared.caller_asleep.store(false, Ordering::SeqCst);
+                }
+            }
         }
         // SAFETY: as above, every worker is done with it.
         unsafe { *shared.job.get() = None };
@@ -217,19 +249,27 @@ impl Drop for Pool {
 
 /// Waits until the job counter moves past `seen`; returns its new value.
 fn next_generation(shared: &Shared, seen: u32) -> u32 {
-    for _ in 0..SPINS {
+    for wait in 0..SPINS + YIELDS {
         let now = shared.generation.load(Ordering::Acquire);
         if now != seen {
             return now;
         }
-        core::hint::spin_loop();
+        match wait < SPINS {
+            true => core::hint::spin_loop(),
+            false => sys::yield_now(),
+        }
     }
     loop {
+        shared.sleepers.fetch_add(1, Ordering::SeqCst);
+        let now = shared.generation.load(Ordering::SeqCst);
+        if now == seen {
+            let _ = sys::futex_wait(&shared.generation, seen, 0);
+        }
+        shared.sleepers.fetch_sub(1, Ordering::SeqCst);
         let now = shared.generation.load(Ordering::Acquire);
         if now != seen {
             return now;
         }
-        let _ = sys::futex_wait(&shared.generation, seen, 0);
     }
 }
 
@@ -254,8 +294,8 @@ extern "C" fn worker_main(arg: u64) -> ! {
             job(start.index, shared.workers);
         }
         shared.job_cycles[start.index].store(cycles() - began, Ordering::Relaxed);
-        let done = shared.finished.fetch_add(1, Ordering::AcqRel) + 1;
-        if done as usize == shared.workers {
+        let done = shared.finished.fetch_add(1, Ordering::SeqCst) + 1;
+        if done as usize == shared.workers && shared.caller_asleep.load(Ordering::SeqCst) {
             let _ = sys::futex_wake(&shared.finished, 1);
         }
     }
