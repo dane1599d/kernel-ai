@@ -60,6 +60,8 @@ pub enum SelfTest {
     ManifestGood,
     /// L3: the `kai-model` disk reads back exactly the file xtask attached.
     Blk,
+    /// Spike S04-3 (ADR 0004): raw commits to `kai-data`, flushed in order.
+    BlkFlush,
     /// L3: the model is held in memory and mapped into `llm`, and survives it.
     Model,
     /// L4: `ask` is answered by the model on the disk, with no LLM server.
@@ -144,6 +146,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=manifest" => Some(SelfTest::Manifest),
             "test=manifest-good" => Some(SelfTest::ManifestGood),
             "test=blk" => Some(SelfTest::Blk),
+            "test=blk-flush" => Some(SelfTest::BlkFlush),
             "test=model" => Some(SelfTest::Model),
             "test=local-ask" => Some(SelfTest::LocalAsk),
             "test=local-script" => Some(SelfTest::LocalScript),

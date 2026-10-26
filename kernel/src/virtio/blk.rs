@@ -15,6 +15,7 @@ use alloc::vec::Vec;
 use mm::PAGE_SIZE;
 use mm::dma::{self, ReadError, SECTOR};
 use virtio_drivers::device::blk::VirtIOBlk;
+use virtio_drivers::transport::Transport;
 use virtio_drivers::transport::pci::PciTransport;
 
 /// One disk's staging buffer, and so the most one read moves: 512 KiB.
@@ -23,6 +24,11 @@ pub const STAGING_BYTES: usize = 512 * 1024;
 const MAX_SECTORS: u64 = STAGING_BYTES as u64 / SECTOR;
 /// The device ID (serial) is at most this long.
 const ID_LEN: usize = 20;
+/// VIRTIO_BLK_F_FLUSH (VIRTIO 1.3 §5.2.3). virtio-drivers negotiates it when the
+/// device offers it, but keeps the negotiated set private, and its `flush`
+/// returns Ok without sending anything when it was not negotiated; so the
+/// kernel reads the offer itself, before setting the device up (ADR 0004 §6).
+const F_FLUSH: u64 = 1 << 9;
 
 type Device = VirtIOBlk<KernelHal, PciTransport>;
 
@@ -32,6 +38,8 @@ pub struct Disk {
     serial: String,
     sectors: u64,
     read_only: bool,
+    /// Whether the device offered FLUSH, and so negotiated it.
+    flush: bool,
     /// [`STAGING_BYTES`] of contiguous frames in the direct map, used by this disk
     /// alone and never freed.
     staging: &'static mut [u8],
@@ -42,7 +50,8 @@ pub struct Disk {
 unsafe impl Send for Disk {}
 
 impl Disk {
-    fn new(transport: PciTransport) -> Result<Disk, &'static str> {
+    fn new(mut transport: PciTransport) -> Result<Disk, &'static str> {
+        let flush = transport.read_device_features() & F_FLUSH != 0;
         let mut device = Device::new(transport).map_err(|_| "blk: virtio-blk setup failed")?;
         device.disable_interrupts();
         let mut id = [0u8; ID_LEN];
@@ -61,6 +70,7 @@ impl Disk {
         Ok(Disk {
             sectors: device.capacity(),
             read_only: device.readonly(),
+            flush,
             device,
             serial,
             staging,
@@ -106,6 +116,42 @@ impl block::Device for Disk {
             .read_blocks(block, &mut self.staging[..bytes])
             .map_err(|_| "blk: the device failed a read")?;
         Ok(&self.staging[..bytes])
+    }
+
+    /// Copies `data` into the staging buffer and writes it from `sector`.
+    fn write(&mut self, sector: u64, data: &[u8]) -> Result<(), &'static str> {
+        if self.read_only {
+            return Err("blk: the disk is read-only");
+        }
+        if !(data.len() as u64).is_multiple_of(SECTOR) {
+            return Err("blk: a write of part of a sector");
+        }
+        let sectors = data.len() as u64 / SECTOR;
+        let bytes = dma::check_read(sector, sectors, self.sectors, STAGING_BYTES as u64).map_err(
+            |error| match error {
+                ReadError::Empty => "blk: a write of no sectors",
+                ReadError::TooLong => "blk: a write longer than the staging buffer",
+                ReadError::PastEnd => "blk: a write past the end of the disk",
+            },
+        )? as usize;
+        let block = usize::try_from(sector).map_err(|_| "blk: sector number out of range")?;
+        self.staging[..bytes].copy_from_slice(data);
+        self.device
+            .write_blocks(block, &self.staging[..bytes])
+            .map_err(|_| "blk: the device failed a write")
+    }
+
+    fn flushes(&self) -> bool {
+        self.flush
+    }
+
+    fn flush(&mut self) -> Result<(), &'static str> {
+        if !self.flush {
+            return Err("blk: the device offers no FLUSH");
+        }
+        self.device
+            .flush()
+            .map_err(|_| "blk: the device failed a flush")
     }
 }
 

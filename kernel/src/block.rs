@@ -24,6 +24,19 @@ pub trait Device: Send {
     /// Reads `sectors` sectors from `sector`; the bytes stay valid until the next
     /// read.
     fn read(&mut self, sector: u64, sectors: u64) -> Result<&[u8], &'static str>;
+    /// Spike S04-3 (ADR 0004): writes `data`, whole sectors, from `sector`.
+    fn write(&mut self, _sector: u64, _data: &[u8]) -> Result<(), &'static str> {
+        Err("block: this driver does not write")
+    }
+    /// Spike S04-3: whether a flush reaches the device, so a write-back cache can
+    /// be made durable.
+    fn flushes(&self) -> bool {
+        false
+    }
+    /// Spike S04-3: makes every completed write durable.
+    fn flush(&mut self) -> Result<(), &'static str> {
+        Err("block: this driver does not flush")
+    }
 }
 
 static DISKS: Mutex<Vec<Box<dyn Device>>> = Mutex::new(Vec::new());

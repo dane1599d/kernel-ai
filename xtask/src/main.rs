@@ -29,6 +29,7 @@
 //! MMX, SSE or AVX instruction (see floatguard.rs).
 
 mod actbench;
+mod blklog;
 mod boot_smoke;
 mod buildsvc;
 mod cases;
@@ -205,6 +206,11 @@ fn execute(options: &Options) -> Result<(), String> {
         .enumerate()
         .filter(|&(index, _)| options::in_shard(options.shard, index))
         .map(|(_, case)| case)
+        // Spike S04-3: `XTASK_CASE=a,b` boots only those cases.
+        .filter(|case| {
+            env::var("XTASK_CASE")
+                .map_or(true, |only| only.split(',').any(|name| name == case.name))
+        })
         .collect::<Vec<_>>();
     for &case in &cases {
         let service = match case.build {
@@ -248,6 +254,10 @@ fn execute(options: &Options) -> Result<(), String> {
             ..options.sizing
         };
         let mut args = qemu::args(&firmware, accel, true, disk.as_ref(), sizing);
+        if case.data_log.is_some() {
+            blklog::prepare(&target_dir)?;
+            args.extend(blklog::qemu_args());
+        }
         if case.image {
             qemu::boot_from_image(&mut args, &esp, &target_dir)?;
         }
@@ -287,6 +297,10 @@ fn execute(options: &Options) -> Result<(), String> {
         };
         let result = qemu::run_test(&qemu, &args, &target_dir, &run)
             .and_then(|()| after(&service))
+            .and_then(|()| {
+                case.data_log
+                    .map_or(Ok(()), |expect| blklog::check(&target_dir, expect))
+            })
             .and_then(|()| match case.screen {
                 Some(expect) => screen::check(&target_dir, expect),
                 None => Ok(()),
