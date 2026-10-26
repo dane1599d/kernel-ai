@@ -273,25 +273,26 @@ struct TreeOracle<'a> {
 }
 
 /// Walks the subtree `ptr` names: every node verifies, keys stay within their
-/// bounds, levels step down, every node below the root is at least a quarter
-/// full, and no block is free or pending.
+/// bounds, levels step down, every node off the tree's rightmost path (`edge`)
+/// is at least a quarter full, and no block is free or pending.
 fn walk(
     image: &mut Image<'_>,
     alloc: &Allocator,
     ptr: &BlockPtr,
     lower: Option<Key>,
     upper: Option<Key>,
-    root: bool,
+    edge: bool,
     sum: &mut (u64, u64),
 ) -> Result<(), String> {
     let node = load(image, ptr).map_err(|e| format!("node {}: {e:?}", ptr.addr))?;
     if alloc.any_unused(ptr.addr, ptr.addr + 1) {
         return Err(format!("node {} is free or pending", ptr.addr));
     }
+    let node_underfull = node.underfull();
     let in_bounds = |k: &Key| lower.is_none_or(|l| *k >= l) && upper.is_none_or(|u| *k < u);
     match node {
         Node::Leaf(items) => {
-            if !root && items.is_empty() {
+            if items.is_empty() || (!edge && node_underfull) {
                 return Err(format!("empty leaf {}", ptr.addr));
             }
             for (k, v) in &items {
@@ -303,7 +304,7 @@ fn walk(
             }
         }
         Node::Branch(_, children) => {
-            if !root && children.len() < kaifs::tree::MAX_BRANCH / 4 {
+            if !edge && node_underfull {
                 return Err(format!("branch {} is under a quarter full", ptr.addr));
             }
             for (i, (key, child)) in children.iter().enumerate() {
@@ -312,7 +313,8 @@ fn walk(
                 };
                 let next = children.get(i + 1).map(|(k, _)| *k).or(upper);
                 let low = if i == 0 { lower } else { Some(*key) };
-                walk(image, alloc, p, low, next, false, sum)?;
+                let edge = edge && i + 1 == children.len();
+                walk(image, alloc, p, low, next, edge, sum)?;
             }
         }
     }

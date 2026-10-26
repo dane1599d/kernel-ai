@@ -41,6 +41,26 @@ pub trait BlockDev {
     fn flush(&mut self) -> Result<(), IoError>;
 }
 
+/// A device borrowed for a while: what lets a mount run over a disk the caller
+/// keeps.
+impl<T: BlockDev + ?Sized> BlockDev for &mut T {
+    fn info(&self) -> DevInfo {
+        (**self).info()
+    }
+
+    fn read(&mut self, addr: u64, buf: &mut Block) -> Result<(), IoError> {
+        (**self).read(addr, buf)
+    }
+
+    fn write(&mut self, addr: u64, data: &Block) -> Result<(), IoError> {
+        (**self).write(addr, data)
+    }
+
+    fn flush(&mut self) -> Result<(), IoError> {
+        (**self).flush()
+    }
+}
+
 /// A sparse disk in memory: unwritten blocks read as zeros. Blocks are shared, so
 /// a copy costs little and a crash state built from a log holds no copies.
 #[derive(Clone, Default)]

@@ -151,6 +151,11 @@ impl Allocator {
         self.buddy.free_blocks()
     }
 
+    /// Whether this transaction has allocated or freed nothing yet.
+    pub fn is_idle(&self) -> bool {
+        self.allocs.is_empty() && self.frees.is_empty()
+    }
+
     /// Whether any block of `[start, end)` is free or pending: what `check()`
     /// asks of every block a tree reaches.
     pub fn any_unused(&self, start: u64, end: u64) -> bool {
@@ -164,6 +169,26 @@ impl Allocator {
     /// Every block of the allocator's own chain.
     pub fn chain(&self) -> &[BlockPtr] {
         &self.chain
+    }
+
+    /// The chain's newest block, which the superblock names.
+    pub fn head(&self) -> BlockPtr {
+        self.head
+    }
+
+    /// Free and pending space together, as sorted extents.
+    pub fn unused(&self) -> Vec<(u64, u64)> {
+        let mut all = self.buddy.extents();
+        all.extend(self.pending.iter().map(|(_, r)| (r.addr, r.blocks())));
+        all.sort_unstable();
+        let mut out: Vec<(u64, u64)> = Vec::with_capacity(all.len());
+        for (s, l) in all {
+            match out.last_mut() {
+                Some((os, ol)) if *os + *ol == s => *ol += l,
+                _ => out.push((s, l)),
+            }
+        }
+        out
     }
 
     pub fn state(&self) -> State {
