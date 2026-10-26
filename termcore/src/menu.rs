@@ -100,6 +100,9 @@ pub enum Refused {
 pub struct Menu {
     pub id: u64,
     question: String,
+    /// The call the question shows, canonical (`termcore::once::call_text`): what
+    /// an Allow's ONCE digest names (`once::digest_call`).
+    call: String,
     choices: Vec<(Answer, String)>,
     selected: usize,
     armed: bool,
@@ -139,6 +142,7 @@ impl Menu {
         Ok(Self {
             id,
             question: question.to_string(),
+            call: String::new(),
             choices,
             selected: match origin {
                 Origin::Asked => 0,
@@ -148,8 +152,25 @@ impl Menu {
         })
     }
 
-    /// Reads `menu <id> <asked|added>`, then the question, the kind rule and the
-    /// target rule, one line each.
+    /// The menu for `call`, which `question` must show word for word: the ONCE an
+    /// Allow mints names this call, so it must be what the user saw.
+    pub fn with_call(self, call: &str) -> Result<Self, Refused> {
+        if call.is_empty() || !showable(call) || !self.question.contains(call) {
+            return Err(Refused::Unshowable);
+        }
+        Ok(Self {
+            call: call.to_string(),
+            ..self
+        })
+    }
+
+    /// The call the question shows.
+    pub fn call(&self) -> &str {
+        &self.call
+    }
+
+    /// Reads `menu <id> <asked|added>`, then the question, the kind rule, the
+    /// target rule and the call, one line each.
     pub fn decode(text: &str) -> Result<Self, Refused> {
         let mut lines = text.split('\n');
         let header = lines.next().ok_or(Refused::Malformed)?;
@@ -166,7 +187,8 @@ impl Menu {
             Some("added") => Origin::Added,
             _ => return Err(Refused::Malformed),
         };
-        let (Some(question), Some(kind), Some(target), None, None) = (
+        let (Some(question), Some(kind), Some(target), Some(call), None, None) = (
+            lines.next(),
             lines.next(),
             lines.next(),
             lines.next(),
@@ -177,16 +199,23 @@ impl Menu {
         };
         let given = |label: &str| Some(label).filter(|l| !l.is_empty()).map(String::from);
         let (kind, target) = (given(kind), given(target));
-        Self::new(id, question, kind.as_deref(), target.as_deref(), origin)
+        Self::new(id, question, kind.as_deref(), target.as_deref(), origin)?.with_call(call)
     }
 
     /// The shell's side of [`Menu::decode`].
-    pub fn encode(id: u64, origin: Origin, question: &str, kind: &str, target: &str) -> String {
+    pub fn encode(
+        id: u64,
+        origin: Origin,
+        question: &str,
+        kind: &str,
+        target: &str,
+        call: &str,
+    ) -> String {
         let origin = match origin {
             Origin::Asked => "asked",
             Origin::Added => "added",
         };
-        format!("menu {id} {origin}\n{question}\n{kind}\n{target}")
+        format!("menu {id} {origin}\n{question}\n{kind}\n{target}\n{call}")
     }
 
     /// The `?` rows, printed once: the question, then each choice numbered.
@@ -398,30 +427,41 @@ mod tests {
 
     #[test]
     fn the_wire_round_trips_and_refuses_what_it_cannot_show() {
-        let text = Menu::encode(9, Origin::Added, "Stop it?", "stopping processes", "");
+        let text = Menu::encode(
+            9,
+            Origin::Added,
+            "Run stop(1)?",
+            "stopping processes",
+            "",
+            "stop(1)",
+        );
         let menu = Menu::decode(&text).unwrap();
         assert_eq!(menu.id, 9);
+        assert_eq!(menu.call(), "stop(1)");
         assert_eq!(menu.selected(), Answer::Deny);
         assert_eq!(menu.rows().len(), 4);
         for bad in [
             "",
             "menu",
-            "menu x asked\nq\n\n",
-            "menu 1 maybe\nq\n\n",
-            "menu 1 asked\nq\n",
-            "menu 1 asked\nq\n\n\n\n",
-            "menu 1 asked extra\nq\n\n",
-            "confirm 1 asked\nq\n\n",
+            "menu x asked\nq\n\n\nq",
+            "menu 1 maybe\nq\n\n\nq",
+            "menu 1 asked\nq\n\n",
+            "menu 1 asked\nq\n\n\nq\n",
+            "menu 1 asked extra\nq\n\n\nq",
+            "confirm 1 asked\nq\n\n\nq",
         ] {
             assert_eq!(Menu::decode(bad), Err(Refused::Malformed), "{bad:?}");
         }
         let long = "x".repeat(MAX_TEXT + 1);
         for bad in [
-            Menu::encode(1, Origin::Asked, "", "", ""),
-            Menu::encode(1, Origin::Asked, "q\u{1b}[2J", "", ""),
-            Menu::encode(1, Origin::Asked, "q", "\u{e9}", ""),
-            Menu::encode(1, Origin::Asked, &long, "", ""),
-            Menu::encode(1, Origin::Asked, "q", &"k".repeat(MAX_TEXT - 5), ""),
+            Menu::encode(1, Origin::Asked, "", "", "", "q"),
+            Menu::encode(1, Origin::Asked, "q\u{1b}[2J", "", "", "q"),
+            Menu::encode(1, Origin::Asked, "q", "\u{e9}", "", "q"),
+            Menu::encode(1, Origin::Asked, &long, "", "", "x"),
+            Menu::encode(1, Origin::Asked, "q", &"k".repeat(MAX_TEXT - 5), "", "q"),
+            // The call must be there, and be what the question shows.
+            Menu::encode(1, Origin::Asked, "Run stop(1)?", "", "", ""),
+            Menu::encode(1, Origin::Asked, "Run stop(1)?", "", "", "stop(2)"),
         ] {
             assert_eq!(Menu::decode(&bad), Err(Refused::Unshowable), "{bad:?}");
         }
@@ -447,6 +487,7 @@ mod tests {
             "Stop \"b\"?",
             "stopping",
             "stopping \"b\"",
+            "\"b\"",
         );
         let bytes = good.as_bytes();
         let mut seed = 0x9e37_79b9_7f4a_7c15u64;

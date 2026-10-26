@@ -223,7 +223,7 @@ fn choose(decoder: &mut Decoder, mut menu: Menu) -> Option<Waiting> {
     finish_line(prompt, answer.word(), "");
     // Allow mints the call's ONCE (and an "Always allow" its rule node); the
     // request ends once the shell has answered, so the ONCE cannot be used later.
-    match crate::allow::allow(menu.id, menu.question(), answer) {
+    match crate::allow::allow(menu.id, menu.call(), answer) {
         Ok(Some(allowed)) => {
             let line = menu::granted_line(menu.id, answer, allowed.granted);
             let waiting = shell_line(&line);

@@ -66,7 +66,7 @@ const NOT_ENGLISH: &[(&str, Expect)] = &[
         "cambia la política a round robin",
         // The Allow / Deny menu, highlight on Deny, with no rule offered.
         Exact(
-            "menu 3 added\nRun set_policy(\"round-robin\")? The request is not in English, so it asks first.\n\n",
+            "menu 3 added\nRun set_policy(\"round-robin\")? The request is not in English, so it asks first.\n\n\nset_policy(\"round-robin\")",
         ),
     ),
     ("n", Contains("not run")),
@@ -226,14 +226,14 @@ fn reply_to(line: &str) -> Result<String, &'static str> {
 }
 
 /// Asks the not-English switch, which must come back as the Allow / Deny menu;
-/// its log entry id and the question as the menu would show it.
+/// its log entry id and the call as the menu shows it.
 fn asked() -> Result<(u64, String), &'static str> {
     let reply = reply_to("cambia la política a round robin")?;
     let menu = menu::Menu::decode(&reply).map_err(|_| {
         log!("act-ask: not a menu: {reply:?}");
         "act-ask: an asking call did not get the menu"
     })?;
-    Ok((menu.id, String::from(menu.question())))
+    Ok((menu.id, String::from(menu.call())))
 }
 
 /// The answer to an asked call must say it did not run, with `why`.
@@ -247,7 +247,7 @@ fn refused(line: &str, why: &str) -> Result<(), &'static str> {
 }
 
 /// The Allow / Deny menu on handles (ADR 0001 D6, ADR 0002 D2a): the trusted
-/// path's Allow mints a ONCE whose kernel-held digest names the question as
+/// path's Allow mints a ONCE whose kernel-held digest names the call as
 /// shown, and the call runs only when the shell's ONCE_CHECK matches, once.
 fn ask() -> Result<(), &'static str> {
     // No ONCE, a typed yes, or a Deny: nothing runs.

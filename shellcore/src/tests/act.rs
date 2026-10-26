@@ -172,7 +172,7 @@ fn an_asking_call_is_the_allow_deny_menu_and_its_answers_decide() {
     // highlight starts on Deny.
     assert_eq!(
         reply.to_wire(),
-        "menu 1 added\nRun set_policy(\"round-robin\")? The request is not in English, so it asks first.\n\n"
+        "menu 1 added\nRun set_policy(\"round-robin\")? The request is not in English, so it asks first.\n\n\nset_policy(\"round-robin\")"
     );
     let menu = termcore::menu::Menu::decode(&reply.to_wire()).unwrap();
     assert_eq!(menu.selected(), termcore::menu::Answer::Deny);
@@ -182,7 +182,7 @@ fn an_asking_call_is_the_allow_deny_menu_and_its_answers_decide() {
 
 /// The menu's question for asked call `id` from `cambia la política…`.
 fn shown(_id: u64) -> &'static str {
-    "Run set_policy(\"round-robin\")? The request is not in English, so it asks first."
+    "set_policy(\"round-robin\")"
 }
 
 #[test]
@@ -203,10 +203,7 @@ fn an_allow_runs_only_with_its_own_once_and_only_once() {
     );
     // A ONCE minted for another question, or another entry, does not check.
     shell.eval(line);
-    let other = host.mint(
-        3,
-        "Run set_policy(\"interactive\")? The request is not in English, so it asks first.",
-    );
+    let other = host.mint(3, "set_policy(\"interactive\")");
     assert_eq!(
         shell.eval(&format!("answer 3 allow once={other}")),
         not_run(3, "its Allow did not check (Invalid)")
