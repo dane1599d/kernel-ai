@@ -47,8 +47,12 @@ fn main() -> i32 {
             }
             best = best.min(sys::time_ns() - start);
         }
-        let mbs = ROUNDS * RECORD as u64 * 1000 / best.max(1) * 1000 / (1 << 20);
-        println!("hashbench: {kind:?} {mbs} MB/s over 128 KiB records in the fs build target");
+        let bytes = u128::from(ROUNDS) * RECORD as u128;
+        let mbs = bytes * 1_000_000_000 / u128::from(best.max(1)) / (1 << 20);
+        println!(
+            "hashbench: {kind:?} {mbs} MB/s over 128 KiB records in the fs build target ({} records in {best} ns)",
+            ROUNDS
+        );
     }
     println!("hashbench: done");
     0
