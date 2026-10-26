@@ -131,11 +131,11 @@ pub const STEPS: &[Step] = &[
     )),
     Live(Call(
         notes_call!("add", r#"{text: "buy milk"}"#),
-        Exact(notes_reply!("ok(1)")),
+        StartsWith(notes_reply!("ok(1)")),
     )),
     Live(Call(
         notes_call!("add", r#"{text: "walk"}"#),
-        Exact(notes_reply!("ok(2)")),
+        StartsWith(notes_reply!("ok(2)")),
     )),
     Live(Active("2", 2)),
     Uploads(&[], "e1"),

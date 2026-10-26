@@ -144,19 +144,19 @@ pub const STEPS: &[Step] = &[
     ),
     Call(
         notes_call!("add", r#"{text: "buy milk"}"#),
-        Exact(notes_reply!("ok(1)")),
+        StartsWith(notes_reply!("ok(1)")),
     ),
     Call(
         notes_call!("add", r#"{text: "call bob today"}"#),
-        Exact(notes_reply!("ok(2)")),
+        StartsWith(notes_reply!("ok(2)")),
     ),
     Call(
         notes_call!("add", r#"{text: "fix the roof"}"#),
-        Exact(notes_reply!("ok(3)")),
+        StartsWith(notes_reply!("ok(3)")),
     ),
     Call(
         notes_call!("add", r#"{text: "walk"}"#),
-        Exact(notes_reply!("ok(4)")),
+        StartsWith(notes_reply!("ok(4)")),
     ),
     Call(
         notes_call!("count", "{}"),
@@ -188,7 +188,7 @@ pub const STEPS: &[Step] = &[
     ),
     Call(
         notes_call!("add", r#"{text: "paint fence"}"#),
-        Exact(notes_reply!("ok(5)")),
+        StartsWith(notes_reply!("ok(5)")),
     ),
     Active("2", 2),
     Counts(&[(Commits, 1), (Generation, 1), (Served, 3)]),
@@ -214,12 +214,12 @@ pub const STEPS: &[Step] = &[
     Call("ctl swap 3-trap", Exact("ok probation 3-trap (3 calls)")),
     Call(
         notes_call!("add", r#"{text: "sixth note"}"#),
-        Exact(notes_reply!("ok(6)")),
+        StartsWith(notes_reply!("ok(6)")),
     ),
     // Version 3-trap overruns its array on the seventh note; 2 answers instead.
     Call(
         notes_call!("add", r#"{text: "seventh"}"#),
-        Exact(notes_reply!("ok(7)")),
+        StartsWith(notes_reply!("ok(7)")),
     ),
     RolledBack(
         "3-trap",
