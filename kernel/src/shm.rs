@@ -136,17 +136,23 @@ fn free_frames(frames: &[u64]) {
 /// SHM_CREATE for the process in `slot`.
 pub fn create(slot: usize, pages: u64) -> Result<u64, Error> {
     let max_pages = process::identity(slot).limits.max_pages;
-    let fits = process::with_space(slot, |space| {
-        space.frames().saturating_add(pages) <= max_pages
-    });
-    if !fits.ok_or(Error::Dead)? {
+    // Checked and counted under one lock, so two threads cannot both fit. Counted
+    // until the process ends, even if the pages are freed before.
+    let charged = process::lock_space(slot)
+        .as_mut()
+        .map(|space| space.try_charge(pages, max_pages));
+    if !charged.ok_or(Error::Dead)? {
         return Err(Error::NoMemory);
     }
-    let object = create_object(pages)?;
-    // Counted until the process ends, even if the pages are freed before.
-    if let Some(space) = process::lock_space(slot).as_mut() {
-        space.charge(pages);
-    }
+    let object = match create_object(pages) {
+        Ok(object) => object,
+        Err(error) => {
+            if let Some(space) = process::lock_space(slot).as_mut() {
+                space.refund(pages);
+            }
+            return Err(error);
+        }
+    };
     let entry = Entry::new(Kind::Shm, created_rights(), object);
     match handle::with(slot, |h| h.table.insert(entry))?.map_err(Error::from) {
         Ok(handle) => Ok(u64::from(handle.0)),

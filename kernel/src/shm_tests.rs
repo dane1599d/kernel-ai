@@ -69,6 +69,13 @@ fn rounds(pids: [u64; 2]) -> Result<(), &'static str> {
     let [Some(a), Some(b)] = slots else {
         return Err("shm: a holder is gone");
     };
+    // Defence in depth: a shared-page edit never reaches the model window's slot.
+    let refused = process::with_space(a, |space| {
+        memory::with(|m| m.set_shared_page(space, kabi::layout::MODEL_BASE, None)).is_err()
+    });
+    if refused != Some(true) {
+        return Err("shm: set_shared_page took an address in the model window's slot");
+    }
     let object = shm::create_object(PAGES).map_err(|_| "shm: cannot make the object")?;
     // A plain handle in the first holder keeps the object alive across rounds.
     give(a, Entry::new(Kind::Shm, Rights::MAP | Rights::READ, object))?;

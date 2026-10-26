@@ -64,9 +64,19 @@ impl UserSpace {
         self.frames + self.charged
     }
 
-    /// Counts `pages` it does not hold against the quota.
-    pub fn charge(&mut self, pages: u64) {
-        self.charged += pages;
+    /// Counts `pages` it does not hold against the quota, if they fit under
+    /// `max_pages` with everything counted already; whether they did.
+    pub fn try_charge(&mut self, pages: u64, max_pages: u64) -> bool {
+        let fits = self.frames().saturating_add(pages) <= max_pages;
+        if fits {
+            self.charged += pages;
+        }
+        fits
+    }
+
+    /// Takes back pages [`UserSpace::try_charge`] counted.
+    pub fn refund(&mut self, pages: u64) {
+        self.charged = self.charged.saturating_sub(pages);
     }
 }
 
@@ -246,6 +256,10 @@ impl Memory {
         addr: u64,
         phys: Option<u64>,
     ) -> Result<(), &'static str> {
+        // Never the model window's slot or the kernel half, whatever the caller.
+        if !is_user_page(addr) {
+            return Err("not a user page address");
+        }
         let indexes = [
             (addr >> 39) & 0x1FF,
             (addr >> 30) & 0x1FF,
