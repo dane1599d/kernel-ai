@@ -233,8 +233,6 @@ mod tests {
         // The generated model's tagged call is a read the guest answers the
         // same (the policy it boots with), run through the one door with no
         // script asked for, and the same again with the first turn in history.
-        // The boot case compares the guest's reply with this byte for byte, so
-        // the read must give the same answer in both worlds.
         assert_eq!(outcome.rounds, [0, 0]);
         assert_eq!(outcome.typed, "ok interactive");
         assert_eq!(outcome.again, outcome.typed);
