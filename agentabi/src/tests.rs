@@ -15,7 +15,11 @@ fn every_row_passes_the_check_one_by_one() {
 
 #[test]
 fn the_lists_cover_every_row_once() {
-    let listed = SCRIPT_API.iter().chain(&HELPERS).chain(&COMMANDS);
+    let listed = SCRIPT_API
+        .iter()
+        .chain(&CALL_ONLY)
+        .chain(&HELPERS)
+        .chain(&COMMANDS);
     assert_eq!(listed.clone().count(), ROWS.len());
     for row in listed {
         assert!(ROWS.iter().any(|r| r.name == row.name), "{}", row.name);
@@ -27,7 +31,7 @@ fn typed_only_rows_are_out_of_every_table_a_call_can_reach() {
     assert_eq!(check(&TYPED_ONLY), Ok(()));
     for row in &TYPED_ONLY {
         assert!(find(&ROWS, row.name).is_none(), "{}", row.name);
-        assert!(find(&SCRIPT_API, row.name).is_none(), "{}", row.name);
+        assert!(find(&BOUND, row.name).is_none(), "{}", row.name);
         assert!(find(&COMMANDS, row.name).is_none(), "{}", row.name);
     }
 }
@@ -52,7 +56,7 @@ fn derived_tiers_match_the_seamless_actions_table() {
         ("fixed", Tier::Run),
         ("floor", Tier::Run),
     ];
-    let rows = SCRIPT_API.iter().chain(&HELPERS);
+    let rows = BOUND.iter().chain(&HELPERS);
     let now: alloc::vec::Vec<_> = rows.map(|row| (row.name, derive(row))).collect();
     assert_eq!(now, before);
     assert_eq!(derive(&TUNE), Tier::Ask);

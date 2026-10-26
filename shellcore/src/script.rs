@@ -27,7 +27,7 @@ use alloc::vec::Vec;
 use core::cell::RefCell;
 use core::fmt::Write;
 use kabi::{MAX_METRIC_PROCESSES, Metrics, policy};
-use llmproto::script::{API, Answer, Effect, check_summary, check_text};
+use llmproto::script::{Answer, Effect, check_summary, check_text};
 use rhai::{AST, Array, Dynamic, Engine, EvalAltResult, INT, Map, Scope};
 
 /// A script that passed every check, waiting for the user's answer.
@@ -135,7 +135,10 @@ impl Tx {
 /// Registers the registry's script API rows named in `granted` on `engine`, each
 /// checked against `tx`'s plan when it runs.
 fn register(engine: &mut Engine, granted: &[&'static str], tx: &Tx) {
-    for row in API.iter().filter(|row| granted.contains(&row.name)) {
+    for row in agentabi::BOUND
+        .iter()
+        .filter(|row| granted.contains(&row.name))
+    {
         bind(engine, row.name, tx);
     }
 }
@@ -145,7 +148,8 @@ fn register(engine: &mut Engine, granted: &[&'static str], tx: &Tx) {
 pub fn unbound(host: &Rc<dyn Host>) -> Vec<&'static str> {
     let mut engine = Engine::new_raw();
     let tx = Tx::new(host, &Rc::default());
-    API.iter()
+    agentabi::BOUND
+        .iter()
         .map(|row| row.name)
         .filter(|&name| !bind(&mut engine, name, &tx))
         .collect()
@@ -406,7 +410,8 @@ fn strict(line: &Rc<Line>, config: &Config, granted: &[&'static str], tx: &Tx) -
 fn split(plan: &Plan) -> (Vec<&'static str>, Vec<&'static str>) {
     let names = plan.names();
     let pick = |effect| {
-        API.iter()
+        agentabi::BOUND
+            .iter()
             .filter(|f| f.effect() == effect && names.contains(&f.name))
             .map(|f| f.name)
             .collect()
@@ -523,6 +528,27 @@ fn for_scripts(config: &Config) -> Config {
 /// stub OS so unknown functions, wrong arguments and type errors are caught before
 /// the user is asked. The error text is fit to send back to the model.
 pub fn check(answer: &Answer, host: &Rc<dyn Host>, config: &Config) -> Result<Checked, Refusal> {
+    check_against(answer, host, config, &agentabi::SCRIPT_API)
+}
+
+/// [`check`] for the one-line script a tagged call's row runs as: its calls are
+/// found among every bound row, the call-only ones too (`agentabi::BOUND`).
+pub fn check_call(
+    answer: &Answer,
+    host: &Rc<dyn Host>,
+    config: &Config,
+) -> Result<Checked, Refusal> {
+    check_against(answer, host, config, &agentabi::BOUND)
+}
+
+/// [`check`], finding the script's calls among `rows`: a model's script sees only
+/// the script API, so a call-only row is no call of it and fails its trial.
+fn check_against(
+    answer: &Answer,
+    host: &Rc<dyn Host>,
+    config: &Config,
+    rows: &'static [agentabi::Action],
+) -> Result<Checked, Refusal> {
     let config = &for_scripts(config);
     let refuse = |why: String| Refusal::Script(why);
     // The llm service checked both already; the shell does not rely on that, since
@@ -534,7 +560,7 @@ pub fn check(answer: &Answer, host: &Rc<dyn Host>, config: &Config) -> Result<Ch
     let ast = strict(&line, config, &[], &Tx::new(&stub, &Rc::default()))
         .compile(&script)
         .map_err(|error| refuse(format!("syntax error: {error}")))?;
-    let plan = Rc::new(analyse::analyse(&ast, &agentabi::SCRIPT_API));
+    let plan = Rc::new(analyse::analyse(&ast, rows));
     let (reads, changes) = split(&plan);
     let granted = plan.names();
     let trial = strict(&line, config, &granted, &Tx::new(&stub, &plan));

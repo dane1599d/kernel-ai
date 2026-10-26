@@ -191,7 +191,7 @@ impl Shell {
         if decision.tier == Tier::Never {
             return self.refuse(id, request, call, decision.why, "it is never run");
         }
-        if !agentabi::SCRIPT_API.iter().any(|r| r.name == row.name) {
+        if !agentabi::BOUND.iter().any(|r| r.name == row.name) {
             let why = format!("{} is typed at the prompt for now, not called", row.name);
             return self.refuse(id, request, call, decision.why, &why);
         }
@@ -199,7 +199,7 @@ impl Shell {
             script: format!("{}({});", row.name, args.rhai.join(", ")),
             summary: String::new(),
         };
-        let checked = match script::check(&answer, &self.host, &self.config) {
+        let checked = match script::check_call(&answer, &self.host, &self.config) {
             Ok(checked) => checked,
             Err(refusal) => {
                 return self.refuse(id, request, call, decision.why, &refusal.to_string());
