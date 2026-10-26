@@ -56,11 +56,11 @@ struct FakeHost {
 
 impl FakeHost {
     /// What the kernel terminal does on Allow: a ONCE badge for menu `id`'s
-    /// `question`, as shown.
-    fn mint(&self, id: u64, question: &str) -> u64 {
+    /// `call`, as shown.
+    fn mint(&self, id: u64, call: &str) -> u64 {
         let mut book = self.once.borrow_mut();
         let badge = 0x0ce0 + book.len() as u64;
-        book.push((badge, termcore::once::digest(id, question), false));
+        book.push((badge, termcore::once::digest_call(id, call), false));
         badge
     }
 }

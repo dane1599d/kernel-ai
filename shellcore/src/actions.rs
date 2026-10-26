@@ -43,8 +43,8 @@ pub(crate) struct Pending {
     pub call: Option<String>,
     /// The standing rules its menu offers, when a rule may waive its ask.
     pub offer: Option<Offer>,
-    /// The question its Allow / Deny menu showed, which the Allow's `ONCE`
-    /// digest must name; `None` for a y/n question.
+    /// The call its Allow / Deny menu showed, canonical, which the Allow's
+    /// `ONCE` digest must name; `None` for a y/n question.
     pub menu: Option<String>,
 }
 
@@ -462,11 +462,11 @@ impl Shell {
         if answer == Answer::Deny {
             return Err(String::new());
         }
-        let Some(question) = &pending.menu else {
+        let Some(call) = &pending.menu else {
             return Err(String::from(": that question was not a menu"));
         };
         let badge = granted.once.ok_or(": the Allow came without its ONCE")?;
-        let digest = termcore::once::digest(pending.id, question);
+        let digest = termcore::once::digest_call(pending.id, call);
         if let Err(why) = self.host.once_check(badge, &digest) {
             self.host
                 .audit(&format!("script {} ONCE refused: {why}", pending.id));

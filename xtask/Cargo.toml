@@ -6,6 +6,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
+agentabi = { path = "../agentabi" }
 bpe = { path = "../bpe" }
 cpufeat = { path = "../cpufeat" }
 gguf = { path = "../gguf" }

@@ -1,13 +1,51 @@
 //! What an Allow on the menu grants (ADR 0001 D6): the digest the kernel holds
-//! for a `ONCE` badge, over the log entry id and the question exactly as the menu
-//! showed it (the action and its arguments are in it). The terminal mints with it
-//! and the shell checks with it, so both use this one definition. SHA-256 is
-//! written out here, small and portable, so the kernel needs no SIMD for it.
+//! for a `ONCE` badge, `kai-once 2`, over the log entry id and the call exactly as
+//! the menu showed it, in its canonical text ([`call_text`]). The terminal mints
+//! with it, and whoever runs the call checks with it: the shell for its own
+//! calls, the kernel for the calls it serves (it rebuilds the call from its own
+//! arguments), so all of them use this one definition. SHA-256 is written out
+//! here, small and portable, so the kernel needs no SIMD for it.
 
-/// The `ONCE` digest of menu `id`'s `question`.
-pub fn digest(id: u64, question: &str) -> [u8; 32] {
+use alloc::format;
+use alloc::string::String;
+use alloc::vec::Vec;
+
+/// One argument of a call, for its canonical text.
+#[derive(Clone, Copy, Debug)]
+pub enum CallArg<'a> {
+    Text(&'a str),
+    Int(i64),
+}
+
+/// A text argument as the call shows it: in double quotes, with `\` and `"`
+/// escaped. `None` for one with a control character, which no call takes.
+pub fn quote(text: &str) -> Option<String> {
+    if text.chars().any(char::is_control) {
+        return None;
+    }
+    Some(format!(
+        "\"{}\"",
+        text.replace('\\', "\\\\").replace('"', "\\\"")
+    ))
+}
+
+/// The canonical text of a call: `process_stop("build-3")`,
+/// `editor_open("notes/src/lib.rs", 40)`. `None` if an argument cannot be shown.
+pub fn call_text(action: &str, args: &[CallArg]) -> Option<String> {
+    let args: Option<Vec<String>> = args
+        .iter()
+        .map(|arg| match arg {
+            CallArg::Text(text) => quote(text),
+            CallArg::Int(n) => Some(format!("{n}")),
+        })
+        .collect();
+    Some(format!("{action}({})", args?.join(", ")))
+}
+
+/// The `ONCE` digest (`kai-once 2`) of log entry `id`'s `call`, in canonical text.
+pub fn digest_call(id: u64, call: &str) -> [u8; 32] {
     let mut sha = Sha256::new();
-    sha.update(b"kai-once 1\n");
+    sha.update(b"kai-once 2\n");
     let mut digits = [0u8; 20];
     let mut at = digits.len();
     let mut rest = id;
@@ -21,7 +59,7 @@ pub fn digest(id: u64, question: &str) -> [u8; 32] {
     }
     sha.update(&digits[at..]);
     sha.update(b"\n");
-    sha.update(question.as_bytes());
+    sha.update(call.as_bytes());
     sha.finish()
 }
 
@@ -185,15 +223,37 @@ mod tests {
     }
 
     #[test]
-    fn the_digest_names_the_entry_and_the_question_exactly() {
-        let shown = "Run set_policy(\"round-robin\")? It has no undo.";
-        let d = digest(7, shown);
-        assert_eq!(d, digest(7, shown));
-        assert_ne!(d, digest(8, shown));
-        assert_ne!(
-            d,
-            digest(7, "Run set_policy(\"interactive\")? It has no undo.")
+    fn the_digest_names_the_entry_and_the_call_exactly() {
+        let call = "process_stop(\"build-3\")";
+        let d = digest_call(7, call);
+        assert_eq!(d, digest_call(7, call));
+        assert_ne!(d, digest_call(8, call));
+        assert_ne!(d, digest_call(7, "process_stop(\"build-4\")"));
+        assert_ne!(digest_call(1, "2x"), digest_call(12, "x"));
+        // Pinned, so a kernel and a shell built apart agree.
+        assert_eq!(hex(&d), sha(b"kai-once 2\n7\nprocess_stop(\"build-3\")"));
+        assert_eq!(hex(&d), PINNED);
+    }
+
+    /// `kai-once 2` of entry 7's `process_stop("build-3")`.
+    const PINNED: &str = "1ff1087a2d7dc10a7dfcbaf7257c1afb4b1b82d8f4dbe5e575e5f693a2bfc0ce";
+
+    #[test]
+    fn a_call_has_one_canonical_text() {
+        let text = |action, args: &[CallArg]| call_text(action, args).unwrap();
+        assert_eq!(
+            text("process_stop", &[CallArg::Text("build-3")]),
+            "process_stop(\"build-3\")"
         );
-        assert_ne!(digest(1, "2x"), digest(12, "x"));
+        assert_eq!(
+            text(
+                "editor_open",
+                &[CallArg::Text("notes/src/lib.rs"), CallArg::Int(40)]
+            ),
+            "editor_open(\"notes/src/lib.rs\", 40)"
+        );
+        assert_eq!(text("cpus", &[]), "cpus()");
+        assert_eq!(quote("a\"b\\c").unwrap(), "\"a\\\"b\\\\c\"");
+        assert_eq!(call_text("x", &[CallArg::Text("a\nb")]), None);
     }
 }
