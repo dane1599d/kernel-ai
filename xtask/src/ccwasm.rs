@@ -37,7 +37,21 @@ pub fn main(args: &[String], target: &Path) -> Result<(), String> {
     run(&src, "make", &["-j4", "wcc-gen2"])?;
     if gen3 {
         run(&src, "npm", &["ci", "--omit=dev", "--ignore-scripts"])?;
-        run(&src, "make", &["-j4", "wcc-gen3"])?;
+        // Upstream's `wcc-gen3` passes compiler flags to tool/run-gen2wcc.sh without
+        // a `--`, and the script refuses `-ansi` as its own option; the same make
+        // rule with the `--` added.
+        run(
+            &src,
+            "make",
+            &[
+                "-j4",
+                "HOST_TARGET=gen2",
+                "HOST_WCC=./tool/run-gen2wcc.sh --",
+                "CC=./tool/run-gen2wcc.sh --",
+                "WCC_TARGET=gen3",
+                "wcc-self-hosting",
+            ],
+        )?;
         let gen2 = read(&src.join("cc.wasm"))?;
         let gen3 = read(&src.join("gen3cc.wasm"))?;
         if gen2 != gen3 {
@@ -73,7 +87,11 @@ fn fetch(src: &Path) -> Result<(), String> {
     }
     fs::create_dir_all(src).map_err(|e| format!("{}: {e}", src.display()))?;
     run(src, "git", &["init", "-q"])?;
-    run(src, "git", &["fetch", "-q", "--depth", "1", XCC_URL, XCC_COMMIT])?;
+    run(
+        src,
+        "git",
+        &["fetch", "-q", "--depth", "1", XCC_URL, XCC_COMMIT],
+    )?;
     run(src, "git", &["checkout", "-q", "FETCH_HEAD"])
 }
 
