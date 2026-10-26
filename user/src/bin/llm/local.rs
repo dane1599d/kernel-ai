@@ -90,6 +90,14 @@ impl Speed {
     }
 }
 
+/// Prompt tokens a request must have computed for its prefill rate to count.
+const MEASURED_TOKENS: usize = 32;
+/// The prefill rate assumed before one is measured: a slow guest's.
+const SLOW_TOKENS_PER_S: f64 = 10.0;
+/// Time kept for writing a short script after its prompt: 40 tokens at a slow
+/// guest's 8 tokens/s.
+const SCRIPT_DECODE_NS: u64 = 5_000_000_000;
+
 /// One decode of a request (a request may take two: `act` then its script), for
 /// the profile `act` logs.
 #[derive(Clone, Copy, Default)]
@@ -202,6 +210,22 @@ impl Clock {
         line
     }
 
+    /// Whether the time left can prefill `tokens` more and write a short script:
+    /// at the prefill rate this request measured, or a slow guest's 10 tokens/s
+    /// before it measured one.
+    fn room_for(&self, tokens: usize) -> bool {
+        let rate = self
+            .phases
+            .first()
+            .filter(|phase| phase.computed >= MEASURED_TOKENS)
+            .map_or(SLOW_TOKENS_PER_S, |phase| {
+                let ns = (phase.prefilled - phase.started).max(1);
+                phase.computed as f64 * 1e9 / ns as f64
+            });
+        let need = (tokens as f64 / rate * 1e9) as u64 + SCRIPT_DECODE_NS;
+        sys::time_ns().saturating_add(need) <= self.deadline
+    }
+
     fn speed(&self) -> Option<Speed> {
         let first = self.first?;
         Some(Speed {
@@ -311,15 +335,18 @@ impl Local {
     /// at most `act::SERVICE_TIMEOUT_MS`; a script's code comes from the script
     /// prompt (`llmproto::local::act::routed`).
     pub fn act(&mut self, request: &ActRequest) -> Result<Call, ActError> {
-        let mut clock = Clock::new(request.timeout_ms.min(act::SERVICE_TIMEOUT_MS));
+        let clock =
+            core::cell::RefCell::new(Clock::new(request.timeout_ms.min(act::SERVICE_TIMEOUT_MS)));
         let call = local::act::routed(
             &mut self.engine,
             &self.grammar,
             request,
             &self.history,
             SLOTS,
-            |step| clock.step(step),
+            |tokens| clock.borrow().room_for(tokens),
+            |step| clock.borrow_mut().step(step),
         );
+        let clock = clock.into_inner();
         let forced = self.engine.forced();
         self.last = clock
             .speed()

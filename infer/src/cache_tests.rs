@@ -396,3 +396,19 @@ fn two_slots_each_keep_their_own_prompt_and_answer_as_a_fresh_engine() {
         assert_eq!(engine.slot(), second);
     }
 }
+
+/// What a prompt would compute: all of it on a fresh slot, its last token once
+/// it is cached (the last token always runs, for its logits).
+#[test]
+fn uncached_tokens_counts_what_the_cache_lacks() {
+    let bytes = fixture::build(&Spec::tiny());
+    let mut engine = Engine::load(&bytes, Tier::all().next().unwrap(), 256, ROOMY).unwrap();
+    let one = asked(Some(SYSTEM), "how many cpus");
+    let whole = engine.conversation_tokens(&one.turns());
+    assert_eq!(engine.uncached_tokens(&one.turns()), whole);
+    ask(&mut engine, &one).unwrap();
+    assert_eq!(engine.uncached_tokens(&one.turns()), 1);
+    let second = engine.add_slot().unwrap();
+    engine.use_slot(second);
+    assert_eq!(engine.uncached_tokens(&one.turns()), whole);
+}

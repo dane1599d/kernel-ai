@@ -136,13 +136,17 @@ impl Slots {
 /// [`act`] in the act slot, with a `script` call's code written by today's
 /// script prompt in the script slot (see the module's note). Words in its
 /// envelope's summary instead of code become `say`. `on_step` keeps one time
-/// limit over both decodes.
+/// limit over both decodes. Before the script stage, `room` is told how many
+/// prompt tokens it would compute; if it says there is no time for them, the
+/// call fails at once instead of running out of time half way (S02-2's first
+/// request, while the script slot was still warming).
 pub fn routed(
     engine: &mut Engine<'_>,
     grammar: &Tagged<'_>,
     request: &ActRequest,
     history: &History,
     slots: Slots,
+    mut room: impl FnMut(usize) -> bool,
     mut on_step: impl FnMut(Step) -> Next,
 ) -> Result<Call, ActError> {
     engine.use_slot(slots.act);
@@ -156,6 +160,12 @@ pub fn routed(
         repair: None,
         timeout_ms: request.timeout_ms,
     };
+    let prompt = script::request_with(&asked.request, None, false);
+    if !room(engine.uncached_tokens(&super::turns(&prompt))) {
+        return Err(ActError::Local(String::from(
+            "the AI is still loading its script prompt; try again in a few seconds",
+        )));
+    }
     let (name, key, value) = match super::script_with(engine, &asked, false, on_step) {
         Ok(answer) => ("script", "code", answer.script),
         Err(script::AnswerError::NoScript(words)) => ("say", "text", words),
@@ -322,6 +332,7 @@ mod tests {
                 &request,
                 &History::new(),
                 Slots::TWO,
+                |_| true,
                 |_| Next::Continue,
             );
             assert!(

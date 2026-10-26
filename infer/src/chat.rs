@@ -606,6 +606,19 @@ impl<'a> Engine<'a> {
     pub fn conversation_tokens(&self, turns: &[Turn<'_>]) -> usize {
         self.chat.conversation(&self.tok, turns).len()
     }
+
+    /// How many of the tokens `turns` make are not in the slot's cache yet: what
+    /// [`Engine::reply`] would compute before answering.
+    pub fn uncached_tokens(&self, turns: &[Turn<'_>]) -> usize {
+        let prompt = self.chat.conversation(&self.tok, turns);
+        let shared = self
+            .cached
+            .iter()
+            .zip(&prompt)
+            .take_while(|(a, b)| a == b)
+            .count();
+        prompt.len() - shared.min(prompt.len().saturating_sub(1))
+    }
 }
 
 /// An upper bound on the bytes the engine allocates for `file` besides the KV
