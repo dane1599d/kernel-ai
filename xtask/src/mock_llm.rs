@@ -263,7 +263,8 @@ const ACTS: &[(&str, &str)] = &[
         "switch to round robin then stop",
         r#"{"name":"script","arguments":{"code":"set_policy(\"round-robin\");\nif processes().len() < 16 { throw \"stopped after the switch\"; }"}}"#,
     ),
-    // `act-rule`: two unsupervised spinners, stopped by name.
+    // `act-rule`: three unsupervised spinners, stopped by name, and a supervised
+    // one the model calls a process: the shell runs the service row.
     (
         "stop spin-a",
         r#"{"name":"process_stop","arguments":{"name":"spin-a"}}"#,
@@ -271,6 +272,14 @@ const ACTS: &[(&str, &str)] = &[
     (
         "stop spin-b",
         r#"{"name":"process_stop","arguments":{"name":"spin-b"}}"#,
+    ),
+    (
+        "stop spin-c",
+        r#"{"name":"process_stop","arguments":{"name":"spin-c"}}"#,
+    ),
+    (
+        "stop spin-d",
+        r#"{"name":"process_stop","arguments":{"name":"spin-d"}}"#,
     ),
 ];
 

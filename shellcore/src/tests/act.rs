@@ -458,6 +458,103 @@ fn a_start_runs_at_once_and_undo_stops_it_again() {
     );
 }
 
+/// A shell whose host lists its services: `notes` stopped, `indexer` running,
+/// and plain processes `build-3` and `build-4`.
+fn with_services(calls: Vec<Result<Call, ActError>>) -> (Rc<FakeHost>, Shell) {
+    let (host, shell) = with_calls(calls);
+    host.services
+        .borrow_mut()
+        .push((String::from("indexer"), true));
+    host.lists_services.set(true);
+    (host, shell)
+}
+
+#[test]
+fn a_stop_runs_the_row_for_what_the_name_is_and_the_menu_names_it() {
+    // The model picked the service row for a plain process, and the process row
+    // for a service: code looks the names up.
+    let wrong_process = r#"{"name":"service_stop","arguments":{"name":"build-3"}}"#;
+    let wrong_service = r#"{"name":"process_stop","arguments":{"name":"indexer"}}"#;
+    let (host, mut shell) = with_services(vec![call(wrong_process), call(wrong_service)]);
+    let reply = shell.eval("stop build-3");
+    let call = "process_stop(\"build-3\")";
+    assert_eq!(
+        reply.to_wire(),
+        format!(
+            "menu 1 asked\nStop process build-3 (pid 30) with {call}? It has no undo.\nprocess_stop calls\nprocess_stop on \"build-3\"\n{call}"
+        )
+    );
+    let once = host.mint(1, call);
+    let reply = shell.eval(&format!("answer 1 allow once={once}"));
+    assert!(
+        reply.ok && reply.text.contains("build-3 stopped"),
+        "{reply:?}"
+    );
+    let audit = host.audit.borrow().join("\n");
+    assert!(
+        audit.contains("service_stop on build-3 runs as process_stop"),
+        "{audit}"
+    );
+    let reply = shell.eval("kill indexer").to_wire();
+    assert!(
+        reply.starts_with("menu 2 ")
+            && reply.contains("\nStop service indexer with service_stop(\"indexer\")? ")
+            && reply.ends_with("\nservice_stop(\"indexer\")"),
+        "{reply}"
+    );
+}
+
+#[test]
+fn starting_a_stopped_service_again_starts_it() {
+    let restart = r#"{"name":"service_restart","arguments":{"name":"notes"}}"#;
+    let (host, mut shell) = with_services(vec![call(restart)]);
+    let reply = shell.eval("start notes again");
+    assert_eq!(reply, ok("Done: service notes running (was stopped). undo"));
+    assert!(host.services.borrow()[0].1);
+}
+
+#[test]
+fn a_name_that_is_both_or_neither_asks_which() {
+    let both = r#"{"name":"process_stop","arguments":{"name":"indexer"}}"#;
+    let neither = r#"{"name":"process_stop","arguments":{"name":"build-9"}}"#;
+    let restart = r#"{"name":"service_restart","arguments":{"name":"build-3"}}"#;
+    let (host, mut shell) = with_services(vec![call(both), call(neither), call(restart)]);
+    host.procs.borrow_mut().push(String::from("indexer"));
+    let reply = shell.eval("stop indexer");
+    assert_eq!(
+        reply,
+        ok("indexer is both a service and a separate process (pid 32). Which one?")
+    );
+    // The answer joins the request, as a clarify's does.
+    let reply = shell.eval("stop build-9");
+    assert_eq!(
+        reply,
+        ok("No service or process named build-9 is running. Which one did you mean?")
+    );
+    let reply = shell.eval("restart build-3");
+    assert!(
+        reply.ok && reply.text.contains("not a service"),
+        "{reply:?}"
+    );
+    assert_eq!(host.procs.borrow().len(), 3, "nothing was stopped");
+}
+
+#[test]
+fn what_is_already_so_is_said_and_nothing_runs() {
+    let stop = r#"{"name":"service_stop","arguments":{"name":"notes"}}"#;
+    let start = r#"{"name":"service_start","arguments":{"name":"indexer"}}"#;
+    let (host, mut shell) = with_services(vec![call(stop), call(start)]);
+    assert_eq!(
+        shell.eval("stop notes"),
+        ok("Service notes is already stopped.")
+    );
+    assert_eq!(
+        shell.eval("start the indexer"),
+        ok("Service indexer is already running.")
+    );
+    assert!(!host.services.borrow()[0].1 && host.services.borrow()[1].1);
+}
+
 #[test]
 fn the_model_cannot_list_or_remove_standing_rules() {
     let remove = r#"{"name":"rules_remove","arguments":{"n":1}}"#;

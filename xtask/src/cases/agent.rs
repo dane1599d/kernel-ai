@@ -87,7 +87,7 @@ pub(super) const CASES: &[TestCase] = &[
     },
     TestCase {
         expect: &[
-            "act-rule: Always allow wrote a rule node, the next stop ran under it, and rules_remove took it away",
+            "act-rule: Always allow wrote a rule node, the next stop ran under it, rules_remove took it away, and a service named as a process stopped as a service",
         ],
         ..case("act-rule", "test=act-rule")
     },

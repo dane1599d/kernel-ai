@@ -20,6 +20,7 @@ use crate::actions::How;
 use crate::actlog::Form;
 use crate::rules::Offer;
 use crate::script::{self, Checked};
+use crate::targets::{self, Unresolved, Verb};
 use crate::tiers::Tier;
 use crate::{Reply, SCRIPT_ROUND_MS, Shell};
 use agentabi::consent::{self, Call as Planned, Label, Value as Consented, Why};
@@ -168,6 +169,10 @@ impl Shell {
 
     /// A registry row: consent decides, then the row runs as a one-line script.
     fn call_row(&mut self, id: u64, request: &str, row: &'static Action, call: &Call) -> Outcome {
+        let (row, subject) = match self.target(id, request, row, call) {
+            Ok(found) => found,
+            Err(outcome) => return outcome,
+        };
         let args = match arguments(row, call) {
             Ok(args) => args,
             Err(why) => return self.refuse(id, request, call, Why::Unknown, &why),
@@ -245,7 +250,7 @@ impl Shell {
                 };
                 self.finish(id, request, &checked, how)
             }
-            _ => self.ask_call(id, request, checked, decision.why, offer),
+            _ => self.ask_call(id, request, checked, decision.why, offer, subject),
         };
         outcome(decision.tier, decision.why, reply)
     }
@@ -259,6 +264,7 @@ impl Shell {
         checked: Checked,
         why: Why,
         offer: Option<Offer>,
+        subject: Option<String>,
     ) -> Reply {
         let reason = match why {
             Why::NotEnglish => String::from("the request is not in English, so it asks first"),
@@ -295,7 +301,11 @@ impl Shell {
             _ => Origin::Added,
         };
         let (kind, target) = offer.map(|o| o.labels()).unwrap_or_default();
-        let question = format!("Run {call}? {}.", capitalised(&reason));
+        let question = match subject {
+            // The call stays word for word: the ONCE an Allow mints names it.
+            Some(subject) => format!("{subject} with {call}? {}.", capitalised(&reason)),
+            None => format!("Run {call}? {}.", capitalised(&reason)),
+        };
         let menu = Menu::new(id, &question, Some(&kind), Some(&target), origin)
             .and_then(|menu| menu.with_call(&call));
         match menu {
@@ -313,6 +323,57 @@ impl Shell {
                 confirm: Some(id),
                 more: false,
             },
+        }
+    }
+
+    /// The row a stop, start or restart runs: code looks the name up among the
+    /// supervisor's services and the running processes, whichever row the model
+    /// picked, and asks when the name is both or neither. Any other row, a
+    /// protected name, or a host that cannot list services keeps the model's row.
+    /// With the row comes how the menu names the target ("Stop service indexer").
+    fn target(
+        &mut self,
+        id: u64,
+        request: &str,
+        row: &'static Action,
+        call: &Call,
+    ) -> Result<(&'static Action, Option<String>), Outcome> {
+        let kept = Ok((row, None));
+        let Some(verb) = Verb::of(row) else {
+            return kept;
+        };
+        let name = text_arg(call, "name");
+        if agentabi::PROTECTED.contains(&name.as_str()) {
+            return kept;
+        }
+        let (Ok(services), Ok(metrics)) = (self.host.services(), self.host.metrics()) else {
+            return kept;
+        };
+        let processes: Vec<(u64, String)> = metrics
+            .processes
+            .iter()
+            .take(metrics.process_count as usize)
+            .map(|p| (p.pid, p.name().to_string()))
+            .collect();
+        match targets::resolve(verb, &name, &services, &processes) {
+            Ok(found) => {
+                if found.row.name != row.name {
+                    self.host.audit(&format!(
+                        "request {id}: {} on {name} runs as {}",
+                        row.name, found.row.name
+                    ));
+                }
+                Ok((found.row, Some(found.question())))
+            }
+            Err(Unresolved::Clarify(question)) => {
+                self.record(id, request, &call.text(), "asked the user to clarify");
+                self.clarifying = Some(request.to_string());
+                Err(outcome(Tier::Run, Why::Read, Reply::ok(question)))
+            }
+            Err(Unresolved::Say(text)) => {
+                let reply = self.say(id, request, text);
+                Err(outcome(Tier::Run, Why::Read, reply))
+            }
         }
     }
 

@@ -64,6 +64,55 @@ impl<'a> Request<'a> {
     }
 }
 
+/// The request that lists the services the supervisor runs, for the shell to
+/// tell a service from a plain process (`services`).
+pub const SERVICES: &str = "services";
+
+/// A service as `services` lists it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Listed {
+    pub name: String,
+    /// The running instance's pid, or 0 between restarts.
+    pub pid: u64,
+    /// Stopped by a `stop` request, until `start`.
+    pub stopped: bool,
+}
+
+/// The answer to `services`: `ok`, then `name=pid` for each service, or
+/// `name=stopped`. Protected names are left out: nothing may stop them.
+pub fn listing(records: &[Record]) -> String {
+    let mut text = String::from("ok");
+    for record in records
+        .iter()
+        .filter(|r| !PROTECTED.contains(&r.name.as_str()))
+    {
+        match record.stopped {
+            true => text.push_str(&format!(" {}=stopped", record.name)),
+            false => text.push_str(&format!(" {}={}", record.name, record.pid)),
+        }
+    }
+    text
+}
+
+/// Reads a [`listing`]; `None` if it is not one.
+pub fn parse_listing(text: &str) -> Option<Vec<Listed>> {
+    let mut words = text.split_whitespace();
+    if words.next()? != "ok" {
+        return None;
+    }
+    words
+        .map(|word| {
+            let (name, state) = word.split_once('=')?;
+            let (pid, stopped) = match state {
+                "stopped" => (0, true),
+                pid => (pid.parse().ok()?, false),
+            };
+            let name = name.to_string();
+            Some(Listed { name, pid, stopped })
+        })
+        .collect()
+}
+
 /// What the supervisor does for `request` given its `records`: the record to act
 /// on, or the reply that refuses it (`err protected`, `err unknown service`,
 /// `err already stopped`, `err not stopped`).

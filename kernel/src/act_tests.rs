@@ -370,6 +370,10 @@ fn rule() -> Result<(), &'static str> {
     if menu.selected() != Answer::Allow || menu.rows().len() != 5 {
         return Err("act-rule: the menu did not start on Allow with both rules offered");
     }
+    if !menu.question().starts_with("Stop process spin-a (pid ") {
+        log!("act-rule: the question was {:?}", menu.question());
+        return Err("act-rule: the menu did not name the process it found");
+    }
     let allowed = allow::allow(menu.id, menu.call(), Answer::AlwaysKind)
         .ok()
         .flatten()
@@ -395,12 +399,20 @@ fn rule() -> Result<(), &'static str> {
             return Err("act-rule: a line got the wrong answer");
         }
     }
-    if !reply_to("stop spin-a")?.starts_with("menu ") {
+    if !reply_to("stop spin-c")?.starts_with("menu ") {
         return Err("act-rule: a stop asked nothing after its rule was removed");
     }
     reply_to("n")?;
+    // The model called the supervised spin-d a process; the supervisor's list
+    // makes it a service stop.
+    let reply = reply_to("stop spin-d")?;
+    if !reply.contains("\nStop service spin-d with service_stop(\"spin-d\")? ") {
+        log!("act-rule: not a service stop: {reply:?}");
+        return Err("act-rule: a stop of a service did not run the service row");
+    }
+    reply_to("n")?;
     log!(
-        "act-rule: Always allow wrote a rule node, the next stop ran under it, and rules_remove took it away"
+        "act-rule: Always allow wrote a rule node, the next stop ran under it, rules_remove took it away, and a service named as a process stopped as a service"
     );
     Ok(())
 }

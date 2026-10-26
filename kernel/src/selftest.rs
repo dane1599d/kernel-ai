@@ -248,9 +248,10 @@ pub fn plan(test: SelfTest) -> Option<String> {
         plan.push('\n');
         plan.push_str(kabi::plan::SHELL);
     }
-    // `act-rule` stops processes the supervisor does not restart.
+    // `act-rule` stops processes the supervisor does not restart, and one
+    // service it does.
     if test == SelfTest::Act(ActCase::Rule) {
-        plan.push_str("\nspin-a program=spinner burst_ms=3600000 unsupervised\nspin-b program=spinner burst_ms=3600000 unsupervised");
+        plan.push_str("\nspin-a program=spinner burst_ms=3600000 unsupervised\nspin-b program=spinner burst_ms=3600000 unsupervised\nspin-c program=spinner burst_ms=3600000 unsupervised\nspin-d program=spinner burst_ms=3600000");
     }
     let workload = crate::workload::plan_lines();
     if !workload.is_empty() {

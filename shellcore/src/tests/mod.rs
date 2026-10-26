@@ -58,6 +58,9 @@ struct FakeHost {
     /// Running processes by name, and services with whether they run.
     procs: RefCell<Vec<String>>,
     services: RefCell<Vec<(String, bool)>>,
+    /// Whether the supervisor lists its services, and metrics show the processes
+    /// above (services from pid 20, plain processes from pid 30).
+    lists_services: Cell<bool>,
 }
 
 impl FakeHost {
@@ -120,6 +123,7 @@ impl FakeHost {
                 String::from("build-4")
             ]),
             services: RefCell::new(alloc::vec![(String::from("notes"), false)]),
+            lists_services: Cell::new(false),
         })
     }
 }
@@ -158,6 +162,26 @@ impl Host for FakeHost {
         m.processes[0].pid = 7;
         m.processes[0].name[..3].copy_from_slice(b"llm");
         m.processes[0].name_len = 3;
+        if self.lists_services.get() {
+            let services = self.services.borrow();
+            let running = services
+                .iter()
+                .enumerate()
+                .filter(|(_, (_, running))| *running)
+                .map(|(i, (name, _))| (20 + i as u64, name.clone()));
+            let procs = self.procs.borrow();
+            let plain = procs
+                .iter()
+                .enumerate()
+                .map(|(i, name)| (30 + i as u64, name.clone()));
+            for (pid, name) in running.chain(plain) {
+                let slot = &mut m.processes[m.process_count as usize];
+                slot.pid = pid;
+                slot.name[..name.len()].copy_from_slice(name.as_bytes());
+                slot.name_len = name.len() as u64;
+                m.process_count += 1;
+            }
+        }
         m.policy = self.policy.get().unwrap_or(policy::INTERACTIVE);
         m.running_policy = m.policy;
         Ok(m)
@@ -232,6 +256,23 @@ impl Host for FakeHost {
 
     fn start_service(&self, name: &str) -> Result<(), String> {
         self.set_running(name, true)
+    }
+
+    fn services(&self) -> Result<Vec<crate::targets::Service>, String> {
+        if !self.lists_services.get() {
+            return Err(String::from("services cannot be listed here"));
+        }
+        let services = self.services.borrow();
+        let listed =
+            services
+                .iter()
+                .enumerate()
+                .map(|(i, (name, running))| crate::targets::Service {
+                    name: name.clone(),
+                    pid: if *running { 20 + i as u64 } else { 0 },
+                    stopped: !running,
+                });
+        Ok(listed.collect())
     }
 
     fn revoke_rule(&self, handle: u32) -> Result<(), String> {
