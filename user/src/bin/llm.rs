@@ -188,9 +188,16 @@ fn main() -> i32 {
         let command = text.split([' ', '\n']).next();
         cold |= matches!(command, Some("ask" | "explain" | "model" | "tune"));
         stale |= matches!(command, Some("remember" | "new"));
-        let mut reply = match handle(&mut backends, text, &mut response) {
-            Ok(text) => format!("ok {text}"),
-            Err(error) => format!("err {}", printable(&error, MAX_ERROR_CHARS, 1)),
+        let mut reply = match command {
+            // `warm`: whether both slots hold their prompts (S02-2 waits for it).
+            Some("warm") => match local_warmable(&backends, stale, cold) {
+                true => String::from("ok no"),
+                false => String::from("ok yes"),
+            },
+            _ => match handle(&mut backends, text, &mut response) {
+                Ok(text) => format!("ok {text}"),
+                Err(error) => format!("err {}", printable(&error, MAX_ERROR_CHARS, 1)),
+            },
         };
         // The character cap can still exceed the kernel's message size in bytes.
         reply.truncate(reply.floor_char_boundary(kabi::MAX_MESSAGE));
