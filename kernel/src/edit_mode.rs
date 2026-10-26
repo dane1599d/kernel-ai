@@ -79,6 +79,50 @@ pub fn open(name: &str, label: Option<&str>) -> String {
     reply
 }
 
+/// Opens the running version of `name` in the editor at `path`:`line`, for the
+/// shell's `do edit` (`crate::doing`). The file must be in that version's stored
+/// source and the line within it; the kernel checks both from its own store
+/// before the editor is asked.
+pub fn open_at(name: &str, path: &str, line: u32) -> Result<String, String> {
+    let component =
+        components::component(name).ok_or_else(|| format!("no live component {name}"))?;
+    let label = component
+        .ledger
+        .active()
+        .ok_or_else(|| format!("{name} has no running version"))?;
+    let bytes = component
+        .bytes(label)
+        .map_err(|_| format!("{name} {label} is no longer stored"))?;
+    let artifact = livecore::artifact::parse(bytes.as_slice())?;
+    let files = livecore::artifact::source_files(artifact.source)?;
+    let (_, text) = files
+        .iter()
+        .find(|(file, _)| *file == path)
+        .ok_or_else(|| format!("{name} {label} has no file {path}"))?;
+    let lines = text.split(|&b| b == b'\n').count() - usize::from(text.ends_with(b"\n"));
+    if !(1..=lines).contains(&(line as usize)) {
+        return Err(format!("{path} has {lines} lines, not {line}"));
+    }
+    if crate::build_service::target().is_none() {
+        return Err(String::from(
+            "no build service; boot with build=IP:PORT build_token=HEX",
+        ));
+    }
+    let message = encode_ipc(&Ipc::Open {
+        component: name,
+        label: None,
+        at: Some(At { path, line }),
+    });
+    let reply = call_editor(&message);
+    match reply.strip_prefix("ok ") {
+        Some(text) => {
+            *EDITING.lock() = Some(name.to_string());
+            Ok(text.to_string())
+        }
+        None => Err(reply.strip_prefix("err ").unwrap_or(&reply).to_string()),
+    }
+}
+
 /// `:fault [name]`: the version whose trap last named a line, opened in the editor
 /// at that line. With no build service, or when the editor cannot open it, the
 /// lines around it from the kernel's own store instead.

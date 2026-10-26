@@ -28,6 +28,7 @@ pub mod analyse;
 mod brackets;
 mod commands;
 pub mod data;
+mod doing;
 mod engine;
 mod rules;
 pub mod script;
@@ -195,9 +196,9 @@ impl Reply {
         }
     }
 
-    /// The Allow / Deny menu for call `id`, drawn by the terminal: `text` is
-    /// `termcore::menu::Menu::encode`'s.
-    fn menu(id: u64, text: String) -> Self {
+    /// A reply the terminal acts on for call `id`: the Allow / Deny menu
+    /// (`termcore::menu::Menu::encode`) or a `do` (`termcore::doing`).
+    fn to_terminal(id: u64, text: String) -> Self {
         Self {
             ok: true,
             text,
@@ -211,7 +212,9 @@ impl Reply {
     pub fn to_wire(&self) -> String {
         match self.confirm {
             _ if self.more => String::from("more"),
-            Some(_) if self.text.starts_with("menu ") => self.text.clone(),
+            Some(_) if self.text.starts_with("menu ") || self.text.starts_with("do ") => {
+                self.text.clone()
+            }
             Some(id) => format!("confirm {id} {}", self.text),
             None => format!("{} {}", if self.ok { "ok" } else { "err" }, self.text),
         }
@@ -237,6 +240,8 @@ pub struct Shell {
     undo_asking: Option<u64>,
     /// Standing rules the menu's "Always allow" wrote.
     rules: rules::Rules,
+    /// The `do` the terminal is running, until its `done`.
+    doing: Option<doing::Doing>,
     /// The last script as `show` prints it.
     shown: Option<String>,
     /// What the script run by the last line printed.
@@ -276,6 +281,7 @@ impl Shell {
             tiers,
             undo_asking: None,
             rules: rules::Rules::default(),
+            doing: None,
             shown: None,
             last_output: None,
             partial: None,
@@ -306,12 +312,25 @@ impl Shell {
         {
             return self.answer(rest);
         }
+        // `done <id> ...` ends a `do` the terminal ran.
+        if let Some(rest) = input.strip_prefix("done ")
+            && rest
+                .split(' ')
+                .next()
+                .is_some_and(|id| id.parse::<u64>().is_ok())
+        {
+            return self.done_line(rest);
+        }
         if let Some(reply) = self.answer_bare(input) {
             return reply;
         }
         // Anything but the answer leaves a proposal unrun, and an undo for later.
         self.tuner.discard();
         self.undo_asking = None;
+        if let Some(doing) = self.doing.take() {
+            let outcome = "lost: the terminal did not say how it went";
+            self.record(doing.id, &doing.request, &doing.call, outcome);
+        }
         if let Some(pending) = self.pending.take() {
             let outcome = "discarded: another line came first";
             self.record(

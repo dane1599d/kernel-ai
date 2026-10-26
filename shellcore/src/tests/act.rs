@@ -91,11 +91,8 @@ fn never_values_and_rows_the_shell_cannot_call_are_refused() {
     ]);
     let never = shell.eval("please tune the shell process");
     assert!(!never.ok && never.text.contains("never run"), "{never:?}");
-    let typed = shell.eval("revert notes");
-    assert!(
-        !typed.ok && typed.text.contains("typed at the prompt"),
-        "{typed:?}"
-    );
+    // The terminal runs a revert for the shell.
+    assert_eq!(shell.eval("revert notes").to_wire(), "do 2 revert notes 1");
     let bad = shell.eval("switch the policy to fifo");
     assert!(!bad.ok && bad.text.contains("not a valid name"), "{bad:?}");
     let unknown = shell.eval("delete everything please");
@@ -254,4 +251,70 @@ fn rules_remove_needs_a_rule_that_is_there() {
         shell.eval("rules_remove x"),
         Reply::err("usage: rules_remove <rule number>")
     );
+}
+
+const OPEN_AT_40: &str =
+    r#"{"name":"editor_open","arguments":{"path":"notes/src/lib.rs","line":40}}"#;
+
+#[test]
+fn the_terminal_runs_an_editor_call_and_its_done_is_the_result_line() {
+    let (host, mut shell) = with_calls(vec![call(OPEN_AT_40)]);
+    let reply = shell.eval("open notes/src/lib.rs at line 40");
+    assert_eq!(reply.to_wire(), "do 1 edit notes src/lib.rs 40");
+    // Nothing is remembered until the terminal says how it went.
+    assert!(host.remembered.borrow().is_empty());
+    assert_eq!(
+        shell.eval("done 1 ok opened src/lib.rs at 40"),
+        ok("Done: opened src/lib.rs at 40")
+    );
+    assert_eq!(
+        host.remembered.borrow()[0].2,
+        "Done: opened src/lib.rs at 40"
+    );
+    assert!(
+        shell
+            .eval("log")
+            .text
+            .contains("#1 open notes/src/lib.rs at line 40: ran")
+    );
+    // A done for nothing, or for another id, is not taken.
+    assert_eq!(
+        shell.eval("done 1 ok again"),
+        Reply::err("nothing to finish")
+    );
+}
+
+#[test]
+fn a_terminal_call_the_terminal_would_refuse_is_refused_here_first() {
+    let up = r#"{"name":"editor_open","arguments":{"path":"notes/../secrets","line":1}}"#;
+    let flat = r#"{"name":"editor_open","arguments":{"path":"lib.rs"}}"#;
+    let (_host, mut shell) = with_calls(vec![call(up), call(flat)]);
+    let reply = shell.eval("open notes/../secrets");
+    assert!(!reply.ok && reply.text.contains("relative"), "{reply:?}");
+    let reply = shell.eval("open lib.rs");
+    assert!(
+        !reply.ok && reply.text.contains("<component>/<file>"),
+        "{reply:?}"
+    );
+}
+
+#[test]
+fn an_asked_terminal_call_sends_its_once_for_the_terminal_to_check() {
+    let (host, mut shell) = with_calls(vec![call(OPEN_AT_40), call(OPEN_AT_40)]);
+    let reply = shell.eval("abre notes/src/lib.rs en la línea 40");
+    assert!(reply.to_wire().starts_with("menu 1 added\n"), "{reply:?}");
+    let once = host.mint(1, "Run editor_open(\"notes/src/lib.rs\", 40)? The request is not in English, so it asks first.");
+    assert_eq!(
+        shell.eval(&format!("answer 1 allow once={once}")).to_wire(),
+        format!("do 1 edit notes src/lib.rs 40 once={once}")
+    );
+    // The shell leaves the ONCE for the terminal to use up.
+    assert!(!host.once.borrow()[0].2);
+    assert_eq!(
+        shell.eval("done 1 err its ONCE did not check (Mismatch)"),
+        Reply::err("Not run: its ONCE did not check (Mismatch)")
+    );
+    // A Deny sends nothing to the terminal.
+    shell.eval("abre notes/src/lib.rs en la línea 40");
+    assert_eq!(shell.eval("answer 2 deny"), ok("script 2 not run"));
 }

@@ -191,6 +191,11 @@ fn chat_content(request: &Value) -> String {
 /// request line. Any other line gets words that are not a call, so the shell asks
 /// for a script as it did before `act`.
 const ACTS: &[(&str, &str)] = &[
+    // `act-edit`: the terminal opens the editor at a line for this call.
+    (
+        "open notes/src/lib.rs at line 3",
+        r#"{"name":"editor_open","arguments":{"path":"notes/src/lib.rs","line":3}}"#,
+    ),
     (
         "turn on round robin scheduling",
         r#"{"name":"set_policy","arguments":{"name":"round-robin"}}"#,

@@ -75,6 +75,14 @@ pub(super) const CASES: &[TestCase] = &[
     },
     TestCase {
         expect: &[
+            "act-edit: a tagged call opened the editor at a line through do; refused do lines changed nothing",
+        ],
+        build: true,
+        min_timeout: Some(core::time::Duration::from_secs(300)),
+        ..case("act-edit", "test=act-edit")
+    },
+    TestCase {
+        expect: &[
             "act-ask: the menu's Allow ran a call once through its ONCE; none, a typed y, a reused one and one for other arguments did not",
         ],
         ..case("act-ask", "test=act-ask")

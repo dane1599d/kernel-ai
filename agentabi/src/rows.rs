@@ -218,6 +218,53 @@ pub const COMPONENT_REVERT: Action = Action {
     old_name: None,
 };
 
+/// `:edit` at a line: opens a live component's source in the editor there.
+pub const EDITOR_OPEN: Action = Action {
+    name: "editor_open",
+    doc: "opens <component>/<file> in the editor at a line",
+    args: &[
+        Arg {
+            from_request: true,
+            ..arg("path", ArgType::Path, Role::Target)
+        },
+        arg(
+            "line",
+            ArgType::Opt(&ArgType::Int {
+                min: 1,
+                max: 100_000,
+            }),
+            Role::Option,
+        ),
+    ],
+    facts: Facts::LOCAL_CHANGE,
+    // `:quit` closes it again; nothing else changes.
+    inverse: Inverse::Restore,
+    cues: &["edit", "open"],
+    returns: Returns::System,
+    ret: RetType::Unit,
+    owner: Owner::Kernel,
+    needs: cap::COMPONENT,
+    min_tier: Tier::Run,
+    old_name: None,
+};
+
+/// `:apply`: shows a component's newest build against what runs; the terminal
+/// asks at its own prompt before it swaps.
+pub const COMPONENT_APPLY: Action = Action {
+    name: "component_apply",
+    doc: "shows the newest build's change, then asks to run it",
+    args: &[Arg {
+        from_request: true,
+        ..arg("component", ArgType::Text { max: 24 }, Role::Target)
+    }],
+    cues: &["apply", "update"],
+    ..COMPONENT_REVERT
+};
+
+/// Rows the kernel terminal runs for the shell (`do`, `termcore::doing`): their
+/// commands live in the trusted terminal, not in a script engine.
+pub const TERMINAL_ROWS: [Action; 3] = [EDITOR_OPEN, COMPONENT_APPLY, COMPONENT_REVERT];
+
 /// The functions LLM-written scripts may call, in the order the prompt lists them.
 pub const SCRIPT_API: [Action; 7] = [
     CPUS, MEMORY, UPTIME_MS, PROCESSES, THREADS, GET_POLICY, SET_POLICY,
@@ -225,10 +272,16 @@ pub const SCRIPT_API: [Action; 7] = [
 /// The pure functions every strict engine adds besides the OS functions it grants.
 pub const HELPERS: [Action; 2] = [FIXED, FLOOR];
 /// Rows that are typed commands today and not bound in scripts.
-pub const COMMANDS: [Action; 3] = [TUNE, TUNE_UNDO, COMPONENT_REVERT];
+pub const COMMANDS: [Action; 5] = [
+    TUNE,
+    TUNE_UNDO,
+    COMPONENT_REVERT,
+    EDITOR_OPEN,
+    COMPONENT_APPLY,
+];
 
 /// Every OS row.
-pub const ROWS: [Action; 12] = [
+pub const ROWS: [Action; 14] = [
     CPUS,
     MEMORY,
     UPTIME_MS,
@@ -241,4 +294,6 @@ pub const ROWS: [Action; 12] = [
     TUNE,
     TUNE_UNDO,
     COMPONENT_REVERT,
+    EDITOR_OPEN,
+    COMPONENT_APPLY,
 ];

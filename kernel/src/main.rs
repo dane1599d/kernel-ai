@@ -35,6 +35,7 @@ mod device_tests;
 mod devices;
 mod display;
 mod display_tests;
+mod doing;
 mod edit_mode;
 mod edit_session;
 mod edit_tests;

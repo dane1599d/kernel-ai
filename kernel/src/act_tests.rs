@@ -132,6 +132,7 @@ pub fn check(which: ActCase) -> Result<(), &'static str> {
         ActCase::Undo => undo(),
         ActCase::Rollback => rollback(),
         ActCase::Ask => ask(),
+        ActCase::Edit => edit(),
     }
 }
 
@@ -297,6 +298,48 @@ fn ask() -> Result<(), &'static str> {
     allow::end(&wrong);
     log!(
         "act-ask: the menu's Allow ran a call once through its ONCE; none, a typed y, a reused one and one for other arguments did not"
+    );
+    Ok(())
+}
+
+/// `act-edit`: a tagged call opens the editor at a line through `do`, which the
+/// terminal parses itself and runs as `:edit` would; `do` lines it must refuse
+/// change nothing.
+fn edit() -> Result<(), &'static str> {
+    for bad in [
+        "do 90 rm notes",
+        "do 91 edit notes ../secrets 1",
+        "do 92 edit notes src/nowhere.rs 1",
+        "do 93 edit notes src/lib.rs 99999",
+        "do 94 edit ghost src/lib.rs 1",
+        "do 95 edit notes src/lib.rs 3 :quit",
+    ] {
+        let done = crate::doing::run(bad);
+        if !done.line.starts_with("done ") || !done.line.contains(" err ") || done.apply.is_some() {
+            log!("act-edit: {bad:?} gave {:?}", done.line);
+            return Err("act-edit: a do the terminal must refuse ran");
+        }
+    }
+    if crate::edit_mode::editing().is_some() {
+        return Err("act-edit: a refused do opened the editor");
+    }
+    let reply = reply_to("open notes/src/lib.rs at line 3")?;
+    if !reply.starts_with("do ") || !reply.ends_with(" edit notes src/lib.rs 3") {
+        log!("act-edit: the call answered {reply:?}");
+        return Err("act-edit: the editor call did not become a do");
+    }
+    let done = crate::doing::run(&reply);
+    if !done.line.contains(" ok ") {
+        log!("act-edit: the do gave {:?}", done.line);
+        return Err("act-edit: the terminal did not open the editor");
+    }
+    let result = reply_to(&done.line)?;
+    if !result.starts_with("ok Done: ") || crate::edit_mode::editing().as_deref() != Some("notes") {
+        log!("act-edit: the done answered {result:?}");
+        return Err("act-edit: the editor is not open on notes");
+    }
+    log!(
+        "act-edit: a tagged call opened the editor at a line through do; refused do lines changed nothing"
     );
     Ok(())
 }

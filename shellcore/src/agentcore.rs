@@ -72,6 +72,8 @@ impl Shell {
         let outcome = self.execute(id, request, &call);
         // A turn that asked is remembered once it is answered (`actions`).
         match &mut self.pending {
+            // The terminal runs it; its `done` is remembered (`doing`).
+            _ if self.doing.as_ref().is_some_and(|d| d.id == id) => {}
             Some(pending) if outcome.reply.confirm == Some(id) => {
                 pending.call = Some(call.text());
             }
@@ -174,6 +176,16 @@ impl Shell {
         if decision.tier == Tier::Never {
             return self.refuse(id, request, call, decision.why, "it is never run");
         }
+        if agentabi::TERMINAL_ROWS.iter().any(|r| r.name == row.name) {
+            let what = match crate::doing::request_for(id, row, &args.values) {
+                Ok(what) => what,
+                Err(why) => return self.refuse(id, request, call, decision.why, &why),
+            };
+            let offer = offer(row, &args, decision.why);
+            let shown = format!("{}({})", row.name, args.rhai.join(", "));
+            let reply = self.terminal_row(id, request, call, &shown, decision, what, offer);
+            return outcome(decision.tier, decision.why, reply);
+        }
         if !agentabi::SCRIPT_API.iter().any(|r| r.name == row.name) {
             let why = format!("{} is typed at the prompt for now, not called", row.name);
             return self.refuse(id, request, call, decision.why, &why);
@@ -234,7 +246,7 @@ impl Shell {
 
     /// An ask-tier call waits for an answer from the Allow / Deny menu, or for `y`
     /// or `n` when its question cannot be shown as a menu.
-    fn ask_call(
+    pub(crate) fn ask_call(
         &mut self,
         id: u64,
         request: &str,
@@ -270,6 +282,7 @@ impl Shell {
             call: None,
             offer: offer.clone(),
             menu: None,
+            terminal: None,
         });
         // The highlight starts on Allow only for a call the line plainly asked for.
         let origin = match why {
@@ -286,7 +299,7 @@ impl Shell {
                 if let Some(pending) = &mut self.pending {
                     pending.menu = Some(call);
                 }
-                Reply::menu(id, text)
+                Reply::to_terminal(id, text)
             }
             // Too long, or not plain ASCII, for the menu: the y/n question shows it.
             Err(_) => Reply {

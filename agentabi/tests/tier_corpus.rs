@@ -259,8 +259,12 @@ const PERMS: &[(&str, &str)] = &[
     ("disk_format", "disk.admin"),
 ];
 
+/// The OS rows, then the stubs for rows it does not have yet.
 fn rows() -> Vec<Action> {
-    agentabi::ROWS.iter().chain(STUBS).copied().collect()
+    let stubs = STUBS
+        .iter()
+        .filter(|stub| agentabi::find(&agentabi::ROWS, stub.name).is_none());
+    agentabi::ROWS.iter().chain(stubs).copied().collect()
 }
 
 /// What a case expects of its calls, in order.

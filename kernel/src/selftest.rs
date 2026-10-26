@@ -14,6 +14,7 @@ pub enum ActCase {
     Undo,
     Rollback,
     Ask,
+    Edit,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -137,6 +138,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=act-undo" => Some(SelfTest::Act(ActCase::Undo)),
             "test=act-rollback" => Some(SelfTest::Act(ActCase::Rollback)),
             "test=act-ask" => Some(SelfTest::Act(ActCase::Ask)),
+            "test=act-edit" => Some(SelfTest::Act(ActCase::Edit)),
             "test=live" => Some(SelfTest::Live),
             "test=edit" => Some(SelfTest::Edit),
             "test=manifest" => Some(SelfTest::Manifest),
@@ -217,6 +219,19 @@ pub fn plan(test: SelfTest) -> Option<String> {
                     kabi::plan::CALLS_ONLY
                 ),
             };
+            if let Some(edit) = crate::build_service::plan_line() {
+                plan.push('\n');
+                plan.push_str(&edit);
+            }
+            plan
+        }
+        // `act-edit`: the editor opens a live component's source at a line.
+        SelfTest::Act(ActCase::Edit) => {
+            let mut plan = format!(
+                "{}\n{}",
+                kabi::plan::NOTES_EDIT_TEST,
+                crate::llm::plan_line()
+            );
             if let Some(edit) = crate::build_service::plan_line() {
                 plan.push('\n');
                 plan.push_str(&edit);

@@ -226,7 +226,10 @@ fn choose(decoder: &mut Decoder, mut menu: Menu) -> Option<Waiting> {
     match crate::allow::allow(menu.id, menu.call(), answer) {
         Ok(Some(allowed)) => {
             let line = menu::granted_line(menu.id, answer, allowed.granted);
+            // A `do` for this call must bring the ONCE just minted.
+            crate::doing::menu_shown(menu.id, menu.question());
             let waiting = shell_line(&line);
+            crate::doing::menu_answered();
             crate::allow::end(&allowed);
             waiting
         }
@@ -298,6 +301,9 @@ fn show_shell_reply(reply: &[u8]) -> Option<Waiting> {
     if reply.starts_with(b"menu ") {
         return menu_reply(reply);
     }
+    if reply.starts_with(b"do ") {
+        return do_reply(reply);
+    }
     let text = String::from_utf8_lossy(reply);
     let clean = printable(&text, kabi::MAX_MESSAGE, MAX_REPLY_LINES);
     let (kind, rest) = clean.split_once(' ').unwrap_or((clean.as_str(), ""));
@@ -330,6 +336,31 @@ fn show_shell_reply(reply: &[u8]) -> Option<Waiting> {
     })
 }
 
+/// A `do` reply: the terminal runs the call itself (`crate::doing`), tells the
+/// shell how it went, and shows the shell's result line. An `apply` then waits for
+/// the yes at this prompt, as `:apply` does.
+fn do_reply(reply: &[u8]) -> Option<Waiting> {
+    REPLIED_NS.store(hpet::nanos(), Ordering::Relaxed);
+    REPLIES_SHOWN.fetch_add(1, Ordering::Relaxed);
+    let done = crate::doing::run(core::str::from_utf8(reply).unwrap_or(""));
+    let shown = match ipc::call("shell", done.line.as_bytes(), SHELL_TIMEOUT_MS) {
+        // One `do` per line: the answer to a `done` cannot be another.
+        Ok(answer) if answer.starts_with(b"do ") || answer.starts_with(b"menu ") => {
+            log!("! the shell answered with another request; it was not run");
+            None
+        }
+        Ok(answer) => show_shell_reply(&answer),
+        Err(error) => {
+            log!("shell: no answer ({error:?})");
+            None
+        }
+    };
+    match done.apply {
+        Some(proposal) => Some(Waiting::Apply(proposal)),
+        None => shown,
+    }
+}
+
 /// A `menu` reply: shown only if it decodes and every row is shown exactly as
 /// sent and fits the screen; otherwise the call is denied, as a confirmation
 /// that cannot be shown in full is declined.
@@ -358,9 +389,12 @@ fn menu_reply(reply: &[u8]) -> Option<Waiting> {
 /// Whether a line typed at the `kai> ` prompt looks like an answer to a script,
 /// `answer <id> ...`, which only the confirm prompt may send.
 fn is_answer(line: &str) -> bool {
-    line.strip_prefix("answer ")
-        .and_then(|rest| rest.split(' ').next())
-        .is_some_and(|id| id.parse::<u64>().is_ok())
+    // `answer`, and `done` (the terminal's own word to the shell after a `do`).
+    ["answer ", "done "].iter().any(|word| {
+        line.strip_prefix(word)
+            .and_then(|rest| rest.split(' ').next())
+            .is_some_and(|id| id.parse::<u64>().is_ok())
+    })
 }
 
 /// Whether `body`, printed with a two-character lead and followed by the prompt,

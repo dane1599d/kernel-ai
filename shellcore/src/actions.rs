@@ -46,6 +46,8 @@ pub(crate) struct Pending {
     /// The call its Allow / Deny menu showed, canonical, which the Allow's
     /// `ONCE` digest must name; `None` for a y/n question.
     pub menu: Option<String>,
+    /// For a row the terminal runs, the `do` that waits on the answer.
+    pub terminal: Option<termcore::doing::Request>,
 }
 
 /// `y`, `n`, `yes` or `no`, any case.
@@ -175,6 +177,7 @@ impl Shell {
             call: None,
             offer: None,
             menu: None,
+            terminal: None,
         });
         Reply {
             ok: true,
@@ -397,6 +400,9 @@ impl Shell {
             self.remember(&pending, "Not run: the question expired");
             return Reply::err("the script expired; ask again");
         }
+        if pending.terminal.is_some() && !is_show(text) {
+            return self.answer_terminal(pending, text);
+        }
         if is_show(text) {
             let question = self.question(id, &pending.request, &pending.checked, &pending.asking);
             let shown = script::shown(id, &pending.checked);
@@ -511,7 +517,7 @@ impl Shell {
     }
 
     /// Tells llm how a model turn that asked ended, for its conversation memory.
-    fn remember(&self, pending: &Pending, result: &str) {
+    pub(crate) fn remember(&self, pending: &Pending, result: &str) {
         if let Some(call) = &pending.call {
             crate::agentcore::remember(self.host.as_ref(), &pending.request, call, result);
         }
