@@ -10,6 +10,9 @@
 //! - Pages are only ever added while the process lives (not-present entries are never
 //!   cached), never unmapped, and the space is freed only by its last thread out,
 //!   after every one of its threads switched its CPU to the kernel PML4.
+//! - The one exception is shared pages (`Shm`, ADR 0001 D4): `crate::shm` unmaps or
+//!   retargets them while the process runs, and shoots the range down on every
+//!   CPU itself. They are never OWNED, so teardown leaves their frames alone.
 //!
 //! Every frame a space uses, page tables included, is counted against the process's
 //! page quota and in [`USER_FRAMES`], which must return to zero when every process
@@ -42,6 +45,9 @@ pub struct UserSpace {
     frames: u64,
     /// The window linked in, if any: its PML4 slot and its PDPT.
     window: Option<(usize, u64)>,
+    /// Pages counted against the quota that the space does not hold: the `Shm`
+    /// objects the process made.
+    charged: u64,
 }
 
 /// The PML4 slot of the model's window, where no other user page may be mapped.
@@ -53,8 +59,24 @@ impl UserSpace {
         self.pml4
     }
 
+    /// Frames counted against the page quota: those it holds and those charged.
     pub fn frames(&self) -> u64 {
-        self.frames
+        self.frames + self.charged
+    }
+
+    /// Counts `pages` it does not hold against the quota, if they fit under
+    /// `max_pages` with everything counted already; whether they did.
+    pub fn try_charge(&mut self, pages: u64, max_pages: u64) -> bool {
+        let fits = self.frames().saturating_add(pages) <= max_pages;
+        if fits {
+            self.charged += pages;
+        }
+        fits
+    }
+
+    /// Takes back pages [`UserSpace::try_charge`] counted.
+    pub fn refund(&mut self, pages: u64) {
+        self.charged = self.charged.saturating_sub(pages);
     }
 }
 
@@ -112,6 +134,7 @@ impl Memory {
             pml4,
             frames: 1,
             window: None,
+            charged: 0,
         })
     }
 
@@ -174,6 +197,94 @@ impl Memory {
                 Err("page already mapped or out of frames for page tables")
             }
         }
+    }
+
+    /// Maps the frame at `phys`, which `space` does not own (an `Shm` page), at
+    /// `addr`: read-only or read-write, never executable. Only the page tables it
+    /// adds count against the space, and teardown leaves the frame alone.
+    pub fn map_shared_page(
+        &mut self,
+        space: &mut UserSpace,
+        addr: u64,
+        phys: u64,
+        write: bool,
+    ) -> Result<(), &'static str> {
+        if !is_user_page(addr) {
+            return Err("not a user page address");
+        }
+        let frame = PhysFrame::containing_address(PhysAddr::new(phys));
+        let mut flags =
+            PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::NO_EXECUTE;
+        if write {
+            flags |= PageTableFlags::WRITABLE;
+        }
+        let parents =
+            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
+        let mut tables = Counting {
+            inner: Frames {
+                bitmap: &mut self.frames,
+                hhdm: self.hhdm,
+            },
+            allocated: 0,
+        };
+        let hhdm = self.hhdm;
+        // SAFETY: the PML4 belongs to `space` and is reached through the HHDM.
+        let mut mapper = unsafe {
+            OffsetPageTable::new(
+                &mut *((hhdm + space.pml4) as *mut PageTable),
+                VirtAddr::new(hhdm),
+            )
+        };
+        let page = Page::<Size4KiB>::containing_address(VirtAddr::new(addr));
+        // SAFETY: the frame is the object's and the page is in this space's user half.
+        // Not flushed: not-present entries are never cached.
+        let mapped =
+            unsafe { mapper.map_to_with_table_flags(page, frame, flags, parents, &mut tables) };
+        space.frames += tables.allocated;
+        USER_FRAMES.fetch_add(tables.allocated, Ordering::Relaxed);
+        mapped
+            .map(|flush| flush.ignore())
+            .map_err(|_| "page already mapped or out of frames for page tables")
+    }
+
+    /// Points the shared page at `addr` in `space` at `phys`, its flags kept, or
+    /// removes it with `None`. Refuses a page the space owns. Not flushed: the
+    /// caller shoots the range down.
+    pub fn set_shared_page(
+        &mut self,
+        space: &UserSpace,
+        addr: u64,
+        phys: Option<u64>,
+    ) -> Result<(), &'static str> {
+        // Never the model window's slot or the kernel half, whatever the caller.
+        if !is_user_page(addr) {
+            return Err("not a user page address");
+        }
+        let indexes = [
+            (addr >> 39) & 0x1FF,
+            (addr >> 30) & 0x1FF,
+            (addr >> 21) & 0x1FF,
+        ];
+        let mut table = space.pml4;
+        for index in indexes {
+            let entry = &self.table(table)[index as usize];
+            let flags = entry.flags();
+            if !flags.contains(PageTableFlags::PRESENT) || flags.contains(PageTableFlags::HUGE_PAGE)
+            {
+                return Err("no shared page there");
+            }
+            table = entry.addr().as_u64();
+        }
+        let entry = &mut self.table(table)[((addr >> 12) & 0x1FF) as usize];
+        let flags = entry.flags();
+        if !flags.contains(PageTableFlags::PRESENT) || flags.contains(OWNED) {
+            return Err("no shared page there");
+        }
+        match phys {
+            Some(phys) => entry.set_addr(PhysAddr::new(phys), flags),
+            None => entry.set_unused(),
+        }
+        Ok(())
     }
 
     /// Links the window whose PDPT is at `pdpt` (built by the kernel, read-only and

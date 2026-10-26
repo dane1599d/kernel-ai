@@ -9,6 +9,7 @@ mod handle;
 mod net;
 mod sched;
 mod service;
+mod shm;
 mod supervise;
 
 use crate::entry::TrapFrame;
@@ -66,6 +67,7 @@ const AREAS: &[Area] = &[
     net::handle,
     handle::handle,
     device::handle,
+    shm::handle,
 ];
 
 fn handle(slot: usize, number: u64, a: [u64; 6]) -> Result<u64, Error> {

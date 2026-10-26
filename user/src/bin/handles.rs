@@ -28,6 +28,10 @@
 //! kernel revokes the client's node, and the client's CALL_H fails with Revoked
 //! long before the server would answer.
 //!
+//! With `mode=shm` (task 14) it serves the kernel's `Shm` case one line at a
+//! time (see [`shm`]): it maps the handles the kernel puts in its table, fills and
+//! counts the pages, and makes, maps and frees an object of its own.
+//!
 //! It prints `handles: every check passed` and exits 0, or names the first check
 //! that failed and exits 1.
 
@@ -53,6 +57,7 @@ fn main() -> i32 {
         Some("hold") => hold,
         Some("revoke") => revoke,
         Some("devlist") => devlist,
+        Some("shm") => shm,
         _ => checks,
     };
     match run() {
@@ -79,6 +84,104 @@ fn expect<T: core::fmt::Debug>(
             Err(what)
         }
     }
+}
+
+/// `mode=shm`: answers the kernel's lines until `exit`. `map <handle> <pages>`
+/// maps read-write and answers the address; `fill <byte>` writes every byte of the
+/// mapping; `count <byte>` answers how many bytes hold it; `unmap`; and `own` makes
+/// a 4-page object with SHM_CREATE, maps, fills, checks and unmaps it. Answers are
+/// `ok`, `ok <n>` or `err <what>`.
+fn shm() -> Result<(), &'static str> {
+    let mut buf = [0u8; 64];
+    let mut mapped: Option<(u64, usize)> = None;
+    loop {
+        let mut caller = 0;
+        let len = sys::svc_recv(&mut buf, 60_000, &mut caller).map_err(|_| "shm: no request")?;
+        let text = core::str::from_utf8(&buf[..len.min(buf.len())]).unwrap_or("");
+        let mut words = text.split_whitespace();
+        let number = |word: Option<&str>| word.and_then(|w| w.parse::<u64>().ok());
+        let reply = match (words.next(), number(words.next()), number(words.next())) {
+            (Some("exit"), ..) => {
+                let _ = sys::svc_reply(b"ok");
+                return Ok(());
+            }
+            (Some("map"), Some(handle), Some(pages)) => {
+                match sys::shm_map(Handle(handle as u32), true) {
+                    Ok(address) => {
+                        mapped = Some((address, pages as usize * 4096));
+                        alloc::format!("ok {address}")
+                    }
+                    Err(error) => alloc::format!("err map {error:?}"),
+                }
+            }
+            (Some("fill"), Some(byte), _) => match mapped {
+                Some((address, len)) => {
+                    region(address, len).fill(byte as u8);
+                    alloc::string::String::from("ok")
+                }
+                None => alloc::string::String::from("err nothing mapped"),
+            },
+            (Some("count"), Some(byte), _) => match mapped {
+                Some((address, len)) => {
+                    let n = region(address, len)
+                        .iter()
+                        .filter(|&&b| b == byte as u8)
+                        .count();
+                    alloc::format!("ok {n}")
+                }
+                None => alloc::string::String::from("err nothing mapped"),
+            },
+            (Some("unmap"), ..) => {
+                match mapped.take().map(|(address, _)| sys::shm_unmap(address)) {
+                    Some(Ok(_)) => alloc::string::String::from("ok"),
+                    Some(Err(error)) => alloc::format!("err unmap {error:?}"),
+                    None => alloc::string::String::from("err nothing mapped"),
+                }
+            }
+            (Some("own"), ..) => match own_shm() {
+                Ok(()) => alloc::string::String::from("ok"),
+                Err(what) => alloc::format!("err {what}"),
+            },
+            _ => alloc::string::String::from("err unknown line"),
+        };
+        sys::svc_reply(reply.as_bytes()).map_err(|_| "shm: cannot answer")?;
+    }
+}
+
+/// The mapping at `address` as bytes.
+fn region(address: u64, len: usize) -> &'static mut [u8] {
+    // SAFETY: SHM_MAP mapped `len` bytes read-write at `address` for this process,
+    // and only this thread touches them until `unmap`.
+    unsafe { core::slice::from_raw_parts_mut(address as *mut u8, len) }
+}
+
+/// SHM_CREATE from ring 3: 4 pages, mapped twice is Busy, filled and read back,
+/// unmapped; then a map of a closed handle fails.
+fn own_shm() -> Result<(), &'static str> {
+    let handle = sys::shm_create(4).map_err(|_| "create failed")?;
+    let address = sys::shm_map(handle, true).map_err(|_| "map failed")?;
+    expect(
+        sys::shm_map(handle, false),
+        Error::Busy,
+        "a second map of one object",
+    )?;
+    let bytes = region(address, 4 * 4096);
+    if bytes.iter().any(|&b| b != 0) {
+        return Err("new pages were not zero");
+    }
+    bytes.fill(0x5A);
+    if bytes.iter().any(|&b| b != 0x5A) {
+        return Err("the pages did not keep what was written");
+    }
+    sys::shm_unmap(address).map_err(|_| "unmap failed")?;
+    expect(sys::shm_create(0), Error::Invalid, "a 0-page object")?;
+    sys::handle_close(handle).map_err(|_| "close failed")?;
+    expect(
+        sys::shm_map(handle, true),
+        Error::BadHandle,
+        "a closed handle",
+    )?;
+    Ok(())
 }
 
 /// The first startup handle of `kind`.

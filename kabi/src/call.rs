@@ -202,5 +202,19 @@ pub const DEV_LIST: u64 = 51;
 /// supervisor runs (stop those through the supervisor's `stop <name>`); NotFound
 /// when no process has the name.
 pub const PROC_STOP: u64 = 52;
+/// `shm_create(pages) -> handle`: new zeroed shared pages, counted against the
+/// caller's page quota, and an `Shm` handle with MAP, READ, WRITE, DUPLICATE,
+/// TRANSFER and INSPECT (ADR 0001 D4). TooBig past [`crate::layout::SHM_SLOT`];
+/// Busy when every object is taken.
+pub const SHM_CREATE: u64 = 53;
+/// `shm_map(handle, write) -> address`: maps the object at its place in
+/// [`crate::layout::SHM_BASE`], read-only (MAP and READ) or read-write (MAP, READ
+/// and WRITE, `write` = 1), never executable. Busy if this process maps it already.
+/// Once the grant node its handle came through is revoked, every page reads as
+/// zero and writes reach no one.
+pub const SHM_MAP: u64 = 54;
+/// `shm_unmap(address) -> 0`: removes the mapping that starts at `address`. The
+/// pages are freed when no mapping and no handle is left.
+pub const SHM_UNMAP: u64 = 55;
 /// The highest call number.
-pub const MAX: u64 = PROC_STOP;
+pub const MAX: u64 = SHM_UNMAP;

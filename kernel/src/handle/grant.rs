@@ -112,6 +112,8 @@ pub fn revoke(node: GrantRef) -> Result<usize, kabi::Error> {
     for tid in wake.into_iter().flatten() {
         x86_64::instructions::interrupts::without_interrupts(|| threads::wake(tid));
     }
+    // Shared pages mapped through a handle under one of them go dark.
+    crate::shm::on_revoke();
     Ok(count)
 }
 

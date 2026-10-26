@@ -109,11 +109,67 @@ pub fn halt_others() {
 
 static SHOOTDOWN: Mutex<()> = Mutex::new(());
 static SHOOTDOWN_ADDRESS: AtomicU64 = AtomicU64::new(0);
+static SHOOTDOWN_PAGES: AtomicU64 = AtomicU64::new(1);
 static SHOOTDOWN_PENDING: AtomicUsize = AtomicUsize::new(0);
+/// Above this many pages a CPU flushes its whole TLB rather than page by page.
+const FLUSH_ALL_PAGES: u64 = 32;
 
 /// Invalidates `address` in every other CPU's TLB and waits until they all have.
 /// The caller has already flushed its own TLB entry.
 pub fn tlb_shootdown(address: u64) {
+    shoot(address, 1);
+}
+
+/// The page tables each CPU has loaded (CR3), set before the CR3 write
+/// (`threads::context`), so a shootdown need only reach the CPUs that show the
+/// space it changed: one that loads it later walks the new tables.
+static LOADED_CR3: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+
+/// Records, before the write, that this CPU is loading `cr3`.
+pub fn note_cr3(cr3: u64) {
+    LOADED_CR3[percpu::index()].store(cr3, Ordering::SeqCst);
+}
+
+/// Invalidates `pages` pages from `address` in this CPU's TLB and in every other
+/// CPU that has one of the address spaces `cr3s` loaded, in one round of
+/// interrupts, and waits until they all have. The caller has changed the page
+/// tables already.
+pub fn tlb_shootdown_range(cr3s: &[u64], address: u64, pages: u64) {
+    flush_range(address, pages);
+    core::sync::atomic::fence(Ordering::SeqCst);
+    let me = percpu::index();
+    let mut targets = [false; MAX_CPUS];
+    let mut count = 0;
+    for (cpu, target) in targets.iter_mut().enumerate().take(online()) {
+        if cpu != me && cr3s.contains(&LOADED_CR3[cpu].load(Ordering::SeqCst)) {
+            *target = true;
+            count += 1;
+        }
+    }
+    if count == 0 {
+        return;
+    }
+    let _guard = SHOOTDOWN.lock();
+    SHOOTDOWN_ADDRESS.store(address, Ordering::Release);
+    SHOOTDOWN_PAGES.store(pages, Ordering::Release);
+    SHOOTDOWN_PENDING.store(count, Ordering::Release);
+    for cpu in (0..online()).filter(|&cpu| targets[cpu]) {
+        send(cpu, apic::TLB_VECTOR);
+    }
+    wait_for_acks(address);
+}
+
+fn flush_range(address: u64, pages: u64) {
+    if pages > FLUSH_ALL_PAGES {
+        x86_64::instructions::tlb::flush_all();
+        return;
+    }
+    for page in 0..pages {
+        x86_64::instructions::tlb::flush(x86_64::VirtAddr::new(address + page * 4096));
+    }
+}
+
+fn shoot(address: u64, pages: u64) {
     let cpus = online();
     if cpus <= 1 {
         return;
@@ -121,10 +177,15 @@ pub fn tlb_shootdown(address: u64) {
     let _guard = SHOOTDOWN.lock();
     let me = percpu::index();
     SHOOTDOWN_ADDRESS.store(address, Ordering::Release);
+    SHOOTDOWN_PAGES.store(pages, Ordering::Release);
     SHOOTDOWN_PENDING.store(cpus - 1, Ordering::Release);
     for cpu in (0..cpus).filter(|&cpu| cpu != me) {
         send(cpu, apic::TLB_VECTOR);
     }
+    wait_for_acks(address);
+}
+
+fn wait_for_acks(address: u64) {
     // Never give up: returning early would let the caller free a frame that another
     // CPU still maps, and a late acknowledgement would corrupt the next round's count.
     let start = hpet::nanos();
@@ -141,7 +202,7 @@ pub fn tlb_shootdown(address: u64) {
 /// TLB shootdown interrupt handler body.
 pub fn on_tlb_ipi() {
     let address = SHOOTDOWN_ADDRESS.load(Ordering::Acquire);
-    x86_64::instructions::tlb::flush(x86_64::VirtAddr::new(address));
+    flush_range(address, SHOOTDOWN_PAGES.load(Ordering::Acquire));
     SHOOTDOWN_PENDING.fetch_sub(1, Ordering::AcqRel);
 }
 

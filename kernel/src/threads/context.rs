@@ -121,6 +121,9 @@ fn load_cr3(cr3: u64) {
     unsafe {
         core::arch::asm!("mov {}, cr3", out(reg) current, options(nomem, nostack, preserves_flags))
     };
+    // Before the write: a shootdown that misses this store finds the new CR3
+    // loaded only after its page-table changes.
+    crate::smp::note_cr3(cr3);
     if current & !0xFFF != cr3 {
         // SAFETY: `cr3` is the kernel PML4 or a process PML4 sharing its kernel half,
         // so the code and stack in use stay mapped.

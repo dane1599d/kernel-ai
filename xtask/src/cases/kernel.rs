@@ -64,4 +64,12 @@ pub(super) const CASES: &[TestCase] = &[
         expect: &["proc-stop: PROC_STOP and the supervisor's stop and start kept to their rules"],
         ..case("proc-stop", "test=proc-stop")
     },
+    // P1 task 14: shared pages, and spike S01-1's M6.
+    TestCase {
+        expect: &[
+            "shm: M6: revoke a 256-page Shm",
+            "shm: SHM_CREATE, MAP and UNMAP work, and a revoke leaves holders sharing nothing",
+        ],
+        ..case("shm", "test=shm")
+    },
 ];
