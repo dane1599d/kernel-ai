@@ -76,8 +76,10 @@ pub fn main(args: &[String]) -> Result<(), String> {
         );
     }
     let side = |seed: u64, tune_spec: &str| -> Result<ab::SideRun, String> {
-        let cmdline =
-            format!("test=tune-ab phase=run workload={mix} seed={seed} tune_spec={tune_spec}");
+        let cmdline = format!(
+            "test=tune-ab phase=run workload={mix} seed={seed} tune_spec={tune_spec} {}",
+            icount::CLOCK
+        );
         ab::parse(&icount_boot(&booter, &cmdline, shift)?)
     };
     let pair = |seed: u64| -> Result<(ab::SideRun, ab::SideRun), String> {
