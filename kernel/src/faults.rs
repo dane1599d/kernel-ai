@@ -175,7 +175,7 @@ pub fn fatal(frame: &TrapFrame) -> ! {
         }
         Err(reason) => {
             log!("self-test: {reason}");
-            crate::test_exit(ExitCode::Failure)
+            crate::fault_exit(&reason)
         }
     }
 }

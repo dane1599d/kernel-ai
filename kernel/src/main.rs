@@ -40,6 +40,7 @@ mod edit_mode;
 mod edit_session;
 mod edit_tests;
 mod entry;
+mod fault;
 mod faults;
 mod fpu;
 mod fpu_tests;
@@ -325,6 +326,13 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Bigmap => run_case(bigmap_tests::check),
         SelfTest::IcountProbe => run_case(|| icount_tests::check(cmdline())),
         SelfTest::Reboot => power::reboot(),
+        // A fault resets the machine; with `panic=reset` even in test mode.
+        SelfTest::PanicReset => {
+            if cmdline().split_whitespace().any(|word| word == "what=fail") {
+                fail("panic-reset: a failed check, on purpose");
+            }
+            panic!("panic-reset: a panic, on purpose")
+        }
         SelfTest::Devices => run_case(device_tests::check),
         SelfTest::TuneRevert => run_case(tune_tests::revert_check),
         SelfTest::TuneStall => run_case(tune_stall_tests::check),
@@ -477,12 +485,21 @@ pub fn test_exit(code: ExitCode) -> ! {
     halt_forever()
 }
 
-/// Logs a fatal error and stops.
+/// Ends the boot after a fault: reset (outside test mode, or with `panic=reset`),
+/// or the failure exit a test run reports.
+pub(crate) fn fault_exit(reason: &dyn core::fmt::Display) -> ! {
+    if fault::resets(TEST_MODE.load(Ordering::SeqCst)) {
+        fault::reset(reason);
+    }
+    qemu::exit(ExitCode::Failure)
+}
+
+/// Logs a fatal error and stops: a reset, or the test run's failure exit.
 fn fail(message: &str) -> ! {
     smp::begin_fatal_report();
     log!("FATAL on cpu {}: {message}", percpu::index());
     backtrace::print_from(backtrace::current_rbp());
-    test_exit(ExitCode::Failure)
+    fault_exit(&message)
 }
 
 /// Disables interrupts and halts the CPU forever.
@@ -499,7 +516,7 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     log!("PANIC on cpu {}: {info}", percpu::index());
     log!("backtrace:");
     backtrace::print_from(backtrace::current_rbp());
-    test_exit(ExitCode::Failure)
+    fault_exit(&info.message())
 }
 
 fn on_off(on: bool) -> &'static str {

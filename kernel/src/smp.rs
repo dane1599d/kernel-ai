@@ -225,7 +225,7 @@ pub fn begin_fatal_report() {
         Ok(_) => halt_others(),
         Err(owner) if owner == me => {
             if REPORT_DEPTH.fetch_add(1, Ordering::Relaxed) >= 1 {
-                crate::test_exit(crate::qemu::ExitCode::Failure);
+                crate::fault_exit(&"a fault while reporting a fault");
             }
         }
         Err(_) => crate::halt_forever(),
