@@ -207,8 +207,23 @@ fn kill_mid_run(mode: &str, waiting: Waiting) -> Result<(), &'static str> {
     Ok(())
 }
 
+/// How long `threads-kill` waits for the network to get its address.
+const NET_WAIT_MS: u64 = 15_000;
+
 /// The `threads-kill` case.
 pub fn kill_check() -> Result<(), &'static str> {
+    // The free-frame count is the whole machine's: DHCP, set going at boot,
+    // allocates when its lease arrives, and once landed between the two counts
+    // and failed the case one frame short. So the network settles first: an
+    // address from DHCP or the fallback, or no card at all.
+    let settled = || crate::net::status().is_none_or(|status| status.address.is_some());
+    let deadline = hpet::nanos() + NET_WAIT_MS * 1_000_000;
+    while !settled() {
+        if hpet::nanos() > deadline {
+            return Err("threads-kill: the network never got an address");
+        }
+        threads::sleep_ms(10);
+    }
     kill_mid_run("park", Waiting::Futex)?;
     kill_mid_run("spin", Waiting::Compute)?;
     expect(
