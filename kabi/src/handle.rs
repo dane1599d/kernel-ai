@@ -128,6 +128,7 @@ bitflags! {
         const WRITE = 1 << 5;
         const MAP = 1 << 6;
         const ENUMERATE = 1 << 7;
+        /// On a Job that names one program: start it ([`crate::call::JOB_SPAWN`]).
         const CREATE = 1 << 8;
         const DELETE = 1 << 9;
         const CALL = 1 << 10;

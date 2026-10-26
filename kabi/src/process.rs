@@ -65,6 +65,17 @@ pub struct SpawnRequest {
     pub program_len: u64,
 }
 
+/// Argument of [`crate::call::JOB_SPAWN`]: the argument string, and the handles
+/// to move into the child (at most 8 `u32`s).
+#[derive(Clone, Copy, Debug, Default)]
+#[repr(C)]
+pub struct JobSpawn {
+    pub args_ptr: u64,
+    pub args_len: u64,
+    pub handles_ptr: u64,
+    pub handles_len: u64,
+}
+
 /// Per-process limits, set by the supervisor at spawn.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C)]

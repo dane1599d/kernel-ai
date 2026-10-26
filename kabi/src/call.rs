@@ -216,5 +216,13 @@ pub const SHM_MAP: u64 = 54;
 /// `shm_unmap(address) -> 0`: removes the mapping that starts at `address`. The
 /// pages are freed when no mapping and no handle is left.
 pub const SHM_UNMAP: u64 = 55;
+/// `job_spawn(job, &JobSpawn) -> pid`: starts the program the Job names
+/// (`scriptrun`) as the caller's child, with no capability bits and only the
+/// handles it moves in (each with TRANSFER, of a kind the caller may hold). Needs
+/// CREATE on the Job. Busy while one runs.
+pub const JOB_SPAWN: u64 = 56;
+/// `job_wait(job, &mut ExitRecord, timeout_ms) -> 1 if a record was written, 0 on
+/// timeout`: the next exit of one of the caller's job children. Needs WAIT.
+pub const JOB_WAIT: u64 = 57;
 /// The highest call number.
-pub const MAX: u64 = SHM_UNMAP;
+pub const MAX: u64 = JOB_WAIT;

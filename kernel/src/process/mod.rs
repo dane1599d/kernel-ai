@@ -22,6 +22,7 @@ pub mod burst;
 pub mod components;
 mod exit;
 pub mod futex;
+pub mod job;
 mod loader;
 pub mod programs;
 mod space;
@@ -129,6 +130,8 @@ pub struct Process {
     pub supervisor: bool,
     /// The pid that spawned it (0 for the kernel).
     pub spawner: u64,
+    /// Started by JOB_SPAWN: its exit goes to `spawner`, not the supervisor.
+    pub job: bool,
     pub heap_end: u64,
     pub crash: Option<Crash>,
 }
@@ -153,6 +156,7 @@ impl Process {
         cr3: 0,
         supervisor: false,
         spawner: 0,
+        job: false,
         heap_end: HEAP_BASE,
         crash: None,
     };
@@ -360,18 +364,36 @@ pub struct SpawnRequest<'a> {
 
 /// Starts a process. At most one live process per service name.
 pub fn spawn(request: &SpawnRequest) -> Result<u64, kabi::Error> {
+    spawn_with(request, alloc::vec::Vec::new(), false).map_err(|(error, _)| error)
+}
+
+/// [`spawn`], with `moved` handles in its table before it runs, and, for `job`, its
+/// exit going to its spawner (JOB_SPAWN). On a refusal `moved` comes back.
+pub fn spawn_with(
+    request: &SpawnRequest,
+    moved: alloc::vec::Vec<captable::Entry>,
+    job: bool,
+) -> Result<u64, (kabi::Error, alloc::vec::Vec<captable::Entry>)> {
     use kabi::Error;
-    if programs::find(request.program).is_none() {
-        return Err(Error::NotFound);
-    }
-    let name = Name::new(request.name).ok_or(Error::Invalid)?;
-    let program = Name::new(request.program).ok_or(Error::Invalid)?;
-    let max_pages = kabi::model::max_pages(request.name, request.program, MAX_PAGES_PER_PROCESS);
-    if request.args.len() > MAX_ARGS || request.limits.max_pages > max_pages {
-        return Err(Error::TooBig);
-    }
+    let checked = (|| {
+        if programs::find(request.program).is_none() {
+            return Err(Error::NotFound);
+        }
+        let name = Name::new(request.name).ok_or(Error::Invalid)?;
+        let program = Name::new(request.program).ok_or(Error::Invalid)?;
+        let max_pages =
+            kabi::model::max_pages(request.name, request.program, MAX_PAGES_PER_PROCESS);
+        if request.args.len() > MAX_ARGS || request.limits.max_pages > max_pages {
+            return Err(Error::TooBig);
+        }
+        Ok((name, program))
+    })();
+    let (name, program) = match checked {
+        Ok(names) => names,
+        Err(error) => return Err((error, moved)),
+    };
     let budget = PAGE_BUDGET.load(Ordering::Relaxed);
-    let (slot, pid) = with_table(|table| {
+    let placed = with_table(|table| {
         if table.iter().any(|p| p.live() && p.name == name) {
             return Err(Error::Busy);
         }
@@ -394,6 +416,7 @@ pub fn spawn(request: &SpawnRequest) -> Result<u64, kabi::Error> {
             live_threads: 1,
             supervisor: request.supervisor,
             spawner: request.spawner,
+            job,
             ..Process::FREE
         };
         process.args[..request.args.len()].copy_from_slice(request.args);
@@ -405,17 +428,22 @@ pub fn spawn(request: &SpawnRequest) -> Result<u64, kabi::Error> {
         WROTE[slot].store(false, Ordering::SeqCst);
         burst::start_process(slot, request.limits.max_burst_ms);
         Ok((slot, pid))
-    })?;
-    // Its startup handles, before it can run (ADR 0001 D3).
+    });
+    let (slot, pid) = match placed {
+        Ok(placed) => placed,
+        Err(error) => return Err((error, moved)),
+    };
+    // Its startup handles and what was moved to it, before it can run (ADR 0001 D3).
     if let Err(error) = crate::handle::create(slot, request.limits.caps, pid, request.uses) {
         with_table(|table| table[slot] = Process::FREE);
-        return Err(error);
+        return Err((error, moved));
     }
+    crate::handle::give_at_start(slot, moved);
     if threads::spawn("user", process_main, slot).is_err() {
         crate::handle::destroy(slot);
         with_table(|table| table[slot] = Process::FREE);
         supervision::record_load_failure(pid, &name, request.supervisor, request.spawner);
-        return Err(Error::NoMemory);
+        return Err((Error::NoMemory, alloc::vec::Vec::new()));
     }
     Ok(pid)
 }
@@ -425,14 +453,15 @@ pub fn identity(slot: usize) -> Process {
     with_table(|table| table[slot])
 }
 
-/// The live processes named `name`: their pids, and whether a process (the
-/// supervisor) started each rather than the kernel.
+/// The live processes named `name`: their pids, and whether the supervisor
+/// started each (a job child, like `scriptrun`, is its parent's, not the
+/// supervisor's).
 pub fn named(name: &str) -> alloc::vec::Vec<(u64, bool)> {
     let table = with_table(|table| *table);
     table
         .iter()
         .filter(|p| p.live() && p.name.as_str() == name)
-        .map(|p| (p.pid, p.spawner != 0 || p.supervisor))
+        .map(|p| (p.pid, (p.spawner != 0 && !p.job) || p.supervisor))
         .collect()
 }
 
