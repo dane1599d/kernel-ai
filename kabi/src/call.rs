@@ -224,5 +224,25 @@ pub const JOB_SPAWN: u64 = 56;
 /// `job_wait(job, &mut ExitRecord, timeout_ms) -> 1 if a record was written, 0 on
 /// timeout`: the next exit of one of the caller's job children. Needs WAIT.
 pub const JOB_WAIT: u64 = 57;
+/// `job_pool(job, n) -> count`: keeps up to `n` (at most 4) idle `scriptrun`
+/// children for the caller, with no handles (ADR 0001's pooled `scriptrun`).
+/// Needs CREATE on the Job.
+pub const JOB_POOL: u64 = 58;
+/// `job_claim(job, &JobSpawn) -> pid`: gives an idle pooled child the request's
+/// arguments and handles (as JOB_SPAWN moves them) and wakes it; starts one when
+/// none is idle. Needs CREATE. Its result comes back through JOB_WAIT.
+pub const JOB_CLAIM: u64 = 59;
+/// `job_take(buf, cap) -> len`, in a pooled child: waits for a claim and copies
+/// its arguments; the claim's handles are in STARTUP. TimedOut with no claim for
+/// a while; Permission outside a job child.
+pub const JOB_TAKE: u64 = 60;
+/// `job_done(code) -> 0`, in a pooled child: reports `code` to the parent's
+/// JOB_WAIT (reason Exited, detail `code`), closes every handle it holds and goes
+/// back to idle. Invalid with no claim taken.
+pub const JOB_DONE: u64 = 61;
+/// `job_kill(job, pid) -> 0`: ends the caller's job child `pid` (a time limit,
+/// Ctrl-C); a pooled child dies too and never goes back to idle. JOB_WAIT then
+/// reports it Killed. NotFound for a pid that is not the caller's job child.
+pub const JOB_KILL: u64 = 62;
 /// The highest call number.
-pub const MAX: u64 = JOB_WAIT;
+pub const MAX: u64 = JOB_KILL;

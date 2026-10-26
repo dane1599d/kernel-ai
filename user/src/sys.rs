@@ -335,6 +335,49 @@ pub fn job_spawn(job: Handle, args: &str, handles: &[Handle]) -> Result<u64, Err
     )
 }
 
+/// Keeps up to `n` idle pooled children of the program `job` names; how many.
+pub fn job_pool(job: Handle, n: u64) -> Result<u64, Error> {
+    call(call::JOB_POOL, [u64::from(job.0), n, 0, 0, 0, 0])
+}
+
+/// Gives an idle pooled child `args` and `handles` (or starts one); its pid. Its
+/// result comes back through [`job_wait`].
+pub fn job_claim(job: Handle, args: &str, handles: &[Handle]) -> Result<u64, Error> {
+    let request = kabi::JobSpawn {
+        args_ptr: args.as_ptr() as u64,
+        args_len: args.len() as u64,
+        handles_ptr: handles.as_ptr() as u64,
+        handles_len: handles.len() as u64,
+    };
+    call(
+        call::JOB_CLAIM,
+        [
+            u64::from(job.0),
+            &request as *const kabi::JobSpawn as u64,
+            0,
+            0,
+            0,
+            0,
+        ],
+    )
+}
+
+/// Ends this process's job child `pid`; JOB_WAIT then reports it Killed.
+pub fn job_kill(job: Handle, pid: u64) -> Result<u64, Error> {
+    call(call::JOB_KILL, [u64::from(job.0), pid, 0, 0, 0, 0])
+}
+
+/// In a pooled child: waits for a claim and copies its arguments; their length.
+pub fn job_take(buf: &mut [u8]) -> Result<usize, Error> {
+    read_into(call::JOB_TAKE, buf, 0)
+}
+
+/// In a pooled child: reports `code` for the claim and goes back to idle, with
+/// every handle closed.
+pub fn job_done(code: u64) -> Result<u64, Error> {
+    call(call::JOB_DONE, [code, 0, 0, 0, 0, 0])
+}
+
 /// The next exit of one of this process's job children, or `None` after
 /// `timeout_ms`.
 pub fn job_wait(job: Handle, timeout_ms: u64) -> Result<Option<ExitRecord>, Error> {
