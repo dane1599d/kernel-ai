@@ -136,3 +136,35 @@ fn hostile_results_are_values_or_traps_within_the_budget() {
     // Random bytes should mostly be refused; the point is that nothing panicked.
     assert!(traps > 0);
 }
+
+/// WAVE text cut and mutated is a value or an error, never a panic, and whatever
+/// it reads prints to text that reads and prints the same.
+#[test]
+fn hostile_wave_text_is_read_or_refused() {
+    use appabi::wave;
+    let samples = [
+        (
+            r#"{x: 3, label: some("a \"b\" \u{41}"), tags: [1, 2, 300], kind: b, deep: [[ok(1), err("e")]]}"#,
+            21u64,
+        ),
+        (r"[(1, true, 'c'), (2, false, '\n')]", 22),
+        (
+            r#"real(1.5e3) text("x") pt({x: -1, y: 2}) {f0, f3, f11} none"#,
+            23,
+        ),
+    ];
+    for (sample, seed) in samples {
+        for ty in shapes() {
+            hostile::fuzz(sample.as_bytes(), seed, 1_000, |bytes| {
+                let Ok(text) = core::str::from_utf8(bytes) else {
+                    return;
+                };
+                if let Ok(value) = wave::parse(text, &ty) {
+                    let printed = wave::print(&value, &ty).expect("a parsed value prints");
+                    let again = wave::parse(&printed, &ty).expect("printed text parses");
+                    assert_eq!(wave::print(&again, &ty).unwrap(), printed);
+                }
+            });
+        }
+    }
+}

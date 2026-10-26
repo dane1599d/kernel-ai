@@ -21,6 +21,7 @@ extern crate alloc;
 mod layout;
 mod lift;
 mod lower;
+pub mod wave;
 
 use layout::flatten;
 pub use layout::{align, size};
@@ -139,7 +140,7 @@ pub trait Guest {
 }
 
 /// One exported function: its core name and its component type.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Func {
     pub export: String,
     pub params: Vec<Ty>,
