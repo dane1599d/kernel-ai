@@ -1,6 +1,8 @@
-//! A thread pool for the engine (L6): one worker pinned on each CPU, up to a limit,
-//! and [`Pool::broadcast`], which runs a job once on every worker and returns when
-//! all of them have. The engine's `Parallel` trait can sit on it: a matvec gives
+//! A thread pool for the engine (L6): one worker for each CPU, up to a limit, and
+//! [`Pool::broadcast`], which runs a job once on every worker and returns when all
+//! of them have. Worker 0 is the caller itself; the others are threads pinned on
+//! CPUs 1 onwards, so the caller does not share a CPU with one of them when the
+//! kernel keeps it on CPU 0. The engine's `Parallel` trait can sit on it: a matvec gives
 //! each worker the rows [`share`] says, so the result does not depend on how many
 //! workers there are or which finishes first.
 //!
@@ -135,8 +137,9 @@ fn spawn(arg: u64, cpu: usize) -> Result<usize, Error> {
 }
 
 impl Pool {
-    /// Starts one worker pinned on each CPU online, at most `max` (and at most
-    /// `kabi::thread::MAX_WORKERS`), at least one.
+    /// One worker for each CPU online, at most `max` (and at most
+    /// `kabi::thread::MAX_WORKERS`), at least one: the caller, and a thread pinned
+    /// on each CPU after the first.
     pub fn new(max: usize) -> Result<Pool, Error> {
         let cpus = sys::metrics().map_or(1, |metrics| metrics.cpus as usize);
         let workers = cpus.min(max).clamp(1, MAX_WORKERS);
@@ -159,7 +162,7 @@ impl Pool {
             stats: Cell::new(Stats::default()),
             _not_sync: PhantomData,
         };
-        for index in 0..workers {
+        for index in 1..workers {
             let start: &'static Start = Box::leak(Box::new(Start { shared, index }));
             shared.live.fetch_add(1, Ordering::AcqRel);
             if let Err(error) = spawn(start as *const Start as u64, index % cpus) {
@@ -198,17 +201,21 @@ impl Pool {
         // reads the cell now; the generation bump below publishes the write.
         unsafe { *shared.job.get() = Some(job) };
         shared.finished.store(0, Ordering::Release);
+        let threads = shared.workers as u32 - 1;
         // SeqCst with the sleepers count: a worker that counts itself asleep
         // after this bump still sees it before it sleeps.
         shared.generation.fetch_add(1, Ordering::SeqCst);
         if shared.sleepers.load(Ordering::SeqCst) > 0 {
             let _ = sys::futex_wake(&shared.generation, u32::MAX);
         }
-        let workers = shared.workers as u32;
+        // The caller is worker 0.
+        let began = cycles();
+        job(0, shared.workers);
+        shared.job_cycles[0].store(cycles() - began, Ordering::Relaxed);
         let mut waits = 0;
         loop {
             let finished = shared.finished.load(Ordering::Acquire);
-            if finished == workers {
+            if finished == threads {
                 break;
             }
             waits += 1;
@@ -316,7 +323,7 @@ extern "C" fn worker_main(arg: u64) -> ! {
         }
         shared.job_cycles[start.index].store(cycles() - began, Ordering::Relaxed);
         let done = shared.finished.fetch_add(1, Ordering::SeqCst) + 1;
-        if done as usize == shared.workers && shared.caller_asleep.load(Ordering::SeqCst) {
+        if done as usize == shared.workers - 1 && shared.caller_asleep.load(Ordering::SeqCst) {
             let _ = sys::futex_wake(&shared.finished, 1);
         }
     }
