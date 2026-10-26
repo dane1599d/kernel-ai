@@ -17,6 +17,7 @@
 //! cargo xtask doctor   (can this PC run Kernel AI in an accelerated VM, and what to fix; read-only)
 //! cargo xtask vbox [--start [--headless]]   (the VirtualBox VM "Kernel AI"; see vbox/mod.rs)
 //! cargo xtask licences check   (every licence in the tree and the dependency graph is allowed and has its text; see licences.rs)
+//! cargo xtask ccwasm [--no-gen3]   (spike S12-1: cc.wasm from the pinned xcc commit; Linux, see ccwasm.rs)
 //! cargo xtask notices [--check]   (writes or checks NOTICES.txt, the third-party notices the image carries; see notices.rs)
 //!
 //! `test` boots the kernel headless once per test case (boot and memory checks,
@@ -32,6 +33,7 @@ mod actbench;
 mod boot_smoke;
 mod buildsvc;
 mod cases;
+mod ccwasm;
 mod components;
 mod disk;
 mod doctor;
@@ -89,6 +91,7 @@ fn main() -> ExitCode {
         Some("licences") => licences::main(&args[1..]),
         Some("notices") => notices::main(&args[1..]),
         Some("wit-check") => wit::main(&args[1..]),
+        Some("ccwasm") => ccwasm::main(&args[1..], &workspace_root().join("target")),
         _ => parse_args(&args).and_then(|options| execute(&options)),
     };
     match result {

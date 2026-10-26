@@ -90,106 +90,24 @@ jobs:
           key: qemu-${{ env.QEMU_VERSION }}-ubuntu-24.04-v1
     timeout-minutes: 40
 
-  # Every case boots under both KVM and TCG; `--shard K/3` deals the cases out in
-  # turn across three runners per accelerator, and shard 1 also runs the host smokes.
-  boot:
-    name: Boot test (${{ matrix.accel }}, shard ${{ matrix.shard }}/3)
+  # Spike S12-1 (ADR 0012), on the never-merged branch spike/cc-wasm only: the
+  # boot, icount and observe jobs are dropped here to keep CI runs to the spike.
+  ccwasm:
+    name: S12-1 cc.wasm from xcc (gen2 == gen3)
     runs-on: ubuntu-24.04
-    needs: qemu
-    strategy:
-      fail-fast: false
-      matrix:
-        accel: [kvm, tcg]
-        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/qemu
-      - name: Show the runner's CPU count and vector features
-        run: |
-          nproc
-          grep -m1 '^flags' /proc/cpuinfo | grep -o -w -E 'avx2|avx512f|avx512bw|avx512_vnni' | xargs echo
-      - name: Allow KVM for the runner user
-        if: matrix.accel == 'kvm'
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
       - name: Install pinned toolchain from rust-toolchain.toml
         run: rustup show active-toolchain || rustup toolchain install
-      - name: Install the WebAssembly target for live components
-        run: rustup target add wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: qemu
-          save-if: ${{ matrix.accel == 'kvm' && matrix.shard == 1 }}
-      - name: Boot kernel with spikes and check pass/fail
-        run: cargo xtask test --accel ${{ matrix.accel }} --timeout 300 --shard ${{ matrix.shard }}/3
-    timeout-minutes: 20
-
-  # M10a-2's spike, not a gate: boots `icount-probe` twice under single-threaded
-  # TCG with icount and requires the same digest; it also prints host seconds per
-  # virtual second, which fixes shift and the trial's window length.
-  icount:
-    name: icount determinism probe (not a gate)
-    runs-on: ubuntu-24.04
-    needs: qemu
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/qemu
-      - name: Install pinned toolchain from rust-toolchain.toml
-        run: rustup show active-toolchain || rustup toolchain install
-      - name: Install the WebAssembly target for live components
-        run: rustup target add wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: qemu
-          save-if: false
-      - name: Boot icount-probe twice and compare digests
-        run: cargo xtask icount --shift 3 --boots 2 --timeout 900
-    timeout-minutes: 45
-
-  # The M10 exit test's recording names the summary an observe boot built, and
-  # `tune ab` refuses it unless a new observe boot builds it again, on another
-  # runner. Each of two runners boots observe twice; all four summaries must match.
-  observe:
-    name: Observe determinism (${{ matrix.runner }})
-    runs-on: ubuntu-24.04
-    needs: qemu
-    strategy:
-      fail-fast: false
-      matrix:
-        runner: [first, second]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/qemu
-      - name: Install pinned toolchain from rust-toolchain.toml
-        run: rustup show active-toolchain || rustup toolchain install
-      - name: Install the WebAssembly target for live components
-        run: rustup target add wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: qemu
-          save-if: false
-      - name: Boot observe twice and compare summaries
+      - name: llvm-ar for wcc's libc
         run: |
-          set -o pipefail
-          cargo xtask tune observe --mix A --boots 2 --timeout 900 | tee observe.txt
-          grep -o 'built the same summary [0-9a-f]*' observe.txt | awk '{print $5}' > summary-sha.txt
-          test -s summary-sha.txt
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends llvm
+      - run: cargo xtask ccwasm
       - uses: actions/upload-artifact@v4
         with:
-          name: observe-${{ matrix.runner }}
-          path: summary-sha.txt
-    timeout-minutes: 45
+          name: ccwasm
+          path: target/ccwasm
+    timeout-minutes: 30
 
-  observe-compare:
-    name: Observe determinism across runners
-    runs-on: ubuntu-24.04
-    needs: observe
-    steps:
-      - uses: actions/download-artifact@v4
-      - name: Both runners built the same summary
-        run: |
-          cat observe-first/summary-sha.txt observe-second/summary-sha.txt
-          cmp observe-first/summary-sha.txt observe-second/summary-sha.txt
