@@ -206,6 +206,8 @@ fn execute(options: &Options) -> Result<(), String> {
         .enumerate()
         .filter(|&(index, _)| options::in_shard(options.shard, index))
         .map(|(_, case)| case)
+        // `XTASK_CASE=name` boots only that case.
+        .filter(|case| env::var("XTASK_CASE").map_or(true, |only| only == case.name))
         .collect::<Vec<_>>();
     for &case in &cases {
         let service = match case.build {

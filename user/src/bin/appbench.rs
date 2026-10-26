@@ -26,6 +26,8 @@ static GUEST: &[u8] =
     include_bytes!("../../../target/wasm32-unknown-unknown/component/comp_viewbench.wasm");
 
 const ROUNDS: usize = 5;
+/// No round starts after this long, so a TCG boot ends within its case timeout.
+const BUDGET_NS: u64 = 90_000_000_000;
 const REBUILDS: usize = 500;
 const LAYOUTS: usize = 200;
 /// S03-1's pass bars, in nanoseconds.
@@ -158,7 +160,18 @@ fn main() -> i32 {
     );
     let (rebuild, layout) = (rebuild_func(), layout_func());
     let (mut view_p99, mut wrap_p99) = (Vec::new(), Vec::new());
+    let build = if cfg!(debug_assertions) {
+        "dev"
+    } else {
+        "release"
+    };
+    println!("appbench: {build} build, hard float, wasmi portable dispatch");
     for r in 0..ROUNDS {
+        if r > 0 && sys::time_ns() - start > BUDGET_NS {
+            break;
+        }
+        // A blocking call between rounds, so the burst limit counts one round.
+        sys::sleep_ms(1);
         let Some((view, wrap)) = round(&mut guest, &rebuild, &layout) else {
             println!("appbench: round {r}: a wrong result");
             return 1;
@@ -176,7 +189,8 @@ fn main() -> i32 {
     let (view, wrap) = (quantile(&mut view_p99, 50), quantile(&mut wrap_p99, 50));
     let verdict = |ns: u64| if ns <= BAR_NS { "met" } else { "MISSED" };
     println!(
-        "appbench: median of {ROUNDS} rounds: rebuild plus lift p99 {} ms (bar 4 ms: {}), layout p99 {} ms (bar 4 ms: {})",
+        "appbench: median of {} rounds: rebuild plus lift p99 {} ms (bar 4 ms: {}), layout p99 {} ms (bar 4 ms: {})",
+        view_p99.len(),
         ms(view),
         verdict(view),
         ms(wrap),

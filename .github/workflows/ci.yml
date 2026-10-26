@@ -207,3 +207,32 @@ jobs:
         run: |
           cat observe-first/summary-sha.txt observe-second/summary-sha.txt
           cmp observe-first/summary-sha.txt observe-second/summary-sha.txt
+
+  # TEMPORARY, removed before merge (lane C (a)): S03-1's bars are for release
+  # builds; the boot shards build dev, whose debug assertions slow wasmi.
+  appbench-release:
+    name: S03-1 figures, release build (KVM, temporary)
+    runs-on: ubuntu-24.04
+    needs: qemu
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/qemu
+      - name: Allow KVM for the runner user
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Install pinned toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Install the WebAssembly target for live components
+        run: rustup target add wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: qemu
+          save-if: false
+      - name: Five boots of test=appbench
+        run: |
+          for boot in 1 2 3 4 5; do
+            XTASK_CASE=appbench cargo xtask test --release --accel kvm --timeout 600 | grep -E 'appbench: |guest cpu'
+          done
+    timeout-minutes: 60
