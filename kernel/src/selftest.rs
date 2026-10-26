@@ -56,6 +56,8 @@ pub enum SelfTest {
     Live,
     /// M9b: a component is edited, built on the host and swapped in live.
     Edit,
+    /// P1 lane C: S03-1's view rebuild and layout figures in hard-float ring 3.
+    AppBench,
     /// M9d: notes swaps to the version the boot manifest names.
     Manifest,
     /// M9d: notes starts on the good version, and the swap rolls back.
@@ -163,6 +165,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=pkg-local" => Some(SelfTest::Act(ActCase::PkgLocal)),
             "test=live" => Some(SelfTest::Live),
             "test=edit" => Some(SelfTest::Edit),
+            "test=appbench" => Some(SelfTest::AppBench),
             "test=manifest" => Some(SelfTest::Manifest),
             "test=manifest-good" => Some(SelfTest::ManifestGood),
             "test=blk" => Some(SelfTest::Blk),

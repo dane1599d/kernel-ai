@@ -11,6 +11,7 @@ publish = false
 doctest = false
 
 [dependencies]
+appabi = { path = "../appabi" }
 kabi = { path = "../kabi" }
 livecore = { path = "../livecore" }
 # portable-dispatch: the default tail-call dispatch grows the native stack with

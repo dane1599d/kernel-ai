@@ -1,0 +1,13 @@
+// The interface the guest's hand binding follows (canonical ABI, appabi's types).
+package kai:viewbench@0.1.0;
+
+interface bench {
+    enum kind { root, header, row, footer }
+    record rect { x: u32, y: u32, width: u32, height: u32 }
+    record node { id: u32, parent: u32, kind: kind, rect: rect, text: string }
+
+    /// Rebuilds the notes view for an event: 300 nodes over 1,000 notes.
+    rebuild: func(event: u32) -> list<node>;
+    /// Wraps 8 KiB of text onto a width x height grid of cells; returns its rows.
+    layout: func(width: u32, height: u32) -> list<string>;
+}

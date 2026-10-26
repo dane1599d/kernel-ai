@@ -1,0 +1,14 @@
+[package]
+name = "comp-viewbench"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# S03-1's view and layout guest (ADR 0003): a notes-like app with 1,000 notes that
+# rebuilds a 300-node view per event, and a layout pass over 8 KiB of text on a
+# 240x67 grid. Bound by hand to the canonical ABI, as wit-bindgen would bind
+# `viewbench.wit`; `appbench` runs it on wasmi through `appabi`.
+[lib]
+crate-type = ["cdylib", "rlib"]
+doctest = false

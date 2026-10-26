@@ -227,3 +227,151 @@ fn a_panic_path_outside_memory_leaves_the_plain_trap() {
     assert_eq!(fault.reason, Reason::Trap);
     assert!(!fault.detail.starts_with("panicked at"), "{}", fault.detail);
 }
+
+/// A canonical-ABI module: `squares(n: u32) -> list<u32>` through a return area,
+/// a bump `cabi_realloc`, and `spin()`, a loop that never ends.
+const CANONICAL: &str = r#"(module
+  (memory (export "memory") 1)
+  (global $top (mut i32) (i32.const 1024))
+  (func (export "cabi_realloc") (param i32 i32 i32 i32) (result i32)
+    (local $at i32)
+    global.get $top
+    local.set $at
+    global.get $top
+    local.get 3
+    i32.add
+    global.set $top
+    local.get $at)
+  (func (export "squares") (param $n i32) (result i32)
+    (local $i i32)
+    (block $done
+      (loop $next
+        local.get $i
+        local.get $n
+        i32.ge_u
+        br_if $done
+        local.get $i
+        i32.const 4
+        i32.mul
+        i32.const 64
+        i32.add
+        local.get $i
+        local.get $i
+        i32.mul
+        i32.store
+        local.get $i
+        i32.const 1
+        i32.add
+        local.set $i
+        br $next))
+    i32.const 0
+    i32.const 64
+    i32.store
+    i32.const 4
+    local.get $n
+    i32.store
+    i32.const 0)
+  (func (export "spin") (loop $l br $l)))"#;
+
+#[test]
+fn a_canonical_module_answers_through_appabi() {
+    let mut guest = load_core(&wat::parse_str(CANONICAL).unwrap(), LIMITS).unwrap();
+    let func = appabi::Func {
+        export: String::from("squares"),
+        params: alloc::vec![appabi::Ty::U32],
+        result: Some(appabi::Ty::List(alloc::boxed::Box::new(appabi::Ty::U32))),
+    };
+    let value = appabi::call(&mut guest, &func, &[appabi::Val::U32(5)]).unwrap();
+    let squares: Vec<appabi::Val> = [0u32, 1, 4, 9, 16].map(appabi::Val::U32).to_vec();
+    assert_eq!(value, Some(appabi::Val::List(squares)));
+    use appabi::Guest;
+    assert_eq!(guest.realloc(0, 0, 4, 16).unwrap(), 1024);
+    assert!(guest.read(65_530, 10).is_err());
+    assert!(guest.call("missing", &[]).is_err());
+}
+
+#[test]
+fn every_call_gets_its_own_fuel() {
+    let mut guest = load_core(&wat::parse_str(CANONICAL).unwrap(), LIMITS).unwrap();
+    use appabi::Guest;
+    assert!(guest.call("spin", &[]).is_err());
+    // The loop spent its call's fuel, not the next call's.
+    assert!(guest.call("squares", &[appabi::Core::I32(3)]).is_ok());
+}
+
+#[test]
+fn a_canonical_module_with_imports_is_refused_for_now() {
+    let wasm = wat::parse_str(
+        r#"(module (import "kai:app/log" "write" (func)) (memory (export "memory") 1))"#,
+    )
+    .unwrap();
+    assert_eq!(reason(load_core(&wasm, LIMITS)), Reason::Link);
+}
+
+/// The view guest `appbench` runs (components/fixtures/viewbench), when it has been
+/// built for wasm32: 300 nodes come back, lifted by `appabi`.
+#[test]
+fn the_view_guest_rebuilds_300_nodes() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../target/wasm32-unknown-unknown/component/comp_viewbench.wasm"
+    );
+    let Ok(wasm) = std::fs::read(path) else {
+        std::eprintln!("skipped: build comp-viewbench for wasm32 first");
+        return;
+    };
+    let mut guest = load_core(&wasm, LIMITS).unwrap();
+    use appabi::{Func, Ty, Val};
+    let s = String::from;
+    let node = Ty::Record(alloc::vec![
+        (s("id"), Ty::U32),
+        (s("parent"), Ty::U32),
+        (
+            s("kind"),
+            Ty::Enum(alloc::vec![s("root"), s("header"), s("row"), s("footer")])
+        ),
+        (
+            s("rect"),
+            Ty::Record(alloc::vec![
+                (s("x"), Ty::U32),
+                (s("y"), Ty::U32),
+                (s("w"), Ty::U32),
+                (s("h"), Ty::U32)
+            ])
+        ),
+        (s("text"), Ty::String),
+    ]);
+    let rebuild = Func {
+        export: s("rebuild"),
+        params: alloc::vec![Ty::U32],
+        result: Some(Ty::List(alloc::boxed::Box::new(node))),
+    };
+    for event in [0u32, 7, 999] {
+        let Some(Val::List(nodes)) =
+            appabi::call(&mut guest, &rebuild, &[Val::U32(event)]).unwrap()
+        else {
+            panic!("not a list");
+        };
+        assert_eq!(nodes.len(), 300);
+        let Val::Record(header) = &nodes[1] else {
+            panic!()
+        };
+        assert_eq!(header[4], Val::String(s("Notes: 1000")));
+        assert_eq!(header[2], Val::Enum(1));
+    }
+    let layout = Func {
+        export: s("layout"),
+        params: alloc::vec![Ty::U32, Ty::U32],
+        result: Some(Ty::List(alloc::boxed::Box::new(Ty::String))),
+    };
+    let Some(Val::List(rows)) =
+        appabi::call(&mut guest, &layout, &[Val::U32(240), Val::U32(67)]).unwrap()
+    else {
+        panic!("not a list");
+    };
+    assert_eq!(rows.len(), 67);
+    assert!(
+        rows.iter()
+            .all(|r| matches!(r, Val::String(t) if t.len() <= 240))
+    );
+}
