@@ -4,8 +4,9 @@
 //! [`REQUESTS`] at the terminal, one at each `latency: ready for keys`. The kernel
 //! times each by its own clock, Enter to the busy sign and Enter to the reply on
 //! screen, and logs `latency:` lines, which this prints again at the end.
-//! `tune-model.yml` runs it on a KVM runner (mode `latency`); never on a PC
-//! without the founder's OK.
+//! It boots twice on one data disk, so the second boot's first request shows the
+//! KV files the first boot saved in `kai-cache` (S10-3). `tune-model.yml` runs it
+//! on a KVM runner (mode `latency`); never on a PC without the founder's OK.
 
 use crate::cases::{TestCase, case};
 use crate::disk::ModelDisk;
@@ -21,6 +22,10 @@ pub const REQUESTS: [&str; 5] = [
     "go back to interactive",
     "how long has the system been up",
 ];
+
+/// Boots, one after another on one data disk: the second shows the first
+/// request with the KV files the first wrote (S10-3).
+const BOOTS: usize = 2;
 
 /// Room for the model to load and cache its prompt, and for five requests of up
 /// to two rounds each.
@@ -65,6 +70,14 @@ pub fn main(args: &[String]) -> Result<(), String> {
     let monitor = crate::qemu::free_port()?;
     let sizing = crate::qemu::run_sizing(booter.accel, booter.options.sizing, true);
     let mut qemu_args = crate::qemu::args(&firmware, booter.accel, true, Some(&disk), sizing);
+    // A fresh GPT data disk with an empty kai-cache, kept for the second boot.
+    let data = crate::blklog::Data {
+        nvme: false,
+        log: None,
+        gpt: true,
+    };
+    crate::blklog::prepare(booter.target(), data)?;
+    qemu_args.extend(crate::blklog::qemu_args(data));
     qemu_args.push("-monitor".into());
     qemu_args.push(format!("tcp:127.0.0.1:{monitor},server=on,wait=off"));
     println!(
@@ -81,7 +94,11 @@ pub fn main(args: &[String]) -> Result<(), String> {
         exact: Vec::new(),
         contains: Vec::new(),
     };
-    crate::qemu::run_test(&booter.qemu, &qemu_args, booter.target(), &run)
+    for boot in 1..=BOOTS {
+        println!("xtask: latency: boot {boot} of {BOOTS}");
+        crate::qemu::run_test(&booter.qemu, &qemu_args, booter.target(), &run)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

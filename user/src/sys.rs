@@ -242,6 +242,35 @@ pub fn model_map() -> Result<u64, Error> {
     call(call::MODEL_MAP, [0; 6])
 }
 
+/// **Interim** (S10-3): fills `buf` from byte `offset` of KV region `region` of
+/// the `kai-cache` partition (MODEL_KV_LOAD); whole sectors, at most
+/// `kabi::model::KV_IO_BYTES`.
+pub fn model_kv_load(region: u64, offset: u64, buf: &mut [u8]) -> Result<u64, Error> {
+    let a = [
+        region,
+        offset,
+        buf.as_mut_ptr() as u64,
+        buf.len() as u64,
+        0,
+        0,
+    ];
+    call(call::MODEL_KV_LOAD, a)
+}
+
+/// **Interim** (S10-3): writes `buf` there (MODEL_KV_SAVE), then makes every
+/// write so far durable when `flush`.
+pub fn model_kv_save(region: u64, offset: u64, buf: &[u8], flush: bool) -> Result<u64, Error> {
+    let a = [
+        region,
+        offset,
+        buf.as_ptr() as u64,
+        buf.len() as u64,
+        u64::from(flush),
+        0,
+    ];
+    call(call::MODEL_KV_SAVE, a)
+}
+
 pub fn http(request: &HttpRequest) -> Result<usize, Error> {
     call(
         call::HTTP,

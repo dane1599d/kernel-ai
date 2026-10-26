@@ -80,6 +80,17 @@ pub const ENGINE_OTHER_BYTES: u64 = 32 << 20;
 /// Pages the llm plan line adds for the engine when a model is loaded.
 pub const ENGINE_PAGES: u64 = (KV_BYTES + ENGINE_OTHER_BYTES) / 4096;
 
+/// **Interim** (S10-3; removed at P2 task 10): llm's KV slots saved in the
+/// `kai-cache` partition, one fixed region each, as `kai-kv 1` files
+/// (`infer::segments`), through MODEL_KV_LOAD and MODEL_KV_SAVE.
+pub const KV_REGIONS: u64 = KV_SLOTS as u64;
+/// Bytes of one region: room for a full slot's file.
+pub const KV_REGION_BYTES: u64 = 320 << 20;
+/// The most one MODEL_KV_LOAD or MODEL_KV_SAVE moves.
+pub const KV_IO_BYTES: u64 = 64 << 10;
+/// What offsets and lengths come in.
+pub const KV_SECTOR: u64 = 512;
+
 /// The one service, and program, that may map the model.
 pub const HOLDER: &str = "llm";
 /// Most pages the model's holder may be granted: 768 MiB, for the engine's two
@@ -170,6 +181,17 @@ pub fn fnv1a(bytes: &[u8]) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_full_slots_kv_file_fits_its_region() {
+        // `infer::segments`: a 128-byte header, a u32 per position, then f16 keys
+        // and values of every layer: Qwen3-4B, 36 layers of 1,024.
+        let positions = super::CONTEXT_CAP as u64;
+        let file = 128 + 4 * positions + 2 * 2 * 36 * 1024 * positions;
+        assert!(file <= super::KV_REGION_BYTES, "{file}");
+        assert_eq!(super::KV_REGION_BYTES % super::KV_SECTOR, 0);
+        assert_eq!(super::KV_IO_BYTES % super::KV_SECTOR, 0);
+    }
+
     #[test]
     fn only_the_holder_gets_the_holders_page_cap() {
         let per_process = 128 * 1024;

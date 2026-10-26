@@ -282,7 +282,7 @@ impl Clock {
 /// Which KV slot each prompt uses: the act prefix stays in one, the script
 /// prompt (and `ask`, `explain`, `tune`, `:model`) in the other, so neither
 /// evicts the other (S02-2).
-const SLOTS: local::act::Slots = local::act::Slots::TWO;
+pub const SLOTS: local::act::Slots = local::act::Slots::TWO;
 
 pub struct Local {
     engine: Engine<'static>,
@@ -293,6 +293,10 @@ pub struct Local {
     last: Option<Speed>,
     /// The last prefill rate measured, tokens/s, for [`Clock::room_for`].
     prefill_rate: Option<f64>,
+    /// The model file, for its identity in the KV files' key.
+    bytes: &'static [u8],
+    /// That identity, once computed.
+    model_id: Option<[u8; 32]>,
 }
 
 impl Local {
@@ -316,7 +320,78 @@ impl Local {
             history: History::new(),
             last: None,
             prefill_rate: None,
+            bytes,
+            model_id: None,
         })
+    }
+
+    /// The key slot `slot`'s `kai-kv 1` file is saved under. Until P2 task 10's
+    /// model store names the model by its SHA-256, its identity is the file's
+    /// FNV-1a64 and length (computed once, as `health` reports it), in the key's
+    /// 32 bytes.
+    fn kv_key(&mut self, slot: usize) -> infer::segments::Key {
+        let bytes = self.bytes;
+        let model_sha256 = *self.model_id.get_or_insert_with(|| {
+            let mut fnv = kabi::model::Fnv1a::new();
+            fnv.update(bytes);
+            let mut id = [0u8; 32];
+            id[..8].copy_from_slice(&fnv.finish().to_le_bytes());
+            id[8..16].copy_from_slice(&(bytes.len() as u64).to_le_bytes());
+            id
+        });
+        infer::segments::Key {
+            model_sha256,
+            tier: self.engine.about().tier,
+            pack_id: match slot == SLOTS.act {
+                true => local::act::pack_id(),
+                false => local::script_pack_id(),
+            },
+            slot: slot as u8,
+        }
+    }
+
+    /// **Interim** (S10-3): fills both KV slots from their `kai-kv 1` files in
+    /// `kai-cache`, logging each. Returns whether the act prefix and the script
+    /// prompt came back; a slot that did not is left to the idle warm-up, and
+    /// saved after it.
+    pub fn restore(&mut self) -> (bool, bool) {
+        let mut restored = [false; 2];
+        for (i, slot) in [SLOTS.act, SLOTS.script].into_iter().enumerate() {
+            let started = sys::time_ns();
+            let key = self.kv_key(slot);
+            self.engine.use_slot(slot);
+            let mut input = crate::kvfile::reader(slot as u64);
+            let got = match slot == SLOTS.act {
+                true => local::act::restore(&mut self.engine, &self.history, &key, &mut input),
+                false => local::restore(&mut self.engine, &key, &mut input),
+            };
+            let ms = (sys::time_ns() - started) / 1_000_000;
+            match got {
+                Ok(n) => println!("local: KV slot {slot} restored, {n} positions, in {ms} ms"),
+                Err(why) => println!("local: KV slot {slot} not restored ({why:?}) in {ms} ms"),
+            }
+            restored[i] = got.is_ok();
+        }
+        (restored[0], restored[1])
+    }
+
+    /// **Interim** (S10-3): writes KV slot `slot` as its `kai-kv 1` file, logging
+    /// it; a failure (no `kai-cache`, a read-only disk) only costs the next
+    /// boot its prefill.
+    pub fn save(&mut self, slot: usize) {
+        let started = sys::time_ns();
+        let key = self.kv_key(slot);
+        self.engine.use_slot(slot);
+        let mut writer = crate::kvfile::Writer::new(slot as u64);
+        let wrote = self
+            .engine
+            .save_slot(&key, &mut |bytes| writer.write(bytes));
+        let ok = wrote.is_ok() && writer.finish();
+        let ms = (sys::time_ns() - started) / 1_000_000;
+        match ok {
+            true => println!("local: KV slot {slot} saved in {ms} ms"),
+            false => println!("local: KV slot {slot} not saved ({ms} ms)"),
+        }
     }
 
     /// The name the file gives the model.

@@ -396,3 +396,64 @@ pub fn check_test_window(runs: u64, source: impl Fn(u64) -> u64) -> Result<(), &
     let built = TEST_WINDOW.get().ok_or("model: no test window")?;
     window::check(built, runs, source)
 }
+
+/// **Interim** (S10-3; removed at P2 task 10, when the KV files move to
+/// `/system/models/cache/`): MODEL_KV_LOAD (`flush` is `None`) and
+/// MODEL_KV_SAVE. Moves `len` bytes between the caller's `buf` and byte `offset`
+/// of KV region `region` of the `kai-cache` partition. Only the model's holder
+/// may, `offset` and `len` are whole sectors, `len` at most
+/// `kabi::model::KV_IO_BYTES`, and the bytes stay inside the region; the
+/// partition must hold every region. The caller's memory is copied outside the
+/// disk's lock.
+pub fn kv_io(
+    slot: usize,
+    region: u64,
+    offset: u64,
+    buf: u64,
+    len: u64,
+    flush: Option<bool>,
+) -> Result<u64, Error> {
+    use kabi::model::{KV_IO_BYTES, KV_REGION_BYTES, KV_REGIONS, KV_SECTOR};
+    if !may_map(slot) {
+        return Err(Error::Permission);
+    }
+    let in_region = offset
+        .checked_add(len)
+        .is_some_and(|end| end <= KV_REGION_BYTES);
+    if region >= KV_REGIONS
+        || !in_region
+        || len == 0
+        || len > KV_IO_BYTES
+        || !offset.is_multiple_of(KV_SECTOR)
+        || !len.is_multiple_of(KV_SECTOR)
+    {
+        return Err(Error::Invalid);
+    }
+    let first = (region * KV_REGION_BYTES + offset) / KV_SECTOR;
+    let mut bytes = alloc::vec![0u8; len as usize];
+    if flush.is_some() {
+        process::uaccess::copy_from_user(slot, buf, &mut bytes)?;
+    }
+    let done = block::with_partition(diskmap::KAI_CACHE_TYPE, |part| {
+        if part.sectors() < KV_REGIONS * KV_REGION_BYTES / KV_SECTOR {
+            return Err(Error::NotFound);
+        }
+        let failed = |_| Error::Unavailable;
+        match flush {
+            None => bytes.copy_from_slice(part.read(first, len / KV_SECTOR).map_err(failed)?),
+            Some(_) if part.read_only() => return Err(Error::Permission),
+            Some(flush) => {
+                part.write(first, &bytes).map_err(failed)?;
+                if flush {
+                    part.flush().map_err(failed)?;
+                }
+            }
+        }
+        Ok(())
+    });
+    done.ok_or(Error::NotFound)??;
+    if flush.is_none() {
+        process::uaccess::copy_to_user(slot, buf, &bytes)?;
+    }
+    Ok(len)
+}

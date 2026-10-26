@@ -22,6 +22,8 @@ const CALLS: &[u64] = &[
     call::METRICS,
     call::INTERRUPTED,
     call::MODEL_MAP,
+    call::MODEL_KV_LOAD,
+    call::MODEL_KV_SAVE,
     call::THREAD_SPAWN,
     call::THREAD_PIN,
     call::THREAD_EXIT,
@@ -68,6 +70,15 @@ fn run(slot: usize, number: u64, a: &[u64; 6]) -> Result<u64, Error> {
         call::MODEL_MAP => {
             need(slot, cap::MODEL)?;
             crate::model::map(slot)
+        }
+        // Interim (S10-3): removed at P2 task 10.
+        call::MODEL_KV_LOAD => {
+            need(slot, cap::MODEL)?;
+            crate::model::kv_io(slot, a[0], a[1], a[2], a[3], None)
+        }
+        call::MODEL_KV_SAVE => {
+            need(slot, cap::MODEL)?;
+            crate::model::kv_io(slot, a[0], a[1], a[2], a[3], Some(a[4] == 1))
         }
         call::THREAD_SPAWN => {
             need(slot, cap::THREADS)?;

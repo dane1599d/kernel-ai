@@ -199,6 +199,24 @@ pub fn warm(
         .map(|_| ())
 }
 
+/// Fills the slot in use from a `kai-kv 1` file read from `input`, for the
+/// script system prompt [`warm`] computes: the positions a script request will
+/// reuse, or why the file was refused (the slot is then empty).
+pub fn restore(
+    engine: &mut Engine<'_>,
+    key: &infer::segments::Key,
+    input: &mut dyn FnMut(&mut [u8]) -> bool,
+) -> Result<usize, infer::segments::Refused> {
+    let system = script::system_prompt();
+    let turns = [Turn::new(infer::chat::Role::System, &system)];
+    engine.restore_slot(key, &turns, input)
+}
+
+/// The script system prompt's `pack_id`, for its `kai-kv 1` file's key.
+pub fn script_pack_id() -> u64 {
+    crate::pack::pack_id(crate::pack::Format::M8, "", &script::system_prompt())
+}
+
 /// The model's answer to a `tune` request, greedy, under part 1's schema: the
 /// reason, `action`, `policy` and `preset` as enums, and `background` a list of
 /// at most 8 of the names the request may label. The shell checks it again with
