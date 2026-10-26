@@ -2,6 +2,9 @@
 //! that end, with backoff and a restart-intensity cap. Its records live in the
 //! kernel-held state region, so when the kernel restarts a dead supervisor the new
 //! one carries on with the same counts and re-attaches to services still running.
+//!
+//! It also serves `supervisor`: `stop <name>` ends a service and keeps it down,
+//! across its own restarts too, until `start <name>` (see `supervise::check`).
 
 #![no_std]
 #![no_main]
@@ -13,7 +16,8 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use kabi::{ExitReason, ExitRecord, SpawnRequest};
-use supervise::{Decision, Record, ServiceSpec};
+use supervise::{Decision, Record, Request, ServiceSpec};
+use user::sys::Event;
 use user::{println, sys};
 
 user::entry!(main);
@@ -48,7 +52,12 @@ fn main() -> i32 {
     for error in &plan.errors {
         println!("plan line skipped: {error}");
     }
-    let specs = plan.services;
+    // The kernel starts the unsupervised lines itself.
+    let specs: Vec<ServiceSpec> = plan
+        .services
+        .into_iter()
+        .filter(|s| !s.unsupervised)
+        .collect();
     let now = now_ms();
     let mut services: Vec<Service> = specs
         .into_iter()
@@ -87,7 +96,11 @@ fn main() -> i32 {
             .find(|(_, name)| *name == service.spec.name)
             .map(|&(pid, _)| pid);
         service.record.pid = service.pid.unwrap_or(0);
-        if service.pid.is_none() && !service.record.gave_up && service.start_at_ms.is_none() {
+        if service.pid.is_none()
+            && !service.record.gave_up
+            && !service.record.stopped
+            && service.start_at_ms.is_none()
+        {
             service.start_at_ms = Some(now);
         }
     }
@@ -116,15 +129,64 @@ fn main() -> i32 {
         }
         let next_start = services.iter().filter_map(|s| s.start_at_ms).min();
         let timeout = next_start.map_or(1000, |at| at.saturating_sub(now_ms()).clamp(1, 1000));
-        match sys::wait_child(timeout) {
-            Ok(Some(exit)) => on_exit(&mut services, &exit),
-            Ok(None) => {}
+        match sys::wait_event(timeout) {
+            Ok(Event::Exit(exit)) => on_exit(&mut services, &exit),
+            Ok(Event::Request) => serve(&mut services),
+            Ok(Event::Timeout) => {}
             Err(error) => {
                 println!("wait_child failed: {error:?}");
                 sys::sleep_ms(100);
             }
         }
     }
+}
+
+/// Takes the waiting request and answers it: `ok`, or why not.
+fn serve(services: &mut [Service]) {
+    let mut buf = [0u8; 128];
+    let mut caller = 0;
+    // The request is already queued, so this does not wait.
+    let Ok(len) = sys::svc_recv(&mut buf, 1, &mut caller) else {
+        return;
+    };
+    let text = core::str::from_utf8(&buf[..len.min(buf.len())]).unwrap_or("");
+    let reply = handle(services, text);
+    if let Err(error) = sys::svc_reply(reply.as_bytes()) {
+        println!("cannot answer {text:?}: {error:?}");
+    }
+}
+
+fn handle(services: &mut [Service], text: &str) -> String {
+    let Some(request) = Request::parse(text) else {
+        return String::from("err unknown request");
+    };
+    let records: Vec<Record> = services.iter().map(|s| s.record.clone()).collect();
+    let index = match supervise::check(request, &records) {
+        Ok(index) => index,
+        Err(why) => return String::from(why),
+    };
+    let service = &mut services[index];
+    let name = service.spec.name.clone();
+    match request {
+        Request::Stop(_) => {
+            service.record.stopped = true;
+            service.start_at_ms = None;
+            if let Some(pid) = service.pid
+                && let Err(error) = sys::kill(pid)
+            {
+                println!("cannot stop {name} (pid {pid}): {error:?}");
+            }
+            println!("{name} stopped on request");
+        }
+        Request::Start(_) => {
+            service.record.stopped = false;
+            service.record.gave_up = false;
+            service.start_at_ms = Some(now_ms());
+            println!("{name} started on request");
+        }
+    }
+    save(services);
+    String::from("ok")
 }
 
 /// Services the kernel reports running, as (pid, name).
@@ -182,6 +244,11 @@ fn on_exit(services: &mut [Service], exit: &ExitRecord) {
     let now = now_ms();
     let reason = ExitReason::from_raw(exit.reason).map_or("ended", ExitReason::name);
     let name = &service.spec.name;
+    if service.record.stopped {
+        println!("{name} {reason}; stopped, so not restarted");
+        save(services);
+        return;
+    }
     match service.record.on_exit(
         &service.spec.policy,
         now,

@@ -59,4 +59,9 @@ pub(super) const CASES: &[TestCase] = &[
         keys: &[KAI],
         ..case("compute-keys", "test=compute-keys")
     },
+    // P1 task 15: PROC_STOP, and the supervisor's stop and start.
+    TestCase {
+        expect: &["proc-stop: PROC_STOP and the supervisor's stop and start kept to their rules"],
+        ..case("proc-stop", "test=proc-stop")
+    },
 ];

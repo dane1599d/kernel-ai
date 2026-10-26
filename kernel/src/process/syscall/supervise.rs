@@ -1,5 +1,5 @@
 //! The supervisor's calls: spawn, wait, kill, its saved state, the plan and the
-//! list of services.
+//! list of services; and PROC_STOP, for a Job handle with STOP.
 
 use super::need;
 use crate::process::supervision;
@@ -14,6 +14,7 @@ const CALLS: &[u64] = &[
     call::STATE_LOAD,
     call::PLAN,
     call::LIST,
+    call::PROC_STOP,
 ];
 
 /// One of [`CALLS`], or `None` for a number this area does not have.
@@ -50,6 +51,10 @@ fn run(slot: usize, number: u64, a: &[u64; 6]) -> Result<u64, Error> {
         call::LIST => {
             need(slot, cap::SUPERVISE)?;
             supervision::list(slot, a[0], a[1])
+        }
+        call::PROC_STOP => {
+            need(slot, cap::STOP)?;
+            supervision::proc_stop(slot, a[0], a[1])
         }
         _ => Err(Error::NotFound),
     }

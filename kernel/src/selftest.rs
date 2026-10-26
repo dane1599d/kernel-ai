@@ -68,6 +68,8 @@ pub enum SelfTest {
     LocalScript,
     /// S02-2: Enter to the busy sign and to done, with the model on the disk.
     Latency,
+    /// PROC_STOP and the supervisor's `stop` and `start` (P1 task 15).
+    ProcStop,
     /// L2: processes keep their vector state across switches and CPUs, and start clean.
     Fpu,
     /// L2: the isolation probe; ops 0-2 complete and every other op is stopped.
@@ -148,6 +150,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=local-ask" => Some(SelfTest::LocalAsk),
             "test=local-script" => Some(SelfTest::LocalScript),
             "test=latency" => Some(SelfTest::Latency),
+            "test=proc-stop" => Some(SelfTest::ProcStop),
             "test=fpu" => Some(SelfTest::Fpu),
             "test=probe" => Some(SelfTest::Probe),
             "test=handles" => Some(SelfTest::Handles),
@@ -195,6 +198,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::LocalAsk
             | SelfTest::LocalScript
             | SelfTest::Latency
+            | SelfTest::ProcStop
             | SelfTest::TuneRevert
             | SelfTest::TuneStall
             | SelfTest::Tune
@@ -243,6 +247,10 @@ pub fn plan(test: SelfTest) -> Option<String> {
     if !workload.is_empty() {
         plan.push('\n');
         plan.push_str(&workload);
+    }
+    if test == SelfTest::ProcStop {
+        plan.push('\n');
+        plan.push_str(crate::stop_tests::PLAN);
     }
     if test == SelfTest::None {
         plan.push('\n');

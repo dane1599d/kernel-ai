@@ -132,6 +132,65 @@ pub fn server_of(name: &str) -> Option<u64> {
     pid.filter(|&pid| pid != 0)
 }
 
+/// For a server waiting in another call (the supervisor in `wait_child`): binds
+/// its endpoint as `svc_recv` does and marks `tid` waiting on it, so the next
+/// request wakes it; returns the endpoint for [`pending`] and [`unwatch`].
+pub fn watch(slot: usize, tid: Tid) -> Result<usize, Error> {
+    let me = process::identity(slot);
+    with_ipc(|ipc| {
+        let endpoint = bind(ipc, &me)?;
+        if let Some(entry) = ipc.endpoints[endpoint].as_mut() {
+            entry.waiting = Some(tid);
+        }
+        Ok(endpoint)
+    })
+}
+
+/// Whether a request waits on `endpoint`.
+pub fn pending(endpoint: usize) -> bool {
+    PENDING[endpoint].load(Ordering::SeqCst) > 0
+}
+
+/// Ends [`watch`]'s wait for `tid`.
+pub fn unwatch(endpoint: usize, tid: Tid) {
+    with_ipc(|ipc| {
+        if let Some(entry) = ipc.endpoints[endpoint].as_mut()
+            && entry.waiting == Some(tid)
+        {
+            entry.waiting = None;
+        }
+    });
+}
+
+/// The endpoint named after `me`, made if there is none yet, with `me` as its
+/// server; Busy if another process serves it.
+fn bind(ipc: &mut Ipc, me: &process::Process) -> Result<usize, Error> {
+    let endpoint = match find(ipc, me.name.as_str()) {
+        Some(endpoint) => endpoint,
+        None => {
+            let free = ipc
+                .endpoints
+                .iter()
+                .position(Option::is_none)
+                .ok_or(Error::Busy)?;
+            ipc.endpoints[free] = Some(Endpoint {
+                name: me.name,
+                server_pid: 0,
+                waiting: None,
+                current_call: None,
+            });
+            free
+        }
+    };
+    let entry = ipc.endpoints[endpoint].as_mut().ok_or(Error::Busy)?;
+    if entry.server_pid != 0 && entry.server_pid != me.pid {
+        return Err(Error::Busy);
+    }
+    entry.server_pid = me.pid;
+    BOUND[endpoint].store(me.pid, Ordering::SeqCst);
+    Ok(endpoint)
+}
+
 /// Replies `name` has delivered so far: (to the kernel, to processes).
 pub fn replies(name: &str) -> (u64, u64) {
     with_ipc(|ipc| find(ipc, name)).map_or((0, 0), |e| {
@@ -391,29 +450,7 @@ pub fn recv_with(
     let deadline = hpet::nanos().saturating_add(wait_ms * 1_000_000);
     loop {
         let (endpoint, taken, failed, opened, extra) = with_ipc(|ipc| {
-            let endpoint = match find(ipc, me.name.as_str()) {
-                Some(endpoint) => endpoint,
-                None => {
-                    let free = ipc
-                        .endpoints
-                        .iter()
-                        .position(Option::is_none)
-                        .ok_or(Error::Busy)?;
-                    ipc.endpoints[free] = Some(Endpoint {
-                        name: me.name,
-                        server_pid: 0,
-                        waiting: None,
-                        current_call: None,
-                    });
-                    free
-                }
-            };
-            let entry = ipc.endpoints[endpoint].as_mut().ok_or(Error::Busy)?;
-            if entry.server_pid != 0 && entry.server_pid != me.pid {
-                return Err(Error::Busy);
-            }
-            entry.server_pid = me.pid;
-            BOUND[endpoint].store(me.pid, Ordering::SeqCst);
+            let endpoint = bind(ipc, &me)?;
             // The next queued call, copied before any state changes, so running out
             // of memory here leaves every call as it was.
             let next = (0..MAX_CALLS)
@@ -467,7 +504,7 @@ pub fn recv_with(
                     }
                 }
             }
-            Ok((endpoint, request, failed, opened, extra))
+            Ok::<_, Error>((endpoint, request, failed, opened, extra))
         })?;
         wake(failed);
         if let Some((request, caller_pid, _)) = taken {

@@ -26,7 +26,8 @@ const EARLY_DEATHS_BEFORE_RESET: u32 = 3;
 const SUPERVISOR_LIMITS: Limits = Limits {
     max_pages: 2048,
     max_burst_ms: 2000,
-    caps: cap::SUPERVISE,
+    // SERVE for the `stop` and `start` requests it takes between exits.
+    caps: cap::SUPERVISE | cap::SERVE,
     stack_pages: 0,
 };
 /// Limits for a service spawned without its own.
@@ -34,6 +35,8 @@ const DEFAULT_PAGES: u64 = 1024;
 const DEFAULT_BURST_MS: u64 = 2000;
 /// The one program that may hold `cap::COMPONENT`.
 pub const COMPONENT_HOST: &str = "comphost";
+/// The one service that may hold `cap::STOP`.
+pub const STOPPER: &str = "shell";
 /// The one service, and program, that may hold `cap::PUBLISH`.
 pub const PUBLISHER: &str = "edit";
 /// Longest any supervision call may block.
@@ -191,11 +194,14 @@ fn with_queue<R>(f: impl FnOnce(&mut ExitQueue) -> R) -> R {
     result
 }
 
-/// The `wait_child` system call.
+/// The `wait_child` system call. A caller that serves (the supervisor) also
+/// returns 2 when a request waits for its service, which it then takes with
+/// `svc_recv`.
 pub fn wait_child(slot: usize, out: u64, timeout_ms: u64) -> Result<u64, Error> {
     REACHED_LOOP.store(true, Ordering::SeqCst);
     let deadline = hpet::nanos().saturating_add(timeout_ms.min(MAX_WAIT_MS) * 1_000_000);
     let me = threads::current_tid();
+    let serves = crate::handle::need(slot, cap::SERVE).is_ok();
     loop {
         let record = with_queue(|queue| {
             if queue.head_delivered {
@@ -224,14 +230,26 @@ pub fn wait_child(slot: usize, out: u64, timeout_ms: u64) -> Result<u64, Error> 
         if super::killed(slot) {
             return Err(Error::Dead);
         }
+        // Bound as `svc_recv` binds it, and watched, so a request wakes the wait.
+        let endpoint = match serves {
+            true => Some(crate::ipc::watch(slot, me)?),
+            false => None,
+        };
+        let request = move || endpoint.is_some_and(crate::ipc::pending);
+        if request() {
+            endpoint.inspect(|&e| crate::ipc::unwatch(e, me));
+            return Ok(2);
+        }
         if hpet::nanos() >= deadline {
+            endpoint.inspect(|&e| crate::ipc::unwatch(e, me));
             return Ok(0);
         }
         WAITER.store(me + 1, Ordering::SeqCst);
         threads::sleep_until_unless(deadline, || {
-            QUEUED.load(Ordering::SeqCst) > 0 || super::killed(slot)
+            QUEUED.load(Ordering::SeqCst) > 0 || super::killed(slot) || request()
         });
         WAITER.store(0, Ordering::SeqCst);
+        endpoint.inspect(|&e| crate::ipc::unwatch(e, me));
     }
 }
 
@@ -268,6 +286,10 @@ pub fn spawn_service(slot: usize, request_ptr: u64) -> Result<u64, Error> {
     }
     // Component versions and the ledger are only for the host that runs them.
     if request.limits.caps & cap::COMPONENT != 0 && program != COMPONENT_HOST {
+        return Err(Error::Permission);
+    }
+    // Stopping processes is for the shell, whose rows ask first.
+    if request.limits.caps & cap::STOP != 0 && name != STOPPER {
         return Err(Error::Permission);
     }
     // Uploading versions and reaching the build service are for the edit service.
@@ -315,6 +337,41 @@ pub fn spawn_service(slot: usize, request_ptr: u64) -> Result<u64, Error> {
         log!("process {name} (pid {pid}, program {program}) started by the supervisor");
     }
     Ok(pid)
+}
+
+/// The `proc_stop` system call: stops every live process named like the request
+/// that the kernel started rather than the supervisor, and returns how many went.
+/// The shell, the supervisor and llm, and the caller itself, are never stopped; a
+/// service is stopped through the supervisor, which then keeps it down.
+pub fn proc_stop(slot: usize, ptr: u64, len: u64) -> Result<u64, Error> {
+    let len = usize::try_from(len).map_err(|_| Error::Invalid)?;
+    if len == 0 || len > MAX_NAME {
+        return Err(Error::TooBig);
+    }
+    let mut name = [0u8; MAX_NAME];
+    copy_from_user(slot, ptr, &mut name[..len])?;
+    let name = core::str::from_utf8(&name[..len]).map_err(|_| Error::Invalid)?;
+    stop_named(super::identity(slot).name.as_str(), name)
+}
+
+/// [`proc_stop`] for the process named `caller`.
+pub fn stop_named(caller: &str, name: &str) -> Result<u64, Error> {
+    if crate::sched_control::PROTECTED.contains(&name) || name == caller {
+        return Err(Error::Permission);
+    }
+    let found = super::named(name);
+    if found.is_empty() {
+        return Err(Error::NotFound);
+    }
+    if found.iter().any(|&(_, supervised)| supervised) {
+        return Err(Error::Invalid);
+    }
+    let stopped = found
+        .iter()
+        .filter(|&&(pid, _)| super::kill(pid, ExitReason::Killed).is_ok())
+        .count() as u64;
+    log!("process: {name} stopped ({stopped} of {})", found.len());
+    Ok(stopped)
 }
 
 /// The `kill` system call: only services, never the supervisor itself.
@@ -408,8 +465,36 @@ pub fn start(plan: String) -> Result<(), &'static str> {
         log!("  {}", redacted(line));
     }
     PLAN.call_once(|| plan);
+    start_unsupervised();
     threads::spawn("init", init_thread, 0)?;
     Ok(())
+}
+
+/// Starts the plan's `unsupervised` lines once, as the kernel's own children with
+/// no capabilities: nothing restarts them, so `proc_stop` stops them for good.
+fn start_unsupervised() {
+    let services = PLAN
+        .get()
+        .map(|plan| supervise::parse_plan(plan).services)
+        .unwrap_or_default();
+    for service in services.iter().filter(|s| s.unsupervised) {
+        let limits = Limits {
+            caps: 0,
+            ..service.limits
+        };
+        match spawn(&SpawnRequest {
+            name: &service.name,
+            program: &service.program,
+            args: service.args.as_bytes(),
+            limits,
+            spawner: 0,
+            supervisor: false,
+            uses: &[],
+        }) {
+            Ok(pid) => log!("process {} (pid {pid}) started unsupervised", service.name),
+            Err(error) => log!("supervision: cannot start {}: {error:?}", service.name),
+        }
+    }
 }
 
 fn init_thread(_: usize) {
