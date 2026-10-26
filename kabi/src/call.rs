@@ -244,5 +244,11 @@ pub const JOB_DONE: u64 = 61;
 /// Ctrl-C); a pooled child dies too and never goes back to idle. JOB_WAIT then
 /// reports it Killed. NotFound for a pid that is not the caller's job child.
 pub const JOB_KILL: u64 = 62;
+/// `thread_pin(cpu) -> 0`: pins the calling thread (a process's main thread or a
+/// worker) to `cpu` and moves it there; load balancing leaves it alone until
+/// `cpu` = `u64::MAX` unpins it. Invalid for a CPU at or past the online count.
+/// Needs [`super::cap::THREADS`]. (llm keeps its main thread beside its workers'
+/// CPUs.)
+pub const THREAD_PIN: u64 = 63;
 /// The highest call number.
-pub const MAX: u64 = JOB_KILL;
+pub const MAX: u64 = THREAD_PIN;

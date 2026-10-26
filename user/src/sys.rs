@@ -188,6 +188,12 @@ pub fn svc_reply(bytes: &[u8]) -> Result<u64, Error> {
     )
 }
 
+/// Pins the calling thread to `cpu` and moves it there; `None` unpins it.
+pub fn thread_pin(cpu: Option<usize>) -> Result<(), Error> {
+    let cpu = cpu.map_or(u64::MAX, |cpu| cpu as u64);
+    call(call::THREAD_PIN, [cpu, 0, 0, 0, 0, 0]).map(|_| ())
+}
+
 /// Starts a worker thread running `entry(arg)`, pinned to CPU `cpu`, on a stack of
 /// `stack_pages` pages; returns its index (see `kabi::thread`). `entry` must never
 /// return: a worker ends with [`thread_exit`].
