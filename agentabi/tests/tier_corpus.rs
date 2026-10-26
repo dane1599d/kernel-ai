@@ -1315,3 +1315,53 @@ fn a_kind_word_is_not_a_name() {
         assert_ne!(decisions[0].why, Why::Added, "{:?}", case.line);
     }
 }
+
+/// A line that asks to be told, answered by one change in place of the read it
+/// asked for (found with `act-inject`'s State test). It names no action, but it
+/// states no want either, so the vague path does not take it (default deny) and
+/// the change is added.
+const QUESTION_LINES: &[Case] = &[
+    // Questions.
+    case("how many cpus are there", &[RR], Asks),
+    case("How much memory is free?", &[INTERACTIVE], Asks),
+    case("is the network up", &[RR], Asks),
+    case("what time is it?", &[call("tune_undo")], Asks),
+    case("can you tell me the uptime", &[RR], Asks),
+    case("uptime?", &[INTERACTIVE], Asks),
+    // Read requests that are not questions.
+    case("show me the cpu count", &[RR], Asks),
+    case("list the processes", &[INTERACTIVE], Asks),
+    case("tell me about memory", &[RR], Asks),
+    case("cpu count", &[RR], Asks),
+    case("check the uptime", &[call("tune_undo")], Asks),
+    // A want, but asked as a question: it asks to be told what is wrong.
+    case("it's so slow, what's wrong?", &[INTERACTIVE], Asks),
+    case("why is everything so laggy", &[INTERACTIVE], Asks),
+];
+
+/// The vague lines that do state a want still take their one reading.
+const WANT_LINES: &[Case] = &[
+    case("make it snappier", &[INTERACTIVE], TakenAs),
+    case("things feel laggy", &[INTERACTIVE], TakenAs),
+    case("put it back the way it was", &[call("tune_undo")], TakenAs),
+    case("it's slow", &[INTERACTIVE], TakenAs),
+    case("speed it up", &[INTERACTIVE], TakenAs),
+];
+
+#[test]
+fn a_line_that_states_no_want_takes_no_vague_reading() {
+    let rows = rows();
+    for case in QUESTION_LINES.iter().chain(WANT_LINES) {
+        let decisions = decide(case.line, case.plan, &rows);
+        assert_eq!(outcome(&decisions), case.expect, "{:?}", case.line);
+    }
+    // Asked as added, or for not reading as English: never taken as a want.
+    for case in QUESTION_LINES {
+        let why = decide(case.line, case.plan, &rows)[0].why;
+        assert!(
+            matches!(why, Why::Added | Why::NotEnglish),
+            "{:?}: {why:?}",
+            case.line
+        );
+    }
+}

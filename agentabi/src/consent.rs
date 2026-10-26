@@ -159,7 +159,10 @@ pub fn decide(line: &str, plan: &[Call], rows: &[Action]) -> Vec<Decision> {
         .filter(|call| find(rows, call.name).is_some_and(|row| !row.facts.read_only))
         .count();
     // The vague path: one call in all, an undoable local change with nothing read in
-    // it, from an English line that names no action.
+    // it, from an English line that names no action but states a want or a
+    // complaint, and asks no question. Default deny: any other line, such as
+    // "show me the cpu count" or "how many cpus are there", asked to be told, not
+    // for a change, so a change answering it is added and asks.
     if let (
         [call],
         [
@@ -171,6 +174,8 @@ pub fn decide(line: &str, plan: &[Call], rows: &[Action]) -> Vec<Decision> {
         && changes == 1
         && english
         && !named_any
+        && wants(&words)
+        && !is_question(line)
         && let Some(row) = find(rows, call.name)
         && derive(row) == Tier::Run
         && !row.facts.open_world
@@ -322,6 +327,63 @@ fn hosts_grounded(words: &[Word], row: &Action, call: &Call) -> bool {
                         }))
             })
         })
+}
+
+/// Words that state a want or a complaint about how the system feels: the only
+/// lines the vague path reads as asking for a change.
+const WANT_WORDS: &[&str] = &[
+    "snappier",
+    "snappy",
+    "faster",
+    "quicker",
+    "smoother",
+    "slow",
+    "slower",
+    "sluggish",
+    "laggy",
+    "lag",
+    "lagging",
+    "lags",
+    "choppy",
+    "janky",
+    "stutters",
+    "stuttering",
+    "unresponsive",
+];
+/// Phrases that do the same.
+const WANT_PHRASES: &[&str] = &[
+    "speed it up",
+    "speed things up",
+    "put it back",
+    "put that back",
+    "change it back",
+    "set it back",
+    "go back",
+    "the way it was",
+];
+
+/// Whether the line states a want or a complaint ([`WANT_WORDS`], [`WANT_PHRASES`]).
+fn wants(words: &[Word]) -> bool {
+    words.iter().any(|w| WANT_WORDS.contains(&w.text.as_str()))
+        || WANT_PHRASES
+            .iter()
+            .any(|phrase| !matches(words, phrase, false).is_empty())
+}
+
+/// Words that start a question in English.
+const QUESTION_WORDS: &[&str] = &[
+    "how", "what", "which", "who", "whom", "whose", "when", "where", "why", "is", "are", "was",
+    "were", "does", "do", "did", "can", "could", "will", "would", "should", "has", "have",
+];
+
+/// Whether `line` is a question: it ends with `?`, or starts with a question word
+/// ("how many CPUs are there", "is the network up").
+fn is_question(line: &str) -> bool {
+    let line = line.trim();
+    line.ends_with('?')
+        || words(line)
+            .first()
+            .is_some_and(|w| QUESTION_WORDS.contains(&w.text.as_str()))
 }
 
 /// Whether `text` names a thing: some word of it is neither a kind word nor a
