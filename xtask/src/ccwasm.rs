@@ -54,7 +54,7 @@ pub fn main(args: &[String], target: &Path) -> Result<(), String> {
         )?;
         let gen2 = read(&src.join("cc.wasm"))?;
         let gen3 = read(&src.join("gen3cc.wasm"))?;
-        report_gen23(&gen2, &gen3);
+        report_gen23(&gen2, &gen3)?;
         let out = target.join("ccwasm");
         fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
         fs::write(out.join("gen3cc.wasm"), &gen3).map_err(|e| e.to_string())?;
@@ -81,20 +81,49 @@ pub fn main(args: &[String], target: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Upstream's `wcc-diff-gen23` compares with `diff -b`; this compares bytes and,
-/// for the spike, reports a difference instead of failing.
-fn report_gen23(gen2: &[u8], gen3: &[u8]) {
+/// Upstream's `wcc-diff-gen23` compares with `diff -b`. Here every section but
+/// the custom ones must be byte-identical; at 631e318 only the `name` section
+/// differs (debug names), so code and data are the same.
+fn report_gen23(gen2: &[u8], gen3: &[u8]) -> Result<(), String> {
     if gen2 == gen3 {
         println!("ccwasm: gen2 and gen3 cc.wasm are byte-identical");
-        return;
+        return Ok(());
     }
-    let differing = gen2.iter().zip(gen3).filter(|(a, b)| a != b).count();
-    let first = gen2.iter().zip(gen3).position(|(a, b)| a != b);
+    if sections(gen2)? != sections(gen3)? {
+        return Err("gen2 and gen3 cc.wasm differ outside custom sections".into());
+    }
     println!(
-        "ccwasm: gen2 and gen3 cc.wasm DIFFER: {} vs {} bytes, {differing} bytes differ, first at {first:?}",
+        "ccwasm: gen2 and gen3 cc.wasm differ only in custom sections ({} and {} bytes)",
         gen2.len(),
         gen3.len()
     );
+    Ok(())
+}
+
+/// A module's non-custom sections, as (id, payload).
+fn sections(wasm: &[u8]) -> Result<Vec<(u8, &[u8])>, String> {
+    let mut out = Vec::new();
+    let mut at = 8;
+    while at < wasm.len() {
+        let id = wasm[at];
+        at += 1;
+        let (mut size, mut shift) = (0usize, 0);
+        loop {
+            let byte = *wasm.get(at).ok_or("truncated section size")?;
+            at += 1;
+            size |= usize::from(byte & 0x7f) << shift;
+            shift += 7;
+            if byte & 0x80 == 0 {
+                break;
+            }
+        }
+        let payload = wasm.get(at..at + size).ok_or("truncated section")?;
+        if id != 0 {
+            out.push((id, payload));
+        }
+        at += size;
+    }
+    Ok(out)
 }
 
 fn fetch(src: &Path) -> Result<(), String> {

@@ -971,6 +971,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "spike-ccspike"
+version = "0.0.0"
+dependencies = [
+ "kailink",
+ "rhai",
+ "wasihost",
+ "wasmi",
+]
+
+[[package]]
 name = "spike-rhai"
 version = "0.0.0"
 dependencies = [

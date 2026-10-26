@@ -1,0 +1,26 @@
+[package]
+name = "spike-ccspike"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Spike S12-1 (ADR 0012): cc.wasm on wasmi with wasihost, objects linked into a
+# session by kailink, and the corpus and speed runs. Shared by the host tests and
+# the ring-3 `ccspike` program of boot case `test=ccspike`. Never merged.
+[lib]
+doctest = false
+
+[features]
+default = ["portable-dispatch"]
+# wasmi's dispatch mode: portable is today's (decisions.md:93); without it the
+# default tail-call dispatch, measured on the host in release builds only.
+portable-dispatch = ["wasmi/portable-dispatch"]
+# Logs every WASI call to stderr (host tests only).
+trace = []
+
+[dependencies]
+kailink = { path = "../../kailink" }
+wasihost = { path = "../../wasihost" }
+wasmi = { version = "2.0.0", default-features = false, features = ["validate"] }
+rhai = { version = "=1.27.0", default-features = false, features = ["no_std", "no_float", "no_custom_syntax", "no_module", "grain"] }

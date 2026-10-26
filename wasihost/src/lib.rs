@@ -1,6 +1,7 @@
 //! The WASI preview-1 calls xcc's libc declares (`libsrc/_wasm/wasi.h` at xcc
 //! 631e318), for the compiler's Store in `cc` (ADR 0012 D2). Twenty calls, over an
-//! in-memory [`Tree`]: `/kai` read-only and `/w` scratch, preopened as fds 3 and 4.
+//! in-memory [`Tree`]: `/kai` read-only, and `/w` and `/tmp` scratch, preopened as
+//! fds 3, 4 and 5 (wcc preprocesses into a `tmpfile()` in `/tmp`).
 //!
 //! - The clock always reads 0, so a compile cannot tell the time.
 //! - `random_get` is refused with `NOSYS`.
@@ -27,7 +28,7 @@ mod tree;
 mod tests;
 
 pub use errno::Errno;
-pub use tree::{KAI, Kind, SCRATCH, Tree, TreeLimits};
+pub use tree::{KAI, Kind, SCRATCH, TMP, Tree, TreeLimits};
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -45,8 +46,8 @@ pub const MAX_ARGS_BYTES: usize = 4096;
 
 const FD_STDOUT: u32 = 1;
 const FD_STDERR: u32 = 2;
-/// `/kai` and `/w`, in this order, from fd 3.
-const PREOPENS: [&str; 2] = [KAI, SCRATCH];
+/// `/kai`, `/w` and `/tmp`, in this order, from fd 3.
+const PREOPENS: [&str; 3] = [KAI, SCRATCH, TMP];
 
 const RIGHT_FD_READ: u64 = 1 << 1;
 const RIGHT_FD_WRITE: u64 = 1 << 6;
@@ -152,7 +153,7 @@ enum Fd {
     Out(u32),
     Dir(String),
     File {
-        path: String,
+        inode: u32,
         pos: u64,
         read: bool,
         write: bool,
@@ -373,17 +374,22 @@ impl Wasi {
                 if write && !tree::writable(&path) {
                     return Err(Errno::ROFS);
                 }
-                if found.is_none() {
-                    if oflags & OFLAGS_CREAT == 0 {
-                        return Err(Errno::NOENT);
+                let inode = match self.tree.inode(&path) {
+                    None if oflags & OFLAGS_CREAT == 0 => return Err(Errno::NOENT),
+                    None => {
+                        self.free_fd()?;
+                        self.tree.create(&path)?
                     }
-                    self.free_fd()?;
-                    self.tree.create(&path)?;
-                } else if oflags & OFLAGS_TRUNC != 0 {
-                    self.tree.truncate(&path)?;
-                }
+                    Some(inode) => {
+                        if oflags & OFLAGS_TRUNC != 0 {
+                            self.tree.truncate(inode)?;
+                        }
+                        inode
+                    }
+                };
+                debug_assert!(found.is_none() || found == Some(Kind::File));
                 Fd::File {
-                    path,
+                    inode,
                     pos: 0,
                     read: rights & RIGHT_FD_READ != 0,
                     write,
@@ -392,6 +398,9 @@ impl Wasi {
             }
         };
         let number = self.free_fd()?;
+        if let Fd::File { inode, .. } = fd {
+            self.tree.open(inode);
+        }
         if number == self.fds.len() {
             self.fds.push(Some(fd));
         } else {
@@ -418,7 +427,10 @@ impl Wasi {
         let path = self.resolve(mem, dir, path, len)?;
         let stat = match self.tree.kind(&path).ok_or(Errno::NOENT)? {
             Kind::Dir => filestat(FILETYPE_DIRECTORY, 0),
-            Kind::File => filestat(FILETYPE_REGULAR_FILE, self.tree.file(&path)?.len() as u64),
+            Kind::File => {
+                let inode = self.tree.inode(&path).ok_or(Errno::NOENT)?;
+                filestat(FILETYPE_REGULAR_FILE, self.tree.data(inode)?.len() as u64)
+            }
         };
         mem.put(out, &stat)
     }
@@ -427,8 +439,8 @@ impl Wasi {
         let stat = match self.fd(fd)? {
             Fd::Stdin | Fd::Out(_) => filestat(FILETYPE_CHARACTER_DEVICE, 0),
             Fd::Dir(_) => filestat(FILETYPE_DIRECTORY, 0),
-            Fd::File { path, .. } => {
-                filestat(FILETYPE_REGULAR_FILE, self.tree.file(path)?.len() as u64)
+            Fd::File { inode, .. } => {
+                filestat(FILETYPE_REGULAR_FILE, self.tree.data(*inode)?.len() as u64)
             }
         };
         mem.put(out, &stat)
@@ -437,18 +449,18 @@ impl Wasi {
     fn fd_read(&mut self, mem: &mut Guest, fd: u32, iovs: u32, count: u32, out: u32) -> Res {
         mem.bytes(out, 4)?;
         let iovs = mem.iovs(iovs, count)?;
-        let (path, pos) = match self.fd(fd)? {
+        let (inode, pos) = match self.fd(fd)? {
             Fd::Stdin => return mem.put_u32(out, 0),
             Fd::File {
-                path,
+                inode,
                 pos,
                 read: true,
                 ..
-            } => (path.clone(), *pos),
+            } => (*inode, *pos),
             Fd::Dir(_) => return Err(Errno::ISDIR),
             _ => return Err(Errno::BADF),
         };
-        let data = self.tree.file(&path)?;
+        let data = self.tree.data(inode)?;
         let mut at = usize::try_from(pos).unwrap_or(usize::MAX).min(data.len());
         let mut total = 0u32;
         for (ptr, len) in iovs {
@@ -474,18 +486,18 @@ impl Wasi {
         match self.fd(fd)?.clone() {
             Fd::Out(n) => self.capture(n, &data),
             Fd::File {
-                path,
+                inode,
                 pos,
                 write: true,
                 append,
                 ..
             } => {
                 let at = if append {
-                    self.tree.file(&path)?.len() as u64
+                    self.tree.data(inode)?.len() as u64
                 } else {
                     pos
                 };
-                self.tree.write_at(&path, at, &data)?;
+                self.tree.write_at(inode, at, &data)?;
                 if let Some(Some(Fd::File { pos, .. })) = self.fds.get_mut(fd as usize) {
                     *pos = at + u64::from(total);
                 }
@@ -513,22 +525,25 @@ impl Wasi {
     }
 
     fn fd_close(&mut self, fd: u32) -> Res {
-        self.fd(fd)?;
+        if let Fd::File { inode, .. } = self.fd(fd)? {
+            let inode = *inode;
+            self.tree.close(inode);
+        }
         self.fds[fd as usize] = None;
         Ok(())
     }
 
     fn fd_seek(&mut self, mem: &mut Guest, fd: u32, offset: i64, whence: u32, out: u32) -> Res {
         mem.bytes(out, 8)?;
-        let (path, pos) = match self.fd(fd)? {
-            Fd::File { path, pos, .. } => (path, *pos),
+        let (inode, pos) = match self.fd(fd)? {
+            Fd::File { inode, pos, .. } => (*inode, *pos),
             Fd::Stdin | Fd::Out(_) => return Err(Errno::SPIPE),
             Fd::Dir(_) => return Err(Errno::BADF),
         };
         let base = match whence {
             0 => 0,
             1 => pos,
-            2 => self.tree.file(path)?.len() as u64,
+            2 => self.tree.data(inode)?.len() as u64,
             _ => return Err(Errno::INVAL),
         };
         let new = i64::try_from(base)

@@ -108,7 +108,7 @@ fn args_round_trip() {
 fn preopens_are_kai_and_w() {
     let mut mem = vec![0u8; MEM];
     let mut w = wasi();
-    for (fd, name) in [(3u64, "/kai"), (4, "/w")] {
+    for (fd, name) in [(3u64, "/kai"), (4, "/w"), (5, "/tmp")] {
         assert_eq!(w.call("fd_prestat_get", &mut mem, &[fd, OUT as u64]), Ok(0));
         assert_eq!(mem[OUT as usize], 0);
         assert_eq!(u32_at(&mem, OUT + 4) as usize, name.len());
@@ -120,7 +120,7 @@ fn preopens_are_kai_and_w() {
         );
     }
     assert_eq!(
-        w.call("fd_prestat_get", &mut mem, &[5, OUT as u64]),
+        w.call("fd_prestat_get", &mut mem, &[6, OUT as u64]),
         Ok(Errno::BADF.0)
     );
     let short = [3, DATA as u64, 2];
@@ -139,7 +139,7 @@ fn reads_a_kai_file() {
         0
     );
     let fd = u32_at(&mem, OUT) as u64;
-    assert_eq!(fd, 5);
+    assert_eq!(fd, 6);
     assert_eq!(read(&mut w, &mut mem, fd, 100), (0, b"int x;\n".to_vec()));
     assert_eq!(read(&mut w, &mut mem, fd, 100), (0, vec![]));
 }
@@ -383,7 +383,7 @@ fn scratch_and_fd_limits_hold() {
         scratch_entries: 2,
     });
     let limits = Limits {
-        fds: 6,
+        fds: 7,
         output_bytes: 16,
     };
     let mut w = Wasi::new(tree, &["wcc"], limits).unwrap();
@@ -397,7 +397,7 @@ fn scratch_and_fd_limits_hold() {
     );
     w.call("fd_close", &mut mem, &[fd]).unwrap();
     assert_eq!(open(&mut w, &mut mem, 4, "b", CREAT, RW), 0);
-    w.call("fd_close", &mut mem, &[5]).unwrap();
+    w.call("fd_close", &mut mem, &[6]).unwrap();
     assert_eq!(open(&mut w, &mut mem, 4, "c", CREAT, RW), Errno::NOSPC.0);
     w.tree_mut().clear_scratch();
     assert_eq!(w.tree().scratch_used(), 0);
