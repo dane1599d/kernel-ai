@@ -155,78 +155,147 @@ fn shm() -> Result<(), &'static str> {
 /// M3's rounds.
 const ROUNDS: usize = 100;
 
-/// `mode=job`: spike S01-1's M3, `scriptrun` per request. Each round makes a
-/// request node, gives a run-tier Sched handle (READ, SET_POLICY) and a 1-page result Shm under it,
-/// starts `scriptrun mode=probe` with them moved in, waits for it to exit, reads
-/// its result and revokes the node; microseconds per round. A Job with only WAIT
-/// cannot start it, and nothing is left to revoke into once a round ends.
+/// `mode=job`: spike S01-1's M3, `scriptrun` per request and then pooled. Each
+/// round makes a request node, gives a run-tier Sched handle (READ, SET_POLICY)
+/// and a 1-page result Shm under it, runs `scriptrun mode=probe` with them moved
+/// in (a new process, or a pooled one claimed), waits for its result, reads it and
+/// revokes the node; microseconds per round. A Job with only WAIT cannot start
+/// it, and a pooled child keeps no handle from one claim to the next.
 fn job() -> Result<(), &'static str> {
     let root = system_grant()?;
     let sched = startup_handle(Kind::Sched).ok_or("no Sched handle")?;
     let starter = scriptrun_job()?;
+    expect(
+        sys::job_spawn(sched, "mode=probe", &[]),
+        Error::BadHandle,
+        "a Sched handle used as a Job",
+    )?;
+    let waiter = sys::handle_dup(starter, Rights::WAIT).map_err(|_| "dup failed")?;
+    expect(
+        sys::job_spawn(waiter, "mode=probe", &[]),
+        Error::Permission,
+        "a Job with only WAIT",
+    )?;
+    expect(
+        sys::job_take(&mut [0u8; 8]),
+        Error::Permission,
+        "JOB_TAKE outside a job child",
+    )?;
+    let per_request = m3(root, sched, starter, false)?;
+    report("per request (spawn, run, exit, revoke)", per_request);
+    if sys::job_pool(starter, 1) != Ok(1) {
+        return Err("job_pool did not keep one child");
+    }
+    let pooled = m3(root, sched, starter, true)?;
+    report("pooled (claim, run, done, revoke)", pooled);
+    kill_claimed(root, sched, starter)
+}
+
+/// A claimed child killed mid-run (a time limit, Ctrl-C) is reported Killed,
+/// leaves the pool, and the next claim gets a new one.
+fn kill_claimed(root: Handle, sched: Handle, starter: Handle) -> Result<(), &'static str> {
+    let stuck = sys::job_claim(starter, "mode=spin", &[]).map_err(|_| "claim failed")?;
+    sys::job_kill(starter, stuck).map_err(|_| "job_kill failed")?;
+    let exit = sys::job_wait(starter, 30_000)
+        .map_err(|_| "job_wait failed")?
+        .ok_or("the killed child was not reported")?;
+    if exit.pid != stuck || exit.reason != kabi::ExitReason::Killed as u64 {
+        return Err("the killed child was not reported Killed");
+    }
+    expect(
+        sys::job_kill(starter, stuck),
+        Error::NotFound,
+        "killing it again",
+    )?;
+    let times = m3_round(root, sched, starter, true)?;
+    if times.1 == stuck {
+        return Err("a killed child was claimed again");
+    }
+    println!("handles: a killed pooled child left the pool, and the next claim got a new one");
+    Ok(())
+}
+
+/// M3's rounds, `pooled` or one process per request; the times, sorted.
+fn m3(
+    root: Handle,
+    sched: Handle,
+    starter: Handle,
+    pooled: bool,
+) -> Result<alloc::vec::Vec<u64>, &'static str> {
     let mut times = alloc::vec::Vec::with_capacity(ROUNDS);
-    for round in 0..ROUNDS {
-        let start = sys::time_ns();
-        let node = sys::grant_new(root, 0, "request").map_err(|_| "grant_new failed")?;
-        let given = sys::grant_dup(
-            sched,
-            Rights::READ | Rights::SET_POLICY | Rights::TRANSFER,
-            node,
-        )
-        .map_err(|_| "cannot give the Sched handle")?;
-        let result = sys::shm_create(1).map_err(|_| "shm_create failed")?;
-        let shared = sys::grant_dup(
-            result,
-            Rights::MAP | Rights::READ | Rights::WRITE | Rights::TRANSFER,
-            node,
-        )
-        .map_err(|_| "cannot give the result Shm")?;
-        let pid = sys::job_spawn(starter, "mode=probe", &[given, shared])
-            .map_err(|_| "job_spawn failed")?;
-        let exit = sys::job_wait(starter, 30_000)
-            .map_err(|_| "job_wait failed")?
-            .ok_or("scriptrun did not end")?;
-        if exit.pid != pid || exit.reason != kabi::ExitReason::Exited as u64 || exit.detail != 0 {
-            println!(
-                "handles: scriptrun ended {} {} {}",
-                exit.pid, exit.reason, exit.detail
-            );
-            return Err("scriptrun failed");
+    let mut child = None;
+    for _ in 0..ROUNDS {
+        let (ns, pid) = m3_round(root, sched, starter, pooled)?;
+        // One pooled child serves every claim.
+        if pooled && *child.get_or_insert(pid) != pid {
+            return Err("a claim went to a new process, not the pooled one");
         }
-        let address = sys::shm_map(result, false).map_err(|_| "cannot map the result")?;
-        let ok = region(address, 4096).starts_with(b"ok 2");
-        sys::shm_unmap(address).map_err(|_| "cannot unmap the result")?;
-        if !ok {
-            return Err("scriptrun wrote no result");
-        }
-        if sys::grant_revoke(node) != Ok(1) {
-            return Err("the request node did not revoke");
-        }
-        sys::handle_close(result).map_err(|_| "close failed")?;
-        times.push(sys::time_ns() - start);
-        if round == 0 {
-            expect(
-                sys::job_spawn(sched, "mode=probe", &[]),
-                Error::BadHandle,
-                "a Sched handle used as a Job",
-            )?;
-            let waiter = sys::handle_dup(starter, Rights::WAIT).map_err(|_| "dup failed")?;
-            expect(
-                sys::job_spawn(waiter, "mode=probe", &[]),
-                Error::Permission,
-                "a Job with only WAIT",
-            )?;
-        }
+        times.push(ns);
     }
     times.sort_unstable();
-    let us = |at: usize| times[(at * (ROUNDS - 1)) / 100] / 1000;
+    Ok(times)
+}
+
+/// One M3 round: the time it took, and the child that ran it.
+fn m3_round(
+    root: Handle,
+    sched: Handle,
+    starter: Handle,
+    pooled: bool,
+) -> Result<(u64, u64), &'static str> {
+    let start = sys::time_ns();
+    let node = sys::grant_new(root, 0, "request").map_err(|_| "grant_new failed")?;
+    let given = sys::grant_dup(
+        sched,
+        Rights::READ | Rights::SET_POLICY | Rights::TRANSFER,
+        node,
+    )
+    .map_err(|_| "cannot give the Sched handle")?;
+    let result = sys::shm_create(1).map_err(|_| "shm_create failed")?;
+    let shared = sys::grant_dup(
+        result,
+        Rights::MAP | Rights::READ | Rights::WRITE | Rights::TRANSFER,
+        node,
+    )
+    .map_err(|_| "cannot give the result Shm")?;
+    let pid = match pooled {
+        true => sys::job_claim(starter, "mode=probe", &[given, shared]),
+        false => sys::job_spawn(starter, "mode=probe", &[given, shared]),
+    }
+    .map_err(|_| "starting scriptrun failed")?;
+    let exit = sys::job_wait(starter, 30_000)
+        .map_err(|_| "job_wait failed")?
+        .ok_or("scriptrun did not finish")?;
+    if exit.pid != pid || exit.reason != kabi::ExitReason::Exited as u64 || exit.detail != 0 {
+        println!(
+            "handles: scriptrun ended {} {} {}",
+            exit.pid, exit.reason, exit.detail
+        );
+        return Err("scriptrun failed");
+    }
+    let address = sys::shm_map(result, false).map_err(|_| "cannot map the result")?;
+    // `ok 2`: the claim's two handles, and nothing left from the last one.
+    let ok = region(address, 4096).starts_with(b"ok 2");
+    sys::shm_unmap(address).map_err(|_| "cannot unmap the result")?;
+    if !ok {
+        return Err("scriptrun wrote no result, or held more than its two handles");
+    }
+    if sys::grant_revoke(node) != Ok(1) {
+        return Err("the request node did not revoke");
+    }
+    sys::handle_close(result).map_err(|_| "close failed")?;
+    Ok((sys::time_ns() - start, pid))
+}
+
+fn report(what: &str, times: alloc::vec::Vec<u64>) {
+    let us = |at: usize| times[(at * (times.len() - 1)) / 100] / 1000;
     println!(
-        "handles: M3: scriptrun per request (spawn, run, exit, revoke): p50 {} us, p99 {} us, max {} us over {ROUNDS} rounds",
+        "handles: M3: scriptrun {what}: p50 {} us, p99 {} us, max {} us over {} rounds",
         us(50),
         us(99),
-        times[ROUNDS - 1] / 1000
+        times[times.len() - 1] / 1000,
+        times.len()
     );
-    Ok(())
 }
 
 /// The startup Job that starts `scriptrun`: CREATE and WAIT.

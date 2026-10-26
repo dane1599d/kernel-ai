@@ -27,9 +27,45 @@ fn main() -> i32 {
                 1
             }
         },
+        Some("pooled") => pooled(),
         _ => {
             println!("scriptrun: no script engine here yet (mode=probe only)");
             2
+        }
+    }
+}
+
+/// A pooled child: takes each claim, runs it, and reports 0 or 1 with JOB_DONE,
+/// which empties its table for the next one.
+fn pooled() -> i32 {
+    let mut buf = [0u8; 256];
+    loop {
+        let len = match sys::job_take(&mut buf) {
+            Ok(len) => len.min(buf.len()),
+            Err(Error::TimedOut) => continue,
+            Err(error) => {
+                println!("scriptrun: JOB_TAKE failed: {error:?}");
+                return 1;
+            }
+        };
+        let claim = core::str::from_utf8(&buf[..len]).unwrap_or("");
+        let code = match arg(claim, "mode") {
+            Some("probe") => match probe() {
+                Ok(()) => 0,
+                Err(what) => {
+                    println!("scriptrun: FAILED: {what}");
+                    1
+                }
+            },
+            // A script that never finishes, for the kill test.
+            Some("spin") => loop {
+                core::hint::spin_loop();
+            },
+            _ => 2,
+        };
+        if let Err(error) = sys::job_done(code) {
+            println!("scriptrun: JOB_DONE failed: {error:?}");
+            return 1;
         }
     }
 }
