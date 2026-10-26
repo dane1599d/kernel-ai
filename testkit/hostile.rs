@@ -1,5 +1,5 @@
 //! Shared helpers for the hostile-input tests of the parsers of untrusted bytes
-//! (gguf, bpe, uelf, llmproto, acpitables). Not a crate: each crate's integration
+//! (gguf, bpe, uelf, llmproto, acpitables, wasihost, kailink). Not a crate: each crate's integration
 //! test includes this file with `#[path = "../../testkit/hostile.rs"] mod hostile;`,
 //! so no dependency is added anywhere.
 //!

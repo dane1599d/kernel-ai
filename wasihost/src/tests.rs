@@ -410,3 +410,40 @@ fn bad_args_are_refused() {
     let long = "x".repeat(MAX_ARGS_BYTES);
     assert!(Wasi::new(Tree::default(), &[&long], Limits::default()).is_err());
 }
+
+#[test]
+fn unlinked_file_lives_until_its_last_fd_closes() {
+    let mut mem = vec![0u8; MEM];
+    let mut w = wasi();
+    assert_eq!(open(&mut w, &mut mem, 5, "tmpXYZ", CREAT, RW), 0);
+    let fd = u32_at(&mem, OUT) as u64;
+    put(&mut mem, PATH, b"tmpXYZ");
+    assert_eq!(
+        w.call("path_unlink_file", &mut mem, &[5, PATH as u64, 6]),
+        Ok(0)
+    );
+    assert_eq!(w.tree().kind("/tmp/tmpXYZ"), None);
+    assert_eq!(write(&mut w, &mut mem, fd, b"#line 1"), 0);
+    assert_eq!(w.call("fd_seek", &mut mem, &[fd, 0, 0, OUT as u64]), Ok(0));
+    assert_eq!(read(&mut w, &mut mem, fd, 64), (0, b"#line 1".to_vec()));
+    assert_eq!(w.tree().scratch_used(), 7);
+    assert_eq!(w.call("fd_close", &mut mem, &[fd]), Ok(0));
+    assert_eq!(w.tree().scratch_used(), 0);
+}
+
+#[test]
+fn clear_scratch_keeps_kai() {
+    let mut mem = vec![0u8; MEM];
+    let mut w = wasi();
+    open(&mut w, &mut mem, 4, "entry.o", CREAT, RW);
+    let mut tree = w.into_tree();
+    tree.clear_scratch();
+    assert_eq!(tree.kind("/w/entry.o"), None);
+    assert_eq!(tree.kind("/w"), Some(Kind::Dir));
+    assert_eq!(tree.read("/kai/include/kai.h"), Some(&b"int x;\n"[..]));
+    tree.put_scratch("entry.c", b"int y;").unwrap();
+    assert_eq!(tree.read("/w/entry.c"), Some(&b"int y;"[..]));
+    tree.put_scratch("entry.c", b"z").unwrap();
+    assert_eq!(tree.read("/w/entry.c"), Some(&b"z"[..]));
+    assert_eq!(tree.scratch_used(), 1);
+}
