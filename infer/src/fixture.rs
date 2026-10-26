@@ -173,8 +173,10 @@ impl Spec {
             vocab: 3072,
             closes_strings: true,
             // Seed 11 closed its script at once under jump-forward, so the
-            // local-script case no longer reached the shell's checks; 12 does.
-            seed: 12,
+            // local-script case no longer reached the shell's checks; 12 did,
+            // until the pack's script call lost its code. 16 calls a read
+            // (`get_policy`) whose answer the guest gives too.
+            seed: 16,
             ..Self::local_ask()
         }
     }

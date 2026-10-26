@@ -6,6 +6,7 @@
 use agentabi::{Action, ArgType, RetType, Tier};
 use alloc::format;
 use alloc::string::String;
+use alloc::vec::Vec;
 use core::fmt::Write;
 
 /// Named types, so a row says `Policy` instead of spelling its words again.
@@ -28,31 +29,23 @@ const CALLS: &str = "\
 ## Calls (no mark: reads; [undo]: runs, undo puts it back; [ask]: asks first)
 say(text: string)  // answer in words: a greeting, chat, or a question you can answer
 clarify(question: string, options: [string])  // the request has two readings
-script(code: string, lang: \"rhai\"?)  // Rhai, at most 40 lines of at most 120 characters
+script()  // a Rhai program, written next, for what the functions below can read or compute
 ";
+
+/// A script call carries no code: llm writes it next with the script prompt
+/// (`act::local::routed`), and the grammar closes `script` with no arguments.
+const SCRIPT: &str = r#"{"name":"script","arguments":{}}"#;
 
 /// (request, the tagged call answering it).
 const EXAMPLES: &[(&str, &str)] = &[
-    (
-        "how many CPUs are there?",
-        r#"{"name":"script","arguments":{"code":"print(\"CPUs: \" + cpus());"}}"#,
-    ),
-    (
-        "what percentage of memory is free?",
-        r#"{"name":"script","arguments":{"code":"let m = memory();\nprint(\"free: \" + m.free_mib * 100 / m.total_mib + \"%\");"}}"#,
-    ),
+    ("how many CPUs are there?", SCRIPT),
+    ("what percentage of memory is free?", SCRIPT),
     (
         "switch to round robin",
         r#"{"name":"set_policy","arguments":{"name":"round-robin"}}"#,
     ),
-    (
-        "print the names of all services",
-        r#"{"name":"script","arguments":{"code":"let n = [];\nfor p in processes() { n.push(p.name); }\nprint(n);"}}"#,
-    ),
-    (
-        "how long has it been up, in minutes and seconds?",
-        r#"{"name":"script","arguments":{"code":"let s = uptime_ms() / 1000;\nprint(s / 60 + \" min \" + s % 60 + \" s\");"}}"#,
-    ),
+    ("print the names of all services", SCRIPT),
+    ("how long has it been up, in minutes and seconds?", SCRIPT),
     (
         "hello",
         r#"{"name":"say","arguments":{"text":"Hello! Ask me about this system, or tell me what to do."}}"#,
@@ -79,6 +72,21 @@ pub(super) const BRIEF: &[(&str, &str)] = &[
     ("set_policy", "every CPU"),
     ("tune_undo", "puts back the policy a kept trial replaced"),
     ("component_revert", "a live component back n versions"),
+];
+
+/// Families: rows `<family>_<verb>` that take the same arguments and return the
+/// same thing share one line, `service_start|stop|restart(name: string)`, with
+/// this doc in place of theirs. A family with fewer than two rows present is
+/// rendered row by row.
+pub(super) const FAMILIES: &[(&str, &str)] = &[
+    (
+        "service",
+        "stop keeps it down until start; restart loses its state",
+    ),
+    (
+        "pkg",
+        "installs or removes a package; undo puts the old set back",
+    ),
 ];
 
 fn doc(row: &Action) -> &'static str {
@@ -134,9 +142,8 @@ fn ret_type(ret: &RetType) -> String {
     }
 }
 
-/// `name(arg: T, ...) -> R [mark]  // doc`: no mark for a read, `[undo]` for a
-/// change that runs, `[ask]` for one that asks first.
-pub(super) fn line(row: &Action) -> String {
+/// `(arg: T, ...) -> R`, what follows the name.
+fn signature(row: &Action) -> String {
     let args: alloc::vec::Vec<String> = row
         .args
         .iter()
@@ -146,17 +153,88 @@ pub(super) fn line(row: &Action) -> String {
         RetType::Unit => String::new(),
         ret => format!(" -> {}", ret_type(&ret)),
     };
-    let mark = match (agentabi::derive(row), row.facts.read_only) {
+    format!("({}){ret}", args.join(", "))
+}
+
+/// No mark for a read, `undo` for a change that runs, `ask` for one that asks
+/// first.
+fn mark(row: &Action) -> &'static str {
+    match (agentabi::derive(row), row.facts.read_only) {
         (Tier::Run, true) => "",
-        (Tier::Run, false) => " [undo]",
-        _ => " [ask]",
+        (Tier::Run, false) => "undo",
+        _ => "ask",
+    }
+}
+
+/// `name(arg: T, ...) -> R [mark]  // doc`.
+pub(super) fn line(row: &Action) -> String {
+    let mark = match mark(row) {
+        "" => String::new(),
+        mark => format!(" [{mark}]"),
+    };
+    format!("{}{}{mark}  // {}", row.name, signature(row), doc(row))
+}
+
+/// The family `row` heads a line for, with its members, or `None` when `row`
+/// renders on its own line.
+fn family<'a>(row: &Action, rows: &[&'a Action]) -> Option<(&'static str, Vec<&'a Action>)> {
+    let (name, doc) = FAMILIES.iter().find(|(name, _)| {
+        row.name
+            .strip_prefix(name)
+            .is_some_and(|v| v.starts_with('_'))
+    })?;
+    let members: Vec<&Action> = rows
+        .iter()
+        .copied()
+        .filter(|r| {
+            r.name
+                .strip_prefix(name)
+                .is_some_and(|v| v.starts_with('_'))
+        })
+        .filter(|r| signature(r) == signature(row))
+        .collect();
+    (members.len() >= 2).then_some((doc, members))
+}
+
+/// `service_start|stop|restart(name: string) [undo|ask|ask]  // doc`: one mark
+/// when every member has the same.
+pub(super) fn family_line(doc: &str, members: &[&Action]) -> String {
+    let head = members[0].name;
+    let prefix = &head[..=head.find('_').unwrap_or(0)];
+    let verbs: Vec<&str> = members
+        .iter()
+        .map(|r| r.name.strip_prefix(prefix).unwrap_or(r.name))
+        .collect();
+    let marks: Vec<&str> = members.iter().map(|r| mark(r)).collect();
+    let mark = match marks.iter().all(|m| *m == marks[0]) {
+        true if marks[0].is_empty() => String::new(),
+        true => format!(" [{}]", marks[0]),
+        false => format!(" [{}]", marks.join("|")),
     };
     format!(
-        "{}({}){ret}{mark}  // {}",
-        row.name,
-        args.join(", "),
-        doc(row)
+        "{prefix}{}{}{mark}  // {doc}",
+        verbs.join("|"),
+        signature(members[0])
     )
+}
+
+/// One line per row, a family's rows on the line of its first.
+pub(super) fn row_lines(rows: &[&Action]) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut done: Vec<&str> = Vec::new();
+    for row in rows {
+        if done.contains(&row.name) {
+            continue;
+        }
+        match family(row, rows) {
+            Some((doc, members)) if members[0].name == row.name => {
+                done.extend(members.iter().map(|r| r.name));
+                lines.push(family_line(doc, &members));
+            }
+            _ => lines.push(line(row)),
+        }
+    }
+    lines
 }
 
 pub(super) fn render(rows: &[&Action]) -> String {
@@ -171,8 +249,8 @@ pub(super) fn render(rows: &[&Action]) -> String {
         let quoted: alloc::vec::Vec<String> = words.iter().map(|w| format!("\"{w}\"")).collect();
         let _ = writeln!(out, "type {name} = {}", quoted.join(" | "));
     }
-    for row in rows {
-        out.push_str(&line(row));
+    for line in row_lines(rows) {
+        out.push_str(&line);
         out.push('\n');
     }
     out

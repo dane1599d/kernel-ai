@@ -225,19 +225,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_shell_refuses_the_models_call_the_same_way_twice() {
+    fn the_shell_answers_the_models_call_the_same_way_twice() {
         let bytes = infer::fixture::local_script(&prompts());
         let outcome = golden(&bytes).unwrap();
         println!("typed: {}\nagain: {}", outcome.typed, outcome.again);
         assert_eq!(golden(&bytes).unwrap(), outcome);
-        // The generated model's tagged call names a row the shell cannot call
-        // yet, so the one door refuses it in code, and no script is asked for.
+        // The generated model's tagged call is a read the guest answers the
+        // same (the policy it boots with), run through the one door with no
+        // script asked for, and the same again with the first turn in history.
         assert_eq!(outcome.rounds, [0, 0]);
-        for reply in [&outcome.typed, &outcome.again] {
-            assert!(reply.starts_with("err Refused "), "{reply}");
-        }
-        let lines = reply_lines(&outcome.typed);
-        assert_eq!(lines, [format!("! {}", &outcome.typed[4..])]);
+        assert_eq!(outcome.typed, "ok interactive");
+        assert_eq!(outcome.again, outcome.typed);
+        assert_eq!(reply_lines(&outcome.typed), ["= interactive"]);
     }
 
     #[test]

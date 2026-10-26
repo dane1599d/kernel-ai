@@ -96,3 +96,44 @@ fn every_brief_doc_names_a_row_and_is_short() {
         assert!(doc.len() <= 60, "{name}");
     }
 }
+
+/// A family's rows share one line, marks in order, and a row of another
+/// signature keeps its own line.
+#[test]
+fn a_family_shares_one_line() {
+    use agentabi::Action;
+    let start = Action {
+        name: "service_start",
+        ..agentabi::SET_POLICY
+    };
+    let stop = Action {
+        name: "service_stop",
+        args: agentabi::SET_POLICY.args,
+        ..agentabi::TUNE
+    };
+    let other = Action {
+        name: "service_list",
+        ..agentabi::CPUS
+    };
+    let lines = dsl1::row_lines(&[&agentabi::CPUS, &start, &other, &stop]);
+    assert_eq!(lines.len(), 3, "{lines:?}");
+    assert_eq!(
+        lines[1],
+        std::format!(
+            "service_start|stop(name: Policy) [undo|ask]  // {}",
+            dsl1::FAMILIES[0].1
+        )
+    );
+    assert!(lines[2].starts_with("service_list() -> int  // "));
+    // One member alone is a row like any other.
+    assert_eq!(dsl1::row_lines(&[&start]), [dsl1::line(&start)]);
+}
+
+/// A script call carries no code: the pack teaches only the call the grammar
+/// allows.
+#[test]
+fn the_pack_teaches_script_with_no_arguments() {
+    let pack = render(Format::Dsl1);
+    assert!(pack.contains("\nscript()  // "));
+    assert!(!pack.contains(r#""code":"#));
+}
