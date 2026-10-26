@@ -94,6 +94,9 @@ pub fn on_tick() {
 fn arm(deadline_ns: u64) {
     let remaining = deadline_ns.saturating_sub(hpet::nanos());
     let count = remaining * APIC_PER_MS.load(Ordering::Relaxed) / 1_000_000;
+    if let Some(n) = crate::diag_observe::raw_index() {
+        crate::diag_observe::ARMED[n].store(count, Ordering::Relaxed);
+    }
     apic::timer_start(count.clamp(1, u64::from(u32::MAX)) as u32);
 }
 

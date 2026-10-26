@@ -12,6 +12,20 @@ static TICK: AtomicU64 = AtomicU64::new(0);
 static HASH: AtomicU64 = AtomicU64::new(0xcbf2_9ce4_8422_2325);
 static BLOCK_HASHES: [AtomicU64; BLOCKS] = [const { AtomicU64::new(0) }; BLOCKS];
 static VECTORS: [AtomicU64; 256] = [const { AtomicU64::new(0) }; 256];
+const RAW: usize = 32;
+/// The first ticks after the edge: lateness, RIP, current thread.
+static RAW_TICKS: [[AtomicU64; 3]; RAW] = [const { [const { AtomicU64::new(0) }; 3] }; RAW];
+/// The APIC counts armed for those ticks.
+pub static ARMED: [AtomicU64; RAW] = [const { AtomicU64::new(0) }; RAW];
+
+/// Which raw tick an arm belongs to, if any.
+pub fn raw_index() -> Option<usize> {
+    if !ON.load(Ordering::Relaxed) || crate::percpu::index() != 0 {
+        return None;
+    }
+    let tick = TICK.load(Ordering::Relaxed) as usize;
+    (tick < RAW).then_some(tick)
+}
 
 pub fn start() {
     ON.store(true, Ordering::SeqCst);
@@ -38,6 +52,11 @@ pub fn on_vector(vector: u64, rip: u64) {
     }
     let tick = TICK.fetch_add(1, Ordering::Relaxed);
     let late = crate::timer::lateness_ns();
+    if let Some(raw) = RAW_TICKS.get(tick as usize) {
+        raw[0].store(late, Ordering::Relaxed);
+        raw[1].store(rip, Ordering::Relaxed);
+        raw[2].store(crate::threads::current_tid() as u64, Ordering::Relaxed);
+    }
     let h = fold(fold(HASH.load(Ordering::Relaxed), rip), late);
     HASH.store(h, Ordering::Relaxed);
     if (tick + 1).is_multiple_of(TICKS_PER_BLOCK) {
@@ -58,6 +77,15 @@ pub fn report() {
         }
     }
     crate::log!("diag: vectors:{line}");
+    for (n, raw) in RAW_TICKS.iter().enumerate() {
+        crate::log!(
+            "diag: tick {n}: late {} ns, rip {:#x}, tid {}, armed {}",
+            raw[0].load(Ordering::Relaxed),
+            raw[1].load(Ordering::Relaxed),
+            raw[2].load(Ordering::Relaxed),
+            ARMED[n].load(Ordering::Relaxed)
+        );
+    }
     for (block, hash) in BLOCK_HASHES.iter().enumerate() {
         let hash = hash.load(Ordering::Relaxed);
         if hash != 0 {
