@@ -263,6 +263,15 @@ const ACTS: &[(&str, &str)] = &[
         "switch to round robin then stop",
         r#"{"name":"script","arguments":{"code":"set_policy(\"round-robin\");\nif processes().len() < 16 { throw \"stopped after the switch\"; }"}}"#,
     ),
+    // `act-rule`: two unsupervised spinners, stopped by name.
+    (
+        "stop spin-a",
+        r#"{"name":"process_stop","arguments":{"name":"spin-a"}}"#,
+    ),
+    (
+        "stop spin-b",
+        r#"{"name":"process_stop","arguments":{"name":"spin-b"}}"#,
+    ),
 ];
 
 /// The call for an `act` request: the last message is `Request: <line>`.

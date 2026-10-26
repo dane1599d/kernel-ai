@@ -247,10 +247,105 @@ fn bind(engine: &mut Engine, name: &'static str, tx: &Tx) -> bool {
                     Ok(())
                 });
             }
+            "process_stop" => {
+                engine.register_fn(name, move |which: &str| -> RhaiResult<()> {
+                    tx.approved(name, &[which])?;
+                    let count = h
+                        .stop_process(which)
+                        .map_err(|why| rhai_error(format!("process_stop: {why}")))?;
+                    tx.changed(stopped(
+                        name,
+                        "kernel",
+                        "process",
+                        which,
+                        &format!("stopped ({count})"),
+                        None,
+                    ));
+                    Ok(())
+                });
+            }
+            "service_stop" => {
+                engine.register_fn(name, move |which: &str| -> RhaiResult<()> {
+                    tx.approved(name, &[which])?;
+                    h.stop_service(which)
+                        .map_err(|why| rhai_error(format!("service_stop: {why}")))?;
+                    tx.changed(stopped(
+                        name,
+                        "supervisor",
+                        "service",
+                        which,
+                        "stopped",
+                        None,
+                    ));
+                    Ok(())
+                });
+            }
+            "service_restart" => {
+                engine.register_fn(name, move |which: &str| -> RhaiResult<()> {
+                    tx.approved(name, &[which])?;
+                    h.stop_service(which)
+                        .map_err(|why| rhai_error(format!("service_restart: {why}")))?;
+                    h.start_service(which).map_err(|why| {
+                        rhai_error(format!("service_restart: stopped, but {why}"))
+                    })?;
+                    tx.changed(stopped(
+                        name,
+                        "supervisor",
+                        "service",
+                        which,
+                        "restarted",
+                        None,
+                    ));
+                    Ok(())
+                });
+            }
+            "service_start" => {
+                engine.register_fn(name, move |which: &str| -> RhaiResult<()> {
+                    tx.approved(name, &[which])?;
+                    // No undo, no change: the tier promises one.
+                    let undo = undo::Name::new(which).ok_or_else(|| {
+                        rhai_error("service_start: no service has a name that long")
+                    })?;
+                    h.start_service(which)
+                        .map_err(|why| rhai_error(format!("service_start: {why}")))?;
+                    tx.changed(stopped(
+                        name,
+                        "supervisor",
+                        "service",
+                        which,
+                        "running",
+                        Some(Inverse::Started(undo)),
+                    ));
+                    Ok(())
+                });
+            }
             _ => return false,
         }
     }
     true
+}
+
+/// One process or service change: `service notes running (was stopped)`.
+fn stopped(
+    action: &'static str,
+    owner: &str,
+    kind: &str,
+    which: &str,
+    after: &str,
+    inverse: Option<Inverse>,
+) -> Done {
+    Done {
+        action: action.into(),
+        owner: owner.into(),
+        res: format!("{kind} {which}"),
+        before: String::from(if after == "running" {
+            "stopped"
+        } else {
+            "running"
+        }),
+        after: after.into(),
+        inverse,
+    }
 }
 
 /// Most decimals [`fixed`] writes.
@@ -355,6 +450,15 @@ impl Host for Stub {
         Ok(m)
     }
     fn set_policy(&self, _: u64) -> Result<(), kabi::Error> {
+        Ok(())
+    }
+    fn stop_process(&self, _: &str) -> Result<u64, String> {
+        Ok(1)
+    }
+    fn stop_service(&self, _: &str) -> Result<(), String> {
+        Ok(())
+    }
+    fn start_service(&self, _: &str) -> Result<(), String> {
         Ok(())
     }
     fn ask(&self, _: &str) -> Result<String, String> {

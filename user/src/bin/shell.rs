@@ -37,6 +37,33 @@ fn llm() -> kabi::handle::Handle {
     user::route(0).unwrap_or(kabi::handle::Handle::NONE)
 }
 
+/// The route to the supervisor: the second in the shell's `uses=llm+supervisor`.
+fn supervisor() -> kabi::handle::Handle {
+    user::route(1).unwrap_or(kabi::handle::Handle::NONE)
+}
+
+/// The supervisor's wait for a stop or a start: a stop waits for the process to end.
+const SUPERVISOR_CALL_MS: u64 = 10_000;
+
+/// Sends `stop <name>` or `start <name>` to the supervisor: `ok`, or `err <why>`.
+fn supervise(verb: &str, name: &str) -> Result<(), String> {
+    let mut reply = vec![0u8; 256];
+    let request = format!("{verb} {name}");
+    let len = sys::call_route(
+        supervisor(),
+        request.as_bytes(),
+        &mut reply,
+        SUPERVISOR_CALL_MS,
+    )
+    .map_err(|error| format!("the supervisor did not answer ({error:?})"))?;
+    let text = core::str::from_utf8(&reply[..len.min(reply.len())]).unwrap_or("err not text");
+    match text.split_once(' ').unwrap_or((text, "")) {
+        ("ok", _) => Ok(()),
+        ("err", why) => Err(why.to_string()),
+        _ => Err(String::from("the supervisor's answer was malformed")),
+    }
+}
+
 impl Host for System {
     fn now_ns(&self) -> u64 {
         sys::time_ns()
@@ -128,6 +155,18 @@ impl Host for System {
     fn forget(&self) {
         let mut reply = vec![0u8; 256];
         let _ = sys::call_route(llm(), b"new", &mut reply, MEMORY_CALL_MS);
+    }
+
+    fn stop_process(&self, name: &str) -> Result<u64, String> {
+        sys::proc_stop(name).map_err(|error| format!("{error:?}"))
+    }
+
+    fn stop_service(&self, name: &str) -> Result<(), String> {
+        supervise("stop", name)
+    }
+
+    fn start_service(&self, name: &str) -> Result<(), String> {
+        supervise("start", name)
     }
 
     fn once_check(&self, badge: u64, digest: &[u8; 32]) -> Result<(), String> {

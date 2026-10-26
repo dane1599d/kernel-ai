@@ -86,6 +86,12 @@ pub(super) const CASES: &[TestCase] = &[
         ..case("act-inject", "test=act-inject")
     },
     TestCase {
+        expect: &[
+            "act-rule: Always allow wrote a rule node, the next stop ran under it, and rules_remove took it away",
+        ],
+        ..case("act-rule", "test=act-rule")
+    },
+    TestCase {
         keys: TERMINAL_SCRIPT,
         expect: &[
             crate::mock_llm::REPLY,

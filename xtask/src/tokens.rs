@@ -252,7 +252,7 @@ mod tests {
     fn the_pack_has_a_row_for_every_api_function() {
         for function in API {
             assert!(
-                pack::render(Format::Dsl1).contains(&format!("\n{}(", function.name)),
+                pack::shows(&pack::render(Format::Dsl1), function.name),
                 "{}",
                 function.name
             );
