@@ -52,8 +52,11 @@ fn the_plan_the_kernel_sends_parses() {
     assert_eq!(plan.errors, Vec::<String>::new());
     let shell = &plan.services[1];
     assert_eq!(shell.name, "shell");
-    assert_eq!(shell.limits.caps, cap::SERVE | cap::CALL | cap::POLICY);
-    assert_eq!(shell.uses, ["llm"]);
+    assert_eq!(
+        shell.limits.caps,
+        cap::SERVE | cap::CALL | cap::POLICY | cap::STOP
+    );
+    assert_eq!(shell.uses, ["llm", SUPERVISOR]);
     assert_eq!(shell.limits.stack_pages, 512);
     assert!(shell.limits.stack_pages < shell.limits.max_pages);
     assert_eq!(
@@ -155,6 +158,7 @@ fn state_round_trips_and_damage_is_ignored() {
             quick_failures: 3,
             recent: vec![10, 20, 30],
             gave_up: false,
+            stopped: false,
             pid: 42,
             started_ms: 1234,
         },
@@ -164,6 +168,7 @@ fn state_round_trips_and_damage_is_ignored() {
             quick_failures: 0,
             recent: vec![],
             gave_up: true,
+            stopped: true,
             pid: 0,
             started_ms: 0,
         },
@@ -172,10 +177,82 @@ fn state_round_trips_and_damage_is_ignored() {
     assert!(decode(b"").is_empty());
     assert!(decode(b"garbage").is_empty());
     assert!(decode(&[0xFF, 0xFE]).is_empty());
-    let damaged = alloc::format!("{STATE_MAGIC}\ncrasher x 1 0 0 0\nhog 2 0 0 7 99");
+    let damaged = alloc::format!("{STATE_MAGIC}\ncrasher x 1 0 0 0 0\nhog 2 0 0 0 7 99");
     // State in an older layout reads as none rather than as shifted fields.
     assert!(decode(b"supervisor-state 2\nhog 2 0 0 7").is_empty());
     assert_eq!(decode(damaged.as_bytes()).len(), 1);
+    // Version 3 had no stopped flag: its records carry over, none stopped.
+    let old = decode(
+        b"supervisor-state 3
+hog 2 1 0 7 99 5",
+    );
+    assert_eq!(old.len(), 1);
+    assert_eq!(
+        (old[0].restarts, old[0].pid, old[0].recent.clone()),
+        (2, 7, vec![5])
+    );
+    assert!(!old[0].stopped);
+}
+
+#[test]
+fn stop_and_start_requests_parse_and_are_checked() {
+    assert_eq!(
+        Request::parse("stop build-1"),
+        Some(Request::Stop("build-1"))
+    );
+    assert_eq!(
+        Request::parse(" start  build-1 "),
+        Some(Request::Start("build-1"))
+    );
+    for bad in ["", "stop", "stop a b", "restart a", "STOP a"] {
+        assert_eq!(Request::parse(bad), None, "{bad:?}");
+    }
+    let mut records = vec![Record::new("llm"), Record::new("build-1")];
+    assert_eq!(check(Request::Stop("llm"), &records), Err("err protected"));
+    assert_eq!(
+        check(Request::Stop("shell"), &records),
+        Err("err protected")
+    );
+    assert_eq!(
+        check(Request::Start("supervisor"), &records),
+        Err("err protected")
+    );
+    assert_eq!(
+        check(Request::Stop("nope"), &records),
+        Err("err unknown service")
+    );
+    assert_eq!(
+        check(Request::Start("build-1"), &records),
+        Err("err not stopped")
+    );
+    assert_eq!(check(Request::Stop("build-1"), &records), Ok(1));
+    records[1].stopped = true;
+    assert_eq!(
+        check(Request::Stop("build-1"), &records),
+        Err("err already stopped")
+    );
+    assert_eq!(check(Request::Start("build-1"), &records), Ok(1));
+}
+
+#[test]
+fn unsupervised_lines_take_no_caps_and_stop_is_a_cap() {
+    let plan = parse_plan(
+        "spinner program=spinner unsupervised
+shell caps=serve+call+stop uses=supervisor",
+    );
+    assert_eq!(plan.errors, Vec::<String>::new());
+    assert!(plan.services[0].unsupervised);
+    assert_eq!(plan.services[0].args, "");
+    assert!(!plan.services[1].unsupervised);
+    assert_eq!(plan.services[1].limits.caps & cap::STOP, cap::STOP);
+    assert_eq!(plan.services[1].uses, [SUPERVISOR]);
+    for bad in [
+        "x caps=serve unsupervised",
+        "llm caps=serve
+x unsupervised uses=llm",
+    ] {
+        assert_eq!(parse_plan(bad).errors.len(), 1, "{bad}");
+    }
 }
 
 #[test]

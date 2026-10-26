@@ -30,6 +30,57 @@ pub struct ServiceSpec {
     pub uses: Vec<String>,
     /// Restart policy; the plan may change `max_backoff_ms` and `max_restarts`.
     pub policy: Policy,
+    /// From the word `unsupervised`: the kernel starts it once at boot and the
+    /// supervisor leaves it alone, so `proc_stop` may stop it for good.
+    pub unsupervised: bool,
+}
+
+/// Names nothing may stop: the shell, the supervisor and the model service (as
+/// `agentabi::rows::PROTECTED` says for the agent's rows).
+pub const PROTECTED: &[&str] = &["shell", "supervisor", "llm"];
+
+/// The service the supervisor serves, and which a plan line may name in `uses=`
+/// although no line lists it.
+pub const SUPERVISOR: &str = "supervisor";
+
+/// A request to the supervisor's service.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Request<'a> {
+    /// `stop <name>`: end the service and keep it down until `start`.
+    Stop(&'a str),
+    /// `start <name>`: start a stopped service again.
+    Start(&'a str),
+}
+
+impl<'a> Request<'a> {
+    pub fn parse(text: &'a str) -> Option<Self> {
+        let mut words = text.split_whitespace();
+        let request = match (words.next()?, words.next()?) {
+            ("stop", name) => Request::Stop(name),
+            ("start", name) => Request::Start(name),
+            _ => return None,
+        };
+        words.next().is_none().then_some(request)
+    }
+}
+
+/// What the supervisor does for `request` given its `records`: the record to act
+/// on, or the reply that refuses it (`err protected`, `err unknown service`,
+/// `err already stopped`, `err not stopped`).
+pub fn check(request: Request, records: &[Record]) -> Result<usize, &'static str> {
+    let (Request::Stop(name) | Request::Start(name)) = request;
+    if PROTECTED.contains(&name) {
+        return Err("err protected");
+    }
+    let index = records
+        .iter()
+        .position(|record| record.name == name)
+        .ok_or("err unknown service")?;
+    match (request, records[index].stopped) {
+        (Request::Stop(_), true) => Err("err already stopped"),
+        (Request::Start(_), false) => Err("err not stopped"),
+        _ => Ok(index),
+    }
 }
 
 /// A parsed plan: the services that parsed, and why any other line was skipped.
@@ -40,8 +91,8 @@ pub struct Plan {
 }
 
 /// Reads the plan: one service per line, `name [program=P] [pages=N] [stack_pages=N]
-/// [burst_ms=N] [caps=serve+net+call+policy+component+publish+model+threads+resolve] [uses=A+B]
-/// [backoff_max_ms=N] [max_restarts=N] [other=args ...]`. The supervisor keys set limits,
+/// [burst_ms=N] [caps=serve+net+call+policy+component+publish+model+threads+resolve+stop]
+/// [uses=A+B] [backoff_max_ms=N] [max_restarts=N] [unsupervised] [other=args ...]`. The supervisor keys set limits,
 /// routes and policy; everything else is passed to the program. A bad line skips only
 /// that service, so one typo cannot keep every other service down.
 pub fn parse_plan(text: &str) -> Plan {
@@ -74,7 +125,12 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
     let mut args = Vec::new();
     let mut program = name;
     let mut uses = Vec::new();
+    let mut unsupervised = false;
     for word in words {
+        if word == "unsupervised" {
+            unsupervised = true;
+            continue;
+        }
         match word.split_once('=') {
             Some(("program", value)) => {
                 if !valid_name(value) {
@@ -107,6 +163,12 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
     if !uses.is_empty() && limits.caps & cap::CALL == 0 {
         return Err(format!("{name}: uses= needs the call capability"));
     }
+    // The kernel starts it with no supervisor to answer for it: no capabilities.
+    if unsupervised && (limits.caps != 0 || !uses.is_empty()) {
+        return Err(format!(
+            "{name}: an unsupervised process takes no caps= or uses="
+        ));
+    }
     Ok(ServiceSpec {
         name: name.to_string(),
         program: program.to_string(),
@@ -114,6 +176,7 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
         limits,
         uses,
         policy,
+        unsupervised,
     })
 }
 
@@ -129,7 +192,7 @@ fn routes(service: &str, value: &str, earlier: &[ServiceSpec]) -> Result<Vec<Str
         if UNCALLABLE.contains(&target) || target == service {
             return Err(format!("{service}: no route may go to {target}"));
         }
-        if !earlier.iter().any(|s| s.name == target) {
+        if target != SUPERVISOR && !earlier.iter().any(|s| s.name == target) {
             return Err(format!(
                 "{service}: uses {target}, which is not listed before it"
             ));
@@ -168,6 +231,7 @@ fn caps(service: &str, value: &str) -> Result<u64, String> {
         "model" => Ok(bits | cap::MODEL),
         "threads" => Ok(bits | cap::THREADS),
         "resolve" => Ok(bits | cap::RESOLVE),
+        "stop" => Ok(bits | cap::STOP),
         other => Err(format!("{service}: unknown capability {other:?}")),
     })
 }
@@ -209,6 +273,9 @@ pub struct Record {
     /// Boot-relative times of recent restarts, in milliseconds, oldest first.
     pub recent: Vec<u64>,
     pub gave_up: bool,
+    /// Stopped by a `stop` request: not restarted, even by a new supervisor,
+    /// until `start`.
+    pub stopped: bool,
     /// The running instance's pid, or 0. Lets a restarted supervisor match exit
     /// records for instances started by its predecessor.
     pub pid: u64,
@@ -249,7 +316,9 @@ impl Record {
     }
 }
 
-const STATE_MAGIC: &str = "supervisor-state 3";
+const STATE_MAGIC: &str = "supervisor-state 4";
+/// The state before `stopped`, still read so an update keeps the counts.
+const STATE_MAGIC_3: &str = "supervisor-state 3";
 
 /// Encodes records for the kernel-held state region.
 pub fn encode(records: &[Record]) -> String {
@@ -257,11 +326,12 @@ pub fn encode(records: &[Record]) -> String {
     for record in records {
         text.push('\n');
         text.push_str(&format!(
-            "{} {} {} {} {} {}",
+            "{} {} {} {} {} {} {}",
             record.name,
             record.restarts,
             record.quick_failures,
             u8::from(record.gave_up),
+            u8::from(record.stopped),
             record.pid,
             record.started_ms
         ));
@@ -279,9 +349,11 @@ pub fn decode(bytes: &[u8]) -> Vec<Record> {
         return Vec::new();
     };
     let mut lines = text.lines();
-    if lines.next() != Some(STATE_MAGIC) {
-        return Vec::new();
-    }
+    let has_stopped = match lines.next() {
+        Some(STATE_MAGIC) => true,
+        Some(STATE_MAGIC_3) => false,
+        _ => return Vec::new(),
+    };
     lines
         .filter_map(|line| {
             let mut words = line.split_whitespace();
@@ -289,6 +361,7 @@ pub fn decode(bytes: &[u8]) -> Vec<Record> {
             let restarts = words.next()?.parse().ok()?;
             let quick_failures = words.next()?.parse().ok()?;
             let gave_up = words.next()? == "1";
+            let stopped = has_stopped && words.next()? == "1";
             let pid = words.next()?.parse().ok()?;
             let started_ms = words.next()?.parse().ok()?;
             let recent = words
@@ -301,6 +374,7 @@ pub fn decode(bytes: &[u8]) -> Vec<Record> {
                 quick_failures,
                 recent,
                 gave_up,
+                stopped,
                 pid,
                 started_ms,
             })

@@ -425,6 +425,17 @@ pub fn identity(slot: usize) -> Process {
     with_table(|table| table[slot])
 }
 
+/// The live processes named `name`: their pids, and whether a process (the
+/// supervisor) started each rather than the kernel.
+pub fn named(name: &str) -> alloc::vec::Vec<(u64, bool)> {
+    let table = with_table(|table| *table);
+    table
+        .iter()
+        .filter(|p| p.live() && p.name.as_str() == name)
+        .map(|p| (p.pid, p.spawner != 0 || p.supervisor))
+        .collect()
+}
+
 /// Pids and names of live processes, excluding the supervisor.
 pub fn services(mut f: impl FnMut(u64, &Name)) {
     let table = with_table(|table| *table);

@@ -100,6 +100,23 @@ pub fn spawn(request: &SpawnRequest) -> Result<u64, Error> {
 
 /// The next exit record, or `None` after `timeout_ms`.
 pub fn wait_child(timeout_ms: u64) -> Result<Option<ExitRecord>, Error> {
+    Ok(match wait_event(timeout_ms)? {
+        Event::Exit(record) => Some(record),
+        Event::Request | Event::Timeout => None,
+    })
+}
+
+/// What [`wait_event`] returned for.
+pub enum Event {
+    Exit(ExitRecord),
+    /// A request waits for the caller's service; `svc_recv` takes it.
+    Request,
+    Timeout,
+}
+
+/// The next exit record, or a request for the caller's own service (for a
+/// supervisor that serves), whichever comes first within `timeout_ms`.
+pub fn wait_event(timeout_ms: u64) -> Result<Event, Error> {
     let mut record = ExitRecord::empty();
     let got = call(
         call::WAIT_CHILD,
@@ -112,7 +129,20 @@ pub fn wait_child(timeout_ms: u64) -> Result<Option<ExitRecord>, Error> {
             0,
         ],
     )?;
-    Ok((got == 1).then_some(record))
+    Ok(match got {
+        1 => Event::Exit(record),
+        2 => Event::Request,
+        _ => Event::Timeout,
+    })
+}
+
+/// Stops every process named `name` that the kernel started outside the
+/// supervisor, and returns how many went (needs a Job handle with STOP).
+pub fn proc_stop(name: &str) -> Result<u64, Error> {
+    call(
+        call::PROC_STOP,
+        [name.as_ptr() as u64, name.len() as u64, 0, 0, 0, 0],
+    )
 }
 
 pub fn kill(pid: u64) -> Result<u64, Error> {

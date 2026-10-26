@@ -140,6 +140,8 @@ bitflags! {
         const SET_POLICY = 1 << 17;
         const THREADS = 1 << 18;
         const USER = 1 << 19;
+        /// On a Job: stop processes ([`crate::call::PROC_STOP`]).
+        const STOP = 1 << 20;
     }
 }
 
