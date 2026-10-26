@@ -64,6 +64,8 @@ jobs:
       - run: cargo clippy -p spike-kaifs --all-targets -- -D warnings
       - name: The spike's tests and measurements
         run: cargo test --release -p spike-kaifs -- --nocapture --test-threads 1
+      - name: SHA-256 in portable code (the ADR's bar)
+        run: RUSTFLAGS='--cfg sha2_backend="soft"' CARGO_TARGET_DIR=target/soft cargo test --release -p spike-kaifs --test measure checksum -- --nocapture
     timeout-minutes: 90
 
   # The in-target checksum figure: `hashbench`, a soft-float ring-3 program as
