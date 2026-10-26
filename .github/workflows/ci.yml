@@ -20,8 +20,14 @@ jobs:
   lint-and-unit:
     name: Format, lint, host unit tests
     runs-on: ubuntu-24.04
+    # Spike S12-1: ccspike embeds cc.wasm, so lint needs the ccwasm job's artifact.
+    needs: ccwasm
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ccwasm
+          path: target/ccwasm
       - name: Install pinned toolchain from rust-toolchain.toml
         run: rustup show active-toolchain || rustup toolchain install
       - name: Install the WebAssembly target for live components
@@ -45,7 +51,7 @@ jobs:
       - name: Clippy for the soft-float ring-3 programs
         run: cargo clippy -p user --target x86_64-unknown-none --lib --bin supervisor --bin shell --bin crasher --bin spinner --bin hog --bin comphost --bin edit --bin work --bin netcheck --bin handles -- -D warnings
       - name: Clippy for the hard-float ring-3 programs
-        run: cargo clippy -Zjson-target-spec -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem -p user --target user/x86_64-kai-user.json --lib --bin llm --bin probe --bin vecstress --bin workers -- -D warnings
+        run: cargo clippy -Zjson-target-spec -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem -p user --target user/x86_64-kai-user.json --lib --bin llm --bin probe --bin vecstress --bin workers --bin ccspike -- -D warnings
       - run: cargo clippy -p compsdk -p comp-notes -p comp-notes-v1 --target wasm32-unknown-unknown -- -D warnings
       - name: Clippy for each broken notes version
         run: for bug in bug-import bug-health bug-trap bug-spin; do cargo clippy -p comp-notes-bad --target wasm32-unknown-unknown --features $bug -- -D warnings; done
@@ -152,12 +158,16 @@ jobs:
         run: |
           nproc
           grep -m1 '^model name' /proc/cpuinfo
+      # Release builds, as the image ships; every boot runs even if one fails.
       - name: Boot test=ccspike
         run: |
-          set -o pipefail
+          failed=0
           for boot in $(seq ${{ matrix.boots }}); do
-            XTASK_CASE=${{ matrix.case }} cargo xtask test --accel ${{ matrix.accel }} --timeout 1500 | tee boot-$boot.log
+            XTASK_CASE=${{ matrix.case }} cargo xtask test --release --accel ${{ matrix.accel }} --timeout 1500 > boot-$boot.log 2>&1 || failed=$((failed + 1))
+            grep -h 'ccspike:' boot-$boot.log | sed 's/^ *| //' | tail -n 40
           done
+          echo "boots failed: $failed of ${{ matrix.boots }}"
+          test "$failed" -eq 0
       - name: The measurements
         if: always()
         run: grep -h 'ccspike:' boot-*.log | sed 's/^ *| //' | tee ccspike-${{ matrix.accel }}.txt
