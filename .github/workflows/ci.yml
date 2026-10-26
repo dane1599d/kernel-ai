@@ -118,5 +118,6 @@ jobs:
           XTASK_CASE=blk-flush,blk-flush-bug cargo xtask test --release --accel ${{ matrix.accel }} --timeout 600 | tee boot.log
       - name: The figures
         if: always()
-        run: grep -h -E 'blk-flush|blk: disk' boot.log | sed 's/^ *| //'
+        run: |
+          grep -h -E 'blk-flush|blk: disk' boot.log | sed 's/^ *| //'
     timeout-minutes: 45
