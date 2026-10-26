@@ -80,6 +80,12 @@ pub(super) const CASES: &[TestCase] = &[
         ..case("act-ask", "test=act-ask")
     },
     TestCase {
+        expect: &[
+            "act-inject: 6 injected calls: 3 held for a question and declined, 1 refused, 2 left as text; nothing changed",
+        ],
+        ..case("act-inject", "test=act-inject")
+    },
+    TestCase {
         keys: TERMINAL_SCRIPT,
         expect: &[
             crate::mock_llm::REPLY,
