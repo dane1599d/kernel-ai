@@ -43,7 +43,7 @@ jobs:
       - name: Clippy for the engine crates on the soft-float kernel target
         run: cargo clippy -p gguf -p cpufeat -p quant -p bpe -p infer --target x86_64-unknown-none -- -D warnings
       - name: Clippy for the soft-float ring-3 programs
-        run: cargo clippy -p user --target x86_64-unknown-none --lib --bin supervisor --bin shell --bin crasher --bin spinner --bin hog --bin comphost --bin edit --bin work --bin netcheck --bin handles -- -D warnings
+        run: cargo clippy -p user --target x86_64-unknown-none --lib --bin supervisor --bin shell --bin crasher --bin spinner --bin hog --bin comphost --bin edit --bin work --bin netcheck --bin handles --bin hashbench -- -D warnings
       - name: Clippy for the hard-float ring-3 programs
         run: cargo clippy -Zjson-target-spec -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem -p user --target user/x86_64-kai-user.json --lib --bin llm --bin probe --bin vecstress --bin workers -- -D warnings
       - run: cargo clippy -p compsdk -p comp-notes -p comp-notes-v1 --target wasm32-unknown-unknown -- -D warnings
@@ -65,3 +65,40 @@ jobs:
       - name: The spike's tests and measurements
         run: cargo test --release -p spike-kaifs -- --nocapture --test-threads 1
     timeout-minutes: 90
+
+  # The in-target checksum figure: `hashbench`, a soft-float ring-3 program as
+  # `fs` will be, booted under KVM and TCG (release builds, as the image ships).
+  hashbench:
+    name: S04-1 boot test=hashbench (${{ matrix.accel }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        accel: [kvm, tcg]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/qemu
+      - name: Allow KVM for the runner user
+        if: matrix.accel == 'kvm'
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: The runner's CPU
+        run: grep -m1 '^model name' /proc/cpuinfo; grep -m1 '^flags' /proc/cpuinfo | grep -o -w sha_ni || echo "no sha_ni"
+      - name: Install pinned toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Install the WebAssembly target for live components
+        run: rustup target add wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: qemu
+          save-if: false
+      - name: Boot test=hashbench
+        run: |
+          set -o pipefail
+          XTASK_CASE=hashbench cargo xtask test --release --accel ${{ matrix.accel }} --timeout 600 | tee boot.log
+      - name: The figures
+        if: always()
+        run: grep -h 'hashbench:' boot.log | sed 's/^ *| //'
+    timeout-minutes: 45

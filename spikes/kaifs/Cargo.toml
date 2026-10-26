@@ -20,3 +20,7 @@ zerocopy = { version = "0.8.63", default-features = false, features = ["derive"]
 # The crash harness and the measurements need std; the core does not.
 default = ["std"]
 std = []
+
+[lints.rust]
+# RUSTFLAGS='--cfg sha2_backend="soft"' forces sha2's portable code (ADR 0004's bar).
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(sha2_backend, values("soft"))'] }

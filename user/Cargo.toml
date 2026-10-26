@@ -25,6 +25,8 @@ quant = { path = "../quant" }
 sched = { path = "../sched" }
 supervise = { path = "../supervise" }
 shellcore = { path = "../shellcore" }
+# Spike S04-1 only (spike/kaifs, never merged).
+spike-kaifs = { path = "../spikes/kaifs", default-features = false }
 spin = "0.12.3"
 talc = "5.1.1"
 wasmhost = { path = "../wasmhost" }
