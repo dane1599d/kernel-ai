@@ -120,11 +120,43 @@ pub fn tlb_shootdown(address: u64) {
     shoot(address, 1);
 }
 
-/// Invalidates `pages` pages from `address` in every CPU's TLB, this one's too,
-/// in one round of interrupts, and waits until they all have.
-pub fn tlb_shootdown_range(address: u64, pages: u64) {
+/// The page tables each CPU has loaded (CR3), set before the CR3 write
+/// (`threads::context`), so a shootdown need only reach the CPUs that show the
+/// space it changed: one that loads it later walks the new tables.
+static LOADED_CR3: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+
+/// Records, before the write, that this CPU is loading `cr3`.
+pub fn note_cr3(cr3: u64) {
+    LOADED_CR3[percpu::index()].store(cr3, Ordering::SeqCst);
+}
+
+/// Invalidates `pages` pages from `address` in this CPU's TLB and in every other
+/// CPU that has one of the address spaces `cr3s` loaded, in one round of
+/// interrupts, and waits until they all have. The caller has changed the page
+/// tables already.
+pub fn tlb_shootdown_range(cr3s: &[u64], address: u64, pages: u64) {
     flush_range(address, pages);
-    shoot(address, pages);
+    core::sync::atomic::fence(Ordering::SeqCst);
+    let me = percpu::index();
+    let mut targets = [false; MAX_CPUS];
+    let mut count = 0;
+    for (cpu, target) in targets.iter_mut().enumerate().take(online()) {
+        if cpu != me && cr3s.contains(&LOADED_CR3[cpu].load(Ordering::SeqCst)) {
+            *target = true;
+            count += 1;
+        }
+    }
+    if count == 0 {
+        return;
+    }
+    let _guard = SHOOTDOWN.lock();
+    SHOOTDOWN_ADDRESS.store(address, Ordering::Release);
+    SHOOTDOWN_PAGES.store(pages, Ordering::Release);
+    SHOOTDOWN_PENDING.store(count, Ordering::Release);
+    for cpu in (0..online()).filter(|&cpu| targets[cpu]) {
+        send(cpu, apic::TLB_VECTOR);
+    }
+    wait_for_acks(address);
 }
 
 fn flush_range(address: u64, pages: u64) {
@@ -150,6 +182,10 @@ fn shoot(address: u64, pages: u64) {
     for cpu in (0..cpus).filter(|&cpu| cpu != me) {
         send(cpu, apic::TLB_VECTOR);
     }
+    wait_for_acks(address);
+}
+
+fn wait_for_acks(address: u64) {
     // Never give up: returning early would let the caller free a frame that another
     // CPU still maps, and a late acknowledgement would corrupt the next round's count.
     let start = hpet::nanos();

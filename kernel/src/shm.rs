@@ -232,7 +232,7 @@ pub fn unmap(slot: usize, address: u64) -> Result<u64, Error> {
             .position(|m| m.pid == pid)
             .ok_or(Error::NotFound)?;
         let pages = object.frames.len() as u64;
-        {
+        let cr3 = {
             let space = process::lock_space(slot);
             let space = space.as_ref().ok_or(Error::Dead)?;
             memory::with(|m| {
@@ -240,9 +240,10 @@ pub fn unmap(slot: usize, address: u64) -> Result<u64, Error> {
                     let _ = m.set_shared_page(space, address + n * PAGE_SIZE, None);
                 }
             });
-        }
+            space.cr3()
+        };
         // With no lock but OBJECTS held, so a CPU that faults meanwhile can go on.
-        smp::tlb_shootdown_range(address, pages);
+        smp::tlb_shootdown_range(&[cr3], address, pages);
         Ok::<_, Error>(object.mappings.remove(at).zero)
     })?;
     if let Some(frame) = zero {
@@ -259,6 +260,8 @@ pub fn on_revoke() {
         for (index, object) in objects.objects.iter_mut().enumerate() {
             let Some(object) = object else { continue };
             let pages = object.frames.len() as u64;
+            // Every holder maps the object at one address: one shootdown for all.
+            let mut cr3s: Vec<u64> = Vec::new();
             for mapping in object.mappings.iter_mut() {
                 let revoked = mapping.grant.is_some_and(|grant| !Kernel.alive(grant));
                 if !revoked || mapping.zero.is_some() {
@@ -276,9 +279,11 @@ pub fn on_revoke() {
                             let _ = m.set_shared_page(space, address + n * PAGE_SIZE, Some(zero));
                         }
                     });
+                    cr3s.push(space.cr3());
                 }
-                drop(space);
-                smp::tlb_shootdown_range(address, pages);
+            }
+            if !cr3s.is_empty() {
+                smp::tlb_shootdown_range(&cr3s, base(index), pages);
             }
         }
     });
