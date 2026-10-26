@@ -25,6 +25,7 @@ mod tables;
 #[cfg(test)]
 mod tests;
 
+use alloc::format;
 use alloc::string::ToString;
 pub use canonical::{CoreInstance, load_core};
 pub use instance::WasmInstance;
@@ -97,18 +98,39 @@ pub enum LiveInstance {
 }
 
 /// Loads an artifact by its manifest's `lifecycle`; a module with no manifest is
-/// `lifecycle 1`.
+/// `lifecycle 1`. A `lifecycle 2` version gets its `kai.actions` rows, and does not
+/// load when they do not parse.
 #[inline(never)]
 pub fn load_live(
     artifact: &[u8],
     limits: Limits,
     log: Option<LogSink>,
 ) -> Result<LiveInstance, Fault> {
-    let lifecycle = livecore::artifact::parse(artifact).map_or(1, |a| a.manifest.lifecycle);
-    match lifecycle {
-        2 => load_core(artifact, limits, log).map(LiveInstance::V2),
+    let parsed = match livecore::artifact::parse(artifact) {
+        Ok(parsed) => Some(parsed),
+        // A manifest that is there must hold, or the version would load as
+        // something it does not say it is.
+        Err(why) if has_manifest(artifact) => return Err(Fault::new(Reason::Link, why)),
+        Err(_) => None,
+    };
+    match parsed.as_ref().map_or(1, |a| a.manifest.lifecycle) {
+        2 => {
+            let rows = parsed.and_then(|a| a.actions).unwrap_or_default();
+            let actions = livecore::actions::parse(rows)
+                .map_err(|why| Fault::new(Reason::Link, format!("kai.actions: {why}")))?;
+            let mut instance = load_core(artifact, limits, log)?;
+            instance.set_actions(actions);
+            Ok(LiveInstance::V2(instance))
+        }
         _ => load(artifact, limits, log).map(LiveInstance::V1),
     }
+}
+
+fn has_manifest(artifact: &[u8]) -> bool {
+    matches!(
+        livecore::artifact::custom_section(artifact, kabi::live::MANIFEST_SECTION),
+        Ok(Some(_))
+    )
 }
 
 macro_rules! either {

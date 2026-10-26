@@ -454,7 +454,15 @@ fn a_lifecycle_2_version_serves_the_lifecycle() {
     v.set_call_inputs(1_000, 42);
     assert_eq!(v.health(), Ok(42));
     assert_eq!(v.self_test(), Ok(0));
-    assert_eq!(reason(v.handle(b"count")), Reason::Abi);
+    // With no action rows, a request is refused in the reply, not a fault.
+    let reply = v.handle(b"count").unwrap();
+    assert!(
+        reply.starts_with(
+            b"kai-reply 1
+refused "
+        ),
+        "{reply:?}"
+    );
 }
 
 #[test]
@@ -512,7 +520,50 @@ fn load_live_picks_the_lifecycle_from_the_manifest() {
         kabi::live::SOURCE_SECTION,
         &bundle(&[("src/lib.wat", b"")]),
     );
+    // Lifecycle 2 needs its action rows.
+    assert_eq!(reason(load_live(&artifact, LIMITS, None)), Reason::Link);
+    let rows = "kai-actions 1
+world app:probe/probe@1.0.0
+action probe_ping
+export app:probe/actions@1.0.0#ping
+doc Ping.
+sig func()
+inverse none
+end
+";
+    let mut bad = artifact.clone();
+    append_custom_section(
+        &mut bad,
+        kabi::live::ACTIONS_SECTION,
+        b"kai-actions 1
+",
+    );
+    assert_eq!(reason(load_live(&bad, LIMITS, None)), Reason::Link);
+    append_custom_section(&mut artifact, kabi::live::ACTIONS_SECTION, rows.as_bytes());
     let mut live = load_live(&artifact, LIMITS, None).unwrap();
     assert!(matches!(live, LiveInstance::V2(_)));
     assert_eq!(live.schema(), Ok(3));
+    // A call the rows do not declare is refused; one they do reaches the module,
+    // which has no such export: the version's fault.
+    let other = live
+        .handle(
+            b"kai-call 1
+func app:probe/actions@1.0.0#pong
+args {}
+",
+        )
+        .unwrap();
+    assert!(other.starts_with(
+        b"kai-reply 1
+refused "
+    ));
+    assert!(
+        live.handle(
+            b"kai-call 1
+func app:probe/actions@1.0.0#ping
+args {}
+"
+        )
+        .is_err()
+    );
 }

@@ -14,6 +14,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 use appabi::{Core, Guest, Trap, Val};
 use kabi::live::MAX_CHECKPOINT;
+use livecore::actions::Actions;
+use livecore::call::{self, CallError};
 use livecore::{Fault, Reason};
 use wasmi::errors::ErrorKind;
 use wasmi::{
@@ -33,6 +35,15 @@ pub struct CoreInstance {
     last: Option<Fault>,
     /// The `kai:live/lifecycle` exports, by name, when the module has them.
     lifecycle: Vec<(&'static str, String)>,
+    /// The app's action rows, which type its `kai-call 1` requests.
+    actions: Option<Actions>,
+}
+
+impl CoreInstance {
+    /// Gives the instance the action rows its requests are typed by.
+    pub fn set_actions(&mut self, actions: Actions) {
+        self.actions = Some(actions);
+    }
 }
 
 fn link_err(detail: impl Into<String>) -> Fault {
@@ -96,6 +107,7 @@ pub fn load_core(
         fuel: limits.fuel_call,
         last: None,
         lifecycle,
+        actions: None,
     })
 }
 
@@ -371,11 +383,22 @@ impl livecore::Instance for CoreInstance {
         Ok(Some(bytes))
     }
 
-    fn handle(&mut self, _request: &[u8]) -> Result<Vec<u8>, Fault> {
-        Err(Fault::new(
-            Reason::Abi,
-            "a lifecycle 2 version is called with kai-call 1, not raw requests",
-        ))
+    /// A `kai-call 1` request, typed by the action rows. A request the rows do not
+    /// allow is refused in the reply; only the version's own failure is a fault.
+    fn handle(&mut self, request: &[u8]) -> Result<Vec<u8>, Fault> {
+        let Some(actions) = self.actions.take() else {
+            return Ok(call::format_refusal("this version declares no actions").into_bytes());
+        };
+        let reply = match core::str::from_utf8(request) {
+            Ok(text) => call::serve(self, &actions, text),
+            Err(_) => Err(CallError::Request("the request is not text".into())),
+        };
+        self.actions = Some(actions);
+        match reply {
+            Ok(reply) => Ok(reply.into_bytes()),
+            Err(CallError::Request(why)) => Ok(call::format_refusal(&why).into_bytes()),
+            Err(CallError::Fault(fault)) => Err(fault),
+        }
     }
 
     #[inline(never)]
