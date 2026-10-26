@@ -180,3 +180,53 @@ fn mutated_allocator_blocks_never_panic() {
         }
     }
 }
+
+fn node_is_total(bytes: &[u8]) {
+    use kaifs::tree::Node;
+    if let Ok(node) = Node::decode(&block_of(bytes)) {
+        assert_eq!(Node::decode(&node.encode()), Ok(node));
+    }
+}
+
+/// Mutated leaves and branches, and every field at every extreme value.
+#[test]
+fn mutated_nodes_never_panic_and_what_decodes_round_trips() {
+    use kaifs::tree::{Child, Key, Node};
+    let leaf = Node::Leaf(
+        (0..40u64)
+            .map(|i| {
+                (
+                    Key::new(i, (i % 3) as u8, i * 7),
+                    vec![i as u8; (i * 13 % 90) as usize],
+                )
+            })
+            .collect(),
+    );
+    let child = BlockPtr {
+        addr: 900,
+        birth: 4,
+        blocks: 1,
+        kind: KIND_NODE,
+        level: 1,
+        flags: 0,
+        csum: [3; 32],
+    };
+    let branch = Node::Branch(
+        2,
+        (0..30u64)
+            .map(|i| {
+                (
+                    Key::new(i * 100, 1, 0),
+                    Child::Clean(BlockPtr {
+                        addr: 900 + i,
+                        ..child
+                    }),
+                )
+            })
+            .collect(),
+    );
+    for (seed, sample) in [(5, leaf.encode()), (6, branch.encode())] {
+        fuzz(&sample, seed, 20_000, node_is_total);
+        sweep_fields(&sample, 0..200, |_, bytes| node_is_total(bytes));
+    }
+}
