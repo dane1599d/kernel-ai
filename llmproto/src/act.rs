@@ -26,6 +26,9 @@ pub const SERVICE_TIMEOUT_MS: u64 = 90_000;
 pub const LINE_MAX_BYTES: usize = 512;
 /// The State line's budget, 64 tokens (ADR 0010 §4), in bytes.
 pub const STATE_MAX_BYTES: usize = 256;
+/// The most the State line and the request may take together, in real tokens;
+/// past it the State line is left out (ADR 0010 §5).
+pub const STATE_REQUEST_TOKENS: usize = 224;
 /// The words of `script`'s `lang`. `c` stays out until ADR 0012's C fluency
 /// gate passes.
 pub const LANGS: &[&str] = &["rhai"];

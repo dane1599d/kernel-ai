@@ -690,6 +690,13 @@ impl<'a> Engine<'a> {
         core::mem::take(&mut self.picking)
     }
 
+    /// `text`'s length in tokens, as the tokenizer splits it outside any turn.
+    pub fn text_tokens(&self, text: &str) -> usize {
+        let mut ids = Vec::new();
+        self.tok.encode(text, &mut ids);
+        ids.len()
+    }
+
     /// The prompt's length in tokens, for a caller sizing `max_new`.
     pub fn prompt_tokens(&self, system: Option<&str>, user: &str) -> usize {
         self.chat.prompt(&self.tok, system, user).len()
