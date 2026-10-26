@@ -260,6 +260,25 @@ unsafe fn xsetbv(xcr0: u64) {
     }
 }
 
+/// Where a firmware call keeps this CPU's vector state (`efi.rs`, one call at a
+/// time under its lock with interrupts off).
+static FIRMWARE: Area = Area(UnsafeCell::new([0; AREA_BYTES]));
+
+/// Runs `f`, a UEFI runtime call that may use SSE, with this CPU's vector state
+/// saved before and restored after: the soft-float kernel never touches those
+/// registers, but the ring-3 thread it interrupted owns them. The caller holds
+/// `efi`'s lock with interrupts off, so one call uses the area at a time.
+pub fn around_firmware<R>(f: impl FnOnce() -> R) -> R {
+    let area = FIRMWARE.0.get().cast::<u8>();
+    // SAFETY: the area is 64-byte aligned, AREA_BYTES covers the CPU's XSAVE
+    // size (init_cpu checked), and the caller's lock keeps it to one user.
+    unsafe { xsave(area) };
+    let result = f();
+    // SAFETY: restores what xsave wrote just above.
+    unsafe { xrstor(area, ALL) };
+    result
+}
+
 /// # Safety
 /// `area` must be 64-byte aligned, at least the CPU's XSAVE size and not in use.
 unsafe fn xsave(area: *mut u8) {

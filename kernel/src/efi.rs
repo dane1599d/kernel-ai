@@ -9,7 +9,8 @@
 //!   SetVirtualAddressMap once, on a temporary PML4 that also maps the regions
 //!   1:1, as the call must run with the firmware's physical addresses valid.
 //! - Every call after that runs under one lock with interrupts off and the
-//!   x87/SSE state saved around it: the kernel is soft-float, firmware may not be.
+//!   vector state saved around it (`fpu::around_firmware`): the kernel is
+//!   soft-float, firmware may not be.
 //!
 //! With no system table (or before [`init`]) the calls answer [`Error::Unavailable`]
 //! and a reset falls back to `power::reboot` (ADR 0007's FADT reset register).
@@ -235,7 +236,7 @@ fn set_virtual_address_map(
             // SAFETY: the temporary PML4 shares the kernel half, so this code and its
             // stack stay mapped; interrupts are off until the kernel's is back.
             unsafe { Cr3::write(temporary, flags) };
-            let status = with_fpu_saved(|| {
+            let status = crate::fpu::around_firmware(|| {
                 call(map.len(), desc_size, desc_version as u32, map.as_mut_ptr())
             });
             // SAFETY: as above, back to the kernel's PML4.
@@ -247,25 +248,12 @@ fn set_virtual_address_map(
     status
 }
 
-/// Runs `f` with this CPU's x87/SSE state saved and restored around it.
-fn with_fpu_saved<R>(f: impl FnOnce() -> R) -> R {
-    #[repr(C, align(16))]
-    struct Area([u8; 512]);
-    let mut area = Area([0; 512]);
-    // SAFETY: fxsave64 writes 512 bytes to a 16-byte-aligned area; SSE is on.
-    unsafe { core::arch::asm!("fxsave64 [{}]", in(reg) area.0.as_mut_ptr(), options(nostack)) };
-    let result = f();
-    // SAFETY: restores what fxsave64 saved above.
-    unsafe { core::arch::asm!("fxrstor64 [{}]", in(reg) area.0.as_ptr(), options(nostack)) };
-    result
-}
-
 /// One firmware call, under the lock with interrupts off and the FPU saved.
 fn call<R>(f: impl FnOnce(&Services) -> R) -> Result<R, Error> {
     let services = SERVICES.get().ok_or(Error::Unavailable)?;
     Ok(interrupts::without_interrupts(|| {
         let _one = CALL.lock();
-        with_fpu_saved(|| f(services))
+        crate::fpu::around_firmware(|| f(services))
     }))
 }
 
@@ -321,7 +309,7 @@ pub fn reset() -> ! {
     if let Some(services) = SERVICES.get() {
         log!("efi: resetting through ResetSystem");
         interrupts::disable();
-        with_fpu_saved(|| (services.reset)(0, 0, 0, core::ptr::null()))
+        crate::fpu::around_firmware(|| (services.reset)(0, 0, 0, core::ptr::null()))
     }
     crate::power::reboot()
 }
