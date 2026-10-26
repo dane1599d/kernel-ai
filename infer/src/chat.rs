@@ -29,6 +29,10 @@ pub use bpe::chat::{Role, Turn};
 use gguf::Gguf;
 use quant::{Parallel, Tier};
 
+/// Pieces the shape's mask is split into over the workers: several each, so a
+/// slow worker does not hold the step.
+const MASK_PIECES: usize = 32;
+
 /// The fewest positions worth running: a short question and a short answer.
 pub const MIN_CONTEXT: usize = 32;
 /// Room for the allocator and the small buffers the estimate leaves out.
@@ -162,6 +166,8 @@ pub struct Engine<'a> {
     ascii: Vec<u32>,
     /// The ones it allows at a step, room for all of them.
     candidates: Vec<u32>,
+    /// The mask in [`MASK_PIECES`] pieces of `ascii`, one worker's each.
+    mask_pieces: Vec<Vec<u32>>,
     /// Every printable ASCII byte has a token of its own, as a shape needs.
     spells_ascii: bool,
     /// Tokens jump-forward fed in the last reply.
@@ -243,6 +249,7 @@ impl<'a> Engine<'a> {
             cached,
             ascii,
             candidates,
+            mask_pieces: Vec::new(),
             spells_ascii,
             forced: 0,
             clock: || 0,
@@ -580,7 +587,7 @@ impl<'a> Engine<'a> {
         state: &mut G::State,
         sampler: &mut Sampler,
     ) -> Result<Result<u32, Overflow>, Error> {
-        grammar.allowed(state, &self.tok, &self.ascii, &mut self.candidates);
+        self.allowed(grammar, state);
         let token = sampler
             .pick_from(&self.logits, &self.candidates)
             .ok_or(Error::Shape("allowed no token"))?;
@@ -591,6 +598,40 @@ impl<'a> Engine<'a> {
             }
             Err(Stop::Over(overflow)) => Ok(Err(overflow)),
             Err(Stop::Masked) => Err(Error::Shape("allowed a token it cannot take")),
+        }
+    }
+
+    /// `candidates`: the tokens of `ascii` that `grammar` allows after `state`, in
+    /// rising order, as [`Constraint::allowed`] gives them. With more than one
+    /// worker the filter runs in [`MASK_PIECES`] pieces, joined in order, so the
+    /// list is the same: it took about a tenth of each decode step on one CPU
+    /// (S02-2).
+    fn allowed<G: Constraint>(&mut self, grammar: &G, state: &G::State) {
+        let par = self.model.parallel();
+        if par.workers() < 2 {
+            grammar.allowed(state, &self.tok, &self.ascii, &mut self.candidates);
+            return;
+        }
+        let (tok, ascii) = (&self.tok, &self.ascii);
+        let per = ascii.len().div_ceil(MASK_PIECES).max(1);
+        self.mask_pieces.resize_with(MASK_PIECES, Vec::new);
+        // Room for a whole piece here, so no worker allocates.
+        for piece in &mut self.mask_pieces {
+            piece.clear();
+            piece.reserve(per);
+        }
+        quant::for_each_mut(par, &mut self.mask_pieces, &|i, out: &mut Vec<u32>| {
+            let piece = ascii.iter().skip(i * per).take(per).copied();
+            out.extend(piece.filter(|&id| {
+                !matches!(
+                    grammar.advance(*state, tok.token_bytes(id)),
+                    Err(Stop::Masked)
+                )
+            }));
+        });
+        self.candidates.clear();
+        for piece in &self.mask_pieces {
+            self.candidates.extend_from_slice(piece);
         }
     }
 

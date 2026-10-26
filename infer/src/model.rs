@@ -127,6 +127,11 @@ impl<'a> Model<'a> {
         self.par = par;
     }
 
+    /// The workers products run on.
+    pub fn parallel(&self) -> &'a dyn Parallel {
+        self.par
+    }
+
     pub fn context(&self) -> usize {
         self.context
     }
