@@ -12,41 +12,64 @@ use core::arch::x86_64::*;
 /// One Q4_K row against `x`. Per super-block, each 32-byte run of codes gives
 /// sub-block 2g (low nibbles) and 2g+1 (high nibbles). A lane of `acc` adds 8
 /// products of at most 2 * 15 * 127 * 63, and the minimum term's lanes
-/// 2 * 63 * 2,032: far from overflow.
+/// 2 * 63 * 2,032: far from overflow. Two super-blocks share one horizontal sum
+/// ([`hsum4`]); their sinks still run in super-block order.
 #[target_feature(enable = "avx2,fma,f16c")]
 pub fn q4_k_dot(row: &[u8], x: &Q8KVec, sink: &mut impl Sink) {
-    let nibble = _mm256_set1_epi8(15);
-    let blocks = row.as_chunks::<{ q4_k::BLOCK_BYTES }>().0.iter();
+    let blocks = row.as_chunks::<{ q4_k::BLOCK_BYTES }>().0;
     let xs = x.qs.as_chunks::<SUPER_LEN>().0;
     let sums = x.sums.as_chunks::<16>().0;
-    for (((block, xq), sums), &dx) in blocks.zip(xs).zip(sums).zip(&x.scales) {
-        let [d, dmin] = halves(block[..4].try_into().unwrap());
-        let (sc, m) = q4_k::packed_scales(block[4..q4_k::CODES].try_into().unwrap());
-        // The scales as i16 in both 128-bit lanes, and the minimums each twice.
-        let sc = _mm256_broadcastsi128_si256(_mm_cvtepu8_epi16(_mm_cvtsi64_si128(sc as i64)));
-        let m = _mm_cvtsi64_si128(m as i64);
-        let m = _mm256_cvtepu8_epi16(_mm_unpacklo_epi8(m, m));
-        let runs = block[q4_k::CODES..].as_chunks::<32>().0;
-        let xq = xq.as_chunks::<32>().0;
-        let mut acc = _mm256_setzero_si256();
-        for (g, run) in runs.iter().enumerate() {
-            let q = load(run);
-            let lo = _mm256_and_si256(q, nibble);
-            let hi = _mm256_and_si256(_mm256_srli_epi16::<4>(q), nibble);
-            let lo = _mm256_madd_epi16(
-                _mm256_maddubs_epi16(lo, load_i8(&xq[2 * g])),
-                _mm256_shuffle_epi8(sc, lane_of(2 * g, 2 * g)),
-            );
-            let hi = _mm256_madd_epi16(
-                _mm256_maddubs_epi16(hi, load_i8(&xq[2 * g + 1])),
-                _mm256_shuffle_epi8(sc, lane_of(2 * g + 1, 2 * g + 1)),
-            );
-            acc = _mm256_add_epi32(acc, _mm256_add_epi32(lo, hi));
-        }
-        let mins = _mm256_madd_epi16(m, load_sums(sums));
-        let (a, b) = hsum2(acc, mins);
-        sink.q4_k(d, dmin, dx, a, b);
+    let n = blocks.len();
+    let mut i = 0;
+    while i + 1 < n {
+        let (acc0, mins0, d0) = q4_k_block(&blocks[i], &xs[i], &sums[i]);
+        let (acc1, mins1, d1) = q4_k_block(&blocks[i + 1], &xs[i + 1], &sums[i + 1]);
+        let [a0, b0, a1, b1] = hsum4(acc0, mins0, acc1, mins1);
+        sink.q4_k(d0[0], d0[1], x.scales[i], a0, b0);
+        sink.q4_k(d1[0], d1[1], x.scales[i + 1], a1, b1);
+        i += 2;
     }
+    if i < n {
+        let (acc, mins, d) = q4_k_block(&blocks[i], &xs[i], &sums[i]);
+        let (a, b) = hsum2(acc, mins);
+        sink.q4_k(d[0], d[1], x.scales[i], a, b);
+    }
+}
+
+/// One Q4_K super-block's lanes against `xq`: the codes times x by sub-block
+/// scale, the minimums times x's sums, and `[d, dmin]`.
+#[target_feature(enable = "avx2,fma,f16c")]
+#[inline]
+fn q4_k_block(
+    block: &[u8; q4_k::BLOCK_BYTES],
+    xq: &[i8; SUPER_LEN],
+    sums: &[i16; 16],
+) -> (__m256i, __m256i, [f32; 2]) {
+    let nibble = _mm256_set1_epi8(15);
+    let d = halves(block[..4].try_into().unwrap());
+    let (sc, m) = q4_k::packed_scales(block[4..q4_k::CODES].try_into().unwrap());
+    // The scales as i16 in both 128-bit lanes, and the minimums each twice.
+    let sc = _mm256_broadcastsi128_si256(_mm_cvtepu8_epi16(_mm_cvtsi64_si128(sc as i64)));
+    let m = _mm_cvtsi64_si128(m as i64);
+    let m = _mm256_cvtepu8_epi16(_mm_unpacklo_epi8(m, m));
+    let runs = block[q4_k::CODES..].as_chunks::<32>().0;
+    let xq = xq.as_chunks::<32>().0;
+    let mut acc = _mm256_setzero_si256();
+    for (g, run) in runs.iter().enumerate() {
+        let q = load(run);
+        let lo = _mm256_and_si256(q, nibble);
+        let hi = _mm256_and_si256(_mm256_srli_epi16::<4>(q), nibble);
+        let lo = _mm256_madd_epi16(
+            _mm256_maddubs_epi16(lo, load_i8(&xq[2 * g])),
+            _mm256_shuffle_epi8(sc, lane_of(2 * g, 2 * g)),
+        );
+        let hi = _mm256_madd_epi16(
+            _mm256_maddubs_epi16(hi, load_i8(&xq[2 * g + 1])),
+            _mm256_shuffle_epi8(sc, lane_of(2 * g + 1, 2 * g + 1)),
+        );
+        acc = _mm256_add_epi32(acc, _mm256_add_epi32(lo, hi));
+    }
+    (acc, _mm256_madd_epi16(m, load_sums(sums)), d)
 }
 
 /// One Q6_K row against `x`. Per half of a super-block, quarter k's codes are a
@@ -156,6 +179,25 @@ pub(crate) fn load_sums(sums: &[i16; 16]) -> __m256i {
 pub(crate) fn load128(bytes: &[u8; 16]) -> __m128i {
     // SAFETY: 16 readable bytes; loadu has no alignment rule. AVX was dispatched.
     unsafe { _mm_loadu_si128(bytes.as_ptr().cast()) }
+}
+
+/// The exact sums of the eight i32 lanes of each of `a0`, `b0`, `a1` and `b1`,
+/// as [`hsum2`] gives two of them (no partial sum can overflow: see the bounds
+/// in the callers).
+#[target_feature(enable = "avx2")]
+pub(crate) fn hsum4(a0: __m256i, b0: __m256i, a1: __m256i, b1: __m256i) -> [i32; 4] {
+    // Pairs of each, then quads: a0, b0, a1, b1 over lanes 0-3 | over lanes 4-7.
+    let quads = _mm256_hadd_epi32(_mm256_hadd_epi32(a0, b0), _mm256_hadd_epi32(a1, b1));
+    let sums = _mm_add_epi32(
+        _mm256_castsi256_si128(quads),
+        _mm256_extracti128_si256::<1>(quads),
+    );
+    [
+        _mm_cvtsi128_si32(sums),
+        _mm_extract_epi32::<1>(sums),
+        _mm_extract_epi32::<2>(sums),
+        _mm_extract_epi32::<3>(sums),
+    ]
 }
 
 /// The exact sums of the eight i32 lanes of `a` and of `b` (no partial sum can
