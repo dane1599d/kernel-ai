@@ -33,6 +33,7 @@ mod cpu;
 mod devhost;
 mod device_tests;
 mod devices;
+mod diag_observe;
 mod display;
 mod display_tests;
 mod edit_mode;
@@ -532,7 +533,13 @@ fn start_user_space(test: SelfTest) {
         threads::resync_ticks();
         let edge = timer::align_to_second();
         threads::resync_ticks();
-        log!("tune-ab: services start at tick {edge}");
+        log!(
+            "tune-ab: services start at tick {edge} (diag: TSC {}, HPET {} ns)",
+            // SAFETY: rdtsc only reads the time-stamp counter.
+            unsafe { core::arch::x86_64::_rdtsc() },
+            hpet::nanos()
+        );
+        diag_observe::start();
     }
     if let Err(message) = process::supervision::start(plan) {
         fail(message);

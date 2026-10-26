@@ -75,6 +75,7 @@ fn observe(seed: &str) -> Result<(), &'static str> {
         let id = rest.split(' ').next().unwrap_or("");
         line(&alloc::format!("answer {id} no"))?;
     }
+    crate::diag_observe::report();
     log!("tune-ab: observe done");
     Ok(())
 }

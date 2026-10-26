@@ -74,6 +74,14 @@ pub fn init() -> Result<(), &'static str> {
 }
 
 /// Called from the timer interrupt.
+/// DIAG: how long after its deadline the tick now arriving came.
+pub fn lateness_ns() -> u64 {
+    let cpu = percpu::this();
+    let ticks = cpu.ticks.load(Ordering::Relaxed);
+    let deadline = cpu.tick_start_ns.load(Ordering::Relaxed) + (ticks + 1) * period_ns();
+    hpet::nanos().saturating_sub(deadline)
+}
+
 pub fn on_tick() {
     let cpu = percpu::this();
     let ticks = cpu.ticks.fetch_add(1, Ordering::Relaxed) + 1;

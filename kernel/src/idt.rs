@@ -101,6 +101,7 @@ pub fn init() {
 /// Called by `entry::common_entry` for every non-IST vector, with interrupts off.
 pub extern "C" fn trap_dispatch(frame: &mut TrapFrame) {
     cpu::clac();
+    crate::diag_observe::on_vector(frame.vector, frame.rip);
     match frame.vector {
         v if v == u64::from(apic::TIMER_VECTOR) => {
             timer::on_tick();
