@@ -8,7 +8,6 @@
 
 use crate::actions::{How, Pending};
 use crate::actlog::Form;
-use crate::rules::Offer;
 use crate::script::Checked;
 use crate::tiers::Tier;
 use crate::{Reply, Shell};
@@ -80,7 +79,8 @@ pub(crate) fn request_for(
 
 impl Shell {
     /// A terminal row consent let through, or that asks: the `do` line, or the
-    /// Allow / Deny menu with the `do` waiting on its answer.
+    /// Allow / Deny menu with the `do` waiting on its answer. Each has an undo, so
+    /// no standing rule covers one and its menu offers none.
     pub(crate) fn terminal_row(
         &mut self,
         id: u64,
@@ -89,7 +89,6 @@ impl Shell {
         shown: &str,
         decision: Decision,
         what: Request,
-        offer: Option<Offer>,
     ) -> Reply {
         let (tier, why) = (decision.tier, decision.why);
         let how = How {
@@ -105,7 +104,7 @@ impl Shell {
                 .audit(&format!("request {id}: the terminal runs {}", call.name));
             return self.send_do(id, request, &call.text(), how, what);
         }
-        let reply = self.ask_call(id, request, Checked::shown_only(shown), why, offer);
+        let reply = self.ask_call(id, request, Checked::shown_only(shown), why, None);
         if let Some(pending) = &mut self.pending {
             pending.terminal = Some(what);
         }

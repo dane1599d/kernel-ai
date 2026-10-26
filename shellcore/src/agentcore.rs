@@ -181,9 +181,8 @@ impl Shell {
                 Ok(what) => what,
                 Err(why) => return self.refuse(id, request, call, decision.why, &why),
             };
-            let offer = offer(row, &args, decision.why);
             let shown = format!("{}({})", row.name, args.rhai.join(", "));
-            let reply = self.terminal_row(id, request, call, &shown, decision, what, offer);
+            let reply = self.terminal_row(id, request, call, &shown, decision, what);
             return outcome(decision.tier, decision.why, reply);
         }
         if !agentabi::SCRIPT_API.iter().any(|r| r.name == row.name) {
