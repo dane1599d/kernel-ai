@@ -1,0 +1,26 @@
+[package]
+name = "spike-kaifs"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Spike S04-1 (ADR 0004): kaifs's crash core, host-only. Never merged; kaifs
+# proper lands in P2 from what this spike settles.
+[lib]
+doctest = false
+
+[dependencies]
+sha2 = { version = "0.11.1", default-features = false }
+# Measured against SHA-256 for csum_kind; it stays only if S04-1 picks it.
+seahash = { version = "4.1.0", default-features = false }
+zerocopy = { version = "0.8.63", default-features = false, features = ["derive"] }
+
+[features]
+# The crash harness and the measurements need std; the core does not.
+default = ["std"]
+std = []
+
+[lints.rust]
+# RUSTFLAGS='--cfg sha2_backend="soft"' forces sha2's portable code (ADR 0004's bar).
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(sha2_backend, values("soft"))'] }

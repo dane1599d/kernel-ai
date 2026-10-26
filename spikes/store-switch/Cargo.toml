@@ -1,0 +1,16 @@
+[package]
+name = "spike-store-switch"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Spike S11-2's host half (ADR 0011): the package store's switch under crashes,
+# over kaifs's transactions (S04-1's spike engine) and over design C's three
+# filesystem primitives. Host-only, never merged.
+[lib]
+doctest = false
+
+[dependencies]
+sha2 = "0.11.1"
+spike-kaifs = { path = "../kaifs" }

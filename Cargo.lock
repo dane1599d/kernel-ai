@@ -847,6 +847,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
+name = "seahash"
+version = "4.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1c107b6f4780854c8b126e228ea8869f4d7b71260f962fefb57b996b8959ba6b"
+
+[[package]]
 name = "semver"
 version = "1.0.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -963,10 +969,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "spike-kaifs"
+version = "0.0.0"
+dependencies = [
+ "seahash",
+ "sha2",
+ "zerocopy",
+]
+
+[[package]]
 name = "spike-rhai"
 version = "0.0.0"
 dependencies = [
  "rhai",
+]
+
+[[package]]
+name = "spike-store-switch"
+version = "0.0.0"
+dependencies = [
+ "sha2",
+ "spike-kaifs",
 ]
 
 [[package]]
