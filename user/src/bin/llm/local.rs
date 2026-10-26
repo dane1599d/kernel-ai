@@ -98,6 +98,38 @@ const SLOW_TOKENS_PER_S: f64 = 10.0;
 /// guest's 8 tokens/s.
 const SCRIPT_DECODE_NS: u64 = 5_000_000_000;
 
+/// The first bytes [`model_id`] hashes: the GGUF header, tokenizer and tensor
+/// table, and the first tensors.
+const ID_HEAD: usize = 32 << 20;
+/// Further 1 MiB samples it hashes, evenly spaced.
+const ID_SAMPLES: usize = 64;
+/// Hashed between 1 ms sleeps, so the burst limit never sees one long run.
+const ID_STEP: usize = 16 << 20;
+
+/// **Interim** (S10-3), the model's identity for its KV files' key until P2
+/// task 10 names it by SHA-256: the file's length, and FNV-1a64 over its first
+/// [`ID_HEAD`] bytes and [`ID_SAMPLES`] 1 MiB samples spread over the rest,
+/// about 96 MiB. All of the 2.5 GB would take the guest over 10 s.
+fn model_id(bytes: &[u8]) -> [u8; 32] {
+    let mut fnv = kabi::model::Fnv1a::new();
+    let mut hash = |part: &[u8]| {
+        for piece in part.chunks(ID_STEP) {
+            fnv.update(piece);
+            sys::sleep_ms(1);
+        }
+    };
+    hash(&bytes[..bytes.len().min(ID_HEAD)]);
+    let rest = bytes.len().saturating_sub(ID_HEAD);
+    for i in 0..ID_SAMPLES {
+        let at = ID_HEAD + rest / ID_SAMPLES * i;
+        hash(&bytes[at.min(bytes.len())..(at + (1 << 20)).min(bytes.len())]);
+    }
+    let mut id = [0u8; 32];
+    id[..8].copy_from_slice(&fnv.finish().to_le_bytes());
+    id[8..16].copy_from_slice(&(bytes.len() as u64).to_le_bytes());
+    id
+}
+
 /// One decode of a request (a request may take two: `act` then its script), for
 /// the profile `act` logs.
 #[derive(Clone, Copy, Default)]
@@ -326,19 +358,11 @@ impl Local {
     }
 
     /// The key slot `slot`'s `kai-kv 1` file is saved under. Until P2 task 10's
-    /// model store names the model by its SHA-256, its identity is the file's
-    /// FNV-1a64 and length (computed once, as `health` reports it), in the key's
-    /// 32 bytes.
+    /// model store names the model by its SHA-256, its identity (computed once)
+    /// is [`model_id`], in the key's 32 bytes.
     fn kv_key(&mut self, slot: usize) -> infer::segments::Key {
         let bytes = self.bytes;
-        let model_sha256 = *self.model_id.get_or_insert_with(|| {
-            let mut fnv = kabi::model::Fnv1a::new();
-            fnv.update(bytes);
-            let mut id = [0u8; 32];
-            id[..8].copy_from_slice(&fnv.finish().to_le_bytes());
-            id[8..16].copy_from_slice(&(bytes.len() as u64).to_le_bytes());
-            id
-        });
+        let model_sha256 = *self.model_id.get_or_insert_with(|| model_id(bytes));
         infer::segments::Key {
             model_sha256,
             tier: self.engine.about().tier,
