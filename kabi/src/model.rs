@@ -80,6 +80,22 @@ pub const ENGINE_OTHER_BYTES: u64 = 32 << 20;
 /// Pages the llm plan line adds for the engine when a model is loaded.
 pub const ENGINE_PAGES: u64 = (KV_BYTES + ENGINE_OTHER_BYTES) / 4096;
 
+/// The one service, and program, that may map the model.
+pub const HOLDER: &str = "llm";
+/// Most pages the model's holder may be granted: 768 MiB, for the engine's two
+/// KV slots (608 MiB) and a pool of workers. Every other process keeps the
+/// kernel's per-process cap (512 MiB, ADR 0001 D4).
+pub const MAX_PAGES_HOLDER: u64 = 192 * 1024;
+
+/// The most pages a process named `name` running `program` may be granted:
+/// [`MAX_PAGES_HOLDER`] for the holder, `per_process` for anything else.
+pub fn max_pages(name: &str, program: &str, per_process: u64) -> u64 {
+    match name == HOLDER && program == HOLDER {
+        true => MAX_PAGES_HOLDER,
+        false => per_process,
+    }
+}
+
 /// What xtask tells the kernel about the file behind the model disk, on the kernel
 /// command line: `model_len=BYTES`, the file's exact length (the disk rounds it up
 /// to whole sectors), and for test boots `model_fnv=HEX`, its [`Fnv1a`] hash.
@@ -154,6 +170,15 @@ pub fn fnv1a(bytes: &[u8]) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_the_holder_gets_the_holders_page_cap() {
+        let per_process = 128 * 1024;
+        assert_eq!(super::max_pages("llm", "llm", per_process), 192 * 1024);
+        for (name, program) in [("shell", "shell"), ("llm", "shell"), ("work", "llm")] {
+            assert_eq!(super::max_pages(name, program, per_process), per_process);
+        }
+    }
+
     use super::*;
 
     #[test]

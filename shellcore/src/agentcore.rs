@@ -65,6 +65,12 @@ impl Shell {
             Err(error @ (ActError::Local(_) | ActError::CutOff)) => {
                 self.host
                     .audit(&format!("request {id}: no call ({})", error.describe()));
+                self.record(
+                    id,
+                    request,
+                    "",
+                    &format!("refused: no call ({})", error.describe()),
+                );
                 return Some(Reply::err(format!(
                     "the model gave no call: {}",
                     error.describe()

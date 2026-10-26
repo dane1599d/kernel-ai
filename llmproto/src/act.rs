@@ -164,6 +164,8 @@ pub fn parse(text: &str) -> Result<Call, ActError> {
 pub fn encode_answer(answer: &Result<Call, ActError>) -> String {
     match answer {
         Ok(call) => format!("ok {}", call.text()),
+        // The far end reads it back as `Local`, which adds "local model: ".
+        Err(ActError::Local(why)) => format!("err {why}"),
         Err(error) => format!("err {}", error.describe()),
     }
 }
@@ -270,6 +272,14 @@ mod tests {
             Err(ActError::Local(
                 "the call was cut off at the token limit".into()
             ))
+        );
+        // A local error crosses the wire once prefixed, not twice.
+        let local = Err(ActError::Local("it ran out of time".into()));
+        let back = decode_answer(&encode_answer(&local));
+        assert_eq!(back, local);
+        assert_eq!(
+            back.unwrap_err().describe(),
+            "local model: it ran out of time"
         );
     }
 }

@@ -169,6 +169,8 @@ pub fn routed(
     let (name, key, value) = match super::script_with(engine, &asked, false, on_step) {
         Ok(answer) => ("script", "code", answer.script),
         Err(script::AnswerError::NoScript(words)) => ("say", "text", words),
+        // `ActError::Local` adds its own "local model: ".
+        Err(script::AnswerError::Local(why)) => return Err(ActError::Local(why)),
         Err(error) => return Err(ActError::Local(error.describe())),
     };
     let mut arguments = serde_json::Map::new();
