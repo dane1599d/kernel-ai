@@ -4,7 +4,9 @@
 const CREATE_IO_SQ: u8 = 0x01;
 const CREATE_IO_CQ: u8 = 0x05;
 const IDENTIFY: u8 = 0x06;
-/// NVM command set opcode.
+/// NVM command set opcodes.
+const FLUSH: u8 = 0x00;
+const WRITE: u8 = 0x01;
 const READ: u8 = 0x02;
 
 /// Identify's CNS values the driver uses.
@@ -65,6 +67,19 @@ impl Command {
         // NLB is zero-based.
         command.dwords[12] = (blocks - 1) & 0xFFFF;
         command
+    }
+
+    /// Writes `blocks` logical blocks (1 to 65,536) to `lba` of namespace `nsid`.
+    pub fn write(cid: u16, nsid: u32, lba: u64, blocks: u32, prp1: u64, prp2: u64) -> Self {
+        let mut command = Self::read(cid, nsid, lba, blocks, prp1, prp2);
+        command.dwords[0] = (command.dwords[0] & !0xFF) | u32::from(WRITE);
+        command
+    }
+
+    /// Makes the namespace's completed writes durable: they leave any volatile
+    /// write cache.
+    pub fn flush(cid: u16, nsid: u32) -> Self {
+        Self::new(FLUSH, cid, nsid, 0, 0)
     }
 
     pub fn cid(&self) -> u16 {
@@ -144,6 +159,18 @@ mod tests {
         assert_eq!(read.dwords[11], 1);
         assert_eq!(read.dwords[12], 1023);
         assert_eq!(read.dwords[8], 0xB000);
+    }
+
+    #[test]
+    fn write_is_read_with_its_own_opcode_and_flush_names_the_namespace() {
+        let write = Command::write(9, 1, 0x1_0000_0002, 8, 0xA000, 0);
+        let read = Command::read(9, 1, 0x1_0000_0002, 8, 0xA000, 0);
+        assert_eq!(write.dwords[0], 0x0009_0001);
+        assert_eq!(write.dwords[1..], read.dwords[1..]);
+        let flush = Command::flush(3, 1);
+        assert_eq!(flush.dwords[0], 0x0003_0000);
+        assert_eq!(flush.dwords[1], 1);
+        assert!(flush.dwords[2..].iter().all(|&w| w == 0));
     }
 
     #[test]

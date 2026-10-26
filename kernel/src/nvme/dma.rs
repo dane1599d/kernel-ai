@@ -36,6 +36,13 @@ impl Page {
         unsafe { core::slice::from_raw_parts(self.virt as *const u8, len) }
     }
 
+    /// The first `len` bytes, to fill before a command that reads them.
+    pub fn bytes_mut(&mut self, len: usize) -> &mut [u8] {
+        let len = len.min(self.len);
+        // SAFETY: as in `bytes`; `&mut self` keeps any other view away meanwhile.
+        unsafe { core::slice::from_raw_parts_mut(self.virt as *mut u8, len) }
+    }
+
     /// Writes `value` as the `index`-th u64.
     pub fn set_u64(&mut self, index: usize, value: u64) {
         assert!(
