@@ -1,8 +1,8 @@
 [workspace]
 resolver = "3"
-members = ["acpitables", "agentabi", "appabi", "bpe", "captable", "compsdk", "cpufeat", "devkit", "devmatch", "editcore", "gfxcore", "gguf", "infer", "livecore", "quant", "wasmhost", "wasihost", "components/notes", "components/fixtures/notes-v1", "components/fixtures/notes-bad", "kabi", "kaibundle", "kernel", "linetable", "llmproto", "mm", "netcore", "nvme", "pci", "sched", "shellcore", "supervise", "termcore", "uelf", "user", "xhci", "xtask", "spikes/rhai", "spikes/wasmi"]
+members = ["acpitables", "agentabi", "appabi", "bpe", "captable", "compsdk", "cpufeat", "devkit", "devmatch", "editcore", "gfxcore", "gguf", "infer", "livecore", "quant", "wasmhost", "wasihost", "components/notes", "components/fixtures/notes-v1", "components/fixtures/notes-bad", "kabi", "kaibundle", "kernel", "linetable", "llmproto", "mm", "netcore", "nvme", "pci", "sched", "shellcore", "supervise", "termcore", "uelf", "user", "xhci", "xtask", "kaifs", "spikes/rhai", "spikes/wasmi"]
 # Host builds only build the xtask runner; the kernel, spikes and most user programs are built by xtask for x86_64-unknown-none, and llm, probe and vecstress for user/x86_64-kai-user.json.
-default-members = ["acpitables", "agentabi", "appabi", "bpe", "captable", "compsdk", "cpufeat", "devkit", "devmatch", "editcore", "gfxcore", "gguf", "infer", "livecore", "quant", "wasmhost", "wasihost", "components/notes", "components/fixtures/notes-v1", "components/fixtures/notes-bad", "kabi", "kaibundle", "linetable", "llmproto", "mm", "netcore", "nvme", "pci", "sched", "shellcore", "supervise", "termcore", "uelf", "xhci", "xtask"]
+default-members = ["acpitables", "agentabi", "appabi", "bpe", "captable", "compsdk", "cpufeat", "devkit", "devmatch", "editcore", "gfxcore", "gguf", "infer", "livecore", "quant", "wasmhost", "wasihost", "components/notes", "components/fixtures/notes-v1", "components/fixtures/notes-bad", "kabi", "kaibundle", "linetable", "llmproto", "mm", "netcore", "nvme", "pci", "sched", "shellcore", "supervise", "termcore", "uelf", "xhci", "xtask", "kaifs"]
 
 [workspace.package]
 edition = "2024"
