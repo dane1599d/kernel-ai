@@ -215,6 +215,11 @@ impl Clock {
     }
 }
 
+/// Which KV slot each prompt uses: the act prefix stays in one, the script
+/// prompt (and `ask`, `explain`, `tune`, `:model`) in the other, so neither
+/// evicts the other (S02-2).
+const SLOTS: local::act::Slots = local::act::Slots::TWO;
+
 pub struct Local {
     engine: Engine<'static>,
     /// The tagged call's grammar over the pack's rows, built once.
@@ -228,12 +233,14 @@ impl Local {
     /// Loads the model in `bytes` on the best tier this CPU and the kernel allow,
     /// to run on `workers`.
     pub fn load(bytes: &'static [u8], workers: &'static dyn Parallel) -> Result<Self, String> {
+        // Each KV slot gets its share: the act prefix's and the script prompt's.
         let budget = Budget {
-            kv_bytes: kabi::model::KV_BYTES as usize,
+            kv_bytes: (kabi::model::KV_BYTES as usize) / kabi::model::KV_SLOTS,
             other_bytes: kabi::model::ENGINE_OTHER_BYTES as usize,
         };
         let mut engine = Engine::load(bytes, Tier::best(), kabi::model::CONTEXT_CAP, budget)
             .map_err(|error| format!("{error}"))?;
+        engine.add_slot().map_err(|error| format!("{error}"))?;
         engine.set_parallel(workers);
         let grammar = local::act::grammar().map_err(|error| format!("{error}"))?;
         Ok(Self {
@@ -267,6 +274,7 @@ impl Local {
 
     /// The model's greedy answer to `request`, for `ask`, `:why` and `:model`.
     pub fn complete(&mut self, request: &chat::Request) -> Result<Completion, String> {
+        self.engine.use_slot(SLOTS.script);
         let mut clock = Clock::new(DEADLINE_MS);
         let done = local::complete(&mut self.engine, request, |step| clock.step(step));
         self.last = clock.speed().or(self.last);
@@ -288,6 +296,7 @@ impl Local {
     /// A script for the shell's `request`, within the time the shell gives one
     /// round and at most `script::SERVICE_TIMEOUT_MS`.
     pub fn script(&mut self, request: &ScriptRequest) -> Result<Answer, AnswerError> {
+        self.engine.use_slot(SLOTS.script);
         let mut clock = Clock::new(request.timeout_ms.min(script::SERVICE_TIMEOUT_MS));
         let answer = local::script(&mut self.engine, request, |step| clock.step(step));
         let forced = self.engine.forced();
@@ -308,6 +317,7 @@ impl Local {
             &self.grammar,
             request,
             &self.history,
+            SLOTS,
             |step| clock.step(step),
         );
         let forced = self.engine.forced();
@@ -342,6 +352,7 @@ impl Local {
     /// Computes the `act` prefix (pack, MODE turn, history) into the cache while
     /// no request waits; `waiting` as for [`Local::warm`].
     pub fn warm_act(&mut self, mut waiting: impl FnMut() -> bool) -> Result<(), String> {
+        self.engine.use_slot(SLOTS.act);
         let mut slept = 0;
         local::act::warm(&mut self.engine, &self.history, |_| {
             if sys::time_ns() - slept < SLEEP_EVERY_NS {
@@ -362,6 +373,7 @@ impl Local {
     /// the start and then once a second of compute, in place of the 1 ms sleep;
     /// if one did, it stops, and the request carries on from what was computed.
     pub fn warm(&mut self, mut waiting: impl FnMut() -> bool) -> Result<(), String> {
+        self.engine.use_slot(SLOTS.script);
         let mut slept = 0;
         local::warm(&mut self.engine, |_| {
             if sys::time_ns() - slept < SLEEP_EVERY_NS {
@@ -381,6 +393,7 @@ impl Local {
     /// `tune::SERVICE_TIMEOUT_MS`. It prints how long the answer took, so a slow
     /// machine's demo shows its own speed.
     pub fn tune(&mut self, request: &TuneRequest) -> Result<Completion, String> {
+        self.engine.use_slot(SLOTS.script);
         let mut clock = Clock::new(tune::SERVICE_TIMEOUT_MS);
         let done = local::tune(&mut self.engine, request, |step| clock.step(step));
         self.last = clock.speed().or(self.last);
@@ -400,6 +413,7 @@ impl Local {
 
     /// `:model`'s lines: the model, the engine, then one timed test prompt.
     pub fn report(&mut self, len: usize) -> String {
+        self.engine.use_slot(SLOTS.script);
         let about = self.engine.about().clone();
         let c = about.config;
         let licence = about.license.as_deref().unwrap_or("not stated in the file");

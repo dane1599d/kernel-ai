@@ -439,14 +439,14 @@ fn the_model_follows_the_ram_as_setup_picks_it() {
 
 #[test]
 fn the_vm_for_the_model_must_fit_in_wsl() {
-    // The 4B's guest: 512 MiB, the 2.4 GB model and the engine's 928 MiB.
-    assert_eq!(crate::disk::memory_mib_for(2_497_281_120), 3840);
+    // The 4B's guest: 512 MiB, the 2.4 GB model and the engine's 1,216 MiB.
+    assert_eq!(crate::disk::memory_mib_for(2_497_281_120), 4160);
     let list = items(&founder());
     let vm = item(&list, "VM size in WSL");
     assert!(vm.ok, "{vm:?}");
     assert!(
         vm.found
-            .contains("3.8 GB guest with 8 vCPUs; WSL has 13.5 GB"),
+            .contains("4.1 GB guest with 8 vCPUs; WSL has 13.5 GB"),
         "{vm:?}"
     );
     let tight = with_wsl(founder(), |w| {
@@ -455,5 +455,5 @@ fn the_vm_for_the_model_must_fit_in_wsl() {
     let list = items(&tight);
     let vm = item(&list, "VM size in WSL");
     assert!(!vm.ok);
-    assert!(vm.fix[0].say.contains("put the line memory=6GB"), "{vm:?}");
+    assert!(vm.fix[0].say.contains("put the line memory=7GB"), "{vm:?}");
 }

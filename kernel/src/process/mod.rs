@@ -52,10 +52,10 @@ use workers::Worker;
 use x86_64::instructions::interrupts;
 
 pub const MAX_PROCESSES: usize = 16;
-/// Most pages one process may be granted: 512 MiB, enough for the llm service's
-/// local engine with its 2,048-position KV cache and a pool of workers
-/// (`model::holder_pages`).
-pub const MAX_PAGES_PER_PROCESS: u64 = 128 * 1024;
+/// Most pages one process may be granted: 768 MiB, enough for the llm service's
+/// local engine with its two 2,048-position KV slots (608 MiB) and a pool of
+/// workers (`model::holder_pages`).
+pub const MAX_PAGES_PER_PROCESS: u64 = 192 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum State {

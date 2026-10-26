@@ -166,6 +166,10 @@ pub struct Engine<'a> {
     spells_ascii: bool,
     /// Tokens jump-forward fed in the last reply.
     forced: usize,
+    /// The other KV slots (see [`Engine::add_slot`]), each a cache with the
+    /// tokens behind it; `None` at the index in use, whose cache is `kv`.
+    slots: Vec<Option<(KvCache, Vec<u32>)>>,
+    slot: usize,
     about: About,
 }
 
@@ -236,8 +240,47 @@ impl<'a> Engine<'a> {
             candidates,
             spells_ascii,
             forced: 0,
+            slots: alloc::vec![None],
+            slot: 0,
             about,
         })
+    }
+
+    /// Adds a KV slot of as many positions as slot 0: a second cache with its own
+    /// prompt cache, so two prompts that share no start (the skill pack and the
+    /// script prompt, S02-2) each stay computed. It takes as much memory as slot
+    /// 0. Returns its index; [`Engine::use_slot`] switches to it.
+    pub fn add_slot(&mut self) -> Result<usize, Error> {
+        let kv = self.model.kv_cache()?;
+        let mut cached = Vec::new();
+        cached
+            .try_reserve_exact(kv.capacity())
+            .map_err(|_| Error::OutOfMemory)?;
+        self.slots.try_reserve(1).map_err(|_| Error::OutOfMemory)?;
+        self.about.kv_bytes += kv.bytes();
+        self.slots.push(Some((kv, cached)));
+        Ok(self.slots.len() - 1)
+    }
+
+    /// Answers from KV slot `slot` from now on (its own cache, untouched by the
+    /// others); an unknown slot changes nothing. Switching moves no keys or
+    /// values: the slots swap places.
+    pub fn use_slot(&mut self, slot: usize) {
+        if slot == self.slot || slot >= self.slots.len() {
+            return;
+        }
+        let Some((kv, cached)) = self.slots[slot].take() else {
+            return;
+        };
+        let old_kv = core::mem::replace(&mut self.kv, kv);
+        let old_cached = core::mem::replace(&mut self.cached, cached);
+        self.slots[self.slot] = Some((old_kv, old_cached));
+        self.slot = slot;
+    }
+
+    /// The KV slot in use.
+    pub fn slot(&self) -> usize {
+        self.slot
     }
 
     /// Runs the model on `par`'s workers from now on (one thread until this is

@@ -17,8 +17,10 @@ pub mod history;
 
 pub use history::{History, Turn};
 
-/// The answer reserve (ADR 0002 D4).
-pub const ACT_MAX_TOKENS: u32 = 1024;
+/// The answer reserve for a call: a row with its arguments, `say` (240 bytes) or
+/// `clarify` (six options). A script call carries no code (llm writes it with
+/// the script prompt), so 256 is room to spare.
+pub const ACT_MAX_TOKENS: u32 = 256;
 /// Longest the llm service spends on one call.
 pub const SERVICE_TIMEOUT_MS: u64 = 90_000;
 pub const LINE_MAX_BYTES: usize = 512;

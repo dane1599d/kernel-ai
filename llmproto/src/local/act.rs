@@ -46,23 +46,12 @@ const CLARIFY: [Arg<'static>; 2] = [
         kind: Kind::List(&OPTION, 6),
     },
 ];
-const LANG: Kind<'static> = Kind::Enum(LANGS);
-/// `script(code, lang?)`: today's script limits.
-const SCRIPT: [Arg<'static>; 2] = [
-    Arg {
-        name: "code",
-        kind: text(
-            script::SCRIPT_MAX_BYTES as u16,
-            script::SCRIPT_MAX_LINES as u8,
-            script::SCRIPT_MAX_LINE_CHARS as u16,
-            true,
-        ),
-    },
-    Arg {
-        name: "lang",
-        kind: Kind::Opt(&LANG),
-    },
-];
+/// `script()`: the call only picks it; [`routed`] has today's script prompt write
+/// the code and fills in `code` and `lang` (`rhai`; `c` stays out until ADR
+/// 0012's gate, `act::LANGS`). Code the call would write is thrown away, and
+/// decoding it cost 16-25 s a request in the guest (S02-2), so the grammar
+/// closes the call at once.
+const SCRIPT: [Arg<'static>; 0] = [];
 
 /// Longest path an argument takes.
 const PATH_MAX: u16 = 128;
@@ -128,20 +117,40 @@ pub fn grammar() -> Result<Tagged<'static>, infer::Error> {
     Tagged::new(Vec::leak(actions(&crate::pack::rows())))
 }
 
-/// [`act`], with a `script` call's code written by today's script prompt
-/// (see the module's note). Words in its envelope's summary instead of code
-/// become `say`. `on_step` keeps one time limit over both decodes.
+/// The engine's KV slots for the two prompts: the act prefix's and the script
+/// prompt's (`kabi::model::KV_SLOTS`). One slot for both works too, at the
+/// cost of each prompt evicting the other.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Slots {
+    pub act: usize,
+    pub script: usize,
+}
+
+impl Slots {
+    /// One slot for everything.
+    pub const ONE: Self = Self { act: 0, script: 0 };
+    /// The llm service's two.
+    pub const TWO: Self = Self { act: 0, script: 1 };
+}
+
+/// [`act`] in the act slot, with a `script` call's code written by today's
+/// script prompt in the script slot (see the module's note). Words in its
+/// envelope's summary instead of code become `say`. `on_step` keeps one time
+/// limit over both decodes.
 pub fn routed(
     engine: &mut Engine<'_>,
     grammar: &Tagged<'_>,
     request: &ActRequest,
     history: &History,
+    slots: Slots,
     mut on_step: impl FnMut(Step) -> Next,
 ) -> Result<Call, ActError> {
+    engine.use_slot(slots.act);
     let call = act(engine, grammar, request, history, &mut on_step)?;
     if call.name != "script" {
         return Ok(call);
     }
+    engine.use_slot(slots.script);
     let asked = script::ScriptRequest {
         request: request.line.clone(),
         repair: None,
@@ -155,7 +164,7 @@ pub fn routed(
     let mut arguments = serde_json::Map::new();
     arguments.insert(key.into(), serde_json::Value::String(value));
     if name == "script" {
-        arguments.insert("lang".into(), serde_json::Value::String("rhai".into()));
+        arguments.insert("lang".into(), serde_json::Value::String(LANGS[0].into()));
     }
     Ok(Call {
         name: name.into(),
@@ -267,17 +276,17 @@ mod tests {
             r#"{"name":"tune","arguments":{"target":"build-3","intent":null}}"#,
             r#"{"name":"say","arguments":{"text":"Hello."}}"#,
             r#"{"name":"clarify","arguments":{"question":"Which?","options":["a","b"]}}"#,
-            r#"{"name":"script","arguments":{"code":"print(cpus());","lang":"rhai"}}"#,
-            r#"{"name":"script","arguments":{"code":"print(cpus());","lang":null}}"#,
+            // The call only picks `script`; llm writes its code (`routed`).
+            r#"{"name":"script","arguments":{}}"#,
         ] {
             let state = g.advance(g.start(), text.as_bytes()).unwrap();
             assert!(g.is_done(&state), "{text}");
             assert!(act::parse(text).is_ok());
         }
-        // The shell's pure helpers and `lang: c` are not offered.
+        // The shell's pure helpers and code inside a script call are not offered.
         for text in [
             r#"{"name":"fixed""#,
-            r#"{"name":"script","arguments":{"code":"","lang":"c"#,
+            r#"{"name":"script","arguments":{"code""#,
         ] {
             assert!(g.advance(g.start(), text.as_bytes()).is_err(), "{text}");
         }
@@ -306,9 +315,15 @@ mod tests {
         let mut first = None;
         for tier in quant::Tier::all() {
             let mut engine = Engine::load(&bytes, tier, 3072, budget).unwrap();
-            let answer = routed(&mut engine, &g, &request, &History::new(), |_| {
-                Next::Continue
-            });
+            engine.add_slot().unwrap();
+            let answer = routed(
+                &mut engine,
+                &g,
+                &request,
+                &History::new(),
+                Slots::TWO,
+                |_| Next::Continue,
+            );
             assert!(
                 matches!(answer, Ok(_) | Err(ActError::CutOff)),
                 "{answer:?}"

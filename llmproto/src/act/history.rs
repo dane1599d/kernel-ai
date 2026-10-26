@@ -22,11 +22,12 @@ use alloc::vec::Vec;
 /// History's ceiling (P1 plan section 4).
 pub const HISTORY_MAX: usize = 512;
 /// What the rest of the context keeps (P1 plan section 4): the chat template's
-/// turns, the State line, the request and the answer reserve.
+/// turns, the State line, the request and the call's answer reserve (the plan had
+/// 1,024 when a script's code was written inside the call).
 pub const TEMPLATE_TOKENS: usize = 32;
 pub const STATE_TOKENS: usize = 64;
 pub const REQUEST_TOKENS: usize = 160;
-pub const ANSWER_TOKENS: usize = 1024;
+pub const ANSWER_TOKENS: usize = super::ACT_MAX_TOKENS as usize;
 /// Under this, the plan's index level would collapse app groups (ADR 0010 §6);
 /// P1's pack leaves the full 512.
 pub const HISTORY_FLOOR: usize = 192;
@@ -35,7 +36,7 @@ pub const RESULT_MAX_BYTES: usize = 300;
 /// Longest call kept, in bytes: a script's call can be 3 KiB.
 pub const CALL_MAX_BYTES: usize = 4096;
 
-/// `HISTORY_BUDGET = min(512, context − pack − 32 − 64 − 160 − 1,024)`, with
+/// `HISTORY_BUDGET = min(512, context − pack − 32 − 64 − 160 − 256)`, with
 /// `pack` the pack and its MODE turn in tokens.
 pub fn budget(context: usize, pack: usize) -> usize {
     let rest = TEMPLATE_TOKENS + STATE_TOKENS + REQUEST_TOKENS + ANSWER_TOKENS;
@@ -178,8 +179,8 @@ mod tests {
     fn the_budget_follows_the_plan() {
         // P1's pack and MODE: 878 real tokens (#48's token count).
         assert_eq!(budget(3072, 878), HISTORY_MAX);
-        assert_eq!(budget(3072, 1_400), 3072 - 1_400 - 1_280);
-        assert_eq!(budget(2048, 1_000), 0);
+        assert_eq!(budget(2048, 1_400), 2048 - 1_400 - 512);
+        assert_eq!(budget(1024, 1_000), 0);
         // The pack's budget leaves history its full 512 tokens, over the floor.
         let pack = crate::pack::PACK_BUDGET;
         assert!(budget(kabi::model::CONTEXT_CAP, pack) >= HISTORY_FLOOR);

@@ -155,6 +155,9 @@ impl Host for Acting {
             &self.grammar,
             &request,
             &self.history.borrow(),
+            // One slot here: the answers are the guest's whichever slot holds
+            // which prompt; only the time differs.
+            local::act::Slots::ONE,
             |_| Next::Continue,
         );
         act::decode_answer(&act::encode_answer(&call))
