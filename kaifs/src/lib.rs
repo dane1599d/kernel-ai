@@ -11,6 +11,8 @@
 //!   of eight slots, and the mount rules;
 //! - [`dev`]: the [`BlockDev`] trait, an in-memory disk, a recording disk, and the
 //!   [`Image`] a crash leaves;
+//! - [`buddy`] and [`allocator`]: the buddy allocator, the N+2 wait for freed
+//!   blocks, and the allocator's chain on disk;
 //! - [`crash`] (with `std`): the crash enumerator every later layer is gated by.
 
 #![no_std]
@@ -19,6 +21,8 @@ extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
 
+pub mod allocator;
+pub mod buddy;
 #[cfg(feature = "std")]
 pub mod crash;
 pub mod csum;
