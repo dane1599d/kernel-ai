@@ -72,7 +72,7 @@ pub fn route_name(id: u64) -> Option<Name> {
 /// The startup handles for capability bits `caps` (ADR 0001 D3's table), for the
 /// process `pid`. CALL gives a route only through `uses=`, so none here.
 pub fn startup(caps: u64, pid: u64) -> Vec<Entry> {
-    let rows: [(u64, Kind, Rights, u64); 12] = [
+    let rows: [(u64, Kind, Rights, u64); 13] = [
         // MINT under the `system` root, which is never revoked (ADR 0001 D3).
         (
             cap::SUPERVISE,
@@ -91,6 +91,13 @@ pub fn startup(caps: u64, pid: u64) -> Vec<Entry> {
             0,
         ),
         (cap::STOP, Kind::Job, Rights::STOP, 0),
+        // CREATE, not SPAWN: it starts `scriptrun` only, and never passes for SUPERVISE.
+        (
+            cap::SCRIPT,
+            Kind::Job,
+            Rights::CREATE.union(Rights::WAIT),
+            crate::process::job::SCRIPTRUN,
+        ),
         (
             cap::SERVE,
             Kind::Endpoint,
@@ -147,6 +154,7 @@ pub fn required(bit: u64) -> Option<(Kind, Rights)> {
         cap::THREADS => (Kind::Process, Rights::THREADS),
         cap::RESOLVE => (Kind::NetDest, Rights::RESOLVE),
         cap::STOP => (Kind::Job, Rights::STOP),
+        cap::SCRIPT => (Kind::Job, Rights::CREATE),
         _ => return None,
     })
 }
@@ -155,7 +163,7 @@ pub fn required(bit: u64) -> Option<(Kind, Rights)> {
 /// ADR 0001 D3). A kind no bit stands for yet (`Grant`, `Shm`) is not limited.
 pub fn ceiling_allows(caps: u64, kind: Kind) -> bool {
     let bits = [
-        (Kind::Job, cap::SUPERVISE | cap::STOP),
+        (Kind::Job, cap::SUPERVISE | cap::STOP | cap::SCRIPT),
         (Kind::Endpoint, cap::SERVE),
         (Kind::Service, cap::CALL),
         (Kind::Sched, cap::POLICY),
@@ -257,6 +265,23 @@ pub fn take_for(slot: usize, handles: &[Handle], to_caps: u64) -> Result<Vec<Ent
         .iter()
         .map(|&handle| table.close(handle).map_err(kabi::Error::from))
         .collect()
+}
+
+/// Puts `entries` moved in before the process in `slot` first runs (JOB_SPAWN)
+/// into its table and lists them in STARTUP, as the handles it starts with.
+/// One that does not fit is dropped.
+pub fn give_at_start(slot: usize, entries: Vec<Entry>) {
+    let mut guard = HANDLES[slot].lock();
+    let Some(handles) = guard.as_mut() else {
+        return;
+    };
+    for entry in entries {
+        if let Ok(handle) = handles.table.insert(entry)
+            && handles.startup.try_reserve(1).is_ok()
+        {
+            handles.startup.push(handle);
+        }
+    }
 }
 
 /// Puts moved `entries` into `slot`'s table; their new handles. One that does not

@@ -31,6 +31,10 @@ pub const RESOLVE: u64 = 1 << 9;
 /// Stop processes the supervisor does not run, by name ([`super::call::PROC_STOP`]):
 /// a Job handle with STOP. The kernel grants it only to the service named `shell`.
 pub const STOP: u64 = 1 << 10;
+/// Start `scriptrun` as one's own child and wait for it ([`super::call::JOB_SPAWN`],
+/// [`super::call::JOB_WAIT`]): a Job handle with CREATE and WAIT that names that
+/// program. The kernel grants it only to the service named `shell` (ADR 0001 D6).
+pub const SCRIPT: u64 = 1 << 11;
 /// Every capability a supervisor may grant.
 pub const GRANTABLE: u64 =
-    SERVE | NET | CALL | POLICY | COMPONENT | PUBLISH | MODEL | THREADS | RESOLVE | STOP;
+    SERVE | NET | CALL | POLICY | COMPONENT | PUBLISH | MODEL | THREADS | RESOLVE | STOP | SCRIPT;

@@ -80,6 +80,7 @@ mod qemu;
 mod sched_control;
 mod sched_tests;
 mod script_tests;
+mod scriptrun_tests;
 mod selftest;
 mod serial;
 mod shell_tests;
@@ -313,6 +314,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Latency => run_case(latency_tests::check),
         SelfTest::ProcStop => run_case(stop_tests::check),
         SelfTest::Shm => run_case(shm_tests::check),
+        SelfTest::Scriptrun => run_case(scriptrun_tests::check),
         SelfTest::Fpu => run_case(fpu_tests::fpu_check),
         SelfTest::Probe => run_case(fpu_tests::probe_check),
         SelfTest::Handles => run_case(handle_tests::check),

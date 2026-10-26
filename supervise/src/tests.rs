@@ -54,7 +54,7 @@ fn the_plan_the_kernel_sends_parses() {
     assert_eq!(shell.name, "shell");
     assert_eq!(
         shell.limits.caps,
-        cap::SERVE | cap::CALL | cap::POLICY | cap::STOP
+        cap::SERVE | cap::CALL | cap::POLICY | cap::STOP | cap::SCRIPT
     );
     assert_eq!(shell.uses, ["llm", SUPERVISOR]);
     assert_eq!(shell.limits.stack_pages, 512);

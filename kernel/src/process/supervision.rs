@@ -37,6 +37,8 @@ const DEFAULT_BURST_MS: u64 = 2000;
 pub const COMPONENT_HOST: &str = "comphost";
 /// The one service that may hold `cap::STOP`.
 pub const STOPPER: &str = "shell";
+/// The one service that may hold `cap::SCRIPT`.
+pub const SCRIPTER: &str = "shell";
 /// The one service, and program, that may hold `cap::PUBLISH`.
 pub const PUBLISHER: &str = "edit";
 /// Longest any supervision call may block.
@@ -120,6 +122,10 @@ pub(super) fn record_load_failure(pid: u64, name: &Name, supervisor: bool, spawn
 /// exit queue if the supervisor started it, and to [`kernel_child_exit`] if the
 /// kernel did.
 pub(super) fn on_exit(process: &Process, reason: ExitReason, detail: u64) {
+    if process.job {
+        super::job::on_exit(process, reason, detail);
+        return;
+    }
     let wake = if process.supervisor {
         // A record it took but never acknowledged goes to its successor.
         with_queue(|queue| queue.head_delivered = false);
@@ -290,6 +296,10 @@ pub fn spawn_service(slot: usize, request_ptr: u64) -> Result<u64, Error> {
     }
     // Stopping processes is for the shell, whose rows ask first.
     if request.limits.caps & cap::STOP != 0 && name != STOPPER {
+        return Err(Error::Permission);
+    }
+    // Starting `scriptrun` is for the agent core (ADR 0001 D6).
+    if request.limits.caps & cap::SCRIPT != 0 && name != SCRIPTER {
         return Err(Error::Permission);
     }
     // Uploading versions and reaching the build service are for the edit service.

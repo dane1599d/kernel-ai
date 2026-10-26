@@ -72,4 +72,13 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("shm", "test=shm")
     },
+    // P1 task 14: scriptrun through a Job, and spike S01-1's M3 and M5.
+    TestCase {
+        expect: &[
+            "handles: M3: scriptrun per request",
+            "scriptrun: M5: ",
+            "scriptrun: a Job started scriptrun with only the handles moved in, and its exit came back",
+        ],
+        ..case("scriptrun", "test=scriptrun")
+    },
 ];

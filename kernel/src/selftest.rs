@@ -72,6 +72,8 @@ pub enum SelfTest {
     ProcStop,
     /// `Shm` and spike S01-1's M6 (P1 task 14).
     Shm,
+    /// `scriptrun` through a Job, and spike S01-1's M3 and M5 (P1 task 14).
+    Scriptrun,
     /// L2: processes keep their vector state across switches and CPUs, and start clean.
     Fpu,
     /// L2: the isolation probe; ops 0-2 complete and every other op is stopped.
@@ -154,6 +156,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=latency" => Some(SelfTest::Latency),
             "test=proc-stop" => Some(SelfTest::ProcStop),
             "test=shm" => Some(SelfTest::Shm),
+            "test=scriptrun" => Some(SelfTest::Scriptrun),
             "test=fpu" => Some(SelfTest::Fpu),
             "test=probe" => Some(SelfTest::Probe),
             "test=handles" => Some(SelfTest::Handles),
