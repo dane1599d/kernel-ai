@@ -32,6 +32,7 @@ mod engine;
 mod rules;
 pub mod script;
 mod show;
+pub mod state;
 pub mod tiers;
 mod tune;
 mod undo;
@@ -78,6 +79,10 @@ pub trait Host {
     fn remember(&self, _line: &str, _call: &str, _result: &str) {}
     /// Forgets the conversation (`new`).
     fn forget(&self) {}
+    /// Where the user is, for the State line (ADR 0010 §5); nothing by default.
+    fn state(&self) -> state::State {
+        state::State::default()
+    }
     /// Whether `digest` is the one the trusted path holds for the `ONCE` badge
     /// `badge` (ONCE_CHECK); a match uses it up. A host without the trusted path
     /// has no Allow to check, so an asked call does not run on its menu.
@@ -246,6 +251,14 @@ pub struct Shell {
     partial: Option<String>,
     /// A request the model asked to clarify: the next line is joined to it.
     clarifying: Option<String>,
+}
+
+impl Shell {
+    /// The State the next request carries, `#{...}`, or `None` when the OS knows
+    /// nothing to show (ADR 0010 §5).
+    pub fn state_line(&self) -> Option<String> {
+        self.host.state().snapshot()
+    }
 }
 
 impl Shell {

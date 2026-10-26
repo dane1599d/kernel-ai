@@ -44,6 +44,9 @@ struct FakeHost {
     /// Calls `act` gives, in order; afterwards there is none.
     calls: RefCell<VecDeque<Result<Call, ActError>>>,
     act_lines: RefCell<Vec<String>>,
+    /// The State each `act` request carried, and what `state` gives.
+    act_states: RefCell<Vec<String>>,
+    state: RefCell<crate::state::State>,
     /// Turns sent to the conversation memory, and how often it was forgotten.
     remembered: RefCell<Vec<(String, String, String)>>,
     forgot: Cell<u32>,
@@ -84,6 +87,8 @@ impl FakeHost {
             script_requests: RefCell::new(Vec::new()),
             calls: RefCell::new(VecDeque::new()),
             act_lines: RefCell::new(Vec::new()),
+            act_states: RefCell::new(Vec::new()),
+            state: RefCell::new(crate::state::State::default()),
             remembered: RefCell::new(Vec::new()),
             forgot: Cell::new(0),
             audit: RefCell::new(Vec::new()),
@@ -190,8 +195,13 @@ impl Host for FakeHost {
         Ok(())
     }
 
+    fn state(&self) -> crate::state::State {
+        self.state.borrow().clone()
+    }
+
     fn act(&self, request: &ActRequest) -> Result<Call, ActError> {
         self.act_lines.borrow_mut().push(request.line.clone());
+        self.act_states.borrow_mut().push(request.state.clone());
         self.calls
             .borrow_mut()
             .pop_front()
