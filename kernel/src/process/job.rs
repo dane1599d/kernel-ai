@@ -28,7 +28,8 @@ const LIMITS: Limits = Limits {
     max_pages: 4096,
     max_burst_ms: 5000,
     caps: 0,
-    stack_pages: 512,
+    // SPIKE: the default stack, to see how much of M3 the 512 pages cost.
+    stack_pages: 0,
 };
 
 /// Exit records waiting for their parent's JOB_WAIT, as (parent pid, record).
