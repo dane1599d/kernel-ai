@@ -104,6 +104,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "bootslot"
+version = "0.0.0"
+
+[[package]]
 name = "bpe"
 version = "0.0.0"
 dependencies = [
