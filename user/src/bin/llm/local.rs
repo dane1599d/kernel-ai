@@ -90,6 +90,20 @@ impl Speed {
     }
 }
 
+/// One decode of a request (a request may take two: `act` then its script), for
+/// the profile `act` logs.
+#[derive(Clone, Copy, Default)]
+struct Phase {
+    started: u64,
+    cached: usize,
+    computed: usize,
+    /// When the last prompt token was computed (prefill's end).
+    prefilled: u64,
+    first: Option<u64>,
+    last: u64,
+    tokens: usize,
+}
+
 /// One request's clock: the deadline, checked after every step, a 1 ms sleep
 /// once [`SLEEP_EVERY_NS`] of compute has passed since the last, and what
 /// [`Speed`] reports.
@@ -103,6 +117,8 @@ struct Clock {
     computed: usize,
     stopped: bool,
     slept: u64,
+    /// Each decode, from its `Step::Cached`.
+    phases: alloc::vec::Vec<Phase>,
 }
 
 impl Clock {
@@ -118,18 +134,39 @@ impl Clock {
             computed: 0,
             stopped: false,
             slept: started,
+            phases: alloc::vec::Vec::new(),
         }
     }
 
     fn step(&mut self, step: Step) -> Next {
         let now = sys::time_ns();
         match step {
-            Step::Cached(tokens) => self.cached = tokens,
-            Step::Prompt => self.computed += 1,
+            Step::Cached(tokens) => {
+                self.cached = tokens;
+                self.phases.push(Phase {
+                    started: now,
+                    cached: tokens,
+                    prefilled: now,
+                    last: now,
+                    ..Phase::default()
+                });
+            }
+            Step::Prompt => {
+                self.computed += 1;
+                if let Some(phase) = self.phases.last_mut() {
+                    phase.computed += 1;
+                    phase.prefilled = now;
+                }
+            }
             Step::Token(_) => {
                 self.first.get_or_insert(now);
                 self.last = now;
                 self.tokens += 1;
+                if let Some(phase) = self.phases.last_mut() {
+                    phase.first.get_or_insert(now);
+                    phase.last = now;
+                    phase.tokens += 1;
+                }
             }
         }
         // A sleep blocks, which ends the burst the kernel times for this thread,
@@ -143,6 +180,26 @@ impl Clock {
             true => Next::Stop,
             false => Next::Continue,
         }
+    }
+
+    /// Where the time went, decode by decode: `act: 2210 ms; call: 12+1003
+    /// prompt tokens, prefill 1500 ms, 14 tokens in 600 ms; ...`.
+    fn profile(&self, names: &[&str]) -> String {
+        let ms = |ns: u64| ns / 1_000_000;
+        let mut line = format!("{} ms", ms(sys::time_ns() - self.started));
+        for (i, phase) in self.phases.iter().enumerate() {
+            let name = names.get(i).copied().unwrap_or("decode");
+            let decode = phase.first.map_or(0, |first| phase.last - first);
+            line.push_str(&format!(
+                "; {name}: {}+{} prompt tokens, prefill {} ms, {} tokens in {} ms",
+                phase.cached,
+                phase.computed,
+                ms(phase.prefilled - phase.started),
+                phase.tokens,
+                ms(decode),
+            ));
+        }
+        line
     }
 
     fn speed(&self) -> Option<Speed> {
@@ -258,6 +315,9 @@ impl Local {
             .speed()
             .map(|speed| Speed { forced, ..speed })
             .or(self.last);
+        // S02-2's profile: the call's decode, then a script's, if any.
+        let name = call.as_ref().map_or("none", |call| call.name.as_str());
+        println!("act: {name}, {}", clock.profile(&["call", "script"]));
         call
     }
 
