@@ -70,6 +70,8 @@ pub struct Options {
     pub data_disk: Option<PathBuf>,
     /// `run --fresh-data`: start the data disk over.
     pub fresh_data: bool,
+    /// `run --cache-mib N`: the size of a fresh data disk's `kai-cache`.
+    pub cache_mib: u64,
 }
 
 impl Options {
@@ -138,6 +140,7 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
         shard: None,
         data_disk: None,
         fresh_data: false,
+        cache_mib: crate::blklog::CACHE_MIB,
     };
     let mut rest = args[1..].iter();
     while let Some(arg) = rest.next() {
@@ -177,6 +180,13 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
             }
             "--edit" if task == Task::Run => options.edit = true,
             "--fresh-data" if task == Task::Run => options.fresh_data = true,
+            "--cache-mib" if task == Task::Run => {
+                options.cache_mib = rest
+                    .next()
+                    .and_then(|n| n.parse().ok())
+                    .filter(|&n| (1..=64 * 1024).contains(&n))
+                    .ok_or("--cache-mib expects 1 to 65536")?;
+            }
             "--data-disk" if task == Task::Run => {
                 let path = rest
                     .next()
@@ -352,6 +362,9 @@ mod tests {
         assert!(options.fresh_data);
         assert!(parse_args(&args(&["test", "--fresh-data"])).is_err());
         assert!(parse_args(&args(&["run", "--data-disk"])).is_err());
+        let small = parse_args(&args(&["run", "--cache-mib", "640"])).unwrap();
+        assert_eq!(small.cache_mib, 640);
+        assert!(parse_args(&args(&["run", "--cache-mib", "0"])).is_err());
     }
 
     #[test]

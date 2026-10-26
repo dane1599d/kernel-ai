@@ -187,7 +187,7 @@ fn execute(options: &Options) -> Result<(), String> {
             .clone()
             .unwrap_or_else(|| target_dir.join(blklog::IMAGE));
         if options.fresh_data || !data.exists() {
-            blklog::make_disk(&data, true)?;
+            blklog::make_disk(&data, Some(options.cache_mib))?;
             println!("xtask: a fresh kai-data disk at {}", data.display());
         }
         let data = match options.data_disk {
