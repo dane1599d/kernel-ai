@@ -9,6 +9,7 @@ use crate::process::components;
 use crate::{boot_manifest, hpet, ipc, log, threads};
 use alloc::format;
 use alloc::string::String;
+use livecore::call::REPLY_HEADER;
 use livecore::ledger::Ledger;
 
 const NAME: &str = "notes";
@@ -98,8 +99,9 @@ fn commits() -> Result<String, String> {
     let (start, pending) = labels(false)?;
     swapped_from(&start, &pending)?;
     for _ in 0..3 {
-        let reply = call("about")?;
-        if !reply.starts_with(&format!("ok notes {pending} ")) || !reply.contains("edited live") {
+        let reply = call(livecore::notes_call!("about", "{}"))?;
+        let about = format!("{REPLY_HEADER}\nresult \"notes {pending} ");
+        if !reply.starts_with(&about) || !reply.contains("edited live") {
             return Err(format!("manifest: about answered {reply:?}"));
         }
     }
@@ -121,10 +123,11 @@ fn commits() -> Result<String, String> {
 fn rolls_back() -> Result<String, String> {
     let (good, pending) = labels(true)?;
     swapped_from(&good, &pending)?;
-    let reply = call("count")?;
+    let reply = call(livecore::notes_call!("count", "{}"))?;
     let ledger = ledger();
     let trapped = ledger.is_bad(&pending) == Some(livecore::Reason::Trap);
-    if !reply.starts_with("ok ") || ledger.active() != Some(good.as_str()) || !trapped {
+    let counted = reply.starts_with(&format!("{REPLY_HEADER}\nresult {{notes: "));
+    if !counted || ledger.active() != Some(good.as_str()) || !trapped {
         return Err(format!(
             "manifest: count answered {reply:?}; notes runs {:?} ({})",
             ledger.active(),

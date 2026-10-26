@@ -8,7 +8,7 @@ use livecore::local::{Kernel, Loader, LocalEnv};
 use livecore::scenario::{self, Driver};
 use livecore::settings::Settings;
 use livecore::store::{Bytes, Component};
-use wasmhost::{Limits, WasmInstance};
+use wasmhost::{Limits, LiveInstance};
 
 /// The settings the kernel's test plan gives the host.
 pub fn test_settings() -> Result<Settings, String> {
@@ -24,14 +24,14 @@ fn print_log(line: &str) {
     println!("  | [notes] {line}");
 }
 
-pub fn loader(settings: &Settings) -> Loader<WasmInstance> {
+pub fn loader(settings: &Settings) -> Loader<LiveInstance> {
     let limits = Limits {
         fuel_call: settings.fuel_call,
         fuel_life: settings.fuel_life,
         memory_bytes: settings.memory_kib as usize * 1024,
     };
     Box::new(move |module, quiet| {
-        let mut instance = wasmhost::load(module, limits, Some(print_log))?;
+        let mut instance = wasmhost::load_live(module, limits, Some(print_log))?;
         livecore::Instance::quiet(&mut instance, quiet);
         Ok(instance)
     })
@@ -41,7 +41,7 @@ struct Smoke {
     kernel: Kernel,
     settings: Settings,
     pid: u64,
-    host: Option<Host<LocalEnv<WasmInstance>>>,
+    host: Option<Host<LocalEnv<LiveInstance>>>,
 }
 
 fn failed(exit: Exit) -> String {

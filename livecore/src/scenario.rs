@@ -10,6 +10,37 @@
 //! comes back with its data. F. A host killed during probation comes back on the
 //! active version.
 
+/// A `kai-call 1` request to a `notes` action: `notes_call!("add", r#"{text: "a"}"#)`.
+#[macro_export]
+macro_rules! notes_call {
+    ($func:literal, $args:literal) => {
+        concat!(
+            "kai-call 1
+func app:notes/actions@1.0.0#",
+            $func,
+            "
+args ",
+            $args,
+            "
+"
+        )
+    };
+}
+
+/// The `kai-reply 1` to a call that returned `$result`, as WAVE.
+#[macro_export]
+macro_rules! notes_reply {
+    ($result:literal) => {
+        concat!(
+            "kai-reply 1
+result ",
+            $result,
+            "
+"
+        )
+    };
+}
+
 use crate::Reason;
 use crate::ledger::Ledger;
 use alloc::format;
@@ -107,12 +138,30 @@ use Step::*;
 
 pub const STEPS: &[Step] = &[
     Part("A: version 1 builds state"),
-    Call("about", Exact("ok notes 1 schema 1")),
-    Call("add buy milk", Exact("ok 1")),
-    Call("add call bob today", Exact("ok 2")),
-    Call("add fix the roof", Exact("ok 3")),
-    Call("add walk", Exact("ok 4")),
-    Call("count", Exact("ok 4")),
+    Call(
+        notes_call!("about", "{}"),
+        Exact(notes_reply!(r#""notes 1 schema 1""#)),
+    ),
+    Call(
+        notes_call!("add", r#"{text: "buy milk"}"#),
+        Exact(notes_reply!("ok(1)")),
+    ),
+    Call(
+        notes_call!("add", r#"{text: "call bob today"}"#),
+        Exact(notes_reply!("ok(2)")),
+    ),
+    Call(
+        notes_call!("add", r#"{text: "fix the roof"}"#),
+        Exact(notes_reply!("ok(3)")),
+    ),
+    Call(
+        notes_call!("add", r#"{text: "walk"}"#),
+        Exact(notes_reply!("ok(4)")),
+    ),
+    Call(
+        notes_call!("count", "{}"),
+        Exact(notes_reply!("{notes: 4, words: 9}")),
+    ),
     Active("1", 1),
     Counts(&[(Restores, 1), (Checkpoints, 4)]),
     Part("S: control comes only from the kernel"),
@@ -129,12 +178,24 @@ pub const STEPS: &[Step] = &[
     Active("1", 1),
     Counts(&[(Begins, 0), (Checkpoints, 4)]),
     Call("ctl swap 2", Exact("ok probation 2 (3 calls)")),
-    Call("count", Exact("ok 4 notes, 9 words")),
-    Call("find roof", Exact("ok 3")),
-    Call("add paint fence", Exact("ok 5")),
+    Call(
+        notes_call!("count", "{}"),
+        Exact(notes_reply!("{notes: 4, words: 9}")),
+    ),
+    Call(
+        notes_call!("find", r#"{word: "roof"}"#),
+        Exact(notes_reply!("[3]")),
+    ),
+    Call(
+        notes_call!("add", r#"{text: "paint fence"}"#),
+        Exact(notes_reply!("ok(5)")),
+    ),
     Active("2", 2),
     Counts(&[(Commits, 1), (Generation, 1), (Served, 3)]),
-    Call("get 2", Exact("ok call bob today")),
+    Call(
+        notes_call!("get", "{id: 2}"),
+        Exact(notes_reply!(r#"some("call bob today")"#)),
+    ),
     Call("ctl source", Contains("components/notes/src/migrate.rs")),
     Part("C: a try finds a broken version; broken versions roll back by themselves"),
     Call("ctl try 3-health", StartsWith("err try 3-health: health: ")),
@@ -146,20 +207,38 @@ pub const STEPS: &[Step] = &[
         "ctl swap 3-health",
         StartsWith("err rolled back 3-health: health"),
     ),
-    Call("count", Exact("ok 5 notes, 11 words")),
+    Call(
+        notes_call!("count", "{}"),
+        Exact(notes_reply!("{notes: 5, words: 11}")),
+    ),
     Call("ctl swap 3-trap", Exact("ok probation 3-trap (3 calls)")),
-    Call("add sixth note", Exact("ok 6")),
+    Call(
+        notes_call!("add", r#"{text: "sixth note"}"#),
+        Exact(notes_reply!("ok(6)")),
+    ),
     // Version 3-trap overruns its array on the seventh note; 2 answers instead.
-    Call("add seventh", Exact("ok 7")),
+    Call(
+        notes_call!("add", r#"{text: "seventh"}"#),
+        Exact(notes_reply!("ok(7)")),
+    ),
     RolledBack(
         "3-trap",
         StartsWith("panicked at components/fixtures/notes-bad/src/lib.rs:"),
     ),
-    Call("about", Exact("ok notes 2 schema 2")),
+    Call(
+        notes_call!("about", "{}"),
+        Exact(notes_reply!(r#""notes 2 schema 2""#)),
+    ),
     Call("ctl swap 3-spin", Exact("ok probation 3-spin (3 calls)")),
     // Version 3-spin loops until its fuel runs out; 2 answers instead.
-    Call("find nothing-matches", Exact("ok none")),
-    Call("count", Exact("ok 7 notes, 14 words")),
+    Call(
+        notes_call!("find", r#"{word: "nothing-matches"}"#),
+        Exact(notes_reply!("[]")),
+    ),
+    Call(
+        notes_call!("count", "{}"),
+        Exact(notes_reply!("{notes: 7, words: 14}")),
+    ),
     Call(
         "ctl swap 3-trap",
         Exact("err 3-trap failed before; use ctl swap 3-trap force"),
@@ -197,8 +276,14 @@ pub const STEPS: &[Step] = &[
     SameHost,
     Part("E: a host killed while serving comes back with its data"),
     Restart,
-    Call("about", Exact("ok notes 2 schema 2")),
-    Call("count", Exact("ok 7 notes, 14 words")),
+    Call(
+        notes_call!("about", "{}"),
+        Exact(notes_reply!(r#""notes 2 schema 2""#)),
+    ),
+    Call(
+        notes_call!("count", "{}"),
+        Exact(notes_reply!("{notes: 7, words: 14}")),
+    ),
     Counts(&[(Restores, 2)]),
     Fetches(&[("2", 3)]),
     Part("F: a host killed during probation comes back on the active version"),
@@ -215,7 +300,10 @@ pub const STEPS: &[Step] = &[
         (Rejected, 0),
     ]),
     Active("2", 2),
-    Call("count", Exact("ok 7 notes, 14 words")),
+    Call(
+        notes_call!("count", "{}"),
+        Exact(notes_reply!("{notes: 7, words: 14}")),
+    ),
     SameHost,
 ];
 

@@ -14,6 +14,7 @@ use editcore::command::{self, Command};
 use editcore::scenario::{EDIT_ABOUT, EDIT_TRAP};
 use editcore::wire::{self, SyncRequest, Synced};
 use kabi::live::Reason;
+use livecore::call::REPLY_HEADER;
 use livecore::host::{Exit, Host};
 use livecore::local::{Kernel, LocalEnv};
 use livecore::settings::Settings;
@@ -23,7 +24,7 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
-use wasmhost::WasmInstance;
+use wasmhost::LiveInstance;
 
 const LIB: &str = "components/notes/src/lib.rs";
 /// What the version with part B's edit says about itself.
@@ -164,7 +165,7 @@ pub fn after_manifest_good(service: &BuildService) -> Result<(), String> {
     Ok(())
 }
 
-type NotesHost = Host<LocalEnv<WasmInstance>>;
+type NotesHost = Host<LocalEnv<LiveInstance>>;
 
 fn failed(exit: Exit) -> String {
     format!("the host exited ({}): {}", exit.code, exit.why)
@@ -313,8 +314,9 @@ pub fn run(root: &Path, modules: &[Module]) -> Result<(), String> {
     let mut machine = boot_on(modules, &manifest)?;
     machine.swap("2")?;
     for _ in 0..3 {
-        let reply = machine.call("about")?;
-        if !reply.starts_with(&format!("ok notes {c_about} ")) || !reply.contains(EDITED) {
+        let reply = machine.call(livecore::notes_call!("about", "{}"))?;
+        let about = format!("{REPLY_HEADER}\nresult \"notes {c_about} ");
+        if !reply.starts_with(&about) || !reply.contains(EDITED) {
             return Err(format!("about answered {reply:?} on probation"));
         }
     }
@@ -332,11 +334,12 @@ pub fn run(root: &Path, modules: &[Module]) -> Result<(), String> {
     }
     let mut machine = boot_on(modules, &manifest)?;
     machine.swap(&c_about)?;
-    let reply = machine.call("count")?;
+    let reply = machine.call(livecore::notes_call!("count", "{}"))?;
     let ledger = machine.ledger();
     let rolled_back =
         ledger.active() == Some(c_about.as_str()) && ledger.is_bad(&c_trap) == Some(Reason::Trap);
-    if !reply.starts_with("ok 0 notes") || !rolled_back {
+    let empty = reply.starts_with(&format!("{REPLY_HEADER}\nresult {{notes: 0,"));
+    if !empty || !rolled_back {
         return Err(format!(
             "count answered {reply:?}; {c_trap} did not roll back by trap"
         ));
