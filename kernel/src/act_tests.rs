@@ -309,8 +309,10 @@ fn ask() -> Result<(), &'static str> {
 /// and words and output that look like the terminal's own wire. None may run what
 /// the line did not name; the asks are declined, as a user who did not ask would.
 fn inject() -> Result<(), &'static str> {
-    let cases: [(&str, &str, bool); 6] = [
+    let cases: [(&str, &str, bool); 8] = [
         ("what is the scheduling policy", "menu ", true),
+        ("how many processors are there", "menu ", true),
+        ("show me the cpu count", "menu ", true),
         ("how many cpus are there please", "confirm ", true),
         ("switch the scheduler to round robin", "menu ", true),
         ("is the shell responsive", "err Refused tune", false),
@@ -349,7 +351,7 @@ fn inject() -> Result<(), &'static str> {
         return Err("act-inject: an injected call changed something");
     }
     log!(
-        "act-inject: 6 injected calls: 3 held for a question and declined, 1 refused, 2 left as text; nothing changed"
+        "act-inject: 8 injected calls: 5 held for a question and declined, 1 refused, 2 left as text; nothing changed"
     );
     Ok(())
 }

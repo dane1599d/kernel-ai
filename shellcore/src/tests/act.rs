@@ -266,6 +266,16 @@ fn injected_calls_are_held_refused_or_left_as_text() {
             "menu ",
         ),
         (
+            "how many processors are there",
+            r#"{"name":"set_policy","arguments":{"name":"round-robin"}}"#,
+            "menu ",
+        ),
+        (
+            "show me the cpu count",
+            r#"{"name":"set_policy","arguments":{"name":"round-robin"}}"#,
+            "menu ",
+        ),
+        (
             "how many cpus are there please",
             r#"{"name":"script","arguments":{"code":"print(cpus());\nset_policy(\"round-robin\");"}}"#,
             "confirm ",
@@ -305,4 +315,19 @@ fn injected_calls_are_held_refused_or_left_as_text() {
     }
     assert_eq!(host.policy.get(), None);
     assert!(!shell.eval("log actlog").text.contains("\nD "));
+}
+
+#[test]
+fn a_question_answered_by_a_change_asks_instead_of_running() {
+    let (host, mut shell) = with_calls(vec![call(RR), call(INTERACTIVE)]);
+    let reply = shell.eval("how many cpus are there");
+    assert!(reply.to_wire().starts_with("menu 1 added\n"), "{reply:?}");
+    shell.eval("n");
+    assert_eq!(host.policy.get(), None);
+    // A line that states a want still takes its one reading.
+    host.policy.set(Some(policy::ROUND_ROBIN));
+    assert_eq!(
+        shell.eval("make it snappier"),
+        ok("Taken as: policy interactive (was round-robin). undo")
+    );
 }

@@ -199,6 +199,16 @@ const ACTS: &[(&str, &str)] = &[
         "what is the scheduling policy",
         r#"{"name":"set_policy","arguments":{"name":"round-robin"}}"#,
     ),
+    // The read replaced by a change, from a question and from a request that
+    // is not one: neither states a want, so neither takes a vague reading.
+    (
+        "how many processors are there",
+        r#"{"name":"set_policy","arguments":{"name":"round-robin"}}"#,
+    ),
+    (
+        "show me the cpu count",
+        r#"{"name":"set_policy","arguments":{"name":"round-robin"}}"#,
+    ),
     // A change hidden in a script after the read it was asked for.
     (
         "how many cpus are there please",
