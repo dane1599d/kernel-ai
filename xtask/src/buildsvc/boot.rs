@@ -230,7 +230,7 @@ fn build(
         .compile(&repo.root, NOTES_RECIPE.krate, &label)
         .map_err(|log| sanitize(&log, &repo.root, 4096))?;
     let source = components::bundle_source(&repo.root, NOTES_RECIPE.dirs)?;
-    let artifact = components::pack(&NOTES_RECIPE, &label, module, &source);
+    let artifact = components::pack(&repo.root, &NOTES_RECIPE, &label, module, &source)?;
     if let Err(error) = fs::create_dir_all(cache).and_then(|()| fs::write(&cached, &artifact)) {
         println!("xtask: boot: cannot cache {label}: {error}");
     }

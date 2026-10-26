@@ -44,6 +44,7 @@ mod fluency;
 mod httpd;
 mod icount;
 mod image;
+mod kai_actions;
 mod latency;
 mod licences;
 mod lines;

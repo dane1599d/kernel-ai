@@ -196,6 +196,8 @@ pub const MAX_VERSIONS: usize = 16;
 pub const MANIFEST_SECTION: &str = "kai.manifest";
 /// Custom section holding the bundled source.
 pub const SOURCE_SECTION: &str = "kai.source";
+/// Custom section holding the action rows (`kai-actions 1`), in `lifecycle 2`.
+pub const ACTIONS_SECTION: &str = "kai.actions";
 /// Requests starting with this are control requests, accepted only from the kernel.
 pub const CONTROL_PREFIX: &str = "ctl ";
 /// Longest control request a PUBLISH holder may have relayed, after `ctl `.

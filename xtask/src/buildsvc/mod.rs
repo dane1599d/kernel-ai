@@ -347,7 +347,13 @@ fn compile(
             return Err(Failure::Failed(build::sanitize(&log, &root, MAX_LOG)));
         }
     };
-    let artifact = components::pack(recipe, job.label, module, job.bundle);
+    let artifact = match components::pack(&root, recipe, job.label, module, job.bundle) {
+        Ok(artifact) => artifact,
+        Err(why) => {
+            restore(&state.repo);
+            return Err(Failure::Failed(why));
+        }
+    };
     let source = sha256_hex(job.bundle);
     let message = format!(
         "{} {}: live edit from {}",
