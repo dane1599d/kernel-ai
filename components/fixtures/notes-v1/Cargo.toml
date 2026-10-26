@@ -5,12 +5,13 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
-# Version 1 of the `notes` component, kept as a fixture: the version the live one
-# migrates from.
+# Version 1 of `notes`, kept as a fixture: the version the live one migrates from.
+# It binds `app:notes@1.0.0` through comp-notes' `app!`.
 [lib]
 crate-type = ["cdylib", "rlib"]
 doctest = false
 
 [dependencies]
+comp-notes = { path = "../../notes", default-features = false }
 compsdk = { path = "../../../compsdk" }
 minicbor = { version = "2.3.0", default-features = false, features = ["alloc", "derive"] }

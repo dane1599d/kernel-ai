@@ -11,10 +11,9 @@
 
 extern crate alloc;
 
-use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec::Vec;
-use comp_notes::Notes;
+use comp_notes::{Actions, Notes, Tally};
 use compsdk::{Component, ImportError};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -116,32 +115,6 @@ impl Component for Bad {
         self.notes.export(schema)
     }
 
-    fn handle(&mut self, request: &str) -> String {
-        let (command, rest) = request.split_once(' ').unwrap_or((request, ""));
-        match (command, self.bug) {
-            ("find", Bug::Spin) if !rest.trim().is_empty() => {
-                let ids = self.find_spinning(rest.trim(), None).unwrap_or_default();
-                match ids.is_empty() {
-                    true => String::from("ok none"),
-                    false => {
-                        let ids: Vec<String> = ids.iter().map(u32::to_string).collect();
-                        format!("ok {}", ids.join(" "))
-                    }
-                }
-            }
-            ("add", Bug::Trap) => {
-                let reply = self.notes.handle(request);
-                let count = self.notes.state.notes.len();
-                if let Some(id) = reply.strip_prefix("ok ").and_then(|id| id.parse().ok()) {
-                    // The bug: one slot per note, as if there were never more than six.
-                    self.recent[count - 1] = id;
-                }
-                reply
-            }
-            _ => self.notes.handle(request),
-        }
-    }
-
     fn health(&self) -> u32 {
         self.notes.health()
     }
@@ -151,7 +124,38 @@ impl Component for Bad {
     }
 }
 
-compsdk::export!(Bad);
+impl Actions for Bad {
+    fn add(&mut self, text: &str) -> Result<u32, String> {
+        let id = self.notes.add(text)?;
+        if self.bug == Bug::Trap {
+            // The bug: one slot per note, as if there were never more than six.
+            let count = self.notes.state.notes.len();
+            self.recent[count - 1] = id;
+        }
+        Ok(id)
+    }
+
+    fn count(&self) -> Tally {
+        self.notes.count()
+    }
+
+    fn find(&self, word: &str) -> Vec<u32> {
+        match self.bug {
+            Bug::Spin => self.find_spinning(word, None).unwrap_or_default(),
+            _ => self.notes.find(word),
+        }
+    }
+
+    fn get(&self, id: u32) -> Option<String> {
+        self.notes.get(id)
+    }
+
+    fn about(&self) -> String {
+        self.notes.about()
+    }
+}
+
+comp_notes::app!(Bad);
 
 #[cfg(test)]
 mod tests {
@@ -160,7 +164,7 @@ mod tests {
     fn notes(texts: &[&str]) -> Notes {
         let mut notes = Notes::init();
         for text in texts {
-            notes.add(text);
+            notes.add(text).unwrap();
         }
         notes
     }
@@ -176,8 +180,8 @@ mod tests {
     #[should_panic(expected = "index out of bounds")]
     fn the_trap_bug_overruns_on_the_seventh_note() {
         let mut bad = Bad::with(notes(&["a", "b", "c", "d", "e"]), Bug::Trap);
-        assert_eq!(bad.handle("add f"), "ok 6");
-        bad.handle("add g");
+        assert_eq!(bad.add("f"), Ok(6));
+        let _ = bad.add("g");
     }
 
     #[test]

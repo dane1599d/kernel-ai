@@ -1,8 +1,7 @@
-//! `notes`, the live component: short notes with ids, state schema 2.
-//!
-//! Requests: `add <text>` (replies with the new note's id), `count` (notes and
-//! words), `get <id>`, `find <word>` (the ids of notes with that word) and `about`.
-//! It reads schema 1, written by version 1, and migrates it (see `migrate`).
+//! `notes`, the first app: short notes with ids, state schema 2. Its actions are
+//! `app:notes/actions@1.0.0` (`wit/notes.wit`): `add` (the new note's id),
+//! `count` (notes and words), `find` (the ids of notes with a word), `get` and
+//! `about`. It reads schema 1, written by version 1, and migrates it.
 
 #![cfg_attr(target_family = "wasm", no_std)]
 
@@ -28,14 +27,19 @@ pub const VERSION: &str = match option_env!("KAI_VERSION") {
 /// Health check results.
 pub const WORD_COUNTS_WRONG: u32 = 1;
 pub const IDS_OUT_OF_ORDER: u32 = 2;
+/// Most ids `find` returns, so its reply fits one message.
+pub const MAX_FOUND: usize = 500;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Notes {
     pub state: V2,
 }
 
-impl Notes {
-    pub fn add(&mut self, text: &str) -> u32 {
+impl Actions for Notes {
+    fn add(&mut self, text: &str) -> Result<u32, String> {
+        if !self.has_room_for(text) {
+            return Err(String::from("notes are full"));
+        }
         let id = self.state.next_id;
         self.state.next_id += 1;
         self.state.notes.push(Note {
@@ -43,23 +47,19 @@ impl Notes {
             words: words(text),
             text: text.to_string(),
         });
-        id
+        Ok(id)
     }
 
-    /// Whether a note with `text` still fits in the state the host can keep.
-    pub fn has_room_for(&self, text: &str) -> bool {
-        // The note's id, word count and framing take well under 24 bytes.
-        let size = compsdk::state::encode(SCHEMA, &self.state).len() + text.len() + 24;
-        size <= compsdk::MAX_STATE
-    }
-
-    pub fn count(&self) -> String {
+    fn count(&self) -> Tally {
         let words: u32 = self.state.notes.iter().map(|note| note.words).sum();
-        format!("ok {} notes, {words} words", self.state.notes.len())
+        Tally {
+            notes: u32::try_from(self.state.notes.len()).unwrap_or(u32::MAX),
+            words,
+        }
     }
 
     /// The ids of the notes that have `word` in them, ignoring case.
-    pub fn find(&self, word: &str) -> Vec<u32> {
+    fn find(&self, word: &str) -> Vec<u32> {
         self.state
             .notes
             .iter()
@@ -69,17 +69,29 @@ impl Notes {
                     .any(|w| w.eq_ignore_ascii_case(word))
             })
             .map(|note| note.id)
+            .take(MAX_FOUND)
             .collect()
     }
 
-    pub fn get(&self, id: &str) -> String {
-        id.parse::<u32>()
-            .ok()
-            .and_then(|id| self.state.notes.iter().find(|note| note.id == id))
-            .map_or_else(
-                || String::from("err no such note"),
-                |note| format!("ok {}", note.text),
-            )
+    fn get(&self, id: u32) -> Option<String> {
+        self.state
+            .notes
+            .iter()
+            .find(|note| note.id == id)
+            .map(|note| note.text.clone())
+    }
+
+    fn about(&self) -> String {
+        format!("notes {VERSION} schema {SCHEMA}")
+    }
+}
+
+impl Notes {
+    /// Whether a note with `text` still fits in the state the host can keep.
+    pub fn has_room_for(&self, text: &str) -> bool {
+        // The note's id, word count and framing take well under 24 bytes.
+        let size = compsdk::state::encode(SCHEMA, &self.state).len() + text.len() + 24;
+        size <= compsdk::MAX_STATE
     }
 }
 
@@ -108,41 +120,6 @@ impl Component for Notes {
         (schema == SCHEMA).then(|| compsdk::state::encode(SCHEMA, &self.state))
     }
 
-    fn handle(&mut self, request: &str) -> String {
-        let (command, rest) = request.split_once(' ').unwrap_or((request, ""));
-        let rest = rest.trim();
-        match command {
-            "add" if !rest.is_empty() => {
-                if !self.has_room_for(rest) {
-                    return String::from("err notes are full");
-                }
-                format!("ok {}", self.add(rest))
-            }
-            "count" => self.count(),
-            "get" => self.get(rest),
-            "find" if !rest.is_empty() => {
-                let ids = self.find(rest);
-                if ids.is_empty() {
-                    return String::from("ok none");
-                }
-                let mut reply = String::from("ok");
-                for id in ids {
-                    let id = id.to_string();
-                    // Keep the reply within what one reply may hold.
-                    if reply.len() + id.len() + 5 > compsdk::MAX_REPLY {
-                        reply.push_str(" ...");
-                        break;
-                    }
-                    reply.push(' ');
-                    reply.push_str(&id);
-                }
-                reply
-            }
-            "about" => format!("ok notes {VERSION} schema {SCHEMA}"),
-            _ => format!("err unknown request {command:?}"),
-        }
-    }
-
     fn health(&self) -> u32 {
         if self
             .state
@@ -163,12 +140,99 @@ impl Component for Notes {
     }
 
     fn self_test(&self) -> u32 {
-        // Floating point, which runs as software floating point in ring 3.
+        // Floating point, which runs as hardware floating point in comphost.
         let sample = [1.5f64, 2.5, 3.5];
         let mean = sample.iter().sum::<f64>() / sample.len() as f64;
         u32::from((mean * 4.0) as u64 != 10)
     }
 }
 
+/// How many notes there are, and how many words they hold.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Tally {
+    pub notes: u32,
+    pub words: u32,
+}
+
+/// `app:notes/actions@1.0.0`, which every notes version implements.
+pub trait Actions {
+    /// Adds a note; its id, or why not.
+    fn add(&mut self, text: &str) -> Result<u32, String>;
+    fn count(&self) -> Tally;
+    /// The ids of the notes that have `word`, at most [`MAX_FOUND`].
+    fn find(&self, word: &str) -> Vec<u32>;
+    fn get(&self, id: u32) -> Option<String>;
+    fn about(&self) -> String;
+}
+
+/// `app:notes/actions@1.0.0`'s bindings (`wit/notes.wit`, world `actions-only`).
+#[cfg(target_family = "wasm")]
+#[doc(hidden)]
+pub mod bind {
+    wit_bindgen::generate!({
+        world: "app:notes/actions-only",
+        path: ["../../wit/kai-live", "../../wit/kai-app", "wit"],
+        pub_export_macro: true,
+        export_macro_name: "export_actions",
+        default_bindings_module: "comp_notes::bind",
+    });
+}
+
+#[doc(hidden)]
+pub mod __private {
+    pub use alloc::string::String;
+    pub use alloc::vec::Vec;
+    pub use compsdk;
+}
+
+/// Binds a notes version: `kai:live/lifecycle` through compsdk, and
+/// `app:notes/actions@1.0.0` to its [`Actions`].
+#[macro_export]
+macro_rules! app {
+    ($app:ty) => {
+        $crate::__private::compsdk::component!($app);
+
+        #[cfg(target_family = "wasm")]
+        const _: () = {
+            use $crate::__private::{String, Vec};
+            use $crate::Actions;
+            use $crate::bind::exports::app::notes::actions::{Guest, Tally};
+
+            struct Bound;
+
+            fn started<R>(f: impl FnOnce(&mut $app) -> R) -> R {
+                match $crate::__private::compsdk::with::<$app, R>(f) {
+                    Some(result) => result,
+                    None => panic!("notes was called before it started"),
+                }
+            }
+
+            impl Guest for Bound {
+                fn add(text: String) -> Result<u32, String> {
+                    started(|notes| notes.add(&text))
+                }
+                fn count() -> Tally {
+                    let tally = started(|notes| notes.count());
+                    Tally {
+                        notes: tally.notes,
+                        words: tally.words,
+                    }
+                }
+                fn find(word: String) -> Vec<u32> {
+                    started(|notes| notes.find(&word))
+                }
+                fn get(id: u32) -> Option<String> {
+                    started(|notes| notes.get(id))
+                }
+                fn about() -> String {
+                    started(|notes| notes.about())
+                }
+            }
+
+    $crate::bind::export_actions!(Bound with_types_in $crate::bind);
+        };
+    };
+}
+
 #[cfg(feature = "exports")]
-compsdk::export!(Notes);
+app!(Notes);
