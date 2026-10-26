@@ -52,9 +52,30 @@ struct FakeHost {
     once: RefCell<Vec<(u64, [u8; 32], bool)>>,
     /// Rule handles revoked.
     revoked: RefCell<Vec<u32>>,
+    /// Running processes by name, and services with whether they run.
+    procs: RefCell<Vec<String>>,
+    services: RefCell<Vec<(String, bool)>>,
 }
 
 impl FakeHost {
+    /// The supervisor's side: `err already ...` when nothing changes.
+    fn set_running(&self, name: &str, running: bool) -> Result<(), String> {
+        let mut services = self.services.borrow_mut();
+        let (_, state) = services
+            .iter_mut()
+            .find(|(n, _)| n == name)
+            .ok_or_else(|| String::from("unknown service"))?;
+        if *state == running {
+            return Err(String::from(if running {
+                "not stopped"
+            } else {
+                "already stopped"
+            }));
+        }
+        *state = running;
+        Ok(())
+    }
+
     /// What the kernel terminal does on Allow: a ONCE badge for menu `id`'s
     /// `call`, as shown.
     fn mint(&self, id: u64, call: &str) -> u64 {
@@ -89,6 +110,11 @@ impl FakeHost {
             audit: RefCell::new(Vec::new()),
             once: RefCell::new(Vec::new()),
             revoked: RefCell::new(Vec::new()),
+            procs: RefCell::new(alloc::vec![
+                String::from("build-3"),
+                String::from("build-4")
+            ]),
+            services: RefCell::new(alloc::vec![(String::from("notes"), false)]),
         })
     }
 }
@@ -183,6 +209,24 @@ impl Host for FakeHost {
                 Ok(())
             }
         }
+    }
+
+    fn stop_process(&self, name: &str) -> Result<u64, String> {
+        let mut procs = self.procs.borrow_mut();
+        let before = procs.len();
+        procs.retain(|p| p != name);
+        match before - procs.len() {
+            0 => Err(String::from("NotFound")),
+            n => Ok(n as u64),
+        }
+    }
+
+    fn stop_service(&self, name: &str) -> Result<(), String> {
+        self.set_running(name, false)
+    }
+
+    fn start_service(&self, name: &str) -> Result<(), String> {
+        self.set_running(name, true)
     }
 
     fn revoke_rule(&self, handle: u32) -> Result<(), String> {

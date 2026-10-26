@@ -83,3 +83,17 @@ pub fn pack_id(format: Format, tokenizer_sha256: &str, pack: &str) -> u64 {
     }
     fnv.finish()
 }
+
+/// Whether `pack` shows the row `name`: on its own line, or as one verb of its
+/// family's line (`service_stop|start|restart(`).
+pub fn shows(pack: &str, name: &str) -> bool {
+    pack.lines().any(|line| {
+        let head = line.split('(').next().unwrap_or("");
+        head == name
+            || name.split_once('_').is_some_and(|(family, verb)| {
+                head.strip_prefix(family)
+                    .and_then(|rest| rest.strip_prefix('_'))
+                    .is_some_and(|verbs| verbs.split('|').any(|v| v == verb))
+            })
+    })
+}

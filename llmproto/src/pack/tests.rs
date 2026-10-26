@@ -45,11 +45,7 @@ fn every_line_is_printable_ascii_of_at_most_120_bytes() {
 fn every_script_function_and_command_has_a_row_and_no_helper_does() {
     let pack = render(Format::Dsl1);
     for row in agentabi::SCRIPT_API.iter().chain(&agentabi::COMMANDS) {
-        assert!(
-            pack.contains(&std::format!("\n{}(", row.name)),
-            "{}",
-            row.name
-        );
+        assert!(super::shows(&pack, row.name), "{}", row.name);
     }
     for row in agentabi::HELPERS {
         assert!(

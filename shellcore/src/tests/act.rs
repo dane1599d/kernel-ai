@@ -359,3 +359,103 @@ fn a_question_answered_by_a_change_asks_instead_of_running() {
         ok("Taken as: policy interactive (was round-robin). undo")
     );
 }
+
+const STOP_BUILD3: &str = r#"{"name":"process_stop","arguments":{"name":"build-3"}}"#;
+
+#[test]
+fn a_stop_asks_once_with_rules_and_an_always_allow_waives_the_next() {
+    let (host, mut shell) = with_calls(vec![call(STOP_BUILD3), call(STOP_BUILD3)]);
+    host.procs.borrow_mut().push(String::from("build-3"));
+    let reply = shell.eval("stop build-3");
+    // Plainly asked, and no undo: the highlight starts on Allow, and both rules
+    // are offered.
+    let question = "Run process_stop(\"build-3\")? It has no undo.";
+    let call = "process_stop(\"build-3\")";
+    assert_eq!(
+        reply.to_wire(),
+        format!(
+            "menu 1 asked\n{question}\nprocess_stop calls\nprocess_stop on \"build-3\"\n{call}"
+        )
+    );
+    let once = host.mint(1, call);
+    let reply = shell.eval(&format!("answer 1 always-target once={once} rule=5"));
+    assert_eq!(
+        reply,
+        ok("Rule #1 added; `rules` lists it.\nDone: process build-3 stopped (2) (was running)")
+    );
+    assert_eq!(shell.eval("rules"), ok("#1 process_stop \"build-3\""));
+    // The rule waives the next ask for that target, and the log says so.
+    host.procs.borrow_mut().push(String::from("build-3"));
+    let reply = shell.eval("stop build-3");
+    assert_eq!(reply, ok("Done: process build-3 stopped (1) (was running)"));
+    let actlog = shell.eval("log actlog").text;
+    assert!(actlog.contains("consent=rule:1"), "{actlog}");
+    // Removing it revokes its grant node and the next one asks again.
+    assert_eq!(
+        shell.eval("rules_remove 1"),
+        ok("Removed rule #1 (process_stop); it asks again")
+    );
+    assert_eq!(*host.revoked.borrow(), [5]);
+}
+
+#[test]
+fn a_rule_for_one_target_does_not_cover_another_and_protected_names_never_stop() {
+    let stop4 = r#"{"name":"process_stop","arguments":{"name":"build-4"}}"#;
+    let llm = r#"{"name":"service_stop","arguments":{"name":"llm"}}"#;
+    let (host, mut shell) = with_calls(vec![call(STOP_BUILD3), call(stop4), call(llm)]);
+    shell.eval("stop build-3");
+    let once = host.mint(1, "process_stop(\"build-3\")");
+    shell.eval(&format!("answer 1 always-target once={once}"));
+    assert!(
+        shell
+            .eval("stop build-4")
+            .text
+            .starts_with("menu 2 asked\n")
+    );
+    shell.eval("n");
+    let reply = shell.eval("stop the llm service");
+    assert!(!reply.ok && reply.text.contains("never"), "{reply:?}");
+}
+
+#[test]
+fn a_start_runs_at_once_and_undo_stops_it_again() {
+    let start = r#"{"name":"service_start","arguments":{"name":"notes"}}"#;
+    let (host, mut shell) = with_calls(vec![call(start)]);
+    let reply = shell.eval("start notes");
+    assert_eq!(reply, ok("Done: service notes running (was stopped). undo"));
+    assert_eq!(
+        shell.eval("undo"),
+        ok("Undone: service notes stopped again")
+    );
+    assert!(!host.services.borrow()[0].1);
+    assert_eq!(
+        shell.eval("undo"),
+        ok("Undone: service notes started again")
+    );
+}
+
+#[test]
+fn the_model_cannot_list_or_remove_standing_rules() {
+    let remove = r#"{"name":"rules_remove","arguments":{"n":1}}"#;
+    let list = r#"{"name":"rules","arguments":{}}"#;
+    let (host, mut shell) = with_calls(vec![call(STOP_BUILD3), call(remove), call(list)]);
+    shell.eval("stop build-3");
+    let once = host.mint(1, "process_stop(\"build-3\")");
+    shell.eval(&format!("answer 1 always-kind once={once}"));
+    for line in ["remove my first rule", "what are my rules"] {
+        let reply = shell.eval(line);
+        assert_eq!(
+            reply,
+            Reply::err(format!(
+                "Refused {}: no such action",
+                if line.starts_with("remove") {
+                    "rules_remove"
+                } else {
+                    "rules"
+                }
+            )),
+            "{line}"
+        );
+    }
+    assert_eq!(shell.eval("rules"), ok("#1 process_stop"));
+}
