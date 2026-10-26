@@ -34,6 +34,10 @@ const SPINS: u32 = 64;
 /// Yields while waiting before sleeping on the futex: about a millisecond or two
 /// in a guest, longer than the gap between a decode step's broadcasts.
 const YIELDS: u32 = 1_000;
+/// A worker that has not blocked for this long sleeps a millisecond before its
+/// next wait: a yield is not blocking, and the kernel kills a thread that runs
+/// its process's burst limit (10 s for llm) without blocking outside a call.
+const BLOCK_EVERY_MS: u64 = 1_000;
 /// How long `Pool::new` retries a Busy THREAD_SPAWN: a worker that just exited
 /// holds its index until the kernel has let its thread go.
 const BUSY_RETRY_MS: u64 = 1_000;
@@ -52,6 +56,14 @@ pub struct Stats {
 pub fn cycles() -> u64 {
     // SAFETY: RDTSC reads a counter and has no other effect; ring 3 may run it.
     unsafe { core::arch::x86_64::_rdtsc() }
+}
+
+/// TSC cycles in a millisecond, over 10 ms of the TIME call's clock.
+fn cycles_per_ms() -> u64 {
+    let (ns, tsc) = (sys::time_ns(), cycles());
+    sys::sleep_ms(10);
+    let (ns, tsc) = (sys::time_ns() - ns, cycles() - tsc);
+    (tsc.saturating_mul(1_000_000) / ns.max(1)).max(1)
 }
 
 /// A job: `(worker, workers)`, borrowing whatever it needs for `'a`.
@@ -73,6 +85,8 @@ struct Shared {
     /// Set while a broadcast runs, to catch a second one at run time too.
     busy: AtomicBool,
     workers: usize,
+    /// TSC cycles in [`BLOCK_EVERY_MS`], measured at start.
+    block_every: u64,
     /// Each worker's cycles in the current job, written before it counts itself
     /// finished.
     job_cycles: [AtomicU64; MAX_WORKERS],
@@ -126,6 +140,7 @@ impl Pool {
     pub fn new(max: usize) -> Result<Pool, Error> {
         let cpus = sys::metrics().map_or(1, |metrics| metrics.cpus as usize);
         let workers = cpus.min(max).clamp(1, MAX_WORKERS);
+        let block_every = cycles_per_ms().saturating_mul(BLOCK_EVERY_MS);
         let shared: &'static Shared = Box::leak(Box::new(Shared {
             generation: AtomicU32::new(0),
             finished: AtomicU32::new(0),
@@ -135,6 +150,7 @@ impl Pool {
             stop: AtomicBool::new(false),
             busy: AtomicBool::new(false),
             workers,
+            block_every,
             job_cycles: [const { AtomicU64::new(0) }; MAX_WORKERS],
             job: UnsafeCell::new(None),
         }));
@@ -278,7 +294,12 @@ extern "C" fn worker_main(arg: u64) -> ! {
     let start = unsafe { &*(arg as *const Start) };
     let shared = start.shared;
     let mut seen = 0;
+    let mut blocked = cycles();
     loop {
+        if cycles() - blocked > shared.block_every {
+            sys::sleep_ms(1);
+            blocked = cycles();
+        }
         seen = next_generation(shared, seen);
         if shared.stop.load(Ordering::Acquire) {
             shared.live.fetch_sub(1, Ordering::AcqRel);
