@@ -104,10 +104,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/qemu
-      - name: Show the runner's CPU count and vector features
+      - name: Show the runner's CPU count, vector features, vendor and nested virtualisation
         run: |
           nproc
           grep -m1 '^flags' /proc/cpuinfo | grep -o -w -E 'avx2|avx512f|avx512bw|avx512_vnni' | xargs echo
+          # ADR 0006 step 1: which runners could host an SVM guest under KVM.
+          grep -m1 '^vendor_id' /proc/cpuinfo
+          grep -m1 '^model name' /proc/cpuinfo
+          echo "virtualisation flags: $(grep -m1 '^flags' /proc/cpuinfo | grep -o -w -E 'svm|vmx|npt|nrip_save|decodeassists|avic' | xargs echo)"
+          for module in kvm_amd kvm_intel; do
+            if [ -r /sys/module/$module/parameters/nested ]; then
+              echo "$module nested=$(cat /sys/module/$module/parameters/nested)"
+            fi
+          done
       - name: Allow KVM for the runner user
         if: matrix.accel == 'kvm'
         run: |

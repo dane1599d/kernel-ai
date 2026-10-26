@@ -147,7 +147,8 @@ pub fn hypervisor(cpu: &cpufeat::Features) -> &'static str {
 }
 
 /// The boot log's CPU line, which xtask also prints at the end of each test: what
-/// CPUID offers, what ring 3 may use with this XCR0, and the hypervisor.
+/// CPUID offers, what ring 3 may use with this XCR0, the hypervisor, and the CPU
+/// vendor with its SVM features (ADR 0006 step 1).
 pub fn features_line() -> String {
     let cpu = cpufeat::Features::detect();
     let list = |names: &mut dyn Iterator<Item = &'static str>| {
@@ -159,8 +160,14 @@ pub fn features_line() -> String {
         }
     };
     let hypervisor = hypervisor(&cpu);
+    let vendor = cpufeat::vendor();
+    let vendor = core::str::from_utf8(&vendor).unwrap_or("?");
+    let svm = match cpu.svm {
+        Some(svm) => format!("{}", svm.describe()),
+        None => String::from("no SVM"),
+    };
     format!(
-        "cpu: vector features: CPUID offers {}; ring 3 may use {}; XCR0 {:#x}, XSAVE area {} bytes; hypervisor {hypervisor}",
+        "cpu: vector features: CPUID offers {}; ring 3 may use {}; XCR0 {:#x}, XSAVE area {} bytes; hypervisor {hypervisor}; vendor {vendor}, {svm}",
         list(&mut cpu.offered()),
         list(&mut cpu.usable()),
         cpu.xcr0,
