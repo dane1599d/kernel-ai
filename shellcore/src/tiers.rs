@@ -14,12 +14,12 @@ use agentabi::Action;
 pub use agentabi::Tier;
 
 /// The rows scripts can call: the script API, then the helpers.
-const CALLABLE: usize = agentabi::SCRIPT_API.len() + agentabi::HELPERS.len();
+const CALLABLE: usize = agentabi::BOUND.len() + agentabi::HELPERS.len();
 
 const fn callable(i: usize) -> &'static Action {
-    let api = agentabi::SCRIPT_API.len();
+    let api = agentabi::BOUND.len();
     if i < api {
-        &agentabi::SCRIPT_API[i]
+        &agentabi::BOUND[i]
     } else {
         &agentabi::HELPERS[i - api]
     }

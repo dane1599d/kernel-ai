@@ -280,7 +280,16 @@ pub const SERVICE_RESTART: Action = Action {
 };
 
 /// The functions LLM-written scripts may call, in the order the prompt lists them.
-pub const SCRIPT_API: [Action; 11] = [
+pub const SCRIPT_API: [Action; 7] = [
+    CPUS, MEMORY, UPTIME_MS, PROCESSES, THREADS, GET_POLICY, SET_POLICY,
+];
+/// Rows a tagged call runs but a script may not: what they change asks once, so
+/// a script's one consent could not cover them. The script prompt does not list
+/// them; they reach the model only through the act pack.
+pub const CALL_ONLY: [Action; 4] = [PROCESS_STOP, SERVICE_STOP, SERVICE_START, SERVICE_RESTART];
+/// Every row the shell's script engine binds: the script API, then the call-only
+/// rows, which only a tagged call's one-line script is given.
+pub const BOUND: [Action; 11] = [
     CPUS,
     MEMORY,
     UPTIME_MS,

@@ -36,7 +36,14 @@ const SWITCH: &str = "set_policy(\"round-robin\");";
 
 #[test]
 fn every_function_a_script_can_call_has_a_tier_and_no_row_names_a_missing_one() {
-    let callable = || API.iter().map(|f| f.name).chain(HELPERS.iter().copied());
+    // The engine binds the script API and the call-only rows (a tagged call's
+    // one-line script); the helpers come with every engine.
+    let callable = || {
+        agentabi::BOUND
+            .iter()
+            .map(|f| f.name)
+            .chain(HELPERS.iter().copied())
+    };
     for function in callable() {
         assert!(
             TIERS.iter().any(|(name, _)| *name == function),

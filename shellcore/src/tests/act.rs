@@ -483,3 +483,15 @@ fn the_model_cannot_list_or_remove_standing_rules() {
     }
     assert_eq!(shell.eval("rules"), ok("#1 process_stop"));
 }
+
+#[test]
+fn a_script_cannot_call_a_call_only_row() {
+    // The script prompt does not list them, and a script that calls one anyway
+    // fails its trial: a stop asks once, which a script's consent cannot cover.
+    let script = r#"{"name":"script","arguments":{"code":"service_stop(\"notes\");"}}"#;
+    let (host, mut shell) = with_calls(vec![call(script)]);
+    let reply = shell.eval("stop the notes service");
+    assert!(!reply.ok, "{reply:?}");
+    assert!(!llmproto::script::system_prompt().contains("service_stop"));
+    assert!(host.services.borrow().iter().all(|(_, running)| !running));
+}
