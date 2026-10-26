@@ -64,6 +64,14 @@ pub struct Model {
 }
 
 static MODEL: Once<Model> = Once::new();
+/// The loaded model's SHA-256 as the boot names it (`model_sha256=`, which
+/// xtask checked the download against); not hashed again here.
+static SHA256: Once<[u8; 32]> = Once::new();
+
+/// The loaded model's SHA-256 as the boot names it, for llm's KV files (S10-3).
+pub fn sha256() -> Option<&'static [u8; 32]> {
+    MODEL.get().and(SHA256.get())
+}
 /// The window's PDPT, once built: what MODEL_MAP links.
 static WINDOW: Once<window::Window> = Once::new();
 /// Test only (`bigmap`): a longer window MODEL_MAP links instead.
@@ -212,6 +220,9 @@ fn boot_module() -> Option<&'static [u8]> {
 /// Anything else is logged and ignored: the system runs without a model.
 pub fn load(cmdline: &str) {
     let attached = Attached::from_cmdline(cmdline);
+    if let Some(sha) = attached.sha256 {
+        SHA256.call_once(|| sha);
+    }
     let started = hpet::nanos();
     let found = match boot_module() {
         Some(bytes) => Some((

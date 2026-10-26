@@ -126,7 +126,11 @@ fn main() -> i32 {
             (None, None, Some(bytes))
         }
         Ok(Some(model)) => {
-            let local = load(model.bytes());
+            let mut local = load(model.bytes());
+            let sha = arg(&args, "model_sha256").and_then(kabi::model::sha256_from_hex);
+            if let (Ok(local), Some(sha)) = (&mut local, sha) {
+                local.set_sha256(sha);
+            }
             (Some(model), Some(local), None)
         }
         Ok(None) => (None, None, None),

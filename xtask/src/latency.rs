@@ -54,7 +54,7 @@ pub fn main(args: &[String]) -> Result<(), String> {
     let value = |name: &str| own.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone());
     let id = value("--local").ok_or(USAGE)?;
     let path = crate::models::stored(&id, value("--store").as_deref())?;
-    let disk = ModelDisk::open(&path)?;
+    let disk = ModelDisk::open(&path)?.with_sha256(crate::models::sha256(&id)?);
     println!("xtask: {}", disk.describe());
     let stages: Vec<&'static [&'static str]> =
         REQUESTS.iter().map(|r| keys(r)).collect::<Result<_, _>>()?;

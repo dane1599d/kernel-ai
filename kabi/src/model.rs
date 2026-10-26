@@ -6,6 +6,7 @@
 
 use alloc::format;
 use alloc::string::String;
+use alloc::vec::Vec;
 
 /// The virtio-blk serial (device ID) of the disk holding the model file.
 pub const SERIAL: &str = "kai-model";
@@ -109,11 +110,32 @@ pub fn max_pages(name: &str, program: &str, per_process: u64) -> u64 {
 
 /// What xtask tells the kernel about the file behind the model disk, on the kernel
 /// command line: `model_len=BYTES`, the file's exact length (the disk rounds it up
-/// to whole sectors), and for test boots `model_fnv=HEX`, its [`Fnv1a`] hash.
+/// to whole sectors), for test boots `model_fnv=HEX`, its [`Fnv1a`] hash, and for
+/// a catalog model `model_sha256=HEX`, the SHA-256 xtask checked it against when
+/// it downloaded it. The kernel does not hash the file again; llm keys its KV
+/// files by the SHA-256 (S10-3).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Attached {
     pub len: Option<u64>,
     pub fnv: Option<u64>,
+    pub sha256: Option<[u8; 32]>,
+}
+
+/// 64 hex digits as 32 bytes.
+pub fn sha256_from_hex(hex: &str) -> Option<[u8; 32]> {
+    if hex.len() != 64 || !hex.is_ascii() {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for (i, byte) in out.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).ok()?;
+    }
+    Some(out)
+}
+
+/// 32 bytes as 64 lowercase hex digits.
+pub fn sha256_hex(sha: &[u8; 32]) -> String {
+    sha.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 impl Attached {
@@ -125,6 +147,8 @@ impl Attached {
                 attached.len = value.parse().ok().filter(|&len| len > 0);
             } else if let Some(value) = word.strip_prefix("model_fnv=") {
                 attached.fnv = u64::from_str_radix(value, 16).ok();
+            } else if let Some(value) = word.strip_prefix("model_sha256=") {
+                attached.sha256 = sha256_from_hex(value);
             }
         }
         attached
@@ -134,11 +158,11 @@ impl Attached {
     pub fn to_cmdline(&self) -> String {
         let len = self.len.map(|len| format!("model_len={len}"));
         let fnv = self.fnv.map(|fnv| format!("model_fnv={fnv:016x}"));
-        match (len, fnv) {
-            (Some(len), Some(fnv)) => format!("{len} {fnv}"),
-            (Some(one), None) | (None, Some(one)) => one,
-            (None, None) => String::new(),
-        }
+        let sha = self
+            .sha256
+            .map(|sha| format!("model_sha256={}", sha256_hex(&sha)));
+        let words: Vec<String> = [len, fnv, sha].into_iter().flatten().collect();
+        words.join(" ")
     }
 }
 
@@ -215,6 +239,7 @@ mod tests {
         let both = Attached {
             len: Some(3_146_505),
             fnv: Some(0x00ab_cdef_0123_4567),
+            sha256: None,
         };
         let words = both.to_cmdline();
         assert_eq!(words, "model_len=3146505 model_fnv=00abcdef01234567");
@@ -225,8 +250,21 @@ mod tests {
         let len_only = Attached {
             len: Some(5),
             fnv: None,
+            sha256: None,
         };
         assert_eq!(Attached::from_cmdline(&len_only.to_cmdline()), len_only);
+        let catalog = Attached {
+            len: Some(5),
+            fnv: None,
+            sha256: Some([0xa5; 32]),
+        };
+        let words = catalog.to_cmdline();
+        assert_eq!(
+            words,
+            alloc::format!("model_len=5 model_sha256={}", "a5".repeat(32))
+        );
+        assert_eq!(Attached::from_cmdline(&words), catalog);
+        assert_eq!(Attached::from_cmdline("model_sha256=abc").sha256, None);
         assert_eq!(Attached::default().to_cmdline(), "");
     }
 

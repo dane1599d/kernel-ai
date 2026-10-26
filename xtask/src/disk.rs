@@ -31,6 +31,9 @@ pub struct ModelDisk {
     len: u64,
     /// The host's hash, passed on for a test boot to check against.
     fnv: Option<u64>,
+    /// A catalog model's SHA-256, which its download was checked against: the
+    /// identity llm keys its KV files by (S10-3).
+    sha256: Option<[u8; 32]>,
     /// What a boot from a generated model must show, worked out on the host.
     golden: Option<Golden>,
     /// Attached as an NVMe controller rather than virtio-blk.
@@ -79,9 +82,18 @@ impl ModelDisk {
             filename,
             len: meta.len(),
             fnv: None,
+            sha256: None,
             golden: None,
             nvme: false,
         })
+    }
+
+    /// The same file, named by the SHA-256 it was checked against.
+    pub fn with_sha256(self, sha256: [u8; 32]) -> Self {
+        Self {
+            sha256: Some(sha256),
+            ..self
+        }
     }
 
     /// The same file, attached as an NVMe controller whose serial is `kai-model`.
@@ -137,6 +149,7 @@ impl ModelDisk {
         let attached = Attached {
             len: Some(self.len),
             fnv: self.fnv,
+            sha256: self.sha256,
         }
         .to_cmdline();
         match &self.golden {
@@ -313,6 +326,7 @@ mod tests {
             filename: path.to_string(),
             len,
             fnv: None,
+            sha256: None,
             golden: None,
             nvme: false,
         }

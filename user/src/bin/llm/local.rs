@@ -106,8 +106,8 @@ const ID_SAMPLES: usize = 64;
 /// Hashed between 1 ms sleeps, so the burst limit never sees one long run.
 const ID_STEP: usize = 16 << 20;
 
-/// **Interim** (S10-3), the model's identity for its KV files' key until P2
-/// task 10 names it by SHA-256: the file's length, and FNV-1a64 over its first
+/// **Interim** (S10-3), the model's identity for its KV files' key when the
+/// boot names no SHA-256 (a model attached by path): the file's length, and FNV-1a64 over its first
 /// [`ID_HEAD`] bytes and [`ID_SAMPLES`] 1 MiB samples spread over the rest,
 /// about 96 MiB. All of the 2.5 GB would take the guest over 10 s.
 fn model_id(bytes: &[u8]) -> [u8; 32] {
@@ -357,12 +357,20 @@ impl Local {
         })
     }
 
-    /// The key slot `slot`'s `kai-kv 1` file is saved under. Until P2 task 10's
-    /// model store names the model by its SHA-256, its identity (computed once)
-    /// is [`model_id`], in the key's 32 bytes.
+    /// The model's SHA-256 as the boot names it (`model_sha256=`, the kernel's
+    /// plan line): the identity in the KV files' key.
+    pub fn set_sha256(&mut self, sha256: [u8; 32]) {
+        self.model_id = Some(sha256);
+    }
+
+    /// The key slot `slot`'s `kai-kv 1` file is saved under: the model's
+    /// SHA-256 when the boot names it, else (computed once) [`model_id`].
     fn kv_key(&mut self, slot: usize) -> infer::segments::Key {
         let bytes = self.bytes;
-        let model_sha256 = *self.model_id.get_or_insert_with(|| model_id(bytes));
+        let model_sha256 = *self.model_id.get_or_insert_with(|| {
+            println!("local: no model_sha256=; the KV files are keyed by a sampled hash");
+            model_id(bytes)
+        });
         infer::segments::Key {
             model_sha256,
             tier: self.engine.about().tier,
