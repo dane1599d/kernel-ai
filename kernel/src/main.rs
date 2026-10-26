@@ -83,6 +83,8 @@ mod script_tests;
 mod selftest;
 mod serial;
 mod shell_tests;
+mod shm;
+mod shm_tests;
 mod smp;
 mod smp_tests;
 #[cfg(feature = "spikes")]
@@ -310,6 +312,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::LocalScript => run_case(|| local_tests::check_script(cmdline())),
         SelfTest::Latency => run_case(latency_tests::check),
         SelfTest::ProcStop => run_case(stop_tests::check),
+        SelfTest::Shm => run_case(shm_tests::check),
         SelfTest::Fpu => run_case(fpu_tests::fpu_check),
         SelfTest::Probe => run_case(fpu_tests::probe_check),
         SelfTest::Handles => run_case(handle_tests::check),

@@ -17,5 +17,10 @@ pub const MAX_STACK_PAGES: u64 = 1024;
 pub const MODEL_BASE: u64 = 0x0000_2000_0000_0000;
 /// Largest model that fits the window: one PML4 slot, 512 GiB.
 pub const MODEL_MAX: u64 = 0x0000_0080_0000_0000;
+/// `Shm` objects are mapped here, each at the start of its own 1 GiB slot
+/// ([`SHM_SLOT`]): object `n` at `SHM_BASE + n * SHM_SLOT`.
+pub const SHM_BASE: u64 = 0x0000_3000_0000_0000;
+/// The address space each `Shm` object may take, so its largest size.
+pub const SHM_SLOT: u64 = 0x0000_0000_4000_0000;
 /// First address that is not user space.
 pub const USER_END: u64 = 0x0000_8000_0000_0000;

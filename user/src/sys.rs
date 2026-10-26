@@ -313,6 +313,24 @@ pub fn recv_h(buf: &mut [u8], timeout_ms: u64, info: &mut RecvInfo) -> Result<us
     .map(|len| len as usize)
 }
 
+/// New zeroed shared pages, and an `Shm` handle to them (ADR 0001 D4).
+pub fn shm_create(pages: u64) -> Result<Handle, Error> {
+    call(call::SHM_CREATE, [pages, 0, 0, 0, 0, 0]).map(|h| Handle(h as u32))
+}
+
+/// Maps the `Shm` that `handle` names, read-write if `write`; its address.
+pub fn shm_map(handle: Handle, write: bool) -> Result<u64, Error> {
+    call(
+        call::SHM_MAP,
+        [u64::from(handle.0), u64::from(write), 0, 0, 0, 0],
+    )
+}
+
+/// Removes the `Shm` mapping that starts at `address`.
+pub fn shm_unmap(address: u64) -> Result<u64, Error> {
+    call(call::SHM_UNMAP, [address, 0, 0, 0, 0, 0])
+}
+
 /// Answers the request taken by the last receive, moving `handles` to the caller.
 pub fn reply_h(bytes: &[u8], handles: &[Handle]) -> Result<u64, Error> {
     call(

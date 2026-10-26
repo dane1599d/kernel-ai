@@ -109,11 +109,35 @@ pub fn halt_others() {
 
 static SHOOTDOWN: Mutex<()> = Mutex::new(());
 static SHOOTDOWN_ADDRESS: AtomicU64 = AtomicU64::new(0);
+static SHOOTDOWN_PAGES: AtomicU64 = AtomicU64::new(1);
 static SHOOTDOWN_PENDING: AtomicUsize = AtomicUsize::new(0);
+/// Above this many pages a CPU flushes its whole TLB rather than page by page.
+const FLUSH_ALL_PAGES: u64 = 32;
 
 /// Invalidates `address` in every other CPU's TLB and waits until they all have.
 /// The caller has already flushed its own TLB entry.
 pub fn tlb_shootdown(address: u64) {
+    shoot(address, 1);
+}
+
+/// Invalidates `pages` pages from `address` in every CPU's TLB, this one's too,
+/// in one round of interrupts, and waits until they all have.
+pub fn tlb_shootdown_range(address: u64, pages: u64) {
+    flush_range(address, pages);
+    shoot(address, pages);
+}
+
+fn flush_range(address: u64, pages: u64) {
+    if pages > FLUSH_ALL_PAGES {
+        x86_64::instructions::tlb::flush_all();
+        return;
+    }
+    for page in 0..pages {
+        x86_64::instructions::tlb::flush(x86_64::VirtAddr::new(address + page * 4096));
+    }
+}
+
+fn shoot(address: u64, pages: u64) {
     let cpus = online();
     if cpus <= 1 {
         return;
@@ -121,6 +145,7 @@ pub fn tlb_shootdown(address: u64) {
     let _guard = SHOOTDOWN.lock();
     let me = percpu::index();
     SHOOTDOWN_ADDRESS.store(address, Ordering::Release);
+    SHOOTDOWN_PAGES.store(pages, Ordering::Release);
     SHOOTDOWN_PENDING.store(cpus - 1, Ordering::Release);
     for cpu in (0..cpus).filter(|&cpu| cpu != me) {
         send(cpu, apic::TLB_VECTOR);
@@ -141,7 +166,7 @@ pub fn tlb_shootdown(address: u64) {
 /// TLB shootdown interrupt handler body.
 pub fn on_tlb_ipi() {
     let address = SHOOTDOWN_ADDRESS.load(Ordering::Acquire);
-    x86_64::instructions::tlb::flush(x86_64::VirtAddr::new(address));
+    flush_range(address, SHOOTDOWN_PAGES.load(Ordering::Acquire));
     SHOOTDOWN_PENDING.fetch_sub(1, Ordering::AcqRel);
 }
 
