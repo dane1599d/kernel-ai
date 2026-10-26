@@ -131,3 +131,52 @@ fn rings_of_garbage_never_panic() {
         }
     }
 }
+
+/// A chain head of `which` kind, then the same head with its bytes mutated and
+/// its pointer's checksum made good, so the replay's own checks run: each must
+/// load or be refused, never panic, and what loads must stay inside the disk.
+#[test]
+fn mutated_allocator_blocks_never_panic() {
+    use kaifs::allocator::Allocator;
+    let blocks = 1 << 14;
+    let area = format::data_area(blocks);
+    let kind = CsumKind::Seahash64;
+    for txns in [1u64, 5] {
+        let mut disk = MemDisk::new(blocks);
+        let mut alloc = Allocator::new(area);
+        let mut head = BlockPtr::NULL;
+        for txn in 1..=txns {
+            let run = alloc.alloc((txn % 4) as u8).unwrap();
+            alloc.free_later(txn, run);
+            head = alloc.persist(&mut disk, kind, txn).unwrap();
+            alloc.committed(txn);
+        }
+        let mut sample = [0; BLOCK];
+        disk.read(head.addr, &mut sample).unwrap();
+        let mut rng = XorShift::new(txns);
+        for _ in 0..5_000 {
+            let block = block_of(&hostile::mutate(&mut rng, &sample));
+            let mut copy = disk.clone();
+            copy.write(head.addr, &block).unwrap();
+            let ptr = BlockPtr {
+                csum: kind.sum(&block),
+                ..head
+            };
+            if let Ok(loaded) = Allocator::load(&mut copy, kind, &ptr, txns + rng.below(3) as u64) {
+                let state = loaded.state();
+                assert!(
+                    state
+                        .free
+                        .iter()
+                        .all(|&(s, l)| s >= area.0 && s + l <= area.1)
+                );
+                assert!(
+                    state
+                        .pending
+                        .iter()
+                        .all(|&(_, s, l)| s >= area.0 && s + l <= area.1)
+                );
+            }
+        }
+    }
+}
