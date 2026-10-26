@@ -383,6 +383,8 @@ impl Local {
     /// at most `act::SERVICE_TIMEOUT_MS`; a script's code comes from the script
     /// prompt (`llmproto::local::act::routed`).
     pub fn act(&mut self, request: &ActRequest) -> Result<Call, ActError> {
+        // The pool's figures from here on are this request's.
+        crate::workers::report();
         let clock = core::cell::RefCell::new(Clock::new(
             request.timeout_ms.min(act::SERVICE_TIMEOUT_MS),
             self.prefill_rate,
@@ -405,7 +407,11 @@ impl Local {
             .or(self.last);
         // S02-2's profile: the call's decode, then a script's, if any.
         let name = call.as_ref().map_or("none", |call| call.name.as_str());
-        println!("act: {name}, {}", clock.profile(&["call", "script"]));
+        println!(
+            "act: {name}, {}; pool: {}",
+            clock.profile(&["call", "script"]),
+            crate::workers::report()
+        );
         call
     }
 
