@@ -49,8 +49,19 @@ impl Booter {
     /// Writes the boot drive with `cmdline`, and returns fresh firmware (a new
     /// variable store every boot).
     pub fn prepare(&self, cmdline: &str) -> Result<crate::Firmware, String> {
+        self.prepare_with(cmdline, Vec::new())
+    }
+
+    /// [`Booter::prepare`], with `extra` modules on the boot drive too.
+    pub fn prepare_with(
+        &self,
+        cmdline: &str,
+        extra: Vec<Module>,
+    ) -> Result<crate::Firmware, String> {
+        let mut modules: Vec<&Module> = self.modules.iter().collect();
+        modules.extend(extra.iter());
         let esp = self.target_dir.join("esp");
-        esp::make_esp(&esp, &self.kernel, &self.modules, &self.efi, cmdline)?;
+        esp::make_esp(&esp, &self.kernel, &modules, &self.efi, cmdline)?;
         crate::find_firmware(&self.qemu, &self.target_dir)
     }
 

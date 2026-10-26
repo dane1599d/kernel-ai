@@ -15,6 +15,9 @@ use std::path::{Path, PathBuf};
 
 /// Guest memory without a model disk, in MiB.
 pub const BASE_MEMORY_MIB: u64 = 512;
+/// The boot module the kernel takes the model from in place of the disk
+/// (`kernel/src/model.rs`).
+pub const MODEL_MODULE: &str = "kai.model";
 const MIB: u64 = 1024 * 1024;
 /// The model's share of guest memory is rounded up to a multiple of this.
 const MEMORY_STEP_MIB: u64 = 64;

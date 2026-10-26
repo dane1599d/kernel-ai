@@ -131,20 +131,113 @@ pub fn check_window() -> Result<(), &'static str> {
     window::check(built, model.run_count(), |k| model.run(k))
 }
 
-/// Copies the `kai-model` disk into memory and builds its window, if there is a
-/// disk and it holds a GGUF file. Anything else is logged and ignored: the system
-/// runs without a model.
+/// The boot module that holds the model in place of the `kai-model` disk.
+pub const MODULE: &str = "kai.model";
+
+/// Where the model comes from.
+enum Source<'a> {
+    Disk(&'a mut dyn Device),
+    /// A boot module, which Limine read before the kernel started: the icount boots
+    /// use it, since a disk's reads complete at host-timed moments and leave the
+    /// kernel's state different from boot to boot (`xtask tune observe`).
+    Module(&'static [u8]),
+}
+
+impl Source<'_> {
+    fn name(&self) -> &'static str {
+        match self {
+            Source::Disk(_) => "the kai-model disk",
+            Source::Module(_) => "the boot module kai.model",
+        }
+    }
+
+    /// The file's length, given what the command line says.
+    fn len(&self, attached: Option<u64>) -> Result<u64, String> {
+        match self {
+            Source::Disk(disk) => {
+                let sectors = disk.sectors();
+                // QEMU rounds the file up to whole sectors; model_len= says where it ends.
+                match attached {
+                    Some(len) if sectors_for(len) == sectors => Ok(len),
+                    Some(len) => Err(format!(
+                        "model_len={len} does not fit a disk of {sectors} sectors"
+                    )),
+                    None => Ok(sectors.checked_mul(SECTOR).ok_or("the disk is too large")?),
+                }
+            }
+            Source::Module(bytes) => match attached {
+                Some(len) if len != bytes.len() as u64 => Err(format!(
+                    "model_len={len} is not the module's {} bytes",
+                    bytes.len()
+                )),
+                _ => Ok(bytes.len() as u64),
+            },
+        }
+    }
+
+    /// The file's first sector, or less.
+    fn head(&mut self) -> Result<Vec<u8>, String> {
+        match self {
+            Source::Disk(disk) => Ok(disk.read(0, 1)?.to_vec()),
+            Source::Module(bytes) => Ok(bytes[..bytes.len().min(SECTOR as usize)].to_vec()),
+        }
+    }
+
+    /// Hands `f` the file in pieces of at most 512 KiB, each starting on a page.
+    fn stream(
+        &mut self,
+        len: u64,
+        mut f: impl FnMut(u64, &[u8]) -> Result<(), &'static str>,
+    ) -> Result<(), &'static str> {
+        match self {
+            Source::Disk(disk) => block::stream(*disk, len, f),
+            Source::Module(bytes) => {
+                let len = usize::try_from(len).map_err(|_| "the module is too large")?;
+                for (n, piece) in bytes[..len].chunks(512 * 1024).enumerate() {
+                    f(n as u64 * 512 * 1024, piece)?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+/// The `kai.model` boot module, if Limine loaded one.
+fn boot_module() -> Option<&'static [u8]> {
+    crate::MODULES
+        .response()?
+        .modules()
+        .iter()
+        .find(|file| file.path().ends_with(MODULE))
+        .map(|file| -> &'static [u8] { file.data() })
+}
+
+/// Copies the model into memory and builds its window: from the `kai.model` boot
+/// module if there is one, or else the `kai-model` disk, if it holds a GGUF file.
+/// Anything else is logged and ignored: the system runs without a model.
 pub fn load(cmdline: &str) {
     let attached = Attached::from_cmdline(cmdline);
     let started = hpet::nanos();
-    match block::with_model_disk(|disk| copy(disk, attached.len)) {
-        None => {}
-        Some(Ok(model)) => {
+    let found = match boot_module() {
+        Some(bytes) => Some((
+            Source::Module(bytes).name(),
+            copy(Source::Module(bytes), attached.len),
+        )),
+        None => block::with_model_disk(|disk| {
+            let source = Source::Disk(disk);
+            (source.name(), copy(source, attached.len))
+        }),
+    };
+    let Some((from, copied)) = found else {
+        return;
+    };
+    match copied {
+        Ok(model) => {
             let runs = model.runs.len() as u64;
             match window::build(runs, |k| model.run(k)) {
                 Ok(built) => {
                     log!(
-                        "model: {} bytes of GGUF v3 copied from the kai-model disk into {runs} runs of 2 MiB in {} ms; window of {} page tables",
+                        "model: {} bytes of GGUF v3 copied from {from} into {runs} runs of 2 MiB in {} ms; window of {} page tables",
                         model.len,
                         (hpet::nanos() - started) / 1_000_000,
                         mm::window::table_frames(runs)
@@ -154,14 +247,14 @@ pub fn load(cmdline: &str) {
                     LOADS.fetch_add(1, Ordering::SeqCst);
                 }
                 Err(why) => {
-                    log!("model: {why}; the kai-model disk is ignored");
+                    log!("model: {why}; {from} is ignored");
                     free_runs(&model.runs);
                     REJECTED.call_once(|| String::from(why));
                 }
             }
         }
-        Some(Err(why)) => {
-            log!("model: {why}; the kai-model disk is ignored");
+        Err(why) => {
+            log!("model: {why}; {from} is ignored");
             REJECTED.call_once(|| why);
         }
     }
@@ -175,22 +268,12 @@ fn free_runs(runs: &[u32]) {
     });
 }
 
-fn copy(disk: &mut dyn Device, attached: Option<u64>) -> Result<Model, String> {
-    let sectors = disk.sectors();
-    // QEMU rounds the file up to whole sectors; model_len= says where it ends.
-    let len = match attached {
-        Some(len) if sectors_for(len) == sectors => len,
-        Some(len) => {
-            return Err(format!(
-                "model_len={len} does not fit a disk of {sectors} sectors"
-            ));
-        }
-        None => sectors.checked_mul(SECTOR).ok_or("the disk is too large")?,
-    };
+fn copy(mut source: Source, attached: Option<u64>) -> Result<Model, String> {
+    let len = source.len(attached)?;
     if len == 0 || len > kabi::layout::MODEL_MAX {
         return Err(format!("{len} bytes is no size for a model"));
     }
-    let first = disk.read(0, 1)?;
+    let first = source.head()?;
     let head = &first[..first.len().min(usize::try_from(len).unwrap_or(usize::MAX))];
     match kabi::model::check_header(head) {
         Ok(()) => {}
@@ -222,7 +305,7 @@ fn copy(disk: &mut dyn Device, attached: Option<u64>) -> Result<Model, String> {
     // Where the next piece of the file goes: its offset in the file.
     let mut offset: u64 = 0;
     let mut progress = progress::Progress::new(len);
-    let copied = block::stream(disk, len, |_, bytes| {
+    let copied = source.stream(len, |_, bytes| {
         let started = hpet::nanos();
         // Reads are 512 KiB and start on a page boundary, so a piece never crosses a
         // run: four of them fill one.
@@ -259,7 +342,7 @@ fn copy(disk: &mut dyn Device, attached: Option<u64>) -> Result<Model, String> {
     }
     if list.len() != count || offset != len {
         free_runs(&list);
-        return Err(String::from("the disk did not yield the whole file"));
+        return Err(String::from("the source did not yield the whole file"));
     }
     // Ring 3 can read the whole last run: no stale memory may follow the file.
     let last = u64::from(list[count - 1]) * PAGE_SIZE;
