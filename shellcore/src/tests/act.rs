@@ -303,7 +303,7 @@ fn an_asked_terminal_call_sends_its_once_for_the_terminal_to_check() {
     let (host, mut shell) = with_calls(vec![call(OPEN_AT_40), call(OPEN_AT_40)]);
     let reply = shell.eval("abre notes/src/lib.rs en la línea 40");
     assert!(reply.to_wire().starts_with("menu 1 added\n"), "{reply:?}");
-    let once = host.mint(1, "Run editor_open(\"notes/src/lib.rs\", 40)? The request is not in English, so it asks first.");
+    let once = host.mint(1, "editor_open(\"notes/src/lib.rs\", 40)");
     assert_eq!(
         shell.eval(&format!("answer 1 allow once={once}")).to_wire(),
         format!("do 1 edit notes src/lib.rs 40 once={once}")

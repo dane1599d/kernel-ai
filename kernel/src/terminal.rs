@@ -227,7 +227,7 @@ fn choose(decoder: &mut Decoder, mut menu: Menu) -> Option<Waiting> {
         Ok(Some(allowed)) => {
             let line = menu::granted_line(menu.id, answer, allowed.granted);
             // A `do` for this call must bring the ONCE just minted.
-            crate::doing::menu_shown(menu.id, menu.question());
+            crate::doing::menu_shown(menu.id, menu.call());
             let waiting = shell_line(&line);
             crate::doing::menu_answered();
             crate::allow::end(&allowed);

@@ -14,12 +14,12 @@ use captable::once::Verdict;
 use spin::Mutex;
 use termcore::doing::{Do, Request, done};
 
-/// The menu on screen and its question, while the shell answers it.
+/// The menu on screen and the call it shows, while the shell answers it.
 static SHOWN: Mutex<Option<(u64, String)>> = Mutex::new(None);
 
 /// The terminal drew menu `id`: a `do` for it must bring its ONCE.
-pub fn menu_shown(id: u64, question: &str) {
-    *SHOWN.lock() = Some((id, String::from(question)));
+pub fn menu_shown(id: u64, call: &str) {
+    *SHOWN.lock() = Some((id, String::from(call)));
 }
 
 /// The shell has answered the menu.
@@ -61,16 +61,16 @@ pub fn run(text: &str) -> Done {
 }
 
 /// A request for a call whose menu is on screen must carry that menu's ONCE, and
-/// its digest must match the question as shown; a match uses it up.
+/// its digest must match the call as shown (`kai-once 2`); a match uses it up.
 fn once_checks(request: &Request) -> Result<(), String> {
     let shown = SHOWN.lock().clone();
-    let Some((id, question)) = shown.filter(|(id, _)| *id == request.id) else {
+    let Some((id, call)) = shown.filter(|(id, _)| *id == request.id) else {
         return Ok(());
     };
     let badge = request
         .once
         .ok_or_else(|| String::from("the call was asked on the menu; its ONCE is missing"))?;
-    match grants::check_once(badge, &termcore::once::digest(id, &question)) {
+    match grants::check_once(badge, &termcore::once::digest_call(id, &call)) {
         Verdict::Match => Ok(()),
         other => Err(alloc::format!("its ONCE did not check ({other:?})")),
     }
