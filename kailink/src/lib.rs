@@ -27,9 +27,6 @@ mod leb;
 mod link;
 mod object;
 
-#[cfg(test)]
-mod tests;
-
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;

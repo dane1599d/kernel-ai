@@ -44,6 +44,12 @@ pub(crate) struct Object<'a> {
     pub segment_align: Vec<u32>,
 }
 
+/// `wasm[range]`, which a truncated object may not have.
+fn slice(wasm: &[u8], range: core::ops::Range<usize>) -> Result<&[u8], Error> {
+    wasm.get(range)
+        .ok_or_else(|| Error::Parse("section past the end".into()))
+}
+
 fn parse_err(error: wasmparser::BinaryReaderError) -> Error {
     Error::Parse(error.message().to_string())
 }
@@ -85,7 +91,7 @@ impl<'a> Object<'a> {
                 Payload::CodeSectionStart { range, .. } => {
                     object.code = Some(Patchable {
                         index: section,
-                        payload: &wasm[range],
+                        payload: slice(wasm, range)?,
                         relocs: Vec::new(),
                     });
                 }
@@ -93,7 +99,7 @@ impl<'a> Object<'a> {
                     object.data_count = reader.count();
                     object.data = Some(Patchable {
                         index: section,
-                        payload: &wasm[reader.range()],
+                        payload: slice(wasm, reader.range())?,
                         relocs: Vec::new(),
                     });
                 }

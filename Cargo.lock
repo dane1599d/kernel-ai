@@ -510,6 +510,7 @@ name = "kailink"
 version = "0.0.0"
 dependencies = [
  "wasm-encoder",
+ "wasmi",
  "wasmparser 0.228.0",
 ]
 
