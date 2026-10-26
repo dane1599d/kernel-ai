@@ -19,6 +19,7 @@
 extern crate alloc;
 
 mod canonical;
+mod effects;
 mod instance;
 pub mod link;
 mod tables;
@@ -173,5 +174,11 @@ impl livecore::Instance for LiveInstance {
         args: &[appabi::Val],
     ) -> Result<Option<appabi::Val>, Fault> {
         either!(self, i => i.call(func, args))
+    }
+    fn begin(&mut self, storage: &livecore::txn::Storage, inputs: livecore::txn::Inputs) {
+        either!(self, i => i.begin(storage, inputs))
+    }
+    fn finish(&mut self) -> livecore::txn::Txn {
+        either!(self, i => i.finish())
     }
 }

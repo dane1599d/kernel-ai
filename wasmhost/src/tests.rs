@@ -465,9 +465,96 @@ refused "
     );
 }
 
+/// Imports `storage` and `effects`, and exports `probe#write`, which puts `k` = `v`
+/// and queues `notify("hi")`, returning its ticket; `probe#read`, which returns 256
+/// times the option's case plus the value's first byte; and `probe#spam`, which
+/// queues effects until one traps.
+const STORAGE_PROBE: &str = r#"
+  (import "kai:app/storage@0.1.0" "get" (func $get (param i32 i32 i32)))
+  (import "kai:app/storage@0.1.0" "put" (func $put (param i32 i32 i32 i32)))
+  (import "kai:app/storage@0.1.0" "delete" (func $delete (param i32 i32)))
+  (import "kai:app/effects@0.1.0" "request" (func $request (param i32 i32 i32 i32 i32) (result i32)))
+  (data (i32.const 200) "kvhi")
+  (func (export "probe#write") (result i32)
+    (call $put (i32.const 200) (i32.const 1) (i32.const 201) (i32.const 1))
+    (call $request (i32.const 1) (i32.const 202) (i32.const 2) (i32.const 0) (i32.const 0)))
+  (func (export "probe#read") (result i32)
+    (call $get (i32.const 200) (i32.const 1) (i32.const 1000))
+    (if (result i32) (i32.load8_u (i32.const 1000))
+      (then (i32.add (i32.const 256) (i32.load8_u (i32.load (i32.const 1004)))))
+      (else (i32.const 0))))
+  (func (export "probe#forget")
+    (call $delete (i32.const 200) (i32.const 1)))
+  (func (export "probe#spam")
+    (loop $again
+      (drop (call $request (i32.const 1) (i32.const 202) (i32.const 2) (i32.const 0) (i32.const 0)))
+      (br $again)))
+"#;
+
+fn probe(export: &str, result: Option<appabi::Ty>) -> appabi::Func {
+    appabi::Func {
+        export: String::from(export),
+        params: Vec::new(),
+        result,
+    }
+}
+
+#[test]
+fn a_call_reads_its_snapshot_and_keeps_its_writes_and_effects() {
+    use appabi::Val;
+    use livecore::txn::{Effect, Inputs, Storage};
+    let mut v = load_core(&lifecycle2(STORAGE_PROBE), LIMITS, None).unwrap();
+    let (write, read) = (
+        probe("probe#write", Some(appabi::Ty::U32)),
+        probe("probe#read", Some(appabi::Ty::U32)),
+    );
+    // Outside a call there is no storage: a host-call error, as for `log`.
+    assert_eq!(reason(v.call(&write, &[])), Reason::Host);
+    let mut storage = Storage::new();
+    storage.insert(String::from("k"), b"w".to_vec());
+    let inputs = Inputs {
+        now_ms: 5,
+        seed: 6,
+        first_ticket: 41,
+    };
+    v.begin(&storage, inputs);
+    assert_eq!(
+        v.call(&read, &[]),
+        Ok(Some(Val::U32(256 + u32::from(b'w'))))
+    );
+    assert_eq!(v.call(&write, &[]), Ok(Some(Val::U32(41))));
+    // The call sees its own write; the snapshot it was given does not change.
+    assert_eq!(
+        v.call(&read, &[]),
+        Ok(Some(Val::U32(256 + u32::from(b'v'))))
+    );
+    assert_eq!(v.call(&write, &[]), Ok(Some(Val::U32(42))));
+    let txn = v.finish();
+    assert_eq!(txn.writes.get("k"), Some(&Some(b"v".to_vec())));
+    assert_eq!(
+        txn.effects,
+        [Effect::Notify("hi".into()), Effect::Notify("hi".into())]
+    );
+    assert_eq!(v.health(), Ok(6), "the seed is the call's");
+    // A delete reads as nothing, and the next call starts clean.
+    v.begin(&storage, inputs);
+    assert_eq!(v.call(&probe("probe#forget", None), &[]), Ok(None));
+    assert_eq!(v.call(&read, &[]), Ok(Some(Val::U32(0))));
+    assert_eq!(v.finish().writes.get("k"), Some(&None));
+    // Too many effects fail the call.
+    v.begin(&storage, inputs);
+    assert_eq!(
+        reason(v.call(&probe("probe#spam", None), &[])),
+        Reason::Host
+    );
+    assert_eq!(v.finish().effects.len(), livecore::txn::MAX_EFFECTS);
+}
+
 #[test]
 fn lifecycle_2_imports_link_only_by_name_type_and_version() {
     let storage = r#"(import "kai:app/storage@0.1.0" "delete" (func (param i32 i32)))"#;
+    assert!(load_core(&lifecycle2(storage), LIMITS, None).is_ok());
+    let storage = r#"(import "kai:app/storage@0.1.0" "delete" (func (param i32 i32 i32)))"#;
     assert_eq!(
         reason(load_core(&lifecycle2(storage), LIMITS, None)),
         Reason::Link
