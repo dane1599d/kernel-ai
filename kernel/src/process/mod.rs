@@ -438,7 +438,7 @@ pub fn spawn_with(
         with_table(|table| table[slot] = Process::FREE);
         return Err((error, moved));
     }
-    crate::handle::give(slot, moved);
+    crate::handle::give_at_start(slot, moved);
     if threads::spawn("user", process_main, slot).is_err() {
         crate::handle::destroy(slot);
         with_table(|table| table[slot] = Process::FREE);

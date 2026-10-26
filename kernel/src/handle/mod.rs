@@ -267,6 +267,23 @@ pub fn take_for(slot: usize, handles: &[Handle], to_caps: u64) -> Result<Vec<Ent
         .collect()
 }
 
+/// Puts `entries` moved in before the process in `slot` first runs (JOB_SPAWN)
+/// into its table and lists them in STARTUP, as the handles it starts with.
+/// One that does not fit is dropped.
+pub fn give_at_start(slot: usize, entries: Vec<Entry>) {
+    let mut guard = HANDLES[slot].lock();
+    let Some(handles) = guard.as_mut() else {
+        return;
+    };
+    for entry in entries {
+        if let Ok(handle) = handles.table.insert(entry)
+            && handles.startup.try_reserve(1).is_ok()
+        {
+            handles.startup.push(handle);
+        }
+    }
+}
+
 /// Puts moved `entries` into `slot`'s table; their new handles. One that does not
 /// fit is dropped, and its handle is 0.
 pub fn give(slot: usize, entries: Vec<Entry>) -> Vec<Handle> {
