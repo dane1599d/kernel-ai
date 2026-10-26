@@ -15,6 +15,9 @@
 //!   M8 50 through the shell's one door (`shellcore`'s `act` then script
 //!   fallback), answered by llm's own `llmproto::local::act::routed` on the OS
 //!   pack. With `--gate` a missed bar fails the run.
+//! - `os`: the OS rows' own requests ([`os::TASKS`], such as "stop build-3" and
+//!   "restart the indexer") through llm's `act` path on the OS pack and the one
+//!   door's name resolution, each against what must run; it passes at 9 of 10.
 //!
 //! Code decides what each call would do ([`consent`]), so false runs and asks
 //! are counted, and [`score`] holds S02-1's thresholds. The layout is ADR
@@ -26,6 +29,7 @@
 mod consent;
 mod grammar;
 mod m8;
+mod os;
 mod registry;
 mod render;
 mod score;
@@ -77,6 +81,8 @@ enum Kind {
     Tagged(Format),
     /// Today's script path; `no_think` false is arm A0.
     M8,
+    /// The OS rows' calls on llm's own `act` path ([`os`]).
+    Os,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -115,6 +121,16 @@ impl Arm {
                     no_think: false,
                     rules: false,
                     m8script: true,
+                    ship: true,
+                });
+            }
+            "os" => {
+                return Ok(Self {
+                    kind: Kind::Os,
+                    rows: 0,
+                    no_think: false,
+                    rules: false,
+                    m8script: false,
                     ship: true,
                 });
             }
@@ -167,6 +183,7 @@ impl Arm {
         match self.kind {
             Kind::M8 if self.no_think => "m8".into(),
             Kind::M8 => "m8-a0".into(),
+            Kind::Os => "os".into(),
             Kind::Tagged(_) if self.ship => "act".into(),
             Kind::Tagged(format) => format!(
                 "{}{}{}{}@{}",
@@ -416,6 +433,9 @@ fn run_arm(
     options: &Options,
     target_dir: &Path,
 ) -> Result<(bool, String), String> {
+    if arm.kind == Kind::Os {
+        return os::run(loaded, seed, target_dir);
+    }
     let started = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
@@ -431,6 +451,7 @@ fn run_arm(
     let mut records = Vec::new();
     let mut scored = Vec::new();
     let m8 = match arm.kind {
+        Kind::Os => unreachable!("arm os returned above"),
         Kind::M8 => {
             header["pack_id"] = json!(null);
             let engine = loaded.engine.clone();
@@ -553,6 +574,7 @@ fn run_arm(
         }
     };
     let gates = match arm.kind {
+        Kind::Os => unreachable!("arm os returned above"),
         Kind::M8 => score::gates(&[], m8).split_off(7),
         Kind::Tagged(_) if options.only_m8 => score::gates(&[], m8).split_off(7),
         Kind::Tagged(_) => score::gates(&scored, m8),
