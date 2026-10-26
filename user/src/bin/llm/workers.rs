@@ -66,6 +66,11 @@ fn calibrate() {
     CYCLES_PER_US.store((tsc * 1000 / ns.max(1)).max(1), Ordering::Relaxed);
 }
 
+/// `cycles` of the TSC in milliseconds.
+pub fn ms(cycles: u64) -> u64 {
+    (us(cycles) / 1000.0) as u64
+}
+
 fn us(cycles: u64) -> f64 {
     cycles as f64 / CYCLES_PER_US.load(Ordering::Relaxed).max(1) as f64
 }
@@ -80,7 +85,6 @@ pub fn report() -> String {
     // SAFETY: a non-null pointer is the leaked `Workers`, which lives for ever,
     // and only the service's thread, which broadcasts, reads its stats.
     let stats = unsafe { &*pool }.0.take_stats();
-    let ms = |cycles: u64| (us(cycles) / 1000.0) as u64;
     format!(
         "{} broadcasts, {} ms, {} ms of hand-off",
         stats.broadcasts,

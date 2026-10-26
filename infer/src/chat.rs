@@ -166,6 +166,11 @@ pub struct Engine<'a> {
     spells_ascii: bool,
     /// Tokens jump-forward fed in the last reply.
     forced: usize,
+    /// A counter the caller may set ([`Engine::set_clock`]), and its count spent
+    /// picking tokens (the shape's mask and the sampler) since
+    /// [`Engine::take_picking`].
+    clock: fn() -> u64,
+    picking: u64,
     /// The other KV slots (see [`Engine::add_slot`]), each a cache with the
     /// tokens behind it; `None` at the index in use, whose cache is `kv`.
     slots: Vec<Option<(KvCache, Vec<u32>)>>,
@@ -240,6 +245,8 @@ impl<'a> Engine<'a> {
             candidates,
             spells_ascii,
             forced: 0,
+            clock: || 0,
+            picking: 0,
             slots: alloc::vec![None],
             slot: 0,
             about,
@@ -403,6 +410,7 @@ impl<'a> Engine<'a> {
         }
         let mut made = reply.tokens;
         while made < max_new {
+            let began = (self.clock)();
             let token = match (grammar, &mut state) {
                 (Some(grammar), Some(state)) => match self.shaped(grammar, state, sampler)? {
                     Ok(token) => token,
@@ -420,6 +428,7 @@ impl<'a> Engine<'a> {
                     token
                 }
             };
+            self.picking += (self.clock)().wrapping_sub(began);
             made += 1;
             self.tok.decode(&[token], &mut reply.bytes);
             reply.tokens += 1;
@@ -594,6 +603,17 @@ impl<'a> Engine<'a> {
     /// Tokens jump-forward fed in the last reply, of those it made.
     pub fn forced(&self) -> usize {
         self.forced
+    }
+
+    /// A counter to time token picks by, such as the TSC; none by default.
+    pub fn set_clock(&mut self, clock: fn() -> u64) {
+        self.clock = clock;
+    }
+
+    /// What token picks (the shape's mask and the sampler) took by the clock
+    /// set since the last call, which starts the count again; 0 with no clock.
+    pub fn take_picking(&mut self) -> u64 {
+        core::mem::take(&mut self.picking)
     }
 
     /// The prompt's length in tokens, for a caller sizing `max_new`.
