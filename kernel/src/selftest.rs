@@ -72,6 +72,8 @@ pub enum SelfTest {
     Fpu,
     /// L2: the isolation probe; ops 0-2 complete and every other op is stopped.
     Probe,
+    /// Spike S04-2 (ADR 0004): a stub `fs` over copied IPC, and its throughput.
+    FsIpc,
     /// P1: handle tables, startup handles and need() on handles.
     Handles,
     /// L6: worker threads start, are refused, filtered and torn down.
@@ -150,6 +152,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=latency" => Some(SelfTest::Latency),
             "test=fpu" => Some(SelfTest::Fpu),
             "test=probe" => Some(SelfTest::Probe),
+            "test=fs-ipc" => Some(SelfTest::FsIpc),
             "test=handles" => Some(SelfTest::Handles),
             "test=threads" => Some(SelfTest::Threads),
             "test=threads-kill" => Some(SelfTest::ThreadsKill),

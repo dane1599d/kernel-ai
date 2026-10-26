@@ -26,5 +26,10 @@ sched = { path = "../sched" }
 supervise = { path = "../supervise" }
 shellcore = { path = "../shellcore" }
 spin = "0.12.3"
+# Spike S04-2 only (spike/fs-ipc, never merged): the stub fs's kai-fs-shaped
+# messages and its per-record checksums.
+minicbor = { version = "2.3.0", default-features = false }
+seahash = { version = "4.1.0", default-features = false }
+sha2 = { version = "0.11.1", default-features = false }
 talc = "5.1.1"
 wasmhost = { path = "../wasmhost" }

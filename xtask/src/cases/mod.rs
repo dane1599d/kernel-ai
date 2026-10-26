@@ -7,6 +7,7 @@ mod components;
 mod devices;
 mod kernel;
 mod network;
+mod storage;
 
 use crate::buildsvc::BuildService;
 use crate::disk::Fixture;
@@ -104,6 +105,7 @@ const LANES: &[&[TestCase]] = &[
     agent::CASES,
     components::CASES,
     network::CASES,
+    storage::CASES,
 ];
 
 /// The cases `cargo xtask test` boots.
@@ -124,6 +126,6 @@ mod tests {
         let cases = test_cases();
         let names: HashSet<&str> = cases.iter().map(|case| case.name).collect();
         assert_eq!(names.len(), cases.len());
-        assert_eq!(cases.len(), 62);
+        assert_eq!(cases.len(), 63);
     }
 }
