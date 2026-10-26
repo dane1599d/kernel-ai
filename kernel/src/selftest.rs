@@ -92,6 +92,8 @@ pub enum SelfTest {
     IcountProbe,
     /// M10a-3: kernel-owned trials on the workload revert or keep by the rules.
     Reboot,
+    /// A panic or failed check that resets the machine (ADR 0008 "fault").
+    PanicReset,
     Devices,
     TuneRevert,
     TuneStall,
@@ -164,6 +166,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=bigmap" => Some(SelfTest::Bigmap),
             "test=icount-probe" => Some(SelfTest::IcountProbe),
             "test=reboot" => Some(SelfTest::Reboot),
+            "test=panic-reset" => Some(SelfTest::PanicReset),
             "test=devices" => Some(SelfTest::Devices),
             "test=tune-revert" => Some(SelfTest::TuneRevert),
             "test=tune-stall" => Some(SelfTest::TuneStall),

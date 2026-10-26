@@ -72,6 +72,24 @@ pub(super) const CASES: &[TestCase] = &[
         expect: &["power: rebooting through the 8042 reset line"],
         ..case("reboot-8042", "test=reboot reboot=8042")
     },
+    // ADR 0008 "fault": a panic or a failed check resets the machine instead of
+    // halting (`panic=reset` asks for that in test mode).
+    TestCase {
+        resets: true,
+        expect: &[
+            "fault: panic-reset: a panic, on purpose; resetting the machine",
+            "power: rebooting through the FADT reset register",
+        ],
+        ..case("panic-reset", "test=panic-reset panic=reset")
+    },
+    TestCase {
+        resets: true,
+        expect: &[
+            "fault: panic-reset: a failed check, on purpose; resetting the machine",
+            "power: rebooting through the FADT reset register",
+        ],
+        ..case("fail-reset", "test=panic-reset what=fail panic=reset")
+    },
     // ADR 0007 section 3: a record per bound device, read by DEV_LIST from ring 3.
     TestCase {
         usb: &["usb-kbd"],
