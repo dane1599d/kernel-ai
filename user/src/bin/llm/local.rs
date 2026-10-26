@@ -90,6 +90,14 @@ impl Speed {
     }
 }
 
+/// Prompt tokens a request must have computed for its prefill rate to count.
+const MEASURED_TOKENS: usize = 32;
+/// The prefill rate assumed before any is measured: a slow guest's.
+const SLOW_TOKENS_PER_S: f64 = 10.0;
+/// Time kept for writing a short script after its prompt: 40 tokens at a slow
+/// guest's 8 tokens/s.
+const SCRIPT_DECODE_NS: u64 = 5_000_000_000;
+
 /// One decode of a request (a request may take two: `act` then its script), for
 /// the profile `act` logs.
 #[derive(Clone, Copy, Default)]
@@ -119,10 +127,47 @@ struct Clock {
     slept: u64,
     /// Each decode, from its `Step::Cached`.
     phases: alloc::vec::Vec<Phase>,
+    /// The prefill rate an earlier request or warm-up measured, tokens/s.
+    known_rate: Option<f64>,
+}
+
+/// Prompt tokens a warm-up computed, and how fast.
+struct Meter {
+    started: u64,
+    computed: usize,
+    last: u64,
+}
+
+impl Meter {
+    fn new() -> Self {
+        let now = sys::time_ns();
+        Self {
+            started: now,
+            computed: 0,
+            last: now,
+        }
+    }
+
+    fn step(&mut self, step: &Step) {
+        if let Step::Prompt = step {
+            self.computed += 1;
+            self.last = sys::time_ns();
+        }
+    }
+
+    fn rate(&self) -> Option<f64> {
+        rate(self.computed, self.last - self.started)
+    }
+}
+
+/// Tokens/s over `computed` prompt tokens in `ns`, once there are enough to
+/// count.
+fn rate(computed: usize, ns: u64) -> Option<f64> {
+    (computed >= MEASURED_TOKENS).then(|| computed as f64 * 1e9 / ns.max(1) as f64)
 }
 
 impl Clock {
-    fn new(limit_ms: u64) -> Self {
+    fn new(limit_ms: u64, known_rate: Option<f64>) -> Self {
         let started = sys::time_ns();
         Self {
             started,
@@ -135,6 +180,7 @@ impl Clock {
             stopped: false,
             slept: started,
             phases: alloc::vec::Vec::new(),
+            known_rate,
         }
     }
 
@@ -202,6 +248,24 @@ impl Clock {
         line
     }
 
+    /// The prefill rate this request measured, its latest decode first.
+    fn rate(&self) -> Option<f64> {
+        self.phases
+            .iter()
+            .rev()
+            .find_map(|phase| rate(phase.computed, phase.prefilled - phase.started))
+    }
+
+    /// Whether the time left can prefill `tokens` more and write a short script:
+    /// at the prefill rate this request measured, else the last one measured
+    /// (a request with its prefix cached computes too few tokens to measure),
+    /// else a slow guest's 10 tokens/s.
+    fn room_for(&self, tokens: usize) -> bool {
+        let rate = self.rate().or(self.known_rate).unwrap_or(SLOW_TOKENS_PER_S);
+        let need = (tokens as f64 / rate * 1e9) as u64 + SCRIPT_DECODE_NS;
+        sys::time_ns().saturating_add(need) <= self.deadline
+    }
+
     fn speed(&self) -> Option<Speed> {
         let first = self.first?;
         Some(Speed {
@@ -215,6 +279,11 @@ impl Clock {
     }
 }
 
+/// Which KV slot each prompt uses: the act prefix stays in one, the script
+/// prompt (and `ask`, `explain`, `tune`, `:model`) in the other, so neither
+/// evicts the other (S02-2).
+const SLOTS: local::act::Slots = local::act::Slots::TWO;
+
 pub struct Local {
     engine: Engine<'static>,
     /// The tagged call's grammar over the pack's rows, built once.
@@ -222,18 +291,22 @@ pub struct Local {
     /// Conversation memory for `act`, in RAM only (P1 plan section 4).
     history: History,
     last: Option<Speed>,
+    /// The last prefill rate measured, tokens/s, for [`Clock::room_for`].
+    prefill_rate: Option<f64>,
 }
 
 impl Local {
     /// Loads the model in `bytes` on the best tier this CPU and the kernel allow,
     /// to run on `workers`.
     pub fn load(bytes: &'static [u8], workers: &'static dyn Parallel) -> Result<Self, String> {
+        // Each KV slot gets its share: the act prefix's and the script prompt's.
         let budget = Budget {
-            kv_bytes: kabi::model::KV_BYTES as usize,
+            kv_bytes: (kabi::model::KV_BYTES as usize) / kabi::model::KV_SLOTS,
             other_bytes: kabi::model::ENGINE_OTHER_BYTES as usize,
         };
         let mut engine = Engine::load(bytes, Tier::best(), kabi::model::CONTEXT_CAP, budget)
             .map_err(|error| format!("{error}"))?;
+        engine.add_slot().map_err(|error| format!("{error}"))?;
         engine.set_parallel(workers);
         let grammar = local::act::grammar().map_err(|error| format!("{error}"))?;
         Ok(Self {
@@ -241,6 +314,7 @@ impl Local {
             grammar,
             history: History::new(),
             last: None,
+            prefill_rate: None,
         })
     }
 
@@ -267,9 +341,11 @@ impl Local {
 
     /// The model's greedy answer to `request`, for `ask`, `:why` and `:model`.
     pub fn complete(&mut self, request: &chat::Request) -> Result<Completion, String> {
-        let mut clock = Clock::new(DEADLINE_MS);
+        self.engine.use_slot(SLOTS.script);
+        let mut clock = Clock::new(DEADLINE_MS, self.prefill_rate);
         let done = local::complete(&mut self.engine, request, |step| clock.step(step));
         self.last = clock.speed().or(self.last);
+        self.prefill_rate = clock.rate().or(self.prefill_rate);
         let completion = done.map_err(|error| match error {
             infer::Error::ContextFull => {
                 String::from("the question is too long for the model's context")
@@ -288,8 +364,13 @@ impl Local {
     /// A script for the shell's `request`, within the time the shell gives one
     /// round and at most `script::SERVICE_TIMEOUT_MS`.
     pub fn script(&mut self, request: &ScriptRequest) -> Result<Answer, AnswerError> {
-        let mut clock = Clock::new(request.timeout_ms.min(script::SERVICE_TIMEOUT_MS));
+        self.engine.use_slot(SLOTS.script);
+        let mut clock = Clock::new(
+            request.timeout_ms.min(script::SERVICE_TIMEOUT_MS),
+            self.prefill_rate,
+        );
         let answer = local::script(&mut self.engine, request, |step| clock.step(step));
+        self.prefill_rate = clock.rate().or(self.prefill_rate);
         let forced = self.engine.forced();
         self.last = clock
             .speed()
@@ -302,14 +383,21 @@ impl Local {
     /// at most `act::SERVICE_TIMEOUT_MS`; a script's code comes from the script
     /// prompt (`llmproto::local::act::routed`).
     pub fn act(&mut self, request: &ActRequest) -> Result<Call, ActError> {
-        let mut clock = Clock::new(request.timeout_ms.min(act::SERVICE_TIMEOUT_MS));
+        let clock = core::cell::RefCell::new(Clock::new(
+            request.timeout_ms.min(act::SERVICE_TIMEOUT_MS),
+            self.prefill_rate,
+        ));
         let call = local::act::routed(
             &mut self.engine,
             &self.grammar,
             request,
             &self.history,
-            |step| clock.step(step),
+            SLOTS,
+            |tokens| clock.borrow().room_for(tokens),
+            |step| clock.borrow_mut().step(step),
         );
+        let clock = clock.into_inner();
+        self.prefill_rate = clock.rate().or(self.prefill_rate);
         let forced = self.engine.forced();
         self.last = clock
             .speed()
@@ -342,8 +430,11 @@ impl Local {
     /// Computes the `act` prefix (pack, MODE turn, history) into the cache while
     /// no request waits; `waiting` as for [`Local::warm`].
     pub fn warm_act(&mut self, mut waiting: impl FnMut() -> bool) -> Result<(), String> {
+        self.engine.use_slot(SLOTS.act);
         let mut slept = 0;
-        local::act::warm(&mut self.engine, &self.history, |_| {
+        let mut meter = Meter::new();
+        let warmed = local::act::warm(&mut self.engine, &self.history, |step| {
+            meter.step(&step);
             if sys::time_ns() - slept < SLEEP_EVERY_NS {
                 return Next::Continue;
             }
@@ -353,8 +444,9 @@ impl Local {
                 true => Next::Stop,
                 false => Next::Continue,
             }
-        })
-        .map_err(|error| local::describe(&error))
+        });
+        self.prefill_rate = meter.rate().or(self.prefill_rate);
+        warmed.map_err(|error| local::describe(&error))
     }
 
     /// Computes the script system prompt into the cache while no request waits
@@ -362,8 +454,11 @@ impl Local {
     /// the start and then once a second of compute, in place of the 1 ms sleep;
     /// if one did, it stops, and the request carries on from what was computed.
     pub fn warm(&mut self, mut waiting: impl FnMut() -> bool) -> Result<(), String> {
+        self.engine.use_slot(SLOTS.script);
         let mut slept = 0;
-        local::warm(&mut self.engine, |_| {
+        let mut meter = Meter::new();
+        let warmed = local::warm(&mut self.engine, |step| {
+            meter.step(&step);
             if sys::time_ns() - slept < SLEEP_EVERY_NS {
                 return Next::Continue;
             }
@@ -373,17 +468,20 @@ impl Local {
                 true => Next::Stop,
                 false => Next::Continue,
             }
-        })
-        .map_err(|error| local::describe(&error))
+        });
+        self.prefill_rate = meter.rate().or(self.prefill_rate);
+        warmed.map_err(|error| local::describe(&error))
     }
 
     /// The model's answer to a `tune` request, under the answer's schema, within
     /// `tune::SERVICE_TIMEOUT_MS`. It prints how long the answer took, so a slow
     /// machine's demo shows its own speed.
     pub fn tune(&mut self, request: &TuneRequest) -> Result<Completion, String> {
-        let mut clock = Clock::new(tune::SERVICE_TIMEOUT_MS);
+        self.engine.use_slot(SLOTS.script);
+        let mut clock = Clock::new(tune::SERVICE_TIMEOUT_MS, self.prefill_rate);
         let done = local::tune(&mut self.engine, request, |step| clock.step(step));
         self.last = clock.speed().or(self.last);
+        self.prefill_rate = clock.rate().or(self.prefill_rate);
         let timing = clock
             .speed()
             .map_or_else(|| String::from("no answer token"), |speed| speed.timing());
@@ -400,6 +498,7 @@ impl Local {
 
     /// `:model`'s lines: the model, the engine, then one timed test prompt.
     pub fn report(&mut self, len: usize) -> String {
+        self.engine.use_slot(SLOTS.script);
         let about = self.engine.about().clone();
         let c = about.config;
         let licence = about.license.as_deref().unwrap_or("not stated in the file");

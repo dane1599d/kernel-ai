@@ -341,20 +341,21 @@ mod tests {
 
     #[test]
     fn memory_grows_with_the_model_and_the_engine() {
-        // The engine's 464 MiB (a 3,072-position f16 cache, ADR 0010), twice:
-        // 928 MiB on top of the model. Qwen3-4B takes a guest of 3,840 MiB (decided
-        // 2026-10-22), Qwen3-0.6B one of 2,112 MiB.
-        assert_eq!(kabi::model::ENGINE_PAGES * 4096 / MIB, 464);
-        assert_eq!(windows_disk("D:/m.gguf", 2_497_281_120).memory_mib(), 3840);
+        // The engine's 608 MiB (two KV slots of 2,048 f16 positions, S02-2),
+        // twice: 1,216 MiB on top of the model. Qwen3-4B takes a guest of
+        // 4,160 MiB (3,840 with one slot, approved 2026-10-22), Qwen3-0.6B one of
+        // 2,368 MiB.
+        assert_eq!(kabi::model::ENGINE_PAGES * 4096 / MIB, 608);
+        assert_eq!(windows_disk("D:/m.gguf", 2_497_281_120).memory_mib(), 4160);
         assert_eq!(
             windows_disk("D:/m.gguf", 639_446_688).memory_mib(),
-            512 + 1600
+            512 + 1856
         );
         assert_eq!(
             windows_disk("D:/m.gguf", 3 * MIB + 777).memory_mib(),
-            512 + 960
+            512 + 1280
         );
-        assert_eq!(windows_disk("D:/m.gguf", 1).memory_mib(), 512 + 960);
+        assert_eq!(windows_disk("D:/m.gguf", 1).memory_mib(), 512 + 1280);
     }
 
     #[test]

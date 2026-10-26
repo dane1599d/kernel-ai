@@ -148,15 +148,33 @@ fn main() -> i32 {
     let mut cold = true;
     // Whether the `act` prefix changed (a remembered turn, `new`): compacted,
     // that is computed again, while no request waits.
-    let mut stale = false;
+    let mut stale = true;
     loop {
         let mut caller = 0;
-        let waiting = match (stale, cold, &mut backends.local) {
-            (true, _, Some(Ok(local))) => warm_act(local, &mut request, &mut caller),
-            (_, true, Some(Ok(local))) => warm(local, &mut request, &mut caller),
+        let local = match &mut backends.local {
+            Some(Ok(local)) => Some(local),
             _ => None,
         };
-        (cold, stale) = (false, false);
+        // Each slot is warmed on its own while no request waits: the act prefix
+        // at first and when history changed, the script prompt at first and after
+        // another prompt took the script slot. A warm-up a request cut short is
+        // finished at the next idle turn.
+        let waiting = match local {
+            Some(local) if stale => {
+                let came = warm_act(local, &mut request, &mut caller);
+                stale = came.is_some();
+                came
+            }
+            Some(local) if cold => {
+                let came = warm(local, &mut request, &mut caller);
+                cold = came.is_some();
+                came
+            }
+            _ => None,
+        };
+        if waiting.is_none() && local_warmable(&backends, stale, cold) {
+            continue;
+        }
         let len = match waiting.map_or_else(|| sys::svc_recv(&mut request, 0, &mut caller), Ok) {
             Ok(len) => len.min(request.len()),
             Err(kabi::Error::TimedOut) => continue,
@@ -168,11 +186,18 @@ fn main() -> i32 {
         };
         let text = core::str::from_utf8(&request[..len]).unwrap_or("");
         let command = text.split([' ', '\n']).next();
-        cold = matches!(command, Some("ask" | "explain" | "model"));
-        stale = matches!(command, Some("remember" | "new"));
-        let mut reply = match handle(&mut backends, text, &mut response) {
-            Ok(text) => format!("ok {text}"),
-            Err(error) => format!("err {}", printable(&error, MAX_ERROR_CHARS, 1)),
+        cold |= matches!(command, Some("ask" | "explain" | "model" | "tune"));
+        stale |= matches!(command, Some("remember" | "new"));
+        let mut reply = match command {
+            // `warm`: whether both slots hold their prompts (S02-2 waits for it).
+            Some("warm") => match local_warmable(&backends, stale, cold) {
+                true => String::from("ok no"),
+                false => String::from("ok yes"),
+            },
+            _ => match handle(&mut backends, text, &mut response) {
+                Ok(text) => format!("ok {text}"),
+                Err(error) => format!("err {}", printable(&error, MAX_ERROR_CHARS, 1)),
+            },
         };
         // The character cap can still exceed the kernel's message size in bytes.
         reply.truncate(reply.floor_char_boundary(kabi::MAX_MESSAGE));
@@ -195,6 +220,11 @@ fn load(bytes: &'static [u8]) -> Result<local::Local, String> {
     // Loading may be a long burst; a sleep ends it before the first request.
     sys::sleep_ms(1);
     loaded
+}
+
+/// Whether a warm-up is still to do on a model that runs.
+fn local_warmable(backends: &Backends, stale: bool, cold: bool) -> bool {
+    matches!(backends.local, Some(Ok(_))) && (stale || cold)
 }
 
 /// Compacts history: the `act` prefix into the cache, as [`warm`] does the script

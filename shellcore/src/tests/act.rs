@@ -163,6 +163,34 @@ fn with_no_call_the_shell_asks_for_a_script_as_before() {
     assert_eq!(host.script_requests.borrow().len(), 1);
 }
 
+/// A model that answered but gave no call (out of time, cut off) asks no
+/// script, says why once, and leaves the request in the log (S02-2).
+#[test]
+fn a_local_or_cut_off_error_asks_no_script_and_is_logged() {
+    for (n, error) in [
+        ActError::Local(String::from("it ran out of time")),
+        ActError::CutOff,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let why = error.describe();
+        let (host, mut shell) = with_calls(vec![Err(error)]);
+        let reply = shell.eval("how many cpus are there");
+        assert_eq!(reply, Reply::err(format!("the model gave no call: {why}")));
+        assert_eq!(
+            reply.text.matches("local model:").count(),
+            usize::from(n == 0)
+        );
+        assert!(host.script_requests.borrow().is_empty());
+        let log = shell.eval("log").text;
+        assert!(
+            log.contains("#1 how many cpus are there: refused: no call"),
+            "{log}"
+        );
+    }
+}
+
 #[test]
 fn an_asking_call_is_the_allow_deny_menu_and_its_answers_decide() {
     let line = "cambia la política a round robin";
