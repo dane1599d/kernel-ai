@@ -18,7 +18,7 @@ use alloc::boxed::Box;
 use core::cell::{Cell, UnsafeCell};
 use core::marker::PhantomData;
 use core::ops::Range;
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use kabi::Error;
 use kabi::thread::MAX_WORKERS;
 
@@ -29,6 +29,22 @@ const SPINS: u32 = 2_000;
 /// How long `Pool::new` retries a Busy THREAD_SPAWN: a worker that just exited
 /// holds its index until the kernel has let its thread go.
 const BUSY_RETRY_MS: u64 = 1_000;
+
+/// What broadcasts cost since [`Pool::take_stats`], in TSC cycles: the caller's
+/// time from start to all finished, and of that each broadcast's slowest
+/// worker's time in the job. The difference is the hand-off.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Stats {
+    pub broadcasts: u64,
+    pub cycles: u64,
+    pub slowest: u64,
+}
+
+/// The time-stamp counter: cheap in a guest, where the TIME call may exit.
+pub fn cycles() -> u64 {
+    // SAFETY: RDTSC reads a counter and has no other effect; ring 3 may run it.
+    unsafe { core::arch::x86_64::_rdtsc() }
+}
 
 /// A job: `(worker, workers)`, borrowing whatever it needs for `'a`.
 type Job<'a> = dyn Fn(usize, usize) + Sync + 'a;
@@ -44,6 +60,9 @@ struct Shared {
     /// Set while a broadcast runs, to catch a second one at run time too.
     busy: AtomicBool,
     workers: usize,
+    /// Each worker's cycles in the current job, written before it counts itself
+    /// finished.
+    job_cycles: [AtomicU64; MAX_WORKERS],
     /// The current job, set by the caller only while no worker runs one.
     job: UnsafeCell<Option<&'static Job<'static>>>,
 }
@@ -63,6 +82,7 @@ struct Start {
 
 pub struct Pool {
     shared: &'static Shared,
+    stats: Cell<Stats>,
     /// Not Sync: a job (which must be Sync) can never hold the pool.
     _not_sync: PhantomData<Cell<()>>,
 }
@@ -100,10 +120,12 @@ impl Pool {
             stop: AtomicBool::new(false),
             busy: AtomicBool::new(false),
             workers,
+            job_cycles: [const { AtomicU64::new(0) }; MAX_WORKERS],
             job: UnsafeCell::new(None),
         }));
         let pool = Pool {
             shared,
+            stats: Cell::new(Stats::default()),
             _not_sync: PhantomData,
         };
         for index in 0..workers {
@@ -123,6 +145,11 @@ impl Pool {
         self.shared.workers
     }
 
+    /// What broadcasts cost since the last call, which starts the count again.
+    pub fn take_stats(&self) -> Stats {
+        self.stats.replace(Stats::default())
+    }
+
     /// Runs `job(worker, workers)` once on every worker, and returns when every one
     /// has finished. A panic in the job ends the whole process.
     pub fn broadcast(&self, job: &Job<'_>) {
@@ -131,6 +158,7 @@ impl Pool {
             !shared.busy.swap(true, Ordering::Acquire),
             "pool: a broadcast while another runs"
         );
+        let started = cycles();
         // SAFETY: the reference lives until this call returns, and no worker uses it
         // after counting itself finished, which this call waits for below.
         let job: &'static Job<'static> =
@@ -151,6 +179,21 @@ impl Pool {
         }
         // SAFETY: as above, every worker is done with it.
         unsafe { *shared.job.get() = None };
+        let slowest = shared.job_cycles[..shared.workers]
+            .iter()
+            .map(|c| c.load(Ordering::Relaxed))
+            .max()
+            .unwrap_or(0);
+        let Stats {
+            broadcasts,
+            cycles: total,
+            slowest: slow,
+        } = self.stats.get();
+        self.stats.set(Stats {
+            broadcasts: broadcasts + 1,
+            cycles: total + (cycles() - started),
+            slowest: slow + slowest,
+        });
         shared.busy.store(false, Ordering::Release);
     }
 }
@@ -204,11 +247,13 @@ extern "C" fn worker_main(arg: u64) -> ! {
             crate::println!("pool: a worker could not exit: {refused:?}");
             sys::exit(102);
         }
+        let began = cycles();
         // SAFETY: a new generation was published after the job was written, and the
         // caller waits for this worker before it changes the cell again.
         if let Some(job) = unsafe { *shared.job.get() } {
             job(start.index, shared.workers);
         }
+        shared.job_cycles[start.index].store(cycles() - began, Ordering::Relaxed);
         let done = shared.finished.fetch_add(1, Ordering::AcqRel) + 1;
         if done as usize == shared.workers {
             let _ = sys::futex_wake(&shared.finished, 1);
