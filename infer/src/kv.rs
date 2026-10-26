@@ -84,6 +84,30 @@ impl KvCache {
         (&mut self.keys[range.clone()], &mut self.values[range])
     }
 
+    /// The layer count and the KV width it was made for.
+    pub(crate) fn shape(&self) -> (usize, usize) {
+        (self.keys.len() / (self.kv_dim * self.capacity), self.kv_dim)
+    }
+
+    /// Keys and values of `layer` for its first `n` positions.
+    pub(crate) fn positions(&self, layer: usize, n: usize) -> (&[u16], &[u16]) {
+        let start = self.range(layer, 0).start;
+        let end = start + n * self.kv_dim;
+        (&self.keys[start..end], &self.values[start..end])
+    }
+
+    /// The same, to be filled by a restore.
+    pub(crate) fn positions_mut(&mut self, layer: usize, n: usize) -> (&mut [u16], &mut [u16]) {
+        let start = self.range(layer, 0).start;
+        let end = start + n * self.kv_dim;
+        (&mut self.keys[start..end], &mut self.values[start..end])
+    }
+
+    /// Counts the first `n` positions as filled, once a restore has filled them.
+    pub(crate) fn set_len(&mut self, n: usize) {
+        self.len = n.min(self.capacity);
+    }
+
     /// Keys and values of `layer` for positions `0..=last`.
     pub(crate) fn layer(&self, layer: usize, last: usize) -> (&[u16], &[u16]) {
         let start = self.range(layer, 0).start;
