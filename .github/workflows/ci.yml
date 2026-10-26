@@ -24,15 +24,16 @@ jobs:
     needs: ccwasm
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: ccwasm
-          path: target/ccwasm
       - name: Install pinned toolchain from rust-toolchain.toml
         run: rustup show active-toolchain || rustup toolchain install
       - name: Install the WebAssembly target for live components
         run: rustup target add wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
+      # After the cache, which restores target/.
+      - uses: actions/download-artifact@v4
+        with:
+          name: ccwasm
+          path: target/ccwasm
       - run: cargo fmt --all --check
       - name: Dependency licences and advisories (deny.toml, ADR 0009 D6)
         run: |
