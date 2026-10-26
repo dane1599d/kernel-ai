@@ -90,6 +90,85 @@ pub struct Features {
     pub xsave_size_max: u32,
     /// Bytes of an XSAVE area for the components XCR0 enables now (CPUID.(0xD,0) EBX).
     pub xsave_size: u32,
+    /// AMD SVM and its extensions, when CPUID offers SVM (ADR 0006 step 1).
+    pub svm: Option<Svm>,
+}
+
+/// What AMD's secure virtual machine offers (CPUID 0x8000_0001 ECX bit 2 and leaf
+/// 0x8000_000A; AMD64 APM vol. 3, appendix E). Firmware can still have disabled
+/// SVM through VM_CR.SVMDIS, which only ring 0 can read.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Svm {
+    /// The SVM revision (EAX bits 7:0).
+    pub revision: u8,
+    /// How many address-space ids the CPU tags TLB entries with (EBX).
+    pub asids: u32,
+    /// Nested paging (EDX bit 0).
+    pub npt: bool,
+    /// The next-RIP save on #VMEXIT (EDX bit 3).
+    pub nrips: bool,
+    /// Decode assists: the faulting instruction's bytes on #VMEXIT (EDX bit 7).
+    pub decode_assists: bool,
+    /// The advanced virtual interrupt controller (EDX bit 13).
+    pub avic: bool,
+}
+
+const SVM_LEAF: u32 = 0x8000_000A;
+
+impl Svm {
+    /// Decodes SVM from the highest extended leaf, CPUID 0x8000_0001 ECX, and leaf
+    /// 0x8000_000A's EAX, EBX and EDX. None without the SVM bit; a CPU that sets
+    /// the bit but has no leaf 0x8000_000A reports SVM with no extensions.
+    pub fn decode(max_extended: u32, ecx_8000_0001: u32, leaf_a: (u32, u32, u32)) -> Option<Self> {
+        if ecx_8000_0001 & (1 << 2) == 0 {
+            return None;
+        }
+        if max_extended < SVM_LEAF {
+            return Some(Self::default());
+        }
+        let (eax, ebx, edx) = leaf_a;
+        let bit = |n: u32| edx & (1 << n) != 0;
+        Some(Self {
+            revision: eax as u8,
+            asids: ebx,
+            npt: bit(0),
+            nrips: bit(3),
+            decode_assists: bit(7),
+            avic: bit(13),
+        })
+    }
+
+    /// The boot line's words: `SVM rev 1, 32768 ASIDs, npt nrips decode-assists avic`.
+    pub fn describe(&self) -> SvmLine {
+        SvmLine(*self)
+    }
+}
+
+/// [`Svm`] as the boot line prints it.
+pub struct SvmLine(Svm);
+
+impl core::fmt::Display for SvmLine {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let svm = &self.0;
+        write!(f, "SVM rev {}, {} ASIDs,", svm.revision, svm.asids)?;
+        let parts = [
+            ("npt", svm.npt),
+            ("nrips", svm.nrips),
+            ("decode-assists", svm.decode_assists),
+            ("avic", svm.avic),
+        ];
+        let mut any = false;
+        for (name, on) in parts {
+            if on {
+                write!(f, " {name}")?;
+                any = true;
+            }
+        }
+        if !any {
+            f.write_str(" no extensions")?;
+        }
+        Ok(())
+    }
 }
 
 impl Features {
@@ -114,6 +193,18 @@ impl Features {
         } else {
             (0, 0, 0)
         };
+        let max_extended = cpuid(0x8000_0000, 0).0;
+        let ecx_ext = if max_extended >= 0x8000_0001 {
+            cpuid(0x8000_0001, 0).2
+        } else {
+            0
+        };
+        let leaf_a = if max_extended >= SVM_LEAF {
+            let (eax, ebx, _, edx) = cpuid(SVM_LEAF, 0);
+            (eax, ebx, edx)
+        } else {
+            (0, 0, 0)
+        };
         Self {
             sse2: bit(edx1, 26),
             avx: bit(ecx1, 28),
@@ -132,6 +223,7 @@ impl Features {
             xcr0_supported,
             xsave_size_max,
             xsave_size,
+            svm: Svm::decode(max_extended, ecx_ext, leaf_a),
         }
     }
 
@@ -188,6 +280,23 @@ impl Features {
         ];
         list.into_iter().filter(|(_, on)| *on).map(|(name, _)| name)
     }
+}
+
+/// The CPU vendor's 12-byte signature (CPUID leaf 0, EBX, EDX and ECX), such as
+/// `AuthenticAMD` or `GenuineIntel`; under a hypervisor, what it chose to show.
+#[cfg(target_arch = "x86_64")]
+pub fn vendor() -> [u8; 12] {
+    let (_, ebx, ecx, edx) = cpuid(0, 0);
+    let mut vendor = [0; 12];
+    vendor[..4].copy_from_slice(&ebx.to_le_bytes());
+    vendor[4..8].copy_from_slice(&edx.to_le_bytes());
+    vendor[8..].copy_from_slice(&ecx.to_le_bytes());
+    vendor
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+pub fn vendor() -> [u8; 12] {
+    [0; 12]
 }
 
 /// The hypervisor's 12-byte vendor signature (CPUID leaf 0x40000000, EBX, ECX and
@@ -364,6 +473,66 @@ mod tests {
     }
 
     #[test]
+    fn svm_needs_its_cpuid_bit() {
+        assert_eq!(Svm::decode(0x8000_001F, 0, (1, 32768, u32::MAX)), None);
+        assert_eq!(Svm::decode(0x8000_001F, !(1 << 2), (1, 8, 1)), None);
+    }
+
+    #[test]
+    fn svm_extensions_decode_from_leaf_8000_000a() {
+        // An AMD Zen 4 shape: revision 1, 32768 ASIDs, and NP, NRIPS, decode
+        // assists and AVIC among EDX's other bits.
+        let zen4 = Svm::decode(0x8000_0028, 1 << 2, (1, 32768, 0x1EBB_FCFF)).unwrap();
+        assert_eq!(
+            zen4,
+            Svm {
+                revision: 1,
+                asids: 32768,
+                npt: true,
+                nrips: true,
+                decode_assists: true,
+                avic: true,
+            }
+        );
+        // Each feature is its own bit.
+        let only = |edx| Svm::decode(0x8000_000A, 1 << 2, (1, 16, edx)).unwrap();
+        assert!(only(1).npt && !only(1).nrips);
+        assert!(only(1 << 3).nrips && !only(1 << 3).npt);
+        assert!(only(1 << 7).decode_assists && !only(1 << 7).avic);
+        assert!(only(1 << 13).avic && !only(1 << 13).decode_assists);
+        // Only EAX's low byte is the revision.
+        let revision = Svm::decode(0x8000_000A, 1 << 2, (0xFF01, 0, 0))
+            .unwrap()
+            .revision;
+        assert_eq!(revision, 1);
+    }
+
+    #[test]
+    fn svm_without_its_leaf_has_no_extensions() {
+        let bare = Svm::decode(0x8000_0008, 1 << 2, (1, 32768, u32::MAX)).unwrap();
+        assert_eq!(bare, Svm::default());
+        assert_eq!(
+            std::format!("{}", bare.describe()),
+            "SVM rev 0, 0 ASIDs, no extensions"
+        );
+    }
+
+    #[test]
+    fn svm_line_names_each_extension() {
+        let edx = 1 | 1 << 3 | 1 << 7 | 1 << 13;
+        let svm = Svm::decode(0x8000_000A, 1 << 2, (1, 32768, edx)).unwrap();
+        assert_eq!(
+            std::format!("{}", svm.describe()),
+            "SVM rev 1, 32768 ASIDs, npt nrips decode-assists avic"
+        );
+        let npt_only = Svm::decode(0x8000_000A, 1 << 2, (1, 16, 1)).unwrap();
+        assert_eq!(
+            std::format!("{}", npt_only.describe()),
+            "SVM rev 1, 16 ASIDs, npt"
+        );
+    }
+
+    #[test]
     fn hypervisors_are_named_from_their_signature() {
         assert_eq!(hypervisor_name(b"KVMKVMKVM\0\0\0"), "KVM");
         assert_eq!(hypervisor_name(b"Microsoft Hv"), "Hyper-V");
@@ -399,6 +568,10 @@ mod tests {
         if cpu.avx512() {
             assert_eq!(cpu.avx512vl, std::is_x86_feature_detected!("avx512vl"));
             assert_eq!(cpu.avx512vnni, std::is_x86_feature_detected!("avx512vnni"));
+        }
+        // Only AMD CPUs set the SVM bit; Intel has VT-x instead.
+        if cpu.svm.is_some() {
+            assert_eq!(&vendor(), b"AuthenticAMD");
         }
         if cpu.osxsave {
             assert!(cpu.xcr0 & XCR0_X87 != 0);
