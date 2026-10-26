@@ -17,6 +17,7 @@
 use super::abrun::icount_flags;
 use super::boot::{Booter, split};
 use crate::disk::ModelDisk;
+use crate::esp::Module;
 use llmproto::chat::Completion;
 use llmproto::tune::{self, Decision, Summary, TuneRequest, replay};
 use serde_json::{Value, json};
@@ -110,16 +111,23 @@ fn observe(
     file.resize(OBSERVE_DISK_BYTES, b'\n');
     let path = booter.target().join("tune-ab").join("replay.bin");
     std::fs::create_dir_all(path.parent().unwrap_or(booter.target())).map_err(|e| e.to_string())?;
-    std::fs::write(&path, file).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+    std::fs::write(&path, &file).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
     let disk = ModelDisk::open(&path)?;
     let cmdline = format!(
         "test=tune-ab phase=observe workload={mix} seed={OBSERVE_SEED} {} {}",
         crate::icount::CLOCK,
         disk.cmdline()
     );
-    let firmware = booter.prepare(&cmdline)?;
-    let mut args = crate::icount::measure_args_with(&firmware, shift, disk.memory_mib());
-    args.extend(disk.qemu_args());
+    // A boot module, not a disk: Limine reads it before the kernel starts, where
+    // the host-timed reads change only the absolute virtual time (which
+    // `clock=icount` ignores). A disk's reads complete at host-timed moments while
+    // the kernel runs, and left its state, and the summary, different per boot.
+    let module = Module {
+        path: String::from(crate::disk::MODEL_MODULE),
+        bytes: file,
+    };
+    let firmware = booter.prepare_with(&cmdline, vec![module])?;
+    let args = crate::icount::measure_args_with(&firmware, shift, disk.memory_mib());
     println!("xtask: observe boot: {cmdline}");
     let captured =
         crate::icount::run_capture(&booter.qemu, &args, booter.target(), booter.options.timeout)?;
