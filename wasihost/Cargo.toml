@@ -1,0 +1,14 @@
+[package]
+name = "wasihost"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The WASI preview-1 calls xcc's libc declares (ADR 0012 D2), over an in-memory
+# tree, for the compiler's Store in `cc`. No Wasm engine here: each call takes the
+# guest's linear memory as a byte slice, so the engine glue stays in `cc`.
+[lib]
+doctest = false
+
+[dependencies]
