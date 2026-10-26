@@ -10,7 +10,10 @@ name: tune with the real model
 # needs (`cargo xtask tune record`); commit its decisions.json after reading it.
 # Mode `latency` is spike S02-2's baseline (`cargo xtask latency`): it types five
 # plain requests at the terminal and reports, by the guest's clock, Enter to the
-# busy sign and Enter to the reply, in the run's summary.
+# busy sign and Enter to the reply, in the run's summary. Mode `bench` downloads
+# nothing: it runs `cargo xtask bench quant` on the runner itself (generated
+# weights with the catalog models' shapes), so a guest's decode rate can be read
+# against the runner's own memory read rate and products.
 on:
   workflow_dispatch:
     inputs:
@@ -18,7 +21,7 @@ on:
         description: Catalog id from xtask/models.json
         default: qwen3-4b-2507
       mode:
-        description: demo, record or latency
+        description: demo, record, latency or bench
         default: demo
 
 permissions:
@@ -44,7 +47,14 @@ jobs:
       - name: Install the WebAssembly target for live components
         run: rustup target add wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
+      - name: Bench — the engine's kernels and decode steps on the runner, no model
+        if: inputs.mode == 'bench'
+        run: |
+          set -o pipefail
+          cargo xtask bench quant 2>&1 | tee transcript.txt
+          { echo "bench quant, commit $GITHUB_SHA, $(nproc) CPUs:"; echo; echo '```'; grep -vE '^\s*(Compiling|Finished|Running|Downloaded|Downloading)' transcript.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: Look up the catalog entry
+        if: inputs.mode != 'bench'
         id: entry
         env:
           MODEL: ${{ inputs.model }}
@@ -54,6 +64,7 @@ jobs:
           echo "sha=$(jq -r .sha256 entry.json)" >> "$GITHUB_OUTPUT"
           echo "file=$(jq -r .file entry.json)" >> "$GITHUB_OUTPUT"
       - name: Download the pinned model into a model store and check its SHA-256
+        if: inputs.mode != 'bench'
         run: |
           mkdir -p "$RUNNER_TEMP/models"
           curl -fL --retry 5 -o "$RUNNER_TEMP/models/${{ steps.entry.outputs.file }}" "${{ steps.entry.outputs.url }}"
