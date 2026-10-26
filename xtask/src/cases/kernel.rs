@@ -76,6 +76,8 @@ pub(super) const CASES: &[TestCase] = &[
     TestCase {
         expect: &[
             "handles: M3: scriptrun per request",
+            "handles: M3: scriptrun pooled",
+            "handles: a killed pooled child left the pool, and the next claim got a new one",
             "scriptrun: M5: ",
             "scriptrun: a Job started scriptrun with only the handles moved in, and its exit came back",
         ],
