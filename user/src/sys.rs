@@ -313,6 +313,46 @@ pub fn recv_h(buf: &mut [u8], timeout_ms: u64, info: &mut RecvInfo) -> Result<us
     .map(|len| len as usize)
 }
 
+/// Starts the program `job` names (`scriptrun`) as a child, moving `handles` into
+/// it; its pid.
+pub fn job_spawn(job: Handle, args: &str, handles: &[Handle]) -> Result<u64, Error> {
+    let request = kabi::JobSpawn {
+        args_ptr: args.as_ptr() as u64,
+        args_len: args.len() as u64,
+        handles_ptr: handles.as_ptr() as u64,
+        handles_len: handles.len() as u64,
+    };
+    call(
+        call::JOB_SPAWN,
+        [
+            u64::from(job.0),
+            &request as *const kabi::JobSpawn as u64,
+            0,
+            0,
+            0,
+            0,
+        ],
+    )
+}
+
+/// The next exit of one of this process's job children, or `None` after
+/// `timeout_ms`.
+pub fn job_wait(job: Handle, timeout_ms: u64) -> Result<Option<ExitRecord>, Error> {
+    let mut record = ExitRecord::empty();
+    let got = call(
+        call::JOB_WAIT,
+        [
+            u64::from(job.0),
+            &mut record as *mut ExitRecord as u64,
+            timeout_ms,
+            0,
+            0,
+            0,
+        ],
+    )?;
+    Ok((got == 1).then_some(record))
+}
+
 /// New zeroed shared pages, and an `Shm` handle to them (ADR 0001 D4).
 pub fn shm_create(pages: u64) -> Result<Handle, Error> {
     call(call::SHM_CREATE, [pages, 0, 0, 0, 0, 0]).map(|h| Handle(h as u32))

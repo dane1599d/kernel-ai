@@ -66,6 +66,7 @@ pub fn exit_current() -> ! {
     crate::shm::collect();
     with_table(|table| table[slot] = Process::FREE);
     supervision::on_exit(&process, reason, detail);
+    super::job::on_parent_exit(process.pid);
     threads::exit()
 }
 

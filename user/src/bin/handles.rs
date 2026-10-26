@@ -28,6 +28,9 @@
 //! kernel revokes the client's node, and the client's CALL_H fails with Revoked
 //! long before the server would answer.
 //!
+//! With `mode=job` (task 14), started with SUPERVISE, POLICY and SCRIPT, it runs
+//! spike S01-1's M3 (see [`job`]): `scriptrun` per request, from spawn to revoke.
+//!
 //! With `mode=shm` (task 14) it serves the kernel's `Shm` case one line at a
 //! time (see [`shm`]): it maps the handles the kernel puts in its table, fills and
 //! counts the pages, and makes, maps and frees an object of its own.
@@ -58,6 +61,7 @@ fn main() -> i32 {
         Some("revoke") => revoke,
         Some("devlist") => devlist,
         Some("shm") => shm,
+        Some("job") => job,
         _ => checks,
     };
     match run() {
@@ -146,6 +150,96 @@ fn shm() -> Result<(), &'static str> {
         };
         sys::svc_reply(reply.as_bytes()).map_err(|_| "shm: cannot answer")?;
     }
+}
+
+/// M3's rounds.
+const ROUNDS: usize = 100;
+
+/// `mode=job`: spike S01-1's M3, `scriptrun` per request. Each round makes a
+/// request node, gives a run-tier Sched handle (READ, SET_POLICY) and a 1-page result Shm under it,
+/// starts `scriptrun mode=probe` with them moved in, waits for it to exit, reads
+/// its result and revokes the node; microseconds per round. A Job with only WAIT
+/// cannot start it, and nothing is left to revoke into once a round ends.
+fn job() -> Result<(), &'static str> {
+    let root = system_grant()?;
+    let sched = startup_handle(Kind::Sched).ok_or("no Sched handle")?;
+    let starter = scriptrun_job()?;
+    let mut times = alloc::vec::Vec::with_capacity(ROUNDS);
+    for round in 0..ROUNDS {
+        let start = sys::time_ns();
+        let node = sys::grant_new(root, 0, "request").map_err(|_| "grant_new failed")?;
+        let given = sys::grant_dup(
+            sched,
+            Rights::READ | Rights::SET_POLICY | Rights::TRANSFER,
+            node,
+        )
+        .map_err(|_| "cannot give the Sched handle")?;
+        let result = sys::shm_create(1).map_err(|_| "shm_create failed")?;
+        let shared = sys::grant_dup(
+            result,
+            Rights::MAP | Rights::READ | Rights::WRITE | Rights::TRANSFER,
+            node,
+        )
+        .map_err(|_| "cannot give the result Shm")?;
+        let pid = sys::job_spawn(starter, "mode=probe", &[given, shared])
+            .map_err(|_| "job_spawn failed")?;
+        let exit = sys::job_wait(starter, 30_000)
+            .map_err(|_| "job_wait failed")?
+            .ok_or("scriptrun did not end")?;
+        if exit.pid != pid || exit.reason != kabi::ExitReason::Exited as u64 || exit.detail != 0 {
+            println!(
+                "handles: scriptrun ended {} {} {}",
+                exit.pid, exit.reason, exit.detail
+            );
+            return Err("scriptrun failed");
+        }
+        let address = sys::shm_map(result, false).map_err(|_| "cannot map the result")?;
+        let ok = region(address, 4096).starts_with(b"ok 2");
+        sys::shm_unmap(address).map_err(|_| "cannot unmap the result")?;
+        if !ok {
+            return Err("scriptrun wrote no result");
+        }
+        if sys::grant_revoke(node) != Ok(1) {
+            return Err("the request node did not revoke");
+        }
+        sys::handle_close(result).map_err(|_| "close failed")?;
+        times.push(sys::time_ns() - start);
+        if round == 0 {
+            expect(
+                sys::job_spawn(sched, "mode=probe", &[]),
+                Error::BadHandle,
+                "a Sched handle used as a Job",
+            )?;
+            let waiter = sys::handle_dup(starter, Rights::WAIT).map_err(|_| "dup failed")?;
+            expect(
+                sys::job_spawn(waiter, "mode=probe", &[]),
+                Error::Permission,
+                "a Job with only WAIT",
+            )?;
+        }
+    }
+    times.sort_unstable();
+    let us = |at: usize| times[(at * (ROUNDS - 1)) / 100] / 1000;
+    println!(
+        "handles: M3: scriptrun per request (spawn, run, exit, revoke): p50 {} us, p99 {} us, max {} us over {ROUNDS} rounds",
+        us(50),
+        us(99),
+        times[ROUNDS - 1] / 1000
+    );
+    Ok(())
+}
+
+/// The startup Job that starts `scriptrun`: CREATE and WAIT.
+fn scriptrun_job() -> Result<Handle, &'static str> {
+    let mut list = [HandleInfo::default(); 8];
+    let count = sys::startup(&mut list)
+        .map_err(|_| "no STARTUP")?
+        .min(list.len());
+    list[..count]
+        .iter()
+        .find(|info| info.kind() == Some(Kind::Job) && info.rights().contains(Rights::CREATE))
+        .map(|info| Handle(info.handle))
+        .ok_or("no scriptrun Job")
 }
 
 /// The mapping at `address` as bytes.
