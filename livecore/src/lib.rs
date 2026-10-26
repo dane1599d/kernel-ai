@@ -29,6 +29,8 @@ mod swap;
 #[cfg(test)]
 mod tests;
 mod try_run;
+pub mod txn;
+mod undo;
 pub mod uploads;
 pub mod why;
 
@@ -80,5 +82,16 @@ pub trait Instance {
             Reason::Abi,
             "a lifecycle 1 version has no typed calls",
         ))
+    }
+    /// Opens the next call's transaction: its storage reads see `storage`, and
+    /// its clock, seed and first ticket are `inputs` (ADR 0003 section 4). A
+    /// `lifecycle 1` version has no storage or effects.
+    fn begin(&mut self, storage: &txn::Storage, inputs: txn::Inputs) {
+        let _ = (storage, inputs);
+    }
+    /// Closes the transaction [`Instance::begin`] opened: the call's writes and
+    /// effects, which the host commits or drops.
+    fn finish(&mut self) -> txn::Txn {
+        txn::Txn::default()
     }
 }

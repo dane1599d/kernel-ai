@@ -42,7 +42,13 @@ impl<E: Env> Host<E> {
                 why: String::from("it was disabled before this host started"),
             }
         } else {
-            core.checkpoint = restored.checkpoint;
+            match crate::state::split(&restored.checkpoint) {
+                Ok((state, storage)) => {
+                    core.checkpoint = state;
+                    core.storage = storage;
+                }
+                Err(_) => core.checkpoint = restored.checkpoint,
+            }
             match restore_into(&mut version, &core.checkpoint, restored.schema) {
                 Ok(blob) => {
                     core.report(&Report {

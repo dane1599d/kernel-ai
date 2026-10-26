@@ -272,7 +272,7 @@ impl Ledger {
 
     /// The header of `blob` must name `schema`.
     fn check_blob(blob: &[u8], schema: u64) -> Result<(), Error> {
-        match crate::state::schema_of(blob) {
+        match crate::state::saved_schema_of(blob) {
             Some(found) if found == schema && schema > 0 => Ok(()),
             _ => Err(Error::Invalid),
         }

@@ -1,15 +1,22 @@
 //! Probation by running both: each request goes to the old version (the standby)
 //! first, whose state is what the kernel keeps, then to the candidate, whose reply
 //! is sent. A candidate fault therefore rolls back losing nothing, and the caller
-//! gets the standby's reply. Components have no side effects, so running a request
-//! twice cannot be told from running it once.
+//! gets the standby's reply.
+//!
+//! Each request is one transaction on each version, both from the same storage,
+//! clock and seed (ADR 0003 section 4). The storage writes that commit are the
+//! standby's, with its checkpoint; the effects that go out are those of the
+//! version whose reply is sent, so an effect is performed once whichever version
+//! answers. Different writes or effects count as a regression, as replies do.
 //!
 //! The candidate is committed when it has served `probation_calls` requests, spent
 //! `probation_ms` on probation, and passes a last health check. With probation_ms
 //! set, a candidate that sees no requests is also committed after four times that
 //! long and two passing health checks. Time never rolls anything back.
 
+use crate::call::REPLY_HEADER;
 use crate::host::{Core, Env, Exit, Mode, Probation, Report, Stop, Version, export_own, text};
+use crate::txn::{Inputs, Txn};
 use crate::{Fault, Instance, Reason};
 use alloc::boxed::Box;
 use alloc::format;
@@ -24,44 +31,70 @@ pub(crate) fn dual_run<E: Env>(
     mut probation: Probation<E::Instance>,
     request: &[u8],
 ) -> Step<E::Instance> {
-    let standby_reply = match run_standby(core, &mut probation.standby, request) {
-        Ok(reply) => reply,
-        Err(Stop::Exit(exit)) => return Err(exit),
-        Err(Stop::Fault(fault)) => return standby_failed(core, probation, &fault),
-    };
-    match probation.candidate.instance.handle(request) {
-        Ok(reply) => {
+    let inputs = core.inputs();
+    let storage = core.storage.clone();
+    let (standby_reply, standby_txn, undo) =
+        match run_standby(core, &mut probation.standby, request, inputs) {
+            Ok(done) => done,
+            Err(Stop::Exit(exit)) => return Err(exit),
+            Err(Stop::Fault(fault)) => return standby_failed(core, probation, &fault),
+        };
+    // The candidate sees the storage the standby saw, not the standby's writes.
+    match core.run(&mut probation.candidate, request, inputs, &storage) {
+        Ok((reply, txn)) => {
             probation.served += 1;
-            if regressed(&standby_reply, &reply) {
+            if regressed(&standby_reply, &reply) || txn != standby_txn {
                 probation.regressions += 1;
             }
             let (mode, rolled_back) = end_if_due(core, probation)?;
             // A candidate that failed its last check does not give the answer.
-            Ok((mode, if rolled_back { standby_reply } else { reply }))
+            let (reply, txn) = if rolled_back {
+                (standby_reply, standby_txn)
+            } else {
+                (reply, txn)
+            };
+            Ok((mode, core.performed(reply, &txn, inputs, undo)))
         }
         Err(fault) => {
             let (mode, _) = roll_back(core, probation, &fault, 0)?;
-            Ok((mode, standby_reply))
+            Ok((
+                mode,
+                core.performed(standby_reply, &standby_txn, inputs, undo),
+            ))
         }
     }
 }
 
-/// Whether the new version answered `err` where the old one answered `ok`.
+/// Whether the new version failed where the old one did not: `err` where it
+/// answered `ok`, or a `kai-reply` refused or `err(...)` where it gave a result.
 pub(crate) fn regressed(old: &[u8], new: &[u8]) -> bool {
-    new.starts_with(b"err") && old.starts_with(b"ok")
+    let failed = |reply: &[u8]| {
+        let Some(rest) = reply
+            .strip_prefix(REPLY_HEADER.as_bytes())
+            .and_then(|rest| rest.strip_prefix(b"\n"))
+        else {
+            return reply.starts_with(b"err");
+        };
+        rest.starts_with(b"refused ") || rest.starts_with(b"result err(")
+    };
+    let succeeded =
+        |reply: &[u8]| reply.starts_with(b"ok") || reply.starts_with(REPLY_HEADER.as_bytes());
+    failed(new) && succeeded(old) && !failed(old)
 }
 
-/// Runs a request on the standby, checkpoints its state, and keeps the request
-/// for `ctl try`.
+/// Runs a request on the standby, commits its writes with its checkpoint, and
+/// keeps the request for `ctl try`.
 fn run_standby<E: Env>(
     core: &mut Core<E>,
     standby: &mut Version<E::Instance>,
     request: &[u8],
-) -> Result<Vec<u8>, Stop> {
-    let reply = standby.instance.handle(request)?;
-    core.checkpoint(standby)?;
+    inputs: Inputs,
+) -> Result<(Vec<u8>, Txn, Option<u64>), Stop> {
+    let storage = core.storage.clone();
+    let (reply, txn) = core.run(standby, request, inputs, &storage)?;
+    let undo = core.commit(standby, &txn)?;
     core.remember(request);
-    Ok(reply)
+    Ok((reply, txn, undo))
 }
 
 /// The old version failed on a request. The kernel still holds its state from

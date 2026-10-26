@@ -62,7 +62,7 @@ pub(crate) fn swap<E: Env>(
         blob: &blob,
         ..Report::new(kind::BEGIN)
     };
-    match core.env.report(&begin) {
+    match core.send(&begin) {
         Ok(()) => {}
         Err(Error::Permission) => {
             let reply = format!("err {label} failed before; use ctl swap {label} force");
@@ -253,5 +253,7 @@ pub(crate) fn commit<E: Env>(
         ..Report::new(kind::COMMIT)
     })?;
     core.checkpoint = blob.to_vec();
+    // The undo history holds the old version's states.
+    core.history.clear();
     Ok(())
 }

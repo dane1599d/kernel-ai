@@ -8,10 +8,16 @@
 //! reply is sent. Any fault rolls back at once and loses nothing, because the old
 //! version already handled the request. Rollbacks come only from faults and failed
 //! checks, never from time, so a slow machine cannot cause one.
+//!
+//! Each call is one transaction (`txn`): its storage writes commit with the
+//! checkpoint and its effects go out in the reply, or neither does.
 
 use crate::artifact::{self, Manifest};
+use crate::call::REPLY_HEADER;
 use crate::control;
 use crate::settings::Settings;
+use crate::txn::{self, Inputs, Storage, Txn};
+use crate::undo::{History, Saved};
 use crate::{Fault, Instance, Reason};
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
@@ -46,7 +52,10 @@ pub struct Report<'a> {
     pub served: u64,
     pub regressions: u64,
     pub flags: u64,
+    /// A state; the host joins the app's storage to it before it goes out.
     pub blob: &'a [u8],
+    /// The storage to join to `blob`; the host's own when `None`.
+    pub storage: Option<&'a Storage>,
     pub detail: &'a str,
 }
 
@@ -79,6 +88,7 @@ impl Report<'_> {
             regressions: 0,
             flags: 0,
             blob: &[],
+            storage: None,
             detail: "",
         }
     }
@@ -153,11 +163,19 @@ pub(crate) struct Core<E> {
     pub env: E,
     pub name: String,
     pub settings: Settings,
-    /// The active version's state, as the kernel holds it.
+    /// The active version's state, as the kernel holds it (without the storage).
     pub checkpoint: Vec<u8>,
+    /// The app's own scope, as the kernel holds it with the checkpoint.
+    pub storage: Storage,
     restarts: Vec<u64>,
     /// The last [`REPLAY`] requests served, oldest first.
     pub recent: VecDeque<Vec<u8>>,
+    /// Calls served, which make each call's seed.
+    calls: u64,
+    /// The ticket the next performed effect gets.
+    next_ticket: u32,
+    /// Undo for the last calls that changed the state.
+    pub history: History,
 }
 
 pub struct Host<E: Env> {
@@ -201,14 +219,32 @@ impl<E: Env> Core<E> {
             name: name.to_string(),
             settings,
             checkpoint: Vec::new(),
+            storage: Storage::new(),
             restarts: Vec::new(),
             recent: VecDeque::new(),
+            calls: 0,
+            next_ticket: 1,
+            history: History::default(),
         }
+    }
+
+    /// Sends an event, its state joined with the storage.
+    pub fn send(&mut self, event: &Report<'_>) -> Result<(), Error> {
+        if event.blob.is_empty() {
+            return self.env.report(event);
+        }
+        let storage = event.storage.unwrap_or(&self.storage);
+        let saved = crate::state::join(event.blob, storage).map_err(|_| Error::Invalid)?;
+        let joined = Report {
+            blob: &saved,
+            ..*event
+        };
+        self.env.report(&joined)
     }
 
     /// Reports an event; a refusal ends the host.
     pub fn report(&mut self, event: &Report<'_>) -> Result<(), Exit> {
-        self.env.report(event).map_err(|error| {
+        self.send(event).map_err(|error| {
             exit(
                 EXIT_REFUSED,
                 format!(
@@ -265,18 +301,117 @@ impl<E: Env> Core<E> {
         })
     }
 
-    /// Exports `version`'s state and sends it as a checkpoint if it changed.
-    pub fn checkpoint(&mut self, version: &mut Version<E::Instance>) -> Result<(), Stop> {
-        let blob = export_own(version)?;
-        if blob != self.checkpoint {
-            self.report(&Report {
-                schema: u64::from(version.schema),
-                blob: &blob,
-                ..Report::new(kind::CHECKPOINT)
-            })?;
-            self.checkpoint = blob;
+    /// The inputs of the next call: the clock, a seed and its first ticket.
+    pub fn inputs(&mut self) -> Inputs {
+        self.calls += 1;
+        let now_ms = self.env.now_ms();
+        Inputs {
+            now_ms,
+            seed: txn::seed(now_ms, self.calls),
+            first_ticket: self.next_ticket,
         }
-        Ok(())
+    }
+
+    /// Runs `request` on `version` as one transaction: its reply and what it did,
+    /// checked against the limits. Over them is the version's fault.
+    pub fn run(
+        &mut self,
+        version: &mut Version<E::Instance>,
+        request: &[u8],
+        inputs: Inputs,
+        storage: &Storage,
+    ) -> Result<(Vec<u8>, Txn), Fault> {
+        version.instance.begin(storage, inputs);
+        let reply = version.instance.handle(request);
+        let txn = version.instance.finish();
+        let reply = reply?;
+        if txn.effects.len() > txn::MAX_EFFECTS {
+            return Err(Fault::new(
+                Reason::Abi,
+                format!(
+                    "it queued {} effects; at most {} a call",
+                    txn.effects.len(),
+                    txn::MAX_EFFECTS
+                ),
+            ));
+        }
+        for effect in &txn.effects {
+            effect.check().map_err(|why| Fault::new(Reason::Abi, why))?;
+        }
+        let effects = txn.effect_lines(inputs.first_ticket);
+        // Room for an `undo` line too.
+        if reply.len() + effects.len() + 32 > kabi::MAX_MESSAGE {
+            return Err(Fault::new(
+                Reason::Abi,
+                "its reply and effects are over one message",
+            ));
+        }
+        Ok((reply, txn))
+    }
+
+    /// Commits `txn`'s writes with `version`'s state, sending the checkpoint if
+    /// either changed; the undo entry for the change, if there was one.
+    pub fn commit(
+        &mut self,
+        version: &mut Version<E::Instance>,
+        txn: &Txn,
+    ) -> Result<Option<u64>, Stop> {
+        let blob = export_own(version)?;
+        let mut storage = self.storage.clone();
+        txn.apply(&mut storage);
+        if blob == self.checkpoint && storage == self.storage {
+            return Ok(None);
+        }
+        if crate::state::join(&blob, &storage)
+            .map_or(true, |saved| saved.len() > kabi::live::MAX_CHECKPOINT)
+        {
+            return Err(Stop::Fault(Fault::new(
+                Reason::Export,
+                format!(
+                    "its state and storage are over {} KiB",
+                    kabi::live::MAX_CHECKPOINT / 1024
+                ),
+            )));
+        }
+        self.report(&Report {
+            schema: u64::from(version.schema),
+            blob: &blob,
+            storage: Some(&storage),
+            ..Report::new(kind::CHECKPOINT)
+        })?;
+        let before = Saved {
+            state: core::mem::replace(&mut self.checkpoint, blob),
+            storage: core::mem::replace(&mut self.storage, storage),
+        };
+        let after = Saved {
+            state: self.checkpoint.clone(),
+            storage: self.storage.clone(),
+        };
+        Ok(Some(self.history.record(before, after)))
+    }
+
+    /// The reply sent for a call whose effects are performed: after a
+    /// `kai-reply`'s result come the effects, with their tickets, and the undo
+    /// entry of the change it made.
+    pub fn performed(
+        &mut self,
+        mut reply: Vec<u8>,
+        txn: &Txn,
+        inputs: Inputs,
+        undo: Option<u64>,
+    ) -> Vec<u8> {
+        if !reply.starts_with(REPLY_HEADER.as_bytes()) {
+            return reply;
+        }
+        if reply.last() != Some(&b'\n') {
+            reply.push(b'\n');
+        }
+        reply.extend_from_slice(txn.effect_lines(inputs.first_ticket).as_bytes());
+        self.next_ticket = inputs.first_ticket.wrapping_add(txn.effects.len() as u32);
+        if let Some(undo) = undo {
+            reply.extend_from_slice(format!("undo {undo}\n").as_bytes());
+        }
+        reply
     }
 
     /// A new instance of `version` holding the last checkpoint.
@@ -377,6 +512,9 @@ impl<E: Env> Host<E> {
                     Err(why) => (mode, text(format!("err {why}"))),
                 }
             }
+            None if request.starts_with(crate::undo::UNDO_HEADER.as_bytes()) => {
+                self.undo(mode, request)?
+            }
             None => match mode {
                 Mode::Serving(version) => self.serve(version, request)?,
                 Mode::Probation(probation) => {
@@ -419,11 +557,16 @@ impl<E: Env> Host<E> {
         mut version: Version<E::Instance>,
         request: &[u8],
     ) -> Result<(Mode<E::Instance>, Vec<u8>), Exit> {
-        let result = version
-            .instance
-            .handle(request)
+        let inputs = self.core.inputs();
+        let storage = self.core.storage.clone();
+        let result = self
+            .core
+            .run(&mut version, request, inputs, &storage)
             .map_err(Stop::Fault)
-            .and_then(|reply| self.core.checkpoint(&mut version).map(|()| reply));
+            .and_then(|(reply, txn)| {
+                let undo = self.core.commit(&mut version, &txn)?;
+                Ok(self.core.performed(reply, &txn, inputs, undo))
+            });
         match result {
             Ok(reply) => {
                 self.core.remember(request);
