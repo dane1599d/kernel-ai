@@ -48,6 +48,20 @@ use std::rc::Rc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tasks::{Cat, TASKS};
 
+/// Diagnostic, not for merge: #99's requests and the call each should get.
+const DIAG: &[(&str, &str)] = &[
+    ("stop build-3", r#"{"name":"process_stop","arguments":{"name":"build-3"}}"#),
+    ("kill build-3", r#"{"name":"process_stop","arguments":{"name":"build-3"}}"#),
+    ("stop the process build-4", r#"{"name":"process_stop","arguments":{"name":"build-4"}}"#),
+    ("restart the indexer", r#"{"name":"service_restart","arguments":{"name":"indexer"}}"#),
+    ("stop the indexer", r#"{"name":"service_stop","arguments":{"name":"indexer"}}"#),
+    ("start the indexer again", r#"{"name":"service_start","arguments":{"name":"indexer"}}"#),
+    ("restart netd", r#"{"name":"service_restart","arguments":{"name":"netd"}}"#),
+    ("stop netd", r#"{"name":"service_stop","arguments":{"name":"netd"}}"#),
+    ("start llm", r#"{"name":"service_start","arguments":{"name":"llm"}}"#),
+    ("restart the llm service", r#"{"name":"service_restart","arguments":{"name":"llm"}}"#),
+];
+
 /// ADR 0010 S10-1: the host engine runs at 4,096 positions.
 const CONTEXT: usize = 4096;
 /// The answer reserve (ADR 0002 D4).
@@ -522,6 +536,38 @@ fn run_arm(
                 );
                 header["os_pack_id"] = json!(format!("{id:016x}"));
                 header["os_pack_tokens"] = json!(os_ids.len());
+            }
+            // Diagnostic branch, not for merge: #99's stop and restart requests
+            // through the OS pack and grammar, as llm answers `act`; then exit.
+            if arm.ship {
+                let grammar = llmproto::local::act::grammar().expect("the OS rows decode");
+                let mut passed = 0;
+                for (line, want) in DIAG {
+                    let request = llmproto::act::ActRequest {
+                        line: (*line).into(),
+                        state: String::new(),
+                        timeout_ms: 60_000,
+                    };
+                    let call = llmproto::local::act::routed(
+                        &mut loaded.engine.borrow_mut(),
+                        &grammar,
+                        &request,
+                        &llmproto::act::History::new(),
+                        llmproto::local::act::Slots::ONE,
+                        |_| true,
+                        |_| Next::Continue,
+                    );
+                    let got = call.as_ref().map_or_else(|e| e.describe(), |c| c.text());
+                    let ok = serde_json::from_str::<Value>(&got).ok()
+                        == serde_json::from_str::<Value>(want).ok();
+                    passed += usize::from(ok);
+                    println!(
+                        "xtask: os-pack diag seed {seed}: {} {line} -> {got}",
+                        if ok { "ok  " } else { "FAIL" }
+                    );
+                }
+                println!("xtask: os-pack diag seed {seed}: {passed}/{}", DIAG.len());
+                std::process::exit(0);
             }
             options.m8.then(|| {
                 if arm.ship {
