@@ -11,6 +11,10 @@
 //!   80-row scale and `:no-think` for the `/no_think` tag on each user turn.
 //! - `m8`, `m8-a0`: today's prompt and envelope, with and without `/no_think`
 //!   (arm A0), on the M8 50 only.
+//! - `act`: what ships, task 18's gate. The 190 tasks as `dsl-1+m8script`; the
+//!   M8 50 through the shell's one door (`shellcore`'s `act` then script
+//!   fallback), answered by llm's own `llmproto::local::act::routed` on the OS
+//!   pack. With `--gate` a missed bar fails the run.
 //!
 //! Code decides what each call would do ([`consent`]), so false runs and asks
 //! are counted, and [`score`] holds S02-1's thresholds. The layout is ADR
@@ -27,6 +31,7 @@ mod render;
 mod score;
 mod tasks;
 
+use crate::fluency::host::GateHost;
 use crate::fluency::local::Shared;
 use crate::fluency::tasks::TASKS as M8_TASKS;
 use grammar::Tagged;
@@ -84,6 +89,10 @@ struct Arm {
     /// `+m8script`: a `script` call's code comes from today's script prompt
     /// and envelope (the plan's fallback for M8-style requests).
     m8script: bool,
+    /// `act`: what ships. The 190 tasks as `dsl-1+m8script` with the shipping
+    /// decoder and consent; the M8 50 through the shell's one door, with llm's
+    /// own `act` path (`llmproto::local::act::routed`) on the OS pack.
+    ship: bool,
 }
 
 impl Arm {
@@ -96,6 +105,17 @@ impl Arm {
                     no_think: true,
                     rules: false,
                     m8script: false,
+                    ship: false,
+                });
+            }
+            "act" => {
+                return Ok(Self {
+                    kind: Kind::Tagged(Format::Dsl1),
+                    rows: 40,
+                    no_think: false,
+                    rules: false,
+                    m8script: true,
+                    ship: true,
                 });
             }
             "m8-a0" => {
@@ -105,6 +125,7 @@ impl Arm {
                     no_think: false,
                     rules: false,
                     m8script: false,
+                    ship: false,
                 });
             }
             _ => {}
@@ -138,6 +159,7 @@ impl Arm {
             no_think,
             rules,
             m8script,
+            ship: false,
         })
     }
 
@@ -145,6 +167,7 @@ impl Arm {
         match self.kind {
             Kind::M8 if self.no_think => "m8".into(),
             Kind::M8 => "m8-a0".into(),
+            Kind::Tagged(_) if self.ship => "act".into(),
             Kind::Tagged(format) => format!(
                 "{}{}{}{}@{}",
                 format.name(),
@@ -168,13 +191,15 @@ struct Options {
     m8: bool,
     /// Only the M8 tasks, for an arm that changes only the script path.
     only_m8: bool,
+    /// Task 18's gate: fail when any arm at any seed misses a bar.
+    gate: bool,
 }
 
 fn parse(args: &[String]) -> Result<Options, String> {
     let (mut id, mut store, mut limit) = (None, None, None);
     let mut arms = vec![Arm::parse("dsl-1")?];
     let mut seeds = SEEDS.to_vec();
-    let (mut m8, mut only_m8) = (true, false);
+    let (mut m8, mut only_m8, mut gate) = (true, false, false);
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
         let mut value = |what: &str| rest.next().cloned().ok_or(format!("{arg} expects {what}"));
@@ -202,6 +227,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
             }
             "--no-m8" => m8 = false,
             "--only-m8" => only_m8 = true,
+            "--gate" => gate = true,
             other => return Err(format!("unknown actbench option {other}")),
         }
     }
@@ -213,6 +239,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         limit,
         m8,
         only_m8,
+        gate,
     })
 }
 
@@ -351,14 +378,14 @@ fn chosen(limit: Option<usize>) -> Vec<&'static tasks::Task> {
 /// The M8 50 (or the first `limit`) through `transport()`, as (passed, runs).
 fn run_m8(
     limit: Option<usize>,
-    transport: &dyn Fn() -> crate::fluency::host::Transport,
+    host: &dyn Fn() -> GateHost,
     records: &mut Vec<Value>,
 ) -> (usize, usize) {
     let mut passed = 0;
     let count = limit.unwrap_or(M8_TASKS.len()).min(M8_TASKS.len());
     for (number, task) in M8_TASKS.iter().take(count).enumerate() {
         let clock = Instant::now();
-        let outcome = crate::fluency::attempt(task, transport());
+        let outcome = crate::fluency::attempt_on(task, host());
         let ms = clock.elapsed().as_millis();
         passed += usize::from(outcome.failure.is_none());
         let failure = outcome.failure.as_ref().map(|(k, d)| format!("{k:?}: {d}"));
@@ -388,7 +415,7 @@ fn run_arm(
     seed: u64,
     options: &Options,
     target_dir: &Path,
-) -> Result<bool, String> {
+) -> Result<(bool, String), String> {
     let started = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
@@ -410,7 +437,7 @@ fn run_arm(
             let no_think = arm.no_think;
             Some(run_m8(
                 options.limit,
-                &move || m8::reference(engine.clone(), no_think),
+                &move || GateHost::new(m8::reference(engine.clone(), no_think)),
                 &mut records,
             ))
         }
@@ -483,7 +510,30 @@ fn run_arm(
                 }));
                 scored.push(one);
             }
+            if arm.ship {
+                // What the OS sends: llmproto's pack, not the mock one.
+                let os_pack = llmproto::pack::render(llmproto::pack::Format::Dsl1);
+                let mut os_ids = Vec::new();
+                loaded.tokenizer.encode(&os_pack, &mut os_ids);
+                let id = llmproto::pack::pack_id(
+                    llmproto::pack::Format::Dsl1,
+                    &loaded.tokenizer_sha256,
+                    &os_pack,
+                );
+                header["os_pack_id"] = json!(format!("{id:016x}"));
+                header["os_pack_tokens"] = json!(os_ids.len());
+            }
             options.m8.then(|| {
+                if arm.ship {
+                    let engine = loaded.engine.clone();
+                    let grammar =
+                        Rc::new(llmproto::local::act::grammar().expect("the OS rows decode"));
+                    return run_m8(
+                        options.limit,
+                        &move || m8::shipping(engine.clone(), grammar.clone()),
+                        &mut records,
+                    );
+                }
                 // The gate's shell has only the M8 functions, so the pack says so.
                 let m8_rows = registry::m8_rows();
                 let tagging = Rc::new(m8::Tagging {
@@ -496,7 +546,7 @@ fn run_arm(
                 });
                 run_m8(
                     options.limit,
-                    &move || m8::tagged(tagging.clone()),
+                    &move || GateHost::new(m8::tagged(tagging.clone())),
                     &mut records,
                 )
             })
@@ -542,12 +592,40 @@ fn run_arm(
         .collect();
     fs::write(&path, lines.join("\n") + "\n").map_err(|e| format!("{}: {e}", path.display()))?;
     println!("xtask: runs written to {}", path.display());
-    Ok(passes)
+    Ok((passes, summary_rows(&arm, seed, &header, &gates)))
 }
 
-/// `cargo xtask actbench`: every arm at every seed. It reports and exits 0;
-/// S02-1 is a measurement, so the gates are read from the summary (task 18
-/// makes them fail the job).
+/// One arm at one seed as Markdown: its pack ids, then each bar.
+fn summary_rows(arm: &Arm, seed: u64, header: &Value, gates: &[score::Gate]) -> String {
+    let id = |key: &str| {
+        header[key]
+            .as_str()
+            .map_or(String::from("-"), |id| format!("`{id}`"))
+    };
+    let mut out = format!(
+        "\n### {} seed {seed}\n\npack_id {} ({} tokens), OS pack_id {} ({} tokens)\n\n\
+         | Bar | Value | Pass |\n|---|---|---|\n",
+        arm.label(),
+        id("pack_id"),
+        header["pack_tokens"],
+        id("os_pack_id"),
+        header["os_pack_tokens"],
+    );
+    for gate in gates {
+        let mark = if gate.passes { "yes" } else { "**no**" };
+        let row = format!(
+            "| {} ({}) | {} | {mark} |\n",
+            gate.name, gate.bar, gate.value
+        );
+        out.push_str(&row);
+    }
+    out
+}
+
+/// `cargo xtask actbench`: every arm at every seed. It writes
+/// `target/actbench/summary.md` (and the job summary on GitHub). With `--gate`
+/// (task 18) it fails when any arm at any seed misses a bar; without, it
+/// reports and exits 0, as S02-1's measurements did.
 pub fn main(args: &[String], target_dir: &Path) -> Result<(), String> {
     if let Some(("--rescore", files)) = args.split_first().map(|(a, r)| (a.as_str(), r)) {
         return files.iter().try_for_each(|file| rescore(Path::new(file)));
@@ -559,9 +637,20 @@ pub fn main(args: &[String], target_dir: &Path) -> Result<(), String> {
     let loaded = load(bytes, &options.id)?;
     println!("xtask: actbench: {}", loaded.line);
     let mut results = Vec::new();
+    let mut summary = format!(
+        "## actbench\n\n{} on {}, commit {}\n",
+        loaded.line,
+        std::env::var("RUNNER_NAME").unwrap_or_else(|_| String::from("this machine")),
+        std::env::var("GITHUB_SHA").unwrap_or_else(|_| String::from("(local)")),
+    );
+    let mut failed = Vec::new();
     for &arm in &options.arms {
         for &seed in &options.seeds {
-            let passes = run_arm(&loaded, arm, seed, &options, target_dir)?;
+            let (passes, rows) = run_arm(&loaded, arm, seed, &options, target_dir)?;
+            summary.push_str(&rows);
+            if !passes {
+                failed.push(format!("{} seed {seed}", arm.label()));
+            }
             results.push(format!(
                 "{} seed {seed}: {}",
                 arm.label(),
@@ -571,6 +660,31 @@ pub fn main(args: &[String], target_dir: &Path) -> Result<(), String> {
     }
     for line in results {
         println!("xtask: actbench {line}");
+    }
+    write_summary(&summary, target_dir)?;
+    match (options.gate, failed.is_empty()) {
+        (true, false) => Err(format!("the actbench gate fails: {}", failed.join(", "))),
+        _ => Ok(()),
+    }
+}
+
+/// The run's Markdown, to `target/actbench/summary.md` and, on GitHub, the
+/// job's summary.
+fn write_summary(summary: &str, target_dir: &Path) -> Result<(), String> {
+    let path = target_dir.join("actbench").join("summary.md");
+    fs::create_dir_all(target_dir.join("actbench")).map_err(|e| e.to_string())?;
+    fs::write(&path, summary).map_err(|e| format!("{}: {e}", path.display()))?;
+    if let Some(step) = std::env::var("GITHUB_STEP_SUMMARY")
+        .ok()
+        .filter(|s| !s.is_empty())
+    {
+        use std::io::Write as _;
+        fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(&step)
+            .and_then(|mut file| file.write_all(summary.as_bytes()))
+            .map_err(|e| format!("{step}: {e}"))?;
     }
     Ok(())
 }
@@ -686,11 +800,9 @@ mod tests {
             crate::local_script::prompts(),
             render::pack(Format::Dsl1, &registry::rows(40)),
             render::MODE_ACT.to_string(),
+            llmproto::pack::render(llmproto::pack::Format::Dsl1),
         ]
-        .join(
-            "
-",
-        );
+        .join("\n");
         let bytes = infer::fixture::local_script(&text);
         let bytes: &'static [u8] = Box::leak(bytes.into_boxed_slice());
         let loaded = load(bytes, "fixture").unwrap();
@@ -718,8 +830,17 @@ mod tests {
         let options = parse(&args("--local fixture --limit 1 --seed 42")).unwrap();
         run_arm(&loaded, Arm::parse("dsl-1").unwrap(), 42, &options, &dir).unwrap();
         run_arm(&loaded, Arm::parse("m8-a0").unwrap(), 42, &options, &dir).unwrap();
+        // What ships: the M8 task through the shell's one door, on the OS pack.
+        let (_, rows) = run_arm(&loaded, Arm::parse("act").unwrap(), 42, &options, &dir).unwrap();
+        assert!(
+            rows.contains("### act seed 42") && rows.contains("OS pack_id `"),
+            "{rows}"
+        );
+        assert!(rows.contains("| exact single calls (>= 57/60) |"), "{rows}");
         let files = fs::read_dir(dir.join("actbench")).unwrap().count();
-        assert_eq!(files, 2);
+        assert_eq!(files, 3);
+        write_summary(&rows, &dir).unwrap();
+        assert!(dir.join("actbench").join("summary.md").exists());
         let _ = fs::remove_dir_all(&dir);
     }
 }
