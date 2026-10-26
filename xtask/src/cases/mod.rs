@@ -124,6 +124,19 @@ mod tests {
         let cases = test_cases();
         let names: HashSet<&str> = cases.iter().map(|case| case.name).collect();
         assert_eq!(names.len(), cases.len());
-        assert_eq!(cases.len(), 62);
+        // Every lane's table is in LANES: counted from the tables themselves, so a
+        // PR that adds a case need not change a shared number here.
+        let tables = [
+            kernel::CASES,
+            devices::CASES,
+            agent::CASES,
+            components::CASES,
+            network::CASES,
+        ];
+        assert_eq!(
+            cases.len(),
+            tables.iter().map(|lane| lane.len()).sum::<usize>()
+        );
+        assert!(tables.iter().all(|lane| !lane.is_empty()));
     }
 }
