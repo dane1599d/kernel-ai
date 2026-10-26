@@ -46,6 +46,12 @@ pub(super) const CASES: &[TestCase] = &[
     // L6: worker threads in one address space.
     case("threads", "test=threads"),
     case("threads-kill", "test=threads-kill"),
+    TestCase {
+        expect: &[
+            "thread-pin: a pinned thread stayed on its CPU, an unpinned one migrated, and ring 3 can pin",
+        ],
+        ..case("thread-pin", "test=thread-pin")
+    },
     case("matvec", "test=matvec"),
     // The graft: the model window past 4 GiB, with RAM above 4 GiB for its copies.
     TestCase {

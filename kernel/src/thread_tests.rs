@@ -210,6 +210,81 @@ fn kill_mid_run(mode: &str, waiting: Waiting) -> Result<(), &'static str> {
 /// How long `threads-kill` waits for the network to get its address.
 const NET_WAIT_MS: u64 = 15_000;
 
+/// What the `thread-pin` mover thread saw, for the case to read.
+static PIN_STAYED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static PIN_MIGRATED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static PIN_DONE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static SPIN_STOP: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// Rounds a pinned thread must stay put through.
+const PIN_ROUNDS: usize = 200;
+
+/// The `thread-pin` case (THREAD_PIN, for llm's main thread): a kernel thread
+/// pinned to CPU 1 never runs elsewhere through yields and sleeps; unpinned
+/// while CPU 1 is crowded, load balancing moves it off. Then THREAD_PIN from
+/// ring 3, and refused without cap::THREADS.
+pub fn pin_check() -> Result<(), &'static str> {
+    if smp::online() < 2 {
+        return Err("thread-pin: needs at least 2 CPUs");
+    }
+    threads::spawn("pin-test", pin_mover, 0).map_err(|_| "thread-pin: cannot start the mover")?;
+    let deadline = hpet::nanos() + 30_000 * 1_000_000;
+    while !PIN_DONE.load(Ordering::SeqCst) {
+        if hpet::nanos() > deadline {
+            return Err("thread-pin: the mover never finished");
+        }
+        threads::sleep_ms(10);
+    }
+    SPIN_STOP.store(true, Ordering::SeqCst);
+    if !PIN_STAYED.load(Ordering::SeqCst) {
+        return Err("thread-pin: a pinned thread ran on another CPU");
+    }
+    if !PIN_MIGRATED.load(Ordering::SeqCst) {
+        return Err("thread-pin: an unpinned thread never moved off a crowded CPU");
+    }
+    expect("pin", "mode=pin", cap::THREADS, (ExitReason::Exited, 0))?;
+    log!(
+        "thread-pin: a pinned thread stayed on its CPU, an unpinned one migrated, and ring 3 can pin"
+    );
+    Ok(())
+}
+
+fn pin_mover(_: usize) {
+    let pinned = threads::pin_current(Some(1)).is_ok();
+    let mut stayed = pinned;
+    for round in 0..PIN_ROUNDS {
+        if round % 2 == 0 {
+            threads::yield_now();
+        } else {
+            threads::sleep_ms(1);
+        }
+        stayed &= crate::percpu::index() == 1 && threads::owner(threads::current_tid()) == 1;
+    }
+    PIN_STAYED.store(stayed, Ordering::SeqCst);
+    // Crowd CPU 1 with pinned spinners, then unpin: balancing pulls this thread off.
+    for _ in 0..3 {
+        let _ = threads::spawn_pinned(1, "pin-spin", pin_spinner, 0);
+    }
+    let _ = threads::pin_current(None);
+    let deadline = hpet::nanos() + 5_000 * 1_000_000;
+    while hpet::nanos() < deadline {
+        if crate::percpu::index() != 1 {
+            PIN_MIGRATED.store(true, Ordering::SeqCst);
+            break;
+        }
+        threads::yield_now();
+    }
+    SPIN_STOP.store(true, Ordering::SeqCst);
+    PIN_DONE.store(true, Ordering::SeqCst);
+    threads::exit();
+}
+
+fn pin_spinner(_: usize) {
+    while !SPIN_STOP.load(Ordering::SeqCst) {
+        core::hint::spin_loop();
+    }
+    threads::exit();
+}
+
 /// The `threads-kill` case.
 pub fn kill_check() -> Result<(), &'static str> {
     // The free-frame count is the whole machine's: DHCP, set going at boot,

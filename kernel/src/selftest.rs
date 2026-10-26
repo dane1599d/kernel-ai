@@ -84,6 +84,8 @@ pub enum SelfTest {
     Threads,
     /// L6: processes killed mid-run, every thread blocked or computing, free every frame.
     ThreadsKill,
+    /// THREAD_PIN: a pinned thread stays, an unpinned one migrates.
+    ThreadPin,
     /// L6: a matvec over the thread pool equals the single-thread result.
     Matvec,
     /// L6: keys reach their thread within 20 ms while ring-3 workers compute.
@@ -164,6 +166,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=handles" => Some(SelfTest::Handles),
             "test=threads" => Some(SelfTest::Threads),
             "test=threads-kill" => Some(SelfTest::ThreadsKill),
+            "test=thread-pin" => Some(SelfTest::ThreadPin),
             "test=matvec" => Some(SelfTest::Matvec),
             "test=compute-keys" => Some(SelfTest::ComputeKeys),
             "test=bigmap" => Some(SelfTest::Bigmap),

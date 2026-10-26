@@ -231,10 +231,36 @@ pub fn sleep() -> i32 {
 /// `mode=nocap`: THREAD_SPAWN without the capability.
 pub fn nocap() -> i32 {
     match sys::thread_spawn(forever, 0, 0, STACK) {
-        Err(Error::Permission) => 0,
+        Err(Error::Permission) => {}
         other => {
             println!("workers: THREAD_SPAWN without cap::THREADS gave {other:?}");
-            40
+            return 40;
         }
     }
+    match sys::thread_pin(Some(0)) {
+        Err(Error::Permission) => 0,
+        other => {
+            println!("workers: THREAD_PIN without cap::THREADS gave {other:?}");
+            41
+        }
+    }
+}
+
+/// THREAD_PIN from ring 3: the main thread pins to the last CPU and back to CPU
+/// 0, a CPU past the online count is Invalid, and unpinning works.
+pub fn pin() -> i32 {
+    let last = cpus() - 1;
+    for (cpu, want, code) in [
+        (Some(last), Ok(()), 50),
+        (Some(0), Ok(()), 51),
+        (Some(cpus() + 3), Err(Error::Invalid), 52),
+        (None, Ok(()), 53),
+    ] {
+        let got = sys::thread_pin(cpu);
+        if got != want {
+            println!("workers: THREAD_PIN {cpu:?} gave {got:?}, wanted {want:?}");
+            return code;
+        }
+    }
+    0
 }
