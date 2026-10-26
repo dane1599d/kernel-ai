@@ -126,7 +126,7 @@ static CMDLINE: ExecutableCmdlineRequest = ExecutableCmdlineRequest::new();
 
 #[used]
 #[unsafe(link_section = ".requests")]
-static MODULES: ModulesRequest = ModulesRequest::new();
+pub(crate) static MODULES: ModulesRequest = ModulesRequest::new();
 
 #[used]
 #[unsafe(link_section = ".requests")]
