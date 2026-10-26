@@ -72,6 +72,26 @@ const NOT_ENGLISH: &[(&str, Expect)] = &[
     ("n", Contains("not run")),
 ];
 
+/// `pkg-local` (P1 task 16): a typed install runs from the image's repository,
+/// in a new RAM generation, and `undo` switches back to the one before.
+const PKG_LOCAL: &[(&str, Expect)] = &[
+    ("pkg list", Exact("ok nothing installed beyond the system")),
+    (
+        "install notes",
+        Exact("ok Done: installed notes 2.0.0 (74 KB), with spell-en 1.2.3. undo"),
+    ),
+    (
+        "pkg list",
+        Exact("ok notes 2.0.0\nspell-en 1.2.3 (needed by another)"),
+    ),
+    ("undo", Exact("ok Undone: packages back to generation 1")),
+    ("pkg list", Exact("ok nothing installed beyond the system")),
+    (
+        "pkg history",
+        Exact("ok 1: image, 0 packages (current)\n2: install notes, 2 packages"),
+    ),
+];
+
 /// S02-3 (ADR 0002): `undo` right after a switch, inside the kernel's 100 ms
 /// limit, so the first try is refused as too soon and the retry puts it back.
 const UNDO_AT_ONCE: &[(&str, Expect)] = &[
@@ -134,6 +154,9 @@ pub fn check(which: ActCase) -> Result<(), &'static str> {
         ActCase::Ask => ask(),
         ActCase::Inject => inject(),
         ActCase::Rule => rule(),
+        ActCase::PkgLocal => expect_lines(PKG_LOCAL).map(|()| {
+            log!("pkg-local: install notes ran from the image's repository and undo put the previous set back");
+        }),
     }
 }
 

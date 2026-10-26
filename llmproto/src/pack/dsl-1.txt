@@ -43,3 +43,6 @@ service_stop|start|restart(name: string) [ask|undo|ask]  // stop keeps it down u
 tune(target: string?, intent: string?) [ask]  // proposes a scheduler trial for a process
 tune_undo() [undo]  // puts back the policy a kept trial replaced
 component_revert(component: string, back: int 1..6?) [undo]  // a live component back n versions
+pkg_install|remove(name: string) [undo]  // installs or removes a package; undo puts the old set back
+pkg_list() -> string  // installed packages
+pkg_search(text: string) -> string  // packages in the repository

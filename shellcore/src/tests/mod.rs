@@ -14,6 +14,7 @@ mod act;
 mod actions;
 mod log;
 mod more;
+mod packages;
 mod scripts;
 mod transaction;
 mod tune;

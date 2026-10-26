@@ -16,6 +16,7 @@ pub enum ActCase {
     Ask,
     Inject,
     Rule,
+    PkgLocal,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -155,6 +156,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=act-ask" => Some(SelfTest::Act(ActCase::Ask)),
             "test=act-inject" => Some(SelfTest::Act(ActCase::Inject)),
             "test=act-rule" => Some(SelfTest::Act(ActCase::Rule)),
+            "test=pkg-local" => Some(SelfTest::Act(ActCase::PkgLocal)),
             "test=live" => Some(SelfTest::Live),
             "test=edit" => Some(SelfTest::Edit),
             "test=manifest" => Some(SelfTest::Manifest),

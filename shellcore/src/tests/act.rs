@@ -563,13 +563,14 @@ fn the_model_cannot_list_or_remove_standing_rules() {
     shell.eval("stop build-3");
     let once = host.mint(1, "process_stop(\"build-3\")");
     shell.eval(&format!("answer 1 always-kind once={once}"));
-    for line in ["remove my first rule", "what are my rules"] {
+    // "remove ..." is a package line (`pkg::line`), so the model is asked with "delete".
+    for line in ["delete my first rule", "what are my rules"] {
         let reply = shell.eval(line);
         assert_eq!(
             reply,
             Reply::err(format!(
                 "Refused {}: no such action",
-                if line.starts_with("remove") {
+                if line.starts_with("delete") {
                     "rules_remove"
                 } else {
                     "rules"

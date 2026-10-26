@@ -28,6 +28,10 @@ pub enum Inverse {
     Started(Name),
     /// Start the service an undo stopped again: the redo of [`Inverse::Started`].
     Stopped(Name),
+    /// Make package generation `to` current again, but only while `from` (the one
+    /// the switch made) still is. The shell's package store does it
+    /// (`Shell::revert_entry`), not the host.
+    Generation { from: u64, to: u64 },
 }
 
 /// A service name held without the heap, so an inverse stays `Copy`.
@@ -92,6 +96,7 @@ pub fn target(inverse: Inverse) -> String {
         Inverse::Spec { policy, preset, .. } => spec_name(policy, preset),
         Inverse::Started(name) => format!("{} stopped", name.as_str()),
         Inverse::Stopped(name) => format!("{} running", name.as_str()),
+        Inverse::Generation { to, .. } => format!("generation {to}"),
     }
 }
 
@@ -129,6 +134,9 @@ pub fn revert(host: &dyn Host, inverse: Inverse, anyway: bool) -> Result<String,
             .start_service(name.as_str())
             .map(|()| format!("service {} started again", name.as_str()))
             .map_err(Refused::Failed),
+        Inverse::Generation { .. } => Err(Refused::Failed(String::from(
+            "a package switch is put back by the shell's store",
+        ))),
     }
 }
 
@@ -146,5 +154,6 @@ pub fn reverse(inverse: Inverse) -> Inverse {
         },
         Inverse::Started(name) => Inverse::Stopped(name),
         Inverse::Stopped(name) => Inverse::Started(name),
+        Inverse::Generation { from, to } => Inverse::Generation { from: to, to: from },
     }
 }

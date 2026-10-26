@@ -85,7 +85,11 @@ impl Shell {
                 left.push(change);
                 break;
             };
-            match undo::revert(self.host.as_ref(), inverse, anyway) {
+            let reverted = match inverse {
+                undo::Inverse::Generation { from, to } => self.switch_generation(from, to, anyway),
+                other => undo::revert(self.host.as_ref(), other, anyway),
+            };
+            match reverted {
                 Ok(text) => {
                     said.push(text);
                     redo.push(Change {
