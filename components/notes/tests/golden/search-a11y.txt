@@ -1,0 +1,11 @@
+[0] window "Notes"
+[1] split ""
+[2] group ""
+[3] text_input "Search" = "THE"
+[4] button "New note" runs notes_add
+[5] list "Notes" = "2 items"
+[1000] label "Ideas for the desktop: a launcher"
+[1001] label "Call the plumber about the kitchen sink …"
+[6] group ""
+[7] label "No note open"
+[8] label "2 of 3 notes match"
