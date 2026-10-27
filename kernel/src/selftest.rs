@@ -129,6 +129,8 @@ pub enum SelfTest {
     Efi,
     /// A reset through UEFI ResetSystem.
     EfiReset,
+    /// The boot lever on a slot image, driven by `slot-do=` (ADR 0008, lane U).
+    Slot,
     Devices,
     TuneRevert,
     TuneStall,
@@ -221,6 +223,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=panic-reset" => Some(SelfTest::PanicReset),
             "test=efi" => Some(SelfTest::Efi),
             "test=efi-reset" => Some(SelfTest::EfiReset),
+            "test=slot" => Some(SelfTest::Slot),
             "test=devices" => Some(SelfTest::Devices),
             "test=tune-revert" => Some(SelfTest::TuneRevert),
             "test=tune-stall" => Some(SelfTest::TuneStall),
@@ -246,6 +249,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
     let wanted = matches!(
         test,
         SelfTest::None
+            | SelfTest::Slot
             | SelfTest::Net
             | SelfTest::Terminal
             | SelfTest::Shell

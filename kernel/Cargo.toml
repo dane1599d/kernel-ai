@@ -23,6 +23,7 @@ devmatch = { path = "../devmatch" }
 diskmap = { path = "../diskmap" }
 fsproto = { path = "../fsproto" }
 kabi = { path = "../kabi" }
+bootslot = { path = "../bootslot" }
 kaibundle = { path = "../kaibundle" }
 limine = "0.6.5"
 linetable = { path = "../linetable" }
