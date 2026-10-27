@@ -110,15 +110,17 @@ pub fn switch() {
 }
 
 /// An answer waits on the console: if the holder shows, the console takes the
-/// screen until [`give_back`]. Ctrl+Alt+F12 does not return it meanwhile.
+/// screen until [`give_back`]. Whether it took it or the console showed already
+/// (Ctrl+Alt+F12), the screen stays on the console until then: neither
+/// Ctrl+Alt+F12 nor a claim returns it, so no window gets keys meanwhile.
 /// Returns whether it took it.
 pub fn take_for_answer() -> bool {
     let mut state = STATE.lock();
+    state.answering = true;
     let Some(grant) = state.showing.take() else {
         return false;
     };
     state.taken_back = true;
-    state.answering = true;
     drop(state);
     to_console(grant);
     input::screen(false);
@@ -126,15 +128,13 @@ pub fn take_for_answer() -> bool {
     true
 }
 
-/// The answer [`take_for_answer`] waited for came: the holder gets the screen
-/// back, as on a second Ctrl+Alt+F12. Nothing when `took` is false.
+/// The answer [`take_for_answer`] waited for came. The holder gets the screen
+/// back, as on a second Ctrl+Alt+F12, if `took` says the answer took it; a
+/// screen the console had before stays the console's.
 pub fn give_back(took: bool) {
-    if !took {
-        return;
-    }
     let mut state = STATE.lock();
     state.answering = false;
-    if !state.taken_back || state.holder.is_none() {
+    if !took || !state.taken_back || state.holder.is_none() {
         return;
     }
     state.taken_back = false;
