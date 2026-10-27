@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+    # `labeled` lets adding `full-ci` start the boot jobs on a PR.
+    types: [opened, synchronize, reopened, labeled]
 
 permissions:
   contents: read
@@ -60,8 +62,17 @@ jobs:
   # and cached: Ubuntu 24.04's QEMU 8.2 segfaulted under TCG in vector-heavy
   # cases (matvec, local-ask, local-script). Bump the version and SHA-256 here
   # and in .github/actions/qemu together.
+  #
+  # The boot, icount and observe jobs all need this one, so this condition gates
+  # them too (founder, 2026-10-27): they run on main, on merge-batch PRs
+  # (`batch/...`), and on a PR labelled `full-ci`. A plain PR push runs only the
+  # lint and host-test job above; merges still need every job green in a batch.
   qemu:
     name: QEMU 11.0.5 (built once, cached)
+    if: >-
+      github.event_name != 'pull_request' ||
+      startsWith(github.head_ref, 'batch/') ||
+      contains(github.event.pull_request.labels.*.name, 'full-ci')
     runs-on: ubuntu-24.04
     env:
       QEMU_VERSION: "11.0.5"
