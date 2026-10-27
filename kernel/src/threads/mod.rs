@@ -42,6 +42,8 @@ static LOAD: [AtomicUsize; MAX_CPUS] = [const { AtomicUsize::new(0) }; MAX_CPUS]
 /// CPU whose core owns each thread.
 static OWNER: [AtomicUsize; MAX_THREADS] = [const { AtomicUsize::new(0) }; MAX_THREADS];
 /// The CPU plus one a blocked thread asked to move to ([`pin_current`]), or 0.
+/// Cleared when a slot is handed out and when it is freed: a thread killed
+/// between asking and blocking leaves its request behind.
 static MOVE_TO: [AtomicUsize; MAX_THREADS] = [const { AtomicUsize::new(0) }; MAX_THREADS];
 /// True from the moment a thread is switched in until its registers are saved again.
 static ON_CPU: [AtomicBool; MAX_THREADS] = [const { AtomicBool::new(false) }; MAX_THREADS];
@@ -165,8 +167,9 @@ fn spawn_on(
         top => top,
     };
     let rsp = initial_frame(top, entry, arg);
-    // A reused slot must not inherit the previous thread's address space.
+    // A reused slot must not inherit the previous thread's address space, or its move.
     THREAD_CR3[tid].store(0, Ordering::Relaxed);
+    MOVE_TO[tid].store(0, Ordering::Release);
     let target = cpu.unwrap_or_else(least_loaded);
     PINNED[tid].store(cpu.is_some(), Ordering::Relaxed);
     OWNER[tid].store(target, Ordering::Release);
@@ -295,17 +298,40 @@ pub fn pin_current(cpu: Option<usize>) -> Result<(), &'static str> {
     Ok(())
 }
 
+/// Test only: [`pin_current`] with a switch away between asking for the move
+/// and blocking, the preemption that lost the request before the fix in
+/// [`move_after_switch`]. A runnable thread must share the CPU, or the yield
+/// does not switch.
+pub fn pin_current_preempted(cpu: usize) {
+    let me = current_tid();
+    PINNED[me].store(true, Ordering::Relaxed);
+    MOVE_TO[me].store(cpu + 1, Ordering::Release);
+    yield_now();
+    while OWNER[me].load(Ordering::Acquire) != cpu {
+        block_unless(|| false);
+    }
+}
+
 /// Right after a switch away from `previous`: if it blocked to move, make it
 /// runnable on the CPU it asked for. Interrupts are off.
+///
+/// A thread preempted after asking for the move but before it blocked keeps its
+/// request: it blocks once it runs again, and that switch moves it. Taking the
+/// request at the preemption lost it, and the thread then blocked with nothing
+/// left to wake it (llm's main thread, hung at start under TCG).
 pub(super) fn move_after_switch(previous: Tid) {
-    let target = MOVE_TO[previous].swap(0, Ordering::AcqRel);
-    if target == 0 {
+    if MOVE_TO[previous].load(Ordering::Acquire) == 0 {
         return;
     }
-    let (me, target) = (percpu::index(), target - 1);
+    let me = percpu::index();
     let now = hpet::nanos();
+    let mut target = 0;
     let moved = CORES[me].lock().as_mut().and_then(|core| {
         if core.state(previous) != sched::State::Blocked {
+            return None;
+        }
+        target = MOVE_TO[previous].swap(0, Ordering::AcqRel);
+        if target == 0 {
             return None;
         }
         core.wake(previous, now);
@@ -316,6 +342,7 @@ pub(super) fn move_after_switch(previous: Tid) {
     let Some((tid, name)) = moved else {
         return;
     };
+    let target = target - 1;
     OWNER[tid].store(target, Ordering::Release);
     if let Some(core) = CORES[target].lock().as_mut() {
         core.adopt(tid, name, EnqueueReason::Woken, now);
