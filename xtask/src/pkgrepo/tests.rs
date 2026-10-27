@@ -652,7 +652,10 @@ fn a_flipped_byte_in_the_bundle_is_refused_by_name() {
     flip(&mut modules, "notes").unwrap();
     let (kept, refused) = image(as_read(&modules), NOW).unwrap();
     assert_eq!(kept, ["hello-1.0.0.kpkg"]);
-    assert!(refused[0].starts_with("notes-1.0.0.kpkg: length or hash"), "{refused:?}");
+    assert!(
+        refused[0].starts_with("notes-1.0.0.kpkg: length or hash"),
+        "{refused:?}"
+    );
     flip(&mut modules, "notes").unwrap();
     let (kept, refused) = image(as_read(&modules), NOW).unwrap();
     assert_eq!((kept.len(), refused.len()), (2, 0));
