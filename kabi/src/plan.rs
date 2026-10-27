@@ -8,6 +8,9 @@ use alloc::string::String;
 /// route, may switch the scheduling policy, and needs a large stack for Rhai's
 /// recursion.
 pub const SHELL: &str = "shell caps=serve+call+policy+stop+script uses=llm+supervisor pages=4096 stack_pages=512 burst_ms=5000";
+/// [`SHELL`] once `fs` runs: with `files`, its `Dir` for `/home/user`, for the
+/// file rows (P2 task 11).
+pub const SHELL_FILES: &str = "shell caps=serve+call+policy+stop+script+files uses=llm+supervisor pages=4096 stack_pages=512 burst_ms=5000";
 /// The file system service (ADR 0004): the only holder of the `kai-data`
 /// partition. Planned before the shell, and only when the disk has `kai-data`.
 /// Its pages hold a 16 MiB block cache and kaifs's working state.
