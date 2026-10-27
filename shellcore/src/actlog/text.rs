@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! actlog 1
-//! E 17 t=1792618800123456789 reg=1 form=call tier=run consent=asked state=done
+//! E 17 t=1792618800123456789 reg=1 pack=0123456789abcdef form=call tier=run consent=asked state=done
 //! R 21
 //! switch to round robin
 //! O 3
@@ -69,10 +69,12 @@ fn entry(out: &mut String, e: &Entry) {
             let tier = e.tier.map_or("-", Tier::name);
             let _ = writeln!(
                 out,
-                "E {} t={} reg={} form={} tier={tier} consent={} state={}",
+                "E {} t={} reg={} pack={} form={} tier={tier} consent={} state={}",
                 e.id,
                 e.t_ns,
                 agentabi::REGISTRY_VERSION,
+                e.pack
+                    .map_or_else(|| String::from("-"), |pack| alloc::format!("{pack:016x}")),
                 e.form.word(),
                 word(&e.consent),
                 e.state.word()
@@ -250,12 +252,24 @@ impl<'a> Reader<'a> {
 
     fn entry(&self, tag: &str, body: &'a str) -> Result<Entry, ParseError> {
         let bad = |why| self.error(why);
+        let mut pack = None;
         let (id, of, t, form, tier, consent, state) = match tag {
             "E" => {
-                let v = self.fields(body, &["", "t", "reg", "form", "tier", "consent", "state"])?;
+                let v = self.fields(
+                    body,
+                    &["", "t", "reg", "pack", "form", "tier", "consent", "state"],
+                )?;
                 if v[2] != "1" {
                     return self.fail("an entry from another registry version");
                 }
+                pack = match v[3] {
+                    "-" => None,
+                    hex if hex.len() == 16 => {
+                        Some(u64::from_str_radix(hex, 16).map_err(|_| bad("a bad pack_id"))?)
+                    }
+                    _ => return self.fail("a bad pack_id"),
+                };
+                let v = [v[0], v[1], v[2], v[4], v[5], v[6], v[7]];
                 (
                     v[0],
                     None,
@@ -277,6 +291,7 @@ impl<'a> Reader<'a> {
             t_ns: number(t).ok_or(bad("a bad time"))?,
             form,
             of,
+            pack,
             tier: match tier {
                 "-" => None,
                 t => Some(tier_of(t).ok_or(bad("an unknown tier"))?),

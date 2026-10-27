@@ -81,7 +81,7 @@ pub(super) const BRIEF: &[(&str, &str)] = &[
 pub(super) const FAMILIES: &[(&str, &str)] = &[
     (
         "service",
-        "stop keeps it down until start; restart loses its state",
+        "start runs a stopped one; stop keeps it down; restart resets",
     ),
     (
         "pkg",

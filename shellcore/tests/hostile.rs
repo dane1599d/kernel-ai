@@ -7,7 +7,7 @@ mod hostile;
 
 use shellcore::actlog::parse;
 
-const SAMPLE: &str = "actlog 1\nE 17 t=1792618800123456789 reg=1 form=call tier=run consent=asked state=done\nR 21\nswitch to round robin\nO 3\nran\nC 26\nset_policy(\"round-robin\");\nD 17.1 set_policy owner=kernel res=policy before=interactive after=round-robin inv=restore\nU 18 of=17 t=1792618860000000000 state=done\nD 18.1 set_policy owner=kernel res=policy before=round-robin after=interactive inv=restore\nS 19 t=1792618860000000000 owner=kernel 33\nnvme0 reset after 5 s timeout, ok\n";
+const SAMPLE: &str = "actlog 1\nE 17 t=1792618800123456789 reg=1 pack=- form=call tier=run consent=asked state=done\nR 21\nswitch to round robin\nO 3\nran\nC 26\nset_policy(\"round-robin\");\nD 17.1 set_policy owner=kernel res=policy before=interactive after=round-robin inv=restore\nU 18 of=17 t=1792618860000000000 state=done\nD 18.1 set_policy owner=kernel res=policy before=round-robin after=interactive inv=restore\nS 19 t=1792618860000000000 owner=kernel 33\nnvme0 reset after 5 s timeout, ok\n";
 
 fn read(bytes: &[u8]) {
     let Ok(text) = core::str::from_utf8(bytes) else {

@@ -222,6 +222,7 @@ impl Shell {
             form: how.form,
             of: None,
             tier: Some(how.tier),
+            pack: None,
             consent: how.consent,
             state: State::Done,
             request: String::from(request),

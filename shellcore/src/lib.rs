@@ -275,6 +275,9 @@ pub struct Shell {
     partial: Option<String>,
     /// A request the model asked to clarify: the next line is joined to it.
     clarifying: Option<String>,
+    /// The `pack_id` of the pack the model is given, logged with each model turn
+    /// (ADR 0010 §7): the same one llm reports for its `act` slot.
+    pack_id: u64,
 }
 
 impl Shell {
@@ -319,6 +322,11 @@ impl Shell {
             last_output: None,
             partial: None,
             clarifying: None,
+            pack_id: llmproto::pack::pack_id(
+                llmproto::pack::Format::Dsl1,
+                "",
+                &llmproto::pack::render(llmproto::pack::Format::Dsl1),
+            ),
         }
     }
 
