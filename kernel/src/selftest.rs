@@ -45,7 +45,7 @@ pub enum SelfTest {
     Terminal,
     /// M8a: the Rhai shell answers a fixed list of lines correctly.
     Shell,
-    /// M8b: LLM-written scripts are checked, shown, and run only after a yes.
+    /// M8b: LLM-written scripts are checked and run by their tier.
     Scripts,
     /// P1 task 7: one tagged call through the one door. `act-plain`: plain
     /// requests become the right calls; `act-run`: the run tier runs with no prompt
