@@ -31,6 +31,17 @@ const REREAD_NVME: TestCase = TestCase {
     ..REREAD
 };
 
+/// Boot 2 of `fs-reboot`: what boot 1 wrote through `fs` reads back.
+const FS_REBOOT_2: TestCase = TestCase {
+    expect: &[
+        "filecheck: boot 2 read back what boot 1 wrote, byte for byte",
+        "files: boot 2: filecheck's step through its Dir handle passed",
+    ],
+    server: false,
+    data: Some(VIRTIO),
+    ..case("fs-reboot (boot 2)", "test=files reread")
+};
+
 pub(super) const CASES: &[TestCase] = &[
     TestCase {
         expect: &[
@@ -73,6 +84,28 @@ pub(super) const CASES: &[TestCase] = &[
         server: false,
         data: Some(NVME),
         ..case("part-nvme", "test=part")
+    },
+    // P2 task 8: files through a `Dir` handle survive a reboot, and `fs` killed
+    // mid-action restarts with nothing half done and its handles working.
+    TestCase {
+        expect: &[
+            "fs: up; kai-data has ",
+            "filecheck: boot 1 wrote notes/plan.txt and a 20 KiB file through its Dir handle",
+            "files: boot 1: filecheck's step through its Dir handle passed",
+        ],
+        server: false,
+        data: Some(VIRTIO),
+        then: Some(&FS_REBOOT_2),
+        ..case("fs-reboot", "test=files")
+    },
+    TestCase {
+        expect: &[
+            "filecheck: the File handle opened before fs restarted reads what was committed",
+            "files: fs restarted mid-action: nothing half-done is on disk, and an open File handle works again",
+        ],
+        server: false,
+        data: Some(VIRTIO),
+        ..case("fs-restart", "test=files-restart")
     },
     // S04-3 raw: 200 commits shaped like kaifs's, every flush point replayed.
     TestCase {

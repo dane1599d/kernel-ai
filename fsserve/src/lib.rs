@@ -16,6 +16,7 @@
 
 extern crate alloc;
 
+mod buffer;
 mod lookup;
 #[cfg(test)]
 mod tests;
@@ -101,6 +102,10 @@ pub struct Server<D: BlockDev> {
     /// The clock at mount: kaifs's times are this plus time since boot, so they
     /// never go back across reboots (there is no wall clock yet).
     base: u64,
+    /// Writes inside an action not yet given to kaifs ([`buffer`]).
+    pending: Option<buffer::Pending>,
+    /// The record last read.
+    cache: Option<buffer::Cached>,
 }
 
 /// The object a checked badge names.
@@ -127,6 +132,8 @@ impl<D: BlockDev> Server<D> {
             owner: None,
             home_user: 0,
             base,
+            pending: None,
+            cache: None,
         };
         server.home_user = server.folders()?;
         Ok((server, started))
@@ -153,6 +160,22 @@ impl<D: BlockDev> Server<D> {
         }
         fs.set_volume(HOME.into())?;
         Ok(fs.lookup(ROOT, "user")?.map_or(0, |e| e.ino))
+    }
+
+    /// The badge of `name` in `system`'s root, a file made if missing: the
+    /// kernel's own S04-2 file, which no handle of a client reaches.
+    pub fn system_file(&mut self, name: &str) -> Result<u64, Error> {
+        let fs = self.fs();
+        fs.set_volume(SYSTEM.into()).map_err(error)?;
+        let ino = match fs.lookup(ROOT, name).map_err(error)? {
+            Some(entry) => entry.ino,
+            None => {
+                let ino = fs.create(ROOT, name).map_err(error)?;
+                fs.commit().map_err(error)?;
+                ino
+            }
+        };
+        Ok(kabi::fs::badge(SYSTEM, true, ino))
     }
 
     /// The commit generation now.
@@ -200,8 +223,16 @@ impl<D: BlockDev> Server<D> {
 
     fn answer(&mut self, call: &Call) -> Result<(Reply, Option<Mint>), Error> {
         let request = fsproto::decode_request(call.request)?;
-        let target = self.target(call.badge)?;
         let changes = changes(&request);
+        if changes {
+            self.cache = None;
+        }
+        match request {
+            Request::Write { .. } => {}
+            Request::Abort if self.owner == Some(call.caller) => self.pending = None,
+            _ => self.write_out()?,
+        }
+        let target = self.target(call.badge)?;
         if changes && self.owner.is_some_and(|o| o != call.caller) {
             return Err(Error::Busy);
         }
@@ -306,7 +337,7 @@ impl<D: BlockDev> Server<D> {
                 file()?;
                 need(Rights::READ)?;
                 let len = (len as usize).min(MAX_DATA);
-                Reply::Data(self.fs().read_at(object, off, len).map_err(error)?)
+                Reply::Data(self.read(object, off, len, target.inode.size)?)
             }
             Request::Write { off, data } => {
                 file()?;
@@ -314,7 +345,7 @@ impl<D: BlockDev> Server<D> {
                 if data.len() > MAX_DATA {
                     return Err(Error::Invalid);
                 }
-                self.fs().write_at(object, off, &data).map_err(error)?;
+                self.write(object, off, &data)?;
                 Reply::Done
             }
             Request::Truncate { size } => {
@@ -470,6 +501,8 @@ impl<D: BlockDev> Server<D> {
     /// Drops everything since the last commit, an open action with it.
     fn drop_changes(&mut self) {
         self.owner = None;
+        self.pending = None;
+        self.cache = None;
         let fs = self.fs.take().expect("fs is mounted between calls");
         let volume = fs.volume();
         // A remount that fails leaves no filesystem to serve: `fs` exits and its

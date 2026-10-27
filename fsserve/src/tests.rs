@@ -422,3 +422,62 @@ fn changes_and_history_answer_from_the_disk() {
     };
     assert!(free < total && total > 0);
 }
+
+#[test]
+fn a_large_file_in_small_messages_is_written_once_per_record() {
+    // 4 MiB in 7 KiB pieces on an 8 MiB disk: rewriting a 128 KiB record per
+    // piece would need about 70 MiB inside the action.
+    let mut disk = MemDisk::new(2048);
+    let (mut c, _) = Client::start(&mut disk);
+    let file = c.open("big.bin", How::CreateFile).unwrap();
+    let bytes: Vec<u8> = (0..4 << 20).map(|i: u32| (i * 7 % 253) as u8).collect();
+    c.home(Request::Begin { action: 1 });
+    for (at, piece) in bytes.chunks(MAX_DATA).enumerate() {
+        let off = (at * MAX_DATA) as u64;
+        assert_eq!(c.write(&file, off, piece), Reply::Done, "piece {at}");
+        // A read in the middle of the run sees it.
+        if at == 100 {
+            let Reply::Data(back) = c
+                .call(
+                    ALICE,
+                    file.badge,
+                    FILE_RIGHTS,
+                    Request::Read { off, len: 64 },
+                )
+                .0
+            else {
+                panic!("no data");
+            };
+            assert_eq!(back, piece[..64]);
+        }
+    }
+    let Reply::Committed { .. } = c.home(Request::Commit).0 else {
+        panic!("not committed");
+    };
+    let mut back = Vec::new();
+    while back.len() < bytes.len() {
+        let len = MAX_DATA as u32;
+        let off = back.len() as u64;
+        let Reply::Data(data) = c
+            .call(ALICE, file.badge, FILE_RIGHTS, Request::Read { off, len })
+            .0
+        else {
+            panic!("no data at {off}");
+        };
+        assert_eq!(data.len(), MAX_DATA.min(bytes.len() - back.len()));
+        back.extend_from_slice(&data);
+    }
+    assert!(back == bytes);
+}
+
+#[test]
+fn an_aborted_action_drops_its_pending_writes() {
+    let mut disk = MemDisk::new(BLOCKS);
+    let (mut c, _) = Client::start(&mut disk);
+    let file = c.open("a.txt", How::CreateFile).unwrap();
+    c.write(&file, 0, b"kept");
+    c.home(Request::Begin { action: 1 });
+    c.write(&file, 0, b"gone");
+    c.home(Request::Abort);
+    assert_eq!(c.read(&file), Ok(b"kept".to_vec()));
+}

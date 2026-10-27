@@ -858,3 +858,25 @@ pub fn part_write(handle: Handle, sector: u64, bytes: &[u8]) -> Result<u64, Erro
 pub fn part_flush(handle: Handle) -> Result<u64, Error> {
     call(call::PART_FLUSH, [u64::from(handle.0), 0, 0, 0, 0, 0])
 }
+
+/// A `Dir` or `File` handle on this process's own endpoint, with `badge` and
+/// `rights`, for the `fs` service to hand on (P2 task 8).
+pub fn endpoint_mint(
+    endpoint: Handle,
+    kind: kabi::handle::Kind,
+    rights: Rights,
+    badge: u64,
+) -> Result<Handle, Error> {
+    call(
+        call::ENDPOINT_MINT,
+        [
+            u64::from(endpoint.0),
+            kind as u64,
+            u64::from(rights.bits()),
+            badge,
+            0,
+            0,
+        ],
+    )
+    .map(|raw| Handle(raw as u32))
+}

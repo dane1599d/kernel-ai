@@ -71,6 +71,14 @@ pub enum SelfTest {
     BlkFlush,
     /// P2 task 3: only `fs` holds a `Partition`, and it reaches `kai-data` alone.
     Part,
+    /// P2 task 8, `fs-reboot`: files written through a `Dir` handle, read back
+    /// in a second boot (`reread`).
+    Files {
+        reread: bool,
+    },
+    /// P2 task 8, `fs-restart`: `fs` killed mid-action leaves nothing half done,
+    /// and a `File` handle works again.
+    FilesRestart,
     /// L3: the model is held in memory and mapped into `llm`, and survives it.
     Model,
     /// L4: `ask` is answered by the model on the disk, with no LLM server.
@@ -178,6 +186,10 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=blk-write" => Some(SelfTest::BlkWrite),
             "test=blk-flush" => Some(SelfTest::BlkFlush),
             "test=part" => Some(SelfTest::Part),
+            "test=files" => Some(SelfTest::Files {
+                reread: cmdline.split_whitespace().any(|w| w == "reread"),
+            }),
+            "test=files-restart" => Some(SelfTest::FilesRestart),
             "test=model" => Some(SelfTest::Model),
             "test=local-ask" => Some(SelfTest::LocalAsk),
             "test=local-script" => Some(SelfTest::LocalScript),
@@ -240,6 +252,8 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::ProcStop
             | SelfTest::Part
             | SelfTest::ManyProcesses
+            | SelfTest::Files { .. }
+            | SelfTest::FilesRestart
             | SelfTest::TuneRevert
             | SelfTest::TuneStall
             | SelfTest::Tune
@@ -256,6 +270,10 @@ pub fn plan(test: SelfTest) -> Option<String> {
     let mut plan = match test {
         SelfTest::Live => format!("{}\n{}", kabi::plan::NOTES_TEST, crate::llm::plan_line()),
         SelfTest::Part => String::from(kabi::plan::FS),
+        SelfTest::Files { reread } => {
+            crate::files_tests::plan(if reread { "read" } else { "write" })
+        }
+        SelfTest::FilesRestart => crate::files_tests::plan("restart"),
         SelfTest::Edit | SelfTest::Manifest | SelfTest::ManifestGood => {
             let mut plan = match test {
                 SelfTest::Edit => String::from(kabi::plan::NOTES_EDIT_TEST),
@@ -282,6 +300,8 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::Manifest
             | SelfTest::ManifestGood
             | SelfTest::Part
+            | SelfTest::Files { .. }
+            | SelfTest::FilesRestart
     ) {
         // The file system service starts before the shell, once there is a
         // `kai-data` partition for it (ADR 0004).

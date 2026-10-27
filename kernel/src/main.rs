@@ -46,6 +46,7 @@ mod efi_tests;
 mod entry;
 mod fault;
 mod faults;
+mod files_tests;
 mod fpu;
 mod fpu_tests;
 mod gdt;
@@ -322,6 +323,8 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::BlkWrite => run_case(|| blk_tests::check_write(cmdline())),
         SelfTest::BlkFlush => run_case(|| blkflush_tests::check(cmdline())),
         SelfTest::Part => run_case(part_tests::check),
+        SelfTest::Files { .. } => run_case(|| files_tests::check(cmdline())),
+        SelfTest::FilesRestart => run_case(files_tests::restart),
         SelfTest::Model => run_case(|| model_tests::check(cmdline())),
         SelfTest::LocalAsk => run_case(|| local_tests::check(cmdline())),
         SelfTest::LocalScript => run_case(|| local_tests::check_script(cmdline())),

@@ -1,8 +1,8 @@
-//! `fs` (ADR 0004): the file system service, the only process that holds a
-//! `Partition` handle, for `kai-data`. This is P2 task 3's stub: it serves the
-//! `part` case's `check` and one file in 128 KiB records over the real PART_*
-//! calls ([`kabi::part::stub`]), so S04-2's figures can be re-run on the disk.
-//! Task 8 replaces it with the `kai-fs 1` server on kaifs.
+//! `fs` (ADR 0004 §6-7, P2 task 8): the file system service, the only process
+//! that holds a `Partition` handle, for `kai-data`. It mounts kaifs there
+//! (formatting a blank disk) and answers `kai-fs 1` on the `Dir` and `File`
+//! handles it mints ([`fsserve`]). The kernel's own requests on a plain route
+//! are the `part` case's: `check`, and S04-2's transfer through kaifs.
 
 #![no_std]
 #![no_main]
@@ -10,18 +10,25 @@
 extern crate alloc;
 
 mod check;
-mod file;
+mod dev;
 
-use kabi::MAX_MESSAGE;
-use kabi::handle::{Handle, HandleInfo, Kind, MAX_STARTUP, RecvInfo};
+use alloc::vec::Vec;
+use fsserve::{Call, Server, Started};
+use kabi::handle::{Handle, HandleInfo, Kind, MAX_STARTUP, RecvInfo, Rights};
 use kabi::part::stub;
+use kabi::{Error, MAX_MESSAGE};
 use user::{println, sys};
 
 user::entry!(main);
 
+/// How long a receive waits before a slice of the GC.
+const IDLE_MS: u64 = 100;
+/// The kernel's S04-2 file, in `system`.
+const BENCH_FILE: &str = "s04-2";
+
 fn main() -> i32 {
-    let Some(part) = partition() else {
-        println!("fs: no Partition handle; nothing to serve");
+    let (Some(part), Some(endpoint)) = (startup(Kind::Partition), startup(Kind::Endpoint)) else {
+        println!("fs: no Partition or Endpoint handle; nothing to serve");
         return 2;
     };
     let info = match sys::part_info(part) {
@@ -31,74 +38,184 @@ fn main() -> i32 {
             return 2;
         }
     };
-    println!(
-        "fs: up; kai-data has {} sectors ({} MiB)",
-        info.sectors,
-        info.sectors / 2048
-    );
-    let mut file = file::File::new(part, info.sectors);
+    let mut uuid = [0u8; 16];
+    uuid[..8].copy_from_slice(&sys::time_ns().to_le_bytes());
+    uuid[8..].copy_from_slice(&info.sectors.to_le_bytes());
+    let mut server = match Server::start(dev::PartDev::new(part, &info), uuid) {
+        Ok((server, started)) => {
+            let how = match started {
+                Started::Formatted => alloc::string::String::from("formatted it"),
+                Started::Mounted { generation } => alloc::format!("generation {generation}"),
+            };
+            println!(
+                "fs: up; kai-data has {} sectors ({} MiB), {how}",
+                info.sectors,
+                info.sectors / 2048
+            );
+            server
+        }
+        Err(error) => {
+            println!("fs: kai-data does not mount: {error:?}");
+            return 2;
+        }
+    };
+    let mut bench = Bench::default();
     let mut request = alloc::vec![0u8; MAX_MESSAGE];
-    let mut reply = alloc::vec![0u8; MAX_MESSAGE];
     loop {
         let mut from = RecvInfo::default();
-        let Ok(len) = sys::recv_h(&mut request, 0, &mut from) else {
-            continue;
+        let len = match sys::recv_h(&mut request, IDLE_MS, &mut from) {
+            Ok(len) => len,
+            Err(Error::TimedOut) => {
+                server.idle();
+                continue;
+            }
+            Err(_) => continue,
         };
-        let len = answer(part, &mut file, &request[..len], &mut reply);
-        let _ = sys::reply_h(&reply[..len], &[]);
+        // `kai-fs 1` takes no handles yet; any a request carried are dropped.
+        for &raw in &from.handles[..(from.handle_count as usize).min(from.handles.len())] {
+            let _ = sys::handle_close(Handle(raw));
+        }
+        let request = &request[..len];
+        if from.badge == 0 {
+            let reply = match from.caller_pid {
+                0 => bench.answer(&mut server, part, request),
+                _ => b"err plain routes to fs are the kernel's".to_vec(),
+            };
+            let _ = sys::reply_h(&reply, &[]);
+            continue;
+        }
+        let answer = server.call(&Call {
+            caller: from.caller_pid,
+            badge: from.badge,
+            rights: Rights::from_bits_truncate(from.rights),
+            request,
+            now: sys::time_ns(),
+        });
+        // The kernel, as a test's client, takes no handles: it names objects by
+        // their badges.
+        let mint = answer.mint.filter(|_| from.caller_pid != 0);
+        let minted = mint.map(|m| {
+            let kind = if m.file { Kind::File } else { Kind::Dir };
+            sys::endpoint_mint(endpoint, kind, m.rights, m.badge)
+        });
+        match minted {
+            None => {
+                let _ = sys::reply_h(&answer.reply, &[]);
+            }
+            Some(Ok(handle)) => {
+                // A reply that fails left the handle here: close it.
+                if sys::reply_h(&answer.reply, &[handle]).is_err() {
+                    let _ = sys::handle_close(handle);
+                }
+            }
+            Some(Err(error)) => {
+                println!("fs: ENDPOINT_MINT failed: {error:?}");
+                let failed = fsproto::Reply::Failed(fsproto::Error::Io);
+                let _ = sys::reply_h(&fsproto::encode_reply(&failed), &[]);
+            }
+        }
     }
 }
 
-/// The one `Partition` handle among the startup handles.
-fn partition() -> Option<Handle> {
+/// The startup handle of `kind`.
+fn startup(kind: Kind) -> Option<Handle> {
     let mut handles = [HandleInfo::default(); MAX_STARTUP];
     let count = sys::startup(&mut handles).ok()?;
     handles[..count.min(MAX_STARTUP)]
         .iter()
-        .find(|h| h.kind() == Some(Kind::Partition))
+        .find(|h| h.kind() == Some(kind))
         .map(|h| Handle(h.handle))
 }
 
-/// Answers one request into `reply`; the reply's length.
-fn answer(part: Handle, file: &mut file::File, request: &[u8], reply: &mut [u8]) -> usize {
-    let text = |reply: &mut [u8], s: &str| {
-        let n = s.len().min(reply.len());
-        reply[..n].copy_from_slice(&s.as_bytes()[..n]);
-        n
-    };
-    if request == stub::CHECK {
-        let line = check::run(part);
-        return text(reply, &line);
-    }
-    let offset = |r: &[u8]| {
-        r.get(1..9)
-            .map(|b| u64::from_le_bytes(b.try_into().unwrap()))
-    };
-    let result = match request.first() {
-        Some(&stub::WRITE) => match offset(request) {
-            Some(at) => file.write(at, &request[9..]).map(|()| text(reply, "ok")),
-            None => Err("a write needs an offset"),
-        },
-        Some(&stub::READ) => {
-            let len = request
-                .get(9..13)
-                .map(|b| u32::from_le_bytes(b.try_into().unwrap()) as usize);
-            match (offset(request), len) {
-                (Some(at), Some(len)) if len <= reply.len() => {
-                    file.read(at, &mut reply[..len]).map(|()| len)
-                }
-                _ => Err("a read needs an offset and a length that fits"),
-            }
+/// The kernel's S04-2 transfer: its writes go into one action that `F`
+/// commits, as a client's large write would.
+#[derive(Default)]
+struct Bench {
+    file: Option<u64>,
+    open: bool,
+}
+
+impl Bench {
+    fn answer<D: kaifs::BlockDev>(
+        &mut self,
+        server: &mut Server<D>,
+        part: Handle,
+        request: &[u8],
+    ) -> Vec<u8> {
+        if request == stub::CHECK {
+            return check::run(part).into_bytes();
         }
-        Some(&stub::FLUSH) => file.flush().map(|()| text(reply, "ok")),
-        _ => Err("unknown request"),
-    };
-    match result {
-        Ok(len) => len,
-        Err(why) => {
-            let mut line = alloc::string::String::from("err ");
-            line.push_str(why);
-            text(reply, &line)
+        match self.kai_fs(server, request) {
+            Ok(reply) => reply,
+            Err(why) => alloc::format!("err {why}").into_bytes(),
+        }
+    }
+
+    fn kai_fs<D: kaifs::BlockDev>(
+        &mut self,
+        server: &mut Server<D>,
+        request: &[u8],
+    ) -> Result<Vec<u8>, &'static str> {
+        use fsproto::{Reply, Request};
+        let badge = match self.file {
+            Some(badge) => badge,
+            None => *self.file.insert(
+                server
+                    .system_file(BENCH_FILE)
+                    .map_err(|_| "no s04-2 file")?,
+            ),
+        };
+        let offset = || {
+            request
+                .get(1..9)
+                .map(|b| u64::from_le_bytes(b.try_into().unwrap()))
+                .ok_or("no offset")
+        };
+        let mut call = |request: Request| {
+            let bytes = fsproto::encode_request(&request);
+            let answer = server.call(&Call {
+                caller: 0,
+                badge,
+                rights: fsserve::FILE_RIGHTS,
+                request: &bytes,
+                now: sys::time_ns(),
+            });
+            match fsproto::decode_reply(&answer.reply) {
+                Ok(Reply::Failed(_)) | Err(_) => Err("kaifs refused it"),
+                Ok(reply) => Ok(reply),
+            }
+        };
+        match request.first() {
+            Some(&stub::WRITE) => {
+                if !self.open {
+                    call(Request::Begin { action: 0 })?;
+                    self.open = true;
+                }
+                let data = request[9..].to_vec();
+                call(Request::Write {
+                    off: offset()?,
+                    data,
+                })?;
+                Ok(b"ok".to_vec())
+            }
+            Some(&stub::READ) => {
+                let len = request.get(9..13).ok_or("no length")?;
+                let len = u32::from_le_bytes(len.try_into().unwrap());
+                match call(Request::Read {
+                    off: offset()?,
+                    len,
+                })? {
+                    Reply::Data(data) => Ok(data),
+                    _ => Err("no data"),
+                }
+            }
+            Some(&stub::FLUSH) => {
+                if core::mem::take(&mut self.open) {
+                    call(Request::Commit)?;
+                }
+                Ok(b"ok".to_vec())
+            }
+            _ => Err("unknown request"),
         }
     }
 }

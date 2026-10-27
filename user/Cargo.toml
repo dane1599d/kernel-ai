@@ -21,11 +21,12 @@ infer = { path = "../infer" }
 kabi = { path = "../kabi" }
 livecore = { path = "../livecore" }
 editcore = { path = "../editcore" }
+fsproto = { path = "../fsproto" }
+fsserve = { path = "../fsserve" }
+kaifs = { path = "../kaifs", default-features = false }
 llmproto = { path = "../llmproto", features = ["local"] }
 quant = { path = "../quant" }
 sched = { path = "../sched" }
-# The stub `fs` checksums each record as kaifs will (P2 task 3).
-seahash = { version = "4.1.0", default-features = false }
 supervise = { path = "../supervise" }
 shellcore = { path = "../shellcore" }
 spin = "0.12.3"
