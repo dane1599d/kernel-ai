@@ -157,6 +157,11 @@ opt-level = 2
 [profile.dev.package.kaibundle]
 opt-level = 2
 
+# The TUF client: `pkg` and `updated` check a repository's metadata at boot, a
+# 1,000-target role of 400 KiB among it (spike S11-1's bench, `test=tuf-bench`).
+[profile.dev.package.kaituf]
+opt-level = 2
+
 [profile.dev.package.cpufeat]
 opt-level = 2
 

@@ -40,3 +40,9 @@ shellcore = { path = "../shellcore" }
 spin = "0.12.3"
 talc = "5.1.1"
 wasmhost = { path = "../wasmhost" }
+
+# tufbench's fixture, signed on the host at build time (build.rs).
+[build-dependencies]
+ecdsa = { version = "0.17.0", default-features = false, features = ["der"] }
+ed25519-compact = { version = "2.6.0", default-features = false }
+p256 = { version = "0.14.0", default-features = false, features = ["ecdsa"] }
