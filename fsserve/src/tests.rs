@@ -489,3 +489,45 @@ fn an_aborted_action_drops_its_pending_writes() {
     c.home(Request::Abort);
     assert_eq!(c.read(&file), Ok(b"kept".to_vec()));
 }
+
+#[test]
+fn the_state_dir_reaches_only_beneath_system_state() {
+    let mut disk = MemDisk::new(BLOCKS);
+    let (mut c, _) = Client::start(&mut disk);
+    let state = |c: &mut Client, path: &str, how: How| {
+        let request = Request::Open {
+            path: path.into(),
+            rights: (Rights::READ | Rights::WRITE).bits(),
+            how,
+        };
+        c.call(ALICE, kabi::fs::SYSTEM_STATE, DIR_RIGHTS, request)
+    };
+    let (reply, mint) = state(&mut c, "log", How::CreateFile);
+    assert!(matches!(reply, Reply::Opened(..)), "{reply:?}");
+    let log = Badge::parse(mint.unwrap().badge);
+    assert_eq!((log.volume, log.file), (SYSTEM, true));
+    // Its own folder, by its real id, and nothing beside or above it.
+    let (_, here) = state(&mut c, ".", How::Existing);
+    assert_eq!(
+        Badge::parse(here.unwrap().badge).object,
+        c.server.system_state
+    );
+    for path in ["..", "../settings", "../pkg", "./../state"] {
+        assert_eq!(
+            failed(state(&mut c, path, How::Existing)),
+            Error::Invalid,
+            "{path}"
+        );
+    }
+    // The home folder does not see it, and it does not see the home folder.
+    assert_eq!(c.open("log", How::Existing), Err(Error::NotFound));
+    assert_eq!(
+        failed(state(&mut c, "plan.txt", How::Existing)),
+        Error::NotFound
+    );
+    // A restart finds the same folder.
+    let object = c.server.system_state;
+    drop(c);
+    let (c, _) = Client::start(&mut disk);
+    assert_eq!(c.server.system_state, object);
+}

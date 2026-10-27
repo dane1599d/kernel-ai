@@ -92,7 +92,7 @@ pub(super) const CASES: &[TestCase] = &[
             "fs: up; kai-data has ",
             "filecheck: boot 1 wrote notes/plan.txt and a 20 KiB file through its Dir handle",
             "files: boot 1: filecheck's step through its Dir handle passed",
-            "files: ENDPOINT_MINT and the FILES ceiling refuse what they must",
+            "files: ENDPOINT_MINT, the FILES ceiling and SYSTEM_STATE refuse what they must",
         ],
         server: false,
         data: Some(VIRTIO),

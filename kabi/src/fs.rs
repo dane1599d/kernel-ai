@@ -62,6 +62,16 @@ pub const HOME_USER: u64 = Badge {
 }
 .raw();
 
+/// The badge of the `Dir` handle [`crate::cap::SYSTEM_STATE`] gives at startup:
+/// `/system/state`, which `fs` looks up itself, as for [`HOME_USER`].
+pub const SYSTEM_STATE: u64 = Badge {
+    volume: SYSTEM,
+    file: false,
+    epoch: 0,
+    object: 0,
+}
+.raw();
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -92,5 +102,7 @@ mod tests {
         }
         assert_eq!(Badge::parse(HOME_USER).object, 0);
         assert_ne!(HOME_USER, 0, "0 is a plain route's badge");
+        assert_ne!(SYSTEM_STATE, HOME_USER);
+        assert_eq!(Badge::parse(SYSTEM_STATE).volume, SYSTEM);
     }
 }

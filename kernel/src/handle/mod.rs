@@ -155,6 +155,14 @@ fn home_dir(fs: u64) -> Entry {
     home
 }
 
+/// SYSTEM_STATE's startup handle: `/system/state` on the `fs` route `fs`, which
+/// `fs` looks up itself as for the home folder.
+fn state_dir(fs: u64) -> Entry {
+    let mut state = Entry::new(Kind::Dir, HOME_RIGHTS | BASE, fs);
+    state.badge = kabi::fs::SYSTEM_STATE;
+    state
+}
+
 /// What the startup `Dir` allows: everything a folder's handle can.
 const HOME_RIGHTS: Rights = Rights::READ
     .union(Rights::WRITE)
@@ -179,7 +187,7 @@ pub fn required(bit: u64) -> Option<(Kind, Rights)> {
         cap::STOP => (Kind::Job, Rights::STOP),
         cap::SCRIPT => (Kind::Job, Rights::CREATE),
         cap::PARTITION => (Kind::Partition, Rights::READ),
-        cap::FILES => (Kind::Dir, Rights::READ),
+        cap::FILES | cap::SYSTEM_STATE => (Kind::Dir, Rights::READ),
         _ => return None,
     })
 }
@@ -199,8 +207,8 @@ pub fn ceiling_allows(caps: u64, kind: Kind) -> bool {
         (Kind::Process, cap::THREADS),
         (Kind::NetDest, cap::NET | cap::RESOLVE),
         (Kind::Partition, cap::PARTITION),
-        (Kind::Dir, cap::FILES),
-        (Kind::File, cap::FILES),
+        (Kind::Dir, cap::FILES | cap::SYSTEM_STATE),
+        (Kind::File, cap::FILES | cap::SYSTEM_STATE),
     ];
     bits.iter()
         .find(|(k, _)| *k == kind)
@@ -227,13 +235,16 @@ pub fn create(slot: usize, caps: u64, pid: u64, uses: &[&str]) -> Result<(), kab
         .map_err(|_| kabi::Error::NoMemory)?;
     let routes = uses.iter().filter(|_| caps & cap::CALL != 0);
     let routes: Result<Vec<Entry>, kabi::Error> = routes.map(|name| route(name)).collect();
-    let files = match caps & cap::FILES {
+    let fs = match caps & (cap::FILES | cap::SYSTEM_STATE) {
         0 => None,
-        _ => Some(home_dir(route_id(crate::process::supervision::FS)?)),
+        _ => Some(route_id(crate::process::supervision::FS)?),
     };
+    let files = fs.filter(|_| caps & cap::FILES != 0).map(home_dir);
+    let state = fs.filter(|_| caps & cap::SYSTEM_STATE != 0).map(state_dir);
     for entry in self::startup(caps, pid)
         .into_iter()
         .chain(files)
+        .chain(state)
         .chain(routes?)
     {
         startup.push(table.insert(entry).map_err(kabi::Error::from)?);

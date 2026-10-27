@@ -43,6 +43,10 @@ pub const PARTITION: u64 = 1 << 12;
 /// for that folder, from which it opens what lies beneath; may hold `Dir` and
 /// `File` handles `fs` hands out.
 pub const FILES: u64 = 1 << 13;
+/// `/system/state` (P2 task 12): a `Dir` handle on the `fs` service for that
+/// folder only, where the shell keeps its log, grants and settings. The kernel
+/// grants it only to the service named `shell` running the `shell` program.
+pub const SYSTEM_STATE: u64 = 1 << 14;
 /// Every capability a supervisor may grant.
 pub const GRANTABLE: u64 = SERVE
     | NET
@@ -56,4 +60,5 @@ pub const GRANTABLE: u64 = SERVE
     | STOP
     | SCRIPT
     | PARTITION
-    | FILES;
+    | FILES
+    | SYSTEM_STATE;
