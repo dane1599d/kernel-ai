@@ -791,6 +791,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "kaigrants"
+version = "0.0.0"
+
+[[package]]
 name = "kailink"
 version = "0.0.0"
 dependencies = [
@@ -1334,6 +1338,7 @@ version = "0.0.0"
 dependencies = [
  "agentabi",
  "kabi",
+ "kaigrants",
  "llmproto",
  "rhai",
  "sched",

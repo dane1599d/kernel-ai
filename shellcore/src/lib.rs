@@ -201,6 +201,15 @@ pub trait Host {
     fn revoke_rule(&self, _handle: u32) -> Result<(), String> {
         Ok(())
     }
+    /// The standing rules as `/system/state/rules` holds them (`kai-grants 1`
+    /// rule lines), read once at start; `None` when there are none (P2 task 12).
+    fn rules_read(&self) -> Option<String> {
+        None
+    }
+    /// Writes the whole rules file, after a rule is added or removed.
+    fn rules_write(&self, _text: &str) -> Result<(), String> {
+        Ok(())
+    }
     /// Runs `request` ([`apart::request`]) in a `scriptrun` child of its own (P1
     /// task 14): `Ok` with the child's answer, or `Err` with why it ended without
     /// one (stopped for time or Ctrl-C, or it faulted). `None` when there is no
@@ -427,10 +436,39 @@ impl Shell {
             owner_once: None,
         }
         .with_saved_log()
+        .with_saved_rules()
     }
 
     /// The log `/system/log` holds, so `undo` works across a reboot; a text that
     /// is not `actlog 1` is set aside, and the log starts again.
+    /// The rules `/system/state/rules` holds; a file refused whole is set aside,
+    /// and the shell starts with none.
+    fn with_saved_rules(mut self) -> Self {
+        let Some(text) = self.host.rules_read() else {
+            return self;
+        };
+        match rules::Rules::restore(&text) {
+            Ok(rules) => self.rules = rules,
+            Err(why) => self.host.audit(&format!(
+                "the rules on disk were refused ({why}); starting with none"
+            )),
+        }
+        self
+    }
+
+    /// Writes the rules to `/system/state/rules`; a failure is audited, and the
+    /// rules hold in memory.
+    pub(crate) fn save_rules(&self) {
+        let written = self
+            .rules
+            .text()
+            .and_then(|text| self.host.rules_write(&text));
+        if let Err(why) = written {
+            self.host
+                .audit(&format!("the rules were not written: {why}"));
+        }
+    }
+
     fn with_saved_log(mut self) -> Self {
         let Some(text) = self.host.log_read() else {
             // Nothing on disk is an empty log: it needs no write until it changes.

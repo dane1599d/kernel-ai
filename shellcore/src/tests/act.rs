@@ -463,6 +463,43 @@ fn a_stop_asks_once_with_rules_and_an_always_allow_waives_the_next() {
 }
 
 #[test]
+fn a_rule_survives_a_restart_as_a_record_and_asks_until_allowed_again() {
+    let (host, mut shell) = with_calls(vec![call(STOP_BUILD3), call(STOP_BUILD3)]);
+    host.procs.borrow_mut().push(String::from("build-3"));
+    shell.eval("stop build-3");
+    let once = host.mint(1, "process_stop(\"build-3\")");
+    shell.eval(&format!("answer 1 always-target once={once} rule=5"));
+    let disk = host.rules_disk.borrow().clone().unwrap();
+    assert!(
+        disk.starts_with(
+            "kai-grants 1
+rule 1 action=process_stop target=build-3 from=prompt:1 made="
+        ),
+        "{disk}"
+    );
+    // A new shell reads it back with no node, so the stop's owner would refuse
+    // it: the stop asks again until it is allowed on this boot.
+    let mut shell = super::shell(&host);
+    assert_eq!(
+        shell.eval("rules"),
+        ok("#1 process_stop \"build-3\" (asks again until allowed on this boot)")
+    );
+    host.procs.borrow_mut().push(String::from("build-3"));
+    assert!(shell.eval("stop build-3").to_wire().starts_with("menu "));
+    assert_eq!(
+        shell.eval("rules_remove 1"),
+        ok("Removed rule #1 (process_stop); it asks again")
+    );
+    assert_eq!(
+        host.rules_disk.borrow().as_deref(),
+        Some(
+            "kai-grants 1
+"
+        )
+    );
+}
+
+#[test]
 fn a_rule_for_one_target_does_not_cover_another_and_protected_names_never_stop() {
     let stop4 = r#"{"name":"process_stop","arguments":{"name":"build-4"}}"#;
     let llm = r#"{"name":"service_stop","arguments":{"name":"llm"}}"#;
