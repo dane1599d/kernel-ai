@@ -24,6 +24,9 @@ use crate::vol::{
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
+/// UNDO records as stored, by action: each part's number and value.
+pub(crate) type RawUndo = BTreeMap<u64, Vec<(u64, Vec<u8>)>>;
+
 /// An open action (§4; ADR 0002): its id, and the generation it began after.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Action {
@@ -41,6 +44,37 @@ impl<D: BlockDev> Fs<D> {
     /// Every UNDO record of the active volume, oldest first.
     pub fn undo_records(&mut self) -> Result<Vec<Undo>, Error> {
         self.undo_scan(undo_key(self.active, 0, 0), None)
+    }
+
+    /// The active volume's UNDO records as stored, undecoded: each action's
+    /// parts with their numbers. For repair, which drops the ones that do not
+    /// hold.
+    pub(crate) fn undo_raw(&mut self) -> Result<RawUndo, Error> {
+        let active = self.active;
+        let mut out = RawUndo::new();
+        self.volumes.scan(
+            &undo_key(active, 0, 0),
+            &mut Meta(&mut self.io),
+            &mut |key, value| {
+                let mine = key.oid == active && key.kind == K_UNDO;
+                if mine {
+                    let (txn, part) = (key.off >> 16, key.off & 0xFFFF);
+                    out.entry(txn).or_default().push((part, value.to_vec()));
+                }
+                mine
+            },
+        )?;
+        Ok(out)
+    }
+
+    /// Removes the parts `parts` of the UNDO record of `txn` in the active
+    /// volume.
+    pub(crate) fn drop_undo(&mut self, txn: u64, parts: &[u64]) -> Result<(), Error> {
+        for &part in parts {
+            self.volumes
+                .remove(&undo_key(self.active, txn, part), &mut Meta(&mut self.io))?;
+        }
+        Ok(())
     }
 
     fn undo_scan(&mut self, from: Key, only: Option<u64>) -> Result<Vec<Undo>, Error> {
