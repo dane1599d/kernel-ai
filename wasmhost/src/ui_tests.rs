@@ -255,6 +255,8 @@ fn the_notes_window_guest_shows_its_window_and_takes_clicks() {
         return;
     };
     let mut g = load_core(&wasm, LIMITS, None).unwrap();
+    // As the host loads it: storage readable, empty.
+    g.view(&livecore::txn::Storage::new());
     assert_eq!(g.init(), Ok(0));
     let frame = |g: &mut crate::CoreInstance| match g.take_ui().pop() {
         Some(Update::Frame { window, frame }) => (window, frame),
@@ -285,7 +287,16 @@ fn the_notes_window_guest_shows_its_window_and_takes_clicks() {
             Some(Box::new(Ty::String)),
         )),
     };
+    // As the host runs an action: in a call, whose writes reach storage.
+    let storage = livecore::txn::Storage::new();
+    g.begin(&storage, livecore::txn::Inputs::default());
     Instance::call(&mut g, &add, &[Val::String("milk".into())]).unwrap();
+    let txn = g.finish();
+    assert!(
+        txn.writes.contains_key("notes/index"),
+        "{:?}",
+        txn.writes.keys()
+    );
     let (_, f) = frame(&mut g);
     assert!(
         f.a11y.iter().any(|n| n.name.contains("milk")),

@@ -85,6 +85,7 @@ pub fn load_core(
         now_ms: 0,
         seed: 0,
         call: None,
+        view: None,
         ui: Default::default(),
     };
     let mut store = Store::new(&engine, state);
@@ -448,6 +449,10 @@ impl livecore::Instance for CoreInstance {
             txn: livecore::txn::Txn::default(),
             first_ticket: inputs.first_ticket,
         });
+    }
+
+    fn view(&mut self, storage: &livecore::txn::Storage) {
+        self.store.data_mut().view = Some(storage.clone());
     }
 
     fn finish(&mut self) -> livecore::txn::Txn {

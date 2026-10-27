@@ -214,6 +214,7 @@ dependencies = [
  "comp-notes",
  "comp-notes-ui",
  "compsdk",
+ "minicbor",
  "uikit",
  "wit-bindgen",
 ]

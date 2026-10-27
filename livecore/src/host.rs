@@ -291,6 +291,7 @@ impl<E: Env> Core<E> {
             ));
         }
         let mut instance = self.env.load(&artifact, quiet)?;
+        instance.view(&self.storage);
         let schema = instance.schema()?;
         Ok(Version {
             label: label.to_string(),
@@ -421,6 +422,7 @@ impl<E: Env> Core<E> {
         quiet: bool,
     ) -> Result<E::Instance, Fault> {
         let mut instance = self.env.load(&version.artifact, quiet)?;
+        instance.view(&self.storage);
         match instance.import(&self.checkpoint, version.schema)? {
             0 => Ok(instance),
             code => Err(Fault::new(

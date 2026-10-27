@@ -17,6 +17,7 @@ doctest = false
 comp-notes = { path = "../notes", default-features = false }
 comp-notes-ui = { path = "../notes-ui" }
 compsdk = { path = "../../compsdk" }
+minicbor = { version = "2.3.0", default-features = false, features = ["alloc", "derive"] }
 uikit = { path = "../../uikit" }
 
 [target.'cfg(target_family = "wasm")'.dependencies]

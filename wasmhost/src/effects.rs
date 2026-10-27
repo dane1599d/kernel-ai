@@ -62,10 +62,16 @@ pub(crate) fn get(
     ret: i32,
 ) -> Result<(), Error> {
     let key = key(&caller, key_ptr, key_len)?;
-    let call = open(&mut caller)?;
-    let value = match call.txn.writes.get(&key) {
-        Some(written) => written.clone(),
-        None => call.storage.get(&key).cloned(),
+    // Outside an action call, a lifecycle call reads the host's view.
+    let value = match caller.data_mut().call.as_mut() {
+        Some(call) => match call.txn.writes.get(&key) {
+            Some(written) => written.clone(),
+            None => call.storage.get(&key).cloned(),
+        },
+        None => match caller.data().view.as_ref() {
+            Some(view) => view.get(&key).cloned(),
+            None => return Err(Error::new("storage is only for action calls")),
+        },
     };
     let mut area = [0u8; 12];
     if let Some(value) = value {
