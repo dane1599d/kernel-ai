@@ -297,15 +297,24 @@ pub fn pin_current(cpu: Option<usize>) -> Result<(), &'static str> {
 
 /// Right after a switch away from `previous`: if it blocked to move, make it
 /// runnable on the CPU it asked for. Interrupts are off.
+///
+/// A thread preempted after asking for the move but before it blocked keeps its
+/// request: it blocks once it runs again, and that switch moves it. Taking the
+/// request at the preemption lost it, and the thread then blocked with nothing
+/// left to wake it (llm's main thread, hung at start under TCG).
 pub(super) fn move_after_switch(previous: Tid) {
-    let target = MOVE_TO[previous].swap(0, Ordering::AcqRel);
-    if target == 0 {
+    if MOVE_TO[previous].load(Ordering::Acquire) == 0 {
         return;
     }
-    let (me, target) = (percpu::index(), target - 1);
+    let me = percpu::index();
     let now = hpet::nanos();
+    let mut target = 0;
     let moved = CORES[me].lock().as_mut().and_then(|core| {
         if core.state(previous) != sched::State::Blocked {
+            return None;
+        }
+        target = MOVE_TO[previous].swap(0, Ordering::AcqRel);
+        if target == 0 {
             return None;
         }
         core.wake(previous, now);
@@ -316,6 +325,7 @@ pub(super) fn move_after_switch(previous: Tid) {
     let Some((tid, name)) = moved else {
         return;
     };
+    let target = target - 1;
     OWNER[tid].store(target, Ordering::Release);
     if let Some(core) = CORES[target].lock().as_mut() {
         core.adopt(tid, name, EnqueueReason::Woken, now);
