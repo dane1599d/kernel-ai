@@ -351,6 +351,9 @@ dependencies = [
 [[package]]
 name = "deskcore"
 version = "0.0.0"
+dependencies = [
+ "surfabi",
+]
 
 [[package]]
 name = "devkit"
@@ -1395,6 +1398,7 @@ version = "0.0.0"
 dependencies = [
  "appabi",
  "cpufeat",
+ "deskcore",
  "editcore",
  "fsproto",
  "fsserve",
@@ -1409,6 +1413,7 @@ dependencies = [
  "shellcore",
  "spin 0.12.3",
  "supervise",
+ "surfabi",
  "talc",
  "wasmhost",
 ]

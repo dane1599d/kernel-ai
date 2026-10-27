@@ -34,6 +34,7 @@ mod claim_tests;
 mod compute_tests;
 mod console;
 mod cpu;
+mod desk_tests;
 mod devhost;
 mod device_tests;
 mod devices;
@@ -335,6 +336,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Shm => run_case(shm_tests::check),
         SelfTest::ManyProcesses => run_case(many_tests::check),
         SelfTest::DisplayClaim => run_case(claim_tests::check),
+        SelfTest::DeskWindows => run_case(desk_tests::check),
         SelfTest::Scriptrun => run_case(scriptrun_tests::check),
         SelfTest::Fpu => run_case(fpu_tests::fpu_check),
         SelfTest::Probe => run_case(fpu_tests::probe_check),
