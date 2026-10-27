@@ -499,8 +499,14 @@ fn hello() -> Package {
     }
 }
 
-/// The image check's kept packages by target and its refusals by target.
-fn image(mut repo: Repository, now: Time) -> Result<(Vec<String>, Vec<String>), String> {
+/// The image check of `repo`, a packer's repository, laid out as the image holds
+/// it: its kept packages by target and its refusals by target.
+fn image(repo: Repository, now: Time) -> Result<(Vec<String>, Vec<String>), String> {
+    laid_out(image_layout(repo)?, now)
+}
+
+/// [`image`] of a repository already in the image's layout.
+fn laid_out(mut repo: Repository, now: Time) -> Result<(Vec<String>, Vec<String>), String> {
     let checked = kaipkg::image::check(&mut repo, now.0, kaipkg::PROVIDED)?;
     let kept = checked.packages.iter();
     let kept = kept.map(|(e, _)| format!("{}-{}.kpkg", e.name, e.version));
@@ -515,7 +521,7 @@ fn image(mut repo: Repository, now: Time) -> Result<(Vec<String>, Vec<String>), 
 fn the_image_check_keeps_every_package_the_packer_signed() {
     let (notes, hello) = (notes(), hello());
     let repo = tuf::build(&[notes.clone(), hello.clone()], &keys(1), NOW).unwrap();
-    let mut files = Repository { files: repo.files };
+    let mut files = image_layout(repo).unwrap();
     let checked = kaipkg::image::check(&mut files, NOW.0, kaipkg::PROVIDED).unwrap();
     assert!(checked.refused.is_empty(), "{:?}", checked.refused);
     let entries: Vec<_> = checked.packages.iter().map(|(e, b)| (e, b)).collect();
@@ -641,8 +647,19 @@ fn metadata_that_does_not_verify_keeps_nothing() {
 #[test]
 fn a_flipped_byte_in_the_bundle_is_refused_by_name() {
     let repo = tuf::build(&[notes(), hello()], &keys(1), NOW).unwrap();
-    let mut modules = as_modules(repo);
+    let mut modules = as_modules(image_layout(repo).unwrap()).unwrap();
     assert!(modules.iter().all(|m| m.path.starts_with("pkgrepo/")));
+    assert!(
+        modules
+            .iter()
+            .any(|m| m.path == "pkgrepo/targets/notes-1.0.0.kpkg")
+    );
+    // Every path fits a kai-bundle 1 entry, and the bundle builds.
+    let files: Vec<(&str, &[u8])> = modules
+        .iter()
+        .map(|m| (m.path.as_str(), m.bytes.as_slice()))
+        .collect();
+    assert!(kaibundle::build(&files).is_ok());
     let as_read = |modules: &[Module]| Repository {
         files: modules
             .iter()
@@ -650,17 +667,47 @@ fn a_flipped_byte_in_the_bundle_is_refused_by_name() {
             .collect(),
     };
     flip(&mut modules, "notes").unwrap();
-    let (kept, refused) = image(as_read(&modules), NOW).unwrap();
+    let (kept, refused) = laid_out(as_read(&modules), NOW).unwrap();
     assert_eq!(kept, ["hello-1.0.0.kpkg"]);
     assert!(
         refused[0].starts_with("notes-1.0.0.kpkg: length or hash"),
         "{refused:?}"
     );
     flip(&mut modules, "notes").unwrap();
-    let (kept, refused) = image(as_read(&modules), NOW).unwrap();
+    let (kept, refused) = laid_out(as_read(&modules), NOW).unwrap();
     assert_eq!((kept.len(), refused.len()), (2, 0));
     assert_eq!(
         flip(&mut modules, "weather").unwrap_err(),
         "the image's repository has no weather"
     );
+}
+
+#[test]
+fn the_image_layout_names_targets_by_path_within_the_bundles_limit() {
+    let repo = tuf::build(&[notes()], &keys(1), NOW).unwrap();
+    let laid: Vec<String> = image_layout(repo)
+        .unwrap()
+        .files
+        .into_iter()
+        .map(|(p, _)| p)
+        .collect();
+    assert!(
+        laid.contains(&"targets/notes-1.0.0.kpkg".to_string()),
+        "{laid:?}"
+    );
+    assert!(laid.contains(&"metadata/1.root.json".to_string()));
+    let long = format!("targets/0a1b.{}.kpkg", "x".repeat(60));
+    let err = image_layout(Repository {
+        files: vec![(long, Vec::new())],
+    })
+    .err()
+    .unwrap();
+    assert!(
+        err.ends_with("is over kai-bundle 1's 64-byte path limit"),
+        "{err}"
+    );
+    let bare = Repository {
+        files: vec![("targets/nohash".into(), Vec::new())],
+    };
+    assert!(image_layout(bare).is_err());
 }

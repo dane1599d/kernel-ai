@@ -149,27 +149,55 @@ pub fn image_modules(root: &Path, versions: &[Module]) -> Result<Vec<Module>, St
         packages.len(),
         &keys.root.id()[..12]
     );
-    Ok(as_modules(repository))
+    as_modules(image_layout(repository)?)
 }
 
-/// `repository`'s files as boot modules under [`IMAGE_DIR`].
-fn as_modules(repository: Repository) -> Vec<Module> {
+/// `repository` laid out as the image holds it (`kaipkg::image`): each target at
+/// `targets/<name>-<version>.kpkg`, its target path, without the SHA-256 prefix
+/// a mirror's consistent snapshots use, since a `kai-bundle 1` path is at most
+/// [`kaibundle::MAX_PATH`] bytes. A path that does not fit even so is an error.
+pub fn image_layout(repository: Repository) -> Result<Repository, String> {
+    let mut files = Vec::new();
+    for (path, bytes) in repository.files {
+        let path = match path.strip_prefix("targets/") {
+            Some(file) => {
+                let (_, target) = file
+                    .split_once('.')
+                    .ok_or_else(|| format!("target {file} has no hash prefix"))?;
+                format!("targets/{target}")
+            }
+            None => path,
+        };
+        let bundled = format!("{IMAGE_DIR}/{path}");
+        if bundled.len() > kaibundle::MAX_PATH {
+            return Err(format!(
+                "{bundled} is over kai-bundle 1's {}-byte path limit",
+                kaibundle::MAX_PATH
+            ));
+        }
+        files.push((path, bytes));
+    }
+    Ok(Repository { files })
+}
+
+/// `repository`'s files, in the image's layout, as boot modules under
+/// [`IMAGE_DIR`].
+fn as_modules(repository: Repository) -> Result<Vec<Module>, String> {
     let modules = repository.files.into_iter().map(|(path, bytes)| Module {
         path: format!("{IMAGE_DIR}/{path}"),
         bytes,
     });
-    modules.collect()
+    Ok(modules.collect())
 }
 
 /// Flips the last byte of `package`'s target among `modules`, the image's
 /// repository, for a tamper case; flipping again puts it back. The bundle's own
 /// digests are computed after, so only the signed metadata can tell.
 pub fn flip(modules: &mut [Module], package: &str) -> Result<(), String> {
-    let prefix = format!("{IMAGE_DIR}/targets/");
-    let named = format!(".{package}-");
+    let prefix = format!("{IMAGE_DIR}/targets/{package}-");
     let module = modules
         .iter_mut()
-        .find(|m| m.path.starts_with(&prefix) && m.path.contains(&named))
+        .find(|m| m.path.starts_with(&prefix))
         .ok_or_else(|| format!("the image's repository has no {package}"))?;
     let last = module.bytes.last_mut().ok_or("an empty target")?;
     *last ^= 1;

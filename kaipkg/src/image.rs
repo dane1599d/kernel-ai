@@ -3,9 +3,12 @@
 //!
 //! The repository is `cargo xtask pkgrepo build`'s, as files by path:
 //! `metadata/1.root.json` and the other roles beside it, and each package at
-//! `targets/<sha256>.<name>-<version>.kpkg`. The image's own `1.root.json` is
-//! the root it is checked against: the image carries its root as it carries the
-//! kernel, and a `dev` image's is a throwaway test root (P4 plan §4, item 3).
+//! `targets/<name>-<version>.kpkg`, its target path. A mirror names targets by
+//! their SHA-256 as well (consistent snapshots), but `kai-bundle 1` paths are at
+//! most 64 bytes, too short for that; the hash is checked from the signed
+//! metadata either way. The image's own `1.root.json` is the root it is checked
+//! against: the image carries its root as it carries the kernel, and a `dev`
+//! image's is a throwaway test root (P4 plan §4, item 3).
 //!
 //! Metadata that does not verify refuses the whole repository. Each target the
 //! [`ROLE`] role lists is then checked on its own: its length and SHA-256, then
@@ -103,10 +106,7 @@ pub fn check(
         updater.refresh().map_err(tuf)?;
         for path in updater.listed(ROLE, "targets").map_err(tuf)? {
             match updater.target(&path) {
-                Ok(Some(target)) => {
-                    let file = updater.target_url(&target);
-                    listed.push((target, file));
-                }
+                Ok(Some(target)) => listed.push(target),
                 Ok(None) => checked
                     .refused
                     .push((path, "no trusted role names it".into())),
@@ -114,9 +114,9 @@ pub fn check(
             }
         }
     }
-    for (target, file) in listed {
+    for target in listed {
         let kept = |name: &str| checked.packages.iter().any(|(e, _)| e.name == name);
-        match package(files, &target, &file) {
+        match package(files, &target) {
             Ok((entry, _)) if kept(&entry.name) => {
                 let why = format!("the image has another version of {}", entry.name);
                 checked.refused.push((target.path, why));
@@ -152,14 +152,11 @@ fn close(checked: &mut Checked, provided: &[(&str, Version)]) {
     }
 }
 
-/// `target`'s bytes from the image, checked, and its index entry.
-fn package(
-    files: &mut dyn Files,
-    target: &TargetFile,
-    file: &str,
-) -> Result<(Entry, Vec<u8>), String> {
+/// `target`'s bytes from the image, at its target path, checked, and its index
+/// entry.
+fn package(files: &mut dyn Files, target: &TargetFile) -> Result<(Entry, Vec<u8>), String> {
     let bytes = files
-        .file(&format!("{TARGETS}/{file}"), target.length)?
+        .file(&format!("{TARGETS}/{}", target.path), target.length)?
         .ok_or("it is not in the image")?;
     updater::check_target(target, &bytes).map_err(|e| e.to_string())?;
     Ok((entry(target, &bytes)?, bytes))

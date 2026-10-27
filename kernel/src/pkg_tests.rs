@@ -61,12 +61,13 @@ impl Step {
         }
     }
 
-    /// The word after `test=pkg-image`: none for boot 1.
+    /// The word after `test=pkg-image`: none for boot 1. Before the heap, as
+    /// [`Step::from_cmdline`], so it allocates nothing.
     pub fn image_from_cmdline(cmdline: &str) -> Self {
-        let words: Vec<&str> = cmdline.split_whitespace().collect();
-        if words.contains(&"tampered") {
+        let has = |word| cmdline.split_whitespace().any(|w| w == word);
+        if has("tampered") {
             Step::ImageTampered
-        } else if words.contains(&"again") {
+        } else if has("again") {
             Step::ImageAgain
         } else {
             Step::Image
