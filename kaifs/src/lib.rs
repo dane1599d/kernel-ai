@@ -13,6 +13,7 @@
 //!   [`Image`] a crash leaves;
 //! - [`buddy`] and [`allocator`]: the buddy allocator, the N+2 wait for freed
 //!   blocks, and the allocator's chain on disk;
+//! - [`tree`]: the copy-on-write B+tree of `(oid, kind, off)` keys;
 //! - [`crash`] (with `std`): the crash enumerator every later layer is gated by.
 
 #![no_std]
@@ -28,6 +29,7 @@ pub mod crash;
 pub mod csum;
 pub mod dev;
 pub mod format;
+pub mod tree;
 
 pub use csum::CsumKind;
 pub use dev::{BlockDev, DevInfo, Image, IoError, MemDisk, Op, RecordingDisk};

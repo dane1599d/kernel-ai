@@ -42,6 +42,7 @@ jobs:
       - run: cargo clippy -p kaifs --all-targets -- -D warnings
       - name: Clippy for the soft-float target fs ships on, without std
         run: cargo clippy -p kaifs --target x86_64-unknown-none --no-default-features -- -D warnings
-      - run: cargo test -p kaifs
-      - name: The crash gates, in release
+      - name: Unit, hostile and the quicker crash gates, in a debug build (overflow checks on)
+        run: cargo test -p kaifs --lib --test hostile --test rings --test alloc
+      - name: Every test and crash gate, in release
         run: cargo test --release -p kaifs -- --nocapture --test-threads 2
