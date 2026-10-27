@@ -593,8 +593,8 @@ impl<'s> Grammar<'s> {
 /// A byte-level grammar the engine steers an answer by: its tokens must keep the
 /// answer a prefix of something the grammar accepts, and the answer ends when
 /// the grammar is done. Only printable ASCII bytes ever come.
-pub trait Constraint {
-    type State: Copy;
+pub trait Constraint: Sync {
+    type State: Copy + Send + Sync;
     fn start(&self) -> Self::State;
     /// The state after `byte`, or why it cannot come.
     fn step(&self, state: Self::State, byte: u8) -> Result<Self::State, Stop>;

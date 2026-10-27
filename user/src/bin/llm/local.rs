@@ -307,6 +307,7 @@ impl Local {
         let mut engine = Engine::load(bytes, Tier::best(), kabi::model::CONTEXT_CAP, budget)
             .map_err(|error| format!("{error}"))?;
         engine.add_slot().map_err(|error| format!("{error}"))?;
+        engine.set_clock(user::pool::cycles);
         engine.set_parallel(workers);
         let grammar = local::act::grammar().map_err(|error| format!("{error}"))?;
         Ok(Self {
@@ -383,8 +384,9 @@ impl Local {
     /// at most `act::SERVICE_TIMEOUT_MS`; a script's code comes from the script
     /// prompt (`llmproto::local::act::routed`).
     pub fn act(&mut self, request: &ActRequest) -> Result<Call, ActError> {
-        // The pool's figures from here on are this request's.
+        // The pool's figures and the picks' time from here on are this request's.
         crate::workers::report();
+        self.engine.take_picking();
         let clock = core::cell::RefCell::new(Clock::new(
             request.timeout_ms.min(act::SERVICE_TIMEOUT_MS),
             self.prefill_rate,
@@ -408,9 +410,10 @@ impl Local {
         // S02-2's profile: the call's decode, then a script's, if any.
         let name = call.as_ref().map_or("none", |call| call.name.as_str());
         println!(
-            "act: {name}, {}; pool: {}",
+            "act: {name}, {}; pool: {}; picking tokens {} ms",
             clock.profile(&["call", "script"]),
-            crate::workers::report()
+            crate::workers::report(),
+            crate::workers::ms(self.engine.take_picking())
         );
         call
     }

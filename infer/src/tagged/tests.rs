@@ -344,3 +344,30 @@ fn the_engine_answers_alike_warm_or_fresh_on_every_tier() {
         }
     }
 }
+
+/// The mask split over several workers allows the same tokens as one worker's,
+/// so the answers are the same.
+#[test]
+fn the_mask_on_many_workers_answers_as_on_one() {
+    let bytes = fixture::build(&Spec::tiny());
+    let acts = actions();
+    let g = Tagged::new(&acts).unwrap();
+    let threads = crate::kquant_tests::Threads(3);
+    for (i, request) in ["switch to round robin", "hello", "undo that"]
+        .iter()
+        .enumerate()
+    {
+        let mut one = Engine::load(&bytes, Tier::best(), 256, ROOMY).unwrap();
+        let mut many = Engine::load(&bytes, Tier::best(), 256, ROOMY).unwrap();
+        many.set_parallel(&threads);
+        let (a, b) = (
+            answer(&mut one, &g, request, i as u64),
+            answer(&mut many, &g, request, i as u64),
+        );
+        assert_eq!(
+            (a.bytes, a.tokens, a.ending),
+            (b.bytes, b.tokens, b.ending),
+            "{request}"
+        );
+    }
+}
