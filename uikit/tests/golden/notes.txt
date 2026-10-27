@@ -1,0 +1,32 @@
+node 0 clip 0,0 480x300
+  fill 0,0 480x300 window r0
+node 1 clip 0,0 480x300
+  fill 167,0 1x300 line r0
+node 3 clip 0,0 170x300
+  fill 12,12 143x28 raised r6
+  stroke 12,12 143x28 line_strong w1 r6
+  text 51,17 label text "New note"
+node 4 clip 0,0 170x300
+  stroke 12,48 143x240 line_strong w1 r6
+  fill 13,49 141x24 raised r0
+  fill 13,49 2x24 accent r0
+node 10 clip 10,46 147x244
+  text 13,49 body text "Groceries"
+node 11 clip 10,46 147x244
+  text 13,73 body text "Ideas"
+node 6 clip 165,0 315x300
+  text 180,12 small muted "Title"
+  fill 180,32 288x28 desk r6
+  stroke 180,32 288x28 line_strong w1 r6
+  clip 181,33 286x26
+  text 190,36 body text "Groceries"
+  fill 262,38 1x16 text r0
+  unclip
+  stroke 177,29 294x34 focus w2 r9
+node 7 clip 165,0 315x300
+  fill 180,68 288x220 desk r6
+  stroke 180,68 288x220 line_strong w1 r6
+  clip 181,69 286x218
+  text 190,74 body text "milk"
+  text 190,94 body text "eggs"
+  unclip
