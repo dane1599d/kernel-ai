@@ -65,6 +65,16 @@ fn an_undo_call_puts_back_what_the_typed_undo_would() {
 }
 
 #[test]
+fn do_it_again_takes_the_vague_path_and_says_what_it_took() {
+    let (host, mut shell) = with_calls(vec![call(RR)]);
+    assert_eq!(
+        shell.eval("do it again"),
+        ok("Taken as: policy round-robin (was interactive). undo")
+    );
+    assert_eq!(host.policy.get(), Some(policy::ROUND_ROBIN));
+}
+
+#[test]
 fn a_read_answers_with_its_value() {
     let (_host, mut shell) = with_calls(vec![call(r#"{"name":"cpus","arguments":{}}"#)]);
     assert_eq!(shell.eval("how many cpus are there"), ok("4"));
