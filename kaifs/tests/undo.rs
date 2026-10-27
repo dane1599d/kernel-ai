@@ -128,14 +128,108 @@ fn abort_drops_the_open_action_and_keeps_the_last_commit() {
     fs.begin(1).unwrap();
     write(&mut fs, "/kept", b"changed");
     write(&mut fs, "/new", b"made");
-    let mut fs = fs.abort().unwrap();
+    fs.set_volume(HOME).unwrap();
+    fs.abort().unwrap();
     assert_eq!(fs.action(), None);
+    assert_eq!(fs.volume(), HOME, "the volume calls act on is kept");
+    fs.set_volume(SYSTEM).unwrap();
     assert_eq!(read(&mut fs, "/kept").unwrap(), b"committed");
     assert_eq!(fs.resolve("/new"), Err(Error::NotFound));
     fs.begin(2).unwrap();
     write(&mut fs, "/after", b"fine");
     fs.commit().unwrap();
     checked(&mut fs);
+}
+
+/// A disk whose writes fail once `fail_after` more have gone through.
+struct Failing {
+    disk: MemDisk,
+    fail_after: u64,
+}
+
+impl kaifs::BlockDev for Failing {
+    fn info(&self) -> kaifs::DevInfo {
+        self.disk.info()
+    }
+
+    fn read(&mut self, addr: u64, buf: &mut kaifs::Block) -> Result<(), kaifs::IoError> {
+        self.disk.read(addr, buf)
+    }
+
+    fn write(&mut self, addr: u64, data: &kaifs::Block) -> Result<(), kaifs::IoError> {
+        if self.fail_after == 0 {
+            return Err(kaifs::IoError);
+        }
+        self.fail_after -= 1;
+        self.disk.write(addr, data)
+    }
+
+    fn flush(&mut self) -> Result<(), kaifs::IoError> {
+        self.disk.flush()
+    }
+}
+
+/// An I/O error at any write of an action's commit leaves the `Fs` in a state no
+/// one should use; `abort` reads back the newest commit on the disk, in place:
+/// the last one, or the interrupted one if it landed whole, and nothing between.
+/// Work then goes on.
+#[test]
+fn abort_after_an_io_error_midway_reads_back_a_whole_commit() {
+    let disk = Failing {
+        disk: MemDisk::new(BLOCKS),
+        fail_after: u64::MAX,
+    };
+    let mut fs = Fs::mkfs(disk, [4; 16], "failing").unwrap();
+    fs.set_volume(HOME).unwrap();
+    let f = write(&mut fs, "/kept", &[0; 20_000]);
+    let mut kept = fs.commit().unwrap();
+    let (mut rolled_back, mut landed) = (0, 0);
+    for budget in 0u64.. {
+        let round = budget as u8 + 1;
+        fs.begin(budget + 1).unwrap();
+        fs.write_file(f, &[round; 20_000]).unwrap();
+        write(&mut fs, &format!("/half {budget}"), &[round; 9_000]);
+        fs.io.dev.fail_after = budget;
+        let committed = fs.commit();
+        fs.io.dev.fail_after = u64::MAX;
+        if committed.is_ok() {
+            break;
+        }
+        assert_eq!(committed, Err(Error::Io));
+        let read = fs.abort().unwrap();
+        assert_eq!(read, fs.committed);
+        let half = fs.resolve(&format!("/half {budget}"));
+        match read == kept {
+            true => {
+                rolled_back += 1;
+                assert_ne!(fs.read_file(f).unwrap(), [round; 20_000]);
+                assert_eq!(half, Err(Error::NotFound));
+            }
+            false => {
+                landed += 1;
+                assert_eq!(read, kept + 1);
+                assert_eq!(fs.read_file(f).unwrap(), [round; 20_000]);
+                assert!(half.is_ok());
+                kept = read;
+            }
+        }
+        let mut cache = Cache::default();
+        check(&mut fs, &mut cache).unwrap();
+        check_namespace(&mut fs, &mut cache).unwrap();
+    }
+    assert!(rolled_back >= 3, "{rolled_back} commits rolled back");
+    assert!(landed >= 1, "no error came after a whole superblock");
+    fs.begin(99).unwrap();
+    fs.write_file(f, b"after the errors").unwrap();
+    fs.commit().unwrap();
+    let mut fs = Fs::mount(fs.into_dev()).unwrap();
+    fs.set_volume(HOME).unwrap();
+    assert_eq!(read_on(&mut fs, "/kept").unwrap(), b"after the errors");
+}
+
+fn read_on<D: kaifs::BlockDev>(fs: &mut Fs<D>, path: &str) -> Option<Vec<u8>> {
+    let ino = fs.resolve(path).ok()?;
+    fs.read_file(ino).ok()
 }
 
 /// One action: `act` on volume `vol`, committed. Returns its generation.

@@ -39,6 +39,9 @@
 //!   which reads only what changed; and `history`;
 //! - [`trash`] and [`cbor`]: the trash, each object beside its `info.cbor`;
 //! - [`gc`]: the GC in slices, and retention.
+//!
+//! For P2 task 8's `fs` server: [`cache`], a write-through CLOCK block cache over
+//! any device.
 
 #![no_std]
 
@@ -48,6 +51,7 @@ extern crate std;
 
 pub mod allocator;
 pub mod buddy;
+pub mod cache;
 pub mod cbor;
 pub mod check;
 #[cfg(feature = "std")]
