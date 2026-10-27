@@ -9,7 +9,9 @@ use spin::Mutex;
 
 const START_TIMEOUT_NS: u64 = 2_000_000_000;
 /// Each application processor's boot and idle stack, guarded like every kernel stack.
-const AP_STACK_PAGES: u64 = 8;
+/// Each AP builds its scheduler Core (11 KB at 256 threads) and policy on this
+/// stack before its first thread runs.
+const AP_STACK_PAGES: u64 = 32;
 /// After this long a shootdown is logged as slow, but the wait continues.
 const SHOOTDOWN_SLOW_NS: u64 = 1_000_000_000;
 
