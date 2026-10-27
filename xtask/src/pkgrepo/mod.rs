@@ -15,7 +15,7 @@
 //! half) until stopped.
 
 mod serve;
-mod tuf;
+pub(crate) mod tuf;
 
 #[cfg(test)]
 mod tests;

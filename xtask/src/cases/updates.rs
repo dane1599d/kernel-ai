@@ -4,7 +4,7 @@
 //! trial boot and commit, B staged, B failing all three of its tries through R,
 //! and A again, saying what happened to B.
 
-use super::{TestCase, case};
+use super::{TestCase, UpdateDisk, case};
 
 /// A slot boot: ends in a reset, which QEMU reports as status 0 under `-no-reboot`.
 const fn boot(
@@ -157,6 +157,54 @@ const A_UPDATES: TestCase = TestCase {
     )
 };
 
+/// `update-disk` boot 3: B, written from the update disk, boots its trial.
+const B_FROM_DISK: TestCase = boot(
+    "update-disk (3: kai-b boots release 2)",
+    "test=slot panic=reset",
+    &[
+        "slots: booted kai-b (record read)",
+        "slots: up in kai-b (trial, 2 tries left)",
+    ],
+);
+/// `update-disk` boot 2: `updated` in A verifies the update disk and writes B.
+const A_FROM_DISK: TestCase = TestCase {
+    then: Some(&B_FROM_DISK),
+    update: Some(UpdateDisk { tampered: false }),
+    ..boot(
+        "update-disk (2: updated writes kai-b from the disk)",
+        "test=update updated=update panic=reset",
+        &[
+            "updated: the update disk's repository verifies: slot.img is release 2, ",
+            "updated: wrote release 2 into B and checked its sha256",
+            "update: restarting into kai-b",
+        ],
+    )
+};
+/// `update-tampered` boot 3: A again, and B, refused, cannot boot.
+const A_AFTER_REFUSAL: TestCase = boot(
+    "update-tampered (3: still kai-a)",
+    "test=slot panic=reset",
+    &[
+        "slots: booted kai-a (record read)",
+        "slots: up in kai-a (trial, 1 tries left)",
+        "slots: kai-b cannot boot (Updating)",
+    ],
+);
+/// `update-tampered` boot 2: the image on the disk is not the one signed.
+const A_REFUSES: TestCase = TestCase {
+    then: Some(&A_AFTER_REFUSAL),
+    update: Some(UpdateDisk { tampered: true }),
+    ..boot(
+        "update-tampered (2: updated refuses the image)",
+        "test=update updated=update panic=reset",
+        &[
+            "updated: the update disk's repository verifies: slot.img is release 2, ",
+            "updated: FAIL refused: slot.img does not match its signed sha256; B stays unbootable",
+            "updated: restarting into the running slot",
+        ],
+    )
+};
+
 pub(super) const CASES: &[TestCase] = &[
     TestCase {
         then: Some(&A_COMMITS),
@@ -167,5 +215,15 @@ pub(super) const CASES: &[TestCase] = &[
     TestCase {
         then: Some(&A_UPDATES),
         ..boot("update-stage", "test=slot panic=reset", INSTALL)
+    },
+    // An update from the update disk (ADR 0008 §12), checked by kaituf against
+    // the slot's root, and the same disk with the image tampered after signing.
+    TestCase {
+        then: Some(&A_FROM_DISK),
+        ..boot("update-disk", "test=slot panic=reset", INSTALL)
+    },
+    TestCase {
+        then: Some(&A_REFUSES),
+        ..boot("update-tampered", "test=slot panic=reset", INSTALL)
     },
 ];

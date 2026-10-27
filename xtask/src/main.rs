@@ -287,7 +287,23 @@ fn execute(options: &Options) -> Result<(), String> {
                     path: "kai.slot".into(),
                     bytes: record.clone().into_bytes(),
                 });
+                // The trust anchor `updated` checks the update disk against.
+                modules.push(esp::Module {
+                    path: "kai.root.json".into(),
+                    bytes: image::update_disk::test_root()?.root_json()?,
+                });
             }
+            let update_disk = match case.update {
+                Some(update) => Some(update_disk(
+                    &root,
+                    &target_dir,
+                    &kernel,
+                    &modules,
+                    &efi,
+                    update,
+                )?),
+                None => None,
+            };
             esp::make_esp(&esp, &kernel, &modules, &efi, &cmdline)?;
             modules.truncate(shared);
             let firmware = wsl::firmware(wsl.as_ref(), &qemu, &target_dir)?;
@@ -313,6 +329,9 @@ fn execute(options: &Options) -> Result<(), String> {
             }
             if case.slots {
                 qemu::boot_from_slots(&mut args, &esp, &target_dir, &cmdline, &record)?;
+            }
+            if let Some(name) = &update_disk {
+                args.extend(qemu::update_disk_args(name));
             }
             if case.gpu {
                 args.extend(screen::gpu_args());
@@ -536,6 +555,43 @@ fn find_qemu() -> Result<PathBuf, String> {
         return Ok(windows_default);
     }
     Err("QEMU not found: install qemu-system-x86_64 or set QEMU to its path".into())
+}
+
+/// Builds `target/update.img` for a case: this build as a slot image of the
+/// next release, signed by the run's test root (`image/update_disk.rs`). The
+/// image's bundle carries its own `kai.slot` naming that release.
+fn update_disk(
+    root: &Path,
+    target_dir: &Path,
+    kernel: &Path,
+    modules: &[esp::Module],
+    efi: &Path,
+    update: cases::UpdateDisk,
+) -> Result<String, String> {
+    let release = SLOT_RELEASE_SEQ + 1;
+    let record = image::slots::slot_record(root, release);
+    let mut files: Vec<&esp::Module> = modules.iter().filter(|m| m.path != "kai.slot").collect();
+    let slot_file = esp::Module {
+        path: "kai.slot".into(),
+        bytes: record.clone().into_bytes(),
+    };
+    files.push(&slot_file);
+    let staging = target_dir.join("esp-update");
+    esp::make_esp(&staging, kernel, &files, efi, "")?;
+    let image = image::slots::slot_image(&staging, &record)?;
+    let disk = image::update_disk::test_root()?.disk(&image, release, update.tampered)?;
+    let name = String::from("update.img");
+    fs::write(target_dir.join(&name), &disk).map_err(|e| format!("cannot write {name}: {e}"))?;
+    println!(
+        "xtask: update disk {name}: release {release}, {} MiB{}",
+        disk.len() >> 20,
+        if update.tampered {
+            ", one byte of the image flipped"
+        } else {
+            ""
+        }
+    );
+    Ok(name)
 }
 
 /// The release a test build's slots hold (ADR 0008 `release_seq`).

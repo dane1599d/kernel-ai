@@ -87,6 +87,28 @@ fn content(nodes: &[Node]) -> u64 {
         .sum()
 }
 
+/// One slot's files: the kernel and bundle of the ESP's `boot`, and `record`.
+fn slot_tree(boot: &Path, record: &str) -> Result<Vec<Node>, String> {
+    Ok(vec![dir(
+        "boot",
+        vec![
+            file("kernel", read(&boot.join("kernel"))?),
+            file(crate::esp::BUNDLE, read(&boot.join(crate::esp::BUNDLE))?),
+            file("slot", record.as_bytes().to_vec()),
+        ],
+    )])
+}
+
+/// A slot image on its own (ADR 0008 §2): the volume `updated` writes raw into
+/// a slot partition, as an update carries it. It must fit the slot it lands in,
+/// which the disk sized for the same files.
+pub fn slot_image(esp: &Path, record: &str) -> Result<Vec<u8>, String> {
+    let tree = slot_tree(&esp.join("boot"), record)?;
+    let count = volume_mib(content(&tree)) * MIB / u64::from(SECTOR);
+    let sectors = u32::try_from(count).map_err(|_| "a slot image would be too large")?;
+    fat32::volume(sectors, 0, VOLUME_IDS[2], &tree)
+}
+
 /// The disk for the directory ESP `esp`, whose kernel and bundle every slot
 /// gets, with `record` as each slot's `boot/slot`.
 pub fn disk(esp: &Path, cmdline: &str, record: &str) -> Result<Vec<u8>, String> {
@@ -116,14 +138,7 @@ pub fn disk(esp: &Path, cmdline: &str, record: &str) -> Result<Vec<u8>, String> 
     }
     let mut trees = vec![esp_files];
     for _ in SLOTS {
-        trees.push(vec![dir(
-            "boot",
-            vec![
-                file("kernel", read(&boot.join("kernel"))?),
-                file(crate::esp::BUNDLE, read(&boot.join(crate::esp::BUNDLE))?),
-                file("slot", record.as_bytes().to_vec()),
-            ],
-        )]);
+        trees.push(slot_tree(&boot, record)?);
     }
     let mut volumes = Vec::new();
     let mut specs = Vec::new();

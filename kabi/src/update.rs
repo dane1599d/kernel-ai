@@ -6,6 +6,9 @@
 pub const R: u64 = 0;
 pub const A: u64 = 1;
 pub const B: u64 = 2;
+/// The update disk (ADR 0008 §12, virtio serial `kai-update`), read-only: what
+/// SLOT_INFO and SLOT_READ take in place of a slot. Never written.
+pub const DISK: u64 = 3;
 /// "No slot": the one-shot BOOTREC_SET deletes, or the active slot off a slot disk.
 pub const NONE: u64 = 0xFF;
 

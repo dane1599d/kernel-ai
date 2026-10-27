@@ -31,6 +31,7 @@ mod bootfiles;
 mod build_job;
 mod build_service;
 mod claim_tests;
+mod clock;
 mod compute_tests;
 mod console;
 mod cpu;

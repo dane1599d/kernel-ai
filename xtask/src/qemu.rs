@@ -168,6 +168,16 @@ pub fn boot_from_slots(
     Ok(())
 }
 
+/// The update disk `name` in `target/`, read-only, found by its serial.
+pub fn update_disk_args(name: &str) -> [String; 4] {
+    [
+        "-drive".into(),
+        format!("if=none,id=update,format=raw,readonly=on,file={name}"),
+        "-device".into(),
+        "virtio-blk-pci,drive=update,serial=kai-update".into(),
+    ]
+}
+
 /// The slot cases' disk, in `target/`.
 const SLOTS_IMAGE: &str = "slots.img";
 

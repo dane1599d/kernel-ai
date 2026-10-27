@@ -22,7 +22,7 @@
 //! | 140-149 | C, components | |
 //! | 150-159 | V, virtual machines (P6) | |
 //! | 160-169 | M, memory | |
-//! | 170-179 | U, updates (P4) | SLOT_INFO, SLOT_READ, SLOT_WRITE, SLOT_FLUSH, BOOTREC_GET, BOOTREC_SET |
+//! | 170-179 | U, updates (P4) | SLOT_INFO, SLOT_READ, SLOT_WRITE, SLOT_FLUSH, BOOTREC_GET, BOOTREC_SET, TRUST_ROOT, TRUST_TIME |
 //! | 180-191 | not given yet | a lane asks lane K for a block |
 
 /// `exit(code: i32) -> !`
@@ -416,6 +416,15 @@ pub const BOOTREC_GET: u64 = 174;
 /// the record says may not boot is Invalid. With `restart` 1 the machine then
 /// resets into it. Needs WRITE.
 pub const BOOTREC_SET: u64 = 175;
+/// `trust_root(handle, buf, cap) -> len`: the TUF root this slot was built
+/// with (ADR 0008 §2, `kai.root.json` in its bundle), the device's trust
+/// anchor until `/system/trust` caches newer ones. NotFound without one;
+/// Invalid if longer than `cap`. Needs READ.
+pub const TRUST_ROOT: u64 = 176;
+/// `trust_time(handle) -> seconds since 1970 UTC`: Limine's date at boot plus
+/// the time since boot, the clock TUF's expiry checks use (ADR 0008 §7).
+/// NotFound when the firmware gave no date. Needs READ.
+pub const TRUST_TIME: u64 = 177;
 
 /// The end of the reserved blocks (see the table above): the highest number a
 /// call may have. A call that is not there yet answers NotFound.

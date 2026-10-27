@@ -77,10 +77,20 @@ pub struct TestCase {
     /// in the bundle; a `then` boot keeps the firmware's variable store, so the
     /// boot lever's record and one-shot carry over.
     pub slots: bool,
+    /// An update disk (`image/update_disk.rs`) of the next release, attached
+    /// read-only as `kai-update`.
+    pub update: Option<UpdateDisk>,
     /// Power cuts (P2 task 9, plan section 4.2): boot `n` of `cuts` adds
     /// `boot=n` to the command line, waits for `files: boot n:` and kills QEMU
     /// a seeded moment later; boot `cuts + 1` adds `last` and must pass.
     pub cuts: u32,
+}
+
+/// What a case's update disk holds.
+#[derive(Clone, Copy, Debug)]
+pub struct UpdateDisk {
+    /// One byte of the image is flipped after it was signed.
+    pub tampered: bool,
 }
 
 pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase {
@@ -107,6 +117,7 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         data: None,
         then: None,
         slots: false,
+        update: None,
         cuts: 0,
     }
 }

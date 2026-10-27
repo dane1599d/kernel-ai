@@ -361,9 +361,16 @@ pub fn plan(test: SelfTest) -> Option<String> {
     }
     // `update` runs the update service's check once the shell is up.
     if test == SelfTest::Update {
+        // `updated=update`: an update from the update disk in place of the
+        // check; in both, a refusal restarts into the running slot.
+        let step = crate::cmdline()
+            .split_whitespace()
+            .find_map(|w| w.strip_prefix("updated="))
+            .unwrap_or("check");
         plan.push('\n');
         plan.push_str(kabi::plan::UPDATED);
-        plan.push_str(" step=check");
+        plan.push_str(" after=restart step=");
+        plan.push_str(step);
     }
     // `act-rule` stops processes the supervisor does not restart, and one
     // service it does.

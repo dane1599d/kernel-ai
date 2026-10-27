@@ -28,8 +28,12 @@ editcore = { path = "../editcore" }
 fsproto = { path = "../fsproto" }
 fsserve = { path = "../fsserve" }
 kaifs = { path = "../kaifs", default-features = false }
+kaibundle = { path = "../kaibundle" }
+kaituf = { path = "../kaituf" }
 llmproto = { path = "../llmproto", features = ["local"] }
 quant = { path = "../quant" }
+serde_json = { version = "1.0.154", default-features = false, features = ["alloc"] }
+sha2 = { version = "0.11.1", default-features = false }
 sched = { path = "../sched" }
 supervise = { path = "../supervise" }
 shellcore = { path = "../shellcore" }

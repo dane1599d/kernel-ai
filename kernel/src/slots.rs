@@ -19,7 +19,7 @@
 
 use crate::efi::{self, Guid, KAI, NV_BS_RT};
 use crate::{bootfiles, ipc, log, threads};
-use bootslot::{InR, Nv, Record, Slot};
+use bootslot::{InR, Nv, Reason, Record, Slot};
 use spin::Mutex;
 
 /// The Boot Loader Interface's vendor GUID, which Limine reads its variables under.
@@ -199,6 +199,15 @@ pub fn on_boot(test: bool) {
         describe(&nv.record, slot),
         nv.record.slot(slot).tries
     );
+    if let Some(other) = slot.other()
+        && nv.record.slot(other).reason != Reason::None
+    {
+        log!(
+            "slots: {} cannot boot ({:?})",
+            entry_id(other),
+            nv.record.slot(other).reason
+        );
+    }
     if nv.record.last_fault.kind != 0 {
         log!(
             "slots: the last boot of {} faulted (kind {})",

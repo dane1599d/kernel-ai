@@ -988,6 +988,17 @@ pub fn bootrec_set(
     call(call::BOOTREC_SET, args)
 }
 
+/// The TUF root this slot was built with, into `buf`; its length.
+pub fn trust_root(handle: Handle, buf: &mut [u8]) -> Result<usize, Error> {
+    let (ptr, cap) = (buf.as_mut_ptr() as u64, buf.len() as u64);
+    call(call::TRUST_ROOT, [u64::from(handle.0), ptr, cap, 0, 0, 0]).map(|n| n as usize)
+}
+
+/// Seconds since 1970 UTC, for TUF's expiry checks.
+pub fn trust_time(handle: Handle) -> Result<u64, Error> {
+    call(call::TRUST_TIME, [u64::from(handle.0), 0, 0, 0, 0, 0])
+}
+
 /// A `Dir` or `File` handle on this process's own endpoint, with `badge` and
 /// `rights`, for the `fs` service to hand on (P2 task 8).
 pub fn endpoint_mint(
