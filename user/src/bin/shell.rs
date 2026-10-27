@@ -67,15 +67,19 @@ fn supervise(request: &str) -> Result<(), String> {
     }
 }
 
-/// A supervisor request carrying what lets it run, which the supervisor checks:
-/// `once=<badge> id=<entry>`, `rule`, or for a stop, `undo id=<entry>`.
-fn with_proof(verb: &str, name: &str, proof: Proof) -> Result<String, String> {
-    match proof {
-        Proof::Once { badge, id } => Ok(format!("{verb} {name} once={badge} id={id}")),
-        Proof::Rule => Ok(format!("{verb} {name} rule")),
-        Proof::Undo { id } if verb == "stop" => Ok(format!("{verb} {name} undo id={id}")),
-        _ => Err(format!("a {verb} needs the menu's Allow or a rule")),
-    }
+/// A stop or restart carrying what lets it run, in the supervisor's own words
+/// (`supervise::Request::encode`): `once=<badge> id=<entry>`, `rule`, or for a
+/// stop, `undo id=<entry>`. One the supervisor would refuse is not sent.
+fn with_proof(request: supervise::Request, proof: Proof) -> Result<String, String> {
+    let proof = match proof {
+        Proof::Once { badge, id } => supervise::Proof::Once(supervise::Once { badge, id }),
+        Proof::Rule => supervise::Proof::Rule,
+        Proof::Undo { id } => supervise::Proof::Undo(id),
+        Proof::None => supervise::Proof::None,
+    };
+    supervise::proof_fits(request, proof)
+        .map_err(|_| String::from("a stop or restart needs the menu's Allow or a rule"))?;
+    Ok(request.encode(proof))
 }
 
 /// Sends `request` to the supervisor over the route; its answer.
@@ -199,16 +203,17 @@ impl Host for System {
     }
 
     fn stop_service(&self, name: &str, proof: Proof) -> Result<(), String> {
-        supervise(&with_proof("stop", name, proof)?)
+        supervise(&with_proof(supervise::Request::Stop(name), proof)?)
     }
 
     /// The supervisor keeps the entry, so only that entry's undo may stop it unasked.
     fn start_service(&self, name: &str, entry: u64) -> Result<(), String> {
-        supervise(&format!("start {name} id={entry}"))
+        let start = supervise::Request::Start(name);
+        supervise(&start.encode(supervise::Proof::Entry(entry)))
     }
 
     fn restart_service(&self, name: &str, proof: Proof) -> Result<(), String> {
-        supervise(&with_proof("restart", name, proof)?)
+        supervise(&with_proof(supervise::Request::Restart(name), proof)?)
     }
 
     fn services(&self) -> Result<Vec<Service>, String> {
