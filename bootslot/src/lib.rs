@@ -207,9 +207,7 @@ impl Record {
 /// The slot the firmware boots: the one-shot, or R without one. Limine erases
 /// the one-shot when it reads it.
 pub fn boot(nv: &mut Nv) -> Slot {
-    let slot = nv.one_shot.take().unwrap_or(Slot::R);
-    nv.record.boot_seq = nv.record.boot_seq.wrapping_add(1);
-    slot
+    nv.one_shot.take().unwrap_or(Slot::R)
 }
 
 /// Asks for `slot` on the next boot, and records that its boot has not finished.

@@ -249,7 +249,6 @@ impl Drill {
         }
         self.track_safety(landed, now);
         self.nv.one_shot = None;
-        self.nv.record.boot_seq = self.nv.record.boot_seq.wrapping_add(1);
         let read = line
             .split_whitespace()
             .skip_while(|w| !w.starts_with("record="))

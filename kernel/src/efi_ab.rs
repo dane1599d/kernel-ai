@@ -180,7 +180,6 @@ pub fn run() -> ! {
         record: record.unwrap_or_default(),
         one_shot: None,
     };
-    nv.record.boot_seq = nv.record.boot_seq.wrapping_add(1);
     let before = nv;
     if record.is_none() {
         drill::install(&mut nv);
@@ -199,7 +198,14 @@ fn finish(cost: &mut Cost, before: &Nv, nv: &Nv, slot: Slot, end: End) -> ! {
         log!("efi-ab: dying before anything is written");
         panic!("efi-ab: panic-early");
     }
-    if let Err(error) = write(cost, before, nv) {
+    // `boot_seq` counts the record's writes, not boots: bumped only when the
+    // record changes anyway, so a normal boot writes the one-shot alone (ADR 0008:
+    // one SetVariable per normal boot).
+    let mut nv = *nv;
+    if !drill::same(&before.record, &nv.record) {
+        nv.record.boot_seq = before.record.boot_seq.wrapping_add(1);
+    }
+    if let Err(error) = write(cost, before, &nv) {
         log!("efi-ab: SetVariable failed: {error:?}");
     }
     if end == End::SetDefault {
@@ -218,7 +224,7 @@ fn finish(cost: &mut Cost, before: &Nv, nv: &Nv, slot: Slot, end: End) -> ! {
     );
     match end {
         End::Fault(kind) => {
-            *PENDING.lock() = Some((*nv, slot, kind));
+            *PENDING.lock() = Some((nv, slot, kind));
             if kind == drill::PANIC {
                 panic!("efi-ab: panic-late");
             }
