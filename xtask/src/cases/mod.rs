@@ -77,6 +77,10 @@ pub struct TestCase {
     /// `boot=n` to the command line, waits for `files: boot n:` and kills QEMU
     /// a seeded moment later; boot `cuts + 1` adds `last` and must pass.
     pub cuts: u32,
+    /// Boot from the slot disk (`image/slots.rs`, ADR 0008) with a `kai.slot`
+    /// in the bundle; a `then` boot keeps the firmware's variable store, so the
+    /// boot lever's record and one-shot carry over.
+    pub slots: bool,
 }
 
 pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase {
@@ -103,6 +107,7 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         data: None,
         then: None,
         cuts: 0,
+        slots: false,
     }
 }
 

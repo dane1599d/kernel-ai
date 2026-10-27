@@ -280,9 +280,22 @@ fn execute(options: &Options) -> Result<(), String> {
                 case.name,
                 buildsvc::redact(&cmdline)
             );
+            let record = image::slots::slot_record(&root, SLOT_RELEASE_SEQ);
+            if case.slots {
+                modules.push(esp::Module {
+                    // `kernel/src/slots.rs` finds it by this path.
+                    path: "kai.slot".into(),
+                    bytes: record.clone().into_bytes(),
+                });
+            }
             esp::make_esp(&esp, &kernel, &modules, &efi, &cmdline)?;
             modules.truncate(shared);
             let firmware = wsl::firmware(wsl.as_ref(), &qemu, &target_dir)?;
+            // A chained slot boot starts on the variables the last boot left.
+            let saved_vars = target_dir.join(SLOT_VARS);
+            if case.slots && !fresh {
+                esp::copy(&saved_vars, &firmware.vars)?;
+            }
             let monitor = qemu::free_port()?;
             let sizing = options::Sizing {
                 mem_mib: options.sizing.mem_mib.max(case.memory_mib),
@@ -297,6 +310,9 @@ fn execute(options: &Options) -> Result<(), String> {
             }
             if case.image {
                 qemu::boot_from_image(&mut args, &esp, &target_dir)?;
+            }
+            if case.slots {
+                qemu::boot_from_slots(&mut args, &esp, &target_dir, &cmdline, &record)?;
             }
             if case.gpu {
                 args.extend(screen::gpu_args());
@@ -333,7 +349,12 @@ fn execute(options: &Options) -> Result<(), String> {
                 (Some(check), Some(service)) => check(service),
                 _ => Ok(()),
             };
-            let result = qemu::run_test(&qemu, &args, &target_dir, &run)
+            let result = qemu::run_test(&qemu, &args, &target_dir, &run);
+            let result = match case.slots {
+                true => result.and_then(|()| esp::copy(&firmware.vars, &saved_vars)),
+                false => result,
+            };
+            let result = result
                 .and_then(|()| after(&service))
                 .and_then(|()| match case.data {
                     Some(
@@ -516,6 +537,11 @@ fn find_qemu() -> Result<PathBuf, String> {
     }
     Err("QEMU not found: install qemu-system-x86_64 or set QEMU to its path".into())
 }
+
+/// The release a test build's slots hold (ADR 0008 `release_seq`).
+const SLOT_RELEASE_SEQ: u32 = 1;
+/// Where a chained slot case keeps the variable store between its boots.
+const SLOT_VARS: &str = "slot-vars.fd";
 
 /// UEFI firmware: a read-only code image plus a fresh writable copy of the variable store.
 struct Firmware {

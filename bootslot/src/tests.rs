@@ -197,3 +197,16 @@ fn recovery_on_request_stays_in_r_once_and_counts_no_failure() {
 fn crc32_matches_the_check_value() {
     assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
 }
+
+#[test]
+fn an_install_arms_a_as_a_trial_and_every_sequence_after_it_keeps_the_rule() {
+    let mut nv = Nv::default();
+    install(&mut nv, 4);
+    assert_eq!(nv.one_shot, Some(Slot::A));
+    assert!(!nv.record.slot(Slot::A).successful);
+    assert_eq!(nv.record.slot(Slot::A).tries, TRIES);
+    assert!(nv.record.slot(Slot::A).priority > nv.record.slot(Slot::B).priority);
+    assert_eq!(nv.record.slot(Slot::B).release_seq, 4);
+    let mut path = [Event::Up; 8];
+    assert!(explore(nv, 6, &mut path, 0) > 0);
+}
