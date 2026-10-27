@@ -35,7 +35,7 @@
 //! `/system/models/...` are the `home`, `system` and `models` volumes. An image
 //! without a GPT is taken as kaifs over the whole file.
 
-mod blklog;
+pub(crate) mod blklog;
 mod disk;
 mod ops;
 #[cfg(test)]
