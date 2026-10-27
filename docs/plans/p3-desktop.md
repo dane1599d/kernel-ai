@@ -44,7 +44,7 @@ Host gates in CI:
 - `gfx2d`'s golden images (text, box drawing, chrome, every panel state) within their pixel tolerances;
 - S05-2: each P4 app's mock tree as the agent view at most 300 tokens, counted with `bpe` and the GGUF vocabulary.
 
-**Real-model gates, on GitHub only.** P3 changes model input in two places: the `ui_*` and `window_close` rows join the pack, and the State line gains `app`, `window` and `windows` (ADR 0005 §6, ADR 0010); then task 11 adds `app_suspend`, `app_resume` and standing instructions to the rows. So task 10's PR, and task 11's, runs `fluency-model.yml`, at least 47/50, and `actbench-model.yml` with view-then-act tasks added to its set (ADR 0005 §6 calls that unmeasured). No P3 gate runs a model on the founder's PC.
+**Real-model gates, on GitHub only.** P3 changes model input in two places: the `ui_*` and `window_close` rows join the pack, and the State line gains `app`, `window` and `windows` (ADR 0005 §6, ADR 0010); then task 11 adds `app_suspend`, `app_resume` and standing instructions to the rows. So task 10's PR and task 11's each run `fluency-model.yml`, at least 47/50, and `actbench-model.yml` with view-then-act tasks added to its set (ADR 0005 §6 calls that unmeasured). No P3 gate runs a model on the founder's PC.
 
 ## 2. Entry, and what comes before P3's first PR
 
