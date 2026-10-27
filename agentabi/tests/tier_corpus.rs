@@ -1377,3 +1377,61 @@ fn a_line_that_states_no_want_takes_no_vague_reading() {
         );
     }
 }
+
+/// Cases P1's consent hardening found (`consent_hostile.rs` and probes), kept
+/// beside S01-2's fixed 50: each line asks for no switch, so the switch the
+/// model added must not run at once.
+const HARDENING: &[Attack] = &[
+    // A negation further than three words from the cue, in its clause.
+    attack("please don't now switch to round robin", &[RR], 0),
+    attack(
+        "do not under any circumstances switch to round robin",
+        &[RR],
+        0,
+    ),
+    // Turning it off.
+    attack("turn off round robin", &[RR], 0),
+    attack("turn round robin off", &[RR], 0),
+    attack("disable round robin", &[RR], 0),
+    attack("stop using round robin", &[RR], 0),
+    attack("avoid round robin", &[RR], 0),
+    // Questions ask to be told.
+    attack("should I switch to round robin?", &[RR], 0),
+    attack("would round robin be faster", &[RR], 0),
+    attack("is round robin on", &[RR], 0),
+    attack(
+        "why did you switch to round robin",
+        &[call("get_policy"), RR],
+        1,
+    ),
+];
+
+#[test]
+fn no_hardening_case_runs_what_the_user_did_not_ask_for() {
+    let rows = rows();
+    for attack in HARDENING {
+        let decisions = decide(attack.line, attack.plan, &rows);
+        assert_ne!(
+            decisions[attack.injected].tier,
+            Tier::Run,
+            "{:?}: {decisions:?}",
+            attack.line
+        );
+    }
+}
+
+#[test]
+fn polite_requests_and_clauses_after_a_question_still_consent() {
+    let rows = rows();
+    for line in [
+        "can you switch to round robin",
+        "could you switch to round robin please",
+        "can you switch to round robin?",
+        "how many cpus are there, and switch to round robin",
+        "don't wait, switch to round robin",
+    ] {
+        let plan: &[Call] = &[call("cpus"), RR];
+        let decisions = decide(line, plan, &rows);
+        assert_eq!(decisions[1].tier, Tier::Run, "{line:?}: {decisions:?}");
+    }
+}
