@@ -52,8 +52,7 @@ impl Files {
     }
 
     fn home(&self) -> Result<Handle, String> {
-        self.home
-            .ok_or_else(|| String::from("there are no files here (no kai-data disk)"))
+        self.home.ok_or_else(|| String::from(shellcore::NO_FILES))
     }
 
     pub fn read(&self, read: FsRead) -> Result<String, String> {
