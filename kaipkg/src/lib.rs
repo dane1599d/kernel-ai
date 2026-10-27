@@ -8,6 +8,8 @@
 //! - [`resolve`]: no solver (§6): the newest compatible version that is not
 //!   yanked, keeping an installed version that already satisfies;
 //! - [`generation`]: `kai-gen 1`, one numbered list of installed packages;
+//! - [`fsvol`]: the store's [`store::Volume`] over `kai-fs 1`, as `pkg` holds
+//!   `/system/pkg`;
 //! - [`store`]: `/system/pkg`'s objects, generations, `current`, `good`, failed
 //!   hashes and GC (§5, §7), over a [`store::Volume`]. A switch writes the new
 //!   generation, `current`, its grants and its log line in one transaction (S11-2).
@@ -22,6 +24,7 @@ extern crate alloc;
 extern crate std;
 
 pub mod bundle;
+pub mod fsvol;
 pub mod generation;
 pub mod header;
 pub mod resolve;

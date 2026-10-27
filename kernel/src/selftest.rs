@@ -98,6 +98,9 @@ pub enum SelfTest {
         boot: u64,
         last: bool,
     },
+    /// P2 task 13, `pkg-store`: kaipkg's store in `pkg` over `fs`, across three
+    /// boots on one data disk.
+    PkgStore(crate::pkg_tests::Step),
     /// L3: the model is held in memory and mapped into `llm`, and survives it.
     Model,
     /// L4: `ask` is answered by the model on the disk, with no LLM server.
@@ -252,6 +255,9 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
                     .unwrap_or(0),
                 last: cmdline.split_whitespace().any(|w| w == "last"),
             }),
+            "test=pkg-store" => Some(SelfTest::PkgStore(crate::pkg_tests::Step::from_cmdline(
+                cmdline,
+            ))),
             "test=model" => Some(SelfTest::Model),
             "test=local-ask" => Some(SelfTest::LocalAsk),
             "test=local-script" => Some(SelfTest::LocalScript),
@@ -333,6 +339,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::Files { .. }
             | SelfTest::FilesRestart
             | SelfTest::FilesDeadClient
+            | SelfTest::PkgStore(_)
             | SelfTest::DisplayClaim
             | SelfTest::DeskWindows
             | SelfTest::DeskRestart
@@ -368,6 +375,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
         SelfTest::FilesChurn { boot, .. } => {
             crate::files_tests::plan(&alloc::format!("churn boot={boot}"))
         }
+        SelfTest::PkgStore(step) => crate::pkg_tests::plan(step),
         SelfTest::Edit | SelfTest::Manifest | SelfTest::ManifestGood => {
             let mut plan = match test {
                 SelfTest::Edit => String::from(kabi::plan::NOTES_EDIT_TEST),
@@ -400,6 +408,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::FilesDeadClient
             | SelfTest::FilesActions
             | SelfTest::FilesChurn { .. }
+            | SelfTest::PkgStore(_)
     ) {
         // The file system service starts before the shell, once there is a
         // `kai-data` partition for it (ADR 0004).
