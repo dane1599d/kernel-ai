@@ -153,6 +153,10 @@ fn console_first() -> Result<(), &'static str> {
 }
 
 pub fn check() -> Result<(), &'static str> {
+    // desktop asks the kernel once for the focus deskdemo's windows get; the
+    // refusal ends any lease, so the case takes its own lease only after.
+    wait("desktop to show", || showing().is_some())?;
+    threads::sleep_ms(3_000);
     round(true)?;
     round(false)?;
     console_first()?;
