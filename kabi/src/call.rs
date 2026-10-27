@@ -263,5 +263,22 @@ pub const MODEL_KV_LOAD: u64 = 64;
 /// every write so far durable after it, and anything else is Invalid.
 /// Permission when the disk cannot be written.
 pub const MODEL_KV_SAVE: u64 = 65;
+/// `part_info(handle, &mut part::PartInfo) -> 0`: the partition a `Partition`
+/// handle names: its length in sectors, the most one call moves, and whether it
+/// takes writes. Needs INSPECT. NotFound when the disk has no such partition.
+/// Numbered at merge (P2 task 3).
+pub const PART_INFO: u64 = 66;
+/// `part_read(handle, sector, buf, len) -> len`: reads `len` bytes from sector
+/// `sector` of the partition into `buf`. `len` is whole sectors, 1 to
+/// [`super::part::MAX_IO`] bytes; a range that is not wholly inside the
+/// partition is Invalid, and nothing outside it can be named. Needs READ.
+/// Unavailable when the disk fails the read.
+pub const PART_READ: u64 = 67;
+/// `part_write(handle, sector, buf, len) -> len`: as [`PART_READ`], writing `len`
+/// bytes of `buf`. Durable only after [`PART_FLUSH`]. Needs WRITE; Permission on
+/// a disk that cannot make writes durable.
+pub const PART_WRITE: u64 = 68;
+/// `part_flush(handle) -> 0`: makes every write before it durable. Needs WRITE.
+pub const PART_FLUSH: u64 = 69;
 /// The highest call number.
-pub const MAX: u64 = MODEL_KV_SAVE;
+pub const MAX: u64 = PART_FLUSH;

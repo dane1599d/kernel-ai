@@ -20,6 +20,7 @@ const USER_PROGRAMS: &[&str] = &[
     "netcheck",
     "handles",
     "scriptrun",
+    "fs",
 ];
 /// Ring-3 programs built for the hard-float target: `llm`, whose engine needs SSE and
 /// AVX; `comphost`, whose wasmi runs guests' floats natively (ADR 0003 section 6);
@@ -138,8 +139,13 @@ mod tests {
         let sources: BTreeSet<String> = fs::read_dir(root().join("user/src/bin"))
             .expect("user/src/bin")
             .filter_map(|entry| {
-                let name = entry.ok()?.file_name().into_string().ok()?;
-                name.strip_suffix(".rs").map(String::from)
+                let entry = entry.ok()?;
+                let name = entry.file_name().into_string().ok()?;
+                // A program is `name.rs`, or a directory with its own `main.rs`.
+                match name.strip_suffix(".rs") {
+                    Some(program) => Some(String::from(program)),
+                    None => entry.path().join("main.rs").exists().then_some(name),
+                }
             })
             .collect();
         let built: BTreeSet<String> = soft.union(&float).map(|s| s.to_string()).collect();

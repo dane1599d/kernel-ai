@@ -72,7 +72,7 @@ pub fn route_name(id: u64) -> Option<Name> {
 /// The startup handles for capability bits `caps` (ADR 0001 D3's table), for the
 /// process `pid`. CALL gives a route only through `uses=`, so none here.
 pub fn startup(caps: u64, pid: u64) -> Vec<Entry> {
-    let rows: [(u64, Kind, Rights, u64); 13] = [
+    let rows: [(u64, Kind, Rights, u64); 14] = [
         // MINT under the `system` root, which is never revoked (ADR 0001 D3).
         (
             cap::SUPERVISE,
@@ -132,6 +132,13 @@ pub fn startup(caps: u64, pid: u64) -> Vec<Entry> {
             Rights::RESOLVE,
             netdest::RESOLVER,
         ),
+        // `kai-data` only: no handle names the ESP or the system slots (ADR 0004 §7).
+        (
+            cap::PARTITION,
+            Kind::Partition,
+            Rights::READ.union(Rights::WRITE),
+            kabi::part::DATA,
+        ),
     ];
     rows.iter()
         .filter(|(bit, ..)| caps & bit != 0)
@@ -155,6 +162,7 @@ pub fn required(bit: u64) -> Option<(Kind, Rights)> {
         cap::RESOLVE => (Kind::NetDest, Rights::RESOLVE),
         cap::STOP => (Kind::Job, Rights::STOP),
         cap::SCRIPT => (Kind::Job, Rights::CREATE),
+        cap::PARTITION => (Kind::Partition, Rights::READ),
         _ => return None,
     })
 }
@@ -173,6 +181,7 @@ pub fn ceiling_allows(caps: u64, kind: Kind) -> bool {
         (Kind::Model, cap::MODEL),
         (Kind::Process, cap::THREADS),
         (Kind::NetDest, cap::NET | cap::RESOLVE),
+        (Kind::Partition, cap::PARTITION),
     ];
     bits.iter()
         .find(|(k, _)| *k == kind)
@@ -226,6 +235,13 @@ pub fn holds(slot: usize, kind: Kind, rights: Rights) -> bool {
         .lock()
         .as_ref()
         .is_some_and(|handles| handles.table.holds(kind, rights, &grant::Kernel))
+}
+
+/// The slots whose table holds a live handle of `kind`, with any rights.
+pub fn holders(kind: Kind) -> Vec<usize> {
+    (0..MAX_PROCESSES)
+        .filter(|&slot| holds(slot, kind, Rights::empty()))
+        .collect()
 }
 
 /// What a call that needed capability bits `bits` now needs: for each bit, a live

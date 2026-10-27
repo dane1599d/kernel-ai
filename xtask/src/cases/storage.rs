@@ -53,6 +53,27 @@ pub(super) const CASES: &[TestCase] = &[
         then: Some(&REREAD_NVME),
         ..case("blk-write-nvme", "test=blk-write")
     },
+    // P2 task 3: `fs` alone holds a Partition, for kai-data only; S04-2 re-run on
+    // the real calls.
+    TestCase {
+        expect: &[
+            "fs: up; kai-data has ",
+            "part: fs alone holds a Partition, for kai-data only, and its checks pass",
+            "part: S04-2 on the real calls: ",
+        ],
+        server: false,
+        data: Some(VIRTIO),
+        ..case("part", "test=part")
+    },
+    TestCase {
+        expect: &[
+            "part: fs alone holds a Partition, for kai-data only, and its checks pass",
+            "part: S04-2 on the real calls: ",
+        ],
+        server: false,
+        data: Some(NVME),
+        ..case("part-nvme", "test=part")
+    },
     // S04-3 raw: 200 commits shaped like kaifs's, every flush point replayed.
     TestCase {
         expect: &["blk-flush: 200 commits durable"],

@@ -69,6 +69,8 @@ pub enum SelfTest {
     BlkWrite,
     /// S04-3 (ADR 0004): raw commits to `kai-data`, flushed in order.
     BlkFlush,
+    /// P2 task 3: only `fs` holds a `Partition`, and it reaches `kai-data` alone.
+    Part,
     /// L3: the model is held in memory and mapped into `llm`, and survives it.
     Model,
     /// L4: `ask` is answered by the model on the disk, with no LLM server.
@@ -173,6 +175,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=blk" => Some(SelfTest::Blk),
             "test=blk-write" => Some(SelfTest::BlkWrite),
             "test=blk-flush" => Some(SelfTest::BlkFlush),
+            "test=part" => Some(SelfTest::Part),
             "test=model" => Some(SelfTest::Model),
             "test=local-ask" => Some(SelfTest::LocalAsk),
             "test=local-script" => Some(SelfTest::LocalScript),
@@ -232,6 +235,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::LocalScript
             | SelfTest::Latency
             | SelfTest::ProcStop
+            | SelfTest::Part
             | SelfTest::TuneRevert
             | SelfTest::TuneStall
             | SelfTest::Tune
@@ -247,6 +251,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
     // edit service, which syncs with git.
     let mut plan = match test {
         SelfTest::Live => format!("{}\n{}", kabi::plan::NOTES_TEST, crate::llm::plan_line()),
+        SelfTest::Part => String::from(kabi::plan::FS),
         SelfTest::Edit | SelfTest::Manifest | SelfTest::ManifestGood => {
             let mut plan = match test {
                 SelfTest::Edit => String::from(kabi::plan::NOTES_EDIT_TEST),
@@ -272,7 +277,14 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::Edit
             | SelfTest::Manifest
             | SelfTest::ManifestGood
+            | SelfTest::Part
     ) {
+        // The file system service starts before the shell, once there is a
+        // `kai-data` partition for it (ADR 0004).
+        if crate::block::has_partition(diskmap::KAI_DATA_TYPE) {
+            plan.push('\n');
+            plan.push_str(kabi::plan::FS);
+        }
         plan.push('\n');
         plan.push_str(kabi::plan::SHELL);
     }

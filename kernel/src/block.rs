@@ -329,6 +329,11 @@ impl Device for Part<'_> {
     }
 }
 
+/// Whether the scan found a partition of type `kind`.
+pub fn has_partition(kind: diskmap::Guid) -> bool {
+    PARTITIONS.lock().iter().any(|p| p.kind == kind)
+}
+
 /// Runs `f` on the partition of type `kind` the scan found, as a disk whose
 /// sector 0 is the partition's first. Only its disk stays locked while `f` runs.
 pub fn with_partition<R>(kind: diskmap::Guid, f: impl FnOnce(&mut dyn Device) -> R) -> Option<R> {

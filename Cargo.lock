@@ -1198,6 +1198,7 @@ dependencies = [
  "llmproto",
  "quant",
  "sched",
+ "seahash",
  "shellcore",
  "spin 0.12.3",
  "supervise",

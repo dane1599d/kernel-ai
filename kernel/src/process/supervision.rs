@@ -41,6 +41,8 @@ pub const STOPPER: &str = "shell";
 pub const SCRIPTER: &str = "shell";
 /// The one service, and program, that may hold `cap::PUBLISH`.
 pub const PUBLISHER: &str = "edit";
+/// The one service, and program, that may hold `cap::PARTITION`.
+pub const FS: &str = "fs";
 /// Longest any supervision call may block.
 const MAX_WAIT_MS: u64 = 60_000;
 
@@ -311,6 +313,10 @@ pub fn spawn_service(slot: usize, request_ptr: u64) -> Result<u64, Error> {
     if request.limits.caps & (cap::MODEL | cap::THREADS) != 0
         && (name != holder || program != holder)
     {
+        return Err(Error::Permission);
+    }
+    // The `kai-data` partition is the file system service's alone (ADR 0004 §7).
+    if request.limits.caps & cap::PARTITION != 0 && (name != FS || program != FS) {
         return Err(Error::Permission);
     }
     let limits = Limits {

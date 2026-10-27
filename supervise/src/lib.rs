@@ -282,6 +282,7 @@ fn caps(service: &str, value: &str) -> Result<u64, String> {
         "resolve" => Ok(bits | cap::RESOLVE),
         "stop" => Ok(bits | cap::STOP),
         "script" => Ok(bits | cap::SCRIPT),
+        "partition" => Ok(bits | cap::PARTITION),
         other => Err(format!("{service}: unknown capability {other:?}")),
     })
 }
