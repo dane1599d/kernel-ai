@@ -13,10 +13,18 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 use std::collections::BTreeSet;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
-/// Tests that set [`INJECT`] run one at a time.
+/// Every test here runs alone: [`INJECT`] is global, and versions `a` and `b`
+/// trap on `kadd` while any test has it set, so a test that never sets it would
+/// still see another's (a CI flake of `the_storage_survives...`).
 static INJECTING: Mutex<()> = Mutex::new(());
+
+fn alone() -> MutexGuard<'static, ()> {
+    INJECTING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 const A: Spec = Spec {
     bug: Bug::Injected,
@@ -54,6 +62,7 @@ fn parts(reply: &str) -> (String, Vec<String>, Option<u64>) {
 
 #[test]
 fn a_call_commits_its_writes_with_the_checkpoint_and_sends_its_effects() {
+    let _guard = alone();
     let kernel = kernel(&[A]);
     let mut host = host_with(&kernel, 10, "version=a probation_calls=3 probation_ms=0");
     let (result, effects, undo) = parts(&call(&mut host, "kadd"));
@@ -78,6 +87,7 @@ fn a_call_commits_its_writes_with_the_checkpoint_and_sends_its_effects() {
 
 #[test]
 fn the_storage_survives_a_restart_with_the_checkpoint() {
+    let _guard = alone();
     let kernel = kernel(&[A]);
     let mut host = host_with(&kernel, 10, "version=a probation_calls=3 probation_ms=0");
     call(&mut host, "kadd");
@@ -90,6 +100,7 @@ fn the_storage_survives_a_restart_with_the_checkpoint() {
 
 #[test]
 fn undo_restores_the_state_before_a_call_unless_it_changed_since() {
+    let _guard = alone();
     let kernel = kernel(&[A]);
     let mut host = host_with(&kernel, 10, "version=a probation_calls=3 probation_ms=0");
     let (_, _, first) = parts(&call(&mut host, "kadd"));
@@ -121,9 +132,7 @@ fn undo_restores_the_state_before_a_call_unless_it_changed_since() {
 
 #[test]
 fn a_committed_swap_clears_the_undo_history() {
-    let _guard = INJECTING
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _guard = alone();
     let kernel = kernel(&[A, B]);
     let mut host = host_with(&kernel, 10, "version=a probation_calls=1 probation_ms=0");
     call(&mut host, "kadd");
@@ -137,9 +146,7 @@ fn a_committed_swap_clears_the_undo_history() {
 
 #[test]
 fn on_probation_the_standby_writes_and_the_replying_version_performs() {
-    let _guard = INJECTING
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _guard = alone();
     let kernel = kernel(&[A, B]);
     let mut host = host_with(&kernel, 10, "version=a probation_calls=3 probation_ms=0");
     call(&mut host, "kadd");
@@ -159,9 +166,7 @@ fn on_probation_the_standby_writes_and_the_replying_version_performs() {
 
 #[test]
 fn s03_1_effects_are_performed_once_by_the_replying_version_over_1000_calls() {
-    let _guard = INJECTING
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _guard = alone();
     const CALLS: u64 = 1000;
     let kernel = kernel(&[A, B]);
     let mut host = host_with(&kernel, 10, "version=a probation_calls=3 probation_ms=0");
