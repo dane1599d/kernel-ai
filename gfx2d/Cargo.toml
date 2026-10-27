@@ -17,6 +17,7 @@ doctest = false
 harfrust = { version = "=0.14.0", default-features = false, features = ["libm"] }
 libm = "0.2.16"
 look = { path = "../look" }
+termcore = { path = "../termcore" }
 skrifa = { version = "=0.48.0", default-features = false, features = ["libm"] }
 tiny-skia = { version = "=0.12.0", default-features = false, features = ["no-std-float", "simd"] }
 
