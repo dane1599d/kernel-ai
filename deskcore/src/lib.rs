@@ -14,6 +14,7 @@ pub mod damage;
 pub mod desk;
 pub mod geom;
 pub mod scale;
+pub mod trusted;
 
 #[cfg(test)]
 mod tests;
