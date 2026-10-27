@@ -25,6 +25,7 @@ pub mod settings;
 mod start;
 pub mod state;
 pub mod store;
+mod suspend;
 mod swap;
 #[cfg(test)]
 mod tests;

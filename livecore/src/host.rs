@@ -154,6 +154,8 @@ pub(crate) enum Mode<I> {
         version: Version<I>,
         why: String,
     },
+    /// Suspended: its state saved, its instance dropped (`ctl suspend`).
+    Suspended(crate::suspend::Parked),
     /// Only while a request moves the host from one mode to another.
     Moving,
 }
@@ -513,9 +515,19 @@ impl<E: Env> Host<E> {
                 }
             }
             None if request.starts_with(crate::undo::UNDO_HEADER.as_bytes()) => {
+                let mode = match mode {
+                    Mode::Suspended(_) => self.resume(mode).0,
+                    other => other,
+                };
                 self.undo(mode, request)?
             }
             None => match mode {
+                // A request wakes a suspended app first.
+                Mode::Suspended(_) => match self.resume(mode) {
+                    (Mode::Serving(version), _) => self.serve(version, request)?,
+                    (mode, Err(why)) => (mode, text(why)),
+                    (mode, Ok(_)) => (mode, text("err busy")),
+                },
                 Mode::Serving(version) => self.serve(version, request)?,
                 Mode::Probation(probation) => {
                     crate::probation::dual_run(&mut self.core, *probation, request)?
