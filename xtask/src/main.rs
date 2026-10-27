@@ -62,6 +62,7 @@ mod notices;
 mod options;
 mod qemu;
 mod release_image;
+mod reuse;
 mod screen;
 mod smoke;
 mod strip;
