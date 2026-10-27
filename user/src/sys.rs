@@ -1040,6 +1040,22 @@ pub fn part_peer_alive(handle: Handle, pid: u64) -> Result<u64, Error> {
     )
 }
 
+/// Hands the kernel the model store's model, `extents` (first block, blocks) of
+/// the partition from byte `offset` of the file (P2 task 10); the bytes filled.
+pub fn model_fill(partition: Handle, extents: &[(u64, u64)], offset: u64) -> Result<u64, Error> {
+    call(
+        call::MODEL_FILL,
+        [
+            u64::from(partition.0),
+            extents.as_ptr() as u64,
+            extents.len() as u64,
+            offset,
+            0,
+            0,
+        ],
+    )
+}
+
 /// A `Dir` or `File` handle on this process's own endpoint, with `badge` and
 /// `rights`, for the `fs` service to hand on (P2 task 8).
 pub fn endpoint_mint(

@@ -24,6 +24,7 @@ const CALLS: &[u64] = &[
     call::PART_FLUSH,
     call::ENDPOINT_MINT,
     call::PART_PEER_ALIVE,
+    call::MODEL_FILL,
 ];
 
 /// One of [`CALLS`], or `None` for a number this area does not have.
@@ -34,6 +35,7 @@ pub(super) fn handle(slot: usize, number: u64, a: &[u64; 6]) -> Option<Result<u6
         call::PART_WRITE => write(slot, a[0], a[1], a[2], a[3]),
         call::PART_FLUSH => flush(slot, a[0]),
         call::PART_PEER_ALIVE => peer_alive(slot, a[0], a[1]),
+        call::MODEL_FILL => model_fill(slot, a[0], a[1], a[2], a[3]),
         _ => mint(slot, a[0], a[1], a[2], a[3]),
     })
 }
@@ -187,6 +189,34 @@ fn peer_alive(slot: usize, raw: u64, pid: u64) -> Result<u64, Error> {
         true => Ok(0),
         false => Err(Error::NotFound),
     }
+}
+
+/// MODEL_FILL: the model store's model, from `kai-data` block runs the caller
+/// names, into the runs reserved at boot ([`crate::model::fill`]).
+fn model_fill(slot: usize, raw: u64, ptr: u64, count: u64, offset: u64) -> Result<u64, Error> {
+    let kind = partition(slot, raw, Rights::READ)?;
+    if kind != diskmap::KAI_DATA_TYPE {
+        return Err(Error::Invalid);
+    }
+    let count = usize::try_from(count)
+        .ok()
+        .filter(|&n| n <= crate::model::fill::MAX_EXTENTS)
+        .ok_or(Error::Invalid)?;
+    let mut raw = [0u8; 16 * crate::model::fill::MAX_EXTENTS];
+    copy_from_user(slot, ptr, &mut raw[..16 * count])?;
+    let extents: Vec<(u64, u64)> = raw[..16 * count]
+        .as_chunks::<16>()
+        .0
+        .iter()
+        .map(|pair| {
+            let (first, blocks) = pair.split_at(8);
+            (
+                u64::from_le_bytes(first.try_into().unwrap()),
+                u64::from_le_bytes(blocks.try_into().unwrap()),
+            )
+        })
+        .collect();
+    crate::model::fill::fill(&extents, offset)
 }
 
 /// Rights a minted handle of each server-backed kind can carry.
