@@ -5,9 +5,13 @@
 //! This is the shell's half, run against any event source: the rule store as
 //! `kai-standing 1` text, the check that a rule comes only from the user's own
 //! line, and the engine that turns window events into firings with no storms.
-//! The desktop's events (G-core) and the owners' check that a live rule covers
-//! each firing (lane K, beside #149's `RULE_CHECK`) come later; the shell alone
-//! never decides that a firing is allowed.
+//! The events and the actions come through [`Triggers`]: the desktop's window
+//! events (G-core), comphost's suspend and resume (lane C) and the owners' check
+//! that a live rule covers each firing (lane K, beside #149's `RULE_CHECK`)
+//! plug in there as they land. The shell alone never decides that a firing is
+//! allowed.
+
+pub mod grammar;
 
 use alloc::collections::VecDeque;
 use alloc::format;
@@ -51,6 +55,20 @@ pub struct Event {
     /// The rule whose firing caused it, if one did: a rule's own action never
     /// triggers it again.
     pub cause: Option<u64>,
+}
+
+/// What standing instructions need from the system. Until something implements
+/// it, a rule is kept and listed but never fires.
+pub trait Triggers {
+    /// Delivers `when`'s events to the shell from now on; a time of day costs
+    /// one timer.
+    fn watch(&self, when: &When) -> Result<(), String>;
+    /// Stops delivering them, when no rule waits for them any more.
+    fn unwatch(&self, when: &When);
+    /// Runs rule `rule`'s firing, `action` on `app`, or (`undo`) puts back what
+    /// its last firing did, for `undo` or its "until". The action's owner checks
+    /// that a live rule covers it, never the shell alone.
+    fn run(&self, rule: u64, action: &str, app: &str, undo: bool) -> Result<(), String>;
 }
 
 /// Where a rule came from. Only the user's own line may make one (ADR 0002's
@@ -147,26 +165,7 @@ impl Standing {
         target: &str,
         until: Option<When>,
     ) -> Result<u64, Refused> {
-        if let Origin::Data(source) = origin {
-            return Err(Refused::FromData(source));
-        }
-        let row = runnable(action).ok_or_else(|| Refused::NotRunTier(action.to_string()))?;
-        if !is_app(target) || !(on.app.is_empty() || is_app(&on.app)) {
-            return Err(Refused::Bad(
-                "an app is named [a-z][a-z0-9-], at most 12 bytes",
-            ));
-        }
-        if until
-            .as_ref()
-            .is_some_and(|u| !(u.app.is_empty() || is_app(&u.app)))
-        {
-            return Err(Refused::Bad(
-                "an app is named [a-z][a-z0-9-], at most 12 bytes",
-            ));
-        }
-        if self.rules.len() == MAX_RULES {
-            return Err(Refused::Full);
-        }
+        let row = self.check(origin, &on, action, target, until.as_ref())?;
         self.next += 1;
         self.rules.push(Rule {
             id: self.next,
@@ -179,6 +178,61 @@ impl Standing {
             fired: VecDeque::new(),
         });
         Ok(self.next)
+    }
+
+    /// Whether a rule could be made, before the ask card is shown: its row.
+    pub fn check(
+        &self,
+        origin: Origin,
+        on: &When,
+        action: &str,
+        target: &str,
+        until: Option<&When>,
+    ) -> Result<&'static str, Refused> {
+        if let Origin::Data(source) = origin {
+            return Err(Refused::FromData(source));
+        }
+        let row = runnable(action).ok_or_else(|| Refused::NotRunTier(action.to_string()))?;
+        let names_app = |w: &When| w.app.is_empty() || is_app(&w.app);
+        if !is_app(target) || !names_app(on) || !until.is_none_or(names_app) {
+            return Err(Refused::Bad(
+                "an app is named [a-z][a-z0-9-], at most 12 bytes",
+            ));
+        }
+        if self.rules.len() == MAX_RULES {
+            return Err(Refused::Full);
+        }
+        Ok(row)
+    }
+
+    /// A removed rule back under its own id (`undo` of `rules_remove`).
+    pub fn put_back(&mut self, rule: Rule) -> Result<u64, Refused> {
+        if self.rules.iter().any(|r| r.id == rule.id) {
+            return Err(Refused::Bad("that rule is already there"));
+        }
+        if self.rules.len() == MAX_RULES {
+            return Err(Refused::Full);
+        }
+        let id = rule.id;
+        self.next = self.next.max(id);
+        let at = self.rules.partition_point(|r| r.id < id);
+        self.rules.insert(at, rule);
+        Ok(id)
+    }
+
+    /// Every event some rule waits for, once each.
+    pub fn watched(&self) -> Vec<When> {
+        let mut out: Vec<When> = Vec::new();
+        for when in self
+            .rules
+            .iter()
+            .flat_map(|r| core::iter::once(&r.on).chain(&r.until))
+        {
+            if !out.contains(when) {
+                out.push(when.clone());
+            }
+        }
+        out
     }
 
     /// `rules_remove` of a standing instruction: it ends; what it did stays.
@@ -256,7 +310,8 @@ impl Standing {
     /// The store read back from [`Standing::text`]; `None` for text it could not
     /// have written. A rule read back is checked as if made again.
     pub fn parse(text: &str) -> Option<Self> {
-        let mut lines = text.lines();
+        // Every line ends in one `\n`, the way `text` writes it.
+        let mut lines = text.strip_suffix('\n')?.split('\n');
         if lines.next()? != HEADER {
             return None;
         }
@@ -264,7 +319,7 @@ impl Standing {
         let mut last = 0;
         for line in lines {
             let mut f = line.strip_prefix("S ")?.split(' ');
-            let id: u64 = f.next()?.parse().ok()?;
+            let id = canonical(f.next()?)?;
             let on = parse_when(f.next()?.strip_prefix("on=")?)?;
             let (action, target) = f.next()?.strip_prefix("do=")?.split_once(':')?;
             let until = match f.next()?.strip_prefix("until=")? {
@@ -338,7 +393,7 @@ fn when_word(when: &When) -> String {
 
 fn parse_when(word: &str) -> Option<When> {
     let (kind, rest) = word.split_once(':')?;
-    let number = || rest.parse::<u16>().ok();
+    let number = || canonical(rest).and_then(|n| u16::try_from(n).ok());
     let (kind, app) = match kind {
         "minimize" => (Kind::Minimize, rest),
         "restore" => (Kind::Restore, rest),
@@ -355,4 +410,12 @@ fn parse_when(word: &str) -> Option<When> {
         kind,
         app: app.to_string(),
     })
+}
+
+/// A number as `text` writes it: digits only, no sign and no leading zero.
+fn canonical(text: &str) -> Option<u64> {
+    let digits = !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit());
+    (digits && (text == "0" || !text.starts_with('0')))
+        .then(|| text.parse().ok())
+        .flatten()
 }

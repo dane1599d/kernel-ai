@@ -343,9 +343,15 @@ impl<'a> Reader<'a> {
 }
 
 fn form_of(word: &str) -> Option<Form> {
-    [Form::Call, Form::Script, Form::Words, Form::Tune]
-        .into_iter()
-        .find(|f| f.word() == word)
+    [
+        Form::Call,
+        Form::Script,
+        Form::Words,
+        Form::Tune,
+        Form::Standing,
+    ]
+    .into_iter()
+    .find(|f| f.word() == word)
 }
 
 fn state_of(word: &str) -> Option<State> {
