@@ -163,6 +163,39 @@ impl Frame {
     }
 }
 
+impl Frame {
+    /// A window layer at `at`: rows `radius..h - radius` are opaque and copied,
+    /// the top and bottom bands (the rounded corners) are blended. `opaque`
+    /// false blends it all (a translucent window).
+    pub fn draw_window(
+        &mut self,
+        src: &Frame,
+        at: (i32, i32),
+        clip: Rect,
+        radius: i32,
+        opaque: bool,
+    ) {
+        if !opaque {
+            return self.draw(src, at, clip, true);
+        }
+        let place = Rect::new(at.0, at.1, src.w, src.h);
+        let bands = [
+            (Rect::new(place.x, place.y, place.w, radius), true),
+            (
+                Rect::new(place.x, place.y + radius, place.w, place.h - 2 * radius),
+                false,
+            ),
+            (
+                Rect::new(place.x, place.bottom() - radius, place.w, radius),
+                true,
+            ),
+        ];
+        for (band, blend) in bands {
+            self.draw(src, at, band.intersect(&clip), blend);
+        }
+    }
+}
+
 /// A shadow, pre-rendered once: a blurred rounded box's alpha, `3 * m` square,
 /// drawn as nine slices around a window so a moving shadow costs a blit.
 pub struct Shadow {

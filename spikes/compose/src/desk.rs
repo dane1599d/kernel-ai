@@ -12,6 +12,8 @@ use alloc::vec::Vec;
 
 pub struct Window {
     pub rect: Rect,
+    /// Whether its body is opaque, so only the corner bands blend.
+    pub opaque: bool,
     /// Premultiplied ARGB: the chrome, the content and the rounded corners.
     pub layer: Frame,
     pub title: &'static str,
@@ -262,6 +264,7 @@ impl Desk {
         frame_line(&mut layer, bounds, opaque(edge));
         round_corners(&mut layer, px(6.0, s));
         self.windows.push(Window {
+            opaque: alpha >= 255,
             rect,
             layer,
             title,
@@ -462,13 +465,51 @@ impl Desk {
         if damage.is_empty() {
             return;
         }
-        self.frame.draw(&self.wallpaper, (0, 0), damage, false);
-        for w in &self.windows {
+        // Occlusion: the topmost opaque window that holds all of `damage` hides
+        // everything below it except in its four rounded corner squares, so the
+        // layers below are drawn only there.
+        let radius = px(6.0, self.scale);
+        let first = self
+            .windows
+            .iter()
+            .rposition(|w| w.opaque && w.rect.intersect(&damage) == damage);
+        match first {
+            None => self.frame.draw(&self.wallpaper, (0, 0), damage, false),
+            Some(top) => {
+                let r = self.windows[top].rect;
+                let corners = [
+                    Rect::new(r.x, r.y, radius, radius),
+                    Rect::new(r.right() - radius, r.y, radius, radius),
+                    Rect::new(r.x, r.bottom() - radius, radius, radius),
+                    Rect::new(r.right() - radius, r.bottom() - radius, radius, radius),
+                ];
+                for corner in corners {
+                    let part = corner.intersect(&damage);
+                    if part.is_empty() {
+                        continue;
+                    }
+                    self.frame.draw(&self.wallpaper, (0, 0), part, false);
+                    for w in &self.windows[..top] {
+                        if w.focused {
+                            self.shadow.draw(&mut self.frame, w.rect, part);
+                        }
+                        self.frame.draw_window(
+                            &w.layer,
+                            (w.rect.x, w.rect.y),
+                            part,
+                            radius,
+                            w.opaque,
+                        );
+                    }
+                }
+            }
+        }
+        for w in &self.windows[first.unwrap_or(0)..] {
             if w.focused {
                 self.shadow.draw(&mut self.frame, w.rect, damage);
             }
             self.frame
-                .draw(&w.layer, (w.rect.x, w.rect.y), damage, true);
+                .draw_window(&w.layer, (w.rect.x, w.rect.y), damage, radius, w.opaque);
         }
         self.frame
             .draw(&self.panel_layer, (0, self.panel.y), damage, false);

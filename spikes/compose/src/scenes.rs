@@ -454,3 +454,78 @@ mod dump {
         }
     }
 }
+
+#[cfg(test)]
+mod timing {
+    use super::*;
+    use crate::look::DARK;
+    use std::time::Instant;
+
+    /// `cargo test --release -p spike-compose timing -- --ignored --nocapture`:
+    /// where the warm text page's time goes, on the host.
+    #[test]
+    #[ignore]
+    fn text_page_parts() {
+        let mut text = Text::new(crate::INTER, crate::MONO, true);
+        let style = mono(1.0);
+        let lines: Vec<String> = (0..45).map(terminal_line).collect();
+        for l in &lines {
+            text.shape(style, l);
+        }
+        let t = Instant::now();
+        for _ in 0..20 {
+            for l in &lines {
+                core::hint::black_box(text.shape(style, l));
+            }
+        }
+        std::println!(
+            "shape 45 lines: {:.2} ms",
+            t.elapsed().as_secs_f64() * 1000.0 / 20.0
+        );
+        let mut f = Frame::new(1400, 960);
+        let all = f.bounds();
+        let t = Instant::now();
+        for _ in 0..20 {
+            for (row, l) in lines.iter().enumerate() {
+                text.draw(&mut f, all, 8.0, 20 * (row as i32 + 1), style, DARK.text, l);
+            }
+        }
+        std::println!(
+            "shape + draw 45 lines: {:.2} ms",
+            t.elapsed().as_secs_f64() * 1000.0 / 20.0
+        );
+    }
+}
+
+#[cfg(test)]
+mod timing_page {
+    use super::*;
+    use crate::look::DARK;
+    use std::time::Instant;
+
+    struct Host(Instant);
+
+    impl Screen for Host {
+        fn present(&mut self, _: &Frame, _: &[Rect]) {}
+        fn now(&self) -> u64 {
+            self.0.elapsed().as_nanos() as u64
+        }
+    }
+
+    /// The whole warm page and a full composite, in host ms.
+    #[test]
+    #[ignore]
+    fn page_and_full() {
+        let mut text = Text::new(crate::INTER, crate::MONO, true);
+        let mut d = desk(1920, 1080, DARK, 1.0, &mut text);
+        let mut screen = Host(Instant::now());
+        let a = crate::stats::summary(&full(&mut d, &mut screen).render, 1_000_000);
+        let (_, warm) = text_page(&mut d, &mut text, &mut screen);
+        let c = crate::stats::summary(&warm.render, 1_000_000);
+        std::println!(
+            "full p50 {:.2} ms; text page warm p50 {:.2} ms",
+            a.p50,
+            c.p50
+        );
+    }
+}
