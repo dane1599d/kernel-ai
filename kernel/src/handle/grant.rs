@@ -178,6 +178,41 @@ pub fn check_once(badge: u64, digest: &[u8; 32]) -> Verdict {
     BOOK.lock().check(badge, digest, &Kernel)
 }
 
+/// [`check_once`] as a call answers it: a match uses the `ONCE` up; Invalid for
+/// another digest, NotFound for no digest under the badge, Revoked once its
+/// request ended.
+pub fn spend_once(badge: u64, digest: &[u8; 32]) -> Result<(), kabi::Error> {
+    match check_once(badge, digest) {
+        Verdict::Match => Ok(()),
+        Verdict::Mismatch => Err(kabi::Error::Invalid),
+        Verdict::Unknown => Err(kabi::Error::NotFound),
+        Verdict::Revoked => Err(kabi::Error::Revoked),
+    }
+}
+
+/// [`spend_once`] for a call made by process `pid`, which must hold the `ONCE`;
+/// pid 0, the kernel's own request, holds no table and is not checked.
+pub fn spend_once_for(pid: u64, badge: u64, digest: &[u8; 32]) -> Result<(), kabi::Error> {
+    if pid != 0 {
+        let slot =
+            crate::process::with_table(|table| table.iter().position(|p| p.live() && p.pid == pid))
+                .ok_or(kabi::Error::NotFound)?;
+        if !holds_once(slot, badge) {
+            return Err(kabi::Error::NotFound);
+        }
+    }
+    spend_once(badge, digest)
+}
+
+/// Whether `slot`'s table holds a `ONCE` handle with badge `badge`.
+pub fn holds_once(slot: usize, badge: u64) -> bool {
+    HANDLES[slot].lock().as_ref().is_some_and(|h| {
+        h.table
+            .iter()
+            .any(|(_, e)| e.flags.contains(Flags::ONCE) && e.badge == badge)
+    })
+}
+
 /// Puts `entry` in `slot`'s table.
 pub fn insert(slot: usize, entry: Entry) -> Result<Handle, kabi::Error> {
     let mut guard = HANDLES[slot].lock();
