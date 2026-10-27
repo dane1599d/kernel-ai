@@ -70,12 +70,18 @@ jobs:
   # them too (founder, 2026-10-27): they run on main, on merge-batch PRs
   # (`batch/...`), and on a PR labelled `full-ci`. A plain PR push runs only the
   # lint and host-test job above; merges still need every job green in a batch.
+  #
+  # A `full-ci` PR boots its cases under KVM only, without the TCG shards, icount
+  # or observe: those ran on every lane's PR and starved the merge batches of the
+  # account's 20 job slots (2026-10-27). Batches and main still run everything,
+  # and a PR labelled `full-ci-all` gets the whole set too, e.g. to chase a TCG hang.
   qemu:
     name: QEMU 11.0.5 (built once, cached)
     if: >-
       github.event_name != 'pull_request' ||
       startsWith(github.head_ref, 'batch/') ||
-      contains(github.event.pull_request.labels.*.name, 'full-ci')
+      contains(github.event.pull_request.labels.*.name, 'full-ci') ||
+      contains(github.event.pull_request.labels.*.name, 'full-ci-all')
     runs-on: ubuntu-24.04
     env:
       QEMU_VERSION: "11.0.5"
@@ -109,8 +115,9 @@ jobs:
           key: qemu-${{ env.QEMU_VERSION }}-ubuntu-24.04-v1
     timeout-minutes: 40
 
-  # Every case boots under both KVM and TCG; `--shard K/3` deals the cases out in
-  # turn across three runners per accelerator, and shard 1 also runs the host smokes.
+  # Every case boots under both KVM and TCG (KVM only on a `full-ci` PR, see
+  # above); `--shard K/3` deals the cases out in turn across three runners per
+  # accelerator, and shard 1 also runs the host smokes.
   boot:
     name: Boot test (${{ matrix.accel }}, shard ${{ matrix.shard }}/3)
     runs-on: ubuntu-24.04
@@ -118,7 +125,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        accel: [kvm, tcg]
+        accel: ${{ fromJSON(github.event_name == 'pull_request' && !startsWith(github.head_ref, 'batch/') && !contains(github.event.pull_request.labels.*.name, 'full-ci-all') && '["kvm"]' || '["kvm", "tcg"]') }}
         shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v4
@@ -192,6 +199,10 @@ jobs:
   # virtual second, which fixes shift and the trial's window length.
   icount:
     name: icount determinism probe (not a gate)
+    if: >-
+      github.event_name != 'pull_request' ||
+      startsWith(github.head_ref, 'batch/') ||
+      contains(github.event.pull_request.labels.*.name, 'full-ci-all')
     runs-on: ubuntu-24.04
     needs: qemu
     continue-on-error: true
@@ -215,6 +226,10 @@ jobs:
   # runner. Each of two runners boots observe twice; all four summaries must match.
   observe:
     name: Observe determinism (${{ matrix.runner }})
+    if: >-
+      github.event_name != 'pull_request' ||
+      startsWith(github.head_ref, 'batch/') ||
+      contains(github.event.pull_request.labels.*.name, 'full-ci-all')
     runs-on: ubuntu-24.04
     needs: qemu
     strategy:
