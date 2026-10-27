@@ -281,18 +281,67 @@ const ACTS: &[(&str, &str)] = &[
         "stop spin-d",
         r#"{"name":"process_stop","arguments":{"name":"spin-d"}}"#,
     ),
+    // `act-convo` with no earlier turn: there is nothing to do again.
+    (
+        "do it again",
+        r#"{"name":"clarify","arguments":{"question":"Do what again? There is no earlier request.","options":[]}}"#,
+    ),
 ];
 
-/// The call for an `act` request: the last message is `Request: <line>`.
+/// Calls for a second turn (`act-convo`, P1 task 10), keyed by the latest
+/// earlier request in the history llm sent, then the request line. They come
+/// before [`ACTS`], so a line answers differently once history holds its turn.
+const CONVO: &[(&str, &str, &str)] = &[
+    (
+        "turn on round robin scheduling",
+        "do it again",
+        r#"{"name":"set_policy","arguments":{"name":"round-robin"}}"#,
+    ),
+    (
+        "do it again",
+        "undo that",
+        r#"{"name":"undo","arguments":{"steps":1}}"#,
+    ),
+    (
+        "stop spin-a",
+        "the same for spin-b",
+        r#"{"name":"process_stop","arguments":{"name":"spin-b"}}"#,
+    ),
+];
+
+/// The call for an `act` request: the last message is `Request: <line>`, and
+/// any earlier `Request: <line>` messages are history's turns, oldest first.
 fn act(request: &Value) -> String {
-    let line = request["messages"]
+    let messages = request["messages"]
         .as_array()
-        .and_then(|messages| messages.last())
-        .and_then(|m| m["content"].as_str())
-        .and_then(|text| text.rsplit("Request: ").next())
-        .unwrap_or("");
-    match ACTS.iter().find(|(asked, _)| *asked == line) {
-        Some((_, call)) => call.to_string(),
+        .map_or(&[][..], Vec::as_slice);
+    let requested = |m: &Value| {
+        m["content"]
+            .as_str()
+            .and_then(|text| text.rsplit_once("Request: "))
+            .map(|(_, line)| line.to_string())
+    };
+    let Some((last, earlier)) = messages.split_last() else {
+        return "I would write a script for that.".to_string();
+    };
+    let line = requested(last).unwrap_or_default();
+    // A history turn's request is a message of its own that starts `Request: `.
+    let before = earlier
+        .iter()
+        .rev()
+        .filter_map(|m| m["content"].as_str()?.strip_prefix("Request: "))
+        .next()
+        .map(str::to_string);
+    let convo = CONVO
+        .iter()
+        .find(|(then, now, _)| before.as_deref() == Some(*then) && *now == line)
+        .map(|(.., call)| call);
+    match convo.or_else(|| {
+        ACTS.iter()
+            .find(|(asked, _)| *asked == line)
+            .map(|(_, call)| call)
+    }) {
+        Some(call) => call.to_string(),
         None => "I would write a script for that.".to_string(),
     }
 }
@@ -486,12 +535,63 @@ Keep \"editor\" responsive."
 
 #[cfg(test)]
 mod act_tests {
-    use super::ACTS;
+    use super::{ACTS, CONVO, act};
+    use llmproto::act::{ActRequest, History, Turn};
+    use serde_json::json;
 
     #[test]
     fn every_canned_call_is_a_call() {
-        for (line, call) in ACTS {
+        let convo = CONVO.iter().map(|(_, line, call)| (*line, *call));
+        for (line, call) in ACTS.iter().copied().chain(convo) {
             assert!(llmproto::act::parse(call).is_ok(), "{line}: {call}");
         }
+    }
+
+    /// The `act` body llm sends for `line` after `earlier` turns.
+    fn asked(earlier: &[&str], line: &str) -> serde_json::Value {
+        let mut history = History::new();
+        for turn in earlier {
+            let turn = Turn {
+                line: turn.to_string(),
+                call: r#"{"name":"say","arguments":{"text":"ok"}}"#.to_string(),
+                result: "Done".to_string(),
+            };
+            history.push(turn, 10, 512);
+        }
+        let request = ActRequest {
+            state: "focused=shell".to_string(),
+            line: line.to_string(),
+            timeout_ms: 0,
+        };
+        let chat = llmproto::act::request(&request, &history);
+        let messages: Vec<_> = chat
+            .messages
+            .iter()
+            .map(|m| json!({ "content": m.content }))
+            .collect();
+        json!({ "messages": messages })
+    }
+
+    #[test]
+    fn a_second_turn_is_answered_from_the_latest_earlier_request() {
+        let again = act(&asked(&["turn on round robin scheduling"], "do it again"));
+        assert!(again.contains("set_policy"), "{again}");
+        let same = act(&asked(
+            &["turn on round robin scheduling", "stop spin-a"],
+            "the same for spin-b",
+        ));
+        assert!(same.contains("spin-b"), "{same}");
+        let undo = act(&asked(
+            &["turn on round robin scheduling", "do it again"],
+            "undo that",
+        ));
+        assert!(undo.contains(r#""name":"undo""#), "{undo}");
+        // With no history, or another turn last, there is nothing to repeat.
+        assert!(act(&asked(&[], "do it again")).contains("clarify"));
+        let other = act(&asked(
+            &["turn on round robin scheduling", "stop spin-a"],
+            "do it again",
+        ));
+        assert!(other.contains("clarify"), "{other}");
     }
 }

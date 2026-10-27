@@ -35,6 +35,36 @@ fn a_plain_undoable_request_runs_at_once_with_a_code_written_line() {
 }
 
 #[test]
+fn an_undo_call_puts_back_what_the_typed_undo_would() {
+    let undo = |steps: u64| format!(r#"{{"name":"undo","arguments":{{"steps":{steps}}}}}"#);
+    let (host, mut shell) = with_calls(vec![
+        call(RR),
+        call(&undo(2)),
+        call(&undo(1)),
+        call(&undo(1)),
+    ]);
+    shell.eval("switch to round robin");
+    // More than one step is refused: a second undo would redo the first.
+    let reply = shell.eval("undo the last two");
+    assert!(
+        !reply.ok && reply.text.contains("one change at a time"),
+        "{reply:?}"
+    );
+    assert_eq!(host.policy.get(), Some(policy::ROUND_ROBIN));
+    assert_eq!(
+        shell.eval("undo that"),
+        ok("Undone: policy back to interactive")
+    );
+    assert_eq!(host.policy.get(), Some(policy::INTERACTIVE));
+    // As with the typed `undo`, again redoes.
+    assert_eq!(
+        shell.eval("undo that"),
+        ok("Undone: policy back to round-robin")
+    );
+    assert_eq!(host.policy.get(), Some(policy::ROUND_ROBIN));
+}
+
+#[test]
 fn a_read_answers_with_its_value() {
     let (_host, mut shell) = with_calls(vec![call(r#"{"name":"cpus","arguments":{}}"#)]);
     assert_eq!(shell.eval("how many cpus are there"), ok("4"));

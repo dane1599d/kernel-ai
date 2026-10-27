@@ -99,10 +99,15 @@ impl Server {
         })
     }
 
-    /// One tagged call: the `act` prompt, and the reply's text read as a call. A
-    /// server keeps no conversation memory: that is the local model's.
-    pub fn act(&self, request: &ActRequest, response: &mut [u8]) -> Result<Call, ActError> {
-        let body = openai::chat_request(&self.model, &act::request(request, &History::new()));
+    /// One tagged call: the `act` prompt after the conversation llm keeps for a
+    /// server, and the reply's text read as a call.
+    pub fn act(
+        &self,
+        request: &ActRequest,
+        history: &History,
+        response: &mut [u8],
+    ) -> Result<Call, ActError> {
+        let body = openai::chat_request(&self.model, &act::request(request, history));
         let reply = self
             .post(&body, CHAT_TIMEOUT_MS, response)
             .map_err(ActError::Unavailable)?;

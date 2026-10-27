@@ -117,6 +117,38 @@ const MOVED_UNDO: &[(&str, Expect)] = &[
     ("n", Exact("ok Not undone; `undo` asks again")),
 ];
 
+/// `act-convo` (P1 task 10): a second turn read from llm's memory of the first.
+/// The mock keys these calls on the latest earlier request (`CONVO` in xtask's
+/// `mock_llm`), so each line answers so only with that turn in history.
+const CONVO_SWITCH: &[(&str, Expect)] = &[(
+    "turn on round robin scheduling",
+    Exact("ok Done: policy round-robin (was interactive). undo"),
+)];
+
+const CONVO_UNDO: &[(&str, Expect)] = &[("undo", Exact("ok Undone: policy back to interactive"))];
+
+/// "do it again" names no row, so it takes the vague path and says what it took.
+const CONVO_AGAIN: &[(&str, Expect)] = &[(
+    "do it again",
+    Contains("policy round-robin (was interactive). undo"),
+)];
+
+/// "undo that" after it is the `undo` call, which puts back what `undo` would.
+const CONVO_UNDO_THAT: &[(&str, Expect)] =
+    &[("undo that", Exact("ok Undone: policy back to interactive"))];
+
+/// `new` forgets the conversation, so "do it again" has nothing to repeat.
+const CONVO_NEW: &[(&str, Expect)] = &[
+    (
+        "new",
+        Exact("ok A new conversation: earlier turns are forgotten; `log` and `undo` still work"),
+    ),
+    (
+        "do it again",
+        Exact("ok Do what again? There is no earlier request."),
+    ),
+];
+
 /// A script that switches and then throws leaves nothing changed.
 const ROLLBACK: &[(&str, Expect)] = &[
     (
@@ -157,6 +189,7 @@ pub fn check(which: ActCase) -> Result<(), &'static str> {
         ActCase::PkgLocal => expect_lines(PKG_LOCAL).map(|()| {
             log!("pkg-local: install notes ran from the image's repository and undo put the previous set back");
         }),
+        ActCase::Convo => convo(),
     }
 }
 
@@ -384,6 +417,46 @@ fn inject() -> Result<(), &'static str> {
 /// offered; "Always allow" on the menu writes a rule, backed by a `rule` node the
 /// trusted path made, and the next stop runs under it without a question.
 /// `rules_remove` revokes it, and the stop asks again.
+fn convo() -> Result<(), &'static str> {
+    expect_lines(CONVO_SWITCH)?;
+    after_switch();
+    expect_lines(CONVO_UNDO)?;
+    after_switch();
+    // The typed `undo` is no model turn, so history's latest request is still
+    // the switch.
+    expect_lines(CONVO_AGAIN)?;
+    if !policy_is("round-robin") {
+        return Err("act-convo: \"do it again\" did not switch again");
+    }
+    after_switch();
+    expect_lines(CONVO_UNDO_THAT)?;
+    if !policy_is("interactive") {
+        return Err("act-convo: \"undo that\" did not put the policy back");
+    }
+    // History can make a line understood, never consent: the second stop asks
+    // as the first did.
+    for (line, process) in [("stop spin-a", "spin-a"), ("the same for spin-b", "spin-b")] {
+        let reply = reply_to(line)?;
+        let asks = menu::Menu::decode(&reply).is_ok_and(|menu| {
+            menu.question()
+                .starts_with(&format!("Stop process {process} (pid "))
+        });
+        if !asks {
+            log!("act-convo: {line:?} got {reply:?}");
+            return Err("act-convo: a stop did not ask for the process history named");
+        }
+        reply_to("n")?;
+    }
+    expect_lines(CONVO_NEW)?;
+    if !policy_is("interactive") {
+        return Err("act-convo: a line after `new` changed the policy");
+    }
+    log!(
+        "act-convo: a second turn read \"do it again\", \"undo that\" and \"the same for\" from memory, still asked, and `new` forgot it"
+    );
+    Ok(())
+}
+
 fn rule() -> Result<(), &'static str> {
     let reply = reply_to("stop spin-a")?;
     let menu = menu::Menu::decode(&reply).map_err(|_| {
