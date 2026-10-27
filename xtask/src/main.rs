@@ -134,8 +134,12 @@ fn execute(options: &Options) -> Result<(), String> {
         Task::Test => Some(buildsvc::verify::real_repo(&root)?),
         _ => None,
     };
-    // With `--shard`, shard 1 alone runs the host scenarios.
-    if options.task == Task::Test && options.shard.is_none_or(|(k, _)| k == 1) {
+    // With `--shard`, shard 1 alone runs the host scenarios; with `XTASK_CASE`,
+    // none does.
+    if options.task == Task::Test
+        && options.shard.is_none_or(|(k, _)| k == 1)
+        && env::var("XTASK_CASE").is_err()
+    {
         // The live-component and edit scenarios on the host first: a failure here
         // is in the host, a version, the editor or the builds, not in the kernel.
         smoke::run(&versions)?;

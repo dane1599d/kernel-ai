@@ -151,6 +151,39 @@ jobs:
         run: cargo xtask test --accel ${{ matrix.accel }} --timeout 300 --shard ${{ matrix.shard }}/3
     timeout-minutes: 20
 
+  # Performance pass marks, judged on the release kernel (decisions, 2026-10-27):
+  # the boot jobs' debug kernel leaves the `kernel` crate unoptimised, so its
+  # figures are the trend line only. Runs on main and on `full-ci` PRs, not on
+  # merge batches, and is not a gate: it reports. `shm` logs spike S01-1's M6.
+  perf:
+    name: Perf marks (release kernel)
+    if: >-
+      github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'full-ci')
+    runs-on: ubuntu-24.04
+    needs: qemu
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/qemu
+      - name: Allow KVM for the runner user
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Install pinned toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Install the WebAssembly target for live components
+        run: rustup target add wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: qemu-release
+      - name: Boot the release kernel and log the perf marks
+        env:
+          XTASK_CASE: shm
+        run: cargo xtask test --release --accel kvm --timeout 300
+    timeout-minutes: 30
+
   # M10a-2's spike, not a gate: boots `icount-probe` twice under single-threaded
   # TCG with icount and requires the same digest; it also prints host seconds per
   # virtual second, which fixes shift and the trial's window length.

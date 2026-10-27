@@ -5,19 +5,21 @@
 //! - SHM_MAP maps object `n` at `SHM_BASE + n * SHM_SLOT` in the caller, read-only
 //!   or read-write, never executable; SHM_UNMAP removes it. The pages are freed
 //!   once no mapping and no handle is left ([`collect`]).
-//! - Each mapping remembers the grant node its handle came through. Revoking that
-//!   node ([`on_revoke`]) points every page of the mapping at one private zero
-//!   page and shoots the range down on every CPU: the holder keeps running but
-//!   sees and shares nothing. Spike S01-1 M6 measures it.
+//! - Each mapping remembers the grant node its handle came through, and gets a
+//!   private zero page when it is made. Revoking that node ([`on_revoke`]) points
+//!   every page of the mapping at that zero page and shoots the range down on
+//!   every CPU: the holder keeps running but sees and shares nothing. Spike S01-1
+//!   M6 measures it; nothing is allocated on that path.
 //!
 //! Lock order: OBJECTS, then a process's SPACE, then HANDLES, then MEMORY.
 
 use crate::handle::{self, grant::Kernel};
 use crate::process::{self, MAX_PROCESSES};
-use crate::{memory, smp, threads};
+use crate::{hpet, memory, smp, threads};
 use alloc::vec::Vec;
 use captable::Entry;
 use captable::grant::{GrantRef, Live};
+use core::sync::atomic::{AtomicU64, Ordering};
 use kabi::Error;
 use kabi::handle::{Handle, Kind, Rights};
 use kabi::layout::{SHM_BASE, SHM_SLOT};
@@ -45,7 +47,8 @@ struct Mapping {
     /// The grant node of the handle it was mapped through, if any.
     grant: Option<GrantRef>,
     /// The private zero page every page points at once that node is revoked.
-    zero: Option<u64>,
+    zero: u64,
+    revoked: bool,
 }
 
 struct Object {
@@ -59,6 +62,11 @@ struct Objects {
     /// Survives the object, so a handle to a freed one is never taken for a new one.
     generations: [u32; MAX_OBJECTS],
 }
+
+/// Nanoseconds [`on_revoke`] has spent in TLB shootdowns, for M6's split.
+pub static SHOOTDOWN_NS: AtomicU64 = AtomicU64::new(0);
+/// Nanoseconds spent in [`on_revoke`] in all, shootdowns included.
+pub static ON_REVOKE_NS: AtomicU64 = AtomicU64::new(0);
 
 static OBJECTS: Mutex<Objects> = Mutex::new(Objects {
     objects: [const { None }; MAX_OBJECTS],
@@ -192,24 +200,24 @@ pub fn map_entry(slot: usize, entry: &Entry, write: bool) -> Result<u64, Error> 
         let address = base(index);
         let mut space = process::lock_space(slot);
         let space = space.as_mut().ok_or(Error::Dead)?;
-        let mapped = memory::with(|m| {
+        let zero = memory::with(|m| {
+            let zero = m.allocate_zeroed_frame().ok_or(Error::NoMemory)?;
             for (n, &frame) in object.frames.iter().enumerate() {
                 let page = address + n as u64 * PAGE_SIZE;
                 if m.map_shared_page(space, page, frame, write).is_err() {
-                    for undo in 0..n as u64 {
-                        let _ = m.set_shared_page(space, address + undo * PAGE_SIZE, None);
-                    }
+                    let _ = m.set_shared_range(space, address, n as u64, None);
+                    let _ = m.free_frame(zero);
                     return Err(Error::NoMemory);
                 }
             }
-            Ok(())
-        });
-        mapped?;
+            Ok(zero)
+        })?;
         object.mappings.push(Mapping {
             pid,
             slot,
             grant: entry.grant,
-            zero: None,
+            zero,
+            revoked: false,
         });
         Ok(address)
     })?;
@@ -242,9 +250,7 @@ pub fn unmap(slot: usize, address: u64) -> Result<u64, Error> {
             let space = process::lock_space(slot);
             let space = space.as_ref().ok_or(Error::Dead)?;
             memory::with(|m| {
-                for n in 0..pages {
-                    let _ = m.set_shared_page(space, address + n * PAGE_SIZE, None);
-                }
+                let _ = m.set_shared_range(space, address, pages, None);
             });
             space.cr3()
         };
@@ -252,9 +258,7 @@ pub fn unmap(slot: usize, address: u64) -> Result<u64, Error> {
         smp::tlb_shootdown_range(&[cr3], address, pages);
         Ok::<_, Error>(object.mappings.remove(at).zero)
     })?;
-    if let Some(frame) = zero {
-        free_frames(&[frame]);
-    }
+    free_frames(&[zero]);
     collect();
     Ok(0)
 }
@@ -262,6 +266,7 @@ pub fn unmap(slot: usize, address: u64) -> Result<u64, Error> {
 /// After a grant node was revoked: every mapping made through a handle under a
 /// dead node gets its private zero page in place of the object's, on every CPU.
 pub fn on_revoke() {
+    let begun = hpet::nanos();
     with(|objects| {
         for (index, object) in objects.objects.iter_mut().enumerate() {
             let Some(object) = object else { continue };
@@ -269,30 +274,26 @@ pub fn on_revoke() {
             // Every holder maps the object at one address: one shootdown for all.
             let mut cr3s: Vec<u64> = Vec::new();
             for mapping in object.mappings.iter_mut() {
-                let revoked = mapping.grant.is_some_and(|grant| !Kernel.alive(grant));
-                if !revoked || mapping.zero.is_some() {
+                if mapping.revoked || mapping.grant.is_none_or(|grant| Kernel.alive(grant)) {
                     continue;
                 }
-                let Some(zero) = memory::with(|m| m.allocate_zeroed_frame()) else {
-                    continue;
-                };
-                mapping.zero = Some(zero);
-                let address = base(index);
+                mapping.revoked = true;
                 let space = process::lock_space(mapping.slot);
                 if let Some(space) = space.as_ref() {
                     memory::with(|m| {
-                        for n in 0..pages {
-                            let _ = m.set_shared_page(space, address + n * PAGE_SIZE, Some(zero));
-                        }
+                        let _ = m.set_shared_range(space, base(index), pages, Some(mapping.zero));
                     });
                     cr3s.push(space.cr3());
                 }
             }
             if !cr3s.is_empty() {
+                let start = hpet::nanos();
                 smp::tlb_shootdown_range(&cr3s, base(index), pages);
+                SHOOTDOWN_NS.fetch_add(hpet::nanos() - start, Ordering::Relaxed);
             }
         }
     });
+    ON_REVOKE_NS.fetch_add(hpet::nanos() - begun, Ordering::Relaxed);
 }
 
 /// When the process `pid` ends, before its space goes: its mappings are dropped
@@ -305,9 +306,7 @@ pub fn forget(pid: u64) {
                 if m.pid != pid {
                     return true;
                 }
-                if let Some(zero) = m.zero {
-                    zeros.push(zero);
-                }
+                zeros.push(m.zero);
                 false
             });
         }

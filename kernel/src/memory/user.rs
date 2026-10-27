@@ -256,7 +256,56 @@ impl Memory {
         addr: u64,
         phys: Option<u64>,
     ) -> Result<(), &'static str> {
-        // Never the model window's slot or the kernel half, whatever the caller.
+        self.set_shared_range(space, addr, 1, phys)
+    }
+
+    /// [`Self::set_shared_page`] for `count` pages from `addr`, every one pointed
+    /// at the same `phys` (a revoked mapping's zero page) or removed: one walk
+    /// from the PML4 per leaf table, not per page. A page that is not a shared
+    /// one is left alone and makes the result an error.
+    pub fn set_shared_range(
+        &mut self,
+        space: &UserSpace,
+        addr: u64,
+        count: u64,
+        phys: Option<u64>,
+    ) -> Result<(), &'static str> {
+        let mut result = Ok(());
+        let mut done = 0;
+        while done < count {
+            let at = addr + done * PAGE_SIZE;
+            let first = ((at >> 12) & 0x1FF) as usize;
+            let run = (512 - first).min((count - done) as usize);
+            done += run as u64;
+            let leaf = match self.leaf_table(space, at) {
+                Ok(leaf) => leaf,
+                Err(error) => {
+                    result = Err(error);
+                    continue;
+                }
+            };
+            let entries = self.table(leaf).iter_mut().skip(first).take(run);
+            for (n, entry) in entries.enumerate() {
+                let flags = entry.flags();
+                // Never the model window's slot or the kernel half, whatever the caller.
+                if !is_user_page(at + n as u64 * PAGE_SIZE)
+                    || !flags.contains(PageTableFlags::PRESENT)
+                    || flags.contains(OWNED)
+                {
+                    result = Err("no shared page there");
+                    continue;
+                }
+                match phys {
+                    Some(phys) => entry.set_addr(PhysAddr::new(phys), flags),
+                    None => entry.set_unused(),
+                }
+            }
+        }
+        result
+    }
+
+    /// The leaf page table that maps `addr` in `space`.
+    fn leaf_table(&self, space: &UserSpace, addr: u64) -> Result<u64, &'static str> {
         if !is_user_page(addr) {
             return Err("not a user page address");
         }
@@ -275,16 +324,7 @@ impl Memory {
             }
             table = entry.addr().as_u64();
         }
-        let entry = &mut self.table(table)[((addr >> 12) & 0x1FF) as usize];
-        let flags = entry.flags();
-        if !flags.contains(PageTableFlags::PRESENT) || flags.contains(OWNED) {
-            return Err("no shared page there");
-        }
-        match phys {
-            Some(phys) => entry.set_addr(PhysAddr::new(phys), flags),
-            None => entry.set_unused(),
-        }
-        Ok(())
+        Ok(table)
     }
 
     /// Maps the firmware page `phys` at `addr` in `space`, present, writable and
