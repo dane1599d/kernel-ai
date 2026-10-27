@@ -11,4 +11,5 @@ publish = false
 doctest = false
 
 [dependencies]
+look = { path = "../look" }
 pc-keyboard = "0.9.0"

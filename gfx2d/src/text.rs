@@ -326,6 +326,58 @@ impl Text {
         text: &str,
     ) -> f32 {
         let (run, _) = self.run(style, scale);
+        self.draw_run(c, clip, x, y, run, scale, color, text)
+    }
+
+    /// The monospace cell at `scale`: its advance in px (fractional), its line
+    /// height in px, and the baseline's offset from the cell's top, the font's
+    /// ascent and descent centred in the line.
+    pub fn cell(&self, scale: f32) -> (f32, i32, i32) {
+        let (run, line) = self.run(TypeStyle::Mono, scale);
+        let face = &self.faces[Face::Mono as usize];
+        let advance = face.ascii[usize::from(b'M')].1 as f32 * run.size / face.upem;
+        let m = face
+            .skrifa
+            .metrics(Size::new(run.size), LocationRef::default());
+        let line = libm::roundf(line * scale) as i32;
+        let glyphs = m.ascent - m.descent;
+        let baseline = libm::roundf((line as f32 - glyphs) / 2.0 + m.ascent) as i32;
+        (advance, line, baseline)
+    }
+
+    /// `text` in the monospace style at `scale`, bold or not, as [`Text::draw`]
+    /// draws it: the terminal's runs.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_mono(
+        &mut self,
+        c: &mut Canvas<'_>,
+        clip: Rect,
+        x: f32,
+        y: i32,
+        scale: f32,
+        bold: bool,
+        color: u32,
+        text: &str,
+    ) -> f32 {
+        let (mut run, _) = self.run(TypeStyle::Mono, scale);
+        if bold {
+            run.weight = 700;
+        }
+        self.draw_run(c, clip, x, y, run, scale, color, text)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_run(
+        &mut self,
+        c: &mut Canvas<'_>,
+        clip: Rect,
+        x: f32,
+        y: i32,
+        run: Run,
+        scale: f32,
+        color: u32,
+        text: &str,
+    ) -> f32 {
         let (glyphs, advance) = self.shape(run, text);
         let size64 = libm::roundf(run.size * 64.0) as u32;
         let hint = libm::fabsf(scale - 1.0) < 1e-3;
