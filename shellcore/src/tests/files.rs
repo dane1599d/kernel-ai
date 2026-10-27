@@ -159,3 +159,36 @@ fn a_script_with_file_rows_runs_in_the_shell_not_a_child() {
         script::check_against(&answer, &dyn_host, &DEFAULT_CONFIG, &agentabi::FS_ROWS).unwrap();
     assert!(!crate::apart::may_run_apart(&checked));
 }
+
+#[test]
+fn a_file_request_runs_through_the_door_and_undo_puts_it_back() {
+    let call = |json: &str| Ok(llmproto::act::parse(json).unwrap());
+    let list = r#"{"name":"fs_list","arguments":{"path":""}}"#;
+    let (host, mut shell) = super::act::with_calls(alloc::vec![
+        call(r#"{"name":"fs_create","arguments":{"path":"notes.txt","text":"hello"}}"#),
+        call(list),
+        call(r#"{"name":"fs_move","arguments":{"from":"notes.txt","to":"plan.txt"}}"#),
+        call(list),
+    ]);
+    let reply = shell.eval("create notes.txt saying hello");
+    assert_eq!(reply, ok("Done: file notes.txt created (was absent). undo"));
+    // A read's content is shown to the user by `show`, never handed back.
+    assert_eq!(shell.eval("list my files"), ok("notes.txt\n"));
+    assert!(
+        shell
+            .eval("show")
+            .text
+            .contains("reads fs_list\n 1 | show(fs_list(\"\"));")
+    );
+    // A move plainly asked for runs at once with undo (ADR 0002 question 9).
+    let moved = shell.eval("move notes.txt to plan.txt");
+    assert!(moved.ok && moved.text.ends_with(". undo"), "{}", moved.text);
+    // `undo` puts the move back; the file is where the first line made it.
+    assert_eq!(shell.eval("undo"), ok("Undone: files back as they were"));
+    assert_eq!(
+        shell.eval("list my files"),
+        ok("notes.txt
+")
+    );
+    assert_eq!(host.files.borrow()["notes.txt"], "hello");
+}

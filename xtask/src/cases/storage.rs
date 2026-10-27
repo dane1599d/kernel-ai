@@ -133,6 +133,19 @@ pub(super) const CASES: &[TestCase] = &[
         min_timeout: Some(std::time::Duration::from_secs(900)),
         ..case("fs-powercut", "test=files-churn")
     },
+    // P2 task 11: file rows through the one door, with the mock model.
+    TestCase {
+        expect: &[
+            "fs-act: a plain create and move ran at once on kai-data, and a read showed only to the user",
+        ],
+        data: Some(VIRTIO),
+        ..case("fs-act", "test=fs-act")
+    },
+    TestCase {
+        expect: &["fs-undo: undo restored the file's transaction, and undo again restored it back"],
+        data: Some(VIRTIO),
+        ..case("fs-undo", "test=fs-undo")
+    },
     // S04-3 raw: 200 commits shaped like kaifs's, every flush point replayed.
     TestCase {
         expect: &["blk-flush: 200 commits durable"],

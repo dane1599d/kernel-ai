@@ -149,6 +149,36 @@ const CONVO_NEW: &[(&str, Expect)] = &[
     ),
 ];
 
+/// `fs-act` (P2 task 11): file rows through the one door, on `kai-data`. A plain
+/// create and move run at once with undo, and a read's content reaches only the
+/// user, through `show`.
+const FS_ACT: &[(&str, Expect)] = &[
+    (
+        "create notes.txt saying hello",
+        Exact("ok Done: file notes.txt created (was absent). undo"),
+    ),
+    ("list my files", StartsWith("ok notes.txt")),
+    ("show", Contains(" 1 | show(fs_list(\"\"));")),
+    (
+        "move notes.txt to plan.txt",
+        Exact("ok Done: file notes.txt moved to plan.txt (was there). undo"),
+    ),
+    ("list my files", StartsWith("ok plan.txt")),
+];
+
+/// `fs-undo` (P2 task 11): `undo` restores the change's transaction, and `undo`
+/// again restores the restore.
+const FS_UNDO: &[(&str, Expect)] = &[
+    (
+        "create notes.txt saying hello",
+        Exact("ok Done: file notes.txt created (was absent). undo"),
+    ),
+    ("undo", Exact("ok Undone: files back as they were")),
+    ("read notes.txt", StartsWith("err ")),
+    ("undo", Exact("ok Undone: files back as they were")),
+    ("read notes.txt", Exact("ok hello")),
+];
+
 /// A script that switches and then throws leaves nothing changed.
 const ROLLBACK: &[(&str, Expect)] = &[
     (
@@ -190,6 +220,12 @@ pub fn check(which: ActCase) -> Result<(), &'static str> {
             log!("pkg-local: install notes ran from the image's repository and undo put the previous set back");
         }),
         ActCase::Convo => convo(),
+        ActCase::FsAct => expect_lines(FS_ACT).map(|()| {
+            log!("fs-act: a plain create and move ran at once on kai-data, and a read showed only to the user");
+        }),
+        ActCase::FsUndo => expect_lines(FS_UNDO).map(|()| {
+            log!("fs-undo: undo restored the file's transaction, and undo again restored it back");
+        }),
     }
 }
 

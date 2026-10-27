@@ -18,6 +18,8 @@ pub enum ActCase {
     Rule,
     PkgLocal,
     Convo,
+    FsAct,
+    FsUndo,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -192,6 +194,8 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=act-rule" => Some(SelfTest::Act(ActCase::Rule)),
             "test=pkg-local" => Some(SelfTest::Act(ActCase::PkgLocal)),
             "test=act-convo" => Some(SelfTest::Act(ActCase::Convo)),
+            "test=fs-act" => Some(SelfTest::Act(ActCase::FsAct)),
+            "test=fs-undo" => Some(SelfTest::Act(ActCase::FsUndo)),
             "test=live" => Some(SelfTest::Live),
             "test=edit" => Some(SelfTest::Edit),
             "test=appbench" => Some(SelfTest::AppBench),
