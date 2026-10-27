@@ -136,11 +136,11 @@ jobs:
           cmp build-a/NOTICES.txt offline/NOTICES.txt
       - name: The assets
         run: |
-          mkdir assets
-          zstd -19 --single-thread -q build-a/kernel-ai.img -o "assets/kernel-ai-$VERSION-x86_64.img.zst"
-          cp build-a/NOTICES.txt assets/NOTICES.txt
-          cp "source/kernel-ai-$VERSION-source.tar.zst" assets/
-          python3 - "$VERSION" > assets/RELEASE-NOTES.md <<'EOF'
+          mkdir release-assets
+          zstd -19 --single-thread -q build-a/kernel-ai.img -o "release-assets/kernel-ai-$VERSION-x86_64.img.zst"
+          cp build-a/NOTICES.txt release-assets/NOTICES.txt
+          cp "source/kernel-ai-$VERSION-source.tar.zst" release-assets/
+          python3 - "$VERSION" > release-assets/RELEASE-NOTES.md <<'EOF'
           import json, sys
           catalog = json.load(open("xtask/models.json"))
           model = next(m for m in catalog["models"] if m["id"] == catalog["default"])
@@ -150,12 +150,12 @@ jobs:
           print(f"- SHA-256 `{model['sha256']}`, {model['size']} bytes, licence {model['license']}")
           print("- Base model: Qwen/Qwen3-4B-Instruct-2507")
           EOF
-          (cd assets && sha256sum -- * > SHA256SUMS)
-          cat assets/SHA256SUMS
+          (cd release-assets && sha256sum -- * > SHA256SUMS)
+          cat release-assets/SHA256SUMS
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-${{ env.VERSION }}
-          path: assets/
+          path: release-assets/
 
   sign:
     name: Sign as TUF targets (test root), accept and refuse
@@ -166,13 +166,13 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: release-${{ env.VERSION }}
-          path: assets
+          path: release-assets
       - name: Throwaway root; the image and SHA256SUMS as targets; a client accepts them, a flipped byte is refused
         run: |
           python3 -m venv "$RUNNER_TEMP/venv"
           "$RUNNER_TEMP/venv/bin/pip" install --quiet tuf==6.0.0 'securesystemslib[crypto]==1.3.0'
           "$RUNNER_TEMP/venv/bin/python" .github/release/tuf_test_target.py "$RUNNER_TEMP/tuf" \
-            "assets/kernel-ai-$VERSION-x86_64.img.zst" assets/SHA256SUMS
+            "release-assets/kernel-ai-$VERSION-x86_64.img.zst" release-assets/SHA256SUMS
       - name: The founder's YubiKey signing event (stub until P4 task 18)
         run: |
           echo "stub: tuf-on-ci opens the signing event in dane1599d/kernel-ai-updates once the root ceremony is done"
@@ -191,17 +191,17 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: release-${{ env.VERSION }}
-          path: assets
+          path: release-assets
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: assets/*
+          subject-path: release-assets/*
       - name: Draft the GitHub Release; the founder publishes it by hand
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           prerelease=$([[ "$VERSION" == *-rc.* ]] && echo --prerelease || true)
           gh release create "$VERSION" --repo "$GITHUB_REPOSITORY" --draft --verify-tag $prerelease \
-            --title "Kernel AI $VERSION" --notes-file assets/RELEASE-NOTES.md assets/*
+            --title "Kernel AI $VERSION" --notes-file release-assets/RELEASE-NOTES.md release-assets/*
       - name: Publish to kernel-ai-updates (stub until P4 task 18)
         run: |
           echo "stub: snapshot and timestamp are signed and published once the root ceremony is done"
