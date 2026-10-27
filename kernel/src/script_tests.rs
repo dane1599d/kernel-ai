@@ -96,11 +96,14 @@ pub fn check() -> Result<(), &'static str> {
         return Err("scripts: a run-tier script did not switch the policy at once");
     }
     // P1 task 14: the scripts ran in the shell's pooled `scriptrun` child, which
-    // waits there for the next one.
-    if !crate::process::named("scriptrun")
-        .iter()
-        .any(|&(_, supervised)| !supervised)
-    {
+    // waits there for the next one; the pool names its children `scriptrun-1`
+    // to `scriptrun-4` (`process::job`).
+    let pooled = (1..=4).any(|k| {
+        crate::process::named(&alloc::format!("scriptrun-{k}"))
+            .iter()
+            .any(|&(_, supervised)| !supervised)
+    });
+    if !pooled {
         return Err("scripts: no scriptrun child of the shell ran them");
     }
     after_switch();
