@@ -186,6 +186,20 @@ pub fn routed(
 
 /// One call for `request` after `history`, under `grammar`. `on_step` stops it
 /// only when time is up.
+/// `request` as the prompt takes it: without its State line when the State line
+/// and the request together pass [`act::STATE_REQUEST_TOKENS`] real tokens
+/// (ADR 0010 §5). A request still over that leaves the answer less room.
+pub(crate) fn within_budget(engine: &Engine<'_>, request: &ActRequest) -> ActRequest {
+    let text = act::user_text(&request.state, &request.line);
+    match !request.state.is_empty() && engine.text_tokens(&text) > act::STATE_REQUEST_TOKENS {
+        true => ActRequest {
+            state: String::new(),
+            ..request.clone()
+        },
+        false => request.clone(),
+    }
+}
+
 pub fn act(
     engine: &mut Engine<'_>,
     grammar: &Tagged<'_>,
@@ -193,7 +207,7 @@ pub fn act(
     history: &History,
     on_step: impl FnMut(Step) -> Next,
 ) -> Result<Call, ActError> {
-    let asked = act::request(request, history);
+    let asked = act::request(&within_budget(engine, request), history);
     let turns = super::turns(&asked);
     let mut sampler = Sampler::seeded(script::TEMPERATURE, script::SEED);
     let reply = engine
@@ -302,6 +316,44 @@ mod tests {
         ] {
             assert!(g.advance(g.start(), text.as_bytes()).is_err(), "{text}");
         }
+    }
+
+    /// The State line stays while it and the request fit 224 real tokens, and
+    /// goes once they pass it; the request itself is never cut.
+    #[test]
+    fn the_state_line_goes_when_state_and_request_pass_224_tokens() {
+        let bytes = infer::fixture::local_script(&crate::local::system_prompts());
+        let budget = infer::chat::Budget {
+            kv_bytes: 64 << 20,
+            other_bytes: 64 << 20,
+        };
+        let engine = Engine::load(&bytes, quant::Tier::best(), 2048, budget).unwrap();
+        let short = ActRequest {
+            line: "stop this".into(),
+            state: "#{dir: \"/home/user\", net: \"up\"}".into(),
+            timeout_ms: 1,
+        };
+        assert_eq!(within_budget(&engine, &short), short);
+        let windows = (0..20)
+            .map(|i| alloc::format!("\"w{i}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let long = ActRequest {
+            // Words the fixture's merges never saw, so each is several tokens.
+            line: (0..60)
+                .map(|i| alloc::format!("q{}z", i * 37 % 101))
+                .collect::<Vec<_>>()
+                .join(" "),
+            state: alloc::format!("#{{windows: [{windows}]}}"),
+            ..short.clone()
+        };
+        let text = act::user_text(&long.state, &long.line);
+        assert!(engine.text_tokens(&text) > act::STATE_REQUEST_TOKENS);
+        let kept = within_budget(&engine, &long);
+        assert_eq!(
+            (kept.state.as_str(), kept.line.as_str()),
+            ("", long.line.as_str())
+        );
     }
 
     /// On the generated local-script model the answer is always a call that
