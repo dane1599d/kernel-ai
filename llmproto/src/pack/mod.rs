@@ -38,14 +38,13 @@ const BYTES_PER_TOKEN: f32 = 3.32;
 /// here has no full line in the pack; an `act` call that names one with
 /// arguments is decoded once more with [`group_text`] after the request
 /// (`local::act`). Scripts are written by the script prompt, which keeps
-/// every function, so they are untouched. The least-used rows: the scheduler
-/// trial and the component revert. Reads stay in full: their return types are
-/// how `act` tells a question `script` can answer from one it cannot (run
-/// 40486342534 indexed them, and M8 through script fell from 47 to 40 of 50).
-pub const INDEX: &[(&str, &[&str])] = &[
-    ("tune", &["tune", "tune_undo"]),
-    ("component", &["component_revert"]),
-];
+/// every function, so they are untouched. The least-used row: the component
+/// revert. Reads stay in full: their return types are how `act` tells a
+/// question `script` can answer from one it cannot (run 40486342534 indexed
+/// them, and M8 through script fell from 47 to 40 of 50). So do the scheduler
+/// trial's rows: from a bare `tune` the model asks how to tune instead of
+/// calling it (run 40503318565, the os arm at 11 of 13).
+pub const INDEX: &[(&str, &[&str])] = &[("component", &["component_revert"])];
 
 /// The index group `name` is in, if it is index-only.
 pub fn indexed(name: &str) -> Option<(&'static str, &'static [&'static str])> {

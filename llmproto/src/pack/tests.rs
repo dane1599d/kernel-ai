@@ -150,8 +150,9 @@ fn index_rows_are_named_once_and_shown_in_full_on_demand() {
             assert_eq!(indexed(name).map(|(g, _)| g), Some(*group));
         }
     }
-    assert!(group_text("tune").contains("tune(target: string?, intent: string?) [ask]"));
+    assert!(group_text("component").contains("component_revert("));
     assert_eq!(indexed("set_policy"), None);
+    assert_eq!(indexed("tune"), None);
     // An index line is not a row's own line: no other name is shown by it.
-    assert!(!shows(&pack, "tune_redo"));
+    assert!(!shows(&pack, "component_list"));
 }

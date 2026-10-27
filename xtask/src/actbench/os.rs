@@ -39,16 +39,16 @@ pub const TASKS: &[(&str, Want)] = &[
     ("stop netd", Row("service_stop", "netd")),
     ("start netd", Say),
     ("restart the llm service", Row("service_restart", "llm")),
-    // Index-only rows (ADR 0010 §6): named on an index line, so a call with
-    // arguments takes the second round with the group's full lines.
     ("tune the indexer", Row("tune", "indexer")),
-    (
-        "roll the notes component back one version",
-        Row("component_revert", "notes"),
-    ),
     (
         "put back the policy the scheduler trial replaced",
         Row("tune_undo", ""),
+    ),
+    // Index-only (ADR 0010 §6): named on an index line, so a call with
+    // arguments takes the second round with the group's full lines.
+    (
+        "roll the notes component back one version",
+        Row("component_revert", "notes"),
     ),
 ];
 /// Share of [`TASKS`] that must come right: 12 of 13.
