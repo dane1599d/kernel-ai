@@ -12,6 +12,16 @@
 //! `current` through `fs` itself, by the `SYSTEM_PKG` badge, and checks it names
 //! the generation that step leaves. On boot 1 it also checks that `pkg` holds
 //! no capability bits and starts with that one `Dir`, and no home folder.
+//!
+//! `test=pkg-image [again|tampered]` (P4 task 1): `pkg`'s plan line adds
+//! `boot=pkgrepo`, and it makes the image's signed repository generation 1:
+//! - boot 1, `step=image`: generation 1 holds notes, from the image;
+//! - boot 2, `again`: generation 1 is still current, seeded once;
+//! - `tampered`, its own case on a fresh disk, with one byte of notes's target
+//!   flipped in the bundle: notes is refused by name, generation 1 is empty.
+//!
+//! Its kernel half reads `gen/1` through `fs` as well, and checks that `pkg`
+//! holds the plan's `boot=pkgrepo`.
 
 use crate::process;
 use crate::{handle, ipc, log, threads};
@@ -31,6 +41,9 @@ pub enum Step {
     Install,
     Undo,
     Check,
+    Image,
+    ImageAgain,
+    ImageTampered,
 }
 
 impl Step {
@@ -48,11 +61,33 @@ impl Step {
         }
     }
 
+    /// The word after `test=pkg-image`: none for boot 1.
+    pub fn image_from_cmdline(cmdline: &str) -> Self {
+        let words: Vec<&str> = cmdline.split_whitespace().collect();
+        if words.contains(&"tampered") {
+            Step::ImageTampered
+        } else if words.contains(&"again") {
+            Step::ImageAgain
+        } else {
+            Step::Image
+        }
+    }
+
     fn name(self) -> &'static str {
         match self {
             Step::Install => "install",
             Step::Undo => "undo",
             Step::Check => "check",
+            Step::Image => "image",
+            Step::ImageAgain => "image-again",
+            Step::ImageTampered => "image-tampered",
+        }
+    }
+
+    fn case(self) -> &'static str {
+        match self {
+            Step::Install | Step::Undo | Step::Check => "pkg-store",
+            Step::Image | Step::ImageAgain | Step::ImageTampered => "pkg-image",
         }
     }
 
@@ -62,16 +97,22 @@ impl Step {
             Step::Install => (1, 2),
             Step::Undo => (2, 3),
             Step::Check => (3, 3),
+            Step::Image | Step::ImageTampered => (1, 1),
+            Step::ImageAgain => (2, 1),
         }
     }
 }
 
-/// Plan lines: `fs`, then `pkg` with `/system/pkg` and nothing else. `pkg` needs
-/// a deeper stack than the 16-page default: fsproto's minicbor decoder
-/// recurses, and overflowed it in `Decoder::array`.
+/// Plan lines: `fs`, then `pkg` with `/system/pkg`, and for `pkg-image` the
+/// image's repository too. `pkg` needs a deeper stack than the 16-page default:
+/// fsproto's minicbor decoder recurses, and overflowed it in `Decoder::array`.
 pub fn plan(step: Step) -> String {
+    let boot = match step.case() {
+        "pkg-image" => " boot=pkgrepo",
+        _ => "",
+    };
     format!(
-        "{}\n{CLIENT} dir=pkg pages=2048 stack_pages=128 step={}",
+        "{}\n{CLIENT} dir=pkg{boot} pages=2048 stack_pages=128 step={}",
         kabi::plan::FS,
         step.name()
     )
@@ -79,18 +120,53 @@ pub fn plan(step: Step) -> String {
 
 pub fn check(step: Step) -> Result<(), &'static str> {
     let (boot, generation) = step.boot_and_generation();
+    let case = step.case();
     wait_for(&format!("case/{}.done", step.name()))
-        .map_err(|_| "pkg-store: pkg did not finish its step")?;
+        .map_err(|_| "pkg: pkg did not finish its step")?;
     let current = read("current")?;
-    let current = core::str::from_utf8(&current).map_err(|_| "pkg-store: current is not text")?;
+    let current = core::str::from_utf8(&current).map_err(|_| "pkg: current is not text")?;
     if current.trim_end().parse::<u64>() != Ok(generation) {
-        log!("pkg-store: boot {boot}: current holds {current:?}, wanted {generation}");
-        return Err("pkg-store: current names another generation");
+        log!("{case}: boot {boot}: current holds {current:?}, wanted {generation}");
+        return Err("pkg: current names another generation");
     }
-    if step == Step::Install {
-        only_its_folder()?;
+    match step {
+        Step::Install => only_its_folder()?,
+        Step::Image | Step::ImageAgain | Step::ImageTampered => image_generation(step)?,
+        Step::Undo | Step::Check => {}
     }
-    log!("pkg-store: boot {boot}: fs shows generation {generation} current, as pkg left it");
+    log!("{case}: boot {boot}: fs shows generation {generation} current, as pkg left it");
+    Ok(())
+}
+
+/// Generation 1 is the image's, notes, or nothing when notes's target was
+/// tampered with; and `pkg` holds the plan's `boot=pkgrepo`.
+fn image_generation(step: Step) -> Result<(), &'static str> {
+    let first = read("gen/1")?;
+    let first = core::str::from_utf8(&first).map_err(|_| "pkg-image: gen/1 is not text")?;
+    let packages: Vec<&str> = first.lines().filter(|l| l.starts_with("pkg ")).collect();
+    let wanted = match step {
+        Step::ImageTampered => packages.is_empty(),
+        _ => packages.len() == 1 && packages[0].starts_with("pkg notes 1.0.0 "),
+    };
+    if !wanted {
+        log!("pkg-image: gen/1 holds {packages:?}");
+        return Err("pkg-image: generation 1 is not the image's packages");
+    }
+    let pid = process::named(CLIENT).first().map(|&(pid, _)| pid);
+    let boot = process::with_table(|t| {
+        t.iter()
+            .find(|p| p.live() && Some(p.pid) == pid)
+            .and_then(|p| p.boot)
+    });
+    if boot != Some(supervise::BootFiles::Pkgrepo) {
+        return Err("pkg-image: pkg does not hold boot=pkgrepo");
+    }
+    match step {
+        Step::ImageTampered => {
+            log!("pkg-image: generation 1 holds no package: the tampered notes is not in it")
+        }
+        _ => log!("pkg-image: generation 1 is notes 1.0.0, from the image's signed repository"),
+    }
     Ok(())
 }
 
@@ -129,8 +205,8 @@ fn ask(badge: u64, request: Request) -> Result<Reply, &'static str> {
         handles: Vec::new(),
     };
     let (reply, _, _) = ipc::call_with(SERVICE, &bytes, 0, deadline, || false, extra)
-        .map_err(|_| "pkg-store: a call to fs failed")?;
-    fsproto::decode_reply(&reply).map_err(|_| "pkg-store: fs's reply does not decode")
+        .map_err(|_| "pkg: a call to fs failed")?;
+    fsproto::decode_reply(&reply).map_err(|_| "pkg: fs's reply does not decode")
 }
 
 /// `/system/pkg/<path>`, whole.
@@ -144,7 +220,7 @@ fn read(path: &str) -> Result<Vec<u8>, &'static str> {
         },
     )?;
     let Reply::Opened(stat, file) = opened else {
-        return Err("pkg-store: a file in /system/pkg cannot be opened");
+        return Err("pkg: a file in /system/pkg cannot be opened");
     };
     let mut out = Vec::new();
     while (out.len() as u64) < stat.size {
@@ -154,7 +230,7 @@ fn read(path: &str) -> Result<Vec<u8>, &'static str> {
         };
         match ask(file, request)? {
             Reply::Data(data) if !data.is_empty() => out.extend_from_slice(&data),
-            _ => return Err("pkg-store: a read in /system/pkg failed"),
+            _ => return Err("pkg: a read in /system/pkg failed"),
         }
     }
     Ok(out)

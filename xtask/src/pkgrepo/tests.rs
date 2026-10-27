@@ -637,3 +637,27 @@ fn metadata_that_does_not_verify_keeps_nothing() {
         "the image has no metadata/1.root.json"
     );
 }
+
+#[test]
+fn a_flipped_byte_in_the_bundle_is_refused_by_name() {
+    let repo = tuf::build(&[notes(), hello()], &keys(1), NOW).unwrap();
+    let mut modules = as_modules(repo);
+    assert!(modules.iter().all(|m| m.path.starts_with("pkgrepo/")));
+    let as_read = |modules: &[Module]| Repository {
+        files: modules
+            .iter()
+            .map(|m| (m.path["pkgrepo/".len()..].to_string(), m.bytes.clone()))
+            .collect(),
+    };
+    flip(&mut modules, "notes").unwrap();
+    let (kept, refused) = image(as_read(&modules), NOW).unwrap();
+    assert_eq!(kept, ["hello-1.0.0.kpkg"]);
+    assert!(refused[0].starts_with("notes-1.0.0.kpkg: length or hash"), "{refused:?}");
+    flip(&mut modules, "notes").unwrap();
+    let (kept, refused) = image(as_read(&modules), NOW).unwrap();
+    assert_eq!((kept.len(), refused.len()), (2, 0));
+    assert_eq!(
+        flip(&mut modules, "weather").unwrap_err(),
+        "the image's repository has no weather"
+    );
+}

@@ -126,16 +126,63 @@ pub fn main(args: &[String]) -> Result<(), String> {
     }
 }
 
+/// Where the image's repository lies in the boot bundle (ADR 0011 §8): `pkg`
+/// reads it there with BOOT_READ, granted by its plan line's `boot=pkgrepo`.
+pub const IMAGE_DIR: &str = "pkgrepo";
+
+fn unix_now() -> Result<Time, String> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| e.to_string())?;
+    Ok(Time(now.as_secs()))
+}
+
+/// The image's repository as boot modules under [`IMAGE_DIR`]: every app of
+/// [`APPS`] packed from `versions`, the boot drive's, and signed by a fresh test
+/// root (P4 plan §4, item 3).
+pub fn image_modules(root: &Path, versions: &[Module]) -> Result<Vec<Module>, String> {
+    let packages = pack_all(root, versions)?;
+    let keys = Keys::generate()?;
+    let repository = tuf::build(&packages, &keys, unix_now()?)?;
+    println!(
+        "xtask: the image's repository: {} packages signed by test root {}",
+        packages.len(),
+        &keys.root.id()[..12]
+    );
+    Ok(as_modules(repository))
+}
+
+/// `repository`'s files as boot modules under [`IMAGE_DIR`].
+fn as_modules(repository: Repository) -> Vec<Module> {
+    let modules = repository.files.into_iter().map(|(path, bytes)| Module {
+        path: format!("{IMAGE_DIR}/{path}"),
+        bytes,
+    });
+    modules.collect()
+}
+
+/// Flips the last byte of `package`'s target among `modules`, the image's
+/// repository, for a tamper case; flipping again puts it back. The bundle's own
+/// digests are computed after, so only the signed metadata can tell.
+pub fn flip(modules: &mut [Module], package: &str) -> Result<(), String> {
+    let prefix = format!("{IMAGE_DIR}/targets/");
+    let named = format!(".{package}-");
+    let module = modules
+        .iter_mut()
+        .find(|m| m.path.starts_with(&prefix) && m.path.contains(&named))
+        .ok_or_else(|| format!("the image's repository has no {package}"))?;
+    let last = module.bytes.last_mut().ok_or("an empty target")?;
+    *last ^= 1;
+    Ok(())
+}
+
 /// Packs the apps, signs them into a repository with a fresh test root, and
 /// writes it to `dir`.
 fn build(root: &Path, dir: &Path) -> Result<Repository, String> {
     let versions = components::build(root)?;
     let packages = pack_all(root, &versions)?;
     let keys = Keys::generate()?;
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| e.to_string())?;
-    let repository = tuf::build(&packages, &keys, Time(now.as_secs()))?;
+    let repository = tuf::build(&packages, &keys, unix_now()?)?;
     write(&repository, dir)?;
     for package in &packages {
         println!(

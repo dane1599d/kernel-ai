@@ -600,6 +600,23 @@ pub fn interrupted() -> bool {
     call(call::INTERRUPTED, [0; 6]).is_ok_and(|flag| flag != 0)
 }
 
+/// Copies the boot bundle's file `path` into `buf` when it fits; its length
+/// either way. Only beneath what this process's plan line grants with `boot=`.
+pub fn boot_read(path: &str, buf: &mut [u8]) -> Result<usize, Error> {
+    call(
+        call::BOOT_READ,
+        [
+            path.as_ptr() as u64,
+            path.len() as u64,
+            buf.as_mut_ptr() as u64,
+            buf.len() as u64,
+            0,
+            0,
+        ],
+    )
+    .map(|len| len as usize)
+}
+
 /// Copies version `label` of this process's component into `buf` when it fits;
 /// its length either way.
 pub fn comp_fetch(label: &str, buf: &mut [u8]) -> Result<usize, Error> {

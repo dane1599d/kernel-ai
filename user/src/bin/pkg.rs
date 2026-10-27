@@ -1,8 +1,13 @@
-//! The `pkg` service, its first slice (P4 task 1; ADR 0011 §5, §12): kaipkg's
-//! store and generations on kaifs, through the `Dir` handle for `/system/pkg`
-//! it gets at startup and `fs` serves (`kaipkg::fsvol`). TUF verification and
-//! the image's repository join once `kaituf` lands; until then the one package
-//! it installs comes from memory.
+//! The `pkg` service (P4 task 1; ADR 0011 §5, §8, §12): kaipkg's store and
+//! generations on kaifs, through the `Dir` handle for `/system/pkg` it gets at
+//! startup and `fs` serves (`kaipkg::fsvol`), and the image's signed repository,
+//! which it reads with BOOT_READ beneath `pkgrepo/` (its plan line's
+//! `boot=pkgrepo`) and checks with `kaituf` (`kaipkg::image`).
+//!
+//! For boot case `pkg-image`, `step=image`, `image-again` and `image-tampered`
+//! each check the image's repository, print each package it refuses by name,
+//! and make the rest generation 1 if the store has no generation yet. Each first
+//! shows that BOOT_READ refuses every path outside `pkgrepo/`.
 //!
 //! For boot case `pkg-store` (P2 plan §1), three boots on one data disk, each a
 //! `step=`:
@@ -28,10 +33,12 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use fsproto::{Reply, Request};
+use kabi::Error;
 use kabi::handle::{Handle, HandleInfo, Kind, MAX_STARTUP, MAX_TRANSFER};
 use kaipkg::bundle;
 use kaipkg::fsvol::{FsVolume, Transport};
 use kaipkg::generation::{Generation, Time};
+use kaipkg::image::Files;
 use kaipkg::resolve::{Entry, Want};
 use kaipkg::store::{self, Ctx, Ledger, Source, Store, Volume};
 use kaipkg::version::Version;
@@ -57,7 +64,8 @@ fn main() -> i32 {
     let mut vol = FsVolume::new(Calls, root);
     let result = match step {
         Some(step @ ("install" | "undo" | "check")) => run(&mut vol, step),
-        _ => Err(String::from("no step=install, undo or check")),
+        Some(step @ ("image" | "image-again" | "image-tampered")) => image(&mut vol, step),
+        _ => Err(String::from("no step=install, undo, check or image")),
     };
     match result {
         Ok(line) => println!("pkg: {line}"),
@@ -124,6 +132,96 @@ impl Ledger for NoLedger {
     fn collected(&mut self, _: &mut dyn Volume, _: &[u64], _: usize) -> Result<(), String> {
         Ok(())
     }
+}
+
+/// Where the image's repository lies in the boot bundle.
+const REPO: &str = "pkgrepo/";
+
+/// The image's repository, read with BOOT_READ.
+struct BootRepo;
+
+impl Files for BootRepo {
+    fn file(&mut self, path: &str, max: u64) -> Result<Option<Vec<u8>>, String> {
+        let path = format!("{REPO}{path}");
+        let len = match sys::boot_read(&path, &mut []) {
+            Ok(len) => len,
+            Err(Error::NotFound) => return Ok(None),
+            Err(e) => return Err(format!("BOOT_READ {path}: {e:?}")),
+        };
+        if len as u64 > max {
+            return Err(format!("{path} is {len} bytes, over {max}"));
+        }
+        let mut bytes = alloc::vec![0u8; len];
+        match sys::boot_read(&path, &mut bytes) {
+            Ok(got) if got == len => Ok(Some(bytes)),
+            Ok(_) => Err(format!("{path} changed while it was read")),
+            Err(e) => Err(format!("BOOT_READ {path}: {e:?}")),
+        }
+    }
+}
+
+/// BOOT_READ answers Permission outside `pkgrepo/`: the plan line grants that
+/// folder and nothing else of the boot bundle.
+fn outside_refused() -> Result<(), String> {
+    for path in [
+        "kernel.lines",
+        "user/pkg.elf",
+        "pkgrepo",
+        "pkgrepo/../kernel.lines",
+        "/pkgrepo/metadata/1.root.json",
+    ] {
+        match sys::boot_read(path, &mut []) {
+            Err(Error::Permission) => {}
+            other => return Err(format!("BOOT_READ {path:?} gave {other:?}, not Permission")),
+        }
+    }
+    println!("pkg: BOOT_READ refuses every path outside pkgrepo/");
+    Ok(())
+}
+
+/// `step=image*`: the image's repository checked, its refusals printed, and
+/// the rest made generation 1 if the store has no generation.
+fn image(vol: &mut FsVolume<Calls>, step: &str) -> Result<String, String> {
+    outside_refused()?;
+    let store = Store::default();
+    let mut ledger = NoLedger;
+    let time = now(vol);
+    let checked = kaipkg::image::check(&mut BootRepo, time.0, kaipkg::PROVIDED)
+        .map_err(|why| format!("the image's repository is refused: {why}"))?;
+    for (path, why) in &checked.refused {
+        println!("pkg: the image's {path} is refused: {why}");
+    }
+    let mut cx = Ctx {
+        vol,
+        ledger: &mut ledger,
+        now: time,
+        action: 1,
+    };
+    let seeded = store
+        .seed(&mut cx, &checked.packages)
+        .map_err(|e| format!("{e:?}"))?;
+    let current = store::current(cx.vol)?;
+    let listed = names(cx.vol, current)?;
+    let listed = match listed.is_empty() {
+        true => "no packages".to_string(),
+        false => listed.join(", "),
+    };
+    let verified = format!(
+        "the image's repository verified, {} kept and {} refused",
+        checked.packages.len(),
+        checked.refused.len()
+    );
+    let line = match seeded {
+        true => format!("{verified}; generation 1 is its packages: {listed}"),
+        false => format!("{verified}; generation {current} stays current: {listed}"),
+    };
+    let summary = store::check(cx.vol, &store, time)?;
+    cx.vol.write(&format!("pkg/case/{step}"), line.as_bytes())?;
+    Ok(format!(
+        "{line} (store checks: current {}, {} object(s))",
+        summary.current,
+        summary.objects.len()
+    ))
 }
 
 /// `hello` 1.0.0: its header, then a payload no two runs differ in.

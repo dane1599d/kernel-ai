@@ -96,20 +96,84 @@ fn a_lines_folders_go_only_to_its_own_program() {
         "fs caps=serve\npkg dir=pkg\nstore program=pkgd dir=pkg\nnotes caps=call uses=fs",
     );
     assert!(plan.errors.is_empty(), "{:?}", plan.errors);
-    let (_, dirs) = plan.grants("pkg", "pkg").unwrap();
-    assert_eq!(dirs, [Folder::Pkg]);
+    assert_eq!(plan.grants("pkg", "pkg").unwrap().dirs, [Folder::Pkg]);
     // The name kept, the program swapped: refused, never started without it.
     let refused = plan.grants("pkg", "notes").unwrap_err();
     assert!(refused.contains("for program pkg, not notes"), "{refused}");
     // A line's `program=` is the program its folder goes to, not its name.
-    assert_eq!(plan.grants("store", "pkgd").unwrap().1, [Folder::Pkg]);
+    assert_eq!(plan.grants("store", "pkgd").unwrap().dirs, [Folder::Pkg]);
     assert!(plan.grants("store", "store").is_err());
     // A line with no folder keeps today's rule; routes come as before.
+    let notes = Grants {
+        uses: vec!["fs".into()],
+        ..Grants::default()
+    };
+    assert_eq!(plan.grants("notes", "comphost"), Ok(notes));
+    assert_eq!(plan.grants("absent", "pkg"), Ok(Grants::default()));
+}
+
+#[test]
+fn boot_files_go_only_to_the_lines_own_program() {
+    let plan = parse_plan("pkg dir=pkg boot=pkgrepo\nimager program=pkg boot=pkgrepo");
+    assert!(plan.errors.is_empty(), "{:?}", plan.errors);
+    assert_eq!(plan.services[0].boot, Some(BootFiles::Pkgrepo));
     assert_eq!(
-        plan.grants("notes", "comphost"),
-        Ok((vec!["fs".into()], vec![]))
+        plan.grants("pkg", "pkg").unwrap().boot,
+        Some(BootFiles::Pkgrepo)
     );
-    assert_eq!(plan.grants("absent", "pkg"), Ok(Default::default()));
+    let refused = plan.grants("imager", "imager").unwrap_err();
+    assert!(
+        refused.contains("its boot= is for program pkg"),
+        "{refused}"
+    );
+    assert!(plan.grants("pkg", "comphost").is_err());
+    assert_eq!(parse_plan("pkg").services[0].boot, None);
+    for bad in [
+        "pkg boot=",
+        "pkg boot=pkgrepo/",
+        "pkg boot=Pkgrepo",
+        "pkg boot=comp",
+        "pkg boot=pkgrepo+pkgrepo",
+        "pkg boot=pkgrepo boot=pkgrepo",
+        "pkg boot=pkgrepo unsupervised",
+    ] {
+        let plan = parse_plan(bad);
+        assert!(plan.services.is_empty() && plan.errors.len() == 1, "{bad}");
+    }
+}
+
+#[test]
+fn boot_files_reach_only_beneath_their_folder() {
+    let repo = BootFiles::Pkgrepo;
+    for good in [
+        "pkgrepo/metadata/1.root.json",
+        "pkgrepo/targets/0a1b.notes-1.0.0.kpkg",
+        "pkgrepo/x",
+    ] {
+        assert!(repo.allows(good), "{good}");
+    }
+    let long = format!("pkgrepo/{}", "a".repeat(MAX_BOOT_PATH));
+    for bad in [
+        "",
+        "pkgrepo",
+        "pkgrepo/",
+        "/pkgrepo/x",
+        "pkgrepo//x",
+        "pkgrepo/x/",
+        "pkgrepo/../kernel.lines",
+        "pkgrepo/metadata/../../kernel.lines",
+        "pkgrepo/./x",
+        "pkgrepo/..",
+        "pkgrepo\\x",
+        "pkgrepo/x y",
+        "pkgrepo/é",
+        "pkgrepox/y",
+        "comp/notes/2.wasm",
+        "kernel.lines",
+        &long,
+    ] {
+        assert!(!repo.allows(bad), "{bad:?}");
+    }
 }
 
 #[test]
