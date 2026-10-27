@@ -44,6 +44,7 @@ const SCRIPT_LIMIT_MS: u64 = DEFAULT_CONFIG.line_budget_ms + 2_000;
 struct System {
     pool: apart::Pool,
     files: files::Files,
+    state: files::State,
 }
 
 /// The route to the llm service: the shell's plan line has `uses=llm`, its only
@@ -241,6 +242,16 @@ impl Host for System {
             .map_err(|error| format!("{error:?}"))
     }
 
+    fn log_read(&self) -> Option<String> {
+        self.state.read_log()
+    }
+
+    /// Its own action for now; the same commit as the change it logs comes with
+    /// one action spanning the change and the log line.
+    fn log_write(&self, text: &str) -> Result<(), String> {
+        self.state.write_log(text, self.files.next_action())
+    }
+
     fn fs_read(&self, read: shellcore::FsRead) -> Result<String, String> {
         self.files.read(read)
     }
@@ -302,10 +313,14 @@ impl Host for System {
 fn main() -> i32 {
     let args = args();
     let mut shell = Shell::new(
-        Rc::new(System {
-            pool: apart::Pool::new(),
-            files: files::Files::new(),
-        }),
+        {
+            let (files, state) = files::Files::new();
+            Rc::new(System {
+                pool: apart::Pool::new(),
+                files,
+                state,
+            })
+        },
         DEFAULT_CONFIG,
     );
     println!("up (restart {})", arg(&args, "restart").unwrap_or("0"));

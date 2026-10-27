@@ -28,11 +28,18 @@ pub struct Files {
 }
 
 impl Files {
-    pub fn new() -> Self {
-        Self {
-            home: startup_dir(),
+    /// `/home/user` and `/system/state`: STARTUP lists FILES's `Dir` before
+    /// SYSTEM_STATE's (the kernel's `handle::create`).
+    pub fn new() -> (Self, State) {
+        let dirs = startup_dirs();
+        let files = Self {
+            home: dirs.first().copied(),
             action: Cell::new(1),
-        }
+        };
+        let state = State {
+            dir: dirs.get(1).copied(),
+        };
+        (files, state)
     }
 
     fn home(&self) -> Result<Handle, String> {
@@ -81,11 +88,17 @@ impl Files {
         }
     }
 
+    /// The next action number, for `Begin`.
+    pub fn next_action(&self) -> u64 {
+        let action = self.action.get();
+        self.action.set(action + 1);
+        action
+    }
+
     /// One change as one action; its generation, the transaction `undo` restores.
     pub fn change(&self, change: FsChange) -> Result<u64, String> {
         let home = self.home()?;
-        let action = self.action.get();
-        self.action.set(action + 1);
+        let action = self.next_action();
         expect_done(home, Request::Begin { action })?;
         let made = make(home, change);
         let ended = match made {
@@ -186,13 +199,60 @@ fn parent(path: &str) -> (&str, &str) {
     path.rsplit_once('/').unwrap_or(("", path))
 }
 
-fn startup_dir() -> Option<Handle> {
+fn startup_dirs() -> Vec<Handle> {
     let mut handles = [HandleInfo::default(); MAX_STARTUP];
-    let count = sys::startup(&mut handles).ok()?;
+    let count = sys::startup(&mut handles).unwrap_or(0);
     handles[..count.min(MAX_STARTUP)]
         .iter()
-        .find(|h| h.kind() == Some(Kind::Dir))
+        .filter(|h| h.kind() == Some(Kind::Dir))
         .map(|h| Handle(h.handle))
+        .collect()
+}
+
+/// `/system/state`, where the shell keeps its action log (P2 task 12). The AI's
+/// file rows never reach it: they go through `Files`' home `Dir` only.
+pub struct State {
+    dir: Option<Handle>,
+}
+
+/// The log's file beneath `/system/state`.
+const LOG: &str = "log";
+
+impl State {
+    /// The log as `/system/state/log` holds it; `None` with no such file or no
+    /// handle.
+    pub fn read_log(&self) -> Option<String> {
+        let file = open(self.dir?, LOG, How::Existing, Rights::READ).ok()?;
+        let text = read_all(file);
+        close(file);
+        text.ok()
+    }
+
+    /// Writes the whole log, as one action of its own.
+    pub fn write_log(&self, text: &str, action: u64) -> Result<(), String> {
+        let dir = self
+            .dir
+            .ok_or_else(|| String::from("no /system/state here"))?;
+        expect_done(dir, Request::Begin { action })?;
+        let wrote = open(dir, LOG, How::Existing, Rights::WRITE)
+            .or_else(|_| open(dir, LOG, How::CreateFile, Rights::WRITE))
+            .and_then(|file| {
+                let wrote = expect_done(file, Request::Truncate { size: 0 })
+                    .and_then(|()| write_all(file, text.as_bytes()));
+                close(file);
+                wrote
+            });
+        match wrote {
+            Ok(()) => match ask(dir, Request::Commit)?.0 {
+                Reply::Committed { .. } => Ok(()),
+                other => Err(unexpected(&other)),
+            },
+            Err(why) => {
+                let _ = ask(dir, Request::Abort);
+                Err(why)
+            }
+        }
+    }
 }
 
 /// One request on `on`; the reply and the handle it moved, if any.
