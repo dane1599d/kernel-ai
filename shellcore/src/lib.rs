@@ -322,11 +322,7 @@ impl Shell {
             last_output: None,
             partial: None,
             clarifying: None,
-            pack_id: llmproto::pack::pack_id(
-                llmproto::pack::Format::Dsl1,
-                "",
-                &llmproto::pack::render(llmproto::pack::Format::Dsl1),
-            ),
+            pack_id: llmproto::pack::act_pack_id(),
         }
     }
 

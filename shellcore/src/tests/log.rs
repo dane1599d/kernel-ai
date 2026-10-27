@@ -103,8 +103,7 @@ fn a_model_turns_entry_carries_the_packs_id_and_a_typed_undo_none() {
     let (_host, mut shell) = super::act::with_calls(vec![Ok(llmproto::act::parse(rr).unwrap())]);
     shell.eval("switch to round robin");
     shell.eval("undo");
-    let pack = llmproto::pack::render(llmproto::pack::Format::Dsl1);
-    let id = llmproto::pack::pack_id(llmproto::pack::Format::Dsl1, "", &pack);
+    let id = llmproto::pack::act_pack_id();
     let text = shell.eval("log actlog").text;
     assert!(text.contains("E 1 t="), "{text}");
     assert!(
