@@ -32,7 +32,9 @@ pub mod thread;
 pub use error::Error;
 pub use ipc::{CallRequest, HttpRequest, MAX_MESSAGE};
 pub use metrics::{MAX_METRIC_PROCESSES, Metrics, ProcessInfo};
-pub use process::{ExitReason, ExitRecord, JobSpawn, Limits, MAX_ARGS, MAX_STATE, SpawnRequest};
+pub use process::{
+    ExitReason, ExitRecord, JobSpawn, Limits, MAX_ARGS, MAX_PLAN, MAX_STATE, SpawnRequest,
+};
 
 pub const MAX_NAME: usize = 24;
 
