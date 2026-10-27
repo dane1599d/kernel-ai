@@ -1,8 +1,8 @@
 # kaifs (ADR 0004; P2 lane S-engine): clippy on the host and for the soft-float
-# target `fs` ships on, without std; the unit, namespace, undo and hostile tests
-# and the golden images; and the crash gates in release builds, with their
-# figures in the log. Host only: no VM and no model. Runs on pull requests and
-# pushes to main that change kaifs or the lock file, and by hand.
+# target `fs` ships on, without std; the unit, namespace, undo, GC and hostile
+# tests and the golden images; and the crash gates in release builds, with
+# their figures in the log. Host only: no VM and no model. Runs on pull requests
+# and pushes to main that change kaifs or the lock file, and by hand.
 name: kaifs
 
 on:
@@ -43,6 +43,6 @@ jobs:
       - name: Clippy for the soft-float target fs ships on, without std
         run: cargo clippy -p kaifs --target x86_64-unknown-none --no-default-features -- -D warnings
       - name: Unit, namespace, hostile, golden image 1 and the quicker crash gates, in a debug build (overflow checks on)
-        run: cargo test -p kaifs --lib --test hostile --test rings --test alloc --test engine --test namespace --test golden --test undo
+        run: cargo test -p kaifs --lib --test hostile --test rings --test alloc --test engine --test namespace --test golden --test undo --test gc
       - name: Every test and crash gate, in release
         run: cargo test --release -p kaifs -- --nocapture --test-threads 2

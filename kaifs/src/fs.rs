@@ -124,6 +124,8 @@ pub struct Fs<D> {
     /// The volume item calls act on.
     pub(crate) active: u64,
     pub(crate) action: Option<Action>,
+    /// The GC pass running, if any.
+    pub(crate) gc: Option<crate::gc::Gc>,
     writable: bool,
     /// No unknown compat bit is set, so `check --repair` may write.
     repairable: bool,
@@ -175,6 +177,7 @@ impl<D: BlockDev> Fs<D> {
                 alloc,
                 txn: 1,
                 node_reads: 0,
+                gc_pin: 0,
                 faults,
                 deferred: Vec::new(),
             },
@@ -190,6 +193,7 @@ impl<D: BlockDev> Fs<D> {
                 .collect(),
             active: volumes[0].0,
             action: None,
+            gc: None,
             writable: true,
             repairable: true,
             faults,
@@ -244,6 +248,7 @@ impl<D: BlockDev> Fs<D> {
             alloc,
             txn: sb.generation + 1,
             node_reads: 0,
+            gc_pin: 0,
             faults,
             deferred: Vec::new(),
         };
@@ -309,6 +314,7 @@ impl<D: BlockDev> Fs<D> {
             vols,
             active,
             action: None,
+            gc: None,
             writable: true,
             repairable: true,
             faults,
@@ -371,12 +377,14 @@ impl<D: BlockDev> Fs<D> {
             .expect("the active volume exists")
     }
 
-    /// The generation an open action pins, as if it were a snapshot.
+    /// The generation an open action or a running GC pass pins, as if it were a
+    /// snapshot.
     fn pin(&self) -> u64 {
-        match (self.action, self.faults.unpinned_action) {
+        let action = match (self.action, self.faults.unpinned_action) {
             (Some(action), false) => action.base,
             _ => 0,
-        }
+        };
+        action.max(self.gc.as_ref().map_or(0, |gc| gc.generation))
     }
 
     /// The active volume's next object id.
