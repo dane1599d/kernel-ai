@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-pub const DEFAULT_VM: &str = "Kernel AI";
+pub const DEFAULT_VM: &str = kabi::PRODUCT_NAME;
 static NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
 /// The VM this run works on.

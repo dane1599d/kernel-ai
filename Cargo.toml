@@ -115,6 +115,9 @@ default-members = [
 ]
 
 [workspace.package]
+# One version for the whole OS (ADR 0009 D7). Updates are ordered by
+# release_seq, never by SemVer.
+version = "0.1.0-dev"
 edition = "2024"
 license = "MPL-2.0"
 

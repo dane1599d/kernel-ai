@@ -259,7 +259,10 @@ pub fn estimate_tokens(text: &str) -> usize {
 /// SchedCP's registry shape (name, what it does, use when, limits). The same for
 /// every request, so it can be a cached prefix.
 pub fn system_prompt() -> &'static str {
-    "Tune Kernel AI's CPU scheduler. Reply with JSON only:\n\
+    concat!(
+        "Tune ",
+        kabi::product_name!(),
+        "'s CPU scheduler. Reply with JSON only:\n\
      {\"reason\":\"<one sentence>\",\"policy\":\"<policy>\",\
      \"preset\":\"gentle|firm\",\"background\":[\"<name>\"]}\n\
      interactive: woken threads first; the default.\n\
@@ -277,6 +280,7 @@ pub fn system_prompt() -> &'static str {
      \"preset\":\"firm\",\"background\":[\"build-1\",\"build-2\"]}\n\
      Example: the flags say keep is fine and interactive runs: {\"reason\":\"Nothing is \
      flagged.\",\"policy\":\"interactive\",\"preset\":\"gentle\",\"background\":[]}"
+    )
 }
 
 /// The line that ends the turn and turns Qwen3's thinking off.
