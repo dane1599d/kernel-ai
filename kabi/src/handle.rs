@@ -87,8 +87,8 @@ pub enum Kind {
     /// The kernel's input queue: only `desktop`'s.
     Input = 17,
     /// The slots and the boot record ([`crate::update`]): only `updated`'s.
-    /// Numbered at merge.
-    Update = 18,
+    /// Numbered at merge, after the terminal window's `Term` (18, #252).
+    Update = 19,
 }
 
 impl Kind {
@@ -287,6 +287,6 @@ mod tests {
             assert_eq!(Kind::from_raw(kind as u32), Some(kind));
         }
         assert_eq!(Kind::from_raw(0), None);
-        assert_eq!(Kind::from_raw(19), None);
+        assert_eq!(Kind::from_raw(20), None);
     }
 }

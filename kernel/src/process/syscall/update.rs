@@ -88,10 +88,10 @@ fn kind_of(raw: u64) -> Result<diskmap::Guid, Error> {
 /// Off a slot disk there is no active slot, and R is not written.
 fn writable(target: Slot) -> bool {
     match (slots::this_slot(), target) {
-        (Some(active), target) if active == target => false,
-        (_, Slot::R) => slots::active_committed(),
         (None, _) => false,
-        _ => true,
+        (Some(active), target) if active == target => false,
+        (Some(_), Slot::R) => slots::active_committed(),
+        (Some(_), _) => true,
     }
 }
 

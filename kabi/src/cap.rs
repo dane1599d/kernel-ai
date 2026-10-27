@@ -62,8 +62,9 @@ pub const INPUT: u64 = 1 << 16;
 /// Write the inactive slot and the boot record ([`super::call::SLOT_WRITE`],
 /// [`super::call::BOOTREC_SET`]): an `Update` handle with READ and WRITE. The
 /// kernel grants it only to the service named `updated` running the program
-/// `updated` (ADR 0008 §10). Numbered at merge.
-pub const UPDATE: u64 = 1 << 17;
+/// `updated` (ADR 0008 §10). Numbered at merge, after the terminal window's
+/// `TERM` (1 << 17, #252).
+pub const UPDATE: u64 = 1 << 18;
 /// Every capability a supervisor may grant.
 pub const GRANTABLE: u64 = SERVE
     | NET
