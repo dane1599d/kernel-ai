@@ -22,7 +22,7 @@
 //! | 140-149 | C, components | |
 //! | 150-159 | V, virtual machines (P6) | |
 //! | 160-169 | M, memory | |
-//! | 170-179 | U, updates (ADR 0008; asked of lane K, numbered at merge) | SLOT_INFO, SLOT_READ, SLOT_WRITE, SLOT_FLUSH, BOOTREC_GET, BOOTREC_SET |
+//! | 170-179 | U, updates (P4) | SLOT_INFO, SLOT_READ, SLOT_WRITE, SLOT_FLUSH, BOOTREC_GET, BOOTREC_SET |
 //! | 180-191 | not given yet | a lane asks lane K for a block |
 
 /// `exit(code: i32) -> !`
