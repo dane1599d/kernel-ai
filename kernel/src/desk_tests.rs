@@ -78,3 +78,38 @@ pub fn check() -> Result<(), &'static str> {
     log!("desk-windows: dragged Left 200 px and pressed its close control");
     Ok(())
 }
+
+/// `test=desk-restart` (P3 task 6): `desktop` killed while it shows. The
+/// console takes the screen back at once, the supervisor starts `desktop`
+/// again, and `deskdemo` opens its windows again on the new one from the pool
+/// it kept, without restarting.
+pub fn restart() -> Result<(), &'static str> {
+    let desktop = || process::named("desktop").first().map(|&(pid, _)| pid);
+    let shows = |pid: u64| {
+        process::with_table(|t| t.iter().position(|p| p.live() && p.pid == pid))
+            .is_some_and(claim::shows)
+    };
+    wait("desktop and deskdemo", || {
+        desktop().is_some_and(shows) && !process::named("deskdemo").is_empty()
+    })?;
+    threads::sleep_ms(2_000);
+    let (Some(first), Some(&(demo, _))) = (desktop(), process::named("deskdemo").first()) else {
+        return Err("desk-restart: desktop or deskdemo is gone");
+    };
+    if process::kill(first, kabi::ExitReason::Killed).is_err() {
+        return Err("desk-restart: cannot kill desktop");
+    }
+    wait("the console to take the screen back", || {
+        !console::suspended() && desktop() != Some(first)
+    })?;
+    wait("a new desktop to claim the screen", || {
+        desktop().is_some_and(|pid| pid != first && shows(pid))
+    })?;
+    // deskdemo notices the new connection on its next poll.
+    threads::sleep_ms(2_000);
+    if process::named("deskdemo").first().map(|&(pid, _)| pid) != Some(demo) {
+        return Err("desk-restart: deskdemo restarted instead of reconnecting");
+    }
+    log!("desk-restart: desktop was killed and came back, and deskdemo kept running");
+    Ok(())
+}
