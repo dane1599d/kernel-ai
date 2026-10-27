@@ -99,7 +99,7 @@ pub(super) const CASES: &[TestCase] = &[
     },
     TestCase {
         expect: &[
-            "act-convo: a second turn read \"do it again\" and \"the same for\" from memory, still asked, and `new` forgot it",
+            "act-convo: a second turn read \"do it again\", \"undo that\" and \"the same for\" from memory, still asked, and `new` forgot it",
         ],
         ..case("act-convo", "test=act-convo")
     },

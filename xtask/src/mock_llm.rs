@@ -298,6 +298,11 @@ const CONVO: &[(&str, &str, &str)] = &[
         r#"{"name":"set_policy","arguments":{"name":"round-robin"}}"#,
     ),
     (
+        "do it again",
+        "undo that",
+        r#"{"name":"undo","arguments":{"steps":1}}"#,
+    ),
+    (
         "stop spin-a",
         "the same for spin-b",
         r#"{"name":"process_stop","arguments":{"name":"spin-b"}}"#,
@@ -572,6 +577,11 @@ mod act_tests {
             "the same for spin-b",
         ));
         assert!(same.contains("spin-b"), "{same}");
+        let undo = act(&asked(
+            &["turn on round robin scheduling", "do it again"],
+            "undo that",
+        ));
+        assert!(undo.contains(r#""name":"undo""#), "{undo}");
         // With no history, or another turn last, there is nothing to repeat.
         assert!(act(&asked(&[], "do it again")).contains("clarify"));
         let other = act(&asked(

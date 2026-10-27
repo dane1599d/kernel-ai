@@ -133,6 +133,10 @@ const CONVO_AGAIN: &[(&str, Expect)] = &[(
     Contains("policy round-robin (was interactive). undo"),
 )];
 
+/// "undo that" after it is the `undo` call, which puts back what `undo` would.
+const CONVO_UNDO_THAT: &[(&str, Expect)] =
+    &[("undo that", Exact("ok Undone: policy back to interactive"))];
+
 /// `new` forgets the conversation, so "do it again" has nothing to repeat.
 const CONVO_NEW: &[(&str, Expect)] = &[
     (
@@ -424,6 +428,11 @@ fn convo() -> Result<(), &'static str> {
     if !policy_is("round-robin") {
         return Err("act-convo: \"do it again\" did not switch again");
     }
+    after_switch();
+    expect_lines(CONVO_UNDO_THAT)?;
+    if !policy_is("interactive") {
+        return Err("act-convo: \"undo that\" did not put the policy back");
+    }
     // History can make a line understood, never consent: the second stop asks
     // as the first did.
     for (line, process) in [("stop spin-a", "spin-a"), ("the same for spin-b", "spin-b")] {
@@ -439,11 +448,11 @@ fn convo() -> Result<(), &'static str> {
         reply_to("n")?;
     }
     expect_lines(CONVO_NEW)?;
-    if !policy_is("round-robin") {
+    if !policy_is("interactive") {
         return Err("act-convo: a line after `new` changed the policy");
     }
     log!(
-        "act-convo: a second turn read \"do it again\" and \"the same for\" from memory, still asked, and `new` forgot it"
+        "act-convo: a second turn read \"do it again\", \"undo that\" and \"the same for\" from memory, still asked, and `new` forgot it"
     );
     Ok(())
 }
