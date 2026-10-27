@@ -14,13 +14,16 @@ env:
   CARGO_TERM_COLOR: always
 
 # A new push to a pull request cancels that PR's older run; runs on main all finish.
+# Adding any other label (`batch-ready`, `batch-first`) starts a run of its own
+# group whose jobs all skip, so it neither cancels the PR's run nor costs a slot.
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.sha }}
+  group: ci-${{ github.event.pull_request.number || github.sha }}${{ github.event.action == 'labeled' && !startsWith(github.event.label.name, 'full-ci') && format('-label-{0}', github.run_id) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   lint-and-unit:
     name: Format, lint, host unit tests
+    if: github.event.action != 'labeled' || startsWith(github.event.label.name, 'full-ci')
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -78,10 +81,11 @@ jobs:
   qemu:
     name: QEMU 11.0.5 (built once, cached)
     if: >-
-      github.event_name != 'pull_request' ||
+      (github.event.action != 'labeled' || startsWith(github.event.label.name, 'full-ci')) &&
+      (github.event_name != 'pull_request' ||
       startsWith(github.head_ref, 'batch/') ||
       contains(github.event.pull_request.labels.*.name, 'full-ci') ||
-      contains(github.event.pull_request.labels.*.name, 'full-ci-all')
+      contains(github.event.pull_request.labels.*.name, 'full-ci-all'))
     runs-on: ubuntu-24.04
     env:
       QEMU_VERSION: "11.0.5"
