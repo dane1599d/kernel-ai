@@ -19,6 +19,8 @@ pub enum Task {
     Smoke,
     /// The icount measurement spike: the `icount-probe` case booted several times.
     Icount,
+    /// Spike S08-1: the A/B/R boot drill on one variable store (`efi_ab.rs`).
+    EfiAb,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,6 +67,10 @@ pub struct Options {
     /// `test --shard K/N`: boot only shard K (from 1) of N; CI splits the cases
     /// across parallel jobs this way.
     pub shard: Option<(usize, usize)>,
+    /// `efi-ab --kills N`: hard kills of QEMU among the boots.
+    pub kills: usize,
+    /// `efi-ab --seed N`: the drill's random choices.
+    pub seed: u64,
 }
 
 impl Options {
@@ -101,6 +107,7 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
         Some("soak") => Task::Soak,
         Some("smoke") => Task::Smoke,
         Some("icount") => Task::Icount,
+        Some("efi-ab") => Task::EfiAb,
         other => {
             return Err(format!(
                 "expected build, run, test, soak, smoke, icount, fluency, setup, model, bench or \
@@ -127,10 +134,15 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
         store: None,
         sizing: Sizing::default(),
         shift: crate::icount::DEFAULT_SHIFT,
-        boots: crate::icount::DEFAULT_BOOTS,
+        boots: match task {
+            Task::EfiAb => crate::efi_ab::DEFAULT_BOOTS,
+            _ => crate::icount::DEFAULT_BOOTS,
+        },
         wsl: false,
         workload: None,
         shard: None,
+        kills: 0,
+        seed: 1,
     };
     let mut rest = args[1..].iter();
     while let Some(arg) = rest.next() {
@@ -226,6 +238,25 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
                     .and_then(|s| s.parse::<usize>().ok())
                     .filter(|&boots| boots >= 2)
                     .ok_or("--boots expects a number of at least 2")?;
+            }
+            "--boots" if task == Task::EfiAb => {
+                options.boots = rest
+                    .next()
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .filter(|&boots| boots >= 1)
+                    .ok_or("--boots expects a number of at least 1")?;
+            }
+            "--kills" if task == Task::EfiAb => {
+                options.kills = rest
+                    .next()
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .ok_or("--kills expects a number")?;
+            }
+            "--seed" if task == Task::EfiAb => {
+                options.seed = rest
+                    .next()
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .ok_or("--seed expects a number")?;
             }
             "--shard" if task == Task::Test => {
                 let text = rest.next().ok_or("--shard expects K/N, such as 1/3")?;

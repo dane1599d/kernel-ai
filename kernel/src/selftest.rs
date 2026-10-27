@@ -100,6 +100,8 @@ pub enum SelfTest {
     Efi,
     /// A reset through UEFI ResetSystem.
     EfiReset,
+    /// Spike S08-1: one boot of the A/B/R drill.
+    EfiAb,
     Devices,
     TuneRevert,
     TuneStall,
@@ -176,6 +178,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=panic-reset" => Some(SelfTest::PanicReset),
             "test=efi" => Some(SelfTest::Efi),
             "test=efi-reset" => Some(SelfTest::EfiReset),
+            "test=efi-ab" => Some(SelfTest::EfiAb),
             "test=devices" => Some(SelfTest::Devices),
             "test=tune-revert" => Some(SelfTest::TuneRevert),
             "test=tune-stall" => Some(SelfTest::TuneStall),

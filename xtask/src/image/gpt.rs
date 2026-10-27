@@ -59,15 +59,29 @@ fn protective_mbr(sectors: u64) -> [u8; 512] {
     s
 }
 
-fn entry_array(partition: u64, name: &str) -> Vec<u8> {
+/// One partition of a [`disk_of`]: its type, its GPT name and its contents.
+pub struct Part<'a> {
+    pub kind: [u8; 16],
+    pub label: &'a str,
+    pub volume: &'a [u8],
+}
+
+fn entry_array(parts: &[(&Part, u64)], name: &str) -> Vec<u8> {
     let mut array = vec![0u8; (ENTRIES * ENTRY_BYTES) as usize];
-    let entry = &mut array[..ENTRY_BYTES as usize];
-    entry[..16].copy_from_slice(&ESP_TYPE);
-    entry[16..32].copy_from_slice(&guid(&format!("{name} partition")));
-    entry[32..40].copy_from_slice(&FIRST_LBA.to_le_bytes());
-    entry[40..48].copy_from_slice(&(FIRST_LBA + partition - 1).to_le_bytes());
-    for (i, unit) in "EFI system partition".encode_utf16().enumerate() {
-        entry[56 + 2 * i..58 + 2 * i].copy_from_slice(&unit.to_le_bytes());
+    for (n, (part, first)) in parts.iter().enumerate() {
+        let entry = &mut array[n * ENTRY_BYTES as usize..(n + 1) * ENTRY_BYTES as usize];
+        let sectors = part.volume.len() as u64 / SECTOR as u64;
+        entry[..16].copy_from_slice(&part.kind);
+        let unique = match n {
+            0 => format!("{name} partition"),
+            _ => format!("{name} partition {}", part.label),
+        };
+        entry[16..32].copy_from_slice(&guid(&unique));
+        entry[32..40].copy_from_slice(&first.to_le_bytes());
+        entry[40..48].copy_from_slice(&(first + sectors - 1).to_le_bytes());
+        for (i, unit) in part.label.encode_utf16().enumerate() {
+            entry[56 + 2 * i..58 + 2 * i].copy_from_slice(&unit.to_le_bytes());
+        }
     }
     array
 }
@@ -99,16 +113,35 @@ fn header(sectors: u64, primary: bool, entries_crc: u32, name: &str) -> [u8; 512
 /// A whole disk holding `volume` (whole sectors) as its EFI system partition.
 /// `name` seeds the GUIDs.
 pub fn disk(volume: &[u8], name: &str) -> Vec<u8> {
-    let partition = volume.len() as u64 / SECTOR as u64;
-    let sectors = disk_sectors(partition);
+    disk_of(
+        &[Part {
+            kind: ESP_TYPE,
+            label: "EFI system partition",
+            volume,
+        }],
+        name,
+    )
+}
+
+/// A whole disk holding `parts` in order, each starting on a MiB boundary.
+pub fn disk_of(parts: &[Part], name: &str) -> Vec<u8> {
+    let mut placed = Vec::new();
+    let mut next = FIRST_LBA;
+    for part in parts {
+        placed.push((part, next));
+        next = (next + part.volume.len() as u64 / SECTOR as u64).next_multiple_of(2048);
+    }
+    let sectors = disk_sectors(next - FIRST_LBA);
     let mut disk = vec![0u8; (sectors * SECTOR as u64) as usize];
     let at = |lba: u64| (lba * SECTOR as u64) as usize;
-    let array = entry_array(partition, name);
+    let array = entry_array(&placed, name);
     let crc = crc32(&array);
     disk[..512].copy_from_slice(&protective_mbr(sectors));
     disk[at(1)..at(2)].copy_from_slice(&header(sectors, true, crc, name));
     disk[at(2)..at(2) + array.len()].copy_from_slice(&array);
-    disk[at(FIRST_LBA)..at(FIRST_LBA) + volume.len()].copy_from_slice(volume);
+    for (part, first) in &placed {
+        disk[at(*first)..at(*first) + part.volume.len()].copy_from_slice(part.volume);
+    }
     let backup = sectors - 1 - ENTRY_SECTORS;
     disk[at(backup)..at(backup) + array.len()].copy_from_slice(&array);
     disk[at(sectors - 1)..].copy_from_slice(&header(sectors, false, crc, name));

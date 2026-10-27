@@ -40,6 +40,7 @@ mod edit_mode;
 mod edit_session;
 mod edit_tests;
 mod efi;
+mod efi_ab;
 mod efi_tests;
 mod entry;
 mod fault;
@@ -341,6 +342,7 @@ extern "C" fn boot_continue() -> ! {
         }
         SelfTest::Efi => run_case(efi_tests::check),
         SelfTest::EfiReset => efi::reset(),
+        SelfTest::EfiAb => efi_ab::run(),
         SelfTest::Devices => run_case(device_tests::check),
         SelfTest::TuneRevert => run_case(tune_tests::revert_check),
         SelfTest::TuneStall => run_case(tune_stall_tests::check),
@@ -503,7 +505,7 @@ pub(crate) fn fault_exit(reason: &dyn core::fmt::Display) -> ! {
 }
 
 /// Logs a fatal error and stops: a reset, or the test run's failure exit.
-fn fail(message: &str) -> ! {
+pub(crate) fn fail(message: &str) -> ! {
     smp::begin_fatal_report();
     log!("FATAL on cpu {}: {message}", percpu::index());
     backtrace::print_from(backtrace::current_rbp());

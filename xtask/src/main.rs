@@ -36,6 +36,7 @@ mod components;
 mod disk;
 mod doctor;
 mod edit_smoke;
+mod efi_ab;
 mod esp;
 mod floatguard;
 mod fluency;
@@ -146,6 +147,9 @@ fn execute(options: &Options) -> Result<(), String> {
     let accel = resolve_accel(options.accel);
     if options.task == Task::Icount {
         return icount::run(&qemu, &target_dir, &kernel, &modules, &efi, options);
+    }
+    if options.task == Task::EfiAb {
+        return efi_ab::run(&qemu, &target_dir, &kernel, &modules, &efi, options, accel);
     }
     if options.task == Task::Run {
         let mut cmdline = llm_cmdline(options.llm.as_deref(), options.model.as_deref())

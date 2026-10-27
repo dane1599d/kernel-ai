@@ -1,0 +1,46 @@
+name: Spike S08-1 efi-ab
+
+# ADR 0008's boot-lever spike: the R/A/B disk booted again and again on one OVMF
+# variable store, with random faults and hard kills. Runs on the spike branch only.
+on:
+  workflow_dispatch:
+  push:
+    branches: ["spike/s08-1-*"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  drill:
+    name: efi-ab (${{ matrix.accel }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - accel: kvm
+            args: --boots 300 --kills 50 --seed 1 --timeout 120
+          - accel: tcg
+            args: --boots 100 --seed 2 --timeout 600
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install QEMU and OVMF
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 ovmf
+          dpkg-query -W qemu-system-x86 ovmf
+      - name: Allow KVM for the runner user
+        if: matrix.accel == 'kvm'
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Install pinned toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Run the drill
+        run: cargo xtask efi-ab --accel ${{ matrix.accel }} ${{ matrix.args }}

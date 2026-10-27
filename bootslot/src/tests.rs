@@ -197,3 +197,41 @@ fn recovery_on_request_stays_in_r_once_and_counts_no_failure() {
 fn crc32_matches_the_check_value() {
     assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
 }
+
+#[test]
+fn the_drill_installs_updates_and_recovers_through_r() {
+    use crate::drill::{self, Command, End};
+    let mut nv = Nv::default();
+    drill::install(&mut nv);
+    assert_eq!(boot(&mut nv), Slot::A);
+    // A committed boot restarts into itself; an update arms B on trial.
+    assert_eq!(drill::run(&mut nv, Slot::A, Command::Reboot), End::Reset);
+    assert_eq!(nv.one_shot, Some(Slot::A));
+    assert_eq!(boot(&mut nv), Slot::A);
+    assert_eq!(drill::run(&mut nv, Slot::A, Command::Stage), End::Reset);
+    assert_eq!(boot(&mut nv), Slot::B);
+    // A panic in the trial lands in R, which re-arms B with a try spent.
+    let end = drill::run(&mut nv, Slot::B, Command::PanicLate);
+    assert_eq!(end, End::Fault(drill::PANIC));
+    fault(&mut nv, Slot::B, drill::PANIC, 0);
+    assert_eq!(boot(&mut nv), Slot::R);
+    assert_eq!(drill::run(&mut nv, Slot::R, Command::None), End::Reset);
+    assert_eq!(boot(&mut nv), Slot::B);
+    assert_eq!(drill::run(&mut nv, Slot::B, Command::Commit), End::Reset);
+    assert!(nv.record.slot(Slot::B).successful);
+    // Recovery on request keeps R up until it is told where to boot.
+    assert_eq!(boot(&mut nv), Slot::B);
+    assert_eq!(
+        drill::run(&mut nv, Slot::B, Command::SetDefault),
+        End::SetDefault
+    );
+    assert_eq!(boot(&mut nv), Slot::R);
+    assert_eq!(drill::run(&mut nv, Slot::R, Command::None), End::Stay);
+    assert_eq!(drill::stay(&mut nv, Command::Boot(Slot::A)), End::Reset);
+    assert_eq!(boot(&mut nv), Slot::A);
+    assert!(drill::same(&nv.record, &{
+        let mut copy = nv.record;
+        copy.boot_seq += 7;
+        copy
+    }));
+}

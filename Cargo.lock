@@ -529,6 +529,7 @@ name = "kernel"
 version = "0.10.0"
 dependencies = [
  "acpitables",
+ "bootslot",
  "captable",
  "cpufeat",
  "devkit",
@@ -1395,6 +1396,7 @@ version = "0.0.0"
 dependencies = [
  "addr2line",
  "agentabi",
+ "bootslot",
  "bpe",
  "cpufeat",
  "editcore",

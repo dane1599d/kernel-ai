@@ -31,5 +31,6 @@ pub fn reset(reason: &dyn Display) -> ! {
         crate::power::reboot();
     }
     log!("fault: {reason}; resetting the machine");
+    crate::efi_ab::on_fault();
     crate::power::reboot()
 }

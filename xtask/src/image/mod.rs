@@ -3,6 +3,7 @@
 //! kernel and its modules. VirtualBox boots it (as a VDI), QEMU's `image` case
 //! boots it raw, and P7's USB stick is the same image written to a device.
 
+pub mod abr;
 pub mod fat32;
 pub mod gpt;
 
@@ -11,7 +12,7 @@ use std::fs;
 use std::path::Path;
 
 pub const SECTOR: u32 = 512;
-const MIB: u64 = 1024 * 1024;
+pub(crate) const MIB: u64 = 1024 * 1024;
 /// The smallest ESP written: comfortably above FAT32's 32.5 MiB floor.
 const MIN_VOLUME_MIB: u64 = 64;
 /// Fixed, so the same files give the same image.

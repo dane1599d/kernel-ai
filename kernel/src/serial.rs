@@ -8,6 +8,7 @@ use x86_64::instructions::interrupts;
 const COM1: u16 = 0x3F8;
 const LINE_STATUS: u16 = COM1 + 5;
 const TRANSMIT_EMPTY: u8 = 0x20;
+const DATA_READY: u8 = 0x01;
 
 /// Programs COM1 for 38400 baud, 8N1, FIFO on, interrupts off.
 pub fn init() {
@@ -38,6 +39,30 @@ fn write_byte(byte: u8) {
             core::hint::spin_loop();
         }
         outb(COM1, byte);
+    }
+}
+
+/// Reads one line from COM1 by polling, without its line ending; its length.
+/// Bytes past `buf` are dropped. Only for spike S08-1's host commands.
+pub fn read_line(buf: &mut [u8]) -> usize {
+    let mut len = 0;
+    loop {
+        // SAFETY: polling the line status register and reading the data register of COM1.
+        let byte = unsafe {
+            while inb(LINE_STATUS) & DATA_READY == 0 {
+                core::hint::spin_loop();
+            }
+            inb(COM1)
+        };
+        match byte {
+            b'\n' | b'\r' if len > 0 => return len,
+            b'\n' | b'\r' => {}
+            byte if len < buf.len() => {
+                buf[len] = byte;
+                len += 1;
+            }
+            _ => {}
+        }
     }
 }
 

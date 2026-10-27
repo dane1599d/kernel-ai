@@ -114,9 +114,27 @@ fn read_u64(addr: u64) -> u64 {
     unsafe { core::ptr::read_volatile(addr as *const u64) }
 }
 
+/// TSC ticks [`init`] took (spike S08-1 reports them).
+static INIT_TICKS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// TSC ticks [`init`] took.
+pub fn init_ticks() -> u64 {
+    INIT_TICKS.load(core::sync::atomic::Ordering::Relaxed)
+}
+
 /// Maps the runtime services and switches them to virtual addresses. No EFI is
 /// not an error: the machine then has no runtime services.
 pub fn init() -> Result<(), &'static str> {
+    // SAFETY: RDTSC has no side effects.
+    let start = unsafe { core::arch::x86_64::_rdtsc() };
+    let result = init_services();
+    // SAFETY: as above.
+    let took = unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start);
+    INIT_TICKS.store(took, core::sync::atomic::Ordering::Relaxed);
+    result
+}
+
+fn init_services() -> Result<(), &'static str> {
     let (Some(system), Some(map)) = (EFI.response(), EFI_MEMMAP.response()) else {
         log!("efi: no EFI system table; no runtime services");
         return Ok(());
