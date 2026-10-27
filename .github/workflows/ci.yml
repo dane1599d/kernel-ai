@@ -182,6 +182,12 @@ jobs:
         env:
           XTASK_CASE: shm
         run: cargo xtask test --release --accel kvm --timeout 300
+      # The same with the TSC as the clock: every HPET read exits to the host.
+      - name: The perf marks again with clock=tsc
+        env:
+          XTASK_CASE: shm
+          XTASK_CMDLINE: clock=tsc
+        run: cargo xtask test --release --accel kvm --timeout 300
     timeout-minutes: 30
 
   # M10a-2's spike, not a gate: boots `icount-probe` twice under single-threaded

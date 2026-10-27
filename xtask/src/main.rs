@@ -246,6 +246,11 @@ fn execute(options: &Options) -> Result<(), String> {
             };
             let server = if case.server { llm_args.as_str() } else { "" };
             let mut cmdline = format!("{} {server}", case.cmdline);
+            // `XTASK_CMDLINE` adds words to every case's kernel command line
+            // (the perf job's `clock=tsc` run).
+            if let Ok(extra) = env::var("XTASK_CMDLINE") {
+                cmdline = format!("{cmdline} {extra}");
+            }
             if case.dns {
                 cmdline = format!("{cmdline} {}", mock_dns.cmdline());
             }
