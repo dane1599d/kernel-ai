@@ -199,3 +199,44 @@ pub fn reverse(inverse: Inverse) -> Inverse {
         Inverse::Fs { txn } => Inverse::Fs { txn },
     }
 }
+
+/// An inverse as one word, for the log and the `scriptrun` wire: `spec:1:2:3:2`,
+/// `fs:12`, `none`.
+pub fn inverse_word(inverse: Option<Inverse>) -> String {
+    match inverse {
+        None => String::from("none"),
+        Some(Inverse::Spec {
+            policy,
+            preset,
+            after,
+        }) => format!("spec:{policy}:{preset}:{}:{}", after.0, after.1),
+        Some(Inverse::Started(name)) => format!("started:{}", name.as_str()),
+        Some(Inverse::Stopped(name)) => format!("stopped:{}", name.as_str()),
+        Some(Inverse::Generation { from, to }) => format!("generation:{from}:{to}"),
+        Some(Inverse::Fs { txn }) => format!("fs:{txn}"),
+    }
+}
+
+/// [`inverse_word`] read back; `None` for a word it could not have written.
+pub fn parse_inverse(text: &str) -> Option<Option<Inverse>> {
+    let mut parts = text.split(':');
+    let number = |part: Option<&str>| part?.parse::<u64>().ok();
+    Some(Some(match parts.next()? {
+        "none" => return Some(None),
+        "spec" => Inverse::Spec {
+            policy: number(parts.next())?,
+            preset: number(parts.next())?,
+            after: (number(parts.next())?, number(parts.next())?),
+        },
+        "started" => Inverse::Started(Name::new(parts.next()?)?),
+        "stopped" => Inverse::Stopped(Name::new(parts.next()?)?),
+        "generation" => Inverse::Generation {
+            from: number(parts.next())?,
+            to: number(parts.next())?,
+        },
+        "fs" => Inverse::Fs {
+            txn: number(parts.next())?,
+        },
+        _ => return None,
+    }))
+}

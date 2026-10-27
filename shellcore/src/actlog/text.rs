@@ -9,7 +9,7 @@
 //! switch to round robin
 //! O 3
 //! ran
-//! D 17.1 set_policy owner=kernel res=policy before=interactive after=round-robin inv=restore
+//! D 17.1 set_policy owner=kernel res=policy before=interactive after=round-robin inv=spec:1:0:2:0
 //! U 18 of=17 t=1792618860000000000 state=done
 //! S 19 t=1792618860000000000 owner=kernel 33
 //! nvme0 reset after 5 s timeout, ok
@@ -17,8 +17,9 @@
 //!
 //! `R` is the request and `O` the outcome; a script's text (`C`) is kept in
 //! memory for `log <id>` and written too. `D` values are single words. The
-//! reader takes back what the writer wrote; the runtime inverse of a change is
-//! not text and is not read back (P2 adds it with the log on disk).
+//! reader takes back what the writer wrote, each change's inverse with it
+//! (`inv=spec:…`, `inv=fs:12`), so `undo` works on a log read from disk (P2
+//! task 12).
 
 use super::{Change, Entry, Form, Record, State, System};
 use crate::tiers::Tier;
@@ -87,11 +88,7 @@ fn entry(out: &mut String, e: &Entry) {
         }
     }
     for (n, c) in e.changes.iter().enumerate() {
-        let inv = if c.inverse.is_some() {
-            "restore"
-        } else {
-            "none"
-        };
+        let inv = crate::undo::inverse_word(c.inverse);
         let _ = writeln!(
             out,
             "D {}.{} {} owner={} res={} before={} after={} inv={inv}",
@@ -329,9 +326,7 @@ impl<'a> Reader<'a> {
         let (entry, n) = v[0].split_once('.').ok_or(bad("a bad change number"))?;
         let entry = number(entry).ok_or(bad("a bad change number"))?;
         let n = number(n).ok_or(bad("a bad change number"))? as usize;
-        if !matches!(v[6], "restore" | "none") {
-            return self.fail("an unknown inverse");
-        }
+        let inverse = crate::undo::parse_inverse(v[6]).ok_or(bad("an unknown inverse"))?;
         Ok((
             entry,
             n,
@@ -341,7 +336,7 @@ impl<'a> Reader<'a> {
                 res: v[3].to_string(),
                 before: v[4].to_string(),
                 after: v[5].to_string(),
-                inverse: None,
+                inverse,
             },
         ))
     }

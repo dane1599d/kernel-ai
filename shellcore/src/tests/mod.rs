@@ -16,6 +16,7 @@ mod apart;
 mod files;
 mod fuzz;
 mod log;
+mod logdisk;
 mod more;
 mod packages;
 mod scripts;
@@ -77,6 +78,9 @@ struct FakeHost {
     /// The `fs` server's files, and each transaction's files before and after.
     files: RefCell<std::collections::BTreeMap<String, String>>,
     txns: RefCell<Vec<(Files, Files)>>,
+    /// `/system/log`, and how often it was written.
+    log_disk: RefCell<Option<String>>,
+    log_writes: Cell<u32>,
 }
 
 type Files = std::collections::BTreeMap<String, String>;
@@ -164,6 +168,8 @@ impl FakeHost {
             started_by: RefCell::new(Vec::new()),
             files: RefCell::new(Files::new()),
             txns: RefCell::new(Vec::new()),
+            log_disk: RefCell::new(None),
+            log_writes: Cell::new(0),
         })
     }
 }
@@ -317,6 +323,16 @@ impl Host for FakeHost {
     fn start_service(&self, name: &str, entry: u64) -> Result<(), String> {
         self.set_running(name, true)?;
         self.started_by.borrow_mut().push((name.into(), entry));
+        Ok(())
+    }
+
+    fn log_read(&self) -> Option<String> {
+        self.log_disk.borrow().clone()
+    }
+
+    fn log_write(&self, text: &str) -> Result<(), String> {
+        *self.log_disk.borrow_mut() = Some(text.into());
+        self.log_writes.set(self.log_writes.get() + 1);
         Ok(())
     }
 

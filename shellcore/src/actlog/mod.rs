@@ -153,6 +153,27 @@ pub struct ActLog {
 }
 
 impl ActLog {
+    /// A log read back from `/system/log` (P2 task 12): its newest [`KEEP`]
+    /// records.
+    pub fn from_records(records: Vec<Record>) -> Self {
+        let skip = records.len().saturating_sub(KEEP);
+        Self {
+            records: records.into_iter().skip(skip).collect(),
+        }
+    }
+
+    /// The highest entry or record number in the log, 0 for none.
+    pub fn last_id(&self) -> u64 {
+        self.records
+            .iter()
+            .map(|r| match r {
+                Record::Entry(e) => e.id,
+                Record::System(s) => s.id,
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
     pub fn push(&mut self, entry: Entry) {
         self.keep(Record::Entry(entry));
     }
