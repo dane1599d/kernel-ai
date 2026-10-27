@@ -159,7 +159,19 @@ Still on the list from the proof of concept: M10a's proof recording, M10b demand
 
 Production grade is a multi-year program. The long poles are P6 (a browser) and P7 (drivers). Estimates are revised at each phase's design.
 
-**Next step:** P0 is done: twelve ADRs and an execution plan in `docs/adr/`, accepted on 2026-10-22. P1, the agent core, starts from its plan in `docs/plans/p1-agent-core.md`, in the order [ADR 0000](adr/0000-execution-plan.md) sets out; spikes run on `spike/*` branches.
+**P1 status (2026-10-27):** **done**: every exit case passes in `ci.yml`'s boot shards under KVM and TCG with the mock model, and both real-model gates pass on GitHub runners. Everything the agent does goes through one door (`shellcore::agentcore`):
+- **The registry:** an action registry (`agentabi`, generated pack `dsl-1`).
+- **The tagged call:** constrained decoding into one tagged call, with an `undo` call beside `say`, `clarify` and `script`.
+- **Consent and tiers:** consent from the user's line and tiers enforced in code. A vague line runs one undoable reading and says `Taken as`.
+- **Log, undo and menu:** an action log with compare-and-set `undo` and redo, and the Allow / Deny menu with standing rules.
+- **Memory:** conversation memory on every backend.
+- **Installs:** `install notes` and its aliases over RAM generations.
+- **Scripts:** model-written scripts run in a pooled `scriptrun` child holding only run-tier handles.
+- **The ONCE:** asked stops and restarts run only on a ONCE or a rule that the kernel or the supervisor checks, not the shell.
+
+The cases are act-plain, act-run, act-ask, act-rule, act-undo, act-rollback, act-inject, act-never, act-vague, act-convo and pkg-local. Fluency: FLUENCY_SCORE/50 (run FLUENCY_RUN). actbench on main, seeds 42, 1 and 2 (run ACTBENCH_RUN): ACTBENCH_SCORES. The plan and its 19 tasks are in `docs/plans/p1-agent-core.md`.
+
+**Next step:** P2, files and storage, from `docs/plans/p2-files-storage.md`; P3's plan is in `docs/plans/`. Spikes run on `spike/*` branches.
 
 ## 4. Testing strategy
 
