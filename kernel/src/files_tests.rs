@@ -47,8 +47,49 @@ pub fn check(cmdline: &str) -> Result<(), &'static str> {
     wait_for(marker).map_err(|_| "files: filecheck did not finish its step")?;
     log!("files: boot {boot}: filecheck's step through its Dir handle passed");
     if !reread {
+        state_holder()?;
         minting()?;
-        log!("files: ENDPOINT_MINT and the FILES ceiling refuse what they must");
+        log!("files: ENDPOINT_MINT, the FILES ceiling and SYSTEM_STATE refuse what they must");
+    }
+    Ok(())
+}
+
+/// `/system/state` goes only to the shell program running as `shell`, and the
+/// shell holds it; `filecheck`, with FILES, gets only its home folder.
+fn state_holder() -> Result<(), &'static str> {
+    use crate::process::supervision::storage_caps_allowed;
+    let state = cap::SYSTEM_STATE;
+    let refused = [
+        ("filecheck", "filecheck"),
+        ("shell", "filecheck"),
+        ("fs", "fs"),
+        ("x", "shell"),
+    ];
+    if refused
+        .iter()
+        .any(|(name, program)| storage_caps_allowed(name, program, state))
+        || !storage_caps_allowed("shell", "shell", state)
+    {
+        return Err("files: SYSTEM_STATE is not the shell's alone");
+    }
+    // With both bits, STARTUP lists the home Dir first, then the state Dir.
+    let both = cap::FILES | cap::SYSTEM_STATE;
+    let order: Vec<u64> = handle::fs_dirs(both, 1).map(|e| e.badge).collect();
+    if order != [kabi::fs::HOME_USER, kabi::fs::SYSTEM_STATE] {
+        return Err("files: the startup Dirs are not home first, then state");
+    }
+    let pid = process::named(CLIENT).first().map(|&(pid, _)| pid);
+    let slot = pid
+        .and_then(|pid| process::with_table(|t| t.iter().position(|p| p.live() && p.pid == pid)))
+        .ok_or("files: filecheck has no slot")?;
+    let badges: Vec<u64> = handle::with(slot, |h| {
+        h.startup()
+            .filter_map(|info| h.table.get(Handle(info.handle)).ok().map(|e| e.badge))
+            .collect()
+    })
+    .map_err(|_| "files: filecheck has no table")?;
+    if badges.contains(&kabi::fs::SYSTEM_STATE) || !badges.contains(&kabi::fs::HOME_USER) {
+        return Err("files: filecheck's startup Dirs are not just its home folder");
     }
     Ok(())
 }

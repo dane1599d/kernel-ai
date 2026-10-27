@@ -26,7 +26,7 @@ use fsproto::{
     Cursor, Error, How, Kind, Listing, MAX_DATA, MAX_LIST, MAX_ROWS, Outcome, Reply, Request, Stat,
     Version,
 };
-use kabi::fs::{Badge, HOME, HOME_USER, MODELS, SYSTEM};
+use kabi::fs::{Badge, HOME, HOME_USER, MODELS, SYSTEM, SYSTEM_STATE};
 use kabi::handle::Rights;
 use kaifs::ns::Listed;
 use kaifs::{BlockDev, FileType, Fs, Inode, ROOT};
@@ -105,7 +105,10 @@ pub struct Server<D: BlockDev> {
     owner: Option<u64>,
     /// `/home/user`'s object id in `home`: what [`HOME_USER`] names.
     home_user: u64,
-    /// This disk's epoch, in every badge but [`HOME_USER`] ([`kabi::fs`]).
+    /// `/system/state`'s object id in `system`: what [`SYSTEM_STATE`] names.
+    system_state: u64,
+    /// This disk's epoch, in every badge but [`HOME_USER`] and
+    /// [`SYSTEM_STATE`] ([`kabi::fs`]).
     epoch: u16,
     /// The clock at mount: kaifs's times are this plus time since boot, so they
     /// never go back across reboots (there is no wall clock yet).
@@ -139,12 +142,13 @@ impl<D: BlockDev> Server<D> {
             fs,
             owner: None,
             home_user: 0,
+            system_state: 0,
             epoch: 0,
             base,
             pending: None,
             cache: None,
         };
-        (server.home_user, server.epoch) = server.prepare(&uuid)?;
+        (server.home_user, server.system_state, server.epoch) = server.prepare(&uuid)?;
         Ok((server, started))
     }
 
@@ -153,8 +157,8 @@ impl<D: BlockDev> Server<D> {
     }
 
     /// Makes the missing [`FOLDERS`], and the disk's epoch if it has none, in
-    /// one commit; `/home/user`'s id and the epoch.
-    fn prepare(&mut self, uuid: &[u8; 16]) -> Result<(u64, u16), kaifs::Error> {
+    /// one commit; `/home/user`'s and `/system/state`'s ids and the epoch.
+    fn prepare(&mut self, uuid: &[u8; 16]) -> Result<(u64, u64, u16), kaifs::Error> {
         let fs = self.fs();
         let writable = fs.writable();
         let mut made = false;
@@ -169,7 +173,7 @@ impl<D: BlockDev> Server<D> {
         let epoch = match fs.get_xattr(ROOT, EPOCH)? {
             Some(bytes) if bytes.len() == 2 => u16::from_le_bytes([bytes[0], bytes[1]]),
             _ => {
-                // Never 0, which only HOME_USER carries.
+                // Never 0, which only the two fixed badges carry.
                 let drawn = u16::from_le_bytes([uuid[0], uuid[1]]) & kabi::fs::EPOCH_MASK;
                 let epoch = drawn.max(1);
                 if writable {
@@ -182,9 +186,10 @@ impl<D: BlockDev> Server<D> {
         if made {
             fs.commit()?;
         }
+        let system_state = fs.lookup(ROOT, "state")?.map_or(0, |e| e.ino);
         fs.set_volume(HOME.into())?;
         let home_user = fs.lookup(ROOT, "user")?.map_or(0, |e| e.ino);
-        Ok((home_user, epoch))
+        Ok((home_user, system_state, epoch))
     }
 
     /// The badge for `object` of `volume` on this disk.
@@ -309,14 +314,15 @@ impl<D: BlockDev> Server<D> {
             epoch,
             object,
         } = Badge::parse(badge);
-        let ours = epoch == self.epoch || badge == HOME_USER;
+        let fixed = badge == HOME_USER || badge == SYSTEM_STATE;
+        let ours = epoch == self.epoch || fixed;
         if !matches!(volume, SYSTEM | HOME | MODELS) || !ours {
             return Err(Error::NotFound);
         }
-        let object = if badge == HOME_USER {
-            self.home_user
-        } else {
-            object
+        let object = match badge {
+            HOME_USER => self.home_user,
+            SYSTEM_STATE => self.system_state,
+            _ => object,
         };
         let fs = self.fs();
         fs.set_volume(volume.into()).map_err(error)?;

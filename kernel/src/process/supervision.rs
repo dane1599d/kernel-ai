@@ -43,6 +43,16 @@ pub const SCRIPTER: &str = "shell";
 pub const PUBLISHER: &str = "edit";
 /// The one service, and program, that may hold `cap::PARTITION`.
 pub const FS: &str = "fs";
+/// The one service, and program, that may hold `cap::SYSTEM_STATE`.
+pub const STATE_HOLDER: &str = "shell";
+/// Whether the service `name` running `program` may have the storage bits in
+/// `caps`: the `kai-data` partition is the file system service's alone (ADR
+/// 0004 §7), and `/system/state` the shell's (P2 task 12).
+pub fn storage_caps_allowed(name: &str, program: &str, caps: u64) -> bool {
+    let only = |bit: u64, holder: &str| caps & bit == 0 || (name == holder && program == holder);
+    only(cap::PARTITION, FS) && only(cap::SYSTEM_STATE, STATE_HOLDER)
+}
+
 /// Longest any supervision call may block.
 const MAX_WAIT_MS: u64 = 60_000;
 
@@ -315,8 +325,7 @@ pub fn spawn_service(slot: usize, request_ptr: u64) -> Result<u64, Error> {
     {
         return Err(Error::Permission);
     }
-    // The `kai-data` partition is the file system service's alone (ADR 0004 §7).
-    if request.limits.caps & cap::PARTITION != 0 && (name != FS || program != FS) {
+    if !storage_caps_allowed(name, program, request.limits.caps) {
         return Err(Error::Permission);
     }
     let limits = Limits {
