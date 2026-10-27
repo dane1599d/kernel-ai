@@ -345,44 +345,86 @@ def canonical(client: str, files: list[str]) -> None:
     print(f"recorded: serde_json: {serde}")
 
 
+def ed25519_pkcs8_v2(path: str) -> None:
+    """An Ed25519 key as PKCS#8 v2 (with its public key), the form ring and
+    aws-lc-rs make and the only Ed25519 form tough loads; openssl writes v1."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    key = Ed25519PrivateKey.generate()
+    raw = serialization.Encoding.Raw
+    seed = key.private_bytes(raw, serialization.PrivateFormat.Raw, serialization.NoEncryption())
+    public = key.public_key().public_bytes(raw, serialization.PublicFormat.Raw)
+    der = bytes.fromhex("3053020101300506032b657004220420") + seed + bytes.fromhex("a123032100") + public
+    open(path, "wb").write(der)
+
+
+# How to make a key tuftool 0.17.0 signs with: from a DER PKCS#8 file only, for
+# Ed25519 and ECDSA (tough's parse_keypair). Its own tests sign with RSA.
+KEY_RECIPES = {
+    "P-256 (openssl genpkey)": lambda key, _: [
+        ["openssl", "genpkey", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256", "-outform", "DER", "-out", key]
+    ],
+    "P-256 (openssl ecparam, pkcs8 -topk8)": lambda key, work: [
+        ["openssl", "ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", os.path.join(work, "ec.pem")],
+        ["openssl", "pkcs8", "-topk8", "-nocrypt", "-in", os.path.join(work, "ec.pem"), "-outform", "DER", "-out", key],
+    ],
+    "Ed25519 (PKCS#8 v2)": None,
+}
+
+
 def tuftool(client: str, tool: str, out: str) -> list[str]:
-    work = os.path.join(out, "tuftool")
-    os.makedirs(os.path.join(work, "input"), exist_ok=True)
-    key, root = os.path.join(work, "key.der"), os.path.join(work, "root.json")
-    open(os.path.join(work, "input", TARGET), "wb").write(CONTENT)
-    # Whole seconds: from a relative date ("in 7 days") tuftool writes fractional
-    # seconds, which the spec's YYYY-MM-DDTHH:MM:SSZ, python-tuf and kaituf refuse.
-    later = LATER.strftime("%Y-%m-%dT%H:%M:%SZ")
-    steps = [
-        ["openssl", "genpkey", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256", "-outform", "DER", "-out", key],
-        [tool, "root", "init", root],
-        [tool, "root", "expire", root, later],
-        *[[tool, "root", "set-threshold", root, role, "1"] for role in TOP],
-        [tool, "root", "add-key", root, "-k", key, *[a for role in TOP for a in ("--role", role)]],
-        [tool, "root", "sign", root, "-k", key],
-        [tool, "create", "--root", root, "--key", key, "--add-targets", os.path.join(work, "input"),
-         "--targets-expires", later, "--targets-version", "1", "--snapshot-expires", later,
-         "--snapshot-version", "1", "--timestamp-expires", later, "--timestamp-version", "1",
-         "--outdir", os.path.join(work, "repo")],
-    ]
-    for step in steps:
-        made = subprocess.run(step, capture_output=True, text=True)
-        if made.returncode != 0:
-            check("tuftool 0.17.0 P-256 repository", False, f"{' '.join(step[:3])}: {made.stderr.strip()[:300]}")
-            return []
-    repo = os.path.join(work, "repo")
-    files = {}
-    for f in glob.glob(os.path.join(repo, "**", "*"), recursive=True):
-        if os.path.isfile(f):
-            files[os.path.relpath(f, repo).replace(os.sep, "/")] = open(f, "rb").read()
-    first = next((n for n in files if n.endswith("1.root.json")), None)
-    if first is None:
-        check("tuftool 0.17.0 P-256 repository", False, f"no 1.root.json in {sorted(files)}")
-        return []
-    files.setdefault("metadata/1.root.json", files[first])
-    run = client_download(client, [files])
-    check("tuftool 0.17.0 P-256 repository", run.returncode == 0, run.stderr.strip() or "downloaded and verified")
-    return sorted(glob.glob(os.path.join(repo, "metadata", "*.json")))
+    """A repository tuftool makes with each key recipe: one tuftool cannot load
+    is recorded as tuftool's limit; one it makes that kaituf refuses fails."""
+    made_files: list[str] = []
+    for n, (name, recipe) in enumerate(KEY_RECIPES.items()):
+        work = os.path.join(out, f"tuftool-{n}")
+        os.makedirs(os.path.join(work, "input"), exist_ok=True)
+        key, root = os.path.join(work, "key.der"), os.path.join(work, "root.json")
+        open(os.path.join(work, "input", TARGET), "wb").write(CONTENT)
+        if recipe is None:
+            ed25519_pkcs8_v2(key)
+            keygen = []
+        else:
+            keygen = recipe(key, work)
+        # Whole seconds: from a relative date ("in 7 days") tuftool writes fractional
+        # seconds, which the spec's YYYY-MM-DDTHH:MM:SSZ, python-tuf and kaituf refuse.
+        later = LATER.strftime("%Y-%m-%dT%H:%M:%SZ")
+        steps = [
+            *keygen,
+            [tool, "root", "init", root],
+            [tool, "root", "expire", root, later],
+            *[[tool, "root", "set-threshold", root, role, "1"] for role in TOP],
+            [tool, "root", "add-key", root, "-k", key, *[a for role in TOP for a in ("--role", role)]],
+            [tool, "root", "sign", root, "-k", key],
+            [tool, "create", "--root", root, "--key", key, "--add-targets", os.path.join(work, "input"),
+             "--targets-expires", later, "--targets-version", "1", "--snapshot-expires", later,
+             "--snapshot-version", "1", "--timestamp-expires", later, "--timestamp-version", "1",
+             "--outdir", os.path.join(work, "repo")],
+        ]
+        label = f"tuftool 0.17.0 repository, {name}"
+        failed = None
+        for step in steps:
+            run = subprocess.run(step, capture_output=True, text=True)
+            if run.returncode != 0:
+                failed = f"{' '.join(os.path.basename(a) for a in step[:3])}: {run.stderr.strip()[:300]}"
+                break
+        if failed:
+            summary.append(f"| {label} | recorded | tuftool did not make it: {failed} |")
+            print(f"recorded: {label}: tuftool did not make it: {failed}")
+            continue
+        repo = os.path.join(work, "repo")
+        files = {}
+        for f in glob.glob(os.path.join(repo, "**", "*"), recursive=True):
+            if os.path.isfile(f):
+                files[os.path.relpath(f, repo).replace(os.sep, "/")] = open(f, "rb").read()
+        if "metadata/1.root.json" not in files:
+            check(label, False, f"no metadata/1.root.json in {sorted(files)}")
+            continue
+        run = client_download(client, [files])
+        check(label, run.returncode == 0, run.stderr.strip() or "downloaded and verified")
+        made_files += sorted(glob.glob(os.path.join(repo, "metadata", "*.json")))
+    return made_files
 
 
 def main() -> None:

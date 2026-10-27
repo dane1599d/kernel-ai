@@ -89,6 +89,7 @@ default-members = [
     "kaifs",
     "kailink",
     "kaipkg",
+    "kaituf",
     "linetable",
     "livecore",
     "look",
