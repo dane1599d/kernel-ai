@@ -10,10 +10,10 @@
 # and are judged by `agentabi::consent`; its M8 50 go through the shell's one
 # door with llm's own `act` path on the OS pack. A job fails when its seed
 # misses a bar of the P1 plan's section 6; each writes its bars, pack_id and
-# OS pack_id to the job summary and uploads its jsonl. About 45 minutes a seed.
+# OS pack_id to the job summary and uploads its jsonl. About 100 minutes a seed.
 #
 # Run workflow with other arms is for measurements (dsl-1, hermes-1, prose-1, os,
-# :no-think, @80, +rules, +m8script, +index, m8, m8-a0), one job, gate off by default.
+# :no-think, @80, +rules, +m8script, +index, m8, m8-a0), one job a seed; options such as --no-m8.
 # Started by hand only, one run at a time; never on every PR.
 name: actbench gate on the real model
 
@@ -33,6 +33,9 @@ on:
         description: "Fail the job when a bar is missed"
         type: boolean
         default: true
+      options:
+        description: "More actbench options, such as --no-m8"
+        default: ""
   pull_request:
     types: [labeled]
 
@@ -51,14 +54,39 @@ env:
   MODEL_ID: qwen3-4b-2507
 
 jobs:
-  actbench:
-    name: actbench ${{ matrix.arms }} seeds ${{ matrix.seeds }}
+  # One job a seed: arm act takes about 100 minutes a seed (its M8 50 go
+  # through the one door at about 110 s each), so three in one job ran past
+  # the 240-minute limit (run 40458077413).
+  plan:
     if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'actbench'
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - id: plan
+        env:
+          DISPATCH: ${{ github.event_name == 'workflow_dispatch' }}
+          ARMS: ${{ inputs.arms }}
+          SEEDS: ${{ inputs.seeds }}
+          GATE: ${{ inputs.gate }}
+          OPTIONS: ${{ inputs.options }}
+        run: |
+          if [ "$DISPATCH" = true ]; then
+            extra="$OPTIONS"
+            if [ "$GATE" = true ]; then extra="$extra --gate"; fi
+          else
+            ARMS=act SEEDS=42,1,2 extra=--gate
+          fi
+          matrix=$(jq -cn --arg arms "$ARMS" --arg seeds "$SEEDS" --arg extra "$extra"             '[$seeds | split(",")[] | {arms: $arms, seeds: ., extra: $extra}]')
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+  actbench:
+    name: actbench ${{ matrix.arms }} seed ${{ matrix.seeds }}
+    needs: plan
     strategy:
       fail-fast: false
       max-parallel: 3
       matrix:
-        include: ${{ fromJSON(github.event_name == 'workflow_dispatch' && format('[{{"arms":"{0}","seeds":"{1}","extra":"{2}"}}]', inputs.arms, inputs.seeds, inputs.gate && '--gate' || '') || '[{"arms":"act","seeds":"42","extra":"--gate"},{"arms":"act","seeds":"1","extra":"--gate"},{"arms":"act","seeds":"2","extra":"--gate"}]') }}
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 240
     steps:
