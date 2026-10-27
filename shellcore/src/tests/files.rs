@@ -105,3 +105,44 @@ fn trash_restore_and_emptying_the_trash() {
     assert!(host.files.borrow().is_empty(), "{:?}", host.files.borrow());
     let _ = format!("{:?}", ran.done);
 }
+
+#[test]
+fn a_file_row_reaches_only_the_users_files_never_system() {
+    let host = FakeHost::new();
+    host.files
+        .borrow_mut()
+        .insert("notes.txt".into(), "mine".into());
+    let dyn_host: Rc<dyn Host> = host.clone();
+    let paths = [
+        "/system/log",
+        "/system/state/grants",
+        "../system/log",
+        "a/../../x",
+        "/home/other/x",
+    ];
+    for path in paths {
+        for source in [
+            format!("print(fs_read(\"{path}\"));"),
+            format!("fs_create(\"{path}\", \"x\");"),
+        ] {
+            let answer = Answer {
+                summary: String::new(),
+                script: source.clone(),
+            };
+            // Refused at its trial run, before it can run at all.
+            let refusal =
+                script::check_against(&answer, &dyn_host, &DEFAULT_CONFIG, &agentabi::FS_ROWS)
+                    .err()
+                    .unwrap_or_else(|| panic!("{source} was not refused"));
+            assert!(
+                refusal.to_string().contains("not under /home/user"),
+                "{source}: {refusal}"
+            );
+        }
+    }
+    assert!(host.txns.borrow().is_empty());
+    // `/home/user/…` is the same as a relative path.
+    let ran = run(&host, "show(fs_read(\"/home/user/notes.txt\"));");
+    assert!(ran.ok && ran.text.contains("mine"), "{}", ran.text);
+    assert_eq!(crate::script::home_path("/home/user"), Some(""));
+}
