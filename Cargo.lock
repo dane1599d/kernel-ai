@@ -464,6 +464,7 @@ dependencies = [
  "look",
  "sha2",
  "skrifa",
+ "termcore",
  "tiny-skia",
 ]
 
@@ -1238,6 +1239,7 @@ dependencies = [
 name = "termcore"
 version = "0.0.0"
 dependencies = [
+ "look",
  "pc-keyboard",
 ]
 

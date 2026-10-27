@@ -142,6 +142,44 @@ fn tag_width(row: &[char]) -> usize {
     }
 }
 
+/// How a whole row looks: its background and, for answers, errors and
+/// questions, a bar in the margin. The console's and the terminal window's
+/// colours are `look::console`'s.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Look {
+    pub background: u32,
+    pub bar: Option<u32>,
+}
+
+/// The look of a row of `kind`. Only answers, errors and questions differ from
+/// the plain screen, so most rows repaint just the cells that change.
+pub fn look(kind: Kind) -> Look {
+    use look::console::*;
+    let (background, bar) = match kind {
+        Kind::Reply | Kind::Ai => (REPLY_TINT, Some(EMBER)),
+        Kind::Error => (ERROR_TINT, Some(CORAL)),
+        Kind::Question => (QUESTION_TINT, Some(GOLD)),
+        _ => (INK, None),
+    };
+    Look { background, bar }
+}
+
+/// A cell's colour and whether it is bold; None for a lead the bar replaces.
+pub fn ink(tone: Tone) -> Option<(u32, bool)> {
+    use look::console::*;
+    Some(match tone {
+        Tone::Text => (PAPER, false),
+        Tone::Muted => (SLATE, false),
+        Tone::Tag => (DIM, false),
+        Tone::Prompt | Tone::Banner => (EMBER, true),
+        Tone::Reply => (REPLY_TEXT, false),
+        Tone::Error => (ERROR_TEXT, false),
+        Tone::Question => (QUESTION_TEXT, false),
+        Tone::Success => (SAGE, false),
+        Tone::Lead => return None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

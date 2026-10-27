@@ -16,6 +16,9 @@
 //!   greyscale only, through the theme's coverage table. Printable-ASCII
 //!   monospace text takes the cell path: no shaping, no ligatures.
 //!
+//! - [`term`]: termcore's cell grid painted into a window, the terminal as the
+//!   desktop's first client.
+//!
 //! Sizes from `look` are logical px; the scale (`n / 120`, fractional-scale-v1)
 //! turns them into the buffer's physical px, rounded only at glyph and rectangle
 //! edges. S05-1 (#176) measured this stack under KVM: a full 1920x1080 composite
@@ -31,6 +34,7 @@ pub mod boxdraw;
 pub mod canvas;
 pub mod damage;
 pub mod shadow;
+pub mod term;
 pub mod text;
 
 pub use canvas::{Canvas, Image, Rect};
