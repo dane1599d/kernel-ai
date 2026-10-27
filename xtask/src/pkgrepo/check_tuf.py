@@ -12,7 +12,6 @@ Usage: python check_tuf.py REPO_DIR
 
 import functools
 import http.server
-import shutil
 import sys
 import tempfile
 import threading
@@ -35,15 +34,16 @@ def serve(directory: Path) -> http.server.ThreadingHTTPServer:
 
 
 def client(base: str, root: Path, work: Path) -> Updater:
-    """A client that trusts `root`, keeping its files under `work`."""
+    """A client that trusts `root` (python-tuf 7 takes it as `bootstrap`),
+    keeping its files under `work`."""
     (work / "metadata").mkdir(parents=True)
     (work / "targets").mkdir()
-    shutil.copy(root, work / "metadata" / "root.json")
     return Updater(
         metadata_dir=str(work / "metadata"),
         metadata_base_url=f"{base}/metadata/",
         target_dir=str(work / "targets"),
         target_base_url=f"{base}/targets/",
+        bootstrap=root.read_bytes(),
     )
 
 
