@@ -15,15 +15,20 @@
 //! once it completes. kaifs's crash enumerator then rebuilds every state the log
 //! allows, with the superblock slots torn at every 512-byte step. Each state must
 //! mount, pass `check()` and every volume's namespace and UNDO rules, and hold
-//! a generation no older than the last one made durable. A FUA write is taken as
-//! one that may be lost, which only adds states: kaifs never sends one.
+//! a generation no older than the last one made durable; on a disk the guest
+//! formats, a state before its mkfs is durable may hold no kaifs at all. A FUA
+//! write is taken as one that may be lost, which only adds states: kaifs never
+//! sends one.
 
-use super::disk::Region;
+use super::disk::{self, Bytes, Region};
+use crate::blklog::Expect;
 use kaifs::check::{Cache, check};
 use kaifs::crash::{Options, Oracle, Recording, Rng, Tally, enumerate};
 use kaifs::ns_check::{check_namespace, check_tree};
 use kaifs::{BLOCK, Block, CsumKind, Fs, Image, MemDisk, Op, format};
+use std::path::Path;
 use std::rc::Rc;
+use std::time::Instant;
 
 pub const MAGIC: u64 = 0x006a_7366_7773_6872;
 const VERSION: u64 = 1;
@@ -272,6 +277,15 @@ impl Checks {
 impl Oracle for Checks {
     fn judge(&mut self, image: &mut Image<'_>, min: u64) -> Result<(), String> {
         self.cache.taint(image.overlay.keys().copied());
+        // On a disk the guest formats, no kaifs at all is a state until its
+        // mkfs is durable.
+        let unformatted = matches!(
+            format::read_rings(image),
+            Err(kaifs::Error::NoValidSuperblock)
+        );
+        if min == 0 && unformatted {
+            return Ok(());
+        }
         match self.generation(image)? {
             g if g < min => Err(format!(
                 "mounted generation {g}, older than the durable {min}"
@@ -324,4 +338,68 @@ pub fn replay(base: &MemDisk, log: &Log, region: Region) -> Result<Tally, String
         &mut checks,
         &mut Rng(1),
     ))
+}
+
+/// Whether `log` over `base` makes the disk `image` holds in `region`: every
+/// block the log wrote last, and every other block as the base had it. A log
+/// cut short, or the wrong base, shows here before any crash state is judged.
+fn accounts_for(image: &[u8], base: &MemDisk, ops: &[Op], region: Region) -> Result<(), String> {
+    let mut last: std::collections::BTreeMap<u64, &Block> = std::collections::BTreeMap::new();
+    for op in ops {
+        if let Op::Write(addr, block) = op {
+            last.insert(*addr, block);
+        }
+    }
+    let zero: Block = [0; BLOCK];
+    for addr in 0..region.blocks {
+        let at = (region.offset + addr * BLOCK as u64) as usize;
+        let disk = image
+            .get(at..at + BLOCK)
+            .ok_or("the image is shorter than its kai-data partition")?;
+        let want: &[u8] = match (last.get(&addr), base.get(addr)) {
+            (Some(block), _) => &block[..],
+            (None, Some(block)) => &block[..],
+            (None, None) => &zero,
+        };
+        if disk != want {
+            return Err(format!(
+                "kai-data block {addr} is not what the base and the log make: the log is cut short, or the base is not the disk before the run"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Task 9's check of a case's data disk (ADR 0004 S04-3, with file actions):
+/// `target/kai-data.img` as the run left it, `target/kai-data.log` as
+/// blklogwrites wrote it, and `base`, the image before the run, or none for a
+/// disk only the guest formatted (zeros under the GPT). The log must account for
+/// the disk; then every crash state it allows is judged. `Clean` wants no
+/// violation, `Caught` at least one. Returns the figures.
+pub fn check_case(target: &Path, base: Option<&Path>, expect: Expect) -> Result<String, String> {
+    let start = Instant::now();
+    let read = |path: &Path| std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()));
+    let image = read(&target.join(crate::blklog::IMAGE))?;
+    let region = disk::locate(&mut Bytes(&image), image.len() as u64)?;
+    let base = match base {
+        Some(path) => self::base(&read(path)?, region),
+        None => MemDisk::new(region.blocks),
+    };
+    let log = parse(&read(&target.join(crate::blklog::LOG))?)?;
+    let flushes = log.entries.iter().filter(|e| **e == Entry::Flush).count();
+    accounts_for(&image, &base, &ops(&log, region)?, region)?;
+    let tally = replay(&base, &log, region)?;
+    let figures = format!(
+        "kaifs replay: {} log entries, {flushes} flushes, {} crash states, {} violations, {:.1} s",
+        log.entries.len(),
+        tally.states,
+        tally.violations,
+        start.elapsed().as_secs_f64()
+    );
+    let first = tally.examples.first().cloned().unwrap_or_default();
+    match (expect, tally.violations) {
+        (Expect::Clean, 0) | (Expect::Caught, 1..) => Ok(figures),
+        (Expect::Clean, _) => Err(format!("{figures}; the first: {first}")),
+        (Expect::Caught, 0) => Err(format!("{figures}: the deliberate bug went unnoticed")),
+    }
 }

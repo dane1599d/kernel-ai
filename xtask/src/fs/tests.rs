@@ -261,17 +261,24 @@ fn recorded_run(name: &str, faults: Faults) -> (Vec<u8>, Region, Log) {
         fs.commit().unwrap();
     }
     let ops = std::mem::take(&mut fs.io.dev.log);
+    let log = log_of(&ops, region, &before[512..1024]);
+    (before, region, log)
+}
+
+/// `ops` on `region` as a blklogwrites log would record them, after a write of
+/// `gpt` to sector 1 and a mark: runs of consecutive blocks become one write, as
+/// the driver may send them.
+fn log_of(ops: &[Op], region: Region, gpt: &[u8]) -> Log {
     let sectors = |addr: u64| (region.offset + addr * BLOCK as u64) / 512;
     let mut entries = vec![
         Entry::Write {
             sector: 1,
-            data: before[512..1024].to_vec(),
+            data: gpt.to_vec(),
             fua: false,
         },
         Entry::Mark,
     ];
-    // Runs of consecutive blocks become one write, as the driver may send them.
-    for op in ops {
+    for op in ops.iter().cloned() {
         match (op, entries.last_mut()) {
             (Op::Flush, _) => entries.push(Entry::Flush),
             (Op::Write(addr, block), Some(Entry::Write { sector, data, .. }))
@@ -287,11 +294,10 @@ fn recorded_run(name: &str, faults: Faults) -> (Vec<u8>, Region, Log) {
             }),
         }
     }
-    let log = Log {
+    Log {
         sector_size: 512,
         entries,
-    };
-    (before, region, log)
+    }
 }
 
 #[test]
@@ -426,4 +432,121 @@ fn the_command_line_takes_each_command_and_refuses_what_it_does_not_know() {
         let replayed = run(&["replay", base.to_str().unwrap(), log_file.to_str().unwrap()]);
         assert_eq!(replayed.is_ok(), passes, "{name}: {replayed:?}");
     }
+}
+
+/// A case's data disk after a run, in `target/` as the case leaves it: task 2's
+/// disk with `kai-cache`, kaifs in `kai-data` (made on the host first if
+/// `host_mkfs`, else by the run itself), `actions` file actions, and the log.
+/// Returns the base the case would have saved, for a host-made disk.
+fn case_disk(target: &Path, actions: u64, host_mkfs: bool, faults: Faults) -> Option<PathBuf> {
+    let image = target.join(crate::blklog::IMAGE);
+    crate::blklog::make_disk(&image, Some(1)).unwrap();
+    if host_mkfs {
+        let dev = FileDev::open(&image, true).unwrap();
+        Fs::mkfs(dev, [6; 16], "case").unwrap();
+    }
+    let before = std::fs::read(&image).unwrap();
+    let region = disk::locate(&mut Bytes(&before), before.len() as u64).unwrap();
+    let mut rec = RecordingDisk::new(region.blocks);
+    rec.disk = blklog::base(&before, region);
+    let mut fs = match host_mkfs {
+        true => Fs::mount_with(rec, faults).unwrap(),
+        false => Fs::mkfs_with(rec, [7; 16], "guest", faults).unwrap(),
+    };
+    for n in 0..actions {
+        fs.begin(n + 1).unwrap();
+        fs.set_volume([HOME, SYSTEM][n as usize % 2]).unwrap();
+        let name = format!("action {}", n % 25);
+        let f = match fs.lookup(ROOT, &name).unwrap() {
+            Some(e) => e.ino,
+            None => fs.create(ROOT, &name).unwrap(),
+        };
+        fs.write_file(f, &vec![n as u8; 600 + (n as usize * 997) % 9000])
+            .unwrap();
+        fs.commit().unwrap();
+    }
+    // What QEMU leaves: the disk with every write on it, and the log.
+    let ops = std::mem::take(&mut fs.io.dev.log);
+    let mut after = before.clone();
+    for op in &ops {
+        if let Op::Write(addr, block) = op {
+            let at = (region.offset + addr * BLOCK as u64) as usize;
+            after[at..at + BLOCK].copy_from_slice(&block[..]);
+        }
+    }
+    std::fs::write(&image, &after).unwrap();
+    let log = log_of(&ops, region, &before[512..1024]);
+    std::fs::write(target.join(crate::blklog::LOG), blklog::encode(&log)).unwrap();
+    host_mkfs.then(|| {
+        let base = target.join("kai-data.base.img");
+        std::fs::write(&base, &before).unwrap();
+        base
+    })
+}
+
+#[test]
+fn a_case_disk_the_guest_formatted_replays_clean() {
+    use crate::blklog::Expect;
+    let target = scratch("case guest mkfs");
+    case_disk(&target, 12, false, Faults::default());
+    let figures = blklog::check_case(&target, None, Expect::Clean).unwrap();
+    assert!(figures.contains(" 0 violations"), "{figures}");
+    // The deliberate bug is no bug here, so Caught must fail.
+    assert!(blklog::check_case(&target, None, Expect::Caught).is_err());
+}
+
+#[test]
+fn a_case_disk_formatted_on_the_host_needs_its_base() {
+    use crate::blklog::Expect;
+    let target = scratch("case host mkfs");
+    let base = case_disk(&target, 8, true, Faults::default()).unwrap();
+    blklog::check_case(&target, Some(&base), Expect::Clean).unwrap();
+    let without = blklog::check_case(&target, None, Expect::Clean).unwrap_err();
+    assert!(without.contains("not the disk before the run"), "{without}");
+    // The same from the command line.
+    let run = |args: &[&str]| super::main(&args.iter().map(|a| a.to_string()).collect::<Vec<_>>());
+    let (target, base) = (target.to_str().unwrap(), base.to_str().unwrap());
+    run(&["case", target, "--base", base]).unwrap();
+    assert!(run(&["case", target, "--base", base, "--caught"]).is_err());
+    assert!(run(&["case", target]).is_err());
+}
+
+#[test]
+fn a_cut_log_is_refused_before_any_state_is_judged() {
+    use crate::blklog::Expect;
+    let target = scratch("case cut log");
+    case_disk(&target, 6, false, Faults::default());
+    let path = target.join(crate::blklog::LOG);
+    let mut log = blklog::parse(&std::fs::read(&path).unwrap()).unwrap();
+    log.entries.truncate(log.entries.len() - 3);
+    std::fs::write(&path, blklog::encode(&log)).unwrap();
+    let cut = blklog::check_case(&target, None, Expect::Clean).unwrap_err();
+    assert!(cut.contains("cut short"), "{cut}");
+}
+
+#[test]
+fn a_case_run_without_its_data_flush_is_caught() {
+    use crate::blklog::Expect;
+    let target = scratch("case no flush");
+    let faults = Faults {
+        skip_data_flush: true,
+        ..Faults::default()
+    };
+    case_disk(&target, 6, false, faults);
+    blklog::check_case(&target, None, Expect::Caught).unwrap();
+    assert!(blklog::check_case(&target, None, Expect::Clean).is_err());
+}
+
+/// Task 9's size: 200 file actions on the case disk. The replay's time is the
+/// figure; run it with `cargo test -p xtask --release -- --ignored two_hundred`.
+#[test]
+#[ignore = "task 9's full size: a release build takes seconds, a debug one minutes"]
+fn two_hundred_actions_replay_in_a_ci_minute() {
+    use crate::blklog::Expect;
+    let target = scratch("case 200 actions");
+    case_disk(&target, 200, false, Faults::default());
+    let start = std::time::Instant::now();
+    let figures = blklog::check_case(&target, None, Expect::Clean).unwrap();
+    eprintln!("{figures}");
+    assert!(start.elapsed().as_secs() < 60, "{figures}");
 }
