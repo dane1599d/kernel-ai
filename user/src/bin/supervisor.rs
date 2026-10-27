@@ -53,9 +53,13 @@ fn main() -> i32 {
     let saved = sys::state_load(&mut buf)
         .map(|len| supervise::decode(&buf[..len.min(buf.len())]))
         .unwrap_or_default();
-    let mut plan = vec![0u8; 4096];
+    let mut plan = vec![0u8; kabi::MAX_PLAN];
     let plan = match sys::plan(&mut plan) {
-        Ok(len) => String::from_utf8_lossy(&plan[..len.min(plan.len())]).into_owned(),
+        Ok(len) if len > plan.len() => {
+            println!("the plan is {len} bytes, over {}", plan.len());
+            return 1;
+        }
+        Ok(len) => String::from_utf8_lossy(&plan[..len]).into_owned(),
         Err(error) => {
             println!("cannot read the plan: {error:?}");
             return 1;
