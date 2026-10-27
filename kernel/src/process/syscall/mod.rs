@@ -22,7 +22,7 @@ mod supervise;
 mod model_kv;
 
 // S-io (P2).
-mod fs;
+pub(crate) mod fs;
 
 // G-core (P3): `mod display;`.
 

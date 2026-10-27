@@ -166,7 +166,13 @@ const FILE_RIGHTS: Rights = Rights::DUPLICATE
 
 /// ENDPOINT_MINT: a `Dir` or `File` handle on the caller's own endpoint (which
 /// must carry MINT), routed to the caller's service name, with `badge`.
-fn mint(slot: usize, endpoint: u64, kind: u64, rights: u64, badge: u64) -> Result<u64, Error> {
+pub(crate) fn mint(
+    slot: usize,
+    endpoint: u64,
+    kind: u64,
+    rights: u64,
+    badge: u64,
+) -> Result<u64, Error> {
     let endpoint = Handle(u32::try_from(endpoint).map_err(|_| Error::BadHandle)?);
     let kind = u32::try_from(kind).ok().and_then(Kind::from_raw);
     let allowed = match kind {
@@ -181,22 +187,24 @@ fn mint(slot: usize, endpoint: u64, kind: u64, rights: u64, badge: u64) -> Resul
         return Err(Error::Invalid);
     }
     let me = crate::process::identity(slot);
-    let route = handle::route_id(me.name.as_str())?;
-    let handle = handle::with(slot, |h| {
-        // Its own endpoint only: one handed to it names another process.
+    // Its own endpoint only: one handed to it names another process. Checked
+    // before the route name is taken, so a refused call takes no name slot.
+    handle::with(slot, |h| {
         let own = h
             .table
             .check(endpoint, Kind::Endpoint, Rights::MINT, &Kernel)?;
-        if own.object != me.pid {
-            return Err(captable::Error::Permission);
+        match own.object == me.pid {
+            true => Ok(()),
+            false => Err(captable::Error::Permission),
         }
-        // Tied to no grant node (`grant: None`, as `Entry::new` makes it): it
-        // lives until closed. Revoking a server's handles is later work (ADR
-        // 0001's "badges revoked" notice).
-        let mut entry = Entry::new(kind.ok_or(captable::Error::Invalid)?, rights, route);
-        entry.badge = badge;
-        h.table.insert(entry)
     })?
     .map_err(Error::from)?;
+    let route = handle::route_id(me.name.as_str())?;
+    // Tied to no grant node (`grant: None`, as `Entry::new` makes it): it lives
+    // until closed. Revoking a server's handles is later work (ADR 0001's
+    // "badges revoked" notice).
+    let mut entry = Entry::new(kind.ok_or(Error::Invalid)?, rights, route);
+    entry.badge = badge;
+    let handle = handle::with(slot, |h| h.table.insert(entry))?.map_err(Error::from)?;
     Ok(u64::from(handle.0))
 }

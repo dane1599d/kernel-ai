@@ -11,13 +11,16 @@
 //! The kernel is `fs`'s client here as well, naming objects by their badges: it
 //! takes no handles.
 
+use crate::handle;
 use crate::process;
 use crate::{ipc, log, threads};
 use alloc::format;
 use alloc::vec::Vec;
+use captable::Entry;
 use fsproto::{How, Reply, Request};
-use kabi::ExitReason;
+use kabi::handle::Handle;
 use kabi::handle::{Kind, Rights};
+use kabi::{Error, ExitReason, cap};
 
 const SERVICE: &str = "fs";
 const CLIENT: &str = "filecheck";
@@ -35,16 +38,6 @@ const RIGHTS: Rights = Rights::READ
 
 /// `fs-reboot`'s boots: `filecheck` leaves `write.ok` or `read.ok`.
 pub fn check(cmdline: &str) -> Result<(), &'static str> {
-    // REPLY_H moves a Dir or File only to a process with FILES: the ceiling.
-    let ceiling = [kabi::cap::SERVE, kabi::cap::SERVE | kabi::cap::PARTITION]
-        .into_iter()
-        .all(|caps| {
-            !crate::handle::ceiling_allows(caps, Kind::Dir)
-                && !crate::handle::ceiling_allows(caps, Kind::File)
-        });
-    if !ceiling || !crate::handle::ceiling_allows(kabi::cap::FILES, Kind::File) {
-        return Err("files: Dir and File handles are not held to FILES");
-    }
     let reread = cmdline.split_whitespace().any(|w| w == "reread");
     let (marker, boot) = if reread {
         ("read.ok", 2)
@@ -53,6 +46,104 @@ pub fn check(cmdline: &str) -> Result<(), &'static str> {
     };
     wait_for(marker).map_err(|_| "files: filecheck did not finish its step")?;
     log!("files: boot {boot}: filecheck's step through its Dir handle passed");
+    if !reread {
+        minting()?;
+        log!("files: ENDPOINT_MINT and the FILES ceiling refuse what they must");
+    }
+    Ok(())
+}
+
+/// ENDPOINT_MINT and REPLY_H's ceiling, on `filecheck`'s table (it idles once
+/// its step is done): what ring 3 cannot reach to try.
+fn minting() -> Result<(), &'static str> {
+    use crate::process::syscall::fs::mint;
+    let pid = process::named(CLIENT).first().map(|&(pid, _)| pid);
+    let fs = process::named(SERVICE).first().map(|&(pid, _)| pid);
+    let (Some(pid), Some(fs)) = (pid, fs) else {
+        return Err("files: filecheck or fs is gone");
+    };
+    let slot = process::with_table(|t| t.iter().position(|p| p.live() && p.pid == pid))
+        .ok_or("files: filecheck has no slot")?;
+    let put = |kind, rights, object| {
+        handle::with(slot, |h| h.table.insert(Entry::new(kind, rights, object)))
+            .ok()
+            .and_then(Result::ok)
+            .map(|h| u64::from(h.0))
+            .ok_or("files: a test handle cannot be put in filecheck's table")
+    };
+    let (dir, file) = (Kind::Dir as u64, Kind::File as u64);
+    let read = Rights::READ.bits() as u64;
+    let others = put(Kind::Endpoint, Rights::MINT, fs)?;
+    let own = put(Kind::Endpoint, Rights::MINT, pid)?;
+    let not_endpoint = put(Kind::Dir, Rights::READ, 1)?;
+    for (what, got, want) in [
+        (
+            "no endpoint",
+            mint(slot, 0, file, read, 1),
+            Error::BadHandle,
+        ),
+        (
+            "a Dir as endpoint",
+            mint(slot, not_endpoint, file, read, 1),
+            Error::BadHandle,
+        ),
+        (
+            "another's endpoint",
+            mint(slot, others, file, read, 1),
+            Error::Permission,
+        ),
+        (
+            "a Partition",
+            mint(slot, own, Kind::Partition as u64, read, 1),
+            Error::Invalid,
+        ),
+        ("no rights", mint(slot, own, file, 0, 1), Error::Invalid),
+        (
+            "only MINT and CALL",
+            mint(
+                slot,
+                own,
+                dir,
+                (Rights::MINT | Rights::CALL).bits() as u64,
+                1,
+            ),
+            Error::Invalid,
+        ),
+    ] {
+        if got != Err(want) {
+            log!("files: ENDPOINT_MINT with {what} gave {got:?}, wanted {want:?}");
+            return Err("files: ENDPOINT_MINT allowed what it must refuse");
+        }
+    }
+    // A good one: masked rights, the badge as given, routed to this service.
+    let wide = (Rights::READ | Rights::MINT | Rights::CREATE).bits() as u64;
+    let minted = mint(slot, own, file, wide, 0xb0b).map_err(|_| "files: a good mint failed")?;
+    let route = handle::route_id(CLIENT).map_err(|_| "files: no route id")?;
+    let entry = handle::with(slot, |h| h.table.get(Handle(minted as u32)).copied())
+        .ok()
+        .and_then(Result::ok)
+        .ok_or("files: the minted handle is not in the table")?;
+    if (
+        entry.kind,
+        entry.rights,
+        entry.badge,
+        entry.object,
+        entry.grant,
+    ) != (Kind::File, Rights::READ, 0xb0b, route, None)
+    {
+        return Err("files: a minted handle is not what was asked");
+    }
+    // REPLY_H moves a Dir only to a process with FILES.
+    let moving = put(Kind::Dir, Rights::READ | Rights::TRANSFER, 1)?;
+    let moving = Handle(moving as u32);
+    if handle::take_for(slot, &[moving], cap::SERVE | cap::CALL) != Err(Error::Permission) {
+        return Err("files: a Dir would move to a process without FILES");
+    }
+    handle::take_for(slot, &[moving], cap::FILES)
+        .map_err(|_| "files: a Dir did not move to FILES")?;
+    for h in [others, own, not_endpoint, minted] {
+        let _ = handle::with(slot, |t| t.table.close(Handle(h as u32)));
+    }
     Ok(())
 }
 

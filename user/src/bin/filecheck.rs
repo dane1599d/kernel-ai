@@ -206,6 +206,28 @@ fn handles(home: Handle, plan: Handle) -> Result<(), String> {
     expect(reader, write, Reply::Failed(Error::Permission))
         .map_err(|e| format!("a READ-only File wrote: {e}"))?;
     let _ = sys::handle_close(reader);
+    // A Dir duplicated with fewer rights: fs is told the fewer rights.
+    let lister = sys::handle_dup(home, Rights::READ | Rights::ENUMERATE)
+        .map_err(|e| format!("HANDLE_DUP: {e:?}"))?;
+    match ask(
+        lister,
+        Request::List {
+            after: None,
+            max: 4,
+        },
+    )? {
+        (Reply::Listed { .. }, _) => {}
+        other => return Err(format!("a READ|ENUMERATE Dir cannot list: {other:?}")),
+    }
+    refused(lister, "new.txt", How::CreateFile, Error::Permission)?;
+    expect(
+        lister,
+        Request::Trash {
+            name: "notes".into(),
+        },
+        Reply::Failed(Error::Permission),
+    )?;
+    let _ = sys::handle_close(lister);
     match sys::endpoint_mint(home, Kind::Dir, Rights::READ, 1) {
         Err(kabi::Error::BadHandle) => {}
         other => return Err(format!("ENDPOINT_MINT on a Dir gave {other:?}")),
