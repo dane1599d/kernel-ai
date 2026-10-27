@@ -3314,6 +3314,3 @@ the following restrictions:
     misrepresented as being the original software.
 
 3. This notice may not be removed or altered from any source distribution.
-
---------------------------------------------------------------------------------
-Cargo.lock SHA-256: 6422a91e8fe0d3463645a1117fa8445729b0f8282d33514c4dcba26fe68ca994
