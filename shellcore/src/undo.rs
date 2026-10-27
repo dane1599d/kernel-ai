@@ -32,6 +32,9 @@ pub enum Inverse {
     /// the switch made) still is. The shell's package store does it
     /// (`Shell::revert_entry`), not the host.
     Generation { from: u64, to: u64 },
+    /// Restore what `fs` transaction `txn` replaced (P2 task 11); the `fs`
+    /// server refuses one over a later change.
+    Fs { txn: u64 },
 }
 
 /// A service name held without the heap, so an inverse stays `Copy`.
@@ -97,6 +100,7 @@ pub fn target(inverse: Inverse) -> String {
         Inverse::Started(name) => format!("{} stopped", name.as_str()),
         Inverse::Stopped(name) => format!("{} running", name.as_str()),
         Inverse::Generation { to, .. } => format!("generation {to}"),
+        Inverse::Fs { .. } => String::from("the files as they were"),
     }
 }
 
@@ -104,6 +108,26 @@ pub fn target(inverse: Inverse) -> String {
 /// that moved since the change is left alone unless `anyway`. A switch the kernel
 /// refuses as too soon is tried once more after [`BUSY_RETRY_MS`].
 pub fn revert(
+    host: &dyn Host,
+    inverse: Inverse,
+    anyway: bool,
+    ids: Ids,
+) -> Result<(String, Inverse), Refused> {
+    match inverse {
+        // A restore is a transaction of its own, so its redo restores that one.
+        Inverse::Fs { txn } => match host.fs_undo(txn, anyway) {
+            Ok(redo) => Ok((
+                String::from("files back as they were"),
+                Inverse::Fs { txn: redo },
+            )),
+            Err(crate::FsRefused::Later(what)) => Err(Refused::Moved(what)),
+            Err(crate::FsRefused::Failed(why)) => Err(Refused::Failed(why)),
+        },
+        other => revert_one(host, other, anyway, ids).map(|text| (text, reverse(other))),
+    }
+}
+
+fn revert_one(
     host: &dyn Host,
     inverse: Inverse,
     anyway: bool,
@@ -142,6 +166,9 @@ pub fn revert(
         Inverse::Generation { .. } => Err(Refused::Failed(String::from(
             "a package switch is put back by the shell's store",
         ))),
+        Inverse::Fs { .. } => Err(Refused::Failed(String::from(
+            "files are put back by revert",
+        ))),
     }
 }
 
@@ -168,5 +195,7 @@ pub fn reverse(inverse: Inverse) -> Inverse {
         Inverse::Started(name) => Inverse::Stopped(name),
         Inverse::Stopped(name) => Inverse::Started(name),
         Inverse::Generation { from, to } => Inverse::Generation { from: to, to: from },
+        // Only the `fs` server knows the restore's own transaction ([`revert`]).
+        Inverse::Fs { txn } => Inverse::Fs { txn },
     }
 }

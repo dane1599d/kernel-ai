@@ -13,6 +13,7 @@ use std::collections::VecDeque;
 mod act;
 mod actions;
 mod apart;
+mod files;
 mod fuzz;
 mod log;
 mod more;
@@ -73,7 +74,12 @@ struct FakeHost {
     proofs: RefCell<Vec<(String, Proof)>>,
     /// Services started, with the entry that started them: the supervisor's memory.
     started_by: RefCell<Vec<(String, u64)>>,
+    /// The `fs` server's files, and each transaction's files before and after.
+    files: RefCell<std::collections::BTreeMap<String, String>>,
+    txns: RefCell<Vec<(Files, Files)>>,
 }
+
+type Files = std::collections::BTreeMap<String, String>;
 
 type Apart = alloc::boxed::Box<dyn Fn(&str) -> Result<String, String>>;
 
@@ -156,6 +162,8 @@ impl FakeHost {
             apart_requests: RefCell::new(Vec::new()),
             proofs: RefCell::new(Vec::new()),
             started_by: RefCell::new(Vec::new()),
+            files: RefCell::new(Files::new()),
+            txns: RefCell::new(Vec::new()),
         })
     }
 }
@@ -310,6 +318,81 @@ impl Host for FakeHost {
         self.set_running(name, true)?;
         self.started_by.borrow_mut().push((name.into(), entry));
         Ok(())
+    }
+
+    fn fs_read(&self, read: FsRead) -> Result<String, String> {
+        let files = self.files.borrow();
+        match read {
+            FsRead::List(dir) => Ok(files
+                .keys()
+                .filter(|path| path.starts_with(dir))
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(
+                    "
+",
+                )),
+            FsRead::Read(path) => files
+                .get(path)
+                .cloned()
+                .ok_or_else(|| String::from("NotFound")),
+            FsRead::History(path) => Ok(format!("{path}: {} versions", self.txns.borrow().len())),
+            FsRead::Changes => Ok(files.keys().cloned().collect::<Vec<_>>().join(
+                "
+",
+            )),
+        }
+    }
+
+    fn fs_change(&self, change: FsChange) -> Result<u64, String> {
+        let before = self.files.borrow().clone();
+        let mut files = before.clone();
+        match change {
+            FsChange::Create { path, .. } if files.contains_key(path) => {
+                return Err(String::from("Exists: use fs_write"));
+            }
+            FsChange::Create { path, text } | FsChange::Write { path, text } => {
+                files.insert(path.into(), text.into());
+            }
+            FsChange::Move { from, to } => {
+                let text = files.remove(from).ok_or_else(|| String::from("NotFound"))?;
+                files.insert(to.into(), text);
+            }
+            FsChange::Trash(path) => {
+                let text = files.remove(path).ok_or_else(|| String::from("NotFound"))?;
+                files.insert(format!(".trash/{path}"), text);
+            }
+            FsChange::Restore(path) => {
+                let text = files
+                    .remove(&format!(".trash/{path}"))
+                    .ok_or_else(|| String::from("NotFound"))?;
+                files.insert(path.into(), text);
+            }
+            FsChange::EmptyTrash => files.retain(|path, _| !path.starts_with(".trash/")),
+        }
+        *self.files.borrow_mut() = files.clone();
+        let mut txns = self.txns.borrow_mut();
+        txns.push((before, files));
+        Ok(txns.len() as u64)
+    }
+
+    fn fs_undo(&self, txn: u64, anyway: bool) -> Result<u64, FsRefused> {
+        let (before, after) = self
+            .txns
+            .borrow()
+            .get(txn as usize - 1)
+            .cloned()
+            .ok_or_else(|| FsRefused::Failed(String::from("NotFound")))?;
+        let now = self.files.borrow().clone();
+        if now != after && !anyway {
+            return Err(FsRefused::Later(String::from(
+                "a later change touched them",
+            )));
+        }
+        *self.files.borrow_mut() = before.clone();
+        let mut txns = self.txns.borrow_mut();
+        txns.push((now, before));
+        Ok(txns.len() as u64)
     }
 
     fn restart_service(&self, name: &str, proof: Proof) -> Result<(), String> {
