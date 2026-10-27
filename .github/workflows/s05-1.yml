@@ -107,10 +107,12 @@ jobs:
         run: cargo xtask test --accel ${{ matrix.accel }} --timeout 900 2>&1 | tee compose.log
       - name: The figures
         if: always()
-        run: grep -E "compose: |\[compose\]|\[compositor\]|xtask: (PASS|FAIL)" compose.log || true
+        run: |
+          grep -E "compose: |\[compose\]|\[compositor\]|xtask: (PASS|FAIL)" compose.log || true
       - name: Boot image size with the fonts
         if: always()
-        run: ls -l target/*/debug/user/compose target/x86_64-kai-user/*/compose 2>/dev/null || find target -name compose -type f -exec ls -l {} \;
+        run: |
+          find target -name compose -type f -exec ls -l {} \;
       - uses: actions/upload-artifact@v4
         if: always() && matrix.accel == 'kvm'
         with:
