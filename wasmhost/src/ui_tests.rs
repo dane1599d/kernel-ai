@@ -239,3 +239,60 @@ fn frames_coalesce_until_comphost_takes_them() {
     assert!(frame.a11y.iter().any(|n| n.id == 1));
     assert!(!frame.damage.is_empty());
 }
+
+/// Notes with its window (components/notes-window), when it has been built for
+/// wasm32: it opens its window when it starts, a click and the agent reach the
+/// same note list, and asking to close closes it.
+#[test]
+fn the_notes_window_guest_shows_its_window_and_takes_clicks() {
+    use livecore::Instance;
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../target/wasm32-unknown-unknown/component/comp_notes_window.wasm"
+    );
+    let Ok(wasm) = std::fs::read(path) else {
+        std::eprintln!("skipped: build comp-notes-window for wasm32 first");
+        return;
+    };
+    let mut g = load_core(&wasm, LIMITS, None).unwrap();
+    assert_eq!(g.init(), Ok(0));
+    let frame = |g: &mut crate::CoreInstance| match g.take_ui().pop() {
+        Some(Update::Frame { window, frame }) => (window, frame),
+        other => panic!("{other:?}"),
+    };
+    let (w, f) = frame(&mut g);
+    assert_eq!(f.title, "Notes");
+    let new = f.a11y.iter().find(|n| n.name == "New note").unwrap().id;
+    assert_eq!(g.ui_act(w, new, Action::Click, None), Ok(Ok(())));
+    let (_, f) = frame(&mut g);
+    assert!(f.a11y.iter().any(|n| n.role.name() == "list"));
+    let count = appabi::Func {
+        export: String::from("app:notes/actions@1.0.0#count"),
+        params: vec![],
+        result: Some(Ty::Record(vec![
+            (String::from("notes"), Ty::U32),
+            (String::from("words"), Ty::U32),
+        ])),
+    };
+    let tally = Instance::call(&mut g, &count, &[]).unwrap();
+    assert_eq!(tally, Some(Val::Record(vec![Val::U32(1), Val::U32(0)])));
+    // The agent's add redraws the window too.
+    let add = appabi::Func {
+        export: String::from("app:notes/actions@1.0.0#add"),
+        params: vec![Ty::String],
+        result: Some(Ty::Result(
+            Some(Box::new(Ty::U32)),
+            Some(Box::new(Ty::String)),
+        )),
+    };
+    Instance::call(&mut g, &add, &[Val::String("milk".into())]).unwrap();
+    let (_, f) = frame(&mut g);
+    assert!(
+        f.a11y.iter().any(|n| n.name.contains("milk")),
+        "{:?}",
+        f.a11y
+    );
+    g.ui_events(w, &[uikit::widget::UiEvent::CloseRequested])
+        .unwrap();
+    assert_eq!(g.take_ui(), vec![Update::Closed(w)]);
+}

@@ -226,6 +226,62 @@ fn check_repair_mounts_a_disk_whose_allocator_does_not_read() {
     assert!(home.iter().any(|line| line.contains("user")), "{home:?}");
 }
 
+/// `import --model`: the blob lands sealed under its SHA-256, its extents
+/// hold it as `MODEL_FILL` will read them, and sector 0 names it.
+#[test]
+fn import_model_writes_a_sealed_blob_and_names_it_in_sector_0() {
+    use kabi::modelhint::Hint;
+    use sha2::{Digest, Sha256};
+    let dir = scratch("model");
+    let image = made(&dir);
+    let model = dir.join("tiny.gguf");
+    let mut bytes = b"GGUF".to_vec();
+    bytes.extend((0..(5u32 << 20) + 77).map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8));
+    std::fs::write(&model, &bytes).unwrap();
+    let line = super::model::import_model(&image, &model).unwrap();
+    let sha256: [u8; 32] = Sha256::digest(&bytes).into();
+    let name: String = sha256.iter().map(|b| format!("{b:02x}")).collect();
+    let path = format!("/system/models/{name}.gguf");
+    assert!(line.starts_with(&path), "{line}");
+    assert_eq!(cat(&image, &path), bytes);
+    let fnv = kabi::model::fnv1a(&bytes);
+    let disk = std::fs::read(&image).unwrap();
+    let region = disk::locate(&mut Bytes(&disk), disk.len() as u64).unwrap();
+    let at = region.offset as usize;
+    let hint = Hint::decode(&disk[at..at + 512]).unwrap();
+    let len = bytes.len() as u64;
+    assert_eq!(hint, Hint { len, fnv, sha256 });
+    let held = {
+        let mut fs = ops::open(&image, false).unwrap();
+        fs.set_volume(MODELS).unwrap();
+        let ino = fs.resolve(&format!("/{name}.gguf")).unwrap();
+        assert!(fs.is_sealed(ino).unwrap());
+        let attr = fs.get_xattr(ino, super::model::FNV_ATTR).unwrap();
+        assert_eq!(attr.unwrap(), fnv.to_le_bytes());
+        let mut held = Vec::new();
+        for (start, blocks) in fs.sealed_extents(ino).unwrap() {
+            let from = at + (start * BLOCK as u64) as usize;
+            held.extend_from_slice(&disk[from..from + (blocks * BLOCK as u64) as usize]);
+        }
+        held
+    };
+    assert_eq!(held[..bytes.len()], bytes[..]);
+    ops::check_image(&image, false).unwrap();
+    // Again: named active, not written twice.
+    let again = super::model::import_model(&image, &model).unwrap();
+    assert!(again.contains("was there already"), "{again}");
+    let after = ops::ls(&image, "/system/models").unwrap();
+    assert_eq!(
+        after.iter().filter(|l| l.contains(".gguf")).count(),
+        1,
+        "{after:?}"
+    );
+    // Not a GGUF file: refused, and nothing written.
+    std::fs::write(&model, b"not a model").unwrap();
+    assert!(super::model::import_model(&image, &model).is_err());
+    ops::check_image(&image, false).unwrap();
+}
+
 /// kaifs on a case disk as task 2's `make_disk` lays it out, `kai-cache` after
 /// `kai-data`: every command finds `kai-data` by its type GUID and leaves the
 /// cache alone. A disk whose primary GPT is gone is read from its backup.

@@ -54,6 +54,21 @@ pub fn tagged(rows: &[&'static Row]) -> Tagged {
     Tagged::new(&actions).expect("the mock registry decodes")
 }
 
+/// [`tagged`], with the rows no task needs (`registry::DISTRACTORS`) closing
+/// with no arguments, as the shipping decoder closes an index-only row
+/// (`llmproto::local::act::Grammar`). No task calls one, so the second round
+/// never changes a score and is not run.
+pub fn indexed(rows: &[&'static Row]) -> Tagged {
+    let rows: Vec<&'static Row> = rows
+        .iter()
+        .map(|row| match super::registry::is_distractor(row) {
+            true => &*Box::leak(Box::new(Row { args: &[], ..**row })),
+            false => *row,
+        })
+        .collect();
+    tagged(&rows)
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::registry::rows;
@@ -74,5 +89,18 @@ mod tests {
         }
         tagged(&rows(40));
         tagged(&super::super::registry::m8_rows());
+    }
+
+    #[test]
+    fn at_the_index_level_a_distractor_closes_with_no_arguments() {
+        let g = indexed(&rows(80));
+        let closed = r#"{"name":"sound_set","arguments":{}}"#;
+        assert!(g.is_done(&g.advance(g.start(), closed.as_bytes()).unwrap()));
+        let full = r#"{"name":"set_policy","arguments":{"name":"round-robin"}}"#;
+        assert!(g.is_done(&g.advance(g.start(), full.as_bytes()).unwrap()));
+        assert!(
+            g.advance(g.start(), br#"{"name":"sound_set","arguments":{"level""#)
+                .is_err()
+        );
     }
 }

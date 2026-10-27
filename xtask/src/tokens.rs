@@ -235,14 +235,15 @@ mod tests {
     }
 
     #[test]
-    fn the_pack_splits_into_its_four_kinds_of_section() {
+    fn the_pack_splits_into_its_five_kinds_of_section() {
         let text = pack::render(Format::Dsl1);
         let headings: Vec<&str> = sections(&text).iter().map(|(h, _)| *h).collect();
-        assert_eq!(headings.len(), 4, "{headings:?}");
+        assert_eq!(headings.len(), 5, "{headings:?}");
         assert!(headings[0].starts_with("## Rhai"));
         assert!(headings[1].starts_with("## Calls"));
         assert_eq!(headings[2], "## Examples");
         assert_eq!(headings[3], "## system");
+        assert!(headings[4].starts_with("## index"));
         let joined: String = sections(&text).iter().map(|(_, t)| *t).collect();
         assert_eq!(joined, text);
     }

@@ -1,0 +1,8 @@
+/// The part of `kai:ui/app@0.1.0` that Notes' window binds itself; `compsdk` and
+/// `comp-notes` bind `kai:app/component` and `app:notes/actions`.
+package app:notes-window@1.0.0;
+
+world window-only {
+    import kai:ui/view@0.1.0;
+    export kai:ui/input@0.1.0;
+}

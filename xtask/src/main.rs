@@ -58,6 +58,7 @@ mod mock_llm;
 mod models;
 mod notices;
 mod options;
+mod pkgrepo;
 mod qemu;
 mod screen;
 mod smoke;
@@ -98,6 +99,7 @@ fn main() -> ExitCode {
         Some("wit-check") => wit::main(&args[1..]),
         Some("wit-tables") => wit_tables::main(&args[1..]),
         Some("fs") => fs_tool::main(&args[1..]),
+        Some("pkgrepo") => pkgrepo::main(&args[1..]),
         _ => parse_args(&args).and_then(|options| execute(&options)),
     };
     match result {
@@ -239,6 +241,7 @@ fn execute(options: &Options) -> Result<(), String> {
         // A case may name a second boot on the same data disk (`then`), booted
         // once the first has passed (P2 plan section 4.2).
         let (mut next, mut fresh) = (Some(first), true);
+        let mut boot = 1;
         while let Some(case) = next.take() {
             let service = match case.build {
                 true => Some(edit_smoke::service(&root, case.name)?),
@@ -246,6 +249,11 @@ fn execute(options: &Options) -> Result<(), String> {
             };
             let server = if case.server { llm_args.as_str() } else { "" };
             let mut cmdline = format!("{} {server}", case.cmdline);
+            let cutting = case.cuts > 0 && boot <= case.cuts;
+            if case.cuts > 0 {
+                let last = if cutting { "" } else { " last" };
+                cmdline = format!("{cmdline} boot={boot}{last}");
+            }
             if case.dns {
                 cmdline = format!("{cmdline} {}", mock_dns.cmdline());
             }
@@ -334,6 +342,7 @@ fn execute(options: &Options) -> Result<(), String> {
                 contains: disk
                     .as_ref()
                     .map_or_else(Vec::new, disk::ModelDisk::console_text),
+                cut: cutting.then(|| (format!("files: boot {boot}:"), cut_delay(case.name, boot))),
             };
             let requests = mock.requests();
             let after = |service: &Option<buildsvc::BuildService>| match (case.after, service) {
@@ -347,9 +356,13 @@ fn execute(options: &Options) -> Result<(), String> {
             };
             let result = result
                 .and_then(|()| after(&service))
-                .and_then(|()| match case.data.and_then(|data| data.log) {
-                    Some(expect) => blklog::check(&target_dir, expect),
-                    None => Ok(()),
+                .and_then(|()| match case.data {
+                    Some(
+                        data @ blklog::Data {
+                            log: Some(expect), ..
+                        },
+                    ) => blklog::check_data(&target_dir, data, expect),
+                    _ => Ok(()),
                 })
                 .and_then(|()| match case.screen {
                     Some(expect) => screen::check(&target_dir, expect),
@@ -365,6 +378,11 @@ fn execute(options: &Options) -> Result<(), String> {
                 eprintln!("xtask: test case {}: {message}", case.name);
                 failures.push(case.name);
                 break;
+            }
+            if cutting {
+                boot += 1;
+                (next, fresh) = (Some(case), false);
+                continue;
             }
             (next, fresh) = (case.then, false);
         }
@@ -383,6 +401,21 @@ fn execute(options: &Options) -> Result<(), String> {
     } else {
         Err(format!("failed test cases: {}", failures.join(", ")))
     }
+}
+
+/// When the power goes in boot `boot` of a case with cuts: 0.2 to 2 s after its
+/// line, seeded by the case and the boot, so a failure repeats.
+pub(crate) fn cut_delay(name: &str, boot: u32) -> std::time::Duration {
+    let mut x = name
+        .bytes()
+        .fold(0xcbf2_9ce4_8422_2325u64 ^ u64::from(boot), |h, b| {
+            (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
+        })
+        | 1;
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    std::time::Duration::from_millis(200 + x % 1800)
 }
 
 /// Kernel command-line arguments that point the kernel at an LLM server.

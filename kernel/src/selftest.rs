@@ -79,6 +79,15 @@ pub enum SelfTest {
     /// P2 task 8, `fs-restart`: `fs` killed mid-action leaves nothing half done,
     /// and a `File` handle works again.
     FilesRestart,
+    /// P2 task 9, `fs-actions`: 200 file actions behind blklogwrites, replayed
+    /// on the host.
+    FilesActions,
+    /// P2 task 9, `fs-powercut`: boot `boot` checks every file after the last
+    /// cut, then makes actions until xtask cuts the power; `last` ends the case.
+    FilesChurn {
+        boot: u64,
+        last: bool,
+    },
     /// L3: the model is held in memory and mapped into `llm`, and survives it.
     Model,
     /// L4: `ask` is answered by the model on the disk, with no LLM server.
@@ -201,6 +210,15 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
                 reread: cmdline.split_whitespace().any(|w| w == "reread"),
             }),
             "test=files-restart" => Some(SelfTest::FilesRestart),
+            "test=files-actions" => Some(SelfTest::FilesActions),
+            "test=files-churn" => Some(SelfTest::FilesChurn {
+                boot: cmdline
+                    .split_whitespace()
+                    .find_map(|w| w.strip_prefix("boot="))
+                    .and_then(|n| n.parse().ok())
+                    .unwrap_or(0),
+                last: cmdline.split_whitespace().any(|w| w == "last"),
+            }),
             "test=model" => Some(SelfTest::Model),
             "test=local-ask" => Some(SelfTest::LocalAsk),
             "test=local-script" => Some(SelfTest::LocalScript),
@@ -275,6 +293,8 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DisplayClaim
             | SelfTest::DeskWindows
             | SelfTest::DeskRestart
+            | SelfTest::FilesActions
+            | SelfTest::FilesChurn { .. }
             | SelfTest::TuneRevert
             | SelfTest::TuneStall
             | SelfTest::Tune
@@ -295,6 +315,10 @@ pub fn plan(test: SelfTest) -> Option<String> {
             crate::files_tests::plan(if reread { "read" } else { "write" })
         }
         SelfTest::FilesRestart => crate::files_tests::plan("restart"),
+        SelfTest::FilesActions => crate::files_tests::plan("actions"),
+        SelfTest::FilesChurn { boot, .. } => {
+            crate::files_tests::plan(&alloc::format!("churn boot={boot}"))
+        }
         SelfTest::Edit | SelfTest::Manifest | SelfTest::ManifestGood => {
             let mut plan = match test {
                 SelfTest::Edit => String::from(kabi::plan::NOTES_EDIT_TEST),
@@ -323,6 +347,8 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::Part
             | SelfTest::Files { .. }
             | SelfTest::FilesRestart
+            | SelfTest::FilesActions
+            | SelfTest::FilesChurn { .. }
     ) {
         // The file system service starts before the shell, once there is a
         // `kai-data` partition for it (ADR 0004).

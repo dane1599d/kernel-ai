@@ -547,6 +547,11 @@ pub fn m8_rows() -> Vec<&'static Row> {
     ROWS[..7].iter().chain([&SAY, &CLARIFY, &SCRIPT]).collect()
 }
 
+/// A row no task needs, of the 80-row scale.
+pub fn is_distractor(row: &Row) -> bool {
+    DISTRACTORS.iter().any(|d| d.name == row.name)
+}
+
 pub fn find<'r>(rows: &[&'r Row], name: &str) -> Option<&'r Row> {
     rows.iter().copied().find(|row| row.name == name)
 }

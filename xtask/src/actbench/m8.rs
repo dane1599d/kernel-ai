@@ -42,7 +42,7 @@ pub fn reference(engine: Shared, no_think: bool) -> Transport {
 /// answers it (`llmproto::local::act::routed` on the OS pack, through the wire
 /// both ways), and scripts (the fallback and repair rounds) as llm
 /// answers them today.
-pub fn shipping(engine: Shared, grammar: Rc<infer::tagged::Tagged<'static>>) -> GateHost {
+pub fn shipping(engine: Shared, grammar: Rc<llmproto::local::act::Grammar>) -> GateHost {
     let act_engine = engine.clone();
     let act = Box::new(move |request: &ActRequest| {
         let request = ActRequest::decode(&request.encode()).ok_or(ActError::NotACall)?;
