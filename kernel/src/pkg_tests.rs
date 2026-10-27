@@ -32,12 +32,14 @@ pub enum Step {
 }
 
 impl Step {
-    /// The word after `test=pkg-store`: none for boot 1.
+    /// The word after `test=pkg-store`: none for boot 1. `selftest::from_cmdline`
+    /// runs at the top of `kmain`, before the heap exists, so this allocates
+    /// nothing: a `Vec` here faulted before the banner and QEMU reset.
     pub fn from_cmdline(cmdline: &str) -> Self {
-        let words: Vec<&str> = cmdline.split_whitespace().collect();
-        if words.contains(&"check") {
+        let has = |word| cmdline.split_whitespace().any(|w| w == word);
+        if has("check") {
             Step::Check
-        } else if words.contains(&"undo") {
+        } else if has("undo") {
             Step::Undo
         } else {
             Step::Install

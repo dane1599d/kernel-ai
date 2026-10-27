@@ -190,6 +190,8 @@ pub enum SelfTest {
 
 const DEFAULT_STORM_SECONDS: u64 = 60;
 
+/// The self-test the command line names. It runs at the top of `kmain`, before
+/// the heap exists, so nothing it calls may allocate.
 pub fn from_cmdline(cmdline: &str) -> SelfTest {
     cmdline
         .split_whitespace()
