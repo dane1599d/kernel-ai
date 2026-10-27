@@ -146,3 +146,16 @@ fn a_file_row_reaches_only_the_users_files_never_system() {
     assert!(ran.ok && ran.text.contains("mine"), "{}", ran.text);
     assert_eq!(crate::script::home_path("/home/user"), Some(""));
 }
+
+#[test]
+fn a_script_with_file_rows_runs_in_the_shell_not_a_child() {
+    let host = FakeHost::new();
+    let dyn_host: Rc<dyn Host> = host.clone();
+    let answer = Answer {
+        summary: String::new(),
+        script: String::from("fs_create(\"a.txt\", \"x\");"),
+    };
+    let checked =
+        script::check_against(&answer, &dyn_host, &DEFAULT_CONFIG, &agentabi::FS_ROWS).unwrap();
+    assert!(!crate::apart::may_run_apart(&checked));
+}
