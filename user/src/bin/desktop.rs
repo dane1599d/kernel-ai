@@ -102,12 +102,12 @@ fn main() -> i32 {
             focus: Focus::Nothing,
         };
         println!("desktop: claimed {width}x{height}");
-        if !run(&mut state, &screen) {
+        let Some(back) = run(&mut state, &screen) else {
             return 1;
-        }
+        };
         let _ = sys::shm_unmap(screen.address);
         println!("desktop: lost the screen to the console");
-        if !wait_for_screen() {
+        if !back && !wait_for_screen() {
             return 1;
         }
         println!("desktop: the screen is back");
@@ -125,8 +125,10 @@ fn claim() -> Option<Screen> {
     Some(Screen { info, address })
 }
 
-/// Serves until the screen is taken: `true` then, `false` on an error.
-fn run(state: &mut State, screen: &Screen) -> bool {
+/// Serves until the screen is taken: `Some(back)` then, `back` when the same
+/// read already gave it back (both Ctrl+Alt+F12 presses at once); `None` on
+/// an error.
+fn run(state: &mut State, screen: &Screen) -> Option<bool> {
     let mut events = [InputEvent {
         time_ns: 0,
         kind: Kind::Screen,
@@ -136,11 +138,14 @@ fn run(state: &mut State, screen: &Screen) -> bool {
     let mut request = vec![0u8; kabi::MAX_MESSAGE];
     loop {
         let Ok(n) = sys::input_read(&mut events, INPUT_WAIT_MS) else {
-            return false;
+            return None;
         };
-        for event in &events[..n] {
+        for (at, event) in events[..n].iter().enumerate() {
             if event.kind == Kind::Screen && event.value == 0 {
-                return true;
+                let back = events[at + 1..n]
+                    .iter()
+                    .any(|e| e.kind == Kind::Screen && e.value == 1);
+                return Some(back);
             }
             input(state, screen, event);
         }
