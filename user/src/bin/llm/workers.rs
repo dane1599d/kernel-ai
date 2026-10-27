@@ -28,6 +28,9 @@ impl Parallel for Workers {
 static POOL: AtomicPtr<Workers> = AtomicPtr::new(core::ptr::null_mut());
 /// TSC cycles per microsecond, measured at start.
 static CYCLES_PER_US: AtomicU64 = AtomicU64::new(0);
+/// CPUs from which the service's thread pins itself to CPU 0: two or more
+/// pool threads beside it.
+const PIN_FROM_CPUS: usize = 3;
 /// Empty broadcasts timed at start.
 const EMPTY: u64 = 1_000;
 
@@ -38,6 +41,13 @@ pub fn start() -> &'static dyn Parallel {
     match Pool::new(kabi::thread::MAX_WORKERS) {
         Ok(pool) => {
             let workers: &'static Workers = Box::leak(Box::new(Workers(pool)));
+            // The caller is worker 0 and the pool's threads sit on CPUs 1 onwards:
+            // on CPU 0 it never trades a CPU with one of them. With fewer than 3
+            // CPUs it stays unpinned, so it does not crowd the kernel's own work
+            // on CPU 0.
+            if workers.0.workers() >= PIN_FROM_CPUS {
+                let _ = sys::thread_pin(Some(0));
+            }
             calibrate();
             for _ in 0..EMPTY {
                 workers.0.broadcast(&|_, _| {});
