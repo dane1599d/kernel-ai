@@ -30,6 +30,7 @@ mod boot_manifest;
 mod bootfiles;
 mod build_job;
 mod build_service;
+mod claim_tests;
 mod compute_tests;
 mod console;
 mod cpu;
@@ -56,6 +57,7 @@ mod hpet;
 mod i8042;
 mod icount_tests;
 mod idt;
+mod input;
 mod ipc;
 mod irq;
 mod keyboard;
@@ -332,6 +334,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::ProcStop => run_case(stop_tests::check),
         SelfTest::Shm => run_case(shm_tests::check),
         SelfTest::ManyProcesses => run_case(many_tests::check),
+        SelfTest::DisplayClaim => run_case(claim_tests::check),
         SelfTest::Scriptrun => run_case(scriptrun_tests::check),
         SelfTest::Fpu => run_case(fpu_tests::fpu_check),
         SelfTest::Probe => run_case(fpu_tests::probe_check),
@@ -570,6 +573,10 @@ fn start_user_space(test: SelfTest) {
         let edge = timer::align_to_second();
         threads::resync_ticks();
         log!("tune-ab: services start at tick {edge}");
+    }
+    // Ctrl+Alt+F12 switches the screen between the console and `desktop`.
+    if let Err(message) = display::claim::init() {
+        fail(message);
     }
     if let Err(message) = process::supervision::start(plan) {
         fail(message);

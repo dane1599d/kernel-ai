@@ -24,7 +24,8 @@ mod model_kv;
 // S-io (P2).
 pub(crate) mod fs;
 
-// G-core (P3): `mod display;`.
+// G-core (P3).
+mod display;
 
 use crate::entry::TrapFrame;
 use crate::{cpu, ipc, threads};
@@ -87,7 +88,8 @@ const AREAS: &[Area] = &[
     model_kv::handle,
     // S-io (P2).
     fs::handle,
-    // G-core (P3): `display::handle`.
+    // G-core (P3).
+    display::handle,
 ];
 
 fn handle(slot: usize, number: u64, a: [u64; 6]) -> Result<u64, Error> {

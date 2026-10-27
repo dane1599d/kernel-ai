@@ -54,6 +54,8 @@ struct Mapping {
 struct Object {
     generation: u32,
     frames: Vec<u64>,
+    /// The kernel's own frames (the screen's back buffer): never freed here.
+    kernel: bool,
     mappings: Vec<Mapping>,
 }
 
@@ -123,6 +125,7 @@ pub fn create_object(pages: u64) -> Result<u64, Error> {
         objects.objects[index] = Some(Object {
             generation,
             frames: core::mem::take(&mut frames),
+            kernel: false,
             mappings: Vec::new(),
         });
         Some(pack(index, generation))
@@ -131,6 +134,36 @@ pub fn create_object(pages: u64) -> Result<u64, Error> {
         free_frames(&frames);
         Error::Busy
     })
+}
+
+/// An object over `pages` frames from `phys` that the kernel owns, such as the
+/// screen's back buffer (ADR 0005 §2): not zeroed, charged to no one, and its
+/// frames never freed when the object goes.
+pub fn create_kernel_object(phys: u64, pages: u64) -> Result<u64, Error> {
+    if pages == 0 {
+        return Err(Error::Invalid);
+    }
+    if pages > MAX_PAGES {
+        return Err(Error::TooBig);
+    }
+    let mut frames = Vec::new();
+    frames
+        .try_reserve_exact(pages as usize)
+        .map_err(|_| Error::NoMemory)?;
+    frames.extend((0..pages).map(|n| phys + n * PAGE_SIZE));
+    with(|objects| {
+        let index = objects.objects.iter().position(Option::is_none)?;
+        let generation = objects.generations[index].wrapping_add(1).max(1);
+        objects.generations[index] = generation;
+        objects.objects[index] = Some(Object {
+            generation,
+            frames,
+            kernel: true,
+            mappings: Vec::new(),
+        });
+        Some(pack(index, generation))
+    })
+    .ok_or(Error::Busy)
 }
 
 fn free_frames(frames: &[u64]) {
@@ -322,7 +355,10 @@ pub fn collect() {
             let unused = place.as_ref().is_some_and(|object| {
                 object.mappings.is_empty() && !held(pack(index, object.generation))
             });
-            if unused && let Some(object) = place.take() {
+            if unused
+                && let Some(object) = place.take()
+                && !object.kernel
+            {
                 freed.extend(object.frames);
             }
         }

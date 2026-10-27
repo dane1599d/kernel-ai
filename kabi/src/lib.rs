@@ -13,6 +13,7 @@ extern crate alloc;
 pub mod call;
 pub mod cap;
 pub mod device;
+pub mod display;
 mod error;
 pub mod fs;
 pub mod handle;
