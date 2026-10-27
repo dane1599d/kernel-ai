@@ -1,2 +1,8 @@
 # decisions.md is append-only: concurrent rows from two branches both stay.
 docs/decisions.md merge=union
+# The self-test enum, its parse and dispatch tables, the per-lane case tables
+# and fsserve's tests are lists every lane appends to: keep both sides' lines.
+# CI runs on every combined tree, so a bad union fails a build, not main.
+kernel/src/selftest.rs merge=union
+xtask/src/cases/*.rs merge=union
+fsserve/src/tests.rs merge=union
