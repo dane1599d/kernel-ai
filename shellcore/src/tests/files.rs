@@ -192,3 +192,32 @@ fn a_file_request_runs_through_the_door_and_undo_puts_it_back() {
     );
     assert_eq!(host.files.borrow()["notes.txt"], "hello");
 }
+
+#[test]
+fn a_scripts_file_changes_share_one_transaction_undone_once() {
+    let call = |json: &str| Ok(llmproto::act::parse(json).unwrap());
+    let two = r#"{"name":"script","arguments":{"code":"fs_create(\"a.txt\", \"1\");\nfs_create(\"b.txt\", \"2\");"}}"#;
+    let (host, mut shell) = super::act::with_calls(alloc::vec![call(two)]);
+    host.one_action.set(true);
+    let reply = shell.eval("create a.txt and b.txt");
+    assert!(reply.ok, "{}", reply.text);
+    assert_eq!(host.txns.borrow().len(), 1, "{}", reply.text);
+    // One restore puts both back, and its redo stands for both.
+    assert_eq!(shell.eval("undo"), ok("Undone: files back as they were"));
+    assert!(host.files.borrow().is_empty(), "{:?}", host.files.borrow());
+    assert_eq!(shell.eval("undo"), ok("Undone: files back as they were"));
+    assert_eq!(host.files.borrow().len(), 2);
+    assert_eq!(host.txns.borrow().len(), 3);
+}
+
+#[test]
+fn a_script_that_fails_after_file_changes_drops_its_one_transaction() {
+    let call = |json: &str| Ok(llmproto::act::parse(json).unwrap());
+    let throws = r#"{"name":"script","arguments":{"code":"fs_create(\"a.txt\", \"1\");\nfs_create(\"b.txt\", \"2\");\nfs_create(\"a.txt\", \"3\");"}}"#;
+    let (host, mut shell) = super::act::with_calls(alloc::vec![call(throws)]);
+    host.one_action.set(true);
+    let reply = shell.eval("create a.txt, b.txt and a.txt again");
+    assert!(reply.text.starts_with("Nothing changed"), "{}", reply.text);
+    assert!(host.files.borrow().is_empty(), "{:?}", host.files.borrow());
+    assert_eq!(shell.eval("undo"), Reply::err("nothing to undo"));
+}
