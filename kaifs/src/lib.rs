@@ -19,6 +19,14 @@
 //! - [`check`]: everything a mount reaches verifies and is accounted for, with
 //!   the memo the crash gates share;
 //! - [`crash`] (with `std`): the crash enumerator every later layer is gated by.
+//!
+//! P2 task 5 adds the namespace on top:
+//! - [`items`]: files, folders, names, data and extended attributes as tree
+//!   items, and their readers;
+//! - [`ns`]: the operations on them;
+//! - [`ns_check`]: the namespace's rules, checked through the same memo, and the
+//!   digest the crash gates compare;
+//! - [`repair`]: `check --repair`'s rules.
 
 #![no_std]
 
@@ -35,12 +43,17 @@ pub mod csum;
 pub mod dev;
 pub mod format;
 pub mod fs;
+pub mod items;
+pub mod ns;
+pub mod ns_check;
+pub mod repair;
 pub mod tree;
 
 pub use csum::CsumKind;
 pub use dev::{BlockDev, DevInfo, Image, IoError, MemDisk, Op, RecordingDisk};
 pub use format::{BlockPtr, Superblock};
 pub use fs::{Fs, Value};
+pub use items::{FileType, Inode, ROOT};
 pub use tree::Key;
 
 /// Bytes in a block, and in a tree node.
@@ -65,6 +78,18 @@ pub enum Error {
     Unsupported(&'static str),
     /// The filesystem is mounted read-only.
     ReadOnly,
+    /// No such file, folder, name or attribute.
+    NotFound,
+    /// The name is taken.
+    Exists,
+    /// A folder was needed.
+    NotDir,
+    /// A file was needed.
+    IsDir,
+    /// The folder still holds names.
+    NotEmpty,
+    /// The caller asked for something format 1 cannot hold: what it was.
+    Invalid(&'static str),
 }
 
 impl From<IoError> for Error {

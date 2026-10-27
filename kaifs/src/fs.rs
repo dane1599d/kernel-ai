@@ -7,7 +7,9 @@
 //!   `BlockPtr` and length.
 //! - **The volume table** is a second tree of meta data: `(volume, VOLUME, 0)`
 //!   holds the volume's live root and `(volume, SNAPSHOT, id)` snapshot `id`'s,
-//!   each with the generation it was made in. Task 4 has one volume; task 6 adds
+//!   each with the generation it was made in and the volume's next object id.
+//!   Object ids are never reused, even across a restore, so the counter lives
+//!   here, outside the trees a restore swaps. Task 4 has one volume; task 6 adds
 //!   `system`, `home` and `models` and the snapshot kinds.
 //! - **Commit G.** Write the dirty nodes and the volume table to free blocks, then
 //!   the allocator's part of its chain; FLUSH; write slot G mod 8 in both rings;
@@ -48,13 +50,29 @@ pub const VOLUME: u64 = 1;
 pub const K_VOLUME: u8 = 1;
 pub const K_SNAPSHOT: u8 = 2;
 const ENTRY_FMT: u8 = 1;
-const ENTRY_VALUE: usize = 1 + PTR_BYTES + 8;
+const ENTRY_VALUE: usize = 1 + PTR_BYTES + 8 + 8;
+/// The first object id a volume hands out; 0 is never one.
+pub const FIRST_OID: u64 = 1;
 
 /// A value as a caller sees it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Value {
     Inline(Vec<u8>),
     Record(Vec<u8>),
+}
+
+impl Value {
+    pub fn bytes(&self) -> &[u8] {
+        match self {
+            Value::Inline(bytes) | Value::Record(bytes) => bytes,
+        }
+    }
+
+    pub fn into_bytes(self) -> Vec<u8> {
+        match self {
+            Value::Inline(bytes) | Value::Record(bytes) => bytes,
+        }
+    }
 }
 
 /// Deliberate bugs, so the crash gates can show they catch each one.
@@ -72,11 +90,13 @@ pub struct Faults {
     pub reuse_next: bool,
 }
 
-/// A snapshot: its root, null for an empty tree, and the generation it was taken in.
+/// A snapshot: its root, null for an empty tree, the generation it was taken in,
+/// and the volume's next object id then.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Snap {
     pub root: BlockPtr,
     pub generation: u64,
+    pub next_oid: u64,
 }
 
 /// Everything below the trees: the disk, checksums, the allocator and the rule
@@ -221,11 +241,12 @@ impl<D: BlockDev> Store for Meta<'_, D> {
     }
 }
 
-fn encode_entry(root: BlockPtr, generation: u64) -> Vec<u8> {
+fn encode_entry(snap: &Snap) -> Vec<u8> {
     let mut value = Vec::with_capacity(ENTRY_VALUE);
     value.push(ENTRY_FMT);
-    value.extend_from_slice(&root.encode());
-    value.extend_from_slice(&generation.to_le_bytes());
+    value.extend_from_slice(&snap.root.encode());
+    value.extend_from_slice(&snap.generation.to_le_bytes());
+    value.extend_from_slice(&snap.next_oid.to_le_bytes());
     value
 }
 
@@ -239,11 +260,19 @@ fn decode_entry(value: &[u8]) -> Result<Snap, Error> {
     if !root.is_null() && root.kind != KIND_NODE {
         return Err(Error::Corrupt("volume root kind"));
     }
-    let mut word = [0; 8];
-    word.copy_from_slice(&value[1 + PTR_BYTES..ENTRY_VALUE]);
+    let word = |at: usize| {
+        let mut word = [0; 8];
+        word.copy_from_slice(&value[at..at + 8]);
+        u64::from_le_bytes(word)
+    };
+    let next_oid = word(1 + PTR_BYTES + 8);
+    if next_oid < FIRST_OID {
+        return Err(Error::Corrupt("volume table entry"));
+    }
     Ok(Snap {
         root,
-        generation: u64::from_le_bytes(word),
+        generation: word(1 + PTR_BYTES),
+        next_oid,
     })
 }
 
@@ -256,6 +285,31 @@ pub fn decode_value<D: BlockDev>(raw: &[u8], io: &mut Io<D>) -> Result<Value, Er
             io.read_record(&ptr, len).map(Value::Record)
         }
         _ => Err(Error::Corrupt("value tag")),
+    }
+}
+
+/// The raw value holding `bytes` inline.
+pub(crate) fn inline_raw(bytes: &[u8]) -> Vec<u8> {
+    let mut raw = Vec::with_capacity(1 + bytes.len());
+    raw.push(TAG_INLINE);
+    raw.extend_from_slice(bytes);
+    raw
+}
+
+/// A raw value's inline bytes, if it holds them inline.
+pub fn inline_of(raw: &[u8]) -> Option<&[u8]> {
+    match raw.first() {
+        Some(&TAG_INLINE) => Some(&raw[1..]),
+        _ => None,
+    }
+}
+
+/// The bytes a raw value holds, inline or in its record, without reading the
+/// record.
+pub fn value_len(raw: &[u8]) -> Option<usize> {
+    match raw.first() {
+        Some(&TAG_INLINE) => Some(raw.len() - 1),
+        _ => record_of(raw).map(|(_, len)| len),
     }
 }
 
@@ -280,7 +334,7 @@ fn snap_key(id: u64) -> Key {
 
 pub struct Fs<D> {
     pub io: Io<D>,
-    uuid: [u8; 16],
+    pub(crate) uuid: [u8; 16],
     block_count: u64,
     label: [u8; 64],
     /// The last commit's generation.
@@ -292,8 +346,15 @@ pub struct Fs<D> {
     volumes: Tree,
     snaps: BTreeMap<u64, Snap>,
     next_snap: u64,
+    /// The volume's next object id.
+    next_oid: u64,
     writable: bool,
+    /// No unknown compat bit is set, so `check --repair` may write.
+    repairable: bool,
     pub faults: Faults,
+    /// The bits of a name's hash the namespace keeps: all of them on disk; tests
+    /// narrow it to make names collide.
+    pub hash_mask: u64,
 }
 
 impl<D: BlockDev> Fs<D> {
@@ -303,7 +364,14 @@ impl<D: BlockDev> Fs<D> {
     }
 
     /// [`Fs::format`] with deliberate faults, for the crash gates.
-    pub fn format_with(
+    pub fn format_with(dev: D, uuid: [u8; 16], label: &str, faults: Faults) -> Result<Self, Error> {
+        let mut fs = Self::build(dev, uuid, label, faults)?;
+        fs.commit()?;
+        Ok(fs)
+    }
+
+    /// An empty filesystem over all of `dev`, not yet committed.
+    pub(crate) fn build(
         mut dev: D,
         uuid: [u8; 16],
         label: &str,
@@ -322,7 +390,7 @@ impl<D: BlockDev> Fs<D> {
         let mut name = [0; 64];
         let n = label.len().min(64);
         name[..n].copy_from_slice(&label.as_bytes()[..n]);
-        let mut fs = Fs {
+        let fs = Fs {
             io: Io {
                 dev,
                 kind: CsumKind::Seahash64,
@@ -342,10 +410,12 @@ impl<D: BlockDev> Fs<D> {
             volumes: Tree::default(),
             snaps: BTreeMap::new(),
             next_snap: 1,
+            next_oid: FIRST_OID,
             writable: true,
+            repairable: true,
             faults,
+            hash_mask: u64::MAX,
         };
-        fs.commit()?;
         Ok(fs)
     }
 
@@ -372,6 +442,7 @@ impl<D: BlockDev> Fs<D> {
             }
             let mut fs = Self::open(dev, &sb, faults)?;
             fs.writable = rules.writable && info.durable();
+            fs.repairable = rules.repairable;
             return Ok(fs);
         }
         Err(Error::NoValidSuperblock)
@@ -431,8 +502,11 @@ impl<D: BlockDev> Fs<D> {
             volumes,
             snaps,
             next_snap,
+            next_oid: live.next_oid,
             writable: true,
+            repairable: true,
             faults,
+            hash_mask: u64::MAX,
         })
     }
 
@@ -448,6 +522,41 @@ impl<D: BlockDev> Fs<D> {
         self.block_count
     }
 
+    pub fn uuid(&self) -> [u8; 16] {
+        self.uuid
+    }
+
+    /// Whether `check --repair` may write: no unknown compat bit is set.
+    pub fn repairable(&self) -> bool {
+        self.repairable
+    }
+
+    /// The volume's next object id.
+    pub fn next_oid(&self) -> u64 {
+        self.next_oid
+    }
+
+    /// Hands out a new object id; none is ever handed out twice.
+    pub fn alloc_oid(&mut self) -> Result<u64, Error> {
+        let oid = self.next_oid;
+        self.next_oid = oid.checked_add(1).ok_or(Error::NoSpace)?;
+        self.live_changed = true;
+        Ok(oid)
+    }
+
+    /// Raises the counter past `oid`: `check --repair` found an object above it.
+    pub(crate) fn bump_oid(&mut self, oid: u64) {
+        if oid >= self.next_oid {
+            self.next_oid = oid.saturating_add(1);
+            self.live_changed = true;
+        }
+    }
+
+    /// The raw tree value at `key`: records are named, not read.
+    pub fn get_raw(&mut self, key: &Key) -> Result<Option<Vec<u8>>, Error> {
+        self.live.get(key, &mut Volume(&mut self.io))
+    }
+
     pub fn get(&mut self, key: &Key) -> Result<Option<Value>, Error> {
         match self.live.get(key, &mut Volume(&mut self.io))? {
             Some(raw) => decode_value(&raw, &mut self.io).map(Some),
@@ -458,7 +567,7 @@ impl<D: BlockDev> Fs<D> {
     /// Sets `key` to inline bytes, at most [`MAX_INLINE`] of them.
     pub fn put(&mut self, key: Key, value: &[u8]) -> Result<(), Error> {
         if value.len() > MAX_INLINE {
-            return Err(Error::Corrupt("an inline value over the limit"));
+            return Err(Error::Invalid("an inline value over the limit"));
         }
         let mut raw = Vec::with_capacity(1 + value.len());
         raw.push(TAG_INLINE);
@@ -469,7 +578,7 @@ impl<D: BlockDev> Fs<D> {
     /// Sets `key` to a record of 1 to [`MAX_RECORD`] bytes, written copy-on-write.
     pub fn put_record(&mut self, key: Key, data: &[u8]) -> Result<(), Error> {
         if data.is_empty() || data.len() > MAX_RECORD {
-            return Err(Error::Corrupt("a record of no bytes or over 128 KiB"));
+            return Err(Error::Invalid("a record of no bytes or over 128 KiB"));
         }
         let ptr = self.io.write_record(data)?;
         let mut raw = Vec::with_capacity(RECORD_VALUE);
@@ -479,7 +588,9 @@ impl<D: BlockDev> Fs<D> {
         self.set(key, raw)
     }
 
-    fn set(&mut self, key: Key, raw: Vec<u8>) -> Result<(), Error> {
+    /// Sets `key` to a raw value as `get_raw` returned it; `check --repair` moves
+    /// items this way.
+    pub(crate) fn set(&mut self, key: Key, raw: Vec<u8>) -> Result<(), Error> {
         let old = self.live.insert(key, raw, &mut Volume(&mut self.io))?;
         self.release_value(old);
         self.live_changed = true;
@@ -499,6 +610,40 @@ impl<D: BlockDev> Fs<D> {
         if let Some((ptr, _)) = old.as_deref().and_then(record_of) {
             self.io.replaced_volume_block(ptr);
         }
+    }
+
+    /// Calls `visit` on every raw item from `from` on, in key order, until it
+    /// returns false; records are named, not read.
+    pub fn scan_raw(
+        &mut self,
+        from: &Key,
+        visit: &mut dyn FnMut(&Key, &[u8]) -> bool,
+    ) -> Result<(), Error> {
+        self.live.scan(from, &mut Volume(&mut self.io), visit)
+    }
+
+    /// Calls `visit` on every raw item of the tree `root` names (a snapshot's, or
+    /// the live tree's as last committed) from `from` on, until it returns false.
+    pub fn scan_tree(
+        &mut self,
+        root: &BlockPtr,
+        from: &Key,
+        visit: &mut dyn FnMut(&Key, &[u8]) -> bool,
+    ) -> Result<(), Error> {
+        Tree::open(*root).scan(from, &mut Volume(&mut self.io), visit)
+    }
+
+    /// Makes `items`, raw and in key order, the whole live tree. The old tree's
+    /// blocks are never read again and wait for the GC: `check --repair` rebuilds
+    /// a tree it could not wholly read this way.
+    pub(crate) fn replace_live(&mut self, items: Vec<(Key, Vec<u8>)>) -> Result<(), Error> {
+        let mut tree = Tree::default();
+        for (key, raw) in items {
+            tree.insert(key, raw, &mut Volume(&mut self.io))?;
+        }
+        self.live = tree;
+        self.live_changed = true;
+        Ok(())
     }
 
     /// Calls `visit` on every item from `from` on, in key order, until it returns
@@ -541,14 +686,12 @@ impl<D: BlockDev> Fs<D> {
         let snap = Snap {
             root,
             generation: self.io.txn,
+            next_oid: self.next_oid,
         };
         self.snaps.insert(id, snap);
         self.io.newest_snap = self.io.txn;
-        self.volumes.insert(
-            snap_key(id),
-            encode_entry(root, snap.generation),
-            &mut Meta(&mut self.io),
-        )?;
+        self.volumes
+            .insert(snap_key(id), encode_entry(&snap), &mut Meta(&mut self.io))?;
         Ok(id)
     }
 
@@ -563,7 +706,7 @@ impl<D: BlockDev> Fs<D> {
     }
 
     /// Makes snapshot `id`'s tree the live tree. The live tree's own blocks wait
-    /// for the GC.
+    /// for the GC; the object id counter never goes back.
     pub fn restore(&mut self, id: u64) -> Result<bool, Error> {
         let Some(snap) = self.snaps.get(&id) else {
             return Ok(false);
@@ -585,11 +728,13 @@ impl<D: BlockDev> Fs<D> {
         let generation = self.io.txn;
         if self.live_changed {
             let root = self.live.write_out(&mut Volume(&mut self.io))?;
-            self.volumes.insert(
-                live_key(),
-                encode_entry(root, generation),
-                &mut Meta(&mut self.io),
-            )?;
+            let live = Snap {
+                root,
+                generation,
+                next_oid: self.next_oid,
+            };
+            self.volumes
+                .insert(live_key(), encode_entry(&live), &mut Meta(&mut self.io))?;
             self.live_changed = false;
         }
         let volumes = self.volumes.write_out(&mut Meta(&mut self.io))?;
