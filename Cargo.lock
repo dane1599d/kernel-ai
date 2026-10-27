@@ -557,6 +557,7 @@ dependencies = [
 name = "kaipkg"
 version = "0.0.0"
 dependencies = [
+ "agentabi",
  "kaifs",
  "sha2",
 ]

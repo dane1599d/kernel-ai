@@ -12,6 +12,7 @@ publish = false
 doctest = false
 
 [dependencies]
+agentabi = { path = "../agentabi" }
 sha2 = { version = "0.11.1", default-features = false }
 
 [dev-dependencies]

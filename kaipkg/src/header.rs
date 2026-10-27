@@ -22,28 +22,6 @@ use crate::{Sha, unhex};
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-/// Package names a package may not take: every OS row group, the first word of
-/// an `agentabi` OS row, so a package `fs` exporting `list` cannot make `fs_list`.
-/// ADR 0011 has `agentabi` export this list; until it does, it lives here.
-pub const RESERVED: &[&str] = &[
-    "fs",
-    "ui",
-    "pkg",
-    "vm",
-    "app",
-    "browser",
-    "window",
-    "media",
-    "system",
-    "device",
-    "power",
-    "update",
-    "model",
-    "linux",
-    "net",
-    "appearance",
-];
-
 /// The longest summary, in bytes.
 pub const MAX_SUMMARY: usize = 80;
 
@@ -89,7 +67,9 @@ pub struct Header {
     pub blob: Option<(Sha, u64)>,
 }
 
-/// Whether `name` may name a package: `[a-z][a-z0-9-]{1,11}`, not reserved.
+/// Whether `name` may name a package: `[a-z][a-z0-9-]{1,11}`, and not an OS
+/// row group (`agentabi::RESERVED_GROUPS`, the one list CI, `pkg` and the
+/// registry check), so a package `fs` exporting `list` cannot make `fs_list`.
 pub fn valid_name(name: &str) -> Result<(), &'static str> {
     let bytes = name.as_bytes();
     let shaped = (2..=12).contains(&bytes.len())
@@ -100,7 +80,7 @@ pub fn valid_name(name: &str) -> Result<(), &'static str> {
     if !shaped {
         return Err("a package name is not 2-12 of a-z, 0-9 and -, starting with a letter");
     }
-    if RESERVED.contains(&name) {
+    if agentabi::is_reserved(name) {
         return Err("a package name is an OS row group");
     }
     Ok(())
