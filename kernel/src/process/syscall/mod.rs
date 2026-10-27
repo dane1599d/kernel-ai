@@ -5,6 +5,7 @@
 mod component;
 mod core;
 mod device;
+mod fs;
 mod handle;
 mod job;
 mod model_kv;
@@ -73,6 +74,7 @@ const AREAS: &[Area] = &[
     job::handle,
     // Interim (S10-3): goes at P2 task 10.
     model_kv::handle,
+    fs::handle,
 ];
 
 fn handle(slot: usize, number: u64, a: [u64; 6]) -> Result<u64, Error> {

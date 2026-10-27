@@ -775,3 +775,56 @@ pub fn once_check(badge: u64, digest: &[u8; 32]) -> Result<(), Error> {
     )
     .map(|_| ())
 }
+
+/// The partition a `Partition` handle names (P2 task 3).
+pub fn part_info(handle: Handle) -> Result<kabi::part::PartInfo, Error> {
+    let mut info = kabi::part::PartInfo::default();
+    call(
+        call::PART_INFO,
+        [
+            u64::from(handle.0),
+            &mut info as *mut kabi::part::PartInfo as u64,
+            0,
+            0,
+            0,
+            0,
+        ],
+    )?;
+    Ok(info)
+}
+
+/// Reads `buf.len()` bytes, whole sectors, from sector `sector` of the partition.
+pub fn part_read(handle: Handle, sector: u64, buf: &mut [u8]) -> Result<u64, Error> {
+    call(
+        call::PART_READ,
+        [
+            u64::from(handle.0),
+            sector,
+            buf.as_mut_ptr() as u64,
+            buf.len() as u64,
+            0,
+            0,
+        ],
+    )
+}
+
+/// Writes `bytes`, whole sectors, at sector `sector` of the partition; durable
+/// only after [`part_flush`].
+pub fn part_write(handle: Handle, sector: u64, bytes: &[u8]) -> Result<u64, Error> {
+    call(
+        call::PART_WRITE,
+        [
+            u64::from(handle.0),
+            sector,
+            bytes.as_ptr() as u64,
+            bytes.len() as u64,
+            0,
+            0,
+        ],
+    )
+}
+
+/// Makes every write to the partition so far durable.
+pub fn part_flush(handle: Handle) -> Result<u64, Error> {
+    call(call::PART_FLUSH, [u64::from(handle.0), 0, 0, 0, 0, 0])
+}

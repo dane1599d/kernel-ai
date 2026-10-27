@@ -43,6 +43,7 @@ Parts
 - rhai 1.27.0: MIT OR Apache-2.0.
 - safe-mmio 0.3.2: MIT OR Apache-2.0.
 - scopeguard 1.2.0: MIT OR Apache-2.0.
+- seahash 4.1.0: MIT.
 - serde 1.0.229: MIT OR Apache-2.0.
 - serde_core 1.0.229: MIT OR Apache-2.0.
 - serde_json 1.0.154: MIT OR Apache-2.0.
@@ -2724,7 +2725,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 --------------------------------------------------------------------------------
-MIT: core-error 0.0.0, libm 0.2.16, wasmi 2.0.0, wasmi_collections 2.0.0, wasmi_core 2.0.0, wasmi_ir 2.0.0, wasmparser 0.228.0
+MIT: core-error 0.0.0, libm 0.2.16, seahash 4.1.0, wasmi 2.0.0, wasmi_collections 2.0.0, wasmi_core 2.0.0, wasmi_ir 2.0.0, wasmparser 0.228.0
 --------------------------------------------------------------------------------
 
 MIT License

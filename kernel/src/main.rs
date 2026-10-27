@@ -75,6 +75,7 @@ mod net;
 mod net_commands;
 mod net_tests;
 mod nvme;
+mod part_tests;
 mod percpu;
 mod platform;
 mod pointer;
@@ -319,6 +320,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Blk => run_case(|| blk_tests::check(cmdline())),
         SelfTest::BlkWrite => run_case(|| blk_tests::check_write(cmdline())),
         SelfTest::BlkFlush => run_case(|| blkflush_tests::check(cmdline())),
+        SelfTest::Part => run_case(part_tests::check),
         SelfTest::Model => run_case(|| model_tests::check(cmdline())),
         SelfTest::LocalAsk => run_case(|| local_tests::check(cmdline())),
         SelfTest::LocalScript => run_case(|| local_tests::check_script(cmdline())),

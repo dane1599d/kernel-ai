@@ -8,6 +8,10 @@ use alloc::string::String;
 /// route, may switch the scheduling policy, and needs a large stack for Rhai's
 /// recursion.
 pub const SHELL: &str = "shell caps=serve+call+policy+stop+script uses=llm+supervisor pages=4096 stack_pages=512 burst_ms=5000";
+/// The file system service (ADR 0004): the only holder of the `kai-data`
+/// partition. Planned before the shell, and only when the disk has `kai-data`.
+/// P2 task 3's stub answers `info` and the `part` case's checks.
+pub const FS: &str = "fs caps=serve+partition pages=1024 burst_ms=5000";
 /// The live `notes` component, run by the shared `comphost` program, without its
 /// arguments.
 const NOTES_BASE: &str =

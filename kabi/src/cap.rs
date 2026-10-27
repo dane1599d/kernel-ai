@@ -35,6 +35,20 @@ pub const STOP: u64 = 1 << 10;
 /// [`super::call::JOB_WAIT`]): a Job handle with CREATE and WAIT that names that
 /// program. The kernel grants it only to the service named `shell` (ADR 0001 D6).
 pub const SCRIPT: u64 = 1 << 11;
+/// Read and write the `kai-data` partition ([`super::call::PART_READ`]): a
+/// `Partition` handle with READ and WRITE. The kernel grants it only to the
+/// service named `fs` running the `fs` program (ADR 0004 §7).
+pub const PARTITION: u64 = 1 << 12;
 /// Every capability a supervisor may grant.
-pub const GRANTABLE: u64 =
-    SERVE | NET | CALL | POLICY | COMPONENT | PUBLISH | MODEL | THREADS | RESOLVE | STOP | SCRIPT;
+pub const GRANTABLE: u64 = SERVE
+    | NET
+    | CALL
+    | POLICY
+    | COMPONENT
+    | PUBLISH
+    | MODEL
+    | THREADS
+    | RESOLVE
+    | STOP
+    | SCRIPT
+    | PARTITION;
