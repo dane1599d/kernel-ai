@@ -43,7 +43,8 @@ process_stop(name: string) [ask]  // stops or kills processes by name
 service_stop|start|restart(name: string) [ask|undo|ask]  // start runs a stopped one; stop keeps it down; restart resets
 tune(target: string?, intent: string?) [ask]  // proposes a scheduler trial for a process
 tune_undo() [undo]  // puts back the policy a kept trial replaced
-## index (name only; call one and its arguments are shown next)
-component: component_revert
-pkg: pkg_install pkg_remove pkg_list pkg_search
-files: fs_list fs_read fs_history fs_changes fs_create fs_write fs_move fs_trash fs_restore fs_empty_trash
+## index (call one and its arguments are shown next)
+component (roll back a component): component_revert
+pkg (install, remove or find packages): pkg_install pkg_remove pkg_list pkg_search
+files (list or read files): fs_list fs_read fs_history fs_changes
+file_edits (write, rename, trash or restore files): fs_create fs_write fs_move fs_trash fs_restore fs_empty_trash
