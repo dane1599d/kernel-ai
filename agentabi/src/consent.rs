@@ -95,10 +95,20 @@ pub const HOSTS: &[(&str, &str)] = &[
     ("wikipedia", "en.wikipedia.org"),
 ];
 
-/// Words that turn the next three words' cues off.
-const NEGATIONS: &[&str] = &["dont", "don't", "not", "never", "no", "without"];
-/// How many words after a negation it reaches.
-const NEGATION_REACH: usize = 3;
+/// Words that turn off every cue after them in their clause.
+const NEGATIONS: &[&str] = &[
+    "dont", "don't", "not", "never", "no", "without", "disable", "avoid",
+];
+/// Words that turn a cue off wherever they stand in its clause: "turn round
+/// robin off" asks for no switch. A row whose own cues say "off" is not
+/// turned off by it.
+const OFF_WORDS: &[&str] = &["off", "disabled"];
+/// A clause that starts with one of these and then `you` (or `u`) is a polite
+/// request, not a question: "can you switch to round robin".
+const POLITE: &[&str] = &["can", "could", "would", "will"];
+/// Words that start a new clause, as `,`, `;`, `.`, `!`, `?` and `:` do: a
+/// negation reaches the end of its clause, never past it ("don't wait, switch").
+const CLAUSE_WORDS: &[&str] = &["but", "then", "however", "instead", "though"];
 /// Words that point at what the OS has focused or selected.
 const POINTERS: &[&str] = &["this", "it", "here", "selected"];
 const SYMBOLS: &[&str] = &["focused", "selected", "here"];
@@ -277,12 +287,25 @@ fn value_of<'a>(call: &Call<'a>, name: &str) -> Option<Value<'a>> {
 fn cued(words: &[Word], row: &Action) -> Option<bool> {
     let mut found = None;
     for cue in row.cues {
+        let off_counts = !row.cues.iter().any(|c| c.contains("off"));
         for at in matches(words, cue, true) {
-            let reach = at.saturating_sub(NEGATION_REACH)..at;
-            if words[reach]
-                .iter()
-                .any(|w| NEGATIONS.contains(&w.text.as_str()))
-            {
+            // A question asks to be told: "is round robin on" asks for no switch.
+            if words[at].question {
+                continue;
+            }
+            let clause = words[at].clause;
+            let before = &words[..at];
+            let negated = before.iter().enumerate().any(|(i, w)| {
+                w.clause == clause
+                    && (NEGATIONS.contains(&w.text.as_str())
+                        // "stop using round robin"
+                        || (w.text == "stop" && before.get(i + 1).is_some_and(|n| n.text == "using")))
+            });
+            let off = off_counts
+                && words
+                    .iter()
+                    .any(|w| w.clause == clause && OFF_WORDS.contains(&w.text.as_str()));
+            if negated || off {
                 return Some(true);
             }
             found = Some(false);
@@ -412,18 +435,60 @@ fn names_a_thing(text: &str) -> bool {
 #[derive(Debug)]
 struct Word {
     text: alloc::string::String,
+    /// Which clause of the line it is in, counted from 0.
+    clause: usize,
+    /// Whether that clause is a question: it starts with a question word (and is
+    /// not a polite request) or ends with `?`.
+    question: bool,
 }
 
 /// The line's words: letters, digits and apostrophes, lower case. Everything else
 /// separates, so "round-robin", "round robin" and "Round Robin." read alike.
 fn words(text: &str) -> Vec<Word> {
-    text.split(|c: char| !(c.is_alphanumeric() || c == '\''))
-        .map(|w| w.trim_matches('\''))
-        .filter(|w| !w.is_empty())
-        .map(|w| Word {
-            text: w.to_lowercase(),
-        })
-        .collect()
+    let is_word = |c: char| c.is_alphanumeric() || c == '\'';
+    let mut clause = 0;
+    let mut out: Vec<Word> = Vec::new();
+    let mut asked = Vec::new();
+    let mut rest = text;
+    while !rest.is_empty() {
+        let end = rest.find(|c: char| !is_word(c)).unwrap_or(rest.len());
+        let word = rest[..end].trim_matches('\'').to_lowercase();
+        rest = &rest[end..];
+        let gap = rest.find(is_word).unwrap_or(rest.len());
+        if !word.is_empty() {
+            if CLAUSE_WORDS.contains(&word.as_str()) {
+                clause += 1;
+            }
+            out.push(Word {
+                text: word,
+                clause,
+                question: false,
+            });
+        }
+        if rest[..gap].contains('?') {
+            asked.push(clause);
+        }
+        if rest[..gap].contains([',', ';', '.', '!', '?', ':']) {
+            clause += 1;
+        }
+        rest = &rest[gap..];
+    }
+    for c in 0..=clause {
+        let mut in_clause = out.iter().filter(|w| w.clause == c);
+        let first = in_clause.next().map(|w| w.text.clone());
+        let second = in_clause.next().map(|w| w.text.clone());
+        let polite = first.as_deref().is_some_and(|w| POLITE.contains(&w))
+            && matches!(second.as_deref(), Some("you" | "u"));
+        let question = !polite
+            && (asked.contains(&c)
+                || first
+                    .as_deref()
+                    .is_some_and(|w| QUESTION_WORDS.contains(&w)));
+        for w in out.iter_mut().filter(|w| w.clause == c) {
+            w.question = question;
+        }
+    }
+    out
 }
 
 /// Where `phrase`'s words appear in a row in `words`. With `prefix`, its last word
@@ -739,7 +804,7 @@ mod tests {
     }
 
     #[test]
-    fn cues_start_words_and_negation_reaches_three_words() {
+    fn cues_start_words_and_negation_reaches_its_clause() {
         let set = crate::SET_POLICY;
         assert_eq!(
             cued(&words("Switch the scheduler to round robin."), &set),
