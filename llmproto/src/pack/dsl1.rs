@@ -88,7 +88,9 @@ pub(super) const FAMILIES: &[(&str, &str)] = &[
         "pkg",
         "installs or removes a package; undo puts the old set back",
     ),
-    ("fs", "paths under /home/user"),
+    // Every fs family has a HEAD_DOCS line; the group header says where paths
+    // start.
+    ("fs", "files"),
 ];
 
 /// A family whose rows share a prefix but not a signature gets its doc from its
@@ -100,7 +102,7 @@ pub(super) const HEAD_DOCS: &[(&str, &str)] = &[
 ];
 
 /// Groups after `## system`, by the rows' owner, each under its own header.
-const GROUPS: &[(&str, &str)] = &[("fs", "files")];
+const GROUPS: &[(&str, &str)] = &[("fs", "files (paths under /home/user)")];
 
 fn doc(row: &Action) -> &'static str {
     BRIEF

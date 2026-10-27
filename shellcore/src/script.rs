@@ -361,6 +361,7 @@ fn bind_file(engine: &mut Engine, name: &'static str, h: Rc<dyn Host>, tx: Tx) -
         "fs_list" | "fs_read" | "fs_history" => {
             engine.register_fn(name, move |path: &str| -> RhaiResult<data::Data> {
                 tx.approved(name, &[path])?;
+                let path = home(name, path)?;
                 let read = match name {
                     "fs_list" => FsRead::List(path),
                     "fs_read" => FsRead::Read(path),
@@ -380,6 +381,7 @@ fn bind_file(engine: &mut Engine, name: &'static str, h: Rc<dyn Host>, tx: Tx) -
         "fs_create" | "fs_write" => {
             engine.register_fn(name, move |path: &str, text: &str| -> RhaiResult<()> {
                 tx.approved(name, &[path, text])?;
+                let path = home(name, path)?;
                 let (change, before, after) = match name {
                     "fs_create" => (FsChange::Create { path, text }, "absent", "created"),
                     _ => (
@@ -396,6 +398,7 @@ fn bind_file(engine: &mut Engine, name: &'static str, h: Rc<dyn Host>, tx: Tx) -
         "fs_move" => {
             engine.register_fn(name, move |from: &str, to: &str| -> RhaiResult<()> {
                 tx.approved(name, &[from, to])?;
+                let (from, to) = (home(name, from)?, home(name, to)?);
                 let txn = h.fs_change(FsChange::Move { from, to }).map_err(fail)?;
                 let after = format!("moved to {to}");
                 tx.changed(file_done(name, from, "there", &after, Some(txn)));
@@ -405,6 +408,7 @@ fn bind_file(engine: &mut Engine, name: &'static str, h: Rc<dyn Host>, tx: Tx) -
         "fs_trash" | "fs_restore" => {
             engine.register_fn(name, move |path: &str| -> RhaiResult<()> {
                 tx.approved(name, &[path])?;
+                let path = home(name, path)?;
                 let (change, before, after) = match name {
                     "fs_trash" => (FsChange::Trash(path), "there", "in the trash"),
                     _ => (FsChange::Restore(path), "as it was", "restored"),
@@ -425,6 +429,25 @@ fn bind_file(engine: &mut Engine, name: &'static str, h: Rc<dyn Host>, tx: Tx) -
         _ => return false,
     }
     true
+}
+
+/// `path` as the `fs` client takes it, relative to `/home/user`: a relative path
+/// starts there, `/home/user/…` is the same, and any other absolute path
+/// (`/system/log`) or a `..` is `None`. The AI's file rows reach only the user's
+/// files, never `/system` (P2 plan §4.3); `fs`'s lookup refuses `..` too.
+pub(crate) fn home_path(path: &str) -> Option<&str> {
+    let rest = match path.strip_prefix('/') {
+        None => path,
+        Some(_) if path == "/home/user" => "",
+        Some(_) => path.strip_prefix("/home/user/")?,
+    };
+    let escapes = rest.split('/').any(|part| part == "..");
+    (!escapes).then_some(rest)
+}
+
+/// [`home_path`] for row `name`'s binding, refused in its words.
+fn home<'a>(name: &str, path: &'a str) -> RhaiResult<&'a str> {
+    home_path(path).ok_or_else(|| rhai_error(format!("{name}: {path} is not under /home/user")))
 }
 
 /// One file change: `file notes.txt created (was absent)`, undone by restoring
