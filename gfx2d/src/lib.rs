@@ -5,6 +5,8 @@
 //!   and the blits compositing needs: fills, opaque copies, premultiplied
 //!   source-over, and window layers whose opaque rows copy and whose rounded
 //!   bands blend;
+//! - [`boxdraw`]: box drawing and block elements, U+2500-259F, drawn by code
+//!   per cell so lines meet at cell edges at every size;
 //! - [`damage`]: [`Damage`], at most `N` rectangles, past that their bounding box
 //!   (clients 32, `desktop` 16);
 //! - [`shadow`]: pre-rendered nine-slice shadows, so a moving shadow is a blit;
@@ -25,6 +27,7 @@ extern crate alloc;
 #[cfg(test)]
 extern crate std;
 
+pub mod boxdraw;
 pub mod canvas;
 pub mod damage;
 pub mod shadow;
