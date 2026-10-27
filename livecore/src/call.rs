@@ -15,7 +15,11 @@
 //! `args` is a WAVE record of the export's parameters, by name; `result` is the
 //! WAVE value it returned (absent for a function with no result). A call the
 //! host cannot make (malformed, or naming nothing the app declares) is answered
-//! `refused <why>` on one line instead. Effect lines
+//! `refused <why>` on one line instead.
+//!
+//! After the result come the call's effects, `effect <ticket> <WAVE effect>`
+//! (`txn`), and `undo <id>` when it changed the app's state, which a
+//! `kai-undo 1` names to put the state back (`undo`). Effect lines
 //! join the reply with the effect transaction. `ctl ` requests are unchanged.
 
 use crate::actions::Actions;
@@ -94,6 +98,49 @@ pub fn format_refusal(why: &str) -> String {
 refused {why}
 "
     )
+}
+
+/// A whole reply: the result, the effects with their tickets, and the undo entry.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Reply {
+    pub result: Option<String>,
+    pub effects: alloc::vec::Vec<(u32, String)>,
+    pub undo: Option<u64>,
+}
+
+impl Reply {
+    /// Reads a reply; a refusal is an error.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let mut lines = text.lines();
+        if lines.next() != Some(REPLY_HEADER) {
+            return Err("not a kai-reply 1".into());
+        }
+        let mut reply = Self::default();
+        for line in lines {
+            let (key, rest) = line.split_once(' ').unwrap_or((line, ""));
+            match key {
+                "refused" => return Err(line.to_string()),
+                "result" if reply.result.is_none() && reply.effects.is_empty() => {
+                    reply.result = Some(rest.to_string());
+                }
+                "effect" => {
+                    let (ticket, effect) = rest
+                        .split_once(' ')
+                        .and_then(|(t, e)| Some((t.parse().ok()?, e)))
+                        .ok_or_else(|| format!("bad effect line {line:?}"))?;
+                    reply.effects.push((ticket, effect.to_string()));
+                }
+                "undo" if reply.undo.is_none() => {
+                    reply.undo = Some(
+                        rest.parse()
+                            .map_err(|_| format!("bad undo line {line:?}"))?,
+                    );
+                }
+                _ => return Err(format!("unexpected line {line:?}")),
+            }
+        }
+        Ok(reply)
+    }
 }
 
 /// The result text of a reply; a refusal is an error.
@@ -245,6 +292,25 @@ mod tests {
             "kai-call 1\nfunc app:notes/actions@1.0.0#add\nargs {{text: \"{long}\"}}\n"
         );
         assert!(request(serve(&mut Notes, &notes(), &over)));
+    }
+
+    #[test]
+    fn a_whole_reply_reads_back() {
+        let text = "kai-reply 1\nresult ok(3)\neffect 7 notify(\"saved\")\nundo 4\n";
+        let reply = Reply::parse(text).unwrap();
+        assert_eq!(reply.result.as_deref(), Some("ok(3)"));
+        assert_eq!(reply.effects, [(7, String::from("notify(\"saved\")"))]);
+        assert_eq!(reply.undo, Some(4));
+        assert_eq!(Reply::parse("kai-reply 1\n").unwrap(), Reply::default());
+        for bad in [
+            "kai-reply 2\n",
+            "kai-reply 1\nrefused no\n",
+            "kai-reply 1\neffect x notify(\"a\")\n",
+            "kai-reply 1\nundo 1\nundo 2\n",
+            "kai-reply 1\nwhat\n",
+        ] {
+            assert!(Reply::parse(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

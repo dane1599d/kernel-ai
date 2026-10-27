@@ -27,6 +27,8 @@ pub(crate) struct HostState {
     /// `kai:app/clock`'s time and seed, fixed for the call (lifecycle 2).
     pub(crate) now_ms: u64,
     pub(crate) seed: u64,
+    /// The action call in progress, with its storage and what it did.
+    pub(crate) call: Option<crate::effects::OpenCall>,
 }
 
 /// Most bytes of a panic's file path read from the version.
@@ -153,6 +155,7 @@ impl WasmInstance {
             panic_at: None,
             now_ms: 0,
             seed: 0,
+            call: None,
         };
         let mut store = Store::new(engine, state);
         store.limiter(|state| &mut state.limits);
