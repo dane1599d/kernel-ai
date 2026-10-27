@@ -299,6 +299,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "deskcore"
+version = "0.0.0"
+
+[[package]]
 name = "devkit"
 version = "0.0.0"
 
