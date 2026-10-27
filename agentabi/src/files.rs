@@ -159,6 +159,22 @@ pub const FS_ROWS: [Action; 10] = [
 
 const _: () = assert!(crate::check(&FS_ROWS).is_ok(), "a file row is inconsistent");
 
+/// What a model's script may call: the script API, then the file rows, so a
+/// script's file changes are one transaction (P2 task 11).
+pub const SCRIPT_CALLS: [Action; crate::SCRIPT_API.len() + FS_ROWS.len()] = {
+    let api = crate::SCRIPT_API;
+    let mut out = [api[0]; crate::SCRIPT_API.len() + FS_ROWS.len()];
+    let mut i = 0;
+    while i < out.len() {
+        out[i] = match i < api.len() {
+            true => api[i],
+            false => FS_ROWS[i - api.len()],
+        };
+        i += 1;
+    }
+    out
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;

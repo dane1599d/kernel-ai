@@ -679,7 +679,7 @@ fn for_scripts(config: &Config) -> Config {
 /// stub OS so unknown functions, wrong arguments and type errors are caught before
 /// the user is asked. The error text is fit to send back to the model.
 pub fn check(answer: &Answer, host: &Rc<dyn Host>, config: &Config) -> Result<Checked, Refusal> {
-    check_against(answer, host, config, &agentabi::SCRIPT_API)
+    check_against(answer, host, config, &agentabi::SCRIPT_CALLS)
 }
 
 /// [`check`] for the one-line script a tagged call's row runs as: its calls are

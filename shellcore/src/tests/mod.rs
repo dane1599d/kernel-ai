@@ -78,6 +78,10 @@ struct FakeHost {
     /// The `fs` server's files, and each transaction's files before and after.
     files: RefCell<std::collections::BTreeMap<String, String>>,
     txns: RefCell<Vec<(Files, Files)>>,
+    /// As the shell does on `fs`: a line's changes are one transaction, left open
+    /// until the log write commits it; the open one's index.
+    one_action: Cell<bool>,
+    open_txn: Cell<Option<usize>>,
     /// `/system/log`, and how often it was written.
     log_disk: RefCell<Option<String>>,
     log_writes: Cell<u32>,
@@ -168,6 +172,8 @@ impl FakeHost {
             started_by: RefCell::new(Vec::new()),
             files: RefCell::new(Files::new()),
             txns: RefCell::new(Vec::new()),
+            one_action: Cell::new(false),
+            open_txn: Cell::new(None),
             log_disk: RefCell::new(None),
             log_writes: Cell::new(0),
         })
@@ -333,6 +339,7 @@ impl Host for FakeHost {
     fn log_write(&self, text: &str) -> Result<(), String> {
         *self.log_disk.borrow_mut() = Some(text.into());
         self.log_writes.set(self.log_writes.get() + 1);
+        self.open_txn.set(None);
         Ok(())
     }
 
@@ -388,7 +395,14 @@ impl Host for FakeHost {
         }
         *self.files.borrow_mut() = files.clone();
         let mut txns = self.txns.borrow_mut();
+        if let Some(open) = self.open_txn.get() {
+            txns[open].1 = files;
+            return Ok(open as u64 + 1);
+        }
         txns.push((before, files));
+        if self.one_action.get() {
+            self.open_txn.set(Some(txns.len() - 1));
+        }
         Ok(txns.len() as u64)
     }
 
@@ -400,6 +414,12 @@ impl Host for FakeHost {
             .cloned()
             .ok_or_else(|| FsRefused::Failed(String::from("NotFound")))?;
         let now = self.files.borrow().clone();
+        // The line's own open transaction is dropped, not restored.
+        if self.open_txn.get() == Some(txn as usize - 1) {
+            self.open_txn.set(None);
+            *self.files.borrow_mut() = before;
+            return Ok(txn);
+        }
         if now != after && !anyway {
             return Err(FsRefused::Later(String::from(
                 "a later change touched them",
