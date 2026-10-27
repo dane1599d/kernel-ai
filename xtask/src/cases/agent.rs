@@ -92,6 +92,12 @@ pub(super) const CASES: &[TestCase] = &[
         ..case("act-rule", "test=act-rule")
     },
     TestCase {
+        expect: &[
+            "pkg-local: install notes ran from the image's repository and undo put the previous set back",
+        ],
+        ..case("pkg-local", "test=pkg-local")
+    },
+    TestCase {
         keys: TERMINAL_SCRIPT,
         expect: &[
             crate::mock_llm::REPLY,
