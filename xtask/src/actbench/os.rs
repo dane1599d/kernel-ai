@@ -112,13 +112,17 @@ fn outcome(call: &Call) -> Result<(String, String), Unresolved> {
         .find(|row| row.name == call.name);
     // The row's subject: `name`, `target`, `component`, `path`, `from` or
     // `text`, else the first text argument (`tune`'s `intent` sorts before its
-    // `target`, run 40536225586). A path is named from the home folder.
+    // `target`, run 40536225586). A path is named from the home folder, and
+    // `./notes.txt` is `notes.txt` (run 40563541080).
     let name = SUBJECTS
         .iter()
         .find_map(|key| call.arguments.get(*key).filter(|v| v.is_string()))
         .or_else(|| call.arguments.values().find(|v| v.is_string()))
         .and_then(Value::as_str)
-        .map(|name| name.trim_start_matches("/home/user/"));
+        .map(|name| {
+            name.trim_start_matches("/home/user/")
+                .trim_start_matches("./")
+        });
     match (row.and_then(Verb::of), name) {
         (Some(verb), Some(name)) => targets::resolve(verb, name, &services(), &processes())
             .map(|found| (found.row.name.to_string(), name.to_string())),
