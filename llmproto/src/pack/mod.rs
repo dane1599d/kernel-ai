@@ -27,6 +27,10 @@ use alloc::vec::Vec;
 
 /// ADR 0010 §4 and ADR 0002 D4: core rules plus the OS rows, MODE included.
 pub const PACK_BUDGET: usize = 1024;
+/// The real count the token-count check holds the pack and MODE to, under
+/// [`PACK_BUDGET`] (ADR 0010 §6's amendment): headroom for the next rows, so a
+/// PR that eats it fails its own check.
+pub const PACK_ALARM: usize = 980;
 /// Bytes per token for the estimate. Measured: 1,005 real tokens for pack+MODE
 /// at 1,013 estimated with the file rows in (token-count run 40462104781); before
 /// them, 890 real at 935 (run 40443905553). The guard stays just above the real
@@ -38,13 +42,36 @@ const BYTES_PER_TOKEN: f32 = 3.46;
 /// here has no full line in the pack; an `act` call that names one with
 /// arguments is decoded once more with [`group_text`] after the request
 /// (`local::act`). Scripts are written by the script prompt, which keeps
-/// every function, so they are untouched. The least-used row: the component
-/// revert. Reads stay in full: their return types are how `act` tells a
+/// every function, so they are untouched. Here: the component revert, and the
+/// package and file groups (ADR 0010 §6's amendment: a new group lands here,
+/// and is shown in full only on a measured actbench gain within the budget).
+/// The system's reads stay in full: their return types are how `act` tells a
 /// question `script` can answer from one it cannot (run 40486342534 indexed
 /// them, and M8 through script fell from 47 to 40 of 50). So do the scheduler
 /// trial's rows: from a bare `tune` the model asks how to tune instead of
 /// calling it (run 40503318565, the os arm at 11 of 13).
-pub const INDEX: &[(&str, &[&str])] = &[("component", &["component_revert"])];
+pub const INDEX: &[(&str, &[&str])] = &[
+    ("component", &["component_revert"]),
+    (
+        "pkg",
+        &["pkg_install", "pkg_remove", "pkg_list", "pkg_search"],
+    ),
+    (
+        "files",
+        &[
+            "fs_list",
+            "fs_read",
+            "fs_history",
+            "fs_changes",
+            "fs_create",
+            "fs_write",
+            "fs_move",
+            "fs_trash",
+            "fs_restore",
+            "fs_empty_trash",
+        ],
+    ),
+];
 
 /// The index group `name` is in, if it is index-only.
 pub fn indexed(name: &str) -> Option<(&'static str, &'static [&'static str])> {
@@ -64,7 +91,9 @@ pub fn group_text(group: &str) -> String {
         .flat_map(|(_, names)| names.iter())
         .filter_map(|name| rows.iter().copied().find(|row| row.name == *name))
         .collect();
-    let mut text = alloc::format!("## {group}\n");
+    // A service group's rows keep its header (`files (paths under /home/user)`).
+    let header = dsl1::header(&members).unwrap_or(group);
+    let mut text = alloc::format!("## {header}\n");
     for line in dsl1::row_lines(&members) {
         text.push_str(&line);
         text.push('\n');

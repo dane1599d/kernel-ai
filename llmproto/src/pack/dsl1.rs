@@ -231,6 +231,19 @@ pub(super) fn row_lines(rows: &[&Action]) -> Vec<String> {
 /// What heads the index lines (ADR 0010 §6).
 pub const INDEX_HEADING: &str = "## index (name only; call one and its arguments are shown next)\n";
 
+/// The header of the service group every one of `rows` belongs to, if any.
+pub(super) fn header(rows: &[&Action]) -> Option<&'static str> {
+    GROUPS
+        .iter()
+        .find(|(owner, _)| {
+            !rows.is_empty()
+                && rows
+                    .iter()
+                    .all(|row| row.owner == agentabi::Owner::Service(owner))
+        })
+        .map(|(_, header)| *header)
+}
+
 pub(super) fn render(rows: &[&Action]) -> String {
     let mut out = String::from(RHAI);
     out.push_str(CALLS);

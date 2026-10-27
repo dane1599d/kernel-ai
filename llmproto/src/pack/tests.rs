@@ -141,16 +141,19 @@ fn index_rows_are_named_once_and_shown_in_full_on_demand() {
     let pack = render(Format::Dsl1);
     for (group, names) in INDEX {
         let text = group_text(group);
-        assert!(text.starts_with(&std::format!("## {group}\n")), "{text}");
+        assert!(text.starts_with("## "), "{text}");
+        // The pack without its index lines shows none of the group's rows.
+        let full = pack.split(INDEX_HEADING).next().unwrap_or("");
         for name in *names {
             assert!(agentabi::find(&agentabi::ROWS, name).is_some(), "{name}");
             assert!(shows(&pack, name), "{name}");
-            assert!(!pack.contains(&std::format!("\n{name}(")), "{name}");
-            assert!(text.contains(&std::format!("\n{name}(")), "{text}");
+            assert!(!shows(full, name), "{name}");
+            assert!(shows(&text, name), "{text}");
             assert_eq!(indexed(name).map(|(g, _)| g), Some(*group));
         }
     }
     assert!(group_text("component").contains("component_revert("));
+    assert!(group_text("files").starts_with("## files (paths under /home/user)\n"));
     assert_eq!(indexed("set_policy"), None);
     assert_eq!(indexed("tune"), None);
     // An index line is not a row's own line: no other name is shown by it.
