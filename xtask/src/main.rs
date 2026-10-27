@@ -44,6 +44,7 @@ mod floatguard;
 mod fluency;
 #[path = "fs/mod.rs"]
 mod fs_tool;
+mod hang;
 mod httpd;
 mod icount;
 mod image;

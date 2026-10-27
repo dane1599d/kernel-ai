@@ -378,6 +378,8 @@ pub fn run_test(
             break status;
         }
         if started.elapsed() > timeout {
+            // Where every vCPU is, before QEMU goes: a silent hang shows its code.
+            crate::hang::dump(monitor, &target_dir.join("esp/boot/kernel.lines"));
             let _ = child.kill();
             let _ = child.wait();
             return Err(format!("timed out after {} s", timeout.as_secs()));
