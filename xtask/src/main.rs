@@ -58,6 +58,7 @@ mod mock_llm;
 mod models;
 mod notices;
 mod options;
+mod pkgrepo;
 mod qemu;
 mod screen;
 mod smoke;
@@ -98,6 +99,7 @@ fn main() -> ExitCode {
         Some("wit-check") => wit::main(&args[1..]),
         Some("wit-tables") => wit_tables::main(&args[1..]),
         Some("fs") => fs_tool::main(&args[1..]),
+        Some("pkgrepo") => pkgrepo::main(&args[1..]),
         _ => parse_args(&args).and_then(|options| execute(&options)),
     };
     match result {
