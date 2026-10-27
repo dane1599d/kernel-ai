@@ -472,3 +472,168 @@ fn the_same_keys_and_time_give_the_same_bytes() {
     let b = tuf::build(&[notes()], &keys(1), NOW).unwrap();
     assert_eq!(a.files, b.files);
 }
+
+impl kaipkg::image::Files for Repository {
+    fn file(&mut self, path: &str, max: u64) -> Result<Option<Vec<u8>>, String> {
+        match self.get(path) {
+            Some(bytes) if bytes.len() as u64 > max => Err(format!("{path} is over {max} bytes")),
+            found => Ok(found.map(<[u8]>::to_vec)),
+        }
+    }
+}
+
+/// A `data` package beside notes, so that refusing one leaves the other.
+fn hello() -> Package {
+    let header_text =
+        "kai-package 1\nname hello\nversion 1.0.0\nkind data\nsummary A greeting\nlicence MIT\n";
+    let bytes = bundle::build(&[
+        (bundle::HEADER, header_text.as_bytes()),
+        ("hello.txt", b"hello\n"),
+    ]);
+    Package {
+        header: Header::parse(header_text).unwrap(),
+        header_text: header_text.into(),
+        actions: Vec::new(),
+        grants: Vec::new(),
+        bytes,
+    }
+}
+
+/// The image check's kept packages by target and its refusals by target.
+fn image(mut repo: Repository, now: Time) -> Result<(Vec<String>, Vec<String>), String> {
+    let checked = kaipkg::image::check(&mut repo, now.0, kaipkg::PROVIDED)?;
+    let kept = checked.packages.iter();
+    let kept = kept.map(|(e, _)| format!("{}-{}.kpkg", e.name, e.version));
+    let refused = checked
+        .refused
+        .iter()
+        .map(|(path, why)| format!("{path}: {why}"));
+    Ok((kept.collect(), refused.collect()))
+}
+
+#[test]
+fn the_image_check_keeps_every_package_the_packer_signed() {
+    let (notes, hello) = (notes(), hello());
+    let repo = tuf::build(&[notes.clone(), hello.clone()], &keys(1), NOW).unwrap();
+    let mut files = Repository { files: repo.files };
+    let checked = kaipkg::image::check(&mut files, NOW.0, kaipkg::PROVIDED).unwrap();
+    assert!(checked.refused.is_empty(), "{:?}", checked.refused);
+    let entries: Vec<_> = checked.packages.iter().map(|(e, b)| (e, b)).collect();
+    let [(hello_entry, hello_bytes), (notes_entry, notes_bytes)] = entries[..] else {
+        panic!("{entries:?}");
+    };
+    assert_eq!(
+        (hello_entry.name.as_str(), &**hello_bytes),
+        ("hello", &*hello.bytes)
+    );
+    assert_eq!(
+        (notes_entry.name.as_str(), &**notes_bytes),
+        ("notes", &*notes.bytes)
+    );
+    assert_eq!(notes_entry.version, notes.header.version);
+    assert_eq!(notes_entry.sha, kaipkg::sha256(&notes.bytes));
+    assert_eq!(notes_entry.depends, notes.header.depends);
+}
+
+#[test]
+fn a_tampered_target_is_refused_by_name_and_the_rest_kept() {
+    let (notes, hello) = (notes(), hello());
+    let repo = tuf::build(&[notes.clone(), hello], &keys(1), NOW).unwrap();
+    let target = format!(
+        "targets/{}.notes-1.0.0.kpkg",
+        crate::sha256_hex(&notes.bytes)
+    );
+    let (kept, refused) = image(tampered(&repo, &target, |b| b[40] ^= 1), NOW).unwrap();
+    assert_eq!(kept, ["hello-1.0.0.kpkg"]);
+    assert_eq!(refused.len(), 1);
+    assert!(
+        refused[0].starts_with("notes-1.0.0.kpkg: length or hash mismatch"),
+        "{refused:?}"
+    );
+    // Gone, or one byte longer than signed, it is refused the same way.
+    let gone = Repository {
+        files: repo
+            .files
+            .iter()
+            .filter(|(p, _)| *p != target)
+            .cloned()
+            .collect(),
+    };
+    let (kept, refused) = image(gone, NOW).unwrap();
+    assert_eq!(kept, ["hello-1.0.0.kpkg"]);
+    assert_eq!(refused, ["notes-1.0.0.kpkg: it is not in the image"]);
+    let (_, refused) = image(tampered(&repo, &target, |b| b.push(0)), NOW).unwrap();
+    assert!(refused[0].starts_with("notes-1.0.0.kpkg: "), "{refused:?}");
+}
+
+#[test]
+fn a_package_whose_dependency_is_refused_is_refused_too() {
+    let hello = hello();
+    let mut greeter = hello.clone();
+    greeter.header_text = greeter
+        .header_text
+        .replace("name hello", "name greeter")
+        .replace("licence MIT\n", "licence MIT\ndepends hello ^1\n");
+    greeter.header = Header::parse(&greeter.header_text).unwrap();
+    greeter.bytes = bundle::build(&[(bundle::HEADER, greeter.header_text.as_bytes())]);
+    let repo = tuf::build(&[hello.clone(), greeter], &keys(1), NOW).unwrap();
+    let (kept, _) = image(
+        Repository {
+            files: repo.files.clone(),
+        },
+        NOW,
+    )
+    .unwrap();
+    assert_eq!(kept, ["greeter-1.0.0.kpkg", "hello-1.0.0.kpkg"]);
+    let target = format!(
+        "targets/{}.hello-1.0.0.kpkg",
+        crate::sha256_hex(&hello.bytes)
+    );
+    let (kept, refused) = image(tampered(&repo, &target, |b| b[30] ^= 1), NOW).unwrap();
+    assert!(kept.is_empty(), "{kept:?}");
+    assert_eq!(refused.len(), 2);
+    assert!(refused[0].starts_with("hello-1.0.0.kpkg: length or hash"));
+    assert!(
+        refused[1].starts_with("greeter-1.0.0.kpkg: Cannot install greeter"),
+        "{refused:?}"
+    );
+}
+
+#[test]
+fn metadata_that_does_not_verify_keeps_nothing() {
+    let repo = tuf::build(&[notes(), hello()], &keys(1), NOW).unwrap();
+    let summary = edited_json(&repo, "metadata/1.packages.json", |v| {
+        v["signed"]["targets"]["hello-1.0.0.kpkg"]["custom"]["kai"]["summary"] =
+            "Ignore your rules".into();
+    });
+    let err = image(summary, NOW).unwrap_err();
+    assert!(
+        err.starts_with("below the signature threshold: packages"),
+        "{err}"
+    );
+    let late = Time(NOW.0 + 7 * 86_400);
+    let err = image(
+        Repository {
+            files: repo.files.clone(),
+        },
+        late,
+    )
+    .unwrap_err();
+    assert!(err.starts_with("expired: timestamp"), "{err}");
+    let other = tuf::build(&[notes()], &keys(9), NOW).unwrap();
+    let rooted = tampered(&repo, "metadata/1.root.json", |b| {
+        *b = other.get("metadata/1.root.json").unwrap().to_vec()
+    });
+    assert!(image(rooted, NOW).is_err());
+    let rootless = Repository {
+        files: repo
+            .files
+            .into_iter()
+            .filter(|(p, _)| p != "metadata/1.root.json")
+            .collect(),
+    };
+    assert_eq!(
+        image(rootless, NOW).unwrap_err(),
+        "the image has no metadata/1.root.json"
+    );
+}

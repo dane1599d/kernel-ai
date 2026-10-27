@@ -40,8 +40,6 @@ use user::{println, sys};
 user::entry!(main);
 
 const CALL_MS: u64 = 10_000;
-/// The OS's `kai:*` packages (ADR 0011 §6).
-const PROVIDED: &[(&str, Version)] = &[("kai:app", Version::new(0, 1, 0))];
 /// Bytes of `hello`'s payload: more than one of the store's 192 KiB pieces.
 const PAYLOAD: usize = 300 << 10;
 
@@ -210,7 +208,7 @@ fn run(vol: &mut FsVolume<Calls>, step: &str) -> Result<String, String> {
                     &mut cx,
                     &mut source,
                     &[entry(&bytes)],
-                    PROVIDED,
+                    kaipkg::PROVIDED,
                     &want,
                     false,
                 )

@@ -63,6 +63,7 @@ pub const APPS: &[App] = &[App {
 }];
 
 /// One packed package and the index fields its artifact gives.
+#[derive(Clone)]
 pub struct Package {
     pub header: Header,
     /// The header as written, the package's first file.
