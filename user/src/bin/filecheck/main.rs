@@ -11,6 +11,8 @@
 //!   the kernel then kills `fs` mid-action, and once `restarted` appears this
 //!   reads `restart.txt` through the handle it kept, `restart.ok`.
 //!
+//! - `step=actions` and `step=churn boot=N`: the power cut's workload ([`cut`]).
+//!
 //! It prints a line for each step that passed, or `filecheck: FAIL ...`, then
 //! idles: the supervisor would restart an exited service.
 
@@ -18,6 +20,8 @@
 #![no_main]
 
 extern crate alloc;
+
+mod cut;
 
 use alloc::format;
 use alloc::string::String;
@@ -39,6 +43,11 @@ fn main() -> i32 {
     let step = args
         .split_whitespace()
         .find_map(|w| w.strip_prefix("step="));
+    let boot = args
+        .split_whitespace()
+        .find_map(|w| w.strip_prefix("boot="))
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0);
     let Some(home) = startup_dir() else {
         println!("filecheck: FAIL no Dir handle at startup");
         idle();
@@ -47,7 +56,11 @@ fn main() -> i32 {
         Some("write") => write(home),
         Some("read") => read(home),
         Some("restart") => restart(home),
-        _ => Err(String::from("no step=write, read or restart")),
+        Some("actions") => cut::actions(home),
+        Some("churn") => cut::churn(home, boot),
+        _ => Err(String::from(
+            "no step=write, read, restart, actions or churn",
+        )),
     };
     if let Err(why) = result {
         println!("filecheck: FAIL {why}");
