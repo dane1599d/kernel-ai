@@ -20,6 +20,7 @@ mod buffer;
 mod lookup;
 #[cfg(test)]
 mod tests;
+mod trash;
 
 use alloc::vec::Vec;
 use fsproto::{
@@ -380,6 +381,21 @@ impl<D: BlockDev> Server<D> {
                 need(Rights::ENUMERATE)?;
                 self.list(object, after, max)?
             }
+            Request::TrashList { after } => {
+                dir()?;
+                need(Rights::ENUMERATE)?;
+                self.trash_list(object, after)?
+            }
+            Request::TrashRestore { path } => {
+                dir()?;
+                need(Rights::CREATE)?;
+                self.trash_restore(object, &path)?
+            }
+            Request::EmptyTrash => {
+                dir()?;
+                need(Rights::DELETE)?;
+                self.empty_trash(object)?
+            }
             Request::Read { off, len } => {
                 file()?;
                 need(Rights::READ)?;
@@ -586,6 +602,8 @@ fn changes(request: &Request) -> bool {
         | Request::Commit
         | Request::Abort
         | Request::Restore { .. }
+        | Request::TrashRestore { .. }
+        | Request::EmptyTrash
         | Request::Sync => true,
         Request::Stat
         | Request::List { .. }
@@ -593,7 +611,8 @@ fn changes(request: &Request) -> bool {
         | Request::History
         | Request::Changes { .. }
         | Request::Df
-        | Request::Generation => false,
+        | Request::Generation
+        | Request::TrashList { .. } => false,
     }
 }
 
