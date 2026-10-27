@@ -67,6 +67,7 @@ mod llm_commands;
 mod local_tests;
 mod logbook;
 mod manifest_tests;
+mod many_tests;
 mod memory;
 mod metrics;
 mod model;
@@ -327,6 +328,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Latency => run_case(latency_tests::check),
         SelfTest::ProcStop => run_case(stop_tests::check),
         SelfTest::Shm => run_case(shm_tests::check),
+        SelfTest::ManyProcesses => run_case(many_tests::check),
         SelfTest::Scriptrun => run_case(scriptrun_tests::check),
         SelfTest::Fpu => run_case(fpu_tests::fpu_check),
         SelfTest::Probe => run_case(fpu_tests::probe_check),
