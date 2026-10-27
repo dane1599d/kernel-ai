@@ -192,7 +192,8 @@ impl Seat {
                     text: String::from(core::str::from_utf8(typed).unwrap_or("")),
                 }
             }
-            Kind::Button | Kind::Wheel => return None,
+            // The screen changing hands is `desktop`'s, not a window's.
+            Kind::Button | Kind::Wheel | Kind::Screen => return None,
         })
     }
 }
