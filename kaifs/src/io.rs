@@ -60,6 +60,9 @@ pub struct Faults {
     /// An action that does not count as a snapshot while it is open, so its
     /// undo snapshot can hold blocks already freed.
     pub unpinned_action: bool,
+    /// A GC pass that marks only the live trees, so it frees what only
+    /// snapshots hold.
+    pub gc_skips_snapshots: bool,
 }
 
 /// Everything below the trees: the disk, checksums, the allocator and the rule
@@ -72,6 +75,9 @@ pub struct Io<D> {
     pub txn: u64,
     /// Nodes read since mount, so tests can see what a walk cost.
     pub node_reads: u64,
+    /// A running GC pass's generation, 0 with none: no volume-table block born
+    /// by then is freed while it runs, as it may still read them.
+    pub(crate) gc_pin: u64,
     pub(crate) faults: Faults,
     /// Replaced blocks the faulty rule judges at commit, with their volume.
     pub(crate) deferred: Vec<(BlockPtr, u64)>,
@@ -178,7 +184,8 @@ pub(crate) struct Volume<'a, D> {
     pub(crate) vol: u64,
 }
 
-/// The volume table's: its replaced blocks are always freed.
+/// The volume table's: its replaced blocks are freed, but for those a running GC
+/// pass may read.
 pub(crate) struct Meta<'a, D>(pub(crate) &'a mut Io<D>);
 
 impl<D: BlockDev> Store for Volume<'_, D> {
@@ -201,8 +208,11 @@ impl<D: BlockDev> Store for Meta<'_, D> {
     }
 
     fn replaced(&mut self, ptr: BlockPtr) {
-        let txn = self.0.txn;
-        self.0.alloc.free_later(txn, run_of(&ptr));
+        // A block a running GC pass may still read waits for the next pass.
+        if ptr.birth > self.0.gc_pin {
+            let txn = self.0.txn;
+            self.0.alloc.free_later(txn, run_of(&ptr));
+        }
     }
 
     fn store(&mut self, block: &Block, level: u8) -> Result<BlockPtr, Error> {

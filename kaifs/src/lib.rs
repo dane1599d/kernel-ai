@@ -36,7 +36,9 @@
 //! - [`txn`]: actions, each one commit with its undo snapshots and UNDO records,
 //!   and abort;
 //! - [`undo`]: `restore(txn)`, which never overwrites a later change; `changes`,
-//!   which reads only what changed; and `history`.
+//!   which reads only what changed; and `history`;
+//! - [`trash`] and [`cbor`]: the trash, each object beside its `info.cbor`;
+//! - [`gc`]: the GC in slices, and retention.
 
 #![no_std]
 
@@ -46,6 +48,7 @@ extern crate std;
 
 pub mod allocator;
 pub mod buddy;
+pub mod cbor;
 pub mod check;
 #[cfg(feature = "std")]
 pub mod crash;
@@ -53,11 +56,13 @@ pub mod csum;
 pub mod dev;
 pub mod format;
 pub mod fs;
+pub mod gc;
 pub mod io;
 pub mod items;
 pub mod ns;
 pub mod ns_check;
 pub mod repair;
+pub mod trash;
 pub mod tree;
 pub mod txn;
 pub mod undo;
