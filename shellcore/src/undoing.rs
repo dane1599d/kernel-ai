@@ -80,11 +80,25 @@ impl Shell {
         let mut redo: Vec<Change> = Vec::new();
         let mut left = entry.changes.clone();
         let mut stopped: Option<Reply> = None;
+        // A script's file changes share one transaction (P2 task 11): the first
+        // restore puts them all back, and its redo stands for each.
+        let mut restored: Option<(u64, undo::Inverse)> = None;
         while let Some(change) = left.pop() {
             let Some(inverse) = change.inverse else {
                 left.push(change);
                 break;
             };
+            if let (undo::Inverse::Fs { txn }, Some((done, again))) = (inverse, restored)
+                && done == txn
+            {
+                redo.push(Change {
+                    before: change.after.clone(),
+                    after: change.before.clone(),
+                    inverse: Some(again),
+                    ..change
+                });
+                continue;
+            }
             let reverted = match inverse {
                 undo::Inverse::Generation { from, to } => self
                     .switch_generation(from, to, anyway)
@@ -99,6 +113,9 @@ impl Shell {
             };
             match reverted {
                 Ok((text, again)) => {
+                    if let undo::Inverse::Fs { txn } = inverse {
+                        restored = Some((txn, again));
+                    }
                     said.push(text);
                     redo.push(Change {
                         before: change.after.clone(),

@@ -18,6 +18,11 @@ pub enum ActCase {
     Rule,
     PkgLocal,
     Convo,
+    FsAct,
+    FsUndo,
+    /// `fs-undo-reboot`'s first boot, then its second (`reread`).
+    FsUndoReboot,
+    FsUndoRebooted,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -194,6 +199,14 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=act-rule" => Some(SelfTest::Act(ActCase::Rule)),
             "test=pkg-local" => Some(SelfTest::Act(ActCase::PkgLocal)),
             "test=act-convo" => Some(SelfTest::Act(ActCase::Convo)),
+            "test=fs-act" => Some(SelfTest::Act(ActCase::FsAct)),
+            "test=fs-undo" => Some(SelfTest::Act(ActCase::FsUndo)),
+            "test=fs-undo-reboot" => Some(SelfTest::Act(
+                match cmdline.split_whitespace().any(|w| w == "reread") {
+                    true => ActCase::FsUndoRebooted,
+                    false => ActCase::FsUndoReboot,
+                },
+            )),
             "test=live" => Some(SelfTest::Live),
             "test=edit" => Some(SelfTest::Edit),
             "test=appbench" => Some(SelfTest::AppBench),
@@ -346,12 +359,17 @@ pub fn plan(test: SelfTest) -> Option<String> {
     ) {
         // The file system service starts before the shell, once there is a
         // `kai-data` partition for it (ADR 0004).
-        if crate::block::has_partition(diskmap::KAI_DATA_TYPE) {
-            plan.push('\n');
-            plan.push_str(kabi::plan::FS);
-        }
+        // With it, the shell gets `files`, its `Dir` for `/home/user`.
+        let shell = match crate::block::has_partition(diskmap::KAI_DATA_TYPE) {
+            true => {
+                plan.push('\n');
+                plan.push_str(kabi::plan::FS);
+                kabi::plan::SHELL_FILES
+            }
+            false => kabi::plan::SHELL,
+        };
         plan.push('\n');
-        plan.push_str(kabi::plan::SHELL);
+        plan.push_str(shell);
     }
     // `act-rule` stops processes the supervisor does not restart, and one
     // service it does.

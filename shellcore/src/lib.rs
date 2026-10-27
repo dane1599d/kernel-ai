@@ -114,6 +114,10 @@ pub struct Consent {
     pub proof: Proof,
 }
 
+/// What a host with no `kai-data` disk answers a file row: the guest's shell
+/// and the gates' stand-ins say the same, so their answers compare equal.
+pub const NO_FILES: &str = "there are no files here (no kai-data disk)";
+
 /// What the shell needs from the operating system.
 pub trait Host {
     fn now_ns(&self) -> u64;
@@ -169,12 +173,12 @@ pub trait Host {
     }
     /// A read of the user's files: its text, or why there is none.
     fn fs_read(&self, _read: FsRead) -> Result<String, String> {
-        Err(String::from("there are no files here"))
+        Err(String::from(NO_FILES))
     }
     /// A change to the user's files, made as one transaction: its number, for
     /// `undo`.
     fn fs_change(&self, _change: FsChange) -> Result<u64, String> {
-        Err(String::from("there are no files here"))
+        Err(String::from(NO_FILES))
     }
     /// The action log as `/system/log` holds it (`actlog 1`), read once at start;
     /// `None` when there is none (P2 task 12).
@@ -189,7 +193,7 @@ pub trait Host {
     /// so `undo` again can redo. Compare-and-set: refused when a later change
     /// touched the same files, unless `anyway`.
     fn fs_undo(&self, _txn: u64, _anyway: bool) -> Result<u64, FsRefused> {
-        Err(FsRefused::Failed(String::from("there are no files here")))
+        Err(FsRefused::Failed(String::from(NO_FILES)))
     }
     /// The services the supervisor runs, so a stop names a service or a process
     /// by what it is. Without them, a stop runs the row the model picked.
