@@ -5,29 +5,10 @@
 
 use termcore::style::{Kind, Tone};
 
-/// The screen.
-pub const INK: u32 = 0x000D_1017;
-/// The status bar, and the line under it.
-pub const BAR: u32 = 0x0014_1821;
-pub const RULE: u32 = 0x0023_2A38;
-/// What the user types, and the status bar's own words.
-pub const PAPER: u32 = 0x00EC_E6DA;
-/// Kernel output.
-pub const SLATE: u32 = 0x009A_A3B4;
-/// Log tags and secondary status text.
-pub const DIM: u32 = 0x007C_8AA8;
-/// The accent: prompt, cursor, the AI's bar and the busy sign.
-pub const EMBER: u32 = 0x00FF_9F5A;
-pub const CORAL: u32 = 0x00FF_6B6B;
-pub const GOLD: u32 = 0x00F5_C451;
-pub const SAGE: u32 = 0x007F_D49B;
-
-const REPLY_TEXT: u32 = 0x00F6_F0E6;
-const REPLY_TINT: u32 = 0x001A_1611;
-const ERROR_TEXT: u32 = 0x00FF_B4AB;
-const ERROR_TINT: u32 = 0x0020_1316;
-const QUESTION_TEXT: u32 = 0x00F8_DF9F;
-const QUESTION_TINT: u32 = 0x001D_1A10;
+// Every colour comes from `look` (ADR 0005 §8), so the console and the desktop
+// share one palette and `look`'s tests hold the contrast claim above.
+pub use look::console::{BAR, CORAL, DIM, EMBER, GOLD, INK, PAPER, RULE, SAGE, SLATE};
+use look::console::{ERROR_TEXT, ERROR_TINT, QUESTION_TEXT, QUESTION_TINT, REPLY_TEXT, REPLY_TINT};
 
 /// How a whole row looks: its background and, for the shell's answers, errors and
 /// questions, a bar in the margin.
