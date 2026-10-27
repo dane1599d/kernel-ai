@@ -23,7 +23,7 @@
 use kaifs::check::{Cache, check};
 use kaifs::crash::{Options, Oracle, Recording, Rng, Tally, enumerate};
 use kaifs::format;
-use kaifs::fs::Faults;
+use kaifs::fs::{Faults, SYSTEM};
 use kaifs::ns_check::{Digest, check_tree};
 use kaifs::{CsumKind, Error, FileType, Fs, Image, MemDisk, ROOT, RecordingDisk};
 use std::collections::BTreeMap;
@@ -535,7 +535,7 @@ impl Run {
                 (
                     outcome(
                         self.fs
-                            .restore(id)
+                            .restore_snapshot(id)
                             .and_then(|b| b.then_some(()).ok_or(Error::NotFound)),
                     ),
                     Outcome::Done,
@@ -612,8 +612,13 @@ impl NsOracle<'_> {
             }
         };
         let trees: Vec<(Option<u64>, kaifs::check::TreeReport)> =
-            core::iter::once((None, report.live))
-                .chain(report.snaps.iter().map(|(id, t)| (Some(*id), *t)))
+            core::iter::once((None, report.volumes[&SYSTEM].live))
+                .chain(
+                    report.volumes[&SYSTEM]
+                        .snaps
+                        .iter()
+                        .map(|(id, t)| (Some(*id), *t)),
+                )
                 .collect();
         let mut state = State {
             live: Digest::default(),
@@ -634,8 +639,14 @@ impl NsOracle<'_> {
                         mounted = Some(fs);
                     }
                     let fs = mounted.as_mut().unwrap();
-                    check_tree(fs, &tree.root, tree.next_oid, &mut self.cache)
-                        .map_err(|e| format!("namespace of {id:?}: {e}"))?
+                    check_tree(
+                        fs,
+                        &tree.root,
+                        tree.next_oid,
+                        tree.generation,
+                        &mut self.cache,
+                    )
+                    .map_err(|e| format!("namespace of {id:?}: {e}"))?
                 }
             };
             match id {
@@ -861,7 +872,8 @@ fn a_folder_tree_of_the_setup_is_what_the_model_says() {
     let mut cache = Cache::default();
     check(&mut run.fs, &mut cache).unwrap();
     let ns = kaifs::ns_check::check_namespace(&mut run.fs, &mut cache).unwrap();
-    assert_eq!(ns.live.digest, run.model.live.digest());
-    assert_eq!(ns.live.files, 60);
+    let live = &ns.volumes[&SYSTEM].live;
+    assert_eq!(live.digest, run.model.live.digest());
+    assert_eq!(live.files, 60);
     assert_eq!(run.fs.stat(ROOT).unwrap().kind, FileType::Dir);
 }

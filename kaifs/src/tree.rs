@@ -528,6 +528,47 @@ impl Tree {
     pub fn is_dirty(&self) -> bool {
         matches!(self.root, Some(Child::Dirty(_)))
     }
+
+    /// Calls `visit` on every item in a leaf born after generation `since` (a
+    /// dirty node is born now), reading only subtrees born after it: since every
+    /// change rewrites its leaf and the leaf's parents, the rest has not changed.
+    pub fn scan_born_after(
+        &self,
+        since: u64,
+        store: &mut dyn Store,
+        visit: &mut dyn FnMut(&Key, &[u8]),
+    ) -> Result<(), Error> {
+        match &self.root {
+            None => Ok(()),
+            Some(root) => born_after(root, since, store, visit),
+        }
+    }
+}
+
+fn born_after(
+    child: &Child,
+    since: u64,
+    store: &mut dyn Store,
+    visit: &mut dyn FnMut(&Key, &[u8]),
+) -> Result<(), Error> {
+    let owned;
+    let node = match child {
+        Child::Clean(ptr) if ptr.birth <= since => return Ok(()),
+        Child::Clean(ptr) => {
+            owned = store.load(ptr)?;
+            &owned
+        }
+        Child::Dirty(node) => &**node,
+    };
+    match node {
+        Node::Leaf(items) => items.iter().for_each(|(k, v)| visit(k, v)),
+        Node::Branch(_, children) => {
+            for (_, child) in children {
+                born_after(child, since, store, visit)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Whether to go on.

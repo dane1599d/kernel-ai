@@ -20,10 +20,12 @@
 //! 5. **Orphans.** An inode the walk did not reach is named by its number in
 //!    `/lost+found`, which is made if missing, lowest number first, with what it
 //!    holds.
-//! 6. **Counts.** Every size, link count and parent is set from the names, and a
-//!    file's size covers its data.
+//! 6. **Counts.** Every size, link count and parent is set from the names, a
+//!    file's size covers its data, and no inode says it changed after the commit
+//!    repair writes.
 //!
-//! Repair refuses a filesystem with an unknown compat bit (ADR 0004 §2), one
+//! Repair acts on the active volume, so `check --repair` runs it once a volume.
+//! It refuses a filesystem with an unknown compat bit (ADR 0004 §2), one
 //! mounted read-only, and one with an open transaction. Space the allocator
 //! accounts wrongly is the GC's (task 6), which rebuilds it from what is reached.
 
@@ -376,6 +378,7 @@ impl<D: BlockDev> Repair<'_, D> {
 
     /// Rule 6.
     fn counts(&mut self, named: &BTreeMap<u64, Vec<u64>>) {
+        let txn = self.fs.io.txn;
         let mut fixes = Vec::new();
         for (ino, inode) in self.state.inodes.iter_mut() {
             let mut want = *inode;
@@ -409,6 +412,7 @@ impl<D: BlockDev> Repair<'_, D> {
                     want.size = want.size.max(end.unwrap_or(0)).min(MAX_FILE);
                 }
             }
+            want.changed = want.changed.min(txn);
             if want != *inode {
                 fixes.push(format!(
                     "object {ino}: size, links and parent set from its names"

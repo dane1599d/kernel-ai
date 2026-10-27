@@ -14,8 +14,10 @@
 //! - [`buddy`] and [`allocator`]: the buddy allocator, the N+2 wait for freed
 //!   blocks, and the allocator's chain on disk;
 //! - [`tree`]: the copy-on-write B+tree of `(oid, kind, off)` keys;
-//! - [`fs`]: the engine: a volume's live tree and snapshots, records, the volume
-//!   table, commit and mount, and the reuse rule decided at replacement;
+//! - [`io`]: what lies below the trees: records, values and the reuse rule
+//!   decided at replacement;
+//! - [`fs`]: the engine: volumes, each a live tree and its snapshots, the volume
+//!   table, commit and mount;
 //! - [`check`]: everything a mount reaches verifies and is accounted for, with
 //!   the memo the crash gates share;
 //! - [`crash`] (with `std`): the crash enumerator every later layer is gated by.
@@ -27,6 +29,14 @@
 //! - [`ns_check`]: the namespace's rules, checked through the same memo, and the
 //!   digest the crash gates compare;
 //! - [`repair`]: `check --repair`'s rules.
+//!
+//! P2 task 6 adds volumes and undo:
+//! - [`vol`]: the volume table's entries: volumes, snapshots of four kinds, and
+//!   UNDO records;
+//! - [`txn`]: actions, each one commit with its undo snapshots and UNDO records,
+//!   and abort;
+//! - [`undo`]: `restore(txn)`, which never overwrites a later change; `changes`,
+//!   which reads only what changed; and `history`.
 
 #![no_std]
 
@@ -43,11 +53,15 @@ pub mod csum;
 pub mod dev;
 pub mod format;
 pub mod fs;
+pub mod io;
 pub mod items;
 pub mod ns;
 pub mod ns_check;
 pub mod repair;
 pub mod tree;
+pub mod txn;
+pub mod undo;
+pub mod vol;
 
 pub use csum::CsumKind;
 pub use dev::{BlockDev, DevInfo, Image, IoError, MemDisk, Op, RecordingDisk};

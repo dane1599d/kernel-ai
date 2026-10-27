@@ -26,12 +26,13 @@
 use crate::check::{Cache, Leaves, summarise};
 use crate::dev::BlockDev;
 use crate::format::BlockPtr;
-use crate::fs::{Fs, MAX_INLINE, decode_value, inline_of, value_len};
+use crate::fs::{Fs, MAX_INLINE, Snap, decode_value, inline_of, value_len};
 use crate::items::{
     CHUNK, Entry, FileType, Inode, K_DATA, K_DIRENT, K_INODE, K_XATTR, MAX_FILE, ROOT,
     decode_attrs, decode_names, hash_name,
 };
 use crate::tree::Key;
+use crate::vol::SnapKind;
 use alloc::collections::{BTreeMap, BTreeSet, VecDeque};
 use alloc::format;
 use alloc::rc::Rc;
@@ -51,13 +52,21 @@ pub struct NsReport {
     pub bytes: u64,
     /// The highest object id an item has.
     pub max_oid: u64,
+    /// The latest generation an inode says changed it.
+    pub max_changed: u64,
 }
 
-/// The namespace on the live tree and on each snapshot.
+/// A volume's namespace on its live tree and on each snapshot.
 #[derive(Clone, Debug)]
-pub struct NsCheck {
+pub struct VolumeNs {
     pub live: Rc<NsReport>,
     pub snaps: BTreeMap<u64, Rc<NsReport>>,
+}
+
+/// Every volume's namespace.
+#[derive(Clone, Debug)]
+pub struct NsCheck {
+    pub volumes: BTreeMap<u64, VolumeNs>,
 }
 
 /// A namespace digest: a wrapping sum of item hashes, so order does not matter.
@@ -116,6 +125,7 @@ struct Seen {
     data: BTreeMap<u64, Vec<(u64, Vec<u8>)>>,
     attrs: BTreeMap<u64, Vec<(String, Vec<u8>)>>,
     max_oid: u64,
+    max_changed: u64,
 }
 
 /// One item against the rules that need nothing but it and its inode.
@@ -144,6 +154,7 @@ fn item(
             if inode.kind == FileType::File && inode.size > MAX_FILE {
                 return Err(at("a file over 256 TiB"));
             }
+            seen.max_changed = seen.max_changed.max(inode.changed);
             seen.inodes.insert(oid, inode);
         }
         K_DIRENT if kind == Some(FileType::Dir) => {
@@ -239,6 +250,7 @@ fn links(seen: &Seen) -> Result<(), String> {
 fn walk<D: BlockDev>(fs: &mut Fs<D>, seen: &Seen) -> Result<NsReport, String> {
     let mut report = NsReport {
         max_oid: seen.max_oid,
+        max_changed: seen.max_changed,
         ..NsReport::default()
     };
     let mut digest = Digest::default();
@@ -321,11 +333,13 @@ pub fn rules<D: BlockDev>(
 }
 
 /// [`rules`] through the memo: a tree whose summary still holds is not read
-/// again.
+/// again. A tree from generation `generation` may hold no object above its
+/// counter `next_oid`, and no inode changed after it.
 pub fn check_tree<D: BlockDev>(
     fs: &mut Fs<D>,
     root: &BlockPtr,
     next_oid: u64,
+    generation: u64,
     cache: &mut Cache,
 ) -> Result<Rc<NsReport>, String> {
     let report = match cache.namespace(root) {
@@ -339,6 +353,12 @@ pub fn check_tree<D: BlockDev>(
             report
         }
     };
+    if report.max_changed > generation {
+        return Err(format!(
+            "an inode changed in {}, after its tree's generation {generation}",
+            report.max_changed
+        ));
+    }
     match report.max_oid < next_oid {
         true => Ok(report),
         false => Err(format!(
@@ -348,24 +368,49 @@ pub fn check_tree<D: BlockDev>(
     }
 }
 
-/// The namespace rules on the live tree, as last committed, and on every
-/// snapshot.
+/// The namespace rules on every volume's live tree, as last committed, and on
+/// every snapshot; and the UNDO records' rules: each decodes, follows the
+/// generation before it, names an undo snapshot of that generation, and names
+/// only objects below the volume's counter.
 pub fn check_namespace<D: BlockDev>(fs: &mut Fs<D>, cache: &mut Cache) -> Result<NsCheck, String> {
     if !fs.is_clean() {
         return Err("check runs between commits".to_string());
     }
-    let live_root = fs.live_root().ok_or("the live tree is not written")?;
-    let live = check_tree(fs, &live_root, fs.next_oid(), cache)?;
-    let roots: Vec<(u64, BlockPtr, u64)> = fs
-        .snapshots()
-        .iter()
-        .map(|(id, s)| (*id, s.root, s.next_oid))
-        .collect();
-    let mut snaps = BTreeMap::new();
-    for (id, root, next_oid) in roots {
-        let report =
-            check_tree(fs, &root, next_oid, cache).map_err(|e| format!("snapshot {id}: {e}"))?;
-        snaps.insert(id, report);
+    let active = fs.volume();
+    let mut volumes = BTreeMap::new();
+    for (id, name) in fs.volumes() {
+        let found = volume(fs, id, cache).map_err(|e| format!("volume {name}: {e}"));
+        let _ = fs.set_volume(active);
+        volumes.insert(id, found?);
     }
-    Ok(NsCheck { live, snaps })
+    Ok(NsCheck { volumes })
+}
+
+fn volume<D: BlockDev>(fs: &mut Fs<D>, id: u64, cache: &mut Cache) -> Result<VolumeNs, String> {
+    let at = |e: crate::Error| format!("{e:?}");
+    fs.set_volume(id).map_err(at)?;
+    let live_root = fs.live_root().ok_or("the live tree is not written")?;
+    let (next_oid, committed) = (fs.next_oid(), fs.committed);
+    let live = check_tree(fs, &live_root, next_oid, committed, cache)?;
+    let roots: Vec<(u64, Snap)> = fs.snapshots().iter().map(|(sid, s)| (*sid, *s)).collect();
+    let mut snaps = BTreeMap::new();
+    for (sid, snap) in &roots {
+        let report = check_tree(fs, &snap.root, snap.next_oid, snap.generation, cache)
+            .map_err(|e| format!("snapshot {sid}: {e}"))?;
+        snaps.insert(*sid, report);
+    }
+    for undo in fs.undo_records().map_err(at)? {
+        let snap = roots
+            .iter()
+            .find(|(sid, _)| *sid == undo.snapshot)
+            .map(|(_, s)| s);
+        let sound = snap.is_some_and(|s| s.kind == SnapKind::Undo && s.generation == undo.before)
+            && undo.before < undo.txn
+            && undo.txn <= committed
+            && undo.objects.iter().all(|&o| (1..next_oid).contains(&o));
+        if !sound {
+            return Err(format!("the undo record of {} does not hold", undo.txn));
+        }
+    }
+    Ok(VolumeNs { live, snaps })
 }
