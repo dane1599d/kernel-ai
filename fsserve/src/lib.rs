@@ -467,6 +467,12 @@ impl<D: BlockDev> Server<D> {
                 let generation = self.commit()?;
                 Reply::Committed { generation }
             }
+            Request::Generation => {
+                self.owned(call.caller)?;
+                Reply::Generation {
+                    generation: self.fs.io.txn,
+                }
+            }
             Request::Df => {
                 let (free, total) = self.fs().space();
                 Reply::Space { free, total }
@@ -586,7 +592,8 @@ fn changes(request: &Request) -> bool {
         | Request::Read { .. }
         | Request::History
         | Request::Changes { .. }
-        | Request::Df => false,
+        | Request::Df
+        | Request::Generation => false,
     }
 }
 

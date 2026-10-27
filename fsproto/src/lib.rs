@@ -148,6 +148,12 @@ pub enum Request {
     /// Free and total 4 KiB blocks.
     #[n(15)]
     Df,
+    /// The generation the caller's open action will commit as, so a change can
+    /// name its own commit in that commit (the shell's log line, P2 task 12).
+    /// Only inside the caller's action: outside one it is [`Error::Invalid`],
+    /// in another caller's [`Error::Busy`]. Begin's lock keeps it true.
+    #[n(16)]
+    Generation,
 }
 
 /// Where a listing goes on: the last name it gave, with its hash.
@@ -327,6 +333,12 @@ pub enum Reply {
     },
     #[n(10)]
     Failed(#[n(0)] Error),
+    /// [`Request::Generation`]'s answer.
+    #[n(11)]
+    Generation {
+        #[n(0)]
+        generation: u64,
+    },
 }
 
 /// `[VERSION, body]` as bytes.
