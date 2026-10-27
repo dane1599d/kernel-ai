@@ -40,6 +40,10 @@ pub struct PerCpu {
     pub xcr0: AtomicU64,
 }
 
+// xtask's hang dump (xtask/src/hang.rs) reads these two at the GS base.
+const _: () = assert!(core::mem::offset_of!(PerCpu, preempt_count) == 36);
+const _: () = assert!(core::mem::offset_of!(PerCpu, current) == 56);
+
 impl PerCpu {
     const fn new() -> Self {
         Self {
