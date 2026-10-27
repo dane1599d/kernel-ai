@@ -565,6 +565,7 @@ fn start_user_space(test: SelfTest) {
         // both sides of it, so no stall carries over (sched::Core::resync_ticks).
         threads::resync_ticks();
         let edge = timer::align_to_second();
+        hpet::round_up_to_second();
         threads::resync_ticks();
         log!("tune-ab: services start at tick {edge}");
     }

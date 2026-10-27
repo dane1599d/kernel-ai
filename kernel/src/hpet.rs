@@ -17,7 +17,7 @@
 
 use crate::percpu::{self, MAX_CPUS};
 use crate::{log, memory};
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use x86_64::structures::paging::PageTableFlags;
 
 const CAPABILITIES: u64 = 0x000;
@@ -40,6 +40,9 @@ static NANOS_ZERO: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPU
 /// The latest time any CPU returned: an HPET read takes microseconds, so two CPUs'
 /// zero points can disagree by that much, and no caller may see time go back.
 static LATEST: AtomicU64 = AtomicU64::new(0);
+/// `clock=icount`: the TSC is the clock at exactly 1 GHz.
+static ICOUNT: AtomicBool = AtomicBool::new(false);
+const NANOS_PER_SECOND: u64 = 1_000_000_000;
 /// One window of measuring the TSC against the HPET, and at most how many.
 const WINDOW_NS: u64 = 25_000_000;
 const WINDOWS: u32 = 200;
@@ -150,6 +153,7 @@ pub fn select_clock(cmdline: &str) {
     {
         set_zero(0);
         TSC_MULT.store(1 << 32, Ordering::Release);
+        ICOUNT.store(true, Ordering::Release);
         log!("clock: the TSC at 1 GHz, as QEMU's icount runs it");
         return;
     }
@@ -192,6 +196,27 @@ pub fn start_cpu(cpu: usize) {
     if TSC_MULT.load(Ordering::Acquire) != 0 && cpu < MAX_CPUS {
         set_zero(cpu);
     }
+}
+
+/// On an icount boot, moves the clock forward to the next whole second; anywhere
+/// else, does nothing. For the icount boots' tick-aligned start: the clock's zero
+/// is an HPET read, and the firmware and boot-drive reads before the kernel are
+/// host-timed, so at the aligned tick the clock stood at a different fraction of a
+/// millisecond in each boot. Whole milliseconds of it (the supervisor's timers)
+/// then ran out on different ticks, and the observe boots flipped between two
+/// summaries. From a whole second, every boot's clock reads the same fractions.
+pub fn round_up_to_second() {
+    if !ICOUNT.load(Ordering::Acquire) {
+        return;
+    }
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let now = nanos();
+        let target = (now / NANOS_PER_SECOND + 1) * NANOS_PER_SECOND;
+        for zero in &NANOS_ZERO {
+            zero.fetch_add(target - now, Ordering::Relaxed);
+        }
+        LATEST.fetch_max(target, Ordering::Relaxed);
+    });
 }
 
 /// Nanoseconds since the HPET was enabled.
