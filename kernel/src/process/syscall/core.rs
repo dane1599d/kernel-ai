@@ -23,6 +23,7 @@ const CALLS: &[u64] = &[
     call::INTERRUPTED,
     call::MODEL_MAP,
     call::THREAD_SPAWN,
+    call::THREAD_PIN,
     call::THREAD_EXIT,
     call::FUTEX_WAIT,
     call::FUTEX_WAKE,
@@ -71,6 +72,15 @@ fn run(slot: usize, number: u64, a: &[u64; 6]) -> Result<u64, Error> {
         call::THREAD_SPAWN => {
             need(slot, cap::THREADS)?;
             crate::process::workers::spawn(slot, a[0], a[1], a[2], a[3])
+        }
+        call::THREAD_PIN => {
+            need(slot, cap::THREADS)?;
+            let cpu = match a[0] {
+                u64::MAX => None,
+                cpu => Some(usize::try_from(cpu).map_err(|_| Error::Invalid)?),
+            };
+            crate::threads::pin_current(cpu).map_err(|_| Error::Invalid)?;
+            Ok(0)
         }
         call::THREAD_EXIT => crate::process::workers::exit_worker(),
         call::FUTEX_WAIT => crate::process::futex::wait(slot, a[0], a[1], a[2]),

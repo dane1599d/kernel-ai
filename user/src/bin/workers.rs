@@ -49,6 +49,7 @@ fn main() -> i32 {
         Some("spawnexit") => basic::spawn_exit(),
         Some("sleep") => basic::sleep(),
         Some("nocap") => basic::nocap(),
+        Some("pin") => basic::pin(),
         Some("burst") => burst::burst(),
         Some("runaway") => burst::runaway(),
         Some("serve") => burst::serve(),

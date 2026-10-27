@@ -41,6 +41,8 @@ static CORES: [Mutex<Option<Core>>; MAX_CPUS] = [const { Mutex::new(None) }; MAX
 static LOAD: [AtomicUsize; MAX_CPUS] = [const { AtomicUsize::new(0) }; MAX_CPUS];
 /// CPU whose core owns each thread.
 static OWNER: [AtomicUsize; MAX_THREADS] = [const { AtomicUsize::new(0) }; MAX_THREADS];
+/// The CPU plus one a blocked thread asked to move to ([`pin_current`]), or 0.
+static MOVE_TO: [AtomicUsize; MAX_THREADS] = [const { AtomicUsize::new(0) }; MAX_THREADS];
 /// True from the moment a thread is switched in until its registers are saved again.
 static ON_CPU: [AtomicBool; MAX_THREADS] = [const { AtomicBool::new(false) }; MAX_THREADS];
 static PINNED: [AtomicBool; MAX_THREADS] = [const { AtomicBool::new(false) }; MAX_THREADS];
@@ -270,6 +272,64 @@ fn transition(change: impl FnOnce(&mut Core, u64) -> Tid) {
         };
         switch(from, to);
     });
+}
+
+/// Pins the calling thread to `cpu` and moves it there, or unpins it with `None`
+/// so load balancing may move it again. A thread moves only once its registers
+/// are saved: it blocks with the move asked for, and the CPU it leaves hands it
+/// to `cpu` right after the switch ([`move_after_switch`]).
+pub fn pin_current(cpu: Option<usize>) -> Result<(), &'static str> {
+    let me = current_tid();
+    let Some(cpu) = cpu else {
+        PINNED[me].store(false, Ordering::Relaxed);
+        return Ok(());
+    };
+    if cpu >= smp::online() {
+        return Err("threads: no such CPU");
+    }
+    PINNED[me].store(true, Ordering::Relaxed);
+    while OWNER[me].load(Ordering::Acquire) != cpu {
+        MOVE_TO[me].store(cpu + 1, Ordering::Release);
+        block_unless(|| false);
+    }
+    Ok(())
+}
+
+/// Right after a switch away from `previous`: if it blocked to move, make it
+/// runnable on the CPU it asked for. Interrupts are off.
+pub(super) fn move_after_switch(previous: Tid) {
+    let target = MOVE_TO[previous].swap(0, Ordering::AcqRel);
+    if target == 0 {
+        return;
+    }
+    let (me, target) = (percpu::index(), target - 1);
+    let now = hpet::nanos();
+    let moved = CORES[me].lock().as_mut().and_then(|core| {
+        if core.state(previous) != sched::State::Blocked {
+            return None;
+        }
+        core.wake(previous, now);
+        let moved = core.detach_runnable(|tid| tid != previous);
+        LOAD[me].store(core.load(), Ordering::Relaxed);
+        moved
+    });
+    let Some((tid, name)) = moved else {
+        return;
+    };
+    OWNER[tid].store(target, Ordering::Release);
+    if let Some(core) = CORES[target].lock().as_mut() {
+        core.adopt(tid, name, EnqueueReason::Woken, now);
+        LOAD[target].store(core.load(), Ordering::Relaxed);
+    }
+    if target == me {
+        return;
+    }
+    smp::send(target, apic::RESCHEDULE_VECTOR);
+}
+
+/// The CPU the thread `tid` belongs to now.
+pub fn owner(tid: Tid) -> usize {
+    OWNER[tid].load(Ordering::Acquire)
 }
 
 /// Lets another runnable thread on this CPU run first.

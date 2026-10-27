@@ -163,4 +163,5 @@ fn finish_switch() {
         PINNED[previous].store(false, Ordering::Relaxed);
         IN_USE[previous].store(false, Ordering::Release);
     }
+    super::move_after_switch(previous);
 }
