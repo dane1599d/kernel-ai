@@ -208,6 +208,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "comp-notes-window"
+version = "0.0.0"
+dependencies = [
+ "comp-notes",
+ "comp-notes-ui",
+ "compsdk",
+ "uikit",
+ "wit-bindgen",
+]
+
+[[package]]
 name = "comp-viewbench"
 version = "0.0.0"
 
