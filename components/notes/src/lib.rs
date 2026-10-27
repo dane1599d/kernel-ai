@@ -11,6 +11,7 @@ pub mod migrate;
 pub mod state;
 #[cfg(test)]
 mod tests;
+pub mod ui;
 
 use alloc::format;
 use alloc::string::{String, ToString};
