@@ -9,7 +9,12 @@
 //! against the `kai:app` version the artifact's WIT world includes. The
 //! packages then go into a TUF repository signed by a fresh test root
 //! ([`tuf`]), written to DIR (default `target/pkgrepo`).
+//!
+//! `cargo xtask pkgrepo serve [--port PORT]` builds the same into
+//! `target/pkgrepo` and serves it as a mirror ([`serve`]; P4 task 2's host
+//! half) until stopped.
 
+mod serve;
 mod tuf;
 
 #[cfg(test)]
@@ -102,21 +107,35 @@ impl Package {
     }
 }
 
+const USAGE: &str = "usage: cargo xtask pkgrepo build [DIR] | serve [--port PORT]";
+
 pub fn main(args: &[String]) -> Result<(), String> {
     let root = crate::workspace_root();
-    let dir = match args {
-        [build] if build == "build" => root.join("target").join("pkgrepo"),
-        [build, dir] if build == "build" => PathBuf::from(dir),
-        _ => return Err("usage: cargo xtask pkgrepo build [DIR]".into()),
-    };
-    let versions = components::build(&root)?;
-    let packages = pack_all(&root, &versions)?;
+    let default = root.join("target").join("pkgrepo");
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    match args.as_slice() {
+        ["build"] => build(&root, &default).map(drop),
+        ["build", dir] => build(&root, Path::new(dir)).map(drop),
+        ["serve"] => serve_on(&root, &default, 0),
+        ["serve", "--port", port] => {
+            let port = port.parse().map_err(|_| format!("{port} is not a port"))?;
+            serve_on(&root, &default, port)
+        }
+        _ => Err(USAGE.into()),
+    }
+}
+
+/// Packs the apps, signs them into a repository with a fresh test root, and
+/// writes it to `dir`.
+fn build(root: &Path, dir: &Path) -> Result<Repository, String> {
+    let versions = components::build(root)?;
+    let packages = pack_all(root, &versions)?;
     let keys = Keys::generate()?;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|e| e.to_string())?;
     let repository = tuf::build(&packages, &keys, Time(now.as_secs()))?;
-    write(&repository, &dir)?;
+    write(&repository, dir)?;
     for package in &packages {
         println!(
             "xtask: {} {} KiB, {} actions",
@@ -130,7 +149,21 @@ pub fn main(args: &[String]) -> Result<(), String> {
         &keys.root.id()[..12],
         dir.display()
     );
-    Ok(())
+    Ok(repository)
+}
+
+/// Builds the repository into `dir` and serves it on `port` until stopped.
+fn serve_on(root: &Path, dir: &Path, port: u16) -> Result<(), String> {
+    let on_range: serve::OnRange = std::sync::Arc::new(|path: &str, start, end| {
+        println!("xtask: mirror: {path} bytes {start}-{}", end - 1);
+    });
+    let port = serve::start(build(root, dir)?, port, on_range)?;
+    println!(
+        "xtask: serving it on 127.0.0.1:{port} (10.0.2.2:{port} from a guest); Ctrl-C stops it"
+    );
+    loop {
+        std::thread::park();
+    }
 }
 
 /// Every app of [`APPS`], packed from `versions`, the boot drive's.
