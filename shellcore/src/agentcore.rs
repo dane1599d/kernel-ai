@@ -327,6 +327,7 @@ impl Shell {
             offer: offer.clone(),
             menu: None,
             pkg: None,
+            standing: None,
         });
         // The highlight starts on Allow only for a call the line plainly asked for.
         let origin = match why {

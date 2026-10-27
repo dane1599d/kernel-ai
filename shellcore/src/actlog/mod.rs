@@ -38,6 +38,8 @@ pub enum Form {
     Tune,
     /// An undo of entry `of`.
     Undo,
+    /// A standing instruction's firing (P3 task 11).
+    Standing,
 }
 
 impl Form {
@@ -48,6 +50,7 @@ impl Form {
             Self::Words => "words",
             Self::Tune => "tune",
             Self::Undo => "undo",
+            Self::Standing => "standing",
         }
     }
 }
