@@ -22,6 +22,10 @@ const PREEMPT_COUNT: u64 = 36;
 const CURRENT: u64 = 56;
 /// RFLAGS.IF.
 const IF: u64 = 1 << 9;
+/// Where the kernel's code is linked, and where its stacks and data live: a
+/// frame whose saved RBP or return address lies elsewhere ends the walk.
+const KERNEL_TEXT: u64 = 0xffff_ffff_8000_0000;
+const KERNEL_HALF: u64 = 0xffff_8000_0000_0000;
 
 /// One vCPU's state, from `info registers -a`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -35,11 +39,18 @@ pub struct Cpu {
     pub gs_base: u64,
 }
 
-/// Prints where each vCPU is. Never fails the run: a dump that cannot be had
-/// says so and the timeout is reported as before.
-pub fn dump(monitor: u16, lines_path: &Path) {
-    let table_bytes = std::fs::read(lines_path).unwrap_or_default();
-    let table = LineTable::parse(&table_bytes).ok();
+/// Prints where each vCPU is, naming addresses from the `kernel.lines` in the
+/// boot drive's `bundle`. Never fails the run: a dump that cannot be had says so
+/// and the timeout is reported as before.
+pub fn dump(monitor: u16, bundle: &Path) {
+    let bundle_bytes = std::fs::read(bundle).unwrap_or_default();
+    let table_bytes = kaibundle::parse(&bundle_bytes)
+        .ok()
+        .and_then(|b| b.get("kernel.lines"));
+    let table = table_bytes.and_then(|bytes| LineTable::parse(bytes).ok());
+    if table.is_none() {
+        println!("xtask: hang dump: no kernel.lines in {}", bundle.display());
+    }
     let name = |addr: u64| -> String {
         let Some(table) = table.as_ref() else {
             return format!("{addr:#x}");
@@ -91,14 +102,15 @@ pub fn dump(monitor: u16, lines_path: &Path) {
         }
         let mut rbp = cpu.rbp;
         for _ in 0..FRAMES {
-            if rbp == 0 || rbp % 8 != 0 {
+            if rbp < KERNEL_HALF || rbp % 8 != 0 {
                 break;
             }
             let frame = words(&monitor.run(&format!("x /2gx {rbp:#x}")));
             let [next, ret] = frame[..] else {
                 break;
             };
-            if ret == 0 {
+            // Not a frame-pointer frame (entry code, or a function without one).
+            if ret < KERNEL_TEXT || ret == u64::MAX {
                 break;
             }
             println!("xtask: hang dump:   from {}", name(ret));
