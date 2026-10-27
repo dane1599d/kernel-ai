@@ -98,6 +98,12 @@ pub(super) const CASES: &[TestCase] = &[
         ..case("pkg-local", "test=pkg-local")
     },
     TestCase {
+        expect: &[
+            "act-convo: a second turn read \"do it again\" and \"the same for\" from memory, still asked, and `new` forgot it",
+        ],
+        ..case("act-convo", "test=act-convo")
+    },
+    TestCase {
         keys: TERMINAL_SCRIPT,
         expect: &[
             crate::mock_llm::REPLY,
