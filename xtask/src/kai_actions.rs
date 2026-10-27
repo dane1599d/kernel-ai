@@ -37,14 +37,19 @@ pub fn write(dirs: &[PathBuf], world: &str) -> Result<String, String> {
         .worlds
         .get(world_name)
         .ok_or_else(|| format!("{package} has no world {world_name}"))?;
-    let app = &resolve.packages[package_id].name;
     let mut out = format!("kai-actions 1\nworld {world}\n");
     for item in resolve.worlds[world_id].exports.values() {
         let WorldItem::Interface { id, .. } = item else {
             continue;
         };
         let iface = &resolve.interfaces[*id];
-        if iface.package != Some(package_id) {
+        // The app's own actions, which may come from another app package (as
+        // `notes-window` exports `app:notes/actions`); never the system's.
+        let Some(owner) = iface.package else {
+            continue;
+        };
+        let app = &resolve.packages[owner].name;
+        if app.namespace == "kai" {
             continue;
         }
         let iface_name = iface

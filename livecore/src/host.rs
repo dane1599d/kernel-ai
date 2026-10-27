@@ -558,6 +558,21 @@ impl<E: Env> Host<E> {
         Ok(())
     }
 
+    /// Runs `f` on each loaded instance with its version's label and whether
+    /// its windows are the ones shown: the serving version, or in probation the
+    /// candidate (the standby's are drained, never shown).
+    pub fn each_instance(&mut self, mut f: impl FnMut(&mut E::Instance, &str, bool)) {
+        match &mut self.mode {
+            Mode::Serving(v) => f(&mut v.instance, &v.label, true),
+            Mode::Probation(p) => {
+                f(&mut p.standby.instance, &p.standby.label, false);
+                f(&mut p.candidate.instance, &p.candidate.label, true);
+            }
+            Mode::Disabled { version, .. } => f(&mut version.instance, &version.label, false),
+            Mode::Moving => {}
+        }
+    }
+
     /// How long to wait for a request before [`Host::tick`]; 0 is forever.
     pub fn timeout_ms(&self) -> u64 {
         match self.mode {

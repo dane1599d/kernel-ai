@@ -6,3 +6,12 @@ world window-only {
     import kai:ui/view@0.1.0;
     export kai:ui/input@0.1.0;
 }
+
+/// The app, as its manifest names it: a live component with Notes' actions and
+/// its window.
+world notes-window {
+    include kai:app/component@0.1.0;
+    import kai:ui/view@0.1.0;
+    export kai:ui/input@0.1.0;
+    export app:notes/actions@1.0.0;
+}

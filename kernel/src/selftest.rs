@@ -121,6 +121,8 @@ pub enum SelfTest {
     DeskBoot,
     /// The AI panel takes focus and queues a typed line (P3 task 7).
     DeskPanel,
+    /// An app's kai:ui window on the desktop, closed from its control (P3 task 9).
+    UiWindow,
     /// `scriptrun` through a Job, and spike S01-1's M3 and M5 (P1 task 14).
     Scriptrun,
     /// L2: processes keep their vector state across switches and CPUs, and start clean.
@@ -256,6 +258,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=app-suspend" => Some(SelfTest::AppSuspend),
             "test=desk-boot" => Some(SelfTest::DeskBoot),
             "test=desk-panel" => Some(SelfTest::DeskPanel),
+            "test=ui-window" => Some(SelfTest::UiWindow),
             "test=scriptrun" => Some(SelfTest::Scriptrun),
             "test=fpu" => Some(SelfTest::Fpu),
             "test=probe" => Some(SelfTest::Probe),
@@ -327,6 +330,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::FilesChurn { .. }
             | SelfTest::DeskBoot
             | SelfTest::DeskPanel
+            | SelfTest::UiWindow
             | SelfTest::TuneRevert
             | SelfTest::TuneStall
             | SelfTest::Tune
@@ -447,6 +451,9 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
     if matches!(test, SelfTest::DeskBoot | SelfTest::DeskPanel) {
         plan.push('\n');
         plan.push_str(crate::desk_tests::BOOT_PLAN);
+    if test == SelfTest::UiWindow {
+        plan.push('\n');
+        plan.push_str(crate::ui_tests::PLAN);
     }
     if test == SelfTest::None {
         plan.push('\n');
