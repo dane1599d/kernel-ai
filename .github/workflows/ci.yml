@@ -47,7 +47,7 @@ jobs:
       - name: Clippy for the engine crates on the soft-float kernel target
         run: cargo clippy -p gguf -p cpufeat -p quant -p bpe -p infer --target x86_64-unknown-none -- -D warnings
       - name: Clippy for the soft-float ring-3 programs
-        run: cargo clippy -p user --target x86_64-unknown-none --lib --bin supervisor --bin shell --bin crasher --bin spinner --bin hog --bin edit --bin work --bin netcheck --bin handles --bin scriptrun --bin fs --bin filecheck --bin desktop --bin deskdemo -- -D warnings
+        run: cargo clippy -p user --target x86_64-unknown-none --lib --bin supervisor --bin shell --bin crasher --bin spinner --bin hog --bin edit --bin work --bin netcheck --bin handles --bin scriptrun --bin fs --bin filecheck --bin updated --bin desktop --bin deskdemo -- -D warnings
       - name: Clippy for the hard-float ring-3 programs
         run: |
           # appbench embeds the view guest.

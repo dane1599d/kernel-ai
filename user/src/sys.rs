@@ -927,6 +927,67 @@ pub fn part_flush(handle: Handle) -> Result<u64, Error> {
     call(call::PART_FLUSH, [u64::from(handle.0), 0, 0, 0, 0, 0])
 }
 
+/// Slot `slot`'s partition, through an `Update` handle (ADR 0008 §10).
+pub fn slot_info(handle: Handle, slot: u64) -> Result<kabi::update::SlotInfo, Error> {
+    let mut info = kabi::update::SlotInfo::default();
+    let out = &mut info as *mut kabi::update::SlotInfo as u64;
+    call(call::SLOT_INFO, [u64::from(handle.0), slot, out, 0, 0, 0])?;
+    Ok(info)
+}
+
+/// Reads `buf.len()` bytes, whole sectors, from sector `sector` of slot `slot`.
+pub fn slot_read(handle: Handle, slot: u64, sector: u64, buf: &mut [u8]) -> Result<u64, Error> {
+    let (ptr, len) = (buf.as_mut_ptr() as u64, buf.len() as u64);
+    call(
+        call::SLOT_READ,
+        [u64::from(handle.0), slot, sector, ptr, len, 0],
+    )
+}
+
+/// Writes `bytes`, whole sectors, at sector `sector` of slot `slot`; durable
+/// only after [`slot_flush`].
+pub fn slot_write(handle: Handle, slot: u64, sector: u64, bytes: &[u8]) -> Result<u64, Error> {
+    let (ptr, len) = (bytes.as_ptr() as u64, bytes.len() as u64);
+    call(
+        call::SLOT_WRITE,
+        [u64::from(handle.0), slot, sector, ptr, len, 0],
+    )
+}
+
+/// Makes every write to slot `slot` so far durable.
+pub fn slot_flush(handle: Handle, slot: u64) -> Result<u64, Error> {
+    call(call::SLOT_FLUSH, [u64::from(handle.0), slot, 0, 0, 0, 0])
+}
+
+/// `KaiBootState` as the firmware holds it.
+pub fn bootrec_get(handle: Handle) -> Result<[u8; 64], Error> {
+    let mut record = [0u8; 64];
+    call(
+        call::BOOTREC_GET,
+        [u64::from(handle.0), record.as_mut_ptr() as u64, 0, 0, 0, 0],
+    )?;
+    Ok(record)
+}
+
+/// Writes `record` and Limine's one-shot (`kabi::update::NONE` deletes it), and
+/// with `restart` resets into it.
+pub fn bootrec_set(
+    handle: Handle,
+    record: &[u8; 64],
+    one_shot: u64,
+    restart: bool,
+) -> Result<u64, Error> {
+    let args = [
+        u64::from(handle.0),
+        record.as_ptr() as u64,
+        one_shot,
+        u64::from(restart),
+        0,
+        0,
+    ];
+    call(call::BOOTREC_SET, args)
+}
+
 /// A `Dir` or `File` handle on this process's own endpoint, with `badge` and
 /// `rights`, for the `fs` service to hand on (P2 task 8).
 pub fn endpoint_mint(

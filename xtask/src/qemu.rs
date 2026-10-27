@@ -143,7 +143,7 @@ pub fn boot_from_image(args: &mut [String], esp: &Path, target_dir: &Path) -> Re
 /// The slot cases: builds the R/A/B disk of `esp` (ADR 0008) as
 /// `target/slots.img` and boots from it in place of the directory ESP.
 pub fn boot_from_slots(
-    args: &mut [String],
+    args: &mut Vec<String>,
     esp: &Path,
     target_dir: &Path,
     cmdline: &str,
@@ -151,11 +151,20 @@ pub fn boot_from_slots(
 ) -> Result<(), String> {
     let bytes = crate::image::slots::build(esp, &target_dir.join(SLOTS_IMAGE), cmdline, record)?;
     println!("xtask: slot disk {SLOTS_IMAGE}, {} MiB", bytes >> 20);
-    let drive = args
-        .iter_mut()
-        .find(|arg| *arg == ESP_DRIVE)
+    // On virtio-blk, so the kernel reaches the slots (`updated`'s SLOT_* calls)
+    // as an installed system reaches its one disk.
+    let at = args
+        .iter()
+        .position(|arg| arg == ESP_DRIVE)
         .ok_or("no directory ESP drive to replace")?;
-    *drive = format!("format=raw,file={SLOTS_IMAGE}");
+    args[at] = format!("if=none,id=slots,format=raw,file={SLOTS_IMAGE}");
+    args.splice(
+        at + 1..at + 1,
+        [
+            "-device".to_string(),
+            "virtio-blk-pci,drive=slots,serial=kai-boot,bootindex=0".to_string(),
+        ],
+    );
     Ok(())
 }
 

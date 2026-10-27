@@ -120,16 +120,52 @@ const A_COMMITS: TestCase = TestCase {
     )
 };
 
-pub(super) const CASES: &[TestCase] = &[TestCase {
-    then: Some(&A_COMMITS),
+/// The first boot of a fresh slot disk: R installs and arms A.
+const INSTALL: &[&str] = &[
+    "slots: booted recovery (record missing)",
+    "slots: in R with no record: installed release 1 in kai-a and kai-b as trials",
+    "slots: R arms kai-a (trial)",
+    "slots: next boot kai-a",
+];
+
+/// `update-stage` boot 3: B, written by `updated`, boots as its trial.
+const B_UP: TestCase = boot(
+    "update-stage (3: kai-b boots its trial)",
+    "test=slot panic=reset",
+    &[
+        "slots: booted kai-b (record read)",
+        "slots: up in kai-b (trial, 2 tries left)",
+        "slots: next boot kai-b",
+    ],
+);
+/// `update-stage` boot 2: `updated` in A checks the Update calls, writes B and
+/// restarts into it.
+const A_UPDATES: TestCase = TestCase {
+    then: Some(&B_UP),
     ..boot(
-        "slot-ab",
-        "test=slot panic=reset",
+        "update-stage (2: updated stages kai-b)",
+        "test=update panic=reset",
         &[
-            "slots: booted recovery (record missing)",
-            "slots: in R with no record: installed release 1 in kai-a and kai-b as trials",
-            "slots: R arms kai-a (trial)",
-            "slots: next boot kai-a",
+            "slots: up in kai-a (trial, 2 tries left)",
+            "updated: slots R ",
+            "this boot runs in A",
+            "updated: SLOT_WRITE refuses the active slot, and R from a trial slot",
+            "updated: BOOTREC_SET refuses a bad record and arming a slot being written",
+            "updated: staged B as release 2: ",
+            "update: restarting into kai-b",
         ],
     )
-}];
+};
+
+pub(super) const CASES: &[TestCase] = &[
+    TestCase {
+        then: Some(&A_COMMITS),
+        ..boot("slot-ab", "test=slot panic=reset", INSTALL)
+    },
+    // The Update kind (ADR 0008 §10): `updated` alone reaches the slots and the
+    // boot record, and stages the slot that is not running.
+    TestCase {
+        then: Some(&A_UPDATES),
+        ..boot("update-stage", "test=slot panic=reset", INSTALL)
+    },
+];

@@ -40,6 +40,9 @@ pub const STOPPER: &str = "shell";
 /// The service, running the program of the same name, that may hold the screen
 /// and read the input queue (ADR 0005 §2).
 pub const DESKTOP: &str = "desktop";
+/// The service, running the program of the same name, that may hold the slots
+/// and the boot record (ADR 0008 §10).
+pub const UPDATED: &str = "updated";
 /// The one service that may hold `cap::SCRIPT`.
 pub const SCRIPTER: &str = "shell";
 /// The one service, and program, that may hold `cap::PUBLISH`.
@@ -325,6 +328,10 @@ pub fn spawn_service(slot: usize, request_ptr: u64) -> Result<u64, Error> {
     if request.limits.caps & (cap::DISPLAY | cap::INPUT) != 0
         && (name != DESKTOP || program != DESKTOP)
     {
+        return Err(Error::Permission);
+    }
+    // The slots and the boot record are `updated`'s alone (ADR 0008 §10).
+    if request.limits.caps & cap::UPDATE != 0 && (name != UPDATED || program != UPDATED) {
         return Err(Error::Permission);
     }
     // The model is mapped, and worker threads run, only in the llm service.
