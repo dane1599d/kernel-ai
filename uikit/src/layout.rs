@@ -11,8 +11,25 @@ use alloc::vec::Vec;
 
 /// Text measurement: `gfx2d` provides the real one; tests use [`FixedAdvance`].
 pub trait Measure {
-    /// The width of one line of `text` in logical px.
-    fn advance(&self, style: TypeStyle, text: &str) -> i32;
+    /// One line of `text`: its advance and its line height, in logical px. Pens
+    /// are fractional; the scale and the legible setting are applied inside.
+    fn measure(&self, style: TypeStyle, text: &str) -> (f32, f32);
+
+    /// The advance, rounded up to whole logical px for layout.
+    fn advance(&self, style: TypeStyle, text: &str) -> i32 {
+        ceil(self.measure(style, text).0)
+    }
+
+    /// The line height, rounded up to whole logical px for layout.
+    fn line(&self, style: TypeStyle) -> i32 {
+        ceil(self.measure(style, "").1)
+    }
+}
+
+/// `f32::ceil` without `std` or `libm`, for the sizes text has.
+fn ceil(x: f32) -> i32 {
+    let i = x as i32;
+    if (i as f32) < x { i + 1 } else { i }
 }
 
 /// Every character three fifths of the style's size wide: a stand-in until
@@ -26,8 +43,9 @@ impl FixedAdvance {
 }
 
 impl Measure for FixedAdvance {
-    fn advance(&self, style: TypeStyle, text: &str) -> i32 {
-        Self::char_w(style) * text.chars().count() as i32
+    fn measure(&self, style: TypeStyle, text: &str) -> (f32, f32) {
+        let w = Self::char_w(style) * text.chars().count() as i32;
+        (w as f32, style.line() as f32)
     }
 }
 
@@ -54,11 +72,11 @@ pub struct Placed {
 pub type Places = BTreeMap<NodeId, Placed>;
 
 /// The space between a field's label and its box, if it has a label.
-pub fn field_label_h(f: &TextField) -> i32 {
+pub fn field_label_h(m: &dyn Measure, f: &TextField) -> i32 {
     if f.label.is_empty() {
         0
     } else {
-        TypeStyle::Small.line() + metric::LABEL_GAP
+        m.line(TypeStyle::Small) + metric::LABEL_GAP
     }
 }
 
@@ -140,7 +158,7 @@ fn natural_of(
         Widget::Stack { axis } => along(*axis, 0),
         Widget::Label { text, style, .. } => (
             widest(m, *style, text),
-            style.line() * text.split('\n').count() as i32,
+            m.line(*style) * text.split('\n').count() as i32,
         ),
         Widget::Button { text, .. } => (
             m.advance(TypeStyle::Label, text) + 2 * CONTROL_PAD,
@@ -153,12 +171,12 @@ fn natural_of(
                 &f.value
             };
             let w = (m.advance(TypeStyle::Body, text) + 2 * CONTROL_PAD).max(160);
-            (w, CONTROL_H + field_label_h(f))
+            (w, CONTROL_H + field_label_h(m, f))
         }
         Widget::TextArea(f) => {
             let w = (widest(m, TypeStyle::Body, &f.value) + 2 * CONTROL_PAD).max(240);
-            let h = area_lines(f) * TypeStyle::Body.line() + 2 * AREA_PAD;
-            (w, h + field_label_h(f))
+            let h = area_lines(f) * m.line(TypeStyle::Body) + 2 * AREA_PAD;
+            (w, h + field_label_h(m, f))
         }
         Widget::ItemList { .. } => {
             let w = kids.iter().map(|k| k.0).max().unwrap_or(0) + 2 * CONTROL_PAD;

@@ -1,8 +1,9 @@
 //! The look's names and the widgets' sizes (ADR 0005 section 8).
 //!
-//! `Token` and `TypeStyle` are names only, as `look` will define them; colour
-//! values never appear outside `look`. When `look` lands these become re-exports
-//! and nothing else here changes.
+//! `Token` and `TypeStyle` are names only, as `look` defines them; colour values
+//! never appear outside `look`. `Token` is the twelve an app's widgets may use:
+//! `ai` and `ask` belong to `desktop` (ADR 0005 sections 4 and 7), so uikit cannot
+//! name them. When `look` lands these map onto its tokens and nothing else changes.
 
 /// A colour token, by job.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -15,8 +16,6 @@ pub enum Token {
     Text,
     Muted,
     Dim,
-    Ai,
-    Ask,
     Error,
     Ok,
     Accent,
@@ -34,8 +33,6 @@ impl Token {
             Self::Text => "text",
             Self::Muted => "muted",
             Self::Dim => "dim",
-            Self::Ai => "ai",
-            Self::Ask => "ask",
             Self::Error => "error",
             Self::Ok => "ok",
             Self::Accent => "accent",
@@ -80,7 +77,8 @@ impl TypeStyle {
         }
     }
 
-    /// Line height in logical px, from the same table.
+    /// Line height in logical px, from the same table: what [`crate::layout::Measure`]
+    /// returns unless the font says otherwise.
     pub const fn line(self) -> i32 {
         match self {
             Self::Small | Self::MonoTitle => 16,

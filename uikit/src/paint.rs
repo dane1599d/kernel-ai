@@ -13,8 +13,8 @@ use alloc::vec::Vec;
 pub use crate::list::{DisplayList, Group, Op};
 
 /// A field's input box inside its node's rectangle, below its label.
-pub fn field_box(f: &TextField, r: Rect, area: bool) -> Rect {
-    let top = field_label_h(f);
+pub fn field_box(m: &dyn Measure, f: &TextField, r: Rect, area: bool) -> Rect {
+    let top = field_label_h(m, f);
     let h = if area {
         r.h - top
     } else {
@@ -29,10 +29,10 @@ pub fn menu_item(r: Rect, i: usize) -> Rect {
 }
 
 /// Text centred vertically in `r`, `PAD` from its left.
-fn text_in(r: Rect, style: TypeStyle, token: Token, text: &str) -> Op {
+fn text_in(m: &dyn Measure, r: Rect, style: TypeStyle, token: Token, text: &str) -> Op {
     Op::Text {
         x: r.x + CONTROL_PAD,
-        y: r.y + (r.h - style.line()) / 2,
+        y: r.y + (r.h - m.line(style)) / 2,
         style,
         token,
         text: String::from(text),
@@ -75,7 +75,7 @@ fn caret(m: &dyn Measure, x: i32, y: i32, line: &str, at: usize) -> Op {
         .unwrap_or(0);
     let dx = m.advance(TypeStyle::Body, &line[..at]);
     fill(
-        Rect::new(x + dx, y + 2, 1, TypeStyle::Body.line() - 4),
+        Rect::new(x + dx, y + 2, 1, m.line(TypeStyle::Body) - 4),
         Token::Text,
         0,
     )
@@ -102,7 +102,7 @@ fn ops_of(
             for (i, line) in text.split('\n').enumerate() {
                 ops.push(text_at(
                     r.x,
-                    r.y + i as i32 * style.line(),
+                    r.y + i as i32 * m.line(*style),
                     *style,
                     tone.token(),
                     line,
@@ -120,7 +120,7 @@ fn ops_of(
             let x = r.x + (r.w - m.advance(TypeStyle::Label, text)) / 2;
             ops.push(text_at(
                 x,
-                r.y + (r.h - TypeStyle::Label.line()) / 2,
+                r.y + (r.h - m.line(TypeStyle::Label)) / 2,
                 TypeStyle::Label,
                 Token::Text,
                 text,
@@ -131,7 +131,7 @@ fn ops_of(
             if !f.label.is_empty() {
                 ops.push(text_at(r.x, r.y, TypeStyle::Small, Token::Muted, &f.label));
             }
-            let b = field_box(f, r, area);
+            let b = field_box(m, f, r, area);
             ops.push(fill(b, Token::Desk, RADIUS));
             ops.push(frame(b, Token::LineStrong));
             ops.push(Op::PushClip(b.inset(1)));
@@ -139,7 +139,7 @@ fn ops_of(
             let y0 = if area {
                 b.y + AREA_PAD
             } else {
-                b.y + (b.h - TypeStyle::Body.line()) / 2
+                b.y + (b.h - m.line(TypeStyle::Body)) / 2
             };
             if f.value.is_empty() {
                 ops.push(text_at(x, y0, TypeStyle::Body, Token::Dim, &f.placeholder));
@@ -147,7 +147,7 @@ fn ops_of(
             let at = st.caret.get(&id).copied().unwrap_or(f.value.len());
             let mut start = 0;
             for (i, line) in f.value.split('\n').enumerate() {
-                let y = y0 + i as i32 * TypeStyle::Body.line();
+                let y = y0 + i as i32 * m.line(TypeStyle::Body);
                 if !line.is_empty() {
                     ops.push(text_at(x, y, TypeStyle::Body, Token::Text, line));
                 }
@@ -193,6 +193,7 @@ fn ops_of(
             for (i, w) in widths.iter().enumerate() {
                 if let Some(c) = columns.get(i) {
                     ops.push(text_in(
+                        m,
                         Rect::new(x, inner.y, *w, ROW_H),
                         TypeStyle::Label,
                         Token::Muted,
@@ -202,7 +203,7 @@ fn ops_of(
                 for (j, row) in rows.iter().enumerate() {
                     if let Some(c) = row.get(i) {
                         let cell = Rect::new(x, inner.y + (j as i32 + 1) * ROW_H, *w, ROW_H);
-                        ops.push(text_in(cell, TypeStyle::Body, Token::Text, c));
+                        ops.push(text_in(m, cell, TypeStyle::Body, Token::Text, c));
                     }
                 }
                 x += w;
@@ -221,7 +222,7 @@ fn ops_of(
                 let token = if on { Token::Text } else { Token::Muted };
                 ops.push(Op::Text {
                     x: x + TAB_PAD,
-                    y: r.y + (TAB_H - TypeStyle::Label.line()) / 2,
+                    y: r.y + (TAB_H - m.line(TypeStyle::Label)) / 2,
                     style: TypeStyle::Label,
                     token,
                     text: l.clone(),
@@ -262,7 +263,7 @@ fn ops_of(
                 Token::Text,
                 KNOB / 2,
             ));
-            let ly = r.y + (r.h - TypeStyle::Body.line()) / 2;
+            let ly = r.y + (r.h - m.line(TypeStyle::Body)) / 2;
             ops.push(text_at(
                 track.right() + INLINE_GAP,
                 ly,
@@ -299,7 +300,7 @@ fn ops_of(
             ));
             let knob = Rect::new(track.x + dx - KNOB / 2, r.y + (r.h - KNOB) / 2, KNOB, KNOB);
             ops.push(fill(knob, Token::Text, KNOB / 2));
-            let ly = r.y + (r.h - TypeStyle::Body.line()) / 2;
+            let ly = r.y + (r.h - m.line(TypeStyle::Body)) / 2;
             ops.push(text_at(
                 r.x + SLIDER_W + INLINE_GAP,
                 ly,
@@ -316,7 +317,7 @@ fn ops_of(
                 RADIUS,
             ));
             ops.push(frame(r, Token::LineStrong));
-            ops.push(text_in(r, TypeStyle::Label, Token::Text, label));
+            ops.push(text_in(m, r, TypeStyle::Label, Token::Text, label));
             let icon = Rect::new(r.right() - CONTROL_PAD - 16, r.y + (r.h - 16) / 2, 16, 16);
             ops.push(Op::Icon {
                 rect: icon,
@@ -374,7 +375,7 @@ fn ops_of(
                     PROGRESS_H / 2,
                 ));
             }
-            let ly = r.y + (r.h - TypeStyle::Body.line()) / 2;
+            let ly = r.y + (r.h - m.line(TypeStyle::Body)) / 2;
             ops.push(text_at(
                 track.right() + INLINE_GAP,
                 ly,
@@ -385,7 +386,7 @@ fn ops_of(
         }
     }
     if focused && st.window_focused {
-        let ring = focus_rect(&node.widget, r);
+        let ring = focus_rect(m, &node.widget, r);
         let d = FOCUS_GAP + FOCUS_W;
         ops.push(Op::Stroke {
             rect: ring.outset(d),
@@ -398,10 +399,10 @@ fn ops_of(
 }
 
 /// What the focus ring goes around.
-fn focus_rect(w: &Widget, r: Rect) -> Rect {
+fn focus_rect(m: &dyn Measure, w: &Widget, r: Rect) -> Rect {
     match w {
-        Widget::TextLine(f) => field_box(f, r, false),
-        Widget::TextArea(f) => field_box(f, r, true),
+        Widget::TextLine(f) => field_box(m, f, r, false),
+        Widget::TextArea(f) => field_box(m, f, r, true),
         Widget::Tabs { .. } => Rect::new(r.x, r.y, r.w, TAB_H),
         _ => r,
     }
@@ -462,7 +463,7 @@ pub fn paint(tree: &Tree, places: &Places, st: &State, m: &dyn Measure) -> Displ
             if st.menu_hover == Some(i) {
                 ops.push(fill(r, Token::Line, 0));
             }
-            ops.push(text_in(r, TypeStyle::Label, Token::Text, item));
+            ops.push(text_in(m, r, TypeStyle::Label, Token::Text, item));
         }
         let bounds = bounds_of(&ops).intersect(&window);
         groups.push(Group {

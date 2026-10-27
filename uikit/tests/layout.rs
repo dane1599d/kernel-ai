@@ -152,3 +152,20 @@ fn a_deep_tree_lays_out_without_recursion() {
     let p = layout(&t, &FixedAdvance, (100, 100), &BTreeMap::new());
     assert_eq!(p.len(), 4000);
 }
+
+/// gfx2d's pens are fractional: layout rounds advances and lines up.
+struct Quarter;
+
+impl uikit::layout::Measure for Quarter {
+    fn measure(&self, _: TypeStyle, text: &str) -> (f32, f32) {
+        (text.len() as f32 * 7.25, 20.5)
+    }
+}
+
+#[test]
+fn fractional_measures_round_up_at_layout() {
+    let mut t = Tree::new();
+    t.put(1, ROOT, Layout::FIT, label("abcd")).unwrap();
+    let p = layout(&t, &Quarter, (200, 100), &BTreeMap::new());
+    assert_eq!(p[&1].rect, Rect::new(0, 0, 29, 21));
+}

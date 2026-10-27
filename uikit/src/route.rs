@@ -254,10 +254,10 @@ impl Window {
                     self.tree.get(t).map(|n| &n.widget),
                     Some(Widget::TextArea(_))
                 );
-                let b = field_box(&f, r, area);
+                let b = field_box(m, &f, r, area);
                 let x = at.x - b.x - metric::CONTROL_PAD;
                 let line_no = if area {
-                    ((at.y - b.y - metric::AREA_PAD) / TypeStyle::Body.line()).max(0) as usize
+                    ((at.y - b.y - metric::AREA_PAD) / m.line(TypeStyle::Body)).max(0) as usize
                 } else {
                     0
                 };
