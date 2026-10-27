@@ -5,8 +5,8 @@
 //! first file is `kai-package`, the header ([`crate::header`]).
 //!
 //! The reader is livecore's `source_files` (livecore/src/artifact.rs) with the
-//! package limits; livecore keeps its own copy for `kai-source 1` until lane C
-//! moves it here.
+//! package limits. [`files_with`] is the grammar alone, for livecore's
+//! `kai-source 1` with its own magic and limits.
 
 use alloc::vec::Vec;
 
@@ -41,16 +41,33 @@ pub fn valid_path(path: &str) -> Result<(), &'static str> {
 /// The files of a `kai-pkg 1` package, in order. Each path is plain and appears
 /// once, and the first is [`HEADER`].
 pub fn files(package: &[u8]) -> Result<Vec<(&str, &[u8])>, &'static str> {
-    if package.len() > MAX_BYTES {
-        return Err("a package is over 64 MiB");
+    let files = files_with(package, MAGIC, MAX_FILES, MAX_BYTES)?;
+    match files.first() {
+        Some((HEADER, _)) => Ok(files),
+        _ => Err("a package's first file is not kai-package"),
     }
-    let mut rest = package
-        .strip_prefix(MAGIC)
-        .ok_or("not a kai-pkg 1 package")?;
+}
+
+/// The files of any bundle in this grammar: the `magic` line, then files, at
+/// most `max_files` of them in at most `max_bytes` in all. Each path is plain
+/// and appears once. A length is plain digits: no sign, no leading zero.
+/// livecore's `kai-source 1` reader calls it with its own magic and limits.
+pub fn files_with<'a>(
+    bundle: &'a [u8],
+    magic: &[u8],
+    max_files: usize,
+    max_bytes: usize,
+) -> Result<Vec<(&'a str, &'a [u8])>, &'static str> {
+    if bundle.len() > max_bytes {
+        return Err("a bundle is over its size limit");
+    }
+    let mut rest = bundle
+        .strip_prefix(magic)
+        .ok_or("a bundle has the wrong magic line")?;
     let mut files: Vec<(&str, &[u8])> = Vec::new();
     while !rest.is_empty() {
-        if files.len() == MAX_FILES {
-            return Err("a package has too many files");
+        if files.len() == max_files {
+            return Err("a bundle has too many files");
         }
         let newline = rest
             .iter()
@@ -68,19 +85,16 @@ pub fn files(package: &[u8]) -> Result<Vec<(&str, &[u8])>, &'static str> {
         let len: usize = len.parse().map_err(|_| "a file length is not a number")?;
         let body = &rest[newline + 1..];
         if len > body.len() {
-            return Err("a file runs past the package");
+            return Err("a file runs past the bundle");
         }
         valid_path(path)?;
         if files.iter().any(|(p, _)| *p == path) {
-            return Err("a file appears twice in the package");
+            return Err("a file appears twice in the bundle");
         }
         files.push((path, &body[..len]));
         rest = &body[len..];
     }
-    match files.first() {
-        Some((HEADER, _)) => Ok(files),
-        _ => Err("a package's first file is not kai-package"),
-    }
+    Ok(files)
 }
 
 /// A package file of `files`, in order (for tests and xtask's repository tools).
@@ -134,12 +148,28 @@ mod tests {
     }
 
     #[test]
+    fn other_bundles_take_their_own_magic_and_limits() {
+        const SOURCE: &[u8] = b"kai-source 1\n";
+        let source = b"kai-source 1\nfile src/lib.rs 2\nhifile Cargo.toml 0\n";
+        let got = files_with(source, SOURCE, 2, 1 << 10).unwrap();
+        assert_eq!(
+            got,
+            vec![("src/lib.rs", &b"hi"[..]), ("Cargo.toml", &b""[..])]
+        );
+        assert!(files_with(source, SOURCE, 1, 1 << 10).is_err());
+        assert!(files_with(source, SOURCE, 2, 8).is_err());
+        assert!(files_with(source, MAGIC, 2, 1 << 10).is_err());
+        // No first-file rule outside kai-pkg 1, and no files at all is a bundle.
+        assert_eq!(files_with(SOURCE, SOURCE, 2, 64), Ok(vec![]));
+    }
+
+    #[test]
     fn the_file_limit_holds() {
         let names: Vec<alloc::string::String> =
             (0..MAX_FILES).map(|i| alloc::format!("f{i}")).collect();
         let mut list: Vec<(&str, &[u8])> = vec![(HEADER, b"")];
         list.extend(names.iter().map(|n| (n.as_str(), &b""[..])));
-        assert_eq!(files(&build(&list)), Err("a package has too many files"));
+        assert_eq!(files(&build(&list)), Err("a bundle has too many files"));
         list.pop();
         assert_eq!(files(&build(&list)).unwrap().len(), MAX_FILES);
     }
