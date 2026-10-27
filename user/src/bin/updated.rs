@@ -33,6 +33,9 @@ user::entry!(main);
 
 /// The release the check stages.
 const STAGED_RELEASE: u32 = 2;
+/// Sectors between short sleeps while copying: the disk calls do not block, and
+/// a process that runs 5 s without blocking is killed as a runaway.
+const YIELD_EVERY: u64 = 2 * 1024 * 1024 / SECTOR;
 
 fn main() -> i32 {
     let mut args = [0u8; 128];
@@ -154,6 +157,7 @@ fn copy(handle: Handle, from: u64, to: u64, sectors: u64) -> Result<(), String> 
             .map_err(|e| format!("SLOT_READ: {e:?}"))?;
         sys::slot_write(handle, to, at, &buf[..bytes]).map_err(|e| format!("SLOT_WRITE: {e:?}"))?;
         at += n;
+        pause(at);
     }
     sys::slot_flush(handle, to).map_err(|e| format!("SLOT_FLUSH: {e:?}"))?;
     let mut at = 0;
@@ -168,6 +172,14 @@ fn copy(handle: Handle, from: u64, to: u64, sectors: u64) -> Result<(), String> 
             return Err(format!("slot {to} reads back differently at sector {at}"));
         }
         at += n;
+        pause(at);
     }
     Ok(())
+}
+
+/// Blocks for a moment every [`YIELD_EVERY`] sectors.
+fn pause(at: u64) {
+    if at.is_multiple_of(YIELD_EVERY) {
+        sys::sleep_ms(1);
+    }
 }
