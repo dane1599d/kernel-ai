@@ -1398,6 +1398,17 @@ name = "uikit"
 version = "0.0.0"
 
 [[package]]
+name = "uipaint"
+version = "0.0.0"
+dependencies = [
+ "gfx2d",
+ "libm",
+ "look",
+ "sha2",
+ "uikit",
+]
+
+[[package]]
 name = "unicode-ident"
 version = "1.0.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
