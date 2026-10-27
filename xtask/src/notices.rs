@@ -4,12 +4,13 @@
 //!    and the ring-3 programs for `x86_64-unknown-none`, and the components for
 //!    `wasm32-unknown-unknown`, normal dependencies only, no proc-macros;
 //! 2. the hand list `xtask/notices.json`: parts no Cargo.lock entry covers, with
-//!    their texts from `LICENSES/` or, for Limine, verbatim from its pinned tarball;
-//! 3. a last line with the SHA-256 of `Cargo.lock`.
+//!    their texts from `LICENSES/` or, for Limine, verbatim from its pinned tarball.
 //!
-//! `--check` fails when the committed file is stale; CI runs it, so only CI and
-//! whoever changes dependencies need cargo-about. `make_esp` copies the file to
-//! the boot drive with [`image_line`] on top.
+//! The file names no hash of `Cargo.lock`, so it changes only when a shipped crate,
+//! its version or a licence does; a PR that adds a crate of our own leaves it alone.
+//! `--check` regenerates it and fails when the committed file differs; CI runs it,
+//! so only CI and whoever changes dependencies need cargo-about. `make_esp`
+//! copies the file to the boot drive with [`image_line`] on top.
 
 use crate::licences;
 use std::collections::{BTreeMap, BTreeSet};
@@ -40,19 +41,13 @@ pub fn main(args: &[String]) -> Result<(), String> {
             Ok(())
         }
         [flag] if flag == "--check" => {
-            let committed = fs::read_to_string(&path)
-                .unwrap_or_default()
-                .replace("\r\n", "\n");
-            if committed != text {
+            let committed = fs::read_to_string(&path).unwrap_or_default();
+            if let Some(lines) = stale(&committed, &text) {
                 // The first lines that differ, so a stale file can be fixed from
                 // CI's log alone.
-                let pairs = committed.lines().zip(text.lines()).enumerate();
-                for (at, (old, new)) in pairs.filter(|(_, (o, n))| o != n).take(8) {
-                    println!("xtask: {FILE}:{}: committed: {old}", at + 1);
-                    println!("xtask: {FILE}:{}: generated: {new}", at + 1);
+                for line in lines {
+                    println!("xtask: {line}");
                 }
-                let (old, new) = (committed.lines().count(), text.lines().count());
-                println!("xtask: {FILE}: {old} lines committed, {new} generated");
                 return Err(format!(
                     "{FILE} is stale: run `cargo xtask notices` and commit it"
                 ));
@@ -62,6 +57,29 @@ pub fn main(args: &[String]) -> Result<(), String> {
         }
         _ => Err("usage: cargo xtask notices [--check]".into()),
     }
+}
+
+/// `None` when the committed notices match the generated ones, line endings
+/// aside; else the first lines that differ and both line counts, for the log.
+fn stale(committed: &str, generated: &str) -> Option<Vec<String>> {
+    let committed = committed.replace("\r\n", "\n");
+    if committed == generated {
+        return None;
+    }
+    let pairs = committed.lines().zip(generated.lines()).enumerate();
+    let mut lines: Vec<String> = pairs
+        .filter(|(_, (old, new))| old != new)
+        .take(8)
+        .flat_map(|(at, (old, new))| {
+            [
+                format!("{FILE}:{}: committed: {old}", at + 1),
+                format!("{FILE}:{}: generated: {new}", at + 1),
+            ]
+        })
+        .collect();
+    let (old, new) = (committed.lines().count(), generated.lines().count());
+    lines.push(format!("{FILE}: {old} lines committed, {new} generated"));
+    Some(lines)
 }
 
 /// The line `make_esp` puts above the notices on the boot drive.
@@ -192,12 +210,6 @@ fn render(root: &Path) -> Result<String, String> {
             users.join(", ")
         ));
     }
-    let lock = fs::read(root.join("Cargo.lock")).map_err(|e| format!("Cargo.lock: {e}"))?;
-    let lock = String::from_utf8_lossy(&lock).replace("\r\n", "\n");
-    out.push_str(&format!(
-        "\n{RULE}\nCargo.lock SHA-256: {}\n",
-        crate::sha256_hex(lock.as_bytes())
-    ));
     Ok(out)
 }
 
@@ -357,6 +369,31 @@ mod tests {
         assert_eq!(registry_crate(r"kabi v0.0.0 (C:\repo\kabi)"), None);
         assert_eq!(registry_crate("kernel v0.10.0 (/repo/kernel)"), None);
         assert_eq!(registry_crate(""), None);
+    }
+
+    #[test]
+    fn check_catches_a_new_dependency_and_ignores_line_endings() {
+        let committed = "Parts\n\n- smoltcp 0.14.0: 0BSD.\n- spin 0.12.3: MIT.\n";
+        assert_eq!(stale(committed, committed), None);
+        assert_eq!(stale(&committed.replace('\n', "\r\n"), committed), None);
+        // A fake dependency entry the committed file lacks.
+        let generated = committed.replace("- spin", "- fakedep 1.0.0: MIT.\n- spin");
+        let lines = stale(committed, &generated).expect("a stale file");
+        assert_eq!(lines[0], "NOTICES.txt:4: committed: - spin 0.12.3: MIT.");
+        assert_eq!(lines[1], "NOTICES.txt:4: generated: - fakedep 1.0.0: MIT.");
+        assert_eq!(
+            lines.last().unwrap(),
+            "NOTICES.txt: 4 lines committed, 5 generated"
+        );
+        // A changed licence, same line count.
+        let relicensed = committed.replace("spin 0.12.3: MIT", "spin 0.12.3: Apache-2.0");
+        assert!(stale(committed, &relicensed).is_some());
+    }
+
+    #[test]
+    fn the_notices_name_no_lock_hash() {
+        let notices = fs::read_to_string(crate::workspace_root().join(FILE)).unwrap();
+        assert!(!notices.contains("Cargo.lock"));
     }
 
     #[test]
