@@ -89,15 +89,91 @@ pub struct Data {
     pub nvme: bool,
     /// Behind blklogwrites, its log replayed once the case has passed.
     pub log: Option<Expect>,
+    /// A GPT with `kai-data` and `kai-cache` partitions, which the kernel finds
+    /// by type GUID; otherwise the raw disk S04-3's commits fill.
+    pub gpt: bool,
+}
+
+/// `kai-data` starts at 2 MiB (P2 plan section 4.1).
+pub const DATA_FIRST: u64 = 4096;
+/// `kai-data`'s size on a GPT data disk: 64 MiB.
+pub const DATA_SECTORS: u64 = 64 * 2048;
+/// `kai-cache`'s size by default: 1 GiB. The model lane's interim KV store
+/// (S10-3) takes two 320 MiB regions from its start, and skips the cache on a
+/// smaller one; its contents are rebuildable and never hold user data.
+pub const CACHE_MIB: u64 = 1024;
+
+/// The partitions of a GPT data disk with a `cache_mib` `kai-cache` after
+/// `kai-data`, both on 2 MiB boundaries, and the disk's size in sectors.
+pub fn partitions(cache_mib: u64) -> ([diskmap::Spec<'static>; 2], u64) {
+    let cache_first = DATA_FIRST + DATA_SECTORS;
+    let cache_last = cache_first + cache_mib * 2048 - 1;
+    // The backup array and header follow, then the disk ends on a whole MiB.
+    let sectors = (cache_last + 1 + diskmap::ENTRY_SECTORS + 1).next_multiple_of(2048);
+    let guid = |label: &str| diskmap::Guid(crate::image::gpt::guid(label));
+    let parts = [
+        diskmap::Spec {
+            kind: diskmap::KAI_DATA_TYPE,
+            guid: guid("ci kai-data partition"),
+            first: DATA_FIRST,
+            last: cache_first - 1,
+            name: "kai-data",
+        },
+        diskmap::Spec {
+            kind: diskmap::KAI_CACHE_TYPE,
+            guid: guid("ci kai-cache partition"),
+            first: cache_first,
+            last: cache_last,
+            name: "kai-cache",
+        },
+    ];
+    (parts, sectors)
 }
 
 /// Makes a zeroed (sparse) data disk and an empty log for QEMU to fill.
-pub fn prepare(target: &Path) -> Result<(), String> {
-    let image = fs::File::create(target.join(IMAGE)).map_err(|e| format!("{IMAGE}: {e}"))?;
-    image
-        .set_len(DISK_BYTES)
-        .map_err(|e| format!("{IMAGE}: {e}"))?;
+pub fn prepare(target: &Path, data: Data) -> Result<(), String> {
+    let cache = data.gpt.then_some(CACHE_MIB);
+    make_disk(&target.join(IMAGE), cache)?;
     fs::write(target.join(LOG), b"").map_err(|e| format!("{LOG}: {e}"))
+}
+
+/// A zeroed (sparse) data disk at `path`: with `cache_mib`, a GPT with a 64 MiB
+/// `kai-data` and a `kai-cache` of that size; without, the raw 64 MiB disk
+/// S04-3's commits fill.
+pub fn make_disk(path: &Path, cache_mib: Option<u64>) -> Result<(), String> {
+    use std::io::{Seek, SeekFrom, Write as _};
+    let name = path.display();
+    let mut image = fs::File::create(path).map_err(|e| format!("{name}: {e}"))?;
+    let sectors = match cache_mib {
+        Some(mib) => partitions(mib).1,
+        None => DISK_BYTES / SECTOR as u64,
+    };
+    image
+        .set_len(sectors * SECTOR as u64)
+        .map_err(|e| format!("{name}: {e}"))?;
+    if let Some(mib) = cache_mib {
+        let disk_guid = crate::image::gpt::guid("ci kai-data disk");
+        let layout = diskmap::layout(sectors, diskmap::Guid(disk_guid), &partitions(mib).0)
+            .map_err(|e| format!("{name}: {e:?}"))?;
+        for (lba, bytes) in layout {
+            image
+                .seek(SeekFrom::Start(lba * SECTOR as u64))
+                .and_then(|_| image.write_all(&bytes))
+                .map_err(|e| format!("{name}: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
+/// `run`'s data disk: the file at `path`, on virtio-blk, kept across runs.
+pub fn run_args(path: &str) -> Vec<String> {
+    [
+        String::from("-blockdev"),
+        format!("driver=file,filename={path},node-name=kai-data-file"),
+        String::from("-device"),
+        format!("virtio-blk-pci,drive=kai-data-file,serial={SERIAL},write-cache=on"),
+    ]
+    .to_vec()
 }
 
 /// The QEMU arguments: the disk with a write-back cache (write-cache=on, so the
@@ -518,6 +594,35 @@ fn check_log(log: &[u8], expect: Expect, commits: u64) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_gpt_data_disk_reads_back_with_both_partitions() {
+        let (parts, sectors) = partitions(CACHE_MIB);
+        let mut disk = vec![0u8; (sectors as usize) * SECTOR];
+        let layout = diskmap::layout(sectors, diskmap::Guid([7; 16]), &parts).unwrap();
+        for (lba, bytes) in layout {
+            let at = lba as usize * SECTOR;
+            disk[at..at + bytes.len()].copy_from_slice(&bytes);
+        }
+        struct Mem(Vec<u8>);
+        impl diskmap::Disk for Mem {
+            fn sectors(&self) -> u64 {
+                (self.0.len() / SECTOR) as u64
+            }
+            fn read(&mut self, lba: u64, out: &mut [u8]) -> Result<(), diskmap::Error> {
+                let at = lba as usize * SECTOR;
+                out.copy_from_slice(&self.0[at..at + out.len()]);
+                Ok(())
+            }
+        }
+        let table = diskmap::read(&mut Mem(disk)).unwrap();
+        let data = table.find(diskmap::KAI_DATA_TYPE).unwrap();
+        let cache = table.find(diskmap::KAI_CACHE_TYPE).unwrap();
+        assert_eq!((data.first, data.sectors()), (DATA_FIRST, DATA_SECTORS));
+        assert_eq!(cache.first % 4096, 0);
+        assert_eq!(cache.sectors(), CACHE_MIB * 2048);
+        assert_eq!(sectors % 2048, 0);
+    }
 
     #[test]
     fn sum_is_fnv1a_over_words() {

@@ -20,6 +20,7 @@ captable = { path = "../captable" }
 cpufeat = { path = "../cpufeat" }
 devkit = { path = "../devkit" }
 devmatch = { path = "../devmatch" }
+diskmap = { path = "../diskmap" }
 kabi = { path = "../kabi" }
 kaibundle = { path = "../kaibundle" }
 limine = "0.6.5"

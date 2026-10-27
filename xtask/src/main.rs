@@ -186,6 +186,20 @@ fn execute(options: &Options) -> Result<(), String> {
         let firmware = wsl::firmware(wsl.as_ref(), &qemu, &target_dir)?;
         let sizing = qemu::run_sizing(accel, options.sizing, disk.is_some());
         let mut args = qemu::args(&firmware, accel, false, disk.as_ref(), sizing);
+        let data = options
+            .data_disk
+            .clone()
+            .unwrap_or_else(|| target_dir.join(blklog::IMAGE));
+        if options.fresh_data || !data.exists() {
+            blklog::make_disk(&data, Some(options.cache_mib))?;
+            println!("xtask: a fresh kai-data disk at {}", data.display());
+        }
+        let data = match options.data_disk {
+            // QEMU runs in target/, so the default needs no host path (or WSL path).
+            None => String::from(blklog::IMAGE),
+            Some(_) => data.display().to_string(),
+        };
+        args.extend(blklog::run_args(&data));
         if options.gpu {
             args.extend(["-vga", "none", "-device", "virtio-gpu-pci"].map(String::from));
         }
@@ -213,108 +227,117 @@ fn execute(options: &Options) -> Result<(), String> {
         // `XTASK_CASE=name` boots only that case.
         .filter(|case| env::var("XTASK_CASE").map_or(true, |only| only == case.name))
         .collect::<Vec<_>>();
-    for &case in &cases {
-        let service = match case.build {
-            true => Some(edit_smoke::service(&root, case.name)?),
-            false => None,
-        };
-        let server = if case.server { llm_args.as_str() } else { "" };
-        let mut cmdline = format!("{} {server}", case.cmdline);
-        if case.dns {
-            cmdline = format!("{cmdline} {}", mock_dns.cmdline());
-        }
-        let disk = match disk::for_case(case, &target_dir) {
-            Ok(disk) => disk,
-            Err(message) => {
+    for &first in &cases {
+        // A case may name a second boot on the same data disk (`then`), booted
+        // once the first has passed (P2 plan section 4.2).
+        let (mut next, mut fresh) = (Some(first), true);
+        while let Some(case) = next.take() {
+            let service = match case.build {
+                true => Some(edit_smoke::service(&root, case.name)?),
+                false => None,
+            };
+            let server = if case.server { llm_args.as_str() } else { "" };
+            let mut cmdline = format!("{} {server}", case.cmdline);
+            if case.dns {
+                cmdline = format!("{cmdline} {}", mock_dns.cmdline());
+            }
+            let disk = match disk::for_case(case, &target_dir) {
+                Ok(disk) => disk,
+                Err(message) => {
+                    eprintln!("xtask: test case {}: {message}", case.name);
+                    failures.push(case.name);
+                    break;
+                }
+            };
+            if let Some(disk) = &disk {
+                cmdline = format!("{cmdline} {}", disk.cmdline());
+            }
+            // The boot manifest's versions join the boot drive for this case only.
+            let shared = modules.len();
+            if let Some(service) = &service {
+                let (versions, live) = boot_smoke::manifest_for(case, service)?;
+                modules.extend(versions);
+                cmdline = format!("{cmdline} {} {live}", buildsvc::cmdline(service));
+            }
+            println!(
+                "xtask: test case {} ({})",
+                case.name,
+                buildsvc::redact(&cmdline)
+            );
+            esp::make_esp(&esp, &kernel, &modules, &efi, &cmdline)?;
+            modules.truncate(shared);
+            let firmware = wsl::firmware(wsl.as_ref(), &qemu, &target_dir)?;
+            let monitor = qemu::free_port()?;
+            let sizing = options::Sizing {
+                mem_mib: options.sizing.mem_mib.max(case.memory_mib),
+                ..options.sizing
+            };
+            let mut args = qemu::args(&firmware, accel, true, disk.as_ref(), sizing);
+            if let Some(data) = case.data {
+                if fresh {
+                    blklog::prepare(&target_dir, data)?;
+                }
+                args.extend(blklog::qemu_args(data));
+            }
+            if case.image {
+                qemu::boot_from_image(&mut args, &esp, &target_dir)?;
+            }
+            if case.gpu {
+                args.extend(screen::gpu_args());
+            }
+            if case.bridge {
+                qemu::net_behind_bridge(&mut args);
+            }
+            if case.screen.is_some() {
+                screen::clear(&target_dir);
+            }
+            args.push("-monitor".into());
+            args.push(format!("tcp:127.0.0.1:{monitor},server=on,wait=off"));
+            let (input, qmp) = qemu::input_args(case)?;
+            args.extend(input);
+            let args = wsl::wrap(wsl.as_ref(), args)?;
+            let run = qemu::TestRun {
+                case,
+                accel,
+                timeout: case
+                    .min_timeout
+                    .map_or(options.timeout, |least| least.max(options.timeout)),
+                monitor,
+                qmp,
+                exact: disk
+                    .as_ref()
+                    .map_or_else(Vec::new, disk::ModelDisk::exact_lines),
+                contains: disk
+                    .as_ref()
+                    .map_or_else(Vec::new, disk::ModelDisk::console_text),
+            };
+            let requests = mock.requests();
+            let after = |service: &Option<buildsvc::BuildService>| match (case.after, service) {
+                (Some(check), Some(service)) => check(service),
+                _ => Ok(()),
+            };
+            let result = qemu::run_test(&qemu, &args, &target_dir, &run)
+                .and_then(|()| after(&service))
+                .and_then(|()| match case.data.and_then(|data| data.log) {
+                    Some(expect) => blklog::check(&target_dir, expect),
+                    None => Ok(()),
+                })
+                .and_then(|()| match case.screen {
+                    Some(expect) => screen::check(&target_dir, expect),
+                    None => Ok(()),
+                })
+                .and_then(|()| match mock.requests() - requests {
+                    sent if !case.server && sent > 0 => Err(format!(
+                        "FAIL: booted without a server, yet the mock LLM got {sent} requests"
+                    )),
+                    _ => Ok(()),
+                });
+            if let Err(message) = result {
                 eprintln!("xtask: test case {}: {message}", case.name);
                 failures.push(case.name);
-                continue;
+                break;
             }
-        };
-        if let Some(disk) = &disk {
-            cmdline = format!("{cmdline} {}", disk.cmdline());
-        }
-        // The boot manifest's versions join the boot drive for this case only.
-        let shared = modules.len();
-        if let Some(service) = &service {
-            let (versions, live) = boot_smoke::manifest_for(case, service)?;
-            modules.extend(versions);
-            cmdline = format!("{cmdline} {} {live}", buildsvc::cmdline(service));
-        }
-        println!(
-            "xtask: test case {} ({})",
-            case.name,
-            buildsvc::redact(&cmdline)
-        );
-        esp::make_esp(&esp, &kernel, &modules, &efi, &cmdline)?;
-        modules.truncate(shared);
-        let firmware = wsl::firmware(wsl.as_ref(), &qemu, &target_dir)?;
-        let monitor = qemu::free_port()?;
-        let sizing = options::Sizing {
-            mem_mib: options.sizing.mem_mib.max(case.memory_mib),
-            ..options.sizing
-        };
-        let mut args = qemu::args(&firmware, accel, true, disk.as_ref(), sizing);
-        if let Some(data) = case.data {
-            blklog::prepare(&target_dir)?;
-            args.extend(blklog::qemu_args(data));
-        }
-        if case.image {
-            qemu::boot_from_image(&mut args, &esp, &target_dir)?;
-        }
-        if case.gpu {
-            args.extend(screen::gpu_args());
-        }
-        if case.bridge {
-            qemu::net_behind_bridge(&mut args);
-        }
-        if case.screen.is_some() {
-            screen::clear(&target_dir);
-        }
-        args.push("-monitor".into());
-        args.push(format!("tcp:127.0.0.1:{monitor},server=on,wait=off"));
-        let (input, qmp) = qemu::input_args(case)?;
-        args.extend(input);
-        let args = wsl::wrap(wsl.as_ref(), args)?;
-        let run = qemu::TestRun {
-            case,
-            accel,
-            timeout: case
-                .min_timeout
-                .map_or(options.timeout, |least| least.max(options.timeout)),
-            monitor,
-            qmp,
-            exact: disk
-                .as_ref()
-                .map_or_else(Vec::new, disk::ModelDisk::exact_lines),
-            contains: disk
-                .as_ref()
-                .map_or_else(Vec::new, disk::ModelDisk::console_text),
-        };
-        let requests = mock.requests();
-        let after = |service: &Option<buildsvc::BuildService>| match (case.after, service) {
-            (Some(check), Some(service)) => check(service),
-            _ => Ok(()),
-        };
-        let result = qemu::run_test(&qemu, &args, &target_dir, &run)
-            .and_then(|()| after(&service))
-            .and_then(|()| match case.data.and_then(|data| data.log) {
-                Some(expect) => blklog::check(&target_dir, expect),
-                None => Ok(()),
-            })
-            .and_then(|()| match case.screen {
-                Some(expect) => screen::check(&target_dir, expect),
-                None => Ok(()),
-            })
-            .and_then(|()| match mock.requests() - requests {
-                sent if !case.server && sent > 0 => Err(format!(
-                    "FAIL: booted without a server, yet the mock LLM got {sent} requests"
-                )),
-                _ => Ok(()),
-            });
-        if let Err(message) = result {
-            eprintln!("xtask: test case {}: {message}", case.name);
-            failures.push(case.name);
+            (next, fresh) = (case.then, false);
         }
     }
     if let Some(before) = &real_repo {

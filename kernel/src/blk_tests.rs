@@ -56,9 +56,6 @@ pub fn check(cmdline: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// The writable data disk the storage cases attach.
-const DATA: &str = "kai-data";
-
 /// A sector's pattern: its number, then bytes that differ from every other's.
 fn pattern(sector: u64, out: &mut [u8]) {
     let mut x = sector.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
@@ -73,12 +70,14 @@ fn pattern(sector: u64, out: &mut [u8]) {
     }
 }
 
-/// `test=blk-write` (P2 task 1): `kai-data` takes writes at its start, a run of
-/// the longest write the driver takes, and its last sector, then a flush; each
-/// reads back as written. Writes of part of a sector, past the end or of
-/// nothing are refused.
-pub fn check_write() -> Result<(), &'static str> {
-    block::with_disk(DATA, |disk: &mut dyn Device| {
+/// `test=blk-write` (P2 tasks 1 and 2): the `kai-data` partition, found by type
+/// GUID, takes writes at its start, a run of the longest write the driver takes,
+/// and its last sector, then a flush; each reads back as written. Writes of part
+/// of a sector, past the partition's end or of nothing are refused. With
+/// `reread`, a second boot on the same disk reads back what the first wrote.
+pub fn check_write(cmdline: &str) -> Result<(), &'static str> {
+    let reread = cmdline.split_whitespace().any(|w| w == "reread");
+    block::with_partition(diskmap::KAI_DATA_TYPE, |disk: &mut dyn Device| {
         if disk.read_only() {
             return Err("blk-write: kai-data is read-only");
         }
@@ -89,18 +88,24 @@ pub fn check_write() -> Result<(), &'static str> {
         let (sectors, max) = (disk.sectors(), disk.max_sectors());
         let runs = [(0, 1), (8, max), (sectors - 1, 1)];
         let mut buffer = alloc::vec![0u8; (max * mm::dma::SECTOR) as usize];
-        for (sector, count) in runs {
-            let bytes = &mut buffer[..(count * mm::dma::SECTOR) as usize];
-            pattern(sector, bytes);
-            disk.write(sector, bytes)?;
+        if !reread {
+            for (sector, count) in runs {
+                let bytes = &mut buffer[..(count * mm::dma::SECTOR) as usize];
+                pattern(sector, bytes);
+                disk.write(sector, bytes)?;
+            }
+            disk.flush()?;
         }
-        disk.flush()?;
         for (sector, count) in runs {
             let bytes = &mut buffer[..(count * mm::dma::SECTOR) as usize];
             pattern(sector, bytes);
             if disk.read(sector, count)? != &*bytes {
                 return Err("blk-write: a write read back different");
             }
+        }
+        if reread {
+            log!("blk-write: boot 1's writes read back over {}", disk.kind());
+            return Ok(());
         }
         let refused = [
             disk.write(0, &buffer[..100]).is_err(),
@@ -121,5 +126,5 @@ pub fn check_write() -> Result<(), &'static str> {
         );
         Ok(())
     })
-    .ok_or("blk-write: no disk with serial kai-data")?
+    .ok_or("blk-write: no kai-data partition")?
 }

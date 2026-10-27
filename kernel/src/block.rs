@@ -3,6 +3,10 @@
 //! model loader, the self-tests and (from P2) the file server find them by serial,
 //! or the model disk by what it holds.
 //!
+//! Once every driver has registered its disks, [`scan`] reads each disk's GPT
+//! with `diskmap` and finds `kai-data` and `kai-cache` by partition type GUID,
+//! never by serial (ADR 0004 §5); [`with_partition`] reaches one.
+//!
 //! A disk is writable only if a write can be made durable (ADR 0004 §6): one
 //! whose cache may hold writes back must also offer a flush, or it is refused
 //! read-write. Each disk has its own lock, so one disk's slow I/O does not hold
@@ -179,6 +183,167 @@ pub fn with_model_disk<R>(f: impl FnOnce(&mut dyn Device) -> R) -> Option<R> {
     };
     let mut disk = disk.lock();
     Some(f(&mut *disk))
+}
+
+/// A partition the scan found.
+struct Found {
+    kind: diskmap::Guid,
+    disk: Arc<Mutex<Disk>>,
+    first: u64,
+    sectors: u64,
+}
+
+static PARTITIONS: Mutex<Vec<Found>> = Mutex::new(Vec::new());
+
+/// The partition types the kernel looks for, and their names for log lines.
+const KNOWN: [(diskmap::Guid, &str); 2] = [
+    (diskmap::KAI_DATA_TYPE, "kai-data"),
+    (diskmap::KAI_CACHE_TYPE, "kai-cache"),
+];
+
+/// `diskmap` reading through a disk.
+struct Reader<'a>(&'a mut dyn Device);
+
+impl diskmap::Disk for Reader<'_> {
+    fn sectors(&self) -> u64 {
+        self.0.sectors()
+    }
+
+    fn read(&mut self, lba: u64, out: &mut [u8]) -> Result<(), diskmap::Error> {
+        let max = self.0.max_sectors() as usize * dma::SECTOR as usize;
+        for (index, chunk) in out.chunks_mut(max).enumerate() {
+            let at = lba + (index * max / dma::SECTOR as usize) as u64;
+            let sectors = (chunk.len() / dma::SECTOR as usize) as u64;
+            let data = self.0.read(at, sectors).map_err(|_| diskmap::Error::Read)?;
+            chunk.copy_from_slice(&data[..chunk.len()]);
+        }
+        Ok(())
+    }
+}
+
+/// Reads every disk's partition table and keeps the `kai-*` partitions, the
+/// first of each type. A disk with no GPT, or a bad one, is skipped.
+pub fn scan() {
+    let disks: Vec<_> = DISKS.lock().iter().map(|e| e.disk.clone()).collect();
+    let mut found: Vec<Found> = Vec::new();
+    for disk in disks {
+        let table = {
+            let mut locked = disk.lock();
+            let read = diskmap::read(&mut Reader(&mut *locked));
+            match read {
+                Ok(table) => {
+                    if table.from_backup {
+                        log!(
+                            "block: {} disk {:?}: the primary GPT is bad; read the backup",
+                            locked.kind(),
+                            locked.serial()
+                        );
+                    }
+                    table
+                }
+                Err(diskmap::Error::BadPartitions) => {
+                    log!(
+                        "block: {} disk {:?}: its GPT's partitions are not valid; skipped",
+                        locked.kind(),
+                        locked.serial()
+                    );
+                    continue;
+                }
+                Err(_) => continue,
+            }
+        };
+        for (kind, name) in KNOWN {
+            let Some(part) = table.find(kind) else {
+                continue;
+            };
+            if found.iter().any(|f| f.kind == kind) {
+                log!("block: a second {name} partition; the first one found is used");
+                continue;
+            }
+            let locked = disk.lock();
+            log!(
+                "block: {name} is {} disk {:?}, sectors {} to {} ({} MiB)",
+                locked.kind(),
+                locked.serial(),
+                part.first,
+                part.last,
+                part.sectors() / 2048
+            );
+            drop(locked);
+            found.push(Found {
+                kind,
+                disk: disk.clone(),
+                first: part.first,
+                sectors: part.sectors(),
+            });
+        }
+    }
+    *PARTITIONS.lock() = found;
+}
+
+/// A partition seen as a disk of its own: sector 0 is its first.
+struct Part<'a> {
+    disk: &'a mut Disk,
+    first: u64,
+    sectors: u64,
+}
+
+impl Part<'_> {
+    fn inside(&self, sector: u64, sectors: u64) -> Result<u64, &'static str> {
+        match sector.checked_add(sectors) {
+            Some(end) if end <= self.sectors => Ok(self.first + sector),
+            _ => Err("block: past the end of the partition"),
+        }
+    }
+}
+
+impl Device for Part<'_> {
+    fn kind(&self) -> &'static str {
+        self.disk.kind()
+    }
+    fn serial(&self) -> &str {
+        self.disk.serial()
+    }
+    fn sectors(&self) -> u64 {
+        self.sectors
+    }
+    fn read_only(&self) -> bool {
+        self.disk.read_only()
+    }
+    fn max_sectors(&self) -> u64 {
+        self.disk.max_sectors()
+    }
+    fn read(&mut self, sector: u64, sectors: u64) -> Result<&[u8], &'static str> {
+        let at = self.inside(sector, sectors)?;
+        self.disk.read(at, sectors)
+    }
+    fn write(&mut self, sector: u64, data: &[u8]) -> Result<(), &'static str> {
+        let at = self.inside(sector, data.len() as u64 / dma::SECTOR)?;
+        self.disk.write(at, data)
+    }
+    fn flush(&mut self) -> Result<(), &'static str> {
+        self.disk.flush()
+    }
+    fn info(&self) -> Info {
+        self.disk.info()
+    }
+}
+
+/// Runs `f` on the partition of type `kind` the scan found, as a disk whose
+/// sector 0 is the partition's first. Only its disk stays locked while `f` runs.
+pub fn with_partition<R>(kind: diskmap::Guid, f: impl FnOnce(&mut dyn Device) -> R) -> Option<R> {
+    let (disk, first, sectors) = PARTITIONS
+        .lock()
+        .iter()
+        .find(|p| p.kind == kind)
+        .map(|p| (p.disk.clone(), p.first, p.sectors))?;
+    let mut disk = disk.lock();
+    let mut part = Part {
+        disk: &mut disk,
+        first,
+        sectors,
+    };
+    Some(f(&mut part))
 }
 
 /// Passes the first `len` bytes of `disk` to `f(offset, bytes)` in order, one read

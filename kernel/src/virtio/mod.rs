@@ -40,5 +40,6 @@ pub fn init(platform: &acpitables::Platform, cmdline: &str) {
     }
     blk::init(found.disks);
     crate::nvme::init(found.nvme);
+    crate::block::scan();
     crate::usb::init(found.usb);
 }

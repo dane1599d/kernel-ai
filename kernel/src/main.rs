@@ -317,7 +317,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Manifest => run_case(manifest_tests::check),
         SelfTest::ManifestGood => run_case(manifest_tests::check_good),
         SelfTest::Blk => run_case(|| blk_tests::check(cmdline())),
-        SelfTest::BlkWrite => run_case(blk_tests::check_write),
+        SelfTest::BlkWrite => run_case(|| blk_tests::check_write(cmdline())),
         SelfTest::BlkFlush => run_case(|| blkflush_tests::check(cmdline())),
         SelfTest::Model => run_case(|| model_tests::check(cmdline())),
         SelfTest::LocalAsk => run_case(|| local_tests::check(cmdline())),

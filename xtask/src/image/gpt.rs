@@ -6,28 +6,10 @@
 use super::SECTOR;
 use sha2::{Digest, Sha256};
 
-/// The ESP's partition type, C12A7328-F81F-11D2-BA4B-00A0C93EC93B, as stored.
-pub const ESP_TYPE: [u8; 16] = [
-    0x28, 0x73, 0x2A, 0xC1, 0x1F, 0xF8, 0xD2, 0x11, 0xBA, 0x4B, 0x00, 0xA0, 0xC9, 0x3E, 0xC9, 0x3B,
-];
-const ENTRIES: u32 = 128;
-const ENTRY_BYTES: u32 = 128;
 /// Sectors the entry array takes: 128 entries of 128 bytes.
-const ENTRY_SECTORS: u64 = (ENTRIES * ENTRY_BYTES) as u64 / SECTOR as u64;
+const ENTRY_SECTORS: u64 = diskmap::ENTRY_SECTORS;
 /// The partition starts at 1 MiB, the alignment every tool expects.
 pub const FIRST_LBA: u64 = 2048;
-
-/// The IEEE CRC-32 that GPT uses.
-pub fn crc32(bytes: &[u8]) -> u32 {
-    let mut crc = !0u32;
-    for &byte in bytes {
-        crc ^= u32::from(byte);
-        for _ in 0..8 {
-            crc = (crc >> 1) ^ (0xEDB8_8320 & 0u32.wrapping_sub(crc & 1));
-        }
-    }
-    !crc
-}
 
 /// A version-4-shaped GUID from `label`, in GPT's byte order.
 pub fn guid(label: &str) -> [u8; 16] {
@@ -45,79 +27,46 @@ pub fn disk_sectors(partition: u64) -> u64 {
     (FIRST_LBA + partition + ENTRY_SECTORS + 1).next_multiple_of(2048)
 }
 
-fn protective_mbr(sectors: u64) -> [u8; 512] {
-    let mut s = [0u8; 512];
-    let entry = &mut s[446..462];
-    entry[1..4].copy_from_slice(&[0x00, 0x02, 0x00]);
-    entry[4] = 0xEE;
-    entry[5..8].copy_from_slice(&[0xFF, 0xFF, 0xFF]);
-    entry[8..12].copy_from_slice(&1u32.to_le_bytes());
-    let size = u32::try_from(sectors - 1).unwrap_or(u32::MAX);
-    entry[12..16].copy_from_slice(&size.to_le_bytes());
-    s[510] = 0x55;
-    s[511] = 0xAA;
-    s
-}
-
-fn entry_array(partition: u64, name: &str) -> Vec<u8> {
-    let mut array = vec![0u8; (ENTRIES * ENTRY_BYTES) as usize];
-    let entry = &mut array[..ENTRY_BYTES as usize];
-    entry[..16].copy_from_slice(&ESP_TYPE);
-    entry[16..32].copy_from_slice(&guid(&format!("{name} partition")));
-    entry[32..40].copy_from_slice(&FIRST_LBA.to_le_bytes());
-    entry[40..48].copy_from_slice(&(FIRST_LBA + partition - 1).to_le_bytes());
-    for (i, unit) in "EFI system partition".encode_utf16().enumerate() {
-        entry[56 + 2 * i..58 + 2 * i].copy_from_slice(&unit.to_le_bytes());
-    }
-    array
-}
-
-fn header(sectors: u64, primary: bool, entries_crc: u32, name: &str) -> [u8; 512] {
-    let last = sectors - 1;
-    let (mine, other, entries_at) = match primary {
-        true => (1, last, 2),
-        false => (last, 1, last - ENTRY_SECTORS),
-    };
-    let mut s = [0u8; 512];
-    s[..8].copy_from_slice(b"EFI PART");
-    s[8..12].copy_from_slice(&0x0001_0000u32.to_le_bytes());
-    s[12..16].copy_from_slice(&92u32.to_le_bytes());
-    s[24..32].copy_from_slice(&mine.to_le_bytes());
-    s[32..40].copy_from_slice(&other.to_le_bytes());
-    s[40..48].copy_from_slice(&(2 + ENTRY_SECTORS).to_le_bytes());
-    s[48..56].copy_from_slice(&(last - ENTRY_SECTORS - 1).to_le_bytes());
-    s[56..72].copy_from_slice(&guid(&format!("{name} disk")));
-    s[72..80].copy_from_slice(&entries_at.to_le_bytes());
-    s[80..84].copy_from_slice(&ENTRIES.to_le_bytes());
-    s[84..88].copy_from_slice(&ENTRY_BYTES.to_le_bytes());
-    s[88..92].copy_from_slice(&entries_crc.to_le_bytes());
-    let crc = crc32(&s[..92]);
-    s[16..20].copy_from_slice(&crc.to_le_bytes());
-    s
-}
-
 /// A whole disk holding `volume` (whole sectors) as its EFI system partition.
 /// `name` seeds the GUIDs.
 pub fn disk(volume: &[u8], name: &str) -> Vec<u8> {
     let partition = volume.len() as u64 / SECTOR as u64;
     let sectors = disk_sectors(partition);
+    let esp = diskmap::Spec {
+        kind: diskmap::ESP_TYPE,
+        guid: diskmap::Guid(guid(&format!("{name} partition"))),
+        first: FIRST_LBA,
+        last: FIRST_LBA + partition - 1,
+        name: "EFI system partition",
+    };
+    let mut disk = laid_out(sectors, &guid(&format!("{name} disk")), &[esp]);
+    let at = (FIRST_LBA * SECTOR as u64) as usize;
+    disk[at..at + volume.len()].copy_from_slice(volume);
+    disk
+}
+
+/// A zeroed disk of `sectors` with the GPT of `parts`.
+pub fn laid_out(sectors: u64, disk_guid: &[u8; 16], parts: &[diskmap::Spec<'_>]) -> Vec<u8> {
     let mut disk = vec![0u8; (sectors * SECTOR as u64) as usize];
-    let at = |lba: u64| (lba * SECTOR as u64) as usize;
-    let array = entry_array(partition, name);
-    let crc = crc32(&array);
-    disk[..512].copy_from_slice(&protective_mbr(sectors));
-    disk[at(1)..at(2)].copy_from_slice(&header(sectors, true, crc, name));
-    disk[at(2)..at(2) + array.len()].copy_from_slice(&array);
-    disk[at(FIRST_LBA)..at(FIRST_LBA) + volume.len()].copy_from_slice(volume);
-    let backup = sectors - 1 - ENTRY_SECTORS;
-    disk[at(backup)..at(backup) + array.len()].copy_from_slice(&array);
-    disk[at(sectors - 1)..].copy_from_slice(&header(sectors, false, crc, name));
+    let layout = diskmap::layout(sectors, diskmap::Guid(*disk_guid), parts)
+        .expect("xtask lays out only disks that fit");
+    for (lba, bytes) in layout {
+        let at = (lba * SECTOR as u64) as usize;
+        disk[at..at + bytes.len()].copy_from_slice(&bytes);
+    }
     disk
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use diskmap::{ESP_TYPE, crc32};
+
+    #[test]
+    fn diskmaps_type_guids_are_the_labels_ones() {
+        assert_eq!(diskmap::KAI_DATA_TYPE.0, guid("kai-data partition type"));
+        assert_eq!(diskmap::KAI_CACHE_TYPE.0, guid("kai-cache partition type"));
+    }
 
     #[test]
     fn crc32_matches_the_check_value() {
@@ -152,7 +101,7 @@ mod tests {
             assert_eq!(mine, lba);
             let entries = u64::from_le_bytes(h[72..80].try_into().unwrap()) as usize * 512;
             let array = &disk[entries..entries + 16384];
-            assert_eq!(&array[..16], &ESP_TYPE);
+            assert_eq!(&array[..16], &ESP_TYPE.0);
             assert_eq!(
                 u32::from_le_bytes(h[88..92].try_into().unwrap()),
                 crc32(array)

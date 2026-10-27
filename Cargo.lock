@@ -318,6 +318,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "diskmap"
+version = "0.0.0"
+
+[[package]]
 name = "editcore"
 version = "0.0.0"
 dependencies = [
@@ -558,6 +562,7 @@ dependencies = [
  "cpufeat",
  "devkit",
  "devmatch",
+ "diskmap",
  "editcore",
  "gfxcore",
  "kabi",
@@ -1521,6 +1526,7 @@ dependencies = [
  "agentabi",
  "bpe",
  "cpufeat",
+ "diskmap",
  "editcore",
  "gfxcore",
  "gguf",
