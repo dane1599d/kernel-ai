@@ -51,7 +51,8 @@ pub fn allow(id: u64, call: &str, answer: Answer) -> Result<Option<Allowed>, kab
         }
     };
     let rule = match answer {
-        Answer::AlwaysKind | Answer::AlwaysTarget => Some(rule_node(shell, id)?),
+        Answer::AlwaysKind => Some(rule_node(shell, id, call, true)?),
+        Answer::AlwaysTarget => Some(rule_node(shell, id, call, false)?),
         _ => None,
     };
     Ok(Some(Allowed {
@@ -64,13 +65,19 @@ pub fn allow(id: u64, call: &str, answer: Answer) -> Result<Option<Allowed>, kab
 }
 
 /// A persistent `rule <id>` node under `user`, and a handle in the shell's table
-/// that can only revoke it.
-fn rule_node(shell: usize, id: u64) -> Result<u32, kabi::Error> {
+/// that can only revoke it. The kernel notes what it covers, `call`'s action for
+/// `every` target or `call` itself ([`handle::rules`]), so a call it covers can be
+/// checked without a `ONCE`.
+fn rule_node(shell: usize, id: u64, call: &str, every: bool) -> Result<u32, kabi::Error> {
     let mut label = [0u8; LABEL];
     let text = alloc::format!("rule from {id}");
     let len = text.len().min(LABEL);
     label[..len].copy_from_slice(&text.as_bytes()[..len]);
     let node = grants::create(grants::root(USER), 0, Life::Persistent, &label[..len])?;
+    if let Err(error) = handle::rules::record(node, call, every) {
+        let _ = grants::revoke(node);
+        return Err(error);
+    }
     let entry = captable::Entry {
         grant: Some(node),
         ..captable::Entry::new(Kind::Grant, Rights::REVOKE, node.pack())

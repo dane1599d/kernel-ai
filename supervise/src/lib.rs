@@ -43,24 +43,117 @@ pub const PROTECTED: &[&str] = &["shell", "supervisor", "llm"];
 /// although no line lists it.
 pub const SUPERVISOR: &str = "supervisor";
 
-/// A request to the supervisor's service.
+/// A request to the supervisor's service, and the [`Proof`] that the user wants
+/// it, which the supervisor checks before it acts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Request<'a> {
     /// `stop <name>`: end the service and keep it down until `start`.
     Stop(&'a str),
     /// `start <name>`: start a stopped service again.
     Start(&'a str),
+    /// `restart <name>`: end the service and start it at once, or start it if it
+    /// is stopped. One request, since a `ONCE` is used up by one check.
+    Restart(&'a str),
+}
+
+/// The user's yes on a menu: the `ONCE` badge the trusted path gave for menu
+/// entry `id` (ADR 0001 D6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Once {
+    pub badge: u64,
+    pub id: u64,
+}
+
+/// Why the supervisor may act on a request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Proof {
+    /// Nothing: enough only for `start`, which the shell runs without asking.
+    None,
+    /// `id=<entry>`: a `start` from the shell's log entry `entry`, which a later
+    /// undo names.
+    Entry(u64),
+    /// `once=<badge> id=<entry>`: the menu's Allow.
+    Once(Once),
+    /// `rule`: a standing rule the caller holds, checked with RULE_CHECK.
+    Rule,
+    /// `undo id=<entry>`: puts back the `start` the shell made as log entry
+    /// `entry`, if nothing has changed the service since.
+    Undo(u64),
 }
 
 impl<'a> Request<'a> {
-    pub fn parse(text: &'a str) -> Option<Self> {
+    /// `<verb> <name>`, then the words of its [`Proof`].
+    pub fn parse(text: &'a str) -> Option<(Self, Proof)> {
         let mut words = text.split_whitespace();
         let request = match (words.next()?, words.next()?) {
             ("stop", name) => Request::Stop(name),
             ("start", name) => Request::Start(name),
+            ("restart", name) => Request::Restart(name),
             _ => return None,
         };
-        words.next().is_none().then_some(request)
+        let number = |word: Option<&str>, key: &str| word?.strip_prefix(key)?.parse().ok();
+        let proof = match (words.next(), words.next()) {
+            (None, None) => Proof::None,
+            (Some("rule"), None) => Proof::Rule,
+            (Some("undo"), id) => Proof::Undo(number(id, "id=")?),
+            (Some(id), None) => Proof::Entry(number(Some(id), "id=")?),
+            (badge, id) => Proof::Once(Once {
+                badge: number(badge, "once=")?,
+                id: number(id, "id=")?,
+            }),
+        };
+        words.next().is_none().then_some((request, proof))
+    }
+
+    pub fn name(self) -> &'a str {
+        match self {
+            Request::Stop(name) | Request::Start(name) | Request::Restart(name) => name,
+        }
+    }
+
+    /// The call the menu shows for it, in canonical text: `service_stop("x")`.
+    /// `None` for a name no call can show.
+    pub fn call(self) -> Option<String> {
+        let action = match self {
+            Request::Stop(_) => "service_stop",
+            Request::Start(_) => "service_start",
+            Request::Restart(_) => "service_restart",
+        };
+        termcore::once::call_text(action, &[termcore::once::CallArg::Text(self.name())])
+    }
+
+    /// The `ONCE` digest of it on menu entry `id`, as the trusted path holds it.
+    pub fn digest(self, id: u64) -> Option<[u8; 32]> {
+        Some(termcore::once::digest_call(id, &self.call()?))
+    }
+
+    /// The request's text, with its proof.
+    pub fn encode(self, proof: Proof) -> String {
+        let verb = match self {
+            Request::Stop(_) => "stop",
+            Request::Start(_) => "start",
+            Request::Restart(_) => "restart",
+        };
+        let name = self.name();
+        match proof {
+            Proof::None => format!("{verb} {name}"),
+            Proof::Entry(id) => format!("{verb} {name} id={id}"),
+            Proof::Once(once) => format!("{verb} {name} once={} id={}", once.badge, once.id),
+            Proof::Rule => format!("{verb} {name} rule"),
+            Proof::Undo(id) => format!("{verb} {name} undo id={id}"),
+        }
+    }
+}
+
+/// Whether `proof` is the kind a request of this verb may carry, before it is
+/// checked: a start needs none (it is run-tier and has no menu); a stop or a
+/// restart needs a `ONCE` or a rule, and only a stop may be an undo.
+pub fn proof_fits(request: Request, proof: Proof) -> Result<(), &'static str> {
+    match (request, proof) {
+        (Request::Start(_), Proof::None | Proof::Entry(_)) => Ok(()),
+        (Request::Start(_), _) => Err("err a start takes only id="),
+        (_, Proof::Once(_) | Proof::Rule) | (Request::Stop(_), Proof::Undo(_)) => Ok(()),
+        _ => Err("err needs ONCE"),
     }
 }
 
@@ -117,7 +210,7 @@ pub fn parse_listing(text: &str) -> Option<Vec<Listed>> {
 /// on, or the reply that refuses it (`err protected`, `err unknown service`,
 /// `err already stopped`, `err not stopped`).
 pub fn check(request: Request, records: &[Record]) -> Result<usize, &'static str> {
-    let (Request::Stop(name) | Request::Start(name)) = request;
+    let name = request.name();
     if PROTECTED.contains(&name) {
         return Err("err protected");
     }
@@ -125,9 +218,11 @@ pub fn check(request: Request, records: &[Record]) -> Result<usize, &'static str
         .iter()
         .position(|record| record.name == name)
         .ok_or("err unknown service")?;
-    match (request, records[index].stopped) {
+    let record = &records[index];
+    match (request, record.stopped) {
         (Request::Stop(_), true) => Err("err already stopped"),
-        (Request::Start(_), false) => Err("err not stopped"),
+        // A service the supervisor gave up on starts again on request too.
+        (Request::Start(_), false) if !record.gave_up => Err("err not stopped"),
         _ => Ok(index),
     }
 }
