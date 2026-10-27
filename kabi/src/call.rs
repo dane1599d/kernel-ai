@@ -1,4 +1,28 @@
 //! System-call numbers.
+//!
+//! Each lane has its own block of numbers, so two PRs adding calls never touch
+//! the same lines: a lane gives its next call the next free number in its own
+//! block and adds it in its own section below, after a blank line from the
+//! section before. [`MAX`] is the end of the reserved blocks, so a new call never
+//! changes it; an unused number in a block answers NotFound.
+//!
+//! | Numbers | Lane | Holds |
+//! |---|---|---|
+//! | 0-63 | P0 and P1, numbered as they landed | |
+//! | 64-65 | model lane (S10-3) | MODEL_KV_LOAD, MODEL_KV_SAVE (interim) |
+//! | 66-70 | S-io (P2) | PART_INFO, PART_READ, PART_WRITE, PART_FLUSH; ENDPOINT_MINT |
+//! | 71-72 | K | PROC_STOP_ONCE, RULE_CHECK |
+//! | 73-79 | G-core (P3) | DISPLAY_CLAIM, DISPLAY_FLUSH, DISPLAY_CURSOR, DISPLAY_CURSOR_MOVE, INPUT_READ; 2 spare |
+//! | 80-89 | K, spare | P2 task 10's model-store calls, P2 task 12's grants |
+//! | 90-99 | S-engine (P2) | |
+//! | 100-109 | P, packages (P2) | |
+//! | 110-119 | A-core | |
+//! | 120-129 | model lane | |
+//! | 130-139 | D, drivers (ADR 0007) | RING_ATTACH, RING_NOTIFY, NOTIFY_WAIT, INPUT_PUSH |
+//! | 140-149 | C, components | |
+//! | 150-159 | V, virtual machines (P6) | |
+//! | 160-169 | M, memory | |
+//! | 170-191 | not given yet | a lane asks lane K for a block |
 
 /// `exit(code: i32) -> !`
 pub const EXIT: u64 = 0;
@@ -250,6 +274,8 @@ pub const JOB_KILL: u64 = 62;
 /// Needs [`super::cap::THREADS`]. (llm keeps its main thread beside its workers'
 /// CPUs.)
 pub const THREAD_PIN: u64 = 63;
+// ---- Model lane, 64-65 (and 120-129) ----
+
 /// **Interim** (S10-3; removed at P2 task 10, when the KV files move to
 /// `/system/models/cache/`). `model_kv_load(region, offset, buf, len) -> len`:
 /// reads `len` bytes at byte `offset` of KV region `region` of the `kai-cache`
@@ -263,10 +289,12 @@ pub const MODEL_KV_LOAD: u64 = 64;
 /// every write so far durable after it, and anything else is Invalid.
 /// Permission when the disk cannot be written.
 pub const MODEL_KV_SAVE: u64 = 65;
+
+// ---- S-io, 66-70 ----
+
 /// `part_info(handle, &mut part::PartInfo) -> 0`: the partition a `Partition`
 /// handle names: its length in sectors, the most one call moves, and whether it
 /// takes writes. Needs INSPECT. NotFound when the disk has no such partition.
-/// Numbered at merge (P2 task 3).
 pub const PART_INFO: u64 = 66;
 /// `part_read(handle, sector, buf, len) -> len`: reads `len` bytes from sector
 /// `sector` of the partition into `buf`. `len` is whole sectors, 1 to
@@ -280,5 +308,58 @@ pub const PART_READ: u64 = 67;
 pub const PART_WRITE: u64 = 68;
 /// `part_flush(handle) -> 0`: makes every write before it durable. Needs WRITE.
 pub const PART_FLUSH: u64 = 69;
-/// The highest call number.
-pub const MAX: u64 = PART_FLUSH;
+
+// ---- Lane K, 71-72 and 80-89 ----
+
+// ---- G-core, 73-79 ----
+
+// ---- S-engine, 90-99 ----
+
+// ---- P, 100-109 ----
+
+// ---- A-core, 110-119 ----
+
+// ---- D, 130-139 ----
+
+// ---- C, 140-149 ----
+
+// ---- V, 150-159 ----
+
+// ---- M, 160-169 ----
+
+/// The end of the reserved blocks (see the table above): the highest number a
+/// call may have. A call that is not there yet answers NotFound.
+pub const MAX: u64 = 191;
+
+#[cfg(test)]
+mod tests {
+    /// Every call constant in this file, by name and number, read from its own
+    /// source so a new call needs no edit here.
+    fn calls() -> alloc::vec::Vec<(&'static str, u64)> {
+        include_str!("call.rs")
+            .lines()
+            .filter_map(|line| line.strip_prefix("pub const "))
+            .filter_map(|rest| {
+                let (name, value) = rest.split_once(": u64 = ")?;
+                let value = value.strip_suffix(';')?;
+                // Flags such as WRITE_LOG_ONLY are not call numbers.
+                if value.contains("<<") || name == "MAX" {
+                    return None;
+                }
+                Some((name, value.parse().ok()?))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn every_call_has_its_own_number_within_max() {
+        let calls = calls();
+        assert!(calls.len() > 60, "{} calls read", calls.len());
+        for (i, (name, n)) in calls.iter().enumerate() {
+            assert!(*n <= super::MAX, "{name} = {n} is past MAX");
+            for (other, m) in &calls[i + 1..] {
+                assert_ne!(n, m, "{name} and {other} share {n}");
+            }
+        }
+    }
+}
