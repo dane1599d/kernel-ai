@@ -21,10 +21,10 @@
 use crate::Error;
 use crate::dev::BlockDev;
 use crate::format::BlockPtr;
-use crate::fs::{Fs, decode_value, inline_of};
+use crate::fs::{Fs, decode_value, inline_of, value_len};
 use crate::items::{
-    CHUNK, Entry, FileType, Inode, K_DATA, K_DIRENT, K_INODE, K_XATTR, MAX_NAME, ROOT,
-    decode_names, valid_name,
+    Entry, FileType, Inode, K_DATA, K_DIRENT, K_INODE, K_XATTR, MAX_NAME, ROOT, decode_names,
+    valid_name,
 };
 use crate::tree::Key;
 use alloc::collections::BTreeSet;
@@ -453,7 +453,8 @@ impl<D: BlockDev> Fs<D> {
         let mut out = vec![0; (end - off) as usize];
         for (key, raw) in self.items_in(View::Tree(root), ino, K_DATA)? {
             let at = key.off;
-            if at.saturating_add(CHUNK) <= off || at >= end {
+            let len = value_len(&raw).ok_or(Error::Corrupt("a data item"))? as u64;
+            if at.saturating_add(len) <= off || at >= end {
                 continue;
             }
             let value = decode_value(&raw, &mut self.io)?;

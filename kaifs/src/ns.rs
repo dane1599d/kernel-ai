@@ -18,7 +18,8 @@ use crate::dev::BlockDev;
 use crate::fs::{Fs, MAX_INLINE, SYSTEM, VOLUMES, decode_value, inline_of, value_len};
 use crate::items::{
     CHUNK, Entry, FileType, Inode, K_DATA, K_DIRENT, K_INODE, K_XATTR, MAX_FILE, ROOT,
-    decode_attrs, decode_names, encode_attrs, encode_names, hash_name, valid_attr_name, valid_name,
+    SEALED_CHUNK, decode_attrs, decode_names, encode_attrs, encode_names, hash_name,
+    valid_attr_name, valid_name,
 };
 use crate::tree::Key;
 use alloc::collections::BTreeSet;
@@ -448,7 +449,12 @@ impl<D: BlockDev> Fs<D> {
     }
 
     /// The raw DATA items of `ino` from offset `from` on: (offset, raw value).
-    fn chunks(&mut self, ino: u64, from: u64, to: u64) -> Result<Vec<(u64, Vec<u8>)>, Error> {
+    pub(crate) fn chunks(
+        &mut self,
+        ino: u64,
+        from: u64,
+        to: u64,
+    ) -> Result<Vec<(u64, Vec<u8>)>, Error> {
         let mut out = Vec::new();
         self.scan_raw(&Key::new(ino, K_DATA, from), &mut |key, raw| {
             let mine = key.oid == ino && key.kind == K_DATA && key.off < to;
@@ -468,7 +474,13 @@ impl<D: BlockDev> Fs<D> {
             return Ok(Vec::new());
         }
         let mut out = vec![0; (end - off) as usize];
-        for (at, raw) in self.chunks(ino, off / CHUNK * CHUNK, end)? {
+        // A sealed file's item holding `off` may start up to 2 MiB before it;
+        // the items that end before `off` are passed over unread.
+        for (at, raw) in self.chunks(ino, off / SEALED_CHUNK * SEALED_CHUNK, end)? {
+            let len = value_len(&raw).ok_or(Error::Corrupt("a data item"))?;
+            if at.saturating_add(len as u64) <= off {
+                continue;
+            }
             let value = decode_value(&raw, &mut self.io)?;
             let bytes = value.bytes();
             let lo = off.max(at);
@@ -503,6 +515,7 @@ impl<D: BlockDev> Fs<D> {
     pub fn write_at(&mut self, ino: u64, off: u64, data: &[u8]) -> Result<(), Error> {
         self.writing()?;
         let mut inode = self.file(ino)?;
+        self.unsealed(ino)?;
         let end = off
             .checked_add(data.len() as u64)
             .filter(|&end| end <= MAX_FILE)
@@ -536,6 +549,7 @@ impl<D: BlockDev> Fs<D> {
     pub fn truncate(&mut self, ino: u64, size: u64) -> Result<(), Error> {
         self.writing()?;
         let mut inode = self.file(ino)?;
+        self.unsealed(ino)?;
         if size > MAX_FILE {
             return Err(Error::Invalid("a file over 256 TiB"));
         }
