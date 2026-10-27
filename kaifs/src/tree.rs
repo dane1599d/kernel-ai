@@ -514,7 +514,7 @@ impl Tree {
         let Some(root) = &self.root else {
             return Ok(());
         };
-        scan(root, from, store, visit).map(|_| ())
+        scan(root, Bounds::ALL, from, store, visit).map(|_| ())
     }
 
     /// Writes every dirty node; returns the root's pointer, or null if empty.
@@ -540,13 +540,64 @@ impl Tree {
     ) -> Result<(), Error> {
         match &self.root {
             None => Ok(()),
-            Some(root) => born_after(root, since, store, visit),
+            Some(root) => born_after(root, Bounds::ALL, since, store, visit),
         }
     }
 }
 
+/// The keys a node may hold, as its parents route them: from `lo` on, and
+/// below `hi` if there is one.
+#[derive(Clone, Copy, Debug)]
+struct Bounds {
+    lo: Key,
+    hi: Option<Key>,
+}
+
+impl Bounds {
+    const ALL: Bounds = Bounds {
+        lo: Key::MIN,
+        hi: None,
+    };
+
+    /// Child `i`'s: from its key on (the first child takes every key below its
+    /// key too, as a lookup routes them), to the next child's key.
+    fn child(self, children: &[(Key, Child)], i: usize) -> Bounds {
+        let lo = match i {
+            0 => self.lo,
+            _ => self.lo.max(children[i].0),
+        };
+        let hi = match (children.get(i + 1).map(|(k, _)| *k), self.hi) {
+            (Some(k), Some(h)) => Some(k.min(h)),
+            (k, h) => k.or(h),
+        };
+        Bounds { lo, hi }
+    }
+
+    fn holds(self, key: &Key) -> bool {
+        *key >= self.lo && self.hi.is_none_or(|h| *key < h)
+    }
+}
+
+/// Loads a node a walk reaches, which must hold together where it lies: a leaf
+/// holds at least one item, each inside the bounds its parents give it. The
+/// bounds of a tree's nodes never overlap, so a node a hostile disk names twice
+/// fails at its second visit, and no walk reads more nodes than the disk holds.
+fn load_within(ptr: &BlockPtr, bounds: Bounds, store: &mut dyn Store) -> Result<Node, Error> {
+    let node = store.load(ptr)?;
+    if let Node::Leaf(items) = &node {
+        let (Some((first, _)), Some((last, _))) = (items.first(), items.last()) else {
+            return Err(Error::Corrupt("an empty leaf"));
+        };
+        if !bounds.holds(first) || !bounds.holds(last) {
+            return Err(Error::Corrupt("keys outside their parent's bounds"));
+        }
+    }
+    Ok(node)
+}
+
 fn born_after(
     child: &Child,
+    bounds: Bounds,
     since: u64,
     store: &mut dyn Store,
     visit: &mut dyn FnMut(&Key, &[u8]),
@@ -555,7 +606,7 @@ fn born_after(
     let node = match child {
         Child::Clean(ptr) if ptr.birth <= since => return Ok(()),
         Child::Clean(ptr) => {
-            owned = store.load(ptr)?;
+            owned = load_within(ptr, bounds, store)?;
             &owned
         }
         Child::Dirty(node) => &**node,
@@ -563,8 +614,8 @@ fn born_after(
     match node {
         Node::Leaf(items) => items.iter().for_each(|(k, v)| visit(k, v)),
         Node::Branch(_, children) => {
-            for (_, child) in children {
-                born_after(child, since, store, visit)?;
+            for (i, (_, child)) in children.iter().enumerate() {
+                born_after(child, bounds.child(children, i), since, store, visit)?;
             }
         }
     }
@@ -574,6 +625,7 @@ fn born_after(
 /// Whether to go on.
 fn scan(
     child: &Child,
+    bounds: Bounds,
     from: &Key,
     store: &mut dyn Store,
     visit: &mut dyn FnMut(&Key, &[u8]) -> bool,
@@ -582,7 +634,7 @@ fn scan(
     let node = match child {
         Child::Dirty(node) => &**node,
         Child::Clean(ptr) => {
-            owned = store.load(ptr)?;
+            owned = load_within(ptr, bounds, store)?;
             &owned
         }
     };
@@ -597,8 +649,9 @@ fn scan(
             Ok(true)
         }
         Node::Branch(_, children) => {
-            for (_, child) in &children[slot(children, from)..] {
-                if !scan(child, from, store, visit)? {
+            for i in slot(children, from)..children.len() {
+                let bounds = bounds.child(children, i);
+                if !scan(&children[i].1, bounds, from, store, visit)? {
                     return Ok(false);
                 }
             }
