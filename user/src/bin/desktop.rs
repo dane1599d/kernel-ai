@@ -452,6 +452,7 @@ fn draw(state: &mut State, screen: &Screen) {
         desk: &state.desk,
         bar: &state.bar,
         panel: &state.panel,
+        ask: None,
         now_ms: now_ms(),
     };
     let mut content = |id: WindowId, layer: &mut Canvas<'_>, at: Rect| {
