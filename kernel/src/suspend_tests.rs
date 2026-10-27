@@ -1,18 +1,20 @@
 //! `test=app-suspend` (P3 task 11): an app suspended and resumed through its
 //! host. `notes` (version 2, `kai:live`) holds a note; `ctl suspend` saves it
 //! and drops the instance, and comphost's heap in use falls by at least the
-//! instance's memory; `ctl resume` brings it back from the saved state, and the
-//! note is still there. The heap figures are comphost's own (`user::heap_bytes`),
-//! in each reply: its heap only grows, so the pages stay with the process.
+//! instance's linear memory, its own region at the cap (`memory_kib`, 2 MiB by
+//! default); `ctl resume` brings it back from the saved state, its heap in use
+//! rising again, and the note is still there. The heap figures are comphost's
+//! own (`user::heap_bytes`), in each reply: its heap only grows, so until lane
+//! K's MEM_RELEASE the pages stay with the process.
 
 use crate::{ipc, log};
 use alloc::string::String;
 
 const NAME: &str = "notes";
 const CALL_MS: u64 = 60_000;
-/// Least the suspend must free: a Rust guest's linear memory starts at 1 MiB
-/// and more.
-const MIN_FREED_KIB: u64 = 512;
+/// Least the suspend must free: the instance's memory region, at the default
+/// cap.
+const MIN_FREED_KIB: u64 = 2048;
 
 fn call(request: &str) -> Result<String, &'static str> {
     ipc::call(NAME, request.as_bytes(), CALL_MS)
@@ -48,6 +50,10 @@ pub fn check() -> Result<(), &'static str> {
     log!("app-suspend: {resumed}");
     if !resumed.starts_with("ok resumed") {
         return Err("app-suspend: notes did not resume");
+    }
+    match heap(&resumed) {
+        Some((before, after)) if after >= before + MIN_FREED_KIB => {}
+        _ => return Err("app-suspend: the resume took no memory back"),
     }
     let count = "kai-call 1\nfunc app:notes/actions@1.0.0#count\nargs {}\n";
     if !call(count)?.contains("{notes: 1, words: 2}") {

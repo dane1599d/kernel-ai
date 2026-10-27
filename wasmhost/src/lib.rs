@@ -21,6 +21,7 @@ extern crate alloc;
 mod canonical;
 mod effects;
 mod instance;
+mod linear;
 pub mod link;
 pub mod surface;
 #[cfg(test)]
