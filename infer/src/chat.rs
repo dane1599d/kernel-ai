@@ -292,6 +292,39 @@ impl<'a> Engine<'a> {
         self.slot = slot;
     }
 
+    /// Writes the slot in use as a `kai-kv 1` file ([`crate::segments`]) to
+    /// `out`, in order: its computed positions and the tokens behind them.
+    pub fn save_slot(
+        &self,
+        key: &crate::segments::Key,
+        out: &mut dyn FnMut(&[u8]) -> bool,
+    ) -> Result<(), Error> {
+        crate::segments::save(key, &self.kv, &self.cached, out)
+    }
+
+    /// Fills the slot in use from a `kai-kv 1` file read from `input`, for a
+    /// prompt of `turns`: how many positions that prompt will reuse (all of
+    /// them its prompt shares with the file, but its last). The slot is emptied
+    /// first, and on any refusal it stays empty, so the reply prefills as from
+    /// cold.
+    pub fn restore_slot(
+        &mut self,
+        key: &crate::segments::Key,
+        turns: &[Turn<'_>],
+        input: &mut dyn FnMut(&mut [u8]) -> bool,
+    ) -> Result<usize, crate::segments::Refused> {
+        let prompt = self.chat.conversation(&self.tok, turns);
+        self.cached.clear();
+        let tokens = crate::segments::restore(key, &mut self.kv, &prompt, input)?;
+        self.cached.extend_from_slice(&tokens);
+        let shared = tokens
+            .iter()
+            .zip(&prompt)
+            .take_while(|(a, b)| a == b)
+            .count();
+        Ok(shared.min(prompt.len() - 1))
+    }
+
     /// The KV slot in use.
     pub fn slot(&self) -> usize {
         self.slot

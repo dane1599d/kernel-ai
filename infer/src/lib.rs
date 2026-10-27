@@ -18,6 +18,7 @@ pub mod json;
 mod kv;
 mod model;
 mod sample;
+pub mod segments;
 pub mod tagged;
 mod weights;
 
@@ -37,6 +38,8 @@ mod prefill_tests;
 mod reference;
 #[cfg(test)]
 mod reply_tests;
+#[cfg(test)]
+mod segments_tests;
 #[cfg(test)]
 mod tests;
 
