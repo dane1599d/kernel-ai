@@ -64,6 +64,9 @@ const EPOCH: &str = "kai.fs.epoch";
 
 /// GC nodes per idle step: well under ADR 0004's 5 ms slice.
 const GC_BUDGET: u64 = 64;
+/// The oldest undo snapshots retention drops before one GC pass while space is
+/// low: one action makes one, so one a pass falls behind a busy writer.
+const DROP_PER_PASS: usize = 8;
 
 /// One request as the kernel delivered it.
 pub struct Call<'a> {
@@ -243,8 +246,12 @@ impl<D: BlockDev> Server<D> {
         }
     }
 
-    /// Between calls: a slice of the GC when space is low, never inside an action.
-    pub fn idle(&mut self) {
+    /// Between calls, never inside an action: when space is low, retention drops
+    /// the expired undo snapshots and up to [`DROP_PER_PASS`] of the oldest
+    /// (kaifs's space rule), then the GC frees what they held: a slice of it, or
+    /// while space is low the whole pass, since a writer that never pauses would
+    /// otherwise outrun it. `now` is the time in ns, as [`Call::now`].
+    pub fn idle(&mut self, now: u64) {
         if self.owner.is_some() {
             return;
         }
@@ -254,9 +261,20 @@ impl<D: BlockDev> Server<D> {
         }
         let stepped = (|| {
             if !fs.gc_running() {
+                let mut dropped = fs.expire(now)?.len();
+                for _ in 1..DROP_PER_PASS {
+                    match fs.expire(now)?.len() {
+                        0 => break,
+                        n => dropped += n,
+                    }
+                }
+                if dropped > 0 {
+                    fs.commit()?;
+                }
                 fs.gc_start()?;
             }
-            fs.gc_step(GC_BUDGET).map(|step| step.done)
+            let budget = if fs.space_low() { u64::MAX } else { GC_BUDGET };
+            fs.gc_step(budget).map(|step| step.done)
         })();
         match stepped {
             Ok(true) => {

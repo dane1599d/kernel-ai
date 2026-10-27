@@ -1,4 +1,6 @@
-//! U, updates (ADR 0008): the boot lever on the R/A/B slot disk. One case boots
+//! U, updates and the trust root: `kaituf`, `bootslot`, `updated` (ADR 0008).
+//!
+//! The boot lever on the R/A/B slot disk. One case boots
 //! ten times on one variable store, each boot a `then` of the one before, and
 //! every boot must land where `bootslot` says: a fresh install in R, A's first
 //! trial boot and commit, B staged, B failing all three of its tries through R,
@@ -120,16 +122,25 @@ const A_COMMITS: TestCase = TestCase {
     )
 };
 
-pub(super) const CASES: &[TestCase] = &[TestCase {
-    then: Some(&A_COMMITS),
-    ..boot(
-        "slot-ab",
-        "test=slot panic=reset",
-        &[
-            "slots: booted recovery (record missing)",
-            "slots: in R with no record: installed release 1 in kai-a and kai-b as trials",
-            "slots: R arms kai-a (trial)",
-            "slots: next boot kai-a",
-        ],
-    )
-}];
+pub(super) const CASES: &[TestCase] = &[
+    // Spikes S08-3 and S11-1: P-256 and Ed25519 verification, a 1,000-target
+    // `packages` role and SHA-256 in soft-float ring 3, reported in the log.
+    TestCase {
+        expect: &["tuf-bench: done"],
+        server: false,
+        ..case("tuf-bench", "test=tuf-bench")
+    },
+    TestCase {
+        then: Some(&A_COMMITS),
+        ..boot(
+            "slot-ab",
+            "test=slot panic=reset",
+            &[
+                "slots: booted recovery (record missing)",
+                "slots: in R with no record: installed release 1 in kai-a and kai-b as trials",
+                "slots: R arms kai-a (trial)",
+                "slots: next boot kai-a",
+            ],
+        )
+    },
+];

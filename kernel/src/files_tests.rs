@@ -188,6 +188,35 @@ fn minting() -> Result<(), &'static str> {
     Ok(())
 }
 
+/// `fs-actions`: `filecheck` makes 200 actions; xtask replays the log.
+pub fn actions() -> Result<(), &'static str> {
+    wait_for("actions.ok").map_err(|_| "files: filecheck's 200 actions did not finish")?;
+    log!("files: 200 file actions are on the disk; the host replays the log");
+    Ok(())
+}
+
+/// One boot of `fs-powercut`: `filecheck` checks every file after the last cut
+/// and leaves `verified-<boot>`, then makes actions until the power goes. Only
+/// the last boot ends the case; the others wait for xtask to cut them. With no
+/// `boot=N` (`xtask vbox --powercut`) filecheck numbers the boot and xtask reads
+/// its lines, so this only waits for the power to go.
+pub fn churn(boot: u64, last: bool) -> Result<(), &'static str> {
+    if boot == 0 {
+        loop {
+            threads::sleep_ms(1_000);
+        }
+    }
+    wait_for(&format!("verified-{boot}"))
+        .map_err(|_| "files: filecheck did not get through the files after the cut")?;
+    log!("files: boot {boot}: every file is whole after the cut");
+    if last {
+        return Ok(());
+    }
+    loop {
+        threads::sleep_ms(1_000);
+    }
+}
+
 /// `fs-restart`.
 pub fn restart() -> Result<(), &'static str> {
     wait_for("ready").map_err(|_| "files: filecheck did not get ready")?;

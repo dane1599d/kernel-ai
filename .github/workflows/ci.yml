@@ -47,13 +47,16 @@ jobs:
       - name: Clippy for the engine crates on the soft-float kernel target
         run: cargo clippy -p gguf -p cpufeat -p quant -p bpe -p infer --target x86_64-unknown-none -- -D warnings
       - name: Clippy for the soft-float ring-3 programs
-        run: cargo clippy -p user --target x86_64-unknown-none --lib --bin supervisor --bin shell --bin crasher --bin spinner --bin hog --bin edit --bin work --bin netcheck --bin handles --bin scriptrun --bin fs --bin filecheck --bin desktop --bin deskdemo -- -D warnings
+        run: cargo clippy -p user --target x86_64-unknown-none --lib --bin supervisor --bin shell --bin crasher --bin spinner --bin hog --bin edit --bin work --bin netcheck --bin handles --bin scriptrun --bin fs --bin filecheck --bin desktop --bin deskdemo --bin tufbench -- -D warnings
       - name: Clippy for the hard-float ring-3 programs
         run: |
-          # appbench embeds the view guest.
+          # appbench embeds the view guest; wasmhost's tests load Notes' window.
           cargo build -p comp-viewbench --target wasm32-unknown-unknown --profile component
+          cargo build -p comp-notes-window --target wasm32-unknown-unknown --profile component
           cargo clippy -Zjson-target-spec -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem -p user --target user/x86_64-kai-user.json --lib --bin llm --bin probe --bin vecstress --bin workers --bin comphost --bin appbench -- -D warnings
       - run: cargo clippy -p compsdk -p comp-notes -p comp-notes-v1 -p comp-viewbench --target wasm32-unknown-unknown -- -D warnings
+      # Alone: with comp-notes in the same run its exports would be on.
+      - run: cargo clippy -p comp-notes-window --target wasm32-unknown-unknown -- -D warnings
       - name: Clippy for each broken notes version
         run: for bug in bug-import bug-health bug-trap bug-spin; do cargo clippy -p comp-notes-bad --target wasm32-unknown-unknown --features $bug -- -D warnings; done
       - run: cargo test --features linetable/alloc,kaibundle/alloc

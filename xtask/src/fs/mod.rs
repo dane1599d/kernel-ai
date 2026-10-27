@@ -4,6 +4,7 @@
 //! ```text
 //! cargo xtask fs mkfs IMAGE [--size MIB] [--label TEXT] [--force]
 //! cargo xtask fs import IMAGE HOST_PATH GUEST_PATH
+//! cargo xtask fs import --model IMAGE FILE
 //! cargo xtask fs ls IMAGE [GUEST_PATH]
 //! cargo xtask fs cat IMAGE GUEST_PATH
 //! cargo xtask fs check IMAGE [--repair]
@@ -18,7 +19,9 @@
 //!   (decision 5). It refuses to overwrite an image unless `--force`. The other
 //!   commands also find `kai-data` on task 2's case disks, beside `kai-cache`.
 //! - `import` copies a host file or folder to a guest path, in one commit,
-//!   replacing files that are there.
+//!   replacing files that are there. `--model` writes a GGUF file as the
+//!   sealed blob `/system/models/<sha256>.gguf` and names it the active model
+//!   in `kai-data`'s sector 0 (ADR 0004 §8).
 //! - `ls` and `cat` read; `check` runs `check()` and every volume's namespace
 //!   rules. `--repair` applies kaifs's whole-disk repair to what fails them:
 //!   space, history and each volume's namespace. A disk that does not mount is
@@ -35,8 +38,9 @@
 //! `/system/models/...` are the `home`, `system` and `models` volumes. An image
 //! without a GPT is taken as kaifs over the whole file.
 
-mod blklog;
+pub(crate) mod blklog;
 mod disk;
+mod model;
 mod ops;
 #[cfg(test)]
 mod tests;
@@ -46,6 +50,7 @@ use std::path::{Path, PathBuf};
 
 const USAGE: &str = "usage: cargo xtask fs mkfs IMAGE [--size MIB] [--label TEXT] [--force]
        cargo xtask fs import IMAGE HOST_PATH GUEST_PATH
+       cargo xtask fs import --model IMAGE FILE
        cargo xtask fs ls IMAGE [GUEST_PATH]
        cargo xtask fs cat IMAGE GUEST_PATH
        cargo xtask fs check IMAGE [--repair]
@@ -66,7 +71,7 @@ pub fn main(args: &[String]) -> Result<(), String> {
             "--size" | "--label" | "--base" => {
                 flags.push((word, Some(iter.next().ok_or_else(usage)?)))
             }
-            "--force" | "--repair" | "--caught" => flags.push((word, None)),
+            "--force" | "--repair" | "--caught" | "--model" => flags.push((word, None)),
             w if w.starts_with("--") => return Err(format!("{w}: not an option of fs\n{USAGE}")),
             w => words.push(w),
         }
@@ -83,6 +88,11 @@ pub fn main(args: &[String]) -> Result<(), String> {
             };
             let label = flag("--label").flatten().unwrap_or("kai-data");
             let done = ops::mkfs(&path(0)?, mib << 20, label, flag("--force").is_some())?;
+            println!("xtask fs: {done}");
+            Ok(())
+        }
+        ("import", 2) if flag("--model").is_some() => {
+            let done = model::import_model(&path(0)?, &path(1)?)?;
             println!("xtask fs: {done}");
             Ok(())
         }

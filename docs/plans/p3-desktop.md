@@ -58,12 +58,12 @@ Host gates in CI:
 | P1's `Shm` merged, with user unmap and TLB shootdown | Met: `kernel/src/shm.rs` (7c4b51d, 8900c3e, 27864a0) |
 | P2's `fs` serving files | Not yet: P2 task 8. P3's early tasks do not need it (section 4, item 3) |
 | Batch 3 approved (ADRs 0005 and 0012) | Met: ADR 0005 accepted 2026-10-22 (decisions row "Graphics and visual direction") |
-| S05-1 "compose and look" passed | **To confirm.** No S05-1 branch, report or decisions row is on main. If it has not run, it runs first (section 5) and gates task 5 |
+| S05-1 "compose and look" passed | Met: passed 2026-10-27 under KVM at every size, on the tiny-skia path ([run 40455136156](https://github.com/dane1599d/kernel-ai/actions/runs/40455136156), spike #176, branch `spike/compose`; decisions row "S05-1 passes") |
 
 **Before the first P3 code PR:**
 
 1. **This plan is approved**, with the look (ADR 0005 question 1) answered or left at its default below.
-2. **S05-1 reports**, if it has not. Its screendumps are what the founder judges the look by.
+2. **S05-1 reports**: done (#176). Its screendumps, on branch `spike/compose` under `spikes/compose/screendumps/`, are what the founder judges the look by.
 3. **Lane C's open stack lands:** #89 (comphost on hard float, S03-1's view and layout figures), #90 (lifecycle 2 through `appabi`), #91 (`kai-actions 1`) and #98 (`wit-bindgen` guests; notes as `app:notes@1.0.0`). Task 9 builds `uikit` inside that comphost. Tasks 1-8 do not wait for them.
 
 Before task 2: lane K's turn for the `Display` and `Input` kinds and the area file `syscall/display.rs` (section 3.4).

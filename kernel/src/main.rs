@@ -107,6 +107,7 @@ mod terminal;
 mod thread_tests;
 mod threads;
 mod timer;
+mod tufbench_tests;
 mod tune_ab_tests;
 mod tune_local_tests;
 mod tune_stall_tests;
@@ -329,6 +330,8 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Part => run_case(part_tests::check),
         SelfTest::Files { .. } => run_case(|| files_tests::check(cmdline())),
         SelfTest::FilesRestart => run_case(files_tests::restart),
+        SelfTest::FilesActions => run_case(files_tests::actions),
+        SelfTest::FilesChurn { boot, last } => run_case(|| files_tests::churn(boot, last)),
         SelfTest::Model => run_case(|| model_tests::check(cmdline())),
         SelfTest::LocalAsk => run_case(|| local_tests::check(cmdline())),
         SelfTest::LocalScript => run_case(|| local_tests::check_script(cmdline())),
@@ -343,6 +346,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Fpu => run_case(fpu_tests::fpu_check),
         SelfTest::Probe => run_case(fpu_tests::probe_check),
         SelfTest::AppBench => run_case(appbench_tests::check),
+        SelfTest::TufBench => run_case(tufbench_tests::check),
         SelfTest::Handles => run_case(handle_tests::check),
         SelfTest::Threads => run_case(thread_tests::check),
         SelfTest::ThreadsKill => run_case(thread_tests::kill_check),

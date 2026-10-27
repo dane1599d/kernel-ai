@@ -314,6 +314,9 @@ pub struct TestRun<'a> {
     pub exact: Vec<String>,
     /// More text the console must contain, besides the case's own.
     pub contains: Vec<String>,
+    /// A power cut: once a kernel line containing this text appears, QEMU is
+    /// killed this much later, and the boot counts as done.
+    pub cut: Option<(String, Duration)>,
 }
 
 pub fn run_test(
@@ -341,6 +344,8 @@ pub fn run_test(
         .map_err(|e| format!("cannot start QEMU: {e}"))?;
     let stdout = child.stdout.take().ok_or("QEMU stdout was not captured")?;
     let (ready_tx, ready_rx) = mpsc::channel();
+    let (cut_tx, cut_rx) = mpsc::channel();
+    let cut_at = run.cut.clone();
     let all = (expect.clone(), exact.clone(), None);
     // The echo runs apart from the reader, as in icount.rs: printing to a slow CI
     // log must never stop QEMU's output being read. A full pipe makes QEMU hold
@@ -370,6 +375,11 @@ pub fn run_test(
             if from_programs(&line) {
                 continue;
             }
+            if let Some((text, _)) = &cut_at
+                && line.contains(text.as_str())
+            {
+                let _ = cut_tx.send(Instant::now());
+            }
             if line.contains("boot-ok") {
                 let _ = ready_tx.send(started.elapsed());
             } else if line.contains("skip keys") {
@@ -392,12 +402,25 @@ pub fn run_test(
         }
         (missing, unseen, cpu_line)
     });
+    let mut cut_seen = None;
     let status = loop {
         if let Some(status) = child
             .try_wait()
             .map_err(|e| format!("waiting on QEMU: {e}"))?
         {
             break status;
+        }
+        cut_seen = cut_seen.or_else(|| cut_rx.try_recv().ok());
+        if let (Some(seen), Some((_, delay))) = (cut_seen, &run.cut)
+            && seen.elapsed() >= *delay
+        {
+            // The power goes: QEMU stops at once, mid-write.
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = reader.join();
+            let _ = echo.join();
+            println!("xtask: power cut {} ms after the line", delay.as_millis());
+            return Ok(());
         }
         if started.elapsed() > timeout {
             let _ = child.kill();

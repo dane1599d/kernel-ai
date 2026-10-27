@@ -552,3 +552,31 @@ fn an_actions_generation_is_the_one_its_commit_gets() {
     assert_eq!(c.home(Request::Commit).0, Reply::Committed { generation });
     assert_eq!(failed(c.home(Request::Generation)), Error::Invalid);
 }
+
+#[test]
+fn a_writer_that_never_pauses_still_gets_its_undo_space_back() {
+    // A small disk: without retention, every action's undo snapshot would keep
+    // the blocks its overwrite replaced, and these actions would fill it many
+    // times over. (Trash is kept until it is emptied, so none is made here.)
+    let mut disk = MemDisk::new(2 * 1024);
+    let (mut c, _) = Client::start(&mut disk);
+    let data = vec![0x5a; 6 * 1024];
+    for i in 0..2_000u64 {
+        assert_eq!(c.home(Request::Begin { action: i + 1 }).0, Reply::Done);
+        let how = if i < 4 {
+            How::CreateFile
+        } else {
+            How::Existing
+        };
+        let file = c.open(&format!("f{}", i % 4), how).unwrap();
+        assert_eq!(c.write(&file, 0, &data), Reply::Done);
+        match c.home(Request::Commit).0 {
+            Reply::Committed { .. } => {}
+            other => panic!("action {i}: {other:?}"),
+        }
+        let now = c.now;
+        c.server.idle(now);
+    }
+    let (free, total) = c.server.fs().space();
+    assert!(free * 20 > total, "{free} of {total} blocks free");
+}
