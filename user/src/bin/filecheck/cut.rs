@@ -23,8 +23,9 @@ use kabi::handle::{Handle, Rights};
 use user::{println, sys};
 
 pub const ACTIONS: u64 = 200;
-/// At most this many live files: at the cap a create trashes one instead, so
-/// twenty boots of churn stay well inside the 64 MiB `kai-data`.
+/// At most this many live files: at the cap a create overwrites one instead.
+/// Every trash is restored nine actions later, and retention gives back what
+/// undo held, so twenty boots of churn stay inside the 64 MiB `kai-data`.
 const MAX_LIVE: usize = 160;
 /// The folder under `/home/user` the files live in.
 const DIR: &str = "cut";
@@ -111,14 +112,14 @@ fn step(dir: Handle, i: u64, state: &mut State) -> Result<(), String> {
     expect(dir, Request::Begin { action: i + 1 }, Reply::Done)?;
     let pick = |state: &State| (i as usize * 7) % state.live.len().max(1);
     let full = state.live.len() >= MAX_LIVE;
-    let trashing = i % 5 == 4 || (i % 5 < 2 && full);
+    let trashing = i % 5 == 4;
     match (i % 5, state.live.is_empty()) {
         (0 | 1, _) | (_, true) if !full => {
             let name = format!("f{i}");
             write_file(dir, &name, How::CreateFile, i, 1)?;
             state.live.push((name, i, 1));
         }
-        (2, false) => {
+        (0..=2, false) => {
             let at = pick(state);
             let (name, id, version) = state.live[at].clone();
             // A file found by listing gets a new id: its old one is unknown.
