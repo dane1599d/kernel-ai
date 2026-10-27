@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The Kernel AI contributors
+
 /// What apps and live components may import from the OS (ADR 0003, section 3).
 /// An app never reaches anything outside itself directly: reads are answered from
 /// the snapshot taken before the call, writes stay in the app's own scope, and

@@ -2,7 +2,8 @@
 name = "compsdk"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+# Programs written for Kernel AI compile it in (ADR 0009 D1).
+license = "MIT OR Apache-2.0"
 publish = false
 
 [lib]

@@ -14,8 +14,9 @@
 //! offers a choice, the alternative earliest in `allow` is taken.
 //!
 //! TODO(ADR 0009 D5): the rule that every tracked file carries our own header
-//! (or matches `REUSE.toml`) is off until the OS licence (D1) is chosen; the
-//! repository stays "all rights reserved" until then.
+//! (or matches `REUSE.toml`) is off until the headers and `REUSE.toml` land. The
+//! licence is chosen (MPL-2.0, decided 2026-10-27); files with no header are
+//! the workspace's MPL-2.0, `kabi` and `compsdk` say theirs in Cargo.toml.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;

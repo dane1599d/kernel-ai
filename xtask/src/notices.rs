@@ -96,7 +96,7 @@ pub fn image_line(root: &Path) -> String {
         .unwrap_or_else(|| "unknown".into());
     let commit = crate::esp::commit_id(root);
     format!(
-        "Kernel AI {version} (commit {commit}). Licence: not yet chosen (all rights reserved). \
+        "Kernel AI {version} (commit {commit}). Licence MPL-2.0. \
          Source: {REPOSITORY}/tree/{}\n\n",
         commit.trim_end_matches("-dirty")
     )
