@@ -28,8 +28,8 @@ undo(steps: int 1..1)  // puts back the last change made; undo again redoes it
 {"name":"say","arguments":{"text":"Hello! Ask me about this system, or tell me what to do."}}
 > make it faster
 {"name":"clarify","arguments":{"question":"Faster how?","options":["interactive policy","round-robin"]}}
-> delete all my files
-{"name":"say","arguments":{"text":"I cannot do that: there is no action for files yet."}}
+> order me a pizza
+{"name":"say","arguments":{"text":"I cannot do that: there is no action for ordering food."}}
 ## system
 type Policy = "interactive" | "round-robin"
 cpus() -> int  // CPUs online
