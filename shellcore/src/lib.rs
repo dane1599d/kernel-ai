@@ -176,6 +176,15 @@ pub trait Host {
     fn fs_change(&self, _change: FsChange) -> Result<u64, String> {
         Err(String::from("there are no files here"))
     }
+    /// The action log as `/system/log` holds it (`actlog 1`), read once at start;
+    /// `None` when there is none (P2 task 12).
+    fn log_read(&self) -> Option<String> {
+        None
+    }
+    /// Writes the whole action log to `/system/log`, after any line that changed it.
+    fn log_write(&self, _text: &str) -> Result<(), String> {
+        Ok(())
+    }
     /// Restores what transaction `txn` replaced, as one new transaction: its number,
     /// so `undo` again can redo. Compare-and-set: refused when a later change
     /// touched the same files, unless `anyway`.
@@ -363,6 +372,9 @@ pub struct Shell {
     /// The `pack_id` of the pack the model is given, logged with each model turn
     /// (ADR 0010 §7): the same one llm reports for its `act` slot.
     pack_id: u64,
+    /// The log text last written to `/system/log`, so an unchanged log is not
+    /// written again.
+    saved_log: Option<String>,
     /// The ONCE of the menu answer now running, kept for the call's owner to
     /// check: the shell does not spend it (P1 task 14).
     owner_once: Option<u64>,
@@ -411,7 +423,43 @@ impl Shell {
             partial: None,
             clarifying: None,
             pack_id: llmproto::pack::act_pack_id(),
+            saved_log: None,
             owner_once: None,
+        }
+        .with_saved_log()
+    }
+
+    /// The log `/system/log` holds, so `undo` works across a reboot; a text that
+    /// is not `actlog 1` is set aside, and the log starts again.
+    fn with_saved_log(mut self) -> Self {
+        let Some(text) = self.host.log_read() else {
+            // Nothing on disk is an empty log: it needs no write until it changes.
+            self.saved_log = Some(self.log.text());
+            return self;
+        };
+        match actlog::parse(&text) {
+            Ok(records) => {
+                self.log = actlog::ActLog::from_records(records);
+                self.next_id = self.log.last_id() + 1;
+                self.saved_log = Some(text);
+            }
+            Err(error) => self.host.audit(&format!(
+                "the log on disk is not actlog 1 (line {}: {}); starting a new one",
+                error.line, error.why
+            )),
+        }
+        self
+    }
+
+    /// Writes the log to `/system/log` if the line changed it.
+    fn save_log(&mut self) {
+        let text = self.log.text();
+        if self.saved_log.as_ref() == Some(&text) {
+            return;
+        }
+        match self.host.log_write(&text) {
+            Ok(()) => self.saved_log = Some(text),
+            Err(why) => self.host.audit(&format!("the log was not written: {why}")),
         }
     }
 
@@ -421,8 +469,14 @@ impl Shell {
         self.last_output.as_deref()
     }
 
-    /// Runs one line and returns what to show.
+    /// Runs one line and returns what to show; the log goes to disk after it.
     pub fn eval(&mut self, input: &str) -> Reply {
+        let reply = self.eval_line(input);
+        self.save_log();
+        reply
+    }
+
+    fn eval_line(&mut self, input: &str) -> Reply {
         if let Some(entry) = self.partial.take() {
             return self.continue_entry(entry, input);
         }

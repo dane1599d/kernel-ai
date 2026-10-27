@@ -70,7 +70,7 @@ fn the_text_has_adr_0002s_records_and_reads_back() {
         "actlog 1\nE 17 t=1792618800123456789 reg=1 pack=0123456789abcdef form=call tier=run consent=asked state=done\nR 21\nswitch to round robin\n"
     ));
     assert!(text.contains(
-        "D 17.1 set_policy owner=kernel res=policy before=interactive after=round-robin inv=restore\n"
+        "D 17.1 set_policy owner=kernel res=policy before=interactive after=round-robin inv=spec:1:0:2:0\n"
     ));
     assert!(text.contains("U 18 of=17 t=1792618800123456789 state=done\n"));
     assert!(text.contains(
@@ -78,7 +78,8 @@ fn the_text_has_adr_0002s_records_and_reads_back() {
     ));
     let read = parse(&text).unwrap();
     assert_eq!(read.len(), 3);
-    // What the text holds comes back; the runtime inverse is not text.
+    // What the text holds comes back, each change's inverse with it, so `undo`
+    // works on a log read from disk.
     let Record::Entry(first) = &read[0] else {
         panic!("not an entry")
     };
@@ -87,7 +88,10 @@ fn the_text_has_adr_0002s_records_and_reads_back() {
         first.changes[0].what(),
         "policy round-robin (was interactive)"
     );
-    assert_eq!(first.changes[0].inverse, None);
+    assert_eq!(
+        first.changes[0].inverse,
+        sample().get(17).unwrap().changes[0].inverse
+    );
     assert_eq!(parse(&text).unwrap(), read);
 }
 
@@ -128,7 +132,7 @@ fn malformed_text_is_refused_with_its_line() {
             "runs past the end",
         ),
         (
-            "actlog 1\nE 1 t=0 reg=1 pack=- form=call tier=run consent=a state=done\nD 1.2 a owner=k res=p before=a after=b inv=restore\n",
+            "actlog 1\nE 1 t=0 reg=1 pack=- form=call tier=run consent=a state=done\nD 1.2 a owner=k res=p before=a after=b inv=none\n",
             "out of order",
         ),
         (
