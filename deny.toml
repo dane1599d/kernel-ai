@@ -34,6 +34,9 @@ exceptions = [
     { crate = "smartstring", allow = ["MPL-2.0"] },
     # The console glyphs are Noto Sans Mono font data (decided 2026-10-22).
     { crate = "noto-sans-mono-bitmap", allow = ["OFL-1.1"] },
+    # The desktop's fonts, Inter and JetBrains Mono in assets/fonts, which gfx2d
+    # draws with (ADR 0005 question 2, decided 2026-10-22).
+    { crate = "gfx2d", allow = ["OFL-1.1"] },
 ]
 
 [licenses.private]
