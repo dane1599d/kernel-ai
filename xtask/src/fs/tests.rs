@@ -201,6 +201,31 @@ fn check_repairs_what_it_finds_wrong() {
     ops::check_image(&image, false).unwrap();
 }
 
+/// A disk no commit of which mounts, its allocator's chain overwritten:
+/// `check --repair` mounts it from what the trees reach, and it checks after.
+#[test]
+fn check_repair_mounts_a_disk_whose_allocator_does_not_read() {
+    let dir = scratch("allocator");
+    let image = made(&dir);
+    let chain: Vec<u64> = {
+        let fs = ops::open(&image, false).unwrap();
+        fs.io.alloc.chain().iter().map(|p| p.addr).collect()
+    };
+    let mut bytes = std::fs::read(&image).unwrap();
+    let region = disk::locate(&mut Bytes(&bytes), bytes.len() as u64).unwrap();
+    for addr in chain {
+        let at = (region.offset + addr * BLOCK as u64) as usize;
+        bytes[at..at + BLOCK].fill(0xA5);
+    }
+    std::fs::write(&image, &bytes).unwrap();
+    assert!(ops::check_image(&image, false).is_err());
+    let lines = ops::check_image(&image, true).unwrap();
+    assert!(lines[0].contains("the disk does not mount"), "{lines:?}");
+    ops::check_image(&image, false).unwrap();
+    let home = ops::ls(&image, "/home").unwrap();
+    assert!(home.iter().any(|line| line.contains("user")), "{home:?}");
+}
+
 /// kaifs on a case disk as task 2's `make_disk` lays it out, `kai-cache` after
 /// `kai-data`: every command finds `kai-data` by its type GUID and leaves the
 /// cache alone. A disk whose primary GPT is gone is read from its backup.
