@@ -21,6 +21,10 @@ pub enum Kind {
     Button = 4,
     /// A wheel; `code` 0 vertical, 1 horizontal; `value` in detents.
     Wheel = 5,
+    /// Ours, not ADR 0007's: the screen changed hands. `value` 0 when
+    /// Ctrl+Alt+F12 gave it to the console (the claim is revoked), 1 when a
+    /// second press gives it back (claim it again).
+    Screen = 6,
 }
 
 impl Kind {
@@ -31,6 +35,7 @@ impl Kind {
             3 => Some(Kind::Abs),
             4 => Some(Kind::Button),
             5 => Some(Kind::Wheel),
+            6 => Some(Kind::Screen),
             _ => None,
         }
     }

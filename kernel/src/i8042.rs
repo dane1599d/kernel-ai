@@ -165,8 +165,12 @@ pub fn on_interrupt() -> Option<usize> {
     take_waiter()
 }
 
-/// Queues one ring entry, dropping it if the ring is full.
+/// Queues one ring entry, dropping it if the ring is full. While `desktop` holds
+/// the screen the kernel's input queue takes it instead (`crate::input`).
 fn enqueue(entry: u16) {
+    if crate::input::on_byte(entry as u8, entry & AUX_TAG != 0) == crate::input::Route::Taken {
+        return;
+    }
     let head = HEAD.load(Ordering::Relaxed);
     if head.wrapping_sub(TAIL.load(Ordering::Acquire)) < RING {
         ENTRIES[head % RING].store(entry, Ordering::Relaxed);

@@ -77,6 +77,17 @@ pub(super) const CASES: &[TestCase] = &[
         expect: &["many-processes: 40 idle processes ran at once beside the shell and llm"],
         ..case("many-processes", "test=many-processes")
     },
+    // P3 task 2: desktop claims the screen; Ctrl+Alt+F12 switches it.
+    TestCase {
+        expect: &[
+            "desktop: claimed",
+            "desktop: key 0x4 1",
+            "desktop: lost the screen to the console",
+            "desktop: the screen is back",
+            "display-claim: desktop claimed the screen, Ctrl+Alt+F12 gave it to the console and back, and only desktop could hold it",
+        ],
+        ..case("display-claim", "test=display-claim")
+    },
     // P1 task 14: shared pages, and spike S01-1's M6.
     TestCase {
         expect: &[

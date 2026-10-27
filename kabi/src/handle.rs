@@ -81,6 +81,11 @@ pub enum Kind {
     Dir = 14,
     /// A file, served by `fs`; badge (volume, object id).
     File = 15,
+    /// The screen ([`crate::display`]): only `desktop`'s. Numbered at merge,
+    /// after P2's Partition (13) and the fs service's Dir and File (14, 15).
+    Display = 16,
+    /// The kernel's input queue: only `desktop`'s.
+    Input = 17,
 }
 
 impl Kind {
@@ -100,6 +105,8 @@ impl Kind {
         Kind::Partition,
         Kind::Dir,
         Kind::File,
+        Kind::Display,
+        Kind::Input,
     ];
 
     pub fn from_raw(raw: u32) -> Option<Kind> {
@@ -123,6 +130,8 @@ impl Kind {
             Kind::Partition => "partition",
             Kind::Dir => "dir",
             Kind::File => "file",
+            Kind::Display => "display",
+            Kind::Input => "input",
         }
     }
 }
@@ -273,6 +282,6 @@ mod tests {
             assert_eq!(Kind::from_raw(kind as u32), Some(kind));
         }
         assert_eq!(Kind::from_raw(0), None);
-        assert_eq!(Kind::from_raw(16), None);
+        assert_eq!(Kind::from_raw(18), None);
     }
 }

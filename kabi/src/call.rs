@@ -344,6 +344,33 @@ pub const ONCE_CHECK_FOR: u64 = 82;
 
 // ---- G-core, 73-79 ----
 
+/// `display_claim(&mut DisplayInfo) -> handle`: stops the console painting and
+/// hands over the screen's back buffer as a kernel-owned `Shm` (MAP, READ,
+/// WRITE; not DUPLICATE or TRANSFER), 4 KiB pages of XRGB8888 rows,
+/// [`crate::display::DisplayInfo`] saying their shape. Needs a `Display` handle.
+/// Busy while the screen is the console's after Ctrl+Alt+F12, until the second
+/// press; NotFound without a display. The kernel revokes the `Shm` when its
+/// holder exits or Ctrl+Alt+F12 is pressed (ADR 0005 §2).
+pub const DISPLAY_CLAIM: u64 = 73;
+/// `display_flush(rects, n) -> 0`: puts up to [`crate::display::MAX_FLUSH`]
+/// rectangles ([`crate::display::FlushRect`]) of the claimed back buffer on
+/// screen: a transfer and flush each on virtio-gpu, nothing on GOP. Needs the
+/// claim.
+pub const DISPLAY_FLUSH: u64 = 74;
+/// `display_cursor(image, hot_x, hot_y) -> 0`: the 64x64 `0xAARRGGBB` hardware
+/// cursor at `image` (16 KiB), its hot spot. NotFound without virtio-gpu (GOP
+/// has none: `desktop` draws its own). Needs the claim.
+pub const DISPLAY_CURSOR: u64 = 75;
+/// `display_cursor_move(x, y) -> 0`: moves the hardware cursor's hot spot.
+/// Needs the claim.
+pub const DISPLAY_CURSOR_MOVE: u64 = 76;
+/// `input_read(buf, cap, timeout_ms) -> n`: up to `cap` 16-byte
+/// [`crate::input::InputEvent`]s from the kernel's one input queue, waiting up
+/// to `timeout_ms` for the first. Needs an `Input` handle. While the console
+/// holds the screen the queue gets nothing but a
+/// [`crate::input::Kind::Screen`] event when it changes hands.
+pub const INPUT_READ: u64 = 77;
+
 // ---- S-engine, 90-99 ----
 
 // ---- P, 100-109 ----

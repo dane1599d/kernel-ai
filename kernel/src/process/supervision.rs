@@ -37,6 +37,9 @@ const DEFAULT_BURST_MS: u64 = 2000;
 pub const COMPONENT_HOST: &str = "comphost";
 /// The one service that may hold `cap::STOP`.
 pub const STOPPER: &str = "shell";
+/// The service, running the program of the same name, that may hold the screen
+/// and read the input queue (ADR 0005 §2).
+pub const DESKTOP: &str = "desktop";
 /// The one service that may hold `cap::SCRIPT`.
 pub const SCRIPTER: &str = "shell";
 /// The one service, and program, that may hold `cap::PUBLISH`.
@@ -316,6 +319,12 @@ pub fn spawn_service(slot: usize, request_ptr: u64) -> Result<u64, Error> {
     }
     // Uploading versions and reaching the build service are for the edit service.
     if request.limits.caps & cap::PUBLISH != 0 && (name != PUBLISHER || program != PUBLISHER) {
+        return Err(Error::Permission);
+    }
+    // The screen and the input queue are `desktop`'s alone (ADR 0005 §2).
+    if request.limits.caps & (cap::DISPLAY | cap::INPUT) != 0
+        && (name != DESKTOP || program != DESKTOP)
+    {
         return Err(Error::Permission);
     }
     // The model is mapped, and worker threads run, only in the llm service.

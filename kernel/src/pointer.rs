@@ -195,6 +195,17 @@ static EVENTS: Mutex<Queue> = Mutex::new(Queue {
 /// Queues `event`. Safe from interrupt handlers: the lock is only ever held with
 /// interrupts off.
 pub fn push(event: Event) {
+    // While `desktop` holds the screen, its input queue takes the report.
+    if crate::input::taking() {
+        let motion = match event.motion {
+            Motion::Relative { dx, dy } => crate::input::Motion::Relative { dx, dy },
+            Motion::Absolute { x, y, x_max, y_max } => {
+                crate::input::Motion::Absolute { x, y, x_max, y_max }
+            }
+        };
+        crate::input::on_pointer(motion, event.buttons);
+        return;
+    }
     let (width, height) = console::pixels().unwrap_or((1, 1));
     let (width, height) = (width.max(1) as u64, height.max(1) as u64);
     x86_64::instructions::interrupts::without_interrupts(|| {

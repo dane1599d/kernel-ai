@@ -11,6 +11,7 @@
 //! in range, otherwise the largest sensible mode the device offers
 //! (`gfxcore::mode`).
 
+pub mod claim;
 mod gpu;
 
 use crate::log;

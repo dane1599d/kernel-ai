@@ -62,6 +62,9 @@ const UNKNOWN: Painted = Painted {
 
 struct Console {
     out: Option<Output>,
+    /// Where it drew while `desktop` holds the screen (ADR 0005 §2): the text
+    /// still goes into the grid, and [`resume`] repaints from it.
+    parked: Option<Output>,
     grid: Screen,
     painted: [Painted; MAX_ROWS],
     /// The row the busy sign is drawn on (`show_sign`).
@@ -73,6 +76,7 @@ unsafe impl Send for Console {}
 
 static CONSOLE: Mutex<Console> = Mutex::new(Console {
     out: None,
+    parked: None,
     grid: Grid::new(),
     painted: [UNKNOWN; MAX_ROWS],
     sign: None,
@@ -153,6 +157,46 @@ pub fn attach(surface: Surface) -> bool {
     CELL_WIDTH.store(layout.font.width, Ordering::Relaxed);
     CELL_HEIGHT.store(layout.font.height, Ordering::Relaxed);
     true
+}
+
+/// Whether the console has stopped painting because `desktop` holds the screen.
+pub fn suspended() -> bool {
+    serial::with_line(|| CONSOLE.lock().parked.is_some())
+}
+
+/// Stops painting while `desktop` holds the screen; text still goes into the
+/// grid and to serial.
+pub fn suspend() {
+    serial::with_line(|| {
+        let mut console = CONSOLE.lock();
+        if let Some(out) = console.out.take() {
+            console.parked = Some(out);
+        }
+    });
+}
+
+/// Paints again after `desktop` lost the screen: the whole screen, from the grid.
+pub fn resume() {
+    serial::with_line(|| {
+        let mut console = CONSOLE.lock();
+        let Some(out) = console.parked.take() else {
+            return;
+        };
+        let layout = out.layout;
+        let height = HEIGHT.load(Ordering::Relaxed);
+        out.fb.fill(0, 0, layout.width, height, theme::INK);
+        status::paint_brand(out.fb, &layout);
+        console.out = Some(out);
+        console.painted = [UNKNOWN; MAX_ROWS];
+        console.sign = None;
+        let _ = console.grid.take_damage();
+        let (_, rows) = console.grid.size();
+        let input = console.grid.input_span();
+        for row in 0..rows {
+            console.paint_row(out, row, input);
+        }
+        let _ = crate::display::flush(Rect::screen(layout.width as u32, height as u32));
+    });
 }
 
 /// Stops drawing, for a test that draws on the display itself; text still goes

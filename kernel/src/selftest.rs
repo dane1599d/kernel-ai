@@ -93,6 +93,8 @@ pub enum SelfTest {
     Shm,
     /// The raised table limits (P3 task 4, ADR 0003 §6): 40 processes at once.
     ManyProcesses,
+    /// `desktop` claims the screen; Ctrl+Alt+F12 switches it (P3 task 2).
+    DisplayClaim,
     /// `scriptrun` through a Job, and spike S01-1's M3 and M5 (P1 task 14).
     Scriptrun,
     /// L2: processes keep their vector state across switches and CPUs, and start clean.
@@ -197,6 +199,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=proc-stop" => Some(SelfTest::ProcStop),
             "test=shm" => Some(SelfTest::Shm),
             "test=many-processes" => Some(SelfTest::ManyProcesses),
+            "test=display-claim" => Some(SelfTest::DisplayClaim),
             "test=scriptrun" => Some(SelfTest::Scriptrun),
             "test=fpu" => Some(SelfTest::Fpu),
             "test=probe" => Some(SelfTest::Probe),
@@ -254,6 +257,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::ManyProcesses
             | SelfTest::Files { .. }
             | SelfTest::FilesRestart
+            | SelfTest::DisplayClaim
             | SelfTest::TuneRevert
             | SelfTest::TuneStall
             | SelfTest::Tune
@@ -336,6 +340,10 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
     }
     if test == SelfTest::ManyProcesses {
         plan.push_str(&crate::many_tests::plan());
+    }
+    if test == SelfTest::DisplayClaim {
+        plan.push('\n');
+        plan.push_str(crate::claim_tests::PLAN);
     }
     if test == SelfTest::None {
         plan.push('\n');
