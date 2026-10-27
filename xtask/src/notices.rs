@@ -82,9 +82,10 @@ fn stale(committed: &str, generated: &str) -> Option<Vec<String>> {
     Some(lines)
 }
 
-/// The line `make_esp` puts above the notices on the boot drive.
+/// The line `make_esp` puts above the notices on the boot drive. The version is
+/// the workspace's one (`[workspace.package]`, ADR 0009 D7).
 pub fn image_line(root: &Path) -> String {
-    let version = fs::read_to_string(root.join("kernel/Cargo.toml"))
+    let version = fs::read_to_string(root.join("Cargo.toml"))
         .ok()
         .and_then(|toml| {
             toml.lines().find_map(|l| {
@@ -360,6 +361,12 @@ fn cargo(root: &Path, args: &[&str]) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_image_line_names_the_workspace_version() {
+        let line = image_line(&crate::workspace_root());
+        assert!(line.starts_with("Kernel AI 0.1.0-dev (commit "), "{line}");
+    }
 
     #[test]
     fn only_registry_crates_count_as_shipped() {
