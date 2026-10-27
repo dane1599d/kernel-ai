@@ -5,6 +5,7 @@
 
 use kaifs::check::{Cache, check};
 use kaifs::format::{self, Superblock};
+use kaifs::fs::SYSTEM;
 use kaifs::fs::inline_of;
 use kaifs::items::{Entry, K_DATA, K_DIRENT, K_INODE, K_XATTR, encode_names};
 use kaifs::ns::Listed;
@@ -29,7 +30,7 @@ fn commit_and_check(fs: &mut Fs<MemDisk>) -> kaifs::ns_check::NsReport {
     fs.commit().unwrap();
     let mut cache = Cache::default();
     check(fs, &mut cache).unwrap();
-    (*check_namespace(fs, &mut cache).unwrap().live).clone()
+    (*check_namespace(fs, &mut cache).unwrap().volumes[&SYSTEM].live).clone()
 }
 
 fn bytes(seed: u64, len: usize) -> Vec<u8> {
@@ -68,7 +69,9 @@ fn mkfs_makes_an_empty_root_that_checks_clean() {
     let mut cache = Cache::default();
     check(&mut fs, &mut cache).unwrap();
     let ns = check_namespace(&mut fs, &mut cache).unwrap();
-    assert_eq!((ns.live.dirs, ns.live.files), (1, 0));
+    let live = &ns.volumes[&SYSTEM].live;
+    assert_eq!((live.dirs, live.files), (1, 0));
+    assert_eq!(ns.volumes.len(), 3, "system, home and models");
 }
 
 #[test]
@@ -355,7 +358,7 @@ fn inode_numbers_are_never_reused() {
     commit_and_check(&mut fs);
     let c = fs.create(ROOT, "c").unwrap();
     fs.commit().unwrap();
-    assert!(fs.restore(snap).unwrap());
+    assert!(fs.restore_snapshot(snap).unwrap());
     let d = fs.create(ROOT, "d").unwrap();
     assert!(d > c, "a restore does not wind the counter back");
     commit_and_check(&mut fs);

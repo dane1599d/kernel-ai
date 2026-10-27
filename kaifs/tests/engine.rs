@@ -4,6 +4,7 @@
 
 use kaifs::check::{Cache, check};
 use kaifs::format::{self, Superblock};
+use kaifs::fs::VOLUME;
 use kaifs::{BlockDev, DevInfo, Error, Fs, Key, MemDisk, Value};
 
 const BLOCKS: u64 = 8192;
@@ -26,7 +27,10 @@ fn a_fresh_filesystem_mounts_empty_and_checks_clean() {
     assert_eq!(fs.committed, 1);
     assert_eq!(fs.get(&key(1)).unwrap(), None);
     let report = check(&mut fs, &mut Cache::default()).unwrap();
-    assert_eq!((report.live.count, report.leaked_blocks), (0, 0));
+    assert_eq!(
+        (report.volumes[&VOLUME].live.count, report.leaked_blocks),
+        (0, 0)
+    );
 }
 
 #[test]
@@ -91,9 +95,9 @@ fn a_snapshot_keeps_its_state_and_restore_brings_it_back() {
     let mut fs = remount(fs);
     assert_eq!(fs.snapshots().len(), 1);
     let report = check(&mut fs, &mut Cache::default()).unwrap();
-    assert_eq!(report.live.count, 2);
-    assert_eq!(report.snaps[&id].count, 1);
-    assert!(fs.restore(id).unwrap());
+    assert_eq!(report.volumes[&VOLUME].live.count, 2);
+    assert_eq!(report.volumes[&VOLUME].snaps[&id].count, 1);
+    assert!(fs.restore_snapshot(id).unwrap());
     fs.commit().unwrap();
     let mut fs = remount(fs);
     assert_eq!(
@@ -122,7 +126,7 @@ fn restore_then_drop_keeps_the_restored_blocks() {
     for n in 0..500 {
         fs.put(key(n), &[0xEE; 60]).unwrap();
     }
-    fs.restore(id).unwrap();
+    fs.restore_snapshot(id).unwrap();
     fs.drop_snapshot(id).unwrap();
     fs.commit().unwrap();
     // Writes that would land on any wrongly freed block.
@@ -142,7 +146,7 @@ fn restore_then_drop_keeps_the_restored_blocks() {
     }
     // The held blocks are the restored tree's own, live again: nothing leaked.
     let report = check(&mut fs, &mut Cache::default()).unwrap();
-    assert_eq!(report.live.count, 1100);
+    assert_eq!(report.volumes[&VOLUME].live.count, 1100);
 }
 
 /// The same with the rule judged at commit: the restored tree breaks, while the
@@ -165,7 +169,7 @@ fn judging_at_commit_breaks_the_restored_tree() {
         for n in 0..500 {
             fs.put(key(n), &[0xEE; 60]).map_err(e)?;
         }
-        fs.restore(id).map_err(e)?;
+        fs.restore_snapshot(id).map_err(e)?;
         fs.drop_snapshot(id).map_err(e)?;
         fs.commit().map_err(e)?;
         for n in 1000..1600 {

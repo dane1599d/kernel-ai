@@ -1,335 +1,113 @@
-//! The engine (ADR 0004 §1-4): a volume's live tree and its snapshots, the volume
-//! table, data records, the allocator, commit and mount.
+//! The engine (ADR 0004 §1-5): volumes, each a live tree and its snapshots; the
+//! volume table; data records; the allocator; actions; commit and mount.
 //!
 //! - **Values.** A tree value is inline bytes (up to [`MAX_INLINE`]) or a pointer
 //!   to a data record of up to [`MAX_RECORD`] bytes, written copy-on-write like
 //!   the nodes. In a leaf a value is a tag byte, then the bytes or the record's
 //!   `BlockPtr` and length.
-//! - **The volume table** is a second tree of meta data: `(volume, VOLUME, 0)`
-//!   holds the volume's live root and `(volume, SNAPSHOT, id)` snapshot `id`'s,
-//!   each with the generation it was made in and the volume's next object id.
-//!   Object ids are never reused, even across a restore, so the counter lives
-//!   here, outside the trees a restore swaps. Task 4 has one volume; task 6 adds
-//!   `system`, `home` and `models` and the snapshot kinds.
+//! - **Volumes** ([`crate::vol`]): `system`, `home` and `models`, each with its own
+//!   live tree, snapshots and object id counter, in one volume table under one
+//!   superblock, so one commit is atomic across all of them. Item calls act on
+//!   the volume [`Fs::set_volume`] chose; `system` until then. Object ids are
+//!   never reused, even across a restore, so each counter lives in the volume
+//!   table, outside the trees a restore swaps.
+//! - **Actions** (§4). [`Fs::begin`] opens one; its commit also writes, for each
+//!   volume it changed, an undo snapshot of the volume's root before it and an
+//!   UNDO record of the objects it changed. [`Fs::abort`] drops everything since
+//!   the last commit.
 //! - **Commit G.** Write the dirty nodes and the volume table to free blocks, then
 //!   the allocator's part of its chain; FLUSH; write slot G mod 8 in both rings;
 //!   FLUSH. There is no journal and no replay.
 //! - **Reuse** (§3, as #88 words it). A volume block replaced in G is freed, and
-//!   reusable from G+2, only if it was born after the newest snapshot that existed
-//!   *when it was replaced* and is not SHARED; any other waits for the GC (task
-//!   6). The decision is made at the replacement, never at commit: spike S04-1
-//!   found that judging at commit frees blocks a restored snapshot made live
-//!   again. Volume-table and allocator blocks belong to no snapshot and are freed.
+//!   reusable from G+2, only if it was born after the newest snapshot of its
+//!   volume that existed *when it was replaced* and is not SHARED; any other
+//!   waits for the GC. The decision is made at the replacement, never at commit:
+//!   spike S04-1 found that judging at commit frees blocks a restored snapshot
+//!   made live again. An open action counts as a snapshot of the generation it
+//!   began after, since its undo snapshot will hold that root. Volume-table and
+//!   allocator blocks belong to no snapshot and are freed.
 //! - **Mount** takes the newest superblock whose volume-table root and allocator
 //!   head verify; once they do, any later failure is reported, never skipped.
 
+use crate::Error;
 use crate::allocator::{Allocator, run_of};
-use crate::buddy::level_for;
 use crate::csum::CsumKind;
 use crate::dev::BlockDev;
-use crate::format::{self, BlockPtr, FLAG_SHARED, KIND_NODE, KIND_RECORD, PTR_BYTES, Superblock};
-use crate::tree::{Key, MAX_VALUE, Node, Store, Tree};
-use crate::{BLOCK, Block, Error};
-use alloc::collections::BTreeMap;
-use alloc::vec;
+use crate::format::{self, BlockPtr, Superblock};
+use crate::io::{Meta, RECORD_VALUE, TAG_RECORD, Volume};
+use crate::tree::{Key, Tree};
+use crate::txn::{Action, undo_parts};
+use crate::vol::{
+    K_SNAPSHOT, K_UNDO, K_VOLUME, SnapKind, VolEntry, decode_snapshot, decode_volume,
+    encode_snapshot, encode_volume, live_key, snap_key, undo_key,
+};
+use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-/// The largest data record: 128 KiB (ADR 0004 §1; sealed 2 MiB blobs come with
-/// task 10's model store).
-pub const MAX_RECORD: usize = 128 << 10;
-/// The largest inline value: a tree value less its tag byte.
-pub const MAX_INLINE: usize = MAX_VALUE - 1;
+pub(crate) use crate::io::inline_raw;
+pub use crate::io::{
+    Faults, Io, MAX_INLINE, MAX_RECORD, Value, decode_value, inline_of, record_of, value_len,
+};
+pub use crate::vol::{FIRST_OID, HOME, MODELS, SYSTEM, Snap, VOLUMES};
 
-const TAG_INLINE: u8 = 0;
-const TAG_RECORD: u8 = 1;
-const RECORD_VALUE: usize = 1 + PTR_BYTES + 4;
+/// The volume [`Fs::format`] makes, and every call acts on until
+/// [`Fs::set_volume`]: `system`.
+pub const VOLUME: u64 = SYSTEM;
 
-/// The one volume task 4 has.
-pub const VOLUME: u64 = 1;
-/// Volume-table item kinds.
-pub const K_VOLUME: u8 = 1;
-pub const K_SNAPSHOT: u8 = 2;
-const ENTRY_FMT: u8 = 1;
-const ENTRY_VALUE: usize = 1 + PTR_BYTES + 8 + 8;
-/// The first object id a volume hands out; 0 is never one.
-pub const FIRST_OID: u64 = 1;
-
-/// A value as a caller sees it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Value {
-    Inline(Vec<u8>),
-    Record(Vec<u8>),
+/// One volume in memory.
+pub struct Vol {
+    pub name: String,
+    pub(crate) live: Tree,
+    pub(crate) live_changed: bool,
+    /// The live root and object id counter the last commit wrote: what an
+    /// action's undo snapshot of this volume holds.
+    pub(crate) base: (BlockPtr, u64),
+    pub(crate) snaps: BTreeMap<u64, Snap>,
+    pub(crate) next_snap: u64,
+    pub(crate) next_oid: u64,
+    /// The objects the open action has changed here.
+    pub(crate) touched: BTreeSet<u64>,
 }
 
-impl Value {
-    pub fn bytes(&self) -> &[u8] {
-        match self {
-            Value::Inline(bytes) | Value::Record(bytes) => bytes,
+impl Vol {
+    fn new(name: &str) -> Self {
+        Vol {
+            name: name.to_string(),
+            live: Tree::default(),
+            live_changed: true,
+            base: (BlockPtr::NULL, FIRST_OID),
+            snaps: BTreeMap::new(),
+            next_snap: 1,
+            next_oid: FIRST_OID,
+            touched: BTreeSet::new(),
         }
     }
 
-    pub fn into_bytes(self) -> Vec<u8> {
-        match self {
-            Value::Inline(bytes) | Value::Record(bytes) => bytes,
-        }
+    /// The generation of the newest snapshot it holds, 0 with none.
+    pub(crate) fn newest(&self) -> u64 {
+        self.snaps.values().map(|s| s.generation).max().unwrap_or(0)
     }
 }
 
-/// Deliberate bugs, so the crash gates can show they catch each one.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Faults {
-    /// No flush between a commit's blocks and its superblock.
-    pub skip_data_flush: bool,
-    /// A replaced block freed at once, reusable in its own transaction.
-    pub reuse_now: bool,
-    /// Replaced blocks freed whatever snapshots hold them.
-    pub ignore_snapshots: bool,
-    /// The reuse rule judged at commit rather than at replacement: S04-1's bug.
-    pub decide_at_commit: bool,
-    /// Freed blocks reusable at N+1: safe with two flushes a commit.
-    pub reuse_next: bool,
-}
-
-/// A snapshot: its root, null for an empty tree, the generation it was taken in,
-/// and the volume's next object id then.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Snap {
-    pub root: BlockPtr,
-    pub generation: u64,
-    pub next_oid: u64,
-}
-
-/// Everything below the trees: the disk, checksums, the allocator and the rule
-/// for replaced blocks.
-pub struct Io<D> {
-    pub dev: D,
-    pub kind: CsumKind,
-    pub alloc: Allocator,
-    /// The generation being built: the last commit's plus one.
-    pub txn: u64,
-    /// The newest snapshot's generation, 0 with none.
-    newest_snap: u64,
-    faults: Faults,
-    /// Replaced blocks the faulty rule judges at commit.
-    deferred: Vec<BlockPtr>,
-}
-
-impl<D: BlockDev> Io<D> {
-    pub fn load_node(&mut self, ptr: &BlockPtr) -> Result<Node, Error> {
-        if ptr.kind != KIND_NODE {
-            return Err(Error::Corrupt("node pointer kind"));
-        }
-        let block = format::read_checked(&mut self.dev, self.kind, ptr, "node")?;
-        let node = Node::decode(&block)?;
-        match node.level() == ptr.level {
-            true => Ok(node),
-            false => Err(Error::Corrupt("node level")),
-        }
-    }
-
-    fn store_node(&mut self, block: &Block, level: u8) -> Result<BlockPtr, Error> {
-        let run = self.alloc.alloc(0)?;
-        self.dev.write(run.addr, block)?;
-        Ok(BlockPtr {
-            addr: run.addr,
-            birth: self.txn,
-            blocks: 1,
-            kind: KIND_NODE,
-            level,
-            flags: 0,
-            csum: self.kind.sum(block),
-        })
-    }
-
-    fn reusable(&self, ptr: &BlockPtr) -> bool {
-        ptr.flags & FLAG_SHARED == 0
-            && (ptr.birth > self.newest_snap || self.faults.ignore_snapshots)
-    }
-
-    /// A volume block replaced in this transaction: freed if no snapshot can hold
-    /// it now; else it waits for the GC.
-    fn replaced_volume_block(&mut self, ptr: BlockPtr) {
-        if self.faults.reuse_now {
-            self.alloc.free_now(run_of(&ptr));
-        } else if self.faults.decide_at_commit {
-            self.deferred.push(ptr);
-        } else if self.reusable(&ptr) {
-            self.alloc.free_later(self.txn, run_of(&ptr));
-        }
-    }
-
-    /// Writes `data` as a record to a free run and returns its pointer.
-    fn write_record(&mut self, data: &[u8]) -> Result<BlockPtr, Error> {
-        let blocks = data.len().div_ceil(BLOCK);
-        let run = self.alloc.alloc(level_for(blocks as u64))?;
-        let mut padded = vec![0; blocks * BLOCK];
-        padded[..data.len()].copy_from_slice(data);
-        for (i, chunk) in padded.as_chunks::<BLOCK>().0.iter().enumerate() {
-            self.dev.write(run.addr + i as u64, chunk)?;
-        }
-        Ok(BlockPtr {
-            addr: run.addr,
-            birth: self.txn,
-            blocks: blocks as u32,
-            kind: KIND_RECORD,
-            level: 0,
-            flags: 0,
-            csum: self.kind.sum(&padded),
-        })
-    }
-
-    /// Reads and verifies the `len` bytes of the record `ptr` names.
-    pub fn read_record(&mut self, ptr: &BlockPtr, len: usize) -> Result<Vec<u8>, Error> {
-        let bad = Error::Corrupt("record");
-        let (start, end) = format::data_area(self.dev.info().blocks);
-        let blocks = ptr.blocks as usize;
-        if ptr.kind != KIND_RECORD
-            || blocks == 0
-            || blocks * BLOCK > MAX_RECORD
-            || len > blocks * BLOCK
-            || len <= (blocks - 1) * BLOCK
-            || ptr.addr < start
-            || ptr.addr + blocks as u64 > end
-        {
-            return Err(bad);
-        }
-        let mut data = vec![0; blocks * BLOCK];
-        for (i, chunk) in data.as_chunks_mut::<BLOCK>().0.iter_mut().enumerate() {
-            self.dev.read(ptr.addr + i as u64, chunk)?;
-        }
-        if self.kind.sum(&data) != ptr.csum {
-            return Err(bad);
-        }
-        data.truncate(len);
-        Ok(data)
-    }
-}
-
-/// The live tree's and the snapshots' view of the disk: replaced blocks follow the
-/// reuse rule.
-struct Volume<'a, D>(&'a mut Io<D>);
-
-/// The volume table's: its replaced blocks are always freed.
-struct Meta<'a, D>(&'a mut Io<D>);
-
-impl<D: BlockDev> Store for Volume<'_, D> {
-    fn load(&mut self, ptr: &BlockPtr) -> Result<Node, Error> {
-        self.0.load_node(ptr)
-    }
-
-    fn replaced(&mut self, ptr: BlockPtr) {
-        self.0.replaced_volume_block(ptr);
-    }
-
-    fn store(&mut self, block: &Block, level: u8) -> Result<BlockPtr, Error> {
-        self.0.store_node(block, level)
-    }
-}
-
-impl<D: BlockDev> Store for Meta<'_, D> {
-    fn load(&mut self, ptr: &BlockPtr) -> Result<Node, Error> {
-        self.0.load_node(ptr)
-    }
-
-    fn replaced(&mut self, ptr: BlockPtr) {
-        let txn = self.0.txn;
-        self.0.alloc.free_later(txn, run_of(&ptr));
-    }
-
-    fn store(&mut self, block: &Block, level: u8) -> Result<BlockPtr, Error> {
-        self.0.store_node(block, level)
-    }
-}
-
-fn encode_entry(snap: &Snap) -> Vec<u8> {
-    let mut value = Vec::with_capacity(ENTRY_VALUE);
-    value.push(ENTRY_FMT);
-    value.extend_from_slice(&snap.root.encode());
-    value.extend_from_slice(&snap.generation.to_le_bytes());
-    value.extend_from_slice(&snap.next_oid.to_le_bytes());
-    value
-}
-
-/// A volume-table entry. Longer entries are a later minor version's: their known
-/// prefix is read.
-fn decode_entry(value: &[u8]) -> Result<Snap, Error> {
-    if value.len() < ENTRY_VALUE || value[0] != ENTRY_FMT {
-        return Err(Error::Corrupt("volume table entry"));
-    }
-    let root = BlockPtr::decode_at(value, 1)?;
-    if !root.is_null() && root.kind != KIND_NODE {
-        return Err(Error::Corrupt("volume root kind"));
-    }
-    let word = |at: usize| {
-        let mut word = [0; 8];
-        word.copy_from_slice(&value[at..at + 8]);
-        u64::from_le_bytes(word)
-    };
-    let next_oid = word(1 + PTR_BYTES + 8);
-    if next_oid < FIRST_OID {
-        return Err(Error::Corrupt("volume table entry"));
-    }
-    Ok(Snap {
-        root,
-        generation: word(1 + PTR_BYTES),
-        next_oid,
-    })
-}
-
-/// A raw tree value as the caller's value, reading a record through `io`.
-pub fn decode_value<D: BlockDev>(raw: &[u8], io: &mut Io<D>) -> Result<Value, Error> {
-    match raw.first() {
-        Some(&TAG_INLINE) => Ok(Value::Inline(raw[1..].to_vec())),
-        Some(&TAG_RECORD) => {
-            let (ptr, len) = record_of(raw).ok_or(Error::Corrupt("record value"))?;
-            io.read_record(&ptr, len).map(Value::Record)
-        }
-        _ => Err(Error::Corrupt("value tag")),
-    }
-}
-
-/// The raw value holding `bytes` inline.
-pub(crate) fn inline_raw(bytes: &[u8]) -> Vec<u8> {
-    let mut raw = Vec::with_capacity(1 + bytes.len());
-    raw.push(TAG_INLINE);
-    raw.extend_from_slice(bytes);
-    raw
-}
-
-/// A raw value's inline bytes, if it holds them inline.
-pub fn inline_of(raw: &[u8]) -> Option<&[u8]> {
-    match raw.first() {
-        Some(&TAG_INLINE) => Some(&raw[1..]),
-        _ => None,
-    }
-}
-
-/// The bytes a raw value holds, inline or in its record, without reading the
-/// record.
-pub fn value_len(raw: &[u8]) -> Option<usize> {
-    match raw.first() {
-        Some(&TAG_INLINE) => Some(raw.len() - 1),
-        _ => record_of(raw).map(|(_, len)| len),
-    }
-}
-
-/// The record a raw value names, if it names one: its pointer and length.
-pub fn record_of(raw: &[u8]) -> Option<(BlockPtr, usize)> {
-    if raw.first() != Some(&TAG_RECORD) || raw.len() != RECORD_VALUE {
-        return None;
-    }
-    let ptr = BlockPtr::decode_at(raw, 1).ok()?;
-    let mut word = [0; 4];
-    word.copy_from_slice(&raw[1 + PTR_BYTES..]);
-    Some((ptr, u32::from_le_bytes(word) as usize))
-}
-
-fn live_key() -> Key {
-    Key::new(VOLUME, K_VOLUME, 0)
-}
-
-fn snap_key(id: u64) -> Key {
-    Key::new(VOLUME, K_SNAPSHOT, id)
+/// The volume `active` and a store over it whose reuse rule counts `pin`, an
+/// open action's generation, as a snapshot.
+fn split<'a, D>(
+    vols: &'a mut BTreeMap<u64, Vol>,
+    io: &'a mut Io<D>,
+    active: u64,
+    pin: u64,
+) -> (&'a mut Vol, Volume<'a, D>) {
+    let vol = vols.get_mut(&active).expect("the active volume exists");
+    let newest = vol.newest().max(pin);
+    (
+        vol,
+        Volume {
+            io,
+            newest,
+            vol: active,
+        },
+    )
 }
 
 pub struct Fs<D> {
@@ -341,13 +119,11 @@ pub struct Fs<D> {
     pub committed: u64,
     /// The writer's clock for the next superblock, nanoseconds since 1970.
     pub clock: u64,
-    live: Tree,
-    live_changed: bool,
-    volumes: Tree,
-    snaps: BTreeMap<u64, Snap>,
-    next_snap: u64,
-    /// The volume's next object id.
-    next_oid: u64,
+    pub(crate) volumes: Tree,
+    pub(crate) vols: BTreeMap<u64, Vol>,
+    /// The volume item calls act on.
+    pub(crate) active: u64,
+    pub(crate) action: Option<Action>,
     writable: bool,
     /// No unknown compat bit is set, so `check --repair` may write.
     repairable: bool,
@@ -358,24 +134,26 @@ pub struct Fs<D> {
 }
 
 impl<D: BlockDev> Fs<D> {
-    /// Writes an empty filesystem over all of `dev`, as generation 1.
+    /// Writes an empty filesystem over all of `dev`, one volume of bare items, as
+    /// generation 1.
     pub fn format(dev: D, uuid: [u8; 16], label: &str) -> Result<Self, Error> {
         Self::format_with(dev, uuid, label, Faults::default())
     }
 
     /// [`Fs::format`] with deliberate faults, for the crash gates.
     pub fn format_with(dev: D, uuid: [u8; 16], label: &str, faults: Faults) -> Result<Self, Error> {
-        let mut fs = Self::build(dev, uuid, label, faults)?;
+        let mut fs = Self::build(dev, uuid, label, faults, &[(VOLUME, "system")])?;
         fs.commit()?;
         Ok(fs)
     }
 
-    /// An empty filesystem over all of `dev`, not yet committed.
+    /// An empty filesystem over all of `dev` with `volumes`, not yet committed.
     pub(crate) fn build(
         mut dev: D,
         uuid: [u8; 16],
         label: &str,
         faults: Faults,
+        volumes: &[(u64, &str)],
     ) -> Result<Self, Error> {
         let info = dev.info();
         if info.blocks < format::MIN_BLOCKS {
@@ -390,13 +168,13 @@ impl<D: BlockDev> Fs<D> {
         let mut name = [0; 64];
         let n = label.len().min(64);
         name[..n].copy_from_slice(&label.as_bytes()[..n]);
-        let fs = Fs {
+        Ok(Fs {
             io: Io {
                 dev,
                 kind: CsumKind::Seahash64,
                 alloc,
                 txn: 1,
-                newest_snap: 0,
+                node_reads: 0,
                 faults,
                 deferred: Vec::new(),
             },
@@ -405,18 +183,18 @@ impl<D: BlockDev> Fs<D> {
             label: name,
             committed: 0,
             clock: 0,
-            live: Tree::default(),
-            live_changed: true,
             volumes: Tree::default(),
-            snaps: BTreeMap::new(),
-            next_snap: 1,
-            next_oid: FIRST_OID,
+            vols: volumes
+                .iter()
+                .map(|(id, name)| (*id, Vol::new(name)))
+                .collect(),
+            active: volumes[0].0,
+            action: None,
             writable: true,
             repairable: true,
             faults,
             hash_mask: u64::MAX,
-        };
-        Ok(fs)
+        })
     }
 
     /// Mounts the newest commit whose roots verify.
@@ -465,7 +243,7 @@ impl<D: BlockDev> Fs<D> {
             kind: sb.csum_kind,
             alloc,
             txn: sb.generation + 1,
-            newest_snap: 0,
+            node_reads: 0,
             faults,
             deferred: Vec::new(),
         };
@@ -475,21 +253,51 @@ impl<D: BlockDev> Fs<D> {
             entries.push((*k, v.to_vec()));
             true
         })?;
-        let mut live = None;
-        let mut snaps = BTreeMap::new();
+        let mut vols: BTreeMap<u64, Vol> = BTreeMap::new();
+        let mut snaps: BTreeMap<u64, BTreeMap<u64, Snap>> = BTreeMap::new();
+        let mut undone: BTreeSet<u64> = BTreeSet::new();
         for (key, value) in entries {
-            let entry = decode_entry(&value)?;
-            match (key.oid, key.kind) {
-                (VOLUME, K_VOLUME) if key.off == 0 => live = Some(entry),
-                (VOLUME, K_SNAPSHOT) if key.off > 0 => {
-                    snaps.insert(key.off, entry);
+            match key.kind {
+                K_VOLUME if key.off == 0 => {
+                    let entry = decode_volume(key.oid, &value)?;
+                    let mut vol = Vol::new(&entry.name);
+                    vol.live = Tree::open(entry.live.root);
+                    vol.live_changed = false;
+                    vol.base = (entry.live.root, entry.live.next_oid);
+                    vol.next_oid = entry.live.next_oid;
+                    vols.insert(key.oid, vol);
+                }
+                K_SNAPSHOT if key.off > 0 => {
+                    snaps
+                        .entry(key.oid)
+                        .or_default()
+                        .insert(key.off, decode_snapshot(&value)?);
+                }
+                // Read when asked for.
+                K_UNDO => {
+                    undone.insert(key.oid);
                 }
                 _ => return Err(Error::Corrupt("an unknown volume table item")),
             }
         }
-        let live = live.ok_or(Error::Corrupt("no live root"))?;
-        io.newest_snap = snaps.values().map(|s| s.generation).max().unwrap_or(0);
-        let next_snap = snaps.keys().next_back().map_or(1, |id| id + 1);
+        let homeless = snaps
+            .keys()
+            .chain(undone.iter())
+            .any(|v| !vols.contains_key(v));
+        if vols.is_empty() || homeless {
+            return Err(Error::Corrupt("a volume table without its volumes"));
+        }
+        for (id, list) in snaps {
+            let vol = vols
+                .get_mut(&id)
+                .ok_or(Error::Corrupt("a snapshot of no volume"))?;
+            vol.next_snap = list.keys().next_back().map_or(1, |id| id + 1);
+            vol.snaps = list;
+        }
+        let active = match vols.contains_key(&SYSTEM) {
+            true => SYSTEM,
+            false => *vols.keys().next().ok_or(Error::Corrupt("no volume"))?,
+        };
         Ok(Fs {
             io,
             uuid: sb.uuid,
@@ -497,12 +305,10 @@ impl<D: BlockDev> Fs<D> {
             label: sb.label,
             committed: sb.generation,
             clock: sb.commit_time,
-            live: Tree::open(live.root),
-            live_changed: false,
             volumes,
-            snaps,
-            next_snap,
-            next_oid: live.next_oid,
+            vols,
+            active,
+            action: None,
             writable: true,
             repairable: true,
             faults,
@@ -531,34 +337,96 @@ impl<D: BlockDev> Fs<D> {
         self.repairable
     }
 
-    /// The volume's next object id.
-    pub fn next_oid(&self) -> u64 {
-        self.next_oid
+    /// Every volume, by id, with its name.
+    pub fn volumes(&self) -> Vec<(u64, String)> {
+        self.vols
+            .iter()
+            .map(|(id, v)| (*id, v.name.clone()))
+            .collect()
     }
 
-    /// Hands out a new object id; none is ever handed out twice.
+    /// The volume item calls act on.
+    pub fn volume(&self) -> u64 {
+        self.active
+    }
+
+    /// Makes item calls act on volume `id`.
+    pub fn set_volume(&mut self, id: u64) -> Result<(), Error> {
+        match self.vols.contains_key(&id) {
+            true => {
+                self.active = id;
+                Ok(())
+            }
+            false => Err(Error::NotFound),
+        }
+    }
+
+    pub(crate) fn vol(&self) -> &Vol {
+        &self.vols[&self.active]
+    }
+
+    pub(crate) fn vol_mut(&mut self) -> &mut Vol {
+        self.vols
+            .get_mut(&self.active)
+            .expect("the active volume exists")
+    }
+
+    /// The generation an open action pins, as if it were a snapshot.
+    fn pin(&self) -> u64 {
+        match (self.action, self.faults.unpinned_action) {
+            (Some(action), false) => action.base,
+            _ => 0,
+        }
+    }
+
+    /// The active volume's next object id.
+    pub fn next_oid(&self) -> u64 {
+        self.vol().next_oid
+    }
+
+    /// Hands out a new object id in the active volume; none is ever handed out
+    /// twice.
     pub fn alloc_oid(&mut self) -> Result<u64, Error> {
-        let oid = self.next_oid;
-        self.next_oid = oid.checked_add(1).ok_or(Error::NoSpace)?;
-        self.live_changed = true;
+        let vol = self.vol_mut();
+        let oid = vol.next_oid;
+        vol.next_oid = oid.checked_add(1).ok_or(Error::NoSpace)?;
+        vol.live_changed = true;
         Ok(oid)
     }
 
     /// Raises the counter past `oid`: `check --repair` found an object above it.
     pub(crate) fn bump_oid(&mut self, oid: u64) {
-        if oid >= self.next_oid {
-            self.next_oid = oid.saturating_add(1);
-            self.live_changed = true;
+        let vol = self.vol_mut();
+        if oid >= vol.next_oid {
+            vol.next_oid = oid.saturating_add(1);
+            vol.live_changed = true;
+        }
+    }
+
+    /// Notes that the open action, if any, changed object `oid` of the active
+    /// volume: its UNDO record will name it.
+    pub(crate) fn touch(&mut self, oid: u64) {
+        if self.action.is_some() {
+            self.vol_mut().touched.insert(oid);
         }
     }
 
     /// The raw tree value at `key`: records are named, not read.
     pub fn get_raw(&mut self, key: &Key) -> Result<Option<Vec<u8>>, Error> {
-        self.live.get(key, &mut Volume(&mut self.io))
+        let pin = self.pin();
+        let (vol, mut store) = split(&mut self.vols, &mut self.io, self.active, pin);
+        vol.live.get(key, &mut store)
+    }
+
+    /// The raw value at `key` in the tree `root` names: a snapshot's.
+    pub fn get_raw_in(&mut self, root: &BlockPtr, key: &Key) -> Result<Option<Vec<u8>>, Error> {
+        let pin = self.pin();
+        let (_, mut store) = split(&mut self.vols, &mut self.io, self.active, pin);
+        Tree::open(*root).get(key, &mut store)
     }
 
     pub fn get(&mut self, key: &Key) -> Result<Option<Value>, Error> {
-        match self.live.get(key, &mut Volume(&mut self.io))? {
+        match self.get_raw(key)? {
             Some(raw) => decode_value(&raw, &mut self.io).map(Some),
             None => Ok(None),
         }
@@ -569,10 +437,7 @@ impl<D: BlockDev> Fs<D> {
         if value.len() > MAX_INLINE {
             return Err(Error::Invalid("an inline value over the limit"));
         }
-        let mut raw = Vec::with_capacity(1 + value.len());
-        raw.push(TAG_INLINE);
-        raw.extend_from_slice(value);
-        self.set(key, raw)
+        self.set(key, inline_raw(value))
     }
 
     /// Sets `key` to a record of 1 to [`MAX_RECORD`] bytes, written copy-on-write.
@@ -588,28 +453,26 @@ impl<D: BlockDev> Fs<D> {
         self.set(key, raw)
     }
 
-    /// Sets `key` to a raw value as `get_raw` returned it; `check --repair` moves
-    /// items this way.
+    /// Sets `key` to a raw value as `get_raw` returned it; `check --repair` and
+    /// `restore` move items this way.
     pub(crate) fn set(&mut self, key: Key, raw: Vec<u8>) -> Result<(), Error> {
-        let old = self.live.insert(key, raw, &mut Volume(&mut self.io))?;
-        self.release_value(old);
-        self.live_changed = true;
+        let pin = self.pin();
+        let (vol, mut store) = split(&mut self.vols, &mut self.io, self.active, pin);
+        let old = vol.live.insert(key, raw, &mut store)?;
+        vol.live_changed = true;
+        release(&mut store, old);
         Ok(())
     }
 
     /// Removes `key`; returns whether it was there.
     pub fn delete(&mut self, key: &Key) -> Result<bool, Error> {
-        let old = self.live.remove(key, &mut Volume(&mut self.io))?;
+        let pin = self.pin();
+        let (vol, mut store) = split(&mut self.vols, &mut self.io, self.active, pin);
+        let old = vol.live.remove(key, &mut store)?;
         let found = old.is_some();
-        self.release_value(old);
-        self.live_changed |= found;
+        vol.live_changed |= found;
+        release(&mut store, old);
         Ok(found)
-    }
-
-    fn release_value(&mut self, old: Option<Vec<u8>>) {
-        if let Some((ptr, _)) = old.as_deref().and_then(record_of) {
-            self.io.replaced_volume_block(ptr);
-        }
     }
 
     /// Calls `visit` on every raw item from `from` on, in key order, until it
@@ -619,7 +482,9 @@ impl<D: BlockDev> Fs<D> {
         from: &Key,
         visit: &mut dyn FnMut(&Key, &[u8]) -> bool,
     ) -> Result<(), Error> {
-        self.live.scan(from, &mut Volume(&mut self.io), visit)
+        let pin = self.pin();
+        let (vol, mut store) = split(&mut self.vols, &mut self.io, self.active, pin);
+        vol.live.scan(from, &mut store, visit)
     }
 
     /// Calls `visit` on every raw item of the tree `root` names (a snapshot's, or
@@ -630,19 +495,35 @@ impl<D: BlockDev> Fs<D> {
         from: &Key,
         visit: &mut dyn FnMut(&Key, &[u8]) -> bool,
     ) -> Result<(), Error> {
-        Tree::open(*root).scan(from, &mut Volume(&mut self.io), visit)
+        let pin = self.pin();
+        let (_, mut store) = split(&mut self.vols, &mut self.io, self.active, pin);
+        Tree::open(*root).scan(from, &mut store, visit)
     }
 
-    /// Makes `items`, raw and in key order, the whole live tree. The old tree's
-    /// blocks are never read again and wait for the GC: `check --repair` rebuilds
-    /// a tree it could not wholly read this way.
+    /// Calls `visit` on every item of the active volume's live tree in a leaf born
+    /// after generation `since`, reading only subtrees born after it.
+    pub fn scan_born_after(
+        &mut self,
+        since: u64,
+        visit: &mut dyn FnMut(&Key, &[u8]),
+    ) -> Result<(), Error> {
+        let pin = self.pin();
+        let (vol, mut store) = split(&mut self.vols, &mut self.io, self.active, pin);
+        vol.live.scan_born_after(since, &mut store, visit)
+    }
+
+    /// Makes `items`, raw and in key order, the active volume's whole live tree.
+    /// The old tree's blocks are never read again and wait for the GC: `check
+    /// --repair` rebuilds a tree it could not wholly read this way.
     pub(crate) fn replace_live(&mut self, items: Vec<(Key, Vec<u8>)>) -> Result<(), Error> {
+        let pin = self.pin();
+        let (vol, mut store) = split(&mut self.vols, &mut self.io, self.active, pin);
         let mut tree = Tree::default();
         for (key, raw) in items {
-            tree.insert(key, raw, &mut Volume(&mut self.io))?;
+            tree.insert(key, raw, &mut store)?;
         }
-        self.live = tree;
-        self.live_changed = true;
+        vol.live = tree;
+        vol.live_changed = true;
         Ok(())
     }
 
@@ -659,11 +540,10 @@ impl<D: BlockDev> Fs<D> {
         let mut cursor = Some(*from);
         while let Some(at) = cursor {
             raws.clear();
-            self.live
-                .scan(&at, &mut Volume(&mut self.io), &mut |k, v| {
-                    raws.push((*k, v.to_vec()));
-                    raws.len() < BATCH
-                })?;
+            self.scan_raw(&at, &mut |k, v| {
+                raws.push((*k, v.to_vec()));
+                raws.len() < BATCH
+            })?;
             cursor = match raws.len() == BATCH {
                 true => raws.last().and_then(|(k, _)| k.next()),
                 false => None,
@@ -677,69 +557,119 @@ impl<D: BlockDev> Fs<D> {
         Ok(())
     }
 
-    /// Takes a snapshot of the live tree as it is now: its dirty nodes are written
-    /// (no flush), and its root joins the volume table at the next commit.
+    /// Takes a snapshot of the active volume's live tree as it is now: its dirty
+    /// nodes are written (no flush), and its root joins the volume table at the
+    /// next commit.
     pub fn snapshot(&mut self) -> Result<u64, Error> {
-        let root = self.live.write_out(&mut Volume(&mut self.io))?;
-        let id = self.next_snap;
-        self.next_snap += 1;
+        self.snapshot_as(SnapKind::Named, 0, 0)
+    }
+
+    /// [`Fs::snapshot`] of a kind, expiring at `expiry` (0: never), pinned by
+    /// action `pin` (0: none).
+    pub fn snapshot_as(&mut self, kind: SnapKind, expiry: u64, pin: u64) -> Result<u64, Error> {
+        let (txn, active, pinned) = (self.io.txn, self.active, self.pin());
+        let (vol, mut store) = split(&mut self.vols, &mut self.io, active, pinned);
+        let root = vol.live.write_out(&mut store)?;
+        let id = vol.next_snap;
         let snap = Snap {
             root,
-            generation: self.io.txn,
-            next_oid: self.next_oid,
+            generation: txn,
+            next_oid: vol.next_oid,
+            kind,
+            expiry,
+            pin,
         };
-        self.snaps.insert(id, snap);
-        self.io.newest_snap = self.io.txn;
-        self.volumes
-            .insert(snap_key(id), encode_entry(&snap), &mut Meta(&mut self.io))?;
+        self.volumes.insert(
+            snap_key(active, id),
+            encode_snapshot(&snap),
+            &mut Meta(&mut self.io),
+        )?;
+        let vol = self.vol_mut();
+        vol.next_snap += 1;
+        vol.snaps.insert(id, snap);
         Ok(id)
     }
 
+    /// Drops snapshot `id` of the active volume, and the UNDO records an undo
+    /// snapshot backs.
     pub fn drop_snapshot(&mut self, id: u64) -> Result<bool, Error> {
-        if self.snaps.remove(&id).is_none() {
-            return Ok(false);
-        }
-        self.io.newest_snap = self.snaps.values().map(|s| s.generation).max().unwrap_or(0);
-        self.volumes
-            .remove(&snap_key(id), &mut Meta(&mut self.io))?;
-        Ok(true)
-    }
-
-    /// Makes snapshot `id`'s tree the live tree. The live tree's own blocks wait
-    /// for the GC; the object id counter never goes back.
-    pub fn restore(&mut self, id: u64) -> Result<bool, Error> {
-        let Some(snap) = self.snaps.get(&id) else {
+        let active = self.active;
+        let Some(snap) = self.vol().snaps.get(&id).copied() else {
             return Ok(false);
         };
-        self.live = Tree::open(snap.root);
-        self.live_changed = true;
+        if snap.kind == SnapKind::Undo {
+            for undo in self
+                .undo_records()?
+                .into_iter()
+                .filter(|u| u.snapshot == id)
+            {
+                let parts = undo_parts(&undo);
+                for part in 0..parts {
+                    self.volumes
+                        .remove(&undo_key(active, undo.txn, part), &mut Meta(&mut self.io))?;
+                }
+            }
+        }
+        self.volumes
+            .remove(&snap_key(active, id), &mut Meta(&mut self.io))?;
+        self.vol_mut().snaps.remove(&id);
         Ok(true)
     }
 
-    pub fn snapshots(&self) -> &BTreeMap<u64, Snap> {
-        &self.snaps
+    /// Makes snapshot `id`'s tree the active volume's live tree. The live tree's
+    /// own blocks wait for the GC; the object id counter never goes back.
+    pub fn restore_snapshot(&mut self, id: u64) -> Result<bool, Error> {
+        let Some(snap) = self.vol().snaps.get(&id).copied() else {
+            return Ok(false);
+        };
+        let vol = self.vol_mut();
+        vol.live = Tree::open(snap.root);
+        vol.live_changed = true;
+        Ok(true)
     }
 
-    /// Commits the transaction: two flushes, both rings. Returns the generation.
+    /// The active volume's snapshots.
+    pub fn snapshots(&self) -> &BTreeMap<u64, Snap> {
+        &self.vol().snaps
+    }
+
+    /// Commits the transaction, and the open action with it: two flushes, both
+    /// rings. Returns the generation.
     pub fn commit(&mut self) -> Result<u64, Error> {
         if !self.writable {
             return Err(Error::ReadOnly);
         }
         let generation = self.io.txn;
-        if self.live_changed {
-            let root = self.live.write_out(&mut Volume(&mut self.io))?;
-            let live = Snap {
-                root,
-                generation,
-                next_oid: self.next_oid,
+        if let Some(action) = self.action {
+            self.write_undo(action, generation)?;
+            self.action = None;
+        }
+        let mut written = Vec::new();
+        for (&id, vol) in self.vols.iter_mut() {
+            if !vol.live_changed {
+                continue;
+            }
+            let newest = vol.newest();
+            let mut store = Volume {
+                io: &mut self.io,
+                newest,
+                vol: id,
+            };
+            let root = vol.live.write_out(&mut store)?;
+            let entry = VolEntry {
+                live: Snap::named(root, generation, vol.next_oid),
+                name: vol.name.clone(),
+                key_id: 0,
             };
             self.volumes
-                .insert(live_key(), encode_entry(&live), &mut Meta(&mut self.io))?;
-            self.live_changed = false;
+                .insert(live_key(id), encode_volume(&entry), &mut Meta(&mut self.io))?;
+            vol.live_changed = false;
+            written.push((id, root));
         }
         let volumes = self.volumes.write_out(&mut Meta(&mut self.io))?;
-        for ptr in core::mem::take(&mut self.io.deferred) {
-            if self.io.reusable(&ptr) {
+        for (ptr, vol) in core::mem::take(&mut self.io.deferred) {
+            let newest = self.vols.get(&vol).map_or(0, Vol::newest);
+            if self.io.reusable(&ptr, newest) {
                 self.io.alloc.free_later(generation, run_of(&ptr));
             }
         }
@@ -761,18 +691,32 @@ impl<D: BlockDev> Fs<D> {
         self.committed = generation;
         self.io.txn = generation + 1;
         self.io.alloc.committed(generation);
+        for (id, root) in written {
+            if let Some(vol) = self.vols.get_mut(&id) {
+                vol.base = (root, vol.next_oid);
+            }
+        }
         Ok(generation)
     }
 
-    /// The roots the last commit wrote, for `check()`: the live tree's (null when
-    /// empty, or when it has changed since), the volume table's, and the
-    /// allocator's chain.
+    /// The active volume's live root as the last commit wrote it, for `check()`:
+    /// null when empty, none when it has changed since.
     pub fn live_root(&self) -> Option<BlockPtr> {
-        match &self.live.root {
+        self.live_root_of(self.active)
+    }
+
+    /// [`Fs::live_root`] of volume `id`.
+    pub fn live_root_of(&self, id: u64) -> Option<BlockPtr> {
+        match &self.vols.get(&id)?.live.root {
             None => Some(BlockPtr::NULL),
             Some(crate::tree::Child::Clean(ptr)) => Some(*ptr),
             Some(crate::tree::Child::Dirty(_)) => None,
         }
+    }
+
+    /// Volume `id`'s next object id and snapshots.
+    pub fn volume_state(&self, id: u64) -> Option<(u64, &BTreeMap<u64, Snap>)> {
+        self.vols.get(&id).map(|v| (v.next_oid, &v.snaps))
     }
 
     pub fn volumes_root(&self) -> Option<BlockPtr> {
@@ -784,6 +728,18 @@ impl<D: BlockDev> Fs<D> {
 
     /// Whether nothing has changed since the last commit.
     pub fn is_clean(&self) -> bool {
-        !self.live_changed && !self.volumes.is_dirty() && self.io.alloc.is_idle()
+        self.vols
+            .values()
+            .all(|v| !v.live_changed && !v.live.is_dirty())
+            && !self.volumes.is_dirty()
+            && self.io.alloc.is_idle()
+    }
+}
+
+/// Frees `old`'s record, if it named one, by the reuse rule of `store`'s volume.
+fn release<D: BlockDev>(store: &mut Volume<'_, D>, old: Option<Vec<u8>>) {
+    if let Some((ptr, _)) = old.as_deref().and_then(record_of) {
+        let (newest, vol) = (store.newest, store.vol);
+        store.io.replaced_volume_block(ptr, newest, vol);
     }
 }

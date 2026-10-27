@@ -15,7 +15,7 @@
 
 use crate::Error;
 use crate::dev::BlockDev;
-use crate::fs::{Fs, MAX_INLINE, decode_value, inline_of, value_len};
+use crate::fs::{Fs, MAX_INLINE, SYSTEM, VOLUMES, decode_value, inline_of, value_len};
 use crate::items::{
     CHUNK, Entry, FileType, Inode, K_DATA, K_DIRENT, K_INODE, K_XATTR, MAX_FILE, ROOT,
     decode_attrs, decode_names, encode_attrs, encode_names, hash_name, valid_attr_name, valid_name,
@@ -41,8 +41,9 @@ fn inline(raw: &[u8], what: &'static str) -> Result<Vec<u8>, Error> {
 }
 
 impl<D: BlockDev> Fs<D> {
-    /// Writes an empty filesystem over all of `dev` whose volume holds an empty
-    /// root folder, as generation 1: `cargo xtask fs mkfs`.
+    /// Writes an empty filesystem over all of `dev` whose volumes `system`, `home`
+    /// and `models` each hold an empty root folder, as generation 1: `cargo xtask
+    /// fs mkfs`.
     pub fn mkfs(dev: D, uuid: [u8; 16], label: &str) -> Result<Self, Error> {
         Self::mkfs_with(dev, uuid, label, crate::fs::Faults::default())
     }
@@ -54,11 +55,15 @@ impl<D: BlockDev> Fs<D> {
         label: &str,
         faults: crate::fs::Faults,
     ) -> Result<Self, Error> {
-        let mut fs = Self::build(dev, uuid, label, faults)?;
-        let root = fs.alloc_oid()?;
-        debug_assert_eq!(root, ROOT);
-        let inode = Inode::new(FileType::Dir, ROOT, fs.clock);
-        fs.put_inode(ROOT, &inode)?;
+        let mut fs = Self::build(dev, uuid, label, faults, &VOLUMES)?;
+        for (vol, _) in VOLUMES {
+            fs.set_volume(vol)?;
+            let root = fs.alloc_oid()?;
+            debug_assert_eq!(root, ROOT);
+            let inode = Inode::new(FileType::Dir, ROOT, fs.clock);
+            fs.put_inode(ROOT, &inode)?;
+        }
+        fs.set_volume(SYSTEM)?;
         fs.commit()?;
         Ok(fs)
     }
@@ -67,7 +72,7 @@ impl<D: BlockDev> Fs<D> {
         hash_name(&self.uuid, self.hash_mask, name)
     }
 
-    fn writing(&self) -> Result<(), Error> {
+    pub(crate) fn writing(&self) -> Result<(), Error> {
         match self.writable() {
             true => Ok(()),
             false => Err(Error::ReadOnly),
@@ -81,11 +86,18 @@ impl<D: BlockDev> Fs<D> {
         Inode::decode(&inline(&raw, "inode")?)
     }
 
-    fn put_inode(&mut self, ino: u64, inode: &Inode) -> Result<(), Error> {
+    /// Writes `ino`'s inode as changed in this transaction, and notes it for the
+    /// open action's UNDO record.
+    pub(crate) fn put_inode(&mut self, ino: u64, inode: &Inode) -> Result<(), Error> {
+        let inode = Inode {
+            changed: self.io.txn,
+            ..*inode
+        };
+        self.touch(ino);
         self.put(Key::new(ino, K_INODE, 0), &inode.encode())
     }
 
-    fn dir(&mut self, ino: u64) -> Result<Inode, Error> {
+    pub(crate) fn dir(&mut self, ino: u64) -> Result<Inode, Error> {
         let inode = self.stat(ino)?;
         match inode.kind {
             FileType::Dir => Ok(inode),
@@ -93,7 +105,7 @@ impl<D: BlockDev> Fs<D> {
         }
     }
 
-    fn file(&mut self, ino: u64) -> Result<Inode, Error> {
+    pub(crate) fn file(&mut self, ino: u64) -> Result<Inode, Error> {
         let inode = self.stat(ino)?;
         match inode.kind {
             FileType::File => Ok(inode),
@@ -102,7 +114,7 @@ impl<D: BlockDev> Fs<D> {
     }
 
     /// The names in `dir` whose hash is `hash`.
-    fn names(&mut self, dir: u64, hash: u64) -> Result<Vec<Entry>, Error> {
+    pub(crate) fn names(&mut self, dir: u64, hash: u64) -> Result<Vec<Entry>, Error> {
         match self.get_raw(&Key::new(dir, K_DIRENT, hash))? {
             None => Ok(Vec::new()),
             Some(raw) => decode_names(&inline(&raw, "folder names")?),
@@ -110,7 +122,7 @@ impl<D: BlockDev> Fs<D> {
     }
 
     /// The DIRENT value for `entries`, if one item holds them.
-    fn names_value(entries: &[Entry]) -> Result<Vec<u8>, Error> {
+    pub(crate) fn names_value(entries: &[Entry]) -> Result<Vec<u8>, Error> {
         let value = encode_names(entries);
         match value.len() <= MAX_INLINE {
             true => Ok(value),
@@ -118,7 +130,12 @@ impl<D: BlockDev> Fs<D> {
         }
     }
 
-    fn put_names(&mut self, dir: u64, hash: u64, value: Option<Vec<u8>>) -> Result<(), Error> {
+    pub(crate) fn put_names(
+        &mut self,
+        dir: u64,
+        hash: u64,
+        value: Option<Vec<u8>>,
+    ) -> Result<(), Error> {
         let key = Key::new(dir, K_DIRENT, hash);
         match value {
             Some(value) => self.put(key, &value),
@@ -240,6 +257,44 @@ impl<D: BlockDev> Fs<D> {
         Ok(ino)
     }
 
+    /// Names `ino`, of type `kind`, `name` in the folder `dir`: `restore` puts an
+    /// object back this way.
+    pub(crate) fn link(
+        &mut self,
+        dir: u64,
+        name: &str,
+        ino: u64,
+        kind: FileType,
+    ) -> Result<(), Error> {
+        if !valid_name(name) {
+            return Err(Error::Invalid("a name"));
+        }
+        let mut parent = self.dir(dir)?;
+        let hash = self.name_hash(name);
+        let mut entries = self.names(dir, hash)?;
+        let at = match entries.binary_search_by(|e| e.name.as_str().cmp(name)) {
+            Ok(_) => return Err(Error::Exists),
+            Err(at) => at,
+        };
+        entries.insert(
+            at,
+            Entry {
+                name: name.to_string(),
+                ino,
+                kind,
+            },
+        );
+        let value = Self::names_value(&entries)?;
+        parent.nlink = parent
+            .nlink
+            .checked_add(u32::from(kind == FileType::Dir))
+            .ok_or(Error::Invalid("too many folders in one folder"))?;
+        self.put_names(dir, hash, Some(value))?;
+        parent.size = parent.size.saturating_add(1);
+        (parent.mtime, parent.ctime) = (self.clock, self.clock);
+        self.put_inode(dir, &parent)
+    }
+
     /// Removes the name `name` from `dir`, and the file or empty folder it named.
     pub fn remove(&mut self, dir: u64, name: &str) -> Result<(), Error> {
         self.writing()?;
@@ -281,7 +336,8 @@ impl<D: BlockDev> Fs<D> {
     }
 
     /// Removes every item of `ino`; its records are freed by the reuse rule.
-    fn destroy(&mut self, ino: u64) -> Result<(), Error> {
+    pub(crate) fn destroy(&mut self, ino: u64) -> Result<(), Error> {
+        self.touch(ino);
         let mut keys: Vec<Key> = Vec::new();
         self.scan_raw(&Key::new(ino, 0, 0), &mut |key, _| {
             let mine = key.oid == ino;
