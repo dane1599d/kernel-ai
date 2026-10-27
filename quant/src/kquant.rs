@@ -206,11 +206,53 @@ pub fn q4_k_matvec(tier: Tier, w: &[u8], x: &Q8KVec, y: &mut [f32]) {
         y.fill(0.0);
         return;
     }
+    let (w, y) = q4_k_fours(tier, w, row, x, y);
     for (w, y) in w.chunks_exact(row).zip(y) {
         let mut total = Total(0.0);
         q4_k_row(tier, w, x, &mut total);
         *y = canonical(total.0);
     }
+}
+
+/// The SIMD tiers' Q4_K rows four at a time
+/// ([`crate::kquant_avx2::q4_k_dot4`], the bits [`Total`] gives each); the rows
+/// and outputs left for one at a time.
+#[cfg_attr(
+    not(all(target_arch = "x86_64", target_feature = "sse2")),
+    expect(unused_variables, reason = "only the baseline tier is compiled")
+)]
+fn q4_k_fours<'a, 'w>(
+    tier: Tier,
+    w: &'w [u8],
+    row: usize,
+    x: &Q8KVec,
+    y: &'a mut [f32],
+) -> (&'w [u8], &'a mut [f32]) {
+    match tier.0 {
+        Kind::Baseline => (w, y),
+        // SAFETY: as in `q4_k_row`.
+        #[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
+        Kind::Avx2 | Kind::Avx512 | Kind::Avx512Vnni => fours(w, row, y, |rows| unsafe {
+            crate::kquant_avx2::q4_k_dot4(rows, x)
+        }),
+    }
+}
+
+/// Each whole group of four `row`-byte rows of `w` through `dot4`, its totals
+/// into `y` as canonical NaNs; the rows and outputs left over.
+#[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
+fn fours<'a, 'w>(
+    w: &'w [u8],
+    row: usize,
+    y: &'a mut [f32],
+    dot4: impl Fn([&[u8]; 4]) -> [f32; 4],
+) -> (&'w [u8], &'a mut [f32]) {
+    let done = y.len() / 4 * 4;
+    let (whole, rest) = y.split_at_mut(done);
+    for (w, y) in w.chunks_exact(4 * row).zip(whole.as_chunks_mut::<4>().0) {
+        *y = dot4(core::array::from_fn(|r| &w[r * row..(r + 1) * row])).map(canonical);
+    }
+    (&w[done * row..], rest)
 }
 
 /// `y[r]` = row `r` of the Q6_K matrix `w` times `x`, for every row, as

@@ -36,6 +36,85 @@ pub fn q4_k_dot(row: &[u8], x: &Q8KVec, sink: &mut impl Sink) {
     }
 }
 
+/// Four Q4_K rows of one length against `x`, each row's total as
+/// [`crate::kquant::Total`] adds its super-blocks up: the integers are
+/// [`q4_k_block`]'s, and lane r of each float op below is row r's scalar op, in
+/// the same order (`(d * dx) * a - (dmin * dx) * b`, then the add), so the same
+/// bits. The rows share x's loads and the scale shuffles, the horizontal sums,
+/// the f16 converts and the float tail, which one row pays alone in
+/// [`q4_k_dot`]. The next four rows are prefetched ([`prefetch_next`]).
+#[target_feature(enable = "avx2,fma,f16c")]
+pub fn q4_k_dot4(rows: [&[u8]; 4], x: &Q8KVec) -> [f32; 4] {
+    let [r0, r1, r2, r3] = rows.map(|r| r.as_chunks::<{ q4_k::BLOCK_BYTES }>().0);
+    let xs = x.qs.as_chunks::<SUPER_LEN>().0;
+    let sums = x.sums.as_chunks::<16>().0;
+    // Even f32 lanes to the low half, odd ones to the high half.
+    let split = _mm256_setr_epi32(0, 2, 4, 6, 1, 3, 5, 7);
+    let nibble = _mm256_set1_epi8(15);
+    let mut total = _mm_setzero_ps();
+    for (i, ((xq, sums), &dx)) in xs.iter().zip(sums).zip(&x.scales).enumerate() {
+        let blocks = [&r0[i], &r1[i], &r2[i], &r3[i]];
+        prefetch_next(rows[0], q4_k::BLOCK_BYTES, i);
+        let xq = xq.as_chunks::<32>().0;
+        // Each row's scales and minimum term, as `q4_k_block` lays them out.
+        let mut sc = [_mm256_setzero_si256(); 4];
+        let mut mins = [_mm256_setzero_si256(); 4];
+        for (r, block) in blocks.iter().enumerate() {
+            let (s, m) = q4_k::packed_scales(block[4..q4_k::CODES].try_into().unwrap());
+            sc[r] = _mm256_broadcastsi128_si256(_mm_cvtepu8_epi16(_mm_cvtsi64_si128(s as i64)));
+            let m = _mm_cvtsi64_si128(m as i64);
+            let m = _mm256_cvtepu8_epi16(_mm_unpacklo_epi8(m, m));
+            mins[r] = _mm256_madd_epi16(m, load_sums(sums));
+        }
+        // Run g of every row against the same x bytes, as `q4_k_block` adds them.
+        let mut acc = [_mm256_setzero_si256(); 4];
+        for g in 0..4 {
+            let (xlo, xhi) = (load_i8(&xq[2 * g]), load_i8(&xq[2 * g + 1]));
+            let (plo, phi) = (lane_of(2 * g, 2 * g), lane_of(2 * g + 1, 2 * g + 1));
+            for (r, block) in blocks.iter().enumerate() {
+                let q = load(block[q4_k::CODES + 32 * g..][..32].try_into().unwrap());
+                let lo = _mm256_and_si256(q, nibble);
+                let hi = _mm256_and_si256(_mm256_srli_epi16::<4>(q), nibble);
+                let lo = _mm256_madd_epi16(
+                    _mm256_maddubs_epi16(lo, xlo),
+                    _mm256_shuffle_epi8(sc[r], plo),
+                );
+                let hi = _mm256_madd_epi16(
+                    _mm256_maddubs_epi16(hi, xhi),
+                    _mm256_shuffle_epi8(sc[r], phi),
+                );
+                acc[r] = _mm256_add_epi32(acc[r], _mm256_add_epi32(lo, hi));
+            }
+        }
+        let (a, b) = sums4(acc, mins);
+        let (a, b) = (_mm_cvtepi32_ps(a), _mm_cvtepi32_ps(b));
+        // Each row's d and dmin, as `halves` converts them.
+        let word =
+            |block: &[u8; q4_k::BLOCK_BYTES]| i32::from_le_bytes(*block.first_chunk().unwrap());
+        let scales = _mm256_cvtph_ps(_mm_setr_epi32(
+            word(&r0[i]),
+            word(&r1[i]),
+            word(&r2[i]),
+            word(&r3[i]),
+        ));
+        let scales = _mm256_permutevar8x32_ps(scales, split);
+        let (d, dmin) = (
+            _mm256_castps256_ps128(scales),
+            _mm256_extractf128_ps::<1>(scales),
+        );
+        let dx = _mm_set1_ps(dx);
+        let terms = _mm_sub_ps(
+            _mm_mul_ps(_mm_mul_ps(d, dx), a),
+            _mm_mul_ps(_mm_mul_ps(dmin, dx), b),
+        );
+        total = _mm_add_ps(total, terms);
+    }
+    let mut out = [0.0; 4];
+    // SAFETY: 16 writable bytes; storeu has no alignment rule.
+    unsafe { _mm_storeu_ps(out.as_mut_ptr(), total) };
+    out
+}
+
 /// One Q4_K super-block's lanes against `xq`: the codes times x by sub-block
 /// scale, the minimums times x's sums, and `[d, dmin]`.
 #[target_feature(enable = "avx2,fma,f16c")]
@@ -128,6 +207,44 @@ pub fn q6_k_dot(row: &[u8], x: &Q8KVec, sink: &mut impl Sink) {
         let offsets = _mm256_madd_epi16(scales, load_sums(sums));
         let (dot, offset) = hsum2(acc, offsets);
         sink.q6_k(d, dx, dot - 32 * offset);
+    }
+}
+
+/// The lanes' exact sums of four rows' two vectors each: `a[r]`'s in lane r of
+/// the first result, `b[r]`'s in lane r of the second (no partial sum can
+/// overflow: see the bounds in the callers).
+#[target_feature(enable = "avx2")]
+#[inline]
+fn sums4(a: [__m256i; 4], b: [__m256i; 4]) -> (__m128i, __m128i) {
+    // Per 128-bit lane: a0, b0, a1, b1 over lanes 0-3 | over lanes 4-7, and the
+    // same for rows 2 and 3; then a0, b0, ..., a3, b3; then the a's, the b's.
+    let p01 = _mm256_hadd_epi32(_mm256_hadd_epi32(a[0], b[0]), _mm256_hadd_epi32(a[1], b[1]));
+    let p23 = _mm256_hadd_epi32(_mm256_hadd_epi32(a[2], b[2]), _mm256_hadd_epi32(a[3], b[3]));
+    let ints = _mm256_add_epi32(
+        _mm256_permute2x128_si256::<0x20>(p01, p23),
+        _mm256_permute2x128_si256::<0x31>(p01, p23),
+    );
+    let ints = _mm256_permutevar8x32_epi32(ints, _mm256_setr_epi32(0, 2, 4, 6, 1, 3, 5, 7));
+    (
+        _mm256_castsi256_si128(ints),
+        _mm256_extracti128_si256::<1>(ints),
+    )
+}
+
+/// Prefetches block `i`'s share of the four rows after the group that starts
+/// with `first` ([`q4_k_dot4`]). Four rows read at once are four streams, which the hardware
+/// prefetcher follows badly (from DRAM about half as fast as one row), so the
+/// next group is fetched in order, a block's share per block. Prefetch never
+/// faults, so rows past the matrix's end are harmless.
+#[inline(always)]
+fn prefetch_next(first: &[u8], block_bytes: usize, i: usize) {
+    let next = first
+        .as_ptr()
+        .wrapping_add(4 * first.len() + 4 * block_bytes * i);
+    for line in 0..(4 * block_bytes).div_ceil(64) {
+        // SAFETY: SSE is part of every x86_64 target, and a prefetch reads
+        // nothing the program sees.
+        unsafe { _mm_prefetch::<_MM_HINT_T0>(next.wrapping_add(64 * line).cast()) };
     }
 }
 
