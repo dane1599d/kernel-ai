@@ -223,14 +223,16 @@ fn report(parent: u64, child: &Process, reason: ExitReason, detail: u64) {
 
 /// The process `pid` ended: its job children are killed and their records dropped.
 pub(super) fn on_parent_exit(pid: u64) {
-    let children: Vec<u64> = super::with_table(|table| {
-        table
+    // Copied out under the lock with no allocation (`with_table`'s rule).
+    let mut children = [0u64; super::MAX_PROCESSES];
+    let count = super::with_table(|table| {
+        let mine = table
             .iter()
             .filter(|p| p.live() && p.job && p.spawner == pid)
-            .map(|p| p.pid)
-            .collect()
+            .map(|p| p.pid);
+        super::fill(&mut children, mine)
     });
-    for child in children {
+    for &child in &children[..count] {
         let _ = kill(child, ExitReason::Killed);
     }
     locked(&EXITS, |exits| exits.retain(|(parent, _)| *parent != pid));
