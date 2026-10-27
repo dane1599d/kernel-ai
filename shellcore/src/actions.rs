@@ -187,12 +187,32 @@ impl Shell {
         }
     }
 
+    /// Runs `checked` in a `scriptrun` child when the host has one and its calls
+    /// are all run-tier, else here. A child that ended without an answer changed
+    /// what the spec taken before its claim says it changed, and that is put back.
+    fn run(&self, checked: &Checked) -> script::Ran {
+        if crate::apart::may_run_apart(checked) {
+            let before = undo::current_spec(self.host.as_ref());
+            let unreadable = "the script's process gave an answer the shell cannot read";
+            match self.host.run_apart(&crate::apart::request(checked)) {
+                Some(Ok(text)) => {
+                    return crate::apart::decode(&text).unwrap_or_else(|| {
+                        crate::apart::killed(unreadable, before, self.host.as_ref())
+                    });
+                }
+                Some(Err(why)) => return crate::apart::killed(&why, before, self.host.as_ref()),
+                None => {}
+            }
+        }
+        script::run(checked, &self.host, &self.config)
+    }
+
     /// Runs a script the user asked for, logs what it changed, and says what
     /// happened in a line or two after its output: `Done: policy round-robin (was
     /// interactive). undo`, or `Taken as: …` when it ran a vague line's reading. A
     /// run that fails after a change puts the change back: `Nothing changed: …`.
     pub(crate) fn finish(&mut self, id: u64, request: &str, checked: &Checked, how: How) -> Reply {
-        let ran = script::run(checked, &self.host, &self.config);
+        let ran = self.run(checked);
         for done in &ran.done {
             let tier = tiers::of(self.tiers, &done.action);
             self.host.audit(&format!(

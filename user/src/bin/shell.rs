@@ -7,6 +7,10 @@
 
 extern crate alloc;
 
+// A program's crate root sits in src/bin, so its modules are named by path.
+#[path = "shell/apart.rs"]
+mod apart;
+
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::rc::Rc;
@@ -31,7 +35,13 @@ const SCRIPT_CALL_MS: u64 = SCRIPT_ROUND_MS + 5_000;
 /// How long `remember` and `new` wait for llm, which only stores the turn.
 const MEMORY_CALL_MS: u64 = 5_000;
 
-struct System;
+/// How long a script's child may run: the line budget its engine keeps, and a
+/// margin for the child's own check before it.
+const SCRIPT_LIMIT_MS: u64 = DEFAULT_CONFIG.line_budget_ms + 2_000;
+
+struct System {
+    pool: apart::Pool,
+}
 
 /// The route to the llm service: the shell's plan line has `uses=llm`, its only
 /// route.
@@ -198,6 +208,10 @@ impl Host for System {
             .map_err(|error| format!("{error:?}"))
     }
 
+    fn run_apart(&self, request: &str) -> Option<Result<String, String>> {
+        self.pool.run(request, SCRIPT_LIMIT_MS)
+    }
+
     /// The audit trail goes to the log, not the screen: the reply says what happened.
     fn audit(&self, text: &str) {
         logln!("{text}");
@@ -242,7 +256,12 @@ impl Host for System {
 
 fn main() -> i32 {
     let args = args();
-    let mut shell = Shell::new(Rc::new(System), DEFAULT_CONFIG);
+    let mut shell = Shell::new(
+        Rc::new(System {
+            pool: apart::Pool::new(),
+        }),
+        DEFAULT_CONFIG,
+    );
     println!("up (restart {})", arg(&args, "restart").unwrap_or("0"));
     let mut line = vec![0u8; kabi::MAX_MESSAGE];
     loop {

@@ -95,6 +95,14 @@ pub fn check() -> Result<(), &'static str> {
     if !policy_is("round-robin") {
         return Err("scripts: a run-tier script did not switch the policy at once");
     }
+    // P1 task 14: the scripts ran in the shell's pooled `scriptrun` child, which
+    // waits there for the next one.
+    if !crate::process::named("scriptrun")
+        .iter()
+        .any(|&(_, supervised)| !supervised)
+    {
+        return Err("scripts: no scriptrun child of the shell ran them");
+    }
     after_switch();
     expect_lines(UNDO)?;
     if !policy_is("interactive") {
