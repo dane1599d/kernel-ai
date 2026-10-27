@@ -14,6 +14,11 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
 
+# bash -eo pipefail: a step piped through tee fails when its command does.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   # Measure 3 and S08-2: the release image from scratch on two fresh runners, no cache.
   image:
@@ -24,11 +29,9 @@ jobs:
         runner: [a, b]
     # Logs and outputs go outside the checkout: an untracked file would mark the
     # build -dirty and change the image.
-    env:
-      OUT: ${{ github.workspace }}/../out
     steps:
       - uses: actions/checkout@v4
-      - run: mkdir -p "$OUT"
+      - run: mkdir -p "$RUNNER_TEMP/out" && echo "OUT=$RUNNER_TEMP/out" >> "$GITHUB_ENV"
       - run: rustup show active-toolchain || rustup toolchain install
       - run: rustup target add wasm32-unknown-unknown
       - name: Build the release image
@@ -91,9 +94,9 @@ jobs:
       - uses: actions/checkout@v4
       - run: rustup show active-toolchain || rustup toolchain install
       - run: rustup target add wasm32-unknown-unknown
-      - shell: bash
-        run: |
+      - run: |
           cargo install --locked cargo-about --version 0.9.2 --features cli
+          cargo fetch --locked
           start=$(date +%s)
           cargo xtask notices
           echo "measure notices_s $(( $(date +%s) - start ))" | tee notices-${{ matrix.os }}.log

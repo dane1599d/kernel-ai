@@ -22,11 +22,11 @@ def sources(target):
     for sub in DIRS:
         for d in glob.glob(os.path.join(target, sub, "deps", "*.d")):
             with open(d, encoding="utf-8", errors="replace") as f:
+                # After the target's own line, each source has a line `PATH:`.
                 for line in f:
-                    head, sep, rest = line.partition(": ")
-                    if not sep or head.endswith(".d"):
-                        continue
-                    seen.add(head.replace("\\ ", " "))
+                    line = line.rstrip("\n")
+                    if line.endswith(":") and not line.endswith(".d:"):
+                        seen.add(line[:-1].replace("\\ ", " "))
     return sorted(p for p in seen if os.path.isfile(p))
 
 

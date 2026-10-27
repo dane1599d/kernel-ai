@@ -37,7 +37,8 @@ def measure(name, value):
 def publish(image, repo):
     expires = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(days=7)
     signers = {role: CryptoSigner.generate_ecdsa() for role in ROLES}
-    root = Metadata(Root(expires=expires))
+    # Plain file names: the spike serves one version of each role.
+    root = Metadata(Root(expires=expires, consistent_snapshot=False))
     for role, signer in signers.items():
         root.signed.add_key(signer.public_key, role)
     targets = Metadata(Targets(expires=expires))
