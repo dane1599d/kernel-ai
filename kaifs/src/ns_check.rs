@@ -32,7 +32,7 @@ use crate::items::{
     decode_attrs, decode_names, hash_name,
 };
 use crate::tree::Key;
-use crate::vol::SnapKind;
+use crate::vol::{SnapKind, Undo};
 use alloc::collections::{BTreeMap, BTreeSet, VecDeque};
 use alloc::format;
 use alloc::rc::Rc;
@@ -400,17 +400,26 @@ fn volume<D: BlockDev>(fs: &mut Fs<D>, id: u64, cache: &mut Cache) -> Result<Vol
         snaps.insert(*sid, report);
     }
     for undo in fs.undo_records().map_err(at)? {
-        let snap = roots
-            .iter()
-            .find(|(sid, _)| *sid == undo.snapshot)
-            .map(|(_, s)| s);
-        let sound = snap.is_some_and(|s| s.kind == SnapKind::Undo && s.generation == undo.before)
-            && undo.before < undo.txn
-            && undo.txn <= committed
-            && undo.objects.iter().all(|&o| (1..next_oid).contains(&o));
-        if !sound {
+        if !undo_holds(&undo, fs.snapshots(), committed, next_oid) {
             return Err(format!("the undo record of {} does not hold", undo.txn));
         }
     }
     Ok(VolumeNs { live, snaps })
+}
+
+/// Whether an UNDO record holds in a volume whose snapshots are `snaps`, whose
+/// last commit is `committed` and whose counter is `next_oid`: it follows the
+/// generation before it, names an undo snapshot of that generation, and names
+/// only objects below the counter.
+pub(crate) fn undo_holds(
+    undo: &Undo,
+    snaps: &BTreeMap<u64, Snap>,
+    committed: u64,
+    next_oid: u64,
+) -> bool {
+    let snap = snaps.get(&undo.snapshot);
+    snap.is_some_and(|s| s.kind == SnapKind::Undo && s.generation == undo.before)
+        && undo.before < undo.txn
+        && undo.txn <= committed
+        && undo.objects.iter().all(|&o| (1..next_oid).contains(&o))
 }
