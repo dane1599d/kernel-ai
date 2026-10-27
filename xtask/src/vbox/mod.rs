@@ -11,7 +11,8 @@
 //! xAPIC, a USB keyboard and tablet on an xHCI controller (PS/2 stays as the
 //! fallback until the kernel configures them), a virtio-net card on NAT, and
 //! one NVMe controller with the OS disk (the image as a VDI) on port 0, the
-//! model on port 1 and `kai-data.vdi` on port 2. The OS disk is rebuilt every
+//! model on port 1 and `kai-data.vdi` on port 2 (port 1 with no model: VirtualBox
+//! lists no namespace past an empty port). The OS disk is rebuilt every
 //! run; `kai-data.vdi` is made once and never deleted with it (ADR 0004). The model is read in place through a VMDK descriptor
 //! (`vmdk.rs`), never copied. The vm(), its disks and the serial log live in `KAI_VBOX_DIR`
 //! (`D:\kai-vbox` by default). The model runs inside the VM only.
@@ -248,9 +249,10 @@ fn configure(dir: &Path, raw: &Path, model: Option<&Path>, memory: u64) -> Resul
         ));
     }
     let has_controller = info.values().any(|v| v == CONTROLLER);
-    // Free the old disks so their files can be replaced.
+    // Free the old disks so their files can be replaced, and `kai-data.vdi` so it
+    // can move to the port after the last disk.
     if has_controller {
-        for port in ["0", "1"] {
+        for port in ["0", "1", "2"] {
             let _ = manage::run(&[
                 "storageattach",
                 vm(),
@@ -302,14 +304,6 @@ fn configure(dir: &Path, raw: &Path, model: Option<&Path>, memory: u64) -> Resul
         step(&["storagectl", vm(), "--name", CONTROLLER, "--portcount", "3"])?;
     }
     attach("0", &os_disk, "normal")?;
-    let data_disk = dir.join(DATA_DISK);
-    powercut::data_disk(&data_disk)?;
-    if info
-        .get(&format!("{CONTROLLER}-2-0"))
-        .is_none_or(|v| v == "none")
-    {
-        attach("2", &data_disk, "normal")?;
-    }
     if let Some(model) = model {
         let vmdk = vmdk::for_file(dir, model, MODEL_TAIL)?;
         // VirtualBox writes its UUIDs into the descriptor once it registers it; a
@@ -333,6 +327,15 @@ fn configure(dir: &Path, raw: &Path, model: Option<&Path>, memory: u64) -> Resul
         );
         attach("1", &model_disk, "immutable")?;
     }
+    // VirtualBox's NVMe lists no namespace past an empty port, so `kai-data`
+    // follows the last disk: port 2 after the model, else port 1.
+    let data_disk = dir.join(DATA_DISK);
+    powercut::data_disk(&data_disk)?;
+    attach(
+        if model.is_some() { "2" } else { "1" },
+        &data_disk,
+        "normal",
+    )?;
     Ok(())
 }
 
