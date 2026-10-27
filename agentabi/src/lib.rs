@@ -13,9 +13,11 @@
 extern crate alloc;
 
 pub mod consent;
+mod names;
 mod rows;
 mod show;
 
+pub use names::{RESERVED_GROUPS, is_reserved, takes_os_name};
 pub use rows::*;
 pub use show::{Signature, Type};
 
