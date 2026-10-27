@@ -107,6 +107,9 @@ pub struct Entry {
     /// The entry an undo reverted.
     pub of: Option<u64>,
     pub tier: Option<Tier>,
+    /// The `pack_id` of the pack the model was given (ADR 0010 §7), for an entry
+    /// a model turn made; `None` for one the user typed.
+    pub pack: Option<u64>,
     /// Where consent came from: `asked`, `taken-as`, `yes`, `typed`, `-`.
     pub consent: String,
     pub state: State,

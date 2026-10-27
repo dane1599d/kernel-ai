@@ -86,6 +86,13 @@ pub fn pack_id(format: Format, tokenizer_sha256: &str, pack: &str) -> u64 {
     fnv.finish()
 }
 
+/// The `act` pack's `pack_id`: dsl-1 as rendered now, with no tokenizer hash,
+/// so llm (its `kai-kv 1` key) and the shell (each model turn's `actlog 1`
+/// entry) name the same pack the same way.
+pub fn act_pack_id() -> u64 {
+    pack_id(Format::Dsl1, "", &render(Format::Dsl1))
+}
+
 /// Whether `pack` shows the row `name`: on its own line, or as one verb of its
 /// family's line (`service_stop|start|restart(`).
 pub fn shows(pack: &str, name: &str) -> bool {

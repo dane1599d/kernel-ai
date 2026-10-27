@@ -8,7 +8,7 @@ fn call(json: &str) -> Result<Call, ActError> {
     Ok(llmproto::act::parse(json).unwrap())
 }
 
-fn with_calls(calls: Vec<Result<Call, ActError>>) -> (Rc<FakeHost>, Shell) {
+pub(super) fn with_calls(calls: Vec<Result<Call, ActError>>) -> (Rc<FakeHost>, Shell) {
     let host = FakeHost::new();
     host.calls.borrow_mut().extend(calls);
     let shell = shell(&host);

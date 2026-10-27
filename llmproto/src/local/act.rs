@@ -316,14 +316,25 @@ pub fn restore(
 
 /// The `act` prefix's `pack_id`, for its `kai-kv 1` file's key.
 pub fn pack_id() -> u64 {
-    let pack = crate::pack::render(crate::pack::Format::Dsl1);
-    crate::pack::pack_id(crate::pack::Format::Dsl1, "", &pack)
+    crate::pack::act_pack_id()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use infer::json::Constraint;
+
+    #[test]
+    fn the_kv_key_names_the_pack_as_the_shells_log_does() {
+        // One function for both, so llm's `kai-kv 1` key and the shell's
+        // `actlog 1` entries cannot drift apart.
+        assert_eq!(pack_id(), crate::pack::act_pack_id());
+        let pack = crate::pack::render(crate::pack::Format::Dsl1);
+        assert_eq!(
+            pack_id(),
+            crate::pack::pack_id(crate::pack::Format::Dsl1, "", &pack)
+        );
+    }
 
     #[test]
     fn every_pack_row_and_pseudo_action_decodes() {
