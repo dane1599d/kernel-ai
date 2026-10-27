@@ -1,0 +1,39 @@
+node 0 clip 0,0 360x400
+  fill 0,0 360x400 window r0
+node 2 clip 0,0 360x400
+  text 12,12 heading text "Settings"
+node 3 clip 0,0 360x400
+  fill 12,51 32x18 accent r9
+  fill 28,53 14x14 text r7
+  text 52,50 body text "Wrap lines"
+node 4 clip 0,0 360x400
+  fill 19,96 146x4 line_strong r2
+  fill 19,96 29x4 accent r2
+  fill 41,91 14x14 text r7
+  text 180,88 body text "Size"
+node 5 clip 0,0 360x400
+  fill 12,133 160x6 line r3
+  fill 12,133 80x6 accent r3
+  text 180,126 body text "Indexing"
+node 6 clip 0,0 360x400
+  fill 12,160 62x28 raised r6
+  stroke 12,160 62x28 line_strong w1 r6
+  text 22,165 label text "Sort"
+  icon 48,166 16x16 chevron-down muted
+node 7 clip 0,0 360x400
+  stroke 12,198 336x74 line_strong w1 r6
+  fill 13,247 334x24 raised r0
+  text 23,202 label muted "Name"
+  text 23,225 body text "a.txt"
+  text 23,249 body text "b.txt"
+  text 83,202 label muted "Size"
+  text 83,225 body text "12"
+  text 83,249 body text "3"
+  fill 13,222 334x1 line r0
+node 8 clip 0,0 360x400
+  text 24,289 label text "One"
+  fill 12,312 48x2 accent r0
+  text 72,289 label muted "Two"
+  fill 12,313 336x1 line r0
+node 9 clip 0,0 360x400
+  text 12,314 body text "first page"
