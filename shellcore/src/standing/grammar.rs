@@ -41,8 +41,10 @@ impl Draft {
     }
 }
 
-/// Longest rule text read: a rule is one short line.
-pub const MAX_TEXT: usize = 160;
+/// Longest rule text read: one short line, so the ask card's question, `Run
+/// rules_add("<rule>")? It asks first.`, fits the menu (termcore's 120 bytes).
+/// The longest rule with three 12-byte app names is 83 bytes.
+pub const MAX_TEXT: usize = 88;
 
 /// Reads `on <event> -> <action>(<app>) [until <event>]`.
 pub fn parse(text: &str) -> Result<Draft, &'static str> {

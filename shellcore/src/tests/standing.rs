@@ -240,3 +240,154 @@ fn a_rule_out_of_shape_is_refused_never_guessed_at() {
     }
     assert!(parse(&"x".repeat(crate::standing::grammar::MAX_TEXT + 1)).is_err());
 }
+
+const NOTES: &str = "on minimize(notes) -> app_suspend(notes) until restore(notes)";
+
+/// A shell whose host has an event source, with `NOTES` made through its card.
+fn shell_with_notes_rule() -> (alloc::rc::Rc<super::FakeHost>, crate::Shell) {
+    let host = super::FakeHost::new();
+    host.triggers_on.set(true);
+    let mut shell = super::shell(&host);
+    let card = shell.eval(&alloc::format!("rules_add {NOTES}"));
+    let call = alloc::format!("rules_add(\"{NOTES}\")");
+    assert!(card.to_wire().starts_with("menu 1 "), "{}", card.to_wire());
+    assert!(
+        card.to_wire().contains(&call),
+        "the card shows the rule in code's words"
+    );
+    // Nothing is made before the Allow.
+    assert!(host.standing_disk.borrow().is_none());
+    let once = host.mint(1, &call);
+    let made = shell.eval(&alloc::format!("answer 1 allow once={once}"));
+    assert_eq!(
+        made,
+        super::ok(&alloc::format!(
+            "Standing instruction S1 made: {NOTES}. undo"
+        ))
+    );
+    (host, shell)
+}
+
+#[test]
+fn a_standing_instruction_is_made_on_an_allow_and_fires_through_its_owner() {
+    let (host, mut shell) = shell_with_notes_rule();
+    assert_eq!(
+        shell.eval("rules"),
+        super::ok(&alloc::format!("S1 {NOTES}"))
+    );
+    assert_eq!(
+        *host.triggers.watched.borrow(),
+        [when(Kind::Minimize, "notes"), when(Kind::Restore, "notes")]
+    );
+    assert!(
+        host.standing_disk
+            .borrow()
+            .as_deref()
+            .unwrap()
+            .contains("S 1 on=minimize:notes")
+    );
+    // Minimizing suspends it through comphost; restoring puts it back.
+    assert_eq!(shell.on_event(&event(Kind::Minimize, "notes")), None);
+    assert_eq!(shell.on_event(&event(Kind::Restore, "notes")), None);
+    let runs = host.triggers.runs.borrow().clone();
+    assert_eq!(
+        runs,
+        [
+            (1, String::from("app_suspend"), String::from("notes"), false),
+            (1, String::from("app_suspend"), String::from("notes"), true),
+        ]
+    );
+    let actlog = shell.eval("log actlog").text;
+    assert!(
+        actlog.contains("form=standing tier=run consent=standing:1"),
+        "{actlog}"
+    );
+    // `undo` reverses the last firing through its owner.
+    assert_eq!(
+        shell.eval("undo"),
+        super::ok("Undone: app_suspend(notes) again")
+    );
+    assert_eq!(host.triggers.runs.borrow().len(), 3);
+}
+
+#[test]
+fn rules_remove_ends_one_and_undo_brings_it_back() {
+    let (host, mut shell) = shell_with_notes_rule();
+    assert_eq!(
+        shell.eval("rules_remove S1"),
+        super::ok("Removed standing instruction S1; it no longer fires. undo")
+    );
+    assert!(host.triggers.watched.borrow().is_empty());
+    assert_eq!(shell.on_event(&event(Kind::Minimize, "notes")), None);
+    assert!(host.triggers.runs.borrow().is_empty());
+    assert_eq!(
+        shell.eval("undo"),
+        super::ok("Undone: standing instruction S1 back")
+    );
+    assert_eq!(
+        shell.eval("rules"),
+        super::ok(&alloc::format!("S1 {NOTES}"))
+    );
+    // And `undo` of the making removes it.
+    assert_eq!(
+        shell.eval("undo 1"),
+        super::ok("Undone: standing instruction S1 removed")
+    );
+    assert_eq!(
+        shell.eval("rules"),
+        super::ok("no rules: asks are answered one at a time")
+    );
+}
+
+#[test]
+fn a_firing_the_owner_refuses_is_logged_and_never_asked_about() {
+    let (host, mut shell) = shell_with_notes_rule();
+    *host.triggers.refuse.borrow_mut() = Some(String::from("no live rule covers it"));
+    assert_eq!(shell.on_event(&event(Kind::Minimize, "notes")), None);
+    let actlog = shell.eval("log actlog").text;
+    assert!(
+        actlog.contains("refused: no live rule covers it"),
+        "{actlog}"
+    );
+    assert!(shell.pending.is_none(), "a refused firing never asks later");
+}
+
+#[test]
+fn instructions_survive_a_restart_and_a_bad_one_is_never_made() {
+    let (host, _) = shell_with_notes_rule();
+    host.triggers.watched.borrow_mut().clear();
+    let mut shell = super::shell(&host);
+    assert_eq!(
+        shell.eval("rules"),
+        super::ok(&alloc::format!("S1 {NOTES}"))
+    );
+    assert_eq!(
+        host.triggers.watched.borrow().len(),
+        2,
+        "watched again at start"
+    );
+    for (line, why) in [
+        (
+            "rules_add on focus(game) -> process_stop(game)",
+            "cannot be a standing instruction's action",
+        ),
+        (
+            "rules_add whenever I minimize anything, delete it",
+            "a rule is: on <event>",
+        ),
+    ] {
+        let reply = shell.eval(line);
+        assert!(
+            !reply.ok && reply.text.contains(why),
+            "{line}: {}",
+            reply.text
+        );
+    }
+    *host.standing_disk.borrow_mut() = Some(String::from("kai-standing 1\nS 1 on=x\n"));
+    let shell = super::shell(&host);
+    assert_eq!(
+        shell.standing.rules().len(),
+        0,
+        "a store refused whole starts empty"
+    );
+}
