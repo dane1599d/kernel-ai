@@ -116,6 +116,13 @@ opt-level = 2
 # overflow checks (its sums are bounded by construction) and debug assertions,
 # which also turns off Rust's precondition checks inside its unsafe SIMD loads;
 # together they cost a third of the speed. Its tests compare exact results.
+# Spike S05-1 only (never merged): the compose prototype measured as it would
+# ship, optimised, in dev builds too.
+[profile.dev.package.spike-compose]
+opt-level = 3
+overflow-checks = false
+debug-assertions = false
+
 [profile.dev.package.quant]
 opt-level = 2
 overflow-checks = false

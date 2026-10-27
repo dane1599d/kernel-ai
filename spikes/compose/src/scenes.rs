@@ -25,6 +25,9 @@ pub trait Screen {
     fn present(&mut self, frame: &Frame, damage: &[Rect]);
     /// The TSC.
     fn now(&self) -> u64;
+    /// Between frames, outside the timing: a program that never blocks is
+    /// stopped as a runaway, so the real screen sleeps now and then.
+    fn pause(&mut self) {}
 }
 
 #[derive(Default)]
@@ -193,6 +196,7 @@ pub fn full(d: &mut Desk, screen: &mut dyn Screen) -> Timings {
         screen.present(&d.frame, &[all]);
         t.render.push(t1 - t0);
         t.flush.push(screen.now() - t1);
+        screen.pause();
     }
     t
 }
@@ -217,6 +221,7 @@ pub fn drag(d: &mut Desk, screen: &mut dyn Screen) -> Timings {
         screen.present(&d.frame, &[damage]);
         t.render.push(t1 - t0);
         t.flush.push(screen.now() - t1);
+        screen.pause();
     }
     d.windows[i].rect = start;
     t
@@ -243,7 +248,9 @@ pub fn text_page(d: &mut Desk, text: &mut Text, screen: &mut dyn Screen) -> (Tim
         d.compose(damage);
         let t1 = screen.now();
         screen.present(&d.frame, &[damage]);
-        (t1 - t0, screen.now() - t1)
+        let flush = screen.now() - t1;
+        screen.pause();
+        (t1 - t0, flush)
     };
     let (mut cold, mut warm) = (Timings::default(), Timings::default());
     for _ in 0..COLD_PAGES {
@@ -291,6 +298,7 @@ pub fn sheet(d: &mut Desk, text: &mut Text, screen: &mut dyn Screen) -> Timings 
             screen.present(&d.frame, &[damage]);
             t.render.push(t1 - t0);
             t.flush.push(screen.now() - t1);
+            screen.pause();
             frames += 1;
         }
     }
@@ -308,6 +316,7 @@ pub fn vello(d: &mut Desk, screen: &mut dyn Screen) -> (Vec<u64>, Vec<u64>) {
         let t0 = screen.now();
         v.render(d, all);
         full.push(screen.now() - t0);
+        screen.pause();
     }
     let i = d.windows.len() - 1;
     let start = d.windows[i].rect;
@@ -322,6 +331,7 @@ pub fn vello(d: &mut Desk, screen: &mut dyn Screen) -> (Vec<u64>, Vec<u64>) {
         let t0 = screen.now();
         v.render(d, damage);
         drag.push(screen.now() - t0);
+        screen.pause();
     }
     d.windows[i].rect = start;
     (full, drag)

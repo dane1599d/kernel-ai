@@ -46,6 +46,9 @@ fn cycles_per_ms() -> u64 {
 
 /// The scanout buffer the kernel mapped, and where frames go.
 struct Display {
+    /// When it last slept (TSC), and a half second in TSC cycles.
+    slept: u64,
+    half_second: u64,
     base: *mut u32,
     w: i32,
     h: i32,
@@ -57,6 +60,8 @@ impl Display {
         let mut info = [0u64; 3];
         let base = sys::spike_display_map(&mut info).ok()?;
         Some(Display {
+            slept: tsc(),
+            half_second: cycles_per_ms() * 500,
             base: base as *mut u32,
             w: info[0] as i32,
             h: info[1] as i32,
@@ -90,6 +95,13 @@ impl Screen for Display {
 
     fn now(&self) -> u64 {
         tsc()
+    }
+
+    fn pause(&mut self) {
+        if tsc() - self.slept > self.half_second {
+            sys::sleep_ms(1);
+            self.slept = tsc();
+        }
     }
 }
 

@@ -104,7 +104,9 @@ jobs:
       - name: The scenes
         env:
           XTASK_CASE: ${{ matrix.cases }}
-        run: cargo xtask test --accel ${{ matrix.accel }} --timeout 900 2>&1 | tee compose.log
+        run: |
+          set -o pipefail
+          cargo xtask test --accel ${{ matrix.accel }} --timeout 900 2>&1 | tee compose.log
       - name: The figures
         if: always()
         run: |
