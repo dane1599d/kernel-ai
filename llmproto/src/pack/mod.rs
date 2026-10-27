@@ -39,19 +39,10 @@ const BYTES_PER_TOKEN: f32 = 3.32;
 /// arguments is decoded once more with [`group_text`] after the request
 /// (`local::act`). Scripts are written by the script prompt, which keeps
 /// every function, so they are untouched. The least-used rows: the scheduler
-/// trial, the component revert, and M8's reads, which `act` sends to `script`.
+/// trial and the component revert. Reads stay in full: their return types are
+/// how `act` tells a question `script` can answer from one it cannot (run
+/// 40486342534 indexed them, and M8 through script fell from 47 to 40 of 50).
 pub const INDEX: &[(&str, &[&str])] = &[
-    (
-        "reads",
-        &[
-            "cpus",
-            "memory",
-            "uptime_ms",
-            "processes",
-            "threads",
-            "get_policy",
-        ],
-    ),
     ("tune", &["tune", "tune_undo"]),
     ("component", &["component_revert"]),
 ];

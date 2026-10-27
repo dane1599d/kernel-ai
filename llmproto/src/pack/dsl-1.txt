@@ -32,6 +32,12 @@ undo(steps: int 1..1)  // puts back the last change made; undo again redoes it
 {"name":"say","arguments":{"text":"I cannot do that: there is no action for files yet."}}
 ## system
 type Policy = "interactive" | "round-robin"
+cpus() -> int  // CPUs online
+memory() -> #{free_mib: int, total_mib: int, heap_kib: int}  // MiB; kernel heap in KiB
+uptime_ms() -> int  // milliseconds since boot
+processes() -> [#{pid: int, name: string}]  // the running services
+threads() -> #{switches: int, ejections: int, migrations: int}  // scheduler counters since boot
+get_policy() -> Policy  // the scheduling policy
 set_policy(name: Policy) [undo]  // every CPU
 process_stop(name: string) [ask]  // stops or kills processes by name
 service_stop|start|restart(name: string) [ask|undo|ask]  // start runs a stopped one; stop keeps it down; restart resets
@@ -39,6 +45,5 @@ pkg_install|remove(name: string) [undo]  // installs or removes a package; undo 
 pkg_list() -> string  // installed packages
 pkg_search(text: string) -> string  // packages in the repository
 ## index (name only; call one and its arguments are shown next)
-reads: cpus memory uptime_ms processes threads get_policy
 tune: tune tune_undo
 component: component_revert
