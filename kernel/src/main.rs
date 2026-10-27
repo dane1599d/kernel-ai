@@ -381,6 +381,7 @@ extern "C" fn boot_continue() -> ! {
             test_exit(ExitCode::Success)
         }
         SelfTest::Update => slots::update_case(),
+        SelfTest::Probation => slots::probation_case(),
         SelfTest::None => slots::on_boot(false),
         SelfTest::Boot => {}
     }

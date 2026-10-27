@@ -257,7 +257,98 @@ fn lever(test: bool) {
     if let Err(error) = write(&before, &nv) {
         log!("slots: SetVariable failed: {error:?}");
     }
+    let trial = !nv.record.slot(slot).successful;
     *BOOTED.lock() = Some((nv, slot));
+    // A trial slot runs on probation until it commits (ADR 0008 §5).
+    if trial && let Err(why) = threads::spawn("probation", probation, slot as usize) {
+        log!(
+            "slots: no probation thread ({why}); {} stays a trial",
+            entry_id(slot)
+        );
+    }
+}
+
+/// ADR 0008 §5's probation: `calls` requests served by the shell and `ms` with
+/// no fault, then a last check; an idle machine commits after 4 times `ms` and 2
+/// passing checks. A fault takes the fault path, which never commits.
+struct Probation {
+    calls: u64,
+    ms: u64,
+}
+
+impl Probation {
+    /// The ADR's figures, or `probation_calls=` and `probation_ms=` for tests:
+    /// an installed system's command line names only its slot.
+    fn from_cmdline() -> Probation {
+        let number = |key, default| word(key).and_then(|v| v.parse().ok()).unwrap_or(default);
+        Probation {
+            calls: number("probation_calls", PROBATION_CALLS),
+            ms: number("probation_ms", PROBATION_MS),
+        }
+    }
+}
+
+/// ADR 0008 §5: 20 requests and 10 minutes.
+const PROBATION_CALLS: u64 = 20;
+const PROBATION_MS: u64 = 600_000;
+/// How often probation looks.
+const PROBATION_TICK_MS: u64 = 1_000;
+
+fn served() -> u64 {
+    let (kernel, processes) = ipc::replies("shell");
+    kernel + processes
+}
+
+fn probation(raw: usize) {
+    let Some(slot) = Slot::ALL.get(raw).copied() else {
+        return;
+    };
+    let rules = Probation::from_cmdline();
+    let start = crate::hpet::nanos() / 1_000_000;
+    let first = served();
+    let mut idle_checks = 0;
+    loop {
+        threads::sleep_ms(PROBATION_TICK_MS);
+        let elapsed = crate::hpet::nanos() / 1_000_000 - start;
+        let calls = served().saturating_sub(first);
+        let busy = calls >= rules.calls && elapsed >= rules.ms;
+        // The idle rule: a check at 2 and at 4 times `ms`.
+        if calls < rules.calls && elapsed >= 2 * rules.ms * (idle_checks + 1) && idle_checks < 2 {
+            if !checks_pass() {
+                crate::fail("slots: a required check failed on probation");
+            }
+            idle_checks += 1;
+        }
+        if busy || idle_checks == 2 {
+            if !checks_pass() {
+                crate::fail("slots: the last check before commit failed");
+            }
+            return commit(slot, calls, elapsed);
+        }
+    }
+}
+
+/// *commit*: from the record as the firmware holds it now, so a change
+/// `updated` made since boot stays.
+fn commit(slot: Slot, calls: u64, elapsed_ms: u64) {
+    let Ok(Some(record)) = read_record() else {
+        log!("slots: no record to commit {} in", entry_id(slot));
+        return;
+    };
+    let mut nv = Nv {
+        record,
+        one_shot: Some(slot),
+    };
+    let epoch = own_release().map_or(0, |(_, epoch)| epoch);
+    bootslot::commit(&mut nv, slot, epoch);
+    match set(nv.record, nv.one_shot) {
+        Ok(()) => log!(
+            "slots: {} passed probation ({calls} requests, {} s) and is committed",
+            entry_id(slot),
+            elapsed_ms / 1000
+        ),
+        Err(error) => log!("slots: cannot commit {}: {error:?}", entry_id(slot)),
+    }
 }
 
 fn in_r(had_record: bool, before: Nv, mut nv: Nv) {
@@ -311,6 +402,34 @@ pub fn update_case() -> ! {
     on_boot(false);
     threads::sleep_ms(UPDATE_CASE_MS);
     crate::fail("update: updated did not restart into the staged slot");
+}
+
+/// `test=probation`: a trial boot comes up, the kernel sends the shell
+/// `probation-lines=` requests (none for the idle rule), and the slot must
+/// commit within a minute of probation's end.
+pub fn probation_case() -> ! {
+    on_boot(false);
+    let Some(slot) = this_slot() else {
+        crate::fail("probation: not on a slot disk");
+    };
+    let lines: u64 = word("probation-lines")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    for _ in 0..lines {
+        if ipc::call("shell", b"1 + 1", 30_000).is_err() {
+            crate::fail("probation: the shell did not answer");
+        }
+    }
+    log!("probation: sent the shell {lines} requests");
+    let wait = Probation::from_cmdline().ms * 4 + 60_000;
+    for _ in 0..wait / PROBATION_TICK_MS {
+        if matches!(read_record(), Ok(Some(record)) if record.slot(slot).successful) {
+            log!("probation: {} is committed", entry_id(slot));
+            crate::test_exit(crate::qemu::ExitCode::Success);
+        }
+        threads::sleep_ms(PROBATION_TICK_MS);
+    }
+    crate::fail("probation: the slot never committed");
 }
 
 /// How long `update_case` waits for `updated` to stage and restart.

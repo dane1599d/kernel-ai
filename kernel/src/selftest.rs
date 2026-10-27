@@ -142,6 +142,8 @@ pub enum SelfTest {
     EfiReset,
     /// The boot lever on a slot image, driven by `slot-do=` (ADR 0008, lane U).
     Slot,
+    /// Probation's commit on a slot image (ADR 0008 §5).
+    Probation,
     /// `updated step=check` on a slot image: the Update calls, then a stage of
     /// the other slot and a restart into it.
     Update,
@@ -249,6 +251,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=efi-reset" => Some(SelfTest::EfiReset),
             "test=slot" => Some(SelfTest::Slot),
             "test=update" => Some(SelfTest::Update),
+            "test=probation" => Some(SelfTest::Probation),
             "test=devices" => Some(SelfTest::Devices),
             "test=tune-revert" => Some(SelfTest::TuneRevert),
             "test=tune-stall" => Some(SelfTest::TuneStall),
@@ -276,6 +279,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
         SelfTest::None
             | SelfTest::Slot
             | SelfTest::Update
+            | SelfTest::Probation
             | SelfTest::Net
             | SelfTest::Terminal
             | SelfTest::Shell

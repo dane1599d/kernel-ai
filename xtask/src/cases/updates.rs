@@ -207,6 +207,41 @@ const A_REFUSES: TestCase = TestCase {
     )
 };
 
+/// After probation: the next boot of A finds it committed.
+const A_COMMITTED: TestCase = boot(
+    "slot-probation (3: kai-a committed)",
+    "test=slot panic=reset",
+    &["slots: up in kai-a (committed, 0 tries left)"],
+);
+/// Probation's busy rule: 6 shell requests and 3 s, then a last check.
+const A_PROBATION: TestCase = TestCase {
+    then: Some(&A_COMMITTED),
+    resets: false,
+    ..boot(
+        "slot-probation (2: kai-a on probation)",
+        "test=probation probation_calls=5 probation_ms=3000 probation-lines=6 panic=reset",
+        &[
+            "slots: up in kai-a (trial, 2 tries left)",
+            "probation: sent the shell 6 requests",
+            "slots: kai-a passed probation (",
+            "probation: kai-a is committed",
+        ],
+    )
+};
+/// Probation's idle rule: no requests, so 4 times `probation_ms` and 2 checks.
+const A_IDLE: TestCase = TestCase {
+    resets: false,
+    ..boot(
+        "slot-idle (2: an idle kai-a commits)",
+        "test=probation probation_calls=1000 probation_ms=1000 panic=reset",
+        &[
+            "probation: sent the shell 0 requests",
+            "slots: kai-a passed probation (0 requests, ",
+            "probation: kai-a is committed",
+        ],
+    )
+};
+
 pub(super) const CASES: &[TestCase] = &[
     // Spikes S08-3 and S11-1: P-256 and Ed25519 verification, a 1,000-target
     // `packages` role and SHA-256 in soft-float ring 3, reported in the log.
@@ -224,6 +259,16 @@ pub(super) const CASES: &[TestCase] = &[
     TestCase {
         then: Some(&A_UPDATES),
         ..boot("update-stage", "test=slot panic=reset", INSTALL)
+    },
+    // Probation (ADR 0008 §5): a trial slot commits after its requests and
+    // time with no fault, or, idle, after 4 times the time and 2 checks.
+    TestCase {
+        then: Some(&A_PROBATION),
+        ..boot("slot-probation", "test=slot panic=reset", INSTALL)
+    },
+    TestCase {
+        then: Some(&A_IDLE),
+        ..boot("slot-idle", "test=slot panic=reset", INSTALL)
     },
     // An update from the update disk (ADR 0008 §12), checked by kaituf against
     // the slot's root, and the same disk with the image tampered after signing.
