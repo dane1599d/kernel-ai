@@ -69,8 +69,10 @@ pub fn churn(home: Handle, boot: u64) -> Result<(), String> {
         Err(_) => open(home, DIR, How::Mkdir, dir_rights())?,
     };
     let files = verify(dir)?;
-    println!("filecheck: boot {boot}: {files} files whole after the cut");
+    // The mark is committed before the line, so a cut after the line that loses
+    // it is a lost commit: the next boot would count this one again.
     mark(home, &format!("verified-{boot}"))?;
+    println!("filecheck: boot {boot}: {files} files whole after the cut");
     let mut state = State {
         live: listing(dir)?.into_iter().map(|name| (name, 0, 0)).collect(),
         ..State::default()
