@@ -552,6 +552,7 @@ fn split(plan: &Plan) -> (Vec<&'static str>, Vec<&'static str>) {
     let pick = |effect| {
         agentabi::BOUND
             .iter()
+            .chain(&agentabi::FS_ROWS)
             .filter(|f| f.effect() == effect && names.contains(&f.name))
             .map(|f| f.name)
             .collect()
