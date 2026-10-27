@@ -580,3 +580,50 @@ fn a_writer_that_never_pauses_still_gets_its_undo_space_back() {
     let (free, total) = c.server.fs().space();
     assert!(free * 20 > total, "{free} of {total} blocks free");
 }
+
+/// The pid [`a_dead_owners_action_is_aborted_and_writes_go_on`] has killed.
+static DEAD: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+#[test]
+fn a_dead_owners_action_is_aborted_and_writes_go_on() {
+    use core::sync::atomic::Ordering;
+    let mut disk = MemDisk::new(BLOCKS);
+    let (mut c, _) = Client::start(&mut disk);
+    c.server.set_alive(|pid| pid != DEAD.load(Ordering::SeqCst));
+    // Alice opens an action, changes a file, and dies before Commit.
+    assert_eq!(c.home(Request::Begin { action: 1 }).0, Reply::Done);
+    let half = c.open("half.txt", How::CreateFile).unwrap();
+    assert_eq!(c.write(&half, 0, b"half done"), Reply::Done);
+    let bob_begins = |c: &mut Client| {
+        c.call(BOB, HOME_USER, DIR_RIGHTS, Request::Begin { action: 2 })
+            .0
+    };
+    // Alive, she holds the action: Bob waits.
+    assert_eq!(bob_begins(&mut c), Reply::Failed(Error::Busy));
+    DEAD.store(ALICE, Ordering::SeqCst);
+    // Dead, her action goes, and nothing of it stays.
+    assert_eq!(bob_begins(&mut c), Reply::Done);
+    let found = c.call(
+        BOB,
+        HOME_USER,
+        DIR_RIGHTS,
+        Request::Open {
+            path: "half.txt".into(),
+            rights: Rights::READ.bits(),
+            how: How::Existing,
+        },
+    );
+    assert_eq!(failed(found), Error::NotFound);
+    let committed = c.call(BOB, HOME_USER, DIR_RIGHTS, Request::Commit).0;
+    assert!(
+        matches!(committed, Reply::Committed { .. }),
+        "{committed:?}"
+    );
+    // Idle reaps too: a dead owner's action never waits for the next writer.
+    DEAD.store(BOB, Ordering::SeqCst);
+    assert_eq!(bob_begins(&mut c), Reply::Done);
+    let now = c.now;
+    c.server.idle(now);
+    assert_eq!(c.home(Request::Begin { action: 3 }).0, Reply::Done);
+    DEAD.store(0, Ordering::SeqCst);
+}
