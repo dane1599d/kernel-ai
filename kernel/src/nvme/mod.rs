@@ -1,7 +1,8 @@
-//! Read-only NVMe disks, polled: QEMU's `-device nvme`, VirtualBox's NVMe
-//! controller, and the SSDs of real PCs (P7). Each active namespace with 512-byte
-//! blocks becomes one `block` disk, named by its controller's serial number.
-//! Nothing here writes to a disk: the driver has no write command.
+//! NVMe disks, polled: QEMU's `-device nvme`, VirtualBox's NVMe controller, and
+//! the SSDs of real PCs (P7). Each active namespace with 512-byte blocks becomes
+//! one `block` disk, named by its controller's serial number. Writes go with
+//! WRITE, and FLUSH empties the controller's volatile write cache if it has one
+//! (VWC).
 
 mod controller;
 mod dma;
@@ -39,9 +40,13 @@ struct Disk {
     serial: String,
     sectors: u64,
     write_protected: bool,
-    /// Bytes one READ command may move: the controller's MDTS, capped by the
-    /// staging buffer.
+    /// Bytes one READ or WRITE command may move: the controller's MDTS, capped by
+    /// the staging buffer.
     max_transfer: u64,
+    /// The controller has a volatile write cache.
+    volatile_cache: bool,
+    /// Sectors a write lands whole across a power failure.
+    atomic_sectors: u64,
     staging: Page,
     prp_list: Page,
 }
@@ -76,6 +81,52 @@ impl block::Device for Disk {
                     ReadError::PastEnd => "nvme: a read past the end of the disk",
                 },
             )?;
+        self.transfer(sector, bytes, false)?;
+        Ok(self.staging.bytes(bytes as usize))
+    }
+
+    /// Copies `data` into the staging buffer and writes it from `sector`.
+    fn write(&mut self, sector: u64, data: &[u8]) -> Result<(), &'static str> {
+        if self.write_protected {
+            return Err("nvme: the namespace is write-protected");
+        }
+        if !(data.len() as u64).is_multiple_of(SECTOR) {
+            return Err("nvme: a write of part of a sector");
+        }
+        let bytes = check_read(
+            sector,
+            data.len() as u64 / SECTOR,
+            self.sectors,
+            STAGING_BYTES,
+        )
+        .map_err(|error| match error {
+            ReadError::Empty => "nvme: a write of no sectors",
+            ReadError::TooLong => "nvme: a write longer than the staging buffer",
+            ReadError::PastEnd => "nvme: a write past the end of the disk",
+        })?;
+        self.staging.bytes_mut(bytes as usize).copy_from_slice(data);
+        self.transfer(sector, bytes, true)
+    }
+
+    fn flush(&mut self) -> Result<(), &'static str> {
+        self.controller.lock().flush(self.nsid)
+    }
+
+    /// FLUSH is a mandatory NVM command; without a volatile cache it has nothing
+    /// to do.
+    fn info(&self) -> block::Info {
+        block::Info {
+            volatile_cache: self.volatile_cache,
+            flush: true,
+            atomic_sectors: self.atomic_sectors,
+        }
+    }
+}
+
+impl Disk {
+    /// Moves `bytes` between the staging buffer and the disk from `sector`, in
+    /// commands of at most `max_transfer`.
+    fn transfer(&mut self, sector: u64, bytes: u64, write: bool) -> Result<(), &'static str> {
         let mut done = 0;
         while done < bytes {
             let piece = (bytes - done).min(self.max_transfer);
@@ -87,12 +138,15 @@ impl block::Device for Disk {
             }
             let lba = sector + done / SECTOR;
             let blocks = (piece / SECTOR) as u32;
-            self.controller
-                .lock()
-                .read(self.nsid, lba, blocks, prps.prp1, prps.prp2)?;
+            let mut controller = self.controller.lock();
+            if write {
+                controller.write(self.nsid, lba, blocks, prps.prp1, prps.prp2)?;
+            } else {
+                controller.read(self.nsid, lba, blocks, prps.prp1, prps.prp2)?;
+            }
             done += piece;
         }
-        Ok(self.staging.bytes(bytes as usize))
+        Ok(())
     }
 }
 
@@ -117,11 +171,17 @@ fn start(function: &Function) -> Result<(), &'static str> {
     let id = controller.identify_controller()?;
     let serial = String::from_utf8_lossy(id.serial()).into_owned();
     log!(
-        "nvme: {} is {:?}, serial {:?}, NVMe {major}.{minor}, MDTS {}",
+        "nvme: {} is {:?}, serial {:?}, NVMe {major}.{minor}, MDTS {}, {}, AWUPF {} blocks",
         function.name,
         String::from_utf8_lossy(id.model()),
         serial,
-        id.mdts
+        id.mdts,
+        if id.volatile_cache {
+            "volatile write cache"
+        } else {
+            "no volatile write cache"
+        },
+        id.atomic_blocks
     );
     controller.create_io_queues()?;
     let namespaces = controller.namespaces(MAX_NAMESPACES)?;
@@ -148,6 +208,8 @@ fn start(function: &Function) -> Result<(), &'static str> {
             sectors: ns.blocks,
             write_protected: ns.write_protected,
             max_transfer,
+            volatile_cache: id.volatile_cache,
+            atomic_sectors: u64::from(id.atomic_blocks),
             staging: Page::contiguous(STAGING_BYTES / PAGE_SIZE)?,
             prp_list: Page::new()?,
         }));

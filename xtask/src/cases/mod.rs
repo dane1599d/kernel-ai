@@ -7,6 +7,7 @@ mod components;
 mod devices;
 mod kernel;
 mod network;
+mod storage;
 
 use crate::buildsvc::BuildService;
 use crate::disk::Fixture;
@@ -67,6 +68,8 @@ pub struct TestCase {
     /// The case passes by resetting the machine: under `-no-reboot` QEMU then
     /// exits with status 0 instead of the isa-debug-exit code.
     pub resets: bool,
+    /// A fresh writable `kai-data` disk (ADR 0004).
+    pub data: Option<crate::blklog::Data>,
 }
 
 pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase {
@@ -90,6 +93,7 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         usb: &[],
         bridge: false,
         resets: false,
+        data: None,
     }
 }
 
@@ -104,6 +108,7 @@ const LANES: &[&[TestCase]] = &[
     agent::CASES,
     components::CASES,
     network::CASES,
+    storage::CASES,
 ];
 
 /// The cases `cargo xtask test` boots.
@@ -132,6 +137,7 @@ mod tests {
             agent::CASES,
             components::CASES,
             network::CASES,
+            storage::CASES,
         ];
         assert_eq!(
             cases.len(),

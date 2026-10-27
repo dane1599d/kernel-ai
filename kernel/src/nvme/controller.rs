@@ -1,6 +1,6 @@
 //! One NVMe controller: its registers in BAR0, the admin queue pair and one I/O
 //! queue pair, all polled. Commands go one at a time, each waited on before the
-//! next, which is all a boot-time model copy needs. Every decision about what to
+//! next. Every decision about what to
 //! write comes from the host-tested `nvme` crate; this file does the volatile
 //! accesses.
 
@@ -259,5 +259,25 @@ impl Controller {
         let cid = self.cid();
         self.run(true, Command::read(cid, nsid, lba, blocks, prp1, prp2))
             .map(|_| ())
+    }
+
+    /// Writes `blocks` logical blocks to `lba` of `nsid` from the PRPs' memory.
+    pub fn write(
+        &mut self,
+        nsid: u32,
+        lba: u64,
+        blocks: u32,
+        prp1: u64,
+        prp2: u64,
+    ) -> Result<(), &'static str> {
+        let cid = self.cid();
+        self.run(true, Command::write(cid, nsid, lba, blocks, prp1, prp2))
+            .map(|_| ())
+    }
+
+    /// Makes `nsid`'s completed writes durable.
+    pub fn flush(&mut self, nsid: u32) -> Result<(), &'static str> {
+        let cid = self.cid();
+        self.run(true, Command::flush(cid, nsid)).map(|_| ())
     }
 }

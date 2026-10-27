@@ -55,3 +55,71 @@ pub fn check(cmdline: &str) -> Result<(), &'static str> {
     log!("blk: kai-model reads back byte for byte, partial last sector included");
     Ok(())
 }
+
+/// The writable data disk the storage cases attach.
+const DATA: &str = "kai-data";
+
+/// A sector's pattern: its number, then bytes that differ from every other's.
+fn pattern(sector: u64, out: &mut [u8]) {
+    let mut x = sector.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+    for (index, byte) in out.iter_mut().enumerate() {
+        if index % 512 == 0 {
+            x ^= sector + (index / 512) as u64;
+        }
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        *byte = x as u8;
+    }
+}
+
+/// `test=blk-write` (P2 task 1): `kai-data` takes writes at its start, a run of
+/// the longest write the driver takes, and its last sector, then a flush; each
+/// reads back as written. Writes of part of a sector, past the end or of
+/// nothing are refused.
+pub fn check_write() -> Result<(), &'static str> {
+    block::with_disk(DATA, |disk: &mut dyn Device| {
+        if disk.read_only() {
+            return Err("blk-write: kai-data is read-only");
+        }
+        let info = disk.info();
+        if !block::durable(info) {
+            return Err("blk-write: kai-data cannot make a write durable");
+        }
+        let (sectors, max) = (disk.sectors(), disk.max_sectors());
+        let runs = [(0, 1), (8, max), (sectors - 1, 1)];
+        let mut buffer = alloc::vec![0u8; (max * mm::dma::SECTOR) as usize];
+        for (sector, count) in runs {
+            let bytes = &mut buffer[..(count * mm::dma::SECTOR) as usize];
+            pattern(sector, bytes);
+            disk.write(sector, bytes)?;
+        }
+        disk.flush()?;
+        for (sector, count) in runs {
+            let bytes = &mut buffer[..(count * mm::dma::SECTOR) as usize];
+            pattern(sector, bytes);
+            if disk.read(sector, count)? != &*bytes {
+                return Err("blk-write: a write read back different");
+            }
+        }
+        let refused = [
+            disk.write(0, &buffer[..100]).is_err(),
+            disk.write(sectors, &buffer[..512]).is_err(),
+            disk.write(sectors - 1, &buffer[..1024]).is_err(),
+            disk.write(0, &[]).is_err(),
+        ];
+        if refused.contains(&false) {
+            return Err("blk-write: a bad write was not refused");
+        }
+        log!(
+            "blk-write: kai-data over {} takes writes and a flush: {} sectors, {} a write at most, volatile cache {}, atomic {} sectors",
+            disk.kind(),
+            2 + max,
+            max,
+            info.volatile_cache,
+            info.atomic_sectors
+        );
+        Ok(())
+    })
+    .ok_or("blk-write: no disk with serial kai-data")?
+}

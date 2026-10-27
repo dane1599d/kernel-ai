@@ -17,6 +17,11 @@ pub struct Controller {
     pub mdts: u8,
     /// Namespaces the controller may have (NN).
     pub namespaces: u32,
+    /// A volatile write cache is present (VWC bit 0): writes need FLUSH to be
+    /// durable.
+    pub volatile_cache: bool,
+    /// Logical blocks a write lands whole across a power failure (AWUPF + 1).
+    pub atomic_blocks: u32,
 }
 
 /// Why an Identify page cannot be used.
@@ -59,6 +64,8 @@ impl Controller {
             model_len,
             mdts: page[77],
             namespaces: u32_at(page, 516),
+            volatile_cache: page[525] & 1 == 1,
+            atomic_blocks: u32::from(u16::from_le_bytes([page[528], page[529]])) + 1,
         })
     }
 
@@ -145,6 +152,14 @@ mod tests {
         assert_eq!(controller.serial(), b"kai-model");
         assert_eq!(controller.model(), b"QEMU NVMe Ctrl");
         assert_eq!(controller.namespaces, 256);
+        assert!(!controller.volatile_cache);
+        assert_eq!(controller.atomic_blocks, 1);
+        let mut cached = id;
+        cached[525] = 1;
+        cached[528..530].copy_from_slice(&7u16.to_le_bytes());
+        let cached = Controller::parse(&cached).unwrap();
+        assert!(cached.volatile_cache);
+        assert_eq!(cached.atomic_blocks, 8);
         assert_eq!(controller.max_transfer(12, 1 << 20), 512 * 1024);
         assert_eq!(controller.max_transfer(12, 128 * 1024), 128 * 1024);
         id[77] = 0;
