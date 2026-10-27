@@ -146,6 +146,7 @@ dependencies = [
  "compsdk",
  "kabi",
  "minicbor",
+ "uikit",
  "wit-bindgen",
 ]
 
