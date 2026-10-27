@@ -174,6 +174,8 @@ pub fn lever_done() -> bool {
 }
 
 static LEVER_DONE: AtomicBool = AtomicBool::new(false);
+/// Probation committed this boot's slot (and logged it).
+static COMMITTED: AtomicBool = AtomicBool::new(false);
 
 fn lever(test: bool) {
     let Some(slot) = this_slot() else {
@@ -342,11 +344,14 @@ fn commit(slot: Slot, calls: u64, elapsed_ms: u64) {
     let epoch = own_release().map_or(0, |(_, epoch)| epoch);
     bootslot::commit(&mut nv, slot, epoch);
     match set(nv.record, nv.one_shot) {
-        Ok(()) => log!(
-            "slots: {} passed probation ({calls} requests, {} s) and is committed",
-            entry_id(slot),
-            elapsed_ms / 1000
-        ),
+        Ok(()) => {
+            log!(
+                "slots: {} passed probation ({calls} requests, {} s) and is committed",
+                entry_id(slot),
+                elapsed_ms / 1000
+            );
+            COMMITTED.store(true, Ordering::SeqCst);
+        }
         Err(error) => log!("slots: cannot commit {}: {error:?}", entry_id(slot)),
     }
 }
@@ -423,7 +428,8 @@ pub fn probation_case() -> ! {
     log!("probation: sent the shell {lines} requests");
     let wait = Probation::from_cmdline().ms * 4 + 60_000;
     for _ in 0..wait / PROBATION_TICK_MS {
-        if matches!(read_record(), Ok(Some(record)) if record.slot(slot).successful) {
+        let firmware = matches!(read_record(), Ok(Some(record)) if record.slot(slot).successful);
+        if COMMITTED.load(Ordering::SeqCst) && firmware {
             log!("probation: {} is committed", entry_id(slot));
             crate::test_exit(crate::qemu::ExitCode::Success);
         }
