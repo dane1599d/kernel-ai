@@ -241,6 +241,16 @@ pub struct Window {
 }
 
 impl Window {
+    /// [`Window::EMPTY`] made on the heap, as [`Snapshot::boxed`].
+    pub fn boxed() -> Box<Window> {
+        let mut window = Box::<Window>::new_uninit();
+        // SAFETY: as for Snapshot: all-zero bytes are EMPTY.
+        unsafe {
+            window.as_mut_ptr().write_bytes(0, 1);
+            window.assume_init()
+        }
+    }
+
     pub const EMPTY: Window = Window {
         ns: 0,
         threads: [ThreadWindow {
@@ -261,6 +271,19 @@ impl Snapshot {
         at: 0,
         threads: [Counters::ZERO; MAX_THREADS],
     };
+
+    /// [`Snapshot::EMPTY`] made on the heap. At 256 threads a snapshot is 47 KB,
+    /// so building it on a kernel stack first, as `Box::new` would in a debug
+    /// build, can overflow that stack.
+    pub fn boxed() -> Box<Snapshot> {
+        let mut snapshot = Box::<Snapshot>::new_uninit();
+        // SAFETY: every field is an integer or an array of integers, so all-zero
+        // bytes are a valid Snapshot, and they are EMPTY.
+        unsafe {
+            snapshot.as_mut_ptr().write_bytes(0, 1);
+            snapshot.assume_init()
+        }
+    }
 
     /// Adds another Core's snapshot taken at the same moment: counters add,
     /// maxima take the larger. Sample sequence numbers stop meaning anything.

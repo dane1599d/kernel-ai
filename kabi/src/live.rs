@@ -189,7 +189,7 @@ pub const MAX_CHECKPOINT: usize = 64 * 1024;
 /// Longest detail text on an event.
 pub const MAX_DETAIL: usize = 96;
 /// Most components the kernel keeps versions and a ledger for.
-pub const MAX_COMPONENTS: usize = 8;
+pub const MAX_COMPONENTS: usize = 32;
 /// Most versions of one component.
 pub const MAX_VERSIONS: usize = 16;
 /// Custom section holding the manifest.

@@ -72,6 +72,11 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("proc-stop", "test=proc-stop")
     },
+    // P3 task 4: the raised table limits hold 40 processes at once.
+    TestCase {
+        expect: &["many-processes: 40 idle processes ran at once beside the shell and llm"],
+        ..case("many-processes", "test=many-processes")
+    },
     // P1 task 14: shared pages, and spike S01-1's M6.
     TestCase {
         expect: &[
