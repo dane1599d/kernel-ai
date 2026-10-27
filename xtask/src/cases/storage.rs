@@ -3,6 +3,7 @@
 
 use super::{TestCase, case};
 use crate::blklog::{Data, Expect};
+use crate::disk::Fixture;
 
 const VIRTIO: Data = Data {
     nvme: false,
@@ -180,5 +181,17 @@ pub(super) const CASES: &[TestCase] = &[
             ..RAW
         }),
         ..case("blk-flush-bug", "test=blk-flush blkbug=noflush")
+    },
+    // P2 task 10: no kai-model disk; the model is in kai-data's store, and fs
+    // fills the runs the boot reserved from kai-modelhint 1.
+    TestCase {
+        expect: &[
+            "model: 2101245 bytes reserved for the model store's model; fs fills them",
+            "model-store: fs filled 2101245 bytes from /system/models",
+        ],
+        server: false,
+        data: Some(VIRTIO),
+        store: Some(Fixture::Gguf),
+        ..case("model-store", "test=model-store")
     },
 ];
