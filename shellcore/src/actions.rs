@@ -12,7 +12,7 @@ use crate::rules::Offer;
 use crate::script::{self, Checked};
 use crate::tiers::{self, Tier};
 use crate::undo::{self, Done};
-use crate::{Reply, Shell};
+use crate::{Consent, Proof, Reply, Shell};
 use agentabi::consent::{Decision, Why};
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -190,7 +190,7 @@ impl Shell {
     /// Runs `checked` in a `scriptrun` child when the host has one and its calls
     /// are all run-tier, else here. A child that ended without an answer changed
     /// what the spec taken before its claim says it changed, and that is put back.
-    fn run(&self, checked: &Checked) -> script::Ran {
+    fn run(&self, checked: &Checked, consent: Consent) -> script::Ran {
         if crate::apart::may_run_apart(checked) {
             let before = undo::current_spec(self.host.as_ref());
             let unreadable = "the script's process gave an answer the shell cannot read";
@@ -204,7 +204,7 @@ impl Shell {
                 None => {}
             }
         }
-        script::run(checked, &self.host, &self.config)
+        script::run_as(checked, &self.host, &self.config, consent)
     }
 
     /// Runs a script the user asked for, logs what it changed, and says what
@@ -212,7 +212,14 @@ impl Shell {
     /// interactive). undo`, or `Taken as: …` when it ran a vague line's reading. A
     /// run that fails after a change puts the change back: `Nothing changed: …`.
     pub(crate) fn finish(&mut self, id: u64, request: &str, checked: &Checked, how: How) -> Reply {
-        let ran = self.run(checked);
+        // The menu's ONCE for a call whose owner checks it, else the rule it ran
+        // under: what the kernel or the supervisor checks before it acts.
+        let proof = match (self.owner_once.take(), how.consent.starts_with("rule:")) {
+            (Some(badge), _) => Proof::Once { badge, id },
+            (None, true) => Proof::Rule,
+            (None, false) => Proof::None,
+        };
+        let ran = self.run(checked, Consent { entry: id, proof });
         for done in &ran.done {
             let tier = tiers::of(self.tiers, &done.action);
             self.host.audit(&format!(
@@ -277,9 +284,10 @@ impl Shell {
     ) -> Reply {
         let mut left = ran.done.clone();
         while let Some(change) = left.last() {
-            let put_back = change
-                .inverse
-                .is_some_and(|inverse| undo::revert(self.host.as_ref(), inverse, false).is_ok());
+            let put_back = change.inverse.is_some_and(|inverse| {
+                let ids = undo::Ids { made: id, next: id };
+                undo::revert(self.host.as_ref(), inverse, false, ids).is_ok()
+            });
             if !put_back {
                 break;
             }
@@ -495,7 +503,11 @@ impl Shell {
         };
         let badge = granted.once.ok_or(": the Allow came without its ONCE")?;
         let digest = termcore::once::digest_call(pending.id, call);
-        if let Err(why) = self.host.once_check(badge, &digest) {
+        // A stop's owner checks and spends its ONCE; checking it here first
+        // would spend it before the owner could.
+        if owner_checks(pending) {
+            self.owner_once = Some(badge);
+        } else if let Err(why) = self.host.once_check(badge, &digest) {
             self.host
                 .audit(&format!("script {} ONCE refused: {why}", pending.id));
             return Err(format!(": its Allow did not check ({why})"));
@@ -552,4 +564,15 @@ impl Shell {
             None => Reply::err("no script yet"),
         }
     }
+}
+
+/// Whether `pending`'s call is one whose owner checks the ONCE: a stop or a
+/// restart (the kernel's `PROC_STOP_ONCE`, the supervisor's `once=`).
+fn owner_checks(pending: &Pending) -> bool {
+    pending
+        .checked
+        .plan
+        .names()
+        .iter()
+        .any(|name| matches!(*name, "process_stop" | "service_stop" | "service_restart"))
 }

@@ -87,7 +87,13 @@ impl Shell {
             };
             let reverted = match inverse {
                 undo::Inverse::Generation { from, to } => self.switch_generation(from, to, anyway),
-                other => undo::revert(self.host.as_ref(), other, anyway),
+                other => {
+                    let ids = undo::Ids {
+                        made: id,
+                        next: self.next_id,
+                    };
+                    undo::revert(self.host.as_ref(), other, anyway, ids)
+                }
             };
             match reverted {
                 Ok(text) => {
