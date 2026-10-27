@@ -246,6 +246,7 @@ fn mutated_namespace_items_never_panic_and_what_decodes_round_trips() {
         mtime: 11,
         ctime: 12,
         crtime: 10,
+        changed: 13,
     }
     .encode();
     let inode_is_total = |bytes: &[u8]| {
@@ -392,4 +393,72 @@ fn a_namespace_with_hostile_items_never_panics_and_repairs_to_one_that_checks() 
         repaired > cases / 2,
         "only {repaired} of {cases} cases needed a repair"
     );
+}
+
+/// The volume table's readers (task 6): volume and snapshot entries, and UNDO
+/// records split over parts. Each decodes or is refused, never panics, and what
+/// decodes encodes back to itself.
+#[test]
+fn mutated_volume_table_entries_never_panic_and_what_decodes_round_trips() {
+    use kaifs::vol::{
+        Snap, SnapKind, Undo, VolEntry, decode_snapshot, decode_undo, decode_volume,
+        encode_snapshot, encode_undo, encode_volume,
+    };
+    let root = BlockPtr {
+        kind: KIND_NODE,
+        blocks: 1,
+        level: 2,
+        flags: 0,
+        ..sample_ptr()
+    };
+    let snap = Snap {
+        root,
+        generation: 41,
+        next_oid: 900,
+        kind: SnapKind::Undo,
+        expiry: 1 << 60,
+        pin: 77,
+    };
+    let volume = encode_volume(&VolEntry {
+        live: snap,
+        name: "home".to_string(),
+        key_id: 0,
+    });
+    fuzz(&volume, 11, 20_000, |bytes| {
+        if let Ok(entry) = decode_volume(2, bytes) {
+            assert_eq!(decode_volume(2, &encode_volume(&entry)), Ok(entry));
+        }
+    });
+    sweep_fields(&volume, 0..volume.len(), |_, bytes| {
+        let _ = decode_volume(2, bytes);
+    });
+    let snapshot = encode_snapshot(&snap);
+    fuzz(&snapshot, 12, 20_000, |bytes| {
+        if let Ok(s) = decode_snapshot(bytes) {
+            assert_eq!(decode_snapshot(&encode_snapshot(&s)), Ok(s));
+        }
+    });
+    let undo = Undo {
+        txn: 50,
+        before: 41,
+        action: 77,
+        time: 123,
+        snapshot: 3,
+        objects: (1..400).collect(),
+    };
+    let parts = encode_undo(&undo).unwrap();
+    assert!(parts.len() > 1);
+    assert_eq!(decode_undo(50, &parts), Ok(undo));
+    let mut rng = XorShift::new(13);
+    for _ in 0..20_000 {
+        let mut mutated = parts.clone();
+        let at = rng.below(mutated.len());
+        mutated[at] = hostile::mutate(&mut rng, &mutated[at]);
+        if rng.below(8) == 0 {
+            mutated.truncate(rng.below(mutated.len()));
+        }
+        // Parts may split anywhere on an object, so a record that decodes need
+        // not encode to the same parts; it must only not panic.
+        let _ = decode_undo(50, &mutated);
+    }
 }

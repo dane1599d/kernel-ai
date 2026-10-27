@@ -19,7 +19,8 @@
 //!   version's: its known prefix is read.
 
 use crate::Error;
-use crate::fs::{FIRST_OID, MAX_RECORD};
+use crate::fs::MAX_RECORD;
+use crate::vol::FIRST_OID;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
@@ -89,6 +90,9 @@ pub struct Inode {
     pub mtime: u64,
     pub ctime: u64,
     pub crtime: u64,
+    /// The generation that last changed it, its data, names or attributes: what
+    /// `restore` and `changes` compare. 0 in an inode written before task 6.
+    pub changed: u64,
 }
 
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
@@ -103,10 +107,13 @@ struct RawInode {
     mtime: U64,
     ctime: U64,
     crtime: U64,
+    changed: U64,
 }
 
 /// Bytes in a stored inode.
-pub const INODE_BYTES: usize = 48;
+pub const INODE_BYTES: usize = 56;
+/// Bytes in an inode written before task 6, which had no `changed`.
+const INODE_BYTES_V0: usize = 48;
 const _: () = assert!(size_of::<RawInode>() == INODE_BYTES);
 
 impl Inode {
@@ -124,6 +131,7 @@ impl Inode {
             mtime: now,
             ctime: now,
             crtime: now,
+            changed: 0,
         }
     }
 
@@ -138,6 +146,7 @@ impl Inode {
             mtime: self.mtime.into(),
             ctime: self.ctime.into(),
             crtime: self.crtime.into(),
+            changed: self.changed.into(),
         };
         let mut out = [0; INODE_BYTES];
         out.copy_from_slice(raw.as_bytes());
@@ -145,10 +154,16 @@ impl Inode {
     }
 
     /// Reads a stored inode. A longer one is a later minor version's: its known
-    /// prefix is read.
+    /// prefix is read. One without `changed`, from before task 6, reads it as 0.
     pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
         let bad = Error::Corrupt("inode");
-        let (raw, _) = RawInode::read_from_prefix(bytes).map_err(|_| bad)?;
+        if bytes.len() < INODE_BYTES_V0 {
+            return Err(bad);
+        }
+        let mut full = [0; INODE_BYTES];
+        let n = bytes.len().min(INODE_BYTES);
+        full[..n].copy_from_slice(&bytes[..n]);
+        let (raw, _) = RawInode::read_from_prefix(&full[..]).map_err(|_| bad)?;
         let kind = FileType::from_code(raw.kind).ok_or(bad)?;
         if raw.fmt != ITEM_FMT || raw.parent.get() < FIRST_OID {
             return Err(bad);
@@ -162,6 +177,7 @@ impl Inode {
             mtime: raw.mtime.get(),
             ctime: raw.ctime.get(),
             crtime: raw.crtime.get(),
+            changed: raw.changed.get(),
         })
     }
 }

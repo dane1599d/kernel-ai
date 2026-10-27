@@ -10,6 +10,10 @@
 //! two-record files, a file with holes, an empty file, attributes, a renamed
 //! file and folder, removed files, and a UTF-8 name.
 //!
+//! Golden image 2, `tests/golden/format-1.0-volumes.kgold`, adds task 6's
+//! structures: three volumes, actions with undo snapshots and UNDO records, a
+//! restore, and inodes that say when they changed.
+//!
 //! The file is a sparse dump: magic `KAIGOLD1`, the block count (u64), then each
 //! written block as its address (u64), a count of segments (u16) and each segment
 //! as an offset (u16), a length (u16) and its bytes; the zeros between segments
@@ -292,8 +296,8 @@ impl Target for Model {
     }
 }
 
-fn read_image() -> MemDisk {
-    let file = std::fs::read(IMAGE).expect("golden image 1 is committed beside this test");
+fn read_image(path: &str) -> MemDisk {
+    let file = std::fs::read(path).expect("the golden images are committed beside this test");
     assert_eq!(&file[..8], MAGIC);
     let blocks = u64::from_le_bytes(file[8..16].try_into().unwrap());
     let mut disk = MemDisk::new(blocks);
@@ -344,11 +348,15 @@ fn write_golden_image_1() {
     let mut target = FsTarget(fs);
     script(&mut target);
     fs = target.0;
-    let disk = fs.into_dev();
+    write_image(IMAGE, &fs.into_dev(), BLOCKS);
+}
+
+/// Writes `disk`'s blocks to `path` as a sparse dump.
+fn write_image(path: &str, disk: &MemDisk, blocks: u64) {
     let mut out = Vec::new();
     out.extend_from_slice(MAGIC);
-    out.extend_from_slice(&BLOCKS.to_le_bytes());
-    for addr in 0..BLOCKS {
+    out.extend_from_slice(&blocks.to_le_bytes());
+    for addr in 0..blocks {
         let Some(block) = disk.get(addr) else {
             continue;
         };
@@ -361,16 +369,16 @@ fn write_golden_image_1() {
             out.extend_from_slice(bytes);
         }
     }
-    std::fs::create_dir_all(std::path::Path::new(IMAGE).parent().unwrap()).unwrap();
-    std::fs::write(IMAGE, &out).unwrap();
-    eprintln!("golden image 1: {} bytes", out.len());
+    std::fs::create_dir_all(std::path::Path::new(path).parent().unwrap()).unwrap();
+    std::fs::write(path, &out).unwrap();
+    eprintln!("{path}: {} bytes", out.len());
 }
 
 #[test]
 fn golden_image_1_mounts_checks_and_reads_back() {
     let mut model = Model::default();
     script(&mut model);
-    let mut disk = read_image();
+    let mut disk = read_image(IMAGE);
     let found = format::read_rings(&mut disk).unwrap();
     assert_eq!((found[0].format_major, found[0].format_minor), (1, 0));
     assert!((FORMAT_MAJOR, FORMAT_MINOR) >= (1, 0));
@@ -384,12 +392,13 @@ fn golden_image_1_mounts_checks_and_reads_back() {
     let mut cache = Cache::default();
     let report = check(&mut fs, &mut cache).unwrap();
     let ns = check_namespace(&mut fs, &mut cache).unwrap();
+    let ns = &ns.volumes[&1];
     assert_eq!(ns.live.digest, model.live.digest(), "the live namespace");
     assert_eq!(ns.snaps.len(), 1);
     let snap = ns.snaps.values().next().unwrap();
     assert_eq!(snap.digest, model.snaps[0].digest(), "the snapshot");
     assert!(
-        report.live.root.level >= 1,
+        report.volumes[&1].live.root.level >= 1,
         "the tree has more than one level"
     );
     // A few reads by hand, beside the digest.
@@ -420,4 +429,186 @@ fn golden_image_1_mounts_checks_and_reads_back() {
     check_namespace(&mut fs, &mut cache).unwrap();
     let mut written = fs.into_dev();
     assert!(written.flush().is_ok());
+}
+
+/// Golden image 2 (task 6): the three volumes, actions with their undo snapshots
+/// and UNDO records across volumes, a restore, a named snapshot, a dropped undo
+/// snapshot, and inodes that say when they changed.
+const IMAGE_2: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/golden/format-1.0-volumes.kgold"
+);
+const BLOCKS_2: u64 = 512;
+const UUID_2: [u8; 16] = *b"kaifs golden 1.0";
+
+fn at(fs: &mut Fs<MemDisk>, path: &str) -> u64 {
+    fs.resolve(path).unwrap()
+}
+
+fn put(fs: &mut Fs<MemDisk>, path: &str, data: &[u8]) -> u64 {
+    let (dir, name) = split(path);
+    let dir = at(fs, dir);
+    let ino = match fs.lookup(dir, name).unwrap() {
+        Some(e) => e.ino,
+        None => fs.create(dir, name).unwrap(),
+    };
+    fs.write_file(ino, data).unwrap();
+    ino
+}
+
+fn commit_at(fs: &mut Fs<MemDisk>, second: u64) -> u64 {
+    fs.clock = EPOCH + second * 1_000_000_000;
+    fs.commit().unwrap()
+}
+
+/// Golden image 2's content; its generations are 1 (mkfs) to 8.
+fn script_2(fs: &mut Fs<MemDisk>) {
+    use kaifs::fs::{HOME, MODELS, SYSTEM};
+    fs.set_volume(SYSTEM).unwrap();
+    fs.mkdir(ROOT, "settings").unwrap();
+    put(fs, "/settings/display.cbor", &[0x82, 0x01, 0xA0]);
+    fs.set_volume(HOME).unwrap();
+    fs.mkdir(ROOT, "user").unwrap();
+    put(fs, "/user/notes.txt", b"first notes\n");
+    put(fs, "/user/photo.bin", &paged(5, 9000));
+    fs.set_volume(MODELS).unwrap();
+    fs.mkdir(ROOT, "cache").unwrap();
+    commit_at(fs, 2);
+    // Action 101 edits a note, adds a list, and logs it in system: one commit.
+    fs.begin(101).unwrap();
+    fs.set_volume(HOME).unwrap();
+    put(fs, "/user/notes.txt", b"second notes\n");
+    put(fs, "/user/todo.txt", b"buy milk\n");
+    fs.set_volume(SYSTEM).unwrap();
+    put(fs, "/log", b"101 edited notes\n");
+    commit_at(fs, 3);
+    // Action 102 removes the list and moves the photo into a new folder.
+    fs.begin(102).unwrap();
+    fs.set_volume(HOME).unwrap();
+    let user = at(fs, "/user");
+    fs.remove(user, "todo.txt").unwrap();
+    let pictures = fs.mkdir(user, "pictures").unwrap();
+    fs.rename(user, "photo.bin", pictures, "photo.bin").unwrap();
+    commit_at(fs, 4);
+    fs.snapshot().unwrap();
+    commit_at(fs, 5);
+    // Action 103 restores action 101 in home: the first notes come back.
+    let txn_101 = fs.undo_records().unwrap()[0].txn;
+    fs.begin(103).unwrap();
+    fs.restore(txn_101).unwrap();
+    commit_at(fs, 6);
+    // Action 104 logs again; then system's oldest undo snapshot is dropped.
+    fs.begin(104).unwrap();
+    fs.set_volume(SYSTEM).unwrap();
+    put(fs, "/log", b"101 edited notes\n104 logged\n");
+    commit_at(fs, 7);
+    let oldest = *fs.snapshots().keys().next().unwrap();
+    fs.drop_snapshot(oldest).unwrap();
+    fs.set_volume(HOME).unwrap();
+    let notes = at(fs, "/user/notes.txt");
+    fs.set_xattr(notes, "user.mood", b"calm").unwrap();
+    commit_at(fs, 8);
+}
+
+#[test]
+#[ignore = "rewrites golden image 2: only a new format version should"]
+fn write_golden_image_2() {
+    let mut fs = Fs::mkfs(MemDisk::new(BLOCKS_2), UUID_2, "golden-2").unwrap();
+    script_2(&mut fs);
+    write_image(IMAGE_2, &fs.into_dev(), BLOCKS_2);
+}
+
+#[test]
+fn golden_image_2_mounts_checks_and_reads_back() {
+    use kaifs::fs::{HOME, MODELS, SYSTEM};
+    use kaifs::vol::{SnapKind, UNDO_LIFE};
+    let mut fs = Fs::mount(read_image(IMAGE_2)).unwrap();
+    assert_eq!(fs.committed, 8, "mkfs, then the script's seven commits");
+    let names: Vec<String> = fs.volumes().into_iter().map(|(_, n)| n).collect();
+    assert_eq!(names, ["system", "home", "models"]);
+    let mut cache = Cache::default();
+    check(&mut fs, &mut cache).unwrap();
+    check_namespace(&mut fs, &mut cache).unwrap();
+    let second = |s: u64| EPOCH + s * 1_000_000_000;
+    // system: the settings, the log, and one undo snapshot left, action 104's.
+    fs.set_volume(SYSTEM).unwrap();
+    let display = at(&mut fs, "/settings/display.cbor");
+    assert_eq!(fs.read_file(display).unwrap(), [0x82, 0x01, 0xA0]);
+    let log = at(&mut fs, "/log");
+    assert_eq!(
+        fs.read_file(log).unwrap(),
+        b"101 edited notes\n104 logged\n"
+    );
+    let snaps: Vec<_> = fs
+        .snapshots()
+        .values()
+        .map(|s| (s.kind, s.pin, s.expiry))
+        .collect();
+    assert_eq!(snaps, [(SnapKind::Undo, 104, second(7) + UNDO_LIFE)]);
+    assert_eq!(
+        fs.undo_records()
+            .unwrap()
+            .iter()
+            .map(|u| u.action)
+            .collect::<Vec<_>>(),
+        [104]
+    );
+    // home: three actions' undo snapshots and a named one between them.
+    fs.set_volume(HOME).unwrap();
+    let kinds: Vec<_> = fs.snapshots().values().map(|s| (s.kind, s.pin)).collect();
+    assert_eq!(
+        kinds,
+        [
+            (SnapKind::Undo, 101),
+            (SnapKind::Undo, 102),
+            (SnapKind::Named, 0),
+            (SnapKind::Undo, 103)
+        ]
+    );
+    let records = fs.undo_records().unwrap();
+    assert_eq!(
+        records
+            .iter()
+            .map(|u| (u.action, u.time))
+            .collect::<Vec<_>>(),
+        [(101, second(3)), (102, second(4)), (103, second(6))]
+    );
+    let notes = at(&mut fs, "/user/notes.txt");
+    assert_eq!(
+        fs.read_file(notes).unwrap(),
+        b"first notes\n",
+        "action 103 restored 101"
+    );
+    assert_eq!(fs.get_xattr(notes, "user.mood").unwrap().unwrap(), b"calm");
+    let photo = at(&mut fs, "/user/pictures/photo.bin");
+    assert_eq!(fs.read_file(photo).unwrap(), paged(5, 9000));
+    assert!(fs.resolve("/user/todo.txt").is_err());
+    assert!(records[0].objects.contains(&notes));
+    assert!(fs.stat(notes).unwrap().changed > records[2].before);
+    let versions: Vec<Vec<u8>> = fs
+        .history(notes)
+        .unwrap()
+        .iter()
+        .map(|v| fs.read_version(v.snapshot, notes, 0, 64).unwrap())
+        .collect();
+    assert!(versions.contains(&b"second notes\n".to_vec()));
+    // models: the cache folder, untouched by any action.
+    fs.set_volume(MODELS).unwrap();
+    assert!(fs.snapshots().is_empty());
+    let cache_dir = at(&mut fs, "/cache");
+    assert_eq!(fs.stat(cache_dir).unwrap().kind, FileType::Dir);
+    // A later build restores an action the image recorded: 102's removal and
+    // move are undone.
+    fs.set_volume(HOME).unwrap();
+    fs.begin(200).unwrap();
+    fs.restore(records[1].txn).unwrap();
+    fs.commit().unwrap();
+    let todo = at(&mut fs, "/user/todo.txt");
+    assert_eq!(fs.read_file(todo).unwrap(), b"buy milk\n");
+    let photo = at(&mut fs, "/user/photo.bin");
+    assert_eq!(fs.read_file(photo).unwrap(), paged(5, 9000));
+    assert!(fs.resolve("/user/pictures").is_err());
+    let mut cache = Cache::default();
+    check(&mut fs, &mut cache).unwrap();
+    check_namespace(&mut fs, &mut cache).unwrap();
 }
