@@ -103,8 +103,12 @@ pub enum SelfTest {
     /// boots on one data disk.
     PkgStore(crate::pkg_tests::Step),
     /// P2 task 10, `model-store`: with no `kai-model` disk, `fs` fills the runs
-    /// the boot reserved from `kai-modelhint 1` with the store's sealed model.
-    ModelStore,
+    /// the boot reserved from `kai-modelhint 1` with the store's sealed model;
+    /// with `bad`, the hint's FNV-1a64 is not the file's, and the kernel refuses
+    /// it.
+    ModelStore {
+        bad: bool,
+    },
     /// L3: the model is held in memory and mapped into `llm`, and survives it.
     Model,
     /// L4: `ask` is answered by the model on the disk, with no LLM server.
@@ -249,7 +253,9 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=blk-write" => Some(SelfTest::BlkWrite),
             "test=blk-flush" => Some(SelfTest::BlkFlush),
             "test=part" => Some(SelfTest::Part),
-            "test=model-store" => Some(SelfTest::ModelStore),
+            "test=model-store" => Some(SelfTest::ModelStore {
+                bad: cmdline.split_whitespace().any(|w| w == "bad"),
+            }),
             "test=files" => Some(SelfTest::Files {
                 reread: cmdline.split_whitespace().any(|w| w == "reread"),
             }),
@@ -345,7 +351,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::Latency
             | SelfTest::ProcStop
             | SelfTest::Part
-            | SelfTest::ModelStore
+            | SelfTest::ModelStore { .. }
             | SelfTest::ManyProcesses
             | SelfTest::Files { .. }
             | SelfTest::FilesRestart
@@ -378,7 +384,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
         SelfTest::Live => format!("{}\n{}", kabi::plan::NOTES_TEST, crate::llm::plan_line()),
         SelfTest::Part => String::from(kabi::plan::FS),
         SelfTest::AppSuspend => kabi::plan::notes("2", None),
-        SelfTest::ModelStore => String::from(kabi::plan::FS),
+        SelfTest::ModelStore { .. } => String::from(kabi::plan::FS),
         SelfTest::Files { reread } => {
             crate::files_tests::plan(if reread { "read" } else { "write" })
         }
@@ -416,7 +422,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::Manifest
             | SelfTest::ManifestGood
             | SelfTest::Part
-            | SelfTest::ModelStore
+            | SelfTest::ModelStore { .. }
             | SelfTest::Files { .. }
             | SelfTest::FilesRestart
             | SelfTest::FilesDeadClient

@@ -89,6 +89,9 @@ pub struct TestCase {
     /// then `import --model`), with its length and hash on the command line;
     /// needs `data`.
     pub store: Option<Fixture>,
+    /// After the import, the hint's FNV-1a64 is changed (its CRC kept good), so
+    /// the kernel must refuse the model `fs` fills.
+    pub store_bad_fnv: bool,
 }
 
 /// What a case's update disk holds.
@@ -125,6 +128,7 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         update: None,
         cuts: 0,
         store: None,
+        store_bad_fnv: false,
     }
 }
 

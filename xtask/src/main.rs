@@ -345,7 +345,11 @@ fn execute(options: &Options) -> Result<(), String> {
                 if fresh {
                     blklog::prepare(&target_dir, data)?;
                     if let Some(model) = &store {
-                        store_model(&target_dir.join(blklog::IMAGE), model.path())?;
+                        let image = target_dir.join(blklog::IMAGE);
+                        store_model(&image, model.path())?;
+                        if case.store_bad_fnv {
+                            damage_hint(&image)?;
+                        }
                     }
                 }
                 args.extend(blklog::qemu_args(data));
@@ -682,6 +686,31 @@ fn run_checked(command: &mut Command) -> Result<(), String> {
 
 /// Makes `image` a kaifs data disk holding `model` in its model store, named
 /// in `kai-modelhint 1`: `xtask fs mkfs`, then `import --model`.
+/// Flips one bit of the FNV-1a64 in `image`'s `kai-modelhint 1` and writes it
+/// back with a good CRC, so the hint still verifies but no longer matches the
+/// model (`xtask fs mkfs` puts `kai-data` at 2 MiB).
+fn damage_hint(image: &std::path::Path) -> Result<(), String> {
+    use std::io::{Read, Seek, SeekFrom, Write};
+    let shown = image.display();
+    let at = SeekFrom::Start(blklog::DATA_FIRST * 512);
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(image)
+        .map_err(|e| format!("{shown}: {e}"))?;
+    let mut sector = [0u8; 512];
+    file.seek(at)
+        .and_then(|_| file.read_exact(&mut sector))
+        .map_err(|e| format!("{shown}: {e}"))?;
+    let mut hint = kabi::modelhint::Hint::decode(&sector)
+        .ok_or_else(|| format!("{shown}: no kai-modelhint 1 at kai-data's start"))?;
+    hint.fnv ^= 1;
+    file.seek(at)
+        .and_then(|_| file.write_all(&hint.encode()))
+        .and_then(|_| file.sync_all())
+        .map_err(|e| format!("{shown}: {e}"))
+}
+
 fn store_model(image: &std::path::Path, model: &std::path::Path) -> Result<(), String> {
     let image = image.display().to_string();
     let words = |w: &[&str]| w.iter().map(|s| s.to_string()).collect::<Vec<_>>();
@@ -692,6 +721,34 @@ fn store_model(image: &std::path::Path, model: &std::path::Path) -> Result<(), S
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_damaged_hint_still_verifies_but_names_another_fnv() {
+        use std::io::{Read, Seek, SeekFrom};
+        let dir = std::env::temp_dir().join(format!("kai-hint-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (image, model) = (dir.join("kai-data.img"), dir.join("model.gguf"));
+        let mut bytes = b"GGUF\x03\0\0\0".to_vec();
+        bytes.resize(100_000, 7);
+        std::fs::write(&model, &bytes).unwrap();
+        super::store_model(&image, &model).unwrap();
+        let hint = || {
+            let mut file = std::fs::File::open(&image).unwrap();
+            let mut sector = [0u8; 512];
+            file.seek(SeekFrom::Start(super::blklog::DATA_FIRST * 512))
+                .unwrap();
+            file.read_exact(&mut sector).unwrap();
+            kabi::modelhint::Hint::decode(&sector).unwrap()
+        };
+        let good = hint();
+        assert_eq!(good.len, 100_000);
+        super::damage_hint(&image).unwrap();
+        let bad = hint();
+        assert_eq!(bad.fnv, good.fnv ^ 1);
+        assert_eq!((bad.len, bad.sha256), (good.len, good.sha256));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     use super::*;
 
     #[test]
