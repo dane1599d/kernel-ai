@@ -53,6 +53,13 @@ const CLARIFY: [Arg<'static>; 2] = [
 /// closes the call at once.
 const SCRIPT: [Arg<'static>; 0] = [];
 
+/// `undo(steps)`: the shell puts back the last change. One step only: a second
+/// undo redoes the first, so the grammar offers no more than the door runs.
+const UNDO: [Arg<'static>; 1] = [Arg {
+    name: "steps",
+    kind: Kind::Int { min: 1, max: 1 },
+}];
+
 /// Longest path an argument takes.
 const PATH_MAX: u16 = 128;
 
@@ -78,7 +85,7 @@ fn kind(ty: &ArgType) -> Kind<'static> {
 }
 
 /// The actions an `act` answer may name: the pack's rows, then `say`,
-/// `clarify` and `script`. Built once, when the model loads.
+/// `clarify`, `script` and `undo`. Built once, when the model loads.
 pub fn actions(rows: &[&'static agentabi::Action]) -> Vec<Action<'static>> {
     let mut actions: Vec<Action<'static>> = rows
         .iter()
@@ -107,6 +114,10 @@ pub fn actions(rows: &[&'static agentabi::Action]) -> Vec<Action<'static>> {
         Action {
             name: "script",
             args: &SCRIPT,
+        },
+        Action {
+            name: "undo",
+            args: &UNDO,
         },
     ]);
     actions
@@ -326,6 +337,7 @@ mod tests {
             r#"{"name":"clarify","arguments":{"question":"Which?","options":["a","b"]}}"#,
             // The call only picks `script`; llm writes its code (`routed`).
             r#"{"name":"script","arguments":{}}"#,
+            r#"{"name":"undo","arguments":{"steps":1}}"#,
         ] {
             let state = g.advance(g.start(), text.as_bytes()).unwrap();
             assert!(g.is_done(&state), "{text}");
@@ -335,6 +347,8 @@ mod tests {
         for text in [
             r#"{"name":"fixed""#,
             r#"{"name":"script","arguments":{"code""#,
+            r#"{"name":"undo","arguments":{"steps":0"#,
+            r#"{"name":"undo","arguments":{"steps":2"#,
         ] {
             assert!(g.advance(g.start(), text.as_bytes()).is_err(), "{text}");
         }

@@ -360,7 +360,15 @@ const WANT_PHRASES: &[&str] = &[
     "set it back",
     "go back",
     "the way it was",
+    "do it again",
+    "do that again",
+    "same again",
+    "once more",
 ];
+
+/// Lines that ask for the last thing again (P1 plan section 4): "do" starts
+/// them as an order, not a question.
+const REPEATS: &[&str] = &["do it again", "do that again"];
 
 /// Whether the line states a want or a complaint ([`WANT_WORDS`], [`WANT_PHRASES`]).
 fn wants(words: &[Word]) -> bool {
@@ -380,10 +388,15 @@ const QUESTION_WORDS: &[&str] = &[
 /// ("how many CPUs are there", "is the network up").
 fn is_question(line: &str) -> bool {
     let line = line.trim();
+    let repeat = REPEATS.iter().any(|r| {
+        line.get(..r.len())
+            .is_some_and(|start| start.eq_ignore_ascii_case(r))
+    });
     line.ends_with('?')
-        || words(line)
-            .first()
-            .is_some_and(|w| QUESTION_WORDS.contains(&w.text.as_str()))
+        || !repeat
+            && words(line)
+                .first()
+                .is_some_and(|w| QUESTION_WORDS.contains(&w.text.as_str()))
 }
 
 /// Whether `text` names a thing: some word of it is neither a kind word nor a
@@ -708,6 +721,17 @@ const ENGLISH_STEMS: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn do_it_again_is_an_order_and_do_you_a_question() {
+        for line in ["do it again", "Do that again please"] {
+            assert!(!is_question(line), "{line}");
+            assert!(wants(&words(line)), "{line}");
+        }
+        for line in ["do you use round robin", "do it again?", "does it run"] {
+            assert!(is_question(line), "{line}");
+        }
+    }
 
     #[test]
     fn the_word_lists_are_sorted_for_binary_search() {

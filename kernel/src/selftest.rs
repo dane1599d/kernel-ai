@@ -17,6 +17,7 @@ pub enum ActCase {
     Inject,
     Rule,
     PkgLocal,
+    Convo,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -163,6 +164,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=act-inject" => Some(SelfTest::Act(ActCase::Inject)),
             "test=act-rule" => Some(SelfTest::Act(ActCase::Rule)),
             "test=pkg-local" => Some(SelfTest::Act(ActCase::PkgLocal)),
+            "test=act-convo" => Some(SelfTest::Act(ActCase::Convo)),
             "test=live" => Some(SelfTest::Live),
             "test=edit" => Some(SelfTest::Edit),
             "test=appbench" => Some(SelfTest::AppBench),
@@ -278,6 +280,14 @@ pub fn plan(test: SelfTest) -> Option<String> {
     // service it does.
     if test == SelfTest::Act(ActCase::Rule) {
         plan.push_str("\nspin-a program=spinner burst_ms=3600000 unsupervised\nspin-b program=spinner burst_ms=3600000 unsupervised\nspin-c program=spinner burst_ms=3600000 unsupervised\nspin-d program=spinner burst_ms=3600000");
+    }
+    // `act-convo` asks to stop two processes and declines both.
+    if test == SelfTest::Act(ActCase::Convo) {
+        plan.push_str(
+            "
+spin-a program=spinner burst_ms=3600000 unsupervised
+spin-b program=spinner burst_ms=3600000 unsupervised",
+        );
     }
     let workload = crate::workload::plan_lines();
     if !workload.is_empty() {

@@ -111,6 +111,7 @@ impl Shell {
             "say" => self.pseudo_say(id, request, call),
             "clarify" => self.pseudo_clarify(id, request, call),
             "script" => self.pseudo_script(id, request, call),
+            "undo" => self.pseudo_undo(call),
             name => match agentabi::find(&agentabi::ROWS, name) {
                 Some(row) => self.call_row(id, request, row, call),
                 None => self.refuse(id, request, call, Why::Unknown, "no such action"),
@@ -140,6 +141,20 @@ impl Shell {
             false => format!("{question} ({})", options.join(", ")),
         };
         outcome(Tier::Run, Why::Read, Reply::ok(text))
+    }
+
+    /// `undo`: what the typed `undo` does, compare-and-set and all, so it only
+    /// puts back what the log holds. One step at a time: a second `undo` redoes,
+    /// so more steps are refused with how to name an entry instead.
+    fn pseudo_undo(&mut self, call: &Call) -> Outcome {
+        let steps = call.arguments.get("steps").and_then(Value::as_u64);
+        let reply = match steps {
+            None | Some(1) => self.undo_command(""),
+            Some(_) => Reply::err(
+                "I undo one change at a time: `log` lists them, and `undo N` puts back entry N",
+            ),
+        };
+        outcome(Tier::Run, Why::Read, reply)
     }
 
     /// `script`: code written by today's script prompt, checked and tiered as

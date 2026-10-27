@@ -1,8 +1,8 @@
 //! The LLM service. It takes `ask <prompt>`, `explain <facts>` (see
 //! `llmproto::explain`), `script ...` (see `llmproto::script`), `tune ...` (see
 //! `llmproto::tune`, answered with the model's raw completion), `act ...` (see
-//! `llmproto::act`, one tagged call, local model only), `remember ...` (a turn
-//! for its conversation memory, `llmproto::act::history`), `new`, `health` and
+//! `llmproto::act`, one tagged call), `remember ...` (a turn for its
+//! conversation memory, `llmproto::act::history`), `new`, `health` and
 //! `model` requests from the kernel terminal and the shell, and answers
 //! `ok <text>` or `err <text>`.
 //!
@@ -34,7 +34,7 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use kabi::model::Fnv1a;
-use llmproto::act::{ActError, ActRequest, history};
+use llmproto::act::{ActError, ActRequest, History, history};
 use llmproto::chat::Completion;
 use llmproto::chat::{self, NO_MODEL};
 use llmproto::script::{self, AnswerError, ScriptRequest};
@@ -106,6 +106,20 @@ struct Backends {
     replay: Option<&'static [u8]>,
     /// `tune` requests traced so far.
     traced: u64,
+    /// The conversation a server is sent, costed by [`server_cost`]. The local
+    /// backend keeps its own, costed by its tokenizer; `remember` and `new` keep
+    /// both in step, and a reply reports the one that answers.
+    history: History,
+}
+
+/// What a turn costs a server's history: about four bytes a token, as no
+/// tokenizer is at hand for a server's model.
+fn server_cost(turn: &history::Turn) -> usize {
+    turn.messages()
+        .iter()
+        .map(|m| m.content.len())
+        .sum::<usize>()
+        .div_ceil(4)
 }
 
 fn main() -> i32 {
@@ -146,6 +160,7 @@ fn main() -> i32 {
         local,
         replay,
         traced: 0,
+        history: History::new(),
     };
     let mut request = vec![0u8; kabi::MAX_MESSAGE];
     let mut response = vec![0u8; http::MAX_RESPONSE];
@@ -309,18 +324,34 @@ fn handle(backends: &mut Backends, text: &str, response: &mut [u8]) -> Result<St
         ),
         "script" => script(backends, text, response),
         "act" => act(backends, text, response),
-        "remember" => match (&mut backends.local, history::decode_remember(text)) {
-            (Some(Ok(local)), Some(turn)) => Ok(local.remember(turn)),
-            (Some(Ok(_)), None) => Err(String::from("malformed remember request")),
-            _ => Err(String::from(NO_MODEL)),
-        },
-        "new" if rest.is_empty() => match &mut backends.local {
-            Some(Ok(local)) => {
-                local.forget();
-                Ok(String::from("conversation cleared"))
+        "remember" => {
+            let turn = history::decode_remember(text).ok_or("malformed remember request")?;
+            let cost = server_cost(&turn);
+            let dropped = backends
+                .history
+                .push(turn.clone(), cost, history::HISTORY_MAX);
+            match &mut backends.local {
+                Some(Ok(local)) => Ok(local.remember(turn)),
+                _ => Ok(format!(
+                    "{} turns, about {} of {} tokens{}",
+                    backends.history.len(),
+                    backends.history.tokens(),
+                    history::HISTORY_MAX,
+                    if dropped {
+                        " (the older half went)"
+                    } else {
+                        ""
+                    }
+                )),
             }
-            _ => Ok(String::from("no conversation")),
-        },
+        }
+        "new" if rest.is_empty() => {
+            backends.history.clear();
+            if let Some(Ok(local)) = &mut backends.local {
+                local.forget();
+            }
+            Ok(String::from("conversation cleared"))
+        }
         "tune" => tune(backends, text, response),
         _ => Err(format!("unknown request {command:?}")),
     }
@@ -367,7 +398,7 @@ fn act(backends: &mut Backends, text: &str, response: &mut [u8]) -> Result<Strin
     let request = ActRequest::decode(text).ok_or("malformed act request")?;
     let answer = match (&mut backends.local, &backends.server) {
         (Some(Ok(local)), _) => local.act(&request),
-        (_, Some(server)) => server.act(&request, response),
+        (_, Some(server)) => server.act(&request, &backends.history, response),
         (Some(Err(why)), None) => Err(ActError::Unavailable(format!(
             "the model cannot run ({why})"
         ))),
