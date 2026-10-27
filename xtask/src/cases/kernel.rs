@@ -169,6 +169,20 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("desk-panel", "test=desk-panel")
     },
+    // P3 task 7: asks answered on desktop's card, and on the console when it dies.
+    TestCase {
+        expect: &[
+            "ask: 1 went to desktop's card",
+            "desktop: ask 1 shows on the card",
+            "desktop: ask 1 answered yes",
+            "desk-card: an ask went to desktop's card, and y on it allowed",
+            "desktop: ask 2 answered no",
+            "desk-card: a letter and Enter did not answer the card, and n denied",
+            "ask: 3 came back from the card; the console asks it",
+            "desk-card: with desktop killed, the ask came back and the console answered it",
+        ],
+        ..case("desk-card", "test=desk-card")
+    },
     // P1 task 14: shared pages, and spike S01-1's M6.
     TestCase {
         expect: &[

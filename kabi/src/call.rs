@@ -23,7 +23,8 @@
 //! | 150-159 | V, virtual machines (P6) | |
 //! | 160-169 | M, memory | |
 //! | 170-179 | U, updates (P4) | SLOT_INFO, SLOT_READ, SLOT_WRITE, SLOT_FLUSH, BOOTREC_GET, BOOTREC_SET, TRUST_ROOT, TRUST_TIME |
-//! | 180-191 | not given yet | a lane asks lane K for a block |
+//! | 180-189 | G-core (P3), second block | ASK_READ, ASK_ANSWER |
+//! | 190-191 | not given yet | a lane asks lane K for a block |
 
 /// `exit(code: i32) -> !`
 pub const EXIT: u64 = 0;
@@ -441,6 +442,23 @@ pub const TRUST_ROOT: u64 = 176;
 /// the time since boot, the clock TUF's expiry checks use (ADR 0008 §7).
 /// NotFound when the firmware gave no date. Needs READ.
 pub const TRUST_TIME: u64 = 177;
+
+// ---- G-core, second block, 180-189 ----
+
+/// `ask_read(handle, buf, cap) -> len`: the ask waiting for `desktop`'s card, as
+/// its log entry id, its call in canonical text (`termcore::once::call_text`)
+/// and its question, one per line; 0 when none waits. Reading marks the trusted
+/// layer alive: the kernel posts asks to the card only while `desktop` reads,
+/// and asks on the console otherwise (ADR 0005 §7). TooBig, with nothing
+/// written, when `cap` is too small. Needs an `Ask` handle, which the kernel
+/// gives only to the service `desktop` running the program `desktop`.
+pub const ASK_READ: u64 = 180;
+/// `ask_answer(handle, id, yes, digest_ptr) -> 0`: answers ask `id` from the
+/// card, Run (`yes` 1) or Don't (0). `digest_ptr` points at the 32-byte
+/// `termcore::once::digest_call` of the call the card showed; NotFound, and
+/// no answer, unless that is the posted ask's. The kernel then mints the
+/// `ONCE` as for the console's menu. Needs an `Ask` handle.
+pub const ASK_ANSWER: u64 = 181;
 
 /// The end of the reserved blocks (see the table above): the highest number a
 /// call may have. A call that is not there yet answers NotFound.

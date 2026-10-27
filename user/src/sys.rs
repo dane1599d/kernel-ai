@@ -470,6 +470,25 @@ pub fn display_claim(info: &mut kabi::display::DisplayInfo) -> Result<Handle, Er
     .map(|h| Handle(h as u32))
 }
 
+/// The ask waiting for the card, as its id, call and question, one per line,
+/// into `buf`; 0 when none waits. Keeps the trusted layer alive (ASK_READ).
+pub fn ask_read(buf: &mut [u8]) -> Result<usize, Error> {
+    call(
+        call::ASK_READ,
+        [0, buf.as_mut_ptr() as u64, buf.len() as u64, 0, 0, 0],
+    )
+    .map(|n| n as usize)
+}
+
+/// Answers ask `id` from the card, with the `ONCE` digest of the call it
+/// showed (ASK_ANSWER).
+pub fn ask_answer(id: u64, yes: bool, digest: &[u8; 32]) -> Result<u64, Error> {
+    call(
+        call::ASK_ANSWER,
+        [0, id, u64::from(yes), digest.as_ptr() as u64, 0, 0],
+    )
+}
+
 /// Puts these rectangles of the claimed back buffer on screen.
 pub fn display_flush(rects: &[kabi::display::FlushRect]) -> Result<u64, Error> {
     call(

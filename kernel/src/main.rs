@@ -21,6 +21,7 @@ mod act_tests;
 mod allow;
 mod apic;
 mod appbench_tests;
+mod ask_box;
 mod ask_tests;
 mod backtrace;
 mod bigmap_tests;
@@ -31,6 +32,7 @@ mod boot_manifest;
 mod bootfiles;
 mod build_job;
 mod build_service;
+mod card_tests;
 mod claim_tests;
 mod clock;
 mod compute_tests;
@@ -349,6 +351,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::AppSuspend => run_case(suspend_tests::check),
         SelfTest::DeskBoot => run_case(desk_tests::boot_check),
         SelfTest::DeskPanel => run_case(desk_tests::panel_check),
+        SelfTest::DeskCard => run_case(card_tests::check),
         SelfTest::Scriptrun => run_case(scriptrun_tests::check),
         SelfTest::Fpu => run_case(fpu_tests::fpu_check),
         SelfTest::Probe => run_case(fpu_tests::probe_check),
