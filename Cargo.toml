@@ -162,6 +162,12 @@ opt-level = 2
 [profile.dev.package.infer]
 opt-level = 2
 
+# kaifs: xtask replays every crash state a case's blklogwrites log allows (P2
+# task 9), over 100,000 for 200 file actions, and the `fs` service runs it on
+# every request. Its debug assertions and overflow checks stay on.
+[profile.dev.package.kaifs]
+opt-level = 2
+
 [profile.release]
 panic = "abort"
 debug = true
