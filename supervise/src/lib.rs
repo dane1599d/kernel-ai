@@ -382,6 +382,7 @@ fn caps(service: &str, value: &str) -> Result<u64, String> {
         "state" => Ok(bits | cap::SYSTEM_STATE),
         "display" => Ok(bits | cap::DISPLAY),
         "input" => Ok(bits | cap::INPUT),
+        "term" => Ok(bits | cap::TERM),
         "update" => Ok(bits | cap::UPDATE),
         other => Err(format!("{service}: unknown capability {other:?}")),
     })

@@ -47,6 +47,10 @@ static ENTRIES: [AtomicU16; RING] = [const { AtomicU16::new(0) }; RING];
 static ARRIVED_NS: [AtomicU64; RING] = [const { AtomicU64::new(0) }; RING];
 static HEAD: AtomicUsize = AtomicUsize::new(0);
 static TAIL: AtomicUsize = AtomicUsize::new(0);
+/// Entries before this one are dropped unread ([`discard_queued`]).
+static DISCARD_TO: AtomicUsize = AtomicUsize::new(0);
+/// Bumped by each [`discard_queued`], so the decoder starts afresh.
+static EPOCH: AtomicU64 = AtomicU64::new(0);
 /// Thread blocked in [`wait`], or `NO_WAITER`.
 static WAITER: AtomicUsize = AtomicUsize::new(NO_WAITER);
 const NO_WAITER: usize = usize::MAX;
@@ -203,13 +207,33 @@ pub fn inject(bytes: &[u8]) -> Option<usize> {
     take_waiter()
 }
 
+/// Drops every byte queued so far, from the producer's side: called where keys
+/// change hands between the console and `desktop` (`crate::input`), in
+/// interrupt context on the CPU that takes IRQ1, so a sequence begun for one
+/// never ends at the other. The reader skips them and starts a fresh decoder.
+pub fn discard_queued() {
+    DISCARD_TO.store(HEAD.load(Ordering::Relaxed), Ordering::Release);
+    EPOCH.fetch_add(1, Ordering::AcqRel);
+}
+
+/// Bumped by every [`discard_queued`].
+pub fn epoch() -> u64 {
+    EPOCH.load(Ordering::Acquire)
+}
+
 fn has_input() -> bool {
     TAIL.load(Ordering::Relaxed) != HEAD.load(Ordering::Acquire)
 }
 
 /// The oldest queued byte, if any.
 pub fn next() -> Option<Input> {
-    let tail = TAIL.load(Ordering::Relaxed);
+    let mut tail = TAIL.load(Ordering::Relaxed);
+    let discard_to = DISCARD_TO.load(Ordering::Acquire);
+    let behind = discard_to.wrapping_sub(tail);
+    if behind != 0 && behind <= RING {
+        tail = discard_to;
+        TAIL.store(tail, Ordering::Release);
+    }
     if tail == HEAD.load(Ordering::Acquire) {
         return None;
     }
