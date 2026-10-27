@@ -1,6 +1,6 @@
 //! P2 task 6's crash gate: actions across volumes, with their undo snapshots and
-//! UNDO records, restores of earlier actions, aborts and dropped snapshots (ADR
-//! 0004 §3-5). After each commit the writer checks itself and keeps what every
+//! UNDO records, restores of earlier actions, aborts, dropped snapshots, the
+//! trash, retention and GC passes in slices (ADR 0004 §3-5). After each commit the writer checks itself and keeps what every
 //! tree of every volume held; then every crash state the enumerator rebuilds
 //! must mount, pass `check()` and the namespace and UNDO rules on every volume,
 //! and hold exactly one committed generation's trees, never older than the last
@@ -57,6 +57,14 @@ enum Step {
     Drop,
     /// A named snapshot of a random volume.
     Snapshot,
+    /// An action that trashes a random name of a random volume.
+    Trash,
+    /// A random volume's trash emptied, outside any action.
+    Empty,
+    /// 31 days pass, and retention drops what expired.
+    Expire,
+    /// A GC pass begun, or its next slice of four nodes.
+    Gc,
 }
 
 struct Run {
@@ -217,6 +225,51 @@ impl Run {
                 fs.set_volume(vol).unwrap();
                 fs.snapshot().map_err(|e| format!("{e:?}"))?;
             }
+            Step::Trash => {
+                let vol = VOLS[self.pick(3)];
+                let in_docs = self.pick(2) == 0;
+                let fs = self.fs();
+                fs.set_volume(vol).unwrap();
+                let dir = match (in_docs, fs.resolve("/docs")) {
+                    (true, Ok(docs)) => docs,
+                    _ => ROOT,
+                };
+                let names: Vec<String> = fs
+                    .list(dir, None, usize::MAX)
+                    .map_err(|e| format!("{e:?}"))?
+                    .into_iter()
+                    .map(|l| l.entry.name)
+                    .filter(|n| n != kaifs::trash::TRASH)
+                    .collect();
+                if names.is_empty() {
+                    return Ok(());
+                }
+                let name = names[self.pick(names.len())].clone();
+                let fs = self.fs();
+                fs.begin(id).map_err(|e| format!("begin: {e:?}"))?;
+                fs.trash(dir, &name).map_err(|e| format!("trash: {e:?}"))?;
+            }
+            Step::Empty => {
+                let vol = VOLS[self.pick(3)];
+                let fs = self.fs();
+                fs.set_volume(vol).unwrap();
+                fs.empty_trash().map_err(|e| format!("empty: {e:?}"))?;
+            }
+            Step::Expire => {
+                let fs = self.fs();
+                fs.clock += kaifs::vol::UNDO_LIFE + 24 * 3600 * 1_000_000_000;
+                let now = fs.clock;
+                fs.expire(now).map_err(|e| format!("expire: {e:?}"))?;
+            }
+            Step::Gc => {
+                let fs = self.fs();
+                match fs.gc_running() {
+                    false => fs.gc_start().map_err(|e| format!("gc: {e:?}"))?,
+                    true => {
+                        fs.gc_step(4).map_err(|e| format!("gc: {e:?}"))?;
+                    }
+                }
+            }
         }
         self.commit()
     }
@@ -348,13 +401,17 @@ impl Oracle for UndoOracle<'_> {
     }
 }
 
-const STEPS: [Step; 6] = [
+const STEPS: [Step; 10] = [
     Step::Act,
     Step::Plain,
     Step::Restore,
     Step::Abort,
     Step::Drop,
     Step::Snapshot,
+    Step::Trash,
+    Step::Empty,
+    Step::Expire,
+    Step::Gc,
 ];
 
 fn report(what: &str, tally: &Tally, start: Instant) {
@@ -434,12 +491,16 @@ fn batches(files: u64, blocks: u64, workloads: u64) -> Tally {
         let mut pick = Rng(77 + w);
         let steps: Vec<Step> = (0..40)
             .map(|_| match pick.below(100) {
-                0..=49 => Step::Act,
-                50..=59 => Step::Plain,
-                60..=74 => Step::Restore,
-                75..=84 => Step::Abort,
-                85..=92 => Step::Drop,
-                _ => Step::Snapshot,
+                0..=34 => Step::Act,
+                35..=41 => Step::Plain,
+                42..=53 => Step::Restore,
+                54..=60 => Step::Abort,
+                61..=64 => Step::Drop,
+                65..=67 => Step::Snapshot,
+                68..=75 => Step::Trash,
+                76..=78 => Step::Empty,
+                79..=81 => Step::Expire,
+                _ => Step::Gc,
             })
             .collect();
         tally.add(&run(&setup, 5000 + w, Faults::default(), &steps, &mut rng));
@@ -475,8 +536,9 @@ fn actions_restores_and_aborts_survive_every_crash_state() {
 }
 
 /// An action that does not count as a snapshot while open lets its undo
-/// snapshot's blocks be freed and written over: caught. So are S04-1's bugs,
-/// under actions.
+/// snapshot's blocks be freed and written over, and a GC pass that skips the
+/// snapshots frees what they hold: both caught. So are S04-1's bugs, under
+/// actions.
 #[test]
 fn the_deliberate_bugs_are_caught_under_actions() {
     use Step::*;
@@ -484,10 +546,17 @@ fn the_deliberate_bugs_are_caught_under_actions() {
     let seqs = [
         vec![Act, Act, Act, Act, Restore, Act, Act, Restore, Act],
         vec![Act, Plain, Act, Drop, Act, Act, Restore, Act],
+        vec![
+            Act, Act, Gc, Gc, Gc, Gc, Gc, Gc, Gc, Gc, Gc, Gc, Act, Act, Act,
+        ],
     ];
     for faults in [
         Faults {
             unpinned_action: true,
+            ..Faults::default()
+        },
+        Faults {
+            gc_skips_snapshots: true,
             ..Faults::default()
         },
         Faults {
