@@ -531,3 +531,24 @@ fn the_state_dir_reaches_only_beneath_system_state() {
     let (c, _) = Client::start(&mut disk);
     assert_eq!(c.server.system_state, object);
 }
+
+#[test]
+fn an_actions_generation_is_the_one_its_commit_gets() {
+    let mut disk = MemDisk::new(BLOCKS);
+    let (mut c, _) = Client::start(&mut disk);
+    let file = c.open("a.txt", How::CreateFile).unwrap();
+    // Outside an action there is no commit to name.
+    assert_eq!(failed(c.home(Request::Generation)), Error::Invalid);
+    c.home(Request::Begin { action: 1 });
+    let Reply::Generation { generation } = c.home(Request::Generation).0 else {
+        panic!("no generation");
+    };
+    // Only the action's owner is told; Begin's lock keeps the answer true.
+    assert_eq!(
+        failed(c.call(BOB, HOME_USER, DIR_RIGHTS, Request::Generation)),
+        Error::Busy
+    );
+    c.write(&file, 0, b"named");
+    assert_eq!(c.home(Request::Commit).0, Reply::Committed { generation });
+    assert_eq!(failed(c.home(Request::Generation)), Error::Invalid);
+}

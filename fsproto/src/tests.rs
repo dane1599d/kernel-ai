@@ -45,6 +45,7 @@ fn every_request_round_trips() {
         Request::Trash { name: "t".into() },
         Request::Begin { action: 42 },
         Request::Commit,
+        Request::Generation,
         Request::Abort,
         Request::Restore { txn: 5, action: 6 },
         Request::History,
@@ -81,6 +82,7 @@ fn every_reply_round_trips_and_the_largest_fit_one_message() {
         full_list,
         Reply::Data(vec![1; MAX_DATA]),
         Reply::Committed { generation: 9 },
+        Reply::Generation { generation: 10 },
         Reply::Restored {
             rows: vec![
                 (1, Outcome::Back),
