@@ -31,6 +31,22 @@
       "in": "the console glyphs in the kernel"
     },
     {
+      "name": "Inter",
+      "version": "4.1 (InterVariable.ttf)",
+      "licence": "OFL-1.1",
+      "crate": "gfx2d",
+      "copyright": ["Copyright (c) 2016 The Inter Project Authors (https://github.com/rsms/inter)"],
+      "in": "assets/fonts, the desktop's sans-serif type (ADR 0005)"
+    },
+    {
+      "name": "JetBrains Mono",
+      "version": "2.304 (JetBrainsMono[wght].ttf)",
+      "licence": "OFL-1.1",
+      "crate": "gfx2d",
+      "copyright": ["Copyright 2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono)"],
+      "in": "assets/fonts, the desktop's monospace type (ADR 0005)"
+    },
+    {
       "name": "Unicode Character Database",
       "version": "16.0",
       "licence": "Unicode-3.0",
