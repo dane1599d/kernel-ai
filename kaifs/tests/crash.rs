@@ -22,7 +22,7 @@
 use kaifs::check::{Cache, Report, check, map_digest};
 use kaifs::crash::{Options, Oracle, Recording, Rng, Tally, enumerate};
 use kaifs::format;
-use kaifs::fs::{Faults, Fs, Value};
+use kaifs::fs::{Faults, Fs, VOLUME, Value};
 use kaifs::{CsumKind, Image, Key, MemDisk, RecordingDisk};
 use std::collections::BTreeMap;
 use std::time::Instant;
@@ -202,7 +202,7 @@ impl Run {
             Action::Restore => {
                 if let Some((&id, map)) = self.model.snaps.iter().next_back() {
                     self.model.live = map.clone();
-                    assert!(self.fs.restore(id)?);
+                    assert!(self.fs.restore_snapshot(id)?);
                 }
             }
             Action::Commit => {
@@ -282,8 +282,11 @@ impl Oracle for FsOracle<'_> {
             .get(&generation)
             .ok_or(format!("generation {generation} was never committed"))?;
         let got = State {
-            live: (report.live.digest, report.live.count),
-            snaps: report
+            live: (
+                report.volumes[&VOLUME].live.digest,
+                report.volumes[&VOLUME].live.count,
+            ),
+            snaps: report.volumes[&VOLUME]
                 .snaps
                 .iter()
                 .map(|(id, t)| (*id, (t.digest, t.count)))

@@ -53,22 +53,29 @@ pub struct Summary {
     pub runs: Rc<Vec<Run>>,
 }
 
-/// A tree `check()` read: its root, the volume's object id counter with it, and
-/// its items' digest and count.
+/// A tree `check()` read: its root, the generation it is from, the volume's
+/// object id counter with it, and its items' digest and count.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TreeReport {
     pub root: BlockPtr,
+    pub generation: u64,
     pub next_oid: u64,
     pub digest: u64,
     pub count: u64,
+}
+
+/// A volume's trees.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct VolumeReport {
+    pub live: TreeReport,
+    pub snaps: BTreeMap<u64, TreeReport>,
 }
 
 /// What `check()` found.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Report {
     pub generation: u64,
-    pub live: TreeReport,
-    pub snaps: BTreeMap<u64, TreeReport>,
+    pub volumes: BTreeMap<u64, VolumeReport>,
     pub reachable_blocks: u64,
     pub free_blocks: u64,
     pub pending_blocks: u64,
@@ -380,38 +387,44 @@ pub fn check<D: BlockDev>(fs: &mut Fs<D>, cache: &mut Cache) -> Result<Report, S
     {
         return Ok((**report).clone());
     }
-    let live = fs.live_root().ok_or("the live tree is not written")?;
     let summary = |fs: &mut Fs<D>, cache: &mut Cache, ptr: &BlockPtr, leaves| match ptr.is_null() {
         true => Ok(None),
         false => summarise(&mut fs.io, ptr, leaves, cache).map(Some),
     };
     let vol = summary(fs, cache, &volumes, Leaves::Entries)?.ok_or("an empty volume table")?;
-    let live_summary = summary(fs, cache, &live, Leaves::Values)?;
-    let tree_report = |root: BlockPtr, next_oid: u64, sub: &Option<Rc<Summary>>| TreeReport {
-        root,
-        next_oid,
-        digest: sub.as_ref().map_or(0, |s| s.digest),
-        count: sub.as_ref().map_or(0, |s| s.count),
-    };
-    let roots: Vec<(u64, BlockPtr, u64)> = fs
-        .snapshots()
-        .iter()
-        .map(|(id, s)| (*id, s.root, s.next_oid))
-        .collect();
-    let mut snaps = BTreeMap::new();
     let mut lists: Vec<Rc<Vec<Run>>> = alloc::vec![vol.runs.clone()];
     let mut children = alloc::vec![(volumes.addr, volumes.csum, META)];
-    for (id, root, next_oid) in roots {
-        let sub = summary(fs, cache, &root, Leaves::Values)?;
-        snaps.insert(id, tree_report(root, next_oid, &sub));
-        if let Some(s) = sub {
-            lists.push(s.runs.clone());
-            children.push((root.addr, root.csum, TREE));
+    let mut reports = BTreeMap::new();
+    for (id, _) in fs.volumes() {
+        let live = fs.live_root_of(id).ok_or("a live tree is not written")?;
+        let (next_oid, snaps) = fs.volume_state(id).ok_or("a volume went missing")?;
+        let mut trees: Vec<(Option<u64>, BlockPtr, u64, u64)> = snaps
+            .iter()
+            .map(|(sid, s)| (Some(*sid), s.root, s.generation, s.next_oid))
+            .collect();
+        trees.push((None, live, fs.committed, next_oid));
+        let mut report = VolumeReport::default();
+        for (sid, root, generation, next_oid) in trees {
+            let sub = summary(fs, cache, &root, Leaves::Values)?;
+            let tree = TreeReport {
+                root,
+                generation,
+                next_oid,
+                digest: sub.as_ref().map_or(0, |s| s.digest),
+                count: sub.as_ref().map_or(0, |s| s.count),
+            };
+            match sid {
+                Some(sid) => {
+                    report.snaps.insert(sid, tree);
+                }
+                None => report.live = tree,
+            }
+            if let Some(s) = sub {
+                lists.push(s.runs.clone());
+                children.push((root.addr, root.csum, TREE));
+            }
         }
-    }
-    if let Some(s) = &live_summary {
-        lists.push(s.runs.clone());
-        children.push((live.addr, live.csum, TREE));
+        reports.insert(id, report);
     }
     let chain: Vec<Run> = fs.io.alloc.chain().iter().map(run_of).collect();
     let mut parts: Vec<&[Run]> = lists.iter().map(|l| &l[..]).collect();
@@ -445,8 +458,7 @@ pub fn check<D: BlockDev>(fs: &mut Fs<D>, cache: &mut Cache) -> Result<Report, S
     let pending_blocks: u64 = state.pending.iter().map(|(_, _, l)| l).sum();
     let report = Report {
         generation: fs.committed,
-        live: tree_report(live, fs.next_oid(), &live_summary),
-        snaps,
+        volumes: reports,
         reachable_blocks,
         free_blocks,
         pending_blocks,
