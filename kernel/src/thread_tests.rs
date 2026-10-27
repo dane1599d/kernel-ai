@@ -235,6 +235,7 @@ pub fn pin_check() -> Result<(), &'static str> {
         threads::sleep_ms(10);
     }
     SPIN_STOP.store(true, Ordering::SeqCst);
+    preempted_pin()?;
     if !PIN_STAYED.load(Ordering::SeqCst) {
         return Err("thread-pin: a pinned thread ran on another CPU");
     }
@@ -275,6 +276,50 @@ fn pin_mover(_: usize) {
     }
     SPIN_STOP.store(true, Ordering::SeqCst);
     PIN_DONE.store(true, Ordering::SeqCst);
+    threads::exit();
+}
+
+static PREEMPTED_ON: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+static YIELDER_STOP: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// How long a pin preempted before it blocks may take to arrive.
+const PREEMPTED_WAIT_MS: u64 = 1_000;
+
+/// A thread on CPU 1 asks to move to CPU 0 and is switched away before it
+/// blocks, beside a thread that keeps yielding so the switch happens. It must
+/// still arrive: before the fix the request was dropped at that switch and the
+/// thread blocked for good, as llm's main thread did under TCG.
+fn preempted_pin() -> Result<(), &'static str> {
+    threads::spawn_pinned(1, "pin-yielder", pin_yielder, 0)
+        .map_err(|_| "thread-pin: cannot start the yielder")?;
+    threads::spawn_pinned(1, "pin-preempted", pin_preempted, 0)
+        .map_err(|_| "thread-pin: cannot start the preempted pin")?;
+    let deadline = hpet::nanos() + PREEMPTED_WAIT_MS * 1_000_000;
+    let arrived = loop {
+        let on = PREEMPTED_ON.load(Ordering::SeqCst);
+        if on != 0 || hpet::nanos() > deadline {
+            break on;
+        }
+        threads::sleep_ms(1);
+    };
+    YIELDER_STOP.store(true, Ordering::SeqCst);
+    match arrived {
+        0 => Err("thread-pin: a pin switched away before it blocked never arrived"),
+        1 => Ok(()),
+        _ => Err("thread-pin: a pin switched away before it blocked arrived elsewhere"),
+    }
+}
+
+fn pin_preempted(_: usize) {
+    threads::pin_current_preempted(0);
+    // CPU plus one, so 0 means not yet.
+    PREEMPTED_ON.store(crate::percpu::index() + 1, Ordering::SeqCst);
+    threads::exit();
+}
+
+fn pin_yielder(_: usize) {
+    while !YIELDER_STOP.load(Ordering::SeqCst) {
+        threads::yield_now();
+    }
     threads::exit();
 }
 
