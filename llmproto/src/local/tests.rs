@@ -96,6 +96,8 @@ fn every_script_from_the_shape_parses_or_is_refused_for_a_limit() {
                     assert!(LIMITS.iter().any(|limit| why.contains(limit)), "{why}");
                 }
                 Err(AnswerError::NoScript(_) | AnswerError::CutOff) => {}
+                // The longest requests fill the window before the model writes.
+                Err(AnswerError::Local(why)) if why.contains("no room to answer") => {}
                 Err(other) => panic!("{request:?}: {other:?}"),
             }
         }

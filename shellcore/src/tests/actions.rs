@@ -36,7 +36,14 @@ const SWITCH: &str = "set_policy(\"round-robin\");";
 
 #[test]
 fn every_function_a_script_can_call_has_a_tier_and_no_row_names_a_missing_one() {
-    let callable = || API.iter().map(|f| f.name).chain(HELPERS.iter().copied());
+    // The engine binds the script API and the call-only rows (a tagged call's
+    // one-line script); the helpers come with every engine.
+    let callable = || {
+        agentabi::BOUND
+            .iter()
+            .map(|f| f.name)
+            .chain(HELPERS.iter().copied())
+    };
     for function in callable() {
         assert!(
             TIERS.iter().any(|(name, _)| *name == function),
@@ -111,11 +118,14 @@ fn a_change_the_model_added_to_a_read_asks_and_says_why() {
 
 /// A call to each run-tier function that changes anything, and a request that
 /// names it.
-const CALLS: &[(&str, &str, &str)] = &[(
-    "set_policy",
-    "set_policy(\"rr\");",
-    "change the policy to round robin",
-)];
+const CALLS: &[(&str, &str, &str)] = &[
+    (
+        "set_policy",
+        "set_policy(\"rr\");",
+        "change the policy to round robin",
+    ),
+    ("service_start", "service_start(\"notes\");", "start notes"),
+];
 
 #[test]
 fn every_run_tier_change_records_how_to_undo_it() {
@@ -390,6 +400,10 @@ fn the_generated_tier_table_is_the_seamless_actions_one() {
         ("threads", Tier::Run),
         ("get_policy", Tier::Run),
         ("set_policy", Tier::Run),
+        ("process_stop", Tier::Ask),
+        ("service_stop", Tier::Ask),
+        ("service_start", Tier::Run),
+        ("service_restart", Tier::Ask),
         ("fixed", Tier::Run),
         ("floor", Tier::Run),
     ];

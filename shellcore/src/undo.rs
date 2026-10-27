@@ -24,6 +24,35 @@ pub enum Inverse {
         preset: u64,
         after: (u64, u64),
     },
+    /// Stop the service a run started again.
+    Started(Name),
+    /// Start the service an undo stopped again: the redo of [`Inverse::Started`].
+    Stopped(Name),
+}
+
+/// A service name held without the heap, so an inverse stays `Copy`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Name {
+    bytes: [u8; kabi::MAX_NAME],
+    len: u8,
+}
+
+impl Name {
+    /// `None` for a name longer than a process name can be.
+    pub fn new(name: &str) -> Option<Self> {
+        let mut bytes = [0u8; kabi::MAX_NAME];
+        bytes
+            .get_mut(..name.len())?
+            .copy_from_slice(name.as_bytes());
+        Some(Self {
+            bytes,
+            len: name.len() as u8,
+        })
+    }
+
+    pub fn as_str(&self) -> &str {
+        core::str::from_utf8(&self.bytes[..usize::from(self.len)]).unwrap_or("")
+    }
 }
 
 /// Why a change was not put back.
@@ -61,6 +90,8 @@ pub fn spec_name(policy: u64, preset: u64) -> String {
 pub fn target(inverse: Inverse) -> String {
     match inverse {
         Inverse::Spec { policy, preset, .. } => spec_name(policy, preset),
+        Inverse::Started(name) => format!("{} stopped", name.as_str()),
+        Inverse::Stopped(name) => format!("{} running", name.as_str()),
     }
 }
 
@@ -90,6 +121,14 @@ pub fn revert(host: &dyn Host, inverse: Inverse, anyway: bool) -> Result<String,
                     Refused::Failed(format!("cannot switch the policy back yet ({error:?})"))
                 })
         }
+        Inverse::Started(name) => host
+            .stop_service(name.as_str())
+            .map(|()| format!("service {} stopped again", name.as_str()))
+            .map_err(Refused::Failed),
+        Inverse::Stopped(name) => host
+            .start_service(name.as_str())
+            .map(|()| format!("service {} started again", name.as_str()))
+            .map_err(Refused::Failed),
     }
 }
 
@@ -105,5 +144,7 @@ pub fn reverse(inverse: Inverse) -> Inverse {
             preset: after.1,
             after: (policy, preset),
         },
+        Inverse::Started(name) => Inverse::Stopped(name),
+        Inverse::Stopped(name) => Inverse::Started(name),
     }
 }

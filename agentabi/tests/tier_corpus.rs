@@ -259,8 +259,12 @@ const PERMS: &[(&str, &str)] = &[
     ("disk_format", "disk.admin"),
 ];
 
+/// The OS rows, then the stubs for rows it does not have yet.
 fn rows() -> Vec<Action> {
-    agentabi::ROWS.iter().chain(STUBS).copied().collect()
+    let stubs = STUBS
+        .iter()
+        .filter(|stub| agentabi::find(&agentabi::ROWS, stub.name).is_none());
+    agentabi::ROWS.iter().chain(stubs).copied().collect()
 }
 
 /// What a case expects of its calls, in order.
@@ -1290,9 +1294,15 @@ const NAMED_LINES: &[Case] = &[
     ),
     // Named, and no undo: it asks once, by design, for that reason.
     case(
+        "stop the notes service",
+        &[with("service_stop", &[("name", v("notes", LIT))])],
+        Asks,
+    ),
+    // A protected service is never stopped.
+    case(
         "stop the llm service",
         &[with("service_stop", &[("name", v("llm", LIT))])],
-        Asks,
+        Refused,
     ),
 ];
 
