@@ -1,0 +1,14 @@
+[package]
+name = "deskcore"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# `desktop`'s logic without a screen (ADR 0005 §1): the scene, damage, focus,
+# window moves and resizes, chrome geometry and scale. Tested on the host from
+# recorded input, as termcore and shellcore are.
+[lib]
+doctest = false
+
+[dependencies]
