@@ -425,6 +425,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "fsproto"
+version = "0.0.0"
+dependencies = [
+ "minicbor",
+]
+
+[[package]]
+name = "fsserve"
+version = "0.0.0"
+dependencies = [
+ "fsproto",
+ "kabi",
+ "kaifs",
+]
+
+[[package]]
 name = "futures-core"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
