@@ -66,6 +66,14 @@ pub struct Core {
     /// The thread's runnable period began with a wake, so a policy switch hands
     /// it over as woken and it keeps the boost it is owed.
     woke: [bool; MAX_THREADS],
+    /// Kept with `states` by [`Core::set_state`], so the questions asked on every
+    /// tick and every switch cost nothing per thread slot (256 of them since
+    /// P3): Runnable threads, Runnable or Running ones, and Sleeping ones.
+    runnable: usize,
+    busy: usize,
+    sleepers: usize,
+    /// No sleeper is due before this; the tick scans for sleepers only then.
+    next_wake: u64,
 }
 
 impl Core {
@@ -100,7 +108,51 @@ impl Core {
             last_tick: now,
             pending_stall: None,
             woke: [false; MAX_THREADS],
+            runnable: 0,
+            busy: 0,
+            sleepers: 0,
+            next_wake: u64::MAX,
         }
+    }
+
+    /// Every change to a thread's state goes through here, so the counts stay
+    /// true.
+    fn set_state(&mut self, tid: Tid, state: State) {
+        let old = self.states[tid];
+        let weigh = |s: State| match s {
+            State::Runnable { .. } => (1, 1, 0),
+            State::Running => (0, 1, 0),
+            State::Sleeping { .. } => (0, 0, 1),
+            _ => (0, 0, 0),
+        };
+        let (r0, b0, s0) = weigh(old);
+        let (r1, b1, s1) = weigh(state);
+        self.runnable = self.runnable + r1 - r0;
+        self.busy = self.busy + b1 - b0;
+        self.sleepers = self.sleepers + s1 - s0;
+        if let State::Sleeping { until } = state {
+            self.next_wake = self.next_wake.min(until);
+        }
+        self.states[tid] = state;
+        #[cfg(test)]
+        self.check_counts();
+    }
+
+    #[cfg(test)]
+    fn check_counts(&self) {
+        let count = |f: fn(&State) -> bool| self.states.iter().filter(|s| f(s)).count();
+        assert_eq!(
+            self.runnable,
+            count(|s| matches!(s, State::Runnable { .. }))
+        );
+        assert_eq!(
+            self.busy,
+            count(|s| matches!(s, State::Runnable { .. } | State::Running))
+        );
+        assert_eq!(
+            self.sleepers,
+            count(|s| matches!(s, State::Sleeping { .. }))
+        );
     }
 
     pub fn current(&self) -> Tid {
@@ -146,10 +198,7 @@ impl Core {
 
     /// Runnable plus running threads, not counting idle. Used for load balancing.
     pub fn load(&self) -> usize {
-        self.states
-            .iter()
-            .filter(|s| matches!(s, State::Runnable { .. } | State::Running))
-            .count()
+        self.busy
     }
 
     pub fn stats(&self) -> &Stats {
@@ -183,6 +232,9 @@ impl Core {
     /// what the watchdog checks, and a trial's guardrail too. `(0, idle)` when
     /// nothing waits.
     pub fn longest_wait(&self, now: u64) -> (u64, Tid) {
+        if self.runnable == 0 {
+            return (0, self.idle);
+        }
         (0..MAX_THREADS)
             .filter_map(|tid| match self.states[tid] {
                 State::Runnable { since } => Some((
@@ -232,7 +284,7 @@ impl Core {
     /// Makes `tid` the running thread; used once for the code that boots the CPU.
     pub fn adopt_running(&mut self, tid: Tid, name: &'static str) {
         self.names[tid] = name;
-        self.states[tid] = State::Running;
+        self.set_state(tid, State::Running);
         self.current = tid;
     }
 
@@ -272,14 +324,14 @@ impl Core {
             })
             .min()?;
         self.active().dequeue(tid);
-        self.states[tid] = State::Free;
+        self.set_state(tid, State::Free);
         Some((tid, self.names[tid], since))
     }
 
     /// Frees an exited thread's slot once it is completely off the CPU.
     pub fn release(&mut self, tid: Tid) -> bool {
         if self.state(tid) == State::Dead {
-            self.states[tid] = State::Free;
+            self.set_state(tid, State::Free);
             true
         } else {
             false
@@ -296,13 +348,20 @@ impl Core {
         }
         // A wake-up whose reschedule interrupt has not arrived yet is delivered here.
         let mut reschedule = self.resched_pending;
-        for tid in 0..MAX_THREADS {
-            if let State::Sleeping { until } = self.states[tid]
-                && until <= now
-            {
-                self.make_runnable(tid, EnqueueReason::Woken, now);
-                reschedule |= self.should_preempt_for(tid);
+        // Only when a sleeper is due: no scan of every slot on every tick.
+        if self.sleepers > 0 && now >= self.next_wake {
+            let mut next = u64::MAX;
+            for tid in 0..MAX_THREADS {
+                match self.states[tid] {
+                    State::Sleeping { until } if until <= now => {
+                        self.make_runnable(tid, EnqueueReason::Woken, now);
+                        reschedule |= self.should_preempt_for(tid);
+                    }
+                    State::Sleeping { until } => next = next.min(until),
+                    _ => {}
+                }
             }
+            self.next_wake = next;
         }
         if !self.on_fallback && self.longest_wait(now).0 > self.watchdog_ns {
             self.eject("a runnable thread waited longer than the watchdog limit");
@@ -398,7 +457,7 @@ impl Core {
 
     fn leave_current(&mut self, state: State, now: u64) -> Tid {
         if self.current != self.idle {
-            self.states[self.current] = state;
+            self.set_state(self.current, state);
         }
         self.pick(now)
     }
@@ -430,7 +489,7 @@ impl Core {
             self.stats.picked(next, now.saturating_sub(since));
         }
         if next != self.idle {
-            self.states[next] = State::Running;
+            self.set_state(next, State::Running);
         }
         if next != self.current {
             self.switches += 1;
@@ -471,7 +530,7 @@ impl Core {
     }
 
     fn make_runnable(&mut self, tid: Tid, reason: EnqueueReason, now: u64) {
-        self.states[tid] = State::Runnable { since: now };
+        self.set_state(tid, State::Runnable { since: now });
         self.woke[tid] = reason == EnqueueReason::Woken;
         self.stats.runnable(tid, reason);
         self.active().enqueue(tid, reason);
@@ -482,9 +541,7 @@ impl Core {
     }
 
     fn any_runnable(&self) -> bool {
-        self.states
-            .iter()
-            .any(|s| matches!(s, State::Runnable { .. }))
+        self.runnable > 0
     }
 
     fn active(&mut self) -> &mut dyn SchedPolicy {
