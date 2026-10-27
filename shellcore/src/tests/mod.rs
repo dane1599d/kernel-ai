@@ -87,6 +87,41 @@ struct FakeHost {
     log_writes: Cell<u32>,
     /// `/system/state/rules`.
     rules_disk: RefCell<Option<String>>,
+    /// `/system/state/standing`, and the event source and owners standing
+    /// instructions run through, when `triggers_on` is set.
+    standing_disk: RefCell<Option<String>>,
+    triggers_on: Cell<bool>,
+    triggers: FakeTriggers,
+}
+
+/// What standing instructions asked the desktop and the owners for.
+#[derive(Default)]
+pub(super) struct FakeTriggers {
+    pub watched: RefCell<Vec<crate::standing::When>>,
+    pub runs: RefCell<Vec<(u64, String, String, bool)>>,
+    /// The owner's answer: `Err` when it finds no live rule covering a firing.
+    pub refuse: RefCell<Option<String>>,
+}
+
+impl crate::standing::Triggers for FakeTriggers {
+    fn watch(&self, when: &crate::standing::When) -> Result<(), String> {
+        self.watched.borrow_mut().push(when.clone());
+        Ok(())
+    }
+
+    fn unwatch(&self, when: &crate::standing::When) {
+        self.watched.borrow_mut().retain(|w| w != when);
+    }
+
+    fn run(&self, rule: u64, action: &str, app: &str, undo: bool) -> Result<(), String> {
+        if let Some(why) = self.refuse.borrow().clone() {
+            return Err(why);
+        }
+        self.runs
+            .borrow_mut()
+            .push((rule, action.into(), app.into(), undo));
+        Ok(())
+    }
 }
 
 type Files = std::collections::BTreeMap<String, String>;
@@ -179,6 +214,9 @@ impl FakeHost {
             log_disk: RefCell::new(None),
             log_writes: Cell::new(0),
             rules_disk: RefCell::new(None),
+            standing_disk: RefCell::new(None),
+            triggers_on: Cell::new(false),
+            triggers: FakeTriggers::default(),
         })
     }
 }
@@ -344,6 +382,22 @@ impl Host for FakeHost {
         self.log_writes.set(self.log_writes.get() + 1);
         self.open_txn.set(None);
         Ok(())
+    }
+
+    fn standing_read(&self) -> Option<String> {
+        self.standing_disk.borrow().clone()
+    }
+
+    fn standing_write(&self, text: &str) -> Result<(), String> {
+        *self.standing_disk.borrow_mut() = Some(text.into());
+        Ok(())
+    }
+
+    fn triggers(&self) -> Option<&dyn crate::standing::Triggers> {
+        match self.triggers_on.get() {
+            true => Some(&self.triggers),
+            false => None,
+        }
     }
 
     fn rules_read(&self) -> Option<String> {

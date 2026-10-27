@@ -103,6 +103,10 @@ impl Shell {
                 undo::Inverse::Generation { from, to } => self
                     .switch_generation(from, to, anyway)
                     .map(|text| (text, undo::reverse(inverse))),
+                undo::Inverse::Instruction { id: rule, made } => self
+                    .revert_instruction(rule, made)
+                    .map(|text| (text, undo::reverse(inverse)))
+                    .map_err(Refused::Failed),
                 other => {
                     let ids = undo::Ids {
                         made: id,

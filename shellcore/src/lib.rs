@@ -30,6 +30,7 @@ mod brackets;
 mod commands;
 pub mod data;
 mod engine;
+mod instructions;
 mod packages;
 mod pkg;
 mod rules;
@@ -214,6 +215,20 @@ pub trait Host {
     fn rules_write(&self, _text: &str) -> Result<(), String> {
         Ok(())
     }
+    /// The standing instructions as `/system/state/standing` holds them
+    /// (`kai-standing 1`), read once at start (P3 task 11).
+    fn standing_read(&self) -> Option<String> {
+        None
+    }
+    /// Writes the whole standing-instruction store, after one changes.
+    fn standing_write(&self, _text: &str) -> Result<(), String> {
+        Ok(())
+    }
+    /// Where standing instructions' events come from and their actions run;
+    /// `None` until the desktop and comphost are wired (P3 tasks 6 and 11).
+    fn triggers(&self) -> Option<&dyn standing::Triggers> {
+        None
+    }
     /// Runs `request` ([`apart::request`]) in a `scriptrun` child of its own (P1
     /// task 14): `Ok` with the child's answer, or `Err` with why it ended without
     /// one (stopped for time or Ctrl-C, or it faulted). `None` when there is no
@@ -369,6 +384,10 @@ pub struct Shell {
     undo_asking: Option<u64>,
     /// Standing rules the menu's "Always allow" wrote.
     rules: rules::Rules,
+    /// Standing instructions (P3 task 11), and the ones `rules_remove` ended,
+    /// which `undo` can put back until the shell restarts.
+    standing: standing::Standing,
+    instructions_removed: Vec<standing::Rule>,
     /// Installed software: the image's repository and its generations.
     pkgs: pkg::Store,
     /// Whether the `sudo` note was said already.
@@ -429,6 +448,8 @@ impl Shell {
             tiers,
             undo_asking: None,
             rules: rules::Rules::default(),
+            standing: standing::Standing::default(),
+            instructions_removed: Vec::new(),
             pkgs: pkg::Store::default(),
             said_no_sudo: false,
             shown: None,
@@ -441,6 +462,7 @@ impl Shell {
         }
         .with_saved_log()
         .with_saved_rules()
+        .with_saved_standing()
     }
 
     /// The log `/system/log` holds, so `undo` works across a reboot; a text that
@@ -571,7 +593,7 @@ impl Shell {
                 "undo" => return self.undo_command(""),
                 "tune undo" => return self.tune_undo(),
                 "new" => return self.forget(),
-                "rules" => return Reply::ok(self.rules.list()),
+                "rules" => return Reply::ok(self.list_rules()),
                 "show" | "why" => return self.show_last(),
                 _ => {}
             }
@@ -586,7 +608,15 @@ impl Shell {
         if let Some(which) = input.strip_prefix("rules_remove ")
             && !self.scope.contains("rules_remove")
         {
-            return self.remove_rule(which);
+            return match which.trim().starts_with('S') {
+                true => self.remove_instruction(input, which.trim()),
+                false => self.remove_rule(which),
+            };
+        }
+        if let Some(text) = input.strip_prefix("rules_add ")
+            && !self.scope.contains("rules_add")
+        {
+            return self.add_instruction(input, text);
         }
         if let Some(which) = input.strip_prefix("undo ")
             && !self.scope.contains("undo")

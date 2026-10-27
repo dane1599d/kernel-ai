@@ -262,6 +262,20 @@ impl Host for System {
         self.state.read(files::RULES)
     }
 
+    fn standing_read(&self) -> Option<String> {
+        self.state.read(files::STANDING)
+    }
+
+    /// As the rules are written: with the line's files, if it changed any.
+    fn standing_write(&self, text: &str) -> Result<(), String> {
+        match self.files.is_open() {
+            true => self.state.write_in(files::STANDING, text),
+            false => self
+                .state
+                .write(files::STANDING, text, self.files.next_action()),
+        }
+    }
+
     /// In the line's open action if it changed files, so the log line that
     /// follows lands with it; else its own action.
     fn rules_write(&self, text: &str) -> Result<(), String> {
