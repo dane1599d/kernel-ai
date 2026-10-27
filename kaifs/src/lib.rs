@@ -14,6 +14,10 @@
 //! - [`buddy`] and [`allocator`]: the buddy allocator, the N+2 wait for freed
 //!   blocks, and the allocator's chain on disk;
 //! - [`tree`]: the copy-on-write B+tree of `(oid, kind, off)` keys;
+//! - [`fs`]: the engine: a volume's live tree and snapshots, records, the volume
+//!   table, commit and mount, and the reuse rule decided at replacement;
+//! - [`check`]: everything a mount reaches verifies and is accounted for, with
+//!   the memo the crash gates share;
 //! - [`crash`] (with `std`): the crash enumerator every later layer is gated by.
 
 #![no_std]
@@ -24,16 +28,20 @@ extern crate std;
 
 pub mod allocator;
 pub mod buddy;
+pub mod check;
 #[cfg(feature = "std")]
 pub mod crash;
 pub mod csum;
 pub mod dev;
 pub mod format;
+pub mod fs;
 pub mod tree;
 
 pub use csum::CsumKind;
 pub use dev::{BlockDev, DevInfo, Image, IoError, MemDisk, Op, RecordingDisk};
 pub use format::{BlockPtr, Superblock};
+pub use fs::{Fs, Value};
+pub use tree::Key;
 
 /// Bytes in a block, and in a tree node.
 pub const BLOCK: usize = 4096;

@@ -7,7 +7,10 @@
 //! Writing the tree out writes every dirty node to a new block, children first, so
 //! each parent records its children's checksums: the tree is a Merkle tree.
 //! Deletes merge or rebalance a node that falls under a quarter full, and the root
-//! shrinks when it has one child, so the tree stays shallow and dense.
+//! shrinks when it has one child, so the tree stays shallow and dense. A key added
+//! at the right end of the tree keeps the full nodes full and starts new ones, as
+//! keys written in order do (new objects' ids): only nodes on the tree's
+//! rightmost path may then be under a quarter full.
 //!
 //! Node layout: a 16-byte header (`fmt`, `level`, item count, reserved), then
 //! items. A leaf item is its 17-byte key, a 2-byte value length and the value; a
@@ -36,6 +39,20 @@ impl Key {
 
     pub fn new(oid: u64, kind: u8, off: u64) -> Self {
         Key { oid, kind, off }
+    }
+
+    /// The key just after this one, if there is one.
+    pub fn next(&self) -> Option<Key> {
+        match (
+            self.off.checked_add(1),
+            self.kind.checked_add(1),
+            self.oid.checked_add(1),
+        ) {
+            (Some(off), _, _) => Some(Key::new(self.oid, self.kind, off)),
+            (None, Some(kind), _) => Some(Key::new(self.oid, kind, 0)),
+            (None, None, Some(oid)) => Some(Key::new(oid, 0, 0)),
+            (None, None, None) => None,
+        }
     }
 
     fn put(&self, out: &mut [u8]) {
@@ -140,7 +157,7 @@ impl Node {
     }
 
     /// Under a quarter full, so a delete merges or rebalances it.
-    fn underfull(&self) -> bool {
+    pub fn underfull(&self) -> bool {
         match self {
             Node::Leaf(items) => leaf_bytes(items) < LEAF_SPACE / 4,
             Node::Branch(_, children) => children.len() < MAX_BRANCH / 4,
@@ -256,25 +273,34 @@ fn slot(children: &[(Key, Child)], key: &Key) -> usize {
 
 type Split = Option<(Key, Node)>;
 
+/// `rightmost`: the node is on the tree's rightmost path, where an item added at
+/// the end is appended to the tree as a whole.
 fn insert(
     node: &mut Node,
     key: Key,
     value: Vec<u8>,
     store: &mut dyn Store,
+    rightmost: bool,
 ) -> Result<(Option<Vec<u8>>, Split), Error> {
     match node {
         Node::Leaf(items) => {
-            let old = match items.binary_search_by_key(&key, |(k, _)| *k) {
-                Ok(i) => Some(core::mem::replace(&mut items[i].1, value)),
+            let (old, at) = match items.binary_search_by_key(&key, |(k, _)| *k) {
+                Ok(i) => (Some(core::mem::replace(&mut items[i].1, value)), i),
                 Err(i) => {
                     items.insert(i, (key, value));
-                    None
+                    (None, i)
                 }
             };
             if leaf_bytes(items) <= LEAF_SPACE {
                 return Ok((old, None));
             }
-            let right = items.split_off(balanced_cut(items));
+            // An append to the tree keeps the full leaf full and starts the next:
+            // keys written in order, such as new objects' ids, fill leaves.
+            let cut = match rightmost && old.is_none() && at == items.len() - 1 {
+                true => at,
+                false => balanced_cut(items),
+            };
+            let right = items.split_off(cut);
             Ok((old, Some((right[0].0, Node::Leaf(right)))))
         }
         Node::Branch(level, children) => {
@@ -282,20 +308,29 @@ fn insert(
             if key < children[i].0 {
                 children[i].0 = key;
             }
+            let last = i == children.len() - 1;
+            let len = value.len();
             let child = dirty(&mut children[i].1, store)?;
-            let (old, split) = insert(child, key, value, store)?;
+            let (old, split) = insert(child, key, value, store, rightmost && last)?;
+            let shrank = old.as_ref().is_some_and(|o| o.len() > len);
             match split {
                 Some((lower, right)) => {
                     children.insert(i + 1, (lower, Child::Dirty(Box::new(right))))
                 }
                 // A shorter value can leave a leaf under a quarter full.
-                None if child.underfull() && children.len() > 1 => rebalance(children, i, store)?,
+                None if shrank && child.underfull() && children.len() > 1 => {
+                    rebalance(children, i, store)?
+                }
                 None => {}
             }
             if children.len() <= MAX_BRANCH {
                 return Ok((old, None));
             }
-            let right = children.split_off(children.len() / 2);
+            let cut = match rightmost && last {
+                true => children.len() - 1,
+                false => children.len() / 2,
+            };
+            let right = children.split_off(cut);
             Ok((old, Some((right[0].0, Node::Branch(*level, right)))))
         }
     }
@@ -426,7 +461,7 @@ impl Tree {
             )]))));
             return Ok(None);
         };
-        let (old, split) = insert(dirty(root, store)?, key, value, store)?;
+        let (old, split) = insert(dirty(root, store)?, key, value, store, true)?;
         if let Some((lower, right)) = split {
             let Some(Child::Dirty(left)) = self.root.take() else {
                 unreachable!("the root was made dirty");
@@ -605,21 +640,22 @@ mod tests {
         }
     }
 
-    /// Checks the tree under `ptr`: order, bounds, levels and fill; returns the
-    /// blocks it reaches.
+    /// Checks the tree under `ptr`: order, bounds, levels and fill (`edge`: the
+    /// node is on the tree's rightmost path, where it may be under a quarter full);
+    /// returns the blocks it reaches.
     fn shape(
         store: &mut MemStore,
         ptr: &BlockPtr,
         lower: Key,
         upper: Option<Key>,
-        root: bool,
+        edge: bool,
         reached: &mut BTreeSet<u64>,
     ) -> usize {
         reached.insert(ptr.addr);
         let node = store.load(ptr).unwrap();
         assert!(
-            root || !node.underfull(),
-            "an underfull node below the root"
+            edge || !node.underfull(),
+            "an underfull node off the rightmost path"
         );
         match node {
             Node::Leaf(items) => {
@@ -638,7 +674,8 @@ mod tests {
                     };
                     assert_eq!(p.level + 1, level);
                     let next = children.get(i + 1).map(|(k, _)| *k).or(upper);
-                    count += shape(store, p, (*key).max(lower), next, false, reached);
+                    let edge = edge && i == children.len() - 1;
+                    count += shape(store, p, (*key).max(lower), next, edge, reached);
                 }
                 count
             }
