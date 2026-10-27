@@ -21,6 +21,7 @@ pub mod layout;
 pub mod live;
 mod metrics;
 pub mod model;
+pub mod modelhint;
 pub mod net;
 pub mod part;
 pub mod plan;
