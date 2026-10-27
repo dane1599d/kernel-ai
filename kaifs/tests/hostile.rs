@@ -462,3 +462,31 @@ fn mutated_volume_table_entries_never_panic_and_what_decodes_round_trips() {
         let _ = decode_undo(50, &mutated);
     }
 }
+
+/// `info.cbor`'s reader, on mutated samples, every field at every extreme value,
+/// and nests of arrays and maps that claim more than they hold: it decodes or
+/// refuses, never panics, never allocates past the input, and what decodes
+/// encodes back to the same record.
+#[test]
+fn mutated_info_cbor_never_panics_and_what_decodes_round_trips() {
+    use kaifs::trash::{TrashInfo, decode_info, encode_info};
+    let sample = encode_info(&TrashInfo {
+        path: "/user/photos/2026/\u{65e5}\u{8a18}.jpg".to_string(),
+        deleted: 1_792_972_800_000_000_000,
+        action: 4_242,
+    });
+    let total = |bytes: &[u8]| {
+        if let Ok(info) = decode_info(bytes) {
+            assert_eq!(decode_info(&encode_info(&info)), Ok(info));
+        }
+    };
+    fuzz(&sample, 14, 50_000, total);
+    sweep_fields(&sample, 0..sample.len(), |_, bytes| total(bytes));
+    let mut nests = vec![0x82, 0x01];
+    nests.extend(std::iter::repeat_n(0x9B, 30));
+    nests.extend_from_slice(&[0xFF; 8]);
+    total(&nests);
+    let mut maps = vec![0x82, 0x01, 0xBB];
+    maps.extend_from_slice(&[0x7F; 8]);
+    total(&maps);
+}
