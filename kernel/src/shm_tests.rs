@@ -7,8 +7,9 @@
 //!   revokes the node: M6's time, TLB shootdown on every CPU included. On the first
 //!   and last rounds one holder's writes show in the other before the revoke, and
 //!   after it nothing either writes reaches the other or the object.
-//! - Each revoke's time is split into the TLB shootdown and the rest (the grant
-//!   tree and page-table edits).
+//! - Each revoke's time is split three ways: the TLB shootdown, the page-table
+//!   edits (with the object, space and memory locks), and the rest (the grant
+//!   tree and waking calls).
 //! - The timings are recorded, not judged (M6 proposes p99 at most 100 us under
 //!   KVM); the case fails only if a byte crosses after a revoke.
 
@@ -84,6 +85,7 @@ fn rounds(pids: [u64; 2]) -> Result<(), &'static str> {
     give(a, Entry::new(Kind::Shm, Rights::MAP | Rights::READ, object))?;
     let mut times = Vec::with_capacity(ROUNDS);
     let mut shootdowns = Vec::with_capacity(ROUNDS);
+    let mut edits = Vec::with_capacity(ROUNDS);
     let mut rest = Vec::with_capacity(ROUNDS);
     for round in 0..ROUNDS {
         let node = grants::new_request(round as u64 + 1).map_err(|_| "shm: no request node")?;
@@ -109,13 +111,16 @@ fn rounds(pids: [u64; 2]) -> Result<(), &'static str> {
             ask(HOLDERS[1], "count 1", &alloc::format!("ok {BYTES}"))?;
         }
         shm::SHOOTDOWN_NS.store(0, Ordering::Relaxed);
+        shm::ON_REVOKE_NS.store(0, Ordering::Relaxed);
         let start = hpet::nanos();
         grants::revoke(node).map_err(|_| "shm: cannot revoke")?;
         let total = hpet::nanos() - start;
-        let shootdown = shm::SHOOTDOWN_NS.load(Ordering::Relaxed).min(total);
+        let on_revoke = shm::ON_REVOKE_NS.load(Ordering::Relaxed).min(total);
+        let shootdown = shm::SHOOTDOWN_NS.load(Ordering::Relaxed).min(on_revoke);
         times.push(total);
         shootdowns.push(shootdown);
-        rest.push(total - shootdown);
+        edits.push(on_revoke - shootdown);
+        rest.push(total - on_revoke);
         if checked {
             // Both now write their own zero page: nothing reaches the other or the object.
             ask(HOLDERS[0], "count 1", "ok 0")?;
@@ -136,7 +141,7 @@ fn rounds(pids: [u64; 2]) -> Result<(), &'static str> {
             ask(name, "unmap", "ok")?;
         }
     }
-    for list in [&mut times, &mut shootdowns, &mut rest] {
+    for list in [&mut times, &mut shootdowns, &mut edits, &mut rest] {
         list.sort_unstable();
     }
     let us = |list: &[u64], at: usize| list[(at * (ROUNDS - 1)) / 100] / 1000;
@@ -148,9 +153,11 @@ fn rounds(pids: [u64; 2]) -> Result<(), &'static str> {
         times[ROUNDS - 1] / 1000
     );
     log!(
-        "shm: M6 split: TLB shootdown p50 {} us, p99 {} us; the rest (grant tree, page tables) p50 {} us, p99 {} us",
+        "shm: M6 split: TLB shootdown p50 {} us, p99 {} us; page-table edits p50 {} us, p99 {} us; grant tree and wakes p50 {} us, p99 {} us",
         us(&shootdowns, 50),
         us(&shootdowns, 99),
+        us(&edits, 50),
+        us(&edits, 99),
         us(&rest, 50),
         us(&rest, 99)
     );

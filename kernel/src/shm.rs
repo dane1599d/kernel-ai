@@ -65,6 +65,8 @@ struct Objects {
 
 /// Nanoseconds [`on_revoke`] has spent in TLB shootdowns, for M6's split.
 pub static SHOOTDOWN_NS: AtomicU64 = AtomicU64::new(0);
+/// Nanoseconds spent in [`on_revoke`] in all, shootdowns included.
+pub static ON_REVOKE_NS: AtomicU64 = AtomicU64::new(0);
 
 static OBJECTS: Mutex<Objects> = Mutex::new(Objects {
     objects: [const { None }; MAX_OBJECTS],
@@ -264,6 +266,7 @@ pub fn unmap(slot: usize, address: u64) -> Result<u64, Error> {
 /// After a grant node was revoked: every mapping made through a handle under a
 /// dead node gets its private zero page in place of the object's, on every CPU.
 pub fn on_revoke() {
+    let begun = hpet::nanos();
     with(|objects| {
         for (index, object) in objects.objects.iter_mut().enumerate() {
             let Some(object) = object else { continue };
@@ -290,6 +293,7 @@ pub fn on_revoke() {
             }
         }
     });
+    ON_REVOKE_NS.fetch_add(hpet::nanos() - begun, Ordering::Relaxed);
 }
 
 /// When the process `pid` ends, before its space goes: its mappings are dropped
