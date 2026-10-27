@@ -17,8 +17,10 @@ pub const SHELL_FILES: &str = "shell caps=serve+call+policy+stop+script+files+st
 /// Its pages hold a 16 MiB block cache and kaifs's working state.
 pub const FS: &str = "fs caps=serve+partition pages=8192 burst_ms=5000";
 /// The update service (ADR 0008 §10): the only holder of the slots and the boot
-/// record. P2 lane U's first `updated` runs `step=check` for the `update` case.
-pub const UPDATED: &str = "updated caps=update dir=trust+updates pages=512 burst_ms=5000";
+/// record. `kaituf`'s JSON and `kai-fs 1`'s CBOR decoders recurse, hence the
+/// larger stack.
+pub const UPDATED: &str =
+    "updated caps=update dir=trust+updates pages=512 stack_pages=128 burst_ms=5000";
 /// The live `notes` component, run by the shared `comphost` program, without its
 /// arguments.
 const NOTES_BASE: &str =
