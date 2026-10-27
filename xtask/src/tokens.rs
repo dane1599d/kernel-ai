@@ -235,15 +235,16 @@ mod tests {
     }
 
     #[test]
-    fn the_pack_splits_into_its_five_kinds_of_section() {
+    fn the_pack_splits_into_its_sections_and_a_group_each() {
         let text = pack::render(Format::Dsl1);
         let headings: Vec<&str> = sections(&text).iter().map(|(h, _)| *h).collect();
-        assert_eq!(headings.len(), 5, "{headings:?}");
-        assert!(headings[0].starts_with("## Rhai"));
+        assert!(headings[0].starts_with("## Rhai"), "{headings:?}");
         assert!(headings[1].starts_with("## Calls"));
         assert_eq!(headings[2], "## Examples");
-        assert_eq!(headings[3], "## system");
-        assert!(headings[4].starts_with("## index"));
+        // Then the OS rows, a section per group, then the index level's names.
+        let (index, groups) = headings[3..].split_last().unwrap();
+        assert_eq!(groups, ["## system", "## files (paths under /home/user)"]);
+        assert!(index.starts_with("## index"), "{index}");
         let joined: String = sections(&text).iter().map(|(_, t)| *t).collect();
         assert_eq!(joined, text);
     }

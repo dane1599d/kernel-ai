@@ -36,11 +36,12 @@ const SWITCH: &str = "set_policy(\"round-robin\");";
 
 #[test]
 fn every_function_a_script_can_call_has_a_tier_and_no_row_names_a_missing_one() {
-    // The engine binds the script API and the call-only rows (a tagged call's
-    // one-line script); the helpers come with every engine.
+    // The engine binds the script API, the call-only rows (a tagged call's
+    // one-line script) and the file rows; the helpers come with every engine.
     let callable = || {
         agentabi::BOUND
             .iter()
+            .chain(&agentabi::FS_ROWS)
             .map(|f| f.name)
             .chain(HELPERS.iter().copied())
     };
@@ -389,7 +390,7 @@ fn a_never_tier_function_is_refused_and_sent_back_once() {
 }
 
 /// #15's table (`shellcore/src/tiers.rs` on main at 57d7120), now generated from
-/// the action registry with the same tiers.
+/// the action registry with the same tiers, and P2 task 11's file rows.
 #[test]
 fn the_generated_tier_table_is_the_seamless_actions_one() {
     let before = [
@@ -404,6 +405,16 @@ fn the_generated_tier_table_is_the_seamless_actions_one() {
         ("service_stop", Tier::Ask),
         ("service_start", Tier::Run),
         ("service_restart", Tier::Ask),
+        ("fs_list", Tier::Run),
+        ("fs_read", Tier::Run),
+        ("fs_history", Tier::Run),
+        ("fs_changes", Tier::Run),
+        ("fs_create", Tier::Run),
+        ("fs_write", Tier::Run),
+        ("fs_move", Tier::Run),
+        ("fs_trash", Tier::Run),
+        ("fs_restore", Tier::Run),
+        ("fs_empty_trash", Tier::Ask),
         ("fixed", Tier::Run),
         ("floor", Tier::Run),
     ];

@@ -182,6 +182,12 @@ impl Host for Acting {
     fn audit(&self, text: &str) {
         self.gate.audit(text);
     }
+
+    /// A guest with an empty `kai-data` disk: a read the model picks answers,
+    /// with nothing in it.
+    fn fs_read(&self, _read: shellcore::FsRead) -> Result<String, String> {
+        Ok(String::new())
+    }
 }
 
 /// The guest's outcome on the model in `bytes`.
