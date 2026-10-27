@@ -5,7 +5,7 @@
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use kabi::live::{MANIFEST_SECTION, MAX_ARTIFACT, SOURCE_SECTION};
+use kabi::live::{ACTIONS_SECTION, MANIFEST_SECTION, MAX_ARTIFACT, SOURCE_SECTION};
 
 const MAGIC: &[u8] = b"\0asm\x01\0\0\0";
 /// Largest source bundle.
@@ -160,6 +160,8 @@ pub struct Artifact<'a> {
     /// The whole module; the sections inside it are ignored when it runs.
     pub module: &'a [u8],
     pub manifest: Manifest,
+    /// The `kai-actions 1` rows, which a `lifecycle 2` version must have.
+    pub actions: Option<&'a str>,
     pub source: &'a [u8],
 }
 
@@ -176,9 +178,15 @@ pub fn parse(bytes: &[u8]) -> Result<Artifact<'_>, String> {
         return Err("the source bundle is over 256 KiB".into());
     }
     source_files(source)?;
+    let actions = match custom_section(bytes, ACTIONS_SECTION)? {
+        Some(rows) => Some(core::str::from_utf8(rows).map_err(|_| "the actions are not text")?),
+        None if manifest.lifecycle >= 2 => return Err("no kai.actions section".into()),
+        None => None,
+    };
     Ok(Artifact {
         module: bytes,
         manifest,
+        actions,
         source,
     })
 }

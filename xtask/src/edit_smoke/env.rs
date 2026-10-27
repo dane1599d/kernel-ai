@@ -13,7 +13,7 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use wasmhost::WasmInstance;
+use wasmhost::LiveInstance;
 
 /// The edit service's view of the fake kernel.
 pub(super) struct StoreEnv {
@@ -61,7 +61,7 @@ fn exchange(port: u16, request: &[u8], timeout_ms: u64) -> Result<Vec<u8>, Error
     Ok(response)
 }
 
-pub(super) type NotesHost = Host<LocalEnv<WasmInstance>>;
+pub(super) type NotesHost = Host<LocalEnv<LiveInstance>>;
 
 /// What the kernel's COMP_CONTROL does: its own check of the request, then
 /// `ctl <request>` to the notes host as the kernel.

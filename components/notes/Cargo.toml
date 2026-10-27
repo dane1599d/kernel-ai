@@ -5,16 +5,21 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
-# The live `notes` component: the code the edit loop (M9b) changes.
+# The notes app, `app:notes@1.0.0` (wit/notes.wit): the code the edit loop (M9b)
+# changes.
 [lib]
 crate-type = ["cdylib", "rlib"]
 doctest = false
 
 [features]
 default = ["exports"]
-# The WebAssembly exports; off when another component builds on this one.
+# The WebAssembly exports; off when another notes version builds on this one.
 exports = []
 
 [dependencies]
 compsdk = { path = "../../compsdk" }
+kabi = { path = "../../kabi" }
 minicbor = { version = "2.3.0", default-features = false, features = ["alloc", "derive"] }
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+wit-bindgen = { version = "=0.63.0", default-features = false, features = ["macros", "realloc"] }

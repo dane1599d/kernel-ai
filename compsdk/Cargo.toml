@@ -14,3 +14,5 @@ minicbor = { version = "2.3.0", default-features = false, features = ["alloc", "
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 talc = "5.1.1"
+# ADR 0003 section 1: upstream wit-bindgen, no_std and synchronous.
+wit-bindgen = { version = "=0.63.0", default-features = false, features = ["macros", "realloc"] }

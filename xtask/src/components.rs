@@ -1,10 +1,11 @@
 //! Live component versions: each built for wasm32 with the `component` profile,
-//! packed into an artifact (the module, its manifest and its source) and shipped
+//! packed into an artifact (the module, its manifest, its action rows and its
+//! source) and shipped
 //! as boot module `comp/<component>/<label>.wasm`.
 
 use crate::esp::Module;
 use crate::sha256_hex;
-use kabi::live::{MANIFEST_SECTION, SOURCE_SECTION};
+use kabi::live::{ACTIONS_SECTION, MANIFEST_SECTION, SOURCE_SECTION};
 use livecore::artifact::{self, Manifest};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -19,6 +20,8 @@ pub struct Recipe {
     /// The crate's directory, and those of path dependencies whose source ships.
     pub dirs: &'static [&'static str],
     pub feature: Option<&'static str>,
+    /// The app's WIT package, the source of its action rows.
+    pub wit: &'static str,
 }
 
 /// One version on the boot drive.
@@ -29,6 +32,10 @@ pub struct Version {
 
 const NOTES: &str = "components/notes";
 const BAD: &str = "components/fixtures/notes-bad";
+/// Every notes version implements `app:notes/actions@1.0.0` from here.
+const NOTES_WIT: &str = "components/notes/wit";
+/// The in-tree packages an app's world may use.
+const KAI_WIT: &[&str] = &["wit/kai-live", "wit/kai-app"];
 
 /// `notes` from `components/notes`: version 2, and every upload the edit loop
 /// builds.
@@ -37,6 +44,7 @@ pub const NOTES_RECIPE: Recipe = Recipe {
     krate: "comp-notes",
     dirs: &[NOTES],
     feature: None,
+    wit: NOTES_WIT,
 };
 
 const fn bad(label: &'static str, feature: &'static str) -> Version {
@@ -47,6 +55,7 @@ const fn bad(label: &'static str, feature: &'static str) -> Version {
             krate: "comp-notes-bad",
             dirs: &[BAD, NOTES],
             feature: Some(feature),
+            wit: NOTES_WIT,
         },
     }
 }
@@ -61,6 +70,7 @@ pub const VERSIONS: &[Version] = &[
             krate: "comp-notes-v1",
             dirs: &["components/fixtures/notes-v1"],
             feature: None,
+            wit: NOTES_WIT,
         },
     },
     Version {
@@ -133,7 +143,7 @@ fn build_one(root: &Path, version: &Version) -> Result<Module, String> {
     let module = fs::read(&wasm).map_err(|e| format!("cannot read {}: {e}", wasm.display()))?;
     let source = bundle_source(root, version.recipe.dirs)?;
     let (module_len, source_len) = (module.len(), source.len());
-    let bytes = pack(&version.recipe, version.label, module, &source);
+    let bytes = pack(root, &version.recipe, version.label, module, &source)?;
     artifact::parse(&bytes)
         .map_err(|why| format!("{} {}: {why}", version.recipe.component, version.label))?;
     println!(
@@ -150,13 +160,27 @@ fn build_one(root: &Path, version: &Version) -> Result<Module, String> {
     })
 }
 
-/// The module with its manifest and source sections appended.
-pub fn pack(recipe: &Recipe, label: &str, mut module: Vec<u8>, source: &[u8]) -> Vec<u8> {
+/// The module with its manifest, action rows and source sections appended. The
+/// rows come from the app's WIT under `root`.
+pub fn pack(
+    root: &Path,
+    recipe: &Recipe,
+    label: &str,
+    mut module: Vec<u8>,
+    source: &[u8],
+) -> Result<Vec<u8>, String> {
+    let world = format!("app:{0}/{0}@1.0.0", recipe.component);
+    let dirs: Vec<PathBuf> = KAI_WIT
+        .iter()
+        .chain([&recipe.wit])
+        .map(|dir| root.join(dir))
+        .collect();
+    let actions = crate::kai_actions::write(&dirs, &world)?;
     let manifest = Manifest {
-        lifecycle: 1,
+        lifecycle: 2,
         component: recipe.component.into(),
         version: label.into(),
-        world: format!("app:{0}/{0}@1.0.0", recipe.component),
+        world,
         engine: "wasmi".into(),
         features: recipe.feature.unwrap_or("-").into(),
         // The workspace licence (Cargo.toml), which every in-tree component uses.
@@ -165,8 +189,9 @@ pub fn pack(recipe: &Recipe, label: &str, mut module: Vec<u8>, source: &[u8]) ->
         source: sha256_hex(source),
     };
     artifact::append_custom_section(&mut module, MANIFEST_SECTION, manifest.format().as_bytes());
+    artifact::append_custom_section(&mut module, ACTIONS_SECTION, actions.as_bytes());
     artifact::append_custom_section(&mut module, SOURCE_SECTION, source);
-    module
+    Ok(module)
 }
 
 /// Cargo.toml and everything under src/ in each directory, by workspace path.
@@ -214,6 +239,7 @@ mod tests {
         for (index, version) in VERSIONS.iter().enumerate() {
             assert!(kabi::live::valid_label(version.label), "{}", version.label);
             assert!(VERSIONS[..index].iter().all(|v| v.label != version.label));
+            assert!(root.join(version.recipe.wit).is_dir());
             for dir in version.recipe.dirs {
                 assert!(root.join(dir).join("Cargo.toml").exists(), "{dir}");
             }
@@ -236,13 +262,19 @@ mod tests {
     fn a_packed_module_keeps_its_bytes_and_says_what_it_is() {
         let module = Vec::from(&b"\0asm\x01\0\0\0"[..]);
         let source = artifact::bundle(&[("components/notes/src/lib.rs", b"//")]);
+        let root = crate::workspace_root();
         let bytes = pack(
+            &root,
             &VERSIONS[2].recipe,
             VERSIONS[2].label,
             module.clone(),
             &source,
-        );
+        )
+        .unwrap();
         let parsed = artifact::parse(&bytes).unwrap();
+        assert_eq!(parsed.manifest.lifecycle, 2);
+        let actions = livecore::actions::parse(parsed.actions.unwrap()).unwrap();
+        assert!(actions.by_name("notes_add").is_some());
         assert!(bytes.starts_with(&module));
         assert_eq!(parsed.manifest.version, "3-import");
         assert_eq!(parsed.manifest.features, "bug-import");

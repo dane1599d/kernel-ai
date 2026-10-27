@@ -1,0 +1,47 @@
+/// Notes, the first app (ADR 0003 section 1). Each action's first doc line is its
+/// description for the model; `kai:` lines give its facts, inverse and cues, and
+/// each `kai: arg` line one argument's bounds and role (ADR 0003 section 5). The
+/// build service writes them into the `kai.actions` section.
+package app:notes@1.0.0;
+
+interface actions {
+    /// How many notes there are, and how many words they hold.
+    record tally {
+        notes: u32,
+        words: u32,
+    }
+
+    /// Add a note and return its id.
+    /// kai: read-only=no destructive=no idempotent=no open-world=no inverse=snapshot cues=add,note,remember,write
+    /// kai: arg text max=2000 role=payload from-request
+    add: func(text: string) -> result<u32, string>;
+
+    /// Count the notes and their words.
+    /// kai: read-only=yes destructive=no idempotent=yes open-world=no inverse=none cues=count,many
+    count: func() -> tally;
+
+    /// Find the notes that have a word, the first 500.
+    /// kai: read-only=yes destructive=no idempotent=yes open-world=no inverse=none cues=find,search
+    /// kai: arg word max=60 role=target from-request
+    find: func(word: string) -> list<u32>;
+
+    /// Read one note by its id.
+    /// kai: read-only=yes destructive=no idempotent=yes open-world=no inverse=none cues=read,show
+    /// kai: arg id min=1 max=1000000 role=target from-request
+    get: func(id: u32) -> option<string>;
+
+    /// Which version of notes is running.
+    /// kai: read-only=yes destructive=no idempotent=yes open-world=no inverse=none
+    about: func() -> string;
+}
+
+/// The notes app: a live component with its actions.
+world notes {
+    include kai:app/component@0.1.0;
+    export actions;
+}
+
+/// The part a notes crate binds itself; `compsdk` binds `kai:app/component`.
+world actions-only {
+    export actions;
+}

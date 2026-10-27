@@ -17,6 +17,7 @@ const INPUTS: &[&str] = &[
     "components",
     "compsdk",
     "kabi",
+    "wit",
     "Cargo.toml",
     "Cargo.lock",
     "rust-toolchain.toml",

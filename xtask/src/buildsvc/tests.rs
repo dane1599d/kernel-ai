@@ -45,6 +45,15 @@ pub(super) fn workspace(root: &Path) -> PathBuf {
     write(&ws, ".cargo/config.toml", "[alias]\n");
     write(&ws, ".gitignore", "/target\n");
     write(&ws, TOML, "[package]\nname = \"comp-notes\"\n");
+    // The WIT the packer writes the action rows from, as in the tree.
+    let tree = crate::workspace_root();
+    for dir in ["wit/kai-live", "wit/kai-app", "components/notes/wit"] {
+        for entry in fs::read_dir(tree.join(dir)).unwrap() {
+            let path = entry.unwrap().path();
+            let name = format!("{dir}/{}", path.file_name().unwrap().to_string_lossy());
+            write(&ws, &name, &fs::read_to_string(&path).unwrap());
+        }
+    }
     write(&ws, LIB, "fn about() -> &'static str {\n    \"notes\"\n}\n");
     git(&ws, &["init", "-q"]).unwrap();
     git(&ws, &["add", "-A"]).unwrap();

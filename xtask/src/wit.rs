@@ -205,6 +205,17 @@ pub(crate) fn load_tree(root: &Path) -> Result<(Resolve, Packages), String> {
     resolve(groups)
 }
 
+/// The packages in `dirs` (each a directory of one package), resolved together.
+pub(crate) fn load_dirs(dirs: &[PathBuf]) -> Result<(Resolve, Packages), String> {
+    let groups = dirs
+        .iter()
+        .map(|dir| {
+            UnresolvedPackageGroup::parse_dir(dir).map_err(|e| format!("{}: {e:#}", dir.display()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    resolve(groups)
+}
+
 fn load_frozen(dir: &Path) -> Result<(Resolve, Packages), String> {
     if !dir.exists() {
         return Ok((Resolve::default(), Packages::new()));

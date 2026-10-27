@@ -13,7 +13,9 @@
 //! ```
 //!
 //! `args` is a WAVE record of the export's parameters, by name; `result` is the
-//! WAVE value it returned (absent for a function with no result). Effect lines
+//! WAVE value it returned (absent for a function with no result). A call the
+//! host cannot make (malformed, or naming nothing the app declares) is answered
+//! `refused <why>` on one line instead. Effect lines
 //! join the reply with the effect transaction. `ctl ` requests are unchanged.
 
 use crate::actions::Actions;
@@ -81,7 +83,20 @@ pub fn format_reply(result: Option<&str>) -> String {
     }
 }
 
-/// The result text of a reply.
+/// The reply to a call the host refused: the caller's mistake, on one line.
+pub fn format_refusal(why: &str) -> String {
+    let why: String = why
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    format!(
+        "{REPLY_HEADER}
+refused {why}
+"
+    )
+}
+
+/// The result text of a reply; a refusal is an error.
 pub fn parse_reply(text: &str) -> Result<Option<String>, String> {
     let mut lines = text.lines();
     if lines.next() != Some(REPLY_HEADER) {
@@ -89,6 +104,7 @@ pub fn parse_reply(text: &str) -> Result<Option<String>, String> {
     }
     match lines.next() {
         None => Ok(None),
+        Some(line) if line.starts_with("refused ") => Err(line.to_string()),
         Some(line) => line
             .strip_prefix("result ")
             .map(|r| Some(r.to_string()))
@@ -229,5 +245,23 @@ mod tests {
             "kai-call 1\nfunc app:notes/actions@1.0.0#add\nargs {{text: \"{long}\"}}\n"
         );
         assert!(request(serve(&mut Notes, &notes(), &over)));
+    }
+
+    #[test]
+    fn a_refusal_is_one_line_and_reads_back_as_an_error() {
+        let reply = format_refusal(
+            "args: expected
+a record",
+        );
+        assert_eq!(
+            reply,
+            "kai-reply 1
+refused args: expected a record
+"
+        );
+        assert_eq!(
+            parse_reply(&reply),
+            Err(String::from("refused args: expected a record"))
+        );
     }
 }
