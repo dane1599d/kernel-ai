@@ -379,9 +379,12 @@ pub const INPUT_READ: u64 = 77;
 /// when `cap` is under what the rows take; `termcore::mirror::MAX_BYTES` always
 /// fits.
 pub const TERM_READ: u64 = 78;
-/// `input_to_console(on) -> 0`: with `on` 1, keys go to the kernel console's
-/// terminal instead of the input queue for about a second (a lease, renewed by
-/// calling again), while the caller keeps showing on the screen; 0 ends it. Alt
+/// `input_to_console(on, pid) -> 0`: with `on` 1, keys go to the kernel
+/// console's terminal instead of the input queue for about a second (a lease,
+/// renewed by calling again), while the caller keeps showing on the screen and
+/// `pid`, the client whose window has the focus, is the terminal window: a
+/// process holding [`super::cap::TERM`]. Permission, ending any lease, for any
+/// other `pid`. `on` 0 ends it. Alt
 /// and Alt+Tab still reach the queue. The kernel ends the lease itself on any
 /// pointer button, Alt+Tab, Ctrl+Alt+F12, a claim, the holder's exit, and an
 /// ask, which it answers on the console. Needs an `Input` handle and the claim.

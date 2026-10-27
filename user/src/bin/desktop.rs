@@ -15,7 +15,9 @@
 //!   without a hardware cursor (GOP) gets one drawn in the frame.
 //! - While the terminal window (`term`'s) has focus, the keys go to the
 //!   kernel's terminal instead: a lease (INPUT_TO_CONSOLE) renewed every
-//!   [`LEASE_RENEW_NS`], and ended when the focus moves (P3 task 8).
+//!   [`LEASE_RENEW_NS`], and ended when the focus moves (P3 task 8). The
+//!   kernel, not `desktop`, decides which client is the terminal: it lends the
+//!   keys only for the window of a process holding TERM.
 
 #![no_std]
 #![no_main]
@@ -52,8 +54,6 @@ const BAR_EVERY_NS: u64 = 1_000_000_000;
 /// Waits for input or a client, in turn, so neither starves.
 const INPUT_WAIT_MS: u64 = 2;
 const CLIENT_WAIT_MS: u64 = 2;
-/// The program whose window takes the kernel terminal's keys.
-const TERM: &str = "term";
 /// How often the lease is renewed while that window has focus: well inside the
 /// kernel's one second.
 const LEASE_RENEW_NS: u64 = 250_000_000;
@@ -96,6 +96,8 @@ struct State {
     focus: Focus,
     /// When the keys were last lent to the kernel's terminal, while they are.
     leased_at: Option<u64>,
+    /// The focused window, and whether the kernel lent the keys for it.
+    asked: Option<(WindowId, bool)>,
 }
 
 fn main() -> i32 {
@@ -131,6 +133,7 @@ fn main() -> i32 {
             known: Vec::new(),
             focus: Focus::Nothing,
             leased_at: None,
+            asked: None,
         };
         println!("desktop: claimed {width}x{height}");
         let result = run(&mut state, &screen);
@@ -194,33 +197,44 @@ fn run(state: &mut State, screen: &Screen) -> Option<bool> {
     }
 }
 
-/// Lends the keys to the kernel's terminal while `term`'s window has focus,
-/// renewing the lease; ends it once the focus moves.
+/// Lends the keys to the kernel's terminal while the terminal window has
+/// focus, renewing the lease; ends it once the focus moves. The kernel says
+/// which window that is: it refuses the lease for any other client.
 fn lease(state: &mut State) {
-    let terminal = match state.desk.focus() {
+    let focused = match state.desk.focus() {
         Focus::Window(id) => state
             .desk
             .window(id)
-            .is_some_and(|w| w.label == TERM && !w.minimized),
-        _ => false,
+            .filter(|w| !w.minimized)
+            .map(|w| (id, u64::from(w.client))),
+        _ => None,
     };
     let now = sys::time_ns();
-    match (terminal, state.leased_at) {
-        (true, Some(at)) if now.saturating_sub(at) < LEASE_RENEW_NS => {}
-        (true, at) => {
-            let ok = sys::input_to_console(true).is_ok();
-            if ok && at.is_none() {
-                println!("desktop: the terminal window has the keys");
-            }
-            state.leased_at = ok.then_some(now);
-        }
-        (false, Some(_)) => {
-            let _ = sys::input_to_console(false);
-            state.leased_at = None;
+    let Some((id, pid)) = focused else {
+        if state.leased_at.take().is_some() {
+            let _ = sys::input_to_console(false, 0);
             println!("desktop: the keys are the desktop's again");
         }
-        (false, None) => {}
+        state.asked = None;
+        return;
+    };
+    let fresh = state
+        .leased_at
+        .is_some_and(|at| now.saturating_sub(at) < LEASE_RENEW_NS);
+    match state.asked {
+        // Not the terminal: asked once for this focus.
+        Some((asked, false)) if asked == id => return,
+        Some((asked, true)) if asked == id && fresh => return,
+        _ => {}
     }
+    let lent = sys::input_to_console(true, pid).is_ok();
+    match (lent, state.leased_at.is_some()) {
+        (true, false) => println!("desktop: the terminal window has the keys"),
+        (false, true) => println!("desktop: the keys are the desktop's again"),
+        _ => {}
+    }
+    state.asked = Some((id, lent));
+    state.leased_at = lent.then_some(now);
 }
 
 /// One kernel input event, in logical px at scale 1.
