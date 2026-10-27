@@ -126,6 +126,8 @@ pub enum Request<'a> {
     AckConfigure {
         serial: u32,
     },
+    /// The client closes its window (`xdg_toplevel.destroy`).
+    ToplevelDestroy,
     // popup
     Position {
         anchor: u32,
@@ -212,6 +214,7 @@ impl<'a> Request<'a> {
                 height: r.size()?,
             },
             (I::Toplevel, 4) => Request::AckConfigure { serial: r.uint()? },
+            (I::Toplevel, 5) => Request::ToplevelDestroy,
             (I::Popup, 0) => Request::Position {
                 anchor: r.uint()?,
                 gravity: r.uint()?,
@@ -281,6 +284,7 @@ impl<'a> Request<'a> {
             Request::SetMinSize { width, height } => w(2).int(width as i32).int(height as i32),
             Request::SetMaxSize { width, height } => w(3).int(width as i32).int(height as i32),
             Request::AckConfigure { serial } => w(4).uint(serial),
+            Request::ToplevelDestroy => w(5),
             Request::Position {
                 anchor,
                 gravity,
@@ -553,7 +557,9 @@ impl Objects {
             Request::Attach { buffer } if self.interface(buffer) != Some(Interface::Buffer) => {
                 return Err(Error::BadArg);
             }
-            Request::BufferDestroy => self.live.retain(|(i, _)| *i != object),
+            Request::BufferDestroy | Request::ToplevelDestroy => {
+                self.live.retain(|(i, _)| *i != object)
+            }
             _ => {
                 if let Some((id, made)) = request.creates() {
                     self.make(id, made)?;

@@ -19,6 +19,8 @@ appabi = { path = "../appabi" }
 cpufeat = { path = "../cpufeat" }
 infer = { path = "../infer" }
 kabi = { path = "../kabi" }
+deskcore = { path = "../deskcore" }
+surfabi = { path = "../surfabi" }
 livecore = { path = "../livecore" }
 look = { path = "../look" }
 editcore = { path = "../editcore" }

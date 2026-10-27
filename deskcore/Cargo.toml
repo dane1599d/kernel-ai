@@ -12,3 +12,4 @@ publish = false
 doctest = false
 
 [dependencies]
+surfabi = { path = "../surfabi" }

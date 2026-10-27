@@ -10,11 +10,16 @@
 extern crate alloc;
 
 pub mod chrome;
+pub mod compose;
 pub mod damage;
 pub mod desk;
 pub mod geom;
 pub mod scale;
+pub mod server;
 pub mod trusted;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod server_tests;

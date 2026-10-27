@@ -23,6 +23,7 @@ const USER_PROGRAMS: &[&str] = &[
     "fs",
     "filecheck",
     "desktop",
+    "deskdemo",
 ];
 /// Ring-3 programs built for the hard-float target: `llm`, whose engine needs SSE and
 /// AVX; `comphost`, whose wasmi runs guests' floats natively (ADR 0003 section 6);

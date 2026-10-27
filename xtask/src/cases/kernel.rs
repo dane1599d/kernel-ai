@@ -88,6 +88,21 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("display-claim", "test=display-claim")
     },
+    // P3 task 6: windows open, move and close.
+    TestCase {
+        expect: &[
+            "deskdemo: opened Left and Right",
+            "desktop: window 1 \"Left\" opened at 48,52 size 302x234",
+            "desktop: window 2 \"Right\" opened at 80,84 size 302x234",
+            "desktop: window 1 has focus",
+            "desktop: window 1 moved to 248,52 size 302x234",
+            "deskdemo: closed Left",
+            "desktop: window 1 closed",
+            "desktop: window 2 has focus",
+            "desk-windows: dragged Left 200 px and pressed its close control",
+        ],
+        ..case("desk-windows", "test=desk-windows")
+    },
     // P1 task 14: shared pages, and spike S01-1's M6.
     TestCase {
         expect: &[
