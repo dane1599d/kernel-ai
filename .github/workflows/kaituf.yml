@@ -1,0 +1,99 @@
+# kaituf, the TUF client (ADR 0008 §7, ADR 0011 §3; spikes S08-3 and S11-1,
+# `kaituf-0`): clippy on the host and for the ring-3 target without std, the
+# host and hostile tests, tuf-conformance v2.5.0 against the client CLI, and the
+# interop checks: python-tuf 7.0.1's repositories and 22 tampered ones, tuf-on-ci
+# v0.21.0's fixtures, a tuftool 0.17.0 repository, and S08-3's canonical JSON
+# comparison. The Python and tuftool tools run here only (ADR 0011 question 3),
+# never on the founder's PC. Host only: no VM and no model.
+name: kaituf
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - kaituf/**
+      - .github/workflows/kaituf.yml
+  pull_request:
+    paths:
+      - kaituf/**
+      - .github/workflows/kaituf.yml
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: kaituf-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  host:
+    name: kaituf (host)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy -p kaituf --all-targets --features client -- -D warnings
+      - name: Clippy for the ring-3 target, without std
+        run: cargo clippy -p kaituf --target x86_64-unknown-none -- -D warnings
+      - run: cargo test -p kaituf
+
+  conformance:
+    name: kaituf (tuf-conformance)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the client-under-test CLI and its expected failures
+        run: |
+          cargo build -p kaituf --features client --bin kaituf-client
+          cp kaituf/conformance.xfails target/debug/kaituf-client.xfails
+      - uses: theupdateframework/tuf-conformance@v2.5.0
+        with:
+          entrypoint: ${{ github.workspace }}/target/debug/kaituf-client
+
+  interop:
+    name: kaituf (interop and canonical JSON)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: tuf-on-ci v0.21.0, for its expected fixtures
+        uses: actions/checkout@v4
+        with:
+          repository: theupdateframework/tuf-on-ci
+          ref: v0.21.0
+          path: tuf-on-ci
+      - name: Install pinned toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build -p kaituf --features client --bin kaituf-client
+      - name: Cache tuftool 0.17.0
+        id: tuftool
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/tuftool
+          key: tuftool-0.17.0-${{ runner.os }}
+      - name: Build tuftool 0.17.0 (once; cached)
+        if: steps.tuftool.outputs.cache-hit != 'true'
+        run: cargo install tuftool --version 0.17.0 --locked
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: python-tuf 7.0.1 and securesystemslib's signers (CI only)
+        run: python -m pip install "tuf==7.0.1" "securesystemslib[crypto]"
+      - name: Interop, tamper and canonical JSON checks
+        run: >
+          python kaituf/interop/check.py
+          --client target/debug/kaituf-client
+          --tuf-on-ci tuf-on-ci
+          --tuftool "$HOME/.cargo/bin/tuftool"
