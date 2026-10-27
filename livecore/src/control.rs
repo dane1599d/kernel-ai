@@ -24,10 +24,13 @@ pub enum Control {
     Source { file: Option<String> },
     /// Rehearse a swap to version `label` on copies, changing nothing.
     Try { label: String },
+    /// Save the app's state and drop its instance (P3 task 11).
+    Suspend,
+    /// Bring a suspended app back from its saved state.
+    Resume,
 }
 
-pub const USAGE: &str =
-    "usage: ctl status | swap <version> [force] | try <version> | rollback | reset | source [file]";
+pub const USAGE: &str = "usage: ctl status | swap <version> [force] | try <version> | rollback | reset | source [file] | suspend | resume";
 
 /// Reads what follows `ctl `.
 pub fn parse(text: &str) -> Result<Control, String> {
@@ -45,6 +48,8 @@ pub fn parse(text: &str) -> Result<Control, String> {
         ["try", label] => Err(format!("bad version label {label:?}")),
         ["rollback"] => Ok(Control::Rollback),
         ["reset"] => Ok(Control::Reset),
+        ["suspend"] => Ok(Control::Suspend),
+        ["resume"] => Ok(Control::Resume),
         ["source"] => Ok(Control::Source { file: None }),
         ["source", file] => Ok(Control::Source {
             file: Some(file.to_string()),
@@ -90,6 +95,17 @@ impl<E: Env> Host<E> {
             )
             .map(|(mode, label)| (mode, text(format!("ok rolled back {label}"))))?,
             (Control::Rollback, mode) => (mode, text("err nothing is on probation")),
+            (Control::Suspend, mode) => self.suspend(mode)?,
+            (Control::Resume, mode) => {
+                let (mode, reply) = self.resume(mode);
+                (mode, text(reply.unwrap_or_else(|why| why)))
+            }
+            (_, mode @ Mode::Suspended(_)) => (
+                mode,
+                text(format!(
+                    "err {name} is suspended; ctl resume brings it back"
+                )),
+            ),
             (Control::Reset, Mode::Disabled { version, .. }) => self.reset(version)?,
             (Control::Reset, mode) => (mode, text(format!("err {name} is not disabled"))),
             (_, mode @ Mode::Disabled { .. }) => (
@@ -128,7 +144,7 @@ fn active<I>(mode: &Mode<I>) -> Option<&Version<I>> {
     match mode {
         Mode::Serving(version) | Mode::Disabled { version, .. } => Some(version),
         Mode::Probation(probation) => Some(&probation.standby),
-        Mode::Moving => None,
+        Mode::Suspended(_) | Mode::Moving => None,
     }
 }
 
@@ -145,6 +161,10 @@ fn status<I>(name: &str, mode: &Mode<I>, settings: &Settings) -> String {
             settings.probation_calls
         ),
         Mode::Disabled { version, why } => format!("ok {name} {} disabled ({why})", version.label),
+        Mode::Suspended(parked) => format!(
+            "ok {name} {} schema {} suspended",
+            parked.label, parked.schema
+        ),
         Mode::Moving => String::from("err busy"),
     }
 }

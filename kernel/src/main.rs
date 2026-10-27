@@ -103,6 +103,7 @@ mod smp_tests;
 #[cfg(feature = "spikes")]
 mod spikes;
 mod stop_tests;
+mod suspend_tests;
 mod terminal;
 mod thread_tests;
 mod threads;
@@ -342,6 +343,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::DisplayClaim => run_case(claim_tests::check),
         SelfTest::DeskWindows => run_case(desk_tests::check),
         SelfTest::DeskRestart => run_case(desk_tests::restart),
+        SelfTest::AppSuspend => run_case(suspend_tests::check),
         SelfTest::Scriptrun => run_case(scriptrun_tests::check),
         SelfTest::Fpu => run_case(fpu_tests::fpu_check),
         SelfTest::Probe => run_case(fpu_tests::probe_check),

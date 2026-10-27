@@ -2,6 +2,8 @@
 //! `[schema, count]`. Its behaviour, and its one bug if any, come from a `fake`
 //! custom section in its artifact, so tests go through real artifact parsing.
 
+extern crate std;
+
 use crate::artifact::{Manifest, append_custom_section, bundle, custom_section};
 use crate::txn::{Effect, Inputs, Storage, Txn};
 use crate::{Fault, Instance, Reason};
@@ -110,6 +112,17 @@ fn parse_list(text: &str) -> Vec<u32> {
         .collect()
 }
 
+std::thread_local! {
+    /// Fakes alive on this test's thread, for the tests that drop instances.
+    pub static LIVE: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+}
+
+impl Drop for Fake {
+    fn drop(&mut self) {
+        LIVE.with(|live| live.set(live.get() - 1));
+    }
+}
+
 pub struct Fake {
     label: String,
     schema: u32,
@@ -146,6 +159,7 @@ pub fn load(module: &[u8], quiet: bool) -> Result<Fake, Fault> {
         other if other.starts_with("HealthAt(") => Bug::HealthAt(number_in(other)),
         other => Bug::TrapAt(number_in(other)),
     };
+    LIVE.with(|live| live.set(live.get() + 1));
     Ok(Fake {
         label: words[5].to_string(),
         storage: Storage::new(),

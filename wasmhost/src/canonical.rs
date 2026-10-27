@@ -66,13 +66,17 @@ pub fn load_core(
         return Err(Fault::new(Reason::Compile, "the module is too large"));
     }
     let engine = Engine::new(&config());
-    let module = Module::new(&engine, wasm)
+    // The guest's memory, moved into a region of its own.
+    let moved = crate::linear::own_memory_as_import(wasm);
+    let bytes = moved.as_ref().map_or(wasm, |(moved, _)| moved.as_slice());
+    let module = Module::new(&engine, bytes)
         .map_err(|error| Fault::new(Reason::Compile, error.to_string()))?;
-    let linker = link_imports(&engine, &module)?;
+    let mut linker = link_imports(&engine, &module)?;
     let state = HostState {
         limits: StoreLimitsBuilder::new()
             .memory_size(limits.memory_bytes)
-            .memories(1)
+            // Its own region's memory, made by the host, counts as one more.
+            .memories(2)
             .tables(1)
             .table_elements(4096)
             .instances(1)
@@ -86,9 +90,16 @@ pub fn load_core(
         seed: 0,
         call: None,
         ui: Default::default(),
+        memory: None,
     };
     let mut store = Store::new(&engine, state);
-    store.limiter(|state| &mut state.limits);
+    store.limiter(|state| state);
+    if let Some((_, pages)) = moved {
+        let memory = own_memory(&mut store, pages, limits.memory_bytes)?;
+        linker
+            .define(crate::linear::MODULE, crate::linear::NAME, memory)
+            .map_err(|error| link_err(error.to_string()))?;
+    }
     store
         .set_fuel(limits.fuel_life)
         .map_err(|error| Fault::new(Reason::Host, error.to_string()))?;
@@ -122,11 +133,38 @@ pub fn load_core(
     })
 }
 
+/// The guest's memory on a region of its own: as large as the cap (or the
+/// guest's maximum, if lower) can reach, its initial pages committed.
+fn own_memory(
+    store: &mut Store<HostState>,
+    pages: crate::linear::Limits,
+    cap: usize,
+) -> Result<Memory, Fault> {
+    use crate::linear::{PAGE, Region};
+    let most = pages.max.map_or(cap, |max| cap.min(max as usize * PAGE));
+    let capacity = most / PAGE * PAGE;
+    let initial = pages.min as usize * PAGE;
+    let too_big = || Fault::new(Reason::Memory, "its memory starts larger than its cap");
+    let mut region = Region::new(capacity, initial).ok_or_else(too_big)?;
+    // SAFETY: the region moves into the store's data below and is dropped with
+    // the store, after the memory that uses the buffer.
+    let buffer = unsafe { region.buffer() };
+    let ty = wasmi::MemoryType::new(pages.min, pages.max);
+    let memory = Memory::new_static(&mut *store, ty, buffer)
+        .map_err(|error| Fault::new(Reason::Memory, error.to_string()))?;
+    store.data_mut().memory = Some(region);
+    Ok(memory)
+}
+
 /// Binds every import the module makes, or fails naming the first it cannot.
 fn link_imports(engine: &Engine, module: &Module) -> Result<Linker<HostState>, Fault> {
     let mut linker = Linker::<HostState>::new(engine);
     for import in module.imports() {
         let (qualified, name) = (import.module(), import.name());
+        // Its own memory, which `load_core` defines.
+        if (qualified, name) == (crate::linear::MODULE, crate::linear::NAME) {
+            continue;
+        }
         let ExternType::Func(ty) = import.ty() else {
             return Err(link_err(format!("{qualified} {name} is not a function")));
         };
