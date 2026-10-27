@@ -10,6 +10,8 @@ extern crate alloc;
 // A program's crate root sits in src/bin, so its modules are named by path.
 #[path = "shell/apart.rs"]
 mod apart;
+#[path = "shell/files.rs"]
+mod files;
 
 use alloc::boxed::Box;
 use alloc::format;
@@ -41,6 +43,7 @@ const SCRIPT_LIMIT_MS: u64 = DEFAULT_CONFIG.line_budget_ms + 2_000;
 
 struct System {
     pool: apart::Pool,
+    files: files::Files,
 }
 
 /// The route to the llm service: the shell's plan line has `uses=llm`, its only
@@ -238,6 +241,18 @@ impl Host for System {
             .map_err(|error| format!("{error:?}"))
     }
 
+    fn fs_read(&self, read: shellcore::FsRead) -> Result<String, String> {
+        self.files.read(read)
+    }
+
+    fn fs_change(&self, change: shellcore::FsChange) -> Result<u64, String> {
+        self.files.change(change)
+    }
+
+    fn fs_undo(&self, txn: u64, anyway: bool) -> Result<u64, shellcore::FsRefused> {
+        self.files.undo(txn, anyway)
+    }
+
     fn run_apart(&self, request: &str) -> Option<Result<String, String>> {
         self.pool.run(request, SCRIPT_LIMIT_MS)
     }
@@ -289,6 +304,7 @@ fn main() -> i32 {
     let mut shell = Shell::new(
         Rc::new(System {
             pool: apart::Pool::new(),
+            files: files::Files::new(),
         }),
         DEFAULT_CONFIG,
     );

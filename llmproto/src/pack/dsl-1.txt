@@ -46,5 +46,12 @@ tune_undo() [undo]  // puts back the policy a kept trial replaced
 pkg_install|remove(name: string) [undo]  // installs or removes a package; undo puts the old set back
 pkg_list() -> string  // installed packages
 pkg_search(text: string) -> string  // packages in the repository
+## files
+fs_list|read|history(path: string) -> data  // names, text, earlier versions
+fs_changes() -> string  // files changed today
+fs_create|write(path: string, text: string) [undo]  // create never overwrites
+fs_move(from: string, to: string) [undo]  // moves or renames
+fs_trash|restore(path: string) [undo]  // restore brings it back
+fs_empty_trash() [ask]  // no undo
 ## index (name only; call one and its arguments are shown next)
 component: component_revert

@@ -343,12 +343,17 @@ pub fn plan(test: SelfTest) -> Option<String> {
     ) {
         // The file system service starts before the shell, once there is a
         // `kai-data` partition for it (ADR 0004).
-        if crate::block::has_partition(diskmap::KAI_DATA_TYPE) {
-            plan.push('\n');
-            plan.push_str(kabi::plan::FS);
-        }
+        // With it, the shell gets `files`, its `Dir` for `/home/user`.
+        let shell = match crate::block::has_partition(diskmap::KAI_DATA_TYPE) {
+            true => {
+                plan.push('\n');
+                plan.push_str(kabi::plan::FS);
+                kabi::plan::SHELL_FILES
+            }
+            false => kabi::plan::SHELL,
+        };
         plan.push('\n');
-        plan.push_str(kabi::plan::SHELL);
+        plan.push_str(shell);
     }
     // `act-rule` stops processes the supervisor does not restart, and one
     // service it does.
