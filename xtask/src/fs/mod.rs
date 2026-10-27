@@ -20,7 +20,10 @@
 //! - `import` copies a host file or folder to a guest path, in one commit,
 //!   replacing files that are there.
 //! - `ls` and `cat` read; `check` runs `check()` and every volume's namespace
-//!   rules, and `--repair` repairs each volume that fails them.
+//!   rules. `--repair` applies kaifs's whole-disk repair to what fails them:
+//!   space, history and each volume's namespace. A disk that does not mount is
+//!   mounted from its newest commit whose volume table reads, with its
+//!   allocator rebuilt.
 //! - `replay` checks every crash state a QEMU blklogwrites log allows, from
 //!   `BASE`, the image as it was before the run (spike S04-3, task 9).
 //! - `case` is task 9's check of a case's data disk: `TARGET/kai-data.img` and
