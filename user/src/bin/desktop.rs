@@ -13,6 +13,9 @@
 //!   the screen and flushes them.
 //! - The top bar's model state and memory are read once a second; a screen
 //!   without a hardware cursor (GOP) gets one drawn in the frame.
+//! - While the terminal window (`term`'s) has focus, the keys go to the
+//!   kernel's terminal instead: a lease (INPUT_TO_CONSOLE) renewed every
+//!   [`LEASE_RENEW_NS`], and ended when the focus moves (P3 task 8).
 
 #![no_std]
 #![no_main]
@@ -49,6 +52,11 @@ const BAR_EVERY_NS: u64 = 1_000_000_000;
 /// Waits for input or a client, in turn, so neither starves.
 const INPUT_WAIT_MS: u64 = 2;
 const CLIENT_WAIT_MS: u64 = 2;
+/// The program whose window takes the kernel terminal's keys.
+const TERM: &str = "term";
+/// How often the lease is renewed while that window has focus: well inside the
+/// kernel's one second.
+const LEASE_RENEW_NS: u64 = 250_000_000;
 
 struct Pool {
     pid: u64,
@@ -86,6 +94,8 @@ struct State {
     /// Frames as last logged, to report moves and closes once.
     known: Vec<(WindowId, Rect)>,
     focus: Focus,
+    /// When the keys were last lent to the kernel's terminal, while they are.
+    leased_at: Option<u64>,
 }
 
 fn main() -> i32 {
@@ -120,6 +130,7 @@ fn main() -> i32 {
             ticked_ms: 0,
             known: Vec::new(),
             focus: Focus::Nothing,
+            leased_at: None,
         };
         println!("desktop: claimed {width}x{height}");
         let result = run(&mut state, &screen);
@@ -178,7 +189,37 @@ fn run(state: &mut State, screen: &Screen) -> Option<bool> {
         report(state);
         refresh_bar(state);
         tick_panel(state);
+        lease(state);
         draw(state, screen);
+    }
+}
+
+/// Lends the keys to the kernel's terminal while `term`'s window has focus,
+/// renewing the lease; ends it once the focus moves.
+fn lease(state: &mut State) {
+    let terminal = match state.desk.focus() {
+        Focus::Window(id) => state
+            .desk
+            .window(id)
+            .is_some_and(|w| w.label == TERM && !w.minimized),
+        _ => false,
+    };
+    let now = sys::time_ns();
+    match (terminal, state.leased_at) {
+        (true, Some(at)) if now.saturating_sub(at) < LEASE_RENEW_NS => {}
+        (true, at) => {
+            let ok = sys::input_to_console(true).is_ok();
+            if ok && at.is_none() {
+                println!("desktop: the terminal window has the keys");
+            }
+            state.leased_at = ok.then_some(now);
+        }
+        (false, Some(_)) => {
+            let _ = sys::input_to_console(false);
+            state.leased_at = None;
+            println!("desktop: the keys are the desktop's again");
+        }
+        (false, None) => {}
     }
 }
 
