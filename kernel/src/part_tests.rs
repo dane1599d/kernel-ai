@@ -106,6 +106,15 @@ fn pattern(offset: u64, out: &mut [u8]) {
 fn bench() -> Result<(), &'static str> {
     let step = stub::MAX_DATA as u64;
     let mut request = Vec::with_capacity(9 + stub::MAX_DATA);
+    // The time spent in `ask` (the round trip through fs), apart from making
+    // and checking the bytes here.
+    let mut asking = [0u64; 2];
+    let mut timed_ask = |phase: usize, request: &[u8]| {
+        let start = hpet::nanos();
+        let reply = ask(request);
+        asking[phase] += hpet::nanos() - start;
+        reply
+    };
     let started = hpet::nanos();
     let mut at = 0;
     while at < FILE_BYTES {
@@ -116,7 +125,7 @@ fn bench() -> Result<(), &'static str> {
         let start = request.len();
         request.resize(start + n as usize, 0);
         pattern(at, &mut request[start..]);
-        if ask(&request)? != b"ok" {
+        if timed_ask(0, &request)? != b"ok" {
             return Err("part: fs refused a write");
         }
         at += n;
@@ -134,7 +143,7 @@ fn bench() -> Result<(), &'static str> {
         request.push(stub::READ);
         request.extend_from_slice(&at.to_le_bytes());
         request.extend_from_slice(&(n as u32).to_le_bytes());
-        let got = ask(&request)?;
+        let got = timed_ask(1, &request)?;
         pattern(at, &mut want[..n as usize]);
         if got != want[..n as usize] {
             return Err("part: the file read back different");
@@ -154,6 +163,13 @@ fn bench() -> Result<(), &'static str> {
         rate(wrote),
         rate(read),
         crate::smp::online()
+    );
+    log!(
+        "part: S04-2's client: write {} ms waiting on fs of {} ms, read {} ms of {} ms",
+        asking[0] / 1_000_000,
+        wrote / 1_000_000,
+        asking[1] / 1_000_000,
+        read / 1_000_000
     );
     Ok(())
 }
