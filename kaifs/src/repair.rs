@@ -76,6 +76,22 @@ fn salvage<D: BlockDev>(
     items: &mut Vec<(Key, Vec<u8>)>,
     fixes: &mut Vec<String>,
 ) {
+    salvage_from(fs, ptr, items, fixes, &mut BTreeSet::new());
+}
+
+/// [`salvage`], reading each pointer once: a node a hostile disk names many
+/// times, at every level, would otherwise be read a number of times that grows
+/// with the tree's depth as a power.
+fn salvage_from<D: BlockDev>(
+    fs: &mut Fs<D>,
+    ptr: &BlockPtr,
+    items: &mut Vec<(Key, Vec<u8>)>,
+    fixes: &mut Vec<String>,
+    seen: &mut BTreeSet<(u64, crate::csum::Csum)>,
+) {
+    if !seen.insert((ptr.addr, ptr.csum)) {
+        return;
+    }
     match fs.io.load_node(ptr) {
         Err(e) => fixes.push(format!(
             "node {} does not verify ({e:?}): the items below it are lost",
@@ -85,7 +101,7 @@ fn salvage<D: BlockDev>(
         Ok(Node::Branch(_, children)) => {
             for (_, child) in children {
                 if let Child::Clean(child) = child {
-                    salvage(fs, &child, items, fixes);
+                    salvage_from(fs, &child, items, fixes, seen);
                 }
             }
         }
