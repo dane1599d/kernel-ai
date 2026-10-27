@@ -95,6 +95,8 @@ pub enum SelfTest {
     ManyProcesses,
     /// `desktop` claims the screen; Ctrl+Alt+F12 switches it (P3 task 2).
     DisplayClaim,
+    /// Windows open, move and close (P3 task 6).
+    DeskWindows,
     /// `scriptrun` through a Job, and spike S01-1's M3 and M5 (P1 task 14).
     Scriptrun,
     /// L2: processes keep their vector state across switches and CPUs, and start clean.
@@ -200,6 +202,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=shm" => Some(SelfTest::Shm),
             "test=many-processes" => Some(SelfTest::ManyProcesses),
             "test=display-claim" => Some(SelfTest::DisplayClaim),
+            "test=desk-windows" => Some(SelfTest::DeskWindows),
             "test=scriptrun" => Some(SelfTest::Scriptrun),
             "test=fpu" => Some(SelfTest::Fpu),
             "test=probe" => Some(SelfTest::Probe),
@@ -258,6 +261,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::Files { .. }
             | SelfTest::FilesRestart
             | SelfTest::DisplayClaim
+            | SelfTest::DeskWindows
             | SelfTest::TuneRevert
             | SelfTest::TuneStall
             | SelfTest::Tune
@@ -344,6 +348,10 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
     if test == SelfTest::DisplayClaim {
         plan.push('\n');
         plan.push_str(crate::claim_tests::PLAN);
+    }
+    if test == SelfTest::DeskWindows {
+        plan.push('\n');
+        plan.push_str(crate::desk_tests::PLAN);
     }
     if test == SelfTest::None {
         plan.push('\n');
