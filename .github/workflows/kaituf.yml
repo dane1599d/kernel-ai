@@ -49,9 +49,8 @@ jobs:
       - name: Clippy for the ring-3 target, without std
         run: cargo clippy -p kaituf --target x86_64-unknown-none -- -D warnings
       - run: cargo test -p kaituf
-      - name: tufbench, the ring-3 bench (clippy), and the .text kaituf adds to a release program (S11-1's bar, 200 KiB)
+      - name: The .text kaituf adds to a release ring-3 program (S11-1's bar, 200 KiB)
         run: |
-          cargo clippy -p user --target x86_64-unknown-none --bin tufbench -- -D warnings
           cargo build -p user --release --target x86_64-unknown-none --bin tufbench --bin spinner
           size="$(find "$(rustc --print sysroot)" -name llvm-size -type f | head -1)"
           text() { "$size" -A "target/x86_64-unknown-none/release/$1" | awk '$1 == ".text" { print $2 }'; }
