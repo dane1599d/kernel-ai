@@ -106,6 +106,8 @@ impl<E: Env> Host<E> {
         version: Version<E::Instance>,
     ) -> Result<(Mode<E::Instance>, Vec<u8>), Exit> {
         self.core.report(&Report::new(kind::RESET))?;
+        self.core.storage.clear();
+        self.core.history.clear();
         let label = version.label.clone();
         let fresh = self
             .core

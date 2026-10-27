@@ -5,6 +5,7 @@
 //! `livecore::Instance`; app exports are reached with `Instance::call`. Each call
 //! gets fresh fuel, and time and the seed are fixed for the call.
 
+use crate::effects::{self, OpenCall};
 use crate::instance::{HostState, classify, fault, log, panic};
 use crate::link::{self, WitFunc};
 use crate::{Limits, LogSink, config, tables};
@@ -80,6 +81,7 @@ pub fn load_core(
         panic_at: None,
         now_ms: 0,
         seed: 0,
+        call: None,
     };
     let mut store = Store::new(&engine, state);
     store.limiter(|state| &mut state.limits);
@@ -139,6 +141,10 @@ fn link_imports(engine: &Engine, module: &Module) -> Result<Linker<HostState>, F
                     c.data().seed as i64
                 })
             }
+            ("kai:app/storage", "get") => linker.func_wrap(qualified, name, effects::get),
+            ("kai:app/storage", "put") => linker.func_wrap(qualified, name, effects::put),
+            ("kai:app/storage", "delete") => linker.func_wrap(qualified, name, effects::delete),
+            ("kai:app/effects", "request") => linker.func_wrap(qualified, name, effects::request),
             (interface, _) => {
                 return Err(link_err(format!(
                     "{interface} is not offered by this host yet"
@@ -418,5 +424,23 @@ impl livecore::Instance for CoreInstance {
     #[inline(never)]
     fn call(&mut self, func: &appabi::Func, args: &[Val]) -> Result<Option<Val>, Fault> {
         self.typed(func, args, self.limits.fuel_call)
+    }
+
+    fn begin(&mut self, storage: &livecore::txn::Storage, inputs: livecore::txn::Inputs) {
+        self.set_call_inputs(inputs.now_ms, inputs.seed);
+        self.store.data_mut().call = Some(OpenCall {
+            storage: storage.clone(),
+            txn: livecore::txn::Txn::default(),
+            first_ticket: inputs.first_ticket,
+        });
+    }
+
+    fn finish(&mut self) -> livecore::txn::Txn {
+        self.store
+            .data_mut()
+            .call
+            .take()
+            .map(|call| call.txn)
+            .unwrap_or_default()
     }
 }

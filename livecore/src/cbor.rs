@@ -43,6 +43,7 @@ pub enum Item {
 struct Reader<'a> {
     rest: &'a [u8],
     items: usize,
+    max_items: usize,
     stopped: bool,
 }
 
@@ -51,6 +52,7 @@ pub fn parse(bytes: &[u8]) -> Result<Item, &'static str> {
     let mut reader = Reader {
         rest: bytes,
         items: 0,
+        max_items: MAX_ITEMS,
         stopped: false,
     };
     let item = reader.item(0)?;
@@ -58,6 +60,19 @@ pub fn parse(bytes: &[u8]) -> Result<Item, &'static str> {
         return Err("bytes follow the item");
     }
     Ok(item)
+}
+
+/// The length of the one CBOR item at the start of `bytes`.
+pub fn item_len(bytes: &[u8]) -> Result<usize, &'static str> {
+    let mut reader = Reader {
+        rest: bytes,
+        items: 0,
+        // Every item takes a byte, so the bytes bound the count.
+        max_items: usize::MAX,
+        stopped: false,
+    };
+    reader.item(0)?;
+    Ok(bytes.len() - reader.rest.len())
 }
 
 impl<'a> Reader<'a> {
@@ -106,7 +121,7 @@ impl<'a> Reader<'a> {
         if depth > MAX_DEPTH {
             return Err("items are nested too deeply");
         }
-        if self.items == MAX_ITEMS {
+        if self.items == self.max_items {
             self.stopped = true;
             return Ok(Item::More);
         }

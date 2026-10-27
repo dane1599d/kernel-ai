@@ -13,6 +13,7 @@
 use crate::host::{Core, Env, Version};
 use crate::probation::regressed;
 use crate::swap::{Failed, transfer, verify};
+use crate::txn::Inputs;
 use crate::{Fault, Instance};
 use alloc::format;
 use alloc::string::String;
@@ -101,11 +102,21 @@ fn replay<E: Env>(
 ) -> Result<String, String> {
     let total = core.recent.len();
     let (mut done, mut regressions) = (0, 0);
+    // Each copy runs from the old version's storage, as on probation; nothing
+    // commits.
+    let mut storage = core.storage.clone();
     for request in &core.recent {
-        let Ok(before) = old.instance.handle(request) else {
+        let inputs = Inputs::default();
+        old.instance.begin(&storage, inputs);
+        let before = old.instance.handle(request);
+        let old_txn = old.instance.finish();
+        let Ok(before) = before else {
             break;
         };
-        let after = candidate.instance.handle(request).map_err(|fault| {
+        candidate.instance.begin(&storage, inputs);
+        let after = candidate.instance.handle(request);
+        let txn = candidate.instance.finish();
+        let after = after.map_err(|fault| {
             format!(
                 "replaying request {} of {total}: {}",
                 done + 1,
@@ -113,9 +124,10 @@ fn replay<E: Env>(
             )
         })?;
         done += 1;
-        if regressed(&before, &after) {
+        if regressed(&before, &after) || txn != old_txn {
             regressions += 1;
         }
+        old_txn.apply(&mut storage);
     }
     if regressions > 0 {
         return Err(format!(

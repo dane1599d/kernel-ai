@@ -2,6 +2,7 @@
 
 extern crate std;
 
+mod effects;
 mod fake;
 mod fallback;
 mod rehearsal;
