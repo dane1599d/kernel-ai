@@ -43,15 +43,7 @@ process_stop(name: string) [ask]  // stops or kills processes by name
 service_stop|start|restart(name: string) [ask|undo|ask]  // start runs a stopped one; stop keeps it down; restart resets
 tune(target: string?, intent: string?) [ask]  // proposes a scheduler trial for a process
 tune_undo() [undo]  // puts back the policy a kept trial replaced
-pkg_install|remove(name: string) [undo]  // installs or removes a package; undo puts the old set back
-pkg_list() -> string  // installed packages
-pkg_search(text: string) -> string  // packages in the repository
-## files (paths under /home/user)
-fs_list|read|history(path: string) -> data  // names, text, earlier versions
-fs_changes() -> string  // files changed today
-fs_create|write(path: string, text: string) [undo]  // create never overwrites
-fs_move(from: string, to: string) [undo]  // moves or renames
-fs_trash|restore(path: string) [undo]  // restore brings it back
-fs_empty_trash() [ask]  // no undo
 ## index (name only; call one and its arguments are shown next)
 component: component_revert
+pkg: pkg_install pkg_remove pkg_list pkg_search
+files: fs_list fs_read fs_history fs_changes fs_create fs_write fs_move fs_trash fs_restore fs_empty_trash
