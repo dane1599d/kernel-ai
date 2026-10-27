@@ -627,3 +627,133 @@ fn a_dead_owners_action_is_aborted_and_writes_go_on() {
     assert_eq!(c.home(Request::Begin { action: 3 }).0, Reply::Done);
     DEAD.store(0, Ordering::SeqCst);
 }
+
+impl Client<'_> {
+    /// Moves `name` in the folder `dir` names (its badge) to the trash.
+    fn trash(&mut self, dir: u64, name: &str) {
+        let request = Request::Trash { name: name.into() };
+        assert_eq!(self.call(ALICE, dir, DIR_RIGHTS, request).0, Reply::Done);
+    }
+
+    /// The whole trash as the `Dir` `dir` sees it, page by page.
+    fn trash_paths(&mut self, dir: u64) -> Vec<String> {
+        let (mut paths, mut after) = (Vec::new(), None);
+        loop {
+            match self
+                .call(ALICE, dir, DIR_RIGHTS, Request::TrashList { after })
+                .0
+            {
+                Reply::Trash { items, more } => {
+                    after = items.last().map(|i| i.id);
+                    paths.extend(items.into_iter().map(|i| i.path));
+                    if !more {
+                        return paths;
+                    }
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+    }
+}
+
+#[test]
+fn the_trash_lists_by_path_and_gives_back_by_name() {
+    let mut disk = MemDisk::new(BLOCKS);
+    let (mut c, _) = Client::start(&mut disk);
+    let notes = c.open("notes", How::Mkdir).unwrap();
+    let plan = c.open("notes/plan.txt", How::CreateFile).unwrap();
+    c.write(&plan, 0, b"buy milk");
+    c.open("old.txt", How::CreateFile).unwrap();
+    c.trash(notes.badge, "plan.txt");
+    c.trash(HOME_USER, "old.txt");
+    assert_eq!(c.trash_paths(HOME_USER), ["notes/plan.txt", "old.txt"]);
+    let Reply::Trash { items, more } = c.home(Request::TrashList { after: None }).0 else {
+        panic!("no trash");
+    };
+    assert!(!more);
+    assert_eq!(items[0].kind, fsproto::Kind::File);
+    assert!(items[0].deleted > 0, "{items:?}");
+    // A name taken since is not overwritten, and the item stays in the trash.
+    let taken = c.open("old.txt", How::CreateFile).unwrap();
+    let back = |c: &mut Client, path: &str| c.home(Request::TrashRestore { path: path.into() }).0;
+    assert_eq!(back(&mut c, "old.txt"), Reply::Failed(Error::Exists));
+    assert_eq!(c.trash_paths(HOME_USER).len(), 2);
+    assert_eq!(c.write(&taken, 0, b"new"), Reply::Done);
+    // Back by name, bytes and all; then it is no longer in the trash.
+    assert_eq!(back(&mut c, "notes/plan.txt"), Reply::Done);
+    let plan = c.open("notes/plan.txt", How::Existing).unwrap();
+    assert_eq!(c.read(&plan), Ok(b"buy milk".to_vec()));
+    assert_eq!(c.trash_paths(HOME_USER), ["old.txt"]);
+    assert_eq!(
+        back(&mut c, "notes/plan.txt"),
+        Reply::Failed(Error::NotFound)
+    );
+    assert_eq!(back(&mut c, "../plan.txt"), Reply::Failed(Error::Invalid));
+}
+
+#[test]
+fn a_restore_from_the_trash_is_undone_like_any_action() {
+    let mut disk = MemDisk::new(BLOCKS);
+    let (mut c, _) = Client::start(&mut disk);
+    c.open("todo.txt", How::CreateFile).unwrap();
+    c.trash(HOME_USER, "todo.txt");
+    c.home(Request::Begin { action: 9 });
+    let request = Request::TrashRestore {
+        path: "todo.txt".into(),
+    };
+    assert_eq!(c.home(request).0, Reply::Done);
+    let Reply::Committed { generation } = c.home(Request::Commit).0 else {
+        panic!("not committed");
+    };
+    assert!(c.trash_paths(HOME_USER).is_empty());
+    let undone = c
+        .home(Request::Restore {
+            txn: generation,
+            action: 10,
+        })
+        .0;
+    assert!(matches!(undone, Reply::Restored { .. }), "{undone:?}");
+    assert_eq!(c.open("todo.txt", How::Existing), Err(Error::NotFound));
+    assert_eq!(c.trash_paths(HOME_USER), ["todo.txt"]);
+}
+
+#[test]
+fn emptying_reaches_only_what_was_beneath_the_dir_and_needs_delete() {
+    let mut disk = MemDisk::new(BLOCKS);
+    let (mut c, _) = Client::start(&mut disk);
+    let notes = c.open("notes", How::Mkdir).unwrap();
+    c.open("notes/a.txt", How::CreateFile).unwrap();
+    c.open("b.txt", How::CreateFile).unwrap();
+    c.trash(notes.badge, "a.txt");
+    c.trash(HOME_USER, "b.txt");
+    // The notes Dir sees only its own, by paths relative to it.
+    assert_eq!(c.trash_paths(notes.badge), ["a.txt"]);
+    let reader = DIR_RIGHTS.difference(Rights::DELETE);
+    let refused = c.call(ALICE, notes.badge, reader, Request::EmptyTrash);
+    assert_eq!(failed(refused), Error::Permission);
+    let emptied = c.call(ALICE, notes.badge, DIR_RIGHTS, Request::EmptyTrash);
+    assert_eq!(emptied.0, Reply::Emptied { count: 1 });
+    assert_eq!(c.trash_paths(HOME_USER), ["b.txt"]);
+    assert_eq!(c.home(Request::EmptyTrash).0, Reply::Emptied { count: 1 });
+    assert!(c.trash_paths(HOME_USER).is_empty());
+    assert_eq!(c.home(Request::EmptyTrash).0, Reply::Emptied { count: 0 });
+}
+
+#[test]
+fn a_long_trash_comes_in_pages() {
+    let mut disk = MemDisk::new(BLOCKS);
+    let (mut c, _) = Client::start(&mut disk);
+    let count = fsproto::MAX_TRASH_ITEMS + 5;
+    for i in 0..count {
+        let name = format!("f{i}");
+        c.open(&name, How::CreateFile).unwrap();
+        c.trash(HOME_USER, &name);
+    }
+    let Reply::Trash { items, more } = c.home(Request::TrashList { after: None }).0 else {
+        panic!("no trash");
+    };
+    assert_eq!((items.len(), more), (fsproto::MAX_TRASH_ITEMS, true));
+    let all = c.trash_paths(HOME_USER);
+    let want: Vec<String> = (0..count).map(|i| format!("f{i}")).collect();
+    assert_eq!(all, want);
+}
