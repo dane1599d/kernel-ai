@@ -1533,6 +1533,7 @@ dependencies = [
  "infer",
  "kabi",
  "kaibundle",
+ "kaifs",
  "linetable",
  "livecore",
  "llmproto",

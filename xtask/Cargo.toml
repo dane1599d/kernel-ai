@@ -12,6 +12,7 @@ cpufeat = { path = "../cpufeat" }
 gguf = { path = "../gguf" }
 infer = { path = "../infer" }
 diskmap = { path = "../diskmap" }
+kaifs = { path = "../kaifs" }
 kabi = { path = "../kabi" }
 kaibundle = { path = "../kaibundle", features = ["alloc"] }
 livecore = { path = "../livecore" }
