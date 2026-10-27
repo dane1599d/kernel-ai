@@ -28,6 +28,7 @@ linetable = { path = "../linetable" }
 livecore = { path = "../livecore" }
 editcore = { path = "../editcore" }
 llmproto = { path = "../llmproto" }
+look = { path = "../look" }
 mm = { path = "../mm" }
 netcore = { path = "../netcore" }
 nvme = { path = "../nvme" }
