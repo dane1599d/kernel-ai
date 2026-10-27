@@ -7,8 +7,10 @@
 
 extern crate alloc;
 
+pub mod actions;
 pub mod artifact;
 pub mod boot;
+pub mod call;
 pub mod cbor;
 pub mod control;
 pub mod diff;
