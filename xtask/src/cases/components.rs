@@ -31,6 +31,13 @@ pub(super) const CASES: &[TestCase] = &[
         min_timeout: Some(Duration::from_secs(300)),
         ..case("manifest-good", "test=manifest-good")
     },
+    // S03-1's deferred figures: the view rebuild and layout pass in hard-float
+    // ring 3, reported in the log.
+    TestCase {
+        expect: &["appbench: done"],
+        server: false,
+        ..case("appbench", "test=appbench")
+    },
     // The live scenario with the model on the disk and no server: `:why` is
     // answered by the local model.
     TestCase {

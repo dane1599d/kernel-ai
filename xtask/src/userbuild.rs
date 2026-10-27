@@ -15,7 +15,6 @@ const USER_PROGRAMS: &[&str] = &[
     "crasher",
     "spinner",
     "hog",
-    "comphost",
     "edit",
     "work",
     "netcheck",
@@ -23,8 +22,19 @@ const USER_PROGRAMS: &[&str] = &[
     "scriptrun",
 ];
 /// Ring-3 programs built for the hard-float target: `llm`, whose engine needs SSE and
-/// AVX, and the tests that check the kernel keeps vector state apart.
-const USER_FLOAT_PROGRAMS: &[&str] = &["llm", "probe", "vecstress", "workers"];
+/// AVX; `comphost`, whose wasmi runs guests' floats natively (ADR 0003 section 6);
+/// `appbench`, which measures comphost's crates there; and the tests that check the
+/// kernel keeps vector state apart.
+const USER_FLOAT_PROGRAMS: &[&str] = &[
+    "llm",
+    "probe",
+    "vecstress",
+    "workers",
+    "comphost",
+    "appbench",
+];
+/// The view guest `appbench` embeds, built first.
+const APPBENCH_GUEST: &str = "comp-viewbench";
 /// The hard-float ring-3 target and the directory cargo builds it into. A JSON target
 /// has no prebuilt core or alloc, so they are built from rust-src.
 const USER_FLOAT_TARGET: &str = "user/x86_64-kai-user.json";
@@ -37,6 +47,7 @@ const BUILD_STD: &[&str] = &[
 
 /// Builds every user program, each for its target; returns (name, ELF path) pairs.
 pub fn build_user(root: &Path, options: &Options) -> Result<Vec<(&'static str, PathBuf)>, String> {
+    build_guest(root)?;
     let mut programs = build_programs(
         root,
         options,
@@ -54,6 +65,26 @@ pub fn build_user(root: &Path, options: &Options) -> Result<Vec<(&'static str, P
         USER_FLOAT_PROGRAMS,
     )?);
     Ok(programs)
+}
+
+/// Builds the wasm32 guest that `appbench` embeds with `include_bytes!`.
+fn build_guest(root: &Path) -> Result<(), String> {
+    let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let status = Command::new(cargo)
+        .current_dir(root)
+        .args(["build", "--quiet", "-p", APPBENCH_GUEST])
+        .args([
+            "--target",
+            crate::components::TARGET,
+            "--profile",
+            "component",
+        ])
+        .status()
+        .map_err(|e| format!("cannot run cargo: {e}"))?;
+    if !status.success() {
+        return Err(format!("building {APPBENCH_GUEST} failed"));
+    }
+    Ok(())
 }
 
 /// Builds `names` from the `user` crate for `target`, into `target/<dir>/<profile>`.

@@ -20,6 +20,7 @@ extern crate alloc;
 mod act_tests;
 mod allow;
 mod apic;
+mod appbench_tests;
 mod backtrace;
 mod bigmap_tests;
 mod blk_tests;
@@ -327,6 +328,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Scriptrun => run_case(scriptrun_tests::check),
         SelfTest::Fpu => run_case(fpu_tests::fpu_check),
         SelfTest::Probe => run_case(fpu_tests::probe_check),
+        SelfTest::AppBench => run_case(appbench_tests::check),
         SelfTest::Handles => run_case(handle_tests::check),
         SelfTest::Threads => run_case(thread_tests::check),
         SelfTest::ThreadsKill => run_case(thread_tests::kill_check),

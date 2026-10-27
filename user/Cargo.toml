@@ -15,6 +15,7 @@ test = false
 bench = false
 
 [dependencies]
+appabi = { path = "../appabi" }
 cpufeat = { path = "../cpufeat" }
 infer = { path = "../infer" }
 kabi = { path = "../kabi" }

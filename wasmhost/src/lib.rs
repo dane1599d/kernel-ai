@@ -18,11 +18,13 @@
 
 extern crate alloc;
 
+mod canonical;
 mod instance;
 #[cfg(test)]
 mod tests;
 
 use alloc::string::ToString;
+pub use canonical::{CoreInstance, load_core};
 pub use instance::WasmInstance;
 use livecore::{Fault, Reason};
 use wasmi::{CompilationMode, Config, EnforcedLimits, Engine, Module};
