@@ -1,0 +1,2 @@
+# decisions.md is append-only: concurrent rows from two branches both stay.
+docs/decisions.md merge=union
