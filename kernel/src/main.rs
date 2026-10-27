@@ -39,6 +39,8 @@ mod display_tests;
 mod edit_mode;
 mod edit_session;
 mod edit_tests;
+mod efi;
+mod efi_tests;
 mod entry;
 mod fault;
 mod faults;
@@ -264,6 +266,10 @@ extern "C" fn boot_continue() -> ! {
         Err(message) => fail(message),
     }
     log!("{}", fpu::features_line());
+    // Before the other CPUs start: SetVirtualAddressMap runs on a borrowed PML4.
+    if let Err(message) = efi::init() {
+        log!("{message}; no runtime services");
+    }
     let platform = init_devices();
     if let Err(message) = threads::init() {
         fail(message);
@@ -334,6 +340,8 @@ extern "C" fn boot_continue() -> ! {
             }
             panic!("panic-reset: a panic, on purpose")
         }
+        SelfTest::Efi => run_case(efi_tests::check),
+        SelfTest::EfiReset => efi::reset(),
         SelfTest::Devices => run_case(device_tests::check),
         SelfTest::TuneRevert => run_case(tune_tests::revert_check),
         SelfTest::TuneStall => run_case(tune_stall_tests::check),

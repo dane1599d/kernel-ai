@@ -99,6 +99,10 @@ pub enum SelfTest {
     Reboot,
     /// A panic or failed check that resets the machine (ADR 0008 "fault").
     PanicReset,
+    /// UEFI runtime variables (ADR 0008).
+    Efi,
+    /// A reset through UEFI ResetSystem.
+    EfiReset,
     Devices,
     TuneRevert,
     TuneStall,
@@ -175,6 +179,8 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=icount-probe" => Some(SelfTest::IcountProbe),
             "test=reboot" => Some(SelfTest::Reboot),
             "test=panic-reset" => Some(SelfTest::PanicReset),
+            "test=efi" => Some(SelfTest::Efi),
+            "test=efi-reset" => Some(SelfTest::EfiReset),
             "test=devices" => Some(SelfTest::Devices),
             "test=tune-revert" => Some(SelfTest::TuneRevert),
             "test=tune-stall" => Some(SelfTest::TuneStall),

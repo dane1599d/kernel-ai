@@ -287,6 +287,47 @@ impl Memory {
         Ok(())
     }
 
+    /// Maps the firmware page `phys` at `addr` in `space`, present, writable and
+    /// executable, for kernel use only: `efi.rs`'s temporary PML4 for
+    /// SetVirtualAddressMap, which maps the runtime regions 1:1. Never OWNED, so
+    /// tearing the space down leaves the firmware's frame alone.
+    pub fn map_firmware_page(
+        &mut self,
+        space: &mut UserSpace,
+        addr: u64,
+        phys: u64,
+    ) -> Result<(), &'static str> {
+        if !is_user_page(addr) {
+            return Err("not a lower-half page address");
+        }
+        let frame = PhysFrame::containing_address(PhysAddr::new(phys));
+        let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
+        let mut tables = Counting {
+            inner: Frames {
+                bitmap: &mut self.frames,
+                hhdm: self.hhdm,
+            },
+            allocated: 0,
+        };
+        let hhdm = self.hhdm;
+        // SAFETY: the PML4 belongs to `space` and is reached through the HHDM.
+        let mut mapper = unsafe {
+            OffsetPageTable::new(
+                &mut *((hhdm + space.pml4) as *mut PageTable),
+                VirtAddr::new(hhdm),
+            )
+        };
+        let page = Page::<Size4KiB>::containing_address(VirtAddr::new(addr));
+        // SAFETY: the frame is firmware memory the space never owns, in its lower half.
+        let mapped =
+            unsafe { mapper.map_to_with_table_flags(page, frame, flags, flags, &mut tables) };
+        space.frames += tables.allocated;
+        USER_FRAMES.fetch_add(tables.allocated, Ordering::Relaxed);
+        mapped
+            .map(|flush| flush.ignore())
+            .map_err(|_| "page already mapped or out of frames for page tables")
+    }
+
     /// Links the window whose PDPT is at `pdpt` (built by the kernel, read-only and
     /// no-execute at every level) into `space`'s PML4 slot holding `base`: one entry,
     /// no frame taken. Linking it again changes nothing; a slot holding anything

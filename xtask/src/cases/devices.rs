@@ -90,6 +90,19 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("fail-reset", "test=panic-reset what=fail panic=reset")
     },
+    // ADR 0008: UEFI runtime services, mapped and switched to virtual addresses.
+    TestCase {
+        expect: &[
+            "efi: runtime services at",
+            "efi: SetVariable, GetVariable and a delete round-tripped a variable",
+        ],
+        ..case("efi", "test=efi")
+    },
+    TestCase {
+        resets: true,
+        expect: &["efi: resetting through ResetSystem"],
+        ..case("efi-reset", "test=efi-reset")
+    },
     // ADR 0007 section 3: a record per bound device, read by DEV_LIST from ring 3.
     TestCase {
         usb: &["usb-kbd"],
