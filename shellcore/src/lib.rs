@@ -33,6 +33,7 @@ mod rules;
 pub mod script;
 mod show;
 pub mod state;
+pub mod targets;
 pub mod tiers;
 mod tune;
 mod undo;
@@ -100,6 +101,11 @@ pub trait Host {
     /// Starts the stopped service `name`.
     fn start_service(&self, _name: &str) -> Result<(), String> {
         Err(String::from("services cannot be started here"))
+    }
+    /// The services the supervisor runs, so a stop names a service or a process
+    /// by what it is. Without them, a stop runs the row the model picked.
+    fn services(&self) -> Result<Vec<targets::Service>, String> {
+        Err(String::from("services cannot be listed here"))
     }
     /// Revokes a standing rule's grant node, through the `Grant` handle the
     /// trusted path gave for it.

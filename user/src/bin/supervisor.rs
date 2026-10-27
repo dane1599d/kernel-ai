@@ -4,7 +4,8 @@
 //! one carries on with the same counts and re-attaches to services still running.
 //!
 //! It also serves `supervisor`: `stop <name>` ends a service and keeps it down,
-//! across its own restarts too, until `start <name>` (see `supervise::check`).
+//! across its own restarts too, until `start <name>` (see `supervise::check`);
+//! `services` lists them, for the shell to tell a service from a process.
 
 #![no_std]
 #![no_main]
@@ -157,10 +158,13 @@ fn serve(services: &mut [Service]) {
 }
 
 fn handle(services: &mut [Service], text: &str) -> String {
+    let records: Vec<Record> = services.iter().map(|s| s.record.clone()).collect();
+    if text.trim() == supervise::SERVICES {
+        return supervise::listing(&records);
+    }
     let Some(request) = Request::parse(text) else {
         return String::from("err unknown request");
     };
-    let records: Vec<Record> = services.iter().map(|s| s.record.clone()).collect();
     let index = match supervise::check(request, &records) {
         Ok(index) => index,
         Err(why) => return String::from(why),

@@ -12,11 +12,13 @@ use alloc::format;
 use alloc::rc::Rc;
 use alloc::string::{String, ToString};
 use alloc::vec;
+use alloc::vec::Vec;
 use kabi::sched::{SchedStats, TrialRequest};
 use llmproto::act::{self, ActError, ActRequest, Call};
 use llmproto::chat::Completion;
 use llmproto::script::{self, Answer, AnswerError, ScriptRequest};
 use llmproto::tune::{self, TuneRequest};
+use shellcore::targets::Service;
 use shellcore::{DEFAULT_CONFIG, Host, SCRIPT_ROUND_MS, Shell};
 use user::{arg, args, logln, println, sys};
 
@@ -47,8 +49,17 @@ const SUPERVISOR_CALL_MS: u64 = 10_000;
 
 /// Sends `stop <name>` or `start <name>` to the supervisor: `ok`, or `err <why>`.
 fn supervise(verb: &str, name: &str) -> Result<(), String> {
-    let mut reply = vec![0u8; 256];
-    let request = format!("{verb} {name}");
+    let text = ask_supervisor(&format!("{verb} {name}"))?;
+    match text.split_once(' ').unwrap_or((&text, "")) {
+        ("ok", _) => Ok(()),
+        ("err", why) => Err(why.to_string()),
+        _ => Err(String::from("the supervisor's answer was malformed")),
+    }
+}
+
+/// Sends `request` to the supervisor over the route; its answer.
+fn ask_supervisor(request: &str) -> Result<String, String> {
+    let mut reply = vec![0u8; 2048];
     let len = sys::call_route(
         supervisor(),
         request.as_bytes(),
@@ -57,11 +68,7 @@ fn supervise(verb: &str, name: &str) -> Result<(), String> {
     )
     .map_err(|error| format!("the supervisor did not answer ({error:?})"))?;
     let text = core::str::from_utf8(&reply[..len.min(reply.len())]).unwrap_or("err not text");
-    match text.split_once(' ').unwrap_or((text, "")) {
-        ("ok", _) => Ok(()),
-        ("err", why) => Err(why.to_string()),
-        _ => Err(String::from("the supervisor's answer was malformed")),
-    }
+    Ok(text.to_string())
 }
 
 impl Host for System {
@@ -167,6 +174,18 @@ impl Host for System {
 
     fn start_service(&self, name: &str) -> Result<(), String> {
         supervise("start", name)
+    }
+
+    fn services(&self) -> Result<Vec<Service>, String> {
+        let text = ask_supervisor(supervise::SERVICES)?;
+        let listed = supervise::parse_listing(&text)
+            .ok_or_else(|| format!("the supervisor's list was malformed: {text}"))?;
+        let services = listed.into_iter().map(|s| Service {
+            name: s.name,
+            pid: s.pid,
+            stopped: s.stopped,
+        });
+        Ok(services.collect())
     }
 
     fn once_check(&self, badge: u64, digest: &[u8; 32]) -> Result<(), String> {

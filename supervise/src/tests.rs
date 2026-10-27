@@ -235,6 +235,39 @@ fn stop_and_start_requests_parse_and_are_checked() {
 }
 
 #[test]
+fn services_lists_pids_and_stops_but_no_protected_name() {
+    let mut records = vec![
+        Record::new("llm"),
+        Record::new("indexer"),
+        Record::new("notes"),
+    ];
+    records[1].pid = 12;
+    records[2].stopped = true;
+    let text = listing(&records);
+    assert_eq!(text, "ok indexer=12 notes=stopped");
+    let listed = parse_listing(&text).unwrap();
+    assert_eq!(
+        listed,
+        vec![
+            Listed {
+                name: "indexer".into(),
+                pid: 12,
+                stopped: false
+            },
+            Listed {
+                name: "notes".into(),
+                pid: 0,
+                stopped: true
+            },
+        ]
+    );
+    assert_eq!(parse_listing("ok"), Some(vec![]));
+    for bad in ["", "err unknown request", "ok indexer", "ok a=x"] {
+        assert_eq!(parse_listing(bad), None, "{bad:?}");
+    }
+}
+
+#[test]
 fn unsupervised_lines_take_no_caps_and_stop_is_a_cap() {
     let plan = parse_plan(
         "spinner program=spinner unsupervised
