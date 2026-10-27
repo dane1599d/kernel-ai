@@ -7,7 +7,10 @@
 //! For boot case `pkg-image`, `step=image`, `image-again` and `image-tampered`
 //! each check the image's repository, print each package it refuses by name,
 //! and make the rest generation 1 if the store has no generation yet. Each first
-//! shows that BOOT_READ refuses every path outside `pkgrepo/`.
+//! shows that BOOT_READ refuses every path outside `pkgrepo/`. Then each app of
+//! the current generation is added as a package version of its component
+//! (COMP_ADD, `p-` and its SHA-256's first 12 hex digits), and the supervisor,
+//! through the route `uses=supervisor` gives, starts its `start=pkg` line there.
 //!
 //! For boot case `pkg-store` (P2 plan §1), three boots on one data disk, each a
 //! `step=`:
@@ -38,6 +41,7 @@ use kabi::handle::{Handle, HandleInfo, Kind, MAX_STARTUP, MAX_TRANSFER};
 use kaipkg::bundle;
 use kaipkg::fsvol::{FsVolume, Transport};
 use kaipkg::generation::{Generation, Time};
+use kaipkg::header::{Header, Kind as PackageKind};
 use kaipkg::image::Files;
 use kaipkg::resolve::{Entry, Want};
 use kaipkg::store::{self, Ctx, Ledger, Source, Store, Volume};
@@ -216,12 +220,68 @@ fn image(vol: &mut FsVolume<Calls>, step: &str) -> Result<String, String> {
         false => format!("{verified}; generation {current} stays current: {listed}"),
     };
     let summary = store::check(cx.vol, &store, time)?;
-    cx.vol.write(&format!("pkg/case/{step}"), line.as_bytes())?;
-    Ok(format!(
-        "{line} (store checks: current {}, {} object(s))",
+    println!(
+        "pkg: {line} (store checks: current {}, {} object(s))",
         summary.current,
         summary.objects.len()
-    ))
+    );
+    let started = start_apps(cx.vol, current)?;
+    let line = match started.is_empty() {
+        true => format!("generation {current} holds no app to start"),
+        false => format!("started from generation {current}: {}", started.join(", ")),
+    };
+    cx.vol.write(&format!("pkg/case/{step}"), line.as_bytes())?;
+    Ok(line)
+}
+
+/// The supervisor's route, from the plan line's `uses=supervisor`.
+fn supervisor() -> Handle {
+    user::route(0).unwrap_or(Handle::NONE)
+}
+
+/// Each app of generation `n`, its artifact added as a package version of its
+/// component (COMP_ADD, which only adds: Busy when it is there already) and
+/// started on it by the supervisor (`run`); `name version as label` for each.
+fn start_apps(vol: &mut dyn Volume, n: u64) -> Result<Vec<String>, String> {
+    let mut started = Vec::new();
+    for package in store::generation(vol, n)?.packages {
+        let name = &package.name;
+        let object = vol
+            .read(&store::object_path(&package.sha))?
+            .ok_or_else(|| format!("{name}'s object is not in the store"))?;
+        let files = bundle::files(&object).map_err(|why| format!("{name}: {why}"))?;
+        let header = files
+            .first()
+            .and_then(|(_, text)| core::str::from_utf8(text).ok())
+            .ok_or_else(|| format!("{name}: no header"))?;
+        if Header::parse(header)?.kind != PackageKind::App {
+            continue;
+        }
+        let artifact = files
+            .iter()
+            .find(|(path, _)| *path == bundle::ARTIFACT)
+            .map(|(_, bytes)| *bytes)
+            .ok_or_else(|| format!("{name}: an app without {}", bundle::ARTIFACT))?;
+        let sha = kaipkg::sha256(artifact);
+        match sys::comp_add(name, artifact, &sha) {
+            Ok(()) | Err(Error::Busy) => {}
+            Err(e) => return Err(format!("COMP_ADD {name}: {e:?}")),
+        }
+        let label = kabi::live::package_label(&sha);
+        let run = supervise::Run {
+            name,
+            version: &label,
+        };
+        let mut reply = [0u8; 256];
+        let len = sys::call_route(supervisor(), run.encode().as_bytes(), &mut reply, CALL_MS)
+            .map_err(|e| format!("the supervisor did not answer {name}'s run: {e:?}"))?;
+        let reply = core::str::from_utf8(&reply[..len.min(reply.len())]).unwrap_or("");
+        if reply != "ok" {
+            return Err(format!("the supervisor refused {name}'s run: {reply}"));
+        }
+        started.push(format!("{name} {} as {label}", package.version));
+    }
+    Ok(started)
 }
 
 /// `hello` 1.0.0: its header, then a payload no two runs differ in.

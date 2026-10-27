@@ -1,18 +1,24 @@
-//! Packages (lane P): BOOT_READ, the image's signed repository for `pkg`
-//! (P4 task 1, ADR 0011 §8).
+//! Packages (lane P): BOOT_READ, the image's signed repository for `pkg`, and
+//! COMP_ADD, a component version from an installed package (P4 task 1,
+//! ADR 0011 §8, §12).
 
-use crate::process::uaccess::{copy_from_user, copy_to_user};
+use crate::log;
+use crate::process::uaccess::{copy_from_user, copy_to_user, read_struct};
+use alloc::vec::Vec;
+use kabi::live::{Add, MAX_ARTIFACT, valid_label};
 use kabi::{Error, call};
-use supervise::MAX_BOOT_PATH;
+use livecore::store::PackageArtifact;
+use supervise::{Folder, MAX_BOOT_PATH};
 
 /// The calls this area serves.
-const CALLS: &[u64] = &[call::BOOT_READ];
+const CALLS: &[u64] = &[call::BOOT_READ, call::COMP_ADD];
 
 /// One of [`CALLS`], or `None` for a number this area does not have.
 pub(super) fn handle(slot: usize, number: u64, a: &[u64; 6]) -> Option<Result<u64, Error>> {
-    CALLS
-        .contains(&number)
-        .then(|| boot_read(slot, a[0], a[1], a[2], a[3]))
+    CALLS.contains(&number).then(|| match number {
+        call::BOOT_READ => boot_read(slot, a[0], a[1], a[2], a[3]),
+        _ => comp_add(slot, a[0]),
+    })
 }
 
 /// `boot_read(path_ptr, path_len, buf, cap) -> len`: only beneath the folder the
@@ -38,4 +44,49 @@ fn boot_read(slot: usize, path_ptr: u64, path_len: u64, buf: u64, cap: u64) -> R
         copy_to_user(slot, buf, data)?;
     }
     Ok(data.len() as u64)
+}
+
+/// Whether the caller holds `/system/pkg`: spawned with the folder its plan line
+/// grants (`dir=pkg`, ADR 0011 §12), and that line is its own program's. No
+/// capability bit or name stands for it.
+fn holds_the_store(slot: usize) -> Result<(), Error> {
+    let me = crate::process::identity(slot);
+    if !me.folders {
+        return Err(Error::Permission);
+    }
+    let grants = crate::process::supervision::plan_grants(me.name.as_str(), me.program.as_str())
+        .map_err(|_| Error::Permission)?;
+    match grants.dirs.contains(&Folder::Pkg) {
+        true => Ok(()),
+        false => Err(Error::Permission),
+    }
+}
+
+/// `comp_add(&live::Add) -> 0`: the artifact is copied out and hashed before the
+/// component lock is taken; the store only adds (`Component::add_package`).
+fn comp_add(slot: usize, add_ptr: u64) -> Result<u64, Error> {
+    holds_the_store(slot)?;
+    let add: Add = read_struct(slot, add_ptr)?;
+    let name_len = usize::try_from(add.name_len).map_err(|_| Error::TooBig)?;
+    if name_len > kabi::MAX_NAME {
+        return Err(Error::TooBig);
+    }
+    let mut name = [0u8; kabi::MAX_NAME];
+    copy_from_user(slot, add.name_ptr, &mut name[..name_len])?;
+    let name = core::str::from_utf8(&name[..name_len]).map_err(|_| Error::Invalid)?;
+    if !valid_label(name) {
+        return Err(Error::Invalid);
+    }
+    let len = usize::try_from(add.artifact_len).map_err(|_| Error::TooBig)?;
+    if len > MAX_ARTIFACT {
+        return Err(Error::TooBig);
+    }
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(len).map_err(|_| Error::NoMemory)?;
+    bytes.resize(len, 0);
+    copy_from_user(slot, add.artifact_ptr, &mut bytes)?;
+    let artifact = PackageArtifact::check(bytes, &add.sha)?;
+    let label = crate::process::components::add_package(name, artifact)?;
+    log!("live: {name} {label} added from an installed package");
+    Ok(0)
 }

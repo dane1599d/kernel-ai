@@ -36,7 +36,7 @@ use std::{fs, io};
 use wit_parser::WorldItem;
 
 /// The artifact's path inside an `app` package, its second file.
-pub const ARTIFACT: &str = "app.wasm";
+pub const ARTIFACT: &str = bundle::ARTIFACT;
 
 /// A built-in app: the version on the boot drive it is packed from, and the
 /// header fields the artifact does not carry.

@@ -36,7 +36,9 @@ const BOOT_2: TestCase = TestCase {
 const IMAGE_AGAIN: TestCase = TestCase {
     expect: &[
         "pkg: the image's repository verified, 1 kept and 0 refused; generation 1 stays current: notes 1.0.0",
+        "pkg: started from generation 1: notes 1.0.0 as p-",
         "pkg-image: generation 1 is notes 1.0.0, from the image's signed repository",
+        "pkg-image: notes serves on package version p-",
         "pkg-image: boot 2: fs shows generation 1 current, as pkg left it",
     ],
     server: false,
@@ -47,12 +49,18 @@ const IMAGE_AGAIN: TestCase = TestCase {
 pub(super) const CASES: &[TestCase] = &[
     // P4 task 1: `pkg` reads the image's signed repository from the boot bundle
     // with BOOT_READ, which its plan line's `boot=pkgrepo` grants beneath
-    // `pkgrepo/` only, checks it with kaituf, and makes it generation 1.
+    // `pkgrepo/` only, checks it with kaituf, and makes it generation 1. notes
+    // is a `start=pkg` app: `pkg` adds its artifact as package version `p-<sha12>`
+    // (COMP_ADD) and the supervisor starts it there, on `pkg`'s request only.
     TestCase {
         expect: &[
             "pkg: BOOT_READ refuses every path outside pkgrepo/",
             "pkg: the image's repository verified, 1 kept and 0 refused; generation 1 is its packages: notes 1.0.0",
+            "live: notes p-",
+            "notes starts on package version p-",
+            "pkg: started from generation 1: notes 1.0.0 as p-",
             "pkg-image: generation 1 is notes 1.0.0, from the image's signed repository",
+            "pkg-image: notes serves on package version p-",
             "pkg-image: boot 1: fs shows generation 1 current, as pkg left it",
         ],
         server: false,
@@ -67,6 +75,7 @@ pub(super) const CASES: &[TestCase] = &[
         expect: &[
             "pkg: the image's notes-1.0.0.kpkg is refused: length or hash mismatch",
             "pkg: the image's repository verified, 0 kept and 1 refused; generation 1 is its packages: no packages",
+            "pkg: generation 1 holds no app to start",
             "pkg-image: generation 1 holds no package: the tampered notes is not in it",
         ],
         server: false,

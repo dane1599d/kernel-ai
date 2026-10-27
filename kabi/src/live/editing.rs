@@ -1,7 +1,9 @@
 //! The calls the editor uses (M9b): upload a version, read the store, and relay a
-//! control request; and the label and commit rules they check.
+//! control request; `pkg`'s version from a package (P4 task 1); and the label and
+//! commit rules they check.
 
-use super::{COMMIT_LEN, MAX_CONTROL, MAX_LABEL, UPLOAD_PREFIX, label_text, phase};
+use super::{COMMIT_LEN, MAX_CONTROL, MAX_LABEL, PACKAGE_PREFIX, UPLOAD_PREFIX, label_text, phase};
+use alloc::string::String;
 
 /// Argument of [`crate::call::COMP_PUT`].
 #[derive(Clone, Copy, Debug, Default)]
@@ -125,6 +127,42 @@ pub fn upload_seq(label: &str) -> Option<u64> {
 /// may not use it.
 pub fn is_upload_label(label: &str) -> bool {
     upload_seq(label).is_some()
+}
+
+/// The label of the package version whose artifact has SHA-256 `sha`:
+/// [`PACKAGE_PREFIX`] and its first 12 hex digits.
+pub fn package_label(sha: &[u8; 32]) -> String {
+    let mut label = String::from(PACKAGE_PREFIX);
+    for byte in &sha[..6] {
+        label.push_str(&alloc::format!("{byte:02x}"));
+    }
+    label
+}
+
+/// Whether `label` has the form of a package label, [`PACKAGE_PREFIX`] and 12
+/// lowercase hex digits. Boot modules may not use it.
+pub fn is_package_label(label: &str) -> bool {
+    label.strip_prefix(PACKAGE_PREFIX).is_some_and(|hex| {
+        hex.len() == 12
+            && hex
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    })
+}
+
+/// Argument of [`crate::call::COMP_ADD`]: a version of component `name` from an
+/// installed package, which `pkg` adds and the kernel labels from `sha`.
+#[derive(Clone, Copy, Debug, Default)]
+#[repr(C)]
+pub struct Add {
+    /// The component.
+    pub name_ptr: u64,
+    pub name_len: u64,
+    /// The artifact, at most [`MAX_ARTIFACT`](super::MAX_ARTIFACT).
+    pub artifact_ptr: u64,
+    pub artifact_len: u64,
+    /// The artifact's full SHA-256, which the kernel checks against its own.
+    pub sha: [u8; 32],
 }
 
 /// Whether `text` is a git commit id: [`COMMIT_LEN`] lowercase hex digits.

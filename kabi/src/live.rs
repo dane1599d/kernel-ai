@@ -46,8 +46,8 @@
 mod editing;
 
 pub use editing::{
-    Control, Info, Put, Read, is_upload_label, put_label, read, relayable, upload_seq,
-    valid_commit, valid_label,
+    Add, Control, Info, Put, Read, is_package_label, is_upload_label, package_label, put_label,
+    read, relayable, upload_seq, valid_commit, valid_label,
 };
 
 /// Kinds of [`Event`] a host reports.
@@ -215,6 +215,9 @@ pub const LINEAGE: usize = 6;
 pub const COMMIT_LEN: usize = 40;
 /// Uploaded versions are labelled this and a number: `e1`, `e2`, ...
 pub const UPLOAD_PREFIX: &str = "e";
+/// Versions `pkg` adds from an installed package (P4 task 1) are labelled this
+/// and the first 12 hex digits of the artifact's SHA-256: `p-0a1b2c3d4e5f`.
+pub const PACKAGE_PREFIX: &str = "p-";
 /// An upload's source: at most this many bytes, files, and lines in a file. The
 /// editor keeps to the same limits, so the kernel's change view stays bounded.
 pub const UPLOAD_SOURCE_MAX: usize = 60 * 1024;

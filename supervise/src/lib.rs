@@ -32,6 +32,8 @@ pub struct ServiceSpec {
     pub dirs: Vec<Folder>,
     /// The boot files it may read with BOOT_READ, from `boot=`.
     pub boot: Option<BootFiles>,
+    /// When the supervisor starts it, from `start=`.
+    pub start: Start,
     /// Restart policy; the plan may change `max_backoff_ms` and `max_restarts`.
     pub policy: Policy,
     /// From the word `unsupervised`: the kernel starts it once at boot and the
@@ -111,6 +113,69 @@ impl BootFiles {
                         .bytes()
                         .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
             })
+    }
+}
+
+/// When the supervisor starts a service (P4 task 1).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Start {
+    /// At boot, as every service did before packages.
+    #[default]
+    Boot,
+    /// `start=pkg`: an app the current generation holds. It stays down until the
+    /// holder of `/system/pkg` asks with [`Run`], and then runs, and restarts, on
+    /// the package version that request names, passed as `version=`.
+    Pkg,
+}
+
+/// `run <name> version=<label>`: the holder of `/system/pkg` asks for `start=pkg`
+/// service `name` on package version `label` (`p-` and 12 hex digits), which it
+/// added with COMP_ADD. The supervisor takes it from no one else ([`check_run`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Run<'a> {
+    pub name: &'a str,
+    pub version: &'a str,
+}
+
+impl<'a> Run<'a> {
+    pub fn parse(text: &'a str) -> Option<Self> {
+        let mut words = text.split_whitespace();
+        let (Some("run"), Some(name), Some(version), None) =
+            (words.next(), words.next(), words.next(), words.next())
+        else {
+            return None;
+        };
+        let version = version.strip_prefix("version=")?;
+        (valid_name(name) && kabi::live::is_package_label(version)).then_some(Run { name, version })
+    }
+
+    pub fn encode(self) -> String {
+        format!("run {} version={}", self.name, self.version)
+    }
+}
+
+/// The index among `services` (each spec with its running pid) of the service
+/// `run` names, if `caller` may ask for it: the running instance of a service
+/// whose plan line grants `/system/pkg` (`dir=pkg`), and only for a `start=pkg`
+/// service. The kernel checks the holder's program when it spawns it.
+pub fn check_run(
+    run: Run,
+    services: &[(&ServiceSpec, Option<u64>)],
+    caller: u64,
+) -> Result<usize, &'static str> {
+    let holds = services
+        .iter()
+        .any(|(spec, pid)| *pid == Some(caller) && spec.dirs.contains(&Folder::Pkg));
+    if !holds {
+        return Err("err only the holder of /system/pkg may run a package");
+    }
+    let index = services
+        .iter()
+        .position(|(spec, _)| spec.name == run.name)
+        .ok_or("err unknown service")?;
+    match services[index].0.start {
+        Start::Pkg => Ok(index),
+        Start::Boot => Err("err not a start=pkg service"),
     }
 }
 
@@ -357,7 +422,7 @@ impl Plan {
 
 /// Reads the plan: one service per line, `name [program=P] [pages=N] [stack_pages=N]
 /// [burst_ms=N] [caps=serve+net+call+policy+component+publish+model+threads+resolve+stop+script]
-/// [uses=A+B] [dir=pkg] [boot=pkgrepo] [backoff_max_ms=N] [max_restarts=N] [unsupervised] [other=args ...]`. The supervisor keys set limits,
+/// [uses=A+B] [dir=pkg] [boot=pkgrepo] [start=pkg] [backoff_max_ms=N] [max_restarts=N] [unsupervised] [other=args ...]`. The supervisor keys set limits,
 /// routes, folders and policy; everything else is passed to the program. A bad line skips only
 /// that service, so one typo cannot keep every other service down.
 pub fn parse_plan(text: &str) -> Plan {
@@ -392,6 +457,7 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
     let mut uses = Vec::new();
     let mut dirs: Option<Vec<Folder>> = None;
     let mut boot: Option<BootFiles> = None;
+    let mut start: Option<Start> = None;
     let mut unsupervised = false;
     for word in words {
         if word == "unsupervised" {
@@ -436,6 +502,15 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
                     .ok_or_else(|| format!("{name}: no boot files {value:?} for boot="))?;
                 boot = Some(files);
             }
+            Some(("start", value)) => {
+                if start.is_some() {
+                    return Err(format!("{name}: start= given twice"));
+                }
+                if value != "pkg" {
+                    return Err(format!("{name}: start= is pkg or not given, not {value:?}"));
+                }
+                start = Some(Start::Pkg);
+            }
             Some(("backoff_max_ms", value)) => policy.max_backoff_ms = number(name, value)?,
             Some(("max_restarts", value)) => policy.max_restarts = number(name, value)? as usize,
             _ => args.push(word),
@@ -452,6 +527,14 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
             "{name}: an unsupervised process takes no caps=, uses=, dir= or boot="
         ));
     }
+    let start = start.unwrap_or_default();
+    if start == Start::Pkg && unsupervised {
+        return Err(format!("{name}: an unsupervised process takes no start="));
+    }
+    // A package's version comes from `pkg`'s request, never the plan.
+    if start == Start::Pkg && args.iter().any(|a| a.starts_with("version=")) {
+        return Err(format!("{name}: a start=pkg line names no version="));
+    }
     Ok(ServiceSpec {
         name: name.to_string(),
         program: program.to_string(),
@@ -460,6 +543,7 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
         uses,
         dirs,
         boot,
+        start,
         policy,
         unsupervised,
     })

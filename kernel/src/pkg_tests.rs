@@ -103,19 +103,21 @@ impl Step {
     }
 }
 
-/// Plan lines: `fs`, then `pkg` with `/system/pkg`, and for `pkg-image` the
-/// image's repository too. `pkg` needs a deeper stack than the 16-page default:
-/// fsproto's minicbor decoder recurses, and overflowed it in `Decoder::array`.
+/// Plan lines: `fs`, then `pkg` with `/system/pkg`. For `pkg-image`, `pkg` also
+/// reads the image's repository and has a route to the supervisor, and notes is
+/// a `start=pkg` app, not a version the boot manifest names. `pkg` needs a
+/// deeper stack than the 16-page default: fsproto's minicbor decoder recurses,
+/// and overflowed it in `Decoder::array`.
 pub fn plan(step: Step) -> String {
-    let boot = match step.case() {
-        "pkg-image" => " boot=pkgrepo",
-        _ => "",
-    };
-    format!(
-        "{}\n{CLIENT} dir=pkg{boot} pages=2048 stack_pages=128 step={}",
-        kabi::plan::FS,
-        step.name()
-    )
+    let fs = kabi::plan::FS;
+    let step_name = step.name();
+    match step.case() {
+        "pkg-image" => format!(
+            "{fs}\n{CLIENT} dir=pkg boot=pkgrepo caps=call uses=supervisor pages=2048 stack_pages=128 step={step_name}\n{}",
+            kabi::plan::notes_from_pkg()
+        ),
+        _ => format!("{fs}\n{CLIENT} dir=pkg pages=2048 stack_pages=128 step={step_name}"),
+    }
 }
 
 pub fn check(step: Step) -> Result<(), &'static str> {
@@ -165,8 +167,44 @@ fn image_generation(step: Step) -> Result<(), &'static str> {
         Step::ImageTampered => {
             log!("pkg-image: generation 1 holds no package: the tampered notes is not in it")
         }
-        _ => log!("pkg-image: generation 1 is notes 1.0.0, from the image's signed repository"),
+        _ => {
+            log!("pkg-image: generation 1 is notes 1.0.0, from the image's signed repository");
+            serves_its_package()?;
+        }
     }
+    Ok(())
+}
+
+/// notes serves on a package version (`p-` and 12 hex digits) that the store
+/// holds with the full SHA-256 of its bytes, which the kernel hashes again here.
+fn serves_its_package() -> Result<(), &'static str> {
+    let mut active = None;
+    for _ in 0..WAIT_MS / 50 {
+        let ledger = process::components::ledger("notes");
+        let label = ledger.as_ref().and_then(|l| l.active().map(String::from));
+        if ipc::server_of("notes").is_some()
+            && let Some(label) = label.filter(|l| kabi::live::is_package_label(l))
+        {
+            active = Some(label);
+            break;
+        }
+        threads::sleep_ms(50);
+    }
+    let label = active.ok_or("pkg-image: notes never served on a package version")?;
+    let component = process::components::component("notes").ok_or("pkg-image: no notes")?;
+    let version = component
+        .version(&label)
+        .ok_or("pkg-image: notes's active version is not stored")?;
+    let livecore::store::Origin::Package { sha } = version.origin else {
+        return Err("pkg-image: notes's active version is not a package's");
+    };
+    let bytes = version.bytes.as_slice().to_vec();
+    if livecore::store::PackageArtifact::check(bytes, &sha).is_err()
+        || kabi::live::package_label(&sha) != label
+    {
+        return Err("pkg-image: notes's package version is not the digest it names");
+    }
+    log!("pkg-image: notes serves on package version {label}, its full SHA-256 checked");
     Ok(())
 }
 

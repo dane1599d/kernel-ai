@@ -595,3 +595,67 @@ fn routes_form_no_cycle_and_never_reach_the_shell_or_edit() {
         );
     }
 }
+
+const RUN_PLAN: &str = "fs caps=serve\n\
+    pkg dir=pkg boot=pkgrepo caps=call uses=supervisor\n\
+    notes program=comphost caps=serve+component start=pkg\n\
+    shell caps=call";
+
+#[test]
+fn a_start_pkg_line_waits_for_pkg_and_names_no_version() {
+    let plan = parse_plan(RUN_PLAN);
+    assert!(plan.errors.is_empty(), "{:?}", plan.errors);
+    let notes = plan.services.iter().find(|s| s.name == "notes").unwrap();
+    assert_eq!(notes.start, Start::Pkg);
+    assert_eq!(notes.args, "");
+    assert_eq!(parse_plan("notes").services[0].start, Start::Boot);
+    for bad in [
+        "notes start=",
+        "notes start=boot",
+        "notes start=PKG",
+        "notes start=pkg start=pkg",
+        "notes start=pkg version=2",
+        "notes start=pkg unsupervised",
+    ] {
+        let plan = parse_plan(bad);
+        assert!(plan.services.is_empty() && plan.errors.len() == 1, "{bad}");
+    }
+}
+
+#[test]
+fn only_the_store_holder_may_run_a_package_version() {
+    let plan = parse_plan(RUN_PLAN);
+    let pids = [Some(10), Some(11), None, Some(13)];
+    let held: Vec<(&ServiceSpec, Option<u64>)> = plan.services.iter().zip(pids).collect();
+    let run = Run::parse("run notes version=p-0a1b2c3d4e5f").unwrap();
+    assert_eq!(run.encode(), "run notes version=p-0a1b2c3d4e5f");
+    assert_eq!(check_run(run, &held, 11), Ok(2));
+    // fs, the shell, the kernel and an unknown pid are not the store's holder.
+    for caller in [10, 13, 0, 99] {
+        assert!(check_run(run, &held, caller).is_err(), "{caller}");
+    }
+    // A holder that is not running holds nothing.
+    let stopped: Vec<(&ServiceSpec, Option<u64>)> = plan
+        .services
+        .iter()
+        .zip([Some(10), None, None, Some(13)])
+        .collect();
+    assert!(check_run(run, &stopped, 11).is_err());
+    let shell = Run::parse("run shell version=p-0a1b2c3d4e5f").unwrap();
+    assert_eq!(
+        check_run(shell, &held, 11),
+        Err("err not a start=pkg service")
+    );
+    for bad in [
+        "run notes",
+        "run notes version=2",
+        "run notes version=c-0a1b2c3d4e5f",
+        "run notes version=p-0A1B2C3D4E5F",
+        "run notes version=p-0a1b2c3d4e5",
+        "run notes version=p-0a1b2c3d4e5f extra",
+        "run no/tes version=p-0a1b2c3d4e5f",
+        "start notes",
+    ] {
+        assert_eq!(Run::parse(bad), None, "{bad}");
+    }
+}
