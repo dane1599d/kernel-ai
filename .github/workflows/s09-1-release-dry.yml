@@ -1,0 +1,165 @@
+# Spike S09-1 with S08-2 (ADR 0009, ADR 0008; P4 plan section 5): the release
+# dry run. Spike only, never merged. No model, no LLM, no QEMU, no secrets; the
+# TUF keys are throwaway and live only inside one job.
+name: S09-1 release dry run
+
+on:
+  push:
+    branches: ["spike/s09-1-**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Measure 3 and S08-2: the release image from scratch on two fresh runners, no cache.
+  image:
+    name: Release image (runner ${{ matrix.runner }})
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        runner: [a, b]
+    # Logs and outputs go outside the checkout: an untracked file would mark the
+    # build -dirty and change the image.
+    env:
+      OUT: ${{ github.workspace }}/../out
+    steps:
+      - uses: actions/checkout@v4
+      - run: mkdir -p "$OUT"
+      - run: rustup show active-toolchain || rustup toolchain install
+      - run: rustup target add wasm32-unknown-unknown
+      - name: Build the release image
+        run: |
+          start=$(date +%s)
+          cargo xtask release-image --out "$OUT/kernel-ai.img" | tee "$OUT/image.log"
+          echo "measure image_build_s $(( $(date +%s) - start ))" | tee -a "$OUT/image.log"
+          git status --porcelain | tee -a "$OUT/image.log"
+      - name: Dep-info licence scan (measure 1b)
+        if: matrix.runner == 'a'
+        run: python3 spikes/s09-1/depinfo_scan.py target "$PWD" | tee "$OUT/depinfo.log"
+      - name: Custom target graph against the stand-in (measure 5)
+        if: matrix.runner == 'a'
+        run: |
+          tree() { cargo tree --locked -p user -e normal,no-proc-macro --prefix none --format '{p}' "$@" | sed 's/ (.*//' | sort -u; }
+          tree --target x86_64-unknown-none > "$OUT/standin.txt"
+          tree -Zjson-target-spec --target user/x86_64-kai-user.json > "$OUT/custom.txt" 2> "$OUT/custom.err" || cat "$OUT/custom.err"
+          log="$OUT/graph.log"
+          echo "measure graph_standin_crates $(wc -l < "$OUT/standin.txt")" | tee "$log"
+          echo "measure graph_custom_crates $(wc -l < "$OUT/custom.txt")" | tee -a "$log"
+          if diff "$OUT/standin.txt" "$OUT/custom.txt" | tee -a "$log"; then echo "measure graph_match yes"; else echo "measure graph_match no"; fi | tee -a "$log"
+      - name: Sign the image as a TUF target with throwaway keys, fetch and verify it
+        if: matrix.runner == 'a'
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet tuf==6.0.0 'securesystemslib[crypto]==1.3.0'
+          "$RUNNER_TEMP/venv/bin/python" spikes/s09-1/tuf_target.py "$OUT/kernel-ai.img" "$RUNNER_TEMP/tuf" | tee "$OUT/tuf.log"
+      - name: Source tarball for the offline rebuild (measure 4)
+        if: matrix.runner == 'a'
+        run: |
+          git rev-parse --short=12 HEAD > COMMIT
+          sysroot=$(rustc --print sysroot)
+          mkdir -p .cargo-offline
+          cargo vendor --locked --versioned-dirs             --sync "$sysroot/lib/rustlib/src/rust/library/Cargo.toml" vendor > .cargo-offline/config.toml
+          tar -czf "$OUT/src.tar.gz" --exclude=./target --exclude=./.git . target/limine-*/
+          echo "measure source_tarball_bytes $(stat -c %s "$OUT/src.tar.gz")" | tee "$OUT/tarball.log"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image-${{ matrix.runner }}
+          path: |
+            ${{ env.OUT }}/*.log
+            ${{ env.OUT }}/*.txt
+      - uses: actions/upload-artifact@v4
+        if: matrix.runner == 'a'
+        with:
+          name: offline-inputs
+          path: |
+            ${{ env.OUT }}/src.tar.gz
+            ${{ env.OUT }}/kernel-ai.img
+
+  # Measure 3: NOTICES.txt rendered on Linux and Windows.
+  notices:
+    name: NOTICES.txt (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+      - run: rustup show active-toolchain || rustup toolchain install
+      - run: rustup target add wasm32-unknown-unknown
+      - shell: bash
+        run: |
+          cargo install --locked cargo-about --version 0.9.2 --features cli
+          start=$(date +%s)
+          cargo xtask notices
+          echo "measure notices_s $(( $(date +%s) - start ))" | tee notices-${{ matrix.os }}.log
+          echo "measure notices_bytes $(wc -c < NOTICES.txt)" | tee -a notices-${{ matrix.os }}.log
+          echo "measure notices_sha256 $(sha256sum NOTICES.txt | cut -d' ' -f1)" | tee -a notices-${{ matrix.os }}.log
+          git diff --quiet NOTICES.txt && echo "measure notices_matches_committed yes" | tee -a notices-${{ matrix.os }}.log || echo "measure notices_matches_committed no" | tee -a notices-${{ matrix.os }}.log
+      - name: Limine's sections are its files, byte for byte (measure 2)
+        shell: bash
+        run: |
+          dir=$(ls -d target/limine-*/limine-binary)
+          for f in LICENSE 3RDPARTY.md; do
+            python3 -c "import sys; n=open(sys.argv[1],'rb').read().replace(b'\r\n',b'\n'); f=open(sys.argv[2],'rb').read().replace(b'\r\n',b'\n'); print('measure limine_'+sys.argv[3]+'_verbatim', 'yes' if f in n else 'no')" NOTICES.txt "$dir/$f" "${f%%.*}" | tee -a notices-${{ matrix.os }}.log
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: notices-${{ matrix.os }}
+          path: notices-*.log
+
+  # Measure 4: rebuild from the source tarball with no network, at the same path.
+  offline:
+    name: Offline rebuild from the source tarball
+    needs: image
+    runs-on: ubuntu-24.04
+    steps:
+      - run: rustup toolchain list
+      - uses: actions/download-artifact@v4
+        with:
+          name: offline-inputs
+      - name: Install the pinned toolchain for the container to borrow
+        run: |
+          mkdir src && tar -xzf src.tar.gz -C src
+          cd src && rustup show active-toolchain || rustup toolchain install
+          rustup target add wasm32-unknown-unknown
+      - name: Build with --network none
+        run: |
+          ws=/home/runner/work/kernel-ai/kernel-ai
+          mkdir -p offline-home/.cargo && cp -r ~/.cargo/bin offline-home/.cargo/bin
+          cp src/.cargo-offline/config.toml offline-home/.cargo/config.toml
+          sed -i "s|directory = \"vendor\"|directory = \"$ws/vendor\"|" offline-home/.cargo/config.toml
+          docker pull -q buildpack-deps:noble
+          start=$(date +%s)
+          docker run --rm --network none -u "$(id -u):$(id -g)" \
+            -e HOME=/home/runner -e CARGO_HOME=/home/runner/.cargo -e RUSTUP_HOME=/home/runner/.rustup \
+            -e PATH=/home/runner/.cargo/bin:/usr/bin:/bin -e CARGO_NET_OFFLINE=true \
+            -v "$PWD/offline-home/.cargo:/home/runner/.cargo" -v "$HOME/.rustup:/home/runner/.rustup" \
+            -v "$PWD/src:$ws" -w "$ws" buildpack-deps:noble \
+            cargo xtask release-image --out offline.img | tee offline.log
+          echo "measure offline_build_s $(( $(date +%s) - start ))" | tee -a offline.log
+          online=$(sha256sum kernel-ai.img | cut -d' ' -f1)
+          echo "measure online_sha256 $online" | tee -a offline.log
+          [ "$(sha256sum src/offline.img | cut -d' ' -f1)" = "$online" ] && echo "measure offline_same_image yes" | tee -a offline.log || echo "measure offline_same_image no" | tee -a offline.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: offline
+          path: offline.log
+
+  compare:
+    name: Compare
+    needs: [image, notices]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+      - run: |
+          cat */*.log
+          a=$(grep 'sha256' image-a/image.log); b=$(grep 'sha256' image-b/image.log)
+          [ "$a" = "$b" ] && echo "measure image_reproducible yes" || { echo "measure image_reproducible no"; diff <(grep part image-a/image.log) <(grep part image-b/image.log); }
+          l=$(grep notices_sha256 notices-ubuntu-24.04/*.log | cut -d' ' -f3); w=$(grep notices_sha256 notices-windows-2025/*.log | cut -d' ' -f3)
+          [ "$l" = "$w" ] && echo "measure notices_linux_windows_same yes" || echo "measure notices_linux_windows_same no"

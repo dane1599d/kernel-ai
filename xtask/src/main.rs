@@ -59,6 +59,7 @@ mod models;
 mod notices;
 mod options;
 mod qemu;
+mod release_image;
 mod screen;
 mod smoke;
 mod strip;
@@ -98,6 +99,7 @@ fn main() -> ExitCode {
         Some("wit-check") => wit::main(&args[1..]),
         Some("wit-tables") => wit_tables::main(&args[1..]),
         Some("fs") => fs_tool::main(&args[1..]),
+        Some("release-image") => release_image::main(&args[1..]),
         _ => parse_args(&args).and_then(|options| execute(&options)),
     };
     match result {
