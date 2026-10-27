@@ -8,6 +8,7 @@ mod devices;
 mod kernel;
 mod network;
 mod storage;
+mod updates;
 
 use crate::buildsvc::BuildService;
 use crate::disk::Fixture;
@@ -117,6 +118,7 @@ const LANES: &[&[TestCase]] = &[
     components::CASES,
     network::CASES,
     storage::CASES,
+    updates::CASES,
 ];
 
 /// The cases `cargo xtask test` boots.
@@ -146,6 +148,7 @@ mod tests {
             components::CASES,
             network::CASES,
             storage::CASES,
+            updates::CASES,
         ];
         assert_eq!(
             cases.len(),
