@@ -193,9 +193,9 @@ fn package_dirs(root: &Path) -> Result<Vec<(String, PathBuf)>, String> {
         .collect()
 }
 
-type Packages = BTreeMap<String, PackageId>;
+pub(crate) type Packages = BTreeMap<String, PackageId>;
 
-fn load_tree(root: &Path) -> Result<(Resolve, Packages), String> {
+pub(crate) fn load_tree(root: &Path) -> Result<(Resolve, Packages), String> {
     let groups = package_dirs(root)?
         .into_iter()
         .map(|(_, dir)| {

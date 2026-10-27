@@ -20,6 +20,8 @@ extern crate alloc;
 
 mod canonical;
 mod instance;
+pub mod link;
+mod tables;
 #[cfg(test)]
 mod tests;
 
@@ -27,6 +29,7 @@ use alloc::string::ToString;
 pub use canonical::{CoreInstance, load_core};
 pub use instance::WasmInstance;
 use livecore::{Fault, Reason};
+pub use tables::{EXPORTS, IMPORTS};
 use wasmi::{CompilationMode, Config, EnforcedLimits, Engine, Module};
 
 /// Resources one instance may use.
@@ -84,4 +87,69 @@ pub fn load(wasm: &[u8], limits: Limits, log: Option<LogSink>) -> Result<WasmIns
     let module = Module::new(&engine, wasm)
         .map_err(|error| Fault::new(Reason::Compile, error.to_string()))?;
     WasmInstance::new(&engine, &module, limits, log)
+}
+
+/// A version as comphost runs it: `lifecycle 1` (hand-bound `kai-lifecycle-1`) or
+/// `lifecycle 2` (`kai:live` through the canonical ABI), as its manifest says.
+pub enum LiveInstance {
+    V1(WasmInstance),
+    V2(CoreInstance),
+}
+
+/// Loads an artifact by its manifest's `lifecycle`; a module with no manifest is
+/// `lifecycle 1`.
+#[inline(never)]
+pub fn load_live(
+    artifact: &[u8],
+    limits: Limits,
+    log: Option<LogSink>,
+) -> Result<LiveInstance, Fault> {
+    let lifecycle = livecore::artifact::parse(artifact).map_or(1, |a| a.manifest.lifecycle);
+    match lifecycle {
+        2 => load_core(artifact, limits, log).map(LiveInstance::V2),
+        _ => load(artifact, limits, log).map(LiveInstance::V1),
+    }
+}
+
+macro_rules! either {
+    ($self:ident, $i:ident => $e:expr) => {
+        match $self {
+            LiveInstance::V1($i) => $e,
+            LiveInstance::V2($i) => $e,
+        }
+    };
+}
+
+impl livecore::Instance for LiveInstance {
+    fn schema(&mut self) -> Result<u32, Fault> {
+        either!(self, i => i.schema())
+    }
+    fn init(&mut self) -> Result<u32, Fault> {
+        either!(self, i => i.init())
+    }
+    fn import(&mut self, state: &[u8], from_schema: u32) -> Result<u32, Fault> {
+        either!(self, i => i.import(state, from_schema))
+    }
+    fn export(&mut self, to_schema: u32) -> Result<Option<alloc::vec::Vec<u8>>, Fault> {
+        either!(self, i => i.export(to_schema))
+    }
+    fn handle(&mut self, request: &[u8]) -> Result<alloc::vec::Vec<u8>, Fault> {
+        either!(self, i => i.handle(request))
+    }
+    fn health(&mut self) -> Result<u32, Fault> {
+        either!(self, i => i.health())
+    }
+    fn self_test(&mut self) -> Result<u32, Fault> {
+        either!(self, i => i.self_test())
+    }
+    fn quiet(&mut self, quiet: bool) {
+        either!(self, i => i.quiet(quiet))
+    }
+    fn call(
+        &mut self,
+        func: &appabi::Func,
+        args: &[appabi::Val],
+    ) -> Result<Option<appabi::Val>, Fault> {
+        either!(self, i => i.call(func, args))
+    }
 }

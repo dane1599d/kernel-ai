@@ -66,4 +66,17 @@ pub trait Instance {
     fn self_test(&mut self) -> Result<u32, Fault>;
     /// Drops (true) or keeps (false) its log lines; the standby on probation is quiet.
     fn quiet(&mut self, quiet: bool);
+    /// Calls the export `func` names with typed arguments (ADR 0003 section 2):
+    /// `lifecycle 2` only; `handle` goes when `lifecycle 1` goes.
+    fn call(
+        &mut self,
+        func: &appabi::Func,
+        args: &[appabi::Val],
+    ) -> Result<Option<appabi::Val>, Fault> {
+        let _ = (func, args);
+        Err(Fault::new(
+            Reason::Abi,
+            "a lifecycle 1 version has no typed calls",
+        ))
+    }
 }

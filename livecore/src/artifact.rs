@@ -82,7 +82,7 @@ pub fn append_custom_section(module: &mut Vec<u8>, name: &str, payload: &[u8]) {
     module.extend_from_slice(&body);
 }
 
-pub use crate::manifest::{LIFECYCLE, Manifest};
+pub use crate::manifest::{LIFECYCLES_LOADED, Manifest};
 
 /// A source bundle: `kai-source 1`, then `file <path> <len>` and the bytes, per file.
 pub fn bundle(files: &[(&str, &[u8])]) -> Vec<u8> {

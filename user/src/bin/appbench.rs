@@ -146,7 +146,7 @@ fn main() -> i32 {
         memory_bytes: 16 << 20,
     };
     let start = sys::time_ns();
-    let mut guest = match load_core(GUEST, limits) {
+    let mut guest = match load_core(GUEST, limits, None) {
         Ok(guest) => guest,
         Err(fault) => {
             println!("appbench: the guest did not load: {fault:?}");
