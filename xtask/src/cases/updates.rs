@@ -7,6 +7,15 @@
 //! and A again, saying what happened to B.
 
 use super::{TestCase, UpdateDisk, case};
+use crate::blklog::Data;
+
+/// A `kai-data` disk for `fs`, so `updated` has `/system/trust` and
+/// `/system/updates`; one per chained case, kept across its boots.
+const DATA: Data = Data {
+    nvme: false,
+    log: None,
+    gpt: true,
+};
 
 /// A slot boot: ends in a reset, which QEMU reports as status 0 under `-no-reboot`.
 const fn boot(
@@ -160,24 +169,47 @@ const A_UPDATES: TestCase = TestCase {
 };
 
 /// `update-disk` boot 3: B, written from the update disk, boots its trial.
-const B_FROM_DISK: TestCase = boot(
-    "update-disk (3: kai-b boots release 2)",
-    "test=slot panic=reset",
-    &[
-        "slots: booted kai-b (record read)",
-        "slots: up in kai-b (trial, 2 tries left)",
-    ],
-);
+/// `update-disk` boot 4: B again, its try spent on boot 3.
+const B_AGAIN: TestCase = TestCase {
+    data: Some(DATA),
+    ..boot(
+        "update-disk (4: still kai-b)",
+        "test=slot panic=reset",
+        &["slots: up in kai-b (trial, 1 tries left)"],
+    )
+};
+/// `update-disk` boot 3: B boots release 2, and the same disk offered again is
+/// refused, now from the root `/system/trust` kept.
+const B_FROM_DISK: TestCase = TestCase {
+    then: Some(&B_AGAIN),
+    data: Some(DATA),
+    update: Some(UpdateDisk { tampered: false }),
+    ..boot(
+        "update-disk (3: kai-b boots release 2)",
+        "test=update updated=update panic=reset",
+        &[
+            "slots: booted kai-b (record read)",
+            "slots: up in kai-b (trial, 2 tries left)",
+            "updated: the trusted root is /system/trust's",
+            "updated: FAIL refused: release 2 is not newer than 2 (anti-rollback)",
+            "updated: restarting into the running slot",
+        ],
+    )
+};
 /// `update-disk` boot 2: `updated` in A verifies the update disk and writes B.
 const A_FROM_DISK: TestCase = TestCase {
     then: Some(&B_FROM_DISK),
+    data: Some(DATA),
     update: Some(UpdateDisk { tampered: false }),
     ..boot(
         "update-disk (2: updated writes kai-b from the disk)",
         "test=update updated=update panic=reset",
         &[
+            "updated: the trusted root is the slot's own",
             "updated: the update disk's repository verifies: slot.img is release 2, ",
             "updated: wrote release 2 into B and checked its sha256",
+            "updated: the verified metadata is in /system/trust",
+            "updated: took update snapshot ",
             "update: restarting into kai-b",
         ],
     )
@@ -274,6 +306,7 @@ pub(super) const CASES: &[TestCase] = &[
     // the slot's root, and the same disk with the image tampered after signing.
     TestCase {
         then: Some(&A_FROM_DISK),
+        data: Some(DATA),
         ..boot("update-disk", "test=slot panic=reset", INSTALL)
     },
     TestCase {

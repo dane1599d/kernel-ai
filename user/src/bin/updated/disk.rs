@@ -8,6 +8,7 @@
 //! slot, marked Updating first so a half-written slot never boots, its SHA-256
 //! computed on the way; it becomes a trial only if length and hash match.
 
+use crate::folders::{self, Folders};
 use crate::{pause, record, set, slot_of};
 use alloc::collections::BTreeMap;
 use alloc::format;
@@ -88,18 +89,31 @@ impl Remote for Repo {
     }
 }
 
-/// The verified metadata of this refresh, in memory: the slot's root to start
-/// from. `/system/trust` keeps it across boots once `kai-data` is on the slot disk.
-struct Memory(BTreeMap<String, Vec<u8>>);
+/// The verified metadata: `/system/trust/<role>.json` when `kai-data` is there
+/// (ADR 0008 §7's cache, so the next refresh starts from the newest root and
+/// refuses replayed metadata), and this refresh's copies in memory. The root
+/// starts as the one in `/system/trust`, or else the slot's own.
+struct Trust {
+    memory: BTreeMap<String, Vec<u8>>,
+    dir: Option<Handle>,
+}
 
-impl Cache for Memory {
+impl Cache for Trust {
     fn load(&mut self, role: &str) -> Option<Vec<u8>> {
-        self.0.get(role).cloned()
+        if let Some(bytes) = self.memory.get(role) {
+            return Some(bytes.clone());
+        }
+        let bytes = folders::read(self.dir?, &format!("{role}.json")).ok()??;
+        self.memory.insert(role.into(), bytes.clone());
+        Some(bytes)
     }
 
     fn save(&mut self, role: &str, bytes: &[u8]) -> Result<(), TufError> {
-        self.0.insert(role.into(), bytes.into());
-        Ok(())
+        self.memory.insert(role.into(), bytes.into());
+        match self.dir {
+            Some(dir) => folders::write(dir, &format!("{role}.json"), bytes).map_err(TufError::Io),
+            None => Ok(()),
+        }
     }
 }
 
@@ -110,7 +124,24 @@ pub fn update(handle: Handle) -> Result<(), String> {
     root.truncate(len);
     let now = sys::trust_time(handle).map_err(|e| format!("TRUST_TIME: {e:?}"))?;
     let mut repo = Repo::open(handle)?;
-    let mut cache = Memory(BTreeMap::from([(String::from("root"), root)]));
+    let dirs = Folders::from_startup();
+    let mut cache = Trust {
+        memory: BTreeMap::new(),
+        dir: dirs.trust,
+    };
+    let cached = dirs
+        .trust
+        .and_then(|dir| folders::read(dir, "root.json").ok().flatten());
+    match cached {
+        Some(newest) => {
+            println!("updated: the trusted root is /system/trust's");
+            cache.memory.insert("root".into(), newest);
+        }
+        None => {
+            println!("updated: the trusted root is the slot's own");
+            cache.save("root", &root).map_err(|e| format!("{e}"))?;
+        }
+    }
     let (target, file) = {
         let mut updater = Updater::new(&mut repo, &mut cache, now).map_err(|e| format!("{e}"))?;
         updater.refresh().map_err(|e| format!("refused: {e}"))?;
@@ -175,9 +206,18 @@ pub fn update(handle: Handle) -> Result<(), String> {
             "refused: {TARGET} does not match its signed sha256; {other:?} stays unbootable"
         ));
     }
+    println!("updated: wrote release {release_seq} into {other:?} and checked its sha256");
+    if dirs.trust.is_some() {
+        println!("updated: the verified metadata is in /system/trust");
+    }
+    // Before the new slot's first boot: if it fails before it commits, the old
+    // slot boots on this snapshot of `system` (ADR 0008 §10). `home` is never in it.
+    if let Some(updates) = dirs.updates {
+        let id = folders::update_snapshot(updates)?;
+        println!("updated: took update snapshot {id} of the system volume");
+    }
     bootslot::stage_end(&mut nv, other, release_seq);
     bootslot::restart_into(&mut nv, other);
-    println!("updated: wrote release {release_seq} into {other:?} and checked its sha256");
     println!("updated: restarting into {other:?}");
     set(handle, &nv, true)
 }

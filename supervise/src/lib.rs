@@ -47,12 +47,19 @@ pub struct ServiceSpec {
 pub enum Folder {
     /// `/system/pkg`, the package store (ADR 0011 §5).
     Pkg,
+    /// `/system/trust`, the cached TUF metadata (ADR 0008 §7): `updated`'s only.
+    Trust,
+    /// `/system/updates`, staged releases and the `update` snapshot's handle
+    /// (ADR 0008 §10): `updated`'s only.
+    Updates,
 }
 
 impl Folder {
     pub fn parse(name: &str) -> Option<Self> {
         match name {
             "pkg" => Some(Folder::Pkg),
+            "trust" => Some(Folder::Trust),
+            "updates" => Some(Folder::Updates),
             _ => None,
         }
     }
@@ -61,9 +68,24 @@ impl Folder {
     pub fn badge(self) -> u64 {
         match self {
             Folder::Pkg => kabi::fs::SYSTEM_PKG,
+            Folder::Trust => kabi::fs::SYSTEM_TRUST,
+            Folder::Updates => kabi::fs::SYSTEM_UPDATES,
+        }
+    }
+
+    /// The one program a line granting it may run, if it has one: the trust
+    /// store and the updates folder are `updated`'s alone (ADR 0008 §10).
+    pub fn only_for(self) -> Option<&'static str> {
+        match self {
+            Folder::Pkg => None,
+            Folder::Trust | Folder::Updates => Some(UPDATED),
         }
     }
 }
+
+/// The update service's program, the only one `dir=trust` and `dir=updates`
+/// may go to.
+pub const UPDATED: &str = "updated";
 
 /// Names nothing may stop: the shell, the supervisor and the model service (as
 /// `agentabi::rows::PROTECTED` says for the agent's rows).
@@ -365,6 +387,12 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
         return Err(format!("{name}: uses= needs the call capability"));
     }
     let dirs = dirs.unwrap_or_default();
+    if let Some(only) = dirs
+        .iter()
+        .find_map(|d| d.only_for().filter(|p| *p != program))
+    {
+        return Err(format!("{name}: that dir= is for program {only} only"));
+    }
     // The kernel starts it with no supervisor to answer for it: no capabilities.
     if unsupervised && (limits.caps != 0 || !uses.is_empty() || !dirs.is_empty()) {
         return Err(format!(

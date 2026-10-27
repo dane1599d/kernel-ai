@@ -18,7 +18,7 @@ pub const SHELL_FILES: &str = "shell caps=serve+call+policy+stop+script+files+st
 pub const FS: &str = "fs caps=serve+partition pages=8192 burst_ms=5000";
 /// The update service (ADR 0008 §10): the only holder of the slots and the boot
 /// record. P2 lane U's first `updated` runs `step=check` for the `update` case.
-pub const UPDATED: &str = "updated caps=update pages=512 burst_ms=5000";
+pub const UPDATED: &str = "updated caps=update dir=trust+updates pages=512 burst_ms=5000";
 /// The live `notes` component, run by the shared `comphost` program, without its
 /// arguments.
 const NOTES_BASE: &str =

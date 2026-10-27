@@ -802,3 +802,56 @@ fn a_long_trash_comes_in_pages() {
     let want: Vec<String> = (0..count).map(|i| format!("f{i}")).collect();
     assert_eq!(all, want);
 }
+
+#[test]
+fn the_update_snapshot_is_taken_and_restored_only_on_system_updates() {
+    let mut disk = MemDisk::new(BLOCKS);
+    let (mut c, _) = Client::start(&mut disk);
+    let updates = kabi::fs::SYSTEM_UPDATES;
+    assert_ne!(c.server.system_updates, 0);
+    assert_ne!(c.server.system_trust, c.server.system_updates);
+    // A file in `/system/state` before the snapshot, then changed after it.
+    let state = |c: &mut Client, how: How| {
+        let request = Request::Open {
+            path: "marker".into(),
+            rights: (Rights::READ | Rights::WRITE).bits(),
+            how,
+        };
+        c.call(ALICE, kabi::fs::SYSTEM_STATE, DIR_RIGHTS, request)
+    };
+    let (_, marker) = state(&mut c, How::CreateFile);
+    let marker = marker.unwrap();
+    c.write(&marker, 0, b"before");
+    let (reply, _) = c.call(ALICE, updates, DIR_RIGHTS, Request::UpdateSnapshot);
+    let Reply::Snapshot { id, .. } = reply else {
+        panic!("{reply:?}");
+    };
+    c.write(&marker, 0, b"after!");
+    // Every other handle is refused, and so is a Dir without WRITE.
+    for badge in [
+        kabi::fs::SYSTEM_STATE,
+        kabi::fs::SYSTEM_PKG,
+        kabi::fs::SYSTEM_TRUST,
+        kabi::fs::HOME_USER,
+    ] {
+        let reply = c.call(ALICE, badge, DIR_RIGHTS, Request::UpdateSnapshot);
+        assert_eq!(failed(reply), Error::Permission);
+        let reply = c.call(ALICE, badge, DIR_RIGHTS, Request::UpdateRestore { id });
+        assert_eq!(failed(reply), Error::Permission);
+    }
+    let read_only = DIR_RIGHTS.difference(Rights::WRITE);
+    let reply = c.call(ALICE, updates, read_only, Request::UpdateSnapshot);
+    assert_eq!(failed(reply), Error::Permission);
+    // Only an update snapshot restores.
+    let reply = c.call(
+        ALICE,
+        updates,
+        DIR_RIGHTS,
+        Request::UpdateRestore { id: id + 99 },
+    );
+    assert_eq!(failed(reply), Error::Invalid);
+    let (reply, _) = c.call(ALICE, updates, DIR_RIGHTS, Request::UpdateRestore { id });
+    assert!(matches!(reply, Reply::Committed { .. }), "{reply:?}");
+    let (_, marker) = state(&mut c, How::Existing);
+    assert_eq!(c.read(&marker.unwrap()).unwrap(), b"before");
+}
