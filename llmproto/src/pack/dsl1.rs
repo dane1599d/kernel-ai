@@ -60,7 +60,21 @@ pub(super) const FAMILIES: &[(&str, &str)] = &[
         "pkg",
         "installs or removes a package; undo puts the old set back",
     ),
+    // Every fs family has a HEAD_DOCS line; the group header says where paths
+    // start.
+    ("fs", "files"),
 ];
+
+/// A family whose rows share a prefix but not a signature gets its doc from its
+/// first row's name here, over [`FAMILIES`]'s for the prefix.
+pub(super) const HEAD_DOCS: &[(&str, &str)] = &[
+    ("fs_list", "names, text, earlier versions"),
+    ("fs_create", "create never overwrites"),
+    ("fs_trash", "restore brings it back"),
+];
+
+/// Groups after `## system`, by the rows' owner, each under its own header.
+const GROUPS: &[(&str, &str)] = &[("fs", "files (paths under /home/user)")];
 
 fn doc(row: &Action) -> &'static str {
     BRIEF
@@ -166,6 +180,10 @@ fn family<'a>(row: &Action, rows: &[&'a Action]) -> Option<(&'static str, Vec<&'
         })
         .filter(|r| signature(r) == signature(row))
         .collect();
+    let doc = HEAD_DOCS
+        .iter()
+        .find(|(head, _)| members.first().is_some_and(|m| m.name == *head))
+        .map_or(*doc, |(_, doc)| doc);
     (members.len() >= 2).then_some((doc, members))
 }
 
@@ -225,14 +243,37 @@ pub(super) fn render(rows: &[&Action]) -> String {
         let quoted: alloc::vec::Vec<String> = words.iter().map(|w| format!("\"{w}\"")).collect();
         let _ = writeln!(out, "type {name} = {}", quoted.join(" | "));
     }
+    // A row the index level lists by name is not rendered in full (ADR 0010 §6);
+    // the rest are the system's, then each service group's under its header.
     let shown: Vec<&Action> = rows
         .iter()
         .copied()
         .filter(|row| super::indexed(row.name).is_none())
         .collect();
-    for line in row_lines(&shown) {
+    let grouped = |row: &&&Action| {
+        GROUPS
+            .iter()
+            .any(|(owner, _)| row.owner == agentabi::Owner::Service(owner))
+    };
+    let system: Vec<&Action> = shown.iter().filter(|r| !grouped(r)).copied().collect();
+    for line in row_lines(&system) {
         out.push_str(&line);
         out.push('\n');
+    }
+    for (owner, header) in GROUPS {
+        let group: Vec<&Action> = shown
+            .iter()
+            .filter(|r| r.owner == agentabi::Owner::Service(owner))
+            .copied()
+            .collect();
+        if group.is_empty() {
+            continue;
+        }
+        let _ = writeln!(out, "## {header}");
+        for line in row_lines(&group) {
+            out.push_str(&line);
+            out.push('\n');
+        }
     }
     out.push_str(INDEX_HEADING);
     for (group, names) in super::INDEX {

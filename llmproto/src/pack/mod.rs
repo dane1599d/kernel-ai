@@ -27,11 +27,11 @@ use alloc::vec::Vec;
 
 /// ADR 0010 §4 and ADR 0002 D4: core rules plus the OS rows, MODE included.
 pub const PACK_BUDGET: usize = 1024;
-/// Bytes per token for the estimate: S10-0's rate for the draft `dsl-1` pack
-/// (2,682 bytes in 807 tokens, run 39842386906). Measured: 890 real tokens for
-/// pack+MODE at 935 estimated (token-count run 40443905553); the guard stays
-/// above the real count.
-const BYTES_PER_TOKEN: f32 = 3.32;
+/// Bytes per token for the estimate. Measured: 1,005 real tokens for pack+MODE
+/// at 1,013 estimated with the file rows in (token-count run 40462104781); before
+/// them, 890 real at 935 (run 40443905553). The guard stays just above the real
+/// count, which the token-count workflow checks.
+const BYTES_PER_TOKEN: f32 = 3.46;
 
 /// ADR 0010 §6's index level, in v0.1 since P2's rows filled the budget:
 /// groups the pack names on one line each (`tune: tune tune_undo`). A row
@@ -110,7 +110,7 @@ pub fn render(format: Format) -> String {
     }
 }
 
-/// A token count of pack text, at S10-0's rate, above the real count. The
+/// A token count of pack text, at the measured rate, above the real count. The
 /// token-count workflow checks the real count.
 pub fn estimate_tokens(text: &str) -> usize {
     (text.len() as f32 / BYTES_PER_TOKEN) as usize + 1

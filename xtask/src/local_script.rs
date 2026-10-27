@@ -232,11 +232,19 @@ mod tests {
         // The generated model's tagged call is a read the guest answers the
         // same, run through the one door with no script asked for, and the same
         // again with the first turn in history. Which read it picks follows the
-        // pack the fixture model was generated from.
+        // pack the fixture model was generated from: a file read, which this
+        // guest, with no kai-data disk, refuses in the shell's own words.
         assert_eq!(outcome.rounds, [0, 0]);
-        assert!(outcome.typed.starts_with("ok "), "{}", outcome.typed);
+        let lead = match outcome.typed.contains(shellcore::NO_FILES) {
+            true => "! ",
+            false => "= ",
+        };
         assert_eq!(outcome.again, outcome.typed);
-        assert!(reply_lines(&outcome.typed)[0].starts_with("= "));
+        assert!(
+            reply_lines(&outcome.typed)[0].starts_with(lead),
+            "{}",
+            outcome.typed
+        );
     }
 
     #[test]

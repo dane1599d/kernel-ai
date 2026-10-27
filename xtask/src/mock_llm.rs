@@ -281,6 +281,23 @@ const ACTS: &[(&str, &str)] = &[
         "stop spin-d",
         r#"{"name":"process_stop","arguments":{"name":"spin-d"}}"#,
     ),
+    // `fs-act` and `fs-undo` (P2 task 11): file rows, on kai-data.
+    (
+        "create notes.txt saying hello",
+        r#"{"name":"fs_create","arguments":{"path":"notes.txt","text":"hello"}}"#,
+    ),
+    (
+        "list my files",
+        r#"{"name":"fs_list","arguments":{"path":""}}"#,
+    ),
+    (
+        "move notes.txt to plan.txt",
+        r#"{"name":"fs_move","arguments":{"from":"notes.txt","to":"plan.txt"}}"#,
+    ),
+    (
+        "read notes.txt",
+        r#"{"name":"fs_read","arguments":{"path":"notes.txt"}}"#,
+    ),
     // `act-convo` with no earlier turn: there is nothing to do again.
     (
         "do it again",
