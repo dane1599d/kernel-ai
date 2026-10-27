@@ -1,9 +1,10 @@
 //! A `lifecycle 2` version (ADR 0003 sections 2-3): a module on the canonical ABI,
 //! reached through `appabi`. Its `kai:*` imports are linked by canonical version
-//! from the generated tables: `kai:app/log` and `kai:app/clock` now, `storage` and
-//! `effects` with the effect transaction. Its `kai:live/lifecycle` exports serve
-//! `livecore::Instance`; app exports are reached with `Instance::call`. Each call
-//! gets fresh fuel, and time and the seed are fixed for the call.
+//! from the generated tables: `kai:app/log` and `kai:app/clock`, `storage` and
+//! `effects` with the effect transaction, and `kai:ui/view` (`ui`). Its
+//! `kai:live/lifecycle` exports serve `livecore::Instance`; app exports are
+//! reached with `Instance::call`. Each call gets fresh fuel, and time and the seed
+//! are fixed for the call.
 
 use crate::effects::{self, OpenCall};
 use crate::instance::{HostState, classify, fault, log, panic};
@@ -25,7 +26,7 @@ use wasmi::{
 
 /// An instance of a canonical-ABI module.
 pub struct CoreInstance {
-    store: Store<HostState>,
+    pub(crate) store: Store<HostState>,
     instance: wasmi::Instance,
     memory: Memory,
     realloc: Option<TypedFunc<(i32, i32, i32, i32), i32>>,
@@ -38,6 +39,8 @@ pub struct CoreInstance {
     lifecycle: Vec<(&'static str, String)>,
     /// The app's action rows, which type its `kai-call 1` requests.
     actions: Option<Actions>,
+    /// The `kai:ui/input` `on-ui` export, when the module has one.
+    pub(crate) on_ui: Option<String>,
 }
 
 impl CoreInstance {
@@ -82,6 +85,7 @@ pub fn load_core(
         now_ms: 0,
         seed: 0,
         call: None,
+        ui: Default::default(),
     };
     let mut store = Store::new(&engine, state);
     store.limiter(|state| &mut state.limits);
@@ -100,6 +104,10 @@ pub fn load_core(
         .ok_or_else(|| Fault::new(Reason::Abi, "memory is not exported"))?;
     let realloc = instance.get_typed_func(&store, "cabi_realloc").ok();
     let lifecycle = lifecycle_exports(&module);
+    let on_ui = tables::EXPORTS
+        .iter()
+        .find(|f| f.interface == crate::ui::INPUT && f.name == "on-ui")
+        .and_then(|f| export_for(&module, f));
     Ok(CoreInstance {
         store,
         instance,
@@ -110,6 +118,7 @@ pub fn load_core(
         last: None,
         lifecycle,
         actions: None,
+        on_ui,
     })
 }
 
@@ -145,6 +154,12 @@ fn link_imports(engine: &Engine, module: &Module) -> Result<Linker<HostState>, F
             ("kai:app/storage", "put") => linker.func_wrap(qualified, name, effects::put),
             ("kai:app/storage", "delete") => linker.func_wrap(qualified, name, effects::delete),
             ("kai:app/effects", "request") => linker.func_wrap(qualified, name, effects::request),
+            (crate::ui::VIEW, _) => linker.func_new(
+                qualified,
+                name,
+                ty.clone(),
+                move |caller, params, _results| crate::ui::view(caller, entry, params),
+            ),
             (interface, _) => {
                 return Err(link_err(format!(
                     "{interface} is not offered by this host yet"
