@@ -2,14 +2,18 @@
 //! builds the release kernel and its boot image and creates, or updates, the
 //! VirtualBox VM "Kernel AI" to boot it. `cargo xtask vbox --start [--headless]`
 //! then boots that VM as it is. `--cmdline WORDS` adds kernel command-line words.
+//! `cargo xtask vbox --powercut` builds a churn image with no model and powers
+//! the VM off hard 20 times mid-write (S04-3's VirtualBox half, `powercut.rs`).
 //! `--name NAME` works on another VM instead, in its own folder
 //! (`D:\kai-vbox-<name>`), so a test VM leaves "Kernel AI" alone.
 //!
 //! The VM is a modern PC: EFI, the ICH9 chipset (PCIe, so MCFG), HPET, IOAPIC,
 //! xAPIC, a USB keyboard and tablet on an xHCI controller (PS/2 stays as the
 //! fallback until the kernel configures them), a virtio-net card on NAT, and
-//! one NVMe controller with the OS disk (the image as a VDI) on port 0 and the
-//! model on port 1. The model is read in place through a VMDK descriptor
+//! one NVMe controller with the OS disk (the image as a VDI) on port 0, the
+//! model on port 1 and `kai-data.vdi` on port 2 (port 1 with no model: VirtualBox
+//! lists no namespace past an empty port). The OS disk is rebuilt every
+//! run; `kai-data.vdi` is made once and never deleted with it (ADR 0004). The model is read in place through a VMDK descriptor
 //! (`vmdk.rs`), never copied. The vm(), its disks and the serial log live in `KAI_VBOX_DIR`
 //! (`D:\kai-vbox` by default). The model runs inside the VM only.
 //!
@@ -19,6 +23,7 @@
 
 pub mod doctor;
 pub mod manage;
+mod powercut;
 mod vmdk;
 
 use crate::{components, disk, esp, floatguard, image, models, options, userbuild};
@@ -31,6 +36,7 @@ const MEMORY_MIB: u64 = 6144;
 const OS_DISK: &str = "kai-os.vdi";
 const MODEL_DISK: &str = "kai-model.vmdk";
 const MODEL_TAIL: &str = "kai-model.tail";
+const DATA_DISK: &str = "kai-data.vdi";
 const SERIAL_LOG: &str = "serial.log";
 /// The kernel's clock and tick rate in the VM: HPET reads and APIC timer exits are
 /// slow under VirtualBox on Hyper-V (kernel/src/hpet.rs and timer.rs).
@@ -43,6 +49,8 @@ struct Args {
     cmdline: String,
     start: bool,
     headless: bool,
+    /// `--powercut`: S04-3's VirtualBox half on this VM.
+    powercut: bool,
     model: Model,
 }
 
@@ -59,6 +67,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
         cmdline: String::new(),
         start: false,
         headless: false,
+        powercut: false,
         model: Model::Default,
     };
     let mut store = None;
@@ -74,6 +83,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--name" => parsed.name = value()?,
             "--cmdline" => parsed.cmdline = value()?,
             "--headless" => parsed.headless = true,
+            "--powercut" => parsed.powercut = true,
             "--no-model" => parsed.model = Model::None,
             "--model-disk" => parsed.model = Model::Path(PathBuf::from(value()?)),
             "--local" => {
@@ -93,6 +103,13 @@ fn parse(args: &[String]) -> Result<Args, String> {
             id: String::new(),
             store: Some(dir),
         };
+    }
+    if parsed.powercut {
+        if parsed.start || !matches!(parsed.model, Model::Default) {
+            return Err("vbox: --powercut takes only --name and --cmdline".into());
+        }
+        parsed.model = Model::None;
+        parsed.cmdline = format!("{} {}", powercut::CMDLINE, parsed.cmdline);
     }
     if parsed.headless && !parsed.start {
         return Err("vbox: --headless goes with --start".into());
@@ -128,6 +145,9 @@ pub fn main(args: &[String]) -> Result<(), String> {
         .map_or(MEMORY_MIB, |d| d.memory_mib().max(MEMORY_MIB));
     configure(&dir, &raw, model.as_deref(), memory)?;
     let _ = fs::remove_file(&raw);
+    if args.powercut {
+        return powercut::run(&dir);
+    }
     let name = match vm() {
         manage::DEFAULT_VM => String::new(),
         other => format!(" --name \"{other}\""),
@@ -229,9 +249,10 @@ fn configure(dir: &Path, raw: &Path, model: Option<&Path>, memory: u64) -> Resul
         ));
     }
     let has_controller = info.values().any(|v| v == CONTROLLER);
-    // Free the old disks so their files can be replaced.
+    // Free the old disks so their files can be replaced, and `kai-data.vdi` so it
+    // can move to the port after the last disk.
     if has_controller {
-        for port in ["0", "1"] {
+        for port in ["0", "1", "2"] {
             let _ = manage::run(&[
                 "storageattach",
                 vm(),
@@ -271,10 +292,16 @@ fn configure(dir: &Path, raw: &Path, model: Option<&Path>, memory: u64) -> Resul
             "--controller",
             "NVMe",
             "--portcount",
-            "2",
+            "3",
             "--bootable",
             "on",
         ])?;
+    } else if info
+        .get("storagecontrollerportcount0")
+        .is_some_and(|n| n != "3")
+    {
+        // A VM from before `kai-data.vdi` has two ports.
+        step(&["storagectl", vm(), "--name", CONTROLLER, "--portcount", "3"])?;
     }
     attach("0", &os_disk, "normal")?;
     if let Some(model) = model {
@@ -300,6 +327,15 @@ fn configure(dir: &Path, raw: &Path, model: Option<&Path>, memory: u64) -> Resul
         );
         attach("1", &model_disk, "immutable")?;
     }
+    // VirtualBox's NVMe lists no namespace past an empty port, so `kai-data`
+    // follows the last disk: port 2 after the model, else port 1.
+    let data_disk = dir.join(DATA_DISK);
+    powercut::data_disk(&data_disk)?;
+    attach(
+        if model.is_some() { "2" } else { "1" },
+        &data_disk,
+        "normal",
+    )?;
     Ok(())
 }
 

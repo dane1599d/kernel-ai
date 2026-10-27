@@ -10,7 +10,9 @@
 //!   kinds (create, overwrite, rename, trash, and every tenth a restore of the
 //!   last trash), with each commit's latency for ADR 0002's typing-to-done table.
 //! - `step=churn boot=N` (`fs-powercut`): checks every file, leaves
-//!   `verified-N`, then makes actions until xtask cuts the power.
+//!   `verified-N`, then makes actions until xtask cuts the power. `boot=0`
+//!   (`xtask vbox --powercut`, where the command line is the same every boot)
+//!   counts the `verified-*` marks already there instead.
 
 use super::{ask, dir_rights, expect, file_rights, mark, open, read_all};
 use alloc::format;
@@ -21,8 +23,9 @@ use kabi::handle::{Handle, Rights};
 use user::{println, sys};
 
 pub const ACTIONS: u64 = 200;
-/// At most this many live files: at the cap a create trashes one instead, so
-/// twenty boots of churn stay well inside the 64 MiB `kai-data`.
+/// At most this many live files: at the cap a create overwrites one instead.
+/// Every trash is restored nine actions later, and retention gives back what
+/// undo held, so twenty boots of churn stay inside the 64 MiB `kai-data`.
 const MAX_LIVE: usize = 160;
 /// The folder under `/home/user` the files live in.
 const DIR: &str = "cut";
@@ -58,13 +61,19 @@ pub fn actions(home: Handle) -> Result<(), String> {
 
 /// Checks every file, then makes actions until the power is cut.
 pub fn churn(home: Handle, boot: u64) -> Result<(), String> {
+    let boot = match boot {
+        0 => next_boot(home)?,
+        n => n,
+    };
     let dir = match open(home, DIR, How::Existing, dir_rights()) {
         Ok(dir) => dir,
         Err(_) => open(home, DIR, How::Mkdir, dir_rights())?,
     };
     let files = verify(dir)?;
-    println!("filecheck: boot {boot}: {files} files whole after the cut");
+    // The mark is committed before the line, so a cut after the line that loses
+    // it is a lost commit: the next boot would count this one again.
     mark(home, &format!("verified-{boot}"))?;
+    println!("filecheck: boot {boot}: {files} files whole after the cut");
     let mut state = State {
         live: listing(dir)?.into_iter().map(|name| (name, 0, 0)).collect(),
         ..State::default()
@@ -74,6 +83,15 @@ pub fn churn(home: Handle, boot: u64) -> Result<(), String> {
         step(dir, i, &mut state)?;
         i += 1;
     }
+}
+
+/// One past the `verified-N` marks in `home`.
+fn next_boot(home: Handle) -> Result<u64, String> {
+    let marks = listing(home)?
+        .iter()
+        .filter_map(|name| name.strip_prefix("verified-")?.parse::<u64>().ok())
+        .max();
+    Ok(marks.unwrap_or(0) + 1)
 }
 
 /// Action `i`; a restore every tenth, else one of four changes.
@@ -94,14 +112,14 @@ fn step(dir: Handle, i: u64, state: &mut State) -> Result<(), String> {
     expect(dir, Request::Begin { action: i + 1 }, Reply::Done)?;
     let pick = |state: &State| (i as usize * 7) % state.live.len().max(1);
     let full = state.live.len() >= MAX_LIVE;
-    let trashing = i % 5 == 4 || (i % 5 < 2 && full);
+    let trashing = i % 5 == 4;
     match (i % 5, state.live.is_empty()) {
         (0 | 1, _) | (_, true) if !full => {
             let name = format!("f{i}");
             write_file(dir, &name, How::CreateFile, i, 1)?;
             state.live.push((name, i, 1));
         }
-        (2, false) => {
+        (0..=2, false) => {
             let at = pick(state);
             let (name, id, version) = state.live[at].clone();
             // A file found by listing gets a new id: its old one is unknown.

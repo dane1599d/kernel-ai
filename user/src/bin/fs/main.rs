@@ -71,7 +71,7 @@ fn main() -> i32 {
         let len = match sys::recv_h(&mut request, IDLE_MS, &mut from) {
             Ok(len) => len,
             Err(Error::TimedOut) => {
-                server.idle();
+                server.idle(sys::time_ns());
                 continue;
             }
             Err(_) => continue,
@@ -119,6 +119,8 @@ fn main() -> i32 {
                 let _ = sys::reply_h(&fsproto::encode_reply(&failed), &[]);
             }
         }
+        // A writer that never pauses must not starve retention and the GC.
+        server.idle(sys::time_ns());
     }
 }
 
