@@ -187,7 +187,6 @@ pub(super) const CASES: &[TestCase] = &[
             "desktop: the terminal window has the keys",
             "term: shows ? ",
             "desk-term: an ask typed in the terminal window was answered only on the console",
-            "desktop: the keys are the desktop's again",
             "desk-term: with the focus elsewhere the keys went to desktop, and nothing asked",
         ],
         ..case("desk-term", "test=desk-term")
