@@ -276,6 +276,8 @@ pub const LOG: &str = "log";
 /// The standing rules' file: rule lines only, never grants, until `powerbox`
 /// owns `/system/grants`.
 pub const RULES: &str = "rules";
+/// The standing instructions' store (`kai-standing 1`, P3 task 11).
+pub const STANDING: &str = "standing";
 
 impl State {
     /// File `name` as `/system/state` holds it; `None` with no such file or no

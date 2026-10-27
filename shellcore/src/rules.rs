@@ -211,6 +211,10 @@ impl Rules {
             .map(|rule| rule.id)
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.list.is_empty()
+    }
+
     /// `rules`: one line per rule.
     pub fn list(&self) -> String {
         if self.list.is_empty() {

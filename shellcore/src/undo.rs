@@ -35,6 +35,18 @@ pub enum Inverse {
     /// Restore what `fs` transaction `txn` replaced (P2 task 11); the `fs`
     /// server refuses one over a later change.
     Fs { txn: u64 },
+    /// Put back what standing instruction `rule`'s firing (`action` on `app`)
+    /// did, through its owner; with `undo` false, do it again (P3 task 11).
+    Fired {
+        rule: u64,
+        action: Name,
+        app: Name,
+        undo: bool,
+    },
+    /// Remove standing instruction `id` again (`made`: `undo` of `rules_add`),
+    /// or put a removed one back (`undo` of `rules_remove`). The shell's store
+    /// does it (`Shell::revert_entry`), not the host.
+    Instruction { id: u64, made: bool },
 }
 
 /// A service name held without the heap, so an inverse stays `Copy`.
@@ -101,6 +113,9 @@ pub fn target(inverse: Inverse) -> String {
         Inverse::Stopped(name) => format!("{} running", name.as_str()),
         Inverse::Generation { to, .. } => format!("generation {to}"),
         Inverse::Fs { .. } => String::from("the files as they were"),
+        Inverse::Fired { app, .. } => format!("{} as it was", app.as_str()),
+        Inverse::Instruction { id, made: true } => format!("standing instruction S{id} removed"),
+        Inverse::Instruction { id, made: false } => format!("standing instruction S{id}"),
     }
 }
 
@@ -123,6 +138,24 @@ pub fn revert(
             Err(crate::FsRefused::Later(what)) => Err(Refused::Moved(what)),
             Err(crate::FsRefused::Failed(why)) => Err(Refused::Failed(why)),
         },
+        Inverse::Fired {
+            rule,
+            action,
+            app,
+            undo,
+        } => {
+            let triggers = host
+                .triggers()
+                .ok_or_else(|| Refused::Failed(String::from("no desktop events here yet")))?;
+            triggers
+                .run(rule, action.as_str(), app.as_str(), undo)
+                .map_err(Refused::Failed)?;
+            let text = match undo {
+                true => format!("{} as it was", app.as_str()),
+                false => format!("{}({}) again", action.as_str(), app.as_str()),
+            };
+            Ok((text, reverse(inverse)))
+        }
         other => revert_one(host, other, anyway, ids).map(|text| (text, reverse(other))),
     }
 }
@@ -166,8 +199,11 @@ fn revert_one(
         Inverse::Generation { .. } => Err(Refused::Failed(String::from(
             "a package switch is put back by the shell's store",
         ))),
-        Inverse::Fs { .. } => Err(Refused::Failed(String::from(
-            "files are put back by revert",
+        Inverse::Fs { .. } | Inverse::Fired { .. } => {
+            Err(Refused::Failed(String::from("it is put back by revert")))
+        }
+        Inverse::Instruction { .. } => Err(Refused::Failed(String::from(
+            "a standing instruction is put back by the shell's store",
         ))),
     }
 }
@@ -197,6 +233,18 @@ pub fn reverse(inverse: Inverse) -> Inverse {
         Inverse::Generation { from, to } => Inverse::Generation { from: to, to: from },
         // Only the `fs` server knows the restore's own transaction ([`revert`]).
         Inverse::Fs { txn } => Inverse::Fs { txn },
+        Inverse::Fired {
+            rule,
+            action,
+            app,
+            undo,
+        } => Inverse::Fired {
+            rule,
+            action,
+            app,
+            undo: !undo,
+        },
+        Inverse::Instruction { id, made } => Inverse::Instruction { id, made: !made },
     }
 }
 
@@ -214,6 +262,18 @@ pub fn inverse_word(inverse: Option<Inverse>) -> String {
         Some(Inverse::Stopped(name)) => format!("stopped:{}", name.as_str()),
         Some(Inverse::Generation { from, to }) => format!("generation:{from}:{to}"),
         Some(Inverse::Fs { txn }) => format!("fs:{txn}"),
+        Some(Inverse::Fired {
+            rule,
+            action,
+            app,
+            undo,
+        }) => format!(
+            "fired:{rule}:{}:{}:{}",
+            action.as_str(),
+            app.as_str(),
+            u8::from(undo)
+        ),
+        Some(Inverse::Instruction { id, made }) => format!("instruction:{id}:{}", u8::from(made)),
     }
 }
 
@@ -237,6 +297,25 @@ pub fn parse_inverse(text: &str) -> Option<Option<Inverse>> {
         "fs" => Inverse::Fs {
             txn: number(parts.next())?,
         },
+        "fired" => Inverse::Fired {
+            rule: number(parts.next())?,
+            action: Name::new(parts.next()?)?,
+            app: Name::new(parts.next()?)?,
+            undo: flag(parts.next())?,
+        },
+        "instruction" => Inverse::Instruction {
+            id: number(parts.next())?,
+            made: flag(parts.next())?,
+        },
         _ => return None,
     }))
+}
+
+/// `0` or `1`.
+fn flag(part: Option<&str>) -> Option<bool> {
+    match part? {
+        "0" => Some(false),
+        "1" => Some(true),
+        _ => None,
+    }
 }
