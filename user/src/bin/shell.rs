@@ -243,7 +243,7 @@ impl Host for System {
     }
 
     fn log_read(&self) -> Option<String> {
-        self.state.read_log()
+        self.state.read(files::LOG)
     }
 
     /// In the same commit as the files the line changed (P2 task 12); else its
@@ -251,11 +251,26 @@ impl Host for System {
     /// user was told it was done.
     fn log_write(&self, text: &str) -> Result<(), String> {
         if !self.files.is_open() {
-            return self.state.write_log(text, self.files.next_action());
+            return self.state.write(files::LOG, text, self.files.next_action());
         }
-        let logged = self.state.write_log_in(text);
+        let logged = self.state.write_in(files::LOG, text);
         let committed = self.files.commit();
         logged.and(committed)
+    }
+
+    fn rules_read(&self) -> Option<String> {
+        self.state.read(files::RULES)
+    }
+
+    /// In the line's open action if it changed files, so the log line that
+    /// follows lands with it; else its own action.
+    fn rules_write(&self, text: &str) -> Result<(), String> {
+        match self.files.is_open() {
+            true => self.state.write_in(files::RULES, text),
+            false => self
+                .state
+                .write(files::RULES, text, self.files.next_action()),
+        }
     }
 
     fn fs_read(&self, read: shellcore::FsRead) -> Result<String, String> {
