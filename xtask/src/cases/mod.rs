@@ -84,6 +84,10 @@ pub struct TestCase {
     /// `boot=n` to the command line, waits for `files: boot n:` and kills QEMU
     /// a seeded moment later; boot `cuts + 1` adds `last` and must pass.
     pub cuts: u32,
+    /// A model put in `kai-data`'s model store before the boot (`xtask fs mkfs`,
+    /// then `import --model`), with its length and hash on the command line;
+    /// needs `data`.
+    pub store: Option<Fixture>,
 }
 
 /// What a case's update disk holds.
@@ -119,6 +123,7 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         slots: false,
         update: None,
         cuts: 0,
+        store: None,
     }
 }
 
