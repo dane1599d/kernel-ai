@@ -126,6 +126,7 @@ pub enum SelfTest {
     DeskPanel,
     /// An app's kai:ui window on the desktop, closed from its control (P3 task 9).
     UiWindow,
+    DeskTerm,
     /// `scriptrun` through a Job, and spike S01-1's M3 and M5 (P1 task 14).
     Scriptrun,
     /// L2: processes keep their vector state across switches and CPUs, and start clean.
@@ -264,6 +265,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=desk-boot" => Some(SelfTest::DeskBoot),
             "test=desk-panel" => Some(SelfTest::DeskPanel),
             "test=ui-window" => Some(SelfTest::UiWindow),
+            "test=desk-term" => Some(SelfTest::DeskTerm),
             "test=scriptrun" => Some(SelfTest::Scriptrun),
             "test=fpu" => Some(SelfTest::Fpu),
             "test=probe" => Some(SelfTest::Probe),
@@ -337,6 +339,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DeskBoot
             | SelfTest::DeskPanel
             | SelfTest::UiWindow
+            | SelfTest::DeskTerm
             | SelfTest::TuneRevert
             | SelfTest::TuneStall
             | SelfTest::Tune
@@ -464,6 +467,10 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
     if test == SelfTest::UiWindow {
         plan.push('\n');
         plan.push_str(crate::ui_tests::PLAN);
+    }
+    if test == SelfTest::DeskTerm {
+        plan.push('\n');
+        plan.push_str(crate::term_tests::PLAN);
     }
     if test == SelfTest::None {
         plan.push('\n');
