@@ -438,15 +438,13 @@ mod tests {
             assert!(g.advance(g.start(), text.as_bytes()).is_err(), "{text}");
         }
         // The second round: the row's own arguments, and no other row.
-        for text in [r#"{"name":"component_revert","arguments":{"component":"shell","back":null}}"#]
-        {
-            let name = act::parse(text).unwrap().name;
-            let second = grammar.second(&name).unwrap();
-            let state = second.advance(second.start(), text.as_bytes()).unwrap();
-            assert!(second.is_done(&state), "{text}");
-            let other = r#"{"name":"set_policy""#;
-            assert!(second.advance(second.start(), other.as_bytes()).is_err());
-        }
+        let text = r#"{"name":"component_revert","arguments":{"component":"shell","back":null}}"#;
+        let name = act::parse(text).unwrap().name;
+        let second = grammar.second(&name).unwrap();
+        let state = second.advance(second.start(), text.as_bytes()).unwrap();
+        assert!(second.is_done(&state), "{text}");
+        let other = r#"{"name":"set_policy""#;
+        assert!(second.advance(second.start(), other.as_bytes()).is_err());
         // A row in full, or with no arguments, needs no second round.
         assert!(grammar.second("tune").is_none());
         assert!(grammar.second("tune_undo").is_none());
