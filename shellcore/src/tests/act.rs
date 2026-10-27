@@ -633,3 +633,90 @@ fn a_script_cannot_call_a_call_only_row() {
     assert!(!llmproto::script::system_prompt().contains("service_stop"));
     assert!(host.services.borrow().iter().all(|(_, running)| !running));
 }
+
+/// P1 task 14: a stop's owner, not the shell, checks and spends its proof.
+#[test]
+fn a_stops_once_goes_to_its_owner_unspent_and_a_rule_or_nothing_is_said_so() {
+    let (host, mut shell) = with_calls(vec![
+        call(STOP_BUILD3),
+        call(STOP_BUILD3),
+        call(STOP_BUILD3),
+    ]);
+    host.procs.borrow_mut().push(String::from("build-3"));
+    shell.eval("stop build-3");
+    let once = host.mint(1, "process_stop(\"build-3\")");
+    let reply = shell.eval(&format!("answer 1 always-target once={once} rule=5"));
+    assert!(
+        reply
+            .text
+            .ends_with("Done: process build-3 stopped (2) (was running)"),
+        "{reply:?}"
+    );
+    // The owner got the ONCE unspent and spent it; the shell did not check it.
+    assert_eq!(
+        host.proofs.borrow()[0],
+        (
+            String::from("process_stop(\"build-3\")"),
+            Proof::Once { badge: once, id: 1 }
+        )
+    );
+    assert!(host.once.borrow()[0].2, "the owner's check used it up");
+    // The next stop runs under the rule, and says so to the owner.
+    host.procs.borrow_mut().push(String::from("build-3"));
+    assert!(shell.eval("stop build-3").ok);
+    assert_eq!(host.proofs.borrow()[1].1, Proof::Rule);
+    // With the rule gone, a reused ONCE is refused by the owner.
+    shell.eval("rules_remove 1");
+    host.procs.borrow_mut().push(String::from("build-3"));
+    shell.eval("stop build-3");
+    let reply = shell.eval(&format!("answer 3 allow once={once}"));
+    assert!(!reply.text.contains("Done:"), "{reply:?}");
+    assert!(host.procs.borrow().contains(&String::from("build-3")));
+}
+
+#[test]
+fn a_restart_is_one_request_with_its_once() {
+    let restart = r#"{"name":"service_restart","arguments":{"name":"indexer"}}"#;
+    let (host, mut shell) = with_services(vec![call(restart)]);
+    shell.eval("restart indexer");
+    let once = host.mint(1, "service_restart(\"indexer\")");
+    let reply = shell.eval(&format!("answer 1 allow once={once}"));
+    assert!(reply.ok && reply.text.contains("restarted"), "{reply:?}");
+    assert_eq!(
+        *host.proofs.borrow(),
+        [(
+            String::from("service_restart(\"indexer\")"),
+            Proof::Once { badge: once, id: 1 }
+        )]
+    );
+}
+
+#[test]
+fn undo_stops_only_the_start_its_own_entry_made() {
+    let start = r#"{"name":"service_start","arguments":{"name":"notes"}}"#;
+    let (host, mut shell) = with_services(vec![call(start), call(start)]);
+    assert!(shell.eval("start notes").ok);
+    // The start told the supervisor its entry; the undo shows that entry.
+    assert_eq!(*host.started_by.borrow(), [(String::from("notes"), 1)]);
+    assert_eq!(
+        shell.eval("undo"),
+        ok("Undone: service notes stopped again")
+    );
+    assert_eq!(host.proofs.borrow()[0].1, Proof::Undo { id: 1 });
+    // Its redo starts it for the undo's own entry, whose undo then stops it.
+    assert_eq!(
+        shell.eval("undo"),
+        ok("Undone: service notes started again")
+    );
+    assert_eq!(*host.started_by.borrow(), [(String::from("notes"), 3)]);
+    assert_eq!(
+        shell.eval("undo"),
+        ok("Undone: service notes stopped again")
+    );
+    assert_eq!(host.proofs.borrow()[1].1, Proof::Undo { id: 3 });
+    // A start the supervisor recorded for another entry is not this undo's.
+    assert!(shell.eval("start notes").ok);
+    host.started_by.borrow_mut()[0].1 = 99;
+    assert!(!shell.eval("undo").ok);
+    assert!(host.services.borrow()[0].1, "notes still runs");
+}

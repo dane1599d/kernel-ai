@@ -220,8 +220,8 @@ pub const ONCE_CHECK: u64 = 50;
 /// handle needed yet, as for METRICS (ADR 0001's INSPECT check comes to both).
 pub const DEV_LIST: u64 = 51;
 /// `proc_stop(name_ptr, name_len) -> count`: stops every live process named
-/// exactly `name` (ExitReason Killed) and returns how many went. Needs a Job
-/// handle with STOP ([`super::cap::STOP`]). Permission for the protected names
+/// exactly `name` (ExitReason Killed) and returns how many went. Needs
+/// [`super::cap::SUPERVISE`]; the shell stops through [`PROC_STOP_ONCE`]. Permission for the protected names
 /// (`shell`, `supervisor`, `llm`) and the caller's own; Invalid for a service the
 /// supervisor runs (stop those through the supervisor's `stop <name>`); NotFound
 /// when no process has the name.
@@ -310,6 +310,30 @@ pub const PART_WRITE: u64 = 68;
 pub const PART_FLUSH: u64 = 69;
 
 // ---- Lane K, 71-72 and 80-89 ----
+
+/// `proc_stop_once(name_ptr, name_len, once_badge, entry_id) -> count`:
+/// [`PROC_STOP`] for the shell, only with the user's yes (ADR 0001 D6). Needs a
+/// Job handle with STOP ([`super::cap::STOP`]), and the caller must hold the
+/// `ONCE` handle with badge `once_badge`, or, with `once_badge` 0, a handle to a
+/// standing rule that covers the call ([`RULE_CHECK`]; Permission if none does). The kernel rebuilds the call shown on
+/// menu `entry_id`, `process_stop("<name>")`, and checks it as [`ONCE_CHECK`]
+/// does, which uses the `ONCE` up; only then does it stop, by PROC_STOP's rules.
+/// Invalid for another call, NotFound for a badge the caller does not hold or the
+/// kernel does not know, Revoked once its request ended.
+pub const PROC_STOP_ONCE: u64 = 71;
+/// `rule_check(pid, call_ptr, call_len) -> 0`: whether the process `pid` holds a
+/// live handle to a standing rule (an "Always allow") that covers the call, in
+/// canonical text (`service_stop("indexer")`), for a server that runs calls for
+/// it (ADR 0002 D2a). Needs [`super::cap::SUPERVISE`]. Permission when no rule
+/// covers it; NotFound for no such process.
+pub const RULE_CHECK: u64 = 72;
+/// `once_check_for(pid, badge, digest_ptr) -> 0`: [`ONCE_CHECK`] for a server
+/// that runs a call for process `pid`: the `ONCE` must also be one `pid`
+/// holds, so a process that only saw the badge cannot spend it. Needs
+/// [`super::cap::SUPERVISE`]. NotFound when `pid` does not hold it; pid 0, the
+/// kernel's own request, holds no table and is not checked for one. Numbered at
+/// merge (lane K's spare block).
+pub const ONCE_CHECK_FOR: u64 = 82;
 
 // ---- G-core, 73-79 ----
 

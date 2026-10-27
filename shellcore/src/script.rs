@@ -18,7 +18,7 @@
 use crate::analyse::{self, Plan};
 use crate::engine::{self, Line, Stop};
 use crate::undo::{self, Done, Inverse, Journal};
-use crate::{Config, Host, data, show};
+use crate::{Config, Consent, Host, Proof, data, show};
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::rc::Rc;
@@ -94,6 +94,8 @@ pub type Outbox = Rc<RefCell<Vec<Queued>>>;
 #[derive(Clone)]
 struct Tx {
     host: Rc<dyn Host>,
+    /// What the run's entry may show the owners of its asked calls.
+    consent: Consent,
     journal: Journal,
     plan: Rc<Plan>,
     outbox: Outbox,
@@ -103,6 +105,7 @@ impl Tx {
     fn new(host: &Rc<dyn Host>, plan: &Rc<Plan>) -> Self {
         Self {
             host: Rc::clone(host),
+            consent: Consent::default(),
             journal: Journal::default(),
             plan: Rc::clone(plan),
             outbox: Outbox::default(),
@@ -271,7 +274,7 @@ fn bind(engine: &mut Engine, name: &'static str, tx: &Tx) -> bool {
                 engine.register_fn(name, move |which: &str| -> RhaiResult<()> {
                     tx.approved(name, &[which])?;
                     let count = h
-                        .stop_process(which)
+                        .stop_process(which, tx.consent.proof)
                         .map_err(|why| rhai_error(format!("process_stop: {why}")))?;
                     tx.changed(stopped(
                         name,
@@ -287,7 +290,7 @@ fn bind(engine: &mut Engine, name: &'static str, tx: &Tx) -> bool {
             "service_stop" => {
                 engine.register_fn(name, move |which: &str| -> RhaiResult<()> {
                     tx.approved(name, &[which])?;
-                    h.stop_service(which)
+                    h.stop_service(which, tx.consent.proof)
                         .map_err(|why| rhai_error(format!("service_stop: {why}")))?;
                     tx.changed(stopped(
                         name,
@@ -303,11 +306,8 @@ fn bind(engine: &mut Engine, name: &'static str, tx: &Tx) -> bool {
             "service_restart" => {
                 engine.register_fn(name, move |which: &str| -> RhaiResult<()> {
                     tx.approved(name, &[which])?;
-                    h.stop_service(which)
+                    h.restart_service(which, tx.consent.proof)
                         .map_err(|why| rhai_error(format!("service_restart: {why}")))?;
-                    h.start_service(which).map_err(|why| {
-                        rhai_error(format!("service_restart: stopped, but {why}"))
-                    })?;
                     tx.changed(stopped(
                         name,
                         "supervisor",
@@ -326,7 +326,7 @@ fn bind(engine: &mut Engine, name: &'static str, tx: &Tx) -> bool {
                     let undo = undo::Name::new(which).ok_or_else(|| {
                         rhai_error("service_start: no service has a name that long")
                     })?;
-                    h.start_service(which)
+                    h.start_service(which, tx.consent.entry)
                         .map_err(|why| rhai_error(format!("service_start: {why}")))?;
                     tx.changed(stopped(
                         name,
@@ -473,13 +473,17 @@ impl Host for Stub {
     fn set_policy(&self, _: u64) -> Result<(), kabi::Error> {
         Ok(())
     }
-    fn stop_process(&self, _: &str) -> Result<u64, String> {
+    fn stop_process(&self, _: &str, _: Proof) -> Result<u64, String> {
         Ok(1)
     }
-    fn stop_service(&self, _: &str) -> Result<(), String> {
+    fn stop_service(&self, _: &str, _: Proof) -> Result<(), String> {
         Ok(())
     }
-    fn start_service(&self, _: &str) -> Result<(), String> {
+    fn start_service(&self, _: &str, _: u64) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn restart_service(&self, _: &str, _: Proof) -> Result<(), String> {
         Ok(())
     }
     fn ask(&self, _: &str) -> Result<String, String> {
@@ -692,9 +696,16 @@ pub struct Ran {
 /// Runs a script with the real OS, granted only the calls the plan found. Its
 /// outbound effects go out only if the whole run succeeded.
 pub fn run(checked: &Checked, host: &Rc<dyn Host>, config: &Config) -> Ran {
+    run_as(checked, host, config, Consent::default())
+}
+
+/// [`run`] for log entry `consent.entry`, showing its asked calls' owners
+/// `consent.proof`.
+pub fn run_as(checked: &Checked, host: &Rc<dyn Host>, config: &Config, consent: Consent) -> Ran {
     let config = &for_scripts(config);
     let line = Line::new();
-    let tx = Tx::new(host, &checked.plan);
+    let mut tx = Tx::new(host, &checked.plan);
+    tx.consent = consent;
     let engine = strict(&line, config, &checked.plan.names(), &tx);
     line.begin(host.as_ref(), config);
     let result = engine::eval(&engine, &mut Scope::new(), &checked.ast, config.exec);

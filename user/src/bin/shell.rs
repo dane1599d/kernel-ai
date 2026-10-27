@@ -23,7 +23,7 @@ use llmproto::chat::Completion;
 use llmproto::script::{self, Answer, AnswerError, ScriptRequest};
 use llmproto::tune::{self, TuneRequest};
 use shellcore::targets::Service;
-use shellcore::{DEFAULT_CONFIG, Host, SCRIPT_ROUND_MS, Shell};
+use shellcore::{DEFAULT_CONFIG, Host, Proof, SCRIPT_ROUND_MS, Shell};
 use user::{arg, args, logln, println, sys};
 
 user::entry!(main);
@@ -57,14 +57,29 @@ fn supervisor() -> kabi::handle::Handle {
 /// The supervisor's wait for a stop or a start: a stop waits for the process to end.
 const SUPERVISOR_CALL_MS: u64 = 10_000;
 
-/// Sends `stop <name>` or `start <name>` to the supervisor: `ok`, or `err <why>`.
-fn supervise(verb: &str, name: &str) -> Result<(), String> {
-    let text = ask_supervisor(&format!("{verb} {name}"))?;
+/// Sends `stop`, `start` or `restart` to the supervisor: `ok`, or `err <why>`.
+fn supervise(request: &str) -> Result<(), String> {
+    let text = ask_supervisor(request)?;
     match text.split_once(' ').unwrap_or((&text, "")) {
         ("ok", _) => Ok(()),
         ("err", why) => Err(why.to_string()),
         _ => Err(String::from("the supervisor's answer was malformed")),
     }
+}
+
+/// A stop or restart carrying what lets it run, in the supervisor's own words
+/// (`supervise::Request::encode`): `once=<badge> id=<entry>`, `rule`, or for a
+/// stop, `undo id=<entry>`. One the supervisor would refuse is not sent.
+fn with_proof(request: supervise::Request, proof: Proof) -> Result<String, String> {
+    let proof = match proof {
+        Proof::Once { badge, id } => supervise::Proof::Once(supervise::Once { badge, id }),
+        Proof::Rule => supervise::Proof::Rule,
+        Proof::Undo { id } => supervise::Proof::Undo(id),
+        Proof::None => supervise::Proof::None,
+    };
+    supervise::proof_fits(request, proof)
+        .map_err(|_| String::from("a stop or restart needs the menu's Allow or a rule"))?;
+    Ok(request.encode(proof))
 }
 
 /// Sends `request` to the supervisor over the route; its answer.
@@ -174,16 +189,31 @@ impl Host for System {
         let _ = sys::call_route(llm(), b"new", &mut reply, MEMORY_CALL_MS);
     }
 
-    fn stop_process(&self, name: &str) -> Result<u64, String> {
-        sys::proc_stop(name).map_err(|error| format!("{error:?}"))
+    /// The kernel checks the proof: the menu's ONCE, or (badge 0) a rule node
+    /// in this table that covers the call (P1 task 14).
+    fn stop_process(&self, name: &str, proof: Proof) -> Result<u64, String> {
+        let (badge, id) = match proof {
+            Proof::Once { badge, id } => (badge, id),
+            Proof::Rule => (0, 0),
+            Proof::None | Proof::Undo { .. } => {
+                return Err(String::from("a stop needs the menu's Allow or a rule"));
+            }
+        };
+        sys::proc_stop_once(name, badge, id).map_err(|error| format!("{error:?}"))
     }
 
-    fn stop_service(&self, name: &str) -> Result<(), String> {
-        supervise("stop", name)
+    fn stop_service(&self, name: &str, proof: Proof) -> Result<(), String> {
+        supervise(&with_proof(supervise::Request::Stop(name), proof)?)
     }
 
-    fn start_service(&self, name: &str) -> Result<(), String> {
-        supervise("start", name)
+    /// The supervisor keeps the entry, so only that entry's undo may stop it unasked.
+    fn start_service(&self, name: &str, entry: u64) -> Result<(), String> {
+        let start = supervise::Request::Start(name);
+        supervise(&start.encode(supervise::Proof::Entry(entry)))
+    }
+
+    fn restart_service(&self, name: &str, proof: Proof) -> Result<(), String> {
+        supervise(&with_proof(supervise::Request::Restart(name), proof)?)
     }
 
     fn services(&self) -> Result<Vec<Service>, String> {

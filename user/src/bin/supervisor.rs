@@ -4,7 +4,13 @@
 //! one carries on with the same counts and re-attaches to services still running.
 //!
 //! It also serves `supervisor`: `stop <name>` ends a service and keeps it down,
-//! across its own restarts too, until `start <name>` (see `supervise::check`);
+//! across its own restarts too, until `start <name>`, and `restart <name>` ends
+//! and starts it (see `supervise::check`). A stop or restart must prove the user
+//! wants it (`supervise::Proof`) before it acts: the menu's `ONCE`, checked with
+//! ONCE_CHECK against the call shown (ADR 0001 D6); a standing rule the caller
+//! holds, checked with RULE_CHECK; or, for a stop, an undo of the start the shell
+//! made as that log entry, with nothing changed since. A start needs none. Its
+//! own restarts need none either.
 //! `services` lists them, for the shell to tell a service from a process.
 
 #![no_std]
@@ -17,7 +23,7 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use kabi::{ExitReason, ExitRecord, SpawnRequest};
-use supervise::{Decision, Record, Request, ServiceSpec};
+use supervise::{Decision, Proof, Record, Request, ServiceSpec};
 use user::sys::Event;
 use user::{println, sys};
 
@@ -30,6 +36,12 @@ struct Service {
     started_ms: u64,
     /// When to start it next, if it is not running.
     start_at_ms: Option<u64>,
+    /// Ended by a `restart` request: start it as soon as it is gone, with no
+    /// backoff and no restart counted.
+    restart_on_exit: bool,
+    /// The shell's log entry whose `start` is the latest change to it, for its
+    /// undo; cleared by any stop or restart.
+    started_by: Option<u64>,
 }
 
 fn now_ms() -> u64 {
@@ -84,6 +96,8 @@ fn main() -> i32 {
                 pid,
                 started_ms,
                 start_at_ms: None,
+                restart_on_exit: false,
+                started_by: None,
             }
         })
         .collect();
@@ -155,26 +169,43 @@ fn serve(services: &mut [Service]) {
         return;
     };
     let text = core::str::from_utf8(&buf[..len.min(buf.len())]).unwrap_or("");
-    let reply = handle(services, text);
+    let reply = handle(services, text, caller);
     if let Err(error) = sys::svc_reply(reply.as_bytes()) {
         println!("cannot answer {text:?}: {error:?}");
     }
 }
 
-fn handle(services: &mut [Service], text: &str) -> String {
+fn handle(services: &mut [Service], text: &str, caller: u64) -> String {
     let records: Vec<Record> = services.iter().map(|s| s.record.clone()).collect();
     if text.trim() == supervise::SERVICES {
         return supervise::listing(&records);
     }
-    let Some(request) = Request::parse(text) else {
+    let Some((request, proof)) = Request::parse(text) else {
         return String::from("err unknown request");
     };
+    if let Err(why) = supervise::proof_fits(request, proof) {
+        return String::from(why);
+    }
+    // Checked first, so a request the user did not allow learns nothing more.
+    if let Err(why) = check_proof(request, proof, caller) {
+        println!("{text:?} refused: {why}");
+        return why;
+    }
     let index = match supervise::check(request, &records) {
         Ok(index) => index,
         Err(why) => return String::from(why),
     };
     let service = &mut services[index];
     let name = service.spec.name.clone();
+    if let Proof::Undo(id) = proof
+        && service.started_by != Some(id)
+    {
+        return String::from("err not that entry's start");
+    }
+    service.started_by = match (request, proof) {
+        (Request::Start(_), Proof::Entry(id)) => Some(id),
+        _ => None,
+    };
     match request {
         Request::Stop(_) => {
             service.record.stopped = true;
@@ -192,9 +223,46 @@ fn handle(services: &mut [Service], text: &str) -> String {
             service.start_at_ms = Some(now_ms());
             println!("{name} started on request");
         }
+        Request::Restart(_) => {
+            service.record.stopped = false;
+            service.record.gave_up = false;
+            match service.pid {
+                Some(pid) => {
+                    service.restart_on_exit = true;
+                    if let Err(error) = sys::kill(pid) {
+                        service.restart_on_exit = false;
+                        println!("cannot restart {name} (pid {pid}): {error:?}");
+                        return format!("err cannot stop it: {error:?}");
+                    }
+                }
+                None => service.start_at_ms = Some(now_ms()),
+            }
+            println!("{name} restarted on request");
+        }
     }
     save(services);
     String::from("ok")
+}
+
+/// A `ONCE` or a rule, checked through the kernel; any other proof needs no call.
+fn check_proof(request: Request, proof: Proof, caller: u64) -> Result<(), String> {
+    let call = request
+        .call()
+        .ok_or_else(|| String::from("err unknown service"))?;
+    match proof {
+        Proof::Once(once) => {
+            let digest = request
+                .digest(once.id)
+                .ok_or_else(|| String::from("err unknown service"))?;
+            // Bound to the caller: a process that only saw the badge cannot spend it.
+            sys::once_check_for(caller, once.badge, &digest)
+                .map_err(|error| format!("err ONCE {error:?}"))
+        }
+        Proof::Rule => {
+            sys::rule_check(caller, &call).map_err(|error| format!("err rule {error:?}"))
+        }
+        Proof::None | Proof::Entry(_) | Proof::Undo(_) => Ok(()),
+    }
 }
 
 /// Services the kernel reports running, as (pid, name).
@@ -249,9 +317,18 @@ fn on_exit(services: &mut [Service], exit: &ExitRecord) {
     service.pid = None;
     service.record.pid = 0;
     service.record.started_ms = 0;
+    // Whatever happens next, the shell's start is no longer the latest change.
+    service.started_by = None;
     let now = now_ms();
     let reason = ExitReason::from_raw(exit.reason).map_or("ended", ExitReason::name);
     let name = &service.spec.name;
+    if service.restart_on_exit {
+        service.restart_on_exit = false;
+        println!("{name} {reason}; restarting on request");
+        service.start_at_ms = Some(now);
+        save(services);
+        return;
+    }
     if service.record.stopped {
         println!("{name} {reason}; stopped, so not restarted");
         save(services);

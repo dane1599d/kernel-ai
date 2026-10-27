@@ -61,6 +61,30 @@ use tiers::Tier;
 
 pub use commands::{COMMANDS, split_command};
 
+/// What lets an asked call run, shown to the call's owner (the kernel for a
+/// process, the supervisor for a service), which checks it: the shell only
+/// passes it on (P1 task 14, ADR 0001 D6).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Proof {
+    /// Nothing: an owner that checks refuses an asked call.
+    #[default]
+    None,
+    /// The `ONCE` the trusted path minted for menu `id`'s Allow.
+    Once { badge: u64, id: u64 },
+    /// A standing rule's node in the shell's table, which the owner finds.
+    Rule,
+    /// The undo of log entry `id`'s start of the service, which the supervisor
+    /// remembers.
+    Undo { id: u64 },
+}
+
+/// What a run of log entry `entry` may show the owners of its calls.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Consent {
+    pub entry: u64,
+    pub proof: Proof,
+}
+
 /// What the shell needs from the operating system.
 pub trait Host {
     fn now_ns(&self) -> u64;
@@ -94,17 +118,25 @@ pub trait Host {
     fn once_check(&self, _badge: u64, _digest: &[u8; 32]) -> Result<(), String> {
         Err(String::from("there is no trusted path here"))
     }
-    /// Stops every running process named `name`; how many stopped.
-    fn stop_process(&self, _name: &str) -> Result<u64, String> {
+    /// Stops every running process named `name`; how many stopped. `proof` is
+    /// what the kernel checks before it stops anything (P1 task 14).
+    fn stop_process(&self, _name: &str, _proof: Proof) -> Result<u64, String> {
         Err(String::from("processes cannot be stopped here"))
     }
     /// Stops the supervised service `name`, which stays stopped until started.
-    fn stop_service(&self, _name: &str) -> Result<(), String> {
+    /// `proof` is what the supervisor checks.
+    fn stop_service(&self, _name: &str, _proof: Proof) -> Result<(), String> {
         Err(String::from("services cannot be stopped here"))
     }
-    /// Starts the stopped service `name`.
-    fn start_service(&self, _name: &str) -> Result<(), String> {
+    /// Starts the stopped service `name` for log entry `entry`, which the
+    /// supervisor keeps so only that entry's undo may stop it again unasked.
+    fn start_service(&self, _name: &str, _entry: u64) -> Result<(), String> {
         Err(String::from("services cannot be started here"))
+    }
+    /// Stops and starts the supervised service `name` in one request: a ONCE is
+    /// used up by its first check, so two requests could not both pass.
+    fn restart_service(&self, _name: &str, _proof: Proof) -> Result<(), String> {
+        Err(String::from("services cannot be restarted here"))
     }
     /// The services the supervisor runs, so a stop names a service or a process
     /// by what it is. Without them, a stop runs the row the model picked.
@@ -287,6 +319,9 @@ pub struct Shell {
     /// The `pack_id` of the pack the model is given, logged with each model turn
     /// (ADR 0010 §7): the same one llm reports for its `act` slot.
     pack_id: u64,
+    /// The ONCE of the menu answer now running, kept for the call's owner to
+    /// check: the shell does not spend it (P1 task 14).
+    owner_once: Option<u64>,
 }
 
 impl Shell {
@@ -332,6 +367,7 @@ impl Shell {
             partial: None,
             clarifying: None,
             pack_id: llmproto::pack::act_pack_id(),
+            owner_once: None,
         }
     }
 

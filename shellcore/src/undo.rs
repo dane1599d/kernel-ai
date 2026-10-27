@@ -1,8 +1,8 @@
 //! What a script changed, recorded as it happens with the value it replaced, so
 //! `undo` can put it back. A change with no recorded inverse cannot be run-tier.
 
-use crate::Host;
 use crate::tune::spec_of;
+use crate::{Host, Proof};
 use alloc::format;
 use alloc::rc::Rc;
 use alloc::string::String;
@@ -103,7 +103,12 @@ pub fn target(inverse: Inverse) -> String {
 /// Puts one change back; what it did, or why it did not. Compare-and-set: a value
 /// that moved since the change is left alone unless `anyway`. A switch the kernel
 /// refuses as too soon is tried once more after [`BUSY_RETRY_MS`].
-pub fn revert(host: &dyn Host, inverse: Inverse, anyway: bool) -> Result<String, Refused> {
+pub fn revert(
+    host: &dyn Host,
+    inverse: Inverse,
+    anyway: bool,
+    ids: Ids,
+) -> Result<String, Refused> {
     match inverse {
         Inverse::Spec {
             policy,
@@ -127,17 +132,25 @@ pub fn revert(host: &dyn Host, inverse: Inverse, anyway: bool) -> Result<String,
                 })
         }
         Inverse::Started(name) => host
-            .stop_service(name.as_str())
+            .stop_service(name.as_str(), Proof::Undo { id: ids.made })
             .map(|()| format!("service {} stopped again", name.as_str()))
             .map_err(Refused::Failed),
         Inverse::Stopped(name) => host
-            .start_service(name.as_str())
+            .start_service(name.as_str(), ids.next)
             .map(|()| format!("service {} started again", name.as_str()))
             .map_err(Refused::Failed),
         Inverse::Generation { .. } => Err(Refused::Failed(String::from(
             "a package switch is put back by the shell's store",
         ))),
     }
+}
+
+/// The log entries a revert stands between: `made`, whose change it puts back,
+/// and `next`, the entry the revert itself is logged as.
+#[derive(Clone, Copy, Debug)]
+pub struct Ids {
+    pub made: u64,
+    pub next: u64,
 }
 
 /// How to put back what reverting with `inverse` did: the redo.

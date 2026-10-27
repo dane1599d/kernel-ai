@@ -137,11 +137,21 @@ pub fn wait_event(timeout_ms: u64) -> Result<Event, Error> {
 }
 
 /// Stops every process named `name` that the kernel started outside the
-/// supervisor, and returns how many went (needs a Job handle with STOP).
+/// supervisor, and returns how many went (needs SUPERVISE).
 pub fn proc_stop(name: &str) -> Result<u64, Error> {
     call(
         call::PROC_STOP,
         [name.as_ptr() as u64, name.len() as u64, 0, 0, 0, 0],
+    )
+}
+
+/// [`proc_stop`] with the user's yes: the `ONCE` badge the trusted path gave for
+/// menu `id`, which showed `process_stop("<name>")`, or badge 0 under a standing
+/// rule the caller holds (needs a Job handle with STOP).
+pub fn proc_stop_once(name: &str, badge: u64, id: u64) -> Result<u64, Error> {
+    call(
+        call::PROC_STOP_ONCE,
+        [name.as_ptr() as u64, name.len() as u64, badge, id, 0, 0],
     )
 }
 
@@ -768,6 +778,26 @@ pub fn grant_dup(handle: Handle, rights: Rights, grant: Handle) -> Result<Handle
 
 /// Whether `digest` is the one the trusted path holds for the `ONCE` badge
 /// `badge`; a match uses it up.
+/// Whether process `pid` holds a standing rule that covers the call `text`, in canonical
+/// text (needs SUPERVISE).
+pub fn rule_check(pid: u64, text: &str) -> Result<(), Error> {
+    call(
+        call::RULE_CHECK,
+        [pid, text.as_ptr() as u64, text.len() as u64, 0, 0, 0],
+    )
+    .map(|_| ())
+}
+
+/// [`once_check`] for a call made by process `pid`, which must hold the `ONCE`
+/// (needs SUPERVISE).
+pub fn once_check_for(pid: u64, badge: u64, digest: &[u8; 32]) -> Result<(), Error> {
+    call(
+        call::ONCE_CHECK_FOR,
+        [pid, badge, digest.as_ptr() as u64, 0, 0, 0],
+    )
+    .map(|_| ())
+}
+
 pub fn once_check(badge: u64, digest: &[u8; 32]) -> Result<(), Error> {
     call(
         call::ONCE_CHECK,

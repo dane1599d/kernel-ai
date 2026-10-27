@@ -69,6 +69,10 @@ struct FakeHost {
     apart: RefCell<Option<Apart>>,
     /// Requests sent to a child.
     apart_requests: RefCell<Vec<String>>,
+    /// What each stop, start and restart showed its owner, in order.
+    proofs: RefCell<Vec<(String, Proof)>>,
+    /// Services started, with the entry that started them: the supervisor's memory.
+    started_by: RefCell<Vec<(String, u64)>>,
 }
 
 type Apart = alloc::boxed::Box<dyn Fn(&str) -> Result<String, String>>;
@@ -90,6 +94,20 @@ impl FakeHost {
         }
         *state = running;
         Ok(())
+    }
+
+    /// What a stop's owner checks (the kernel, the supervisor): the menu's ONCE
+    /// against `call` as shown, used up by a match, or a standing rule. With no
+    /// proof it refuses, as the real owners do.
+    fn owner_check(&self, call: &str, proof: Proof) -> Result<(), String> {
+        self.proofs.borrow_mut().push((call.into(), proof));
+        match proof {
+            Proof::Once { badge, id } => self
+                .once_check(badge, &termcore::once::digest_call(id, call))
+                .map_err(|why| format!("ONCE {why}")),
+            Proof::Rule => Ok(()),
+            Proof::None | Proof::Undo { .. } => Err(String::from("Permission")),
+        }
     }
 
     /// What the kernel terminal does on Allow: a ONCE badge for menu `id`'s
@@ -136,6 +154,8 @@ impl FakeHost {
             lists_services: Cell::new(false),
             apart: RefCell::new(None),
             apart_requests: RefCell::new(Vec::new()),
+            proofs: RefCell::new(Vec::new()),
+            started_by: RefCell::new(Vec::new()),
         })
     }
 }
@@ -252,7 +272,8 @@ impl Host for FakeHost {
         }
     }
 
-    fn stop_process(&self, name: &str) -> Result<u64, String> {
+    fn stop_process(&self, name: &str, proof: Proof) -> Result<u64, String> {
+        self.owner_check(&format!("process_stop(\"{name}\")"), proof)?;
         let mut procs = self.procs.borrow_mut();
         let before = procs.len();
         procs.retain(|p| p != name);
@@ -262,11 +283,39 @@ impl Host for FakeHost {
         }
     }
 
-    fn stop_service(&self, name: &str) -> Result<(), String> {
+    fn stop_service(&self, name: &str, proof: Proof) -> Result<(), String> {
+        match proof {
+            // The supervisor's memory: only the entry that started it.
+            Proof::Undo { id } => {
+                self.proofs
+                    .borrow_mut()
+                    .push((format!("service_stop({name})"), proof));
+                let started = self.started_by.borrow();
+                if !started
+                    .iter()
+                    .rev()
+                    .find(|(n, _)| n == name)
+                    .is_some_and(|&(_, by)| by == id)
+                {
+                    return Err(String::from("err undo refused"));
+                }
+            }
+            _ => self.owner_check(&format!("service_stop(\"{name}\")"), proof)?,
+        }
+        self.started_by.borrow_mut().retain(|(n, _)| n != name);
         self.set_running(name, false)
     }
 
-    fn start_service(&self, name: &str) -> Result<(), String> {
+    fn start_service(&self, name: &str, entry: u64) -> Result<(), String> {
+        self.set_running(name, true)?;
+        self.started_by.borrow_mut().push((name.into(), entry));
+        Ok(())
+    }
+
+    fn restart_service(&self, name: &str, proof: Proof) -> Result<(), String> {
+        self.owner_check(&format!("service_restart(\"{name}\")"), proof)?;
+        self.started_by.borrow_mut().retain(|(n, _)| n != name);
+        self.set_running(name, false)?;
         self.set_running(name, true)
     }
 
