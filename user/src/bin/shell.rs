@@ -246,10 +246,16 @@ impl Host for System {
         self.state.read_log()
     }
 
-    /// Its own action for now; the same commit as the change it logs comes with
-    /// one action spanning the change and the log line.
+    /// In the same commit as the files the line changed (P2 task 12); else its
+    /// own action. A log that fails to write still lets the change commit: the
+    /// user was told it was done.
     fn log_write(&self, text: &str) -> Result<(), String> {
-        self.state.write_log(text, self.files.next_action())
+        if !self.files.is_open() {
+            return self.state.write_log(text, self.files.next_action());
+        }
+        let logged = self.state.write_log_in(text);
+        let committed = self.files.commit();
+        logged.and(committed)
     }
 
     fn fs_read(&self, read: shellcore::FsRead) -> Result<String, String> {

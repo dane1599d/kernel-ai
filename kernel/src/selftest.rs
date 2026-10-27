@@ -20,6 +20,9 @@ pub enum ActCase {
     Convo,
     FsAct,
     FsUndo,
+    /// `fs-undo-reboot`'s first boot, then its second (`reread`).
+    FsUndoReboot,
+    FsUndoRebooted,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -196,6 +199,12 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=act-convo" => Some(SelfTest::Act(ActCase::Convo)),
             "test=fs-act" => Some(SelfTest::Act(ActCase::FsAct)),
             "test=fs-undo" => Some(SelfTest::Act(ActCase::FsUndo)),
+            "test=fs-undo-reboot" => Some(SelfTest::Act(
+                match cmdline.split_whitespace().any(|w| w == "reread") {
+                    true => ActCase::FsUndoRebooted,
+                    false => ActCase::FsUndoReboot,
+                },
+            )),
             "test=live" => Some(SelfTest::Live),
             "test=edit" => Some(SelfTest::Edit),
             "test=appbench" => Some(SelfTest::AppBench),

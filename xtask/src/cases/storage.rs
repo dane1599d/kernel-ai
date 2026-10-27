@@ -42,6 +42,13 @@ const FS_REBOOT_2: TestCase = TestCase {
     ..case("fs-reboot (boot 2)", "test=files reread")
 };
 
+/// Boot 2 of `fs-undo-reboot`: the log on disk still undoes boot 1's change.
+const FS_UNDO_REBOOT_2: TestCase = TestCase {
+    expect: &["fs-undo-reboot: boot 2's undo restored notes.txt from the log on disk"],
+    data: Some(VIRTIO),
+    ..case("fs-undo-reboot (boot 2)", "test=fs-undo-reboot reread")
+};
+
 pub(super) const CASES: &[TestCase] = &[
     TestCase {
         expect: &[
@@ -145,6 +152,13 @@ pub(super) const CASES: &[TestCase] = &[
         expect: &["fs-undo: undo restored the file's transaction, and undo again restored it back"],
         data: Some(VIRTIO),
         ..case("fs-undo", "test=fs-undo")
+    },
+    // P2 task 12: the change and its log line in one commit, undone after a reboot.
+    TestCase {
+        expect: &["fs-undo-reboot: boot 1 created notes.txt, its log line in the same commit"],
+        data: Some(VIRTIO),
+        then: Some(&FS_UNDO_REBOOT_2),
+        ..case("fs-undo-reboot", "test=fs-undo-reboot")
     },
     // S04-3 raw: 200 commits shaped like kaifs's, every flush point replayed.
     TestCase {

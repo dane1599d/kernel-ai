@@ -179,6 +179,19 @@ const FS_UNDO: &[(&str, Expect)] = &[
     ("read notes.txt", Exact("ok hello")),
 ];
 
+/// `fs-undo-reboot` (P2 task 12): the change and its log line land in one
+/// commit, so after a reboot the log on disk still undoes it.
+const FS_BEFORE_REBOOT: &[(&str, Expect)] = &[(
+    "create notes.txt saying hello",
+    Exact("ok Done: file notes.txt created (was absent). undo"),
+)];
+
+const FS_AFTER_REBOOT: &[(&str, Expect)] = &[
+    ("read notes.txt", Exact("ok hello")),
+    ("undo", Exact("ok Undone: files back as they were")),
+    ("read notes.txt", StartsWith("err ")),
+];
+
 /// A script that switches and then throws leaves nothing changed.
 const ROLLBACK: &[(&str, Expect)] = &[
     (
@@ -225,6 +238,12 @@ pub fn check(which: ActCase) -> Result<(), &'static str> {
         }),
         ActCase::FsUndo => expect_lines(FS_UNDO).map(|()| {
             log!("fs-undo: undo restored the file's transaction, and undo again restored it back");
+        }),
+        ActCase::FsUndoReboot => expect_lines(FS_BEFORE_REBOOT).map(|()| {
+            log!("fs-undo-reboot: boot 1 created notes.txt, its log line in the same commit");
+        }),
+        ActCase::FsUndoRebooted => expect_lines(FS_AFTER_REBOOT).map(|()| {
+            log!("fs-undo-reboot: boot 2's undo restored notes.txt from the log on disk");
         }),
     }
 }

@@ -1,8 +1,10 @@
 //! The shell's `fs` client (P2 task 11): the file rows' host calls through the
 //! `Dir` handle for `/home/user` the shell gets at startup with `files`, in
-//! `kai-fs 1`. Each change is one action (`Begin` … `Commit`), whose generation
-//! is its transaction for `undo`; `undo` is a `Restore` of it, never over a
-//! later change.
+//! `kai-fs 1`. A line's changes are one action (`Begin` … `Commit`), left open
+//! until the log line that records them is written into it (P2 task 12), so the
+//! change and its log line land in one commit. The commit's generation, known at
+//! `Begin` (`Request::Generation`), is its transaction for `undo`; `undo` is a
+//! `Restore` of it, never over a later change.
 
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -25,6 +27,11 @@ pub struct Files {
     home: Option<Handle>,
     /// The next action number `Begin` gets.
     action: Cell<u64>,
+    /// The generation of the line's open action, until the log commits it.
+    open: Cell<Option<u64>>,
+    /// An open action dropped by a failed run's rollback or by `fs`: its
+    /// generation, which is nothing to restore.
+    dropped: Cell<Option<u64>>,
 }
 
 impl Files {
@@ -35,6 +42,8 @@ impl Files {
         let files = Self {
             home: dirs.first().copied(),
             action: Cell::new(1),
+            open: Cell::new(None),
+            dropped: Cell::new(None),
         };
         let state = State {
             dir: dirs.get(1).copied(),
@@ -95,27 +104,73 @@ impl Files {
         action
     }
 
-    /// One change as one action; its generation, the transaction `undo` restores.
+    /// One change in the line's action, opened by its first change; the action's
+    /// generation, the transaction `undo` restores.
     pub fn change(&self, change: FsChange) -> Result<u64, String> {
         let home = self.home()?;
+        let generation = match self.open.get() {
+            Some(generation) => generation,
+            None => self.begin(home)?,
+        };
+        make(home, change).inspect_err(|why| {
+            // A refused change leaves the action open; a failed disk drops it.
+            if why.contains("Io") {
+                self.open.set(None);
+                self.dropped.set(Some(generation));
+            }
+        })?;
+        Ok(generation)
+    }
+
+    fn begin(&self, home: Handle) -> Result<u64, String> {
         let action = self.next_action();
         expect_done(home, Request::Begin { action })?;
-        let made = make(home, change);
-        let ended = match made {
-            Ok(()) => ask(home, Request::Commit),
-            Err(why) => {
+        let generation = match ask(home, Request::Generation)?.0 {
+            Reply::Generation { generation } => generation,
+            other => {
                 let _ = ask(home, Request::Abort);
-                return Err(why);
+                return Err(unexpected(&other));
             }
         };
-        match ended?.0 {
-            Reply::Committed { generation } => Ok(generation),
+        self.open.set(Some(generation));
+        self.dropped.set(None);
+        Ok(generation)
+    }
+
+    /// Whether a line's changes wait for their log line.
+    pub fn is_open(&self) -> bool {
+        self.open.get().is_some()
+    }
+
+    /// Commits the line's action, its log line in it; an error if the commit got
+    /// another generation than its changes were told.
+    pub fn commit(&self) -> Result<(), String> {
+        let (Some(generation), Ok(home)) = (self.open.take(), self.home()) else {
+            return Ok(());
+        };
+        match ask(home, Request::Commit)?.0 {
+            Reply::Committed { generation: got } if got == generation => Ok(()),
+            Reply::Committed { generation: got } => Err(format!(
+                "the files committed as {got}, not {generation}; undo may miss them"
+            )),
             other => Err(unexpected(&other)),
         }
     }
 
     pub fn undo(&self, txn: u64, anyway: bool) -> Result<u64, FsRefused> {
         let home = self.home().map_err(FsRefused::Failed)?;
+        // A failed run's rollback: its own action is dropped, not restored.
+        if self.open.get() == Some(txn) {
+            let _ = ask(home, Request::Abort);
+            self.open.set(None);
+            self.dropped.set(Some(txn));
+            return Ok(txn);
+        }
+        if self.dropped.get() == Some(txn) {
+            return Ok(txn);
+        }
+        // Another line's action still open (its log was not written) lands first.
+        self.commit().map_err(FsRefused::Failed)?;
         let action = self.action.get();
         self.action.set(action + 1);
         let failed = |why: String| FsRefused::Failed(why);
@@ -228,21 +283,29 @@ impl State {
         text.ok()
     }
 
-    /// Writes the whole log, as one action of its own.
-    pub fn write_log(&self, text: &str, action: u64) -> Result<(), String> {
+    /// Writes the whole log into the action now open, the one that changed files.
+    pub fn write_log_in(&self, text: &str) -> Result<(), String> {
         let dir = self
             .dir
             .ok_or_else(|| String::from("no /system/state here"))?;
-        expect_done(dir, Request::Begin { action })?;
-        let wrote = open(dir, LOG, How::Existing, Rights::WRITE)
+        open(dir, LOG, How::Existing, Rights::WRITE)
             .or_else(|_| open(dir, LOG, How::CreateFile, Rights::WRITE))
             .and_then(|file| {
                 let wrote = expect_done(file, Request::Truncate { size: 0 })
                     .and_then(|()| write_all(file, text.as_bytes()));
                 close(file);
                 wrote
-            });
-        match wrote {
+            })
+    }
+
+    /// Writes the whole log, as one action of its own: a line that changed no
+    /// files.
+    pub fn write_log(&self, text: &str, action: u64) -> Result<(), String> {
+        let dir = self
+            .dir
+            .ok_or_else(|| String::from("no /system/state here"))?;
+        expect_done(dir, Request::Begin { action })?;
+        match self.write_log_in(text) {
             Ok(()) => match ask(dir, Request::Commit)?.0 {
                 Reply::Committed { .. } => Ok(()),
                 other => Err(unexpected(&other)),
