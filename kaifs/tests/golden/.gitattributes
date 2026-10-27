@@ -1,0 +1,2 @@
+# Golden images are raw disk bytes: never touch their line endings.
+*.kgold binary

@@ -26,7 +26,7 @@ fn a_fresh_filesystem_mounts_empty_and_checks_clean() {
     assert_eq!(fs.committed, 1);
     assert_eq!(fs.get(&key(1)).unwrap(), None);
     let report = check(&mut fs, &mut Cache::default()).unwrap();
-    assert_eq!((report.live, report.leaked_blocks), ((0, 0), 0));
+    assert_eq!((report.live.count, report.leaked_blocks), (0, 0));
 }
 
 #[test]
@@ -91,8 +91,8 @@ fn a_snapshot_keeps_its_state_and_restore_brings_it_back() {
     let mut fs = remount(fs);
     assert_eq!(fs.snapshots().len(), 1);
     let report = check(&mut fs, &mut Cache::default()).unwrap();
-    assert_eq!(report.live.1, 2);
-    assert_eq!(report.snaps[&id].1, 1);
+    assert_eq!(report.live.count, 2);
+    assert_eq!(report.snaps[&id].count, 1);
     assert!(fs.restore(id).unwrap());
     fs.commit().unwrap();
     let mut fs = remount(fs);
@@ -142,7 +142,7 @@ fn restore_then_drop_keeps_the_restored_blocks() {
     }
     // The held blocks are the restored tree's own, live again: nothing leaked.
     let report = check(&mut fs, &mut Cache::default()).unwrap();
-    assert_eq!(report.live.1, 1100);
+    assert_eq!(report.live.count, 1100);
 }
 
 /// The same with the rule judged at commit: the restored tree breaks, while the

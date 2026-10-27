@@ -230,3 +230,166 @@ fn mutated_nodes_never_panic_and_what_decodes_round_trips() {
         sweep_fields(&sample, 0..200, |_, bytes| node_is_total(bytes));
     }
 }
+
+/// Each namespace item reader on mutated samples and every field at every
+/// extreme value: decode or refuse, never panic, and what decodes round-trips.
+#[test]
+fn mutated_namespace_items_never_panic_and_what_decodes_round_trips() {
+    use kaifs::FileType;
+    use kaifs::items::{Entry, Inode, decode_attrs, decode_names, encode_attrs, encode_names};
+    let inode = Inode {
+        kind: FileType::File,
+        mode: 0o644,
+        nlink: 1,
+        size: 300_000,
+        parent: 7,
+        mtime: 11,
+        ctime: 12,
+        crtime: 10,
+    }
+    .encode();
+    let inode_is_total = |bytes: &[u8]| {
+        if let Ok(inode) = Inode::decode(bytes) {
+            assert_eq!(Inode::decode(&inode.encode()), Ok(inode));
+        }
+    };
+    fuzz(&inode, 7, 20_000, inode_is_total);
+    sweep_fields(&inode, 0..inode.len(), |_, bytes| inode_is_total(bytes));
+    let entries: Vec<Entry> = ["a", "bb", "\u{65e5}\u{8a18}", "zzz"]
+        .iter()
+        .enumerate()
+        .map(|(i, n)| Entry {
+            name: n.to_string(),
+            ino: 2 + i as u64,
+            kind: [FileType::File, FileType::Dir][i % 2],
+        })
+        .collect();
+    let names = encode_names(&entries);
+    let names_are_total = |bytes: &[u8]| {
+        if let Ok(decoded) = decode_names(bytes) {
+            assert_eq!(encode_names(&decoded), bytes);
+        }
+    };
+    fuzz(&names, 8, 20_000, names_are_total);
+    sweep_fields(&names, 0..names.len(), |_, bytes| names_are_total(bytes));
+    let attrs = encode_attrs(&[
+        ("user.a".to_string(), b"one".to_vec()),
+        ("user.b".to_string(), Vec::new()),
+        ("user.c".to_string(), vec![0xAB; 40]),
+    ]);
+    let attrs_are_total = |bytes: &[u8]| {
+        if let Ok(decoded) = decode_attrs(bytes) {
+            assert_eq!(encode_attrs(&decoded), bytes);
+        }
+    };
+    fuzz(&attrs, 9, 20_000, attrs_are_total);
+    sweep_fields(&attrs, 0..attrs.len(), |_, bytes| attrs_are_total(bytes));
+}
+
+/// Walks what a namespace shows a reader, never trusting it: every name, every
+/// inode, a bounded read of every file and every attribute.
+fn browse(fs: &mut kaifs::Fs<MemDisk>) {
+    use kaifs::{FileType, ROOT};
+    let mut seen = std::collections::BTreeSet::new();
+    let mut stack = vec![ROOT];
+    while let Some(dir) = stack.pop() {
+        if !seen.insert(dir) || seen.len() > 2_000 {
+            continue;
+        }
+        let _ = fs.xattrs(dir);
+        let Ok(names) = fs.list(dir, None, 500) else {
+            continue;
+        };
+        for listed in names {
+            let ino = listed.entry.ino;
+            let _ = fs.lookup(dir, &listed.entry.name);
+            match fs.stat(ino).map(|i| i.kind) {
+                Ok(FileType::Dir) => stack.push(ino),
+                Ok(FileType::File) => {
+                    let _ = fs.read_at(ino, 0, 1 << 20);
+                    let _ = fs.read_at(ino, u64::MAX - 10, 100);
+                    let _ = fs.xattrs(ino);
+                }
+                Err(_) => {}
+            }
+        }
+    }
+}
+
+/// A sound namespace whose items are replaced by mutated bytes, or joined by
+/// items at random keys: reads, check and the namespace rules must never panic,
+/// and repair must refuse or leave a namespace that passes check.
+#[test]
+fn a_namespace_with_hostile_items_never_panics_and_repairs_to_one_that_checks() {
+    use kaifs::check::{Cache, check};
+    use kaifs::items::{K_DATA, K_DIRENT, K_INODE, K_XATTR};
+    use kaifs::ns_check::check_namespace;
+    use kaifs::repair::repair;
+    use kaifs::tree::Key;
+    use kaifs::{Fs, ROOT};
+    let mut fs = Fs::mkfs(MemDisk::new(4096), [5; 16], "hostile").unwrap();
+    fs.hash_mask = 0xF;
+    let d = fs.mkdir(ROOT, "d").unwrap();
+    for i in 0..30u64 {
+        let f = fs
+            .create(if i % 2 == 0 { ROOT } else { d }, &format!("f{i}"))
+            .unwrap();
+        fs.write_file(f, &vec![i as u8 + 1; (i as usize * 97) % 3000])
+            .unwrap();
+        if i % 5 == 0 {
+            fs.set_xattr(f, "user.x", &[i as u8; 9]).unwrap();
+        }
+    }
+    fs.commit().unwrap();
+    let mut items: Vec<(Key, Vec<u8>)> = Vec::new();
+    fs.scan_raw(&Key::MIN, &mut |k, v| {
+        items.push((*k, v.to_vec()));
+        true
+    })
+    .unwrap();
+    let base = fs.into_dev();
+    let cases = if cfg!(debug_assertions) { 150 } else { 1_500 };
+    let mut rng = XorShift::new(10);
+    let mut repaired = 0;
+    for _ in 0..cases {
+        let mut fs = Fs::mount(base.clone()).unwrap();
+        fs.hash_mask = 0xF;
+        for _ in 0..1 + rng.below(3) {
+            let (key, raw) = &items[rng.below(items.len())];
+            let inline = kaifs::fs::inline_of(raw).unwrap_or(&raw[1..]);
+            let bytes = hostile::mutate(&mut rng, inline);
+            let key = match rng.below(4) {
+                0 => *key,
+                1 => Key::new(key.oid, key.kind, rng.next() % 64),
+                2 => Key::new(
+                    rng.below(70) as u64,
+                    [K_INODE, K_DIRENT, K_DATA, K_XATTR, 9][rng.below(5)],
+                    key.off,
+                ),
+                _ => Key::new(key.oid + rng.below(3) as u64, key.kind, key.off),
+            };
+            if bytes.len() <= kaifs::fs::MAX_INLINE {
+                let _ = fs.put(key, &bytes);
+            } else {
+                let _ = fs.delete(&key);
+            }
+        }
+        fs.commit().unwrap();
+        browse(&mut fs);
+        let mut cache = Cache::default();
+        let _ = check(&mut fs, &mut cache);
+        let _ = check_namespace(&mut fs, &mut cache);
+        if let Ok(fixes) = repair(&mut fs) {
+            repaired += usize::from(!fixes.is_empty());
+            let mut cache = Cache::default();
+            check(&mut fs, &mut cache).unwrap();
+            check_namespace(&mut fs, &mut cache)
+                .unwrap_or_else(|e| panic!("after repair: {e}\n{fixes:#?}"));
+            browse(&mut fs);
+        }
+    }
+    assert!(
+        repaired > cases / 2,
+        "only {repaired} of {cases} cases needed a repair"
+    );
+}

@@ -20,7 +20,9 @@
 //! block) and the links to the summaries above them, so a block overwritten too
 //! early is read again and caught. Keying by address and checksum alone, as spike
 //! S04-1 did, would have trusted it. A whole mount is memoised the same way, by its
-//! allocator head, so most crash states cost a ring read and a lookup.
+//! allocator head, so most crash states cost a ring read and a lookup. A tree's
+//! namespace verdict ([`crate::ns_check`]) rests on its tree's summary, so it is
+//! forgotten with it.
 
 use crate::allocator::run_of;
 use crate::buddy::Run;
@@ -28,6 +30,7 @@ use crate::csum::Csum;
 use crate::dev::BlockDev;
 use crate::format::{self, BlockPtr};
 use crate::fs::{Fs, Io, Value, decode_value, record_of};
+use crate::ns_check::NsReport;
 use crate::tree::{Child, Key, Node};
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::format;
@@ -50,13 +53,22 @@ pub struct Summary {
     pub runs: Rc<Vec<Run>>,
 }
 
+/// A tree `check()` read: its root, the volume's object id counter with it, and
+/// its items' digest and count.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TreeReport {
+    pub root: BlockPtr,
+    pub next_oid: u64,
+    pub digest: u64,
+    pub count: u64,
+}
+
 /// What `check()` found.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Report {
     pub generation: u64,
-    /// The live tree's digest and item count.
-    pub live: (u64, u64),
-    pub snaps: BTreeMap<u64, (u64, u64)>,
+    pub live: TreeReport,
+    pub snaps: BTreeMap<u64, TreeReport>,
     pub reachable_blocks: u64,
     pub free_blocks: u64,
     pub pending_blocks: u64,
@@ -70,6 +82,7 @@ type MemoKey = (u64, Csum, u8);
 const TREE: u8 = 0;
 const MOUNT: u8 = 1;
 const META: u8 = 2;
+const NAMESPACE: u8 = 3;
 
 /// What a tree's leaves hold.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,6 +105,7 @@ impl Leaves {
 enum Memo {
     Tree(Rc<Summary>),
     Mount(Rc<Report>, BlockPtr),
+    Namespace(Rc<NsReport>),
 }
 
 struct Entry {
@@ -175,6 +189,22 @@ impl Cache {
             }
             _ => None,
         }
+    }
+
+    /// The namespace verdict on the tree `root` names, if one is remembered and
+    /// still holds.
+    pub fn namespace(&mut self, root: &BlockPtr) -> Option<Rc<NsReport>> {
+        match self.usable(&(root.addr, root.csum, NAMESPACE)) {
+            Some(Memo::Namespace(report)) => Some(report.clone()),
+            _ => None,
+        }
+    }
+
+    /// Remembers the namespace verdict on `root`'s tree, resting on its summary.
+    pub(crate) fn put_namespace(&mut self, root: &BlockPtr, report: Rc<NsReport>) {
+        let key = (root.addr, root.csum, NAMESPACE);
+        let tree = (root.addr, root.csum, TREE);
+        self.put(key, Memo::Namespace(report), &[], &[tree]);
     }
 
     /// Remembers `memo` under `key`, unless it read a block this state wrote or
@@ -357,13 +387,23 @@ pub fn check<D: BlockDev>(fs: &mut Fs<D>, cache: &mut Cache) -> Result<Report, S
     };
     let vol = summary(fs, cache, &volumes, Leaves::Entries)?.ok_or("an empty volume table")?;
     let live_summary = summary(fs, cache, &live, Leaves::Values)?;
-    let roots: Vec<(u64, BlockPtr)> = fs.snapshots().iter().map(|(id, s)| (*id, s.root)).collect();
+    let tree_report = |root: BlockPtr, next_oid: u64, sub: &Option<Rc<Summary>>| TreeReport {
+        root,
+        next_oid,
+        digest: sub.as_ref().map_or(0, |s| s.digest),
+        count: sub.as_ref().map_or(0, |s| s.count),
+    };
+    let roots: Vec<(u64, BlockPtr, u64)> = fs
+        .snapshots()
+        .iter()
+        .map(|(id, s)| (*id, s.root, s.next_oid))
+        .collect();
     let mut snaps = BTreeMap::new();
     let mut lists: Vec<Rc<Vec<Run>>> = alloc::vec![vol.runs.clone()];
     let mut children = alloc::vec![(volumes.addr, volumes.csum, META)];
-    for (id, root) in roots {
+    for (id, root, next_oid) in roots {
         let sub = summary(fs, cache, &root, Leaves::Values)?;
-        snaps.insert(id, sub.as_ref().map_or((0, 0), |s| (s.digest, s.count)));
+        snaps.insert(id, tree_report(root, next_oid, &sub));
         if let Some(s) = sub {
             lists.push(s.runs.clone());
             children.push((root.addr, root.csum, TREE));
@@ -405,7 +445,7 @@ pub fn check<D: BlockDev>(fs: &mut Fs<D>, cache: &mut Cache) -> Result<Report, S
     let pending_blocks: u64 = state.pending.iter().map(|(_, _, l)| l).sum();
     let report = Report {
         generation: fs.committed,
-        live: live_summary.map_or((0, 0), |s| (s.digest, s.count)),
+        live: tree_report(live, fs.next_oid(), &live_summary),
         snaps,
         reachable_blocks,
         free_blocks,

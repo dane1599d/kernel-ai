@@ -282,8 +282,12 @@ impl Oracle for FsOracle<'_> {
             .get(&generation)
             .ok_or(format!("generation {generation} was never committed"))?;
         let got = State {
-            live: report.live,
-            snaps: report.snaps,
+            live: (report.live.digest, report.live.count),
+            snaps: report
+                .snaps
+                .iter()
+                .map(|(id, t)| (*id, (t.digest, t.count)))
+                .collect(),
         };
         match got == *want {
             true => Ok(()),
