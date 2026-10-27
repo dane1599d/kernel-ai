@@ -387,3 +387,87 @@ fn the_scale_follows_the_edid_or_the_width() {
     assert_eq!(scale::to_physical(100, 150), 125);
     assert_eq!(scale::to_logical(125, 150), 100);
 }
+
+fn centre(r: Rect) -> (i32, i32) {
+    (r.x + r.w / 2, r.y + r.h / 2)
+}
+
+#[test]
+fn an_ask_card_takes_only_y_n_or_a_click_and_drops_keys_held_before_it() {
+    let (mut desk, ids) = desk_with(2);
+    // `a` is held down when the card appears.
+    key(&mut desk, 0x04, true);
+    assert_eq!(desk.show_ask(7, 3), [Effect::Focus(Focus::Ask(7))]);
+    assert!(desk.take_damage().iter().any(|d| {
+        let card = crate::trusted::card(W, H, &desk.ask().unwrap());
+        d.intersect(&card) == Some(card)
+    }));
+    // Its release, Enter, Esc and other keys go nowhere; no window hears them.
+    for code in [0x04, 0x28, 0x29, 0x05] {
+        assert!(key(&mut desk, code, true).is_empty() || code == 0x04);
+        assert!(key(&mut desk, code, false).is_empty());
+    }
+    // A click on a window neither raises it nor reaches it.
+    let lower = desk.window(ids[0]).unwrap().content();
+    assert!(click(&mut desk, (lower.x + 3, lower.y + 3)).is_empty());
+    assert_eq!(desk.windows().last().unwrap().id, ids[1]);
+    // Shortcuts cannot take focus from it.
+    key(&mut desk, usage::LEFT_CTRL, true);
+    assert!(key(&mut desk, usage::SPACE, true).is_empty());
+    key(&mut desk, usage::SPACE, false);
+    key(&mut desk, usage::LEFT_CTRL, false);
+    assert_eq!(desk.focus(), Focus::Ask(7));
+    // y answers yes; focus goes back to the window.
+    assert_eq!(
+        key(&mut desk, usage::Y, true),
+        [
+            Effect::Answer { id: 7, yes: true },
+            Effect::Focus(Focus::Window(ids[1]))
+        ]
+    );
+    assert_eq!(desk.ask(), None);
+}
+
+#[test]
+fn a_y_held_before_the_card_cannot_answer_it_and_buttons_can() {
+    let (mut desk, _) = desk_with(1);
+    key(&mut desk, usage::Y, true);
+    desk.show_ask(9, 1);
+    // The y still held repeats or comes up: neither answers.
+    assert!(key(&mut desk, usage::Y, true).is_empty());
+    assert!(key(&mut desk, usage::Y, false).is_empty());
+    let card = crate::trusted::card(W, H, &desk.ask().unwrap());
+    let (_, no) = crate::trusted::buttons(card);
+    let effects = click(&mut desk, centre(no));
+    assert!(effects.contains(&Effect::Answer { id: 9, yes: false }));
+    // A card that times out goes without an answer.
+    desk.show_ask(10, 1);
+    assert_eq!(desk.hide_ask(11), []);
+    assert!(!desk.hide_ask(10).is_empty());
+    assert_eq!(desk.ask(), None);
+}
+
+#[test]
+fn a_key_or_click_in_the_agents_window_takes_over() {
+    let (mut desk, ids) = desk_with(2);
+    desk.set_agent(Some(ids[1]));
+    desk.take_damage();
+    // A key while another window has focus is not taking over.
+    let other = desk.window(ids[0]).unwrap().content();
+    click(&mut desk, (other.x + 2, other.y + 2));
+    assert_eq!(desk.agent(), Some(ids[1]));
+    // A click on the agent's window is, where the other window does not cover it.
+    let agent = desk.window(ids[1]).unwrap().content();
+    let effects = click(&mut desk, (agent.right() - 3, agent.bottom() - 3));
+    assert!(effects.contains(&Effect::TookOver { window: ids[1] }));
+    assert_eq!(desk.agent(), None);
+    let outline = crate::trusted::outline(desk.window(ids[1]).unwrap().frame);
+    assert!(
+        desk.take_damage()
+            .iter()
+            .any(|d| d.intersect(&outline) == Some(outline))
+    );
+    // A key in the focused agent window is too.
+    desk.set_agent(Some(ids[1]));
+    assert!(key(&mut desk, 0x04, true).contains(&Effect::TookOver { window: ids[1] }));
+}
