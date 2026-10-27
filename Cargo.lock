@@ -1080,6 +1080,9 @@ dependencies = [
 [[package]]
 name = "surfabi"
 version = "0.0.0"
+dependencies = [
+ "kabi",
+]
 
 [[package]]
 name = "syn"
