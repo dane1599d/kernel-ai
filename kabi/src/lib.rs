@@ -15,6 +15,7 @@ pub mod cap;
 pub mod device;
 mod error;
 pub mod handle;
+pub mod input;
 mod ipc;
 pub mod layout;
 pub mod live;

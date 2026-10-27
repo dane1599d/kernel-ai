@@ -12,8 +12,8 @@
 //!   events, so a frame costs a doorbell and no message.
 //! - [`tree`]: the accessibility tree records `a11y.tree_update` carries, a
 //!   pinned subset of AccessKit 0.25.1's `TreeUpdate`.
-//! - [`input`]: ADR 0007's 16-byte `InputEvent`, which the header page's events
-//!   carry.
+//! - [`input`]: ADR 0007's 16-byte `InputEvent` from `kabi`, which the header
+//!   page's events carry.
 //!
 //! The objects follow Wayland's, so a Wayland client or a guest bridge maps onto
 //! them one to one. Where ADR 0005's table leaves out how an object is made,
@@ -26,10 +26,12 @@
 extern crate alloc;
 
 pub mod header;
-pub mod input;
 pub mod proto;
 pub mod tree;
 pub mod wire;
+
+/// ADR 0007's `InputEvent`, the kernel's (INPUT_READ) and the header page's.
+pub use kabi::input;
 
 #[cfg(test)]
 mod tests;
