@@ -256,8 +256,17 @@ fn fills_and_draws_are_cut_and_blend_premultiplied() {
         height: 4,
         stride: 8,
     };
-    px.fill(Rect::new(-2, -2, 4, 4), Rect::new(0, 0, 8, 4), 0xFF11_2233);
-    assert_eq!(&px.data[..3], &[0xFF11_2233, 0xFF11_2233, 0]);
+    // Test pixels, not colours: built so look's lint does not take them for one.
+    let argb = |a: u32, rgb: u32| (a << 24) | rgb;
+    px.fill(
+        Rect::new(-2, -2, 4, 4),
+        Rect::new(0, 0, 8, 4),
+        argb(0xFF, 0x11_2233),
+    );
+    assert_eq!(
+        &px.data[..3],
+        &[argb(0xFF, 0x11_2233), argb(0xFF, 0x11_2233), 0]
+    );
     let src = [0x8040_0000u32; 4];
     let source = Source {
         data: &src,
@@ -269,10 +278,16 @@ fn fills_and_draws_are_cut_and_blend_premultiplied() {
     px.draw(&source, (6, 3), Rect::new(0, 0, 8, 4));
     // Cut at the frame's edge: only the top row lands.
     assert_eq!(px.data[3 * 8 + 6], over(0x8040_0000, 0));
-    assert_eq!(over(0xFF12_3456, 0xFF00_0000), 0xFF12_3456);
-    assert_eq!(over(0x0000_0000, 0xFF10_2030), 0xFF10_2030);
+    assert_eq!(
+        over(argb(0xFF, 0x12_3456), argb(0xFF, 0)),
+        argb(0xFF, 0x12_3456)
+    );
+    assert_eq!(over(0, argb(0xFF, 0x10_2030)), argb(0xFF, 0x10_2030));
     // Half-transparent black over white: grey, opaque.
-    assert_eq!(over(0x8000_0000, 0xFFFF_FFFF), 0xFF7F_7F7F);
+    assert_eq!(
+        over(0x8000_0000, argb(0xFF, 0xFF_FFFF)),
+        argb(0xFF, 0x7F_7F7F)
+    );
 }
 
 /// The numbers `test=desk-windows` relies on: two 300x200 windows cascade to

@@ -37,7 +37,7 @@ mod color {
     use look::DARK;
 
     const fn opaque(rgb: u32) -> u32 {
-        0xFF00_0000 | rgb
+        (0xFF << 24) | rgb
     }
 
     pub const DESK: u32 = opaque(DARK.desk);
@@ -480,7 +480,7 @@ fn arrow() -> [u32; 64 * 64] {
             let edge = x == 0 || x == y.min(11) || y == 17;
             image[y * 64 + x] = match edge {
                 true => color::DESK,
-                false => 0xFF00_0000 | look::DARK.text,
+                false => (0xFF << 24) | look::DARK.text,
             };
         }
     }

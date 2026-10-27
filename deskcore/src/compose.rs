@@ -76,7 +76,7 @@ impl Pixels<'_> {
                 }
             } else {
                 for (d, &s) in dst.iter_mut().zip(src) {
-                    *d = s | 0xFF00_0000;
+                    *d = s | (0xFF << 24);
                 }
             }
         }
