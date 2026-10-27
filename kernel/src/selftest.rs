@@ -83,6 +83,8 @@ pub enum SelfTest {
     ProcStop,
     /// `Shm` and spike S01-1's M6 (P1 task 14).
     Shm,
+    /// The raised table limits (P3 task 4, ADR 0003 §6): 40 processes at once.
+    ManyProcesses,
     /// `scriptrun` through a Job, and spike S01-1's M3 and M5 (P1 task 14).
     Scriptrun,
     /// L2: processes keep their vector state across switches and CPUs, and start clean.
@@ -182,6 +184,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=latency" => Some(SelfTest::Latency),
             "test=proc-stop" => Some(SelfTest::ProcStop),
             "test=shm" => Some(SelfTest::Shm),
+            "test=many-processes" => Some(SelfTest::ManyProcesses),
             "test=scriptrun" => Some(SelfTest::Scriptrun),
             "test=fpu" => Some(SelfTest::Fpu),
             "test=probe" => Some(SelfTest::Probe),
@@ -236,6 +239,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::Latency
             | SelfTest::ProcStop
             | SelfTest::Part
+            | SelfTest::ManyProcesses
             | SelfTest::TuneRevert
             | SelfTest::TuneStall
             | SelfTest::Tune
@@ -309,6 +313,9 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
     if test == SelfTest::ProcStop {
         plan.push('\n');
         plan.push_str(crate::stop_tests::PLAN);
+    }
+    if test == SelfTest::ManyProcesses {
+        plan.push_str(&crate::many_tests::plan());
     }
     if test == SelfTest::None {
         plan.push('\n');

@@ -20,7 +20,8 @@ pub const DRAIN_NS: u64 = 100_000_000;
 
 /// Every CPU's counters at one moment.
 pub struct Snapshots {
-    pub cores: Vec<Snapshot>,
+    /// Boxed: one is 47 KB at 256 threads.
+    pub cores: Vec<alloc::boxed::Box<Snapshot>>,
     /// Each CPU's idle thread.
     pub idle: Vec<Tid>,
     pub ejections: u64,
@@ -30,7 +31,7 @@ impl Snapshots {
     pub fn new() -> Self {
         let cpus = smp::online();
         Self {
-            cores: vec![Snapshot::EMPTY; cpus],
+            cores: (0..cpus).map(|_| Snapshot::boxed()).collect(),
             idle: vec![0; cpus],
             ejections: 0,
         }
@@ -53,7 +54,7 @@ impl Snapshots {
     pub fn since(&self, earlier: &Snapshots) -> (Vec<[u64; 4]>, u64) {
         let mut sums = vec![[0u64; 4]; MAX_THREADS];
         let mut idle_ns = 0;
-        let mut window = alloc::boxed::Box::new(Window::EMPTY);
+        let mut window = Window::boxed();
         for (cpu, (now, then)) in self.cores.iter().zip(&earlier.cores).enumerate() {
             now.window_into(then, &mut window);
             idle_ns += window.threads[self.idle[cpu]].cpu_ns;

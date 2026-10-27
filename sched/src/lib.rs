@@ -36,7 +36,7 @@ pub use policy::{Interactive, RoundRobin};
 pub type Tid = usize;
 
 /// Maximum number of threads, including the idle thread.
-pub const MAX_THREADS: usize = 64;
+pub const MAX_THREADS: usize = 256;
 
 /// The idle thread. It is never queued; it runs when nothing else can.
 pub const IDLE: Tid = 0;
