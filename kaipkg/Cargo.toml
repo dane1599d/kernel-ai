@@ -1,0 +1,19 @@
+[package]
+name = "kaipkg"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Packages and their store (ADR 0011; P2 lane P, task 13). `no_std` + `alloc`, so
+# the ring-3 `pkg` service and the host tests run the same code. The store works
+# over a `Volume`; the tests drive it over kaifs and its crash enumerator.
+[lib]
+doctest = false
+
+[dependencies]
+agentabi = { path = "../agentabi" }
+sha2 = { version = "0.11.1", default-features = false }
+
+[dev-dependencies]
+kaifs = { path = "../kaifs" }
