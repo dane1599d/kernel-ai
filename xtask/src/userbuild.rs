@@ -108,6 +108,10 @@ fn build_programs(
     for name in names {
         command.args(["--bin", name]);
     }
+    // Spike S05-1 only: the compose stack builds for the hard-float target alone.
+    if names.contains(&"compose") {
+        command.args(["--features", "compose"]);
+    }
     if options.release {
         command.arg("--release");
     }
