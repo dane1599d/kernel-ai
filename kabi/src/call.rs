@@ -408,7 +408,8 @@ pub const SLOT_WRITE: u64 = 172;
 pub const SLOT_FLUSH: u64 = 173;
 /// `bootrec_get(handle, buf) -> 64`: `KaiBootState` as the firmware holds it,
 /// 64 bytes into `buf`. NotFound when there is none, Unavailable without
-/// runtime services. Needs READ.
+/// runtime services. Needs READ. Like BOOTREC_SET and SLOT_WRITE, Busy until
+/// this boot's own boot lever has written the record (`kernel/src/slots.rs`).
 pub const BOOTREC_GET: u64 = 174;
 /// `bootrec_set(handle, buf, one_shot, restart) -> 0`: writes the 64-byte
 /// record at `buf` (its CRC must hold), and Limine's one-shot for `one_shot`

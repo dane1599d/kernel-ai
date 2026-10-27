@@ -43,6 +43,13 @@ const ROOT_FILE: &str = "kai.root.json";
 
 /// One of [`CALLS`], or `None` for a number this area does not have.
 pub(super) fn handle(slot: usize, number: u64, a: &[u64; 6]) -> Option<Result<u64, Error>> {
+    let writes_state = matches!(
+        number,
+        call::SLOT_WRITE | call::BOOTREC_GET | call::BOOTREC_SET
+    );
+    if CALLS.contains(&number) && writes_state && !slots::lever_done() {
+        return Some(Err(Error::Busy));
+    }
     CALLS.contains(&number).then(|| match number {
         call::SLOT_INFO => info(slot, a[0], a[1], a[2]),
         call::SLOT_READ if a[1] == update::DISK => {

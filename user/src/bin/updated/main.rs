@@ -38,6 +38,8 @@ use user::{println, sys};
 
 user::entry!(main);
 
+/// How long to wait for the boot lever's record.
+const LEVER_WAIT_MS: u64 = 120_000;
 /// The release the check stages.
 const STAGED_RELEASE: u32 = 2;
 /// Sectors between short sleeps while copying: the disk calls do not block, and
@@ -55,6 +57,14 @@ fn main() -> i32 {
         println!("updated: FAIL no Update handle at startup");
         idle();
     };
+    // The kernel's boot lever writes the record first; until it has, the boot
+    // record answers Busy.
+    for _ in 0..LEVER_WAIT_MS / 100 {
+        if sys::bootrec_get(handle) != Err(Error::Busy) {
+            break;
+        }
+        sys::sleep_ms(100);
+    }
     let result = match step {
         Some("check") => check(handle),
         Some("update") => disk::update(handle),

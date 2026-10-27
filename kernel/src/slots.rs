@@ -20,6 +20,7 @@
 use crate::efi::{self, Guid, KAI, NV_BS_RT};
 use crate::{bootfiles, ipc, log, threads};
 use bootslot::{InR, Nv, Reason, Record, Slot};
+use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 
 /// The Boot Loader Interface's vendor GUID, which Limine reads its variables under.
@@ -161,6 +162,20 @@ fn action() -> Action {
 /// off a slot image, or R stays up, or a slot boot is up and stays running
 /// outside `test=slot`.
 pub fn on_boot(test: bool) {
+    lever(test);
+    LEVER_DONE.store(true, Ordering::SeqCst);
+}
+
+/// Whether this boot's lever has written its record: until then `updated`'s
+/// BOOTREC_* and SLOT_WRITE calls answer Busy, so the lever's write never
+/// overwrites a change of theirs.
+pub fn lever_done() -> bool {
+    LEVER_DONE.load(Ordering::SeqCst)
+}
+
+static LEVER_DONE: AtomicBool = AtomicBool::new(false);
+
+fn lever(test: bool) {
     let Some(slot) = this_slot() else {
         return;
     };
