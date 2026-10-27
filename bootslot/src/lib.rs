@@ -11,6 +11,8 @@
 
 #![no_std]
 
+pub mod slotfile;
+
 /// The record's magic and version.
 pub const MAGIC: &[u8; 4] = b"KAB1";
 pub const VERSION: (u8, u8) = (1, 0);
@@ -356,6 +358,19 @@ pub fn r_boots(nv: &mut Nv) -> InR {
             InR::Stay
         }
     }
+}
+
+/// *R boots* with no record (a fresh install, or NVRAM cleared): a new record
+/// with both system slots as trials of `release_seq`, A above B, and A armed.
+/// Nothing is committed until a slot passes probation. R reads `release_seq`
+/// from its own `kai-slot 1`; on a fresh install every slot holds the same
+/// release. Rebuilding after NVRAM is cleared on a machine whose slots differ
+/// reads each slot's record, through `updated` and SLOT_READ.
+pub fn install(nv: &mut Nv, release_seq: u32) {
+    nv.record = Record::default();
+    stage_end(nv, Slot::B, release_seq);
+    stage_end(nv, Slot::A, release_seq);
+    arm(nv, Slot::A);
 }
 
 /// Whether booting `slot` keeps the rule: R, a committed slot, or a trial slot

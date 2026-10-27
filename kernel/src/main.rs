@@ -97,6 +97,7 @@ mod serial;
 mod shell_tests;
 mod shm;
 mod shm_tests;
+mod slots;
 mod smp;
 mod smp_tests;
 #[cfg(feature = "spikes")]
@@ -374,7 +375,12 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::NetSetup => run_case(net_tests::setup_check),
         SelfTest::NetFallback => run_case(net_tests::fallback_check),
         SelfTest::NetStatic => run_case(net_tests::static_check),
-        SelfTest::Boot | SelfTest::None => {}
+        SelfTest::Slot => {
+            slots::on_boot(true);
+            test_exit(ExitCode::Success)
+        }
+        SelfTest::None => slots::on_boot(false),
+        SelfTest::Boot => {}
     }
 
     #[cfg(feature = "spikes")]

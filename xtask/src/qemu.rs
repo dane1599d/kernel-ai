@@ -140,6 +140,28 @@ pub fn boot_from_image(args: &mut [String], esp: &Path, target_dir: &Path) -> Re
     Ok(())
 }
 
+/// The slot cases: builds the R/A/B disk of `esp` (ADR 0008) as
+/// `target/slots.img` and boots from it in place of the directory ESP.
+pub fn boot_from_slots(
+    args: &mut [String],
+    esp: &Path,
+    target_dir: &Path,
+    cmdline: &str,
+    record: &str,
+) -> Result<(), String> {
+    let bytes = crate::image::slots::build(esp, &target_dir.join(SLOTS_IMAGE), cmdline, record)?;
+    println!("xtask: slot disk {SLOTS_IMAGE}, {} MiB", bytes >> 20);
+    let drive = args
+        .iter_mut()
+        .find(|arg| *arg == ESP_DRIVE)
+        .ok_or("no directory ESP drive to replace")?;
+    *drive = format!("format=raw,file={SLOTS_IMAGE}");
+    Ok(())
+}
+
+/// The slot cases' disk, in `target/`.
+const SLOTS_IMAGE: &str = "slots.img";
+
 /// The directory ESP, as QEMU's virtual FAT drive.
 const ESP_DRIVE: &str = "format=raw,file=fat:rw:esp";
 /// The image case's disk, in `target/`.

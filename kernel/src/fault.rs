@@ -31,5 +31,7 @@ pub fn reset(reason: &dyn Display) -> ! {
         crate::power::reboot();
     }
     log!("fault: {reason}; resetting the machine");
+    // On a slot image: the fault is recorded and R boots next (ADR 0008).
+    crate::slots::on_fault();
     crate::power::reboot()
 }
