@@ -23,6 +23,10 @@ user::entry!(main);
 
 /// How long a receive waits before a slice of the GC.
 const IDLE_MS: u64 = 100;
+/// The block cache in front of the disk: 16 MiB of 4 KiB blocks for now, under
+/// the memory the kernel sets aside for services beside the model; the plan's
+/// 64 MiB ([`kaifs::cache::DEFAULT_BLOCKS`]) waits for that budget to grow.
+const CACHE_BLOCKS: usize = 4096;
 /// The kernel's S04-2 file, in `system`.
 const BENCH_FILE: &str = "s04-2";
 
@@ -41,7 +45,8 @@ fn main() -> i32 {
     let mut uuid = [0u8; 16];
     uuid[..8].copy_from_slice(&sys::time_ns().to_le_bytes());
     uuid[8..].copy_from_slice(&info.sectors.to_le_bytes());
-    let mut server = match Server::start(dev::PartDev::new(part, &info), uuid) {
+    let disk = kaifs::cache::Cached::new(dev::PartDev::new(part, &info), CACHE_BLOCKS);
+    let mut server = match Server::start(disk, uuid) {
         Ok((server, started)) => {
             let how = match started {
                 Started::Formatted => alloc::string::String::from("formatted it"),

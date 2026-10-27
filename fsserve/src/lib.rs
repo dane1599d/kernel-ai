@@ -100,8 +100,7 @@ pub enum Started {
 }
 
 pub struct Server<D: BlockDev> {
-    /// Always `Some` between calls; taken only while an abort remounts.
-    fs: Option<Fs<D>>,
+    fs: Fs<D>,
     /// The caller whose action is open.
     owner: Option<u64>,
     /// `/home/user`'s object id in `home`: what [`HOME_USER`] names.
@@ -137,7 +136,7 @@ impl<D: BlockDev> Server<D> {
         };
         let base = fs.clock;
         let mut server = Server {
-            fs: Some(fs),
+            fs,
             owner: None,
             home_user: 0,
             epoch: 0,
@@ -150,7 +149,7 @@ impl<D: BlockDev> Server<D> {
     }
 
     fn fs(&mut self) -> &mut Fs<D> {
-        self.fs.as_mut().expect("fs is mounted between calls")
+        &mut self.fs
     }
 
     /// Makes the missing [`FOLDERS`], and the disk's epoch if it has none, in
@@ -252,13 +251,16 @@ impl<D: BlockDev> Server<D> {
             if !fs.gc_running() {
                 fs.gc_start()?;
             }
-            if fs.gc_step(GC_BUDGET)?.done {
-                fs.commit()?;
-            }
-            Ok::<(), kaifs::Error>(())
+            fs.gc_step(GC_BUDGET).map(|step| step.done)
         })();
-        if stepped.is_err() {
-            self.drop_changes();
+        match stepped {
+            Ok(true) => {
+                let _ = self.commit();
+            }
+            Ok(false) => {}
+            Err(_) => {
+                self.drop_changes();
+            }
         }
     }
 
@@ -282,18 +284,10 @@ impl<D: BlockDev> Server<D> {
         match done {
             // A change outside an action is durable before it is answered.
             Ok((reply, mint)) if changes && !in_action && self.owner.is_none() => {
-                let committed = if self.fs().is_clean() {
-                    Ok(self.fs().committed)
-                } else {
-                    self.fs().commit()
-                };
-                match committed {
-                    Ok(_) => Ok((reply, mint)),
-                    Err(e) => {
-                        self.drop_changes();
-                        Err(error(e))
-                    }
+                if !self.fs.is_clean() {
+                    self.commit()?;
                 }
+                Ok((reply, mint))
             }
             Ok(done) => Ok(done),
             Err(e) => {
@@ -425,14 +419,10 @@ impl<D: BlockDev> Server<D> {
             }
             Request::Commit => {
                 self.owned(call.caller)?;
-                let generation = self.fs().commit();
+                let generation = self.commit();
                 self.owner = None;
-                match generation {
-                    Ok(generation) => Reply::Committed { generation },
-                    Err(e) => {
-                        self.drop_changes();
-                        return Err(error(e));
-                    }
+                Reply::Committed {
+                    generation: generation?,
                 }
             }
             Request::Abort => {
@@ -468,7 +458,7 @@ impl<D: BlockDev> Server<D> {
                 }
             }
             Request::Sync => {
-                let generation = self.fs().commit().map_err(error)?;
+                let generation = self.commit()?;
                 Reply::Committed { generation }
             }
             Request::Df => {
@@ -523,12 +513,16 @@ impl<D: BlockDev> Server<D> {
         let volume = fs.volume();
         let done = (|| {
             fs.begin(action)?;
-            let rows = fs.restore(txn)?;
-            let generation = fs.commit()?;
-            Ok::<_, kaifs::Error>((rows, generation))
+            fs.restore(txn)
         })();
-        let fs = self.fs();
-        let _ = fs.set_volume(volume);
+        let done = match done {
+            Ok(rows) => self.commit().map(|generation| (rows, generation)),
+            Err(e) => {
+                self.drop_changes();
+                Err(error(e))
+            }
+        };
+        let _ = self.fs.set_volume(volume);
         match done {
             Ok((rows, generation)) => Ok(Reply::Restored {
                 rows: rows
@@ -538,25 +532,33 @@ impl<D: BlockDev> Server<D> {
                     .collect(),
                 generation,
             }),
-            Err(e) => {
-                self.drop_changes();
-                Err(error(e))
-            }
+            Err(e) => Err(e),
         }
     }
 
-    /// Drops everything since the last commit, an open action with it.
-    fn drop_changes(&mut self) {
+    /// Drops everything since the last commit, an open action with it; the
+    /// generation now on the disk. That is the last commit, or one an error
+    /// interrupted after it had landed whole ([`Fs::abort`]).
+    fn drop_changes(&mut self) -> u64 {
         self.owner = None;
         self.pending = None;
         self.cache = None;
-        let fs = self.fs.take().expect("fs is mounted between calls");
-        let volume = fs.volume();
-        // A remount that fails leaves no filesystem to serve: `fs` exits and its
-        // supervisor starts it again, which mounts the last commit.
-        let mut fs = fs.abort().expect("the last commit mounts again");
-        let _ = fs.set_volume(volume);
-        self.fs = Some(fs);
+        // A disk that no longer mounts leaves nothing to serve: `fs` exits and
+        // its supervisor starts it again.
+        self.fs.abort().expect("the last commit reads back")
+    }
+
+    /// Commits, or drops the changes if the commit fails; a commit that landed
+    /// whole despite the error counts as done (its changes are on the disk).
+    fn commit(&mut self) -> Result<u64, Error> {
+        let before = self.fs.committed;
+        match self.fs.commit() {
+            Ok(generation) => Ok(generation),
+            Err(e) => match self.drop_changes() {
+                landed if landed > before => Ok(landed),
+                _ => Err(error(e)),
+            },
+        }
     }
 }
 
