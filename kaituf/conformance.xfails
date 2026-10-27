@@ -1,0 +1,11 @@
+# tuf-conformance v2.5.0 tests kaituf does not pass, by design. The workflow
+# copies this file to `<entrypoint>.xfails`.
+#
+# kaituf checks Ed25519 and ECDSA P-256 only (ADR 0008 §7): the founder's
+# YubiKeys and a KMS sign with P-256, file keys with Ed25519. A role that needs
+# any other key type is refused as "unsupported key type". These are the suite's
+# key-type feature tests, which its README says a client may mark.
+test_keytype_and_scheme[rsa/rsassa-pss-sha256]
+test_rsa_keytype_and_scheme
+test_ecdsa_keytype_and_scheme
+test_mldsa_keytype_and_scheme

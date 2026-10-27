@@ -1,0 +1,28 @@
+[package]
+name = "kaituf"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The TUF client (ADR 0008 §7, ADR 0011 §3; spikes S08-3 and S11-1, `kaituf-0`).
+# `no_std` + `alloc`: `updated` and `pkg` in ring 3 and the host tests run the same
+# code. It checks Ed25519 and ECDSA P-256 signatures and SHA-256 and SHA-512 hashes;
+# fetching and storage are the caller's (`Remote`, `Cache`).
+[lib]
+doctest = false
+
+# tuf-conformance's client-under-test CLI (its CLIENT-CLI.md), for CI only.
+[[bin]]
+name = "kaituf-client"
+path = "src/bin/client.rs"
+required-features = ["client"]
+
+[features]
+client = []
+
+[dependencies]
+ed25519-compact = { version = "2.6.0", default-features = false }
+p256 = { version = "0.14.0", default-features = false, features = ["ecdsa"] }
+serde_json = { version = "1.0.154", default-features = false, features = ["alloc"] }
+sha2 = { version = "0.11.1", default-features = false }
