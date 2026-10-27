@@ -287,6 +287,28 @@ pub fn warm(
         .map(|_| ())
 }
 
+/// Fills the slot in use from a `kai-kv 1` file read from `input`, for the
+/// `act` prefix [`warm`] computes with `history`: the positions an `act`
+/// request will reuse, or why the file was refused (the slot is then empty).
+pub fn restore(
+    engine: &mut Engine<'_>,
+    history: &History,
+    key: &infer::segments::Key,
+    input: &mut dyn FnMut(&mut [u8]) -> bool,
+) -> Result<usize, infer::segments::Refused> {
+    let prefix = chat::Request {
+        messages: act::prefix(history),
+        max_tokens: 1,
+    };
+    engine.restore_slot(key, &super::turns(&prefix), input)
+}
+
+/// The `act` prefix's `pack_id`, for its `kai-kv 1` file's key.
+pub fn pack_id() -> u64 {
+    let pack = crate::pack::render(crate::pack::Format::Dsl1);
+    crate::pack::pack_id(crate::pack::Format::Dsl1, "", &pack)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

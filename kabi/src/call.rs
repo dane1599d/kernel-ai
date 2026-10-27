@@ -250,5 +250,18 @@ pub const JOB_KILL: u64 = 62;
 /// Needs [`super::cap::THREADS`]. (llm keeps its main thread beside its workers'
 /// CPUs.)
 pub const THREAD_PIN: u64 = 63;
+/// **Interim** (S10-3; removed at P2 task 10, when the KV files move to
+/// `/system/models/cache/`). `model_kv_load(region, offset, buf, len) -> len`:
+/// reads `len` bytes at byte `offset` of KV region `region` of the `kai-cache`
+/// partition (see [`crate::model::KV_REGIONS`]) into `buf`. `offset` and `len`
+/// are whole sectors, `len` at most [`crate::model::KV_IO_BYTES`]. The model's
+/// holder only (`cap::MODEL`); NotFound without a `kai-cache` partition that
+/// holds every region.
+pub const MODEL_KV_LOAD: u64 = 64;
+/// **Interim**, as [`MODEL_KV_LOAD`]: `model_kv_save(region, offset, buf, len,
+/// flush) -> len` writes `len` bytes of `buf` there; `flush` is 0, or 1 to make
+/// every write so far durable after it, and anything else is Invalid.
+/// Permission when the disk cannot be written.
+pub const MODEL_KV_SAVE: u64 = 65;
 /// The highest call number.
-pub const MAX: u64 = THREAD_PIN;
+pub const MAX: u64 = MODEL_KV_SAVE;

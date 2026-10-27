@@ -208,6 +208,14 @@ pub fn default_id() -> Result<String, String> {
     Ok(Catalog::load()?.default.clone())
 }
 
+/// Catalog model `id`'s SHA-256, which its download is checked against.
+pub fn sha256(id: &str) -> Result<[u8; 32], String> {
+    let catalog = Catalog::load()?;
+    let entry = catalog.get(id)?;
+    kabi::model::sha256_from_hex(&entry.sha256)
+        .ok_or_else(|| format!("{id}: sha256 is not 64 hex digits"))
+}
+
 pub fn stored(id: &str, store: Option<&str>) -> Result<PathBuf, String> {
     let catalog = Catalog::load()?;
     let entry = catalog.get(id)?;

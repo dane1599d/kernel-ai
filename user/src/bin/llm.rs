@@ -20,6 +20,8 @@
 extern crate alloc;
 
 // A program's crate root sits in src/bin, so its modules are named by path.
+#[path = "llm/kvfile.rs"]
+mod kvfile;
 #[path = "llm/local.rs"]
 mod local;
 #[path = "llm/remote.rs"]
@@ -124,7 +126,11 @@ fn main() -> i32 {
             (None, None, Some(bytes))
         }
         Ok(Some(model)) => {
-            let local = load(model.bytes());
+            let mut local = load(model.bytes());
+            let sha = arg(&args, "model_sha256").and_then(kabi::model::sha256_from_hex);
+            if let (Ok(local), Some(sha)) = (&mut local, sha) {
+                local.set_sha256(sha);
+            }
             (Some(model), Some(local), None)
         }
         Ok(None) => (None, None, None),
@@ -149,6 +155,15 @@ fn main() -> i32 {
     // Whether the `act` prefix changed (a remembered turn, `new`): compacted,
     // that is computed again, while no request waits.
     let mut stale = true;
+    // Interim (S10-3): the slots' prefixes from last boot's KV files; a slot
+    // that did not come back is saved once its warm-up finishes.
+    let (mut save_act, mut save_script) = match &mut backends.local {
+        Some(Ok(local)) => {
+            let (act, script) = local.restore();
+            (!act, !script)
+        }
+        _ => (false, false),
+    };
     loop {
         let mut caller = 0;
         let local = match &mut backends.local {
@@ -163,11 +178,17 @@ fn main() -> i32 {
             Some(local) if stale => {
                 let came = warm_act(local, &mut request, &mut caller);
                 stale = came.is_some();
+                if !stale && core::mem::take(&mut save_act) {
+                    local.save(local::SLOTS.act);
+                }
                 came
             }
             Some(local) if cold => {
                 let came = warm(local, &mut request, &mut caller);
                 cold = came.is_some();
+                if !cold && core::mem::take(&mut save_script) {
+                    local.save(local::SLOTS.script);
+                }
                 came
             }
             _ => None,

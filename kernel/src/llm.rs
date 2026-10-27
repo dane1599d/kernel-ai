@@ -80,16 +80,31 @@ pub fn plan_line() -> String {
             crate::model::HOLDER_PAGES
         ),
     };
+    let mut passed = String::new();
     if let Some((ip, port, model)) = target() {
-        line.push_str(&format!(" host={ip}:{port}"));
+        passed.push_str(&format!(" host={ip}:{port}"));
         if model.chars().all(|c| !c.is_whitespace() && !c.is_control()) {
-            line.push_str(&format!(" model={model}"));
+            passed.push_str(&format!(" model={model}"));
         } else {
             log!("llm: the model name has control characters; using the service default");
         }
     }
+    // The model's SHA-256 as the boot names it (hex digits, one word), for llm's
+    // KV files (S10-3), while llm's arguments still fit with the supervisor's
+    // `restart=N`; without it llm keys them by a sampled hash.
+    if let Some(sha) = crate::model::sha256() {
+        let word = format!(" model_sha256={}", kabi::model::sha256_hex(sha));
+        match passed.len() + word.len() + RESTART_ROOM <= kabi::MAX_ARGS {
+            true => passed.push_str(&word),
+            false => log!("llm: no room for model_sha256= beside the server's arguments"),
+        }
+    }
+    line.push_str(&passed);
     line
 }
+
+/// What the supervisor adds to a service's arguments: ` restart=N`.
+const RESTART_ROOM: usize = 32;
 
 /// Asks the `llm` service; returns its reply or why there is none.
 fn request(text: &str, timeout_ms: u64) -> Result<String, String> {

@@ -6,6 +6,7 @@
 
 use alloc::format;
 use alloc::string::String;
+use alloc::vec::Vec;
 
 /// The virtio-blk serial (device ID) of the disk holding the model file.
 pub const SERIAL: &str = "kai-model";
@@ -80,6 +81,17 @@ pub const ENGINE_OTHER_BYTES: u64 = 32 << 20;
 /// Pages the llm plan line adds for the engine when a model is loaded.
 pub const ENGINE_PAGES: u64 = (KV_BYTES + ENGINE_OTHER_BYTES) / 4096;
 
+/// **Interim** (S10-3; removed at P2 task 10): llm's KV slots saved in the
+/// `kai-cache` partition, one fixed region each, as `kai-kv 1` files
+/// (`infer::segments`), through MODEL_KV_LOAD and MODEL_KV_SAVE.
+pub const KV_REGIONS: u64 = KV_SLOTS as u64;
+/// Bytes of one region: room for a full slot's file.
+pub const KV_REGION_BYTES: u64 = 320 << 20;
+/// The most one MODEL_KV_LOAD or MODEL_KV_SAVE moves.
+pub const KV_IO_BYTES: u64 = 64 << 10;
+/// What offsets and lengths come in.
+pub const KV_SECTOR: u64 = 512;
+
 /// The one service, and program, that may map the model.
 pub const HOLDER: &str = "llm";
 /// Most pages the model's holder may be granted: 768 MiB, for the engine's two
@@ -98,11 +110,32 @@ pub fn max_pages(name: &str, program: &str, per_process: u64) -> u64 {
 
 /// What xtask tells the kernel about the file behind the model disk, on the kernel
 /// command line: `model_len=BYTES`, the file's exact length (the disk rounds it up
-/// to whole sectors), and for test boots `model_fnv=HEX`, its [`Fnv1a`] hash.
+/// to whole sectors), for test boots `model_fnv=HEX`, its [`Fnv1a`] hash, and for
+/// a catalog model `model_sha256=HEX`, the SHA-256 xtask checked it against when
+/// it downloaded it. The kernel does not hash the file again; llm keys its KV
+/// files by the SHA-256 (S10-3).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Attached {
     pub len: Option<u64>,
     pub fnv: Option<u64>,
+    pub sha256: Option<[u8; 32]>,
+}
+
+/// 64 hex digits as 32 bytes.
+pub fn sha256_from_hex(hex: &str) -> Option<[u8; 32]> {
+    if hex.len() != 64 || !hex.is_ascii() {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for (i, byte) in out.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).ok()?;
+    }
+    Some(out)
+}
+
+/// 32 bytes as 64 lowercase hex digits.
+pub fn sha256_hex(sha: &[u8; 32]) -> String {
+    sha.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 impl Attached {
@@ -114,6 +147,8 @@ impl Attached {
                 attached.len = value.parse().ok().filter(|&len| len > 0);
             } else if let Some(value) = word.strip_prefix("model_fnv=") {
                 attached.fnv = u64::from_str_radix(value, 16).ok();
+            } else if let Some(value) = word.strip_prefix("model_sha256=") {
+                attached.sha256 = sha256_from_hex(value);
             }
         }
         attached
@@ -123,11 +158,11 @@ impl Attached {
     pub fn to_cmdline(&self) -> String {
         let len = self.len.map(|len| format!("model_len={len}"));
         let fnv = self.fnv.map(|fnv| format!("model_fnv={fnv:016x}"));
-        match (len, fnv) {
-            (Some(len), Some(fnv)) => format!("{len} {fnv}"),
-            (Some(one), None) | (None, Some(one)) => one,
-            (None, None) => String::new(),
-        }
+        let sha = self
+            .sha256
+            .map(|sha| format!("model_sha256={}", sha256_hex(&sha)));
+        let words: Vec<String> = [len, fnv, sha].into_iter().flatten().collect();
+        words.join(" ")
     }
 }
 
@@ -171,6 +206,17 @@ pub fn fnv1a(bytes: &[u8]) -> u64 {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn a_full_slots_kv_file_fits_its_region() {
+        // `infer::segments`: a 128-byte header, a u32 per position, then f16 keys
+        // and values of every layer: Qwen3-4B, 36 layers of 1,024.
+        let positions = super::CONTEXT_CAP as u64;
+        let file = 128 + 4 * positions + 2 * 2 * 36 * 1024 * positions;
+        assert!(file <= super::KV_REGION_BYTES, "{file}");
+        assert_eq!(super::KV_REGION_BYTES % super::KV_SECTOR, 0);
+        assert_eq!(super::KV_IO_BYTES % super::KV_SECTOR, 0);
+    }
+
+    #[test]
     fn only_the_holder_gets_the_holders_page_cap() {
         let per_process = 128 * 1024;
         assert_eq!(super::max_pages("llm", "llm", per_process), 192 * 1024);
@@ -193,6 +239,7 @@ mod tests {
         let both = Attached {
             len: Some(3_146_505),
             fnv: Some(0x00ab_cdef_0123_4567),
+            sha256: None,
         };
         let words = both.to_cmdline();
         assert_eq!(words, "model_len=3146505 model_fnv=00abcdef01234567");
@@ -203,8 +250,21 @@ mod tests {
         let len_only = Attached {
             len: Some(5),
             fnv: None,
+            sha256: None,
         };
         assert_eq!(Attached::from_cmdline(&len_only.to_cmdline()), len_only);
+        let catalog = Attached {
+            len: Some(5),
+            fnv: None,
+            sha256: Some([0xa5; 32]),
+        };
+        let words = catalog.to_cmdline();
+        assert_eq!(
+            words,
+            alloc::format!("model_len=5 model_sha256={}", "a5".repeat(32))
+        );
+        assert_eq!(Attached::from_cmdline(&words), catalog);
+        assert_eq!(Attached::from_cmdline("model_sha256=abc").sha256, None);
         assert_eq!(Attached::default().to_cmdline(), "");
     }
 
