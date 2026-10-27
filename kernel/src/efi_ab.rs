@@ -51,15 +51,23 @@ fn set(cost: &mut Cost, vendor: &Guid, name: &str, data: &[u8]) -> Result<(), ef
     }
 }
 
-/// The slot Limine loaded this kernel from: partitions 2, 3 and 4 are R, A, B.
+/// The slot Limine loaded this kernel from, as its entry's command line says
+/// (`slot=r|a|b`, beside that entry's `boot(N):` path). Limine 12 reports
+/// partition 0 for a file loaded through `boot(N):`, so the file's own
+/// partition index cannot tell.
 fn this_slot() -> Option<Slot> {
-    let file = EXECUTABLE.response()?.executable_file();
-    match file.partition_index {
-        2 => Some(Slot::R),
-        3 => Some(Slot::A),
-        4 => Some(Slot::B),
+    let slot = crate::cmdline()
+        .split_whitespace()
+        .find_map(|word| word.strip_prefix("slot="));
+    match slot {
+        Some("r") => Some(Slot::R),
+        Some("a") => Some(Slot::A),
+        Some("b") => Some(Slot::B),
         other => {
-            log!("efi-ab: loaded from partition {other}, not a slot");
+            let partition = EXECUTABLE
+                .response()
+                .map_or(0, |r| r.executable_file().partition_index);
+            log!("efi-ab: no slot on the command line ({other:?}; partition {partition})");
             None
         }
     }

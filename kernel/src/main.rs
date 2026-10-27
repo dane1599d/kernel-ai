@@ -164,7 +164,7 @@ static TEST_MODE: AtomicBool = AtomicBool::new(false);
 static REPORTED_CPUS: AtomicUsize = AtomicUsize::new(1);
 
 /// The kernel command line, or "" without one.
-fn cmdline() -> &'static str {
+pub(crate) fn cmdline() -> &'static str {
     CMDLINE.response().map_or("", |r| r.cmdline())
 }
 

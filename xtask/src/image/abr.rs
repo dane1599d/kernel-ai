@@ -17,10 +17,11 @@ const VOLUME_IDS: [u32; 4] = [0x4B41_4931, 0x4B41_4952, 0x4B41_4941, 0x4B41_4942
 /// ADR 0008 section 3's `limine.conf`, with the spike's command line.
 pub fn limine_conf(cmdline: &str) -> String {
     let mut conf = String::from("timeout: 0\ndefault_entry: 1\n");
+    // `slot=` names the slot: Limine reports no partition for a `boot(N):` file.
     for (entry, partition, extra) in [
-        ("recovery", 2, " mode=recovery"),
-        ("kai-a", 3, ""),
-        ("kai-b", 4, ""),
+        ("recovery", 2, " slot=r mode=recovery"),
+        ("kai-a", 3, " slot=a"),
+        ("kai-b", 4, " slot=b"),
     ] {
         conf.push_str(&format!(
             "\n/{entry}\n    protocol: limine\n    path: boot({partition}):/boot/kernel\n    \
@@ -132,7 +133,8 @@ mod tests {
             assert!(conf.contains(&format!("path: boot({n}):/boot/kernel")));
             assert!(conf.contains(&format!("module_path: boot({n}):/boot/kai.bundle")));
         }
-        assert!(conf.contains("cmdline: test=efi-ab mode=recovery\n"));
+        assert!(conf.contains("cmdline: test=efi-ab slot=r mode=recovery\n"));
+        assert!(conf.contains("cmdline: test=efi-ab slot=b\n"));
         assert!(!conf.contains("remember_last_entry"));
     }
 }

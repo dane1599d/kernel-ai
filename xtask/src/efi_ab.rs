@@ -26,6 +26,9 @@ const CMDLINE: &str = "test=efi-ab panic=reset";
 const IMAGE: &str = "abr.img";
 /// How long a boot that hangs is left before the VM is killed.
 const HANG_GRACE: Duration = Duration::from_secs(1);
+/// Resets in a row with no boot line: the image cannot boot, so the run fails
+/// rather than loop.
+const MAX_RESETS_WITHOUT_BOOT: usize = 5;
 /// The ADR's pass line.
 const MAX_BOOTS_TO_SAFE: usize = 4;
 const MAX_ADDED_MS: u64 = 50;
@@ -437,6 +440,9 @@ fn session(
     options: &Options,
 ) -> Result<(), String> {
     let mut kill_after: Option<Instant> = None;
+    // From QEMU's start, then from each boot line.
+    let mut since = Instant::now();
+    let mut resets = 0;
     loop {
         if let Some(at) = kill_after
             && Instant::now() >= at
@@ -451,17 +457,19 @@ fn session(
         let line = match vm.lines.recv_timeout(Duration::from_millis(100)) {
             Ok(line) => line,
             Err(RecvTimeoutError::Timeout) => {
-                if drill
-                    .last_boot_at
-                    .is_some_and(|at| at.elapsed() > options.timeout)
-                {
+                if since.elapsed() > options.timeout {
                     println!(
                         "xtask: efi-ab: no boot for {:?}; restarting QEMU",
                         options.timeout
                     );
                     drill.stats.timeouts += 1;
+                    if drill.stats.timeouts > MAX_RESETS_WITHOUT_BOOT {
+                        return Err(format!(
+                            "efi-ab: {} timeouts; the drill cannot go on",
+                            drill.stats.timeouts
+                        ));
+                    }
                     drill.allowed = vec![Slot::R, drill.nv.one_shot.unwrap_or(Slot::R)];
-                    drill.last_boot_at = Some(Instant::now());
                     return Ok(());
                 }
                 continue;
@@ -475,7 +483,17 @@ fn session(
             continue;
         }
         println!("  | {line}");
+        if line.starts_with("fault:") {
+            resets += 1;
+            if resets > MAX_RESETS_WITHOUT_BOOT {
+                return Err(format!(
+                    "efi-ab: {resets} resets in a row with no boot line; last: {line}"
+                ));
+            }
+        }
         if line.contains("efi-ab: boot in=") {
+            since = Instant::now();
+            resets = 0;
             drill.on_boot(&line);
             if drill.stats.boots >= options.boots {
                 return Ok(());
