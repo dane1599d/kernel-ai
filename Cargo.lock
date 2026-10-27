@@ -423,6 +423,7 @@ dependencies = [
  "look",
  "sha2",
  "surfabi",
+ "termcore",
 ]
 
 [[package]]

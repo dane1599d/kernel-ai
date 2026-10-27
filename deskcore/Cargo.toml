@@ -17,6 +17,7 @@ gfx2d = { path = "../gfx2d" }
 libm = "0.2.16"
 look = { path = "../look" }
 surfabi = { path = "../surfabi" }
+termcore = { path = "../termcore" }
 
 [dev-dependencies]
 sha2 = "0.11.1"

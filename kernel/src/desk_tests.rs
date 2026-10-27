@@ -153,3 +153,21 @@ pub fn boot_check() -> Result<(), &'static str> {
     log!("desk-boot: desktop booted to the desk and the screendump was taken");
     Ok(())
 }
+
+/// `test=desk-panel` (P3 task 7): Ctrl+Space focuses the AI panel from the
+/// desk, and a line typed there is queued for the shell on Enter. `desktop`
+/// logs the focus and the queued line's length, which the host checks.
+pub fn panel_check() -> Result<(), &'static str> {
+    // Ctrl and Space down and up, "hi", Enter: set 1 make and break codes.
+    const CTRL_SPACE: [u8; 4] = [0x1D, 0x39, 0xB9, 0x9D];
+    const HI_ENTER: [u8; 6] = [0x23, 0xA3, 0x17, 0x97, 0x1C, 0x9C];
+    wait("desktop to draw", || {
+        desktop_shows() && claim::flushes() > 0
+    })?;
+    crate::claim_tests::type_keys(&CTRL_SPACE);
+    threads::sleep_ms(STEP_MS);
+    crate::claim_tests::type_keys(&HI_ENTER);
+    threads::sleep_ms(1_000);
+    log!("desk-panel: typed Ctrl+Space, \"hi\" and Enter");
+    Ok(())
+}

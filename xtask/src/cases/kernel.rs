@@ -134,11 +134,20 @@ pub(super) const CASES: &[TestCase] = &[
             size: Some((1280, 800)),
             cursor: false,
             golden: Some(crate::screen::Golden {
-                sha256: "7d408c1f3c7f91d7217130ed0ab4a0b724519b016ef8d95a0a1d7423c0330620",
+                sha256: "514ded10f7fe4dd26d45737cbd9831ff457c6cf5ff59631ecc042c33342a51bb",
                 mask: desk_stats,
             }),
         }),
         ..case("desk-boot", "test=desk-boot")
+    },
+    // P3 task 7: Ctrl+Space focuses the AI panel, and Enter queues its line.
+    TestCase {
+        expect: &[
+            "desktop: focus Panel",
+            "desktop: the panel queued a request (2 characters)",
+            "desk-panel: typed Ctrl+Space, \"hi\" and Enter",
+        ],
+        ..case("desk-panel", "test=desk-panel")
     },
     // P1 task 14: shared pages, and spike S01-1's M6.
     TestCase {

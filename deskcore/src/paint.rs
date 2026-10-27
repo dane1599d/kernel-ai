@@ -1,8 +1,9 @@
 //! Drawing the desk (ADR 0005 §5, §8): the desk, each window's chrome and
 //! content, the focused window's shadow, the agent's outline, the top bar, the
 //! panel, the ask card and the cursor, in Ember Workbench's dark tokens and type.
-//! Pure: the same desk and [`Bar`] give the same pixels, on the host as in
-//! `desktop`, so the look is pinned by a host test and by `desk-boot`'s golden.
+//! Pure: the same [`Scene`] gives the same pixels, on the host as in `desktop`,
+//! so the look is pinned by a host test and by `desk-boot`'s golden. The panel
+//! is drawn in `paint_panel.rs`.
 //!
 //! Each window is drawn as a layer (frame, title bar, controls, content), its
 //! corners rounded, then put on the frame: copied where opaque and blended at
@@ -13,6 +14,7 @@
 use crate::chrome::{self, Part};
 use crate::desk::{Desk, Focus, Window, WindowId};
 use crate::geom::{Point, Rect};
+use crate::panel::Panel;
 use crate::trusted;
 use alloc::format;
 use gfx2d::shadow::Shadow;
@@ -22,7 +24,7 @@ use look::{DARK, TypeStyle};
 /// How far outside a frame its drawing reaches: the shadow fits in the grabs.
 pub const SHADOW_REACH: i32 = chrome::GRAB;
 /// Space before and after text in a bar.
-const PAD: i32 = 12;
+pub(crate) const PAD: i32 = 12;
 /// The varying right side of the top bar: model state and memory.
 pub const STATS_W: i32 = 320;
 /// A tab's widest.
@@ -39,18 +41,27 @@ pub struct Bar {
     pub mem_total_mib: u64,
 }
 
+/// Everything a frame shows besides the windows' own pixels.
+pub struct Scene<'a> {
+    pub desk: &'a Desk,
+    pub bar: &'a Bar,
+    pub panel: &'a Panel,
+    /// The clock, for the panel's "thinking 4s".
+    pub now_ms: u64,
+}
+
 pub struct Painter {
-    text: Text,
+    pub(crate) text: Text,
     near: Shadow,
     far: Shadow,
 }
 
 /// `0xFF` alpha on a token.
-const fn opaque(rgb: u32) -> u32 {
+pub(crate) const fn opaque(rgb: u32) -> u32 {
     (0xFF << 24) | rgb
 }
 
-fn g(r: Rect) -> gfx2d::Rect {
+pub(crate) fn g(r: Rect) -> gfx2d::Rect {
     gfx2d::Rect::new(r.x, r.y, r.w, r.h)
 }
 
@@ -86,10 +97,10 @@ impl Painter {
         &mut self,
         c: &mut Canvas<'_>,
         clip: Rect,
-        desk: &Desk,
-        bar: &Bar,
+        scene: &Scene<'_>,
         content: &mut dyn FnMut(WindowId, &mut Canvas<'_>, Rect) -> bool,
     ) {
+        let (desk, bar) = (scene.desk, scene.bar);
         c.fill(g(clip), opaque(DARK.desk));
         for window in desk.windows().iter().filter(|w| !w.minimized) {
             if reach(window.frame).intersect(&clip).is_none() {
@@ -110,10 +121,8 @@ impl Painter {
         if desk.top_bar().intersect(&clip).is_some() {
             self.top_bar(c, clip, desk, bar);
         }
-        let panel = desk.panel();
-        if panel.intersect(&clip).is_some() {
-            fill(c, panel, clip, DARK.window);
-            fill(c, Rect::new(panel.x, panel.y, panel.w, 1), clip, DARK.line);
+        if desk.panel().intersect(&clip).is_some() {
+            self.panel(c, clip, scene);
         }
         if let Some(ask) = desk.ask() {
             let (width, height) = (c.width as i32, c.height as i32);
@@ -165,7 +174,7 @@ impl Painter {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn draw_text(
+    pub(crate) fn draw_text(
         &mut self,
         c: &mut Canvas<'_>,
         clip: Rect,
@@ -285,12 +294,12 @@ pub fn arrow(x: i32, y: i32) -> Option<u32> {
 
 /// The baseline for `style` centred in a band `h` px tall from `top`: the
 /// capitals' height, about 0.72 of the size, in the middle.
-fn baseline(top: i32, h: i32, style: TypeStyle) -> i32 {
+pub(crate) fn baseline(top: i32, h: i32, style: TypeStyle) -> i32 {
     let size = look::style(style, false).size;
     top + libm::roundf((h as f32 + 0.72 * size) / 2.0) as i32
 }
 
-fn fill(c: &mut Canvas<'_>, r: Rect, clip: Rect, rgb: u32) {
+pub(crate) fn fill(c: &mut Canvas<'_>, r: Rect, clip: Rect, rgb: u32) {
     if let Some(r) = r.intersect(&clip) {
         c.fill(g(r), opaque(rgb));
     }
@@ -318,7 +327,7 @@ fn plot(c: &mut Canvas<'_>, clip: Rect, x: i32, y: i32, rgb: u32, a: f32) {
 }
 
 /// A filled disc, its edge antialiased.
-fn disc(c: &mut Canvas<'_>, clip: Rect, at: (i32, i32), r: f32, rgb: u32) {
+pub(crate) fn disc(c: &mut Canvas<'_>, clip: Rect, at: (i32, i32), r: f32, rgb: u32) {
     let reach = libm::ceilf(r) as i32 + 1;
     for y in at.1 - reach..=at.1 + reach {
         for x in at.0 - reach..=at.0 + reach {

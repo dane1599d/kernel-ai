@@ -3,7 +3,8 @@
 
 use crate::desk::Desk;
 use crate::geom::{Rect, Size};
-use crate::paint::{Bar, Painter};
+use crate::paint::{Bar, Painter, Scene};
+use crate::panel::{Panel, State};
 use alloc::string::String;
 use alloc::vec::Vec;
 use gfx2d::{Fonts, Image};
@@ -21,14 +22,23 @@ const BAR: Bar = Bar {
 };
 
 fn paint(name: &str, desk: &Desk, w: i32, h: i32) -> String {
+    paint_with(name, desk, &Panel::new(), w, h)
+}
+
+fn paint_with(name: &str, desk: &Desk, panel: &Panel, w: i32, h: i32) -> String {
     let mut painter = Painter::new(FONTS).expect("the fonts parse");
     let mut image = Image::new(w, h);
     let mut canvas = image.canvas();
+    let scene = Scene {
+        desk,
+        bar: &BAR,
+        panel,
+        now_ms: 4_200,
+    };
     painter.paint(
         &mut canvas,
         Rect::new(0, 0, w, h),
-        desk,
-        &BAR,
+        &scene,
         &mut |_, _, _| false,
     );
     painter.cursor(&mut canvas, Rect::new(0, 0, w, h), desk.pointer());
@@ -65,7 +75,7 @@ fn two_windows_paint() {
 /// 1280x800 with the cursor in the middle, as `desktop` first draws it on GOP,
 /// its RGB bytes hashed with the top bar's stats blanked. The boot's screendump
 /// must hash the same.
-const DESK_BOOT: &str = "7d408c1f3c7f91d7217130ed0ab4a0b724519b016ef8d95a0a1d7423c0330620";
+const DESK_BOOT: &str = "514ded10f7fe4dd26d45737cbd9831ff457c6cf5ff59631ecc042c33342a51bb";
 
 #[test]
 fn the_boot_desk_matches_desk_boot_s_golden() {
@@ -75,7 +85,14 @@ fn the_boot_desk_matches_desk_boot_s_golden() {
     let mut image = Image::new(w, h);
     let mut canvas = image.canvas();
     let all = Rect::new(0, 0, w, h);
-    painter.paint(&mut canvas, all, &desk, &BAR, &mut |_, _, _| false);
+    let panel = Panel::new();
+    let scene = Scene {
+        desk: &desk,
+        bar: &BAR,
+        panel: &panel,
+        now_ms: 0,
+    };
+    painter.paint(&mut canvas, all, &scene, &mut |_, _, _| false);
     painter.cursor(&mut canvas, all, desk.pointer());
     let stats = crate::paint::stats_area(w);
     let mut rgb = Vec::new();
@@ -93,4 +110,27 @@ fn the_boot_desk_matches_desk_boot_s_golden() {
         got, DESK_BOOT,
         "desk-boot's golden changed: update it here and in xtask"
     );
+}
+
+#[test]
+fn the_panel_paints_each_state() {
+    let desk = Desk::new(1280, 800);
+    let mut panel = Panel::new();
+    paint_with("panel-idle", &desk, &panel, 1280, 800);
+    panel.set_focus(true);
+    for code in [0x0B, 0x0C] {
+        panel.key(code, true, 0);
+        panel.key(code, false, 0);
+    }
+    paint_with("panel-listening", &desk, &panel, 1280, 800);
+    panel.set_state(State::Thinking { since_ms: 0 });
+    paint_with("panel-thinking", &desk, &panel, 1280, 800);
+    panel.set_state(State::Done {
+        line: "Done: policy round-robin (was interactive).".into(),
+    });
+    paint_with("panel-done", &desk, &panel, 1280, 800);
+    panel.set_state(State::Refused {
+        reason: "Refused: notes is protected".into(),
+    });
+    paint_with("panel-refused", &desk, &panel, 1280, 800);
 }

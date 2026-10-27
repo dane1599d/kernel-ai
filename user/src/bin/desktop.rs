@@ -24,7 +24,9 @@ use alloc::vec::Vec;
 use deskcore::compose::{Pixels, Source};
 use deskcore::desk::{Button, Desk, Effect, Focus, Input, WindowId};
 use deskcore::geom::{Point, Rect};
-use deskcore::paint::{self, Bar, Painter};
+use deskcore::paint::{self, Bar, Painter, Scene};
+use deskcore::paint_panel;
+use deskcore::panel::Panel;
 use deskcore::server::{Buffer, Client, Need};
 use gfx2d::{Canvas, Fonts, Image};
 use kabi::display::{DisplayInfo, FlushRect};
@@ -77,6 +79,10 @@ struct State {
     draws_cursor: bool,
     /// The first frame is on the screen.
     drawn: bool,
+    /// The AI panel's line and the state the shell reports.
+    panel: Panel,
+    /// When the panel's "thinking 4s" was last redrawn.
+    ticked_ms: u64,
     /// Frames as last logged, to report moves and closes once.
     known: Vec<(WindowId, Rect)>,
     focus: Focus,
@@ -110,6 +116,8 @@ fn main() -> i32 {
             extra: Vec::new(),
             draws_cursor: screen.info.cursor == 0,
             drawn: false,
+            panel: Panel::new(),
+            ticked_ms: 0,
             known: Vec::new(),
             focus: Focus::Nothing,
         };
@@ -169,6 +177,7 @@ fn run(state: &mut State, screen: &Screen) -> Option<bool> {
         }
         report(state);
         refresh_bar(state);
+        tick_panel(state);
         draw(state, screen);
     }
 }
@@ -241,6 +250,44 @@ fn input(state: &mut State, screen: &Screen, event: &InputEvent) {
 fn deliver(state: &mut State, effects: &[Effect]) {
     for client in &mut state.clients {
         client.apply(effects);
+    }
+    let now = now_ms();
+    for effect in effects {
+        let changed = match *effect {
+            Effect::PanelKey { usage, down } => {
+                let before = state.panel.waiting();
+                let changed = state.panel.key(usage, down, now);
+                if state.panel.waiting() > before {
+                    // Its length only: a panel line may hold anything typed.
+                    let len = match state.panel.newest() {
+                        Some(deskcore::panel::Request::Line(text)) => text.chars().count(),
+                        _ => 0,
+                    };
+                    println!("desktop: the panel queued a request ({len} characters)");
+                }
+                changed
+            }
+            Effect::Focus(focus) => state.panel.set_focus(focus == Focus::Panel),
+            _ => false,
+        };
+        if changed {
+            state.extra.push(state.desk.panel());
+        }
+    }
+}
+
+fn now_ms() -> u64 {
+    sys::time_ns() / 1_000_000
+}
+
+/// Redraws the panel's state once a second while it counts ("thinking 4s").
+fn tick_panel(state: &mut State) {
+    let now = now_ms();
+    if paint_panel::ticks(&state.panel) && now.saturating_sub(state.ticked_ms) >= 1_000 {
+        state.ticked_ms = now;
+        state
+            .extra
+            .push(paint_panel::state_area(state.desk.panel()));
     }
 }
 
@@ -380,6 +427,10 @@ fn refresh_bar(state: &mut State) {
     if bar != state.bar {
         state.bar = bar;
         state.extra.push(paint::stats_area(state.width));
+        // The idle panel shows the model's dot too.
+        state
+            .extra
+            .push(paint_panel::state_area(state.desk.panel()));
     }
 }
 
@@ -397,6 +448,12 @@ fn draw(state: &mut State, screen: &Screen) {
         .collect();
     let mut frame = state.frame.canvas();
     let (shown, pools) = (&state.shown, &state.pools);
+    let scene = Scene {
+        desk: &state.desk,
+        bar: &state.bar,
+        panel: &state.panel,
+        now_ms: now_ms(),
+    };
     let mut content = |id: WindowId, layer: &mut Canvas<'_>, at: Rect| {
         let Some((_, pid, buffer)) = shown.iter().find(|(w, ..)| *w == id) else {
             return false;
@@ -415,9 +472,7 @@ fn draw(state: &mut State, screen: &Screen) {
         true
     };
     for &clip in &damage {
-        state
-            .painter
-            .paint(&mut frame, clip, &state.desk, &state.bar, &mut content);
+        state.painter.paint(&mut frame, clip, &scene, &mut content);
         if state.draws_cursor {
             state.painter.cursor(&mut frame, clip, state.desk.pointer());
         }
