@@ -198,13 +198,42 @@ hog 2 1 0 7 99 5",
 fn stop_and_start_requests_parse_and_are_checked() {
     assert_eq!(
         Request::parse("stop build-1"),
-        Some(Request::Stop("build-1"))
+        Some((Request::Stop("build-1"), Proof::None))
     );
     assert_eq!(
         Request::parse(" start  build-1 "),
-        Some(Request::Start("build-1"))
+        Some((Request::Start("build-1"), Proof::None))
     );
-    for bad in ["", "stop", "stop a b", "restart a", "STOP a"] {
+    let once = Once { badge: 9, id: 4 };
+    for (text, want) in [
+        (
+            "restart build-1 once=9 id=4",
+            (Request::Restart("build-1"), Proof::Once(once)),
+        ),
+        ("stop build-1 rule", (Request::Stop("build-1"), Proof::Rule)),
+        (
+            "stop build-1 undo id=4",
+            (Request::Stop("build-1"), Proof::Undo(4)),
+        ),
+        (
+            "start build-1 id=4",
+            (Request::Start("build-1"), Proof::Entry(4)),
+        ),
+    ] {
+        assert_eq!(Request::parse(text), Some(want), "{text:?}");
+    }
+    for bad in [
+        "",
+        "stop",
+        "stop a b",
+        "STOP a",
+        "stop a once=9",
+        "stop a id=4 once=9",
+        "stop a once=x id=4",
+        "stop a once=9 id=4 more",
+        "stop a undo",
+        "stop a rule id=4",
+    ] {
         assert_eq!(Request::parse(bad), None, "{bad:?}");
     }
     let mut records = vec![Record::new("llm"), Record::new("build-1")];
@@ -232,6 +261,79 @@ fn stop_and_start_requests_parse_and_are_checked() {
         Err("err already stopped")
     );
     assert_eq!(check(Request::Start("build-1"), &records), Ok(1));
+    // A service the supervisor gave up on may be started.
+    records[1].stopped = false;
+    records[1].gave_up = true;
+    assert_eq!(check(Request::Start("build-1"), &records), Ok(1));
+    records[1].gave_up = false;
+    records[1].stopped = true;
+    // A restart starts a stopped service, and restarts a running one.
+    assert_eq!(check(Request::Restart("build-1"), &records), Ok(1));
+    records[1].stopped = false;
+    assert_eq!(check(Request::Restart("build-1"), &records), Ok(1));
+    assert_eq!(
+        check(Request::Restart("llm"), &records),
+        Err("err protected")
+    );
+}
+
+#[test]
+fn a_start_needs_no_proof_and_a_stop_or_restart_needs_one() {
+    let once = Proof::Once(Once { badge: 1, id: 2 });
+    let fits = |request, proof| proof_fits(request, proof).is_ok();
+    assert!(fits(Request::Start("a"), Proof::None));
+    assert!(fits(Request::Start("a"), Proof::Entry(3)));
+    assert!(!fits(Request::Start("a"), once));
+    for request in [Request::Stop("a"), Request::Restart("a")] {
+        assert!(fits(request, once));
+        assert!(fits(request, Proof::Rule));
+        assert_eq!(proof_fits(request, Proof::None), Err("err needs ONCE"));
+        assert_eq!(proof_fits(request, Proof::Entry(3)), Err("err needs ONCE"));
+    }
+    // Only a stop undoes a start.
+    assert!(fits(Request::Stop("a"), Proof::Undo(3)));
+    assert!(!fits(Request::Restart("a"), Proof::Undo(3)));
+}
+
+#[test]
+fn a_request_digests_the_call_the_menu_showed() {
+    let once = Once { badge: 77, id: 7 };
+    for (request, call) in [
+        (Request::Stop("indexer"), "service_stop(\"indexer\")"),
+        (Request::Start("indexer"), "service_start(\"indexer\")"),
+        (Request::Restart("indexer"), "service_restart(\"indexer\")"),
+    ] {
+        assert_eq!(request.call().as_deref(), Some(call));
+        assert_eq!(
+            request.digest(7),
+            Some(termcore::once::digest_call(7, call))
+        );
+        // Another entry, verb or name digests differently.
+        assert_ne!(request.digest(7), request.digest(8));
+        for proof in [
+            Proof::Once(once),
+            Proof::Rule,
+            Proof::Undo(3),
+            Proof::Entry(3),
+            Proof::None,
+        ] {
+            let text = request.encode(proof);
+            assert_eq!(Request::parse(&text), Some((request, proof)), "{text:?}");
+        }
+    }
+    assert_ne!(
+        Request::Stop("indexer").digest(7),
+        Request::Restart("indexer").digest(7)
+    );
+    assert_ne!(
+        Request::Stop("indexer").digest(7),
+        Request::Stop("indexes").digest(7)
+    );
+    // A process stop shown on the menu does not pass for a service stop.
+    assert_ne!(
+        Request::Stop("indexer").digest(7),
+        Some(termcore::once::digest_call(7, "process_stop(\"indexer\")"))
+    );
 }
 
 #[test]

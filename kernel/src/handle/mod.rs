@@ -30,6 +30,7 @@ pub struct Handles {
 }
 
 pub mod grant;
+pub mod rules;
 
 static HANDLES: [Mutex<Option<Handles>>; MAX_PROCESSES] =
     [const { Mutex::new(None) }; MAX_PROCESSES];
