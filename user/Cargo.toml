@@ -20,6 +20,7 @@ cpufeat = { path = "../cpufeat" }
 infer = { path = "../infer" }
 kabi = { path = "../kabi" }
 livecore = { path = "../livecore" }
+look = { path = "../look" }
 editcore = { path = "../editcore" }
 fsproto = { path = "../fsproto" }
 fsserve = { path = "../fsserve" }

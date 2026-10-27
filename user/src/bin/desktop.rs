@@ -13,8 +13,9 @@ use user::{println, sys};
 
 user::entry!(main);
 
-/// A dark blue-grey: not the console's ink, so a screendump tells them apart.
-const BACKGROUND: u32 = 0x0020_3040;
+/// Ember Workbench's raised surface: not the console's ink (`desk`), so a
+/// screendump tells them apart.
+const BACKGROUND: u32 = look::DARK.raised;
 
 fn main() -> i32 {
     loop {
