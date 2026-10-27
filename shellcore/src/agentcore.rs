@@ -24,7 +24,7 @@ use crate::targets::{self, Unresolved, Verb};
 use crate::tiers::Tier;
 use crate::{Reply, SCRIPT_ROUND_MS, Shell};
 use agentabi::consent::{self, Call as Planned, Label, Value as Consented, Why};
-use agentabi::{Action, ArgType, Role};
+use agentabi::{Action, ArgType, RetType, Role};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -216,15 +216,28 @@ impl Shell {
             let reply = self.pkg_call(id, request, row.name, &args.values, decision);
             return outcome(decision.tier, decision.why, reply);
         }
-        if !agentabi::BOUND.iter().any(|r| r.name == row.name) {
+        // A file row's one-line script is found among the file rows, every other
+        // row's among the bound ones.
+        let rows: &'static [Action] = match agentabi::FS_ROWS.iter().any(|r| r.name == row.name) {
+            true => &agentabi::FS_ROWS,
+            false => &agentabi::BOUND,
+        };
+        if !rows.iter().any(|r| r.name == row.name) {
             let why = format!("{} is typed at the prompt for now, not called", row.name);
             return self.refuse(id, request, call, decision.why, &why);
         }
+        // What a content read returns is `Data`: `show` is the one way it comes
+        // out, to the user and not back to the model (ADR 0002 D6).
+        let called = format!("{}({})", row.name, args.rhai.join(", "));
+        let script = match row.ret {
+            RetType::Data => format!("show({called});"),
+            _ => format!("{called};"),
+        };
         let answer = Answer {
-            script: format!("{}({});", row.name, args.rhai.join(", ")),
+            script,
             summary: String::new(),
         };
-        let checked = match script::check_call(&answer, &self.host, &self.config) {
+        let checked = match script::check_against(&answer, &self.host, &self.config, rows) {
             Ok(checked) => checked,
             Err(refusal) => {
                 return self.refuse(id, request, call, decision.why, &refusal.to_string());

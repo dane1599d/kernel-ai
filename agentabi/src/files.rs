@@ -4,8 +4,8 @@
 //!
 //! A move and an overwrite you plainly ask for run at once with undo; the AI's
 //! own pick asks, as any added change does (ADR 0002 question 9, decided
-//! 2026-10-27). They are not in [`crate::ROWS`] yet: the pack renders them once
-//! the shell is wired to the `fs` server.
+//! 2026-10-27). They are in [`crate::ROWS`], so the pack lists them under
+//! `## files`, now that the shell is wired to the `fs` server.
 
 use crate::{Action, Arg, ArgType, Facts, Inverse, Owner, RetType, Returns, Role, Tier};
 
@@ -69,17 +69,17 @@ const fn change(name: &'static str, doc: &'static str, args: &'static [Arg]) -> 
 }
 
 pub const FS_LIST: Action = Action {
-    cues: &["list", "show", "what"],
+    cues: &["folder", "files"],
     ..read("fs_list", "a folder's names", &[PATH])
 };
 
 pub const FS_READ: Action = Action {
-    cues: &["read", "open", "show", "cat"],
+    cues: &["read", "cat"],
     ..read("fs_read", "a file's text", &[PATH])
 };
 
 pub const FS_HISTORY: Action = Action {
-    cues: &["history", "versions", "earlier"],
+    cues: &["history", "versions"],
     ..read("fs_history", "a file's earlier versions", &[PATH])
 };
 
@@ -91,12 +91,12 @@ pub const FS_CHANGES: Action = Action {
 };
 
 pub const FS_CREATE: Action = Action {
-    cues: &["create", "make", "new", "save"],
+    cues: &["create"],
     ..change("fs_create", "a new file; never overwrites", &[PATH, TEXT])
 };
 
 pub const FS_WRITE: Action = Action {
-    cues: &["write", "overwrite", "replace", "save"],
+    cues: &["write", "overwrite"],
     ..change("fs_write", "a file's text, replaced", &[PATH, TEXT])
 };
 
@@ -118,13 +118,13 @@ pub const FS_MOVE: Action = Action {
 };
 
 pub const FS_TRASH: Action = Action {
-    cues: &["delete", "remove", "trash", "erase"],
+    cues: &["trash", "delete"],
     inverse: Inverse::Trash,
     ..change("fs_trash", "to the trash; undo brings it back", &[PATH])
 };
 
 pub const FS_RESTORE: Action = Action {
-    cues: &["restore", "recover", "bring back"],
+    cues: &["restore", "recover"],
     ..change(
         "fs_restore",
         "an earlier version, or out of the trash",
@@ -159,6 +159,22 @@ pub const FS_ROWS: [Action; 10] = [
 
 const _: () = assert!(crate::check(&FS_ROWS).is_ok(), "a file row is inconsistent");
 
+/// What a model's script may call: the script API, then the file rows, so a
+/// script's file changes are one transaction (P2 task 11).
+pub const SCRIPT_CALLS: [Action; crate::SCRIPT_API.len() + FS_ROWS.len()] = {
+    let api = crate::SCRIPT_API;
+    let mut out = [api[0]; crate::SCRIPT_API.len() + FS_ROWS.len()];
+    let mut i = 0;
+    while i < out.len() {
+        out[i] = match i < api.len() {
+            true => api[i],
+            false => FS_ROWS[i - api.len()],
+        };
+        i += 1;
+    }
+    out
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -176,10 +192,10 @@ mod tests {
     }
 
     #[test]
-    fn file_rows_are_not_in_the_os_rows_until_fs_is_wired() {
+    fn file_rows_are_os_rows_now_that_fs_is_wired() {
         for row in &FS_ROWS {
             assert!(
-                !crate::ROWS.iter().any(|r| r.name == row.name),
+                crate::ROWS.iter().any(|r| r.name == row.name),
                 "{}",
                 row.name
             );

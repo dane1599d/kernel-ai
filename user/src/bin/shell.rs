@@ -10,6 +10,8 @@ extern crate alloc;
 // A program's crate root sits in src/bin, so its modules are named by path.
 #[path = "shell/apart.rs"]
 mod apart;
+#[path = "shell/files.rs"]
+mod files;
 
 use alloc::boxed::Box;
 use alloc::format;
@@ -41,6 +43,8 @@ const SCRIPT_LIMIT_MS: u64 = DEFAULT_CONFIG.line_budget_ms + 2_000;
 
 struct System {
     pool: apart::Pool,
+    files: files::Files,
+    state: files::State,
 }
 
 /// The route to the llm service: the shell's plan line has `uses=llm`, its only
@@ -238,6 +242,34 @@ impl Host for System {
             .map_err(|error| format!("{error:?}"))
     }
 
+    fn log_read(&self) -> Option<String> {
+        self.state.read_log()
+    }
+
+    /// In the same commit as the files the line changed (P2 task 12); else its
+    /// own action. A log that fails to write still lets the change commit: the
+    /// user was told it was done.
+    fn log_write(&self, text: &str) -> Result<(), String> {
+        if !self.files.is_open() {
+            return self.state.write_log(text, self.files.next_action());
+        }
+        let logged = self.state.write_log_in(text);
+        let committed = self.files.commit();
+        logged.and(committed)
+    }
+
+    fn fs_read(&self, read: shellcore::FsRead) -> Result<String, String> {
+        self.files.read(read)
+    }
+
+    fn fs_change(&self, change: shellcore::FsChange) -> Result<u64, String> {
+        self.files.change(change)
+    }
+
+    fn fs_undo(&self, txn: u64, anyway: bool) -> Result<u64, shellcore::FsRefused> {
+        self.files.undo(txn, anyway)
+    }
+
     fn run_apart(&self, request: &str) -> Option<Result<String, String>> {
         self.pool.run(request, SCRIPT_LIMIT_MS)
     }
@@ -287,9 +319,14 @@ impl Host for System {
 fn main() -> i32 {
     let args = args();
     let mut shell = Shell::new(
-        Rc::new(System {
-            pool: apart::Pool::new(),
-        }),
+        {
+            let (files, state) = files::Files::new();
+            Rc::new(System {
+                pool: apart::Pool::new(),
+                files,
+                state,
+            })
+        },
         DEFAULT_CONFIG,
     );
     println!("up (restart {})", arg(&args, "restart").unwrap_or("0"));

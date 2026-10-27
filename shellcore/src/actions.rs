@@ -283,8 +283,16 @@ impl Shell {
         ran: script::Ran,
     ) -> Reply {
         let mut left = ran.done.clone();
+        // The script's file changes share one transaction: one restore is enough.
+        let mut restored = None;
         while let Some(change) = left.last() {
             let put_back = change.inverse.is_some_and(|inverse| {
+                if let undo::Inverse::Fs { txn } = inverse {
+                    if restored == Some(txn) {
+                        return true;
+                    }
+                    restored = Some(txn);
+                }
                 let ids = undo::Ids { made: id, next: id };
                 undo::revert(self.host.as_ref(), inverse, false, ids).is_ok()
             });
