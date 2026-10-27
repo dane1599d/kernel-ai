@@ -4,8 +4,8 @@
 //!
 //! 1. **Salvage.** Every item the live tree still yields is kept; a node that no
 //!    longer verifies loses the items below it, and the tree is rebuilt from the
-//!    rest. The old tree's blocks wait for the GC, so nothing a snapshot holds is
-//!    touched.
+//!    rest, as is a tree whose nodes verify but do not hold together. The old
+//!    tree's blocks wait for the GC, so nothing a snapshot holds is touched.
 //! 2. **Items.** An item of an unknown kind, of object 0, or of an object with no
 //!    inode is dropped, as are names in a file, data in a folder, data off a
 //!    128 KiB boundary, past 256 TiB or in a record that no longer verifies, and
@@ -24,12 +24,13 @@
 //!    file's size covers its data, and no inode says it changed after the commit
 //!    repair writes.
 //!
-//! Repair acts on the active volume, so `check --repair` runs it once a volume.
-//! It refuses a filesystem with an unknown compat bit (ADR 0004 §2), one
-//! mounted read-only, and one with an open transaction. Space the allocator
-//! accounts wrongly is the GC's (task 6), which rebuilds it from what is reached.
+//! Repair acts on the active volume; [`crate::repair_fs`] runs it on each, after
+//! the space and history rules (0 and 7). It refuses a filesystem with an
+//! unknown compat bit (ADR 0004 §2), one mounted read-only, and one with an open
+//! transaction. Blocks held by nothing are the GC's (task 6).
 
 use crate::Error;
+use crate::check::{Cache, Leaves, summarise};
 use crate::dev::BlockDev;
 use crate::format::BlockPtr;
 use crate::fs::{Fs, MAX_INLINE, decode_value, inline_of, inline_raw, record_of, value_len};
@@ -475,6 +476,19 @@ pub fn repair<D: BlockDev>(fs: &mut Fs<D>) -> Result<Vec<String>, Error> {
         salvage(fs, &root, &mut found, &mut fixes);
     }
     let lost_nodes = !fixes.is_empty();
+    // A tree whose nodes all verify but do not hold together (keys outside
+    // their bounds, a level skipped, a node under a quarter full, a block
+    // reached twice) is rebuilt from its items too.
+    let unsound = match lost_nodes || root.is_null() {
+        true => None,
+        false => summarise(&mut fs.io, &root, Leaves::Values, &mut Cache::default()).err(),
+    };
+    if let Some(why) = &unsound {
+        fixes.push(format!(
+            "the live tree does not check ({why}): rebuilt from its items"
+        ));
+    }
+    let rebuild = lost_nodes || unsound.is_some();
     let (uuid, mask, next_oid) = (fs.uuid(), fs.hash_mask, fs.next_oid());
     let mut repair = Repair {
         fs,
@@ -499,10 +513,10 @@ pub fn repair<D: BlockDev>(fs: &mut Fs<D>) -> Result<Vec<String>, Error> {
     repair.counts(&named);
     let want = repair.items();
     let Repair { fs, fixes, .. } = repair;
-    if want == found && !lost_nodes && fs.next_oid() == next_oid {
+    if want == found && !rebuild && fs.next_oid() == next_oid {
         return Ok(Vec::new());
     }
-    match lost_nodes {
+    match rebuild {
         true => fs.replace_live(want)?,
         false => {
             let want_keys: BTreeSet<Key> = want.iter().map(|(k, _)| *k).collect();
