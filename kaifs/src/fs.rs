@@ -90,6 +90,15 @@ impl Vol {
     }
 }
 
+/// What a commit left in memory: the allocator, the volume table and the
+/// volumes, and the volume calls act on at first.
+pub(crate) struct Loaded {
+    pub(crate) alloc: Allocator,
+    pub(crate) volumes: Tree,
+    pub(crate) vols: BTreeMap<u64, Vol>,
+    pub(crate) active: u64,
+}
+
 /// The volume `active` and a store over it whose reuse rule counts `pin`, an
 /// open action's generation, as a snapshot.
 fn split<'a, D>(
@@ -209,34 +218,61 @@ impl<D: BlockDev> Fs<D> {
     /// [`Fs::mount`] for a writer with deliberate faults (its reuse wait too).
     pub fn mount_with(mut dev: D, faults: Faults) -> Result<Self, Error> {
         let info = dev.info();
-        let found = format::read_rings(&mut dev)?;
+        let (sb, rules) = Self::newest(&mut dev)?;
+        let loaded = Self::load(&mut dev, &sb, faults)?;
+        Ok(Fs {
+            io: Io {
+                dev,
+                kind: sb.csum_kind,
+                alloc: loaded.alloc,
+                txn: sb.generation + 1,
+                node_reads: 0,
+                gc_pin: 0,
+                faults,
+                deferred: Vec::new(),
+            },
+            uuid: sb.uuid,
+            block_count: sb.block_count,
+            label: sb.label,
+            committed: sb.generation,
+            clock: sb.commit_time,
+            volumes: loaded.volumes,
+            vols: loaded.vols,
+            active: loaded.active,
+            action: None,
+            gc: None,
+            writable: rules.writable && info.durable(),
+            repairable: rules.repairable,
+            faults,
+            hash_mask: u64::MAX,
+        })
+    }
+
+    /// The newest superblock whose volume-table root and allocator head verify,
+    /// and the mount rules the newest slot sets.
+    pub(crate) fn newest(dev: &mut D) -> Result<(Superblock, format::Rules), Error> {
+        let found = format::read_rings(&mut *dev)?;
         let rules = found[0].rules()?;
         let kind = found[0].csum_kind;
         for sb in found {
             let verifies = |dev: &mut D, ptr: &BlockPtr| {
                 ptr.is_null() || format::read_checked(dev, kind, ptr, "root").is_ok()
             };
-            if sb.volumes.is_null()
-                || !verifies(&mut dev, &sb.volumes)
-                || !verifies(&mut dev, &sb.alloc)
-            {
-                continue;
+            if !sb.volumes.is_null() && verifies(dev, &sb.volumes) && verifies(dev, &sb.alloc) {
+                return Ok((sb, rules));
             }
-            let mut fs = Self::open(dev, &sb, faults)?;
-            fs.writable = rules.writable && info.durable();
-            fs.repairable = rules.repairable;
-            return Ok(fs);
         }
         Err(Error::NoValidSuperblock)
     }
 
-    fn open(mut dev: D, sb: &Superblock, faults: Faults) -> Result<Self, Error> {
+    /// The allocator, the volume table and the volumes commit `sb` left.
+    pub(crate) fn load(dev: &mut D, sb: &Superblock, faults: Faults) -> Result<Loaded, Error> {
         let alloc_faults = crate::allocator::Faults {
             reuse_next: faults.reuse_next,
             ..Default::default()
         };
         let alloc = Allocator::load_with(
-            &mut dev,
+            &mut *dev,
             sb.csum_kind,
             &sb.alloc,
             sb.generation,
@@ -303,22 +339,11 @@ impl<D: BlockDev> Fs<D> {
             true => SYSTEM,
             false => *vols.keys().next().ok_or(Error::Corrupt("no volume"))?,
         };
-        Ok(Fs {
-            io,
-            uuid: sb.uuid,
-            block_count: sb.block_count,
-            label: sb.label,
-            committed: sb.generation,
-            clock: sb.commit_time,
+        Ok(Loaded {
+            alloc: io.alloc,
             volumes,
             vols,
             active,
-            action: None,
-            gc: None,
-            writable: true,
-            repairable: true,
-            faults,
-            hash_mask: u64::MAX,
         })
     }
 

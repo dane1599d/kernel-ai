@@ -188,8 +188,7 @@ impl Run {
                     self.change();
                 }
                 if step == Step::Abort {
-                    let fs = self.fs.take().unwrap();
-                    self.fs = Some(fs.abort().map_err(|e| format!("abort: {e:?}"))?);
+                    self.fs().abort().map_err(|e| format!("abort: {e:?}"))?;
                     return Ok(());
                 }
             }

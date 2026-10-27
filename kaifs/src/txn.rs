@@ -9,8 +9,8 @@
 //!   the snapshot and every object it changed. Both land in the same commit as
 //!   the changes, so after a crash an action is wholly done, with its undo, or
 //!   not done at all.
-//! - [`Fs::abort`] mounts the last commit again: nothing an open action wrote
-//!   is reachable from it.
+//! - [`Fs::abort`] reads the last commit again, in place: nothing an open action
+//!   wrote is reachable from it.
 
 use crate::Error;
 use crate::dev::BlockDev;
@@ -94,26 +94,35 @@ impl<D: BlockDev> Fs<D> {
         self.action
     }
 
-    /// Drops everything since the last commit, an open action with it, by
-    /// mounting that commit again.
-    pub fn abort(self) -> Result<Self, Error> {
-        let (faults, mask, clock, active, committed) = (
-            self.faults,
-            self.hash_mask,
-            self.clock,
-            self.active,
-            self.committed,
-        );
-        let mut fs = Self::mount_with(self.io.dev, faults)?;
-        if fs.committed != committed {
+    /// Drops everything since the last commit, an open action and a running GC
+    /// pass with it: the allocator and the volumes are read again from the newest
+    /// commit on the disk, as a mount reads them. The `Fs` stays where it is, so a
+    /// server holding it needs nothing moved; after an I/O error mid-operation,
+    /// this is how the transaction is dropped. The volume calls act on is kept.
+    ///
+    /// Returns the generation it read. That is the last commit, or the one an
+    /// error interrupted if that one had landed whole (an error after a
+    /// superblock slot was written): then its changes are on the disk, and the
+    /// caller must say so, not that it failed.
+    pub fn abort(&mut self) -> Result<u64, Error> {
+        let (sb, _) = Self::newest(&mut self.io.dev)?;
+        if sb.generation < self.committed {
             return Err(Error::Corrupt("the disk lost the last commit"));
         }
-        fs.hash_mask = mask;
-        fs.clock = clock;
-        if fs.vols.contains_key(&active) {
-            fs.active = active;
+        let loaded = Self::load(&mut self.io.dev, &sb, self.faults)?;
+        self.io.alloc = loaded.alloc;
+        self.io.txn = sb.generation + 1;
+        self.io.gc_pin = 0;
+        self.io.deferred.clear();
+        self.volumes = loaded.volumes;
+        self.vols = loaded.vols;
+        self.action = None;
+        self.gc = None;
+        self.committed = sb.generation;
+        if !self.vols.contains_key(&self.active) {
+            self.active = loaded.active;
         }
-        Ok(fs)
+        Ok(sb.generation)
     }
 
     /// For each volume the open action changed: an undo snapshot of its root
