@@ -108,6 +108,31 @@ pub(super) const CASES: &[TestCase] = &[
         data: Some(VIRTIO),
         ..case("fs-restart", "test=files-restart")
     },
+    // P2 task 9: 200 file actions through `fs` behind blklogwrites; every crash
+    // state the log allows mounts, checks and keeps the last durable commit.
+    TestCase {
+        expect: &[
+            "filecheck: 200 file actions committed; commit p50 ",
+            " files whole after the actions",
+            "files: 200 file actions are on the disk; the host replays the log",
+        ],
+        server: false,
+        data: Some(Data {
+            log: Some(Expect::Clean),
+            ..VIRTIO
+        }),
+        ..case("fs-actions", "test=files-actions")
+    },
+    // P2 task 9: 20 power cuts while `filecheck` makes file actions, each boot
+    // first finding every file whole; the 21st boot ends the case.
+    TestCase {
+        expect: &["files: boot 21: every file is whole after the cut"],
+        server: false,
+        data: Some(VIRTIO),
+        cuts: 20,
+        min_timeout: Some(std::time::Duration::from_secs(900)),
+        ..case("fs-powercut", "test=files-churn")
+    },
     // S04-3 raw: 200 commits shaped like kaifs's, every flush point replayed.
     TestCase {
         expect: &["blk-flush: 200 commits durable"],

@@ -12,7 +12,6 @@
 use crate::fluency::host::GateHost;
 use infer::Next;
 use infer::chat::{Budget, Engine, Step};
-use infer::tagged::Tagged;
 use llmproto::act::{self, ActError, ActRequest, Call, History};
 use llmproto::local;
 use llmproto::script::{self, Answer, AnswerError, ScriptRequest};
@@ -113,7 +112,7 @@ fn outcome(bytes: &'static [u8], tier: Tier) -> Result<Outcome, String> {
 struct Acting {
     gate: Rc<GateHost>,
     engine: Rc<RefCell<Engine<'static>>>,
-    grammar: Tagged<'static>,
+    grammar: local::act::Grammar,
     history: RefCell<History>,
 }
 

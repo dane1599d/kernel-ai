@@ -16,6 +16,8 @@
 //! workflow counts the real tokens (`cargo xtask tokens`).
 
 mod dsl1;
+
+pub use dsl1::INDEX_HEADING;
 #[cfg(test)]
 mod tests;
 
@@ -30,6 +32,45 @@ pub const PACK_BUDGET: usize = 1024;
 /// pack+MODE at 935 estimated (token-count run 40443905553); the guard stays
 /// above the real count.
 const BYTES_PER_TOKEN: f32 = 3.32;
+
+/// ADR 0010 §6's index level, in v0.1 since P2's rows filled the budget:
+/// groups the pack names on one line each (`tune: tune tune_undo`). A row
+/// here has no full line in the pack; an `act` call that names one with
+/// arguments is decoded once more with [`group_text`] after the request
+/// (`local::act`). Scripts are written by the script prompt, which keeps
+/// every function, so they are untouched. The least-used row: the component
+/// revert. Reads stay in full: their return types are how `act` tells a
+/// question `script` can answer from one it cannot (run 40486342534 indexed
+/// them, and M8 through script fell from 47 to 40 of 50). So do the scheduler
+/// trial's rows: from a bare `tune` the model asks how to tune instead of
+/// calling it (run 40503318565, the os arm at 11 of 13).
+pub const INDEX: &[(&str, &[&str])] = &[("component", &["component_revert"])];
+
+/// The index group `name` is in, if it is index-only.
+pub fn indexed(name: &str) -> Option<(&'static str, &'static [&'static str])> {
+    INDEX
+        .iter()
+        .find(|(_, names)| names.contains(&name))
+        .copied()
+}
+
+/// The full lines of `group`'s rows, as a system turn after the request: what
+/// a call naming one of them is decoded with the second time.
+pub fn group_text(group: &str) -> String {
+    let rows = rows();
+    let members: Vec<&Action> = INDEX
+        .iter()
+        .filter(|(name, _)| *name == group)
+        .flat_map(|(_, names)| names.iter())
+        .filter_map(|name| rows.iter().copied().find(|row| row.name == *name))
+        .collect();
+    let mut text = alloc::format!("## {group}\n");
+    for line in dsl1::row_lines(&members) {
+        text.push_str(&line);
+        text.push('\n');
+    }
+    text
+}
 
 /// The `act` MODE turn, a second system turn after the pack (ADR 0010 §3).
 pub const MODE_ACT: &str =
@@ -93,16 +134,24 @@ pub fn act_pack_id() -> u64 {
     pack_id(Format::Dsl1, "", &render(Format::Dsl1))
 }
 
-/// Whether `pack` shows the row `name`: on its own line, or as one verb of its
-/// family's line (`service_stop|start|restart(`).
+/// Whether `pack` shows the row `name`: on its own line, as one verb of its
+/// family's line (`service_stop|start|restart(`), or by name on an index line.
 pub fn shows(pack: &str, name: &str) -> bool {
-    pack.lines().any(|line| {
-        let head = line.split('(').next().unwrap_or("");
-        head == name
-            || name.split_once('_').is_some_and(|(family, verb)| {
-                head.strip_prefix(family)
-                    .and_then(|rest| rest.strip_prefix('_'))
-                    .is_some_and(|verbs| verbs.split('|').any(|v| v == verb))
-            })
-    })
+    let index = pack
+        .split_once(dsl1::INDEX_HEADING)
+        .map_or("", |(_, index)| index);
+    let listed = index.lines().any(|line| {
+        line.split_once(": ")
+            .is_some_and(|(_, names)| names.split(' ').any(|n| n == name))
+    });
+    listed
+        || pack.lines().any(|line| {
+            let head = line.split('(').next().unwrap_or("");
+            head == name
+                || name.split_once('_').is_some_and(|(family, verb)| {
+                    head.strip_prefix(family)
+                        .and_then(|rest| rest.strip_prefix('_'))
+                        .is_some_and(|verbs| verbs.split('|').any(|v| v == verb))
+                })
+        })
 }

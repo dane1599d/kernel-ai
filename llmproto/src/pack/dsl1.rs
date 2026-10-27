@@ -238,6 +238,9 @@ pub(super) fn row_lines(rows: &[&Action]) -> Vec<String> {
     lines
 }
 
+/// What heads the index lines (ADR 0010 §6).
+pub const INDEX_HEADING: &str = "## index (name only; call one and its arguments are shown next)\n";
+
 pub(super) fn render(rows: &[&Action]) -> String {
     let mut out = String::from(RHAI);
     out.push_str(CALLS);
@@ -250,9 +253,25 @@ pub(super) fn render(rows: &[&Action]) -> String {
         let quoted: alloc::vec::Vec<String> = words.iter().map(|w| format!("\"{w}\"")).collect();
         let _ = writeln!(out, "type {name} = {}", quoted.join(" | "));
     }
-    for line in row_lines(rows) {
+    let shown: Vec<&Action> = rows
+        .iter()
+        .copied()
+        .filter(|row| super::indexed(row.name).is_none())
+        .collect();
+    for line in row_lines(&shown) {
         out.push_str(&line);
         out.push('\n');
+    }
+    out.push_str(INDEX_HEADING);
+    for (group, names) in super::INDEX {
+        let present: Vec<&str> = names
+            .iter()
+            .copied()
+            .filter(|name| rows.iter().any(|row| row.name == *name))
+            .collect();
+        if !present.is_empty() {
+            let _ = writeln!(out, "{group}: {}", present.join(" "));
+        }
     }
     out
 }

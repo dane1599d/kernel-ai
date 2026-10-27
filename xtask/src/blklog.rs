@@ -542,6 +542,18 @@ impl Replay {
 }
 
 /// Replays the log and checks it; prints the figures.
+/// The replay a case's `data` asks for: kaifs's crash states for a GPT disk the
+/// guest's `fs` formatted (P2 task 9, `fs_tool::blklog::check_case`), or the raw
+/// commit check for S04-3's raw disk ([`check`]).
+pub fn check_data(target: &Path, data: Data, expect: Expect) -> Result<(), String> {
+    if !data.gpt {
+        return check(target, expect);
+    }
+    let figures = crate::fs_tool::blklog::check_case(target, None, expect)?;
+    println!("xtask: {figures}");
+    Ok(())
+}
+
 pub fn check(target: &Path, expect: Expect) -> Result<(), String> {
     let log = fs::read(target.join(LOG)).map_err(|e| format!("{LOG}: {e}"))?;
     check_log(&log, expect, COMMITS)

@@ -122,6 +122,12 @@ pub fn after_edit_case(service: &BuildService) -> Result<(), String> {
     Ok(())
 }
 
+/// The refs a run could write, were it to reach the founder's repository: the
+/// build service's own (`refs/kai/...`) and its component branches
+/// (`refs/heads/kai/...`). Other refs are left out, because other sessions
+/// sharing the repository push to their branches while a run goes on.
+const RUN_REFS: [&str; 2] = ["refs/kai/", "refs/heads/kai/"];
+
 /// What a run must leave as it was in the founder's repository.
 #[derive(Debug, PartialEq, Eq)]
 pub struct RealRepo {
@@ -131,8 +137,10 @@ pub struct RealRepo {
 }
 
 pub fn real_repo(root: &Path) -> Result<RealRepo, String> {
+    let mut args = vec!["for-each-ref", "--format=%(refname) %(objectname)"];
+    args.extend(RUN_REFS);
     Ok(RealRepo {
-        refs: git(root, &["for-each-ref", "--format=%(refname) %(objectname)"])?,
+        refs: git(root, &args)?,
         head: git(root, &["rev-parse", "HEAD"])?,
         status: git(root, &["status", "--porcelain"])?,
     })
@@ -148,4 +156,48 @@ pub fn unchanged(root: &Path, before: &RealRepo) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::tests::scratch;
+    use super::{git, real_repo, unchanged};
+
+    #[test]
+    fn the_guard_sees_the_service_refs_and_not_other_sessions_branches() {
+        let dir = scratch("guard");
+        let repo = dir.0.as_path();
+        let run = |args: &[&str]| git(repo, args).unwrap();
+        run(&["init", "-q"]);
+        run(&[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "root",
+        ]);
+        let head = run(&["rev-parse", "HEAD"]);
+        let head = head.trim();
+        let before = real_repo(repo).unwrap();
+        // Another session pushes its branch, or a remote ref moves: not the run.
+        run(&["update-ref", "refs/heads/dane/other", head]);
+        run(&["update-ref", "refs/remotes/origin/main", head]);
+        assert_eq!(unchanged(repo, &before), Ok(()));
+        // A build ref or a component branch is the run's doing.
+        for name in ["refs/kai/builds/notes/e1", "refs/heads/kai/notes"] {
+            let before = real_repo(repo).unwrap();
+            run(&["update-ref", name, head]);
+            assert!(unchanged(repo, &before).is_err(), "{name} went unseen");
+        }
+        // So is a change to the work tree.
+        let before = real_repo(repo).unwrap();
+        std::fs::write(repo.join("stray.txt"), "x").unwrap();
+        assert!(unchanged(repo, &before).is_err());
+    }
 }

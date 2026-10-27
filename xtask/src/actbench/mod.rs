@@ -99,6 +99,9 @@ struct Arm {
     /// decoder and consent; the M8 50 through the shell's one door, with llm's
     /// own `act` path (`llmproto::local::act::routed`) on the OS pack.
     ship: bool,
+    /// `+index`: rows no task needs (the 80-row scale's distractors) are
+    /// named on index lines only, and close with no arguments (ADR 0010 §6).
+    index: bool,
 }
 
 impl Arm {
@@ -112,6 +115,7 @@ impl Arm {
                     rules: false,
                     m8script: false,
                     ship: false,
+                    index: false,
                 });
             }
             "act" => {
@@ -122,6 +126,7 @@ impl Arm {
                     rules: false,
                     m8script: true,
                     ship: true,
+                    index: false,
                 });
             }
             "os" => {
@@ -132,6 +137,7 @@ impl Arm {
                     rules: false,
                     m8script: false,
                     ship: true,
+                    index: false,
                 });
             }
             "m8-a0" => {
@@ -142,6 +148,7 @@ impl Arm {
                     rules: false,
                     m8script: false,
                     ship: false,
+                    index: false,
                 });
             }
             _ => {}
@@ -156,12 +163,14 @@ impl Arm {
             Some(arm) => (arm, true),
             None => (text, false),
         };
-        let (mut text, mut rules, mut m8script) = (text, false, false);
+        let (mut text, mut rules, mut m8script, mut index) = (text, false, false, false);
         loop {
             if let Some(arm) = text.strip_suffix("+rules") {
                 (text, rules) = (arm, true);
             } else if let Some(arm) = text.strip_suffix("+m8script") {
                 (text, m8script) = (arm, true);
+            } else if let Some(arm) = text.strip_suffix("+index") {
+                (text, index) = (arm, true);
             } else {
                 break;
             }
@@ -176,6 +185,7 @@ impl Arm {
             rules,
             m8script,
             ship: false,
+            index,
         })
     }
 
@@ -186,10 +196,11 @@ impl Arm {
             Kind::Os => "os".into(),
             Kind::Tagged(_) if self.ship => "act".into(),
             Kind::Tagged(format) => format!(
-                "{}{}{}{}@{}",
+                "{}{}{}{}{}@{}",
                 format.name(),
                 if self.rules { "+rules" } else { "" },
                 if self.m8script { "+m8script" } else { "" },
+                if self.index { "+index" } else { "" },
                 if self.no_think { ":no-think" } else { "" },
                 self.rows
             ),
@@ -463,7 +474,10 @@ fn run_arm(
             ))
         }
         Kind::Tagged(format) => {
-            let pack = render::pack_card(format, &rows, arm.rules);
+            let pack = match arm.index {
+                true => render::indexed_card(format, &rows, arm.rules),
+                false => render::pack_card(format, &rows, arm.rules),
+            };
             let mut ids = Vec::new();
             loaded.tokenizer.encode(&pack, &mut ids);
             header["format"] = json!(format.name());
@@ -477,7 +491,10 @@ fn run_arm(
                 ids.len(),
                 header["pack_id"]
             );
-            let grammar = Rc::new(grammar::tagged(&rows));
+            let grammar = Rc::new(match arm.index {
+                true => grammar::indexed(&rows),
+                false => grammar::tagged(&rows),
+            });
             let clock = Instant::now();
             let base = base_turns(&pack);
             let warm: Vec<Turn<'_>> = base.iter().map(|(r, t)| Turn::new(*r, t)).collect();

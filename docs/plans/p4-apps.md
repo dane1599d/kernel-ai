@@ -1,6 +1,6 @@
 # P4 plan: built-in apps, packages, `c>` and the v0.1 release
 
-Status: DRAFT for founder approval, 2026-10-27. No P4 code lands on main until the founder approves this plan. It plans the work that the accepted ADRs (`docs/adr/`, accepted 2026-10-22) and the execution plan ([ADR 0000](../adr/0000-execution-plan.md) §3, §5 and §6, P4 rows) put in P4: the P4 rows of [ADR 0011](../adr/0011-packages.md) (packages), [ADR 0012](../adr/0012-terminal-compiler.md) (the `c>` prompt), [ADR 0003](../adr/0003-app-model.md) (every built-in app on `kai:app`), [ADR 0005](../adr/0005-graphics.md) (apps on `uikit`, the other themes), [ADR 0010](../adr/0010-skill-pack.md) (app groups in the pack) and [ADR 0008](../adr/0008-updates.md) and [ADR 0009](../adr/0009-licence.md) (the signed release). P4 is the last phase before v0.1, "an AI-native OS you can try", in a VM (roadmap §3b, Releases). Section 4 lists the few things this plan decides itself. Nothing here was built or run for this plan. Sizes marked "est." are estimates.
+Status: approved by the founder on 2026-10-27 with its defaults (MPL-2.0 with the DCO, three YubiKeys when release work starts, keep "Kernel AI" with a trademark search before v0.1). Amended the same day: the in-OS assistant is named Kai (section 4, decision 9). It plans the work that the accepted ADRs (`docs/adr/`, accepted 2026-10-22) and the execution plan ([ADR 0000](../adr/0000-execution-plan.md) §3, §5 and §6, P4 rows) put in P4: the P4 rows of [ADR 0011](../adr/0011-packages.md) (packages), [ADR 0012](../adr/0012-terminal-compiler.md) (the `c>` prompt), [ADR 0003](../adr/0003-app-model.md) (every built-in app on `kai:app`), [ADR 0005](../adr/0005-graphics.md) (apps on `uikit`, the other themes), [ADR 0010](../adr/0010-skill-pack.md) (app groups in the pack) and [ADR 0008](../adr/0008-updates.md) and [ADR 0009](../adr/0009-licence.md) (the signed release). P4 is the last phase before v0.1, "an AI-native OS you can try", in a VM (roadmap §3b, Releases). Section 4 lists the few things this plan decides itself. Nothing here was built or run for this plan. Sizes marked "est." are estimates.
 
 ## 1. Goal and exit
 
@@ -76,7 +76,7 @@ Host gates in CI: hostile tests through `testkit/hostile.rs` for every new parse
 | **1. The OS licence** (ADR 0009 D1 and question 1; deferred by the founder to before v0.1). Section 6 summarises the three options | **MPL-2.0 with the DCO and no CLA** (ADR 0009's option C, its proposal). Task 16b writes it; nothing else in P4 waits for it until the tag |
 | 2. Keys (ADR 0008 question 1, ADR 0011 question 4): buy three YubiKeys (firmware 5.7 or later), one kept off-site; each package publish needs your touch | Yes. Until they arrive, every build is signed by a throwaway test root and nothing is published to `stable` |
 | 3. Online keys for snapshot and timestamp (ADR 0008 question 2): a cloud KMS account, or Ed25519 file keys in a protected GitHub environment | File keys in a protected `release` environment for v0.1 (no cost, no account); a KMS before v1.0. The ADR leaves this open; this is the cheaper start |
-| 4. The name and counsel (ADR 0009 question 6): D8 puts a clearance search before the v0.1 tag | Keep "Kernel AI"; the tag waits for the search. If no counsel is funded, tag `v0.1.0-rc.N` only, which publishes nothing to `stable` |
+| 4. The name and counsel (ADR 0009 question 6): D8 puts a clearance search before the v0.1 tag | Keep "Kernel AI" for the project and the OS; the assistant is Kai (decision 9). The search covers both names, and the tag waits for it. If no counsel is funded, tag `v0.1.0-rc.N` only, which publishes nothing to `stable` |
 | 5. Model weights in the release (ADR 0009 question 9) | No weights in the image or the release. The notes name the pinned GGUF and its SHA-256; Models imports it from an attached disk and checks it (task 10) |
 | 6. v0.1 install scope (ADR 0011 question 8): the image and a local mirror only, internet installs in v0.2 | Yes |
 | 7. Model-written C (ADR 0012 question 2): once S12-2 passes, run tier, or always shown first | Run tier, as for Rhai: every `kai` import still goes through `agentcore::execute` with its own tier, and the program is in the log and `:why`. You said "if i tell it to do something it should just do it" |
@@ -189,7 +189,7 @@ v0.1 is tagged when all of these hold, and not before:
 - P1, P2 and P3 are closed, and M10a's exit test passes (it does: PR #7).
 - A/B slots with rollback and offline updates from an update disk work (lane U, from P2).
 - The built-ins are signed packages; `install` reaches the image and a local mirror.
-- ADR 0009's D1-D8 are in place: the licence you chose, `NOTICES.txt` byte-identical in the image and the release, the source tarball rebuilding offline, the DCO job, the name cleared.
+- ADR 0009's D1-D8 are in place: the licence you chose, `NOTICES.txt` byte-identical in the image and the release, the source tarball rebuilding offline, the DCO job, both names cleared ("Kernel AI" and "Kai").
 - The release is a TUF target signed by your root, in `kernel-ai-updates`.
 - Fluency at least 47/50 and actbench pass on the tag's model input.
 
@@ -212,6 +212,7 @@ No ADR settles these. Each is small and can change in review.
 6. **`cc`'s compiler runs without wasmi's strict limits.** S12-1 found `cc.wasm` has 2,538 active data segments, over the strict limit of 1,000. Only the SHA-pinned `cc.wasm` runs that way; session code keeps strict limits.
 7. **Per-app cases use the mock model.** Keyed by request, like P2's and P3's, so they run on every PR. The real model is measured by task 15's fluency and actbench runs.
 8. **Tags.** `v0.1.0-rc.N` until section 3.5 holds, then `v0.1.0`. The workspace version is `0.1.0-dev` from task 16a (ADR 0009 D7); updates order by `release_seq`, never by SemVer.
+9. **The assistant is Kai** (founder, 2026-10-27). The project and the OS stay "Kernel AI", the way a company names its model apart from itself. The name shows where the assistant speaks or is spoken of: ask cards, the prompt, the docs, and the model's self-introduction. Giving the model the name in its system prompt is a model-input change, so it is its own small PR in the model lane and passes the fluency gate (fluency at least 90%, as for any change to model input); the docs and UI strings follow in the PRs that touch them. The pre-v0.1 trademark search covers "Kai" as well as "Kernel AI".
 
 ## 5. Spikes
 

@@ -22,6 +22,9 @@ mod canonical;
 mod effects;
 mod instance;
 pub mod link;
+pub mod surface;
+#[cfg(test)]
+mod surface_tests;
 mod tables;
 #[cfg(test)]
 mod tests;

@@ -93,6 +93,7 @@ pub fn main(args: &[String]) -> Result<(), String> {
         qmp: None,
         exact: Vec::new(),
         contains: Vec::new(),
+        cut: None,
     };
     for boot in 1..=BOOTS {
         println!("xtask: latency: boot {boot} of {BOOTS}");

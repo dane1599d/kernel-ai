@@ -319,6 +319,44 @@ pub fn pack_card(format: Format, rows: &[&Row], m8_rules: bool) -> String {
     out
 }
 
+/// [`pack_card`] at the index level (ADR 0010 §6): in `dsl-1`, the rows no task
+/// needs are named on one index line a group, under the OS pack's heading.
+/// Other formats are unchanged.
+pub fn indexed_card(format: Format, rows: &[&Row], m8_rules: bool) -> String {
+    if format != Format::Dsl1 {
+        return pack_card(format, rows, m8_rules);
+    }
+    let (named, shown): (Vec<&Row>, Vec<&Row>) = rows
+        .iter()
+        .copied()
+        .partition(|row| super::registry::is_distractor(row));
+    let card = pack_card(format, &shown, m8_rules);
+    let (rows_part, examples) = card
+        .split_once(
+            "## Examples
+",
+        )
+        .unwrap_or((&card, ""));
+    let mut out = String::from(rows_part);
+    out.push_str(llmproto::pack::INDEX_HEADING);
+    for name in ["system", "services", "devices", "updates", "network"] {
+        let names: Vec<&str> = named
+            .iter()
+            .filter(|r| group(r) == name)
+            .map(|r| r.name)
+            .collect();
+        if !names.is_empty() {
+            let _ = writeln!(out, "{name}: {}", names.join(" "));
+        }
+    }
+    out.push_str(
+        "## Examples
+",
+    );
+    out.push_str(examples);
+    out
+}
+
 /// `pack_id` (ADR 0010 §7): FNV-1a 64 over the format name, the tokenizer's
 /// hash and the rendered bytes, as 16 hex digits.
 pub fn pack_id(format: Format, tokenizer_sha256: &str, pack: &str) -> String {
@@ -397,5 +435,44 @@ mod tests {
         assert_eq!(a.len(), 16);
         assert_ne!(a, pack_id(Format::Hermes1, "t", "x"));
         assert_ne!(a, pack_id(Format::Dsl1, "t", "y"));
+    }
+
+    #[test]
+    fn the_index_card_names_each_distractor_once_and_lists_no_line_for_it() {
+        let rows = rows(80);
+        let card = indexed_card(Format::Dsl1, &rows, false);
+        let (_, index) = card.split_once(llmproto::pack::INDEX_HEADING).unwrap();
+        for row in super::super::registry::DISTRACTORS {
+            assert!(
+                !card.contains(&format!(
+                    "
+{}(",
+                    row.name
+                )),
+                "{}",
+                row.name
+            );
+            assert!(
+                index.split_whitespace().any(|w| w == row.name),
+                "{}",
+                row.name
+            );
+        }
+        for row in super::super::registry::ROWS {
+            assert!(
+                card.contains(&format!(
+                    "
+{}(",
+                    row.name
+                )),
+                "{}",
+                row.name
+            );
+        }
+        assert!(card.contains(
+            "## Examples
+> "
+        ));
+        assert!(indexed_card(Format::Dsl1, &rows, false).len() < pack(Format::Dsl1, &rows).len());
     }
 }
