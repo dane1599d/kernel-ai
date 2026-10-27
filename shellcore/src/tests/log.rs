@@ -106,7 +106,7 @@ fn a_model_turns_entry_carries_the_packs_id_and_a_typed_undo_none() {
     let pack = llmproto::pack::render(llmproto::pack::Format::Dsl1);
     let id = llmproto::pack::pack_id(llmproto::pack::Format::Dsl1, "", &pack);
     let text = shell.eval("log actlog").text;
-    assert!(text.contains(&format!("E 1 t=")), "{text}");
+    assert!(text.contains("E 1 t="), "{text}");
     assert!(
         text.contains(&format!("reg=1 pack={id:016x} form=call")),
         "{text}"
