@@ -39,6 +39,10 @@ pub const SCRIPT: u64 = 1 << 11;
 /// `Partition` handle with READ and WRITE. The kernel grants it only to the
 /// service named `fs` running the `fs` program (ADR 0004 §7).
 pub const PARTITION: u64 = 1 << 12;
+/// Files under `/home/user` (ADR 0004 §6-7): a `Dir` handle on the `fs` service
+/// for that folder, from which it opens what lies beneath; may hold `Dir` and
+/// `File` handles `fs` hands out.
+pub const FILES: u64 = 1 << 13;
 /// Every capability a supervisor may grant.
 pub const GRANTABLE: u64 = SERVE
     | NET
@@ -51,4 +55,5 @@ pub const GRANTABLE: u64 = SERVE
     | RESOLVE
     | STOP
     | SCRIPT
-    | PARTITION;
+    | PARTITION
+    | FILES;

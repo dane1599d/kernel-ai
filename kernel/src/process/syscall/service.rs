@@ -66,16 +66,19 @@ fn read_handles(slot: usize, ptr: u64, len: u64) -> Result<Vec<Handle>, Error> {
         .collect())
 }
 
-/// CALL_H: sends a request through the `Service` route `route` and waits for the
-/// reply, moving handles each way.
+/// CALL_H: sends a request through the `Service` route `route`, or on a `Dir` or
+/// `File` handle its server minted, and waits for the reply, moving handles each
+/// way. A server-backed handle needs no right here: its server checks the rights
+/// it is told for each request (ADR 0001 D2).
 fn call_h(slot: usize, route: u64, args_ptr: u64) -> Result<u64, Error> {
     let route = u32::try_from(route)
         .ok()
         .filter(|&r| r != 0)
         .map(Handle)
         .ok_or(Error::BadHandle)?;
-    let entry = handle::with(slot, |h| {
-        h.table.check(route, Kind::Service, Rights::CALL, &Kernel)
+    let entry = handle::with(slot, |h| match h.table.get(route).map(|e| e.kind) {
+        Ok(Kind::Dir | Kind::File) => h.table.live(route, &Kernel),
+        _ => h.table.check(route, Kind::Service, Rights::CALL, &Kernel),
     })
     .map_err(|_| Error::BadHandle)?
     .map_err(Error::from)?;

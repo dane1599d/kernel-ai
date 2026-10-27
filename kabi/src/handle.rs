@@ -77,10 +77,14 @@ pub enum Kind {
     Shm = 12,
     /// One disk partition, `kai-data` ([`crate::part`]): the `fs` service's only.
     Partition = 13,
+    /// A folder, served by `fs`; badge (volume, object id) ([`crate::fs`]).
+    Dir = 14,
+    /// A file, served by `fs`; badge (volume, object id).
+    File = 15,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 13] = [
+    pub const ALL: [Kind; 15] = [
         Kind::Process,
         Kind::Job,
         Kind::Endpoint,
@@ -94,6 +98,8 @@ impl Kind {
         Kind::NetDest,
         Kind::Shm,
         Kind::Partition,
+        Kind::Dir,
+        Kind::File,
     ];
 
     pub fn from_raw(raw: u32) -> Option<Kind> {
@@ -115,6 +121,8 @@ impl Kind {
             Kind::NetDest => "netdest",
             Kind::Shm => "shm",
             Kind::Partition => "partition",
+            Kind::Dir => "dir",
+            Kind::File => "file",
         }
     }
 }
@@ -265,6 +273,6 @@ mod tests {
             assert_eq!(Kind::from_raw(kind as u32), Some(kind));
         }
         assert_eq!(Kind::from_raw(0), None);
-        assert_eq!(Kind::from_raw(14), None);
+        assert_eq!(Kind::from_raw(16), None);
     }
 }

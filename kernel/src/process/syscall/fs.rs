@@ -1,13 +1,17 @@
-//! Partitions (lane S-io, ADR 0004 §6-7): PART_INFO, PART_READ, PART_WRITE and
-//! PART_FLUSH. Each needs a `Partition` handle, which only the `fs` service holds,
-//! and reaches only the partition it names: the kernel checks every range against
-//! that partition, so a block outside it, the ESP and the slots included, can never
-//! be named.
+//! Partitions and files (lane S-io, ADR 0004 §6-7).
+//! - PART_INFO, PART_READ, PART_WRITE and PART_FLUSH each need a `Partition`
+//!   handle, which only the `fs` service holds, and reach only the partition it
+//!   names: the kernel checks every range against that partition, so a block
+//!   outside it, the ESP and the slots included, can never be named.
+//! - ENDPOINT_MINT lets a server make a `Dir` or `File` handle on its own
+//!   endpoint, with a badge it chooses, to hand to a client; a call on it reaches
+//!   that server like a route's.
 
 use crate::block::{self, Device};
 use crate::handle::{self, grant::Kernel};
 use crate::process::uaccess::{copy_from_user, copy_to_user};
 use alloc::vec::Vec;
+use captable::Entry;
 use kabi::handle::{Handle, Kind, Rights};
 use kabi::part::{self, MAX_IO, SECTOR};
 use kabi::{Error, call};
@@ -18,6 +22,7 @@ const CALLS: &[u64] = &[
     call::PART_READ,
     call::PART_WRITE,
     call::PART_FLUSH,
+    call::ENDPOINT_MINT,
 ];
 
 /// One of [`CALLS`], or `None` for a number this area does not have.
@@ -26,7 +31,8 @@ pub(super) fn handle(slot: usize, number: u64, a: &[u64; 6]) -> Option<Result<u6
         call::PART_INFO => info(slot, a[0], a[1]),
         call::PART_READ => read(slot, a[0], a[1], a[2], a[3]),
         call::PART_WRITE => write(slot, a[0], a[1], a[2], a[3]),
-        _ => flush(slot, a[0]),
+        call::PART_FLUSH => flush(slot, a[0]),
+        _ => mint(slot, a[0], a[1], a[2], a[3]),
     })
 }
 
@@ -141,4 +147,52 @@ fn flush(slot: usize, raw: u64) -> Result<u64, Error> {
         disk.flush().map_err(|_| Error::Unavailable)?;
         Ok(0)
     })?
+}
+
+/// Rights a minted handle of each server-backed kind can carry.
+const DIR_RIGHTS: Rights = Rights::DUPLICATE
+    .union(Rights::TRANSFER)
+    .union(Rights::INSPECT)
+    .union(Rights::READ)
+    .union(Rights::WRITE)
+    .union(Rights::ENUMERATE)
+    .union(Rights::CREATE)
+    .union(Rights::DELETE);
+const FILE_RIGHTS: Rights = Rights::DUPLICATE
+    .union(Rights::TRANSFER)
+    .union(Rights::INSPECT)
+    .union(Rights::READ)
+    .union(Rights::WRITE);
+
+/// ENDPOINT_MINT: a `Dir` or `File` handle on the caller's own endpoint (which
+/// must carry MINT), routed to the caller's service name, with `badge`.
+fn mint(slot: usize, endpoint: u64, kind: u64, rights: u64, badge: u64) -> Result<u64, Error> {
+    let endpoint = Handle(u32::try_from(endpoint).map_err(|_| Error::BadHandle)?);
+    let kind = u32::try_from(kind).ok().and_then(Kind::from_raw);
+    let allowed = match kind {
+        Some(Kind::Dir) => DIR_RIGHTS,
+        Some(Kind::File) => FILE_RIGHTS,
+        _ => return Err(Error::Invalid),
+    };
+    let rights = u32::try_from(rights)
+        .ok()
+        .and_then(Rights::from_bits)
+        .filter(|r| allowed.contains(*r))
+        .ok_or(Error::Invalid)?;
+    let me = crate::process::identity(slot);
+    let route = handle::route_id(me.name.as_str())?;
+    let handle = handle::with(slot, |h| {
+        // Its own endpoint only: one handed to it names another process.
+        let own = h
+            .table
+            .check(endpoint, Kind::Endpoint, Rights::MINT, &Kernel)?;
+        if own.object != me.pid {
+            return Err(captable::Error::Permission);
+        }
+        let mut entry = Entry::new(kind.ok_or(captable::Error::Invalid)?, rights, route);
+        entry.badge = badge;
+        h.table.insert(entry)
+    })?
+    .map_err(Error::from)?;
+    Ok(u64::from(handle.0))
 }

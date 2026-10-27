@@ -141,11 +141,29 @@ pub fn startup(caps: u64, pid: u64) -> Vec<Entry> {
             kabi::part::DATA,
         ),
     ];
-    rows.iter()
+    let mut entries: Vec<Entry> = rows
+        .iter()
         .filter(|(bit, ..)| caps & bit != 0)
         .map(|&(_, kind, rights, object)| Entry::new(kind, rights | BASE, object))
-        .collect()
+        .collect();
+    // `/home/user` on the `fs` service: its badge names the folder for `fs`, which
+    // looks it up itself (ADR 0004 §7).
+    if caps & cap::FILES != 0
+        && let Ok(fs) = route_id(crate::process::supervision::FS)
+    {
+        let mut home = Entry::new(Kind::Dir, HOME_RIGHTS | BASE, fs);
+        home.badge = kabi::fs::HOME_USER;
+        entries.push(home);
+    }
+    entries
 }
+
+/// What the startup `Dir` allows: everything a folder's handle can.
+const HOME_RIGHTS: Rights = Rights::READ
+    .union(Rights::WRITE)
+    .union(Rights::ENUMERATE)
+    .union(Rights::CREATE)
+    .union(Rights::DELETE);
 
 /// The handle kind and right that stand for capability bit `bit` in `need`;
 /// `None` for a bit no handle stands for.
@@ -164,6 +182,7 @@ pub fn required(bit: u64) -> Option<(Kind, Rights)> {
         cap::STOP => (Kind::Job, Rights::STOP),
         cap::SCRIPT => (Kind::Job, Rights::CREATE),
         cap::PARTITION => (Kind::Partition, Rights::READ),
+        cap::FILES => (Kind::Dir, Rights::READ),
         _ => return None,
     })
 }
@@ -183,6 +202,8 @@ pub fn ceiling_allows(caps: u64, kind: Kind) -> bool {
         (Kind::Process, cap::THREADS),
         (Kind::NetDest, cap::NET | cap::RESOLVE),
         (Kind::Partition, cap::PARTITION),
+        (Kind::Dir, cap::FILES),
+        (Kind::File, cap::FILES),
     ];
     bits.iter()
         .find(|(k, _)| *k == kind)
