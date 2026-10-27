@@ -274,9 +274,11 @@ pub enum Reply {
     /// Done, and durable if it changed anything outside an action.
     #[n(0)]
     Done,
-    /// [`Request::Open`]'s object; its handle moves with this reply.
+    /// [`Request::Open`]'s object and the badge of the handle that moves with
+    /// this reply. The badge is `fs`'s own naming, of use only to the kernel,
+    /// which takes no handles; it grants nothing.
     #[n(1)]
-    Opened(#[n(0)] Stat),
+    Opened(#[n(0)] Stat, #[n(1)] u64),
     #[n(2)]
     Stat(#[n(0)] Stat),
     /// Names, and where to go on if there are more.

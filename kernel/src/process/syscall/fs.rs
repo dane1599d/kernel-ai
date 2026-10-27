@@ -174,11 +174,12 @@ fn mint(slot: usize, endpoint: u64, kind: u64, rights: u64, badge: u64) -> Resul
         Some(Kind::File) => FILE_RIGHTS,
         _ => return Err(Error::Invalid),
     };
-    let rights = u32::try_from(rights)
-        .ok()
-        .and_then(Rights::from_bits)
-        .filter(|r| allowed.contains(*r))
-        .ok_or(Error::Invalid)?;
+    // Masked to the kind's rights, so MINT, REVOKE or CALL are never minted;
+    // nothing left is refused.
+    let rights = Rights::from_bits_truncate(rights as u32) & allowed;
+    if rights.is_empty() {
+        return Err(Error::Invalid);
+    }
     let me = crate::process::identity(slot);
     let route = handle::route_id(me.name.as_str())?;
     let handle = handle::with(slot, |h| {
@@ -189,6 +190,9 @@ fn mint(slot: usize, endpoint: u64, kind: u64, rights: u64, badge: u64) -> Resul
         if own.object != me.pid {
             return Err(captable::Error::Permission);
         }
+        // Tied to no grant node (`grant: None`, as `Entry::new` makes it): it
+        // lives until closed. Revoking a server's handles is later work (ADR
+        // 0001's "badges revoked" notice).
         let mut entry = Entry::new(kind.ok_or(captable::Error::Invalid)?, rights, route);
         entry.badge = badge;
         h.table.insert(entry)

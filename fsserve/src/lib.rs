@@ -26,7 +26,7 @@ use fsproto::{
     Cursor, Error, How, Kind, Listing, MAX_DATA, MAX_LIST, MAX_ROWS, Outcome, Reply, Request, Stat,
     Version,
 };
-use kabi::fs::{HOME, HOME_USER, MODELS, SYSTEM};
+use kabi::fs::{Badge, HOME, HOME_USER, MODELS, SYSTEM};
 use kabi::handle::Rights;
 use kaifs::ns::Listed;
 use kaifs::{BlockDev, FileType, Fs, Inode, ROOT};
@@ -54,6 +54,9 @@ pub const FILE_RIGHTS: Rights = Rights::DUPLICATE
     .union(Rights::INSPECT)
     .union(Rights::READ)
     .union(Rights::WRITE);
+
+/// The extended attribute on `system`'s root that holds the disk's epoch.
+const EPOCH: &str = "kai.fs.epoch";
 
 /// GC nodes per idle step: well under ADR 0004's 5 ms slice.
 const GC_BUDGET: u64 = 64;
@@ -99,6 +102,8 @@ pub struct Server<D: BlockDev> {
     owner: Option<u64>,
     /// `/home/user`'s object id in `home`: what [`HOME_USER`] names.
     home_user: u64,
+    /// This disk's epoch, in every badge but [`HOME_USER`] ([`kabi::fs`]).
+    epoch: u16,
     /// The clock at mount: kaifs's times are this plus time since boot, so they
     /// never go back across reboots (there is no wall clock yet).
     base: u64,
@@ -131,11 +136,12 @@ impl<D: BlockDev> Server<D> {
             fs: Some(fs),
             owner: None,
             home_user: 0,
+            epoch: 0,
             base,
             pending: None,
             cache: None,
         };
-        server.home_user = server.folders()?;
+        (server.home_user, server.epoch) = server.prepare(&uuid)?;
         Ok((server, started))
     }
 
@@ -143,8 +149,9 @@ impl<D: BlockDev> Server<D> {
         self.fs.as_mut().expect("fs is mounted between calls")
     }
 
-    /// Makes the missing [`FOLDERS`] in one commit; `/home/user`'s id.
-    fn folders(&mut self) -> Result<u64, kaifs::Error> {
+    /// Makes the missing [`FOLDERS`], and the disk's epoch if it has none, in
+    /// one commit; `/home/user`'s id and the epoch.
+    fn prepare(&mut self, uuid: &[u8; 16]) -> Result<(u64, u16), kaifs::Error> {
         let fs = self.fs();
         let writable = fs.writable();
         let mut made = false;
@@ -155,11 +162,41 @@ impl<D: BlockDev> Server<D> {
                 made = true;
             }
         }
+        fs.set_volume(SYSTEM.into())?;
+        let epoch = match fs.get_xattr(ROOT, EPOCH)? {
+            Some(bytes) if bytes.len() == 2 => u16::from_le_bytes([bytes[0], bytes[1]]),
+            _ => {
+                // Never 0, which only HOME_USER carries.
+                let drawn = u16::from_le_bytes([uuid[0], uuid[1]]) & kabi::fs::EPOCH_MASK;
+                let epoch = drawn.max(1);
+                if writable {
+                    fs.set_xattr(ROOT, EPOCH, &epoch.to_le_bytes())?;
+                    made = true;
+                }
+                epoch
+            }
+        };
         if made {
             fs.commit()?;
         }
         fs.set_volume(HOME.into())?;
-        Ok(fs.lookup(ROOT, "user")?.map_or(0, |e| e.ino))
+        let home_user = fs.lookup(ROOT, "user")?.map_or(0, |e| e.ino);
+        Ok((home_user, epoch))
+    }
+
+    /// The badge for `object` of `volume` on this disk.
+    pub(crate) fn badge(&self, volume: u8, file: bool, object: u64) -> Result<u64, Error> {
+        if object > kabi::fs::OBJECT_MAX {
+            return Err(Error::NoSpace);
+        }
+        let epoch = self.epoch;
+        Ok(Badge {
+            volume,
+            file,
+            epoch,
+            object,
+        }
+        .raw())
     }
 
     /// The badge of `name` in `system`'s root, a file made if missing: the
@@ -175,7 +212,7 @@ impl<D: BlockDev> Server<D> {
                 ino
             }
         };
-        Ok(kabi::fs::badge(SYSTEM, true, ino))
+        self.badge(SYSTEM, true, ino)
     }
 
     /// The commit generation now.
@@ -268,8 +305,14 @@ impl<D: BlockDev> Server<D> {
 
     /// The volume and object `badge` names, checked to exist with its kind.
     fn target(&mut self, badge: u64) -> Result<Target, Error> {
-        let (volume, file, object) = kabi::fs::parse(badge);
-        if !matches!(volume, SYSTEM | HOME | MODELS) {
+        let Badge {
+            volume,
+            file,
+            epoch,
+            object,
+        } = Badge::parse(badge);
+        let ours = epoch == self.epoch || badge == HOME_USER;
+        if !matches!(volume, SYSTEM | HOME | MODELS) || !ours {
             return Err(Error::NotFound);
         }
         let object = if badge == HOME_USER {

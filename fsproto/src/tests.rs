@@ -76,7 +76,7 @@ fn every_reply_round_trips_and_the_largest_fit_one_message() {
     };
     let replies = [
         Reply::Done,
-        Reply::Opened(stat()),
+        Reply::Opened(stat(), u64::MAX),
         Reply::Stat(stat()),
         full_list,
         Reply::Data(vec![1; MAX_DATA]),

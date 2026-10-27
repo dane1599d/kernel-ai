@@ -17,7 +17,7 @@ use alloc::format;
 use alloc::vec::Vec;
 use fsproto::{How, Reply, Request};
 use kabi::ExitReason;
-use kabi::handle::Rights;
+use kabi::handle::{Kind, Rights};
 
 const SERVICE: &str = "fs";
 const CLIENT: &str = "filecheck";
@@ -35,6 +35,16 @@ const RIGHTS: Rights = Rights::READ
 
 /// `fs-reboot`'s boots: `filecheck` leaves `write.ok` or `read.ok`.
 pub fn check(cmdline: &str) -> Result<(), &'static str> {
+    // REPLY_H moves a Dir or File only to a process with FILES: the ceiling.
+    let ceiling = [kabi::cap::SERVE, kabi::cap::SERVE | kabi::cap::PARTITION]
+        .into_iter()
+        .all(|caps| {
+            !crate::handle::ceiling_allows(caps, Kind::Dir)
+                && !crate::handle::ceiling_allows(caps, Kind::File)
+        });
+    if !ceiling || !crate::handle::ceiling_allows(kabi::cap::FILES, Kind::File) {
+        return Err("files: Dir and File handles are not held to FILES");
+    }
     let reread = cmdline.split_whitespace().any(|w| w == "reread");
     let (marker, boot) = if reread {
         ("read.ok", 2)
@@ -57,7 +67,7 @@ pub fn restart() -> Result<(), &'static str> {
             how: How::Existing,
         },
     )? {
-        Reply::Opened(stat) => kabi::fs::badge(kabi::fs::HOME, true, stat.object),
+        Reply::Opened(_, badge) => badge,
         _ => return Err("files: restart.txt cannot be opened"),
     };
     // An action left open: written, never committed.
@@ -94,7 +104,7 @@ pub fn restart() -> Result<(), &'static str> {
             how: How::CreateFile,
         },
     )? {
-        Reply::Opened(_) => {}
+        Reply::Opened(..) => {}
         _ => return Err("files: the restarted marker cannot be made"),
     }
     wait_for("restart.ok").map_err(|_| "files: filecheck's handle did not work again")?;
@@ -138,7 +148,7 @@ fn wait_for(name: &str) -> Result<(), ()> {
                         how: How::Existing,
                     }
                 ),
-                Ok(Reply::Opened(_))
+                Ok(Reply::Opened(..))
             )
     })
 }

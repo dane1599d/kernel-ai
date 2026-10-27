@@ -43,12 +43,13 @@ impl<D: BlockDev> Server<D> {
         let file = inode.kind == FileType::File;
         let volume = fs.volume() as u8;
         let rights = rights & if file { FILE_RIGHTS } else { DIR_RIGHTS };
+        let badge = self.badge(volume, file, object)?;
         let mint = Mint {
             file,
             rights,
-            badge: kabi::fs::badge(volume, file, object),
+            badge,
         };
-        Ok((Reply::Opened(stat(object, &inode)), Some(mint)))
+        Ok((Reply::Opened(stat(object, &inode), badge), Some(mint)))
     }
 
     /// The folder holding `path`'s last name, and that name: `None` when the

@@ -141,21 +141,18 @@ pub fn startup(caps: u64, pid: u64) -> Vec<Entry> {
             kabi::part::DATA,
         ),
     ];
-    let mut entries: Vec<Entry> = rows
-        .iter()
+    rows.iter()
         .filter(|(bit, ..)| caps & bit != 0)
         .map(|&(_, kind, rights, object)| Entry::new(kind, rights | BASE, object))
-        .collect();
-    // `/home/user` on the `fs` service: its badge names the folder for `fs`, which
-    // looks it up itself (ADR 0004 §7).
-    if caps & cap::FILES != 0
-        && let Ok(fs) = route_id(crate::process::supervision::FS)
-    {
-        let mut home = Entry::new(Kind::Dir, HOME_RIGHTS | BASE, fs);
-        home.badge = kabi::fs::HOME_USER;
-        entries.push(home);
-    }
-    entries
+        .collect()
+}
+
+/// FILES's startup handle: `/home/user` on the `fs` route `fs`. Its badge names
+/// the folder for `fs`, which looks it up itself (ADR 0004 §7).
+fn home_dir(fs: u64) -> Entry {
+    let mut home = Entry::new(Kind::Dir, HOME_RIGHTS | BASE, fs);
+    home.badge = kabi::fs::HOME_USER;
+    home
 }
 
 /// What the startup `Dir` allows: everything a folder's handle can.
@@ -230,7 +227,15 @@ pub fn create(slot: usize, caps: u64, pid: u64, uses: &[&str]) -> Result<(), kab
         .map_err(|_| kabi::Error::NoMemory)?;
     let routes = uses.iter().filter(|_| caps & cap::CALL != 0);
     let routes: Result<Vec<Entry>, kabi::Error> = routes.map(|name| route(name)).collect();
-    for entry in self::startup(caps, pid).into_iter().chain(routes?) {
+    let files = match caps & cap::FILES {
+        0 => None,
+        _ => Some(home_dir(route_id(crate::process::supervision::FS)?)),
+    };
+    for entry in self::startup(caps, pid)
+        .into_iter()
+        .chain(files)
+        .chain(routes?)
+    {
         startup.push(table.insert(entry).map_err(kabi::Error::from)?);
     }
     *HANDLES[slot].lock() = Some(Handles { table, startup });

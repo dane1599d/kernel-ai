@@ -97,7 +97,7 @@ fn open(dir: Handle, path: &str, how: How, rights: Rights) -> Result<Handle, Str
         how,
     };
     match ask(dir, request)? {
-        (Reply::Opened(_), Some(handle)) => Ok(handle),
+        (Reply::Opened(..), Some(handle)) => Ok(handle),
         other => Err(format!("opening {path}: {other:?}")),
     }
 }
@@ -157,6 +157,7 @@ fn write(home: Handle) -> Result<(), String> {
     )?;
     refused(home, "notes/plan.txt", How::CreateFile, Error::Exists)?;
     refused(home, "..", How::Existing, Error::Invalid)?;
+    handles(home, plan)?;
     refused(notes, "../../home", How::Existing, Error::Invalid)?;
     // A file over several messages, as one action: one commit.
     let big = open(notes, "big.bin", How::CreateFile, file_rights())?;
@@ -181,6 +182,34 @@ fn write(home: Handle) -> Result<(), String> {
     }
     mark(home, "write.ok")?;
     println!("filecheck: boot 1 wrote notes/plan.txt and a 20 KiB file through its Dir handle");
+    Ok(())
+}
+
+/// What the kernel checks of `Dir` and `File` handles, seen from ring 3: a call
+/// on one reaches `fs` with its own badge and exactly its rights, and a process
+/// with no endpoint of its own cannot mint one.
+fn handles(home: Handle, plan: Handle) -> Result<(), String> {
+    let reader = open(home, "notes/plan.txt", How::Existing, Rights::READ)?;
+    let (want, got) = match (ask(plan, Request::Stat)?, ask(reader, Request::Stat)?) {
+        ((Reply::Stat(a), _), (Reply::Stat(b), _)) => (a.object, b.object),
+        other => return Err(format!("STAT on two handles: {other:?}")),
+    };
+    if want != got {
+        return Err(String::from(
+            "two handles to one file reached different objects",
+        ));
+    }
+    let write = Request::Write {
+        off: 0,
+        data: b"no".to_vec(),
+    };
+    expect(reader, write, Reply::Failed(Error::Permission))
+        .map_err(|e| format!("a READ-only File wrote: {e}"))?;
+    let _ = sys::handle_close(reader);
+    match sys::endpoint_mint(home, Kind::Dir, Rights::READ, 1) {
+        Err(kabi::Error::BadHandle) => {}
+        other => return Err(format!("ENDPOINT_MINT on a Dir gave {other:?}")),
+    }
     Ok(())
 }
 
@@ -214,7 +243,7 @@ fn restart(home: Handle) -> Result<(), String> {
         how: How::Existing,
     };
     loop {
-        if let Ok((Reply::Opened(_), moved)) = ask(home, restarted.clone()) {
+        if let Ok((Reply::Opened(..), moved)) = ask(home, restarted.clone()) {
             if let Some(h) = moved {
                 let _ = sys::handle_close(h);
             }

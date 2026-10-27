@@ -54,7 +54,7 @@ impl<'d> Client<'d> {
             rights,
             how,
         }) {
-            (Reply::Opened(_), Some(mint)) => Ok(mint),
+            (Reply::Opened(..), Some(mint)) => Ok(mint),
             (Reply::Failed(e), None) => Err(e),
             other => panic!("{other:?}"),
         }
@@ -163,7 +163,7 @@ fn a_path_never_leaves_its_dir() {
     let here = c.open("notes/..", How::Existing).unwrap();
     assert!(!here.file);
     // The handle's folder is /home/user itself, by its real object id.
-    assert_eq!(kabi::fs::parse(here.badge).2, c.server.home_user);
+    assert_eq!(Badge::parse(here.badge).object, c.server.home_user);
 }
 
 #[test]
@@ -256,12 +256,20 @@ fn badges_of_another_volume_kind_or_a_gone_object_find_nothing() {
     let mut disk = MemDisk::new(BLOCKS);
     let (mut c, _) = Client::start(&mut disk);
     let file = c.open("a.txt", How::CreateFile).unwrap();
-    let (volume, _, object) = kabi::fs::parse(file.badge);
+    let real = Badge::parse(file.badge);
+    let other = |change: fn(&mut Badge)| {
+        let mut badge = real;
+        change(&mut badge);
+        badge.raw()
+    };
     for badge in [
-        kabi::fs::badge(9, true, object),
-        kabi::fs::badge(volume, false, object),
-        kabi::fs::badge(volume, true, object + 1000),
-        kabi::fs::badge(volume, true, 0),
+        other(|b| b.volume = 9),
+        other(|b| b.file = false),
+        other(|b| b.object += 1000),
+        other(|b| b.object = 0),
+        // Another disk's, or this one's before it was formatted again.
+        other(|b| b.epoch ^= 1),
+        other(|b| b.epoch = 0),
     ] {
         assert_eq!(
             failed(c.call(ALICE, badge, FILE_RIGHTS, Request::Stat)),
@@ -410,7 +418,7 @@ fn changes_and_history_answer_from_the_disk() {
     let Reply::Changes { rows, more: false } = c.home(Request::Changes { since }).0 else {
         panic!("no changes");
     };
-    let object = kabi::fs::parse(file.badge).2;
+    let object = Badge::parse(file.badge).object;
     assert!(rows.iter().any(|s| s.object == object));
     let Reply::History(versions) = c.call(ALICE, file.badge, FILE_RIGHTS, Request::History).0
     else {
