@@ -325,9 +325,13 @@ fn act(request: &Value) -> String {
         return "I would write a script for that.".to_string();
     };
     let line = requested(last).unwrap_or_default();
-    // The pack and MODE messages come first; history's turns follow them.
-    let turns = earlier.get(2..).unwrap_or_default();
-    let before = turns.iter().rev().find_map(requested);
+    // A history turn's request is a message of its own that starts `Request: `.
+    let before = earlier
+        .iter()
+        .rev()
+        .filter_map(|m| m["content"].as_str()?.strip_prefix("Request: "))
+        .next()
+        .map(str::to_string);
     let convo = CONVO
         .iter()
         .find(|(then, now, _)| before.as_deref() == Some(*then) && *now == line)

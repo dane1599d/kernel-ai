@@ -105,7 +105,8 @@ struct Backends {
     /// `tune` requests traced so far.
     traced: u64,
     /// The conversation a server is sent, costed by [`server_cost`]. The local
-    /// backend keeps its own, costed by its tokenizer.
+    /// backend keeps its own, costed by its tokenizer; `remember` and `new` keep
+    /// both in step, and a reply reports the one that answers.
     history: History,
 }
 
