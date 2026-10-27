@@ -103,6 +103,16 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("desk-windows", "test=desk-windows")
     },
+    // P3 task 6: desktop killed and restarted; its client reconnects.
+    TestCase {
+        expect: &[
+            "deskdemo: opened Left and Right",
+            "display: its holder ended; the console has the screen",
+            "deskdemo: reopened Left and Right after desktop restarted",
+            "desk-restart: desktop was killed and came back, and deskdemo kept running",
+        ],
+        ..case("desk-restart", "test=desk-restart")
+    },
     // P1 task 14: shared pages, and spike S01-1's M6.
     TestCase {
         expect: &[
