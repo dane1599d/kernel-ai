@@ -12,8 +12,8 @@
 # misses a bar of the P1 plan's section 6; each writes its bars, pack_id and
 # OS pack_id to the job summary and uploads its jsonl. About 45 minutes a seed.
 #
-# Run workflow with other arms is for measurements (dsl-1, hermes-1, prose-1,
-# :no-think, @80, +rules, +m8script, m8, m8-a0), one job, gate off by default.
+# Run workflow with other arms is for measurements (dsl-1, hermes-1, prose-1, os,
+# :no-think, @80, +rules, +m8script, +index, m8, m8-a0), one job, gate off by default.
 # Started by hand only, one run at a time; never on every PR.
 name: actbench gate on the real model
 
@@ -40,7 +40,10 @@ permissions:
   contents: read
 
 concurrency:
-  group: real-model-actbench
+  # Any other label on a pull request starts a run with no job; it gets a group
+  # of its own, so it never waits behind a gate, nor cancels a dispatched run
+  # waiting for one (GitHub keeps one pending run a group).
+  group: real-model-actbench-${{ github.event_name == 'pull_request' && github.event.label.name != 'actbench' && github.run_id || 'gate' }}
   cancel-in-progress: false
 
 env:

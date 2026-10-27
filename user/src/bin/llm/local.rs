@@ -15,7 +15,6 @@ use alloc::format;
 use alloc::string::String;
 use infer::Next;
 use infer::chat::{Budget, Engine, Step};
-use infer::tagged::Tagged;
 use llmproto::act::{self, ActError, ActRequest, Call, History, Turn};
 use llmproto::chat::{self, Completion};
 use llmproto::local;
@@ -319,7 +318,7 @@ pub const SLOTS: local::act::Slots = local::act::Slots::TWO;
 pub struct Local {
     engine: Engine<'static>,
     /// The tagged call's grammar over the pack's rows, built once.
-    grammar: Tagged<'static>,
+    grammar: local::act::Grammar,
     /// Conversation memory for `act`, in RAM only (P1 plan section 4).
     history: History,
     last: Option<Speed>,

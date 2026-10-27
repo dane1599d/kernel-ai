@@ -39,8 +39,19 @@ pub const TASKS: &[(&str, Want)] = &[
     ("stop netd", Row("service_stop", "netd")),
     ("start netd", Say),
     ("restart the llm service", Row("service_restart", "llm")),
+    // Index-only rows (ADR 0010 §6): named on an index line, so a call with
+    // arguments takes the second round with the group's full lines.
+    ("tune the indexer", Row("tune", "indexer")),
+    (
+        "roll the notes component back one version",
+        Row("component_revert", "notes"),
+    ),
+    (
+        "put back the policy the scheduler trial replaced",
+        Row("tune_undo", ""),
+    ),
 ];
-/// Share of [`TASKS`] that must come right: 9 of 10.
+/// Share of [`TASKS`] that must come right: 12 of 13.
 pub const BAR: f64 = 0.9;
 /// The time llm gives one call.
 const TIMEOUT_MS: u64 = 60_000;
@@ -82,7 +93,13 @@ fn outcome(call: &Call) -> Result<(String, String), Unresolved> {
     let row = llmproto::pack::rows()
         .into_iter()
         .find(|row| row.name == call.name);
-    let name = call.arguments.get("name").and_then(Value::as_str);
+    // The row's subject: `name`, or the first text argument (`target`,
+    // `component`).
+    let name = call
+        .arguments
+        .get("name")
+        .or_else(|| call.arguments.values().find(|v| v.is_string()))
+        .and_then(Value::as_str);
     match (row.and_then(Verb::of), name) {
         (Some(verb), Some(name)) => targets::resolve(verb, name, &services(), &processes())
             .map(|found| (found.row.name.to_string(), name.to_string())),
@@ -189,5 +206,14 @@ mod tests {
         assert!(!meets(&clarify, Row("process_stop", "build-3")));
         let words = call(r#"{"name":"say","arguments":{"text":"It already runs."}}"#);
         assert!(meets(&words, Say));
+        let tune = call(r#"{"name":"tune","arguments":{"target":"indexer","intent":null}}"#);
+        assert!(meets(&tune, Row("tune", "indexer")));
+        let revert =
+            call(r#"{"name":"component_revert","arguments":{"component":"notes","back":1}}"#);
+        assert!(meets(&revert, Row("component_revert", "notes")));
+        assert!(meets(
+            &call(r#"{"name":"tune_undo","arguments":{}}"#),
+            Row("tune_undo", "")
+        ));
     }
 }

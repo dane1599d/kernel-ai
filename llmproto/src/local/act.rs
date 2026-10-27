@@ -123,9 +123,57 @@ pub fn actions(rows: &[&'static agentabi::Action]) -> Vec<Action<'static>> {
     actions
 }
 
-/// The grammar over the pack's rows (`llmproto::pack::rows`) and the pseudo-actions.
-pub fn grammar() -> Result<Tagged<'static>, infer::Error> {
-    Tagged::new(Vec::leak(actions(&crate::pack::rows())))
+/// What an `act` answer is decoded under (ADR 0010 §6). The first grammar
+/// takes every row and pseudo-action, but an index-only row closes with no
+/// arguments: the pack shows only its name, so the call stops after it. A
+/// row of those that takes arguments has a second grammar of its own, used
+/// once more with its group's full lines after the request.
+pub struct Grammar {
+    first: Tagged<'static>,
+    second: Vec<(&'static str, Tagged<'static>)>,
+}
+
+impl Grammar {
+    /// The grammar every answer starts under.
+    pub fn first(&self) -> &Tagged<'static> {
+        &self.first
+    }
+
+    /// The grammar for the second round of a call naming `name`, when it is
+    /// index-only and takes arguments.
+    fn second(&self, name: &str) -> Option<&Tagged<'static>> {
+        self.second
+            .iter()
+            .find(|(row, _)| *row == name)
+            .map(|(_, grammar)| grammar)
+    }
+}
+
+/// The grammars over the pack's rows (`llmproto::pack::rows`) and the
+/// pseudo-actions.
+pub fn grammar() -> Result<Grammar, infer::Error> {
+    let full = actions(&crate::pack::rows());
+    let mut second = Vec::new();
+    for action in full.iter().filter(|a| !a.args.is_empty()) {
+        if crate::pack::indexed(action.name).is_some() {
+            let one: &'static [Action<'static>] = Vec::leak(alloc::vec![*action]);
+            second.push((action.name, Tagged::new(one)?));
+        }
+    }
+    let first: Vec<Action<'static>> = full
+        .into_iter()
+        .map(|action| match crate::pack::indexed(action.name) {
+            Some(_) => Action {
+                args: &[],
+                ..action
+            },
+            None => action,
+        })
+        .collect();
+    Ok(Grammar {
+        first: Tagged::new(Vec::leak(first))?,
+        second,
+    })
 }
 
 /// The engine's KV slots for the two prompts: the act prefix's and the script
@@ -153,7 +201,7 @@ impl Slots {
 /// request, while the script slot was still warming).
 pub fn routed(
     engine: &mut Engine<'_>,
-    grammar: &Tagged<'_>,
+    grammar: &Grammar,
     request: &ActRequest,
     history: &History,
     slots: Slots,
@@ -211,15 +259,39 @@ pub(crate) fn within_budget(engine: &Engine<'_>, request: &ActRequest) -> ActReq
     }
 }
 
+/// One call for `request` after `history`. A call naming an index-only row
+/// that takes arguments stopped after the name; it is decoded once more with
+/// that row's group shown after the request (ADR 0010 §6), so its arguments
+/// are written from the full line. The prompt up to the request is reused.
 pub fn act(
     engine: &mut Engine<'_>,
-    grammar: &Tagged<'_>,
+    grammar: &Grammar,
     request: &ActRequest,
     history: &History,
+    mut on_step: impl FnMut(Step) -> Next,
+) -> Result<Call, ActError> {
+    let mut asked = act::request(&within_budget(engine, request), history);
+    let call = decode(engine, grammar.first(), &asked, &mut on_step)?;
+    let (Some(second), Some((group, _))) =
+        (grammar.second(&call.name), crate::pack::indexed(&call.name))
+    else {
+        return Ok(call);
+    };
+    asked.messages.push(chat::Message::new(
+        chat::Role::System,
+        &crate::pack::group_text(group),
+    ));
+    decode(engine, second, &asked, &mut on_step)
+}
+
+/// The call `asked` gets under `grammar`.
+fn decode(
+    engine: &mut Engine<'_>,
+    grammar: &Tagged<'_>,
+    asked: &chat::Request,
     on_step: impl FnMut(Step) -> Next,
 ) -> Result<Call, ActError> {
-    let asked = act::request(&within_budget(engine, request), history);
-    let turns = super::turns(&asked);
+    let turns = super::turns(asked);
     let mut sampler = Sampler::seeded(script::TEMPERATURE, script::SEED);
     let reply = engine
         .reply_under(
@@ -338,12 +410,15 @@ mod tests {
 
     #[test]
     fn every_pack_row_and_pseudo_action_decodes() {
-        let g = grammar().unwrap();
+        let grammar = grammar().unwrap();
+        let g = grammar.first();
         for text in [
             r#"{"name":"set_policy","arguments":{"name":"round-robin"}}"#,
             r#"{"name":"cpus","arguments":{}}"#,
-            r#"{"name":"component_revert","arguments":{"component":"shell","back":null}}"#,
-            r#"{"name":"tune","arguments":{"target":"build-3","intent":null}}"#,
+            // Index-only: the name alone, then a second round (`act`).
+            r#"{"name":"component_revert","arguments":{}}"#,
+            r#"{"name":"tune","arguments":{}}"#,
+            r#"{"name":"tune_undo","arguments":{}}"#,
             r#"{"name":"say","arguments":{"text":"Hello."}}"#,
             r#"{"name":"clarify","arguments":{"question":"Which?","options":["a","b"]}}"#,
             // The call only picks `script`; llm writes its code (`routed`).
@@ -363,6 +438,21 @@ mod tests {
         ] {
             assert!(g.advance(g.start(), text.as_bytes()).is_err(), "{text}");
         }
+        // The second round: the row's own arguments, and no other row.
+        for text in [
+            r#"{"name":"component_revert","arguments":{"component":"shell","back":null}}"#,
+            r#"{"name":"tune","arguments":{"target":"build-3","intent":null}}"#,
+        ] {
+            let name = act::parse(text).unwrap().name;
+            let second = grammar.second(&name).unwrap();
+            let state = second.advance(second.start(), text.as_bytes()).unwrap();
+            assert!(second.is_done(&state), "{text}");
+            let other = r#"{"name":"set_policy""#;
+            assert!(second.advance(second.start(), other.as_bytes()).is_err());
+        }
+        // A row with no arguments needs no second round.
+        assert!(grammar.second("tune_undo").is_none());
+        assert!(grammar.second("set_policy").is_none());
     }
 
     /// The State line stays while it and the request fit 224 real tokens, and
