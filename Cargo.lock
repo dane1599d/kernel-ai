@@ -418,6 +418,10 @@ dependencies = [
 name = "deskcore"
 version = "0.1.0-dev"
 dependencies = [
+ "gfx2d",
+ "libm",
+ "look",
+ "sha2",
  "surfabi",
 ]
 
@@ -1654,6 +1658,7 @@ dependencies = [
  "editcore",
  "fsproto",
  "fsserve",
+ "gfx2d",
  "infer",
  "kabi",
  "kaibundle",

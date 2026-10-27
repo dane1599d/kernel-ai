@@ -197,6 +197,7 @@ pub(super) const CASES: &[TestCase] = &[
         screen: Some(crate::screen::Expect {
             size: None,
             cursor: true,
+            golden: None,
         }),
         ..case("display", "test=display")
     },
@@ -207,6 +208,7 @@ pub(super) const CASES: &[TestCase] = &[
         screen: Some(crate::screen::Expect {
             size: Some((1024, 768)),
             cursor: true,
+            golden: None,
         }),
         ..case("display-mode", "test=display display=1024x768")
     },
@@ -216,6 +218,7 @@ pub(super) const CASES: &[TestCase] = &[
         screen: Some(crate::screen::Expect {
             size: None,
             cursor: false,
+            golden: None,
         }),
         ..case("display-gop", "test=display")
     },

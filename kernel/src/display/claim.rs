@@ -15,7 +15,7 @@ use crate::handle::grant::{self as grants, Kernel};
 use crate::{console, input, log, memory, process, shm, threads};
 use captable::Entry;
 use captable::grant::{GrantRef, Life, Live, SYSTEM};
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use kabi::Error;
 use kabi::display::{DisplayInfo, FORMAT_XRGB8888};
 use kabi::handle::{Kind, Rights};
@@ -40,10 +40,23 @@ static STATE: Mutex<State> = Mutex::new(State {
     cursor: (0, 0),
 });
 static SWITCH: AtomicBool = AtomicBool::new(false);
+/// Flushes the holder has made since boot, for the cases that wait for its
+/// first frame and for the screen to keep still.
+static FLUSHES: AtomicU64 = AtomicU64::new(0);
 const NO_THREAD: usize = usize::MAX;
 static SWITCHER: AtomicUsize = AtomicUsize::new(NO_THREAD);
 
 /// Starts the thread that switches the screen on Ctrl+Alt+F12.
+/// Counts a flush by the holder.
+pub fn flushed() {
+    FLUSHES.fetch_add(1, Ordering::Relaxed);
+}
+
+/// The holder's flushes since boot.
+pub fn flushes() -> u64 {
+    FLUSHES.load(Ordering::Relaxed)
+}
+
 pub fn init() -> Result<(), &'static str> {
     let tid = threads::spawn("display-switch", switcher, 0)?;
     SWITCHER.store(tid, Ordering::Release);

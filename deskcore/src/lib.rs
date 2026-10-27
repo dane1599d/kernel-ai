@@ -8,12 +8,15 @@
 #![no_std]
 
 extern crate alloc;
+#[cfg(test)]
+extern crate std;
 
 pub mod chrome;
 pub mod compose;
 pub mod damage;
 pub mod desk;
 pub mod geom;
+pub mod paint;
 pub mod scale;
 pub mod server;
 pub mod trusted;
@@ -23,3 +26,6 @@ mod tests;
 
 #[cfg(test)]
 mod server_tests;
+
+#[cfg(test)]
+mod paint_tests;

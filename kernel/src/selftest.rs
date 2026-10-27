@@ -117,6 +117,8 @@ pub enum SelfTest {
     DeskRestart,
     /// An app suspended and resumed through its host (P3 task 11).
     AppSuspend,
+    /// The OS boots to the desktop, whose screen matches its golden (P3 task 6).
+    DeskBoot,
     /// `scriptrun` through a Job, and spike S01-1's M3 and M5 (P1 task 14).
     Scriptrun,
     /// L2: processes keep their vector state across switches and CPUs, and start clean.
@@ -250,6 +252,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=desk-windows" => Some(SelfTest::DeskWindows),
             "test=desk-restart" => Some(SelfTest::DeskRestart),
             "test=app-suspend" => Some(SelfTest::AppSuspend),
+            "test=desk-boot" => Some(SelfTest::DeskBoot),
             "test=scriptrun" => Some(SelfTest::Scriptrun),
             "test=fpu" => Some(SelfTest::Fpu),
             "test=probe" => Some(SelfTest::Probe),
@@ -319,6 +322,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DeskRestart
             | SelfTest::FilesActions
             | SelfTest::FilesChurn { .. }
+            | SelfTest::DeskBoot
             | SelfTest::TuneRevert
             | SelfTest::TuneStall
             | SelfTest::Tune
@@ -435,6 +439,10 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
     if matches!(test, SelfTest::DeskWindows | SelfTest::DeskRestart) {
         plan.push('\n');
         plan.push_str(crate::desk_tests::PLAN);
+    }
+    if test == SelfTest::DeskBoot {
+        plan.push('\n');
+        plan.push_str(crate::desk_tests::BOOT_PLAN);
     }
     if test == SelfTest::None {
         plan.push('\n');

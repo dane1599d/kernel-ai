@@ -13,7 +13,7 @@
 //!   hands.
 
 use crate::{hpet, threads};
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use kabi::input::{InputEvent, Kind, Set1, usage};
 use spin::Mutex;
 use termcore::mouse::{Button, Buttons, Decoder};
@@ -57,6 +57,8 @@ struct Decoders {
 
 /// Buttons held, as [`BITS`], from whichever pointer reported last.
 static BUTTONS: AtomicU8 = AtomicU8::new(0);
+/// Key events queued for `desktop` since boot.
+static KEYS: AtomicU64 = AtomicU64::new(0);
 
 static DECODERS: Mutex<Decoders> = Mutex::new(Decoders {
     keys: Set1::new(),
@@ -127,6 +129,7 @@ fn route(byte: u8, aux: bool) -> (Route, bool) {
         return (Route::Console, false);
     }
     push(Kind::Key, code, i32::from(down));
+    KEYS.fetch_add(1, Ordering::Relaxed);
     (Route::Taken, false)
 }
 
@@ -265,6 +268,11 @@ pub fn read(out: &mut [InputEvent], timeout_ms: u64) -> usize {
         WAITER.store(threads::current(), Ordering::SeqCst);
         threads::sleep_until_unless(deadline, has_events);
     }
+}
+
+/// Key events queued for `desktop` since boot.
+pub fn keys() -> u64 {
+    KEYS.load(Ordering::Relaxed)
 }
 
 /// Events dropped because `desktop` fell behind.

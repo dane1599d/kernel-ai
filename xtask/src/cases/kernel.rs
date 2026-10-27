@@ -121,6 +121,23 @@ pub(super) const CASES: &[TestCase] = &[
             "app-suspend: notes freed ",
         ],
         ..case("app-suspend", "test=app-suspend")
+    // P3 task 6's exit case: the OS boots to the desktop, and its screen is the
+    // golden one deskcore::paint's host test paints.
+    TestCase {
+        keys: &[crate::screen::KEYS],
+        expect: &[
+            "desktop: drew the desk at 1280x800",
+            "desk-boot: desktop booted to the desk and the screendump was taken",
+        ],
+        screen: Some(crate::screen::Expect {
+            size: Some((1280, 800)),
+            cursor: false,
+            golden: Some(crate::screen::Golden {
+                sha256: "7d408c1f3c7f91d7217130ed0ab4a0b724519b016ef8d95a0a1d7423c0330620",
+                mask: desk_stats,
+            }),
+        }),
+        ..case("desk-boot", "test=desk-boot")
     },
     // P1 task 14: shared pages, and spike S01-1's M6.
     TestCase {
@@ -142,3 +159,10 @@ pub(super) const CASES: &[TestCase] = &[
         ..case("scriptrun", "test=scriptrun")
     },
 ];
+
+/// The top bar's model state and memory, which change while the desk is still:
+/// `deskcore::paint::stats_area`, 320 px wide at the right of the 28 px bar,
+/// above its 1 px rule.
+fn desk_stats(width: u32, _height: u32) -> (u32, u32, u32, u32) {
+    (width.saturating_sub(320), 0, 320, 27)
+}

@@ -87,6 +87,7 @@ fn flush(slot: usize, rects_ptr: u64, n: u64) -> Result<u64, Error> {
         if rect.x < x2 && rect.y < y2 {
             // A busy display sends the whole screen next time; not an error here.
             let _ = display::flush(Rect::new(rect.x, rect.y, x2 - rect.x, y2 - rect.y));
+            claim::flushed();
         }
     }
     Ok(0)
