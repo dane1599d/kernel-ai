@@ -1403,6 +1403,7 @@ dependencies = [
  "kaifs",
  "livecore",
  "llmproto",
+ "look",
  "quant",
  "sched",
  "shellcore",

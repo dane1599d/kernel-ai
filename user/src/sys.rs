@@ -454,6 +454,74 @@ pub fn shm_map(handle: Handle, write: bool) -> Result<u64, Error> {
     )
 }
 
+/// Takes the screen (`desktop` only): its back buffer's `Shm`, and its shape.
+pub fn display_claim(info: &mut kabi::display::DisplayInfo) -> Result<Handle, Error> {
+    call(
+        call::DISPLAY_CLAIM,
+        [
+            info as *mut kabi::display::DisplayInfo as u64,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ],
+    )
+    .map(|h| Handle(h as u32))
+}
+
+/// Puts these rectangles of the claimed back buffer on screen.
+pub fn display_flush(rects: &[kabi::display::FlushRect]) -> Result<u64, Error> {
+    call(
+        call::DISPLAY_FLUSH,
+        [rects.as_ptr() as u64, rects.len() as u64, 0, 0, 0, 0],
+    )
+}
+
+/// The 64x64 `0xAARRGGBB` hardware cursor and its hot spot.
+pub fn display_cursor(image: &[u32; 64 * 64], hot: (u32, u32)) -> Result<u64, Error> {
+    call(
+        call::DISPLAY_CURSOR,
+        [
+            image.as_ptr() as u64,
+            u64::from(hot.0),
+            u64::from(hot.1),
+            0,
+            0,
+            0,
+        ],
+    )
+}
+
+pub fn display_cursor_move(x: u32, y: u32) -> Result<u64, Error> {
+    call(
+        call::DISPLAY_CURSOR_MOVE,
+        [u64::from(x), u64::from(y), 0, 0, 0, 0],
+    )
+}
+
+/// Input events from the kernel's queue (`desktop` only), waiting up to
+/// `timeout_ms` for the first.
+pub fn input_read(out: &mut [kabi::input::InputEvent], timeout_ms: u64) -> Result<usize, Error> {
+    let mut raw = [0u8; 64 * kabi::input::InputEvent::SIZE];
+    let cap = out.len().min(64);
+    let n = call(
+        call::INPUT_READ,
+        [raw.as_mut_ptr() as u64, cap as u64, timeout_ms, 0, 0, 0],
+    )? as usize;
+    let mut got = 0;
+    for chunk in raw[..n.min(cap) * kabi::input::InputEvent::SIZE]
+        .as_chunks::<{ kabi::input::InputEvent::SIZE }>()
+        .0
+    {
+        if let Some(event) = kabi::input::InputEvent::decode(chunk) {
+            out[got] = event;
+            got += 1;
+        }
+    }
+    Ok(got)
+}
+
 /// Removes the `Shm` mapping that starts at `address`.
 pub fn shm_unmap(address: u64) -> Result<u64, Error> {
     call(call::SHM_UNMAP, [address, 0, 0, 0, 0, 0])

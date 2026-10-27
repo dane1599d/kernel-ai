@@ -51,6 +51,14 @@ pub const FILES: u64 = 1 << 13;
 /// tells them apart by order: the first `Dir` is `/home/user`, the second
 /// `/system/state`. HANDLE_INFO carries no badge.
 pub const SYSTEM_STATE: u64 = 1 << 14;
+/// Own the screen ([`super::call::DISPLAY_CLAIM`]): a `Display` handle. The
+/// kernel grants it only to the service named `desktop` running the program
+/// `desktop` (ADR 0005 §2). Numbered at merge, after P2's PARTITION, FILES and
+/// SYSTEM_STATE.
+pub const DISPLAY: u64 = 1 << 15;
+/// Read the kernel's input queue ([`super::call::INPUT_READ`]): an `Input`
+/// handle. Granted as [`DISPLAY`] is.
+pub const INPUT: u64 = 1 << 16;
 /// Every capability a supervisor may grant.
 pub const GRANTABLE: u64 = SERVE
     | NET
@@ -65,4 +73,6 @@ pub const GRANTABLE: u64 = SERVE
     | SCRIPT
     | PARTITION
     | FILES
-    | SYSTEM_STATE;
+    | SYSTEM_STATE
+    | DISPLAY
+    | INPUT;
