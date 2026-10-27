@@ -22,6 +22,7 @@ const USER_PROGRAMS: &[&str] = &[
     "scriptrun",
     "fs",
     "filecheck",
+    "updated",
     "desktop",
     "deskdemo",
     "tufbench",

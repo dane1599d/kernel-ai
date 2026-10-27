@@ -16,6 +16,7 @@ bench = false
 
 [dependencies]
 appabi = { path = "../appabi" }
+bootslot = { path = "../bootslot" }
 cpufeat = { path = "../cpufeat" }
 infer = { path = "../infer" }
 kabi = { path = "../kabi" }

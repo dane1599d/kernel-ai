@@ -50,7 +50,7 @@ fn partition(slot: usize, raw: u64, rights: Rights) -> Result<diskmap::Guid, Err
 }
 
 /// Runs `f` on the partition, NotFound when the disk has none of that type.
-fn on<R>(kind: diskmap::Guid, f: impl FnOnce(&mut dyn Device) -> R) -> Result<R, Error> {
+pub(super) fn on<R>(kind: diskmap::Guid, f: impl FnOnce(&mut dyn Device) -> R) -> Result<R, Error> {
     block::with_partition(kind, f).ok_or(Error::NotFound)
 }
 
@@ -94,6 +94,18 @@ fn info(slot: usize, raw: u64, out: u64) -> Result<u64, Error> {
 
 fn read(slot: usize, raw: u64, sector: u64, buf: u64, len: u64) -> Result<u64, Error> {
     let kind = partition(slot, raw, Rights::READ)?;
+    read_in(slot, kind, sector, buf, len)
+}
+
+/// Reads `len` bytes from `sector` of the partition of type `kind` into the
+/// caller's `buf`: PART_READ's work, and SLOT_READ's (`update.rs`).
+pub(super) fn read_in(
+    slot: usize,
+    kind: diskmap::Guid,
+    sector: u64,
+    buf: u64,
+    len: u64,
+) -> Result<u64, Error> {
     let mut data = Vec::new();
     data.try_reserve_exact(len.min(MAX_IO) as usize)
         .map_err(|_| Error::NoMemory)?;
@@ -116,6 +128,18 @@ fn read(slot: usize, raw: u64, sector: u64, buf: u64, len: u64) -> Result<u64, E
 
 fn write(slot: usize, raw: u64, sector: u64, buf: u64, len: u64) -> Result<u64, Error> {
     let kind = partition(slot, raw, Rights::WRITE)?;
+    write_in(slot, kind, sector, buf, len)
+}
+
+/// Writes `len` bytes of the caller's `buf` from `sector` of the partition of
+/// type `kind`: PART_WRITE's work, and SLOT_WRITE's (`update.rs`).
+pub(super) fn write_in(
+    slot: usize,
+    kind: diskmap::Guid,
+    sector: u64,
+    buf: u64,
+    len: u64,
+) -> Result<u64, Error> {
     if len == 0 || len > MAX_IO {
         return Err(Error::Invalid);
     }
@@ -140,6 +164,11 @@ fn write(slot: usize, raw: u64, sector: u64, buf: u64, len: u64) -> Result<u64, 
 
 fn flush(slot: usize, raw: u64) -> Result<u64, Error> {
     let kind = partition(slot, raw, Rights::WRITE)?;
+    flush_in(kind)
+}
+
+/// Makes every write to the disk of the partition of type `kind` durable.
+pub(super) fn flush_in(kind: diskmap::Guid) -> Result<u64, Error> {
     on(kind, |disk| {
         if disk.read_only() {
             return Err(Error::Permission);
