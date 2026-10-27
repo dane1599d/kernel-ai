@@ -15,10 +15,11 @@
 
 use crate::handle::{self, grant::Kernel};
 use crate::process::{self, MAX_PROCESSES};
-use crate::{memory, smp, threads};
+use crate::{hpet, memory, smp, threads};
 use alloc::vec::Vec;
 use captable::Entry;
 use captable::grant::{GrantRef, Live};
+use core::sync::atomic::{AtomicU64, Ordering};
 use kabi::Error;
 use kabi::handle::{Handle, Kind, Rights};
 use kabi::layout::{SHM_BASE, SHM_SLOT};
@@ -61,6 +62,9 @@ struct Objects {
     /// Survives the object, so a handle to a freed one is never taken for a new one.
     generations: [u32; MAX_OBJECTS],
 }
+
+/// Nanoseconds [`on_revoke`] has spent in TLB shootdowns, for M6's split.
+pub static SHOOTDOWN_NS: AtomicU64 = AtomicU64::new(0);
 
 static OBJECTS: Mutex<Objects> = Mutex::new(Objects {
     objects: [const { None }; MAX_OBJECTS],
@@ -280,7 +284,9 @@ pub fn on_revoke() {
                 }
             }
             if !cr3s.is_empty() {
+                let start = hpet::nanos();
                 smp::tlb_shootdown_range(&cr3s, base(index), pages);
+                SHOOTDOWN_NS.fetch_add(hpet::nanos() - start, Ordering::Relaxed);
             }
         }
     });
