@@ -99,9 +99,10 @@ pub fn restart() -> Result<(), &'static str> {
     if process::kill(first, kabi::ExitReason::Killed).is_err() {
         return Err("desk-restart: cannot kill desktop");
     }
-    wait("the console to take the screen back", || {
-        !console::suspended() && desktop() != Some(first)
-    })?;
+    // The console has the screen only until the supervisor's restart claims it
+    // again, 50 ms on, which a 50 ms poll can miss; the host checks the
+    // console's line ("its holder ended; the console has the screen").
+    wait("the killed desktop to be gone", || desktop() != Some(first))?;
     wait("a new desktop to claim the screen", || {
         desktop().is_some_and(|pid| pid != first && shows(pid))
     })?;
