@@ -29,31 +29,24 @@ pub const WRITABLE: u64 = 1 << 0;
 /// A write is durable only after PART_FLUSH.
 pub const VOLATILE_CACHE: u64 = 1 << 1;
 
-/// The stub `fs` service's requests (P2 task 3), until task 8's `kai-fs 1`. One
-/// file lives at [`stub::FILE_BASE`] in `kai-data`, in records of
-/// [`stub::RECORD`] bytes, each checksummed with seahash-64 as kaifs would.
+/// The kernel's own requests to `fs`, on a plain route (badge 0), for the
+/// `part` case: `check`, and S04-2's transfer over `kai-fs 1`'s message size.
+/// The file lives in kaifs, `/system/s04-2`; every other caller speaks
+/// `kai-fs 1` on a `Dir` or `File` handle.
 pub mod stub {
     /// `check`: the `part` case's checks inside `fs`. The reply is
     /// `ok sectors=N first=HEX` (the first 16 bytes of the partition) or
     /// `fail <why>`.
     pub const CHECK: &[u8] = b"check";
-    /// `W`, then the byte offset (u64 LE), then the bytes to write there. A
-    /// record goes to the disk once its last byte arrives. Replies `ok`.
+    /// `W`, then the byte offset (u64 LE), then the bytes to write there, one
+    /// kaifs write in an action that the next `F` commits. Replies `ok`.
     pub const WRITE: u8 = b'W';
     /// `R`, then the byte offset (u64 LE) and length (u32 LE): replies the bytes,
-    /// each record read from the disk and its checksum verified on first use.
+    /// read through kaifs.
     pub const READ: u8 = b'R';
-    /// `F`: makes every whole record written so far durable and forgets the
-    /// cached record, so the next read comes from the disk. Replies `ok`.
+    /// `F`: commits the writes since the last one, two flushes. Replies `ok`.
     pub const FLUSH: u8 = b'F';
-    /// Where the file starts in the partition: 1 MiB, past the sectors `check`
-    /// uses.
-    pub const FILE_BASE: u64 = 1 << 20;
-    /// The longest file.
-    pub const FILE_MAX: u64 = 32 << 20;
-    /// A record: kaifs's 128 KiB, one PART_WRITE.
-    pub const RECORD: u64 = super::MAX_IO;
-    /// The most file bytes one message carries, as S04-2's `kai-fs 1` messages.
+    /// The most file bytes one message carries, as `kai-fs 1`'s messages.
     pub const MAX_DATA: usize = 7 * 1024;
 }
 

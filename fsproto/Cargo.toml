@@ -1,0 +1,15 @@
+[package]
+name = "fsproto"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# `kai-fs 1` (ADR 0004 §6): the messages a client sends on a `Dir` or `File`
+# handle and the `fs` service's replies, as versioned CBOR. `no_std` + `alloc`,
+# for `fs`, its clients and host tests.
+[lib]
+doctest = false
+
+[dependencies]
+minicbor = { version = "2.3.0", default-features = false, features = ["alloc", "derive"] }

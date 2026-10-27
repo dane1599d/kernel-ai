@@ -5,8 +5,8 @@
 //!   the disk's, a range past the end is refused, and a handle narrowed to READ
 //!   can neither write nor flush.
 //! - S04-2's figures re-run on the real calls: a 32 MiB file goes to `fs` in
-//!   7 KiB messages and comes back, `fs` writing each 128 KiB record with one
-//!   PART_WRITE and reading it back from the disk with its checksum verified.
+//!   7 KiB messages and comes back, through kaifs (`/system/s04-2`, one action
+//!   committed at the end) and the PART_* calls.
 //!
 //! The kernel is `fs`'s client here, so the figures include no ring-3 client's
 //! own cost; S04-2 measured that, with the file in `fs`'s memory.
@@ -35,18 +35,31 @@ pub fn check() -> Result<(), &'static str> {
     })
     .ok_or("part: no kai-data partition")?
     .map_err(|_| "part: the marker could not be written")?;
-    let reply = ask(stub::CHECK)?;
-    let first: String = MARKER.iter().map(|b| format!("{b:02x}")).collect();
+    // `check` writes the partition's last sector, which is in kaifs's second
+    // superblock ring: what was there goes back once the write is seen.
     let sectors = block::with_partition(diskmap::KAI_DATA_TYPE, |disk: &mut dyn Device| {
         disk.sectors()
     })
     .unwrap_or(0);
+    let saved = block::with_partition(diskmap::KAI_DATA_TYPE, |disk: &mut dyn Device| {
+        disk.read(sectors.saturating_sub(1), 1).map(<[u8]>::to_vec)
+    })
+    .and_then(Result::ok)
+    .ok_or("part: kai-data's last sector cannot be read")?;
+    let reply = ask(stub::CHECK)?;
+    let first: String = MARKER.iter().map(|b| format!("{b:02x}")).collect();
     let want = format!("ok sectors={sectors} first={first}");
     if reply != want.as_bytes() {
         log!("part: fs answered {:?}", String::from_utf8_lossy(&reply));
         return Err("part: fs's check failed, or it reached another partition");
     }
     last_sector(sectors)?;
+    block::with_partition(diskmap::KAI_DATA_TYPE, |disk: &mut dyn Device| {
+        disk.write(sectors - 1, &saved[..SECTOR as usize])
+            .and_then(|()| disk.flush())
+    })
+    .and_then(Result::ok)
+    .ok_or("part: kai-data's last sector could not be put back")?;
     only_fs()?;
     log!("part: fs alone holds a Partition, for kai-data only, and its checks pass");
     bench()

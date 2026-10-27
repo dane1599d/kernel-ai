@@ -1,0 +1,255 @@
+//! `test=files [reread]` and `test=files-restart` (P2 task 8, ADR 0004 §6-7): the
+//! `fs` service on kaifs, with `filecheck` as its ring-3 client through the `Dir`
+//! handle FILES gives.
+//! - `fs-reboot`: boot 1's `filecheck step=write` makes files; boot 2, on the
+//!   same data disk, reads them back byte for byte (`step=read`).
+//! - `fs-restart`: with `filecheck` holding a `File` handle, the kernel opens an
+//!   action of its own, writes, and kills `fs` before it commits. The restarted
+//!   `fs` must show nothing of that write, and the handle opened before the kill
+//!   must work again.
+//!
+//! The kernel is `fs`'s client here as well, naming objects by their badges: it
+//! takes no handles.
+
+use crate::handle;
+use crate::process;
+use crate::{ipc, log, threads};
+use alloc::format;
+use alloc::vec::Vec;
+use captable::Entry;
+use fsproto::{How, Reply, Request};
+use kabi::handle::Handle;
+use kabi::handle::{Kind, Rights};
+use kabi::{Error, ExitReason, cap};
+
+const SERVICE: &str = "fs";
+const CLIENT: &str = "filecheck";
+/// Plan lines: `fs`, then `filecheck` doing `step`.
+pub fn plan(step: &str) -> alloc::string::String {
+    format!("{}\n{CLIENT} caps=files step={step}", kabi::plan::FS)
+}
+const CALL_MS: u64 = 10_000;
+const WAIT_MS: u64 = 120_000;
+const RIGHTS: Rights = Rights::READ
+    .union(Rights::WRITE)
+    .union(Rights::ENUMERATE)
+    .union(Rights::CREATE)
+    .union(Rights::DELETE);
+
+/// `fs-reboot`'s boots: `filecheck` leaves `write.ok` or `read.ok`.
+pub fn check(cmdline: &str) -> Result<(), &'static str> {
+    let reread = cmdline.split_whitespace().any(|w| w == "reread");
+    let (marker, boot) = if reread {
+        ("read.ok", 2)
+    } else {
+        ("write.ok", 1)
+    };
+    wait_for(marker).map_err(|_| "files: filecheck did not finish its step")?;
+    log!("files: boot {boot}: filecheck's step through its Dir handle passed");
+    if !reread {
+        minting()?;
+        log!("files: ENDPOINT_MINT and the FILES ceiling refuse what they must");
+    }
+    Ok(())
+}
+
+/// ENDPOINT_MINT and REPLY_H's ceiling, on `filecheck`'s table (it idles once
+/// its step is done): what ring 3 cannot reach to try.
+fn minting() -> Result<(), &'static str> {
+    use crate::process::syscall::fs::mint;
+    let pid = process::named(CLIENT).first().map(|&(pid, _)| pid);
+    let fs = process::named(SERVICE).first().map(|&(pid, _)| pid);
+    let (Some(pid), Some(fs)) = (pid, fs) else {
+        return Err("files: filecheck or fs is gone");
+    };
+    let slot = process::with_table(|t| t.iter().position(|p| p.live() && p.pid == pid))
+        .ok_or("files: filecheck has no slot")?;
+    let put = |kind, rights, object| {
+        handle::with(slot, |h| h.table.insert(Entry::new(kind, rights, object)))
+            .ok()
+            .and_then(Result::ok)
+            .map(|h| u64::from(h.0))
+            .ok_or("files: a test handle cannot be put in filecheck's table")
+    };
+    let (dir, file) = (Kind::Dir as u64, Kind::File as u64);
+    let read = Rights::READ.bits() as u64;
+    let others = put(Kind::Endpoint, Rights::MINT, fs)?;
+    let own = put(Kind::Endpoint, Rights::MINT, pid)?;
+    let not_endpoint = put(Kind::Dir, Rights::READ, 1)?;
+    for (what, got, want) in [
+        (
+            "no endpoint",
+            mint(slot, 0, file, read, 1),
+            Error::BadHandle,
+        ),
+        (
+            "a Dir as endpoint",
+            mint(slot, not_endpoint, file, read, 1),
+            Error::BadHandle,
+        ),
+        (
+            "another's endpoint",
+            mint(slot, others, file, read, 1),
+            Error::Permission,
+        ),
+        (
+            "a Partition",
+            mint(slot, own, Kind::Partition as u64, read, 1),
+            Error::Invalid,
+        ),
+        ("no rights", mint(slot, own, file, 0, 1), Error::Invalid),
+        (
+            "only MINT and CALL",
+            mint(
+                slot,
+                own,
+                dir,
+                (Rights::MINT | Rights::CALL).bits() as u64,
+                1,
+            ),
+            Error::Invalid,
+        ),
+    ] {
+        if got != Err(want) {
+            log!("files: ENDPOINT_MINT with {what} gave {got:?}, wanted {want:?}");
+            return Err("files: ENDPOINT_MINT allowed what it must refuse");
+        }
+    }
+    // A good one: masked rights, the badge as given, routed to this service.
+    let wide = (Rights::READ | Rights::MINT | Rights::CREATE).bits() as u64;
+    let minted = mint(slot, own, file, wide, 0xb0b).map_err(|_| "files: a good mint failed")?;
+    let route = handle::route_id(CLIENT).map_err(|_| "files: no route id")?;
+    let entry = handle::with(slot, |h| h.table.get(Handle(minted as u32)).copied())
+        .ok()
+        .and_then(Result::ok)
+        .ok_or("files: the minted handle is not in the table")?;
+    if (
+        entry.kind,
+        entry.rights,
+        entry.badge,
+        entry.object,
+        entry.grant,
+    ) != (Kind::File, Rights::READ, 0xb0b, route, None)
+    {
+        return Err("files: a minted handle is not what was asked");
+    }
+    // REPLY_H moves a Dir only to a process with FILES.
+    let moving = put(Kind::Dir, Rights::READ | Rights::TRANSFER, 1)?;
+    let moving = Handle(moving as u32);
+    if handle::take_for(slot, &[moving], cap::SERVE | cap::CALL) != Err(Error::Permission) {
+        return Err("files: a Dir would move to a process without FILES");
+    }
+    handle::take_for(slot, &[moving], cap::FILES)
+        .map_err(|_| "files: a Dir did not move to FILES")?;
+    for h in [others, own, not_endpoint, minted] {
+        let _ = handle::with(slot, |t| t.table.close(Handle(h as u32)));
+    }
+    Ok(())
+}
+
+/// `fs-restart`.
+pub fn restart() -> Result<(), &'static str> {
+    wait_for("ready").map_err(|_| "files: filecheck did not get ready")?;
+    let file = match ask(
+        kabi::fs::HOME_USER,
+        Request::Open {
+            path: "restart.txt".into(),
+            rights: (Rights::READ | Rights::WRITE).bits(),
+            how: How::Existing,
+        },
+    )? {
+        Reply::Opened(_, badge) => badge,
+        _ => return Err("files: restart.txt cannot be opened"),
+    };
+    // An action left open: written, never committed.
+    ok(ask(kabi::fs::HOME_USER, Request::Begin { action: 77 })?)?;
+    ok(ask(
+        file,
+        Request::Write {
+            off: 0,
+            data: b"half-done".to_vec(),
+        },
+    )?)?;
+    let before: Vec<u64> = process::named(SERVICE)
+        .into_iter()
+        .map(|(pid, _)| pid)
+        .collect();
+    let &[pid] = before.as_slice() else {
+        return Err("files: not one fs to kill");
+    };
+    process::kill(pid, ExitReason::Killed).map_err(|_| "files: fs could not be killed")?;
+    wait_within(WAIT_MS, || {
+        ipc::server_of(SERVICE).is_some_and(|served| served != pid)
+    })
+    .map_err(|_| "files: fs did not come back")?;
+    match ask(file, Request::Read { off: 0, len: 64 })? {
+        Reply::Data(data) if data == b"v1" => {}
+        Reply::Data(_) => return Err("files: the killed action's write is on disk"),
+        _ => return Err("files: restart.txt cannot be read after the restart"),
+    }
+    match ask(
+        kabi::fs::HOME_USER,
+        Request::Open {
+            path: "restarted".into(),
+            rights: Rights::READ.bits(),
+            how: How::CreateFile,
+        },
+    )? {
+        Reply::Opened(..) => {}
+        _ => return Err("files: the restarted marker cannot be made"),
+    }
+    wait_for("restart.ok").map_err(|_| "files: filecheck's handle did not work again")?;
+    log!(
+        "files: fs restarted mid-action: nothing half-done is on disk, and an open File handle works again"
+    );
+    Ok(())
+}
+
+/// One request to `fs` on `badge`, as its kernel client.
+fn ask(badge: u64, request: Request) -> Result<Reply, &'static str> {
+    let bytes = fsproto::encode_request(&request);
+    let deadline = crate::hpet::nanos() + CALL_MS * 1_000_000;
+    let extra = ipc::Extra {
+        badge,
+        rights: RIGHTS.bits(),
+        handles: Vec::new(),
+    };
+    let (reply, _, _) = ipc::call_with(SERVICE, &bytes, 0, deadline, || false, extra)
+        .map_err(|_| "files: a call to fs failed")?;
+    fsproto::decode_reply(&reply).map_err(|_| "files: fs's reply does not decode")
+}
+
+fn ok(reply: Reply) -> Result<(), &'static str> {
+    match reply {
+        Reply::Done => Ok(()),
+        _ => Err("files: fs refused a request"),
+    }
+}
+
+/// Waits until `/home/user/<name>` exists.
+fn wait_for(name: &str) -> Result<(), ()> {
+    wait_within(WAIT_MS, || {
+        ipc::server_of(SERVICE).is_some()
+            && matches!(
+                ask(
+                    kabi::fs::HOME_USER,
+                    Request::Open {
+                        path: name.into(),
+                        rights: 0,
+                        how: How::Existing,
+                    }
+                ),
+                Ok(Reply::Opened(..))
+            )
+    })
+}
+
+fn wait_within(ms: u64, mut done: impl FnMut() -> bool) -> Result<(), ()> {
+    for _ in 0..ms / 50 {
+        if done() {
+            return Ok(());
+        }
+        threads::sleep_ms(50);
+    }
+    Err(())
+}

@@ -147,6 +147,21 @@ pub fn startup(caps: u64, pid: u64) -> Vec<Entry> {
         .collect()
 }
 
+/// FILES's startup handle: `/home/user` on the `fs` route `fs`. Its badge names
+/// the folder for `fs`, which looks it up itself (ADR 0004 §7).
+fn home_dir(fs: u64) -> Entry {
+    let mut home = Entry::new(Kind::Dir, HOME_RIGHTS | BASE, fs);
+    home.badge = kabi::fs::HOME_USER;
+    home
+}
+
+/// What the startup `Dir` allows: everything a folder's handle can.
+const HOME_RIGHTS: Rights = Rights::READ
+    .union(Rights::WRITE)
+    .union(Rights::ENUMERATE)
+    .union(Rights::CREATE)
+    .union(Rights::DELETE);
+
 /// The handle kind and right that stand for capability bit `bit` in `need`;
 /// `None` for a bit no handle stands for.
 pub fn required(bit: u64) -> Option<(Kind, Rights)> {
@@ -164,6 +179,7 @@ pub fn required(bit: u64) -> Option<(Kind, Rights)> {
         cap::STOP => (Kind::Job, Rights::STOP),
         cap::SCRIPT => (Kind::Job, Rights::CREATE),
         cap::PARTITION => (Kind::Partition, Rights::READ),
+        cap::FILES => (Kind::Dir, Rights::READ),
         _ => return None,
     })
 }
@@ -183,6 +199,8 @@ pub fn ceiling_allows(caps: u64, kind: Kind) -> bool {
         (Kind::Process, cap::THREADS),
         (Kind::NetDest, cap::NET | cap::RESOLVE),
         (Kind::Partition, cap::PARTITION),
+        (Kind::Dir, cap::FILES),
+        (Kind::File, cap::FILES),
     ];
     bits.iter()
         .find(|(k, _)| *k == kind)
@@ -209,7 +227,15 @@ pub fn create(slot: usize, caps: u64, pid: u64, uses: &[&str]) -> Result<(), kab
         .map_err(|_| kabi::Error::NoMemory)?;
     let routes = uses.iter().filter(|_| caps & cap::CALL != 0);
     let routes: Result<Vec<Entry>, kabi::Error> = routes.map(|name| route(name)).collect();
-    for entry in self::startup(caps, pid).into_iter().chain(routes?) {
+    let files = match caps & cap::FILES {
+        0 => None,
+        _ => Some(home_dir(route_id(crate::process::supervision::FS)?)),
+    };
+    for entry in self::startup(caps, pid)
+        .into_iter()
+        .chain(files)
+        .chain(routes?)
+    {
         startup.push(table.insert(entry).map_err(kabi::Error::from)?);
     }
     *HANDLES[slot].lock() = Some(Handles { table, startup });

@@ -308,6 +308,13 @@ pub const PART_READ: u64 = 67;
 pub const PART_WRITE: u64 = 68;
 /// `part_flush(handle) -> 0`: makes every write before it durable. Needs WRITE.
 pub const PART_FLUSH: u64 = 69;
+/// `endpoint_mint(endpoint, kind, rights, badge) -> handle`: a new handle of a
+/// server-backed kind (`Dir` or `File`) on the caller's own endpoint, which
+/// needs MINT. Its rights are `rights` within that kind's
+/// ([`super::fs`]); a call on it reaches this endpoint with `badge` and those
+/// rights in [`super::handle::RecvInfo`]. The server hands it on with
+/// REPLY_H.
+pub const ENDPOINT_MINT: u64 = 70;
 
 // ---- Lane K, 71-72 and 80-89 ----
 

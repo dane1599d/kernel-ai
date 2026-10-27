@@ -425,6 +425,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "fsproto"
+version = "0.0.0"
+dependencies = [
+ "minicbor",
+]
+
+[[package]]
+name = "fsserve"
+version = "0.0.0"
+dependencies = [
+ "fsproto",
+ "kabi",
+ "kaifs",
+]
+
+[[package]]
 name = "futures-core"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -654,6 +670,7 @@ dependencies = [
  "devmatch",
  "diskmap",
  "editcore",
+ "fsproto",
  "gfxcore",
  "kabi",
  "kaibundle",
@@ -1370,13 +1387,15 @@ dependencies = [
  "appabi",
  "cpufeat",
  "editcore",
+ "fsproto",
+ "fsserve",
  "infer",
  "kabi",
+ "kaifs",
  "livecore",
  "llmproto",
  "quant",
  "sched",
- "seahash",
  "shellcore",
  "spin 0.12.3",
  "supervise",
