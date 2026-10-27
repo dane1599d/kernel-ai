@@ -12,6 +12,7 @@ use std::collections::VecDeque;
 
 mod act;
 mod actions;
+mod apart;
 mod log;
 mod more;
 mod packages;
@@ -62,7 +63,13 @@ struct FakeHost {
     /// Whether the supervisor lists its services, and metrics show the processes
     /// above (services from pid 20, plain processes from pid 30).
     lists_services: Cell<bool>,
+    /// What a `scriptrun` child does with a request; none runs scripts here.
+    apart: RefCell<Option<Apart>>,
+    /// Requests sent to a child.
+    apart_requests: RefCell<Vec<String>>,
 }
+
+type Apart = alloc::boxed::Box<dyn Fn(&str) -> Result<String, String>>;
 
 impl FakeHost {
     /// The supervisor's side: `err already ...` when nothing changes.
@@ -125,6 +132,8 @@ impl FakeHost {
             ]),
             services: RefCell::new(alloc::vec![(String::from("notes"), false)]),
             lists_services: Cell::new(false),
+            apart: RefCell::new(None),
+            apart_requests: RefCell::new(Vec::new()),
         })
     }
 }
@@ -292,6 +301,13 @@ impl Host for FakeHost {
             .borrow_mut()
             .pop_front()
             .unwrap_or(Err(ActError::Unavailable(String::from("no more calls"))))
+    }
+
+    fn run_apart(&self, request: &str) -> Option<Result<String, String>> {
+        let apart = self.apart.borrow();
+        let child = apart.as_ref()?;
+        self.apart_requests.borrow_mut().push(request.into());
+        Some(child(request))
     }
 
     fn audit(&self, text: &str) {

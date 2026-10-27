@@ -25,6 +25,7 @@ mod actions;
 pub mod actlog;
 mod agentcore;
 pub mod analyse;
+pub mod apart;
 mod brackets;
 mod commands;
 pub mod data;
@@ -113,6 +114,13 @@ pub trait Host {
     /// trusted path gave for it.
     fn revoke_rule(&self, _handle: u32) -> Result<(), String> {
         Ok(())
+    }
+    /// Runs `request` ([`apart::request`]) in a `scriptrun` child of its own (P1
+    /// task 14): `Ok` with the child's answer, or `Err` with why it ended without
+    /// one (stopped for time or Ctrl-C, or it faulted). `None` when there is no
+    /// child here, so the shell runs the script itself.
+    fn run_apart(&self, _request: &str) -> Option<Result<String, String>> {
+        None
     }
     /// Writes one line to the console log.
     fn audit(&self, text: &str);
