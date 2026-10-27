@@ -155,6 +155,15 @@ fn home_dir(fs: u64) -> Entry {
     home
 }
 
+/// The startup `Dir`s on the `fs` route `fs` that `caps` give, in STARTUP's
+/// order: FILES's `/home/user`, then SYSTEM_STATE's `/system/state` (the order
+/// is ABI, `kabi::cap::SYSTEM_STATE`).
+pub fn fs_dirs(caps: u64, fs: u64) -> impl Iterator<Item = Entry> {
+    let files = (caps & cap::FILES != 0).then(|| home_dir(fs));
+    let state = (caps & cap::SYSTEM_STATE != 0).then(|| state_dir(fs));
+    files.into_iter().chain(state)
+}
+
 /// SYSTEM_STATE's startup handle: `/system/state` on the `fs` route `fs`, which
 /// `fs` looks up itself as for the home folder.
 fn state_dir(fs: u64) -> Entry {
@@ -239,12 +248,9 @@ pub fn create(slot: usize, caps: u64, pid: u64, uses: &[&str]) -> Result<(), kab
         0 => None,
         _ => Some(route_id(crate::process::supervision::FS)?),
     };
-    let files = fs.filter(|_| caps & cap::FILES != 0).map(home_dir);
-    let state = fs.filter(|_| caps & cap::SYSTEM_STATE != 0).map(state_dir);
     for entry in self::startup(caps, pid)
         .into_iter()
-        .chain(files)
-        .chain(state)
+        .chain(fs.into_iter().flat_map(|fs| fs_dirs(caps, fs)))
         .chain(routes?)
     {
         startup.push(table.insert(entry).map_err(kabi::Error::from)?);

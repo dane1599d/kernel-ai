@@ -72,6 +72,12 @@ fn state_holder() -> Result<(), &'static str> {
     {
         return Err("files: SYSTEM_STATE is not the shell's alone");
     }
+    // With both bits, STARTUP lists the home Dir first, then the state Dir.
+    let both = cap::FILES | cap::SYSTEM_STATE;
+    let order: Vec<u64> = handle::fs_dirs(both, 1).map(|e| e.badge).collect();
+    if order != [kabi::fs::HOME_USER, kabi::fs::SYSTEM_STATE] {
+        return Err("files: the startup Dirs are not home first, then state");
+    }
     let pid = process::named(CLIENT).first().map(|&(pid, _)| pid);
     let slot = pid
         .and_then(|pid| process::with_table(|t| t.iter().position(|p| p.live() && p.pid == pid)))

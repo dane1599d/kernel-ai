@@ -46,6 +46,10 @@ pub const FILES: u64 = 1 << 13;
 /// `/system/state` (P2 task 12): a `Dir` handle on the `fs` service for that
 /// folder only, where the shell keeps its log, grants and settings. The kernel
 /// grants it only to the service named `shell` running the `shell` program.
+///
+/// STARTUP lists FILES's `Dir` before SYSTEM_STATE's, so a process holding both
+/// tells them apart by order: the first `Dir` is `/home/user`, the second
+/// `/system/state`. HANDLE_INFO carries no badge.
 pub const SYSTEM_STATE: u64 = 1 << 14;
 /// Every capability a supervisor may grant.
 pub const GRANTABLE: u64 = SERVE
