@@ -38,6 +38,7 @@
 //!   and abort;
 //! - [`undo`]: `restore(txn)`, which never overwrites a later change; `changes`,
 //!   which reads only what changed; and `history`;
+//! - [`sealed`]: sealed files, the model store's blobs in 2 MiB records;
 //! - [`trash`] and [`cbor`]: the trash, each object beside its `info.cbor`;
 //! - [`gc`]: the GC in slices, and retention.
 //!
@@ -68,6 +69,7 @@ pub mod ns;
 pub mod ns_check;
 pub mod repair;
 pub mod repair_fs;
+pub mod sealed;
 pub mod trash;
 pub mod tree;
 pub mod txn;

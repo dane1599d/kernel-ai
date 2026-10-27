@@ -9,7 +9,9 @@
 //!   filed under their own hash; each names an inode of the type it says.
 //! - A file is at most 256 TiB. DATA items belong to files, start on a 128 KiB
 //!   boundary, hold at least one byte and end within the file's size, and are
-//!   inline exactly when their bytes fit an item.
+//!   inline exactly when their bytes fit an item. A sealed file's items are
+//!   instead all SEALED records, one after another from 0 on 2 MiB boundaries,
+//!   and end at its size; no other file names a SEALED record.
 //! - XATTR items' names are valid, sorted, distinct and filed under their hash.
 //! - Every folder but the root has exactly one name, its parent is the folder
 //!   holding it, its size counts its names, and its links are 2 plus its
@@ -26,10 +28,10 @@
 use crate::check::{Cache, Leaves, summarise};
 use crate::dev::BlockDev;
 use crate::format::BlockPtr;
-use crate::fs::{Fs, MAX_INLINE, Snap, decode_value, inline_of, value_len};
+use crate::fs::{Fs, MAX_INLINE, Snap, decode_value, inline_of, sealed_of, value_len};
 use crate::items::{
     CHUNK, Entry, FileType, Inode, K_DATA, K_DIRENT, K_INODE, K_XATTR, MAX_FILE, ROOT,
-    decode_attrs, decode_names, hash_name,
+    SEALED_CHUNK, decode_attrs, decode_names, hash_name,
 };
 use crate::tree::Key;
 use crate::vol::{SnapKind, Undo};
@@ -124,6 +126,8 @@ struct Seen {
     names: BTreeMap<u64, Vec<Entry>>,
     data: BTreeMap<u64, Vec<(u64, Vec<u8>)>>,
     attrs: BTreeMap<u64, Vec<(String, Vec<u8>)>>,
+    /// Each sealed file, with the offset its data has reached.
+    sealed: BTreeMap<u64, u64>,
     max_oid: u64,
     max_changed: u64,
 }
@@ -168,13 +172,30 @@ fn item(
         K_DATA if kind == Some(FileType::File) => {
             let size = seen.inodes[&oid].size;
             let len = value_len(raw).ok_or_else(|| at("a data item"))? as u64;
+            let sealed = sealed_of(raw);
+            if key.off == 0 && sealed {
+                seen.sealed.insert(oid, 0);
+            }
+            let reached = seen.sealed.get(&oid).copied();
+            let placed = match reached {
+                Some(next) => key.off == next && key.off.is_multiple_of(SEALED_CHUNK),
+                None => true,
+            };
+            if sealed != reached.is_some() || !placed {
+                return Err(at(
+                    "a SEALED record out of a sealed file's run, or the other way",
+                ));
+            }
+            if let Some(next) = seen.sealed.get_mut(&oid) {
+                *next = key.off.saturating_add(len);
+            }
             if !key.off.is_multiple_of(CHUNK) || len == 0 || key.off.saturating_add(len) > size {
                 return Err(at(&format!(
                     "data at {} of {len} bytes, in a file of {size}",
                     key.off
                 )));
             }
-            if (len <= MAX_INLINE as u64) != inline_of(raw).is_some() {
+            if !sealed && (len <= MAX_INLINE as u64) != inline_of(raw).is_some() {
                 return Err(at("data inline that does not fit, or a record that would"));
             }
             seen.data
@@ -239,6 +260,9 @@ fn links(seen: &Seen) -> Result<(), String> {
                 }
                 if !by.contains(&inode.parent) {
                     return fault("a file's parent does not name it");
+                }
+                if seen.sealed.get(ino).is_some_and(|&end| end != inode.size) {
+                    return fault("a sealed file's data does not reach its size");
                 }
             }
         }

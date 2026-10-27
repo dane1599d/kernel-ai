@@ -34,7 +34,7 @@ use crate::allocator::{Allocator, run_of};
 use crate::csum::CsumKind;
 use crate::dev::BlockDev;
 use crate::format::{self, BlockPtr, Superblock};
-use crate::io::{Meta, RECORD_VALUE, TAG_RECORD, Volume};
+use crate::io::{Meta, Volume, record_raw};
 use crate::tree::{Key, Tree};
 use crate::txn::{Action, undo_parts};
 use crate::vol::{
@@ -47,7 +47,8 @@ use alloc::vec::Vec;
 
 pub(crate) use crate::io::inline_raw;
 pub use crate::io::{
-    Faults, Io, MAX_INLINE, MAX_RECORD, Value, decode_value, inline_of, record_of, value_len,
+    Faults, Io, MAX_INLINE, MAX_RECORD, MAX_SEALED, Value, decode_value, inline_of, record_of,
+    sealed_of, value_len,
 };
 pub use crate::vol::{FIRST_OID, HOME, MODELS, SYSTEM, Snap, VOLUMES};
 
@@ -517,11 +518,17 @@ impl<D: BlockDev> Fs<D> {
             return Err(Error::Invalid("a record of no bytes or over 128 KiB"));
         }
         let ptr = self.io.write_record(data)?;
-        let mut raw = Vec::with_capacity(RECORD_VALUE);
-        raw.push(TAG_RECORD);
-        raw.extend_from_slice(&ptr.encode());
-        raw.extend_from_slice(&(data.len() as u32).to_le_bytes());
-        self.set(key, raw)
+        self.set(key, record_raw(&ptr, data.len()))
+    }
+
+    /// Sets `key` to a SEALED record of 1 to [`MAX_SEALED`] bytes: a sealed
+    /// file's data item.
+    pub(crate) fn put_sealed(&mut self, key: Key, data: &[u8]) -> Result<(), Error> {
+        if data.is_empty() || data.len() > MAX_SEALED {
+            return Err(Error::Invalid("a sealed record of no bytes or over 2 MiB"));
+        }
+        let ptr = self.io.write_record_as(data, format::FLAG_SEALED)?;
+        self.set(key, record_raw(&ptr, data.len()))
     }
 
     /// Sets `key` to a raw value as `get_raw` returned it; `check --repair` and
