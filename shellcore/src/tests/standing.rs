@@ -186,3 +186,57 @@ fn the_store_reads_back_and_refuses_what_it_could_not_have_written() {
         assert!(Standing::parse(bad).is_none(), "{bad:?}");
     }
 }
+
+#[test]
+fn a_rule_in_the_users_words_reads_and_describes_itself_the_same() {
+    use crate::standing::grammar::parse;
+    for text in [
+        "on minimize(notes) -> app_suspend(notes) until restore(notes)",
+        "on idle(15 min) -> app_suspend(mail)",
+        "on time(22:00) -> app_suspend(game) until time(07:30)",
+        "on focus(game) -> profile_set(gaming)",
+    ] {
+        let draft = parse(text).unwrap_or_else(|why| panic!("{text}: {why}"));
+        assert_eq!(draft.describe(), text);
+    }
+    let spaced = parse("  on   minimize(notes)  ->  app_suspend(notes)  ").unwrap();
+    assert_eq!(
+        spaced.describe(),
+        "on minimize(notes) -> app_suspend(notes)"
+    );
+    let draft = parse("on minimize(notes) -> app_suspend(notes) until restore(notes)").unwrap();
+    assert_eq!(draft.on, when(Kind::Minimize, "notes"));
+    assert_eq!(
+        (draft.action.as_str(), draft.target.as_str()),
+        ("app_suspend", "notes")
+    );
+    assert_eq!(draft.until, Some(when(Kind::Restore, "notes")));
+}
+
+#[test]
+fn a_rule_out_of_shape_is_refused_never_guessed_at() {
+    use crate::standing::grammar::parse;
+    for text in [
+        "",
+        "minimize(notes) -> app_suspend(notes)",
+        "on minimize(notes) app_suspend(notes)",
+        "on minimize(notes) -> app_suspend(notes) until",
+        "on minimize(notes) -> app_suspend(notes) when restore(notes)",
+        "on minimise(notes) -> app_suspend(notes)",
+        "on minimize(Notes) -> app_suspend(notes)",
+        "on minimize(notes) -> app_suspend(../x)",
+        "on minimize(notes) -> App_Suspend(notes)",
+        "on minimize(notes) -> app_suspend notes",
+        "on idle(0 min) -> app_suspend(mail)",
+        "on idle(1441 min) -> app_suspend(mail)",
+        "on idle(-5 min) -> app_suspend(mail)",
+        "on idle(15) -> app_suspend(mail)",
+        "on time(24:00) -> app_suspend(game)",
+        "on time(7:30) -> app_suspend(game)",
+        "on time(07:60) -> app_suspend(game)",
+        "on minimize(notes) -> app_suspend(notes) until restore(notes) and more",
+    ] {
+        assert!(parse(text).is_err(), "{text:?}");
+    }
+    assert!(parse(&"x".repeat(crate::standing::grammar::MAX_TEXT + 1)).is_err());
+}
