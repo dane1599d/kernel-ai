@@ -142,6 +142,10 @@ fn bench() -> Result<(), &'static str> {
         at += n;
     }
     let read = hpet::nanos() - started;
+    // A FLUSH with nothing open ends the read phase, so fs reports it too.
+    if ask(&[stub::FLUSH])? != b"ok" {
+        return Err("part: fs refused the flush");
+    }
     let rate = |ns: u64| FILE_BYTES * 1_000 / ns.max(1);
     log!(
         "part: S04-2 on the real calls: {} MiB in {} B messages, write {} MB/s (to the flush), read {} MB/s, {} cpus",

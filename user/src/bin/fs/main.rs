@@ -199,6 +199,11 @@ fn startup(kind: Kind) -> Option<Handle> {
 struct Bench {
     file: Option<u64>,
     open: bool,
+    /// The phase so far (since the last FLUSH): when it began, its messages,
+    /// and the time spent in `fs` answering them.
+    began: Option<u64>,
+    messages: u64,
+    inside: u64,
 }
 
 impl Bench {
@@ -211,10 +216,44 @@ impl Bench {
         if request == stub::CHECK {
             return check::run(part).into_bytes();
         }
-        match self.kai_fs(server, request) {
+        let start = sys::time_ns();
+        let began = *self.began.get_or_insert(start);
+        let reply = match self.kai_fs(server, request) {
             Ok(reply) => reply,
             Err(why) => alloc::format!("err {why}").into_bytes(),
+        };
+        let end = sys::time_ns();
+        self.messages += 1;
+        self.inside += end.saturating_sub(start);
+        if request.first() == Some(&stub::FLUSH) {
+            self.report(end.saturating_sub(began));
         }
+        reply
+    }
+
+    /// S04-2's breakdown of one phase (the writes and their commit, or the
+    /// reads): where its time went, for the P2 close's profile.
+    fn report(&mut self, wall: u64) {
+        let ms = |ns: u64| ns / 1_000_000;
+        let [read, write, flush] = dev::take();
+        let disk = read.1 + write.1 + flush.1;
+        println!(
+            "fs: S04-2 phase: {} messages in {} ms; outside fs (IPC and the client) {} ms; in fs {} ms: PART_READ {}x {} ms, PART_WRITE {}x {} ms, PART_FLUSH {}x {} ms, the rest (fsserve and kaifs) {} ms",
+            self.messages,
+            ms(wall),
+            ms(wall.saturating_sub(self.inside)),
+            ms(self.inside),
+            read.0,
+            ms(read.1),
+            write.0,
+            ms(write.1),
+            flush.0,
+            ms(flush.1),
+            ms(self.inside.saturating_sub(disk))
+        );
+        self.began = None;
+        self.messages = 0;
+        self.inside = 0;
     }
 
     fn kai_fs<D: kaifs::BlockDev>(
