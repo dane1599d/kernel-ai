@@ -24,3 +24,9 @@ pub const SHM_BASE: u64 = 0x0000_3000_0000_0000;
 pub const SHM_SLOT: u64 = 0x0000_0000_4000_0000;
 /// First address that is not user space.
 pub const USER_END: u64 = 0x0000_8000_0000_0000;
+/// **Spike S05-1 only:** where SPIKE_DISPLAY_MAP maps the back buffer.
+pub const SPIKE_DISPLAY_BASE: u64 = 0x0000_4000_0000_0000;
+/// **Spike S05-1 only:** shared buffer `id` is at `SPIKE_SHARE_BASE + id *
+/// SPIKE_SHARE_SLOT`.
+pub const SPIKE_SHARE_BASE: u64 = 0x0000_5000_0000_0000;
+pub const SPIKE_SHARE_SLOT: u64 = 0x0000_0000_4000_0000;

@@ -26,6 +26,8 @@ quant = { path = "../quant" }
 sched = { path = "../sched" }
 supervise = { path = "../supervise" }
 shellcore = { path = "../shellcore" }
+# Spike S05-1 only (never merged): the compose program.
+spike-compose = { path = "../spikes/compose" }
 spin = "0.12.3"
 talc = "5.1.1"
 wasmhost = { path = "../wasmhost" }

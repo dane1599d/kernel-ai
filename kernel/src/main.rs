@@ -94,6 +94,8 @@ mod shm_tests;
 mod smp;
 mod smp_tests;
 #[cfg(feature = "spikes")]
+mod spike_compose;
+#[cfg(feature = "spikes")]
 mod spikes;
 mod stop_tests;
 mod terminal;
@@ -301,6 +303,8 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Keyboard => run_case(keyboard::typing_check),
         SelfTest::Pointer => run_case(pointer::self_test),
         SelfTest::Display => run_case(display_tests::check),
+        #[cfg(feature = "spikes")]
+        SelfTest::Compose => run_case(spike_compose::check),
         SelfTest::Usb => run_case(usb::self_test),
         SelfTest::Sched => run_case(sched_tests::latency_check),
         SelfTest::Watchdog => run_case(sched_tests::watchdog_check),

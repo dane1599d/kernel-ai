@@ -1,9 +1,9 @@
 name: CI
 
+# Spike S05-1's branch only: CI runs by hand, so the spike's PR does not boot the
+# whole matrix; .github/workflows/s05-1.yml runs the spike.
 on:
-  push:
-    branches: [main]
-  pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read

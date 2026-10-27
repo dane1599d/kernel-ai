@@ -55,9 +55,39 @@ fn check(addr: u64) -> Result<(), Error> {
 /// 1 when the word did not hold `expected`; TimedOut, or Dead once killed.
 pub fn wait(slot: usize, addr: u64, expected: u64, timeout_ms: u64) -> Result<u64, Error> {
     check(addr)?;
+    let key = (identity(slot).pid, addr);
+    wait_on(slot, addr, key, expected, timeout_ms)
+}
+
+/// Spike S05-1: as [`wait`], keyed by the word's physical address under a pid no
+/// process has, so a process waits on a word another one rings.
+#[cfg(feature = "spikes")]
+pub fn wait_shared(slot: usize, addr: u64, expected: u64, timeout_ms: u64) -> Result<u64, Error> {
+    check(addr)?;
+    let key = (SHARED, uaccess::phys_of(slot, addr)?);
+    wait_on(slot, addr, key, expected, timeout_ms)
+}
+
+/// Spike S05-1: as [`wake`], for [`wait_shared`].
+#[cfg(feature = "spikes")]
+pub fn wake_shared(slot: usize, addr: u64, count: u64) -> Result<u64, Error> {
+    check(addr)?;
+    Ok(wake_key((SHARED, uaccess::phys_of(slot, addr)?), count))
+}
+
+/// The pid [`wait_shared`]'s keys use.
+#[cfg(feature = "spikes")]
+const SHARED: u64 = u64::MAX;
+
+fn wait_on(
+    slot: usize,
+    addr: u64,
+    key: (u64, u64),
+    expected: u64,
+    timeout_ms: u64,
+) -> Result<u64, Error> {
     let expected = u32::try_from(expected).map_err(|_| Error::Invalid)?;
     let phys = uaccess::phys_of(slot, addr)?;
-    let pid = identity(slot).pid;
     let tid = threads::current_tid();
     // SAFETY: `phys` is a frame of this process, which is not freed while this
     // thread lives, reached through the direct map; the word is 4-byte aligned.
@@ -67,7 +97,7 @@ pub fn wait(slot: usize, addr: u64, expected: u64, timeout_ms: u64) -> Result<u6
             return false;
         }
         WOKEN[tid].store(false, Ordering::SeqCst);
-        waiting[tid] = Some((pid, addr));
+        waiting[tid] = Some(key);
         true
     });
     if !registered {
@@ -99,7 +129,10 @@ pub fn wait(slot: usize, addr: u64, expected: u64, timeout_ms: u64) -> Result<u6
 /// word at `addr`, and returns how many.
 pub fn wake(slot: usize, addr: u64, count: u64) -> Result<u64, Error> {
     check(addr)?;
-    let pid = identity(slot).pid;
+    Ok(wake_key((identity(slot).pid, addr), count))
+}
+
+fn wake_key(key: (u64, u64), count: u64) -> u64 {
     let mut woken: [Option<Tid>; MAX_THREADS] = [None; MAX_THREADS];
     let mut n = 0;
     with_waiting(|waiting| {
@@ -107,7 +140,7 @@ pub fn wake(slot: usize, addr: u64, count: u64) -> Result<u64, Error> {
             if n as u64 >= count {
                 break;
             }
-            if *entry == Some((pid, addr)) {
+            if *entry == Some(key) {
                 *entry = None;
                 WOKEN[tid].store(true, Ordering::SeqCst);
                 woken[n] = Some(tid);
@@ -116,7 +149,7 @@ pub fn wake(slot: usize, addr: u64, count: u64) -> Result<u64, Error> {
         }
     });
     interrupts::without_interrupts(|| threads::wake_all(woken.iter().flatten().copied()));
-    Ok(n as u64)
+    n as u64
 }
 
 /// Threads of process `pid` waiting in FUTEX_WAIT now, for the tests.

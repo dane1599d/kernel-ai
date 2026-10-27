@@ -1,0 +1,18 @@
+[package]
+name = "spike-compose"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Spike S05-1 "compose and look" (ADR 0005): gfx2d's stack, no_std, for the
+# hard-float ring-3 target. Never merged.
+[lib]
+doctest = false
+
+[dependencies]
+tiny-skia = { version = "=0.12.0", default-features = false, features = ["no-std-float", "simd"] }
+skrifa = { version = "=0.48.0", default-features = false, features = ["libm"] }
+harfrust = { version = "=0.14.0", default-features = false, features = ["libm"] }
+vello_cpu = { version = "=0.3.0", default-features = false, features = ["libm", "u8_pipeline"] }
+libm = "0.2.15"

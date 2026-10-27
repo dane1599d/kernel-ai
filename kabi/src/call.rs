@@ -252,3 +252,25 @@ pub const JOB_KILL: u64 = 62;
 pub const THREAD_PIN: u64 = 63;
 /// The highest call number.
 pub const MAX: u64 = THREAD_PIN;
+
+/// **Spike S05-1 only** (ADR 0005; the kernel's `spikes` feature; never merged).
+/// `spike_display_map(&mut [u64; 3]) -> address`: the console stops drawing and
+/// the display's back buffer is mapped read-write at
+/// [`crate::layout::SPIKE_DISPLAY_BASE`] in 4 KiB pages; writes width, height and
+/// stride (pixels). NotFound without a display.
+pub const SPIKE_DISPLAY_MAP: u64 = 0x5051;
+/// **Spike S05-1 only.** `spike_display_flush(rects, n <= 32) -> 0`: each of `n`
+/// `[x, y, width, height]` u32 rectangles of the back buffer goes on screen.
+pub const SPIKE_DISPLAY_FLUSH: u64 = 0x5052;
+/// **Spike S05-1 only.** `spike_share_map(id < 4, bytes) -> address`: shared
+/// zeroed pages, the same for every process that maps `id`, read-write at
+/// `SPIKE_SHARE_BASE + id * SPIKE_SHARE_SLOT`. The first call sets the size.
+pub const SPIKE_SHARE_MAP: u64 = 0x5053;
+/// **Spike S05-1 only.** As FUTEX_WAIT, but keyed by the word's physical frame,
+/// so a waiter in one process is woken from another through a shared page.
+pub const SPIKE_BELL_WAIT: u64 = 0x5054;
+/// **Spike S05-1 only.** As FUTEX_WAKE, for [`SPIKE_BELL_WAIT`].
+pub const SPIKE_BELL_RING: u64 = 0x5055;
+/// **Spike S05-1 only.** `spike_mark() -> 0`: the kernel logs "ready for keys",
+/// so xtask takes the next screendump.
+pub const SPIKE_MARK: u64 = 0x5056;

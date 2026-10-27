@@ -746,3 +746,50 @@ pub fn once_check(badge: u64, digest: &[u8; 32]) -> Result<(), Error> {
     )
     .map(|_| ())
 }
+
+/// Spike S05-1: the kernel logs "ready for keys" for xtask's next screendump.
+pub fn spike_mark() -> Result<u64, Error> {
+    call(call::SPIKE_MARK, [0; 6])
+}
+
+/// Spike S05-1: maps the display's back buffer; returns its address and writes
+/// width, height and stride (pixels) to `info`.
+pub fn spike_display_map(info: &mut [u64; 3]) -> Result<u64, Error> {
+    call(
+        call::SPIKE_DISPLAY_MAP,
+        [info.as_mut_ptr() as u64, 0, 0, 0, 0, 0],
+    )
+}
+
+/// Spike S05-1: flushes `rects`, each `[x, y, width, height]`, at most 32.
+pub fn spike_display_flush(rects: &[[u32; 4]]) -> Result<u64, Error> {
+    call(
+        call::SPIKE_DISPLAY_FLUSH,
+        [rects.as_ptr() as u64, rects.len() as u64, 0, 0, 0, 0],
+    )
+}
+
+/// Spike S05-1: maps shared buffer `id` of `bytes`; returns its address.
+pub fn spike_share_map(id: u64, bytes: u64) -> Result<u64, Error> {
+    call(call::SPIKE_SHARE_MAP, [id, bytes, 0, 0, 0, 0])
+}
+
+/// Spike S05-1: as [`futex_wait`], across processes through a shared page.
+pub fn spike_bell_wait(
+    word: *const AtomicU32,
+    expected: u32,
+    timeout_ms: u64,
+) -> Result<u64, Error> {
+    call(
+        call::SPIKE_BELL_WAIT,
+        [word as u64, u64::from(expected), timeout_ms, 0, 0, 0],
+    )
+}
+
+/// Spike S05-1: as [`futex_wake`], for [`spike_bell_wait`].
+pub fn spike_bell_ring(word: *const AtomicU32) -> Result<u64, Error> {
+    call(
+        call::SPIKE_BELL_RING,
+        [word as u64, u64::MAX >> 32, 0, 0, 0, 0],
+    )
+}

@@ -11,6 +11,8 @@ mod net;
 mod sched;
 mod service;
 mod shm;
+#[cfg(feature = "spikes")]
+mod spike;
 mod supervise;
 
 use crate::entry::TrapFrame;
@@ -70,6 +72,8 @@ const AREAS: &[Area] = &[
     device::handle,
     shm::handle,
     job::handle,
+    #[cfg(feature = "spikes")]
+    spike::handle,
 ];
 
 fn handle(slot: usize, number: u64, a: [u64; 6]) -> Result<u64, Error> {

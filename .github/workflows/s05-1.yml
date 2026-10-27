@@ -1,0 +1,121 @@
+# Spike S05-1 "compose and look" (ADR 0005), on spike/compose only; never merged.
+# Boots `test=compose` at 1280x800, 1920x1080, 2560x1440 and 3840x2160 under KVM
+# (the gate) and at 1280x800 under TCG (recorded only), prints every figure, and
+# uploads the 1920x1080 screendumps of each panel state, dark and light. No model.
+name: S05-1 compose and look
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [spike/compose]
+
+concurrency:
+  group: s05-1-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Inter 4.1 and JetBrains Mono 2.304, OFL-1.1, pinned by SHA-256.
+  INTER_URL: https://github.com/rsms/inter/releases/download/v4.1/Inter-4.1.zip
+  INTER_SHA256: 9883fdd4a49d4fb66bd8177ba6625ef9a64aa45899767dde3d36aa425756b11e
+  MONO_URL: https://github.com/JetBrains/JetBrainsMono/releases/download/v2.304/JetBrainsMono-2.304.zip
+  MONO_SHA256: 6f6376c6ed2960ea8a963cd7387ec9d76e3f629125bc33d1fdcd7eb7012f7bbf
+
+jobs:
+  qemu:
+    name: QEMU 11.0.5 (built once, cached)
+    runs-on: ubuntu-24.04
+    env:
+      QEMU_VERSION: "11.0.5"
+      QEMU_SHA256: 38a1a09f349660cb0e20b8fe5f224d6a53ec4235eb36f2e33a31e21bb6138147
+    steps:
+      - id: cache
+        uses: actions/cache@v4
+        with:
+          path: ~/qemu
+          key: qemu-${{ env.QEMU_VERSION }}-ubuntu-24.04-v1
+          lookup-only: true
+      - name: Build QEMU ${{ env.QEMU_VERSION }}
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ninja-build pkg-config python3-venv \
+            libglib2.0-dev libpixman-1-dev libslirp-dev libfdt-dev flex bison
+          curl -sSfL "https://download.qemu.org/qemu-$QEMU_VERSION.tar.xz" -o qemu.tar.xz
+          echo "$QEMU_SHA256  qemu.tar.xz" | sha256sum -c -
+          tar -xJf qemu.tar.xz
+          cd "qemu-$QEMU_VERSION"
+          ./configure --prefix="$HOME/qemu" --target-list=x86_64-softmmu --enable-slirp \
+            --disable-docs --disable-gtk --disable-sdl --disable-opengl --disable-werror
+          make -j"$(nproc)" install
+      - name: Save QEMU ${{ env.QEMU_VERSION }}
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/qemu
+          key: qemu-${{ env.QEMU_VERSION }}-ubuntu-24.04-v1
+    timeout-minutes: 40
+
+  compose:
+    name: S05-1 (${{ matrix.accel }})
+    runs-on: ubuntu-24.04
+    needs: qemu
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - accel: kvm
+            cases: compose-1280,compose-1920,compose-2560,compose-3840
+          - accel: tcg
+            cases: compose-1280
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/qemu
+      - name: The runner's CPU
+        run: |
+          nproc
+          grep -m1 '^model name' /proc/cpuinfo
+          grep -m1 '^flags' /proc/cpuinfo | grep -o -w -E 'avx2|avx512f|avx512bw' | xargs echo
+      - name: Allow KVM for the runner user
+        if: matrix.accel == 'kvm'
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Fetch the fonts by SHA-256
+        run: |
+          mkdir -p "$RUNNER_TEMP/fonts" && cd "$RUNNER_TEMP/fonts"
+          curl -sSfL "$INTER_URL" -o inter.zip
+          echo "$INTER_SHA256  inter.zip" | sha256sum -c -
+          curl -sSfL "$MONO_URL" -o mono.zip
+          echo "$MONO_SHA256  mono.zip" | sha256sum -c -
+          unzip -j -q inter.zip InterVariable.ttf
+          unzip -j -q mono.zip 'fonts/variable/JetBrainsMono\[wght\].ttf'
+          mv 'JetBrainsMono[wght].ttf' JetBrainsMono.ttf
+          ls -l
+          echo "KAI_FONTS=$RUNNER_TEMP/fonts" >> "$GITHUB_ENV"
+      - name: Install pinned toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Install the WebAssembly target for live components
+        run: rustup target add wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: s05-1
+      - name: The scenes
+        env:
+          XTASK_CASE: ${{ matrix.cases }}
+        run: cargo xtask test --accel ${{ matrix.accel }} --timeout 900 2>&1 | tee compose.log
+      - name: The figures
+        if: always()
+        run: grep -E "compose: |\[compose\]|\[compositor\]|xtask: (PASS|FAIL)" compose.log || true
+      - name: Boot image size with the fonts
+        if: always()
+        run: ls -l target/*/debug/user/compose target/x86_64-kai-user/*/compose 2>/dev/null || find target -name compose -type f -exec ls -l {} \;
+      - uses: actions/upload-artifact@v4
+        if: always() && matrix.accel == 'kvm'
+        with:
+          name: s05-1-screendumps
+          path: |
+            target/compose-*.ppm
+            compose.log
+    timeout-minutes: 60

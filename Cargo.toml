@@ -35,6 +35,7 @@ members = [
     "quant",
     "sched",
     "shellcore",
+    "spikes/compose",
     "spikes/rhai",
     "spikes/wasmi",
     "supervise",

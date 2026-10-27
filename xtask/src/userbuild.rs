@@ -32,6 +32,8 @@ const USER_FLOAT_PROGRAMS: &[&str] = &[
     "workers",
     "comphost",
     "appbench",
+    // Spike S05-1 only (never merged).
+    "compose",
 ];
 /// The view guest `appbench` embeds, built first.
 const APPBENCH_GUEST: &str = "comp-viewbench";

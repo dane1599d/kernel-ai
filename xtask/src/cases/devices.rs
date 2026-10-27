@@ -220,3 +220,45 @@ pub(super) const CASES: &[TestCase] = &[
         ..case("display-gop", "test=display")
     },
 ];
+
+/// The screendumps S05-1's `compose` takes at 1920x1080: every panel state, dark
+/// then light.
+const SHOTS: &[&[&str]] = &[
+    &["!screendump compose-dark-idle.ppm"],
+    &["!screendump compose-dark-listening.ppm"],
+    &["!screendump compose-dark-thinking.ppm"],
+    &["!screendump compose-dark-acting.ppm"],
+    &["!screendump compose-dark-done.ppm"],
+    &["!screendump compose-dark-asking.ppm"],
+    &["!screendump compose-dark-refused.ppm"],
+    &["!screendump compose-light-idle.ppm"],
+    &["!screendump compose-light-listening.ppm"],
+    &["!screendump compose-light-thinking.ppm"],
+    &["!screendump compose-light-acting.ppm"],
+    &["!screendump compose-light-done.ppm"],
+    &["!screendump compose-light-asking.ppm"],
+    &["!screendump compose-light-refused.ppm"],
+];
+
+const fn compose(
+    name: &'static str,
+    cmdline: &'static str,
+    keys: &'static [&'static [&'static str]],
+) -> TestCase {
+    TestCase {
+        gpu: true,
+        keys,
+        expect: &["compose: done", "(e) "],
+        memory_mib: Some(3072),
+        min_timeout: Some(std::time::Duration::from_secs(900)),
+        ..case(name, cmdline)
+    }
+}
+
+/// Spike S05-1 "compose and look" (ADR 0005; never merged): `XTASK_CASE=compose-...`.
+pub const SPIKE_CASES: &[TestCase] = &[
+    compose("compose-1280", "test=compose display=1280x800", &[]),
+    compose("compose-1920", "test=compose display=1920x1080", SHOTS),
+    compose("compose-2560", "test=compose display=2560x1440", &[]),
+    compose("compose-3840", "test=compose display=3840x2160", &[]),
+];

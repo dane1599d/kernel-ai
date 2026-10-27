@@ -35,6 +35,9 @@ pub enum SelfTest {
     Display,
     /// P7: keys and pointer reports arrive from a USB keyboard, mouse or tablet.
     Usb,
+    /// Spike S05-1 (the `spikes` feature only): `compose`'s scenes and figures.
+    #[cfg(feature = "spikes")]
+    Compose,
     Sched,
     Watchdog,
     Smp,
@@ -144,6 +147,8 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=keyboard" => Some(SelfTest::Keyboard),
             "test=pointer" => Some(SelfTest::Pointer),
             "test=display" => Some(SelfTest::Display),
+            #[cfg(feature = "spikes")]
+            "test=compose" => Some(SelfTest::Compose),
             "test=usb" => Some(SelfTest::Usb),
             "test=sched" => Some(SelfTest::Sched),
             "test=watchdog" => Some(SelfTest::Watchdog),

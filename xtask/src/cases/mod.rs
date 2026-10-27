@@ -112,6 +112,7 @@ const LANES: &[&[TestCase]] = &[
     components::CASES,
     network::CASES,
     storage::CASES,
+    devices::SPIKE_CASES,
 ];
 
 /// The cases `cargo xtask test` boots.
@@ -141,6 +142,7 @@ mod tests {
             components::CASES,
             network::CASES,
             storage::CASES,
+            devices::SPIKE_CASES,
         ];
         assert_eq!(
             cases.len(),
