@@ -322,7 +322,15 @@ impl Drill {
                 self.hangs,
             ),
         };
-        let normal = first == Command::Reboot && self.nv.record.slot(slot).successful;
+        // ADR 0008's normal boot: a committed slot restarted with nothing to
+        // clear. The first restart after a fault also clears `failures` (or
+        // `safe_once`), a real change to the record, so it writes it as well.
+        let state = self.nv.record.slot(slot);
+        let normal = first == Command::Reboot
+            && state.successful
+            && state.failures == 0
+            && !self.nv.record.safe_once
+            && self.nv.record.armed == Some(slot);
         let mut queue = vec![first];
         let mut end = drill::run(&mut self.nv, slot, first);
         while end == End::Stay {
@@ -573,7 +581,7 @@ fn report(stats: &Stats, accel: Accel, took: Duration, options: &Options) -> Res
         stats.default_ignored, stats.default_checks
     );
     println!(
-        "xtask: efi-ab: SetVariable calls per normal boot: max {max_normal_sets} over {} normal boots",
+        "xtask: efi-ab: SetVariable calls per normal boot (a committed slot restarted, nothing to clear): max {max_normal_sets} over {} normal boots",
         stats.normal_sets.len()
     );
     println!(
