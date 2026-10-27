@@ -41,7 +41,8 @@ pub struct ServiceSpec {
 /// startup `Dir` for it in the service's table, on the `fs` route, and lets the
 /// service hold `Dir` and `File` handles. The authority is the plan line, which
 /// only the kernel and the supervisor write: no capability bit stands for it,
-/// and no program name is bound to it.
+/// and the kernel hard-codes no program name. The folder goes only to the
+/// line's own program, its `program=` or else its name ([`Plan::grants`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Folder {
     /// `/system/pkg`, the package store (ADR 0011 §5).
@@ -261,6 +262,26 @@ pub fn check(request: Request, records: &[Record]) -> Result<usize, &'static str
 pub struct Plan {
     pub services: Vec<ServiceSpec>,
     pub errors: Vec<String>,
+}
+
+impl Plan {
+    /// The routes (`uses=`) and folders (`dir=`) this plan grants service `name`
+    /// running `program`; none for a service it does not list. A line's folders
+    /// go only to its own program, its `program=` or else its name: started with
+    /// any other, the service is refused, as PUBLISH is, so a spawn that keeps
+    /// the name and swaps the program never gets the folder (ADR 0011 §12).
+    pub fn grants(&self, name: &str, program: &str) -> Result<(Vec<String>, Vec<Folder>), String> {
+        let Some(service) = self.services.iter().find(|s| s.name == name) else {
+            return Ok(Default::default());
+        };
+        if !service.dirs.is_empty() && service.program != program {
+            return Err(format!(
+                "{name}: its dir= is for program {}, not {program}",
+                service.program
+            ));
+        }
+        Ok((service.uses.clone(), service.dirs.clone()))
+    }
 }
 
 /// Reads the plan: one service per line, `name [program=P] [pages=N] [stack_pages=N]

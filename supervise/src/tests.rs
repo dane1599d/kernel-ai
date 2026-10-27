@@ -91,6 +91,28 @@ fn plan_rejects_bad_lines() {
 }
 
 #[test]
+fn a_lines_folders_go_only_to_its_own_program() {
+    let plan = parse_plan(
+        "fs caps=serve\npkg dir=pkg\nstore program=pkgd dir=pkg\nnotes caps=call uses=fs",
+    );
+    assert!(plan.errors.is_empty(), "{:?}", plan.errors);
+    let (_, dirs) = plan.grants("pkg", "pkg").unwrap();
+    assert_eq!(dirs, [Folder::Pkg]);
+    // The name kept, the program swapped: refused, never started without it.
+    let refused = plan.grants("pkg", "notes").unwrap_err();
+    assert!(refused.contains("for program pkg, not notes"), "{refused}");
+    // A line's `program=` is the program its folder goes to, not its name.
+    assert_eq!(plan.grants("store", "pkgd").unwrap().1, [Folder::Pkg]);
+    assert!(plan.grants("store", "store").is_err());
+    // A line with no folder keeps today's rule; routes come as before.
+    assert_eq!(
+        plan.grants("notes", "comphost"),
+        Ok((vec!["fs".into()], vec![]))
+    );
+    assert_eq!(plan.grants("absent", "pkg"), Ok(Default::default()));
+}
+
+#[test]
 fn dir_grants_only_the_folders_it_names() {
     let plan = parse_plan("pkg dir=pkg step=install").services;
     assert_eq!(plan[0].dirs, [Folder::Pkg]);
