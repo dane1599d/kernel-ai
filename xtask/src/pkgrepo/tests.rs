@@ -5,7 +5,7 @@ use kaipkg::header::Kind;
 use kaipkg::version::Version;
 use serde_json::Map;
 
-const NOW: Time = Time(1_793_000_000);
+pub(super) const NOW: Time = Time(1_793_000_000);
 
 impl Repository {
     fn get(&self, path: &str) -> Option<&[u8]> {
@@ -31,11 +31,11 @@ fn notes_artifact() -> Vec<u8> {
     .unwrap()
 }
 
-fn notes() -> Package {
+pub(super) fn notes() -> Package {
     pack(&crate::workspace_root(), &APPS[0], &notes_artifact()).unwrap()
 }
 
-fn keys(base: u8) -> Keys {
+pub(super) fn keys(base: u8) -> Keys {
     let key = |n: u8| Key::from_seed([base.wrapping_add(n); 32]);
     Keys {
         root: key(0),
