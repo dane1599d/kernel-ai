@@ -20,7 +20,7 @@
 //! Every block a commit allocates is in its own entries, the allocator's own
 //! blocks included, so a mount rebuilds exactly the state the commit had.
 
-use crate::buddy::{Buddy, Run, level_for, tile};
+use crate::buddy::{Buddy, Run, TOP, level_for, tile};
 use crate::csum::CsumKind;
 use crate::dev::BlockDev;
 use crate::format::{self, BlockPtr, KIND_ALLOC, PTR_BYTES};
@@ -106,11 +106,17 @@ fn joined(runs: &[Run]) -> Vec<(u64, u64)> {
     out
 }
 
-/// The run a pointer's blocks occupy.
+/// The run a pointer's blocks occupy. A SEALED record's is always a whole
+/// top-level run (ADR 0004 §8), however short its last piece, so a blob's
+/// pieces can lie end to end.
 pub fn run_of(ptr: &BlockPtr) -> Run {
+    let level = match ptr.flags & format::FLAG_SEALED {
+        0 => level_for(u64::from(ptr.blocks)),
+        _ => TOP,
+    };
     Run {
         addr: ptr.addr,
-        level: level_for(u64::from(ptr.blocks)),
+        level,
     }
 }
 

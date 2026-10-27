@@ -7,7 +7,7 @@ use crate::allocator::{Allocator, run_of};
 use crate::buddy::level_for;
 use crate::csum::CsumKind;
 use crate::dev::BlockDev;
-use crate::format::{self, BlockPtr, FLAG_SHARED, KIND_NODE, KIND_RECORD, PTR_BYTES};
+use crate::format::{self, BlockPtr, FLAG_SEALED, FLAG_SHARED, KIND_NODE, KIND_RECORD, PTR_BYTES};
 use crate::tree::{MAX_VALUE, Node, Store};
 use crate::{BLOCK, Block};
 use alloc::vec;
@@ -16,6 +16,9 @@ use alloc::vec::Vec;
 /// The largest data record: 128 KiB (ADR 0004 §1; sealed 2 MiB blobs come with
 /// task 10's model store).
 pub const MAX_RECORD: usize = 128 << 10;
+/// The longest record of a sealed file's data item (ADR 0004 §8): one top-level
+/// buddy run.
+pub const MAX_SEALED: usize = 2 << 20;
 /// The largest inline value: a tree value less its tag byte.
 pub const MAX_INLINE: usize = MAX_VALUE - 1;
 
@@ -131,8 +134,18 @@ impl<D: BlockDev> Io<D> {
 
     /// Writes `data` as a record to a free run and returns its pointer.
     pub(crate) fn write_record(&mut self, data: &[u8]) -> Result<BlockPtr, Error> {
+        self.write_record_as(data, 0)
+    }
+
+    /// [`Io::write_record`] with the pointer's `flags`: SEALED for a sealed
+    /// file's data.
+    pub(crate) fn write_record_as(&mut self, data: &[u8], flags: u16) -> Result<BlockPtr, Error> {
         let blocks = data.len().div_ceil(BLOCK);
-        let run = self.alloc.alloc(level_for(blocks as u64))?;
+        let level = match flags & FLAG_SEALED {
+            0 => level_for(blocks as u64),
+            _ => crate::buddy::TOP,
+        };
+        let run = self.alloc.alloc(level)?;
         let mut padded = vec![0; blocks * BLOCK];
         padded[..data.len()].copy_from_slice(data);
         for (i, chunk) in padded.as_chunks::<BLOCK>().0.iter().enumerate() {
@@ -144,7 +157,7 @@ impl<D: BlockDev> Io<D> {
             blocks: blocks as u32,
             kind: KIND_RECORD,
             level: 0,
-            flags: 0,
+            flags,
             csum: self.kind.sum(&padded),
         })
     }
@@ -154,9 +167,13 @@ impl<D: BlockDev> Io<D> {
         let bad = Error::Corrupt("record");
         let (start, end) = format::data_area(self.dev.info().blocks);
         let blocks = ptr.blocks as usize;
+        let max = match ptr.flags & FLAG_SEALED {
+            0 => MAX_RECORD,
+            _ => MAX_SEALED,
+        };
         if ptr.kind != KIND_RECORD
             || blocks == 0
-            || blocks * BLOCK > MAX_RECORD
+            || blocks * BLOCK > max
             || len > blocks * BLOCK
             || len <= (blocks - 1) * BLOCK
             || ptr.addr < start
@@ -238,6 +255,20 @@ pub(crate) fn inline_raw(bytes: &[u8]) -> Vec<u8> {
     raw.push(TAG_INLINE);
     raw.extend_from_slice(bytes);
     raw
+}
+
+/// The raw value naming the record `ptr` of `len` bytes.
+pub(crate) fn record_raw(ptr: &BlockPtr, len: usize) -> Vec<u8> {
+    let mut raw = Vec::with_capacity(RECORD_VALUE);
+    raw.push(TAG_RECORD);
+    raw.extend_from_slice(&ptr.encode());
+    raw.extend_from_slice(&(len as u32).to_le_bytes());
+    raw
+}
+
+/// Whether a raw value names a SEALED record: a sealed file's data.
+pub fn sealed_of(raw: &[u8]) -> bool {
+    record_of(raw).is_some_and(|(ptr, _)| ptr.flags & FLAG_SEALED != 0)
 }
 
 /// A raw value's inline bytes, if it holds them inline.
