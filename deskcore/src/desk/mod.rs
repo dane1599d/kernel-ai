@@ -10,13 +10,22 @@
 //!   (xdg-activation-v1's rule).
 //! - Super, or Ctrl+Space, focuses the AI panel from anywhere.
 //! - Every change damages what it uncovers and what it covers.
+//! - The trusted layer (ADR 0005 §7): an ask card sits above every window and
+//!   takes only y, n or a click on its buttons; Enter does nothing, no window
+//!   gets a key or a click while it is up, and keys held before it appeared are
+//!   dropped on release. A key or click by the user in the window the agent is
+//!   acting on stops the agent ("Stopped: you took over").
 
 use crate::chrome::{self, Edges, PANEL, Part, TOP_BAR};
 use crate::damage::Damage;
 use crate::geom::{Point, Rect, Size};
+use crate::trusted::Ask;
 use alloc::string::String;
 use alloc::vec::Vec;
 /// HID keyboard usages (page 0x07) the desk itself reacts to.
+mod ask;
+mod manage;
+
 pub mod usage {
     pub const TAB: u16 = 0x2B;
     pub const SPACE: u16 = 0x2C;
@@ -28,6 +37,8 @@ pub mod usage {
     pub const RIGHT_SHIFT: u16 = 0xE5;
     pub const RIGHT_ALT: u16 = 0xE6;
     pub const RIGHT_GUI: u16 = 0xE7;
+    pub const Y: u16 = 0x1C;
+    pub const N: u16 = 0x11;
 }
 use usage::{SPACE, TAB};
 /// How far each new window opens from the last, down and right.
@@ -72,6 +83,8 @@ pub enum Focus {
     Nothing,
     Window(WindowId),
     Panel,
+    /// The ask card with this log entry id.
+    Ask(u64),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -121,6 +134,10 @@ pub enum Effect {
     },
     /// The close control was pressed: the client decides (`toplevel.close`).
     Close { window: WindowId },
+    /// The user answered the ask card for log entry `id`: y mints its `ONCE`.
+    Answer { id: u64, yes: bool },
+    /// The user acted in the window the agent was driving: stop the run.
+    TookOver { window: WindowId },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -164,6 +181,14 @@ pub struct Desk {
     shift: bool,
     /// Super went down with no other key since: its release focuses the panel.
     super_alone: bool,
+    /// The ask card up now, and where focus goes back to after it.
+    ask: Option<(Ask, Focus)>,
+    /// Keys down when the card appeared: their releases go nowhere.
+    held: Vec<u16>,
+    /// Keys down now.
+    down: Vec<u16>,
+    /// The window the agent is acting on: it has the outline.
+    agent: Option<WindowId>,
 }
 
 impl Desk {
@@ -188,6 +213,10 @@ impl Desk {
             alt: false,
             shift: false,
             super_alone: false,
+            ask: None,
+            held: Vec::new(),
+            down: Vec::new(),
+            agent: None,
         }
     }
 
@@ -368,6 +397,18 @@ impl Desk {
 
     pub fn input(&mut self, input: Input) -> Vec<Effect> {
         let mut effects = Vec::new();
+        if let Input::Key { usage: code, down } = input {
+            match down {
+                true if !self.down.contains(&code) => self.down.push(code),
+                true => {}
+                false => self.down.retain(|&k| k != code),
+            }
+        }
+        if self.ask.is_some() {
+            self.ask_input(input, &mut effects);
+            return effects;
+        }
+        self.takeover(input, &mut effects);
         match input {
             Input::Motion(p) => self.motion(p, &mut effects),
             Input::Button { button, down } => self.button(button, down, &mut effects),
@@ -430,69 +471,6 @@ impl Desk {
         if let Some((window, at)) = over {
             effects.push(Effect::Pointer { window, at });
         }
-    }
-
-    /// Asks the client for the size dragging its `edges` by `delta` gives.
-    fn resize(
-        &mut self,
-        id: WindowId,
-        edges: Edges,
-        start: Rect,
-        delta: Point,
-        effects: &mut Vec<Effect>,
-    ) {
-        let Some(w) = self.window(id) else {
-            return;
-        };
-        let content = chrome::content_of(start);
-        let dw = if edges.right {
-            delta.x
-        } else if edges.left {
-            -delta.x
-        } else {
-            0
-        };
-        let dh = if edges.bottom {
-            delta.y
-        } else if edges.top {
-            -delta.y
-        } else {
-            0
-        };
-        let size = Size {
-            w: (content.w + dw).clamp(w.min.w, w.max.w),
-            h: (content.h + dh).clamp(w.min.h, w.max.h),
-        };
-        // Left and top edges move the corner as well as the size.
-        let x = if edges.left {
-            content.right() - size.w
-        } else {
-            content.x
-        };
-        let y = if edges.top {
-            content.bottom() - size.h
-        } else {
-            content.y
-        };
-        let frame = chrome::frame_for(Rect::new(x, y, content.w, content.h));
-        let activated = self.focus == Focus::Window(id);
-        if let Some(w) = self.windows.iter_mut().find(|w| w.id == id) {
-            // Moved now; the size changes when the client commits it.
-            if w.frame.x != frame.x || w.frame.y != frame.y {
-                let old = w.frame;
-                w.frame = Rect::new(frame.x, frame.y, old.w, old.h);
-                let new = w.frame;
-                self.damage.add(old);
-                self.damage.add(new);
-            }
-            w.restore = None;
-        }
-        effects.push(Effect::Configure {
-            window: id,
-            size,
-            maximized: false,
-            activated,
-        });
     }
 
     fn button(&mut self, button: Button, down: bool, effects: &mut Vec<Effect>) {
@@ -601,98 +579,8 @@ impl Desk {
                 down,
             }),
             Focus::Panel => effects.push(Effect::PanelKey { usage: code, down }),
-            Focus::Nothing => {}
+            Focus::Nothing | Focus::Ask(_) => {}
         }
-    }
-
-    /// Alt+Tab: the next window down the stack comes to the top, minimized ones
-    /// included, which come back.
-    fn cycle(&mut self, effects: &mut Vec<Effect>) {
-        if self.windows.is_empty() {
-            return;
-        }
-        let current = match self.focus {
-            Focus::Window(id) => self.windows.iter().position(|w| w.id == id),
-            _ => None,
-        };
-        // The bottom window rises: repeated presses walk the whole stack.
-        let pick = match current {
-            Some(_) if self.windows.len() > 1 => 0,
-            Some(at) => at,
-            None => self.windows.len() - 1,
-        };
-        let id = self.windows[pick].id;
-        if let Some(w) = self.windows.iter_mut().find(|w| w.id == id) {
-            w.minimized = false;
-            let frame = w.frame;
-            self.damage.add(frame);
-        }
-        self.raise(id);
-        self.set_focus(Focus::Window(id), effects);
-    }
-
-    fn raise(&mut self, id: WindowId) {
-        let Some(at) = self.windows.iter().position(|w| w.id == id) else {
-            return;
-        };
-        if at + 1 == self.windows.len() {
-            return;
-        }
-        let window = self.windows.remove(at);
-        self.damage.add(window.frame);
-        self.windows.push(window);
-    }
-
-    fn minimize(&mut self, id: WindowId, effects: &mut Vec<Effect>) {
-        if let Some(w) = self.windows.iter_mut().find(|w| w.id == id) {
-            w.minimized = true;
-            let frame = w.frame;
-            self.damage.add(frame);
-        }
-        if self.focus == Focus::Window(id) {
-            let next = self.top_visible().map_or(Focus::Nothing, Focus::Window);
-            self.set_focus(next, effects);
-        }
-    }
-
-    fn toggle_maximize(&mut self, id: WindowId, effects: &mut Vec<Effect>) {
-        let area = self.work_area();
-        let activated = self.focus == Focus::Window(id);
-        let Some(w) = self.windows.iter_mut().find(|w| w.id == id) else {
-            return;
-        };
-        let (frame, maximized) = match w.restore.take() {
-            Some(back) => (back, false),
-            None => {
-                w.restore = Some(w.frame);
-                (area, true)
-            }
-        };
-        // Moved now; the client resizes to the content and commits.
-        let content = chrome::content_of(frame);
-        let old = w.frame;
-        let size = Size {
-            w: content.w,
-            h: content.h,
-        };
-        w.frame = Rect::new(frame.x, frame.y, old.w, old.h);
-        let new = w.frame;
-        self.damage.add(old);
-        self.damage.add(new);
-        effects.push(Effect::Configure {
-            window: id,
-            size,
-            maximized,
-            activated,
-        });
-    }
-
-    fn top_visible(&self) -> Option<WindowId> {
-        self.windows
-            .iter()
-            .rev()
-            .find(|w| !w.minimized)
-            .map(|w| w.id)
     }
 
     /// Moves keyboard focus; the old and new windows' title bars repaint.
@@ -708,6 +596,12 @@ impl Desk {
                 let frame = w.frame;
                 self.damage.add(frame.grow(chrome::GRAB));
             }
+        }
+        // A card takes the keyboard back if anything tries to move it away.
+        if let Some((ask, _)) = self.ask
+            && focus != Focus::Ask(ask.id)
+        {
+            return;
         }
         if matches!(self.focus, Focus::Panel) || matches!(focus, Focus::Panel) {
             let panel = self.panel();
