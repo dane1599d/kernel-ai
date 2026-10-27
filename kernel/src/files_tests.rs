@@ -197,8 +197,15 @@ pub fn actions() -> Result<(), &'static str> {
 
 /// One boot of `fs-powercut`: `filecheck` checks every file after the last cut
 /// and leaves `verified-<boot>`, then makes actions until the power goes. Only
-/// the last boot ends the case; the others wait for xtask to cut them.
+/// the last boot ends the case; the others wait for xtask to cut them. With no
+/// `boot=N` (`xtask vbox --powercut`) filecheck numbers the boot and xtask reads
+/// its lines, so this only waits for the power to go.
 pub fn churn(boot: u64, last: bool) -> Result<(), &'static str> {
+    if boot == 0 {
+        loop {
+            threads::sleep_ms(1_000);
+        }
+    }
     wait_for(&format!("verified-{boot}"))
         .map_err(|_| "files: filecheck did not get through the files after the cut")?;
     log!("files: boot {boot}: every file is whole after the cut");

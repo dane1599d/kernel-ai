@@ -10,7 +10,9 @@
 //!   kinds (create, overwrite, rename, trash, and every tenth a restore of the
 //!   last trash), with each commit's latency for ADR 0002's typing-to-done table.
 //! - `step=churn boot=N` (`fs-powercut`): checks every file, leaves
-//!   `verified-N`, then makes actions until xtask cuts the power.
+//!   `verified-N`, then makes actions until xtask cuts the power. `boot=0`
+//!   (`xtask vbox --powercut`, where the command line is the same every boot)
+//!   counts the `verified-*` marks already there instead.
 
 use super::{ask, dir_rights, expect, file_rights, mark, open, read_all};
 use alloc::format;
@@ -58,6 +60,10 @@ pub fn actions(home: Handle) -> Result<(), String> {
 
 /// Checks every file, then makes actions until the power is cut.
 pub fn churn(home: Handle, boot: u64) -> Result<(), String> {
+    let boot = match boot {
+        0 => next_boot(home)?,
+        n => n,
+    };
     let dir = match open(home, DIR, How::Existing, dir_rights()) {
         Ok(dir) => dir,
         Err(_) => open(home, DIR, How::Mkdir, dir_rights())?,
@@ -74,6 +80,15 @@ pub fn churn(home: Handle, boot: u64) -> Result<(), String> {
         step(dir, i, &mut state)?;
         i += 1;
     }
+}
+
+/// One past the `verified-N` marks in `home`.
+fn next_boot(home: Handle) -> Result<u64, String> {
+    let marks = listing(home)?
+        .iter()
+        .filter_map(|name| name.strip_prefix("verified-")?.parse::<u64>().ok())
+        .max();
+    Ok(marks.unwrap_or(0) + 1)
 }
 
 /// Action `i`; a restore every tenth, else one of four changes.

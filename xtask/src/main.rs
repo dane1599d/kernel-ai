@@ -382,7 +382,7 @@ fn execute(options: &Options) -> Result<(), String> {
 
 /// When the power goes in boot `boot` of a case with cuts: 0.2 to 2 s after its
 /// line, seeded by the case and the boot, so a failure repeats.
-fn cut_delay(name: &str, boot: u32) -> std::time::Duration {
+pub(crate) fn cut_delay(name: &str, boot: u32) -> std::time::Duration {
     let mut x = name
         .bytes()
         .fold(0xcbf2_9ce4_8422_2325u64 ^ u64::from(boot), |h, b| {
