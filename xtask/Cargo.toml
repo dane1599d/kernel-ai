@@ -13,6 +13,7 @@ gguf = { path = "../gguf" }
 infer = { path = "../infer" }
 diskmap = { path = "../diskmap" }
 kaifs = { path = "../kaifs" }
+kaipkg = { path = "../kaipkg" }
 kabi = { path = "../kabi" }
 kaibundle = { path = "../kaibundle", features = ["alloc"] }
 livecore = { path = "../livecore" }
@@ -27,6 +28,9 @@ object = "0.40.0"
 quant = { path = "../quant" }
 sched = { path = "../sched" }
 rustc-demangle = "0.1.28"
+# The package repository's test keys (pkgrepo/tuf.rs; ADR 0011 §3).
+ed25519-compact = { version = "2.6.0", default-features = false }
+getrandom = "0.2.17"
 serde_json = "1.0.154"
 sha2 = "0.11.1"
 # Grain on for the S12-3 comparison (fluency/grain.rs); the OS shell builds without it.
