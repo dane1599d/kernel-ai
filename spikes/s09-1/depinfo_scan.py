@@ -20,7 +20,9 @@ DIRS = ("x86_64-unknown-none/release", "x86_64-kai-user/release", "wasm32-unknow
 def sources(target):
     seen = set()
     for sub in DIRS:
-        for d in glob.glob(os.path.join(target, sub, "deps", "*.d")):
+        # deps/ in the old layout; build/<package>/<hash>/out/ in cargo's new one.
+        pattern = os.path.join(target, sub, "**", "*.d")
+        for d in glob.glob(pattern, recursive=True):
             with open(d, encoding="utf-8", errors="replace") as f:
                 # After the target's own line, each source has a line `PATH:`.
                 for line in f:

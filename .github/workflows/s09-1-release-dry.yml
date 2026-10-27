@@ -135,14 +135,17 @@ jobs:
           ws=/home/runner/work/kernel-ai/kernel-ai
           mkdir -p offline-home/.cargo && cp -r ~/.cargo/bin offline-home/.cargo/bin
           cp src/.cargo-offline/config.toml offline-home/.cargo/config.toml
-          sed -i "s|directory = \"vendor\"|directory = \"$ws/vendor\"|" offline-home/.cargo/config.toml
+          # The vendored crates sit where the online build read them, so panic
+          # locations and line tables name the same paths.
+          reg=/home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f
+          sed -i "s|directory = \"vendor\"|directory = \"$reg\"|" offline-home/.cargo/config.toml
           docker pull -q buildpack-deps:noble
           start=$(date +%s)
           docker run --rm --network none -u "$(id -u):$(id -g)" \
             -e HOME=/home/runner -e CARGO_HOME=/home/runner/.cargo -e RUSTUP_HOME=/home/runner/.rustup \
             -e PATH=/home/runner/.cargo/bin:/usr/bin:/bin -e CARGO_NET_OFFLINE=true \
             -v "$PWD/offline-home/.cargo:/home/runner/.cargo" -v "$HOME/.rustup:/home/runner/.rustup" \
-            -v "$PWD/src:$ws" -w "$ws" buildpack-deps:noble \
+            -v "$PWD/src:$ws" -v "$PWD/src/vendor:$reg:ro" -w "$ws" buildpack-deps:noble \
             cargo xtask release-image --out offline.img | tee offline.log
           echo "measure offline_build_s $(( $(date +%s) - start ))" | tee -a offline.log
           online=$(sha256sum kernel-ai.img | cut -d' ' -f1)
