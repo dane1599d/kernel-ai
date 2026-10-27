@@ -100,6 +100,9 @@ fn main() -> ExitCode {
         Some("wit-tables") => wit_tables::main(&args[1..]),
         Some("fs") => fs_tool::main(&args[1..]),
         Some("release-image") => release_image::main(&args[1..]),
+        // The release's source tarball carries Limine's pinned files (ADR 0009 D7).
+        Some("limine") => ensure_limine(&workspace_root().join("target"))
+            .map(|efi| println!("xtask: Limine {LIMINE_VERSION} at {}", efi.display())),
         _ => parse_args(&args).and_then(|options| execute(&options)),
     };
     match result {

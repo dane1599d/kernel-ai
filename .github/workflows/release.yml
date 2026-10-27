@@ -76,6 +76,7 @@ jobs:
       - name: Sources, every crate vendored (build-std's too), Limine, and the commit
         run: |
           out="$RUNNER_TEMP/out" && mkdir -p "$out"
+          cargo xtask limine
           git rev-parse --short=12 HEAD > COMMIT
           sysroot=$(rustc --print sysroot)
           mkdir -p .cargo-offline
