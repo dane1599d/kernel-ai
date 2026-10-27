@@ -324,7 +324,7 @@ Thresholds are relative or token-based on purpose: on the same runner a one-sent
 6. **Decided 2026-10-22:** pasted text counts as your own request once you press Enter (D3).
 7. Is running existing MCP tools (from Linux software or other vendors) a product goal for v0.2? It decides how much of the bridge in D9 to build.
 8. The action log stores your requests on disk from P2. How long should it keep them, and should there be a `forget` command?
-9. Moves and overwrites you plainly ask for would run at once with undo; roadmap.md:141 says they ask. Approve the change?
+9. **Decided 2026-10-27:** moves and overwrites you plainly ask for run at once, with undo. Ones the AI picks on its own still ask, and delete still goes through the trash. In P2 task 11, `fs_move` and `fs_write` over an existing file are run-tier with undo when plainly asked.
 10. **Decided 2026-10-22:** Rhai's required `smartstring` 1.0.1 dependency (MPL-2.0+; unmaintained per RUSTSEC-2026-0249, 2026-05-03) stays. Rhai 1.27.0 still requires it (`compact_str` is only an optional feature), so the upgrade does not remove it.
 
 No permissive crate needs approval here. The Rhai 1.27.0 step brings rhai_codegen 3.3.0 (MIT OR Apache-2.0); ADR 0012's PR lists both. If S02-1 or P5 adds one (rmcp 3.6.0 is Apache-2.0), the PR lists it with its licence.
