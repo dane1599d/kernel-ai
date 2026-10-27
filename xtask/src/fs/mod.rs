@@ -8,6 +8,7 @@
 //! cargo xtask fs cat IMAGE GUEST_PATH
 //! cargo xtask fs check IMAGE [--repair]
 //! cargo xtask fs replay BASE LOG
+//! cargo xtask fs case TARGET [--base IMAGE] [--caught]
 //! ```
 //!
 //! - `mkfs` makes a GPT disk with one `kai-data` partition at 2 MiB (P2 plan
@@ -22,6 +23,10 @@
 //!   rules, and `--repair` repairs each volume that fails them.
 //! - `replay` checks every crash state a QEMU blklogwrites log allows, from
 //!   `BASE`, the image as it was before the run (spike S04-3, task 9).
+//! - `case` is task 9's check of a case's data disk: `TARGET/kai-data.img` and
+//!   `TARGET/kai-data.log` as the run left them, from `--base`, the image before
+//!   the run, or from zeros if the guest formatted it. The log must account for
+//!   the disk, then every crash state is replayed; `--caught` wants a violation.
 //!
 //! Guest paths are the guest's: `/home/...`, `/system/...` and
 //! `/system/models/...` are the `home`, `system` and `models` volumes. An image
@@ -33,6 +38,7 @@ mod ops;
 #[cfg(test)]
 mod tests;
 
+use crate::blklog::Expect;
 use std::path::{Path, PathBuf};
 
 const USAGE: &str = "usage: cargo xtask fs mkfs IMAGE [--size MIB] [--label TEXT] [--force]
@@ -40,7 +46,8 @@ const USAGE: &str = "usage: cargo xtask fs mkfs IMAGE [--size MIB] [--label TEXT
        cargo xtask fs ls IMAGE [GUEST_PATH]
        cargo xtask fs cat IMAGE GUEST_PATH
        cargo xtask fs check IMAGE [--repair]
-       cargo xtask fs replay BASE LOG";
+       cargo xtask fs replay BASE LOG
+       cargo xtask fs case TARGET [--base IMAGE] [--caught]";
 
 /// The default data disk: 256 MiB, enough for a dev loop and small on a full C:.
 const DEFAULT_MIB: u64 = 256;
@@ -53,8 +60,10 @@ pub fn main(args: &[String]) -> Result<(), String> {
     let mut iter = rest.iter().map(String::as_str);
     while let Some(word) = iter.next() {
         match word {
-            "--size" | "--label" => flags.push((word, Some(iter.next().ok_or_else(usage)?))),
-            "--force" | "--repair" => flags.push((word, None)),
+            "--size" | "--label" | "--base" => {
+                flags.push((word, Some(iter.next().ok_or_else(usage)?)))
+            }
+            "--force" | "--repair" | "--caught" => flags.push((word, None)),
             w if w.starts_with("--") => return Err(format!("{w}: not an option of fs\n{USAGE}")),
             w => words.push(w),
         }
@@ -113,6 +122,16 @@ pub fn main(args: &[String]) -> Result<(), String> {
                 0 => Ok(()),
                 n => Err(format!("{n} crash states do not check")),
             }
+        }
+        ("case", 1) => {
+            let base = flag("--base").flatten().map(PathBuf::from);
+            let expect = match flag("--caught") {
+                Some(_) => Expect::Caught,
+                None => Expect::Clean,
+            };
+            let figures = blklog::check_case(&path(0)?, base.as_deref(), expect)?;
+            println!("xtask fs: {figures}");
+            Ok(())
         }
         _ => Err(usage()),
     }
