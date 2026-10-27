@@ -31,14 +31,14 @@ const RESULT: &str = "ran 1";
 
 /// Whether `checked` may run apart: its calls are all run-tier rows a child can
 /// make with the handles it is given. Ask-tier rows (the stops) stay in the shell
-/// until the child can show the kernel their ONCE (task 14, part B).
+/// until the child can show the kernel their ONCE (task 14, part B), and so do
+/// file rows: the child holds no `Dir`, and `fs` keys an open action by the
+/// caller's process (P2 task 11).
 pub fn may_run_apart(checked: &Checked) -> bool {
     !checked.script.is_empty()
-        && checked
-            .plan
-            .names()
-            .iter()
-            .all(|name| !agentabi::CALL_ONLY.iter().any(|row| row.name == *name))
+        && checked.plan.names().iter().all(|name| {
+            !agentabi::CALL_ONLY.iter().any(|row| row.name == *name) && !name.starts_with("fs_")
+        })
 }
 
 /// The request a child is sent for `checked`.
