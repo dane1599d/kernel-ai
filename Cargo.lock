@@ -1522,6 +1522,7 @@ dependencies = [
  "appabi",
  "kabi",
  "livecore",
+ "uikit",
  "wasmi",
  "wat",
 ]

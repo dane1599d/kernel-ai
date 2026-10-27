@@ -284,3 +284,49 @@ fn bad_guest_values_are_traps() {
             .contains("wrong type")
     );
 }
+
+#[test]
+fn host_imports_lift_their_arguments_flat_or_by_pointer() {
+    let mut g = Fake::new();
+    let result = Ty::Result(Some(Box::new(Ty::U32)), Some(Box::new(Ty::U8)));
+    // Two flat parameters and a result that comes back by pointer.
+    let small = Func {
+        export: String::new(),
+        params: vec![Ty::String, Ty::U16],
+        result: Some(result.clone()),
+    };
+    let args = vec![Val::String("hi".into()), Val::U16(7)];
+    let mut core = Vec::new();
+    for (v, t) in args.iter().zip(&small.params) {
+        lower(&mut g, v, t, &mut core).unwrap();
+    }
+    core.push(Core::I32(512));
+    assert_eq!(
+        lift_args(&mut g, &small, &core),
+        Ok((args.clone(), Some(512)))
+    );
+    let ok = Val::Result(Ok(Some(Box::new(Val::U32(9)))));
+    store_result(&mut g, &ok, &result, 512).unwrap();
+    assert_eq!(load(&mut Lift::new(&mut g), &result, 512), Ok(ok));
+    // A missing result pointer, or one flat value too many, is a trap.
+    assert!(lift_args(&mut g, &small, &core[..core.len() - 1]).is_err());
+    let plain = Func {
+        result: None,
+        ..small.clone()
+    };
+    assert!(lift_args(&mut g, &plain, &core).is_err());
+    // More than 16 flat parameters come as a pointer to their tuple.
+    let many = Func {
+        export: String::new(),
+        params: vec![Ty::U32; 17],
+        result: None,
+    };
+    let vals: Vec<Val> = (0..17).map(Val::U32).collect();
+    let tuple = Ty::Tuple(many.params.clone());
+    let at = g.realloc(0, 0, align(&tuple), size(&tuple)).unwrap();
+    store(&mut g, &Val::Tuple(vals.clone()), &tuple, at).unwrap();
+    assert_eq!(
+        lift_args(&mut g, &many, &[Core::I32(at as i32)]),
+        Ok((vals, None))
+    );
+}

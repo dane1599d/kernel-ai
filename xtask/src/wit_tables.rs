@@ -1,6 +1,6 @@
 //! `cargo xtask wit-tables [--check]`: writes `wasmhost/src/tables.rs`, the host's
-//! tables for the `kai:app` app world (ADR 0003 section 2): every function the
-//! world imports and exports, its canonical version, its core signature and its
+//! tables for the app worlds it serves, `kai:app` and `kai:ui` (ADR 0003 section 2,
+//! ADR 0005 section 4): every function the worlds import and export, once each, its canonical version, its core signature and its
 //! component types for `appabi`. The OS never parses WIT; this is generated on the
 //! host with wit-parser, and the xtask tests fail when the file drifts from `wit/`.
 
@@ -13,9 +13,8 @@ use wit_parser::{Function, Handle, Resolve, Type, TypeDefKind, WorldItem};
 
 /// Where the generated tables live.
 pub const OUTPUT: &str = "wasmhost/src/tables.rs";
-/// The world whose imports and exports the host serves.
-const PACKAGE: &str = "kai:app";
-const WORLD: &str = "app";
+/// The worlds whose imports and exports the host serves, as (package, world).
+const WORLDS: &[(&str, &str)] = &[("kai:app", "app"), ("kai:ui", "app")];
 
 pub fn main(args: &[String]) -> Result<(), String> {
     let root = crate::workspace_root();
@@ -45,45 +44,68 @@ pub fn check(path: &Path, text: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The tables for the app world, as Rust source.
+/// The tables for the app worlds, as Rust source.
 pub fn generate(wit_root: &Path) -> Result<String, String> {
     let (resolve, packages) = wit::load_tree(wit_root)?;
-    let package = packages
-        .iter()
-        .find(|(name, _)| name.starts_with(&format!("{PACKAGE}@")))
-        .map(|(_, id)| *id)
-        .ok_or_else(|| format!("no package {PACKAGE} under wit/"))?;
-    let world = resolve.packages[package]
-        .worlds
-        .get(WORLD)
-        .copied()
-        .ok_or_else(|| format!("{PACKAGE} has no world {WORLD}"))?;
-    let world = &resolve.worlds[world];
+    let mut worlds = Vec::new();
+    for (package, world) in WORLDS {
+        let id = packages
+            .iter()
+            .find(|(name, _)| name.starts_with(&format!("{package}@")))
+            .map(|(_, id)| *id)
+            .ok_or_else(|| format!("no package {package} under wit/"))?;
+        let world = resolve.packages[id]
+            .worlds
+            .get(*world)
+            .copied()
+            .ok_or_else(|| format!("{package} has no world {world}"))?;
+        worlds.push(&resolve.worlds[world]);
+    }
     let mut out = String::from(HEADER);
-    for (list, items, variant) in [
-        ("IMPORTS", &world.imports, AbiVariant::GuestImport),
-        ("EXPORTS", &world.exports, AbiVariant::GuestExport),
+    for (list, variant) in [
+        ("IMPORTS", AbiVariant::GuestImport),
+        ("EXPORTS", AbiVariant::GuestExport),
     ] {
-        let _ = writeln!(out, "\npub const {list}: &[WitFunc] = &[");
-        for item in items.values() {
-            let WorldItem::Interface { id, .. } = item else {
-                continue;
+        let _ = writeln!(
+            out,
+            "
+pub const {list}: &[WitFunc] = &["
+        );
+        // A world that includes another lists its interfaces again: each once.
+        let mut seen = Vec::new();
+        for world in &worlds {
+            let items = match variant {
+                AbiVariant::GuestImport => &world.imports,
+                _ => &world.exports,
             };
-            let iface = &resolve.interfaces[*id];
-            let pkg = &resolve.packages[iface.package.ok_or("an interface outside a package")?];
-            let name = format!(
-                "{}:{}/{}",
-                pkg.name.namespace,
-                pkg.name.name,
-                iface.name.as_deref().unwrap_or("")
-            );
-            let version = pkg.name.version.as_ref().ok_or("an unversioned package")?;
-            let version = canonical(version.major, version.minor);
-            for func in iface.functions.values() {
-                out.push_str(&entry(&resolve, &name, &version, func, variant)?);
+            for item in items.values() {
+                let WorldItem::Interface { id, .. } = item else {
+                    continue;
+                };
+                if seen.contains(id) {
+                    continue;
+                }
+                seen.push(*id);
+                let iface = &resolve.interfaces[*id];
+                let pkg =
+                    &resolve.packages[iface.package.ok_or("an interface outside a package")?];
+                let name = format!(
+                    "{}:{}/{}",
+                    pkg.name.namespace,
+                    pkg.name.name,
+                    iface.name.as_deref().unwrap_or("")
+                );
+                let version = pkg.name.version.as_ref().ok_or("an unversioned package")?;
+                let version = canonical(version.major, version.minor);
+                for func in iface.functions.values() {
+                    out.push_str(&entry(&resolve, &name, &version, func, variant)?);
+                }
             }
         }
-        out.push_str("];\n");
+        out.push_str(
+            "];
+",
+        );
     }
     rustfmt(&out)
 }
