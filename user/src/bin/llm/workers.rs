@@ -38,6 +38,9 @@ pub fn start() -> &'static dyn Parallel {
     match Pool::new(kabi::thread::MAX_WORKERS) {
         Ok(pool) => {
             let workers: &'static Workers = Box::leak(Box::new(Workers(pool)));
+            // The caller is worker 0 and the pool's threads sit on CPUs 1 onwards:
+            // on CPU 0 it never trades a CPU with one of them.
+            let _ = sys::thread_pin(Some(0));
             calibrate();
             for _ in 0..EMPTY {
                 workers.0.broadcast(&|_, _| {});
