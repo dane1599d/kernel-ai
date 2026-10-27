@@ -44,6 +44,22 @@ pub struct Checked {
     ast: AST,
 }
 
+impl Checked {
+    /// A call shown to the user that no script engine runs: the package store
+    /// (`crate::packages`) runs it; its text, and nothing to run.
+    pub(crate) fn shown_only(call: &str) -> Self {
+        Self {
+            summary: String::new(),
+            script: call.to_string(),
+            reads: Vec::new(),
+            changes: Vec::new(),
+            plan: Rc::default(),
+            note: None,
+            ast: AST::empty(),
+        }
+    }
+}
+
 type RhaiResult<T> = Result<T, Box<EvalAltResult>>;
 
 fn rhai_error(message: impl Into<String>) -> Box<EvalAltResult> {

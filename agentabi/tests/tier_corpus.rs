@@ -249,6 +249,8 @@ const PERMS: &[(&str, &str)] = &[
     ("file_move", "files.write"),
     ("pkg_install", "pkg.install"),
     ("pkg_remove", "pkg.install"),
+    ("pkg_list", "pkg.read"),
+    ("pkg_search", "pkg.read"),
     ("model_use", "model.use"),
     ("rules_remove", "grants.narrow"),
     ("rules", "grants.read"),

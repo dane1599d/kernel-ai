@@ -279,6 +279,57 @@ pub const SERVICE_RESTART: Action = Action {
     ..SERVICE_STOP
 };
 
+/// A package named in the request (ADR 0011 §2: at most 12 bytes).
+const PACKAGE: Arg = Arg {
+    from_request: true,
+    ..arg("name", ArgType::Text { max: 12 }, Role::Target)
+};
+
+/// `install <name>` (ADR 0011 §10): a new generation, undone by switching back.
+/// The shell asks first when the package needs a new permission.
+pub const PKG_INSTALL: Action = Action {
+    name: "pkg_install",
+    doc: "installs a package; undo puts the old set back",
+    args: &[PACKAGE],
+    facts: Facts::LOCAL_CHANGE,
+    inverse: Inverse::Restore,
+    cues: &["install", "add"],
+    returns: Returns::System,
+    ret: RetType::Unit,
+    owner: Owner::Service("pkg"),
+    needs: 0,
+    min_tier: Tier::Run,
+    old_name: None,
+};
+
+/// `remove <name>`: a new generation without it; its data folder stays.
+pub const PKG_REMOVE: Action = Action {
+    name: "pkg_remove",
+    doc: "removes a package",
+    cues: &["remove", "uninstall", "delete"],
+    ..PKG_INSTALL
+};
+
+/// `pkg list`.
+pub const PKG_LIST: Action = Action {
+    owner: Owner::Service("pkg"),
+    ..read("pkg_list", "installed packages", RetType::Of(STRING))
+};
+
+/// `pkg search <text>`.
+pub const PKG_SEARCH: Action = Action {
+    args: &[arg("text", ArgType::Text { max: 64 }, Role::Option)],
+    owner: Owner::Service("pkg"),
+    ..read(
+        "pkg_search",
+        "packages in the repository",
+        RetType::Of(STRING),
+    )
+};
+
+/// Rows the shell's package store answers (`shellcore::packages`).
+pub const PKG_ROWS: [Action; 4] = [PKG_INSTALL, PKG_REMOVE, PKG_LIST, PKG_SEARCH];
+
 /// The functions LLM-written scripts may call, in the order the prompt lists them.
 pub const SCRIPT_API: [Action; 7] = [
     CPUS, MEMORY, UPTIME_MS, PROCESSES, THREADS, GET_POLICY, SET_POLICY,
@@ -305,7 +356,15 @@ pub const BOUND: [Action; 11] = [
 /// The pure functions every strict engine adds besides the OS functions it grants.
 pub const HELPERS: [Action; 2] = [FIXED, FLOOR];
 /// Rows that are typed commands today and not bound in scripts.
-pub const COMMANDS: [Action; 3] = [TUNE, TUNE_UNDO, COMPONENT_REVERT];
+pub const COMMANDS: [Action; 7] = [
+    TUNE,
+    TUNE_UNDO,
+    COMPONENT_REVERT,
+    PKG_INSTALL,
+    PKG_REMOVE,
+    PKG_LIST,
+    PKG_SEARCH,
+];
 
 /// `rules`: lists the standing rules the menu's "Always allow" wrote.
 pub const RULES: Action = Action {
@@ -339,7 +398,7 @@ pub const RULES_REMOVE: Action = Action {
 pub const TYPED_ONLY: [Action; 2] = [RULES, RULES_REMOVE];
 
 /// Every OS row.
-pub const ROWS: [Action; 16] = [
+pub const ROWS: [Action; 20] = [
     CPUS,
     MEMORY,
     UPTIME_MS,
@@ -356,4 +415,8 @@ pub const ROWS: [Action; 16] = [
     TUNE,
     TUNE_UNDO,
     COMPONENT_REVERT,
+    PKG_INSTALL,
+    PKG_REMOVE,
+    PKG_LIST,
+    PKG_SEARCH,
 ];

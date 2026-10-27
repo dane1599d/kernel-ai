@@ -231,12 +231,13 @@ mod tests {
         println!("typed: {}\nagain: {}", outcome.typed, outcome.again);
         assert_eq!(golden(&bytes).unwrap(), outcome);
         // The generated model's tagged call is a read the guest answers the
-        // same (the policy it boots with), run through the one door with no
-        // script asked for, and the same again with the first turn in history.
+        // same, run through the one door with no script asked for, and the same
+        // again with the first turn in history. Which read it picks follows the
+        // pack the fixture model was generated from.
         assert_eq!(outcome.rounds, [0, 0]);
-        assert_eq!(outcome.typed, "ok interactive");
+        assert!(outcome.typed.starts_with("ok "), "{}", outcome.typed);
         assert_eq!(outcome.again, outcome.typed);
-        assert_eq!(reply_lines(&outcome.typed), ["= interactive"]);
+        assert!(reply_lines(&outcome.typed)[0].starts_with("= "));
     }
 
     #[test]

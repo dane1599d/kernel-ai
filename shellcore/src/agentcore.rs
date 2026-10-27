@@ -197,6 +197,10 @@ impl Shell {
         if decision.tier == Tier::Never {
             return self.refuse(id, request, call, decision.why, "it is never run");
         }
+        if agentabi::PKG_ROWS.iter().any(|r| r.name == row.name) {
+            let reply = self.pkg_call(id, request, row.name, &args.values, decision);
+            return outcome(decision.tier, decision.why, reply);
+        }
         if !agentabi::BOUND.iter().any(|r| r.name == row.name) {
             let why = format!("{} is typed at the prompt for now, not called", row.name);
             return self.refuse(id, request, call, decision.why, &why);
@@ -257,7 +261,7 @@ impl Shell {
 
     /// An ask-tier call waits for an answer from the Allow / Deny menu, or for `y`
     /// or `n` when its question cannot be shown as a menu.
-    fn ask_call(
+    pub(crate) fn ask_call(
         &mut self,
         id: u64,
         request: &str,
@@ -294,6 +298,7 @@ impl Shell {
             call: None,
             offer: offer.clone(),
             menu: None,
+            pkg: None,
         });
         // The highlight starts on Allow only for a call the line plainly asked for.
         let origin = match why {

@@ -29,6 +29,8 @@ mod brackets;
 mod commands;
 pub mod data;
 mod engine;
+mod packages;
+mod pkg;
 mod rules;
 pub mod script;
 mod show;
@@ -260,6 +262,10 @@ pub struct Shell {
     undo_asking: Option<u64>,
     /// Standing rules the menu's "Always allow" wrote.
     rules: rules::Rules,
+    /// Installed software: the image's repository and its generations.
+    pkgs: pkg::Store,
+    /// Whether the `sudo` note was said already.
+    said_no_sudo: bool,
     /// The last script as `show` prints it.
     shown: Option<String>,
     /// What the script run by the last line printed.
@@ -307,6 +313,8 @@ impl Shell {
             tiers,
             undo_asking: None,
             rules: rules::Rules::default(),
+            pkgs: pkg::Store::default(),
+            said_no_sudo: false,
             shown: None,
             last_output: None,
             partial: None,
@@ -378,6 +386,13 @@ impl Shell {
                 "show" | "why" => return self.show_last(),
                 _ => {}
             }
+        }
+        // Package lines come before Rhai, unless their first word is a variable.
+        if let Some(word) = pkg::line::first_word(input)
+            && !self.scope.contains(word)
+            && let Some(parsed) = pkg::line::parse(input)
+        {
+            return self.pkg_line(input, parsed);
         }
         if let Some(which) = input.strip_prefix("rules_remove ")
             && !self.scope.contains("rules_remove")
