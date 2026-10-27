@@ -56,13 +56,10 @@ pub const INDEX: &[(&str, &[&str])] = &[
         "pkg",
         &["pkg_install", "pkg_remove", "pkg_list", "pkg_search"],
     ),
+    ("files", &["fs_list", "fs_read", "fs_history", "fs_changes"]),
     (
-        "files",
+        "file_edits",
         &[
-            "fs_list",
-            "fs_read",
-            "fs_history",
-            "fs_changes",
             "fs_create",
             "fs_write",
             "fs_move",
@@ -72,6 +69,27 @@ pub const INDEX: &[(&str, &[&str])] = &[
         ],
     ),
 ];
+
+/// Each index group's gloss, at most [`GLOSS_TOKENS`] (ADR 0010 §6's
+/// amendment): what its rows do, in the words a request uses, so the first
+/// round can pick a name it cannot read the line of (run 40589523905: with
+/// names alone, "rename" found no row and "trash" took `fs_move`).
+pub const GLOSS: &[(&str, &str)] = &[
+    ("component", "roll back a component"),
+    ("pkg", "install, remove or find packages"),
+    ("files", "list or read files"),
+    ("file_edits", "write, rename, trash or restore files"),
+];
+/// The longest a gloss may be, in estimated tokens.
+pub const GLOSS_TOKENS: usize = 12;
+
+/// `group`'s gloss, or "" for none.
+pub fn gloss(group: &str) -> &'static str {
+    GLOSS
+        .iter()
+        .find(|(name, _)| *name == group)
+        .map_or("", |(_, gloss)| gloss)
+}
 
 /// The index group `name` is in, if it is index-only.
 pub fn indexed(name: &str) -> Option<(&'static str, &'static [&'static str])> {

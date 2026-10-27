@@ -229,7 +229,7 @@ pub(super) fn row_lines(rows: &[&Action]) -> Vec<String> {
 }
 
 /// What heads the index lines (ADR 0010 §6).
-pub const INDEX_HEADING: &str = "## index (name only; call one and its arguments are shown next)\n";
+pub const INDEX_HEADING: &str = "## index (call one and its arguments are shown next)\n";
 
 /// The header of the service group every one of `rows` belongs to, if any.
 pub(super) fn header(rows: &[&Action]) -> Option<&'static str> {
@@ -295,8 +295,14 @@ pub(super) fn render(rows: &[&Action]) -> String {
             .copied()
             .filter(|name| rows.iter().any(|row| row.name == *name))
             .collect();
-        if !present.is_empty() {
-            let _ = writeln!(out, "{group}: {}", present.join(" "));
+        match (present.is_empty(), super::gloss(group)) {
+            (true, _) => {}
+            (false, "") => {
+                let _ = writeln!(out, "{group}: {}", present.join(" "));
+            }
+            (false, gloss) => {
+                let _ = writeln!(out, "{group} ({gloss}): {}", present.join(" "));
+            }
         }
     }
     out

@@ -153,6 +153,20 @@ fn index_rows_are_named_once_and_shown_in_full_on_demand() {
         }
     }
     assert!(group_text("component").contains("component_revert("));
+    // Every group has its gloss, short, and on its line before the names.
+    for (group, _) in INDEX {
+        let gloss = super::gloss(group);
+        assert!(!gloss.is_empty(), "{group}");
+        assert!(
+            estimate_tokens(gloss) <= super::GLOSS_TOKENS,
+            "{group}: {gloss}"
+        );
+        assert!(!gloss.contains(": "), "{group}: {gloss}");
+        assert!(
+            pack.contains(&std::format!("\n{group} ({gloss}): ")),
+            "{group}"
+        );
+    }
     assert!(group_text("files").starts_with("## files (paths under /home/user)\n"));
     assert_eq!(indexed("set_policy"), None);
     assert_eq!(indexed("tune"), None);

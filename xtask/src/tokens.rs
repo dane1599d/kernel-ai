@@ -245,7 +245,8 @@ mod tests {
         assert_eq!(headings[2], "## Examples");
         // Then the OS rows, a section per group, then the index level's names.
         let (index, groups) = headings[3..].split_last().unwrap();
-        assert_eq!(groups, ["## system", "## files (paths under /home/user)"]);
+        // The file group is on the index level (ADR 0010 §6).
+        assert_eq!(groups, ["## system"]);
         assert!(index.starts_with("## index"), "{index}");
         let joined: String = sections(&text).iter().map(|(_, t)| *t).collect();
         assert_eq!(joined, text);
