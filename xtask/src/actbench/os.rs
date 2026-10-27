@@ -93,11 +93,11 @@ fn outcome(call: &Call) -> Result<(String, String), Unresolved> {
     let row = llmproto::pack::rows()
         .into_iter()
         .find(|row| row.name == call.name);
-    // The row's subject: `name`, or the first text argument (`target`,
-    // `component`).
-    let name = call
-        .arguments
-        .get("name")
+    // The row's subject: `name`, `target` or `component`, else the first text
+    // argument (`tune`'s `intent` sorts before its `target`, run 40536225586).
+    let name = ["name", "target", "component"]
+        .iter()
+        .find_map(|key| call.arguments.get(*key).filter(|v| v.is_string()))
         .or_else(|| call.arguments.values().find(|v| v.is_string()))
         .and_then(Value::as_str);
     match (row.and_then(Verb::of), name) {
@@ -207,6 +207,8 @@ mod tests {
         let words = call(r#"{"name":"say","arguments":{"text":"It already runs."}}"#);
         assert!(meets(&words, Say));
         let tune = call(r#"{"name":"tune","arguments":{"target":"indexer","intent":null}}"#);
+        assert!(meets(&tune, Row("tune", "indexer")));
+        let tune = call(r#"{"name":"tune","arguments":{"intent":"faster","target":"indexer"}}"#);
         assert!(meets(&tune, Row("tune", "indexer")));
         let revert =
             call(r#"{"name":"component_revert","arguments":{"component":"notes","back":1}}"#);
