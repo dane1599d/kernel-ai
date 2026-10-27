@@ -1140,6 +1140,7 @@ version = "0.0.0"
 dependencies = [
  "agentabi",
  "kabi",
+ "kaigrants",
  "llmproto",
  "rhai",
  "sched",

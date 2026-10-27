@@ -526,10 +526,12 @@ impl Shell {
             _ => return Ok(String::from("yes")),
         };
         let offer = pending.offer.as_ref().ok_or(": no rule can cover it")?;
-        match self.rules.add(offer, always, granted.rule) {
+        let made = (pending.id, self.host.now_ns());
+        match self.rules.add(offer, always, granted.rule, made) {
             Ok(rule) => {
                 self.host
                     .audit(&format!("rule #{rule} added from menu {}", pending.id));
+                self.save_rules();
                 Ok(format!("rule:{rule}"))
             }
             Err(why) => Err(format!(": {why}")),
@@ -549,6 +551,7 @@ impl Shell {
                         .audit(&format!("rule #{id}: its node was not revoked: {why}"));
                 }
                 self.host.audit(&format!("rule #{id} removed"));
+                self.save_rules();
                 Reply::ok(format!(
                     "Removed rule #{id} ({}); it asks again",
                     rule.action
@@ -582,5 +585,5 @@ fn owner_checks(pending: &Pending) -> bool {
         .plan
         .names()
         .iter()
-        .any(|name| matches!(*name, "process_stop" | "service_stop" | "service_restart"))
+        .any(|name| crate::rules::OWNER_CHECKED.contains(name))
 }

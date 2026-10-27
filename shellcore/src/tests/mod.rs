@@ -85,6 +85,8 @@ struct FakeHost {
     /// `/system/log`, and how often it was written.
     log_disk: RefCell<Option<String>>,
     log_writes: Cell<u32>,
+    /// `/system/state/rules`.
+    rules_disk: RefCell<Option<String>>,
 }
 
 type Files = std::collections::BTreeMap<String, String>;
@@ -176,6 +178,7 @@ impl FakeHost {
             open_txn: Cell::new(None),
             log_disk: RefCell::new(None),
             log_writes: Cell::new(0),
+            rules_disk: RefCell::new(None),
         })
     }
 }
@@ -340,6 +343,15 @@ impl Host for FakeHost {
         *self.log_disk.borrow_mut() = Some(text.into());
         self.log_writes.set(self.log_writes.get() + 1);
         self.open_txn.set(None);
+        Ok(())
+    }
+
+    fn rules_read(&self) -> Option<String> {
+        self.rules_disk.borrow().clone()
+    }
+
+    fn rules_write(&self, text: &str) -> Result<(), String> {
+        *self.rules_disk.borrow_mut() = Some(text.into());
         Ok(())
     }
 
