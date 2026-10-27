@@ -273,6 +273,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::Scripts
             | SelfTest::Act(_)
             | SelfTest::Live
+            | SelfTest::AppSuspend
             | SelfTest::Edit
             | SelfTest::Manifest
             | SelfTest::ManifestGood
@@ -305,6 +306,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
     let mut plan = match test {
         SelfTest::Live => format!("{}\n{}", kabi::plan::NOTES_TEST, crate::llm::plan_line()),
         SelfTest::Part => String::from(kabi::plan::FS),
+        SelfTest::AppSuspend => kabi::plan::notes("2", None),
         SelfTest::Files { reread } => {
             crate::files_tests::plan(if reread { "read" } else { "write" })
         }
@@ -335,6 +337,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
         test,
         SelfTest::Net
             | SelfTest::Live
+            | SelfTest::AppSuspend
             | SelfTest::Edit
             | SelfTest::Manifest
             | SelfTest::ManifestGood
@@ -385,10 +388,6 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
     if matches!(test, SelfTest::DeskWindows | SelfTest::DeskRestart) {
         plan.push('\n');
         plan.push_str(crate::desk_tests::PLAN);
-    }
-    if test == SelfTest::AppSuspend {
-        plan.push('\n');
-        plan.push_str(&kabi::plan::notes("2", None));
     }
     if test == SelfTest::None {
         plan.push('\n');
