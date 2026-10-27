@@ -14,11 +14,13 @@ extern crate alloc;
 
 pub mod consent;
 mod desk;
+mod files;
 mod names;
 mod rows;
 mod show;
 
 pub use desk::*;
+pub use files::*;
 pub use names::{RESERVED_GROUPS, is_reserved, takes_os_name};
 pub use rows::*;
 pub use show::{Signature, Type};

@@ -86,7 +86,9 @@ impl Shell {
                 break;
             };
             let reverted = match inverse {
-                undo::Inverse::Generation { from, to } => self.switch_generation(from, to, anyway),
+                undo::Inverse::Generation { from, to } => self
+                    .switch_generation(from, to, anyway)
+                    .map(|text| (text, undo::reverse(inverse))),
                 other => {
                     let ids = undo::Ids {
                         made: id,
@@ -96,12 +98,12 @@ impl Shell {
                 }
             };
             match reverted {
-                Ok(text) => {
+                Ok((text, again)) => {
                     said.push(text);
                     redo.push(Change {
                         before: change.after.clone(),
                         after: change.before.clone(),
-                        inverse: Some(undo::reverse(inverse)),
+                        inverse: Some(again),
                         ..change
                     });
                 }

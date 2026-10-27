@@ -207,6 +207,7 @@ fn inverse(inverse: Option<Inverse>) -> String {
         Some(Inverse::Started(name)) => format!("started:{}", name.as_str()),
         Some(Inverse::Stopped(name)) => format!("stopped:{}", name.as_str()),
         Some(Inverse::Generation { from, to }) => format!("generation:{from}:{to}"),
+        Some(Inverse::Fs { txn }) => format!("fs:{txn}"),
     }
 }
 
@@ -225,6 +226,9 @@ fn parse_inverse(text: &str) -> Option<Option<Inverse>> {
         "generation" => Inverse::Generation {
             from: number(parts.next())?,
             to: number(parts.next())?,
+        },
+        "fs" => Inverse::Fs {
+            txn: number(parts.next())?,
         },
         _ => return None,
     }))

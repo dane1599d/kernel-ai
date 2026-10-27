@@ -78,6 +78,35 @@ pub enum Proof {
     Undo { id: u64 },
 }
 
+/// A read the `fs` server answers (P2 task 11).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FsRead<'a> {
+    List(&'a str),
+    Read(&'a str),
+    History(&'a str),
+    Changes,
+}
+
+/// A change the `fs` server makes as one transaction, which `undo` restores.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FsChange<'a> {
+    Create { path: &'a str, text: &'a str },
+    Write { path: &'a str, text: &'a str },
+    Move { from: &'a str, to: &'a str },
+    Trash(&'a str),
+    Restore(&'a str),
+    EmptyTrash,
+}
+
+/// Why the `fs` server did not restore a transaction.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FsRefused {
+    /// A later change touched the same files, as this says; restoring would undo
+    /// it too, so the user is asked first.
+    Later(String),
+    Failed(String),
+}
+
 /// What a run of log entry `entry` may show the owners of its calls.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Consent {
@@ -137,6 +166,21 @@ pub trait Host {
     /// used up by its first check, so two requests could not both pass.
     fn restart_service(&self, _name: &str, _proof: Proof) -> Result<(), String> {
         Err(String::from("services cannot be restarted here"))
+    }
+    /// A read of the user's files: its text, or why there is none.
+    fn fs_read(&self, _read: FsRead) -> Result<String, String> {
+        Err(String::from("there are no files here"))
+    }
+    /// A change to the user's files, made as one transaction: its number, for
+    /// `undo`.
+    fn fs_change(&self, _change: FsChange) -> Result<u64, String> {
+        Err(String::from("there are no files here"))
+    }
+    /// Restores what transaction `txn` replaced, as one new transaction: its number,
+    /// so `undo` again can redo. Compare-and-set: refused when a later change
+    /// touched the same files, unless `anyway`.
+    fn fs_undo(&self, _txn: u64, _anyway: bool) -> Result<u64, FsRefused> {
+        Err(FsRefused::Failed(String::from("there are no files here")))
     }
     /// The services the supervisor runs, so a stop names a service or a process
     /// by what it is. Without them, a stop runs the row the model picked.

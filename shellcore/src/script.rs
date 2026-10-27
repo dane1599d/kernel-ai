@@ -18,7 +18,7 @@
 use crate::analyse::{self, Plan};
 use crate::engine::{self, Line, Stop};
 use crate::undo::{self, Done, Inverse, Journal};
-use crate::{Config, Consent, Host, Proof, data, show};
+use crate::{Config, Consent, FsChange, FsRead, Host, Proof, data, show};
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::rc::Rc;
@@ -128,6 +128,12 @@ impl Tx {
     /// first value it replaced: the snapshot is taken once, at the first change.
     fn changed(&self, done: Done) {
         let mut journal = self.journal.borrow_mut();
+        // Each file change is a transaction of its own, so each keeps its own
+        // inverse; `undo` restores them newest first.
+        if matches!(done.inverse, Some(Inverse::Fs { .. })) {
+            journal.push(done);
+            return;
+        }
         match journal
             .iter_mut()
             .find(|d| d.owner == done.owner && d.res == done.res)
@@ -156,6 +162,7 @@ impl Tx {
 fn register(engine: &mut Engine, granted: &[&'static str], tx: &Tx) {
     for row in agentabi::BOUND
         .iter()
+        .chain(&agentabi::FS_ROWS)
         .filter(|row| granted.contains(&row.name))
     {
         bind(engine, row.name, tx);
@@ -339,10 +346,104 @@ fn bind(engine: &mut Engine, name: &'static str, tx: &Tx) -> bool {
                     Ok(())
                 });
             }
+            name if name.starts_with("fs_") => return bind_file(engine, name, h, tx),
             _ => return false,
         }
     }
     true
+}
+
+/// Binds P2's file row `name` (task 11): reads hand back `Data`, and each change
+/// is one `fs` transaction that `undo` restores.
+fn bind_file(engine: &mut Engine, name: &'static str, h: Rc<dyn Host>, tx: Tx) -> bool {
+    let fail = move |why: String| rhai_error(format!("{name}: {why}"));
+    match name {
+        "fs_list" | "fs_read" | "fs_history" => {
+            engine.register_fn(name, move |path: &str| -> RhaiResult<data::Data> {
+                tx.approved(name, &[path])?;
+                let read = match name {
+                    "fs_list" => FsRead::List(path),
+                    "fs_read" => FsRead::Read(path),
+                    _ => FsRead::History(path),
+                };
+                h.fs_read(read)
+                    .map(|text| data::Data::new("fs", text))
+                    .map_err(fail)
+            });
+        }
+        "fs_changes" => {
+            engine.register_fn(name, move || -> RhaiResult<String> {
+                tx.approved(name, &[])?;
+                h.fs_read(FsRead::Changes).map_err(fail)
+            });
+        }
+        "fs_create" | "fs_write" => {
+            engine.register_fn(name, move |path: &str, text: &str| -> RhaiResult<()> {
+                tx.approved(name, &[path, text])?;
+                let (change, before, after) = match name {
+                    "fs_create" => (FsChange::Create { path, text }, "absent", "created"),
+                    _ => (
+                        FsChange::Write { path, text },
+                        "its earlier text",
+                        "written",
+                    ),
+                };
+                let txn = h.fs_change(change).map_err(fail)?;
+                tx.changed(file_done(name, path, before, after, Some(txn)));
+                Ok(())
+            });
+        }
+        "fs_move" => {
+            engine.register_fn(name, move |from: &str, to: &str| -> RhaiResult<()> {
+                tx.approved(name, &[from, to])?;
+                let txn = h.fs_change(FsChange::Move { from, to }).map_err(fail)?;
+                let after = format!("moved to {to}");
+                tx.changed(file_done(name, from, "there", &after, Some(txn)));
+                Ok(())
+            });
+        }
+        "fs_trash" | "fs_restore" => {
+            engine.register_fn(name, move |path: &str| -> RhaiResult<()> {
+                tx.approved(name, &[path])?;
+                let (change, before, after) = match name {
+                    "fs_trash" => (FsChange::Trash(path), "there", "in the trash"),
+                    _ => (FsChange::Restore(path), "as it was", "restored"),
+                };
+                let txn = h.fs_change(change).map_err(fail)?;
+                tx.changed(file_done(name, path, before, after, Some(txn)));
+                Ok(())
+            });
+        }
+        "fs_empty_trash" => {
+            engine.register_fn(name, move || -> RhaiResult<()> {
+                tx.approved(name, &[])?;
+                h.fs_change(FsChange::EmptyTrash).map_err(fail)?;
+                tx.changed(file_done(name, "trash", "full", "emptied", None));
+                Ok(())
+            });
+        }
+        _ => return false,
+    }
+    true
+}
+
+/// One file change: `file notes.txt created (was absent)`, undone by restoring
+/// transaction `txn`.
+fn file_done(
+    action: &'static str,
+    path: &str,
+    before: &str,
+    after: &str,
+    txn: Option<u64>,
+) -> Done {
+    Done {
+        action: action.into(),
+        owner: "fs".into(),
+        res: format!("file {path}"),
+        before: before.into(),
+        after: after.into(),
+        inverse: txn.map(|txn| Inverse::Fs { txn }),
+    }
 }
 
 /// One process or service change: `service notes running (was stopped)`.
@@ -486,6 +587,12 @@ impl Host for Stub {
     fn restart_service(&self, _: &str, _: Proof) -> Result<(), String> {
         Ok(())
     }
+    fn fs_read(&self, _: FsRead) -> Result<String, String> {
+        Ok(String::new())
+    }
+    fn fs_change(&self, _: FsChange) -> Result<u64, String> {
+        Ok(0)
+    }
     fn ask(&self, _: &str) -> Result<String, String> {
         Err("not available to scripts".into())
     }
@@ -563,7 +670,7 @@ pub fn check_call(
 
 /// [`check`], finding the script's calls among `rows`: a model's script sees only
 /// the script API, so a call-only row is no call of it and fails its trial.
-fn check_against(
+pub(crate) fn check_against(
     answer: &Answer,
     host: &Rc<dyn Host>,
     config: &Config,
