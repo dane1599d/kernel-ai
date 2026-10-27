@@ -40,6 +40,10 @@ const FOLDERS: [(u8, &str); 4] = [
     (SYSTEM, "pkg"),
 ];
 
+/// Rights every minted handle carries, as the kernel's startup handles do.
+pub const BASE: Rights = Rights::DUPLICATE
+    .union(Rights::TRANSFER)
+    .union(Rights::INSPECT);
 /// Rights a `Dir` handle can carry, and a `File` handle.
 pub const DIR_RIGHTS: Rights = Rights::DUPLICATE
     .union(Rights::TRANSFER)

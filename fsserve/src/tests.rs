@@ -248,7 +248,7 @@ fn rights_only_narrow_and_each_request_needs_its_own() {
             how: How::Existing,
         },
     );
-    assert_eq!(mint.unwrap().rights, read_only);
+    assert_eq!(mint.unwrap().rights, read_only | BASE);
 }
 
 #[test]

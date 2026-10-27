@@ -3,7 +3,7 @@
 //! names walked so far and never above the `Dir` itself, and an absolute or
 //! empty name is refused. So a `Dir` reaches only what lies beneath it.
 
-use super::{Call, DIR_RIGHTS, FILE_RIGHTS, Mint, Server, error, stat};
+use super::{BASE, Call, DIR_RIGHTS, FILE_RIGHTS, Mint, Server, error, stat};
 use alloc::vec;
 use fsproto::{Error, How, Reply};
 use kabi::handle::Rights;
@@ -42,7 +42,10 @@ impl<D: BlockDev> Server<D> {
         let inode = fs.stat(object).map_err(error)?;
         let file = inode.kind == FileType::File;
         let volume = fs.volume() as u8;
-        let rights = rights & if file { FILE_RIGHTS } else { DIR_RIGHTS };
+        // The kind's rights the caller asked for, and always the base ones: REPLY_H
+        // moves a handle only with TRANSFER, and the client may pass it on or
+        // narrow it as any handle.
+        let rights = (rights & if file { FILE_RIGHTS } else { DIR_RIGHTS }) | BASE;
         let badge = self.badge(volume, file, object)?;
         let mint = Mint {
             file,
