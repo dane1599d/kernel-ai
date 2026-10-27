@@ -254,6 +254,25 @@ fn the_table_refuses_what_names_nothing_or_takes_a_live_id() {
         objects.receive(REGISTRY, 0, &[]).map(|_| ()),
         Err(Error::Truncated)
     );
+    // A buffer whose stride is not whole pixels, under a row, or that starts
+    // off a pixel.
+    for (offset, width, stride) in [(4096, 64, 258), (4096, 64, 252), (4098, 64, 256)] {
+        let buffer = Request::PoolBuffer {
+            id: 9,
+            offset,
+            width,
+            height: 1,
+            stride,
+            format: Format::Xrgb8888,
+        };
+        let bytes = buffer.encode(2).unwrap();
+        let (_, args, _) = wire::split(&bytes).unwrap();
+        assert_eq!(
+            Request::decode(Interface::Pool, 1, args),
+            Err(Error::BadArg),
+            "{stride}"
+        );
+    }
 }
 
 #[test]
@@ -448,6 +467,23 @@ fn a_page_the_client_wrote_badly_is_refused() {
             POOL
         ),
         Err(header::Error::BadStride)
+    );
+    let bad = |f: Front| page(f, POOL);
+    assert_eq!(
+        bad(Front {
+            stride: 402,
+            height: 49,
+            ..front()
+        }),
+        Err(header::Error::BadStride)
+    );
+    assert_eq!(
+        bad(Front {
+            offset: 4098,
+            height: 49,
+            ..front()
+        }),
+        Err(header::Error::OutOfPool)
     );
     assert_eq!(
         page(

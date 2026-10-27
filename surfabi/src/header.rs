@@ -83,7 +83,7 @@ pub enum Error {
     /// The pool size is not the `Shm`'s, or the front buffer does not fit in it
     /// after this page.
     OutOfPool,
-    /// A stride under width times 4.
+    /// A stride under width times 4, or not a multiple of 4.
     BadStride,
     TooMuchDamage,
 }
@@ -178,12 +178,16 @@ pub fn latch(page: &[u8; PAGE], pool_size: u32) -> Result<Option<Latched>, Error
         stride: get(page, STRIDE),
         format: Format::from_raw(get(page, FORMAT)).ok_or(Error::BadFormat)?,
     };
-    if front
-        .width
-        .checked_mul(4)
-        .is_none_or(|row| front.stride < row)
+    if !front.stride.is_multiple_of(4)
+        || front
+            .width
+            .checked_mul(4)
+            .is_none_or(|row| front.stride < row)
     {
         return Err(Error::BadStride);
+    }
+    if !front.offset.is_multiple_of(4) {
+        return Err(Error::OutOfPool);
     }
     let end = u64::from(front.stride) * u64::from(front.height) + u64::from(front.offset);
     if (front.offset as usize) < PAGE || end > u64::from(pool_size) {

@@ -172,14 +172,20 @@ impl<'a> Request<'a> {
                 id: r.new_id()?,
             },
             (I::Pool, 0) => Request::PoolCreate { size: r.uint()? },
-            (I::Pool, 1) => Request::PoolBuffer {
-                id: r.new_id()?,
-                offset: r.size()?,
-                width: r.size()?,
-                height: r.size()?,
-                stride: r.size()?,
-                format: Format::from_raw(r.uint()?).ok_or(Error::BadArg)?,
-            },
+            (I::Pool, 1) => {
+                let request = Request::PoolBuffer {
+                    id: r.new_id()?,
+                    offset: r.size()?,
+                    width: r.size()?,
+                    height: r.size()?,
+                    stride: r.size()?,
+                    format: Format::from_raw(r.uint()?).ok_or(Error::BadArg)?,
+                };
+                if !buffer_fits(&request) {
+                    return Err(Error::BadArg);
+                }
+                request
+            }
             (I::Buffer, 0) => Request::BufferDestroy,
             (I::Surface, 0) => Request::Attach {
                 buffer: r.object()?,
@@ -304,6 +310,24 @@ impl<'a> Request<'a> {
             _ => None,
         }
     }
+}
+
+/// A buffer's rows are whole pixels apart and at least a row wide, and it starts
+/// on a pixel: `stride` and `offset` are multiples of 4 and `stride` is at least
+/// `width` times 4, so a renderer can take `stride / 4` as its row pitch.
+fn buffer_fits(request: &Request) -> bool {
+    let Request::PoolBuffer {
+        offset,
+        width,
+        stride,
+        ..
+    } = *request
+    else {
+        return true;
+    };
+    stride.is_multiple_of(4)
+        && offset.is_multiple_of(4)
+        && width.checked_mul(4).is_some_and(|row| stride >= row)
 }
 
 /// An event to a client.
