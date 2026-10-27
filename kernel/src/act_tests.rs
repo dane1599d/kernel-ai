@@ -176,7 +176,7 @@ const FS_UNDO: &[(&str, Expect)] = &[
     ("undo", Exact("ok Undone: files back as they were")),
     ("read notes.txt", StartsWith("err ")),
     ("undo", Exact("ok Undone: files back as they were")),
-    ("read notes.txt", Exact("ok hello")),
+    ("read notes.txt", Exact("ok hello\n")),
 ];
 
 /// `fs-undo-reboot` (P2 task 12): the change and its log line land in one
@@ -187,7 +187,7 @@ const FS_BEFORE_REBOOT: &[(&str, Expect)] = &[(
 )];
 
 const FS_AFTER_REBOOT: &[(&str, Expect)] = &[
-    ("read notes.txt", Exact("ok hello")),
+    ("read notes.txt", Exact("ok hello\n")),
     ("undo", Exact("ok Undone: files back as they were")),
     ("read notes.txt", StartsWith("err ")),
 ];
