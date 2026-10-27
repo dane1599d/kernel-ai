@@ -14,6 +14,7 @@ What the founder sees at the end of P3, in the VM:
 - **The agent acts inside apps.** "make a note called groceries saying milk and eggs" opens Notes and fills the note, through the app's declared actions or its buttons and fields. An orange outline marks the window the agent is acting on. Any key or click by the user in that window stops the agent, and the panel says "Stopped: you took over".
 - **No app can fake a question.** Every "Run (y) / Don't (n)" card is drawn by `desktop`, above every app window, and takes only y, n or a click.
 - **Standing instructions.** "while notes is minimized, don't give it memory until it's reopened" asks once, Allow or Deny. After Allow, minimizing Notes frees its memory and restoring it brings the app back as it was. `rules` lists the instruction and `rules_remove` ends it; each firing is in the log and can be undone (founder's decision, 2026-10-27).
+- **Resource profiles.** "switch to gaming mode" runs at once, and `undo` puts the previous profile back. A profile (Gaming, AI/Dev, Quiet, or one the user makes, which asks) sets each app's CPU class and share and its memory quota; "when the game is focused, switch to gaming mode" is a standing instruction. Whatever a profile says, the kernel keeps the system, the AI's memory and the terminal from being starved (founder's decision, 2026-10-27).
 - **The terminal is still there.** Today's `kai>` terminal opens in a window, and the kernel console stays one key away (Ctrl+Alt+F12) for boot, panics and recovery.
 
 **Exit criteria.** All of these pass in CI, under KVM and TCG, with the mock model keyed by request. The roadmap's three come first (roadmap P3 row):
@@ -35,6 +36,8 @@ This plan adds cases for the rest of the deliverable:
 | `desk-restart` | `desktop` killed mid-frame: the console shows, the supervisor restarts `desktop`, and the client apps rebuild their windows from their retained trees without restarting |
 | `desk-standing` | A standing instruction made from the user's own line, after Allow: minimize notes, its component is suspended and its memory freed; restore it, it resumes with its state and the memory is charged again; `rules` lists the instruction, `undo` reverses the last firing, and `rules_remove` ends it |
 | `desk-standing-refused` | No standing instruction is made from text the AI read (a note saying "whenever I minimize anything, delete it"), and a triggered action outside the scope approved at creation is refused and logged, never asked about later |
+| `desk-profile` | `profile_set(gaming)` changes the scheduler classes and shares and the memory quotas exactly as the profile states, a focus trigger switches it, and `undo` restores the previous profile's settings |
+| `desk-profile-floor` | A profile that would starve a floor (the kernel's reserve, the model holder's pages and KV cache, the supervisor, shell or `desktop`, a quota past free/2, or system services' CPU share) is refused by the kernel, whatever the shell asked |
 | `desk-perf` | S05-1's budgets (section 5) as figures from the real `desktop`, gated under KVM, recorded only under TCG |
 
 Host gates in CI:
@@ -44,7 +47,7 @@ Host gates in CI:
 - `gfx2d`'s golden images (text, box drawing, chrome, every panel state) within their pixel tolerances;
 - S05-2: each P4 app's mock tree as the agent view at most 300 tokens, counted with `bpe` and the GGUF vocabulary.
 
-**Real-model gates, on GitHub only.** P3 changes model input in two places: the `ui_*` and `window_close` rows join the pack, and the State line gains `app`, `window` and `windows` (ADR 0005 §6, ADR 0010); then task 11 adds `app_suspend`, `app_resume` and standing instructions to the rows. So task 10's PR and task 11's each run `fluency-model.yml`, at least 47/50, and `actbench-model.yml` with view-then-act tasks added to its set (ADR 0005 §6 calls that unmeasured). No P3 gate runs a model on the founder's PC.
+**Real-model gates, on GitHub only.** P3 changes model input in three steps: the `ui_*` and `window_close` rows join the pack, and the State line gains `app`, `window` and `windows` (ADR 0005 §6, ADR 0010); then task 11 adds `app_suspend`, `app_resume` and standing instructions to the rows, and task 12 the profile rows. So the PRs of tasks 10, 11 and 12 each run `fluency-model.yml`, at least 47/50, and `actbench-model.yml` with view-then-act tasks added to its set (ADR 0005 §6 calls that unmeasured). No P3 gate runs a model on the founder's PC.
 
 ## 2. Entry, and what comes before P3's first PR
 
@@ -85,8 +88,8 @@ P3 adds two graphics lanes and borrows turns from lanes that are already running
 | **G-render** | `look/` (new), `gfx2d/` (new), `gfxcore/` (#18), `termcore/`, `kernel/src/console/` (its theme only) | New. Host-only until task 6 draws with it |
 | **C** (running) | `wit/`, `appabi/`, `wasmhost/`, `livecore/`, `compsdk/`, `components/`, `user/src/bin/comphost.rs` | Unchanged. Builds `uikit` and `kai:ui@0.1.0` (task 9) with G-core, and the suspend and resume of a component (task 11) |
 | **A-core** (running) | `agentabi/`, `shellcore/`, `user/src/bin/shell*` | Unchanged. Lends turns: the panel's shell side (task 7), the `ui_*` rows (task 10), and standing instructions' rows, consent and checks (task 11) |
-| **Model lane** (running) | `llmproto/`, `infer/src/`, `user/src/bin/llm/` | Unchanged. Lends turns (tasks 10 and 11): the State line's window fields and the real-model gates |
-| **K** (running) | `kernel/src/process/`, `kabi/src/handle.rs`, `kernel/src/handle/`, `captable/`, `supervise/` | Unchanged. Lends turns (section 3.4) |
+| **Model lane** (running) | `llmproto/`, `infer/src/`, `user/src/bin/llm/` | Unchanged. Lends turns (tasks 10-12): the State line's window fields and the real-model gates |
+| **K** (running) | `kernel/src/process/`, `kabi/src/handle.rs`, `kernel/src/handle/`, `captable/`, `supervise/` | Unchanged. Lends turns (section 3.4), and for task 12 the kernel floors and the quota and class calls |
 | **D** (running) | `kernel/src/virtio/`, `xhci/`, `kernel/src/usb.rs`, `devkit/`, `kabi::ring` | Unchanged. Beside: KRNG v1 and the doorbell calls (section 3.2) |
 
 None of these is a P2 lane's file. S-io keeps `kernel/src/block.rs`, `kernel/src/virtio/blk.rs`, `kernel/src/nvme/`, `diskmap/`, `user/src/bin/fs/`, `syscall/fs.rs` and `xtask/src/cases/storage.rs`; S-engine keeps `kaifs/` and `xtask/src/fs/`; P keeps `kaipkg/` and `user/src/bin/pkg/`. The virtio-gpu driver lives in `kernel/src/display/` since #18, not in `kernel/src/virtio/`, so G-core never edits lane D's or S-io's virtio files.
@@ -108,9 +111,10 @@ Each row is one PR. "Needs" names what must merge first. Sizes are ADR 0005's li
 | 9 | **`uikit` and `kai:ui@0.1.0`.** The WIT package's body; `uikit` as native host functions in comphost: the retained view tree, layout, drawing through `gfx2d` into the window's `Surface`, and the AccessKit tree from the same widgets; ADR 0005 §4's v0.1 widgets; notes on `uikit` as the first app | C with G-core | 0005 §4, 0003 §3 | 6; lane C's #89, #90, #91, #98 | L (~3,500) | Host tests; a case where notes opens a `uikit` window and its tree reaches `desktop` |
 | 10 | **The agent's view and rows.** `ui_windows`, `ui_view`, `ui_open`, `ui_focus`, `window_close` and `ui_act` in `agentabi`, with their tiers and inverses; the view projection within 300 tokens; the State line's `app`, `window` and `windows`; takeover | G-core, A-core's and the model lane's turns | 0005 §6, 0002, 0010 | 7, 9 | M | `desk-agent`, `desk-takeover`; S05-2; fluency at least 47/50; actbench with view-then-act tasks |
 | 11 | **Standing instructions** (founder's decision, 2026-10-27). A rule is a trigger, an optional condition, an action and an optional "until" event, e.g. `on minimize(notes) -> app_suspend(notes) until restore(notes)`. Triggers in v0.1 are `desktop`'s window events: minimize, restore, focus, close and idle (no input for N minutes), plus a time of day, which costs one timer. The app lifecycle rows a trigger can use: `app_suspend(app)` saves the component through `kai:live`'s `save`, drops its instance and frees its memory; `app_resume(app)` instantiates it again and restores the saved state through `init` and `migrate`. Safety follows ADR 0002, below the table. `rules` lists standing instructions beside the standing rules; `rules_remove` ends one | A-core (rows, consent, rule store), G-core (the events), C (suspend and resume), K's turn (the owner-side check) | 0002, 0003 §5, 0005 §6 | 6, 7; lane C's stack; #149's rule check | M (~1,500) | `desk-standing`, `desk-standing-refused` |
-| 12 | **P3 close.** Every exit case in `ci.yml`'s shards; `desk-perf`'s figures; decisions rows; the roadmap's P3 status | – | – | all | S | Section 1's exit criteria |
+| 12 | **Resource profiles** (founder's decision, 2026-10-27). A named profile, `kai-profile 1` text (in RAM until P2's `/system/settings` serves it): for each app or group, a CPU class and share (on M10's `classes` policy and the scheduler-policy rows) and a memory quota and reservation; a `gpu` field reserved and refused unless 0 until GPU support (P7+). Rows: `profile_list` (run, read-only); `profile_set(name)` switches between existing profiles (run; undo restores the previous one); `profile_create` and `profile_edit` (ask); and the lower rows profiles are built from, `app_priority(app, class)` (run, undoable) and `app_mem_limit(app, pages)` (run when lowering, ask when raising). Switching by trigger is a standing instruction of task 11 (`on focus(game) -> profile_set(gaming)`). The kernel enforces the floors below the table | K (floors, PROC_QUOTA_SET and PROC_CLASS_SET, named at merge), A-core (rows, consent, `rules`), G-core (the focus trigger) | 0002, 0001, M10 | 11 for triggers; switching by ask needs only 7 | M (~1,200) | `desk-profile`, `desk-profile-floor` |
+| 13 | **P3 close.** Every exit case in `ci.yml`'s shards; `desk-perf`'s figures; decisions rows; the roadmap's P3 status | – | – | all | S | Section 1's exit criteria |
 
-**Critical path:** 2 and 3 side by side, then 6, then 7, then 10 and 11 side by side, then 12: five steps after S05-1. `gfx2d` (task 5) runs beside 2 and 3 and must merge before 6. `uikit` (task 9) is the long pole of the second half: it waits for lane C's stack and for task 6, and gates task 10. Task 11 needs the window events (task 6), the ask card (task 7) and lane C's lifecycle, not `uikit`, so it runs beside 9 and 10 and adds no step unless lane C's suspend and resume are late.
+**Critical path:** 2 and 3 side by side, then 6, then 7, then 10, 11 and 12 side by side, then 13: five steps after S05-1. `gfx2d` (task 5) runs beside 2 and 3 and must merge before 6. `uikit` (task 9) is the long pole of the second half: it waits for lane C's stack and for task 6, and gates task 10. Task 11 needs the window events (task 6), the ask card (task 7) and lane C's lifecycle, not `uikit`, so it runs beside 9 and 10 and adds no step unless lane C's suspend and resume are late. Task 12's switch by ask needs only the kernel calls and the rows; its switch by trigger lands after task 11.
 
 **Standing instructions' safety rules** (task 11; ADR 0002's consent and tier rules):
 
@@ -120,6 +124,13 @@ Each row is one PR. "Needs" names what must merge first. Sizes are ADR 0005's li
 - **Listed and removable.** `rules` lists standing instructions beside the standing rules; `rules_remove` ends one, itself undoable.
 - **Enforced where the action runs.** The owner of the action (the supervisor and comphost for `app_suspend` and `app_resume`) checks that a live rule covers each firing, through the same kind of owner-side rule check as #149 (`RULE_CHECK`), not in the shell alone. A shell that is compromised cannot invent a rule that fires.
 - **No storms.** A rule fires at most once per event, a rule's own action never triggers it again, and a rule that fires more than 10 times a minute is paused and the panel says so.
+
+**Resource profiles' floors** (task 12), enforced in the kernel at PROC_QUOTA_SET and PROC_CLASS_SET, never by the prompt or the shell:
+
+- The kernel's own memory, the AI's reserved memory (the model holder's pages and its KV cache) and the supervisor, shell and `desktop` are never starved: their quotas never drop below what they hold, and they are never put in the background class.
+- No profile raises a quota past the global admission rule (free / 2).
+- System services and the terminal keep a minimum CPU share under every profile.
+- A profile is created or edited only with an ask, listed in `rules`, every switch is logged and undoable, and enforcement is the kernel's, like task 11's owner-side checks.
 
 ### 3.2 Beside lanes during P3
 
@@ -157,6 +168,7 @@ Tasks with two halves pass between sessions at a merged PR, never mid-branch: 2 
 | `user/src/bin/comphost.rs`, `wit/` (lane C) | `uikit`'s host functions; `kai:ui@0.1.0` | 9 | Lane C's own task, with G-core |
 | `agentabi/`, `shellcore/`, `user/src/bin/shell*` (A-core) | The shell calls `desktop` for panel requests and states; the `ui_*` and `window_close` rows; `app_suspend`, `app_resume`, standing instructions in `rules` and `rules_remove` | 7, 10, 11 | A-core's turns |
 | `kernel/src/process/supervision.rs`, `supervise/` (lane K) | The owner-side check that a live rule covers a triggered `app_suspend` or `app_resume`, beside #149's `RULE_CHECK` | 11 | Lane K's turn |
+| `kernel/src/process/` limits, `kernel/src/sched_control.rs`, `kabi/src/call.rs` (lane K) | PROC_QUOTA_SET and PROC_CLASS_SET with the floors, named at merge | 12 | Lane K's turn |
 | `llmproto/` (model lane) | The State line's window fields; the pack's `ui` group | 10 | The model lane's turn, with the real-model gates |
 | `xtask/src/qemu.rs` | `-device virtio-gpu` and `display=` already exist (#18); the `desktop` boot command line | 6 | One PR at a time; every lane's boots run through it |
 | `xtask/src/cases/mod.rs` | One line joins `desk::CASES` | 2 | Once |
@@ -195,15 +207,15 @@ S05-2's pass mark is each P4 app's view at most 300 tokens. Past that, the proje
 - **`deskcore` is tested without a screen.** Scene, damage, focus, stacking and the trusted layer are pure logic over recorded input, in the way `termcore` and `shellcore` are tested today.
 - **CI boot cases** under KVM and TCG with the mock model: section 1's exit set. They join `ci.yml`'s shards with no workflow edit.
 - **The trusted path has its own cases** (`desk-ask`, `desk-takeover`): an app that tries to cover the ask layer, draw an ask-coloured card, or read keys while a card is up must fail at each.
-- **Real-model runs** only at tasks 10 and 11, on GitHub: fluency and actbench.
+- **Real-model runs** only at tasks 10-12, on GitHub: fluency and actbench.
 - Each run records its runner and run id in its PR.
 
 ## 7. Estimate
 
-- **Core:** 12 PRs. About 16,500 lines with tests in all: ADR 0005's estimate (est.), plus about 1,500 for standing instructions (est.: events and the rule engine 600, rows and consent 500, suspend and resume 400), 2-3 weeks of lane-turns that run beside tasks 9 and 10. ADR 0005's part: `look` 300, kernel 800, `surfabi` 900, `gfx2d` 2,100, `deskcore` and `desktop` 2,500, panel and agent rows 2,500, `uikit` 3,500, the terminal client 1,200, and the themes and scale work, about 1,200, mostly in P4.
+- **Core:** 13 PRs. About 17,700 lines with tests in all: ADR 0005's estimate (est.), plus about 1,200 for resource profiles (est.: kernel floors and calls 400, `kai-profile 1` and the rows 500, cases 300; about 2 weeks of lane K and A-core turns), plus about 1,500 for standing instructions (est.: events and the rule engine 600, rows and consent 500, suspend and resume 400), 2-3 weeks of lane-turns that run beside tasks 9 and 10. ADR 0005's part: `look` 300, kernel 800, `surfabi` 900, `gfx2d` 2,100, `deskcore` and `desktop` 2,500, panel and agent rows 2,500, `uikit` 3,500, the terminal client 1,200, and the themes and scale work, about 1,200, mostly in P4.
 - **New external crates**, all in ADR 0009's free class (BSD-3-Clause, MIT, Apache-2.0; Unicode-3.0 and OFL-1.1 since 2026-10-22): tiny-skia 0.12.0 (BSD-3-Clause), skrifa 0.48.0, read-fonts 0.45 and harfrust 0.14.0 (MIT OR Apache-2.0), with `yoke` and `zerofrom` (Unicode-3.0, free class since 2026-10-22); accesskit 0.25.1 and accesskit_consumer 0.39.1 (MIT OR Apache-2.0); the fonts under OFL-1.1. Each PR lists what it adds.
 - **Beside lanes in P3:** lanes D, M, V and C, about 6-10 PRs (est.).
-- **Timing:** the roadmap says months. With G-core and G-render in parallel and lane C on `uikit`, P3's length is set by tasks 2/3, 6, 7 and then 9 and 10: about 10-14 weeks (est.), plus S05-1 if it has not run. Standing instructions add no weeks while lane C's suspend and resume land beside `uikit`; if they are late, task 11 adds up to 2 weeks (est.).
+- **Timing:** the roadmap says months. With G-core and G-render in parallel and lane C on `uikit`, P3's length is set by tasks 2/3, 6, 7 and then 9 and 10: about 10-14 weeks (est.), plus S05-1 if it has not run. Standing instructions add no weeks while lane C's suspend and resume land beside `uikit`; if they are late, task 11 adds up to 2 weeks (est.). Resource profiles run beside tasks 10 and 11 and add no weeks unless lane K's turn is late.
 
 **Start with these two, in parallel, once the plan is approved:**
 
@@ -223,17 +235,19 @@ S05-2's pass mark is each P4 app's view at most 300 tokens. Past that, the proje
 | Super or Ctrl+Space never reach the guest under QEMU or VirtualBox (ADR 0005 calls it unverified) | `desk-panel` checks both under QEMU; the panel also takes focus from a click, and a third key is chosen in review if neither arrives |
 | `desktop` joins the trusted base for asks | `desk-ask` and `desk-takeover` test the trusted layer; P8 fuzzes `surfabi` and reviews the trusted path (ADR 0005, phases table) |
 | A standing instruction is made from injected text, or fires an action nobody approved | Making one is an ask, only from the user's own line; every firing is checked by the action's owner against a live rule, and anything outside the approved scope is refused and logged (`desk-standing-refused`) |
+| A profile starves the system or the AI | The floors are the kernel's, checked at every quota and class call (`desk-profile-floor`); the shell and the model cannot set past them |
 | Suspend loses an app's unsaved work | Suspend goes through `kai:live`'s `save`; if it fails, nothing is suspended and the log says why; resume restores through `init` and `migrate`, and `undo` resumes |
 | Five sessions at once | The founder sets the number; P3 starts with two sessions and adds lane C's as it frees up |
-| GitHub Actions time | Only tasks 10 and 11 run real-model jobs (fluency and actbench, once each per PR revision); `desk-perf` gates under KVM only |
+| GitHub Actions time | Only tasks 10-12 run real-model jobs (fluency and actbench, once each per PR revision); `desk-perf` gates under KVM only |
 
 ## 9. Deferred, and where it goes
 
 - **P4:** every app on `uikit` with declared actions; the terminal app with typed spans; the files, settings, system monitor and model manager apps; the light, high-contrast and legible themes, `kai-theme 1` files and `appearance_set`; the editor in a window.
 - **P5:** network asks on the ask card; fonts and apps as packages ([ADR 0011](../adr/0011-packages.md)).
-- **P6:** standing instructions for browser tabs: the guest agent `kai-guest` reports tab events (a tab minimized, hidden or closed), and a rule's action asks the guest to discard or restore the tab, so "while my tab is minimized, don't give it memory until it's reopened" works for the browser too (ADR 0006); the Linux guest's screen as one foreign `Surface` (v0.2); a per-window guest bridge after it; `wlbridge` only on 0006's `lxabi` fallback.
+- **P6:** a profile also sizes the Linux VM's vCPUs and memory, for games in the VM (ADR 0006); standing instructions for browser tabs: the guest agent `kai-guest` reports tab events (a tab minimized, hidden or closed), and a rule's action asks the guest to discard or restore the tab, so "while my tab is minimized, don't give it memory until it's reopened" works for the browser too (ADR 0006); the Linux guest's screen as one foreign `Surface` (v0.2); a per-window guest bridge after it; `wlbridge` only on 0006's `lxabi` fallback.
 - **P7:** GOP on the founder's PC with its colour masks; scale from a real monitor's EDID; input from `usbd`.
 - **P8:** fuzzing of `surfabi`, the tree decoder and `kai-theme 1` at scale; a screen reader on the same trees; a security review of the trusted path.
-- **A memory-limit row** (`app_memory_limit`): not in v0.1, because a running component's memory limit is fixed when it is instantiated (ADR 0003 §6); it comes when comphost can lower a live instance's limit, P4 or later.
+- **A live component's memory limit:** `app_mem_limit` sets a process's page quota at once (growth past it is refused), but a component's memory limit is fixed when it is instantiated (ADR 0003 §6), so for components the new limit applies at its next start or resume; lowering a live instance's limit waits for comphost to support it, P4 or later.
+- **GPU share in profiles:** the reserved `gpu` field, once GPU support lands (P7+).
 - **`kai-surface 2`:** GPU buffers, only when GPU work starts (ADR 0005, question 4).
 - **Waiting on the founder:** section 2's questions.
