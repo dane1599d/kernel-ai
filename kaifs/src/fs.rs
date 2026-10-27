@@ -217,10 +217,21 @@ impl<D: BlockDev> Fs<D> {
 
     /// [`Fs::mount`] for a writer with deliberate faults (its reuse wait too).
     pub fn mount_with(mut dev: D, faults: Faults) -> Result<Self, Error> {
-        let info = dev.info();
         let (sb, rules) = Self::newest(&mut dev)?;
         let loaded = Self::load(&mut dev, &sb, faults)?;
-        Ok(Fs {
+        Ok(Self::assemble(dev, &sb, rules, loaded, faults))
+    }
+
+    /// The filesystem commit `sb` left, from what [`Fs::load`] read.
+    pub(crate) fn assemble(
+        dev: D,
+        sb: &Superblock,
+        rules: format::Rules,
+        loaded: Loaded,
+        faults: Faults,
+    ) -> Self {
+        let info = dev.info();
+        Fs {
             io: Io {
                 dev,
                 kind: sb.csum_kind,
@@ -245,7 +256,24 @@ impl<D: BlockDev> Fs<D> {
             repairable: rules.repairable,
             faults,
             hash_mask: u64::MAX,
-        })
+        }
+    }
+
+    /// Every superblock on the rings whose volume-table root verifies, newest
+    /// first, and the mount rules the newest slot sets: what a repair that
+    /// rebuilds the allocator mounts from.
+    pub(crate) fn with_tables(dev: &mut D) -> Result<(Vec<Superblock>, format::Rules), Error> {
+        let found = format::read_rings(&mut *dev)?;
+        let rules = found[0].rules()?;
+        let kind = found[0].csum_kind;
+        let mut out = Vec::new();
+        for sb in found {
+            if !sb.volumes.is_null() && format::read_checked(dev, kind, &sb.volumes, "root").is_ok()
+            {
+                out.push(sb);
+            }
+        }
+        Ok((out, rules))
     }
 
     /// The newest superblock whose volume-table root and allocator head verify,
@@ -278,6 +306,16 @@ impl<D: BlockDev> Fs<D> {
             sb.generation,
             alloc_faults,
         )?;
+        Self::load_tables(dev, sb, alloc, faults)
+    }
+
+    /// The volume table and the volumes commit `sb` left, beside `alloc`.
+    pub(crate) fn load_tables(
+        dev: &mut D,
+        sb: &Superblock,
+        alloc: Allocator,
+        faults: Faults,
+    ) -> Result<Loaded, Error> {
         let mut io = Io {
             dev,
             kind: sb.csum_kind,
