@@ -32,9 +32,9 @@ kaibundle = { path = "../kaibundle" }
 kaituf = { path = "../kaituf" }
 llmproto = { path = "../llmproto", features = ["local"] }
 quant = { path = "../quant" }
+sched = { path = "../sched" }
 serde_json = { version = "1.0.154", default-features = false, features = ["alloc"] }
 sha2 = { version = "0.11.1", default-features = false }
-sched = { path = "../sched" }
 supervise = { path = "../supervise" }
 shellcore = { path = "../shellcore" }
 spin = "0.12.3"
@@ -45,4 +45,7 @@ wasmhost = { path = "../wasmhost" }
 [build-dependencies]
 ecdsa = { version = "0.17.0", default-features = false, features = ["der"] }
 ed25519-compact = { version = "2.6.0", default-features = false }
+kaituf = { path = "../kaituf" }
 p256 = { version = "0.14.0", default-features = false, features = ["ecdsa"] }
+serde_json = { version = "1.0.154", default-features = false, features = ["alloc"] }
+sha2 = { version = "0.11.1", default-features = false }
