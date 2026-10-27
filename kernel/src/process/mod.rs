@@ -52,7 +52,7 @@ use spin::Mutex;
 use workers::Worker;
 use x86_64::instructions::interrupts;
 
-pub const MAX_PROCESSES: usize = 16;
+pub const MAX_PROCESSES: usize = 64;
 /// Most pages one process may be granted: 512 MiB (ADR 0001 D4). The model's
 /// holder alone may get `kabi::model::MAX_PAGES_HOLDER`, for its engine.
 pub const MAX_PAGES_PER_PROCESS: u64 = 128 * 1024;
@@ -457,31 +457,41 @@ pub fn identity(slot: usize) -> Process {
 /// started each (a job child, like `scriptrun`, is its parent's, not the
 /// supervisor's).
 pub fn named(name: &str) -> alloc::vec::Vec<(u64, bool)> {
-    let table = with_table(|table| *table);
-    table
-        .iter()
-        .filter(|p| p.live() && p.name.as_str() == name)
-        .map(|p| (p.pid, (p.spawner != 0 && !p.job) || p.supervisor))
-        .collect()
+    // Under the lock, never a copy of the table: 64 slots of about 900 bytes
+    // would not fit on a kernel stack.
+    with_table(|table| {
+        table
+            .iter()
+            .filter(|p| p.live() && p.name.as_str() == name)
+            .map(|p| (p.pid, (p.spawner != 0 && !p.job) || p.supervisor))
+            .collect()
+    })
 }
 
 /// Pids and names of live processes, excluding the supervisor.
 pub fn services(mut f: impl FnMut(u64, &Name)) {
-    let table = with_table(|table| *table);
-    for process in table.iter().filter(|p| p.live() && !p.supervisor) {
-        f(process.pid, &process.name);
+    let live: alloc::vec::Vec<(u64, Name)> = with_table(|table| {
+        table
+            .iter()
+            .filter(|p| p.live() && !p.supervisor)
+            .map(|p| (p.pid, p.name))
+            .collect()
+    });
+    for (pid, name) in &live {
+        f(*pid, name);
     }
 }
 
 /// The process owning each thread slot: its pid, or 0 for kernel threads.
 pub fn pids_by_tid() -> [u64; MAX_THREADS] {
     let mut pids = [0; MAX_THREADS];
-    let table = with_table(|table| *table);
-    for process in table.iter().filter(|p| p.live()) {
-        for tid in process.thread_tids().into_iter().flatten() {
-            pids[tid] = process.pid;
+    with_table(|table| {
+        for process in table.iter().filter(|p| p.live()) {
+            for tid in process.thread_tids().into_iter().flatten() {
+                pids[tid] = process.pid;
+            }
         }
-    }
+    });
     pids
 }
 
@@ -517,10 +527,15 @@ pub fn has_cap_by_name(name: &str, bits: u64) -> bool {
 
 /// The names of live processes holding all the capability `bits`.
 pub fn holders(bits: u64) -> alloc::vec::Vec<alloc::string::String> {
-    let table = with_table(|table| *table);
-    table
+    let names: alloc::vec::Vec<Name> = with_table(|table| {
+        table
+            .iter()
+            .filter(|p| p.live() && p.limits.caps & bits == bits)
+            .map(|p| p.name)
+            .collect()
+    });
+    names
         .iter()
-        .filter(|p| p.live() && p.limits.caps & bits == bits)
-        .map(|p| alloc::string::String::from(p.name.as_str()))
+        .map(|name| alloc::string::String::from(name.as_str()))
         .collect()
 }
