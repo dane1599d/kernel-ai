@@ -91,6 +91,31 @@ fn plan_rejects_bad_lines() {
 }
 
 #[test]
+fn dir_grants_only_the_folders_it_names() {
+    let plan = parse_plan("pkg dir=pkg step=install").services;
+    assert_eq!(plan[0].dirs, [Folder::Pkg]);
+    assert_eq!(plan[0].dirs[0].badge(), kabi::fs::SYSTEM_PKG);
+    // A grant is the plan's key, never a program argument.
+    assert_eq!(plan[0].args, "step=install");
+    assert_eq!(plan[0].limits.caps, 0);
+    assert!(parse_plan("pkg").services[0].dirs.is_empty());
+    for bad in [
+        "pkg dir=",
+        "pkg dir=home",
+        "pkg dir=Pkg",
+        "pkg dir=pkg+pkg",
+        "pkg dir=pkg dir=pkg",
+        "pkg dir=pkg+",
+        "pkg dir=../pkg",
+        "pkg dir=system/pkg",
+        "pkg dir=pkg unsupervised",
+    ] {
+        let plan = parse_plan(bad);
+        assert!(plan.services.is_empty() && plan.errors.len() == 1, "{bad}");
+    }
+}
+
+#[test]
 fn quick_failures_back_off_exponentially_up_to_the_cap() {
     let mut record = Record::new("crasher");
     let delays: Vec<Decision> = (0..8)

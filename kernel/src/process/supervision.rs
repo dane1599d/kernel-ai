@@ -366,10 +366,11 @@ pub fn spawn_service(slot: usize, request_ptr: u64) -> Result<u64, Error> {
             .min(kabi::layout::MAX_STACK_PAGES),
     };
     let me = super::identity(slot).pid;
-    // Its routes come from the kernel's own copy of the plan, never the request.
-    let uses = uses_of(name);
+    // Its routes and folders come from the kernel's own copy of the plan, never
+    // the request: the plan line is the authority (ADR 0011 §12).
+    let (uses, dirs) = plan_grants(name);
     let uses: Vec<&str> = uses.iter().map(String::as_str).collect();
-    let pid = spawn(&SpawnRequest {
+    let request = SpawnRequest {
         name,
         program,
         args: &args[..args_len],
@@ -377,7 +378,8 @@ pub fn spawn_service(slot: usize, request_ptr: u64) -> Result<u64, Error> {
         spawner: me,
         supervisor: false,
         uses: &uses,
-    })?;
+    };
+    let pid = super::spawn_in(&request, Vec::new(), false, &dirs).map_err(|(error, _)| error)?;
     if program == name {
         log!("process {name} (pid {pid}) started by the supervisor");
     } else {
@@ -506,9 +508,9 @@ fn clear_state() {
     drop(old);
 }
 
-/// The services the plan's line for `name` gives it routes to (`uses=`); none
-/// for a service the plan does not list, or whose line does not parse.
-pub fn uses_of(name: &str) -> Vec<String> {
+/// The routes (`uses=`) and folders (`dir=`) the kernel's plan grants service
+/// `name`; none for a service it does not list, or whose line does not parse.
+pub fn plan_grants(name: &str) -> (Vec<String>, Vec<supervise::Folder>) {
     PLAN.get()
         .and_then(|plan| {
             supervise::parse_plan(plan)
@@ -516,7 +518,7 @@ pub fn uses_of(name: &str) -> Vec<String> {
                 .into_iter()
                 .find(|service| service.name == name)
         })
-        .map_or_else(Vec::new, |service| service.uses)
+        .map_or_else(Default::default, |service| (service.uses, service.dirs))
 }
 
 pub fn plan(slot: usize, ptr: u64, cap: u64) -> Result<u64, Error> {

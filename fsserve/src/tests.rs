@@ -491,6 +491,51 @@ fn an_aborted_action_drops_its_pending_writes() {
 }
 
 #[test]
+fn the_pkg_dir_reaches_only_beneath_system_pkg() {
+    let mut disk = MemDisk::new(BLOCKS);
+    let (mut c, _) = Client::start(&mut disk);
+    let pkg = |c: &mut Client, path: &str, how: How| {
+        let request = Request::Open {
+            path: path.into(),
+            rights: (Rights::READ | Rights::WRITE).bits(),
+            how,
+        };
+        c.call(ALICE, kabi::fs::SYSTEM_PKG, DIR_RIGHTS, request)
+    };
+    let (reply, mint) = pkg(&mut c, "current", How::CreateFile);
+    assert!(matches!(reply, Reply::Opened(..)), "{reply:?}");
+    assert_eq!(Badge::parse(mint.unwrap().badge).volume, SYSTEM);
+    let (_, here) = pkg(&mut c, ".", How::Existing);
+    assert_eq!(
+        Badge::parse(here.unwrap().badge).object,
+        c.server.system_pkg
+    );
+    assert_ne!(c.server.system_pkg, c.server.system_state);
+    for path in ["..", "../state", "../settings", "./../pkg"] {
+        assert_eq!(
+            failed(pkg(&mut c, path, How::Existing)),
+            Error::Invalid,
+            "{path}"
+        );
+    }
+    // The state folder does not see it.
+    let state = Request::Open {
+        path: "current".into(),
+        rights: Rights::READ.bits(),
+        how: How::Existing,
+    };
+    assert_eq!(
+        failed(c.call(ALICE, kabi::fs::SYSTEM_STATE, DIR_RIGHTS, state)),
+        Error::NotFound
+    );
+    // A restart finds the same folder.
+    let object = c.server.system_pkg;
+    drop(c);
+    let (c, _) = Client::start(&mut disk);
+    assert_eq!(c.server.system_pkg, object);
+}
+
+#[test]
 fn the_state_dir_reaches_only_beneath_system_state() {
     let mut disk = MemDisk::new(BLOCKS);
     let (mut c, _) = Client::start(&mut disk);
