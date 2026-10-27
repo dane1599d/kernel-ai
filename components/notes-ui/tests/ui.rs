@@ -2,8 +2,8 @@
 //! `FixedAdvance` in `look`'s token names, and the round trip from window events
 //! to state. Set `UIKIT_BLESS=1` to rewrite the goldens, and review the diff.
 
-use comp_notes::ui::{self, Change, EDITOR, Entry, LIST, NEW, SEARCH, View};
 use comp_notes::{Actions, Notes};
+use comp_notes_ui::{self as ui, Change, EDITOR, Entry, LIST, NEW, SEARCH, View};
 use compsdk::Component;
 use std::path::PathBuf;
 use uikit::layout::FixedAdvance as M;
@@ -113,7 +113,7 @@ fn new_note_runs_the_declared_action_and_opens_the_note() {
     assert!(
         matches!(&new.widget, uikit::widget::Widget::Button { action: Some(a), .. } if a == "notes_add")
     );
-    assert!(notes.on_ui(&mut view, &UiEvent::Pressed(NEW)));
+    assert!(ui::on_ui(&mut notes, &mut view, &UiEvent::Pressed(NEW)));
     assert_eq!(view.selected, Some(4));
     assert_eq!(notes.get(4).as_deref(), Some(""));
 }
@@ -135,7 +135,7 @@ fn typing_in_the_window_changes_the_state() {
         )
         .unwrap();
     for e in &picked {
-        notes.on_ui(&mut view, e);
+        ui::on_ui(&mut notes, &mut view, e);
     }
     assert_eq!(view.selected, Some(2));
     let tree = ui::build(&notes, &view);
@@ -152,7 +152,7 @@ fn typing_in_the_window_changes_the_state() {
         &M,
     );
     for e in &typed {
-        notes.on_ui(&mut view, e);
+        ui::on_ui(&mut notes, &mut view, e);
     }
     assert_eq!(
         notes.get(2).as_deref(),
@@ -165,15 +165,24 @@ fn typing_in_the_window_changes_the_state() {
 fn search_filters_and_enter_opens_the_first_match() {
     let mut notes = some_notes();
     let mut view = View::default();
-    assert!(notes.on_ui(
+    assert!(ui::on_ui(
+        &mut notes,
         &mut view,
         &UiEvent::Changed(SEARCH, Value::Text(String::from("milk")))
     ));
     assert_eq!(ui::shown(&notes, &view).len(), 1);
-    assert!(notes.on_ui(&mut view, &UiEvent::Submitted(SEARCH)));
+    assert!(ui::on_ui(
+        &mut notes,
+        &mut view,
+        &UiEvent::Submitted(SEARCH)
+    ));
     assert_eq!(view.selected, Some(1));
     view.search = String::from("nothing");
-    assert!(!notes.on_ui(&mut view, &UiEvent::Submitted(SEARCH)));
+    assert!(!ui::on_ui(
+        &mut notes,
+        &mut view,
+        &UiEvent::Submitted(SEARCH)
+    ));
 }
 
 #[test]
@@ -225,9 +234,9 @@ fn list_labels_are_first_lines_cut_short() {
 fn the_editor_refuses_text_past_the_state() {
     let mut notes = Notes::init();
     let id = notes.add("a").unwrap();
-    assert!(notes.set_text(id, "a b"));
+    assert!(ui::set_text(&mut notes, id, "a b"));
     assert_eq!(notes.count().words, 2);
     let huge = "y".repeat(compsdk::MAX_STATE);
-    assert!(!notes.set_text(id, &huge));
-    assert!(!notes.set_text(99, "z"));
+    assert!(!ui::set_text(&mut notes, id, &huge));
+    assert!(!ui::set_text(&mut notes, 99, "z"));
 }

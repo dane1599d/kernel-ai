@@ -20,8 +20,6 @@ exports = []
 compsdk = { path = "../../compsdk" }
 kabi = { path = "../../kabi" }
 minicbor = { version = "2.3.0", default-features = false, features = ["alloc", "derive"] }
-# Its window's widget types (ADR 0005 section 4).
-uikit = { path = "../../uikit" }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 wit-bindgen = { version = "=0.63.0", default-features = false, features = ["macros", "realloc"] }

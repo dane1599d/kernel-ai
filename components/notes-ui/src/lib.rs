@@ -3,11 +3,17 @@
 //! the state after each event and [`diff`]ed against the last one, so only what
 //! changed goes to the host. The actions in `kai.actions` are unchanged: "New
 //! note" is bound to `notes_add`, so the agent sees the same words and tier.
+//! It is its own crate so the source the edit loop changes, and the bundle it
+//! builds in the OS, stay as they are.
 
-use crate::{Actions, Notes};
+#![no_std]
+
+extern crate alloc;
+
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
+use comp_notes::{Actions, Notes, SCHEMA, state};
 use uikit::style::{Tone, TypeStyle};
 use uikit::widget::{Axis, Insets, Layout, NodeId, ROOT, Size, TextField, UiEvent, Value, Widget};
 
@@ -62,7 +68,7 @@ fn matches(text: &str, search: &str) -> bool {
 }
 
 /// The notes the list shows, in order.
-pub fn shown<'a>(notes: &'a Notes, view: &View) -> Vec<&'a crate::state::Note> {
+pub fn shown<'a>(notes: &'a Notes, view: &View) -> Vec<&'a state::Note> {
     notes
         .state
         .notes
@@ -266,63 +272,61 @@ pub fn diff(old: &[Entry], new: &[Entry]) -> Vec<Change> {
     out
 }
 
-impl Notes {
-    /// Replaces a note's text from the editor; false if it is gone or the
-    /// state has no room for the new text.
-    pub fn set_text(&mut self, id: u32, text: &str) -> bool {
-        let old = match self.state.notes.iter().find(|n| n.id == id) {
-            Some(n) => n.text.len(),
-            None => return false,
-        };
-        let grow = text.len().saturating_sub(old);
-        let size = compsdk::state::encode(crate::SCHEMA, &self.state).len() + grow;
-        if grow > 0 && size > compsdk::MAX_STATE {
-            return false;
-        }
-        match self.state.notes.iter_mut().find(|n| n.id == id) {
-            Some(n) => {
-                n.text = String::from(text);
-                n.words = crate::state::words(text);
-                true
-            }
-            None => false,
-        }
+/// Replaces a note's text from the editor; false if it is gone or the state
+/// has no room for the new text.
+pub fn set_text(notes: &mut Notes, id: u32, text: &str) -> bool {
+    let old = match notes.state.notes.iter().find(|n| n.id == id) {
+        Some(n) => n.text.len(),
+        None => return false,
+    };
+    let grow = text.len().saturating_sub(old);
+    let size = compsdk::state::encode(SCHEMA, &notes.state).len() + grow;
+    if grow > 0 && size > compsdk::MAX_STATE {
+        return false;
     }
+    match notes.state.notes.iter_mut().find(|n| n.id == id) {
+        Some(n) => {
+            n.text = String::from(text);
+            n.words = state::words(text);
+            true
+        }
+        None => false,
+    }
+}
 
-    /// Handles one event from the window; whether the tree may have changed.
-    pub fn on_ui(&mut self, view: &mut View, e: &UiEvent) -> bool {
-        match e {
-            UiEvent::Pressed(NEW) => match self.add("") {
-                Ok(id) => {
-                    view.selected = Some(id);
-                    view.search.clear();
-                    true
-                }
-                Err(_) => false,
-            },
-            UiEvent::Changed(SEARCH, Value::Text(t)) => {
-                view.search.clone_from(t);
+/// Handles one event from the window; whether the tree may have changed.
+pub fn on_ui(notes: &mut Notes, view: &mut View, e: &UiEvent) -> bool {
+    match e {
+        UiEvent::Pressed(NEW) => match notes.add("") {
+            Ok(id) => {
+                view.selected = Some(id);
+                view.search.clear();
                 true
             }
-            UiEvent::Changed(LIST, Value::Index(i)) => {
-                let id = shown(self, view).get(*i as usize).map(|n| n.id);
-                if id.is_some() {
-                    view.selected = id;
-                }
-                id.is_some()
-            }
-            UiEvent::Changed(EDITOR, Value::Text(t)) => match view.selected {
-                Some(id) => self.set_text(id, t),
-                None => false,
-            },
-            UiEvent::Submitted(SEARCH) => {
-                let first = shown(self, view).first().map(|n| n.id);
-                if first.is_some() {
-                    view.selected = first;
-                }
-                first.is_some()
-            }
-            _ => false,
+            Err(_) => false,
+        },
+        UiEvent::Changed(SEARCH, Value::Text(t)) => {
+            view.search.clone_from(t);
+            true
         }
+        UiEvent::Changed(LIST, Value::Index(i)) => {
+            let id = shown(notes, view).get(*i as usize).map(|n| n.id);
+            if id.is_some() {
+                view.selected = id;
+            }
+            id.is_some()
+        }
+        UiEvent::Changed(EDITOR, Value::Text(t)) => match view.selected {
+            Some(id) => set_text(notes, id, t),
+            None => false,
+        },
+        UiEvent::Submitted(SEARCH) => {
+            let first = shown(notes, view).first().map(|n| n.id);
+            if first.is_some() {
+                view.selected = first;
+            }
+            first.is_some()
+        }
+        _ => false,
     }
 }

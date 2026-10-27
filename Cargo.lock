@@ -178,7 +178,6 @@ dependencies = [
  "compsdk",
  "kabi",
  "minicbor",
- "uikit",
  "wit-bindgen",
 ]
 
@@ -188,6 +187,15 @@ version = "0.0.0"
 dependencies = [
  "comp-notes",
  "compsdk",
+]
+
+[[package]]
+name = "comp-notes-ui"
+version = "0.0.0"
+dependencies = [
+ "comp-notes",
+ "compsdk",
+ "uikit",
 ]
 
 [[package]]
