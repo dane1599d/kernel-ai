@@ -34,6 +34,7 @@ mod pkg;
 mod rules;
 pub mod script;
 mod show;
+pub mod standing;
 pub mod state;
 pub mod targets;
 pub mod tiers;

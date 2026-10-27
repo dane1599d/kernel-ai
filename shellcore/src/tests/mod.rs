@@ -16,6 +16,7 @@ mod log;
 mod more;
 mod packages;
 mod scripts;
+mod standing;
 mod transaction;
 mod tune;
 
