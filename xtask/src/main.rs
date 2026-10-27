@@ -20,6 +20,8 @@
 //! cargo xtask licences check   (every licence in the tree and the dependency graph is allowed and has its text; see licences.rs)
 //! cargo xtask notices [--check]   (writes or checks NOTICES.txt, the third-party notices the image carries; see notices.rs)
 //! cargo xtask fs mkfs|import|ls|cat|check|replay ...   (kaifs data disks on the host, no WSL; see fs/mod.rs)
+//! cargo xtask release-image [--out PATH]   (the release image and its NOTICES.txt; release.yml runs it)
+//! cargo xtask limine   (fetches and checks Limine's pinned files, for the release's source tarball)
 //!
 //! `test` boots the kernel headless once per test case (boot and memory checks,
 //! page fault, double fault, write-protect, stack overflow, 60 s timer, keyboard,
