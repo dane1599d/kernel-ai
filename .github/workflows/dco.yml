@@ -1,0 +1,44 @@
+name: DCO
+
+# ADR 0009 D2: every commit of a pull request is signed off under DCO 1.1
+# (CONTRIBUTING.md), unless its author is a maintainer. `Co-Authored-By:` and
+# `Assisted-by:` trailers are not sign-offs, and AI tools never add one (D3).
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  dco:
+    name: DCO sign-off
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check each commit's Signed-off-by
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          # The maintainers as the base branch lists them, so a pull request
+          # cannot add its own author; the PR's copy only before the file exists.
+          maintainers=$(git show "$BASE:MAINTAINERS" 2>/dev/null || cat MAINTAINERS)
+          emails=$(grep -oE '<[^<>]+>' <<<"$maintainers" | tr -d '<>')
+          failed=0
+          for commit in $(git rev-list --no-merges "$BASE..$HEAD"); do
+            name=$(git log -1 --format=%an "$commit")
+            email=$(git log -1 --format=%ae "$commit")
+            if grep -qxF -- "$email" <<<"$emails"; then
+              continue
+            fi
+            if git log -1 --format=%B "$commit" | grep -qxF -- "Signed-off-by: $name <$email>"; then
+              continue
+            fi
+            echo "::error::$commit by $name <$email> has no 'Signed-off-by: $name <$email>' (see CONTRIBUTING.md; use git commit -s)"
+            failed=1
+          done
+          exit "$failed"

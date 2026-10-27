@@ -42,6 +42,18 @@ pub use process::{
 
 pub const MAX_NAME: usize = 24;
 
+/// The product's name (ADR 0009 D8), as a macro too, so `concat!` keeps the
+/// model's prompts `const`. The banner, the boot entry, the VM's name and the
+/// prompts say it. Renaming changes the prompts, so it needs a fluency re-run.
+#[macro_export]
+macro_rules! product_name {
+    () => {
+        "Kernel AI"
+    };
+}
+
+pub const PRODUCT_NAME: &str = product_name!();
+
 // The fixed layout must leave the image, heap and stack apart, inside user space,
 // and the structures passed by pointer must keep their sizes.
 const _: () = {

@@ -45,7 +45,8 @@ pub const BUNDLE: &str = "kai.bundle";
 
 pub fn limine_conf(cmdline: &str, module_paths: &[&str]) -> String {
     let mut conf = format!(
-        "timeout: 0\n\n/Kernel AI\n    protocol: limine\n    path: boot():/boot/kernel\n    cmdline: {cmdline}\n"
+        "timeout: 0\n\n/{}\n    protocol: limine\n    path: boot():/boot/kernel\n    cmdline: {cmdline}\n",
+        kabi::PRODUCT_NAME
     );
     for path in module_paths {
         conf.push_str(&format!("    module_path: boot():/boot/{path}\n"));

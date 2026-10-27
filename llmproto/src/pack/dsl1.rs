@@ -33,34 +33,6 @@ script()  // a Rhai program, written next, for what the functions below can read
 undo(steps: int 1..1)  // puts back the last change made; undo again redoes it
 ";
 
-/// A script call carries no code: llm writes it next with the script prompt
-/// (`act::local::routed`), and the grammar closes `script` with no arguments.
-const SCRIPT: &str = r#"{"name":"script","arguments":{}}"#;
-
-/// (request, the tagged call answering it).
-const EXAMPLES: &[(&str, &str)] = &[
-    ("how many CPUs are there?", SCRIPT),
-    ("what percentage of memory is free?", SCRIPT),
-    (
-        "switch to round robin",
-        r#"{"name":"set_policy","arguments":{"name":"round-robin"}}"#,
-    ),
-    ("print the names of all services", SCRIPT),
-    ("how long has it been up, in minutes and seconds?", SCRIPT),
-    (
-        "hello",
-        r#"{"name":"say","arguments":{"text":"Hello! Ask me about this system, or tell me what to do."}}"#,
-    ),
-    (
-        "make it faster",
-        r#"{"name":"clarify","arguments":{"question":"Faster how?","options":["interactive policy","round-robin"]}}"#,
-    ),
-    (
-        "delete all my files",
-        r#"{"name":"say","arguments":{"text":"I cannot do that: there is no action for files yet."}}"#,
-    ),
-];
-
 /// Shorter docs for `dsl-1` where the registry's doc is the M8 prompt's (kept byte
 /// for byte there) and the line's types already say the rest: S10-0's draft
 /// wording. Every name here is a row (a test checks); this table goes once the
@@ -242,7 +214,7 @@ pub(super) fn render(rows: &[&Action]) -> String {
     let mut out = String::from(RHAI);
     out.push_str(CALLS);
     out.push_str("## Examples\n");
-    for (request, call) in EXAMPLES {
+    for (request, call) in crate::examples::ACT {
         let _ = writeln!(out, "> {request}\n{call}");
     }
     out.push_str("## system\n");

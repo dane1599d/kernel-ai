@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "acpitables"
-version = "0.0.0"
+version = "0.1.0-dev"
 
 [[package]]
 name = "addr2line"
@@ -30,7 +30,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "agentabi"
-version = "0.0.0"
+version = "0.1.0-dev"
 dependencies = [
  "kabi",
 ]
@@ -68,7 +68,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "appabi"
-version = "0.0.0"
+version = "0.1.0-dev"
 
 [[package]]
 name = "arrayref"
@@ -117,11 +117,11 @@ dependencies = [
 
 [[package]]
 name = "bootslot"
-version = "0.0.0"
+version = "0.1.0-dev"
 
 [[package]]
 name = "bpe"
-version = "0.0.0"
+version = "0.1.0-dev"
 dependencies = [
  "gguf",
 ]
@@ -160,7 +160,7 @@ checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 
 [[package]]
 name = "captable"
-version = "0.0.0"
+version = "0.1.0-dev"
 dependencies = [
  "kabi",
 ]
@@ -173,7 +173,7 @@ checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 
 [[package]]
 name = "comp-notes"
-version = "0.0.0"
+version = "0.1.0-dev"
 dependencies = [
  "compsdk",
  "kabi",
@@ -183,7 +183,7 @@ dependencies = [
 
 [[package]]
 name = "comp-notes-bad"
-version = "0.0.0"
+version = "0.1.0-dev"
 dependencies = [
  "comp-notes",
  "compsdk",
@@ -191,7 +191,7 @@ dependencies = [
 
 [[package]]
 name = "comp-notes-ui"
-version = "0.0.0"
+version = "0.1.0-dev"
 dependencies = [
  "comp-notes",
  "compsdk",
@@ -200,7 +200,7 @@ dependencies = [
 
 [[package]]
 name = "comp-notes-v1"
-version = "0.0.0"
+version = "0.1.0-dev"
 dependencies = [
  "comp-notes",
  "compsdk",
@@ -209,7 +209,7 @@ dependencies = [
 
 [[package]]
 name = "comp-notes-window"
-version = "0.0.0"
+version = "0.1.0-dev"
 dependencies = [
  "comp-notes",
  "comp-notes-ui",
@@ -220,11 +220,11 @@ dependencies = [
 
 [[package]]
 name = "comp-viewbench"
-version = "0.0.0"
+version = "0.1.0-dev"
 
 [[package]]
 name = "compsdk"
-version = "0.0.0"
+version = "0.1.0-dev"
 dependencies = [
  "kabi",
  "minicbor",
@@ -293,7 +293,7 @@ dependencies = [
 
 [[package]]
 name = "cpufeat"
-version = "0.0.0"
+version = "0.1.0-dev"
 
 [[package]]
 name = "cpufeatures"
@@ -361,18 +361,18 @@ dependencies = [
 
 [[package]]
 name = "deskcore"
-version = "0.0.0"
+version = "0.1.0-dev"
 dependencies = [
  "surfabi",
 ]
 
 [[package]]
 name = "devkit"
-version = "0.0.0"
+version = "0.1.0-dev"
 
 [[package]]
 name = "devmatch"
-version = "0.0.0"
+version = "0.1.0-dev"
 
 [[package]]
 name = "digest"
@@ -387,7 +387,7 @@ dependencies = [
 
 [[package]]
 name = "diskmap"
-version = "0.0.0"
+version = "0.1.0-dev"
 
 [[package]]
 name = "ed25519-compact"
@@ -397,7 +397,7 @@ checksum = "1454db4f2edb7f0e8fe0c5b375b0c978fc63244cc9f010d160e417eb10139aa8"
 
 [[package]]
 name = "editcore"
-version = "0.0.0"
+version = "0.1.0-dev"
 dependencies = [
  "kabi",
  "livecore",
@@ -455,14 +455,14 @@ dependencies = [
 
 [[package]]
 name = "fsproto"
-version = "0.0.0"
+version = "0.1.0-dev"
 dependencies = [
  "minicbor",
 ]
 
 [[package]]
 name = "fsserve"
-version = "0.0.0"
+version = "0.1.0-dev"
 dependencies = [
  "fsproto",
  "kabi",
@@ -506,7 +506,7 @@ dependencies = [
 
 [[package]]
 name = "gfx2d"
-version = "0.0.0"
+version = "0.1.0-dev"
 dependencies = [
  "harfrust",
  "libm",
@@ -519,11 +519,11 @@ dependencies = [
 
 [[package]]
 name = "gfxcore"
-version = "0.0.0"
+version = "0.1.0-dev"
 
 [[package]]
 name = "gguf"
-version = "0.0.0"
+version = "0.1.0-dev"
 
 [[package]]
 name = "gimli"
@@ -622,7 +622,7 @@ dependencies = [
 
 [[package]]
 name = "infer"
-version = "0.0.0"
+version = "0.1.0-dev"
 dependencies = [
  "bpe",
  "gguf",
@@ -650,21 +650,21 @@ dependencies = [
 
 [[package]]
 name = "kabi"
-version = "0.0.0"
+version = "0.1.0-dev"
 dependencies = [
  "bitflags 2.13.2",
 ]
 
 [[package]]
 name = "kaibundle"
-version = "0.0.0"
+version = "0.1.0-dev"
 dependencies = [
  "sha2",
 ]
 
 [[package]]
 name = "kaifs"
-version = "0.0.0"
+version = "0.1.0-dev"
 dependencies = [
  "seahash",
  "zerocopy",
@@ -672,7 +672,7 @@ dependencies = [
 
 [[package]]
 name = "kailink"
-version = "0.0.0"
+version = "0.1.0-dev"
 dependencies = [
  "wasm-encoder",
  "wasmi",
@@ -681,7 +681,7 @@ dependencies = [
 
 [[package]]
 name = "kaipkg"
-version = "0.0.0"
+version = "0.1.0-dev"
 dependencies = [
  "agentabi",
  "kaifs",
@@ -690,7 +690,7 @@ dependencies = [
 
 [[package]]
 name = "kernel"
-version = "0.10.0"
+version = "0.1.0-dev"
 dependencies = [
  "acpitables",
  "captable",
@@ -756,11 +756,11 @@ checksum = "29363c0f37e66e18575fadf7141c56ee7ea04ae5fecbeb25eff303f77af203a9"
 
 [[package]]
 name = "linetable"
-version = "0.0.0"
+version = "0.1.0-dev"
 
 [[package]]
 name = "livecore"
-version = "0.0.0"
+version = "0.1.0-dev"
 dependencies = [
  "appabi",
  "kabi",
@@ -768,7 +768,7 @@ dependencies = [
 
 [[package]]
 name = "llmproto"
-version = "0.0.0"
+version = "0.1.0-dev"
 dependencies = [
  "agentabi",
  "infer",
@@ -796,7 +796,7 @@ checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
 name = "look"
-version = "0.0.0"
+version = "0.1.0-dev"
 dependencies = [
  "libm",
 ]
@@ -854,11 +854,11 @@ dependencies = [
 
 [[package]]
 name = "mm"
-version = "0.0.0"
+version = "0.1.0-dev"
 
 [[package]]
 name = "netcore"
-version = "0.0.0"
+version = "0.1.0-dev"
 dependencies = [
  "smoltcp",
 ]
@@ -887,7 +887,7 @@ dependencies = [
 
 [[package]]
 name = "nvme"
-version = "0.0.0"
+version = "0.1.0-dev"
 
 [[package]]
 name = "object"
@@ -917,7 +917,7 @@ checksum = "73c53b65bbadd653c9d125e745d2659a3a060539b17d96ab1c59f9f5bfdacce5"
 
 [[package]]
 name = "pci"
-version = "0.0.0"
+version = "0.1.0-dev"
 dependencies = [
  "pci_types",
 ]
@@ -965,7 +965,7 @@ dependencies = [
 
 [[package]]
 name = "quant"
-version = "0.0.0"
+version = "0.1.0-dev"
 dependencies = [
  "cpufeat",
 ]
@@ -1056,7 +1056,7 @@ dependencies = [
 
 [[package]]
 name = "sched"
-version = "0.0.0"
+version = "0.1.0-dev"
 
 [[package]]
 name = "scopeguard"
@@ -1132,7 +1132,7 @@ dependencies = [
 
 [[package]]
 name = "shellcore"
-version = "0.0.0"
+version = "0.1.0-dev"
 dependencies = [
  "agentabi",
  "kabi",
@@ -1199,14 +1199,14 @@ dependencies = [
 
 [[package]]
 name = "spike-rhai"
-version = "0.0.0"
+version = "0.1.0-dev"
 dependencies = [
  "rhai",
 ]
 
 [[package]]
 name = "spike-wasmi"
-version = "0.0.0"
+version = "0.1.0-dev"
 dependencies = [
  "wasmi",
 ]
@@ -1246,7 +1246,7 @@ checksum = "6637bab7722d379c8b41ba849228d680cc12d0a45ba1fa2b48f2a30577a06731"
 
 [[package]]
 name = "supervise"
-version = "0.0.0"
+version = "0.1.0-dev"
 dependencies = [
  "kabi",
  "termcore",
@@ -1254,7 +1254,7 @@ dependencies = [
 
 [[package]]
 name = "surfabi"
-version = "0.0.0"
+version = "0.1.0-dev"
 dependencies = [
  "kabi",
 ]
@@ -1304,7 +1304,7 @@ dependencies = [
 
 [[package]]
 name = "termcore"
-version = "0.0.0"
+version = "0.1.0-dev"
 dependencies = [
  "look",
  "pc-keyboard",
@@ -1391,11 +1391,11 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
 name = "uelf"
-version = "0.0.0"
+version = "0.1.0-dev"
 
 [[package]]
 name = "uikit"
-version = "0.0.0"
+version = "0.1.0-dev"
 
 [[package]]
 name = "unicode-ident"
@@ -1411,7 +1411,7 @@ checksum = "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
 
 [[package]]
 name = "user"
-version = "0.0.0"
+version = "0.1.0-dev"
 dependencies = [
  "appabi",
  "cpufeat",
@@ -1469,7 +1469,7 @@ checksum = "ccf3ec651a847eb01de73ccad15eb7d99f80485de043efb2f370cd654f4ea44b"
 
 [[package]]
 name = "wasihost"
-version = "0.0.0"
+version = "0.1.0-dev"
 
 [[package]]
 name = "wasm-bindgen"
@@ -1540,7 +1540,7 @@ dependencies = [
 
 [[package]]
 name = "wasmhost"
-version = "0.0.0"
+version = "0.1.0-dev"
 dependencies = [
  "appabi",
  "kabi",
@@ -1744,14 +1744,14 @@ dependencies = [
 
 [[package]]
 name = "xhci"
-version = "0.0.0"
+version = "0.1.0-dev"
 dependencies = [
  "devkit",
 ]
 
 [[package]]
 name = "xtask"
-version = "0.0.0"
+version = "0.1.0-dev"
 dependencies = [
  "addr2line",
  "agentabi",
