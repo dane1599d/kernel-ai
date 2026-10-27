@@ -141,14 +141,18 @@ pub fn claim(slot: usize, info: &mut DisplayInfo) -> Result<u64, Error> {
             return Err(error);
         }
     };
+    // The console stops painting, and input becomes the holder's, before the
+    // claim can be seen: otherwise, on another CPU, the console could still
+    // draw into the buffer the holder now owns, or take a key, while `shows`
+    // already says the holder has the screen.
+    console::suspend();
+    input::clear();
+    input::set_taking(true);
     state.holder = Some(pid);
     state.showing = Some(grant);
     state.taken_back = false;
     state.cursor = (surface.width as u32 / 2, surface.height as u32 / 2);
     drop(state);
-    console::suspend();
-    input::clear();
-    input::set_taking(true);
     *info = DisplayInfo {
         width: surface.width as u32,
         height: surface.height as u32,
