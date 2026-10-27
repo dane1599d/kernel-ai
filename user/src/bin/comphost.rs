@@ -115,6 +115,7 @@ fn main() -> i32 {
         match sys::svc_recv(&mut request, host.timeout_ms(), &mut caller) {
             Ok(len) => {
                 let len = len.min(request.len());
+                let heap_before = user::heap_bytes();
                 let mut reply = match host.handle(caller, &request[..len]) {
                     Ok(reply) => reply,
                     Err(exit) => {
@@ -122,6 +123,7 @@ fn main() -> i32 {
                         return exit.code;
                     }
                 };
+                note_heap(&mut reply, heap_before);
                 reply.truncate(kabi::MAX_MESSAGE);
                 if let Err(error) = sys::svc_reply(&reply) {
                     println!("svc_reply failed: {error:?}");
@@ -139,4 +141,17 @@ fn main() -> i32 {
             }
         }
     }
+}
+
+/// After a suspend or a resume (P3 task 11), the heap in use before and after
+/// joins the reply and the log, so what the instance held is seen to go.
+fn note_heap(reply: &mut Vec<u8>, before: u64) {
+    let moved = [b"ok suspended ".as_slice(), b"ok resumed ".as_slice()];
+    if !moved.iter().any(|ok| reply.starts_with(ok)) {
+        return;
+    }
+    let (before, after) = (before / 1024, user::heap_bytes() / 1024);
+    let note = alloc::format!("; heap {before} KiB -> {after} KiB");
+    reply.extend_from_slice(note.as_bytes());
+    println!("{}", core::str::from_utf8(reply).unwrap_or(""));
 }

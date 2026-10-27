@@ -115,6 +115,8 @@ pub enum SelfTest {
     DeskWindows,
     /// `desktop` killed and restarted; clients reconnect (P3 task 6).
     DeskRestart,
+    /// An app suspended and resumed through its host (P3 task 11).
+    AppSuspend,
     /// `scriptrun` through a Job, and spike S01-1's M3 and M5 (P1 task 14).
     Scriptrun,
     /// L2: processes keep their vector state across switches and CPUs, and start clean.
@@ -242,6 +244,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=display-claim" => Some(SelfTest::DisplayClaim),
             "test=desk-windows" => Some(SelfTest::DeskWindows),
             "test=desk-restart" => Some(SelfTest::DeskRestart),
+            "test=app-suspend" => Some(SelfTest::AppSuspend),
             "test=scriptrun" => Some(SelfTest::Scriptrun),
             "test=fpu" => Some(SelfTest::Fpu),
             "test=probe" => Some(SelfTest::Probe),
@@ -290,6 +293,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::Scripts
             | SelfTest::Act(_)
             | SelfTest::Live
+            | SelfTest::AppSuspend
             | SelfTest::Edit
             | SelfTest::Manifest
             | SelfTest::ManifestGood
@@ -322,6 +326,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
     let mut plan = match test {
         SelfTest::Live => format!("{}\n{}", kabi::plan::NOTES_TEST, crate::llm::plan_line()),
         SelfTest::Part => String::from(kabi::plan::FS),
+        SelfTest::AppSuspend => kabi::plan::notes("2", None),
         SelfTest::Files { reread } => {
             crate::files_tests::plan(if reread { "read" } else { "write" })
         }
@@ -352,6 +357,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
         test,
         SelfTest::Net
             | SelfTest::Live
+            | SelfTest::AppSuspend
             | SelfTest::Edit
             | SelfTest::Manifest
             | SelfTest::ManifestGood

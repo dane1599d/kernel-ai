@@ -16,6 +16,8 @@ use wasmi::{
 /// What host functions see of the instance.
 pub(crate) struct HostState {
     pub(crate) limits: StoreLimits,
+    /// The instance's own memory region (lifecycle 2), committed as it grows.
+    pub(crate) memory: Option<crate::linear::Region>,
     pub(crate) log: Option<LogSink>,
     /// Log lines are dropped while set.
     pub(crate) quiet: bool,
@@ -151,6 +153,7 @@ impl WasmInstance {
                 .instances(1)
                 .trap_on_grow_failure(true)
                 .build(),
+            memory: None,
             log: log_sink,
             quiet: false,
             lines: 0,
@@ -307,5 +310,61 @@ impl livecore::Instance for WasmInstance {
     #[inline(never)]
     fn quiet(&mut self, quiet: bool) {
         self.store.data_mut().quiet = quiet;
+    }
+}
+
+impl wasmi::ResourceLimiter for HostState {
+    fn memory_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        maximum: Option<usize>,
+    ) -> Result<bool, wasmi_core::LimiterError> {
+        let allowed = self.limits.memory_growing(current, desired, maximum)?;
+        // Commit before wasmi writes the new pages.
+        let committed = match self.memory.as_mut() {
+            Some(region) if allowed => region.grow(desired),
+            _ => true,
+        };
+        if committed {
+            Ok(allowed)
+        } else {
+            Err(wasmi_core::LimiterError::ResourceLimiterDeniedAllocation)
+        }
+    }
+
+    fn memory_grow_failed(
+        &mut self,
+        error: &wasmi::errors::MemoryError,
+    ) -> Result<(), wasmi_core::LimiterError> {
+        self.limits.memory_grow_failed(error)
+    }
+
+    fn table_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        maximum: Option<usize>,
+    ) -> Result<bool, wasmi_core::LimiterError> {
+        self.limits.table_growing(current, desired, maximum)
+    }
+
+    fn table_grow_failed(
+        &mut self,
+        error: &wasmi::errors::TableError,
+    ) -> Result<(), wasmi_core::LimiterError> {
+        self.limits.table_grow_failed(error)
+    }
+
+    fn instances(&self) -> usize {
+        self.limits.instances()
+    }
+
+    fn tables(&self) -> usize {
+        self.limits.tables()
+    }
+
+    fn memories(&self) -> usize {
+        self.limits.memories()
     }
 }

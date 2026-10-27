@@ -113,6 +113,15 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("desk-restart", "test=desk-restart")
     },
+    // P3 task 11: an app suspended and resumed through its host.
+    TestCase {
+        expect: &[
+            "notes: suspended version 2",
+            "notes: resumed version 2",
+            "app-suspend: notes freed ",
+        ],
+        ..case("app-suspend", "test=app-suspend")
+    },
     // P1 task 14: shared pages, and spike S01-1's M6.
     TestCase {
         expect: &[

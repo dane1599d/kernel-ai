@@ -1785,6 +1785,7 @@ dependencies = [
  "surfabi",
  "uikit",
  "wasmi",
+ "wasmi_core",
  "wat",
 ]
 
