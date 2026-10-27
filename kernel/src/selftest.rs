@@ -15,6 +15,7 @@ pub enum ActCase {
     Rollback,
     Ask,
     Inject,
+    Rule,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -147,6 +148,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=act-rollback" => Some(SelfTest::Act(ActCase::Rollback)),
             "test=act-ask" => Some(SelfTest::Act(ActCase::Ask)),
             "test=act-inject" => Some(SelfTest::Act(ActCase::Inject)),
+            "test=act-rule" => Some(SelfTest::Act(ActCase::Rule)),
             "test=live" => Some(SelfTest::Live),
             "test=edit" => Some(SelfTest::Edit),
             "test=manifest" => Some(SelfTest::Manifest),
@@ -251,6 +253,10 @@ pub fn plan(test: SelfTest) -> Option<String> {
     ) {
         plan.push('\n');
         plan.push_str(kabi::plan::SHELL);
+    }
+    // `act-rule` stops processes the supervisor does not restart.
+    if test == SelfTest::Act(ActCase::Rule) {
+        plan.push_str("\nspin-a program=spinner burst_ms=3600000 unsupervised\nspin-b program=spinner burst_ms=3600000 unsupervised");
     }
     let workload = crate::workload::plan_lines();
     if !workload.is_empty() {

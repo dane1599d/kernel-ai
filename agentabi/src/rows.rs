@@ -1,5 +1,6 @@
-//! The OS rows of `REGISTRY_VERSION` 1: the seven M8 script functions, the shell's
-//! two pure helpers, and the typed `tune`, `tune undo` and `:revert`.
+//! The OS rows of `REGISTRY_VERSION` 1: the seven M8 script functions, P1's
+//! process and service rows, the shell's two pure helpers, and the typed `tune`,
+//! `tune undo` and `:revert`.
 
 use crate::{Action, Arg, ArgType, Facts, Inverse, Owner, RetType, Returns, Role, Tier};
 use kabi::cap;
@@ -218,17 +219,77 @@ pub const COMPONENT_REVERT: Action = Action {
     old_name: None,
 };
 
+/// A process or service named in the request; no row acts on a protected one.
+const NAMED: Arg = Arg {
+    from_request: true,
+    never: PROTECTED,
+    ..arg("name", ArgType::Text { max: 24 }, Role::Target)
+};
+
+/// Stopping loses what it held, and a stopped process cannot be resumed.
+const STOPS: Facts = Facts {
+    read_only: false,
+    destructive: true,
+    idempotent: true,
+    open_world: false,
+};
+
+/// Stops a running process by name: no undo, so it asks once (ADR 0002 D2a).
+pub const PROCESS_STOP: Action = Action {
+    name: "process_stop",
+    doc: "stops processes by name",
+    args: &[NAMED],
+    facts: STOPS,
+    inverse: Inverse::None("a stopped process cannot be resumed"),
+    cues: &["stop", "kill", "end", "terminate"],
+    returns: Returns::System,
+    ret: RetType::Unit,
+    owner: Owner::Kernel,
+    needs: cap::CALL,
+    min_tier: Tier::Run,
+    old_name: None,
+};
+
+/// Stops a supervised service so it stays stopped: no undo, so it asks once.
+pub const SERVICE_STOP: Action = Action {
+    name: "service_stop",
+    doc: "stays stopped until started",
+    cues: &["stop", "shut"],
+    inverse: Inverse::None("a stopped service loses what it held"),
+    owner: Owner::Service("supervisor"),
+    ..PROCESS_STOP
+};
+
+/// Starts a stopped service again; `undo` stops it.
+pub const SERVICE_START: Action = Action {
+    name: "service_start",
+    doc: "starts a stopped service",
+    facts: Facts::LOCAL_CHANGE,
+    inverse: Inverse::Compensate("service_stop"),
+    cues: &["start", "launch"],
+    ..SERVICE_STOP
+};
+
+/// Stops a service and starts it again: what it held is lost, so it asks once.
+pub const SERVICE_RESTART: Action = Action {
+    name: "service_restart",
+    doc: "loses what it held",
+    inverse: Inverse::None("a restarted service loses what it held"),
+    cues: &["restart"],
+    ..SERVICE_STOP
+};
+
 /// The functions LLM-written scripts may call, in the order the prompt lists them.
 pub const SCRIPT_API: [Action; 7] = [
     CPUS, MEMORY, UPTIME_MS, PROCESSES, THREADS, GET_POLICY, SET_POLICY,
 ];
-/// The pure functions every strict engine adds besides the OS functions it grants.
-pub const HELPERS: [Action; 2] = [FIXED, FLOOR];
-/// Rows that are typed commands today and not bound in scripts.
-pub const COMMANDS: [Action; 3] = [TUNE, TUNE_UNDO, COMPONENT_REVERT];
-
-/// Every OS row.
-pub const ROWS: [Action; 12] = [
+/// Rows a tagged call runs but a script may not: what they change asks once, so
+/// a script's one consent could not cover them. The script prompt does not list
+/// them; they reach the model only through the act pack.
+pub const CALL_ONLY: [Action; 4] = [PROCESS_STOP, SERVICE_STOP, SERVICE_START, SERVICE_RESTART];
+/// Every row the shell's script engine binds: the script API, then the call-only
+/// rows, which only a tagged call's one-line script is given.
+pub const BOUND: [Action; 11] = [
     CPUS,
     MEMORY,
     UPTIME_MS,
@@ -236,6 +297,60 @@ pub const ROWS: [Action; 12] = [
     THREADS,
     GET_POLICY,
     SET_POLICY,
+    PROCESS_STOP,
+    SERVICE_STOP,
+    SERVICE_START,
+    SERVICE_RESTART,
+];
+/// The pure functions every strict engine adds besides the OS functions it grants.
+pub const HELPERS: [Action; 2] = [FIXED, FLOOR];
+/// Rows that are typed commands today and not bound in scripts.
+pub const COMMANDS: [Action; 3] = [TUNE, TUNE_UNDO, COMPONENT_REVERT];
+
+/// `rules`: lists the standing rules the menu's "Always allow" wrote.
+pub const RULES: Action = Action {
+    name: "rules",
+    doc: "the standing rules, numbered",
+    cues: &["rules"],
+    owner: Owner::Shell,
+    ..read("rules", "", RetType::Of(STRING))
+};
+
+/// `rules_remove <n>`: removes one rule and revokes its grant node. It only
+/// narrows what runs without a question.
+pub const RULES_REMOVE: Action = Action {
+    name: "rules_remove",
+    doc: "removes standing rule n",
+    args: &[arg("n", ArgType::Int { min: 1, max: 32 }, Role::Target)],
+    facts: Facts::LOCAL_CHANGE,
+    inverse: Inverse::Restore,
+    cues: &["remove", "delete"],
+    returns: Returns::System,
+    ret: RetType::Unit,
+    owner: Owner::Shell,
+    needs: 0,
+    min_tier: Tier::Run,
+    old_name: None,
+};
+
+/// Rows only the user types (ADR 0002 D2a): standing consent is the user's alone,
+/// so these are in no pack and no tagged call or script can reach them. They are
+/// not in [`ROWS`], which is what calls, consent and the pack look in.
+pub const TYPED_ONLY: [Action; 2] = [RULES, RULES_REMOVE];
+
+/// Every OS row.
+pub const ROWS: [Action; 16] = [
+    CPUS,
+    MEMORY,
+    UPTIME_MS,
+    PROCESSES,
+    THREADS,
+    GET_POLICY,
+    SET_POLICY,
+    PROCESS_STOP,
+    SERVICE_STOP,
+    SERVICE_START,
+    SERVICE_RESTART,
     FIXED,
     FLOOR,
     TUNE,

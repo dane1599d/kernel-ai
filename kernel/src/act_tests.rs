@@ -133,6 +133,7 @@ pub fn check(which: ActCase) -> Result<(), &'static str> {
         ActCase::Rollback => rollback(),
         ActCase::Ask => ask(),
         ActCase::Inject => inject(),
+        ActCase::Rule => rule(),
     }
 }
 
@@ -352,6 +353,54 @@ fn inject() -> Result<(), &'static str> {
     }
     log!(
         "act-inject: 8 injected calls: 5 held for a question and declined, 1 refused, 2 left as text; nothing changed"
+    );
+    Ok(())
+}
+
+/// `act-rule` (ADR 0002 D2a): a stop has no undo, so it asks with both rules
+/// offered; "Always allow" on the menu writes a rule, backed by a `rule` node the
+/// trusted path made, and the next stop runs under it without a question.
+/// `rules_remove` revokes it, and the stop asks again.
+fn rule() -> Result<(), &'static str> {
+    let reply = reply_to("stop spin-a")?;
+    let menu = menu::Menu::decode(&reply).map_err(|_| {
+        log!("act-rule: not a menu: {reply:?}");
+        "act-rule: a stop did not ask with the menu"
+    })?;
+    if menu.selected() != Answer::Allow || menu.rows().len() != 5 {
+        return Err("act-rule: the menu did not start on Allow with both rules offered");
+    }
+    let allowed = allow::allow(menu.id, menu.call(), Answer::AlwaysKind)
+        .ok()
+        .flatten()
+        .ok_or("act-rule: the trusted path could not mint a ONCE and a rule")?;
+    let reply = reply_to(&menu::granted_line(
+        menu.id,
+        Answer::AlwaysKind,
+        allowed.granted,
+    ))?;
+    allow::end(&allowed);
+    let added =
+        "ok Rule #1 added; `rules` lists it.\nDone: process spin-a stopped (1) (was running)";
+    let ruled = "ok Done: process spin-b stopped (1) (was running)";
+    let removed = "ok Removed rule #1 (process_stop); it asks again";
+    for (got, want) in [
+        (reply, added),
+        (reply_to("stop spin-b")?, ruled),
+        (reply_to("rules")?, "ok #1 process_stop"),
+        (reply_to("rules_remove 1")?, removed),
+    ] {
+        if got != want {
+            log!("act-rule: wanted {want:?}, got {got:?}");
+            return Err("act-rule: a line got the wrong answer");
+        }
+    }
+    if !reply_to("stop spin-a")?.starts_with("menu ") {
+        return Err("act-rule: a stop asked nothing after its rule was removed");
+    }
+    reply_to("n")?;
+    log!(
+        "act-rule: Always allow wrote a rule node, the next stop ran under it, and rules_remove took it away"
     );
     Ok(())
 }

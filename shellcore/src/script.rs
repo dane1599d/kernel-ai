@@ -27,7 +27,7 @@ use alloc::vec::Vec;
 use core::cell::RefCell;
 use core::fmt::Write;
 use kabi::{MAX_METRIC_PROCESSES, Metrics, policy};
-use llmproto::script::{API, Answer, Effect, check_summary, check_text};
+use llmproto::script::{Answer, Effect, check_summary, check_text};
 use rhai::{AST, Array, Dynamic, Engine, EvalAltResult, INT, Map, Scope};
 
 /// A script that passed every check, waiting for the user's answer.
@@ -135,7 +135,10 @@ impl Tx {
 /// Registers the registry's script API rows named in `granted` on `engine`, each
 /// checked against `tx`'s plan when it runs.
 fn register(engine: &mut Engine, granted: &[&'static str], tx: &Tx) {
-    for row in API.iter().filter(|row| granted.contains(&row.name)) {
+    for row in agentabi::BOUND
+        .iter()
+        .filter(|row| granted.contains(&row.name))
+    {
         bind(engine, row.name, tx);
     }
 }
@@ -145,7 +148,8 @@ fn register(engine: &mut Engine, granted: &[&'static str], tx: &Tx) {
 pub fn unbound(host: &Rc<dyn Host>) -> Vec<&'static str> {
     let mut engine = Engine::new_raw();
     let tx = Tx::new(host, &Rc::default());
-    API.iter()
+    agentabi::BOUND
+        .iter()
         .map(|row| row.name)
         .filter(|&name| !bind(&mut engine, name, &tx))
         .collect()
@@ -247,10 +251,105 @@ fn bind(engine: &mut Engine, name: &'static str, tx: &Tx) -> bool {
                     Ok(())
                 });
             }
+            "process_stop" => {
+                engine.register_fn(name, move |which: &str| -> RhaiResult<()> {
+                    tx.approved(name, &[which])?;
+                    let count = h
+                        .stop_process(which)
+                        .map_err(|why| rhai_error(format!("process_stop: {why}")))?;
+                    tx.changed(stopped(
+                        name,
+                        "kernel",
+                        "process",
+                        which,
+                        &format!("stopped ({count})"),
+                        None,
+                    ));
+                    Ok(())
+                });
+            }
+            "service_stop" => {
+                engine.register_fn(name, move |which: &str| -> RhaiResult<()> {
+                    tx.approved(name, &[which])?;
+                    h.stop_service(which)
+                        .map_err(|why| rhai_error(format!("service_stop: {why}")))?;
+                    tx.changed(stopped(
+                        name,
+                        "supervisor",
+                        "service",
+                        which,
+                        "stopped",
+                        None,
+                    ));
+                    Ok(())
+                });
+            }
+            "service_restart" => {
+                engine.register_fn(name, move |which: &str| -> RhaiResult<()> {
+                    tx.approved(name, &[which])?;
+                    h.stop_service(which)
+                        .map_err(|why| rhai_error(format!("service_restart: {why}")))?;
+                    h.start_service(which).map_err(|why| {
+                        rhai_error(format!("service_restart: stopped, but {why}"))
+                    })?;
+                    tx.changed(stopped(
+                        name,
+                        "supervisor",
+                        "service",
+                        which,
+                        "restarted",
+                        None,
+                    ));
+                    Ok(())
+                });
+            }
+            "service_start" => {
+                engine.register_fn(name, move |which: &str| -> RhaiResult<()> {
+                    tx.approved(name, &[which])?;
+                    // No undo, no change: the tier promises one.
+                    let undo = undo::Name::new(which).ok_or_else(|| {
+                        rhai_error("service_start: no service has a name that long")
+                    })?;
+                    h.start_service(which)
+                        .map_err(|why| rhai_error(format!("service_start: {why}")))?;
+                    tx.changed(stopped(
+                        name,
+                        "supervisor",
+                        "service",
+                        which,
+                        "running",
+                        Some(Inverse::Started(undo)),
+                    ));
+                    Ok(())
+                });
+            }
             _ => return false,
         }
     }
     true
+}
+
+/// One process or service change: `service notes running (was stopped)`.
+fn stopped(
+    action: &'static str,
+    owner: &str,
+    kind: &str,
+    which: &str,
+    after: &str,
+    inverse: Option<Inverse>,
+) -> Done {
+    Done {
+        action: action.into(),
+        owner: owner.into(),
+        res: format!("{kind} {which}"),
+        before: String::from(if after == "running" {
+            "stopped"
+        } else {
+            "running"
+        }),
+        after: after.into(),
+        inverse,
+    }
 }
 
 /// Most decimals [`fixed`] writes.
@@ -311,7 +410,8 @@ fn strict(line: &Rc<Line>, config: &Config, granted: &[&'static str], tx: &Tx) -
 fn split(plan: &Plan) -> (Vec<&'static str>, Vec<&'static str>) {
     let names = plan.names();
     let pick = |effect| {
-        API.iter()
+        agentabi::BOUND
+            .iter()
             .filter(|f| f.effect() == effect && names.contains(&f.name))
             .map(|f| f.name)
             .collect()
@@ -355,6 +455,15 @@ impl Host for Stub {
         Ok(m)
     }
     fn set_policy(&self, _: u64) -> Result<(), kabi::Error> {
+        Ok(())
+    }
+    fn stop_process(&self, _: &str) -> Result<u64, String> {
+        Ok(1)
+    }
+    fn stop_service(&self, _: &str) -> Result<(), String> {
+        Ok(())
+    }
+    fn start_service(&self, _: &str) -> Result<(), String> {
         Ok(())
     }
     fn ask(&self, _: &str) -> Result<String, String> {
@@ -419,6 +528,27 @@ fn for_scripts(config: &Config) -> Config {
 /// stub OS so unknown functions, wrong arguments and type errors are caught before
 /// the user is asked. The error text is fit to send back to the model.
 pub fn check(answer: &Answer, host: &Rc<dyn Host>, config: &Config) -> Result<Checked, Refusal> {
+    check_against(answer, host, config, &agentabi::SCRIPT_API)
+}
+
+/// [`check`] for the one-line script a tagged call's row runs as: its calls are
+/// found among every bound row, the call-only ones too (`agentabi::BOUND`).
+pub fn check_call(
+    answer: &Answer,
+    host: &Rc<dyn Host>,
+    config: &Config,
+) -> Result<Checked, Refusal> {
+    check_against(answer, host, config, &agentabi::BOUND)
+}
+
+/// [`check`], finding the script's calls among `rows`: a model's script sees only
+/// the script API, so a call-only row is no call of it and fails its trial.
+fn check_against(
+    answer: &Answer,
+    host: &Rc<dyn Host>,
+    config: &Config,
+    rows: &'static [agentabi::Action],
+) -> Result<Checked, Refusal> {
     let config = &for_scripts(config);
     let refuse = |why: String| Refusal::Script(why);
     // The llm service checked both already; the shell does not rely on that, since
@@ -430,7 +560,7 @@ pub fn check(answer: &Answer, host: &Rc<dyn Host>, config: &Config) -> Result<Ch
     let ast = strict(&line, config, &[], &Tx::new(&stub, &Rc::default()))
         .compile(&script)
         .map_err(|error| refuse(format!("syntax error: {error}")))?;
-    let plan = Rc::new(analyse::analyse(&ast, &agentabi::SCRIPT_API));
+    let plan = Rc::new(analyse::analyse(&ast, rows));
     let (reads, changes) = split(&plan);
     let granted = plan.names();
     let trial = strict(&line, config, &granted, &Tx::new(&stub, &plan));

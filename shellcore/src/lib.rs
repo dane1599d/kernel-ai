@@ -89,6 +89,18 @@ pub trait Host {
     fn once_check(&self, _badge: u64, _digest: &[u8; 32]) -> Result<(), String> {
         Err(String::from("there is no trusted path here"))
     }
+    /// Stops every running process named `name`; how many stopped.
+    fn stop_process(&self, _name: &str) -> Result<u64, String> {
+        Err(String::from("processes cannot be stopped here"))
+    }
+    /// Stops the supervised service `name`, which stays stopped until started.
+    fn stop_service(&self, _name: &str) -> Result<(), String> {
+        Err(String::from("services cannot be stopped here"))
+    }
+    /// Starts the stopped service `name`.
+    fn start_service(&self, _name: &str) -> Result<(), String> {
+        Err(String::from("services cannot be started here"))
+    }
     /// Revokes a standing rule's grant node, through the `Grant` handle the
     /// trusted path gave for it.
     fn revoke_rule(&self, _handle: u32) -> Result<(), String> {
