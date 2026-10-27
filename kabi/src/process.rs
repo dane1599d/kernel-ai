@@ -47,8 +47,11 @@ impl ExitReason {
 }
 
 pub const MAX_ARGS: usize = 256;
-/// Largest supervisor state the kernel keeps.
-pub const MAX_STATE: usize = 4096;
+/// Largest supervisor state the kernel keeps: room for a record of each of
+/// [`MAX_PLAN`]'s services at the 64-process limit (ADR 0003 §6).
+pub const MAX_STATE: usize = 16 * 1024;
+/// Largest plan the supervisor reads.
+pub const MAX_PLAN: usize = 16 * 1024;
 
 /// Argument of [`crate::call::SPAWN`].
 #[derive(Clone, Copy, Debug, Default)]
