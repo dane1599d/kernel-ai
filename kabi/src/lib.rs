@@ -32,6 +32,7 @@ pub mod probe;
 mod process;
 pub mod sched;
 pub mod thread;
+pub mod update;
 
 pub use error::Error;
 pub use ipc::{CallRequest, HttpRequest, MAX_MESSAGE};

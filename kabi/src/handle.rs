@@ -86,10 +86,13 @@ pub enum Kind {
     Display = 16,
     /// The kernel's input queue: only `desktop`'s.
     Input = 17,
+    /// The slots and the boot record ([`crate::update`]): only `updated`'s.
+    /// Numbered at merge, after the terminal window's `Term` (18, #252).
+    Update = 19,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 17] = [
+    pub const ALL: [Kind; 18] = [
         Kind::Process,
         Kind::Job,
         Kind::Endpoint,
@@ -107,6 +110,7 @@ impl Kind {
         Kind::File,
         Kind::Display,
         Kind::Input,
+        Kind::Update,
     ];
 
     pub fn from_raw(raw: u32) -> Option<Kind> {
@@ -132,6 +136,7 @@ impl Kind {
             Kind::File => "file",
             Kind::Display => "display",
             Kind::Input => "input",
+            Kind::Update => "update",
         }
     }
 }
@@ -282,6 +287,6 @@ mod tests {
             assert_eq!(Kind::from_raw(kind as u32), Some(kind));
         }
         assert_eq!(Kind::from_raw(0), None);
-        assert_eq!(Kind::from_raw(18), None);
+        assert_eq!(Kind::from_raw(20), None);
     }
 }

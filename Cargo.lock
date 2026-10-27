@@ -1645,6 +1645,7 @@ name = "user"
 version = "0.1.0-dev"
 dependencies = [
  "appabi",
+ "bootslot",
  "cpufeat",
  "deskcore",
  "ecdsa",

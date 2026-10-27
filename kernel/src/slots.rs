@@ -87,7 +87,12 @@ fn write(before: &Nv, after: &Nv) -> Result<(), efi::Error> {
     if after.one_shot == before.one_shot {
         return Ok(());
     }
-    let result = match after.one_shot {
+    write_one_shot(after.one_shot)
+}
+
+/// Sets Limine's one-shot to `slot`'s entry, or deletes it.
+fn write_one_shot(one_shot: Option<Slot>) -> Result<(), efi::Error> {
+    let result = match one_shot {
         Some(slot) => {
             let mut bytes = [0u8; 64];
             let mut n = 0;
@@ -100,7 +105,7 @@ fn write(before: &Nv, after: &Nv) -> Result<(), efi::Error> {
         None => efi::set_variable(&BLI, ONE_SHOT, NV_BS_RT, &[]),
     };
     match result {
-        Err(efi::Error::NotFound) if after.one_shot.is_none() => Ok(()),
+        Err(efi::Error::NotFound) if one_shot.is_none() => Ok(()),
         other => other,
     }
 }
@@ -274,6 +279,42 @@ fn checks_pass() -> bool {
         threads::sleep_ms(50);
     }
     false
+}
+
+/// `test=update`: the boot comes up as a normal one, then `updated step=check`
+/// stages the other slot and restarts into it. Fails if it has not by then.
+pub fn update_case() -> ! {
+    on_boot(false);
+    threads::sleep_ms(UPDATE_CASE_MS);
+    crate::fail("update: updated did not restart into the staged slot");
+}
+
+/// How long `update_case` waits for `updated` to stage and restart.
+const UPDATE_CASE_MS: u64 = 240_000;
+
+/// `KaiBootState` as the firmware holds it, for BOOTREC_GET.
+pub fn record() -> Result<Option<Record>, &'static str> {
+    read_record()
+}
+
+/// Whether this boot's slot is committed, for SLOT_WRITE's rule on R.
+pub fn active_committed() -> bool {
+    match (this_slot(), read_record()) {
+        (Some(slot), Ok(Some(record))) => record.slot(slot).successful,
+        _ => false,
+    }
+}
+
+/// BOOTREC_SET: writes `record` as given and the one-shot for `one_shot`, and
+/// keeps them as what the fault path writes from.
+pub fn set(record: Record, one_shot: Option<Slot>) -> Result<(), efi::Error> {
+    efi::set_variable(&KAI, RECORD, NV_BS_RT, &record.encode())?;
+    write_one_shot(one_shot)?;
+    let mut booted = BOOTED.lock();
+    if let Some((_, slot)) = *booted {
+        *booted = Some((Nv { record, one_shot }, slot));
+    }
+    Ok(())
 }
 
 /// From the fault path: records the fault in this boot's slot and deletes the

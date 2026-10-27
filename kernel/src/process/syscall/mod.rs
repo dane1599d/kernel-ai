@@ -27,6 +27,9 @@ pub(crate) mod fs;
 // G-core (P3).
 mod display;
 
+// U, updates (ADR 0008).
+mod update;
+
 use crate::entry::TrapFrame;
 use crate::{cpu, ipc, threads};
 use kabi::Error;
@@ -90,6 +93,8 @@ const AREAS: &[Area] = &[
     fs::handle,
     // G-core (P3).
     display::handle,
+    // U, updates (ADR 0008).
+    update::handle,
 ];
 
 fn handle(slot: usize, number: u64, a: [u64; 6]) -> Result<u64, Error> {

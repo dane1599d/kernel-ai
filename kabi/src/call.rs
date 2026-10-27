@@ -22,7 +22,8 @@
 //! | 140-149 | C, components | |
 //! | 150-159 | V, virtual machines (P6) | |
 //! | 160-169 | M, memory | |
-//! | 170-191 | not given yet | a lane asks lane K for a block |
+//! | 170-179 | U, updates (P4) | SLOT_INFO, SLOT_READ, SLOT_WRITE, SLOT_FLUSH, BOOTREC_GET, BOOTREC_SET |
+//! | 180-191 | not given yet | a lane asks lane K for a block |
 
 /// `exit(code: i32) -> !`
 pub const EXIT: u64 = 0;
@@ -384,6 +385,37 @@ pub const INPUT_READ: u64 = 77;
 // ---- V, 150-159 ----
 
 // ---- M, 160-169 ----
+
+// ---- U, 170-179 ----
+
+/// `slot_info(handle, slot, &mut update::SlotInfo) -> 0`: slot `slot`'s
+/// partition ([`super::update::R`], `A` or `B`) on the boot disk, the slot this
+/// boot runs in, and whether SLOT_WRITE would take it now. Needs an `Update`
+/// handle with INSPECT. NotFound when the disk has no such partition.
+pub const SLOT_INFO: u64 = 170;
+/// `slot_read(handle, slot, sector, buf, len) -> len`: reads `len` bytes from
+/// sector `sector` of the slot. `len` is whole sectors, 1 to
+/// [`super::update::MAX_IO`] bytes, wholly inside the slot; Invalid otherwise.
+/// Needs READ.
+pub const SLOT_READ: u64 = 171;
+/// `slot_write(handle, slot, sector, buf, len) -> len`: as [`SLOT_READ`],
+/// writing. Permission for the slot this boot runs in, and for R unless that
+/// slot is committed (ADR 0008 §10). Durable only after [`SLOT_FLUSH`]. Needs
+/// WRITE.
+pub const SLOT_WRITE: u64 = 172;
+/// `slot_flush(handle, slot) -> 0`: makes every write to the slot's disk before
+/// it durable. Needs WRITE.
+pub const SLOT_FLUSH: u64 = 173;
+/// `bootrec_get(handle, buf) -> 64`: `KaiBootState` as the firmware holds it,
+/// 64 bytes into `buf`. NotFound when there is none, Unavailable without
+/// runtime services. Needs READ.
+pub const BOOTREC_GET: u64 = 174;
+/// `bootrec_set(handle, buf, one_shot, restart) -> 0`: writes the 64-byte
+/// record at `buf` (its CRC must hold), and Limine's one-shot for `one_shot`
+/// (a slot, or [`super::update::NONE`] to delete it); a one-shot naming a slot
+/// the record says may not boot is Invalid. With `restart` 1 the machine then
+/// resets into it. Needs WRITE.
+pub const BOOTREC_SET: u64 = 175;
 
 /// The end of the reserved blocks (see the table above): the highest number a
 /// call may have. A call that is not there yet answers NotFound.

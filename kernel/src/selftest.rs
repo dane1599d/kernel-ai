@@ -149,6 +149,9 @@ pub enum SelfTest {
     EfiReset,
     /// The boot lever on a slot image, driven by `slot-do=` (ADR 0008, lane U).
     Slot,
+    /// `updated step=check` on a slot image: the Update calls, then a stage of
+    /// the other slot and a restart into it.
+    Update,
     Devices,
     TuneRevert,
     TuneStall,
@@ -261,6 +264,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=efi" => Some(SelfTest::Efi),
             "test=efi-reset" => Some(SelfTest::EfiReset),
             "test=slot" => Some(SelfTest::Slot),
+            "test=update" => Some(SelfTest::Update),
             "test=devices" => Some(SelfTest::Devices),
             "test=tune-revert" => Some(SelfTest::TuneRevert),
             "test=tune-stall" => Some(SelfTest::TuneStall),
@@ -287,6 +291,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
         test,
         SelfTest::None
             | SelfTest::Slot
+            | SelfTest::Update
             | SelfTest::Net
             | SelfTest::Terminal
             | SelfTest::Shell
@@ -380,6 +385,12 @@ pub fn plan(test: SelfTest) -> Option<String> {
         };
         plan.push('\n');
         plan.push_str(shell);
+    }
+    // `update` runs the update service's check once the shell is up.
+    if test == SelfTest::Update {
+        plan.push('\n');
+        plan.push_str(kabi::plan::UPDATED);
+        plan.push_str(" step=check");
     }
     // `act-rule` stops processes the supervisor does not restart, and one
     // service it does.
