@@ -548,10 +548,11 @@ pub fn term_read(out: &mut [u8], since: u64) -> Result<usize, Error> {
     Ok(len as usize)
 }
 
-/// Lends the keys to the kernel console's terminal for about a second, or
-/// (`on` false) ends the lease (`desktop` only, while it shows).
-pub fn input_to_console(on: bool) -> Result<(), Error> {
-    call(call::INPUT_TO_CONSOLE, [u64::from(on), 0, 0, 0, 0, 0]).map(|_| ())
+/// Lends the keys to the kernel console's terminal for about a second, while
+/// `pid`'s window, which must be the terminal window, has the focus; or (`on`
+/// false) ends the lease (`desktop` only, while it shows).
+pub fn input_to_console(on: bool, pid: u64) -> Result<(), Error> {
+    call(call::INPUT_TO_CONSOLE, [u64::from(on), pid, 0, 0, 0, 0]).map(|_| ())
 }
 
 /// Removes the `Shm` mapping that starts at `address`.

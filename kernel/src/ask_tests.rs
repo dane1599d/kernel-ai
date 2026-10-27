@@ -63,6 +63,7 @@ fn showing() -> Option<u64> {
 }
 
 /// Waits `ms`, renewing the lease as `desktop` does while the window has focus.
+/// The kernel's own `input::lease`, under INPUT_TO_CONSOLE's checks.
 fn hold(ms: u64, leased: bool) {
     for _ in 0..ms / 100 {
         if leased {
