@@ -46,6 +46,14 @@ fn every_request_round_trips() {
         Request::Begin { action: 42 },
         Request::Commit,
         Request::Generation,
+        Request::TrashList { after: None },
+        Request::TrashList {
+            after: Some(u64::MAX),
+        },
+        Request::TrashRestore {
+            path: "notes/plan.txt".into(),
+        },
+        Request::EmptyTrash,
         Request::Abort,
         Request::Restore { txn: 5, action: 6 },
         Request::History,
@@ -83,6 +91,8 @@ fn every_reply_round_trips_and_the_largest_fit_one_message() {
         Reply::Data(vec![1; MAX_DATA]),
         Reply::Committed { generation: 9 },
         Reply::Generation { generation: 10 },
+        full_trash(),
+        Reply::Emptied { count: u64::MAX },
         Reply::Restored {
             rows: vec![
                 (1, Outcome::Back),
@@ -139,4 +149,37 @@ fn another_version_trailing_bytes_and_oversize_are_bad_requests() {
         decode_request(&encode_request(&big)),
         Err(Error::BadRequest)
     );
+}
+
+/// The largest [`Reply::Trash`] fsserve sends: its path text at the budget,
+/// spread over the most items.
+fn full_trash() -> Reply {
+    let each = MAX_TRASH_TEXT / MAX_TRASH_ITEMS;
+    Reply::Trash {
+        items: (0..MAX_TRASH_ITEMS)
+            .map(|_| TrashItem {
+                id: u64::MAX,
+                path: "p".repeat(each),
+                kind: Kind::Dir,
+                deleted: u64::MAX,
+                action: u64::MAX,
+            })
+            .collect(),
+        more: true,
+    }
+}
+
+#[test]
+fn one_path_at_the_whole_trash_budget_fits_one_message() {
+    let reply = Reply::Trash {
+        items: vec![TrashItem {
+            id: u64::MAX,
+            path: "p".repeat(MAX_TRASH_TEXT),
+            kind: Kind::File,
+            deleted: u64::MAX,
+            action: u64::MAX,
+        }],
+        more: true,
+    };
+    assert!(encode_reply(&reply).len() <= MAX_MESSAGE);
 }
