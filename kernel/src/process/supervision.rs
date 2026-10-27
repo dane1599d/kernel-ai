@@ -360,14 +360,45 @@ pub fn spawn_service(slot: usize, request_ptr: u64) -> Result<u64, Error> {
 /// The shell, the supervisor and llm, and the caller itself, are never stopped; a
 /// service is stopped through the supervisor, which then keeps it down.
 pub fn proc_stop(slot: usize, ptr: u64, len: u64) -> Result<u64, Error> {
+    let mut name = [0u8; MAX_NAME];
+    let name = name_arg(slot, ptr, len, &mut name)?;
+    stop_named(super::identity(slot).name.as_str(), name)
+}
+
+/// The `proc_stop_once` system call.
+pub fn proc_stop_once(slot: usize, ptr: u64, len: u64, badge: u64, id: u64) -> Result<u64, Error> {
+    let mut name = [0u8; MAX_NAME];
+    let name = name_arg(slot, ptr, len, &mut name)?;
+    stop_once(slot, name, badge, id)
+}
+
+/// [`stop_named`] for the process in `slot`, once the `ONCE` it holds under
+/// `badge` checks against menu `id`'s `process_stop("<name>")`, which uses it up;
+/// with `badge` 0, once a standing rule it holds covers that call.
+pub fn stop_once(slot: usize, name: &str, badge: u64, id: u64) -> Result<u64, Error> {
+    let call = termcore::once::call_text("process_stop", &[termcore::once::CallArg::Text(name)])
+        .ok_or(Error::Invalid)?;
+    if badge == 0 {
+        if !crate::handle::rules::covers(slot, &call) {
+            return Err(Error::Permission);
+        }
+    } else {
+        if !crate::handle::grant::holds_once(slot, badge) {
+            return Err(Error::NotFound);
+        }
+        crate::handle::grant::spend_once(badge, &termcore::once::digest_call(id, &call))?;
+    }
+    stop_named(super::identity(slot).name.as_str(), name)
+}
+
+/// A process name from ring 3, `len` bytes at `ptr`.
+fn name_arg(slot: usize, ptr: u64, len: u64, buf: &mut [u8; MAX_NAME]) -> Result<&str, Error> {
     let len = usize::try_from(len).map_err(|_| Error::Invalid)?;
     if len == 0 || len > MAX_NAME {
         return Err(Error::TooBig);
     }
-    let mut name = [0u8; MAX_NAME];
-    copy_from_user(slot, ptr, &mut name[..len])?;
-    let name = core::str::from_utf8(&name[..len]).map_err(|_| Error::Invalid)?;
-    stop_named(super::identity(slot).name.as_str(), name)
+    copy_from_user(slot, ptr, &mut buf[..len])?;
+    core::str::from_utf8(&buf[..len]).map_err(|_| Error::Invalid)
 }
 
 /// [`proc_stop`] for the process named `caller`.
