@@ -53,10 +53,11 @@ const CLARIFY: [Arg<'static>; 2] = [
 /// closes the call at once.
 const SCRIPT: [Arg<'static>; 0] = [];
 
-/// `undo(steps)`: the shell puts back that many changes, one at a time.
+/// `undo(steps)`: the shell puts back the last change. One step only: a second
+/// undo redoes the first, so the grammar offers no more than the door runs.
 const UNDO: [Arg<'static>; 1] = [Arg {
     name: "steps",
-    kind: Kind::Int { min: 1, max: 6 },
+    kind: Kind::Int { min: 1, max: 1 },
 }];
 
 /// Longest path an argument takes.
@@ -315,7 +316,6 @@ mod tests {
             // The call only picks `script`; llm writes its code (`routed`).
             r#"{"name":"script","arguments":{}}"#,
             r#"{"name":"undo","arguments":{"steps":1}}"#,
-            r#"{"name":"undo","arguments":{"steps":6}}"#,
         ] {
             let state = g.advance(g.start(), text.as_bytes()).unwrap();
             assert!(g.is_done(&state), "{text}");
@@ -326,7 +326,7 @@ mod tests {
             r#"{"name":"fixed""#,
             r#"{"name":"script","arguments":{"code""#,
             r#"{"name":"undo","arguments":{"steps":0"#,
-            r#"{"name":"undo","arguments":{"steps":7"#,
+            r#"{"name":"undo","arguments":{"steps":2"#,
         ] {
             assert!(g.advance(g.start(), text.as_bytes()).is_err(), "{text}");
         }

@@ -30,7 +30,7 @@ const CALLS: &str = "\
 say(text: string)  // answer in words: a greeting, chat, or a question you can answer
 clarify(question: string, options: [string])  // the request has two readings
 script()  // a Rhai program, written next, for what the functions below can read or compute
-undo(steps: int 1..6)  // puts back the last change made; undo again redoes it
+undo(steps: int 1..1)  // puts back the last change made; undo again redoes it
 ";
 
 /// A script call carries no code: llm writes it next with the script prompt
