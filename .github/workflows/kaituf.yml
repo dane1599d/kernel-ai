@@ -2,9 +2,11 @@
 # `kaituf-0`): clippy on the host and for the ring-3 target without std, the
 # host and hostile tests, tuf-conformance v2.5.0 against the client CLI, and the
 # interop checks: python-tuf 7.0.1's repositories and 22 tampered ones, tuf-on-ci
-# v0.21.0's fixtures, a tuftool 0.17.0 repository, and S08-3's canonical JSON
-# comparison. The Python and tuftool tools run here only (ADR 0011 question 3),
-# never on the founder's PC. Host only: no VM and no model.
+# v0.21.0's fixtures, tuftool 0.17.0 repositories and S08-3's canonical JSON
+# comparison; and the .text the client adds to a release ring-3 program (the
+# `tuf-bench` boot case has its timings). The Python and tuftool tools run here
+# only (ADR 0011 question 3), never on the founder's PC. Host only: no VM and no
+# model.
 name: kaituf
 
 on:
@@ -13,10 +15,14 @@ on:
     branches: [main]
     paths:
       - kaituf/**
+      - user/build.rs
+      - user/src/bin/tufbench.rs
       - .github/workflows/kaituf.yml
   pull_request:
     paths:
       - kaituf/**
+      - user/build.rs
+      - user/src/bin/tufbench.rs
       - .github/workflows/kaituf.yml
 
 permissions:
@@ -43,6 +49,14 @@ jobs:
       - name: Clippy for the ring-3 target, without std
         run: cargo clippy -p kaituf --target x86_64-unknown-none -- -D warnings
       - run: cargo test -p kaituf
+      - name: tufbench, the ring-3 bench (clippy), and the .text kaituf adds to a release program (S11-1's bar, 200 KiB)
+        run: |
+          cargo clippy -p user --target x86_64-unknown-none --bin tufbench -- -D warnings
+          cargo build -p user --release --target x86_64-unknown-none --bin tufbench --bin spinner
+          size="$(find "$(rustc --print sysroot)" -name llvm-size -type f | head -1)"
+          text() { "$size" -A "target/x86_64-unknown-none/release/$1" | awk '$1 == ".text" { print $2 }'; }
+          bench=$(text tufbench); base=$(text spinner)
+          echo "tufbench .text $bench bytes, spinner $base: kaituf, its crates and the bench add $(( (bench - base) / 1024 )) KiB (S11-1's bar: 200 KiB)" | tee -a "$GITHUB_STEP_SUMMARY"
 
   conformance:
     name: kaituf (tuf-conformance)

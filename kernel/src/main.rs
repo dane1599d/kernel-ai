@@ -106,6 +106,7 @@ mod terminal;
 mod thread_tests;
 mod threads;
 mod timer;
+mod tufbench_tests;
 mod tune_ab_tests;
 mod tune_local_tests;
 mod tune_stall_tests;
@@ -342,6 +343,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Fpu => run_case(fpu_tests::fpu_check),
         SelfTest::Probe => run_case(fpu_tests::probe_check),
         SelfTest::AppBench => run_case(appbench_tests::check),
+        SelfTest::TufBench => run_case(tufbench_tests::check),
         SelfTest::Handles => run_case(handle_tests::check),
         SelfTest::Threads => run_case(thread_tests::check),
         SelfTest::ThreadsKill => run_case(thread_tests::kill_check),
