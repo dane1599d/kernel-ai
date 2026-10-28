@@ -1,0 +1,11 @@
+[package]
+name = "kaiprofile"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# `kai-profile 1` (P3 task 12): resource profiles as text, read strictly, and the
+# built-in ones. `no_std` + `alloc`, so the shell and the host tests share it.
+[lib]
+doctest = false

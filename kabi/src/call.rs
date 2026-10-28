@@ -21,7 +21,7 @@
 //! | 130-139 | D, drivers (ADR 0007) | RING_ATTACH, RING_NOTIFY, NOTIFY_WAIT, INPUT_PUSH |
 //! | 140-149 | C, components | |
 //! | 150-159 | V, virtual machines (P6) | |
-//! | 160-169 | M, memory | |
+//! | 160-169 | M, memory | MEM_RESERVE, MEM_COMMIT, MEM_RELEASE |
 //! | 170-179 | U, updates (P4) | SLOT_INFO, SLOT_READ, SLOT_WRITE, SLOT_FLUSH, BOOTREC_GET, BOOTREC_SET, TRUST_ROOT, TRUST_TIME |
 //! | 180-189 | G-core (P3), second block | ASK_READ, ASK_ANSWER, EVENT_POST, EVENT_READ, APP_CTL |
 //! | 190-191 | not given yet | a lane asks lane K for a block |
@@ -401,6 +401,22 @@ pub const INPUT_TO_CONSOLE: u64 = 79;
 // ---- V, 150-159 ----
 
 // ---- M, 160-169 ----
+
+/// `mem_reserve(bytes) -> addr`: `bytes` (whole pages) of fresh address space,
+/// with nothing mapped; it can be far larger than what will be committed (room
+/// for guard regions). At most 64 reservations at once. Invalid for zero bytes,
+/// NoMemory when the region or the table is full.
+pub const MEM_RESERVE: u64 = 160;
+/// `mem_commit(addr, bytes) -> 0`: maps zeroed read-write pages over
+/// `[addr, addr + bytes)` of a reservation; pages committed already stay as they
+/// are. Commits grow from the reservation's start: one past its committed end
+/// is Invalid, as is one past its end. Counted against the page quota: past it,
+/// NoMemory, with what fitted committed.
+pub const MEM_COMMIT: u64 = 161;
+/// `mem_release(addr) -> pages`: unmaps the reservation starting at `addr` and
+/// gives every committed page back to the system; how many. NotFound for any
+/// other address.
+pub const MEM_RELEASE: u64 = 162;
 
 // ---- U, 170-179 ----
 

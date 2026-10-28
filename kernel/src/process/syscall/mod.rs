@@ -30,6 +30,8 @@ mod standing;
 
 // U, updates (ADR 0008).
 mod update;
+// M, memory (P3).
+mod mem;
 
 use crate::entry::TrapFrame;
 use crate::{cpu, ipc, threads};
@@ -97,6 +99,8 @@ const AREAS: &[Area] = &[
     standing::handle,
     // U, updates (ADR 0008).
     update::handle,
+    // M, memory (P3).
+    mem::handle,
 ];
 
 fn handle(slot: usize, number: u64, a: [u64; 6]) -> Result<u64, Error> {

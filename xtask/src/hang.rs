@@ -2,7 +2,8 @@
 //! monitor's `info registers -a` gives each vCPU's RIP, RFLAGS, privilege level
 //! and halt state, and for each CPU in the kernel a read of its per-CPU block
 //! (`kernel/src/percpu.rs`, at the GS base) gives the thread it runs and its
-//! preemption count, and a walk of its frame pointers a short backtrace. Every
+//! preemption count, and a walk of its frame pointers a short backtrace (or,
+//! with no frame chain, the kernel functions named by words on its stack). Every
 //! address is named from the kernel's line table, as a fault report would be.
 //! A silent hang (no line for minutes, not even a case's own timeout) then shows
 //! which code every CPU sits in.
@@ -15,6 +16,8 @@ use std::time::{Duration, Instant};
 
 /// Frames of each kernel backtrace.
 const FRAMES: usize = 12;
+/// Stack words read from RSP when a CPU's frame pointers give nothing.
+const SCAN_WORDS: usize = 64;
 /// How long one monitor command may take to answer.
 const ANSWER: Duration = Duration::from_secs(3);
 /// Offsets in `PerCpu` (`kernel/src/percpu.rs` asserts them).
@@ -34,6 +37,7 @@ pub struct Cpu {
     pub rip: u64,
     pub rflags: u64,
     pub rbp: u64,
+    pub rsp: u64,
     pub cpl: u8,
     pub halted: bool,
     pub gs_base: u64,
@@ -100,7 +104,17 @@ pub fn dump(monitor: u16, bundle: &Path) {
                 cpu.index
             );
         }
+        // A word is code if the line table names a function at it.
+        let code = |addr: u64| {
+            addr >= KERNEL_TEXT
+                && addr != u64::MAX
+                && table
+                    .as_ref()
+                    .and_then(|t| t.resolve(addr))
+                    .is_some_and(|at| at.symbol.is_some())
+        };
         let mut rbp = cpu.rbp;
+        let mut walked = 0;
         for _ in 0..FRAMES {
             if rbp < KERNEL_HALF || rbp % 8 != 0 {
                 break;
@@ -109,15 +123,36 @@ pub fn dump(monitor: u16, bundle: &Path) {
             let [next, ret] = frame[..] else {
                 break;
             };
-            // Not a frame-pointer frame (entry code, or a function without one).
-            if ret < KERNEL_TEXT || ret == u64::MAX {
+            // Not a frame-pointer frame (entry code, a function without one, or
+            // a stale RBP): its "return address" names no function.
+            if !code(ret) {
                 break;
             }
             println!("xtask: hang dump:   from {}", name(ret));
+            walked += 1;
             if next <= rbp {
                 break;
             }
             rbp = next;
+        }
+        // No frame chain (a leaf, or entry code): words on the stack that name
+        // kernel functions, most likely return addresses. A guess, marked so.
+        if walked == 0 {
+            let rsp = cpu.rsp;
+            let stack = match rsp >= KERNEL_HALF {
+                true => words(&monitor.run(&format!("x /{SCAN_WORDS}gx {rsp:#x}"))),
+                false => Vec::new(),
+            };
+            let named: Vec<u64> = stack.iter().copied().filter(|&a| code(a)).collect();
+            for addr in named.iter().take(FRAMES) {
+                println!("xtask: hang dump:   on its stack {}", name(*addr));
+            }
+            if named.is_empty() {
+                println!(
+                    "xtask: hang dump:   no frames; stack at {rsp:#x}: {} words read, none a kernel function",
+                    stack.len()
+                );
+            }
         }
     }
 }
@@ -212,6 +247,7 @@ pub fn parse_cpus(text: &str) -> Vec<Cpu> {
                 "RIP" => cpu.rip = hex(value).unwrap_or(0),
                 "RFL" => cpu.rflags = hex(value).unwrap_or(0),
                 "RBP" => cpu.rbp = hex(value).unwrap_or(0),
+                "RSP" => cpu.rsp = hex(value).unwrap_or(0),
                 "CPL" => cpu.cpl = value.parse().unwrap_or(0),
                 "HLT" => cpu.halted = value == "1",
                 _ => {}
@@ -278,6 +314,7 @@ GS =0000 0000000000000000 ffffffff 00c00000\n\
         assert_eq!(cpus[0].rip, 0xffff_ffff_8001_2345);
         assert_eq!(cpus[0].rflags & IF, 0);
         assert_eq!(cpus[0].rbp, 0xffff_8000_0012_3f40);
+        assert_eq!(cpus[0].rsp, 0xffff_8000_0012_3f00);
         assert_eq!(cpus[0].cpl, 0);
         assert!(!cpus[0].halted);
         assert_eq!(cpus[0].gs_base, 0xffff_ffff_8040_0000);

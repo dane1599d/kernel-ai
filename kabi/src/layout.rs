@@ -22,5 +22,9 @@ pub const MODEL_MAX: u64 = 0x0000_0080_0000_0000;
 pub const SHM_BASE: u64 = 0x0000_3000_0000_0000;
 /// The address space each `Shm` object may take, so its largest size.
 pub const SHM_SLOT: u64 = 0x0000_0000_4000_0000;
+/// Anonymous reservations (MEM_RESERVE) are made from here, never reused,
+/// up to [`MEM_END`]: 16 TiB, clear of the model's and `Shm`'s windows.
+pub const MEM_BASE: u64 = 0x0000_4000_0000_0000;
+pub const MEM_END: u64 = 0x0000_5000_0000_0000;
 /// First address that is not user space.
 pub const USER_END: u64 = 0x0000_8000_0000_0000;
