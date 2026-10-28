@@ -277,6 +277,15 @@ fn execute(options: &Options) -> Result<(), String> {
             if let Some(disk) = &disk {
                 cmdline = format!("{cmdline} {}", disk.cmdline());
             }
+            // A model for kai-data's store, named on the command line as a
+            // kai-model disk would be (P2 task 10).
+            let store = match case.store {
+                Some(fixture) => Some(fixture.write(&target_dir.join("store"))?),
+                None => None,
+            };
+            if let Some(model) = &store {
+                cmdline = format!("{cmdline} {}", model.cmdline());
+            }
             // The boot manifest's versions join the boot drive for this case only.
             let shared = modules.len();
             if let Some(service) = &service {
@@ -330,6 +339,9 @@ fn execute(options: &Options) -> Result<(), String> {
             if let Some(data) = case.data {
                 if fresh {
                     blklog::prepare(&target_dir, data)?;
+                    if let Some(model) = &store {
+                        store_model(&target_dir.join(blklog::IMAGE), model.path())?;
+                    }
                 }
                 args.extend(blklog::qemu_args(data));
             }
@@ -661,6 +673,16 @@ fn run_checked(command: &mut Command) -> Result<(), String> {
     } else {
         Err(format!("{command:?} failed with {status}"))
     }
+}
+
+/// Makes `image` a kaifs data disk holding `model` in its model store, named
+/// in `kai-modelhint 1`: `xtask fs mkfs`, then `import --model`.
+fn store_model(image: &std::path::Path, model: &std::path::Path) -> Result<(), String> {
+    let image = image.display().to_string();
+    let words = |w: &[&str]| w.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    fs_tool::main(&words(&["mkfs", &image, "--size", "64", "--force"]))?;
+    let model = model.display().to_string();
+    fs_tool::main(&words(&["import", "--model", &image, &model]))
 }
 
 #[cfg(test)]
