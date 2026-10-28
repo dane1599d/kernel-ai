@@ -156,14 +156,14 @@ pub fn update(handle: Handle) -> Result<(), String> {
     let dirs = Folders::from_startup()?;
     let mut cache = Trust::open(dirs.trust)?;
     // The newer root wins (ADR 0008 §7): an older one would let keys a rotation
-    // revoked sign the chain again.
+    // revoked sign the chain again. At the same version the cached one stays.
     let own = root_version(&root).ok_or("refused: the slot's own root does not parse")?;
     let cached = cache
         .memory
         .get("root")
         .and_then(|bytes| root_version(bytes));
     match cached {
-        Some(version) if version > own => {
+        Some(version) if version >= own => {
             println!("updated: the trusted root is /system/trust's, version {version}");
         }
         _ => {
