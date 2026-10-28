@@ -24,6 +24,8 @@ pub enum ActCase {
     /// `fs-undo-reboot`'s first boot, then its second (`reread`).
     FsUndoReboot,
     FsUndoRebooted,
+    /// `profile-switch` (P3 task 12): profiles through the supervisor.
+    Profile,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -232,6 +234,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=fs-act" => Some(SelfTest::Act(ActCase::FsAct)),
             "test=fs-undo" => Some(SelfTest::Act(ActCase::FsUndo)),
             "test=fs-trash" => Some(SelfTest::Act(ActCase::FsTrash)),
+            "test=profile-switch" => Some(SelfTest::Act(ActCase::Profile)),
             "test=fs-undo-reboot" => Some(SelfTest::Act(
                 match cmdline.split_whitespace().any(|w| w == "reread") {
                     true => ActCase::FsUndoRebooted,
@@ -451,6 +454,10 @@ pub fn plan(test: SelfTest) -> Option<String> {
     // service it does.
     if test == SelfTest::Act(ActCase::Rule) {
         plan.push_str("\nspin-a program=spinner burst_ms=3600000 unsupervised\nspin-b program=spinner burst_ms=3600000 unsupervised\nspin-c program=spinner burst_ms=3600000 unsupervised\nspin-d program=spinner burst_ms=3600000");
+    }
+    // `profile-switch` sets two apps' classes and quotas.
+    if test == SelfTest::Act(ActCase::Profile) {
+        plan.push_str("\nspin-a program=spinner burst_ms=3600000 unsupervised\nspin-b program=spinner burst_ms=3600000 unsupervised");
     }
     // `act-convo` asks to stop two processes and declines both.
     if test == SelfTest::Act(ActCase::Convo) {
