@@ -179,6 +179,35 @@ const FS_UNDO: &[(&str, Expect)] = &[
     ("read notes.txt", Exact("ok hello\n")),
 ];
 
+/// `fs-trash` (P2 task 11, an exit item): trashing and restoring run at once
+/// with undo; emptying the trash has none, so it asks, and a no keeps it.
+const FS_TRASH: &[(&str, Expect)] = &[
+    (
+        "create notes.txt saying hello",
+        Exact("ok Done: file notes.txt created (was absent). undo"),
+    ),
+    (
+        "trash notes.txt",
+        Exact("ok Done: file notes.txt in the trash (was there). undo"),
+    ),
+    ("read notes.txt", StartsWith("err ")),
+    (
+        "restore notes.txt",
+        Exact("ok Done: file notes.txt restored (was in the trash). undo"),
+    ),
+    ("read notes.txt", Exact("ok hello\n")),
+    (
+        "trash notes.txt",
+        Exact("ok Done: file notes.txt in the trash (was there). undo"),
+    ),
+    ("empty the trash", StartsWith("menu ")),
+    ("n", Contains("not run")),
+    (
+        "restore notes.txt",
+        Exact("ok Done: file notes.txt restored (was in the trash). undo"),
+    ),
+];
+
 /// `fs-undo-reboot` (P2 task 12): the change and its log line land in one
 /// commit, so after a reboot the log on disk still undoes it.
 const FS_BEFORE_REBOOT: &[(&str, Expect)] = &[(
@@ -238,6 +267,9 @@ pub fn check(which: ActCase) -> Result<(), &'static str> {
         }),
         ActCase::FsUndo => expect_lines(FS_UNDO).map(|()| {
             log!("fs-undo: undo restored the file's transaction, and undo again restored it back");
+        }),
+        ActCase::FsTrash => expect_lines(FS_TRASH).map(|()| {
+            log!("fs-trash: trash and restore ran with undo, and emptying the trash asked first");
         }),
         ActCase::FsUndoReboot => expect_lines(FS_BEFORE_REBOOT).map(|()| {
             log!("fs-undo-reboot: boot 1 created notes.txt, its log line in the same commit");
