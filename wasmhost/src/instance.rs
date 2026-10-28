@@ -31,6 +31,8 @@ pub(crate) struct HostState {
     pub(crate) seed: u64,
     /// The action call in progress, with its storage and what it did.
     pub(crate) call: Option<crate::effects::OpenCall>,
+    /// The storage lifecycle calls read (`livecore::Instance::view`).
+    pub(crate) view: Option<livecore::txn::Storage>,
     /// The app's windows (`kai:ui`, lifecycle 2).
     pub(crate) ui: crate::ui::UiHost,
 }
@@ -161,6 +163,7 @@ impl WasmInstance {
             now_ms: 0,
             seed: 0,
             call: None,
+            view: None,
             ui: Default::default(),
         };
         let mut store = Store::new(engine, state);

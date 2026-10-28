@@ -11,6 +11,7 @@ extern crate alloc;
 
 #[cfg(target_family = "wasm")]
 mod bind;
+pub mod stored;
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -34,6 +35,8 @@ pub trait Sink {
 pub struct NotesWindow {
     pub notes: Notes,
     pub view: View,
+    /// Whether `notes` holds notes storage does not have yet ([`stored`]).
+    pending: bool,
     /// The open window, and the tree it was last sent.
     window: Option<(u32, Vec<Entry>)>,
 }
@@ -43,6 +46,7 @@ impl NotesWindow {
         Self {
             notes,
             view: View::default(),
+            pending: false,
             window: None,
         }
     }
@@ -79,6 +83,8 @@ impl NotesWindow {
             return sink.close(window);
         }
         if ui::on_ui(&mut self.notes, &mut self.view, e) {
+            // Storage is written in action calls only: the change waits.
+            self.pending = true;
             return self.present(sink);
         }
         Ok(())
@@ -107,19 +113,58 @@ impl NotesWindow {
     }
 }
 
+impl NotesWindow {
+    /// The notes storage holds, read through the host's view.
+    fn from_storage() -> Self {
+        Self::new(Notes {
+            state: stored::load(),
+        })
+    }
+
+    /// Writes pending notes out; only inside an action call.
+    fn store(&mut self) {
+        stored::save(&self.notes.state);
+        self.pending = false;
+    }
+}
+
 impl Component for NotesWindow {
-    const SCHEMA: u32 = Notes::SCHEMA;
+    const SCHEMA: u32 = stored::SCHEMA;
 
     fn init() -> Self {
-        shown(Self::new(Notes::init()))
+        shown(Self::from_storage())
     }
 
+    /// Schema 3 reads its notes from storage, or its pending ones; schemas 1
+    /// and 2 (`comp-notes`'s) arrive pending, written out by the next `add`.
     fn import(state: &[u8], from_schema: u32) -> Result<Self, ImportError> {
-        Notes::import(state, from_schema).map(|notes| shown(Self::new(notes)))
+        if from_schema != stored::SCHEMA {
+            let mut app = Self::new(Notes::import(state, from_schema)?);
+            app.pending = true;
+            return Ok(shown(app));
+        }
+        let v3: stored::V3 =
+            compsdk::state::decode(state, stored::SCHEMA).ok_or(ImportError::Bad)?;
+        let app = match v3.pending {
+            Some(state) => Self {
+                pending: true,
+                ..Self::new(Notes { state })
+            },
+            None => Self::from_storage(),
+        };
+        Ok(shown(app))
     }
 
+    /// Schema 3 carries only pending notes; schema 2 is the whole state, for a
+    /// rollback to `comp-notes`.
     fn export(&self, schema: u32) -> Option<Vec<u8>> {
-        self.notes.export(schema)
+        if schema != stored::SCHEMA {
+            return self.notes.export(schema);
+        }
+        let v3 = stored::V3 {
+            pending: self.pending.then(|| self.notes.state.clone()),
+        };
+        Some(compsdk::state::encode(stored::SCHEMA, &v3))
     }
 
     fn health(&self) -> u32 {
@@ -134,6 +179,7 @@ impl Component for NotesWindow {
 impl Actions for NotesWindow {
     fn add(&mut self, text: &str) -> Result<u32, String> {
         let id = self.notes.add(text)?;
+        self.store();
         self.present_logged();
         Ok(id)
     }

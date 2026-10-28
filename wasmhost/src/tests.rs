@@ -550,6 +550,26 @@ fn a_call_reads_its_snapshot_and_keeps_its_writes_and_effects() {
     assert_eq!(v.finish().effects.len(), livecore::txn::MAX_EFFECTS);
 }
 
+/// A lifecycle call reads the host's view of the storage (an app shows its data
+/// from `init` or `migrate`), and still cannot write.
+#[test]
+fn outside_a_call_storage_reads_the_view_and_refuses_writes() {
+    use appabi::Val;
+    use livecore::txn::Storage;
+    let mut v = load_core(&lifecycle2(STORAGE_PROBE), LIMITS, None).unwrap();
+    let read = probe("probe#read", Some(appabi::Ty::U32));
+    assert_eq!(reason(v.call(&read, &[])), Reason::Host);
+    let mut storage = Storage::new();
+    storage.insert(String::from("k"), b"z".to_vec());
+    v.view(&storage);
+    assert_eq!(
+        v.call(&read, &[]),
+        Ok(Some(Val::U32(256 + u32::from(b'z'))))
+    );
+    let forget = probe("probe#forget", None);
+    assert_eq!(reason(v.call(&forget, &[])), Reason::Host);
+}
+
 #[test]
 fn lifecycle_2_imports_link_only_by_name_type_and_version() {
     let storage = r#"(import "kai:app/storage@0.1.0" "delete" (func (param i32 i32)))"#;

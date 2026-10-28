@@ -95,4 +95,10 @@ pub trait Instance {
     fn finish(&mut self) -> txn::Txn {
         txn::Txn::default()
     }
+    /// The storage its lifecycle calls (`init`, `migrate`) may read, as the host
+    /// holds it when the instance is loaded: an app that keeps its data there
+    /// can show it at once. Writes stay for action calls.
+    fn view(&mut self, storage: &txn::Storage) {
+        let _ = storage;
+    }
 }

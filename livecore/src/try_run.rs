@@ -167,6 +167,7 @@ fn reverse<E: Env>(
         .env
         .load(&active.artifact, true)
         .map_err(|fault| failed(&fault))?;
+    fresh.view(&core.storage);
     match fresh.import(&blob, schema) {
         Ok(0) => Ok("reverse ok"),
         Ok(code) => Err(format!(
