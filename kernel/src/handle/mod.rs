@@ -73,7 +73,7 @@ pub fn route_name(id: u64) -> Option<Name> {
 /// The startup handles for capability bits `caps` (ADR 0001 D3's table), for the
 /// process `pid`. CALL gives a route only through `uses=`, so none here.
 pub fn startup(caps: u64, pid: u64) -> Vec<Entry> {
-    let rows: [(u64, Kind, Rights, u64); 19] = [
+    let rows: [(u64, Kind, Rights, u64); 20] = [
         // MINT under the `system` root, which is never revoked (ADR 0001 D3).
         (
             cap::SUPERVISE,

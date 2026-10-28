@@ -1,0 +1,34 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The Kernel AI contributors
+
+/// Editing a component's source through the edit service (P4 task 11). Unlike
+/// `kai:app`, this is a granted interface (ADR 0003 section 3, like `kai:fs`
+/// and `kai:net` later): only an app whose package holds the `edit` grant can
+/// import it, the grant is shown when the package is installed, and a component
+/// that imports it without the grant does not stage (`Reason::Link`). A request
+/// is not run inside the call that makes it, as the app's other effects are not:
+/// the host sends it after the call and tells the app the answer in a later one.
+package kai:edit@0.1.0;
+
+interface edit {
+    /// Queues `message` for the edit service and returns its ticket. A message is
+    /// `open <component> [<label>] [at <path>:<line>]` or `cmd <line>`, as the
+    /// kernel's edit mode sends them; the answer is `ok ...` or `err ...` text.
+    /// Refused when a call has queued 8 messages already, or `message` is empty
+    /// or longer than 8,192 bytes.
+    send: func(message: list<u8>) -> u32;
+}
+
+/// What the edit service answered.
+interface replies {
+    /// The answer to the message with this ticket, or why there is none (the
+    /// service is not running, did not answer, or the message was not one an app
+    /// may send). Tickets are not reused while the app runs.
+    on-reply: func(ticket: u32, outcome: result<list<u8>, string>);
+}
+
+/// An app that edits source: the two halves of the grant.
+world editing {
+    import edit;
+    export replies;
+}

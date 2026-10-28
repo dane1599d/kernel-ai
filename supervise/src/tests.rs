@@ -34,6 +34,18 @@ fn the_local_llm_line_names_the_model_capability() {
 }
 
 #[test]
+fn the_editor_comphost_line_names_the_edit_capability() {
+    let plan =
+        parse_plan("editor program=comphost caps=serve+component+call+edit version=1").services;
+    assert_eq!(
+        plan[0].limits.caps,
+        cap::SERVE | cap::COMPONENT | cap::CALL | cap::EDIT
+    );
+    assert_eq!(plan[0].args, "version=1");
+    assert_ne!(cap::GRANTABLE & cap::EDIT, 0);
+}
+
+#[test]
 fn plan_can_tune_the_restart_policy_per_service() {
     let plan = parse_plan("crasher backoff_max_ms=200 max_restarts=1000 after_ms=150").services;
     assert_eq!(plan[0].policy.max_backoff_ms, 200);

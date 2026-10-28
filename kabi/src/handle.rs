@@ -101,7 +101,7 @@ pub enum Kind {
 }
 
 impl Kind {
-    pub const ALL: [Kind; 20] = [
+    pub const ALL: [Kind; 21] = [
         Kind::Process,
         Kind::Job,
         Kind::Endpoint,
