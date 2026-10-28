@@ -69,13 +69,17 @@ fn main() -> i32 {
     }
     // Every start first settles an update left in flight (`restore.rs`).
     let reconciled = restore::reconcile(handle);
+    if let Ok(outcome) = reconciled
+        && outcome != restore::Outcome::Nothing
+    {
+        println!("updated: reconciled: {outcome:?}");
+    }
     let result = match (step, reconciled) {
         (_, Err(why)) => Err(why),
         (Some("check"), _) => check(handle),
         (Some("update"), _) => disk::update(handle),
         // The rollback case: the reconcile is the step, then the boot ends.
-        (Some("reconcile"), Ok(outcome)) => {
-            println!("updated: reconciled: {outcome:?}");
+        (Some("reconcile"), Ok(_)) => {
             if args.split_whitespace().any(|w| w == "after=restart") {
                 restart_here(handle);
             }

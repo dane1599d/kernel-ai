@@ -857,6 +857,69 @@ fn the_update_snapshot_is_taken_and_restored_only_on_system_updates() {
 }
 
 #[test]
+fn an_update_restore_keeps_system_trust_and_the_standing_rules() {
+    let mut disk = MemDisk::new(BLOCKS);
+    let (mut c, _) = Client::start(&mut disk);
+    let updates = kabi::fs::SYSTEM_UPDATES;
+    let open = |c: &mut Client, badge: u64, name: &str, how: How| {
+        let request = Request::Open {
+            path: name.into(),
+            rights: (Rights::READ | Rights::WRITE).bits(),
+            how,
+        };
+        c.call(ALICE, badge, DIR_RIGHTS, request).1
+    };
+    let (trust, state) = (kabi::fs::SYSTEM_TRUST, kabi::fs::SYSTEM_STATE);
+    let root = open(&mut c, trust, "root.json", How::CreateFile).unwrap();
+    c.write(&root, 0, b"root v1");
+    let old = open(&mut c, trust, "old.json", How::CreateFile).unwrap();
+    c.write(&old, 0, b"gone after");
+    let rules = open(&mut c, state, "rules", How::CreateFile).unwrap();
+    c.write(&rules, 0, b"always allow x");
+    let marker = open(&mut c, state, "marker", How::CreateFile).unwrap();
+    c.write(&marker, 0, b"before");
+    let (reply, _) = c.call(ALICE, updates, DIR_RIGHTS, Request::UpdateSnapshot);
+    let Reply::Snapshot { id, .. } = reply else {
+        panic!("{reply:?}");
+    };
+    // On the failed slot: a rotation, a newer timestamp, a removed file, a
+    // revoked rule, and an ordinary change.
+    c.write(&root, 0, b"root v2");
+    let timestamp = open(&mut c, trust, "timestamp.json", How::CreateFile).unwrap();
+    c.write(&timestamp, 0, b"timestamp v11");
+    let reply = c.call(
+        ALICE,
+        trust,
+        DIR_RIGHTS,
+        Request::Trash {
+            name: "old.json".into(),
+        },
+    );
+    assert!(matches!(reply.0, Reply::Done), "{reply:?}");
+    let reply = c.call(
+        ALICE,
+        state,
+        DIR_RIGHTS,
+        Request::Trash {
+            name: "rules".into(),
+        },
+    );
+    assert!(matches!(reply.0, Reply::Done), "{reply:?}");
+    c.write(&marker, 0, b"after!");
+    let (reply, _) = c.call(ALICE, updates, DIR_RIGHTS, Request::UpdateRestore { id });
+    assert!(matches!(reply, Reply::Committed { .. }), "{reply:?}");
+    // The ordinary change went back; trust and the rules did not.
+    let marker = open(&mut c, state, "marker", How::Existing).unwrap();
+    assert_eq!(c.read(&marker).unwrap(), b"before");
+    let root = open(&mut c, trust, "root.json", How::Existing).unwrap();
+    assert_eq!(c.read(&root).unwrap(), b"root v2");
+    let timestamp = open(&mut c, trust, "timestamp.json", How::Existing).unwrap();
+    assert_eq!(c.read(&timestamp).unwrap(), b"timestamp v11");
+    assert!(open(&mut c, trust, "old.json", How::Existing).is_none());
+    assert!(open(&mut c, state, "rules", How::Existing).is_none());
+}
+
+#[test]
 fn the_update_snapshot_is_refused_inside_any_action() {
     let mut disk = MemDisk::new(BLOCKS);
     let (mut c, _) = Client::start(&mut disk);

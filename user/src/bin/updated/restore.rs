@@ -3,62 +3,30 @@
 //! `/system/updates/pending` naming it, the slot and the release. The file is
 //! written after the snapshot, so it is not in it.
 //!
-//! On every start `updated` reconciles: if the pending slot has committed, the
-//! update held and the file is cleared; if this boot runs in another slot and
-//! the pending one never committed, the new slot failed before it could, so
-//! `system` goes back to the snapshot, which also takes the file away. `home` is
-//! never in the snapshot and is never rolled back. Either way the snapshot is
-//! then dropped, so its blocks go back to the disk.
+//! On every start `updated` reconciles it with the boot record
+//! ([`bootslot::trial`]): if the pending slot committed, the update held and
+//! the file is cleared; if the slot spent its tries without committing, the
+//! update failed, so `system` goes back to the snapshot, which also takes the
+//! file away; if the slot never finished staging, the update never booted and
+//! the file is cleared. `fs` keeps `/system/trust` and the standing rules
+//! through the restore, and `home` is never in the snapshot. Whenever the file
+//! is cleared the snapshot is dropped too, so its blocks go back to the disk.
 
 use crate::folders::{self, Folders};
 use crate::{record, slot_of};
 use alloc::format;
 use alloc::string::String;
-use bootslot::Slot;
+use bootslot::Trial;
+use bootslot::pending::Pending;
 use kabi::handle::Handle;
 use user::{println, sys};
 
 /// The file in `/system/updates` that names the update in flight.
 pub const PENDING: &str = "pending";
 
-/// What `pending` holds: `snapshot <id> slot <A|B> release <seq>`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Pending {
-    pub snapshot: u64,
-    pub slot: Slot,
-    pub release_seq: u32,
-}
-
-impl Pending {
-    pub fn encode(&self) -> String {
-        let slot = if self.slot == Slot::A { "A" } else { "B" };
-        format!(
-            "snapshot {} slot {slot} release {}\n",
-            self.snapshot, self.release_seq
-        )
-    }
-
-    pub fn parse(text: &str) -> Option<Pending> {
-        let mut words = text.split_whitespace();
-        let mut field = |key| (words.next() == Some(key)).then(|| words.next()).flatten();
-        let snapshot = field("snapshot")?.parse().ok()?;
-        let slot = match field("slot")? {
-            "A" => Slot::A,
-            "B" => Slot::B,
-            _ => return None,
-        };
-        let release_seq = field("release")?.parse().ok()?;
-        Some(Pending {
-            snapshot,
-            slot,
-            release_seq,
-        })
-    }
-}
-
 /// Records the update in flight, after its snapshot was taken.
 pub fn record_pending(updates: Handle, pending: Pending) -> Result<(), String> {
-    folders::write(updates, PENDING, pending.encode().as_bytes())
+    folders::write(updates, PENDING, format!("{pending}").as_bytes())
 }
 
 /// What reconciling found.
@@ -68,15 +36,20 @@ pub enum Outcome {
     Nothing,
     /// The pending slot is the one running, on trial: wait for its commit.
     OnTrial,
+    /// The pending slot is staged but has not spent its tries: wait.
+    Waiting,
     /// The pending slot committed; the file is cleared.
     Held,
     /// The pending slot failed before it committed; `system` was restored.
     Restored,
+    /// The update never booted, or its snapshot is gone: the file is cleared
+    /// and `system` stays as it is.
+    Cleared,
 }
 
 /// Reconciles the update in flight with the boot record.
 pub fn reconcile(handle: Handle) -> Result<Outcome, String> {
-    let Some(updates) = Folders::from_startup().updates else {
+    let Some(updates) = Folders::from_startup()?.updates else {
         return Ok(Outcome::Nothing);
     };
     let text = folders::read(updates, PENDING)?.unwrap_or_default();
@@ -84,30 +57,53 @@ pub fn reconcile(handle: Handle) -> Result<Outcome, String> {
     if text.trim().is_empty() {
         return Ok(Outcome::Nothing);
     }
-    let pending = Pending::parse(text).ok_or_else(|| format!("{PENDING} holds {text:?}"))?;
+    let Some(pending) = Pending::parse(text) else {
+        println!("updated: {PENDING} holds {text:?}; cleared");
+        folders::write(updates, PENDING, b"")?;
+        return Ok(Outcome::Cleared);
+    };
     let record = record(handle)?;
     let running = slot_of(
         sys::slot_info(handle, 1)
             .map_err(|e| format!("SLOT_INFO: {e:?}"))?
             .active,
     )?;
-    let state = record.slot(pending.slot);
-    if state.successful && state.release_seq == pending.release_seq {
-        folders::write(updates, PENDING, b"")?;
-        folders::update_drop(updates, pending.snapshot)?;
-        println!(
-            "updated: release {} in {:?} committed; the update held, and update snapshot {} is dropped",
-            pending.release_seq, pending.slot, pending.snapshot
-        );
-        return Ok(Outcome::Held);
+    let (release, slot) = (pending.release_seq, pending.slot);
+    match bootslot::trial(&record, slot, release, running) {
+        Trial::OnTrial => Ok(Outcome::OnTrial),
+        Trial::Waiting => Ok(Outcome::Waiting),
+        Trial::Held => {
+            folders::write(updates, PENDING, b"")?;
+            println!("updated: release {release} in {slot:?} committed; the update held");
+            drop_snapshot(updates, pending.snapshot);
+            Ok(Outcome::Held)
+        }
+        Trial::Abandoned => {
+            folders::write(updates, PENDING, b"")?;
+            println!("updated: release {release} in {slot:?} never booted; {PENDING} cleared");
+            drop_snapshot(updates, pending.snapshot);
+            Ok(Outcome::Cleared)
+        }
+        Trial::Failed => restore(updates, pending),
     }
-    if running == pending.slot {
-        return Ok(Outcome::OnTrial);
+}
+
+fn restore(updates: Handle, pending: Pending) -> Result<Outcome, String> {
+    let (release, slot, id) = (pending.release_seq, pending.slot, pending.snapshot);
+    match folders::update_restore(updates, id)? {
+        folders::Restore::Done => {}
+        // Repair dropped it, or it was never committed: there is nothing to go
+        // back to, and keeping the file would refuse every later update.
+        folders::Restore::Gone => {
+            println!(
+                "updated: release {release} in {slot:?} failed, but update snapshot {id} is gone; {PENDING} cleared"
+            );
+            folders::write(updates, PENDING, b"")?;
+            return Ok(Outcome::Cleared);
+        }
     }
-    folders::update_restore(updates, pending.snapshot)?;
     println!(
-        "updated: release {} in {:?} failed before it committed; restored the system volume from update snapshot {}",
-        pending.release_seq, pending.slot, pending.snapshot
+        "updated: release {release} in {slot:?} failed before it committed; restored the system volume from update snapshot {id}"
     );
     let left = folders::read(updates, PENDING)?.is_some_and(|t| !t.is_empty());
     println!(
@@ -115,7 +111,15 @@ pub fn reconcile(handle: Handle) -> Result<Outcome, String> {
         if left { "still there" } else { "gone" }
     );
     // The way back is taken; the snapshot is not needed again.
-    folders::update_drop(updates, pending.snapshot)?;
-    println!("updated: update snapshot {} is dropped", pending.snapshot);
+    drop_snapshot(updates, id);
     Ok(Outcome::Restored)
+}
+
+/// Drops update snapshot `id` once `pending` no longer names it. A failure
+/// only leaves its blocks pinned, so it is reported and the start goes on.
+fn drop_snapshot(updates: Handle, id: u64) {
+    match folders::update_drop(updates, id) {
+        Ok(()) => println!("updated: update snapshot {id} is dropped"),
+        Err(why) => println!("updated: update snapshot {id} stays: {why}"),
+    }
 }
