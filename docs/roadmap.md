@@ -176,8 +176,8 @@ The cases are act-plain, act-run, act-ask, act-rule, act-undo, act-rollback, act
 - **On main:** `blk-write`, `fs-reboot`, `fs-restart`, `fs-dead-client`, the power cut (`fs-actions`, `fs-powercut`, VirtualBox 20/20), the file rows and undo (`fs-act`, `fs-undo`, `fs-undo-reboot`), the trash with restore-by-name and empty-trash (`fs-trash`), and `pkg-store`.
 - **Not met yet:**
   - `model-store` and `model-store-bad` (#236, #261, labelled for a batch);
-  - `llm` mapping the store's model (#314, waiting on a rebase);
-  - files moved through kaifs at 12 MB/s in a release build under KVM, under S04-2's bar (the IPC alone passed). One disk call per 4 KiB block is now batched (#325); the speed is to be measured again (#262), and slow IPC round trips remain.
+  - `llm` mapping the store's model (#314, stacked on #236);
+  - files moved through kaifs at 12 MB/s in a release build under KVM, under S04-2's bar (the IPC alone passed). One disk call per 4 KiB block is now batched (#325), not re-measured since (#262 open); slow IPC round trips remain.
 
 The P2 close row in `docs/decisions.md` has each case and gap.
 
