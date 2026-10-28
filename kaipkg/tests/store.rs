@@ -87,6 +87,54 @@ fn refused(r: Result<u64, Error>) -> Refused {
 }
 
 #[test]
+fn the_image_seeds_generation_1_once() {
+    let fs = Fs::mkfs(MemDisk::new(4096), *b"kaipkg store tst", "store").unwrap();
+    let mut vol = KaifsVol::new(fs);
+    let mut ledger = TestLedger;
+    let store = Store {
+        policy: Policy::default(),
+    };
+    let image: Vec<_> = ["ui-kit", "weather"]
+        .into_iter()
+        .map(|name| {
+            let bytes = object(find(name));
+            (entry_for(find(name), &bytes), bytes)
+        })
+        .collect();
+    let mut seed = |action, image: &[(kaipkg::resolve::Entry, Vec<u8>)]| {
+        let mut cx = Ctx {
+            vol: &mut vol,
+            ledger: &mut ledger,
+            now: Time::parse("2026-11-02T10:31:00Z").unwrap(),
+            action,
+        };
+        store.seed(&mut cx, image)
+    };
+    // An object whose bytes are not its entry's stops the seed before any switch.
+    let mut spoiled = image.clone();
+    spoiled[1].1[40] ^= 1;
+    let err = seed(1, &spoiled);
+    assert_eq!(err, Err(Error::Refused(Refused::BadHash("weather".into()))));
+    assert_eq!(seed(2, &image), Ok(true));
+    assert_eq!(seed(3, &image[..1]), Ok(false));
+    assert_eq!(store::current(&mut vol), Ok(1));
+    let first = store::generation(&mut vol, 1).unwrap();
+    let names: Vec<_> = first
+        .packages
+        .iter()
+        .map(|p| (&*p.name, p.explicit))
+        .collect();
+    assert_eq!(names, [("ui-kit", true), ("weather", true)]);
+    assert_eq!(first.packages[1].grants, find("weather").grants);
+    for (entry, _) in &image {
+        assert_eq!(store::present(&mut vol, &entry.sha), Ok(true));
+    }
+    let now = Time::parse("2026-11-03T10:31:00Z").unwrap();
+    let checked = state(&mut vol, &store, now).unwrap();
+    assert_eq!(checked.store.current, 1);
+}
+
+#[test]
 fn an_install_brings_its_dependencies_and_one_switch() {
     let mut w = World::new();
     assert_eq!(w.install("notes"), Ok(2));

@@ -85,6 +85,10 @@ pub struct TestCase {
     /// `boot=n` to the command line, waits for `files: boot n:` and kills QEMU
     /// a seeded moment later; boot `cuts + 1` adds `last` and must pass.
     pub cuts: u32,
+    /// One byte of this package's target in the image's repository flipped, the
+    /// bundle's digests recomputed, so only its signed metadata can tell (P4
+    /// task 1's tamper case).
+    pub tampered: Option<&'static str>,
 }
 
 /// What a case's update disk holds.
@@ -120,6 +124,7 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         slots: false,
         update: None,
         cuts: 0,
+        tampered: None,
     }
 }
 
