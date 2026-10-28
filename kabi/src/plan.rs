@@ -26,6 +26,12 @@ pub const UPDATED: &str =
 /// arguments.
 const NOTES_BASE: &str =
     "notes program=comphost caps=serve+component pages=8192 stack_pages=512 burst_ms=20000";
+/// The live `notes` component as an app of the current generation (P4 task 1):
+/// the supervisor starts it when `pkg` names its package version.
+pub fn notes_from_pkg() -> String {
+    format!("{NOTES_BASE} start=pkg")
+}
+
 /// The live `notes` component starting on `version`, falling back to `fallback`
 /// when that cannot start. Its arguments go to the host. Version 2 is built from
 /// `components/notes`, which `:edit notes` edits; the boot manifest may name a

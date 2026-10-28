@@ -21,7 +21,7 @@ use kabi::live::{
     MAX_LABEL, MAX_UPLOAD, Put, Read, Restore, read,
 };
 use livecore::ledger::{self, Ledger};
-use livecore::store::{Bytes, Component};
+use livecore::store::{Bytes, Component, PackageArtifact};
 use livecore::uploads::{self, SyncJob};
 use spin::Mutex;
 
@@ -250,6 +250,29 @@ pub fn upload(name: &str, bytes: Vec<u8>, base: &str, commit: &str) -> Result<u6
         return Err(Error::Invalid);
     }
     store_upload(name, bytes, base, commit)
+}
+
+/// Adds `artifact`, already hashed and checked, as a version of component
+/// `name`, which joins the components if it is not one yet; its label. Only
+/// adds, and within `MAX_PACKAGE_TOTAL` bytes of package versions over every
+/// component (`Component::add_package`).
+pub fn add_package(name: &str, artifact: PackageArtifact) -> Result<String, Error> {
+    with(|all| {
+        let used_elsewhere: usize = all
+            .iter()
+            .filter(|c| c.name != name)
+            .map(Component::package_bytes)
+            .sum();
+        let index = match all.iter().position(|c| c.name == name) {
+            Some(index) => index,
+            None if all.len() < MAX_COMPONENTS => {
+                all.push(Component::new(name));
+                all.len() - 1
+            }
+            None => return Err(Error::NoMemory),
+        };
+        all[index].add_package(artifact, used_elsewhere)
+    })
 }
 
 fn store_upload(name: &str, bytes: Vec<u8>, base: &str, commit: &str) -> Result<u64, Error> {
