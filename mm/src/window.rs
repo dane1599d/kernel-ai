@@ -3,7 +3,11 @@
 //! whose entries map 2 MiB pages (PS=1) of physically contiguous, 2 MiB-aligned runs.
 //!
 //! Every entry is computed whole, all 512 of each table, so a table never holds
-//! anything but a run or zero. Every level is PRESENT and USER and never WRITABLE,
+//! anything but a run or zero. [`directory_entry`] and [`pdpt_entry`] give one
+//! entry at a time, so the kernel builds and checks a table entry by entry with
+//! no table on its stack (a 4 KiB table moved by value, several times over in a
+//! debug build, overflowed a kernel thread's 64 KiB, #236);
+//! [`directory`] and [`pdpt`] are the same entries as whole tables. Every level is PRESENT and USER and never WRITABLE,
 //! and every level is no-execute, so ring 3 can only read the model. The kernel
 //! builds the tables once and links the PDPT into each process that maps the model.
 
@@ -74,6 +78,42 @@ fn valid_table(phys: u64) -> bool {
     phys.is_multiple_of(PAGE_SIZE) && phys & !ADDRESS == 0
 }
 
+/// Entry `index` (0 to 511) of directory `directory` of a window of `runs` runs,
+/// where run `k` of the window is at physical address `run(k)`: the run it maps,
+/// or zero past the last run.
+pub fn directory_entry(
+    directory: u64,
+    index: usize,
+    runs: u64,
+    run: impl Fn(u64) -> u64,
+) -> Result<u64, WindowError> {
+    if runs == 0 || runs > MAX_RUNS || directory >= directories_for(runs) || index >= 512 {
+        return Err(WindowError::Size);
+    }
+    let k = directory * 512 + index as u64;
+    if k >= runs {
+        return Ok(0);
+    }
+    let phys = run(k);
+    match valid_run(phys) {
+        true => Ok(entry(phys, RUN_FLAGS)),
+        false => Err(WindowError::Run(phys)),
+    }
+}
+
+/// Entry `index` (0 to 511) of the PDPT pointing at the directories at
+/// `directories`: a directory, or zero past the last.
+pub fn pdpt_entry(directories: &[u64], index: usize) -> Result<u64, WindowError> {
+    if directories.is_empty() || directories.len() > 512 || index >= 512 {
+        return Err(WindowError::Size);
+    }
+    match directories.get(index) {
+        None => Ok(0),
+        Some(&phys) if valid_table(phys) => Ok(entry(phys, TABLE_FLAGS)),
+        Some(&phys) => Err(WindowError::Table(phys)),
+    }
+}
+
 /// The 512 entries of directory `directory` of a window of `runs` runs, where run
 /// `k` of the window is at physical address `run(k)`.
 pub fn directory(
@@ -81,35 +121,18 @@ pub fn directory(
     runs: u64,
     run: impl Fn(u64) -> u64,
 ) -> Result<[u64; 512], WindowError> {
-    if runs == 0 || runs > MAX_RUNS || directory >= directories_for(runs) {
-        return Err(WindowError::Size);
-    }
     let mut table = [0; 512];
     for (index, slot) in table.iter_mut().enumerate() {
-        let k = directory * 512 + index as u64;
-        if k >= runs {
-            break;
-        }
-        let phys = run(k);
-        if !valid_run(phys) {
-            return Err(WindowError::Run(phys));
-        }
-        *slot = entry(phys, RUN_FLAGS);
+        *slot = directory_entry(directory, index, runs, &run)?;
     }
     Ok(table)
 }
 
 /// The 512 entries of the PDPT, pointing at the directories at `directories`.
 pub fn pdpt(directories: &[u64]) -> Result<[u64; 512], WindowError> {
-    if directories.is_empty() || directories.len() > 512 {
-        return Err(WindowError::Size);
-    }
     let mut table = [0; 512];
-    for (slot, &phys) in table.iter_mut().zip(directories) {
-        if !valid_table(phys) {
-            return Err(WindowError::Table(phys));
-        }
-        *slot = entry(phys, TABLE_FLAGS);
+    for (index, slot) in table.iter_mut().enumerate() {
+        *slot = pdpt_entry(directories, index)?;
     }
     Ok(table)
 }
@@ -187,6 +210,34 @@ mod tests {
         assert_eq!(pdpt(&[]), Err(WindowError::Size));
         let many: Vec<u64> = (0..513).map(|i| i * PAGE_SIZE).collect();
         assert_eq!(pdpt(&many), Err(WindowError::Size));
+    }
+
+    /// Entry by entry is the whole table, entry for entry, and refuses the same.
+    #[test]
+    fn one_entry_at_a_time_matches_the_whole_table() {
+        for (runs, start) in [(1, 0), (700, 4 * GIB), (512, 64 * GIB), (513, RUN_BYTES)] {
+            let run = |k: u64| start + k * RUN_BYTES;
+            for d in 0..directories_for(runs) {
+                let table = directory(d, runs, run).unwrap();
+                for (i, &whole) in table.iter().enumerate() {
+                    assert_eq!(directory_entry(d, i, runs, run), Ok(whole), "{d}/{i}");
+                }
+            }
+        }
+        let directories = [0x5000, 0x9000, 5 * GIB];
+        let table = pdpt(&directories).unwrap();
+        for (i, &whole) in table.iter().enumerate() {
+            assert_eq!(pdpt_entry(&directories, i), Ok(whole), "{i}");
+        }
+        assert_eq!(directory_entry(0, 512, 1, |_| 0), Err(WindowError::Size));
+        assert_eq!(pdpt_entry(&directories, 512), Err(WindowError::Size));
+        assert_eq!(pdpt_entry(&[0x1001], 0), Err(WindowError::Table(0x1001)));
+        assert_eq!(
+            directory_entry(0, 0, 1, |_| PAGE_SIZE),
+            Err(WindowError::Run(PAGE_SIZE))
+        );
+        // Past the last run is zero, never refused for the run it would be.
+        assert_eq!(directory_entry(0, 5, 1, |_| PAGE_SIZE), Ok(0));
     }
 
     #[test]
