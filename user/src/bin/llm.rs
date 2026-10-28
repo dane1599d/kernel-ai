@@ -37,6 +37,7 @@ use kabi::model::Fnv1a;
 use llmproto::act::{ActError, ActRequest, History, history};
 use llmproto::chat::Completion;
 use llmproto::chat::{self, NO_MODEL};
+use llmproto::health::{State, Status};
 use llmproto::script::{self, AnswerError, ScriptRequest};
 use llmproto::text::printable;
 use llmproto::tune::{self, TuneRequest, replay};
@@ -110,6 +111,8 @@ struct Backends {
     /// backend keeps its own, costed by its tokenizer; `remember` and `new` keep
     /// both in step, and a reply reports the one that answers.
     history: History,
+    /// A slot's prompt is not cached yet: `health` says `warming`.
+    warming: bool,
 }
 
 /// What a turn costs a server's history: about four bytes a token, as no
@@ -161,6 +164,7 @@ fn main() -> i32 {
         replay,
         traced: 0,
         history: History::new(),
+        warming: false,
     };
     let mut request = vec![0u8; kabi::MAX_MESSAGE];
     let mut response = vec![0u8; http::MAX_RESPONSE];
@@ -224,6 +228,7 @@ fn main() -> i32 {
         let command = text.split([' ', '\n']).next();
         cold |= matches!(command, Some("ask" | "explain" | "model" | "tune"));
         stale |= matches!(command, Some("remember" | "new"));
+        backends.warming = local_warmable(&backends, stale, cold);
         let mut reply = match command {
             // `warm`: whether both slots hold their prompts (S02-2 waits for it).
             Some("warm") => match local_warmable(&backends, stale, cold) {
@@ -444,8 +449,27 @@ fn tune_answer(
 }
 
 /// The server's health first, then the model's and the engine's; either side may
-/// be missing, not both.
+/// be missing, not both. A reply ends with the model's state and speed for the
+/// Monitor app (`llmproto::health`).
 fn health(backends: &mut Backends, response: &mut [u8]) -> Result<String, String> {
+    let status = Status {
+        state: match (&backends.local, &backends.server) {
+            (Some(Ok(_)), _) if backends.warming => State::Warming,
+            (Some(Ok(_)), _) => State::Ready,
+            (Some(Err(_)), _) => State::Failed,
+            (None, Some(_)) => State::Remote,
+            (None, None) => State::NoModel,
+        },
+        tps10: match &backends.local {
+            Some(Ok(local)) => local.tps10(),
+            _ => 0,
+        },
+    };
+    described(backends, response).map(|text| format!("{text}; {}", status.line()))
+}
+
+/// [`health`]'s words, before the status.
+fn described(backends: &mut Backends, response: &mut [u8]) -> Result<String, String> {
     let mut local: Vec<String> = Vec::new();
     if let Some(model) = &mut backends.model {
         local.push(model.describe());
