@@ -15,7 +15,7 @@
 //! | 73-79 | G-core (P3) | DISPLAY_CLAIM, DISPLAY_FLUSH, DISPLAY_CURSOR, DISPLAY_CURSOR_MOVE, INPUT_READ, TERM_READ, INPUT_TO_CONSOLE |
 //! | 80-89 | K, spare | MODEL_FILL 80 and 81 held (S-io, P2 task 10); ONCE_CHECK_FOR 82; P2 task 12's grants |
 //! | 90-99 | S-engine (P2) | |
-//! | 100-109 | P, packages (P2) | BOOT_READ, COMP_ADD |
+//! | 100-109 | P, packages (P2) | BOOT_READ, COMP_ADD, PKG_FETCH |
 //! | 110-119 | A-core | |
 //! | 120-129 | model lane | |
 //! | 130-139 | D, drivers (ADR 0007) | RING_ATTACH, RING_NOTIFY, NOTIFY_WAIT, INPUT_PUSH |
@@ -407,6 +407,12 @@ pub const BOOT_READ: u64 = 100;
 /// over [`crate::live::MAX_ARTIFACT`] TooBig. Only for the holder of `/system/pkg`
 /// (its plan line's `dir=pkg`, run as that line's own program).
 pub const COMP_ADD: u64 = 101;
+/// `pkg_fetch(&HttpRequest) -> response len`: sends the request to the fixed
+/// `pkgrepo=` mirror (ADR 0011 §8) and copies its response out, as [`HTTP`] does
+/// for `llm=`. The request must be exactly one `crate::pkgrepo::request` builds,
+/// a GET of at most 192 KiB of one repository file (Invalid otherwise); NotFound
+/// when the command line names no mirror. Only for the holder of `/system/pkg`.
+pub const PKG_FETCH: u64 = 102;
 
 // ---- A-core, 110-119 ----
 

@@ -18,6 +18,8 @@ mod serve;
 pub(crate) mod tuf;
 
 #[cfg(test)]
+mod mirror_tests;
+#[cfg(test)]
 mod tests;
 
 pub use tuf::{Keys, Repository};
