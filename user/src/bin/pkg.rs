@@ -43,10 +43,11 @@ use kaipkg::fsvol::{FsVolume, Transport};
 use kaipkg::generation::{Generation, Time};
 use kaipkg::header::{Header, Kind as PackageKind};
 use kaipkg::image::Files;
-use kaipkg::mirror::{self, Exchange, Mirror, TUF_DIR, TufCache};
+use kaipkg::mirror::{self, Exchange, Mirror, TufCache};
 use kaipkg::resolve::{Entry, Want};
 use kaipkg::store::{self, Ctx, Ledger, Source, Store, Volume};
 use kaipkg::version::Version;
+use kaituf::updater::Cache;
 use user::{println, sys};
 
 user::entry!(main);
@@ -271,13 +272,12 @@ impl Exchange for Fetch {
 ///   install is refused by name.
 fn mirror(vol: &mut FsVolume<Calls>, step: &str) -> Result<String, String> {
     image(vol, step)?;
-    let root = format!("{TUF_DIR}/root.json");
-    if vol.read(&root)?.is_none() {
+    let mut cache = TufCache { vol };
+    if cache.load("root").map_err(|e| e.to_string())?.is_none() {
         let image_root = BootRepo
             .file(kaipkg::image::ROOT, kaituf::updater::ROOT_MAX)?
             .ok_or("the image has no root for the mirror")?;
-        vol.write(&root, &image_root)?;
-        vol.commit()?;
+        cache.save("root", &image_root).map_err(|e| e.to_string())?;
     }
     let time = match dated(vol) {
         Ok(time) => time,

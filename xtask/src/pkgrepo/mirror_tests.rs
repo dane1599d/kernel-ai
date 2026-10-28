@@ -151,6 +151,30 @@ fn a_flipped_object_byte_is_refused_by_name() {
 }
 
 #[test]
+fn a_target_the_mirror_does_not_serve_is_a_fetch_error_not_a_tamper() {
+    let repo = tuf::build(&[big()], &keys(1), NOW).unwrap();
+    let sha = crate::sha256_hex(&big().bytes);
+    let target = format!("targets/{sha}.big-1.0.0.kpkg");
+    // Listed by the index, but answered 404, as while the mirror syncs.
+    let syncing = Repository {
+        files: repo
+            .files
+            .iter()
+            .filter(|(p, _)| *p != target)
+            .cloned()
+            .collect(),
+    };
+    let port = serve(&syncing);
+    let mut vol = device(&repo);
+    let (result, fetches) = install(&mut vol, port, "big");
+    assert_eq!(fetches, 1);
+    match result {
+        Err(Error::Store(why)) => assert!(why.contains("the mirror has no"), "{why}"),
+        other => panic!("not a fetch error: {other:?}"),
+    }
+}
+
+#[test]
 fn an_expired_timestamp_lists_nothing() {
     let repo = tuf::build(&[big()], &keys(1), NOW).unwrap();
     let port = serve(&repo);
