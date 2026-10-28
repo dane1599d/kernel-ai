@@ -13,10 +13,9 @@
 //! the whole of `cargo metadata`, host tools included. Where an expression
 //! offers a choice, the alternative earliest in `allow` is taken.
 //!
-//! TODO(ADR 0009 D5): the rule that every tracked file carries our own header
-//! (or matches `REUSE.toml`) is off until the headers and `REUSE.toml` land. The
-//! licence is chosen (MPL-2.0, decided 2026-10-27); files with no header are
-//! the workspace's MPL-2.0, `kabi` and `compsdk` say theirs in Cargo.toml.
+//! Every tracked file is covered by its own header or a `REUSE.toml` path, and
+//! where it has both they agree ([`crate::reuse`]; ADR 0009 D5, its REUSE.toml
+//! route widened to path globs on 2026-10-27).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -45,8 +44,18 @@ pub struct Rules {
     clarify: BTreeMap<String, String>,
 }
 
+/// The "crate" a file of the tree is judged as: our own files may also be under
+/// the workspace's licence, and under an approved item's (ADR 0009 D4: OFL-1.1
+/// for font data), whatever crate it was approved for.
+pub const TREE: &str = "<tree>";
+
 impl Rules {
     fn allows(&self, krate: Option<&str>, id: &str) -> bool {
+        if krate == Some(TREE) {
+            return self.allow.iter().any(|a| a == id)
+                || id == OWN
+                || self.exceptions.values().flatten().any(|a| a == id);
+        }
         self.allow.iter().any(|a| a == id)
             || krate
                 .and_then(|k| self.exceptions.get(k))
@@ -63,6 +72,9 @@ impl Rules {
 }
 
 /// The rules in `deny.toml`.
+/// The workspace's own licence, `[workspace.package] license` (ADR 0009 D1).
+const OWN: &str = "MPL-2.0";
+
 pub fn rules(root: &Path) -> Result<Rules, String> {
     let deny = fs::read_to_string(root.join("deny.toml")).map_err(|e| format!("deny.toml: {e}"))?;
     parse_rules(&deny)
@@ -72,9 +84,11 @@ fn check(root: &Path) -> Result<(), String> {
     let rules = rules(root)?;
     let mut problems = Vec::new();
     // Who uses an expression, the crate an exception may name, the expression.
-    let mut uses: Vec<(String, Option<String>, String)> = tree_expressions(root)?
+    let tree = tree_expressions(root)?;
+    problems.extend(coverage(root, &tree)?);
+    let mut uses: Vec<(String, Option<String>, String)> = tree
         .into_iter()
-        .map(|(path, expression)| (path, None, expression))
+        .map(|(path, expression)| (path, Some(TREE.to_owned()), expression))
         .collect();
     for (name, krate, expression) in crate::notices::hand_expressions(root)? {
         uses.push((format!("xtask/notices.json: {name}"), krate, expression));
@@ -278,6 +292,24 @@ fn tree_expressions(root: &Path) -> Result<Vec<(String, String)>, String> {
     Ok(found)
 }
 
+/// What [`crate::reuse::problems`] finds over the tracked files and the header
+/// expressions `tree` found in them.
+fn coverage(root: &Path, tree: &[(String, String)]) -> Result<Vec<String>, String> {
+    let text =
+        fs::read_to_string(root.join("REUSE.toml")).map_err(|e| format!("REUSE.toml: {e}"))?;
+    let annotations = crate::reuse::parse(&text)?;
+    let out = run(root, "git", &["ls-files", "-z"])?;
+    let files: Vec<(String, Option<String>)> = out
+        .split('\0')
+        .filter(|p| !p.is_empty())
+        .map(|path| {
+            let header = tree.iter().find(|(p, _)| p == path).map(|(_, e)| e.clone());
+            (path.to_owned(), header)
+        })
+        .collect();
+    Ok(crate::reuse::problems(&files, &annotations))
+}
+
 /// The expression of a header line such as `// SPDX-License-Identifier: MIT`.
 fn header(line: &str) -> Option<String> {
     let rest = line.trim_start_matches(|c: char| c.is_whitespace() || "/#*;-<!".contains(c));
@@ -381,6 +413,24 @@ ignore = [{ id = "X", reason = "y" }]
 "#,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn the_trees_own_files_may_be_ours_or_an_approved_items_but_no_other() {
+        let r = rules();
+        let tree = Some(TREE);
+        assert_eq!(choose("MPL-2.0", &r, tree), Ok(vec!["MPL-2.0".into()]));
+        assert!(choose("MIT OR Apache-2.0", &r, tree).is_ok());
+        // smartstring's approval makes MPL-2.0 an approved item; GPL is none.
+        assert!(choose("GPL-3.0-only", &r, tree).is_err());
+        // A dependency is still judged as one: MPL-2.0 only for smartstring.
+        assert!(choose("MPL-2.0", &r, Some("other")).is_err());
+    }
+
+    #[test]
+    fn own_is_the_workspaces_licence() {
+        let toml = fs::read_to_string(crate::workspace_root().join("Cargo.toml")).unwrap();
+        assert!(toml.contains(&format!("license = \"{OWN}\"")));
     }
 
     #[test]
