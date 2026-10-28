@@ -173,12 +173,11 @@ The cases are act-plain, act-run, act-ask, act-rule, act-undo, act-rollback, act
 
 **P2 status (2026-10-28):** **closing, not yet done**.
 - **Built:** a writable `kai-data` disk on virtio-blk and NVMe; kaifs format 1 with volumes, snapshots, undo, trash, retention and the GC; the ring-3 `fs` service over `kai-fs 1`, with `Dir` and `File` handles; and the model store with MODEL_FILL.
-- **On main:** `blk-write`, `fs-reboot`, `fs-restart`, `fs-dead-client`, the power cut (`fs-actions`, `fs-powercut`, VirtualBox 20/20), and the file rows and undo (`fs-act`, `fs-undo`, `fs-undo-reboot`). **Queued:** `model-store` and `model-store-bad`.
+- **On main:** `blk-write`, `fs-reboot`, `fs-restart`, `fs-dead-client`, the power cut (`fs-actions`, `fs-powercut`, VirtualBox 20/20), the file rows and undo (`fs-act`, `fs-undo`, `fs-undo-reboot`), the trash with restore-by-name and empty-trash (`fs-trash`), and `pkg-store`.
 - **Not met yet:**
-  - `pkg-store` (#267);
-  - `llm` mapping the store's model;
-  - the shell's restore-by-name and empty-trash over `fs`;
-  - files move through kaifs at 12 MB/s in a release build under KVM, under S04-2's bar (the IPC alone passed). The cost is split between one disk call per 4 KiB block and slow IPC round trips.
+  - `model-store` and `model-store-bad` (#236, #261, labelled for a batch);
+  - `llm` mapping the store's model (#314, waiting on a rebase);
+  - files moved through kaifs at 12 MB/s in a release build under KVM, under S04-2's bar (the IPC alone passed). One disk call per 4 KiB block is now batched (#325); the speed is to be measured again (#262), and slow IPC round trips remain.
 
 The P2 close row in `docs/decisions.md` has each case and gap.
 
