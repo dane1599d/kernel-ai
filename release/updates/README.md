@@ -10,6 +10,6 @@ The update repository for [Kernel AI](https://github.com/dane1599d/kernel-ai): t
 | `models` | `*.gguf` and their chunk lists | 1 of 2 YubiKeys |
 | `snapshot`, `timestamp` | the repository's current state | an online key, re-signed by CI |
 
-Releases are made in `kernel-ai` by `.github/workflows/release.yml`, which opens a signing event here for each tag. How the repository and its keys are set up is in `docs/root-ceremony.md`. The workflows call [tuf-on-ci](https://github.com/theupdateframework/tuf-on-ci)'s actions (MIT), pinned to v0.21.0 by commit. This repository's own files are MPL-2.0, as Kernel AI's are.
+Releases are made in `kernel-ai` by `.github/workflows/release.yml`, which opens a signing event here for each tag. How the repository and its keys are set up is in `docs/root-ceremony.md`. The repository was made from tuf-on-ci's template, and its workflows call [tuf-on-ci](https://github.com/theupdateframework/tuf-on-ci)'s actions, pinned to v0.21.0 by commit.
 
 Until the root ceremony, this repository holds no metadata and no key.

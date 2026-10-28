@@ -21,11 +21,11 @@ The same three YubiKeys can hold the root key and the `targets`, `packages` and 
 
 ## 0. A dry run (recommended)
 
-Do steps 2-6 once on a throwaway copy of this repository with a spare YubiKey or two, then delete it. Check three things: the signing event, the first publish, and a release's target signed and fetched. `kaituf`'s client and python-tuf's both read Pages the way devices will.
+Do steps 2-6 once on a throwaway repository made from the same template with a spare YubiKey or two, then delete it. Check three things: the signing event, the first publish, and a release's target signed and fetched. `kaituf`'s client and python-tuf's both read Pages the way devices will.
 
 ## 1. The repository
 
-`dane1599d/kernel-ai-updates` exists (public). Its first commit holds the README, this runbook as `docs/root-ceremony.md`, and five workflows of our own. The workflows call tuf-on-ci's GitHub Actions (MIT), each pinned to v0.21.0 by commit (`662382a8295b89a9d538390ce8b9bb85b207a93d`):
+`dane1599d/kernel-ai-updates` exists (public). It was made on 2026-10-28 from tuf-on-ci's own template (`theupdateframework/tuf-on-ci-template`). Its workflows call tuf-on-ci's actions, pinned to v0.21.0 by commit (`662382a8295b89a9d538390ce8b9bb85b207a93d`):
 
 - `signing-event.yml`: on each push to a `sign/*` branch, it checks the event and asks its signers.
 - `create-signing-events.yml`: it opens an event for any offline role near expiry.
@@ -33,7 +33,7 @@ Do steps 2-6 once on a throwaway copy of this repository with a spare YubiKey or
 - `publish.yml`: it deploys to Pages from `publish`.
 - `test.yml`: it checks the published repository with a TUF client.
 
-Every job runs only in `dane1599d`'s repository, never in a fork. Scheduled runs wait for the repository variable `KAI_UPDATES_LIVE` (step 5), so nothing runs on a timer before there is metadata. The repository holds no key and no signature until the ceremony.
+The second commit adds this runbook as `docs/root-ceremony.md` and the repository's README. It also turns on `signing-event.yml`'s owner guard (`github.repository_owner == 'dane1599d'`), so forks never run it. The repository holds no key and no signature until the ceremony. Until then the scheduled runs of `online-sign`, `create-signing-events` and `test` fail, because there is no metadata yet, and tuf-on-ci opens an issue for that. Close it after the first publish.
 
 ## 2. Repository settings
 
@@ -92,7 +92,7 @@ On WSL, attach the YubiKey to Linux with `usbipd-win` first.
    - `tuf-on-ci-delegate sign/packages packages`, paths `*.kpkg`, terminating;
    - `tuf-on-ci-delegate sign/models models`, paths `*.gguf` and `*.kai-chunks`.
 5. **Check the result:** a fresh python-tuf or `kaituf` client, given only `1.root.json`, refreshes from Pages and lands on the newest root, which needs 2 of 3 signatures.
-6. **Turn on the timers:** Settings → Secrets and variables → Actions → Variables → `KAI_UPDATES_LIVE` = `true`. From then on, the scheduled runs keep snapshot and timestamp fresh, open re-signing events and test what Pages serves.
+6. **Close the issue** tuf-on-ci opened for the scheduled runs that failed before there was metadata. From now on, those runs keep snapshot and timestamp fresh, open re-signing events and test what Pages serves.
 
 ## 6. Wire `kernel-ai` to it
 
