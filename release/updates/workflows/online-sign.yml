@@ -1,0 +1,50 @@
+# Signs snapshot and timestamp with the online key, after an offline role
+# changes on main and on a schedule, so timestamp (7 days) and snapshot
+# (30 days) never lapse (ADR 0008 §7; tuf-on-ci 0.21.0). The key lives in a
+# cloud KMS reached through GitHub OIDC: set the variables for the one you use
+# (docs/root-ceremony.md, step 2). Nothing here holds a private key.
+name: Online signing
+
+on:
+  schedule:
+    - cron: "17 1,7,13,19 * * *"
+  push:
+    branches: [main]
+    paths: ["metadata/**", "!metadata/timestamp.json", "!metadata/snapshot.json"]
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  online-sign:
+    # Scheduled runs wait for the first publish (docs/root-ceremony.md, step 5).
+    if: github.repository_owner == 'dane1599d' && (github.event_name != 'schedule' || vars.KAI_UPDATES_LIVE == 'true')
+    runs-on: ubuntu-24.04
+    permissions:
+      id-token: write # OIDC to the KMS
+      contents: write # commits snapshot and timestamp
+      actions: write # starts the publish workflow
+    steps:
+      - uses: theupdateframework/tuf-on-ci/actions/online-sign@662382a8295b89a9d538390ce8b9bb85b207a93d # v0.21.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          gcp_workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          gcp_service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+          aws_region: ${{ vars.AWS_REGION }}
+          aws_role_to_assume: ${{ vars.AWS_ROLE_TO_ASSUME }}
+          azure_client_id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure_tenant_id: ${{ secrets.AZURE_TENANT_ID }}
+          azure_subscription_id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+  update-issue:
+    needs: [online-sign]
+    if: always() && !cancelled() && github.repository_owner == 'dane1599d'
+    runs-on: ubuntu-24.04
+    permissions:
+      issues: write
+      contents: read
+    steps:
+      - uses: theupdateframework/tuf-on-ci/actions/update-issue@662382a8295b89a9d538390ce8b9bb85b207a93d # v0.21.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          success: ${{ !contains(needs.*.result, 'failure') }}

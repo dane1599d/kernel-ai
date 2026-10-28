@@ -1,0 +1,58 @@
+# Publishes the signed metadata (and any targets kept here) to GitHub Pages,
+# then checks the published repository with a TUF client (tuf-on-ci 0.21.0).
+# Started by online signing; Pages deploys only from the `publish` branch.
+name: Publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        type: string
+        required: false
+
+permissions: {}
+
+jobs:
+  build:
+    if: github.repository_owner == 'dane1599d'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: theupdateframework/tuf-on-ci/actions/upload-repository@662382a8295b89a9d538390ce8b9bb85b207a93d # v0.21.0
+        with:
+          gh_pages: true
+          ref: ${{ inputs.ref }}
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write # Pages deployment
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
+
+  test:
+    needs: deploy
+    permissions:
+      contents: read
+      issues: write
+    uses: ./.github/workflows/test.yml
+
+  update-issue:
+    needs: [build, deploy, test]
+    if: always() && !cancelled()
+    runs-on: ubuntu-24.04
+    permissions:
+      issues: write
+      contents: read
+    steps:
+      - uses: theupdateframework/tuf-on-ci/actions/update-issue@662382a8295b89a9d538390ce8b9bb85b207a93d # v0.21.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          success: ${{ !contains(needs.*.result, 'failure') }}
