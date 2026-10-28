@@ -47,6 +47,9 @@ pub struct Queue {
     effects: Vec<(String, VecDeque<String>)>,
     /// Results by app, oldest first.
     results: Vec<(String, VecDeque<Done>)>,
+    /// Where the next take starts looking: round the apps in turn, so one
+    /// busy app cannot keep the others waiting.
+    next: usize,
 }
 
 impl Queue {
@@ -80,9 +83,14 @@ impl Queue {
     }
 
     /// One app's oldest effects, at most `budget` bytes of lines (always at
-    /// least one); `None` when nothing waits.
+    /// least one), the apps taking turns; `None` when nothing waits.
     pub fn take(&mut self, budget: usize) -> Option<(String, Vec<String>)> {
-        let (app, waiting) = self.effects.iter_mut().find(|(_, w)| !w.is_empty())?;
+        let count = self.effects.len();
+        let at = (0..count)
+            .map(|step| (self.next + step) % count)
+            .find(|&at| !self.effects[at].1.is_empty())?;
+        self.next = (at + 1) % count;
+        let (app, waiting) = &mut self.effects[at];
         let mut lines = Vec::new();
         let mut used = 0;
         while let Some(line) = waiting.front() {
@@ -226,6 +234,24 @@ mod tests {
             Some((String::from("monitor"), alloc::vec![line(9)]))
         );
         assert_eq!(queue.take(4096), None);
+    }
+
+    #[test]
+    fn apps_take_turns() {
+        let mut queue = Queue::default();
+        let lines: Vec<String> = (0..4).map(line).collect();
+        queue.put(
+            "files",
+            &lines.join(
+                "
+",
+            ),
+        );
+        queue.put("monitor", &line(9));
+        let budget = line(0).len() + 1;
+        let order: Vec<String> =
+            core::iter::from_fn(|| queue.take(budget).map(|(app, _)| app)).collect();
+        assert_eq!(order, ["files", "monitor", "files", "files", "files"]);
     }
 
     #[test]
