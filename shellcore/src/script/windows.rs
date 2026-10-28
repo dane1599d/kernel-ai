@@ -57,14 +57,24 @@ pub(super) fn bind(engine: &mut Engine, name: &'static str, h: Rc<dyn Host>, tx:
                     app: app.into(),
                     arg: arg.map(String::from),
                 };
-                h.ui(&call).map_err(fail)?;
-                tx.changed(window_done(
-                    name,
-                    app,
-                    "closed",
-                    "open",
-                    Inverse::Reclose(name_of(app)?),
-                ));
+                let answer = h.ui(&call).map_err(fail)?;
+                // A window the user had only took focus: undo moves focus back
+                // and never closes it.
+                let done = match crate::ui::opened(&answer, app) {
+                    Some(Inverse::Refocus { to, from }) => Done {
+                        action: name.into(),
+                        owner: "desktop".into(),
+                        res: String::from("keyboard focus"),
+                        before: format!("on {}", to.as_str()),
+                        after: format!("on {}", from.as_str()),
+                        inverse: Some(Inverse::Refocus { to, from }),
+                    },
+                    inverse => Done {
+                        inverse,
+                        ..window_done(name, app, "closed", "open", Inverse::Reopen(name_of(app)?))
+                    },
+                };
+                tx.changed(done);
                 Ok(())
             };
             let again = open.clone();

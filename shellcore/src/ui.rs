@@ -10,6 +10,7 @@
 //! it makes asks, and it gets no third round.
 
 use crate::state::State;
+use crate::undo::{self, Inverse, Name, Refused};
 use crate::{Host, Reply, Shell};
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -22,7 +23,9 @@ use serde_json::Value;
 pub enum UiCall {
     Windows,
     View(String),
-    /// Opens `app`: its first request starts it and it opens its window.
+    /// Opens `app`: its first request starts it and it opens its window. The
+    /// answer is `opened w5` for a new window, or `focused w3 w1` when the
+    /// app's window was open already and only took focus (from `w1`).
     Open {
         app: String,
         arg: Option<String>,
@@ -129,6 +132,14 @@ impl Shell {
             Ok(next) if next.name == "ui_view" => Round::Failed(Reply::err(
                 "I looked at the window once; say what to do in it",
             )),
+            // These do not go through a row's consent, so the view could steer
+            // them past it: after a view only rows, `say` and `clarify` come.
+            Ok(next) if matches!(next.name.as_str(), "script" | "undo") => {
+                Round::Failed(Reply::err(format!(
+                    "after looking at a window I act only in it; ask for {} on its own",
+                    next.name
+                )))
+            }
             Ok(next) => {
                 self.host.audit(&format!(
                     "request {id}: after the view, the model called {}",
@@ -147,23 +158,63 @@ impl Shell {
     }
 }
 
-/// Puts back a window change (`undo`): what it did, or why not.
-pub(crate) fn revert(host: &dyn Host, inverse: crate::undo::Inverse) -> Result<String, String> {
-    use crate::undo::Inverse;
+/// What undoes a `ui_open` that answered `answer` for `app`: closing the
+/// window it opened, or, when it only focused a window the user had, putting
+/// focus back. `None` for an answer that says neither.
+pub(crate) fn opened(answer: &str, app: &str) -> Option<Inverse> {
+    let mut words = answer.split(' ');
+    let inverse = match (words.next()?, words.next()?, words.next()) {
+        ("opened", window, None) => Inverse::Reclose {
+            window: Name::new(window)?,
+            app: Name::new(app)?,
+        },
+        ("focused", window, Some(before)) => Inverse::Refocus {
+            to: Name::new(before)?,
+            from: Name::new(window)?,
+        },
+        _ => return None,
+    };
+    words.next().is_none().then_some(inverse)
+}
+
+/// Puts back a window change (`undo`): what it did and its redo, or why not.
+/// Closing a window the agent opened asks first unless `anyway`: the user may
+/// have worked in it since.
+pub(crate) fn revert(
+    host: &dyn Host,
+    inverse: Inverse,
+    anyway: bool,
+) -> Result<(String, Inverse), Refused> {
     match inverse {
-        Inverse::Refocus { to, .. } => host
+        Inverse::Refocus { to, from } => host
             .ui(&UiCall::Refocus(to.as_str().into()))
-            .map(|_| format!("focus back on {}", to.as_str())),
-        Inverse::Reopen(app) => host
-            .ui(&UiCall::Open {
+            .map(|_| {
+                let text = format!("focus back on {}", to.as_str());
+                (text, Inverse::Refocus { to: from, from: to })
+            })
+            .map_err(Refused::Failed),
+        Inverse::Reopen(app) => {
+            let open = UiCall::Open {
                 app: app.as_str().into(),
                 arg: None,
+            };
+            let answer = host.ui(&open).map_err(Refused::Failed)?;
+            let redo = opened(&answer, app.as_str()).unwrap_or(undo::reverse(inverse));
+            Ok((format!("{} opened again", app.as_str()), redo))
+        }
+        Inverse::Reclose { .. } if !anyway => Err(Refused::Moved(String::from(
+            "open, and it may hold unsaved work",
+        ))),
+        Inverse::Reclose { window, app } => host
+            .ui(&UiCall::Close(window.as_str().into()))
+            .map(|_| {
+                (
+                    format!("{} closed again", app.as_str()),
+                    Inverse::Reopen(app),
+                )
             })
-            .map(|_| format!("{} opened again", app.as_str())),
-        Inverse::Reclose(app) => host
-            .ui(&UiCall::Close(app.as_str().into()))
-            .map(|_| format!("{} closed again", app.as_str())),
-        _ => Err(String::from("it is not a window change")),
+            .map_err(Refused::Failed),
+        _ => Err(Refused::Failed(String::from("it is not a window change"))),
     }
 }
 

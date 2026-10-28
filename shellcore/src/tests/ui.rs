@@ -24,6 +24,7 @@ fn desktop(host: &FakeHost) {
         UiCall::View(_) => Ok(String::from(VIEW)),
         UiCall::Focus(_) => Ok(String::from("w1")),
         UiCall::Close(window) => Ok(window.clone()),
+        UiCall::Open { .. } => Ok(String::from("opened w5")),
         _ => Ok(String::new()),
     }));
 }
@@ -130,11 +131,54 @@ fn close_asks_and_undo_reopens_and_open_runs_and_undo_closes() {
     );
     let opened = shell.eval("open notes");
     assert_eq!(opened, ok("Done: window notes open (was closed). undo"));
-    assert!(shell.eval("undo").ok);
+    // The window may hold work by now: undo asks before it closes it, and
+    // closes that window, not the app's others.
+    let asked = shell.eval("undo");
+    assert!(asked.text.ends_with("anyway? y/n"), "{asked:?}");
+    assert_ne!(
+        host.ui_calls.borrow().last(),
+        Some(&UiCall::Close("w5".into()))
+    );
+    assert!(shell.eval("y").ok);
     assert_eq!(
         host.ui_calls.borrow().last(),
-        Some(&UiCall::Close("notes".into()))
+        Some(&UiCall::Close("w5".into()))
     );
+}
+
+#[test]
+fn opening_an_app_already_open_only_focuses_it_and_undo_never_closes_it() {
+    let open = r#"{"name":"ui_open","arguments":{"app":"notes"}}"#;
+    let (host, mut shell) = with_calls(vec![call(open)]);
+    desktop(&host);
+    *host.ui_answer.borrow_mut() = Some(Box::new(|call: &UiCall| match call {
+        UiCall::Open { .. } => Ok(String::from("focused w2 w1")),
+        _ => Ok(String::new()),
+    }));
+    let reply = shell.eval("open notes");
+    assert_eq!(reply, ok("Done: keyboard focus on w2 (was on w1). undo"));
+    assert!(shell.eval("undo").ok);
+    let calls = host.ui_calls.borrow();
+    assert_eq!(calls.last(), Some(&UiCall::Refocus("w1".into())));
+    assert!(!calls.iter().any(|c| matches!(c, UiCall::Close(_))));
+}
+
+#[test]
+fn a_script_or_an_undo_after_a_view_is_refused() {
+    let view = r#"{"name":"ui_view","arguments":{"window":"notes"}}"#;
+    for after in [
+        r#"{"name":"script","arguments":{}}"#,
+        r#"{"name":"undo","arguments":{"steps":1}}"#,
+    ] {
+        let (host, mut shell) = with_calls(vec![call(view), call(after)]);
+        desktop(&host);
+        let reply = shell.eval("look at notes and fix it");
+        assert!(
+            !reply.ok && reply.text.contains("act only in it"),
+            "{after}: {reply:?}"
+        );
+        assert!(host.script_requests.borrow().is_empty());
+    }
 }
 
 #[test]

@@ -55,8 +55,9 @@ pub enum Inverse {
     Refocus { to: Name, from: Name },
     /// Open the app whose window `window_close` closed.
     Reopen(Name),
-    /// Close the window `ui_open` opened for the app.
-    Reclose(Name),
+    /// Close `window`, which `ui_open` opened for `app`. It asks first, since
+    /// the window may hold work by now.
+    Reclose { window: Name, app: Name },
 }
 
 /// A service name held without the heap, so an inverse stays `Copy`.
@@ -129,7 +130,7 @@ pub fn target(inverse: Inverse) -> String {
         Inverse::Profile { .. } => String::from("the profile before"),
         Inverse::Refocus { to, .. } => format!("focus on {}", to.as_str()),
         Inverse::Reopen(app) => format!("{} open", app.as_str()),
-        Inverse::Reclose(app) => format!("{} closed", app.as_str()),
+        Inverse::Reclose { app, .. } => format!("{} closed", app.as_str()),
     }
 }
 
@@ -169,6 +170,10 @@ pub fn revert(
                 false => format!("{}({}) again", action.as_str(), app.as_str()),
             };
             Ok((text, reverse(inverse)))
+        }
+        // Each knows its redo from what desktop answered.
+        Inverse::Refocus { .. } | Inverse::Reopen(_) | Inverse::Reclose { .. } => {
+            crate::ui::revert(host, inverse, anyway)
         }
         other => revert_one(host, other, anyway, ids).map(|text| (text, reverse(other))),
     }
@@ -213,15 +218,14 @@ fn revert_one(
         Inverse::Generation { .. } => Err(Refused::Failed(String::from(
             "a package switch is put back by the shell's store",
         ))),
-        Inverse::Fs { .. } | Inverse::Fired { .. } => {
-            Err(Refused::Failed(String::from("it is put back by revert")))
-        }
+        Inverse::Fs { .. }
+        | Inverse::Fired { .. }
+        | Inverse::Refocus { .. }
+        | Inverse::Reopen(_)
+        | Inverse::Reclose { .. } => Err(Refused::Failed(String::from("it is put back by revert"))),
         Inverse::Instruction { .. } | Inverse::Profile { .. } => Err(Refused::Failed(
             String::from("it is put back by the shell's own store"),
         )),
-        Inverse::Refocus { .. } | Inverse::Reopen(_) | Inverse::Reclose(_) => {
-            crate::ui::revert(host, inverse).map_err(Refused::Failed)
-        }
     }
 }
 
@@ -265,8 +269,9 @@ pub fn reverse(inverse: Inverse) -> Inverse {
         // Only the shell knows the redo's key ([`crate::Shell`]).
         Inverse::Profile { key } => Inverse::Profile { key },
         Inverse::Refocus { to, from } => Inverse::Refocus { to: from, from: to },
-        Inverse::Reopen(app) => Inverse::Reclose(app),
-        Inverse::Reclose(app) => Inverse::Reopen(app),
+        // `revert` names the window a reopen made; this is only its fallback.
+        Inverse::Reopen(app) => Inverse::Reclose { window: app, app },
+        Inverse::Reclose { app, .. } => Inverse::Reopen(app),
     }
 }
 
@@ -301,7 +306,9 @@ pub fn inverse_word(inverse: Option<Inverse>) -> String {
             format!("refocus:{}:{}", to.as_str(), from.as_str())
         }
         Some(Inverse::Reopen(app)) => format!("reopen:{}", app.as_str()),
-        Some(Inverse::Reclose(app)) => format!("reclose:{}", app.as_str()),
+        Some(Inverse::Reclose { window, app }) => {
+            format!("reclose:{}:{}", window.as_str(), app.as_str())
+        }
     }
 }
 
@@ -343,7 +350,10 @@ pub fn parse_inverse(text: &str) -> Option<Option<Inverse>> {
             from: Name::new(parts.next()?)?,
         },
         "reopen" => Inverse::Reopen(Name::new(parts.next()?)?),
-        "reclose" => Inverse::Reclose(Name::new(parts.next()?)?),
+        "reclose" => Inverse::Reclose {
+            window: Name::new(parts.next()?)?,
+            app: Name::new(parts.next()?)?,
+        },
         _ => return None,
     }))
 }
