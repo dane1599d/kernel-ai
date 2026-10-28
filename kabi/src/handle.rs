@@ -86,13 +86,15 @@ pub enum Kind {
     Display = 16,
     /// The kernel's input queue: only `desktop`'s.
     Input = 17,
+    /// The kernel console's rows, to read: only `term`'s.
+    Term = 18,
     /// The slots and the boot record ([`crate::update`]): only `updated`'s.
     /// Numbered at merge, after the terminal window's `Term` (18, #252).
     Update = 19,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 18] = [
+    pub const ALL: [Kind; 19] = [
         Kind::Process,
         Kind::Job,
         Kind::Endpoint,
@@ -110,6 +112,7 @@ impl Kind {
         Kind::File,
         Kind::Display,
         Kind::Input,
+        Kind::Term,
         Kind::Update,
     ];
 
@@ -136,6 +139,7 @@ impl Kind {
             Kind::File => "file",
             Kind::Display => "display",
             Kind::Input => "input",
+            Kind::Term => "term",
             Kind::Update => "update",
         }
     }

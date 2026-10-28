@@ -21,6 +21,7 @@ mod act_tests;
 mod allow;
 mod apic;
 mod appbench_tests;
+mod ask_tests;
 mod backtrace;
 mod bigmap_tests;
 mod blk_tests;
@@ -347,6 +348,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::DisplayClaim => run_case(claim_tests::check),
         SelfTest::DeskWindows => run_case(desk_tests::check),
         SelfTest::DeskRestart => run_case(desk_tests::restart),
+        SelfTest::DeskAsk => run_case(ask_tests::check),
         SelfTest::AppSuspend => run_case(suspend_tests::check),
         SelfTest::DeskBoot => run_case(desk_tests::boot_check),
         SelfTest::DeskPanel => run_case(desk_tests::panel_check),
