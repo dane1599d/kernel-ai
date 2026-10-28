@@ -23,6 +23,7 @@ kabi = { path = "../kabi" }
 deskcore = { path = "../deskcore" }
 surfabi = { path = "../surfabi" }
 livecore = { path = "../livecore" }
+gfx2d = { path = "../gfx2d" }
 look = { path = "../look" }
 editcore = { path = "../editcore" }
 fsproto = { path = "../fsproto" }

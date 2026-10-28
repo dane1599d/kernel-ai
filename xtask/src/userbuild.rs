@@ -23,16 +23,17 @@ const USER_PROGRAMS: &[&str] = &[
     "fs",
     "filecheck",
     "updated",
-    "desktop",
     "deskdemo",
     "tufbench",
 ];
 /// Ring-3 programs built for the hard-float target: `llm`, whose engine needs SSE and
 /// AVX; `comphost`, whose wasmi runs guests' floats natively (ADR 0003 section 6);
-/// `appbench`, which measures comphost's crates there; and the tests that check the
-/// kernel keeps vector state apart.
+/// `appbench`, which measures comphost's crates there; `desktop`, whose renderer
+/// (`gfx2d`) works in floats (ADR 0005 §1); and the tests that check the kernel
+/// keeps vector state apart.
 const USER_FLOAT_PROGRAMS: &[&str] = &[
     "llm",
+    "desktop",
     "probe",
     "vecstress",
     "workers",

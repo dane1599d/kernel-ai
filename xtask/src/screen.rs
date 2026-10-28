@@ -1,8 +1,11 @@
-//! The `display` cases' host checks: QEMU's screendump (a binary PPM) must equal
-//! `gfxcore::pattern` pixel for pixel, at the size the case expects, and on
-//! virtio-gpu QEMU's cursor trace must show the cursor set and then moved.
+//! The screendump cases' host checks: QEMU's screendump (a binary PPM) must equal
+//! `gfxcore::pattern` pixel for pixel, at the size the case expects, or, for the
+//! desktop, hash to its golden digest with what changes while it is still
+//! blanked; on virtio-gpu QEMU's cursor trace must show the cursor set and then
+//! moved.
 
 use gfxcore::pattern::{CURSOR_AT, CURSOR_TO, pixel};
+use sha2::{Digest, Sha256};
 use std::path::Path;
 
 /// The screendump the case's keys ask QEMU for, in `target/`.
@@ -19,6 +22,17 @@ pub struct Expect {
     pub size: Option<(u32, u32)>,
     /// The cursor trace must show the set and the move.
     pub cursor: bool,
+    /// Instead of the test pattern, a golden digest.
+    pub golden: Option<Golden>,
+}
+
+/// A screen that must hash to `sha256` (of its RGB bytes, row by row) once the
+/// rectangle `mask` gives for its size is blanked to black.
+#[derive(Clone, Copy)]
+pub struct Golden {
+    pub sha256: &'static str,
+    /// (x, y, w, h) for a `width` x `height` screen.
+    pub mask: fn(u32, u32) -> (u32, u32, u32, u32),
 }
 
 /// The QEMU monitor commands, then Enter, that the case types once the kernel
@@ -61,8 +75,25 @@ pub fn check(target_dir: &Path, expect: Expect) -> Result<(), String> {
             size.0, size.1
         ));
     }
-    compare(width, height, pixels)?;
-    println!("xtask: the {width}x{height} screendump matches the test pattern pixel for pixel");
+    match expect.golden {
+        Some(golden) => {
+            let got = digest(width, height, pixels, golden.mask);
+            if got != golden.sha256 {
+                return Err(format!(
+                    "FAIL: the {width}x{height} screendump hashes to {got}, not the golden {}; it is at {}",
+                    golden.sha256,
+                    path.display()
+                ));
+            }
+            println!("xtask: the {width}x{height} screendump matches its golden digest");
+        }
+        None => {
+            compare(width, height, pixels)?;
+            println!(
+                "xtask: the {width}x{height} screendump matches the test pattern pixel for pixel"
+            );
+        }
+    }
     if expect.cursor {
         let trace = std::fs::read_to_string(target_dir.join(TRACE))
             .map_err(|e| format!("FAIL: no QEMU trace log {TRACE}: {e}"))?;
@@ -133,6 +164,27 @@ fn compare(width: u32, height: u32, pixels: &[u8]) -> Result<(), String> {
             "FAIL: {wrong} pixels differ from the test pattern; the first at {x},{y} is {got:06x}, not {want:06x}"
         )),
     }
+}
+
+/// The SHA-256 of `pixels` (RGB, row by row) with `mask`'s rectangle black.
+pub fn digest(
+    width: u32,
+    height: u32,
+    pixels: &[u8],
+    mask: fn(u32, u32) -> (u32, u32, u32, u32),
+) -> String {
+    let mut pixels = pixels.to_vec();
+    let (mx, my, mw, mh) = mask(width, height);
+    for y in my..(my + mh).min(height) {
+        let row = (y * width) as usize * 3;
+        let from = row + mx.min(width) as usize * 3;
+        let to = row + (mx + mw).min(width) as usize * 3;
+        pixels[from..to].fill(0);
+    }
+    Sha256::digest(&pixels)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 /// The trace must show an update at CURSOR_AT and, after it, a move to CURSOR_TO.

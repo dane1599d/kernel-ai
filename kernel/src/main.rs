@@ -345,6 +345,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::DeskWindows => run_case(desk_tests::check),
         SelfTest::DeskRestart => run_case(desk_tests::restart),
         SelfTest::AppSuspend => run_case(suspend_tests::check),
+        SelfTest::DeskBoot => run_case(desk_tests::boot_check),
         SelfTest::Scriptrun => run_case(scriptrun_tests::check),
         SelfTest::Fpu => run_case(fpu_tests::fpu_check),
         SelfTest::Probe => run_case(fpu_tests::probe_check),

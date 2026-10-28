@@ -1,16 +1,18 @@
 //! `desktop`, the compositor (ADR 0005 §1, P3 task 6): it claims the screen,
 //! serves `kai-surface 1` to its clients, and draws their windows with
-//! `deskcore`'s rules. This first version draws chrome as solid colours and no
-//! text; lane G-render's `gfx2d` and `look` bring type and the Ember Workbench
-//! tokens.
+//! `deskcore`'s rules, painted by `deskcore::paint` on `gfx2d` in Ember
+//! Workbench's tokens and type.
 //!
 //! - A client calls the `desktop` service with a run of `surfabi` messages; the
 //!   reply carries the events waiting for it. `pool.create` brings its `Shm`,
 //!   mapped here read-only.
 //! - Input comes from the kernel's queue (INPUT_READ); Ctrl+Alt+F12 takes the
 //!   screen away (a `Screen` event) and gives it back.
-//! - Each frame redraws only the desk's damage into a frame of its own, then
-//!   copies those rectangles to the screen and flushes them.
+//! - Each frame repaints only the desk's damage, grown by what a window's
+//!   shadow reaches, into a frame of its own, then copies those rectangles to
+//!   the screen and flushes them.
+//! - The top bar's model state and memory are read once a second; a screen
+//!   without a hardware cursor (GOP) gets one drawn in the frame.
 
 #![no_std]
 #![no_main]
@@ -22,8 +24,9 @@ use alloc::vec::Vec;
 use deskcore::compose::{Pixels, Source};
 use deskcore::desk::{Button, Desk, Effect, Focus, Input, WindowId};
 use deskcore::geom::{Point, Rect};
+use deskcore::paint::{self, Bar, Painter};
 use deskcore::server::{Buffer, Client, Need};
-use deskcore::{chrome, trusted};
+use gfx2d::{Canvas, Fonts, Image};
 use kabi::display::{DisplayInfo, FlushRect};
 use kabi::handle::{Handle, RecvInfo};
 use kabi::input::{InputEvent, Kind};
@@ -32,24 +35,14 @@ use user::{println, sys};
 
 user::entry!(main);
 
-/// Ember Workbench's dark tokens (ADR 0005 §8), opaque.
-mod color {
-    use look::DARK;
+/// The fonts ADR 0005 §8 names, built in until P2's files carry them.
+const FONTS: Fonts = Fonts {
+    sans: include_bytes!("../../../assets/fonts/InterVariable.ttf"),
+    mono: include_bytes!("../../../assets/fonts/JetBrainsMono-Variable.ttf"),
+};
 
-    const fn opaque(rgb: u32) -> u32 {
-        (0xFF << 24) | rgb
-    }
-
-    pub const DESK: u32 = opaque(DARK.desk);
-    pub const WINDOW: u32 = opaque(DARK.window);
-    pub const LINE: u32 = opaque(DARK.line);
-    pub const LINE_STRONG: u32 = opaque(DARK.line_strong);
-    pub const RAISED: u32 = opaque(DARK.raised);
-    pub const AI: u32 = opaque(DARK.ai);
-    pub const ASK: u32 = opaque(DARK.ask);
-    /// The controls until they get their icons.
-    pub const CONTROL: u32 = opaque(DARK.line);
-}
+/// How often the top bar's model state and memory are read.
+const BAR_EVERY_NS: u64 = 1_000_000_000;
 
 /// Waits for input or a client, in turn, so neither starves.
 const INPUT_WAIT_MS: u64 = 2;
@@ -72,15 +65,28 @@ struct State {
     clients: Vec<Client>,
     pools: Vec<Pool>,
     shown: Vec<(WindowId, u64, Buffer)>,
-    frame: Vec<u32>,
+    frame: Image,
     width: i32,
     height: i32,
+    painter: Painter,
+    bar: Bar,
+    bar_at: u64,
+    /// Damage of desktop's own: the top bar's stats, the drawn cursor.
+    extra: Vec<Rect>,
+    /// The screen has no hardware cursor, so the frame shows one.
+    draws_cursor: bool,
+    /// The first frame is on the screen.
+    drawn: bool,
     /// Frames as last logged, to report moves and closes once.
     known: Vec<(WindowId, Rect)>,
     focus: Focus,
 }
 
 fn main() -> i32 {
+    let Some(mut painter) = Painter::new(FONTS) else {
+        println!("desktop: the built-in fonts do not parse");
+        return 1;
+    };
     loop {
         let Some(screen) = claim() else {
             if !wait_for_screen() {
@@ -95,14 +101,22 @@ fn main() -> i32 {
             clients: Vec::new(),
             pools: Vec::new(),
             shown: Vec::new(),
-            frame: vec![0; (width * height) as usize],
+            frame: Image::new(width, height),
             width,
             height,
+            painter,
+            bar: Bar::default(),
+            bar_at: 0,
+            extra: Vec::new(),
+            draws_cursor: screen.info.cursor == 0,
+            drawn: false,
             known: Vec::new(),
             focus: Focus::Nothing,
         };
         println!("desktop: claimed {width}x{height}");
-        let Some(back) = run(&mut state, &screen) else {
+        let result = run(&mut state, &screen);
+        painter = state.painter;
+        let Some(back) = result else {
             return 1;
         };
         let _ = sys::shm_unmap(screen.address);
@@ -154,6 +168,7 @@ fn run(state: &mut State, screen: &Screen) -> Option<bool> {
             serve(state, &request[..len.min(request.len())], &info);
         }
         report(state);
+        refresh_bar(state);
         draw(state, screen);
     }
 }
@@ -208,12 +223,16 @@ fn input(state: &mut State, screen: &Screen, event: &InputEvent) {
     let Some(input) = input else {
         return;
     };
+    let before = state.desk.pointer();
     let effects = state.desk.input(input);
-    if let Input::Motion(_) = input
-        && screen.info.cursor != 0
-    {
-        let at = state.desk.pointer();
-        let _ = sys::display_cursor_move(at.x as u32, at.y as u32);
+    let at = state.desk.pointer();
+    if at != before {
+        if state.draws_cursor {
+            state.extra.push(paint::cursor_box(before));
+            state.extra.push(paint::cursor_box(at));
+        } else if screen.info.cursor != 0 {
+            let _ = sys::display_cursor_move(at.x as u32, at.y as u32);
+        }
     }
     deliver(state, &effects);
 }
@@ -340,51 +359,70 @@ fn report(state: &mut State) {
     }
 }
 
-/// Redraws the desk's damage into the frame, copies it to the screen and
-/// flushes it.
+/// Reads the model state and memory once a second; a change damages the top
+/// bar's stats.
+fn refresh_bar(state: &mut State) {
+    let now = sys::time_ns();
+    if state.bar_at != 0 && now.saturating_sub(state.bar_at) < BAR_EVERY_NS {
+        return;
+    }
+    state.bar_at = now.max(1);
+    let Ok(m) = sys::metrics() else {
+        return;
+    };
+    let listed = &m.processes[..(m.process_count as usize).min(m.processes.len())];
+    let mib = |frames: u64| frames * 4096 / (1024 * 1024);
+    let bar = Bar {
+        model: listed.iter().any(|p| p.name() == "llm"),
+        mem_used_mib: mib(m.total_frames - m.free_frames),
+        mem_total_mib: mib(m.total_frames),
+    };
+    if bar != state.bar {
+        state.bar = bar;
+        state.extra.push(paint::stats_area(state.width));
+    }
+}
+
+/// Repaints the damage into the frame, copies it to the screen and flushes it.
 fn draw(state: &mut State, screen: &Screen) {
-    let damage = state.desk.take_damage();
+    let mut damage = state.desk.take_damage();
+    damage.append(&mut state.extra);
     if damage.is_empty() {
         return;
     }
-    let (width, height) = (state.width, state.height);
-    let mut frame = Pixels {
-        data: &mut state.frame,
-        width,
-        height,
-        stride: width as usize,
+    let bounds = Rect::new(0, 0, state.width, state.height);
+    let damage: Vec<Rect> = damage
+        .iter()
+        .filter_map(|r| paint::reach(*r).intersect(&bounds))
+        .collect();
+    let mut frame = state.frame.canvas();
+    let (shown, pools) = (&state.shown, &state.pools);
+    let mut content = |id: WindowId, layer: &mut Canvas<'_>, at: Rect| {
+        let Some((_, pid, buffer)) = shown.iter().find(|(w, ..)| *w == id) else {
+            return false;
+        };
+        let Some(source) = source(pools, *pid, buffer) else {
+            return false;
+        };
+        let mut pixels = Pixels {
+            width: layer.width as i32,
+            height: layer.height as i32,
+            stride: layer.stride_px as usize,
+            data: layer.pixels,
+        };
+        pixels.fill(at, at, (0xFF << 24) | look::DARK.window);
+        pixels.draw(&source, (at.x, at.y), at);
+        true
     };
     for &clip in &damage {
-        frame.fill(clip, clip, color::DESK);
-        let desk = &state.desk;
-        for window in desk.windows().iter().filter(|w| !w.minimized) {
-            let focused = desk.focus() == Focus::Window(window.id);
-            draw_chrome(&mut frame, window.frame, focused, clip);
-            if desk.agent() == Some(window.id) {
-                outline(&mut frame, trusted::outline(window.frame), color::AI, clip);
-            }
-            let content = window.content();
-            if let Some((_, pid, buffer)) = state.shown.iter().find(|(w, ..)| *w == window.id)
-                && let Some(source) = source(&state.pools, *pid, buffer)
-            {
-                frame.draw(
-                    &source,
-                    (content.x, content.y),
-                    content.intersect(&clip).unwrap_or_default(),
-                );
-            } else {
-                frame.fill(content, clip, color::WINDOW);
-            }
-        }
-        frame.fill(desk.top_bar(), clip, color::WINDOW);
-        frame.fill(desk.panel(), clip, color::WINDOW);
-        if let Some(ask) = desk.ask() {
-            let card = trusted::card(width, height, &ask);
-            frame.fill(card, clip, color::RAISED);
-            frame.fill(Rect::new(card.x, card.y, card.w, 3), clip, color::ASK);
+        state
+            .painter
+            .paint(&mut frame, clip, &state.desk, &state.bar, &mut content);
+        if state.draws_cursor {
+            state.painter.cursor(&mut frame, clip, state.desk.pointer());
         }
     }
-    copy_to_screen(&state.frame, width, screen, &damage);
+    copy_to_screen(&state.frame.px, state.width, screen, &damage);
     let rects: Vec<FlushRect> = damage
         .iter()
         .map(|r| FlushRect {
@@ -397,30 +435,9 @@ fn draw(state: &mut State, screen: &Screen) {
     for chunk in rects.chunks(kabi::display::MAX_FLUSH) {
         let _ = sys::display_flush(chunk);
     }
-}
-
-fn draw_chrome(frame: &mut Pixels, f: Rect, focused: bool, clip: Rect) {
-    let line = if focused {
-        color::LINE_STRONG
-    } else {
-        color::LINE
-    };
-    frame.fill(f, clip, line);
-    frame.fill(chrome::title_bar(f), clip, color::WINDOW);
-    for (_, control) in chrome::controls(f) {
-        frame.fill(control, clip, color::CONTROL);
-    }
-}
-
-fn outline(frame: &mut Pixels, r: Rect, color: u32, clip: Rect) {
-    let t = trusted::OUTLINE;
-    for edge in [
-        Rect::new(r.x, r.y, r.w, t),
-        Rect::new(r.x, r.bottom() - t, r.w, t),
-        Rect::new(r.x, r.y, t, r.h),
-        Rect::new(r.right() - t, r.y, t, r.h),
-    ] {
-        frame.fill(edge, clip, color);
+    if !state.drawn {
+        state.drawn = true;
+        println!("desktop: drew the desk at {}x{}", state.width, state.height);
     }
 }
 
@@ -472,17 +489,12 @@ fn copy_to_screen(frame: &[u32], width: i32, screen: &Screen, damage: &[Rect]) {
     }
 }
 
-/// A plain arrow for the hardware cursor: `text` inside a `desk` edge.
+/// The hardware cursor's image: the arrow the frame draws on GOP.
 fn arrow() -> [u32; 64 * 64] {
     let mut image = [0u32; 64 * 64];
-    for y in 0..18usize {
-        for x in 0..=y.min(11) {
-            let edge = x == 0 || x == y.min(11) || y == 17;
-            image[y * 64 + x] = match edge {
-                true => color::DESK,
-                false => (0xFF << 24) | look::DARK.text,
-            };
-        }
+    for (i, pixel) in image.iter_mut().enumerate() {
+        let (x, y) = ((i % 64) as i32, (i / 64) as i32);
+        *pixel = paint::arrow(x, y).unwrap_or(0);
     }
     image
 }
