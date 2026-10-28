@@ -1,0 +1,58 @@
+//! Resource profiles' kernel half (P3 task 12): a process's page quota
+//! (PROC_QUOTA_SET), which the heap, `Shm` and MEM_COMMIT all charge against,
+//! and its CPU class on M10's `classes` policy (PROC_CLASS_SET). Both need
+//! SUPERVISE. A profile can never starve what the user needs to stay in
+//! control: the shell, the supervisor, the model service and `desktop`, which
+//! holds the trusted layer, are never made `background`, and their quota is
+//! never set below what they have.
+
+use crate::sched_control;
+use kabi::Error;
+
+/// The quota a profile may not go below for anyone: enough for a program's
+/// image, stack and a little heap.
+pub const MIN_PAGES: u64 = 64;
+
+/// The services no profile may slow or shrink.
+const FLOORED: &[&str] = &["shell", "supervisor", "llm", super::supervision::DESKTOP];
+
+fn floored(name: &str) -> bool {
+    FLOORED.contains(&name)
+}
+
+/// PROC_QUOTA_SET: process `pid`'s page quota becomes `pages`; the old one.
+/// Pages it holds past a lower quota stay: its next allocation fails instead.
+pub fn quota_set(pid: u64, pages: u64) -> Result<u64, Error> {
+    if pages < MIN_PAGES {
+        return Err(Error::Invalid);
+    }
+    super::with_table(|table| {
+        let process = table
+            .iter_mut()
+            .find(|p| p.live() && p.pid == pid && pid != 0)
+            .ok_or(Error::NotFound)?;
+        let old = process.limits.max_pages;
+        if floored(process.name.as_str()) && pages < old {
+            return Err(Error::Permission);
+        }
+        process.limits.max_pages = pages;
+        Ok(old)
+    })
+}
+
+/// PROC_CLASS_SET: process `pid` runs `normal` (0) or `background` (1) from
+/// now on, every thread on every CPU. Busy while a tuning trial runs: the trial
+/// owns the labels until it ends.
+pub fn class_set(pid: u64, class: u64) -> Result<u64, Error> {
+    let background = match class {
+        0 => false,
+        1 => true,
+        _ => return Err(Error::Invalid),
+    };
+    let (name, _) = super::name_of(pid).ok_or(Error::NotFound)?;
+    if background && floored(name.as_str()) {
+        return Err(Error::Permission);
+    }
+    sched_control::label(pid, background)?;
+    Ok(0)
+}

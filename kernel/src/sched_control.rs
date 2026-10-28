@@ -206,6 +206,36 @@ pub fn install(spec: PolicySpec, background: Vec<u64>) -> Result<(), Error> {
     Ok(())
 }
 
+/// A profile's class for process `pid` (PROC_CLASS_SET): `background` or not
+/// from now on, every thread on every CPU, kept for its threads to come.
+/// Busy while a trial runs, which owns the labels until it ends.
+pub fn label(pid: u64, background: bool) -> Result<(), Error> {
+    // Outside every lock: it reads the process table, and allocates nothing.
+    let by_tid = process::pids_by_tid();
+    with(|control| {
+        if trial::running(control) {
+            return Err(Error::Busy);
+        }
+        control.background.retain(|&p| p != pid);
+        if background {
+            control.background.push(pid);
+        }
+        for cpu in 0..smp::online() {
+            threads::with_core(cpu, |core, _| {
+                for tid in (0..by_tid.len()).filter(|&tid| by_tid[tid] == pid) {
+                    core.clear_class(tid);
+                    if background {
+                        core.set_class(tid, Class::Background);
+                    }
+                }
+            });
+        }
+        Ok(())
+    })?;
+    metrics::invalidate();
+    Ok(())
+}
+
 /// A thread of process `pid` starts: it gets the process's installed label on
 /// every CPU, or none while a trial runs.
 pub fn on_thread_start(tid: Tid, pid: u64) {
