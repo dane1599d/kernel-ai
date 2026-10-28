@@ -25,6 +25,7 @@ pub mod futex;
 pub mod job;
 mod loader;
 pub mod mem;
+pub mod profile;
 pub mod programs;
 mod space;
 pub mod supervision;
