@@ -457,6 +457,18 @@ pub fn mem_release(addr: u64) -> Result<u64, Error> {
     call(call::MEM_RELEASE, [addr, 0, 0, 0, 0, 0])
 }
 
+/// Process `pid`'s page quota becomes `pages`; the old one (PROC_QUOTA_SET,
+/// needs SUPERVISE).
+pub fn proc_quota_set(pid: u64, pages: u64) -> Result<u64, Error> {
+    call(call::PROC_QUOTA_SET, [pid, pages, 0, 0, 0, 0])
+}
+
+/// Process `pid` runs `normal` (0) or `background` (1) (PROC_CLASS_SET, needs
+/// SUPERVISE).
+pub fn proc_class_set(pid: u64, class: u64) -> Result<u64, Error> {
+    call(call::PROC_CLASS_SET, [pid, class, 0, 0, 0, 0])
+}
+
 /// New zeroed shared pages, and an `Shm` handle to them (ADR 0001 D4).
 pub fn shm_create(pages: u64) -> Result<Handle, Error> {
     call(call::SHM_CREATE, [pages, 0, 0, 0, 0, 0]).map(|h| Handle(h as u32))

@@ -90,6 +90,7 @@ mod pointer;
 mod port;
 mod power;
 mod process;
+mod profile_tests;
 mod qemu;
 mod sched_control;
 mod sched_tests;
@@ -346,6 +347,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::ProcStop => run_case(stop_tests::check),
         SelfTest::Shm => run_case(shm_tests::check),
         SelfTest::Mem => run_case(mem_tests::check),
+        SelfTest::Profile => run_case(profile_tests::check),
         SelfTest::ManyProcesses => run_case(many_tests::check),
         SelfTest::DisplayClaim => run_case(claim_tests::check),
         SelfTest::DeskWindows => run_case(desk_tests::check),

@@ -21,7 +21,7 @@
 //! | 130-139 | D, drivers (ADR 0007) | RING_ATTACH, RING_NOTIFY, NOTIFY_WAIT, INPUT_PUSH |
 //! | 140-149 | C, components | |
 //! | 150-159 | V, virtual machines (P6) | |
-//! | 160-169 | M, memory | MEM_RESERVE, MEM_COMMIT, MEM_RELEASE |
+//! | 160-169 | M, memory | MEM_RESERVE, MEM_COMMIT, MEM_RELEASE, PROC_QUOTA_SET, PROC_CLASS_SET |
 //! | 170-179 | U, updates (P4) | SLOT_INFO, SLOT_READ, SLOT_WRITE, SLOT_FLUSH, BOOTREC_GET, BOOTREC_SET, TRUST_ROOT, TRUST_TIME |
 //! | 180-189 | not given yet | a lane asks lane K for a block |
 //! | 190-191 | S-io (P2), second block | PART_PEER_ALIVE |
@@ -420,6 +420,17 @@ pub const MEM_COMMIT: u64 = 161;
 /// gives every committed page back to the system; how many. NotFound for any
 /// other address.
 pub const MEM_RELEASE: u64 = 162;
+/// `proc_quota_set(pid, pages) -> old`: process `pid`'s page quota, which its
+/// heap, `Shm` objects and MEM_COMMIT charge against, becomes `pages`; the old
+/// one. Pages held past a lower quota stay, and the next allocation fails.
+/// Invalid under 64 pages; Permission to lower the shell's, the supervisor's,
+/// the model service's or `desktop`'s. Needs SUPERVISE (P3 task 12).
+pub const PROC_QUOTA_SET: u64 = 163;
+/// `proc_class_set(pid, class) -> 0`: process `pid` runs `normal` (0) or
+/// `background` (1) on the `classes` policy from now on, every thread; SCHED_STATS
+/// shows it. Permission to make the shell, the supervisor, the model service or
+/// `desktop` background; Busy while a tuning trial runs. Needs SUPERVISE.
+pub const PROC_CLASS_SET: u64 = 164;
 
 // ---- U, 170-179 ----
 
