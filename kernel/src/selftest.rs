@@ -188,6 +188,8 @@ pub enum SelfTest {
     NetFallback,
     /// P5: `ip=static` at boot.
     NetStatic,
+    /// Spike P5-S2 (not for merge): download speed by receive buffer and poll gap.
+    NetThroughput,
 }
 
 const DEFAULT_STORM_SECONDS: u64 = 60;
@@ -308,6 +310,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=net-setup" => Some(SelfTest::NetSetup),
             "test=net-fallback" => Some(SelfTest::NetFallback),
             "test=net-static" => Some(SelfTest::NetStatic),
+            "test=net-throughput" => Some(SelfTest::NetThroughput),
             other => other.strip_prefix("test=storm").map(|rest| {
                 let seconds = rest.strip_prefix('-').and_then(|s| s.parse().ok());
                 SelfTest::Storm(seconds.unwrap_or(DEFAULT_STORM_SECONDS))

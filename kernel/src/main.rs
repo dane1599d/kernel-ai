@@ -82,6 +82,7 @@ mod model_tests;
 mod net;
 mod net_commands;
 mod net_tests;
+mod net_throughput_tests;
 mod nvme;
 mod part_tests;
 mod percpu;
@@ -391,6 +392,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::NetSetup => run_case(net_tests::setup_check),
         SelfTest::NetFallback => run_case(net_tests::fallback_check),
         SelfTest::NetStatic => run_case(net_tests::static_check),
+        SelfTest::NetThroughput => run_case(net_throughput_tests::check),
         SelfTest::Slot => {
             slots::on_boot(true);
             test_exit(ExitCode::Success)

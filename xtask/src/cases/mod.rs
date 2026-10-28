@@ -85,6 +85,10 @@ pub struct TestCase {
     /// `boot=n` to the command line, waits for `files: boot n:` and kills QEMU
     /// a seeded moment later; boot `cuts + 1` adds `last` and must pass.
     pub cuts: u32,
+    /// Spike P5-S2 (not for merge): the blob server on the command line (`blob=`)
+    /// and this much round trip added by a QEMU filter that holds the frames to
+    /// the guest (`rtt_ms=`).
+    pub blob_rtt_ms: Option<u32>,
 }
 
 /// What a case's update disk holds.
@@ -120,6 +124,7 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         slots: false,
         update: None,
         cuts: 0,
+        blob_rtt_ms: None,
     }
 }
 

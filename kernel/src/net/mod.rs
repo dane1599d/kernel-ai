@@ -240,6 +240,111 @@ pub fn exchange(
     result.map(|()| response)
 }
 
+/// Spike P5-S2 (not for merge): one download's bytes, and the time from its
+/// first byte to its last.
+pub struct Download {
+    pub bytes: u64,
+    pub ns: u64,
+}
+
+/// How a P5-S2 download runs: the socket's receive buffer (window scaling
+/// follows its size), how long the loop sleeps between polls (0: it yields and
+/// polls again at once), and when it stops.
+pub struct DownloadPlan {
+    pub rx_buffer: usize,
+    pub poll_gap_ms: u64,
+    pub max_bytes: u64,
+    pub run_ms: u64,
+}
+
+/// Longest wait for a P5-S2 download's connection and first byte.
+const DOWNLOAD_CONNECT_MS: u64 = 15_000;
+
+/// Spike P5-S2 (not for merge): sends `request` to `server` and counts what
+/// comes back without keeping it, as the polled driver allows: poll, drain the
+/// socket, poll again so the window update leaves at once, then sleep. Stops at
+/// the server's close, `max_bytes`, or `run_ms` after the first byte; aborts
+/// the connection after.
+pub fn download(
+    server: (Ipv4Addr, u16),
+    request: &[u8],
+    plan: &DownloadPlan,
+) -> Result<Download, &'static str> {
+    let connect_by = hpet::nanos() + DOWNLOAD_CONNECT_MS * 1_000_000;
+    wait_for_address(connect_by, &|| false)?;
+    let handle = {
+        let mut guard = NET.lock();
+        let net = guard.as_mut().ok_or("net: no network card")?;
+        let mut socket = tcp::Socket::new(
+            tcp::SocketBuffer::new(vec![0u8; plan.rx_buffer]),
+            tcp::SocketBuffer::new(vec![0u8; TX_BUFFER]),
+        );
+        socket.set_nagle_enabled(false);
+        socket
+            .connect(
+                net.iface.context(),
+                (IpAddress::Ipv4(server.0), server.1),
+                next_port(),
+            )
+            .map_err(|_| "net: cannot start the connection")?;
+        net.sockets.add(socket)
+    };
+    let (mut sent, mut bytes) = (0, 0u64);
+    let (mut first, mut last) = (None::<u64>, 0);
+    let result = loop {
+        let mut guard = NET.lock();
+        let net = guard.as_mut().ok_or("net: no network card")?;
+        net.poll();
+        let socket = net.sockets.get_mut::<tcp::Socket>(handle);
+        if socket.can_send() && sent < request.len() {
+            sent += socket.send_slice(&request[sent..]).unwrap_or(0);
+        }
+        let mut drained = false;
+        while let Ok(n) = socket.recv(|buf| (buf.len(), buf.len())) {
+            if n == 0 {
+                break;
+            }
+            let now = hpet::nanos();
+            first.get_or_insert(now);
+            last = now;
+            bytes += n as u64;
+            drained = true;
+        }
+        let open = socket.may_recv();
+        let state = socket.state();
+        if drained {
+            net.poll();
+        }
+        let now = hpet::nanos();
+        if bytes >= plan.max_bytes
+            || first.is_some_and(|f| now - f >= plan.run_ms * 1_000_000)
+            || (bytes > 0 && !open)
+        {
+            break Ok(());
+        }
+        if matches!(state, tcp::State::Closed | tcp::State::TimeWait) {
+            break Err("net: connection refused or timed out");
+        }
+        if first.is_none() && now > connect_by {
+            break Err("net: no data in time");
+        }
+        drop(guard);
+        match plan.poll_gap_ms {
+            0 => threads::yield_now(),
+            gap => threads::sleep_ms(gap),
+        }
+    };
+    if let Some(net) = NET.lock().as_mut() {
+        net.sockets.get_mut::<tcp::Socket>(handle).abort();
+        net.poll();
+        net.sockets.remove(handle);
+    }
+    result.map(|()| Download {
+        bytes,
+        ns: first.map_or(0, |f| last - f),
+    })
+}
+
 /// The error a system call reports for an [`exchange`] or a resolve that failed.
 pub fn error_code(error: &str) -> kabi::Error {
     match error {

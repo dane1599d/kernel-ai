@@ -34,6 +34,7 @@
 
 mod actbench;
 mod blklog;
+mod blob;
 mod boot_smoke;
 mod buildsvc;
 mod cases;
@@ -230,6 +231,7 @@ fn execute(options: &Options) -> Result<(), String> {
     // 10.0.2.2 through QEMU's user-mode network.
     let mock = mock_llm::start()?;
     let mock_dns = mock_dns::start()?;
+    let blob = blob::start()?;
     let llm = format!("10.0.2.2:{}", mock.port);
     let llm_args = llm_cmdline(Some(&llm), Some(mock_llm::MODEL));
     let mut failures = Vec::new();
@@ -262,6 +264,9 @@ fn execute(options: &Options) -> Result<(), String> {
             if case.cuts > 0 {
                 let last = if cutting { "" } else { " last" };
                 cmdline = format!("{cmdline} boot={boot}{last}");
+            }
+            if let Some(rtt) = case.blob_rtt_ms {
+                cmdline = format!("{cmdline} blob=10.0.2.2:{} rtt_ms={rtt}", blob.port);
             }
             if case.dns {
                 cmdline = format!("{cmdline} {}", mock_dns.cmdline());
@@ -347,6 +352,9 @@ fn execute(options: &Options) -> Result<(), String> {
             }
             if case.bridge {
                 qemu::net_behind_bridge(&mut args);
+            }
+            if let Some(rtt) = case.blob_rtt_ms.filter(|&rtt| rtt > 0) {
+                args.extend(qemu::rtt_args(rtt));
             }
             if case.screen.is_some() {
                 screen::clear(&target_dir);

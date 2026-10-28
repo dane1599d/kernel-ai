@@ -272,6 +272,20 @@ impl Qmp {
 /// The network card's `-device` value.
 const NET_DEVICE: &str = "virtio-net-pci,netdev=net0";
 
+/// Spike P5-S2 (not for merge): `rtt_ms` of round trip on the user network. The
+/// filter holds every frame QEMU sends the guest until its interval ends, so a
+/// window-limited TCP flow moves one window per interval, as over a link with
+/// that round trip; frames from the guest pass at once.
+pub fn rtt_args(rtt_ms: u32) -> [String; 2] {
+    [
+        "-object".into(),
+        format!(
+            "filter-buffer,id=kai-rtt,netdev=net0,queue=tx,interval={}",
+            u64::from(rtt_ms) * 1000
+        ),
+    ]
+}
+
 /// Moves the network card behind a PCIe root port of its own (bus 1).
 pub fn net_behind_bridge(args: &mut Vec<String>) {
     if let Some(at) = args.iter().position(|arg| arg == NET_DEVICE) {

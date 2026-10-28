@@ -1,6 +1,7 @@
 //! N, the network: DHCP, DNS, ping and the static fallback.
 
 use super::{TestCase, case};
+use std::time::Duration;
 
 pub(super) const CASES: &[TestCase] = &[
     // P5: DHCP from slirp, ping to its gateway, the resolver against the mock DNS
@@ -45,5 +46,28 @@ pub(super) const CASES: &[TestCase] = &[
             "net-static: 3 of 3 pings to the gateway answered",
         ],
         ..case("net-static", "test=net-static ip=static")
+    },
+    // Spike P5-S2 (not for merge): download speed at 0, 20 and 80 ms of added
+    // round trip, by receive buffer and poll gap, reported in the log.
+    TestCase {
+        server: false,
+        blob_rtt_ms: Some(0),
+        expect: &["net-throughput: done"],
+        min_timeout: Some(Duration::from_secs(240)),
+        ..case("net-throughput-0ms", "test=net-throughput")
+    },
+    TestCase {
+        server: false,
+        blob_rtt_ms: Some(20),
+        expect: &["net-throughput: done"],
+        min_timeout: Some(Duration::from_secs(240)),
+        ..case("net-throughput-20ms", "test=net-throughput")
+    },
+    TestCase {
+        server: false,
+        blob_rtt_ms: Some(80),
+        expect: &["net-throughput: done"],
+        min_timeout: Some(Duration::from_secs(240)),
+        ..case("net-throughput-80ms", "test=net-throughput")
     },
 ];

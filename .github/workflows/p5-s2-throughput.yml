@@ -1,0 +1,70 @@
+# Spike P5-S2 `net-throughput` (docs/plans/p5-networking.md §5), not for merge:
+# download speed from xtask's blob server at 0, 20 and 80 ms of added round
+# trip, with receive buffers of 64 KiB, 1 MiB and 4 MiB, under today's polled
+# virtio-net driver (2 ms between polls) and polling at once. KVM and TCG,
+# release kernel. Bar: at least 30 MB/s at 20 ms. No model, no internet.
+name: p5-s2-throughput
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - kernel/src/net/**
+      - kernel/src/net_throughput_tests.rs
+      - xtask/src/blob.rs
+      - .github/workflows/p5-s2-throughput.yml
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: p5-s2-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  boot:
+    name: P5-S2 net-throughput (${{ matrix.accel }}, release)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        accel: [kvm, tcg]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/qemu
+      - name: The runner's CPU
+        run: |
+          nproc
+          grep -m1 '^model name' /proc/cpuinfo
+      - name: Allow KVM for the runner user
+        if: matrix.accel == 'kvm'
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Install pinned toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Install the WebAssembly target for live components
+        run: rustup target add wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: p5-s2-${{ matrix.accel }}
+      - name: Boot net-throughput at 0, 20 and 80 ms and keep the figures
+        run: |
+          status=0
+          for rtt in 0 20 80; do
+            XTASK_CASE=net-throughput-${rtt}ms cargo xtask test --release --accel ${{ matrix.accel }} \
+              --timeout 300 2>&1 | tee -a boot.log || status=1
+            [ "${PIPESTATUS[0]}" = 0 ] || status=1
+          done
+          {
+            echo "${{ matrix.accel }}, release kernel:"
+            echo '```'
+            grep -E 'net-throughput:' boot.log | sed 's/^ *| //'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit $status
