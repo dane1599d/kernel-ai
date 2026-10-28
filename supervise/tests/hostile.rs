@@ -28,6 +28,7 @@ fn grants_only_what_it_says(bytes: &[u8]) {
         if service.dirs != [Folder::Pkg] {
             // A mutation that reached `updated`'s folders is the other test's.
             assert_eq!(service.program, "updated", "{text:?}");
+            assert_eq!(service.name, "updated", "{text:?}");
             continue;
         }
         let line = text
@@ -95,6 +96,7 @@ fn trust_and_updates_go_only_to_updated(bytes: &[u8]) {
         assert_eq!(service.dirs, word, "{line:?}");
         if service.dirs.iter().any(|d| *d != Folder::Pkg) {
             assert_eq!(service.program, "updated", "{line:?}");
+            assert_eq!(service.name, "updated", "{line:?}");
         }
     }
 }
@@ -112,9 +114,10 @@ fn only_updated_gets_the_trust_and_updates_folders() {
     // A line for another program asking for them is refused whole.
     assert_eq!(dirs("notes"), None);
     assert_eq!(dirs("pkg"), None);
-    // A service named otherwise may run the program `updated` and get them.
-    assert_eq!(dirs("shell"), Some(vec![Folder::Updates]));
-    assert_eq!(plan.errors.len(), 2, "{:?}", plan.errors);
+    // Running the program `updated` under another name is refused too: the
+    // name and the program must both be `updated`, as for the UPDATE capability.
+    assert_eq!(dirs("shell"), None);
+    assert_eq!(plan.errors.len(), 3, "{:?}", plan.errors);
     fuzz(
         UPDATED_PLAN.as_bytes(),
         0xd2,
