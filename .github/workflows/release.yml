@@ -47,6 +47,30 @@ defaults:
     shell: bash
 
 jobs:
+  # ADR 0008 §2: `release_seq` only rises. A tag's `release/seq` must be above the
+  # highest published one. Until `kernel-ai-updates` publishes TUF metadata (P4
+  # task 18), that is the previous `v*` tag's `release/seq`.
+  seq:
+    name: release/seq is above the last release's
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - run: |
+          seq=$(cat release/seq)
+          case "$seq" in ''|*[!0-9]*) echo "release/seq holds '$seq', not a number"; exit 1;; esac
+          previous=$(git tag --list 'v*' --sort=-creatordate | grep -vx "$VERSION" | head -1 || true)
+          last=0
+          if [ -n "$previous" ]; then
+            last=$(git show "$previous:release/seq" 2>/dev/null || echo 0)
+          fi
+          echo "release/seq $seq; the last release ($previous) had $last"
+          if [ "$seq" -le "$last" ]; then
+            echo "release/seq must rise above $last: bump it in the release PR"
+            exit 1
+          fi
+
   build:
     name: Build the release image (runner ${{ matrix.runner }})
     runs-on: ubuntu-24.04
@@ -213,7 +237,7 @@ jobs:
   publish:
     name: Attest and draft the release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [sign, vm]
+    needs: [seq, sign, vm]
     runs-on: ubuntu-24.04
     environment: release
     permissions:

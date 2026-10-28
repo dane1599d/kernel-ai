@@ -191,6 +191,7 @@ v0.1 is tagged when all of these hold, and not before:
 - The built-ins are signed packages; `install` reaches the image and a local mirror.
 - ADR 0009's D1-D8 are in place: the licence you chose, `NOTICES.txt` byte-identical in the image and the release, the source tarball rebuilding offline, the DCO job, both names cleared ("Kernel AI" and "Kai").
 - The release is a TUF target signed by your root, in `kernel-ai-updates`.
+- `release/seq` is bumped in the release PR, above the last release's: `release.yml`'s `seq` job refuses a tag otherwise (ADR 0008 §2, decided 2026-10-27).
 - Fluency at least 47/50 and actbench pass on the tag's model input.
 
 ### 3.6 What v0.1 does not wait for
