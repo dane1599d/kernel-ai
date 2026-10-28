@@ -73,8 +73,9 @@ impl Folder {
         }
     }
 
-    /// The one program a line granting it may run, if it has one: the trust
-    /// store and the updates folder are `updated`'s alone (ADR 0008 §10).
+    /// The one service, by name and by program, a line granting it must be, if
+    /// it has one: the trust store and the updates folder are `updated`'s alone
+    /// (ADR 0008 §10), as the kernel's UPDATE capability is.
     pub fn only_for(self) -> Option<&'static str> {
         match self {
             Folder::Pkg => None,
@@ -389,9 +390,11 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
     let dirs = dirs.unwrap_or_default();
     if let Some(only) = dirs
         .iter()
-        .find_map(|d| d.only_for().filter(|p| *p != program))
+        .find_map(|d| d.only_for().filter(|o| *o != name || *o != program))
     {
-        return Err(format!("{name}: that dir= is for program {only} only"));
+        return Err(format!(
+            "{name}: that dir= is for the service {only} running {only} only"
+        ));
     }
     // The kernel starts it with no supervisor to answer for it: no capabilities.
     if unsupervised && (limits.caps != 0 || !uses.is_empty() || !dirs.is_empty()) {
