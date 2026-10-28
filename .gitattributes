@@ -1,15 +1,2 @@
 # decisions.md is append-only: concurrent rows from two branches both stay.
 docs/decisions.md merge=union
-# The self-test enum, its parse and dispatch tables, the per-lane case tables
-# are lists every lane appends to: keep both sides' lines.
-# CI runs on every combined tree, so a bad union fails a build, not main.
-# Name each file: a glob also matched a file two branches both created, and
-# union pasted the two versions into one (#255 with #245, 2026-10-27).
-kernel/src/selftest.rs merge=union
-xtask/src/cases/mod.rs merge=union
-xtask/src/cases/kernel.rs merge=union
-xtask/src/cases/devices.rs merge=union
-xtask/src/cases/agent.rs merge=union
-xtask/src/cases/components.rs merge=union
-xtask/src/cases/network.rs merge=union
-xtask/src/cases/storage.rs merge=union
