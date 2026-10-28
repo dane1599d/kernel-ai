@@ -855,3 +855,53 @@ fn the_update_snapshot_is_taken_and_restored_only_on_system_updates() {
     let (_, marker) = state(&mut c, How::Existing);
     assert_eq!(c.read(&marker.unwrap()).unwrap(), b"before");
 }
+
+#[test]
+fn the_update_snapshot_is_refused_inside_any_action() {
+    let mut disk = MemDisk::new(BLOCKS);
+    let (mut c, _) = Client::start(&mut disk);
+    let updates = kabi::fs::SYSTEM_UPDATES;
+    let (reply, _) = c.call(ALICE, updates, DIR_RIGHTS, Request::UpdateSnapshot);
+    let Reply::Snapshot { id, .. } = reply else {
+        panic!("{reply:?}");
+    };
+    // Alice opens an action on the same folder and changes a file in it.
+    let begin = Request::Begin { action: 1 };
+    assert_eq!(c.call(ALICE, updates, DIR_RIGHTS, begin).0, Reply::Done);
+    let open = Request::Open {
+        path: "pending".into(),
+        rights: (Rights::READ | Rights::WRITE).bits(),
+        how: How::CreateFile,
+    };
+    let (_, file) = c.call(ALICE, updates, DIR_RIGHTS, open);
+    assert_eq!(c.write(&file.unwrap(), 0, b"half"), Reply::Done);
+    // Neither request may commit her action half done, nor may Bob's.
+    for caller in [ALICE, BOB] {
+        let want = if caller == ALICE {
+            Error::Invalid
+        } else {
+            Error::Busy
+        };
+        let reply = c.call(caller, updates, DIR_RIGHTS, Request::UpdateSnapshot);
+        assert_eq!(failed(reply), want);
+        let reply = c.call(caller, updates, DIR_RIGHTS, Request::UpdateRestore { id });
+        assert_eq!(failed(reply), want);
+    }
+    // Her action is still hers and still open: Abort drops the half write.
+    assert_eq!(
+        c.call(ALICE, updates, DIR_RIGHTS, Request::Abort).0,
+        Reply::Done
+    );
+    let open = Request::Open {
+        path: "pending".into(),
+        rights: Rights::READ.bits(),
+        how: How::Existing,
+    };
+    assert_eq!(
+        failed(c.call(ALICE, updates, DIR_RIGHTS, open)),
+        Error::NotFound
+    );
+    // Outside any action the snapshot goes through again.
+    let (reply, _) = c.call(ALICE, updates, DIR_RIGHTS, Request::UpdateSnapshot);
+    assert!(matches!(reply, Reply::Snapshot { .. }), "{reply:?}");
+}

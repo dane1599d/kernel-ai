@@ -602,14 +602,17 @@ impl<D: BlockDev> Server<D> {
     }
 
     /// The `update` snapshot's requests come only on `/system/updates`'s `Dir`
-    /// with WRITE, outside any other caller's action.
+    /// with WRITE, and never inside an action: each commits on its own, so in
+    /// the caller's own action it would commit that action half done (Invalid),
+    /// and another caller's is Busy.
     fn updates_only(&self, call: &Call) -> Result<(), Error> {
         if call.badge != SYSTEM_UPDATES || !call.rights.contains(Rights::WRITE) {
             return Err(Error::Permission);
         }
         match self.owner {
-            Some(owner) if owner != call.caller => Err(Error::Busy),
-            _ => Ok(()),
+            Some(owner) if owner == call.caller => Err(Error::Invalid),
+            Some(_) => Err(Error::Busy),
+            None => Ok(()),
         }
     }
 
