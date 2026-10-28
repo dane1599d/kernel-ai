@@ -1,0 +1,24 @@
+[0] window "Files"
+[1] group ""
+[2] group ""
+[3] button "Up" runs files_open
+[4] label "Home"
+[5] button "Refresh"
+[6] split ""
+[7] list "Files" = "4 items"
+[1000] label "docs/"
+[1001] label "old/"
+[1002] label "notes.txt"
+[1003] label "photo one.png"
+[8] group ""
+[9] label "Home"
+[10] scroll_view ""
+[11] group ""
+[2000] label "Nothing selected"
+[12] text_input "Move or rename to" = ""
+[13] group ""
+[14] button "Open" runs files_open
+[15] button "Move" runs fs_move
+[16] button "Trash" runs fs_trash
+[17] button "Restore" runs fs_restore
+[18] label "2 folders, 2 files"
