@@ -6,6 +6,7 @@ mod effects;
 mod fake;
 mod fallback;
 mod rehearsal;
+mod rows;
 mod suspend;
 
 use crate::Reason;

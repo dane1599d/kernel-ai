@@ -22,8 +22,10 @@ const CALLS: &[u64] = &[
 const CTL_MS: u64 = 60_000;
 /// How long an app's action may take.
 const APP_CALL_MS: u64 = 30_000;
-/// The requests APP_CALL forwards, by their first line.
+/// The requests APP_CALL forwards, by their first line, and the one it
+/// forwards whole: `kai-actions 1`, the app's rows.
 const APP_REQUESTS: &[&[u8]] = &[b"kai-call 1\n", b"kai-undo 1\n"];
+const APP_ROWS: &[&[u8]] = &[b"kai-actions 1", b"kai-actions 1\n"];
 
 /// One of [`CALLS`], or `None` for a number this area does not have.
 pub(super) fn handle(slot: usize, number: u64, a: &[u64; 6]) -> Option<Result<u64, Error>> {
@@ -102,7 +104,9 @@ fn app_call(slot: usize, a: &[u64; 6]) -> Result<u64, Error> {
     }
     let mut request = alloc::vec![0u8; len];
     copy_from_user(slot, a[2], &mut request)?;
-    if !APP_REQUESTS.iter().any(|head| request.starts_with(head)) {
+    if !APP_REQUESTS.iter().any(|head| request.starts_with(head))
+        && !APP_ROWS.contains(&request.as_slice())
+    {
         return Err(Error::Invalid);
     }
     ipc::server_of(name).ok_or(Error::NotFound)?;

@@ -501,7 +501,7 @@ pub const EVENT_READ: u64 = 183;
 /// such service; TimedOut when it does not answer.
 pub const APP_CTL: u64 = 184;
 /// `app_call(name_ptr, name_len, req_ptr, req_len, buf, cap) -> len`: the
-/// kernel sends `req`, a `kai-call 1` or `kai-undo 1` of at most
+/// kernel sends `req`, a `kai-call 1`, a `kai-undo 1` or `kai-actions 1`, of at most
 /// [`super::ipc::MAX_MESSAGE`] bytes, to the app service `name` (a process
 /// holding [`super::cap::COMPONENT`]), and writes its reply into `buf`. For
 /// the supervisor, which forwards the agent core's calls to apps' actions (P4,

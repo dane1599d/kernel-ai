@@ -5,7 +5,8 @@
 //! badged per-app routes replace it once routes can be made at run time.
 //!
 //! Only the shell may ask, only an app (a `component` service of the plan)
-//! may be called, and only `kai-call 1` and `kai-undo 1` go through, at most
+//! may be called, and only `kai-call 1`, `kai-undo 1` and `kai-actions 1` (the
+//! app's rows) go through, at most
 //! [`MAX_REQUEST`] bytes. An app that is not running is started, once, and
 //! the call tried again.
 
@@ -17,6 +18,8 @@ use kabi::cap;
 pub const APP_CALL: &str = "app-call ";
 /// The requests forwarded, by their first line.
 pub const HEADERS: &[&str] = &["kai-call 1\n", "kai-undo 1\n"];
+/// The request forwarded whole: the app's rows (`livecore::rows`).
+pub const ROWS: &str = "kai-actions 1";
 /// The longest request forwarded: one message, less the `app-call` line.
 pub const MAX_REQUEST: usize = kabi::MAX_MESSAGE - 64;
 /// Who may ask.
@@ -44,8 +47,9 @@ pub fn check(
     if caller != CALLER {
         return Err("err only the shell calls apps");
     }
-    if !HEADERS.iter().any(|header| request.starts_with(header)) {
-        return Err("err only kai-call 1 and kai-undo 1 go to an app");
+    let rows = request.strip_suffix('\n').unwrap_or(request) == ROWS;
+    if !rows && !HEADERS.iter().any(|header| request.starts_with(header)) {
+        return Err("err only kai-call 1, kai-undo 1 and kai-actions 1 go to an app");
     }
     if request.len() > MAX_REQUEST {
         return Err("err the call is too long");
@@ -86,6 +90,8 @@ mod tests {
         assert!(check("shell", "nobody", call, &specs).is_err());
         assert!(check("shell", "notes", "ctl suspend", &specs).is_err());
         assert!(check("shell", "notes", "kai-undo 1\nid 3\n", &specs).is_ok());
+        assert!(check("shell", "notes", "kai-actions 1", &specs).is_ok());
+        assert!(check("shell", "notes", "kai-actions 1 x", &specs).is_err());
         let long = format!("kai-call 1\n{}", "x".repeat(MAX_REQUEST));
         assert!(check("shell", "notes", &long, &specs).is_err());
     }

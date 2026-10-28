@@ -504,6 +504,10 @@ pub(crate) fn export_own<I: Instance>(version: &mut Version<I>) -> Result<Vec<u8
 impl<E: Env> Host<E> {
     /// Answers one request from `caller` (0 is the kernel).
     pub fn handle(&mut self, caller: u64, request: &[u8]) -> Result<Vec<u8>, Exit> {
+        // The rows come from the loaded artifact, with no call into the app.
+        if crate::rows::is_request(request) {
+            return Ok(text(self.rows()));
+        }
         let mode = core::mem::replace(&mut self.mode, Mode::Moving);
         let (mode, reply) = match request.strip_prefix(kabi::live::CONTROL_PREFIX.as_bytes()) {
             Some(_) if caller != 0 => {
