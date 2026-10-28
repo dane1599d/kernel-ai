@@ -138,6 +138,8 @@ pub struct Process {
     /// Its plan line grants a folder (`dir=`): its kind ceiling takes `Dir` and
     /// `File` handles, as FILES's does, without FILES's home folder.
     pub folders: bool,
+    /// The boot files its plan line lets it read with BOOT_READ (`bootfiles=`).
+    pub boot: Option<supervise::BootFiles>,
 }
 
 impl Process {
@@ -164,6 +166,7 @@ impl Process {
         heap_end: HEAP_BASE,
         crash: None,
         folders: false,
+        boot: None,
     };
 
     pub fn live(&self) -> bool {
@@ -383,17 +386,20 @@ pub fn spawn_with(
     moved: alloc::vec::Vec<captable::Entry>,
     job: bool,
 ) -> Result<u64, (kabi::Error, alloc::vec::Vec<captable::Entry>)> {
-    spawn_in(request, moved, job, &[])
+    spawn_in(request, moved, job, &supervise::Grants::default())
 }
 
-/// [`spawn_with`], with a startup `Dir` for each of `dirs`, the folders its plan
-/// line grants (`dir=`, ADR 0011 §12), after any FILES and SYSTEM_STATE give.
+/// [`spawn_with`], with what its plan line grants besides capability bits
+/// (ADR 0011 §12): a startup `Dir` for each of `plan.dirs` (`dir=`), after any
+/// FILES and SYSTEM_STATE give, and BOOT_READ of `plan.boot` (`bootfiles=`). Its
+/// routes are `request.uses`.
 pub fn spawn_in(
     request: &SpawnRequest,
     moved: alloc::vec::Vec<captable::Entry>,
     job: bool,
-    dirs: &[supervise::Folder],
+    plan: &supervise::Grants,
 ) -> Result<u64, (kabi::Error, alloc::vec::Vec<captable::Entry>)> {
+    let dirs = plan.dirs.as_slice();
     use kabi::Error;
     let checked = (|| {
         if programs::find(request.program).is_none() {
@@ -438,6 +444,7 @@ pub fn spawn_in(
             spawner: request.spawner,
             job,
             folders: !dirs.is_empty(),
+            boot: plan.boot,
             ..Process::FREE
         };
         process.args[..request.args.len()].copy_from_slice(request.args);

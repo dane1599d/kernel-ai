@@ -15,7 +15,7 @@
 //! | 73-79 | G-core (P3) | DISPLAY_CLAIM, DISPLAY_FLUSH, DISPLAY_CURSOR, DISPLAY_CURSOR_MOVE, INPUT_READ, TERM_READ, INPUT_TO_CONSOLE |
 //! | 80-89 | K, spare | MODEL_FILL 80 and 81 held (S-io, P2 task 10); ONCE_CHECK_FOR 82; P2 task 12's grants |
 //! | 90-99 | S-engine (P2) | |
-//! | 100-109 | P, packages (P2) | |
+//! | 100-109 | P, packages (P2) | BOOT_READ, COMP_ADD |
 //! | 110-119 | A-core | |
 //! | 120-129 | model lane | |
 //! | 130-139 | D, drivers (ADR 0007) | RING_ATTACH, RING_NOTIFY, NOTIFY_WAIT, INPUT_PUSH |
@@ -394,6 +394,19 @@ pub const INPUT_TO_CONSOLE: u64 = 79;
 // ---- S-engine, 90-99 ----
 
 // ---- P, 100-109 ----
+
+/// `boot_read(path_ptr, path_len, buf, cap) -> len`: copies the boot bundle's
+/// file `path` into `buf` when it fits; its length either way. Only for a process
+/// whose plan line's `bootfiles=` names the folder `path` lies beneath, run as that
+/// line's own program (P4 task 1: `pkg` reads the image's signed repository).
+pub const BOOT_READ: u64 = 100;
+/// `comp_add(&live::Add) -> 0`: adds a version of a component from an
+/// installed package, labelled `p-` and the first 12 hex digits of its SHA-256,
+/// which the kernel computes and checks against the full digest given. It only
+/// adds: a label already there is Busy, a full store NoMemory and an artifact
+/// over [`crate::live::MAX_ARTIFACT`] TooBig. Only for the holder of `/system/pkg`
+/// (its plan line's `dir=pkg`, run as that line's own program).
+pub const COMP_ADD: u64 = 101;
 
 // ---- A-core, 110-119 ----
 

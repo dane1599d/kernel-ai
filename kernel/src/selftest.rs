@@ -100,7 +100,8 @@ pub enum SelfTest {
         last: bool,
     },
     /// P2 task 13, `pkg-store`: kaipkg's store in `pkg` over `fs`, across three
-    /// boots on one data disk.
+    /// boots on one data disk; and P4 task 1, `pkg-image`: the image's signed
+    /// repository as generation 1.
     PkgStore(crate::pkg_tests::Step),
     /// L3: the model is held in memory and mapped into `llm`, and survives it.
     Model,
@@ -263,6 +264,9 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=pkg-store" => Some(SelfTest::PkgStore(crate::pkg_tests::Step::from_cmdline(
                 cmdline,
             ))),
+            "test=pkg-image" => Some(SelfTest::PkgStore(
+                crate::pkg_tests::Step::image_from_cmdline(cmdline),
+            )),
             "test=model" => Some(SelfTest::Model),
             "test=local-ask" => Some(SelfTest::LocalAsk),
             "test=local-script" => Some(SelfTest::LocalScript),
