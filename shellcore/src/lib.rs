@@ -33,6 +33,7 @@ mod engine;
 mod instructions;
 mod packages;
 mod pkg;
+mod profiles;
 mod rules;
 pub mod script;
 mod show;
@@ -224,6 +225,21 @@ pub trait Host {
     fn standing_write(&self, _text: &str) -> Result<(), String> {
         Ok(())
     }
+    /// Gives each process its class and quota (P3 task 12), through the
+    /// supervisor's PROC_CLASS_SET and PROC_QUOTA_SET; every one's settings from
+    /// before, so `undo` can put them back.
+    fn profile_apply(
+        &self,
+        _settings: &[kaiprofile::Setting],
+    ) -> Result<Vec<kaiprofile::Setting>, String> {
+        Err(String::from(
+            "profiles are not wired to the supervisor here yet",
+        ))
+    }
+    /// The app with focus on the desktop, which a profile's `focused` line names.
+    fn focused_app(&self) -> Option<String> {
+        None
+    }
     /// Where standing instructions' events come from and their actions run;
     /// `None` until the desktop and comphost are wired (P3 tasks 6 and 11).
     fn triggers(&self) -> Option<&dyn standing::Triggers> {
@@ -388,6 +404,10 @@ pub struct Shell {
     /// which `undo` can put back until the shell restarts.
     standing: standing::Standing,
     instructions_removed: Vec<standing::Rule>,
+    /// Resource profiles (P3 task 12), in RAM until `/system/settings`.
+    profiles: profiles::Profiles,
+    /// Each standing instruction's last profile switch, which its "until" puts back.
+    fired_profiles: Vec<(u64, u64)>,
     /// Installed software: the image's repository and its generations.
     pkgs: pkg::Store,
     /// Whether the `sudo` note was said already.
@@ -450,6 +470,8 @@ impl Shell {
             rules: rules::Rules::default(),
             standing: standing::Standing::default(),
             instructions_removed: Vec::new(),
+            profiles: profiles::Profiles::default(),
+            fired_profiles: Vec::new(),
             pkgs: pkg::Store::default(),
             said_no_sudo: false,
             shown: None,
@@ -594,6 +616,7 @@ impl Shell {
                 "tune undo" => return self.tune_undo(),
                 "new" => return self.forget(),
                 "rules" => return Reply::ok(self.list_rules()),
+                "profile" => return self.list_profiles(),
                 "show" | "why" => return self.show_last(),
                 _ => {}
             }
@@ -617,6 +640,11 @@ impl Shell {
             && !self.scope.contains("rules_add")
         {
             return self.add_instruction(input, text);
+        }
+        if let Some(name) = input.strip_prefix("profile ")
+            && !self.scope.contains("profile")
+        {
+            return self.profile_command(input, name);
         }
         if let Some(which) = input.strip_prefix("undo ")
             && !self.scope.contains("undo")
