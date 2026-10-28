@@ -21,6 +21,7 @@ extern crate alloc;
 
 use alloc::vec;
 use alloc::vec::Vec;
+use deskcore::askcard::Card;
 use deskcore::compose::{Pixels, Source};
 use deskcore::desk::{Button, Desk, Effect, Focus, Input, WindowId};
 use deskcore::geom::{Point, Rect};
@@ -83,6 +84,10 @@ struct State {
     panel: Panel,
     /// When the panel's "thinking 4s" was last redrawn.
     ticked_ms: u64,
+    /// The ask card up now, as the kernel posted it.
+    card: Option<Card>,
+    /// When the ask box was last read.
+    asked_ms: u64,
     /// Frames as last logged, to report moves and closes once.
     known: Vec<(WindowId, Rect)>,
     focus: Focus,
@@ -118,6 +123,8 @@ fn main() -> i32 {
             drawn: false,
             panel: Panel::new(),
             ticked_ms: 0,
+            card: None,
+            asked_ms: 0,
             known: Vec::new(),
             focus: Focus::Nothing,
         };
@@ -178,6 +185,7 @@ fn run(state: &mut State, screen: &Screen) -> Option<bool> {
         report(state);
         refresh_bar(state);
         tick_panel(state);
+        read_asks(state);
         draw(state, screen);
     }
 }
@@ -253,6 +261,10 @@ fn deliver(state: &mut State, effects: &[Effect]) {
     }
     let now = now_ms();
     for effect in effects {
+        if let Effect::Answer { id, yes } = *effect {
+            answer_ask(state, id, yes);
+            continue;
+        }
         let changed = match *effect {
             Effect::PanelKey { usage, down } => {
                 let before = state.panel.waiting();
@@ -273,6 +285,71 @@ fn deliver(state: &mut State, effects: &[Effect]) {
         if changed {
             state.extra.push(state.desk.panel());
         }
+    }
+}
+
+/// How often the ask box is read: often enough that the kernel sees the
+/// trusted layer alive, and a posted ask shows within a frame or two.
+const ASK_EVERY_MS: u64 = 100;
+
+/// Reads the ask box: a new ask shows as the card; one the kernel withdrew
+/// goes away.
+fn read_asks(state: &mut State) {
+    let now = now_ms();
+    if now.saturating_sub(state.asked_ms) < ASK_EVERY_MS {
+        return;
+    }
+    state.asked_ms = now;
+    let mut buf = [0u8; 2048];
+    let Ok(len) = sys::ask_read(&mut buf) else {
+        return;
+    };
+    let text = core::str::from_utf8(&buf[..len.min(buf.len())]).unwrap_or("");
+    let mut parts = text.splitn(3, '\n');
+    let posted = match (parts.next(), parts.next(), parts.next()) {
+        (Some(id), Some(call), Some(question)) => id.parse().ok().map(|id| (id, call, question)),
+        _ => None,
+    };
+    match (posted, state.card.as_ref()) {
+        (Some((id, _, _)), Some(card)) if card.id == id => {}
+        (Some((id, call, question)), _) => {
+            let card = Card {
+                id,
+                call: call.into(),
+                reason: question.into(),
+                shown_ms: now,
+            };
+            let lines = state.painter.card_lines(state.width, &card);
+            if let Some(old) = state.card.take() {
+                let effects = state.desk.hide_ask(old.id);
+                deliver(state, &effects);
+            }
+            println!("desktop: ask {id} shows on the card");
+            let effects = state.desk.show_ask(id, lines);
+            state.card = Some(card);
+            deliver(state, &effects);
+        }
+        (None, Some(card)) => {
+            // Withdrawn by the kernel: it asks on the console now.
+            let id = card.id;
+            state.card = None;
+            let effects = state.desk.hide_ask(id);
+            deliver(state, &effects);
+        }
+        (None, None) => {}
+    }
+}
+
+/// The card's answer goes to the kernel with the digest of the call it showed.
+fn answer_ask(state: &mut State, id: u64, yes: bool) {
+    let Some(card) = state.card.take().filter(|c| c.id == id) else {
+        return;
+    };
+    let digest = termcore::once::digest_call(id, &card.call);
+    let word = if yes { "yes" } else { "no" };
+    match sys::ask_answer(id, yes, &digest) {
+        Ok(_) => println!("desktop: ask {id} answered {word}"),
+        Err(error) => println!("desktop: the kernel refused ask {id}'s answer ({error:?})"),
     }
 }
 
@@ -452,6 +529,7 @@ fn draw(state: &mut State, screen: &Screen) {
         desk: &state.desk,
         bar: &state.bar,
         panel: &state.panel,
+        ask: state.card.as_ref(),
         now_ms: now_ms(),
     };
     let mut content = |id: WindowId, layer: &mut Canvas<'_>, at: Rect| {

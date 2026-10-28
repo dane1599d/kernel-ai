@@ -11,8 +11,15 @@
 //!   [`on_pointer`]. While the console holds it, they go to the console as
 //!   before, and the queue gets only [`Kind::Screen`] when the screen changes
 //!   hands.
+//! - INPUT_TO_CONSOLE leases the keys back to the console's terminal while
+//!   `desktop` shows, for the terminal window (P3 task 8): about a second at a
+//!   time, renewed by `desktop` while that window has focus. The lease ends on
+//!   any pointer button, on Alt+Tab, on Ctrl+Alt+F12, and whenever the screen
+//!   changes hands ([`end_lease`]). Alt and Alt+Tab always reach the queue, so
+//!   `desktop` can always switch away. Keys change hands only between scancode
+//!   sequences, and the console's ring is emptied each time they do.
 
-use crate::{hpet, threads};
+use crate::{hpet, i8042, threads};
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use kabi::input::{InputEvent, Kind, Set1, usage};
 use spin::Mutex;
@@ -48,11 +55,18 @@ static WAITER: AtomicUsize = AtomicUsize::new(NO_WAITER);
 static PENDING: [AtomicUsize; 2] = [const { AtomicUsize::new(NO_WAITER) }; 2];
 /// Set while `desktop` holds the screen: input is its, not the console's.
 static TAKING: AtomicBool = AtomicBool::new(false);
+/// While `desktop` holds the screen, keys go to the console until this HPET
+/// time (INPUT_TO_CONSOLE); 0 for no lease.
+static LEASE_UNTIL_NS: AtomicU64 = AtomicU64::new(0);
+/// How long one INPUT_TO_CONSOLE lends the keys.
+const LEASE_NS: u64 = 1_000_000_000;
 
 /// The interrupt side's decoders: one producer, the CPU that takes IRQ1.
 struct Decoders {
     keys: Set1,
     mouse: Decoder,
+    /// Keys go to the console under a lease: changed only between sequences.
+    leased: bool,
 }
 
 /// Buttons held, as [`BITS`], from whichever pointer reported last.
@@ -63,6 +77,7 @@ static KEYS: AtomicU64 = AtomicU64::new(0);
 static DECODERS: Mutex<Decoders> = Mutex::new(Decoders {
     keys: Set1::new(),
     mouse: Decoder::new(),
+    leased: false,
 });
 
 /// Whether input goes to `desktop` now.
@@ -73,6 +88,28 @@ pub fn taking() -> bool {
 /// `desktop` holds the screen (`true`) or the console does.
 pub fn set_taking(on: bool) {
     TAKING.store(on, Ordering::Release);
+}
+
+/// INPUT_TO_CONSOLE: lends the keys to the console for [`LEASE_NS`] from now,
+/// or (`on` false) ends the lease.
+pub fn lease(on: bool) {
+    let until = match on {
+        true => hpet::nanos().saturating_add(LEASE_NS).max(1),
+        false => 0,
+    };
+    LEASE_UNTIL_NS.store(until, Ordering::Release);
+}
+
+/// Ends the lease: the keys go back to `desktop`'s queue at the next sequence
+/// boundary. Safe in interrupt context.
+pub fn end_lease() {
+    LEASE_UNTIL_NS.store(0, Ordering::Release);
+}
+
+/// Whether a lease lends the keys to the console now.
+fn leased_now() -> bool {
+    let until = LEASE_UNTIL_NS.load(Ordering::Acquire);
+    until != 0 && hpet::nanos() < until
 }
 
 /// What the i8042 ring does with a byte: keep it for the console, or not
@@ -116,16 +153,49 @@ fn route(byte: u8, aux: bool) -> (Route, bool) {
         }
         return (Route::Taken, false);
     }
+    // Keys change hands only between sequences, never inside an E0 or E1 one,
+    // and the console's ring is emptied each time.
+    if decoders.keys.at_boundary() {
+        let leased = taking && leased_now();
+        if leased != decoders.leased {
+            decoders.leased = leased;
+            i8042::discard_queued();
+        }
+    }
+    let to_console = !taking || decoders.leased;
     let Some((code, down)) = decoders.keys.feed(byte) else {
         // A prefix byte: the console needs it only if it is getting keys.
-        return (if taking { Route::Taken } else { Route::Console }, false);
+        return (
+            if to_console {
+                Route::Console
+            } else {
+                Route::Taken
+            },
+            false,
+        );
     };
     if code == usage::F12 && decoders.keys.ctrl_alt() {
         // The press switches; its release is dropped too, so neither side sees F12.
+        end_lease();
         return (Route::Taken, down);
     }
+    let alt = matches!(code, usage::LEFT_ALT | usage::RIGHT_ALT);
+    let alt_tab = code == usage::TAB && decoders.keys.alt();
     drop(decoders);
     if !taking {
+        return (Route::Console, false);
+    }
+    if alt_tab {
+        // `desktop`'s own chord: never the console's, and it ends a lease.
+        end_lease();
+        push(Kind::Key, code, i32::from(down));
+        return (Route::Taken, false);
+    }
+    if to_console {
+        // Alt goes to both, so `desktop` sees an Alt+Tab whole.
+        if alt {
+            push(Kind::Key, code, i32::from(down));
+        }
         return (Route::Console, false);
     }
     push(Kind::Key, code, i32::from(down));
@@ -183,8 +253,11 @@ fn mask(buttons: Buttons) -> u8 {
 }
 
 /// Button events for what changed, with HID button usages (1 left, 2 right,
-/// 3 middle).
+/// 3 middle). A press ends a lease: a click may move the focus.
 fn buttons(before: u8, now: u8) {
+    if now & !before != 0 {
+        end_lease();
+    }
     for (_, bit, code) in BITS {
         if before & bit != now & bit {
             push(Kind::Button, code, i32::from(now & bit != 0));
@@ -268,6 +341,11 @@ pub fn read(out: &mut [InputEvent], timeout_ms: u64) -> usize {
         WAITER.store(threads::current(), Ordering::SeqCst);
         threads::sleep_until_unless(deadline, has_events);
     }
+}
+
+/// Whether a lease lends the keys to the console now.
+pub fn leased() -> bool {
+    leased_now()
 }
 
 /// Key events queued for `desktop` since boot.

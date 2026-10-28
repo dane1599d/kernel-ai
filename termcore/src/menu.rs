@@ -13,9 +13,11 @@
 //!
 //! The rows are printed once, as `?` rows; the last line is the terminal's input
 //! region, which shows the highlighted choice and moves with the arrows. Up,
-//! Down, Home and End move; Enter takes the highlighted choice; a digit takes
-//! that choice; `y` is Allow and `n` is Deny; Esc and Ctrl-C are Deny. Keys
-//! typed before the menu showed are dropped: it takes none until [`Menu::arm`].
+//! Down, Home and End move; a digit takes that choice; `y` is Allow and `n` is
+//! Deny; Esc and Ctrl-C are Deny. Enter takes nothing (ADR 0005 §7), so a line
+//! typed for something else cannot end on a yes. Keys count only through the
+//! [`Gate`] that [`Menu::arm`] sets: none for [`SETTLE_MS`] after it showed,
+//! none while a key held when it showed is still down, and no auto-repeat.
 //! The highlight starts on Allow for a call the user plainly asked for, and on
 //! Deny for one the AI added or that data steered. The "Always allow" rows come
 //! only when a standing rule may waive this ask; the shell decides that.
@@ -24,7 +26,7 @@
 //! for the question, the kind rule and the target rule (either may be empty),
 //! and the terminal answers `answer <id> allow|deny|always-kind|always-target`.
 
-use crate::keys::Key;
+use crate::keys::{Code, Key, Stroke};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -33,6 +35,36 @@ use alloc::vec::Vec;
 pub const MAX_TEXT: usize = 120;
 /// The input region's prompt while a menu waits.
 const PROMPT: &str = "allow? ";
+/// How long after it shows a menu takes no key: a key already on its way, or
+/// typed for something else, cannot answer it.
+pub const SETTLE_MS: u64 = 400;
+
+/// When keys start to count: [`SETTLE_MS`] after the menu showed, and once every
+/// key held then has come up.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Gate {
+    open_at_ms: u64,
+    held: Vec<Code>,
+}
+
+impl Gate {
+    pub fn new(shown_ms: u64, held: impl Iterator<Item = Code>) -> Self {
+        Self {
+            open_at_ms: shown_ms.saturating_add(SETTLE_MS),
+            held: held.collect(),
+        }
+    }
+
+    /// Whether `stroke` at `now_ms` counts: a fresh press, past the settle,
+    /// with every key held at show time released.
+    pub fn pass(&mut self, stroke: &Stroke, now_ms: u64) -> bool {
+        if !stroke.down {
+            self.held.retain(|code| *code != stroke.code);
+            return false;
+        }
+        !stroke.repeat && now_ms >= self.open_at_ms && self.held.is_empty()
+    }
+}
 
 /// What the user chose.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -105,7 +137,8 @@ pub struct Menu {
     call: String,
     choices: Vec<(Answer, String)>,
     selected: usize,
-    armed: bool,
+    /// Set by [`Menu::arm`]; no key counts before.
+    gate: Option<Gate>,
 }
 
 fn showable(text: &str) -> bool {
@@ -148,7 +181,7 @@ impl Menu {
                 Origin::Asked => 0,
                 Origin::Added => 1,
             },
-            armed: false,
+            gate: None,
         })
     }
 
@@ -246,24 +279,32 @@ impl Menu {
         self.choices[self.selected].0
     }
 
-    /// From now on keys count: call it once the rows and the input region are on
-    /// screen and the keys typed before are dropped.
-    pub fn arm(&mut self) {
-        self.armed = true;
+    /// Keys may count from now, through `gate`: call it once the rows and the
+    /// input region are on screen and the keys typed before are dropped.
+    pub fn arm(&mut self, gate: Gate) {
+        self.gate = Some(gate);
     }
 
-    /// What `key` does.
-    pub fn apply(&mut self, key: Key) -> Step {
-        if !self.armed {
-            return Step::Ignored;
+    /// What `stroke` at `now_ms` does.
+    pub fn press(&mut self, stroke: &Stroke, now_ms: u64) -> Step {
+        let passes = self
+            .gate
+            .as_mut()
+            .is_some_and(|gate| gate.pass(stroke, now_ms));
+        match (passes, stroke.key) {
+            (true, Some(key)) => self.apply(key),
+            _ => Step::Ignored,
         }
+    }
+
+    /// What `key` does once it passed the gate.
+    fn apply(&mut self, key: Key) -> Step {
         let last = self.choices.len() - 1;
         let to = match key {
             Key::Up | Key::Left => self.selected.saturating_sub(1),
             Key::Down | Key::Right | Key::Tab => (self.selected + 1).min(last),
             Key::Home => 0,
             Key::End => last,
-            Key::Enter => return Step::Chosen(self.selected()),
             Key::Char('y' | 'Y') => return Step::Chosen(Answer::Allow),
             Key::Char('n' | 'N') | Key::Esc | Key::Ctrl('c') => return Step::Chosen(Answer::Deny),
             Key::Char(digit @ '1'..='9') => {
@@ -331,6 +372,12 @@ pub fn read_answer(text: &str) -> Option<(Answer, Granted)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::keys::Decoder;
+
+    /// Presses `key` on a menu whose gate is open.
+    fn key(menu: &mut Menu, key: Key) -> Step {
+        menu.apply(key)
+    }
 
     fn stop(origin: Origin) -> Menu {
         let mut menu = Menu::new(
@@ -341,7 +388,7 @@ mod tests {
             origin,
         )
         .unwrap();
-        menu.arm();
+        menu.arm(Gate::new(0, core::iter::empty()));
         menu
     }
 
@@ -371,44 +418,115 @@ mod tests {
         assert_eq!(stop(Origin::Asked).selected(), Answer::Allow);
         let mut added = stop(Origin::Added);
         assert_eq!(added.selected(), Answer::Deny);
-        assert_eq!(added.apply(Key::Enter), Step::Chosen(Answer::Deny));
+        assert_eq!(key(&mut added, Key::Enter), Step::Ignored);
     }
 
     #[test]
-    fn arrows_move_and_enter_takes_the_highlight() {
+    fn arrows_move_and_enter_takes_nothing() {
         let mut menu = stop(Origin::Asked);
-        assert_eq!(menu.apply(Key::Up), Step::Ignored);
-        assert_eq!(menu.apply(Key::Down), Step::Moved);
-        assert_eq!(menu.apply(Key::Down), Step::Moved);
+        assert_eq!(key(&mut menu, Key::Up), Step::Ignored);
+        assert_eq!(key(&mut menu, Key::Down), Step::Moved);
+        assert_eq!(key(&mut menu, Key::Down), Step::Moved);
         assert_eq!(menu.input().1, "3 Always allow stopping processes");
-        assert_eq!(menu.apply(Key::End), Step::Moved);
-        assert_eq!(menu.apply(Key::Down), Step::Ignored);
-        assert_eq!(menu.apply(Key::Enter), Step::Chosen(Answer::AlwaysTarget));
-        assert_eq!(menu.apply(Key::Home), Step::Moved);
-        assert_eq!(menu.apply(Key::Enter), Step::Chosen(Answer::Allow));
+        assert_eq!(key(&mut menu, Key::End), Step::Moved);
+        assert_eq!(key(&mut menu, Key::Down), Step::Ignored);
+        assert_eq!(key(&mut menu, Key::Enter), Step::Ignored);
+        assert_eq!(key(&mut menu, Key::Home), Step::Moved);
+        assert_eq!(key(&mut menu, Key::Enter), Step::Ignored);
+        assert_eq!(menu.selected(), Answer::Allow);
     }
 
     #[test]
     fn y_n_digits_esc_and_ctrl_c_answer_at_once() {
         let mut menu = stop(Origin::Added);
-        assert_eq!(menu.apply(Key::Char('y')), Step::Chosen(Answer::Allow));
-        assert_eq!(menu.apply(Key::Char('N')), Step::Chosen(Answer::Deny));
-        assert_eq!(menu.apply(Key::Esc), Step::Chosen(Answer::Deny));
-        assert_eq!(menu.apply(Key::Ctrl('c')), Step::Chosen(Answer::Deny));
-        assert_eq!(menu.apply(Key::Char('3')), Step::Chosen(Answer::AlwaysKind));
-        assert_eq!(menu.apply(Key::Char('5')), Step::Ignored);
-        assert_eq!(menu.apply(Key::Char('x')), Step::Ignored);
-        assert_eq!(menu.apply(Key::Backspace), Step::Ignored);
+        assert_eq!(key(&mut menu, Key::Char('y')), Step::Chosen(Answer::Allow));
+        assert_eq!(key(&mut menu, Key::Char('N')), Step::Chosen(Answer::Deny));
+        assert_eq!(key(&mut menu, Key::Esc), Step::Chosen(Answer::Deny));
+        assert_eq!(key(&mut menu, Key::Ctrl('c')), Step::Chosen(Answer::Deny));
+        assert_eq!(
+            key(&mut menu, Key::Char('3')),
+            Step::Chosen(Answer::AlwaysKind)
+        );
+        assert_eq!(key(&mut menu, Key::Char('5')), Step::Ignored);
+        assert_eq!(key(&mut menu, Key::Char('x')), Step::Ignored);
+        assert_eq!(key(&mut menu, Key::Backspace), Step::Ignored);
     }
 
     #[test]
     fn keys_before_it_is_armed_are_dropped() {
+        let mut decoder = Decoder::new();
         let mut menu = Menu::new(1, "Reboot?", None, None, Origin::Asked).unwrap();
-        for key in [Key::Char('y'), Key::Enter, Key::Down] {
-            assert_eq!(menu.apply(key), Step::Ignored);
-        }
-        menu.arm();
-        assert_eq!(menu.apply(Key::Enter), Step::Chosen(Answer::Allow));
+        assert_eq!(
+            press(&mut menu, &mut decoder, &[0x15, 0x95], 10_000),
+            [Step::Ignored; 2]
+        );
+        menu.arm(Gate::new(0, decoder.held()));
+        assert_eq!(
+            press(&mut menu, &mut decoder, &[0x15], 10_000),
+            [Step::Chosen(Answer::Allow)]
+        );
+    }
+
+    /// The strokes `bytes` make, pressed on `menu` at `now_ms`.
+    fn press(menu: &mut Menu, decoder: &mut Decoder, bytes: &[u8], now_ms: u64) -> Vec<Step> {
+        bytes
+            .iter()
+            .filter_map(|&byte| decoder.stroke(byte))
+            .map(|stroke| menu.press(&stroke, now_ms))
+            .collect()
+    }
+
+    #[test]
+    fn no_key_counts_until_the_settle_has_passed() {
+        let mut decoder = Decoder::new();
+        let mut menu = Menu::new(1, "Reboot?", None, None, Origin::Asked).unwrap();
+        menu.arm(Gate::new(1_000, decoder.held()));
+        // y down and up, just inside the settle.
+        let early = press(
+            &mut menu,
+            &mut decoder,
+            &[0x15, 0x95],
+            1_000 + SETTLE_MS - 1,
+        );
+        assert_eq!(early, [Step::Ignored; 2]);
+        let late = press(&mut menu, &mut decoder, &[0x15], 1_000 + SETTLE_MS);
+        assert_eq!(late, [Step::Chosen(Answer::Allow)]);
+    }
+
+    #[test]
+    fn a_key_held_when_it_showed_must_come_up_first() {
+        let mut decoder = Decoder::new();
+        // y and Shift are down as the menu shows.
+        let mut menu = Menu::new(1, "Reboot?", None, None, Origin::Asked).unwrap();
+        press(&mut menu, &mut decoder, &[0x15, 0x2A], 0);
+        menu.arm(Gate::new(0, decoder.held()));
+        let late = SETTLE_MS * 10;
+        // y's auto-repeat, y up, then n: Shift is still down.
+        let steps = press(&mut menu, &mut decoder, &[0x15, 0x95, 0x31], late);
+        assert_eq!(steps, [Step::Ignored; 3]);
+        // Shift up, n up, n again: now it counts.
+        let steps = press(&mut menu, &mut decoder, &[0xAA, 0xB1, 0x31], late);
+        assert_eq!(
+            steps,
+            [Step::Ignored, Step::Ignored, Step::Chosen(Answer::Deny)]
+        );
+    }
+
+    #[test]
+    fn auto_repeat_never_answers() {
+        let mut decoder = Decoder::new();
+        // 3 goes down and repeats; only a fresh press after it came up counts.
+        let mut menu = stop(Origin::Asked);
+        assert_eq!(
+            press(&mut menu, &mut decoder, &[0x04, 0x04, 0x04], SETTLE_MS)[1..],
+            [Step::Ignored; 2]
+        );
+        let mut menu = stop(Origin::Asked);
+        let steps = press(&mut menu, &mut decoder, &[0x04, 0x84, 0x04], SETTLE_MS);
+        assert_eq!(
+            steps[1..],
+            [Step::Ignored, Step::Chosen(Answer::AlwaysKind)]
+        );
     }
 
     #[test]
@@ -416,13 +534,13 @@ mod tests {
         let menu = Menu::new(1, "Reboot? It has no undo.", None, None, Origin::Asked).unwrap();
         assert_eq!(menu.rows().len(), 3);
         let mut menu = Menu::new(1, "q", None, Some("stopping \"x\""), Origin::Asked).unwrap();
-        menu.arm();
+        menu.arm(Gate::new(0, core::iter::empty()));
         assert_eq!(menu.rows()[3], "?   3 Always allow stopping \"x\"");
         assert_eq!(
-            menu.apply(Key::Char('3')),
+            key(&mut menu, Key::Char('3')),
             Step::Chosen(Answer::AlwaysTarget)
         );
-        assert_eq!(menu.apply(Key::Char('4')), Step::Ignored);
+        assert_eq!(key(&mut menu, Key::Char('4')), Step::Ignored);
     }
 
     #[test]

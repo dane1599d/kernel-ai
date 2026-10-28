@@ -40,6 +40,8 @@ pub const STOPPER: &str = "shell";
 /// The service, running the program of the same name, that may hold the screen
 /// and read the input queue (ADR 0005 §2).
 pub const DESKTOP: &str = "desktop";
+/// The terminal window, the only reader of the console's rows (P3 task 8).
+pub const TERM: &str = "term";
 /// The service, running the program of the same name, that may hold the slots
 /// and the boot record (ADR 0008 §10).
 pub const UPDATED: &str = "updated";
@@ -328,6 +330,14 @@ pub fn spawn_service(slot: usize, request_ptr: u64) -> Result<u64, Error> {
     if request.limits.caps & (cap::DISPLAY | cap::INPUT) != 0
         && (name != DESKTOP || program != DESKTOP)
     {
+        return Err(Error::Permission);
+    }
+    // Answering asks is the desktop's alone (ADR 0005 §7).
+    if request.limits.caps & cap::ASK != 0 && (name != DESKTOP || program != DESKTOP) {
+        return Err(Error::Permission);
+    }
+    // The console's rows are the terminal window's alone.
+    if request.limits.caps & cap::TERM != 0 && (name != TERM || program != TERM) {
         return Err(Error::Permission);
     }
     // The slots and the boot record are `updated`'s alone (ADR 0008 §10).

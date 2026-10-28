@@ -1678,6 +1678,7 @@ dependencies = [
  "supervise",
  "surfabi",
  "talc",
+ "termcore",
  "uikit",
  "uipaint",
  "wasmhost",

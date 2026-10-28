@@ -115,6 +115,7 @@ pub enum SelfTest {
     DeskWindows,
     /// `desktop` killed and restarted; clients reconnect (P3 task 6).
     DeskRestart,
+    DeskAsk,
     /// An app suspended and resumed through its host (P3 task 11).
     AppSuspend,
     /// The OS boots to the desktop, whose screen matches its golden (P3 task 6).
@@ -123,6 +124,8 @@ pub enum SelfTest {
     DeskPanel,
     /// An app's kai:ui window on the desktop, closed from its control (P3 task 9).
     UiWindow,
+    /// Asks answered on `desktop`'s card, and on the console when it dies (P3 task 7).
+    DeskCard,
     /// `scriptrun` through a Job, and spike S01-1's M3 and M5 (P1 task 14).
     Scriptrun,
     /// L2: processes keep their vector state across switches and CPUs, and start clean.
@@ -255,10 +258,12 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=display-claim" => Some(SelfTest::DisplayClaim),
             "test=desk-windows" => Some(SelfTest::DeskWindows),
             "test=desk-restart" => Some(SelfTest::DeskRestart),
+            "test=desk-ask" => Some(SelfTest::DeskAsk),
             "test=app-suspend" => Some(SelfTest::AppSuspend),
             "test=desk-boot" => Some(SelfTest::DeskBoot),
             "test=desk-panel" => Some(SelfTest::DeskPanel),
             "test=ui-window" => Some(SelfTest::UiWindow),
+            "test=desk-card" => Some(SelfTest::DeskCard),
             "test=scriptrun" => Some(SelfTest::Scriptrun),
             "test=fpu" => Some(SelfTest::Fpu),
             "test=probe" => Some(SelfTest::Probe),
@@ -326,11 +331,13 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DisplayClaim
             | SelfTest::DeskWindows
             | SelfTest::DeskRestart
+            | SelfTest::DeskAsk
             | SelfTest::FilesActions
             | SelfTest::FilesChurn { .. }
             | SelfTest::DeskBoot
             | SelfTest::DeskPanel
             | SelfTest::UiWindow
+            | SelfTest::DeskCard
             | SelfTest::TuneRevert
             | SelfTest::TuneStall
             | SelfTest::Tune
@@ -444,7 +451,10 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
         plan.push('\n');
         plan.push_str(crate::claim_tests::PLAN);
     }
-    if matches!(test, SelfTest::DeskWindows | SelfTest::DeskRestart) {
+    if matches!(
+        test,
+        SelfTest::DeskWindows | SelfTest::DeskRestart | SelfTest::DeskAsk | SelfTest::DeskCard
+    ) {
         plan.push('\n');
         plan.push_str(crate::desk_tests::PLAN);
     }

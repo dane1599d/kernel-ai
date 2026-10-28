@@ -59,12 +59,22 @@ pub const DISPLAY: u64 = 1 << 15;
 /// Read the kernel's input queue ([`super::call::INPUT_READ`]): an `Input`
 /// handle. Granted as [`DISPLAY`] is.
 pub const INPUT: u64 = 1 << 16;
+/// Read the kernel console's rows ([`super::call::TERM_READ`]): a `Term`
+/// handle. The kernel grants it only to the service named `term` running the
+/// program `term` (P3 task 8).
+pub const TERM: u64 = 1 << 17;
 /// Write the inactive slot and the boot record ([`super::call::SLOT_WRITE`],
 /// [`super::call::BOOTREC_SET`]): an `Update` handle with READ and WRITE. The
 /// kernel grants it only to the service named `updated` running the program
 /// `updated` (ADR 0008 §10). Numbered at merge, after the terminal window's
 /// `TERM` (1 << 17, #252).
 pub const UPDATE: u64 = 1 << 18;
+/// Answer asks on `desktop`'s card ([`super::call::ASK_READ`],
+/// [`super::call::ASK_ANSWER`]): an `Ask` handle. The kernel grants it only to
+/// the service named `desktop` running the program `desktop` (ADR 0005 §7);
+/// nothing else can answer an ask, and only the kernel mints the `ONCE`.
+/// Numbered at merge, after `UPDATE` (1 << 18, #268).
+pub const ASK: u64 = 1 << 19;
 /// Every capability a supervisor may grant.
 pub const GRANTABLE: u64 = SERVE
     | NET
@@ -82,4 +92,6 @@ pub const GRANTABLE: u64 = SERVE
     | SYSTEM_STATE
     | DISPLAY
     | INPUT
-    | UPDATE;
+    | TERM
+    | UPDATE
+    | ASK;

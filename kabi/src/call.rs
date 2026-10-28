@@ -12,7 +12,7 @@
 //! | 64-65 | model lane (S10-3) | MODEL_KV_LOAD, MODEL_KV_SAVE (interim) |
 //! | 66-70 | S-io (P2) | PART_INFO, PART_READ, PART_WRITE, PART_FLUSH; ENDPOINT_MINT |
 //! | 71-72 | K | PROC_STOP_ONCE, RULE_CHECK |
-//! | 73-79 | G-core (P3) | DISPLAY_CLAIM, DISPLAY_FLUSH, DISPLAY_CURSOR, DISPLAY_CURSOR_MOVE, INPUT_READ; 2 spare |
+//! | 73-79 | G-core (P3) | DISPLAY_CLAIM, DISPLAY_FLUSH, DISPLAY_CURSOR, DISPLAY_CURSOR_MOVE, INPUT_READ, TERM_READ, INPUT_TO_CONSOLE |
 //! | 80-89 | K, spare | MODEL_FILL 80 and 81 held (S-io, P2 task 10); ONCE_CHECK_FOR 82; P2 task 12's grants |
 //! | 90-99 | S-engine (P2) | |
 //! | 100-109 | P, packages (P2) | |
@@ -23,7 +23,8 @@
 //! | 150-159 | V, virtual machines (P6) | |
 //! | 160-169 | M, memory | |
 //! | 170-179 | U, updates (P4) | SLOT_INFO, SLOT_READ, SLOT_WRITE, SLOT_FLUSH, BOOTREC_GET, BOOTREC_SET, TRUST_ROOT, TRUST_TIME |
-//! | 180-191 | not given yet | a lane asks lane K for a block |
+//! | 180-189 | G-core (P3), second block | ASK_READ, ASK_ANSWER |
+//! | 190-191 | not given yet | a lane asks lane K for a block |
 
 /// `exit(code: i32) -> !`
 pub const EXIT: u64 = 0;
@@ -371,6 +372,21 @@ pub const DISPLAY_CURSOR_MOVE: u64 = 76;
 /// holds the screen the queue gets nothing but a
 /// [`crate::input::Kind::Screen`] event when it changes hands.
 pub const INPUT_READ: u64 = 77;
+/// `term_read(buf, cap, since) -> len`: the kernel console's rows changed after
+/// sequence `since` (0 for all), with their kinds, the cursor and the rows
+/// scrolled, in `termcore::mirror`'s format, for the terminal window (P3 task
+/// 8). Read-only. Needs a `Term` handle, which the kernel gives only to the
+/// service `term` running the program `term`. TooBig, with nothing written,
+/// when `cap` is under what the rows take; `termcore::mirror::MAX_BYTES` always
+/// fits.
+pub const TERM_READ: u64 = 78;
+/// `input_to_console(on) -> 0`: with `on` 1, keys go to the kernel console's
+/// terminal instead of the input queue for about a second (a lease, renewed by
+/// calling again), while the caller keeps showing on the screen; 0 ends it. Alt
+/// and Alt+Tab still reach the queue. The kernel ends the lease itself on any
+/// pointer button, Alt+Tab, Ctrl+Alt+F12, a claim, the holder's exit, and an
+/// ask, which it answers on the console. Needs an `Input` handle and the claim.
+pub const INPUT_TO_CONSOLE: u64 = 79;
 
 // ---- S-engine, 90-99 ----
 
@@ -426,6 +442,23 @@ pub const TRUST_ROOT: u64 = 176;
 /// the time since boot, the clock TUF's expiry checks use (ADR 0008 §7).
 /// NotFound when the firmware gave no date. Needs READ.
 pub const TRUST_TIME: u64 = 177;
+
+// ---- G-core, second block, 180-189 ----
+
+/// `ask_read(handle, buf, cap) -> len`: the ask waiting for `desktop`'s card, as
+/// its log entry id, its call in canonical text (`termcore::once::call_text`)
+/// and its question, one per line; 0 when none waits. Reading marks the trusted
+/// layer alive: the kernel posts asks to the card only while `desktop` reads,
+/// and asks on the console otherwise (ADR 0005 §7). TooBig, with nothing
+/// written, when `cap` is too small. Needs an `Ask` handle, which the kernel
+/// gives only to the service `desktop` running the program `desktop`.
+pub const ASK_READ: u64 = 180;
+/// `ask_answer(handle, id, yes, digest_ptr) -> 0`: answers ask `id` from the
+/// card, Run (`yes` 1) or Don't (0). `digest_ptr` points at the 32-byte
+/// `termcore::once::digest_call` of the call the card showed; NotFound, and
+/// no answer, unless that is the posted ask's. The kernel then mints the
+/// `ONCE` as for the console's menu. Needs an `Ask` handle.
+pub const ASK_ANSWER: u64 = 181;
 
 /// The end of the reserved blocks (see the table above): the highest number a
 /// call may have. A call that is not there yet answers NotFound.

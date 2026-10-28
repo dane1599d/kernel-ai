@@ -9,6 +9,11 @@
 //!   `desktop` gets a `Screen` event and claims it again.
 //! - The switch runs on its own kernel thread, since a revoke takes locks and
 //!   shoots down TLBs, which the keyboard interrupt that sees the keys cannot.
+//! - An ask is answered only on the console (ADR 0005 §7): while the terminal's
+//!   Allow / Deny menu, a script's confirmation or `:apply`'s card waits, the
+//!   console takes the screen as Ctrl+Alt+F12 does ([`take_for_answer`]) and
+//!   gives it back after ([`give_back`]), so no key typed in a window answers.
+//! - Every change of hands ends INPUT_TO_CONSOLE's lease (`input::end_lease`).
 
 use super::Surface;
 use crate::handle::grant::{self as grants, Kernel};
@@ -29,6 +34,9 @@ struct State {
     showing: Option<GrantRef>,
     /// Ctrl+Alt+F12 took the screen from the holder; the next press gives it back.
     taken_back: bool,
+    /// The console took it for an answer ([`take_for_answer`]): only
+    /// [`give_back`] returns it.
+    answering: bool,
     /// The hardware cursor's hot spot.
     cursor: (u32, u32),
 }
@@ -37,6 +45,7 @@ static STATE: Mutex<State> = Mutex::new(State {
     holder: None,
     showing: None,
     taken_back: false,
+    answering: false,
     cursor: (0, 0),
 });
 static SWITCH: AtomicBool = AtomicBool::new(false);
@@ -84,6 +93,7 @@ fn switcher(_: usize) {
 
 /// One Ctrl+Alt+F12.
 pub fn switch() {
+    input::end_lease();
     let mut state = STATE.lock();
     if let Some(grant) = state.showing.take() {
         state.taken_back = true;
@@ -91,7 +101,7 @@ pub fn switch() {
         to_console(grant);
         input::screen(false);
         log!("display: Ctrl+Alt+F12 gave the screen to the console");
-    } else if state.taken_back {
+    } else if state.taken_back && !state.answering {
         state.taken_back = false;
         drop(state);
         input::screen(true);
@@ -99,8 +109,43 @@ pub fn switch() {
     }
 }
 
+/// An answer waits on the console: if the holder shows, the console takes the
+/// screen until [`give_back`]. Whether it took it or the console showed already
+/// (Ctrl+Alt+F12), the screen stays on the console until then: neither
+/// Ctrl+Alt+F12 nor a claim returns it, so no window gets keys meanwhile.
+/// Returns whether it took it.
+pub fn take_for_answer() -> bool {
+    let mut state = STATE.lock();
+    state.answering = true;
+    let Some(grant) = state.showing.take() else {
+        return false;
+    };
+    state.taken_back = true;
+    drop(state);
+    to_console(grant);
+    input::screen(false);
+    log!("display: the console took the screen for an answer");
+    true
+}
+
+/// The answer [`take_for_answer`] waited for came. The holder gets the screen
+/// back, as on a second Ctrl+Alt+F12, if `took` says the answer took it; a
+/// screen the console had before stays the console's.
+pub fn give_back(took: bool) {
+    let mut state = STATE.lock();
+    state.answering = false;
+    if !took || !state.taken_back || state.holder.is_none() {
+        return;
+    }
+    state.taken_back = false;
+    drop(state);
+    input::screen(true);
+    log!("display: the answer came; the screen went back to its holder");
+}
+
 /// Revokes the holder's `Shm` and repaints the console.
 fn to_console(grant: GrantRef) {
+    input::end_lease();
     input::set_taking(false);
     input::clear();
     let _ = grants::revoke(grant);
@@ -115,6 +160,8 @@ pub fn on_exit(pid: u64) {
     }
     state.holder = None;
     state.taken_back = false;
+    input::end_lease();
+    crate::ask_box::on_desktop_exit();
     if let Some(grant) = state.showing.take() {
         drop(state);
         to_console(grant);
@@ -129,7 +176,9 @@ pub fn claim(slot: usize, info: &mut DisplayInfo) -> Result<u64, Error> {
     let pid = process::identity(slot).pid;
     let mut state = STATE.lock();
     let holder_alive = state.holder.is_some_and(|h| process::name_of(h).is_some());
+    // An answer waiting on the console keeps it there, for a new holder too.
     if state.showing.is_some()
+        || state.answering
         || (state.taken_back && state.holder == Some(pid))
         || (holder_alive && state.holder != Some(pid))
     {
@@ -166,6 +215,10 @@ pub fn claim(slot: usize, info: &mut DisplayInfo) -> Result<u64, Error> {
     state.taken_back = false;
     state.cursor = (surface.width as u32 / 2, surface.height as u32 / 2);
     drop(state);
+    console::suspend();
+    input::end_lease();
+    input::clear();
+    input::set_taking(true);
     *info = DisplayInfo {
         width: surface.width as u32,
         height: surface.height as u32,
@@ -197,6 +250,11 @@ fn frames(surface: &Surface) -> Result<(u64, u64), Error> {
 }
 
 /// Whether the process in `slot` shows on the screen now.
+/// Whether a holder shows on the screen now.
+pub fn showing() -> bool {
+    STATE.lock().showing.is_some()
+}
+
 pub fn shows(slot: usize) -> bool {
     let pid = process::identity(slot).pid;
     let state = STATE.lock();

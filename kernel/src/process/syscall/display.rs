@@ -1,14 +1,16 @@
 //! The screen and input (lane G-core, ADR 0005 §2): DISPLAY_CLAIM,
-//! DISPLAY_FLUSH, DISPLAY_CURSOR, DISPLAY_CURSOR_MOVE and INPUT_READ. The first
-//! needs a `Display` handle, INPUT_READ an `Input` handle; the kernel gives both
-//! only to the service `desktop` running the program `desktop`. Flushing and the
-//! cursor need the claim itself: a process that lost the screen to the console
-//! changes nothing on it.
+//! DISPLAY_FLUSH, DISPLAY_CURSOR, DISPLAY_CURSOR_MOVE and INPUT_READ, and for the
+//! terminal window (P3 task 8) TERM_READ and INPUT_TO_CONSOLE. DISPLAY_CLAIM
+//! needs a `Display` handle, INPUT_READ and INPUT_TO_CONSOLE an `Input` handle;
+//! the kernel gives both only to the service `desktop` running the program
+//! `desktop`. TERM_READ needs a `Term` handle, only `term`'s. Flushing, the
+//! cursor and INPUT_TO_CONSOLE need the claim itself: a process that lost the
+//! screen to the console changes nothing on it.
 
 use super::need;
 use crate::display::{self, claim};
-use crate::input;
 use crate::process::uaccess::{copy_from_user, copy_to_user};
+use crate::{console, input};
 use alloc::vec::Vec;
 use gfxcore::Rect;
 use kabi::display::{CURSOR, DisplayInfo, FlushRect, MAX_FLUSH};
@@ -21,6 +23,10 @@ const CALLS: &[u64] = &[
     call::DISPLAY_CURSOR,
     call::DISPLAY_CURSOR_MOVE,
     call::INPUT_READ,
+    call::TERM_READ,
+    call::INPUT_TO_CONSOLE,
+    call::ASK_READ,
+    call::ASK_ANSWER,
 ];
 
 /// The most events one INPUT_READ returns.
@@ -35,6 +41,10 @@ pub(super) fn handle(slot: usize, number: u64, a: &[u64; 6]) -> Option<Result<u6
         call::DISPLAY_FLUSH => flush(slot, a[0], a[1]),
         call::DISPLAY_CURSOR => cursor(slot, a[0], a[1], a[2]),
         call::DISPLAY_CURSOR_MOVE => cursor_move(slot, a[0], a[1]),
+        call::TERM_READ => term_read(slot, a[0], a[1], a[2]),
+        call::INPUT_TO_CONSOLE => to_console(slot, a[0]),
+        call::ASK_READ => ask_read(slot, a[1], a[2]),
+        call::ASK_ANSWER => ask_answer(slot, a[1], a[2], a[3]),
         _ => read(slot, a[0], a[1], a[2]),
     })
 }
@@ -146,4 +156,64 @@ fn read(slot: usize, buf_ptr: u64, cap_events: u64, timeout_ms: u64) -> Result<u
     }
     copy_to_user(slot, buf_ptr, &bytes[..got * InputEvent::SIZE])?;
     Ok(got as u64)
+}
+
+/// TERM_READ: the console's rows changed after `since`, snapshotted under its
+/// lock into a buffer reserved before, and copied out after.
+fn term_read(slot: usize, buf_ptr: u64, cap_bytes: u64, since: u64) -> Result<u64, Error> {
+    need(slot, cap::TERM)?;
+    let room = usize::try_from(cap_bytes)
+        .unwrap_or(usize::MAX)
+        .min(termcore::mirror::MAX_BYTES);
+    let mut out = Vec::new();
+    out.try_reserve_exact(room).map_err(|_| Error::NoMemory)?;
+    match console::mirror(since, &mut out) {
+        None => return Err(Error::NotFound),
+        Some(Err(termcore::mirror::Full)) => return Err(Error::TooBig),
+        Some(Ok(())) => {}
+    }
+    copy_to_user(slot, buf_ptr, &out)?;
+    Ok(out.len() as u64)
+}
+
+/// INPUT_TO_CONSOLE: lends the keys to the console's terminal, or ends the
+/// lease, for the holder showing now.
+fn to_console(slot: usize, on: u64) -> Result<u64, Error> {
+    need(slot, cap::INPUT)?;
+    if on > 1 {
+        return Err(Error::Invalid);
+    }
+    if !claim::shows(slot) {
+        input::end_lease();
+        return Err(Error::Permission);
+    }
+    input::lease(on == 1);
+    Ok(0)
+}
+
+/// ASK_READ: the ask posted for the card, if any; marks the trusted layer alive.
+fn ask_read(slot: usize, buf_ptr: u64, cap_bytes: u64) -> Result<u64, Error> {
+    need(slot, cap::ASK)?;
+    let mut text = alloc::string::String::new();
+    crate::ask_box::read(&mut text);
+    if text.len() as u64 > cap_bytes {
+        return Err(Error::TooBig);
+    }
+    copy_to_user(slot, buf_ptr, text.as_bytes())?;
+    Ok(text.len() as u64)
+}
+
+/// ASK_ANSWER: the card's answer to ask `id`, with the digest of the call it
+/// showed.
+fn ask_answer(slot: usize, id: u64, yes: u64, digest_ptr: u64) -> Result<u64, Error> {
+    need(slot, cap::ASK)?;
+    if yes > 1 {
+        return Err(Error::Invalid);
+    }
+    let mut digest = [0u8; 32];
+    copy_from_user(slot, digest_ptr, &mut digest)?;
+    match crate::ask_box::answer(id, yes == 1, &digest) {
+        true => Ok(0),
+        false => Err(Error::NotFound),
+    }
 }
