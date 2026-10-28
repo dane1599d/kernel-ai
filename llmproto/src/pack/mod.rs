@@ -90,7 +90,7 @@ pub const GLOSS: &[(&str, &str)] = &[
     ("pkg", "install, remove or find packages"),
     ("files", "list or read files"),
     ("file_edits", "write, rename, trash or restore files"),
-    ("ui", "open, close, switch to or type in apps"),
+    ("ui", "open/close apps; view before ui_act"),
 ];
 /// The longest a gloss may be, in estimated tokens.
 pub const GLOSS_TOKENS: usize = 12;
