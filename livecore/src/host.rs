@@ -574,6 +574,11 @@ impl<E: Env> Host<E> {
         }
     }
 
+    /// The component's name.
+    pub fn name(&self) -> &str {
+        &self.core.name
+    }
+
     /// Whether the app is suspended (`ctl suspend`): no instance, its state
     /// saved.
     pub fn suspended(&self) -> bool {

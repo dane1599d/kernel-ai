@@ -3,7 +3,7 @@
 //! on `ctl swap` from the kernel. The logic is the host-tested `livecore::host`;
 //! this program connects it to the COMP_* calls and the service endpoint, and,
 //! with a route to `desktop`, the app's `kai:ui` windows to the screen (`ui`).
-//! An app left unused naps (P3 task 12b): see [`Napper`].
+//! An app left unused naps (P3 task 12b): see [`livecore::napper`].
 
 #![no_std]
 #![no_main]
@@ -15,9 +15,10 @@ use alloc::vec::Vec;
 use kabi::Error;
 use kabi::live::{MAX_ARTIFACT, MAX_CHECKPOINT, Restore};
 use livecore::Fault;
-use livecore::host::{Env, Exit, Host, Report, Restored};
+use livecore::host::{Env, Host, Report, Restored};
 use livecore::local::restored_of;
 use livecore::nap::Nap;
+use livecore::napper::{Napped, Napper};
 use livecore::settings::Settings;
 use user::{arg, args, println, sys};
 use wasmhost::{Limits, LiveInstance};
@@ -129,9 +130,7 @@ fn main() -> i32 {
             return livecore::host::EXIT_REFUSED;
         }
     };
-    let mut napper = Napper {
-        nap: Nap::new(settings.nap_ms, now_ms()),
-    };
+    let mut napper = Napper::new(Nap::new(settings.nap_ms, now_ms()));
     let mut host = match Host::start(env, &name, settings) {
         Ok(host) => host,
         Err(exit) => {
@@ -156,17 +155,20 @@ fn main() -> i32 {
             (true, 0) => ui::POLL_MS,
             (true, ms) => ms.min(ui::POLL_MS),
         };
-        let wait = napper.wait(&host, wait);
+        let wait = napper.wait(&host, wait, now_ms());
         let mut caller = u64::MAX;
         match sys::svc_recv(&mut request, wait, &mut caller) {
             Ok(len) => {
                 let len = len.min(request.len());
                 let heap_before = user::heap_bytes();
                 let reply = napper
-                    .request(&mut host, caller, &request[..len])
-                    .and_then(|reply| match reply {
-                        Some(reply) => Ok(reply),
-                        None => host.handle(caller, &request[..len]),
+                    .request(&mut host, caller, &request[..len], now_ms())
+                    .and_then(|(reply, napped)| {
+                        log_nap(&name, napped);
+                        match reply {
+                            Some(reply) => Ok(reply),
+                            None => host.handle(caller, &request[..len]),
+                        }
                     });
                 let mut reply = match reply {
                     Ok(reply) => reply,
@@ -181,7 +183,7 @@ fn main() -> i32 {
                     println!("svc_reply failed: {error:?}");
                 }
                 tick_at = deadline(host.timeout_ms());
-                napper.after(&host);
+                napper.after(&host, now_ms());
                 if let Some(ui) = windows.as_mut() {
                     ui.pump(&mut host);
                 }
@@ -190,14 +192,22 @@ fn main() -> i32 {
                 if let Some(ui) = windows.as_mut().filter(|ui| ui.has_windows())
                     && let Err(exit) = ui
                         .poll(&mut host)
-                        .and_then(|()| napper.focus(&mut host, ui.take_focused()))
+                        .and_then(|()| {
+                            // A close or an agent's action may have woken it.
+                            napper.after(&host, now_ms());
+                            napper.focus(&mut host, ui.take_focused(), now_ms())
+                        })
+                        .map(|napped| log_nap(&name, napped))
                 {
                     println!("{}", exit.why);
                     return exit.code;
                 }
-                if let Err(exit) = napper.tick(&mut host, &name) {
-                    println!("{}", exit.why);
-                    return exit.code;
+                match napper.tick(&mut host, now_ms()) {
+                    Ok(napped) => log_nap(&name, napped),
+                    Err(exit) => {
+                        println!("{}", exit.why);
+                        return exit.code;
+                    }
                 }
                 if tick_at != 0 && now_ms() >= tick_at {
                     if let Err(exit) = host.tick() {
@@ -240,100 +250,14 @@ fn deadline(ms: u64) -> u64 {
     if ms == 0 { 0 } else { now_ms() + ms }
 }
 
-/// App nap (P3 task 12b): the app naps after `nap_ms` unused (no request, no
-/// focus) unless its keep-running switch or a background-work lease holds it,
-/// and wakes on its next request or focus. comphost wakes only what it napped:
-/// a standing instruction's suspend keeps its authority until its `until`.
-struct Napper {
-    nap: Nap,
-}
-
-/// The keep-running switch, from the kernel only: `ctl keep-running on|off`.
-const KEEP_RUNNING: &str = "ctl keep-running ";
-
-impl Napper {
-    /// How long to wait, at most `wait` (0 forever), so a nap comes on time.
-    fn wait<E: Env>(&self, host: &Host<E>, wait: u64) -> u64 {
-        let nap = (!host.suspended())
-            .then(|| self.nap.wait_ms(now_ms()))
-            .flatten()
-            .map(|ms| ms.max(1));
-        match (wait, nap) {
-            (0, Some(nap)) => nap,
-            (wait, Some(nap)) => wait.min(nap),
-            (wait, None) => wait,
-        }
-    }
-
-    /// Before a request: the switch is answered here; anything else is use,
-    /// and wakes a napping app first, so even `ctl swap` finds it running.
-    fn request<E: Env>(
-        &mut self,
-        host: &mut Host<E>,
-        caller: u64,
-        request: &[u8],
-    ) -> Result<Option<Vec<u8>>, Exit> {
-        if caller == 0
-            && let Some(on) = request.strip_prefix(KEEP_RUNNING.as_bytes())
-        {
-            let reply: &[u8] = match on {
-                b"on" => b"ok keep-running on",
-                b"off" => b"ok keep-running off",
-                _ => b"err usage: ctl keep-running on|off",
-            };
-            if on == b"on" || on == b"off" {
-                self.nap.keep_running(on == b"on");
-            }
-            return Ok(Some(reply.to_vec()));
-        }
-        self.nap.used(now_ms());
-        self.wake(host)?;
-        Ok(None)
-    }
-
-    /// After a request: a resume from any side ends the nap.
-    fn after<E: Env>(&mut self, host: &Host<E>) {
-        if self.nap.is_napping() && !host.suspended() {
-            self.nap.woke(now_ms());
-        }
-    }
-
-    /// One of its windows took focus: use, which wakes its nap.
-    fn focus<E: Env>(&mut self, host: &mut Host<E>, focused: bool) -> Result<(), Exit> {
-        if focused {
-            self.nap.used(now_ms());
-            self.wake(host)?;
-        }
-        Ok(())
-    }
-
-    fn wake<E: Env>(&mut self, host: &mut Host<E>) -> Result<(), Exit> {
-        if self.nap.is_napping()
-            && let Some(reply) = host.wake()?
-        {
-            println!(
-                "comphost: woke from its nap: {}",
-                alloc::string::String::from_utf8_lossy(&reply)
-            );
-            self.nap.woke(now_ms());
-        }
-        Ok(())
-    }
-
-    /// When the wait ends: nap if it is due and the app serves alone.
-    fn tick<E: Env>(&mut self, host: &mut Host<E>, name: &str) -> Result<(), Exit> {
-        if host.suspended() || !self.nap.due(now_ms()) {
-            return Ok(());
-        }
-        let request = alloc::format!("{}suspend", kabi::live::CONTROL_PREFIX);
-        let reply = host.handle(0, request.as_bytes())?;
-        if reply.starts_with(b"ok suspended") {
-            self.nap.napped();
-            println!("comphost: {name} napped, unused");
-        } else {
-            // On probation or unsaved: try again a whole nap later.
-            self.nap.used(now_ms());
-        }
-        Ok(())
+/// The nap's log lines.
+fn log_nap(name: &str, napped: Option<Napped>) {
+    match napped {
+        Some(Napped::Napped) => println!("comphost: {name} napped, unused"),
+        Some(Napped::Woke(reply)) => println!(
+            "comphost: woke from its nap: {}",
+            alloc::string::String::from_utf8_lossy(&reply)
+        ),
+        None => {}
     }
 }
