@@ -6,7 +6,9 @@
 //! - boot 2, `undo`: 2 is still current; undo switches to 3, 1's packages;
 //! - boot 3, `check`: 3 is current.
 //!
-//! The kernel's half waits for `pkg`'s `case/<step>` marker, then reads
+//! The kernel's half waits for `pkg`'s `case/<step>.done` marker, which `pkg`
+//! leaves only once its own line is printed, so the case never ends the boot
+//! while the console still prints it. Then it reads
 //! `current` through `fs` itself, by the `SYSTEM_PKG` badge, and checks it names
 //! the generation that step leaves. On boot 1 it also checks that `pkg` holds
 //! no capability bits and starts with that one `Dir`, and no home folder.
@@ -77,7 +79,7 @@ pub fn plan(step: Step) -> String {
 
 pub fn check(step: Step) -> Result<(), &'static str> {
     let (boot, generation) = step.boot_and_generation();
-    wait_for(&format!("case/{}", step.name()))
+    wait_for(&format!("case/{}.done", step.name()))
         .map_err(|_| "pkg-store: pkg did not finish its step")?;
     let current = read("current")?;
     let current = core::str::from_utf8(&current).map_err(|_| "pkg-store: current is not text")?;

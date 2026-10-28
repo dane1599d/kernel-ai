@@ -14,9 +14,10 @@
 //! - `check` (boot 3): generation 3 is current, without `hello`.
 //!
 //! After each it checks the store as a whole (`kaipkg::store::check`), leaves
-//! `case/<step>` in `/system/pkg` for the kernel's half, and idles: the
-//! supervisor would restart an exited service. A failure prints
-//! `pkg: FAIL ...`.
+//! `case/<step>` in `/system/pkg`, prints its line, then leaves
+//! `case/<step>.done` for the kernel's half, which may end the boot only once
+//! the line is out. Then it idles: the supervisor would restart an exited
+//! service. A failure prints `pkg: FAIL ...`.
 
 #![no_std]
 #![no_main]
@@ -63,6 +64,16 @@ fn main() -> i32 {
     match result {
         Ok(line) => println!("pkg: {line}"),
         Err(why) => println!("pkg: FAIL {why}"),
+    }
+    // The line is out: the kernel's half may end the boot now, not while the
+    // console still prints it.
+    if let Some(step) = step {
+        let done = vol
+            .write(&format!("pkg/case/{step}.done"), b"")
+            .and_then(|()| vol.commit());
+        if let Err(why) = done {
+            println!("pkg: FAIL cannot leave case/{step}.done: {why}");
+        }
     }
     idle()
 }
