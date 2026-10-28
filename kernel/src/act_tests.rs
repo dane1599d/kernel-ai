@@ -262,6 +262,7 @@ pub fn check(which: ActCase) -> Result<(), &'static str> {
             log!("pkg-local: install notes ran from the image's repository and undo put the previous set back");
         }),
         ActCase::Convo => convo(),
+        ActCase::AppRoute => crate::app_route_tests::check(),
         ActCase::FsAct => expect_lines(FS_ACT).map(|()| {
             log!("fs-act: a plain create and move ran at once on kai-data, and a read showed only to the user");
         }),

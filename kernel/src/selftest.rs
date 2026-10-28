@@ -24,6 +24,8 @@ pub enum ActCase {
     /// `fs-undo-reboot`'s first boot, then its second (`reread`).
     FsUndoReboot,
     FsUndoRebooted,
+    /// `app-route` (P4): the agent calls an app's row through the supervisor.
+    AppRoute,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -236,6 +238,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=fs-act" => Some(SelfTest::Act(ActCase::FsAct)),
             "test=fs-undo" => Some(SelfTest::Act(ActCase::FsUndo)),
             "test=fs-trash" => Some(SelfTest::Act(ActCase::FsTrash)),
+            "test=app-route" => Some(SelfTest::Act(ActCase::AppRoute)),
             "test=fs-undo-reboot" => Some(SelfTest::Act(
                 match cmdline.split_whitespace().any(|w| w == "reread") {
                     true => ActCase::FsUndoRebooted,
@@ -384,6 +387,14 @@ pub fn plan(test: SelfTest) -> Option<String> {
         SelfTest::Live => format!("{}\n{}", kabi::plan::NOTES_TEST, crate::llm::plan_line()),
         SelfTest::Part => String::from(kabi::plan::FS),
         SelfTest::AppSuspend => kabi::plan::notes("2", None),
+        // notes is listed before the shell, whose call reaches it through the
+        // supervisor, never a route.
+        SelfTest::Act(ActCase::AppRoute) => format!(
+            "{}
+{}",
+            crate::llm::plan_line(),
+            kabi::plan::notes("2", None)
+        ),
         SelfTest::Files { reread } => {
             crate::files_tests::plan(if reread { "read" } else { "write" })
         }

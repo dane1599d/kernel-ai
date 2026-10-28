@@ -311,6 +311,11 @@ const ACTS: &[(&str, &str)] = &[
         "empty the trash",
         r#"{"name":"fs_empty_trash","arguments":{}}"#,
     ),
+    // `app-route` (P4): an installed app's row, through the supervisor.
+    (
+        "add a note saying buy milk",
+        r#"{"name":"notes_add","arguments":{"text":"buy milk"}}"#,
+    ),
     // `act-convo` with no earlier turn: there is nothing to do again.
     (
         "do it again",
