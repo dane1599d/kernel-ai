@@ -145,6 +145,8 @@ pub fn startup(caps: u64, pid: u64) -> Vec<Entry> {
         (cap::INPUT, Kind::Input, Rights::READ, 0),
         // The console's rows, for the terminal window: read-only.
         (cap::TERM, Kind::Term, Rights::READ, 0),
+        // The edit service through the kernel's journal, for `comphost` (P4 task 11).
+        (cap::EDIT, Kind::Edit, Rights::CALL, 0),
         // The slots and the boot record, never the ESP or `kai-data` (ADR 0008 §10).
         (
             cap::UPDATE,
@@ -231,6 +233,7 @@ pub fn required(bit: u64) -> Option<(Kind, Rights)> {
         cap::TERM => (Kind::Term, Rights::READ),
         cap::UPDATE => (Kind::Update, Rights::WRITE),
         cap::ASK => (Kind::Ask, Rights::WRITE),
+        cap::EDIT => (Kind::Edit, Rights::CALL),
         _ => return None,
     })
 }
@@ -257,6 +260,7 @@ pub fn ceiling_allows(caps: u64, kind: Kind) -> bool {
         (Kind::Term, cap::TERM),
         (Kind::Update, cap::UPDATE),
         (Kind::Ask, cap::ASK),
+        (Kind::Edit, cap::EDIT),
     ];
     bits.iter()
         .find(|(k, _)| *k == kind)

@@ -293,3 +293,38 @@ fn builds_and_syncs_are_told_apart_by_their_exact_request_line() {
         assert!(!is_build_request(other) && !is_sync_request(other));
     }
 }
+#[test]
+fn an_app_may_send_only_an_open_or_a_plain_command() {
+    use crate::ipc::for_app;
+    for ok in [
+        "open notes",
+        "open notes e1 at components/notes/src/lib.rs:5",
+        "cmd view 1,40",
+        "cmd c 3 let x = 1;",
+        "cmd split 5 4 2",
+        "cmd build",
+        "cmd status",
+        "cmd c 3 tab\there",
+    ] {
+        assert_eq!(for_app(ok.as_bytes()), Ok(()), "{ok:?}");
+    }
+    for bad in [
+        // The kernel's own messages.
+        "sync 3\ncomponent notes\n",
+        "replay 0\n0000000000000000 open notes",
+        // A minute with the caller waiting.
+        "cmd try",
+        "cmd try e1",
+        // Not a request, or a request that is more than a line.
+        "",
+        "cmd c 3 a\nb",
+        "cmd c 3 a\u{1b}[2J",
+        "cmd c 3 a\rb",
+        "open ../etc",
+        "open Notes",
+        "frob",
+    ] {
+        assert!(for_app(bad.as_bytes()).is_err(), "{bad:?}");
+    }
+    assert!(for_app(&[0xff, 0xfe]).is_err());
+}

@@ -19,7 +19,7 @@
 //! | 110-119 | A-core | |
 //! | 120-129 | model lane | |
 //! | 130-139 | D, drivers (ADR 0007) | RING_ATTACH, RING_NOTIFY, NOTIFY_WAIT, INPUT_PUSH |
-//! | 140-149 | C, components | |
+//! | 140-149 | C, components | EDIT_CALL (lane E) |
 //! | 150-159 | V, virtual machines (P6) | |
 //! | 160-169 | M, memory | MEM_RESERVE, MEM_COMMIT, MEM_RELEASE, PROC_QUOTA_SET, PROC_CLASS_SET |
 //! | 170-179 | U, updates (P4) | SLOT_INFO, SLOT_READ, SLOT_WRITE, SLOT_FLUSH, BOOTREC_GET, BOOTREC_SET, TRUST_ROOT, TRUST_TIME |
@@ -435,6 +435,20 @@ pub const PKG_TIME: u64 = 103;
 // ---- D, 130-139 ----
 
 // ---- C, 140-149 ----
+
+/// `edit_call(msg, msg_len, reply, reply_cap) -> len`: sends the edit
+/// service one request, as the kernel's own edit mode does, through the
+/// kernel's session journal (so a restarted service gets the session back), and
+/// copies its answer to `reply`. Only `comphost` holds the `Edit` handle, and
+/// it sends only for an app whose package holds the `edit` grant (needs
+/// [`super::cap::EDIT`], as COMP_FETCH needs COMPONENT). `msg` is an
+/// `open ...` or a `cmd ...` (`editcore::ipc`) of at most
+/// [`super::MAX_MESSAGE`] bytes: a sync or a replay is the kernel's alone, and
+/// `cmd try`, which can take a minute, is refused, all as Invalid. The answer
+/// keeps the line a build moved the cursor with (`#at path:line`) and is cut to
+/// [`super::MAX_MESSAGE`]; `reply_cap` below that is Invalid. NotFound when
+/// the edit service is not running. Numbered at merge, the first of C's block.
+pub const EDIT_CALL: u64 = 140;
 
 // ---- V, 150-159 ----
 

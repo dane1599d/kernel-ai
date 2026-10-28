@@ -65,17 +65,51 @@ fn repin(old: Option<(String, String)>, new: Option<(String, String)>) {
 /// Sends one open or command to the edit service; its reply, made printable, or
 /// why there is none (as an `err` reply). The journal records what was answered.
 pub fn call(message: &[u8]) -> String {
+    match exchange(message) {
+        Ok(reply) => {
+            // The line saying a build moved the cursor is for the journal alone.
+            let shown = editcore::ipc::split_moved(&reply).1;
+            printable(
+                &String::from_utf8_lossy(shown),
+                kabi::MAX_MESSAGE,
+                MAX_LINES,
+            )
+        }
+        Err(why) => why,
+    }
+}
+
+/// As [`call`], for an app that holds the `edit` grant: the reply as the
+/// service sent it, with the line a build moved the cursor (`#at path:line`), at
+/// most [`kabi::MAX_MESSAGE`] bytes. The service cleans what it sends, and the
+/// editor app draws it through `uikit`, which draws no control character.
+pub fn call_for_app(message: &[u8]) -> String {
+    match exchange(message) {
+        Ok(reply) => {
+            let mut text = String::from_utf8_lossy(&reply).into_owned();
+            text.truncate(text.floor_char_boundary(kabi::MAX_MESSAGE));
+            text
+        }
+        Err(why) => why,
+    }
+}
+
+/// The exchange itself: the service's reply, or why there is none. The journal
+/// records what was answered.
+fn exchange(message: &[u8]) -> Result<Vec<u8>, String> {
     // The supervisor restarts it within 1.6 s; longer means it is not coming back.
     let bound = hpet::nanos() + BIND_WAIT_NS;
     if ipc::wait_bound("edit", bound, || false).is_err() {
-        return String::from("err the edit service is not running (see :ps)");
+        return Err(String::from(
+            "err the edit service is not running (see :ps)",
+        ));
     }
     restore_if_new();
     let (reply, server) = match ipc::call_from("edit", message, edit_mode::EDIT_CALL_MS) {
         Ok(answered) => answered,
         // No answer: not journaled, so a command that kills the service is never
         // replayed into the next one.
-        Err(error) => return format!("err the edit service did not answer ({error:?})"),
+        Err(error) => return Err(format!("err the edit service did not answer ({error:?})")),
     };
     let (old, recorded, new) = with(|state| {
         let old = base(&state.journal);
@@ -100,13 +134,7 @@ pub fn call(message: &[u8]) -> String {
         Some(Some(warning)) => log!("edit: {warning}"),
         Some(None) => {}
     }
-    // The line saying a build moved the cursor is for the journal alone.
-    let shown = editcore::ipc::split_moved(&reply).1;
-    printable(
-        &String::from_utf8_lossy(shown),
-        kabi::MAX_MESSAGE,
-        MAX_LINES,
-    )
+    Ok(reply)
 }
 
 /// COMP_PUT stored `component` `label`, built from `base`; the journal notes the

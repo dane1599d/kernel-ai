@@ -340,6 +340,11 @@ pub fn spawn_service(slot: usize, request_ptr: u64) -> Result<u64, Error> {
     if request.limits.caps & cap::TERM != 0 && (name != TERM || program != TERM) {
         return Err(Error::Permission);
     }
+    // Editing for an app is comphost's alone, which sends it only for an app
+    // whose package holds the `edit` grant (P4 task 11).
+    if request.limits.caps & cap::EDIT != 0 && program != COMPONENT_HOST {
+        return Err(Error::Permission);
+    }
     // The slots and the boot record are `updated`'s alone (ADR 0008 §10).
     if request.limits.caps & cap::UPDATE != 0 && (name != UPDATED || program != UPDATED) {
         return Err(Error::Permission);
