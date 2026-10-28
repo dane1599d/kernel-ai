@@ -57,7 +57,11 @@ impl<D: BlockDev> Server<D> {
 
     /// The folder holding `path`'s last name, and that name: `None` when the
     /// path names a folder walked to (`""`, `.`, `a/..`).
-    fn walk<'p>(&mut self, dir: u64, path: &'p str) -> Result<(u64, Option<&'p str>), Error> {
+    pub(crate) fn walk<'p>(
+        &mut self,
+        dir: u64,
+        path: &'p str,
+    ) -> Result<(u64, Option<&'p str>), Error> {
         if path.starts_with('/') {
             return Err(Error::Invalid);
         }
