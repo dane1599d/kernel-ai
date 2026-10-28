@@ -10,6 +10,11 @@
 # `release-dry` is this workflow on a pull request that changes it, or on
 # demand: everything but the attestation and the draft, as `v0.1.0-rc.0`.
 #
+# The `vm` job boots the slot disk in QEMU under KVM: `updated` takes release 2
+# from an update disk signed by a throwaway root and boots it, and refuses the
+# same disk with one byte of the image flipped (boot cases `update-disk` and
+# `update-tampered`, ADR 0008 §12).
+#
 # Stubbed until P4 task 18: tuf-on-ci's signing event for the founder's
 # YubiKeys, and the publish to `dane1599d/kernel-ai-updates`. No model, no LLM.
 # Every action is pinned by commit SHA.
@@ -157,6 +162,34 @@ jobs:
           name: release-${{ env.VERSION }}
           path: release-assets/
 
+  vm:
+    name: A VM takes an update from an update disk and refuses a tampered one
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # QEMU as ci.yml's `qemu` job builds and caches it (.github/actions/qemu),
+      # restored here with the cache action pinned by SHA.
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/qemu
+          key: qemu-11.0.5-ubuntu-24.04-v1
+          fail-on-cache-miss: true
+      - name: OVMF, QEMU's runtime libraries, and KVM for the runner user
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ovmf libpixman-1-0 libslirp0 libglib2.0-0t64 libfdt1
+          echo "$HOME/qemu/bin" >> "$GITHUB_PATH"
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - run: rustup show active-toolchain || rustup toolchain install
+      - run: rustup target add wasm32-unknown-unknown
+      - name: update-disk, then update-tampered
+        run: |
+          for case in update-disk update-tampered; do
+            XTASK_CASE="$case" cargo xtask test --accel kvm --timeout 300
+          done
+
   sign:
     name: Sign as TUF targets (test root), accept and refuse
     needs: assemble
@@ -180,7 +213,7 @@ jobs:
   publish:
     name: Attest and draft the release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: sign
+    needs: [sign, vm]
     runs-on: ubuntu-24.04
     environment: release
     permissions:
