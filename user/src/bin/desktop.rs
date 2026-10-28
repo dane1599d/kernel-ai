@@ -436,19 +436,18 @@ fn apply_need(state: &mut State, at: usize, pid: u64, need: Need, handle: Option
     }
 }
 
-/// The name a process runs under, which labels its windows.
+/// The name a process runs under, which labels its windows and names its app
+/// in standing instructions' events. From the metrics' process list: LIST is
+/// the supervisor's alone.
 fn name_of(pid: u64) -> alloc::string::String {
-    let mut buf = vec![0u8; 4096];
-    let Ok(len) = sys::list(&mut buf) else {
-        return alloc::format!("pid {pid}");
-    };
-    alloc::string::String::from_utf8_lossy(&buf[..len.min(buf.len())])
-        .lines()
-        .find_map(|line| {
-            let (p, name) = line.split_once(' ')?;
-            (p.parse() == Ok(pid)).then(|| alloc::string::String::from(name))
-        })
-        .unwrap_or_else(|| alloc::format!("pid {pid}"))
+    let named = sys::metrics().ok().and_then(|m| {
+        let listed = &m.processes[..(m.process_count as usize).min(m.processes.len())];
+        listed
+            .iter()
+            .find(|p| p.pid == pid)
+            .map(|p| alloc::string::String::from(p.name()))
+    });
+    named.unwrap_or_else(|| alloc::format!("pid {pid}"))
 }
 
 /// Logs windows that opened, moved or closed, and focus changes, once each.
