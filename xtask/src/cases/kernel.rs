@@ -138,7 +138,7 @@ pub(super) const CASES: &[TestCase] = &[
         expect: &[
             "notes: suspended version 2",
             "notes: resumed version 2",
-            "app-suspend: notes freed ",
+            "app-suspend: notes gave ",
         ],
         ..case("app-suspend", "test=app-suspend")
     },

@@ -1,10 +1,10 @@
 //! Each `lifecycle 2` instance's linear memory in a region of its own, so that
 //! dropping the instance (P3 task 11's suspend) gives the memory back whole.
 //! The region is reserved once at the instance's cap, committed as the guest's
-//! `memory.grow` asks, and released when the instance goes: the shape of lane
-//! K's coming MEM_RESERVE, MEM_COMMIT and MEM_RELEASE. Until those exist the
-//! three steps are on the heap ([`reserve`], [`commit`], [`release`]); they are
-//! the one place that changes for real page return.
+//! `memory.grow` asks, and released when the instance goes. The three steps
+//! are a [`Pages`]: comphost installs MEM_RESERVE, MEM_COMMIT and MEM_RELEASE
+//! ([`use_pages`]), so a suspended app's pages go back to the kernel; until a
+//! program installs them, and on the host, they are on the heap ([`HEAP`]).
 //!
 //! wasmi gives a guest's own memory a heap `Vec`, so the guest's memory
 //! definition is turned into an import of `kai:host/memory` ([`own_memory_as_import`]),
@@ -13,6 +13,7 @@
 use alloc::alloc::{Layout, alloc_zeroed, dealloc};
 use alloc::vec::Vec;
 use core::ptr::NonNull;
+use core::sync::atomic::{AtomicPtr, Ordering};
 
 /// The import a guest's memory becomes.
 pub(crate) const MODULE: &str = "kai:host";
@@ -21,26 +22,51 @@ pub(crate) const NAME: &str = "memory";
 pub(crate) const PAGE: usize = 64 * 1024;
 const ALIGN: usize = 4096;
 
-/// Address space for `bytes`, nothing usable yet (MEM_RESERVE). On the heap it
-/// is zeroed memory at once.
-fn reserve(bytes: usize) -> Option<NonNull<u8>> {
+/// Where regions get their memory.
+pub struct Pages {
+    /// Address space for `bytes`, nothing usable yet (MEM_RESERVE).
+    pub reserve: fn(bytes: usize) -> Option<NonNull<u8>>,
+    /// Makes `[at, at + bytes)` usable and zeroed, `at` the end of what is
+    /// committed already (MEM_COMMIT); false when the system has no more.
+    pub commit: fn(at: NonNull<u8>, bytes: usize) -> bool,
+    /// Gives back the whole region reserved at `at`, `bytes` long (MEM_RELEASE).
+    pub release: fn(at: NonNull<u8>, bytes: usize),
+}
+
+fn heap_reserve(bytes: usize) -> Option<NonNull<u8>> {
     let layout = Layout::from_size_align(bytes, ALIGN).ok()?;
     // SAFETY: `bytes` is above 0 (a region is at least one page).
     NonNull::new(unsafe { alloc_zeroed(layout) })
 }
 
-/// Makes `[at, at + bytes)` usable, zeroed (MEM_COMMIT). The heap's region is
-/// usable from the start.
-fn commit(_at: NonNull<u8>, _bytes: usize) -> bool {
-    true
-}
-
-/// Gives the whole region back (MEM_RELEASE).
-fn release(at: NonNull<u8>, bytes: usize) {
+fn heap_release(at: NonNull<u8>, bytes: usize) {
     if let Ok(layout) = Layout::from_size_align(bytes, ALIGN) {
-        // SAFETY: `at` came from `reserve(bytes)` with this layout, once.
+        // SAFETY: `at` came from `heap_reserve(bytes)` with this layout, once.
         unsafe { dealloc(at.as_ptr(), layout) }
     }
+}
+
+/// Regions on the heap: zeroed and usable from the start, back to the heap
+/// when released.
+pub static HEAP: Pages = Pages {
+    reserve: heap_reserve,
+    commit: |_, _| true,
+    release: heap_release,
+};
+
+static PAGES: AtomicPtr<Pages> = AtomicPtr::new(core::ptr::null_mut());
+
+/// Makes `pages` where every region from now on gets its memory. A program
+/// installs it once, before its first instance; regions made before keep the
+/// pages they came from.
+pub fn use_pages(pages: &'static Pages) {
+    PAGES.store(core::ptr::from_ref(pages).cast_mut(), Ordering::Release);
+}
+
+fn pages() -> &'static Pages {
+    let installed = PAGES.load(Ordering::Acquire);
+    // SAFETY: only `use_pages` stores, and it stores a `&'static Pages`.
+    unsafe { installed.as_ref() }.unwrap_or(&HEAP)
 }
 
 /// One instance's memory region.
@@ -48,6 +74,8 @@ pub(crate) struct Region {
     at: NonNull<u8>,
     capacity: usize,
     committed: usize,
+    /// Where it came from, so it goes back there.
+    pages: &'static Pages,
 }
 
 // SAFETY: the region is owned by one store, used by one thread at a time.
@@ -56,14 +84,19 @@ unsafe impl Send for Region {}
 impl Region {
     /// A region for up to `capacity` bytes, `initial` of them usable.
     pub(crate) fn new(capacity: usize, initial: usize) -> Option<Self> {
+        Self::from(pages(), capacity, initial)
+    }
+
+    fn from(pages: &'static Pages, capacity: usize, initial: usize) -> Option<Self> {
         if capacity == 0 || initial > capacity {
             return None;
         }
-        let at = reserve(capacity)?;
+        let at = (pages.reserve)(capacity)?;
         let mut region = Self {
             at,
             capacity,
             committed: 0,
+            pages,
         };
         region.grow(initial).then_some(region)
     }
@@ -91,7 +124,7 @@ impl Region {
         }
         // SAFETY: `committed < bytes <= capacity`, inside the region.
         let from = unsafe { NonNull::new_unchecked(self.at.as_ptr().add(self.committed)) };
-        if !commit(from, bytes - self.committed) {
+        if !(self.pages.commit)(from, bytes - self.committed) {
             return false;
         }
         self.committed = bytes;
@@ -101,7 +134,7 @@ impl Region {
 
 impl Drop for Region {
     fn drop(&mut self) {
-        release(self.at, self.capacity);
+        (self.pages.release)(self.at, self.capacity);
     }
 }
 
@@ -267,6 +300,21 @@ mod tests {
         assert_eq!(limits, Limits { min: 1, max: None });
         assert!(wasmi::Module::new(&wasmi::Engine::default(), &moved).is_ok());
         assert!(own_memory_as_import(&wat::parse_str("(module)").unwrap()).is_none());
+    }
+
+    /// Pages whose commits the system refuses past one page.
+    static TIGHT: Pages = Pages {
+        reserve: heap_reserve,
+        commit: |_, bytes| bytes <= PAGE,
+        release: heap_release,
+    };
+
+    #[test]
+    fn a_refused_commit_is_a_failed_grow_and_the_region_stays() {
+        let mut r = Region::from(&TIGHT, 4 * PAGE, PAGE).unwrap();
+        assert!(!r.grow(3 * PAGE), "two more pages at once are refused");
+        assert!(r.grow(2 * PAGE), "one more is not");
+        assert!(Region::from(&TIGHT, 4 * PAGE, 2 * PAGE).is_none());
     }
 
     #[test]

@@ -24,7 +24,7 @@ pub mod desk;
 mod desk_tests;
 mod effects;
 mod instance;
-mod linear;
+pub mod linear;
 pub mod link;
 pub mod surface;
 #[cfg(test)]
