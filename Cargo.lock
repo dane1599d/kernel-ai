@@ -232,6 +232,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "comp-settings"
+version = "0.1.0-dev"
+dependencies = [
+ "kaigrants",
+ "kaiprofile",
+ "look",
+ "minicbor",
+]
+
+[[package]]
+name = "comp-settings-ui"
+version = "0.1.0-dev"
+dependencies = [
+ "comp-settings",
+ "kaigrants",
+ "look",
+ "uikit",
+]
+
+[[package]]
 name = "comp-viewbench"
 version = "0.1.0-dev"
 
