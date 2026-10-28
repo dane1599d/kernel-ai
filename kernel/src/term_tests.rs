@@ -11,9 +11,10 @@ use crate::desk_tests::report;
 use crate::display::claim;
 use crate::{console, input, log, process, terminal, threads};
 
-/// The plan lines this case adds.
-pub const PLAN: &str = "desktop caps=display+input+serve pages=8192\n\
-     term uses=desktop caps=call+term pages=4096";
+/// The plan lines this case adds: `desktop` as `desk-boot` runs it (its fonts
+/// need the stack), and `term`.
+pub const PLAN: &str = "desktop caps=display+input+serve pages=8192 stack_pages=512\n\
+     term uses=desktop caps=call+term pages=4096 stack_pages=512";
 const WAIT_MS: u64 = 60_000;
 /// Where `desktop` starts the pointer: the middle of 1280x800.
 const START: (i32, i32) = (640, 400);
