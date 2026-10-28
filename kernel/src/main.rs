@@ -332,7 +332,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::BlkWrite => run_case(|| blk_tests::check_write(cmdline())),
         SelfTest::BlkFlush => run_case(|| blkflush_tests::check(cmdline())),
         SelfTest::Part => run_case(part_tests::check),
-        SelfTest::ModelStore => run_case(|| model_tests::store(cmdline())),
+        SelfTest::ModelStore { bad } => run_case(|| model_tests::store(cmdline(), bad)),
         SelfTest::Files { .. } => run_case(|| files_tests::check(cmdline())),
         SelfTest::FilesRestart => run_case(files_tests::restart),
         SelfTest::FilesDeadClient => run_case(files_tests::dead_client),
