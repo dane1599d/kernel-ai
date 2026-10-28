@@ -891,6 +891,35 @@ fn system_settings_is_read_only_through_its_badge() {
     assert_eq!(failed(reply), Error::Permission);
     let reply = c.call(ALICE, settings, read, open(Rights::READ, How::CreateFile));
     assert_eq!(failed(reply), Error::Permission);
+    // A handle that somehow carries WRITE still opens nothing writable, and
+    // what it opens is read only.
+    let reply = c.call(
+        ALICE,
+        settings,
+        DIR_RIGHTS,
+        open(Rights::READ | Rights::WRITE, How::Existing),
+    );
+    assert_eq!(failed(reply), Error::Permission);
+    let (_, file) = c.call(
+        ALICE,
+        settings,
+        DIR_RIGHTS,
+        open(Rights::READ, How::Existing),
+    );
+    let file = file.unwrap();
+    assert!(!file.rights.contains(Rights::WRITE));
+    assert!(!matches!(c.write(&file, 0, b"x"), Reply::Done));
+    let reply = c.call(
+        ALICE,
+        settings,
+        DIR_RIGHTS,
+        Request::Open {
+            path: String::new(),
+            rights: DIR_RIGHTS.bits(),
+            how: How::Existing,
+        },
+    );
+    assert_eq!(failed(reply), Error::Permission);
     // And `fs` refuses a change through the badge even with every right.
     for request in [
         Request::Trash {

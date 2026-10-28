@@ -47,6 +47,9 @@ const FOLDERS: [(u8, &str); 6] = [
     (SYSTEM, "updates"),
 ];
 
+/// The most a [`SYSTEM_SETTINGS`] handle may use, however it was made.
+const SETTINGS_RIGHTS: Rights = Rights::READ.union(Rights::ENUMERATE).union(BASE);
+
 /// Rights every minted handle carries, as the kernel's startup handles do.
 pub const BASE: Rights = Rights::DUPLICATE
     .union(Rights::TRANSFER)
@@ -359,10 +362,22 @@ impl<D: BlockDev> Server<D> {
     }
 
     fn answer(&mut self, call: &Call) -> Result<(Reply, Option<Mint>), Error> {
+        // `/system/settings` is read only through its fixed badge, whatever
+        // rights the handle carries: nothing it opens gets more than READ and
+        // ENUMERATE either.
+        let read_only;
+        let call = match call.badge == SYSTEM_SETTINGS {
+            true => {
+                read_only = Call {
+                    rights: call.rights & SETTINGS_RIGHTS,
+                    ..*call
+                };
+                &read_only
+            }
+            false => call,
+        };
         let request = fsproto::decode_request(call.request)?;
         let changes = changes(&request);
-        // `/system/settings` is read only through its fixed badge, whatever
-        // rights the handle carries.
         if changes && call.badge == SYSTEM_SETTINGS {
             return Err(Error::Permission);
         }
