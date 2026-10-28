@@ -168,14 +168,31 @@ const A_UPDATES: TestCase = TestCase {
     )
 };
 
-/// `update-disk` boot 3: B, written from the update disk, boots its trial.
-/// `update-disk` boot 4: B again, its try spent on boot 3.
-const B_AGAIN: TestCase = TestCase {
+/// `update-disk` boot 5: committed B finds `pending` and clears it, with no
+/// restore.
+const B_HELD: TestCase = TestCase {
     data: Some(DATA),
     ..boot(
-        "update-disk (4: still kai-b)",
-        "test=slot panic=reset",
-        &["slots: up in kai-b (trial, 1 tries left)"],
+        "update-disk (5: the update held)",
+        "test=update updated=reconcile panic=reset",
+        &[
+            "slots: booted kai-b (record read)",
+            "updated: release 2 in B committed; the update held",
+            "updated: reconciled: Held",
+        ],
+    )
+};
+/// `update-disk` boot 4: B again, its try spent on boot 3, and it commits.
+const B_AGAIN: TestCase = TestCase {
+    then: Some(&B_HELD),
+    data: Some(DATA),
+    ..boot(
+        "update-disk (4: kai-b commits)",
+        "test=slot slot-do=commit panic=reset",
+        &[
+            "slots: up in kai-b (trial, 1 tries left)",
+            "slots: committed kai-b",
+        ],
     )
 };
 /// `update-disk` boot 3: B boots release 2, and the same disk offered again is
@@ -190,6 +207,7 @@ const B_FROM_DISK: TestCase = TestCase {
         &[
             "slots: booted kai-b (record read)",
             "slots: up in kai-b (trial, 2 tries left)",
+            "updated: reconciled: OnTrial",
             "updated: the trusted root is /system/trust's",
             "updated: FAIL refused: release 2 is not newer than 2 (anti-rollback)",
             "updated: restarting into the running slot",
