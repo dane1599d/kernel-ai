@@ -138,7 +138,7 @@ pub(super) const CASES: &[TestCase] = &[
         expect: &[
             "notes: suspended version 2",
             "notes: resumed version 2",
-            "app-suspend: notes freed ",
+            "app-suspend: notes gave ",
         ],
         ..case("app-suspend", "test=app-suspend")
     },
@@ -209,6 +209,28 @@ pub(super) const CASES: &[TestCase] = &[
             "desk-standing: restoring Notes resumed it, with its note intact",
         ],
         ..case("desk-standing", "test=desk-standing")
+    },
+    // P3 task 8: the kernel's terminal in a window, and an ask typed there.
+    TestCase {
+        keys: &[
+            &[
+                "w", "h", "a", "t", "spc", "i", "s", "spc", "t", "h", "e", "spc", "s", "c", "h",
+                "e", "d", "u", "l", "i", "n", "g", "spc", "p", "o", "l", "i", "c", "y", "ret", "y",
+            ],
+            &["n"],
+            &[
+                "w", "h", "a", "t", "spc", "i", "s", "spc", "t", "h", "e", "spc", "s", "c", "h",
+                "e", "d", "u", "l", "i", "n", "g", "spc", "p", "o", "l", "i", "c", "y", "ret",
+            ],
+        ],
+        expect: &[
+            "term: opened its window",
+            "desktop: the terminal window has the keys",
+            "term: shows ? ",
+            "desk-term: an ask typed in the terminal window was answered only on the console",
+            "desk-term: with the focus elsewhere the keys went to desktop, and nothing asked",
+        ],
+        ..case("desk-term", "test=desk-term")
     },
     // P1 task 14: shared pages, and spike S01-1's M6.
     TestCase {

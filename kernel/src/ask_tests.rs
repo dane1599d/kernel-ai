@@ -63,6 +63,7 @@ fn showing() -> Option<u64> {
 }
 
 /// Waits `ms`, renewing the lease as `desktop` does while the window has focus.
+/// The kernel's own `input::lease`, under INPUT_TO_CONSOLE's checks.
 fn hold(ms: u64, leased: bool) {
     for _ in 0..ms / 100 {
         if leased {
@@ -152,6 +153,10 @@ fn console_first() -> Result<(), &'static str> {
 }
 
 pub fn check() -> Result<(), &'static str> {
+    // desktop asks the kernel once for the focus deskdemo's windows get; the
+    // refusal ends any lease, so the case takes its own lease only after.
+    wait("desktop to show", || showing().is_some())?;
+    threads::sleep_ms(3_000);
     round(true)?;
     round(false)?;
     console_first()?;

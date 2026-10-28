@@ -1,20 +1,20 @@
 //! `test=app-suspend` (P3 task 11): an app suspended and resumed through its
 //! host. `notes` (version 2, `kai:live`) holds a note; `ctl suspend` saves it
-//! and drops the instance, and comphost's heap in use falls by at least the
-//! instance's linear memory, its own region at the cap (`memory_kib`, 2 MiB by
-//! default); `ctl resume` brings it back from the saved state, its heap in use
-//! rising again, and the note is still there. The heap figures are comphost's
-//! own (`user::heap_bytes`), in each reply: its heap only grows, so until lane
-//! K's MEM_RELEASE the pages stay with the process.
+//! and drops the instance, whose linear memory is a MEM_RESERVE reservation of
+//! its own, released with it: the kernel's free frames rise by at least the
+//! guest's starting memory (2 pages, 128 KiB: components build with a 64 KiB
+//! stack, .cargo/config.toml) and whatever it grew. `ctl
+//! resume` brings it back from the saved state, committing again, and the
+//! note is still there. comphost's own heap figures ride in each reply too.
 
-use crate::{ipc, log};
+use crate::{ipc, log, memory};
 use alloc::string::String;
 
 const NAME: &str = "notes";
 const CALL_MS: u64 = 60_000;
-/// Least the suspend must free: the instance's memory region, at the default
-/// cap.
-const MIN_FREED_KIB: u64 = 2048;
+/// Least the suspend must give back to the kernel: the guest's 128 KiB of
+/// starting memory, in 4 KiB frames.
+const MIN_FREED_FRAMES: u64 = 32;
 
 fn call(request: &str) -> Result<String, &'static str> {
     ipc::call(NAME, request.as_bytes(), CALL_MS)
@@ -22,12 +22,8 @@ fn call(request: &str) -> Result<String, &'static str> {
         .map_err(|_| "app-suspend: notes did not reply")
 }
 
-/// The `heap A KiB -> B KiB` comphost adds to a suspend's or resume's reply.
-fn heap(reply: &str) -> Option<(u64, u64)> {
-    let (_, figures) = reply.rsplit_once("; heap ")?;
-    let (before, after) = figures.split_once(" KiB -> ")?;
-    let after = after.strip_suffix(" KiB")?;
-    Some((before.parse().ok()?, after.parse().ok()?))
+fn free_frames() -> u64 {
+    memory::with(|m| m.free_frames())
 }
 
 pub fn check() -> Result<(), &'static str> {
@@ -36,29 +32,34 @@ pub fn check() -> Result<(), &'static str> {
     if !call(add)?.contains("ok(1)") {
         return Err("app-suspend: the note was not added");
     }
+    let before = free_frames();
     let suspended = call("ctl suspend")?;
+    let after = free_frames();
     log!("app-suspend: {suspended}");
-    let Some((before, after)) = heap(&suspended).filter(|_| suspended.starts_with("ok")) else {
+    if !suspended.starts_with("ok suspended") {
         return Err("app-suspend: notes did not suspend");
-    };
-    let freed = before.saturating_sub(after);
-    if freed < MIN_FREED_KIB {
-        log!("app-suspend: only {freed} KiB came back");
-        return Err("app-suspend: the suspend freed too little");
+    }
+    let freed = after.saturating_sub(before);
+    log!("app-suspend: free frames {before} before the suspend, {after} after ({freed} back)");
+    if freed < MIN_FREED_FRAMES {
+        return Err("app-suspend: the suspend gave too few frames back");
     }
     let resumed = call("ctl resume")?;
+    let again = free_frames();
     log!("app-suspend: {resumed}");
     if !resumed.starts_with("ok resumed") {
         return Err("app-suspend: notes did not resume");
     }
-    match heap(&resumed) {
-        Some((before, after)) if after >= before + MIN_FREED_KIB => {}
-        _ => return Err("app-suspend: the resume took no memory back"),
+    if again + MIN_FREED_FRAMES > after {
+        log!("app-suspend: free frames {again} after the resume");
+        return Err("app-suspend: the resume took no frames");
     }
     let count = "kai-call 1\nfunc app:notes/actions@1.0.0#count\nargs {}\n";
     if !call(count)?.contains("{notes: 1, words: 2}") {
         return Err("app-suspend: the note did not come back");
     }
-    log!("app-suspend: notes freed {freed} KiB while suspended and came back with its note");
+    log!(
+        "app-suspend: notes gave {freed} frames back to the kernel while suspended and came back with its note"
+    );
     Ok(())
 }
