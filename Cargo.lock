@@ -2031,6 +2031,7 @@ dependencies = [
  "bootslot",
  "bpe",
  "cpufeat",
+ "deskcore",
  "diskmap",
  "ed25519-compact",
  "editcore",
