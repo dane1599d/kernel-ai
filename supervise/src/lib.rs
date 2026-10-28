@@ -47,12 +47,17 @@ pub struct ServiceSpec {
 pub enum Folder {
     /// `/system/pkg`, the package store (ADR 0011 §5).
     Pkg,
+    /// `/system/apps`, where comphost keeps each app's saved state: one folder
+    /// per app, named for it (P4). comphost is the OS's own host and the app's
+    /// wasm never reaches `fs`, so a host only touches its own app's folder.
+    Apps,
 }
 
 impl Folder {
     pub fn parse(name: &str) -> Option<Self> {
         match name {
             "pkg" => Some(Folder::Pkg),
+            "apps" => Some(Folder::Apps),
             _ => None,
         }
     }
@@ -61,6 +66,7 @@ impl Folder {
     pub fn badge(self) -> u64 {
         match self {
             Folder::Pkg => kabi::fs::SYSTEM_PKG,
+            Folder::Apps => kabi::fs::SYSTEM_APPS,
         }
     }
 }

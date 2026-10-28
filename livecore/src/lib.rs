@@ -20,6 +20,7 @@ pub mod local;
 pub mod location;
 pub mod manifest;
 mod probation;
+pub mod saved;
 pub mod scenario;
 pub mod settings;
 mod start;

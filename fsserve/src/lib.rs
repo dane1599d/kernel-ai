@@ -28,18 +28,19 @@ use fsproto::{
     Cursor, Error, How, Kind, Listing, MAX_DATA, MAX_LIST, MAX_ROWS, Outcome, Reply, Request, Stat,
     Version,
 };
-use kabi::fs::{Badge, HOME, HOME_USER, MODELS, SYSTEM, SYSTEM_PKG, SYSTEM_STATE};
+use kabi::fs::{Badge, HOME, HOME_USER, MODELS, SYSTEM, SYSTEM_APPS, SYSTEM_PKG, SYSTEM_STATE};
 use kabi::handle::Rights;
 use kaifs::ns::Listed;
 use kaifs::{BlockDev, FileType, Fs, Inode, ROOT};
 
 /// The folders `fs` makes at its first mount if `cargo xtask fs mkfs` did not
 /// (P2 plan §4.5), by volume.
-const FOLDERS: [(u8, &str); 4] = [
+const FOLDERS: [(u8, &str); 5] = [
     (HOME, "user"),
     (SYSTEM, "settings"),
     (SYSTEM, "state"),
     (SYSTEM, "pkg"),
+    (SYSTEM, "apps"),
 ];
 
 /// Rights every minted handle carries, as the kernel's startup handles do.
@@ -115,6 +116,9 @@ pub struct Server<D: BlockDev> {
     /// `/system/pkg`'s object id in `system`: what [`SYSTEM_PKG`] names, the
     /// folder a plan line's `dir=pkg` grants (ADR 0011 §12).
     system_pkg: u64,
+    /// `/system/apps`'s object id in `system`: what [`SYSTEM_APPS`] names, the
+    /// folder a plan line's `dir=apps` grants.
+    system_apps: u64,
     /// This disk's epoch, in every badge but the fixed ones ([`kabi::fs`]).
     epoch: u16,
     /// The clock at mount: kaifs's times are this plus time since boot, so they
@@ -154,6 +158,7 @@ impl<D: BlockDev> Server<D> {
             home_user: 0,
             system_state: 0,
             system_pkg: 0,
+            system_apps: 0,
             epoch: 0,
             base,
             pending: None,
@@ -165,6 +170,7 @@ impl<D: BlockDev> Server<D> {
             server.home_user,
             server.system_state,
             server.system_pkg,
+            server.system_apps,
             server.epoch,
         ) = fixed;
         Ok((server, started))
@@ -196,7 +202,7 @@ impl<D: BlockDev> Server<D> {
     /// Makes the missing [`FOLDERS`], and the disk's epoch if it has none, in
     /// one commit; `/home/user`'s, `/system/state`'s and `/system/pkg`'s ids and
     /// the epoch.
-    fn prepare(&mut self, uuid: &[u8; 16]) -> Result<(u64, u64, u64, u16), kaifs::Error> {
+    fn prepare(&mut self, uuid: &[u8; 16]) -> Result<(u64, u64, u64, u64, u16), kaifs::Error> {
         let fs = self.fs();
         let writable = fs.writable();
         let mut made = false;
@@ -226,9 +232,10 @@ impl<D: BlockDev> Server<D> {
         }
         let system_state = fs.lookup(ROOT, "state")?.map_or(0, |e| e.ino);
         let system_pkg = fs.lookup(ROOT, "pkg")?.map_or(0, |e| e.ino);
+        let system_apps = fs.lookup(ROOT, "apps")?.map_or(0, |e| e.ino);
         fs.set_volume(HOME.into())?;
         let home_user = fs.lookup(ROOT, "user")?.map_or(0, |e| e.ino);
-        Ok((home_user, system_state, system_pkg, epoch))
+        Ok((home_user, system_state, system_pkg, system_apps, epoch))
     }
 
     /// The badge for `object` of `volume` on this disk.
@@ -372,7 +379,7 @@ impl<D: BlockDev> Server<D> {
             epoch,
             object,
         } = Badge::parse(badge);
-        let fixed = matches!(badge, HOME_USER | SYSTEM_STATE | SYSTEM_PKG);
+        let fixed = matches!(badge, HOME_USER | SYSTEM_STATE | SYSTEM_PKG | SYSTEM_APPS);
         let ours = epoch == self.epoch || fixed;
         if !matches!(volume, SYSTEM | HOME | MODELS) || !ours {
             return Err(Error::NotFound);
@@ -381,6 +388,7 @@ impl<D: BlockDev> Server<D> {
             HOME_USER => self.home_user,
             SYSTEM_STATE => self.system_state,
             SYSTEM_PKG => self.system_pkg,
+            SYSTEM_APPS => self.system_apps,
             _ => object,
         };
         let fs = self.fs();

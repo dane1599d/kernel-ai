@@ -20,6 +20,8 @@ use livecore::settings::Settings;
 use user::{arg, args, println, sys};
 use wasmhost::{Limits, LiveInstance};
 
+#[path = "comphost/disk.rs"]
+mod disk;
 #[path = "comphost/ui.rs"]
 mod ui;
 
@@ -43,6 +45,9 @@ struct SysEnv {
     limits: Limits,
     /// Whether the app's windows reach `desktop`.
     windows: bool,
+    /// The app's saved state on disk, with a plan line's `dir=apps`; opened
+    /// at the first restore, which names the app.
+    disk: Option<disk::Disk>,
 }
 
 fn version_log(line: &str) {
@@ -66,7 +71,14 @@ impl Env for SysEnv {
     }
 
     fn report(&mut self, event: &Report<'_>) -> Result<(), Error> {
-        sys::comp_event(&event.to_raw())
+        sys::comp_event(&event.to_raw())?;
+        // A checkpoint the kernel took is the app's to keep across a reboot.
+        if event.kind == kabi::live::kind::CHECKPOINT
+            && let Some(disk) = self.disk.as_mut()
+        {
+            disk.save(event.schema as u32, event.blob);
+        }
+        Ok(())
     }
 
     fn restore(&mut self) -> Result<Restored, Error> {
@@ -74,7 +86,14 @@ impl Env for SysEnv {
         let mut checkpoint = vec![0u8; MAX_CHECKPOINT];
         let len = sys::comp_restore(&mut restore, &mut checkpoint)?;
         checkpoint.truncate(len.min(MAX_CHECKPOINT));
-        Ok(restored_of(&restore, &checkpoint))
+        let mut restored = restored_of(&restore, &checkpoint);
+        if self.disk.is_none() {
+            self.disk = disk::Disk::open(&restored.name);
+        }
+        // After a reboot the kernel has nothing; the disk may.
+        let saved = self.disk.as_mut().and_then(|d| d.load(MAX_CHECKPOINT));
+        livecore::saved::merge(&mut restored, saved);
+        Ok(restored)
     }
 
     fn load(&mut self, module: &[u8], quiet: bool) -> Result<LiveInstance, Fault> {
@@ -114,6 +133,7 @@ fn main() -> i32 {
     let mut windows = ui::Ui::new();
     let mut env = SysEnv {
         windows: windows.is_some(),
+        disk: None,
         limits: Limits {
             fuel_call: settings.fuel_call,
             fuel_life: settings.fuel_life,

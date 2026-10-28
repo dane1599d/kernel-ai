@@ -42,6 +42,17 @@ const FS_REBOOT_2: TestCase = TestCase {
     ..case("fs-reboot (boot 2)", "test=files reread")
 };
 
+/// Boot 2 of `app-saved`: the app starts from its saved state.
+const APP_SAVED_2: TestCase = TestCase {
+    expect: &[
+        "live: notes-window 1 restored from its saved state",
+        "app-saved: boot 2 found boot 1's note, restored from the app's saved state",
+    ],
+    server: false,
+    data: Some(VIRTIO),
+    ..case("app-saved (boot 2)", "test=app-saved reread")
+};
+
 /// Boot 2 of `fs-undo-reboot`: the log on disk still undoes boot 1's change.
 const FS_UNDO_REBOOT_2: TestCase = TestCase {
     expect: &["fs-undo-reboot: boot 2's undo restored notes.txt from the log on disk"],
@@ -105,6 +116,14 @@ pub(super) const CASES: &[TestCase] = &[
         data: Some(VIRTIO),
         then: Some(&FS_REBOOT_2),
         ..case("fs-reboot", "test=files")
+    },
+    // P4: an app's state survives a reboot through its own folder (dir=apps).
+    TestCase {
+        expect: &["app-saved: boot 1 added a note"],
+        server: false,
+        data: Some(VIRTIO),
+        then: Some(&APP_SAVED_2),
+        ..case("app-saved", "test=app-saved")
     },
     TestCase {
         expect: &[

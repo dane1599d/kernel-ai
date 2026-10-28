@@ -83,6 +83,17 @@ pub const SYSTEM_PKG: u64 = Badge {
 }
 .raw();
 
+/// The badge of the startup `Dir` a plan line's `dir=apps` grants: `/system/apps`,
+/// where comphost keeps each app's saved state in a folder named for the app
+/// (P4, app storage that survives a reboot). Fixed, as [`SYSTEM_PKG`]; object 2.
+pub const SYSTEM_APPS: u64 = Badge {
+    volume: SYSTEM,
+    file: false,
+    epoch: 0,
+    object: 2,
+}
+.raw();
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,6 +127,8 @@ mod tests {
         // The fixed badges are three, and none is another's.
         assert_eq!(Badge::parse(SYSTEM_PKG).epoch, 0);
         const { assert!(SYSTEM_PKG != SYSTEM_STATE && SYSTEM_PKG != HOME_USER) };
+        const { assert!(SYSTEM_APPS != SYSTEM_PKG && SYSTEM_APPS != SYSTEM_STATE) };
+        assert_eq!(Badge::parse(SYSTEM_APPS).epoch, 0);
         assert_ne!(SYSTEM_STATE, HOME_USER);
         assert_eq!(Badge::parse(SYSTEM_STATE).volume, SYSTEM);
     }
