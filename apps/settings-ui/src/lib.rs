@@ -31,26 +31,33 @@ pub const LEGIBLE: NodeId = 11;
 pub const MOTION: NodeId = 12;
 // What apps can do.
 pub const APP_LIST: NodeId = 20;
+pub const NO_ACCESS: NodeId = 21;
+// Rows of one kind take a block of 1,000 ids each, and a page shows at most
+// [`MAX_ROWS`] of a kind, so no two nodes can share an id.
 pub const APP_ITEM: NodeId = 1000;
 pub const ACCESS: NodeId = 2000;
-pub const REVOKE: NodeId = 3000;
+pub const ACCESS_TEXT: NodeId = 3000;
+pub const REVOKE: NodeId = 4000;
 // Rules and profiles.
 pub const RULES: NodeId = 30;
-pub const RULE: NodeId = 4000;
-pub const REMOVE: NodeId = 5000;
+pub const NO_RULES: NodeId = 32;
+pub const RULE: NodeId = 5000;
+pub const RULE_TEXT: NodeId = 6000;
+pub const REMOVE: NodeId = 7000;
 pub const PROFILES: NodeId = 31;
-pub const PROFILE_ITEM: NodeId = 6000;
+pub const PROFILE_ITEM: NodeId = 8000;
 // Keep running.
-pub const KEEP: NodeId = 7000;
+pub const NO_NAP: NodeId = 33;
+pub const KEEP: NodeId = 9000;
 // Updates.
 pub const WINDOW_ON: NodeId = 40;
 pub const START: NodeId = 41;
 pub const END: NodeId = 42;
 // About.
-pub const ABOUT: NodeId = 8000;
+pub const ABOUT: NodeId = 10_000;
 
-/// Most rows a page shows of one kind, so node ids stay apart.
-pub const MAX_ROWS: usize = 999;
+/// Most rows a page shows of one kind: one block of ids.
+pub const MAX_ROWS: usize = 1000;
 /// The window's size.
 pub const SIZE: (u16, u16) = (640, 460);
 /// The restart window a switch turns on with: 02:00 to 05:00.
@@ -144,7 +151,7 @@ fn appearance(s: &Settings, tree: &mut Vec<Entry>) {
 fn access(s: &Settings, view: &View, tree: &mut Vec<Entry>) {
     if s.access.is_empty() {
         tree.push(entry(
-            ACCESS,
+            NO_ACCESS,
             PAGE,
             wide(),
             label(
@@ -177,10 +184,10 @@ fn access(s: &Settings, view: &View, tree: &mut Vec<Entry>) {
         return;
     };
     for (i, x) in app.access.iter().take(MAX_ROWS).enumerate() {
-        let at = ACCESS + 2 * i as u32;
+        let at = ACCESS + i as u32;
         tree.push(entry(at, PAGE, wide(), row()));
         tree.push(entry(
-            at + 1,
+            ACCESS_TEXT + i as u32,
             at,
             wide(),
             label(
@@ -210,17 +217,17 @@ fn rules(s: &Settings, tree: &mut Vec<Entry>) {
     ));
     if s.rules.is_empty() {
         tree.push(entry(
-            RULE,
+            NO_RULES,
             PAGE,
             wide(),
             label("None: every ask still asks.", TypeStyle::Body, Tone::Muted),
         ));
     }
     for (i, r) in s.rules.iter().take(MAX_ROWS).enumerate() {
-        let at = RULE + 1 + 2 * i as u32;
+        let at = RULE + i as u32;
         tree.push(entry(at, PAGE, wide(), row()));
         tree.push(entry(
-            at + 1,
+            RULE_TEXT + i as u32,
             at,
             wide(),
             label(&r.text, TypeStyle::Body, Tone::Normal),
@@ -262,7 +269,7 @@ fn rules(s: &Settings, tree: &mut Vec<Entry>) {
 fn apps(s: &Settings, tree: &mut Vec<Entry>) {
     if s.nappable.is_empty() {
         tree.push(entry(
-            KEEP,
+            NO_NAP,
             PAGE,
             wide(),
             label("No app naps yet.", TypeStyle::Body, Tone::Muted),
@@ -270,7 +277,7 @@ fn apps(s: &Settings, tree: &mut Vec<Entry>) {
     }
     for (i, app) in s.nappable.iter().take(MAX_ROWS).enumerate() {
         tree.push(entry(
-            KEEP + 1 + i as u32,
+            KEEP + i as u32,
             PAGE,
             wide(),
             Widget::Toggle {
@@ -386,7 +393,7 @@ pub fn on_ui(settings: &Settings, view: &mut View, e: &UiEvent) -> (bool, Option
             (false, settings.restart_window(Some(w)))
         }
         UiEvent::Changed(id, Value::On(on)) => {
-            let app = nth(*id, KEEP + 1).and_then(|i| settings.nappable.get(i));
+            let app = nth(*id, KEEP).and_then(|i| settings.nappable.get(i));
             (false, app.and_then(|a| settings.keep_running(a, *on)))
         }
         _ => (false, None),

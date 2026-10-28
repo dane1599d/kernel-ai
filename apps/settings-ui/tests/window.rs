@@ -97,7 +97,7 @@ fn switching_pages_sends_only_what_changed() {
     assert!(
         changes
             .iter()
-            .any(|c| matches!(c, Change::Put(e) if e.id == KEEP + 1))
+            .any(|c| matches!(c, Change::Put(e) if e.id == KEEP))
     );
     // Applying the changes to the first tree gives the second.
     let mut w = Window::new("Settings", SIZE.0, SIZE.1);
@@ -168,14 +168,14 @@ fn rules_profiles_and_keep_running_give_their_intents() {
         None
     );
     assert_eq!(
-        on_ui(&s, &mut view, &UiEvent::Changed(KEEP + 1, Value::On(true))).1,
+        on_ui(&s, &mut view, &UiEvent::Changed(KEEP, Value::On(true))).1,
         Some(Intent::KeepRunning {
             app: "files".into(),
             on: true
         })
     );
     assert_eq!(
-        on_ui(&s, &mut view, &UiEvent::Changed(KEEP + 2, Value::On(true))).1,
+        on_ui(&s, &mut view, &UiEvent::Changed(KEEP + 1, Value::On(true))).1,
         None
     );
 }
@@ -211,4 +211,49 @@ fn the_restart_window_turns_on_and_moves_in_quarter_hours() {
         .1,
         Some(Intent::RestartWindow(None))
     );
+}
+
+#[test]
+fn node_ids_stay_unique_with_every_kind_of_row_at_its_limit() {
+    use comp_settings::access::{Access, AppAccess};
+    use comp_settings_ui::MAX_ROWS;
+    let n = MAX_ROWS + 5;
+    let s = Settings {
+        access: vec![AppAccess {
+            app: "many".into(),
+            access: (0..n as u32)
+                .map(|grant| Access {
+                    grant,
+                    what: format!("thing {grant}"),
+                    why: "test".into(),
+                })
+                .collect(),
+        }],
+        rules: (0..n as u32)
+            .map(|i| RuleLine {
+                id: RuleRef::Rule(i),
+                text: format!("rule {i}"),
+            })
+            .collect(),
+        profiles: (0..n).map(|i| format!("p{i}")).collect(),
+        nappable: (0..n).map(|i| format!("a{i}")).collect(),
+        ..Settings::default()
+    };
+    for page in 0..Page::ALL.len() {
+        let tree = build(&s, &View { page, app: Some(0) });
+        let mut ids: Vec<u32> = tree.iter().map(|e| e.id).collect();
+        let total = ids.len();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), total, "page {page} reuses an id");
+        // Every parent is a node put before it.
+        for (i, e) in tree.iter().enumerate().skip(1) {
+            assert!(
+                tree[..i].iter().any(|p| p.id == e.parent),
+                "page {page}: {} before its parent {}",
+                e.id,
+                e.parent
+            );
+        }
+    }
 }
