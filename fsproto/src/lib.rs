@@ -184,13 +184,15 @@ pub enum Request {
     /// taken before a new slot's first boot, so the old slot can boot on it if
     /// the new one fails before it commits (ADR 0008 §10). Only on the `Dir`
     /// for `/system/updates` ([`kabi::fs::SYSTEM_UPDATES`]) with WRITE;
-    /// Permission on any other handle. `home` is never in it.
+    /// Permission on any other handle. Never inside an action, as it commits on
+    /// its own: Invalid in the caller's own, Busy in another's. `home` is never
+    /// in it.
     #[n(20)]
     UpdateSnapshot,
     /// Makes `update` snapshot `id` the `system` volume's live tree again, and
     /// commits: the way back after a new slot failed before it committed. On
-    /// the same handle as [`Request::UpdateSnapshot`]; Invalid for an id that
-    /// is not an `update` snapshot.
+    /// the same handle as [`Request::UpdateSnapshot`], and like it never inside
+    /// an action; Invalid for an id that is not an `update` snapshot.
     #[n(21)]
     UpdateRestore {
         #[n(0)]
