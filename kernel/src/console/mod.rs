@@ -13,6 +13,9 @@
 //!
 //! Every access takes the serial line lock and then the console lock, so a reader
 //! never makes another CPU's line miss the screen.
+//!
+//! Beside the grid it keeps `termcore::mirror`'s row log, apart from its own
+//! paint damage, for the terminal window's TERM_READ ([`mirror`]).
 
 mod fb;
 mod layout;
@@ -29,12 +32,14 @@ use layout::Layout;
 use limine::framebuffer::Framebuffer;
 use spin::Mutex;
 use termcore::grid::{Grid, MAX_ROWS};
+use termcore::mirror::{self, Full};
 use termcore::plain::Plainly;
 use termcore::style::Kind;
 
 /// Cells the screen holds: 176 by 42 on CI's 1280x800, 168 by 37 on 1920x1080. The
 /// grid is 128 KiB, more than a kernel stack, so it lives only in CONSOLE.
 const CELLS: usize = 32 * 1024;
+const _: () = assert!(CELLS == mirror::CELLS);
 
 /// The screen's text.
 pub type Screen = Grid<CELLS>;
@@ -69,6 +74,8 @@ struct Console {
     painted: [Painted; MAX_ROWS],
     /// The row the busy sign is drawn on (`show_sign`).
     sign: Option<usize>,
+    /// What changed for TERM_READ's readers, kept apart from `painted`.
+    log: mirror::Log,
 }
 
 // SAFETY: the framebuffer pointer is only used under the CONSOLE mutex.
@@ -80,6 +87,7 @@ static CONSOLE: Mutex<Console> = Mutex::new(Console {
     grid: Grid::new(),
     painted: [UNKNOWN; MAX_ROWS],
     sign: None,
+    log: mirror::Log::new(),
 });
 static SCREENLOG: AtomicBool = AtomicBool::new(false);
 /// Text columns and rows of the framebuffer console; 0 when there is none.
@@ -144,6 +152,7 @@ pub fn attach(surface: Surface) -> bool {
         console.sign = None;
         // Every row is blank ink already.
         console.grid.take_damage();
+        console.log.touch_all();
         console.painted.fill(Painted {
             width: 0,
             look: Some(theme::look(Kind::of(&[]))),
@@ -189,7 +198,9 @@ pub fn resume() {
         console.out = Some(out);
         console.painted = [UNKNOWN; MAX_ROWS];
         console.sign = None;
-        let _ = console.grid.take_damage();
+        let damage = console.grid.take_damage();
+        let rows = console.grid.size().1;
+        console.log.fold(damage, rows);
         let (_, rows) = console.grid.size();
         let input = console.grid.input_span();
         for row in 0..rows {
@@ -261,6 +272,16 @@ fn rows_rect(layout: &Layout, first: usize, last: usize) -> Rect {
     Rect::new(0, top as u32, layout.width as u32, height as u32)
 }
 
+/// TERM_READ: writes the rows changed after `since` into `out`, whose room is
+/// reserved already (`termcore::mirror::Log::snapshot` never allocates). None
+/// while a fault on this CPU holds the console.
+pub fn mirror(since: u64, out: &mut alloc::vec::Vec<u8>) -> Option<Result<(), Full>> {
+    serial::with_line(|| {
+        let console = CONSOLE.try_lock()?;
+        Some(console.log.snapshot(&console.grid, since, out))
+    })
+}
+
 /// Runs `f` on the screen's text, with no line drawn meanwhile. None without a
 /// framebuffer console, or while a fault on this CPU holds it. `f` runs with
 /// interrupts off and must not allocate.
@@ -280,6 +301,7 @@ impl Console {
     /// status thread draws it again where there is room.
     fn flush(&mut self) {
         let damage = self.grid.take_damage();
+        self.log.fold(damage, self.grid.size().1);
         let Some(out) = self.out else {
             return;
         };

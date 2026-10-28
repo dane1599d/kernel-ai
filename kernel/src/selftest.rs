@@ -115,6 +115,7 @@ pub enum SelfTest {
     DeskWindows,
     /// `desktop` killed and restarted; clients reconnect (P3 task 6).
     DeskRestart,
+    DeskAsk,
     /// An app suspended and resumed through its host (P3 task 11).
     AppSuspend,
     /// The OS boots to the desktop, whose screen matches its golden (P3 task 6).
@@ -255,6 +256,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=display-claim" => Some(SelfTest::DisplayClaim),
             "test=desk-windows" => Some(SelfTest::DeskWindows),
             "test=desk-restart" => Some(SelfTest::DeskRestart),
+            "test=desk-ask" => Some(SelfTest::DeskAsk),
             "test=app-suspend" => Some(SelfTest::AppSuspend),
             "test=desk-boot" => Some(SelfTest::DeskBoot),
             "test=desk-panel" => Some(SelfTest::DeskPanel),
@@ -326,6 +328,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DisplayClaim
             | SelfTest::DeskWindows
             | SelfTest::DeskRestart
+            | SelfTest::DeskAsk
             | SelfTest::FilesActions
             | SelfTest::FilesChurn { .. }
             | SelfTest::DeskBoot
@@ -444,7 +447,10 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
         plan.push('\n');
         plan.push_str(crate::claim_tests::PLAN);
     }
-    if matches!(test, SelfTest::DeskWindows | SelfTest::DeskRestart) {
+    if matches!(
+        test,
+        SelfTest::DeskWindows | SelfTest::DeskRestart | SelfTest::DeskAsk
+    ) {
         plan.push('\n');
         plan.push_str(crate::desk_tests::PLAN);
     }
