@@ -70,7 +70,9 @@ pub const ACT: &[(&str, &str)] = &[
         r#"{"name":"clarify","arguments":{"question":"Faster how?","options":["interactive policy","round-robin"]}}"#,
     ),
     (
-        "delete all my files",
-        r#"{"name":"say","arguments":{"text":"I cannot do that: there is no action for files yet."}}"#,
+        // A request no row can do. Not files: they have rows since P2, and this
+        // example once taught the model they did not (run 40569449630).
+        "order me a pizza",
+        r#"{"name":"say","arguments":{"text":"I cannot do that: there is no action for ordering food."}}"#,
     ),
 ];

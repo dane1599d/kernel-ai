@@ -3,15 +3,19 @@
 //! no history), then taken through the one door's name resolution
 //! (`shellcore::targets::resolve`) in [`services`] and [`processes`], and checked
 //! against what must run. It gates the one door's row changes, such as the stop
-//! and restart rows (#99) and their name resolution (#106), at [`BAR`] of
-//! [`TASKS`]. The shipping decoder is greedy, so every seed gives the same calls;
-//! one seed is enough.
+//! and restart rows (#99) and their name resolution (#106), and which groups
+//! the pack shows by name only (ADR 0010 §6), at [`BAR`] of [`TASKS`]. Each
+//! request also reports its decode rounds (two for an index-only row with
+//! arguments) and the tokens it computed. The shipping decoder is greedy, so
+//! every seed gives the same calls; one seed is enough.
 
 use super::{Loaded, Next};
+use infer::chat::Step;
 use llmproto::act::{ActRequest, Call, History};
 use llmproto::local::act::{self as local_act, Slots};
 use serde_json::{Value, json};
 use shellcore::targets::{self, Service, Unresolved, Verb};
+use std::cell::Cell;
 use std::fs;
 use std::path::Path;
 
@@ -44,6 +48,16 @@ pub const TASKS: &[(&str, Want)] = &[
         "put back the policy the scheduler trial replaced",
         Row("tune_undo", ""),
     ),
+    // Packages and files (P2), the groups most likely to be shown by name only.
+    ("install htop", Row("pkg_install", "htop")),
+    ("remove the notes package", Row("pkg_remove", "notes")),
+    (
+        "search the package repository for htop",
+        Row("pkg_search", "htop"),
+    ),
+    ("show me what is in notes.txt", Row("fs_read", "notes.txt")),
+    ("rename todo.txt to done.txt", Row("fs_move", "todo.txt")),
+    ("move old.txt to the trash", Row("fs_trash", "old.txt")),
     // Index-only (ADR 0010 §6): named on an index line, so a call with
     // arguments takes the second round with the group's full lines.
     (
@@ -51,7 +65,7 @@ pub const TASKS: &[(&str, Want)] = &[
         Row("component_revert", "notes"),
     ),
 ];
-/// Share of [`TASKS`] that must come right: 12 of 13.
+/// Share of [`TASKS`] that must come right: 18 of 19.
 pub const BAR: f64 = 0.9;
 /// The time llm gives one call.
 const TIMEOUT_MS: u64 = 60_000;
@@ -87,19 +101,28 @@ pub fn processes() -> Vec<(u64, String)> {
     .collect()
 }
 
+/// The arguments that name a row's subject, in the order they are looked for.
+const SUBJECTS: [&str; 6] = ["name", "target", "component", "path", "from", "text"];
+
 /// What the door makes of `call`: a stop, start or restart row resolved by the
 /// name it names, or the call as the model wrote it.
 fn outcome(call: &Call) -> Result<(String, String), Unresolved> {
     let row = llmproto::pack::rows()
         .into_iter()
         .find(|row| row.name == call.name);
-    // The row's subject: `name`, `target` or `component`, else the first text
-    // argument (`tune`'s `intent` sorts before its `target`, run 40536225586).
-    let name = ["name", "target", "component"]
+    // The row's subject: `name`, `target`, `component`, `path`, `from` or
+    // `text`, else the first text argument (`tune`'s `intent` sorts before its
+    // `target`, run 40536225586). A path is named from the home folder, and
+    // `./notes.txt` is `notes.txt` (run 40563541080).
+    let name = SUBJECTS
         .iter()
         .find_map(|key| call.arguments.get(*key).filter(|v| v.is_string()))
         .or_else(|| call.arguments.values().find(|v| v.is_string()))
-        .and_then(Value::as_str);
+        .and_then(Value::as_str)
+        .map(|name| {
+            name.trim_start_matches("/home/user/")
+                .trim_start_matches("./")
+        });
     match (row.and_then(Verb::of), name) {
         (Some(verb), Some(name)) => targets::resolve(verb, name, &services(), &processes())
             .map(|found| (found.row.name.to_string(), name.to_string())),
@@ -122,6 +145,7 @@ pub fn run(loaded: &Loaded, seed: u64, target_dir: &Path) -> Result<(bool, Strin
     let grammar = local_act::grammar().map_err(|e| e.to_string())?;
     let mut records = Vec::new();
     let mut passed = 0;
+    let (mut all_rounds, mut all_tokens) = (0, 0);
     for &(line, want) in TASKS {
         let request = ActRequest {
             line: line.into(),
@@ -129,6 +153,9 @@ pub fn run(loaded: &Loaded, seed: u64, target_dir: &Path) -> Result<(bool, Strin
             timeout_ms: TIMEOUT_MS,
         };
         let started = std::time::Instant::now();
+        // Rounds are the decodes (each starts with its cache count); tokens are
+        // those the model computed, prompt and answer.
+        let (rounds, tokens) = (Cell::new(0), Cell::new(0));
         let call = local_act::routed(
             &mut loaded.engine.borrow_mut(),
             &grammar,
@@ -136,28 +163,42 @@ pub fn run(loaded: &Loaded, seed: u64, target_dir: &Path) -> Result<(bool, Strin
             &History::new(),
             Slots::ONE,
             |_| true,
-            |_| Next::Continue,
+            |step| {
+                match step {
+                    Step::Cached(_) => rounds.set(rounds.get() + 1),
+                    Step::Prompt | Step::Token(_) => tokens.set(tokens.get() + 1),
+                }
+                Next::Continue
+            },
         );
+        let (rounds, tokens) = (rounds.get(), tokens.get());
+        all_rounds += rounds;
+        all_tokens += tokens;
         let ok = call.as_ref().is_ok_and(|call| meets(call, want));
         let got = call.as_ref().map_or_else(|e| e.describe(), Call::text);
         let door = call.as_ref().ok().map(outcome);
         passed += usize::from(ok);
         println!(
-            "  {} {line} -> {got}; the door: {door:?} ({} ms)",
+            "  {} {line} -> {got}; the door: {door:?} ({} ms, {rounds} rounds, {tokens} tokens)",
             if ok { "ok  " } else { "FAIL" },
             started.elapsed().as_millis()
         );
         records.push(json!({
             "line": line, "got": got, "want": format!("{want:?}"),
             "door": format!("{door:?}"), "passed": ok,
+            "rounds": rounds, "tokens": tokens,
         }));
     }
     let need = (TASKS.len() as f64 * BAR).ceil() as usize;
     let passes = passed >= need;
+    let per = |total: usize| total as f64 / TASKS.len() as f64;
     println!(
-        "xtask: actbench os seed {seed}: {} {passed}/{} requests (pass >= {need})",
+        "xtask: actbench os seed {seed}: {} {passed}/{} requests (pass >= {need}); \
+         {:.2} rounds and {:.0} tokens a request",
         if passes { "pass" } else { "FAIL" },
-        TASKS.len()
+        TASKS.len(),
+        per(all_rounds),
+        per(all_tokens)
     );
     let dir = target_dir.join("actbench");
     fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -167,9 +208,13 @@ pub fn run(loaded: &Loaded, seed: u64, target_dir: &Path) -> Result<(bool, Strin
     let mark = if passes { "yes" } else { "**no**" };
     let rows = format!(
         "\n### os seed {seed}\n\n| Bar | Value | Pass |\n|---|---|---|\n\
-         | OS requests through the door (>= {need}/{}) | {passed}/{} | {mark} |\n",
+         | OS requests through the door (>= {need}/{}) | {passed}/{} | {mark} |\n\
+         | Decode rounds a request | {:.2} | |\n\
+         | Tokens computed a request | {:.0} | |\n",
         TASKS.len(),
-        TASKS.len()
+        TASKS.len(),
+        per(all_rounds),
+        per(all_tokens)
     );
     Ok((passes, rows))
 }
