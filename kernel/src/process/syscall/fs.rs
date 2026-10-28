@@ -23,6 +23,7 @@ const CALLS: &[u64] = &[
     call::PART_WRITE,
     call::PART_FLUSH,
     call::ENDPOINT_MINT,
+    call::PART_PEER_ALIVE,
 ];
 
 /// One of [`CALLS`], or `None` for a number this area does not have.
@@ -32,6 +33,7 @@ pub(super) fn handle(slot: usize, number: u64, a: &[u64; 6]) -> Option<Result<u6
         call::PART_READ => read(slot, a[0], a[1], a[2], a[3]),
         call::PART_WRITE => write(slot, a[0], a[1], a[2], a[3]),
         call::PART_FLUSH => flush(slot, a[0]),
+        call::PART_PEER_ALIVE => peer_alive(slot, a[0], a[1]),
         _ => mint(slot, a[0], a[1], a[2], a[3]),
     })
 }
@@ -176,6 +178,15 @@ pub(super) fn flush_in(kind: diskmap::Guid) -> Result<u64, Error> {
         disk.flush().map_err(|_| Error::Unavailable)?;
         Ok(0)
     })?
+}
+
+/// Whether `pid` still runs, for the holder of a `Partition` handle (`fs`).
+fn peer_alive(slot: usize, raw: u64, pid: u64) -> Result<u64, Error> {
+    partition(slot, raw, Rights::empty())?;
+    match pid == 0 || crate::process::name_of(pid).is_some() {
+        true => Ok(0),
+        false => Err(Error::NotFound),
+    }
 }
 
 /// Rights a minted handle of each server-backed kind can carry.
