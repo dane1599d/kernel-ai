@@ -78,3 +78,38 @@ fn effects_past_the_limit_are_refused() {
     assert!(done[..MAX_EFFECTS].iter().all(|d| d.outcome.is_ok()));
     assert!(done[MAX_EFFECTS].outcome.is_err());
 }
+
+#[test]
+fn a_file_read_comes_back_to_the_app_and_a_move_undoes() {
+    let host = FakeHost::new();
+    host.files
+        .borrow_mut()
+        .insert("notes.txt".into(), "milk".into());
+    let mut shell = shell(&host);
+    let list = r#"effect 1 call({name: "fs_list", args: "{path: \"\"}"})"#;
+    let done = shell.run_effects("files", list);
+    assert_eq!(done[0].outcome, Ok(String::from("notes.txt\n")));
+    let read = r#"effect 2 call({name: "fs_read", args: "{path: \"notes.txt\"}"})"#;
+    assert_eq!(
+        shell.run_effects("files", read)[0].outcome,
+        Ok(String::from("milk\n"))
+    );
+    let moved =
+        r#"effect 3 call({name: "fs_move", args: "{from: \"notes.txt\", to: \"plan.txt\"}"})"#;
+    let done = shell.run_effects("files", moved);
+    assert!(
+        matches!(&done[0].outcome, Ok(line) if line.ends_with(". undo")),
+        "{done:?}"
+    );
+    assert!(host.files.borrow().contains_key("plan.txt"));
+    assert_eq!(shell.eval("undo"), ok("Undone: files back as they were"));
+    assert!(host.files.borrow().contains_key("notes.txt"));
+}
+
+#[test]
+fn an_app_cannot_reach_the_package_door() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    let install = r#"effect 1 call({name: "pkg_install", args: "{name: \"hello\"}"})"#;
+    assert!(shell.run_effects("files", install)[0].outcome.is_err());
+}

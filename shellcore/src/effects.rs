@@ -16,7 +16,7 @@ use crate::actlog::Form;
 use crate::script;
 use crate::tiers::Tier;
 use crate::{Reply, Shell};
-use agentabi::{Action, ArgType};
+use agentabi::{Action, ArgType, RetType};
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -177,13 +177,31 @@ impl Shell {
                 "{name} asks the user first, which an app cannot do on its own; ask the AI"
             ));
         }
+        // As a call's: a file row's script is checked among the file rows, any
+        // other among the bound ones; packages go through the package door,
+        // which an app's effect may not reach.
+        let rows: &'static [Action] = match agentabi::FS_ROWS.iter().any(|r| r.name == row.name) {
+            true => &agentabi::FS_ROWS,
+            false => &agentabi::BOUND,
+        };
+        let is_pkg = agentabi::PKG_ROWS.iter().any(|r| r.name == row.name);
+        if is_pkg || !rows.iter().any(|r| r.name == row.name) {
+            return Err(format!("{name} is no action an app may call"));
+        }
         let call = call_of(row, args)?;
         let args = crate::agentcore::arguments(row, &call)?;
+        // What a read returns goes back to the app that asked, never to the
+        // model: `show` puts it in the result.
+        let called = format!("{}({})", row.name, args.rhai.join(", "));
+        let script = match row.ret {
+            RetType::Data => format!("show({called});"),
+            _ => format!("{called};"),
+        };
         let answer = Answer {
-            script: format!("{}({});", row.name, args.rhai.join(", ")),
+            script,
             summary: String::new(),
         };
-        let checked = script::check_against(&answer, &self.host, &self.config, &agentabi::ROWS)
+        let checked = script::check_against(&answer, &self.host, &self.config, rows)
             .map_err(|refusal| refusal.to_string())?;
         let id = self.next_id;
         self.next_id += 1;
