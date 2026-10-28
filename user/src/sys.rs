@@ -748,7 +748,11 @@ pub fn comp_control(component: &str, request: &str, reply: &mut [u8]) -> Result<
     .map(|len| len as usize)
 }
 
-/// As [`http`], to the build service the kernel was booted with (needs PUBLISH).
+/// The date, seconds since 1970 UTC; only for the holder of `/system/pkg`.
+pub fn pkg_time() -> Result<u64, Error> {
+    call(call::PKG_TIME, [0; 6])
+}
+
 /// Sends `request`, as `kabi::pkgrepo::request` builds it, to the fixed `pkgrepo=`
 /// mirror; the response's length. Only for the holder of `/system/pkg`.
 pub fn pkg_fetch(request: &HttpRequest) -> Result<usize, Error> {
@@ -759,6 +763,7 @@ pub fn pkg_fetch(request: &HttpRequest) -> Result<usize, Error> {
     .map(|len| len as usize)
 }
 
+/// As [`http`], to the build service the kernel was booted with (needs PUBLISH).
 pub fn build(request: &HttpRequest) -> Result<usize, Error> {
     call(
         call::BUILD,

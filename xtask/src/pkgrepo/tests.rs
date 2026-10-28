@@ -1,3 +1,4 @@
+use super::mirrors::tampered;
 use super::tuf::{self, Key, canonical};
 use super::*;
 use ed25519_compact::{PublicKey, Signature};
@@ -355,22 +356,6 @@ fn each_role_expires_after_adr_0008s_period() {
     }
     let late = Time(NOW.0 + 7 * 86_400);
     assert_eq!(verify(&repo, late).err().unwrap(), "timestamp: expired");
-}
-
-/// `repo` with `path`'s bytes changed by `edit`.
-pub(super) fn tampered(repo: &Repository, path: &str, edit: impl Fn(&mut Vec<u8>)) -> Repository {
-    let files = repo
-        .files
-        .iter()
-        .map(|(p, bytes)| {
-            let mut bytes = bytes.clone();
-            if p == path {
-                edit(&mut bytes);
-            }
-            (p.clone(), bytes)
-        })
-        .collect();
-    Repository { files }
 }
 
 /// `path`'s JSON with `edit` applied, written canonically and not signed again.

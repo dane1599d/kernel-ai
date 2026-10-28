@@ -43,6 +43,7 @@ use kaipkg::fsvol::{FsVolume, Transport};
 use kaipkg::generation::{Generation, Time};
 use kaipkg::header::{Header, Kind as PackageKind};
 use kaipkg::image::Files;
+use kaipkg::mirror::{self, Exchange, Mirror, TUF_DIR, TufCache};
 use kaipkg::resolve::{Entry, Want};
 use kaipkg::store::{self, Ctx, Ledger, Source, Store, Volume};
 use kaipkg::version::Version;
@@ -69,7 +70,12 @@ fn main() -> i32 {
     let result = match step {
         Some(step @ ("install" | "undo" | "check")) => run(&mut vol, step),
         Some(step @ ("image" | "image-again" | "image-tampered")) => image(&mut vol, step),
-        _ => Err(String::from("no step=install, undo, check or image")),
+        Some(step @ ("mirror" | "mirror-again" | "mirror-tampered" | "mirror-rollback")) => {
+            mirror(&mut vol, step)
+        }
+        _ => Err(String::from(
+            "no step=install, undo, check, image or mirror",
+        )),
     };
     match result {
         Ok(line) => println!("pkg: {line}"),
@@ -234,6 +240,101 @@ fn image(vol: &mut FsVolume<Calls>, step: &str) -> Result<String, String> {
     Ok(line)
 }
 
+/// The package the mirror cases install: a `data` package of two pieces.
+const FROM_MIRROR: &str = "big";
+
+/// PKG_FETCH: the fixed `pkgrepo=` mirror, one request at a time.
+struct Fetch;
+
+impl Exchange for Fetch {
+    fn exchange(&mut self, request: &[u8]) -> Result<Vec<u8>, String> {
+        let mut response = alloc::vec![0u8; llmproto::http::MAX_RESPONSE];
+        let call = kabi::HttpRequest {
+            request_ptr: request.as_ptr() as u64,
+            request_len: request.len() as u64,
+            response_ptr: response.as_mut_ptr() as u64,
+            response_cap: response.len() as u64,
+            timeout_ms: CALL_MS,
+        };
+        let len = sys::pkg_fetch(&call).map_err(|e| format!("PKG_FETCH: {e:?}"))?;
+        response.truncate(len);
+        Ok(response)
+    }
+}
+
+/// `step=mirror*` (P4 task 2): generation 1 from the image, as `step=image`,
+/// then an install from the `pkgrepo=` mirror, checked with `kaituf` against
+/// the root the image carries:
+/// - `mirror`: [`FROM_MIRROR`] installs, fetched in pieces;
+/// - `mirror-again` (boot 2): undo, then the same install again, from the store;
+/// - `mirror-tampered`, `mirror-rollback`: the mirror is tampered with, and the
+///   install is refused by name.
+fn mirror(vol: &mut FsVolume<Calls>, step: &str) -> Result<String, String> {
+    image(vol, step)?;
+    let root = format!("{TUF_DIR}/root.json");
+    if vol.read(&root)?.is_none() {
+        let image_root = BootRepo
+            .file(kaipkg::image::ROOT, kaituf::updater::ROOT_MAX)?
+            .ok_or("the image has no root for the mirror")?;
+        vol.write(&root, &image_root)?;
+        vol.commit()?;
+    }
+    let time = now(vol);
+    let mut source = Mirror::new(Fetch);
+    let listing = match mirror::index(&mut source, &mut TufCache { vol }, time.0) {
+        Ok(listing) => listing,
+        Err(why) => return Ok(format!("the mirror's index is refused: {why}")),
+    };
+    for (path, why) in &listing.refused {
+        println!("pkg: the mirror's {path} is refused: {why}");
+    }
+    let store = Store::default();
+    let mut ledger = NoLedger;
+    let mut cx = Ctx {
+        vol,
+        ledger: &mut ledger,
+        now: time,
+        action: 2,
+    };
+    let mut undone = String::new();
+    if step == "mirror-again" {
+        let current = store::current(cx.vol)?;
+        let parent = store::generation(cx.vol, current)?.parent;
+        let n = store
+            .rollback(&mut cx, parent)
+            .map_err(|e| format!("{e:?}"))?;
+        undone = format!("undo switched to generation {n}; ");
+    }
+    let want = [Want {
+        name: FROM_MIRROR,
+        range: None,
+    }];
+    let before = source.requests;
+    let result = store.install(
+        &mut cx,
+        &mut source,
+        &listing.entries,
+        kaipkg::PROVIDED,
+        &want,
+        false,
+    );
+    let pieces = source.requests - before;
+    let line = match result {
+        Ok(n) => format!(
+            "{undone}{FROM_MIRROR} installed from the mirror as generation {n}, fetched in {pieces} pieces"
+        ),
+        Err(store::Error::Refused(why)) => {
+            format!("the mirror's {FROM_MIRROR} is refused: {why:?}")
+        }
+        Err(why) => return Err(format!("{why:?}")),
+    };
+    let summary = store::check(cx.vol, &store, time)?;
+    Ok(format!(
+        "{line} (store checks: current {})",
+        summary.current
+    ))
+}
+
 /// The supervisor's route, from the plan line's `uses=supervisor`.
 fn supervisor() -> Handle {
     user::route(0).unwrap_or(Handle::NONE)
@@ -331,12 +432,15 @@ impl Source for Memory<'_> {
     }
 }
 
-/// kaifs's way with no wall clock: never before the newest generation.
+/// The date (PKG_TIME), and without one the time since boot, never before the
+/// newest generation.
 fn now(vol: &mut dyn Volume) -> Time {
     let newest = store::current(vol)
         .and_then(|n| store::generation(vol, n))
         .map_or(0, |g| g.time.0);
-    Time(newest + 1 + sys::time_ns() / 1_000_000_000)
+    // The date, for TUF's expiry checks, but never before the newest generation.
+    let date = sys::pkg_time().unwrap_or(0);
+    Time(date.max(newest + 1 + sys::time_ns() / 1_000_000_000))
 }
 
 /// The packages generation `n` names, as `name version`.
