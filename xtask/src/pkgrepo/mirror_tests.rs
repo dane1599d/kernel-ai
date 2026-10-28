@@ -259,3 +259,43 @@ fn each_case_mirror_gives_the_answer_its_boot_case_expects() {
     );
     assert!(index_err(&mut vol, MirrorKind::RolledBack).starts_with("bad version"));
 }
+
+#[test]
+fn the_catalogue_lists_what_is_installed_then_the_mirrors_offers() {
+    use super::mirrors::{self, MirrorKind};
+    use kaipkg::catalog;
+    let keys = keys(1);
+    let image = [notes()];
+    let signed = mirrors::build(MirrorKind::Signed, &image, &keys, NOW).unwrap();
+    let mut vol = device(&signed);
+    let listing = listing(&mut vol, serve(&signed), NOW).0.unwrap();
+    // As pkg-install's boot 1 leaves it: notes from the image, big from the mirror.
+    let installed: Vec<_> = listing
+        .indexes
+        .iter()
+        .filter(|i| i.name == "notes" || i.name == "big")
+        .cloned()
+        .collect();
+    let from_image: Vec<_> = listing
+        .indexes
+        .iter()
+        .filter(|i| i.name == "notes")
+        .cloned()
+        .collect();
+    let rows = catalog::rows(&installed, &from_image, &listing.indexes);
+    let text = catalog::page(&rows, 0, kabi::MAX_MESSAGE);
+    let starts: Vec<String> = text
+        .lines()
+        .map(|line| line.splitn(5, '\t').take(4).collect::<Vec<_>>().join(" "))
+        .collect();
+    assert_eq!(
+        starts,
+        [
+            "kai-catalog 1",
+            "installed big 1.0.0 data",
+            "installed notes 1.0.0 app",
+            "mirror extra 1.0.0 data",
+        ]
+    );
+    assert_eq!(catalog::parse(&text).unwrap(), rows);
+}
