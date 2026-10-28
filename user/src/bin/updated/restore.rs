@@ -7,7 +7,8 @@
 //! update held and the file is cleared; if this boot runs in another slot and
 //! the pending one never committed, the new slot failed before it could, so
 //! `system` goes back to the snapshot, which also takes the file away. `home` is
-//! never in the snapshot and is never rolled back.
+//! never in the snapshot and is never rolled back. Either way the snapshot is
+//! then dropped, so its blocks go back to the disk.
 
 use crate::folders::{self, Folders};
 use crate::{record, slot_of};
@@ -93,9 +94,10 @@ pub fn reconcile(handle: Handle) -> Result<Outcome, String> {
     let state = record.slot(pending.slot);
     if state.successful && state.release_seq == pending.release_seq {
         folders::write(updates, PENDING, b"")?;
+        folders::update_drop(updates, pending.snapshot)?;
         println!(
-            "updated: release {} in {:?} committed; the update held",
-            pending.release_seq, pending.slot
+            "updated: release {} in {:?} committed; the update held, and update snapshot {} is dropped",
+            pending.release_seq, pending.slot, pending.snapshot
         );
         return Ok(Outcome::Held);
     }
@@ -112,5 +114,8 @@ pub fn reconcile(handle: Handle) -> Result<Outcome, String> {
         "updated: {PENDING} is {} after the restore",
         if left { "still there" } else { "gone" }
     );
+    // The way back is taken; the snapshot is not needed again.
+    folders::update_drop(updates, pending.snapshot)?;
+    println!("updated: update snapshot {} is dropped", pending.snapshot);
     Ok(Outcome::Restored)
 }

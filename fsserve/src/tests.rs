@@ -905,3 +905,51 @@ fn the_update_snapshot_is_refused_inside_any_action() {
     let (reply, _) = c.call(ALICE, updates, DIR_RIGHTS, Request::UpdateSnapshot);
     assert!(matches!(reply, Reply::Snapshot { .. }), "{reply:?}");
 }
+
+#[test]
+fn an_update_snapshot_is_dropped_only_on_system_updates_and_only_once() {
+    let mut disk = MemDisk::new(BLOCKS);
+    let (mut c, _) = Client::start(&mut disk);
+    let updates = kabi::fs::SYSTEM_UPDATES;
+    let (reply, _) = c.call(ALICE, updates, DIR_RIGHTS, Request::UpdateSnapshot);
+    let Reply::Snapshot { id, .. } = reply else {
+        panic!("{reply:?}");
+    };
+    let remove = Request::UpdateDrop { id };
+    let reply = c.call(ALICE, kabi::fs::SYSTEM_STATE, DIR_RIGHTS, remove.clone());
+    assert_eq!(failed(reply), Error::Permission);
+    let begin = Request::Begin { action: 1 };
+    assert_eq!(c.call(ALICE, updates, DIR_RIGHTS, begin).0, Reply::Done);
+    assert_eq!(
+        failed(c.call(ALICE, updates, DIR_RIGHTS, remove.clone())),
+        Error::Invalid
+    );
+    assert_eq!(
+        failed(c.call(BOB, updates, DIR_RIGHTS, remove.clone())),
+        Error::Busy
+    );
+    assert_eq!(
+        c.call(ALICE, updates, DIR_RIGHTS, Request::Abort).0,
+        Reply::Done
+    );
+    let (reply, _) = c.call(ALICE, updates, DIR_RIGHTS, remove.clone());
+    assert!(matches!(reply, Reply::Committed { .. }), "{reply:?}");
+    // Gone: a second drop, and a restore from it, are refused.
+    assert_eq!(
+        failed(c.call(ALICE, updates, DIR_RIGHTS, remove)),
+        Error::Invalid
+    );
+    let restore = Request::UpdateRestore { id };
+    assert_eq!(
+        failed(c.call(ALICE, updates, DIR_RIGHTS, restore)),
+        Error::Invalid
+    );
+    // It stays gone across a restart.
+    drop(c);
+    let (mut c, _) = Client::start(&mut disk);
+    let restore = Request::UpdateRestore { id };
+    assert_eq!(
+        failed(c.call(ALICE, updates, DIR_RIGHTS, restore)),
+        Error::Invalid
+    );
+}

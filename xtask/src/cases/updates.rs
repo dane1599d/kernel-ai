@@ -298,6 +298,8 @@ const RB_RESTORE: TestCase = rb(
         "slots: kai-b cannot boot (Unbootable)",
         "updated: release 2 in B failed before it committed; restored the system volume from update snapshot ",
         "updated: pending is gone after the restore",
+        "updated: update snapshot ",
+        " is dropped",
         "updated: reconciled: Restored",
     ],
     None,
