@@ -22,23 +22,49 @@ pub struct Folders {
 }
 
 impl Folders {
-    pub fn from_startup() -> Folders {
+    /// A `Dir` `fs` refuses (no `kai-data` on this machine, or one mounted
+    /// read-only without the folders) is none. One `fs` does not answer at all
+    /// is an error: guessing "none" would skip the cache and the snapshot.
+    pub fn from_startup() -> Result<Folders, String> {
         let mut handles = [HandleInfo::default(); MAX_STARTUP];
         let count = sys::startup(&mut handles).unwrap_or(0);
         let mut dirs = handles[..count.min(MAX_STARTUP)]
             .iter()
             .filter(|h| h.kind() == Some(Kind::Dir))
             .map(|h| Handle(h.handle));
-        // A `Dir` `fs` does not answer (no `kai-data` on this machine) is none.
-        let mut served = || dirs.next().filter(|dir| ask(*dir, &Request::Stat).is_ok());
-        Folders {
-            trust: served(),
-            updates: served(),
-        }
+        let mut served = || -> Result<Option<Handle>, String> {
+            let Some(dir) = dirs.next() else {
+                return Ok(None);
+            };
+            match ask(dir, &Request::Stat)? {
+                (Reply::Stat(_), _) => Ok(Some(dir)),
+                (Reply::Failed(_), _) => Ok(None),
+                other => Err(format!("fs: Stat answered {other:?}")),
+            }
+        };
+        Ok(Folders {
+            trust: served()?,
+            updates: served()?,
+        })
     }
 }
 
+/// Another caller's open action makes a change Busy for a moment: try again
+/// for up to `BUSY_TRIES * BUSY_MS` before giving up.
+const BUSY_TRIES: u32 = 50;
+const BUSY_MS: u64 = 100;
+
 fn ask(on: Handle, request: &Request) -> Result<(Reply, Option<Handle>), String> {
+    for _ in 1..BUSY_TRIES {
+        match ask_once(on, request)? {
+            (Reply::Failed(fsproto::Error::Busy), _) => sys::sleep_ms(BUSY_MS),
+            answer => return Ok(answer),
+        }
+    }
+    ask_once(on, request)
+}
+
+fn ask_once(on: Handle, request: &Request) -> Result<(Reply, Option<Handle>), String> {
     let bytes = fsproto::encode_request(request);
     let mut reply = vec![0u8; fsproto::MAX_MESSAGE];
     let mut moved = [Handle::NONE; MAX_TRANSFER];
