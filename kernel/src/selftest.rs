@@ -107,6 +107,8 @@ pub enum SelfTest {
     ProcStop,
     /// `Shm` and spike S01-1's M6 (P1 task 14).
     Shm,
+    /// Anonymous memory reserved, committed and given back (lane M).
+    Mem,
     /// The raised table limits (P3 task 4, ADR 0003 §6): 40 processes at once.
     ManyProcesses,
     /// `desktop` claims the screen; Ctrl+Alt+F12 switches it (P3 task 2).
@@ -252,6 +254,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=latency" => Some(SelfTest::Latency),
             "test=proc-stop" => Some(SelfTest::ProcStop),
             "test=shm" => Some(SelfTest::Shm),
+            "test=mem" => Some(SelfTest::Mem),
             "test=many-processes" => Some(SelfTest::ManyProcesses),
             "test=display-claim" => Some(SelfTest::DisplayClaim),
             "test=desk-windows" => Some(SelfTest::DeskWindows),

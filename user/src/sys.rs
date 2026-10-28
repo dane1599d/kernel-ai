@@ -441,6 +441,22 @@ pub fn job_wait(job: Handle, timeout_ms: u64) -> Result<Option<ExitRecord>, Erro
     Ok((got == 1).then_some(record))
 }
 
+/// `bytes` of fresh address space with nothing mapped; its start (MEM_RESERVE).
+pub fn mem_reserve(bytes: u64) -> Result<u64, Error> {
+    call(call::MEM_RESERVE, [bytes, 0, 0, 0, 0, 0])
+}
+
+/// Maps zeroed read-write pages over `[addr, addr + bytes)` of a reservation
+/// (MEM_COMMIT).
+pub fn mem_commit(addr: u64, bytes: u64) -> Result<u64, Error> {
+    call(call::MEM_COMMIT, [addr, bytes, 0, 0, 0, 0])
+}
+
+/// Gives the reservation at `addr` back; how many pages it freed (MEM_RELEASE).
+pub fn mem_release(addr: u64) -> Result<u64, Error> {
+    call(call::MEM_RELEASE, [addr, 0, 0, 0, 0, 0])
+}
+
 /// New zeroed shared pages, and an `Shm` handle to them (ADR 0001 D4).
 pub fn shm_create(pages: u64) -> Result<Handle, Error> {
     call(call::SHM_CREATE, [pages, 0, 0, 0, 0, 0]).map(|h| Handle(h as u32))
