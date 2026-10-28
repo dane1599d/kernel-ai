@@ -82,6 +82,7 @@ mod memory;
 mod metrics;
 mod model;
 mod model_tests;
+mod nap_tests;
 mod net;
 mod net_commands;
 mod net_tests;
@@ -359,6 +360,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::DeskBoot => run_case(desk_tests::boot_check),
         SelfTest::DeskPanel => run_case(desk_tests::panel_check),
         SelfTest::UiWindow => run_case(ui_tests::check),
+        SelfTest::DeskNap => run_case(nap_tests::check),
         SelfTest::DeskCard => run_case(card_tests::check),
         SelfTest::DeskStanding => run_case(standing_tests::check),
         SelfTest::DeskTerm => run_case(term_tests::check),

@@ -3,7 +3,7 @@
 
 use crate::desk::{self, Desk, Told};
 use alloc::vec::Vec;
-use deskcore::desk::{Desk as Screen, Effect};
+use deskcore::desk::{Desk as Screen, Effect, Focus};
 use deskcore::server::{Client, Need};
 use uikit::layout::FixedAdvance;
 use uikit::widget::{Layout, ROOT, Widget};
@@ -63,6 +63,10 @@ fn a_window_opens_shows_new_pictures_and_closes() {
     assert!(
         matches!(needs[..], [Need::Show { buffer, .. }] if buffer.offset == show.target.offset)
     );
+    // A click that focuses it reaches the app as focus (app nap's use).
+    client.take_events(8192);
+    client.apply(&[Effect::Focus(Focus::Window(window))]);
+    assert_eq!(d.told(&client.take_events(8192)), [Told::Focus(1)]);
     // The user asks to close it; the app's close ends it on the desk.
     client.apply(&[Effect::Close { window }]);
     assert_eq!(d.told(&client.take_events(8192)), [Told::Close(1)]);

@@ -66,6 +66,8 @@ pub struct Ui {
     frames: Vec<(u32, Frame)>,
     /// The version whose windows show.
     shown: Option<String>,
+    /// Whether one of its windows took focus since [`Ui::take_focused`].
+    focused: bool,
     /// Events that came back with the window's own calls, acted on at the next
     /// poll.
     later: Vec<Told>,
@@ -87,6 +89,7 @@ impl Ui {
             pools: Vec::new(),
             frames: Vec::new(),
             shown: None,
+            focused: false,
             later: Vec::new(),
             reply: alloc::vec![0u8; kabi::MAX_MESSAGE],
         })
@@ -94,6 +97,12 @@ impl Ui {
 
     pub fn has_windows(&self) -> bool {
         !self.frames.is_empty()
+    }
+
+    /// Whether one of its windows took focus since the last call: use, for
+    /// app nap (P3 task 12b).
+    pub fn take_focused(&mut self) -> bool {
+        core::mem::take(&mut self.focused)
     }
 
     /// Shows what the instances committed since the last call: the shown
@@ -153,7 +162,9 @@ impl Ui {
         told: Vec<Told>,
     ) -> Result<(), Exit> {
         for t in told {
-            if !matches!(t, Told::Restarted)
+            // A focus wakes only an app comphost napped itself (its caller
+            // decides); a close or an action wakes any suspended app.
+            if !matches!(t, Told::Restarted | Told::Focus(_))
                 && let Some(reply) = host.wake()?
             {
                 println!(
@@ -163,6 +174,7 @@ impl Ui {
             }
             match t {
                 Told::Restarted => self.reopen(),
+                Told::Focus(_) => self.focused = true,
                 Told::Close(window) => with_shown(host, |core| {
                     let _ = core.ui_events(window, &[UiEvent::CloseRequested]);
                 }),
