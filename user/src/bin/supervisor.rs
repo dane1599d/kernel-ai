@@ -15,6 +15,8 @@
 //! rule, checked with RULE_CHECK, the kernel sends the app its `ctl` (APP_CTL)
 //! and the app's answer is the reply.
 //! `services` lists them, for the shell to tell a service from a process.
+//! `app-call <app>` forwards the shell's `kai-call 1` or `kai-undo 1` to an
+//! app through the kernel (APP_CALL), starting the app first if it is down.
 
 #![no_std]
 #![no_main]
@@ -183,6 +185,9 @@ fn handle(services: &mut [Service], text: &str, caller: u64) -> String {
     if text.trim() == supervise::SERVICES {
         return supervise::listing(&records);
     }
+    if let Some((app, request)) = supervise::appcall::parse(text) {
+        return app_call(services, app, request, caller);
+    }
     let Some((request, proof)) = Request::parse(text) else {
         return String::from("err unknown request");
     };
@@ -265,6 +270,60 @@ fn app_ctl(name: &str, resume: bool) -> String {
             text
         }
         Err(error) => format!("err cannot reach {name}: {error:?}"),
+    }
+}
+
+/// How long an app started for a call has to come up.
+const APP_START_MS: u64 = 10_000;
+const APP_START_POLL_MS: u64 = 100;
+
+/// `app-call <app>`: the shell's request to app `app`, through the kernel. The
+/// app's own reply, or `err ...`. An app that is down, and not stopped or given
+/// up on, is started and the call tried again once it serves.
+fn app_call(services: &mut [Service], app: &str, request: &str, caller: u64) -> String {
+    let caller_name = running_services()
+        .into_iter()
+        .find(|(pid, _)| *pid == caller)
+        .map(|(_, name)| name)
+        .unwrap_or_default();
+    let specs: Vec<&ServiceSpec> = services.iter().map(|s| &s.spec).collect();
+    let index = match supervise::appcall::check(&caller_name, app, request, &specs) {
+        Ok(index) => index,
+        Err(why) => return String::from(why),
+    };
+    let mut reply = vec![0u8; kabi::MAX_MESSAGE];
+    let first = sys::app_call(app, request, &mut reply);
+    let len = match first {
+        Err(kabi::Error::NotFound) => {
+            let service = &mut services[index];
+            if service.record.stopped || service.record.gave_up {
+                return format!("err {app} is stopped");
+            }
+            if service.pid.is_none() {
+                println!("{app} starts for a call");
+                start(service, now_ms());
+            }
+            retry(app, request, &mut reply)
+        }
+        other => other,
+    };
+    match len {
+        Ok(len) => String::from_utf8_lossy(&reply[..len.min(reply.len())]).into_owned(),
+        Err(error) => format!("err cannot reach {app}: {error:?}"),
+    }
+}
+
+/// The call again once `app` serves, up to [`APP_START_MS`].
+fn retry(app: &str, request: &str, reply: &mut [u8]) -> Result<usize, kabi::Error> {
+    let mut waited = 0;
+    loop {
+        match sys::app_call(app, request, reply) {
+            Err(kabi::Error::NotFound) if waited < APP_START_MS => {
+                sys::sleep_ms(APP_START_POLL_MS);
+                waited += APP_START_POLL_MS;
+            }
+            other => return other,
+        }
     }
 }
 

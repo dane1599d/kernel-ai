@@ -20,6 +20,7 @@ pub mod local;
 pub mod location;
 pub mod manifest;
 mod probation;
+pub mod rows;
 pub mod scenario;
 mod serve_with;
 pub mod settings;
