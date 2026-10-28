@@ -139,3 +139,50 @@ fn random_bytes_never_panic() {
         let _ = parse(&bytes).map(|b| b.entries().count());
     }
 }
+
+#[test]
+fn the_table_reads_alone_as_a_streaming_reader_needs() {
+    let bytes = sample();
+    let size = table_bytes(&bytes[..HEADER_BYTES]).unwrap();
+    assert_eq!(size, HEADER_BYTES + 4 * ENTRY_BYTES);
+    let table = &bytes[..size];
+    let total = bytes.len() as u64;
+    for (index, whole) in parse(&bytes).unwrap().entries().enumerate() {
+        let entry = table_entry(table, index, total).unwrap();
+        assert_eq!(entry.path, whole.path);
+        let data = &bytes[entry.offset as usize..(entry.offset + entry.length) as usize];
+        assert_eq!(data, whole.data);
+        assert_eq!(entry.sha256, sha256::digest(data));
+    }
+    assert_eq!(table_entry(table, 4, total), Err(Error::Truncated));
+    // Data past the end of the disk is refused, as is a short table.
+    assert_eq!(table_entry(table, 2, 4096), Err(Error::BadRange));
+    assert_eq!(
+        table_entry(&table[..size - 1], 0, total),
+        Err(Error::Truncated)
+    );
+    assert_eq!(
+        table_bytes(b"KAIBNDL2\x01\0\0\0\0\0\0\0"),
+        Err(Error::BadMagic)
+    );
+}
+
+#[test]
+fn hostile_tables_give_errors_never_panics() {
+    let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+    for _ in 0..2000 {
+        let mut table = sample()[..HEADER_BYTES + 4 * ENTRY_BYTES].to_vec();
+        for _ in 0..4 {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            let at = (seed as usize) % table.len();
+            table[at] = (seed >> 32) as u8;
+        }
+        if let Ok(size) = table_bytes(&table) {
+            for index in 0..(size.saturating_sub(HEADER_BYTES) / ENTRY_BYTES).min(8) {
+                let _ = table_entry(&table, index, u64::MAX);
+            }
+        }
+    }
+}

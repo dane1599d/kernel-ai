@@ -41,6 +41,8 @@ wit-parser = { version = "=0.262.0", default-features = false, features = ["std"
 semver = "1.0.28"
 
 [dev-dependencies]
+# The update disk's test reads its metadata back.
+kaituf = { path = "../kaituf" }
 # The slot disk's tests read its kai-slot 1 back.
 bootslot = { path = "../bootslot" }
 wat = "1.262.0"

@@ -28,6 +28,7 @@ editcore = { path = "../editcore" }
 fsproto = { path = "../fsproto" }
 fsserve = { path = "../fsserve" }
 kaifs = { path = "../kaifs", default-features = false }
+kaibundle = { path = "../kaibundle" }
 kaituf = { path = "../kaituf" }
 llmproto = { path = "../llmproto", features = ["local"] }
 quant = { path = "../quant" }

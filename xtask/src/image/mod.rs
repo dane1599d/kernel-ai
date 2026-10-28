@@ -6,6 +6,7 @@
 pub mod fat32;
 pub mod gpt;
 pub mod slots;
+pub mod update_disk;
 
 use fat32::Node;
 use std::fs;

@@ -206,16 +206,16 @@ pub fn build(packages: &[Package], keys: &Keys, now: Time) -> Result<Repository,
     Ok(Repository { files })
 }
 
-fn key_map(keys: &[&Key]) -> Value {
+pub(crate) fn key_map(keys: &[&Key]) -> Value {
     Value::Object(keys.iter().map(|k| (k.id(), k.public())).collect())
 }
 
-fn role(key: &Key) -> Value {
+pub(crate) fn role(key: &Key) -> Value {
     json!({ "keyids": [key.id()], "threshold": 1 })
 }
 
 /// `signed` with its one signature, as canonical JSON.
-fn envelope(signed: &Value, key: &Key) -> Result<Vec<u8>, String> {
+pub(crate) fn envelope(signed: &Value, key: &Key) -> Result<Vec<u8>, String> {
     canonical(&json!({ "signed": signed, "signatures": [key.sign(signed)?] }))
 }
 

@@ -1,7 +1,12 @@
 //! The update service (ADR 0008 §10), the only holder of an `Update` handle:
-//! the slots R, A and B and the boot record. Lane U builds it in steps; this
-//! first one has no repository yet (the update disk and `kaituf` come next) and
-//! runs `step=check` for the `update` case:
+//! the slots R, A and B, the boot record and the update disk.
+//!
+//! `step=update` (`disk.rs`) takes the update from the update disk: a TUF
+//! repository, checked by `kaituf` against the root this slot was built with,
+//! whose target `slot.img` it streams into the other slot, hashing as it
+//! writes; a target that does not match is refused and its slot never boots.
+//!
+//! `step=check` exercises the calls for the `update-stage` case:
 //!
 //! 1. SLOT_INFO for each slot, and the slot this boot runs in;
 //! 2. SLOT_WRITE refused for the active slot, and for R while it is a trial;
@@ -20,6 +25,8 @@
 
 extern crate alloc;
 
+mod disk;
+
 use alloc::format;
 use alloc::string::String;
 use alloc::vec;
@@ -31,6 +38,8 @@ use user::{println, sys};
 
 user::entry!(main);
 
+/// How long to wait for the boot lever's record.
+const LEVER_WAIT_MS: u64 = 120_000;
 /// The release the check stages.
 const STAGED_RELEASE: u32 = 2;
 /// Sectors between short sleeps while copying: the disk calls do not block, and
@@ -48,14 +57,37 @@ fn main() -> i32 {
         println!("updated: FAIL no Update handle at startup");
         idle();
     };
+    // The kernel's boot lever writes the record first; until it has, the boot
+    // record answers Busy.
+    for _ in 0..LEVER_WAIT_MS / 100 {
+        if sys::bootrec_get(handle) != Err(Error::Busy) {
+            break;
+        }
+        sys::sleep_ms(100);
+    }
     let result = match step {
         Some("check") => check(handle),
+        Some("update") => disk::update(handle),
         _ => Ok(()),
     };
     if let Err(why) = result {
         println!("updated: FAIL {why}");
+        // In the update cases, a refused update ends the boot too, back into
+        // the slot that is running, so the next boot shows what it left.
+        if args.split_whitespace().any(|w| w == "after=restart") {
+            restart_here(handle);
+        }
     }
     idle()
+}
+
+/// Restarts into the slot this boot runs in, with the record as it stands.
+fn restart_here(handle: Handle) {
+    let (Ok(record), Ok(info)) = (record(handle), sys::slot_info(handle, 1)) else {
+        return;
+    };
+    println!("updated: restarting into the running slot");
+    let _ = sys::bootrec_set(handle, &record.encode(), info.active, true);
 }
 
 fn idle() -> ! {
@@ -73,14 +105,14 @@ fn startup_update() -> Option<Handle> {
         .map(|h| Handle(h.handle))
 }
 
-fn slot_of(raw: u64) -> Result<Slot, String> {
+pub(crate) fn slot_of(raw: u64) -> Result<Slot, String> {
     Slot::ALL
         .into_iter()
         .find(|s| *s as u64 == raw)
         .ok_or_else(|| format!("no slot {raw}"))
 }
 
-fn record(handle: Handle) -> Result<Record, String> {
+pub(crate) fn record(handle: Handle) -> Result<Record, String> {
     let bytes = sys::bootrec_get(handle).map_err(|e| format!("BOOTREC_GET: {e:?}"))?;
     Record::decode(&bytes)
         .ok_or_else(|| String::from("BOOTREC_GET gave a record that does not decode"))
@@ -136,7 +168,7 @@ fn check(handle: Handle) -> Result<(), String> {
     set(handle, &nv, true)
 }
 
-fn set(handle: Handle, nv: &Nv, restart: bool) -> Result<(), String> {
+pub(crate) fn set(handle: Handle, nv: &Nv, restart: bool) -> Result<(), String> {
     let one_shot = nv.one_shot.map_or(NONE, |s| s as u64);
     sys::bootrec_set(handle, &nv.record.encode(), one_shot, restart)
         .map(|_| ())
@@ -178,7 +210,7 @@ fn copy(handle: Handle, from: u64, to: u64, sectors: u64) -> Result<(), String> 
 }
 
 /// Blocks for a moment every [`YIELD_EVERY`] sectors.
-fn pause(at: u64) {
+pub(crate) fn pause(at: u64) {
     if at.is_multiple_of(YIELD_EVERY) {
         sys::sleep_ms(1);
     }

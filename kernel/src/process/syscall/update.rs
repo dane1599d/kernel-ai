@@ -8,12 +8,17 @@
 //! - BOOTREC_GET and BOOTREC_SET read and write `KaiBootState` and Limine's
 //!   one-shot through `slots.rs`; a one-shot naming a slot the record says may
 //!   not boot is refused.
+//! - The update disk (`kai-update`, ADR 0008 §12) reads through SLOT_INFO and
+//!   SLOT_READ as slot [`update::DISK`], and is never written.
+//! - TRUST_ROOT hands over the slot's TUF root and TRUST_TIME the date, for
+//!   `kaituf`'s checks in `updated`.
 
 use super::fs::{flush_in, on, read_in, write_in};
-use crate::block::Device;
+use crate::block::{self, Device};
 use crate::handle::{self, grant::Kernel};
 use crate::process::uaccess::{copy_from_user, copy_to_user};
 use crate::slots;
+use alloc::vec::Vec;
 use bootslot::{Record, Slot};
 use kabi::handle::{Handle, Kind, Rights};
 use kabi::update::{self, MAX_IO, RECORD_BYTES, SECTOR};
@@ -27,12 +32,30 @@ const CALLS: &[u64] = &[
     call::SLOT_FLUSH,
     call::BOOTREC_GET,
     call::BOOTREC_SET,
+    call::TRUST_ROOT,
+    call::TRUST_TIME,
 ];
+
+/// The update disk's QEMU serial, as the model disk's is `kai-model`.
+const UPDATE_DISK: &str = "kai-update";
+/// The bundle entry holding the slot's TUF root.
+const ROOT_FILE: &str = "kai.root.json";
 
 /// One of [`CALLS`], or `None` for a number this area does not have.
 pub(super) fn handle(slot: usize, number: u64, a: &[u64; 6]) -> Option<Result<u64, Error>> {
+    let writes_state = matches!(
+        number,
+        call::SLOT_WRITE | call::BOOTREC_GET | call::BOOTREC_SET
+    );
+    if CALLS.contains(&number) && writes_state && !slots::lever_done() {
+        return Some(Err(Error::Busy));
+    }
     CALLS.contains(&number).then(|| match number {
         call::SLOT_INFO => info(slot, a[0], a[1], a[2]),
+        call::SLOT_READ if a[1] == update::DISK => {
+            checked(slot, a[0], Rights::READ)?;
+            disk_read(slot, a[2], a[3], a[4])
+        }
         call::SLOT_READ => {
             checked(slot, a[0], Rights::READ)?;
             read_in(slot, kind_of(a[1])?, a[2], a[3], a[4])
@@ -50,7 +73,20 @@ pub(super) fn handle(slot: usize, number: u64, a: &[u64; 6]) -> Option<Result<u6
             flush_in(kind_of(a[1])?)
         }
         call::BOOTREC_GET => get(slot, a[0], a[1]),
-        _ => set(slot, a[0], a[1], a[2], a[3]),
+        call::BOOTREC_SET => set(slot, a[0], a[1], a[2], a[3]),
+        call::TRUST_ROOT => {
+            checked(slot, a[0], Rights::READ)?;
+            let root = crate::bootfiles::find(ROOT_FILE).ok_or(Error::NotFound)?;
+            if root.len() as u64 > a[2] {
+                return Err(Error::Invalid);
+            }
+            copy_to_user(slot, a[1], root)?;
+            Ok(root.len() as u64)
+        }
+        _ => {
+            checked(slot, a[0], Rights::READ)?;
+            crate::clock::unix_seconds().ok_or(Error::NotFound)
+        }
     })
 }
 
@@ -95,16 +131,56 @@ fn writable(target: Slot) -> bool {
     }
 }
 
+/// Reads `len` bytes from `sector` of the update disk into the caller's `buf`.
+fn disk_read(slot: usize, sector: u64, buf: u64, len: u64) -> Result<u64, Error> {
+    if len == 0 || len > MAX_IO || !len.is_multiple_of(SECTOR) {
+        return Err(Error::Invalid);
+    }
+    let mut data = Vec::new();
+    data.try_reserve_exact(len as usize)
+        .map_err(|_| Error::NoMemory)?;
+    block::with_disk(UPDATE_DISK, |disk| {
+        let count = len / SECTOR;
+        if sector
+            .checked_add(count)
+            .is_none_or(|end| end > disk.sectors())
+        {
+            return Err(Error::Invalid);
+        }
+        let step = disk.max_sectors().max(1);
+        let mut at = sector;
+        while at < sector + count {
+            let n = step.min(sector + count - at);
+            let bytes = disk.read(at, n).map_err(|_| Error::Unavailable)?;
+            data.extend_from_slice(&bytes[..(n * SECTOR) as usize]);
+            at += n;
+        }
+        Ok(())
+    })
+    .ok_or(Error::NotFound)??;
+    copy_to_user(slot, buf, &data)?;
+    Ok(len)
+}
+
 fn info(slot: usize, raw: u64, which: u64, out: u64) -> Result<u64, Error> {
     checked(slot, raw, Rights::INSPECT)?;
+    if which == update::DISK {
+        let sectors =
+            block::with_disk(UPDATE_DISK, |disk| disk.sectors()).ok_or(Error::NotFound)?;
+        return info_out(slot, out, sectors, 0);
+    }
     let target = slot_of(which)?;
     let sectors = on(kind_of(which)?, |disk: &mut dyn Device| disk.sectors())?;
-    let active = slots::this_slot().map_or(update::NONE, |s| s as u64);
     let flags = if writable(target) {
         update::WRITABLE
     } else {
         0
     };
+    info_out(slot, out, sectors, flags)
+}
+
+fn info_out(slot: usize, out: u64, sectors: u64, flags: u64) -> Result<u64, Error> {
+    let active = slots::this_slot().map_or(update::NONE, |s| s as u64);
     let mut bytes = [0u8; core::mem::size_of::<update::SlotInfo>()];
     for (field, value) in
         bytes
