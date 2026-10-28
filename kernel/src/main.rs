@@ -114,6 +114,7 @@ mod tune_ab_tests;
 mod tune_local_tests;
 mod tune_stall_tests;
 mod tune_tests;
+mod ui_tests;
 mod usb;
 mod version;
 mod virtio;
@@ -347,6 +348,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::AppSuspend => run_case(suspend_tests::check),
         SelfTest::DeskBoot => run_case(desk_tests::boot_check),
         SelfTest::DeskPanel => run_case(desk_tests::panel_check),
+        SelfTest::UiWindow => run_case(ui_tests::check),
         SelfTest::Scriptrun => run_case(scriptrun_tests::check),
         SelfTest::Fpu => run_case(fpu_tests::fpu_check),
         SelfTest::Probe => run_case(fpu_tests::probe_check),

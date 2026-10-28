@@ -2,7 +2,8 @@
 //! `uikit::Ui` the instance owns, and `input` delivered to the app's `on-ui`.
 //! A committed frame is kept as an [`Update`] until comphost takes it, so no
 //! pixels and no window state enter the app's memory. Text is measured with
-//! `uikit`'s `FixedAdvance` until `gfx2d` gives the real font's advances.
+//! the measure comphost sets (`gfx2d`'s, through `uipaint`), or `uikit`'s
+//! `FixedAdvance` until it does.
 
 use crate::canonical::CoreInstance;
 use crate::instance::HostState;
@@ -19,7 +20,7 @@ use livecore::{Fault, Reason};
 use uikit::a11y::Action;
 use uikit::geom::Rect;
 use uikit::input::Input;
-use uikit::layout::FixedAdvance;
+use uikit::layout::{FixedAdvance, Measure};
 use uikit::widget::{UiError, UiEvent, Value};
 use uikit::{ActError, Frame, Ui};
 use wasmi::{Caller, Error, Extern};
@@ -47,6 +48,12 @@ pub enum Update {
 pub(crate) struct UiHost {
     pub(crate) ui: Ui,
     pub(crate) updates: Vec<Update>,
+    measure: Option<Box<dyn Measure>>,
+}
+
+/// The measure the windows are laid out with.
+fn measure(m: &Option<Box<dyn Measure>>) -> &dyn Measure {
+    m.as_deref().unwrap_or(&FixedAdvance)
 }
 
 impl UiHost {
@@ -209,11 +216,11 @@ fn run(
             let node = node()?;
             host.ui.window(window).and_then(|w| w.focus(node))
         }
-        "commit" => host
-            .ui
-            .window(window)
-            .map(|w| w.commit(&FixedAdvance))
-            .map(|frame| host.shown(window, frame)),
+        "commit" => {
+            let m = measure(&host.measure);
+            let frame = host.ui.window(window).map(|w| w.commit(m));
+            frame.map(|frame| host.shown(window, frame))
+        }
         "close" => host.ui.close(window).map(|()| host.closed(window)),
         other => return Err(format!("{other} is not a view function")),
     };
@@ -228,6 +235,12 @@ pub enum ActRefused {
 }
 
 impl CoreInstance {
+    /// Lays the app's windows out with `measure` from now on: the fonts
+    /// comphost draws with.
+    pub fn set_measure(&mut self, measure: Box<dyn Measure>) {
+        self.store.data_mut().ui.measure = Some(measure);
+    }
+
     /// What comphost shows next, oldest first; taking them empties the list.
     pub fn take_ui(&mut self) -> Vec<Update> {
         core::mem::take(&mut self.store.data_mut().ui.updates)
@@ -241,9 +254,11 @@ impl CoreInstance {
     /// Routes one input to a window and gives the app what it caused. Input for
     /// a window the app has closed is dropped.
     pub fn ui_input(&mut self, window: u32, input: Input) -> Result<(), Fault> {
-        let events = match self.store.data_mut().ui.ui.window(window) {
-            Ok(w) => w.input(input, &FixedAdvance),
-            Err(_) => return Ok(()),
+        let host = &mut self.store.data_mut().ui;
+        let m = measure(&host.measure);
+        let events = host.ui.window(window).map(|w| w.input(input, m));
+        let Ok(events) = events else {
+            return Ok(());
         };
         self.ui_events(window, &events)
     }
@@ -257,9 +272,14 @@ impl CoreInstance {
         action: Action,
         value: Option<Value>,
     ) -> Result<Result<(), ActRefused>, Fault> {
-        let acted = match self.store.data_mut().ui.ui.window(window) {
-            Ok(w) => w.act(node, action, value, &FixedAdvance),
-            Err(_) => return Ok(Err(ActRefused::NoWindow)),
+        let host = &mut self.store.data_mut().ui;
+        let m = measure(&host.measure);
+        let acted = host
+            .ui
+            .window(window)
+            .map(|w| w.act(node, action, value, m));
+        let Ok(acted) = acted else {
+            return Ok(Err(ActRefused::NoWindow));
         };
         match acted {
             Ok(events) => self.ui_events(window, &events).map(Ok),

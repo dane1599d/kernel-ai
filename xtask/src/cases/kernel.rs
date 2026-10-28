@@ -149,6 +149,17 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("desk-panel", "test=desk-panel")
     },
+    // P3 task 9: an app's kai:ui window on the desktop, closed from its control.
+    TestCase {
+        expect: &[
+            "comphost: window 1 \"Notes\" shown at 640x420",
+            "desktop: window 1 \"Notes\" opened at 48,52 size 642x454",
+            "comphost: window 1 closed",
+            "desktop: window 1 closed",
+            "ui-window: Notes opened its window and pressed its close control",
+        ],
+        ..case("ui-window", "test=ui-window")
+    },
     // P1 task 14: shared pages, and spike S01-1's M6.
     TestCase {
         expect: &[

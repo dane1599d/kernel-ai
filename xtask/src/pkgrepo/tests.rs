@@ -78,7 +78,7 @@ fn an_app_whose_parts_disagree_is_refused() {
         label: "2",
         summary,
         licence,
-        wit: components::NOTES_RECIPE.wit,
+        wit: components::NOTES_RECIPE.wit[0],
     };
     let refused = |app: App, bytes: &[u8], why: &str| {
         let err = pack(&root, &app, bytes).err().expect("refused");

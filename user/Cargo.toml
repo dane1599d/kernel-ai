@@ -41,6 +41,8 @@ shellcore = { path = "../shellcore" }
 spin = "0.12.3"
 talc = "5.1.1"
 wasmhost = { path = "../wasmhost" }
+uikit = { path = "../uikit" }
+uipaint = { path = "../uipaint" }
 
 # tufbench's fixture, signed on the host at build time (build.rs).
 [build-dependencies]

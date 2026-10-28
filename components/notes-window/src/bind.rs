@@ -9,7 +9,7 @@ use uikit::widget::{self as w, Axis, NodeId, UiError, UiEvent, Value};
 
 wit_bindgen::generate!({
     world: "app:notes-window/window-only",
-    path: ["../../wit/kai-live", "../../wit/kai-app", "../../wit/kai-ui", "wit"],
+    path: ["../../wit/kai-live", "../../wit/kai-app", "../../wit/kai-ui", "../notes/wit", "wit"],
     generate_all,
 });
 

@@ -20,8 +20,9 @@ pub struct Recipe {
     /// The crate's directory, and those of path dependencies whose source ships.
     pub dirs: &'static [&'static str],
     pub feature: Option<&'static str>,
-    /// The app's WIT package, the source of its action rows.
-    pub wit: &'static str,
+    /// The app's WIT packages, the first with its world: the source of its
+    /// action rows.
+    pub wit: &'static [&'static str],
 }
 
 /// One version on the boot drive.
@@ -36,6 +37,9 @@ const BAD: &str = "components/fixtures/notes-bad";
 const NOTES_WIT: &str = "components/notes/wit";
 /// The in-tree packages an app's world may use.
 const KAI_WIT: &[&str] = &["wit/kai-live", "wit/kai-app"];
+const WINDOW: &str = "components/notes-window";
+const NOTES_UI: &str = "components/notes-ui";
+const WINDOW_WIT: &str = "components/notes-window/wit";
 
 /// `notes` from `components/notes`: version 2, and every upload the edit loop
 /// builds.
@@ -44,7 +48,7 @@ pub const NOTES_RECIPE: Recipe = Recipe {
     krate: "comp-notes",
     dirs: &[NOTES],
     feature: None,
-    wit: NOTES_WIT,
+    wit: &[NOTES_WIT],
 };
 
 const fn bad(label: &'static str, feature: &'static str) -> Version {
@@ -55,7 +59,7 @@ const fn bad(label: &'static str, feature: &'static str) -> Version {
             krate: "comp-notes-bad",
             dirs: &[BAD, NOTES],
             feature: Some(feature),
-            wit: NOTES_WIT,
+            wit: &[NOTES_WIT],
         },
     }
 }
@@ -70,7 +74,7 @@ pub const VERSIONS: &[Version] = &[
             krate: "comp-notes-v1",
             dirs: &["components/fixtures/notes-v1"],
             feature: None,
-            wit: NOTES_WIT,
+            wit: &[NOTES_WIT],
         },
     },
     Version {
@@ -81,6 +85,18 @@ pub const VERSIONS: &[Version] = &[
     bad("3-health", "bug-health"),
     bad("3-trap", "bug-trap"),
     bad("3-spin", "bug-spin"),
+    // Notes with its window (P3 task 9): the build P4 ships, its own component
+    // so the edit loop's `notes` is untouched.
+    Version {
+        label: "1",
+        recipe: Recipe {
+            component: "notes-window",
+            krate: "comp-notes-window",
+            dirs: &[WINDOW, NOTES_UI, NOTES],
+            feature: None,
+            wit: &[WINDOW_WIT, "wit/kai-ui", NOTES_WIT],
+        },
+    },
 ];
 
 /// Builds and packs every version.
@@ -172,7 +188,7 @@ pub fn pack(
     let world = format!("app:{0}/{0}@1.0.0", recipe.component);
     let dirs: Vec<PathBuf> = KAI_WIT
         .iter()
-        .chain([&recipe.wit])
+        .chain(recipe.wit)
         .map(|dir| root.join(dir))
         .collect();
     let actions = crate::kai_actions::write(&dirs, &world)?;
@@ -238,8 +254,11 @@ mod tests {
         let root = crate::workspace_root();
         for (index, version) in VERSIONS.iter().enumerate() {
             assert!(kabi::live::valid_label(version.label), "{}", version.label);
-            assert!(VERSIONS[..index].iter().all(|v| v.label != version.label));
-            assert!(root.join(version.recipe.wit).is_dir());
+            let same = |v: &Version| {
+                (v.recipe.component, v.label) == (version.recipe.component, version.label)
+            };
+            assert!(!VERSIONS[..index].iter().any(same));
+            assert!(version.recipe.wit.iter().all(|w| root.join(w).is_dir()));
             for dir in version.recipe.dirs {
                 assert!(root.join(dir).join("Cargo.toml").exists(), "{dir}");
             }
@@ -256,6 +275,24 @@ mod tests {
         assert!(paths.contains(&"components/fixtures/notes-bad/src/lib.rs"));
         assert!(paths.contains(&"components/notes/Cargo.toml"));
         assert!(paths.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    /// Notes' window build carries Notes' own action rows, under its world.
+    #[test]
+    fn the_window_build_packs_with_notes_actions() {
+        let window = VERSIONS
+            .iter()
+            .find(|v| v.recipe.component == "notes-window")
+            .unwrap();
+        let module = Vec::from(&b"\0asm\x01\0\0\0"[..]);
+        let root = crate::workspace_root();
+        let source = artifact::bundle(&[("components/notes-window/src/lib.rs", b"//")]);
+        let bytes = pack(&root, &window.recipe, window.label, module, &source).unwrap();
+        let parsed = artifact::parse(&bytes).unwrap();
+        assert_eq!(parsed.manifest.world, "app:notes-window/notes-window@1.0.0");
+        let actions = livecore::actions::parse(parsed.actions.unwrap()).unwrap();
+        let add = actions.by_name("notes_add").unwrap();
+        assert_eq!(add.export, "app:notes/actions@1.0.0#add");
     }
 
     #[test]

@@ -274,7 +274,11 @@ fn the_service_knows_the_manifests_versions_and_syncs_move_the_boot_refs() {
 
 #[test]
 fn the_boot_drive_has_room_for_the_manifest_and_every_upload() {
-    let boot_drive = crate::components::VERSIONS.len();
+    // The limit is per component: `notes`'s own versions.
+    let boot_drive = crate::components::VERSIONS
+        .iter()
+        .filter(|v| v.recipe.component == "notes")
+        .count();
     assert_eq!(boot_drive + 2 + KEEP_UPLOADS, 13);
     assert!(boot_drive + 2 + KEEP_UPLOADS <= MAX_VERSIONS);
 }
