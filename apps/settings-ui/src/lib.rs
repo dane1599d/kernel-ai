@@ -2,24 +2,28 @@
 //! for its pages, and the page under them. As Notes' window does, it rebuilds
 //! the tree whole from the model after each event and [`diff`]s it against the
 //! last one. A choice comes back from [`on_ui`] as the model's
-//! [`Intent`], which the component carries out through the agent's rows, so the
+//! [`Intent`](comp_settings::Intent), which the component carries out through the agent's rows, so the
 //! window itself changes nothing in the OS.
 
 #![no_std]
 
 extern crate alloc;
 
+mod events;
+mod rows;
 mod tree;
 
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use comp_settings::files::{Appearance, DAY_MINUTES};
-use comp_settings::{Intent, Page, Settings};
+use comp_settings::files::DAY_MINUTES;
+use comp_settings::{Page, RuleRef, Settings};
+pub use events::{on_ui, redraw};
+use rows::{Room, Slots};
 pub use tree::{Change, Entry, diff};
 use tree::{entry, label, row, wide};
 use uikit::style::{Tone, TypeStyle};
-use uikit::widget::{Axis, Layout, NodeId, ROOT, UiEvent, Value, Widget};
+use uikit::widget::{Axis, Layout, NodeId, ROOT, Widget};
 
 pub const COLUMN: NodeId = 1;
 pub const TABS: NodeId = 2;
@@ -32,8 +36,11 @@ pub const MOTION: NodeId = 12;
 // What apps can do.
 pub const APP_LIST: NodeId = 20;
 pub const NO_ACCESS: NodeId = 21;
-// Rows of one kind take a block of 1,000 ids each, and a page shows at most
-// [`MAX_ROWS`] of a kind, so no two nodes can share an id.
+pub const MORE_ACCESS: NodeId = 22;
+pub const MORE_APPS: NodeId = 23;
+// Rows of one kind take a block of 1,000 ids each, and a row's id is its slot
+// in that block (`rows::Slots`), so no two nodes can share an id. A page shows
+// as many rows as fit in `uikit`'s caps on one window, then how many more.
 pub const APP_ITEM: NodeId = 1000;
 pub const ACCESS: NodeId = 2000;
 pub const ACCESS_TEXT: NodeId = 3000;
@@ -41,6 +48,8 @@ pub const REVOKE: NodeId = 4000;
 // Rules and profiles.
 pub const RULES: NodeId = 30;
 pub const NO_RULES: NodeId = 32;
+pub const MORE_RULES: NodeId = 34;
+pub const MORE_PROFILES: NodeId = 35;
 pub const RULE: NodeId = 5000;
 pub const RULE_TEXT: NodeId = 6000;
 pub const REMOVE: NodeId = 7000;
@@ -48,6 +57,7 @@ pub const PROFILES: NodeId = 31;
 pub const PROFILE_ITEM: NodeId = 8000;
 // Keep running.
 pub const NO_NAP: NodeId = 33;
+pub const MORE_NAP: NodeId = 36;
 pub const KEEP: NodeId = 9000;
 // Updates.
 pub const WINDOW_ON: NodeId = 40;
@@ -56,7 +66,7 @@ pub const END: NodeId = 42;
 // About.
 pub const ABOUT: NodeId = 10_000;
 
-/// Most rows a page shows of one kind: one block of ids.
+/// Most slots of one kind of row: one block of ids.
 pub const MAX_ROWS: usize = 1000;
 /// The window's size.
 pub const SIZE: (u16, u16) = (640, 460);
@@ -67,8 +77,33 @@ pub const DEFAULT_WINDOW: (u16, u16) = (120, 300);
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct View {
     pub page: usize,
-    /// The app chosen on "What apps can do", by its place in the list.
-    pub app: Option<usize>,
+    /// The app chosen on "What apps can do", by name: a place in the list would
+    /// pass to another app when one above it goes.
+    pub app: Option<String>,
+    /// What the rows showed when the tree was last built, so an event names
+    /// what the person saw, not what is at that place now.
+    pub(crate) shown: Shown,
+    /// The control the last change came from, put again on the next draw
+    /// ([`redraw`]).
+    pub(crate) touched: Option<NodeId>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Shown {
+    pub(crate) apps: Vec<String>,
+    pub(crate) grants: Slots<u32>,
+    pub(crate) rules: Slots<RuleRef>,
+    pub(crate) profiles: Vec<String>,
+    pub(crate) keep: Slots<String>,
+}
+
+impl View {
+    pub fn page(page: usize) -> View {
+        View {
+            page,
+            ..View::default()
+        }
+    }
 }
 
 /// `hh:mm` for minute `m` of the day.
@@ -77,7 +112,7 @@ pub fn clock(m: u16) -> String {
 }
 
 /// The window's tree for `settings` as `view` shows it.
-pub fn build(settings: &Settings, view: &View) -> Vec<Entry> {
+pub fn build(settings: &Settings, view: &mut View) -> Vec<Entry> {
     let page = Page::ALL[view.page.min(Page::ALL.len() - 1)];
     let mut tree = alloc::vec![
         entry(
@@ -111,8 +146,8 @@ pub fn build(settings: &Settings, view: &View) -> Vec<Entry> {
     match page {
         Page::Appearance => appearance(settings, &mut tree),
         Page::Access => access(settings, view, &mut tree),
-        Page::Rules => rules(settings, &mut tree),
-        Page::Apps => apps(settings, &mut tree),
+        Page::Rules => rules(settings, &mut view.shown, &mut tree),
+        Page::Apps => apps(settings, &mut view.shown, &mut tree),
         Page::Updates => updates(settings, &mut tree),
         Page::About => about(settings, &mut tree),
     }
@@ -148,7 +183,8 @@ fn appearance(s: &Settings, tree: &mut Vec<Entry>) {
     ));
 }
 
-fn access(s: &Settings, view: &View, tree: &mut Vec<Entry>) {
+fn access(s: &Settings, view: &mut View, tree: &mut Vec<Entry>) {
+    view.shown.apps.clear();
     if s.access.is_empty() {
         tree.push(entry(
             NO_ACCESS,
@@ -162,53 +198,91 @@ fn access(s: &Settings, view: &View, tree: &mut Vec<Entry>) {
         ));
         return;
     }
-    let selected = view.app.filter(|&i| i < s.access.len());
     tree.push(entry(
         APP_LIST,
         PAGE,
         wide(),
         Widget::ItemList {
             label: String::from("Apps"),
-            selected: selected.map(|i| i as u32),
+            selected: None,
         },
     ));
-    for (i, app) in s.access.iter().take(MAX_ROWS).enumerate() {
-        tree.push(entry(
-            APP_ITEM + i as u32,
+    let list = tree.len() - 1;
+    let mut room = Room::of(tree);
+    for app in s.access.iter().take(MAX_ROWS) {
+        let item = entry(
+            APP_ITEM + view.shown.apps.len() as u32,
             APP_LIST,
             wide(),
             label(&app.app, TypeStyle::Body, Tone::Normal),
-        ));
+        );
+        if !room.take(core::slice::from_ref(&item)) {
+            break;
+        }
+        view.shown.apps.push(app.app.clone());
+        tree.push(item);
+    }
+    more(tree, MORE_APPS, s.access.len() - view.shown.apps.len());
+    let selected = view
+        .app
+        .as_ref()
+        .and_then(|name| view.shown.apps.iter().position(|n| n == name));
+    if let Widget::ItemList { selected: at, .. } = &mut tree[list].widget {
+        *at = selected.map(|i| i as u32);
     }
     let Some(app) = selected.map(|i| &s.access[i]) else {
+        view.shown.grants = Slots::default();
         return;
     };
-    for (i, x) in app.access.iter().take(MAX_ROWS).enumerate() {
-        let at = ACCESS + i as u32;
-        tree.push(entry(at, PAGE, wide(), row()));
-        tree.push(entry(
-            ACCESS_TEXT + i as u32,
-            at,
-            wide(),
-            label(
-                &format!("{} ({})", x.what, x.why),
-                TypeStyle::Body,
-                Tone::Normal,
+    let grants: Vec<u32> = app.access.iter().map(|x| x.grant).collect();
+    let slots = view.shown.grants.place(&grants);
+    let mut fitted = 0;
+    for (x, slot) in app.access.iter().zip(slots) {
+        let at = ACCESS + slot as u32;
+        let row = [
+            entry(at, PAGE, wide(), row()),
+            entry(
+                ACCESS_TEXT + slot as u32,
+                at,
+                wide(),
+                label(
+                    &format!("{} ({})", x.what, x.why),
+                    TypeStyle::Body,
+                    Tone::Normal,
+                ),
             ),
-        ));
+            entry(
+                REVOKE + slot as u32,
+                at,
+                Layout::FIT,
+                Widget::Button {
+                    text: String::from("Revoke"),
+                    action: None,
+                },
+            ),
+        ];
+        if !room.take(&row) {
+            break;
+        }
+        tree.extend(row);
+        fitted += 1;
+    }
+    more(tree, MORE_ACCESS, app.access.len() - fitted);
+}
+
+/// "`n` more not shown" under the rows, if any did not fit.
+fn more(tree: &mut Vec<Entry>, id: NodeId, n: usize) {
+    if n > 0 {
         tree.push(entry(
-            REVOKE + i as u32,
-            at,
-            Layout::FIT,
-            Widget::Button {
-                text: String::from("Revoke"),
-                action: None,
-            },
+            id,
+            PAGE,
+            wide(),
+            label(&format!("{n} more not shown"), TypeStyle::Body, Tone::Muted),
         ));
     }
 }
 
-fn rules(s: &Settings, tree: &mut Vec<Entry>) {
+fn rules(s: &Settings, shown: &mut Shown, tree: &mut Vec<Entry>) {
     tree.push(entry(
         RULES,
         PAGE,
@@ -223,50 +297,76 @@ fn rules(s: &Settings, tree: &mut Vec<Entry>) {
             label("None: every ask still asks.", TypeStyle::Body, Tone::Muted),
         ));
     }
-    for (i, r) in s.rules.iter().take(MAX_ROWS).enumerate() {
-        let at = RULE + i as u32;
-        tree.push(entry(at, PAGE, wide(), row()));
-        tree.push(entry(
-            RULE_TEXT + i as u32,
-            at,
-            wide(),
-            label(&r.text, TypeStyle::Body, Tone::Normal),
-        ));
-        tree.push(entry(
-            REMOVE + i as u32,
-            at,
-            Layout::FIT,
-            Widget::Button {
-                text: String::from("Remove"),
-                action: Some(String::from("rules_remove")),
-            },
-        ));
+    let ids: Vec<RuleRef> = s.rules.iter().map(|r| r.id).collect();
+    let slots = shown.rules.place(&ids);
+    let mut room = Room::of(tree);
+    let mut fitted = 0;
+    for (r, slot) in s.rules.iter().zip(slots) {
+        let at = RULE + slot as u32;
+        let row = [
+            entry(at, PAGE, wide(), row()),
+            entry(
+                RULE_TEXT + slot as u32,
+                at,
+                wide(),
+                label(&r.text, TypeStyle::Body, Tone::Normal),
+            ),
+            entry(
+                REMOVE + slot as u32,
+                at,
+                Layout::FIT,
+                Widget::Button {
+                    text: String::from("Remove"),
+                    action: Some(String::from("rules_remove")),
+                },
+            ),
+        ];
+        if !room.take(&row) {
+            break;
+        }
+        tree.extend(row);
+        fitted += 1;
     }
-    let selected = s
-        .profile
-        .as_ref()
-        .and_then(|p| s.profiles.iter().position(|n| n == p))
-        .map(|i| i as u32);
-    tree.push(entry(
+    more(tree, MORE_RULES, s.rules.len() - fitted);
+    shown.profiles.clear();
+    let list = entry(
         PROFILES,
         PAGE,
         wide(),
         Widget::ItemList {
             label: String::from("Profiles"),
-            selected,
+            selected: None,
         },
-    ));
-    for (i, name) in s.profiles.iter().take(MAX_ROWS).enumerate() {
-        tree.push(entry(
-            PROFILE_ITEM + i as u32,
+    );
+    if !room.take(core::slice::from_ref(&list)) {
+        return;
+    }
+    tree.push(list);
+    let at = tree.len() - 1;
+    for name in s.profiles.iter().take(MAX_ROWS) {
+        let item = entry(
+            PROFILE_ITEM + shown.profiles.len() as u32,
             PROFILES,
             wide(),
             label(name, TypeStyle::Body, Tone::Normal),
-        ));
+        );
+        if !room.take(core::slice::from_ref(&item)) {
+            break;
+        }
+        shown.profiles.push(name.clone());
+        tree.push(item);
     }
+    let selected = s
+        .profile
+        .as_ref()
+        .and_then(|p| shown.profiles.iter().position(|n| n == p));
+    if let Widget::ItemList { selected: sel, .. } = &mut tree[at].widget {
+        *sel = selected.map(|i| i as u32);
+    }
+    more(tree, MORE_PROFILES, s.profiles.len() - shown.profiles.len());
 }
 
-fn apps(s: &Settings, tree: &mut Vec<Entry>) {
+fn apps(s: &Settings, shown: &mut Shown, tree: &mut Vec<Entry>) {
     if s.nappable.is_empty() {
         tree.push(entry(
             NO_NAP,
@@ -275,17 +375,26 @@ fn apps(s: &Settings, tree: &mut Vec<Entry>) {
             label("No app naps yet.", TypeStyle::Body, Tone::Muted),
         ));
     }
-    for (i, app) in s.nappable.iter().take(MAX_ROWS).enumerate() {
-        tree.push(entry(
-            KEEP + i as u32,
+    let slots = shown.keep.place(&s.nappable);
+    let mut room = Room::of(tree);
+    let mut fitted = 0;
+    for (app, slot) in s.nappable.iter().zip(slots) {
+        let toggle = entry(
+            KEEP + slot as u32,
             PAGE,
             wide(),
             Widget::Toggle {
                 label: format!("Keep {app} running"),
                 on: s.apps.keeps(app),
             },
-        ));
+        );
+        if !room.take(core::slice::from_ref(&toggle)) {
+            break;
+        }
+        tree.push(toggle);
+        fitted += 1;
     }
+    more(tree, MORE_NAP, s.nappable.len() - fitted);
 }
 
 fn updates(s: &Settings, tree: &mut Vec<Entry>) {
@@ -339,72 +448,4 @@ fn about(s: &Settings, tree: &mut Vec<Entry>) {
             label(text, TypeStyle::Body, Tone::Normal),
         ));
     }
-}
-
-/// `id` as the `i`th of the rows starting at `base`, if it is one.
-fn nth(id: NodeId, base: NodeId) -> Option<usize> {
-    id.checked_sub(base)
-        .map(|i| i as usize)
-        .filter(|&i| i < MAX_ROWS)
-}
-
-/// Handles one event: changes `view` for a page or a selection, and answers a
-/// choice with the intent to carry out. True if the window must be drawn again.
-pub fn on_ui(settings: &Settings, view: &mut View, e: &UiEvent) -> (bool, Option<Intent>) {
-    match e {
-        UiEvent::Changed(TABS, Value::Index(i)) if (*i as usize) < Page::ALL.len() => {
-            *view = View {
-                page: *i as usize,
-                app: None,
-            };
-            (true, None)
-        }
-        UiEvent::Changed(APP_LIST, Value::Index(i)) => {
-            view.app = Some(*i as usize).filter(|&i| i < settings.access.len());
-            (true, None)
-        }
-        UiEvent::Pressed(THEME) => (false, Some(settings.next_theme())),
-        UiEvent::Changed(LEGIBLE | MOTION, Value::On(on)) => {
-            let mut a: Appearance = settings.appearance.clone();
-            if matches!(e, UiEvent::Changed(LEGIBLE, _)) {
-                a.legible = *on;
-            } else {
-                a.reduced_motion = *on;
-            }
-            let changed = a != settings.appearance;
-            (false, changed.then_some(Intent::Appearance(a)))
-        }
-        UiEvent::Pressed(id) => (false, pressed(settings, view, *id)),
-        UiEvent::Changed(PROFILES, Value::Index(i)) => {
-            let name = settings.profiles.get(*i as usize).cloned();
-            let changed = name.is_some() && name != settings.profile;
-            (false, name.filter(|_| changed).map(Intent::UseProfile))
-        }
-        UiEvent::Changed(WINDOW_ON, Value::On(on)) => {
-            let w = on.then_some(DEFAULT_WINDOW);
-            (false, settings.restart_window(w))
-        }
-        UiEvent::Changed(id @ (START | END), Value::Number(n)) => {
-            let (Some((start, end)), Ok(n)) = (settings.updates.restart_window, u16::try_from(*n))
-            else {
-                return (false, None);
-            };
-            let w = if *id == START { (n, end) } else { (start, n) };
-            (false, settings.restart_window(Some(w)))
-        }
-        UiEvent::Changed(id, Value::On(on)) => {
-            let app = nth(*id, KEEP).and_then(|i| settings.nappable.get(i));
-            (false, app.and_then(|a| settings.keep_running(a, *on)))
-        }
-        _ => (false, None),
-    }
-}
-
-fn pressed(settings: &Settings, view: &View, id: NodeId) -> Option<Intent> {
-    if let Some(i) = nth(id, REVOKE) {
-        let app = settings.access.get(view.app?)?;
-        return settings.revoke(app.access.get(i)?.grant);
-    }
-    let rule = settings.rules.get(nth(id, REMOVE)?)?;
-    Some(Intent::RemoveRule(rule.id))
 }

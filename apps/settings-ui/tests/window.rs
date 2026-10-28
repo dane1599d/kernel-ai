@@ -7,7 +7,7 @@ use comp_settings::files::Apps;
 use comp_settings::{About, Intent, Page, RuleLine, RuleRef, Settings};
 use comp_settings_ui::{
     APP_LIST, Change, END, Entry, KEEP, LEGIBLE, PROFILES, REMOVE, REVOKE, SIZE, START, TABS,
-    THEME, View, WINDOW_ON, build, clock, diff, on_ui,
+    THEME, View, WINDOW_ON, build, clock, diff, on_ui, redraw,
 };
 use uikit::layout::FixedAdvance;
 use uikit::widget::{UiEvent, Value};
@@ -66,8 +66,10 @@ fn names(tree: &[Entry]) -> Vec<String> {
 fn every_page_is_a_tree_uikit_takes() {
     let s = settings();
     for page in 0..Page::ALL.len() {
-        for app in [None, Some(0), Some(1)] {
-            let tree = build(&s, &View { page, app });
+        for app in [None, Some("notes"), Some("browser"), Some("gone")] {
+            let mut view = View::page(page);
+            view.app = app.map(String::from);
+            let tree = build(&s, &mut view);
             let shown = names(&tree);
             assert!(
                 shown.iter().any(|n| n == Page::ALL[page].title()),
@@ -75,7 +77,7 @@ fn every_page_is_a_tree_uikit_takes() {
             );
         }
     }
-    let about = names(&build(&s, &View { page: 5, app: None }));
+    let about = names(&build(&s, &mut View::page(5)));
     assert!(about.iter().any(|n| n == "Licence: MPL-2.0"), "{about:?}");
 }
 
@@ -83,10 +85,10 @@ fn every_page_is_a_tree_uikit_takes() {
 fn switching_pages_sends_only_what_changed() {
     let s = settings();
     let mut view = View::default();
-    let first = build(&s, &view);
+    let first = build(&s, &mut view);
     let (redraw, intent) = on_ui(&s, &mut view, &UiEvent::Changed(TABS, Value::Index(3)));
     assert!(redraw && intent.is_none());
-    let second = build(&s, &view);
+    let second = build(&s, &mut view);
     let changes = diff(&first, &second);
     // The tabs and the page's own nodes change; the column stays.
     assert!(
@@ -134,10 +136,12 @@ fn appearance_controls_give_appearance_set() {
 #[test]
 fn revoke_needs_a_chosen_app_and_names_its_grant() {
     let s = settings();
-    let mut view = View { page: 1, app: None };
+    let mut view = View::page(1);
+    build(&s, &mut view);
     assert_eq!(on_ui(&s, &mut view, &UiEvent::Pressed(REVOKE)).1, None);
     on_ui(&s, &mut view, &UiEvent::Changed(APP_LIST, Value::Index(1)));
-    assert_eq!(view.app, Some(1));
+    assert_eq!(view.app.as_deref(), Some("notes"));
+    build(&s, &mut view);
     assert_eq!(
         on_ui(&s, &mut view, &UiEvent::Pressed(REVOKE)).1,
         Some(Intent::Revoke(41))
@@ -147,10 +151,101 @@ fn revoke_needs_a_chosen_app_and_names_its_grant() {
     assert_eq!(view.app, None);
 }
 
+const MORE_GRANTS: &str = "kai-grants 1\n\
+grant 41 app=notes kind=dir object=/home/user/notes rights=read+write from=picker life=persistent signer=- made=2026-11-02T10:14:00Z\n\
+grant 42 app=browser kind=host object=example.org rights=connect from=request:7 life=session signer=- made=2026-11-02T10:15:00Z\n\
+grant 43 app=notes kind=dir object=/home/user/drafts rights=read from=picker life=persistent signer=- made=2026-11-02T10:16:00Z\n";
+
+/// A press that comes again after its row went (a double-click, a repeated
+/// Enter, the agent retrying) names nothing, never the row that moved up.
+#[test]
+fn a_second_press_after_a_revoke_never_names_another_grant() {
+    let mut s = Settings {
+        access: by_app(&kaigrants::parse(MORE_GRANTS).unwrap()),
+        ..settings()
+    };
+    let mut view = View::page(1);
+    build(&s, &mut view);
+    let browser = s.access.iter().position(|a| a.app == "browser").unwrap();
+    on_ui(
+        &s,
+        &mut view,
+        &UiEvent::Changed(APP_LIST, Value::Index(browser as u32)),
+    );
+    build(&s, &mut view);
+    let revoke = on_ui(&s, &mut view, &UiEvent::Pressed(REVOKE)).1;
+    assert_eq!(revoke, Some(Intent::Revoke(42)));
+    s.applied(&revoke.unwrap());
+    let tree = build(&s, &mut view);
+    // Browser is gone, so nothing is chosen, and the same press does nothing.
+    assert!(!tree.iter().any(|e| e.id == REVOKE));
+    assert_eq!(on_ui(&s, &mut view, &UiEvent::Pressed(REVOKE)).1, None);
+    // Within one app: the first grant's button names only that grant.
+    let notes = s.access.iter().position(|a| a.app == "notes").unwrap();
+    on_ui(
+        &s,
+        &mut view,
+        &UiEvent::Changed(APP_LIST, Value::Index(notes as u32)),
+    );
+    build(&s, &mut view);
+    let first = on_ui(&s, &mut view, &UiEvent::Pressed(REVOKE)).1.unwrap();
+    let Intent::Revoke(gone) = first else {
+        panic!("{first:?}");
+    };
+    s.applied(&first);
+    build(&s, &mut view);
+    assert_eq!(view.app.as_deref(), Some("notes"));
+    assert_eq!(on_ui(&s, &mut view, &UiEvent::Pressed(REVOKE)).1, None);
+    let other = if gone == 41 { 43 } else { 41 };
+    assert_eq!(
+        on_ui(&s, &mut view, &UiEvent::Pressed(REVOKE + 1)).1,
+        Some(Intent::Revoke(other))
+    );
+}
+
+#[test]
+fn a_second_press_after_a_rule_is_removed_never_names_another_rule() {
+    let mut s = settings();
+    let mut view = View::page(2);
+    build(&s, &mut view);
+    let remove = on_ui(&s, &mut view, &UiEvent::Pressed(REMOVE)).1;
+    assert_eq!(remove, Some(Intent::RemoveRule(RuleRef::Rule(3))));
+    s.rules.remove(0);
+    build(&s, &mut view);
+    assert_eq!(on_ui(&s, &mut view, &UiEvent::Pressed(REMOVE)).1, None);
+    assert_eq!(
+        on_ui(&s, &mut view, &UiEvent::Pressed(REMOVE + 1)).1,
+        Some(Intent::RemoveRule(RuleRef::Instruction(2)))
+    );
+}
+
+/// `uikit` moves a slider or a toggle itself; when the model does not follow,
+/// the next draw puts the control back to what the model holds.
+#[test]
+fn a_refused_change_puts_the_control_back() {
+    let mut s = settings();
+    s.updates.restart_window = Some((120, 300));
+    let mut view = View::page(4);
+    let old = build(&s, &mut view);
+    let (draw, intent) = on_ui(&s, &mut view, &UiEvent::Changed(START, Value::Number(300)));
+    assert!(draw && intent.is_none());
+    let new = build(&s, &mut view);
+    let changes = redraw(&old, &new, &mut view);
+    assert!(
+        changes
+            .iter()
+            .any(|c| matches!(c, Change::Put(e) if e.id == START && e.widget == old.iter().find(|o| o.id == START).unwrap().widget)),
+        "{changes:?}"
+    );
+    // Only once: the draw after that sends nothing.
+    assert!(redraw(&new, &build(&s, &mut view), &mut view).is_empty());
+}
+
 #[test]
 fn rules_profiles_and_keep_running_give_their_intents() {
     let s = settings();
-    let mut view = View { page: 2, app: None };
+    let mut view = View::page(2);
+    build(&s, &mut view);
     assert_eq!(
         on_ui(&s, &mut view, &UiEvent::Pressed(REMOVE)).1,
         Some(Intent::RemoveRule(RuleRef::Rule(3)))
@@ -167,6 +262,8 @@ fn rules_profiles_and_keep_running_give_their_intents() {
         on_ui(&s, &mut view, &UiEvent::Changed(PROFILES, Value::Index(0))).1,
         None
     );
+    let mut view = View::page(3);
+    build(&s, &mut view);
     assert_eq!(
         on_ui(&s, &mut view, &UiEvent::Changed(KEEP, Value::On(true))).1,
         Some(Intent::KeepRunning {
@@ -183,11 +280,11 @@ fn rules_profiles_and_keep_running_give_their_intents() {
 #[test]
 fn the_restart_window_turns_on_and_moves_in_quarter_hours() {
     let mut s = settings();
-    let mut view = View { page: 4, app: None };
+    let mut view = View::page(4);
     let (_, on) = on_ui(&s, &mut view, &UiEvent::Changed(WINDOW_ON, Value::On(true)));
     assert_eq!(on, Some(Intent::RestartWindow(Some((120, 300)))));
     s.applied(&on.unwrap());
-    let tree = names(&build(&s, &view));
+    let tree = names(&build(&s, &mut view));
     assert!(tree.iter().any(|n| n.contains(&clock(120))), "{tree:?}");
     assert_eq!(
         on_ui(&s, &mut view, &UiEvent::Changed(END, Value::Number(360))).1,
@@ -214,7 +311,7 @@ fn the_restart_window_turns_on_and_moves_in_quarter_hours() {
 }
 
 #[test]
-fn node_ids_stay_unique_with_every_kind_of_row_at_its_limit() {
+fn every_page_at_its_limit_has_unique_ids_and_fits_one_window() {
     use comp_settings::access::{Access, AppAccess};
     use comp_settings_ui::MAX_ROWS;
     let n = MAX_ROWS + 5;
@@ -224,7 +321,7 @@ fn node_ids_stay_unique_with_every_kind_of_row_at_its_limit() {
             access: (0..n as u32)
                 .map(|grant| Access {
                     grant,
-                    what: format!("thing {grant}"),
+                    what: format!("Read and write the file /home/user/{grant:0>200}"),
                     why: "test".into(),
                 })
                 .collect(),
@@ -232,7 +329,7 @@ fn node_ids_stay_unique_with_every_kind_of_row_at_its_limit() {
         rules: (0..n as u32)
             .map(|i| RuleLine {
                 id: RuleRef::Rule(i),
-                text: format!("rule {i}"),
+                text: format!("Always allow rule {i:0>200}"),
             })
             .collect(),
         profiles: (0..n).map(|i| format!("p{i}")).collect(),
@@ -240,7 +337,17 @@ fn node_ids_stay_unique_with_every_kind_of_row_at_its_limit() {
         ..Settings::default()
     };
     for page in 0..Page::ALL.len() {
-        let tree = build(&s, &View { page, app: Some(0) });
+        let mut view = View::page(page);
+        view.app = Some("many".into());
+        let tree = build(&s, &mut view);
+        // uikit takes it whole: within 4,096 nodes and 256 KiB.
+        let shown = names(&tree);
+        if page == 1 || page == 2 {
+            assert!(
+                shown.iter().any(|n| n.ends_with("more not shown")),
+                "page {page}"
+            );
+        }
         let mut ids: Vec<u32> = tree.iter().map(|e| e.id).collect();
         let total = ids.len();
         ids.sort_unstable();
