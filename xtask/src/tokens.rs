@@ -5,7 +5,8 @@
 //! the `dsl-1` pack `llmproto::pack` renders from the registry, with bytes per
 //! token against the pack's estimator, and the conversation-memory budget the
 //! pack leaves (P1 plan section 4). It fails when the pack and MODE go over
-//! `llmproto::pack::PACK_BUDGET` real tokens or the estimate undercounts them.
+//! `llmproto::pack::PACK_ALARM` real tokens (headroom under `PACK_BUDGET`) or
+//! the estimate undercounts them.
 //! The token-count workflow runs it on GitHub's runner.
 
 use bpe::Tokenizer;
@@ -18,7 +19,7 @@ use std::io::Read;
 /// Bytes of the GGUF file read: the header and the whole vocabulary of a Qwen3
 /// model fit in the first 8 MB, so this leaves room.
 const HEAD_BYTES: u64 = 32 * 1024 * 1024;
-use llmproto::pack::{self, Format, MODE_ACT, PACK_BUDGET};
+use llmproto::pack::{self, Format, MODE_ACT, PACK_ALARM, PACK_BUDGET};
 /// A plain request, as today's user turn carries it.
 const REQUEST: &str = "switch to round robin";
 /// ADR 0010 §4 and P1 plan §4.
@@ -44,16 +45,17 @@ pub fn main(args: &[String]) -> Result<(), String> {
     check_budget(&tok)
 }
 
-/// The pack and MODE within the budget in real tokens, and the estimate the
-/// host test uses not under the real count.
+/// The pack and MODE within the alarm in real tokens, below the budget, and the
+/// estimate the host test uses not under the real count.
 fn check_budget(tok: &Tokenizer) -> Result<(), String> {
     let text = pack::render(Format::Dsl1);
     let real = count(tok, &text) + count(tok, MODE_ACT);
     let estimate = pack::estimate_tokens(&text) + pack::estimate_tokens(MODE_ACT);
-    match (real <= PACK_BUDGET, estimate >= real) {
+    match (real <= PACK_ALARM, estimate >= real) {
         (true, true) => Ok(()),
         (false, _) => Err(format!(
-            "the pack and MODE take {real} tokens, over {PACK_BUDGET}"
+            "the pack and MODE take {real} tokens, over the {PACK_ALARM} that keeps \
+             headroom under {PACK_BUDGET}: put a group on the index level (ADR 0010 §6)"
         )),
         (true, false) => Err(format!(
             "the pack estimate ({estimate}) undercounts the real {real} tokens"
@@ -243,7 +245,8 @@ mod tests {
         assert_eq!(headings[2], "## Examples");
         // Then the OS rows, a section per group, then the index level's names.
         let (index, groups) = headings[3..].split_last().unwrap();
-        assert_eq!(groups, ["## system", "## files (paths under /home/user)"]);
+        // The file group is on the index level (ADR 0010 §6).
+        assert_eq!(groups, ["## system"]);
         assert!(index.starts_with("## index"), "{index}");
         let joined: String = sections(&text).iter().map(|(_, t)| *t).collect();
         assert_eq!(joined, text);
