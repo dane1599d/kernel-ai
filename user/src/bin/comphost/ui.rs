@@ -322,7 +322,19 @@ fn serve_shown<E: Env<Instance = LiveInstance>>(
         _ => Ok(()),
     });
     match served {
-        Ok(done) => done.map(|((), performed)| performed),
+        Ok(done) => {
+            let performed = done.map(|((), performed)| performed);
+            // Until the effect transport (A-core) carries these to the agent core,
+            // say what is dropped, so a window's missing effect is not silent.
+            if let Some(performed) = performed.as_ref().filter(|p| !p.is_empty()) {
+                println!(
+                    "comphost: dropped {} effect(s) from a window event: {}",
+                    performed.txn.effects.len(),
+                    performed.effect_lines().trim_end().replace('\n', "; ")
+                );
+            }
+            performed
+        }
         Err(exit) => {
             println!("comphost: {}", exit.why);
             None
