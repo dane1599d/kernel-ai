@@ -172,6 +172,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ccserve"
+version = "0.1.0-dev"
+dependencies = [
+ "kailink",
+ "promptcore",
+ "sha2",
+ "wasihost",
+ "wasmi",
+ "wasmparser 0.228.0",
+]
+
+[[package]]
 name = "cfg-if"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"

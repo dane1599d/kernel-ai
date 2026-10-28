@@ -17,6 +17,7 @@
 //! cargo xtask doctor   (can this PC run Kernel AI in an accelerated VM, and what to fix; read-only)
 //! cargo xtask vbox [--start [--headless]]   (the VirtualBox VM "Kernel AI"; see vbox/mod.rs)
 //! cargo xtask wit-tables [--check]   (wasmhost/src/tables.rs from wit/: the host tables of the kai:app world)
+//! cargo xtask ccwasm [--check] [--no-gen3]   (third_party/xcc/cc.wasm from xcc's pinned commit; Linux or WSL2; see cc/mod.rs)
 //! cargo xtask licences check   (every licence in the tree and the dependency graph is allowed and has its text; see licences.rs)
 //! cargo xtask notices [--check]   (writes or checks NOTICES.txt, the third-party notices the image carries; see notices.rs)
 //! cargo xtask fs mkfs|import|ls|cat|check|replay ...   (kaifs data disks on the host, no WSL; see fs/mod.rs)
@@ -37,6 +38,7 @@ mod blklog;
 mod boot_smoke;
 mod buildsvc;
 mod cases;
+mod cc;
 mod components;
 mod disk;
 mod doctor;
@@ -99,6 +101,7 @@ fn main() -> ExitCode {
         Some("latency") => latency::main(&args[1..]),
         Some("doctor") => doctor::main(&args[1..]),
         Some("vbox") => vbox::main(&args[1..]),
+        Some("ccwasm") => cc::main(&args[1..], &workspace_root()),
         Some("licences") => licences::main(&args[1..]),
         Some("notices") => notices::main(&args[1..]),
         Some("wit-check") => wit::main(&args[1..]),
