@@ -26,6 +26,7 @@ pub mod actlog;
 mod agentcore;
 pub mod analyse;
 pub mod apart;
+pub mod apps;
 mod brackets;
 mod commands;
 pub mod data;
