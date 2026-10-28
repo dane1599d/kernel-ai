@@ -999,6 +999,14 @@ pub fn trust_time(handle: Handle) -> Result<u64, Error> {
     call(call::TRUST_TIME, [u64::from(handle.0), 0, 0, 0, 0, 0])
 }
 
+/// Whether process `pid` still runs; needs a `Partition` handle (`fs`).
+pub fn part_peer_alive(handle: Handle, pid: u64) -> Result<u64, Error> {
+    call(
+        call::PART_PEER_ALIVE,
+        [u64::from(handle.0), pid, 0, 0, 0, 0],
+    )
+}
+
 /// A `Dir` or `File` handle on this process's own endpoint, with `badge` and
 /// `rights`, for the `fs` service to hand on (P2 task 8).
 pub fn endpoint_mint(
