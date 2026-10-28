@@ -518,6 +518,25 @@ pub fn services(mut f: impl FnMut(u64, &Name)) {
     }
 }
 
+/// What each live service (not the supervisor) uses now: its pid, its name, the
+/// pages counted against its quota and its CPU time since it started (METRICS).
+pub fn services_usage(mut f: impl FnMut(u64, &Name, u64, u64)) {
+    let mut live = [(0, 0, Name::EMPTY); MAX_PROCESSES];
+    let count = with_table(|table| {
+        let services = table
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.live() && !p.supervisor)
+            .map(|(slot, p)| (slot, p.pid, p.name));
+        fill(&mut live, services)
+    });
+    // The spaces after the table's lock, one at a time (lock order).
+    for (slot, pid, name) in &live[..count] {
+        let pages = with_space(*slot, UserSpace::frames).unwrap_or(0);
+        f(*pid, name, pages, burst::cpu_ns(*slot));
+    }
+}
+
 /// The process owning each thread slot: its pid, or 0 for kernel threads.
 pub fn pids_by_tid() -> [u64; MAX_THREADS] {
     let mut pids = [0; MAX_THREADS];
