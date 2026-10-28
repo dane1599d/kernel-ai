@@ -21,7 +21,7 @@ const KEY_A: [u8; 2] = [0x1E, 0x9E];
 
 /// Keys as if the keyboard sent them. The case types nothing else, so the
 /// ring's one producer is this thread for the moment.
-fn type_keys(bytes: &[u8]) {
+pub(crate) fn type_keys(bytes: &[u8]) {
     let waiter = without_interrupts(|| {
         let waiter = crate::i8042::inject(bytes);
         crate::input::wake_pending();
