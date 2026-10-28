@@ -522,6 +522,23 @@ pub fn input_read(out: &mut [kabi::input::InputEvent], timeout_ms: u64) -> Resul
     Ok(got)
 }
 
+/// The kernel console's rows changed after `since` (`term` only), in
+/// `termcore::mirror`'s format, into `out`; the length written.
+pub fn term_read(out: &mut [u8], since: u64) -> Result<usize, Error> {
+    let len = call(
+        call::TERM_READ,
+        [out.as_mut_ptr() as u64, out.len() as u64, since, 0, 0, 0],
+    )?;
+    Ok(len as usize)
+}
+
+/// Lends the keys to the kernel console's terminal for about a second, while
+/// `pid`'s window, which must be the terminal window, has the focus; or (`on`
+/// false) ends the lease (`desktop` only, while it shows).
+pub fn input_to_console(on: bool, pid: u64) -> Result<(), Error> {
+    call(call::INPUT_TO_CONSOLE, [u64::from(on), pid, 0, 0, 0, 0]).map(|_| ())
+}
+
 /// Removes the `Shm` mapping that starts at `address`.
 pub fn shm_unmap(address: u64) -> Result<u64, Error> {
     call(call::SHM_UNMAP, [address, 0, 0, 0, 0, 0])
