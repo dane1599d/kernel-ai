@@ -53,6 +53,11 @@ pub struct Golden {
 }
 
 impl ModelDisk {
+    /// The file on the host.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
     /// A file to attach, by an absolute path. The file is only read.
     pub fn open(path: &Path) -> Result<Self, String> {
         // Not canonicalize: on Windows that gives a `\\?\` path QEMU may not take.

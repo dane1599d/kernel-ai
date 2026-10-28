@@ -13,11 +13,21 @@ mod check;
 mod dev;
 
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU32, Ordering};
 use fsserve::{Call, Server, Started};
 use kabi::handle::{Handle, HandleInfo, Kind, MAX_STARTUP, RecvInfo, Rights};
 use kabi::part::stub;
 use kabi::{Error, MAX_MESSAGE};
 use user::{println, sys};
+
+/// The `Partition` handle, for [`alive`].
+static PARTITION: AtomicU32 = AtomicU32::new(0);
+
+/// Whether a caller still runs: only a definite NotFound counts as dead.
+fn alive(pid: u64) -> bool {
+    let part = Handle(PARTITION.load(Ordering::Relaxed));
+    sys::part_peer_alive(part, pid) != Err(Error::NotFound)
+}
 
 user::entry!(main);
 
@@ -64,6 +74,9 @@ fn main() -> i32 {
             return 2;
         }
     };
+    PARTITION.store(part.0, Ordering::Relaxed);
+    server.set_alive(alive);
+    fill_model(&mut server, part);
     let mut bench = Bench::default();
     let mut request = alloc::vec![0u8; MAX_MESSAGE];
     loop {
@@ -122,6 +135,50 @@ fn main() -> i32 {
         // A writer that never pauses must not starve retention and the GC.
         server.idle(sys::time_ns());
     }
+}
+
+/// Hands the kernel the model `kai-modelhint 1` names, if it reserved room for
+/// one at boot (P2 task 10): its block runs in `kai-data`, 64 at a time. The
+/// kernel reads, checks and publishes it; NotFound means it waits for none.
+fn fill_model<D: kaifs::BlockDev>(server: &mut Server<D>, part: Handle) {
+    let mut sector = [0u8; kabi::modelhint::SIZE];
+    let hint = sys::part_read(part, 0, &mut sector)
+        .ok()
+        .and_then(|_| kabi::modelhint::Hint::decode(&sector));
+    let Some(hint) = hint else {
+        return;
+    };
+    let extents = match server.model_extents(&hint.sha256) {
+        Ok(Some(extents)) => extents,
+        found => {
+            println!("fs: kai-modelhint names a model the store cannot give: {found:?}");
+            // No runs: the kernel stops waiting, so llm's wait ends.
+            let _ = sys::model_fill(part, &[], 0);
+            return;
+        }
+    };
+    let blocks: u64 = extents.iter().map(|&(_, n)| n).sum();
+    if blocks * 4096 < hint.len {
+        println!("fs: the model store's file is shorter than kai-modelhint says");
+        let _ = sys::model_fill(part, &[], 0);
+        return;
+    }
+    let mut offset = 0;
+    for chunk in extents.chunks(64) {
+        match sys::model_fill(part, chunk, offset) {
+            Ok(filled) => offset = filled,
+            // The boot used a kai-model disk or a boot module instead.
+            Err(Error::NotFound) => return,
+            Err(error) => {
+                println!("fs: MODEL_FILL refused the model: {error:?}");
+                return;
+            }
+        }
+    }
+    println!(
+        "fs: the model store's model is filled, {offset} of {} bytes",
+        hint.len
+    );
 }
 
 /// The startup handle of `kind`.

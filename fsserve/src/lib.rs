@@ -20,6 +20,7 @@ mod buffer;
 mod lookup;
 #[cfg(test)]
 mod tests;
+mod trash;
 
 use alloc::vec::Vec;
 use fsproto::{
@@ -120,6 +121,9 @@ pub struct Server<D: BlockDev> {
     pending: Option<buffer::Pending>,
     /// The record last read.
     cache: Option<buffer::Cached>,
+    /// Whether a caller (a pid) still runs: a dead owner's action is aborted
+    /// ([`Server::set_alive`]).
+    alive: fn(u64) -> bool,
 }
 
 /// The object a checked badge names.
@@ -150,9 +154,29 @@ impl<D: BlockDev> Server<D> {
             base,
             pending: None,
             cache: None,
+            alive: |_| true,
         };
         (server.home_user, server.system_state, server.epoch) = server.prepare(&uuid)?;
         Ok((server, started))
+    }
+
+    /// How `fs` learns whether a caller still runs. Until set, every caller
+    /// counts as alive. With it, an action whose owner has died is aborted, as
+    /// if it had sent Abort, once another caller's change would wait on it or
+    /// at [`Server::idle`], so one crash between Begin and Commit cannot wedge
+    /// every later change.
+    pub fn set_alive(&mut self, alive: fn(u64) -> bool) {
+        self.alive = alive;
+    }
+
+    /// Aborts the open action if its owner is dead; the kernel (0) never dies.
+    fn reap(&mut self) {
+        if let Some(owner) = self.owner
+            && owner != 0
+            && !(self.alive)(owner)
+        {
+            self.drop_changes();
+        }
     }
 
     fn fs(&mut self) -> &mut Fs<D> {
@@ -226,6 +250,26 @@ impl<D: BlockDev> Server<D> {
         self.badge(SYSTEM, true, ino)
     }
 
+    /// The model store's file for `sha256` (`<hex>.gguf` in the `models`
+    /// volume's root, sealed) and its `kai-data` block runs in file order, for
+    /// MODEL_FILL (P2 task 10); `None` if the store has no such sealed file.
+    pub fn model_extents(&mut self, sha256: &[u8; 32]) -> Result<Option<Vec<(u64, u64)>>, Error> {
+        let mut name = alloc::string::String::with_capacity(69);
+        for byte in sha256 {
+            name.push_str(&alloc::format!("{byte:02x}"));
+        }
+        name.push_str(".gguf");
+        let fs = self.fs();
+        fs.set_volume(MODELS.into()).map_err(error)?;
+        let Some(entry) = fs.lookup(ROOT, &name).map_err(error)? else {
+            return Ok(None);
+        };
+        if !fs.is_sealed(entry.ino).map_err(error)? {
+            return Ok(None);
+        }
+        fs.sealed_extents(entry.ino).map(Some).map_err(error)
+    }
+
     /// The commit generation now.
     pub fn generation(&mut self) -> u64 {
         self.fs().committed
@@ -252,6 +296,7 @@ impl<D: BlockDev> Server<D> {
     /// while space is low the whole pass, since a writer that never pauses would
     /// otherwise outrun it. `now` is the time in ns, as [`Call::now`].
     pub fn idle(&mut self, now: u64) {
+        self.reap();
         if self.owner.is_some() {
             return;
         }
@@ -290,6 +335,9 @@ impl<D: BlockDev> Server<D> {
     fn answer(&mut self, call: &Call) -> Result<(Reply, Option<Mint>), Error> {
         let request = fsproto::decode_request(call.request)?;
         let changes = changes(&request);
+        if changes && self.owner.is_some_and(|o| o != call.caller) {
+            self.reap();
+        }
         if changes {
             self.cache = None;
         }
@@ -397,6 +445,21 @@ impl<D: BlockDev> Server<D> {
                 dir()?;
                 need(Rights::ENUMERATE)?;
                 self.list(object, after, max)?
+            }
+            Request::TrashList { after } => {
+                dir()?;
+                need(Rights::ENUMERATE)?;
+                self.trash_list(object, after)?
+            }
+            Request::TrashRestore { path } => {
+                dir()?;
+                need(Rights::CREATE)?;
+                self.trash_restore(object, &path)?
+            }
+            Request::EmptyTrash => {
+                dir()?;
+                need(Rights::DELETE)?;
+                self.empty_trash(object)?
             }
             Request::Read { off, len } => {
                 file()?;
@@ -604,6 +667,8 @@ fn changes(request: &Request) -> bool {
         | Request::Commit
         | Request::Abort
         | Request::Restore { .. }
+        | Request::TrashRestore { .. }
+        | Request::EmptyTrash
         | Request::Sync => true,
         Request::Stat
         | Request::List { .. }
@@ -611,7 +676,8 @@ fn changes(request: &Request) -> bool {
         | Request::History
         | Request::Changes { .. }
         | Request::Df
-        | Request::Generation => false,
+        | Request::Generation
+        | Request::TrashList { .. } => false,
     }
 }
 
