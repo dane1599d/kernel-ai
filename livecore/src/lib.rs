@@ -19,6 +19,7 @@ pub mod ledger;
 pub mod local;
 pub mod location;
 pub mod manifest;
+pub mod nap;
 mod probation;
 pub mod scenario;
 pub mod settings;
