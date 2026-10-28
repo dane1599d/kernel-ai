@@ -531,3 +531,49 @@ fn routes_form_no_cycle_and_never_reach_the_shell_or_edit() {
         );
     }
 }
+
+#[test]
+fn a_demand_line_waits_for_the_kernels_demand() {
+    let plan = parse_plan(
+        "notes program=comphost caps=serve start=demand\nshell caps=serve\nodd start=later\ntwice start=demand start=demand\nlone unsupervised start=demand",
+    );
+    assert_eq!(plan.services.len(), 2, "{:?}", plan.errors);
+    assert_eq!(plan.errors.len(), 3, "{:?}", plan.errors);
+    assert_eq!(plan.services[0].start, Start::Demand);
+    assert_eq!(plan.services[1].start, Start::Boot);
+    assert_eq!(parse_demand("demand notes"), Some("notes"));
+    for bad in [
+        "demand",
+        "demand notes x",
+        "demand no/tes",
+        "start notes",
+        "",
+    ] {
+        assert_eq!(parse_demand(bad), None, "{bad:?}");
+    }
+    let specs: Vec<&ServiceSpec> = plan.services.iter().collect();
+    let mut records = vec![Record::new("notes"), Record::new("shell")];
+    let idle = [false, false];
+    assert_eq!(
+        check_demand("notes", &specs, &records, 0, &idle),
+        Ok(Some(0))
+    );
+    // Only the kernel asks, and only for a start=demand line.
+    assert!(check_demand("notes", &specs, &records, 7, &idle).is_err());
+    assert!(check_demand("shell", &specs, &records, 0, &idle).is_err());
+    assert!(check_demand("nobody", &specs, &records, 0, &idle).is_err());
+    // Already starting or running: nothing to do.
+    assert_eq!(
+        check_demand("notes", &specs, &records, 0, &[true, false]),
+        Ok(None)
+    );
+    records[0].pid = 9;
+    assert_eq!(check_demand("notes", &specs, &records, 0, &idle), Ok(None));
+    // Stopped by the user: a demand does not undo that.
+    records[0].pid = 0;
+    records[0].stopped = true;
+    assert_eq!(
+        check_demand("notes", &specs, &records, 0, &idle),
+        Err("err stopped")
+    );
+}

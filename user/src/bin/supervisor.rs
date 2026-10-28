@@ -12,6 +12,8 @@
 //! made as that log entry, with nothing changed since. A start needs none. Its
 //! own restarts need none either.
 //! `services` lists them, for the shell to tell a service from a process.
+//! A `start=demand` service is not started at boot: `demand <name>`, which only
+//! the kernel sends, when a call first waits for it, starts it (P3 task 12b).
 
 #![no_std]
 #![no_main]
@@ -23,7 +25,7 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use kabi::{ExitReason, ExitRecord, SpawnRequest};
-use supervise::{Decision, Proof, Record, Request, ServiceSpec};
+use supervise::{Decision, Proof, Record, Request, ServiceSpec, Start};
 use user::sys::Event;
 use user::{println, sys};
 
@@ -115,10 +117,12 @@ fn main() -> i32 {
             .find(|(_, name)| *name == service.spec.name)
             .map(|&(pid, _)| pid);
         service.record.pid = service.pid.unwrap_or(0);
+        // A `start=demand` service waits for the kernel's `demand`.
         if service.pid.is_none()
             && !service.record.gave_up
             && !service.record.stopped
             && service.start_at_ms.is_none()
+            && service.spec.start == Start::Boot
         {
             service.start_at_ms = Some(now);
         }
@@ -179,6 +183,9 @@ fn handle(services: &mut [Service], text: &str, caller: u64) -> String {
     let records: Vec<Record> = services.iter().map(|s| s.record.clone()).collect();
     if text.trim() == supervise::SERVICES {
         return supervise::listing(&records);
+    }
+    if let Some(name) = supervise::parse_demand(text) {
+        return demand(services, &records, name, caller);
     }
     let Some((request, proof)) = Request::parse(text) else {
         return String::from("err unknown request");
@@ -242,6 +249,22 @@ fn handle(services: &mut [Service], text: &str, caller: u64) -> String {
     }
     save(services);
     String::from("ok")
+}
+
+/// `demand <name>` from the kernel: a call waits for `start=demand` service
+/// `name`, so it starts now (P3 task 12b).
+fn demand(services: &mut [Service], records: &[Record], name: &str, caller: u64) -> String {
+    let specs: Vec<&ServiceSpec> = services.iter().map(|s| &s.spec).collect();
+    let starting: Vec<bool> = services.iter().map(|s| s.start_at_ms.is_some()).collect();
+    match supervise::check_demand(name, &specs, records, caller, &starting) {
+        Ok(Some(index)) => {
+            services[index].start_at_ms = Some(now_ms());
+            println!("{name} starts on demand");
+            String::from("ok")
+        }
+        Ok(None) => String::from("ok"),
+        Err(why) => why.into(),
+    }
 }
 
 /// A `ONCE` or a rule, checked through the kernel; any other proof needs no call.

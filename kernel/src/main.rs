@@ -36,6 +36,7 @@ mod clock;
 mod compute_tests;
 mod console;
 mod cpu;
+mod demand_tests;
 mod desk_tests;
 mod devhost;
 mod device_tests;
@@ -354,6 +355,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::DeskRestart => run_case(desk_tests::restart),
         SelfTest::DeskAsk => run_case(ask_tests::check),
         SelfTest::AppSuspend => run_case(suspend_tests::check),
+        SelfTest::AppOnDemand => run_case(demand_tests::check),
         SelfTest::DeskBoot => run_case(desk_tests::boot_check),
         SelfTest::DeskPanel => run_case(desk_tests::panel_check),
         SelfTest::UiWindow => run_case(ui_tests::check),
