@@ -214,8 +214,10 @@ fn write(home: Handle) -> Result<(), String> {
     if read_all(plan, PLAN.len())? != PLAN || read_all(big, BIG)? != pattern() {
         return Err(String::from("a file read back different before the reboot"));
     }
-    mark(home, "write.ok")?;
+    // The line before the mark: the kernel ends the case once it sees the
+    // mark, and on a slow runner the machine can stop before a later line.
     println!("filecheck: boot 1 wrote notes/plan.txt and a 20 KiB file through its Dir handle");
+    mark(home, "write.ok")?;
     Ok(())
 }
 
@@ -275,8 +277,8 @@ fn read(home: Handle) -> Result<(), String> {
     if read_all(plan, PLAN.len())? != PLAN || read_all(big, BIG)? != pattern() {
         return Err(String::from("boot 1's files read back different"));
     }
-    mark(home, "read.ok")?;
     println!("filecheck: boot 2 read back what boot 1 wrote, byte for byte");
+    mark(home, "read.ok")?;
     Ok(())
 }
 
@@ -310,7 +312,7 @@ fn restart(home: Handle) -> Result<(), String> {
     if read_all(file, 2)? != b"v1" {
         return Err(String::from("restart.txt is not what was committed"));
     }
-    mark(home, "restart.ok")?;
     println!("filecheck: the File handle opened before fs restarted reads what was committed");
+    mark(home, "restart.ok")?;
     Ok(())
 }
