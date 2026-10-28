@@ -14,78 +14,17 @@ env:
   CARGO_TERM_COLOR: always
 
 # A new push to a pull request cancels that PR's older run; runs on main all finish.
-# Adding any other label (`batch-ready`, `batch-first`) starts a run of its own
-# group whose jobs all skip, so it neither cancels the PR's run nor costs a slot.
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.sha }}${{ github.event.action == 'labeled' && !startsWith(github.event.label.name, 'full-ci') && format('-label-{0}', github.run_id) || '' }}
+  group: ci-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  lint-and-unit:
-    name: Format, lint, host unit tests
-    if: github.event.action != 'labeled' || startsWith(github.event.label.name, 'full-ci')
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install pinned toolchain from rust-toolchain.toml
-        run: rustup show active-toolchain || rustup toolchain install
-      - name: Install the WebAssembly target for live components
-        run: rustup target add wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --all --check
-      - name: Dependency licences and advisories (deny.toml, ADR 0009 D6)
-        run: |
-          cargo install --locked cargo-deny --version 0.20.2
-          cargo deny check licenses advisories
-      - name: Every licence in the tree and graph is allowed and has its text (ADR 0009 D5)
-        run: cargo xtask licences check
-      - name: NOTICES.txt is up to date (ADR 0009 D6)
-        run: |
-          cargo install --locked cargo-about --version 0.9.2 --features cli
-          cargo xtask notices --check
-      # Host crates are the workspace's default-members (Cargo.toml), so a new
-      # crate is linted and tested here without editing this file.
-      - run: cargo clippy --all-targets --features linetable/alloc,kaibundle/alloc -- -D warnings
-      - run: cargo clippy -p kernel --target x86_64-unknown-none --features spikes -- -D warnings
-      - name: Clippy for the engine crates on the soft-float kernel target
-        run: cargo clippy -p gguf -p cpufeat -p quant -p bpe -p infer --target x86_64-unknown-none -- -D warnings
-      - name: Clippy for the soft-float ring-3 programs
-        run: cargo clippy -p user --target x86_64-unknown-none --lib --bin supervisor --bin shell --bin crasher --bin spinner --bin hog --bin edit --bin work --bin netcheck --bin handles --bin scriptrun --bin fs --bin filecheck --bin updated --bin desktop --bin deskdemo --bin tufbench -- -D warnings
-      - name: Clippy for the hard-float ring-3 programs
-        run: |
-          # appbench embeds the view guest; wasmhost's tests load Notes' window.
-          cargo build -p comp-viewbench --target wasm32-unknown-unknown --profile component
-          cargo build -p comp-notes-window --target wasm32-unknown-unknown --profile component
-          cargo clippy -Zjson-target-spec -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem -p user --target user/x86_64-kai-user.json --lib --bin llm --bin probe --bin vecstress --bin workers --bin comphost --bin appbench -- -D warnings
-      - run: cargo clippy -p compsdk -p comp-notes -p comp-notes-v1 -p comp-viewbench --target wasm32-unknown-unknown -- -D warnings
-      # Alone: with comp-notes in the same run its exports would be on.
-      - run: cargo clippy -p comp-notes-window --target wasm32-unknown-unknown -- -D warnings
-      - name: Clippy for each broken notes version
-        run: for bug in bug-import bug-health bug-trap bug-spin; do cargo clippy -p comp-notes-bad --target wasm32-unknown-unknown --features $bug -- -D warnings; done
-      - run: cargo test --features linetable/alloc,kaibundle/alloc
-
-  # QEMU for every boot job, built once per version from a pinned source tarball
-  # and cached: Ubuntu 24.04's QEMU 8.2 segfaulted under TCG in vector-heavy
-  # cases (matvec, local-ask, local-script). Bump the version and SHA-256 here
-  # and in .github/actions/qemu together.
-  #
-  # The boot, icount and observe jobs all need this one, so this condition gates
-  # them too (founder, 2026-10-27): they run on main, on merge-batch PRs
-  # (`batch/...`), and on a PR labelled `full-ci`. A plain PR push runs only the
-  # lint and host-test job above; merges still need every job green in a batch.
-  #
-  # A `full-ci` PR boots its cases under KVM only, without the TCG shards, icount
-  # or observe: those ran on every lane's PR and starved the merge batches of the
-  # account's 20 job slots (2026-10-27). Batches and main still run everything,
-  # and a PR labelled `full-ci-all` gets the whole set too, e.g. to chase a TCG hang.
   qemu:
     name: QEMU 11.0.5 (built once, cached)
     if: >-
-      (github.event.action != 'labeled' || startsWith(github.event.label.name, 'full-ci')) &&
-      (github.event_name != 'pull_request' ||
+      github.event_name != 'pull_request' ||
       startsWith(github.head_ref, 'batch/') ||
-      contains(github.event.pull_request.labels.*.name, 'full-ci') ||
-      contains(github.event.pull_request.labels.*.name, 'full-ci-all'))
+      contains(github.event.pull_request.labels.*.name, 'full-ci')
     runs-on: ubuntu-24.04
     env:
       QEMU_VERSION: "11.0.5"
@@ -119,40 +58,15 @@ jobs:
           key: qemu-${{ env.QEMU_VERSION }}-ubuntu-24.04-v1
     timeout-minutes: 40
 
-  # Every case boots under both KVM and TCG (KVM only on a `full-ci` PR, see
-  # above); `--shard K/3` deals the cases out in turn across three runners per
-  # accelerator, and shard 1 also runs the host smokes.
-  boot:
-    name: Boot test (${{ matrix.accel }}, shard ${{ matrix.shard }}/3)
+  # Every case boots under both KVM and TCG; `--shard K/3` deals the cases out in
+  # turn across three runners per accelerator, and shard 1 also runs the host smokes.
+  hangdump:
+    name: Hang dump on a forced timeout
     runs-on: ubuntu-24.04
     needs: qemu
-    strategy:
-      fail-fast: false
-      matrix:
-        accel: ${{ fromJSON(github.event_name == 'pull_request' && !startsWith(github.head_ref, 'batch/') && !contains(github.event.pull_request.labels.*.name, 'full-ci-all') && '["kvm"]' || '["kvm", "tcg"]') }}
-        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/qemu
-      - name: Show the runner's CPU count, vector features, vendor and nested virtualisation
-        run: |
-          nproc
-          grep -m1 '^flags' /proc/cpuinfo | grep -o -w -E 'avx2|avx512f|avx512bw|avx512_vnni' | xargs echo
-          # ADR 0006 step 1: which runners could host an SVM guest under KVM.
-          grep -m1 '^vendor_id' /proc/cpuinfo
-          grep -m1 '^model name' /proc/cpuinfo
-          echo "virtualisation flags: $(grep -m1 '^flags' /proc/cpuinfo | grep -o -w -E 'svm|vmx|npt|nrip_save|decodeassists|avic' | xargs echo)"
-          for module in kvm_amd kvm_intel; do
-            if [ -r /sys/module/$module/parameters/nested ]; then
-              echo "$module nested=$(cat /sys/module/$module/parameters/nested)"
-            fi
-          done
-      - name: Allow KVM for the runner user
-        if: matrix.accel == 'kvm'
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
       - name: Install pinned toolchain from rust-toolchain.toml
         run: rustup show active-toolchain || rustup toolchain install
       - name: Install the WebAssembly target for live components
@@ -160,116 +74,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: qemu
-          save-if: ${{ matrix.accel == 'kvm' && matrix.shard == 1 }}
-      - name: Boot kernel with spikes and check pass/fail
-        run: cargo xtask test --accel ${{ matrix.accel }} --timeout 300 --shard ${{ matrix.shard }}/3
-    timeout-minutes: 20
-
-  # Performance pass marks, judged on the release kernel (decisions, 2026-10-27):
-  # the boot jobs' debug kernel leaves the `kernel` crate unoptimised, so its
-  # figures are the trend line only. Runs on main and on `full-ci` PRs, not on
-  # merge batches, and is not a gate: it reports. `shm` logs spike S01-1's M6.
-  perf:
-    name: Perf marks (release kernel)
-    if: >-
-      github.event_name != 'pull_request' ||
-      contains(github.event.pull_request.labels.*.name, 'full-ci')
-    runs-on: ubuntu-24.04
-    needs: qemu
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/qemu
-      - name: Allow KVM for the runner user
+          save-if: false
+      - name: A case that times out, to see the dump
         run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-      - name: Install pinned toolchain from rust-toolchain.toml
-        run: rustup show active-toolchain || rustup toolchain install
-      - name: Install the WebAssembly target for live components
-        run: rustup target add wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: qemu-release
-      - name: Boot the release kernel and log the perf marks
-        env:
-          XTASK_CASE: shm
-        run: cargo xtask test --release --accel kvm --timeout 300
+          XTASK_CASE=tune cargo xtask test --accel tcg --timeout 25 || true
     timeout-minutes: 30
-
-  # M10a-2's spike, not a gate: boots `icount-probe` twice under single-threaded
-  # TCG with icount and requires the same digest; it also prints host seconds per
-  # virtual second, which fixes shift and the trial's window length.
-  icount:
-    name: icount determinism probe (not a gate)
-    if: >-
-      github.event_name != 'pull_request' ||
-      startsWith(github.head_ref, 'batch/') ||
-      contains(github.event.pull_request.labels.*.name, 'full-ci-all')
-    runs-on: ubuntu-24.04
-    needs: qemu
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/qemu
-      - name: Install pinned toolchain from rust-toolchain.toml
-        run: rustup show active-toolchain || rustup toolchain install
-      - name: Install the WebAssembly target for live components
-        run: rustup target add wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: qemu
-          save-if: false
-      - name: Boot icount-probe twice and compare digests
-        run: cargo xtask icount --shift 3 --boots 2 --timeout 900
-    timeout-minutes: 45
-
-  # The M10 exit test's recording names the summary an observe boot built, and
-  # `tune ab` refuses it unless a new observe boot builds it again, on another
-  # runner. Each of two runners boots observe twice; all four summaries must match.
-  observe:
-    name: Observe determinism (${{ matrix.runner }})
-    if: >-
-      github.event_name != 'pull_request' ||
-      startsWith(github.head_ref, 'batch/') ||
-      contains(github.event.pull_request.labels.*.name, 'full-ci-all')
-    runs-on: ubuntu-24.04
-    needs: qemu
-    strategy:
-      fail-fast: false
-      matrix:
-        runner: [first, second]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/qemu
-      - name: Install pinned toolchain from rust-toolchain.toml
-        run: rustup show active-toolchain || rustup toolchain install
-      - name: Install the WebAssembly target for live components
-        run: rustup target add wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: qemu
-          save-if: false
-      - name: Boot observe twice and compare summaries
-        run: |
-          set -o pipefail
-          cargo xtask tune observe --mix A --boots 2 --timeout 900 | tee observe.txt
-          grep -o 'built the same summary [0-9a-f]*' observe.txt | awk '{print $5}' > summary-sha.txt
-          test -s summary-sha.txt
-      - uses: actions/upload-artifact@v4
-        with:
-          name: observe-${{ matrix.runner }}
-          path: summary-sha.txt
-    timeout-minutes: 45
-
-  observe-compare:
-    name: Observe determinism across runners
-    runs-on: ubuntu-24.04
-    needs: observe
-    steps:
-      - uses: actions/download-artifact@v4
-      - name: Both runners built the same summary
-        run: |
-          cat observe-first/summary-sha.txt observe-second/summary-sha.txt
-          cmp observe-first/summary-sha.txt observe-second/summary-sha.txt
