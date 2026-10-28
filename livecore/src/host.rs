@@ -574,6 +574,24 @@ impl<E: Env> Host<E> {
         }
     }
 
+    /// Whether the app is suspended (`ctl suspend`): no instance, its state
+    /// saved.
+    pub fn suspended(&self) -> bool {
+        matches!(self.mode, Mode::Suspended(_))
+    }
+
+    /// Brings a suspended app back, as `ctl resume` from the kernel does, so an
+    /// event for its kept window (a close, an agent's action) reaches it
+    /// instead of being dropped. The resume's reply, or `None` when the app was
+    /// not suspended.
+    pub fn wake(&mut self) -> Result<Option<Vec<u8>>, Exit> {
+        if !self.suspended() {
+            return Ok(None);
+        }
+        let request = alloc::format!("{}resume", kabi::live::CONTROL_PREFIX);
+        self.handle(0, request.as_bytes()).map(Some)
+    }
+
     /// How long to wait for a request before [`Host::tick`]; 0 is forever.
     pub fn timeout_ms(&self) -> u64 {
         match self.mode {

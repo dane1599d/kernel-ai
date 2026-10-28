@@ -159,8 +159,11 @@ fn main() -> i32 {
                 }
             }
             Err(Error::TimedOut) => {
-                if let Some(ui) = windows.as_mut().filter(|ui| ui.has_windows()) {
-                    ui.poll(&mut host);
+                if let Some(ui) = windows.as_mut().filter(|ui| ui.has_windows())
+                    && let Err(exit) = ui.poll(&mut host)
+                {
+                    println!("{}", exit.why);
+                    return exit.code;
                 }
                 if tick_at != 0 && now_ms() >= tick_at {
                     if let Err(exit) = host.tick() {

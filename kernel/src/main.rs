@@ -21,6 +21,7 @@ mod act_tests;
 mod allow;
 mod apic;
 mod appbench_tests;
+mod ask_box;
 mod ask_tests;
 mod backtrace;
 mod bigmap_tests;
@@ -31,6 +32,7 @@ mod boot_manifest;
 mod bootfiles;
 mod build_job;
 mod build_service;
+mod card_tests;
 mod claim_tests;
 mod clock;
 mod compute_tests;
@@ -48,6 +50,7 @@ mod edit_tests;
 mod efi;
 mod efi_tests;
 mod entry;
+mod event_box;
 mod fault;
 mod faults;
 mod files_tests;
@@ -105,6 +108,7 @@ mod smp;
 mod smp_tests;
 #[cfg(feature = "spikes")]
 mod spikes;
+mod standing_tests;
 mod stop_tests;
 mod suspend_tests;
 mod terminal;
@@ -353,6 +357,8 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::DeskBoot => run_case(desk_tests::boot_check),
         SelfTest::DeskPanel => run_case(desk_tests::panel_check),
         SelfTest::UiWindow => run_case(ui_tests::check),
+        SelfTest::DeskCard => run_case(card_tests::check),
+        SelfTest::DeskStanding => run_case(standing_tests::check),
         SelfTest::Scriptrun => run_case(scriptrun_tests::check),
         SelfTest::Fpu => run_case(fpu_tests::fpu_check),
         SelfTest::Probe => run_case(fpu_tests::probe_check),
