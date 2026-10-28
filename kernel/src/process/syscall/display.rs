@@ -40,7 +40,7 @@ pub(super) fn handle(slot: usize, number: u64, a: &[u64; 6]) -> Option<Result<u6
         call::DISPLAY_CURSOR => cursor(slot, a[0], a[1], a[2]),
         call::DISPLAY_CURSOR_MOVE => cursor_move(slot, a[0], a[1]),
         call::TERM_READ => term_read(slot, a[0], a[1], a[2]),
-        call::INPUT_TO_CONSOLE => to_console(slot, a[0]),
+        call::INPUT_TO_CONSOLE => to_console(slot, a[0], a[1]),
         _ => read(slot, a[0], a[1], a[2]),
     })
 }
@@ -173,13 +173,15 @@ fn term_read(slot: usize, buf_ptr: u64, cap_bytes: u64, since: u64) -> Result<u6
 }
 
 /// INPUT_TO_CONSOLE: lends the keys to the console's terminal, or ends the
-/// lease, for the holder showing now.
-fn to_console(slot: usize, on: u64) -> Result<u64, Error> {
+/// lease, for the holder showing now. Only the terminal window's focus lends
+/// them: `pid` must hold TERM, which only `term` can.
+fn to_console(slot: usize, on: u64, pid: u64) -> Result<u64, Error> {
     need(slot, cap::INPUT)?;
     if on > 1 {
         return Err(Error::Invalid);
     }
-    if !claim::shows(slot) {
+    let terminal = || crate::handle::caps_of(pid).is_some_and(|caps| caps & cap::TERM != 0);
+    if !claim::shows(slot) || (on == 1 && !terminal()) {
         input::end_lease();
         return Err(Error::Permission);
     }
