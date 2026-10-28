@@ -489,6 +489,42 @@ pub fn ask_answer(id: u64, yes: bool, digest: &[u8; 32]) -> Result<u64, Error> {
     )
 }
 
+/// Puts one event for standing instructions in the kernel's box (EVENT_POST):
+/// a line [`kabi::event::Event::parse`] reads. For `desktop`.
+pub fn event_post(line: &str) -> Result<u64, Error> {
+    call(
+        call::EVENT_POST,
+        [line.as_ptr() as u64, line.len() as u64, 0, 0, 0, 0],
+    )
+}
+
+/// Takes the box's events, one line each (EVENT_READ); `buf` must hold
+/// [`kabi::event::READ_BYTES`]. For the shell.
+pub fn event_read(buf: &mut [u8]) -> Result<usize, Error> {
+    call(
+        call::EVENT_READ,
+        [buf.as_mut_ptr() as u64, buf.len() as u64, 0, 0, 0, 0],
+    )
+    .map(|n| n as usize)
+}
+
+/// `ctl suspend`, or with `resume` `ctl resume`, to app `name`, sent by the
+/// kernel (APP_CTL); the app's reply goes into `reply`. For the supervisor.
+pub fn app_ctl(name: &str, resume: bool, reply: &mut [u8]) -> Result<usize, Error> {
+    call(
+        call::APP_CTL,
+        [
+            name.as_ptr() as u64,
+            name.len() as u64,
+            u64::from(resume),
+            reply.as_mut_ptr() as u64,
+            reply.len() as u64,
+            0,
+        ],
+    )
+    .map(|n| n as usize)
+}
+
 /// Puts these rectangles of the claimed back buffer on screen.
 pub fn display_flush(rects: &[kabi::display::FlushRect]) -> Result<u64, Error> {
     call(

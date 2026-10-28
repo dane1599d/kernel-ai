@@ -194,6 +194,17 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("desk-card", "test=desk-card")
     },
+    // P3 task 11: a standing instruction fired by Notes' window events.
+    TestCase {
+        expect: &[
+            "desk-standing: the rule was allowed on the card, and the shell holds it",
+            "desktop: event minimize notes-window",
+            "desk-standing: minimizing Notes fired the rule, and Notes is suspended",
+            "desktop: event restore notes-window",
+            "desk-standing: restoring Notes resumed it, with its note intact",
+        ],
+        ..case("desk-standing", "test=desk-standing")
+    },
     // P1 task 14: shared pages, and spike S01-1's M6.
     TestCase {
         expect: &[

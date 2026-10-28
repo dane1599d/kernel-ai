@@ -11,6 +11,9 @@
 //! - Each frame repaints only the desk's damage, grown by what a window's
 //!   shadow reaches, into a frame of its own, then copies those rectangles to
 //!   the screen and flushes them.
+//! - Window events (minimize, restore, focus, close) and idle minutes go to the
+//!   kernel's event box for the shell's standing instructions (P3 task 11),
+//!   found by `deskcore::watch`.
 //! - The top bar's model state and memory are read once a second; a screen
 //!   without a hardware cursor (GOP) gets one drawn in the frame.
 
@@ -29,6 +32,7 @@ use deskcore::paint::{self, Bar, Painter, Scene};
 use deskcore::paint_panel;
 use deskcore::panel::Panel;
 use deskcore::server::{Buffer, Client, Need};
+use deskcore::watch::Watch;
 use gfx2d::{Canvas, Fonts, Image};
 use kabi::display::{DisplayInfo, FlushRect};
 use kabi::handle::{Handle, RecvInfo};
@@ -91,6 +95,8 @@ struct State {
     /// Frames as last logged, to report moves and closes once.
     known: Vec<(WindowId, Rect)>,
     focus: Focus,
+    /// What standing instructions hear about: window events and idle.
+    watch: Watch,
 }
 
 fn main() -> i32 {
@@ -127,6 +133,7 @@ fn main() -> i32 {
             asked_ms: 0,
             known: Vec::new(),
             focus: Focus::Nothing,
+            watch: Watch::new(now_ms()),
         };
         println!("desktop: claimed {width}x{height}");
         let result = run(&mut state, &screen);
@@ -183,6 +190,7 @@ fn run(state: &mut State, screen: &Screen) -> Option<bool> {
             serve(state, &request[..len.min(request.len())], &info);
         }
         report(state);
+        post_events(state);
         refresh_bar(state);
         tick_panel(state);
         read_asks(state);
@@ -240,6 +248,7 @@ fn input(state: &mut State, screen: &Screen, event: &InputEvent) {
     let Some(input) = input else {
         return;
     };
+    state.watch.input(now_ms());
     let before = state.desk.pointer();
     let effects = state.desk.input(input);
     let at = state.desk.pointer();
@@ -480,6 +489,23 @@ fn report(state: &mut State) {
             other => println!("desktop: focus {other:?}"),
         }
         state.focus = focus;
+    }
+}
+
+/// Posts the window events and idle minutes since last round to the kernel's
+/// event box, for the shell's standing instructions.
+fn post_events(state: &mut State) {
+    let mut events = state
+        .watch
+        .windows(state.desk.windows(), state.desk.focus());
+    events.extend(state.watch.idle(now_ms()));
+    for event in events {
+        let mut line = alloc::string::String::new();
+        let _ = event.text(&mut line);
+        match sys::event_post(&line) {
+            Ok(_) => println!("desktop: event {line}"),
+            Err(error) => println!("desktop: cannot post {line}: {error:?}"),
+        }
     }
 }
 

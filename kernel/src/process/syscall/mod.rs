@@ -26,6 +26,7 @@ pub(crate) mod fs;
 
 // G-core (P3).
 mod display;
+mod standing;
 
 // U, updates (ADR 0008).
 mod update;
@@ -93,6 +94,7 @@ const AREAS: &[Area] = &[
     fs::handle,
     // G-core (P3).
     display::handle,
+    standing::handle,
     // U, updates (ADR 0008).
     update::handle,
 ];

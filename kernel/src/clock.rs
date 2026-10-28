@@ -1,6 +1,7 @@
 //! The date (ADR 0008 §7, "Clock"): Limine's date at boot plus the time since
 //! boot, in seconds since 1970 UTC. TUF's expiry checks in `updated` read it
-//! through TRUST_TIME; nothing else in the kernel needs the date yet.
+//! through TRUST_TIME, and standing instructions' time of day comes from it
+//! ([`crate::event_box`]).
 
 use limine::request::DateAtBootRequest;
 

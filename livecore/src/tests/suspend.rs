@@ -15,7 +15,9 @@ fn a_suspended_app_drops_its_instance_and_resumes_with_its_state() {
     call(&mut host, "add");
     call(&mut host, "add");
     let before = live();
+    assert!(!host.suspended());
     assert_eq!(call(&mut host, "ctl suspend"), "ok suspended counter 1");
+    assert!(host.suspended());
     assert_eq!(live(), before - 1, "the instance is gone");
     assert_eq!(
         call(&mut host, "ctl status"),
@@ -27,6 +29,7 @@ fn a_suspended_app_drops_its_instance_and_resumes_with_its_state() {
         "err counter is suspended; ctl resume brings it back"
     );
     assert_eq!(call(&mut host, "ctl resume"), "ok resumed counter 1");
+    assert!(!host.suspended());
     assert_eq!(live(), before);
     assert_eq!(call(&mut host, "get"), "ok 2 schema 1");
     assert_eq!(

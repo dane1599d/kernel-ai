@@ -207,6 +207,20 @@ pub fn run(_: usize) {
     }
 }
 
+/// Sends `line` to the shell as if typed, and answers each menu it asks on its
+/// one surface, as [`run`] does. Whether one was asked. For boot cases that
+/// need the shell's own ask (`desk-standing`).
+pub(crate) fn shell_line_answered(line: &str) -> bool {
+    let mut decoder = Decoder::new();
+    let mut waiting = shell_line(line);
+    let mut asked = false;
+    while let Some(Waiting::Menu(menu)) = waiting {
+        asked = true;
+        waiting = choose(&mut decoder, menu);
+    }
+    asked
+}
+
 /// Shows `menu` on the console, reads its answer, then sends it to the shell
 /// with what an Allow minted.
 fn choose(decoder: &mut Decoder, mut menu: Menu) -> Option<Waiting> {

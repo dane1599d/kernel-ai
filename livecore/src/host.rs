@@ -574,6 +574,12 @@ impl<E: Env> Host<E> {
         }
     }
 
+    /// Whether the app is suspended (`ctl suspend`): no instance, its state
+    /// saved.
+    pub fn suspended(&self) -> bool {
+        matches!(self.mode, Mode::Suspended(_))
+    }
+
     /// How long to wait for a request before [`Host::tick`]; 0 is forever.
     pub fn timeout_ms(&self) -> u64 {
         match self.mode {

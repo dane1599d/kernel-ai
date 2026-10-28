@@ -98,8 +98,13 @@ impl Ui {
 
     /// Shows what the instances committed since the last call: the shown
     /// version's frames and closes, and nothing of a standby's. A new version
-    /// shown closes the old one's windows first.
+    /// shown closes the old one's windows first. A suspended app's windows stay
+    /// open with their last frame, so the user can restore one and a standing
+    /// instruction's "until restore" can come (P3 task 11).
     pub fn pump<E: Env<Instance = LiveInstance>>(&mut self, host: &mut Host<E>) {
+        if host.suspended() {
+            return;
+        }
         let mut updates = Vec::new();
         let mut label = None;
         host.each_instance(|instance, version, shown| {
