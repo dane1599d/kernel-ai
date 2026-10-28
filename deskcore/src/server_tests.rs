@@ -497,7 +497,17 @@ fn a_bound_node_names_its_action_and_unbinding_or_a_new_tree_drops_it() {
 
 #[test]
 fn a_badly_named_or_one_too_many_binding_closes_the_connection() {
-    for name in ["Notes_Save", "save", "notes save", &"a_".repeat(40)] {
+    // `tree_window`'s client is `notes`: another app's row, or a bare prefix,
+    // is refused too.
+    for name in [
+        "Notes_Save",
+        "save",
+        "notes save",
+        "notes_",
+        "files_delete_all",
+        "notesx_save",
+        &"notes_".repeat(11),
+    ] {
         let (mut desk, mut client, _) = tree_window();
         let bad = bytes(&[(
             8,
@@ -542,4 +552,30 @@ fn a_window_is_saved_until_its_app_says_otherwise() {
         .handle(&mut desk, &bytes(&[(5, Request::SetUnsaved(false))]), false)
         .unwrap();
     assert!(!client.unsaved(window));
+}
+
+#[test]
+fn a_hyphenated_label_binds_its_own_rows_only() {
+    let mut desk = Desk::new(1280, 800);
+    let mut client = Client::new(5, "notes-window");
+    client.handle(&mut desk, &setup(), true).unwrap();
+    client
+        .handle(&mut desk, &bytes(&[(3, Request::GetA11y { id: 8 })]), false)
+        .unwrap();
+    let own = bytes(&[(
+        8,
+        Request::BindAction {
+            node: 2,
+            action: "notes_window_save",
+        },
+    )]);
+    assert_eq!(client.handle(&mut desk, &own, false), Ok(vec![]));
+    let theirs = bytes(&[(
+        8,
+        Request::BindAction {
+            node: 2,
+            action: "notes_save",
+        },
+    )]);
+    assert_eq!(client.handle(&mut desk, &theirs, false), Err(Error::BadArg));
 }
