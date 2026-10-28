@@ -104,6 +104,15 @@ pub fn dump(monitor: u16, bundle: &Path) {
                 cpu.index
             );
         }
+        // A word is code if the line table names a function at it.
+        let code = |addr: u64| {
+            addr >= KERNEL_TEXT
+                && addr != u64::MAX
+                && table
+                    .as_ref()
+                    .and_then(|t| t.resolve(addr))
+                    .is_some_and(|at| at.symbol.is_some())
+        };
         let mut rbp = cpu.rbp;
         let mut walked = 0;
         for _ in 0..FRAMES {
@@ -114,8 +123,9 @@ pub fn dump(monitor: u16, bundle: &Path) {
             let [next, ret] = frame[..] else {
                 break;
             };
-            // Not a frame-pointer frame (entry code, or a function without one).
-            if ret < KERNEL_TEXT || ret == u64::MAX {
+            // Not a frame-pointer frame (entry code, a function without one, or
+            // a stale RBP): its "return address" names no function.
+            if !code(ret) {
                 break;
             }
             println!("xtask: hang dump:   from {}", name(ret));
@@ -129,15 +139,7 @@ pub fn dump(monitor: u16, bundle: &Path) {
         // kernel functions, most likely return addresses. A guess, marked so.
         if walked == 0 && cpu.rsp >= KERNEL_HALF {
             let stack = words(&monitor.run(&format!("x /{SCAN_WORDS}gx {:#x}", cpu.rsp)));
-            let code = |addr: &u64| {
-                *addr >= KERNEL_TEXT
-                    && *addr != u64::MAX
-                    && table
-                        .as_ref()
-                        .and_then(|t| t.resolve(*addr))
-                        .is_some_and(|at| at.symbol.is_some())
-            };
-            for addr in stack.iter().filter(|a| code(a)).take(FRAMES) {
+            for addr in stack.iter().filter(|&&a| code(a)).take(FRAMES) {
                 println!("xtask: hang dump:   on its stack {}", name(*addr));
             }
         }
