@@ -121,6 +121,7 @@ pub(super) const CASES: &[TestCase] = &[
             "app-suspend: notes freed ",
         ],
         ..case("app-suspend", "test=app-suspend")
+    },
     // P3 task 6's exit case: the OS boots to the desktop, and its screen is the
     // golden one deskcore::paint's host test paints.
     TestCase {
