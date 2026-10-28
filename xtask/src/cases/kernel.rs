@@ -148,6 +148,7 @@ pub(super) const CASES: &[TestCase] = &[
             "desk-panel: typed Ctrl+Space, \"hi\" and Enter",
         ],
         ..case("desk-panel", "test=desk-panel")
+    },
     // P3 task 9: an app's kai:ui window on the desktop, closed from its control.
     TestCase {
         expect: &[

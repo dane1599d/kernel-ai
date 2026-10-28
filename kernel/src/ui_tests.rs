@@ -12,7 +12,7 @@ use crate::pointer::{self, Event, Motion, Source};
 use crate::{console, log, process, threads};
 
 /// The plan lines this case adds.
-pub const PLAN: &str = "desktop caps=display+input+serve pages=8192\n\
+pub const PLAN: &str = "desktop caps=display+input+serve pages=8192 stack_pages=512\n\
      notes-window program=comphost caps=serve+component+call uses=desktop pages=8192 stack_pages=512 burst_ms=20000 version=1";
 const WAIT_MS: u64 = 60_000;
 /// Time for `desktop` to take each step in.

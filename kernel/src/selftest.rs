@@ -451,6 +451,7 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
     if matches!(test, SelfTest::DeskBoot | SelfTest::DeskPanel) {
         plan.push('\n');
         plan.push_str(crate::desk_tests::BOOT_PLAN);
+    }
     if test == SelfTest::UiWindow {
         plan.push('\n');
         plan.push_str(crate::ui_tests::PLAN);

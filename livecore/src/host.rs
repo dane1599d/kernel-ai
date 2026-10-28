@@ -569,7 +569,8 @@ impl<E: Env> Host<E> {
                 f(&mut p.candidate.instance, &p.candidate.label, true);
             }
             Mode::Disabled { version, .. } => f(&mut version.instance, &version.label, false),
-            Mode::Moving => {}
+            // Suspended: no instance, so no windows.
+            Mode::Suspended(_) | Mode::Moving => {}
         }
     }
 

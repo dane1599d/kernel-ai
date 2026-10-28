@@ -59,7 +59,7 @@ pub const APPS: &[App] = &[App {
     label: livecore::boot::BUILT_IN,
     summary: "Plain-text notes the AI can read and write",
     licence: "MPL-2.0",
-    wit: components::NOTES_RECIPE.wit,
+    wit: components::NOTES_RECIPE.wit[0],
 }];
 
 /// One packed package and the index fields its artifact gives.
