@@ -46,8 +46,8 @@
 mod editing;
 
 pub use editing::{
-    Control, Info, Put, Read, is_upload_label, put_label, read, relayable, upload_seq,
-    valid_commit, valid_label,
+    Add, Control, Info, Put, Read, is_package_label, is_upload_label, package_label, put_label,
+    read, relayable, upload_seq, valid_commit, valid_label,
 };
 
 /// Kinds of [`Event`] a host reports.
@@ -209,12 +209,19 @@ pub const MAX_UPLOAD: usize = 192 * 1024;
 pub const KEEP_UPLOADS: usize = 5;
 /// All uploads of all components together.
 pub const MAX_UPLOAD_TOTAL: usize = 2 * 1024 * 1024;
+/// All package versions of all components together (P4 task 1): they are
+/// never evicted, so COMP_ADD refuses one past this, and no ring-3 service can
+/// grow the kernel's heap without bound.
+pub const MAX_PACKAGE_TOTAL: usize = 8 * 1024 * 1024;
 /// Active versions the ledger remembers, for `:revert`.
 pub const LINEAGE: usize = 6;
 /// A git commit id: 40 lowercase hex digits.
 pub const COMMIT_LEN: usize = 40;
 /// Uploaded versions are labelled this and a number: `e1`, `e2`, ...
 pub const UPLOAD_PREFIX: &str = "e";
+/// Versions `pkg` adds from an installed package (P4 task 1) are labelled this
+/// and the first 12 hex digits of the artifact's SHA-256: `p-0a1b2c3d4e5f`.
+pub const PACKAGE_PREFIX: &str = "p-";
 /// An upload's source: at most this many bytes, files, and lines in a file. The
 /// editor keeps to the same limits, so the kernel's change view stays bounded.
 pub const UPLOAD_SOURCE_MAX: usize = 60 * 1024;

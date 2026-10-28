@@ -91,6 +91,122 @@ fn plan_rejects_bad_lines() {
 }
 
 #[test]
+fn a_lines_folders_go_only_to_its_own_program() {
+    let plan = parse_plan(
+        "fs caps=serve\npkg dir=pkg\nstore program=pkgd dir=pkg\nnotes caps=call uses=fs",
+    );
+    assert!(plan.errors.is_empty(), "{:?}", plan.errors);
+    assert_eq!(plan.grants("pkg", "pkg").unwrap().dirs, [Folder::Pkg]);
+    // The name kept, the program swapped: refused, never started without it.
+    let refused = plan.grants("pkg", "notes").unwrap_err();
+    assert!(refused.contains("for program pkg, not notes"), "{refused}");
+    // A line's `program=` is the program its folder goes to, not its name.
+    assert_eq!(plan.grants("store", "pkgd").unwrap().dirs, [Folder::Pkg]);
+    assert!(plan.grants("store", "store").is_err());
+    // A line with no folder keeps today's rule; routes come as before.
+    let notes = Grants {
+        uses: vec!["fs".into()],
+        ..Grants::default()
+    };
+    assert_eq!(plan.grants("notes", "comphost"), Ok(notes));
+    assert_eq!(plan.grants("absent", "pkg"), Ok(Grants::default()));
+}
+
+#[test]
+fn boot_files_go_only_to_the_lines_own_program() {
+    let plan = parse_plan("pkg dir=pkg bootfiles=pkgrepo\nimager program=pkg bootfiles=pkgrepo");
+    assert!(plan.errors.is_empty(), "{:?}", plan.errors);
+    // `boot=` stays the program's own word, as fs-powercut's filecheck uses it.
+    let churn = parse_plan("filecheck caps=files step=churn boot=1");
+    assert!(churn.errors.is_empty(), "{:?}", churn.errors);
+    assert_eq!(churn.services[0].args, "step=churn boot=1");
+    assert_eq!(churn.services[0].boot, None);
+    assert_eq!(plan.services[0].boot, Some(BootFiles::Pkgrepo));
+    assert_eq!(
+        plan.grants("pkg", "pkg").unwrap().boot,
+        Some(BootFiles::Pkgrepo)
+    );
+    let refused = plan.grants("imager", "imager").unwrap_err();
+    assert!(
+        refused.contains("its bootfiles= is for program pkg"),
+        "{refused}"
+    );
+    assert!(plan.grants("pkg", "comphost").is_err());
+    assert_eq!(parse_plan("pkg").services[0].boot, None);
+    for bad in [
+        "pkg bootfiles=",
+        "pkg bootfiles=pkgrepo/",
+        "pkg bootfiles=Pkgrepo",
+        "pkg bootfiles=comp",
+        "pkg bootfiles=pkgrepo+pkgrepo",
+        "pkg bootfiles=pkgrepo bootfiles=pkgrepo",
+        "pkg bootfiles=pkgrepo unsupervised",
+    ] {
+        let plan = parse_plan(bad);
+        assert!(plan.services.is_empty() && plan.errors.len() == 1, "{bad}");
+    }
+}
+
+#[test]
+fn boot_files_reach_only_beneath_their_folder() {
+    let repo = BootFiles::Pkgrepo;
+    for good in [
+        "pkgrepo/metadata/1.root.json",
+        "pkgrepo/targets/0a1b.notes-1.0.0.kpkg",
+        "pkgrepo/x",
+    ] {
+        assert!(repo.allows(good), "{good}");
+    }
+    let long = format!("pkgrepo/{}", "a".repeat(MAX_BOOT_PATH));
+    for bad in [
+        "",
+        "pkgrepo",
+        "pkgrepo/",
+        "/pkgrepo/x",
+        "pkgrepo//x",
+        "pkgrepo/x/",
+        "pkgrepo/../kernel.lines",
+        "pkgrepo/metadata/../../kernel.lines",
+        "pkgrepo/./x",
+        "pkgrepo/..",
+        "pkgrepo\\x",
+        "pkgrepo/x y",
+        "pkgrepo/é",
+        "pkgrepox/y",
+        "comp/notes/2.wasm",
+        "kernel.lines",
+        &long,
+    ] {
+        assert!(!repo.allows(bad), "{bad:?}");
+    }
+}
+
+#[test]
+fn dir_grants_only_the_folders_it_names() {
+    let plan = parse_plan("pkg dir=pkg step=install").services;
+    assert_eq!(plan[0].dirs, [Folder::Pkg]);
+    assert_eq!(plan[0].dirs[0].badge(), kabi::fs::SYSTEM_PKG);
+    // A grant is the plan's key, never a program argument.
+    assert_eq!(plan[0].args, "step=install");
+    assert_eq!(plan[0].limits.caps, 0);
+    assert!(parse_plan("pkg").services[0].dirs.is_empty());
+    for bad in [
+        "pkg dir=",
+        "pkg dir=home",
+        "pkg dir=Pkg",
+        "pkg dir=pkg+pkg",
+        "pkg dir=pkg dir=pkg",
+        "pkg dir=pkg+",
+        "pkg dir=../pkg",
+        "pkg dir=system/pkg",
+        "pkg dir=pkg unsupervised",
+    ] {
+        let plan = parse_plan(bad);
+        assert!(plan.services.is_empty() && plan.errors.len() == 1, "{bad}");
+    }
+}
+
+#[test]
 fn quick_failures_back_off_exponentially_up_to_the_cap() {
     let mut record = Record::new("crasher");
     let delays: Vec<Decision> = (0..8)
@@ -518,4 +634,68 @@ fn suspend_and_resume_need_a_once_or_a_rule() {
         Err("err protected")
     );
     assert_eq!(check(Request::Suspend("notes"), &records), Ok(1));
+}
+
+const RUN_PLAN: &str = "fs caps=serve\n\
+    pkg dir=pkg bootfiles=pkgrepo caps=call uses=supervisor\n\
+    notes program=comphost caps=serve+component start=pkg\n\
+    shell caps=call";
+
+#[test]
+fn a_start_pkg_line_waits_for_pkg_and_names_no_version() {
+    let plan = parse_plan(RUN_PLAN);
+    assert!(plan.errors.is_empty(), "{:?}", plan.errors);
+    let notes = plan.services.iter().find(|s| s.name == "notes").unwrap();
+    assert_eq!(notes.start, Start::Pkg);
+    assert_eq!(notes.args, "");
+    assert_eq!(parse_plan("notes").services[0].start, Start::Boot);
+    for bad in [
+        "notes start=",
+        "notes start=boot",
+        "notes start=PKG",
+        "notes start=pkg start=pkg",
+        "notes start=pkg version=2",
+        "notes start=pkg unsupervised",
+    ] {
+        let plan = parse_plan(bad);
+        assert!(plan.services.is_empty() && plan.errors.len() == 1, "{bad}");
+    }
+}
+
+#[test]
+fn only_the_store_holder_may_run_a_package_version() {
+    let plan = parse_plan(RUN_PLAN);
+    let pids = [Some(10), Some(11), None, Some(13)];
+    let held: Vec<(&ServiceSpec, Option<u64>)> = plan.services.iter().zip(pids).collect();
+    let run = Run::parse("run notes version=p-0a1b2c3d4e5f").unwrap();
+    assert_eq!(run.encode(), "run notes version=p-0a1b2c3d4e5f");
+    assert_eq!(check_run(run, &held, 11), Ok(2));
+    // fs, the shell, the kernel and an unknown pid are not the store's holder.
+    for caller in [10, 13, 0, 99] {
+        assert!(check_run(run, &held, caller).is_err(), "{caller}");
+    }
+    // A holder that is not running holds nothing.
+    let stopped: Vec<(&ServiceSpec, Option<u64>)> = plan
+        .services
+        .iter()
+        .zip([Some(10), None, None, Some(13)])
+        .collect();
+    assert!(check_run(run, &stopped, 11).is_err());
+    let shell = Run::parse("run shell version=p-0a1b2c3d4e5f").unwrap();
+    assert_eq!(
+        check_run(shell, &held, 11),
+        Err("err not a start=pkg service")
+    );
+    for bad in [
+        "run notes",
+        "run notes version=2",
+        "run notes version=c-0a1b2c3d4e5f",
+        "run notes version=p-0A1B2C3D4E5F",
+        "run notes version=p-0a1b2c3d4e5",
+        "run notes version=p-0a1b2c3d4e5f extra",
+        "run no/tes version=p-0a1b2c3d4e5f",
+        "start notes",
+    ] {
+        assert_eq!(Run::parse(bad), None, "{bad}");
+    }
 }

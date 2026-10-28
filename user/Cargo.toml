@@ -30,6 +30,7 @@ fsproto = { path = "../fsproto" }
 fsserve = { path = "../fsserve" }
 kaifs = { path = "../kaifs", default-features = false }
 kaibundle = { path = "../kaibundle" }
+kaipkg = { path = "../kaipkg" }
 kaituf = { path = "../kaituf" }
 llmproto = { path = "../llmproto", features = ["local"] }
 quant = { path = "../quant" }
@@ -37,6 +38,7 @@ sched = { path = "../sched" }
 serde_json = { version = "1.0.154", default-features = false, features = ["alloc"] }
 sha2 = { version = "0.11.1", default-features = false }
 supervise = { path = "../supervise" }
+kaiprofile = { path = "../kaiprofile" }
 shellcore = { path = "../shellcore" }
 termcore = { path = "../termcore" }
 spin = "0.12.3"

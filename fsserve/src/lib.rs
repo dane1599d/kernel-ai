@@ -16,6 +16,7 @@
 
 extern crate alloc;
 
+pub mod batch;
 mod buffer;
 mod lookup;
 #[cfg(test)]
@@ -27,7 +28,7 @@ use fsproto::{
     Cursor, Error, How, Kind, Listing, MAX_DATA, MAX_LIST, MAX_ROWS, Outcome, Reply, Request, Stat,
     Version,
 };
-use kabi::fs::{Badge, HOME, HOME_USER, MODELS, SYSTEM, SYSTEM_STATE};
+use kabi::fs::{Badge, HOME, HOME_USER, MODELS, SYSTEM, SYSTEM_PKG, SYSTEM_STATE};
 use kabi::handle::Rights;
 use kaifs::ns::Listed;
 use kaifs::{BlockDev, FileType, Fs, Inode, ROOT};
@@ -111,8 +112,10 @@ pub struct Server<D: BlockDev> {
     home_user: u64,
     /// `/system/state`'s object id in `system`: what [`SYSTEM_STATE`] names.
     system_state: u64,
-    /// This disk's epoch, in every badge but [`HOME_USER`] and
-    /// [`SYSTEM_STATE`] ([`kabi::fs`]).
+    /// `/system/pkg`'s object id in `system`: what [`SYSTEM_PKG`] names, the
+    /// folder a plan line's `dir=pkg` grants (ADR 0011 §12).
+    system_pkg: u64,
+    /// This disk's epoch, in every badge but the fixed ones ([`kabi::fs`]).
     epoch: u16,
     /// The clock at mount: kaifs's times are this plus time since boot, so they
     /// never go back across reboots (there is no wall clock yet).
@@ -150,13 +153,20 @@ impl<D: BlockDev> Server<D> {
             owner: None,
             home_user: 0,
             system_state: 0,
+            system_pkg: 0,
             epoch: 0,
             base,
             pending: None,
             cache: None,
             alive: |_| true,
         };
-        (server.home_user, server.system_state, server.epoch) = server.prepare(&uuid)?;
+        let fixed = server.prepare(&uuid)?;
+        (
+            server.home_user,
+            server.system_state,
+            server.system_pkg,
+            server.epoch,
+        ) = fixed;
         Ok((server, started))
     }
 
@@ -184,8 +194,9 @@ impl<D: BlockDev> Server<D> {
     }
 
     /// Makes the missing [`FOLDERS`], and the disk's epoch if it has none, in
-    /// one commit; `/home/user`'s and `/system/state`'s ids and the epoch.
-    fn prepare(&mut self, uuid: &[u8; 16]) -> Result<(u64, u64, u16), kaifs::Error> {
+    /// one commit; `/home/user`'s, `/system/state`'s and `/system/pkg`'s ids and
+    /// the epoch.
+    fn prepare(&mut self, uuid: &[u8; 16]) -> Result<(u64, u64, u64, u16), kaifs::Error> {
         let fs = self.fs();
         let writable = fs.writable();
         let mut made = false;
@@ -200,7 +211,7 @@ impl<D: BlockDev> Server<D> {
         let epoch = match fs.get_xattr(ROOT, EPOCH)? {
             Some(bytes) if bytes.len() == 2 => u16::from_le_bytes([bytes[0], bytes[1]]),
             _ => {
-                // Never 0, which only the two fixed badges carry.
+                // Never 0, which only the fixed badges carry.
                 let drawn = u16::from_le_bytes([uuid[0], uuid[1]]) & kabi::fs::EPOCH_MASK;
                 let epoch = drawn.max(1);
                 if writable {
@@ -214,9 +225,10 @@ impl<D: BlockDev> Server<D> {
             fs.commit()?;
         }
         let system_state = fs.lookup(ROOT, "state")?.map_or(0, |e| e.ino);
+        let system_pkg = fs.lookup(ROOT, "pkg")?.map_or(0, |e| e.ino);
         fs.set_volume(HOME.into())?;
         let home_user = fs.lookup(ROOT, "user")?.map_or(0, |e| e.ino);
-        Ok((home_user, system_state, epoch))
+        Ok((home_user, system_state, system_pkg, epoch))
     }
 
     /// The badge for `object` of `volume` on this disk.
@@ -360,7 +372,7 @@ impl<D: BlockDev> Server<D> {
             epoch,
             object,
         } = Badge::parse(badge);
-        let fixed = badge == HOME_USER || badge == SYSTEM_STATE;
+        let fixed = matches!(badge, HOME_USER | SYSTEM_STATE | SYSTEM_PKG);
         let ours = epoch == self.epoch || fixed;
         if !matches!(volume, SYSTEM | HOME | MODELS) || !ours {
             return Err(Error::NotFound);
@@ -368,6 +380,7 @@ impl<D: BlockDev> Server<D> {
         let object = match badge {
             HOME_USER => self.home_user,
             SYSTEM_STATE => self.system_state,
+            SYSTEM_PKG => self.system_pkg,
             _ => object,
         };
         let fs = self.fs();

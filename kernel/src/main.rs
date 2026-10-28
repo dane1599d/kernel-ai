@@ -88,11 +88,14 @@ mod net_tests;
 mod nvme;
 mod part_tests;
 mod percpu;
+mod pkg_tests;
+mod pkgrepo;
 mod platform;
 mod pointer;
 mod port;
 mod power;
 mod process;
+mod profile_tests;
 mod qemu;
 mod sched_control;
 mod sched_tests;
@@ -269,6 +272,7 @@ extern "C" fn boot_continue() -> ! {
         net::setup::configure(cmdline.cmdline());
         llm::configure(cmdline.cmdline());
         build_service::configure(cmdline.cmdline());
+        pkgrepo::configure(cmdline.cmdline());
         boot_manifest::configure(cmdline.cmdline());
         pointer::configure(cmdline.cmdline());
         console::configure(cmdline.cmdline());
@@ -343,6 +347,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::FilesDeadClient => run_case(files_tests::dead_client),
         SelfTest::FilesActions => run_case(files_tests::actions),
         SelfTest::FilesChurn { boot, last } => run_case(|| files_tests::churn(boot, last)),
+        SelfTest::PkgStore(step) => run_case(|| pkg_tests::check(step)),
         SelfTest::Model => run_case(|| model_tests::check(cmdline())),
         SelfTest::LocalAsk => run_case(|| local_tests::check(cmdline())),
         SelfTest::LocalScript => run_case(|| local_tests::check_script(cmdline())),
@@ -350,6 +355,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::ProcStop => run_case(stop_tests::check),
         SelfTest::Shm => run_case(shm_tests::check),
         SelfTest::Mem => run_case(mem_tests::check),
+        SelfTest::Profile => run_case(profile_tests::check),
         SelfTest::ManyProcesses => run_case(many_tests::check),
         SelfTest::DisplayClaim => run_case(claim_tests::check),
         SelfTest::DeskWindows => run_case(desk_tests::check),
