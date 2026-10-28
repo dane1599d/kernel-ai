@@ -185,6 +185,14 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("ui-window", "test=ui-window")
     },
+    // Key input for uikit apps: the keyboard reaches Notes' widgets.
+    TestCase {
+        keys: &[&["tab", "tab", "ret", "tab", "tab", "h", "i"]],
+        expect: &[
+            "ui-keys: Tab, Enter and typed text reached Notes' widgets through desktop and comphost",
+        ],
+        ..case("ui-keys", "test=ui-keys")
+    },
     // P3 task 8: the kernel's terminal in a window, and an ask typed there.
     TestCase {
         keys: &[

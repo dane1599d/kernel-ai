@@ -9,11 +9,13 @@
 //! `pool.create` brings its `Shm` as the call's first handle; `desktop` maps it
 //! and tells [`Client::pool_mapped`] where.
 
-use crate::desk::{Desk, Effect, Focus, WindowId};
+use crate::desk::{Button, Desk, Effect, Focus, WindowId};
 use crate::geom::{Rect, Size};
 use alloc::string::String;
 use alloc::vec::Vec;
 use surfabi::Format;
+use surfabi::header::Event as RingEvent;
+use surfabi::input::{InputEvent, Kind};
 use surfabi::proto::{Event, GLOBALS, Objects, REGISTRY, Request};
 use surfabi::wire::{self, Error};
 
@@ -64,6 +66,11 @@ pub struct Client {
     /// Encoded events not yet sent.
     events: Vec<u8>,
     serial: u32,
+    /// Modifier keys held, as `seat.modifiers` carries them: shift 1, ctrl 2,
+    /// alt 4, super 8 (`uikit::input::Mods`).
+    mods: u32,
+    /// Input for its windows, by the pool whose header ring takes it.
+    posts: Vec<(u32, RingEvent)>,
 }
 
 impl Client {
@@ -79,6 +86,8 @@ impl Client {
             seat: None,
             events: Vec::new(),
             serial: 0,
+            mods: 0,
+            posts: Vec::new(),
         };
         for (n, global) in GLOBALS.iter().enumerate() {
             client.send(
@@ -125,6 +134,100 @@ impl Client {
 
     pub fn buffer(&self, id: u32) -> Option<Buffer> {
         self.buffers.iter().find(|b| b.0 == id).map(|b| b.1)
+    }
+
+    /// The input for its windows since the last call, by pool: `desktop` posts
+    /// each into that pool's header ring (ADR 0005 §3), where the client reads
+    /// it without a message.
+    pub fn take_posts(&mut self) -> Vec<(u32, RingEvent)> {
+        core::mem::take(&mut self.posts)
+    }
+
+    /// The pool holding `window`'s buffer.
+    fn pool_of(&self, window: WindowId) -> Option<u32> {
+        let surface = self.surfaces.iter().find(|s| s.window == Some(window))?;
+        self.buffer(surface.attached?).map(|b| b.pool)
+    }
+
+    /// An input effect for one of its windows, as a ring event: a key with the
+    /// text it types (US layout, none while Ctrl, Alt or Super is held), a
+    /// button, or the pointer's move; the modifiers go to the seat.
+    fn input(&mut self, effect: &Effect) {
+        let (window, kind, code, value, at) = match *effect {
+            Effect::Key {
+                window,
+                usage,
+                down,
+            } => {
+                self.modifier(usage, down);
+                (window, Kind::Key, usage, i32::from(down), None)
+            }
+            Effect::Button {
+                window,
+                at,
+                button,
+                down,
+            } => {
+                let code = match button {
+                    Button::Left => 1,
+                    Button::Right => 2,
+                    Button::Middle => 3,
+                };
+                (window, Kind::Button, code, i32::from(down), Some(at))
+            }
+            Effect::Pointer { window, at } => (window, Kind::Abs, 0, 0, Some(at)),
+            _ => return,
+        };
+        let Some(pool) = self.pool_of(window) else {
+            return;
+        };
+        let mut text = [0u8; 4];
+        let mut len = 0;
+        let command = self.mods & (2 | 4 | 8) != 0;
+        if kind == Kind::Key
+            && value == 1
+            && !command
+            && let Some(ch) = crate::keymap::char_of(code, self.mods & 1 != 0)
+        {
+            len = ch.encode_utf8(&mut text).len() as u8;
+        }
+        let (x, y) = at.map_or((0, 0), |p| (p.x << 8, p.y << 8));
+        let event = RingEvent::Input {
+            event: InputEvent {
+                time_ns: 0,
+                kind,
+                code,
+                value,
+            },
+            x,
+            y,
+            text,
+            len,
+        };
+        self.posts.push((pool, event));
+    }
+
+    /// Shift, Ctrl, Alt and Super, held or let go: the seat hears the new set.
+    fn modifier(&mut self, usage: u16, down: bool) {
+        let bit = match usage {
+            0xE1 | 0xE5 => 1,
+            0xE0 | 0xE4 => 2,
+            0xE2 | 0xE6 => 4,
+            0xE3 | 0xE7 => 8,
+            _ => return,
+        };
+        let mods = if down {
+            self.mods | bit
+        } else {
+            self.mods & !bit
+        };
+        if mods == self.mods {
+            return;
+        }
+        self.mods = mods;
+        if let Some(seat) = self.seat {
+            self.send(seat, Event::Modifiers(mods));
+        }
     }
 
     /// The client's windows.
@@ -312,6 +415,7 @@ impl Client {
     /// Turns the desk's effects that concern this client into events.
     pub fn apply(&mut self, effects: &[Effect]) {
         for effect in effects {
+            self.input(effect);
             match *effect {
                 Effect::Configure {
                     window,
