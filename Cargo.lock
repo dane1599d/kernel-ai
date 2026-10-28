@@ -819,6 +819,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "kaiprofile"
+version = "0.1.0-dev"
+
+[[package]]
 name = "kaituf"
 version = "0.0.0"
 dependencies = [
@@ -1346,6 +1350,7 @@ dependencies = [
  "agentabi",
  "kabi",
  "kaigrants",
+ "kaiprofile",
  "llmproto",
  "rhai",
  "sched",

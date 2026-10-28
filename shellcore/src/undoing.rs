@@ -107,6 +107,10 @@ impl Shell {
                     .revert_instruction(rule, made)
                     .map(|text| (text, undo::reverse(inverse)))
                     .map_err(Refused::Failed),
+                undo::Inverse::Profile { key } => self
+                    .revert_profile(key)
+                    .map(|(text, redo)| (text, undo::Inverse::Profile { key: redo }))
+                    .map_err(Refused::Failed),
                 other => {
                     let ids = undo::Ids {
                         made: id,
