@@ -16,6 +16,7 @@ pub mod chrome;
 pub mod compose;
 pub mod damage;
 pub mod desk;
+pub mod effects;
 pub mod geom;
 pub mod keymap;
 pub mod paint;
