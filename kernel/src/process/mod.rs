@@ -201,6 +201,10 @@ pub fn has_written(pid: u64) -> bool {
 }
 
 /// Runs `f` on the process table with preemption off.
+/// Runs `f` with the process table locked and preemption off. `f` must not
+/// allocate: an allocation waits for the heap's lock, and a CPU spinning here
+/// for the table while another holds it waiting for the heap can freeze them all
+/// (the `tune-revert` hang, 2026-10-27).
 pub fn with_table<R>(f: impl FnOnce(&mut [Process; MAX_PROCESSES]) -> R) -> R {
     threads::preempt_disable();
     let result = f(&mut TABLE.lock());
@@ -457,27 +461,40 @@ pub fn identity(slot: usize) -> Process {
 /// started each (a job child, like `scriptrun`, is its parent's, not the
 /// supervisor's).
 pub fn named(name: &str) -> alloc::vec::Vec<(u64, bool)> {
-    // Under the lock, never a copy of the table: 64 slots of about 900 bytes
-    // would not fit on a kernel stack.
-    with_table(|table| {
-        table
+    let mut found = [(0, false); MAX_PROCESSES];
+    let count = with_table(|table| {
+        let matching = table
             .iter()
             .filter(|p| p.live() && p.name.as_str() == name)
-            .map(|p| (p.pid, (p.spawner != 0 && !p.job) || p.supervisor))
-            .collect()
-    })
+            .map(|p| (p.pid, (p.spawner != 0 && !p.job) || p.supervisor));
+        fill(&mut found, matching)
+    });
+    found[..count].to_vec()
+}
+
+/// Copies `items` into `out` and says how many: what the table's readers take
+/// under its lock, so that nothing allocates there (the heap's lock must never
+/// be waited for while the process table is held).
+pub(super) fn fill<T>(out: &mut [T], items: impl Iterator<Item = T>) -> usize {
+    let mut count = 0;
+    for (slot, item) in out.iter_mut().zip(items) {
+        *slot = item;
+        count += 1;
+    }
+    count
 }
 
 /// Pids and names of live processes, excluding the supervisor.
 pub fn services(mut f: impl FnMut(u64, &Name)) {
-    let live: alloc::vec::Vec<(u64, Name)> = with_table(|table| {
-        table
+    let mut live = [(0, Name::EMPTY); MAX_PROCESSES];
+    let count = with_table(|table| {
+        let services = table
             .iter()
             .filter(|p| p.live() && !p.supervisor)
-            .map(|p| (p.pid, p.name))
-            .collect()
+            .map(|p| (p.pid, p.name));
+        fill(&mut live, services)
     });
-    for (pid, name) in &live {
+    for (pid, name) in &live[..count] {
         f(*pid, name);
     }
 }
@@ -527,14 +544,15 @@ pub fn has_cap_by_name(name: &str, bits: u64) -> bool {
 
 /// The names of live processes holding all the capability `bits`.
 pub fn holders(bits: u64) -> alloc::vec::Vec<alloc::string::String> {
-    let names: alloc::vec::Vec<Name> = with_table(|table| {
-        table
+    let mut names = [Name::EMPTY; MAX_PROCESSES];
+    let count = with_table(|table| {
+        let holding = table
             .iter()
             .filter(|p| p.live() && p.limits.caps & bits == bits)
-            .map(|p| p.name)
-            .collect()
+            .map(|p| p.name);
+        fill(&mut names, holding)
     });
-    names
+    names[..count]
         .iter()
         .map(|name| alloc::string::String::from(name.as_str()))
         .collect()
