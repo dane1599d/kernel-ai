@@ -2,7 +2,8 @@
 //! MEM_COMMIT, MEM_RELEASE) one line at a time until `exit`. `reserve <pages>`
 //! takes address space; `commit <pages>` commits that many pages from the
 //! reservation's start and writes to each; `release` gives them back and
-//! answers how many; `misuse` checks the refusals. Answers are `ok`, `ok <n>` or
+//! answers how many; `misuse` checks the refusals; `spin <ms>` keeps a CPU busy
+//! that long, for the scheduler's stats. Answers are `ok`, `ok <n>` or
 //! `err <what>`.
 
 use alloc::format;
@@ -59,6 +60,13 @@ pub fn mem() -> Result<(), &'static str> {
                 }
                 Err(error) => format!("err release {error:?}"),
             },
+            (Some("spin"), Some(ms), _) => {
+                let until = sys::time_ns() + ms * 1_000_000;
+                while sys::time_ns() < until {
+                    core::hint::spin_loop();
+                }
+                String::from("ok")
+            }
             (Some("misuse"), ..) => match misuse() {
                 Ok(()) => String::from("ok"),
                 Err(what) => format!("err {what}"),
@@ -90,6 +98,12 @@ fn misuse() -> Result<(), &'static str> {
     }
     if sys::mem_commit(addr, PAGE) != Err(Error::NotFound) {
         return Err("a commit after the release was not refused");
+    }
+    // Profiles are the supervisor's: without SUPERVISE both calls are refused.
+    if sys::proc_quota_set(1, 4096) != Err(Error::Permission)
+        || sys::proc_class_set(1, 1) != Err(Error::Permission)
+    {
+        return Err("a profile call without SUPERVISE was not refused");
     }
     Ok(())
 }

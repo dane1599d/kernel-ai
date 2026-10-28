@@ -1,9 +1,11 @@
-//! kaifs's disk: the `kai-data` partition through the PART_* calls. A 4 KiB
-//! block is 8 sectors, and block 0 is the partition's first.
+//! kaifs's disk: the `kai-data` partition through the PART_* calls, a run of up
+//! to 128 KiB a call ([`fsserve::batch`]). A 4 KiB block is 8 sectors, and
+//! block 0 is the partition's first.
 
+use fsserve::batch::RunDev;
 use kabi::handle::Handle;
 use kabi::part::{PartInfo, SECTOR, VOLATILE_CACHE, WRITABLE};
-use kaifs::{BLOCK, Block, BlockDev, DevInfo, IoError};
+use kaifs::{BLOCK, DevInfo, IoError};
 use user::sys;
 
 const SECTORS: u64 = BLOCK as u64 / SECTOR;
@@ -29,18 +31,18 @@ impl PartDev {
     }
 }
 
-impl BlockDev for PartDev {
+impl RunDev for PartDev {
     fn info(&self) -> DevInfo {
         self.info
     }
 
-    fn read(&mut self, addr: u64, buf: &mut Block) -> Result<(), IoError> {
+    fn read_run(&mut self, addr: u64, buf: &mut [u8]) -> Result<(), IoError> {
         let sector = addr.checked_mul(SECTORS).ok_or(IoError)?;
         sys::part_read(self.part, sector, buf).map_err(|_| IoError)?;
         Ok(())
     }
 
-    fn write(&mut self, addr: u64, data: &Block) -> Result<(), IoError> {
+    fn write_run(&mut self, addr: u64, data: &[u8]) -> Result<(), IoError> {
         let sector = addr.checked_mul(SECTORS).ok_or(IoError)?;
         sys::part_write(self.part, sector, data).map_err(|_| IoError)?;
         Ok(())

@@ -16,6 +16,7 @@
 
 extern crate alloc;
 
+pub mod batch;
 mod buffer;
 mod lookup;
 #[cfg(test)]
