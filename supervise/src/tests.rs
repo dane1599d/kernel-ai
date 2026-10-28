@@ -91,6 +91,53 @@ fn plan_rejects_bad_lines() {
 }
 
 #[test]
+fn a_lines_folders_go_only_to_its_own_program() {
+    let plan = parse_plan(
+        "fs caps=serve\npkg dir=pkg\nstore program=pkgd dir=pkg\nnotes caps=call uses=fs",
+    );
+    assert!(plan.errors.is_empty(), "{:?}", plan.errors);
+    let (_, dirs) = plan.grants("pkg", "pkg").unwrap();
+    assert_eq!(dirs, [Folder::Pkg]);
+    // The name kept, the program swapped: refused, never started without it.
+    let refused = plan.grants("pkg", "notes").unwrap_err();
+    assert!(refused.contains("for program pkg, not notes"), "{refused}");
+    // A line's `program=` is the program its folder goes to, not its name.
+    assert_eq!(plan.grants("store", "pkgd").unwrap().1, [Folder::Pkg]);
+    assert!(plan.grants("store", "store").is_err());
+    // A line with no folder keeps today's rule; routes come as before.
+    assert_eq!(
+        plan.grants("notes", "comphost"),
+        Ok((vec!["fs".into()], vec![]))
+    );
+    assert_eq!(plan.grants("absent", "pkg"), Ok(Default::default()));
+}
+
+#[test]
+fn dir_grants_only_the_folders_it_names() {
+    let plan = parse_plan("pkg dir=pkg step=install").services;
+    assert_eq!(plan[0].dirs, [Folder::Pkg]);
+    assert_eq!(plan[0].dirs[0].badge(), kabi::fs::SYSTEM_PKG);
+    // A grant is the plan's key, never a program argument.
+    assert_eq!(plan[0].args, "step=install");
+    assert_eq!(plan[0].limits.caps, 0);
+    assert!(parse_plan("pkg").services[0].dirs.is_empty());
+    for bad in [
+        "pkg dir=",
+        "pkg dir=home",
+        "pkg dir=Pkg",
+        "pkg dir=pkg+pkg",
+        "pkg dir=pkg dir=pkg",
+        "pkg dir=pkg+",
+        "pkg dir=../pkg",
+        "pkg dir=system/pkg",
+        "pkg dir=pkg unsupervised",
+    ] {
+        let plan = parse_plan(bad);
+        assert!(plan.services.is_empty() && plan.errors.len() == 1, "{bad}");
+    }
+}
+
+#[test]
 fn quick_failures_back_off_exponentially_up_to_the_cap() {
     let mut record = Record::new("crasher");
     let delays: Vec<Decision> = (0..8)

@@ -85,6 +85,7 @@ mod net_tests;
 mod nvme;
 mod part_tests;
 mod percpu;
+mod pkg_tests;
 mod platform;
 mod pointer;
 mod port;
@@ -339,6 +340,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::FilesDeadClient => run_case(files_tests::dead_client),
         SelfTest::FilesActions => run_case(files_tests::actions),
         SelfTest::FilesChurn { boot, last } => run_case(|| files_tests::churn(boot, last)),
+        SelfTest::PkgStore(step) => run_case(|| pkg_tests::check(step)),
         SelfTest::Model => run_case(|| model_tests::check(cmdline())),
         SelfTest::LocalAsk => run_case(|| local_tests::check(cmdline())),
         SelfTest::LocalScript => run_case(|| local_tests::check_script(cmdline())),

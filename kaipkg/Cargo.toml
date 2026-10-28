@@ -13,7 +13,10 @@ doctest = false
 
 [dependencies]
 agentabi = { path = "../agentabi" }
+fsproto = { path = "../fsproto" }
+kabi = { path = "../kabi" }
 sha2 = { version = "0.11.1", default-features = false }
 
 [dev-dependencies]
+fsserve = { path = "../fsserve" }
 kaifs = { path = "../kaifs" }

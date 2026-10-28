@@ -28,11 +28,41 @@ pub struct ServiceSpec {
     /// The services it may call, from `uses=`: one route each, in this order
     /// (ADR 0001 D3). Each is listed earlier in the plan, so routes form no cycle.
     pub uses: Vec<String>,
+    /// The folders it gets a startup `Dir` for, from `dir=`, in this order.
+    pub dirs: Vec<Folder>,
     /// Restart policy; the plan may change `max_backoff_ms` and `max_restarts`.
     pub policy: Policy,
     /// From the word `unsupervised`: the kernel starts it once at boot and the
     /// supervisor leaves it alone, so `proc_stop` may stop it for good.
     pub unsupervised: bool,
+}
+
+/// A folder a plan line grants with `dir=` (ADR 0011 §12): the kernel puts a
+/// startup `Dir` for it in the service's table, on the `fs` route, and lets the
+/// service hold `Dir` and `File` handles. The authority is the plan line, which
+/// only the kernel and the supervisor write: no capability bit stands for it,
+/// and the kernel hard-codes no program name. The folder goes only to the
+/// line's own program, its `program=` or else its name ([`Plan::grants`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Folder {
+    /// `/system/pkg`, the package store (ADR 0011 §5).
+    Pkg,
+}
+
+impl Folder {
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "pkg" => Some(Folder::Pkg),
+            _ => None,
+        }
+    }
+
+    /// The badge `fs` serves it under, which it looks up itself.
+    pub fn badge(self) -> u64 {
+        match self {
+            Folder::Pkg => kabi::fs::SYSTEM_PKG,
+        }
+    }
 }
 
 /// Names nothing may stop: the shell, the supervisor and the model service (as
@@ -234,10 +264,30 @@ pub struct Plan {
     pub errors: Vec<String>,
 }
 
+impl Plan {
+    /// The routes (`uses=`) and folders (`dir=`) this plan grants service `name`
+    /// running `program`; none for a service it does not list. A line's folders
+    /// go only to its own program, its `program=` or else its name: started with
+    /// any other, the service is refused, as PUBLISH is, so a spawn that keeps
+    /// the name and swaps the program never gets the folder (ADR 0011 §12).
+    pub fn grants(&self, name: &str, program: &str) -> Result<(Vec<String>, Vec<Folder>), String> {
+        let Some(service) = self.services.iter().find(|s| s.name == name) else {
+            return Ok(Default::default());
+        };
+        if !service.dirs.is_empty() && service.program != program {
+            return Err(format!(
+                "{name}: its dir= is for program {}, not {program}",
+                service.program
+            ));
+        }
+        Ok((service.uses.clone(), service.dirs.clone()))
+    }
+}
+
 /// Reads the plan: one service per line, `name [program=P] [pages=N] [stack_pages=N]
 /// [burst_ms=N] [caps=serve+net+call+policy+component+publish+model+threads+resolve+stop+script]
-/// [uses=A+B] [backoff_max_ms=N] [max_restarts=N] [unsupervised] [other=args ...]`. The supervisor keys set limits,
-/// routes and policy; everything else is passed to the program. A bad line skips only
+/// [uses=A+B] [dir=pkg] [backoff_max_ms=N] [max_restarts=N] [unsupervised] [other=args ...]`. The supervisor keys set limits,
+/// routes, folders and policy; everything else is passed to the program. A bad line skips only
 /// that service, so one typo cannot keep every other service down.
 pub fn parse_plan(text: &str) -> Plan {
     let mut plan = Plan::default();
@@ -269,6 +319,7 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
     let mut args = Vec::new();
     let mut program = name;
     let mut uses = Vec::new();
+    let mut dirs: Option<Vec<Folder>> = None;
     let mut unsupervised = false;
     for word in words {
         if word == "unsupervised" {
@@ -299,6 +350,12 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
             Some(("burst_ms", value)) => limits.max_burst_ms = number(name, value)?,
             Some(("caps", value)) => limits.caps = caps(name, value)?,
             Some(("uses", value)) => uses = routes(name, value, earlier)?,
+            Some(("dir", value)) => {
+                if dirs.is_some() {
+                    return Err(format!("{name}: dir= given twice"));
+                }
+                dirs = Some(folders(name, value)?);
+            }
             Some(("backoff_max_ms", value)) => policy.max_backoff_ms = number(name, value)?,
             Some(("max_restarts", value)) => policy.max_restarts = number(name, value)? as usize,
             _ => args.push(word),
@@ -307,10 +364,11 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
     if !uses.is_empty() && limits.caps & cap::CALL == 0 {
         return Err(format!("{name}: uses= needs the call capability"));
     }
+    let dirs = dirs.unwrap_or_default();
     // The kernel starts it with no supervisor to answer for it: no capabilities.
-    if unsupervised && (limits.caps != 0 || !uses.is_empty()) {
+    if unsupervised && (limits.caps != 0 || !uses.is_empty() || !dirs.is_empty()) {
         return Err(format!(
-            "{name}: an unsupervised process takes no caps= or uses="
+            "{name}: an unsupervised process takes no caps=, uses= or dir="
         ));
     }
     Ok(ServiceSpec {
@@ -319,9 +377,25 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
         args: args.join(" "),
         limits,
         uses,
+        dirs,
         policy,
         unsupervised,
     })
+}
+
+/// The folders in `dir=A+B`: each one [`Folder`] names, and each once. Any other
+/// name fails the line, so a typo grants nothing.
+fn folders(service: &str, value: &str) -> Result<Vec<Folder>, String> {
+    let mut dirs: Vec<Folder> = Vec::new();
+    for word in value.split('+') {
+        let folder =
+            Folder::parse(word).ok_or_else(|| format!("{service}: no folder {word:?} for dir="))?;
+        if dirs.contains(&folder) {
+            return Err(format!("{service}: dir={word} twice"));
+        }
+        dirs.push(folder);
+    }
+    Ok(dirs)
 }
 
 /// Services nobody may call: the shell takes only the terminal's lines, and the

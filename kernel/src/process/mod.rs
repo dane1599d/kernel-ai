@@ -135,6 +135,9 @@ pub struct Process {
     pub job: bool,
     pub heap_end: u64,
     pub crash: Option<Crash>,
+    /// Its plan line grants a folder (`dir=`): its kind ceiling takes `Dir` and
+    /// `File` handles, as FILES's does, without FILES's home folder.
+    pub folders: bool,
 }
 
 impl Process {
@@ -160,6 +163,7 @@ impl Process {
         job: false,
         heap_end: HEAP_BASE,
         crash: None,
+        folders: false,
     };
 
     pub fn live(&self) -> bool {
@@ -379,6 +383,17 @@ pub fn spawn_with(
     moved: alloc::vec::Vec<captable::Entry>,
     job: bool,
 ) -> Result<u64, (kabi::Error, alloc::vec::Vec<captable::Entry>)> {
+    spawn_in(request, moved, job, &[])
+}
+
+/// [`spawn_with`], with a startup `Dir` for each of `dirs`, the folders its plan
+/// line grants (`dir=`, ADR 0011 §12), after any FILES and SYSTEM_STATE give.
+pub fn spawn_in(
+    request: &SpawnRequest,
+    moved: alloc::vec::Vec<captable::Entry>,
+    job: bool,
+    dirs: &[supervise::Folder],
+) -> Result<u64, (kabi::Error, alloc::vec::Vec<captable::Entry>)> {
     use kabi::Error;
     let checked = (|| {
         if programs::find(request.program).is_none() {
@@ -422,6 +437,7 @@ pub fn spawn_with(
             supervisor: request.supervisor,
             spawner: request.spawner,
             job,
+            folders: !dirs.is_empty(),
             ..Process::FREE
         };
         process.args[..request.args.len()].copy_from_slice(request.args);
@@ -439,7 +455,9 @@ pub fn spawn_with(
         Err(error) => return Err((error, moved)),
     };
     // Its startup handles and what was moved to it, before it can run (ADR 0001 D3).
-    if let Err(error) = crate::handle::create(slot, request.limits.caps, pid, request.uses) {
+    if let Err(error) =
+        crate::handle::create_with(slot, request.limits.caps, pid, request.uses, dirs)
+    {
         with_table(|table| table[slot] = Process::FREE);
         return Err((error, moved));
     }
