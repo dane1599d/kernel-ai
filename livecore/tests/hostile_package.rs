@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 
 /// [`Component::add_package`] of `bytes` checked against `sha`.
 fn add(component: &mut Component, bytes: Vec<u8>, sha: &[u8; 32]) -> Result<String, Error> {
-    component.add_package(PackageArtifact::check(bytes, sha)?)
+    component.add_package(PackageArtifact::check(bytes, sha)?, 0)
 }
 
 fn digest(bytes: &[u8]) -> [u8; 32] {

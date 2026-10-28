@@ -154,6 +154,12 @@ impl<'a> Run<'a> {
     }
 }
 
+/// The answer to a `run` for a service whose plan line is not `start=pkg`, as a
+/// local override's is: `pkg` shows it as shadowed, not as a failure.
+pub const NOT_FROM_PKG: &str = "err not a start=pkg service";
+/// The answer to a `run` for an app that already serves another version.
+pub const RUNS_ANOTHER: &str = "err it runs another version";
+
 /// The index among `services` (each spec with its running pid) of the service
 /// `run` names, if `caller` may ask for it: the running instance of a service
 /// whose plan line grants `/system/pkg` (`dir=pkg`), and only for a `start=pkg`
@@ -175,7 +181,7 @@ pub fn check_run(
         .ok_or("err unknown service")?;
     match services[index].0.start {
         Start::Pkg => Ok(index),
-        Start::Boot => Err("err not a start=pkg service"),
+        Start::Boot => Err(NOT_FROM_PKG),
     }
 }
 

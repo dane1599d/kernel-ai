@@ -276,10 +276,21 @@ fn start_apps(vol: &mut dyn Volume, n: u64) -> Result<Vec<String>, String> {
         let len = sys::call_route(supervisor(), run.encode().as_bytes(), &mut reply, CALL_MS)
             .map_err(|e| format!("the supervisor did not answer {name}'s run: {e:?}"))?;
         let reply = core::str::from_utf8(&reply[..len.min(reply.len())]).unwrap_or("");
-        if reply != "ok" {
-            return Err(format!("the supervisor refused {name}'s run: {reply}"));
+        let version = package.version;
+        // Another version runs it: a local override (its plan line is not
+        // `start=pkg`) or one already serving. Shown, never hidden.
+        let shadowed = match reply {
+            "ok" => None,
+            supervise::NOT_FROM_PKG => Some("its plan line runs a local version"),
+            supervise::RUNS_ANOTHER => Some("it already runs another version"),
+            _ => return Err(format!("the supervisor refused {name}'s run: {reply}")),
+        };
+        match shadowed {
+            Some(why) => println!(
+                "pkg: {name} {version} ({label}) is installed but not started from generation {n}: {why}"
+            ),
+            None => started.push(format!("{name} {version} as {label}")),
         }
-        started.push(format!("{name} {} as {label}", package.version));
     }
     Ok(started)
 }

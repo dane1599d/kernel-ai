@@ -106,7 +106,7 @@ fn info_reports_the_phase_labels_and_next_upload() {
 
 /// [`Component::add_package`] of `bytes` checked against `sha`.
 fn add(component: &mut Component, bytes: Vec<u8>, sha: &[u8; 32]) -> Result<String, Error> {
-    component.add_package(PackageArtifact::check(bytes, sha)?)
+    component.add_package(PackageArtifact::check(bytes, sha)?, 0)
 }
 
 fn digest(bytes: &[u8]) -> [u8; 32] {
@@ -165,4 +165,46 @@ fn a_wrong_digest_or_an_oversized_or_unstorable_package_is_refused() {
         Err(Error::NoMemory)
     );
     assert_eq!(notes.versions().len(), MAX_VERSIONS);
+}
+
+#[test]
+fn package_versions_of_every_component_together_stay_within_their_budget() {
+    // 1 MiB artifacts, told apart by their first byte.
+    let artifact = |n: u8| {
+        let mut bytes = alloc::vec![0u8; MAX_ARTIFACT];
+        bytes[0] = n;
+        bytes
+    };
+    let mut store: Vec<Component> = ["notes", "files", "editor"]
+        .into_iter()
+        .map(Component::new)
+        .collect();
+    let used_except = |store: &[Component], at: usize| -> usize {
+        let others = store.iter().enumerate().filter(|(i, _)| *i != at);
+        others.map(|(_, c)| c.package_bytes()).sum()
+    };
+    let mut added = 0;
+    for n in 0..=u8::MAX {
+        let at = usize::from(n) % store.len();
+        let bytes = artifact(n);
+        let used = used_except(&store, at);
+        let checked = PackageArtifact::check(bytes.clone(), &digest(&bytes)).unwrap();
+        match store[at].add_package(checked, used) {
+            Ok(_) => added += 1,
+            Err(error) => {
+                assert_eq!(error, Error::NoMemory);
+                break;
+            }
+        }
+    }
+    assert_eq!(added, MAX_PACKAGE_TOTAL / MAX_ARTIFACT);
+    let held: usize = store.iter().map(Component::package_bytes).sum();
+    assert!(held <= MAX_PACKAGE_TOTAL, "{held}");
+    // A version already there is still Busy, never NoMemory, and uploads do not
+    // count against the packages' budget.
+    let first = artifact(0);
+    let again = PackageArtifact::check(first.clone(), &digest(&first)).unwrap();
+    let used = used_except(&store, 0);
+    assert_eq!(store[0].add_package(again, used), Err(Error::Busy));
+    assert_eq!(store[0].upload_bytes(), 0);
 }

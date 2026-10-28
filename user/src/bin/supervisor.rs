@@ -308,7 +308,7 @@ fn run_package(services: &mut [Service], run: supervise::Run, caller: u64) -> St
     if service.pid.is_some() {
         return match service.version.as_deref() == Some(run.version) {
             true => String::from("ok"),
-            false => String::from("err it runs another version"),
+            false => String::from(supervise::RUNS_ANOTHER),
         };
     }
     service.version = Some(String::from(run.version));

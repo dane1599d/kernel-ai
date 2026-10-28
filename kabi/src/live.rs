@@ -209,6 +209,10 @@ pub const MAX_UPLOAD: usize = 192 * 1024;
 pub const KEEP_UPLOADS: usize = 5;
 /// All uploads of all components together.
 pub const MAX_UPLOAD_TOTAL: usize = 2 * 1024 * 1024;
+/// All package versions of all components together (P4 task 1): they are
+/// never evicted, so COMP_ADD refuses one past this, and no ring-3 service can
+/// grow the kernel's heap without bound.
+pub const MAX_PACKAGE_TOTAL: usize = 8 * 1024 * 1024;
 /// Active versions the ledger remembers, for `:revert`.
 pub const LINEAGE: usize = 6;
 /// A git commit id: 40 lowercase hex digits.

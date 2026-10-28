@@ -87,6 +87,12 @@ fn comp_add(slot: usize, add_ptr: u64) -> Result<u64, Error> {
     copy_from_user(slot, add.artifact_ptr, &mut bytes)?;
     let artifact = PackageArtifact::check(bytes, &add.sha)?;
     let label = crate::process::components::add_package(name, artifact)?;
-    log!("live: {name} {label} added from an installed package");
+    // A local override shadows it: say so, never hide it.
+    match crate::boot_manifest::override_of(name) {
+        Some(local) => log!(
+            "live: {name} {label} added from an installed package, but the boot manifest's local {local} runs instead (live_good/live_pending)"
+        ),
+        None => log!("live: {name} {label} added from an installed package"),
+    }
     Ok(0)
 }

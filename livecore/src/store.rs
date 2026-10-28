@@ -10,8 +10,8 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use kabi::Error;
 use kabi::live::{
-    Info, MAX_ARTIFACT, MAX_LABEL, MAX_VERSIONS, Reason, Restore, is_package_label,
-    is_upload_label, kind, package_label, phase, put_label, valid_label,
+    Info, MAX_ARTIFACT, MAX_LABEL, MAX_PACKAGE_TOTAL, MAX_VERSIONS, Reason, Restore,
+    is_package_label, is_upload_label, kind, package_label, phase, put_label, valid_label,
 };
 use sha2::{Digest, Sha256};
 
@@ -165,15 +165,25 @@ impl Component {
 
     /// Adds the version an installed package holds (P4 task 1), labelled from
     /// its checked SHA-256. It only adds: a label already there is Busy, so a
-    /// running or known-good version is never replaced, and a full store is
-    /// NoMemory. Package versions are never evicted. Its label.
-    pub fn add_package(&mut self, artifact: PackageArtifact) -> Result<String, Error> {
+    /// running or known-good version is never replaced. A full store is
+    /// NoMemory, and so is one more than [`MAX_PACKAGE_TOTAL`] bytes of package
+    /// versions with `used_elsewhere`, the other components' ([`Self::package_bytes`]):
+    /// package versions are never evicted, so this bounds the kernel's heap. Its
+    /// label.
+    pub fn add_package(
+        &mut self,
+        artifact: PackageArtifact,
+        used_elsewhere: usize,
+    ) -> Result<String, Error> {
         let PackageArtifact { bytes, sha } = artifact;
         let label = package_label(&sha);
         if self.version(&label).is_some() {
             return Err(Error::Busy);
         }
-        if self.versions.len() == MAX_VERSIONS {
+        let total = used_elsewhere
+            .saturating_add(self.package_bytes())
+            .saturating_add(bytes.len());
+        if self.versions.len() == MAX_VERSIONS || total > MAX_PACKAGE_TOTAL {
             return Err(Error::NoMemory);
         }
         let (world, source, files) = match artifact::parse(&bytes) {
@@ -310,6 +320,16 @@ impl Component {
     }
 
     /// Bytes held by this component's uploads.
+    /// Bytes of this component's package versions, which count against
+    /// [`MAX_PACKAGE_TOTAL`] with every other component's.
+    pub fn package_bytes(&self) -> usize {
+        self.versions
+            .iter()
+            .filter(|v| matches!(v.origin, Origin::Package { .. }))
+            .map(|v| v.bytes.as_slice().len())
+            .sum()
+    }
+
     pub fn upload_bytes(&self) -> usize {
         self.versions
             .iter()
