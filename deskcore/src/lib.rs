@@ -20,6 +20,7 @@ pub mod keymap;
 pub mod paint;
 pub mod paint_panel;
 pub mod panel;
+pub mod panel_wire;
 pub mod scale;
 pub mod server;
 pub mod trusted;

@@ -174,6 +174,17 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("desk-panel", "test=desk-panel")
     },
+    // P3 task 7: the shell takes the panel's line from `desktop` and reports
+    // its result back.
+    TestCase {
+        expect: &[
+            "desktop: the panel queued a request (2 characters)",
+            "desktop: the shell took the panel's request",
+            "desktop: the panel shows ",
+            "desk-panel-shell: typed \"hi\" in the panel",
+        ],
+        ..case("desk-panel-shell", "test=desk-panel-shell")
+    },
     // P3 task 9: an app's kai:ui window on the desktop, closed from its control.
     TestCase {
         expect: &[

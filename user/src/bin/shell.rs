@@ -58,6 +58,63 @@ fn supervisor() -> kabi::handle::Handle {
     user::route(1).unwrap_or(kabi::handle::Handle::NONE)
 }
 
+/// The route to `desktop`, third in `uses=llm+supervisor+desktop`, on a desktop
+/// only (P3 task 7).
+fn desktop() -> Option<kabi::handle::Handle> {
+    user::route(2)
+}
+
+/// How long the shell waits for a line before it looks at the AI panel.
+const PANEL_POLL_MS: u64 = 250;
+const DESKTOP_CALL_MS: u64 = 5_000;
+
+/// One panel request to `desktop`: its answer.
+fn ask_desktop(route: kabi::handle::Handle, request: &str) -> Result<String, String> {
+    let mut reply = vec![0u8; kabi::MAX_MESSAGE];
+    let len = sys::call_route(route, request.as_bytes(), &mut reply, DESKTOP_CALL_MS)
+        .map_err(|error| format!("desktop did not answer ({error:?})"))?;
+    Ok(String::from_utf8_lossy(&reply[..len.min(reply.len())]).into_owned())
+}
+
+/// Takes the panel's oldest request, runs a line as the terminal's would be,
+/// and reports what came of it: code's result line, or why not. The panel
+/// shows thinking from the Enter until then. A line that asks first is asked
+/// in the terminal for now; the panel says so.
+fn take_panel(shell: &mut Shell) {
+    use deskcore::panel::{Request, State};
+    use deskcore::panel_wire;
+    let Some(route) = desktop() else {
+        return;
+    };
+    let Ok(answer) = ask_desktop(route, panel_wire::TAKE) else {
+        return;
+    };
+    let shown = match panel_wire::parse_take(&answer) {
+        Some(Some(Request::Line(line))) => {
+            let wire = shell.eval(&line).to_wire();
+            match wire.split_once(' ').unwrap_or((&wire, "")) {
+                ("ok", "") => State::Done {
+                    line: String::from("Done."),
+                },
+                ("ok", text) => State::Done { line: text.into() },
+                ("err", why) => State::Refused { reason: why.into() },
+                _ => State::Refused {
+                    reason: String::from("it asks first: answer it in the terminal"),
+                },
+            }
+        }
+        // Esc while thinking: the panel is idle again already, and the line
+        // ran to its end, as the terminal's does.
+        Some(Some(Request::Stop)) => State::Idle,
+        _ => return,
+    };
+    if let Some(request) = panel_wire::encode_state(&shown)
+        && let Err(why) = ask_desktop(route, &request)
+    {
+        println!("the panel's state was not set: {why}");
+    }
+}
+
 /// The supervisor's wait for a stop or a start: a stop waits for the process to end.
 const SUPERVISOR_CALL_MS: u64 = 10_000;
 
@@ -360,9 +417,15 @@ fn main() -> i32 {
     );
     println!("up (restart {})", arg(&args, "restart").unwrap_or("0"));
     let mut line = vec![0u8; kabi::MAX_MESSAGE];
+    // On a desktop the shell looks at the AI panel between lines.
+    let wait_ms = match desktop() {
+        Some(_) => PANEL_POLL_MS,
+        None => 0,
+    };
     loop {
+        take_panel(&mut shell);
         let mut caller = u64::MAX;
-        let len = match sys::svc_recv(&mut line, 0, &mut caller) {
+        let len = match sys::svc_recv(&mut line, wait_ms, &mut caller) {
             Ok(len) => len.min(line.len()),
             Err(kabi::Error::TimedOut) => continue,
             Err(error) => {

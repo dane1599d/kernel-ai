@@ -131,6 +131,8 @@ pub enum SelfTest {
     DeskBoot,
     /// The AI panel takes focus and queues a typed line (P3 task 7).
     DeskPanel,
+    /// `desk-panel-shell` (P3 task 7): the shell takes the panel's line.
+    DeskPanelShell,
     /// An app's kai:ui window on the desktop, closed from its control (P3 task 9).
     UiWindow,
     DeskTerm,
@@ -278,6 +280,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=app-suspend" => Some(SelfTest::AppSuspend),
             "test=desk-boot" => Some(SelfTest::DeskBoot),
             "test=desk-panel" => Some(SelfTest::DeskPanel),
+            "test=desk-panel-shell" => Some(SelfTest::DeskPanelShell),
             "test=ui-window" => Some(SelfTest::UiWindow),
             "test=desk-term" => Some(SelfTest::DeskTerm),
             "test=scriptrun" => Some(SelfTest::Scriptrun),
@@ -428,6 +431,11 @@ pub fn plan(test: SelfTest) -> Option<String> {
             }
             false => kabi::plan::SHELL,
         };
+        // On the desktop the shell has a route to `desktop`, for the panel.
+        let shell = match test {
+            SelfTest::DeskPanelShell => kabi::plan::SHELL_DESK,
+            _ => shell,
+        };
         plan.push('\n');
         plan.push_str(shell);
     }
@@ -480,7 +488,10 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
         plan.push('\n');
         plan.push_str(crate::desk_tests::PLAN);
     }
-    if matches!(test, SelfTest::DeskBoot | SelfTest::DeskPanel) {
+    if matches!(
+        test,
+        SelfTest::DeskBoot | SelfTest::DeskPanel | SelfTest::DeskPanelShell
+    ) {
         plan.push('\n');
         plan.push_str(crate::desk_tests::BOOT_PLAN);
     }
