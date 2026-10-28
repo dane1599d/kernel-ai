@@ -196,7 +196,7 @@ fn image(vol: &mut FsVolume<Calls>, step: &str) -> Result<String, String> {
     let store = Store::default();
     let mut ledger = NoLedger;
     let time = now(vol);
-    let checked = kaipkg::image::check(&mut BootRepo, time.0, kaipkg::PROVIDED)
+    let checked = kaipkg::image::check(&mut BootRepo, kaipkg::PROVIDED)
         .map_err(|why| format!("the image's repository is refused: {why}"))?;
     for (path, why) in &checked.refused {
         println!("pkg: the image's {path} is refused: {why}");
@@ -279,7 +279,10 @@ fn mirror(vol: &mut FsVolume<Calls>, step: &str) -> Result<String, String> {
         vol.write(&root, &image_root)?;
         vol.commit()?;
     }
-    let time = now(vol);
+    let time = match dated(vol) {
+        Ok(time) => time,
+        Err(why) => return Ok(format!("the mirror is refused: {why}")),
+    };
     let mut source = Mirror::new(Fetch);
     let listing = match mirror::index(&mut source, &mut TufCache { vol }, time.0) {
         Ok(listing) => listing,
@@ -432,15 +435,26 @@ impl Source for Memory<'_> {
     }
 }
 
-/// The date (PKG_TIME), and without one the time since boot, never before the
-/// newest generation.
+/// The time generations are stamped with: the date (PKG_TIME), never before
+/// the newest generation ([`Time::at`]).
 fn now(vol: &mut dyn Volume) -> Time {
     let newest = store::current(vol)
         .and_then(|n| store::generation(vol, n))
-        .map_or(0, |g| g.time.0);
-    // The date, for TUF's expiry checks, but never before the newest generation.
-    let date = sys::pkg_time().unwrap_or(0);
-    Time(date.max(newest + 1 + sys::time_ns() / 1_000_000_000))
+        .map_or(Time(0), |g| g.time);
+    Time::at(sys::pkg_time().ok(), newest)
+}
+
+/// [`now`] for kaituf's expiry checks on the mirror, which needs the date:
+/// without one the time is near 1970, and metadata that expired long ago would
+/// pass (a freeze attack), so the mirror is refused, as `updated` stops without
+/// TRUST_TIME.
+fn dated(vol: &mut dyn Volume) -> Result<Time, String> {
+    match sys::pkg_time() {
+        Ok(_) => Ok(now(vol)),
+        Err(e) => Err(format!(
+            "there is no date to check its expiry against (PKG_TIME: {e:?})"
+        )),
+    }
 }
 
 /// The packages generation `n` names, as `name version`.

@@ -74,16 +74,18 @@ impl Cache for Memory {
     }
 }
 
-/// The image repository in `files`, checked at `now` (seconds since 1970 UTC),
-/// as a closure over `provided`, the OS's virtual packages: a package whose
-/// dependencies the kept ones and `provided` do not meet is refused too, in
-/// resolution's words. An error means the metadata did not verify, and nothing
-/// in it is kept.
-pub fn check(
-    files: &mut dyn Files,
-    now: u64,
-    provided: &[(&str, Version)],
-) -> Result<Checked, String> {
+/// The time the image repository is checked at: before every expiry date. It
+/// comes from the boot medium with the kernel, so it is as trusted as the image
+/// is, and checked against the date an image would refuse its own packages a
+/// week after it was built, once its timestamp ran out.
+const UNEXPIRED: u64 = 0;
+
+/// The image repository in `files`, its expiry dates not checked
+/// ([`UNEXPIRED`]), as a closure over `provided`, the OS's virtual packages: a
+/// package whose dependencies the kept ones and `provided` do not meet is
+/// refused too, in resolution's words. An error means the metadata did not
+/// verify, and nothing in it is kept.
+pub fn check(files: &mut dyn Files, provided: &[(&str, Version)]) -> Result<Checked, String> {
     let root = files
         .file(ROOT, updater::ROOT_MAX)?
         .ok_or_else(|| format!("the image has no {ROOT}"))?;
@@ -94,7 +96,7 @@ pub fn check(
     {
         let tuf = |e: kaituf::Error| e.to_string();
         let mut remote = Metadata(files);
-        let mut updater = Updater::new(&mut remote, &mut cache, now).map_err(tuf)?;
+        let mut updater = Updater::new(&mut remote, &mut cache, UNEXPIRED).map_err(tuf)?;
         updater.refresh().map_err(tuf)?;
         for path in updater.listed(ROLE, "targets").map_err(tuf)? {
             match updater.target(&path) {
