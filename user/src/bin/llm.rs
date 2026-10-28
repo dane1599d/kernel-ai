@@ -49,6 +49,8 @@ const MAX_ERROR_CHARS: usize = 160;
 /// Bytes hashed between two 1 ms sleeps, so hashing a large model never runs into
 /// the burst limit.
 const HASH_PIECE: usize = 16 * 1024 * 1024;
+/// How often MODEL_MAP is asked again while the model store fills the model.
+const STORE_POLL_MS: u64 = 100;
 
 /// The model the kernel mapped into this process.
 struct Model {
@@ -59,13 +61,29 @@ struct Model {
 
 impl Model {
     /// Maps the model: none when the kernel holds no model or this process may
-    /// not map it, an error when the mapping failed.
+    /// not map it, an error when the mapping failed. While the kernel waits for
+    /// the model store to fill the model it reserved (P2 task 10), MODEL_MAP
+    /// answers Busy, and this asks again: the kernel ends the wait itself, with
+    /// the model or with NotFound when `fs` gives up, so there is no time limit.
     fn map() -> Result<Option<Model>, kabi::Error> {
-        let len = match sys::model_map() {
-            Ok(len) => usize::try_from(len).map_err(|_| kabi::Error::TooBig)?,
-            Err(kabi::Error::NotFound | kabi::Error::Permission) => return Ok(None),
-            Err(error) => return Err(error),
+        let mut waited = false;
+        let len = loop {
+            match sys::model_map() {
+                Ok(len) => break usize::try_from(len).map_err(|_| kabi::Error::TooBig)?,
+                Err(kabi::Error::Busy) => {
+                    if !waited {
+                        println!("model: waiting for the model store to fill the model");
+                        waited = true;
+                    }
+                    sys::sleep_ms(STORE_POLL_MS);
+                }
+                Err(kabi::Error::NotFound | kabi::Error::Permission) => return Ok(None),
+                Err(error) => return Err(error),
+            }
         };
+        if waited {
+            println!("model: the model store filled the model");
+        }
         println!(
             "model: {len} bytes mapped read-only at {:#x}",
             kabi::layout::MODEL_BASE

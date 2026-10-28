@@ -92,7 +92,8 @@ pub fn check(cmdline: &str) -> Result<(), &'static str> {
 /// `kai-modelhint 1`; `fs`, once mounted, fills them from the store with
 /// MODEL_FILL. The model must then be published, holding the file xtask
 /// imported (its length and FNV-1a64 on the command line), and MODEL_MAP no
-/// longer waits.
+/// longer waits: `llm`, started before the fill ended, waited on Busy and now
+/// reports the same length and hash.
 pub fn store(cmdline: &str) -> Result<(), &'static str> {
     let attached = Attached::from_cmdline(cmdline);
     let (Some(len), Some(fnv)) = (attached.len, attached.fnv) else {
@@ -122,6 +123,17 @@ pub fn store(cmdline: &str) -> Result<(), &'static str> {
         "model-store: fs filled {len} bytes from /system/models in {} ms; length and FNV-1a64 match",
         hpet::nanos().saturating_sub(start) / 1_000_000
     );
+    let expected = format!("model {len} bytes fnv1a64 {fnv:016x}");
+    loop {
+        if llm::health().is_ok_and(|health| health.contains(&expected)) {
+            break;
+        }
+        if hpet::nanos().saturating_sub(start) > STORE_WAIT_MS * 1_000_000 {
+            return Err("model-store: llm never reported the store's model");
+        }
+        threads::sleep_ms(200);
+    }
+    log!("model-store: llm waited for the fill and maps the store's model");
     Ok(())
 }
 
