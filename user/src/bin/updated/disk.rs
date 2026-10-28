@@ -9,7 +9,7 @@
 //! computed on the way; it becomes a trial only if length and hash match.
 
 use crate::folders::{self, Folders};
-use crate::{pause, record, set, slot_of};
+use crate::{pause, record, restore, set, slot_of};
 use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::String;
@@ -215,6 +215,12 @@ pub fn update(handle: Handle) -> Result<(), String> {
     if let Some(updates) = dirs.updates {
         let id = folders::update_snapshot(updates)?;
         println!("updated: took update snapshot {id} of the system volume");
+        let pending = restore::Pending {
+            snapshot: id,
+            slot: other,
+            release_seq,
+        };
+        restore::record_pending(updates, pending)?;
     }
     bootslot::stage_end(&mut nv, other, release_seq);
     bootslot::restart_into(&mut nv, other);
