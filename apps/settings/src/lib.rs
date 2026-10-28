@@ -66,10 +66,40 @@ pub struct About {
     pub notices: String,
 }
 
-/// One standing rule, as `rules` lists it: its number and its words.
+/// What `rules` lists and `rules_remove` takes: a standing rule by its number,
+/// or a standing instruction as `S<n>` (P3 task 11).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuleRef {
+    Rule(u32),
+    Instruction(u32),
+}
+
+impl RuleRef {
+    /// The word `rules_remove` takes: `3` or `S3`.
+    pub fn word(self) -> String {
+        match self {
+            RuleRef::Rule(n) => alloc::format!("{n}"),
+            RuleRef::Instruction(n) => alloc::format!("S{n}"),
+        }
+    }
+
+    /// `3` or `S3`, as `rules` lists them; `None` for anything else.
+    pub fn parse(word: &str) -> Option<RuleRef> {
+        let number = |digits: &str| {
+            let ok = !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit());
+            ok.then(|| digits.parse().ok()).flatten()
+        };
+        match word.strip_prefix('S') {
+            Some(rest) => number(rest).map(RuleRef::Instruction),
+            None => number(word).map(RuleRef::Rule),
+        }
+    }
+}
+
+/// One line of `rules`: what it is and its words.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RuleLine {
-    pub id: u32,
+    pub id: RuleRef,
     pub text: String,
 }
 
@@ -81,8 +111,8 @@ pub enum Intent {
     Appearance(Appearance),
     /// The grant revoke row, by grant id.
     Revoke(u32),
-    /// `rules_remove`.
-    RemoveRule(u32),
+    /// `rules_remove`, with [`RuleRef::word`].
+    RemoveRule(RuleRef),
     /// `profile_set`.
     UseProfile(String),
     /// The keep-running switch for one app.

@@ -4,7 +4,7 @@
 
 use comp_settings::access::by_app;
 use comp_settings::files::{Appearance, Apps, DAY_MINUTES, Updates};
-use comp_settings::{Intent, Settings};
+use comp_settings::{Intent, RuleLine, RuleRef, Settings};
 
 const GRANTS: &str = "kai-grants 1\n\
 grant 41 app=notes kind=dir object=/home/user/notes rights=read+write+enumerate from=picker life=persistent signer=- made=2026-11-02T10:14:00Z\n\
@@ -165,4 +165,36 @@ fn hostile_bytes_give_defaults_never_a_panic() {
             }
         }
     }
+}
+
+#[test]
+fn a_rule_ref_is_the_word_rules_remove_takes() {
+    assert_eq!(RuleRef::Rule(3).word(), "3");
+    assert_eq!(RuleRef::Instruction(12).word(), "S12");
+    for r in [RuleRef::Rule(0), RuleRef::Rule(41), RuleRef::Instruction(7)] {
+        assert_eq!(RuleRef::parse(&r.word()), Some(r));
+    }
+    for bad in ["", "S", "s3", "S-1", "3x", "+3", "S 3", "99999999999"] {
+        assert_eq!(RuleRef::parse(bad), None, "{bad}");
+    }
+}
+
+#[test]
+fn removing_one_kind_leaves_the_other_with_the_same_number() {
+    let mut s = Settings {
+        rules: vec![
+            RuleLine {
+                id: RuleRef::Rule(2),
+                text: "a rule".into(),
+            },
+            RuleLine {
+                id: RuleRef::Instruction(2),
+                text: "an instruction".into(),
+            },
+        ],
+        ..Settings::default()
+    };
+    s.applied(&Intent::RemoveRule(RuleRef::Instruction(2)));
+    assert_eq!(s.rules.len(), 1);
+    assert_eq!(s.rules[0].id, RuleRef::Rule(2));
 }

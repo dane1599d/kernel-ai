@@ -4,7 +4,7 @@
 
 use comp_settings::access::by_app;
 use comp_settings::files::Apps;
-use comp_settings::{About, Intent, Page, RuleLine, Settings};
+use comp_settings::{About, Intent, Page, RuleLine, RuleRef, Settings};
 use comp_settings_ui::{
     APP_LIST, Change, END, Entry, KEEP, LEGIBLE, PROFILES, REMOVE, REVOKE, SIZE, START, TABS,
     THEME, View, WINDOW_ON, build, clock, diff, on_ui,
@@ -22,10 +22,16 @@ fn settings() -> Settings {
     apps.set("notes", true);
     Settings {
         access: by_app(&kaigrants::parse(GRANTS).unwrap()),
-        rules: vec![RuleLine {
-            id: 3,
-            text: "Always stop build-3 when asked".into(),
-        }],
+        rules: vec![
+            RuleLine {
+                id: RuleRef::Rule(3),
+                text: "Always stop build-3 when asked".into(),
+            },
+            RuleLine {
+                id: RuleRef::Instruction(2),
+                text: "When a build finishes, tell me".into(),
+            },
+        ],
         profiles: vec!["normal".into(), "focus".into()],
         profile: Some("normal".into()),
         nappable: vec!["files".into(), "notes".into()],
@@ -147,7 +153,11 @@ fn rules_profiles_and_keep_running_give_their_intents() {
     let mut view = View { page: 2, app: None };
     assert_eq!(
         on_ui(&s, &mut view, &UiEvent::Pressed(REMOVE)).1,
-        Some(Intent::RemoveRule(3))
+        Some(Intent::RemoveRule(RuleRef::Rule(3)))
+    );
+    assert_eq!(
+        on_ui(&s, &mut view, &UiEvent::Pressed(REMOVE + 1)).1,
+        Some(Intent::RemoveRule(RuleRef::Instruction(2)))
     );
     assert_eq!(
         on_ui(&s, &mut view, &UiEvent::Changed(PROFILES, Value::Index(1))).1,
