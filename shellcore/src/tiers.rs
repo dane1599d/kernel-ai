@@ -13,18 +13,25 @@ use agentabi::Action;
 
 pub use agentabi::Tier;
 
-/// The rows scripts can call: the bound rows, the file rows, then the helpers.
-const CALLABLE: usize = agentabi::BOUND.len() + agentabi::FS_ROWS.len() + agentabi::HELPERS.len();
+/// The rows scripts can call: the bound rows, the file rows, the window rows,
+/// then the helpers.
+const CALLABLE: usize = agentabi::BOUND.len()
+    + agentabi::FS_ROWS.len()
+    + agentabi::UI_ROWS.len()
+    + agentabi::HELPERS.len();
 
 const fn callable(i: usize) -> &'static Action {
     let api = agentabi::BOUND.len();
     let files = api + agentabi::FS_ROWS.len();
+    let windows = files + agentabi::UI_ROWS.len();
     if i < api {
         &agentabi::BOUND[i]
     } else if i < files {
         &agentabi::FS_ROWS[i - api]
+    } else if i < windows {
+        &agentabi::UI_ROWS[i - files]
     } else {
-        &agentabi::HELPERS[i - files]
+        &agentabi::HELPERS[i - windows]
     }
 }
 
