@@ -58,3 +58,19 @@ fn only_an_app_serving_alone_suspends() {
     let reply = call(&mut host, "ctl suspend");
     assert!(reply.contains("finish its probation first"), "{reply}");
 }
+
+#[test]
+fn wake_resumes_only_a_suspended_app() {
+    let kernel = kernel(&[V1]);
+    let mut host = host(&kernel);
+    call(&mut host, "add");
+    assert_eq!(host.wake().unwrap(), None, "a serving app is left alone");
+    call(&mut host, "ctl suspend");
+    let before = live();
+    let reply = host.wake().unwrap().unwrap();
+    assert_eq!(reply, b"ok resumed counter 1");
+    assert!(!host.suspended());
+    assert_eq!(live(), before + 1, "the instance is back");
+    assert_eq!(call(&mut host, "get"), "ok 1 schema 1");
+    assert_eq!(host.wake().unwrap(), None);
+}
