@@ -19,6 +19,7 @@ mod log;
 mod logdisk;
 mod more;
 mod packages;
+mod panel;
 mod profiles;
 mod scripts;
 mod standing;

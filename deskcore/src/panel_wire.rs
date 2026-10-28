@@ -82,8 +82,13 @@ pub fn parse_state(text: &str) -> Option<State> {
 }
 
 /// The first line of `text`, tabs made spaces, at most [`MAX_TEXT`] bytes.
+/// `text`'s first line that is not blank, cut to [`MAX_TEXT`]; "-" if none.
 fn one_line(text: &str) -> String {
-    let line = text.lines().next().unwrap_or("").replace('\t', " ");
+    let line = text
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("-")
+        .replace('\t', " ");
     let mut end = line.len().min(MAX_TEXT);
     while !line.is_char_boundary(end) {
         end -= 1;
@@ -129,6 +134,13 @@ mod tests {
             line: "first\nsecond".into(),
         };
         assert_eq!(encode_state(&done).unwrap(), "panel state done first");
+        let blank_first = State::Done {
+            line: "\n42".into(),
+        };
+        let text = encode_state(&blank_first).unwrap();
+        assert_eq!(parse_state(&text), Some(State::Done { line: "42".into() }));
+        let blank = encode_state(&State::Done { line: "\n".into() }).unwrap();
+        assert!(parse_state(&blank).is_some(), "{blank}");
         let long = State::Refused {
             reason: "é".repeat(300),
         };

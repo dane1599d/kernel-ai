@@ -25,7 +25,7 @@ use llmproto::chat::Completion;
 use llmproto::script::{self, Answer, AnswerError, ScriptRequest};
 use llmproto::tune::{self, TuneRequest};
 use shellcore::targets::Service;
-use shellcore::{DEFAULT_CONFIG, Host, Proof, SCRIPT_ROUND_MS, Shell};
+use shellcore::{DEFAULT_CONFIG, Host, PanelResult, Proof, SCRIPT_ROUND_MS, Shell};
 use user::{arg, args, logln, println, sys};
 
 user::entry!(main);
@@ -76,10 +76,11 @@ fn ask_desktop(route: kabi::handle::Handle, request: &str) -> Result<String, Str
     Ok(String::from_utf8_lossy(&reply[..len.min(reply.len())]).into_owned())
 }
 
-/// Takes the panel's oldest request, runs a line as the terminal's would be,
-/// and reports what came of it: code's result line, or why not. The panel
-/// shows thinking from the Enter until then. A line that asks first is asked
-/// in the terminal for now; the panel says so.
+/// Takes the panel's oldest request, runs a line apart from the terminal's
+/// entry and questions (`Shell::eval_panel`), and reports what came of it:
+/// code's result line, or why not, never the model's words. The panel shows
+/// thinking from the Enter until then. A line that asks first is asked in the
+/// terminal for now; the panel says so.
 fn take_panel(shell: &mut Shell) {
     use deskcore::panel::{Request, State};
     use deskcore::panel_wire;
@@ -90,28 +91,22 @@ fn take_panel(shell: &mut Shell) {
         return;
     };
     let shown = match panel_wire::parse_take(&answer) {
-        Some(Some(Request::Line(line))) => {
-            let wire = shell.eval(&line).to_wire();
-            match wire.split_once(' ').unwrap_or((&wire, "")) {
-                ("ok", "") => State::Done {
-                    line: String::from("Done."),
-                },
-                ("ok", text) => State::Done { line: text.into() },
-                ("err", why) => State::Refused { reason: why.into() },
-                _ => State::Refused {
-                    reason: String::from("it asks first: answer it in the terminal"),
-                },
-            }
-        }
-        // Esc while thinking: the panel is idle again already, and the line
-        // ran to its end, as the terminal's does.
-        Some(Some(Request::Stop)) => State::Idle,
+        Some(Some(Request::Line(line))) => match shell.eval_panel(&line) {
+            PanelResult::Done(line) => State::Done { line },
+            PanelResult::Refused(reason) => State::Refused { reason },
+        },
+        // Esc after the shell took the line: it has run already, one line at
+        // a time, and its result stays shown. Esc before is desktop's own: the
+        // line never came here.
         _ => return,
     };
-    if let Some(request) = panel_wire::encode_state(&shown)
-        && let Err(why) = ask_desktop(route, &request)
-    {
-        println!("the panel's state was not set: {why}");
+    let Some(request) = panel_wire::encode_state(&shown) else {
+        return;
+    };
+    match ask_desktop(route, &request) {
+        Ok(answer) if answer == "ok" => {}
+        Ok(answer) => println!("the panel's state was not set: {answer}"),
+        Err(why) => println!("the panel's state was not set: {why}"),
     }
 }
 

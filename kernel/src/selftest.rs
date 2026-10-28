@@ -431,9 +431,14 @@ pub fn plan(test: SelfTest) -> Option<String> {
             }
             false => kabi::plan::SHELL,
         };
-        // On the desktop the shell has a route to `desktop`, for the panel.
+        // On the desktop the shell has a route to `desktop`, for the panel:
+        // `desktop` is planned first, as a route's target must be.
         let shell = match test {
-            SelfTest::DeskPanelShell => kabi::plan::SHELL_DESK,
+            SelfTest::DeskPanelShell => {
+                plan.push('\n');
+                plan.push_str(crate::desk_tests::BOOT_PLAN);
+                kabi::plan::SHELL_DESK
+            }
             _ => shell,
         };
         plan.push('\n');
@@ -488,10 +493,7 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
         plan.push('\n');
         plan.push_str(crate::desk_tests::PLAN);
     }
-    if matches!(
-        test,
-        SelfTest::DeskBoot | SelfTest::DeskPanel | SelfTest::DeskPanelShell
-    ) {
+    if matches!(test, SelfTest::DeskBoot | SelfTest::DeskPanel) {
         plan.push('\n');
         plan.push_str(crate::desk_tests::BOOT_PLAN);
     }
