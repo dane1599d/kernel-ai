@@ -58,13 +58,34 @@ fn main() -> i32 {
         Some("restart") => restart(home),
         Some("actions") => cut::actions(home),
         Some("churn") => cut::churn(home, boot),
+        Some("hold") => hold(home),
         _ => Err(String::from(
-            "no step=write, read, restart, actions or churn",
+            "no step=write, read, restart, actions, churn or hold",
         )),
     };
     if let Err(why) = result {
         println!("filecheck: FAIL {why}");
     }
+    idle()
+}
+
+/// `fs-dead-client`: opens an action, changes a file in it, and holds it until
+/// the kernel kills this process. Once only: a restarted `filecheck` finds
+/// `held` and does nothing.
+fn hold(home: Handle) -> Result<(), String> {
+    if open(home, "held", How::Existing, Rights::READ).is_ok() {
+        println!("filecheck: restarted after the kill; holding nothing");
+        return Ok(());
+    }
+    mark(home, "held")?;
+    expect(home, Request::Begin { action: 1 }, Reply::Done)?;
+    let half = open(home, "half.txt", How::CreateFile, file_rights())?;
+    let request = Request::Write {
+        off: 0,
+        data: b"half done".to_vec(),
+    };
+    expect(half, request, Reply::Done)?;
+    println!("filecheck: holding an action with half.txt in it");
     idle()
 }
 
