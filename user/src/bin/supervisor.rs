@@ -198,7 +198,8 @@ fn handle(services: &mut [Service], text: &str, caller: u64) -> String {
         println!("{text:?} refused: {why}");
         return why;
     }
-    let index = match supervise::check(request, &records) {
+    let starts: Vec<Start> = services.iter().map(|s| s.spec.start).collect();
+    let index = match supervise::check_for(request, &records, &starts) {
         Ok(index) => index,
         Err(why) => return String::from(why),
     };

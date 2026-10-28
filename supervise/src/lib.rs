@@ -88,6 +88,12 @@ pub fn check_demand(
     if record.stopped {
         return Err("err stopped");
     }
+    // Past its restart cap a demand does not start it again; only the user's
+    // `start` does. While it backs off it is starting, below, so a demand never
+    // skips the backoff either.
+    if record.gave_up {
+        return Err("err gave up");
+    }
     match record.pid != 0 || starting[index] {
         true => Ok(None),
         false => Ok(Some(index)),
@@ -297,6 +303,17 @@ pub fn parse_listing(text: &str) -> Option<Vec<Listed>> {
 /// on, or the reply that refuses it (`err protected`, `err unknown service`,
 /// `err already stopped`, `err not stopped`).
 pub fn check(request: Request, records: &[Record]) -> Result<usize, &'static str> {
+    check_for(request, records, &[])
+}
+
+/// [`check`], knowing each record's [`Start`] (`starts`, by index; a record
+/// past its end starts at boot): a `start` of a `start=demand` service that
+/// has not started yet starts it, as its first demand would.
+pub fn check_for(
+    request: Request,
+    records: &[Record],
+    starts: &[Start],
+) -> Result<usize, &'static str> {
     let name = request.name();
     if PROTECTED.contains(&name) {
         return Err("err protected");
@@ -306,10 +323,12 @@ pub fn check(request: Request, records: &[Record]) -> Result<usize, &'static str
         .position(|record| record.name == name)
         .ok_or("err unknown service")?;
     let record = &records[index];
+    let waiting = starts.get(index) == Some(&Start::Demand) && record.pid == 0;
     match (request, record.stopped) {
         (Request::Stop(_), true) => Err("err already stopped"),
-        // A service the supervisor gave up on starts again on request too.
-        (Request::Start(_), false) if !record.gave_up => Err("err not stopped"),
+        // A service the supervisor gave up on starts again on request too, and
+        // so does a demand service not started yet.
+        (Request::Start(_), false) if !record.gave_up && !waiting => Err("err not stopped"),
         _ => Ok(index),
     }
 }

@@ -577,3 +577,47 @@ fn a_demand_line_waits_for_the_kernels_demand() {
         Err("err stopped")
     );
 }
+
+#[test]
+fn a_demand_does_not_restart_a_service_past_its_cap() {
+    let plan = parse_plan("notes program=comphost caps=serve start=demand");
+    let specs: Vec<&ServiceSpec> = plan.services.iter().collect();
+    let mut records = vec![Record::new("notes")];
+    records[0].gave_up = true;
+    assert_eq!(
+        check_demand("notes", &specs, &records, 0, &[false]),
+        Err("err gave up")
+    );
+    // While it backs off it is starting, so a demand adds nothing either.
+    records[0].gave_up = false;
+    assert_eq!(
+        check_demand("notes", &specs, &records, 0, &[true]),
+        Ok(None)
+    );
+}
+
+#[test]
+fn start_starts_a_demand_service_not_started_yet() {
+    let starts = [Start::Demand, Start::Boot];
+    let mut records = vec![Record::new("notes"), Record::new("files")];
+    // Never started: `start` starts it, as a demand would.
+    assert_eq!(check_for(Request::Start("notes"), &records, &starts), Ok(0));
+    // A boot service that runs is not stopped, so `start` is refused as before.
+    records[1].pid = 4;
+    assert_eq!(
+        check_for(Request::Start("files"), &records, &starts),
+        Err("err not stopped")
+    );
+    // Once the demand service runs, `start` is refused like any other.
+    records[0].pid = 9;
+    assert_eq!(
+        check_for(Request::Start("notes"), &records, &starts),
+        Err("err not stopped")
+    );
+    // `check` alone knows no starts: unchanged.
+    records[0].pid = 0;
+    assert_eq!(
+        check(Request::Start("notes"), &records),
+        Err("err not stopped")
+    );
+}
