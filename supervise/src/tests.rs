@@ -114,8 +114,13 @@ fn a_lines_folders_go_only_to_its_own_program() {
 
 #[test]
 fn boot_files_go_only_to_the_lines_own_program() {
-    let plan = parse_plan("pkg dir=pkg boot=pkgrepo\nimager program=pkg boot=pkgrepo");
+    let plan = parse_plan("pkg dir=pkg bootfiles=pkgrepo\nimager program=pkg bootfiles=pkgrepo");
     assert!(plan.errors.is_empty(), "{:?}", plan.errors);
+    // `boot=` stays the program's own word, as fs-powercut's filecheck uses it.
+    let churn = parse_plan("filecheck caps=files step=churn boot=1");
+    assert!(churn.errors.is_empty(), "{:?}", churn.errors);
+    assert_eq!(churn.services[0].args, "step=churn boot=1");
+    assert_eq!(churn.services[0].boot, None);
     assert_eq!(plan.services[0].boot, Some(BootFiles::Pkgrepo));
     assert_eq!(
         plan.grants("pkg", "pkg").unwrap().boot,
@@ -123,19 +128,19 @@ fn boot_files_go_only_to_the_lines_own_program() {
     );
     let refused = plan.grants("imager", "imager").unwrap_err();
     assert!(
-        refused.contains("its boot= is for program pkg"),
+        refused.contains("its bootfiles= is for program pkg"),
         "{refused}"
     );
     assert!(plan.grants("pkg", "comphost").is_err());
     assert_eq!(parse_plan("pkg").services[0].boot, None);
     for bad in [
-        "pkg boot=",
-        "pkg boot=pkgrepo/",
-        "pkg boot=Pkgrepo",
-        "pkg boot=comp",
-        "pkg boot=pkgrepo+pkgrepo",
-        "pkg boot=pkgrepo boot=pkgrepo",
-        "pkg boot=pkgrepo unsupervised",
+        "pkg bootfiles=",
+        "pkg bootfiles=pkgrepo/",
+        "pkg bootfiles=Pkgrepo",
+        "pkg bootfiles=comp",
+        "pkg bootfiles=pkgrepo+pkgrepo",
+        "pkg bootfiles=pkgrepo bootfiles=pkgrepo",
+        "pkg bootfiles=pkgrepo unsupervised",
     ] {
         let plan = parse_plan(bad);
         assert!(plan.services.is_empty() && plan.errors.len() == 1, "{bad}");
@@ -597,7 +602,7 @@ fn routes_form_no_cycle_and_never_reach_the_shell_or_edit() {
 }
 
 const RUN_PLAN: &str = "fs caps=serve\n\
-    pkg dir=pkg boot=pkgrepo caps=call uses=supervisor\n\
+    pkg dir=pkg bootfiles=pkgrepo caps=call uses=supervisor\n\
     notes program=comphost caps=serve+component start=pkg\n\
     shell caps=call";
 

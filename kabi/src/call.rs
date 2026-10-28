@@ -394,7 +394,7 @@ pub const INPUT_TO_CONSOLE: u64 = 79;
 
 /// `boot_read(path_ptr, path_len, buf, cap) -> len`: copies the boot bundle's
 /// file `path` into `buf` when it fits; its length either way. Only for a process
-/// whose plan line's `boot=` names the folder `path` lies beneath, run as that
+/// whose plan line's `bootfiles=` names the folder `path` lies beneath, run as that
 /// line's own program (P4 task 1: `pkg` reads the image's signed repository).
 pub const BOOT_READ: u64 = 100;
 /// `comp_add(&live::Add) -> 0`: adds a version of a component from an

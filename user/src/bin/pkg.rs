@@ -2,7 +2,7 @@
 //! generations on kaifs, through the `Dir` handle for `/system/pkg` it gets at
 //! startup and `fs` serves (`kaipkg::fsvol`), and the image's signed repository,
 //! which it reads with BOOT_READ beneath `pkgrepo/` (its plan line's
-//! `boot=pkgrepo`) and checks with `kaituf` (`kaipkg::image`).
+//! `bootfiles=pkgrepo`) and checks with `kaituf` (`kaipkg::image`).
 //!
 //! For boot case `pkg-image`, `step=image`, `image-again` and `image-tampered`
 //! each check the image's repository, print each package it refuses by name,

@@ -48,7 +48,7 @@ const IMAGE_AGAIN: TestCase = TestCase {
 
 pub(super) const CASES: &[TestCase] = &[
     // P4 task 1: `pkg` reads the image's signed repository from the boot bundle
-    // with BOOT_READ, which its plan line's `boot=pkgrepo` grants beneath
+    // with BOOT_READ, which its plan line's `bootfiles=pkgrepo` grants beneath
     // `pkgrepo/` only, checks it with kaituf, and makes it generation 1. notes
     // is a `start=pkg` app: `pkg` adds its artifact as package version `p-<sha12>`
     // (COMP_ADD) and the supervisor starts it there, on `pkg`'s request only.

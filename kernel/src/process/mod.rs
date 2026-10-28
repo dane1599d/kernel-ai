@@ -138,7 +138,7 @@ pub struct Process {
     /// Its plan line grants a folder (`dir=`): its kind ceiling takes `Dir` and
     /// `File` handles, as FILES's does, without FILES's home folder.
     pub folders: bool,
-    /// The boot files its plan line lets it read with BOOT_READ (`boot=`).
+    /// The boot files its plan line lets it read with BOOT_READ (`bootfiles=`).
     pub boot: Option<supervise::BootFiles>,
 }
 
@@ -391,7 +391,7 @@ pub fn spawn_with(
 
 /// [`spawn_with`], with what its plan line grants besides capability bits
 /// (ADR 0011 §12): a startup `Dir` for each of `plan.dirs` (`dir=`), after any
-/// FILES and SYSTEM_STATE give, and BOOT_READ of `plan.boot` (`boot=`). Its
+/// FILES and SYSTEM_STATE give, and BOOT_READ of `plan.boot` (`bootfiles=`). Its
 /// routes are `request.uses`.
 pub fn spawn_in(
     request: &SpawnRequest,

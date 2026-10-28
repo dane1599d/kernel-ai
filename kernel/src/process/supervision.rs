@@ -512,7 +512,7 @@ fn clear_state() {
     drop(old);
 }
 
-/// The routes (`uses=`), folders (`dir=`) and boot files (`boot=`) the kernel's
+/// The routes (`uses=`), folders (`dir=`) and boot files (`bootfiles=`) the kernel's
 /// plan grants service `name` running `program` (`supervise::Plan::grants`);
 /// none for a service it does not list, or whose line does not parse.
 pub fn plan_grants(name: &str, program: &str) -> Result<supervise::Grants, String> {

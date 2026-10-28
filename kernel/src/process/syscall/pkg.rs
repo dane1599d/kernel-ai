@@ -22,7 +22,7 @@ pub(super) fn handle(slot: usize, number: u64, a: &[u64; 6]) -> Option<Result<u6
 }
 
 /// `boot_read(path_ptr, path_len, buf, cap) -> len`: only beneath the folder the
-/// caller's plan line grants with `boot=` (set at spawn from the kernel's own
+/// caller's plan line grants with `bootfiles=` (set at spawn from the kernel's own
 /// plan, for that line's own program), and only a plain path there
 /// (`supervise::BootFiles::allows`), looked up exactly.
 fn boot_read(slot: usize, path_ptr: u64, path_len: u64, buf: u64, cap: u64) -> Result<u64, Error> {

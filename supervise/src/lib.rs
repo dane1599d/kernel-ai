@@ -30,7 +30,7 @@ pub struct ServiceSpec {
     pub uses: Vec<String>,
     /// The folders it gets a startup `Dir` for, from `dir=`, in this order.
     pub dirs: Vec<Folder>,
-    /// The boot files it may read with BOOT_READ, from `boot=`.
+    /// The boot files it may read with BOOT_READ, from `bootfiles=`.
     pub boot: Option<BootFiles>,
     /// When the supervisor starts it, from `start=`.
     pub start: Start,
@@ -69,7 +69,7 @@ impl Folder {
     }
 }
 
-/// Boot files a plan line lets its service read with BOOT_READ, from `boot=`
+/// Boot files a plan line lets its service read with BOOT_READ, from `bootfiles=`
 /// (P4 task 1): one folder of the boot bundle, read-only. Like [`Folder`], the
 /// authority is the plan line, and the grant goes only to the line's own
 /// program ([`Plan::grants`]).
@@ -192,7 +192,7 @@ pub struct Grants {
     pub uses: Vec<String>,
     /// Its startup folders, from `dir=`.
     pub dirs: Vec<Folder>,
-    /// Its boot files, from `boot=`.
+    /// Its boot files, from `bootfiles=`.
     pub boot: Option<BootFiles>,
 }
 
@@ -396,7 +396,7 @@ pub struct Plan {
 }
 
 impl Plan {
-    /// The routes (`uses=`), folders (`dir=`) and boot files (`boot=`) this plan
+    /// The routes (`uses=`), folders (`dir=`) and boot files (`bootfiles=`) this plan
     /// grants service `name` running `program`; none for a service it does not
     /// list. A line's folders and boot files go only to its own program, its
     /// `program=` or else its name: started with any other, the service is
@@ -408,7 +408,7 @@ impl Plan {
         };
         let bound = [
             (!service.dirs.is_empty(), "dir="),
-            (service.boot.is_some(), "boot="),
+            (service.boot.is_some(), "bootfiles="),
         ];
         if let Some((_, key)) = bound.iter().find(|(held, _)| *held)
             && service.program != program
@@ -428,7 +428,7 @@ impl Plan {
 
 /// Reads the plan: one service per line, `name [program=P] [pages=N] [stack_pages=N]
 /// [burst_ms=N] [caps=serve+net+call+policy+component+publish+model+threads+resolve+stop+script]
-/// [uses=A+B] [dir=pkg] [boot=pkgrepo] [start=pkg] [backoff_max_ms=N] [max_restarts=N] [unsupervised] [other=args ...]`. The supervisor keys set limits,
+/// [uses=A+B] [dir=pkg] [bootfiles=pkgrepo] [start=pkg] [backoff_max_ms=N] [max_restarts=N] [unsupervised] [other=args ...]`. The supervisor keys set limits,
 /// routes, folders and policy; everything else is passed to the program. A bad line skips only
 /// that service, so one typo cannot keep every other service down.
 pub fn parse_plan(text: &str) -> Plan {
@@ -500,12 +500,12 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
                 }
                 dirs = Some(folders(name, value)?);
             }
-            Some(("boot", value)) => {
+            Some(("bootfiles", value)) => {
                 if boot.is_some() {
-                    return Err(format!("{name}: boot= given twice"));
+                    return Err(format!("{name}: bootfiles= given twice"));
                 }
                 let files = BootFiles::parse(value)
-                    .ok_or_else(|| format!("{name}: no boot files {value:?} for boot="))?;
+                    .ok_or_else(|| format!("{name}: no boot files {value:?} for bootfiles="))?;
                 boot = Some(files);
             }
             Some(("start", value)) => {
@@ -530,7 +530,7 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
     if unsupervised && (limits.caps != 0 || !uses.is_empty() || !dirs.is_empty() || boot.is_some())
     {
         return Err(format!(
-            "{name}: an unsupervised process takes no caps=, uses=, dir= or boot="
+            "{name}: an unsupervised process takes no caps=, uses=, dir= or bootfiles="
         ));
     }
     let start = start.unwrap_or_default();

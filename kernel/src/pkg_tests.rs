@@ -14,14 +14,14 @@
 //! no capability bits and starts with that one `Dir`, and no home folder.
 //!
 //! `test=pkg-image [again|tampered]` (P4 task 1): `pkg`'s plan line adds
-//! `boot=pkgrepo`, and it makes the image's signed repository generation 1:
+//! `bootfiles=pkgrepo`, and it makes the image's signed repository generation 1:
 //! - boot 1, `step=image`: generation 1 holds notes, from the image;
 //! - boot 2, `again`: generation 1 is still current, seeded once;
 //! - `tampered`, its own case on a fresh disk, with one byte of notes's target
 //!   flipped in the bundle: notes is refused by name, generation 1 is empty.
 //!
 //! Its kernel half reads `gen/1` through `fs` as well, and checks that `pkg`
-//! holds the plan's `boot=pkgrepo`.
+//! holds the plan's `bootfiles=pkgrepo`.
 
 use crate::process;
 use crate::{handle, ipc, log, threads};
@@ -114,7 +114,7 @@ pub fn plan(step: Step) -> String {
     let step_name = step.name();
     match step.case() {
         "pkg-image" => format!(
-            "{fs}\n{CLIENT} dir=pkg boot=pkgrepo caps=call uses=supervisor pages=2048 stack_pages=128 step={step_name}\n{}",
+            "{fs}\n{CLIENT} dir=pkg bootfiles=pkgrepo caps=call uses=supervisor pages=2048 stack_pages=128 step={step_name}\n{}",
             kabi::plan::notes_from_pkg()
         ),
         _ => format!("{fs}\n{CLIENT} dir=pkg pages=2048 stack_pages=128 step={step_name}"),
@@ -142,7 +142,7 @@ pub fn check(step: Step) -> Result<(), &'static str> {
 }
 
 /// Generation 1 is the image's, notes, or nothing when notes's target was
-/// tampered with; and `pkg` holds the plan's `boot=pkgrepo`.
+/// tampered with; and `pkg` holds the plan's `bootfiles=pkgrepo`.
 fn image_generation(step: Step) -> Result<(), &'static str> {
     let first = read("gen/1")?;
     let first = core::str::from_utf8(&first).map_err(|_| "pkg-image: gen/1 is not text")?;
@@ -162,7 +162,7 @@ fn image_generation(step: Step) -> Result<(), &'static str> {
             .and_then(|p| p.boot)
     });
     if boot != Some(supervise::BootFiles::Pkgrepo) {
-        return Err("pkg-image: pkg does not hold boot=pkgrepo");
+        return Err("pkg-image: pkg does not hold bootfiles=pkgrepo");
     }
     match step {
         Step::ImageTampered => {

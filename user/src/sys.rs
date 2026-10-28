@@ -601,7 +601,7 @@ pub fn interrupted() -> bool {
 }
 
 /// Copies the boot bundle's file `path` into `buf` when it fits; its length
-/// either way. Only beneath what this process's plan line grants with `boot=`.
+/// either way. Only beneath what this process's plan line grants with `bootfiles=`.
 pub fn boot_read(path: &str, buf: &mut [u8]) -> Result<usize, Error> {
     call(
         call::BOOT_READ,

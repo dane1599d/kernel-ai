@@ -127,7 +127,7 @@ pub fn main(args: &[String]) -> Result<(), String> {
 }
 
 /// Where the image's repository lies in the boot bundle (ADR 0011 §8): `pkg`
-/// reads it there with BOOT_READ, granted by its plan line's `boot=pkgrepo`.
+/// reads it there with BOOT_READ, granted by its plan line's `bootfiles=pkgrepo`.
 pub const IMAGE_DIR: &str = "pkgrepo";
 
 fn unix_now() -> Result<Time, String> {

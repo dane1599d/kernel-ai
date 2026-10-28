@@ -11,12 +11,12 @@ use hostile::{fuzz, truncations};
 use supervise::{BootFiles, Folder, MAX_BOOT_PATH, parse_plan};
 
 const PLAN: &str = "fs caps=serve+partition\n\
-    pkg dir=pkg boot=pkgrepo pages=2048 step=install\n\
+    pkg dir=pkg bootfiles=pkgrepo pages=2048 step=install\n\
     shell caps=call+files uses=fs dir=pkg\n\
     notes caps=serve\n";
 
 /// Every service that came out with a folder names `dir=pkg` on its own line,
-/// and every one with boot files `boot=pkgrepo`.
+/// and every one with boot files `bootfiles=pkgrepo`.
 fn grants_only_what_it_says(bytes: &[u8]) {
     let Ok(text) = core::str::from_utf8(bytes) else {
         return;
@@ -36,7 +36,7 @@ fn grants_only_what_it_says(bytes: &[u8]) {
         }
         if let Some(boot) = service.boot {
             assert_eq!(boot, BootFiles::Pkgrepo, "{text:?}");
-            assert!(says("boot=pkgrepo"), "{text:?}");
+            assert!(says("bootfiles=pkgrepo"), "{text:?}");
         }
     }
 }
@@ -66,12 +66,14 @@ fn near_misses_of_dir_pkg_are_refused() {
 #[test]
 fn near_misses_of_boot_pkgrepo_are_refused() {
     for word in [
-        "boot=pkgrepo2",
-        "boot=pkgrep",
-        "boot=PKGREPO",
+        "bootfiles=pkgrepo2",
+        "bootfiles=pkgrep",
+        "bootfiles=PKGREPO",
         "boots=pkgrepo",
-        "boot=pkgrepo/",
-        "boot=/pkgrepo",
+        "bootfiles=pkgrepo/",
+        "bootfiles=/pkgrepo",
+        // A program's own `boot=N` argument (filecheck's) is never the grant.
+        "boot=pkgrepo",
     ] {
         let plan = parse_plan(&format!("pkg {word}"));
         assert!(plan.services.iter().all(|s| s.boot.is_none()), "{word}");
