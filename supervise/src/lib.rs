@@ -7,6 +7,8 @@
 
 extern crate alloc;
 
+pub mod profile;
+
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;

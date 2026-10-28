@@ -209,6 +209,11 @@ pub fn install(spec: PolicySpec, background: Vec<u64>) -> Result<(), Error> {
 /// A profile's class for process `pid` (PROC_CLASS_SET): `background` or not
 /// from now on, every thread on every CPU, kept for its threads to come.
 /// Busy while a trial runs, which owns the labels until it ends.
+/// Whether process `pid` is labelled background (PROC_CLASS_SET or a trial).
+pub fn is_background(pid: u64) -> bool {
+    with(|control| control.background.contains(&pid))
+}
+
 pub fn label(pid: u64, background: bool) -> Result<(), Error> {
     // Outside every lock: it reads the process table, and allocates nothing.
     let by_tid = process::pids_by_tid();

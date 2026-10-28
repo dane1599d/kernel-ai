@@ -12,6 +12,10 @@
 //! made as that log entry, with nothing changed since. A start needs none. Its
 //! own restarts need none either.
 //! `services` lists them, for the shell to tell a service from a process.
+//! `profile <pid> <class> <pages|->` sets one process's CPU class and page quota
+//! for a resource profile (P3 task 12), for the shell alone: PROC_CLASS_SET and
+//! PROC_QUOTA_SET need SUPERVISE, and the kernel's floors refuse a protected
+//! process. The answer is what the process had, for `undo`.
 
 #![no_std]
 #![no_main]
@@ -139,6 +143,8 @@ fn main() -> i32 {
         );
     }
     save(&services);
+    // The class each process was last set to by a profile; any other runs normal.
+    let mut classes: Vec<(u64, u64)> = Vec::new();
     loop {
         let now = now_ms();
         let mut started = false;
@@ -156,7 +162,7 @@ fn main() -> i32 {
         let timeout = next_start.map_or(1000, |at| at.saturating_sub(now_ms()).clamp(1, 1000));
         match sys::wait_event(timeout) {
             Ok(Event::Exit(exit)) => on_exit(&mut services, &exit),
-            Ok(Event::Request) => serve(&mut services),
+            Ok(Event::Request) => serve(&mut services, &mut classes),
             Ok(Event::Timeout) => {}
             Err(error) => {
                 println!("wait_child failed: {error:?}");
@@ -167,7 +173,7 @@ fn main() -> i32 {
 }
 
 /// Takes the waiting request and answers it: `ok`, or why not.
-fn serve(services: &mut [Service]) {
+fn serve(services: &mut [Service], classes: &mut Vec<(u64, u64)>) {
     let mut buf = [0u8; 128];
     let mut caller = 0;
     // The request is already queued, so this does not wait.
@@ -175,7 +181,10 @@ fn serve(services: &mut [Service]) {
         return;
     };
     let text = core::str::from_utf8(&buf[..len.min(buf.len())]).unwrap_or("");
-    let reply = handle(services, text, caller);
+    let reply = match supervise::profile::Set::parse(text) {
+        Some(set) => set_profile(services, classes, set, caller),
+        None => handle(services, text, caller),
+    };
     if let Err(error) = sys::svc_reply(reply.as_bytes()) {
         println!("cannot answer {text:?}: {error:?}");
     }
@@ -251,6 +260,50 @@ fn handle(services: &mut [Service], text: &str, caller: u64) -> String {
     }
     save(services);
     String::from("ok")
+}
+
+/// `profile <pid> <class> <pages|->`, from the shell only: the class, then the
+/// quota; what the process had before. A quota the kernel refuses puts the
+/// class back, so a refused request changes nothing.
+fn set_profile(
+    services: &[Service],
+    classes: &mut Vec<(u64, u64)>,
+    set: supervise::profile::Set,
+    caller: u64,
+) -> String {
+    let shell = services
+        .iter()
+        .find(|s| s.spec.name == "shell")
+        .and_then(|s| s.pid);
+    if shell != Some(caller) {
+        return String::from("err only the shell sets profiles");
+    }
+    let class_before = classes
+        .iter()
+        .find(|(pid, _)| *pid == set.pid)
+        .map_or(0, |(_, class)| *class);
+    if let Err(error) = sys::proc_class_set(set.pid, set.class) {
+        println!("profile: pid {} class {}: {error:?}", set.pid, set.class);
+        return format!("err {error:?}");
+    }
+    let pages_before = match set.pages {
+        None => None,
+        Some(pages) => match sys::proc_quota_set(set.pid, pages) {
+            Ok(old) => Some(old),
+            Err(error) => {
+                let _ = sys::proc_class_set(set.pid, class_before);
+                println!("profile: pid {} quota {pages}: {error:?}", set.pid);
+                return format!("err {error:?}");
+            }
+        },
+    };
+    classes.retain(|(pid, _)| *pid != set.pid);
+    classes.push((set.pid, set.class));
+    supervise::profile::encode_before(supervise::profile::Set {
+        pid: set.pid,
+        class: class_before,
+        pages: pages_before,
+    })
 }
 
 /// A `ONCE` or a rule, checked through the kernel; any other proof needs no call.

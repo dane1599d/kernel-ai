@@ -104,7 +104,23 @@ impl Shell {
             .take(metrics.process_count as usize)
             .map(|p| String::from(p.name()))
             .collect();
-        let running: Vec<&str> = running.iter().map(String::as_str).collect();
+        // A profile sets apps: a running service the supervisor keeps is the
+        // system's, and is left alone.
+        let services: Vec<String> = self
+            .host
+            .services()
+            .map(|list| {
+                list.into_iter()
+                    .filter(|s| !s.stopped)
+                    .map(|s| s.name)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let running: Vec<&str> = running
+            .iter()
+            .map(String::as_str)
+            .filter(|name| !services.iter().any(|s| s == name))
+            .collect();
         let focused = self.host.focused_app();
         let settings = profile.resolve(&running, focused.as_deref());
         let before = self.host.profile_apply(&settings)?;
