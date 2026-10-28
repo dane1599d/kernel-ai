@@ -2,7 +2,8 @@
 //! host. `notes` (version 2, `kai:live`) holds a note; `ctl suspend` saves it
 //! and drops the instance, whose linear memory is a MEM_RESERVE reservation of
 //! its own, released with it: the kernel's free frames rise by at least the
-//! guest's committed memory (a Rust guest starts with 1 MiB and more). `ctl
+//! guest's starting memory (2 pages, 128 KiB: components build with a 64 KiB
+//! stack, .cargo/config.toml) and whatever it grew. `ctl
 //! resume` brings it back from the saved state, committing again, and the
 //! note is still there. comphost's own heap figures ride in each reply too.
 
@@ -11,8 +12,9 @@ use alloc::string::String;
 
 const NAME: &str = "notes";
 const CALL_MS: u64 = 60_000;
-/// Least the suspend must give back to the kernel: 1 MiB of 4 KiB frames.
-const MIN_FREED_FRAMES: u64 = 256;
+/// Least the suspend must give back to the kernel: the guest's 128 KiB of
+/// starting memory, in 4 KiB frames.
+const MIN_FREED_FRAMES: u64 = 32;
 
 fn call(request: &str) -> Result<String, &'static str> {
     ipc::call(NAME, request.as_bytes(), CALL_MS)
