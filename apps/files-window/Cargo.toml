@@ -22,3 +22,8 @@ uikit = { path = "../../uikit" }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 wit-bindgen = { version = "=0.63.0", default-features = false, features = ["macros", "realloc"] }
+
+[dev-dependencies]
+appabi = { path = "../../appabi" }
+livecore = { path = "../../livecore" }
+wasmhost = { path = "../../wasmhost" }
