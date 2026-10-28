@@ -27,6 +27,11 @@ pub const MAX_LIST: u32 = 24;
 /// The most rows in one [`Reply::Changes`], [`Reply::History`] or
 /// [`Reply::Restored`]; a longer answer ends with `more`.
 pub const MAX_ROWS: u32 = 64;
+/// The most path text in one [`Reply::Trash`]: items stop before it is passed,
+/// and a single path longer than this is shown by its last this-many bytes.
+pub const MAX_TRASH_TEXT: usize = 6 * 1024;
+/// The most items in one [`Reply::Trash`].
+pub const MAX_TRASH_ITEMS: usize = 32;
 
 /// How [`Request::Open`] treats the last name of its path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Encode, Decode)]
@@ -154,6 +159,27 @@ pub enum Request {
     /// in another caller's [`Error::Busy`]. Begin's lock keeps it true.
     #[n(16)]
     Generation,
+    /// On a `Dir`: what its volume's trash holds from beneath this `Dir`, oldest
+    /// first, after item `after` ([`TrashItem::id`]). Needs ENUMERATE.
+    #[n(17)]
+    TrashList {
+        #[n(0)]
+        after: Option<u64>,
+    },
+    /// On a `Dir`: moves the newest trashed item that was at `path` (beneath
+    /// this `Dir`, as [`TrashItem::path`]) back there. [`Error::Exists`] if the
+    /// name was taken since; [`Error::NotFound`] if its folder is gone. Needs
+    /// CREATE.
+    #[n(18)]
+    TrashRestore {
+        #[n(0)]
+        path: String,
+    },
+    /// On a `Dir`: removes for good everything its volume's trash holds from
+    /// beneath this `Dir`; [`Reply::Emptied`] says how many. No undo brings it
+    /// back. Needs DELETE.
+    #[n(19)]
+    EmptyTrash,
 }
 
 /// Where a listing goes on: the last name it gave, with its hash.
@@ -225,6 +251,25 @@ pub enum Outcome {
     Removed,
     #[n(4)]
     Left,
+}
+
+/// One thing in the trash, as [`Request::TrashList`] tells it.
+#[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+pub struct TrashItem {
+    /// Which item: its cursor for the next [`Request::TrashList`].
+    #[n(0)]
+    pub id: u64,
+    /// Where it was, beneath the `Dir` asked.
+    #[n(1)]
+    pub path: String,
+    #[n(2)]
+    pub kind: Kind,
+    /// When it was trashed, nanoseconds since 1970.
+    #[n(3)]
+    pub deleted: u64,
+    /// The action that trashed it; 0 if none.
+    #[n(4)]
+    pub action: u64,
 }
 
 /// One earlier version of an object.
@@ -338,6 +383,20 @@ pub enum Reply {
     Generation {
         #[n(0)]
         generation: u64,
+    },
+    /// Trashed items, and whether more follow the last.
+    #[n(12)]
+    Trash {
+        #[n(0)]
+        items: Vec<TrashItem>,
+        #[n(1)]
+        more: bool,
+    },
+    /// [`Request::EmptyTrash`]'s answer: how many items went for good.
+    #[n(13)]
+    Emptied {
+        #[n(0)]
+        count: u64,
     },
 }
 

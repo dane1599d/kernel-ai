@@ -86,6 +86,9 @@ pub enum SelfTest {
     /// P2 task 8, `fs-restart`: `fs` killed mid-action leaves nothing half done,
     /// and a `File` handle works again.
     FilesRestart,
+    /// `fs-dead-client`: a client killed between Begin and Commit leaves
+    /// nothing, and the next Begin goes through.
+    FilesDeadClient,
     /// P2 task 9, `fs-actions`: 200 file actions behind blklogwrites, replayed
     /// on the host.
     FilesActions,
@@ -236,6 +239,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
                 reread: cmdline.split_whitespace().any(|w| w == "reread"),
             }),
             "test=files-restart" => Some(SelfTest::FilesRestart),
+            "test=files-dead-client" => Some(SelfTest::FilesDeadClient),
             "test=files-actions" => Some(SelfTest::FilesActions),
             "test=files-churn" => Some(SelfTest::FilesChurn {
                 boot: cmdline
@@ -354,6 +358,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             crate::files_tests::plan(if reread { "read" } else { "write" })
         }
         SelfTest::FilesRestart => crate::files_tests::plan("restart"),
+        SelfTest::FilesDeadClient => crate::files_tests::plan("hold"),
         SelfTest::FilesActions => crate::files_tests::plan("actions"),
         SelfTest::FilesChurn { boot, .. } => {
             crate::files_tests::plan(&alloc::format!("churn boot={boot}"))
@@ -387,6 +392,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::Part
             | SelfTest::Files { .. }
             | SelfTest::FilesRestart
+            | SelfTest::FilesDeadClient
             | SelfTest::FilesActions
             | SelfTest::FilesChurn { .. }
     ) {

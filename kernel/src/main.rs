@@ -334,6 +334,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Part => run_case(part_tests::check),
         SelfTest::Files { .. } => run_case(|| files_tests::check(cmdline())),
         SelfTest::FilesRestart => run_case(files_tests::restart),
+        SelfTest::FilesDeadClient => run_case(files_tests::dead_client),
         SelfTest::FilesActions => run_case(files_tests::actions),
         SelfTest::FilesChurn { boot, last } => run_case(|| files_tests::churn(boot, last)),
         SelfTest::Model => run_case(|| model_tests::check(cmdline())),
