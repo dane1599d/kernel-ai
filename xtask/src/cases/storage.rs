@@ -164,6 +164,11 @@ pub(super) const CASES: &[TestCase] = &[
         data: Some(VIRTIO),
         ..case("fs-undo", "test=fs-undo")
     },
+    TestCase {
+        expect: &["fs-trash: trash and restore ran with undo, and emptying the trash asked first"],
+        data: Some(VIRTIO),
+        ..case("fs-trash", "test=fs-trash")
+    },
     // P2 task 12: the change and its log line in one commit, undone after a reboot.
     TestCase {
         expect: &["fs-undo-reboot: boot 1 created notes.txt, its log line in the same commit"],
