@@ -24,7 +24,7 @@
 //! | 160-169 | M, memory | MEM_RESERVE, MEM_COMMIT, MEM_RELEASE |
 //! | 170-179 | U, updates (P4) | SLOT_INFO, SLOT_READ, SLOT_WRITE, SLOT_FLUSH, BOOTREC_GET, BOOTREC_SET, TRUST_ROOT, TRUST_TIME |
 //! | 180-189 | G-core (P3), second block | ASK_READ, ASK_ANSWER, EVENT_POST, EVENT_READ, APP_CTL |
-//! | 190-191 | not given yet | a lane asks lane K for a block |
+//! | 190-191 | S-io (P2), second block | PART_PEER_ALIVE |
 
 /// `exit(code: i32) -> !`
 pub const EXIT: u64 = 0;
@@ -497,6 +497,14 @@ pub const EVENT_READ: u64 = 183;
 /// RULE_CHECK (P3 task 11): needs [`super::cap::SUPERVISE`]. NotFound with no
 /// such service; TimedOut when it does not answer.
 pub const APP_CTL: u64 = 184;
+
+// ---- S-io, second block, 190-191 ----
+
+/// `part_peer_alive(partition, pid) -> 0`: whether process `pid` still runs,
+/// for `fs`, so that an action whose owner died is aborted rather than holding
+/// every later change at Busy. Needs a `Partition` handle (any rights), so only
+/// `fs` can ask. NotFound once `pid` has exited; pid 0, the kernel, always runs.
+pub const PART_PEER_ALIVE: u64 = 190;
 
 /// The end of the reserved blocks (see the table above): the highest number a
 /// call may have. A call that is not there yet answers NotFound.
