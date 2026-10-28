@@ -325,15 +325,12 @@ impl wasmi::ResourceLimiter for HostState {
     ) -> Result<bool, wasmi_core::LimiterError> {
         let allowed = self.limits.memory_growing(current, desired, maximum)?;
         // Commit before wasmi writes the new pages.
-        let committed = match self.memory.as_mut() {
+        // The system out of memory fails the guest's `memory.grow` (-1); the
+        // guest decides what that means.
+        Ok(match self.memory.as_mut() {
             Some(region) if allowed => region.grow(desired),
-            _ => true,
-        };
-        if committed {
-            Ok(allowed)
-        } else {
-            Err(wasmi_core::LimiterError::ResourceLimiterDeniedAllocation)
-        }
+            _ => allowed,
+        })
     }
 
     fn memory_grow_failed(
