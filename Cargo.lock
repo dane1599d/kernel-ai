@@ -232,6 +232,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "comp-ui-bind"
+version = "0.1.0-dev"
+dependencies = [
+ "compsdk",
+ "uikit",
+ "wit-bindgen",
+]
+
+[[package]]
 name = "comp-viewbench"
 version = "0.1.0-dev"
 
