@@ -1,7 +1,9 @@
-//! Packages (lane P): BOOT_READ, the image's signed repository for `pkg`, and
-//! COMP_ADD, a component version from an installed package (P4 task 1,
-//! ADR 0011 §8, §12).
+//! Packages (lane P): BOOT_READ, the image's signed repository for `pkg`;
+//! COMP_ADD, a component version from an installed package (P4 task 1); and
+//! PKG_FETCH, a range of a file from the `pkgrepo=` mirror (P4 task 2). ADR
+//! 0011 §8, §12.
 
+use super::net::{Destination, exchange_to};
 use crate::log;
 use crate::process::uaccess::{copy_from_user, copy_to_user, read_struct};
 use alloc::vec::Vec;
@@ -11,14 +13,23 @@ use livecore::store::PackageArtifact;
 use supervise::{Folder, MAX_BOOT_PATH};
 
 /// The calls this area serves.
-const CALLS: &[u64] = &[call::BOOT_READ, call::COMP_ADD];
+const CALLS: &[u64] = &[call::BOOT_READ, call::COMP_ADD, call::PKG_FETCH];
 
 /// One of [`CALLS`], or `None` for a number this area does not have.
 pub(super) fn handle(slot: usize, number: u64, a: &[u64; 6]) -> Option<Result<u64, Error>> {
     CALLS.contains(&number).then(|| match number {
         call::BOOT_READ => boot_read(slot, a[0], a[1], a[2], a[3]),
-        _ => comp_add(slot, a[0]),
+        call::COMP_ADD => comp_add(slot, a[0]),
+        _ => pkg_fetch(slot, a[0]),
     })
+}
+
+/// `pkg_fetch(&HttpRequest) -> len`: only for the holder of `/system/pkg`, and
+/// only to the fixed `pkgrepo=` mirror, with the one request shape
+/// `kabi::pkgrepo::check` takes (in `exchange_to`).
+fn pkg_fetch(slot: usize, request_ptr: u64) -> Result<u64, Error> {
+    holds_the_store(slot)?;
+    exchange_to(slot, request_ptr, Destination::Pkgrepo)
 }
 
 /// `boot_read(path_ptr, path_len, buf, cap) -> len`: only beneath the folder the

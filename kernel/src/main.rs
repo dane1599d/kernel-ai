@@ -86,6 +86,7 @@ mod nvme;
 mod part_tests;
 mod percpu;
 mod pkg_tests;
+mod pkgrepo;
 mod platform;
 mod pointer;
 mod port;
@@ -267,6 +268,7 @@ extern "C" fn boot_continue() -> ! {
         net::setup::configure(cmdline.cmdline());
         llm::configure(cmdline.cmdline());
         build_service::configure(cmdline.cmdline());
+        pkgrepo::configure(cmdline.cmdline());
         boot_manifest::configure(cmdline.cmdline());
         pointer::configure(cmdline.cmdline());
         console::configure(cmdline.cmdline());

@@ -358,7 +358,7 @@ fn each_role_expires_after_adr_0008s_period() {
 }
 
 /// `repo` with `path`'s bytes changed by `edit`.
-fn tampered(repo: &Repository, path: &str, edit: impl Fn(&mut Vec<u8>)) -> Repository {
+pub(super) fn tampered(repo: &Repository, path: &str, edit: impl Fn(&mut Vec<u8>)) -> Repository {
     let files = repo
         .files
         .iter()
@@ -483,7 +483,7 @@ impl kaipkg::image::Files for Repository {
 }
 
 /// A `data` package beside notes, so that refusing one leaves the other.
-fn hello() -> Package {
+pub(super) fn hello() -> Package {
     let header_text =
         "kai-package 1\nname hello\nversion 1.0.0\nkind data\nsummary A greeting\nlicence MIT\n";
     let bytes = bundle::build(&[

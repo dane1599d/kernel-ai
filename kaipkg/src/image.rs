@@ -15,9 +15,9 @@
 //! its own header against its `custom.kai` index entry (cargo's rule). One that
 //! fails is refused by name and left out; the rest are kept.
 
-use crate::Sha;
 use crate::bundle::{self, HEADER};
 use crate::header::Header;
+use crate::index::Index;
 use crate::resolve::{self, Entry, Want};
 use crate::version::Version;
 use alloc::collections::BTreeMap;
@@ -26,7 +26,6 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use kaituf::meta::TargetFile;
 use kaituf::updater::{self, Cache, Remote, Updater};
-use serde_json::{Map, Value};
 
 /// The role that lists every package (ADR 0011 §3), delegated by `targets`.
 pub const ROLE: &str = "packages";
@@ -34,13 +33,6 @@ pub const METADATA: &str = "metadata";
 pub const TARGETS: &str = "targets";
 /// The root the image carries.
 pub const ROOT: &str = "metadata/1.root.json";
-
-/// `custom.kai`'s fields, in the packer's order: every one is required but
-/// `world`, which only an `app` has, and no other is allowed.
-const FIELDS: [&str; 10] = [
-    "name", "version", "kind", "summary", "licence", "depends", "grants", "actions", "yanked",
-    "world",
-];
 
 /// The repository's files.
 pub trait Files {
@@ -162,10 +154,11 @@ fn package(files: &mut dyn Files, target: &TargetFile) -> Result<(Entry, Vec<u8>
     Ok((entry(target, &bytes)?, bytes))
 }
 
-/// `target`'s index entry, from its `custom.kai` fields, each of which must be
-/// what the package's own header says; `bytes` are the package, already checked
-/// against `target`.
+/// `target`'s index entry, each of whose `custom.kai` fields must be what the
+/// package's own header says ([`Index::matches`]); `bytes` are the package,
+/// already checked against `target`.
 pub fn entry(target: &TargetFile, bytes: &[u8]) -> Result<Entry, String> {
+    let index = Index::parse(target)?;
     let files = bundle::files(bytes)?;
     let text = files
         .first()
@@ -173,92 +166,15 @@ pub fn entry(target: &TargetFile, bytes: &[u8]) -> Result<Entry, String> {
         .map(|(_, text)| *text)
         .ok_or("its first file is not kai-package")?;
     let text = core::str::from_utf8(text).map_err(|_| "its header is not text")?;
-    let header = Header::parse(text)?;
-    let kai = target
-        .custom
-        .get("kai")
-        .and_then(Value::as_object)
-        .ok_or("it has no custom.kai")?;
-    if let Some(key) = kai.keys().find(|key| !FIELDS.contains(&key.as_str())) {
-        return Err(format!("custom.kai has an unknown field {key}"));
-    }
-    let depends: Vec<&str> = text
-        .lines()
-        .filter_map(|line| line.strip_prefix("depends "))
-        .collect();
-    let version = header.version.to_string();
-    let same = [
-        ("name", Some(header.name.as_str())),
-        ("version", Some(version.as_str())),
-        ("kind", Some(header.kind.name())),
-        ("summary", Some(header.summary.as_str())),
-        ("licence", Some(header.licence.as_str())),
-        ("world", header.world.as_deref()),
-    ];
-    for (key, own) in same {
-        let indexed = match kai.get(key) {
-            None => None,
-            Some(value) => Some(value.as_str().ok_or_else(|| not_a(key, "string"))?),
-        };
-        if indexed != own {
-            return Err(format!("its header's {key} is not its index entry's"));
-        }
-    }
-    if strings(kai, "depends")? != depends {
-        return Err("its header's depends are not its index entry's".into());
-    }
-    let grants = strings(kai, "grants")?
-        .into_iter()
-        .map(String::from)
-        .collect();
-    strings(kai, "actions")?;
-    let yanked = kai
-        .get("yanked")
-        .and_then(Value::as_bool)
-        .ok_or_else(|| not_a("yanked", "boolean"))?;
-    let path = format!("{}-{version}.kpkg", header.name);
-    if target.path != path {
-        return Err(format!("it is named {}, not {path}", target.path));
-    }
-    Ok(Entry {
-        name: header.name,
-        version: header.version,
-        sha: sha256(target)?,
-        size: target.length,
-        depends: header.depends,
-        grants,
-        yanked,
-    })
-}
-
-fn not_a(key: &str, what: &str) -> String {
-    format!("custom.kai.{key} is not a {what}")
-}
-
-fn strings<'a>(kai: &'a Map<String, Value>, key: &str) -> Result<Vec<&'a str>, String> {
-    let list = kai
-        .get(key)
-        .and_then(Value::as_array)
-        .ok_or_else(|| not_a(key, "list"))?;
-    list.iter()
-        .map(|item| item.as_str().ok_or_else(|| not_a(key, "list of strings")))
-        .collect()
-}
-
-/// The SHA-256 `target` names, which every index entry has.
-fn sha256(target: &TargetFile) -> Result<Sha, String> {
-    target
-        .hashes
-        .iter()
-        .find(|(algorithm, _)| algorithm == "sha256")
-        .and_then(|(_, digest)| Sha::try_from(digest.as_slice()).ok())
-        .ok_or_else(|| format!("{} names no SHA-256", target.path))
+    index.matches(&Header::parse(text)?, text)?;
+    index.check_path(target)?;
+    index.entry()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     const HEADER_TEXT: &str = "kai-package 1\nname hello\nversion 1.0.0\nkind data\nsummary A greeting\nlicence MIT\ndepends spell-en ^1.2\n";
 

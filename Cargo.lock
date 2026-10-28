@@ -819,6 +819,7 @@ dependencies = [
  "kabi",
  "kaifs",
  "kaituf",
+ "llmproto",
  "serde_json",
  "sha2",
 ]
