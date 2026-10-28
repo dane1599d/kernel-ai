@@ -37,6 +37,9 @@ exceptions = [
     # The desktop's fonts, Inter and JetBrains Mono in assets/fonts, which gfx2d
     # draws with (ADR 0005 question 2, decided 2026-10-22).
     { crate = "gfx2d", allow = ["OFL-1.1"] },
+    # Mozilla's root certificates for the TLS client (P5 question 2, approved
+    # 2026-10-27 for this one data crate). Spike P5-S1, not for merge.
+    { crate = "webpki-roots", allow = ["CDLA-Permissive-2.0"] },
 ]
 
 [licenses.private]
@@ -51,5 +54,6 @@ license-files = [{ path = "LICENSE", hash = 0xe4fab402 }]
 
 [advisories]
 ignore = [
+    { id = "RUSTSEC-2023-0071", reason = "Spike P5-S1, not for merge: rsa 0.9.10 only verifies certificate and CertificateVerify signatures; the Marvin attack needs private-key operations, which the TLS client never does. P5 task 4 decides." },
     { id = "RUSTSEC-2026-0249", reason = "smartstring is unmaintained but required by Rhai; ADR 0012 owns the Rhai upgrade. Review by 2027-01-31." },
 ]

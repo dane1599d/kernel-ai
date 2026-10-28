@@ -45,6 +45,20 @@ talc = "5.1.1"
 wasmhost = { path = "../wasmhost" }
 uikit = { path = "../uikit" }
 uipaint = { path = "../uipaint" }
+# Spike P5-S1 (not for merge): built only for the hard-float programs.
+spike-tls = { path = "../spikes/tls-nostd", optional = true }
+rustls = { version = "=0.23.46", default-features = false, optional = true }
+
+[features]
+tls-spike = ["dep:spike-tls", "dep:rustls"]
+
+[[bin]]
+name = "tlsbench"
+required-features = ["tls-spike"]
+
+[[bin]]
+name = "tlssize"
+required-features = ["tls-spike"]
 
 # tufbench's fixture, signed on the host at build time (build.rs).
 [build-dependencies]

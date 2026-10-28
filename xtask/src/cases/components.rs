@@ -38,6 +38,13 @@ pub(super) const CASES: &[TestCase] = &[
         server: false,
         ..case("appbench", "test=appbench")
     },
+    // Spike P5-S1 (not for merge): TLS 1.3 on rustls without std, handshakes
+    // and records in hard-float ring 3, reported in the log.
+    TestCase {
+        expect: &["tls-bench: done"],
+        server: false,
+        ..case("tls-bench", "test=tls-bench")
+    },
     // The live scenario with the model on the disk and no server: `:why` is
     // answered by the local model.
     TestCase {

@@ -41,6 +41,9 @@ const USER_FLOAT_PROGRAMS: &[&str] = &[
     "comphost",
     "appbench",
     "term",
+    "tlsbench",
+    "tlssize",
+    "tlsnone",
 ];
 /// The view guest `appbench` embeds, built first.
 const APPBENCH_GUEST: &str = "comp-viewbench";
@@ -114,6 +117,11 @@ fn build_programs(
         .args(["-p", "user", "--target", target]);
     for name in names {
         command.args(["--bin", name]);
+    }
+    // Spike P5-S1 (not for merge): the TLS programs link spike-tls, which only
+    // builds hard-float (its AVX2 paths cannot compile soft-float).
+    if dir == USER_FLOAT_DIR {
+        command.args(["--features", "tls-spike"]);
     }
     if options.release {
         command.arg("--release");

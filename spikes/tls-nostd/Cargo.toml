@@ -1,0 +1,40 @@
+[package]
+name = "spike-tls"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "P5-S1 tls-nostd: rustls 0.23 without std on a RustCrypto provider (spike, not for merge)"
+
+# The provider and the in-memory bench are no_std + alloc, built for
+# x86_64-unknown-none and the hard-float ring-3 target. `std` adds the host
+# entropy and clock for the host tests and `tlsprobe`, the one job that reaches
+# the four real hosts from a GitHub runner.
+[features]
+default = []
+std = ["rustls/std", "dep:getrandom"]
+
+[[bin]]
+name = "tlsprobe"
+required-features = ["std"]
+
+[[bin]]
+name = "tlshost"
+required-features = ["std"]
+
+[dependencies]
+rustls = { version = "=0.23.46", default-features = false }
+webpki-roots = "=1.0.11"
+sha2 = { version = "0.11.1", default-features = false }
+hmac = "0.13.0"
+ecdsa = { version = "0.17.0", default-features = false, features = ["der"] }
+aes-gcm = { version = "0.11.1", default-features = false, features = ["aes", "alloc"] }
+chacha20poly1305 = { version = "0.11.0", default-features = false, features = ["alloc"] }
+x25519-dalek = { version = "3.0.0", default-features = false, features = ["static_secrets", "zeroize"] }
+p256 = { version = "0.14.0", default-features = false, features = ["alloc", "ecdh", "ecdsa"] }
+p384 = { version = "0.14.0", default-features = false, features = ["alloc", "ecdh", "ecdsa"] }
+ed25519-dalek = { version = "3.0.0", default-features = false }
+rsa = { version = "0.9.10", default-features = false, features = ["u64_digit"] }
+sha2-10 = { package = "sha2", version = "0.10.9", default-features = false, features = ["oid"] }
+zeroize = { version = "1.9.1", default-features = false }
+getrandom = { version = "0.2.17", optional = true }
