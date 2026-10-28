@@ -15,7 +15,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 use pc_keyboard::layouts::Us104Key;
-use pc_keyboard::{DecodedKey, HandleControl, KeyCode, PS2Keyboard, ScancodeSet1};
+use pc_keyboard::{DecodedKey, HandleControl, KeyCode, KeyState, PS2Keyboard, ScancodeSet1};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Key {
@@ -143,8 +143,32 @@ fn named(name: &str) -> Option<Key> {
     NAMED.into_iter().find(|key| key.name() == Some(name))
 }
 
-/// Turns keyboard bytes into keys, keeping Shift, Ctrl and NumLock state.
-pub struct Decoder(PS2Keyboard<Us104Key, ScancodeSet1>);
+/// Keys [`Decoder`] tracks as held at once; more are still decoded, just not
+/// tracked (a repeat of an untracked key reads as a fresh press).
+const HELD: usize = 8;
+
+/// A physical key, as [`Stroke`] names it: what [`Decoder::held`] lists.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Code(KeyCode);
+
+/// One key going down or up, from [`Decoder::stroke`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Stroke {
+    pub code: Code,
+    /// The key it types, for a press; `None` for a release, a modifier or a key
+    /// with no meaning here.
+    pub key: Option<Key>,
+    pub down: bool,
+    /// A press of a key already held: the keyboard's auto-repeat.
+    pub repeat: bool,
+}
+
+/// Turns keyboard bytes into keys, keeping Shift, Ctrl and NumLock state, and
+/// which keys are held.
+pub struct Decoder {
+    keyboard: PS2Keyboard<Us104Key, ScancodeSet1>,
+    held: [Option<KeyCode>; HELD],
+}
 
 impl Default for Decoder {
     fn default() -> Self {
@@ -154,28 +178,64 @@ impl Default for Decoder {
 
 impl Decoder {
     pub const fn new() -> Self {
-        Self(PS2Keyboard::new(
-            ScancodeSet1::new(),
-            Us104Key,
-            HandleControl::MapLettersToUnicode,
-        ))
+        Self {
+            keyboard: PS2Keyboard::new(
+                ScancodeSet1::new(),
+                Us104Key,
+                HandleControl::MapLettersToUnicode,
+            ),
+            held: [None; HELD],
+        }
     }
 
     /// Takes one byte from the keyboard. None for break codes, prefixes, modifier
     /// keys, keys with no meaning here, and bytes that do not decode.
     pub fn feed(&mut self, byte: u8) -> Option<Key> {
-        let event = self.0.add_byte(byte).ok()??;
+        self.stroke(byte).and_then(|stroke| stroke.key)
+    }
+
+    /// Takes one byte from the keyboard: the stroke it ends, if any. None for
+    /// prefixes and bytes that do not decode.
+    pub fn stroke(&mut self, byte: u8) -> Option<Stroke> {
+        let event = self.keyboard.add_byte(byte).ok()??;
         let code = event.code;
-        // Every event goes through, so the modifiers stay right.
-        match self.0.process_keyevent(event)? {
-            DecodedKey::Unicode(ch) => self.char_key(ch, code),
-            DecodedKey::RawKey(code) => code_key(code),
+        let down = event.state != KeyState::Up;
+        let was_held = self.held.contains(&Some(code));
+        match (down, was_held) {
+            (true, false) => {
+                if let Some(free) = self.held.iter_mut().find(|h| h.is_none()) {
+                    *free = Some(code);
+                }
+            }
+            (false, _) => {
+                for held in self.held.iter_mut().filter(|h| **h == Some(code)) {
+                    *held = None;
+                }
+            }
+            (true, true) => {}
         }
+        // Every event goes through, so the modifiers stay right.
+        let key = match self.keyboard.process_keyevent(event) {
+            Some(DecodedKey::Unicode(ch)) => self.char_key(ch, code),
+            Some(DecodedKey::RawKey(code)) => code_key(code),
+            None => None,
+        };
+        Some(Stroke {
+            code: Code(code),
+            key: key.filter(|_| down),
+            down,
+            repeat: down && was_held,
+        })
+    }
+
+    /// The keys held now, as far as it tracks them.
+    pub fn held(&self) -> impl Iterator<Item = Code> + '_ {
+        self.held.iter().flatten().map(|&code| Code(code))
     }
 
     /// Whether either Ctrl is held.
     pub fn ctrl(&self) -> bool {
-        self.0.get_modifiers().is_ctrl()
+        self.keyboard.get_modifiers().is_ctrl()
     }
 
     fn char_key(&self, ch: char, code: KeyCode) -> Option<Key> {
@@ -248,6 +308,31 @@ mod tests {
                 "E0 {code:02X}"
             );
         }
+    }
+
+    #[test]
+    fn strokes_say_what_is_held_and_what_repeats() {
+        let mut decoder = Decoder::new();
+        let strokes: Vec<Stroke> = [0x15, 0x15, 0x2A, 0x95, 0xAA]
+            .iter()
+            .filter_map(|&byte| decoder.stroke(byte))
+            .collect();
+        let shown: Vec<(Option<Key>, bool, bool)> =
+            strokes.iter().map(|s| (s.key, s.down, s.repeat)).collect();
+        assert_eq!(
+            shown,
+            [
+                (Some(Char('y')), true, false),
+                (Some(Char('y')), true, true),
+                (None, true, false),
+                (None, false, false),
+                (None, false, false),
+            ]
+        );
+        assert_eq!(decoder.held().count(), 0);
+        let enter = decoder.stroke(0x1C).unwrap();
+        assert_eq!(decoder.held().collect::<Vec<_>>(), [enter.code]);
+        assert_ne!(enter.code, strokes[0].code);
     }
 
     #[test]

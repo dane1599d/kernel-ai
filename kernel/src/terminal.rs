@@ -9,8 +9,12 @@
 //! the same way before an upload runs. A call that asks shows the Allow / Deny
 //! menu (`termcore::menu`), drawn here and nowhere else: the shell replies
 //! `menu ...`, keys pick a choice, and the terminal answers `answer <id> <word>`.
+//! Every question is answered on the console: while one waits and `desktop`
+//! holds the screen, the console takes it (`display::claim::take_for_answer`)
+//! and gives it back after, so no key typed in a window answers (ADR 0005 §7).
 
 use crate::console::{self, FORM_FEED, Screen};
+use crate::display::claim;
 use crate::keyboard::Decoder;
 use crate::{edit_mode, hpet, ipc, llm, log, memory, net, serial, smp, threads};
 use alloc::format;
@@ -18,7 +22,7 @@ use alloc::string::String;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use llmproto::text::{printable, wrap};
 use termcore::line::{Line, Outcome};
-use termcore::menu::{self, Answer, Menu, Step};
+use termcore::menu::{self, Answer, Gate, Menu, Step};
 
 const PROMPT: &str = "kai> ";
 const MAX_LINE: usize = 200;
@@ -153,14 +157,20 @@ pub fn run(_: usize) {
             Some(Waiting::More) => CONTINUE_PROMPT.into(),
             Some(Waiting::Menu(_)) | None => edit_mode::prompt().unwrap_or_else(|| PROMPT.into()),
         };
-        console::show_input(&prompt, "", 0);
-        if matches!(waiting, Some(Waiting::Confirm(_) | Waiting::Apply(_))) {
-            // Only keys typed once the question is on screen may answer it.
-            decoder.discard_pending();
+        let asks = matches!(waiting, Some(Waiting::Confirm(_) | Waiting::Apply(_)));
+        // The question is answered on the console, and only by keys typed once
+        // it is on screen: the flag first, then the screen, then the drop.
+        if asks {
             AWAITING_ANSWER.store(true, Ordering::Release);
+        }
+        let took = asks && claim::take_for_answer();
+        console::show_input(&prompt, "", 0);
+        if asks {
+            decoder.discard_pending();
         }
         let line = read_line(&mut decoder, &prompt);
         AWAITING_ANSWER.store(false, Ordering::Release);
+        claim::give_back(took);
         // Ctrl-C: prompt again, with a pending question still asked; an open entry
         // is dropped.
         let Some(line) = line else {
@@ -197,28 +207,10 @@ pub fn run(_: usize) {
     }
 }
 
-/// Shows `menu` and reads keys until one picks a choice, then sends the answer.
-/// Keys typed before the menu showed are dropped; Ctrl-C and Esc are Deny.
+/// Shows `menu` on the console, reads its answer, then sends it to the shell
+/// with what an Allow minted.
 fn choose(decoder: &mut Decoder, mut menu: Menu) -> Option<Waiting> {
-    for row in menu.rows() {
-        log!("{row}");
-    }
-    let (prompt, text) = menu.input();
-    console::show_input(prompt, &text, text.chars().count());
-    decoder.discard_pending();
-    menu.arm();
-    AWAITING_ANSWER.store(true, Ordering::Release);
-    let answer = loop {
-        match menu.apply(decoder.read_key()) {
-            Step::Ignored => {}
-            Step::Moved => {
-                let (prompt, text) = menu.input();
-                console::show_input(prompt, &text, text.chars().count());
-            }
-            Step::Chosen(answer) => break answer,
-        }
-    };
-    AWAITING_ANSWER.store(false, Ordering::Release);
+    let answer = answer_on_console(decoder, &mut menu);
     let (prompt, _) = menu.input();
     finish_line(prompt, answer.word(), "");
     // Allow mints the call's ONCE (and an "Always allow" its rule node); the
@@ -236,6 +228,41 @@ fn choose(decoder: &mut Decoder, mut menu: Menu) -> Option<Waiting> {
             shell_line(&menu::answer_line(menu.id, Answer::Deny))
         }
     }
+}
+
+/// Shows `menu` on the console and reads keys until one picks a choice. The
+/// console takes the screen from `desktop` first, and gives it back after. Keys
+/// typed before the menu showed are dropped, and the menu's gate takes none for
+/// its settle, none while a key held then is down, and no auto-repeat; Ctrl-C
+/// and Esc are Deny.
+pub(crate) fn answer_on_console(decoder: &mut Decoder, menu: &mut Menu) -> Answer {
+    AWAITING_ANSWER.store(true, Ordering::Release);
+    let took = claim::take_for_answer();
+    for row in menu.rows() {
+        log!("{row}");
+    }
+    let (prompt, text) = menu.input();
+    console::show_input(prompt, &text, text.chars().count());
+    decoder.discard_pending();
+    menu.arm(Gate::new(now_ms(), decoder.held()));
+    let answer = loop {
+        match menu.press(&decoder.read_stroke(), now_ms()) {
+            Step::Ignored => {}
+            Step::Moved => {
+                let (prompt, text) = menu.input();
+                console::show_input(prompt, &text, text.chars().count());
+            }
+            Step::Chosen(answer) => break answer,
+        }
+    };
+    AWAITING_ANSWER.store(false, Ordering::Release);
+    claim::give_back(took);
+    answer
+}
+
+/// HPET time in milliseconds, for the menu's gate.
+fn now_ms() -> u64 {
+    hpet::nanos() / 1_000_000
 }
 
 /// Reads a line into the input region after `prompt`, edited at the cursor. Typed

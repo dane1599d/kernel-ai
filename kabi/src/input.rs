@@ -124,6 +124,7 @@ pub mod usage {
     pub const RIGHT_SHIFT: u16 = 0xE5;
     pub const RIGHT_ALT: u16 = 0xE6;
     pub const RIGHT_GUI: u16 = 0xE7;
+    pub const TAB: u16 = 0x2B;
     pub const F12: u16 = 0x45;
 }
 
@@ -191,6 +192,17 @@ impl Set1 {
     /// Whether a Ctrl and an Alt key are both held.
     pub fn ctrl_alt(&self) -> bool {
         self.ctrl != 0 && self.alt != 0
+    }
+
+    /// Whether an Alt key is held.
+    pub fn alt(&self) -> bool {
+        self.alt != 0
+    }
+
+    /// Whether the last byte ended its sequence: no `E0` or `E1` is waiting
+    /// for the rest, so the bytes after it may go elsewhere.
+    pub fn at_boundary(&self) -> bool {
+        !self.extended && self.skip == 0
     }
 }
 

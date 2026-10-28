@@ -12,7 +12,7 @@
 //! | 64-65 | model lane (S10-3) | MODEL_KV_LOAD, MODEL_KV_SAVE (interim) |
 //! | 66-70 | S-io (P2) | PART_INFO, PART_READ, PART_WRITE, PART_FLUSH; ENDPOINT_MINT |
 //! | 71-72 | K | PROC_STOP_ONCE, RULE_CHECK |
-//! | 73-79 | G-core (P3) | DISPLAY_CLAIM, DISPLAY_FLUSH, DISPLAY_CURSOR, DISPLAY_CURSOR_MOVE, INPUT_READ; 2 spare |
+//! | 73-79 | G-core (P3) | DISPLAY_CLAIM, DISPLAY_FLUSH, DISPLAY_CURSOR, DISPLAY_CURSOR_MOVE, INPUT_READ, TERM_READ, INPUT_TO_CONSOLE |
 //! | 80-89 | K, spare | MODEL_FILL 80 and 81 held (S-io, P2 task 10); ONCE_CHECK_FOR 82; P2 task 12's grants |
 //! | 90-99 | S-engine (P2) | |
 //! | 100-109 | P, packages (P2) | |
@@ -371,6 +371,21 @@ pub const DISPLAY_CURSOR_MOVE: u64 = 76;
 /// holds the screen the queue gets nothing but a
 /// [`crate::input::Kind::Screen`] event when it changes hands.
 pub const INPUT_READ: u64 = 77;
+/// `term_read(buf, cap, since) -> len`: the kernel console's rows changed after
+/// sequence `since` (0 for all), with their kinds, the cursor and the rows
+/// scrolled, in `termcore::mirror`'s format, for the terminal window (P3 task
+/// 8). Read-only. Needs a `Term` handle, which the kernel gives only to the
+/// service `term` running the program `term`. TooBig, with nothing written,
+/// when `cap` is under what the rows take; `termcore::mirror::MAX_BYTES` always
+/// fits.
+pub const TERM_READ: u64 = 78;
+/// `input_to_console(on) -> 0`: with `on` 1, keys go to the kernel console's
+/// terminal instead of the input queue for about a second (a lease, renewed by
+/// calling again), while the caller keeps showing on the screen; 0 ends it. Alt
+/// and Alt+Tab still reach the queue. The kernel ends the lease itself on any
+/// pointer button, Alt+Tab, Ctrl+Alt+F12, a claim, the holder's exit, and an
+/// ask, which it answers on the console. Needs an `Input` handle and the claim.
+pub const INPUT_TO_CONSOLE: u64 = 79;
 
 // ---- S-engine, 90-99 ----
 

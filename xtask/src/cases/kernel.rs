@@ -113,6 +113,26 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("desk-restart", "test=desk-restart")
     },
+    // P3 task 8: an ask is answered only on the console, whatever the lease.
+    TestCase {
+        keys: &[
+            &["y", "ret"],
+            &["n"],
+            &["y", "ret"],
+            &["n"],
+            &["n"],
+            &["y", "ret"],
+        ],
+        expect: &[
+            "display: the console took the screen for an answer",
+            "desk-ask: an ask after keys leased to the console was answered only on the console",
+            "desk-ask: an ask after keys with desktop was answered only on the console",
+            "display: the answer came; the screen went back to its holder",
+            "desk-ask: with the console showing already, the ask kept the screen until its answer",
+            "desk-ask: the restarted desktop got the keys, with no lease left over",
+        ],
+        ..case("desk-ask", "test=desk-ask")
+    },
     // P3 task 11: an app suspended and resumed through its host.
     TestCase {
         expect: &[
