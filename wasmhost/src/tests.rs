@@ -570,6 +570,24 @@ fn outside_a_call_storage_reads_the_view_and_refuses_writes() {
     assert_eq!(reason(v.call(&forget, &[])), Reason::Host);
 }
 
+/// comphost holds a [`crate::LiveInstance`]: the view reaches the version
+/// inside it, as the host's load gives it.
+#[test]
+fn a_live_instance_passes_the_view_on() {
+    use appabi::Val;
+    use livecore::txn::Storage;
+    let core = load_core(&lifecycle2(STORAGE_PROBE), LIMITS, None).unwrap();
+    let mut live = crate::LiveInstance::V2(core);
+    let mut storage = Storage::new();
+    storage.insert(String::from("k"), b"y".to_vec());
+    livecore::Instance::view(&mut live, &storage);
+    let read = probe("probe#read", Some(appabi::Ty::U32));
+    assert_eq!(
+        livecore::Instance::call(&mut live, &read, &[]),
+        Ok(Some(Val::U32(256 + u32::from(b'y'))))
+    );
+}
+
 #[test]
 fn lifecycle_2_imports_link_only_by_name_type_and_version() {
     let storage = r#"(import "kai:app/storage@0.1.0" "delete" (func (param i32 i32)))"#;

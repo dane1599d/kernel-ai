@@ -1678,6 +1678,8 @@ dependencies = [
  "supervise",
  "surfabi",
  "talc",
+ "uikit",
+ "uipaint",
  "wasmhost",
 ]
 
@@ -1789,6 +1791,7 @@ name = "wasmhost"
 version = "0.1.0-dev"
 dependencies = [
  "appabi",
+ "deskcore",
  "kabi",
  "livecore",
  "surfabi",

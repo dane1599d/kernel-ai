@@ -19,6 +19,9 @@
 extern crate alloc;
 
 mod canonical;
+pub mod desk;
+#[cfg(test)]
+mod desk_tests;
 mod effects;
 mod instance;
 mod linear;
@@ -189,5 +192,9 @@ impl livecore::Instance for LiveInstance {
     }
     fn finish(&mut self) -> livecore::txn::Txn {
         either!(self, i => i.finish())
+    }
+
+    fn view(&mut self, storage: &livecore::txn::Storage) {
+        either!(self, i => i.view(storage))
     }
 }
