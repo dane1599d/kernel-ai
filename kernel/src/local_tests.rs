@@ -172,7 +172,9 @@ pub fn check_script(cmdline: &str) -> Result<(), &'static str> {
     let reply = ipc::call("shell", SCRIPT_REQUEST.as_bytes(), SCRIPT_WAIT_MS)
         .map_err(|_| "local-script: the shell did not answer the kernel")?;
     let text = core::str::from_utf8(&reply).unwrap_or("");
-    if fnv1a(text.as_bytes()) != golden {
+    // By its shape: the read the model picks may be of live counters, which
+    // the host's stand-in cannot know.
+    if fnv1a(kabi::model::shape(text).as_bytes()) != golden {
         log!("local-script: the shell answered the kernel: {text}");
         return Err("local-script: the second request did not get the host's outcome");
     }
