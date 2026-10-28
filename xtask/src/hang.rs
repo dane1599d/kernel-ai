@@ -137,10 +137,21 @@ pub fn dump(monitor: u16, bundle: &Path) {
         }
         // No frame chain (a leaf, or entry code): words on the stack that name
         // kernel functions, most likely return addresses. A guess, marked so.
-        if walked == 0 && cpu.rsp >= KERNEL_HALF {
-            let stack = words(&monitor.run(&format!("x /{SCAN_WORDS}gx {:#x}", cpu.rsp)));
-            for addr in stack.iter().filter(|&&a| code(a)).take(FRAMES) {
+        if walked == 0 {
+            let rsp = cpu.rsp;
+            let stack = match rsp >= KERNEL_HALF {
+                true => words(&monitor.run(&format!("x /{SCAN_WORDS}gx {rsp:#x}"))),
+                false => Vec::new(),
+            };
+            let named: Vec<u64> = stack.iter().copied().filter(|&a| code(a)).collect();
+            for addr in named.iter().take(FRAMES) {
                 println!("xtask: hang dump:   on its stack {}", name(*addr));
+            }
+            if named.is_empty() {
+                println!(
+                    "xtask: hang dump:   no frames; stack at {rsp:#x}: {} words read, none a kernel function",
+                    stack.len()
+                );
             }
         }
     }
