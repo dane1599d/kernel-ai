@@ -105,12 +105,13 @@ pub const SYSTEM_UPDATES: u64 = Badge {
 /// The badge of the startup `Dir` a plan line's `dir=settings` grants:
 /// `/system/settings`, the Settings app's files (ADR 0004 §5), for a service
 /// that reads a setting. The kernel gives it READ and ENUMERATE only, and `fs`
-/// refuses any change through it. Fixed, as [`SYSTEM_PKG`] is.
+/// refuses any change through it. Fixed, as [`SYSTEM_PKG`] is; object 4 is
+/// lane C's `SYSTEM_APPS` (#350).
 pub const SYSTEM_SETTINGS: u64 = Badge {
     volume: SYSTEM,
     file: false,
     epoch: 0,
-    object: 4,
+    object: 5,
 }
 .raw();
 
