@@ -5,10 +5,10 @@
 //!
 //! - `ui_windows` and `ui_view` read. A view is `Data` (ADR 0002 D6): what an
 //!   app puts in its tree cannot start an action, add one or lower a tier.
-//! - `ui_open`, `ui_focus` and `window_close` run when asked and are undone by
-//!   their inverses. `window_close` asks when the app may have unsaved work,
-//!   which the shell decides from `desktop`'s answer, as `app_mem_limit`'s raise
-//!   is decided against the quota in force.
+//! - `ui_open` and `ui_focus` run when asked and are undone by their inverses.
+//!   `window_close` runs only when the app reports nothing unsaved (ADR 0005
+//!   §6), and no app can report that in v0.1 (`kai:ui@0.1.0` has no such
+//!   signal), so it asks for now; `undo` reopens the app.
 //! - `ui_act` takes the tier of the declared action its node is bound to; an
 //!   unbound node asks, so the row's own tier is ask.
 
@@ -155,13 +155,14 @@ pub const UI_FOCUS: Action = Action {
     )
 };
 
-/// Closes any window, a Linux one too (ADR 0006); `undo` reopens it. Asks when
-/// the app may have unsaved work.
+/// Closes any window, a Linux one too (ADR 0006); `undo` reopens it. Asks
+/// until apps can report that nothing is unsaved.
 pub const WINDOW_CLOSE: Action = Action {
     cues: &["close", "quit", "exit"],
+    min_tier: Tier::Ask,
     ..change(
         "window_close",
-        "closes a window; asks if work may be unsaved",
+        "closes a window; asks first",
         &[WINDOW],
         Inverse::Compensate("ui_open"),
     )
@@ -216,7 +217,7 @@ mod tests {
     fn the_tiers_are_adr_0005s() {
         for row in &UI_ROWS {
             let want = match row.name {
-                "ui_act" => Tier::Ask,
+                "ui_act" | "window_close" => Tier::Ask,
                 _ => Tier::Run,
             };
             assert_eq!(derive(row), want, "{}", row.name);
