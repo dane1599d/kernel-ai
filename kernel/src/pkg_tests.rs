@@ -64,10 +64,12 @@ impl Step {
     }
 }
 
-/// Plan lines: `fs`, then `pkg` with `/system/pkg` and nothing else.
+/// Plan lines: `fs`, then `pkg` with `/system/pkg` and nothing else. `pkg` needs
+/// a deeper stack than the 16-page default: fsproto's minicbor decoder
+/// recurses, and overflowed it in `Decoder::array`.
 pub fn plan(step: Step) -> String {
     format!(
-        "{}\n{CLIENT} dir=pkg pages=2048 step={}",
+        "{}\n{CLIENT} dir=pkg pages=2048 stack_pages=128 step={}",
         kabi::plan::FS,
         step.name()
     )
