@@ -1344,6 +1344,7 @@ dependencies = [
  "agentabi",
  "kabi",
  "kaigrants",
+ "kaiprofile",
  "llmproto",
  "rhai",
  "sched",
