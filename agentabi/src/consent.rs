@@ -221,7 +221,11 @@ fn decide_one(words: &[Word], english: bool, call: &Call, rows: &[Action]) -> De
     if !english {
         return Decision::new(Tier::Ask, Why::NotEnglish);
     }
-    let asked = matches!(cued(words, row), Some(false)) && arguments_in_line(words, row, call);
+    // Data that decided the call runs, or gave it a value, means the line did not
+    // ask for it, whatever its cues (ADR 0002 D6: data cannot start an action).
+    let asked = !steered_at_all(call)
+        && matches!(cued(words, row), Some(false))
+        && arguments_in_line(words, row, call);
     match (asked, derive(row)) {
         (true, Tier::Run) => Decision::new(Tier::Run, Why::Asked),
         (true, tier) => Decision::new(tier, Why::NoUndo),
