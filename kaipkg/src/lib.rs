@@ -8,6 +8,8 @@
 //! - [`resolve`]: no solver (§6): the newest compatible version that is not
 //!   yanked, keeping an installed version that already satisfies;
 //! - [`generation`]: `kai-gen 1`, one numbered list of installed packages;
+//! - [`image`]: the image's signed repository, checked with `kaituf`, as
+//!   generation 1's packages;
 //! - [`fsvol`]: the store's [`store::Volume`] over `kai-fs 1`, as `pkg` holds
 //!   `/system/pkg`;
 //! - [`store`]: `/system/pkg`'s objects, generations, `current`, `good`, failed
@@ -27,12 +29,18 @@ pub mod bundle;
 pub mod fsvol;
 pub mod generation;
 pub mod header;
+pub mod image;
 pub mod resolve;
 pub mod store;
 pub mod version;
 
 use alloc::string::String;
 use sha2::{Digest, Sha256};
+use version::Version;
+
+/// The OS's virtual packages (§6): the `kai:*` WIT packages it provides, which
+/// an app's `world` depends on.
+pub const PROVIDED: &[(&str, Version)] = &[("kai:app", Version::new(0, 1, 0))];
 
 /// An object's name: its SHA-256.
 pub type Sha = [u8; 32];

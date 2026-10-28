@@ -818,6 +818,8 @@ dependencies = [
  "fsserve",
  "kabi",
  "kaifs",
+ "kaituf",
+ "serde_json",
  "sha2",
 ]
 
@@ -912,6 +914,7 @@ version = "0.1.0-dev"
 dependencies = [
  "appabi",
  "kabi",
+ "sha2",
 ]
 
 [[package]]
