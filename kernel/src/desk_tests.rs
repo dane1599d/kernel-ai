@@ -17,10 +17,10 @@ use crate::pointer::{self, Event, Motion, Source};
 use crate::{console, input, log, process, threads};
 
 /// The plan lines this case adds.
-pub const PLAN: &str = "desktop caps=display+input+serve pages=8192 stack_pages=512\n\
+pub const PLAN: &str = "desktop caps=display+input+serve+ask pages=8192 stack_pages=512\n\
      deskdemo uses=desktop caps=call";
 /// The plan line `test=desk-boot` adds: the desktop, no client.
-pub const BOOT_PLAN: &str = "desktop caps=display+input+serve pages=8192 stack_pages=512";
+pub const BOOT_PLAN: &str = "desktop caps=display+input+serve+ask pages=8192 stack_pages=512";
 const WAIT_MS: u64 = 60_000;
 /// How long the screen must go without a flush before the screendump.
 const STILL_MS: u64 = 1_000;

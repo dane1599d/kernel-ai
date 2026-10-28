@@ -33,6 +33,7 @@ fn paint_with(name: &str, desk: &Desk, panel: &Panel, w: i32, h: i32) -> String 
         desk,
         bar: &BAR,
         panel,
+        ask: None,
         now_ms: 4_200,
     };
     painter.paint(
@@ -90,6 +91,7 @@ fn the_boot_desk_matches_desk_boot_s_golden() {
         desk: &desk,
         bar: &BAR,
         panel: &panel,
+        ask: None,
         now_ms: 0,
     };
     painter.paint(&mut canvas, all, &scene, &mut |_, _, _| false);
@@ -133,4 +135,50 @@ fn the_panel_paints_each_state() {
         reason: "Refused: notes is protected".into(),
     });
     paint_with("panel-refused", &desk, &panel, 1280, 800);
+}
+
+#[test]
+fn an_ask_card_paints_above_a_window() {
+    let mut desk = Desk::new(1280, 800);
+    desk.open(1, "notes", "Notes", Size { w: 400, h: 300 }, true);
+    let card = crate::askcard::Card {
+        id: 41,
+        call: "process_stop(\"build-3\")".into(),
+        reason: "build-3 has used a whole CPU for ten minutes and the editor lags.".into(),
+        shown_ms: 0,
+    };
+    let painter = Painter::new(FONTS).expect("the fonts parse");
+    let lines = painter.card_lines(1280, &card);
+    desk.show_ask(card.id, lines);
+    let (w, h) = (1280, 800);
+    let mut painter = painter;
+    let mut image = Image::new(w, h);
+    let mut canvas = image.canvas();
+    let panel = Panel::new();
+    let scene = Scene {
+        desk: &desk,
+        bar: &BAR,
+        panel: &panel,
+        ask: Some(&card),
+        now_ms: 3_000,
+    };
+    painter.paint(
+        &mut canvas,
+        Rect::new(0, 0, w, h),
+        &scene,
+        &mut |_, _, _| false,
+    );
+    if let Ok(dir) = std::env::var("DESK_PREVIEW") {
+        let mut ppm = std::format!(
+            "P6
+{w} {h}
+255
+"
+        )
+        .into_bytes();
+        for p in &image.px {
+            ppm.extend_from_slice(&[(p >> 16) as u8, (p >> 8) as u8, *p as u8]);
+        }
+        std::fs::write(std::format!("{dir}/ask.ppm"), ppm).expect("the preview is written");
+    }
 }

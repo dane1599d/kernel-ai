@@ -69,6 +69,12 @@ pub const TERM: u64 = 1 << 17;
 /// `updated` (ADR 0008 §10). Numbered at merge, after the terminal window's
 /// `TERM` (1 << 17, #252).
 pub const UPDATE: u64 = 1 << 18;
+/// Answer asks on `desktop`'s card ([`super::call::ASK_READ`],
+/// [`super::call::ASK_ANSWER`]): an `Ask` handle. The kernel grants it only to
+/// the service named `desktop` running the program `desktop` (ADR 0005 §7);
+/// nothing else can answer an ask, and only the kernel mints the `ONCE`.
+/// Numbered at merge, after `UPDATE` (1 << 18, #268).
+pub const ASK: u64 = 1 << 19;
 /// Every capability a supervisor may grant.
 pub const GRANTABLE: u64 = SERVE
     | NET
@@ -87,4 +93,5 @@ pub const GRANTABLE: u64 = SERVE
     | DISPLAY
     | INPUT
     | TERM
-    | UPDATE;
+    | UPDATE
+    | ASK;

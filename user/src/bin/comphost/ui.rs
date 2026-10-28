@@ -10,7 +10,7 @@ use alloc::vec::Vec;
 use gfx2d::Canvas;
 use gfx2d::text::{Fonts, Text};
 use kabi::handle::{Handle, Rights};
-use livecore::host::{Env, Host};
+use livecore::host::{Env, Exit, Host};
 use uikit::Frame;
 use uikit::layout::Measure;
 use uikit::style::TypeStyle;
@@ -98,8 +98,13 @@ impl Ui {
 
     /// Shows what the instances committed since the last call: the shown
     /// version's frames and closes, and nothing of a standby's. A new version
-    /// shown closes the old one's windows first.
+    /// shown closes the old one's windows first. A suspended app's windows stay
+    /// open with their last frame, so the user can restore one and a standing
+    /// instruction's "until restore" can come (P3 task 11).
     pub fn pump<E: Env<Instance = LiveInstance>>(&mut self, host: &mut Host<E>) {
+        if host.suspended() {
+            return;
+        }
         let mut updates = Vec::new();
         let mut label = None;
         host.each_instance(|instance, version, shown| {
@@ -129,16 +134,33 @@ impl Ui {
     }
 
     /// Asks `desktop` for its events and acts on them.
-    pub fn poll<E: Env<Instance = LiveInstance>>(&mut self, host: &mut Host<E>) {
+    pub fn poll<E: Env<Instance = LiveInstance>>(
+        &mut self,
+        host: &mut Host<E>,
+    ) -> Result<(), Exit> {
         let mut told = core::mem::take(&mut self.later);
         if let Ok(len) = sys::call_route(self.route, &[], &mut self.reply, CALL_MS) {
             told.extend(self.desk.told(&self.reply[..len.min(self.reply.len())]));
         }
-        self.act(host, told);
+        self.act(host, told)
     }
 
-    fn act<E: Env<Instance = LiveInstance>>(&mut self, host: &mut Host<E>, told: Vec<Told>) {
+    /// Hands `desktop`'s events to the app. A close or an action on the kept
+    /// window of a suspended app resumes it first, so it is not dropped.
+    fn act<E: Env<Instance = LiveInstance>>(
+        &mut self,
+        host: &mut Host<E>,
+        told: Vec<Told>,
+    ) -> Result<(), Exit> {
         for t in told {
+            if !matches!(t, Told::Restarted)
+                && let Some(reply) = host.wake()?
+            {
+                println!(
+                    "comphost: resumed for a window event: {}",
+                    String::from_utf8_lossy(&reply)
+                );
+            }
             match t {
                 Told::Restarted => self.reopen(),
                 Told::Close(window) => with_shown(host, |core| {
@@ -166,6 +188,7 @@ impl Ui {
             }
         }
         self.pump(host);
+        Ok(())
     }
 
     /// A new `desktop`: every window opens again from its last frame.
