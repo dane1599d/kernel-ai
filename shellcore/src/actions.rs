@@ -269,6 +269,7 @@ impl Shell {
             false => State::Nothing,
         };
         self.log_entry(id, request, checked, how, state, outcome, ran.done);
+        self.run_app_effects();
         Reply {
             ok: ran.ok,
             text,

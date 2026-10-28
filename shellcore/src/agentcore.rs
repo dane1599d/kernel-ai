@@ -112,10 +112,28 @@ impl Shell {
             "clarify" => self.pseudo_clarify(id, request, call),
             "script" => self.pseudo_script(id, request, call),
             "undo" => self.pseudo_undo(call),
-            name => match agentabi::find(&agentabi::ROWS, name) {
+            name => match self.row(name) {
                 Some(row) => self.call_row(id, request, row, call),
                 None => self.refuse(id, request, call, Why::Unknown, "no such action"),
             },
+        }
+    }
+
+    /// The row named `name`: the OS's, then an installed app's (P4).
+    pub(crate) fn row(&self, name: &str) -> Option<&'static Action> {
+        agentabi::find(&agentabi::ROWS, name).or_else(|| {
+            crate::apps::load_for(self.host.as_ref(), name);
+            let apps = self.host.apps()?;
+            apps.borrow().rows.find(name).map(|r| r.row)
+        })
+    }
+
+    /// The rows `row` is decided or checked among: an app's row alone, every
+    /// other among the OS's `rows`.
+    fn rows_for(&self, row: &'static Action, rows: &'static [Action]) -> &'static [Action] {
+        match row.owner {
+            agentabi::Owner::App(_) => core::slice::from_ref(row),
+            _ => rows,
         }
     }
 
@@ -208,7 +226,7 @@ impl Shell {
             args: &values,
             control: Label::Literal,
         }];
-        let decision = consent::decide(request, &planned, &agentabi::ROWS)[0];
+        let decision = consent::decide(request, &planned, self.rows_for(row, &agentabi::ROWS))[0];
         if decision.tier == Tier::Never {
             return self.refuse(id, request, call, decision.why, "it is never run");
         }
@@ -220,7 +238,7 @@ impl Shell {
         // row's among the bound ones.
         let rows: &'static [Action] = match agentabi::FS_ROWS.iter().any(|r| r.name == row.name) {
             true => &agentabi::FS_ROWS,
-            false => &agentabi::BOUND,
+            false => self.rows_for(row, &agentabi::BOUND),
         };
         if !rows.iter().any(|r| r.name == row.name) {
             let why = format!("{} is typed at the prompt for now, not called", row.name);

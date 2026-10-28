@@ -30,6 +30,92 @@ const TEXT_MAX: u16 = 2000;
 /// The most items a list argument takes.
 const LIST_MAX: u8 = 32;
 
+/// The shell's apps: their rows, and the effects their calls queued, which
+/// the agent core runs once the call's run succeeded.
+#[derive(Default)]
+pub struct Apps {
+    pub rows: AppRows,
+    pub effects: Vec<(String, String)>,
+}
+
+impl Apps {
+    /// What the runs queued since the last take, as (app, effect lines).
+    pub fn take_effects(&mut self) -> Vec<(String, String)> {
+        core::mem::take(&mut self.effects)
+    }
+}
+
+/// Loads the rows of the app whose `<app>_` names `name`, if a service of
+/// that name answers `kai-actions 1`: the first call to an app's row loads its
+/// rows, so no app starts only to be listed. The longest name wins, so
+/// `notes_window_add` is `notes-window`'s before `notes`'s.
+pub(crate) fn load_for(host: &dyn crate::Host, name: &str) {
+    let Some(apps) = host.apps() else {
+        return;
+    };
+    let Ok(services) = host.services() else {
+        return;
+    };
+    let Some(app) = services
+        .iter()
+        .map(|s| s.name.as_str())
+        .filter(|app| name.starts_with(&format!("{}_", app.replace('-', "_"))))
+        .max_by_key(|app| app.len())
+    else {
+        return;
+    };
+    if apps.borrow().rows.has(app) {
+        return;
+    }
+    let answer = match host.app_call(app, "kai-actions 1") {
+        Ok(answer) => answer,
+        Err(why) => return host.audit(&format!("{app}'s rows were not asked for: {why}")),
+    };
+    match apps.borrow_mut().rows.load(app, &answer) {
+        Ok(count) => host.audit(&format!("{app}'s {count} actions loaded")),
+        Err(why) => host.audit(&why),
+    }
+}
+
+/// `kai-undo 1` of app `app`'s call kept as `id`, with `force` if `anyway`:
+/// the undo's own id, which undoes it again, or why not.
+pub(crate) fn undo(
+    host: &dyn crate::Host,
+    app: &str,
+    id: u64,
+    anyway: bool,
+) -> Result<u64, crate::undo::Refused> {
+    use crate::undo::Refused;
+    let force = if anyway {
+        "force
+"
+    } else {
+        ""
+    };
+    let request = format!(
+        "kai-undo 1
+id {id}
+{force}"
+    );
+    let text = host.app_call(app, &request).map_err(Refused::Failed)?;
+    let mut lines = text.lines();
+    if lines.next() != Some(livecore::call::REPLY_HEADER) {
+        return Err(Refused::Failed(format!("{app} did not answer the undo")));
+    }
+    let mut redo = None;
+    for line in lines {
+        match line.split_once(' ') {
+            Some(("undone", _)) => {}
+            Some(("undo", next)) => redo = next.parse().ok(),
+            Some(("changed", _)) => {
+                return Err(Refused::Moved(format!("{app} changed since")));
+            }
+            _ => return Err(Refused::Failed(format!("{app}: {line}"))),
+        }
+    }
+    redo.ok_or_else(|| Refused::Failed(format!("{app} kept no undo of its undo")))
+}
+
 /// One loaded row and what calling it needs.
 #[derive(Clone, Debug)]
 pub struct AppRow {

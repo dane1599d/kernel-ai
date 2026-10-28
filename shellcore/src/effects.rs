@@ -133,6 +133,28 @@ fn call_of(row: &'static Action, args: &str) -> Result<Call, String> {
 }
 
 impl Shell {
+    /// Runs what the apps' calls in the last run queued (P4): each through
+    /// [`Shell::run_effects`], with its own tier, log and undo.
+    pub(crate) fn run_app_effects(&mut self) {
+        let Some(queued) = self
+            .host
+            .apps()
+            .map(|apps| apps.borrow_mut().take_effects())
+        else {
+            return;
+        };
+        for (app, lines) in queued {
+            for done in self.run_effects(&app, &lines) {
+                if let Err(why) = done.outcome {
+                    self.host.audit(&format!(
+                        "{app}'s effect {} did not run: {why}",
+                        done.ticket
+                    ));
+                }
+            }
+        }
+    }
+
     /// Runs app `app`'s effect lines, oldest first: what each came to. `app` is
     /// the caller's record of who replied. Past [`MAX_EFFECTS`], the rest are
     /// refused, not run.

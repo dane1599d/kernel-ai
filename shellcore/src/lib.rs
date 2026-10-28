@@ -178,6 +178,16 @@ pub trait Host {
     fn restart_service(&self, _name: &str, _proof: Proof) -> Result<(), String> {
         Err(String::from("services cannot be restarted here"))
     }
+    /// The installed apps' rows and the effects their calls queued (P4);
+    /// `None` where there are no apps.
+    fn apps(&self) -> Option<&core::cell::RefCell<apps::Apps>> {
+        None
+    }
+    /// A `kai-call 1`, `kai-undo 1` or `kai-actions 1` to app `app`, through the
+    /// supervisor's `app-call`: the app's reply, or why not.
+    fn app_call(&self, _app: &str, _request: &str) -> Result<String, String> {
+        Err(String::from("there are no apps here"))
+    }
     /// A read of the user's files: its text, or why there is none.
     fn fs_read(&self, _read: FsRead) -> Result<String, String> {
         Err(String::from(NO_FILES))

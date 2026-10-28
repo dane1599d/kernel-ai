@@ -62,6 +62,8 @@ impl Checked {
 
 type RhaiResult<T> = Result<T, Box<EvalAltResult>>;
 
+mod apps;
+
 fn rhai_error(message: impl Into<String>) -> Box<EvalAltResult> {
     let message: String = message.into();
     message.into()
@@ -130,7 +132,7 @@ impl Tx {
         let mut journal = self.journal.borrow_mut();
         // Each file change is a transaction of its own, so each keeps its own
         // inverse; `undo` restores them newest first.
-        if matches!(done.inverse, Some(Inverse::Fs { .. })) {
+        if matches!(done.inverse, Some(Inverse::Fs { .. } | Inverse::App { .. })) {
             journal.push(done);
             return;
         }
@@ -166,6 +168,17 @@ fn register(engine: &mut Engine, granted: &[&'static str], tx: &Tx) {
         .filter(|row| granted.contains(&row.name))
     {
         bind(engine, row.name, tx);
+    }
+    // An installed app's rows (P4), granted as any row is.
+    let Some(apps) = tx.host.apps() else {
+        return;
+    };
+    let rows: Vec<crate::apps::AppRow> = granted
+        .iter()
+        .filter_map(|name| apps.borrow().rows.find(name).cloned())
+        .collect();
+    for row in rows {
+        apps::bind(engine, row, tx);
     }
 }
 
@@ -547,12 +560,16 @@ fn strict(line: &Rc<Line>, config: &Config, granted: &[&'static str], tx: &Tx) -
 }
 
 /// The plan's calls, reads and changes apart, each in the registry's order.
-fn split(plan: &Plan) -> (Vec<&'static str>, Vec<&'static str>) {
+fn split(plan: &Plan, rows: &'static [agentabi::Action]) -> (Vec<&'static str>, Vec<&'static str>) {
     let names = plan.names();
+    let apps = rows
+        .iter()
+        .filter(|row| matches!(row.owner, agentabi::Owner::App(_)));
     let pick = |effect| {
         agentabi::BOUND
             .iter()
             .chain(&agentabi::FS_ROWS)
+            .chain(apps.clone())
             .filter(|f| f.effect() == effect && names.contains(&f.name))
             .map(|f| f.name)
             .collect()
@@ -616,6 +633,12 @@ impl Host for Stub {
     }
     fn fs_change(&self, _: FsChange) -> Result<u64, String> {
         Ok(0)
+    }
+    fn apps(&self) -> Option<&core::cell::RefCell<crate::apps::Apps>> {
+        self.0.apps()
+    }
+    fn app_call(&self, _: &str, _: &str) -> Result<String, String> {
+        Ok(alloc::format!("{}\n", livecore::call::REPLY_HEADER))
     }
     fn ask(&self, _: &str) -> Result<String, String> {
         Err("not available to scripts".into())
@@ -712,7 +735,7 @@ pub(crate) fn check_against(
         .compile(&script)
         .map_err(|error| refuse(format!("syntax error: {error}")))?;
     let plan = Rc::new(analyse::analyse(&ast, rows));
-    let (reads, changes) = split(&plan);
+    let (reads, changes) = split(&plan, rows);
     let granted = plan.names();
     let trial = strict(&line, config, &granted, &Tx::new(&stub, &plan));
     line.begin(stub.as_ref(), config);
