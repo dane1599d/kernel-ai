@@ -441,6 +441,14 @@ pub fn plan(test: SelfTest) -> Option<String> {
         plan.push_str(kabi::plan::UPDATED);
         plan.push_str(" after=restart step=");
         plan.push_str(step);
+        // `updated.<word>`: a word for `updated`'s line, as `restart=window`.
+        for word in crate::cmdline()
+            .split_whitespace()
+            .filter_map(|w| w.strip_prefix("updated."))
+        {
+            plan.push(' ');
+            plan.push_str(word);
+        }
     }
     // `act-rule` stops processes the supervisor does not restart, and one
     // service it does.

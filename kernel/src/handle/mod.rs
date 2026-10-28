@@ -187,7 +187,11 @@ fn state_dir(fs: u64) -> Entry {
 /// The startup `Dir` for a folder a plan line grants, on the `fs` route `fs`.
 /// Its badge names the folder for `fs`, which looks it up itself.
 fn folder_dir(fs: u64, folder: supervise::Folder) -> Entry {
-    let mut dir = Entry::new(Kind::Dir, HOME_RIGHTS | BASE, fs);
+    let rights = match folder.read_only() {
+        true => READ_RIGHTS,
+        false => HOME_RIGHTS,
+    };
+    let mut dir = Entry::new(Kind::Dir, rights | BASE, fs);
     dir.badge = folder.badge();
     dir
 }
@@ -198,6 +202,9 @@ const HOME_RIGHTS: Rights = Rights::READ
     .union(Rights::ENUMERATE)
     .union(Rights::CREATE)
     .union(Rights::DELETE);
+
+/// What a read-only folder's startup `Dir` allows ([`supervise::Folder::read_only`]).
+const READ_RIGHTS: Rights = Rights::READ.union(Rights::ENUMERATE);
 
 /// The handle kind and right that stand for capability bit `bit` in `need`;
 /// `None` for a bit no handle stands for.

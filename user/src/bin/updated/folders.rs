@@ -1,9 +1,10 @@
-//! `updated`'s two folders on `kai-data`, from its plan line's `dir=trust+updates`
+//! `updated`'s folders on `kai-data`, from its plan line's `dir=trust+updates+settings`
 //! (ADR 0008 §7, §10): `/system/trust` keeps the TUF metadata `kaituf` verified,
 //! so the next refresh starts from the newest root and refuses replayed
 //! metadata; `/system/updates` is the handle the `update` snapshot of `system`
-//! is taken on before a new slot's first boot. Without `kai-data` neither
-//! exists, and `updated` keeps its metadata in memory for the one refresh.
+//! is taken on before a new slot's first boot; `/system/settings`, read only,
+//! holds the restart window. Without `kai-data` none exists, and `updated`
+//! keeps its metadata in memory for the one refresh.
 
 use alloc::format;
 use alloc::string::String;
@@ -20,6 +21,8 @@ const CALL_MS: u64 = 10_000;
 pub struct Folders {
     pub trust: Option<Handle>,
     pub updates: Option<Handle>,
+    /// `/system/settings`, read only: the restart window (`window.rs`).
+    pub settings: Option<Handle>,
 }
 
 impl Folders {
@@ -50,6 +53,7 @@ impl Folders {
         Ok(Folders {
             trust: served()?,
             updates: served()?,
+            settings: served()?,
         })
     }
 }

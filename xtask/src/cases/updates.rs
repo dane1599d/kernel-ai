@@ -385,6 +385,38 @@ const RB_COMMIT: TestCase = rb(
     Some(&RB_UPDATE),
 );
 
+/// `update-window` boot 3: the restart in the window boots B.
+const W_B: TestCase = TestCase {
+    data: Some(DATA),
+    ..boot(
+        "update-window (3: kai-b boots)",
+        "test=slot panic=reset",
+        &["slots: booted kai-b (record read)"],
+    )
+};
+/// `update-window` boot 2: `updated` stages B without restarting, reads
+/// `/system/settings` through its read-only `dir=settings`, then restarts into
+/// B inside the restart window (`window=now`, from the current minute) after
+/// a heads-up.
+const W_STAGE: TestCase = TestCase {
+    then: Some(&W_B),
+    data: Some(DATA),
+    update: Some(UpdateDisk { tampered: false }),
+    ..boot(
+        "update-window (2: updated waits for the restart window)",
+        "test=update updated=update updated.restart=window updated.window=now updated.heads_up_s=2 panic=reset",
+        &[
+            "updated: wrote release 2 into B and checked its sha256",
+            "updated: took update snapshot ",
+            "updated: /system/settings has no updates.cbor",
+            "updated: release 2 is staged in B; the restart window is ",
+            "updated: restarting into B in 2 s, inside the restart window",
+            "updated: restarting into B in the restart window",
+            "update: restarting into kai-b",
+        ],
+    )
+};
+
 pub(super) const CASES: &[TestCase] = &[
     // Spikes S08-3 and S11-1: P-256 and Ed25519 verification, a 1,000-target
     // `packages` role and SHA-256 in soft-float ring 3, reported in the log.
@@ -419,6 +451,12 @@ pub(super) const CASES: &[TestCase] = &[
         then: Some(&A_FROM_DISK),
         data: Some(DATA),
         ..boot("update-disk", "test=slot panic=reset", INSTALL)
+    },
+    // The restart window (P4 question 10): staged, then a restart only inside it.
+    TestCase {
+        then: Some(&W_STAGE),
+        data: Some(DATA),
+        ..boot("update-window", "test=slot panic=reset", INSTALL)
     },
     TestCase {
         then: Some(&A_REFUSES),

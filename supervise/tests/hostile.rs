@@ -128,3 +128,27 @@ fn only_updated_gets_the_trust_and_updates_folders() {
         trust_and_updates_go_only_to_updated(cut)
     });
 }
+
+/// `dir=settings` reads the Settings app's files: any service may be given it,
+/// and its `Dir` is read only.
+#[test]
+fn dir_settings_goes_to_any_service_and_only_reads() {
+    let plan = parse_plan(
+        "updated caps=update dir=trust+updates+settings\n\
+         desktop dir=settings\n",
+    );
+    assert!(plan.errors.is_empty(), "{:?}", plan.errors);
+    let dirs: Vec<Vec<Folder>> = plan.services.iter().map(|s| s.dirs.clone()).collect();
+    assert_eq!(
+        dirs,
+        vec![
+            vec![Folder::Trust, Folder::Updates, Folder::Settings],
+            vec![Folder::Settings],
+        ]
+    );
+    assert!(Folder::Settings.read_only());
+    assert_eq!(Folder::Settings.badge(), kabi::fs::SYSTEM_SETTINGS);
+    for writable in [Folder::Pkg, Folder::Trust, Folder::Updates] {
+        assert!(!writable.read_only());
+    }
+}

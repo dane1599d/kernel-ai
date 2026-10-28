@@ -52,6 +52,10 @@ pub enum Folder {
     /// `/system/updates`, staged releases and the `update` snapshot's handle
     /// (ADR 0008 §10): `updated`'s only.
     Updates,
+    /// `/system/settings`, the Settings app's files, read only: for a service
+    /// that follows a setting (`updated`'s restart window; the desktop's
+    /// appearance and the supervisor's profiles next).
+    Settings,
 }
 
 impl Folder {
@@ -60,6 +64,7 @@ impl Folder {
             "pkg" => Some(Folder::Pkg),
             "trust" => Some(Folder::Trust),
             "updates" => Some(Folder::Updates),
+            "settings" => Some(Folder::Settings),
             _ => None,
         }
     }
@@ -70,7 +75,14 @@ impl Folder {
             Folder::Pkg => kabi::fs::SYSTEM_PKG,
             Folder::Trust => kabi::fs::SYSTEM_TRUST,
             Folder::Updates => kabi::fs::SYSTEM_UPDATES,
+            Folder::Settings => kabi::fs::SYSTEM_SETTINGS,
         }
+    }
+
+    /// Whether its `Dir` only reads: the kernel gives it READ and ENUMERATE, and
+    /// `fs` refuses a change through it whatever the handle says.
+    pub fn read_only(self) -> bool {
+        matches!(self, Folder::Settings)
     }
 
     /// The one service, by name and by program, a line granting it must be, if
@@ -78,7 +90,7 @@ impl Folder {
     /// (ADR 0008 §10), as the kernel's UPDATE capability is.
     pub fn only_for(self) -> Option<&'static str> {
         match self {
-            Folder::Pkg => None,
+            Folder::Pkg | Folder::Settings => None,
             Folder::Trust | Folder::Updates => Some(UPDATED),
         }
     }

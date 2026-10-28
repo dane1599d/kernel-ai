@@ -13,6 +13,7 @@
 
 pub mod pending;
 pub mod slotfile;
+pub mod window;
 
 /// The record's magic and version.
 pub const MAGIC: &[u8; 4] = b"KAB1";

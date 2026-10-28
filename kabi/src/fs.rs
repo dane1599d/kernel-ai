@@ -102,6 +102,18 @@ pub const SYSTEM_UPDATES: u64 = Badge {
 }
 .raw();
 
+/// The badge of the startup `Dir` a plan line's `dir=settings` grants:
+/// `/system/settings`, the Settings app's files (ADR 0004 §5), for a service
+/// that reads a setting. The kernel gives it READ and ENUMERATE only, and `fs`
+/// refuses any change through it. Fixed, as [`SYSTEM_PKG`] is.
+pub const SYSTEM_SETTINGS: u64 = Badge {
+    volume: SYSTEM,
+    file: false,
+    epoch: 0,
+    object: 4,
+}
+.raw();
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -141,6 +153,7 @@ mod tests {
             SYSTEM_PKG,
             SYSTEM_TRUST,
             SYSTEM_UPDATES,
+            SYSTEM_SETTINGS,
         ];
         for (i, a) in fixed.iter().enumerate() {
             assert_eq!(Badge::parse(*a).epoch, 0);

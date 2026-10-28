@@ -28,6 +28,7 @@ extern crate alloc;
 mod disk;
 mod folders;
 mod restore;
+mod window;
 
 use alloc::format;
 use alloc::string::String;
@@ -77,7 +78,14 @@ fn main() -> i32 {
     let result = match (step, reconciled) {
         (_, Err(why)) => Err(why),
         (Some("check"), _) => check(handle),
-        (Some("update"), _) => disk::update(handle),
+        (Some("update"), _) => {
+            let now = !args.split_whitespace().any(|w| w == "restart=window");
+            disk::update(handle, now).map(|staged| {
+                if !now {
+                    window::wait(handle, staged, args);
+                }
+            })
+        }
         // The rollback case: the reconcile is the step, then the boot ends.
         (Some("reconcile"), Ok(_)) => {
             if args.split_whitespace().any(|w| w == "after=restart") {
@@ -107,7 +115,7 @@ fn restart_here(handle: Handle) {
     let _ = sys::bootrec_set(handle, &record.encode(), info.active, true);
 }
 
-fn idle() -> ! {
+pub(crate) fn idle() -> ! {
     loop {
         sys::sleep_ms(60_000);
     }
