@@ -749,6 +749,16 @@ pub fn comp_control(component: &str, request: &str, reply: &mut [u8]) -> Result<
 }
 
 /// As [`http`], to the build service the kernel was booted with (needs PUBLISH).
+/// Sends `request`, as `kabi::pkgrepo::request` builds it, to the fixed `pkgrepo=`
+/// mirror; the response's length. Only for the holder of `/system/pkg`.
+pub fn pkg_fetch(request: &HttpRequest) -> Result<usize, Error> {
+    call(
+        call::PKG_FETCH,
+        [request as *const HttpRequest as u64, 0, 0, 0, 0, 0],
+    )
+    .map(|len| len as usize)
+}
+
 pub fn build(request: &HttpRequest) -> Result<usize, Error> {
     call(
         call::BUILD,

@@ -10,6 +10,11 @@
 //! - [`generation`]: `kai-gen 1`, one numbered list of installed packages;
 //! - [`image`]: the image's signed repository, checked with `kaituf`, as
 //!   generation 1's packages;
+//! - [`index`]: a package's `custom.kai` index entry, and cargo's rule against
+//!   its header;
+//! - [`mirror`]: installs from the fixed `pkgrepo=` mirror, its metadata checked
+//!   with `kaituf`, its packages fetched in pieces;
+//! - [`memvol`]: the store's volume in memory;
 //! - [`fsvol`]: the store's [`store::Volume`] over `kai-fs 1`, as `pkg` holds
 //!   `/system/pkg`;
 //! - [`store`]: `/system/pkg`'s objects, generations, `current`, `good`, failed
@@ -30,6 +35,9 @@ pub mod fsvol;
 pub mod generation;
 pub mod header;
 pub mod image;
+pub mod index;
+pub mod memvol;
+pub mod mirror;
 pub mod resolve;
 pub mod store;
 pub mod version;
