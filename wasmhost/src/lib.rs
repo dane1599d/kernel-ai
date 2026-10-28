@@ -35,6 +35,8 @@ mod tests;
 mod ui;
 #[cfg(test)]
 mod ui_tests;
+#[cfg(test)]
+mod ui_txn_tests;
 mod uival;
 
 use alloc::format;
@@ -43,7 +45,7 @@ pub use canonical::{CoreInstance, load_core};
 pub use instance::WasmInstance;
 use livecore::{Fault, Reason};
 pub use tables::{EXPORTS, IMPORTS};
-pub use ui::{ActRefused, MAX_UPDATES, Update};
+pub use ui::{ActRefused, AppEvent, MAX_UPDATES, Update};
 use wasmi::{CompilationMode, Config, EnforcedLimits, Engine, Module};
 
 /// Resources one instance may use.
