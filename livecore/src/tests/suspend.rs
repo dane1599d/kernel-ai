@@ -74,3 +74,15 @@ fn wake_resumes_only_a_suspended_app() {
     assert_eq!(call(&mut host, "get"), "ok 1 schema 1");
     assert_eq!(host.wake().unwrap(), None);
 }
+
+#[test]
+fn a_resumed_app_reads_its_storage_as_when_it_started() {
+    let kernel = kernel(&[V1]);
+    let mut host = host(&kernel);
+    call(&mut host, "kadd");
+    assert_eq!(call(&mut host, "viewed"), "ok viewed 0");
+    call(&mut host, "ctl suspend");
+    assert_eq!(call(&mut host, "ctl resume"), "ok resumed counter 1");
+    // Notes reads its notes while it restores: the new instance has the view.
+    assert_eq!(call(&mut host, "viewed"), "ok viewed 2");
+}

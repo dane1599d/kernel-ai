@@ -135,6 +135,9 @@ pub struct Fake {
     storage: Storage,
     inputs: Inputs,
     txn: Txn,
+    /// The storage its lifecycle calls may read ([`Instance::view`]), if the
+    /// host gave it one.
+    view: Option<Storage>,
 }
 
 /// What the loader does with a module: a fault for a broken one.
@@ -165,6 +168,7 @@ pub fn load(module: &[u8], quiet: bool) -> Result<Fake, Fault> {
         storage: Storage::new(),
         inputs: Inputs::default(),
         txn: Txn::default(),
+        view: None,
         schema: words[0].parse().unwrap(),
         reads: parse_list(words[1]),
         writes: parse_list(words[2]),
@@ -261,6 +265,11 @@ impl Instance for Fake {
                 format!("ok {}", self.count)
             }
             b"get" => format!("ok {} schema {}", self.count, self.schema),
+            // How many keys the storage view it was loaded with holds.
+            b"viewed" => match &self.view {
+                Some(view) => format!("ok viewed {}", view.len()),
+                None => String::from("err no view"),
+            },
             // A kai-call stand-in: counts, stores who wrote, and queues an effect.
             b"kadd" => {
                 if self.bug == Bug::Injected && !self.quiet && INJECT.load(Ordering::SeqCst) {
@@ -334,5 +343,9 @@ impl Instance for Fake {
 
     fn finish(&mut self) -> Txn {
         core::mem::take(&mut self.txn)
+    }
+
+    fn view(&mut self, storage: &Storage) {
+        self.view = Some(storage.clone());
     }
 }
