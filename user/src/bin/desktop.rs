@@ -70,6 +70,9 @@ struct Pool {
     pool: u32,
     address: u64,
     size: u32,
+    /// Mapped writable, so its header page's event ring takes the client's
+    /// input (ADR 0005 §3); a client that gave read-only access gets none.
+    writable: bool,
 }
 
 struct Screen {
@@ -319,10 +322,14 @@ fn input(state: &mut State, screen: &Screen, event: &InputEvent) {
     deliver(state, &effects);
 }
 
-/// Hands the desk's effects to the clients they concern.
+/// Hands the desk's effects to the clients they concern: messages, and input
+/// posted to their pools' event rings.
 fn deliver(state: &mut State, effects: &[Effect]) {
     for client in &mut state.clients {
         client.apply(effects);
+        for (pool, event) in client.take_posts() {
+            post(&state.pools, client.pid, pool, &event);
+        }
     }
     let now = now_ms();
     for effect in effects {
@@ -347,6 +354,25 @@ fn deliver(state: &mut State, effects: &[Effect]) {
             state.extra.push(state.desk.panel());
         }
     }
+}
+
+/// Posts `event` to the ring in the header page of `pid`'s pool `pool`; a full
+/// ring drops it and counts the drop there.
+fn post(pools: &[Pool], pid: u64, pool: u32, event: &surfabi::header::Event) {
+    let Some(p) = pools
+        .iter()
+        .find(|p| p.pid == pid && p.pool == pool && p.writable)
+    else {
+        return;
+    };
+    if (p.size as usize) < surfabi::header::PAGE {
+        return;
+    }
+    // SAFETY: the pool is mapped read-write at `address` for `size` bytes, at
+    // least a page; its first page is the header the client set up, and only
+    // its ring's slots and head are written.
+    let page = unsafe { &mut *(p.address as *mut [u8; surfabi::header::PAGE]) };
+    surfabi::header::post(page, event);
 }
 
 fn now_ms() -> u64 {
@@ -419,13 +445,19 @@ fn apply_need(state: &mut State, at: usize, pid: u64, need: Need, handle: Option
     match need {
         Need::MapPool { pool, size } => {
             let Some(handle) = handle else { return };
-            match sys::shm_map(handle, false) {
-                Ok(address) => {
+            // Writable when the client allowed it, for its input ring; read-only
+            // otherwise, as before.
+            let mapped = sys::shm_map(handle, true)
+                .map(|address| (address, true))
+                .or_else(|_| sys::shm_map(handle, false).map(|address| (address, false)));
+            match mapped {
+                Ok((address, writable)) => {
                     state.pools.push(Pool {
                         pid,
                         pool,
                         address,
                         size,
+                        writable,
                     });
                     state.clients[at].pool_mapped(pool);
                 }
