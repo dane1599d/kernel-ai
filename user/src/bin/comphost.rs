@@ -145,7 +145,7 @@ fn main() -> i32 {
     // When the host's own wait ends; 0 is never.
     let mut tick_at = deadline(host.timeout_ms());
     loop {
-        let open = windows.as_ref().is_some_and(ui::Ui::has_windows);
+        let open = windows.as_ref().is_some_and(ui::Ui::wants_poll);
         let wait = match (open, host.timeout_ms()) {
             (false, ms) => ms,
             (true, 0) => ui::POLL_MS,
@@ -174,7 +174,7 @@ fn main() -> i32 {
                 }
             }
             Err(Error::TimedOut) => {
-                if let Some(ui) = windows.as_mut().filter(|ui| ui.has_windows())
+                if let Some(ui) = windows.as_mut().filter(|ui| ui.wants_poll())
                     && let Err(exit) = ui.poll(&mut host)
                 {
                     println!("{}", exit.why);

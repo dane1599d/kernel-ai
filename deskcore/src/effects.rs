@@ -133,6 +133,49 @@ fn entry<'a, T>(all: &'a mut Vec<(String, VecDeque<T>)>, app: &str) -> &'a mut V
     &mut all[at].1
 }
 
+/// The app's side: the tickets it sent and has no result for yet. A result
+/// reaches the app only for a ticket in here, once; anything else `desktop`
+/// answers is dropped.
+#[derive(Default)]
+pub struct Sent {
+    tickets: VecDeque<u32>,
+}
+
+impl Sent {
+    /// Records the tickets of the effect lines `desktop` took; the oldest go
+    /// past [`MAX_RESULTS`], as `desktop` keeps no more results than that.
+    pub fn record(&mut self, lines: &str) {
+        for ticket in lines.lines().filter_map(ticket_of) {
+            if self.tickets.len() == MAX_RESULTS {
+                self.tickets.pop_front();
+            }
+            self.tickets.push_back(ticket);
+        }
+    }
+
+    /// Whether a result is still awaited.
+    pub fn awaits(&self) -> bool {
+        !self.tickets.is_empty()
+    }
+
+    /// The results for tickets sent, each taken off the record, and the
+    /// tickets of the rest.
+    pub fn accept(&mut self, results: Vec<Done>) -> (Vec<Done>, Vec<u32>) {
+        let mut accepted = Vec::new();
+        let mut stray = Vec::new();
+        for done in results {
+            match self.tickets.iter().position(|t| *t == done.ticket) {
+                Some(at) => {
+                    self.tickets.remove(at);
+                    accepted.push(done);
+                }
+                None => stray.push(done.ticket),
+            }
+        }
+        (accepted, stray)
+    }
+}
+
 /// The ticket of an `effect <ticket> <WAVE>` line.
 pub fn ticket_of(line: &str) -> Option<u32> {
     let (ticket, _) = line.strip_prefix("effect ")?.split_once(' ')?;
@@ -301,6 +344,38 @@ mod tests {
         assert_eq!(results.len(), MAX_RESULTS);
         assert_eq!(results[0].ticket, 2);
         assert!(queue.results("files").is_empty());
+    }
+
+    #[test]
+    fn an_app_takes_results_only_for_tickets_it_sent_and_once() {
+        let mut sent = Sent::default();
+        assert!(!sent.awaits());
+        sent.record(&format!("{}\n{}\nresult ok", line(4), line(5)));
+        assert!(sent.awaits());
+        let done = |ticket| Done {
+            ticket,
+            outcome: Ok(String::new()),
+        };
+        let (accepted, stray) = sent.accept(alloc::vec![done(5), done(9), done(5)]);
+        assert_eq!(accepted, [done(5)]);
+        assert_eq!(stray, [9, 5]);
+        assert!(sent.awaits());
+        let (accepted, _) = sent.accept(alloc::vec![done(4)]);
+        assert_eq!(accepted, [done(4)]);
+        assert!(!sent.awaits());
+    }
+
+    #[test]
+    fn the_record_is_bounded() {
+        let mut sent = Sent::default();
+        let lines: Vec<String> = (0..=MAX_RESULTS as u32).map(line).collect();
+        sent.record(&lines.join("\n"));
+        let done = |ticket| Done {
+            ticket,
+            outcome: Ok(String::new()),
+        };
+        let (accepted, stray) = sent.accept(alloc::vec![done(0), done(1)]);
+        assert_eq!((accepted.len(), stray), (1, alloc::vec![0]));
     }
 
     #[test]
