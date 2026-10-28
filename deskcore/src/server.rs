@@ -44,6 +44,11 @@ struct Surface {
     /// `tree_update` bytes waiting for their commit: one update may span
     /// several messages.
     pending: Vec<u8>,
+    /// The declared action each bound node runs (`a11y.bind_action`), at most
+    /// [`MAX_BOUND`].
+    bound: Vec<(u32, String)>,
+    /// Whether it holds changes not yet kept (`toplevel.set_unsaved`).
+    unsaved: bool,
 }
 
 /// What `desktop` must do for a request beyond the desk itself.
@@ -60,6 +65,11 @@ pub enum Need {
 
 /// An update's head, which [`tree::MAX_BYTES`] does not count.
 const PENDING_HEAD: usize = 12;
+
+/// Most nodes a window binds to declared actions.
+pub const MAX_BOUND: usize = 256;
+/// Longest action name: `<app>_<function>`, as an `agentabi` row's.
+pub const MAX_ACTION: usize = 64;
 
 pub struct Client {
     /// The client's process id, which also labels its windows.
@@ -254,6 +264,13 @@ impl Client {
                     let update = tree::Update::decode(&bytes).map_err(|_| Error::BadArg)?;
                     surface.tree.apply(update).map_err(|_| Error::BadArg)?;
                 }
+                Request::BindAction { node, action } => {
+                    let surface = self.surface_of_a11y(header.object)?;
+                    bind(&mut surface.bound, node, action)?;
+                }
+                Request::SetUnsaved(unsaved) => {
+                    self.surface_of_toplevel(header.object)?.unsaved = unsaved;
+                }
                 Request::ToplevelDestroy => {
                     let surface = self.surface_of_toplevel(header.object)?;
                     surface.toplevel = None;
@@ -290,6 +307,28 @@ impl Client {
             .iter()
             .find(|s| s.window == Some(window))
             .map(|s| &s.tree)
+    }
+
+    /// The declared action `node` of `window` runs, so `ui_act` on it takes
+    /// that action's tier; none for an unbound node (which asks), or one no
+    /// longer in the tree.
+    pub fn bound_action(&self, window: WindowId, node: u32) -> Option<&str> {
+        let surface = self.surfaces.iter().find(|s| s.window == Some(window))?;
+        surface.tree.node(node)?;
+        surface
+            .bound
+            .iter()
+            .find(|(n, _)| *n == node)
+            .map(|(_, action)| action.as_str())
+    }
+
+    /// Whether `window`'s app says it holds changes not yet kept, so
+    /// `window_close` asks first. A window of a client that never says is
+    /// treated as saved, as ADR 0005 §6 has it for an app that reports nothing.
+    pub fn unsaved(&self, window: WindowId) -> bool {
+        self.surfaces
+            .iter()
+            .any(|s| s.window == Some(window) && s.unsaved)
     }
 
     /// Asks `window`'s app to run `action` (a bit number of
@@ -451,4 +490,24 @@ impl Client {
         self.surfaces.clear();
         effects
     }
+}
+
+/// Binds `node` to `action`, or unbinds it for an empty name. A name that is not
+/// `<app>_<function>`-shaped, or a window past [`MAX_BOUND`], closes the
+/// connection.
+fn bind(bound: &mut Vec<(u32, String)>, node: u32, action: &str) -> Result<(), Error> {
+    bound.retain(|(n, _)| *n != node);
+    if action.is_empty() {
+        return Ok(());
+    }
+    let shaped = action.len() <= MAX_ACTION
+        && action.contains('_')
+        && action
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
+    if !shaped || bound.len() >= MAX_BOUND {
+        return Err(Error::BadArg);
+    }
+    bound.push((node, String::from(action)));
+    Ok(())
 }

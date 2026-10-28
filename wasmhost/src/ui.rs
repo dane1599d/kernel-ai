@@ -9,7 +9,7 @@ use crate::canonical::CoreInstance;
 use crate::instance::HostState;
 use crate::link::WitFunc;
 use crate::tables;
-use crate::uival::{self, layout, str_of, u16_of, u32_of, widget};
+use crate::uival::{self, bool_of, layout, str_of, u16_of, u32_of, widget};
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::String;
@@ -222,6 +222,10 @@ fn run(
             frame.map(|frame| host.shown(window, frame))
         }
         "close" => host.ui.close(window).map(|()| host.closed(window)),
+        "set-unsaved" => {
+            let unsaved = bool_of(args.get(1))?;
+            host.ui.window(window).map(|w| w.set_unsaved(unsaved))
+        }
         other => return Err(format!("{other} is not a view function")),
     };
     Ok(done.map(|()| None))
