@@ -10,6 +10,7 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use fsproto::{How, MAX_DATA, Reply, Request};
+use kabi::Error;
 use kabi::handle::{Handle, HandleInfo, Kind, MAX_STARTUP, MAX_TRANSFER, Rights};
 use user::sys;
 
@@ -22,9 +23,10 @@ pub struct Folders {
 }
 
 impl Folders {
-    /// A `Dir` `fs` refuses (no `kai-data` on this machine, or one mounted
-    /// read-only without the folders) is none. One `fs` does not answer at all
-    /// is an error: guessing "none" would skip the cache and the snapshot.
+    /// A `Dir` with no `fs` behind it (no `kai-data` on this machine: the call
+    /// is Unavailable), or one `fs` refuses (mounted read-only without the
+    /// folders), is none. An `fs` that is there but does not answer is an
+    /// error: guessing "none" would skip the cache and the snapshot.
     pub fn from_startup() -> Result<Folders, String> {
         let mut handles = [HandleInfo::default(); MAX_STARTUP];
         let count = sys::startup(&mut handles).unwrap_or(0);
@@ -36,6 +38,9 @@ impl Folders {
             let Some(dir) = dirs.next() else {
                 return Ok(None);
             };
+            if !served_by_fs(dir) {
+                return Ok(None);
+            }
             match ask(dir, &Request::Stat)? {
                 (Reply::Stat(_), _) => Ok(Some(dir)),
                 (Reply::Failed(_), _) => Ok(None),
@@ -62,6 +67,27 @@ fn ask(on: Handle, request: &Request) -> Result<(Reply, Option<Handle>), String>
         }
     }
     ask_once(on, request)
+}
+
+/// Tries before a `Dir` with no server counts as none: an `fs` the supervisor
+/// is restarting is back within a few tens of milliseconds.
+const NO_SERVER_TRIES: u32 = 5;
+const NO_SERVER_MS: u64 = 200;
+
+/// Whether a server answers on `dir` at all: the kernel says Unavailable when
+/// none does.
+fn served_by_fs(dir: Handle) -> bool {
+    let bytes = fsproto::encode_request(&Request::Stat);
+    let mut reply = vec![0u8; fsproto::MAX_MESSAGE];
+    let mut moved = [Handle::NONE; MAX_TRANSFER];
+    for _ in 1..NO_SERVER_TRIES {
+        let call = sys::call_h(dir, &bytes, &mut reply, CALL_MS, &[], &mut moved);
+        if call != Err(Error::Unavailable) {
+            return true;
+        }
+        sys::sleep_ms(NO_SERVER_MS);
+    }
+    sys::call_h(dir, &bytes, &mut reply, CALL_MS, &[], &mut moved) != Err(Error::Unavailable)
 }
 
 fn ask_once(on: Handle, request: &Request) -> Result<(Reply, Option<Handle>), String> {
