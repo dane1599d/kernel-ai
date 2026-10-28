@@ -401,6 +401,7 @@ pub const MEM_COMMIT: u64 = 161;
 /// gives every committed page back to the system; how many. NotFound for any
 /// other address.
 pub const MEM_RELEASE: u64 = 162;
+
 // ---- U, 170-179 ----
 
 /// `slot_info(handle, slot, &mut update::SlotInfo) -> 0`: slot `slot`'s
