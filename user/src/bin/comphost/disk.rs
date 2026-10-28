@@ -82,8 +82,10 @@ impl Disk {
     /// The app's folder beneath the startup `Dir`, made if new.
     pub fn open(app: &str) -> Option<Self> {
         let apps = startup_dir()?;
-        let folder = open(apps, app, How::Existing)
-            .or_else(|_| open(apps, app, How::Mkdir))
+        let folder = open(apps, app, How::Existing).or_else(|_| open(apps, app, How::Mkdir));
+        // Only its own folder is kept, not all of `/system/apps`.
+        let _ = sys::handle_close(apps);
+        let folder = folder
             .map_err(|why| println!("comphost: no folder for {app}'s saved state: {why}"))
             .ok()?;
         Some(Self { folder, next: 0 })

@@ -85,12 +85,13 @@ pub const SYSTEM_PKG: u64 = Badge {
 
 /// The badge of the startup `Dir` a plan line's `dir=apps` grants: `/system/apps`,
 /// where comphost keeps each app's saved state in a folder named for the app
-/// (P4, app storage that survives a reboot). Fixed, as [`SYSTEM_PKG`]; object 2.
+/// (P4, app storage that survives a reboot). Fixed, as [`SYSTEM_PKG`]; object 4
+/// (2 is `/system/trust`'s, #288).
 pub const SYSTEM_APPS: u64 = Badge {
     volume: SYSTEM,
     file: false,
     epoch: 0,
-    object: 2,
+    object: 4,
 }
 .raw();
 
