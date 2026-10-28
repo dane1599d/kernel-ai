@@ -19,6 +19,7 @@ use bootslot::Nv;
 use kabi::handle::Handle;
 use kabi::update::{DISK, MAX_IO, SECTOR};
 use kaituf::Error as TufError;
+use kaituf::meta::Root;
 use kaituf::updater::{Cache, Remote, Updater};
 use sha2::{Digest, Sha256};
 use user::{println, sys};
@@ -92,10 +93,38 @@ impl Remote for Repo {
 /// The verified metadata: `/system/trust/<role>.json` when `kai-data` is there
 /// (ADR 0008 §7's cache, so the next refresh starts from the newest root and
 /// refuses replayed metadata), and this refresh's copies in memory. The root
-/// starts as the one in `/system/trust`, or else the slot's own.
+/// starts as the newer of `/system/trust`'s and the slot's own.
 struct Trust {
     memory: BTreeMap<String, Vec<u8>>,
     dir: Option<Handle>,
+}
+
+/// The top-level roles, read from `/system/trust` before the refresh starts.
+const ROLES: [&str; 4] = ["root", "timestamp", "snapshot", "targets"];
+
+impl Trust {
+    /// `dir`'s copies of [`ROLES`]. A read that fails refuses the update: taken
+    /// as "nothing cached", it would let an older root or a replayed timestamp
+    /// through.
+    fn open(dir: Option<Handle>) -> Result<Trust, String> {
+        let mut memory = BTreeMap::new();
+        if let Some(dir) = dir {
+            for role in ROLES {
+                let name = format!("{role}.json");
+                let read = folders::read(dir, &name)
+                    .map_err(|e| format!("refused: /system/trust/{name}: {e}"))?;
+                if let Some(bytes) = read {
+                    memory.insert(role.into(), bytes);
+                }
+            }
+        }
+        Ok(Trust { memory, dir })
+    }
+}
+
+/// The version of a root's bytes, or `None` if they do not parse.
+fn root_version(bytes: &[u8]) -> Option<u64> {
+    Root::parse(bytes).ok().map(|root| root.version)
 }
 
 impl Cache for Trust {
@@ -124,21 +153,21 @@ pub fn update(handle: Handle) -> Result<(), String> {
     root.truncate(len);
     let now = sys::trust_time(handle).map_err(|e| format!("TRUST_TIME: {e:?}"))?;
     let mut repo = Repo::open(handle)?;
-    let dirs = Folders::from_startup();
-    let mut cache = Trust {
-        memory: BTreeMap::new(),
-        dir: dirs.trust,
-    };
-    let cached = dirs
-        .trust
-        .and_then(|dir| folders::read(dir, "root.json").ok().flatten());
+    let dirs = Folders::from_startup()?;
+    let mut cache = Trust::open(dirs.trust)?;
+    // The newer root wins (ADR 0008 §7): an older one would let keys a rotation
+    // revoked sign the chain again.
+    let own = root_version(&root).ok_or("refused: the slot's own root does not parse")?;
+    let cached = cache
+        .memory
+        .get("root")
+        .and_then(|bytes| root_version(bytes));
     match cached {
-        Some(newest) => {
-            println!("updated: the trusted root is /system/trust's");
-            cache.memory.insert("root".into(), newest);
+        Some(version) if version > own => {
+            println!("updated: the trusted root is /system/trust's, version {version}");
         }
-        None => {
-            println!("updated: the trusted root is the slot's own");
+        _ => {
+            println!("updated: the trusted root is the slot's own, version {own}");
             cache.save("root", &root).map_err(|e| format!("{e}"))?;
         }
     }
