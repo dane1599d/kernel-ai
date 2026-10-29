@@ -128,13 +128,19 @@ fn root_version(bytes: &[u8]) -> Option<u64> {
 }
 
 impl Cache for Trust {
-    fn load(&mut self, role: &str) -> Option<Vec<u8>> {
+    fn load(&mut self, role: &str) -> Result<Option<Vec<u8>>, TufError> {
         if let Some(bytes) = self.memory.get(role) {
-            return Some(bytes.clone());
+            return Ok(Some(bytes.clone()));
         }
-        let bytes = folders::read(self.dir?, &format!("{role}.json")).ok()??;
-        self.memory.insert(role.into(), bytes.clone());
-        Some(bytes)
+        let Some(dir) = self.dir else {
+            return Ok(None);
+        };
+        // A copy that cannot be read is an error, never "nothing kept".
+        let bytes = folders::read(dir, &format!("{role}.json")).map_err(TufError::Io)?;
+        if let Some(bytes) = &bytes {
+            self.memory.insert(role.into(), bytes.clone());
+        }
+        Ok(bytes)
     }
 
     fn save(&mut self, role: &str, bytes: &[u8]) -> Result<(), TufError> {
