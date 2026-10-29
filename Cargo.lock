@@ -1233,6 +1233,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "promptcore"
+version = "0.1.0-dev"
+
+[[package]]
 name = "quant"
 version = "0.1.0-dev"
 dependencies = [
