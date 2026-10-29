@@ -307,3 +307,63 @@ fn the_notes_window_guest_shows_its_window_and_takes_clicks() {
         .unwrap();
     assert_eq!(g.take_ui(), vec![Update::Closed(w)]);
 }
+
+/// Keys as `desktop` posts them reach Notes' widgets through `uikit`'s routing
+/// (the real guest, when built): Tab, Tab and Enter press "New note"; two more
+/// Tabs reach the editor, and typing edits the note.
+#[test]
+fn keys_drive_the_notes_window_guest() {
+    use livecore::Instance;
+    use uikit::input::{Key, Mods};
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../target/wasm32-unknown-unknown/component/comp_notes_window.wasm"
+    );
+    let Ok(wasm) = std::fs::read(path) else {
+        std::eprintln!("skipped: build comp-notes-window for wasm32 first");
+        return;
+    };
+    let mut g = load_core(&wasm, LIMITS, None).unwrap();
+    g.view(&livecore::txn::Storage::new());
+    assert_eq!(g.init(), Ok(0));
+    let w = match g.take_ui().pop() {
+        Some(Update::Frame { window, .. }) => window,
+        other => panic!("{other:?}"),
+    };
+    let press = |g: &mut crate::CoreInstance, key: Key, text: &str| {
+        for down in [true, false] {
+            let input = Input::Key {
+                key,
+                down,
+                mods: Mods::default(),
+                text: if down {
+                    String::from(text)
+                } else {
+                    String::new()
+                },
+            };
+            g.ui_input(w, input).unwrap();
+        }
+    };
+    press(&mut g, Key::Tab, "");
+    press(&mut g, Key::Tab, "");
+    press(&mut g, Key::Enter, "");
+    let get = appabi::Func {
+        export: String::from("app:notes/actions@1.0.0#get"),
+        params: vec![Ty::U32],
+        result: Some(Ty::Option(Box::new(Ty::String))),
+    };
+    let note = |g: &mut crate::CoreInstance| Instance::call(g, &get, &[Val::U32(1)]).unwrap();
+    assert_eq!(
+        note(&mut g),
+        Some(Val::Option(Some(Box::new(Val::String(String::new())))))
+    );
+    press(&mut g, Key::Tab, "");
+    press(&mut g, Key::Tab, "");
+    press(&mut g, Key::Other(0x0B), "h");
+    press(&mut g, Key::Other(0x0C), "i");
+    assert_eq!(
+        note(&mut g),
+        Some(Val::Option(Some(Box::new(Val::String(String::from("hi"))))))
+    );
+}

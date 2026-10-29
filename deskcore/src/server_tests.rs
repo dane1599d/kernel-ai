@@ -238,6 +238,89 @@ fn configure_close_and_destroy_go_through_the_client() {
     assert_eq!(client.windows().count(), 0);
 }
 
+/// Keys, clicks and moves for a client's window go to its pool's header ring,
+/// a key with the text it types; the seat hears the modifiers.
+#[test]
+fn input_for_a_window_goes_to_its_pool_with_its_text() {
+    use crate::desk::Button;
+    use crate::geom::Point;
+    use surfabi::header::Event as Ring;
+    use surfabi::input::Kind;
+    let mut desk = Desk::new(1280, 800);
+    let mut client = Client::new(42, "notes");
+    client.handle(&mut desk, &setup(), true).unwrap();
+    client.pool_mapped(2);
+    let needs = client.handle(&mut desk, &show(), false).unwrap();
+    let [Need::Show { window, .. }] = needs[..] else {
+        panic!("{needs:?}");
+    };
+    events(&mut client);
+    let key = |usage, down| Effect::Key {
+        window,
+        usage,
+        down,
+    };
+    client.apply(&[key(0xE1, true), key(0x04, true), key(0x04, false)]);
+    let posts = client.take_posts();
+    let typed: Vec<(u32, Kind, u16, i32, &[u8])> = posts
+        .iter()
+        .map(|(pool, e)| match e {
+            Ring::Input {
+                event, text, len, ..
+            } => (
+                *pool,
+                event.kind,
+                event.code,
+                event.value,
+                &text[..usize::from(*len)],
+            ),
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        typed,
+        [
+            (2, Kind::Key, 0xE1, 1, &b""[..]),
+            (2, Kind::Key, 0x04, 1, &b"A"[..]),
+            (2, Kind::Key, 0x04, 0, &b""[..]),
+        ]
+    );
+    // The seat (7) heard Shift.
+    let sent = events(&mut client);
+    let modifiers = Event::decode(Interface::Seat, sent[0].1, &sent[0].2);
+    assert_eq!((sent[0].0, modifiers), (7, Ok(Event::Modifiers(1))));
+    // Ctrl held: the key comes with no text.
+    client.apply(&[key(0xE1, false), key(0xE0, true), key(0x06, true)]);
+    let ctrl_c = client.take_posts();
+    assert!(matches!(ctrl_c[2].1, Ring::Input { len: 0, .. }));
+    // A click carries its place in 24.8; another window's input is not ours.
+    let at = Point { x: 10, y: 20 };
+    client.apply(&[Effect::Button {
+        window,
+        at,
+        button: Button::Left,
+        down: true,
+    }]);
+    let click = client.take_posts();
+    assert!(matches!(
+        click[..],
+        [(
+            2,
+            Ring::Input {
+                x: 2560,
+                y: 5120,
+                ..
+            }
+        )]
+    ));
+    client.apply(&[Effect::Key {
+        window: crate::desk::WindowId(window.0 + 100),
+        usage: 0x04,
+        down: true,
+    }]);
+    assert!(client.take_posts().is_empty());
+}
+
 #[test]
 fn events_are_sent_in_whole_messages() {
     let mut client = Client::new(1, "x");

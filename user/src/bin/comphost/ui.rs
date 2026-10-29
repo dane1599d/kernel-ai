@@ -129,13 +129,51 @@ impl Ui {
         }
     }
 
-    /// Asks `desktop` for its events and acts on them.
+    /// Asks `desktop` for its events and acts on them, then hands the app the
+    /// input `desktop` posted to its windows' event rings.
     pub fn poll<E: Env<Instance = LiveInstance>>(&mut self, host: &mut Host<E>) {
         let mut told = core::mem::take(&mut self.later);
         if let Ok(len) = sys::call_route(self.route, &[], &mut self.reply, CALL_MS) {
             told.extend(self.desk.told(&self.reply[..len.min(self.reply.len())]));
         }
         self.act(host, told);
+        let inputs = self.take_input();
+        if inputs.is_empty() {
+            return;
+        }
+        for (app, input) in inputs {
+            with_shown(host, |core| {
+                let _ = core.ui_input(app, input.clone());
+            });
+        }
+        self.pump(host);
+    }
+
+    /// The input waiting in each window's event ring, as `uikit` input: keys
+    /// with their text, buttons and pointer moves (ADR 0005 §3).
+    fn take_input(&mut self) -> Vec<(u32, uikit::input::Input)> {
+        let mut out = Vec::new();
+        for pool in &self.pools {
+            if (pool.bytes as usize) < surfabi::header::PAGE {
+                continue;
+            }
+            // SAFETY: the pool is mapped read-write at `address` for `bytes`,
+            // at least a page; its first page is the header set up at `open`.
+            let page = unsafe { &mut *(pool.address as *mut [u8; surfabi::header::PAGE]) };
+            loop {
+                match surfabi::header::take(page) {
+                    Ok(Some(event)) => {
+                        if let Some(input) = self.desk.seat_state.input(&event) {
+                            out.push((pool.app, input));
+                        }
+                    }
+                    // One it cannot read is skipped.
+                    Err(()) => {}
+                    Ok(None) => break,
+                }
+            }
+        }
+        out
     }
 
     fn act<E: Env<Instance = LiveInstance>>(&mut self, host: &mut Host<E>, told: Vec<Told>) {
@@ -223,8 +261,15 @@ impl Ui {
             address,
             bytes: open.pool_bytes,
         };
+        // The header page first: `desktop` posts the window's input to its ring.
+        let header = surfabi::header::new_page(open.pool_bytes);
+        // SAFETY: the pool is mapped read-write at `address`, a page at least.
+        unsafe {
+            core::ptr::copy_nonoverlapping(header.as_ptr(), address as *mut u8, header.len())
+        };
         self.paint(&pool, open.target, frame);
-        let rights = Rights::MAP | Rights::READ | Rights::TRANSFER;
+        // Write, so `desktop` can post input to the header page's ring.
+        let rights = Rights::MAP | Rights::READ | Rights::WRITE | Rights::TRANSFER;
         let sent =
             sys::handle_dup(shm, rights).is_ok_and(|copy| self.send(&open.calls, Some(copy)));
         self.pools.push(pool);
