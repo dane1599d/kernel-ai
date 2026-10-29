@@ -74,6 +74,11 @@ impl Shell {
         self.c.on
     }
 
+    /// Whether an entry waits on a question at the user's prompt.
+    pub(crate) fn c_waiting(&self) -> bool {
+        self.c.waiting.is_some()
+    }
+
     /// The line at `c>`, or a `:c` line at `kai>`; `None` for every other line
     /// at `kai>`.
     pub(crate) fn c_line(&mut self, input: &str) -> Option<Reply> {

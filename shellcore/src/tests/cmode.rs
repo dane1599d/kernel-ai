@@ -3,6 +3,7 @@
 //! answered at the prompt, `:dis` and `:defs`, and a restart that replays.
 
 use super::*;
+use crate::PanelResult;
 use ccserve::rows::Rows;
 use ccserve::{Service, XCC_HEADERS};
 
@@ -292,4 +293,49 @@ fn colon_c_inside_an_open_rhai_entry_stays_rhai() {
     assert!(shell.eval("fn f() {").more);
     shell.eval(":c");
     assert!(!shell.at_c());
+}
+
+/// A line from the desktop's AI panel runs at kai> while the terminal is at
+/// c>, never reaches cc, and leaves the terminal's open entry and session.
+#[test]
+fn a_panel_line_runs_at_kai_and_leaves_c_alone() {
+    let host = FakeHost::new();
+    let mut shell = c_shell(&host);
+    assert!(shell.eval("I64 Sq(I64 x) { return x * x; }").ok);
+    assert!(shell.eval("I64 F(I64 x) {").more);
+    let sent = host.cc_sent.borrow().len();
+    assert_eq!(shell.eval_panel("1 + 2"), PanelResult::Done("3".into()));
+    for line in [":c 6 * 7", ":c", ":rhai"] {
+        assert_eq!(
+            shell.eval_panel(line),
+            PanelResult::Refused("C goes in the terminal".into()),
+            "{line}"
+        );
+    }
+    assert_eq!(host.cc_sent.borrow().len(), sent);
+    assert!(shell.at_c());
+    assert!(shell.eval("  return Sq(x); }").ok);
+    assert_eq!(shell.eval("F(3)").text, "= 9");
+}
+
+/// While a C entry waits on its question a panel line is refused, since the
+/// entry's log entry takes in what is logged after it began; the terminal's
+/// answer still finishes the entry.
+#[test]
+fn the_terminals_answer_finishes_a_c_entry_after_a_panel_line() {
+    let host = FakeHost::new();
+    *host.procs.borrow_mut() = alloc::vec![String::from("notes")];
+    let mut shell = c_shell(&host);
+    let id = shell
+        .eval("process_stop(\"notes\")")
+        .confirm
+        .expect("a stop asks");
+    assert!(matches!(
+        shell.eval_panel("1 + 2"),
+        PanelResult::Refused(why) if why.contains("C entry waits")
+    ));
+    let once = host.mint(id, "process_stop(\"notes\")");
+    let allowed = shell.eval(&format!("answer {id} allow once={once}"));
+    assert!(allowed.text.ends_with("= 0"), "{allowed:?}");
+    assert!(host.procs.borrow().is_empty());
 }
