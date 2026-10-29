@@ -35,6 +35,8 @@ const GUEST: &str = r#"(module
     i32.add
     global.set $top
     local.get $at)
+  (func (export "kai:ui/input@0.1.0#on-ui") (param i32 i32 i32 i32 i32 i32)
+    (drop (call $send (i32.const 32) (i32.const 10))))
   (func (export "kai:live/lifecycle@0.1.0#health") (result i32)
     i32.const 32
     i32.const 10
@@ -121,6 +123,23 @@ fn send_queues_a_message_with_a_ticket_and_taking_empties_the_queue() {
     assert!(app.take_edits().is_empty());
     // Tickets go on, so an answer is never taken for a later message's.
     assert_eq!(in_call(&mut app, |a| a.health()).unwrap(), 2);
+}
+
+#[test]
+fn a_message_says_whether_a_person_was_at_the_keys() {
+    use uikit::widget::UiEvent;
+    let mut app = load_core_granted(&guest(), LIMITS, None, granted()).unwrap();
+    let press = [UiEvent::Pressed(2)];
+    // A real key or click, the agent's action or an event, and an answer's call.
+    in_call(&mut app, |a| a.ui_events_user(1, &press)).unwrap();
+    in_call(&mut app, |a| a.ui_events(1, &press)).unwrap();
+    in_call(&mut app, |a| a.health()).unwrap();
+    let sent = app.take_edits();
+    let users: std::vec::Vec<bool> = sent.iter().map(|r| r.user).collect();
+    assert_eq!(users, [true, false, false]);
+    // The flag does not stay up after the person's call.
+    in_call(&mut app, |a| a.ui_events(1, &press)).unwrap();
+    assert!(!app.take_edits()[0].user);
 }
 
 #[test]

@@ -337,3 +337,33 @@ fn an_app_command_must_fit_a_journal_entry() {
     assert_eq!(for_app(line(MAX_COMMAND).as_bytes()), Ok(()));
     assert!(for_app(line(MAX_COMMAND + 1).as_bytes()).is_err());
 }
+
+#[test]
+fn a_build_goes_only_for_a_person_and_not_too_soon() {
+    use crate::gate::{BUILD_GAP_MS, Gate, NOT_BY_A_PERSON, TOO_SOON, starts_build};
+    assert!(starts_build(b"cmd build"));
+    assert!(!starts_build(b"cmd builds"));
+    assert!(!starts_build(b"cmd status"));
+    assert!(!starts_build(b"open notes"));
+    assert!(!starts_build(b"cmd c 1 build"));
+    let mut gate = Gate::new();
+    // Only a person's key or click starts a build, and a refusal costs no time.
+    assert_eq!(gate.check(b"cmd build", false, 0), Err(NOT_BY_A_PERSON));
+    assert_eq!(gate.check(b"cmd build", true, 1), Ok(()));
+    assert_eq!(gate.check(b"cmd build", true, 2), Err(TOO_SOON));
+    assert_eq!(gate.check(b"cmd build", false, 3), Err(NOT_BY_A_PERSON));
+    assert_eq!(gate.check(b"cmd build", true, BUILD_GAP_MS), Err(TOO_SOON));
+    assert_eq!(gate.check(b"cmd build", true, 1 + BUILD_GAP_MS), Ok(()));
+    // The gap runs from the last build that went, and a clock that steps back
+    // does not open the gate.
+    assert_eq!(gate.check(b"cmd build", true, 5), Err(TOO_SOON));
+    // Everything else passes, by a person or not.
+    for message in [
+        &b"cmd status"[..],
+        b"cmd view 1,40",
+        b"open notes",
+        b"cmd c 1 x",
+    ] {
+        assert_eq!(gate.check(message, false, 6), Ok(()));
+    }
+}

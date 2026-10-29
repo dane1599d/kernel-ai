@@ -11,6 +11,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
+use editcore::gate::Gate;
 use kabi::handle::{HandleInfo, Kind, MAX_STARTUP};
 use livecore::host::{Env, Host};
 use user::sys;
@@ -44,8 +45,11 @@ fn call(message: &[u8], reply: &mut [u8]) -> Result<Vec<u8>, String> {
     }
 }
 
-/// Sends what the shown version queued and tells it the answers.
-pub fn pump<E: Env<Instance = LiveInstance>>(host: &mut Host<E>) {
+/// Sends what the shown version queued and tells it the answers. A build is
+/// sent only when a person asked for it and not too soon after the last one
+/// ([`Gate`]); otherwise the app is answered with an `err` line, as if the
+/// service had refused it.
+pub fn pump<E: Env<Instance = LiveInstance>>(host: &mut Host<E>, gate: &mut Gate) {
     let mut reply = vec![0u8; kabi::MAX_MESSAGE];
     let start = sys::time_ns();
     // Set by the first message that could not be sent; the rest of the pump
@@ -71,9 +75,12 @@ pub fn pump<E: Env<Instance = LiveInstance>>(host: &mut Host<E>) {
                 if failed.is_none() && spent > BUDGET_MS {
                     failed = Some(String::from("the edit service is too slow"));
                 }
-                let outcome = match &failed {
-                    Some(why) => Err(why.clone()),
-                    None => call(&request.message, &mut reply),
+                let now_ms = sys::time_ns() / 1_000_000;
+                let verdict = gate.check(&request.message, request.user, now_ms);
+                let outcome = match (&failed, verdict) {
+                    (Some(why), _) => Err(why.clone()),
+                    (None, Err(refused)) => Ok(refused.as_bytes().to_vec()),
+                    (None, Ok(())) => call(&request.message, &mut reply),
                 };
                 if let (None, Err(why)) = (&failed, &outcome) {
                     failed = Some(why.clone());

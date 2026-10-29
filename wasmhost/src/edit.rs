@@ -40,6 +40,11 @@ pub struct EditRequest {
     /// What `on-reply` is told the answer is for.
     pub ticket: u32,
     pub message: Vec<u8>,
+    /// Whether a person's key or click was being handled when the app sent it
+    /// ([`CoreInstance::ui_input`], [`CoreInstance::ui_events_user`]), and not an
+    /// answer, an event, the agent's `ui_act` or a timer. comphost sends a build
+    /// only for a message that is.
+    pub user: bool,
 }
 
 /// The messages not yet taken, and the next ticket.
@@ -76,6 +81,7 @@ pub(crate) fn send(mut caller: Caller<'_, HostState>, ptr: i32, len: i32) -> Res
             "{EDIT} send: only inside a call that a transaction wraps"
         )));
     }
+    let user = caller.data().user_input;
     let host = &mut caller.data_mut().edit;
     if host.queue.len() >= MAX_QUEUED {
         return Err(Error::new(alloc::format!(
@@ -84,7 +90,11 @@ pub(crate) fn send(mut caller: Caller<'_, HostState>, ptr: i32, len: i32) -> Res
     }
     let ticket = host.next;
     host.next = host.next.wrapping_add(1);
-    host.queue.push(EditRequest { ticket, message });
+    host.queue.push(EditRequest {
+        ticket,
+        message,
+        user,
+    });
     Ok(ticket as i32)
 }
 

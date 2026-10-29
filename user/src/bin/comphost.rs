@@ -157,7 +157,8 @@ fn main() -> i32 {
             return livecore::host::EXIT_REFUSED;
         }
     };
-    let edits = env.grants.edit;
+    // The editor's rules for what it may send; none for an app without the grant.
+    let mut edits = env.grants.edit.then(editcore::gate::Gate::new);
     let mut napper = Napper::new(Nap::new(settings.nap_ms, now_ms()));
     napper.nap.keep_running(settings.keep_running);
     let mut host = match Host::start(env, &name, settings) {
@@ -171,7 +172,7 @@ fn main() -> i32 {
         "up (restart {}): serving {name}",
         arg(&args, "restart").unwrap_or("0")
     );
-    settle(&mut windows, edits, &mut host);
+    settle(&mut windows, &mut edits, &mut host);
     let mut request = vec![0u8; kabi::MAX_MESSAGE];
     // When the host's own wait ends; 0 is never.
     let mut tick_at = deadline(host.timeout_ms());
@@ -211,7 +212,7 @@ fn main() -> i32 {
                 }
                 tick_at = deadline(host.timeout_ms());
                 napper.after(&host, now_ms());
-                settle(&mut windows, edits, &mut host);
+                settle(&mut windows, &mut edits, &mut host);
             }
             Err(Error::TimedOut) => {
                 if let Some(ui) = windows.as_mut().filter(|ui| ui.wants_poll())
@@ -227,7 +228,7 @@ fn main() -> i32 {
                     println!("{}", exit.why);
                     return exit.code;
                 }
-                settle(&mut windows, edits, &mut host);
+                settle(&mut windows, &mut edits, &mut host);
                 match napper.tick(&mut host, now_ms()) {
                     Ok(napped) => log_nap(&name, napped),
                     Err(exit) => {
@@ -241,7 +242,7 @@ fn main() -> i32 {
                         return exit.code;
                     }
                     tick_at = deadline(host.timeout_ms());
-                    settle(&mut windows, edits, &mut host);
+                    settle(&mut windows, &mut edits, &mut host);
                 }
             }
             Err(error) => {
@@ -254,9 +255,13 @@ fn main() -> i32 {
 
 /// What the instances did that leaves comphost: the editor's messages go to the
 /// edit service, then the windows' frames to `desktop`.
-fn settle(windows: &mut Option<ui::Ui>, edits: bool, host: &mut Host<SysEnv>) {
-    if edits {
-        edit::pump(host);
+fn settle(
+    windows: &mut Option<ui::Ui>,
+    edits: &mut Option<editcore::gate::Gate>,
+    host: &mut Host<SysEnv>,
+) {
+    if let Some(gate) = edits.as_mut() {
+        edit::pump(host, gate);
     }
     if let Some(ui) = windows.as_mut() {
         ui.pump(host);
