@@ -14,8 +14,10 @@ changes = "none"
 why = """
 cc embeds cc.wasm and runs it on wasmi to compile each entry at c>. The binary is
 kept here rather than built by every build, so building the OS needs no C
-toolchain. It is rebuilt and compared with `cargo xtask ccwasm`, which needs git,
-make, a host C compiler and llvm-ar (Linux or WSL2). gen2 and gen3 differ only in
+toolchain. It is rebuilt and compared with `cargo xtask ccwasm --check`, which
+needs git, make, a host C compiler and llvm-ar (Linux or WSL2); the `ccwasm`
+workflow runs it whenever this directory or the build changes, and on main.
+gen2 and gen3 differ only in
 the `name` custom section (S12-1). The headers are the ones session code may
 include; kairt supplies the few functions they declare that sessions use.
 """
