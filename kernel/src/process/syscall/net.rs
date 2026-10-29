@@ -37,6 +37,8 @@ pub(super) enum Destination {
     Llm,
     /// The build service, `build=` (BUILD).
     Build,
+    /// The package mirror, `pkgrepo=` (PKG_FETCH).
+    Pkgrepo,
 }
 
 /// A ring-3 HTTP request: the struct, the request copied in (at most 64 KiB), the
@@ -78,6 +80,11 @@ pub(super) fn exchange_to(
             return Err(Error::Invalid);
         }
         Destination::Build => crate::build_service::target(),
+        // Only the one request `pkg` builds: a GET of one range of one file.
+        Destination::Pkgrepo if kabi::pkgrepo::check(&request).is_err() => {
+            return Err(Error::Invalid);
+        }
+        Destination::Pkgrepo => crate::pkgrepo::target(),
     };
     let (ip, port) = target.ok_or(Error::NotFound)?;
     let response = net::exchange((ip, port), &request, timeout, response_cap, || {

@@ -32,6 +32,8 @@ mod standing;
 mod update;
 // M, memory (P3).
 mod mem;
+// P, packages.
+mod pkg;
 
 use crate::entry::TrapFrame;
 use crate::{cpu, ipc, threads};
@@ -101,6 +103,8 @@ const AREAS: &[Area] = &[
     update::handle,
     // M, memory (P3).
     mem::handle,
+    // P, packages.
+    pkg::handle,
 ];
 
 fn handle(slot: usize, number: u64, a: [u64; 6]) -> Result<u64, Error> {
