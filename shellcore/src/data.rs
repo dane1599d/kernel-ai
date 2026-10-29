@@ -22,6 +22,11 @@ impl Data {
             text: Rc::from(text.into()),
         }
     }
+
+    /// The text, for a `c>` entry's own program, which the user wrote.
+    pub fn text(&self) -> &str {
+        &self.text
+    }
 }
 
 /// Registers the `Data` type and `show` on a strict engine whose output is `line`'s.

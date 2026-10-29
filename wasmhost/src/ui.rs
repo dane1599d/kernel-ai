@@ -264,7 +264,20 @@ impl CoreInstance {
         let Ok(events) = events else {
             return Ok(());
         };
-        self.ui_events(window, &events)
+        self.ui_events_user(window, &events)
+    }
+
+    /// As [`CoreInstance::ui_events`], for events a person caused with a real key
+    /// or click: while the app handles them, a granted import can tell they are
+    /// the person's (`HostState::user_input`). [`CoreInstance::ui_input`] is this
+    /// for the input comphost routes from desktop; the agent's `ui_act` and every
+    /// other source go through `ui_events`, so they are never taken for a
+    /// person's.
+    pub fn ui_events_user(&mut self, window: u32, events: &[UiEvent]) -> Result<(), Fault> {
+        self.store.data_mut().user_input = true;
+        let result = self.ui_events(window, events);
+        self.store.data_mut().user_input = false;
+        result
     }
 
     /// The agent's AccessKit action on a node, which reaches the app as the same
