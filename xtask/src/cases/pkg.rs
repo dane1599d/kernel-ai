@@ -2,6 +2,7 @@
 
 use super::{TestCase, case};
 use crate::blklog::Data;
+use crate::pkgrepo::mirrors::MirrorKind;
 
 const VIRTIO: Data = Data {
     nvme: false,
@@ -46,7 +47,115 @@ const IMAGE_AGAIN: TestCase = TestCase {
     ..case("pkg-image (boot 2)", "test=pkg-image again")
 };
 
+/// A `pkg-install` boot against the `kind` mirror.
+const fn install(name: &'static str, cmdline: &'static str, kind: MirrorKind) -> TestCase {
+    TestCase {
+        server: false,
+        data: Some(VIRTIO),
+        mirror: Some(kind),
+        ..case(name, cmdline)
+    }
+}
+
+/// Boot 2 of `pkg-install`: undo, then the same install again, from the store.
+const INSTALL_AGAIN: TestCase = TestCase {
+    expect: &[
+        "pkg: undo switched to generation 3; big installed from the mirror as generation 4, fetched in 0 pieces",
+        "pkg-install: boot 2: fs shows generation 4 current, as pkg left it",
+    ],
+    ..install(
+        "pkg-install (boot 2)",
+        "test=pkg-install again",
+        MirrorKind::Signed,
+    )
+};
+
+/// Boot 2 of `pkg-install-rollback`: the mirror now serves a newer timestamp
+/// naming an older snapshot than the one boot 1 trusted.
+const ROLLBACK: TestCase = TestCase {
+    expect: &[
+        "pkg: the mirror's index is refused: bad version",
+        "pkg-install: boot 2: fs shows generation 2 current, as pkg left it",
+    ],
+    ..install(
+        "pkg-install-rollback (boot 2)",
+        "test=pkg-install rollback",
+        MirrorKind::RolledBack,
+    )
+};
+
 pub(super) const CASES: &[TestCase] = &[
+    // P4 task 2: `pkg` installs from the `pkgrepo=` mirror through PKG_FETCH, in
+    // 192 KiB ranges, checked with kaituf against the root the image carries
+    // (the mirror is signed by the image's own per-build keys); undo, then the
+    // install again comes from the store with no fetch.
+    TestCase {
+        expect: &[
+            "pkg: big installed from the mirror as generation 2, fetched in 2 pieces",
+            "pkg-install: generation 2 holds big from the mirror beside the image's notes",
+            "pkg-install: the catalogue lists big and notes installed, then the mirror's extra",
+            "pkg-install: boot 1: fs shows generation 2 current, as pkg left it",
+        ],
+        then: Some(&INSTALL_AGAIN),
+        ..install("pkg-install", "test=pkg-install", MirrorKind::Signed)
+    },
+    // ADR 0011's five tamper cases, each refused by name, switching nothing.
+    TestCase {
+        expect: &[
+            "pkg: the mirror's big is refused: BadHash(\"big\")",
+            "pkg-install: boot 1: fs shows generation 1 current, as pkg left it",
+        ],
+        ..install(
+            "pkg-install-flipped",
+            "test=pkg-install tampered",
+            MirrorKind::FlippedByte,
+        )
+    },
+    TestCase {
+        expect: &[
+            "pkg: the mirror's index is refused: expired: timestamp",
+            "pkg-install: boot 1: fs shows generation 1 current, as pkg left it",
+        ],
+        ..install(
+            "pkg-install-expired",
+            "test=pkg-install tampered",
+            MirrorKind::Expired,
+        )
+    },
+    TestCase {
+        expect: &[
+            "pkg: big installed from the mirror as generation 2, fetched in 2 pieces",
+            "pkg-install: boot 1: fs shows generation 2 current, as pkg left it",
+        ],
+        then: Some(&ROLLBACK),
+        ..install(
+            "pkg-install-rollback",
+            "test=pkg-install",
+            MirrorKind::Newer,
+        )
+    },
+    TestCase {
+        expect: &[
+            "pkg: the mirror's index is refused: below the signature threshold",
+            "pkg-install: boot 1: fs shows generation 1 current, as pkg left it",
+        ],
+        ..install(
+            "pkg-install-unknown-key",
+            "test=pkg-install tampered",
+            MirrorKind::UnknownKey,
+        )
+    },
+    TestCase {
+        expect: &[
+            "pkg: the mirror's big is refused: HeaderDiffers(\"big\")",
+            "pkg-install: boot 1: fs shows generation 1 current, as pkg left it",
+        ],
+        ..install(
+            "pkg-install-header",
+            "test=pkg-install tampered",
+            MirrorKind::HeaderDiffers,
+        )
+    },
     // P4 task 1: `pkg` reads the image's signed repository from the boot bundle
     // with BOOT_READ, which its plan line's `bootfiles=pkgrepo` grants beneath
     // `pkgrepo/` only, checks it with kaituf, and makes it generation 1. notes

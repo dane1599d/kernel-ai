@@ -277,10 +277,13 @@ pub fn act(
     else {
         return Ok(call);
     };
-    asked.messages.push(chat::Message::new(
-        chat::Role::System,
-        &crate::pack::group_text(group),
-    ));
+    // A second round whose read was in the same group shows its lines already.
+    let lines = crate::pack::group_text(group);
+    if !asked.messages.iter().any(|m| m.content == lines) {
+        asked
+            .messages
+            .push(chat::Message::new(chat::Role::System, &lines));
+    }
     decode(engine, second, &asked, &mut on_step)
 }
 
@@ -465,6 +468,7 @@ mod tests {
             line: "stop this".into(),
             state: "#{dir: \"/home/user\", net: \"up\"}".into(),
             timeout_ms: 1,
+            read: None,
         };
         assert_eq!(within_budget(&engine, &short), short);
         let windows = (0..20)
@@ -504,6 +508,7 @@ mod tests {
             line: "switch to round robin".into(),
             state: String::new(),
             timeout_ms: 1,
+            read: None,
         };
         let budget = infer::chat::Budget {
             kv_bytes: 64 << 20,
@@ -572,6 +577,7 @@ mod tests {
             line: "undo that".into(),
             state: String::new(),
             timeout_ms: 1,
+            read: None,
         };
         let mut cached = 0;
         let warm_answer = act(&mut engine, &g, &request, &history, |step| {

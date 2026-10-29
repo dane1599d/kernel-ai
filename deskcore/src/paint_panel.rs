@@ -5,12 +5,12 @@
 //! undo, or a refusal under an `error` rule.
 
 use crate::geom::Rect;
-use crate::paint::{PAD, Painter, Scene, baseline, disc, fill, g};
+use crate::paint::{PAD, Painter, Scene, disc, fill, g};
 use crate::panel::{Panel, State};
 use alloc::format;
 use alloc::string::String;
 use gfx2d::Canvas;
-use look::{DARK, TypeStyle};
+use look::TypeStyle;
 
 const PROMPT: &str = "kai>";
 const PLACEHOLDER: &str = "ask, or type Rhai";
@@ -30,19 +30,19 @@ impl Painter {
             return;
         };
         let panel = scene.panel;
-        fill(c, area, clip, DARK.window);
+        fill(c, area, clip, self.palette.window);
         let (rule, thick) = match (panel.state(), panel.focused()) {
-            (State::Refused { .. }, _) => (DARK.error, RULE),
-            (_, true) => (DARK.ai, RULE),
-            _ => (DARK.line, 1),
+            (State::Refused { .. }, _) => (self.palette.error, RULE),
+            (_, true) => (self.palette.ai, RULE),
+            _ => (self.palette.line, 1),
         };
         fill(c, Rect::new(area.x, area.y, area.w, thick), clip, rule);
         let (advance, line_h, _) = self.text.cell(1.0);
-        let y = baseline(area.y, area.h, TypeStyle::Mono);
+        let y = self.baseline(area.y, area.h, TypeStyle::Mono);
         let x = (area.x + PAD) as f32;
         let x = x + self
             .text
-            .draw_mono(c, g(clip), x, y, 1.0, true, DARK.ai, PROMPT);
+            .draw_mono(c, g(clip), x, y, 1.0, true, self.palette.ai, PROMPT);
         let input_x = x + advance;
         let input = Rect::new(input_x as i32, area.y, area.w / 2 - input_x as i32, area.h);
         let input_clip = input.intersect(&clip).unwrap_or_default();
@@ -53,7 +53,7 @@ impl Painter {
                 input_x,
                 y,
                 TypeStyle::Mono,
-                DARK.dim,
+                self.palette.dim,
                 PLACEHOLDER,
             );
         } else {
@@ -64,7 +64,7 @@ impl Painter {
                 y,
                 1.0,
                 false,
-                DARK.text,
+                self.palette.text,
                 panel.text(),
             );
         }
@@ -92,12 +92,12 @@ impl Painter {
             libm::ceilf(advance) as i32,
             line_h,
         );
-        fill(c, block, clip, DARK.ai);
+        fill(c, block, clip, self.palette.ai);
         if let Some(ch) = panel.text().chars().nth(panel.cursor()) {
-            let y = baseline(clip.y, clip.h, TypeStyle::Mono);
+            let y = self.baseline(clip.y, clip.h, TypeStyle::Mono);
             let under = String::from(ch);
             self.text
-                .draw_mono(c, g(clip), x, y, 1.0, false, DARK.window, &under);
+                .draw_mono(c, g(clip), x, y, 1.0, false, self.palette.window, &under);
         }
     }
 
@@ -108,11 +108,15 @@ impl Painter {
             return;
         };
         let style = TypeStyle::MonoTitle;
-        let y = baseline(area.y, area.h, style);
+        let y = self.baseline(area.y, area.h, style);
         let end = (right.right() - PAD) as f32;
         let parts: alloc::vec::Vec<(String, u32)> = match scene.panel.state() {
             State::Idle => {
-                let dot = if scene.bar.model { DARK.ok } else { DARK.dim };
+                let dot = if scene.bar.model {
+                    self.palette.ok
+                } else {
+                    self.palette.dim
+                };
                 disc(
                     c,
                     clip,
@@ -125,19 +129,19 @@ impl Painter {
             State::Thinking { since_ms } => {
                 let seconds = scene.now_ms.saturating_sub(*since_ms) / 1000;
                 alloc::vec![
-                    (format!("thinking {seconds}s"), DARK.text),
-                    (String::from("   Esc stops"), DARK.dim),
+                    (format!("thinking {seconds}s"), self.palette.text),
+                    (String::from("   Esc stops"), self.palette.dim),
                 ]
             }
             State::Acting { call, target } => alloc::vec![
-                (call.clone(), DARK.text),
-                (format!("  {target}"), DARK.muted),
+                (call.clone(), self.palette.text),
+                (format!("  {target}"), self.palette.muted),
             ],
             State::Done { line } => alloc::vec![
-                (line.clone(), DARK.text),
-                (String::from("   undo  show"), DARK.accent),
+                (line.clone(), self.palette.text),
+                (String::from("   undo  show"), self.palette.accent),
             ],
-            State::Refused { reason } => alloc::vec![(reason.clone(), DARK.error)],
+            State::Refused { reason } => alloc::vec![(reason.clone(), self.palette.error)],
         };
         let width: f32 = parts
             .iter()
@@ -147,7 +151,7 @@ impl Painter {
         if matches!(scene.panel.state(), State::Done { .. }) {
             // The check before a finished line.
             let at = (x as i32 - 12, area.y + area.h / 2);
-            disc(c, clip, at, 3.0, DARK.ok);
+            disc(c, clip, at, 3.0, self.palette.ok);
         }
         for (text, color) in &parts {
             x += self.draw_text(c, clip, x, y, style, *color, text);

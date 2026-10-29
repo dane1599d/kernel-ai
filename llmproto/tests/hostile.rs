@@ -270,6 +270,7 @@ fn act_requests_and_calls_parse_or_fail() {
         line: String::from("stop this, then \u{e9}"),
         state: String::from("focused=build-3 here=/home"),
         timeout_ms: 90_000,
+        read: None,
     };
     let wire = request.encode();
     hostile::fuzz(wire.as_bytes(), 29, 4000, |mutated| {
