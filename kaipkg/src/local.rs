@@ -10,8 +10,13 @@
 //!   holder of `/system/pkg` reads.
 //! - **Names:** a build cannot take a name another repository offers or that
 //!   is installed from one, so it never stands in for a signed package.
-//! - **Versions:** `0.0.<n>`, one past the build it replaces; `local` holds the
-//!   newest build of each name only.
+//! - **Versions:** the artifact's own, from its manifest's world
+//!   (`app:<name>/<world>@<version>`, as the packer reads one), newer than the
+//!   build it replaces; [`next`] proposes `0.0.<n>` for `cc build` to write.
+//!   `local` holds the newest build of each name only.
+//! - **Only apps:** a build on plain `kai:app/component` is an artifact only,
+//!   since ADR 0011 has no component package kind; the shell sends `pkg` apps
+//!   only.
 
 use crate::bundle::{self, ARTIFACT, HEADER};
 use crate::generation::Time;
@@ -71,10 +76,23 @@ pub struct Published {
     pub version: Version,
 }
 
-/// `artifact`, a component `cc build` wrote, as a package in `local`, signed by
-/// `key`: named by its manifest, refused if `taken` holds that name, and
-/// replacing an older build of it. The whole repository is written again in one
-/// action, so a crash leaves the old one or the new.
+/// The version the next build of `name` takes unless the user names one:
+/// `0.0.<n>`, one past the newest build `local` holds, or `0.0.1`.
+pub fn next(vol: &mut dyn Volume, name: &str) -> Result<Version, String> {
+    let held = held(vol)?;
+    Ok(
+        match held.iter().find(|(header, _, _)| header.name == name) {
+            Some((old, _, _)) => Version::new(0, 0, old.version.patch + 1),
+            None => Version::new(0, 0, 1),
+        },
+    )
+}
+
+/// `artifact`, an app `cc build` wrote, as a package in `local`, signed by
+/// `key`: named and versioned by its manifest, refused if `taken` holds that
+/// name or the version is not newer than the build it replaces. The whole
+/// repository is written again in one action, so a crash leaves the old one or
+/// the new.
 pub fn publish(
     vol: &mut dyn Volume,
     key: &Key,
@@ -90,14 +108,23 @@ pub fn publish(
             "{name} is another repository's package: a build cannot take its name"
         ));
     }
+    let version = manifest
+        .world
+        .strip_prefix(&format!("app:{name}/"))
+        .and_then(|rest| rest.split_once('@'))
+        .map(|(_, version)| version)
+        .ok_or_else(|| format!("{name}'s world {} is not its own app's", manifest.world))?;
+    let version = Version::parse(version).map_err(|why| format!("{name}'s version: {why}"))?;
     let mut held = held(vol)?;
-    let version = match held.iter().position(|(header, _, _)| header.name == name) {
-        Some(at) => {
-            let (old, _, _) = held.remove(at);
-            Version::new(0, 0, old.version.patch + 1)
+    if let Some(at) = held.iter().position(|(header, _, _)| header.name == name) {
+        let old = held[at].0.version;
+        if version <= old {
+            return Err(format!(
+                "{name} {version} is not newer than local's {name} {old}"
+            ));
         }
-        None => Version::new(0, 0, 1),
-    };
+        held.remove(at);
+    }
     let text = format!(
         "kai-package 1\nname {name}\nversion {version}\nkind app\nsummary {SUMMARY}\n\
          licence {}\nworld {WORLD}\ndepends kai:app ^0.1\n",
@@ -252,10 +279,10 @@ mod tests {
     const NOW: Time = Time(1_793_000_000);
     const PROVIDED: &[(&str, Version)] = &[("kai:app", Version::new(0, 1, 0))];
 
-    /// A component `cc build` might write, named `name`, its source `source`.
-    fn artifact(name: &str, source: &str) -> Vec<u8> {
+    /// An app `cc build` might write: `name` at `version`, from `source`.
+    fn artifact(name: &str, version: &str, source: &str) -> Vec<u8> {
         let mut module = Vec::from(&b"\0asm\x01\0\0\0"[..]);
-        let world = format!("app:{name}/{name}@0.0.1");
+        let world = format!("app:{name}/{name}@{version}");
         let manifest = Manifest {
             lifecycle: 2,
             component: name.into(),
@@ -307,36 +334,57 @@ mod tests {
     fn a_build_is_published_signed_by_the_device_key_and_a_rebuild_replaces_it() {
         let mut vol = MemVolume::default();
         let key = key(1);
-        let hello = artifact("hello", "int main(void) { return 0; }\n");
+        assert_eq!(next(&mut vol, "hello"), Ok(Version::new(0, 0, 1)));
+        let hello = artifact("hello", "0.0.1", "int main(void) { return 0; }\n");
         let published = publish(&mut vol, &key, &hello, &["notes"], NOW).unwrap();
         assert_eq!(published.version, Version::new(0, 0, 1));
         let checked = check(&mut vol, &key, PROVIDED).unwrap();
         assert_eq!(kept(&checked), ["hello 0.0.1"]);
         assert!(checked.refused.is_empty(), "{:?}", checked.refused);
         assert_eq!(checked.indexes[0].summary, SUMMARY);
-        let rebuilt = artifact("hello", "int main(void) { return 1; }\n");
+        assert_eq!(next(&mut vol, "hello"), Ok(Version::new(0, 0, 2)));
+        // A rebuild must be newer than the build it replaces.
+        let same = artifact("hello", "0.0.1", "int main(void) { return 2; }\n");
+        assert_eq!(
+            publish(&mut vol, &key, &same, &[], NOW).err().as_deref(),
+            Some("hello 0.0.1 is not newer than local's hello 0.0.1")
+        );
+        let rebuilt = artifact("hello", "0.0.2", "int main(void) { return 1; }\n");
         assert_eq!(
             publish(&mut vol, &key, &rebuilt, &[], NOW).unwrap().version,
             Version::new(0, 0, 2)
         );
-        let other = artifact("other", "int x;\n");
-        publish(&mut vol, &key, &other, &[], NOW).unwrap();
+        // A user may name a version, under the same rule.
+        let named = artifact("other", "1.2.0", "int x;\n");
+        publish(&mut vol, &key, &named, &[], NOW).unwrap();
         let checked = check(&mut vol, &key, PROVIDED).unwrap();
-        assert_eq!(kept(&checked), ["hello 0.0.2", "other 0.0.1"]);
+        assert_eq!(kept(&checked), ["hello 0.0.2", "other 1.2.0"]);
         let targets = vol.list(&format!("{DIR}/targets")).unwrap();
-        assert_eq!(targets, ["hello-0.0.2.kpkg", "other-0.0.1.kpkg"]);
+        assert_eq!(targets, ["hello-0.0.2.kpkg", "other-1.2.0.kpkg"]);
+    }
+
+    #[test]
+    fn a_build_whose_world_is_another_apps_is_refused() {
+        let mut vol = MemVolume::default();
+        let mut other = artifact("hello", "0.0.1", "int x;\n");
+        let world = b"app:hello/hello@0.0.1";
+        let at = other.windows(world.len()).position(|w| w == world).unwrap();
+        other[at..at + world.len()].copy_from_slice(b"app:notes/notes@0.0.1");
+        let err = publish(&mut vol, &key(1), &other, &[], NOW).unwrap_err();
+        assert!(err.ends_with("is not its own app's"), "{err}");
+        assert!(vol.files().is_empty());
     }
 
     #[test]
     fn a_build_cannot_take_another_repositorys_name_or_a_bad_one() {
         let mut vol = MemVolume::default();
-        let notes = artifact("notes", "int main(void) { return 0; }\n");
+        let notes = artifact("notes", "0.0.1", "int main(void) { return 0; }\n");
         let err = publish(&mut vol, &key(1), &notes, &["notes"], NOW).unwrap_err();
         assert!(
             err.starts_with("notes is another repository's package"),
             "{err}"
         );
-        let fs = artifact("fs", "int x;\n");
+        let fs = artifact("fs", "0.0.1", "int x;\n");
         assert!(
             publish(&mut vol, &key(1), &fs, &[], NOW).is_err(),
             "an OS row group"
@@ -348,7 +396,7 @@ mod tests {
     #[test]
     fn local_is_pinned_to_the_device_key_and_a_flipped_byte_is_refused_by_name() {
         let mut vol = MemVolume::default();
-        let hello = artifact("hello", "int main(void) { return 0; }\n");
+        let hello = artifact("hello", "0.0.1", "int main(void) { return 0; }\n");
         publish(&mut vol, &key(1), &hello, &[], NOW).unwrap();
         assert_eq!(
             check(&mut vol, &key(2), PROVIDED).err().as_deref(),
@@ -384,7 +432,7 @@ mod tests {
     fn a_build_installs_from_local_as_a_generation_and_undo_takes_it_out() {
         let mut vol = MemVolume::default();
         let key = key(1);
-        let hello = artifact("hello", "int main(void) { return 0; }\n");
+        let hello = artifact("hello", "0.0.1", "int main(void) { return 0; }\n");
         publish(&mut vol, &key, &hello, &[], NOW).unwrap();
         let checked = check(&mut vol, &key, PROVIDED).unwrap();
         let entries: Vec<Entry> = checked.packages.iter().map(|(e, _)| e.clone()).collect();
