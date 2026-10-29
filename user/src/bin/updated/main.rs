@@ -27,6 +27,7 @@ extern crate alloc;
 
 mod disk;
 mod folders;
+mod restore;
 
 use alloc::format;
 use alloc::string::String;
@@ -66,9 +67,24 @@ fn main() -> i32 {
         }
         sys::sleep_ms(100);
     }
-    let result = match step {
-        Some("check") => check(handle),
-        Some("update") => disk::update(handle),
+    // Every start first settles an update left in flight (`restore.rs`).
+    let reconciled = restore::reconcile(handle);
+    if let Ok(outcome) = reconciled
+        && outcome != restore::Outcome::Nothing
+    {
+        println!("updated: reconciled: {outcome:?}");
+    }
+    let result = match (step, reconciled) {
+        (_, Err(why)) => Err(why),
+        (Some("check"), _) => check(handle),
+        (Some("update"), _) => disk::update(handle),
+        // The rollback case: the reconcile is the step, then the boot ends.
+        (Some("reconcile"), Ok(_)) => {
+            if args.split_whitespace().any(|w| w == "after=restart") {
+                restart_here(handle);
+            }
+            Ok(())
+        }
         _ => Ok(()),
     };
     if let Err(why) = result {

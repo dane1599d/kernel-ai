@@ -170,6 +170,22 @@ pub fn write(dir: Handle, name: &str, bytes: &[u8]) -> Result<(), String> {
     }
 }
 
+/// Makes `update` snapshot `id` the `system` volume's live tree again.
+/// What [`update_restore`] did.
+pub enum Restore {
+    Done,
+    /// No update snapshot `id` (fs answers Invalid).
+    Gone,
+}
+
+pub fn update_restore(updates: Handle, id: u64) -> Result<Restore, String> {
+    match ask(updates, &Request::UpdateRestore { id })? {
+        (Reply::Committed { .. }, _) => Ok(Restore::Done),
+        (Reply::Failed(fsproto::Error::Invalid), _) => Ok(Restore::Gone),
+        other => Err(format!("restoring update snapshot {id}: {other:?}")),
+    }
+}
+
 /// An `update` snapshot of the `system` volume, on `/system/updates`.
 pub fn update_snapshot(updates: Handle) -> Result<u64, String> {
     match ask(updates, &Request::UpdateSnapshot)? {
