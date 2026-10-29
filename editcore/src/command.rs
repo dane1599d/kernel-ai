@@ -1,6 +1,10 @@
 //! The editor's commands, one per line typed in edit mode.
 
 use alloc::string::String;
+use alloc::vec::Vec;
+
+/// The widest column or indent a command names.
+const MAX_COLUMN: usize = 65_536;
 
 pub const USAGE: &str = "\
 files               list the files; * marks changed ones
@@ -13,6 +17,9 @@ c <n> <text>        change line n
 i <n> <text>        insert a line before line n
 a <n> <text>        add a line after line n
 d <n>[,<m>]         delete lines
+split <n> <col> [k] break line n after col characters; the rest is line n+1, k spaces in
+join <n>            join line n+1 onto line n
+view <n>,<m>        the lines for a screen, with the file's state; changes nothing
 undo                take back the last edit
 diff                what changed since the version was opened
 build               build it on the host in the background, as the next version
@@ -39,6 +46,13 @@ pub enum Command<'a> {
     Insert(usize, &'a str),
     Append(usize, &'a str),
     Delete(usize, usize),
+    Split {
+        line: usize,
+        col: usize,
+        indent: usize,
+    },
+    Join(usize),
+    View(usize, usize),
     Undo,
     Diff,
     Build,
@@ -61,6 +75,14 @@ fn range(text: &str) -> Result<(usize, usize), String> {
         Some((from, to)) => Ok((number(from)?, number(to)?)),
         None => number(text).map(|n| (n, n)),
     }
+}
+
+/// A column or an indent: from 0.
+fn count(text: &str) -> Result<usize, String> {
+    text.parse()
+        .ok()
+        .filter(|&n| n <= MAX_COLUMN)
+        .ok_or_else(|| alloc::format!("{text:?} is not a column"))
 }
 
 /// A line number, then one space, then the rest exactly as typed.
@@ -137,6 +159,17 @@ pub fn parse(line: &str) -> Result<Command<'_>, String> {
             let (from, to) = range(rest.trim())?;
             Ok(Command::Delete(from, to))
         }
+        "split" => {
+            let words: Vec<&str> = rest.split(' ').collect();
+            match words[..] {
+                [line, col] => Ok((number(line)?, count(col)?, 0)),
+                [line, col, indent] => Ok((number(line)?, count(col)?, count(indent)?)),
+                _ => Err(String::from("split expects <n> <col> [indent]")),
+            }
+            .map(|(line, col, indent)| Command::Split { line, col, indent })
+        }
+        "join" => number(rest.trim()).map(Command::Join),
+        "view" => range(rest.trim()).map(|(from, to)| Command::View(from, to)),
         "" => Err(String::from("type help for the commands")),
         other => Err(alloc::format!("unknown command {other:?}; type help")),
     }

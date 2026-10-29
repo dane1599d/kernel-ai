@@ -58,6 +58,7 @@ impl Shell {
             // Data, never consent (ADR 0010 §5): it reaches the model only.
             state: self.state_line().unwrap_or_default(),
             timeout_ms: SCRIPT_ROUND_MS,
+            read: None,
         };
         let call = match self.host.act(&asked) {
             Ok(call) => call,

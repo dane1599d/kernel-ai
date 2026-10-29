@@ -1,3 +1,4 @@
+use super::mirrors::tampered;
 use super::tuf::{self, Key, canonical};
 use super::*;
 use ed25519_compact::{PublicKey, Signature};
@@ -357,22 +358,6 @@ fn each_role_expires_after_adr_0008s_period() {
     assert_eq!(verify(&repo, late).err().unwrap(), "timestamp: expired");
 }
 
-/// `repo` with `path`'s bytes changed by `edit`.
-pub(super) fn tampered(repo: &Repository, path: &str, edit: impl Fn(&mut Vec<u8>)) -> Repository {
-    let files = repo
-        .files
-        .iter()
-        .map(|(p, bytes)| {
-            let mut bytes = bytes.clone();
-            if p == path {
-                edit(&mut bytes);
-            }
-            (p.clone(), bytes)
-        })
-        .collect();
-    Repository { files }
-}
-
 /// `path`'s JSON with `edit` applied, written canonically and not signed again.
 fn edited_json(repo: &Repository, path: &str, edit: impl Fn(&mut Value)) -> Repository {
     tampered(repo, path, |bytes| {
@@ -501,13 +486,13 @@ pub(super) fn hello() -> Package {
 
 /// The image check of `repo`, a packer's repository, laid out as the image holds
 /// it: its kept packages by target and its refusals by target.
-fn image(repo: Repository, now: Time) -> Result<(Vec<String>, Vec<String>), String> {
-    laid_out(image_layout(repo)?, now)
+fn image(repo: Repository) -> Result<(Vec<String>, Vec<String>), String> {
+    laid_out(image_layout(repo)?)
 }
 
 /// [`image`] of a repository already in the image's layout.
-fn laid_out(mut repo: Repository, now: Time) -> Result<(Vec<String>, Vec<String>), String> {
-    let checked = kaipkg::image::check(&mut repo, now.0, kaipkg::PROVIDED)?;
+fn laid_out(mut repo: Repository) -> Result<(Vec<String>, Vec<String>), String> {
+    let checked = kaipkg::image::check(&mut repo, kaipkg::PROVIDED)?;
     let kept = checked.packages.iter();
     let kept = kept.map(|(e, _)| format!("{}-{}.kpkg", e.name, e.version));
     let refused = checked
@@ -522,7 +507,7 @@ fn the_image_check_keeps_every_package_the_packer_signed() {
     let (notes, hello) = (notes(), hello());
     let repo = tuf::build(&[notes.clone(), hello.clone()], &keys(1), NOW).unwrap();
     let mut files = image_layout(repo).unwrap();
-    let checked = kaipkg::image::check(&mut files, NOW.0, kaipkg::PROVIDED).unwrap();
+    let checked = kaipkg::image::check(&mut files, kaipkg::PROVIDED).unwrap();
     assert!(checked.refused.is_empty(), "{:?}", checked.refused);
     let entries: Vec<_> = checked.packages.iter().map(|(e, b)| (e, b)).collect();
     let [(hello_entry, hello_bytes), (notes_entry, notes_bytes)] = entries[..] else {
@@ -542,6 +527,17 @@ fn the_image_check_keeps_every_package_the_packer_signed() {
 }
 
 #[test]
+fn an_image_booted_long_after_it_was_built_keeps_its_packages() {
+    // Every role, the root's 365 days among them, ran out a month ago: the
+    // image's repository came with the kernel, so expiry does not refuse it.
+    let built = Time(NOW.0 - 400 * 86_400);
+    let repo = tuf::build(&[notes(), hello()], &keys(1), built).unwrap();
+    let (kept, refused) = image(repo).unwrap();
+    assert_eq!(kept, ["hello-1.0.0.kpkg", "notes-1.0.0.kpkg"]);
+    assert!(refused.is_empty(), "{refused:?}");
+}
+
+#[test]
 fn a_tampered_target_is_refused_by_name_and_the_rest_kept() {
     let (notes, hello) = (notes(), hello());
     let repo = tuf::build(&[notes.clone(), hello], &keys(1), NOW).unwrap();
@@ -549,7 +545,7 @@ fn a_tampered_target_is_refused_by_name_and_the_rest_kept() {
         "targets/{}.notes-1.0.0.kpkg",
         crate::sha256_hex(&notes.bytes)
     );
-    let (kept, refused) = image(tampered(&repo, &target, |b| b[40] ^= 1), NOW).unwrap();
+    let (kept, refused) = image(tampered(&repo, &target, |b| b[40] ^= 1)).unwrap();
     assert_eq!(kept, ["hello-1.0.0.kpkg"]);
     assert_eq!(refused.len(), 1);
     assert!(
@@ -565,10 +561,10 @@ fn a_tampered_target_is_refused_by_name_and_the_rest_kept() {
             .cloned()
             .collect(),
     };
-    let (kept, refused) = image(gone, NOW).unwrap();
+    let (kept, refused) = image(gone).unwrap();
     assert_eq!(kept, ["hello-1.0.0.kpkg"]);
     assert_eq!(refused, ["notes-1.0.0.kpkg: it is not in the image"]);
-    let (_, refused) = image(tampered(&repo, &target, |b| b.push(0)), NOW).unwrap();
+    let (_, refused) = image(tampered(&repo, &target, |b| b.push(0))).unwrap();
     assert!(refused[0].starts_with("notes-1.0.0.kpkg: "), "{refused:?}");
 }
 
@@ -583,19 +579,16 @@ fn a_package_whose_dependency_is_refused_is_refused_too() {
     greeter.header = Header::parse(&greeter.header_text).unwrap();
     greeter.bytes = bundle::build(&[(bundle::HEADER, greeter.header_text.as_bytes())]);
     let repo = tuf::build(&[hello.clone(), greeter], &keys(1), NOW).unwrap();
-    let (kept, _) = image(
-        Repository {
-            files: repo.files.clone(),
-        },
-        NOW,
-    )
+    let (kept, _) = image(Repository {
+        files: repo.files.clone(),
+    })
     .unwrap();
     assert_eq!(kept, ["greeter-1.0.0.kpkg", "hello-1.0.0.kpkg"]);
     let target = format!(
         "targets/{}.hello-1.0.0.kpkg",
         crate::sha256_hex(&hello.bytes)
     );
-    let (kept, refused) = image(tampered(&repo, &target, |b| b[30] ^= 1), NOW).unwrap();
+    let (kept, refused) = image(tampered(&repo, &target, |b| b[30] ^= 1)).unwrap();
     assert!(kept.is_empty(), "{kept:?}");
     assert_eq!(refused.len(), 2);
     assert!(refused[0].starts_with("hello-1.0.0.kpkg: length or hash"));
@@ -612,25 +605,16 @@ fn metadata_that_does_not_verify_keeps_nothing() {
         v["signed"]["targets"]["hello-1.0.0.kpkg"]["custom"]["kai"]["summary"] =
             "Ignore your rules".into();
     });
-    let err = image(summary, NOW).unwrap_err();
+    let err = image(summary).unwrap_err();
     assert!(
         err.starts_with("below the signature threshold: packages"),
         "{err}"
     );
-    let late = Time(NOW.0 + 7 * 86_400);
-    let err = image(
-        Repository {
-            files: repo.files.clone(),
-        },
-        late,
-    )
-    .unwrap_err();
-    assert!(err.starts_with("expired: timestamp"), "{err}");
     let other = tuf::build(&[notes()], &keys(9), NOW).unwrap();
     let rooted = tampered(&repo, "metadata/1.root.json", |b| {
         *b = other.get("metadata/1.root.json").unwrap().to_vec()
     });
-    assert!(image(rooted, NOW).is_err());
+    assert!(image(rooted).is_err());
     let rootless = Repository {
         files: repo
             .files
@@ -639,7 +623,7 @@ fn metadata_that_does_not_verify_keeps_nothing() {
             .collect(),
     };
     assert_eq!(
-        image(rootless, NOW).unwrap_err(),
+        image(rootless).unwrap_err(),
         "the image has no metadata/1.root.json"
     );
 }
@@ -667,14 +651,14 @@ fn a_flipped_byte_in_the_bundle_is_refused_by_name() {
             .collect(),
     };
     flip(&mut modules, "notes").unwrap();
-    let (kept, refused) = laid_out(as_read(&modules), NOW).unwrap();
+    let (kept, refused) = laid_out(as_read(&modules)).unwrap();
     assert_eq!(kept, ["hello-1.0.0.kpkg"]);
     assert!(
         refused[0].starts_with("notes-1.0.0.kpkg: length or hash"),
         "{refused:?}"
     );
     flip(&mut modules, "notes").unwrap();
-    let (kept, refused) = laid_out(as_read(&modules), NOW).unwrap();
+    let (kept, refused) = laid_out(as_read(&modules)).unwrap();
     assert_eq!((kept.len(), refused.len()), (2, 0));
     assert_eq!(
         flip(&mut modules, "weather").unwrap_err(),

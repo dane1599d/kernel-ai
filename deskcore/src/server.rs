@@ -15,6 +15,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use surfabi::Format;
 use surfabi::proto::{Event, GLOBALS, Objects, REGISTRY, Request};
+use surfabi::tree::{self, Tree};
 use surfabi::wire::{self, Error};
 
 /// A buffer in one of the client's pools.
@@ -37,6 +38,12 @@ struct Surface {
     damage: Vec<Rect>,
     title: String,
     app_id: String,
+    /// Its `a11y` object, and the tree the last `a11y.commit` applied.
+    a11y: Option<u32>,
+    tree: Tree,
+    /// `tree_update` bytes waiting for their commit: one update may span
+    /// several messages.
+    pending: Vec<u8>,
 }
 
 /// What `desktop` must do for a request beyond the desk itself.
@@ -50,6 +57,9 @@ pub enum Need {
     /// `window` is gone: forget its buffer.
     Closed { window: WindowId },
 }
+
+/// An update's head, which [`tree::MAX_BYTES`] does not count.
+const PENDING_HEAD: usize = 12;
 
 pub struct Client {
     /// The client's process id, which also labels its windows.
@@ -228,6 +238,22 @@ impl Client {
                         needs.push(need);
                     }
                 }
+                Request::GetA11y { id } => self.surface(header.object)?.a11y = Some(id),
+                Request::TreeUpdate(part) => {
+                    let surface = self.surface_of_a11y(header.object)?;
+                    if surface.pending.len() + part.len() > tree::MAX_BYTES + PENDING_HEAD {
+                        return Err(Error::BadArg);
+                    }
+                    surface.pending.extend_from_slice(part);
+                }
+                // A bad tree closes the connection and the window keeps the
+                // tree it had (ADR 0005 §3).
+                Request::A11yCommit => {
+                    let surface = self.surface_of_a11y(header.object)?;
+                    let bytes = core::mem::take(&mut surface.pending);
+                    let update = tree::Update::decode(&bytes).map_err(|_| Error::BadArg)?;
+                    surface.tree.apply(update).map_err(|_| Error::BadArg)?;
+                }
                 Request::ToplevelDestroy => {
                     let surface = self.surface_of_toplevel(header.object)?;
                     surface.toplevel = None;
@@ -237,8 +263,7 @@ impl Client {
                         self.apply(&effects);
                     }
                 }
-                // The rest asks nothing of the desk yet (popups, the tree and the
-                // panel come with tasks 7 and 9).
+                // The rest asks nothing of the desk yet (popups and the panel).
                 _ => {}
             }
         }
@@ -250,6 +275,47 @@ impl Client {
             .iter_mut()
             .find(|s| s.id == id)
             .ok_or(Error::UnknownObject)
+    }
+
+    fn surface_of_a11y(&mut self, a11y: u32) -> Result<&mut Surface, Error> {
+        self.surfaces
+            .iter_mut()
+            .find(|s| s.a11y == Some(a11y))
+            .ok_or(Error::UnknownObject)
+    }
+
+    /// `window`'s tree as its client last committed it: empty until then.
+    pub fn tree(&self, window: WindowId) -> Option<&Tree> {
+        self.surfaces
+            .iter()
+            .find(|s| s.window == Some(window))
+            .map(|s| &s.tree)
+    }
+
+    /// Asks `window`'s app to run `action` (a bit number of
+    /// [`surfabi::tree::action`]) on `node`, as an AccessKit `ActionRequest`:
+    /// never synthetic input (ADR 0005 §6). False when the window has no tree
+    /// or the node does not offer that action.
+    pub fn act(&mut self, window: WindowId, node: u32, action: u32, value: &str) -> bool {
+        let Some(surface) = self.surfaces.iter().find(|s| s.window == Some(window)) else {
+            return false;
+        };
+        let offered = surface
+            .tree
+            .node(node)
+            .is_some_and(|n| action < 16 && n.actions & (1 << action) != 0);
+        let Some(a11y) = surface.a11y.filter(|_| offered) else {
+            return false;
+        };
+        self.send(
+            a11y,
+            Event::ActionRequest {
+                node,
+                action,
+                value,
+            },
+        );
+        true
     }
 
     fn surface_of_toplevel(&mut self, toplevel: u32) -> Result<&mut Surface, Error> {
