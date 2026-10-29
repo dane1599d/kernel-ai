@@ -15,13 +15,13 @@
 //! | 73-79 | G-core (P3) | DISPLAY_CLAIM, DISPLAY_FLUSH, DISPLAY_CURSOR, DISPLAY_CURSOR_MOVE, INPUT_READ, TERM_READ, INPUT_TO_CONSOLE |
 //! | 80-89 | K, spare | MODEL_FILL 80 and 81 held (S-io, P2 task 10); ONCE_CHECK_FOR 82; P2 task 12's grants |
 //! | 90-99 | S-engine (P2) | |
-//! | 100-109 | P, packages (P2) | |
+//! | 100-109 | P, packages (P2) | BOOT_READ, COMP_ADD, PKG_FETCH |
 //! | 110-119 | A-core | |
 //! | 120-129 | model lane | |
 //! | 130-139 | D, drivers (ADR 0007) | RING_ATTACH, RING_NOTIFY, NOTIFY_WAIT, INPUT_PUSH |
 //! | 140-149 | C, components | |
 //! | 150-159 | V, virtual machines (P6) | |
-//! | 160-169 | M, memory | MEM_RESERVE, MEM_COMMIT, MEM_RELEASE |
+//! | 160-169 | M, memory | MEM_RESERVE, MEM_COMMIT, MEM_RELEASE, PROC_QUOTA_SET, PROC_CLASS_SET |
 //! | 170-179 | U, updates (P4) | SLOT_INFO, SLOT_READ, SLOT_WRITE, SLOT_FLUSH, BOOTREC_GET, BOOTREC_SET, TRUST_ROOT, TRUST_TIME |
 //! | 180-189 | not given yet | a lane asks lane K for a block |
 //! | 190-191 | S-io (P2), second block | PART_PEER_ALIVE |
@@ -407,6 +407,25 @@ pub const INPUT_TO_CONSOLE: u64 = 79;
 
 // ---- P, 100-109 ----
 
+/// `boot_read(path_ptr, path_len, buf, cap) -> len`: copies the boot bundle's
+/// file `path` into `buf` when it fits; its length either way. Only for a process
+/// whose plan line's `bootfiles=` names the folder `path` lies beneath, run as that
+/// line's own program (P4 task 1: `pkg` reads the image's signed repository).
+pub const BOOT_READ: u64 = 100;
+/// `comp_add(&live::Add) -> 0`: adds a version of a component from an
+/// installed package, labelled `p-` and the first 12 hex digits of its SHA-256,
+/// which the kernel computes and checks against the full digest given. It only
+/// adds: a label already there is Busy, a full store NoMemory and an artifact
+/// over [`crate::live::MAX_ARTIFACT`] TooBig. Only for the holder of `/system/pkg`
+/// (its plan line's `dir=pkg`, run as that line's own program).
+pub const COMP_ADD: u64 = 101;
+/// `pkg_fetch(&HttpRequest) -> response len`: sends the request to the fixed
+/// `pkgrepo=` mirror (ADR 0011 §8) and copies its response out, as [`HTTP`] does
+/// for `llm=`. The request must be exactly one `crate::pkgrepo::request` builds,
+/// a GET of at most 192 KiB of one repository file (Invalid otherwise); NotFound
+/// when the command line names no mirror. Only for the holder of `/system/pkg`.
+pub const PKG_FETCH: u64 = 102;
+
 // ---- A-core, 110-119 ----
 
 // ---- D, 130-139 ----
@@ -432,6 +451,17 @@ pub const MEM_COMMIT: u64 = 161;
 /// gives every committed page back to the system; how many. NotFound for any
 /// other address.
 pub const MEM_RELEASE: u64 = 162;
+/// `proc_quota_set(pid, pages) -> old`: process `pid`'s page quota, which its
+/// heap, `Shm` objects and MEM_COMMIT charge against, becomes `pages`; the old
+/// one. Pages held past a lower quota stay, and the next allocation fails.
+/// Invalid under 64 pages; Permission to lower the shell's, the supervisor's,
+/// the model service's or `desktop`'s. Needs SUPERVISE (P3 task 12).
+pub const PROC_QUOTA_SET: u64 = 163;
+/// `proc_class_set(pid, class) -> 0`: process `pid` runs `normal` (0) or
+/// `background` (1) on the `classes` policy from now on, every thread; SCHED_STATS
+/// shows it. Permission to make the shell, the supervisor, the model service or
+/// `desktop` background; Busy while a tuning trial runs. Needs SUPERVISE.
+pub const PROC_CLASS_SET: u64 = 164;
 
 // ---- U, 170-179 ----
 
