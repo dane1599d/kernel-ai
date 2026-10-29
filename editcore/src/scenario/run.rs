@@ -91,7 +91,7 @@ fn run_step(
                         Some((v.label.clone(), base.clone()))
                     }
                     Origin::Upload { .. } => Some((v.label.clone(), String::from("?"))),
-                    Origin::Boot => None,
+                    Origin::Boot | Origin::Package { .. } => None,
                 })
                 .collect();
             let wanted: Vec<(String, String)> = wanted

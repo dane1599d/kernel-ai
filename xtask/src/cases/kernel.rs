@@ -250,6 +250,13 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("desk-term", "test=desk-term")
     },
+    // P3 task 12: resource profiles' kernel half.
+    TestCase {
+        expect: &[
+            "profile: a quota stopped a commit, a class showed in SCHED_STATS, and the floors held",
+        ],
+        ..case("profile", "test=profile")
+    },
     // P1 task 14: shared pages, and spike S01-1's M6.
     TestCase {
         expect: &[

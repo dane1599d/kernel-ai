@@ -193,3 +193,17 @@ fn an_app_may_not_take_a_longer_apps_prefix_and_a_failed_load_is_not_retried() {
     // Asked for the rows once, not on every call.
     assert_eq!(host.app_requests.borrow().len(), 1);
 }
+
+#[test]
+fn an_apps_row_runs_in_the_shell_never_apart() {
+    let add = r#"{"name":"notes_add","arguments":{"text":"buy milk"}}"#;
+    let (host, mut shell) = with_notes(vec![call(add)]);
+    *host.apart.borrow_mut() = Some(alloc::boxed::Box::new(|_: &str| {
+        Err(String::from("the child has no apps"))
+    }));
+    host.app_replies
+        .borrow_mut()
+        .push_back(String::from("kai-reply 1\nresult ok(1)\nundo 4\n"));
+    assert!(shell.eval("add a note saying buy milk").ok);
+    assert!(host.apart_requests.borrow().is_empty());
+}

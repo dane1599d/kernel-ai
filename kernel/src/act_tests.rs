@@ -207,6 +207,59 @@ const FS_TRASH: &[(&str, Expect)] = &[
         Exact("ok Done: file notes.txt restored (was in the trash). undo"),
     ),
 ];
+/// `profile-switch` (P3 task 12): a profile switch reaches the kernel through
+/// the supervisor, and `undo` puts every quota back.
+const PROFILE_GAMING: &[(&str, Expect)] = &[(
+    "profile gaming",
+    Exact("ok Done: profile gaming (was default). undo"),
+)];
+
+const PROFILE_QUIET: &[(&str, Expect)] = &[(
+    "profile quiet",
+    Exact("ok Done: profile quiet (was gaming). undo"),
+)];
+
+const PROFILE_UNDO: &[(&str, Expect)] = &[("undo", Exact("ok Undone: profile back to gaming"))];
+
+/// A live process's pid and page quota.
+fn proc_of(name: &str) -> Option<(u64, u64)> {
+    crate::process::with_table(|t| {
+        t.iter()
+            .find(|p| p.live() && p.name.as_str() == name)
+            .map(|p| (p.pid, p.limits.max_pages))
+    })
+}
+
+fn profile_switch() -> Result<(), &'static str> {
+    let (spin, quota) = proc_of("spin-a").ok_or("profile-switch: spin-a is not running")?;
+    let (shell, shell_quota) = proc_of("shell").ok_or("profile-switch: no shell")?;
+    // Nothing has focus here, so gaming sends every app to the back.
+    expect_lines(PROFILE_GAMING)?;
+    if !crate::sched_control::is_background(spin) {
+        return Err("profile-switch: gaming left spin-a normal");
+    }
+    if crate::sched_control::is_background(shell) {
+        return Err("profile-switch: a profile made the shell background");
+    }
+    expect_lines(PROFILE_QUIET)?;
+    if proc_of("spin-a").map(|(_, q)| q) != Some(kaiprofile::QUIET_PAGES) {
+        return Err("profile-switch: quiet did not lower spin-a's quota");
+    }
+    if proc_of("shell").map(|(_, q)| q) != Some(shell_quota) {
+        return Err("profile-switch: quiet changed the shell's quota");
+    }
+    expect_lines(PROFILE_UNDO)?;
+    if proc_of("spin-a").map(|(_, q)| q) != Some(quota) {
+        return Err("profile-switch: undo did not put spin-a's quota back");
+    }
+    if !crate::sched_control::is_background(spin) {
+        return Err("profile-switch: undo of quiet left gaming's class off");
+    }
+    log!(
+        "profile-switch: gaming sent the apps back, quiet lowered a quota, undo put it back, and the shell kept its own"
+    );
+    Ok(())
+}
 
 /// `fs-undo-reboot` (P2 task 12): the change and its log line land in one
 /// commit, so after a reboot the log on disk still undoes it.
@@ -272,6 +325,7 @@ pub fn check(which: ActCase) -> Result<(), &'static str> {
         ActCase::FsTrash => expect_lines(FS_TRASH).map(|()| {
             log!("fs-trash: trash and restore ran with undo, and emptying the trash asked first");
         }),
+        ActCase::Profile => profile_switch(),
         ActCase::FsUndoReboot => expect_lines(FS_BEFORE_REBOOT).map(|()| {
             log!("fs-undo-reboot: boot 1 created notes.txt, its log line in the same commit");
         }),
