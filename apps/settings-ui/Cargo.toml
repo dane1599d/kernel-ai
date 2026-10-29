@@ -1,0 +1,20 @@
+[package]
+name = "comp-settings-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The Settings app's window as a `kai:ui` tree (ADR 0005 section 4), as
+# `comp-notes-ui` is Notes': built whole from the model after each event and
+# diffed, with no wasm dependency, so the host tests drive it through `uikit`.
+[lib]
+doctest = false
+
+[dependencies]
+comp-settings = { path = "../settings" }
+uikit = { path = "../../uikit" }
+
+[dev-dependencies]
+kaigrants = { path = "../../kaigrants" }
+look = { path = "../../look" }

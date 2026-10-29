@@ -1,0 +1,19 @@
+[package]
+name = "comp-settings"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The Settings app's model (P4 task 7): its pages, the settings files it keeps
+# in `/system/settings` and what it shows from `kai-grants 1` and `kai-profile 1`.
+# `no_std` + `alloc` and free of `kai:ui`, so the host tests run it as is; the
+# window (`comp-settings-ui`, then the component) draws it.
+[lib]
+doctest = false
+
+[dependencies]
+kaigrants = { path = "../../kaigrants" }
+kaiprofile = { path = "../../kaiprofile" }
+look = { path = "../../look" }
+minicbor = { version = "2.3.0", default-features = false, features = ["alloc"] }

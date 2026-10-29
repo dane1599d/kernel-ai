@@ -232,6 +232,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "comp-settings"
+version = "0.1.0-dev"
+dependencies = [
+ "kaigrants",
+ "kaiprofile",
+ "look",
+ "minicbor",
+]
+
+[[package]]
+name = "comp-settings-ui"
+version = "0.1.0-dev"
+dependencies = [
+ "comp-settings",
+ "kaigrants",
+ "look",
+ "uikit",
+]
+
+[[package]]
 name = "comp-ui-bind"
 version = "0.1.0-dev"
 dependencies = [
@@ -827,6 +847,9 @@ dependencies = [
  "fsserve",
  "kabi",
  "kaifs",
+ "kaituf",
+ "llmproto",
+ "serde_json",
  "sha2",
 ]
 
@@ -860,6 +883,7 @@ dependencies = [
  "gfxcore",
  "kabi",
  "kaibundle",
+ "kaiprofile",
  "limine",
  "linetable",
  "livecore",
@@ -921,6 +945,7 @@ version = "0.1.0-dev"
 dependencies = [
  "appabi",
  "kabi",
+ "sha2",
 ]
 
 [[package]]
@@ -1682,6 +1707,7 @@ dependencies = [
  "kaibundle",
  "kaifs",
  "kaipkg",
+ "kaiprofile",
  "kaituf",
  "livecore",
  "llmproto",
