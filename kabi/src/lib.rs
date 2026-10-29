@@ -16,6 +16,7 @@ pub mod device;
 pub mod display;
 mod error;
 pub mod event;
+pub mod event_ring;
 pub mod fs;
 pub mod handle;
 pub mod input;
