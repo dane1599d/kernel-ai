@@ -20,7 +20,8 @@ fn the_lists_cover_every_row_once() {
         .chain(&CALL_ONLY)
         .chain(&HELPERS)
         .chain(&COMMANDS)
-        .chain(&FS_ROWS);
+        .chain(&FS_ROWS)
+        .chain(&UI_ROWS);
     assert_eq!(listed.clone().count(), ROWS.len());
     for row in listed {
         assert!(ROWS.iter().any(|r| r.name == row.name), "{}", row.name);

@@ -250,7 +250,7 @@ impl Painter<'_> {
                 token,
                 text,
             } => {
-                let t = look::style(look_style(*style), self.text.legible);
+                let t = self.text.style(look_style(*style));
                 let top = *y as f32 * s.0;
                 let base = top + baseline(*style, t.size, t.line) * s.0;
                 let color = self.palette.get(look_token(*token));

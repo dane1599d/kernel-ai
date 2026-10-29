@@ -408,9 +408,18 @@ fn list(dir: Handle) -> Result<Vec<String>, String> {
         };
         match ask(dir, request)?.0 {
             Reply::Listed { names: page, more } => {
-                names.extend(page.into_iter().map(|l| match l.kind {
-                    fsproto::Kind::Dir => format!("{}/", l.name),
-                    fsproto::Kind::File => l.name,
+                names.extend(page.into_iter().map(|l| {
+                    // The answer joins names with `\n`, so a name's own control
+                    // characters (a `\n`) must not split it into several names.
+                    let name: String = l
+                        .name
+                        .chars()
+                        .map(|c| if c.is_control() { '\u{fffd}' } else { c })
+                        .collect();
+                    match l.kind {
+                        fsproto::Kind::Dir => format!("{name}/"),
+                        fsproto::Kind::File => name,
+                    }
                 }));
                 if more.is_none() || names.len() >= LIST_MAX {
                     return Ok(names);

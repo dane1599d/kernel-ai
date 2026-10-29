@@ -119,7 +119,8 @@ pub const BUILD: u64 = 27;
 /// linking the kernel's window of 2 MiB pages, which takes nothing from the
 /// page quota; returns its length in bytes, and calling it again maps nothing
 /// new. NotFound when no model is loaded, Invalid if the window cannot be
-/// linked. Needs [`super::cap::MODEL`].
+/// linked, Busy while the model store's model is reserved and not yet filled
+/// ([`MODEL_FILL`]; `llm` asks again). Needs [`super::cap::MODEL`].
 pub const MODEL_MAP: u64 = 28;
 /// `thread_spawn(entry, arg, cpu, stack_pages) -> index`: starts a worker of this
 /// process at `entry` with `arg` in RDI, pinned to CPU `cpu` (below the CPUs
@@ -336,6 +337,17 @@ pub const PROC_STOP_ONCE: u64 = 71;
 /// it (ADR 0002 D2a). Needs [`super::cap::SUPERVISE`]. Permission when no rule
 /// covers it; NotFound for no such process.
 pub const RULE_CHECK: u64 = 72;
+/// `model_fill(partition, extents, count, offset) -> filled` (P2 task 10, ADR
+/// 0004 §8; from lane K's block 80-89): copies the model store's model into the
+/// runs the kernel reserved at boot from `kai-modelhint 1`. `extents` points to
+/// `count` (first block, blocks) pairs of u64, at most 64, naming 4 KiB blocks of
+/// the partition in file order, starting at byte `offset` of the file, which
+/// must be where the last call stopped. Returns the bytes filled so far; at the
+/// model's length the kernel checks its GGUF header and FNV-1a64 and makes it
+/// the model, or refuses it (Invalid). `count` 0 gives up: `fs` found the hinted
+/// file missing or short, the runs are freed and MODEL_MAP answers NotFound.
+/// Needs a `Partition` handle with READ. NotFound when no model is waiting.
+pub const MODEL_FILL: u64 = 80;
 /// `once_check_for(pid, badge, digest_ptr) -> 0`: [`ONCE_CHECK`] for a server
 /// that runs a call for process `pid`: the `ONCE` must also be one `pid`
 /// holds, so a process that only saw the badge cannot spend it. Needs

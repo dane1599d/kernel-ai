@@ -18,6 +18,7 @@ on:
       - llmproto/src/pack/**
       - agentabi/src/**
       - bpe/src/**
+      - deskcore/src/view/**
 
 permissions:
   contents: read
