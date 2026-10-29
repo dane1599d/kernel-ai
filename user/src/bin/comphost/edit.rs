@@ -19,6 +19,10 @@ use wasmhost::{EditRequest, Grants, LiveInstance};
 /// Rounds of sending and answering one pump may make, since an answer can make
 /// the app send again.
 const ROUNDS: usize = 8;
+/// How long one pump may spend with the edit service, so a service that does not
+/// answer cannot keep comphost from serving the host's own requests (a swap, a
+/// rollback). A message not sent in time is answered with an error.
+const BUDGET_MS: u64 = 3_000;
 
 /// What this process is granted: `edit` if the kernel gave it an `Edit` handle.
 pub fn grants() -> Grants {
@@ -43,6 +47,10 @@ fn call(message: &[u8], reply: &mut [u8]) -> Result<Vec<u8>, String> {
 /// Sends what the shown version queued and tells it the answers.
 pub fn pump<E: Env<Instance = LiveInstance>>(host: &mut Host<E>) {
     let mut reply = vec![0u8; kabi::MAX_MESSAGE];
+    let start = sys::time_ns();
+    // Set by the first message that could not be sent; the rest of the pump
+    // answers with it and sends nothing more.
+    let mut failed: Option<String> = None;
     for _ in 0..ROUNDS {
         let mut queued: Vec<EditRequest> = Vec::new();
         host.each_instance(|instance, _, shown| {
@@ -58,7 +66,20 @@ pub fn pump<E: Env<Instance = LiveInstance>>(host: &mut Host<E>) {
         }
         let answers: Vec<_> = queued
             .iter()
-            .map(|request| (request.ticket, call(&request.message, &mut reply)))
+            .map(|request| {
+                let spent = sys::time_ns().saturating_sub(start) / 1_000_000;
+                if failed.is_none() && spent > BUDGET_MS {
+                    failed = Some(String::from("the edit service is too slow"));
+                }
+                let outcome = match &failed {
+                    Some(why) => Err(why.clone()),
+                    None => call(&request.message, &mut reply),
+                };
+                if let (None, Err(why)) = (&failed, &outcome) {
+                    failed = Some(why.clone());
+                }
+                (request.ticket, outcome)
+            })
             .collect();
         host.each_instance(|instance, _, shown| {
             if let (LiveInstance::V2(core), true) = (instance, shown) {

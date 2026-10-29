@@ -71,7 +71,8 @@ fn run(slot: usize, number: u64, a: &[u64; 6]) -> Result<u64, Error> {
 }
 
 /// EDIT_CALL: one open or command for the edit service, through the kernel's
-/// journal. Only what an app may send gets through ([`editcore::ipc::for_app`]).
+/// journal. Only what an app may send gets through ([`editcore::ipc::for_app`]),
+/// and the wait ends if the caller is killed or stopped.
 fn edit_call(
     slot: usize,
     msg: u64,
@@ -87,9 +88,28 @@ fn edit_call(
     let mut message = alloc::vec![0u8; len];
     uaccess::copy_from_user(slot, msg, &mut message)?;
     editcore::ipc::for_app(&message).map_err(|_| Error::Invalid)?;
-    let answer = crate::edit_session::call_for_app(&message);
+    // The edit is done and journaled by the time the answer is copied, so a reply
+    // buffer that cannot be written must be found out first, or a retry would
+    // make the same edit twice.
+    writable(slot, reply, kabi::MAX_MESSAGE)?;
+    let cancel = || crate::process::killed(slot) || crate::process::interrupt_pending(slot);
+    let answer = crate::edit_session::call_for_app(&message, &cancel);
+    if crate::process::killed(slot) {
+        return Err(Error::Dead);
+    }
     uaccess::copy_to_user(slot, reply, answer.as_bytes())?;
     Ok(answer.len() as u64)
+}
+
+/// Whether `len` bytes at `addr` can be written: one byte in each page, and the
+/// last. (Zeroes them, which the caller's own buffer can take.)
+fn writable(slot: usize, addr: u64, len: usize) -> Result<(), Error> {
+    const PAGE: usize = 4096;
+    for offset in (0..len).step_by(PAGE).chain([len - 1]) {
+        let at = addr.checked_add(offset as u64).ok_or(Error::Invalid)?;
+        uaccess::copy_to_user(slot, at, &[0])?;
+    }
+    Ok(())
 }
 
 /// BUILD_START: hands a build to the background job.

@@ -21,6 +21,10 @@ use alloc::vec::Vec;
 pub const MAX_JOURNAL: usize = 128 * 1024;
 /// Room a `replay <from>` header takes in a message.
 const HEADER: usize = 24;
+/// The longest command line an entry can hold: the entry is `<digest> cmd <line>`
+/// and, with a replay's header, must fit one message. A longer one is answered
+/// but cannot be journaled, which would switch the journal off.
+pub const MAX_COMMAND: usize = kabi::MAX_MESSAGE - HEADER - (16 + 1 + 4);
 /// Commands that reach the host or a component, or change nothing.
 const SKIPPED: [&str; 5] = ["build", "try", "help", "status", "view"];
 /// Commands that change the text.

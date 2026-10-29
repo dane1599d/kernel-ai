@@ -120,6 +120,9 @@ pub fn for_app(message: &[u8]) -> Result<(), &'static str> {
         Ipc::Cmd(line) if line.chars().any(|c| c.is_control() && c != '\t') => {
             Err("a command holds a control character")
         }
+        Ipc::Cmd(line) if line.len() > crate::journal::MAX_COMMAND => {
+            Err("a command too long to journal")
+        }
         Ipc::Cmd(line) if line.split(' ').next() == Some("try") => {
             Err("try is for the kernel's editor")
         }

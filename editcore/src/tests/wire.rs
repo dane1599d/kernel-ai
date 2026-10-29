@@ -328,3 +328,12 @@ fn an_app_may_send_only_an_open_or_a_plain_command() {
     }
     assert!(for_app(&[0xff, 0xfe]).is_err());
 }
+
+#[test]
+fn an_app_command_must_fit_a_journal_entry() {
+    use crate::ipc::for_app;
+    use crate::journal::MAX_COMMAND;
+    let line = |n: usize| alloc::format!("cmd c 1 {}", "x".repeat(n - "c 1 ".len()));
+    assert_eq!(for_app(line(MAX_COMMAND).as_bytes()), Ok(()));
+    assert!(for_app(line(MAX_COMMAND + 1).as_bytes()).is_err());
+}

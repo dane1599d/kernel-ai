@@ -14,8 +14,8 @@ interface edit {
     /// Queues `message` for the edit service and returns its ticket. A message is
     /// `open <component> [<label>] [at <path>:<line>]` or `cmd <line>`, as the
     /// kernel's edit mode sends them; the answer is `ok ...` or `err ...` text.
-    /// Refused when a call has queued 8 messages already, or `message` is empty
-    /// or longer than 8,192 bytes.
+    /// Traps when 16 messages already wait for the host (it sends them after each
+    /// call into the app), or when `message` is empty or longer than 8,192 bytes.
     send: func(message: list<u8>) -> u32;
 }
 

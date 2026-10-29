@@ -28,8 +28,10 @@ pub(crate) const REPLIES: &str = "kai:edit/replies";
 
 /// Longest message `send` takes: what the edit service's request holds.
 pub const MAX_MESSAGE: usize = kabi::MAX_MESSAGE;
-/// Most messages queued for comphost; a call that sends more traps.
-pub const MAX_QUEUED: usize = 8;
+/// Most messages waiting for comphost, which takes them after every call it
+/// makes into the app; one that would be over this traps the call. (Several
+/// events can reach the app between two takes, so this is not a limit per call.)
+pub const MAX_QUEUED: usize = 16;
 
 /// A message the app sent, waiting for comphost.
 #[derive(Clone, Debug, PartialEq, Eq)]
