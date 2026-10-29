@@ -134,7 +134,7 @@ fn desktop_learns_a_buttons_action_and_the_windows_unsaved_changes() {
     let mut d = Desk::new();
     client.take_events(8192);
     let mut win = Window::new("Notes", 320, 200);
-    let Err(open) = d.frame(1, &bound(&mut win, Some("notes_window_save"), false)) else {
+    let Err(open) = d.frame(1, &bound(&mut win, Some("notes_save"), false)) else {
         panic!("a first frame opens a window");
     };
     let needs = serve(&mut client, &mut screen, &open.calls, true);
@@ -143,21 +143,15 @@ fn desktop_learns_a_buttons_action_and_the_windows_unsaved_changes() {
     };
     client.pool_mapped(pool);
     let button = crate::surface::wire_id(1);
-    assert_eq!(
-        client.bound_action(window, button),
-        Some("notes_window_save")
-    );
+    assert_eq!(client.bound_action(window, button), Some("notes_save"));
     assert!(!client.unsaved(window));
     // An edit: the app says it holds changes; the binding is not sent again.
-    let Ok(show) = d.frame(1, &bound(&mut win, Some("notes_window_save"), true)) else {
+    let Ok(show) = d.frame(1, &bound(&mut win, Some("notes_save"), true)) else {
         panic!("an open window takes new pictures");
     };
     serve(&mut client, &mut screen, &show.calls, false);
     assert!(client.unsaved(window));
-    assert_eq!(
-        client.bound_action(window, button),
-        Some("notes_window_save")
-    );
+    assert_eq!(client.bound_action(window, button), Some("notes_save"));
     // Saved, and the button runs nothing declared any more.
     let Ok(show) = d.frame(1, &bound(&mut win, None, false)) else {
         panic!("an open window takes new pictures");

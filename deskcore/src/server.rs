@@ -265,9 +265,8 @@ impl Client {
                     surface.tree.apply(update).map_err(|_| Error::BadArg)?;
                 }
                 Request::BindAction { node, action } => {
-                    let app = action_prefix(&self.label);
                     let surface = self.surface_of_a11y(header.object)?;
-                    bind(&mut surface.bound, &app, node, action)?;
+                    bind(&mut surface.bound, node, action)?;
                 }
                 Request::SetUnsaved(unsaved) => {
                     self.surface_of_toplevel(header.object)?.unsaved = unsaved;
@@ -493,29 +492,20 @@ impl Client {
     }
 }
 
-/// The prefix of the actions a client may bind: its kernel-given label (never
-/// anything it sent), `-` as `_`, then `_`. So a window cannot borrow another
-/// app's row, and its tier, for the agent's `ui_act`.
-fn action_prefix(label: &str) -> String {
-    let mut prefix: String = label
-        .chars()
-        .map(|c| if c == '-' { '_' } else { c })
-        .collect();
-    prefix.push('_');
-    prefix
-}
-
 /// Binds `node` to `action`, or unbinds it for an empty name. A name that is not
-/// `<app>_<function>`-shaped for this client's `app` prefix, or a window past
-/// [`MAX_BOUND`], closes the connection.
-fn bind(bound: &mut Vec<(u32, String)>, app: &str, node: u32, action: &str) -> Result<(), Error> {
+/// `<app>_<function>`-shaped, or a window past [`MAX_BOUND`], closes the
+/// connection. Only the shape is checked here: which app's row it is, and so its
+/// tier, the agent core resolves among the rows of this window's own app (the
+/// kernel's pid, then that app's `kai-actions 1`), and a name not there asks.
+fn bind(bound: &mut Vec<(u32, String)>, node: u32, action: &str) -> Result<(), Error> {
     bound.retain(|(n, _)| *n != node);
     if action.is_empty() {
         return Ok(());
     }
     let shaped = action.len() <= MAX_ACTION
-        && action.len() > app.len()
-        && action.starts_with(app)
+        && action.contains('_')
+        && !action.starts_with('_')
+        && !action.ends_with('_')
         && action
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
