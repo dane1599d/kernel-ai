@@ -121,6 +121,7 @@ mod tune_local_tests;
 mod tune_stall_tests;
 mod tune_tests;
 mod ui_tests;
+mod usage_tests;
 mod usb;
 mod version;
 mod virtio;
@@ -350,6 +351,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::LocalScript => run_case(|| local_tests::check_script(cmdline())),
         SelfTest::Latency => run_case(latency_tests::check),
         SelfTest::ProcStop => run_case(stop_tests::check),
+        SelfTest::ProcUsage => run_case(usage_tests::check),
         SelfTest::Shm => run_case(shm_tests::check),
         SelfTest::Mem => run_case(mem_tests::check),
         SelfTest::Profile => run_case(profile_tests::check),

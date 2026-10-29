@@ -122,6 +122,8 @@ pub enum SelfTest {
     Latency,
     /// PROC_STOP and the supervisor's `stop` and `start` (P1 task 15).
     ProcStop,
+    /// Each process's pages and CPU time through METRICS (for P4's Monitor).
+    ProcUsage,
     /// `Shm` and spike S01-1's M6 (P1 task 14).
     Shm,
     /// Anonymous memory reserved, committed and given back (lane M).
@@ -290,6 +292,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=local-script" => Some(SelfTest::LocalScript),
             "test=latency" => Some(SelfTest::Latency),
             "test=proc-stop" => Some(SelfTest::ProcStop),
+            "test=proc-usage" => Some(SelfTest::ProcUsage),
             "test=shm" => Some(SelfTest::Shm),
             "test=mem" => Some(SelfTest::Mem),
             "test=profile" => Some(SelfTest::Profile),
@@ -363,6 +366,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::LocalScript
             | SelfTest::Latency
             | SelfTest::ProcStop
+            | SelfTest::ProcUsage
             | SelfTest::Part
             | SelfTest::ModelStore { .. }
             | SelfTest::ManyProcesses
@@ -495,6 +499,10 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
     if test == SelfTest::ProcStop {
         plan.push('\n');
         plan.push_str(crate::stop_tests::PLAN);
+    }
+    if test == SelfTest::ProcUsage {
+        plan.push('\n');
+        plan.push_str(crate::usage_tests::PLAN);
     }
     if test == SelfTest::ManyProcesses {
         plan.push_str(&crate::many_tests::plan());
