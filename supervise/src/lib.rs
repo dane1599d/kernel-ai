@@ -252,6 +252,11 @@ pub enum Request<'a> {
     /// `restart <name>`: end the service and start it at once, or start it if it
     /// is stopped. One request, since a `ONCE` is used up by one check.
     Restart(&'a str),
+    /// `suspend <name>`: the app saves its state and drops its instance
+    /// (`app_suspend`, P3 task 11), through the kernel's `ctl suspend`.
+    Suspend(&'a str),
+    /// `resume <name>`: the app comes back from its saved state (`app_resume`).
+    Resume(&'a str),
 }
 
 /// The user's yes on a menu: the `ONCE` badge the trusted path gave for menu
@@ -287,6 +292,8 @@ impl<'a> Request<'a> {
             ("stop", name) => Request::Stop(name),
             ("start", name) => Request::Start(name),
             ("restart", name) => Request::Restart(name),
+            ("suspend", name) => Request::Suspend(name),
+            ("resume", name) => Request::Resume(name),
             _ => return None,
         };
         let number = |word: Option<&str>, key: &str| word?.strip_prefix(key)?.parse().ok();
@@ -305,7 +312,11 @@ impl<'a> Request<'a> {
 
     pub fn name(self) -> &'a str {
         match self {
-            Request::Stop(name) | Request::Start(name) | Request::Restart(name) => name,
+            Request::Stop(name)
+            | Request::Start(name)
+            | Request::Restart(name)
+            | Request::Suspend(name)
+            | Request::Resume(name) => name,
         }
     }
 
@@ -316,6 +327,8 @@ impl<'a> Request<'a> {
             Request::Stop(_) => "service_stop",
             Request::Start(_) => "service_start",
             Request::Restart(_) => "service_restart",
+            Request::Suspend(_) => "app_suspend",
+            Request::Resume(_) => "app_resume",
         };
         termcore::once::call_text(action, &[termcore::once::CallArg::Text(self.name())])
     }
@@ -331,6 +344,8 @@ impl<'a> Request<'a> {
             Request::Stop(_) => "stop",
             Request::Start(_) => "start",
             Request::Restart(_) => "restart",
+            Request::Suspend(_) => "suspend",
+            Request::Resume(_) => "resume",
         };
         let name = self.name();
         match proof {
@@ -345,9 +360,12 @@ impl<'a> Request<'a> {
 
 /// Whether `proof` is the kind a request of this verb may carry, before it is
 /// checked: a start needs none (it is run-tier and has no menu); a stop or a
-/// restart needs a `ONCE` or a rule, and only a stop may be an undo.
+/// restart needs a `ONCE` or a rule, and only a stop may be an undo; a suspend
+/// or a resume, which a standing instruction fires, a `ONCE` or a rule.
 pub fn proof_fits(request: Request, proof: Proof) -> Result<(), &'static str> {
     match (request, proof) {
+        (Request::Suspend(_) | Request::Resume(_), Proof::Once(_) | Proof::Rule) => Ok(()),
+        (Request::Suspend(_) | Request::Resume(_), _) => Err("err needs ONCE or a rule"),
         (Request::Start(_), Proof::None | Proof::Entry(_)) => Ok(()),
         (Request::Start(_), _) => Err("err a start takes only id="),
         (_, Proof::Once(_) | Proof::Rule) | (Request::Stop(_), Proof::Undo(_)) => Ok(()),
@@ -675,6 +693,7 @@ fn caps(service: &str, value: &str) -> Result<u64, String> {
         "input" => Ok(bits | cap::INPUT),
         "term" => Ok(bits | cap::TERM),
         "update" => Ok(bits | cap::UPDATE),
+        "ask" => Ok(bits | cap::ASK),
         other => Err(format!("{service}: unknown capability {other:?}")),
     })
 }

@@ -11,6 +11,9 @@
 //! - Each frame repaints only the desk's damage, grown by what a window's
 //!   shadow reaches, into a frame of its own, then copies those rectangles to
 //!   the screen and flushes them.
+//! - Window events (minimize, restore, focus, close) and idle minutes go to the
+//!   kernel's event box for the shell's standing instructions (P3 task 11),
+//!   found by `deskcore::watch`.
 //! - The top bar's model state and memory are read once a second; a screen
 //!   without a hardware cursor (GOP) gets one drawn in the frame.
 //! - Everything is painted in the theme the [`Appearance`] resolves to (P4
@@ -31,6 +34,7 @@ extern crate alloc;
 
 use alloc::vec;
 use alloc::vec::Vec;
+use deskcore::askcard::Card;
 use deskcore::compose::{Pixels, Source};
 use deskcore::desk::{Button, Desk, Effect, Focus, Input, WindowId};
 use deskcore::geom::{Point, Rect};
@@ -38,6 +42,7 @@ use deskcore::paint::{self, Bar, Painter, Scene};
 use deskcore::paint_panel;
 use deskcore::panel::Panel;
 use deskcore::server::{Buffer, Client, Need};
+use deskcore::watch::Watch;
 use gfx2d::{Canvas, Fonts, Image};
 use kabi::display::{DisplayInfo, FlushRect};
 use kabi::handle::{Handle, RecvInfo};
@@ -101,9 +106,15 @@ struct State {
     panel: Panel,
     /// When the panel's "thinking 4s" was last redrawn.
     ticked_ms: u64,
+    /// The ask card up now, as the kernel posted it.
+    card: Option<Card>,
+    /// When the ask box was last read.
+    asked_ms: u64,
     /// Frames as last logged, to report moves and closes once.
     known: Vec<(WindowId, Rect)>,
     focus: Focus,
+    /// What standing instructions hear about: window events and idle.
+    watch: Watch,
     /// When the keys were last lent to the kernel's terminal, while they are.
     leased_at: Option<u64>,
     /// The focused window, and whether the kernel lent the keys for it.
@@ -147,8 +158,11 @@ fn main() -> i32 {
             drawn: false,
             panel: Panel::new(),
             ticked_ms: 0,
+            card: None,
+            asked_ms: 0,
             known: Vec::new(),
             focus: Focus::Nothing,
+            watch: Watch::new(now_ms()),
             leased_at: None,
             asked: None,
             appearance: appearance.clone(),
@@ -210,8 +224,10 @@ fn run(state: &mut State, screen: &Screen) -> Option<bool> {
             serve(state, &request[..len.min(request.len())], &info);
         }
         report(state);
+        post_events(state);
         refresh_bar(state);
         tick_panel(state);
+        read_asks(state);
         lease(state);
         theme(state, screen);
         draw(state, screen);
@@ -308,6 +324,7 @@ fn input(state: &mut State, screen: &Screen, event: &InputEvent) {
     let Some(input) = input else {
         return;
     };
+    state.watch.input(now_ms());
     let before = state.desk.pointer();
     let effects = state.desk.input(input);
     let at = state.desk.pointer();
@@ -333,6 +350,10 @@ fn deliver(state: &mut State, effects: &[Effect]) {
     }
     let now = now_ms();
     for effect in effects {
+        if let Effect::Answer { id, yes } = *effect {
+            answer_ask(state, id, yes);
+            continue;
+        }
         let changed = match *effect {
             Effect::PanelKey { usage, down } => {
                 let before = state.panel.waiting();
@@ -353,6 +374,71 @@ fn deliver(state: &mut State, effects: &[Effect]) {
         if changed {
             state.extra.push(state.desk.panel());
         }
+    }
+}
+
+/// How often the ask box is read: often enough that the kernel sees the
+/// trusted layer alive, and a posted ask shows within a frame or two.
+const ASK_EVERY_MS: u64 = 100;
+
+/// Reads the ask box: a new ask shows as the card; one the kernel withdrew
+/// goes away.
+fn read_asks(state: &mut State) {
+    let now = now_ms();
+    if now.saturating_sub(state.asked_ms) < ASK_EVERY_MS {
+        return;
+    }
+    state.asked_ms = now;
+    let mut buf = [0u8; 2048];
+    let Ok(len) = sys::ask_read(&mut buf) else {
+        return;
+    };
+    let text = core::str::from_utf8(&buf[..len.min(buf.len())]).unwrap_or("");
+    let mut parts = text.splitn(3, '\n');
+    let posted = match (parts.next(), parts.next(), parts.next()) {
+        (Some(id), Some(call), Some(question)) => id.parse().ok().map(|id| (id, call, question)),
+        _ => None,
+    };
+    match (posted, state.card.as_ref()) {
+        (Some((id, _, _)), Some(card)) if card.id == id => {}
+        (Some((id, call, question)), _) => {
+            let card = Card {
+                id,
+                call: call.into(),
+                reason: question.into(),
+                shown_ms: now,
+            };
+            let lines = state.painter.card_lines(state.width, &card);
+            if let Some(old) = state.card.take() {
+                let effects = state.desk.hide_ask(old.id);
+                deliver(state, &effects);
+            }
+            println!("desktop: ask {id} shows on the card");
+            let effects = state.desk.show_ask(id, lines);
+            state.card = Some(card);
+            deliver(state, &effects);
+        }
+        (None, Some(card)) => {
+            // Withdrawn by the kernel: it asks on the console now.
+            let id = card.id;
+            state.card = None;
+            let effects = state.desk.hide_ask(id);
+            deliver(state, &effects);
+        }
+        (None, None) => {}
+    }
+}
+
+/// The card's answer goes to the kernel with the digest of the call it showed.
+fn answer_ask(state: &mut State, id: u64, yes: bool) {
+    let Some(card) = state.card.take().filter(|c| c.id == id) else {
+        return;
+    };
+    let digest = termcore::once::digest_call(id, &card.call);
+    let word = if yes { "yes" } else { "no" };
+    match sys::ask_answer(id, yes, &digest) {
+        Ok(_) => println!("desktop: ask {id} answered {word}"),
+        Err(error) => println!("desktop: the kernel refused ask {id}'s answer ({error:?})"),
     }
 }
 
@@ -472,19 +558,18 @@ fn apply_need(state: &mut State, at: usize, pid: u64, need: Need, handle: Option
     }
 }
 
-/// The name a process runs under, which labels its windows.
+/// The name a process runs under, which labels its windows and names its app
+/// in standing instructions' events. From the metrics' process list: LIST is
+/// the supervisor's alone.
 fn name_of(pid: u64) -> alloc::string::String {
-    let mut buf = vec![0u8; 4096];
-    let Ok(len) = sys::list(&mut buf) else {
-        return alloc::format!("pid {pid}");
-    };
-    alloc::string::String::from_utf8_lossy(&buf[..len.min(buf.len())])
-        .lines()
-        .find_map(|line| {
-            let (p, name) = line.split_once(' ')?;
-            (p.parse() == Ok(pid)).then(|| alloc::string::String::from(name))
-        })
-        .unwrap_or_else(|| alloc::format!("pid {pid}"))
+    let named = sys::metrics().ok().and_then(|m| {
+        let listed = &m.processes[..(m.process_count as usize).min(m.processes.len())];
+        listed
+            .iter()
+            .find(|p| p.pid == pid)
+            .map(|p| alloc::string::String::from(p.name()))
+    });
+    named.unwrap_or_else(|| alloc::format!("pid {pid}"))
 }
 
 /// Logs windows that opened, moved or closed, and focus changes, once each.
@@ -525,6 +610,23 @@ fn report(state: &mut State) {
             other => println!("desktop: focus {other:?}"),
         }
         state.focus = focus;
+    }
+}
+
+/// Posts the window events and idle minutes since last round to the kernel's
+/// event box, for the shell's standing instructions.
+fn post_events(state: &mut State) {
+    let mut events = state
+        .watch
+        .windows(state.desk.windows(), state.desk.focus());
+    events.extend(state.watch.idle(now_ms()));
+    for event in events {
+        let mut line = alloc::string::String::new();
+        let _ = event.text(&mut line);
+        match sys::event_post(&line) {
+            Ok(_) => println!("desktop: event {line}"),
+            Err(error) => println!("desktop: cannot post {line}: {error:?}"),
+        }
     }
 }
 
@@ -574,6 +676,7 @@ fn draw(state: &mut State, screen: &Screen) {
         desk: &state.desk,
         bar: &state.bar,
         panel: &state.panel,
+        ask: state.card.as_ref(),
         now_ms: now_ms(),
     };
     let mut content = |id: WindowId, layer: &mut Canvas<'_>, at: Rect| {

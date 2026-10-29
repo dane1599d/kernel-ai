@@ -147,6 +147,10 @@ pub enum SelfTest {
     DeskPanel,
     /// An app's kai:ui window on the desktop, closed from its control (P3 task 9).
     UiWindow,
+    /// Asks answered on `desktop`'s card, and on the console when it dies (P3 task 7).
+    DeskCard,
+    /// A standing instruction fired by Notes' window minimized and restored (P3 task 11).
+    DeskStanding,
     /// The keyboard reaches an app's widgets (key input for uikit apps).
     UiKeys,
     DeskTerm,
@@ -307,6 +311,8 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=desk-boot" => Some(SelfTest::DeskBoot),
             "test=desk-panel" => Some(SelfTest::DeskPanel),
             "test=ui-window" => Some(SelfTest::UiWindow),
+            "test=desk-card" => Some(SelfTest::DeskCard),
+            "test=desk-standing" => Some(SelfTest::DeskStanding),
             "test=ui-keys" => Some(SelfTest::UiKeys),
             "test=desk-term" => Some(SelfTest::DeskTerm),
             "test=scriptrun" => Some(SelfTest::Scriptrun),
@@ -386,6 +392,8 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DeskBoot
             | SelfTest::DeskPanel
             | SelfTest::UiWindow
+            | SelfTest::DeskCard
+            | SelfTest::DeskStanding
             | SelfTest::UiKeys
             | SelfTest::DeskTerm
             | SelfTest::TuneRevert
@@ -529,7 +537,7 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
     }
     if matches!(
         test,
-        SelfTest::DeskWindows | SelfTest::DeskRestart | SelfTest::DeskAsk
+        SelfTest::DeskWindows | SelfTest::DeskRestart | SelfTest::DeskAsk | SelfTest::DeskCard
     ) {
         plan.push('\n');
         plan.push_str(crate::desk_tests::PLAN);
@@ -541,6 +549,10 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
     if test == SelfTest::UiWindow {
         plan.push('\n');
         plan.push_str(crate::ui_tests::PLAN);
+    }
+    if test == SelfTest::DeskStanding {
+        plan.push('\n');
+        plan.push_str(crate::standing_tests::PLAN);
     }
     if test == SelfTest::UiKeys {
         plan.push('\n');

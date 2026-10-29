@@ -23,7 +23,7 @@
 //! | 150-159 | V, virtual machines (P6) | |
 //! | 160-169 | M, memory | MEM_RESERVE, MEM_COMMIT, MEM_RELEASE, PROC_QUOTA_SET, PROC_CLASS_SET |
 //! | 170-179 | U, updates (P4) | SLOT_INFO, SLOT_READ, SLOT_WRITE, SLOT_FLUSH, BOOTREC_GET, BOOTREC_SET, TRUST_ROOT, TRUST_TIME |
-//! | 180-189 | not given yet | a lane asks lane K for a block |
+//! | 180-189 | G-core (P3), second block | ASK_READ, ASK_ANSWER, EVENT_POST, EVENT_READ, APP_CTL |
 //! | 190-191 | S-io (P2), second block | PART_PEER_ALIVE |
 
 /// `exit(code: i32) -> !`
@@ -507,6 +507,45 @@ pub const TRUST_ROOT: u64 = 176;
 /// the time since boot, the clock TUF's expiry checks use (ADR 0008 §7).
 /// NotFound when the firmware gave no date. Needs READ.
 pub const TRUST_TIME: u64 = 177;
+
+// ---- G-core, second block, 180-189 ----
+
+/// `ask_read(handle, buf, cap) -> len`: the ask waiting for `desktop`'s card, as
+/// its log entry id, its call in canonical text (`termcore::once::call_text`)
+/// and its question, one per line; 0 when none waits. Reading marks the trusted
+/// layer alive: the kernel posts asks to the card only while `desktop` reads,
+/// and asks on the console otherwise (ADR 0005 §7). TooBig, with nothing
+/// written, when `cap` is too small. Needs an `Ask` handle, which the kernel
+/// gives only to the service `desktop` running the program `desktop`.
+pub const ASK_READ: u64 = 180;
+/// `ask_answer(handle, id, yes, digest_ptr) -> 0`: answers ask `id` from the
+/// card, Run (`yes` 1) or Don't (0). `digest_ptr` points at the 32-byte
+/// `termcore::once::digest_call` of the call the card showed; NotFound, and
+/// no answer, unless that is the posted ask's. The kernel then mints the
+/// `ONCE` as for the console's menu. Needs an `Ask` handle.
+pub const ASK_ANSWER: u64 = 181;
+/// `event_post(line_ptr, line_len) -> 0`: puts one event for standing
+/// instructions in the kernel's box (P3 task 11), one line as
+/// [`super::event::Event::parse`] reads it: a window event or idle. Invalid for
+/// any other line, and for `time`, which the kernel adds itself. Only the
+/// display holder posts: it needs [`super::cap::DISPLAY`], which the kernel
+/// gives only to `desktop`. The box keeps [`super::event::BOX`] events; past
+/// that the oldest goes, and is counted.
+pub const EVENT_POST: u64 = 182;
+/// `event_read(buf, cap) -> len`: takes the box's events, one line each,
+/// oldest first, then a `time <minute>` (UTC) for each minute of the day begun
+/// since the last read; first `dropped <n>` when events were lost since the
+/// last read. 0 when none wait. Only the process serving `shell` may read.
+/// TooBig, with nothing taken, when `cap` is under
+/// [`super::event::READ_BYTES`].
+pub const EVENT_READ: u64 = 183;
+/// `app_ctl(name_ptr, name_len, verb, buf, cap) -> len`: the kernel sends
+/// `ctl suspend` (`verb` 0) or `ctl resume` (1) to the app service `name`, as
+/// its own request, and writes the reply into `buf`. For the supervisor, which
+/// runs `app_suspend` and `app_resume` for a standing instruction after
+/// RULE_CHECK (P3 task 11): needs [`super::cap::SUPERVISE`]. NotFound with no
+/// such service; TimedOut when it does not answer.
+pub const APP_CTL: u64 = 184;
 
 // ---- S-io, second block, 190-191 ----
 
