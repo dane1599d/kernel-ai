@@ -541,3 +541,115 @@ fn act_sends_an_action_request_only_for_an_action_the_node_offers() {
         ]
     );
 }
+
+#[test]
+fn a_bound_node_names_its_action_and_unbinding_or_a_new_tree_drops_it() {
+    let (mut desk, mut client, window) = tree_window();
+    let tree = bytes(&[
+        (8, Request::TreeUpdate(&tree_bytes("Save"))),
+        (8, Request::A11yCommit),
+        (
+            8,
+            Request::BindAction {
+                node: 2,
+                action: "notes_save",
+            },
+        ),
+        (
+            8,
+            Request::BindAction {
+                node: 9,
+                action: "notes_delete",
+            },
+        ),
+    ]);
+    client.handle(&mut desk, &tree, false).unwrap();
+    assert_eq!(client.bound_action(window, 2), Some("notes_save"));
+    assert_eq!(client.bound_action(window, 3), None, "unbound: ask");
+    assert_eq!(client.bound_action(window, 9), None, "not in the tree");
+    let unbind = bytes(&[(
+        8,
+        Request::BindAction {
+            node: 2,
+            action: "",
+        },
+    )]);
+    client.handle(&mut desk, &unbind, false).unwrap();
+    assert_eq!(client.bound_action(window, 2), None);
+}
+
+#[test]
+fn a_badly_named_or_one_too_many_binding_closes_the_connection() {
+    // Only the shape: another app's row is the agent core's to refuse.
+    for name in [
+        "Notes_Save",
+        "save",
+        "notes save",
+        "notes_",
+        "_save",
+        &"notes_".repeat(11),
+    ] {
+        let (mut desk, mut client, _) = tree_window();
+        let bad = bytes(&[(
+            8,
+            Request::BindAction {
+                node: 2,
+                action: name,
+            },
+        )]);
+        assert_eq!(
+            client.handle(&mut desk, &bad, false),
+            Err(Error::BadArg),
+            "{name}"
+        );
+    }
+    let (mut desk, mut client, _) = tree_window();
+    let many: Vec<(u32, Request)> = (0..=crate::server::MAX_BOUND as u32)
+        .map(|node| {
+            (
+                8,
+                Request::BindAction {
+                    node,
+                    action: "notes_save",
+                },
+            )
+        })
+        .collect();
+    assert_eq!(
+        client.handle(&mut desk, &bytes(&many), false),
+        Err(Error::BadArg)
+    );
+}
+
+#[test]
+fn a_window_is_saved_until_its_app_says_otherwise() {
+    let (mut desk, mut client, window) = tree_window();
+    assert!(!client.unsaved(window));
+    client
+        .handle(&mut desk, &bytes(&[(5, Request::SetUnsaved(true))]), false)
+        .unwrap();
+    assert!(client.unsaved(window));
+    client
+        .handle(&mut desk, &bytes(&[(5, Request::SetUnsaved(false))]), false)
+        .unwrap();
+    assert!(!client.unsaved(window));
+}
+
+#[test]
+fn a_window_of_another_name_binds_its_apps_rows() {
+    // Notes' window runs as `notes-window` and binds the Notes app's `notes_add`.
+    let mut desk = Desk::new(1280, 800);
+    let mut client = Client::new(5, "notes-window");
+    client.handle(&mut desk, &setup(), true).unwrap();
+    client
+        .handle(&mut desk, &bytes(&[(3, Request::GetA11y { id: 8 })]), false)
+        .unwrap();
+    let rows = bytes(&[(
+        8,
+        Request::BindAction {
+            node: 2,
+            action: "notes_add",
+        },
+    )]);
+    assert_eq!(client.handle(&mut desk, &rows, false), Ok(vec![]));
+}
