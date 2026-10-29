@@ -66,6 +66,11 @@ fn every_request_reads_back_and_nothing_else_does() {
         },
         Request::Agent(Some("w1".into())),
         Request::Agent(None),
+        Request::Check {
+            window: "w1".into(),
+            node: "b2".into(),
+            action: 0,
+        },
     ];
     for request in requests {
         assert_eq!(Request::parse(&request.encode()), Some(request.clone()));
@@ -122,12 +127,9 @@ fn windows_list_front_to_back_and_read_back() {
 fn a_view_then_an_act_reaches_the_app_and_moves_the_outline() {
     let (mut desk, mut fake, notes, _) = desktop();
     let mut agent = Agent::default();
-    // Acting before a view has no ids to read.
+    // Acting before a view has no ids to read: the answer says to view.
     let (early, _) = agent.answer(&mut desk, &mut fake, "ui act notes b2 0\t");
-    assert!(
-        early.starts_with("err b2 is not in the window's last view"),
-        "{early}"
-    );
+    assert_eq!(early, "err unknown node; view w1 first");
     let (view, _) = agent.answer(&mut desk, &mut fake, "ui view notes");
     assert!(view.starts_with("ok windows: "), "{view}");
     assert!(view.contains("[t1] textbox \"Search\"  [b2] button \"New note\""));
@@ -147,7 +149,36 @@ fn a_view_then_an_act_reaches_the_app_and_moves_the_outline() {
     assert_eq!(refused, "err b2 does not take that action");
     agent.closed(notes);
     let (gone, _) = agent.answer(&mut desk, &mut fake, "ui act notes b2 0\t");
-    assert!(gone.starts_with("err "), "{gone}");
+    assert_eq!(gone, "err unknown node; view w1 first");
+}
+
+#[test]
+fn check_names_an_unknown_or_guessed_node_and_sends_nothing() {
+    let (mut desk, mut fake, _, _) = desktop();
+    let mut agent = Agent::default();
+    let (before, _) = agent.answer(&mut desk, &mut fake, "ui check notes b2 0");
+    assert_eq!(before, "err unknown node; view w1 first");
+    agent.answer(&mut desk, &mut fake, "ui view notes");
+    for (request, want) in [
+        ("ui check notes b2 0", "ok"),
+        ("ui check w1 t1 2", "ok"),
+        // An id the model made up, and one no view of that window showed.
+        (
+            "ui check notes new-note 0",
+            "err unknown node; view w1 first",
+        ),
+        ("ui check notes b9 0", "err unknown node; view w1 first"),
+        ("ui check kai> b2 0", "err unknown node; view w2 first"),
+        ("ui check notes b2 2", "err b2 does not take that action"),
+    ] {
+        assert_eq!(
+            agent.answer(&mut desk, &mut fake, request).0,
+            want,
+            "{request}"
+        );
+    }
+    assert!(fake.sent.is_empty(), "a check acts on nothing");
+    assert_eq!(desk.agent(), None);
 }
 
 #[test]
