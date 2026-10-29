@@ -1,11 +1,14 @@
 //! Arm `view`: view-then-act (ADR 0005 §6, P3 task 10), which ADR 0005 calls
 //! unmeasured. Each request is answered as llm answers `act` on the OS pack, in
 //! a desktop of S05-2's seven mock windows with the State line's `app`,
-//! `window` and `windows`. A request about a control with no declared action
-//! must first call `ui_view`; its second round then reads that window's view
-//! as `Data` and must call `ui_act` on the right control, action and value. A
-//! request about a whole window (focus, close, open) must call its row at once.
-//! It reports at [`BAR`]; the gate comes once the rows' wording settles.
+//! `window` and `windows`, and its reads come back as the shell gives them
+//! (`shellcore::ui`): a `ui_view` reads that window's view once, and a `ui_act`
+//! on a node no view showed reads `desktop`'s refusal ("unknown node; view w3
+//! first"), at most two reads in all. A request about a control with no
+//! declared action must end in `ui_act` on the right control, action and value
+//! of the view it read; one about a whole window (focus, close, open) must end
+//! in its row. It reports at [`BAR`]; the gate comes once the rows' wording
+//! settles.
 
 use super::{Loaded, Next};
 use deskcore::desk::WindowId;
@@ -148,6 +151,88 @@ fn view_of(windows: &[Listed], app: &str) -> Option<String> {
     Some(view::project(windows, id, &tree).text)
 }
 
+/// The window `text` names, by its app or its id, as `desktop` finds it.
+fn find<'a>(windows: &'a [Listed], text: &str) -> Option<&'a Listed> {
+    windows
+        .iter()
+        .find(|w| w.app.eq_ignore_ascii_case(text) || view::parse_window(text) == Some(w.id))
+}
+
+/// What one request's calls come to, as the shell takes them.
+struct Rounds {
+    last: Result<Call, String>,
+    /// The view the model last read, if any.
+    view: Option<String>,
+    got: Vec<String>,
+    first_view: bool,
+    rounds: usize,
+    tokens: usize,
+}
+
+/// The shell's reads (module note): at most two, one of them a view.
+const MAX_READS: usize = 2;
+
+fn rounds(
+    loaded: &Loaded,
+    grammar: &local_act::Grammar,
+    request: &ActRequest,
+    windows: &[Listed],
+) -> Rounds {
+    let (first, mut rounds, mut tokens) = ask(loaded, grammar, request);
+    let mut got = vec![first.as_ref().map_or_else(Clone::clone, Call::text)];
+    let first_view = first.as_ref().is_ok_and(|c| c.name == "ui_view");
+    let (mut last, mut view, mut reads) = (first, None::<(String, String)>, 0);
+    while let Ok(call) = &last {
+        let data = match call.name.as_str() {
+            "ui_view" if view.is_none() => match find(windows, text_arg(call, "window")) {
+                Some(w) => {
+                    let text = view_of(windows, &w.app).unwrap_or_default();
+                    view = Some((w.app.clone(), text.clone()));
+                    text
+                }
+                None => break,
+            },
+            "ui_act" => {
+                let Some(w) = find(windows, text_arg(call, "window")) else {
+                    break;
+                };
+                let node = format!("[{}]", text_arg(call, "node"));
+                let known = view
+                    .as_ref()
+                    .is_some_and(|(app, text)| *app == w.app && text.contains(&node));
+                if known {
+                    break;
+                }
+                format!("unknown node; view {} first", view::window_id(w.id))
+            }
+            _ => break,
+        };
+        if reads == MAX_READS {
+            break;
+        }
+        reads += 1;
+        let again = ActRequest {
+            read: Some(Read {
+                call: call.text(),
+                data,
+            }),
+            ..request.clone()
+        };
+        let (next, r, t) = ask(loaded, grammar, &again);
+        (rounds, tokens) = (rounds + r, tokens + t);
+        got.push(next.as_ref().map_or_else(Clone::clone, Call::text));
+        last = next;
+    }
+    Rounds {
+        last,
+        view: view.map(|(_, text)| text),
+        got,
+        first_view,
+        rounds,
+        tokens,
+    }
+}
+
 /// Whether `text` names `app`'s window: the app's name or its id.
 fn names_window(windows: &[Listed], app: &str, text: &str) -> bool {
     text.eq_ignore_ascii_case(app)
@@ -221,43 +306,39 @@ pub fn run(loaded: &Loaded, seed: u64, target_dir: &Path) -> Result<(bool, Strin
             read: None,
         };
         let started = std::time::Instant::now();
-        let (first, mut rounds, mut tokens) = ask(loaded, &grammar, &request);
-        let mut got = vec![first.as_ref().map_or_else(Clone::clone, Call::text)];
-        let ok = match (want, &first) {
-            (Row(row, target), Ok(call)) => {
+        let Rounds {
+            last,
+            view,
+            got,
+            first_view,
+            rounds,
+            tokens,
+        } = rounds(loaded, &grammar, &request, &windows);
+        views += usize::from(view.is_some());
+        let first_right = match want {
+            Row(row, _) => got[0].contains(&format!("\"name\":\"{row}\"")),
+            Act { .. } => first_view,
+        };
+        first_ok += usize::from(first_right);
+        let ok = match (want, &last, &view) {
+            (Row(row, target), Ok(call), _) => {
                 let named = match row {
                     "ui_open" => text_arg(call, "app"),
                     _ => text_arg(call, "window"),
                 };
-                first_ok += usize::from(call.name == row);
                 call.name == row && names_window(&windows, target, named)
             }
-            (Act { .. }, Ok(call))
-                if call.name == "ui_view"
-                    && names_window(&windows, app, text_arg(call, "window")) =>
-            {
-                first_ok += 1;
-                views += 1;
-                let data = view_of(&windows, app).unwrap_or_default();
-                let second = ActRequest {
-                    read: Some(Read {
-                        call: call.text(),
-                        data: data.clone(),
-                    }),
-                    ..request.clone()
-                };
-                let (then, r, t) = ask(loaded, &grammar, &second);
-                (rounds, tokens) = (rounds + r, tokens + t);
-                got.push(then.as_ref().map_or_else(Clone::clone, Call::text));
-                let Act {
+            (
+                Act {
                     control,
                     action,
                     value,
-                } = want
-                else {
-                    unreachable!("matched as Act")
-                };
-                then.is_ok_and(|call| acts(&call, &data, control, action, value))
+                },
+                Ok(call),
+                Some(view),
+            ) => {
+                let viewed = find(&windows, text_arg(call, "window")).is_some_and(|w| w.app == app);
+                viewed && acts(call, view, control, action, value)
             }
             _ => false,
         };

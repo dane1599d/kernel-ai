@@ -15,8 +15,10 @@ publish = false
 doctest = false
 
 [dependencies]
+agentabi = { path = "../agentabi" }
 kailink = { path = "../kailink" }
 promptcore = { path = "../promptcore" }
+serde_json = { version = "1.0.154", default-features = false, features = ["alloc"] }
 wasihost = { path = "../wasihost" }
 wasmi = { version = "2.0.0", default-features = false, features = ["validate", "portable-dispatch"] }
 wasmparser = { version = "0.228.0", default-features = false }
