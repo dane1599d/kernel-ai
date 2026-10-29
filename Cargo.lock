@@ -513,6 +513,7 @@ dependencies = [
  "kabi",
  "livecore",
  "llmproto",
+ "termcore",
 ]
 
 [[package]]
