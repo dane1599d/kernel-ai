@@ -26,11 +26,11 @@ pub fn check() -> Result<(), &'static str> {
         "app-route: after the call, notes says {}",
         added.replace('\n', "; ")
     );
-    if !added.contains("result 1") {
+    if !added.contains("notes: 1,") {
         return Err("app-route: the note was not added");
     }
     expect_lines(&[("undo", StartsWith("ok Undone: notes as it was"))])?;
-    if !count()?.contains("result 0") {
+    if !count()?.contains("notes: 0,") {
         return Err("app-route: undo did not put notes back");
     }
     log!(
