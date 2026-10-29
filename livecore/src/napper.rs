@@ -58,7 +58,7 @@ impl Napper {
     }
 
     /// Before a request from `caller`: the keep-running switch is answered
-    /// here; a rule's `ctl suspend` takes a napping app over (so focus no
+    /// here, and turning it on wakes a napping app; a rule's `ctl suspend` takes a napping app over (so focus no
     /// longer wakes it) and is answered here; status, suspend and resume pass
     /// as they are; anything else is use and wakes a napping app first, so even
     /// `ctl swap` finds it running. `Some` is the reply, `None` hands the
@@ -82,7 +82,13 @@ impl Napper {
             if on == b"on" || on == b"off" {
                 self.nap.keep_running(on == b"on");
             }
-            return Ok((Some(reply.to_vec()), None));
+            // Kept running from now: a napping app wakes; a rule's suspend
+            // stays the rule's (`wake` ends only the nap's own).
+            let woke = match on {
+                b"on" => self.wake(host, now_ms)?,
+                _ => None,
+            };
+            return Ok((Some(reply.to_vec()), woke));
         }
         if caller == 0 && self.nap.is_napping() && request == b"ctl suspend" {
             // Suspended already: the rule's suspend now holds it.
