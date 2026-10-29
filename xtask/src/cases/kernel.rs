@@ -147,6 +147,16 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("app-suspend", "test=app-suspend")
     },
+    // P3 task 12b: an app starts on its first request, not at boot.
+    TestCase {
+        expect: &[
+            "app-on-demand: notes is not running after boot",
+            "notes starts on demand",
+            "ipc: notes asked for on demand",
+            "app-on-demand: the first request started notes, and it answered",
+        ],
+        ..case("app-on-demand", "test=app-on-demand")
+    },
     // Lane M: anonymous memory comes back on release and on exit.
     TestCase {
         expect: &["mem: 1024 committed pages came back on release and 512 on exit; refusals held"],
@@ -189,6 +199,39 @@ pub(super) const CASES: &[TestCase] = &[
             "ui-window: Notes opened its window and pressed its close control",
         ],
         ..case("ui-window", "test=ui-window")
+    },
+    // P3 task 7: asks answered on desktop's card, and on the console when it dies.
+    TestCase {
+        expect: &[
+            "ask: 1 went to desktop's card",
+            "desktop: ask 1 shows on the card",
+            "desktop: ask 1 answered yes",
+            "desk-card: an ask went to desktop's card, and y on it allowed",
+            "desktop: ask 2 answered no",
+            "desk-card: a letter and Enter did not answer the card, and n denied",
+            "ask: 3 came back from the card; the console asks it",
+            "desk-card: with desktop killed, the ask came back and the console answered it",
+        ],
+        ..case("desk-card", "test=desk-card")
+    },
+    // P3 task 11: a standing instruction fired by Notes' window events.
+    TestCase {
+        expect: &[
+            "desk-standing: the rule was allowed on the card, and the shell holds it",
+            "desktop: event minimize notes-window",
+            "desk-standing: minimizing Notes fired the rule, and Notes is suspended",
+            "desktop: event restore notes-window",
+            "desk-standing: restoring Notes resumed it, with its note intact",
+        ],
+        ..case("desk-standing", "test=desk-standing")
+    },
+    // Key input for uikit apps: the keyboard reaches Notes' widgets.
+    TestCase {
+        keys: &[&["tab", "tab", "ret", "tab", "tab", "h", "i"]],
+        expect: &[
+            "ui-keys: Tab, Enter and typed text reached Notes' widgets through desktop and comphost",
+        ],
+        ..case("ui-keys", "test=ui-keys")
     },
     // P3 task 8: the kernel's terminal in a window, and an ask typed there.
     TestCase {

@@ -11,7 +11,9 @@
 
 #![no_std]
 
+pub mod pending;
 pub mod slotfile;
+pub mod window;
 
 /// The record's magic and version.
 pub const MAGIC: &[u8; 4] = b"KAB1";
@@ -371,6 +373,38 @@ pub fn install(nv: &mut Nv, release_seq: u32) {
     stage_end(nv, Slot::B, release_seq);
     stage_end(nv, Slot::A, release_seq);
     arm(nv, Slot::A);
+}
+
+/// What became of an update staged into `slot` with `release_seq`, seen from a
+/// boot running in `running` (`updated`'s reconcile, ADR 0008 §10).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Trial {
+    /// The slot committed that release: the update held.
+    Held,
+    /// This boot is the slot's trial.
+    OnTrial,
+    /// Staged, but it has not spent its tries: it may still boot and commit.
+    Waiting,
+    /// It spent its tries without committing: the update failed.
+    Failed,
+    /// It never finished staging, or holds another release now: the update
+    /// never booted.
+    Abandoned,
+}
+
+pub fn trial(record: &Record, slot: Slot, release_seq: u32, running: Slot) -> Trial {
+    let state = record.slot(slot);
+    if state.release_seq != release_seq || state.reason == Reason::Updating {
+        Trial::Abandoned
+    } else if state.successful {
+        Trial::Held
+    } else if running == slot {
+        Trial::OnTrial
+    } else if state.reason == Reason::Unbootable {
+        Trial::Failed
+    } else {
+        Trial::Waiting
+    }
 }
 
 /// Whether booting `slot` keeps the rule: R, a committed slot, or a trial slot

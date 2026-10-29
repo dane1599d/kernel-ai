@@ -223,6 +223,9 @@ pub(super) const CASES: &[TestCase] = &[
         expect: &[
             "model: 2101245 bytes reserved for the model store's model; fs fills them",
             "model-store: fs filled 2101245 bytes from /system/models",
+            "[llm] model: waiting for the model store to fill the model",
+            "[llm] model: the model store filled the model",
+            "model-store: llm waited for the fill and maps the store's model",
         ],
         server: false,
         data: Some(VIRTIO),
