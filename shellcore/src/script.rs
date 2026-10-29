@@ -848,6 +848,8 @@ pub struct Ran {
     /// The first change to each resource, with the value it replaced. The caller
     /// puts them back when `ok` is false.
     pub done: Vec<Done>,
+    /// The script's last value, run in the shell; `None` from a child.
+    pub value: Option<Dynamic>,
 }
 
 /// Runs a script with the real OS, granted only the calls the plan found. Its
@@ -867,11 +869,13 @@ pub fn run_as(checked: &Checked, host: &Rc<dyn Host>, config: &Config, consent: 
     line.begin(host.as_ref(), config);
     let result = engine::eval(&engine, &mut Scope::new(), &checked.ast, config.exec);
     let mut text = line.take_output();
+    let mut last = None;
     let mut ok = match result {
         Ok(value) => {
             if !value.is_unit() {
                 text.push_str(&show::value(&value));
             }
+            last = Some(value);
             true
         }
         Err(error) => {
@@ -884,7 +888,12 @@ pub fn run_as(checked: &Checked, host: &Rc<dyn Host>, config: &Config, consent: 
         ok = flush(queued, &mut text);
     }
     let done = tx.journal.take();
-    Ran { ok, text, done }
+    Ran {
+        ok,
+        text,
+        done,
+        value: last,
+    }
 }
 
 /// Sends what a successful run queued, in order, stopping at the first that fails.
