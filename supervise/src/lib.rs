@@ -45,6 +45,55 @@ pub struct ServiceSpec {
     pub unsupervised: bool,
 }
 
+/// The kernel's request that a `start=demand` service start: `demand <name>`.
+pub const DEMAND: &str = "demand";
+
+/// The service `text` (`demand <name>`) names, if it is one.
+pub fn parse_demand(text: &str) -> Option<&str> {
+    let mut words = text.split_whitespace();
+    match (words.next(), words.next(), words.next()) {
+        (Some(DEMAND), Some(name), None) if valid_name(name) => Some(name),
+        _ => None,
+    }
+}
+
+/// The index among `specs` of the service `demand <name>` asks for, if the
+/// supervisor should start it now: the request is the kernel's (`caller` 0),
+/// the line says `start=demand`, it is not running, and the user has not
+/// stopped it. `Ok(None)` when it already runs or is starting.
+pub fn check_demand(
+    name: &str,
+    specs: &[&ServiceSpec],
+    records: &[Record],
+    caller: u64,
+    starting: &[bool],
+) -> Result<Option<usize>, &'static str> {
+    if caller != 0 {
+        return Err("err only the kernel asks for a service on demand");
+    }
+    let index = specs
+        .iter()
+        .position(|s| s.name == name)
+        .ok_or("err unknown service")?;
+    if specs[index].start != Start::Demand {
+        return Err("err not a start=demand service");
+    }
+    let record = &records[index];
+    if record.stopped {
+        return Err("err stopped");
+    }
+    // Past its restart cap a demand does not start it again; only the user's
+    // `start` does. While it backs off it is starting, below, so a demand never
+    // skips the backoff either.
+    if record.gave_up {
+        return Err("err gave up");
+    }
+    match record.pid != 0 || starting[index] {
+        true => Ok(None),
+        false => Ok(Some(index)),
+    }
+}
+
 /// A folder a plan line grants with `dir=` (ADR 0011 §12): the kernel puts a
 /// startup `Dir` for it in the service's table, on the `fs` route, and lets the
 /// service hold `Dir` and `File` handles. The authority is the plan line, which
@@ -60,6 +109,10 @@ pub enum Folder {
     /// `/system/updates`, staged releases and the `update` snapshot's handle
     /// (ADR 0008 §10): `updated`'s only.
     Updates,
+    /// `/system/settings`, the Settings app's files, read only: for a service
+    /// that follows a setting (`updated`'s restart window; the desktop's
+    /// appearance and the supervisor's profiles next).
+    Settings,
 }
 
 impl Folder {
@@ -68,6 +121,7 @@ impl Folder {
             "pkg" => Some(Folder::Pkg),
             "trust" => Some(Folder::Trust),
             "updates" => Some(Folder::Updates),
+            "settings" => Some(Folder::Settings),
             _ => None,
         }
     }
@@ -78,7 +132,14 @@ impl Folder {
             Folder::Pkg => kabi::fs::SYSTEM_PKG,
             Folder::Trust => kabi::fs::SYSTEM_TRUST,
             Folder::Updates => kabi::fs::SYSTEM_UPDATES,
+            Folder::Settings => kabi::fs::SYSTEM_SETTINGS,
         }
+    }
+
+    /// Whether its `Dir` only reads: the kernel gives it READ and ENUMERATE, and
+    /// `fs` refuses a change through it whatever the handle says.
+    pub fn read_only(self) -> bool {
+        matches!(self, Folder::Settings)
     }
 
     /// The one service, by name and by program, a line granting it must be, if
@@ -86,7 +147,7 @@ impl Folder {
     /// (ADR 0008 §10), as the kernel's UPDATE capability is.
     pub fn only_for(self) -> Option<&'static str> {
         match self {
-            Folder::Pkg => None,
+            Folder::Pkg | Folder::Settings => None,
             Folder::Trust | Folder::Updates => Some(UPDATED),
         }
     }
@@ -153,6 +214,10 @@ pub enum Start {
     /// holder of `/system/pkg` asks with [`Run`], and then runs, and restarts, on
     /// the package version that request names, passed as `version=`.
     Pkg,
+    /// `start=demand` (P3 task 12b, app nap): not at boot, but when something
+    /// first needs it. A call that waits for it makes the kernel send the
+    /// supervisor [`DEMAND`] for it ([`check_demand`]).
+    Demand,
 }
 
 /// `run <name> version=<label>`: the holder of `/system/pkg` asks for `start=pkg`
@@ -208,7 +273,7 @@ pub fn check_run(
         .ok_or("err unknown service")?;
     match services[index].0.start {
         Start::Pkg => Ok(index),
-        Start::Boot => Err(NOT_FROM_PKG),
+        Start::Boot | Start::Demand => Err(NOT_FROM_PKG),
     }
 }
 
@@ -416,6 +481,17 @@ pub fn parse_listing(text: &str) -> Option<Vec<Listed>> {
 /// on, or the reply that refuses it (`err protected`, `err unknown service`,
 /// `err already stopped`, `err not stopped`).
 pub fn check(request: Request, records: &[Record]) -> Result<usize, &'static str> {
+    check_for(request, records, &[])
+}
+
+/// [`check`], knowing each record's [`Start`] (`starts`, by index; a record
+/// past its end starts at boot): a `start` of a `start=demand` service that
+/// has not started yet starts it, as its first demand would.
+pub fn check_for(
+    request: Request,
+    records: &[Record],
+    starts: &[Start],
+) -> Result<usize, &'static str> {
     let name = request.name();
     if PROTECTED.contains(&name) {
         return Err("err protected");
@@ -425,10 +501,12 @@ pub fn check(request: Request, records: &[Record]) -> Result<usize, &'static str
         .position(|record| record.name == name)
         .ok_or("err unknown service")?;
     let record = &records[index];
+    let waiting = starts.get(index) == Some(&Start::Demand) && record.pid == 0;
     match (request, record.stopped) {
         (Request::Stop(_), true) => Err("err already stopped"),
-        // A service the supervisor gave up on starts again on request too.
-        (Request::Start(_), false) if !record.gave_up => Err("err not stopped"),
+        // A service the supervisor gave up on starts again on request too, and
+        // so does a demand service not started yet.
+        (Request::Start(_), false) if !record.gave_up && !waiting => Err("err not stopped"),
         _ => Ok(index),
     }
 }
@@ -473,7 +551,7 @@ impl Plan {
 
 /// Reads the plan: one service per line, `name [program=P] [pages=N] [stack_pages=N]
 /// [burst_ms=N] [caps=serve+net+call+policy+component+publish+model+threads+resolve+stop+script]
-/// [uses=A+B] [dir=pkg] [bootfiles=pkgrepo] [start=pkg] [backoff_max_ms=N] [max_restarts=N] [unsupervised] [other=args ...]`. The supervisor keys set limits,
+/// [uses=A+B] [dir=pkg] [bootfiles=pkgrepo] [start=pkg|demand] [backoff_max_ms=N] [max_restarts=N] [unsupervised] [other=args ...]`. The supervisor keys set limits,
 /// routes, folders and policy; everything else is passed to the program. A bad line skips only
 /// that service, so one typo cannot keep every other service down.
 pub fn parse_plan(text: &str) -> Plan {
@@ -557,10 +635,15 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
                 if start.is_some() {
                     return Err(format!("{name}: start= given twice"));
                 }
-                if value != "pkg" {
-                    return Err(format!("{name}: start= is pkg or not given, not {value:?}"));
-                }
-                start = Some(Start::Pkg);
+                start = Some(match value {
+                    "pkg" => Start::Pkg,
+                    "demand" => Start::Demand,
+                    _ => {
+                        return Err(format!(
+                            "{name}: start= is pkg, demand or not given, not {value:?}"
+                        ));
+                    }
+                });
             }
             Some(("backoff_max_ms", value)) => policy.max_backoff_ms = number(name, value)?,
             Some(("max_restarts", value)) => policy.max_restarts = number(name, value)? as usize,
@@ -587,7 +670,7 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
         ));
     }
     let start = start.unwrap_or_default();
-    if start == Start::Pkg && unsupervised {
+    if unsupervised && start != Start::Boot {
         return Err(format!("{name}: an unsupervised process takes no start="));
     }
     // A package's version comes from `pkg`'s request, never the plan.

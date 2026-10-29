@@ -63,6 +63,7 @@ impl Checked {
 type RhaiResult<T> = Result<T, Box<EvalAltResult>>;
 
 mod apps;
+mod windows;
 
 fn rhai_error(message: impl Into<String>) -> Box<EvalAltResult> {
     let message: String = message.into();
@@ -165,6 +166,7 @@ fn register(engine: &mut Engine, granted: &[&'static str], tx: &Tx) {
     for row in agentabi::BOUND
         .iter()
         .chain(&agentabi::FS_ROWS)
+        .chain(&agentabi::UI_ROWS)
         .filter(|row| granted.contains(&row.name))
     {
         bind(engine, row.name, tx);
@@ -360,6 +362,9 @@ fn bind(engine: &mut Engine, name: &'static str, tx: &Tx) -> bool {
                 });
             }
             name if name.starts_with("fs_") => return bind_file(engine, name, h, tx),
+            name if agentabi::UI_ROWS.iter().any(|r| r.name == name) => {
+                return windows::bind(engine, name, h, tx);
+            }
             _ => return false,
         }
     }
@@ -570,6 +575,7 @@ fn split(plan: &Plan, rows: &'static [agentabi::Action]) -> (Vec<&'static str>, 
             .iter()
             .chain(&agentabi::FS_ROWS)
             .chain(apps.clone())
+            .chain(&agentabi::UI_ROWS)
             .filter(|f| f.effect() == effect && names.contains(&f.name))
             .map(|f| f.name)
             .collect()
@@ -639,6 +645,15 @@ impl Host for Stub {
     }
     fn app_call(&self, _: &str, _: &str) -> Result<String, String> {
         Ok(alloc::format!("{}\n", livecore::call::REPLY_HEADER))
+    }
+    fn ui(&self, call: &crate::ui::UiCall) -> Result<String, String> {
+        use crate::ui::UiCall;
+        Ok(String::from(match call {
+            UiCall::Windows => "w1\tx\tx\t1",
+            UiCall::Focus(_) => "none",
+            UiCall::Close(window) => return Ok(window.clone()),
+            _ => "",
+        }))
     }
     fn ask(&self, _: &str) -> Result<String, String> {
         Err("not available to scripts".into())
