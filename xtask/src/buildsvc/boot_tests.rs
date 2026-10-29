@@ -274,7 +274,13 @@ fn the_service_knows_the_manifests_versions_and_syncs_move_the_boot_refs() {
 
 #[test]
 fn the_boot_drive_has_room_for_the_manifest_and_every_upload() {
-    let boot_drive = crate::components::VERSIONS.len();
-    assert_eq!(boot_drive + 2 + KEEP_UPLOADS, 13);
-    assert!(boot_drive + 2 + KEEP_UPLOADS <= MAX_VERSIONS);
+    // The limit is per component: `notes`'s own versions, the manifest's two,
+    // the uploads kept, and the package versions kept (P4).
+    let boot_drive = crate::components::VERSIONS
+        .iter()
+        .filter(|v| v.recipe.component == "notes")
+        .count();
+    let packages = livecore::store::KEEP_PACKAGES;
+    assert_eq!(boot_drive + 2 + KEEP_UPLOADS + packages, 16);
+    assert!(boot_drive + 2 + KEEP_UPLOADS + packages <= MAX_VERSIONS);
 }

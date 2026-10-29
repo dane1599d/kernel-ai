@@ -2,17 +2,38 @@
 //! allocation, times are clamped, pointers are only used through `uaccess`, and
 //! capability bits are checked before the call does anything.
 
+// One file per area, grouped by lane with a blank line between lanes, so two
+// lanes adding an area never touch the same lines (kabi::call has the number
+// blocks). A lane adds its `mod` line and its AREAS line in its own group.
+
+// P0 and P1 (lane K and the lanes before it).
 mod component;
 mod core;
 mod device;
 mod handle;
 mod job;
-mod model_kv;
 mod net;
 mod sched;
 mod service;
 mod shm;
 mod supervise;
+
+// Model lane.
+mod model_kv;
+
+// S-io (P2).
+pub(crate) mod fs;
+
+// G-core (P3).
+mod display;
+mod standing;
+
+// U, updates (ADR 0008).
+mod update;
+// M, memory (P3).
+mod mem;
+// P, packages.
+mod pkg;
 
 use crate::entry::TrapFrame;
 use crate::{cpu, ipc, threads};
@@ -59,7 +80,7 @@ fn need(slot: usize, bits: u64) -> Result<(), Error> {
 type Area = fn(usize, u64, &[u64; 6]) -> Option<Result<u64, Error>>;
 
 /// Every area, each in a file of its own: a lane adds its calls to its own area
-/// and, for a new area, one line here (ADR 0000 section 4.2).
+/// and, for a new area, one line here in its own group (ADR 0000 section 4.2).
 const AREAS: &[Area] = &[
     core::handle,
     supervise::handle,
@@ -71,8 +92,19 @@ const AREAS: &[Area] = &[
     device::handle,
     shm::handle,
     job::handle,
-    // Interim (S10-3): goes at P2 task 10.
+    // Model lane. Interim (S10-3): goes at P2 task 10.
     model_kv::handle,
+    // S-io (P2).
+    fs::handle,
+    // G-core (P3).
+    display::handle,
+    standing::handle,
+    // U, updates (ADR 0008).
+    update::handle,
+    // M, memory (P3).
+    mem::handle,
+    // P, packages.
+    pkg::handle,
 ];
 
 fn handle(slot: usize, number: u64, a: [u64; 6]) -> Result<u64, Error> {

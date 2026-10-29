@@ -15,6 +15,7 @@ extern crate alloc;
 #[cfg(target_family = "wasm")]
 #[doc(hidden)]
 pub mod abi;
+pub mod app;
 pub mod state;
 
 /// The `kai:app/component` world's bindings: the `log` import and the

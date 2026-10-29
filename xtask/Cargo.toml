@@ -1,6 +1,6 @@
 [package]
 name = "xtask"
-version = "0.0.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
@@ -9,10 +9,13 @@ publish = false
 agentabi = { path = "../agentabi" }
 bpe = { path = "../bpe" }
 cpufeat = { path = "../cpufeat" }
+# S05-2's mock trees, counted by `cargo xtask tokens`.
+deskcore = { path = "../deskcore", features = ["mock"] }
 gguf = { path = "../gguf" }
 infer = { path = "../infer" }
 diskmap = { path = "../diskmap" }
 kaifs = { path = "../kaifs" }
+kaipkg = { path = "../kaipkg" }
 kabi = { path = "../kabi" }
 kaibundle = { path = "../kaibundle", features = ["alloc"] }
 livecore = { path = "../livecore" }
@@ -27,6 +30,9 @@ object = "0.40.0"
 quant = { path = "../quant" }
 sched = { path = "../sched" }
 rustc-demangle = "0.1.28"
+# The package repository's test keys (pkgrepo/tuf.rs; ADR 0011 §3).
+ed25519-compact = { version = "2.6.0", default-features = false }
+getrandom = "0.2.17"
 serde_json = "1.0.154"
 sha2 = "0.11.1"
 # Grain on for the S12-3 comparison (fluency/grain.rs); the OS shell builds without it.
@@ -37,4 +43,8 @@ wit-parser = { version = "=0.262.0", default-features = false, features = ["std"
 semver = "1.0.28"
 
 [dev-dependencies]
+# The update disk's test reads its metadata back.
+kaituf = { path = "../kaituf" }
+# The slot disk's tests read its kai-slot 1 back.
+bootslot = { path = "../bootslot" }
 wat = "1.262.0"

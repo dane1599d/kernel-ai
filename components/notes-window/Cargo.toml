@@ -1,0 +1,24 @@
+[package]
+name = "comp-notes-window"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Notes with its window (ADR 0005 section 4): `comp-notes`'s logic and actions,
+# `comp-notes-ui`'s tree, and the `kai:ui` glue. All of Notes' logic stays in
+# `comp-notes`, so an edit the edit loop makes there reaches this build too.
+[lib]
+crate-type = ["cdylib", "rlib"]
+doctest = false
+
+[dependencies]
+# Without its exports: this crate binds `kai:live` and `app:notes/actions`.
+comp-notes = { path = "../notes", default-features = false }
+comp-notes-ui = { path = "../notes-ui" }
+compsdk = { path = "../../compsdk" }
+minicbor = { version = "2.3.0", default-features = false, features = ["alloc", "derive"] }
+uikit = { path = "../../uikit" }
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+wit-bindgen = { version = "=0.63.0", default-features = false, features = ["macros", "realloc"] }

@@ -39,11 +39,22 @@ pub fn map(memory: &mut Memory) -> Result<(), &'static str> {
 
 struct Counting;
 
+/// Runs `f`, which takes talc's lock, with preemption off: talc's lock is a
+/// plain spinlock, and a thread switched out while it held it left every other
+/// CPU that wanted memory spinning, some of them with preemption off, so the
+/// holder could never run again (the `tune-revert` hang, 2026-10-27).
+fn unpreempted<R>(f: impl FnOnce() -> R) -> R {
+    crate::threads::preempt_disable();
+    let result = f();
+    crate::threads::preempt_enable();
+    result
+}
+
 // SAFETY: forwards to talc and only adds bookkeeping.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         // SAFETY: same contract as the caller's.
-        let ptr = unsafe { TALC.alloc(layout) };
+        let ptr = unpreempted(|| unsafe { TALC.alloc(layout) });
         if !ptr.is_null() {
             LIVE_ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
             LIVE_BYTES.fetch_add(layout.size(), Ordering::Relaxed);
@@ -53,14 +64,14 @@ unsafe impl GlobalAlloc for Counting {
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         // SAFETY: same contract as the caller's.
-        unsafe { TALC.dealloc(ptr, layout) };
+        unpreempted(|| unsafe { TALC.dealloc(ptr, layout) });
         LIVE_ALLOCATIONS.fetch_sub(1, Ordering::Relaxed);
         LIVE_BYTES.fetch_sub(layout.size(), Ordering::Relaxed);
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         // SAFETY: same contract as the caller's.
-        let new = unsafe { TALC.realloc(ptr, layout, new_size) };
+        let new = unpreempted(|| unsafe { TALC.realloc(ptr, layout, new_size) });
         if !new.is_null() {
             LIVE_BYTES.fetch_add(new_size, Ordering::Relaxed);
             LIVE_BYTES.fetch_sub(layout.size(), Ordering::Relaxed);

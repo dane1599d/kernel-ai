@@ -13,12 +13,18 @@ use std::collections::VecDeque;
 mod act;
 mod actions;
 mod apart;
+mod files;
+mod fuzz;
 mod log;
+mod logdisk;
 mod more;
 mod packages;
+mod profiles;
 mod scripts;
+mod standing;
 mod transaction;
 mod tune;
+mod ui;
 
 /// A host whose clock moves `step_ns` on every reading.
 struct FakeHost {
@@ -48,6 +54,11 @@ struct FakeHost {
     act_lines: RefCell<Vec<String>>,
     /// The State each `act` request carried, and what `state` gives.
     act_states: RefCell<Vec<String>>,
+    /// Each act request's second-round read (P3 task 10).
+    act_reads: RefCell<Vec<Option<llmproto::act::Read>>>,
+    /// What the shell asked `desktop`, and how `desktop` answers.
+    ui_calls: RefCell<Vec<crate::ui::UiCall>>,
+    ui_answer: RefCell<Option<UiAnswer>>,
     state: RefCell<crate::state::State>,
     /// Turns sent to the conversation memory, and how often it was forgotten.
     remembered: RefCell<Vec<(String, String, String)>>,
@@ -67,9 +78,68 @@ struct FakeHost {
     apart: RefCell<Option<Apart>>,
     /// Requests sent to a child.
     apart_requests: RefCell<Vec<String>>,
+    /// What each stop, start and restart showed its owner, in order.
+    proofs: RefCell<Vec<(String, Proof)>>,
+    /// Services started, with the entry that started them: the supervisor's memory.
+    started_by: RefCell<Vec<(String, u64)>>,
+    /// The `fs` server's files, and each transaction's files before and after.
+    files: RefCell<std::collections::BTreeMap<String, String>>,
+    txns: RefCell<Vec<(Files, Files)>>,
+    /// As the shell does on `fs`: a line's changes are one transaction, left open
+    /// until the log write commits it; the open one's index.
+    one_action: Cell<bool>,
+    open_txn: Cell<Option<usize>>,
+    /// `/system/log`, and how often it was written.
+    log_disk: RefCell<Option<String>>,
+    log_writes: Cell<u32>,
+    /// `/system/state/rules`.
+    rules_disk: RefCell<Option<String>>,
+    /// `/system/state/standing`, and the event source and owners standing
+    /// instructions run through, when `triggers_on` is set.
+    standing_disk: RefCell<Option<String>>,
+    triggers_on: Cell<bool>,
+    triggers: FakeTriggers,
+    /// What the supervisor set each process to (class, page quota); a process
+    /// not here runs normal with 4,096 pages. And the app with focus.
+    profile_state: RefCell<std::collections::BTreeMap<String, (kaiprofile::Class, u64)>>,
+    focused: RefCell<Option<String>>,
 }
 
+/// What standing instructions asked the desktop and the owners for.
+#[derive(Default)]
+pub(super) struct FakeTriggers {
+    pub watched: RefCell<Vec<crate::standing::When>>,
+    pub runs: RefCell<Vec<(u64, String, String, bool)>>,
+    /// The owner's answer: `Err` when it finds no live rule covering a firing.
+    pub refuse: RefCell<Option<String>>,
+}
+
+impl crate::standing::Triggers for FakeTriggers {
+    fn watch(&self, when: &crate::standing::When) -> Result<(), String> {
+        self.watched.borrow_mut().push(when.clone());
+        Ok(())
+    }
+
+    fn unwatch(&self, when: &crate::standing::When) {
+        self.watched.borrow_mut().retain(|w| w != when);
+    }
+
+    fn run(&self, rule: u64, action: &str, app: &str, undo: bool) -> Result<(), String> {
+        if let Some(why) = self.refuse.borrow().clone() {
+            return Err(why);
+        }
+        self.runs
+            .borrow_mut()
+            .push((rule, action.into(), app.into(), undo));
+        Ok(())
+    }
+}
+
+type Files = std::collections::BTreeMap<String, String>;
+
 type Apart = alloc::boxed::Box<dyn Fn(&str) -> Result<String, String>>;
+
+type UiAnswer = alloc::boxed::Box<dyn Fn(&crate::ui::UiCall) -> Result<String, String>>;
 
 impl FakeHost {
     /// The supervisor's side: `err already ...` when nothing changes.
@@ -88,6 +158,20 @@ impl FakeHost {
         }
         *state = running;
         Ok(())
+    }
+
+    /// What a stop's owner checks (the kernel, the supervisor): the menu's ONCE
+    /// against `call` as shown, used up by a match, or a standing rule. With no
+    /// proof it refuses, as the real owners do.
+    fn owner_check(&self, call: &str, proof: Proof) -> Result<(), String> {
+        self.proofs.borrow_mut().push((call.into(), proof));
+        match proof {
+            Proof::Once { badge, id } => self
+                .once_check(badge, &termcore::once::digest_call(id, call))
+                .map_err(|why| format!("ONCE {why}")),
+            Proof::Rule => Ok(()),
+            Proof::None | Proof::Undo { .. } => Err(String::from("Permission")),
+        }
     }
 
     /// What the kernel terminal does on Allow: a ONCE badge for menu `id`'s
@@ -120,6 +204,9 @@ impl FakeHost {
             calls: RefCell::new(VecDeque::new()),
             act_lines: RefCell::new(Vec::new()),
             act_states: RefCell::new(Vec::new()),
+            act_reads: RefCell::new(Vec::new()),
+            ui_calls: RefCell::new(Vec::new()),
+            ui_answer: RefCell::new(None),
             state: RefCell::new(crate::state::State::default()),
             remembered: RefCell::new(Vec::new()),
             forgot: Cell::new(0),
@@ -134,6 +221,20 @@ impl FakeHost {
             lists_services: Cell::new(false),
             apart: RefCell::new(None),
             apart_requests: RefCell::new(Vec::new()),
+            proofs: RefCell::new(Vec::new()),
+            started_by: RefCell::new(Vec::new()),
+            files: RefCell::new(Files::new()),
+            txns: RefCell::new(Vec::new()),
+            one_action: Cell::new(false),
+            open_txn: Cell::new(None),
+            log_disk: RefCell::new(None),
+            log_writes: Cell::new(0),
+            rules_disk: RefCell::new(None),
+            standing_disk: RefCell::new(None),
+            triggers_on: Cell::new(false),
+            triggers: FakeTriggers::default(),
+            profile_state: RefCell::new(std::collections::BTreeMap::new()),
+            focused: RefCell::new(None),
         })
     }
 }
@@ -250,7 +351,8 @@ impl Host for FakeHost {
         }
     }
 
-    fn stop_process(&self, name: &str) -> Result<u64, String> {
+    fn stop_process(&self, name: &str, proof: Proof) -> Result<u64, String> {
+        self.owner_check(&format!("process_stop(\"{name}\")"), proof)?;
         let mut procs = self.procs.borrow_mut();
         let before = procs.len();
         procs.retain(|p| p != name);
@@ -260,11 +362,188 @@ impl Host for FakeHost {
         }
     }
 
-    fn stop_service(&self, name: &str) -> Result<(), String> {
+    fn stop_service(&self, name: &str, proof: Proof) -> Result<(), String> {
+        match proof {
+            // The supervisor's memory: only the entry that started it.
+            Proof::Undo { id } => {
+                self.proofs
+                    .borrow_mut()
+                    .push((format!("service_stop({name})"), proof));
+                let started = self.started_by.borrow();
+                if !started
+                    .iter()
+                    .rev()
+                    .find(|(n, _)| n == name)
+                    .is_some_and(|&(_, by)| by == id)
+                {
+                    return Err(String::from("err undo refused"));
+                }
+            }
+            _ => self.owner_check(&format!("service_stop(\"{name}\")"), proof)?,
+        }
+        self.started_by.borrow_mut().retain(|(n, _)| n != name);
         self.set_running(name, false)
     }
 
-    fn start_service(&self, name: &str) -> Result<(), String> {
+    fn start_service(&self, name: &str, entry: u64) -> Result<(), String> {
+        self.set_running(name, true)?;
+        self.started_by.borrow_mut().push((name.into(), entry));
+        Ok(())
+    }
+
+    fn log_read(&self) -> Option<String> {
+        self.log_disk.borrow().clone()
+    }
+
+    fn log_write(&self, text: &str) -> Result<(), String> {
+        *self.log_disk.borrow_mut() = Some(text.into());
+        self.log_writes.set(self.log_writes.get() + 1);
+        self.open_txn.set(None);
+        Ok(())
+    }
+
+    fn standing_read(&self) -> Option<String> {
+        self.standing_disk.borrow().clone()
+    }
+
+    fn standing_write(&self, text: &str) -> Result<(), String> {
+        *self.standing_disk.borrow_mut() = Some(text.into());
+        Ok(())
+    }
+
+    fn profile_apply(
+        &self,
+        settings: &[kaiprofile::Setting],
+    ) -> Result<Vec<kaiprofile::Setting>, String> {
+        let mut state = self.profile_state.borrow_mut();
+        let mut before = Vec::new();
+        for s in settings {
+            let now = state
+                .get(&s.process)
+                .copied()
+                .unwrap_or((kaiprofile::Class::Normal, 4096));
+            before.push(kaiprofile::Setting {
+                process: s.process.clone(),
+                class: now.0,
+                mem: Some(now.1),
+            });
+            state.insert(s.process.clone(), (s.class, s.mem.unwrap_or(now.1)));
+        }
+        Ok(before)
+    }
+
+    fn focused_app(&self) -> Option<String> {
+        self.focused.borrow().clone()
+    }
+
+    fn triggers(&self) -> Option<&dyn crate::standing::Triggers> {
+        match self.triggers_on.get() {
+            true => Some(&self.triggers),
+            false => None,
+        }
+    }
+
+    fn rules_read(&self) -> Option<String> {
+        self.rules_disk.borrow().clone()
+    }
+
+    fn rules_write(&self, text: &str) -> Result<(), String> {
+        *self.rules_disk.borrow_mut() = Some(text.into());
+        Ok(())
+    }
+
+    fn fs_read(&self, read: FsRead) -> Result<String, String> {
+        let files = self.files.borrow();
+        match read {
+            FsRead::List(dir) => Ok(files
+                .keys()
+                .filter(|path| path.starts_with(dir))
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(
+                    "
+",
+                )),
+            FsRead::Read(path) => files
+                .get(path)
+                .cloned()
+                .ok_or_else(|| String::from("NotFound")),
+            FsRead::History(path) => Ok(format!("{path}: {} versions", self.txns.borrow().len())),
+            FsRead::Changes => Ok(files.keys().cloned().collect::<Vec<_>>().join(
+                "
+",
+            )),
+        }
+    }
+
+    fn fs_change(&self, change: FsChange) -> Result<u64, String> {
+        let before = self.files.borrow().clone();
+        let mut files = before.clone();
+        match change {
+            FsChange::Create { path, .. } if files.contains_key(path) => {
+                return Err(String::from("Exists: use fs_write"));
+            }
+            FsChange::Create { path, text } | FsChange::Write { path, text } => {
+                files.insert(path.into(), text.into());
+            }
+            FsChange::Move { from, to } => {
+                let text = files.remove(from).ok_or_else(|| String::from("NotFound"))?;
+                files.insert(to.into(), text);
+            }
+            FsChange::Trash(path) => {
+                let text = files.remove(path).ok_or_else(|| String::from("NotFound"))?;
+                files.insert(format!(".trash/{path}"), text);
+            }
+            FsChange::Restore(path) => {
+                let text = files
+                    .remove(&format!(".trash/{path}"))
+                    .ok_or_else(|| String::from("NotFound"))?;
+                files.insert(path.into(), text);
+            }
+            FsChange::EmptyTrash => files.retain(|path, _| !path.starts_with(".trash/")),
+        }
+        *self.files.borrow_mut() = files.clone();
+        let mut txns = self.txns.borrow_mut();
+        if let Some(open) = self.open_txn.get() {
+            txns[open].1 = files;
+            return Ok(open as u64 + 1);
+        }
+        txns.push((before, files));
+        if self.one_action.get() {
+            self.open_txn.set(Some(txns.len() - 1));
+        }
+        Ok(txns.len() as u64)
+    }
+
+    fn fs_undo(&self, txn: u64, anyway: bool) -> Result<u64, FsRefused> {
+        let (before, after) = self
+            .txns
+            .borrow()
+            .get(txn as usize - 1)
+            .cloned()
+            .ok_or_else(|| FsRefused::Failed(String::from("NotFound")))?;
+        let now = self.files.borrow().clone();
+        // The line's own open transaction is dropped, not restored.
+        if self.open_txn.get() == Some(txn as usize - 1) {
+            self.open_txn.set(None);
+            *self.files.borrow_mut() = before;
+            return Ok(txn);
+        }
+        if now != after && !anyway {
+            return Err(FsRefused::Later(String::from(
+                "a later change touched them",
+            )));
+        }
+        *self.files.borrow_mut() = before.clone();
+        let mut txns = self.txns.borrow_mut();
+        txns.push((now, before));
+        Ok(txns.len() as u64)
+    }
+
+    fn restart_service(&self, name: &str, proof: Proof) -> Result<(), String> {
+        self.owner_check(&format!("service_restart(\"{name}\")"), proof)?;
+        self.started_by.borrow_mut().retain(|(n, _)| n != name);
+        self.set_running(name, false)?;
         self.set_running(name, true)
     }
 
@@ -294,9 +573,18 @@ impl Host for FakeHost {
         self.state.borrow().clone()
     }
 
+    fn ui(&self, call: &crate::ui::UiCall) -> Result<String, String> {
+        self.ui_calls.borrow_mut().push(call.clone());
+        match self.ui_answer.borrow().as_ref() {
+            Some(answer) => answer(call),
+            None => crate::ui::no_desktop(),
+        }
+    }
+
     fn act(&self, request: &ActRequest) -> Result<Call, ActError> {
         self.act_lines.borrow_mut().push(request.line.clone());
         self.act_states.borrow_mut().push(request.state.clone());
+        self.act_reads.borrow_mut().push(request.read.clone());
         self.calls
             .borrow_mut()
             .pop_front()

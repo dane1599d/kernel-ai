@@ -1,0 +1,54 @@
+# Who wrote each file and under which licence (REUSE 3.3; ADR 0009 D5, with its
+# REUSE.toml route widened to path globs: docs/decisions.md, 2026-10-27). A file's
+# own SPDX header must say the same as its last matching annotation here;
+# `cargo xtask licences check` fails CI when a tracked file matches neither or the
+# two disagree. LICENSES/ and LICENSE are the licence texts themselves.
+version = 1
+
+# Everything we write: the OS, its docs, goldens and test fixtures.
+[[annotations]]
+path = "**"
+precedence = "closest"
+SPDX-FileCopyrightText = "The Kernel AI contributors"
+SPDX-License-Identifier = "MPL-2.0"
+
+# Compiled into programs written for Kernel AI (ADR 0009 D1).
+[[annotations]]
+path = ["kabi/**", "compsdk/**", "wit/**"]
+precedence = "closest"
+SPDX-FileCopyrightText = "The Kernel AI contributors"
+SPDX-License-Identifier = "MIT OR Apache-2.0"
+
+# The worked examples the AI copies into what it writes for you (ADR 0009 D1).
+[[annotations]]
+path = "llmproto/src/examples.rs"
+precedence = "closest"
+SPDX-FileCopyrightText = "The Kernel AI contributors"
+SPDX-License-Identifier = "0BSD"
+
+# Our code around a table from the Unicode Character Database 16.0.
+[[annotations]]
+path = "bpe/src/marks.rs"
+precedence = "closest"
+SPDX-FileCopyrightText = ["The Kernel AI contributors", "1991-2024 Unicode, Inc."]
+SPDX-License-Identifier = "MPL-2.0 AND Unicode-3.0"
+
+# The desktop's fonts and their licence texts (ADR 0005; ADR 0009 D4's OFL rule).
+[[annotations]]
+path = ["assets/fonts/InterVariable.ttf", "assets/fonts/Inter-OFL.txt"]
+precedence = "closest"
+SPDX-FileCopyrightText = "2016 The Inter Project Authors (https://github.com/rsms/inter)"
+SPDX-License-Identifier = "OFL-1.1"
+
+[[annotations]]
+path = ["assets/fonts/JetBrainsMono-Variable.ttf", "assets/fonts/JetBrainsMono-OFL.txt"]
+precedence = "closest"
+SPDX-FileCopyrightText = "2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono)"
+SPDX-License-Identifier = "OFL-1.1"
+
+# xcc's compiler and headers, unchanged (ADR 0012 D2; third_party/xcc/UPSTREAM.toml).
+[[annotations]]
+path = "third_party/xcc/**"
+precedence = "closest"
+SPDX-FileCopyrightText = "2024 tyfkda"
+SPDX-License-Identifier = "MIT"

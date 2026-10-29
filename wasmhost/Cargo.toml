@@ -1,6 +1,6 @@
 [package]
 name = "wasmhost"
-version = "0.0.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
@@ -14,9 +14,14 @@ doctest = false
 appabi = { path = "../appabi" }
 kabi = { path = "../kabi" }
 livecore = { path = "../livecore" }
+surfabi = { path = "../surfabi" }
+uikit = { path = "../uikit" }
 # portable-dispatch: the default tail-call dispatch grows the native stack with
 # every instruction when debug assertions are on, as they are in dev builds.
+# The limiter error wasmi does not re-export; the version wasmi pins.
+wasmi_core = { version = "=2.0.0", default-features = false }
 wasmi = { version = "2.0.0", default-features = false, features = ["validate", "portable-dispatch"] }
 
 [dev-dependencies]
+deskcore = { path = "../deskcore" }
 wat = "1.262.0"

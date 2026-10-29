@@ -133,3 +133,43 @@ fn the_pack_teaches_script_with_no_arguments() {
     assert!(pack.contains("\nscript()  // "));
     assert!(!pack.contains(r#""code":"#));
 }
+
+/// ADR 0010 §6: an index-only row is named once on its group's line and has no
+/// line of its own; its group's text gives the full lines for the second round.
+#[test]
+fn index_rows_are_named_once_and_shown_in_full_on_demand() {
+    let pack = render(Format::Dsl1);
+    for (group, names) in INDEX {
+        let text = group_text(group);
+        assert!(text.starts_with("## "), "{text}");
+        // The pack without its index lines shows none of the group's rows.
+        let full = pack.split(INDEX_HEADING).next().unwrap_or("");
+        for name in *names {
+            assert!(agentabi::find(&agentabi::ROWS, name).is_some(), "{name}");
+            assert!(shows(&pack, name), "{name}");
+            assert!(!shows(full, name), "{name}");
+            assert!(shows(&text, name), "{text}");
+            assert_eq!(indexed(name).map(|(g, _)| g), Some(*group));
+        }
+    }
+    assert!(group_text("component").contains("component_revert("));
+    // Every group has its gloss, short, and on its line before the names.
+    for (group, _) in INDEX {
+        let gloss = super::gloss(group);
+        assert!(!gloss.is_empty(), "{group}");
+        assert!(
+            estimate_tokens(gloss) <= super::GLOSS_TOKENS,
+            "{group}: {gloss}"
+        );
+        assert!(!gloss.contains(": "), "{group}: {gloss}");
+        assert!(
+            pack.contains(&std::format!("\n{group} ({gloss}): ")),
+            "{group}"
+        );
+    }
+    assert!(group_text("files").starts_with("## files (paths under /home/user)\n"));
+    assert_eq!(indexed("set_policy"), None);
+    assert_eq!(indexed("tune"), None);
+    // An index line is not a row's own line: no other name is shown by it.
+    assert!(!shows(&pack, "component_list"));
+}

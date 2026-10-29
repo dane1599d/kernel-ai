@@ -2,6 +2,8 @@
 //! `[schema, count]`. Its behaviour, and its one bug if any, come from a `fake`
 //! custom section in its artifact, so tests go through real artifact parsing.
 
+extern crate std;
+
 use crate::artifact::{Manifest, append_custom_section, bundle, custom_section};
 use crate::txn::{Effect, Inputs, Storage, Txn};
 use crate::{Fault, Instance, Reason};
@@ -110,6 +112,17 @@ fn parse_list(text: &str) -> Vec<u32> {
         .collect()
 }
 
+std::thread_local! {
+    /// Fakes alive on this test's thread, for the tests that drop instances.
+    pub static LIVE: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+}
+
+impl Drop for Fake {
+    fn drop(&mut self) {
+        LIVE.with(|live| live.set(live.get() - 1));
+    }
+}
+
 pub struct Fake {
     label: String,
     schema: u32,
@@ -122,6 +135,9 @@ pub struct Fake {
     storage: Storage,
     inputs: Inputs,
     txn: Txn,
+    /// The storage its lifecycle calls may read ([`Instance::view`]), if the
+    /// host gave it one.
+    view: Option<Storage>,
 }
 
 /// What the loader does with a module: a fault for a broken one.
@@ -146,11 +162,13 @@ pub fn load(module: &[u8], quiet: bool) -> Result<Fake, Fault> {
         other if other.starts_with("HealthAt(") => Bug::HealthAt(number_in(other)),
         other => Bug::TrapAt(number_in(other)),
     };
+    LIVE.with(|live| live.set(live.get() + 1));
     Ok(Fake {
         label: words[5].to_string(),
         storage: Storage::new(),
         inputs: Inputs::default(),
         txn: Txn::default(),
+        view: None,
         schema: words[0].parse().unwrap(),
         reads: parse_list(words[1]),
         writes: parse_list(words[2]),
@@ -247,6 +265,11 @@ impl Instance for Fake {
                 format!("ok {}", self.count)
             }
             b"get" => format!("ok {} schema {}", self.count, self.schema),
+            // How many keys the storage view it was loaded with holds.
+            b"viewed" => match &self.view {
+                Some(view) => format!("ok viewed {}", view.len()),
+                None => String::from("err no view"),
+            },
             // A kai-call stand-in: counts, stores who wrote, and queues an effect.
             b"kadd" => {
                 if self.bug == Bug::Injected && !self.quiet && INJECT.load(Ordering::SeqCst) {
@@ -320,5 +343,9 @@ impl Instance for Fake {
 
     fn finish(&mut self) -> Txn {
         core::mem::take(&mut self.txn)
+    }
+
+    fn view(&mut self, storage: &Storage) {
+        self.view = Some(storage.clone());
     }
 }

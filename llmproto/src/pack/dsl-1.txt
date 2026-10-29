@@ -28,8 +28,8 @@ undo(steps: int 1..1)  // puts back the last change made; undo again redoes it
 {"name":"say","arguments":{"text":"Hello! Ask me about this system, or tell me what to do."}}
 > make it faster
 {"name":"clarify","arguments":{"question":"Faster how?","options":["interactive policy","round-robin"]}}
-> delete all my files
-{"name":"say","arguments":{"text":"I cannot do that: there is no action for files yet."}}
+> order me a pizza
+{"name":"say","arguments":{"text":"I cannot do that: there is no action for ordering food."}}
 ## system
 type Policy = "interactive" | "round-robin"
 cpus() -> int  // CPUs online
@@ -40,10 +40,12 @@ threads() -> #{switches: int, ejections: int, migrations: int}  // scheduler cou
 get_policy() -> Policy  // the scheduling policy
 set_policy(name: Policy) [undo]  // every CPU
 process_stop(name: string) [ask]  // stops or kills processes by name
-service_stop|start|restart(name: string) [ask|undo|ask]  // stop keeps it down until start; restart loses its state
+service_stop|start|restart(name: string) [ask|undo|ask]  // start runs a stopped one; stop keeps it down; restart resets
 tune(target: string?, intent: string?) [ask]  // proposes a scheduler trial for a process
 tune_undo() [undo]  // puts back the policy a kept trial replaced
-component_revert(component: string, back: int 1..6?) [undo]  // a live component back n versions
-pkg_install|remove(name: string) [undo]  // installs or removes a package; undo puts the old set back
-pkg_list() -> string  // installed packages
-pkg_search(text: string) -> string  // packages in the repository
+## index (call one and its arguments are shown next)
+component (roll back a component): component_revert
+pkg (install, remove or find packages): pkg_install pkg_remove pkg_list pkg_search
+files (list or read files): fs_list fs_read fs_history fs_changes
+file_edits (write, rename, trash or restore files): fs_create fs_write fs_move fs_trash fs_restore fs_empty_trash
+ui (open, close, switch to or type in apps): ui_windows ui_view ui_open ui_focus ui_act window_close

@@ -121,6 +121,66 @@ fn entry(bytes: &[u8], index: usize) -> Result<Entry<'_>, Error> {
     Ok(Entry { path, data })
 }
 
+/// One table entry, read without the data: for a bundle on a disk, which the
+/// reader streams entry by entry (the update disk, ADR 0008 §12) and checks
+/// against the digest itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TableEntry<'a> {
+    pub path: &'a str,
+    pub offset: u64,
+    pub length: u64,
+    pub sha256: [u8; 32],
+}
+
+/// The bytes of header and table a bundle whose first [`HEADER_BYTES`] are
+/// `header` has: what a streaming reader reads next.
+pub fn table_bytes(header: &[u8]) -> Result<usize, Error> {
+    let header = header.get(..HEADER_BYTES).ok_or(Error::Truncated)?;
+    if &header[..8] != MAGIC {
+        return Err(Error::BadMagic);
+    }
+    let version = u16_at(header, 8);
+    if version != VERSION {
+        return Err(Error::UnknownVersion(version));
+    }
+    let count = u16_at(header, 10) as usize;
+    if count > MAX_ENTRIES {
+        return Err(Error::TooManyEntries);
+    }
+    Ok(HEADER_BYTES + count * ENTRY_BYTES)
+}
+
+/// Entry `index` of a bundle of `total` bytes whose header and table are
+/// `table` (as [`table_bytes`] sized it): its path checked, and its data inside
+/// the bundle and on a 4 KiB boundary. The digest is the caller's to check.
+pub fn table_entry(table: &[u8], index: usize, total: u64) -> Result<TableEntry<'_>, Error> {
+    let size = table_bytes(table)?;
+    if table.len() < size || index >= (size - HEADER_BYTES) / ENTRY_BYTES {
+        return Err(Error::Truncated);
+    }
+    let at = HEADER_BYTES + index * ENTRY_BYTES;
+    let raw = &table[at..at + ENTRY_BYTES];
+    let name = &raw[..MAX_PATH];
+    let end = name.iter().position(|b| *b == 0).unwrap_or(MAX_PATH);
+    if end == 0 || name[end..].iter().any(|b| *b != 0) {
+        return Err(Error::BadPath);
+    }
+    let path = core::str::from_utf8(&name[..end]).map_err(|_| Error::BadPath)?;
+    let (offset, length) = (u64_at(raw, MAX_PATH), u64_at(raw, MAX_PATH + 8));
+    let inside = offset.checked_add(length).is_some_and(|end| end <= total);
+    if !offset.is_multiple_of(ALIGN as u64) || offset < size as u64 || !inside {
+        return Err(Error::BadRange);
+    }
+    let mut sha256 = [0u8; 32];
+    sha256.copy_from_slice(&raw[MAX_PATH + 16..]);
+    Ok(TableEntry {
+        path,
+        offset,
+        length,
+        sha256,
+    })
+}
+
 /// Checks `bytes` as a `kai-bundle 1`: header, table, every path and range, no
 /// path twice, and every entry's SHA-256.
 pub fn parse(bytes: &[u8]) -> Result<Bundle<'_>, Error> {

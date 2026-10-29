@@ -157,6 +157,7 @@ fn restore<E: Env>(
     saved: &Saved,
 ) -> Result<(), Stop> {
     let mut instance = core.env.load(&version.artifact, false)?;
+    instance.view(&saved.storage);
     match instance.import(&saved.state, version.schema)? {
         0 => {}
         code => {

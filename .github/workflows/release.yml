@@ -1,0 +1,264 @@
+# The release pipeline (ADR 0008 section 8, ADR 0009 D7, P4 task 17).
+#
+# On a `v*` tag: build the release image twice on clean runners and require one
+# SHA-256, rebuild it from the source tarball with no network and require the
+# same, assemble the five assets, sign them as TUF targets of a throwaway test
+# repository and check a client accepts them and refuses a tampered copy, then,
+# in the protected `release` environment, attest the assets and draft the GitHub
+# Release. The founder publishes the draft by hand.
+#
+# `release-dry` is this workflow on a pull request that changes it, or on
+# demand: everything but the attestation and the draft, as `v0.1.0-rc.0`.
+#
+# The `vm` job boots the slot disk in QEMU under KVM: `updated` takes release 2
+# from an update disk signed by a throwaway root and boots it, and refuses the
+# same disk with one byte of the image flipped (boot cases `update-disk` and
+# `update-tampered`, ADR 0008 §12).
+#
+# Stubbed until P4 task 18: tuf-on-ci's signing event for the founder's
+# YubiKeys, and the publish to `dane1599d/kernel-ai-updates`. No model, no LLM.
+# Every action is pinned by commit SHA.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - .github/release/**
+      - xtask/src/release_image.rs
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # The version: the tag, or the dry run's throwaway one.
+  VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'v0.1.0-rc.0' }}
+  # Where the release build reads its crates, and the offline rebuild mounts the
+  # vendored ones, so panic locations and line tables match (decisions.md, S09-1).
+  REGISTRY_SRC: /home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f
+
+# bash -eo pipefail: a step piped through tee fails when its command does.
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # ADR 0008 §2: `release_seq` only rises. A tag's `release/seq` must be above the
+  # highest published one. Until `kernel-ai-updates` publishes TUF metadata (P4
+  # task 18), that is the previous `v*` tag's `release/seq`.
+  seq:
+    name: release/seq is above the last release's
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - run: |
+          seq=$(cat release/seq)
+          case "$seq" in ''|*[!0-9]*) echo "release/seq holds '$seq', not a number"; exit 1;; esac
+          previous=$(git tag --list 'v*' --sort=-creatordate | grep -vx "$VERSION" | head -1 || true)
+          last=0
+          if [ -n "$previous" ]; then
+            last=$(git show "$previous:release/seq" 2>/dev/null || echo 0)
+          fi
+          echo "release/seq $seq; the last release ($previous) had $last"
+          if [ "$seq" -le "$last" ]; then
+            echo "release/seq must rise above $last: bump it in the release PR"
+            exit 1
+          fi
+
+  build:
+    name: Build the release image (runner ${{ matrix.runner }})
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        runner: [a, b]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # Outputs go outside the checkout: an untracked file would mark the build
+      # -dirty and change the image.
+      - run: mkdir -p "$RUNNER_TEMP/out" && echo "OUT=$RUNNER_TEMP/out" >> "$GITHUB_ENV"
+      - run: rustup show active-toolchain || rustup toolchain install
+      - run: rustup target add wasm32-unknown-unknown
+      - run: cargo xtask release-image --out "$OUT/kernel-ai.img" | tee "$OUT/build.log"
+      - name: The build left the tree clean
+        run: test -z "$(git status --porcelain)"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: build-${{ matrix.runner }}
+          path: |
+            ${{ env.OUT }}/kernel-ai.img
+            ${{ env.OUT }}/NOTICES.txt
+            ${{ env.OUT }}/build.log
+
+  source:
+    name: Source tarball
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: rustup show active-toolchain || rustup toolchain install
+      - run: rustup target add wasm32-unknown-unknown
+      - name: Sources, every crate vendored (build-std's too), Limine, and the commit
+        run: |
+          out="$RUNNER_TEMP/out" && mkdir -p "$out"
+          cargo xtask limine
+          git rev-parse --short=12 HEAD > COMMIT
+          sysroot=$(rustc --print sysroot)
+          mkdir -p .cargo-offline
+          cargo vendor --locked --versioned-dirs \
+            --sync "$sysroot/lib/rustlib/src/rust/library/Cargo.toml" vendor > .cargo-offline/config.toml
+          tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
+            --exclude=./target --exclude=./.git -cf - . target/limine-*/ \
+            | zstd -19 --single-thread -q -o "$out/kernel-ai-$VERSION-source.tar.zst"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: source
+          path: ${{ runner.temp }}/out/kernel-ai-${{ env.VERSION }}-source.tar.zst
+
+  offline:
+    name: Rebuild from the source tarball, offline
+    needs: source
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: source
+      - name: Unpack, and install the pinned toolchain for the container to borrow
+        run: |
+          mkdir src && zstd -dc "kernel-ai-$VERSION-source.tar.zst" | tar -xf - -C src
+          cd src && (rustup show active-toolchain || rustup toolchain install)
+          rustup target add wasm32-unknown-unknown
+      - name: Build with --network none, crates at the release build's registry path
+        run: |
+          ws=/home/runner/work/kernel-ai/kernel-ai
+          mkdir -p home/.cargo && cp -r ~/.cargo/bin home/.cargo/bin
+          sed "s|directory = \"vendor\"|directory = \"$REGISTRY_SRC\"|" src/.cargo-offline/config.toml > home/.cargo/config.toml
+          docker pull -q buildpack-deps:noble
+          docker run --rm --network none -u "$(id -u):$(id -g)" \
+            -e HOME=/home/runner -e CARGO_HOME=/home/runner/.cargo -e RUSTUP_HOME=/home/runner/.rustup \
+            -e PATH=/home/runner/.cargo/bin:/usr/bin:/bin -e CARGO_NET_OFFLINE=true \
+            -v "$PWD/home/.cargo:/home/runner/.cargo" -v "$HOME/.rustup:/home/runner/.rustup" \
+            -v "$PWD/src:$ws" -v "$PWD/src/vendor:$REGISTRY_SRC:ro" -w "$ws" buildpack-deps:noble \
+            cargo xtask release-image --out offline.img | tee offline.log
+          mkdir out && mv src/offline.img src/NOTICES.txt offline.log out/
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: offline
+          path: out/
+
+  assemble:
+    name: One SHA-256, then the five assets
+    needs: [build, offline]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - name: Both clean builds and the offline rebuild made the same image
+        run: |
+          sha256sum build-a/kernel-ai.img build-b/kernel-ai.img offline/offline.img | tee hashes.txt
+          test "$(cut -d' ' -f1 hashes.txt | sort -u | wc -l)" -eq 1
+          cmp build-a/NOTICES.txt build-b/NOTICES.txt
+          cmp build-a/NOTICES.txt offline/NOTICES.txt
+      - name: The assets
+        run: |
+          mkdir release-assets
+          zstd -19 --single-thread -q build-a/kernel-ai.img -o "release-assets/kernel-ai-$VERSION-x86_64.img.zst"
+          cp build-a/NOTICES.txt release-assets/NOTICES.txt
+          cp "source/kernel-ai-$VERSION-source.tar.zst" release-assets/
+          python3 - "$VERSION" > release-assets/RELEASE-NOTES.md <<'EOF'
+          import json, sys
+          catalog = json.load(open("xtask/models.json"))
+          model = next(m for m in catalog["models"] if m["id"] == catalog["default"])
+          print(f"# Kernel AI {sys.argv[1]}\n")
+          print("The image holds no AI model. Attach this one as a disk; Models imports and checks it:\n")
+          print(f"- `{model['repo']}`, file `{model['file']}`, revision `{model['revision']}`")
+          print(f"- SHA-256 `{model['sha256']}`, {model['size']} bytes, licence {model['license']}")
+          print("- Base model: Qwen/Qwen3-4B-Instruct-2507")
+          EOF
+          (cd release-assets && sha256sum -- * > SHA256SUMS)
+          cat release-assets/SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-${{ env.VERSION }}
+          path: release-assets/
+
+  vm:
+    name: A VM takes an update from an update disk and refuses a tampered one
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # QEMU as ci.yml's `qemu` job builds and caches it (.github/actions/qemu),
+      # restored here with the cache action pinned by SHA.
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/qemu
+          key: qemu-11.0.5-ubuntu-24.04-v1
+          fail-on-cache-miss: true
+      - name: OVMF, QEMU's runtime libraries, and KVM for the runner user
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ovmf libpixman-1-0 libslirp0 libglib2.0-0t64 libfdt1
+          echo "$HOME/qemu/bin" >> "$GITHUB_PATH"
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - run: rustup show active-toolchain || rustup toolchain install
+      - run: rustup target add wasm32-unknown-unknown
+      - name: update-disk, then update-tampered
+        run: |
+          for case in update-disk update-tampered; do
+            XTASK_CASE="$case" cargo xtask test --accel kvm --timeout 300
+          done
+
+  sign:
+    name: Sign as TUF targets (test root), accept and refuse
+    needs: assemble
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-${{ env.VERSION }}
+          path: release-assets
+      - name: Throwaway root; the image and SHA256SUMS as targets; a client accepts them, a flipped byte is refused
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet tuf==6.0.0 'securesystemslib[crypto]==1.3.0'
+          "$RUNNER_TEMP/venv/bin/python" .github/release/tuf_test_target.py "$RUNNER_TEMP/tuf" \
+            "release-assets/kernel-ai-$VERSION-x86_64.img.zst" release-assets/SHA256SUMS
+      - name: The founder's YubiKey signing event (stub until P4 task 18)
+        run: |
+          echo "stub: tuf-on-ci opens the signing event in dane1599d/kernel-ai-updates once the root ceremony is done"
+
+  publish:
+    name: Attest and draft the release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [seq, sign, vm]
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-${{ env.VERSION }}
+          path: release-assets
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: release-assets/*
+      - name: Draft the GitHub Release; the founder publishes it by hand
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prerelease=$([[ "$VERSION" == *-rc.* ]] && echo --prerelease || true)
+          gh release create "$VERSION" --repo "$GITHUB_REPOSITORY" --draft --verify-tag $prerelease \
+            --title "Kernel AI $VERSION" --notes-file release-assets/RELEASE-NOTES.md release-assets/*
+      - name: Publish to kernel-ai-updates (stub until P4 task 18)
+        run: |
+          echo "stub: snapshot and timestamp are signed and published once the root ceremony is done"

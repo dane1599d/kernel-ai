@@ -4,42 +4,67 @@ members = [
     "acpitables",
     "agentabi",
     "appabi",
+    "apps/files",
+    "apps/files-ui",
+    "apps/monitor",
+    "apps/monitor-ui",
+    "apps/settings",
+    "apps/settings-ui",
+    "apps/terminal",
+    "apps/terminal-ui",
+    "apps/ui-bind",
     "bootslot",
     "bpe",
     "captable",
+    "ccserve",
     "components/fixtures/notes-bad",
     "components/fixtures/notes-v1",
     "components/fixtures/viewbench",
     "components/notes",
+    "components/notes-ui",
+    "components/notes-window",
     "compsdk",
     "cpufeat",
+    "deskcore",
     "devkit",
     "devmatch",
     "diskmap",
     "editcore",
+    "fsproto",
+    "fsserve",
+    "gfx2d",
     "gfxcore",
     "gguf",
     "infer",
     "kabi",
     "kaibundle",
     "kaifs",
+    "kaigrants",
     "kailink",
+    "kaipkg",
+    "kaiprofile",
+    "kaituf",
     "kernel",
     "linetable",
     "livecore",
+    "look",
     "llmproto",
     "mm",
     "netcore",
     "nvme",
     "pci",
+    "promptcore",
     "quant",
     "sched",
     "shellcore",
     "spikes/rhai",
     "spikes/wasmi",
     "supervise",
+    "surfabi",
     "termcore",
     "uelf",
+    "uikit",
+    "uipaint",
     "user",
     "wasihost",
     "wasmhost",
@@ -51,39 +76,64 @@ default-members = [
     "acpitables",
     "agentabi",
     "appabi",
+    "apps/files",
+    "apps/files-ui",
+    "apps/monitor",
+    "apps/monitor-ui",
+    "apps/settings",
+    "apps/settings-ui",
+    "apps/terminal",
+    "apps/terminal-ui",
+    "apps/ui-bind",
     "bootslot",
     "bpe",
     "captable",
+    "ccserve",
     "components/fixtures/notes-bad",
     "components/fixtures/notes-v1",
     "components/fixtures/viewbench",
     "components/notes",
+    "components/notes-ui",
+    "components/notes-window",
     "compsdk",
     "cpufeat",
+    "deskcore",
     "devkit",
     "devmatch",
     "diskmap",
     "editcore",
+    "fsproto",
+    "fsserve",
+    "gfx2d",
     "gfxcore",
     "gguf",
     "infer",
     "kabi",
     "kaibundle",
     "kaifs",
+    "kaigrants",
     "kailink",
+    "kaipkg",
+    "kaiprofile",
+    "kaituf",
     "linetable",
     "livecore",
+    "look",
     "llmproto",
     "mm",
     "netcore",
     "nvme",
     "pci",
+    "promptcore",
     "quant",
     "sched",
     "shellcore",
     "supervise",
+    "surfabi",
     "termcore",
     "uelf",
+    "uikit",
+    "uipaint",
     "wasihost",
     "wasmhost",
     "xhci",
@@ -91,6 +141,9 @@ default-members = [
 ]
 
 [workspace.package]
+# One version for the whole OS (ADR 0009 D7). Updates are ordered by
+# release_seq, never by SemVer.
+version = "0.1.0-dev"
 edition = "2024"
 license = "MPL-2.0"
 
@@ -106,6 +159,10 @@ opt-level = 2
 # wasmi's host-function glue crashes when compiled without optimisation, and its
 # generics are instantiated in wasmhost (see wasmhost/src/lib.rs).
 [profile.dev.package.wasmhost]
+opt-level = 2
+
+# The same for `cc`'s logic, the other crate that defines wasmi host functions.
+[profile.dev.package.ccserve]
 opt-level = 2
 
 # The inference engine crates at the same level: unoptimised, the Q8_0 matvec runs
@@ -133,6 +190,11 @@ opt-level = 2
 [profile.dev.package.kaibundle]
 opt-level = 2
 
+# The TUF client: `pkg` and `updated` check a repository's metadata at boot, a
+# 1,000-target role of 400 KiB among it (spike S11-1's bench, `test=tuf-bench`).
+[profile.dev.package.kaituf]
+opt-level = 2
+
 [profile.dev.package.cpufeat]
 opt-level = 2
 
@@ -140,6 +202,12 @@ opt-level = 2
 opt-level = 2
 
 [profile.dev.package.infer]
+opt-level = 2
+
+# kaifs: xtask replays every crash state a case's blklogwrites log allows (P2
+# task 9), over 100,000 for 200 file actions, and the `fs` service runs it on
+# every request. Its debug assertions and overflow checks stay on.
+[profile.dev.package.kaifs]
 opt-level = 2
 
 [profile.release]

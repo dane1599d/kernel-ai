@@ -57,6 +57,7 @@ pub fn exit_current() -> ! {
     let detail = KILL_DETAIL[slot].load(Ordering::SeqCst);
     crate::ipc::on_process_exit(process.pid);
     crate::shm::forget(process.pid);
+    crate::display::claim::on_exit(process.pid);
     let space = lock_space(slot).take();
     let freed = space.map_or(0, |space| memory::with(|m| m.destroy_user_space(space)));
     report_exit(&process, reason, detail, freed);

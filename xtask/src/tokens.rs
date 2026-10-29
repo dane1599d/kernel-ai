@@ -5,7 +5,10 @@
 //! the `dsl-1` pack `llmproto::pack` renders from the registry, with bytes per
 //! token against the pack's estimator, and the conversation-memory budget the
 //! pack leaves (P1 plan section 4). It fails when the pack and MODE go over
-//! `llmproto::pack::PACK_BUDGET` real tokens or the estimate undercounts them.
+//! `llmproto::pack::PACK_ALARM` real tokens (headroom under `PACK_BUDGET`) or
+//! the estimate undercounts them. It also counts S05-2's agent views (ADR 0005):
+//! each P4 app's mock window as `ui_view` shows it, which fails past
+//! `deskcore::view::MAX_TOKENS` or when the view's estimate undercounts it.
 //! The token-count workflow runs it on GitHub's runner.
 
 use bpe::Tokenizer;
@@ -18,7 +21,7 @@ use std::io::Read;
 /// Bytes of the GGUF file read: the header and the whole vocabulary of a Qwen3
 /// model fit in the first 8 MB, so this leaves room.
 const HEAD_BYTES: u64 = 32 * 1024 * 1024;
-use llmproto::pack::{self, Format, MODE_ACT, PACK_BUDGET};
+use llmproto::pack::{self, Format, MODE_ACT, PACK_ALARM, PACK_BUDGET};
 /// A plain request, as today's user turn carries it.
 const REQUEST: &str = "switch to round robin";
 /// ADR 0010 §4 and P1 plan §4.
@@ -41,19 +44,79 @@ pub fn main(args: &[String]) -> Result<(), String> {
     let tok = Tokenizer::from_gguf(&header).map_err(|error| format!("{path}: {error:?}"))?;
     let chat = Chat::new(&tok).map_err(|error| format!("{path}: {error:?}"))?;
     print!("{}", report(&tok, &chat));
-    check_budget(&tok)
+    print!("{}", views(&tok));
+    check_budget(&tok)?;
+    check_views(&tok)
 }
 
-/// The pack and MODE within the budget in real tokens, and the estimate the
-/// host test uses not under the real count.
+/// S05-2's views: each P4 app's mock window, with the other apps' windows in
+/// the list, as `ui_view` would answer.
+fn mock_views() -> Vec<(&'static str, String)> {
+    use deskcore::view::{self, Listed, mock};
+    let apps = mock::apps();
+    let windows: Vec<Listed> = apps
+        .iter()
+        .enumerate()
+        .map(|(n, (app, title, _))| Listed {
+            id: deskcore::desk::WindowId(n as u32 + 1),
+            app: String::from(*app),
+            title: String::from(*title),
+            focused: n == 0,
+        })
+        .collect();
+    apps.iter()
+        .zip(&windows)
+        .map(|((app, _, tree), w)| (*app, view::project(&windows, w.id, tree).text))
+        .collect()
+}
+
+/// S05-2's table (ADR 0005, "Spikes that settle it").
+fn views(tok: &Tokenizer) -> String {
+    use deskcore::view::{MAX_TOKENS, estimate_tokens};
+    let mut table = Table::new(&format!(
+        "S05-2: each P4 app's agent view (at most {MAX_TOKENS} tokens)"
+    ));
+    for (app, text) in mock_views() {
+        table.part(
+            tok,
+            &format!("`{app}` (estimated {})", estimate_tokens(&text)),
+            &text,
+        );
+    }
+    table.text
+}
+
+/// Each view within its budget in real tokens, and its estimate not under them.
+fn check_views(tok: &Tokenizer) -> Result<(), String> {
+    use deskcore::view::{MAX_TOKENS, estimate_tokens};
+    for (app, text) in mock_views() {
+        let real = count(tok, &text);
+        if real > MAX_TOKENS {
+            return Err(format!(
+                "S05-2: {app}'s view takes {real} tokens, over {MAX_TOKENS}: shorten the                  projection (drop static text, shorten roles) before its format freezes"
+            ));
+        }
+        if estimate_tokens(&text) < real {
+            return Err(format!(
+                "S05-2: {app}'s view estimate ({}) undercounts the real {real} tokens",
+                estimate_tokens(&text)
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The pack and MODE within the alarm in real tokens, below the budget, and the
+/// estimate the host test uses not under the real count.
 fn check_budget(tok: &Tokenizer) -> Result<(), String> {
     let text = pack::render(Format::Dsl1);
     let real = count(tok, &text) + count(tok, MODE_ACT);
     let estimate = pack::estimate_tokens(&text) + pack::estimate_tokens(MODE_ACT);
-    match (real <= PACK_BUDGET, estimate >= real) {
+    match (real <= PACK_ALARM, estimate >= real) {
         (true, true) => Ok(()),
         (false, _) => Err(format!(
-            "the pack and MODE take {real} tokens, over {PACK_BUDGET}"
+            "the pack and MODE take {real} tokens, over the {PACK_ALARM} that keeps \
+             headroom under {PACK_BUDGET}: put a group on the index level (ADR 0010 §6)"
         )),
         (true, false) => Err(format!(
             "the pack estimate ({estimate}) undercounts the real {real} tokens"
@@ -235,14 +298,17 @@ mod tests {
     }
 
     #[test]
-    fn the_pack_splits_into_its_four_kinds_of_section() {
+    fn the_pack_splits_into_its_sections_and_a_group_each() {
         let text = pack::render(Format::Dsl1);
         let headings: Vec<&str> = sections(&text).iter().map(|(h, _)| *h).collect();
-        assert_eq!(headings.len(), 4, "{headings:?}");
-        assert!(headings[0].starts_with("## Rhai"));
+        assert!(headings[0].starts_with("## Rhai"), "{headings:?}");
         assert!(headings[1].starts_with("## Calls"));
         assert_eq!(headings[2], "## Examples");
-        assert_eq!(headings[3], "## system");
+        // Then the OS rows, a section per group, then the index level's names.
+        let (index, groups) = headings[3..].split_last().unwrap();
+        // The file group is on the index level (ADR 0010 §6).
+        assert_eq!(groups, ["## system"]);
+        assert!(index.starts_with("## index"), "{index}");
         let joined: String = sections(&text).iter().map(|(_, t)| *t).collect();
         assert_eq!(joined, text);
     }
@@ -271,5 +337,7 @@ mod tests {
         let chat = Chat::new(&tok).unwrap();
         let report = report(&tok, &chat);
         assert!(report.contains("**whole pack**"), "{report}");
+        println!("{}", views(&tok));
+        check_views(&tok).unwrap();
     }
 }

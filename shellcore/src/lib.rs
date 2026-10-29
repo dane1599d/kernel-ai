@@ -30,15 +30,19 @@ mod brackets;
 mod commands;
 pub mod data;
 mod engine;
+mod instructions;
 mod packages;
 mod pkg;
+mod profiles;
 mod rules;
 pub mod script;
 mod show;
+pub mod standing;
 pub mod state;
 pub mod targets;
 pub mod tiers;
 mod tune;
+pub mod ui;
 mod undo;
 mod undoing;
 
@@ -59,6 +63,63 @@ use rhai::{AST, Dynamic, Engine, EvalAltResult, Scope};
 use tiers::Tier;
 
 pub use commands::{COMMANDS, split_command};
+
+/// What lets an asked call run, shown to the call's owner (the kernel for a
+/// process, the supervisor for a service), which checks it: the shell only
+/// passes it on (P1 task 14, ADR 0001 D6).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Proof {
+    /// Nothing: an owner that checks refuses an asked call.
+    #[default]
+    None,
+    /// The `ONCE` the trusted path minted for menu `id`'s Allow.
+    Once { badge: u64, id: u64 },
+    /// A standing rule's node in the shell's table, which the owner finds.
+    Rule,
+    /// The undo of log entry `id`'s start of the service, which the supervisor
+    /// remembers.
+    Undo { id: u64 },
+}
+
+/// A read the `fs` server answers (P2 task 11).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FsRead<'a> {
+    List(&'a str),
+    Read(&'a str),
+    History(&'a str),
+    Changes,
+}
+
+/// A change the `fs` server makes as one transaction, which `undo` restores.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FsChange<'a> {
+    Create { path: &'a str, text: &'a str },
+    Write { path: &'a str, text: &'a str },
+    Move { from: &'a str, to: &'a str },
+    Trash(&'a str),
+    Restore(&'a str),
+    EmptyTrash,
+}
+
+/// Why the `fs` server did not restore a transaction.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FsRefused {
+    /// A later change touched the same files, as this says; restoring would undo
+    /// it too, so the user is asked first.
+    Later(String),
+    Failed(String),
+}
+
+/// What a run of log entry `entry` may show the owners of its calls.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Consent {
+    pub entry: u64,
+    pub proof: Proof,
+}
+
+/// What a host with no `kai-data` disk answers a file row: the guest's shell
+/// and the gates' stand-ins say the same, so their answers compare equal.
+pub const NO_FILES: &str = "there are no files here (no kai-data disk)";
 
 /// What the shell needs from the operating system.
 pub trait Host {
@@ -93,17 +154,54 @@ pub trait Host {
     fn once_check(&self, _badge: u64, _digest: &[u8; 32]) -> Result<(), String> {
         Err(String::from("there is no trusted path here"))
     }
-    /// Stops every running process named `name`; how many stopped.
-    fn stop_process(&self, _name: &str) -> Result<u64, String> {
+    /// Stops every running process named `name`; how many stopped. `proof` is
+    /// what the kernel checks before it stops anything (P1 task 14).
+    fn stop_process(&self, _name: &str, _proof: Proof) -> Result<u64, String> {
         Err(String::from("processes cannot be stopped here"))
     }
     /// Stops the supervised service `name`, which stays stopped until started.
-    fn stop_service(&self, _name: &str) -> Result<(), String> {
+    /// `proof` is what the supervisor checks.
+    fn stop_service(&self, _name: &str, _proof: Proof) -> Result<(), String> {
         Err(String::from("services cannot be stopped here"))
     }
-    /// Starts the stopped service `name`.
-    fn start_service(&self, _name: &str) -> Result<(), String> {
+    /// Starts the stopped service `name` for log entry `entry`, which the
+    /// supervisor keeps so only that entry's undo may stop it again unasked.
+    fn start_service(&self, _name: &str, _entry: u64) -> Result<(), String> {
         Err(String::from("services cannot be started here"))
+    }
+    /// Stops and starts the supervised service `name` in one request: a ONCE is
+    /// used up by its first check, so two requests could not both pass.
+    fn restart_service(&self, _name: &str, _proof: Proof) -> Result<(), String> {
+        Err(String::from("services cannot be restarted here"))
+    }
+    /// One of the agent's window rows, asked of `desktop` (P3 task 10): the
+    /// answer after its `ok`, or why not.
+    fn ui(&self, _call: &ui::UiCall) -> Result<String, String> {
+        ui::no_desktop()
+    }
+    /// A read of the user's files: its text, or why there is none.
+    fn fs_read(&self, _read: FsRead) -> Result<String, String> {
+        Err(String::from(NO_FILES))
+    }
+    /// A change to the user's files, made as one transaction: its number, for
+    /// `undo`.
+    fn fs_change(&self, _change: FsChange) -> Result<u64, String> {
+        Err(String::from(NO_FILES))
+    }
+    /// The action log as `/system/log` holds it (`actlog 1`), read once at start;
+    /// `None` when there is none (P2 task 12).
+    fn log_read(&self) -> Option<String> {
+        None
+    }
+    /// Writes the whole action log to `/system/log`, after any line that changed it.
+    fn log_write(&self, _text: &str) -> Result<(), String> {
+        Ok(())
+    }
+    /// Restores what transaction `txn` replaced, as one new transaction: its number,
+    /// so `undo` again can redo. Compare-and-set: refused when a later change
+    /// touched the same files, unless `anyway`.
+    fn fs_undo(&self, _txn: u64, _anyway: bool) -> Result<u64, FsRefused> {
+        Err(FsRefused::Failed(String::from(NO_FILES)))
     }
     /// The services the supervisor runs, so a stop names a service or a process
     /// by what it is. Without them, a stop runs the row the model picked.
@@ -114,6 +212,44 @@ pub trait Host {
     /// trusted path gave for it.
     fn revoke_rule(&self, _handle: u32) -> Result<(), String> {
         Ok(())
+    }
+    /// The standing rules as `/system/state/rules` holds them (`kai-grants 1`
+    /// rule lines), read once at start; `None` when there are none (P2 task 12).
+    fn rules_read(&self) -> Option<String> {
+        None
+    }
+    /// Writes the whole rules file, after a rule is added or removed.
+    fn rules_write(&self, _text: &str) -> Result<(), String> {
+        Ok(())
+    }
+    /// The standing instructions as `/system/state/standing` holds them
+    /// (`kai-standing 1`), read once at start (P3 task 11).
+    fn standing_read(&self) -> Option<String> {
+        None
+    }
+    /// Writes the whole standing-instruction store, after one changes.
+    fn standing_write(&self, _text: &str) -> Result<(), String> {
+        Ok(())
+    }
+    /// Gives each process its class and quota (P3 task 12), through the
+    /// supervisor's PROC_CLASS_SET and PROC_QUOTA_SET; every one's settings from
+    /// before, so `undo` can put them back.
+    fn profile_apply(
+        &self,
+        _settings: &[kaiprofile::Setting],
+    ) -> Result<Vec<kaiprofile::Setting>, String> {
+        Err(String::from(
+            "profiles are not wired to the supervisor here yet",
+        ))
+    }
+    /// The app with focus on the desktop, which a profile's `focused` line names.
+    fn focused_app(&self) -> Option<String> {
+        None
+    }
+    /// Where standing instructions' events come from and their actions run;
+    /// `None` until the desktop and comphost are wired (P3 tasks 6 and 11).
+    fn triggers(&self) -> Option<&dyn standing::Triggers> {
+        None
     }
     /// Runs `request` ([`apart::request`]) in a `scriptrun` child of its own (P1
     /// task 14): `Ok` with the child's answer, or `Err` with why it ended without
@@ -270,6 +406,14 @@ pub struct Shell {
     undo_asking: Option<u64>,
     /// Standing rules the menu's "Always allow" wrote.
     rules: rules::Rules,
+    /// Standing instructions (P3 task 11), and the ones `rules_remove` ended,
+    /// which `undo` can put back until the shell restarts.
+    standing: standing::Standing,
+    instructions_removed: Vec<standing::Rule>,
+    /// Resource profiles (P3 task 12), in RAM until `/system/settings`.
+    profiles: profiles::Profiles,
+    /// Each standing instruction's last profile switch, which its "until" puts back.
+    fired_profiles: Vec<(u64, u64)>,
     /// Installed software: the image's repository and its generations.
     pkgs: pkg::Store,
     /// Whether the `sudo` note was said already.
@@ -283,6 +427,18 @@ pub struct Shell {
     partial: Option<String>,
     /// A request the model asked to clarify: the next line is joined to it.
     clarifying: Option<String>,
+    /// The `pack_id` of the pack the model is given, logged with each model turn
+    /// (ADR 0010 §7): the same one llm reports for its `act` slot.
+    pack_id: u64,
+    /// The log text last written to `/system/log`, so an unchanged log is not
+    /// written again.
+    saved_log: Option<String>,
+    /// The ONCE of the menu answer now running, kept for the call's owner to
+    /// check: the shell does not spend it (P1 task 14).
+    owner_once: Option<u64>,
+    /// The source of the data the call now running was decided after (a
+    /// view's second round), for consent (ADR 0002 D6).
+    steered: Option<&'static str>,
 }
 
 impl Shell {
@@ -321,12 +477,85 @@ impl Shell {
             tiers,
             undo_asking: None,
             rules: rules::Rules::default(),
+            standing: standing::Standing::default(),
+            instructions_removed: Vec::new(),
+            profiles: profiles::Profiles::default(),
+            fired_profiles: Vec::new(),
             pkgs: pkg::Store::default(),
             said_no_sudo: false,
             shown: None,
             last_output: None,
             partial: None,
             clarifying: None,
+            pack_id: llmproto::pack::act_pack_id(),
+            saved_log: None,
+            owner_once: None,
+            steered: None,
+        }
+        .with_saved_log()
+        .with_saved_rules()
+        .with_saved_standing()
+    }
+
+    /// The log `/system/log` holds, so `undo` works across a reboot; a text that
+    /// is not `actlog 1` is set aside, and the log starts again.
+    /// The rules `/system/state/rules` holds; a file refused whole is set aside,
+    /// and the shell starts with none.
+    fn with_saved_rules(mut self) -> Self {
+        let Some(text) = self.host.rules_read() else {
+            return self;
+        };
+        match rules::Rules::restore(&text) {
+            Ok(rules) => self.rules = rules,
+            Err(why) => self.host.audit(&format!(
+                "the rules on disk were refused ({why}); starting with none"
+            )),
+        }
+        self
+    }
+
+    /// Writes the rules to `/system/state/rules`; a failure is audited, and the
+    /// rules hold in memory.
+    pub(crate) fn save_rules(&self) {
+        let written = self
+            .rules
+            .text()
+            .and_then(|text| self.host.rules_write(&text));
+        if let Err(why) = written {
+            self.host
+                .audit(&format!("the rules were not written: {why}"));
+        }
+    }
+
+    fn with_saved_log(mut self) -> Self {
+        let Some(text) = self.host.log_read() else {
+            // Nothing on disk is an empty log: it needs no write until it changes.
+            self.saved_log = Some(self.log.text());
+            return self;
+        };
+        match actlog::parse(&text) {
+            Ok(records) => {
+                self.log = actlog::ActLog::from_records(records);
+                self.next_id = self.log.last_id() + 1;
+                self.saved_log = Some(text);
+            }
+            Err(error) => self.host.audit(&format!(
+                "the log on disk is not actlog 1 (line {}: {}); starting a new one",
+                error.line, error.why
+            )),
+        }
+        self
+    }
+
+    /// Writes the log to `/system/log` if the line changed it.
+    fn save_log(&mut self) {
+        let text = self.log.text();
+        if self.saved_log.as_ref() == Some(&text) {
+            return;
+        }
+        match self.host.log_write(&text) {
+            Ok(()) => self.saved_log = Some(text),
+            Err(why) => self.host.audit(&format!("the log was not written: {why}")),
         }
     }
 
@@ -336,8 +565,14 @@ impl Shell {
         self.last_output.as_deref()
     }
 
-    /// Runs one line and returns what to show.
+    /// Runs one line and returns what to show; the log goes to disk after it.
     pub fn eval(&mut self, input: &str) -> Reply {
+        let reply = self.eval_line(input);
+        self.save_log();
+        reply
+    }
+
+    fn eval_line(&mut self, input: &str) -> Reply {
         if let Some(entry) = self.partial.take() {
             return self.continue_entry(entry, input);
         }
@@ -390,7 +625,8 @@ impl Shell {
                 "undo" => return self.undo_command(""),
                 "tune undo" => return self.tune_undo(),
                 "new" => return self.forget(),
-                "rules" => return Reply::ok(self.rules.list()),
+                "rules" => return Reply::ok(self.list_rules()),
+                "profile" => return self.list_profiles(),
                 "show" | "why" => return self.show_last(),
                 _ => {}
             }
@@ -405,7 +641,20 @@ impl Shell {
         if let Some(which) = input.strip_prefix("rules_remove ")
             && !self.scope.contains("rules_remove")
         {
-            return self.remove_rule(which);
+            return match which.trim().starts_with('S') {
+                true => self.remove_instruction(input, which.trim()),
+                false => self.remove_rule(which),
+            };
+        }
+        if let Some(text) = input.strip_prefix("rules_add ")
+            && !self.scope.contains("rules_add")
+        {
+            return self.add_instruction(input, text);
+        }
+        if let Some(name) = input.strip_prefix("profile ")
+            && !self.scope.contains("profile")
+        {
+            return self.profile_command(input, name);
         }
         if let Some(which) = input.strip_prefix("undo ")
             && !self.scope.contains("undo")

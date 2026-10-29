@@ -201,6 +201,87 @@ fn check_repairs_what_it_finds_wrong() {
     ops::check_image(&image, false).unwrap();
 }
 
+/// A disk no commit of which mounts, its allocator's chain overwritten:
+/// `check --repair` mounts it from what the trees reach, and it checks after.
+#[test]
+fn check_repair_mounts_a_disk_whose_allocator_does_not_read() {
+    let dir = scratch("allocator");
+    let image = made(&dir);
+    let chain: Vec<u64> = {
+        let fs = ops::open(&image, false).unwrap();
+        fs.io.alloc.chain().iter().map(|p| p.addr).collect()
+    };
+    let mut bytes = std::fs::read(&image).unwrap();
+    let region = disk::locate(&mut Bytes(&bytes), bytes.len() as u64).unwrap();
+    for addr in chain {
+        let at = (region.offset + addr * BLOCK as u64) as usize;
+        bytes[at..at + BLOCK].fill(0xA5);
+    }
+    std::fs::write(&image, &bytes).unwrap();
+    assert!(ops::check_image(&image, false).is_err());
+    let lines = ops::check_image(&image, true).unwrap();
+    assert!(lines[0].contains("the disk does not mount"), "{lines:?}");
+    ops::check_image(&image, false).unwrap();
+    let home = ops::ls(&image, "/home").unwrap();
+    assert!(home.iter().any(|line| line.contains("user")), "{home:?}");
+}
+
+/// `import --model`: the blob lands sealed under its SHA-256, its extents
+/// hold it as `MODEL_FILL` will read them, and sector 0 names it.
+#[test]
+fn import_model_writes_a_sealed_blob_and_names_it_in_sector_0() {
+    use kabi::modelhint::Hint;
+    use sha2::{Digest, Sha256};
+    let dir = scratch("model");
+    let image = made(&dir);
+    let model = dir.join("tiny.gguf");
+    let mut bytes = b"GGUF".to_vec();
+    bytes.extend((0..(5u32 << 20) + 77).map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8));
+    std::fs::write(&model, &bytes).unwrap();
+    let line = super::model::import_model(&image, &model).unwrap();
+    let sha256: [u8; 32] = Sha256::digest(&bytes).into();
+    let name: String = sha256.iter().map(|b| format!("{b:02x}")).collect();
+    let path = format!("/system/models/{name}.gguf");
+    assert!(line.starts_with(&path), "{line}");
+    assert_eq!(cat(&image, &path), bytes);
+    let fnv = kabi::model::fnv1a(&bytes);
+    let disk = std::fs::read(&image).unwrap();
+    let region = disk::locate(&mut Bytes(&disk), disk.len() as u64).unwrap();
+    let at = region.offset as usize;
+    let hint = Hint::decode(&disk[at..at + 512]).unwrap();
+    let len = bytes.len() as u64;
+    assert_eq!(hint, Hint { len, fnv, sha256 });
+    let held = {
+        let mut fs = ops::open(&image, false).unwrap();
+        fs.set_volume(MODELS).unwrap();
+        let ino = fs.resolve(&format!("/{name}.gguf")).unwrap();
+        assert!(fs.is_sealed(ino).unwrap());
+        let attr = fs.get_xattr(ino, super::model::FNV_ATTR).unwrap();
+        assert_eq!(attr.unwrap(), fnv.to_le_bytes());
+        let mut held = Vec::new();
+        for (start, blocks) in fs.sealed_extents(ino).unwrap() {
+            let from = at + (start * BLOCK as u64) as usize;
+            held.extend_from_slice(&disk[from..from + (blocks * BLOCK as u64) as usize]);
+        }
+        held
+    };
+    assert_eq!(held[..bytes.len()], bytes[..]);
+    ops::check_image(&image, false).unwrap();
+    // Again: named active, not written twice.
+    let again = super::model::import_model(&image, &model).unwrap();
+    assert!(again.contains("was there already"), "{again}");
+    let after = ops::ls(&image, "/system/models").unwrap();
+    assert_eq!(
+        after.iter().filter(|l| l.contains(".gguf")).count(),
+        1,
+        "{after:?}"
+    );
+    // Not a GGUF file: refused, and nothing written.
+    std::fs::write(&model, b"not a model").unwrap();
+    assert!(super::model::import_model(&image, &model).is_err());
+    ops::check_image(&image, false).unwrap();
+}
+
 /// kaifs on a case disk as task 2's `make_disk` lays it out, `kai-cache` after
 /// `kai-data`: every command finds `kai-data` by its type GUID and leaves the
 /// cache alone. A disk whose primary GPT is gone is read from its backup.
@@ -261,17 +342,24 @@ fn recorded_run(name: &str, faults: Faults) -> (Vec<u8>, Region, Log) {
         fs.commit().unwrap();
     }
     let ops = std::mem::take(&mut fs.io.dev.log);
+    let log = log_of(&ops, region, &before[512..1024]);
+    (before, region, log)
+}
+
+/// `ops` on `region` as a blklogwrites log would record them, after a write of
+/// `gpt` to sector 1 and a mark: runs of consecutive blocks become one write, as
+/// the driver may send them.
+fn log_of(ops: &[Op], region: Region, gpt: &[u8]) -> Log {
     let sectors = |addr: u64| (region.offset + addr * BLOCK as u64) / 512;
     let mut entries = vec![
         Entry::Write {
             sector: 1,
-            data: before[512..1024].to_vec(),
+            data: gpt.to_vec(),
             fua: false,
         },
         Entry::Mark,
     ];
-    // Runs of consecutive blocks become one write, as the driver may send them.
-    for op in ops {
+    for op in ops.iter().cloned() {
         match (op, entries.last_mut()) {
             (Op::Flush, _) => entries.push(Entry::Flush),
             (Op::Write(addr, block), Some(Entry::Write { sector, data, .. }))
@@ -287,11 +375,10 @@ fn recorded_run(name: &str, faults: Faults) -> (Vec<u8>, Region, Log) {
             }),
         }
     }
-    let log = Log {
+    Log {
         sector_size: 512,
         entries,
-    };
-    (before, region, log)
+    }
 }
 
 #[test]
@@ -426,4 +513,121 @@ fn the_command_line_takes_each_command_and_refuses_what_it_does_not_know() {
         let replayed = run(&["replay", base.to_str().unwrap(), log_file.to_str().unwrap()]);
         assert_eq!(replayed.is_ok(), passes, "{name}: {replayed:?}");
     }
+}
+
+/// A case's data disk after a run, in `target/` as the case leaves it: task 2's
+/// disk with `kai-cache`, kaifs in `kai-data` (made on the host first if
+/// `host_mkfs`, else by the run itself), `actions` file actions, and the log.
+/// Returns the base the case would have saved, for a host-made disk.
+fn case_disk(target: &Path, actions: u64, host_mkfs: bool, faults: Faults) -> Option<PathBuf> {
+    let image = target.join(crate::blklog::IMAGE);
+    crate::blklog::make_disk(&image, Some(1)).unwrap();
+    if host_mkfs {
+        let dev = FileDev::open(&image, true).unwrap();
+        Fs::mkfs(dev, [6; 16], "case").unwrap();
+    }
+    let before = std::fs::read(&image).unwrap();
+    let region = disk::locate(&mut Bytes(&before), before.len() as u64).unwrap();
+    let mut rec = RecordingDisk::new(region.blocks);
+    rec.disk = blklog::base(&before, region);
+    let mut fs = match host_mkfs {
+        true => Fs::mount_with(rec, faults).unwrap(),
+        false => Fs::mkfs_with(rec, [7; 16], "guest", faults).unwrap(),
+    };
+    for n in 0..actions {
+        fs.begin(n + 1).unwrap();
+        fs.set_volume([HOME, SYSTEM][n as usize % 2]).unwrap();
+        let name = format!("action {}", n % 25);
+        let f = match fs.lookup(ROOT, &name).unwrap() {
+            Some(e) => e.ino,
+            None => fs.create(ROOT, &name).unwrap(),
+        };
+        fs.write_file(f, &vec![n as u8; 600 + (n as usize * 997) % 9000])
+            .unwrap();
+        fs.commit().unwrap();
+    }
+    // What QEMU leaves: the disk with every write on it, and the log.
+    let ops = std::mem::take(&mut fs.io.dev.log);
+    let mut after = before.clone();
+    for op in &ops {
+        if let Op::Write(addr, block) = op {
+            let at = (region.offset + addr * BLOCK as u64) as usize;
+            after[at..at + BLOCK].copy_from_slice(&block[..]);
+        }
+    }
+    std::fs::write(&image, &after).unwrap();
+    let log = log_of(&ops, region, &before[512..1024]);
+    std::fs::write(target.join(crate::blklog::LOG), blklog::encode(&log)).unwrap();
+    host_mkfs.then(|| {
+        let base = target.join("kai-data.base.img");
+        std::fs::write(&base, &before).unwrap();
+        base
+    })
+}
+
+#[test]
+fn a_case_disk_the_guest_formatted_replays_clean() {
+    use crate::blklog::Expect;
+    let target = scratch("case guest mkfs");
+    case_disk(&target, 12, false, Faults::default());
+    let figures = blklog::check_case(&target, None, Expect::Clean).unwrap();
+    assert!(figures.contains(" 0 violations"), "{figures}");
+    // The deliberate bug is no bug here, so Caught must fail.
+    assert!(blklog::check_case(&target, None, Expect::Caught).is_err());
+}
+
+#[test]
+fn a_case_disk_formatted_on_the_host_needs_its_base() {
+    use crate::blklog::Expect;
+    let target = scratch("case host mkfs");
+    let base = case_disk(&target, 8, true, Faults::default()).unwrap();
+    blklog::check_case(&target, Some(&base), Expect::Clean).unwrap();
+    let without = blklog::check_case(&target, None, Expect::Clean).unwrap_err();
+    assert!(without.contains("not the disk before the run"), "{without}");
+    // The same from the command line.
+    let run = |args: &[&str]| super::main(&args.iter().map(|a| a.to_string()).collect::<Vec<_>>());
+    let (target, base) = (target.to_str().unwrap(), base.to_str().unwrap());
+    run(&["case", target, "--base", base]).unwrap();
+    assert!(run(&["case", target, "--base", base, "--caught"]).is_err());
+    assert!(run(&["case", target]).is_err());
+}
+
+#[test]
+fn a_cut_log_is_refused_before_any_state_is_judged() {
+    use crate::blklog::Expect;
+    let target = scratch("case cut log");
+    case_disk(&target, 6, false, Faults::default());
+    let path = target.join(crate::blklog::LOG);
+    let mut log = blklog::parse(&std::fs::read(&path).unwrap()).unwrap();
+    log.entries.truncate(log.entries.len() - 3);
+    std::fs::write(&path, blklog::encode(&log)).unwrap();
+    let cut = blklog::check_case(&target, None, Expect::Clean).unwrap_err();
+    assert!(cut.contains("cut short"), "{cut}");
+}
+
+#[test]
+fn a_case_run_without_its_data_flush_is_caught() {
+    use crate::blklog::Expect;
+    let target = scratch("case no flush");
+    let faults = Faults {
+        skip_data_flush: true,
+        ..Faults::default()
+    };
+    case_disk(&target, 6, false, faults);
+    blklog::check_case(&target, None, Expect::Caught).unwrap();
+    assert!(blklog::check_case(&target, None, Expect::Clean).is_err());
+}
+
+/// Task 9's size: 200 file actions on the case disk. The replay's time is the
+/// figure; run it with `cargo test -p xtask --release -- --ignored two_hundred`.
+#[test]
+#[ignore = "task 9's full size: a release build takes seconds, a debug one minutes"]
+fn two_hundred_actions_replay_in_a_ci_minute() {
+    use crate::blklog::Expect;
+    let target = scratch("case 200 actions");
+    case_disk(&target, 200, false, Faults::default());
+    let start = std::time::Instant::now();
+    let figures = blklog::check_case(&target, None, Expect::Clean).unwrap();
+    eprintln!("{figures}");
+    assert!(start.elapsed().as_secs() < 60, "{figures}");
 }

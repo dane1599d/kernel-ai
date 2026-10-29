@@ -186,6 +186,57 @@ pub fn call(guest: &mut dyn Guest, func: &Func, args: &[Val]) -> Result<Option<V
     Ok(Some(value))
 }
 
+/// A host function's arguments, as the guest passed them to an import of `func`:
+/// lifted from the flat core values, or from the tuple they point to when there
+/// are more than [`MAX_FLAT_PARAMS`]. Also the pointer to store the result at
+/// with [`store_result`], when the result is more than [`MAX_FLAT_RESULTS`]
+/// flat values (the guest passes it last).
+pub fn lift_args(
+    guest: &mut dyn Guest,
+    func: &Func,
+    core: &[Core],
+) -> Result<(Vec<Val>, Option<u32>), Trap> {
+    let by_pointer = func
+        .result
+        .as_ref()
+        .is_some_and(|t| flatten(t).len() > MAX_FLAT_RESULTS);
+    let (args, ret) = match (by_pointer, core.split_last()) {
+        (true, Some((Core::I32(at), args))) => (args, Some(*at as u32)),
+        (true, _) => return Err(trap("expected a result pointer")),
+        (false, _) => (core, None),
+    };
+    let flat_params: usize = func.params.iter().map(|t| flatten(t).len()).sum();
+    let mut cx = Lift::new(guest);
+    let values = if flat_params > MAX_FLAT_PARAMS {
+        let at = match args {
+            [Core::I32(at)] => *at as u32,
+            _ => return Err(trap("expected an argument pointer")),
+        };
+        match load(&mut cx, &Ty::Tuple(func.params.clone()), at)? {
+            Val::Tuple(values) => values,
+            _ => return Err(trap("the arguments are not a tuple")),
+        }
+    } else {
+        let mut slots = args.iter().copied();
+        let values = func
+            .params
+            .iter()
+            .map(|ty| lift(&mut cx, ty, &mut slots))
+            .collect::<Result<Vec<_>, _>>()?;
+        if slots.next().is_some() {
+            return Err(trap("too many flat values"));
+        }
+        values
+    };
+    Ok((values, ret))
+}
+
+/// Writes a host function's result of type `ty` at `at`, the pointer
+/// [`lift_args`] returned.
+pub fn store_result(guest: &mut dyn Guest, value: &Val, ty: &Ty, at: u32) -> Result<(), Trap> {
+    store(guest, value, ty, at)
+}
+
 fn post_name(export: &str) -> String {
     format!("cabi_post_{export}")
 }

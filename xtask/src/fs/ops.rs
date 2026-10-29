@@ -8,7 +8,7 @@ use super::disk::{self, FileDev};
 use kaifs::check::{Cache, check};
 use kaifs::fs::{HOME, MODELS, SYSTEM};
 use kaifs::ns_check::check_namespace;
-use kaifs::repair::repair;
+use kaifs::repair_fs::{mount_to_repair, repair_fs};
 use kaifs::{Error, FileType, Fs, ROOT};
 use sha2::{Digest, Sha256};
 use std::fs::File;
@@ -260,11 +260,17 @@ pub fn cat(image: &Path, path: &str, out: &mut dyn Write) -> Result<u64, String>
 }
 
 /// `check`: everything a mount reaches verifies, and every volume keeps the
-/// namespace's rules. With `repair`, each volume that does not is repaired, and
-/// the result checked again.
+/// namespace's rules. With `repair`, kaifs's whole-disk rules
+/// ([`kaifs::repair_fs`]): a disk that does not mount is mounted from its newest
+/// commit whose volume table reads, its allocator rebuilt; one that does not
+/// check is repaired, space, history and each volume's namespace; and the
+/// result is checked again.
 pub fn check_image(image: &Path, fix: bool) -> Result<Vec<String>, String> {
-    let mut fs = open(image, fix)?;
-    let mut lines = Vec::new();
+    let shown = image.display().to_string();
+    let (mut fs, mut lines) = match fix {
+        true => mount_to_repair(FileDev::open(image, true)?).map_err(fail(&shown))?,
+        false => (open(image, false)?, Vec::new()),
+    };
     let mut cache = Cache::default();
     let found = check(&mut fs, &mut cache)
         .and_then(|r| check_namespace(&mut fs, &mut cache).map(|ns| (r, ns)));
@@ -290,15 +296,11 @@ pub fn check_image(image: &Path, fix: bool) -> Result<Vec<String>, String> {
             ));
             Ok(lines)
         }
-        Err(why) if !fix => Err(format!("{}: does not check: {why}", image.display())),
+        Err(why) if !fix => Err(format!("{shown}: does not check: {why}")),
         Err(why) => {
             lines.push(format!("does not check: {why}"));
-            for (id, name) in fs.volumes() {
-                fs.set_volume(id).map_err(fail(&name))?;
-                for fixed in repair(&mut fs).map_err(fail(&format!("repair {name}")))? {
-                    lines.push(format!("  {name}: {fixed}"));
-                }
-            }
+            let fixed = repair_fs(&mut fs).map_err(fail("repair"))?;
+            lines.extend(fixed.iter().map(|line| format!("  {line}")));
             drop(fs);
             lines.extend(check_image(image, false)?);
             Ok(lines)

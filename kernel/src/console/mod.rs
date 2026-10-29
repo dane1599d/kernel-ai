@@ -13,6 +13,9 @@
 //!
 //! Every access takes the serial line lock and then the console lock, so a reader
 //! never makes another CPU's line miss the screen.
+//!
+//! Beside the grid it keeps `termcore::mirror`'s row log, apart from its own
+//! paint damage, for the terminal window's TERM_READ ([`mirror`]).
 
 mod fb;
 mod layout;
@@ -29,12 +32,14 @@ use layout::Layout;
 use limine::framebuffer::Framebuffer;
 use spin::Mutex;
 use termcore::grid::{Grid, MAX_ROWS};
+use termcore::mirror::{self, Full};
 use termcore::plain::Plainly;
 use termcore::style::Kind;
 
 /// Cells the screen holds: 176 by 42 on CI's 1280x800, 168 by 37 on 1920x1080. The
 /// grid is 128 KiB, more than a kernel stack, so it lives only in CONSOLE.
 const CELLS: usize = 32 * 1024;
+const _: () = assert!(CELLS == mirror::CELLS);
 
 /// The screen's text.
 pub type Screen = Grid<CELLS>;
@@ -62,10 +67,15 @@ const UNKNOWN: Painted = Painted {
 
 struct Console {
     out: Option<Output>,
+    /// Where it drew while `desktop` holds the screen (ADR 0005 §2): the text
+    /// still goes into the grid, and [`resume`] repaints from it.
+    parked: Option<Output>,
     grid: Screen,
     painted: [Painted; MAX_ROWS],
     /// The row the busy sign is drawn on (`show_sign`).
     sign: Option<usize>,
+    /// What changed for TERM_READ's readers, kept apart from `painted`.
+    log: mirror::Log,
 }
 
 // SAFETY: the framebuffer pointer is only used under the CONSOLE mutex.
@@ -73,9 +83,11 @@ unsafe impl Send for Console {}
 
 static CONSOLE: Mutex<Console> = Mutex::new(Console {
     out: None,
+    parked: None,
     grid: Grid::new(),
     painted: [UNKNOWN; MAX_ROWS],
     sign: None,
+    log: mirror::Log::new(),
 });
 static SCREENLOG: AtomicBool = AtomicBool::new(false);
 /// Text columns and rows of the framebuffer console; 0 when there is none.
@@ -140,6 +152,7 @@ pub fn attach(surface: Surface) -> bool {
         console.sign = None;
         // Every row is blank ink already.
         console.grid.take_damage();
+        console.log.touch_all();
         console.painted.fill(Painted {
             width: 0,
             look: Some(theme::look(Kind::of(&[]))),
@@ -153,6 +166,48 @@ pub fn attach(surface: Surface) -> bool {
     CELL_WIDTH.store(layout.font.width, Ordering::Relaxed);
     CELL_HEIGHT.store(layout.font.height, Ordering::Relaxed);
     true
+}
+
+/// Whether the console has stopped painting because `desktop` holds the screen.
+pub fn suspended() -> bool {
+    serial::with_line(|| CONSOLE.lock().parked.is_some())
+}
+
+/// Stops painting while `desktop` holds the screen; text still goes into the
+/// grid and to serial.
+pub fn suspend() {
+    serial::with_line(|| {
+        let mut console = CONSOLE.lock();
+        if let Some(out) = console.out.take() {
+            console.parked = Some(out);
+        }
+    });
+}
+
+/// Paints again after `desktop` lost the screen: the whole screen, from the grid.
+pub fn resume() {
+    serial::with_line(|| {
+        let mut console = CONSOLE.lock();
+        let Some(out) = console.parked.take() else {
+            return;
+        };
+        let layout = out.layout;
+        let height = HEIGHT.load(Ordering::Relaxed);
+        out.fb.fill(0, 0, layout.width, height, theme::INK);
+        status::paint_brand(out.fb, &layout);
+        console.out = Some(out);
+        console.painted = [UNKNOWN; MAX_ROWS];
+        console.sign = None;
+        let damage = console.grid.take_damage();
+        let rows = console.grid.size().1;
+        console.log.fold(damage, rows);
+        let (_, rows) = console.grid.size();
+        let input = console.grid.input_span();
+        for row in 0..rows {
+            console.paint_row(out, row, input);
+        }
+        let _ = crate::display::flush(Rect::screen(layout.width as u32, height as u32));
+    });
 }
 
 /// Stops drawing, for a test that draws on the display itself; text still goes
@@ -217,6 +272,16 @@ fn rows_rect(layout: &Layout, first: usize, last: usize) -> Rect {
     Rect::new(0, top as u32, layout.width as u32, height as u32)
 }
 
+/// TERM_READ: writes the rows changed after `since` into `out`, whose room is
+/// reserved already (`termcore::mirror::Log::snapshot` never allocates). None
+/// while a fault on this CPU holds the console.
+pub fn mirror(since: u64, out: &mut alloc::vec::Vec<u8>) -> Option<Result<(), Full>> {
+    serial::with_line(|| {
+        let console = CONSOLE.try_lock()?;
+        Some(console.log.snapshot(&console.grid, since, out))
+    })
+}
+
 /// Runs `f` on the screen's text, with no line drawn meanwhile. None without a
 /// framebuffer console, or while a fault on this CPU holds it. `f` runs with
 /// interrupts off and must not allocate.
@@ -236,6 +301,7 @@ impl Console {
     /// status thread draws it again where there is room.
     fn flush(&mut self) {
         let damage = self.grid.take_damage();
+        self.log.fold(damage, self.grid.size().1);
         let Some(out) = self.out else {
             return;
         };

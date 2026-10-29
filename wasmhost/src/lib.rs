@@ -19,12 +19,25 @@
 extern crate alloc;
 
 mod canonical;
+pub mod desk;
+#[cfg(test)]
+mod desk_tests;
 mod effects;
 mod instance;
+pub mod linear;
 pub mod link;
+pub mod surface;
+#[cfg(test)]
+mod surface_tests;
 mod tables;
 #[cfg(test)]
 mod tests;
+mod ui;
+#[cfg(test)]
+mod ui_tests;
+#[cfg(test)]
+mod ui_txn_tests;
+mod uival;
 
 use alloc::format;
 use alloc::string::ToString;
@@ -32,6 +45,7 @@ pub use canonical::{CoreInstance, load_core};
 pub use instance::WasmInstance;
 use livecore::{Fault, Reason};
 pub use tables::{EXPORTS, IMPORTS};
+pub use ui::{ActRefused, AppEvent, MAX_UPDATES, Update};
 use wasmi::{CompilationMode, Config, EnforcedLimits, Engine, Module};
 
 /// Resources one instance may use.
@@ -180,5 +194,9 @@ impl livecore::Instance for LiveInstance {
     }
     fn finish(&mut self) -> livecore::txn::Txn {
         either!(self, i => i.finish())
+    }
+
+    fn view(&mut self, storage: &livecore::txn::Storage) {
+        either!(self, i => i.view(storage))
     }
 }

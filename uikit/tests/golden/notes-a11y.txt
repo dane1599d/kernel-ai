@@ -1,0 +1,10 @@
+[0] window "Notes" at 0,0 480x300 kids [1]
+[1] split "" at 0,0 480x300 kids [2, 5]
+[2] group "" at 0,0 167x300 kids [3, 4]
+[3] button "New note" at 12,12 143x28 acts focus,click runs notes_add
+[4] list "Notes" = "2 items, selected 0" at 12,48 143x240 acts focus,set_value kids [10, 11]
+[10] label "Groceries" at 13,49 141x24
+[11] label "Ideas" at 13,73 141x24
+[5] group "" at 168,0 312x300 kids [6, 7]
+[6] text_input "Title" = "Groceries" at 180,12 288x48 acts focus,set_value focused
+[7] multiline_text "" = "milk\neggs" at 180,68 288x220 acts focus,set_value

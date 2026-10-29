@@ -1,0 +1,10 @@
+/// The parts of `kai:app/app@0.1.0` that `compsdk::app` binds: `component!`
+/// binds the lifecycle and `log` in `kai:app/component` already.
+package kai:compsdk;
+
+world app-extras {
+    import kai:app/clock@0.1.0;
+    import kai:app/storage@0.1.0;
+    import kai:app/effects@0.1.0;
+    export kai:app/events@0.1.0;
+}

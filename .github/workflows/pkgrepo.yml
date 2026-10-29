@@ -1,0 +1,51 @@
+# The package repository (ADR 0011 §3; P4 task 1's host half, lane P):
+# `cargo xtask pkgrepo build` packs the built-in apps and writes a TUF repository
+# signed by a fresh test root; python-tuf 7.0.1's client (CI only, ADR 0011
+# question 3) verifies it, downloads every package, and refuses one with a
+# changed byte. Host only: no VM and no model. Runs on pull requests and pushes
+# to main that change the packer or kaipkg, and by hand.
+name: pkgrepo
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - xtask/src/pkgrepo/**
+      - kaipkg/**
+      - .github/workflows/pkgrepo.yml
+  pull_request:
+    paths:
+      - xtask/src/pkgrepo/**
+      - kaipkg/**
+      - .github/workflows/pkgrepo.yml
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: pkgrepo-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  pkgrepo:
+    name: pkgrepo (python-tuf)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Pack the built-in apps into a repository signed by a test root
+        run: cargo xtask pkgrepo build target/pkgrepo
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: python-tuf 7.0.1 and securesystemslib's Ed25519 verifier (CI only)
+        run: python -m pip install "tuf==7.0.1" "securesystemslib[crypto]"
+      - name: python-tuf's client verifies the repository and refuses a changed package
+        run: python xtask/src/pkgrepo/check_tuf.py target/pkgrepo

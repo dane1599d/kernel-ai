@@ -45,7 +45,8 @@ pub const BUNDLE: &str = "kai.bundle";
 
 pub fn limine_conf(cmdline: &str, module_paths: &[&str]) -> String {
     let mut conf = format!(
-        "timeout: 0\n\n/Kernel AI\n    protocol: limine\n    path: boot():/boot/kernel\n    cmdline: {cmdline}\n"
+        "timeout: 0\n\n/{}\n    protocol: limine\n    path: boot():/boot/kernel\n    cmdline: {cmdline}\n",
+        kabi::PRODUCT_NAME
     );
     for path in module_paths {
         conf.push_str(&format!("    module_path: boot():/boot/{path}\n"));
@@ -99,7 +100,8 @@ pub fn make_esp<M: core::borrow::Borrow<Module>>(
 }
 
 /// The commit the kernel is built from, for its banner: the short hash, and
-/// `-dirty` with uncommitted changes; "unknown" without git.
+/// `-dirty` with uncommitted changes. Without git (a source tarball), the hash in
+/// its `COMMIT` file, else "unknown".
 pub fn commit_id(root: &Path) -> String {
     let git = |args: &[&str]| {
         std::process::Command::new("git")
@@ -116,7 +118,9 @@ pub fn commit_id(root: &Path) -> String {
     ) {
         (Some(hash), Some(changes)) if !changes.is_empty() => format!("{hash}-dirty"),
         (Some(hash), _) => hash,
-        (None, _) => "unknown".into(),
+        (None, _) => fs::read_to_string(root.join("COMMIT"))
+            .map(|hash| hash.trim().to_string())
+            .unwrap_or_else(|_| "unknown".into()),
     }
 }
 

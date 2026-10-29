@@ -1,0 +1,16 @@
+[package]
+name = "comp-notes-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Notes' window as a `kai:ui` tree (ADR 0005 section 4), kept out of
+# `comp-notes` so the source the edit loop changes is untouched.
+[lib]
+doctest = false
+
+[dependencies]
+comp-notes = { path = "../notes", default-features = false }
+compsdk = { path = "../../compsdk" }
+uikit = { path = "../../uikit" }

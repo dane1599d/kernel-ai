@@ -1,0 +1,15 @@
+[package]
+name = "look"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# ADR 0005 §8's look, "Ember Workbench": colour tokens, type styles, motion values
+# and `contrast()`. no_std, so the kernel console, gfx2d, desktop and uikit share
+# one source of every colour. P3 task 1 (lane G-render).
+[lib]
+doctest = false
+
+[dependencies]
+libm = "0.2.16"

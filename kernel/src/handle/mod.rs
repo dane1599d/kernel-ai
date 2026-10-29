@@ -30,6 +30,7 @@ pub struct Handles {
 }
 
 pub mod grant;
+pub mod rules;
 
 static HANDLES: [Mutex<Option<Handles>>; MAX_PROCESSES] =
     [const { Mutex::new(None) }; MAX_PROCESSES];
@@ -72,7 +73,7 @@ pub fn route_name(id: u64) -> Option<Name> {
 /// The startup handles for capability bits `caps` (ADR 0001 D3's table), for the
 /// process `pid`. CALL gives a route only through `uses=`, so none here.
 pub fn startup(caps: u64, pid: u64) -> Vec<Entry> {
-    let rows: [(u64, Kind, Rights, u64); 13] = [
+    let rows: [(u64, Kind, Rights, u64); 19] = [
         // MINT under the `system` root, which is never revoked (ADR 0001 D3).
         (
             cap::SUPERVISE,
@@ -132,12 +133,80 @@ pub fn startup(caps: u64, pid: u64) -> Vec<Entry> {
             Rights::RESOLVE,
             netdest::RESOLVER,
         ),
+        // `kai-data` only: no handle names the ESP or the system slots (ADR 0004 §7).
+        (
+            cap::PARTITION,
+            Kind::Partition,
+            Rights::READ.union(Rights::WRITE),
+            kabi::part::DATA,
+        ),
+        // The screen and the input queue, `desktop`'s alone (ADR 0005 §2).
+        (cap::DISPLAY, Kind::Display, Rights::WRITE, 0),
+        (cap::INPUT, Kind::Input, Rights::READ, 0),
+        // The console's rows, for the terminal window: read-only.
+        (cap::TERM, Kind::Term, Rights::READ, 0),
+        // The slots and the boot record, never the ESP or `kai-data` (ADR 0008 §10).
+        (
+            cap::UPDATE,
+            Kind::Update,
+            Rights::INSPECT.union(Rights::READ).union(Rights::WRITE),
+            kabi::update::SYSTEM,
+        ),
+        // The asks for the card, `desktop`'s alone (ADR 0005 §7).
+        (cap::ASK, Kind::Ask, Rights::READ.union(Rights::WRITE), 0),
     ];
     rows.iter()
         .filter(|(bit, ..)| caps & bit != 0)
         .map(|&(_, kind, rights, object)| Entry::new(kind, rights | BASE, object))
         .collect()
 }
+
+/// FILES's startup handle: `/home/user` on the `fs` route `fs`. Its badge names
+/// the folder for `fs`, which looks it up itself (ADR 0004 §7).
+fn home_dir(fs: u64) -> Entry {
+    let mut home = Entry::new(Kind::Dir, HOME_RIGHTS | BASE, fs);
+    home.badge = kabi::fs::HOME_USER;
+    home
+}
+
+/// The startup `Dir`s on the `fs` route `fs` that `caps` give, in STARTUP's
+/// order: FILES's `/home/user`, then SYSTEM_STATE's `/system/state` (the order
+/// is ABI, `kabi::cap::SYSTEM_STATE`).
+pub fn fs_dirs(caps: u64, fs: u64) -> impl Iterator<Item = Entry> {
+    let files = (caps & cap::FILES != 0).then(|| home_dir(fs));
+    let state = (caps & cap::SYSTEM_STATE != 0).then(|| state_dir(fs));
+    files.into_iter().chain(state)
+}
+
+/// SYSTEM_STATE's startup handle: `/system/state` on the `fs` route `fs`, which
+/// `fs` looks up itself as for the home folder.
+fn state_dir(fs: u64) -> Entry {
+    let mut state = Entry::new(Kind::Dir, HOME_RIGHTS | BASE, fs);
+    state.badge = kabi::fs::SYSTEM_STATE;
+    state
+}
+
+/// The startup `Dir` for a folder a plan line grants, on the `fs` route `fs`.
+/// Its badge names the folder for `fs`, which looks it up itself.
+fn folder_dir(fs: u64, folder: supervise::Folder) -> Entry {
+    let rights = match folder.read_only() {
+        true => READ_RIGHTS,
+        false => HOME_RIGHTS,
+    };
+    let mut dir = Entry::new(Kind::Dir, rights | BASE, fs);
+    dir.badge = folder.badge();
+    dir
+}
+
+/// What the startup `Dir` allows: everything a folder's handle can.
+const HOME_RIGHTS: Rights = Rights::READ
+    .union(Rights::WRITE)
+    .union(Rights::ENUMERATE)
+    .union(Rights::CREATE)
+    .union(Rights::DELETE);
+
+/// What a read-only folder's startup `Dir` allows ([`supervise::Folder::read_only`]).
+const READ_RIGHTS: Rights = Rights::READ.union(Rights::ENUMERATE);
 
 /// The handle kind and right that stand for capability bit `bit` in `need`;
 /// `None` for a bit no handle stands for.
@@ -155,6 +224,13 @@ pub fn required(bit: u64) -> Option<(Kind, Rights)> {
         cap::RESOLVE => (Kind::NetDest, Rights::RESOLVE),
         cap::STOP => (Kind::Job, Rights::STOP),
         cap::SCRIPT => (Kind::Job, Rights::CREATE),
+        cap::PARTITION => (Kind::Partition, Rights::READ),
+        cap::FILES | cap::SYSTEM_STATE => (Kind::Dir, Rights::READ),
+        cap::DISPLAY => (Kind::Display, Rights::WRITE),
+        cap::INPUT => (Kind::Input, Rights::READ),
+        cap::TERM => (Kind::Term, Rights::READ),
+        cap::UPDATE => (Kind::Update, Rights::WRITE),
+        cap::ASK => (Kind::Ask, Rights::WRITE),
         _ => return None,
     })
 }
@@ -173,6 +249,14 @@ pub fn ceiling_allows(caps: u64, kind: Kind) -> bool {
         (Kind::Model, cap::MODEL),
         (Kind::Process, cap::THREADS),
         (Kind::NetDest, cap::NET | cap::RESOLVE),
+        (Kind::Partition, cap::PARTITION),
+        (Kind::Dir, cap::FILES | cap::SYSTEM_STATE),
+        (Kind::File, cap::FILES | cap::SYSTEM_STATE),
+        (Kind::Display, cap::DISPLAY),
+        (Kind::Input, cap::INPUT),
+        (Kind::Term, cap::TERM),
+        (Kind::Update, cap::UPDATE),
+        (Kind::Ask, cap::ASK),
     ];
     bits.iter()
         .find(|(k, _)| *k == kind)
@@ -192,6 +276,18 @@ pub fn route(service: &str) -> Result<Entry, kabi::Error> {
 /// from `caps`, then a route to each service in `uses` (CALL only). Before the
 /// process runs, so nothing races it.
 pub fn create(slot: usize, caps: u64, pid: u64, uses: &[&str]) -> Result<(), kabi::Error> {
+    create_with(slot, caps, pid, uses, &[])
+}
+
+/// [`create`], with a startup `Dir` on the `fs` route for each folder in `dirs`
+/// (the plan's `dir=`), after FILES's and SYSTEM_STATE's.
+pub fn create_with(
+    slot: usize,
+    caps: u64,
+    pid: u64,
+    uses: &[&str],
+    dirs: &[supervise::Folder],
+) -> Result<(), kabi::Error> {
     let mut table = Table::new().map_err(kabi::Error::from)?;
     let mut startup = Vec::new();
     startup
@@ -199,7 +295,19 @@ pub fn create(slot: usize, caps: u64, pid: u64, uses: &[&str]) -> Result<(), kab
         .map_err(|_| kabi::Error::NoMemory)?;
     let routes = uses.iter().filter(|_| caps & cap::CALL != 0);
     let routes: Result<Vec<Entry>, kabi::Error> = routes.map(|name| route(name)).collect();
-    for entry in self::startup(caps, pid).into_iter().chain(routes?) {
+    let fs = match (caps & (cap::FILES | cap::SYSTEM_STATE), dirs) {
+        (0, []) => None,
+        _ => Some(route_id(crate::process::supervision::FS)?),
+    };
+    let folders = fs
+        .into_iter()
+        .flat_map(|fs| dirs.iter().map(move |&d| folder_dir(fs, d)));
+    for entry in self::startup(caps, pid)
+        .into_iter()
+        .chain(fs.into_iter().flat_map(|fs| fs_dirs(caps, fs)))
+        .chain(folders)
+        .chain(routes?)
+    {
         startup.push(table.insert(entry).map_err(kabi::Error::from)?);
     }
     *HANDLES[slot].lock() = Some(Handles { table, startup });
@@ -226,6 +334,13 @@ pub fn holds(slot: usize, kind: Kind, rights: Rights) -> bool {
         .lock()
         .as_ref()
         .is_some_and(|handles| handles.table.holds(kind, rights, &grant::Kernel))
+}
+
+/// The slots whose table holds a live handle of `kind`, with any rights.
+pub fn holders(kind: Kind) -> Vec<usize> {
+    (0..MAX_PROCESSES)
+        .filter(|&slot| holds(slot, kind, Rights::empty()))
+        .collect()
 }
 
 /// What a call that needed capability bits `bits` now needs: for each bit, a live
@@ -297,13 +412,16 @@ pub fn give(slot: usize, entries: Vec<Entry>) -> Vec<Handle> {
         .collect()
 }
 
-/// The capability bits of the live process `pid`; `None` for none (the kernel).
+/// The capability bits that set the live process `pid`'s kind ceiling, for the
+/// handles REPLY_H and CALL_H move to it; `None` for none (the kernel).
 pub fn caps_of(pid: u64) -> Option<u64> {
     crate::process::with_table(|table| {
         table
             .iter()
             .find(|p| p.live() && p.pid == pid && pid != 0)
-            .map(|p| p.limits.caps)
+            // A plan folder brings FILES's ceiling for `Dir` and `File`, and
+            // only that: the bits go to [`ceiling_allows`], nothing else.
+            .map(|p| p.limits.caps | if p.folders { cap::FILES } else { 0 })
     })
 }
 

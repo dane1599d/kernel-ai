@@ -38,6 +38,8 @@ pub enum Form {
     Tune,
     /// An undo of entry `of`.
     Undo,
+    /// A standing instruction's firing (P3 task 11).
+    Standing,
 }
 
 impl Form {
@@ -48,6 +50,7 @@ impl Form {
             Self::Words => "words",
             Self::Tune => "tune",
             Self::Undo => "undo",
+            Self::Standing => "standing",
         }
     }
 }
@@ -107,6 +110,9 @@ pub struct Entry {
     /// The entry an undo reverted.
     pub of: Option<u64>,
     pub tier: Option<Tier>,
+    /// The `pack_id` of the pack the model was given (ADR 0010 §7), for an entry
+    /// a model turn made; `None` for one the user typed.
+    pub pack: Option<u64>,
     /// Where consent came from: `asked`, `taken-as`, `yes`, `typed`, `-`.
     pub consent: String,
     pub state: State,
@@ -150,6 +156,27 @@ pub struct ActLog {
 }
 
 impl ActLog {
+    /// A log read back from `/system/log` (P2 task 12): its newest [`KEEP`]
+    /// records.
+    pub fn from_records(records: Vec<Record>) -> Self {
+        let skip = records.len().saturating_sub(KEEP);
+        Self {
+            records: records.into_iter().skip(skip).collect(),
+        }
+    }
+
+    /// The highest entry or record number in the log, 0 for none.
+    pub fn last_id(&self) -> u64 {
+        self.records
+            .iter()
+            .map(|r| match r {
+                Record::Entry(e) => e.id,
+                Record::System(s) => s.id,
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
     pub fn push(&mut self, entry: Entry) {
         self.keep(Record::Entry(entry));
     }

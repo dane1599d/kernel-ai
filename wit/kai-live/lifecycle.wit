@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The Kernel AI contributors
+
 /// The contract every live version implements (ADR 0003, section 3): the
 /// lifecycle that `kai-lifecycle-1` bound by hand, renamed off WIT keywords.
 /// State is CBOR `[schema, body]`, at most 64 KiB, written by any version.

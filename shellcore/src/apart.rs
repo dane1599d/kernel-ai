@@ -17,7 +17,7 @@
 //! on the lines after it.
 
 use crate::script::{self, Checked, Ran};
-use crate::undo::{self, Done, Inverse, Name};
+use crate::undo::{self, Done, Inverse};
 use crate::{Config, Host};
 use alloc::format;
 use alloc::rc::Rc;
@@ -31,14 +31,14 @@ const RESULT: &str = "ran 1";
 
 /// Whether `checked` may run apart: its calls are all run-tier rows a child can
 /// make with the handles it is given. Ask-tier rows (the stops) stay in the shell
-/// until the child can show the kernel their ONCE (task 14, part B).
+/// until the child can show the kernel their ONCE (task 14, part B), and so do
+/// file rows: the child holds no `Dir`, and `fs` keys an open action by the
+/// caller's process (P2 task 11).
 pub fn may_run_apart(checked: &Checked) -> bool {
     !checked.script.is_empty()
-        && checked
-            .plan
-            .names()
-            .iter()
-            .all(|name| !agentabi::CALL_ONLY.iter().any(|row| row.name == *name))
+        && checked.plan.names().iter().all(|name| {
+            !agentabi::CALL_ONLY.iter().any(|row| row.name == *name) && !name.starts_with("fs_")
+        })
 }
 
 /// The request a child is sent for `checked`.
@@ -98,7 +98,7 @@ pub fn encode(ran: &Ran) -> String {
             word(&done.action),
             word(&done.owner),
             word(&done.res),
-            inverse(done.inverse),
+            undo::inverse_word(done.inverse),
             done.before.len(),
             done.before,
             done.after.len(),
@@ -126,7 +126,7 @@ pub fn decode(text: &str) -> Option<Ran> {
         rest = after;
         let mut fields = line.split(' ');
         let (action, owner, res) = (fields.next()?, fields.next()?, fields.next()?);
-        let inverse = parse_inverse(fields.next()?)?;
+        let inverse = undo::parse_inverse(fields.next()?)?;
         let before = sized(&mut rest)?;
         let after = sized(&mut rest)?;
         done.push(Done {
@@ -194,38 +194,4 @@ fn word(text: &str) -> &str {
         true => "-",
         false => text,
     }
-}
-
-fn inverse(inverse: Option<Inverse>) -> String {
-    match inverse {
-        None => String::from("none"),
-        Some(Inverse::Spec {
-            policy,
-            preset,
-            after,
-        }) => format!("spec:{policy}:{preset}:{}:{}", after.0, after.1),
-        Some(Inverse::Started(name)) => format!("started:{}", name.as_str()),
-        Some(Inverse::Stopped(name)) => format!("stopped:{}", name.as_str()),
-        Some(Inverse::Generation { from, to }) => format!("generation:{from}:{to}"),
-    }
-}
-
-fn parse_inverse(text: &str) -> Option<Option<Inverse>> {
-    let mut parts = text.split(':');
-    let number = |part: Option<&str>| part?.parse::<u64>().ok();
-    Some(Some(match parts.next()? {
-        "none" => return Some(None),
-        "spec" => Inverse::Spec {
-            policy: number(parts.next())?,
-            preset: number(parts.next())?,
-            after: (number(parts.next())?, number(parts.next())?),
-        },
-        "started" => Inverse::Started(Name::new(parts.next()?)?),
-        "stopped" => Inverse::Stopped(Name::new(parts.next()?)?),
-        "generation" => Inverse::Generation {
-            from: number(parts.next())?,
-            to: number(parts.next())?,
-        },
-        _ => return None,
-    }))
 }

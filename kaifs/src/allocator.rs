@@ -20,7 +20,7 @@
 //! Every block a commit allocates is in its own entries, the allocator's own
 //! blocks included, so a mount rebuilds exactly the state the commit had.
 
-use crate::buddy::{Buddy, Run, level_for, tile};
+use crate::buddy::{Buddy, Run, TOP, level_for, tile};
 use crate::csum::CsumKind;
 use crate::dev::BlockDev;
 use crate::format::{self, BlockPtr, KIND_ALLOC, PTR_BYTES};
@@ -92,11 +92,31 @@ fn extents(runs: impl IntoIterator<Item = Run>) -> Vec<(u64, u64)> {
     out
 }
 
-/// The run a pointer's blocks occupy.
+/// `runs`, which may overlap, as sorted, disjoint `[start, end)` spans.
+fn joined(runs: &[Run]) -> Vec<(u64, u64)> {
+    let mut spans: Vec<(u64, u64)> = runs.iter().map(|r| (r.addr, r.end())).collect();
+    spans.sort_unstable();
+    let mut out: Vec<(u64, u64)> = Vec::with_capacity(spans.len());
+    for (s, e) in spans {
+        match out.last_mut() {
+            Some((_, oe)) if s <= *oe => *oe = (*oe).max(e),
+            _ => out.push((s, e)),
+        }
+    }
+    out
+}
+
+/// The run a pointer's blocks occupy. A SEALED record's is always a whole
+/// top-level run (ADR 0004 §8), however short its last piece, so a blob's
+/// pieces can lie end to end.
 pub fn run_of(ptr: &BlockPtr) -> Run {
+    let level = match ptr.flags & format::FLAG_SEALED {
+        0 => level_for(u64::from(ptr.blocks)),
+        _ => TOP,
+    };
     Run {
         addr: ptr.addr,
-        level: level_for(u64::from(ptr.blocks)),
+        level,
     }
 }
 
@@ -164,6 +184,43 @@ impl Allocator {
                 .pending
                 .iter()
                 .any(|(_, r)| r.addr < end && r.end() > start)
+    }
+
+    /// Takes every block of `used` out of free and pending space, and has the
+    /// next commit write a new base: repair's rule for blocks the allocator holds
+    /// unused though something reaches them. A pending run that overlaps `used`
+    /// is dropped whole, and what of it nothing reaches waits for the GC. Returns
+    /// the blocks taken.
+    pub fn claim(&mut self, used: &[Run]) -> u64 {
+        let used = joined(used);
+        let free = self.buddy.extents();
+        let mut taken = 0;
+        // Both are sorted and disjoint: one walk finds where they meet.
+        let (mut i, mut j) = (0, 0);
+        while i < free.len() && j < used.len() {
+            let ((s, l), (us, ue)) = (free[i], used[j]);
+            let (lo, hi) = (s.max(us), (s + l).min(ue));
+            if lo < hi && self.buddy.take_extent(lo, hi - lo) {
+                taken += hi - lo;
+            }
+            match s + l <= ue {
+                true => i += 1,
+                false => j += 1,
+            }
+        }
+        let overlaps = |r: &Run| {
+            let k = used.partition_point(|&(_, ue)| ue <= r.addr);
+            used.get(k).is_some_and(|&(us, _)| us < r.end())
+        };
+        self.pending.retain(|(_, r)| {
+            let hit = overlaps(r);
+            taken += if hit { r.blocks() } else { 0 };
+            !hit
+        });
+        if taken > 0 {
+            self.deltas = MAX_DELTAS;
+        }
+        taken
     }
 
     /// Every block of the allocator's own chain.
@@ -354,6 +411,28 @@ impl Allocator {
         self.release(txn + 1 + early);
     }
 
+    /// The blocks of the chain `head` names, newest first, as far as they
+    /// verify: what a repair that rebuilds the allocator keeps in use.
+    pub fn chain_blocks<D: BlockDev>(
+        dev: &mut D,
+        kind: CsumKind,
+        head: &BlockPtr,
+    ) -> Vec<BlockPtr> {
+        let mut out: Vec<BlockPtr> = Vec::new();
+        let mut seen = BTreeSet::new();
+        let mut ptr = *head;
+        while !ptr.is_null() && seen.insert(ptr.addr) {
+            out.push(ptr);
+            let next = format::read_checked(dev, kind, &ptr, "allocator block")
+                .and_then(|block| BlockPtr::decode_at(&block[..], 16));
+            match next {
+                Ok(next) => ptr = next,
+                Err(_) => break,
+            }
+        }
+        out
+    }
+
     /// The allocator commit `generation` left, from the chain `head` names.
     pub fn load<D: BlockDev>(
         dev: &mut D,
@@ -473,6 +552,48 @@ impl Allocator {
 mod tests {
     use super::*;
     use crate::dev::MemDisk;
+
+    #[test]
+    fn claim_takes_used_blocks_out_of_free_and_pending_space() {
+        let mut disk = MemDisk::new(1 << 12);
+        let area = format::data_area(1 << 12);
+        let mut alloc = Allocator::new(area);
+        let a = alloc.alloc(3).unwrap();
+        alloc.free_later(
+            1,
+            Run {
+                addr: a.addr,
+                level: 2,
+            },
+        );
+        let start = area.0 + 100;
+        // Runs that overlap: six free blocks, and one of the four pending.
+        let used = [
+            Run {
+                addr: start,
+                level: 2,
+            },
+            Run {
+                addr: start + 2,
+                level: 2,
+            },
+            Run {
+                addr: a.addr,
+                level: 0,
+            },
+        ];
+        let free = alloc.free_blocks();
+        assert_eq!(alloc.claim(&used), 6 + 4);
+        assert_eq!(alloc.free_blocks(), free - 6);
+        assert!(!alloc.any_unused(start, start + 6));
+        assert!(!alloc.any_unused(a.addr, a.addr + 4));
+        // The next commit writes a base that says so.
+        let head = alloc.persist(&mut disk, CsumKind::Seahash64, 2).unwrap();
+        alloc.committed(2);
+        let loaded = Allocator::load(&mut disk, CsumKind::Seahash64, &head, 2).unwrap();
+        assert_eq!(loaded.state(), alloc.state());
+        assert_eq!(alloc.claim(&used), 0);
+    }
 
     #[test]
     fn a_fresh_disk_is_one_extent_and_one_block() {

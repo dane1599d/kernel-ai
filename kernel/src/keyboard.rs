@@ -5,21 +5,52 @@
 use crate::i8042::{self, Input};
 use crate::{hpet, log, pointer, serial};
 use alloc::string::String;
-use termcore::keys::{self, Key};
+use termcore::keys::{self, Code, Key, Stroke};
 
-pub struct Decoder(keys::Decoder);
+pub struct Decoder {
+    keys: keys::Decoder,
+    /// The ring's epoch these keys were decoded in.
+    epoch: u64,
+}
 
 impl Decoder {
     pub fn new() -> Self {
-        Self(keys::Decoder::new())
+        Self {
+            keys: keys::Decoder::new(),
+            epoch: i8042::epoch(),
+        }
+    }
+
+    fn stroke(&mut self, input: Input) -> Option<Stroke> {
+        // Keys changed hands since: what this decoder thinks is held is stale.
+        let epoch = i8042::epoch();
+        if epoch != self.epoch {
+            self.keys = keys::Decoder::new();
+            self.epoch = epoch;
+        }
+        if input.aux {
+            pointer::on_byte(input.byte, self.keys.ctrl());
+            return None;
+        }
+        self.keys.stroke(input.byte)
     }
 
     fn decode(&mut self, input: Input) -> Option<Key> {
-        if input.aux {
-            pointer::on_byte(input.byte, self.0.ctrl());
-            return None;
+        self.stroke(input).and_then(|stroke| stroke.key)
+    }
+
+    /// The keys held now.
+    pub fn held(&self) -> impl Iterator<Item = Code> + '_ {
+        self.keys.held()
+    }
+
+    /// Blocks the calling thread until a key goes down or up.
+    pub fn read_stroke(&mut self) -> Stroke {
+        loop {
+            if let Some(stroke) = self.stroke(i8042::wait()) {
+                return stroke;
+            }
         }
-        self.0.feed(input.byte)
     }
 
     /// Decodes queued bytes until one produces a key.

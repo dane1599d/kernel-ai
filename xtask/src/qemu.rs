@@ -140,6 +140,47 @@ pub fn boot_from_image(args: &mut [String], esp: &Path, target_dir: &Path) -> Re
     Ok(())
 }
 
+/// The slot cases: builds the R/A/B disk of `esp` (ADR 0008) as
+/// `target/slots.img` and boots from it in place of the directory ESP.
+pub fn boot_from_slots(
+    args: &mut Vec<String>,
+    esp: &Path,
+    target_dir: &Path,
+    cmdline: &str,
+    record: &str,
+) -> Result<(), String> {
+    let bytes = crate::image::slots::build(esp, &target_dir.join(SLOTS_IMAGE), cmdline, record)?;
+    println!("xtask: slot disk {SLOTS_IMAGE}, {} MiB", bytes >> 20);
+    // On virtio-blk, so the kernel reaches the slots (`updated`'s SLOT_* calls)
+    // as an installed system reaches its one disk.
+    let at = args
+        .iter()
+        .position(|arg| arg == ESP_DRIVE)
+        .ok_or("no directory ESP drive to replace")?;
+    args[at] = format!("if=none,id=slots,format=raw,file={SLOTS_IMAGE}");
+    args.splice(
+        at + 1..at + 1,
+        [
+            "-device".to_string(),
+            "virtio-blk-pci,drive=slots,serial=kai-boot,bootindex=0".to_string(),
+        ],
+    );
+    Ok(())
+}
+
+/// The update disk `name` in `target/`, read-only, found by its serial.
+pub fn update_disk_args(name: &str) -> [String; 4] {
+    [
+        "-drive".into(),
+        format!("if=none,id=update,format=raw,readonly=on,file={name}"),
+        "-device".into(),
+        "virtio-blk-pci,drive=update,serial=kai-update".into(),
+    ]
+}
+
+/// The slot cases' disk, in `target/`.
+const SLOTS_IMAGE: &str = "slots.img";
+
 /// The directory ESP, as QEMU's virtual FAT drive.
 const ESP_DRIVE: &str = "format=raw,file=fat:rw:esp";
 /// The image case's disk, in `target/`.
@@ -292,6 +333,9 @@ pub struct TestRun<'a> {
     pub exact: Vec<String>,
     /// More text the console must contain, besides the case's own.
     pub contains: Vec<String>,
+    /// A power cut: once a kernel line containing this text appears, QEMU is
+    /// killed this much later, and the boot counts as done.
+    pub cut: Option<(String, Duration)>,
 }
 
 pub fn run_test(
@@ -319,6 +363,8 @@ pub fn run_test(
         .map_err(|e| format!("cannot start QEMU: {e}"))?;
     let stdout = child.stdout.take().ok_or("QEMU stdout was not captured")?;
     let (ready_tx, ready_rx) = mpsc::channel();
+    let (cut_tx, cut_rx) = mpsc::channel();
+    let cut_at = run.cut.clone();
     let all = (expect.clone(), exact.clone(), None);
     // The echo runs apart from the reader, as in icount.rs: printing to a slow CI
     // log must never stop QEMU's output being read. A full pipe makes QEMU hold
@@ -348,6 +394,11 @@ pub fn run_test(
             if from_programs(&line) {
                 continue;
             }
+            if let Some((text, _)) = &cut_at
+                && line.contains(text.as_str())
+            {
+                let _ = cut_tx.send(Instant::now());
+            }
             if line.contains("boot-ok") {
                 let _ = ready_tx.send(started.elapsed());
             } else if line.contains("skip keys") {
@@ -370,6 +421,7 @@ pub fn run_test(
         }
         (missing, unseen, cpu_line)
     });
+    let mut cut_seen = None;
     let status = loop {
         if let Some(status) = child
             .try_wait()
@@ -377,7 +429,24 @@ pub fn run_test(
         {
             break status;
         }
+        cut_seen = cut_seen.or_else(|| cut_rx.try_recv().ok());
+        if let (Some(seen), Some((_, delay))) = (cut_seen, &run.cut)
+            && seen.elapsed() >= *delay
+        {
+            // The power goes: QEMU stops at once, mid-write.
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = reader.join();
+            let _ = echo.join();
+            println!("xtask: power cut {} ms after the line", delay.as_millis());
+            return Ok(());
+        }
         if started.elapsed() > timeout {
+            // Where every vCPU is, before QEMU goes: a silent hang shows its code.
+            crate::hang::dump(
+                monitor,
+                &target_dir.join("esp/boot").join(crate::esp::BUNDLE),
+            );
             let _ = child.kill();
             let _ = child.wait();
             return Err(format!("timed out after {} s", timeout.as_secs()));

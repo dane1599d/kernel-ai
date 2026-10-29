@@ -97,6 +97,349 @@ pub const IMPORTS: &[WitFunc] = &[
         params: || vec![Ty::String, Ty::U32, Ty::U32],
         result: || None,
     },
+    WitFunc {
+        interface: "kai:ui/view",
+        version: "0.1",
+        name: "open",
+        core_params: &[
+            CoreTy::I32,
+            CoreTy::I32,
+            CoreTy::I32,
+            CoreTy::I32,
+            CoreTy::I32,
+        ],
+        core_results: &[],
+        params: || vec![Ty::String, Ty::U16, Ty::U16],
+        result: || {
+            Some(Ty::Result(
+                Some(Box::new(Ty::U32)),
+                Some(Box::new(Ty::Enum(vec![
+                    String::from("no-window"),
+                    String::from("no-node"),
+                    String::from("bad-parent"),
+                    String::from("too-big"),
+                    String::from("too-many-windows"),
+                ]))),
+            ))
+        },
+    },
+    WitFunc {
+        interface: "kai:ui/view",
+        version: "0.1",
+        name: "set-title",
+        core_params: &[CoreTy::I32, CoreTy::I32, CoreTy::I32, CoreTy::I32],
+        core_results: &[],
+        params: || vec![Ty::U32, Ty::String],
+        result: || {
+            Some(Ty::Result(
+                None,
+                Some(Box::new(Ty::Enum(vec![
+                    String::from("no-window"),
+                    String::from("no-node"),
+                    String::from("bad-parent"),
+                    String::from("too-big"),
+                    String::from("too-many-windows"),
+                ]))),
+            ))
+        },
+    },
+    WitFunc {
+        interface: "kai:ui/view",
+        version: "0.1",
+        name: "put",
+        core_params: &[CoreTy::I32, CoreTy::I32],
+        core_results: &[],
+        params: || {
+            vec![
+                Ty::U32,
+                Ty::U32,
+                Ty::U32,
+                Ty::Record(vec![
+                    (
+                        String::from("width"),
+                        Ty::Variant(vec![
+                            (String::from("fit"), None),
+                            (String::from("fill"), Some(Ty::U16)),
+                            (String::from("fixed"), Some(Ty::U16)),
+                        ]),
+                    ),
+                    (
+                        String::from("height"),
+                        Ty::Variant(vec![
+                            (String::from("fit"), None),
+                            (String::from("fill"), Some(Ty::U16)),
+                            (String::from("fixed"), Some(Ty::U16)),
+                        ]),
+                    ),
+                    (
+                        String::from("padding"),
+                        Ty::Record(vec![
+                            (String::from("top"), Ty::U16),
+                            (String::from("right"), Ty::U16),
+                            (String::from("bottom"), Ty::U16),
+                            (String::from("left"), Ty::U16),
+                        ]),
+                    ),
+                    (String::from("gap"), Ty::U16),
+                ]),
+                Ty::Variant(vec![
+                    (
+                        String::from("stack"),
+                        Some(Ty::Record(vec![(
+                            String::from("axis"),
+                            Ty::Enum(vec![String::from("row"), String::from("column")]),
+                        )])),
+                    ),
+                    (
+                        String::from("label"),
+                        Some(Ty::Record(vec![
+                            (String::from("text"), Ty::String),
+                            (
+                                String::from("style"),
+                                Ty::Enum(vec![
+                                    String::from("small"),
+                                    String::from("body"),
+                                    String::from("label"),
+                                    String::from("heading"),
+                                    String::from("display"),
+                                    String::from("mono"),
+                                ]),
+                            ),
+                            (
+                                String::from("tone"),
+                                Ty::Enum(vec![
+                                    String::from("normal"),
+                                    String::from("muted"),
+                                    String::from("dim"),
+                                    String::from("accent"),
+                                    String::from("ok"),
+                                    String::from("error"),
+                                ]),
+                            ),
+                        ])),
+                    ),
+                    (
+                        String::from("button"),
+                        Some(Ty::Record(vec![
+                            (String::from("text"), Ty::String),
+                            (String::from("action"), Ty::Option(Box::new(Ty::String))),
+                        ])),
+                    ),
+                    (
+                        String::from("text-line"),
+                        Some(Ty::Record(vec![
+                            (String::from("label"), Ty::String),
+                            (String::from("value"), Ty::String),
+                            (String::from("placeholder"), Ty::String),
+                            (String::from("max-len"), Ty::U32),
+                        ])),
+                    ),
+                    (
+                        String::from("text-area"),
+                        Some(Ty::Record(vec![
+                            (String::from("label"), Ty::String),
+                            (String::from("value"), Ty::String),
+                            (String::from("placeholder"), Ty::String),
+                            (String::from("max-len"), Ty::U32),
+                        ])),
+                    ),
+                    (
+                        String::from("item-list"),
+                        Some(Ty::Record(vec![
+                            (String::from("label"), Ty::String),
+                            (String::from("selected"), Ty::Option(Box::new(Ty::U32))),
+                        ])),
+                    ),
+                    (
+                        String::from("table"),
+                        Some(Ty::Record(vec![
+                            (String::from("label"), Ty::String),
+                            (String::from("columns"), Ty::List(Box::new(Ty::String))),
+                            (
+                                String::from("rows"),
+                                Ty::List(Box::new(Ty::List(Box::new(Ty::String)))),
+                            ),
+                            (String::from("selected"), Ty::Option(Box::new(Ty::U32))),
+                        ])),
+                    ),
+                    (
+                        String::from("tabs"),
+                        Some(Ty::Record(vec![
+                            (String::from("labels"), Ty::List(Box::new(Ty::String))),
+                            (String::from("selected"), Ty::U32),
+                        ])),
+                    ),
+                    (
+                        String::from("toggle"),
+                        Some(Ty::Record(vec![
+                            (String::from("label"), Ty::String),
+                            (String::from("on"), Ty::Bool),
+                        ])),
+                    ),
+                    (
+                        String::from("slider"),
+                        Some(Ty::Record(vec![
+                            (String::from("label"), Ty::String),
+                            (String::from("min"), Ty::S32),
+                            (String::from("max"), Ty::S32),
+                            (String::from("step"), Ty::S32),
+                            (String::from("value"), Ty::S32),
+                        ])),
+                    ),
+                    (
+                        String::from("menu"),
+                        Some(Ty::Record(vec![
+                            (String::from("label"), Ty::String),
+                            (String::from("items"), Ty::List(Box::new(Ty::String))),
+                        ])),
+                    ),
+                    (
+                        String::from("scroll"),
+                        Some(Ty::Record(vec![(
+                            String::from("axis"),
+                            Ty::Enum(vec![String::from("row"), String::from("column")]),
+                        )])),
+                    ),
+                    (
+                        String::from("split"),
+                        Some(Ty::Record(vec![
+                            (
+                                String::from("axis"),
+                                Ty::Enum(vec![String::from("row"), String::from("column")]),
+                            ),
+                            (String::from("first"), Ty::U16),
+                        ])),
+                    ),
+                    (
+                        String::from("image"),
+                        Some(Ty::Record(vec![
+                            (String::from("label"), Ty::String),
+                            (String::from("source"), Ty::String),
+                        ])),
+                    ),
+                    (
+                        String::from("progress"),
+                        Some(Ty::Record(vec![
+                            (String::from("label"), Ty::String),
+                            (String::from("done"), Ty::Option(Box::new(Ty::U16))),
+                        ])),
+                    ),
+                ]),
+            ]
+        },
+        result: || {
+            Some(Ty::Result(
+                None,
+                Some(Box::new(Ty::Enum(vec![
+                    String::from("no-window"),
+                    String::from("no-node"),
+                    String::from("bad-parent"),
+                    String::from("too-big"),
+                    String::from("too-many-windows"),
+                ]))),
+            ))
+        },
+    },
+    WitFunc {
+        interface: "kai:ui/view",
+        version: "0.1",
+        name: "remove",
+        core_params: &[CoreTy::I32, CoreTy::I32, CoreTy::I32],
+        core_results: &[],
+        params: || vec![Ty::U32, Ty::U32],
+        result: || {
+            Some(Ty::Result(
+                None,
+                Some(Box::new(Ty::Enum(vec![
+                    String::from("no-window"),
+                    String::from("no-node"),
+                    String::from("bad-parent"),
+                    String::from("too-big"),
+                    String::from("too-many-windows"),
+                ]))),
+            ))
+        },
+    },
+    WitFunc {
+        interface: "kai:ui/view",
+        version: "0.1",
+        name: "focus",
+        core_params: &[CoreTy::I32, CoreTy::I32, CoreTy::I32],
+        core_results: &[],
+        params: || vec![Ty::U32, Ty::U32],
+        result: || {
+            Some(Ty::Result(
+                None,
+                Some(Box::new(Ty::Enum(vec![
+                    String::from("no-window"),
+                    String::from("no-node"),
+                    String::from("bad-parent"),
+                    String::from("too-big"),
+                    String::from("too-many-windows"),
+                ]))),
+            ))
+        },
+    },
+    WitFunc {
+        interface: "kai:ui/view",
+        version: "0.1",
+        name: "commit",
+        core_params: &[CoreTy::I32, CoreTy::I32],
+        core_results: &[],
+        params: || vec![Ty::U32],
+        result: || {
+            Some(Ty::Result(
+                None,
+                Some(Box::new(Ty::Enum(vec![
+                    String::from("no-window"),
+                    String::from("no-node"),
+                    String::from("bad-parent"),
+                    String::from("too-big"),
+                    String::from("too-many-windows"),
+                ]))),
+            ))
+        },
+    },
+    WitFunc {
+        interface: "kai:ui/view",
+        version: "0.1",
+        name: "close",
+        core_params: &[CoreTy::I32, CoreTy::I32],
+        core_results: &[],
+        params: || vec![Ty::U32],
+        result: || {
+            Some(Ty::Result(
+                None,
+                Some(Box::new(Ty::Enum(vec![
+                    String::from("no-window"),
+                    String::from("no-node"),
+                    String::from("bad-parent"),
+                    String::from("too-big"),
+                    String::from("too-many-windows"),
+                ]))),
+            ))
+        },
+    },
+    WitFunc {
+        interface: "kai:ui/view",
+        version: "0.1",
+        name: "set-unsaved",
+        core_params: &[CoreTy::I32, CoreTy::I32, CoreTy::I32],
+        core_results: &[],
+        params: || vec![Ty::U32, Ty::Bool],
+        result: || {
+            Some(Ty::Result(
+                None,
+                Some(Box::new(Ty::Enum(vec![
+                    String::from("no-window"),
+                    String::from("no-node"),
+                    String::from("bad-parent"),
+                    String::from("too-big"),
+                    String::from("too-many-windows"),
+                ]))),
+            ))
+        },
+    },
 ];
 
 pub const EXPORTS: &[WitFunc] = &[
@@ -198,5 +541,42 @@ pub const EXPORTS: &[WitFunc] = &[
         core_results: &[CoreTy::I32],
         params: || vec![],
         result: || Some(Ty::U32),
+    },
+    WitFunc {
+        interface: "kai:ui/input",
+        version: "0.1",
+        name: "on-ui",
+        core_params: &[
+            CoreTy::I32,
+            CoreTy::I32,
+            CoreTy::I32,
+            CoreTy::I32,
+            CoreTy::I32,
+            CoreTy::I32,
+        ],
+        core_results: &[],
+        params: || {
+            vec![
+                Ty::U32,
+                Ty::Variant(vec![
+                    (String::from("pressed"), Some(Ty::U32)),
+                    (
+                        String::from("changed"),
+                        Some(Ty::Tuple(vec![
+                            Ty::U32,
+                            Ty::Variant(vec![
+                                (String::from("text"), Some(Ty::String)),
+                                (String::from("on"), Some(Ty::Bool)),
+                                (String::from("number"), Some(Ty::S32)),
+                                (String::from("index"), Some(Ty::U32)),
+                            ]),
+                        ])),
+                    ),
+                    (String::from("submitted"), Some(Ty::U32)),
+                    (String::from("close-requested"), Some(Ty::U32)),
+                ]),
+            ]
+        },
+        result: || None,
     },
 ];

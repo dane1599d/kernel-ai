@@ -17,9 +17,12 @@
 //! cargo xtask doctor   (can this PC run Kernel AI in an accelerated VM, and what to fix; read-only)
 //! cargo xtask vbox [--start [--headless]]   (the VirtualBox VM "Kernel AI"; see vbox/mod.rs)
 //! cargo xtask wit-tables [--check]   (wasmhost/src/tables.rs from wit/: the host tables of the kai:app world)
+//! cargo xtask ccwasm [--check] [--no-gen3]   (third_party/xcc/cc.wasm from xcc's pinned commit; Linux or WSL2; see cc/mod.rs)
 //! cargo xtask licences check   (every licence in the tree and the dependency graph is allowed and has its text; see licences.rs)
 //! cargo xtask notices [--check]   (writes or checks NOTICES.txt, the third-party notices the image carries; see notices.rs)
 //! cargo xtask fs mkfs|import|ls|cat|check|replay ...   (kaifs data disks on the host, no WSL; see fs/mod.rs)
+//! cargo xtask release-image [--out PATH]   (the release image and its NOTICES.txt; release.yml runs it)
+//! cargo xtask limine   (fetches and checks Limine's pinned files, for the release's source tarball)
 //!
 //! `test` boots the kernel headless once per test case (boot and memory checks,
 //! page fault, double fault, write-protect, stack overflow, 60 s timer, keyboard,
@@ -35,6 +38,7 @@ mod blklog;
 mod boot_smoke;
 mod buildsvc;
 mod cases;
+mod cc;
 mod components;
 mod disk;
 mod doctor;
@@ -44,6 +48,7 @@ mod floatguard;
 mod fluency;
 #[path = "fs/mod.rs"]
 mod fs_tool;
+mod hang;
 mod httpd;
 mod icount;
 mod image;
@@ -58,7 +63,10 @@ mod mock_llm;
 mod models;
 mod notices;
 mod options;
+mod pkgrepo;
 mod qemu;
+mod release_image;
+mod reuse;
 mod screen;
 mod smoke;
 mod strip;
@@ -73,6 +81,7 @@ mod wsl;
 use options::{Accel, Options, Task, parse_args};
 use sha2::{Digest, Sha256};
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
@@ -93,11 +102,17 @@ fn main() -> ExitCode {
         Some("latency") => latency::main(&args[1..]),
         Some("doctor") => doctor::main(&args[1..]),
         Some("vbox") => vbox::main(&args[1..]),
+        Some("ccwasm") => cc::main(&args[1..], &workspace_root()),
         Some("licences") => licences::main(&args[1..]),
         Some("notices") => notices::main(&args[1..]),
         Some("wit-check") => wit::main(&args[1..]),
         Some("wit-tables") => wit_tables::main(&args[1..]),
         Some("fs") => fs_tool::main(&args[1..]),
+        Some("pkgrepo") => pkgrepo::main(&args[1..]),
+        Some("release-image") => release_image::main(&args[1..]),
+        // The release's source tarball carries Limine's pinned files (ADR 0009 D7).
+        Some("limine") => ensure_limine(&workspace_root().join("target"))
+            .map(|efi| println!("xtask: Limine {LIMINE_VERSION} at {}", efi.display())),
         _ => parse_args(&args).and_then(|options| execute(&options)),
     };
     match result {
@@ -148,7 +163,10 @@ fn execute(options: &Options) -> Result<(), String> {
     }
     let target_dir = root.join("target");
     let mut modules = esp::boot_modules(&kernel, &programs, &root)?;
+    // The built-in apps as the image's signed repository (ADR 0011 §8).
+    let mut image = pkgrepo::image(&root, &versions)?;
     modules.extend(versions);
+    modules.extend(std::mem::take(&mut image.modules));
     let efi = ensure_limine(&target_dir)?;
     let esp = target_dir.join("esp");
     // `--accel wsl`: QEMU runs inside WSL2, behind wsl.exe (wsl/launch.rs).
@@ -222,6 +240,8 @@ fn execute(options: &Options) -> Result<(), String> {
     let llm = format!("10.0.2.2:{}", mock.port);
     let llm_args = llm_cmdline(Some(&llm), Some(mock_llm::MODEL));
     let mut failures = Vec::new();
+    // Each kind of package mirror a case names, started once (P4 task 2).
+    let mut mirrors: HashMap<pkgrepo::mirrors::MirrorKind, u16> = HashMap::new();
     let cases = if options.task == Task::Soak {
         cases::SOAK_CASES.iter().collect()
     } else {
@@ -239,6 +259,7 @@ fn execute(options: &Options) -> Result<(), String> {
         // A case may name a second boot on the same data disk (`then`), booted
         // once the first has passed (P2 plan section 4.2).
         let (mut next, mut fresh) = (Some(first), true);
+        let mut boot = 1;
         while let Some(case) = next.take() {
             let service = match case.build {
                 true => Some(edit_smoke::service(&root, case.name)?),
@@ -251,8 +272,24 @@ fn execute(options: &Options) -> Result<(), String> {
             if let Ok(extra) = env::var("XTASK_CMDLINE") {
                 cmdline = format!("{cmdline} {extra}");
             }
+            let cutting = case.cuts > 0 && boot <= case.cuts;
+            if case.cuts > 0 {
+                let last = if cutting { "" } else { " last" };
+                cmdline = format!("{cmdline} boot={boot}{last}");
+            }
             if case.dns {
                 cmdline = format!("{cmdline} {}", mock_dns.cmdline());
+            }
+            if let Some(kind) = case.mirror {
+                let port = match mirrors.get(&kind) {
+                    Some(&port) => port,
+                    None => {
+                        let port = pkgrepo::serve_mirror(&image, kind)?;
+                        mirrors.insert(kind, port);
+                        port
+                    }
+                };
+                cmdline = format!("{cmdline} pkgrepo=10.0.2.2:{port}");
             }
             let disk = match disk::for_case(case, &target_dir) {
                 Ok(disk) => disk,
@@ -264,6 +301,15 @@ fn execute(options: &Options) -> Result<(), String> {
             };
             if let Some(disk) = &disk {
                 cmdline = format!("{cmdline} {}", disk.cmdline());
+            }
+            // A model for kai-data's store, named on the command line as a
+            // kai-model disk would be (P2 task 10).
+            let store = match case.store {
+                Some(fixture) => Some(fixture.write(&target_dir.join("store"))?),
+                None => None,
+            };
+            if let Some(model) = &store {
+                cmdline = format!("{cmdline} {}", model.cmdline());
             }
             // The boot manifest's versions join the boot drive for this case only.
             let shared = modules.len();
@@ -277,23 +323,76 @@ fn execute(options: &Options) -> Result<(), String> {
                 case.name,
                 buildsvc::redact(&cmdline)
             );
+            let record = image::slots::slot_record(&root, SLOT_RELEASE_SEQ);
+            if case.slots {
+                modules.push(esp::Module {
+                    // `kernel/src/slots.rs` finds it by this path.
+                    path: "kai.slot".into(),
+                    bytes: record.clone().into_bytes(),
+                });
+                // The trust anchor `updated` checks the update disk against.
+                modules.push(esp::Module {
+                    path: "kai.root.json".into(),
+                    bytes: image::update_disk::test_root()?.root_json()?,
+                });
+            }
+            let update_disk = match case.update {
+                Some(update) => Some(update_disk(
+                    &root,
+                    &target_dir,
+                    &kernel,
+                    &modules,
+                    &efi,
+                    update,
+                )?),
+                None => None,
+            };
+            if let Some(package) = case.tampered {
+                pkgrepo::flip(&mut modules, package)?;
+            }
             esp::make_esp(&esp, &kernel, &modules, &efi, &cmdline)?;
+            if let Some(package) = case.tampered {
+                pkgrepo::flip(&mut modules, package)?;
+            }
             modules.truncate(shared);
             let firmware = wsl::firmware(wsl.as_ref(), &qemu, &target_dir)?;
+            // A chained slot boot starts on the variables the last boot left.
+            let saved_vars = target_dir.join(SLOT_VARS);
+            if case.slots && !fresh {
+                esp::copy(&saved_vars, &firmware.vars)?;
+            }
             let monitor = qemu::free_port()?;
             let sizing = options::Sizing {
-                mem_mib: options.sizing.mem_mib.max(case.memory_mib),
+                // A store model needs the memory a kai-model disk would.
+                mem_mib: options
+                    .sizing
+                    .mem_mib
+                    .max(case.memory_mib)
+                    .max(store.as_ref().map(disk::ModelDisk::memory_mib)),
                 ..options.sizing
             };
             let mut args = qemu::args(&firmware, accel, true, disk.as_ref(), sizing);
             if let Some(data) = case.data {
                 if fresh {
                     blklog::prepare(&target_dir, data)?;
+                    if let Some(model) = &store {
+                        let image = target_dir.join(blklog::IMAGE);
+                        store_model(&image, model.path())?;
+                        if case.store_bad_fnv {
+                            damage_hint(&image)?;
+                        }
+                    }
                 }
                 args.extend(blklog::qemu_args(data));
             }
             if case.image {
                 qemu::boot_from_image(&mut args, &esp, &target_dir)?;
+            }
+            if case.slots {
+                qemu::boot_from_slots(&mut args, &esp, &target_dir, &cmdline, &record)?;
+            }
+            if let Some(name) = &update_disk {
+                args.extend(qemu::update_disk_args(name));
             }
             if case.gpu {
                 args.extend(screen::gpu_args());
@@ -323,17 +422,27 @@ fn execute(options: &Options) -> Result<(), String> {
                 contains: disk
                     .as_ref()
                     .map_or_else(Vec::new, disk::ModelDisk::console_text),
+                cut: cutting.then(|| (format!("files: boot {boot}:"), cut_delay(case.name, boot))),
             };
             let requests = mock.requests();
             let after = |service: &Option<buildsvc::BuildService>| match (case.after, service) {
                 (Some(check), Some(service)) => check(service),
                 _ => Ok(()),
             };
-            let result = qemu::run_test(&qemu, &args, &target_dir, &run)
+            let result = qemu::run_test(&qemu, &args, &target_dir, &run);
+            let result = match case.slots {
+                true => result.and_then(|()| esp::copy(&firmware.vars, &saved_vars)),
+                false => result,
+            };
+            let result = result
                 .and_then(|()| after(&service))
-                .and_then(|()| match case.data.and_then(|data| data.log) {
-                    Some(expect) => blklog::check(&target_dir, expect),
-                    None => Ok(()),
+                .and_then(|()| match case.data {
+                    Some(
+                        data @ blklog::Data {
+                            log: Some(expect), ..
+                        },
+                    ) => blklog::check_data(&target_dir, data, expect),
+                    _ => Ok(()),
                 })
                 .and_then(|()| match case.screen {
                     Some(expect) => screen::check(&target_dir, expect),
@@ -349,6 +458,11 @@ fn execute(options: &Options) -> Result<(), String> {
                 eprintln!("xtask: test case {}: {message}", case.name);
                 failures.push(case.name);
                 break;
+            }
+            if cutting {
+                boot += 1;
+                (next, fresh) = (Some(case), false);
+                continue;
             }
             (next, fresh) = (case.then, false);
         }
@@ -367,6 +481,21 @@ fn execute(options: &Options) -> Result<(), String> {
     } else {
         Err(format!("failed test cases: {}", failures.join(", ")))
     }
+}
+
+/// When the power goes in boot `boot` of a case with cuts: 0.2 to 2 s after its
+/// line, seeded by the case and the boot, so a failure repeats.
+pub(crate) fn cut_delay(name: &str, boot: u32) -> std::time::Duration {
+    let mut x = name
+        .bytes()
+        .fold(0xcbf2_9ce4_8422_2325u64 ^ u64::from(boot), |h, b| {
+            (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
+        })
+        | 1;
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    std::time::Duration::from_millis(200 + x % 1800)
 }
 
 /// Kernel command-line arguments that point the kernel at an LLM server.
@@ -489,6 +618,48 @@ fn find_qemu() -> Result<PathBuf, String> {
     Err("QEMU not found: install qemu-system-x86_64 or set QEMU to its path".into())
 }
 
+/// Builds `target/update.img` for a case: this build as a slot image of the
+/// next release, signed by the run's test root (`image/update_disk.rs`). The
+/// image's bundle carries its own `kai.slot` naming that release.
+fn update_disk(
+    root: &Path,
+    target_dir: &Path,
+    kernel: &Path,
+    modules: &[esp::Module],
+    efi: &Path,
+    update: cases::UpdateDisk,
+) -> Result<String, String> {
+    let release = SLOT_RELEASE_SEQ + 1;
+    let record = image::slots::slot_record(root, release);
+    let mut files: Vec<&esp::Module> = modules.iter().filter(|m| m.path != "kai.slot").collect();
+    let slot_file = esp::Module {
+        path: "kai.slot".into(),
+        bytes: record.clone().into_bytes(),
+    };
+    files.push(&slot_file);
+    let staging = target_dir.join("esp-update");
+    esp::make_esp(&staging, kernel, &files, efi, "")?;
+    let image = image::slots::slot_image(&staging, &record)?;
+    let disk = image::update_disk::test_root()?.disk(&image, release, update.tampered)?;
+    let name = String::from("update.img");
+    fs::write(target_dir.join(&name), &disk).map_err(|e| format!("cannot write {name}: {e}"))?;
+    println!(
+        "xtask: update disk {name}: release {release}, {} MiB{}",
+        disk.len() >> 20,
+        if update.tampered {
+            ", one byte of the image flipped"
+        } else {
+            ""
+        }
+    );
+    Ok(name)
+}
+
+/// The release a test build's slots hold (ADR 0008 `release_seq`).
+const SLOT_RELEASE_SEQ: u32 = 1;
+/// Where a chained slot case keeps the variable store between its boots.
+const SLOT_VARS: &str = "slot-vars.fd";
+
 /// UEFI firmware: a read-only code image plus a fresh writable copy of the variable store.
 struct Firmware {
     code: PathBuf,
@@ -544,8 +715,71 @@ fn run_checked(command: &mut Command) -> Result<(), String> {
     }
 }
 
+/// Makes `image` a kaifs data disk holding `model` in its model store, named
+/// in `kai-modelhint 1`: `xtask fs mkfs`, then `import --model`.
+/// Flips one bit of the FNV-1a64 in `image`'s `kai-modelhint 1` and writes it
+/// back with a good CRC, so the hint still verifies but no longer matches the
+/// model (`xtask fs mkfs` puts `kai-data` at 2 MiB).
+fn damage_hint(image: &std::path::Path) -> Result<(), String> {
+    use std::io::{Read, Seek, SeekFrom, Write};
+    let shown = image.display();
+    let at = SeekFrom::Start(blklog::DATA_FIRST * 512);
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(image)
+        .map_err(|e| format!("{shown}: {e}"))?;
+    let mut sector = [0u8; 512];
+    file.seek(at)
+        .and_then(|_| file.read_exact(&mut sector))
+        .map_err(|e| format!("{shown}: {e}"))?;
+    let mut hint = kabi::modelhint::Hint::decode(&sector)
+        .ok_or_else(|| format!("{shown}: no kai-modelhint 1 at kai-data's start"))?;
+    hint.fnv ^= 1;
+    file.seek(at)
+        .and_then(|_| file.write_all(&hint.encode()))
+        .and_then(|_| file.sync_all())
+        .map_err(|e| format!("{shown}: {e}"))
+}
+
+fn store_model(image: &std::path::Path, model: &std::path::Path) -> Result<(), String> {
+    let image = image.display().to_string();
+    let words = |w: &[&str]| w.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    fs_tool::main(&words(&["mkfs", &image, "--size", "64", "--force"]))?;
+    let model = model.display().to_string();
+    fs_tool::main(&words(&["import", "--model", &image, &model]))
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_damaged_hint_still_verifies_but_names_another_fnv() {
+        use std::io::{Read, Seek, SeekFrom};
+        let dir = std::env::temp_dir().join(format!("kai-hint-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (image, model) = (dir.join("kai-data.img"), dir.join("model.gguf"));
+        let mut bytes = b"GGUF\x03\0\0\0".to_vec();
+        bytes.resize(100_000, 7);
+        std::fs::write(&model, &bytes).unwrap();
+        super::store_model(&image, &model).unwrap();
+        let hint = || {
+            let mut file = std::fs::File::open(&image).unwrap();
+            let mut sector = [0u8; 512];
+            file.seek(SeekFrom::Start(super::blklog::DATA_FIRST * 512))
+                .unwrap();
+            file.read_exact(&mut sector).unwrap();
+            kabi::modelhint::Hint::decode(&sector).unwrap()
+        };
+        let good = hint();
+        assert_eq!(good.len, 100_000);
+        super::damage_hint(&image).unwrap();
+        let bad = hint();
+        assert_eq!(bad.fnv, good.fnv ^ 1);
+        assert_eq!((bad.len, bad.sha256), (good.len, good.sha256));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     use super::*;
 
     #[test]

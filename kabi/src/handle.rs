@@ -75,10 +75,29 @@ pub enum Kind {
     NetDest = 11,
     /// Shared pages.
     Shm = 12,
+    /// One disk partition, `kai-data` ([`crate::part`]): the `fs` service's only.
+    Partition = 13,
+    /// A folder, served by `fs`; badge (volume, object id) ([`crate::fs`]).
+    Dir = 14,
+    /// A file, served by `fs`; badge (volume, object id).
+    File = 15,
+    /// The screen ([`crate::display`]): only `desktop`'s. Numbered at merge,
+    /// after P2's Partition (13) and the fs service's Dir and File (14, 15).
+    Display = 16,
+    /// The kernel's input queue: only `desktop`'s.
+    Input = 17,
+    /// The kernel console's rows, to read: only `term`'s.
+    Term = 18,
+    /// The slots and the boot record ([`crate::update`]): only `updated`'s.
+    /// Numbered at merge, after the terminal window's `Term` (18, #252).
+    Update = 19,
+    /// The asks waiting for `desktop`'s card, to read and answer: only
+    /// `desktop`'s. Numbered at merge, after `Update` (19, #268).
+    Ask = 20,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 12] = [
+    pub const ALL: [Kind; 20] = [
         Kind::Process,
         Kind::Job,
         Kind::Endpoint,
@@ -91,6 +110,14 @@ impl Kind {
         Kind::Build,
         Kind::NetDest,
         Kind::Shm,
+        Kind::Partition,
+        Kind::Dir,
+        Kind::File,
+        Kind::Display,
+        Kind::Input,
+        Kind::Term,
+        Kind::Update,
+        Kind::Ask,
     ];
 
     pub fn from_raw(raw: u32) -> Option<Kind> {
@@ -111,6 +138,14 @@ impl Kind {
             Kind::Build => "build",
             Kind::NetDest => "netdest",
             Kind::Shm => "shm",
+            Kind::Partition => "partition",
+            Kind::Dir => "dir",
+            Kind::File => "file",
+            Kind::Display => "display",
+            Kind::Input => "input",
+            Kind::Term => "term",
+            Kind::Update => "update",
+            Kind::Ask => "ask",
         }
     }
 }
@@ -261,6 +296,6 @@ mod tests {
             assert_eq!(Kind::from_raw(kind as u32), Some(kind));
         }
         assert_eq!(Kind::from_raw(0), None);
-        assert_eq!(Kind::from_raw(13), None);
+        assert_eq!(Kind::from_raw(21), None);
     }
 }

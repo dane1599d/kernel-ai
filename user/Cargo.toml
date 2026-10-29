@@ -1,6 +1,6 @@
 [package]
 name = "user"
-version = "0.0.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
@@ -16,16 +16,42 @@ bench = false
 
 [dependencies]
 appabi = { path = "../appabi" }
+bootslot = { path = "../bootslot" }
 cpufeat = { path = "../cpufeat" }
 infer = { path = "../infer" }
 kabi = { path = "../kabi" }
+deskcore = { path = "../deskcore" }
+gfx2d = { path = "../gfx2d" }
+surfabi = { path = "../surfabi" }
 livecore = { path = "../livecore" }
+look = { path = "../look" }
 editcore = { path = "../editcore" }
+fsproto = { path = "../fsproto" }
+fsserve = { path = "../fsserve" }
+kaifs = { path = "../kaifs", default-features = false }
+kaibundle = { path = "../kaibundle" }
+kaipkg = { path = "../kaipkg" }
+kaituf = { path = "../kaituf" }
 llmproto = { path = "../llmproto", features = ["local"] }
 quant = { path = "../quant" }
 sched = { path = "../sched" }
+serde_json = { version = "1.0.154", default-features = false, features = ["alloc"] }
+sha2 = { version = "0.11.1", default-features = false }
 supervise = { path = "../supervise" }
+kaiprofile = { path = "../kaiprofile" }
 shellcore = { path = "../shellcore" }
+termcore = { path = "../termcore" }
 spin = "0.12.3"
 talc = "5.1.1"
 wasmhost = { path = "../wasmhost" }
+uikit = { path = "../uikit" }
+uipaint = { path = "../uipaint" }
+
+# tufbench's fixture, signed on the host at build time (build.rs).
+[build-dependencies]
+ecdsa = { version = "0.17.0", default-features = false, features = ["der"] }
+ed25519-compact = { version = "2.6.0", default-features = false }
+kaituf = { path = "../kaituf" }
+p256 = { version = "0.14.0", default-features = false, features = ["ecdsa"] }
+serde_json = { version = "1.0.154", default-features = false, features = ["alloc"] }
+sha2 = { version = "0.11.1", default-features = false }

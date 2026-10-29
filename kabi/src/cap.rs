@@ -35,6 +35,63 @@ pub const STOP: u64 = 1 << 10;
 /// [`super::call::JOB_WAIT`]): a Job handle with CREATE and WAIT that names that
 /// program. The kernel grants it only to the service named `shell` (ADR 0001 D6).
 pub const SCRIPT: u64 = 1 << 11;
+/// Read and write the `kai-data` partition ([`super::call::PART_READ`]): a
+/// `Partition` handle with READ and WRITE. The kernel grants it only to the
+/// service named `fs` running the `fs` program (ADR 0004 §7).
+pub const PARTITION: u64 = 1 << 12;
+/// Files under `/home/user` (ADR 0004 §6-7): a `Dir` handle on the `fs` service
+/// for that folder, from which it opens what lies beneath; may hold `Dir` and
+/// `File` handles `fs` hands out.
+pub const FILES: u64 = 1 << 13;
+/// `/system/state` (P2 task 12): a `Dir` handle on the `fs` service for that
+/// folder only, where the shell keeps its log, grants and settings. The kernel
+/// grants it only to the service named `shell` running the `shell` program.
+///
+/// STARTUP lists FILES's `Dir` before SYSTEM_STATE's, so a process holding both
+/// tells them apart by order: the first `Dir` is `/home/user`, the second
+/// `/system/state`. HANDLE_INFO carries no badge.
+pub const SYSTEM_STATE: u64 = 1 << 14;
+/// Own the screen ([`super::call::DISPLAY_CLAIM`]): a `Display` handle. The
+/// kernel grants it only to the service named `desktop` running the program
+/// `desktop` (ADR 0005 §2). Numbered at merge, after P2's PARTITION, FILES and
+/// SYSTEM_STATE.
+pub const DISPLAY: u64 = 1 << 15;
+/// Read the kernel's input queue ([`super::call::INPUT_READ`]): an `Input`
+/// handle. Granted as [`DISPLAY`] is.
+pub const INPUT: u64 = 1 << 16;
+/// Read the kernel console's rows ([`super::call::TERM_READ`]): a `Term`
+/// handle. The kernel grants it only to the service named `term` running the
+/// program `term` (P3 task 8).
+pub const TERM: u64 = 1 << 17;
+/// Write the inactive slot and the boot record ([`super::call::SLOT_WRITE`],
+/// [`super::call::BOOTREC_SET`]): an `Update` handle with READ and WRITE. The
+/// kernel grants it only to the service named `updated` running the program
+/// `updated` (ADR 0008 §10). Numbered at merge, after the terminal window's
+/// `TERM` (1 << 17, #252).
+pub const UPDATE: u64 = 1 << 18;
+/// Answer asks on `desktop`'s card ([`super::call::ASK_READ`],
+/// [`super::call::ASK_ANSWER`]): an `Ask` handle. The kernel grants it only to
+/// the service named `desktop` running the program `desktop` (ADR 0005 §7);
+/// nothing else can answer an ask, and only the kernel mints the `ONCE`.
+/// Numbered at merge, after `UPDATE` (1 << 18, #268).
+pub const ASK: u64 = 1 << 19;
 /// Every capability a supervisor may grant.
-pub const GRANTABLE: u64 =
-    SERVE | NET | CALL | POLICY | COMPONENT | PUBLISH | MODEL | THREADS | RESOLVE | STOP | SCRIPT;
+pub const GRANTABLE: u64 = SERVE
+    | NET
+    | CALL
+    | POLICY
+    | COMPONENT
+    | PUBLISH
+    | MODEL
+    | THREADS
+    | RESOLVE
+    | STOP
+    | SCRIPT
+    | PARTITION
+    | FILES
+    | SYSTEM_STATE
+    | DISPLAY
+    | INPUT
+    | TERM
+    | UPDATE
+    | ASK;

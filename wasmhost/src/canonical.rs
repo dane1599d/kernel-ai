@@ -1,9 +1,10 @@
 //! A `lifecycle 2` version (ADR 0003 sections 2-3): a module on the canonical ABI,
 //! reached through `appabi`. Its `kai:*` imports are linked by canonical version
-//! from the generated tables: `kai:app/log` and `kai:app/clock` now, `storage` and
-//! `effects` with the effect transaction. Its `kai:live/lifecycle` exports serve
-//! `livecore::Instance`; app exports are reached with `Instance::call`. Each call
-//! gets fresh fuel, and time and the seed are fixed for the call.
+//! from the generated tables: `kai:app/log` and `kai:app/clock`, `storage` and
+//! `effects` with the effect transaction, and `kai:ui/view` (`ui`). Its
+//! `kai:live/lifecycle` exports serve `livecore::Instance`; app exports are
+//! reached with `Instance::call`. Each call gets fresh fuel, and time and the seed
+//! are fixed for the call.
 
 use crate::effects::{self, OpenCall};
 use crate::instance::{HostState, classify, fault, log, panic};
@@ -25,7 +26,7 @@ use wasmi::{
 
 /// An instance of a canonical-ABI module.
 pub struct CoreInstance {
-    store: Store<HostState>,
+    pub(crate) store: Store<HostState>,
     instance: wasmi::Instance,
     memory: Memory,
     realloc: Option<TypedFunc<(i32, i32, i32, i32), i32>>,
@@ -38,6 +39,10 @@ pub struct CoreInstance {
     lifecycle: Vec<(&'static str, String)>,
     /// The app's action rows, which type its `kai-call 1` requests.
     actions: Option<Actions>,
+    /// The `kai:ui/input` `on-ui` export, when the module has one.
+    pub(crate) on_ui: Option<String>,
+    /// The export `kai:app/events.on-event` is, if the app has one.
+    pub(crate) on_event: Option<String>,
 }
 
 impl CoreInstance {
@@ -63,13 +68,17 @@ pub fn load_core(
         return Err(Fault::new(Reason::Compile, "the module is too large"));
     }
     let engine = Engine::new(&config());
-    let module = Module::new(&engine, wasm)
+    // The guest's memory, moved into a region of its own.
+    let moved = crate::linear::own_memory_as_import(wasm);
+    let bytes = moved.as_ref().map_or(wasm, |(moved, _)| moved.as_slice());
+    let module = Module::new(&engine, bytes)
         .map_err(|error| Fault::new(Reason::Compile, error.to_string()))?;
-    let linker = link_imports(&engine, &module)?;
+    let mut linker = link_imports(&engine, &module)?;
     let state = HostState {
         limits: StoreLimitsBuilder::new()
             .memory_size(limits.memory_bytes)
-            .memories(1)
+            // Its own region's memory, made by the host, counts as one more.
+            .memories(2)
             .tables(1)
             .table_elements(4096)
             .instances(1)
@@ -82,9 +91,18 @@ pub fn load_core(
         now_ms: 0,
         seed: 0,
         call: None,
+        view: None,
+        ui: Default::default(),
+        memory: None,
     };
     let mut store = Store::new(&engine, state);
-    store.limiter(|state| &mut state.limits);
+    store.limiter(|state| state);
+    if let Some((_, pages)) = moved {
+        let memory = own_memory(&mut store, pages, limits.memory_bytes)?;
+        linker
+            .define(crate::linear::MODULE, crate::linear::NAME, memory)
+            .map_err(|error| link_err(error.to_string()))?;
+    }
     store
         .set_fuel(limits.fuel_life)
         .map_err(|error| Fault::new(Reason::Host, error.to_string()))?;
@@ -100,6 +118,14 @@ pub fn load_core(
         .ok_or_else(|| Fault::new(Reason::Abi, "memory is not exported"))?;
     let realloc = instance.get_typed_func(&store, "cabi_realloc").ok();
     let lifecycle = lifecycle_exports(&module);
+    let on_ui = tables::EXPORTS
+        .iter()
+        .find(|f| f.interface == crate::ui::INPUT && f.name == "on-ui")
+        .and_then(|f| export_for(&module, f));
+    let on_event = tables::EXPORTS
+        .iter()
+        .find(|f| f.interface == "kai:app/events" && f.name == "on-event")
+        .and_then(|f| export_for(&module, f));
     Ok(CoreInstance {
         store,
         instance,
@@ -110,7 +136,32 @@ pub fn load_core(
         last: None,
         lifecycle,
         actions: None,
+        on_ui,
+        on_event,
     })
+}
+
+/// The guest's memory on a region of its own: as large as the cap (or the
+/// guest's maximum, if lower) can reach, its initial pages committed.
+fn own_memory(
+    store: &mut Store<HostState>,
+    pages: crate::linear::Limits,
+    cap: usize,
+) -> Result<Memory, Fault> {
+    use crate::linear::{PAGE, Region};
+    let most = pages.max.map_or(cap, |max| cap.min(max as usize * PAGE));
+    let capacity = most / PAGE * PAGE;
+    let initial = pages.min as usize * PAGE;
+    let too_big = || Fault::new(Reason::Memory, "its memory starts larger than its cap");
+    let mut region = Region::new(capacity, initial).ok_or_else(too_big)?;
+    // SAFETY: the region moves into the store's data below and is dropped with
+    // the store, after the memory that uses the buffer.
+    let buffer = unsafe { region.buffer() };
+    let ty = wasmi::MemoryType::new(pages.min, pages.max);
+    let memory = Memory::new_static(&mut *store, ty, buffer)
+        .map_err(|error| Fault::new(Reason::Memory, error.to_string()))?;
+    store.data_mut().memory = Some(region);
+    Ok(memory)
 }
 
 /// Binds every import the module makes, or fails naming the first it cannot.
@@ -118,6 +169,10 @@ fn link_imports(engine: &Engine, module: &Module) -> Result<Linker<HostState>, F
     let mut linker = Linker::<HostState>::new(engine);
     for import in module.imports() {
         let (qualified, name) = (import.module(), import.name());
+        // Its own memory, which `load_core` defines.
+        if (qualified, name) == (crate::linear::MODULE, crate::linear::NAME) {
+            continue;
+        }
         let ExternType::Func(ty) = import.ty() else {
             return Err(link_err(format!("{qualified} {name} is not a function")));
         };
@@ -145,6 +200,12 @@ fn link_imports(engine: &Engine, module: &Module) -> Result<Linker<HostState>, F
             ("kai:app/storage", "put") => linker.func_wrap(qualified, name, effects::put),
             ("kai:app/storage", "delete") => linker.func_wrap(qualified, name, effects::delete),
             ("kai:app/effects", "request") => linker.func_wrap(qualified, name, effects::request),
+            (crate::ui::VIEW, _) => linker.func_new(
+                qualified,
+                name,
+                ty.clone(),
+                move |caller, params, _results| crate::ui::view(caller, entry, params),
+            ),
             (interface, _) => {
                 return Err(link_err(format!(
                     "{interface} is not offered by this host yet"
@@ -433,6 +494,10 @@ impl livecore::Instance for CoreInstance {
             txn: livecore::txn::Txn::default(),
             first_ticket: inputs.first_ticket,
         });
+    }
+
+    fn view(&mut self, storage: &livecore::txn::Storage) {
+        self.store.data_mut().view = Some(storage.clone());
     }
 
     fn finish(&mut self) -> livecore::txn::Txn {

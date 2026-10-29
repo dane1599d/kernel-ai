@@ -203,8 +203,35 @@ pub fn fnv1a(bytes: &[u8]) -> u64 {
     hash.finish()
 }
 
+/// `text` with each run of ASCII digits read as one `N`: a reply's shape, for
+/// a read whose numbers are live, so the host's stand-in and the guest differ
+/// only in them (`local-script`'s second request, a scheduler-counter read).
+pub fn shape(text: &str) -> alloc::string::String {
+    let mut out = alloc::string::String::with_capacity(text.len());
+    let mut digits = false;
+    for ch in text.chars() {
+        match (ch.is_ascii_digit(), digits) {
+            (true, true) => {}
+            (true, false) => out.push('N'),
+            (false, _) => out.push(ch),
+        }
+        digits = ch.is_ascii_digit();
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_shape_reads_each_number_as_n() {
+        let host = super::shape("ok #{ejections: 13, migrations: 61, switches: 9876}");
+        let guest = super::shape("ok #{ejections: 0, migrations: 2, switches: 4629}");
+        assert_eq!(host, "ok #{ejections: N, migrations: N, switches: N}");
+        assert_eq!(host, guest);
+        assert_eq!(super::shape("ok interactive"), "ok interactive");
+        assert_ne!(super::shape("ok 1"), super::shape("ok x"));
+    }
+
     #[test]
     fn a_full_slots_kv_file_fits_its_region() {
         // `infer::segments`: a 128-byte header, a u32 per position, then f16 keys

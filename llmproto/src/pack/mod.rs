@@ -16,6 +16,8 @@
 //! workflow counts the real tokens (`cargo xtask tokens`).
 
 mod dsl1;
+
+pub use dsl1::INDEX_HEADING;
 #[cfg(test)]
 mod tests;
 
@@ -25,11 +27,109 @@ use alloc::vec::Vec;
 
 /// ADR 0010 §4 and ADR 0002 D4: core rules plus the OS rows, MODE included.
 pub const PACK_BUDGET: usize = 1024;
-/// Bytes per token for the estimate: S10-0's rate for the draft `dsl-1` pack
-/// (2,682 bytes in 807 tokens, run 39842386906). Measured: 890 real tokens for
-/// pack+MODE at 935 estimated (token-count run 40443905553); the guard stays
-/// above the real count.
-const BYTES_PER_TOKEN: f32 = 3.32;
+/// The real count the token-count check holds the pack and MODE to, under
+/// [`PACK_BUDGET`] (ADR 0010 §6's amendment): headroom for the next rows, so a
+/// PR that eats it fails its own check.
+pub const PACK_ALARM: usize = 980;
+/// Bytes per token for the estimate. Measured: 1,005 real tokens for pack+MODE
+/// at 1,013 estimated with the file rows in (token-count run 40462104781); before
+/// them, 890 real at 935 (run 40443905553). The guard stays just above the real
+/// count, which the token-count workflow checks.
+const BYTES_PER_TOKEN: f32 = 3.46;
+
+/// ADR 0010 §6's index level, in v0.1 since P2's rows filled the budget:
+/// groups the pack names on one line each (`tune: tune tune_undo`). A row
+/// here has no full line in the pack; an `act` call that names one with
+/// arguments is decoded once more with [`group_text`] after the request
+/// (`local::act`). Scripts are written by the script prompt, which keeps
+/// every function, so they are untouched. Here: the component revert, and the
+/// package, file and window (`ui`) groups (ADR 0010 §6's amendment: a new group lands here,
+/// and is shown in full only on a measured actbench gain within the budget).
+/// The system's reads stay in full: their return types are how `act` tells a
+/// question `script` can answer from one it cannot (run 40486342534 indexed
+/// them, and M8 through script fell from 47 to 40 of 50). So do the scheduler
+/// trial's rows: from a bare `tune` the model asks how to tune instead of
+/// calling it (run 40503318565, the os arm at 11 of 13).
+pub const INDEX: &[(&str, &[&str])] = &[
+    ("component", &["component_revert"]),
+    (
+        "pkg",
+        &["pkg_install", "pkg_remove", "pkg_list", "pkg_search"],
+    ),
+    ("files", &["fs_list", "fs_read", "fs_history", "fs_changes"]),
+    (
+        "file_edits",
+        &[
+            "fs_create",
+            "fs_write",
+            "fs_move",
+            "fs_trash",
+            "fs_restore",
+            "fs_empty_trash",
+        ],
+    ),
+    (
+        "ui",
+        &[
+            "ui_windows",
+            "ui_view",
+            "ui_open",
+            "ui_focus",
+            "ui_act",
+            "window_close",
+        ],
+    ),
+];
+
+/// Each index group's gloss, at most [`GLOSS_TOKENS`] (ADR 0010 §6's
+/// amendment): what its rows do, in the words a request uses, so the first
+/// round can pick a name it cannot read the line of (run 40589523905: with
+/// names alone, "rename" found no row and "trash" took `fs_move`).
+pub const GLOSS: &[(&str, &str)] = &[
+    ("component", "roll back a component"),
+    ("pkg", "install, remove or find packages"),
+    ("files", "list or read files"),
+    ("file_edits", "write, rename, trash or restore files"),
+    ("ui", "open, close, switch to or type in apps"),
+];
+/// The longest a gloss may be, in estimated tokens.
+pub const GLOSS_TOKENS: usize = 12;
+
+/// `group`'s gloss, or "" for none.
+pub fn gloss(group: &str) -> &'static str {
+    GLOSS
+        .iter()
+        .find(|(name, _)| *name == group)
+        .map_or("", |(_, gloss)| gloss)
+}
+
+/// The index group `name` is in, if it is index-only.
+pub fn indexed(name: &str) -> Option<(&'static str, &'static [&'static str])> {
+    INDEX
+        .iter()
+        .find(|(_, names)| names.contains(&name))
+        .copied()
+}
+
+/// The full lines of `group`'s rows, as a system turn after the request: what
+/// a call naming one of them is decoded with the second time.
+pub fn group_text(group: &str) -> String {
+    let rows = rows();
+    let members: Vec<&Action> = INDEX
+        .iter()
+        .filter(|(name, _)| *name == group)
+        .flat_map(|(_, names)| names.iter())
+        .filter_map(|name| rows.iter().copied().find(|row| row.name == *name))
+        .collect();
+    // A service group's rows keep its header (`files (paths under /home/user)`).
+    let header = dsl1::header(&members).unwrap_or(group);
+    let mut text = alloc::format!("## {header}\n");
+    for line in dsl1::row_lines(&members) {
+        text.push_str(&line);
+        text.push('\n');
+    }
+    text
+}
 
 /// The `act` MODE turn, a second system turn after the pack (ADR 0010 §3).
 pub const MODE_ACT: &str =
@@ -69,7 +169,7 @@ pub fn render(format: Format) -> String {
     }
 }
 
-/// A token count of pack text, at S10-0's rate, above the real count. The
+/// A token count of pack text, at the measured rate, above the real count. The
 /// token-count workflow checks the real count.
 pub fn estimate_tokens(text: &str) -> usize {
     (text.len() as f32 / BYTES_PER_TOKEN) as usize + 1
@@ -86,16 +186,31 @@ pub fn pack_id(format: Format, tokenizer_sha256: &str, pack: &str) -> u64 {
     fnv.finish()
 }
 
-/// Whether `pack` shows the row `name`: on its own line, or as one verb of its
-/// family's line (`service_stop|start|restart(`).
+/// The `act` pack's `pack_id`: dsl-1 as rendered now, with no tokenizer hash,
+/// so llm (its `kai-kv 1` key) and the shell (each model turn's `actlog 1`
+/// entry) name the same pack the same way.
+pub fn act_pack_id() -> u64 {
+    pack_id(Format::Dsl1, "", &render(Format::Dsl1))
+}
+
+/// Whether `pack` shows the row `name`: on its own line, as one verb of its
+/// family's line (`service_stop|start|restart(`), or by name on an index line.
 pub fn shows(pack: &str, name: &str) -> bool {
-    pack.lines().any(|line| {
-        let head = line.split('(').next().unwrap_or("");
-        head == name
-            || name.split_once('_').is_some_and(|(family, verb)| {
-                head.strip_prefix(family)
-                    .and_then(|rest| rest.strip_prefix('_'))
-                    .is_some_and(|verbs| verbs.split('|').any(|v| v == verb))
-            })
-    })
+    let index = pack
+        .split_once(dsl1::INDEX_HEADING)
+        .map_or("", |(_, index)| index);
+    let listed = index.lines().any(|line| {
+        line.split_once(": ")
+            .is_some_and(|(_, names)| names.split(' ').any(|n| n == name))
+    });
+    listed
+        || pack.lines().any(|line| {
+            let head = line.split('(').next().unwrap_or("");
+            head == name
+                || name.split_once('_').is_some_and(|(family, verb)| {
+                    head.strip_prefix(family)
+                        .and_then(|rest| rest.strip_prefix('_'))
+                        .is_some_and(|verbs| verbs.split('|').any(|v| v == verb))
+                })
+        })
 }

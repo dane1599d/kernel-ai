@@ -10,9 +10,11 @@ use alloc::vec::Vec;
 use serde::Serialize;
 
 /// The system prompt of `ask`.
-pub const ASK_SYSTEM_PROMPT: &str = "You are the assistant built into Kernel AI, a small \
-                                     experimental operating system. Answer in a few short \
-                                     sentences.";
+pub const ASK_SYSTEM_PROMPT: &str = concat!(
+    "You are the assistant built into ",
+    kabi::product_name!(),
+    ", a small experimental operating system. Answer in a few short sentences."
+);
 pub const ASK_MAX_TOKENS: u32 = 256;
 /// The longest answer to `ask` shown.
 pub const MAX_REPLY_CHARS: usize = 4096;

@@ -16,6 +16,8 @@ use wasmi::{
 /// What host functions see of the instance.
 pub(crate) struct HostState {
     pub(crate) limits: StoreLimits,
+    /// The instance's own memory region (lifecycle 2), committed as it grows.
+    pub(crate) memory: Option<crate::linear::Region>,
     pub(crate) log: Option<LogSink>,
     /// Log lines are dropped while set.
     pub(crate) quiet: bool,
@@ -29,6 +31,10 @@ pub(crate) struct HostState {
     pub(crate) seed: u64,
     /// The action call in progress, with its storage and what it did.
     pub(crate) call: Option<crate::effects::OpenCall>,
+    /// The storage lifecycle calls read (`livecore::Instance::view`).
+    pub(crate) view: Option<livecore::txn::Storage>,
+    /// The app's windows (`kai:ui`, lifecycle 2).
+    pub(crate) ui: crate::ui::UiHost,
 }
 
 /// Most bytes of a panic's file path read from the version.
@@ -149,6 +155,7 @@ impl WasmInstance {
                 .instances(1)
                 .trap_on_grow_failure(true)
                 .build(),
+            memory: None,
             log: log_sink,
             quiet: false,
             lines: 0,
@@ -156,6 +163,8 @@ impl WasmInstance {
             now_ms: 0,
             seed: 0,
             call: None,
+            view: None,
+            ui: Default::default(),
         };
         let mut store = Store::new(engine, state);
         store.limiter(|state| &mut state.limits);
@@ -304,5 +313,58 @@ impl livecore::Instance for WasmInstance {
     #[inline(never)]
     fn quiet(&mut self, quiet: bool) {
         self.store.data_mut().quiet = quiet;
+    }
+}
+
+impl wasmi::ResourceLimiter for HostState {
+    fn memory_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        maximum: Option<usize>,
+    ) -> Result<bool, wasmi_core::LimiterError> {
+        let allowed = self.limits.memory_growing(current, desired, maximum)?;
+        // Commit before wasmi writes the new pages.
+        // The system out of memory fails the guest's `memory.grow` (-1); the
+        // guest decides what that means.
+        Ok(match self.memory.as_mut() {
+            Some(region) if allowed => region.grow(desired),
+            _ => allowed,
+        })
+    }
+
+    fn memory_grow_failed(
+        &mut self,
+        error: &wasmi::errors::MemoryError,
+    ) -> Result<(), wasmi_core::LimiterError> {
+        self.limits.memory_grow_failed(error)
+    }
+
+    fn table_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        maximum: Option<usize>,
+    ) -> Result<bool, wasmi_core::LimiterError> {
+        self.limits.table_growing(current, desired, maximum)
+    }
+
+    fn table_grow_failed(
+        &mut self,
+        error: &wasmi::errors::TableError,
+    ) -> Result<(), wasmi_core::LimiterError> {
+        self.limits.table_grow_failed(error)
+    }
+
+    fn instances(&self) -> usize {
+        self.limits.instances()
+    }
+
+    fn tables(&self) -> usize {
+        self.limits.tables()
+    }
+
+    fn memories(&self) -> usize {
+        self.limits.memories()
     }
 }

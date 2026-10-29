@@ -1,0 +1,12 @@
+[package]
+name = "uikit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The app UI toolkit behind `kai:ui` (ADR 0005 section 4) without a screen: the
+# retained view tree, layout, focus, input routing, the display list and the
+# accessibility tree, tested on the host. comphost draws the list through gfx2d.
+[lib]
+doctest = false

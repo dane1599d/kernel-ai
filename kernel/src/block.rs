@@ -196,9 +196,13 @@ struct Found {
 static PARTITIONS: Mutex<Vec<Found>> = Mutex::new(Vec::new());
 
 /// The partition types the kernel looks for, and their names for log lines.
-const KNOWN: [(diskmap::Guid, &str); 2] = [
+const KNOWN: [(diskmap::Guid, &str); 5] = [
     (diskmap::KAI_DATA_TYPE, "kai-data"),
     (diskmap::KAI_CACHE_TYPE, "kai-cache"),
+    // The slots (ADR 0008 §1), reached only through `updated`'s SLOT_* calls.
+    (diskmap::KAI_R_TYPE, "kai-r"),
+    (diskmap::KAI_A_TYPE, "kai-a"),
+    (diskmap::KAI_B_TYPE, "kai-b"),
 ];
 
 /// `diskmap` reading through a disk.
@@ -327,6 +331,11 @@ impl Device for Part<'_> {
     fn info(&self) -> Info {
         self.disk.info()
     }
+}
+
+/// Whether the scan found a partition of type `kind`.
+pub fn has_partition(kind: diskmap::Guid) -> bool {
+    PARTITIONS.lock().iter().any(|p| p.kind == kind)
 }
 
 /// Runs `f` on the partition of type `kind` the scan found, as a disk whose

@@ -14,13 +14,16 @@ env:
   CARGO_TERM_COLOR: always
 
 # A new push to a pull request cancels that PR's older run; runs on main all finish.
+# Adding any other label (`batch-ready`, `batch-first`) starts a run of its own
+# group whose jobs all skip, so it neither cancels the PR's run nor costs a slot.
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.sha }}
+  group: ci-${{ github.event.pull_request.number || github.sha }}${{ github.event.action == 'labeled' && !startsWith(github.event.label.name, 'full-ci') && format('-label-{0}', github.run_id) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   lint-and-unit:
     name: Format, lint, host unit tests
+    if: github.event.action != 'labeled' || startsWith(github.event.label.name, 'full-ci')
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -47,13 +50,17 @@ jobs:
       - name: Clippy for the engine crates on the soft-float kernel target
         run: cargo clippy -p gguf -p cpufeat -p quant -p bpe -p infer --target x86_64-unknown-none -- -D warnings
       - name: Clippy for the soft-float ring-3 programs
-        run: cargo clippy -p user --target x86_64-unknown-none --lib --bin supervisor --bin shell --bin crasher --bin spinner --bin hog --bin edit --bin work --bin netcheck --bin handles --bin scriptrun -- -D warnings
+        run: cargo clippy -p user --target x86_64-unknown-none --lib --bin supervisor --bin shell --bin crasher --bin spinner --bin hog --bin edit --bin work --bin netcheck --bin handles --bin scriptrun --bin fs --bin filecheck --bin updated --bin deskdemo --bin tufbench --bin pkg -- -D warnings
       - name: Clippy for the hard-float ring-3 programs
         run: |
-          # appbench embeds the view guest.
+          # appbench embeds the view guest; wasmhost's tests load Notes' window.
           cargo build -p comp-viewbench --target wasm32-unknown-unknown --profile component
-          cargo clippy -Zjson-target-spec -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem -p user --target user/x86_64-kai-user.json --lib --bin llm --bin probe --bin vecstress --bin workers --bin comphost --bin appbench -- -D warnings
-      - run: cargo clippy -p compsdk -p comp-notes -p comp-notes-v1 -p comp-viewbench --target wasm32-unknown-unknown -- -D warnings
+          cargo build -p comp-notes-window --target wasm32-unknown-unknown --profile component
+          cargo clippy -Zjson-target-spec -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem -p user --target user/x86_64-kai-user.json --lib --bin llm --bin desktop --bin probe --bin vecstress --bin workers --bin comphost --bin appbench --bin term -- -D warnings
+      # termcore and the Terminal app's model are no_std and build for wasm32 (P4 task 4; the model lane reviews).
+      - run: cargo clippy -p compsdk -p comp-notes -p comp-notes-v1 -p comp-viewbench -p termcore -p comp-terminal --target wasm32-unknown-unknown -- -D warnings
+      # Alone: with comp-notes in the same run its exports would be on.
+      - run: cargo clippy -p comp-notes-window --target wasm32-unknown-unknown -- -D warnings
       - name: Clippy for each broken notes version
         run: for bug in bug-import bug-health bug-trap bug-spin; do cargo clippy -p comp-notes-bad --target wasm32-unknown-unknown --features $bug -- -D warnings; done
       - run: cargo test --features linetable/alloc,kaibundle/alloc
@@ -67,12 +74,19 @@ jobs:
   # them too (founder, 2026-10-27): they run on main, on merge-batch PRs
   # (`batch/...`), and on a PR labelled `full-ci`. A plain PR push runs only the
   # lint and host-test job above; merges still need every job green in a batch.
+  #
+  # A `full-ci` PR boots its cases under KVM only, without the TCG shards, icount
+  # or observe: those ran on every lane's PR and starved the merge batches of the
+  # account's 20 job slots (2026-10-27). Batches and main still run everything,
+  # and a PR labelled `full-ci-all` gets the whole set too, e.g. to chase a TCG hang.
   qemu:
     name: QEMU 11.0.5 (built once, cached)
     if: >-
-      github.event_name != 'pull_request' ||
+      (github.event.action != 'labeled' || startsWith(github.event.label.name, 'full-ci')) &&
+      (github.event_name != 'pull_request' ||
       startsWith(github.head_ref, 'batch/') ||
-      contains(github.event.pull_request.labels.*.name, 'full-ci')
+      contains(github.event.pull_request.labels.*.name, 'full-ci') ||
+      contains(github.event.pull_request.labels.*.name, 'full-ci-all'))
     runs-on: ubuntu-24.04
     env:
       QEMU_VERSION: "11.0.5"
@@ -106,8 +120,9 @@ jobs:
           key: qemu-${{ env.QEMU_VERSION }}-ubuntu-24.04-v1
     timeout-minutes: 40
 
-  # Every case boots under both KVM and TCG; `--shard K/3` deals the cases out in
-  # turn across three runners per accelerator, and shard 1 also runs the host smokes.
+  # Every case boots under both KVM and TCG (KVM only on a `full-ci` PR, see
+  # above); `--shard K/3` deals the cases out in turn across three runners per
+  # accelerator, and shard 1 also runs the host smokes.
   boot:
     name: Boot test (${{ matrix.accel }}, shard ${{ matrix.shard }}/3)
     runs-on: ubuntu-24.04
@@ -115,7 +130,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        accel: [kvm, tcg]
+        accel: ${{ fromJSON(github.event_name == 'pull_request' && !startsWith(github.head_ref, 'batch/') && !contains(github.event.pull_request.labels.*.name, 'full-ci-all') && '["kvm"]' || '["kvm", "tcg"]') }}
         shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v4
@@ -149,7 +164,9 @@ jobs:
           save-if: ${{ matrix.accel == 'kvm' && matrix.shard == 1 }}
       - name: Boot kernel with spikes and check pass/fail
         run: cargo xtask test --accel ${{ matrix.accel }} --timeout 300 --shard ${{ matrix.shard }}/3
-    timeout-minutes: 20
+    # TCG shards run about twice as long as KVM ones: on 2026-10-28 main's slowest
+    # TCG shard took 19 of its 20 minutes, and batch #340's timed out mid-case.
+    timeout-minutes: ${{ matrix.accel == 'tcg' && 35 || 20 }}
 
   # Performance pass marks, judged on the release kernel (decisions, 2026-10-27):
   # the boot jobs' debug kernel leaves the `kernel` crate unoptimised, so its
@@ -195,6 +212,10 @@ jobs:
   # virtual second, which fixes shift and the trial's window length.
   icount:
     name: icount determinism probe (not a gate)
+    if: >-
+      github.event_name != 'pull_request' ||
+      startsWith(github.head_ref, 'batch/') ||
+      contains(github.event.pull_request.labels.*.name, 'full-ci-all')
     runs-on: ubuntu-24.04
     needs: qemu
     continue-on-error: true
@@ -218,6 +239,10 @@ jobs:
   # runner. Each of two runners boots observe twice; all four summaries must match.
   observe:
     name: Observe determinism (${{ matrix.runner }})
+    if: >-
+      github.event_name != 'pull_request' ||
+      startsWith(github.head_ref, 'batch/') ||
+      contains(github.event.pull_request.labels.*.name, 'full-ci-all')
     runs-on: ubuntu-24.04
     needs: qemu
     strategy:

@@ -123,9 +123,57 @@ pub fn actions(rows: &[&'static agentabi::Action]) -> Vec<Action<'static>> {
     actions
 }
 
-/// The grammar over the pack's rows (`llmproto::pack::rows`) and the pseudo-actions.
-pub fn grammar() -> Result<Tagged<'static>, infer::Error> {
-    Tagged::new(Vec::leak(actions(&crate::pack::rows())))
+/// What an `act` answer is decoded under (ADR 0010 §6). The first grammar
+/// takes every row and pseudo-action, but an index-only row closes with no
+/// arguments: the pack shows only its name, so the call stops after it. A
+/// row of those that takes arguments has a second grammar of its own, used
+/// once more with its group's full lines after the request.
+pub struct Grammar {
+    first: Tagged<'static>,
+    second: Vec<(&'static str, Tagged<'static>)>,
+}
+
+impl Grammar {
+    /// The grammar every answer starts under.
+    pub fn first(&self) -> &Tagged<'static> {
+        &self.first
+    }
+
+    /// The grammar for the second round of a call naming `name`, when it is
+    /// index-only and takes arguments.
+    fn second(&self, name: &str) -> Option<&Tagged<'static>> {
+        self.second
+            .iter()
+            .find(|(row, _)| *row == name)
+            .map(|(_, grammar)| grammar)
+    }
+}
+
+/// The grammars over the pack's rows (`llmproto::pack::rows`) and the
+/// pseudo-actions.
+pub fn grammar() -> Result<Grammar, infer::Error> {
+    let full = actions(&crate::pack::rows());
+    let mut second = Vec::new();
+    for action in full.iter().filter(|a| !a.args.is_empty()) {
+        if crate::pack::indexed(action.name).is_some() {
+            let one: &'static [Action<'static>] = Vec::leak(alloc::vec![*action]);
+            second.push((action.name, Tagged::new(one)?));
+        }
+    }
+    let first: Vec<Action<'static>> = full
+        .into_iter()
+        .map(|action| match crate::pack::indexed(action.name) {
+            Some(_) => Action {
+                args: &[],
+                ..action
+            },
+            None => action,
+        })
+        .collect();
+    Ok(Grammar {
+        first: Tagged::new(Vec::leak(first))?,
+        second,
+    })
 }
 
 /// The engine's KV slots for the two prompts: the act prefix's and the script
@@ -153,7 +201,7 @@ impl Slots {
 /// request, while the script slot was still warming).
 pub fn routed(
     engine: &mut Engine<'_>,
-    grammar: &Tagged<'_>,
+    grammar: &Grammar,
     request: &ActRequest,
     history: &History,
     slots: Slots,
@@ -211,15 +259,42 @@ pub(crate) fn within_budget(engine: &Engine<'_>, request: &ActRequest) -> ActReq
     }
 }
 
+/// One call for `request` after `history`. A call naming an index-only row
+/// that takes arguments stopped after the name; it is decoded once more with
+/// that row's group shown after the request (ADR 0010 §6), so its arguments
+/// are written from the full line. The prompt up to the request is reused.
 pub fn act(
     engine: &mut Engine<'_>,
-    grammar: &Tagged<'_>,
+    grammar: &Grammar,
     request: &ActRequest,
     history: &History,
+    mut on_step: impl FnMut(Step) -> Next,
+) -> Result<Call, ActError> {
+    let mut asked = act::request(&within_budget(engine, request), history);
+    let call = decode(engine, grammar.first(), &asked, &mut on_step)?;
+    let (Some(second), Some((group, _))) =
+        (grammar.second(&call.name), crate::pack::indexed(&call.name))
+    else {
+        return Ok(call);
+    };
+    // A second round whose read was in the same group shows its lines already.
+    let lines = crate::pack::group_text(group);
+    if !asked.messages.iter().any(|m| m.content == lines) {
+        asked
+            .messages
+            .push(chat::Message::new(chat::Role::System, &lines));
+    }
+    decode(engine, second, &asked, &mut on_step)
+}
+
+/// The call `asked` gets under `grammar`.
+fn decode(
+    engine: &mut Engine<'_>,
+    grammar: &Tagged<'_>,
+    asked: &chat::Request,
     on_step: impl FnMut(Step) -> Next,
 ) -> Result<Call, ActError> {
-    let asked = act::request(&within_budget(engine, request), history);
-    let turns = super::turns(&asked);
+    let turns = super::turns(asked);
     let mut sampler = Sampler::seeded(script::TEMPERATURE, script::SEED);
     let reply = engine
         .reply_under(
@@ -316,8 +391,7 @@ pub fn restore(
 
 /// The `act` prefix's `pack_id`, for its `kai-kv 1` file's key.
 pub fn pack_id() -> u64 {
-    let pack = crate::pack::render(crate::pack::Format::Dsl1);
-    crate::pack::pack_id(crate::pack::Format::Dsl1, "", &pack)
+    crate::pack::act_pack_id()
 }
 
 #[cfg(test)]
@@ -326,13 +400,27 @@ mod tests {
     use infer::json::Constraint;
 
     #[test]
+    fn the_kv_key_names_the_pack_as_the_shells_log_does() {
+        // One function for both, so llm's `kai-kv 1` key and the shell's
+        // `actlog 1` entries cannot drift apart.
+        assert_eq!(pack_id(), crate::pack::act_pack_id());
+        let pack = crate::pack::render(crate::pack::Format::Dsl1);
+        assert_eq!(
+            pack_id(),
+            crate::pack::pack_id(crate::pack::Format::Dsl1, "", &pack)
+        );
+    }
+
+    #[test]
     fn every_pack_row_and_pseudo_action_decodes() {
-        let g = grammar().unwrap();
+        let grammar = grammar().unwrap();
+        let g = grammar.first();
         for text in [
             r#"{"name":"set_policy","arguments":{"name":"round-robin"}}"#,
             r#"{"name":"cpus","arguments":{}}"#,
-            r#"{"name":"component_revert","arguments":{"component":"shell","back":null}}"#,
-            r#"{"name":"tune","arguments":{"target":"build-3","intent":null}}"#,
+            // Index-only: the name alone, then a second round (`act`).
+            r#"{"name":"component_revert","arguments":{}}"#,
+            r#"{"name":"tune_undo","arguments":{}}"#,
             r#"{"name":"say","arguments":{"text":"Hello."}}"#,
             r#"{"name":"clarify","arguments":{"question":"Which?","options":["a","b"]}}"#,
             // The call only picks `script`; llm writes its code (`routed`).
@@ -352,6 +440,18 @@ mod tests {
         ] {
             assert!(g.advance(g.start(), text.as_bytes()).is_err(), "{text}");
         }
+        // The second round: the row's own arguments, and no other row.
+        let text = r#"{"name":"component_revert","arguments":{"component":"shell","back":null}}"#;
+        let name = act::parse(text).unwrap().name;
+        let second = grammar.second(&name).unwrap();
+        let state = second.advance(second.start(), text.as_bytes()).unwrap();
+        assert!(second.is_done(&state), "{text}");
+        let other = r#"{"name":"set_policy""#;
+        assert!(second.advance(second.start(), other.as_bytes()).is_err());
+        // A row in full, or with no arguments, needs no second round.
+        assert!(grammar.second("tune").is_none());
+        assert!(grammar.second("tune_undo").is_none());
+        assert!(grammar.second("set_policy").is_none());
     }
 
     /// The State line stays while it and the request fit 224 real tokens, and
@@ -368,6 +468,7 @@ mod tests {
             line: "stop this".into(),
             state: "#{dir: \"/home/user\", net: \"up\"}".into(),
             timeout_ms: 1,
+            read: None,
         };
         assert_eq!(within_budget(&engine, &short), short);
         let windows = (0..20)
@@ -407,6 +508,7 @@ mod tests {
             line: "switch to round robin".into(),
             state: String::new(),
             timeout_ms: 1,
+            read: None,
         };
         let budget = infer::chat::Budget {
             kv_bytes: 64 << 20,
@@ -475,6 +577,7 @@ mod tests {
             line: "undo that".into(),
             state: String::new(),
             timeout_ms: 1,
+            read: None,
         };
         let mut cached = 0;
         let warm_answer = act(&mut engine, &g, &request, &history, |step| {

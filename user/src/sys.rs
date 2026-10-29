@@ -137,11 +137,21 @@ pub fn wait_event(timeout_ms: u64) -> Result<Event, Error> {
 }
 
 /// Stops every process named `name` that the kernel started outside the
-/// supervisor, and returns how many went (needs a Job handle with STOP).
+/// supervisor, and returns how many went (needs SUPERVISE).
 pub fn proc_stop(name: &str) -> Result<u64, Error> {
     call(
         call::PROC_STOP,
         [name.as_ptr() as u64, name.len() as u64, 0, 0, 0, 0],
+    )
+}
+
+/// [`proc_stop`] with the user's yes: the `ONCE` badge the trusted path gave for
+/// menu `id`, which showed `process_stop("<name>")`, or badge 0 under a standing
+/// rule the caller holds (needs a Job handle with STOP).
+pub fn proc_stop_once(name: &str, badge: u64, id: u64) -> Result<u64, Error> {
+    call(
+        call::PROC_STOP_ONCE,
+        [name.as_ptr() as u64, name.len() as u64, badge, id, 0, 0],
     )
 }
 
@@ -431,6 +441,34 @@ pub fn job_wait(job: Handle, timeout_ms: u64) -> Result<Option<ExitRecord>, Erro
     Ok((got == 1).then_some(record))
 }
 
+/// `bytes` of fresh address space with nothing mapped; its start (MEM_RESERVE).
+pub fn mem_reserve(bytes: u64) -> Result<u64, Error> {
+    call(call::MEM_RESERVE, [bytes, 0, 0, 0, 0, 0])
+}
+
+/// Maps zeroed read-write pages over `[addr, addr + bytes)` of a reservation
+/// (MEM_COMMIT).
+pub fn mem_commit(addr: u64, bytes: u64) -> Result<u64, Error> {
+    call(call::MEM_COMMIT, [addr, bytes, 0, 0, 0, 0])
+}
+
+/// Gives the reservation at `addr` back; how many pages it freed (MEM_RELEASE).
+pub fn mem_release(addr: u64) -> Result<u64, Error> {
+    call(call::MEM_RELEASE, [addr, 0, 0, 0, 0, 0])
+}
+
+/// Process `pid`'s page quota becomes `pages`; the old one (PROC_QUOTA_SET,
+/// needs SUPERVISE).
+pub fn proc_quota_set(pid: u64, pages: u64) -> Result<u64, Error> {
+    call(call::PROC_QUOTA_SET, [pid, pages, 0, 0, 0, 0])
+}
+
+/// Process `pid` runs `normal` (0) or `background` (1) (PROC_CLASS_SET, needs
+/// SUPERVISE).
+pub fn proc_class_set(pid: u64, class: u64) -> Result<u64, Error> {
+    call(call::PROC_CLASS_SET, [pid, class, 0, 0, 0, 0])
+}
+
 /// New zeroed shared pages, and an `Shm` handle to them (ADR 0001 D4).
 pub fn shm_create(pages: u64) -> Result<Handle, Error> {
     call(call::SHM_CREATE, [pages, 0, 0, 0, 0, 0]).map(|h| Handle(h as u32))
@@ -442,6 +480,146 @@ pub fn shm_map(handle: Handle, write: bool) -> Result<u64, Error> {
         call::SHM_MAP,
         [u64::from(handle.0), u64::from(write), 0, 0, 0, 0],
     )
+}
+
+/// Takes the screen (`desktop` only): its back buffer's `Shm`, and its shape.
+pub fn display_claim(info: &mut kabi::display::DisplayInfo) -> Result<Handle, Error> {
+    call(
+        call::DISPLAY_CLAIM,
+        [
+            info as *mut kabi::display::DisplayInfo as u64,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ],
+    )
+    .map(|h| Handle(h as u32))
+}
+
+/// The ask waiting for the card, as its id, call and question, one per line,
+/// into `buf`; 0 when none waits. Keeps the trusted layer alive (ASK_READ).
+pub fn ask_read(buf: &mut [u8]) -> Result<usize, Error> {
+    call(
+        call::ASK_READ,
+        [0, buf.as_mut_ptr() as u64, buf.len() as u64, 0, 0, 0],
+    )
+    .map(|n| n as usize)
+}
+
+/// Answers ask `id` from the card, with the `ONCE` digest of the call it
+/// showed (ASK_ANSWER).
+pub fn ask_answer(id: u64, yes: bool, digest: &[u8; 32]) -> Result<u64, Error> {
+    call(
+        call::ASK_ANSWER,
+        [0, id, u64::from(yes), digest.as_ptr() as u64, 0, 0],
+    )
+}
+
+/// Puts one event for standing instructions in the kernel's box (EVENT_POST):
+/// a line [`kabi::event::Event::parse`] reads. For `desktop`.
+pub fn event_post(line: &str) -> Result<u64, Error> {
+    call(
+        call::EVENT_POST,
+        [line.as_ptr() as u64, line.len() as u64, 0, 0, 0, 0],
+    )
+}
+
+/// Takes the box's events, one line each (EVENT_READ); `buf` must hold
+/// [`kabi::event::READ_BYTES`]. For the shell.
+pub fn event_read(buf: &mut [u8]) -> Result<usize, Error> {
+    call(
+        call::EVENT_READ,
+        [buf.as_mut_ptr() as u64, buf.len() as u64, 0, 0, 0, 0],
+    )
+    .map(|n| n as usize)
+}
+
+/// `ctl suspend`, or with `resume` `ctl resume`, to app `name`, sent by the
+/// kernel (APP_CTL); the app's reply goes into `reply`. For the supervisor.
+pub fn app_ctl(name: &str, resume: bool, reply: &mut [u8]) -> Result<usize, Error> {
+    call(
+        call::APP_CTL,
+        [
+            name.as_ptr() as u64,
+            name.len() as u64,
+            u64::from(resume),
+            reply.as_mut_ptr() as u64,
+            reply.len() as u64,
+            0,
+        ],
+    )
+    .map(|n| n as usize)
+}
+
+/// Puts these rectangles of the claimed back buffer on screen.
+pub fn display_flush(rects: &[kabi::display::FlushRect]) -> Result<u64, Error> {
+    call(
+        call::DISPLAY_FLUSH,
+        [rects.as_ptr() as u64, rects.len() as u64, 0, 0, 0, 0],
+    )
+}
+
+/// The 64x64 `0xAARRGGBB` hardware cursor and its hot spot.
+pub fn display_cursor(image: &[u32; 64 * 64], hot: (u32, u32)) -> Result<u64, Error> {
+    call(
+        call::DISPLAY_CURSOR,
+        [
+            image.as_ptr() as u64,
+            u64::from(hot.0),
+            u64::from(hot.1),
+            0,
+            0,
+            0,
+        ],
+    )
+}
+
+pub fn display_cursor_move(x: u32, y: u32) -> Result<u64, Error> {
+    call(
+        call::DISPLAY_CURSOR_MOVE,
+        [u64::from(x), u64::from(y), 0, 0, 0, 0],
+    )
+}
+
+/// Input events from the kernel's queue (`desktop` only), waiting up to
+/// `timeout_ms` for the first.
+pub fn input_read(out: &mut [kabi::input::InputEvent], timeout_ms: u64) -> Result<usize, Error> {
+    let mut raw = [0u8; 64 * kabi::input::InputEvent::SIZE];
+    let cap = out.len().min(64);
+    let n = call(
+        call::INPUT_READ,
+        [raw.as_mut_ptr() as u64, cap as u64, timeout_ms, 0, 0, 0],
+    )? as usize;
+    let mut got = 0;
+    for chunk in raw[..n.min(cap) * kabi::input::InputEvent::SIZE]
+        .as_chunks::<{ kabi::input::InputEvent::SIZE }>()
+        .0
+    {
+        if let Some(event) = kabi::input::InputEvent::decode(chunk) {
+            out[got] = event;
+            got += 1;
+        }
+    }
+    Ok(got)
+}
+
+/// The kernel console's rows changed after `since` (`term` only), in
+/// `termcore::mirror`'s format, into `out`; the length written.
+pub fn term_read(out: &mut [u8], since: u64) -> Result<usize, Error> {
+    let len = call(
+        call::TERM_READ,
+        [out.as_mut_ptr() as u64, out.len() as u64, since, 0, 0, 0],
+    )?;
+    Ok(len as usize)
+}
+
+/// Lends the keys to the kernel console's terminal for about a second, while
+/// `pid`'s window, which must be the terminal window, has the focus; or (`on`
+/// false) ends the lease (`desktop` only, while it shows).
+pub fn input_to_console(on: bool, pid: u64) -> Result<(), Error> {
+    call(call::INPUT_TO_CONSOLE, [u64::from(on), pid, 0, 0, 0, 0]).map(|_| ())
 }
 
 /// Removes the `Shm` mapping that starts at `address`.
@@ -504,6 +682,37 @@ pub fn sched_trial(request: &kabi::sched::TrialRequest) -> Result<u64, Error> {
 /// Whether the user asked to stop since the last call; reading clears it.
 pub fn interrupted() -> bool {
     call(call::INTERRUPTED, [0; 6]).is_ok_and(|flag| flag != 0)
+}
+
+/// Copies the boot bundle's file `path` into `buf` when it fits; its length
+/// either way. Only beneath what this process's plan line grants with `bootfiles=`.
+pub fn boot_read(path: &str, buf: &mut [u8]) -> Result<usize, Error> {
+    call(
+        call::BOOT_READ,
+        [
+            path.as_ptr() as u64,
+            path.len() as u64,
+            buf.as_mut_ptr() as u64,
+            buf.len() as u64,
+            0,
+            0,
+        ],
+    )
+    .map(|len| len as usize)
+}
+
+/// Adds `artifact`, whose SHA-256 is `sha`, as a version of component `name`,
+/// labelled `p-` and its digest's first 12 hex digits. Only for the holder of
+/// `/system/pkg`; only adds.
+pub fn comp_add(name: &str, artifact: &[u8], sha: &[u8; 32]) -> Result<(), Error> {
+    let add = kabi::live::Add {
+        name_ptr: name.as_ptr() as u64,
+        name_len: name.len() as u64,
+        artifact_ptr: artifact.as_ptr() as u64,
+        artifact_len: artifact.len() as u64,
+        sha: *sha,
+    };
+    call(call::COMP_ADD, [&add as *const _ as u64, 0, 0, 0, 0, 0]).map(drop)
 }
 
 /// Copies version `label` of this process's component into `buf` when it fits;
@@ -619,6 +828,21 @@ pub fn comp_control(component: &str, request: &str, reply: &mut [u8]) -> Result<
     call(
         call::COMP_CONTROL,
         [&control as *const kabi::live::Control as u64, 0, 0, 0, 0, 0],
+    )
+    .map(|len| len as usize)
+}
+
+/// The date, seconds since 1970 UTC; only for the holder of `/system/pkg`.
+pub fn pkg_time() -> Result<u64, Error> {
+    call(call::PKG_TIME, [0; 6])
+}
+
+/// Sends `request`, as `kabi::pkgrepo::request` builds it, to the fixed `pkgrepo=`
+/// mirror; the response's length. Only for the holder of `/system/pkg`.
+pub fn pkg_fetch(request: &HttpRequest) -> Result<usize, Error> {
+    call(
+        call::PKG_FETCH,
+        [request as *const HttpRequest as u64, 0, 0, 0, 0, 0],
     )
     .map(|len| len as usize)
 }
@@ -768,10 +992,201 @@ pub fn grant_dup(handle: Handle, rights: Rights, grant: Handle) -> Result<Handle
 
 /// Whether `digest` is the one the trusted path holds for the `ONCE` badge
 /// `badge`; a match uses it up.
+/// Whether process `pid` holds a standing rule that covers the call `text`, in canonical
+/// text (needs SUPERVISE).
+pub fn rule_check(pid: u64, text: &str) -> Result<(), Error> {
+    call(
+        call::RULE_CHECK,
+        [pid, text.as_ptr() as u64, text.len() as u64, 0, 0, 0],
+    )
+    .map(|_| ())
+}
+
+/// [`once_check`] for a call made by process `pid`, which must hold the `ONCE`
+/// (needs SUPERVISE).
+pub fn once_check_for(pid: u64, badge: u64, digest: &[u8; 32]) -> Result<(), Error> {
+    call(
+        call::ONCE_CHECK_FOR,
+        [pid, badge, digest.as_ptr() as u64, 0, 0, 0],
+    )
+    .map(|_| ())
+}
+
 pub fn once_check(badge: u64, digest: &[u8; 32]) -> Result<(), Error> {
     call(
         call::ONCE_CHECK,
         [badge, digest.as_ptr() as u64, 0, 0, 0, 0],
     )
     .map(|_| ())
+}
+
+/// The partition a `Partition` handle names (P2 task 3).
+pub fn part_info(handle: Handle) -> Result<kabi::part::PartInfo, Error> {
+    let mut info = kabi::part::PartInfo::default();
+    call(
+        call::PART_INFO,
+        [
+            u64::from(handle.0),
+            &mut info as *mut kabi::part::PartInfo as u64,
+            0,
+            0,
+            0,
+            0,
+        ],
+    )?;
+    Ok(info)
+}
+
+/// Reads `buf.len()` bytes, whole sectors, from sector `sector` of the partition.
+pub fn part_read(handle: Handle, sector: u64, buf: &mut [u8]) -> Result<u64, Error> {
+    call(
+        call::PART_READ,
+        [
+            u64::from(handle.0),
+            sector,
+            buf.as_mut_ptr() as u64,
+            buf.len() as u64,
+            0,
+            0,
+        ],
+    )
+}
+
+/// Writes `bytes`, whole sectors, at sector `sector` of the partition; durable
+/// only after [`part_flush`].
+pub fn part_write(handle: Handle, sector: u64, bytes: &[u8]) -> Result<u64, Error> {
+    call(
+        call::PART_WRITE,
+        [
+            u64::from(handle.0),
+            sector,
+            bytes.as_ptr() as u64,
+            bytes.len() as u64,
+            0,
+            0,
+        ],
+    )
+}
+
+/// Makes every write to the partition so far durable.
+pub fn part_flush(handle: Handle) -> Result<u64, Error> {
+    call(call::PART_FLUSH, [u64::from(handle.0), 0, 0, 0, 0, 0])
+}
+
+/// Slot `slot`'s partition, through an `Update` handle (ADR 0008 §10).
+pub fn slot_info(handle: Handle, slot: u64) -> Result<kabi::update::SlotInfo, Error> {
+    let mut info = kabi::update::SlotInfo::default();
+    let out = &mut info as *mut kabi::update::SlotInfo as u64;
+    call(call::SLOT_INFO, [u64::from(handle.0), slot, out, 0, 0, 0])?;
+    Ok(info)
+}
+
+/// Reads `buf.len()` bytes, whole sectors, from sector `sector` of slot `slot`.
+pub fn slot_read(handle: Handle, slot: u64, sector: u64, buf: &mut [u8]) -> Result<u64, Error> {
+    let (ptr, len) = (buf.as_mut_ptr() as u64, buf.len() as u64);
+    call(
+        call::SLOT_READ,
+        [u64::from(handle.0), slot, sector, ptr, len, 0],
+    )
+}
+
+/// Writes `bytes`, whole sectors, at sector `sector` of slot `slot`; durable
+/// only after [`slot_flush`].
+pub fn slot_write(handle: Handle, slot: u64, sector: u64, bytes: &[u8]) -> Result<u64, Error> {
+    let (ptr, len) = (bytes.as_ptr() as u64, bytes.len() as u64);
+    call(
+        call::SLOT_WRITE,
+        [u64::from(handle.0), slot, sector, ptr, len, 0],
+    )
+}
+
+/// Makes every write to slot `slot` so far durable.
+pub fn slot_flush(handle: Handle, slot: u64) -> Result<u64, Error> {
+    call(call::SLOT_FLUSH, [u64::from(handle.0), slot, 0, 0, 0, 0])
+}
+
+/// `KaiBootState` as the firmware holds it.
+pub fn bootrec_get(handle: Handle) -> Result<[u8; 64], Error> {
+    let mut record = [0u8; 64];
+    call(
+        call::BOOTREC_GET,
+        [u64::from(handle.0), record.as_mut_ptr() as u64, 0, 0, 0, 0],
+    )?;
+    Ok(record)
+}
+
+/// Writes `record` and Limine's one-shot (`kabi::update::NONE` deletes it), and
+/// with `restart` resets into it.
+pub fn bootrec_set(
+    handle: Handle,
+    record: &[u8; 64],
+    one_shot: u64,
+    restart: bool,
+) -> Result<u64, Error> {
+    let args = [
+        u64::from(handle.0),
+        record.as_ptr() as u64,
+        one_shot,
+        u64::from(restart),
+        0,
+        0,
+    ];
+    call(call::BOOTREC_SET, args)
+}
+
+/// The TUF root this slot was built with, into `buf`; its length.
+pub fn trust_root(handle: Handle, buf: &mut [u8]) -> Result<usize, Error> {
+    let (ptr, cap) = (buf.as_mut_ptr() as u64, buf.len() as u64);
+    call(call::TRUST_ROOT, [u64::from(handle.0), ptr, cap, 0, 0, 0]).map(|n| n as usize)
+}
+
+/// Seconds since 1970 UTC, for TUF's expiry checks.
+pub fn trust_time(handle: Handle) -> Result<u64, Error> {
+    call(call::TRUST_TIME, [u64::from(handle.0), 0, 0, 0, 0, 0])
+}
+
+/// Whether process `pid` still runs; needs a `Partition` handle (`fs`).
+pub fn part_peer_alive(handle: Handle, pid: u64) -> Result<u64, Error> {
+    call(
+        call::PART_PEER_ALIVE,
+        [u64::from(handle.0), pid, 0, 0, 0, 0],
+    )
+}
+
+/// Hands the kernel the model store's model, `extents` (first block, blocks) of
+/// the partition from byte `offset` of the file (P2 task 10); the bytes filled.
+pub fn model_fill(partition: Handle, extents: &[(u64, u64)], offset: u64) -> Result<u64, Error> {
+    call(
+        call::MODEL_FILL,
+        [
+            u64::from(partition.0),
+            extents.as_ptr() as u64,
+            extents.len() as u64,
+            offset,
+            0,
+            0,
+        ],
+    )
+}
+
+/// A `Dir` or `File` handle on this process's own endpoint, with `badge` and
+/// `rights`, for the `fs` service to hand on (P2 task 8).
+pub fn endpoint_mint(
+    endpoint: Handle,
+    kind: kabi::handle::Kind,
+    rights: Rights,
+    badge: u64,
+) -> Result<Handle, Error> {
+    call(
+        call::ENDPOINT_MINT,
+        [
+            u64::from(endpoint.0),
+            kind as u64,
+            u64::from(rights.bits()),
+            badge,
+            0,
+            0,
+        ],
+    )
+    .map(|raw| Handle(raw as u32))
 }

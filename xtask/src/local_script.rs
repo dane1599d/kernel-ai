@@ -12,7 +12,6 @@
 use crate::fluency::host::GateHost;
 use infer::Next;
 use infer::chat::{Budget, Engine, Step};
-use infer::tagged::Tagged;
 use llmproto::act::{self, ActError, ActRequest, Call, History};
 use llmproto::local;
 use llmproto::script::{self, Answer, AnswerError, ScriptRequest};
@@ -113,7 +112,7 @@ fn outcome(bytes: &'static [u8], tier: Tier) -> Result<Outcome, String> {
 struct Acting {
     gate: Rc<GateHost>,
     engine: Rc<RefCell<Engine<'static>>>,
-    grammar: Tagged<'static>,
+    grammar: local::act::Grammar,
     history: RefCell<History>,
 }
 
@@ -230,14 +229,20 @@ mod tests {
         let outcome = golden(&bytes).unwrap();
         println!("typed: {}\nagain: {}", outcome.typed, outcome.again);
         assert_eq!(golden(&bytes).unwrap(), outcome);
-        // The generated model's tagged call is a read the guest answers the
-        // same, run through the one door with no script asked for, and the same
-        // again with the first turn in history. Which read it picks follows the
-        // pack the fixture model was generated from.
+        // The generated model's tagged call is a read, run through the one door
+        // with no script asked for, and a read again with the first turn in
+        // history. The fixture model is random weights: which read it picks
+        // follows the pack's bytes and the history, so the two need not match;
+        // the same input twice must (above). A file read, which this guest,
+        // with no kai-data disk, refuses in the shell's own words, shows `! `.
         assert_eq!(outcome.rounds, [0, 0]);
-        assert!(outcome.typed.starts_with("ok "), "{}", outcome.typed);
-        assert_eq!(outcome.again, outcome.typed);
-        assert!(reply_lines(&outcome.typed)[0].starts_with("= "));
+        for reply in [&outcome.typed, &outcome.again] {
+            let lead = match reply.contains(shellcore::NO_FILES) {
+                true => "! ",
+                false => "= ",
+            };
+            assert!(reply_lines(reply)[0].starts_with(lead), "{reply}");
+        }
     }
 
     #[test]

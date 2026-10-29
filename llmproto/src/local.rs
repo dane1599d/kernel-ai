@@ -8,8 +8,9 @@
 //! always parses. Past one of [`script`]'s limits it is refused with the reason
 //! [`script::answer`] would give a server's answer, which the shell sends back for
 //! a repair; one that runs out of tokens is cut off, and one that fills the
-//! context is a local error. The shell checks every answer again, shows it and
-//! runs it only after a yes, as it does a server's.
+//! context is a local error. The shell checks every answer again and runs it by
+//! its tier, as it does a server's: at once for a read or an undoable change,
+//! after a yes otherwise (ADR 0002 D2).
 
 use crate::chat::{self, Completion, Role};
 use crate::script::{self, Answer, AnswerError, ScriptRequest};

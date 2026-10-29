@@ -1,7 +1,9 @@
 //! Context switching: a new thread's first frame, the stack switch itself, and
 //! pointing the CPU at the next thread's address space and kernel stack.
 
-use super::{CORES, IN_USE, ON_CPU, PINNED, SAVED_RSP, STACK_TOP, THREAD_CR3, current_tid, exit};
+use super::{
+    CORES, IN_USE, MOVE_TO, ON_CPU, PINNED, SAVED_RSP, STACK_TOP, THREAD_CR3, current_tid, exit,
+};
 use crate::percpu;
 use core::sync::atomic::Ordering;
 use sched::Tid;
@@ -161,6 +163,7 @@ fn finish_switch() {
         .is_some_and(|core| core.release(previous));
     if released {
         PINNED[previous].store(false, Ordering::Relaxed);
+        MOVE_TO[previous].store(0, Ordering::Release);
         IN_USE[previous].store(false, Ordering::Release);
     }
     super::move_after_switch(previous);

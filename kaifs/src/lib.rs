@@ -28,7 +28,8 @@
 //! - [`ns`]: the operations on them;
 //! - [`ns_check`]: the namespace's rules, checked through the same memo, and the
 //!   digest the crash gates compare;
-//! - [`repair`]: `check --repair`'s rules.
+//! - [`repair`] and [`repair_fs`]: `check --repair`'s rules, on a volume's
+//!   namespace and on the whole filesystem.
 //!
 //! P2 task 6 adds volumes and undo:
 //! - [`vol`]: the volume table's entries: volumes, snapshots of four kinds, and
@@ -37,6 +38,7 @@
 //!   and abort;
 //! - [`undo`]: `restore(txn)`, which never overwrites a later change; `changes`,
 //!   which reads only what changed; and `history`;
+//! - [`sealed`]: sealed files, the model store's blobs in 2 MiB records;
 //! - [`trash`] and [`cbor`]: the trash, each object beside its `info.cbor`;
 //! - [`gc`]: the GC in slices, and retention.
 //!
@@ -66,6 +68,8 @@ pub mod items;
 pub mod ns;
 pub mod ns_check;
 pub mod repair;
+pub mod repair_fs;
+pub mod sealed;
 pub mod trash;
 pub mod tree;
 pub mod txn;

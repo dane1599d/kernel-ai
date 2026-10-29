@@ -110,6 +110,7 @@ pub extern "C" fn trap_dispatch(frame: &mut TrapFrame) {
             if let Some(tid) = waiter {
                 threads::wake(tid);
             }
+            crate::input::wake_pending();
             threads::on_tick();
         }
         // Both PS/2 ports: either interrupt drains whatever the controller holds.
@@ -119,6 +120,7 @@ pub extern "C" fn trap_dispatch(frame: &mut TrapFrame) {
             if let Some(tid) = waiter {
                 threads::wake(tid);
             }
+            crate::input::wake_pending();
         }
         // Spurious interrupts must not be acknowledged.
         v if v == u64::from(apic::SPURIOUS_VECTOR) => {}
@@ -134,6 +136,7 @@ pub extern "C" fn trap_dispatch(frame: &mut TrapFrame) {
         v if v == u64::from(apic::HALT_VECTOR) => crate::halt_forever(),
         v if (u64::from(irq::FIRST)..=u64::from(irq::LAST)).contains(&v) => {
             irq::on_interrupt(v as u8);
+            crate::input::wake_pending();
         }
         0..=31 => exception(frame),
         _ => faults::fatal(frame),

@@ -1,0 +1,250 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The Kernel AI contributors
+
+/// The app UI (ADR 0005 section 4; ADR 0003 section 3 owns the package and its
+/// freeze rule). An app hands a retained view tree to the native `uikit`, which
+/// lays it out, draws it and gives the agent the same tree. No pixels enter the
+/// app's memory, and widgets take only tones and logical px: an app gets no AI
+/// or ask colour, so it cannot dress a control as the system's.
+package kai:ui@0.1.0;
+
+interface types {
+    /// One of the app's windows, as `view.open` returned it.
+    type window-id = u32;
+    /// A node, chosen by the app and unique in its window. Node 0 is the window's
+    /// root, a column that always exists.
+    type node-id = u32;
+
+    /// Which way children run.
+    enum axis {
+        row,
+        column,
+    }
+
+    /// The text styles an app may pick (ADR 0005 section 8). `mono-title` and
+    /// the window chrome are `desktop`'s.
+    enum text-style {
+        small,
+        body,
+        label,
+        heading,
+        display,
+        mono,
+    }
+
+    /// The colours an app may pick for text, by job. `ai` and `ask` are not here.
+    enum tone {
+        normal,
+        muted,
+        dim,
+        accent,
+        ok,
+        error,
+    }
+
+    /// How much room a node takes along one axis, in logical px.
+    variant size {
+        /// As much as its content needs.
+        fit,
+        /// A share of what is left, by weight (at least 1).
+        fill(u16),
+        /// Exactly this many logical px.
+        fixed(u16),
+    }
+
+    /// Space inside a node's edge, in logical px.
+    record insets {
+        top: u16,
+        right: u16,
+        bottom: u16,
+        left: u16,
+    }
+
+    /// Where a node sits in its parent.
+    record layout {
+        width: size,
+        height: size,
+        padding: insets,
+        /// Space between children, for containers.
+        gap: u16,
+    }
+
+    /// A box of children, run along `axis`.
+    record stack {
+        axis: axis,
+    }
+
+    record label {
+        text: string,
+        style: text-style,
+        tone: tone,
+    }
+
+    record button {
+        text: string,
+        /// The declared action (`<app>_<function>`) this button runs, if any. It
+        /// shows that action's `doc` text (ADR 0002) and takes its tier.
+        action: option<string>,
+    }
+
+    /// A one-line or a multi-line text input.
+    record text-field {
+        label: string,
+        value: string,
+        placeholder: string,
+        /// The most bytes it takes; at most 65,536.
+        max-len: u32,
+    }
+
+    /// Its children are the items.
+    record item-list {
+        label: string,
+        selected: option<u32>,
+    }
+
+    record table {
+        label: string,
+        columns: list<string>,
+        rows: list<list<string>>,
+        selected: option<u32>,
+    }
+
+    /// Its children are the pages, one per label.
+    record tabs {
+        labels: list<string>,
+        selected: u32,
+    }
+
+    record toggle {
+        label: string,
+        on: bool,
+    }
+
+    record slider {
+        label: string,
+        min: s32,
+        max: s32,
+        step: s32,
+        value: s32,
+    }
+
+    /// A button that opens a list of choices.
+    record menu {
+        label: string,
+        items: list<string>,
+    }
+
+    /// Its one child scrolls along `axis`.
+    record scroll {
+        axis: axis,
+    }
+
+    /// Its two children share `axis`; the first takes `first` per mille.
+    record split {
+        axis: axis,
+        first: u16,
+    }
+
+    /// A picture from a file the app may read, never from the app's memory.
+    record image {
+        label: string,
+        source: string,
+    }
+
+    /// Done so far, per mille; none while it cannot tell.
+    record progress {
+        label: string,
+        done: option<u16>,
+    }
+
+    /// The v0.1 widgets (ADR 0005 section 4).
+    variant widget {
+        stack(stack),
+        label(label),
+        button(button),
+        text-line(text-field),
+        text-area(text-field),
+        item-list(item-list),
+        table(table),
+        tabs(tabs),
+        toggle(toggle),
+        slider(slider),
+        menu(menu),
+        scroll(scroll),
+        split(split),
+        image(image),
+        progress(progress),
+    }
+
+    /// Why the tree refused a change.
+    enum ui-error {
+        /// No such window, or not this app's.
+        no-window,
+        /// No such node, or node 0 where it cannot be.
+        no-node,
+        /// The parent cannot hold this child, or the change would make a cycle.
+        bad-parent,
+        /// Over a window's 4,096 nodes or 256 KiB.
+        too-big,
+        /// Too many windows for this app.
+        too-many-windows,
+    }
+}
+
+/// What the app asks of `uikit`.
+interface view {
+    use types.{window-id, node-id, layout, widget, ui-error};
+
+    /// Opens a window of `width` by `height` logical px. It shows at the next
+    /// `commit`.
+    open: func(title: string, width: u16, height: u16) -> result<window-id, ui-error>;
+    /// Sets the title `desktop` draws after the app's label.
+    set-title: func(window: window-id, title: string) -> result<_, ui-error>;
+    /// Adds `node` as the last child of `parent`, or replaces it in place if it
+    /// exists, keeping its children.
+    put: func(window: window-id, node: node-id, parent: node-id, layout: layout, widget: widget) -> result<_, ui-error>;
+    /// Removes `node` and everything under it.
+    remove: func(window: window-id, node: node-id) -> result<_, ui-error>;
+    /// Asks for keyboard focus inside the window; `desktop` decides between windows.
+    focus: func(window: window-id, node: node-id) -> result<_, ui-error>;
+    /// Shows every change since the last commit, as one frame.
+    commit: func(window: window-id) -> result<_, ui-error>;
+    /// Closes the window and drops its tree.
+    close: func(window: window-id) -> result<_, ui-error>;
+}
+
+/// What `uikit` tells the app. A click by the user and an `ui_act` by the agent
+/// arrive as the same event.
+interface input {
+    use types.{window-id, node-id};
+
+    /// A widget's new value.
+    variant value {
+        text(string),
+        on(bool),
+        number(s32),
+        index(u32),
+    }
+
+    variant ui-event {
+        /// A button was pressed.
+        pressed(node-id),
+        /// A field, toggle, slider, list, table, tab or menu changed; the tree
+        /// already shows the new value.
+        changed(tuple<node-id, value>),
+        /// Enter in a one-line field.
+        submitted(node-id),
+        /// The user or the agent asked to close the window.
+        close-requested(window-id),
+    }
+
+    on-ui: func(window: window-id, e: ui-event);
+}
+
+/// An app with a UI: the `kai:app` app world, `view` and `input`. `kai:app/app`
+/// gains `kai:ui` itself at the next `kai:app` release.
+world app {
+    include kai:app/app@0.1.0;
+    import view;
+    export input;
+}

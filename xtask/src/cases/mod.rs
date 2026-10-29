@@ -7,7 +7,9 @@ mod components;
 mod devices;
 mod kernel;
 mod network;
+mod pkg;
 mod storage;
+mod updates;
 
 use crate::buildsvc::BuildService;
 use crate::disk::Fixture;
@@ -72,6 +74,38 @@ pub struct TestCase {
     pub data: Option<crate::blklog::Data>,
     /// A second boot, once this one has passed, on the same data disk.
     pub then: Option<&'static TestCase>,
+    /// Boot from the slot disk (`image/slots.rs`, ADR 0008) with a `kai.slot`
+    /// in the bundle; a `then` boot keeps the firmware's variable store, so the
+    /// boot lever's record and one-shot carry over.
+    pub slots: bool,
+    /// An update disk (`image/update_disk.rs`) of the next release, attached
+    /// read-only as `kai-update`.
+    pub update: Option<UpdateDisk>,
+    /// Power cuts (P2 task 9, plan section 4.2): boot `n` of `cuts` adds
+    /// `boot=n` to the command line, waits for `files: boot n:` and kills QEMU
+    /// a seeded moment later; boot `cuts + 1` adds `last` and must pass.
+    pub cuts: u32,
+    /// A model put in `kai-data`'s model store before the boot (`xtask fs mkfs`,
+    /// then `import --model`), with its length and hash on the command line;
+    /// needs `data`.
+    pub store: Option<Fixture>,
+    /// After the import, the hint's FNV-1a64 is changed (its CRC kept good), so
+    /// the kernel must refuse the model `fs` fills.
+    pub store_bad_fnv: bool,
+    /// One byte of this package's target in the image's repository flipped, the
+    /// bundle's digests recomputed, so only its signed metadata can tell (P4
+    /// task 1's tamper case).
+    pub tampered: Option<&'static str>,
+    /// The package mirror the guest reaches at `pkgrepo=` (P4 task 2), signed by
+    /// the image's keys, or a tampered one.
+    pub mirror: Option<crate::pkgrepo::mirrors::MirrorKind>,
+}
+
+/// What a case's update disk holds.
+#[derive(Clone, Copy, Debug)]
+pub struct UpdateDisk {
+    /// One byte of the image is flipped after it was signed.
+    pub tampered: bool,
 }
 
 pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase {
@@ -97,6 +131,13 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         resets: false,
         data: None,
         then: None,
+        slots: false,
+        update: None,
+        cuts: 0,
+        store: None,
+        store_bad_fnv: false,
+        tampered: None,
+        mirror: None,
     }
 }
 
@@ -112,6 +153,8 @@ const LANES: &[&[TestCase]] = &[
     components::CASES,
     network::CASES,
     storage::CASES,
+    updates::CASES,
+    pkg::CASES,
 ];
 
 /// The cases `cargo xtask test` boots.
@@ -141,6 +184,8 @@ mod tests {
             components::CASES,
             network::CASES,
             storage::CASES,
+            updates::CASES,
+            pkg::CASES,
         ];
         assert_eq!(
             cases.len(),

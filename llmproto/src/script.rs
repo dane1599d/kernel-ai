@@ -44,49 +44,12 @@ pub type ApiFn = agentabi::Action;
 /// registry (`agentabi::SCRIPT_API`); each has one arity and one effect.
 pub const API: &[ApiFn] = &agentabi::SCRIPT_API;
 
-/// Worked examples shown to the model: (request, script, summary).
-const EXAMPLES: &[(&str, &str, &str)] = &[
-    (
-        "how many CPUs are there?",
-        "print(\"CPUs: \" + cpus());",
-        "Prints the number of CPUs.",
-    ),
-    (
-        "what percentage of memory is free?",
-        "let m = memory();\nlet pct = m.free_mib * 100 / m.total_mib;\nprint(\"free: \" + pct + \"%\");",
-        "Prints free memory as a whole percentage.",
-    ),
-    (
-        "use round robin scheduling unless it is on already",
-        "if get_policy() != \"round-robin\" {\n    set_policy(\"round-robin\");\n}\nprint(\"policy: \" + get_policy());",
-        "Switches to round-robin if needed and prints the policy.",
-    ),
-    (
-        "print the names of all services",
-        "let names = \"\";\nfor p in processes() {\n    if names != \"\" {\n        names += \", \";\n    }\n    names += p.name;\n}\nprint(names);",
-        "Prints every service name, separated by commas.",
-    ),
-    (
-        "hello",
-        "",
-        "Hello! Ask me about this system, or tell me what to do.",
-    ),
-    (
-        "what can you do?",
-        "",
-        "I answer questions and run scripts that read CPUs, memory, uptime and services, or set the policy. Try: how much memory is free? or use round robin.",
-    ),
-    (
-        "delete all my files",
-        "print(\"I cannot do that: scripts here have no access to files.\");",
-        "Prints why it cannot be done.",
-    ),
-];
-
 /// The system prompt. It is the same for every request, so a server can reuse it.
 pub fn system_prompt() -> String {
-    let mut prompt = String::from(
-        "You write short Rhai scripts for the shell of Kernel AI, a small operating system.\n\
+    let mut prompt = String::from(concat!(
+        "You write short Rhai scripts for the shell of ",
+        kabi::product_name!(),
+        ", a small operating system.\n\
          Answer with JSON only: {\"script\": \"...\", \"summary\": \"...\"}.\n\
          script: Rhai code, at most 40 lines of at most 120 characters, ASCII only.\n\
          summary: for a script, one sentence of at most 100 characters saying what it does.\n\
@@ -112,12 +75,12 @@ pub fn system_prompt() -> String {
          - If the request cannot be done with these functions, print why instead.\n\
          \n\
          Functions:\n",
-    );
+    ));
     for function in API {
         let _ = writeln!(prompt, "- {}: {}", function.signature(), function.doc);
     }
     prompt.push_str("\nExamples:\n");
-    for (request, script, summary) in EXAMPLES {
+    for (request, script, summary) in crate::examples::SCRIPT {
         let envelope = serde_json::json!({ "script": script, "summary": summary });
         let _ = writeln!(prompt, "Request: {request}\n{envelope}");
     }

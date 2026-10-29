@@ -1,6 +1,6 @@
 [package]
 name = "shellcore"
-version = "0.0.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
@@ -8,6 +8,8 @@ publish = false
 [dependencies]
 agentabi = { path = "../agentabi" }
 kabi = { path = "../kabi" }
+kaigrants = { path = "../kaigrants" }
+kaiprofile = { path = "../kaiprofile" }
 llmproto = { path = "../llmproto" }
 sched = { path = "../sched" }
 termcore = { path = "../termcore" }

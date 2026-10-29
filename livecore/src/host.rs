@@ -154,6 +154,8 @@ pub(crate) enum Mode<I> {
         version: Version<I>,
         why: String,
     },
+    /// Suspended: its state saved, its instance dropped (`ctl suspend`).
+    Suspended(crate::suspend::Parked),
     /// Only while a request moves the host from one mode to another.
     Moving,
 }
@@ -173,7 +175,7 @@ pub(crate) struct Core<E> {
     /// Calls served, which make each call's seed.
     calls: u64,
     /// The ticket the next performed effect gets.
-    next_ticket: u32,
+    pub(crate) next_ticket: u32,
     /// Undo for the last calls that changed the state.
     pub history: History,
 }
@@ -267,7 +269,12 @@ impl<E: Env> Core<E> {
         let manifest = artifact::parse(&artifact)
             .map_err(|why| Fault::new(Reason::Manifest, why))?
             .manifest;
-        if manifest.component != self.name || manifest.version != label {
+        // A package version's label is its artifact's digest, which the
+        // kernel's store checked when `pkg` added it (P4 task 1); its manifest
+        // names the version it was built as. Every other label is the
+        // manifest's own.
+        let named = manifest.version == label || kabi::live::is_package_label(label);
+        if manifest.component != self.name || !named {
             return Err(Fault::new(
                 Reason::Manifest,
                 format!(
@@ -291,6 +298,7 @@ impl<E: Env> Core<E> {
             ));
         }
         let mut instance = self.env.load(&artifact, quiet)?;
+        instance.view(&self.storage);
         let schema = instance.schema()?;
         Ok(Version {
             label: label.to_string(),
@@ -325,27 +333,7 @@ impl<E: Env> Core<E> {
         let reply = version.instance.handle(request);
         let txn = version.instance.finish();
         let reply = reply?;
-        if txn.effects.len() > txn::MAX_EFFECTS {
-            return Err(Fault::new(
-                Reason::Abi,
-                format!(
-                    "it queued {} effects; at most {} a call",
-                    txn.effects.len(),
-                    txn::MAX_EFFECTS
-                ),
-            ));
-        }
-        for effect in &txn.effects {
-            effect.check().map_err(|why| Fault::new(Reason::Abi, why))?;
-        }
-        let effects = txn.effect_lines(inputs.first_ticket);
-        // Room for an `undo` line too.
-        if reply.len() + effects.len() + 32 > kabi::MAX_MESSAGE {
-            return Err(Fault::new(
-                Reason::Abi,
-                "its reply and effects are over one message",
-            ));
-        }
+        check_txn(&txn, inputs, reply.len())?;
         Ok((reply, txn))
     }
 
@@ -355,6 +343,17 @@ impl<E: Env> Core<E> {
         &mut self,
         version: &mut Version<E::Instance>,
         txn: &Txn,
+    ) -> Result<Option<u64>, Stop> {
+        self.commit_as(version, txn, true)
+    }
+
+    /// [`Core::commit`], recording an undo entry only if `undoable`: a window's
+    /// own edits are not the agent's changes, and would fill the history.
+    pub(crate) fn commit_as(
+        &mut self,
+        version: &mut Version<E::Instance>,
+        txn: &Txn,
+        undoable: bool,
     ) -> Result<Option<u64>, Stop> {
         let blob = export_own(version)?;
         let mut storage = self.storage.clone();
@@ -387,7 +386,7 @@ impl<E: Env> Core<E> {
             state: self.checkpoint.clone(),
             storage: self.storage.clone(),
         };
-        Ok(Some(self.history.record(before, after)))
+        Ok(undoable.then(|| self.history.record(before, after)))
     }
 
     /// The reply sent for a call whose effects are performed: after a
@@ -421,6 +420,7 @@ impl<E: Env> Core<E> {
         quiet: bool,
     ) -> Result<E::Instance, Fault> {
         let mut instance = self.env.load(&version.artifact, quiet)?;
+        instance.view(&self.storage);
         match instance.import(&self.checkpoint, version.schema)? {
             0 => Ok(instance),
             code => Err(Fault::new(
@@ -481,6 +481,34 @@ impl<E: Env> Core<E> {
     }
 }
 
+/// Checks what a call did against the limits: over them is the version's fault.
+/// `reply_len` is the length of the reply the effects ride in, 0 for a call that
+/// has none.
+pub(crate) fn check_txn(txn: &Txn, inputs: Inputs, reply_len: usize) -> Result<(), Fault> {
+    if txn.effects.len() > txn::MAX_EFFECTS {
+        return Err(Fault::new(
+            Reason::Abi,
+            format!(
+                "it queued {} effects; at most {} a call",
+                txn.effects.len(),
+                txn::MAX_EFFECTS
+            ),
+        ));
+    }
+    for effect in &txn.effects {
+        effect.check().map_err(|why| Fault::new(Reason::Abi, why))?;
+    }
+    let effects = txn.effect_lines(inputs.first_ticket);
+    // Room for an `undo` line too.
+    if reply_len + effects.len() + 32 > kabi::MAX_MESSAGE {
+        return Err(Fault::new(
+            Reason::Abi,
+            "its reply and effects are over one message",
+        ));
+    }
+    Ok(())
+}
+
 /// A version's own state, checked to be in its own schema.
 pub(crate) fn export_own<I: Instance>(version: &mut Version<I>) -> Result<Vec<u8>, Fault> {
     let blob = version
@@ -513,9 +541,19 @@ impl<E: Env> Host<E> {
                 }
             }
             None if request.starts_with(crate::undo::UNDO_HEADER.as_bytes()) => {
+                let mode = match mode {
+                    Mode::Suspended(_) => self.resume(mode).0,
+                    other => other,
+                };
                 self.undo(mode, request)?
             }
             None => match mode {
+                // A request wakes a suspended app first.
+                Mode::Suspended(_) => match self.resume(mode) {
+                    (Mode::Serving(version), _) => self.serve(version, request)?,
+                    (mode, Err(why)) => (mode, text(why)),
+                    (mode, Ok(_)) => (mode, text("err busy")),
+                },
                 Mode::Serving(version) => self.serve(version, request)?,
                 Mode::Probation(probation) => {
                     crate::probation::dual_run(&mut self.core, *probation, request)?
@@ -542,6 +580,40 @@ impl<E: Env> Host<E> {
             other => other,
         };
         Ok(())
+    }
+
+    /// Runs `f` on each loaded instance with its version's label and whether
+    /// its windows are the ones shown: the serving version, or in probation the
+    /// candidate (the standby's are drained, never shown).
+    pub fn each_instance(&mut self, mut f: impl FnMut(&mut E::Instance, &str, bool)) {
+        match &mut self.mode {
+            Mode::Serving(v) => f(&mut v.instance, &v.label, true),
+            Mode::Probation(p) => {
+                f(&mut p.standby.instance, &p.standby.label, false);
+                f(&mut p.candidate.instance, &p.candidate.label, true);
+            }
+            Mode::Disabled { version, .. } => f(&mut version.instance, &version.label, false),
+            // Suspended: no instance, so no windows.
+            Mode::Suspended(_) | Mode::Moving => {}
+        }
+    }
+
+    /// Whether the app is suspended (`ctl suspend`): no instance, its state
+    /// saved.
+    pub fn suspended(&self) -> bool {
+        matches!(self.mode, Mode::Suspended(_))
+    }
+
+    /// Brings a suspended app back, as `ctl resume` from the kernel does, so an
+    /// event for its kept window (a close, an agent's action) reaches it
+    /// instead of being dropped. The resume's reply, or `None` when the app was
+    /// not suspended.
+    pub fn wake(&mut self) -> Result<Option<Vec<u8>>, Exit> {
+        if !self.suspended() {
+            return Ok(None);
+        }
+        let request = alloc::format!("{}resume", kabi::live::CONTROL_PREFIX);
+        self.handle(0, request.as_bytes()).map(Some)
     }
 
     /// How long to wait for a request before [`Host::tick`]; 0 is forever.

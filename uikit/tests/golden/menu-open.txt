@@ -1,0 +1,4 @@
+Fill { rect: Rect { x: 11, y: 189, w: 162, h: 50 }, token: Raised, radius: 6 }
+Stroke { rect: Rect { x: 11, y: 189, w: 162, h: 50 }, token: LineStrong, width: 1, radius: 6 }
+Text { x: 22, y: 193, style: Label, token: Text, text: "Name" }
+Text { x: 22, y: 217, style: Label, token: Text, text: "Date" }

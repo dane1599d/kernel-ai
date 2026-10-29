@@ -33,34 +33,6 @@ script()  // a Rhai program, written next, for what the functions below can read
 undo(steps: int 1..1)  // puts back the last change made; undo again redoes it
 ";
 
-/// A script call carries no code: llm writes it next with the script prompt
-/// (`act::local::routed`), and the grammar closes `script` with no arguments.
-const SCRIPT: &str = r#"{"name":"script","arguments":{}}"#;
-
-/// (request, the tagged call answering it).
-const EXAMPLES: &[(&str, &str)] = &[
-    ("how many CPUs are there?", SCRIPT),
-    ("what percentage of memory is free?", SCRIPT),
-    (
-        "switch to round robin",
-        r#"{"name":"set_policy","arguments":{"name":"round-robin"}}"#,
-    ),
-    ("print the names of all services", SCRIPT),
-    ("how long has it been up, in minutes and seconds?", SCRIPT),
-    (
-        "hello",
-        r#"{"name":"say","arguments":{"text":"Hello! Ask me about this system, or tell me what to do."}}"#,
-    ),
-    (
-        "make it faster",
-        r#"{"name":"clarify","arguments":{"question":"Faster how?","options":["interactive policy","round-robin"]}}"#,
-    ),
-    (
-        "delete all my files",
-        r#"{"name":"say","arguments":{"text":"I cannot do that: there is no action for files yet."}}"#,
-    ),
-];
-
 /// Shorter docs for `dsl-1` where the registry's doc is the M8 prompt's (kept byte
 /// for byte there) and the line's types already say the rest: S10-0's draft
 /// wording. Every name here is a row (a test checks); this table goes once the
@@ -82,13 +54,27 @@ pub(super) const BRIEF: &[(&str, &str)] = &[
 pub(super) const FAMILIES: &[(&str, &str)] = &[
     (
         "service",
-        "stop keeps it down until start; restart loses its state",
+        "start runs a stopped one; stop keeps it down; restart resets",
     ),
     (
         "pkg",
         "installs or removes a package; undo puts the old set back",
     ),
+    // Every fs family has a HEAD_DOCS line; the group header says where paths
+    // start.
+    ("fs", "files"),
 ];
+
+/// A family whose rows share a prefix but not a signature gets its doc from its
+/// first row's name here, over [`FAMILIES`]'s for the prefix.
+pub(super) const HEAD_DOCS: &[(&str, &str)] = &[
+    ("fs_list", "names, text, earlier versions"),
+    ("fs_create", "create never overwrites"),
+    ("fs_trash", "restore brings it back"),
+];
+
+/// Groups after `## system`, by the rows' owner, each under its own header.
+const GROUPS: &[(&str, &str)] = &[("fs", "files (paths under /home/user)")];
 
 fn doc(row: &Action) -> &'static str {
     BRIEF
@@ -194,6 +180,10 @@ fn family<'a>(row: &Action, rows: &[&'a Action]) -> Option<(&'static str, Vec<&'
         })
         .filter(|r| signature(r) == signature(row))
         .collect();
+    let doc = HEAD_DOCS
+        .iter()
+        .find(|(head, _)| members.first().is_some_and(|m| m.name == *head))
+        .map_or(*doc, |(_, doc)| doc);
     (members.len() >= 2).then_some((doc, members))
 }
 
@@ -238,11 +228,27 @@ pub(super) fn row_lines(rows: &[&Action]) -> Vec<String> {
     lines
 }
 
+/// What heads the index lines (ADR 0010 §6).
+pub const INDEX_HEADING: &str = "## index (call one and its arguments are shown next)\n";
+
+/// The header of the service group every one of `rows` belongs to, if any.
+pub(super) fn header(rows: &[&Action]) -> Option<&'static str> {
+    GROUPS
+        .iter()
+        .find(|(owner, _)| {
+            !rows.is_empty()
+                && rows
+                    .iter()
+                    .all(|row| row.owner == agentabi::Owner::Service(owner))
+        })
+        .map(|(_, header)| *header)
+}
+
 pub(super) fn render(rows: &[&Action]) -> String {
     let mut out = String::from(RHAI);
     out.push_str(CALLS);
     out.push_str("## Examples\n");
-    for (request, call) in EXAMPLES {
+    for (request, call) in crate::examples::ACT {
         let _ = writeln!(out, "> {request}\n{call}");
     }
     out.push_str("## system\n");
@@ -250,9 +256,54 @@ pub(super) fn render(rows: &[&Action]) -> String {
         let quoted: alloc::vec::Vec<String> = words.iter().map(|w| format!("\"{w}\"")).collect();
         let _ = writeln!(out, "type {name} = {}", quoted.join(" | "));
     }
-    for line in row_lines(rows) {
+    // A row the index level lists by name is not rendered in full (ADR 0010 §6);
+    // the rest are the system's, then each service group's under its header.
+    let shown: Vec<&Action> = rows
+        .iter()
+        .copied()
+        .filter(|row| super::indexed(row.name).is_none())
+        .collect();
+    let grouped = |row: &&&Action| {
+        GROUPS
+            .iter()
+            .any(|(owner, _)| row.owner == agentabi::Owner::Service(owner))
+    };
+    let system: Vec<&Action> = shown.iter().filter(|r| !grouped(r)).copied().collect();
+    for line in row_lines(&system) {
         out.push_str(&line);
         out.push('\n');
+    }
+    for (owner, header) in GROUPS {
+        let group: Vec<&Action> = shown
+            .iter()
+            .filter(|r| r.owner == agentabi::Owner::Service(owner))
+            .copied()
+            .collect();
+        if group.is_empty() {
+            continue;
+        }
+        let _ = writeln!(out, "## {header}");
+        for line in row_lines(&group) {
+            out.push_str(&line);
+            out.push('\n');
+        }
+    }
+    out.push_str(INDEX_HEADING);
+    for (group, names) in super::INDEX {
+        let present: Vec<&str> = names
+            .iter()
+            .copied()
+            .filter(|name| rows.iter().any(|row| row.name == *name))
+            .collect();
+        match (present.is_empty(), super::gloss(group)) {
+            (true, _) => {}
+            (false, "") => {
+                let _ = writeln!(out, "{group}: {}", present.join(" "));
+            }
+            (false, gloss) => {
+                let _ = writeln!(out, "{group} ({gloss}): {}", present.join(" "));
+            }
+        }
     }
     out
 }

@@ -10,6 +10,8 @@ extern crate alloc;
 // A program's crate root sits in src/bin, so its modules are named by path.
 #[path = "shell/apart.rs"]
 mod apart;
+#[path = "shell/files.rs"]
+mod files;
 
 use alloc::boxed::Box;
 use alloc::format;
@@ -23,7 +25,7 @@ use llmproto::chat::Completion;
 use llmproto::script::{self, Answer, AnswerError, ScriptRequest};
 use llmproto::tune::{self, TuneRequest};
 use shellcore::targets::Service;
-use shellcore::{DEFAULT_CONFIG, Host, SCRIPT_ROUND_MS, Shell};
+use shellcore::{DEFAULT_CONFIG, Host, Proof, SCRIPT_ROUND_MS, Shell};
 use user::{arg, args, logln, println, sys};
 
 user::entry!(main);
@@ -41,6 +43,8 @@ const SCRIPT_LIMIT_MS: u64 = DEFAULT_CONFIG.line_budget_ms + 2_000;
 
 struct System {
     pool: apart::Pool,
+    files: files::Files,
+    state: files::State,
 }
 
 /// The route to the llm service: the shell's plan line has `uses=llm`, its only
@@ -57,14 +61,29 @@ fn supervisor() -> kabi::handle::Handle {
 /// The supervisor's wait for a stop or a start: a stop waits for the process to end.
 const SUPERVISOR_CALL_MS: u64 = 10_000;
 
-/// Sends `stop <name>` or `start <name>` to the supervisor: `ok`, or `err <why>`.
-fn supervise(verb: &str, name: &str) -> Result<(), String> {
-    let text = ask_supervisor(&format!("{verb} {name}"))?;
+/// Sends `stop`, `start` or `restart` to the supervisor: `ok`, or `err <why>`.
+fn supervise(request: &str) -> Result<(), String> {
+    let text = ask_supervisor(request)?;
     match text.split_once(' ').unwrap_or((&text, "")) {
         ("ok", _) => Ok(()),
         ("err", why) => Err(why.to_string()),
         _ => Err(String::from("the supervisor's answer was malformed")),
     }
+}
+
+/// A stop or restart carrying what lets it run, in the supervisor's own words
+/// (`supervise::Request::encode`): `once=<badge> id=<entry>`, `rule`, or for a
+/// stop, `undo id=<entry>`. One the supervisor would refuse is not sent.
+fn with_proof(request: supervise::Request, proof: Proof) -> Result<String, String> {
+    let proof = match proof {
+        Proof::Once { badge, id } => supervise::Proof::Once(supervise::Once { badge, id }),
+        Proof::Rule => supervise::Proof::Rule,
+        Proof::Undo { id } => supervise::Proof::Undo(id),
+        Proof::None => supervise::Proof::None,
+    };
+    supervise::proof_fits(request, proof)
+        .map_err(|_| String::from("a stop or restart needs the menu's Allow or a rule"))?;
+    Ok(request.encode(proof))
 }
 
 /// Sends `request` to the supervisor over the route; its answer.
@@ -174,16 +193,85 @@ impl Host for System {
         let _ = sys::call_route(llm(), b"new", &mut reply, MEMORY_CALL_MS);
     }
 
-    fn stop_process(&self, name: &str) -> Result<u64, String> {
-        sys::proc_stop(name).map_err(|error| format!("{error:?}"))
+    /// The kernel checks the proof: the menu's ONCE, or (badge 0) a rule node
+    /// in this table that covers the call (P1 task 14).
+    fn stop_process(&self, name: &str, proof: Proof) -> Result<u64, String> {
+        let (badge, id) = match proof {
+            Proof::Once { badge, id } => (badge, id),
+            Proof::Rule => (0, 0),
+            Proof::None | Proof::Undo { .. } => {
+                return Err(String::from("a stop needs the menu's Allow or a rule"));
+            }
+        };
+        sys::proc_stop_once(name, badge, id).map_err(|error| format!("{error:?}"))
     }
 
-    fn stop_service(&self, name: &str) -> Result<(), String> {
-        supervise("stop", name)
+    fn stop_service(&self, name: &str, proof: Proof) -> Result<(), String> {
+        supervise(&with_proof(supervise::Request::Stop(name), proof)?)
     }
 
-    fn start_service(&self, name: &str) -> Result<(), String> {
-        supervise("start", name)
+    /// The supervisor keeps the entry, so only that entry's undo may stop it unasked.
+    fn start_service(&self, name: &str, entry: u64) -> Result<(), String> {
+        let start = supervise::Request::Start(name);
+        supervise(&start.encode(supervise::Proof::Entry(entry)))
+    }
+
+    fn restart_service(&self, name: &str, proof: Proof) -> Result<(), String> {
+        supervise(&with_proof(supervise::Request::Restart(name), proof)?)
+    }
+
+    /// One `profile` request to the supervisor per process (P3 task 12). One it
+    /// refuses puts back those set before it, so a switch is all or nothing.
+    fn profile_apply(
+        &self,
+        settings: &[kaiprofile::Setting],
+    ) -> Result<Vec<kaiprofile::Setting>, String> {
+        let metrics = sys::metrics().map_err(|e| format!("cannot read the processes ({e:?})"))?;
+        let pid_of = |name: &str| {
+            metrics
+                .processes
+                .iter()
+                .take(metrics.process_count as usize)
+                .find(|p| p.name() == name)
+                .map(|p| p.pid)
+        };
+        let mut done: Vec<(u64, supervise::profile::Set)> = Vec::new();
+        let mut before = Vec::new();
+        for setting in settings {
+            let set = pid_of(&setting.process).map(|pid| supervise::profile::Set {
+                pid,
+                class: setting.class.number(),
+                pages: setting.mem,
+            });
+            let had = set
+                .ok_or_else(|| format!("{} is not running", setting.process))
+                .and_then(|set| {
+                    let request = set.encode().ok_or("no such class")?;
+                    supervise::profile::parse_before(set.pid, &ask_supervisor(&request)?)
+                });
+            match had {
+                Ok(had) => {
+                    done.push((had.pid, had));
+                    before.push(kaiprofile::Setting {
+                        process: setting.process.clone(),
+                        class: match had.class {
+                            1 => kaiprofile::Class::Background,
+                            _ => kaiprofile::Class::Normal,
+                        },
+                        mem: had.pages,
+                    });
+                }
+                Err(why) => {
+                    for (_, had) in done.iter().rev() {
+                        if let Some(request) = had.encode() {
+                            let _ = ask_supervisor(&request);
+                        }
+                    }
+                    return Err(format!("{}: {why}; nothing changed", setting.process));
+                }
+            }
+        }
+        Ok(before)
     }
 
     fn services(&self) -> Result<Vec<Service>, String> {
@@ -206,6 +294,63 @@ impl Host for System {
         sys::grant_revoke(kabi::handle::Handle(handle))
             .map(|_| ())
             .map_err(|error| format!("{error:?}"))
+    }
+
+    fn log_read(&self) -> Option<String> {
+        self.state.read(files::LOG)
+    }
+
+    /// In the same commit as the files the line changed (P2 task 12); else its
+    /// own action. A log that fails to write still lets the change commit: the
+    /// user was told it was done.
+    fn log_write(&self, text: &str) -> Result<(), String> {
+        if !self.files.is_open() {
+            return self.state.write(files::LOG, text, self.files.next_action());
+        }
+        let logged = self.state.write_in(files::LOG, text);
+        let committed = self.files.commit();
+        logged.and(committed)
+    }
+
+    fn rules_read(&self) -> Option<String> {
+        self.state.read(files::RULES)
+    }
+
+    fn standing_read(&self) -> Option<String> {
+        self.state.read(files::STANDING)
+    }
+
+    /// As the rules are written: with the line's files, if it changed any.
+    fn standing_write(&self, text: &str) -> Result<(), String> {
+        match self.files.is_open() {
+            true => self.state.write_in(files::STANDING, text),
+            false => self
+                .state
+                .write(files::STANDING, text, self.files.next_action()),
+        }
+    }
+
+    /// In the line's open action if it changed files, so the log line that
+    /// follows lands with it; else its own action.
+    fn rules_write(&self, text: &str) -> Result<(), String> {
+        match self.files.is_open() {
+            true => self.state.write_in(files::RULES, text),
+            false => self
+                .state
+                .write(files::RULES, text, self.files.next_action()),
+        }
+    }
+
+    fn fs_read(&self, read: shellcore::FsRead) -> Result<String, String> {
+        self.files.read(read)
+    }
+
+    fn fs_change(&self, change: shellcore::FsChange) -> Result<u64, String> {
+        self.files.change(change)
+    }
+
+    fn fs_undo(&self, txn: u64, anyway: bool) -> Result<u64, shellcore::FsRefused> {
+        self.files.undo(txn, anyway)
     }
 
     fn run_apart(&self, request: &str) -> Option<Result<String, String>> {
@@ -257,9 +402,14 @@ impl Host for System {
 fn main() -> i32 {
     let args = args();
     let mut shell = Shell::new(
-        Rc::new(System {
-            pool: apart::Pool::new(),
-        }),
+        {
+            let (files, state) = files::Files::new();
+            Rc::new(System {
+                pool: apart::Pool::new(),
+                files,
+                state,
+            })
+        },
         DEFAULT_CONFIG,
     );
     println!("up (restart {})", arg(&args, "restart").unwrap_or("0"));

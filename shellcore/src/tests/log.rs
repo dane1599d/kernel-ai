@@ -96,3 +96,26 @@ fn log_actlog_prints_the_records() {
     );
     assert!(text.contains("\nU 2 of=1 "), "{text}");
 }
+
+#[test]
+fn a_model_turns_entry_carries_the_packs_id_and_a_typed_undo_none() {
+    let rr = r#"{"name":"set_policy","arguments":{"name":"round-robin"}}"#;
+    let (_host, mut shell) = super::act::with_calls(vec![Ok(llmproto::act::parse(rr).unwrap())]);
+    shell.eval("switch to round robin");
+    shell.eval("undo");
+    let id = llmproto::pack::act_pack_id();
+    let text = shell.eval("log actlog").text;
+    assert!(text.contains("E 1 t="), "{text}");
+    assert!(
+        text.contains(&format!("reg=1 pack={id:016x} form=call")),
+        "{text}"
+    );
+    // An undo is a `U` record, which has no pack.
+    assert!(
+        text.contains(
+            "
+U 2 of=1 "
+        ),
+        "{text}"
+    );
+}

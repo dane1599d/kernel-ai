@@ -66,6 +66,9 @@ mod tests {
     fn diskmaps_type_guids_are_the_labels_ones() {
         assert_eq!(diskmap::KAI_DATA_TYPE.0, guid("kai-data partition type"));
         assert_eq!(diskmap::KAI_CACHE_TYPE.0, guid("kai-cache partition type"));
+        assert_eq!(diskmap::KAI_R_TYPE.0, guid("kai-r partition type"));
+        assert_eq!(diskmap::KAI_A_TYPE.0, guid("kai-a partition type"));
+        assert_eq!(diskmap::KAI_B_TYPE.0, guid("kai-b partition type"));
     }
 
     #[test]

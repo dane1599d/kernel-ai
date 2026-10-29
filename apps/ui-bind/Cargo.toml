@@ -1,0 +1,21 @@
+[package]
+name = "comp-ui-bind"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# What every app with a window shares (P4 tasks 5 to 10): the `kai:ui` tree's
+# nodes and diff, the window's open-diff-commit loop, and on wasm32 the bindings
+# to `kai:ui/view` and `kai:ui/input`. An app's own `actions` interface and its
+# model stay in its own crates; Notes' window (`comp-notes-window`) keeps the
+# copy it was written with.
+[lib]
+doctest = false
+
+[dependencies]
+compsdk = { path = "../../compsdk" }
+uikit = { path = "../../uikit" }
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+wit-bindgen = { version = "=0.63.0", default-features = false, features = ["macros", "realloc"] }

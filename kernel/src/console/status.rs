@@ -195,7 +195,7 @@ pub fn paint_brand(fb: Fb, layout: &Layout) {
     fb.disc(cx, cy, radius, EMBER, BAR);
     fb.disc(cx, cy, radius / 2, BAR, EMBER);
     let x = layout.left + 2 * radius + font.width;
-    let x = fb.text(font, (x, y), "Kernel AI", (PAPER, true), BAR);
+    let x = fb.text(font, (x, y), kabi::PRODUCT_NAME, (PAPER, true), BAR);
     let version = format_version();
     fb.text(
         font,
@@ -206,7 +206,7 @@ pub fn paint_brand(fb: Fb, layout: &Layout) {
     );
 }
 
-/// `0.10.0 M10a`, without the heap, which does not exist yet at boot.
+/// `0.1.0-dev M10a`, without the heap, which does not exist yet at boot.
 fn format_version() -> Short {
     let mut out = Short::default();
     for part in [version::VERSION, " ", version::MILESTONE] {

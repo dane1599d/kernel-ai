@@ -398,7 +398,7 @@ pub const RULES_REMOVE: Action = Action {
 pub const TYPED_ONLY: [Action; 2] = [RULES, RULES_REMOVE];
 
 /// Every OS row.
-pub const ROWS: [Action; 20] = [
+pub const ROWS: [Action; 36] = [
     CPUS,
     MEMORY,
     UPTIME_MS,
@@ -419,4 +419,20 @@ pub const ROWS: [Action; 20] = [
     PKG_REMOVE,
     PKG_LIST,
     PKG_SEARCH,
+    crate::FS_LIST,
+    crate::FS_READ,
+    crate::FS_HISTORY,
+    crate::FS_CHANGES,
+    crate::FS_CREATE,
+    crate::FS_WRITE,
+    crate::FS_MOVE,
+    crate::FS_TRASH,
+    crate::FS_RESTORE,
+    crate::FS_EMPTY_TRASH,
+    crate::UI_WINDOWS,
+    crate::UI_VIEW,
+    crate::UI_OPEN,
+    crate::UI_FOCUS,
+    crate::WINDOW_CLOSE,
+    crate::UI_ACT,
 ];

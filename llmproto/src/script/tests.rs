@@ -38,7 +38,7 @@ fn the_prompt_lists_every_function_and_never_changes() {
 
 #[test]
 fn every_example_passes_the_text_checks() {
-    for (_, script, summary) in EXAMPLES {
+    for (_, script, summary) in crate::examples::SCRIPT {
         assert_eq!(check_text(script).unwrap(), *script);
         let checked = match script.is_empty() {
             true => check_reply(summary),
@@ -47,7 +47,11 @@ fn every_example_passes_the_text_checks() {
         assert_eq!(checked.unwrap(), *summary);
     }
     // A chat example answers with no script, its reply in the summary.
-    assert!(EXAMPLES.iter().any(|(_, script, _)| script.is_empty()));
+    assert!(
+        crate::examples::SCRIPT
+            .iter()
+            .any(|(_, script, _)| script.is_empty())
+    );
 }
 
 #[test]

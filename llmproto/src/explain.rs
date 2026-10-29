@@ -11,10 +11,14 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 /// What the model is asked to do with the facts.
-pub const SYSTEM_PROMPT: &str = "You explain to the developer of Kernel AI, a small \
+pub const SYSTEM_PROMPT: &str = concat!(
+    "You explain to the developer of ",
+    kabi::product_name!(),
+    ", a small \
 experimental operating system, why a version of a live component was rolled back. Use \
 only the facts you are given. Where they do not say why, say so; never guess a cause \
-they do not support. Answer in two to four short sentences of plain text.";
+they do not support. Answer in two to four short sentences of plain text."
+);
 /// Most bytes of facts the kernel sends.
 pub const MAX_FACTS: usize = 1024;
 pub const MAX_TOKENS: u32 = 256;

@@ -106,4 +106,4 @@ More:
 
 ## Licence
 
-None yet: all rights reserved. A licence and contribution terms are being decided (see [docs/decisions.md](docs/decisions.md)). Until then, please open an issue rather than a pull request. The models are third-party and keep their own licences (Qwen3: Apache-2.0).
+Kernel AI is under the [Mozilla Public License 2.0](LICENSE) (ADR [0009](docs/adr/0009-licence.md)). `kabi/`, `compsdk/` and the interfaces under `wit/` are `MIT OR Apache-2.0`, so programs written for Kernel AI can compile them in under any licence, and the AI's worked examples (`llmproto/src/examples.rs`) are `0BSD`. What the AI writes for you is yours. Contributions are welcome under the same terms, signed off with the DCO: see [CONTRIBUTING.md](CONTRIBUTING.md), and [SECURITY.md](SECURITY.md) for reporting a vulnerability. Third-party code keeps its own licence, listed in [NOTICES.txt](NOTICES.txt); the models are not bundled and keep theirs (Qwen3: Apache-2.0).

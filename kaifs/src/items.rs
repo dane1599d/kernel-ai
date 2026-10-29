@@ -36,6 +36,9 @@ pub const K_DATA: u8 = 3;
 pub const K_XATTR: u8 = 4;
 /// A file's data item covers this much of it: one record's worth.
 pub const CHUNK: u64 = MAX_RECORD as u64;
+/// A sealed file's data item covers this much: one sealed record's worth, on its
+/// own boundary.
+pub const SEALED_CHUNK: u64 = crate::fs::MAX_SEALED as u64;
 /// The longest name, and the longest attribute name, in bytes.
 pub const MAX_NAME: usize = 255;
 /// The largest file: 256 TiB, far inside the arithmetic.

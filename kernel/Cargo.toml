@@ -1,6 +1,6 @@
 [package]
 name = "kernel"
-version = "0.10.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
@@ -21,13 +21,17 @@ cpufeat = { path = "../cpufeat" }
 devkit = { path = "../devkit" }
 devmatch = { path = "../devmatch" }
 diskmap = { path = "../diskmap" }
+fsproto = { path = "../fsproto" }
 kabi = { path = "../kabi" }
+kaiprofile = { path = "../kaiprofile" }
+bootslot = { path = "../bootslot" }
 kaibundle = { path = "../kaibundle" }
 limine = "0.6.5"
 linetable = { path = "../linetable" }
 livecore = { path = "../livecore" }
 editcore = { path = "../editcore" }
 llmproto = { path = "../llmproto" }
+look = { path = "../look" }
 mm = { path = "../mm" }
 netcore = { path = "../netcore" }
 nvme = { path = "../nvme" }

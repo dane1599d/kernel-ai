@@ -7,16 +7,24 @@ extern crate std;
 
 use super::fake::{Bug, INJECT, Spec};
 use super::{call, host_with, kernel, ledger};
-use crate::Reason;
 use crate::state::split;
+use crate::{Instance, Reason};
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 use std::collections::BTreeSet;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
-/// Tests that set [`INJECT`] run one at a time.
+/// Every test here runs alone: [`INJECT`] is global, and versions `a` and `b`
+/// trap on `kadd` while any test has it set, so a test that never sets it would
+/// still see another's (a CI flake of `the_storage_survives...`).
 static INJECTING: Mutex<()> = Mutex::new(());
+
+fn alone() -> MutexGuard<'static, ()> {
+    INJECTING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 const A: Spec = Spec {
     bug: Bug::Injected,
@@ -54,6 +62,7 @@ fn parts(reply: &str) -> (String, Vec<String>, Option<u64>) {
 
 #[test]
 fn a_call_commits_its_writes_with_the_checkpoint_and_sends_its_effects() {
+    let _guard = alone();
     let kernel = kernel(&[A]);
     let mut host = host_with(&kernel, 10, "version=a probation_calls=3 probation_ms=0");
     let (result, effects, undo) = parts(&call(&mut host, "kadd"));
@@ -78,6 +87,7 @@ fn a_call_commits_its_writes_with_the_checkpoint_and_sends_its_effects() {
 
 #[test]
 fn the_storage_survives_a_restart_with_the_checkpoint() {
+    let _guard = alone();
     let kernel = kernel(&[A]);
     let mut host = host_with(&kernel, 10, "version=a probation_calls=3 probation_ms=0");
     call(&mut host, "kadd");
@@ -90,6 +100,7 @@ fn the_storage_survives_a_restart_with_the_checkpoint() {
 
 #[test]
 fn undo_restores_the_state_before_a_call_unless_it_changed_since() {
+    let _guard = alone();
     let kernel = kernel(&[A]);
     let mut host = host_with(&kernel, 10, "version=a probation_calls=3 probation_ms=0");
     let (_, _, first) = parts(&call(&mut host, "kadd"));
@@ -121,9 +132,7 @@ fn undo_restores_the_state_before_a_call_unless_it_changed_since() {
 
 #[test]
 fn a_committed_swap_clears_the_undo_history() {
-    let _guard = INJECTING
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _guard = alone();
     let kernel = kernel(&[A, B]);
     let mut host = host_with(&kernel, 10, "version=a probation_calls=1 probation_ms=0");
     call(&mut host, "kadd");
@@ -137,9 +146,7 @@ fn a_committed_swap_clears_the_undo_history() {
 
 #[test]
 fn on_probation_the_standby_writes_and_the_replying_version_performs() {
-    let _guard = INJECTING
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _guard = alone();
     let kernel = kernel(&[A, B]);
     let mut host = host_with(&kernel, 10, "version=a probation_calls=3 probation_ms=0");
     call(&mut host, "kadd");
@@ -159,9 +166,7 @@ fn on_probation_the_standby_writes_and_the_replying_version_performs() {
 
 #[test]
 fn s03_1_effects_are_performed_once_by_the_replying_version_over_1000_calls() {
-    let _guard = INJECTING
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _guard = alone();
     const CALLS: u64 = 1000;
     let kernel = kernel(&[A, B]);
     let mut host = host_with(&kernel, 10, "version=a probation_calls=3 probation_ms=0");
@@ -221,4 +226,76 @@ fn s03_1_effects_are_performed_once_by_the_replying_version_over_1000_calls() {
     assert_eq!(tickets.len() as u64, CALLS);
     assert_eq!(tickets.last().copied(), Some(CALLS));
     assert_eq!(stored(&kernel, "count"), Some(CALLS.to_string()));
+}
+
+/// What `serve_with` made of a call that is not a request, as text.
+fn ui_call(host: &mut super::TestHost, request: &[u8]) -> Option<(String, String)> {
+    host.serve_with(|instance| instance.handle(request))
+        .unwrap()
+        .map(|(reply, performed)| (String::from_utf8(reply).unwrap(), performed.effect_lines()))
+}
+
+#[test]
+fn a_call_that_is_not_a_request_commits_like_one_but_leaves_no_undo_entry() {
+    let _guard = alone();
+    let kernel = kernel(&[A]);
+    let mut host = host_with(&kernel, 10, "version=a probation_calls=3 probation_ms=0");
+    let checkpoints = ledger(&kernel).counters.checkpoints;
+    let (_, lines) = ui_call(&mut host, b"kadd").unwrap();
+    assert_eq!(lines, "effect 1 notify(\"a 1\")\n");
+    assert_eq!(stored(&kernel, "count").as_deref(), Some("1"));
+    assert_eq!(ledger(&kernel).counters.checkpoints, checkpoints + 1);
+    // The ticket runs on into the next call, and the first undo entry is that
+    // call's: the window's edit took none.
+    let (_, effects, undo) = parts(&call(&mut host, "kadd"));
+    assert_eq!(effects, ["2 notify(\"a 2\")"]);
+    assert_eq!(undo, Some(1));
+    let (_, lines) = ui_call(&mut host, b"kadd").unwrap();
+    assert_eq!(lines, "effect 3 notify(\"a 3\")\n");
+    // And the call after sees what the window's call wrote.
+    assert!(call(&mut host, "kget").starts_with("kai-reply 1\nresult \"3 by a seed "));
+}
+
+#[test]
+fn a_call_that_changes_nothing_sends_no_checkpoint() {
+    let _guard = alone();
+    let kernel = kernel(&[A]);
+    let mut host = host_with(&kernel, 10, "version=a probation_calls=3 probation_ms=0");
+    let checkpoints = ledger(&kernel).counters.checkpoints;
+    let (reply, lines) = ui_call(&mut host, b"get").unwrap();
+    assert_eq!(reply, "ok 0 schema 1");
+    assert_eq!(lines, "");
+    assert_eq!(ledger(&kernel).counters.checkpoints, checkpoints);
+}
+
+#[test]
+fn a_faulting_or_overspending_call_keeps_nothing_and_the_version_reloads() {
+    let _guard = alone();
+    let kernel = kernel(&[A]);
+    let mut host = host_with(&kernel, 10, "version=a probation_calls=3 probation_ms=0");
+    ui_call(&mut host, b"kadd").unwrap();
+    let checkpoints = ledger(&kernel).counters.checkpoints;
+    assert_eq!(ui_call(&mut host, b"poison"), None);
+    assert_eq!(ui_call(&mut host, b"kspam"), None);
+    assert_eq!(ledger(&kernel).counters.checkpoints, checkpoints);
+    assert_eq!(stored(&kernel, "count").as_deref(), Some("1"));
+    // The version is back from its checkpoint and serves again.
+    assert!(call(&mut host, "get").starts_with("ok 1 "));
+    // Both were reported as faults, and each reloaded the version in place.
+    let ledger = ledger(&kernel);
+    assert_eq!((ledger.counters.faults, ledger.counters.restarts), (2, 2));
+}
+
+#[test]
+fn during_probation_a_call_runs_on_the_candidate_without_a_transaction() {
+    let _guard = alone();
+    let kernel = kernel(&[A, B]);
+    let mut host = host_with(&kernel, 10, "version=a probation_calls=3 probation_ms=0");
+    call(&mut host, "kadd");
+    assert!(call(&mut host, "ctl swap b").starts_with("ok probation b"));
+    let checkpoints = ledger(&kernel).counters.checkpoints;
+    let (reply, lines) = ui_call(&mut host, b"get").unwrap();
+    assert!(reply.starts_with("ok 1 schema 1"), "{reply}");
+    assert_eq!(lines, "");
+    assert_eq!(ledger(&kernel).counters.checkpoints, checkpoints);
 }

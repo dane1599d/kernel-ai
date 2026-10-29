@@ -20,18 +20,27 @@ const USER_PROGRAMS: &[&str] = &[
     "netcheck",
     "handles",
     "scriptrun",
+    "fs",
+    "filecheck",
+    "updated",
+    "deskdemo",
+    "tufbench",
+    "pkg",
 ];
 /// Ring-3 programs built for the hard-float target: `llm`, whose engine needs SSE and
 /// AVX; `comphost`, whose wasmi runs guests' floats natively (ADR 0003 section 6);
-/// `appbench`, which measures comphost's crates there; and the tests that check the
+/// `appbench`, which measures comphost's crates there; `desktop` and `term`, whose
+/// renderer (`gfx2d`) works in floats (ADR 0005 §1); and the tests that check the
 /// kernel keeps vector state apart.
 const USER_FLOAT_PROGRAMS: &[&str] = &[
     "llm",
+    "desktop",
     "probe",
     "vecstress",
     "workers",
     "comphost",
     "appbench",
+    "term",
 ];
 /// The view guest `appbench` embeds, built first.
 const APPBENCH_GUEST: &str = "comp-viewbench";
@@ -138,8 +147,13 @@ mod tests {
         let sources: BTreeSet<String> = fs::read_dir(root().join("user/src/bin"))
             .expect("user/src/bin")
             .filter_map(|entry| {
-                let name = entry.ok()?.file_name().into_string().ok()?;
-                name.strip_suffix(".rs").map(String::from)
+                let entry = entry.ok()?;
+                let name = entry.file_name().into_string().ok()?;
+                // A program is `name.rs`, or a directory with its own `main.rs`.
+                match name.strip_suffix(".rs") {
+                    Some(program) => Some(String::from(program)),
+                    None => entry.path().join("main.rs").exists().then_some(name),
+                }
             })
             .collect();
         let built: BTreeSet<String> = soft.union(&float).map(|s| s.to_string()).collect();

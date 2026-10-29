@@ -4,13 +4,15 @@
 //!
 //! 1. **Salvage.** Every item the live tree still yields is kept; a node that no
 //!    longer verifies loses the items below it, and the tree is rebuilt from the
-//!    rest. The old tree's blocks wait for the GC, so nothing a snapshot holds is
-//!    touched.
+//!    rest, as is a tree whose nodes verify but do not hold together. The old
+//!    tree's blocks wait for the GC, so nothing a snapshot holds is touched.
 //! 2. **Items.** An item of an unknown kind, of object 0, or of an object with no
 //!    inode is dropped, as are names in a file, data in a folder, data off a
 //!    128 KiB boundary, past 256 TiB or in a record that no longer verifies, and
 //!    an item that does not decode. A name or attribute filed under another hash is filed
-//!    again under its own. Data is made inline exactly when it fits. The object
+//!    again under its own. Data is made inline exactly when it fits. A sealed
+//!    file keeps the run of SEALED records from 0, each on its 2 MiB boundary,
+//!    and drops the rest; a SEALED record in another file is dropped. The object
 //!    id counter is raised past every object found.
 //! 3. **The root.** If inode 1 is missing or not a folder, it becomes an empty
 //!    folder again.
@@ -24,18 +26,21 @@
 //!    file's size covers its data, and no inode says it changed after the commit
 //!    repair writes.
 //!
-//! Repair acts on the active volume, so `check --repair` runs it once a volume.
-//! It refuses a filesystem with an unknown compat bit (ADR 0004 §2), one
-//! mounted read-only, and one with an open transaction. Space the allocator
-//! accounts wrongly is the GC's (task 6), which rebuilds it from what is reached.
+//! Repair acts on the active volume; [`crate::repair_fs`] runs it on each, after
+//! the space and history rules (0 and 7). It refuses a filesystem with an
+//! unknown compat bit (ADR 0004 §2), one mounted read-only, and one with an open
+//! transaction. Blocks held by nothing are the GC's (task 6).
 
 use crate::Error;
+use crate::check::{Cache, Leaves, summarise};
 use crate::dev::BlockDev;
 use crate::format::BlockPtr;
-use crate::fs::{Fs, MAX_INLINE, decode_value, inline_of, inline_raw, record_of, value_len};
+use crate::fs::{
+    Fs, MAX_INLINE, decode_value, inline_of, inline_raw, record_of, sealed_of, value_len,
+};
 use crate::items::{
     CHUNK, Entry, FileType, Inode, K_DATA, K_DIRENT, K_INODE, K_XATTR, MAX_FILE, ROOT,
-    decode_attrs, decode_names, encode_attrs, encode_names, hash_name,
+    SEALED_CHUNK, decode_attrs, decode_names, encode_attrs, encode_names, hash_name,
 };
 use crate::tree::{Child, Key, Node};
 use alloc::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -57,6 +62,8 @@ struct State {
     /// Each file's data items: offset, raw value.
     data: BTreeMap<u64, BTreeMap<u64, Vec<u8>>>,
     attrs: BTreeMap<u64, Attrs>,
+    /// Each sealed file, with the offset its kept data has reached.
+    sealed: BTreeMap<u64, u64>,
 }
 
 struct Repair<'a, D> {
@@ -76,6 +83,22 @@ fn salvage<D: BlockDev>(
     items: &mut Vec<(Key, Vec<u8>)>,
     fixes: &mut Vec<String>,
 ) {
+    salvage_from(fs, ptr, items, fixes, &mut BTreeSet::new());
+}
+
+/// [`salvage`], reading each pointer once: a node a hostile disk names many
+/// times, at every level, would otherwise be read a number of times that grows
+/// with the tree's depth as a power.
+fn salvage_from<D: BlockDev>(
+    fs: &mut Fs<D>,
+    ptr: &BlockPtr,
+    items: &mut Vec<(Key, Vec<u8>)>,
+    fixes: &mut Vec<String>,
+    seen: &mut BTreeSet<(u64, crate::csum::Csum)>,
+) {
+    if !seen.insert((ptr.addr, ptr.csum)) {
+        return;
+    }
     match fs.io.load_node(ptr) {
         Err(e) => fixes.push(format!(
             "node {} does not verify ({e:?}): the items below it are lost",
@@ -85,7 +108,7 @@ fn salvage<D: BlockDev>(
         Ok(Node::Branch(_, children)) => {
             for (_, child) in children {
                 if let Child::Clean(child) = child {
-                    salvage(fs, &child, items, fixes);
+                    salvage_from(fs, &child, items, fixes, seen);
                 }
             }
         }
@@ -195,10 +218,26 @@ impl<D: BlockDev> Repair<'_, D> {
                 "data off a 128 KiB boundary, empty, or past 256 TiB",
             ));
         }
+        let sealed = sealed_of(&raw);
+        if at == 0 && sealed {
+            self.state.sealed.insert(oid, 0);
+        }
+        let reached = self.state.sealed.get(&oid).copied();
+        let placed = reached.is_none_or(|next| at == next && at.is_multiple_of(SEALED_CHUNK));
+        if sealed != reached.is_some() || !placed {
+            return self.fix(dropped(
+                "a SEALED record out of a sealed file's run, or the other way",
+            ));
+        }
         let bytes = match decode_value(&raw, &mut self.fs.io) {
             Ok(value) => value.into_bytes(),
             Err(e) => return self.fix(dropped(&format!("data that does not verify ({e:?})"))),
         };
+        if let Some(next) = self.state.sealed.get_mut(&oid) {
+            *next = at + len as u64;
+            self.state.data.entry(oid).or_default().insert(at, raw);
+            return;
+        }
         let raw = match (len <= MAX_INLINE, record_of(&raw).is_some()) {
             (true, true) => {
                 self.fix(format!("file {oid}: data at {at} made inline"));
@@ -410,6 +449,10 @@ impl<D: BlockDev> Repair<'_, D> {
                         .and_then(|d| d.iter().next_back())
                         .map(|(at, raw)| at + value_len(raw).unwrap_or(0) as u64);
                     want.size = want.size.max(end.unwrap_or(0)).min(MAX_FILE);
+                    // A sealed file ends where its kept data does.
+                    if let Some(&reached) = self.state.sealed.get(ino) {
+                        want.size = reached;
+                    }
                 }
             }
             want.changed = want.changed.min(txn);
@@ -475,6 +518,19 @@ pub fn repair<D: BlockDev>(fs: &mut Fs<D>) -> Result<Vec<String>, Error> {
         salvage(fs, &root, &mut found, &mut fixes);
     }
     let lost_nodes = !fixes.is_empty();
+    // A tree whose nodes all verify but do not hold together (keys outside
+    // their bounds, a level skipped, a node under a quarter full, a block
+    // reached twice) is rebuilt from its items too.
+    let unsound = match lost_nodes || root.is_null() {
+        true => None,
+        false => summarise(&mut fs.io, &root, Leaves::Values, &mut Cache::default()).err(),
+    };
+    if let Some(why) = &unsound {
+        fixes.push(format!(
+            "the live tree does not check ({why}): rebuilt from its items"
+        ));
+    }
+    let rebuild = lost_nodes || unsound.is_some();
     let (uuid, mask, next_oid) = (fs.uuid(), fs.hash_mask, fs.next_oid());
     let mut repair = Repair {
         fs,
@@ -499,10 +555,10 @@ pub fn repair<D: BlockDev>(fs: &mut Fs<D>) -> Result<Vec<String>, Error> {
     repair.counts(&named);
     let want = repair.items();
     let Repair { fs, fixes, .. } = repair;
-    if want == found && !lost_nodes && fs.next_oid() == next_oid {
+    if want == found && !rebuild && fs.next_oid() == next_oid {
         return Ok(Vec::new());
     }
-    match lost_nodes {
+    match rebuild {
         true => fs.replace_live(want)?,
         false => {
             let want_keys: BTreeSet<Key> = want.iter().map(|(k, _)| *k).collect();

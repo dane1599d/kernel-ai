@@ -18,6 +18,9 @@
 //! - `os`: the OS rows' own requests ([`os::TASKS`], such as "stop build-3" and
 //!   "restart the indexer") through llm's `act` path on the OS pack and the one
 //!   door's name resolution, each against what must run; it passes at 9 of 10.
+//! - `view`: view-then-act ([`view::TASKS`], ADR 0005 §6) in a desktop of
+//!   S05-2's mock windows: `ui_view`, then `ui_act` on the right control after
+//!   reading the view as `Data`. Reported, not gated yet.
 //!
 //! Code decides what each call would do ([`consent`]), so false runs and asks
 //! are counted, and [`score`] holds S02-1's thresholds. The layout is ADR
@@ -34,6 +37,7 @@ mod registry;
 mod render;
 mod score;
 mod tasks;
+mod view;
 
 use crate::fluency::host::GateHost;
 use crate::fluency::local::Shared;
@@ -83,6 +87,8 @@ enum Kind {
     M8,
     /// The OS rows' calls on llm's own `act` path ([`os`]).
     Os,
+    /// View-then-act on llm's own `act` path ([`view`]).
+    View,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -99,6 +105,9 @@ struct Arm {
     /// decoder and consent; the M8 50 through the shell's one door, with llm's
     /// own `act` path (`llmproto::local::act::routed`) on the OS pack.
     ship: bool,
+    /// `+index`: rows no task needs (the 80-row scale's distractors) are
+    /// named on index lines only, and close with no arguments (ADR 0010 §6).
+    index: bool,
 }
 
 impl Arm {
@@ -112,6 +121,7 @@ impl Arm {
                     rules: false,
                     m8script: false,
                     ship: false,
+                    index: false,
                 });
             }
             "act" => {
@@ -122,6 +132,7 @@ impl Arm {
                     rules: false,
                     m8script: true,
                     ship: true,
+                    index: false,
                 });
             }
             "os" => {
@@ -132,6 +143,18 @@ impl Arm {
                     rules: false,
                     m8script: false,
                     ship: true,
+                    index: false,
+                });
+            }
+            "view" => {
+                return Ok(Self {
+                    kind: Kind::View,
+                    rows: 0,
+                    no_think: false,
+                    rules: false,
+                    m8script: false,
+                    ship: true,
+                    index: false,
                 });
             }
             "m8-a0" => {
@@ -142,6 +165,7 @@ impl Arm {
                     rules: false,
                     m8script: false,
                     ship: false,
+                    index: false,
                 });
             }
             _ => {}
@@ -156,12 +180,14 @@ impl Arm {
             Some(arm) => (arm, true),
             None => (text, false),
         };
-        let (mut text, mut rules, mut m8script) = (text, false, false);
+        let (mut text, mut rules, mut m8script, mut index) = (text, false, false, false);
         loop {
             if let Some(arm) = text.strip_suffix("+rules") {
                 (text, rules) = (arm, true);
             } else if let Some(arm) = text.strip_suffix("+m8script") {
                 (text, m8script) = (arm, true);
+            } else if let Some(arm) = text.strip_suffix("+index") {
+                (text, index) = (arm, true);
             } else {
                 break;
             }
@@ -176,6 +202,7 @@ impl Arm {
             rules,
             m8script,
             ship: false,
+            index,
         })
     }
 
@@ -184,12 +211,14 @@ impl Arm {
             Kind::M8 if self.no_think => "m8".into(),
             Kind::M8 => "m8-a0".into(),
             Kind::Os => "os".into(),
+            Kind::View => "view".into(),
             Kind::Tagged(_) if self.ship => "act".into(),
             Kind::Tagged(format) => format!(
-                "{}{}{}{}@{}",
+                "{}{}{}{}{}@{}",
                 format.name(),
                 if self.rules { "+rules" } else { "" },
                 if self.m8script { "+m8script" } else { "" },
+                if self.index { "+index" } else { "" },
                 if self.no_think { ":no-think" } else { "" },
                 self.rows
             ),
@@ -433,8 +462,10 @@ fn run_arm(
     options: &Options,
     target_dir: &Path,
 ) -> Result<(bool, String), String> {
-    if arm.kind == Kind::Os {
-        return os::run(loaded, seed, target_dir);
+    match arm.kind {
+        Kind::Os => return os::run(loaded, seed, target_dir),
+        Kind::View => return view::run(loaded, seed, target_dir),
+        _ => {}
     }
     let started = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -451,7 +482,7 @@ fn run_arm(
     let mut records = Vec::new();
     let mut scored = Vec::new();
     let m8 = match arm.kind {
-        Kind::Os => unreachable!("arm os returned above"),
+        Kind::Os | Kind::View => unreachable!("arms os and view returned above"),
         Kind::M8 => {
             header["pack_id"] = json!(null);
             let engine = loaded.engine.clone();
@@ -463,7 +494,10 @@ fn run_arm(
             ))
         }
         Kind::Tagged(format) => {
-            let pack = render::pack_card(format, &rows, arm.rules);
+            let pack = match arm.index {
+                true => render::indexed_card(format, &rows, arm.rules),
+                false => render::pack_card(format, &rows, arm.rules),
+            };
             let mut ids = Vec::new();
             loaded.tokenizer.encode(&pack, &mut ids);
             header["format"] = json!(format.name());
@@ -477,7 +511,10 @@ fn run_arm(
                 ids.len(),
                 header["pack_id"]
             );
-            let grammar = Rc::new(grammar::tagged(&rows));
+            let grammar = Rc::new(match arm.index {
+                true => grammar::indexed(&rows),
+                false => grammar::tagged(&rows),
+            });
             let clock = Instant::now();
             let base = base_turns(&pack);
             let warm: Vec<Turn<'_>> = base.iter().map(|(r, t)| Turn::new(*r, t)).collect();
@@ -574,7 +611,7 @@ fn run_arm(
         }
     };
     let gates = match arm.kind {
-        Kind::Os => unreachable!("arm os returned above"),
+        Kind::Os | Kind::View => unreachable!("arms os and view returned above"),
         Kind::M8 => score::gates(&[], m8).split_off(7),
         Kind::Tagged(_) if options.only_m8 => score::gates(&[], m8).split_off(7),
         Kind::Tagged(_) => score::gates(&scored, m8),

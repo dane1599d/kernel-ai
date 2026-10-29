@@ -1,0 +1,28 @@
+[package]
+name = "deskcore"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# `desktop`'s logic without a screen (ADR 0005 §1): the scene, damage, focus,
+# window moves and resizes, chrome geometry and scale, and the drawing
+# (`paint`, on gfx2d and look). Tested on the host from
+# recorded input, as termcore and shellcore are.
+[lib]
+doctest = false
+
+[dependencies]
+gfx2d = { path = "../gfx2d" }
+kabi = { path = "../kabi" }
+libm = "0.2.16"
+look = { path = "../look" }
+surfabi = { path = "../surfabi" }
+termcore = { path = "../termcore" }
+
+[features]
+# S05-2's mock trees (`view::mock`), for `cargo xtask tokens`.
+mock = []
+
+[dev-dependencies]
+sha2 = "0.11.1"

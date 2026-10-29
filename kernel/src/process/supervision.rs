@@ -37,10 +37,30 @@ const DEFAULT_BURST_MS: u64 = 2000;
 pub const COMPONENT_HOST: &str = "comphost";
 /// The one service that may hold `cap::STOP`.
 pub const STOPPER: &str = "shell";
+/// The service, running the program of the same name, that may hold the screen
+/// and read the input queue (ADR 0005 §2).
+pub const DESKTOP: &str = "desktop";
+/// The terminal window, the only reader of the console's rows (P3 task 8).
+pub const TERM: &str = "term";
+/// The service, running the program of the same name, that may hold the slots
+/// and the boot record (ADR 0008 §10).
+pub const UPDATED: &str = "updated";
 /// The one service that may hold `cap::SCRIPT`.
 pub const SCRIPTER: &str = "shell";
 /// The one service, and program, that may hold `cap::PUBLISH`.
 pub const PUBLISHER: &str = "edit";
+/// The one service, and program, that may hold `cap::PARTITION`.
+pub const FS: &str = "fs";
+/// The one service, and program, that may hold `cap::SYSTEM_STATE`.
+pub const STATE_HOLDER: &str = "shell";
+/// Whether the service `name` running `program` may have the storage bits in
+/// `caps`: the `kai-data` partition is the file system service's alone (ADR
+/// 0004 §7), and `/system/state` the shell's (P2 task 12).
+pub fn storage_caps_allowed(name: &str, program: &str, caps: u64) -> bool {
+    let only = |bit: u64, holder: &str| caps & bit == 0 || (name == holder && program == holder);
+    only(cap::PARTITION, FS) && only(cap::SYSTEM_STATE, STATE_HOLDER)
+}
+
 /// Longest any supervision call may block.
 const MAX_WAIT_MS: u64 = 60_000;
 
@@ -306,11 +326,32 @@ pub fn spawn_service(slot: usize, request_ptr: u64) -> Result<u64, Error> {
     if request.limits.caps & cap::PUBLISH != 0 && (name != PUBLISHER || program != PUBLISHER) {
         return Err(Error::Permission);
     }
+    // The screen and the input queue are `desktop`'s alone (ADR 0005 §2).
+    if request.limits.caps & (cap::DISPLAY | cap::INPUT) != 0
+        && (name != DESKTOP || program != DESKTOP)
+    {
+        return Err(Error::Permission);
+    }
+    // Answering asks is the desktop's alone (ADR 0005 §7).
+    if request.limits.caps & cap::ASK != 0 && (name != DESKTOP || program != DESKTOP) {
+        return Err(Error::Permission);
+    }
+    // The console's rows are the terminal window's alone.
+    if request.limits.caps & cap::TERM != 0 && (name != TERM || program != TERM) {
+        return Err(Error::Permission);
+    }
+    // The slots and the boot record are `updated`'s alone (ADR 0008 §10).
+    if request.limits.caps & cap::UPDATE != 0 && (name != UPDATED || program != UPDATED) {
+        return Err(Error::Permission);
+    }
     // The model is mapped, and worker threads run, only in the llm service.
     let holder = crate::model::HOLDER;
     if request.limits.caps & (cap::MODEL | cap::THREADS) != 0
         && (name != holder || program != holder)
     {
+        return Err(Error::Permission);
+    }
+    if !storage_caps_allowed(name, program, request.limits.caps) {
         return Err(Error::Permission);
     }
     let limits = Limits {
@@ -329,10 +370,15 @@ pub fn spawn_service(slot: usize, request_ptr: u64) -> Result<u64, Error> {
             .min(kabi::layout::MAX_STACK_PAGES),
     };
     let me = super::identity(slot).pid;
-    // Its routes come from the kernel's own copy of the plan, never the request.
-    let uses = uses_of(name);
-    let uses: Vec<&str> = uses.iter().map(String::as_str).collect();
-    let pid = spawn(&SpawnRequest {
+    // Its routes, folders and boot files come from the kernel's own copy of the
+    // plan, never the request: the plan line is the authority (ADR 0011 §12).
+    // Its folders and boot files go only to the program the line names.
+    let grants = plan_grants(name, program).map_err(|why| {
+        log!("supervision: {why}");
+        Error::Permission
+    })?;
+    let uses: Vec<&str> = grants.uses.iter().map(String::as_str).collect();
+    let request = SpawnRequest {
         name,
         program,
         args: &args[..args_len],
@@ -340,7 +386,8 @@ pub fn spawn_service(slot: usize, request_ptr: u64) -> Result<u64, Error> {
         spawner: me,
         supervisor: false,
         uses: &uses,
-    })?;
+    };
+    let pid = super::spawn_in(&request, Vec::new(), false, &grants).map_err(|(error, _)| error)?;
     if program == name {
         log!("process {name} (pid {pid}) started by the supervisor");
     } else {
@@ -354,14 +401,45 @@ pub fn spawn_service(slot: usize, request_ptr: u64) -> Result<u64, Error> {
 /// The shell, the supervisor and llm, and the caller itself, are never stopped; a
 /// service is stopped through the supervisor, which then keeps it down.
 pub fn proc_stop(slot: usize, ptr: u64, len: u64) -> Result<u64, Error> {
+    let mut name = [0u8; MAX_NAME];
+    let name = name_arg(slot, ptr, len, &mut name)?;
+    stop_named(super::identity(slot).name.as_str(), name)
+}
+
+/// The `proc_stop_once` system call.
+pub fn proc_stop_once(slot: usize, ptr: u64, len: u64, badge: u64, id: u64) -> Result<u64, Error> {
+    let mut name = [0u8; MAX_NAME];
+    let name = name_arg(slot, ptr, len, &mut name)?;
+    stop_once(slot, name, badge, id)
+}
+
+/// [`stop_named`] for the process in `slot`, once the `ONCE` it holds under
+/// `badge` checks against menu `id`'s `process_stop("<name>")`, which uses it up;
+/// with `badge` 0, once a standing rule it holds covers that call.
+pub fn stop_once(slot: usize, name: &str, badge: u64, id: u64) -> Result<u64, Error> {
+    let call = termcore::once::call_text("process_stop", &[termcore::once::CallArg::Text(name)])
+        .ok_or(Error::Invalid)?;
+    if badge == 0 {
+        if !crate::handle::rules::covers(slot, &call) {
+            return Err(Error::Permission);
+        }
+    } else {
+        if !crate::handle::grant::holds_once(slot, badge) {
+            return Err(Error::NotFound);
+        }
+        crate::handle::grant::spend_once(badge, &termcore::once::digest_call(id, &call))?;
+    }
+    stop_named(super::identity(slot).name.as_str(), name)
+}
+
+/// A process name from ring 3, `len` bytes at `ptr`.
+fn name_arg(slot: usize, ptr: u64, len: u64, buf: &mut [u8; MAX_NAME]) -> Result<&str, Error> {
     let len = usize::try_from(len).map_err(|_| Error::Invalid)?;
     if len == 0 || len > MAX_NAME {
         return Err(Error::TooBig);
     }
-    let mut name = [0u8; MAX_NAME];
-    copy_from_user(slot, ptr, &mut name[..len])?;
-    let name = core::str::from_utf8(&name[..len]).map_err(|_| Error::Invalid)?;
-    stop_named(super::identity(slot).name.as_str(), name)
+    copy_from_user(slot, ptr, &mut buf[..len])?;
+    core::str::from_utf8(&buf[..len]).map_err(|_| Error::Invalid)
 }
 
 /// [`proc_stop`] for the process named `caller`.
@@ -438,17 +516,26 @@ fn clear_state() {
     drop(old);
 }
 
-/// The services the plan's line for `name` gives it routes to (`uses=`); none
-/// for a service the plan does not list, or whose line does not parse.
-pub fn uses_of(name: &str) -> Vec<String> {
-    PLAN.get()
-        .and_then(|plan| {
-            supervise::parse_plan(plan)
-                .services
-                .into_iter()
-                .find(|service| service.name == name)
-        })
-        .map_or_else(Vec::new, |service| service.uses)
+/// The routes (`uses=`), folders (`dir=`) and boot files (`bootfiles=`) the kernel's
+/// plan grants service `name` running `program` (`supervise::Plan::grants`);
+/// none for a service it does not list, or whose line does not parse.
+pub fn plan_grants(name: &str, program: &str) -> Result<supervise::Grants, String> {
+    match PLAN.get() {
+        Some(plan) => supervise::parse_plan(plan).grants(name, program),
+        None => Ok(Default::default()),
+    }
+}
+
+/// Whether the kernel's own plan starts service `name` on demand
+/// (`start=demand`, P3 task 12b): not at boot, but when a call first waits for
+/// it.
+pub fn on_demand(name: &str) -> bool {
+    PLAN.get().is_some_and(|plan| {
+        supervise::parse_plan(plan)
+            .services
+            .iter()
+            .any(|s| s.name == name && s.start == supervise::Start::Demand)
+    })
 }
 
 pub fn plan(slot: usize, ptr: u64, cap: u64) -> Result<u64, Error> {

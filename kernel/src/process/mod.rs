@@ -24,6 +24,8 @@ mod exit;
 pub mod futex;
 pub mod job;
 mod loader;
+pub mod mem;
+pub mod profile;
 pub mod programs;
 mod space;
 pub mod supervision;
@@ -52,7 +54,7 @@ use spin::Mutex;
 use workers::Worker;
 use x86_64::instructions::interrupts;
 
-pub const MAX_PROCESSES: usize = 16;
+pub const MAX_PROCESSES: usize = 64;
 /// Most pages one process may be granted: 512 MiB (ADR 0001 D4). The model's
 /// holder alone may get `kabi::model::MAX_PAGES_HOLDER`, for its engine.
 pub const MAX_PAGES_PER_PROCESS: u64 = 128 * 1024;
@@ -134,6 +136,11 @@ pub struct Process {
     pub job: bool,
     pub heap_end: u64,
     pub crash: Option<Crash>,
+    /// Its plan line grants a folder (`dir=`): its kind ceiling takes `Dir` and
+    /// `File` handles, as FILES's does, without FILES's home folder.
+    pub folders: bool,
+    /// The boot files its plan line lets it read with BOOT_READ (`bootfiles=`).
+    pub boot: Option<supervise::BootFiles>,
 }
 
 impl Process {
@@ -159,6 +166,8 @@ impl Process {
         job: false,
         heap_end: HEAP_BASE,
         crash: None,
+        folders: false,
+        boot: None,
     };
 
     pub fn live(&self) -> bool {
@@ -201,6 +210,10 @@ pub fn has_written(pid: u64) -> bool {
 }
 
 /// Runs `f` on the process table with preemption off.
+/// Runs `f` with the process table locked and preemption off. `f` must not
+/// allocate: an allocation waits for the heap's lock, and a CPU spinning here
+/// for the table while another holds it waiting for the heap can freeze them all
+/// (the `tune-revert` hang, 2026-10-27).
 pub fn with_table<R>(f: impl FnOnce(&mut [Process; MAX_PROCESSES]) -> R) -> R {
     threads::preempt_disable();
     let result = f(&mut TABLE.lock());
@@ -374,6 +387,20 @@ pub fn spawn_with(
     moved: alloc::vec::Vec<captable::Entry>,
     job: bool,
 ) -> Result<u64, (kabi::Error, alloc::vec::Vec<captable::Entry>)> {
+    spawn_in(request, moved, job, &supervise::Grants::default())
+}
+
+/// [`spawn_with`], with what its plan line grants besides capability bits
+/// (ADR 0011 §12): a startup `Dir` for each of `plan.dirs` (`dir=`), after any
+/// FILES and SYSTEM_STATE give, and BOOT_READ of `plan.boot` (`bootfiles=`). Its
+/// routes are `request.uses`.
+pub fn spawn_in(
+    request: &SpawnRequest,
+    moved: alloc::vec::Vec<captable::Entry>,
+    job: bool,
+    plan: &supervise::Grants,
+) -> Result<u64, (kabi::Error, alloc::vec::Vec<captable::Entry>)> {
+    let dirs = plan.dirs.as_slice();
     use kabi::Error;
     let checked = (|| {
         if programs::find(request.program).is_none() {
@@ -417,6 +444,8 @@ pub fn spawn_with(
             supervisor: request.supervisor,
             spawner: request.spawner,
             job,
+            folders: !dirs.is_empty(),
+            boot: plan.boot,
             ..Process::FREE
         };
         process.args[..request.args.len()].copy_from_slice(request.args);
@@ -434,7 +463,9 @@ pub fn spawn_with(
         Err(error) => return Err((error, moved)),
     };
     // Its startup handles and what was moved to it, before it can run (ADR 0001 D3).
-    if let Err(error) = crate::handle::create(slot, request.limits.caps, pid, request.uses) {
+    if let Err(error) =
+        crate::handle::create_with(slot, request.limits.caps, pid, request.uses, dirs)
+    {
         with_table(|table| table[slot] = Process::FREE);
         return Err((error, moved));
     }
@@ -457,31 +488,73 @@ pub fn identity(slot: usize) -> Process {
 /// started each (a job child, like `scriptrun`, is its parent's, not the
 /// supervisor's).
 pub fn named(name: &str) -> alloc::vec::Vec<(u64, bool)> {
-    let table = with_table(|table| *table);
-    table
-        .iter()
-        .filter(|p| p.live() && p.name.as_str() == name)
-        .map(|p| (p.pid, (p.spawner != 0 && !p.job) || p.supervisor))
-        .collect()
+    let mut found = [(0, false); MAX_PROCESSES];
+    let count = with_table(|table| {
+        let matching = table
+            .iter()
+            .filter(|p| p.live() && p.name.as_str() == name)
+            .map(|p| (p.pid, (p.spawner != 0 && !p.job) || p.supervisor));
+        fill(&mut found, matching)
+    });
+    found[..count].to_vec()
+}
+
+/// Copies `items` into `out` and says how many: what the table's readers take
+/// under its lock, so that nothing allocates there (the heap's lock must never
+/// be waited for while the process table is held).
+pub(super) fn fill<T>(out: &mut [T], items: impl Iterator<Item = T>) -> usize {
+    let mut count = 0;
+    for (slot, item) in out.iter_mut().zip(items) {
+        *slot = item;
+        count += 1;
+    }
+    count
 }
 
 /// Pids and names of live processes, excluding the supervisor.
 pub fn services(mut f: impl FnMut(u64, &Name)) {
-    let table = with_table(|table| *table);
-    for process in table.iter().filter(|p| p.live() && !p.supervisor) {
-        f(process.pid, &process.name);
+    let mut live = [(0, Name::EMPTY); MAX_PROCESSES];
+    let count = with_table(|table| {
+        let services = table
+            .iter()
+            .filter(|p| p.live() && !p.supervisor)
+            .map(|p| (p.pid, p.name));
+        fill(&mut live, services)
+    });
+    for (pid, name) in &live[..count] {
+        f(*pid, name);
+    }
+}
+
+/// What each live service (not the supervisor) uses now: its pid, its name, the
+/// pages counted against its quota and its CPU time since it started (METRICS).
+pub fn services_usage(mut f: impl FnMut(u64, &Name, u64, u64)) {
+    let mut live = [(0, 0, Name::EMPTY); MAX_PROCESSES];
+    let count = with_table(|table| {
+        let services = table
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.live() && !p.supervisor)
+            .map(|(slot, p)| (slot, p.pid, p.name));
+        fill(&mut live, services)
+    });
+    // The spaces after the table's lock, one at a time (lock order).
+    for (slot, pid, name) in &live[..count] {
+        let pages = with_space(*slot, UserSpace::frames).unwrap_or(0);
+        f(*pid, name, pages, burst::cpu_ns(*slot));
     }
 }
 
 /// The process owning each thread slot: its pid, or 0 for kernel threads.
 pub fn pids_by_tid() -> [u64; MAX_THREADS] {
     let mut pids = [0; MAX_THREADS];
-    let table = with_table(|table| *table);
-    for process in table.iter().filter(|p| p.live()) {
-        for tid in process.thread_tids().into_iter().flatten() {
-            pids[tid] = process.pid;
+    with_table(|table| {
+        for process in table.iter().filter(|p| p.live()) {
+            for tid in process.thread_tids().into_iter().flatten() {
+                pids[tid] = process.pid;
+            }
         }
-    }
+    });
     pids
 }
 
@@ -517,10 +590,16 @@ pub fn has_cap_by_name(name: &str, bits: u64) -> bool {
 
 /// The names of live processes holding all the capability `bits`.
 pub fn holders(bits: u64) -> alloc::vec::Vec<alloc::string::String> {
-    let table = with_table(|table| *table);
-    table
+    let mut names = [Name::EMPTY; MAX_PROCESSES];
+    let count = with_table(|table| {
+        let holding = table
+            .iter()
+            .filter(|p| p.live() && p.limits.caps & bits == bits)
+            .map(|p| p.name);
+        fill(&mut names, holding)
+    });
+    names[..count]
         .iter()
-        .filter(|p| p.live() && p.limits.caps & bits == bits)
-        .map(|p| alloc::string::String::from(p.name.as_str()))
+        .map(|name| alloc::string::String::from(name.as_str()))
         .collect()
 }

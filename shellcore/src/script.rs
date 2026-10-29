@@ -18,7 +18,7 @@
 use crate::analyse::{self, Plan};
 use crate::engine::{self, Line, Stop};
 use crate::undo::{self, Done, Inverse, Journal};
-use crate::{Config, Host, data, show};
+use crate::{Config, Consent, FsChange, FsRead, Host, Proof, data, show};
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::rc::Rc;
@@ -62,6 +62,8 @@ impl Checked {
 
 type RhaiResult<T> = Result<T, Box<EvalAltResult>>;
 
+mod windows;
+
 fn rhai_error(message: impl Into<String>) -> Box<EvalAltResult> {
     let message: String = message.into();
     message.into()
@@ -94,6 +96,8 @@ pub type Outbox = Rc<RefCell<Vec<Queued>>>;
 #[derive(Clone)]
 struct Tx {
     host: Rc<dyn Host>,
+    /// What the run's entry may show the owners of its asked calls.
+    consent: Consent,
     journal: Journal,
     plan: Rc<Plan>,
     outbox: Outbox,
@@ -103,6 +107,7 @@ impl Tx {
     fn new(host: &Rc<dyn Host>, plan: &Rc<Plan>) -> Self {
         Self {
             host: Rc::clone(host),
+            consent: Consent::default(),
             journal: Journal::default(),
             plan: Rc::clone(plan),
             outbox: Outbox::default(),
@@ -125,6 +130,12 @@ impl Tx {
     /// first value it replaced: the snapshot is taken once, at the first change.
     fn changed(&self, done: Done) {
         let mut journal = self.journal.borrow_mut();
+        // Each file change is a transaction of its own, so each keeps its own
+        // inverse; `undo` restores them newest first.
+        if matches!(done.inverse, Some(Inverse::Fs { .. })) {
+            journal.push(done);
+            return;
+        }
         match journal
             .iter_mut()
             .find(|d| d.owner == done.owner && d.res == done.res)
@@ -153,6 +164,8 @@ impl Tx {
 fn register(engine: &mut Engine, granted: &[&'static str], tx: &Tx) {
     for row in agentabi::BOUND
         .iter()
+        .chain(&agentabi::FS_ROWS)
+        .chain(&agentabi::UI_ROWS)
         .filter(|row| granted.contains(&row.name))
     {
         bind(engine, row.name, tx);
@@ -271,7 +284,7 @@ fn bind(engine: &mut Engine, name: &'static str, tx: &Tx) -> bool {
                 engine.register_fn(name, move |which: &str| -> RhaiResult<()> {
                     tx.approved(name, &[which])?;
                     let count = h
-                        .stop_process(which)
+                        .stop_process(which, tx.consent.proof)
                         .map_err(|why| rhai_error(format!("process_stop: {why}")))?;
                     tx.changed(stopped(
                         name,
@@ -287,7 +300,7 @@ fn bind(engine: &mut Engine, name: &'static str, tx: &Tx) -> bool {
             "service_stop" => {
                 engine.register_fn(name, move |which: &str| -> RhaiResult<()> {
                     tx.approved(name, &[which])?;
-                    h.stop_service(which)
+                    h.stop_service(which, tx.consent.proof)
                         .map_err(|why| rhai_error(format!("service_stop: {why}")))?;
                     tx.changed(stopped(
                         name,
@@ -303,11 +316,8 @@ fn bind(engine: &mut Engine, name: &'static str, tx: &Tx) -> bool {
             "service_restart" => {
                 engine.register_fn(name, move |which: &str| -> RhaiResult<()> {
                     tx.approved(name, &[which])?;
-                    h.stop_service(which)
+                    h.restart_service(which, tx.consent.proof)
                         .map_err(|why| rhai_error(format!("service_restart: {why}")))?;
-                    h.start_service(which).map_err(|why| {
-                        rhai_error(format!("service_restart: stopped, but {why}"))
-                    })?;
                     tx.changed(stopped(
                         name,
                         "supervisor",
@@ -326,7 +336,7 @@ fn bind(engine: &mut Engine, name: &'static str, tx: &Tx) -> bool {
                     let undo = undo::Name::new(which).ok_or_else(|| {
                         rhai_error("service_start: no service has a name that long")
                     })?;
-                    h.start_service(which)
+                    h.start_service(which, tx.consent.entry)
                         .map_err(|why| rhai_error(format!("service_start: {why}")))?;
                     tx.changed(stopped(
                         name,
@@ -339,10 +349,130 @@ fn bind(engine: &mut Engine, name: &'static str, tx: &Tx) -> bool {
                     Ok(())
                 });
             }
+            name if name.starts_with("fs_") => return bind_file(engine, name, h, tx),
+            name if agentabi::UI_ROWS.iter().any(|r| r.name == name) => {
+                return windows::bind(engine, name, h, tx);
+            }
             _ => return false,
         }
     }
     true
+}
+
+/// Binds P2's file row `name` (task 11): reads hand back `Data`, and each change
+/// is one `fs` transaction that `undo` restores.
+fn bind_file(engine: &mut Engine, name: &'static str, h: Rc<dyn Host>, tx: Tx) -> bool {
+    let fail = move |why: String| rhai_error(format!("{name}: {why}"));
+    match name {
+        "fs_list" | "fs_read" | "fs_history" => {
+            engine.register_fn(name, move |path: &str| -> RhaiResult<data::Data> {
+                tx.approved(name, &[path])?;
+                let path = home(name, path)?;
+                let read = match name {
+                    "fs_list" => FsRead::List(path),
+                    "fs_read" => FsRead::Read(path),
+                    _ => FsRead::History(path),
+                };
+                h.fs_read(read)
+                    .map(|text| data::Data::new("fs", text))
+                    .map_err(fail)
+            });
+        }
+        "fs_changes" => {
+            engine.register_fn(name, move || -> RhaiResult<String> {
+                tx.approved(name, &[])?;
+                h.fs_read(FsRead::Changes).map_err(fail)
+            });
+        }
+        "fs_create" | "fs_write" => {
+            engine.register_fn(name, move |path: &str, text: &str| -> RhaiResult<()> {
+                tx.approved(name, &[path, text])?;
+                let path = home(name, path)?;
+                let (change, before, after) = match name {
+                    "fs_create" => (FsChange::Create { path, text }, "absent", "created"),
+                    _ => (
+                        FsChange::Write { path, text },
+                        "its earlier text",
+                        "written",
+                    ),
+                };
+                let txn = h.fs_change(change).map_err(fail)?;
+                tx.changed(file_done(name, path, before, after, Some(txn)));
+                Ok(())
+            });
+        }
+        "fs_move" => {
+            engine.register_fn(name, move |from: &str, to: &str| -> RhaiResult<()> {
+                tx.approved(name, &[from, to])?;
+                let (from, to) = (home(name, from)?, home(name, to)?);
+                let txn = h.fs_change(FsChange::Move { from, to }).map_err(fail)?;
+                let after = format!("moved to {to}");
+                tx.changed(file_done(name, from, "there", &after, Some(txn)));
+                Ok(())
+            });
+        }
+        "fs_trash" | "fs_restore" => {
+            engine.register_fn(name, move |path: &str| -> RhaiResult<()> {
+                tx.approved(name, &[path])?;
+                let path = home(name, path)?;
+                let (change, before, after) = match name {
+                    "fs_trash" => (FsChange::Trash(path), "there", "in the trash"),
+                    _ => (FsChange::Restore(path), "in the trash", "restored"),
+                };
+                let txn = h.fs_change(change).map_err(fail)?;
+                tx.changed(file_done(name, path, before, after, Some(txn)));
+                Ok(())
+            });
+        }
+        "fs_empty_trash" => {
+            engine.register_fn(name, move || -> RhaiResult<()> {
+                tx.approved(name, &[])?;
+                h.fs_change(FsChange::EmptyTrash).map_err(fail)?;
+                tx.changed(file_done(name, "trash", "full", "emptied", None));
+                Ok(())
+            });
+        }
+        _ => return false,
+    }
+    true
+}
+
+/// `path` as the `fs` client takes it, relative to `/home/user`: a relative path
+/// starts there, `/home/user/…` is the same, and any other absolute path
+/// (`/system/log`) or a `..` is `None`. The AI's file rows reach only the user's
+/// files, never `/system` (P2 plan §4.3); `fs`'s lookup refuses `..` too.
+pub(crate) fn home_path(path: &str) -> Option<&str> {
+    let rest = match path.strip_prefix('/') {
+        None => path,
+        Some(_) if path == "/home/user" => "",
+        Some(_) => path.strip_prefix("/home/user/")?,
+    };
+    let escapes = rest.split('/').any(|part| part == "..");
+    (!escapes).then_some(rest)
+}
+
+/// [`home_path`] for row `name`'s binding, refused in its words.
+fn home<'a>(name: &str, path: &'a str) -> RhaiResult<&'a str> {
+    home_path(path).ok_or_else(|| rhai_error(format!("{name}: {path} is not under /home/user")))
+}
+
+/// One file change: `file notes.txt created (was absent)`, undone by restoring
+/// transaction `txn`.
+fn file_done(
+    action: &'static str,
+    path: &str,
+    before: &str,
+    after: &str,
+    txn: Option<u64>,
+) -> Done {
+    Done {
+        action: action.into(),
+        owner: "fs".into(),
+        res: format!("file {path}"),
+        before: before.into(),
+        after: after.into(),
+        inverse: txn.map(|txn| Inverse::Fs { txn }),
+    }
 }
 
 /// One process or service change: `service notes running (was stopped)`.
@@ -428,6 +558,8 @@ fn split(plan: &Plan) -> (Vec<&'static str>, Vec<&'static str>) {
     let pick = |effect| {
         agentabi::BOUND
             .iter()
+            .chain(&agentabi::FS_ROWS)
+            .chain(&agentabi::UI_ROWS)
             .filter(|f| f.effect() == effect && names.contains(&f.name))
             .map(|f| f.name)
             .collect()
@@ -473,14 +605,33 @@ impl Host for Stub {
     fn set_policy(&self, _: u64) -> Result<(), kabi::Error> {
         Ok(())
     }
-    fn stop_process(&self, _: &str) -> Result<u64, String> {
+    fn stop_process(&self, _: &str, _: Proof) -> Result<u64, String> {
         Ok(1)
     }
-    fn stop_service(&self, _: &str) -> Result<(), String> {
+    fn stop_service(&self, _: &str, _: Proof) -> Result<(), String> {
         Ok(())
     }
-    fn start_service(&self, _: &str) -> Result<(), String> {
+    fn start_service(&self, _: &str, _: u64) -> Result<(), String> {
         Ok(())
+    }
+
+    fn restart_service(&self, _: &str, _: Proof) -> Result<(), String> {
+        Ok(())
+    }
+    fn fs_read(&self, _: FsRead) -> Result<String, String> {
+        Ok(String::new())
+    }
+    fn fs_change(&self, _: FsChange) -> Result<u64, String> {
+        Ok(0)
+    }
+    fn ui(&self, call: &crate::ui::UiCall) -> Result<String, String> {
+        use crate::ui::UiCall;
+        Ok(String::from(match call {
+            UiCall::Windows => "w1\tx\tx\t1",
+            UiCall::Focus(_) => "none",
+            UiCall::Close(window) => return Ok(window.clone()),
+            _ => "",
+        }))
     }
     fn ask(&self, _: &str) -> Result<String, String> {
         Err("not available to scripts".into())
@@ -544,7 +695,7 @@ fn for_scripts(config: &Config) -> Config {
 /// stub OS so unknown functions, wrong arguments and type errors are caught before
 /// the user is asked. The error text is fit to send back to the model.
 pub fn check(answer: &Answer, host: &Rc<dyn Host>, config: &Config) -> Result<Checked, Refusal> {
-    check_against(answer, host, config, &agentabi::SCRIPT_API)
+    check_against(answer, host, config, &agentabi::SCRIPT_CALLS)
 }
 
 /// [`check`] for the one-line script a tagged call's row runs as: its calls are
@@ -559,7 +710,7 @@ pub fn check_call(
 
 /// [`check`], finding the script's calls among `rows`: a model's script sees only
 /// the script API, so a call-only row is no call of it and fails its trial.
-fn check_against(
+pub(crate) fn check_against(
     answer: &Answer,
     host: &Rc<dyn Host>,
     config: &Config,
@@ -692,9 +843,16 @@ pub struct Ran {
 /// Runs a script with the real OS, granted only the calls the plan found. Its
 /// outbound effects go out only if the whole run succeeded.
 pub fn run(checked: &Checked, host: &Rc<dyn Host>, config: &Config) -> Ran {
+    run_as(checked, host, config, Consent::default())
+}
+
+/// [`run`] for log entry `consent.entry`, showing its asked calls' owners
+/// `consent.proof`.
+pub fn run_as(checked: &Checked, host: &Rc<dyn Host>, config: &Config, consent: Consent) -> Ran {
     let config = &for_scripts(config);
     let line = Line::new();
-    let tx = Tx::new(host, &checked.plan);
+    let mut tx = Tx::new(host, &checked.plan);
+    tx.consent = consent;
     let engine = strict(&line, config, &checked.plan.names(), &tx);
     line.begin(host.as_ref(), config);
     let result = engine::eval(&engine, &mut Scope::new(), &checked.ast, config.exec);

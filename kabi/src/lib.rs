@@ -13,27 +13,49 @@ extern crate alloc;
 pub mod call;
 pub mod cap;
 pub mod device;
+pub mod display;
 mod error;
+pub mod event;
+pub mod fs;
 pub mod handle;
+pub mod input;
 mod ipc;
 pub mod layout;
 pub mod live;
 mod metrics;
 pub mod model;
+pub mod modelhint;
 pub mod net;
+pub mod part;
+pub mod pkgrepo;
 pub mod plan;
 pub mod policy;
 pub mod probe;
 mod process;
 pub mod sched;
 pub mod thread;
+pub mod update;
 
 pub use error::Error;
 pub use ipc::{CallRequest, HttpRequest, MAX_MESSAGE};
 pub use metrics::{MAX_METRIC_PROCESSES, Metrics, ProcessInfo};
-pub use process::{ExitReason, ExitRecord, JobSpawn, Limits, MAX_ARGS, MAX_STATE, SpawnRequest};
+pub use process::{
+    ExitReason, ExitRecord, JobSpawn, Limits, MAX_ARGS, MAX_PLAN, MAX_STATE, SpawnRequest,
+};
 
 pub const MAX_NAME: usize = 24;
+
+/// The product's name (ADR 0009 D8), as a macro too, so `concat!` keeps the
+/// model's prompts `const`. The banner, the boot entry, the VM's name and the
+/// prompts say it. Renaming changes the prompts, so it needs a fluency re-run.
+#[macro_export]
+macro_rules! product_name {
+    () => {
+        "Kernel AI"
+    };
+}
+
+pub const PRODUCT_NAME: &str = product_name!();
 
 // The fixed layout must leave the image, heap and stack apart, inside user space,
 // and the structures passed by pointer must keep their sizes.
@@ -44,7 +66,7 @@ const _: () = {
     assert!(core::mem::size_of::<ExitRecord>() == 32 + MAX_NAME);
     assert!(core::mem::size_of::<SpawnRequest>() == 10 * 8);
     assert!(core::mem::size_of::<CallRequest>() == 5 * 8);
-    assert!(core::mem::size_of::<Metrics>() == 13 * 8 + MAX_METRIC_PROCESSES * (16 + MAX_NAME));
+    assert!(core::mem::size_of::<Metrics>() == 13 * 8 + MAX_METRIC_PROCESSES * (32 + MAX_NAME));
     assert!(HEAP_BASE + HEAP_MAX < STACK_TOP - MAX_STACK_PAGES * 4096);
     assert!(HEAP_BASE + HEAP_MAX <= MODEL_BASE && MODEL_BASE.is_multiple_of(MODEL_MAX));
     assert!(MODEL_MAX == 1 << 39 && MODEL_BASE + MODEL_MAX <= STACK_TOP - MAX_STACK_PAGES * 4096);

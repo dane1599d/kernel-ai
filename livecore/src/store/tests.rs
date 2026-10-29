@@ -103,3 +103,131 @@ fn info_reports_the_phase_labels_and_next_upload() {
     let info = notes.info();
     assert_eq!((info.phase, info.active()), (phase::STEADY, "1"));
 }
+
+/// [`Component::add_package`] of `bytes` checked against `sha`.
+fn add(component: &mut Component, bytes: Vec<u8>, sha: &[u8; 32]) -> Result<String, Error> {
+    component.add_package(PackageArtifact::check(bytes, sha)?, 0)
+}
+
+fn digest(bytes: &[u8]) -> [u8; 32] {
+    Sha256::digest(bytes).into()
+}
+
+#[test]
+fn a_package_version_is_labelled_by_its_own_digest_and_only_added() {
+    let mut notes = Component::new("notes");
+    notes.add_version("2", Bytes::Static(b"boot two")).unwrap();
+    let artifact = b"package one".to_vec();
+    let sha = digest(&artifact);
+    let label = add(&mut notes, artifact.clone(), &sha).unwrap();
+    assert_eq!(label, package_label(&sha));
+    assert!(is_package_label(&label) && label.len() == 14);
+    let version = notes.version(&label).unwrap();
+    assert_eq!(version.origin, Origin::Package { sha });
+    assert_eq!(notes.fetch(5, &label, 100), Ok((&b"package one"[..], true)));
+    // Started like any version, through the ledger.
+    assert!(notes.event(5, &event(kind::RESTORED, &label)).is_ok());
+    // A second add of the same label replaces nothing, not even with the same bytes.
+    assert_eq!(add(&mut notes, artifact, &sha), Err(Error::Busy));
+    assert_eq!(notes.bytes(&label).unwrap().as_slice(), b"package one");
+    // A boot module may not take a package label.
+    assert!(notes.add_version(&label, Bytes::Static(b"x")).is_err());
+}
+
+#[test]
+fn a_wrong_digest_or_an_oversized_or_unstorable_package_is_refused() {
+    let mut notes = Component::new("notes");
+    let artifact = b"package one".to_vec();
+    let mut wrong = digest(&artifact);
+    wrong[31] ^= 1;
+    assert_eq!(
+        add(&mut notes, artifact.clone(), &wrong),
+        Err(Error::Invalid)
+    );
+    // The digest of other bytes, even with the same first 12 hex digits' label.
+    assert_eq!(
+        add(&mut notes, b"other".to_vec(), &digest(&artifact)),
+        Err(Error::Invalid)
+    );
+    let big = alloc::vec![0u8; MAX_ARTIFACT + 1];
+    assert_eq!(
+        add(&mut notes, big.clone(), &digest(&big)),
+        Err(Error::TooBig)
+    );
+    assert_eq!(notes.versions().len(), 0);
+}
+
+/// Each update adds a version; older ones go so updates never fill the store,
+/// but never the running one (nor the candidate or the rollback target, which
+/// the same `keep` holds).
+#[test]
+fn updates_evict_old_package_versions_but_not_the_running_or_rollback_ones() {
+    let mut notes = Component::new("notes");
+    let mut labels = Vec::new();
+    for n in 0..2 * MAX_VERSIONS {
+        let bytes = alloc::format!("version {n}").into_bytes();
+        let label = add(&mut notes, bytes.clone(), &digest(&bytes)).unwrap();
+        // The first runs, so it must outlast every later update.
+        if n == 0 {
+            notes.fetch(5, &label, 100).unwrap();
+            assert!(notes.event(5, &event(kind::RESTORED, &label)).is_ok());
+        }
+        labels.push(label);
+    }
+    let held: Vec<&str> = notes.labels().collect();
+    assert!(held.len() <= KEEP_PACKAGES, "{held:?}");
+    let newest = labels.last().unwrap().as_str();
+    assert!(held.contains(&newest), "the newest stays");
+    let active = notes.ledger.active().unwrap();
+    assert!(held.contains(&active), "the running one stays: {active}");
+    if let Some(back) = notes.ledger.revert_target(1) {
+        assert!(held.contains(&back), "the rollback stays: {back}");
+    }
+}
+
+#[test]
+fn package_versions_of_every_component_together_stay_within_their_budget() {
+    // 1 MiB artifacts, told apart by their first byte.
+    let artifact = |n: u8| {
+        let mut bytes = alloc::vec![0u8; MAX_ARTIFACT];
+        bytes[0] = n;
+        bytes
+    };
+    let mut store: Vec<Component> = ["notes", "files", "editor"]
+        .into_iter()
+        .map(Component::new)
+        .collect();
+    let used_except = |store: &[Component], at: usize| -> usize {
+        let others = store.iter().enumerate().filter(|(i, _)| *i != at);
+        others.map(|(_, c)| c.package_bytes()).sum()
+    };
+    // Round and round: each add evicts its own component's old versions, so
+    // every one fits and the total never passes the budget.
+    for n in 0..=u8::MAX {
+        let at = usize::from(n) % store.len();
+        let bytes = artifact(n);
+        let used = used_except(&store, at);
+        let checked = PackageArtifact::check(bytes.clone(), &digest(&bytes)).unwrap();
+        assert!(store[at].add_package(checked, used).is_ok(), "update {n}");
+        let held: usize = store.iter().map(Component::package_bytes).sum();
+        assert!(held <= MAX_PACKAGE_TOTAL, "{held} after update {n}");
+        assert!(store[at].labels().count() <= KEEP_PACKAGES);
+    }
+    // When the others' budget leaves no room even after evicting all of its
+    // own, the add is refused.
+    let mut lone = Component::new("lone");
+    let bytes = artifact(1);
+    let checked = PackageArtifact::check(bytes.clone(), &digest(&bytes)).unwrap();
+    assert_eq!(
+        lone.add_package(checked, MAX_PACKAGE_TOTAL),
+        Err(Error::NoMemory)
+    );
+    // A version that is still there is Busy, never NoMemory.
+    let last = artifact(u8::MAX);
+    let again = PackageArtifact::check(last.clone(), &digest(&last)).unwrap();
+    let at = usize::from(u8::MAX) % store.len();
+    let used = used_except(&store, at);
+    assert_eq!(store[at].add_package(again, used), Err(Error::Busy));
+    // Uploads do not count against the packages' budget.
+    assert_eq!(store[0].upload_bytes(), 0);
+}

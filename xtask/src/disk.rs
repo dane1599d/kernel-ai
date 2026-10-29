@@ -53,6 +53,11 @@ pub struct Golden {
 }
 
 impl ModelDisk {
+    /// The file on the host.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
     /// A file to attach, by an absolute path. The file is only read.
     pub fn open(path: &Path) -> Result<Self, String> {
         // Not canonicalize: on Windows that gives a `\\?\` path QEMU may not take.
@@ -297,9 +302,11 @@ impl Fixture {
             }
             Fixture::LocalScript => {
                 let outcome = crate::local_script::golden(&bytes)?;
+                // The second reply by its shape: a read the model picks may be
+                // of live counters (`kabi::model::shape`).
                 Some(Golden {
                     lines: crate::local_script::reply_lines(&outcome.typed),
-                    hashed: outcome.again,
+                    hashed: kabi::model::shape(&outcome.again),
                 })
             }
             Fixture::LocalTune => {
@@ -434,7 +441,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         let bytes = infer::fixture::local_script(&crate::local_script::prompts());
         let outcome = crate::local_script::golden(&bytes).unwrap();
-        let hash = kabi::model::fnv1a(outcome.again.as_bytes());
+        let hash = kabi::model::fnv1a(kabi::model::shape(&outcome.again).as_bytes());
         assert!(
             disk.cmdline()
                 .ends_with(&format!(" local_golden={hash:016x}"))

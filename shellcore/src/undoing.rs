@@ -80,22 +80,55 @@ impl Shell {
         let mut redo: Vec<Change> = Vec::new();
         let mut left = entry.changes.clone();
         let mut stopped: Option<Reply> = None;
+        // A script's file changes share one transaction (P2 task 11): the first
+        // restore puts them all back, and its redo stands for each.
+        let mut restored: Option<(u64, undo::Inverse)> = None;
         while let Some(change) = left.pop() {
             let Some(inverse) = change.inverse else {
                 left.push(change);
                 break;
             };
+            if let (undo::Inverse::Fs { txn }, Some((done, again))) = (inverse, restored)
+                && done == txn
+            {
+                redo.push(Change {
+                    before: change.after.clone(),
+                    after: change.before.clone(),
+                    inverse: Some(again),
+                    ..change
+                });
+                continue;
+            }
             let reverted = match inverse {
-                undo::Inverse::Generation { from, to } => self.switch_generation(from, to, anyway),
-                other => undo::revert(self.host.as_ref(), other, anyway),
+                undo::Inverse::Generation { from, to } => self
+                    .switch_generation(from, to, anyway)
+                    .map(|text| (text, undo::reverse(inverse))),
+                undo::Inverse::Instruction { id: rule, made } => self
+                    .revert_instruction(rule, made)
+                    .map(|text| (text, undo::reverse(inverse)))
+                    .map_err(Refused::Failed),
+                undo::Inverse::Profile { key } => self
+                    .revert_profile(key)
+                    .map(|(text, redo)| (text, undo::Inverse::Profile { key: redo }))
+                    .map_err(Refused::Failed),
+                other => {
+                    let ids = undo::Ids {
+                        made: id,
+                        next: self.next_id,
+                    };
+                    undo::revert(self.host.as_ref(), other, anyway, ids)
+                }
             };
             match reverted {
-                Ok(text) => {
+                Ok((text, again)) => {
+                    if let undo::Inverse::Fs { txn } = inverse {
+                        restored = Some((txn, again));
+                    }
                     said.push(text);
                     redo.push(Change {
                         before: change.after.clone(),
                         after: change.before.clone(),
-                        inverse: Some(undo::reverse(inverse)),
+                        inverse: Some(again),
                         ..change
                     });
                 }
@@ -148,6 +181,7 @@ impl Shell {
             form: Form::Undo,
             of: Some(entry.id),
             tier: None,
+            pack: None,
             consent: String::from("typed"),
             state: State::Done,
             request: String::from("undo"),
@@ -181,6 +215,7 @@ impl Shell {
             form: Form::Tune,
             of: None,
             tier: None,
+            pack: None,
             consent: String::from("yes"),
             state: State::Done,
             request: format!("tune {}", kept.target),
