@@ -16,6 +16,8 @@ pub const MAX_FILES: usize = 512;
 pub const MAX_BYTES: usize = 64 << 20;
 /// The header's path, the first file of every package.
 pub const HEADER: &str = "kai-package";
+/// The ADR 0003 artifact's path inside an `app` package, its second file.
+pub const ARTIFACT: &str = "app.wasm";
 
 /// Whether `path` is a plain relative path: `/` between segments that are not
 /// empty, `.` or `..`, with no backslash, colon, whitespace or control character.

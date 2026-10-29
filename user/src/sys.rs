@@ -457,6 +457,18 @@ pub fn mem_release(addr: u64) -> Result<u64, Error> {
     call(call::MEM_RELEASE, [addr, 0, 0, 0, 0, 0])
 }
 
+/// Process `pid`'s page quota becomes `pages`; the old one (PROC_QUOTA_SET,
+/// needs SUPERVISE).
+pub fn proc_quota_set(pid: u64, pages: u64) -> Result<u64, Error> {
+    call(call::PROC_QUOTA_SET, [pid, pages, 0, 0, 0, 0])
+}
+
+/// Process `pid` runs `normal` (0) or `background` (1) (PROC_CLASS_SET, needs
+/// SUPERVISE).
+pub fn proc_class_set(pid: u64, class: u64) -> Result<u64, Error> {
+    call(call::PROC_CLASS_SET, [pid, class, 0, 0, 0, 0])
+}
+
 /// New zeroed shared pages, and an `Shm` handle to them (ADR 0001 D4).
 pub fn shm_create(pages: u64) -> Result<Handle, Error> {
     call(call::SHM_CREATE, [pages, 0, 0, 0, 0, 0]).map(|h| Handle(h as u32))
@@ -617,6 +629,37 @@ pub fn interrupted() -> bool {
     call(call::INTERRUPTED, [0; 6]).is_ok_and(|flag| flag != 0)
 }
 
+/// Copies the boot bundle's file `path` into `buf` when it fits; its length
+/// either way. Only beneath what this process's plan line grants with `bootfiles=`.
+pub fn boot_read(path: &str, buf: &mut [u8]) -> Result<usize, Error> {
+    call(
+        call::BOOT_READ,
+        [
+            path.as_ptr() as u64,
+            path.len() as u64,
+            buf.as_mut_ptr() as u64,
+            buf.len() as u64,
+            0,
+            0,
+        ],
+    )
+    .map(|len| len as usize)
+}
+
+/// Adds `artifact`, whose SHA-256 is `sha`, as a version of component `name`,
+/// labelled `p-` and its digest's first 12 hex digits. Only for the holder of
+/// `/system/pkg`; only adds.
+pub fn comp_add(name: &str, artifact: &[u8], sha: &[u8; 32]) -> Result<(), Error> {
+    let add = kabi::live::Add {
+        name_ptr: name.as_ptr() as u64,
+        name_len: name.len() as u64,
+        artifact_ptr: artifact.as_ptr() as u64,
+        artifact_len: artifact.len() as u64,
+        sha: *sha,
+    };
+    call(call::COMP_ADD, [&add as *const _ as u64, 0, 0, 0, 0, 0]).map(drop)
+}
+
 /// Copies version `label` of this process's component into `buf` when it fits;
 /// its length either way.
 pub fn comp_fetch(label: &str, buf: &mut [u8]) -> Result<usize, Error> {
@@ -735,6 +778,16 @@ pub fn comp_control(component: &str, request: &str, reply: &mut [u8]) -> Result<
 }
 
 /// As [`http`], to the build service the kernel was booted with (needs PUBLISH).
+/// Sends `request`, as `kabi::pkgrepo::request` builds it, to the fixed `pkgrepo=`
+/// mirror; the response's length. Only for the holder of `/system/pkg`.
+pub fn pkg_fetch(request: &HttpRequest) -> Result<usize, Error> {
+    call(
+        call::PKG_FETCH,
+        [request as *const HttpRequest as u64, 0, 0, 0, 0, 0],
+    )
+    .map(|len| len as usize)
+}
+
 pub fn build(request: &HttpRequest) -> Result<usize, Error> {
     call(
         call::BUILD,

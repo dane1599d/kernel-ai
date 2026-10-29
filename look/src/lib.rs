@@ -9,6 +9,9 @@
 //!   stay the console's alone.
 //! - [`TypeStyle`] and [`Type`]: the type styles in logical px.
 //! - [`Motion`]: the motion tokens.
+//! - [`theme`]: `kai-theme 1` files, the shipped themes (dark, light,
+//!   high-contrast and legible) and the checks every theme must pass;
+//!   [`appearance`]: what `appearance_set` changes, with undo.
 //! - [`contrast`]: the WCAG 2.2 contrast ratio. The tests hold every text pair
 //!   to 4.5:1 and every mark and edge to 3:1, and fail any colour literal outside
 //!   this crate and the kernel console.
@@ -17,10 +20,13 @@
 
 #![no_std]
 
+extern crate alloc;
 #[cfg(test)]
 extern crate std;
 
+pub mod appearance;
 pub mod console;
+pub mod theme;
 
 /// A colour's job (ADR 0005 §8's table).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -366,3 +372,5 @@ pub fn contrast(a: u32, b: u32) -> f64 {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod theme_tests;
