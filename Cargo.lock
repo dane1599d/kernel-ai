@@ -124,6 +124,9 @@ dependencies = [
 [[package]]
 name = "bootslot"
 version = "0.1.0-dev"
+dependencies = [
+ "minicbor",
+]
 
 [[package]]
 name = "bpe"
@@ -169,6 +172,20 @@ name = "captable"
 version = "0.1.0-dev"
 dependencies = [
  "kabi",
+]
+
+[[package]]
+name = "ccserve"
+version = "0.1.0-dev"
+dependencies = [
+ "agentabi",
+ "kailink",
+ "promptcore",
+ "serde_json",
+ "sha2",
+ "wasihost",
+ "wasmi",
+ "wasmparser 0.228.0",
 ]
 
 [[package]]
@@ -297,6 +314,15 @@ version = "0.1.0-dev"
 dependencies = [
  "comp-terminal",
  "uikit",
+]
+
+[[package]]
+name = "comp-ui-bind"
+version = "0.1.0-dev"
+dependencies = [
+ "compsdk",
+ "uikit",
+ "wit-bindgen",
 ]
 
 [[package]]
@@ -487,6 +513,7 @@ name = "deskcore"
 version = "0.1.0-dev"
 dependencies = [
  "gfx2d",
+ "kabi",
  "libm",
  "look",
  "sha2",
@@ -1222,6 +1249,10 @@ checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
 dependencies = [
  "unicode-ident",
 ]
+
+[[package]]
+name = "promptcore"
+version = "0.1.0-dev"
 
 [[package]]
 name = "quant"

@@ -238,6 +238,89 @@ fn configure_close_and_destroy_go_through_the_client() {
     assert_eq!(client.windows().count(), 0);
 }
 
+/// Keys, clicks and moves for a client's window go to its pool's header ring,
+/// a key with the text it types; the seat hears the modifiers.
+#[test]
+fn input_for_a_window_goes_to_its_pool_with_its_text() {
+    use crate::desk::Button;
+    use crate::geom::Point;
+    use surfabi::header::Event as Ring;
+    use surfabi::input::Kind;
+    let mut desk = Desk::new(1280, 800);
+    let mut client = Client::new(42, "notes");
+    client.handle(&mut desk, &setup(), true).unwrap();
+    client.pool_mapped(2);
+    let needs = client.handle(&mut desk, &show(), false).unwrap();
+    let [Need::Show { window, .. }] = needs[..] else {
+        panic!("{needs:?}");
+    };
+    events(&mut client);
+    let key = |usage, down| Effect::Key {
+        window,
+        usage,
+        down,
+    };
+    client.apply(&[key(0xE1, true), key(0x04, true), key(0x04, false)]);
+    let posts = client.take_posts();
+    let typed: Vec<(u32, Kind, u16, i32, &[u8])> = posts
+        .iter()
+        .map(|(pool, e)| match e {
+            Ring::Input {
+                event, text, len, ..
+            } => (
+                *pool,
+                event.kind,
+                event.code,
+                event.value,
+                &text[..usize::from(*len)],
+            ),
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        typed,
+        [
+            (2, Kind::Key, 0xE1, 1, &b""[..]),
+            (2, Kind::Key, 0x04, 1, &b"A"[..]),
+            (2, Kind::Key, 0x04, 0, &b""[..]),
+        ]
+    );
+    // The seat (7) heard Shift.
+    let sent = events(&mut client);
+    let modifiers = Event::decode(Interface::Seat, sent[0].1, &sent[0].2);
+    assert_eq!((sent[0].0, modifiers), (7, Ok(Event::Modifiers(1))));
+    // Ctrl held: the key comes with no text.
+    client.apply(&[key(0xE1, false), key(0xE0, true), key(0x06, true)]);
+    let ctrl_c = client.take_posts();
+    assert!(matches!(ctrl_c[2].1, Ring::Input { len: 0, .. }));
+    // A click carries its place in 24.8; another window's input is not ours.
+    let at = Point { x: 10, y: 20 };
+    client.apply(&[Effect::Button {
+        window,
+        at,
+        button: Button::Left,
+        down: true,
+    }]);
+    let click = client.take_posts();
+    assert!(matches!(
+        click[..],
+        [(
+            2,
+            Ring::Input {
+                x: 2560,
+                y: 5120,
+                ..
+            }
+        )]
+    ));
+    client.apply(&[Effect::Key {
+        window: crate::desk::WindowId(window.0 + 100),
+        usage: 0x04,
+        down: true,
+    }]);
+    assert!(client.take_posts().is_empty());
+}
+
 #[test]
 fn events_are_sent_in_whole_messages() {
     let mut client = Client::new(1, "x");
@@ -457,4 +540,116 @@ fn act_sends_an_action_request_only_for_an_action_the_node_offers() {
             },
         ]
     );
+}
+
+#[test]
+fn a_bound_node_names_its_action_and_unbinding_or_a_new_tree_drops_it() {
+    let (mut desk, mut client, window) = tree_window();
+    let tree = bytes(&[
+        (8, Request::TreeUpdate(&tree_bytes("Save"))),
+        (8, Request::A11yCommit),
+        (
+            8,
+            Request::BindAction {
+                node: 2,
+                action: "notes_save",
+            },
+        ),
+        (
+            8,
+            Request::BindAction {
+                node: 9,
+                action: "notes_delete",
+            },
+        ),
+    ]);
+    client.handle(&mut desk, &tree, false).unwrap();
+    assert_eq!(client.bound_action(window, 2), Some("notes_save"));
+    assert_eq!(client.bound_action(window, 3), None, "unbound: ask");
+    assert_eq!(client.bound_action(window, 9), None, "not in the tree");
+    let unbind = bytes(&[(
+        8,
+        Request::BindAction {
+            node: 2,
+            action: "",
+        },
+    )]);
+    client.handle(&mut desk, &unbind, false).unwrap();
+    assert_eq!(client.bound_action(window, 2), None);
+}
+
+#[test]
+fn a_badly_named_or_one_too_many_binding_closes_the_connection() {
+    // Only the shape: another app's row is the agent core's to refuse.
+    for name in [
+        "Notes_Save",
+        "save",
+        "notes save",
+        "notes_",
+        "_save",
+        &"notes_".repeat(11),
+    ] {
+        let (mut desk, mut client, _) = tree_window();
+        let bad = bytes(&[(
+            8,
+            Request::BindAction {
+                node: 2,
+                action: name,
+            },
+        )]);
+        assert_eq!(
+            client.handle(&mut desk, &bad, false),
+            Err(Error::BadArg),
+            "{name}"
+        );
+    }
+    let (mut desk, mut client, _) = tree_window();
+    let many: Vec<(u32, Request)> = (0..=crate::server::MAX_BOUND as u32)
+        .map(|node| {
+            (
+                8,
+                Request::BindAction {
+                    node,
+                    action: "notes_save",
+                },
+            )
+        })
+        .collect();
+    assert_eq!(
+        client.handle(&mut desk, &bytes(&many), false),
+        Err(Error::BadArg)
+    );
+}
+
+#[test]
+fn a_window_is_saved_until_its_app_says_otherwise() {
+    let (mut desk, mut client, window) = tree_window();
+    assert!(!client.unsaved(window));
+    client
+        .handle(&mut desk, &bytes(&[(5, Request::SetUnsaved(true))]), false)
+        .unwrap();
+    assert!(client.unsaved(window));
+    client
+        .handle(&mut desk, &bytes(&[(5, Request::SetUnsaved(false))]), false)
+        .unwrap();
+    assert!(!client.unsaved(window));
+}
+
+#[test]
+fn a_window_of_another_name_binds_its_apps_rows() {
+    // Notes' window runs as `notes-window` and binds the Notes app's `notes_add`.
+    let mut desk = Desk::new(1280, 800);
+    let mut client = Client::new(5, "notes-window");
+    client.handle(&mut desk, &setup(), true).unwrap();
+    client
+        .handle(&mut desk, &bytes(&[(3, Request::GetA11y { id: 8 })]), false)
+        .unwrap();
+    let rows = bytes(&[(
+        8,
+        Request::BindAction {
+            node: 2,
+            action: "notes_add",
+        },
+    )]);
+    assert_eq!(client.handle(&mut desk, &rows, false), Ok(vec![]));
 }

@@ -332,6 +332,10 @@ pub fn spawn_service(slot: usize, request_ptr: u64) -> Result<u64, Error> {
     {
         return Err(Error::Permission);
     }
+    // Answering asks is the desktop's alone (ADR 0005 §7).
+    if request.limits.caps & cap::ASK != 0 && (name != DESKTOP || program != DESKTOP) {
+        return Err(Error::Permission);
+    }
     // The console's rows are the terminal window's alone.
     if request.limits.caps & cap::TERM != 0 && (name != TERM || program != TERM) {
         return Err(Error::Permission);

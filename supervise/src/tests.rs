@@ -328,6 +328,11 @@ fn stop_and_start_requests_parse_and_are_checked() {
         ),
         ("stop build-1 rule", (Request::Stop("build-1"), Proof::Rule)),
         (
+            "suspend notes rule",
+            (Request::Suspend("notes"), Proof::Rule),
+        ),
+        ("resume notes rule", (Request::Resume("notes"), Proof::Rule)),
+        (
             "stop build-1 undo id=4",
             (Request::Stop("build-1"), Proof::Undo(4)),
         ),
@@ -689,6 +694,36 @@ fn start_starts_a_demand_service_not_started_yet() {
         check(Request::Start("notes"), &records),
         Err("err not stopped")
     );
+}
+
+#[test]
+fn suspend_and_resume_need_a_once_or_a_rule() {
+    let once = Proof::Once(Once { badge: 1, id: 2 });
+    for request in [Request::Suspend("notes"), Request::Resume("notes")] {
+        assert_eq!(proof_fits(request, Proof::Rule), Ok(()));
+        assert_eq!(proof_fits(request, once), Ok(()));
+        for proof in [Proof::None, Proof::Entry(2), Proof::Undo(2)] {
+            assert!(proof_fits(request, proof).is_err(), "{request:?} {proof:?}");
+        }
+        assert_eq!(
+            Request::parse(&request.encode(Proof::Rule)),
+            Some((request, Proof::Rule))
+        );
+    }
+    assert_eq!(
+        Request::Suspend("notes").call().as_deref(),
+        Some("app_suspend(\"notes\")")
+    );
+    assert_eq!(
+        Request::Resume("notes").call().as_deref(),
+        Some("app_resume(\"notes\")")
+    );
+    let records = vec![Record::new("shell"), Record::new("notes")];
+    assert_eq!(
+        check(Request::Suspend("shell"), &records),
+        Err("err protected")
+    );
+    assert_eq!(check(Request::Suspend("notes"), &records), Ok(1));
 }
 
 const RUN_PLAN: &str = "fs caps=serve\n\

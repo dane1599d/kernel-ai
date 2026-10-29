@@ -10,7 +10,10 @@
 //! ONCE_CHECK against the call shown (ADR 0001 D6); a standing rule the caller
 //! holds, checked with RULE_CHECK; or, for a stop, an undo of the start the shell
 //! made as that log entry, with nothing changed since. A start needs none. Its
-//! own restarts need none either.
+//! own restarts need none either. `suspend <name>` and `resume <name>` run a
+//! standing instruction's `app_suspend` and `app_resume` (P3 task 11): with a
+//! rule, checked with RULE_CHECK, the kernel sends the app its `ctl` (APP_CTL)
+//! and the app's answer is the reply.
 //! `services` lists them, for the shell to tell a service from a process.
 //! A `start=demand` service is not started at boot: `demand <name>`, which only
 //! the kernel sends, when a call first waits for it, starts it (P3 task 12b).
@@ -222,6 +225,9 @@ fn handle(services: &mut [Service], text: &str, caller: u64) -> String {
     };
     let service = &mut services[index];
     let name = service.spec.name.clone();
+    if let Request::Suspend(_) | Request::Resume(_) = request {
+        return app_ctl(&name, matches!(request, Request::Resume(_)));
+    }
     if let Proof::Undo(id) = proof
         && service.started_by != Some(id)
     {
@@ -248,6 +254,7 @@ fn handle(services: &mut [Service], text: &str, caller: u64) -> String {
             service.start_at_ms = Some(now_ms());
             println!("{name} started on request");
         }
+        Request::Suspend(_) | Request::Resume(_) => {}
         Request::Restart(_) => {
             service.record.stopped = false;
             service.record.gave_up = false;
@@ -282,6 +289,23 @@ fn demand(services: &mut [Service], records: &[Record], name: &str, caller: u64)
         }
         Ok(None) => String::from("ok"),
         Err(why) => why.into(),
+    }
+}
+
+/// `ctl suspend` (or, `resume`, `ctl resume`) to app `name` through the kernel:
+/// the app's own answer, `ok ...` or `err ...`.
+fn app_ctl(name: &str, resume: bool) -> String {
+    let mut reply = [0u8; 256];
+    match sys::app_ctl(name, resume, &mut reply) {
+        Ok(len) => {
+            let text = String::from_utf8_lossy(&reply[..len.min(reply.len())]).into_owned();
+            println!(
+                "{name} {}: {text}",
+                if resume { "resume" } else { "suspend" }
+            );
+            text
+        }
+        Err(error) => format!("err cannot reach {name}: {error:?}"),
     }
 }
 

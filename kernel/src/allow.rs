@@ -5,6 +5,9 @@
 //! digest with ONCE_CHECK before the call runs, and a match uses it up. On
 //! "Always allow" it also makes the rule's persistent node under `user` and gives
 //! the shell a `Grant` handle that can only revoke it, for `rules_remove`.
+//! An Allow on a standing instruction's `rules_add(...)` makes such a node too,
+//! noting the one action the instruction may run on its app (P3 task 11), so
+//! the user's Allow is the only way a firing's owner finds a rule for it.
 //!
 //! The shell still holds its run-tier rights, so today the ONCE check is the
 //! shell's own; task 14 moves asked calls into `scriptrun`, where the kernel
@@ -51,8 +54,11 @@ pub fn allow(id: u64, call: &str, answer: Answer) -> Result<Option<Allowed>, kab
         }
     };
     let rule = match answer {
-        Answer::AlwaysKind => Some(rule_node(shell, id, call, true)?),
-        Answer::AlwaysTarget => Some(rule_node(shell, id, call, false)?),
+        _ if kabi::event::standing(call).is_some() => {
+            Some(rule_node(shell, id, call, Note::Standing)?)
+        }
+        Answer::AlwaysKind => Some(rule_node(shell, id, call, Note::Every)?),
+        Answer::AlwaysTarget => Some(rule_node(shell, id, call, Note::Call)?),
         _ => None,
     };
     Ok(Some(Allowed {
@@ -64,17 +70,32 @@ pub fn allow(id: u64, call: &str, answer: Answer) -> Result<Option<Allowed>, kab
     }))
 }
 
+/// What a rule node covers.
+enum Note {
+    /// `call`'s action, for every target.
+    Every,
+    /// `call` itself.
+    Call,
+    /// The standing instruction `call` makes: its action on its app, and the
+    /// inverse.
+    Standing,
+}
+
 /// A persistent `rule <id>` node under `user`, and a handle in the shell's table
-/// that can only revoke it. The kernel notes what it covers, `call`'s action for
-/// `every` target or `call` itself ([`handle::rules`]), so a call it covers can be
-/// checked without a `ONCE`.
-fn rule_node(shell: usize, id: u64, call: &str, every: bool) -> Result<u32, kabi::Error> {
+/// that can only revoke it. The kernel notes what it covers ([`handle::rules`]),
+/// so a call it covers can be checked without a `ONCE`.
+fn rule_node(shell: usize, id: u64, call: &str, note: Note) -> Result<u32, kabi::Error> {
     let mut label = [0u8; LABEL];
     let text = alloc::format!("rule from {id}");
     let len = text.len().min(LABEL);
     label[..len].copy_from_slice(&text.as_bytes()[..len]);
     let node = grants::create(grants::root(USER), 0, Life::Persistent, &label[..len])?;
-    if let Err(error) = handle::rules::record(node, call, every) {
+    let noted = match note {
+        Note::Every => handle::rules::record(node, call, true),
+        Note::Call => handle::rules::record(node, call, false),
+        Note::Standing => handle::rules::record_standing(node, call),
+    };
+    if let Err(error) = noted {
         let _ = grants::revoke(node);
         return Err(error);
     }

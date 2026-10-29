@@ -12,6 +12,7 @@
 //! inside [`SHADOW_REACH`]; `desktop` grows its damage by that much, so a moved
 //! or refocused window takes its shadow with it.
 
+use crate::askcard::Card;
 use crate::chrome::{self, Part};
 use crate::desk::{Desk, Focus, Window, WindowId};
 use crate::geom::{Point, Rect};
@@ -48,6 +49,8 @@ pub struct Scene<'a> {
     pub desk: &'a Desk,
     pub bar: &'a Bar,
     pub panel: &'a Panel,
+    /// The text of the ask card up now, as the kernel posted it.
+    pub ask: Option<&'a Card>,
     /// The clock, for the panel's "thinking 4s".
     pub now_ms: u64,
 }
@@ -141,15 +144,23 @@ impl Painter {
             self.panel(c, clip, scene);
         }
         if let Some(ask) = desk.ask() {
-            let (width, height) = (c.width as i32, c.height as i32);
-            let card = trusted::card(width, height, &ask);
-            fill(c, card, clip, self.palette.raised);
-            fill(
-                c,
-                Rect::new(card.x, card.y, card.w, 3),
-                clip,
-                self.palette.ask,
-            );
+            match scene.ask {
+                Some(card) if card.id == ask.id => {
+                    self.ask_card(c, clip, &ask, card, scene.now_ms);
+                }
+                // A card with no text from the kernel shows none.
+                _ => {
+                    let (width, height) = (c.width as i32, c.height as i32);
+                    let card = trusted::card(width, height, &ask);
+                    fill(c, card, clip, self.palette.raised);
+                    fill(
+                        c,
+                        Rect::new(card.x, card.y, card.w, 3),
+                        clip,
+                        self.palette.ask,
+                    );
+                }
+            }
         }
     }
 

@@ -30,7 +30,8 @@ use fsproto::{
     Version,
 };
 use kabi::fs::{
-    Badge, HOME, HOME_USER, MODELS, SYSTEM, SYSTEM_PKG, SYSTEM_STATE, SYSTEM_TRUST, SYSTEM_UPDATES,
+    Badge, HOME, HOME_USER, MODELS, SYSTEM, SYSTEM_PKG, SYSTEM_SETTINGS, SYSTEM_STATE,
+    SYSTEM_TRUST, SYSTEM_UPDATES,
 };
 use kabi::handle::Rights;
 use kaifs::ns::Listed;
@@ -46,6 +47,9 @@ const FOLDERS: [(u8, &str); 6] = [
     (SYSTEM, "trust"),
     (SYSTEM, "updates"),
 ];
+
+/// The most a [`SYSTEM_SETTINGS`] handle may use, however it was made.
+const SETTINGS_RIGHTS: Rights = Rights::READ.union(Rights::ENUMERATE).union(BASE);
 
 /// Rights every minted handle carries, as the kernel's startup handles do.
 pub const BASE: Rights = Rights::DUPLICATE
@@ -133,6 +137,8 @@ pub struct Server<D: BlockDev> {
     /// [`SYSTEM_UPDATES`] name, the folders `updated`'s `dir=` grants.
     system_trust: u64,
     system_updates: u64,
+    /// `/system/settings`: what [`SYSTEM_SETTINGS`] names, read only.
+    system_settings: u64,
     /// This disk's epoch, in every badge but the fixed ones ([`kabi::fs`]).
     epoch: u16,
     /// The clock at mount: kaifs's times are this plus time since boot, so they
@@ -174,6 +180,7 @@ impl<D: BlockDev> Server<D> {
             system_pkg: 0,
             system_trust: 0,
             system_updates: 0,
+            system_settings: 0,
             epoch: 0,
             base,
             pending: None,
@@ -188,6 +195,7 @@ impl<D: BlockDev> Server<D> {
                 server.system_pkg,
                 server.system_trust,
                 server.system_updates,
+                server.system_settings,
             ],
             server.epoch,
         ) = fixed;
@@ -220,7 +228,7 @@ impl<D: BlockDev> Server<D> {
     /// Makes the missing [`FOLDERS`], and the disk's epoch if it has none, in
     /// one commit; `/home/user`'s, `/system/state`'s and `/system/pkg`'s ids and
     /// the epoch.
-    fn prepare(&mut self, uuid: &[u8; 16]) -> Result<(u64, u64, [u64; 3], u16), kaifs::Error> {
+    fn prepare(&mut self, uuid: &[u8; 16]) -> Result<(u64, u64, [u64; 4], u16), kaifs::Error> {
         let fs = self.fs();
         let writable = fs.writable();
         let mut made = false;
@@ -249,9 +257,11 @@ impl<D: BlockDev> Server<D> {
             fs.commit()?;
         }
         let system_state = fs.lookup(ROOT, "state")?.map_or(0, |e| e.ino);
-        // The plan-line folders: `/system/pkg`, `/system/trust`, `/system/updates`.
-        let mut granted = [0; 3];
-        for (id, name) in granted.iter_mut().zip(["pkg", "trust", "updates"]) {
+        // The plan-line folders: `/system/pkg`, `/system/trust`, `/system/updates`,
+        // `/system/settings`.
+        let mut granted = [0; 4];
+        let names = ["pkg", "trust", "updates", "settings"];
+        for (id, name) in granted.iter_mut().zip(names) {
             *id = fs.lookup(ROOT, name)?.map_or(0, |e| e.ino);
         }
         fs.set_volume(HOME.into())?;
@@ -373,8 +383,25 @@ impl<D: BlockDev> Server<D> {
     }
 
     fn answer(&mut self, call: &Call) -> Result<(Reply, Option<Mint>), Error> {
+        // `/system/settings` is read only through its fixed badge, whatever
+        // rights the handle carries: nothing it opens gets more than READ and
+        // ENUMERATE either.
+        let read_only;
+        let call = match call.badge == SYSTEM_SETTINGS {
+            true => {
+                read_only = Call {
+                    rights: call.rights & SETTINGS_RIGHTS,
+                    ..*call
+                };
+                &read_only
+            }
+            false => call,
+        };
         let request = fsproto::decode_request(call.request)?;
         let changes = changes(&request);
+        if changes && call.badge == SYSTEM_SETTINGS {
+            return Err(Error::Permission);
+        }
         if changes && self.owner.is_some_and(|o| o != call.caller) {
             self.reap();
         }
@@ -422,7 +449,7 @@ impl<D: BlockDev> Server<D> {
         } = Badge::parse(badge);
         let fixed = matches!(
             badge,
-            HOME_USER | SYSTEM_STATE | SYSTEM_PKG | SYSTEM_TRUST | SYSTEM_UPDATES
+            HOME_USER | SYSTEM_STATE | SYSTEM_PKG | SYSTEM_TRUST | SYSTEM_UPDATES | SYSTEM_SETTINGS
         );
         let ours = epoch == self.epoch || fixed;
         if !matches!(volume, SYSTEM | HOME | MODELS) || !ours {
@@ -434,6 +461,7 @@ impl<D: BlockDev> Server<D> {
             SYSTEM_PKG => self.system_pkg,
             SYSTEM_TRUST => self.system_trust,
             SYSTEM_UPDATES => self.system_updates,
+            SYSTEM_SETTINGS => self.system_settings,
             _ => object,
         };
         let fs = self.fs();

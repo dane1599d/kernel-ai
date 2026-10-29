@@ -163,3 +163,32 @@ fn the_table_limit_holds() {
     let full = session.link(&common::fixture("fib"), &common::allow);
     assert_eq!(full.unwrap_err(), Error::Full("table"));
 }
+
+#[test]
+fn revert_puts_back_what_a_commit_replaced() {
+    let mut r = Runner::new();
+    let first = r.link("define_sq").unwrap();
+    let first_commit = r.session.commit(&first);
+    let old = r.session.symbol("sq").cloned();
+    let again = r.link("sq_i64").unwrap();
+    let commit = r.session.commit(&again);
+    assert_ne!(r.session.symbol("sq").cloned(), old);
+    let size = r.session.table_size();
+    r.session.revert(commit);
+    assert_eq!(r.session.symbol("sq").cloned(), old);
+    // Slots stay reserved: a stored pointer may still reach them.
+    assert_eq!(r.session.table_size(), size);
+    r.session.revert(first_commit);
+    assert!(r.session.symbol("sq").is_none());
+}
+
+#[test]
+fn reserve_keeps_slots_and_data_and_defines_nothing() {
+    let mut r = Runner::new();
+    let linked = r.link("global").unwrap();
+    r.session.reserve(&linked);
+    assert!(r.session.symbol("counter").is_none());
+    assert_eq!(r.session.data_end(), linked.data_end);
+    let next = r.link("global").unwrap();
+    assert!(next.data_end > linked.data_end);
+}
