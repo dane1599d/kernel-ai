@@ -258,7 +258,10 @@ mod tests {
         );
         assert_eq!(queue.take(8192), None);
         assert_eq!(queue.put(SETTINGS_APP, "1\t1\trules"), Ok(()));
-        assert_eq!(queue.take(8192), Some(alloc::vec![request(1, true, "rules")]));
+        assert_eq!(
+            queue.take(8192),
+            Some(alloc::vec![request(1, true, "rules")])
+        );
     }
 
     #[test]
