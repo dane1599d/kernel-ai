@@ -226,7 +226,13 @@ impl Shell {
             args: &values,
             control: Label::Literal,
         }];
-        let decision = consent::decide(request, &planned, self.rows_for(row, &agentabi::ROWS))[0];
+        let decision = match row.owner {
+            agentabi::Owner::App(_) => {
+                let rows: Vec<Action> = agentabi::ROWS.iter().copied().chain([*row]).collect();
+                consent::decide(request, &planned, &rows)[0]
+            }
+            _ => consent::decide(request, &planned, &agentabi::ROWS)[0],
+        };
         if decision.tier == Tier::Never {
             return self.refuse(id, request, call, decision.why, "it is never run");
         }

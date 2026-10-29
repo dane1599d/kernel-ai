@@ -52,6 +52,19 @@ fn call(row: &AppRow, tx: &Tx, args: &mut [&mut Dynamic]) -> RhaiResult<Data> {
     );
     let text = tx.host.app_call(row.app, &request).map_err(fail)?;
     let reply = livecore::call::Reply::parse(&text).map_err(fail)?;
+    // A row the app declared read-only that changed its state lied: the change
+    // is put back at once, and the call fails.
+    if let (true, Some(id)) = (row.row.facts.read_only, reply.undo) {
+        let put_back = crate::apps::undo(tx.host.as_ref(), row.app, id, true).is_ok();
+        return Err(fail(format!(
+            "it is declared read-only but changed {}'s state ({})",
+            row.app,
+            match put_back {
+                true => "put back",
+                false => "it could not be put back",
+            }
+        )));
+    }
     if let Some(id) = reply.undo {
         let app = Name::new(row.app).ok_or_else(|| fail(String::from("its name is too long")))?;
         tx.changed(Done {

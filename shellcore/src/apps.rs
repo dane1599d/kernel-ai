@@ -64,14 +64,20 @@ pub(crate) fn load_for(host: &dyn crate::Host, name: &str) {
     else {
         return;
     };
-    if apps.borrow().rows.has(app) {
+    if apps.borrow().rows.has(app) || apps.borrow().rows.failed(app) {
         return;
     }
+    let others: Vec<String> = services
+        .iter()
+        .map(|s| s.name.clone())
+        .filter(|name| name != app)
+        .collect();
     let answer = match host.app_call(app, "kai-actions 1") {
         Ok(answer) => answer,
         Err(why) => return host.audit(&format!("{app}'s rows were not asked for: {why}")),
     };
-    match apps.borrow_mut().rows.load(app, &answer) {
+    let loaded = apps.borrow_mut().rows.load_among(app, &answer, &others);
+    match loaded {
         Ok(count) => host.audit(&format!("{app}'s {count} actions loaded")),
         Err(why) => host.audit(&why),
     }
@@ -86,17 +92,8 @@ pub(crate) fn undo(
     anyway: bool,
 ) -> Result<u64, crate::undo::Refused> {
     use crate::undo::Refused;
-    let force = if anyway {
-        "force
-"
-    } else {
-        ""
-    };
-    let request = format!(
-        "kai-undo 1
-id {id}
-{force}"
-    );
+    let force = if anyway { "force\n" } else { "" };
+    let request = format!("kai-undo 1\nid {id}\n{force}");
     let text = host.app_call(app, &request).map_err(Refused::Failed)?;
     let mut lines = text.lines();
     if lines.next() != Some(livecore::call::REPLY_HEADER) {
@@ -138,6 +135,8 @@ struct Loaded {
 pub struct AppRows {
     loaded: Vec<Loaded>,
     loads: usize,
+    /// Apps whose rows did not load: not asked again until reboot.
+    failed: Vec<String>,
 }
 
 impl AppRows {
@@ -145,6 +144,32 @@ impl AppRows {
     /// then the section): how many rows it has, or why none loaded. A version
     /// already loaded is not loaded again.
     pub fn load(&mut self, app: &str, answer: &str) -> Result<usize, String> {
+        self.load_among(app, answer, &[])
+    }
+
+    /// [`AppRows::load`], with the names of the other services: a row may not
+    /// start with another's longer `<name>_` either, so `notes` cannot declare
+    /// `notes_window_add` for `notes-window`. A load that fails is remembered,
+    /// and counts against [`MAX_LOADS`] once anything of it was leaked.
+    pub fn load_among(
+        &mut self,
+        app: &str,
+        answer: &str,
+        others: &[String],
+    ) -> Result<usize, String> {
+        let loaded = self.try_load(app, answer, others);
+        if loaded.is_err() && !self.failed.iter().any(|f| f == app) {
+            self.failed.push(app.to_string());
+        }
+        loaded
+    }
+
+    /// Whether `app`'s rows failed to load since boot.
+    pub fn failed(&self, app: &str) -> bool {
+        self.failed.iter().any(|f| f == app)
+    }
+
+    fn try_load(&mut self, app: &str, answer: &str, others: &[String]) -> Result<usize, String> {
         let (head, section) = answer
             .split_once('\n')
             .ok_or_else(|| format!("{app}'s rows are not a kai-actions answer"))?;
@@ -167,22 +192,17 @@ impl AppRows {
         if parsed.rows.len() > MAX_ROWS {
             return Err(format!("{app} declares over {MAX_ROWS} actions"));
         }
+        // Every check on names comes before anything is leaked.
+        for row in &parsed.rows {
+            self.name_free(app, &row.name, others)?;
+        }
+        // From here on rows are leaked, so the load counts even if one fails.
+        self.loads += 1;
         let rows = parsed
             .rows
             .iter()
             .map(|row| convert(app, row))
             .collect::<Result<Vec<_>, _>>()?;
-        // A model calls a row by its name alone, so no two apps share one.
-        if let Some(taken) = rows.iter().find_map(|row| {
-            self.loaded
-                .iter()
-                .filter(|l| l.app != app)
-                .find(|l| l.rows.iter().any(|r| r.row.name == row.row.name))
-                .map(|l| (row.row.name, l.app.clone()))
-        }) {
-            return Err(format!("{app}'s action {} is {}'s", taken.0, taken.1));
-        }
-        self.loads += 1;
         self.loaded.retain(|l| l.app != app);
         let count = rows.len();
         self.loaded.push(Loaded {
@@ -191,6 +211,33 @@ impl AppRows {
             rows,
         });
         Ok(count)
+    }
+
+    /// Why `name` may not be one of `app`'s rows: no `<app>_` start, an OS
+    /// row's name, a longer service name's start, or another loaded app's row.
+    fn name_free(&self, app: &str, name: &str, others: &[String]) -> Result<(), String> {
+        let prefix = format!("{}_", app.replace('-', "_"));
+        let function = name
+            .strip_prefix(&prefix)
+            .ok_or_else(|| format!("{app}'s action {name} does not start {prefix}"))?;
+        if agentabi::takes_os_name(app, function) || is_os_row(name) {
+            return Err(format!("{app}'s action {name} is an OS row's name"));
+        }
+        if let Some(other) = others.iter().find(|other| {
+            let theirs = format!("{}_", other.replace('-', "_"));
+            theirs.len() > prefix.len() && name.starts_with(&theirs)
+        }) {
+            return Err(format!("{app}'s action {name} starts with {other}'s name"));
+        }
+        if let Some(l) = self
+            .loaded
+            .iter()
+            .filter(|l| l.app != app)
+            .find(|l| l.rows.iter().any(|r| r.row.name == name))
+        {
+            return Err(format!("{app}'s action {name} is {}'s", l.app));
+        }
+        Ok(())
     }
 
     /// The loaded row named `name`.
@@ -246,13 +293,7 @@ fn leak_strs(texts: &[String]) -> &'static [&'static str] {
 /// One declared row as an ADR 0002 row, checked as the OS's rows are.
 fn convert(app: &str, row: &ActionRow) -> Result<AppRow, String> {
     let prefix = format!("{}_", app.replace('-', "_"));
-    let function = row
-        .name
-        .strip_prefix(&prefix)
-        .ok_or_else(|| format!("{app}'s action {} does not start {prefix}", row.name))?;
-    if agentabi::takes_os_name(app, function) {
-        return Err(format!("{app}'s action {} is an OS row's name", row.name));
-    }
+    let function = row.name.strip_prefix(&prefix).unwrap_or(&row.name);
     let args = row
         .args
         .iter()
@@ -267,7 +308,9 @@ fn convert(app: &str, row: &ActionRow) -> Result<AppRow, String> {
                     declared::Role::Payload => Role::Payload,
                     declared::Role::Option => Role::Option,
                 },
-                from_request: arg.from_request,
+                // What a call acts on, or carries, must be in the user's line,
+                // whatever the app declares.
+                from_request: arg.from_request || !matches!(arg.role, declared::Role::Option),
                 never: &[],
                 aliases: &[],
             })
@@ -294,7 +337,9 @@ fn convert(app: &str, row: &ActionRow) -> Result<AppRow, String> {
             open_world: row.facts.open_world.unwrap_or(true),
         },
         inverse,
-        cues: leak_strs(&row.cues),
+        // The cues are the function's own words, never the app's list: a row
+        // cannot claim every line as a request for it.
+        cues: leak_strs(&cues_of(function)),
         // A result is the app's content (ADR 0003 §5).
         returns: Returns::Content(leak_str(app)),
         ret: RetType::Data,
@@ -311,6 +356,28 @@ fn convert(app: &str, row: &ActionRow) -> Result<AppRow, String> {
         export: row.export.clone(),
         args: row.args_record(),
     })
+}
+
+/// The words of a row's function name, as its cues: `add` for `notes_add`.
+fn cues_of(function: &str) -> Vec<String> {
+    function
+        .split('_')
+        .filter(|word| word.len() > 2)
+        .map(String::from)
+        .collect()
+}
+
+/// Whether `name` is a row of the OS under any of its lists.
+fn is_os_row(name: &str) -> bool {
+    agentabi::ROWS
+        .iter()
+        .chain(&agentabi::BOUND)
+        .chain(&agentabi::CALL_ONLY)
+        .chain(&agentabi::COMMANDS)
+        .chain(&agentabi::SCRIPT_API)
+        .chain(&agentabi::TYPED_ONLY)
+        .chain(&agentabi::FS_ROWS)
+        .any(|row| row.name == name)
 }
 
 /// The OS's type for a declared argument of WIT type `ty`.

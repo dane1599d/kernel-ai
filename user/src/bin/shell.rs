@@ -169,11 +169,22 @@ fn with_proof(request: supervise::Request, proof: Proof) -> Result<String, Strin
 
 /// How long an app's call may take through the supervisor: its start, then
 /// the call (`supervise::appcall`).
-const APP_CALL_MS: u64 = 45_000;
+const APP_CALL_MS: u64 = 8_000;
 
 /// `request` to app `app` through the supervisor's `app-call` (APP_CALL): the
-/// app's reply, or why not.
+/// app's reply, or why not. The supervisor waits at most 5 s on one call; a
+/// timeout is tried once more.
 fn ask_app(app: &str, request: &str) -> Result<String, String> {
+    match ask_app_once(app, request) {
+        Err(why) if why.starts_with("timeout") => {
+            println!("{app} did not answer in time; asking once more");
+            ask_app_once(app, request)
+        }
+        other => other,
+    }
+}
+
+fn ask_app_once(app: &str, request: &str) -> Result<String, String> {
     let mut reply = vec![0u8; kabi::MAX_MESSAGE];
     let call = supervise::appcall::encode(app, request);
     let len = sys::call_route(supervisor(), call.as_bytes(), &mut reply, APP_CALL_MS)
