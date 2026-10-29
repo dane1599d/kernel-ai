@@ -13,9 +13,11 @@ doctest = false
 
 [dependencies]
 agentabi = { path = "../agentabi" }
+ed25519-compact = { version = "2.6.0", default-features = false, features = ["opt_size"] }
 fsproto = { path = "../fsproto" }
 kabi = { path = "../kabi" }
 kaituf = { path = "../kaituf" }
+livecore = { path = "../livecore" }
 llmproto = { path = "../llmproto" }
 serde_json = { version = "1.0.154", default-features = false, features = ["alloc"] }
 sha2 = { version = "0.11.1", default-features = false }

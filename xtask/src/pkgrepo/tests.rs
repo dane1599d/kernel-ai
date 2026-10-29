@@ -1,8 +1,9 @@
 use super::mirrors::tampered;
-use super::tuf::{self, Key, canonical};
+use super::tuf::{self, Key};
 use super::*;
 use ed25519_compact::{PublicKey, Signature};
 use kaipkg::header::Kind;
+use kaipkg::sign::canonical;
 use kaipkg::version::Version;
 use serde_json::Map;
 
@@ -174,7 +175,7 @@ fn verify(repo: &Repository, now: Time) -> Result<Vec<(String, Vec<u8>)>, String
         return Err("targets is not the snapshot's version".into());
     }
     let delegation = &top["delegations"]["roles"][0];
-    if delegation["name"] != tuf::PACKAGES || delegation["paths"] != json!(["*.kpkg"]) {
+    if delegation["name"] != kaipkg::sign::PACKAGES || delegation["paths"] != json!(["*.kpkg"]) {
         return Err("targets does not delegate *.kpkg to packages".into());
     }
     let delegated_keys = top["delegations"]["keys"]
