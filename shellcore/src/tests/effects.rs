@@ -1,22 +1,67 @@
-//! An app's effects (P4): a local, undoable call runs, is logged as the app's
-//! and undoes; anything that would ask is refused back to the app.
+//! An app's effects (P4): a row its package declares, local and undoable,
+//! runs, is logged as the app's and undoes; an undeclared row, or one that
+//! would ask, is refused back to the app.
 
 use super::*;
 use crate::effects::{EffectDone, MAX_EFFECTS};
 
 const ROUND_ROBIN: &str = r#"effect 1 call({name: "set_policy", args: "{name: \"round-robin\"}"})"#;
 
-#[test]
-fn a_local_undoable_effect_runs_and_undo_puts_it_back() {
+/// A `files` app whose effects may call the file rows it uses, and no other.
+const FILES: &str = "version 1
+kai-actions 1
+world app:files/files@1.0.0
+effects fs_list fs_read fs_move
+action files_open
+export app:files/actions@1.0.0#open
+doc Open a folder.
+sig func(path: string)
+arg path text max=255 role=target from-request
+facts read-only=yes destructive=no idempotent=yes open-world=no
+inverse none
+end
+";
+
+/// A host where `files` and `monitor` (which declares no effects) are loaded.
+fn host() -> Rc<FakeHost> {
     let host = FakeHost::new();
+    let mut apps = host.apps.borrow_mut();
+    apps.rows.load("files", FILES).unwrap();
+    let monitor = FILES
+        .replace("app:files/", "app:monitor/")
+        .replace("files_open", "monitor_open")
+        .replace(
+            "effects fs_list fs_read fs_move
+",
+            "",
+        );
+    apps.rows.load("monitor", &monitor).unwrap();
+    drop(apps);
+    host
+}
+
+#[test]
+fn an_undeclared_row_is_refused_even_at_the_run_tier() {
+    let host = host();
     let mut shell = shell(&host);
     let done = shell.run_effects("monitor", ROUND_ROBIN);
-    assert_eq!(done.len(), 1);
-    assert_eq!(done[0].ticket, 1);
-    assert!(done[0].outcome.is_ok(), "{:?}", done[0].outcome);
-    assert_eq!(host.policy.get(), Some(policy::ROUND_ROBIN));
-    assert!(shell.eval("undo").text.starts_with("Undone: "));
-    assert_eq!(host.policy.get(), Some(policy::INTERACTIVE));
+    assert!(
+        matches!(&done[0].outcome, Err(why) if why.contains("does not declare")),
+        "{done:?}"
+    );
+    assert_eq!(host.policy.get(), None);
+}
+
+#[test]
+fn an_app_effect_may_not_remove_a_package_nor_declare_that_it_may() {
+    let host = host();
+    let mut shell = shell(&host);
+    let remove = r#"effect 1 call({name: "pkg_remove", args: "{name: \"notes\"}"})"#;
+    assert!(shell.run_effects("files", remove)[0].outcome.is_err());
+    let mut apps = crate::apps::AppRows::default();
+    let greedy = FILES.replace("effects fs_list", "effects pkg_remove fs_list");
+    let err = apps.load("files", &greedy).unwrap_err();
+    assert!(err.contains("pkg_remove, which no app may"), "{err}");
 }
 
 #[test]
@@ -81,7 +126,7 @@ fn effects_past_the_limit_are_refused() {
 
 #[test]
 fn a_file_read_comes_back_to_the_app_and_a_move_undoes() {
-    let host = FakeHost::new();
+    let host = host();
     host.files
         .borrow_mut()
         .insert("notes.txt".into(), "milk".into());

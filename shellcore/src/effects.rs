@@ -192,6 +192,16 @@ impl Shell {
     ) -> Result<String, String> {
         let row = agentabi::find(&agentabi::ROWS, name)
             .ok_or_else(|| format!("{name} is no action an app may call"))?;
+        // Only a row the app's package declares for its effects, deny by
+        // default: no app installs, removes or rules on its own (P4).
+        crate::apps::load_app(self.host.as_ref(), app);
+        let declared = self
+            .host
+            .apps()
+            .is_some_and(|apps| apps.borrow().rows.may_effect(app, name));
+        if !declared {
+            return Err(format!("{app} does not declare effects that call {name}"));
+        }
         // A change derives Run only with an inverse, so this is local and undoable.
         let at_once = agentabi::derive(row) == Tier::Run;
         if !at_once || row.facts.open_world || row.facts.destructive {
