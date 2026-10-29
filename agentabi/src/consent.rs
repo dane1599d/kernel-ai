@@ -218,6 +218,12 @@ fn decide_one(words: &[Word], english: bool, call: &Call, rows: &[Action]) -> De
             false => Decision::new(Tier::Ask, Why::Ungrounded),
         };
     }
+    // Data decided that this change runs, or gave it a value: the line did not
+    // ask for it, whatever its cues (ADR 0002 D6). It asks, and the ask names
+    // where the data came from.
+    if let Some(source) = content_source(call) {
+        return Decision::new(derive(row).max(Tier::Ask), Why::Steered(source));
+    }
     if !english {
         return Decision::new(Tier::Ask, Why::NotEnglish);
     }
@@ -262,6 +268,21 @@ fn outbound(row: &Action, call: &Call) -> Option<&'static str> {
     call.args.iter().find_map(|(_, value)| match value.label {
         Label::Content(source) => Some(source),
         _ => None,
+    })
+}
+
+/// The source of the content that decides `call` runs, or of any of its
+/// values.
+fn content_source(call: &Call) -> Option<&'static str> {
+    let control = match call.control {
+        Label::Content(source) => Some(source),
+        _ => None,
+    };
+    control.or_else(|| {
+        call.args.iter().find_map(|(_, value)| match value.label {
+            Label::Content(source) => Some(source),
+            _ => None,
+        })
     })
 }
 

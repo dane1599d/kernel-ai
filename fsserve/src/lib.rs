@@ -262,6 +262,26 @@ impl<D: BlockDev> Server<D> {
         self.badge(SYSTEM, true, ino)
     }
 
+    /// The model store's file for `sha256` (`<hex>.gguf` in the `models`
+    /// volume's root, sealed) and its `kai-data` block runs in file order, for
+    /// MODEL_FILL (P2 task 10); `None` if the store has no such sealed file.
+    pub fn model_extents(&mut self, sha256: &[u8; 32]) -> Result<Option<Vec<(u64, u64)>>, Error> {
+        let mut name = alloc::string::String::with_capacity(69);
+        for byte in sha256 {
+            name.push_str(&alloc::format!("{byte:02x}"));
+        }
+        name.push_str(".gguf");
+        let fs = self.fs();
+        fs.set_volume(MODELS.into()).map_err(error)?;
+        let Some(entry) = fs.lookup(ROOT, &name).map_err(error)? else {
+            return Ok(None);
+        };
+        if !fs.is_sealed(entry.ino).map_err(error)? {
+            return Ok(None);
+        }
+        fs.sealed_extents(entry.ino).map(Some).map_err(error)
+    }
+
     /// The commit generation now.
     pub fn generation(&mut self) -> u64 {
         self.fs().committed
