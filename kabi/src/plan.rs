@@ -14,8 +14,10 @@ pub const SHELL: &str = "shell caps=serve+call+policy+stop+script uses=llm+super
 pub const SHELL_FILES: &str = "shell caps=serve+call+policy+stop+script+files+state uses=llm+supervisor pages=4096 stack_pages=512 burst_ms=5000";
 /// The file system service (ADR 0004): the only holder of the `kai-data`
 /// partition. Planned before the shell, and only when the disk has `kai-data`.
-/// Its pages hold a 16 MiB block cache and kaifs's working state.
-pub const FS: &str = "fs caps=serve+partition pages=8192 burst_ms=5000";
+/// Its pages hold a 16 MiB block cache and kaifs's working state. `kai-fs 1`'s
+/// minicbor decoder and the request paths outgrew the default 16-page stack,
+/// as filecheck's and `pkg`'s did.
+pub const FS: &str = "fs caps=serve+partition pages=8192 stack_pages=64 burst_ms=5000";
 /// The update service (ADR 0008 §10): the only holder of the slots and the boot
 /// record. `kaituf`'s JSON and `kai-fs 1`'s CBOR decoders recurse, hence the
 /// larger stack, which counts within its pages with a 512 KiB root buffer and

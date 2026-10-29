@@ -104,10 +104,10 @@ fn ask_once(on: Handle, request: &Request) -> Result<(Reply, Option<Handle>), St
     Ok((reply, (came > 0).then_some(moved[0])))
 }
 
-fn open(dir: Handle, name: &str, how: How) -> Result<Option<Handle>, String> {
+fn open(dir: Handle, name: &str, how: How, rights: Rights) -> Result<Option<Handle>, String> {
     let request = Request::Open {
         path: name.into(),
-        rights: (Rights::READ | Rights::WRITE).bits(),
+        rights: rights.bits(),
         how,
     };
     match ask(dir, &request)? {
@@ -119,7 +119,8 @@ fn open(dir: Handle, name: &str, how: How) -> Result<Option<Handle>, String> {
 
 /// The whole of `name` in `dir`, or `None` if there is no such file.
 pub fn read(dir: Handle, name: &str) -> Result<Option<Vec<u8>>, String> {
-    let Some(file) = open(dir, name, How::Existing)? else {
+    // READ only: `/system/settings`'s Dir gives nothing more.
+    let Some(file) = open(dir, name, How::Existing, Rights::READ)? else {
         return Ok(None);
     };
     let mut out = Vec::new();
@@ -147,9 +148,10 @@ pub fn write(dir: Handle, name: &str, bytes: &[u8]) -> Result<(), String> {
     };
     done("beginning", ask(dir, &Request::Begin { action: 0 }))?;
     let result = (|| {
-        let file = match open(dir, name, How::Existing)? {
+        let rw = Rights::READ | Rights::WRITE;
+        let file = match open(dir, name, How::Existing, rw)? {
             Some(file) => file,
-            None => open(dir, name, How::CreateFile)?.ok_or_else(|| format!("no {name}"))?,
+            None => open(dir, name, How::CreateFile, rw)?.ok_or_else(|| format!("no {name}"))?,
         };
         done("truncating", ask(file, &Request::Truncate { size: 0 }))?;
         for (n, chunk) in bytes.chunks(MAX_DATA).enumerate() {
