@@ -1,7 +1,7 @@
 //! How the monitor's numbers read: whole units, one decimal for percentages, and
 //! "-" for what the OS has not told it.
 
-use crate::rows::{Memory, Proc};
+use crate::{Memory, Proc};
 use alloc::format;
 use alloc::string::String;
 

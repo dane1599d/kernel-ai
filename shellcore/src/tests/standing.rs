@@ -391,3 +391,43 @@ fn instructions_survive_a_restart_and_a_bad_one_is_never_made() {
         "a store refused whole starts empty"
     );
 }
+
+#[test]
+fn the_event_boxs_lines_become_events_and_nothing_else_does() {
+    assert_eq!(
+        Event::from_line("minimize notes"),
+        Some(event(Kind::Minimize, "notes"))
+    );
+    assert_eq!(Event::from_line("idle 5"), Some(event(Kind::Idle(5), "")));
+    assert_eq!(
+        Event::from_line("time 545"),
+        Some(event(Kind::Time(545), ""))
+    );
+    for line in [
+        "",
+        "dropped 3",
+        "minimize",
+        "minimize Notes",
+        "idle 05",
+        "time 1440",
+    ] {
+        assert_eq!(Event::from_line(line), None, "{line:?}");
+    }
+}
+
+#[test]
+fn the_allows_rule_node_is_kept_and_rules_remove_revokes_it() {
+    let host = super::FakeHost::new();
+    host.triggers_on.set(true);
+    let mut shell = super::shell(&host);
+    shell.eval(&alloc::format!("rules_add {NOTES}"));
+    let once = host.mint(1, &alloc::format!("rules_add(\"{NOTES}\")"));
+    assert!(
+        shell
+            .eval(&alloc::format!("answer 1 allow once={once} rule=9"))
+            .ok
+    );
+    assert_eq!(shell.standing.rules()[0].grant, Some(9));
+    assert!(shell.eval("rules_remove S1").ok);
+    assert_eq!(*host.revoked.borrow(), [9]);
+}

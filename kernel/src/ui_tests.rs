@@ -27,7 +27,7 @@ const START: (i32, i32) = (640, 400);
 const CLOSE: (i32, i32) = (48 + 642 - 17, 52 + 17);
 
 /// A USB-style relative report with `buttons` held.
-fn report(dx: i32, dy: i32, buttons: u8) {
+pub(crate) fn report(dx: i32, dy: i32, buttons: u8) {
     x86_64::instructions::interrupts::without_interrupts(|| {
         pointer::push(Event {
             source: Source::UsbMouse,
