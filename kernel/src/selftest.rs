@@ -401,7 +401,11 @@ pub fn plan(test: SelfTest) -> Option<String> {
         SelfTest::Live => format!("{}\n{}", kabi::plan::NOTES_TEST, crate::llm::plan_line()),
         SelfTest::Part => String::from(kabi::plan::FS),
         SelfTest::AppSuspend => kabi::plan::notes("2", None),
-        SelfTest::ModelStore { .. } => String::from(kabi::plan::FS),
+        // llm first, so it asks for the model while fs still fills it.
+        SelfTest::ModelStore { bad: false } => {
+            format!("{}\n{}", crate::llm::plan_line(), kabi::plan::FS)
+        }
+        SelfTest::ModelStore { bad: true } => String::from(kabi::plan::FS),
         SelfTest::Files { reread } => {
             crate::files_tests::plan(if reread { "read" } else { "write" })
         }
