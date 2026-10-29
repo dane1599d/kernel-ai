@@ -159,7 +159,10 @@ fn execute(options: &Options) -> Result<(), String> {
     }
     let target_dir = root.join("target");
     let mut modules = esp::boot_modules(&kernel, &programs, &root)?;
+    // The built-in apps as the image's signed repository (ADR 0011 §8).
+    let repository = pkgrepo::image_modules(&root, &versions)?;
     modules.extend(versions);
+    modules.extend(repository);
     let efi = ensure_limine(&target_dir)?;
     let esp = target_dir.join("esp");
     // `--accel wsl`: QEMU runs inside WSL2, behind wsl.exe (wsl/launch.rs).
@@ -322,7 +325,13 @@ fn execute(options: &Options) -> Result<(), String> {
                 )?),
                 None => None,
             };
+            if let Some(package) = case.tampered {
+                pkgrepo::flip(&mut modules, package)?;
+            }
             esp::make_esp(&esp, &kernel, &modules, &efi, &cmdline)?;
+            if let Some(package) = case.tampered {
+                pkgrepo::flip(&mut modules, package)?;
+            }
             modules.truncate(shared);
             let firmware = wsl::firmware(wsl.as_ref(), &qemu, &target_dir)?;
             // A chained slot boot starts on the variables the last boot left.
