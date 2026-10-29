@@ -124,6 +124,9 @@ dependencies = [
 [[package]]
 name = "bootslot"
 version = "0.1.0-dev"
+dependencies = [
+ "minicbor",
+]
 
 [[package]]
 name = "bpe"
@@ -172,6 +175,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ccserve"
+version = "0.1.0-dev"
+dependencies = [
+ "agentabi",
+ "kailink",
+ "promptcore",
+ "serde_json",
+ "sha2",
+ "wasihost",
+ "wasmi",
+ "wasmparser 0.228.0",
+]
+
+[[package]]
 name = "cfg-if"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -196,6 +213,22 @@ version = "0.1.0-dev"
 dependencies = [
  "agentabi",
  "comp-files",
+ "uikit",
+]
+
+[[package]]
+name = "comp-monitor"
+version = "0.1.0-dev"
+dependencies = [
+ "appabi",
+]
+
+[[package]]
+name = "comp-monitor-ui"
+version = "0.1.0-dev"
+dependencies = [
+ "agentabi",
+ "comp-monitor",
  "uikit",
 ]
 
@@ -281,6 +314,15 @@ version = "0.1.0-dev"
 dependencies = [
  "comp-terminal",
  "uikit",
+]
+
+[[package]]
+name = "comp-ui-bind"
+version = "0.1.0-dev"
+dependencies = [
+ "compsdk",
+ "uikit",
+ "wit-bindgen",
 ]
 
 [[package]]
@@ -1207,6 +1249,10 @@ checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
 dependencies = [
  "unicode-ident",
 ]
+
+[[package]]
+name = "promptcore"
+version = "0.1.0-dev"
 
 [[package]]
 name = "quant"
