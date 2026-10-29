@@ -8,8 +8,16 @@
 //! stops reading never grows kernel memory, and the next read says how many
 //! were lost.
 
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use kabi::event::{BOX, DAY_MINUTES, DROPPED, Event, Kind};
 use spin::Mutex;
+
+/// The pid that reads the box, 0 before any read: a post wakes it.
+static READER: AtomicU64 = AtomicU64::new(0);
+/// A post came since the reader last read or was woken: its `svc_recv`
+/// returns `Woken` once. One wake a post at most, so a reader that never reads
+/// does not spin; reading clears it too.
+static WOKEN: AtomicBool = AtomicBool::new(false);
 use x86_64::instructions::interrupts::without_interrupts;
 
 struct Ring {
@@ -67,9 +75,34 @@ fn with<R>(f: impl FnOnce(&mut Ring) -> R) -> R {
     without_interrupts(|| f(&mut RING.lock()))
 }
 
-/// Keeps `event`, dropping the oldest when the box is full.
+/// Keeps `event`, dropping the oldest when the box is full, and wakes the
+/// box's reader if it waits in `svc_recv`.
 pub fn post(event: Event) {
-    with(|ring| ring.push(event))
+    with(|ring| ring.push(event));
+    WOKEN.store(true, Ordering::SeqCst);
+    match READER.load(Ordering::SeqCst) {
+        0 => {}
+        pid => crate::ipc::wake_server(pid),
+    }
+}
+
+/// Whether process `pid` is the reader and a post came since it last looked.
+pub fn woken(pid: u64) -> bool {
+    pid != 0 && READER.load(Ordering::SeqCst) == pid && WOKEN.load(Ordering::SeqCst)
+}
+
+/// Takes the wake for `pid`, once: whether there was one.
+pub fn take_wake(pid: u64) -> bool {
+    woken(pid) && WOKEN.swap(false, Ordering::SeqCst)
+}
+
+/// Takes every event for reader `pid`, oldest first, after the count of those
+/// dropped (0 when none were); `pid` is the box's reader from now on, whom a
+/// post wakes. The minutes begun since the last read come last.
+pub fn take_for(pid: u64) -> (u64, [Option<Event>; BOX]) {
+    READER.store(pid, Ordering::SeqCst);
+    WOKEN.store(false, Ordering::SeqCst);
+    take()
 }
 
 /// Takes every event, oldest first, after the count of those dropped (0 when
