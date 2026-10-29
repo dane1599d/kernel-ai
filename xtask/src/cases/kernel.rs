@@ -147,6 +147,16 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("app-suspend", "test=app-suspend")
     },
+    // P3 task 12b: an app starts on its first request, not at boot.
+    TestCase {
+        expect: &[
+            "app-on-demand: notes is not running after boot",
+            "notes starts on demand",
+            "ipc: notes asked for on demand",
+            "app-on-demand: the first request started notes, and it answered",
+        ],
+        ..case("app-on-demand", "test=app-on-demand")
+    },
     // Lane M: anonymous memory comes back on release and on exit.
     TestCase {
         expect: &["mem: 1024 committed pages came back on release and 512 on exit; refusals held"],

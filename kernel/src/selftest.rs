@@ -141,6 +141,8 @@ pub enum SelfTest {
     DeskAsk,
     /// An app suspended and resumed through its host (P3 task 11).
     AppSuspend,
+    /// An app not started at boot, started by the first request to it (P3 task 12b).
+    AppOnDemand,
     /// The OS boots to the desktop, whose screen matches its golden (P3 task 6).
     DeskBoot,
     /// The AI panel takes focus and queues a typed line (P3 task 7).
@@ -308,6 +310,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=desk-restart" => Some(SelfTest::DeskRestart),
             "test=desk-ask" => Some(SelfTest::DeskAsk),
             "test=app-suspend" => Some(SelfTest::AppSuspend),
+            "test=app-on-demand" => Some(SelfTest::AppOnDemand),
             "test=desk-boot" => Some(SelfTest::DeskBoot),
             "test=desk-panel" => Some(SelfTest::DeskPanel),
             "test=ui-window" => Some(SelfTest::UiWindow),
@@ -368,6 +371,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::Act(_)
             | SelfTest::Live
             | SelfTest::AppSuspend
+            | SelfTest::AppOnDemand
             | SelfTest::Edit
             | SelfTest::Manifest
             | SelfTest::ManifestGood
@@ -413,6 +417,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
         SelfTest::Live => format!("{}\n{}", kabi::plan::NOTES_TEST, crate::llm::plan_line()),
         SelfTest::Part => String::from(kabi::plan::FS),
         SelfTest::AppSuspend => kabi::plan::notes("2", None),
+        SelfTest::AppOnDemand => crate::demand_tests::plan(),
         // llm first, so it asks for the model while fs still fills it.
         SelfTest::ModelStore { bad: false } => {
             format!("{}\n{}", crate::llm::plan_line(), kabi::plan::FS)
@@ -451,6 +456,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
         SelfTest::Net
             | SelfTest::Live
             | SelfTest::AppSuspend
+            | SelfTest::AppOnDemand
             | SelfTest::Edit
             | SelfTest::Manifest
             | SelfTest::ManifestGood
