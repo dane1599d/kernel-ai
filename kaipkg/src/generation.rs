@@ -100,6 +100,13 @@ impl Time {
         );
         out
     }
+
+    /// The time `pkg` works at: `date` (seconds since 1970 UTC, the time since
+    /// boot already in it), never before the second after `newest`, the newest
+    /// generation's time, which is all there is without a date.
+    pub fn at(date: Option<u64>, newest: Time) -> Time {
+        Time(date.unwrap_or(0).max(newest.0.saturating_add(1)))
+    }
 }
 
 /// One installed package of a generation.
@@ -216,6 +223,19 @@ impl Generation {
 mod tests {
     use super::*;
     use alloc::vec;
+
+    #[test]
+    fn the_time_is_the_date_never_before_the_newest_generation() {
+        let date = Time::parse("2026-10-28T22:00:00Z").unwrap();
+        // A generation made from the date earlier in the boot: a minute later
+        // the time is a minute later, not that plus the boot's uptime again.
+        assert_eq!(Time::at(Some(date.0 + 60), date), Time(date.0 + 60));
+        // A date behind the newest generation (a clock set back) does not
+        // move the time back.
+        assert_eq!(Time::at(Some(date.0 - 86_400), date), Time(date.0 + 1));
+        assert_eq!(Time::at(None, date), Time(date.0 + 1));
+        assert_eq!(Time::at(None, Time(u64::MAX)), Time(u64::MAX));
+    }
 
     fn sample() -> Generation {
         Generation {

@@ -24,9 +24,14 @@ use kabi::{Error, ExitReason, cap};
 
 const SERVICE: &str = "fs";
 const CLIENT: &str = "filecheck";
-/// Plan lines: `fs`, then `filecheck` doing `step`.
+/// Plan lines: `fs`, then `filecheck` doing `step`. `kai-fs 1`'s derived CBOR
+/// decoder needs more than the 16-page default stack, as `updated`'s and
+/// `pkg`'s do.
 pub fn plan(step: &str) -> alloc::string::String {
-    format!("{}\n{CLIENT} caps=files step={step}", kabi::plan::FS)
+    format!(
+        "{}\n{CLIENT} caps=files stack_pages=64 step={step}",
+        kabi::plan::FS
+    )
 }
 const CALL_MS: u64 = 10_000;
 const WAIT_MS: u64 = 120_000;

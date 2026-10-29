@@ -4,11 +4,19 @@ members = [
     "acpitables",
     "agentabi",
     "appabi",
+    "apps/files",
+    "apps/files-ui",
+    "apps/monitor",
+    "apps/monitor-ui",
     "apps/settings",
     "apps/settings-ui",
+    "apps/terminal",
+    "apps/terminal-ui",
+    "apps/ui-bind",
     "bootslot",
     "bpe",
     "captable",
+    "ccserve",
     "components/fixtures/notes-bad",
     "components/fixtures/notes-v1",
     "components/fixtures/viewbench",
@@ -45,6 +53,7 @@ members = [
     "netcore",
     "nvme",
     "pci",
+    "promptcore",
     "quant",
     "sched",
     "shellcore",
@@ -67,11 +76,19 @@ default-members = [
     "acpitables",
     "agentabi",
     "appabi",
+    "apps/files",
+    "apps/files-ui",
+    "apps/monitor",
+    "apps/monitor-ui",
     "apps/settings",
     "apps/settings-ui",
+    "apps/terminal",
+    "apps/terminal-ui",
+    "apps/ui-bind",
     "bootslot",
     "bpe",
     "captable",
+    "ccserve",
     "components/fixtures/notes-bad",
     "components/fixtures/notes-v1",
     "components/fixtures/viewbench",
@@ -107,6 +124,7 @@ default-members = [
     "netcore",
     "nvme",
     "pci",
+    "promptcore",
     "quant",
     "sched",
     "shellcore",
@@ -141,6 +159,10 @@ opt-level = 2
 # wasmi's host-function glue crashes when compiled without optimisation, and its
 # generics are instantiated in wasmhost (see wasmhost/src/lib.rs).
 [profile.dev.package.wasmhost]
+opt-level = 2
+
+# The same for `cc`'s logic, the other crate that defines wasmi host functions.
+[profile.dev.package.ccserve]
 opt-level = 2
 
 # The inference engine crates at the same level: unoptimised, the Q8_0 matvec runs

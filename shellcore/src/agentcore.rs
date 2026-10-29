@@ -58,6 +58,7 @@ impl Shell {
             // Data, never consent (ADR 0010 §5): it reaches the model only.
             state: self.state_line().unwrap_or_default(),
             timeout_ms: SCRIPT_ROUND_MS,
+            read: None,
         };
         let call = match self.host.act(&asked) {
             Ok(call) => call,
@@ -88,7 +89,20 @@ impl Shell {
         };
         self.host
             .audit(&format!("request {id}: the model called {}", call.text()));
+        // A view the model asked for comes back to it once (ADR 0005 §6).
+        let call = match self.second_round(id, &asked, call) {
+            crate::ui::Round::First(call) => call,
+            crate::ui::Round::Second(call) => {
+                self.steered = Some("ui");
+                call
+            }
+            crate::ui::Round::Failed(reply) => {
+                self.record(id, request, "", &format!("refused: {}", reply.text));
+                return Some(reply);
+            }
+        };
         let outcome = self.execute(id, request, &call);
+        self.steered = None;
         // A turn that asked is remembered once it is answered (`actions`).
         match &mut self.pending {
             Some(pending) if outcome.reply.confirm == Some(id) => {
@@ -203,10 +217,12 @@ impl Shell {
                 (*name, value)
             })
             .collect();
+        // A call made after reading a view was decided by data (ADR 0002 D6).
+        let control = self.steered.map_or(Label::Literal, Label::Content);
         let planned = [Planned {
             name: row.name,
             args: &values,
-            control: Label::Literal,
+            control,
         }];
         let decision = consent::decide(request, &planned, &agentabi::ROWS)[0];
         if decision.tier == Tier::Never {
@@ -216,11 +232,15 @@ impl Shell {
             let reply = self.pkg_call(id, request, row.name, &args.values, decision);
             return outcome(decision.tier, decision.why, reply);
         }
-        // A file row's one-line script is found among the file rows, every other
-        // row's among the bound ones.
-        let rows: &'static [Action] = match agentabi::FS_ROWS.iter().any(|r| r.name == row.name) {
-            true => &agentabi::FS_ROWS,
-            false => &agentabi::BOUND,
+        // A file or window row's one-line script is found among its own rows,
+        // every other row's among the bound ones.
+        let own = |rows: &[Action]| rows.iter().any(|r| r.name == row.name);
+        let rows: &'static [Action] = if own(&agentabi::FS_ROWS) {
+            &agentabi::FS_ROWS
+        } else if own(&agentabi::UI_ROWS) {
+            &agentabi::UI_ROWS
+        } else {
+            &agentabi::BOUND
         };
         if !rows.iter().any(|r| r.name == row.name) {
             let why = format!("{} is typed at the prompt for now, not called", row.name);
@@ -496,7 +516,9 @@ fn arguments(row: &'static Action, call: &Call) -> Result<Arguments, String> {
         rhai: Vec::new(),
     };
     for arg in row.args {
-        let Some(value) = call.arguments.get(arg.name) else {
+        // An optional argument left out, or given as null, is a shorter call.
+        let given = call.arguments.get(arg.name).filter(|v| !v.is_null());
+        let Some(value) = given else {
             if matches!(arg.ty, ArgType::Opt(_)) {
                 continue;
             }

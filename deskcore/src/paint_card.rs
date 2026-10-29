@@ -5,11 +5,11 @@
 
 use crate::askcard::Card;
 use crate::geom::Rect;
-use crate::paint::{Painter, baseline, fill, g};
+use crate::paint::{Painter, fill, g};
 use crate::trusted::{self, Ask, LINE, PADDING};
 use alloc::vec::Vec;
 use gfx2d::Canvas;
-use look::{DARK, TypeStyle};
+use look::TypeStyle;
 
 const TITLE: &str = "Kai asks to run";
 const YES: &str = "Run (y)";
@@ -45,8 +45,13 @@ impl Painter {
         let Some(clip) = area.intersect(&clip) else {
             return;
         };
-        fill(c, area, clip, DARK.raised);
-        fill(c, Rect::new(area.x, area.y, area.w, BAR), clip, DARK.ask);
+        fill(c, area, clip, self.palette.raised);
+        fill(
+            c,
+            Rect::new(area.x, area.y, area.w, BAR),
+            clip,
+            self.palette.ask,
+        );
         let inner = Rect::new(
             area.x + PADDING,
             area.y + PADDING,
@@ -55,20 +60,28 @@ impl Painter {
         );
         let text_clip = inner.intersect(&clip).unwrap_or_default();
         let mut top = inner.y;
-        let y = baseline(top, LINE, TypeStyle::Label);
+        let y = self.baseline(top, LINE, TypeStyle::Label);
         self.draw_text(
             c,
             text_clip,
             inner.x as f32,
             y,
             TypeStyle::Label,
-            DARK.text,
+            self.palette.text,
             TITLE,
         );
         let left = card.left(now_ms);
         let (w, _) = self.text.measure(TypeStyle::MonoTitle, &left);
         let x = inner.right() as f32 - w;
-        self.draw_text(c, text_clip, x, y, TypeStyle::MonoTitle, DARK.dim, &left);
+        self.draw_text(
+            c,
+            text_clip,
+            x,
+            y,
+            TypeStyle::MonoTitle,
+            self.palette.dim,
+            &left,
+        );
         top += LINE;
         let (call, reason) = card.lines(self.card_cols(width));
         let rows: Vec<(&str, bool)> = call
@@ -80,15 +93,23 @@ impl Painter {
             if top + LINE > inner.bottom() - trusted::BUTTON_H {
                 break;
             }
-            let y = baseline(top, LINE, TypeStyle::Mono);
+            let y = self.baseline(top, LINE, TypeStyle::Mono);
             let x = inner.x as f32;
             match mono {
                 true => {
                     self.text
-                        .draw_mono(c, g(text_clip), x, y, 1.0, false, DARK.text, line);
+                        .draw_mono(c, g(text_clip), x, y, 1.0, false, self.palette.text, line);
                 }
                 false => {
-                    self.draw_text(c, text_clip, x, y, TypeStyle::Body, DARK.muted, line);
+                    self.draw_text(
+                        c,
+                        text_clip,
+                        x,
+                        y,
+                        TypeStyle::Body,
+                        self.palette.muted,
+                        line,
+                    );
                 }
             }
             top += LINE;
@@ -102,8 +123,8 @@ impl Painter {
     fn button(&mut self, c: &mut Canvas<'_>, clip: Rect, r: Rect, label: &str, primary: bool) {
         let ink = match primary {
             true => {
-                fill(c, r, clip, DARK.ask);
-                DARK.window
+                fill(c, r, clip, self.palette.ask);
+                self.palette.window
             }
             false => {
                 for edge in [
@@ -112,14 +133,14 @@ impl Painter {
                     Rect::new(r.x, r.y, 1, r.h),
                     Rect::new(r.right() - 1, r.y, 1, r.h),
                 ] {
-                    fill(c, edge, clip, DARK.line_strong);
+                    fill(c, edge, clip, self.palette.line_strong);
                 }
-                DARK.text
+                self.palette.text
             }
         };
         let (w, _) = self.text.measure(TypeStyle::Label, label);
         let x = r.x as f32 + (r.w as f32 - w) / 2.0;
-        let y = baseline(r.y, r.h, TypeStyle::Label);
+        let y = self.baseline(r.y, r.h, TypeStyle::Label);
         let inside = r.intersect(&clip).unwrap_or_default();
         self.draw_text(c, inside, x, y, TypeStyle::Label, ink, label);
     }

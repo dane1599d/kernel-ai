@@ -9,12 +9,15 @@
 //! `pool.create` brings its `Shm` as the call's first handle; `desktop` maps it
 //! and tells [`Client::pool_mapped`] where.
 
-use crate::desk::{Desk, Effect, Focus, WindowId};
+use crate::desk::{Button, Desk, Effect, Focus, WindowId};
 use crate::geom::{Rect, Size};
 use alloc::string::String;
 use alloc::vec::Vec;
 use surfabi::Format;
+use surfabi::header::Event as RingEvent;
+use surfabi::input::{InputEvent, Kind};
 use surfabi::proto::{Event, GLOBALS, Objects, REGISTRY, Request};
+use surfabi::tree::{self, Tree};
 use surfabi::wire::{self, Error};
 
 /// A buffer in one of the client's pools.
@@ -37,6 +40,17 @@ struct Surface {
     damage: Vec<Rect>,
     title: String,
     app_id: String,
+    /// Its `a11y` object, and the tree the last `a11y.commit` applied.
+    a11y: Option<u32>,
+    tree: Tree,
+    /// `tree_update` bytes waiting for their commit: one update may span
+    /// several messages.
+    pending: Vec<u8>,
+    /// The declared action each bound node runs (`a11y.bind_action`), at most
+    /// [`MAX_BOUND`].
+    bound: Vec<(u32, String)>,
+    /// Whether it holds changes not yet kept (`toplevel.set_unsaved`).
+    unsaved: bool,
 }
 
 /// What `desktop` must do for a request beyond the desk itself.
@@ -51,6 +65,14 @@ pub enum Need {
     Closed { window: WindowId },
 }
 
+/// An update's head, which [`tree::MAX_BYTES`] does not count.
+const PENDING_HEAD: usize = 12;
+
+/// Most nodes a window binds to declared actions.
+pub const MAX_BOUND: usize = 256;
+/// Longest action name: `<app>_<function>`, as an `agentabi` row's.
+pub const MAX_ACTION: usize = 64;
+
 pub struct Client {
     /// The client's process id, which also labels its windows.
     pub pid: u64,
@@ -64,6 +86,11 @@ pub struct Client {
     /// Encoded events not yet sent.
     events: Vec<u8>,
     serial: u32,
+    /// Modifier keys held, as `seat.modifiers` carries them: shift 1, ctrl 2,
+    /// alt 4, super 8 (`uikit::input::Mods`).
+    mods: u32,
+    /// Input for its windows, by the pool whose header ring takes it.
+    posts: Vec<(u32, RingEvent)>,
 }
 
 impl Client {
@@ -79,6 +106,8 @@ impl Client {
             seat: None,
             events: Vec::new(),
             serial: 0,
+            mods: 0,
+            posts: Vec::new(),
         };
         for (n, global) in GLOBALS.iter().enumerate() {
             client.send(
@@ -125,6 +154,100 @@ impl Client {
 
     pub fn buffer(&self, id: u32) -> Option<Buffer> {
         self.buffers.iter().find(|b| b.0 == id).map(|b| b.1)
+    }
+
+    /// The input for its windows since the last call, by pool: `desktop` posts
+    /// each into that pool's header ring (ADR 0005 §3), where the client reads
+    /// it without a message.
+    pub fn take_posts(&mut self) -> Vec<(u32, RingEvent)> {
+        core::mem::take(&mut self.posts)
+    }
+
+    /// The pool holding `window`'s buffer.
+    fn pool_of(&self, window: WindowId) -> Option<u32> {
+        let surface = self.surfaces.iter().find(|s| s.window == Some(window))?;
+        self.buffer(surface.attached?).map(|b| b.pool)
+    }
+
+    /// An input effect for one of its windows, as a ring event: a key with the
+    /// text it types (US layout, none while Ctrl, Alt or Super is held), a
+    /// button, or the pointer's move; the modifiers go to the seat.
+    fn input(&mut self, effect: &Effect) {
+        let (window, kind, code, value, at) = match *effect {
+            Effect::Key {
+                window,
+                usage,
+                down,
+            } => {
+                self.modifier(usage, down);
+                (window, Kind::Key, usage, i32::from(down), None)
+            }
+            Effect::Button {
+                window,
+                at,
+                button,
+                down,
+            } => {
+                let code = match button {
+                    Button::Left => 1,
+                    Button::Right => 2,
+                    Button::Middle => 3,
+                };
+                (window, Kind::Button, code, i32::from(down), Some(at))
+            }
+            Effect::Pointer { window, at } => (window, Kind::Abs, 0, 0, Some(at)),
+            _ => return,
+        };
+        let Some(pool) = self.pool_of(window) else {
+            return;
+        };
+        let mut text = [0u8; 4];
+        let mut len = 0;
+        let command = self.mods & (2 | 4 | 8) != 0;
+        if kind == Kind::Key
+            && value == 1
+            && !command
+            && let Some(ch) = crate::keymap::char_of(code, self.mods & 1 != 0)
+        {
+            len = ch.encode_utf8(&mut text).len() as u8;
+        }
+        let (x, y) = at.map_or((0, 0), |p| (p.x << 8, p.y << 8));
+        let event = RingEvent::Input {
+            event: InputEvent {
+                time_ns: 0,
+                kind,
+                code,
+                value,
+            },
+            x,
+            y,
+            text,
+            len,
+        };
+        self.posts.push((pool, event));
+    }
+
+    /// Shift, Ctrl, Alt and Super, held or let go: the seat hears the new set.
+    fn modifier(&mut self, usage: u16, down: bool) {
+        let bit = match usage {
+            0xE1 | 0xE5 => 1,
+            0xE0 | 0xE4 => 2,
+            0xE2 | 0xE6 => 4,
+            0xE3 | 0xE7 => 8,
+            _ => return,
+        };
+        let mods = if down {
+            self.mods | bit
+        } else {
+            self.mods & !bit
+        };
+        if mods == self.mods {
+            return;
+        }
+        self.mods = mods;
+        if let Some(seat) = self.seat {
+            self.send(seat, Event::Modifiers(mods));
+        }
     }
 
     /// The client's windows.
@@ -228,6 +351,29 @@ impl Client {
                         needs.push(need);
                     }
                 }
+                Request::GetA11y { id } => self.surface(header.object)?.a11y = Some(id),
+                Request::TreeUpdate(part) => {
+                    let surface = self.surface_of_a11y(header.object)?;
+                    if surface.pending.len() + part.len() > tree::MAX_BYTES + PENDING_HEAD {
+                        return Err(Error::BadArg);
+                    }
+                    surface.pending.extend_from_slice(part);
+                }
+                // A bad tree closes the connection and the window keeps the
+                // tree it had (ADR 0005 §3).
+                Request::A11yCommit => {
+                    let surface = self.surface_of_a11y(header.object)?;
+                    let bytes = core::mem::take(&mut surface.pending);
+                    let update = tree::Update::decode(&bytes).map_err(|_| Error::BadArg)?;
+                    surface.tree.apply(update).map_err(|_| Error::BadArg)?;
+                }
+                Request::BindAction { node, action } => {
+                    let surface = self.surface_of_a11y(header.object)?;
+                    bind(&mut surface.bound, node, action)?;
+                }
+                Request::SetUnsaved(unsaved) => {
+                    self.surface_of_toplevel(header.object)?.unsaved = unsaved;
+                }
                 Request::ToplevelDestroy => {
                     let surface = self.surface_of_toplevel(header.object)?;
                     surface.toplevel = None;
@@ -237,8 +383,7 @@ impl Client {
                         self.apply(&effects);
                     }
                 }
-                // The rest asks nothing of the desk yet (popups, the tree and the
-                // panel come with tasks 7 and 9).
+                // The rest asks nothing of the desk yet (popups and the panel).
                 _ => {}
             }
         }
@@ -250,6 +395,69 @@ impl Client {
             .iter_mut()
             .find(|s| s.id == id)
             .ok_or(Error::UnknownObject)
+    }
+
+    fn surface_of_a11y(&mut self, a11y: u32) -> Result<&mut Surface, Error> {
+        self.surfaces
+            .iter_mut()
+            .find(|s| s.a11y == Some(a11y))
+            .ok_or(Error::UnknownObject)
+    }
+
+    /// `window`'s tree as its client last committed it: empty until then.
+    pub fn tree(&self, window: WindowId) -> Option<&Tree> {
+        self.surfaces
+            .iter()
+            .find(|s| s.window == Some(window))
+            .map(|s| &s.tree)
+    }
+
+    /// The declared action `node` of `window` runs, so `ui_act` on it takes
+    /// that action's tier; none for an unbound node (which asks), or one no
+    /// longer in the tree.
+    pub fn bound_action(&self, window: WindowId, node: u32) -> Option<&str> {
+        let surface = self.surfaces.iter().find(|s| s.window == Some(window))?;
+        surface.tree.node(node)?;
+        surface
+            .bound
+            .iter()
+            .find(|(n, _)| *n == node)
+            .map(|(_, action)| action.as_str())
+    }
+
+    /// Whether `window`'s app says it holds changes not yet kept, so
+    /// `window_close` asks first. A window of a client that never says is
+    /// treated as saved, as ADR 0005 §6 has it for an app that reports nothing.
+    pub fn unsaved(&self, window: WindowId) -> bool {
+        self.surfaces
+            .iter()
+            .any(|s| s.window == Some(window) && s.unsaved)
+    }
+
+    /// Asks `window`'s app to run `action` (a bit number of
+    /// [`surfabi::tree::action`]) on `node`, as an AccessKit `ActionRequest`:
+    /// never synthetic input (ADR 0005 §6). False when the window has no tree
+    /// or the node does not offer that action.
+    pub fn act(&mut self, window: WindowId, node: u32, action: u32, value: &str) -> bool {
+        let Some(surface) = self.surfaces.iter().find(|s| s.window == Some(window)) else {
+            return false;
+        };
+        let offered = surface
+            .tree
+            .node(node)
+            .is_some_and(|n| action < 16 && n.actions & (1 << action) != 0);
+        let Some(a11y) = surface.a11y.filter(|_| offered) else {
+            return false;
+        };
+        self.send(
+            a11y,
+            Event::ActionRequest {
+                node,
+                action,
+                value,
+            },
+        );
+        true
     }
 
     fn surface_of_toplevel(&mut self, toplevel: u32) -> Result<&mut Surface, Error> {
@@ -312,6 +520,7 @@ impl Client {
     /// Turns the desk's effects that concern this client into events.
     pub fn apply(&mut self, effects: &[Effect]) {
         for effect in effects {
+            self.input(effect);
             match *effect {
                 Effect::Configure {
                     window,
@@ -385,4 +594,28 @@ impl Client {
         self.surfaces.clear();
         effects
     }
+}
+
+/// Binds `node` to `action`, or unbinds it for an empty name. A name that is not
+/// `<app>_<function>`-shaped, or a window past [`MAX_BOUND`], closes the
+/// connection. Only the shape is checked here: which app's row it is, and so its
+/// tier, the agent core resolves among the rows of this window's own app (the
+/// kernel's pid, then that app's `kai-actions 1`), and a name not there asks.
+fn bind(bound: &mut Vec<(u32, String)>, node: u32, action: &str) -> Result<(), Error> {
+    bound.retain(|(n, _)| *n != node);
+    if action.is_empty() {
+        return Ok(());
+    }
+    let shaped = action.len() <= MAX_ACTION
+        && action.contains('_')
+        && !action.starts_with('_')
+        && !action.ends_with('_')
+        && action
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
+    if !shaped || bound.len() >= MAX_BOUND {
+        return Err(Error::BadArg);
+    }
+    bound.push((node, String::from(action)));
+    Ok(())
 }

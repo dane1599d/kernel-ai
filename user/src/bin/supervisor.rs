@@ -17,6 +17,8 @@
 //! `services` lists them, for the shell to tell a service from a process.
 //! `app-call <app>` forwards the shell's `kai-call 1` or `kai-undo 1` to an
 //! app through the kernel (APP_CALL), starting the app first if it is down.
+//! A `start=demand` service is not started at boot: `demand <name>`, which only
+//! the kernel sends, when a call first waits for it, starts it (P3 task 12b).
 //! `profile <pid> <class> <pages|->` sets one process's CPU class and page quota
 //! for a resource profile (P3 task 12), for the shell alone: PROC_CLASS_SET and
 //! PROC_QUOTA_SET need SUPERVISE, and the kernel's floors refuse a protected
@@ -128,7 +130,8 @@ fn main() -> i32 {
             .find(|(_, name)| *name == service.spec.name)
             .map(|&(pid, _)| pid);
         service.record.pid = service.pid.unwrap_or(0);
-        // A `start=pkg` app waits for the store holder's `run`.
+        // A `start=pkg` app waits for the store holder's `run`, and a
+        // `start=demand` service for the kernel's `demand`.
         if service.pid.is_none()
             && !service.record.gave_up
             && !service.record.stopped
@@ -204,6 +207,9 @@ fn handle(services: &mut [Service], text: &str, caller: u64) -> String {
     if let Some((app, request)) = supervise::appcall::parse(text) {
         return app_call(services, app, request, caller);
     }
+    if let Some(name) = supervise::parse_demand(text) {
+        return demand(services, &records, name, caller);
+    }
     if let Some(run) = supervise::Run::parse(text) {
         return run_package(services, run, caller);
     }
@@ -218,7 +224,8 @@ fn handle(services: &mut [Service], text: &str, caller: u64) -> String {
         println!("{text:?} refused: {why}");
         return why;
     }
-    let index = match supervise::check(request, &records) {
+    let starts: Vec<Start> = services.iter().map(|s| s.spec.start).collect();
+    let index = match supervise::check_for(request, &records, &starts) {
         Ok(index) => index,
         Err(why) => return String::from(why),
     };
@@ -273,6 +280,22 @@ fn handle(services: &mut [Service], text: &str, caller: u64) -> String {
     }
     save(services);
     String::from("ok")
+}
+
+/// `demand <name>` from the kernel: a call waits for `start=demand` service
+/// `name`, so it starts now (P3 task 12b).
+fn demand(services: &mut [Service], records: &[Record], name: &str, caller: u64) -> String {
+    let specs: Vec<&ServiceSpec> = services.iter().map(|s| &s.spec).collect();
+    let starting: Vec<bool> = services.iter().map(|s| s.start_at_ms.is_some()).collect();
+    match supervise::check_demand(name, &specs, records, caller, &starting) {
+        Ok(Some(index)) => {
+            services[index].start_at_ms = Some(now_ms());
+            println!("{name} starts on demand");
+            String::from("ok")
+        }
+        Ok(None) => String::from("ok"),
+        Err(why) => why.into(),
+    }
 }
 
 /// `ctl suspend` (or, `resume`, `ctl resume`) to app `name` through the kernel:
@@ -471,7 +494,7 @@ fn run_package(services: &mut [Service], run: supervise::Run, caller: u64) -> St
 
 fn start(service: &mut Service, now: u64) {
     let version = match (service.spec.start, &service.version) {
-        (Start::Boot, _) => String::new(),
+        (Start::Boot | Start::Demand, _) => String::new(),
         (Start::Pkg, Some(version)) => format!(" version={version}"),
         (Start::Pkg, None) => {
             println!("{} waits for pkg to name its version", service.spec.name);
