@@ -8,6 +8,7 @@
 //! slot, marked Updating first so a half-written slot never boots, its SHA-256
 //! computed on the way; it becomes a trial only if length and hash match.
 
+use crate::folders::{self, Folders};
 use crate::{pause, record, set, slot_of};
 use alloc::collections::BTreeMap;
 use alloc::format;
@@ -18,6 +19,7 @@ use bootslot::Nv;
 use kabi::handle::Handle;
 use kabi::update::{DISK, MAX_IO, SECTOR};
 use kaituf::Error as TufError;
+use kaituf::meta::Root;
 use kaituf::updater::{Cache, Remote, Updater};
 use sha2::{Digest, Sha256};
 use user::{println, sys};
@@ -88,18 +90,65 @@ impl Remote for Repo {
     }
 }
 
-/// The verified metadata of this refresh, in memory: the slot's root to start
-/// from. `/system/trust` keeps it across boots once `kai-data` is on the slot disk.
-struct Memory(BTreeMap<String, Vec<u8>>);
+/// The verified metadata: `/system/trust/<role>.json` when `kai-data` is there
+/// (ADR 0008 §7's cache, so the next refresh starts from the newest root and
+/// refuses replayed metadata), and this refresh's copies in memory. The root
+/// starts as the newer of `/system/trust`'s and the slot's own.
+struct Trust {
+    memory: BTreeMap<String, Vec<u8>>,
+    dir: Option<Handle>,
+}
 
-impl Cache for Memory {
+/// The top-level roles, read from `/system/trust` before the refresh starts.
+const ROLES: [&str; 4] = ["root", "timestamp", "snapshot", "targets"];
+
+impl Trust {
+    /// `dir`'s copies of [`ROLES`]. A read that fails refuses the update: taken
+    /// as "nothing cached", it would let an older root or a replayed timestamp
+    /// through.
+    fn open(dir: Option<Handle>) -> Result<Trust, String> {
+        let mut memory = BTreeMap::new();
+        if let Some(dir) = dir {
+            for role in ROLES {
+                let name = format!("{role}.json");
+                let read = folders::read(dir, &name)
+                    .map_err(|e| format!("refused: /system/trust/{name}: {e}"))?;
+                if let Some(bytes) = read {
+                    memory.insert(role.into(), bytes);
+                }
+            }
+        }
+        Ok(Trust { memory, dir })
+    }
+}
+
+/// The version of a root's bytes, or `None` if they do not parse.
+fn root_version(bytes: &[u8]) -> Option<u64> {
+    Root::parse(bytes).ok().map(|root| root.version)
+}
+
+impl Cache for Trust {
     fn load(&mut self, role: &str) -> Result<Option<Vec<u8>>, TufError> {
-        Ok(self.0.get(role).cloned())
+        if let Some(bytes) = self.memory.get(role) {
+            return Ok(Some(bytes.clone()));
+        }
+        let Some(dir) = self.dir else {
+            return Ok(None);
+        };
+        // A copy that cannot be read is an error, never "nothing kept".
+        let bytes = folders::read(dir, &format!("{role}.json")).map_err(TufError::Io)?;
+        if let Some(bytes) = &bytes {
+            self.memory.insert(role.into(), bytes.clone());
+        }
+        Ok(bytes)
     }
 
     fn save(&mut self, role: &str, bytes: &[u8]) -> Result<(), TufError> {
-        self.0.insert(role.into(), bytes.into());
-        Ok(())
+        self.memory.insert(role.into(), bytes.into());
+        match self.dir {
+            Some(dir) => folders::write(dir, &format!("{role}.json"), bytes).map_err(TufError::Io),
+            None => Ok(()),
+        }
     }
 }
 
@@ -110,7 +159,24 @@ pub fn update(handle: Handle) -> Result<(), String> {
     root.truncate(len);
     let now = sys::trust_time(handle).map_err(|e| format!("TRUST_TIME: {e:?}"))?;
     let mut repo = Repo::open(handle)?;
-    let mut cache = Memory(BTreeMap::from([(String::from("root"), root)]));
+    let dirs = Folders::from_startup()?;
+    let mut cache = Trust::open(dirs.trust)?;
+    // The newer root wins (ADR 0008 §7): an older one would let keys a rotation
+    // revoked sign the chain again. At the same version the cached one stays.
+    let own = root_version(&root).ok_or("refused: the slot's own root does not parse")?;
+    let cached = cache
+        .memory
+        .get("root")
+        .and_then(|bytes| root_version(bytes));
+    match cached {
+        Some(version) if version >= own => {
+            println!("updated: the trusted root is /system/trust's, version {version}");
+        }
+        _ => {
+            println!("updated: the trusted root is the slot's own, version {own}");
+            cache.save("root", &root).map_err(|e| format!("{e}"))?;
+        }
+    }
     let (target, file) = {
         let mut updater = Updater::new(&mut repo, &mut cache, now).map_err(|e| format!("{e}"))?;
         updater.refresh().map_err(|e| format!("refused: {e}"))?;
@@ -175,9 +241,18 @@ pub fn update(handle: Handle) -> Result<(), String> {
             "refused: {TARGET} does not match its signed sha256; {other:?} stays unbootable"
         ));
     }
+    println!("updated: wrote release {release_seq} into {other:?} and checked its sha256");
+    if dirs.trust.is_some() {
+        println!("updated: the verified metadata is in /system/trust");
+    }
+    // Before the new slot's first boot: if it fails before it commits, the old
+    // slot boots on this snapshot of `system` (ADR 0008 §10). `home` is never in it.
+    if let Some(updates) = dirs.updates {
+        let id = folders::update_snapshot(updates)?;
+        println!("updated: took update snapshot {id} of the system volume");
+    }
     bootslot::stage_end(&mut nv, other, release_seq);
     bootslot::restart_into(&mut nv, other);
-    println!("updated: wrote release {release_seq} into {other:?} and checked its sha256");
     println!("updated: restarting into {other:?}");
     set(handle, &nv, true)
 }

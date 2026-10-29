@@ -83,10 +83,28 @@ pub const SYSTEM_PKG: u64 = Badge {
 }
 .raw();
 
+/// The badges of the startup `Dir`s `updated`'s plan line grants (ADR 0008
+/// §7, §10): `dir=trust` gives `/system/trust`, the cached TUF metadata, and
+/// `dir=updates` gives `/system/updates`, the staged releases and the handle
+/// the `update` snapshot is taken on. Fixed, as [`SYSTEM_PKG`] is.
+pub const SYSTEM_TRUST: u64 = Badge {
+    volume: SYSTEM,
+    file: false,
+    epoch: 0,
+    object: 2,
+}
+.raw();
+pub const SYSTEM_UPDATES: u64 = Badge {
+    volume: SYSTEM,
+    file: false,
+    epoch: 0,
+    object: 3,
+}
+.raw();
 /// The badge of the startup `Dir` a plan line's `dir=apps` grants: `/system/apps`,
 /// where comphost keeps each app's saved state in a folder named for the app
 /// (P4, app storage that survives a reboot). Fixed, as [`SYSTEM_PKG`]; object 4
-/// (2 is `/system/trust`'s, #288).
+/// (2 and 3 are `/system/trust` and `/system/updates`, #288).
 pub const SYSTEM_APPS: u64 = Badge {
     volume: SYSTEM,
     file: false,
@@ -128,8 +146,18 @@ mod tests {
         // The fixed badges are three, and none is another's.
         assert_eq!(Badge::parse(SYSTEM_PKG).epoch, 0);
         const { assert!(SYSTEM_PKG != SYSTEM_STATE && SYSTEM_PKG != HOME_USER) };
-        const { assert!(SYSTEM_APPS != SYSTEM_PKG && SYSTEM_APPS != SYSTEM_STATE) };
-        assert_eq!(Badge::parse(SYSTEM_APPS).epoch, 0);
+        let fixed = [
+            HOME_USER,
+            SYSTEM_STATE,
+            SYSTEM_PKG,
+            SYSTEM_TRUST,
+            SYSTEM_UPDATES,
+            SYSTEM_APPS,
+        ];
+        for (i, a) in fixed.iter().enumerate() {
+            assert_eq!(Badge::parse(*a).epoch, 0);
+            assert!(fixed[i + 1..].iter().all(|b| b != a));
+        }
         assert_ne!(SYSTEM_STATE, HOME_USER);
         assert_eq!(Badge::parse(SYSTEM_STATE).volume, SYSTEM);
     }

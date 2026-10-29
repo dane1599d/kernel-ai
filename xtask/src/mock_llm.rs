@@ -592,6 +592,7 @@ mod act_tests {
             state: "focused=shell".to_string(),
             line: line.to_string(),
             timeout_ms: 0,
+            read: None,
         };
         let chat = llmproto::act::request(&request, &history);
         let messages: Vec<_> = chat

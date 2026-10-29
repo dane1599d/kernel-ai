@@ -28,18 +28,23 @@ use fsproto::{
     Cursor, Error, How, Kind, Listing, MAX_DATA, MAX_LIST, MAX_ROWS, Outcome, Reply, Request, Stat,
     Version,
 };
-use kabi::fs::{Badge, HOME, HOME_USER, MODELS, SYSTEM, SYSTEM_APPS, SYSTEM_PKG, SYSTEM_STATE};
+use kabi::fs::{
+    Badge, HOME, HOME_USER, MODELS, SYSTEM, SYSTEM_APPS, SYSTEM_PKG, SYSTEM_STATE, SYSTEM_TRUST,
+    SYSTEM_UPDATES,
+};
 use kabi::handle::Rights;
 use kaifs::ns::Listed;
 use kaifs::{BlockDev, FileType, Fs, Inode, ROOT};
 
 /// The folders `fs` makes at its first mount if `cargo xtask fs mkfs` did not
 /// (P2 plan §4.5), by volume.
-const FOLDERS: [(u8, &str); 5] = [
+const FOLDERS: [(u8, &str); 7] = [
     (HOME, "user"),
     (SYSTEM, "settings"),
     (SYSTEM, "state"),
     (SYSTEM, "pkg"),
+    (SYSTEM, "trust"),
+    (SYSTEM, "updates"),
     (SYSTEM, "apps"),
 ];
 
@@ -116,6 +121,10 @@ pub struct Server<D: BlockDev> {
     /// `/system/pkg`'s object id in `system`: what [`SYSTEM_PKG`] names, the
     /// folder a plan line's `dir=pkg` grants (ADR 0011 §12).
     system_pkg: u64,
+    /// `/system/trust` and `/system/updates`: what [`SYSTEM_TRUST`] and
+    /// [`SYSTEM_UPDATES`] name, the folders `updated`'s `dir=` grants.
+    system_trust: u64,
+    system_updates: u64,
     /// `/system/apps`'s object id in `system`: what [`SYSTEM_APPS`] names, the
     /// folder a plan line's `dir=apps` grants.
     system_apps: u64,
@@ -158,6 +167,8 @@ impl<D: BlockDev> Server<D> {
             home_user: 0,
             system_state: 0,
             system_pkg: 0,
+            system_trust: 0,
+            system_updates: 0,
             system_apps: 0,
             epoch: 0,
             base,
@@ -169,8 +180,12 @@ impl<D: BlockDev> Server<D> {
         (
             server.home_user,
             server.system_state,
-            server.system_pkg,
-            server.system_apps,
+            [
+                server.system_pkg,
+                server.system_trust,
+                server.system_updates,
+                server.system_apps,
+            ],
             server.epoch,
         ) = fixed;
         Ok((server, started))
@@ -202,7 +217,7 @@ impl<D: BlockDev> Server<D> {
     /// Makes the missing [`FOLDERS`], and the disk's epoch if it has none, in
     /// one commit; `/home/user`'s, `/system/state`'s and `/system/pkg`'s ids and
     /// the epoch.
-    fn prepare(&mut self, uuid: &[u8; 16]) -> Result<(u64, u64, u64, u64, u16), kaifs::Error> {
+    fn prepare(&mut self, uuid: &[u8; 16]) -> Result<(u64, u64, [u64; 4], u16), kaifs::Error> {
         let fs = self.fs();
         let writable = fs.writable();
         let mut made = false;
@@ -231,11 +246,15 @@ impl<D: BlockDev> Server<D> {
             fs.commit()?;
         }
         let system_state = fs.lookup(ROOT, "state")?.map_or(0, |e| e.ino);
-        let system_pkg = fs.lookup(ROOT, "pkg")?.map_or(0, |e| e.ino);
-        let system_apps = fs.lookup(ROOT, "apps")?.map_or(0, |e| e.ino);
+        // The plan-line folders: `/system/pkg`, `/system/trust`, `/system/updates`,
+        // `/system/apps`.
+        let mut granted = [0; 4];
+        for (id, name) in granted.iter_mut().zip(["pkg", "trust", "updates", "apps"]) {
+            *id = fs.lookup(ROOT, name)?.map_or(0, |e| e.ino);
+        }
         fs.set_volume(HOME.into())?;
         let home_user = fs.lookup(ROOT, "user")?.map_or(0, |e| e.ino);
-        Ok((home_user, system_state, system_pkg, system_apps, epoch))
+        Ok((home_user, system_state, granted, epoch))
     }
 
     /// The badge for `object` of `volume` on this disk.
@@ -399,7 +418,10 @@ impl<D: BlockDev> Server<D> {
             epoch,
             object,
         } = Badge::parse(badge);
-        let fixed = matches!(badge, HOME_USER | SYSTEM_STATE | SYSTEM_PKG | SYSTEM_APPS);
+        let fixed = matches!(
+            badge,
+            HOME_USER | SYSTEM_STATE | SYSTEM_PKG | SYSTEM_TRUST | SYSTEM_UPDATES | SYSTEM_APPS
+        );
         let ours = epoch == self.epoch || fixed;
         if !matches!(volume, SYSTEM | HOME | MODELS) || !ours {
             return Err(Error::NotFound);
@@ -408,6 +430,8 @@ impl<D: BlockDev> Server<D> {
             HOME_USER => self.home_user,
             SYSTEM_STATE => self.system_state,
             SYSTEM_PKG => self.system_pkg,
+            SYSTEM_TRUST => self.system_trust,
+            SYSTEM_UPDATES => self.system_updates,
             SYSTEM_APPS => self.system_apps,
             _ => object,
         };
@@ -579,8 +603,47 @@ impl<D: BlockDev> Server<D> {
                 let (free, total) = self.fs().space();
                 Reply::Space { free, total }
             }
+            Request::UpdateSnapshot => {
+                self.updates_only(call)?;
+                let fs = self.fs();
+                fs.set_volume(SYSTEM.into()).map_err(error)?;
+                let id = fs
+                    .snapshot_as(kaifs::vol::SnapKind::Update, 0, 0)
+                    .map_err(error)?;
+                let generation = self.commit()?;
+                Reply::Snapshot { id, generation }
+            }
+            Request::UpdateRestore { id } => {
+                self.updates_only(call)?;
+                let fs = self.fs();
+                fs.set_volume(SYSTEM.into()).map_err(error)?;
+                let update = fs
+                    .snapshots()
+                    .get(&id)
+                    .is_some_and(|s| s.kind == kaifs::vol::SnapKind::Update);
+                if !update || !fs.restore_snapshot(id).map_err(error)? {
+                    return Err(Error::Invalid);
+                }
+                let generation = self.commit()?;
+                Reply::Committed { generation }
+            }
         };
         Ok((reply, None))
+    }
+
+    /// The `update` snapshot's requests come only on `/system/updates`'s `Dir`
+    /// with WRITE, and never inside an action: each commits on its own, so in
+    /// the caller's own action it would commit that action half done (Invalid),
+    /// and another caller's is Busy.
+    fn updates_only(&self, call: &Call) -> Result<(), Error> {
+        if call.badge != SYSTEM_UPDATES || !call.rights.contains(Rights::WRITE) {
+            return Err(Error::Permission);
+        }
+        match self.owner {
+            Some(owner) if owner == call.caller => Err(Error::Invalid),
+            Some(_) => Err(Error::Busy),
+            None => Ok(()),
+        }
     }
 
     fn owned(&self, caller: u64) -> Result<(), Error> {
@@ -690,7 +753,9 @@ fn changes(request: &Request) -> bool {
         | Request::Restore { .. }
         | Request::TrashRestore { .. }
         | Request::EmptyTrash
-        | Request::Sync => true,
+        | Request::Sync
+        | Request::UpdateSnapshot
+        | Request::UpdateRestore { .. } => true,
         Request::Stat
         | Request::List { .. }
         | Request::Read { .. }

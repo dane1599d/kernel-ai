@@ -147,7 +147,7 @@ pub fn plan(step: Step) -> String {
     let step_name = step.name();
     match step.case() {
         "pkg-image" | "pkg-install" => format!(
-            "{fs}\n{CLIENT} dir=pkg bootfiles=pkgrepo caps=call uses=supervisor pages=2048 stack_pages=128 step={step_name}\n{}",
+            "{fs}\n{CLIENT} dir=pkg bootfiles=pkgrepo caps=call+serve uses=supervisor pages=2048 stack_pages=128 step={step_name}\n{}",
             kabi::plan::notes_from_pkg()
         ),
         _ => format!("{fs}\n{CLIENT} dir=pkg pages=2048 stack_pages=128 step={step_name}"),
@@ -283,6 +283,40 @@ fn mirror_installed() -> Result<(), &'static str> {
         return Err("pkg-install: generation 2 is not notes and big");
     }
     log!("pkg-install: generation 2 holds big from the mirror beside the image's notes");
+    catalogue_lists_them()
+}
+
+/// `pkg` answers the Apps sheet's `catalog` (P4 task 3): big and notes as
+/// installed, then the mirror's `extra`, which is not.
+fn catalogue_lists_them() -> Result<(), &'static str> {
+    let mut answer = None;
+    for _ in 0..WAIT_MS / 50 {
+        if let Ok(reply) = ipc::call(CLIENT, b"catalog 0", CALL_MS) {
+            answer = Some(reply);
+            break;
+        }
+        threads::sleep_ms(50);
+    }
+    let answer = answer.ok_or("pkg-install: pkg never answered catalog")?;
+    let text =
+        core::str::from_utf8(&answer).map_err(|_| "pkg-install: the catalogue is not text")?;
+    let rows: Vec<&str> = text.lines().collect();
+    let wanted = [
+        "kai-catalog 1",
+        "installed\tbig\t1.0.0\tdata\t",
+        "installed\tnotes\t1.0.0\tapp\t",
+        "mirror\textra\t1.0.0\tdata\t",
+    ];
+    let listed = rows.len() == wanted.len()
+        && rows
+            .iter()
+            .zip(wanted)
+            .all(|(row, start)| row.starts_with(start));
+    if !listed {
+        log!("pkg-install: the catalogue is {text:?}");
+        return Err("pkg-install: the catalogue does not list installed then offered");
+    }
+    log!("pkg-install: the catalogue lists big and notes installed, then the mirror's extra");
     Ok(())
 }
 
