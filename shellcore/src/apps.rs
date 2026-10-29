@@ -368,7 +368,7 @@ fn cues_of(function: &str) -> Vec<String> {
 }
 
 /// Whether `name` is a row of the OS under any of its lists.
-fn is_os_row(name: &str) -> bool {
+pub(crate) fn is_os_row(name: &str) -> bool {
     agentabi::ROWS
         .iter()
         .chain(&agentabi::BOUND)
@@ -377,6 +377,7 @@ fn is_os_row(name: &str) -> bool {
         .chain(&agentabi::SCRIPT_API)
         .chain(&agentabi::TYPED_ONLY)
         .chain(&agentabi::FS_ROWS)
+        .chain(&agentabi::HELPERS)
         .any(|row| row.name == name)
 }
 
