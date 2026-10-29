@@ -1,0 +1,18 @@
+[package]
+name = "comp-terminal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The Terminal app's model (P4 task 4): today's shell in an app window, as typed
+# spans. It keeps the scrollback, the input phases (`kai> `, `..> `, a line with
+# the shell, a question the trusted path answers) and what `terminal_read` says.
+# `no_std` + `alloc` and free of `kai:ui`, so the host tests run it as is; the
+# window (`comp-terminal-ui`, then the component) draws it.
+[lib]
+doctest = false
+
+[dependencies]
+minicbor = { version = "2.3.0", default-features = false, features = ["alloc", "derive"] }
+termcore = { path = "../../termcore" }

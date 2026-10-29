@@ -402,8 +402,8 @@ impl Remote for Served<'_> {
 pub struct Memory(pub BTreeMap<String, Vec<u8>>);
 
 impl Cache for Memory {
-    fn load(&mut self, role: &str) -> Option<Vec<u8>> {
-        self.0.get(role).cloned()
+    fn load(&mut self, role: &str) -> Result<Option<Vec<u8>>, Error> {
+        Ok(self.0.get(role).cloned())
     }
 
     fn save(&mut self, role: &str, bytes: &[u8]) -> Result<(), Error> {

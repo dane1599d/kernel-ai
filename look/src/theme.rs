@@ -157,6 +157,31 @@ impl Theme {
         self.base.dark
     }
 
+    /// The colours as a [`Palette`], named after the base, for painters that
+    /// take one.
+    pub fn palette(&self) -> Palette {
+        let c = |token| self.colour(token);
+        Palette {
+            name: self.base.name,
+            dark: self.base.dark,
+            desk: c(Token::Desk),
+            window: c(Token::Window),
+            raised: c(Token::Raised),
+            line: c(Token::Line),
+            line_strong: c(Token::LineStrong),
+            text: c(Token::Text),
+            muted: c(Token::Muted),
+            dim: c(Token::Dim),
+            ai: c(Token::Ai),
+            ai_mark: c(Token::AiMark),
+            ask: c(Token::Ask),
+            error: c(Token::Error),
+            ok: c(Token::Ok),
+            accent: c(Token::Accent),
+            focus: c(Token::Focus),
+        }
+    }
+
     pub fn colour(&self, token: Token) -> u32 {
         self.colours[position(&Token::ALL, &token)]
     }

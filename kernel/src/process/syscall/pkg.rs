@@ -13,15 +13,28 @@ use livecore::store::PackageArtifact;
 use supervise::{Folder, MAX_BOOT_PATH};
 
 /// The calls this area serves.
-const CALLS: &[u64] = &[call::BOOT_READ, call::COMP_ADD, call::PKG_FETCH];
+const CALLS: &[u64] = &[
+    call::BOOT_READ,
+    call::COMP_ADD,
+    call::PKG_FETCH,
+    call::PKG_TIME,
+];
 
 /// One of [`CALLS`], or `None` for a number this area does not have.
 pub(super) fn handle(slot: usize, number: u64, a: &[u64; 6]) -> Option<Result<u64, Error>> {
     CALLS.contains(&number).then(|| match number {
         call::BOOT_READ => boot_read(slot, a[0], a[1], a[2], a[3]),
         call::COMP_ADD => comp_add(slot, a[0]),
-        _ => pkg_fetch(slot, a[0]),
+        call::PKG_FETCH => pkg_fetch(slot, a[0]),
+        _ => pkg_time(slot),
     })
+}
+
+/// `pkg_time() -> seconds`: the date for TUF's expiry checks, only for the
+/// holder of `/system/pkg`, as TRUST_TIME is for `updated`.
+fn pkg_time(slot: usize) -> Result<u64, Error> {
+    holds_the_store(slot)?;
+    crate::clock::unix_seconds().ok_or(Error::NotFound)
 }
 
 /// `pkg_fetch(&HttpRequest) -> len`: only for the holder of `/system/pkg`, and
