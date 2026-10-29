@@ -149,6 +149,8 @@ pub enum SelfTest {
     DeskPanel,
     /// An app's kai:ui window on the desktop, closed from its control (P3 task 9).
     UiWindow,
+    /// An unused app naps and a click wakes it (P3 task 12b).
+    DeskNap,
     /// Asks answered on `desktop`'s card, and on the console when it dies (P3 task 7).
     DeskCard,
     /// A standing instruction fired by Notes' window minimized and restored (P3 task 11).
@@ -314,6 +316,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=desk-boot" => Some(SelfTest::DeskBoot),
             "test=desk-panel" => Some(SelfTest::DeskPanel),
             "test=ui-window" => Some(SelfTest::UiWindow),
+            "test=desk-nap" => Some(SelfTest::DeskNap),
             "test=desk-card" => Some(SelfTest::DeskCard),
             "test=desk-standing" => Some(SelfTest::DeskStanding),
             "test=ui-keys" => Some(SelfTest::UiKeys),
@@ -396,6 +399,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DeskBoot
             | SelfTest::DeskPanel
             | SelfTest::UiWindow
+            | SelfTest::DeskNap
             | SelfTest::DeskCard
             | SelfTest::DeskStanding
             | SelfTest::UiKeys
@@ -555,6 +559,10 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
     if test == SelfTest::UiWindow {
         plan.push('\n');
         plan.push_str(crate::ui_tests::PLAN);
+    }
+    if test == SelfTest::DeskNap {
+        plan.push('\n');
+        plan.push_str(crate::nap_tests::PLAN);
     }
     if test == SelfTest::DeskStanding {
         plan.push('\n');

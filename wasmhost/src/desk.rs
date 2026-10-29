@@ -62,6 +62,9 @@ pub enum Told {
     },
     /// A second `desktop` greeted the connection: every window must open again.
     Restarted,
+    /// One of the app's windows took the keyboard focus (`seat.focus_in`): a
+    /// click on it, or Alt+Tab to it.
+    Focus(u32),
 }
 
 struct Window {
@@ -303,10 +306,14 @@ impl Desk {
                 continue;
             }
             if Some(header.object) == self.seat {
-                if let Ok(Event::Modifiers(mask)) =
-                    Event::decode(Interface::Seat, header.opcode, args)
-                {
-                    self.seat_state.modifiers(mask);
+                match Event::decode(Interface::Seat, header.opcode, args) {
+                    Ok(Event::Modifiers(mask)) => self.seat_state.modifiers(mask),
+                    Ok(Event::FocusIn { surface }) => {
+                        if let Some(w) = self.windows.iter().find(|w| w.surface == surface) {
+                            out.push(Told::Focus(w.app));
+                        }
+                    }
+                    _ => {}
                 }
                 continue;
             }
