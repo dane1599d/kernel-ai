@@ -27,6 +27,7 @@ mod agentcore;
 pub mod analyse;
 pub mod apart;
 mod brackets;
+mod centry;
 mod commands;
 pub mod data;
 mod engine;
@@ -47,11 +48,13 @@ mod undo;
 mod undoing;
 
 use actions::Pending;
+pub use agentcore::Outcome;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::rc::Rc;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+pub use centry::CallValue;
 pub use engine::Exec;
 use engine::Line;
 use kabi::sched::{SchedStats, TrialRequest};
@@ -439,6 +442,11 @@ pub struct Shell {
     /// The source of the data the call now running was decided after (a
     /// view's second round), for consent (ADR 0002 D6).
     steered: Option<&'static str>,
+    /// The `c>` entry now running, and its calls' values (P4 task 12).
+    c_entry: Option<centry::CEntry>,
+    last_value: Option<rhai::Dynamic>,
+    value_rets: Vec<(u64, agentabi::RetType)>,
+    values: Vec<(u64, centry::CallValue)>,
 }
 
 impl Shell {
@@ -491,6 +499,10 @@ impl Shell {
             saved_log: None,
             owner_once: None,
             steered: None,
+            c_entry: None,
+            last_value: None,
+            value_rets: Vec::new(),
+            values: Vec::new(),
         }
         .with_saved_log()
         .with_saved_rules()

@@ -13,6 +13,7 @@ use std::collections::VecDeque;
 mod act;
 mod actions;
 mod apart;
+mod centry;
 mod files;
 mod fuzz;
 mod log;
