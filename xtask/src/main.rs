@@ -18,6 +18,7 @@
 //! cargo xtask vbox [--start [--headless]]   (the VirtualBox VM "Kernel AI"; see vbox/mod.rs)
 //! cargo xtask wit-tables [--check]   (wasmhost/src/tables.rs from wit/: the host tables of the kai:app world)
 //! cargo xtask ccwasm [--check] [--no-gen3]   (third_party/xcc/cc.wasm from xcc's pinned commit; Linux or WSL2; see cc/mod.rs)
+//! cargo xtask cc-bind [--check]   (ccserve/kai/bind/: the C bindings `cc build` compiles against, from wit/; see cc/bind.rs)
 //! cargo xtask licences check   (every licence in the tree and the dependency graph is allowed and has its text; see licences.rs)
 //! cargo xtask notices [--check]   (writes or checks NOTICES.txt, the third-party notices the image carries; see notices.rs)
 //! cargo xtask fs mkfs|import|ls|cat|check|replay ...   (kaifs data disks on the host, no WSL; see fs/mod.rs)
@@ -103,6 +104,7 @@ fn main() -> ExitCode {
         Some("doctor") => doctor::main(&args[1..]),
         Some("vbox") => vbox::main(&args[1..]),
         Some("ccwasm") => cc::main(&args[1..], &workspace_root()),
+        Some("cc-bind") => cc::bind::main(&args[1..]),
         Some("licences") => licences::main(&args[1..]),
         Some("notices") => notices::main(&args[1..]),
         Some("wit-check") => wit::main(&args[1..]),
