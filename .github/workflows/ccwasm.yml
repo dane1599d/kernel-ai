@@ -1,0 +1,54 @@
+# cc.wasm, xcc's compiler for the `c>` prompt (ADR 0012 D2): `cargo xtask ccwasm
+# --check` rebuilds it from the commit third_party/xcc/UPSTREAM.toml pins, runs
+# upstream's gen2-gen3 check (only custom sections may differ), and fails if the
+# build differs from the committed third_party/xcc/cc.wasm (its SHA-256) or any
+# header there. The C toolchain (make, gcc, llvm-ar, node and npm) runs here
+# only, never in the OS build. Host only: no VM and no model. Runs on pull
+# requests and pushes to main that change xcc's files or the build, and by hand.
+name: ccwasm
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - third_party/xcc/**
+      - xtask/src/cc/**
+      - .github/workflows/ccwasm.yml
+  pull_request:
+    paths:
+      - third_party/xcc/**
+      - xtask/src/cc/**
+      - .github/workflows/ccwasm.yml
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: ccwasm-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    name: ccwasm (rebuild matches the pin)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: llvm-ar for wcc's libc
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends llvm
+      - name: Rebuild cc.wasm from xcc's pinned commit and compare
+        # `shell: bash` adds pipefail, so the tee does not hide a failure.
+        shell: bash
+        run: cargo xtask ccwasm --check 2>&1 | tee ccwasm.log
+      - name: Summary
+        if: always()
+        run: grep '^ccwasm:' ccwasm.log | tee -a "$GITHUB_STEP_SUMMARY" || true
