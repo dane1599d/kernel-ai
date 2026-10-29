@@ -155,16 +155,34 @@ fn a_wrong_digest_or_an_oversized_or_unstorable_package_is_refused() {
         Err(Error::TooBig)
     );
     assert_eq!(notes.versions().len(), 0);
-    for n in 0..MAX_VERSIONS {
+}
+
+/// Each update adds a version; older ones go so updates never fill the store,
+/// but never the running one (nor the candidate or the rollback target, which
+/// the same `keep` holds).
+#[test]
+fn updates_evict_old_package_versions_but_not_the_running_or_rollback_ones() {
+    let mut notes = Component::new("notes");
+    let mut labels = Vec::new();
+    for n in 0..2 * MAX_VERSIONS {
         let bytes = alloc::format!("version {n}").into_bytes();
-        add(&mut notes, bytes.clone(), &digest(&bytes)).unwrap();
+        let label = add(&mut notes, bytes.clone(), &digest(&bytes)).unwrap();
+        // The first runs, so it must outlast every later update.
+        if n == 0 {
+            notes.fetch(5, &label, 100).unwrap();
+            assert!(notes.event(5, &event(kind::RESTORED, &label)).is_ok());
+        }
+        labels.push(label);
     }
-    let last = b"one too many".to_vec();
-    assert_eq!(
-        add(&mut notes, last.clone(), &digest(&last)),
-        Err(Error::NoMemory)
-    );
-    assert_eq!(notes.versions().len(), MAX_VERSIONS);
+    let held: Vec<&str> = notes.labels().collect();
+    assert!(held.len() <= KEEP_PACKAGES, "{held:?}");
+    let newest = labels.last().unwrap().as_str();
+    assert!(held.contains(&newest), "the newest stays");
+    let active = notes.ledger.active().unwrap();
+    assert!(held.contains(&active), "the running one stays: {active}");
+    if let Some(back) = notes.ledger.revert_target(1) {
+        assert!(held.contains(&back), "the rollback stays: {back}");
+    }
 }
 
 #[test]
@@ -183,28 +201,33 @@ fn package_versions_of_every_component_together_stay_within_their_budget() {
         let others = store.iter().enumerate().filter(|(i, _)| *i != at);
         others.map(|(_, c)| c.package_bytes()).sum()
     };
-    let mut added = 0;
+    // Round and round: each add evicts its own component's old versions, so
+    // every one fits and the total never passes the budget.
     for n in 0..=u8::MAX {
         let at = usize::from(n) % store.len();
         let bytes = artifact(n);
         let used = used_except(&store, at);
         let checked = PackageArtifact::check(bytes.clone(), &digest(&bytes)).unwrap();
-        match store[at].add_package(checked, used) {
-            Ok(_) => added += 1,
-            Err(error) => {
-                assert_eq!(error, Error::NoMemory);
-                break;
-            }
-        }
+        assert!(store[at].add_package(checked, used).is_ok(), "update {n}");
+        let held: usize = store.iter().map(Component::package_bytes).sum();
+        assert!(held <= MAX_PACKAGE_TOTAL, "{held} after update {n}");
+        assert!(store[at].labels().count() <= KEEP_PACKAGES);
     }
-    assert_eq!(added, MAX_PACKAGE_TOTAL / MAX_ARTIFACT);
-    let held: usize = store.iter().map(Component::package_bytes).sum();
-    assert!(held <= MAX_PACKAGE_TOTAL, "{held}");
-    // A version already there is still Busy, never NoMemory, and uploads do not
-    // count against the packages' budget.
-    let first = artifact(0);
-    let again = PackageArtifact::check(first.clone(), &digest(&first)).unwrap();
-    let used = used_except(&store, 0);
-    assert_eq!(store[0].add_package(again, used), Err(Error::Busy));
+    // When the others' budget leaves no room even after evicting all of its
+    // own, the add is refused.
+    let mut lone = Component::new("lone");
+    let bytes = artifact(1);
+    let checked = PackageArtifact::check(bytes.clone(), &digest(&bytes)).unwrap();
+    assert_eq!(
+        lone.add_package(checked, MAX_PACKAGE_TOTAL),
+        Err(Error::NoMemory)
+    );
+    // A version that is still there is Busy, never NoMemory.
+    let last = artifact(u8::MAX);
+    let again = PackageArtifact::check(last.clone(), &digest(&last)).unwrap();
+    let at = usize::from(u8::MAX) % store.len();
+    let used = used_except(&store, at);
+    assert_eq!(store[at].add_package(again, used), Err(Error::Busy));
+    // Uploads do not count against the packages' budget.
     assert_eq!(store[0].upload_bytes(), 0);
 }
