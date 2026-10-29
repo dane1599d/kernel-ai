@@ -119,7 +119,8 @@ pub const BUILD: u64 = 27;
 /// linking the kernel's window of 2 MiB pages, which takes nothing from the
 /// page quota; returns its length in bytes, and calling it again maps nothing
 /// new. NotFound when no model is loaded, Invalid if the window cannot be
-/// linked. Needs [`super::cap::MODEL`].
+/// linked, Busy while the model store's model is reserved and not yet filled
+/// ([`MODEL_FILL`]; `llm` asks again). Needs [`super::cap::MODEL`].
 pub const MODEL_MAP: u64 = 28;
 /// `thread_spawn(entry, arg, cpu, stack_pages) -> index`: starts a worker of this
 /// process at `entry` with `arg` in RDI, pinned to CPU `cpu` (below the CPUs

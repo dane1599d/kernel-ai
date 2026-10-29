@@ -1,0 +1,18 @@
+[0] window "System Monitor"
+[1] group ""
+[2] group ""
+[3] label "CPUs: -"
+[4] label "Up -"
+[5] progress "Memory: -" = "working"
+[6] group ""
+[7] button "CPU high-low" runs monitor_sort
+[8] button "Memory" runs monitor_sort
+[9] button "Name" runs monitor_sort
+[10] button "PID" runs monitor_sort
+[11] button "Refresh"
+[12] table "Processes" = "2 rows"
+[13] label "Model: not reported"
+[14] group ""
+[15] button "Stop" runs process_stop
+[16] label "Pick a process to stop it"
+[17] label "Reading…"
