@@ -36,7 +36,7 @@ This plan adds cases for the rest of the deliverable:
 | `desk-catalog` | The Apps sheet lists installed and available apps; Enter on an available one installs it with the same consent as a typed `install`; an index summary written as an instruction is shown as text and changes no tier |
 | `c-prompt` | `:c`, a definition, a call, a redefinition that switches the caller, `:dis`, `undo`, `:rhai`; a `kai` import's effect goes through `agentcore::execute` and is undone |
 | `c-build` | `cc build` writes a component that installs from the `local` repository, signed by the device key, and runs; `undo` removes it |
-| `release-dry` | (A workflow, not a boot case.) `release.yml` on a throwaway `v0.1.0-rc.0` tag with test keys: two clean builds give one SHA-256, the five assets are drafted, and a CI VM accepts the target from an update disk and refuses a tampered copy |
+| `release-dry` | (A workflow, not a boot case.) `release.yml` on a throwaway `v0.1.0-rc.0` tag with test keys: two clean builds give one SHA-256, the five assets are drafted, and a CI VM accepts the target from an update disk and refuses a tampered copy. **Done** (2026-10-28, run 40627897825; the draft is skipped on a dry run by design). Gap: the VM's update disk carries xtask's own slot image, not the slot of the assembled release image; task 18 closes it |
 
 Host gates in CI: hostile tests through `testkit/hostile.rs` for every new parser (`kai-theme 1`, the catalogue's index fields, `promptcore`, the mirror client); S05-2's 300-token view for each app's real tree, not only its P3 mock; `cargo deny`, `cargo xtask licences check` and `cargo xtask notices --check` (already on main, #41, #42).
 

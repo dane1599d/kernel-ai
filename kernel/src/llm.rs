@@ -61,7 +61,8 @@ pub fn target() -> Option<(Ipv4Addr, u16, &'static str)> {
         .map(|config| (config.server.0, config.server.1, config.model.as_str()))
 }
 
-/// The plan line for the `llm` service. With a model loaded it also gets
+/// The plan line for the `llm` service. With a model loaded, or reserved and
+/// waiting for the model store to fill it (P2 task 10), it also gets
 /// `cap::MODEL`, `cap::THREADS`, and pages for a pool of workers (L6) and for the
 /// engine (its KV cache and tokenizer, `kabi::model::ENGINE_PAGES`); the model's
 /// window is the kernel's; it keeps `net` for an LLM server named as well (CI's
@@ -70,12 +71,13 @@ pub fn target() -> Option<(Ipv4Addr, u16, &'static str)> {
 /// command-line word, so it holds no whitespace and cannot add arguments of its
 /// own; control characters are refused as well.
 pub fn plan_line() -> String {
-    let mut line = match crate::model::get() {
-        Some(_) => format!(
+    let model = crate::model::get().is_some() || crate::model::fill::pending();
+    let mut line = match model {
+        true => format!(
             "llm caps=serve+net+model+threads burst_ms=10000 pages={}",
             crate::model::holder_pages()
         ),
-        None => format!(
+        false => format!(
             "llm caps=serve+net burst_ms=10000 pages={}",
             crate::model::HOLDER_PAGES
         ),

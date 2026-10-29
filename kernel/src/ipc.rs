@@ -16,7 +16,7 @@
 //! fail at once and queued ones wait for the next instance.
 
 use crate::process::{self, MAX_PROCESSES, Name, uaccess};
-use crate::{hpet, threads};
+use crate::{hpet, log, threads};
 use alloc::vec::Vec;
 use captable::Entry;
 use core::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
@@ -221,6 +221,9 @@ pub fn wait_bound(
     deadline_ns: u64,
     cancel: impl Fn() -> bool,
 ) -> Result<(), CallError> {
+    if server_of(name).is_none() {
+        demand(name);
+    }
     while server_of(name).is_none() {
         if cancel() {
             return Err(CallError::Cancelled);
@@ -231,6 +234,27 @@ pub fn wait_bound(
         threads::sleep_ms(BIND_POLL_MS);
     }
     Ok(())
+}
+
+/// How long the kernel waits for the supervisor to take a `demand`.
+const DEMAND_MS: u64 = 2_000;
+
+/// A call waits for `start=demand` service `name`, which is not running: the
+/// kernel asks the supervisor to start it (P3 task 12b), once for this wait.
+/// The supervisor takes `demand` only from the kernel.
+fn demand(name: &str) {
+    if name == supervise::SUPERVISOR || !process::supervision::on_demand(name) {
+        return;
+    }
+    let request = alloc::format!("{} {name}", supervise::DEMAND);
+    match call("supervisor", request.as_bytes(), DEMAND_MS) {
+        Ok(reply) if reply == b"ok" => log!("ipc: {name} asked for on demand"),
+        Ok(reply) => log!(
+            "ipc: the supervisor did not start {name}: {}",
+            alloc::string::String::from_utf8_lossy(&reply)
+        ),
+        Err(error) => log!("ipc: the supervisor did not take the demand for {name}: {error:?}"),
+    }
 }
 
 /// A call that was sent and not yet collected with [`finish`].
