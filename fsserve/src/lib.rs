@@ -645,6 +645,20 @@ impl<D: BlockDev> Server<D> {
                 let generation = self.commit()?;
                 Reply::Committed { generation }
             }
+            Request::UpdateDrop { id } => {
+                self.updates_only(call)?;
+                let fs = self.fs();
+                fs.set_volume(SYSTEM.into()).map_err(error)?;
+                let update = fs
+                    .snapshots()
+                    .get(&id)
+                    .is_some_and(|s| s.kind == kaifs::vol::SnapKind::Update);
+                if !update || !fs.drop_snapshot(id).map_err(error)? {
+                    return Err(Error::Invalid);
+                }
+                let generation = self.commit()?;
+                Reply::Committed { generation }
+            }
         };
         Ok((reply, None))
     }
@@ -850,7 +864,8 @@ fn changes(request: &Request) -> bool {
         | Request::EmptyTrash
         | Request::Sync
         | Request::UpdateSnapshot
-        | Request::UpdateRestore { .. } => true,
+        | Request::UpdateRestore { .. }
+        | Request::UpdateDrop { .. } => true,
         Request::Stat
         | Request::List { .. }
         | Request::Read { .. }

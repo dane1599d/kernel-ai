@@ -9,7 +9,8 @@
 //! update failed, so `system` goes back to the snapshot, which also takes the
 //! file away; if the slot never finished staging, the update never booted and
 //! the file is cleared. `fs` keeps `/system/trust` and the standing rules
-//! through the restore, and `home` is never in the snapshot.
+//! through the restore, and `home` is never in the snapshot. Whenever the file
+//! is cleared the snapshot is dropped too, so its blocks go back to the disk.
 
 use crate::folders::{self, Folders};
 use crate::{record, slot_of};
@@ -74,11 +75,13 @@ pub fn reconcile(handle: Handle) -> Result<Outcome, String> {
         Trial::Held => {
             folders::write(updates, PENDING, b"")?;
             println!("updated: release {release} in {slot:?} committed; the update held");
+            drop_snapshot(updates, pending.snapshot);
             Ok(Outcome::Held)
         }
         Trial::Abandoned => {
             folders::write(updates, PENDING, b"")?;
             println!("updated: release {release} in {slot:?} never booted; {PENDING} cleared");
+            drop_snapshot(updates, pending.snapshot);
             Ok(Outcome::Cleared)
         }
         Trial::Failed => restore(updates, pending),
@@ -107,5 +110,16 @@ fn restore(updates: Handle, pending: Pending) -> Result<Outcome, String> {
         "updated: {PENDING} is {} after the restore",
         if left { "still there" } else { "gone" }
     );
+    // The way back is taken; the snapshot is not needed again.
+    drop_snapshot(updates, id);
     Ok(Outcome::Restored)
+}
+
+/// Drops update snapshot `id` once `pending` no longer names it. A failure
+/// only leaves its blocks pinned, so it is reported and the start goes on.
+fn drop_snapshot(updates: Handle, id: u64) {
+    match folders::update_drop(updates, id) {
+        Ok(()) => println!("updated: update snapshot {id} is dropped"),
+        Err(why) => println!("updated: update snapshot {id} stays: {why}"),
+    }
 }
