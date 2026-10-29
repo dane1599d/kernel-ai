@@ -268,6 +268,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "comp-terminal"
+version = "0.1.0-dev"
+dependencies = [
+ "minicbor",
+ "termcore",
+]
+
+[[package]]
+name = "comp-terminal-ui"
+version = "0.1.0-dev"
+dependencies = [
+ "comp-terminal",
+ "uikit",
+]
+
+[[package]]
 name = "comp-viewbench"
 version = "0.1.0-dev"
 
