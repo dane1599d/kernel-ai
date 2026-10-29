@@ -56,6 +56,14 @@ pub fn labels() -> (Option<String>, Option<String>) {
     (manifest.good, manifest.pending)
 }
 
+/// The version the manifest starts component `name` on, when it names one: a
+/// local override (M9d) that runs instead of whatever package version `pkg`
+/// adds, and is never to hide one (P4 task 1).
+pub fn override_of(name: &str) -> Option<String> {
+    let manifest = manifest();
+    (name == COMPONENT && !manifest.is_empty()).then(|| manifest.start().0.into())
+}
+
 /// notes's plan line: the version the manifest starts it on.
 pub fn plan_line() -> String {
     let manifest = manifest();
