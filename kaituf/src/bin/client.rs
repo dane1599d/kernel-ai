@@ -175,8 +175,13 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
 struct Files(PathBuf);
 
 impl Cache for Files {
-    fn load(&mut self, role: &str) -> Option<Vec<u8>> {
-        fs::read(self.0.join(format!("{}.json", quote(role)))).ok()
+    fn load(&mut self, role: &str) -> Result<Option<Vec<u8>>, Error> {
+        let path = self.0.join(format!("{}.json", quote(role)));
+        match fs::read(&path) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(Error::Io(format!("{}: {e}", path.display()))),
+        }
     }
 
     fn save(&mut self, role: &str, bytes: &[u8]) -> Result<(), Error> {
