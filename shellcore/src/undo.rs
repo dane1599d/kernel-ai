@@ -53,6 +53,13 @@ pub enum Inverse {
     /// Put app `app`'s state back from before its call kept as `id` (ADR 0003
     /// §4's checkpoint undo, `kai-undo 1`): the app runs its own inverse.
     App { app: Name, id: u64 },
+    /// Set appearance `setting` back to `before`, while it is still `after`
+    /// (P4 task 8's `appearance_set`).
+    Appearance {
+        setting: Name,
+        before: Name,
+        after: Name,
+    },
     /// Put keyboard focus back on `to` (`w2`, `panel` or `none`); its redo
     /// focuses `from` again (P3 task 10's `ui_focus`).
     Refocus { to: Name, from: Name },
@@ -139,6 +146,11 @@ pub fn target(inverse: Inverse) -> String {
         Inverse::Instruction { id, made: false } => format!("standing instruction S{id}"),
         Inverse::Profile { .. } => String::from("the profile before"),
         Inverse::App { app, .. } => format!("{} as it was", app.as_str()),
+        Inverse::Appearance {
+            setting, before, ..
+        } => {
+            format!("{} {}", setting.as_str(), before.as_str())
+        }
         Inverse::Refocus { to, .. } => format!("focus on {}", to.as_str()),
         Inverse::Reopen(app) => format!("{} open", app.as_str()),
         Inverse::Reclose { app, .. } => format!("{} closed", app.as_str()),
@@ -250,6 +262,11 @@ fn revert_one(
         | Inverse::Reopen(_)
         | Inverse::Reclose { .. }
         | Inverse::App { .. } => Err(Refused::Failed(String::from("it is put back by revert"))),
+        Inverse::Appearance {
+            setting,
+            before,
+            after,
+        } => crate::appearance::revert(host, setting, before, after, anyway),
         // Setting it twice changes nothing, so this needs no compare.
         Inverse::Grant { app, row, withheld } => {
             crate::grants::set(host, app.as_str(), row.as_str(), withheld)
@@ -301,6 +318,15 @@ pub fn reverse(inverse: Inverse) -> Inverse {
             undo: !undo,
         },
         Inverse::Instruction { id, made } => Inverse::Instruction { id, made: !made },
+        Inverse::Appearance {
+            setting,
+            before,
+            after,
+        } => Inverse::Appearance {
+            setting,
+            before: after,
+            after: before,
+        },
         // Only the shell knows the redo's key ([`crate::Shell`]).
         Inverse::Profile { key } => Inverse::Profile { key },
         Inverse::Refocus { to, from } => Inverse::Refocus { to: from, from: to },
@@ -343,6 +369,16 @@ pub fn inverse_word(inverse: Option<Inverse>) -> String {
         Some(Inverse::Instruction { id, made }) => format!("instruction:{id}:{}", u8::from(made)),
         Some(Inverse::Profile { key }) => format!("profile:{key}"),
         Some(Inverse::App { app, id }) => format!("app:{}:{id}", app.as_str()),
+        Some(Inverse::Appearance {
+            setting,
+            before,
+            after,
+        }) => format!(
+            "appearance:{}:{}:{}",
+            setting.as_str(),
+            before.as_str(),
+            after.as_str()
+        ),
         Some(Inverse::Refocus { to, from }) => {
             format!("refocus:{}:{}", to.as_str(), from.as_str())
         }
@@ -391,6 +427,11 @@ pub fn parse_inverse(text: &str) -> Option<Option<Inverse>> {
         "app" => Inverse::App {
             app: Name::new(parts.next()?)?,
             id: number(parts.next())?,
+        },
+        "appearance" => Inverse::Appearance {
+            setting: Name::new(parts.next()?)?,
+            before: Name::new(parts.next()?)?,
+            after: Name::new(parts.next()?)?,
         },
         "instruction" => Inverse::Instruction {
             id: number(parts.next())?,

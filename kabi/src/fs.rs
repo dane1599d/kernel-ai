@@ -101,6 +101,17 @@ pub const SYSTEM_UPDATES: u64 = Badge {
     object: 3,
 }
 .raw();
+/// The badge of the startup `Dir` a plan line's `dir=apps` grants: `/system/apps`,
+/// where comphost keeps each app's saved state in a folder named for the app
+/// (P4, app storage that survives a reboot). Fixed, as [`SYSTEM_PKG`]; object 4
+/// (2 and 3 are `/system/trust` and `/system/updates`, #288).
+pub const SYSTEM_APPS: u64 = Badge {
+    volume: SYSTEM,
+    file: false,
+    epoch: 0,
+    object: 4,
+}
+.raw();
 
 /// The badge of the startup `Dir` a plan line's `dir=settings` grants:
 /// `/system/settings`, the Settings app's files (ADR 0004 §5), for a service
@@ -155,6 +166,7 @@ mod tests {
             SYSTEM_TRUST,
             SYSTEM_UPDATES,
             SYSTEM_SETTINGS,
+            SYSTEM_APPS,
         ];
         for (i, a) in fixed.iter().enumerate() {
             assert_eq!(Badge::parse(*a).epoch, 0);

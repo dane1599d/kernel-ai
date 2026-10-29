@@ -14,11 +14,13 @@ mod act;
 mod actions;
 mod apart;
 mod apps;
+mod centry;
 mod effects;
 mod files;
 mod fuzz;
 mod log;
 mod logdisk;
+mod look;
 mod more;
 mod packages;
 mod panel;
@@ -71,6 +73,8 @@ struct FakeHost {
     apps: RefCell<crate::apps::Apps>,
     app_requests: RefCell<Vec<(String, String)>>,
     app_replies: RefCell<VecDeque<String>>,
+    /// The saved appearance (`kai-appearance 1`).
+    appearance: RefCell<Option<String>>,
     /// The trusted path's ONCE book: badge, digest, and whether it was used.
     once: RefCell<Vec<(u64, [u8; 32], bool)>>,
     /// Rule handles revoked.
@@ -222,6 +226,7 @@ impl FakeHost {
             apps: RefCell::new(crate::apps::Apps::default()),
             app_requests: RefCell::new(Vec::new()),
             app_replies: RefCell::new(VecDeque::new()),
+            appearance: RefCell::new(None),
             once: RefCell::new(Vec::new()),
             revoked: RefCell::new(Vec::new()),
             procs: RefCell::new(alloc::vec![
@@ -631,6 +636,15 @@ impl Host for FakeHost {
             .borrow_mut()
             .pop_front()
             .ok_or_else(|| String::from("the app did not answer"))
+    }
+
+    fn appearance_read(&self) -> Option<String> {
+        self.appearance.borrow().clone()
+    }
+
+    fn appearance_write(&self, text: &str) -> Result<(), String> {
+        *self.appearance.borrow_mut() = Some(String::from(text));
+        Ok(())
     }
 
     fn audit(&self, text: &str) {

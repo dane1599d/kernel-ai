@@ -232,6 +232,7 @@ const PERMS: &[(&str, &str)] = &[
     ("threads", "sys.read"),
     ("get_policy", "sys.read"),
     ("set_policy", "sched.set"),
+    ("appearance_set", "look.set"),
     ("fixed", "none"),
     ("floor", "none"),
     ("tune", "sched.trial"),

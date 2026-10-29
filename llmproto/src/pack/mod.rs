@@ -79,6 +79,7 @@ pub const INDEX: &[(&str, &[&str])] = &[
             "window_close",
         ],
     ),
+    ("appearance", &["appearance_set"]),
 ];
 
 /// Each index group's gloss, at most [`GLOSS_TOKENS`] (ADR 0010 §6's
@@ -91,6 +92,7 @@ pub const GLOSS: &[(&str, &str)] = &[
     ("files", "list or read files"),
     ("file_edits", "write, rename, trash or restore files"),
     ("ui", "open, close, switch to or type in apps"),
+    ("appearance", "theme, text size, motion or legible type"),
 ];
 /// The longest a gloss may be, in estimated tokens.
 pub const GLOSS_TOKENS: usize = 12;

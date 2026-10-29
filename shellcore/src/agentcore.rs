@@ -41,6 +41,9 @@ pub struct Outcome {
     /// Why, from consent and the row.
     pub why: Why,
     pub reply: Reply,
+    /// A `c>` entry's call: its value as JSON, or why there is none; `None`
+    /// while it asks (P4 task 12).
+    pub value: Option<crate::centry::CallValue>,
 }
 
 /// How a call's arguments read as consent sees them, and as Rhai literals.
@@ -235,8 +238,10 @@ impl Shell {
                 (*name, value)
             })
             .collect();
-        // A call made after reading a view was decided by data (ADR 0002 D6).
-        let control = self.steered.map_or(Label::Literal, Label::Content);
+        // A call made after reading a view was decided by data (ADR 0002 D6),
+        // as are a `c>` entry's later calls after it read content.
+        let seen = self.c_entry.as_ref().and_then(|entry| entry.seen);
+        let control = self.steered.or(seen).map_or(Label::Literal, Label::Content);
         let planned = [Planned {
             name: row.name,
             args: &values,
@@ -275,9 +280,12 @@ impl Shell {
         // What a content read returns is `Data`: `show` is the one way it comes
         // out, to the user and not back to the model (ADR 0002 D6).
         let called = format!("{}({})", row.name, args.rhai.join(", "));
-        let script = match row.ret {
-            RetType::Data => format!("show({called});"),
-            _ => format!("{called};"),
+        // A `c>` entry's call gives its value back to the program; anyone
+        // else's Data is shown to the user only.
+        let script = match (row.ret, self.c_entry.is_some()) {
+            (_, true) => called,
+            (RetType::Data, false) => format!("show({called});"),
+            (_, false) => format!("{called};"),
         };
         let answer = Answer {
             script,
@@ -515,7 +523,19 @@ pub(crate) fn remember(host: &dyn crate::Host, line: &str, call: &str, reply: &s
 }
 
 fn outcome(tier: Tier, why: Why, reply: Reply) -> Outcome {
-    Outcome { tier, why, reply }
+    Outcome {
+        tier,
+        why,
+        reply,
+        value: None,
+    }
+}
+
+/// A call refused before any row was found.
+pub(crate) fn outcome_refused(why: &str) -> Outcome {
+    let mut refused = outcome(Tier::Never, Why::Unknown, Reply::err(why));
+    refused.value = Some(Err(alloc::format!("refused: {why}")));
+    refused
 }
 
 /// A string argument, or "" when the model left it out.
