@@ -44,9 +44,9 @@ pub struct Outcome {
 }
 
 /// How a call's arguments read as consent sees them, and as Rhai literals.
-struct Arguments {
+pub(crate) struct Arguments {
     values: Vec<(&'static str, String)>,
-    rhai: Vec<String>,
+    pub(crate) rhai: Vec<String>,
 }
 
 impl Shell {
@@ -483,7 +483,7 @@ fn text_arg(call: &Call, name: &str) -> String {
 
 /// A call's arguments in the row's order, checked against its types: as text for
 /// consent and as Rhai literals for the one-line script.
-fn arguments(row: &'static Action, call: &Call) -> Result<Arguments, String> {
+pub(crate) fn arguments(row: &'static Action, call: &Call) -> Result<Arguments, String> {
     if let Some(extra) = call
         .arguments
         .keys()

@@ -11,6 +11,9 @@ pub const SHELL: &str = "shell caps=serve+call+policy+stop+script uses=llm+super
 /// [`SHELL`] once `fs` runs: with `files`, its `Dir` for `/home/user`, for the
 /// file rows (P2 task 11), and `state`, its `Dir` for `/system/state`, for the
 /// action log (P2 task 12).
+/// [`SHELL`] on a desktop: with a route to `desktop`, third, which it takes the
+/// AI panel's requests from and reports their states to (P3 task 7).
+pub const SHELL_DESK: &str = "shell caps=serve+call+policy+stop+script uses=llm+supervisor+desktop pages=4096 stack_pages=512 burst_ms=5000";
 pub const SHELL_FILES: &str = "shell caps=serve+call+policy+stop+script+files+state uses=llm+supervisor pages=4096 stack_pages=512 burst_ms=5000";
 /// The file system service (ADR 0004): the only holder of the `kai-data`
 /// partition. Planned before the shell, and only when the disk has `kai-data`.

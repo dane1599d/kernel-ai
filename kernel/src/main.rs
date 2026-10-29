@@ -364,6 +364,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::AppSuspend => run_case(suspend_tests::check),
         SelfTest::DeskBoot => run_case(desk_tests::boot_check),
         SelfTest::DeskPanel => run_case(desk_tests::panel_check),
+        SelfTest::DeskPanelShell => run_case(desk_tests::panel_shell_check),
         SelfTest::UiWindow => run_case(ui_tests::check),
         SelfTest::DeskCard => run_case(card_tests::check),
         SelfTest::DeskStanding => run_case(standing_tests::check),
