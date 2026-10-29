@@ -5,6 +5,7 @@ extern crate std;
 mod effects;
 mod fake;
 mod fallback;
+mod package;
 mod rehearsal;
 mod saved;
 mod suspend;
