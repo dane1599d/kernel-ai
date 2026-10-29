@@ -21,7 +21,7 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 /// The app that holds the settings grant.
-pub const SETTINGS_APP: &str = "settings";
+pub const SETTINGS_APP: &str = "settings-window";
 /// The longest request (`kai:settings`' own bound).
 pub const MAX_REQUEST: usize = 512;
 /// The longest app or profile name.
