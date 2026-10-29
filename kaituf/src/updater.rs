@@ -166,6 +166,19 @@ impl<'a> Updater<'a> {
         self.cache.save(role, &bytes)
     }
 
+    /// The paths targets role `role` lists, loaded as `delegator` delegates it,
+    /// for a client that takes every target of one role, as `pkg` takes the
+    /// image's packages. Look each up with [`Updater::target`], which says what
+    /// the first role to name it holds. Call [`Updater::refresh`] first.
+    pub fn listed(&mut self, role: &str, delegator: &str) -> Result<Vec<String>, Error> {
+        self.load_targets(role, delegator)?;
+        let targets = self
+            .trusted
+            .targets(role)
+            .ok_or_else(|| Error::Malformed(alloc::format!("{role} did not load")))?;
+        Ok(targets.signed.targets.keys().cloned().collect())
+    }
+
     /// The artifact `path` as the first role to name it in a preorder depth-first
     /// search of the delegations says it is; None if no trusted role names it.
     /// Call [`Updater::refresh`] first.
