@@ -13,6 +13,11 @@
 //!   the screen and flushes them.
 //! - The top bar's model state and memory are read once a second; a screen
 //!   without a hardware cursor (GOP) gets one drawn in the frame.
+//! - Everything is painted in the theme the [`Appearance`] resolves to (P4
+//!   task 8): checked once per frame, and on a change the whole screen and the
+//!   hardware cursor are painted again. It starts from the plan line's
+//!   arguments (`theme=light`, `legible=on`, ...), each an `appearance_set`
+//!   setting.
 //! - While the terminal window (`term`'s) has focus, the keys go to the
 //!   kernel's terminal instead: a lease (INPUT_TO_CONSOLE) renewed every
 //!   [`LEASE_RENEW_NS`], and ended when the focus moves (P3 task 8). The
@@ -37,6 +42,8 @@ use gfx2d::{Canvas, Fonts, Image};
 use kabi::display::{DisplayInfo, FlushRect};
 use kabi::handle::{Handle, RecvInfo};
 use kabi::input::{InputEvent, Kind};
+use look::Palette;
+use look::appearance::{self, Appearance, Shipped};
 use surfabi::Format;
 use user::{println, sys};
 
@@ -98,6 +105,9 @@ struct State {
     leased_at: Option<u64>,
     /// The focused window, and whether the kernel lent the keys for it.
     asked: Option<(WindowId, bool)>,
+    /// What the user chose, and what the screen is painted in.
+    appearance: Appearance,
+    painted_in: Option<Appearance>,
 }
 
 fn main() -> i32 {
@@ -105,6 +115,7 @@ fn main() -> i32 {
         println!("desktop: the built-in fonts do not parse");
         return 1;
     };
+    let appearance = starting_appearance();
     loop {
         let Some(screen) = claim() else {
             if !wait_for_screen() {
@@ -134,6 +145,8 @@ fn main() -> i32 {
             focus: Focus::Nothing,
             leased_at: None,
             asked: None,
+            appearance: appearance.clone(),
+            painted_in: None,
         };
         println!("desktop: claimed {width}x{height}");
         let result = run(&mut state, &screen);
@@ -155,7 +168,7 @@ fn claim() -> Option<Screen> {
     let shm = sys::display_claim(&mut info).ok()?;
     let address = sys::shm_map(shm, true).ok()?;
     if info.cursor != 0 {
-        let _ = sys::display_cursor(&arrow(), (0, 0));
+        let _ = sys::display_cursor(&arrow(&look::DARK), (0, 0));
         let _ = sys::display_cursor_move(info.width / 2, info.height / 2);
     }
     Some(Screen { info, address })
@@ -193,6 +206,7 @@ fn run(state: &mut State, screen: &Screen) -> Option<bool> {
         refresh_bar(state);
         tick_panel(state);
         lease(state);
+        theme(state, screen);
         draw(state, screen);
     }
 }
@@ -600,13 +614,55 @@ fn copy_to_screen(frame: &[u32], width: i32, screen: &Screen, damage: &[Rect]) {
 }
 
 /// The hardware cursor's image: the arrow the frame draws on GOP.
-fn arrow() -> [u32; 64 * 64] {
+fn arrow(palette: &Palette) -> [u32; 64 * 64] {
     let mut image = [0u32; 64 * 64];
     for (i, pixel) in image.iter_mut().enumerate() {
         let (x, y) = ((i % 64) as i32, (i / 64) as i32);
-        *pixel = paint::arrow(x, y).unwrap_or(0);
+        *pixel = paint::arrow(x, y, palette).unwrap_or(0);
     }
     image
+}
+
+/// The appearance the plan line's arguments set, one `appearance_set` setting
+/// each; one that is refused is left out, and said.
+fn starting_appearance() -> Appearance {
+    let args = user::args();
+    let mut chosen = Appearance::default();
+    for setting in appearance::SETTINGS {
+        let Some(value) = user::arg(&args, setting) else {
+            continue;
+        };
+        match chosen.set(setting, value, &Shipped) {
+            Ok(next) => chosen = next,
+            Err(why) => println!("desktop: {setting}={value} is refused: {}", why.0),
+        }
+    }
+    chosen
+}
+
+/// Paints in the appearance's theme from this frame on, when it changed: the
+/// whole screen again, and the hardware cursor in its colours.
+fn theme(state: &mut State, screen: &Screen) {
+    if state.painted_in.as_ref() == Some(&state.appearance) {
+        return;
+    }
+    let theme = match state.appearance.resolve(&Shipped) {
+        Ok(theme) => theme,
+        Err(why) => {
+            println!("desktop: the appearance is refused ({}); dark it is", why.0);
+            state.appearance = Appearance::default();
+            return;
+        }
+    };
+    state.painter.set_theme(&theme);
+    state.extra.push(Rect::new(0, 0, state.width, state.height));
+    if screen.info.cursor != 0 {
+        let _ = sys::display_cursor(&arrow(state.painter.palette()), (0, 0));
+    }
+    if state.painted_in.is_some() || state.appearance != Appearance::default() {
+        println!("desktop: painting in the {} theme", theme.name);
+    }
+    state.painted_in = Some(state.appearance.clone());
 }
 
 /// Waits for the screen to come back: `false` on an error.
