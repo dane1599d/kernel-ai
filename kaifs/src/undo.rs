@@ -26,6 +26,7 @@ use crate::items::{
     Entry, FileType, Inode, K_DATA, K_DIRENT, K_INODE, K_XATTR, MAX_NAME, ROOT, decode_names,
     valid_name,
 };
+use crate::trash::TRASH;
 use crate::tree::Key;
 use alloc::collections::BTreeSet;
 use alloc::format;
@@ -108,6 +109,53 @@ impl<D: BlockDev> Fs<D> {
             }
         }
         Ok(None)
+    }
+
+    /// Whether `ino` is one of folders `dirs` or lies under one in `view`.
+    fn under_in(&mut self, view: View, ino: u64, dirs: &[u64]) -> Result<bool, Error> {
+        let mut seen = BTreeSet::new();
+        let mut at = ino;
+        while !dirs.contains(&at) {
+            if at == ROOT {
+                return Ok(false);
+            }
+            if !seen.insert(at) {
+                return Err(Error::Corrupt("a folder's parents loop"));
+            }
+            at = match self.inode_in(view, at)? {
+                Some(inode) => inode.parent,
+                None => return Ok(false),
+            };
+        }
+        Ok(true)
+    }
+
+    /// Whether everything the action committed as `txn` changed lies in folder
+    /// `dir` (or is it) or in the trash, both before the action and live now:
+    /// what [`Fs::restore`] would touch stays there. The root counts only when
+    /// the action made the trash, the one change a trash makes there.
+    pub fn restore_within(&mut self, txn: u64, dir: u64) -> Result<bool, Error> {
+        let undo = self.undo_record(txn)?.ok_or(Error::NotFound)?;
+        let snap = *self
+            .snapshots()
+            .get(&undo.snapshot)
+            .ok_or(Error::NotFound)?;
+        let then = View::Tree(snap.root);
+        let trash = self.lookup(ROOT, TRASH)?.map(|e| e.ino);
+        let scope = [Some(dir), trash].into_iter().flatten().collect::<Vec<_>>();
+        let made_trash = trash.is_some_and(|t| undo.objects.contains(&t));
+        for &ino in &undo.objects {
+            if ino == ROOT && made_trash {
+                continue;
+            }
+            for view in [then, View::Live] {
+                let present = self.inode_in(view, ino)?.is_some();
+                if present && !self.under_in(view, ino, &scope)? {
+                    return Ok(false);
+                }
+            }
+        }
+        Ok(true)
     }
 
     /// How many folders lie between `ino` and the root in `view`.

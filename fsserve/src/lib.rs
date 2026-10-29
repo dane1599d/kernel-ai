@@ -515,7 +515,7 @@ impl<D: BlockDev> Server<D> {
                 if self.owner.is_some() {
                     return Err(Error::Busy);
                 }
-                self.restore(txn, action)?
+                self.restore(object, txn, action)?
             }
             Request::History => {
                 need(Rights::READ)?;
@@ -594,8 +594,14 @@ impl<D: BlockDev> Server<D> {
         })
     }
 
-    fn restore(&mut self, txn: u64, action: u64) -> Result<Reply, Error> {
+    /// Restores action `txn` as action `action`, if all it changed lies in
+    /// folder `dir` (the handle's) or the volume's trash ([`Fs::restore_within`]):
+    /// a handle reverts nothing in a folder it was not given.
+    fn restore(&mut self, dir: u64, txn: u64, action: u64) -> Result<Reply, Error> {
         let fs = self.fs();
+        if !fs.restore_within(txn, dir).map_err(error)? {
+            return Err(Error::Permission);
+        }
         let volume = fs.volume();
         let done = (|| {
             fs.begin(action)?;

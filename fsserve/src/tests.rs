@@ -536,6 +536,44 @@ fn the_pkg_dir_reaches_only_beneath_system_pkg() {
 }
 
 #[test]
+fn a_restore_reverts_only_inside_the_handles_folder() {
+    let mut disk = MemDisk::new(BLOCKS);
+    let (mut c, _) = Client::start(&mut disk);
+    let (pkg, state) = (kabi::fs::SYSTEM_PKG, kabi::fs::SYSTEM_STATE);
+    let open = |path: &str, how| Request::Open {
+        path: path.into(),
+        rights: (Rights::READ | Rights::WRITE).bits(),
+        how,
+    };
+    let (_, current) = c.call(ALICE, pkg, DIR_RIGHTS, open("current", How::CreateFile));
+    let current = current.unwrap();
+    c.write(&current, 0, b"v1");
+    // An action in /system/pkg, committed.
+    c.call(ALICE, pkg, DIR_RIGHTS, Request::Begin { action: 7 });
+    c.write(&current, 0, b"v2");
+    let Reply::Committed { generation } = c.call(ALICE, pkg, DIR_RIGHTS, Request::Commit).0 else {
+        panic!("not committed");
+    };
+    let restore = |action| Request::Restore {
+        txn: generation,
+        action,
+    };
+    // The state folder's handle, with every right, may not revert it.
+    let reply = c.call(ALICE, state, DIR_RIGHTS, restore(8));
+    assert_eq!(failed(reply), Error::Permission);
+    assert_eq!(c.read(&current), Ok(b"v2".to_vec()));
+    // Nor may a handle on a folder inside the one the action changed.
+    let (_, sub) = c.call(ALICE, pkg, DIR_RIGHTS, open("sub", How::Mkdir));
+    let sub = sub.unwrap();
+    let reply = c.call(ALICE, sub.badge, DIR_RIGHTS, restore(8));
+    assert_eq!(failed(reply), Error::Permission);
+    // The pkg folder's own handle may.
+    let reply = c.call(ALICE, pkg, DIR_RIGHTS, restore(9)).0;
+    assert!(matches!(reply, Reply::Restored { .. }), "{reply:?}");
+    assert_eq!(c.read(&current), Ok(b"v1".to_vec()));
+}
+
+#[test]
 fn the_state_dir_reaches_only_beneath_system_state() {
     let mut disk = MemDisk::new(BLOCKS);
     let (mut c, _) = Client::start(&mut disk);
