@@ -12,7 +12,7 @@
 #[path = "../../testkit/hostile.rs"]
 mod hostile;
 
-use agentabi::consent::{Call, Label, Value, decide};
+use agentabi::consent::{Call, Label, Value, Why, decide};
 use agentabi::{ROWS, Tier, derive, find};
 use hostile::XorShift;
 
@@ -153,6 +153,63 @@ fn steered(call: &Call) -> bool {
             .args
             .iter()
             .any(|(_, v)| matches!(v.label, Label::Content(_)))
+}
+
+/// ADR 0002 D6: an undoable change that data chose, or gave its target, asks
+/// however plainly the line asks for it, and the ask names the data.
+#[test]
+fn a_change_data_chose_asks_and_names_the_data() {
+    let lit = |text| Value {
+        text,
+        label: Label::Literal,
+    };
+    let note = |text| Value {
+        text,
+        label: Label::Content("note"),
+    };
+    let cases: [(&str, Call); 3] = [
+        // A note's content decided that the install runs.
+        (
+            "install htop",
+            Call {
+                name: "pkg_install",
+                args: &[("name", lit("htop"))],
+                control: Label::Content("note"),
+            },
+        ),
+        // The line's cue, and the target from a note.
+        (
+            "install htop",
+            Call {
+                name: "pkg_install",
+                args: Box::leak(Box::new([("name", note("htop"))])),
+                control: Label::Literal,
+            },
+        ),
+        (
+            "switch to round robin",
+            Call {
+                name: "set_policy",
+                args: Box::leak(Box::new([("name", note("round-robin"))])),
+                control: Label::Literal,
+            },
+        ),
+    ];
+    for (line, call) in cases {
+        let decision = decide(line, &[call], &ROWS)[0];
+        assert_eq!(
+            (decision.tier, decision.why),
+            (Tier::Ask, Why::Steered("note")),
+            "{line}: {call:?}"
+        );
+    }
+    // The same calls with nothing read run, as the line asks.
+    let plain = Call {
+        name: "pkg_install",
+        args: &[("name", lit("htop"))],
+        control: Label::Literal,
+    };
+    assert_eq!(decide("install htop", &[plain], &ROWS)[0].tier, Tier::Run);
 }
 
 #[test]

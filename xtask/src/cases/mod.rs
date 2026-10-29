@@ -89,6 +89,9 @@ pub struct TestCase {
     /// bundle's digests recomputed, so only its signed metadata can tell (P4
     /// task 1's tamper case).
     pub tampered: Option<&'static str>,
+    /// The package mirror the guest reaches at `pkgrepo=` (P4 task 2), signed by
+    /// the image's keys, or a tampered one.
+    pub mirror: Option<crate::pkgrepo::mirrors::MirrorKind>,
 }
 
 /// What a case's update disk holds.
@@ -125,6 +128,7 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         update: None,
         cuts: 0,
         tampered: None,
+        mirror: None,
     }
 }
 
