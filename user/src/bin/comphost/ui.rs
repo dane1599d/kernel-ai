@@ -145,6 +145,11 @@ impl Ui {
             told.extend(self.desk.told(&self.reply[..len.min(self.reply.len())]));
         }
         self.act(host, told)?;
+        // A suspended app's input waits in its rings: serving it would wake the
+        // app, and what resumes it (a rule's `until`, `ctl resume`) goes first.
+        if host.suspended() {
+            return Ok(());
+        }
         let inputs = self.take_input();
         if inputs.is_empty() {
             return Ok(());
