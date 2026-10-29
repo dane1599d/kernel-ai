@@ -231,9 +231,6 @@ dependencies = [
 [[package]]
 name = "comp-monitor"
 version = "0.1.0-dev"
-dependencies = [
- "appabi",
-]
 
 [[package]]
 name = "comp-monitor-ui"

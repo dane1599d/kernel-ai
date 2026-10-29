@@ -1,8 +1,9 @@
-//! The System monitor's model (P4 task 9): what the machine is doing, as the
-//! read-only OS rows tell it (`processes`, `memory`, `cpus`, `uptime_ms` and
-//! the model's state), sorted and selected the way the window or the agent says.
-//! It reads and never changes anything itself: stopping a process is the OS's
-//! `process_stop`, which asks, queued as an effect like any other row.
+//! The System monitor's model (P4 task 9): what the machine is doing, from the
+//! samples the host hands in ([`Monitor::update`]), sorted and selected the way
+//! the window or the agent says. A [`Sample`] is plain numbers (the kernel's
+//! `METRICS` and the model's `health`), so there is nothing to parse; this crate
+//! turns two samples into each process's CPU share. It changes nothing itself:
+//! stopping a process is the OS's `process_stop`, which asks, queued as an effect.
 //!
 //! The agent's rows are `monitor_sort` and `monitor_select` ([`Monitor::act_sort`]
 //! and [`Monitor::act_select`]). They move the view and say what they found, so
@@ -14,18 +15,26 @@ extern crate alloc;
 #[cfg(test)]
 extern crate std;
 
+pub mod calls;
 pub mod fake;
-pub mod rows;
+pub mod sample;
 pub mod view;
 
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use calls::Call;
 use core::cmp::Ordering;
-use rows::{Call, Memory, Model, Proc};
+use sample::{ModelStatus, PAGE, Sample};
 
 /// The longest message the status line shows, in characters.
 pub const MESSAGE_CHARS: usize = 120;
+/// Most processes kept from one sample.
+pub const MAX_PROCS: usize = 256;
+/// Longest process name kept, in characters.
+pub const NAME_CHARS: usize = 48;
+/// Pages in a MiB.
+const PAGES_PER_MIB: u64 = (1 << 20) / PAGE;
 /// Most requests waiting for an answer; the oldest is forgotten past this.
 const MAX_PENDING: usize = 16;
 
@@ -47,6 +56,27 @@ pub fn tame(text: &str, max: usize) -> String {
         out.push('…');
     }
     out
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Proc {
+    pub pid: u32,
+    /// The name as the window shows it: no control characters, cut short.
+    pub name: String,
+    /// Whether `name` is the name the OS gave. `process_stop` takes a name, so
+    /// only a process whose name is exact can be stopped from here.
+    pub exact: bool,
+    /// CPU over the time between the last two samples, in thousandths of one
+    /// CPU; unknown until there are two.
+    pub cpu_permille: Option<u32>,
+    pub mem_kib: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Memory {
+    pub free_mib: u64,
+    pub total_mib: u64,
+    pub heap_kib: u64,
 }
 
 /// What the table is ordered by.
@@ -91,28 +121,28 @@ pub enum Status {
     Failed(String),
 }
 
-enum Asked {
-    Processes,
-    Memory,
-    Cpus,
-    Uptime,
-    Model,
-    Stop(String),
+/// What the last sample said about each process, for the next one's rates.
+struct Baseline {
+    uptime_ns: u64,
+    procs: Vec<(u32, String, u64)>,
 }
 
 pub struct Monitor {
     cpus: Option<u32>,
     uptime_ms: Option<u64>,
     memory: Option<Memory>,
-    model: Option<Model>,
+    model: ModelStatus,
+    omitted: u32,
     /// In the order [`Monitor::sort`] says.
     procs: Vec<Proc>,
+    baseline: Option<Baseline>,
     sort: Sort,
     /// Whether the order is reversed from the sort's natural one.
     flipped: bool,
     selected: Option<u32>,
     status: Status,
-    pending: Vec<(u32, Asked)>,
+    /// Tickets of `process_stop` effects, by the name they were asked for.
+    pending: Vec<(u32, String)>,
 }
 
 impl Default for Monitor {
@@ -146,14 +176,26 @@ fn order(sort: Sort, flipped: bool, a: &Proc, b: &Proc) -> Ordering {
     key.then(a.pid.cmp(&b.pid))
 }
 
+/// A process's CPU in thousandths of one CPU between two samples `elapsed_ns`
+/// apart, at most `cpus` CPUs' worth: `dcpu_ns * 1000 / duptime_ns`. None when
+/// its CPU time went backwards (a new process under an old pid).
+fn share(before: u64, now: u64, elapsed_ns: u64, cpus: u32) -> Option<u32> {
+    let used = now.checked_sub(before)?;
+    let permille = u128::from(used) * 1000 / u128::from(elapsed_ns);
+    let most = u128::from(cpus.max(1)) * 1000;
+    Some(permille.min(most) as u32)
+}
+
 impl Monitor {
     pub fn new() -> Self {
         Self {
             cpus: None,
             uptime_ms: None,
             memory: None,
-            model: None,
+            model: ModelStatus::UNKNOWN,
+            omitted: 0,
             procs: Vec::new(),
+            baseline: None,
             sort: Sort::Cpu,
             flipped: false,
             selected: None,
@@ -174,8 +216,13 @@ impl Monitor {
         self.memory
     }
 
-    pub fn model(&self) -> Option<&Model> {
-        self.model.as_ref()
+    pub fn model(&self) -> ModelStatus {
+        self.model
+    }
+
+    /// Processes the kernel's list had no room for.
+    pub fn omitted(&self) -> u32 {
+        self.omitted
     }
 
     /// The processes, in the order the table shows.
@@ -195,7 +242,7 @@ impl Monitor {
         &self.status
     }
 
-    /// Whether answers are still to come.
+    /// Whether a `process_stop` is still to be answered.
     pub fn busy(&self) -> bool {
         !self.pending.is_empty()
     }
@@ -216,24 +263,72 @@ impl Monitor {
         self.status = Status::Failed(tame(why, MESSAGE_CHARS));
     }
 
-    fn ask(&mut self, os: &mut dyn Os, call: &Call, what: Asked) {
-        let ticket = os.request(call);
-        if self.pending.len() == MAX_PENDING {
-            self.pending.remove(0);
+    /// Takes in a new sample: the numbers it holds, and each process's CPU share
+    /// since the last one. A sample no later than the last gives no shares and
+    /// keeps the older one as the baseline, so two reads in a moment cannot make
+    /// a rate of nothing over nothing.
+    pub fn update(&mut self, s: &Sample) {
+        self.cpus = Some(s.cpus).filter(|&n| n > 0);
+        self.uptime_ms = Some(s.uptime_ns / 1_000_000);
+        self.memory = (s.total_pages > 0 && s.free_pages <= s.total_pages).then_some(Memory {
+            free_mib: s.free_pages / PAGES_PER_MIB,
+            total_mib: s.total_pages / PAGES_PER_MIB,
+            heap_kib: s.heap_bytes / 1024,
+        });
+        self.model = s.model;
+        self.omitted = s.omitted;
+        let elapsed = self
+            .baseline
+            .as_ref()
+            .and_then(|b| s.uptime_ns.checked_sub(b.uptime_ns))
+            .filter(|&dt| dt > 0);
+        let before = |p: &sample::ProcSample| {
+            let base = self.baseline.as_ref()?;
+            let (_, _, cpu_ns) = base
+                .procs
+                .iter()
+                .find(|(pid, name, _)| *pid == p.pid && *name == p.name)?;
+            Some(*cpu_ns)
+        };
+        self.procs = s
+            .procs
+            .iter()
+            .take(MAX_PROCS)
+            .map(|p| {
+                let shown = tame(&p.name, NAME_CHARS);
+                Proc {
+                    pid: p.pid,
+                    exact: shown == p.name,
+                    name: shown,
+                    cpu_permille: elapsed
+                        .zip(before(p))
+                        .and_then(|(dt, was)| share(was, p.cpu_ns, dt, s.cpus)),
+                    mem_kib: Some(p.pages.saturating_mul(PAGE / 1024)),
+                }
+            })
+            .collect();
+        // Keep the older baseline when no time passed; start a new one when the
+        // clock went back (a reboot) or there was none.
+        let newer = self
+            .baseline
+            .as_ref()
+            .is_none_or(|b| s.uptime_ns != b.uptime_ns);
+        if newer {
+            self.baseline = Some(Baseline {
+                uptime_ns: s.uptime_ns,
+                procs: s
+                    .procs
+                    .iter()
+                    .take(MAX_PROCS)
+                    .map(|p| (p.pid, p.name.clone(), p.cpu_ns))
+                    .collect(),
+            });
         }
-        self.pending.push((ticket, what));
-    }
-
-    /// Asks the OS for everything the window shows. Five effects, and answers
-    /// still to come for an earlier refresh are forgotten.
-    pub fn refresh(&mut self, os: &mut dyn Os) {
-        self.pending.clear();
-        self.status = Status::Ready;
-        self.ask(os, &rows::processes(), Asked::Processes);
-        self.ask(os, &rows::memory(), Asked::Memory);
-        self.ask(os, &rows::cpus(), Asked::Cpus);
-        self.ask(os, &rows::uptime(), Asked::Uptime);
-        self.ask(os, &rows::model_state(), Asked::Model);
+        self.resort();
+        // A process that is gone is no longer selected.
+        if self.selected().is_none() {
+            self.selected = None;
+        }
     }
 
     fn resort(&mut self) {
@@ -307,53 +402,26 @@ impl Monitor {
         let Some(p) = self.selected().cloned() else {
             return self.fail("Pick a process to stop first.");
         };
-        let call = p.exact.then(|| rows::stop(&p.name)).flatten();
-        match call {
-            Some(call) => self.ask(os, &call, Asked::Stop(p.name)),
-            None => self.fail("That name cannot be given to the stop row."),
+        let call = p.exact.then(|| calls::stop(&p.name)).flatten();
+        let Some(call) = call else {
+            return self.fail("That name cannot be given to the stop row.");
+        };
+        let ticket = os.request(&call);
+        if self.pending.len() == MAX_PENDING {
+            self.pending.remove(0);
         }
+        self.pending.push((ticket, p.name));
     }
 
     /// The result of the effect with `ticket`; whether the window changed.
-    pub fn done(&mut self, os: &mut dyn Os, ticket: u32, outcome: Result<String, String>) -> bool {
+    pub fn done(&mut self, ticket: u32, outcome: Result<String, String>) -> bool {
         let Some(at) = self.pending.iter().position(|(t, _)| *t == ticket) else {
             return false;
         };
-        let (_, what) = self.pending.remove(at);
-        match (what, outcome) {
-            (Asked::Stop(name), Ok(_)) => {
-                self.refresh(os);
-                self.status = Status::Done(format!("Stopped {}.", tame(&name, 40)));
-            }
-            (Asked::Stop(_), Err(why)) => self.fail(&why),
-            (Asked::Processes, Ok(text)) => match rows::parse_processes(&text) {
-                Ok(procs) => {
-                    self.procs = procs;
-                    self.resort();
-                    // A process that is gone is no longer selected.
-                    if self.selected().is_none() {
-                        self.selected = None;
-                    }
-                }
-                Err(why) => self.fail(&format!("processes: {why}")),
-            },
-            (Asked::Memory, Ok(text)) => match rows::parse_memory(&text) {
-                Ok(memory) => self.memory = Some(memory),
-                Err(why) => self.fail(&format!("memory: {why}")),
-            },
-            (Asked::Cpus, Ok(text)) => match rows::parse_cpus(&text) {
-                Ok(cpus) => self.cpus = Some(cpus),
-                Err(why) => self.fail(&format!("cpus: {why}")),
-            },
-            (Asked::Uptime, Ok(text)) => match rows::parse_uptime(&text) {
-                Ok(ms) => self.uptime_ms = Some(ms),
-                Err(why) => self.fail(&format!("uptime: {why}")),
-            },
-            // The model row may not exist yet, or the model may be off: the
-            // line then says it does not know, and that is not a failure.
-            (Asked::Model, Ok(text)) => self.model = rows::parse_model(&text).ok(),
-            (Asked::Model, Err(_)) => self.model = None,
-            (_, Err(why)) => self.fail(&why),
+        let (_, name) = self.pending.remove(at);
+        match outcome {
+            Ok(_) => self.status = Status::Done(format!("Stopped {}.", tame(&name, 40))),
+            Err(why) => self.fail(&why),
         }
         true
     }
