@@ -83,6 +83,8 @@ struct Window {
     bound: Vec<(u32, String)>,
     /// What `desktop` was last told of its unsaved changes.
     unsaved: bool,
+    /// Whether `desktop` was last told it is kept from the agent.
+    agent_private: bool,
 }
 
 impl Window {
@@ -176,6 +178,7 @@ impl Desk {
             if let Some(title) = (!frame.title.is_empty()).then_some(frame.title.as_str()) {
                 encode(&mut requests, win.toplevel, Request::SetTitle(title));
             }
+            push_private(&mut requests, win, frame);
             push_tree(&mut requests, win.a11y, &tree);
             push_state(&mut requests, win, frame);
             return Ok(Show {
@@ -203,6 +206,7 @@ impl Desk {
             front: 0,
             bound: Vec::new(),
             unsaved: false,
+            agent_private: false,
         };
         let pool_bytes = PAGE as u32 + BUFFERS * win.buffer_bytes();
         encode(&mut requests, REGISTRY, bind(POOL, "pool", win.pool));
@@ -249,8 +253,9 @@ impl Desk {
         let all = Rect { x: 0, y: 0, w, h };
         encode(&mut requests, win.surface, Request::DamageBuffer(all));
         encode(&mut requests, win.surface, Request::Commit);
-        push_tree(&mut requests, win.a11y, &tree);
         let mut win = win;
+        push_private(&mut requests, &mut win, frame);
+        push_tree(&mut requests, win.a11y, &tree);
         push_state(&mut requests, &mut win, frame);
         let target = win.target(0);
         self.windows.push(win);
@@ -367,6 +372,19 @@ fn bind(name: u32, interface: &str, id: u32) -> Request<'_> {
         interface,
         version: 1,
         id,
+    }
+}
+
+/// `toplevel.set_agent_private` when it changed: before the tree, so `desktop`
+/// never holds a private window's contents as shared.
+fn push_private(out: &mut Vec<u8>, win: &mut Window, frame: &Frame) {
+    if frame.agent_private != win.agent_private {
+        encode(
+            out,
+            win.toplevel,
+            Request::SetAgentPrivate(frame.agent_private),
+        );
+        win.agent_private = frame.agent_private;
     }
 }
 
