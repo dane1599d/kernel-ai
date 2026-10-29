@@ -366,7 +366,8 @@ fn tick_panel(state: &mut State) {
 
 fn serve(state: &mut State, bytes: &[u8], info: &RecvInfo) {
     let pid = info.caller_pid;
-    if !state.clients.iter().any(|c| c.pid == pid) {
+    let new = !state.clients.iter().any(|c| c.pid == pid);
+    if new {
         let label = name_of(pid);
         state.clients.push(Client::new(pid, &label));
     }
@@ -380,6 +381,18 @@ fn serve(state: &mut State, bytes: &[u8], info: &RecvInfo) {
             for need in needs {
                 apply_need(state, at, pid, need, handle);
             }
+            let reply = state.clients[at].take_events(kabi::MAX_MESSAGE);
+            let _ = sys::reply_h(&reply, &[]);
+        }
+        // A client new to this desktop that names objects it never made was
+        // talking to the desktop before a restart: it gets the greeting (the
+        // registry's globals), not an empty reply, so it opens its windows
+        // again (`term` committed to its old surface each time the console
+        // changed, and never heard the greeting).
+        Err(_) if new => {
+            println!("desktop: pid {pid} spoke to an earlier desktop; greeting it");
+            let label = state.clients[at].label.clone();
+            state.clients[at] = Client::new(pid, &label);
             let reply = state.clients[at].take_events(kabi::MAX_MESSAGE);
             let _ = sys::reply_h(&reply, &[]);
         }
