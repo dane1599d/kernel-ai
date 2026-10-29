@@ -968,3 +968,35 @@ fn the_update_snapshot_is_refused_inside_any_action() {
     let (reply, _) = c.call(ALICE, updates, DIR_RIGHTS, Request::UpdateSnapshot);
     assert!(matches!(reply, Reply::Snapshot { .. }), "{reply:?}");
 }
+
+#[test]
+fn the_model_store_hands_over_a_sealed_models_runs() {
+    let mut disk = MemDisk::new(BLOCKS);
+    let (mut c, _) = Client::start(&mut disk);
+    let sha = [0x5a; 32];
+    let name: String = sha.iter().map(|b| format!("{b:02x}")).collect::<String>() + ".gguf";
+    assert_eq!(c.server.model_extents(&sha), Ok(None), "no model yet");
+    let len = (5 << 20) + 1234;
+    let fs = &mut c.server.fs;
+    fs.set_volume(MODELS.into()).unwrap();
+    let mut at = 0u64;
+    fs.write_sealed(ROOT, &name, len, &mut |piece: &mut [u8]| {
+        for byte in piece.iter_mut() {
+            *byte = (at % 251) as u8;
+            at += 1;
+        }
+        Ok(())
+    })
+    .unwrap();
+    fs.commit().unwrap();
+    let extents = c
+        .server
+        .model_extents(&sha)
+        .unwrap()
+        .expect("the sealed model");
+    let blocks: u64 = extents.iter().map(|&(_, n)| n).sum();
+    assert_eq!(blocks, len.div_ceil(4096), "{extents:?}");
+    assert!(extents.len() <= 3, "few runs: {extents:?}");
+    // A plain file of that name is not the model.
+    assert_eq!(c.server.model_extents(&[0x11; 32]), Ok(None));
+}
