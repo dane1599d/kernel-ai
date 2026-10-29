@@ -547,6 +547,10 @@ fn main() -> i32 {
     println!("up (restart {})", arg(&args, "restart").unwrap_or("0"));
     let mut line = vec![0u8; kabi::MAX_MESSAGE];
     let mut events = vec![0u8; kabi::event::READ_BYTES];
+    // The first wait binds the shell's service, so the next pass's read of the
+    // event box is admitted and makes the shell the box's reader; until then a
+    // post could not wake it.
+    let mut wait_ms = 1;
     loop {
         // Between lines: what happened on the desktop since the last look, then
         // the panel's line and the apps' effects. A post to the event box wakes
@@ -555,9 +559,12 @@ fn main() -> i32 {
         take_panel(&mut shell);
         take_effects(&mut shell);
         let mut caller = u64::MAX;
-        let len = match sys::svc_recv(&mut line, WAKE_WAIT_MS, &mut caller) {
+        let len = match sys::svc_recv(&mut line, wait_ms, &mut caller) {
             Ok(len) => len.min(line.len()),
-            Err(kabi::Error::TimedOut | kabi::Error::Woken) => continue,
+            Err(kabi::Error::TimedOut | kabi::Error::Woken) => {
+                wait_ms = WAKE_WAIT_MS;
+                continue;
+            }
             Err(error) => {
                 println!("svc_recv failed: {error:?}");
                 sys::sleep_ms(100);
