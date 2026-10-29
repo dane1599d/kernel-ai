@@ -90,6 +90,10 @@ pub struct Rule {
     pub target: String,
     pub until: Option<When>,
     pub paused: bool,
+    /// The rule node the Allow on its `rules_add` gave (P3 task 11): what its
+    /// owner's RULE_CHECK finds, and what `rules_remove` revokes. A rule read
+    /// back from disk has none until it is allowed again.
+    pub grant: Option<u32>,
     /// Whether its last firing still stands, to be put back by `until`.
     armed: bool,
     /// When it fired in the last minute.
@@ -174,6 +178,7 @@ impl Standing {
             target: target.to_string(),
             until,
             paused: false,
+            grant: None,
             armed: false,
             fired: VecDeque::new(),
         });
@@ -233,6 +238,13 @@ impl Standing {
             }
         }
         out
+    }
+
+    /// Keeps the rule node an Allow gave rule `id`.
+    pub fn set_grant(&mut self, id: u64, grant: u32) {
+        if let Some(rule) = self.rules.iter_mut().find(|r| r.id == id) {
+            rule.grant = Some(grant);
+        }
     }
 
     /// `rules_remove` of a standing instruction: it ends; what it did stays.
@@ -342,6 +354,30 @@ impl Standing {
         }
         store.next = last;
         Some(store)
+    }
+}
+
+impl Event {
+    /// One line of the kernel's event box (EVENT_READ), as
+    /// [`kabi::event::Event::parse`] reads it; `None` for any other line, such
+    /// as the box's count of what it dropped.
+    pub fn from_line(line: &str) -> Option<Self> {
+        let event = kabi::event::Event::parse(line)?;
+        let kind = match event.kind {
+            kabi::event::Kind::Minimize => Kind::Minimize,
+            kabi::event::Kind::Restore => Kind::Restore,
+            kabi::event::Kind::Focus => Kind::Focus,
+            kabi::event::Kind::Close => Kind::Close,
+            kabi::event::Kind::Idle(minutes) => Kind::Idle(minutes),
+            kabi::event::Kind::Time(minute) => Kind::Time(minute),
+        };
+        Some(Event {
+            when: When {
+                kind,
+                app: event.app().to_string(),
+            },
+            cause: None,
+        })
     }
 }
 

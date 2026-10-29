@@ -211,6 +211,15 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("ui-window", "test=ui-window")
     },
+    // P3 task 12b: an unused app naps, and a click wakes it with its state.
+    TestCase {
+        expect: &[
+            "comphost: notes-window napped, unused",
+            "comphost: woke from its nap: ok resumed notes-window 1",
+            "desk-nap: Notes napped unused, gave its memory back, and a click woke it with its note",
+        ],
+        ..case("desk-nap", "test=desk-nap")
+    },
     // P3 task 7: asks answered on desktop's card, and on the console when it dies.
     TestCase {
         expect: &[

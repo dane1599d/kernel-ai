@@ -74,6 +74,8 @@ impl Shell {
                             .once_check(badge, &termcore::once::digest_call(id, call))
                             .map_err(|why| format!("its Allow did not check ({why})"))
                     })
+                    // The rule node the kernel noted for this instruction.
+                    .map(|()| granted.rule)
             }
             _ => Err(String::new()),
         };
@@ -96,6 +98,9 @@ impl Shell {
             Ok(rule) => rule,
             Err(refused) => return Reply::err(refusal(&refused)),
         };
+        if let Ok(Some(grant)) = allowed {
+            self.standing.set_grant(rule, grant);
+        }
         self.watch(&draft);
         self.save_standing();
         let described = draft.describe();
@@ -122,6 +127,7 @@ impl Shell {
         };
         let described = rule.describe();
         self.unwatch_unused(&rule);
+        self.revoke_grant(&rule);
         self.instructions_removed.push(rule);
         self.save_standing();
         let id = self.next_id;
@@ -145,6 +151,7 @@ impl Shell {
                 .remove(rule_id)
                 .ok_or_else(|| format!("standing instruction S{rule_id} is already gone"))?;
             self.unwatch_unused(&rule);
+            self.revoke_grant(&rule);
             self.instructions_removed.push(rule);
             self.save_standing();
             return Ok(format!("standing instruction S{rule_id} removed"));
@@ -448,6 +455,18 @@ impl Shell {
                 self.host
                     .audit(&format!("standing instruction events not watched: {why}"));
             }
+        }
+    }
+
+    /// Revokes the rule node of an instruction that ended, so its owner refuses
+    /// any firing of it. Put back by `undo`, it fires again only once allowed
+    /// again.
+    fn revoke_grant(&self, rule: &Rule) {
+        if let Some(Err(why)) = rule.grant.map(|h| self.host.revoke_rule(h)) {
+            self.host.audit(&format!(
+                "standing instruction S{}: its node was not revoked: {why}",
+                rule.id
+            ));
         }
     }
 
