@@ -14,6 +14,7 @@
 //! `target/pkgrepo` and serves it as a mirror ([`serve`]; P4 task 2's host
 //! half) until stopped.
 
+pub mod mirrors;
 mod serve;
 pub(crate) mod tuf;
 
@@ -139,19 +140,42 @@ fn unix_now() -> Result<Time, String> {
     Ok(Time(now.as_secs()))
 }
 
-/// The image's repository as boot modules under [`IMAGE_DIR`]: every app of
-/// [`APPS`] packed from `versions`, the boot drive's, and signed by a fresh test
-/// root (P4 plan §4, item 3).
-pub fn image_modules(root: &Path, versions: &[Module]) -> Result<Vec<Module>, String> {
+/// The image's repository, and what a mirror for it is built from.
+pub struct Image {
+    /// Its files as boot modules under [`IMAGE_DIR`].
+    pub modules: Vec<Module>,
+    /// The per-build keys that sign it, which sign the cases' mirrors too, so
+    /// the root the image carries checks both.
+    pub keys: Keys,
+    pub packages: Vec<Package>,
+    pub now: Time,
+}
+
+/// The image's repository: every app of [`APPS`] packed from `versions`, the
+/// boot drive's, and signed by a fresh test root (P4 plan §4, item 3).
+pub fn image(root: &Path, versions: &[Module]) -> Result<Image, String> {
     let packages = pack_all(root, versions)?;
     let keys = Keys::generate()?;
-    let repository = tuf::build(&packages, &keys, unix_now()?)?;
+    let now = unix_now()?;
+    let repository = tuf::build(&packages, &keys, now)?;
     println!(
         "xtask: the image's repository: {} packages signed by test root {}",
         packages.len(),
         &keys.root.id()[..12]
     );
-    as_modules(image_layout(repository)?)
+    Ok(Image {
+        modules: as_modules(image_layout(repository)?)?,
+        keys,
+        packages,
+        now,
+    })
+}
+
+/// Serves the `kind` mirror for `image` on a free port until xtask exits; the
+/// port, which a guest reaches at 10.0.2.2.
+pub fn serve_mirror(image: &Image, kind: mirrors::MirrorKind) -> Result<u16, String> {
+    let repository = mirrors::build(kind, &image.packages, &image.keys, image.now)?;
+    serve::start(repository, 0, std::sync::Arc::new(|_: &str, _, _| {}))
 }
 
 /// `repository` laid out as the image holds it (`kaipkg::image`): each target at
