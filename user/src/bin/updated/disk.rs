@@ -93,8 +93,8 @@ impl Remote for Repo {
 struct Memory(BTreeMap<String, Vec<u8>>);
 
 impl Cache for Memory {
-    fn load(&mut self, role: &str) -> Option<Vec<u8>> {
-        self.0.get(role).cloned()
+    fn load(&mut self, role: &str) -> Result<Option<Vec<u8>>, TufError> {
+        Ok(self.0.get(role).cloned())
     }
 
     fn save(&mut self, role: &str, bytes: &[u8]) -> Result<(), TufError> {

@@ -5,17 +5,15 @@
 //! an older snapshot, an unknown key, and a header that differs from its index
 //! entry.
 
-use super::tests::{NOW, hello, keys, notes, tampered};
-use super::tuf::{self, envelope};
-use super::{Package, Repository, serve};
-use kaipkg::bundle;
+use super::mirrors::{at_version, big, package, tampered};
+use super::tests::{NOW, hello, keys, notes};
+use super::tuf;
+use super::{Repository, serve};
 use kaipkg::generation::{Generation, Time};
-use kaipkg::header::Header;
 use kaipkg::memvol::MemVolume;
 use kaipkg::mirror::{self, Exchange, Listing, Mirror, TUF_DIR, TufCache};
 use kaipkg::resolve::Want;
 use kaipkg::store::{self, Ctx, Error, Ledger, Refused, Store, Volume};
-use serde_json::Value;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::sync::Arc;
@@ -44,24 +42,6 @@ impl Ledger for NoLedger {
 
     fn collected(&mut self, _: &mut dyn Volume, _: &[u64], _: usize) -> Result<(), String> {
         Ok(())
-    }
-}
-
-/// A 300 KiB `data` package: two of the store's 192 KiB pieces.
-fn big() -> Package {
-    package("big", "1.0.0", &vec![7u8; 300 << 10])
-}
-
-fn package(name: &str, version: &str, payload: &[u8]) -> Package {
-    let header_text = format!(
-        "kai-package 1\nname {name}\nversion {version}\nkind data\nsummary A test package\nlicence MIT\n"
-    );
-    Package {
-        header: Header::parse(&header_text).unwrap(),
-        bytes: bundle::build(&[(bundle::HEADER, header_text.as_bytes()), ("data", payload)]),
-        header_text,
-        actions: Vec::new(),
-        grants: Vec::new(),
     }
 }
 
@@ -171,6 +151,30 @@ fn a_flipped_object_byte_is_refused_by_name() {
 }
 
 #[test]
+fn a_target_the_mirror_does_not_serve_is_a_fetch_error_not_a_tamper() {
+    let repo = tuf::build(&[big()], &keys(1), NOW).unwrap();
+    let sha = crate::sha256_hex(&big().bytes);
+    let target = format!("targets/{sha}.big-1.0.0.kpkg");
+    // Listed by the index, but answered 404, as while the mirror syncs.
+    let syncing = Repository {
+        files: repo
+            .files
+            .iter()
+            .filter(|(p, _)| *p != target)
+            .cloned()
+            .collect(),
+    };
+    let port = serve(&syncing);
+    let mut vol = device(&repo);
+    let (result, fetches) = install(&mut vol, port, "big");
+    assert_eq!(fetches, 1);
+    match result {
+        Err(Error::Store(why)) => assert!(why.contains("the mirror has no"), "{why}"),
+        other => panic!("not a fetch error: {other:?}"),
+    }
+}
+
+#[test]
 fn an_expired_timestamp_lists_nothing() {
     let repo = tuf::build(&[big()], &keys(1), NOW).unwrap();
     let port = serve(&repo);
@@ -180,46 +184,15 @@ fn an_expired_timestamp_lists_nothing() {
     assert!(err.starts_with("expired: timestamp"), "{err}");
 }
 
-/// `repo` with snapshot and timestamp at `version`, signed again by `keys(1)`.
-fn at_version(repo: &Repository, version: u64, snapshot_version: u64) -> Repository {
-    let keys = keys(1);
-    let mut snapshot: Value =
-        serde_json::from_slice(file(repo, "metadata/1.snapshot.json")).unwrap();
-    snapshot["signed"]["version"] = snapshot_version.into();
-    let snapshot = envelope(&snapshot["signed"], &keys.snapshot).unwrap();
-    let mut timestamp: Value =
-        serde_json::from_slice(file(repo, "metadata/timestamp.json")).unwrap();
-    let signed = &mut timestamp["signed"];
-    signed["version"] = version.into();
-    signed["meta"]["snapshot.json"] = serde_json::json!({
-        "version": snapshot_version,
-        "length": snapshot.len(),
-        "hashes": { "sha256": crate::sha256_hex(&snapshot) },
-    });
-    let timestamp = envelope(signed, &keys.timestamp).unwrap();
-    let mut files: Vec<(String, Vec<u8>)> = repo
-        .files
-        .iter()
-        .filter(|(p, _)| p != "metadata/timestamp.json")
-        .cloned()
-        .collect();
-    files.push((
-        format!("metadata/{snapshot_version}.snapshot.json"),
-        snapshot,
-    ));
-    files.push(("metadata/timestamp.json".into(), timestamp));
-    Repository { files }
-}
-
 #[test]
 fn an_older_snapshot_than_the_device_holds_is_refused() {
     let repo = tuf::build(&[big()], &keys(1), NOW).unwrap();
     let mut vol = device(&repo);
-    let newer = at_version(&repo, 2, 2);
+    let newer = at_version(&repo, &keys(1), 2, 2).unwrap();
     let (seen, _) = listing(&mut vol, serve(&newer), NOW);
     assert!(seen.is_ok(), "{seen:?}");
     // A newer timestamp that names the snapshot the device has moved past.
-    let rolled_back = at_version(&repo, 3, 1);
+    let rolled_back = at_version(&repo, &keys(1), 3, 1).unwrap();
     let (result, _) = listing(&mut vol, serve(&rolled_back), NOW);
     let err = result.unwrap_err();
     assert!(
@@ -247,4 +220,42 @@ fn a_header_that_differs_from_its_index_entry_is_refused_by_name() {
     let mut vol = device(&repo);
     let (result, _) = install(&mut vol, port, "liar");
     assert_eq!(refused(result), Refused::HeaderDiffers("liar".into()));
+}
+
+#[test]
+fn each_case_mirror_gives_the_answer_its_boot_case_expects() {
+    use super::mirrors::{self, MirrorKind};
+    let keys = keys(1);
+    let image = [notes()];
+    let built = |kind| mirrors::build(kind, &image, &keys, NOW).unwrap();
+    // The device trusts the image's root, which the same keys sign.
+    let device_of = || device(&built(MirrorKind::Signed));
+    let (n, fetches) = install(&mut device_of(), serve(&built(MirrorKind::Signed)), "big");
+    assert_eq!((n, fetches), (Ok(2), 2));
+    let (flipped, _) = install(
+        &mut device_of(),
+        serve(&built(MirrorKind::FlippedByte)),
+        "big",
+    );
+    assert_eq!(refused(flipped), Refused::BadHash("big".into()));
+    let (header, _) = install(
+        &mut device_of(),
+        serve(&built(MirrorKind::HeaderDiffers)),
+        "big",
+    );
+    assert_eq!(refused(header), Refused::HeaderDiffers("big".into()));
+    let index_err =
+        |vol: &mut MemVolume, kind| listing(vol, serve(&built(kind)), NOW).0.unwrap_err();
+    assert!(index_err(&mut device_of(), MirrorKind::Expired).starts_with("expired: timestamp"));
+    assert!(
+        index_err(&mut device_of(), MirrorKind::UnknownKey)
+            .starts_with("below the signature threshold")
+    );
+    let mut vol = device_of();
+    assert!(
+        listing(&mut vol, serve(&built(MirrorKind::Newer)), NOW)
+            .0
+            .is_ok()
+    );
+    assert!(index_err(&mut vol, MirrorKind::RolledBack).starts_with("bad version"));
 }
