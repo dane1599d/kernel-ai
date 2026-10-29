@@ -28,10 +28,13 @@ pub enum Error {
     BadHandle = 13,
     /// The handle's grant was revoked. Old programs read it as `Invalid`.
     Revoked = 14,
+    /// The CPU gives no random numbers (neither RDSEED nor RDRAND), so ENTROPY
+    /// has none to give. Old programs read it as `Invalid`. 15 is #395's.
+    NoEntropy = 16,
 }
 
 impl Error {
-    pub const ALL: [Error; 14] = [
+    pub const ALL: [Error; 15] = [
         Error::Permission,
         Error::Fault,
         Error::Invalid,
@@ -46,6 +49,7 @@ impl Error {
         Error::Unavailable,
         Error::BadHandle,
         Error::Revoked,
+        Error::NoEntropy,
     ];
 
     /// The value placed in RAX.

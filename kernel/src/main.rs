@@ -50,6 +50,7 @@ mod edit_session;
 mod edit_tests;
 mod efi;
 mod efi_tests;
+mod entropy;
 mod entry;
 mod event_box;
 mod fault;
@@ -100,6 +101,7 @@ mod power;
 mod process;
 mod profile_tests;
 mod qemu;
+mod saved_tests;
 mod sched_control;
 mod sched_tests;
 mod script_tests;
@@ -348,6 +350,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Part => run_case(part_tests::check),
         SelfTest::ModelStore { bad } => run_case(|| model_tests::store(cmdline(), bad)),
         SelfTest::Files { .. } => run_case(|| files_tests::check(cmdline())),
+        SelfTest::AppSaved { reread } => run_case(|| saved_tests::check(reread)),
         SelfTest::FilesRestart => run_case(files_tests::restart),
         SelfTest::FilesDeadClient => run_case(files_tests::dead_client),
         SelfTest::FilesActions => run_case(files_tests::actions),
@@ -465,6 +468,7 @@ fn init_devices() -> &'static acpitables::Platform {
         hpet::init(hpet)?;
         hpet::select_clock(cmdline());
         timer::init()?;
+        entropy::init();
         // ADR 0007 section 8: no 8042 when the FADT says the machine has none.
         if platform.no_8042 {
             log!("i8042: the FADT says this machine has no 8042; skipped");
