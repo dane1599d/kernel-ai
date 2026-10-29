@@ -175,7 +175,7 @@ pub(crate) struct Core<E> {
     /// Calls served, which make each call's seed.
     calls: u64,
     /// The ticket the next performed effect gets.
-    next_ticket: u32,
+    pub(crate) next_ticket: u32,
     /// Undo for the last calls that changed the state.
     pub history: History,
 }
@@ -269,7 +269,12 @@ impl<E: Env> Core<E> {
         let manifest = artifact::parse(&artifact)
             .map_err(|why| Fault::new(Reason::Manifest, why))?
             .manifest;
-        if manifest.component != self.name || manifest.version != label {
+        // A package version's label is its artifact's digest, which the
+        // kernel's store checked when `pkg` added it (P4 task 1); its manifest
+        // names the version it was built as. Every other label is the
+        // manifest's own.
+        let named = manifest.version == label || kabi::live::is_package_label(label);
+        if manifest.component != self.name || !named {
             return Err(Fault::new(
                 Reason::Manifest,
                 format!(
@@ -328,27 +333,7 @@ impl<E: Env> Core<E> {
         let reply = version.instance.handle(request);
         let txn = version.instance.finish();
         let reply = reply?;
-        if txn.effects.len() > txn::MAX_EFFECTS {
-            return Err(Fault::new(
-                Reason::Abi,
-                format!(
-                    "it queued {} effects; at most {} a call",
-                    txn.effects.len(),
-                    txn::MAX_EFFECTS
-                ),
-            ));
-        }
-        for effect in &txn.effects {
-            effect.check().map_err(|why| Fault::new(Reason::Abi, why))?;
-        }
-        let effects = txn.effect_lines(inputs.first_ticket);
-        // Room for an `undo` line too.
-        if reply.len() + effects.len() + 32 > kabi::MAX_MESSAGE {
-            return Err(Fault::new(
-                Reason::Abi,
-                "its reply and effects are over one message",
-            ));
-        }
+        check_txn(&txn, inputs, reply.len())?;
         Ok((reply, txn))
     }
 
@@ -358,6 +343,17 @@ impl<E: Env> Core<E> {
         &mut self,
         version: &mut Version<E::Instance>,
         txn: &Txn,
+    ) -> Result<Option<u64>, Stop> {
+        self.commit_as(version, txn, true)
+    }
+
+    /// [`Core::commit`], recording an undo entry only if `undoable`: a window's
+    /// own edits are not the agent's changes, and would fill the history.
+    pub(crate) fn commit_as(
+        &mut self,
+        version: &mut Version<E::Instance>,
+        txn: &Txn,
+        undoable: bool,
     ) -> Result<Option<u64>, Stop> {
         let blob = export_own(version)?;
         let mut storage = self.storage.clone();
@@ -390,7 +386,7 @@ impl<E: Env> Core<E> {
             state: self.checkpoint.clone(),
             storage: self.storage.clone(),
         };
-        Ok(Some(self.history.record(before, after)))
+        Ok(undoable.then(|| self.history.record(before, after)))
     }
 
     /// The reply sent for a call whose effects are performed: after a
@@ -483,6 +479,34 @@ impl<E: Env> Core<E> {
         })?;
         Ok(())
     }
+}
+
+/// Checks what a call did against the limits: over them is the version's fault.
+/// `reply_len` is the length of the reply the effects ride in, 0 for a call that
+/// has none.
+pub(crate) fn check_txn(txn: &Txn, inputs: Inputs, reply_len: usize) -> Result<(), Fault> {
+    if txn.effects.len() > txn::MAX_EFFECTS {
+        return Err(Fault::new(
+            Reason::Abi,
+            format!(
+                "it queued {} effects; at most {} a call",
+                txn.effects.len(),
+                txn::MAX_EFFECTS
+            ),
+        ));
+    }
+    for effect in &txn.effects {
+        effect.check().map_err(|why| Fault::new(Reason::Abi, why))?;
+    }
+    let effects = txn.effect_lines(inputs.first_ticket);
+    // Room for an `undo` line too.
+    if reply_len + effects.len() + 32 > kabi::MAX_MESSAGE {
+        return Err(Fault::new(
+            Reason::Abi,
+            "its reply and effects are over one message",
+        ));
+    }
+    Ok(())
 }
 
 /// A version's own state, checked to be in its own schema.

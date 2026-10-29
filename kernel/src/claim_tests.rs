@@ -56,7 +56,9 @@ pub fn check() -> Result<(), &'static str> {
         return Err("display-claim: the console still holds the screen after the claim");
     }
     type_keys(&KEY_A);
-    threads::sleep_ms(200);
+    // Ctrl+Alt+F12 clears the queue, so the key must be read first: desktop may
+    // still be painting its first frame, slowly under TCG.
+    wait("desktop to read the key", || !input::pending())?;
     // Ctrl+Alt+F12: back to the console.
     type_keys(&CTRL_ALT_F12);
     wait("the console to take the screen back", || {

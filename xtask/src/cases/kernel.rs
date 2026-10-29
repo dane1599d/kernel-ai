@@ -72,6 +72,11 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("proc-stop", "test=proc-stop")
     },
+    // P4's Monitor: each process's pages and CPU time through METRICS.
+    TestCase {
+        expect: &["proc-usage: each process's pages and CPU time came through METRICS"],
+        ..case("proc-usage", "test=proc-usage")
+    },
     // P3 task 4: the raised table limits hold 40 processes at once.
     TestCase {
         expect: &["many-processes: 40 idle processes ran at once beside the shell and llm"],
@@ -206,6 +211,13 @@ pub(super) const CASES: &[TestCase] = &[
             "desk-term: with the focus elsewhere the keys went to desktop, and nothing asked",
         ],
         ..case("desk-term", "test=desk-term")
+    },
+    // P3 task 12: resource profiles' kernel half.
+    TestCase {
+        expect: &[
+            "profile: a quota stopped a commit, a class showed in SCHED_STATS, and the floors held",
+        ],
+        ..case("profile", "test=profile")
     },
     // P1 task 14: shared pages, and spike S01-1's M6.
     TestCase {

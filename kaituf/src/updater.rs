@@ -39,7 +39,11 @@ pub trait Remote {
 /// Where verified metadata is kept between refreshes, by role name, as the
 /// bytes the repository served.
 pub trait Cache {
-    fn load(&mut self, role: &str) -> Option<Vec<u8>>;
+    /// None when nothing is kept for `role`. A copy that can't be read is an
+    /// error, never None: a lost timestamp or snapshot would lower the floor
+    /// that refuses a rollback.
+    fn load(&mut self, role: &str) -> Result<Option<Vec<u8>>, Error>;
+    /// Replaces `role`'s copy whole: after a crash the old copy or the new.
     fn save(&mut self, role: &str, bytes: &[u8]) -> Result<(), Error>;
 }
 
@@ -67,7 +71,7 @@ impl<'a> Updater<'a> {
         now: u64,
     ) -> Result<Self, Error> {
         let root = cache
-            .load("root")
+            .load("root")?
             .ok_or(Error::NotFound("no trusted root".into()))?;
         let trusted = TrustedSet::new(&root, now)?;
         Ok(Updater {
@@ -106,7 +110,7 @@ impl<'a> Updater<'a> {
     }
 
     fn load_timestamp(&mut self) -> Result<(), Error> {
-        if let Some(bytes) = self.cache.load("timestamp") {
+        if let Some(bytes) = self.cache.load("timestamp")? {
             // An intermediate: whatever it fails, the download below is checked
             // against what it held.
             let _ = self.trusted.update_timestamp(&bytes);
@@ -119,7 +123,7 @@ impl<'a> Updater<'a> {
     }
 
     fn load_snapshot(&mut self) -> Result<(), Error> {
-        if let Some(bytes) = self.cache.load("snapshot")
+        if let Some(bytes) = self.cache.load("snapshot")?
             && self.trusted.update_snapshot(&bytes, true).is_ok()
         {
             return Ok(());
@@ -144,7 +148,7 @@ impl<'a> Updater<'a> {
         if self.trusted.trusted_through(role, delegator)? {
             return Ok(());
         }
-        if let Some(bytes) = self.cache.load(role)
+        if let Some(bytes) = self.cache.load(role)?
             && self.trusted.update_targets(&bytes, role, delegator).is_ok()
         {
             return Ok(());
@@ -164,6 +168,19 @@ impl<'a> Updater<'a> {
         let bytes = fetch(self.remote, &name, named.length.unwrap_or(TARGETS_MAX))?;
         self.trusted.update_targets(&bytes, role, delegator)?;
         self.cache.save(role, &bytes)
+    }
+
+    /// The paths targets role `role` lists, loaded as `delegator` delegates it,
+    /// for a client that takes every target of one role, as `pkg` takes the
+    /// image's packages. Look each up with [`Updater::target`], which says what
+    /// the first role to name it holds. Call [`Updater::refresh`] first.
+    pub fn listed(&mut self, role: &str, delegator: &str) -> Result<Vec<String>, Error> {
+        self.load_targets(role, delegator)?;
+        let targets = self
+            .trusted
+            .targets(role)
+            .ok_or_else(|| Error::Malformed(alloc::format!("{role} did not load")))?;
+        Ok(targets.signed.targets.keys().cloned().collect())
     }
 
     /// The artifact `path` as the first role to name it in a preorder depth-first

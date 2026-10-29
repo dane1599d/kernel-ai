@@ -69,6 +69,14 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("act-undo", "test=act-undo")
     },
+    // P3 task 12: resource profiles through the supervisor's PROC_CLASS_SET and
+    // PROC_QUOTA_SET.
+    TestCase {
+        expect: &[
+            "profile-switch: gaming sent the apps back, quiet lowered a quota, undo put it back, and the shell kept its own",
+        ],
+        ..case("profile-switch", "test=profile-switch")
+    },
     TestCase {
         expect: &["act-rollback: a script that switched and then threw left nothing changed"],
         ..case("act-rollback", "test=act-rollback")

@@ -10,9 +10,10 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use kabi::Error;
 use kabi::live::{
-    Info, MAX_ARTIFACT, MAX_LABEL, MAX_VERSIONS, Reason, Restore, is_upload_label, kind, phase,
-    put_label, valid_label,
+    Info, MAX_ARTIFACT, MAX_LABEL, MAX_PACKAGE_TOTAL, MAX_VERSIONS, Reason, Restore,
+    is_package_label, is_upload_label, kind, package_label, phase, put_label, valid_label,
 };
+use sha2::{Digest, Sha256};
 
 /// A version's bytes: a boot module, or an upload on the heap. Cloning shares them.
 #[derive(Clone, Debug)]
@@ -44,6 +45,11 @@ pub enum Origin {
         base: String,
         commit: String,
     },
+    /// From an installed package, added by `pkg` (P4 task 1): its artifact's full
+    /// SHA-256, which the label's 12 hex digits begin.
+    Package {
+        sha: [u8; 32],
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -69,8 +75,36 @@ impl Version {
     pub fn commit(&self) -> Option<&str> {
         match &self.origin {
             Origin::Upload { commit, .. } => Some(commit),
-            Origin::Boot => None,
+            Origin::Boot | Origin::Package { .. } => None,
         }
+    }
+}
+
+/// Package versions a component keeps: the running one, the one a rollback
+/// goes back to, and one more, so updates never fill the store.
+pub const KEEP_PACKAGES: usize = 3;
+
+/// An artifact from an installed package whose SHA-256 was hashed here and
+/// matched the digest given: the only way into [`Component::add_package`]. The
+/// kernel makes one before it takes the component lock.
+#[derive(Debug)]
+pub struct PackageArtifact {
+    bytes: Vec<u8>,
+    sha: [u8; 32],
+}
+
+impl PackageArtifact {
+    /// `bytes`, if they are at most [`MAX_ARTIFACT`] (TooBig) and hash to `sha`
+    /// (Invalid).
+    pub fn check(bytes: Vec<u8>, sha: &[u8; 32]) -> Result<Self, Error> {
+        if bytes.len() > MAX_ARTIFACT {
+            return Err(Error::TooBig);
+        }
+        let own: [u8; 32] = Sha256::digest(&bytes).into();
+        if own != *sha {
+            return Err(Error::Invalid);
+        }
+        Ok(Self { bytes, sha: own })
     }
 }
 
@@ -92,13 +126,17 @@ impl Component {
         }
     }
 
-    /// Adds a boot version. Upload labels (`e` and digits) are kept for uploads.
+    /// Adds a boot version. Upload labels (`e` and digits) are kept for uploads,
+    /// and package labels (`p-` and 12 hex digits) for packages.
     pub fn add_version(&mut self, label: &str, bytes: Bytes) -> Result<(), &'static str> {
         if !valid_label(label) {
             return Err("bad version label");
         }
         if is_upload_label(label) {
             return Err("e and a number is an upload label");
+        }
+        if is_package_label(label) {
+            return Err("p- and 12 hex digits is a package label");
         }
         if bytes.as_slice().len() > MAX_ARTIFACT {
             return Err("artifact over 1 MiB");
@@ -127,6 +165,102 @@ impl Component {
             files,
         });
         Ok(())
+    }
+
+    /// Adds the version an installed package holds (P4 task 1), labelled from
+    /// its checked SHA-256. It only adds: a label already there is Busy, so a
+    /// running or known-good version is never replaced. A full store is
+    /// NoMemory, and so is one more than [`MAX_PACKAGE_TOTAL`] bytes of package
+    /// versions with `used_elsewhere`, the other components' ([`Self::package_bytes`]):
+    /// package versions are never evicted, so this bounds the kernel's heap. Its
+    /// label.
+    pub fn add_package(
+        &mut self,
+        artifact: PackageArtifact,
+        used_elsewhere: usize,
+    ) -> Result<String, Error> {
+        let PackageArtifact { bytes, sha } = artifact;
+        let label = package_label(&sha);
+        if self.version(&label).is_some() {
+            return Err(Error::Busy);
+        }
+        let victims = self.package_victims(bytes.len(), used_elsewhere);
+        let held: usize = self
+            .versions
+            .iter()
+            .filter(|v| victims.contains(&v.label))
+            .map(|v| v.bytes.as_slice().len())
+            .sum();
+        let total = used_elsewhere
+            .saturating_add(self.package_bytes() - held)
+            .saturating_add(bytes.len());
+        if self.versions.len() - victims.len() >= MAX_VERSIONS || total > MAX_PACKAGE_TOTAL {
+            return Err(Error::NoMemory);
+        }
+        self.versions.retain(|v| !victims.contains(&v.label));
+        let (world, source, files) = match artifact::parse(&bytes) {
+            Ok(parsed) => (
+                parsed.manifest.world,
+                parsed.manifest.source,
+                uploads::source_paths(parsed.source).unwrap_or_default(),
+            ),
+            Err(_) => (String::new(), String::new(), Vec::new()),
+        };
+        self.versions.push(Version {
+            label: label.clone(),
+            bytes: Bytes::shared(bytes),
+            fetches: 0,
+            origin: Origin::Package { sha },
+            world,
+            source,
+            files,
+        });
+        Ok(label)
+    }
+
+    /// The package versions to evict so one of `size` bytes fits: past
+    /// [`KEEP_PACKAGES`], a full store or the bytes cap. Failed ones first, then
+    /// the oldest; never the active version, the candidate, or the one just
+    /// before the active (the version a rollback goes back to).
+    fn package_victims(&self, size: usize, used_elsewhere: usize) -> Vec<String> {
+        let ledger = &self.ledger;
+        let keep = |label: &str| {
+            ledger.active() == Some(label)
+                || ledger.candidate() == Some(label)
+                || ledger.revert_target(1) == Some(label)
+        };
+        let mut packages: Vec<(bool, usize, &Version)> = self
+            .versions
+            .iter()
+            .enumerate()
+            .filter(|(_, v)| matches!(v.origin, Origin::Package { .. }))
+            .map(|(at, v)| (ledger.is_bad(&v.label).is_none(), at, v))
+            .collect();
+        let mut count = packages.len();
+        let mut held: usize = packages
+            .iter()
+            .map(|(.., v)| v.bytes.as_slice().len())
+            .sum();
+        let mut slots = self.versions.len();
+        // Failed first (false sorts before true), then the oldest.
+        packages.sort_by_key(|&(good, at, _)| (good, at));
+        let mut chosen = Vec::new();
+        for (_, _, version) in packages {
+            let fits = count < KEEP_PACKAGES
+                && slots < MAX_VERSIONS
+                && used_elsewhere + held + size <= MAX_PACKAGE_TOTAL;
+            if fits {
+                break;
+            }
+            if keep(&version.label) {
+                continue;
+            }
+            count -= 1;
+            slots -= 1;
+            held -= version.bytes.as_slice().len();
+            chosen.push(version.label.clone());
+        }
+        chosen
     }
 
     pub fn labels(&self) -> impl Iterator<Item = &str> {
@@ -243,6 +377,16 @@ impl Component {
     }
 
     /// Bytes held by this component's uploads.
+    /// Bytes of this component's package versions, which count against
+    /// [`MAX_PACKAGE_TOTAL`] with every other component's.
+    pub fn package_bytes(&self) -> usize {
+        self.versions
+            .iter()
+            .filter(|v| matches!(v.origin, Origin::Package { .. }))
+            .map(|v| v.bytes.as_slice().len())
+            .sum()
+    }
+
     pub fn upload_bytes(&self) -> usize {
         self.versions
             .iter()

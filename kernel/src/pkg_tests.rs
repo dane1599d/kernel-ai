@@ -12,6 +12,16 @@
 //! `current` through `fs` itself, by the `SYSTEM_PKG` badge, and checks it names
 //! the generation that step leaves. On boot 1 it also checks that `pkg` holds
 //! no capability bits and starts with that one `Dir`, and no home folder.
+//!
+//! `test=pkg-image [again|tampered]` (P4 task 1): `pkg`'s plan line adds
+//! `bootfiles=pkgrepo`, and it makes the image's signed repository generation 1:
+//! - boot 1, `step=image`: generation 1 holds notes, from the image;
+//! - boot 2, `again`: generation 1 is still current, seeded once;
+//! - `tampered`, its own case on a fresh disk, with one byte of notes's target
+//!   flipped in the bundle: notes is refused by name, generation 1 is empty.
+//!
+//! Its kernel half reads `gen/1` through `fs` as well, and checks that `pkg`
+//! holds the plan's `bootfiles=pkgrepo`.
 
 use crate::process;
 use crate::{handle, ipc, log, threads};
@@ -31,6 +41,13 @@ pub enum Step {
     Install,
     Undo,
     Check,
+    Image,
+    ImageAgain,
+    ImageTampered,
+    Mirror,
+    MirrorAgain,
+    MirrorTampered,
+    MirrorRollback,
 }
 
 impl Step {
@@ -48,11 +65,56 @@ impl Step {
         }
     }
 
+    /// The word after `test=pkg-image`: none for boot 1. Before the heap, as
+    /// [`Step::from_cmdline`], so it allocates nothing.
+    pub fn image_from_cmdline(cmdline: &str) -> Self {
+        let has = |word| cmdline.split_whitespace().any(|w| w == word);
+        if has("tampered") {
+            Step::ImageTampered
+        } else if has("again") {
+            Step::ImageAgain
+        } else {
+            Step::Image
+        }
+    }
+
+    /// The word after `test=pkg-install`: none for boot 1. Before the heap, as
+    /// [`Step::from_cmdline`], so it allocates nothing.
+    pub fn mirror_from_cmdline(cmdline: &str) -> Self {
+        let has = |word| cmdline.split_whitespace().any(|w| w == word);
+        if has("tampered") {
+            Step::MirrorTampered
+        } else if has("rollback") {
+            Step::MirrorRollback
+        } else if has("again") {
+            Step::MirrorAgain
+        } else {
+            Step::Mirror
+        }
+    }
+
     fn name(self) -> &'static str {
         match self {
             Step::Install => "install",
             Step::Undo => "undo",
             Step::Check => "check",
+            Step::Image => "image",
+            Step::ImageAgain => "image-again",
+            Step::ImageTampered => "image-tampered",
+            Step::Mirror => "mirror",
+            Step::MirrorAgain => "mirror-again",
+            Step::MirrorTampered => "mirror-tampered",
+            Step::MirrorRollback => "mirror-rollback",
+        }
+    }
+
+    fn case(self) -> &'static str {
+        match self {
+            Step::Install | Step::Undo | Step::Check => "pkg-store",
+            Step::Image | Step::ImageAgain | Step::ImageTampered => "pkg-image",
+            Step::Mirror | Step::MirrorAgain | Step::MirrorTampered | Step::MirrorRollback => {
+                "pkg-install"
+            }
         }
     }
 
@@ -62,35 +124,123 @@ impl Step {
             Step::Install => (1, 2),
             Step::Undo => (2, 3),
             Step::Check => (3, 3),
+            Step::Image | Step::ImageTampered => (1, 1),
+            Step::ImageAgain => (2, 1),
+            // An install from the mirror; then undo and the install again.
+            Step::Mirror => (1, 2),
+            Step::MirrorAgain => (2, 4),
+            // A tampered mirror switches nothing: generation 1 stays.
+            Step::MirrorTampered => (1, 1),
+            // Boot 2 of the older-snapshot case: boot 1 installed from the newer.
+            Step::MirrorRollback => (2, 2),
         }
     }
 }
 
-/// Plan lines: `fs`, then `pkg` with `/system/pkg` and nothing else. `pkg` needs
-/// a deeper stack than the 16-page default: fsproto's minicbor decoder
-/// recurses, and overflowed it in `Decoder::array`.
+/// Plan lines: `fs`, then `pkg` with `/system/pkg`. For `pkg-image`, `pkg` also
+/// reads the image's repository and has a route to the supervisor, and notes is
+/// a `start=pkg` app, not a version the boot manifest names. `pkg` needs a
+/// deeper stack than the 16-page default: fsproto's minicbor decoder recurses,
+/// and overflowed it in `Decoder::array`.
 pub fn plan(step: Step) -> String {
-    format!(
-        "{}\n{CLIENT} dir=pkg pages=2048 stack_pages=128 step={}",
-        kabi::plan::FS,
-        step.name()
-    )
+    let fs = kabi::plan::FS;
+    let step_name = step.name();
+    match step.case() {
+        "pkg-image" | "pkg-install" => format!(
+            "{fs}\n{CLIENT} dir=pkg bootfiles=pkgrepo caps=call+serve uses=supervisor pages=2048 stack_pages=128 step={step_name}\n{}",
+            kabi::plan::notes_from_pkg()
+        ),
+        _ => format!("{fs}\n{CLIENT} dir=pkg pages=2048 stack_pages=128 step={step_name}"),
+    }
 }
 
 pub fn check(step: Step) -> Result<(), &'static str> {
     let (boot, generation) = step.boot_and_generation();
+    let case = step.case();
     wait_for(&format!("case/{}.done", step.name()))
-        .map_err(|_| "pkg-store: pkg did not finish its step")?;
+        .map_err(|_| "pkg: pkg did not finish its step")?;
     let current = read("current")?;
-    let current = core::str::from_utf8(&current).map_err(|_| "pkg-store: current is not text")?;
+    let current = core::str::from_utf8(&current).map_err(|_| "pkg: current is not text")?;
     if current.trim_end().parse::<u64>() != Ok(generation) {
-        log!("pkg-store: boot {boot}: current holds {current:?}, wanted {generation}");
-        return Err("pkg-store: current names another generation");
+        log!("{case}: boot {boot}: current holds {current:?}, wanted {generation}");
+        return Err("pkg: current names another generation");
     }
-    if step == Step::Install {
-        only_its_folder()?;
+    match step {
+        Step::Install => only_its_folder()?,
+        Step::Image | Step::ImageAgain | Step::ImageTampered => image_generation(step)?,
+        Step::Mirror => mirror_installed()?,
+        Step::Undo | Step::Check => {}
+        Step::MirrorAgain | Step::MirrorTampered | Step::MirrorRollback => {}
     }
-    log!("pkg-store: boot {boot}: fs shows generation {generation} current, as pkg left it");
+    log!("{case}: boot {boot}: fs shows generation {generation} current, as pkg left it");
+    Ok(())
+}
+
+/// Generation 1 is the image's, notes, or nothing when notes's target was
+/// tampered with; and `pkg` holds the plan's `bootfiles=pkgrepo`.
+fn image_generation(step: Step) -> Result<(), &'static str> {
+    let first = read("gen/1")?;
+    let first = core::str::from_utf8(&first).map_err(|_| "pkg-image: gen/1 is not text")?;
+    let packages: Vec<&str> = first.lines().filter(|l| l.starts_with("pkg ")).collect();
+    let wanted = match step {
+        Step::ImageTampered => packages.is_empty(),
+        _ => packages.len() == 1 && packages[0].starts_with("pkg notes 1.0.0 "),
+    };
+    if !wanted {
+        log!("pkg-image: gen/1 holds {packages:?}");
+        return Err("pkg-image: generation 1 is not the image's packages");
+    }
+    let pid = process::named(CLIENT).first().map(|&(pid, _)| pid);
+    let boot = process::with_table(|t| {
+        t.iter()
+            .find(|p| p.live() && Some(p.pid) == pid)
+            .and_then(|p| p.boot)
+    });
+    if boot != Some(supervise::BootFiles::Pkgrepo) {
+        return Err("pkg-image: pkg does not hold bootfiles=pkgrepo");
+    }
+    match step {
+        Step::ImageTampered => {
+            log!("pkg-image: generation 1 holds no package: the tampered notes is not in it")
+        }
+        _ => {
+            log!("pkg-image: generation 1 is notes 1.0.0, from the image's signed repository");
+            serves_its_package()?;
+        }
+    }
+    Ok(())
+}
+
+/// notes serves on a package version (`p-` and 12 hex digits) that the store
+/// holds with the full SHA-256 of its bytes, which the kernel hashes again here.
+fn serves_its_package() -> Result<(), &'static str> {
+    let mut active = None;
+    for _ in 0..WAIT_MS / 50 {
+        let ledger = process::components::ledger("notes");
+        let label = ledger.as_ref().and_then(|l| l.active().map(String::from));
+        if ipc::server_of("notes").is_some()
+            && let Some(label) = label.filter(|l| kabi::live::is_package_label(l))
+        {
+            active = Some(label);
+            break;
+        }
+        threads::sleep_ms(50);
+    }
+    let label = active.ok_or("pkg-image: notes never served on a package version")?;
+    let component = process::components::component("notes").ok_or("pkg-image: no notes")?;
+    let version = component
+        .version(&label)
+        .ok_or("pkg-image: notes's active version is not stored")?;
+    let livecore::store::Origin::Package { sha } = version.origin else {
+        return Err("pkg-image: notes's active version is not a package's");
+    };
+    let bytes = version.bytes.as_slice().to_vec();
+    if livecore::store::PackageArtifact::check(bytes, &sha).is_err()
+        || kabi::live::package_label(&sha) != label
+    {
+        return Err("pkg-image: notes's package version is not the digest it names");
+    }
+    log!("pkg-image: notes serves on package version {label}, its full SHA-256 checked");
     Ok(())
 }
 
@@ -119,6 +269,57 @@ fn only_its_folder() -> Result<(), &'static str> {
     Ok(())
 }
 
+/// Generation 2 holds `big`, from the mirror, beside the image's notes.
+fn mirror_installed() -> Result<(), &'static str> {
+    let second = read("gen/2")?;
+    let second = core::str::from_utf8(&second).map_err(|_| "pkg-install: gen/2 is not text")?;
+    let named = |name: &str| {
+        second
+            .lines()
+            .any(|l| l.starts_with(&format!("pkg {name} ")))
+    };
+    if !named("big") || !named("notes") {
+        log!("pkg-install: gen/2 is {second:?}");
+        return Err("pkg-install: generation 2 is not notes and big");
+    }
+    log!("pkg-install: generation 2 holds big from the mirror beside the image's notes");
+    catalogue_lists_them()
+}
+
+/// `pkg` answers the Apps sheet's `catalog` (P4 task 3): big and notes as
+/// installed, then the mirror's `extra`, which is not.
+fn catalogue_lists_them() -> Result<(), &'static str> {
+    let mut answer = None;
+    for _ in 0..WAIT_MS / 50 {
+        if let Ok(reply) = ipc::call(CLIENT, b"catalog 0", CALL_MS) {
+            answer = Some(reply);
+            break;
+        }
+        threads::sleep_ms(50);
+    }
+    let answer = answer.ok_or("pkg-install: pkg never answered catalog")?;
+    let text =
+        core::str::from_utf8(&answer).map_err(|_| "pkg-install: the catalogue is not text")?;
+    let rows: Vec<&str> = text.lines().collect();
+    let wanted = [
+        "kai-catalog 1",
+        "installed\tbig\t1.0.0\tdata\t",
+        "installed\tnotes\t1.0.0\tapp\t",
+        "mirror\textra\t1.0.0\tdata\t",
+    ];
+    let listed = rows.len() == wanted.len()
+        && rows
+            .iter()
+            .zip(wanted)
+            .all(|(row, start)| row.starts_with(start));
+    if !listed {
+        log!("pkg-install: the catalogue is {text:?}");
+        return Err("pkg-install: the catalogue does not list installed then offered");
+    }
+    log!("pkg-install: the catalogue lists big and notes installed, then the mirror's extra");
+    Ok(())
+}
+
 /// One request to `fs` on `badge`, as its kernel client.
 fn ask(badge: u64, request: Request) -> Result<Reply, &'static str> {
     let bytes = fsproto::encode_request(&request);
@@ -129,8 +330,8 @@ fn ask(badge: u64, request: Request) -> Result<Reply, &'static str> {
         handles: Vec::new(),
     };
     let (reply, _, _) = ipc::call_with(SERVICE, &bytes, 0, deadline, || false, extra)
-        .map_err(|_| "pkg-store: a call to fs failed")?;
-    fsproto::decode_reply(&reply).map_err(|_| "pkg-store: fs's reply does not decode")
+        .map_err(|_| "pkg: a call to fs failed")?;
+    fsproto::decode_reply(&reply).map_err(|_| "pkg: fs's reply does not decode")
 }
 
 /// `/system/pkg/<path>`, whole.
@@ -144,7 +345,7 @@ fn read(path: &str) -> Result<Vec<u8>, &'static str> {
         },
     )?;
     let Reply::Opened(stat, file) = opened else {
-        return Err("pkg-store: a file in /system/pkg cannot be opened");
+        return Err("pkg: a file in /system/pkg cannot be opened");
     };
     let mut out = Vec::new();
     while (out.len() as u64) < stat.size {
@@ -154,7 +355,7 @@ fn read(path: &str) -> Result<Vec<u8>, &'static str> {
         };
         match ask(file, request)? {
             Reply::Data(data) if !data.is_empty() => out.extend_from_slice(&data),
-            _ => return Err("pkg-store: a read in /system/pkg failed"),
+            _ => return Err("pkg: a read in /system/pkg failed"),
         }
     }
     Ok(out)
