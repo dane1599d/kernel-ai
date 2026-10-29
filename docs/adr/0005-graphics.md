@@ -97,10 +97,10 @@ Crate `surfabi`: no_std, host-tested, fuzzed. It keeps Wayland's object model, s
 | pool | create(Shm, size), buffer(offset, w, h, stride, format) | | `wl_shm_pool` |
 | buffer | destroy | release | `wl_buffer` |
 | surface | attach, damage_buffer, frame, set_opaque, commit | preferred_scale (n/120), enter, leave | `wl_surface`, fractional-scale-v1 |
-| toplevel | set_title, set_app_id, set_min_size, set_max_size, ack_configure | configure(serial, w, h, states), close | `xdg_toplevel` |
+| toplevel | set_title, set_app_id, set_min_size, set_max_size, ack_configure, set_unsaved(bool) | configure(serial, w, h, states), close | `xdg_toplevel` |
 | popup | position(anchor, gravity, offset), grab | configure, done | `xdg_popup` |
 | seat | set_cursor(shape name) | focus_in, focus_out, modifiers | `wl_seat`, cursor-shape-v1 |
-| a11y | tree_update(bytes), commit, bind_action(node, action) | action_request(node, action, value) | ours |
+| a11y | tree_update(bytes), commit, bind_action(node, action name; empty unbinds) | action_request(node, action, value) | ours |
 | panel | layer, exclusive_zone | configure | ours, like wlr-layer-shell; system programs only |
 
 - **`Surface`.** A pool's `Shm` begins with one 4 KiB header page (C's): magic, version 1, size, stride, format, scale, the front buffer index, `commit_seq`, up to 32 damage rectangles (u16 x, y, w, h) and a ring of 64 events of 32 bytes. Events are frame done, buffer release, and this surface's input: an `InputEvent`, the position in surface-local logical units and, for a key, its text, so native apps need no keymap. A client draws into its back buffer, writes its damage, bumps `commit_seq` and rings the doorbell. `desktop` latches, composites, flushes and posts the events. A frame costs no message and no IPC call, only a doorbell. A translator maps `wl_surface.commit` to a header write.
