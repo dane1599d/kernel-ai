@@ -229,19 +229,38 @@ fn giving_a_row_back_asks_first() {
 }
 
 #[test]
-fn the_withheld_rows_are_read_again_at_boot_and_a_bad_file_withholds_none() {
+fn the_withheld_rows_are_read_again_at_boot_and_a_bad_file_fails_closed() {
     let host = host();
     *host.withheld_disk.borrow_mut() = Some("kai-withheld 1\nfiles fs_list\n".into());
     let mut shell = shell(&host);
     assert!(shell.run_effects("files", LIST)[0].outcome.is_err());
     let host = self::host();
     *host.withheld_disk.borrow_mut() = Some("kai-withheld 1\nfiles ../x\n".into());
+    host.calls
+        .borrow_mut()
+        .push_back(Ok(grant_call("grant_revoke", "files", "fs_read")));
     let mut shell = super::shell(&host);
-    assert!(shell.run_effects("files", LIST)[0].outcome.is_ok());
+    // Every declared row is refused, and nothing overwrites the file.
+    assert!(shell.run_effects("files", LIST)[0].outcome.is_err());
+    assert!(crate::grants::allowed(host.as_ref(), "files").is_empty());
+    let asked = shell.eval("revoke fs_read from files");
+    if let Some(id) = asked.confirm {
+        let once = host.mint(id, "grant_revoke(\"files\", \"fs_read\")");
+        let reply = shell.eval(&format!("answer {id} allow once={once}"));
+        assert!(!reply.text.starts_with("Done"), "{reply:?}");
+    }
+    assert_eq!(
+        host.withheld_disk.borrow().as_deref(),
+        Some(
+            "kai-withheld 1
+files ../x
+"
+        )
+    );
     assert!(
         host.audit
             .borrow()
             .iter()
-            .any(|line| line.contains("withheld grants on disk were refused"))
+            .any(|line| line.contains("withheld grants on disk are out of shape"))
     );
 }

@@ -4,7 +4,9 @@
 //! the file is the one copy: each check reads it through the host, so a trial
 //! run (whose host throws writes away) changes nothing, and a reboot loses
 //! nothing. `run_effects` refuses a withheld row as it refuses an undeclared
-//! one, from the next effect on, with no restart.
+//! one, from the next effect on, with no restart. A file that is there but out
+//! of shape fails closed: every effect row is refused, and nothing overwrites
+//! it, until it is put right; no file at all means none are withheld.
 //!
 //! ```text
 //! kai-withheld 1
@@ -91,27 +93,28 @@ fn valid(name: &str, sep: char) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == sep)
 }
 
-/// The pairs withheld now: none with no file, or one out of shape.
-fn current(host: &dyn Host) -> Withheld {
-    host.withheld_read()
-        .and_then(|text| Withheld::parse(&text).ok())
-        .unwrap_or_default()
+/// The pairs withheld now: none with no file; why not, for a file out of
+/// shape, which must not be read as none.
+fn current(host: &dyn Host) -> Result<Withheld, String> {
+    match host.withheld_read() {
+        None => Ok(Withheld::default()),
+        Some(text) => Withheld::parse(&text)
+            .map_err(|why| format!("the withheld grants on disk are out of shape ({why})")),
+    }
 }
 
-/// Whether `app`'s effects may not call `row` now.
+/// Whether `app`'s effects may not call `row` now: every row, while the file
+/// is out of shape (fail closed).
 pub fn is_withheld(host: &dyn Host, app: &str, row: &str) -> bool {
-    current(host).contains(app, row)
+    current(host).map_or(true, |withheld| withheld.contains(app, row))
 }
 
 /// Checks `/system/state/withheld` at start: a file out of shape is audited,
-/// and none are withheld, as the rules are read.
+/// and every effect row is refused until it is put right.
 pub fn check_saved(host: &dyn Host) {
-    let Some(text) = host.withheld_read() else {
-        return;
-    };
-    if let Err(why) = Withheld::parse(&text) {
+    if let Err(why) = current(host) {
         host.audit(&format!(
-            "the withheld grants on disk were refused ({why}); none are withheld"
+            "{why}; every app effect that calls a row is refused until it is put right"
         ));
     }
 }
@@ -138,7 +141,8 @@ pub fn set(host: &dyn Host, app: &str, row: &str, withheld: bool) -> Result<bool
     if !valid(app, '-') || !valid(row, '_') {
         return Err(format!("{app} {row} is not an app and a row"));
     }
-    let now = current(host);
+    // A file out of shape is left for the user to see: never overwritten.
+    let now = current(host)?;
     if now.contains(app, row) == withheld {
         return Ok(false);
     }
@@ -147,12 +151,11 @@ pub fn set(host: &dyn Host, app: &str, row: &str, withheld: bool) -> Result<bool
 }
 
 /// The rows `app` declares for its effects that it may still call, for
-/// Settings' "what each app can do".
+/// Settings' "what each app can do": none while the file is out of shape.
 pub fn allowed(host: &dyn Host, app: &str) -> Vec<String> {
-    let Some(apps) = host.apps() else {
+    let (Some(apps), Ok(withheld)) = (host.apps(), current(host)) else {
         return Vec::new();
     };
-    let withheld = current(host);
     let apps = apps.borrow();
     apps.rows
         .effects_of(app)
