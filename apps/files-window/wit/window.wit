@@ -3,6 +3,9 @@
 /// no storage and no clock.
 package app:files-window@1.0.0;
 
+/// The OS rows the app queues as effects, and the only ones the agent core runs
+/// for it (effects are deny-by-default): exactly the rows its model uses.
+/// kai: effects=fs_list,fs_read,fs_move,fs_trash,fs_restore
 world files-window {
     include kai:app/component@0.1.0;
     import kai:app/effects@0.1.0;
