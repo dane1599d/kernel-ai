@@ -217,11 +217,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "comp-monitor"
+name = "comp-models"
+version = "0.1.0-dev"
+
+[[package]]
+name = "comp-models-ui"
 version = "0.1.0-dev"
 dependencies = [
- "appabi",
+ "comp-models",
+ "uikit",
 ]
+
+[[package]]
+name = "comp-monitor"
+version = "0.1.0-dev"
 
 [[package]]
 name = "comp-monitor-ui"
@@ -1461,6 +1470,7 @@ dependencies = [
  "kaigrants",
  "kaiprofile",
  "llmproto",
+ "look",
  "rhai",
  "sched",
  "serde_json",
@@ -1631,6 +1641,10 @@ dependencies = [
  "quote",
  "syn 3.0.9",
 ]
+
+[[package]]
+name = "systemabi"
+version = "0.1.0-dev"
 
 [[package]]
 name = "talc"

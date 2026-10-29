@@ -2,7 +2,7 @@
 [1] group ""
 [2] group ""
 [3] label "CPUs: 4"
-[4] label "Up 12m 34s"
+[4] label "Up 12m 36s"
 [5] progress "Memory: 2596 of 4096 MiB used" = "63%"
 [6] group ""
 [7] button "CPU" runs monitor_sort
@@ -11,7 +11,7 @@
 [10] button "PID" runs monitor_sort
 [11] button "Refresh"
 [12] table "Processes" = "4 rows, selected \"4 | llm | 61.2% | 2.2 GiB\""
-[13] label "Model: answering, 12.5 tokens/s"
+[13] label "Model: ready, 12.5 tokens/s"
 [14] group ""
 [15] button "Stop" runs process_stop
 [16] label "Stops every process named llm"
