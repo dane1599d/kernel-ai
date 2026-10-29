@@ -99,8 +99,8 @@ fn main() -> i32 {
             println!("pkg: FAIL cannot leave case/{step}.done: {why}");
         }
     }
-    serve(|text, moved| {
-        local::answer(&mut vol, text, moved).unwrap_or_else(|| answer(&mut vol, text))
+    serve(|text, moved, caller| {
+        local::answer(&mut vol, text, moved, caller).unwrap_or_else(|| answer(&mut vol, text))
     })
 }
 
@@ -138,7 +138,7 @@ fn not_holder() -> ! {
         false => wrong.join("; "),
     };
     println!("pkg: without /system/pkg: {line}");
-    serve(|_, _| line.clone())
+    serve(|_, _, _| line.clone())
 }
 
 /// What the image's repository and the mirror listed at this boot, as index
@@ -146,11 +146,12 @@ fn not_holder() -> ! {
 static KNOWN: spin::Mutex<(Vec<Index>, Vec<Index>)> = spin::Mutex::new((Vec::new(), Vec::new()));
 
 /// After its step, `pkg` answers on its endpoint with `answer`, given each
-/// request and the handles it moved: the Apps sheet's `catalog <offset>` (P4
-/// task 3) and `cc build`'s `local` requests (P4 task 13, [`local`]). Every
-/// handle a request moved is closed once it is answered. With no `serve` in its
-/// plan line it idles.
-fn serve(mut answer: impl FnMut(&str, &[Handle]) -> String) -> ! {
+/// request, the handles it moved and the pid of the process that sent it: the
+/// Apps sheet's `catalog <offset>` (P4 task 3) and `cc build`'s `local`
+/// requests (P4 task 13, [`local`]). Every handle a request moved is closed
+/// once it is answered, and an answer is at most one message. With no `serve`
+/// in its plan line it idles.
+fn serve(mut answer: impl FnMut(&str, &[Handle], u64) -> String) -> ! {
     let mut request = [0u8; 64];
     loop {
         let mut info = RecvInfo::default();
@@ -159,9 +160,16 @@ fn serve(mut answer: impl FnMut(&str, &[Handle]) -> String) -> ! {
                 let text = core::str::from_utf8(&request[..len.min(request.len())]).unwrap_or("");
                 let count = (info.handle_count as usize).min(MAX_TRANSFER);
                 let moved: Vec<Handle> = info.handles[..count].iter().map(|h| Handle(*h)).collect();
-                let reply = answer(text, &moved);
+                let mut reply = answer(text, &moved, info.caller_pid);
                 for handle in moved {
                     let _ = sys::handle_close(handle);
+                }
+                if reply.len() > kabi::MAX_MESSAGE {
+                    let mut end = kabi::MAX_MESSAGE;
+                    while !reply.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    reply.truncate(end);
                 }
                 if let Err(why) = sys::svc_reply(reply.as_bytes()) {
                     println!("pkg: cannot answer {text:?}: {why:?}");

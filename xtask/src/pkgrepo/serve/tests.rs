@@ -138,6 +138,9 @@ impl Volume for Memory {
     fn begin(&mut self, _: u64) -> Result<(), String> {
         Ok(())
     }
+    fn abort(&mut self) -> Result<(), String> {
+        Ok(())
+    }
     fn commit(&mut self) -> Result<(), String> {
         Ok(())
     }

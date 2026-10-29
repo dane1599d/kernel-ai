@@ -36,6 +36,8 @@ pub trait Volume {
     /// Opens the action `action` (ADR 0004 §4).
     fn begin(&mut self, action: u64) -> Result<(), String>;
     fn commit(&mut self) -> Result<(), String>;
+    /// Drops the open action and everything in it; nothing when none is open.
+    fn abort(&mut self) -> Result<(), String>;
     fn read(&mut self, path: &str) -> Result<Option<Vec<u8>>, String>;
     /// The names directly in folder `dir`; none when it does not exist.
     fn list(&mut self, dir: &str) -> Result<Vec<String>, String>;

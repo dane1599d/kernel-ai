@@ -81,8 +81,14 @@ impl<T: Transport> FsVolume<T> {
         on: T::Handle,
         request: Request,
     ) -> Result<(Reply, Option<T::Handle>), String> {
+        // The request's name only: its fields may be a file's bytes, such as
+        // the device key's seed.
         let what = format!("{request:?}");
-        let what = &what[..what.len().min(48)];
+        let what = String::from(
+            what.split(|c: char| !c.is_ascii_alphanumeric())
+                .next()
+                .unwrap_or(""),
+        );
         self.transport
             .call(on, request)
             .map_err(|e| format!("{what}: {e}"))
@@ -230,6 +236,13 @@ impl<T: Transport> Volume for FsVolume<T> {
         self.done(self.root, Request::Begin { action })?;
         self.in_action = true;
         Ok(())
+    }
+
+    fn abort(&mut self) -> Result<(), String> {
+        match core::mem::take(&mut self.in_action) {
+            true => self.done(self.root, Request::Abort),
+            false => Ok(()),
+        }
     }
 
     fn commit(&mut self) -> Result<(), String> {
