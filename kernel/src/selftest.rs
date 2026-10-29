@@ -363,6 +363,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::FilesChurn { .. }
             | SelfTest::DeskBoot
             | SelfTest::DeskPanel
+            | SelfTest::DeskPanelShell
             | SelfTest::UiWindow
             | SelfTest::DeskCard
             | SelfTest::DeskStanding
