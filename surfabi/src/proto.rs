@@ -131,6 +131,10 @@ pub enum Request<'a> {
     /// Whether the window holds changes not yet kept: `window_close` closes a
     /// window without one at once, and asks first for one with (ADR 0005 §6).
     SetUnsaved(bool),
+    /// Whether the window is kept from the agent: `ui_view` shows only its
+    /// title and that it is private, and `ui_act` on it is refused (ADR 0005
+    /// §6). Only comphost's grant decides who may ask.
+    SetAgentPrivate(bool),
     // popup
     Position {
         anchor: u32,
@@ -225,6 +229,11 @@ impl<'a> Request<'a> {
                 1 => true,
                 _ => return Err(Error::BadArg),
             }),
+            (I::Toplevel, 7) => Request::SetAgentPrivate(match r.uint()? {
+                0 => false,
+                1 => true,
+                _ => return Err(Error::BadArg),
+            }),
             (I::Popup, 0) => Request::Position {
                 anchor: r.uint()?,
                 gravity: r.uint()?,
@@ -296,6 +305,7 @@ impl<'a> Request<'a> {
             Request::AckConfigure { serial } => w(4).uint(serial),
             Request::ToplevelDestroy => w(5),
             Request::SetUnsaved(unsaved) => w(6).uint(unsaved as u32),
+            Request::SetAgentPrivate(private) => w(7).uint(private as u32),
             Request::Position {
                 anchor,
                 gravity,

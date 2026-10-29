@@ -441,6 +441,26 @@ pub const IMPORTS: &[WitFunc] = &[
         },
     },
     WitFunc {
+        interface: "kai:ui/view",
+        version: "0.1",
+        name: "set-agent-private",
+        core_params: &[CoreTy::I32, CoreTy::I32, CoreTy::I32],
+        core_results: &[],
+        params: || vec![Ty::U32, Ty::Bool],
+        result: || {
+            Some(Ty::Result(
+                None,
+                Some(Box::new(Ty::Enum(vec![
+                    String::from("no-window"),
+                    String::from("no-node"),
+                    String::from("bad-parent"),
+                    String::from("too-big"),
+                    String::from("too-many-windows"),
+                ]))),
+            ))
+        },
+    },
+    WitFunc {
         interface: "kai:system/system",
         version: "0.1",
         name: "read",

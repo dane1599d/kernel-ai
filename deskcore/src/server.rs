@@ -51,6 +51,8 @@ struct Surface {
     bound: Vec<(u32, String)>,
     /// Whether it holds changes not yet kept (`toplevel.set_unsaved`).
     unsaved: bool,
+    /// Whether it is kept from the agent (`toplevel.set_agent_private`).
+    agent_private: bool,
 }
 
 /// What `desktop` must do for a request beyond the desk itself.
@@ -374,6 +376,9 @@ impl Client {
                 Request::SetUnsaved(unsaved) => {
                     self.surface_of_toplevel(header.object)?.unsaved = unsaved;
                 }
+                Request::SetAgentPrivate(private) => {
+                    self.surface_of_toplevel(header.object)?.agent_private = private;
+                }
                 Request::ToplevelDestroy => {
                     let surface = self.surface_of_toplevel(header.object)?;
                     surface.toplevel = None;
@@ -432,6 +437,16 @@ impl Client {
         self.surfaces
             .iter()
             .any(|s| s.window == Some(window) && s.unsaved)
+    }
+
+    /// Whether `window`'s app keeps it from the agent: its `ui_view` is the
+    /// title and "private" alone, and `ui_act` on it, focus included, is
+    /// refused. comphost asks only for an app the system image grants it
+    /// (Settings), so the flag is taken as it comes.
+    pub fn agent_private(&self, window: WindowId) -> bool {
+        self.surfaces
+            .iter()
+            .any(|s| s.window == Some(window) && s.agent_private)
     }
 
     /// Asks `window`'s app to run `action` (a bit number of
