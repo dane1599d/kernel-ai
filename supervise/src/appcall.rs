@@ -24,6 +24,15 @@ pub const ROWS: &str = "kai-actions 1";
 pub const MAX_REQUEST: usize = kabi::MAX_MESSAGE - 64;
 /// Who may ask.
 pub const CALLER: &str = "shell";
+/// The longest the supervisor waits on one `app-call`, a start included: it
+/// serves one request at a time, so a slow or hung app holds every other
+/// request, restarts too, no longer than this.
+pub const WAIT_MS: u64 = 5_000;
+/// The answer when the app did not answer in [`WAIT_MS`]; the shell may try
+/// once more.
+pub const TIMEOUT: &str = "err timeout";
+/// The supervisor's request buffer: one message, so a full `app-call` fits.
+pub const MAX_SERVED: usize = kabi::MAX_MESSAGE;
 
 /// `app-call <app>\n<request>` read back: the app and its request.
 pub fn parse(text: &str) -> Option<(&str, &str)> {
@@ -94,5 +103,9 @@ mod tests {
         assert!(check("shell", "notes", "kai-actions 1 x", &specs).is_err());
         let long = format!("kai-call 1\n{}", "x".repeat(MAX_REQUEST));
         assert!(check("shell", "notes", &long, &specs).is_err());
+        // The longest call allowed fits the supervisor's buffer whole.
+        let full = format!("kai-call 1\n{}", "x".repeat(MAX_REQUEST - 11));
+        assert!(check("shell", "notes", &full, &specs).is_ok());
+        assert!(encode("notes-window-long-name", &full).len() <= MAX_SERVED);
     }
 }

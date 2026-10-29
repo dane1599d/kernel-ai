@@ -167,7 +167,8 @@ fn main() -> i32 {
 
 /// Takes the waiting request and answers it: `ok`, or why not.
 fn serve(services: &mut [Service]) {
-    let mut buf = [0u8; 128];
+    // One message: an `app-call` carries a whole `kai-call 1`.
+    let mut buf = vec![0u8; supervise::appcall::MAX_SERVED];
     let mut caller = 0;
     // The request is already queued, so this does not wait.
     let Ok(len) = sys::svc_recv(&mut buf, 1, &mut caller) else {
@@ -273,13 +274,13 @@ fn app_ctl(name: &str, resume: bool) -> String {
     }
 }
 
-/// How long an app started for a call has to come up.
-const APP_START_MS: u64 = 10_000;
 const APP_START_POLL_MS: u64 = 100;
 
 /// `app-call <app>`: the shell's request to app `app`, through the kernel. The
 /// app's own reply, or `err ...`. An app that is down, and not stopped or given
-/// up on, is started and the call tried again once it serves.
+/// up on, is started and the call tried again once it serves. The whole call,
+/// the start too, takes at most `supervise::appcall::WAIT_MS`; past that the
+/// answer is `err timeout`.
 fn app_call(services: &mut [Service], app: &str, request: &str, caller: u64) -> String {
     let caller_name = running_services()
         .into_iter()
@@ -292,7 +293,8 @@ fn app_call(services: &mut [Service], app: &str, request: &str, caller: u64) -> 
         Err(why) => return String::from(why),
     };
     let mut reply = vec![0u8; kabi::MAX_MESSAGE];
-    let first = sys::app_call(app, request, &mut reply);
+    let deadline = now_ms() + supervise::appcall::WAIT_MS;
+    let first = sys::app_call(app, request, &mut reply, left(deadline));
     let len = match first {
         Err(kabi::Error::NotFound) => {
             let service = &mut services[index];
@@ -303,25 +305,36 @@ fn app_call(services: &mut [Service], app: &str, request: &str, caller: u64) -> 
                 println!("{app} starts for a call");
                 start(service, now_ms());
             }
-            retry(app, request, &mut reply)
+            retry(app, request, &mut reply, deadline)
         }
         other => other,
     };
     match len {
         Ok(len) => String::from_utf8_lossy(&reply[..len.min(reply.len())]).into_owned(),
+        Err(kabi::Error::TimedOut) => {
+            println!("{app} did not answer a call in time");
+            format!(
+                "{} {app} did not answer in time",
+                supervise::appcall::TIMEOUT
+            )
+        }
         Err(error) => format!("err cannot reach {app}: {error:?}"),
     }
 }
 
-/// The call again once `app` serves, up to [`APP_START_MS`].
-fn retry(app: &str, request: &str, reply: &mut [u8]) -> Result<usize, kabi::Error> {
-    let mut waited = 0;
+/// The milliseconds left until `deadline`, at least 1.
+fn left(deadline: u64) -> u32 {
+    u32::try_from(deadline.saturating_sub(now_ms()).max(1)).unwrap_or(u32::MAX)
+}
+
+/// The call again once `app` serves, until `deadline`.
+fn retry(app: &str, request: &str, reply: &mut [u8], deadline: u64) -> Result<usize, kabi::Error> {
     loop {
-        match sys::app_call(app, request, reply) {
-            Err(kabi::Error::NotFound) if waited < APP_START_MS => {
+        match sys::app_call(app, request, reply, left(deadline)) {
+            Err(kabi::Error::NotFound) if now_ms() < deadline => {
                 sys::sleep_ms(APP_START_POLL_MS);
-                waited += APP_START_POLL_MS;
             }
+            Err(kabi::Error::NotFound) => return Err(kabi::Error::TimedOut),
             other => return other,
         }
     }
