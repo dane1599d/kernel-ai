@@ -217,6 +217,10 @@ impl Shell {
             false => rule.call(),
         };
         let request = format!("S{rule_id}: {}", rule.describe());
+        // The shell holds the profiles, so it switches them itself.
+        if rule.action == "profile_set" {
+            return self.fire_profile(id, rule_id, &rule.target, &request, undo);
+        }
         let ran = match self.host.triggers() {
             Some(triggers) => triggers.run(rule_id, rule.action, &rule.target, undo),
             None => Err(String::from("no desktop events here yet")),
@@ -262,6 +266,72 @@ impl Shell {
             "ran",
             Some(change),
         );
+    }
+
+    /// A standing instruction's `profile_set`: the switch, or (`undo`, its
+    /// "until") the switch back, logged with the rule's id.
+    fn fire_profile(&mut self, id: u64, rule: u64, name: &str, request: &str, undo: bool) {
+        let logged = crate::profiles::Logged {
+            form: Form::Standing,
+            consent: format!("standing:{rule}"),
+            request,
+        };
+        let done = match (
+            undo,
+            self.fired_profiles.iter().position(|(r, _)| *r == rule),
+        ) {
+            (false, _) => self.switch_profile(id, name, logged).map(|(_, key)| {
+                self.fired_profiles.retain(|(r, _)| *r != rule);
+                self.fired_profiles.push((rule, key));
+            }),
+            (true, Some(at)) => {
+                let (_, key) = self.fired_profiles.remove(at);
+                self.revert_entry_profile(id, (rule, key), request)
+            }
+            (true, None) => Err(String::from("nothing of its to put back")),
+        };
+        if let Err(why) = done {
+            self.host
+                .audit(&format!("standing instruction S{rule} refused: {why}"));
+            let script = format!("profile_set(\"{name}\")");
+            self.log_firing(
+                id,
+                request,
+                &script,
+                rule,
+                State::Nothing,
+                &format!("refused: {why}"),
+                None,
+            );
+        }
+    }
+
+    /// An "until" putting a firing's profile switch back, as its own entry.
+    fn revert_entry_profile(
+        &mut self,
+        id: u64,
+        (rule, key): (u64, u64),
+        request: &str,
+    ) -> Result<(), String> {
+        let (text, redo) = self.revert_profile(key)?;
+        let change = Change {
+            action: String::from("profile_set"),
+            owner: String::from("supervisor"),
+            res: String::from("profile"),
+            before: String::from("changed"),
+            after: text,
+            inverse: Some(Inverse::Profile { key: redo }),
+        };
+        self.log_firing(
+            id,
+            request,
+            "undo profile_set",
+            rule,
+            State::Done,
+            "ran",
+            Some(change),
+        );
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]

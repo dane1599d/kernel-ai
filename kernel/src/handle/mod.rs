@@ -186,6 +186,14 @@ fn state_dir(fs: u64) -> Entry {
     state
 }
 
+/// The startup `Dir` for a folder a plan line grants, on the `fs` route `fs`.
+/// Its badge names the folder for `fs`, which looks it up itself.
+fn folder_dir(fs: u64, folder: supervise::Folder) -> Entry {
+    let mut dir = Entry::new(Kind::Dir, HOME_RIGHTS | BASE, fs);
+    dir.badge = folder.badge();
+    dir
+}
+
 /// What the startup `Dir` allows: everything a folder's handle can.
 const HOME_RIGHTS: Rights = Rights::READ
     .union(Rights::WRITE)
@@ -261,6 +269,18 @@ pub fn route(service: &str) -> Result<Entry, kabi::Error> {
 /// from `caps`, then a route to each service in `uses` (CALL only). Before the
 /// process runs, so nothing races it.
 pub fn create(slot: usize, caps: u64, pid: u64, uses: &[&str]) -> Result<(), kabi::Error> {
+    create_with(slot, caps, pid, uses, &[])
+}
+
+/// [`create`], with a startup `Dir` on the `fs` route for each folder in `dirs`
+/// (the plan's `dir=`), after FILES's and SYSTEM_STATE's.
+pub fn create_with(
+    slot: usize,
+    caps: u64,
+    pid: u64,
+    uses: &[&str],
+    dirs: &[supervise::Folder],
+) -> Result<(), kabi::Error> {
     let mut table = Table::new().map_err(kabi::Error::from)?;
     let mut startup = Vec::new();
     startup
@@ -268,13 +288,17 @@ pub fn create(slot: usize, caps: u64, pid: u64, uses: &[&str]) -> Result<(), kab
         .map_err(|_| kabi::Error::NoMemory)?;
     let routes = uses.iter().filter(|_| caps & cap::CALL != 0);
     let routes: Result<Vec<Entry>, kabi::Error> = routes.map(|name| route(name)).collect();
-    let fs = match caps & (cap::FILES | cap::SYSTEM_STATE) {
-        0 => None,
+    let fs = match (caps & (cap::FILES | cap::SYSTEM_STATE), dirs) {
+        (0, []) => None,
         _ => Some(route_id(crate::process::supervision::FS)?),
     };
+    let folders = fs
+        .into_iter()
+        .flat_map(|fs| dirs.iter().map(move |&d| folder_dir(fs, d)));
     for entry in self::startup(caps, pid)
         .into_iter()
         .chain(fs.into_iter().flat_map(|fs| fs_dirs(caps, fs)))
+        .chain(folders)
         .chain(routes?)
     {
         startup.push(table.insert(entry).map_err(kabi::Error::from)?);
@@ -381,13 +405,16 @@ pub fn give(slot: usize, entries: Vec<Entry>) -> Vec<Handle> {
         .collect()
 }
 
-/// The capability bits of the live process `pid`; `None` for none (the kernel).
+/// The capability bits that set the live process `pid`'s kind ceiling, for the
+/// handles REPLY_H and CALL_H move to it; `None` for none (the kernel).
 pub fn caps_of(pid: u64) -> Option<u64> {
     crate::process::with_table(|table| {
         table
             .iter()
             .find(|p| p.live() && p.pid == pid && pid != 0)
-            .map(|p| p.limits.caps)
+            // A plan folder brings FILES's ceiling for `Dir` and `File`, and
+            // only that: the bits go to [`ceiling_allows`], nothing else.
+            .map(|p| p.limits.caps | if p.folders { cap::FILES } else { 0 })
     })
 }
 

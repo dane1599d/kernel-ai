@@ -58,13 +58,34 @@ fn main() -> i32 {
         Some("restart") => restart(home),
         Some("actions") => cut::actions(home),
         Some("churn") => cut::churn(home, boot),
+        Some("hold") => hold(home),
         _ => Err(String::from(
-            "no step=write, read, restart, actions or churn",
+            "no step=write, read, restart, actions, churn or hold",
         )),
     };
     if let Err(why) = result {
         println!("filecheck: FAIL {why}");
     }
+    idle()
+}
+
+/// `fs-dead-client`: opens an action, changes a file in it, and holds it until
+/// the kernel kills this process. Once only: a restarted `filecheck` finds
+/// `held` and does nothing.
+fn hold(home: Handle) -> Result<(), String> {
+    if open(home, "held", How::Existing, Rights::READ).is_ok() {
+        println!("filecheck: restarted after the kill; holding nothing");
+        return Ok(());
+    }
+    mark(home, "held")?;
+    expect(home, Request::Begin { action: 1 }, Reply::Done)?;
+    let half = open(home, "half.txt", How::CreateFile, file_rights())?;
+    let request = Request::Write {
+        off: 0,
+        data: b"half done".to_vec(),
+    };
+    expect(half, request, Reply::Done)?;
+    println!("filecheck: holding an action with half.txt in it");
     idle()
 }
 
@@ -193,8 +214,10 @@ fn write(home: Handle) -> Result<(), String> {
     if read_all(plan, PLAN.len())? != PLAN || read_all(big, BIG)? != pattern() {
         return Err(String::from("a file read back different before the reboot"));
     }
-    mark(home, "write.ok")?;
+    // The line before the mark: the kernel ends the case once it sees the
+    // mark, and on a slow runner the machine can stop before a later line.
     println!("filecheck: boot 1 wrote notes/plan.txt and a 20 KiB file through its Dir handle");
+    mark(home, "write.ok")?;
     Ok(())
 }
 
@@ -254,8 +277,8 @@ fn read(home: Handle) -> Result<(), String> {
     if read_all(plan, PLAN.len())? != PLAN || read_all(big, BIG)? != pattern() {
         return Err(String::from("boot 1's files read back different"));
     }
-    mark(home, "read.ok")?;
     println!("filecheck: boot 2 read back what boot 1 wrote, byte for byte");
+    mark(home, "read.ok")?;
     Ok(())
 }
 
@@ -289,7 +312,7 @@ fn restart(home: Handle) -> Result<(), String> {
     if read_all(file, 2)? != b"v1" {
         return Err(String::from("restart.txt is not what was committed"));
     }
-    mark(home, "restart.ok")?;
     println!("filecheck: the File handle opened before fs restarted reads what was committed");
+    mark(home, "restart.ok")?;
     Ok(())
 }

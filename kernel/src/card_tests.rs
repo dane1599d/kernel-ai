@@ -30,11 +30,14 @@ fn code(answer: Answer) -> u8 {
     }
 }
 
-/// Asks "Stop build-3?" for `process_stop("build-3")`, as the terminal does.
+/// The question the shell asks for it: a menu's question shows its call.
+const QUESTION: &str = "Run process_stop(\"build-3\")? It stops a process.";
+
+/// Asks for `process_stop("build-3")`, as the terminal does.
 fn asker(_: usize) {
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
     let mut decoder = Decoder::new();
-    let answer = match Menu::new(id, "Stop build-3?", None, None, Origin::Asked)
+    let answer = match Menu::new(id, QUESTION, None, None, Origin::Asked)
         .and_then(|menu| menu.with_call("process_stop(\"build-3\")"))
     {
         Ok(mut menu) => code(terminal::answer(&mut decoder, &mut menu)),

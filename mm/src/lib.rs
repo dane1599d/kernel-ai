@@ -12,6 +12,7 @@ extern crate alloc;
 pub mod dma;
 mod frames;
 mod reclaim;
+pub mod reserve;
 pub mod window;
 
 pub use frames::{FrameBitmap, FrameError};

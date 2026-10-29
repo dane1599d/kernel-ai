@@ -115,6 +115,17 @@ pub(super) const CASES: &[TestCase] = &[
         data: Some(VIRTIO),
         ..case("fs-restart", "test=files-restart")
     },
+    // A client killed between Begin and Commit: fs aborts its action rather
+    // than holding every later change at Busy (PART_PEER_ALIVE).
+    TestCase {
+        expect: &[
+            "filecheck: holding an action with half.txt in it",
+            "files: a client killed mid-action leaves nothing, and the next Begin goes through",
+        ],
+        server: false,
+        data: Some(VIRTIO),
+        ..case("fs-dead-client", "test=files-dead-client")
+    },
     // P2 task 9: 200 file actions through `fs` behind blklogwrites; every crash
     // state the log allows mounts, checks and keeps the last durable commit.
     TestCase {
@@ -152,6 +163,11 @@ pub(super) const CASES: &[TestCase] = &[
         expect: &["fs-undo: undo restored the file's transaction, and undo again restored it back"],
         data: Some(VIRTIO),
         ..case("fs-undo", "test=fs-undo")
+    },
+    TestCase {
+        expect: &["fs-trash: trash and restore ran with undo, and emptying the trash asked first"],
+        data: Some(VIRTIO),
+        ..case("fs-trash", "test=fs-trash")
     },
     // P2 task 12: the change and its log line in one commit, undone after a reboot.
     TestCase {

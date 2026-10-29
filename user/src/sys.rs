@@ -441,6 +441,34 @@ pub fn job_wait(job: Handle, timeout_ms: u64) -> Result<Option<ExitRecord>, Erro
     Ok((got == 1).then_some(record))
 }
 
+/// `bytes` of fresh address space with nothing mapped; its start (MEM_RESERVE).
+pub fn mem_reserve(bytes: u64) -> Result<u64, Error> {
+    call(call::MEM_RESERVE, [bytes, 0, 0, 0, 0, 0])
+}
+
+/// Maps zeroed read-write pages over `[addr, addr + bytes)` of a reservation
+/// (MEM_COMMIT).
+pub fn mem_commit(addr: u64, bytes: u64) -> Result<u64, Error> {
+    call(call::MEM_COMMIT, [addr, bytes, 0, 0, 0, 0])
+}
+
+/// Gives the reservation at `addr` back; how many pages it freed (MEM_RELEASE).
+pub fn mem_release(addr: u64) -> Result<u64, Error> {
+    call(call::MEM_RELEASE, [addr, 0, 0, 0, 0, 0])
+}
+
+/// Process `pid`'s page quota becomes `pages`; the old one (PROC_QUOTA_SET,
+/// needs SUPERVISE).
+pub fn proc_quota_set(pid: u64, pages: u64) -> Result<u64, Error> {
+    call(call::PROC_QUOTA_SET, [pid, pages, 0, 0, 0, 0])
+}
+
+/// Process `pid` runs `normal` (0) or `background` (1) (PROC_CLASS_SET, needs
+/// SUPERVISE).
+pub fn proc_class_set(pid: u64, class: u64) -> Result<u64, Error> {
+    call(call::PROC_CLASS_SET, [pid, class, 0, 0, 0, 0])
+}
+
 /// New zeroed shared pages, and an `Shm` handle to them (ADR 0001 D4).
 pub fn shm_create(pages: u64) -> Result<Handle, Error> {
     call(call::SHM_CREATE, [pages, 0, 0, 0, 0, 0]).map(|h| Handle(h as u32))
@@ -577,6 +605,23 @@ pub fn input_read(out: &mut [kabi::input::InputEvent], timeout_ms: u64) -> Resul
     Ok(got)
 }
 
+/// The kernel console's rows changed after `since` (`term` only), in
+/// `termcore::mirror`'s format, into `out`; the length written.
+pub fn term_read(out: &mut [u8], since: u64) -> Result<usize, Error> {
+    let len = call(
+        call::TERM_READ,
+        [out.as_mut_ptr() as u64, out.len() as u64, since, 0, 0, 0],
+    )?;
+    Ok(len as usize)
+}
+
+/// Lends the keys to the kernel console's terminal for about a second, while
+/// `pid`'s window, which must be the terminal window, has the focus; or (`on`
+/// false) ends the lease (`desktop` only, while it shows).
+pub fn input_to_console(on: bool, pid: u64) -> Result<(), Error> {
+    call(call::INPUT_TO_CONSOLE, [u64::from(on), pid, 0, 0, 0, 0]).map(|_| ())
+}
+
 /// Removes the `Shm` mapping that starts at `address`.
 pub fn shm_unmap(address: u64) -> Result<u64, Error> {
     call(call::SHM_UNMAP, [address, 0, 0, 0, 0, 0])
@@ -637,6 +682,37 @@ pub fn sched_trial(request: &kabi::sched::TrialRequest) -> Result<u64, Error> {
 /// Whether the user asked to stop since the last call; reading clears it.
 pub fn interrupted() -> bool {
     call(call::INTERRUPTED, [0; 6]).is_ok_and(|flag| flag != 0)
+}
+
+/// Copies the boot bundle's file `path` into `buf` when it fits; its length
+/// either way. Only beneath what this process's plan line grants with `bootfiles=`.
+pub fn boot_read(path: &str, buf: &mut [u8]) -> Result<usize, Error> {
+    call(
+        call::BOOT_READ,
+        [
+            path.as_ptr() as u64,
+            path.len() as u64,
+            buf.as_mut_ptr() as u64,
+            buf.len() as u64,
+            0,
+            0,
+        ],
+    )
+    .map(|len| len as usize)
+}
+
+/// Adds `artifact`, whose SHA-256 is `sha`, as a version of component `name`,
+/// labelled `p-` and its digest's first 12 hex digits. Only for the holder of
+/// `/system/pkg`; only adds.
+pub fn comp_add(name: &str, artifact: &[u8], sha: &[u8; 32]) -> Result<(), Error> {
+    let add = kabi::live::Add {
+        name_ptr: name.as_ptr() as u64,
+        name_len: name.len() as u64,
+        artifact_ptr: artifact.as_ptr() as u64,
+        artifact_len: artifact.len() as u64,
+        sha: *sha,
+    };
+    call(call::COMP_ADD, [&add as *const _ as u64, 0, 0, 0, 0, 0]).map(drop)
 }
 
 /// Copies version `label` of this process's component into `buf` when it fits;
@@ -757,6 +833,16 @@ pub fn comp_control(component: &str, request: &str, reply: &mut [u8]) -> Result<
 }
 
 /// As [`http`], to the build service the kernel was booted with (needs PUBLISH).
+/// Sends `request`, as `kabi::pkgrepo::request` builds it, to the fixed `pkgrepo=`
+/// mirror; the response's length. Only for the holder of `/system/pkg`.
+pub fn pkg_fetch(request: &HttpRequest) -> Result<usize, Error> {
+    call(
+        call::PKG_FETCH,
+        [request as *const HttpRequest as u64, 0, 0, 0, 0, 0],
+    )
+    .map(|len| len as usize)
+}
+
 pub fn build(request: &HttpRequest) -> Result<usize, Error> {
     call(
         call::BUILD,
@@ -1052,6 +1138,14 @@ pub fn trust_root(handle: Handle, buf: &mut [u8]) -> Result<usize, Error> {
 /// Seconds since 1970 UTC, for TUF's expiry checks.
 pub fn trust_time(handle: Handle) -> Result<u64, Error> {
     call(call::TRUST_TIME, [u64::from(handle.0), 0, 0, 0, 0, 0])
+}
+
+/// Whether process `pid` still runs; needs a `Partition` handle (`fs`).
+pub fn part_peer_alive(handle: Handle, pid: u64) -> Result<u64, Error> {
+    call(
+        call::PART_PEER_ALIVE,
+        [u64::from(handle.0), pid, 0, 0, 0, 0],
+    )
 }
 
 /// A `Dir` or `File` handle on this process's own endpoint, with `badge` and

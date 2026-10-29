@@ -13,11 +13,21 @@ mod check;
 mod dev;
 
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU32, Ordering};
 use fsserve::{Call, Server, Started};
 use kabi::handle::{Handle, HandleInfo, Kind, MAX_STARTUP, RecvInfo, Rights};
 use kabi::part::stub;
 use kabi::{Error, MAX_MESSAGE};
 use user::{println, sys};
+
+/// The `Partition` handle, for [`alive`].
+static PARTITION: AtomicU32 = AtomicU32::new(0);
+
+/// Whether a caller still runs: only a definite NotFound counts as dead.
+fn alive(pid: u64) -> bool {
+    let part = Handle(PARTITION.load(Ordering::Relaxed));
+    sys::part_peer_alive(part, pid) != Err(Error::NotFound)
+}
 
 user::entry!(main);
 
@@ -45,7 +55,9 @@ fn main() -> i32 {
     let mut uuid = [0u8; 16];
     uuid[..8].copy_from_slice(&sys::time_ns().to_le_bytes());
     uuid[8..].copy_from_slice(&info.sectors.to_le_bytes());
-    let disk = kaifs::cache::Cached::new(dev::PartDev::new(part, &info), CACHE_BLOCKS);
+    // kaifs, its block cache, then runs of up to 128 KiB a PART_* call.
+    let runs = fsserve::batch::Batched::new(dev::PartDev::new(part, &info));
+    let disk = kaifs::cache::Cached::new(runs, CACHE_BLOCKS);
     let mut server = match Server::start(disk, uuid) {
         Ok((server, started)) => {
             let how = match started {
@@ -64,6 +76,8 @@ fn main() -> i32 {
             return 2;
         }
     };
+    PARTITION.store(part.0, Ordering::Relaxed);
+    server.set_alive(alive);
     let mut bench = Bench::default();
     let mut request = alloc::vec![0u8; MAX_MESSAGE];
     loop {

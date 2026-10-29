@@ -269,7 +269,12 @@ impl<E: Env> Core<E> {
         let manifest = artifact::parse(&artifact)
             .map_err(|why| Fault::new(Reason::Manifest, why))?
             .manifest;
-        if manifest.component != self.name || manifest.version != label {
+        // A package version's label is its artifact's digest, which the
+        // kernel's store checked when `pkg` added it (P4 task 1); its manifest
+        // names the version it was built as. Every other label is the
+        // manifest's own.
+        let named = manifest.version == label || kabi::live::is_package_label(label);
+        if manifest.component != self.name || !named {
             return Err(Fault::new(
                 Reason::Manifest,
                 format!(
@@ -578,6 +583,18 @@ impl<E: Env> Host<E> {
     /// saved.
     pub fn suspended(&self) -> bool {
         matches!(self.mode, Mode::Suspended(_))
+    }
+
+    /// Brings a suspended app back, as `ctl resume` from the kernel does, so an
+    /// event for its kept window (a close, an agent's action) reaches it
+    /// instead of being dropped. The resume's reply, or `None` when the app was
+    /// not suspended.
+    pub fn wake(&mut self) -> Result<Option<Vec<u8>>, Exit> {
+        if !self.suspended() {
+            return Ok(None);
+        }
+        let request = alloc::format!("{}resume", kabi::live::CONTROL_PREFIX);
+        self.handle(0, request.as_bytes()).map(Some)
     }
 
     /// How long to wait for a request before [`Host::tick`]; 0 is forever.

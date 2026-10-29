@@ -275,6 +275,45 @@ pub fn restart() -> Result<(), &'static str> {
     Ok(())
 }
 
+/// `fs-dead-client`: `filecheck` holds an action with `half.txt` in it. While
+/// it runs, the kernel's Begin waits (Busy); once it is killed, `fs` aborts its
+/// action, the kernel's Begin goes through, and `half.txt` is gone.
+pub fn dead_client() -> Result<(), &'static str> {
+    let home = kabi::fs::HOME_USER;
+    wait_for("half.txt").map_err(|_| "files: filecheck did not open its action")?;
+    let begin = || ask(home, Request::Begin { action: 7 });
+    if begin()? != Reply::Failed(fsproto::Error::Busy) {
+        return Err("files: a live client's action did not hold the next Begin");
+    }
+    let held: Vec<u64> = process::named(CLIENT)
+        .into_iter()
+        .map(|(pid, _)| pid)
+        .collect();
+    let &[pid] = held.as_slice() else {
+        return Err("files: not one filecheck to kill");
+    };
+    process::kill(pid, ExitReason::Killed).map_err(|_| "files: filecheck could not be killed")?;
+    wait_within(WAIT_MS, || {
+        !process::named(CLIENT).iter().any(|(p, _)| *p == pid)
+    })
+    .map_err(|_| "files: filecheck did not die")?;
+    ok(begin()?).map_err(|_| "files: the dead client's action still holds every Begin")?;
+    let half = ask(
+        home,
+        Request::Open {
+            path: "half.txt".into(),
+            rights: Rights::READ.bits(),
+            how: How::Existing,
+        },
+    )?;
+    if half != Reply::Failed(fsproto::Error::NotFound) {
+        return Err("files: the dead client's half-done change is still there");
+    }
+    ok(ask(home, Request::Abort)?)?;
+    log!("files: a client killed mid-action leaves nothing, and the next Begin goes through");
+    Ok(())
+}
+
 /// One request to `fs` on `badge`, as its kernel client.
 fn ask(badge: u64, request: Request) -> Result<Reply, &'static str> {
     let bytes = fsproto::encode_request(&request);

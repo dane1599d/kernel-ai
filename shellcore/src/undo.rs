@@ -43,6 +43,9 @@ pub enum Inverse {
         app: Name,
         undo: bool,
     },
+    /// Put back every process's class and quota from before a profile switch,
+    /// kept by the shell under `key` (P3 task 12; `Shell::revert_entry`).
+    Profile { key: u64 },
     /// Remove standing instruction `id` again (`made`: `undo` of `rules_add`),
     /// or put a removed one back (`undo` of `rules_remove`). The shell's store
     /// does it (`Shell::revert_entry`), not the host.
@@ -116,6 +119,7 @@ pub fn target(inverse: Inverse) -> String {
         Inverse::Fired { app, .. } => format!("{} as it was", app.as_str()),
         Inverse::Instruction { id, made: true } => format!("standing instruction S{id} removed"),
         Inverse::Instruction { id, made: false } => format!("standing instruction S{id}"),
+        Inverse::Profile { .. } => String::from("the profile before"),
     }
 }
 
@@ -202,9 +206,9 @@ fn revert_one(
         Inverse::Fs { .. } | Inverse::Fired { .. } => {
             Err(Refused::Failed(String::from("it is put back by revert")))
         }
-        Inverse::Instruction { .. } => Err(Refused::Failed(String::from(
-            "a standing instruction is put back by the shell's store",
-        ))),
+        Inverse::Instruction { .. } | Inverse::Profile { .. } => Err(Refused::Failed(
+            String::from("it is put back by the shell's own store"),
+        )),
     }
 }
 
@@ -245,6 +249,8 @@ pub fn reverse(inverse: Inverse) -> Inverse {
             undo: !undo,
         },
         Inverse::Instruction { id, made } => Inverse::Instruction { id, made: !made },
+        // Only the shell knows the redo's key ([`crate::Shell`]).
+        Inverse::Profile { key } => Inverse::Profile { key },
     }
 }
 
@@ -274,6 +280,7 @@ pub fn inverse_word(inverse: Option<Inverse>) -> String {
             u8::from(undo)
         ),
         Some(Inverse::Instruction { id, made }) => format!("instruction:{id}:{}", u8::from(made)),
+        Some(Inverse::Profile { key }) => format!("profile:{key}"),
     }
 }
 
@@ -302,6 +309,9 @@ pub fn parse_inverse(text: &str) -> Option<Option<Inverse>> {
             action: Name::new(parts.next()?)?,
             app: Name::new(parts.next()?)?,
             undo: flag(parts.next())?,
+        },
+        "profile" => Inverse::Profile {
+            key: number(parts.next())?,
         },
         "instruction" => Inverse::Instruction {
             id: number(parts.next())?,

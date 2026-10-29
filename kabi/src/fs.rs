@@ -72,6 +72,17 @@ pub const SYSTEM_STATE: u64 = Badge {
 }
 .raw();
 
+/// The badge of the startup `Dir` a plan line's `dir=pkg` grants (ADR 0011 §12):
+/// `/system/pkg`, which `fs` looks up itself. Epoch 0 marks it fixed, as for
+/// [`HOME_USER`] and [`SYSTEM_STATE`]; object 1 tells it from `/system/state`.
+pub const SYSTEM_PKG: u64 = Badge {
+    volume: SYSTEM,
+    file: false,
+    epoch: 0,
+    object: 1,
+}
+.raw();
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -102,6 +113,9 @@ mod tests {
         }
         assert_eq!(Badge::parse(HOME_USER).object, 0);
         assert_ne!(HOME_USER, 0, "0 is a plain route's badge");
+        // The fixed badges are three, and none is another's.
+        assert_eq!(Badge::parse(SYSTEM_PKG).epoch, 0);
+        const { assert!(SYSTEM_PKG != SYSTEM_STATE && SYSTEM_PKG != HOME_USER) };
         assert_ne!(SYSTEM_STATE, HOME_USER);
         assert_eq!(Badge::parse(SYSTEM_STATE).volume, SYSTEM);
     }

@@ -298,6 +298,19 @@ const ACTS: &[(&str, &str)] = &[
         "read notes.txt",
         r#"{"name":"fs_read","arguments":{"path":"notes.txt"}}"#,
     ),
+    // `fs-trash`: the trash rows (P2 task 11's exit item).
+    (
+        "trash notes.txt",
+        r#"{"name":"fs_trash","arguments":{"path":"notes.txt"}}"#,
+    ),
+    (
+        "restore notes.txt",
+        r#"{"name":"fs_restore","arguments":{"path":"notes.txt"}}"#,
+    ),
+    (
+        "empty the trash",
+        r#"{"name":"fs_empty_trash","arguments":{}}"#,
+    ),
     // `act-convo` with no earlier turn: there is nothing to do again.
     (
         "do it again",

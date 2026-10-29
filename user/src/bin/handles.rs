@@ -35,6 +35,9 @@
 //! time (see [`shm`]): it maps the handles the kernel puts in its table, fills and
 //! counts the pages, and makes, maps and frees an object of its own.
 //!
+//! With `mode=mem` (lane M) it serves the kernel's anonymous-memory case (see
+//! `handles/mem.rs`).
+//!
 //! It prints `handles: every check passed` and exits 0, or names the first check
 //! that failed and exits 1.
 
@@ -49,6 +52,9 @@ use kabi::handle::{ABI, Handle, HandleInfo, Kind, RecvInfo, Rights, TABLE_MAX};
 use kabi::sched::SchedStats;
 use user::{arg, args, println, sys};
 
+#[path = "handles/mem.rs"]
+mod mem;
+
 user::entry!(main);
 
 fn main() -> i32 {
@@ -62,6 +68,7 @@ fn main() -> i32 {
         Some("devlist") => devlist,
         Some("shm") => shm,
         Some("job") => job,
+        Some("mem") => mem::mem,
         _ => checks,
     };
     match run() {

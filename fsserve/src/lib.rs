@@ -16,17 +16,19 @@
 
 extern crate alloc;
 
+pub mod batch;
 mod buffer;
 mod lookup;
 #[cfg(test)]
 mod tests;
+mod trash;
 
 use alloc::vec::Vec;
 use fsproto::{
     Cursor, Error, How, Kind, Listing, MAX_DATA, MAX_LIST, MAX_ROWS, Outcome, Reply, Request, Stat,
     Version,
 };
-use kabi::fs::{Badge, HOME, HOME_USER, MODELS, SYSTEM, SYSTEM_STATE};
+use kabi::fs::{Badge, HOME, HOME_USER, MODELS, SYSTEM, SYSTEM_PKG, SYSTEM_STATE};
 use kabi::handle::Rights;
 use kaifs::ns::Listed;
 use kaifs::{BlockDev, FileType, Fs, Inode, ROOT};
@@ -110,8 +112,10 @@ pub struct Server<D: BlockDev> {
     home_user: u64,
     /// `/system/state`'s object id in `system`: what [`SYSTEM_STATE`] names.
     system_state: u64,
-    /// This disk's epoch, in every badge but [`HOME_USER`] and
-    /// [`SYSTEM_STATE`] ([`kabi::fs`]).
+    /// `/system/pkg`'s object id in `system`: what [`SYSTEM_PKG`] names, the
+    /// folder a plan line's `dir=pkg` grants (ADR 0011 §12).
+    system_pkg: u64,
+    /// This disk's epoch, in every badge but the fixed ones ([`kabi::fs`]).
     epoch: u16,
     /// The clock at mount: kaifs's times are this plus time since boot, so they
     /// never go back across reboots (there is no wall clock yet).
@@ -120,6 +124,9 @@ pub struct Server<D: BlockDev> {
     pending: Option<buffer::Pending>,
     /// The record last read.
     cache: Option<buffer::Cached>,
+    /// Whether a caller (a pid) still runs: a dead owner's action is aborted
+    /// ([`Server::set_alive`]).
+    alive: fn(u64) -> bool,
 }
 
 /// The object a checked badge names.
@@ -146,13 +153,40 @@ impl<D: BlockDev> Server<D> {
             owner: None,
             home_user: 0,
             system_state: 0,
+            system_pkg: 0,
             epoch: 0,
             base,
             pending: None,
             cache: None,
+            alive: |_| true,
         };
-        (server.home_user, server.system_state, server.epoch) = server.prepare(&uuid)?;
+        let fixed = server.prepare(&uuid)?;
+        (
+            server.home_user,
+            server.system_state,
+            server.system_pkg,
+            server.epoch,
+        ) = fixed;
         Ok((server, started))
+    }
+
+    /// How `fs` learns whether a caller still runs. Until set, every caller
+    /// counts as alive. With it, an action whose owner has died is aborted, as
+    /// if it had sent Abort, once another caller's change would wait on it or
+    /// at [`Server::idle`], so one crash between Begin and Commit cannot wedge
+    /// every later change.
+    pub fn set_alive(&mut self, alive: fn(u64) -> bool) {
+        self.alive = alive;
+    }
+
+    /// Aborts the open action if its owner is dead; the kernel (0) never dies.
+    fn reap(&mut self) {
+        if let Some(owner) = self.owner
+            && owner != 0
+            && !(self.alive)(owner)
+        {
+            self.drop_changes();
+        }
     }
 
     fn fs(&mut self) -> &mut Fs<D> {
@@ -160,8 +194,9 @@ impl<D: BlockDev> Server<D> {
     }
 
     /// Makes the missing [`FOLDERS`], and the disk's epoch if it has none, in
-    /// one commit; `/home/user`'s and `/system/state`'s ids and the epoch.
-    fn prepare(&mut self, uuid: &[u8; 16]) -> Result<(u64, u64, u16), kaifs::Error> {
+    /// one commit; `/home/user`'s, `/system/state`'s and `/system/pkg`'s ids and
+    /// the epoch.
+    fn prepare(&mut self, uuid: &[u8; 16]) -> Result<(u64, u64, u64, u16), kaifs::Error> {
         let fs = self.fs();
         let writable = fs.writable();
         let mut made = false;
@@ -176,7 +211,7 @@ impl<D: BlockDev> Server<D> {
         let epoch = match fs.get_xattr(ROOT, EPOCH)? {
             Some(bytes) if bytes.len() == 2 => u16::from_le_bytes([bytes[0], bytes[1]]),
             _ => {
-                // Never 0, which only the two fixed badges carry.
+                // Never 0, which only the fixed badges carry.
                 let drawn = u16::from_le_bytes([uuid[0], uuid[1]]) & kabi::fs::EPOCH_MASK;
                 let epoch = drawn.max(1);
                 if writable {
@@ -190,9 +225,10 @@ impl<D: BlockDev> Server<D> {
             fs.commit()?;
         }
         let system_state = fs.lookup(ROOT, "state")?.map_or(0, |e| e.ino);
+        let system_pkg = fs.lookup(ROOT, "pkg")?.map_or(0, |e| e.ino);
         fs.set_volume(HOME.into())?;
         let home_user = fs.lookup(ROOT, "user")?.map_or(0, |e| e.ino);
-        Ok((home_user, system_state, epoch))
+        Ok((home_user, system_state, system_pkg, epoch))
     }
 
     /// The badge for `object` of `volume` on this disk.
@@ -252,6 +288,7 @@ impl<D: BlockDev> Server<D> {
     /// while space is low the whole pass, since a writer that never pauses would
     /// otherwise outrun it. `now` is the time in ns, as [`Call::now`].
     pub fn idle(&mut self, now: u64) {
+        self.reap();
         if self.owner.is_some() {
             return;
         }
@@ -290,6 +327,9 @@ impl<D: BlockDev> Server<D> {
     fn answer(&mut self, call: &Call) -> Result<(Reply, Option<Mint>), Error> {
         let request = fsproto::decode_request(call.request)?;
         let changes = changes(&request);
+        if changes && self.owner.is_some_and(|o| o != call.caller) {
+            self.reap();
+        }
         if changes {
             self.cache = None;
         }
@@ -332,7 +372,7 @@ impl<D: BlockDev> Server<D> {
             epoch,
             object,
         } = Badge::parse(badge);
-        let fixed = badge == HOME_USER || badge == SYSTEM_STATE;
+        let fixed = matches!(badge, HOME_USER | SYSTEM_STATE | SYSTEM_PKG);
         let ours = epoch == self.epoch || fixed;
         if !matches!(volume, SYSTEM | HOME | MODELS) || !ours {
             return Err(Error::NotFound);
@@ -340,6 +380,7 @@ impl<D: BlockDev> Server<D> {
         let object = match badge {
             HOME_USER => self.home_user,
             SYSTEM_STATE => self.system_state,
+            SYSTEM_PKG => self.system_pkg,
             _ => object,
         };
         let fs = self.fs();
@@ -397,6 +438,21 @@ impl<D: BlockDev> Server<D> {
                 dir()?;
                 need(Rights::ENUMERATE)?;
                 self.list(object, after, max)?
+            }
+            Request::TrashList { after } => {
+                dir()?;
+                need(Rights::ENUMERATE)?;
+                self.trash_list(object, after)?
+            }
+            Request::TrashRestore { path } => {
+                dir()?;
+                need(Rights::CREATE)?;
+                self.trash_restore(object, &path)?
+            }
+            Request::EmptyTrash => {
+                dir()?;
+                need(Rights::DELETE)?;
+                self.empty_trash(object)?
             }
             Request::Read { off, len } => {
                 file()?;
@@ -604,6 +660,8 @@ fn changes(request: &Request) -> bool {
         | Request::Commit
         | Request::Abort
         | Request::Restore { .. }
+        | Request::TrashRestore { .. }
+        | Request::EmptyTrash
         | Request::Sync => true,
         Request::Stat
         | Request::List { .. }
@@ -611,7 +669,8 @@ fn changes(request: &Request) -> bool {
         | Request::History
         | Request::Changes { .. }
         | Request::Df
-        | Request::Generation => false,
+        | Request::Generation
+        | Request::TrashList { .. } => false,
     }
 }
 

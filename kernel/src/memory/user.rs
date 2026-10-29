@@ -48,6 +48,8 @@ pub struct UserSpace {
     /// Pages counted against the quota that the space does not hold: the `Shm`
     /// objects the process made.
     charged: u64,
+    /// Its anonymous reservations (MEM_RESERVE), kept under the space's lock.
+    pub reservations: mm::reserve::Reservations,
 }
 
 /// The PML4 slot of the model's window, where no other user page may be mapped.
@@ -135,6 +137,10 @@ impl Memory {
             frames: 1,
             window: None,
             charged: 0,
+            reservations: mm::reserve::Reservations::new(
+                kabi::layout::MEM_BASE,
+                kabi::layout::MEM_END,
+            ),
         })
     }
 
@@ -302,6 +308,54 @@ impl Memory {
             }
         }
         result
+    }
+
+    /// Unmaps the pages `space` owns in `[addr, addr + count pages)` and moves
+    /// their frames into `out`, which must have room for `count` (it never
+    /// grows here, under the MEMORY lock). The frames stay allocated: the caller
+    /// shoots the range down on every CPU first, then frees them with
+    /// [`Memory::free_user_frames`], so no stale TLB entry reaches a reused
+    /// frame, and a process that exits meanwhile can neither free them twice
+    /// nor leak them. Pages not mapped or not owned are skipped.
+    pub fn take_owned_range(
+        &mut self,
+        space: &mut UserSpace,
+        addr: u64,
+        count: u64,
+        out: &mut alloc::vec::Vec<u64>,
+    ) {
+        let mut done = 0;
+        while done < count {
+            let at = addr + done * PAGE_SIZE;
+            let first = ((at >> 12) & 0x1FF) as usize;
+            let run = (512 - first).min((count - done) as usize);
+            done += run as u64;
+            let Ok(leaf) = self.leaf_table(space, at) else {
+                continue;
+            };
+            for entry in self.table(leaf).iter_mut().skip(first).take(run) {
+                let flags = entry.flags();
+                if !flags.contains(PageTableFlags::PRESENT) || !flags.contains(OWNED) {
+                    continue;
+                }
+                if out.len() == out.capacity() {
+                    // Never allocate here; the caller sized `out` from the book.
+                    continue;
+                }
+                out.push(entry.addr().as_u64() / PAGE_SIZE);
+                entry.set_unused();
+                space.frames -= 1;
+                USER_FRAMES.fetch_sub(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// Frees frame numbers [`Memory::take_owned_range`] took, after their
+    /// shootdown.
+    pub fn free_user_frames(&mut self, frames: &[u64]) {
+        for &number in frames {
+            let _ = self.frames.free(number);
+        }
     }
 
     /// The leaf page table that maps `addr` in `space`.

@@ -2,6 +2,11 @@
 //! `mm::window`'s host-tested encoder, every entry of every table written whole, and
 //! checked by reading them back against where they were built. The frames are the
 //! kernel's and never freed.
+//!
+//! Tables are written and read one entry at a time through the direct map, never
+//! held whole on the stack: the model store publishes from a kernel thread with
+//! 64 KiB of stack, which 4 KiB tables moved by value overflowed in a debug
+//! build (#236).
 
 use crate::memory;
 use alloc::vec::Vec;
@@ -41,12 +46,17 @@ pub fn build(runs: u64, run: impl Fn(u64) -> u64) -> Result<Window, &'static str
     });
     let pdpt = tables.ok_or("out of frames for the window's tables")?;
     for (d, &directory) in directories.iter().enumerate() {
-        let entries =
-            window::directory(d as u64, runs, &run).map_err(|_| "a run is not 2 MiB-aligned")?;
-        write(directory, &entries);
+        for index in 0..512 {
+            let entry = window::directory_entry(d as u64, index, runs, &run)
+                .map_err(|_| "a run is not 2 MiB-aligned")?;
+            write(directory, index, entry);
+        }
     }
-    let entries = window::pdpt(&directories).map_err(|_| "a window table is misplaced")?;
-    write(pdpt, &entries);
+    for index in 0..512 {
+        let entry =
+            window::pdpt_entry(&directories, index).map_err(|_| "a window table is misplaced")?;
+        write(pdpt, index, entry);
+    }
     let built = Window { pdpt, directories };
     check(&built, runs, &run)?;
     Ok(built)
@@ -67,37 +77,47 @@ pub fn check(built: &Window, runs: u64, run: impl Fn(u64) -> u64) -> Result<(), 
     if !held {
         return Err("a window table's frame was freed");
     }
-    let want = window::pdpt(directories).map_err(|_| "the window's PDPT is broken")?;
-    if read(built.pdpt) != want {
-        return Err("the window's PDPT is not what was built");
+    for index in 0..512 {
+        let want =
+            window::pdpt_entry(directories, index).map_err(|_| "the window's PDPT is broken")?;
+        if read(built.pdpt, index) != want {
+            return Err("the window's PDPT is not what was built");
+        }
     }
     for (d, &directory) in directories.iter().enumerate() {
-        let want = window::directory(d as u64, runs, &run).map_err(|_| "a run is misplaced")?;
-        if read(directory) != want {
-            return Err("a window directory is not what was built");
+        for index in 0..512 {
+            let want = window::directory_entry(d as u64, index, runs, &run)
+                .map_err(|_| "a run is misplaced")?;
+            if read(directory, index) != want {
+                return Err("a window directory is not what was built");
+            }
         }
     }
     Ok(())
 }
 
-fn write(table: u64, entries: &[u64; 512]) {
+/// Writes entry `index` of the table in frame `table`.
+fn write(table: u64, index: usize, entry: u64) {
+    debug_assert!(index < 512);
     // SAFETY: `table` is a frame allocated for the window alone and not yet linked
-    // anywhere, reached through the direct map; 512 entries fill exactly one page.
+    // anywhere, reached through the direct map; entry `index` lies inside it.
     unsafe {
-        core::ptr::copy_nonoverlapping(entries.as_ptr(), (memory::hhdm() + table) as *mut u64, 512)
+        ((memory::hhdm() + table) as *mut u64)
+            .add(index)
+            .write_volatile(entry)
     };
 }
 
-fn read(table: u64) -> [u64; 512] {
-    let mut entries: [u64; 512] = [0; 512];
+/// Entry `index` of the table in frame `table`, without the Accessed and Dirty
+/// bits the CPU sets.
+fn read(table: u64, index: usize) -> u64 {
+    debug_assert!(index < 512);
     // SAFETY: as above; the window's tables are never freed, and nothing writes them
     // after `build` but the CPU's Accessed and Dirty bits, which are masked here.
-    unsafe {
-        core::ptr::copy_nonoverlapping(
-            (memory::hhdm() + table) as *const u64,
-            entries.as_mut_ptr(),
-            512,
-        )
+    let entry = unsafe {
+        ((memory::hhdm() + table) as *const u64)
+            .add(index)
+            .read_volatile()
     };
-    entries.map(|entry| entry & !(window::ACCESSED | window::DIRTY))
+    entry & !(window::ACCESSED | window::DIRTY)
 }

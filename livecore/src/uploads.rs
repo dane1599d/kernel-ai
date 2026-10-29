@@ -116,7 +116,7 @@ pub(crate) fn victims(
         .iter()
         .filter_map(|v| match v.origin {
             Origin::Upload { seq, .. } => Some((ledger.is_bad(&v.label).is_none(), seq, v)),
-            Origin::Boot => None,
+            Origin::Boot | Origin::Package { .. } => None,
         })
         .collect();
     let mut held: usize = uploads.iter().map(|(.., v)| v.bytes.as_slice().len()).sum();
@@ -327,7 +327,7 @@ pub fn apply_candidate(component: &Component) -> Result<String, String> {
         .iter()
         .filter_map(|v| match v.origin {
             Origin::Upload { seq, .. } => Some((seq, v.label.as_str())),
-            Origin::Boot => None,
+            Origin::Boot | Origin::Package { .. } => None,
         })
         .max_by_key(|&(seq, _)| seq)
         .map(|(_, label)| label)

@@ -224,6 +224,60 @@ impl Host for System {
         Some(&Firings)
     }
 
+    /// One `profile` request to the supervisor per process (P3 task 12). One it
+    /// refuses puts back those set before it, so a switch is all or nothing.
+    fn profile_apply(
+        &self,
+        settings: &[kaiprofile::Setting],
+    ) -> Result<Vec<kaiprofile::Setting>, String> {
+        let metrics = sys::metrics().map_err(|e| format!("cannot read the processes ({e:?})"))?;
+        let pid_of = |name: &str| {
+            metrics
+                .processes
+                .iter()
+                .take(metrics.process_count as usize)
+                .find(|p| p.name() == name)
+                .map(|p| p.pid)
+        };
+        let mut done: Vec<(u64, supervise::profile::Set)> = Vec::new();
+        let mut before = Vec::new();
+        for setting in settings {
+            let set = pid_of(&setting.process).map(|pid| supervise::profile::Set {
+                pid,
+                class: setting.class.number(),
+                pages: setting.mem,
+            });
+            let had = set
+                .ok_or_else(|| format!("{} is not running", setting.process))
+                .and_then(|set| {
+                    let request = set.encode().ok_or("no such class")?;
+                    supervise::profile::parse_before(set.pid, &ask_supervisor(&request)?)
+                });
+            match had {
+                Ok(had) => {
+                    done.push((had.pid, had));
+                    before.push(kaiprofile::Setting {
+                        process: setting.process.clone(),
+                        class: match had.class {
+                            1 => kaiprofile::Class::Background,
+                            _ => kaiprofile::Class::Normal,
+                        },
+                        mem: had.pages,
+                    });
+                }
+                Err(why) => {
+                    for (_, had) in done.iter().rev() {
+                        if let Some(request) = had.encode() {
+                            let _ = ask_supervisor(&request);
+                        }
+                    }
+                    return Err(format!("{}: {why}; nothing changed", setting.process));
+                }
+            }
+        }
+        Ok(before)
+    }
+
     fn services(&self) -> Result<Vec<Service>, String> {
         let text = ask_supervisor(supervise::SERVICES)?;
         let listed = supervise::parse_listing(&text)

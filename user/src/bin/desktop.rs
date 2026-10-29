@@ -16,6 +16,11 @@
 //!   found by `deskcore::watch`.
 //! - The top bar's model state and memory are read once a second; a screen
 //!   without a hardware cursor (GOP) gets one drawn in the frame.
+//! - While the terminal window (`term`'s) has focus, the keys go to the
+//!   kernel's terminal instead: a lease (INPUT_TO_CONSOLE) renewed every
+//!   [`LEASE_RENEW_NS`], and ended when the focus moves (P3 task 8). The
+//!   kernel, not `desktop`, decides which client is the terminal: it lends the
+//!   keys only for the window of a process holding TERM.
 
 #![no_std]
 #![no_main]
@@ -54,6 +59,9 @@ const BAR_EVERY_NS: u64 = 1_000_000_000;
 /// Waits for input or a client, in turn, so neither starves.
 const INPUT_WAIT_MS: u64 = 2;
 const CLIENT_WAIT_MS: u64 = 2;
+/// How often the lease is renewed while that window has focus: well inside the
+/// kernel's one second.
+const LEASE_RENEW_NS: u64 = 250_000_000;
 
 struct Pool {
     pid: u64,
@@ -97,6 +105,10 @@ struct State {
     focus: Focus,
     /// What standing instructions hear about: window events and idle.
     watch: Watch,
+    /// When the keys were last lent to the kernel's terminal, while they are.
+    leased_at: Option<u64>,
+    /// The focused window, and whether the kernel lent the keys for it.
+    asked: Option<(WindowId, bool)>,
 }
 
 fn main() -> i32 {
@@ -134,6 +146,8 @@ fn main() -> i32 {
             known: Vec::new(),
             focus: Focus::Nothing,
             watch: Watch::new(now_ms()),
+            leased_at: None,
+            asked: None,
         };
         println!("desktop: claimed {width}x{height}");
         let result = run(&mut state, &screen);
@@ -194,8 +208,49 @@ fn run(state: &mut State, screen: &Screen) -> Option<bool> {
         refresh_bar(state);
         tick_panel(state);
         read_asks(state);
+        lease(state);
         draw(state, screen);
     }
+}
+
+/// Lends the keys to the kernel's terminal while the terminal window has
+/// focus, renewing the lease; ends it once the focus moves. The kernel says
+/// which window that is: it refuses the lease for any other client.
+fn lease(state: &mut State) {
+    let focused = match state.desk.focus() {
+        Focus::Window(id) => state
+            .desk
+            .window(id)
+            .filter(|w| !w.minimized)
+            .map(|w| (id, u64::from(w.client))),
+        _ => None,
+    };
+    let now = sys::time_ns();
+    let Some((id, pid)) = focused else {
+        if state.leased_at.take().is_some() {
+            let _ = sys::input_to_console(false, 0);
+            println!("desktop: the keys are the desktop's again");
+        }
+        state.asked = None;
+        return;
+    };
+    let fresh = state
+        .leased_at
+        .is_some_and(|at| now.saturating_sub(at) < LEASE_RENEW_NS);
+    match state.asked {
+        // Not the terminal: asked once for this focus.
+        Some((asked, false)) if asked == id => return,
+        Some((asked, true)) if asked == id && fresh => return,
+        _ => {}
+    }
+    let lent = sys::input_to_console(true, pid).is_ok();
+    match (lent, state.leased_at.is_some()) {
+        (true, false) => println!("desktop: the terminal window has the keys"),
+        (false, true) => println!("desktop: the keys are the desktop's again"),
+        _ => {}
+    }
+    state.asked = Some((id, lent));
+    state.leased_at = lent.then_some(now);
 }
 
 /// One kernel input event, in logical px at scale 1.
@@ -436,19 +491,18 @@ fn apply_need(state: &mut State, at: usize, pid: u64, need: Need, handle: Option
     }
 }
 
-/// The name a process runs under, which labels its windows.
+/// The name a process runs under, which labels its windows and names its app
+/// in standing instructions' events. From the metrics' process list: LIST is
+/// the supervisor's alone.
 fn name_of(pid: u64) -> alloc::string::String {
-    let mut buf = vec![0u8; 4096];
-    let Ok(len) = sys::list(&mut buf) else {
-        return alloc::format!("pid {pid}");
-    };
-    alloc::string::String::from_utf8_lossy(&buf[..len.min(buf.len())])
-        .lines()
-        .find_map(|line| {
-            let (p, name) = line.split_once(' ')?;
-            (p.parse() == Ok(pid)).then(|| alloc::string::String::from(name))
-        })
-        .unwrap_or_else(|| alloc::format!("pid {pid}"))
+    let named = sys::metrics().ok().and_then(|m| {
+        let listed = &m.processes[..(m.process_count as usize).min(m.processes.len())];
+        listed
+            .iter()
+            .find(|p| p.pid == pid)
+            .map(|p| alloc::string::String::from(p.name()))
+    });
+    named.unwrap_or_else(|| alloc::format!("pid {pid}"))
 }
 
 /// Logs windows that opened, moved or closed, and focus changes, once each.

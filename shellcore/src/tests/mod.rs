@@ -19,6 +19,7 @@ mod log;
 mod logdisk;
 mod more;
 mod packages;
+mod profiles;
 mod scripts;
 mod standing;
 mod transaction;
@@ -92,6 +93,10 @@ struct FakeHost {
     standing_disk: RefCell<Option<String>>,
     triggers_on: Cell<bool>,
     triggers: FakeTriggers,
+    /// What the supervisor set each process to (class, page quota); a process
+    /// not here runs normal with 4,096 pages. And the app with focus.
+    profile_state: RefCell<std::collections::BTreeMap<String, (kaiprofile::Class, u64)>>,
+    focused: RefCell<Option<String>>,
 }
 
 /// What standing instructions asked the desktop and the owners for.
@@ -217,6 +222,8 @@ impl FakeHost {
             standing_disk: RefCell::new(None),
             triggers_on: Cell::new(false),
             triggers: FakeTriggers::default(),
+            profile_state: RefCell::new(std::collections::BTreeMap::new()),
+            focused: RefCell::new(None),
         })
     }
 }
@@ -391,6 +398,31 @@ impl Host for FakeHost {
     fn standing_write(&self, text: &str) -> Result<(), String> {
         *self.standing_disk.borrow_mut() = Some(text.into());
         Ok(())
+    }
+
+    fn profile_apply(
+        &self,
+        settings: &[kaiprofile::Setting],
+    ) -> Result<Vec<kaiprofile::Setting>, String> {
+        let mut state = self.profile_state.borrow_mut();
+        let mut before = Vec::new();
+        for s in settings {
+            let now = state
+                .get(&s.process)
+                .copied()
+                .unwrap_or((kaiprofile::Class::Normal, 4096));
+            before.push(kaiprofile::Setting {
+                process: s.process.clone(),
+                class: now.0,
+                mem: Some(now.1),
+            });
+            state.insert(s.process.clone(), (s.class, s.mem.unwrap_or(now.1)));
+        }
+        Ok(before)
+    }
+
+    fn focused_app(&self) -> Option<String> {
+        self.focused.borrow().clone()
     }
 
     fn triggers(&self) -> Option<&dyn crate::standing::Triggers> {

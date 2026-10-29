@@ -25,6 +25,20 @@ mod ui;
 
 user::entry!(main);
 
+/// Each instance's linear memory in a reservation of its own (P3 task 11):
+/// committed as it grows, released when the instance goes, so a suspended
+/// app's pages go back to the kernel.
+static MEM: wasmhost::linear::Pages = wasmhost::linear::Pages {
+    reserve: |bytes| {
+        let at = sys::mem_reserve(bytes as u64).ok()?;
+        core::ptr::NonNull::new(at as *mut u8)
+    },
+    commit: |at, bytes| sys::mem_commit(at.as_ptr() as u64, bytes as u64).is_ok(),
+    release: |at, _| {
+        let _ = sys::mem_release(at.as_ptr() as u64);
+    },
+};
+
 struct SysEnv {
     limits: Limits,
     /// Whether the app's windows reach `desktop`.
@@ -88,6 +102,7 @@ impl Env for SysEnv {
 }
 
 fn main() -> i32 {
+    wasmhost::linear::use_pages(&MEM);
     let args = args();
     let settings = match Settings::parse(&args) {
         Ok(settings) => settings,
@@ -159,8 +174,11 @@ fn main() -> i32 {
                 }
             }
             Err(Error::TimedOut) => {
-                if let Some(ui) = windows.as_mut().filter(|ui| ui.has_windows()) {
-                    ui.poll(&mut host);
+                if let Some(ui) = windows.as_mut().filter(|ui| ui.has_windows())
+                    && let Err(exit) = ui.poll(&mut host)
+                {
+                    println!("{}", exit.why);
+                    return exit.code;
                 }
                 if tick_at != 0 && now_ms() >= tick_at {
                     if let Err(exit) = host.tick() {
