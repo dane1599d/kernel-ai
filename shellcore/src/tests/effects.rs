@@ -158,3 +158,90 @@ fn an_app_cannot_reach_the_package_door() {
     let install = r#"effect 1 call({name: "pkg_install", args: "{name: \"hello\"}"})"#;
     assert!(shell.run_effects("files", install)[0].outcome.is_err());
 }
+
+const LIST: &str = r#"effect 1 call({name: "fs_list", args: "{path: \"\"}"})"#;
+
+fn grant_call(name: &str, app: &str, row: &str) -> Call {
+    let json = format!(r#"{{"name":"{name}","arguments":{{"app":"{app}","row":"{row}"}}}}"#);
+    llmproto::act::parse(&json).unwrap()
+}
+
+#[test]
+fn a_withheld_row_is_refused_as_an_undeclared_one_until_undo_gives_it_back() {
+    let host = host();
+    host.calls
+        .borrow_mut()
+        .push_back(Ok(grant_call("grant_revoke", "files", "fs_list")));
+    let mut shell = shell(&host);
+    assert!(shell.run_effects("files", LIST)[0].outcome.is_ok());
+    // The AI's call asks unless the line names the row as the row is named;
+    // Settings' click is the user's own.
+    let asked = shell.eval("revoke fs_list from files");
+    let id = asked.confirm.expect("the AI's revoke asks");
+    let once = host.mint(id, "grant_revoke(\"files\", \"fs_list\")");
+    let reply = shell.eval(&format!("answer {id} allow once={once}"));
+    assert!(reply.text.starts_with("Done"), "{reply:?}");
+    assert_eq!(
+        host.withheld_disk.borrow().as_deref(),
+        Some("kai-withheld 1\nfiles fs_list\n")
+    );
+    // From the next effect on, with no restart.
+    let refused = shell.run_effects("files", LIST);
+    assert!(
+        matches!(&refused[0].outcome, Err(why) if why == "files does not declare effects that call fs_list"),
+        "{refused:?}"
+    );
+    assert_eq!(
+        crate::grants::allowed(host.as_ref(), "files"),
+        ["fs_read", "fs_move"]
+    );
+    assert!(shell.eval("undo").text.starts_with("Undone: "));
+    assert!(shell.run_effects("files", LIST)[0].outcome.is_ok());
+    assert_eq!(
+        host.withheld_disk.borrow().as_deref(),
+        Some("kai-withheld 1\n")
+    );
+}
+
+#[test]
+fn only_a_row_the_app_declares_can_be_revoked() {
+    let host = host();
+    host.calls
+        .borrow_mut()
+        .push_back(Ok(grant_call("grant_revoke", "files", "set_policy")));
+    let mut shell = shell(&host);
+    let reply = shell.eval("revoke set_policy from files");
+    assert!(!reply.text.starts_with("Done"), "{reply:?}");
+    assert_eq!(*host.withheld_disk.borrow(), None);
+}
+
+#[test]
+fn giving_a_row_back_asks_first() {
+    let host = host();
+    *host.withheld_disk.borrow_mut() = Some("kai-withheld 1\nfiles fs_list\n".into());
+    host.calls
+        .borrow_mut()
+        .push_back(Ok(grant_call("grant_restore", "files", "fs_list")));
+    let mut shell = shell(&host);
+    let reply = shell.eval("give files fs_list back");
+    assert!(reply.confirm.is_some(), "{reply:?}");
+    assert!(shell.run_effects("files", LIST)[0].outcome.is_err());
+}
+
+#[test]
+fn the_withheld_rows_are_read_again_at_boot_and_a_bad_file_withholds_none() {
+    let host = host();
+    *host.withheld_disk.borrow_mut() = Some("kai-withheld 1\nfiles fs_list\n".into());
+    let mut shell = shell(&host);
+    assert!(shell.run_effects("files", LIST)[0].outcome.is_err());
+    let host = self::host();
+    *host.withheld_disk.borrow_mut() = Some("kai-withheld 1\nfiles ../x\n".into());
+    let mut shell = super::shell(&host);
+    assert!(shell.run_effects("files", LIST)[0].outcome.is_ok());
+    assert!(
+        host.audit
+            .borrow()
+            .iter()
+            .any(|line| line.contains("withheld grants on disk were refused"))
+    );
+}

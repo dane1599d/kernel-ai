@@ -21,7 +21,8 @@ fn the_lists_cover_every_row_once() {
         .chain(&HELPERS)
         .chain(&COMMANDS)
         .chain(&FS_ROWS)
-        .chain(&UI_ROWS);
+        .chain(&UI_ROWS)
+        .chain(&GRANT_ROWS);
     assert_eq!(listed.clone().count(), ROWS.len());
     for row in listed {
         assert!(ROWS.iter().any(|r| r.name == row.name), "{}", row.name);

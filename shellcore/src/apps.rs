@@ -311,6 +311,15 @@ impl AppRows {
             .flat_map(|l| l.rows.iter().map(|r| r.row))
     }
 
+    /// The OS rows `app`'s package declares for its effects; none while its
+    /// rows are not loaded.
+    pub fn effects_of(&self, app: &str) -> &[String] {
+        self.loaded
+            .iter()
+            .find(|l| l.app == app)
+            .map_or(&[], |l| l.effects.as_slice())
+    }
+
     /// Whether `app`'s package declares that its effects may call `row`.
     pub fn may_effect(&self, app: &str, row: &str) -> bool {
         self.loaded
