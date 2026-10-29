@@ -1,0 +1,16 @@
+/// The Settings app (ADR 0003 section 1). Its action only moves the window's
+/// view: every change a page offers is the OS's own row (`appearance_set`,
+/// `profile_set` and the rest), so tiers and undo stay the OS's.
+package app:settings@1.0.0;
+
+interface actions {
+    /// Open a page of the Settings window.
+    /// kai: read-only=yes destructive=no idempotent=yes open-world=no inverse=none cues=settings,preferences,options
+    /// kai: arg page max=16 role=target from-request
+    open: func(page: string) -> result<string, string>;
+}
+
+/// The part a Settings crate binds itself; `compsdk` binds `kai:app/component`.
+world actions-only {
+    export actions;
+}
