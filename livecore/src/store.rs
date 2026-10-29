@@ -80,6 +80,10 @@ impl Version {
     }
 }
 
+/// Package versions a component keeps: the running one, the one a rollback
+/// goes back to, and one more, so updates never fill the store.
+pub const KEEP_PACKAGES: usize = 3;
+
 /// An artifact from an installed package whose SHA-256 was hashed here and
 /// matched the digest given: the only way into [`Component::add_package`]. The
 /// kernel makes one before it takes the component lock.
@@ -180,12 +184,20 @@ impl Component {
         if self.version(&label).is_some() {
             return Err(Error::Busy);
         }
+        let victims = self.package_victims(bytes.len(), used_elsewhere);
+        let held: usize = self
+            .versions
+            .iter()
+            .filter(|v| victims.contains(&v.label))
+            .map(|v| v.bytes.as_slice().len())
+            .sum();
         let total = used_elsewhere
-            .saturating_add(self.package_bytes())
+            .saturating_add(self.package_bytes() - held)
             .saturating_add(bytes.len());
-        if self.versions.len() == MAX_VERSIONS || total > MAX_PACKAGE_TOTAL {
+        if self.versions.len() - victims.len() >= MAX_VERSIONS || total > MAX_PACKAGE_TOTAL {
             return Err(Error::NoMemory);
         }
+        self.versions.retain(|v| !victims.contains(&v.label));
         let (world, source, files) = match artifact::parse(&bytes) {
             Ok(parsed) => (
                 parsed.manifest.world,
@@ -204,6 +216,51 @@ impl Component {
             files,
         });
         Ok(label)
+    }
+
+    /// The package versions to evict so one of `size` bytes fits: past
+    /// [`KEEP_PACKAGES`], a full store or the bytes cap. Failed ones first, then
+    /// the oldest; never the active version, the candidate, or the one just
+    /// before the active (the version a rollback goes back to).
+    fn package_victims(&self, size: usize, used_elsewhere: usize) -> Vec<String> {
+        let ledger = &self.ledger;
+        let keep = |label: &str| {
+            ledger.active() == Some(label)
+                || ledger.candidate() == Some(label)
+                || ledger.revert_target(1) == Some(label)
+        };
+        let mut packages: Vec<(bool, usize, &Version)> = self
+            .versions
+            .iter()
+            .enumerate()
+            .filter(|(_, v)| matches!(v.origin, Origin::Package { .. }))
+            .map(|(at, v)| (ledger.is_bad(&v.label).is_none(), at, v))
+            .collect();
+        let mut count = packages.len();
+        let mut held: usize = packages
+            .iter()
+            .map(|(.., v)| v.bytes.as_slice().len())
+            .sum();
+        let mut slots = self.versions.len();
+        // Failed first (false sorts before true), then the oldest.
+        packages.sort_by_key(|&(good, at, _)| (good, at));
+        let mut chosen = Vec::new();
+        for (_, _, version) in packages {
+            let fits = count < KEEP_PACKAGES
+                && slots < MAX_VERSIONS
+                && used_elsewhere + held + size <= MAX_PACKAGE_TOTAL;
+            if fits {
+                break;
+            }
+            if keep(&version.label) {
+                continue;
+            }
+            count -= 1;
+            slots -= 1;
+            held -= version.bytes.as_slice().len();
+            chosen.push(version.label.clone());
+        }
+        chosen
     }
 
     pub fn labels(&self) -> impl Iterator<Item = &str> {

@@ -53,12 +53,24 @@ pub struct ServiceSpec {
 pub enum Folder {
     /// `/system/pkg`, the package store (ADR 0011 §5).
     Pkg,
+    /// `/system/trust`, the cached TUF metadata (ADR 0008 §7): `updated`'s only.
+    Trust,
+    /// `/system/updates`, staged releases and the `update` snapshot's handle
+    /// (ADR 0008 §10): `updated`'s only.
+    Updates,
+    /// `/system/settings`, the Settings app's files, read only: for a service
+    /// that follows a setting (`updated`'s restart window; the desktop's
+    /// appearance and the supervisor's profiles next).
+    Settings,
 }
 
 impl Folder {
     pub fn parse(name: &str) -> Option<Self> {
         match name {
             "pkg" => Some(Folder::Pkg),
+            "trust" => Some(Folder::Trust),
+            "updates" => Some(Folder::Updates),
+            "settings" => Some(Folder::Settings),
             _ => None,
         }
     }
@@ -67,9 +79,32 @@ impl Folder {
     pub fn badge(self) -> u64 {
         match self {
             Folder::Pkg => kabi::fs::SYSTEM_PKG,
+            Folder::Trust => kabi::fs::SYSTEM_TRUST,
+            Folder::Updates => kabi::fs::SYSTEM_UPDATES,
+            Folder::Settings => kabi::fs::SYSTEM_SETTINGS,
+        }
+    }
+
+    /// Whether its `Dir` only reads: the kernel gives it READ and ENUMERATE, and
+    /// `fs` refuses a change through it whatever the handle says.
+    pub fn read_only(self) -> bool {
+        matches!(self, Folder::Settings)
+    }
+
+    /// The one service, by name and by program, a line granting it must be, if
+    /// it has one: the trust store and the updates folder are `updated`'s alone
+    /// (ADR 0008 §10), as the kernel's UPDATE capability is.
+    pub fn only_for(self) -> Option<&'static str> {
+        match self {
+            Folder::Pkg | Folder::Settings => None,
+            Folder::Trust | Folder::Updates => Some(UPDATED),
         }
     }
 }
+
+/// The update service's program, the only one `dir=trust` and `dir=updates`
+/// may go to.
+pub const UPDATED: &str = "updated";
 
 /// Boot files a plan line lets its service read with BOOT_READ, from `bootfiles=`
 /// (P4 task 1): one folder of the boot bundle, read-only. Like [`Folder`], the
@@ -528,6 +563,14 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
         return Err(format!("{name}: uses= needs the call capability"));
     }
     let dirs = dirs.unwrap_or_default();
+    if let Some(only) = dirs
+        .iter()
+        .find_map(|d| d.only_for().filter(|o| *o != name || *o != program))
+    {
+        return Err(format!(
+            "{name}: that dir= is for the service {only} running {only} only"
+        ));
+    }
     // The kernel starts it with no supervisor to answer for it: no capabilities.
     if unsupervised && (limits.caps != 0 || !uses.is_empty() || !dirs.is_empty() || boot.is_some())
     {

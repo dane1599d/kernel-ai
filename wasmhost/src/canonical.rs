@@ -44,6 +44,8 @@ pub struct CoreInstance {
     /// Whether the last guest call was made while a person's key or click was
     /// handled ([`CoreInstance::last_call_by_user`]).
     pub(crate) by_user: bool,
+    /// The export `kai:app/events.on-event` is, if the app has one.
+    pub(crate) on_event: Option<String>,
 }
 
 impl CoreInstance {
@@ -131,6 +133,10 @@ pub fn load_core(
         .iter()
         .find(|f| f.interface == crate::ui::INPUT && f.name == "on-ui")
         .and_then(|f| export_for(&module, f));
+    let on_event = tables::EXPORTS
+        .iter()
+        .find(|f| f.interface == "kai:app/events" && f.name == "on-event")
+        .and_then(|f| export_for(&module, f));
     Ok(CoreInstance {
         store,
         instance,
@@ -143,6 +149,7 @@ pub fn load_core(
         actions: None,
         on_ui,
         by_user: false,
+        on_event,
     })
 }
 

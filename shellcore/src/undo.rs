@@ -50,6 +50,14 @@ pub enum Inverse {
     /// or put a removed one back (`undo` of `rules_remove`). The shell's store
     /// does it (`Shell::revert_entry`), not the host.
     Instruction { id: u64, made: bool },
+    /// Put keyboard focus back on `to` (`w2`, `panel` or `none`); its redo
+    /// focuses `from` again (P3 task 10's `ui_focus`).
+    Refocus { to: Name, from: Name },
+    /// Open the app whose window `window_close` closed.
+    Reopen(Name),
+    /// Close `window`, which `ui_open` opened for `app`. It asks first, since
+    /// the window may hold work by now.
+    Reclose { window: Name, app: Name },
 }
 
 /// A service name held without the heap, so an inverse stays `Copy`.
@@ -120,6 +128,9 @@ pub fn target(inverse: Inverse) -> String {
         Inverse::Instruction { id, made: true } => format!("standing instruction S{id} removed"),
         Inverse::Instruction { id, made: false } => format!("standing instruction S{id}"),
         Inverse::Profile { .. } => String::from("the profile before"),
+        Inverse::Refocus { to, .. } => format!("focus on {}", to.as_str()),
+        Inverse::Reopen(app) => format!("{} open", app.as_str()),
+        Inverse::Reclose { app, .. } => format!("{} closed", app.as_str()),
     }
 }
 
@@ -159,6 +170,10 @@ pub fn revert(
                 false => format!("{}({}) again", action.as_str(), app.as_str()),
             };
             Ok((text, reverse(inverse)))
+        }
+        // Each knows its redo from what desktop answered.
+        Inverse::Refocus { .. } | Inverse::Reopen(_) | Inverse::Reclose { .. } => {
+            crate::ui::revert(host, inverse, anyway)
         }
         other => revert_one(host, other, anyway, ids).map(|text| (text, reverse(other))),
     }
@@ -203,9 +218,11 @@ fn revert_one(
         Inverse::Generation { .. } => Err(Refused::Failed(String::from(
             "a package switch is put back by the shell's store",
         ))),
-        Inverse::Fs { .. } | Inverse::Fired { .. } => {
-            Err(Refused::Failed(String::from("it is put back by revert")))
-        }
+        Inverse::Fs { .. }
+        | Inverse::Fired { .. }
+        | Inverse::Refocus { .. }
+        | Inverse::Reopen(_)
+        | Inverse::Reclose { .. } => Err(Refused::Failed(String::from("it is put back by revert"))),
         Inverse::Instruction { .. } | Inverse::Profile { .. } => Err(Refused::Failed(
             String::from("it is put back by the shell's own store"),
         )),
@@ -251,6 +268,10 @@ pub fn reverse(inverse: Inverse) -> Inverse {
         Inverse::Instruction { id, made } => Inverse::Instruction { id, made: !made },
         // Only the shell knows the redo's key ([`crate::Shell`]).
         Inverse::Profile { key } => Inverse::Profile { key },
+        Inverse::Refocus { to, from } => Inverse::Refocus { to: from, from: to },
+        // `revert` names the window a reopen made; this is only its fallback.
+        Inverse::Reopen(app) => Inverse::Reclose { window: app, app },
+        Inverse::Reclose { app, .. } => Inverse::Reopen(app),
     }
 }
 
@@ -281,6 +302,13 @@ pub fn inverse_word(inverse: Option<Inverse>) -> String {
         ),
         Some(Inverse::Instruction { id, made }) => format!("instruction:{id}:{}", u8::from(made)),
         Some(Inverse::Profile { key }) => format!("profile:{key}"),
+        Some(Inverse::Refocus { to, from }) => {
+            format!("refocus:{}:{}", to.as_str(), from.as_str())
+        }
+        Some(Inverse::Reopen(app)) => format!("reopen:{}", app.as_str()),
+        Some(Inverse::Reclose { window, app }) => {
+            format!("reclose:{}:{}", window.as_str(), app.as_str())
+        }
     }
 }
 
@@ -316,6 +344,15 @@ pub fn parse_inverse(text: &str) -> Option<Option<Inverse>> {
         "instruction" => Inverse::Instruction {
             id: number(parts.next())?,
             made: flag(parts.next())?,
+        },
+        "refocus" => Inverse::Refocus {
+            to: Name::new(parts.next()?)?,
+            from: Name::new(parts.next()?)?,
+        },
+        "reopen" => Inverse::Reopen(Name::new(parts.next()?)?),
+        "reclose" => Inverse::Reclose {
+            window: Name::new(parts.next()?)?,
+            app: Name::new(parts.next()?)?,
         },
         _ => return None,
     }))

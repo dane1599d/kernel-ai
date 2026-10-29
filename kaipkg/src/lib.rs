@@ -3,6 +3,8 @@
 //! switches between.
 //!
 //! - [`bundle`]: `kai-pkg 1`, length-framed files with plain relative paths;
+//! - [`catalog`]: the Apps sheet's rows, installed then offered, in
+//!   `kai-catalog 1`;
 //! - [`header`]: `kai-package 1`, the package's first file, parsed strictly;
 //! - [`version`]: SemVer versions and the `^`, `~`, `=` and comparison ranges;
 //! - [`resolve`]: no solver (§6): the newest compatible version that is not
@@ -31,6 +33,7 @@ extern crate alloc;
 extern crate std;
 
 pub mod bundle;
+pub mod catalog;
 pub mod fsvol;
 pub mod generation;
 pub mod header;

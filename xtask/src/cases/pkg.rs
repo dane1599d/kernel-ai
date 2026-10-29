@@ -91,8 +91,11 @@ pub(super) const CASES: &[TestCase] = &[
     // install again comes from the store with no fetch.
     TestCase {
         expect: &[
+            "pkg: PKG_FETCH refuses a request one byte off kabi::pkgrepo's",
             "pkg: big installed from the mirror as generation 2, fetched in 2 pieces",
             "pkg-install: generation 2 holds big from the mirror beside the image's notes",
+            "pkg-install: the catalogue lists big and notes installed, then the mirror's extra",
+            "pkg-install: a process without /system/pkg gets Permission from BOOT_READ, COMP_ADD, PKG_FETCH and PKG_TIME",
             "pkg-install: boot 1: fs shows generation 2 current, as pkg left it",
         ],
         then: Some(&INSTALL_AGAIN),

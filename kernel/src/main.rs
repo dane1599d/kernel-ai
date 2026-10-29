@@ -64,6 +64,7 @@ mod input;
 mod ipc;
 mod irq;
 mod keyboard;
+mod keys_tests;
 mod latency_tests;
 mod lines;
 mod live_commands;
@@ -121,6 +122,7 @@ mod tune_local_tests;
 mod tune_stall_tests;
 mod tune_tests;
 mod ui_tests;
+mod usage_tests;
 mod usb;
 mod version;
 mod virtio;
@@ -338,6 +340,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::BlkWrite => run_case(|| blk_tests::check_write(cmdline())),
         SelfTest::BlkFlush => run_case(|| blkflush_tests::check(cmdline())),
         SelfTest::Part => run_case(part_tests::check),
+        SelfTest::ModelStore { bad } => run_case(|| model_tests::store(cmdline(), bad)),
         SelfTest::Files { .. } => run_case(|| files_tests::check(cmdline())),
         SelfTest::FilesRestart => run_case(files_tests::restart),
         SelfTest::FilesDeadClient => run_case(files_tests::dead_client),
@@ -349,6 +352,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::LocalScript => run_case(|| local_tests::check_script(cmdline())),
         SelfTest::Latency => run_case(latency_tests::check),
         SelfTest::ProcStop => run_case(stop_tests::check),
+        SelfTest::ProcUsage => run_case(usage_tests::check),
         SelfTest::Shm => run_case(shm_tests::check),
         SelfTest::Mem => run_case(mem_tests::check),
         SelfTest::Profile => run_case(profile_tests::check),
@@ -361,6 +365,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::DeskBoot => run_case(desk_tests::boot_check),
         SelfTest::DeskPanel => run_case(desk_tests::panel_check),
         SelfTest::UiWindow => run_case(ui_tests::check),
+        SelfTest::UiKeys => run_case(keys_tests::check),
         SelfTest::DeskTerm => run_case(term_tests::check),
         SelfTest::Scriptrun => run_case(scriptrun_tests::check),
         SelfTest::Fpu => run_case(fpu_tests::fpu_check),
