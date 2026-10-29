@@ -6,6 +6,13 @@
 //! this time, the kernel for PROC_STOP_ONCE and the supervisor through RULE_CHECK,
 //! asks [`covers`]: whether the caller holds a live handle to a rule whose scope
 //! covers the call. Revoking the node (`rules_remove`) ends the rule.
+//!
+//! A standing instruction (P3 task 11) is a rule too: an Allow on its
+//! `rules_add(...)` notes the one action it may run on its one app, and that
+//! action's inverse, which its "until" and `undo` run
+//! ([`kabi::event::standing`]). So the owner of the action (the supervisor,
+//! through RULE_CHECK) runs a firing only for a rule the user allowed, never
+//! for one the shell made up.
 
 use super::HANDLES;
 use super::grant::Kernel;
@@ -25,6 +32,9 @@ enum Scope {
     Action(String),
     /// This call only, as [`digest`] of its canonical text.
     Call([u8; 32]),
+    /// A standing instruction's action on its app, and that action's inverse:
+    /// `app_suspend("notes")` and `app_resume("notes")`.
+    Standing { action: String, target: String },
 }
 
 static RULES: Mutex<Vec<(GrantRef, Scope)>> = Mutex::new(Vec::new());
@@ -36,6 +46,25 @@ pub fn record(node: GrantRef, call: &str, every: bool) -> Result<(), kabi::Error
         true => Scope::Action(String::from(action(call))),
         false => Scope::Call(digest(call)),
     };
+    keep(node, scope)
+}
+
+/// Notes that the rule node `node` is the standing instruction allowed as
+/// `call`, `rules_add("on minimize(notes) -> app_suspend(notes) until
+/// restore(notes)")`. Invalid when its action is not one
+/// [`kabi::event::STANDING`] lists.
+pub fn record_standing(node: GrantRef, call: &str) -> Result<(), kabi::Error> {
+    let (action, target) = kabi::event::standing(call).ok_or(kabi::Error::Invalid)?;
+    keep(
+        node,
+        Scope::Standing {
+            action: String::from(action),
+            target: String::from(target),
+        },
+    )
+}
+
+fn keep(node: GrantRef, scope: Scope) -> Result<(), kabi::Error> {
     let mut rules = RULES.lock();
     rules.retain(|(node, _)| Kernel.alive(*node));
     if rules.len() >= MAX_RULES {
@@ -66,6 +95,7 @@ pub fn covers(slot: usize, call: &str) -> bool {
             && match scope {
                 Scope::Action(allowed) => allowed == action,
                 Scope::Call(allowed) => *allowed == digest,
+                Scope::Standing { action, target } => kabi::event::covers(action, target, call),
             }
     })
 }

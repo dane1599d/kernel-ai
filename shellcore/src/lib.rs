@@ -43,6 +43,7 @@ pub mod state;
 pub mod targets;
 pub mod tiers;
 mod tune;
+pub mod ui;
 mod undo;
 mod undoing;
 
@@ -173,6 +174,11 @@ pub trait Host {
     /// used up by its first check, so two requests could not both pass.
     fn restart_service(&self, _name: &str, _proof: Proof) -> Result<(), String> {
         Err(String::from("services cannot be restarted here"))
+    }
+    /// One of the agent's window rows, asked of `desktop` (P3 task 10): the
+    /// answer after its `ok`, or why not.
+    fn ui(&self, _call: &ui::UiCall) -> Result<String, String> {
+        ui::no_desktop()
     }
     /// A read of the user's files: its text, or why there is none.
     fn fs_read(&self, _read: FsRead) -> Result<String, String> {
@@ -444,6 +450,9 @@ pub struct Shell {
     /// The ONCE of the menu answer now running, kept for the call's owner to
     /// check: the shell does not spend it (P1 task 14).
     owner_once: Option<u64>,
+    /// The source of the data the call now running was decided after (a
+    /// view's second round), for consent (ADR 0002 D6).
+    steered: Option<&'static str>,
 }
 
 impl Shell {
@@ -496,6 +505,7 @@ impl Shell {
             pack_id: llmproto::pack::act_pack_id(),
             saved_log: None,
             owner_once: None,
+            steered: None,
         }
         .with_saved_log()
         .with_saved_rules()

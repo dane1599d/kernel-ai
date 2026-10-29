@@ -96,6 +96,19 @@ impl Desk {
         self.set_focus(Focus::Window(id), effects);
     }
 
+    /// The agent's `ui_focus` (ADR 0005 §3: a row the agent runs may move
+    /// focus): `id` comes back if it was minimized, rises and takes the keys.
+    pub fn activate(&mut self, id: WindowId, effects: &mut Vec<Effect>) {
+        let Some(w) = self.windows.iter_mut().find(|w| w.id == id) else {
+            return;
+        };
+        w.minimized = false;
+        let frame = w.frame;
+        self.damage.add(frame);
+        self.raise(id);
+        self.set_focus(Focus::Window(id), effects);
+    }
+
     pub(super) fn raise(&mut self, id: WindowId) {
         let Some(at) = self.windows.iter().position(|w| w.id == id) else {
             return;

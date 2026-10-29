@@ -3,7 +3,7 @@
 
 use crate::desk::{self, Desk, Told};
 use alloc::vec::Vec;
-use deskcore::desk::{Desk as Screen, Effect};
+use deskcore::desk::{Desk as Screen, Effect, Focus};
 use deskcore::server::{Client, Need};
 use uikit::layout::FixedAdvance;
 use uikit::widget::{Layout, ROOT, Widget};
@@ -63,6 +63,10 @@ fn a_window_opens_shows_new_pictures_and_closes() {
     assert!(
         matches!(needs[..], [Need::Show { buffer, .. }] if buffer.offset == show.target.offset)
     );
+    // A click that focuses it reaches the app as focus (app nap's use).
+    client.take_events(8192);
+    client.apply(&[Effect::Focus(Focus::Window(window))]);
+    assert_eq!(d.told(&client.take_events(8192)), [Told::Focus(1)]);
     // The user asks to close it; the app's close ends it on the desk.
     client.apply(&[Effect::Close { window }]);
     assert_eq!(d.told(&client.take_events(8192)), [Told::Close(1)]);
@@ -114,4 +118,49 @@ fn requests_split_into_calls_at_message_boundaries() {
     let all: Vec<u8> = open.calls.concat();
     assert!(open.calls.iter().all(|c| c.len() <= kabi::MAX_MESSAGE));
     assert_eq!(desk::calls(&all).concat(), all);
+}
+
+/// A window whose one button runs `action`, holding unsaved changes or not.
+fn bound(win: &mut Window, action: Option<&str>, unsaved: bool) -> Frame {
+    let button = Widget::Button {
+        text: "Save".into(),
+        action: action.map(Into::into),
+    };
+    win.put(1, ROOT, Layout::FIT, button).unwrap();
+    win.set_unsaved(unsaved);
+    win.commit(&FixedAdvance)
+}
+
+#[test]
+fn desktop_learns_a_buttons_action_and_the_windows_unsaved_changes() {
+    let mut screen = Screen::new(1280, 800);
+    let mut client = Client::new(7, "notes-window");
+    let mut d = Desk::new();
+    client.take_events(8192);
+    let mut win = Window::new("Notes", 320, 200);
+    let Err(open) = d.frame(1, &bound(&mut win, Some("notes_save"), false)) else {
+        panic!("a first frame opens a window");
+    };
+    let needs = serve(&mut client, &mut screen, &open.calls, true);
+    let [Need::MapPool { pool, .. }, Need::Show { window, .. }] = needs[..] else {
+        panic!("{needs:?}");
+    };
+    client.pool_mapped(pool);
+    let button = crate::surface::wire_id(1);
+    assert_eq!(client.bound_action(window, button), Some("notes_save"));
+    assert!(!client.unsaved(window));
+    // An edit: the app says it holds changes; the binding is not sent again.
+    let Ok(show) = d.frame(1, &bound(&mut win, Some("notes_save"), true)) else {
+        panic!("an open window takes new pictures");
+    };
+    serve(&mut client, &mut screen, &show.calls, false);
+    assert!(client.unsaved(window));
+    assert_eq!(client.bound_action(window, button), Some("notes_save"));
+    // Saved, and the button runs nothing declared any more.
+    let Ok(show) = d.frame(1, &bound(&mut win, None, false)) else {
+        panic!("an open window takes new pictures");
+    };
+    serve(&mut client, &mut screen, &show.calls, false);
+    assert!(!client.unsaved(window));
+    assert_eq!(client.bound_action(window, button), None);
 }

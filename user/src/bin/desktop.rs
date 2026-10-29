@@ -11,8 +11,16 @@
 //! - Each frame repaints only the desk's damage, grown by what a window's
 //!   shadow reaches, into a frame of its own, then copies those rectangles to
 //!   the screen and flushes them.
+//! - Window events (minimize, restore, focus, close) and idle minutes go to the
+//!   kernel's event box for the shell's standing instructions (P3 task 11),
+//!   found by `deskcore::watch`.
 //! - The top bar's model state and memory are read once a second; a screen
 //!   without a hardware cursor (GOP) gets one drawn in the frame.
+//! - Everything is painted in the theme the [`Appearance`] resolves to (P4
+//!   task 8): checked once per frame, and on a change the whole screen and the
+//!   hardware cursor are painted again. It starts from the plan line's
+//!   arguments (`theme=light`, `legible=on`, ...), each an `appearance_set`
+//!   setting.
 //! - While the terminal window (`term`'s) has focus, the keys go to the
 //!   kernel's terminal instead: a lease (INPUT_TO_CONSOLE) renewed every
 //!   [`LEASE_RENEW_NS`], and ended when the focus moves (P3 task 8). The
@@ -26,6 +34,7 @@ extern crate alloc;
 
 use alloc::vec;
 use alloc::vec::Vec;
+use deskcore::askcard::Card;
 use deskcore::compose::{Pixels, Source};
 use deskcore::desk::{Button, Desk, Effect, Focus, Input, WindowId};
 use deskcore::geom::{Point, Rect};
@@ -33,10 +42,13 @@ use deskcore::paint::{self, Bar, Painter, Scene};
 use deskcore::paint_panel;
 use deskcore::panel::Panel;
 use deskcore::server::{Buffer, Client, Need};
+use deskcore::watch::Watch;
 use gfx2d::{Canvas, Fonts, Image};
 use kabi::display::{DisplayInfo, FlushRect};
 use kabi::handle::{Handle, RecvInfo};
 use kabi::input::{InputEvent, Kind};
+use look::Palette;
+use look::appearance::{self, Appearance, Shipped};
 use surfabi::Format;
 use user::{println, sys};
 
@@ -63,6 +75,9 @@ struct Pool {
     pool: u32,
     address: u64,
     size: u32,
+    /// Mapped writable, so its header page's event ring takes the client's
+    /// input (ADR 0005 §3); a client that gave read-only access gets none.
+    writable: bool,
 }
 
 struct Screen {
@@ -91,13 +106,24 @@ struct State {
     panel: Panel,
     /// When the panel's "thinking 4s" was last redrawn.
     ticked_ms: u64,
+    /// The ask card up now, as the kernel posted it.
+    card: Option<Card>,
+    /// When the ask box was last read.
+    asked_ms: u64,
     /// Frames as last logged, to report moves and closes once.
     known: Vec<(WindowId, Rect)>,
     focus: Focus,
+    /// What standing instructions hear about: window events and idle.
+    watch: Watch,
     /// When the keys were last lent to the kernel's terminal, while they are.
     leased_at: Option<u64>,
     /// The focused window, and whether the kernel lent the keys for it.
     asked: Option<(WindowId, bool)>,
+    /// What the user chose, and what the painter paints in: kept with the
+    /// painter across a lost screen, and the default (what `Painter::new`
+    /// paints) at first, so the first frame does no theme work for it.
+    appearance: Appearance,
+    painted_in: Appearance,
 }
 
 fn main() -> i32 {
@@ -105,6 +131,8 @@ fn main() -> i32 {
         println!("desktop: the built-in fonts do not parse");
         return 1;
     };
+    let appearance = starting_appearance();
+    let mut painted_in = Appearance::default();
     loop {
         let Some(screen) = claim() else {
             if !wait_for_screen() {
@@ -130,14 +158,20 @@ fn main() -> i32 {
             drawn: false,
             panel: Panel::new(),
             ticked_ms: 0,
+            card: None,
+            asked_ms: 0,
             known: Vec::new(),
             focus: Focus::Nothing,
+            watch: Watch::new(now_ms()),
             leased_at: None,
             asked: None,
+            appearance: appearance.clone(),
+            painted_in,
         };
         println!("desktop: claimed {width}x{height}");
         let result = run(&mut state, &screen);
         painter = state.painter;
+        painted_in = state.painted_in;
         let Some(back) = result else {
             return 1;
         };
@@ -155,7 +189,7 @@ fn claim() -> Option<Screen> {
     let shm = sys::display_claim(&mut info).ok()?;
     let address = sys::shm_map(shm, true).ok()?;
     if info.cursor != 0 {
-        let _ = sys::display_cursor(&arrow(), (0, 0));
+        let _ = sys::display_cursor(&arrow(&look::DARK), (0, 0));
         let _ = sys::display_cursor_move(info.width / 2, info.height / 2);
     }
     Some(Screen { info, address })
@@ -190,9 +224,12 @@ fn run(state: &mut State, screen: &Screen) -> Option<bool> {
             serve(state, &request[..len.min(request.len())], &info);
         }
         report(state);
+        post_events(state);
         refresh_bar(state);
         tick_panel(state);
+        read_asks(state);
         lease(state);
+        theme(state, screen);
         draw(state, screen);
     }
 }
@@ -287,6 +324,7 @@ fn input(state: &mut State, screen: &Screen, event: &InputEvent) {
     let Some(input) = input else {
         return;
     };
+    state.watch.input(now_ms());
     let before = state.desk.pointer();
     let effects = state.desk.input(input);
     let at = state.desk.pointer();
@@ -301,13 +339,21 @@ fn input(state: &mut State, screen: &Screen, event: &InputEvent) {
     deliver(state, &effects);
 }
 
-/// Hands the desk's effects to the clients they concern.
+/// Hands the desk's effects to the clients they concern: messages, and input
+/// posted to their pools' event rings.
 fn deliver(state: &mut State, effects: &[Effect]) {
     for client in &mut state.clients {
         client.apply(effects);
+        for (pool, event) in client.take_posts() {
+            post(&state.pools, client.pid, pool, &event);
+        }
     }
     let now = now_ms();
     for effect in effects {
+        if let Effect::Answer { id, yes } = *effect {
+            answer_ask(state, id, yes);
+            continue;
+        }
         let changed = match *effect {
             Effect::PanelKey { usage, down } => {
                 let before = state.panel.waiting();
@@ -331,6 +377,90 @@ fn deliver(state: &mut State, effects: &[Effect]) {
     }
 }
 
+/// How often the ask box is read: often enough that the kernel sees the
+/// trusted layer alive, and a posted ask shows within a frame or two.
+const ASK_EVERY_MS: u64 = 100;
+
+/// Reads the ask box: a new ask shows as the card; one the kernel withdrew
+/// goes away.
+fn read_asks(state: &mut State) {
+    let now = now_ms();
+    if now.saturating_sub(state.asked_ms) < ASK_EVERY_MS {
+        return;
+    }
+    state.asked_ms = now;
+    let mut buf = [0u8; 2048];
+    let Ok(len) = sys::ask_read(&mut buf) else {
+        return;
+    };
+    let text = core::str::from_utf8(&buf[..len.min(buf.len())]).unwrap_or("");
+    let mut parts = text.splitn(3, '\n');
+    let posted = match (parts.next(), parts.next(), parts.next()) {
+        (Some(id), Some(call), Some(question)) => id.parse().ok().map(|id| (id, call, question)),
+        _ => None,
+    };
+    match (posted, state.card.as_ref()) {
+        (Some((id, _, _)), Some(card)) if card.id == id => {}
+        (Some((id, call, question)), _) => {
+            let card = Card {
+                id,
+                call: call.into(),
+                reason: question.into(),
+                shown_ms: now,
+            };
+            let lines = state.painter.card_lines(state.width, &card);
+            if let Some(old) = state.card.take() {
+                let effects = state.desk.hide_ask(old.id);
+                deliver(state, &effects);
+            }
+            println!("desktop: ask {id} shows on the card");
+            let effects = state.desk.show_ask(id, lines);
+            state.card = Some(card);
+            deliver(state, &effects);
+        }
+        (None, Some(card)) => {
+            // Withdrawn by the kernel: it asks on the console now.
+            let id = card.id;
+            state.card = None;
+            let effects = state.desk.hide_ask(id);
+            deliver(state, &effects);
+        }
+        (None, None) => {}
+    }
+}
+
+/// The card's answer goes to the kernel with the digest of the call it showed.
+fn answer_ask(state: &mut State, id: u64, yes: bool) {
+    let Some(card) = state.card.take().filter(|c| c.id == id) else {
+        return;
+    };
+    let digest = termcore::once::digest_call(id, &card.call);
+    let word = if yes { "yes" } else { "no" };
+    match sys::ask_answer(id, yes, &digest) {
+        Ok(_) => println!("desktop: ask {id} answered {word}"),
+        Err(error) => println!("desktop: the kernel refused ask {id}'s answer ({error:?})"),
+    }
+}
+
+/// Posts `event` to the ring in the header page of `pid`'s pool `pool`; a full
+/// ring drops it and counts the drop there.
+fn post(pools: &[Pool], pid: u64, pool: u32, event: &surfabi::header::Event) {
+    let Some(p) = pools
+        .iter()
+        .find(|p| p.pid == pid && p.pool == pool && p.writable)
+    else {
+        return;
+    };
+    if (p.size as usize) < surfabi::header::PAGE {
+        return;
+    }
+    // SAFETY: the pool is mapped read-write at `address` for `size` bytes, at
+    // least a page; its first page is the header the client set up, and only
+    // its ring's slots and head are written.
+    let page = unsafe { &mut *(p.address as *mut [u8; surfabi::header::PAGE]) };
+    surfabi::header::post(page, event);
+}
+
 fn now_ms() -> u64 {
     sys::time_ns() / 1_000_000
 }
@@ -348,7 +478,8 @@ fn tick_panel(state: &mut State) {
 
 fn serve(state: &mut State, bytes: &[u8], info: &RecvInfo) {
     let pid = info.caller_pid;
-    if !state.clients.iter().any(|c| c.pid == pid) {
+    let new = !state.clients.iter().any(|c| c.pid == pid);
+    if new {
         let label = name_of(pid);
         state.clients.push(Client::new(pid, &label));
     }
@@ -362,6 +493,22 @@ fn serve(state: &mut State, bytes: &[u8], info: &RecvInfo) {
             for need in needs {
                 apply_need(state, at, pid, need, handle);
             }
+            let reply = state.clients[at].take_events(kabi::MAX_MESSAGE);
+            let _ = sys::reply_h(&reply, &[]);
+        }
+        // A client new to this desktop that names objects it never made was
+        // talking to the desktop before a restart: it gets the greeting (the
+        // registry's globals), not an empty reply, so it opens its windows
+        // again (`term` committed to its old surface each time the console
+        // changed, and never heard the greeting).
+        Err(surfabi::wire::Error::UnknownObject) if new => {
+            println!("desktop: pid {pid} spoke to an earlier desktop; greeting it");
+            // Windows the message opened before it failed go with the old
+            // connection, not left on the desk.
+            let effects = state.clients[at].close_all(&mut state.desk);
+            deliver(state, &effects);
+            let label = state.clients[at].label.clone();
+            state.clients[at] = Client::new(pid, &label);
             let reply = state.clients[at].take_events(kabi::MAX_MESSAGE);
             let _ = sys::reply_h(&reply, &[]);
         }
@@ -384,13 +531,19 @@ fn apply_need(state: &mut State, at: usize, pid: u64, need: Need, handle: Option
     match need {
         Need::MapPool { pool, size } => {
             let Some(handle) = handle else { return };
-            match sys::shm_map(handle, false) {
-                Ok(address) => {
+            // Writable when the client allowed it, for its input ring; read-only
+            // otherwise, as before.
+            let mapped = sys::shm_map(handle, true)
+                .map(|address| (address, true))
+                .or_else(|_| sys::shm_map(handle, false).map(|address| (address, false)));
+            match mapped {
+                Ok((address, writable)) => {
                     state.pools.push(Pool {
                         pid,
                         pool,
                         address,
                         size,
+                        writable,
                     });
                     state.clients[at].pool_mapped(pool);
                 }
@@ -405,19 +558,18 @@ fn apply_need(state: &mut State, at: usize, pid: u64, need: Need, handle: Option
     }
 }
 
-/// The name a process runs under, which labels its windows.
+/// The name a process runs under, which labels its windows and names its app
+/// in standing instructions' events. From the metrics' process list: LIST is
+/// the supervisor's alone.
 fn name_of(pid: u64) -> alloc::string::String {
-    let mut buf = vec![0u8; 4096];
-    let Ok(len) = sys::list(&mut buf) else {
-        return alloc::format!("pid {pid}");
-    };
-    alloc::string::String::from_utf8_lossy(&buf[..len.min(buf.len())])
-        .lines()
-        .find_map(|line| {
-            let (p, name) = line.split_once(' ')?;
-            (p.parse() == Ok(pid)).then(|| alloc::string::String::from(name))
-        })
-        .unwrap_or_else(|| alloc::format!("pid {pid}"))
+    let named = sys::metrics().ok().and_then(|m| {
+        let listed = &m.processes[..(m.process_count as usize).min(m.processes.len())];
+        listed
+            .iter()
+            .find(|p| p.pid == pid)
+            .map(|p| alloc::string::String::from(p.name()))
+    });
+    named.unwrap_or_else(|| alloc::format!("pid {pid}"))
 }
 
 /// Logs windows that opened, moved or closed, and focus changes, once each.
@@ -458,6 +610,23 @@ fn report(state: &mut State) {
             other => println!("desktop: focus {other:?}"),
         }
         state.focus = focus;
+    }
+}
+
+/// Posts the window events and idle minutes since last round to the kernel's
+/// event box, for the shell's standing instructions.
+fn post_events(state: &mut State) {
+    let mut events = state
+        .watch
+        .windows(state.desk.windows(), state.desk.focus());
+    events.extend(state.watch.idle(now_ms()));
+    for event in events {
+        let mut line = alloc::string::String::new();
+        let _ = event.text(&mut line);
+        match sys::event_post(&line) {
+            Ok(_) => println!("desktop: event {line}"),
+            Err(error) => println!("desktop: cannot post {line}: {error:?}"),
+        }
     }
 }
 
@@ -507,6 +676,7 @@ fn draw(state: &mut State, screen: &Screen) {
         desk: &state.desk,
         bar: &state.bar,
         panel: &state.panel,
+        ask: state.card.as_ref(),
         now_ms: now_ms(),
     };
     let mut content = |id: WindowId, layer: &mut Canvas<'_>, at: Rect| {
@@ -600,13 +770,55 @@ fn copy_to_screen(frame: &[u32], width: i32, screen: &Screen, damage: &[Rect]) {
 }
 
 /// The hardware cursor's image: the arrow the frame draws on GOP.
-fn arrow() -> [u32; 64 * 64] {
+fn arrow(palette: &Palette) -> [u32; 64 * 64] {
     let mut image = [0u32; 64 * 64];
     for (i, pixel) in image.iter_mut().enumerate() {
         let (x, y) = ((i % 64) as i32, (i / 64) as i32);
-        *pixel = paint::arrow(x, y).unwrap_or(0);
+        *pixel = paint::arrow(x, y, palette).unwrap_or(0);
     }
     image
+}
+
+/// The appearance the plan line's arguments set, one `appearance_set` setting
+/// each; one that is refused is left out, and said.
+fn starting_appearance() -> Appearance {
+    let args = user::args();
+    let mut chosen = Appearance::default();
+    for setting in appearance::SETTINGS {
+        let Some(value) = user::arg(&args, setting) else {
+            continue;
+        };
+        match chosen.set(setting, value, &Shipped) {
+            Ok(next) => chosen = next,
+            Err(why) => println!("desktop: {setting}={value} is refused: {}", why.0),
+        }
+    }
+    chosen
+}
+
+/// Paints in the appearance's theme from this frame on, when it changed: the
+/// whole screen again, and the hardware cursor in its colours. Nothing while the
+/// painter already paints in it, so a first frame in the default theme costs
+/// what it did before themes (display-claim reads a key typed during it).
+fn theme(state: &mut State, screen: &Screen) {
+    if state.painted_in == state.appearance {
+        return;
+    }
+    let theme = match state.appearance.resolve(&Shipped) {
+        Ok(theme) => theme,
+        Err(why) => {
+            println!("desktop: the appearance is refused ({}); dark it is", why.0);
+            state.appearance = Appearance::default();
+            return;
+        }
+    };
+    state.painter.set_theme(&theme);
+    state.extra.push(Rect::new(0, 0, state.width, state.height));
+    if screen.info.cursor != 0 {
+        let _ = sys::display_cursor(&arrow(state.painter.palette()), (0, 0));
+    }
+    println!("desktop: painting in the {} theme", theme.name);
+    state.painted_in = state.appearance.clone();
 }
 
 /// Waits for the screen to come back: `false` on an error.

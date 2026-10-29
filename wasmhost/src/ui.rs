@@ -9,7 +9,7 @@ use crate::canonical::CoreInstance;
 use crate::instance::HostState;
 use crate::link::WitFunc;
 use crate::tables;
-use crate::uival::{self, layout, str_of, u16_of, u32_of, widget};
+use crate::uival::{self, bool_of, layout, str_of, u16_of, u32_of, widget};
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::String;
@@ -222,6 +222,10 @@ fn run(
             frame.map(|frame| host.shown(window, frame))
         }
         "close" => host.ui.close(window).map(|()| host.closed(window)),
+        "set-unsaved" => {
+            let unsaved = bool_of(args.get(1))?;
+            host.ui.window(window).map(|w| w.set_unsaved(unsaved))
+        }
         other => return Err(format!("{other} is not a view function")),
     };
     Ok(done.map(|()| None))
@@ -302,6 +306,54 @@ impl CoreInstance {
             let args = [Val::U32(window), uival::event(window, e)];
             livecore::Instance::call(self, &func, &args)?;
         }
+        Ok(())
+    }
+}
+
+/// What the OS tells an app (`kai:app/events`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AppEvent {
+    /// The app started.
+    Started,
+    /// The effect with this ticket finished: its result or why not.
+    EffectDone {
+        ticket: u32,
+        outcome: Result<String, String>,
+    },
+}
+
+impl AppEvent {
+    fn val(&self) -> Val {
+        match self {
+            Self::Started => Val::Variant(0, None),
+            Self::EffectDone { ticket, outcome } => {
+                let text = |s: &String| Some(Box::new(Val::String(s.clone())));
+                let outcome = Val::Result(match outcome {
+                    Ok(s) => Ok(text(s)),
+                    Err(s) => Err(text(s)),
+                });
+                let result = Val::Record(vec![Val::U32(*ticket), outcome]);
+                Val::Variant(1, Some(Box::new(result)))
+            }
+        }
+    }
+}
+
+impl CoreInstance {
+    /// Tells the app `event` with one `on-event` call. An app that does not
+    /// export `kai:app/events` gets nothing. Run it inside a transaction
+    /// ([`livecore::Host::serve_with`]), so what the app does about it, storage
+    /// writes and more effects, is kept.
+    pub fn deliver_event(&mut self, event: &AppEvent) -> Result<(), Fault> {
+        let Some(export) = self.on_event.clone() else {
+            return Ok(());
+        };
+        let entry = tables::EXPORTS
+            .iter()
+            .find(|f| f.interface == "kai:app/events" && f.name == "on-event")
+            .ok_or_else(|| Fault::new(Reason::Host, "no kai:app/events table"))?;
+        let func = entry.func(export);
+        livecore::Instance::call(self, &func, &[event.val()])?;
         Ok(())
     }
 }

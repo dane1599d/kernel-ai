@@ -7,6 +7,7 @@
 
 extern crate alloc;
 
+pub mod keep;
 pub mod profile;
 
 use alloc::format;
@@ -43,6 +44,55 @@ pub struct ServiceSpec {
     pub unsupervised: bool,
 }
 
+/// The kernel's request that a `start=demand` service start: `demand <name>`.
+pub const DEMAND: &str = "demand";
+
+/// The service `text` (`demand <name>`) names, if it is one.
+pub fn parse_demand(text: &str) -> Option<&str> {
+    let mut words = text.split_whitespace();
+    match (words.next(), words.next(), words.next()) {
+        (Some(DEMAND), Some(name), None) if valid_name(name) => Some(name),
+        _ => None,
+    }
+}
+
+/// The index among `specs` of the service `demand <name>` asks for, if the
+/// supervisor should start it now: the request is the kernel's (`caller` 0),
+/// the line says `start=demand`, it is not running, and the user has not
+/// stopped it. `Ok(None)` when it already runs or is starting.
+pub fn check_demand(
+    name: &str,
+    specs: &[&ServiceSpec],
+    records: &[Record],
+    caller: u64,
+    starting: &[bool],
+) -> Result<Option<usize>, &'static str> {
+    if caller != 0 {
+        return Err("err only the kernel asks for a service on demand");
+    }
+    let index = specs
+        .iter()
+        .position(|s| s.name == name)
+        .ok_or("err unknown service")?;
+    if specs[index].start != Start::Demand {
+        return Err("err not a start=demand service");
+    }
+    let record = &records[index];
+    if record.stopped {
+        return Err("err stopped");
+    }
+    // Past its restart cap a demand does not start it again; only the user's
+    // `start` does. While it backs off it is starting, below, so a demand never
+    // skips the backoff either.
+    if record.gave_up {
+        return Err("err gave up");
+    }
+    match record.pid != 0 || starting[index] {
+        true => Ok(None),
+        false => Ok(Some(index)),
+    }
+}
+
 /// A folder a plan line grants with `dir=` (ADR 0011 §12): the kernel puts a
 /// startup `Dir` for it in the service's table, on the `fs` route, and lets the
 /// service hold `Dir` and `File` handles. The authority is the plan line, which
@@ -53,12 +103,24 @@ pub struct ServiceSpec {
 pub enum Folder {
     /// `/system/pkg`, the package store (ADR 0011 §5).
     Pkg,
+    /// `/system/trust`, the cached TUF metadata (ADR 0008 §7): `updated`'s only.
+    Trust,
+    /// `/system/updates`, staged releases and the `update` snapshot's handle
+    /// (ADR 0008 §10): `updated`'s only.
+    Updates,
+    /// `/system/settings`, the Settings app's files, read only: for a service
+    /// that follows a setting (`updated`'s restart window; the desktop's
+    /// appearance and the supervisor's profiles next).
+    Settings,
 }
 
 impl Folder {
     pub fn parse(name: &str) -> Option<Self> {
         match name {
             "pkg" => Some(Folder::Pkg),
+            "trust" => Some(Folder::Trust),
+            "updates" => Some(Folder::Updates),
+            "settings" => Some(Folder::Settings),
             _ => None,
         }
     }
@@ -67,9 +129,32 @@ impl Folder {
     pub fn badge(self) -> u64 {
         match self {
             Folder::Pkg => kabi::fs::SYSTEM_PKG,
+            Folder::Trust => kabi::fs::SYSTEM_TRUST,
+            Folder::Updates => kabi::fs::SYSTEM_UPDATES,
+            Folder::Settings => kabi::fs::SYSTEM_SETTINGS,
+        }
+    }
+
+    /// Whether its `Dir` only reads: the kernel gives it READ and ENUMERATE, and
+    /// `fs` refuses a change through it whatever the handle says.
+    pub fn read_only(self) -> bool {
+        matches!(self, Folder::Settings)
+    }
+
+    /// The one service, by name and by program, a line granting it must be, if
+    /// it has one: the trust store and the updates folder are `updated`'s alone
+    /// (ADR 0008 §10), as the kernel's UPDATE capability is.
+    pub fn only_for(self) -> Option<&'static str> {
+        match self {
+            Folder::Pkg | Folder::Settings => None,
+            Folder::Trust | Folder::Updates => Some(UPDATED),
         }
     }
 }
+
+/// The update service's program, the only one `dir=trust` and `dir=updates`
+/// may go to.
+pub const UPDATED: &str = "updated";
 
 /// Boot files a plan line lets its service read with BOOT_READ, from `bootfiles=`
 /// (P4 task 1): one folder of the boot bundle, read-only. Like [`Folder`], the
@@ -128,6 +213,10 @@ pub enum Start {
     /// holder of `/system/pkg` asks with [`Run`], and then runs, and restarts, on
     /// the package version that request names, passed as `version=`.
     Pkg,
+    /// `start=demand` (P3 task 12b, app nap): not at boot, but when something
+    /// first needs it. A call that waits for it makes the kernel send the
+    /// supervisor [`DEMAND`] for it ([`check_demand`]).
+    Demand,
 }
 
 /// `run <name> version=<label>`: the holder of `/system/pkg` asks for `start=pkg`
@@ -183,7 +272,7 @@ pub fn check_run(
         .ok_or("err unknown service")?;
     match services[index].0.start {
         Start::Pkg => Ok(index),
-        Start::Boot => Err(NOT_FROM_PKG),
+        Start::Boot | Start::Demand => Err(NOT_FROM_PKG),
     }
 }
 
@@ -217,6 +306,11 @@ pub enum Request<'a> {
     /// `restart <name>`: end the service and start it at once, or start it if it
     /// is stopped. One request, since a `ONCE` is used up by one check.
     Restart(&'a str),
+    /// `suspend <name>`: the app saves its state and drops its instance
+    /// (`app_suspend`, P3 task 11), through the kernel's `ctl suspend`.
+    Suspend(&'a str),
+    /// `resume <name>`: the app comes back from its saved state (`app_resume`).
+    Resume(&'a str),
 }
 
 /// The user's yes on a menu: the `ONCE` badge the trusted path gave for menu
@@ -252,6 +346,8 @@ impl<'a> Request<'a> {
             ("stop", name) => Request::Stop(name),
             ("start", name) => Request::Start(name),
             ("restart", name) => Request::Restart(name),
+            ("suspend", name) => Request::Suspend(name),
+            ("resume", name) => Request::Resume(name),
             _ => return None,
         };
         let number = |word: Option<&str>, key: &str| word?.strip_prefix(key)?.parse().ok();
@@ -270,7 +366,11 @@ impl<'a> Request<'a> {
 
     pub fn name(self) -> &'a str {
         match self {
-            Request::Stop(name) | Request::Start(name) | Request::Restart(name) => name,
+            Request::Stop(name)
+            | Request::Start(name)
+            | Request::Restart(name)
+            | Request::Suspend(name)
+            | Request::Resume(name) => name,
         }
     }
 
@@ -281,6 +381,8 @@ impl<'a> Request<'a> {
             Request::Stop(_) => "service_stop",
             Request::Start(_) => "service_start",
             Request::Restart(_) => "service_restart",
+            Request::Suspend(_) => "app_suspend",
+            Request::Resume(_) => "app_resume",
         };
         termcore::once::call_text(action, &[termcore::once::CallArg::Text(self.name())])
     }
@@ -296,6 +398,8 @@ impl<'a> Request<'a> {
             Request::Stop(_) => "stop",
             Request::Start(_) => "start",
             Request::Restart(_) => "restart",
+            Request::Suspend(_) => "suspend",
+            Request::Resume(_) => "resume",
         };
         let name = self.name();
         match proof {
@@ -310,9 +414,12 @@ impl<'a> Request<'a> {
 
 /// Whether `proof` is the kind a request of this verb may carry, before it is
 /// checked: a start needs none (it is run-tier and has no menu); a stop or a
-/// restart needs a `ONCE` or a rule, and only a stop may be an undo.
+/// restart needs a `ONCE` or a rule, and only a stop may be an undo; a suspend
+/// or a resume, which a standing instruction fires, a `ONCE` or a rule.
 pub fn proof_fits(request: Request, proof: Proof) -> Result<(), &'static str> {
     match (request, proof) {
+        (Request::Suspend(_) | Request::Resume(_), Proof::Once(_) | Proof::Rule) => Ok(()),
+        (Request::Suspend(_) | Request::Resume(_), _) => Err("err needs ONCE or a rule"),
         (Request::Start(_), Proof::None | Proof::Entry(_)) => Ok(()),
         (Request::Start(_), _) => Err("err a start takes only id="),
         (_, Proof::Once(_) | Proof::Rule) | (Request::Stop(_), Proof::Undo(_)) => Ok(()),
@@ -373,6 +480,17 @@ pub fn parse_listing(text: &str) -> Option<Vec<Listed>> {
 /// on, or the reply that refuses it (`err protected`, `err unknown service`,
 /// `err already stopped`, `err not stopped`).
 pub fn check(request: Request, records: &[Record]) -> Result<usize, &'static str> {
+    check_for(request, records, &[])
+}
+
+/// [`check`], knowing each record's [`Start`] (`starts`, by index; a record
+/// past its end starts at boot): a `start` of a `start=demand` service that
+/// has not started yet starts it, as its first demand would.
+pub fn check_for(
+    request: Request,
+    records: &[Record],
+    starts: &[Start],
+) -> Result<usize, &'static str> {
     let name = request.name();
     if PROTECTED.contains(&name) {
         return Err("err protected");
@@ -382,10 +500,12 @@ pub fn check(request: Request, records: &[Record]) -> Result<usize, &'static str
         .position(|record| record.name == name)
         .ok_or("err unknown service")?;
     let record = &records[index];
+    let waiting = starts.get(index) == Some(&Start::Demand) && record.pid == 0;
     match (request, record.stopped) {
         (Request::Stop(_), true) => Err("err already stopped"),
-        // A service the supervisor gave up on starts again on request too.
-        (Request::Start(_), false) if !record.gave_up => Err("err not stopped"),
+        // A service the supervisor gave up on starts again on request too, and
+        // so does a demand service not started yet.
+        (Request::Start(_), false) if !record.gave_up && !waiting => Err("err not stopped"),
         _ => Ok(index),
     }
 }
@@ -430,7 +550,7 @@ impl Plan {
 
 /// Reads the plan: one service per line, `name [program=P] [pages=N] [stack_pages=N]
 /// [burst_ms=N] [caps=serve+net+call+policy+component+publish+model+threads+resolve+stop+script]
-/// [uses=A+B] [dir=pkg] [bootfiles=pkgrepo] [start=pkg] [backoff_max_ms=N] [max_restarts=N] [unsupervised] [other=args ...]`. The supervisor keys set limits,
+/// [uses=A+B] [dir=pkg] [bootfiles=pkgrepo] [start=pkg|demand] [backoff_max_ms=N] [max_restarts=N] [unsupervised] [other=args ...]`. The supervisor keys set limits,
 /// routes, folders and policy; everything else is passed to the program. A bad line skips only
 /// that service, so one typo cannot keep every other service down.
 pub fn parse_plan(text: &str) -> Plan {
@@ -514,10 +634,15 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
                 if start.is_some() {
                     return Err(format!("{name}: start= given twice"));
                 }
-                if value != "pkg" {
-                    return Err(format!("{name}: start= is pkg or not given, not {value:?}"));
-                }
-                start = Some(Start::Pkg);
+                start = Some(match value {
+                    "pkg" => Start::Pkg,
+                    "demand" => Start::Demand,
+                    _ => {
+                        return Err(format!(
+                            "{name}: start= is pkg, demand or not given, not {value:?}"
+                        ));
+                    }
+                });
             }
             Some(("backoff_max_ms", value)) => policy.max_backoff_ms = number(name, value)?,
             Some(("max_restarts", value)) => policy.max_restarts = number(name, value)? as usize,
@@ -528,6 +653,14 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
         return Err(format!("{name}: uses= needs the call capability"));
     }
     let dirs = dirs.unwrap_or_default();
+    if let Some(only) = dirs
+        .iter()
+        .find_map(|d| d.only_for().filter(|o| *o != name || *o != program))
+    {
+        return Err(format!(
+            "{name}: that dir= is for the service {only} running {only} only"
+        ));
+    }
     // The kernel starts it with no supervisor to answer for it: no capabilities.
     if unsupervised && (limits.caps != 0 || !uses.is_empty() || !dirs.is_empty() || boot.is_some())
     {
@@ -536,7 +669,7 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
         ));
     }
     let start = start.unwrap_or_default();
-    if start == Start::Pkg && unsupervised {
+    if unsupervised && start != Start::Boot {
         return Err(format!("{name}: an unsupervised process takes no start="));
     }
     // A package's version comes from `pkg`'s request, never the plan.
@@ -632,6 +765,7 @@ fn caps(service: &str, value: &str) -> Result<u64, String> {
         "input" => Ok(bits | cap::INPUT),
         "term" => Ok(bits | cap::TERM),
         "update" => Ok(bits | cap::UPDATE),
+        "ask" => Ok(bits | cap::ASK),
         other => Err(format!("{service}: unknown capability {other:?}")),
     })
 }
@@ -676,6 +810,9 @@ pub struct Record {
     /// Stopped by a `stop` request: not restarted, even by a new supervisor,
     /// until `start`.
     pub stopped: bool,
+    /// Kept running by the user's switch ([`keep`]): an app that never naps,
+    /// passed `keep=1` at each start.
+    pub keep: bool,
     /// The running instance's pid, or 0. Lets a restarted supervisor match exit
     /// records for instances started by its predecessor.
     pub pid: u64,
@@ -716,8 +853,10 @@ impl Record {
     }
 }
 
-const STATE_MAGIC: &str = "supervisor-state 4";
-/// The state before `stopped`, still read so an update keeps the counts.
+const STATE_MAGIC: &str = "supervisor-state 5";
+/// The state before `keep`, still read so an update keeps the counts.
+const STATE_MAGIC_4: &str = "supervisor-state 4";
+/// The state before `stopped`, still read too.
 const STATE_MAGIC_3: &str = "supervisor-state 3";
 
 /// Encodes records for the kernel-held state region.
@@ -726,12 +865,13 @@ pub fn encode(records: &[Record]) -> String {
     for record in records {
         text.push('\n');
         text.push_str(&format!(
-            "{} {} {} {} {} {} {}",
+            "{} {} {} {} {} {} {} {}",
             record.name,
             record.restarts,
             record.quick_failures,
             u8::from(record.gave_up),
             u8::from(record.stopped),
+            u8::from(record.keep),
             record.pid,
             record.started_ms
         ));
@@ -749,9 +889,10 @@ pub fn decode(bytes: &[u8]) -> Vec<Record> {
         return Vec::new();
     };
     let mut lines = text.lines();
-    let has_stopped = match lines.next() {
-        Some(STATE_MAGIC) => true,
-        Some(STATE_MAGIC_3) => false,
+    let (has_stopped, has_keep) = match lines.next() {
+        Some(STATE_MAGIC) => (true, true),
+        Some(STATE_MAGIC_4) => (true, false),
+        Some(STATE_MAGIC_3) => (false, false),
         _ => return Vec::new(),
     };
     lines
@@ -762,6 +903,7 @@ pub fn decode(bytes: &[u8]) -> Vec<Record> {
             let quick_failures = words.next()?.parse().ok()?;
             let gave_up = words.next()? == "1";
             let stopped = has_stopped && words.next()? == "1";
+            let keep = has_keep && words.next()? == "1";
             let pid = words.next()?.parse().ok()?;
             let started_ms = words.next()?.parse().ok()?;
             let recent = words
@@ -775,6 +917,7 @@ pub fn decode(bytes: &[u8]) -> Vec<Record> {
                 recent,
                 gave_up,
                 stopped,
+                keep,
                 pid,
                 started_ms,
             })

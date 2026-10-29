@@ -45,3 +45,10 @@ path = ["assets/fonts/JetBrainsMono-Variable.ttf", "assets/fonts/JetBrainsMono-O
 precedence = "closest"
 SPDX-FileCopyrightText = "2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono)"
 SPDX-License-Identifier = "OFL-1.1"
+
+# xcc's compiler and headers, unchanged (ADR 0012 D2; third_party/xcc/UPSTREAM.toml).
+[[annotations]]
+path = "third_party/xcc/**"
+precedence = "closest"
+SPDX-FileCopyrightText = "2024 tyfkda"
+SPDX-License-Identifier = "MIT"

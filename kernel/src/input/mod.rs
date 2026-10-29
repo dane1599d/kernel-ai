@@ -313,6 +313,11 @@ fn has_events() -> bool {
     x86_64::instructions::interrupts::without_interrupts(|| QUEUE_LOCK.lock().len > 0)
 }
 
+/// Whether events wait in the queue, unread by `desktop`.
+pub fn pending() -> bool {
+    has_events()
+}
+
 /// Takes up to `out.len()` events, waiting up to `timeout_ms` for the first.
 pub fn read(out: &mut [InputEvent], timeout_ms: u64) -> usize {
     let deadline = hpet::nanos().saturating_add(timeout_ms.saturating_mul(1_000_000));

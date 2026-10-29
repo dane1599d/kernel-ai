@@ -24,6 +24,8 @@ pub struct Frame {
     /// What changed since the last frame, in window-local logical px.
     pub damage: Vec<Rect>,
     pub a11y: Vec<A11yNode>,
+    /// Whether the window holds changes not yet kept.
+    pub unsaved: bool,
 }
 
 pub struct Window {
@@ -37,6 +39,7 @@ pub struct Window {
     pub(crate) dirty: bool,
     /// Whether all of it must be redrawn (first frame, resize).
     full: bool,
+    unsaved: bool,
 }
 
 impl Window {
@@ -50,6 +53,7 @@ impl Window {
             last: None,
             dirty: true,
             full: true,
+            unsaved: false,
         }
     }
 
@@ -73,6 +77,19 @@ impl Window {
     pub fn set_title(&mut self, title: &str) {
         self.title = String::from(title);
         self.dirty = true;
+    }
+
+    /// Whether the window holds changes not yet kept; it shows at the next
+    /// commit, as the title does.
+    pub fn set_unsaved(&mut self, unsaved: bool) {
+        if self.unsaved != unsaved {
+            self.unsaved = unsaved;
+            self.dirty = true;
+        }
+    }
+
+    pub fn unsaved(&self) -> bool {
+        self.unsaved
     }
 
     /// `desktop`'s configure: the window's new size.
@@ -162,6 +179,7 @@ impl Window {
             list,
             damage,
             a11y,
+            unsaved: self.unsaved,
         }
     }
 }

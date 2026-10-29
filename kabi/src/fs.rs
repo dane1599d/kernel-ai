@@ -83,6 +83,38 @@ pub const SYSTEM_PKG: u64 = Badge {
 }
 .raw();
 
+/// The badges of the startup `Dir`s `updated`'s plan line grants (ADR 0008
+/// §7, §10): `dir=trust` gives `/system/trust`, the cached TUF metadata, and
+/// `dir=updates` gives `/system/updates`, the staged releases and the handle
+/// the `update` snapshot is taken on. Fixed, as [`SYSTEM_PKG`] is.
+pub const SYSTEM_TRUST: u64 = Badge {
+    volume: SYSTEM,
+    file: false,
+    epoch: 0,
+    object: 2,
+}
+.raw();
+pub const SYSTEM_UPDATES: u64 = Badge {
+    volume: SYSTEM,
+    file: false,
+    epoch: 0,
+    object: 3,
+}
+.raw();
+
+/// The badge of the startup `Dir` a plan line's `dir=settings` grants:
+/// `/system/settings`, the Settings app's files (ADR 0004 §5), for a service
+/// that reads a setting. The kernel gives it READ and ENUMERATE only, and `fs`
+/// refuses any change through it. Fixed, as [`SYSTEM_PKG`] is; object 4 is
+/// lane C's `SYSTEM_APPS` (#350).
+pub const SYSTEM_SETTINGS: u64 = Badge {
+    volume: SYSTEM,
+    file: false,
+    epoch: 0,
+    object: 5,
+}
+.raw();
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,6 +148,18 @@ mod tests {
         // The fixed badges are three, and none is another's.
         assert_eq!(Badge::parse(SYSTEM_PKG).epoch, 0);
         const { assert!(SYSTEM_PKG != SYSTEM_STATE && SYSTEM_PKG != HOME_USER) };
+        let fixed = [
+            HOME_USER,
+            SYSTEM_STATE,
+            SYSTEM_PKG,
+            SYSTEM_TRUST,
+            SYSTEM_UPDATES,
+            SYSTEM_SETTINGS,
+        ];
+        for (i, a) in fixed.iter().enumerate() {
+            assert_eq!(Badge::parse(*a).epoch, 0);
+            assert!(fixed[i + 1..].iter().all(|b| b != a));
+        }
         assert_ne!(SYSTEM_STATE, HOME_USER);
         assert_eq!(Badge::parse(SYSTEM_STATE).volume, SYSTEM);
     }

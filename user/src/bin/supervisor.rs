@@ -10,12 +10,21 @@
 //! ONCE_CHECK against the call shown (ADR 0001 D6); a standing rule the caller
 //! holds, checked with RULE_CHECK; or, for a stop, an undo of the start the shell
 //! made as that log entry, with nothing changed since. A start needs none. Its
-//! own restarts need none either.
+//! own restarts need none either. `suspend <name>` and `resume <name>` run a
+//! standing instruction's `app_suspend` and `app_resume` (P3 task 11): with a
+//! rule, checked with RULE_CHECK, the kernel sends the app its `ctl` (APP_CTL)
+//! and the app's answer is the reply.
 //! `services` lists them, for the shell to tell a service from a process.
+//! A `start=demand` service is not started at boot: `demand <name>`, which only
+//! the kernel sends, when a call first waits for it, starts it (P3 task 12b).
 //! `profile <pid> <class> <pages|->` sets one process's CPU class and page quota
 //! for a resource profile (P3 task 12), for the shell alone: PROC_CLASS_SET and
 //! PROC_QUOTA_SET need SUPERVISE, and the kernel's floors refuse a protected
 //! process. The answer is what the process had, for `undo`.
+//! `keep <name> on|off`, also for the shell alone, keeps an app from napping
+//! (`supervise::keep`): the flag lives in its record and goes to it as `keep=1`
+//! at each start, and to a running app at once as the kernel's
+//! `ctl keep-running on|off`.
 
 #![no_std]
 #![no_main]
@@ -123,7 +132,8 @@ fn main() -> i32 {
             .find(|(_, name)| *name == service.spec.name)
             .map(|&(pid, _)| pid);
         service.record.pid = service.pid.unwrap_or(0);
-        // A `start=pkg` app waits for the store holder's `run`.
+        // A `start=pkg` app waits for the store holder's `run`, and a
+        // `start=demand` service for the kernel's `demand`.
         if service.pid.is_none()
             && !service.record.gave_up
             && !service.record.stopped
@@ -195,8 +205,14 @@ fn handle(services: &mut [Service], text: &str, caller: u64) -> String {
     if text.trim() == supervise::SERVICES {
         return supervise::listing(&records);
     }
+    if let Some(name) = supervise::parse_demand(text) {
+        return demand(services, &records, name, caller);
+    }
     if let Some(run) = supervise::Run::parse(text) {
         return run_package(services, run, caller);
+    }
+    if let Some((name, on)) = supervise::keep::parse(text) {
+        return keep(services, &records, name, on, caller);
     }
     let Some((request, proof)) = Request::parse(text) else {
         return String::from("err unknown request");
@@ -209,12 +225,16 @@ fn handle(services: &mut [Service], text: &str, caller: u64) -> String {
         println!("{text:?} refused: {why}");
         return why;
     }
-    let index = match supervise::check(request, &records) {
+    let starts: Vec<Start> = services.iter().map(|s| s.spec.start).collect();
+    let index = match supervise::check_for(request, &records, &starts) {
         Ok(index) => index,
         Err(why) => return String::from(why),
     };
     let service = &mut services[index];
     let name = service.spec.name.clone();
+    if let Request::Suspend(_) | Request::Resume(_) = request {
+        return app_ctl(&name, matches!(request, Request::Resume(_)));
+    }
     if let Proof::Undo(id) = proof
         && service.started_by != Some(id)
     {
@@ -241,6 +261,7 @@ fn handle(services: &mut [Service], text: &str, caller: u64) -> String {
             service.start_at_ms = Some(now_ms());
             println!("{name} started on request");
         }
+        Request::Suspend(_) | Request::Resume(_) => {}
         Request::Restart(_) => {
             service.record.stopped = false;
             service.record.gave_up = false;
@@ -260,6 +281,82 @@ fn handle(services: &mut [Service], text: &str, caller: u64) -> String {
     }
     save(services);
     String::from("ok")
+}
+
+/// `demand <name>` from the kernel: a call waits for `start=demand` service
+/// `name`, so it starts now (P3 task 12b).
+fn demand(services: &mut [Service], records: &[Record], name: &str, caller: u64) -> String {
+    let specs: Vec<&ServiceSpec> = services.iter().map(|s| &s.spec).collect();
+    let starting: Vec<bool> = services.iter().map(|s| s.start_at_ms.is_some()).collect();
+    match supervise::check_demand(name, &specs, records, caller, &starting) {
+        Ok(Some(index)) => {
+            services[index].start_at_ms = Some(now_ms());
+            println!("{name} starts on demand");
+            String::from("ok")
+        }
+        Ok(None) => String::from("ok"),
+        Err(why) => why.into(),
+    }
+}
+
+/// `keep <name> on|off` from the shell: the flag goes in the app's record,
+/// which passes `keep=1` at each start, and a running app hears it at once.
+fn keep(services: &mut [Service], records: &[Record], name: &str, on: bool, caller: u64) -> String {
+    let specs: Vec<&ServiceSpec> = services.iter().map(|s| &s.spec).collect();
+    let shell = services
+        .iter()
+        .find(|s| s.spec.name == "shell")
+        .and_then(|s| s.pid);
+    let index = match supervise::keep::check(name, &specs, records, caller, shell) {
+        Ok(index) => index,
+        Err(why) => {
+            println!(
+                "{:?} from pid {caller} refused: {why}",
+                supervise::keep::encode(name, on)
+            );
+            return String::from(why);
+        }
+    };
+    services[index].record.keep = on;
+    save(services);
+    let word = if on { "on" } else { "off" };
+    if services[index].pid.is_none() {
+        println!("{name} keep-running {word}, from its next start");
+        return format!("ok keep-running {word}");
+    }
+    let verb = if on {
+        sys::AppCtl::KeepOn
+    } else {
+        sys::AppCtl::KeepOff
+    };
+    send_ctl(name, verb)
+}
+
+/// `ctl suspend` (or, `resume`, `ctl resume`) to app `name` through the kernel:
+/// the app's own answer, `ok ...` or `err ...`.
+fn app_ctl(name: &str, resume: bool) -> String {
+    send_ctl(
+        name,
+        if resume {
+            sys::AppCtl::Resume
+        } else {
+            sys::AppCtl::Suspend
+        },
+    )
+}
+
+/// `verb`'s `ctl` request to app `name` through the kernel (APP_CTL): the
+/// app's own answer.
+fn send_ctl(name: &str, verb: sys::AppCtl) -> String {
+    let mut reply = [0u8; 256];
+    match sys::app_ctl(name, verb, &mut reply) {
+        Ok(len) => {
+            let text = String::from_utf8_lossy(&reply[..len.min(reply.len())]).into_owned();
+            println!("{name} {}: {text}", verb.word());
+            text
+        }
+        Err(error) => format!("err cannot reach {name}: {error:?}"),
+    }
 }
 
 /// `profile <pid> <class> <pages|->`, from the shell only: the class, then the
@@ -375,7 +472,7 @@ fn run_package(services: &mut [Service], run: supervise::Run, caller: u64) -> St
 
 fn start(service: &mut Service, now: u64) {
     let version = match (service.spec.start, &service.version) {
-        (Start::Boot, _) => String::new(),
+        (Start::Boot | Start::Demand, _) => String::new(),
         (Start::Pkg, Some(version)) => format!(" version={version}"),
         (Start::Pkg, None) => {
             println!("{} waits for pkg to name its version", service.spec.name);
@@ -384,8 +481,12 @@ fn start(service: &mut Service, now: u64) {
         }
     };
     // The restart count goes to the program, so a restart is visible from outside.
+    let keep = match service.record.keep {
+        true => format!(" {}", supervise::keep::ARG),
+        false => String::new(),
+    };
     let args = format!(
-        "restart={} {}{version}",
+        "restart={} {}{version}{keep}",
         service.record.restarts, service.spec.args
     );
     let name = service.spec.name.as_bytes();
