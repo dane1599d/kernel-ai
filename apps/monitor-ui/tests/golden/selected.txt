@@ -3,7 +3,7 @@ node 0 clip 0,0 640x440
 node 3 clip 0,0 640x440
   text 12,12 body text "CPUs: 4"
 node 4 clip 0,0 640x440
-  text 68,12 body muted "Up 12m 34s"
+  text 68,12 body muted "Up 12m 36s"
 node 5 clip 0,0 640x440
   fill 12,51 160x6 line r3
   fill 12,51 101x6 accent r3
@@ -45,15 +45,15 @@ node 12 clip 0,0 640x440
   text 167,139 body text "61.2%"
   text 167,163 body text "8.0%"
   text 167,187 body text "0.5%"
-  text 167,211 body text "-"
+  text 167,211 body text "0.0%"
   text 227,116 label muted "Memory"
   text 227,139 body text "2.2 GiB"
   text 227,163 body text "40.0 MiB"
   text 227,187 body text "300 KiB"
-  text 227,211 body text "-"
+  text 227,211 body text "160 KiB"
   fill 13,136 614x1 line r0
 node 13 clip 0,0 640x440
-  text 12,348 body text "Model: answering, 12.5 tokens/s"
+  text 12,348 body text "Model: ready, 12.5 tokens/s"
 node 15 clip 0,0 640x440
   fill 12,376 52x28 raised r6
   stroke 12,376 52x28 line_strong w1 r6

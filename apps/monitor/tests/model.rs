@@ -1,264 +1,302 @@
-//! The monitor model on the host: what it asks the OS for, how it reads the
-//! answers, how it sorts and selects, and that hostile answers change nothing
-//! but what the window shows. The fake queue gives tickets from 1.
+//! The monitor model on the host: how it reads a sample, how two samples make a
+//! CPU share, how it sorts and selects, what it asks the OS to stop, and that
+//! odd numbers change nothing but what the window shows.
 
 #[path = "../../../testkit/hostile.rs"]
 mod hostile;
 
 use comp_monitor::fake::Queue;
-use comp_monitor::rows::{self, MAX_PROCS, NAME_CHARS};
-use comp_monitor::{Monitor, Sort, Status, view};
+use comp_monitor::sample::{ModelState, ModelStatus, ProcSample, Sample};
+use comp_monitor::{MAX_PROCS, Monitor, NAME_CHARS, Sort, Status, view};
 
-const PROCS: &str = r#"[{pid: 1, name: "supervisor", cpu-permille: some(5), mem-kib: some(300)},
- {pid: 4, name: "llm", cpu-permille: some(612), mem-kib: some(2400000)},
- {pid: 7, name: "desktop", cpu-permille: some(80), mem-kib: some(41000)},
- {pid: 9, name: "shell", cpu-permille: none, mem-kib: none}]"#;
-const MEMORY: &str = "{free-mib: 1500, total-mib: 4096, heap-kib: 820}";
-const MODEL: &str = r#"{state: "answering", tokens-per-s-x10: some(125)}"#;
+const MS: u64 = 1_000_000;
+const SEC: u64 = 1_000_000_000;
 
-struct App {
-    mon: Monitor,
-    os: Queue,
+const READY: ModelStatus = ModelStatus {
+    state: ModelState::Ready,
+    tps10: 125,
+};
+
+fn proc(pid: u32, name: &str, pages: u64, cpu_ns: u64) -> ProcSample {
+    ProcSample {
+        pid,
+        name: name.into(),
+        pages,
+        cpu_ns,
+    }
 }
 
-impl App {
-    fn new() -> Self {
-        Self {
-            mon: Monitor::new(),
-            os: Queue::default(),
-        }
+/// A 4-CPU machine with 1,500 of 4,096 MiB free, `uptime_ns` after boot.
+fn sample(uptime_ns: u64, procs: Vec<ProcSample>) -> Sample {
+    Sample {
+        uptime_ns,
+        cpus: 4,
+        free_pages: 1500 * 256,
+        total_pages: 4096 * 256,
+        heap_bytes: 820 * 1024,
+        procs,
+        omitted: 0,
+        model: READY,
     }
+}
 
-    /// A refresh, answered with the usual numbers.
-    fn full() -> Self {
-        let mut app = Self::new();
-        app.mon.refresh(&mut app.os);
-        app.answer("processes", Ok(PROCS));
-        app.answer("memory", Ok(MEMORY));
-        app.answer("cpus", Ok("4"));
-        app.answer("uptime_ms", Ok("754000"));
-        app.answer("model_state", Ok(MODEL));
-        app
-    }
+/// The usual four processes, with CPU time that grows by `step` a second.
+fn usual(uptime_ns: u64, step: u64) -> Sample {
+    let t = uptime_ns / SEC;
+    sample(
+        uptime_ns,
+        vec![
+            proc(1, "supervisor", 75, 5 * MS * t),
+            proc(4, "llm", 600_000, step * t),
+            proc(7, "desktop", 10_250, 80 * MS * t),
+            proc(9, "shell", 40, 0),
+        ],
+    )
+}
 
-    fn answer(&mut self, row: &str, outcome: Result<&str, &str>) -> bool {
-        let ticket = self.os.ticket_of(row).expect("the row was asked");
-        let outcome = outcome.map(String::from).map_err(String::from);
-        self.mon.done(&mut self.os, ticket, outcome)
-    }
+fn names(mon: &Monitor) -> Vec<&str> {
+    mon.procs().iter().map(|p| p.name.as_str()).collect()
+}
 
-    fn names(&self) -> Vec<&str> {
-        self.mon.procs().iter().map(|p| p.name.as_str()).collect()
-    }
+/// A monitor that has seen the usual machine at 1 s and 2 s.
+fn running() -> Monitor {
+    let mut mon = Monitor::new();
+    mon.update(&usual(SEC, 612 * MS));
+    mon.update(&usual(2 * SEC, 612 * MS));
+    mon
 }
 
 #[test]
-fn a_refresh_asks_five_reads_and_none_changes_anything() {
-    let mut app = App::new();
-    app.mon.refresh(&mut app.os);
-    let names: Vec<_> = app.os.calls.iter().map(|c| c.name).collect();
+fn a_sample_fills_the_window_and_the_first_has_no_shares() {
+    let mut mon = Monitor::new();
+    mon.update(&usual(SEC, 612 * MS));
+    assert_eq!(mon.cpus(), Some(4));
+    assert_eq!(mon.uptime_ms(), Some(1000));
+    let memory = mon.memory().unwrap();
     assert_eq!(
-        names,
-        ["processes", "memory", "cpus", "uptime_ms", "model_state"]
+        (memory.free_mib, memory.total_mib, memory.heap_kib),
+        (1500, 4096, 820)
     );
-    assert!(app.os.calls.iter().all(|c| c.args == "{}"));
-    assert!(app.mon.busy());
+    assert_eq!(mon.model(), READY);
+    let llm = mon.procs().iter().find(|p| p.name == "llm").unwrap();
+    // Pages are 4 KiB; the share needs a second sample.
+    assert_eq!((llm.mem_kib, llm.cpu_permille), (Some(2_400_000), None));
+    assert_eq!(mon.status(), &Status::Ready);
 }
 
 #[test]
-fn the_answers_fill_the_window_with_the_busiest_first() {
-    let app = App::full();
-    assert!(!app.mon.busy());
-    assert_eq!(app.names(), ["llm", "desktop", "supervisor", "shell"]);
-    assert_eq!(app.mon.cpus(), Some(4));
-    assert_eq!(app.mon.uptime_ms(), Some(754_000));
-    assert_eq!(app.mon.memory().unwrap().free_mib, 1500);
-    assert_eq!(app.mon.model().unwrap().state, "answering");
-    assert_eq!(app.mon.model().unwrap().tokens_per_s_x10, Some(125));
-    assert_eq!(app.mon.status(), &Status::Ready);
-}
-
-#[test]
-fn the_rows_as_they_are_today_still_read() {
-    // `processes` gives only pid and name; the other columns are unknown.
-    let mut app = App::new();
-    app.mon.refresh(&mut app.os);
-    app.answer(
-        "processes",
-        Ok(r#"[{pid: 3, name: "shell"}, {pid: 1, name: "supervisor"}]"#),
-    );
-    app.answer("memory", Ok("{free_mib: 10, total_mib: 20, heap_kib: 5}"));
-    app.answer("model_state", Err("no such row"));
-    assert_eq!(app.names(), ["supervisor", "shell"]);
-    assert!(
-        app.mon
-            .procs()
+fn two_samples_make_each_processes_cpu_share() {
+    let mon = running();
+    let share = |name: &str| {
+        mon.procs()
             .iter()
-            .all(|p| p.cpu_permille.is_none() && p.mem_kib.is_none())
-    );
-    assert_eq!(app.mon.memory().unwrap().total_mib, 20);
-    // No model row is not a failure.
-    assert_eq!(app.mon.model(), None);
-    assert_eq!(app.mon.status(), &Status::Ready);
+            .find(|p| p.name == name)
+            .unwrap()
+            .cpu_permille
+    };
+    // dcpu_ns * 1000 / duptime_ns: 612 ms of CPU in one second is 612.
+    assert_eq!(share("llm"), Some(612));
+    assert_eq!(share("desktop"), Some(80));
+    assert_eq!(share("supervisor"), Some(5));
+    assert_eq!(share("shell"), Some(0));
+    assert_eq!(names(&mon), ["llm", "desktop", "supervisor", "shell"]);
+}
+
+#[test]
+fn a_share_is_over_the_time_between_samples_and_no_more_than_the_cpus_have() {
+    let mut mon = Monitor::new();
+    mon.update(&sample(
+        10 * SEC,
+        vec![proc(4, "llm", 1, 0), proc(5, "hog", 1, 0)],
+    ));
+    // Half a second later: 100 ms of CPU is 200; nine seconds of it, on four
+    // CPUs, cannot be more than 4,000.
+    mon.update(&sample(
+        10 * SEC + SEC / 2,
+        vec![proc(4, "llm", 1, 100 * MS), proc(5, "hog", 1, 9 * SEC)],
+    ));
+    let share = |name: &str| {
+        mon.procs()
+            .iter()
+            .find(|p| p.name == name)
+            .unwrap()
+            .cpu_permille
+    };
+    assert_eq!(share("llm"), Some(200));
+    assert_eq!(share("hog"), Some(4000));
+}
+
+#[test]
+fn two_reads_in_the_same_instant_keep_the_older_baseline() {
+    let mut mon = Monitor::new();
+    mon.update(&usual(SEC, 500 * MS));
+    // Same uptime again: no time passed, so no share, and the baseline stays.
+    mon.update(&usual(SEC, 500 * MS));
+    assert!(mon.procs().iter().all(|p| p.cpu_permille.is_none()));
+    // A second later the share is against the first sample.
+    mon.update(&usual(2 * SEC, 500 * MS));
+    let llm = mon.procs().iter().find(|p| p.name == "llm").unwrap();
+    assert_eq!(llm.cpu_permille, Some(500));
+}
+
+#[test]
+fn a_new_process_under_an_old_pid_or_a_clock_gone_back_gives_no_share() {
+    let mut mon = running();
+    // llm restarted: same pid and name, less CPU time than before.
+    mon.update(&sample(3 * SEC, vec![proc(4, "llm", 1, 10 * MS)]));
+    assert_eq!(mon.procs()[0].cpu_permille, None);
+    // The pid was reused by another program.
+    mon.update(&sample(4 * SEC, vec![proc(4, "other", 1, 900 * MS)]));
+    assert_eq!(mon.procs()[0].cpu_permille, None);
+    // Time went backwards (a reboot): no share, and a fresh baseline.
+    mon.update(&sample(SEC, vec![proc(4, "other", 1, 50 * MS)]));
+    assert_eq!(mon.procs()[0].cpu_permille, None);
+    mon.update(&sample(2 * SEC, vec![proc(4, "other", 1, 150 * MS)]));
+    assert_eq!(mon.procs()[0].cpu_permille, Some(100));
+}
+
+#[test]
+fn what_the_kernel_could_not_say_reads_as_unknown() {
+    let mut mon = Monitor::new();
+    let mut s = usual(SEC, 500 * MS);
+    s.cpus = 0;
+    s.total_pages = 0;
+    s.model = ModelStatus::UNKNOWN;
+    s.omitted = 3;
+    mon.update(&s);
+    assert_eq!((mon.cpus(), mon.memory()), (None, None));
+    assert_eq!(mon.model().state, ModelState::Unknown);
+    assert_eq!(mon.omitted(), 3);
+    // More free than total is not a memory.
+    s.total_pages = 10;
+    s.free_pages = 20;
+    mon.update(&s);
+    assert_eq!(mon.memory(), None);
 }
 
 #[test]
 fn sorting_by_memory_names_the_top_process() {
-    let mut app = App::full();
-    let said = app.mon.act_sort("memory").unwrap();
-    assert_eq!(app.names(), ["llm", "desktop", "supervisor", "shell"]);
+    let mut mon = running();
+    let said = mon.act_sort("memory").unwrap();
+    assert_eq!(names(&mon), ["llm", "desktop", "supervisor", "shell"]);
     assert_eq!(
         said,
         "Sorted by memory. First: llm (pid 4), 2.2 GiB, 61.2% CPU."
     );
     assert_eq!(
-        app.mon.act_sort(" Name ").unwrap(),
+        mon.act_sort(" Name ").unwrap(),
         "Sorted by name. First: desktop (pid 7), 40.0 MiB, 8.0% CPU."
     );
-    assert_eq!(app.names(), ["desktop", "llm", "shell", "supervisor"]);
-    app.mon.act_sort("pid").unwrap();
-    assert_eq!(app.names(), ["supervisor", "llm", "desktop", "shell"]);
-    assert!(app.mon.act_sort("colour").is_err());
-    assert!(app.mon.act_sort("").is_err());
+    assert_eq!(names(&mon), ["desktop", "llm", "shell", "supervisor"]);
+    mon.act_sort("pid").unwrap();
+    assert_eq!(names(&mon), ["supervisor", "llm", "desktop", "shell"]);
+    assert!(mon.act_sort("colour").is_err());
+    assert!(mon.act_sort("").is_err());
     assert_eq!(Sort::parse("MEMORY"), Some(Sort::Memory));
 }
 
 #[test]
 fn a_second_press_reverses_and_unknowns_stay_last() {
-    let mut app = App::full();
-    app.mon.press_sort(Sort::Memory);
-    assert_eq!(app.names().last(), Some(&"shell"));
-    app.mon.press_sort(Sort::Memory);
-    assert!(app.mon.flipped());
-    // Smallest first; the process with no figure is still last.
-    assert_eq!(app.names(), ["supervisor", "desktop", "llm", "shell"]);
-    app.mon.press_sort(Sort::Cpu);
-    assert!(!app.mon.flipped());
-    assert_eq!(app.names()[0], "llm");
+    let mut mon = Monitor::new();
+    // The first sample has no shares: every CPU figure is unknown.
+    mon.update(&usual(SEC, 612 * MS));
+    mon.press_sort(Sort::Cpu);
+    assert_eq!(names(&mon), ["supervisor", "llm", "desktop", "shell"]);
+    let mut mon = running();
+    mon.press_sort(Sort::Memory);
+    assert_eq!(mon.procs()[0].name, "llm");
+    mon.press_sort(Sort::Memory);
+    assert!(mon.flipped());
+    // Smallest first.
+    assert_eq!(names(&mon), ["shell", "supervisor", "desktop", "llm"]);
+    mon.press_sort(Sort::Cpu);
+    assert!(!mon.flipped());
+    assert_eq!(names(&mon)[0], "llm");
 }
 
 #[test]
-fn selecting_by_name_or_row_keeps_the_process_through_a_refresh() {
-    let mut app = App::full();
+fn selecting_by_name_or_row_keeps_the_process_through_a_new_sample() {
+    let mut mon = running();
     assert_eq!(
-        app.mon.act_select("DESKTOP").unwrap(),
+        mon.act_select("DESKTOP").unwrap(),
         "Selected desktop (pid 7), 40.0 MiB, 8.0% CPU."
     );
-    assert_eq!(app.mon.selected().unwrap().pid, 7);
-    assert!(app.mon.act_select("nothing").is_err());
-    assert!(app.mon.select_index(0));
-    assert_eq!(app.mon.selected().unwrap().pid, 4);
-    assert!(!app.mon.select_index(99));
+    assert_eq!(mon.selected().unwrap().pid, 7);
+    assert!(mon.act_select("nothing").is_err());
+    assert!(mon.select_index(0));
+    assert_eq!(mon.selected().unwrap().pid, 4);
+    assert!(!mon.select_index(99));
 
-    // After a refresh in another order, the same process is still selected.
-    app.mon.refresh(&mut app.os);
-    app.answer(
-        "processes",
-        Ok(r#"[{pid: 9, name: "shell"}, {pid: 4, name: "llm"}]"#),
-    );
-    assert_eq!(app.mon.selected().unwrap().name, "llm");
+    // After a sample in another order, the same process is still selected.
+    mon.update(&sample(
+        3 * SEC,
+        vec![proc(9, "shell", 40, 0), proc(4, "llm", 600_000, 2 * SEC)],
+    ));
+    assert_eq!(mon.selected().unwrap().name, "llm");
+    assert_eq!(mon.selected_index(), Some(0));
     // And when it is gone, nothing is.
-    app.mon.refresh(&mut app.os);
-    app.answer("processes", Ok(r#"[{pid: 9, name: "shell"}]"#));
-    assert!(app.mon.selected().is_none());
-    assert_eq!(app.mon.selected_index(), None);
+    mon.update(&sample(4 * SEC, vec![proc(9, "shell", 40, 0)]));
+    assert!(mon.selected().is_none());
+    assert_eq!(mon.selected_index(), None);
 }
 
 #[test]
 fn stopping_asks_the_os_by_name_and_only_for_a_name_it_can_give() {
-    let mut app = App::full();
-    app.mon.stop_selected(&mut app.os);
+    let mut os = Queue::default();
+    let mut mon = running();
+    mon.stop_selected(&mut os);
     assert_eq!(
-        app.mon.status(),
+        mon.status(),
         &Status::Failed("Pick a process to stop first.".into())
     );
-    let before = app.os.calls.len();
-    app.mon.act_select("llm").unwrap();
-    app.mon.stop_selected(&mut app.os);
-    let call = app.os.calls.last().unwrap();
+    assert!(os.calls.is_empty());
+
+    mon.act_select("llm").unwrap();
+    mon.stop_selected(&mut os);
+    let call = &os.calls[0];
     assert_eq!(
         (call.name, call.args.as_str()),
         ("process_stop", r#"{name: "llm"}"#)
     );
-    assert_eq!(app.os.calls.len(), before + 1);
+    assert!(mon.busy());
 
-    // The user said no, or the row refused: the status says so, nothing else moves.
-    app.answer("process_stop", Err("not allowed"));
-    assert_eq!(app.mon.status(), &Status::Failed("not allowed".into()));
-    assert_eq!(app.os.calls.len(), before + 1);
+    // The user said no, or the row refused: the status says so.
+    assert!(mon.done(1, Err("not allowed".into())));
+    assert_eq!(mon.status(), &Status::Failed("not allowed".into()));
+    assert!(!mon.busy());
 
-    // It stopped: the monitor reads everything again.
-    app.mon.stop_selected(&mut app.os);
-    let asked = app.os.calls.len();
-    app.answer("process_stop", Ok(""));
-    assert_eq!(app.os.calls.len(), asked + 5);
-    assert_eq!(app.mon.status(), &Status::Done("Stopped llm.".into()));
+    // It stopped.
+    mon.stop_selected(&mut os);
+    assert!(mon.done(2, Ok(String::new())));
+    assert_eq!(mon.status(), &Status::Done("Stopped llm.".into()));
+    // An answer to nothing asked is nothing.
+    assert!(!mon.done(99, Ok(String::new())));
 }
 
 #[test]
 fn a_name_that_was_cut_or_changed_is_never_given_to_the_stop_row() {
-    let mut app = App::new();
-    app.mon.refresh(&mut app.os);
+    let mut os = Queue::default();
+    let mut mon = Monitor::new();
     let long = "x".repeat(NAME_CHARS + 10);
-    app.answer(
-        "processes",
-        Ok(&format!(
-            r#"[{{pid: 1, name: "{long}"}}, {{pid: 2, name: "bad\u{{1b}}name"}}, {{pid: 3, name: "q\"uote"}}]"#
-        )),
-    );
-    for pid in [1, 2, 3] {
-        let i = app.mon.procs().iter().position(|p| p.pid == pid).unwrap();
-        assert!(app.mon.select_index(i));
-        let before = app.os.calls.len();
-        app.mon.stop_selected(&mut app.os);
-        assert_eq!(app.os.calls.len(), before, "pid {pid}");
-        assert!(matches!(app.mon.status(), Status::Failed(_)));
-    }
-    assert!(app.mon.procs().iter().all(
-        |p| p.name.chars().count() <= NAME_CHARS + 1 && p.name.chars().all(|c| !c.is_control())
+    mon.update(&sample(
+        SEC,
+        vec![
+            proc(1, &long, 1, 0),
+            proc(2, "bad\u{1b}name", 1, 0),
+            proc(3, "q\"uote", 1, 0),
+            proc(4, "back\\slash", 1, 0),
+        ],
     ));
-}
-
-#[test]
-fn an_answer_from_before_the_latest_refresh_is_dropped() {
-    let mut app = App::new();
-    app.mon.refresh(&mut app.os);
-    let old = app.os.ticket_of("processes").unwrap();
-    app.mon.refresh(&mut app.os);
-    assert!(!app.mon.done(&mut app.os, old, Ok(PROCS.into())));
-    assert!(app.mon.procs().is_empty());
-    assert!(!app.mon.done(&mut app.os, 9_999, Ok("4".into())));
-}
-
-#[test]
-fn bad_answers_say_which_row_was_wrong_and_leave_the_old_numbers() {
-    let mut app = App::full();
-    for (row, text, why) in [
-        ("processes", "not a list", "processes: "),
-        (
-            "memory",
-            "{free-mib: 5000, total-mib: 100, heap-kib: 1}",
-            "memory: ",
-        ),
-        (
-            "memory",
-            "{free-mib: -1, total-mib: 100, heap-kib: 1}",
-            "memory: ",
-        ),
-        ("cpus", "0", "cpus: "),
-        ("cpus", "\"four\"", "cpus: "),
-        ("uptime_ms", "-5", "uptime: "),
-    ] {
-        app.mon.refresh(&mut app.os);
-        app.answer(row, Ok(text));
-        let Status::Failed(msg) = app.mon.status() else {
-            panic!("{row} {text}");
-        };
-        assert!(msg.starts_with(why), "{msg}");
+    for pid in [1, 2, 3, 4] {
+        let i = mon.procs().iter().position(|p| p.pid == pid).unwrap();
+        assert!(mon.select_index(i));
+        mon.stop_selected(&mut os);
+        assert!(matches!(mon.status(), Status::Failed(_)), "pid {pid}");
     }
-    assert_eq!(app.mon.cpus(), Some(4));
-    assert_eq!(app.mon.memory().unwrap().total_mib, 4096);
-    assert_eq!(app.mon.procs().len(), 4);
+    assert!(os.calls.is_empty());
+    assert!(mon.procs().iter().all(|p| {
+        p.name.chars().count() <= NAME_CHARS + 1 && p.name.chars().all(|c| !c.is_control())
+    }));
 }
 
 #[test]
@@ -274,52 +312,61 @@ fn numbers_read_the_way_a_person_would() {
     assert_eq!(view::uptime(Some(7_500_000)), "2h 5m");
     assert_eq!(view::uptime(Some(100_000_000)), "1d 3h");
     assert_eq!(view::tokens(Some(125)), "12.5 tokens/s");
-    let m = rows::parse_memory(MEMORY).unwrap();
-    assert_eq!(view::used_permille(Some(m)), Some(633));
-    assert_eq!(view::memory_line(Some(m)), "2596 of 4096 MiB used");
-    let zero = rows::Memory {
-        free_mib: 0,
-        total_mib: 0,
-        heap_kib: 0,
-    };
-    assert_eq!(view::used_permille(Some(zero)), None);
+    let mon = running();
+    assert_eq!(view::used_permille(mon.memory()), Some(633));
+    assert_eq!(view::memory_line(mon.memory()), "2596 of 4096 MiB used");
 }
 
 #[test]
-fn hostile_answers_never_panic_and_stay_in_bounds() {
-    let samples: [&[u8]; 3] = [PROCS.as_bytes(), MEMORY.as_bytes(), MODEL.as_bytes()];
+fn any_numbers_at_all_leave_a_sane_window() {
     let mut rng = hostile::XorShift::new(0xbeef);
-    for round in 0..6_000 {
-        let bytes = hostile::mutate(&mut rng, samples[round % 3]);
-        let text = String::from_utf8_lossy(&bytes);
-        if let Ok(procs) = rows::parse_processes(&text) {
-            assert!(procs.len() <= MAX_PROCS);
-            for p in &procs {
-                assert!(p.name.chars().count() <= NAME_CHARS + 1);
-                assert!(p.name.chars().all(|c| !c.is_control()));
-            }
+    let extreme = |rng: &mut hostile::XorShift| match rng.below(4) {
+        0 => 0,
+        1 => u64::MAX,
+        2 => hostile::INTERESTING[rng.below(hostile::INTERESTING.len())],
+        _ => rng.next() % 5_000_000_000,
+    };
+    let mut mon = Monitor::new();
+    for _ in 0..3_000 {
+        let procs = (0..rng.below(30))
+            .map(|_| {
+                let long = "n".repeat(300);
+                let name = ["llm", "a\u{7}b", "", long.as_str()][rng.below(4)];
+                proc(
+                    rng.below(40) as u32,
+                    name,
+                    extreme(&mut rng),
+                    extreme(&mut rng),
+                )
+            })
+            .collect();
+        let s = Sample {
+            uptime_ns: extreme(&mut rng),
+            cpus: rng.below(9) as u32,
+            free_pages: extreme(&mut rng),
+            total_pages: extreme(&mut rng),
+            heap_bytes: extreme(&mut rng),
+            procs,
+            omitted: rng.next() as u32,
+            model: READY,
+        };
+        mon.update(&s);
+        assert!(mon.procs().len() <= MAX_PROCS);
+        for p in mon.procs() {
+            // A share is at most the CPUs the sample had.
+            let most = s.cpus.max(1) * 1000;
+            assert!(p.cpu_permille.is_none_or(|c| c <= most), "{p:?}");
+            assert!(p.name.chars().all(|c| !c.is_control()));
         }
-        if let Ok(m) = rows::parse_memory(&text) {
+        if let Some(m) = mon.memory() {
             assert!(m.free_mib <= m.total_mib);
         }
-        let _ = rows::parse_model(&text);
-        let _ = rows::parse_cpus(&text);
-        let _ = rows::parse_uptime(&text);
+        match rng.below(5) {
+            0 => mon.press_sort(Sort::ALL[rng.below(4)]),
+            1 => drop(mon.select_index(rng.below(35))),
+            _ => {}
+        }
+        // The selection, if any, is a row of the table.
+        assert_eq!(mon.selected().is_some(), mon.selected_index().is_some());
     }
-}
-
-#[test]
-fn a_huge_process_list_is_cut_and_a_huge_text_is_refused() {
-    let list: String = (0..300)
-        .map(|i| format!("{{pid: {i}, name: \"p{i}\"}}"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    assert_eq!(
-        rows::parse_processes(&format!("[{list}]")).unwrap().len(),
-        MAX_PROCS
-    );
-    let too_long = format!("[{}]", "{pid: 1, name: \"x\"}, ".repeat(10_000));
-    assert!(rows::parse_processes(&too_long).is_err());
-    let deep = format!("{}1{}", "[".repeat(5_000), "]".repeat(5_000));
-    assert!(rows::parse_processes(&deep).is_err());
 }
