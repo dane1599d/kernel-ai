@@ -213,4 +213,16 @@ pub(super) const CASES: &[TestCase] = &[
         store: Some(Fixture::Gguf),
         ..case("model-store", "test=model-store")
     },
+    // The same store with the hint's FNV-1a64 changed: what fs fills is refused.
+    TestCase {
+        expect: &[
+            "model: the model store's file is refused: its FNV-1a64 is not the hint's",
+            "model-store: the store's blob is refused",
+        ],
+        server: false,
+        data: Some(VIRTIO),
+        store: Some(Fixture::Gguf),
+        store_bad_fnv: true,
+        ..case("model-store-bad", "test=model-store bad")
+    },
 ];

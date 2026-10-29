@@ -93,8 +93,12 @@ pub fn check(cmdline: &str) -> Result<(), &'static str> {
 /// MODEL_FILL. The model must then be published, holding the file xtask
 /// imported (its length and FNV-1a64 on the command line), and MODEL_MAP no
 /// longer waits: `llm`, started before the fill ended, waited on Busy and now
-/// reports the same length and hash.
-pub fn store(cmdline: &str) -> Result<(), &'static str> {
+/// reports the same length and hash. With `bad`, the hint's FNV-1a64 is not
+/// the file's: the kernel must refuse what `fs` filled and publish nothing.
+pub fn store(cmdline: &str, bad: bool) -> Result<(), &'static str> {
+    if bad {
+        return refused();
+    }
     let attached = Attached::from_cmdline(cmdline);
     let (Some(len), Some(fnv)) = (attached.len, attached.fnv) else {
         return Err("model-store: the command line has no model_len= and model_fnv=");
@@ -134,6 +138,29 @@ pub fn store(cmdline: &str) -> Result<(), &'static str> {
         threads::sleep_ms(200);
     }
     log!("model-store: llm waited for the fill and maps the store's model");
+    Ok(())
+}
+
+/// `model-store`'s bad blob: the fill ends in a refusal, and no model is
+/// published.
+fn refused() -> Result<(), &'static str> {
+    let start = hpet::nanos();
+    let why = loop {
+        if let Some(why) = model::rejected() {
+            break why;
+        }
+        if model::get().is_some() {
+            return Err("model-store: a blob whose FNV-1a64 is not the hint's was published");
+        }
+        if hpet::nanos().saturating_sub(start) > STORE_WAIT_MS * 1_000_000 {
+            return Err("model-store: the bad blob was neither refused nor published in time");
+        }
+        threads::sleep_ms(50);
+    };
+    if model::get().is_some() || model::fill::pending() {
+        return Err("model-store: a refused model is still published or waited on");
+    }
+    log!("model-store: the store's blob is refused ({why}); no model is published");
     Ok(())
 }
 
