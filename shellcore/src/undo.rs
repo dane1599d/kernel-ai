@@ -227,9 +227,9 @@ fn revert_one(
         | Inverse::Refocus { .. }
         | Inverse::Reopen(_)
         | Inverse::Reclose { .. } => Err(Refused::Failed(String::from("it is put back by revert"))),
-        Inverse::Instruction { .. } | Inverse::Profile { .. } | Inverse::Keep { .. } => Err(Refused::Failed(
-            String::from("it is put back by the shell's own store"),
-        )),
+        Inverse::Instruction { .. } | Inverse::Profile { .. } | Inverse::Keep { .. } => Err(
+            Refused::Failed(String::from("it is put back by the shell's own store")),
+        ),
     }
 }
 
