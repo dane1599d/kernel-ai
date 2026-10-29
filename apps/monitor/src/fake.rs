@@ -1,7 +1,7 @@
 //! A stand-in for the OS's effect queue, for the host tests of this crate and of
 //! `comp-monitor-ui`: it keeps each call and gives tickets from 1.
 
-use crate::{Os, rows::Call};
+use crate::{Os, calls::Call};
 use alloc::vec::Vec;
 
 #[derive(Default)]

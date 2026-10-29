@@ -1,0 +1,41 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The Kernel AI contributors
+
+/// A look at the machine, for the System monitor (P4 task 9): the processes with
+/// their memory and CPU time, the CPUs and memory, and the model's state. Like
+/// `kai:edit` and `kai:settings`, this is a granted interface, not part of
+/// `kai:app` (which is frozen): only an app whose package holds the `system`
+/// grant can import it, and a component that imports it without the grant does
+/// not stage (`Reason::Link`). It adds no row for the AI and reads only; stopping
+/// a process stays the OS's `process_stop`, an effect that asks.
+///
+/// `read` only queues. The host takes the queue after the call, reads the
+/// kernel's `METRICS` and asks the llm service for its `health`, and tells the
+/// app the answer in a later call, so a call never waits on the system, and a
+/// version rehearsed beside the active one cannot read twice: only the shown
+/// version's queue is taken. The answer is one sample in the `systemabi` format
+/// (`KSY1`, little-endian numbers and length-prefixed names, at most 32 KiB);
+/// the app parses it as it would any input, and a sample it cannot parse is a
+/// reading it does not show.
+package kai:system@0.1.0;
+
+interface system {
+    /// Asks for one sample and returns its ticket. Refused (the call traps) when
+    /// 4 reads are waiting for the host already.
+    read: func() -> u32;
+}
+
+/// What the system answered.
+interface samples {
+    /// The answer to the read with this ticket: one sample, or why there is none
+    /// (the system could not be read, or the answer was too large; at most 200
+    /// printable ASCII bytes). A ticket is not reused while this instance runs; a
+    /// new instance starts again from 0.
+    on-sample: func(ticket: u32, outcome: result<list<u8>, string>);
+}
+
+/// An app that reads the machine: the two halves of the grant.
+world system-read {
+    import system;
+    export samples;
+}

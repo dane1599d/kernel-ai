@@ -86,6 +86,7 @@ fn rounds(pids: [u64; 2]) -> Result<(), &'static str> {
     let mut times = Vec::with_capacity(ROUNDS);
     let mut shootdowns = Vec::with_capacity(ROUNDS);
     let mut edits = Vec::with_capacity(ROUNDS);
+    let mut reads = Vec::with_capacity(ROUNDS);
     let mut rest = Vec::with_capacity(ROUNDS);
     for round in 0..ROUNDS {
         let node = grants::new_request(round as u64 + 1).map_err(|_| "shm: no request node")?;
@@ -112,9 +113,11 @@ fn rounds(pids: [u64; 2]) -> Result<(), &'static str> {
         }
         shm::SHOOTDOWN_NS.store(0, Ordering::Relaxed);
         shm::ON_REVOKE_NS.store(0, Ordering::Relaxed);
+        let reads_before = hpet::reads();
         let start = hpet::nanos();
         grants::revoke(node).map_err(|_| "shm: cannot revoke")?;
         let total = hpet::nanos() - start;
+        reads.push(hpet::reads() - reads_before);
         let on_revoke = shm::ON_REVOKE_NS.load(Ordering::Relaxed).min(total);
         let shootdown = shm::SHOOTDOWN_NS.load(Ordering::Relaxed).min(on_revoke);
         times.push(total);
@@ -160,6 +163,17 @@ fn rounds(pids: [u64; 2]) -> Result<(), &'static str> {
         us(&edits, 99),
         us(&rest, 50),
         us(&rest, 99)
+    );
+    reads.sort_unstable();
+    log!(
+        "shm: M6 clock: {}; HPET reads per revoke, every CPU's: p50 {}, max {}",
+        if hpet::tsc_clock() {
+            "the TSC"
+        } else {
+            "the HPET"
+        },
+        reads[ROUNDS / 2],
+        reads[ROUNDS - 1]
     );
     Ok(())
 }

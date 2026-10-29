@@ -86,6 +86,11 @@ pub enum SelfTest {
     Files {
         reread: bool,
     },
+    /// An app's state survives a reboot through its folder (P4): boot 1, then
+    /// boot 2 (`reread`).
+    AppSaved {
+        reread: bool,
+    },
     /// P2 task 8, `fs-restart`: `fs` killed mid-action leaves nothing half done,
     /// and a `File` handle works again.
     FilesRestart,
@@ -149,6 +154,8 @@ pub enum SelfTest {
     DeskPanel,
     /// An app's kai:ui window on the desktop, closed from its control (P3 task 9).
     UiWindow,
+    /// An unused app naps and a click wakes it (P3 task 12b).
+    DeskNap,
     /// Asks answered on `desktop`'s card, and on the console when it dies (P3 task 7).
     DeskCard,
     /// A standing instruction fired by Notes' window minimized and restored (P3 task 11).
@@ -275,6 +282,9 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=files" => Some(SelfTest::Files {
                 reread: cmdline.split_whitespace().any(|w| w == "reread"),
             }),
+            "test=app-saved" => Some(SelfTest::AppSaved {
+                reread: cmdline.split_whitespace().any(|w| w == "reread"),
+            }),
             "test=files-restart" => Some(SelfTest::FilesRestart),
             "test=files-dead-client" => Some(SelfTest::FilesDeadClient),
             "test=files-actions" => Some(SelfTest::FilesActions),
@@ -314,6 +324,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=desk-boot" => Some(SelfTest::DeskBoot),
             "test=desk-panel" => Some(SelfTest::DeskPanel),
             "test=ui-window" => Some(SelfTest::UiWindow),
+            "test=desk-nap" => Some(SelfTest::DeskNap),
             "test=desk-card" => Some(SelfTest::DeskCard),
             "test=desk-standing" => Some(SelfTest::DeskStanding),
             "test=ui-keys" => Some(SelfTest::UiKeys),
@@ -384,6 +395,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::ModelStore { .. }
             | SelfTest::ManyProcesses
             | SelfTest::Files { .. }
+            | SelfTest::AppSaved { .. }
             | SelfTest::FilesRestart
             | SelfTest::FilesDeadClient
             | SelfTest::PkgStore(_)
@@ -396,6 +408,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DeskBoot
             | SelfTest::DeskPanel
             | SelfTest::UiWindow
+            | SelfTest::DeskNap
             | SelfTest::DeskCard
             | SelfTest::DeskStanding
             | SelfTest::UiKeys
@@ -417,6 +430,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
         SelfTest::Live => format!("{}\n{}", kabi::plan::NOTES_TEST, crate::llm::plan_line()),
         SelfTest::Part => String::from(kabi::plan::FS),
         SelfTest::AppSuspend => kabi::plan::notes("2", None),
+        SelfTest::AppSaved { .. } => crate::saved_tests::plan(),
         SelfTest::AppOnDemand => crate::demand_tests::plan(),
         // llm first, so it asks for the model while fs still fills it.
         SelfTest::ModelStore { bad: false } => {
@@ -461,6 +475,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::Manifest
             | SelfTest::ManifestGood
             | SelfTest::Part
+            | SelfTest::AppSaved { .. }
             | SelfTest::ModelStore { .. }
             | SelfTest::Files { .. }
             | SelfTest::FilesRestart
@@ -555,6 +570,10 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
     if test == SelfTest::UiWindow {
         plan.push('\n');
         plan.push_str(crate::ui_tests::PLAN);
+    }
+    if test == SelfTest::DeskNap {
+        plan.push('\n');
+        plan.push_str(crate::nap_tests::PLAN);
     }
     if test == SelfTest::DeskStanding {
         plan.push('\n');

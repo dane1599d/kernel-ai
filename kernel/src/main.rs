@@ -84,6 +84,7 @@ mod memory;
 mod metrics;
 mod model;
 mod model_tests;
+mod nap_tests;
 mod net;
 mod net_commands;
 mod net_tests;
@@ -99,6 +100,7 @@ mod power;
 mod process;
 mod profile_tests;
 mod qemu;
+mod saved_tests;
 mod sched_control;
 mod sched_tests;
 mod script_tests;
@@ -347,6 +349,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Part => run_case(part_tests::check),
         SelfTest::ModelStore { bad } => run_case(|| model_tests::store(cmdline(), bad)),
         SelfTest::Files { .. } => run_case(|| files_tests::check(cmdline())),
+        SelfTest::AppSaved { reread } => run_case(|| saved_tests::check(reread)),
         SelfTest::FilesRestart => run_case(files_tests::restart),
         SelfTest::FilesDeadClient => run_case(files_tests::dead_client),
         SelfTest::FilesActions => run_case(files_tests::actions),
@@ -371,6 +374,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::DeskBoot => run_case(desk_tests::boot_check),
         SelfTest::DeskPanel => run_case(desk_tests::panel_check),
         SelfTest::UiWindow => run_case(ui_tests::check),
+        SelfTest::DeskNap => run_case(nap_tests::check),
         SelfTest::DeskCard => run_case(card_tests::check),
         SelfTest::DeskStanding => run_case(standing_tests::check),
         SelfTest::UiKeys => run_case(keys_tests::check),
