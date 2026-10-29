@@ -275,6 +275,7 @@ fn state_round_trips_and_damage_is_ignored() {
             recent: vec![10, 20, 30],
             gave_up: false,
             stopped: false,
+            keep: true,
             pid: 42,
             started_ms: 1234,
         },
@@ -285,6 +286,7 @@ fn state_round_trips_and_damage_is_ignored() {
             recent: vec![],
             gave_up: true,
             stopped: true,
+            keep: false,
             pid: 0,
             started_ms: 0,
         },
@@ -293,7 +295,7 @@ fn state_round_trips_and_damage_is_ignored() {
     assert!(decode(b"").is_empty());
     assert!(decode(b"garbage").is_empty());
     assert!(decode(&[0xFF, 0xFE]).is_empty());
-    let damaged = alloc::format!("{STATE_MAGIC}\ncrasher x 1 0 0 0 0\nhog 2 0 0 0 7 99");
+    let damaged = alloc::format!("{STATE_MAGIC}\ncrasher x 1 0 0 0 0 0\nhog 2 0 0 0 0 7 99");
     // State in an older layout reads as none rather than as shifted fields.
     assert!(decode(b"supervisor-state 2\nhog 2 0 0 7").is_empty());
     assert_eq!(decode(damaged.as_bytes()).len(), 1);
@@ -308,6 +310,73 @@ hog 2 1 0 7 99 5",
         (2, 7, vec![5])
     );
     assert!(!old[0].stopped);
+    // Version 4 had no keep flag: its records carry over, none kept, a stop kept.
+    let old = decode(
+        b"supervisor-state 4
+hog 2 1 0 1 7 99 5",
+    );
+    assert_eq!(old.len(), 1);
+    assert_eq!(
+        (
+            old[0].stopped,
+            old[0].keep,
+            old[0].pid,
+            old[0].recent.clone()
+        ),
+        (true, false, 7, vec![5])
+    );
+}
+
+#[test]
+fn keep_requests_parse() {
+    assert_eq!(keep::parse("keep notes on"), Some(("notes", true)));
+    assert_eq!(keep::parse("keep notes off"), Some(("notes", false)));
+    assert_eq!(
+        keep::parse(&keep::encode("files-window", true)),
+        Some(("files-window", true))
+    );
+    for bad in [
+        "keep",
+        "keep notes",
+        "keep notes yes",
+        "keep notes on now",
+        "keep no/tes on",
+        "keep  on",
+        "stop notes",
+        "",
+    ] {
+        assert_eq!(keep::parse(bad), None, "{bad:?}");
+    }
+}
+
+#[test]
+fn only_the_shell_keeps_only_apps_running() {
+    let plan = parse_plan(
+        "notes program=comphost caps=serve+component\nshell caps=serve\nfiles caps=serve\nllm program=comphost caps=serve",
+    );
+    assert_eq!(plan.errors, Vec::<String>::new());
+    let specs: Vec<&ServiceSpec> = plan.services.iter().collect();
+    let records: Vec<Record> = specs.iter().map(|s| Record::new(&s.name)).collect();
+    let shell = Some(3);
+    assert_eq!(keep::check("notes", &specs, &records, 3, shell), Ok(0));
+    // Anyone else, or with no shell running, is refused.
+    assert!(keep::check("notes", &specs, &records, 4, shell).is_err());
+    assert!(keep::check("notes", &specs, &records, 0, shell).is_err());
+    assert!(keep::check("notes", &specs, &records, 3, None).is_err());
+    // Only an app's line naps, so only it may be kept.
+    assert_eq!(
+        keep::check("files", &specs, &records, 3, shell),
+        Err("err not an app")
+    );
+    assert_eq!(
+        keep::check("nobody", &specs, &records, 3, shell),
+        Err("err unknown service")
+    );
+    // A protected name is refused even on a comphost line.
+    assert_eq!(
+        keep::check("llm", &specs, &records, 3, shell),
+        Err("err protected")
+    );
 }
 
 #[test]

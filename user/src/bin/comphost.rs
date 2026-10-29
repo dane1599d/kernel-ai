@@ -131,6 +131,7 @@ fn main() -> i32 {
         }
     };
     let mut napper = Napper::new(Nap::new(settings.nap_ms, now_ms()));
+    napper.nap.keep_running(settings.keep_running);
     let mut host = match Host::start(env, &name, settings) {
         Ok(host) => host,
         Err(exit) => {
