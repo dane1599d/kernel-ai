@@ -20,8 +20,9 @@ const CALLS: &[u64] = &[
 
 /// How long a suspend or resume may take: saving and restoring the app's state.
 const CTL_MS: u64 = 60_000;
-/// How long an app's action may take.
-const APP_CALL_MS: u64 = 30_000;
+/// The longest an app's call may take: the supervisor waits on it, so a slow
+/// or hung app cannot hold it longer (`supervise::appcall::WAIT_MS`).
+const APP_CALL_MS: u64 = 5_000;
 /// The requests APP_CALL forwards, by their first line, and the one it
 /// forwards whole: `kai-actions 1`, the app's rows.
 const APP_REQUESTS: &[&[u8]] = &[b"kai-call 1\n", b"kai-undo 1\n"];
@@ -110,12 +111,18 @@ fn app_call(slot: usize, a: &[u64; 6]) -> Result<u64, Error> {
         return Err(Error::Invalid);
     }
     ipc::server_of(name).ok_or(Error::NotFound)?;
-    let reply = ipc::call(name, &request, APP_CALL_MS).map_err(|error| match error {
+    // The reply's room in the low half, the time the caller has left in the high.
+    let cap = a[5] & u64::from(u32::MAX);
+    let wait_ms = match a[5] >> 32 {
+        0 => APP_CALL_MS,
+        ms => ms.min(APP_CALL_MS),
+    };
+    let reply = ipc::call(name, &request, wait_ms).map_err(|error| match error {
         ipc::CallError::Unavailable => Error::NotFound,
         ipc::CallError::NoMemory => Error::NoMemory,
         _ => Error::TimedOut,
     })?;
-    let reply = &reply[..reply.len().min(usize::try_from(a[5]).unwrap_or(usize::MAX))];
+    let reply = &reply[..reply.len().min(usize::try_from(cap).unwrap_or(usize::MAX))];
     copy_to_user(slot, a[4], reply)?;
     Ok(reply.len() as u64)
 }

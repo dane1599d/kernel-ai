@@ -500,14 +500,15 @@ pub const EVENT_READ: u64 = 183;
 /// RULE_CHECK (P3 task 11): needs [`super::cap::SUPERVISE`]. NotFound with no
 /// such service; TimedOut when it does not answer.
 pub const APP_CTL: u64 = 184;
-/// `app_call(name_ptr, name_len, req_ptr, req_len, buf, cap) -> len`: the
+/// `app_call(name_ptr, name_len, req_ptr, req_len, buf, cap | wait_ms << 32) -> len`: the
 /// kernel sends `req`, a `kai-call 1`, a `kai-undo 1` or `kai-actions 1`, of at most
 /// [`super::ipc::MAX_MESSAGE`] bytes, to the app service `name` (a process
 /// holding [`super::cap::COMPONENT`]), and writes its reply into `buf`. For
 /// the supervisor, which forwards the agent core's calls to apps' actions (P4,
 /// a v0.1 bridge until per-app routes): needs [`super::cap::SUPERVISE`].
 /// NotFound at once when no such app serves, so the supervisor can start it;
-/// Invalid for any other request; TimedOut when it does not answer.
+/// Invalid for any other request; TimedOut when it does not answer within
+/// `wait_ms` (0, or more than 5,000, is 5,000).
 pub const APP_CALL: u64 = 185;
 
 // ---- S-io, second block, 190-191 ----
