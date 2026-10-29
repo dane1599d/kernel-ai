@@ -200,6 +200,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "comp-monitor"
+version = "0.1.0-dev"
+dependencies = [
+ "appabi",
+]
+
+[[package]]
+name = "comp-monitor-ui"
+version = "0.1.0-dev"
+dependencies = [
+ "agentabi",
+ "comp-monitor",
+ "uikit",
+]
+
+[[package]]
 name = "comp-notes"
 version = "0.1.0-dev"
 dependencies = [
@@ -264,6 +280,22 @@ dependencies = [
  "comp-settings",
  "kaigrants",
  "look",
+ "uikit",
+]
+
+[[package]]
+name = "comp-terminal"
+version = "0.1.0-dev"
+dependencies = [
+ "minicbor",
+ "termcore",
+]
+
+[[package]]
+name = "comp-terminal-ui"
+version = "0.1.0-dev"
+dependencies = [
+ "comp-terminal",
  "uikit",
 ]
 
@@ -513,6 +545,7 @@ dependencies = [
  "kabi",
  "livecore",
  "llmproto",
+ "termcore",
 ]
 
 [[package]]
@@ -2073,6 +2106,7 @@ dependencies = [
  "bootslot",
  "bpe",
  "cpufeat",
+ "deskcore",
  "diskmap",
  "ed25519-compact",
  "editcore",

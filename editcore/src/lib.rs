@@ -16,6 +16,7 @@ pub mod ipc;
 pub mod journal;
 pub mod rules;
 pub mod scenario;
+pub mod screen;
 pub mod service;
 pub mod session;
 #[cfg(test)]

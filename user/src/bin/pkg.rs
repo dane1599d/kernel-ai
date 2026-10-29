@@ -39,10 +39,12 @@ use fsproto::{Reply, Request};
 use kabi::Error;
 use kabi::handle::{Handle, HandleInfo, Kind, MAX_STARTUP, MAX_TRANSFER};
 use kaipkg::bundle;
+use kaipkg::catalog;
 use kaipkg::fsvol::{FsVolume, Transport};
 use kaipkg::generation::{Generation, Time};
 use kaipkg::header::{Header, Kind as PackageKind};
 use kaipkg::image::Files;
+use kaipkg::index::Index;
 use kaipkg::mirror::{self, Exchange, Mirror, TufCache};
 use kaipkg::resolve::{Entry, Want};
 use kaipkg::store::{self, Ctx, Ledger, Source, Store, Volume};
@@ -92,7 +94,80 @@ fn main() -> i32 {
             println!("pkg: FAIL cannot leave case/{step}.done: {why}");
         }
     }
-    idle()
+    serve(&mut vol)
+}
+
+/// What the image's repository and the mirror listed at this boot, as index
+/// entries, for the catalogue.
+static KNOWN: spin::Mutex<(Vec<Index>, Vec<Index>)> = spin::Mutex::new((Vec::new(), Vec::new()));
+
+/// After its step, `pkg` answers the Apps sheet's `catalog <offset>` (P4 task 3)
+/// on its endpoint; with no `serve` in its plan line it idles.
+fn serve(vol: &mut dyn Volume) -> ! {
+    let mut request = [0u8; 64];
+    loop {
+        let mut caller = 0;
+        match sys::svc_recv(&mut request, 60_000, &mut caller) {
+            Ok(len) => {
+                let text = core::str::from_utf8(&request[..len.min(request.len())]).unwrap_or("");
+                let reply = answer(vol, text);
+                if let Err(why) = sys::svc_reply(reply.as_bytes()) {
+                    println!("pkg: cannot answer {text:?}: {why:?}");
+                }
+            }
+            Err(Error::TimedOut) => {}
+            Err(_) => idle(),
+        }
+    }
+}
+
+/// `catalog` or `catalog <offset>`: one page of `kai-catalog 1`.
+fn answer(vol: &mut dyn Volume, text: &str) -> String {
+    let offset = match text.split_once(' ') {
+        None if text == "catalog" => Some(0),
+        Some(("catalog", n)) => n.parse::<usize>().ok(),
+        _ => None,
+    };
+    let Some(offset) = offset else {
+        return String::from("err unknown request");
+    };
+    match catalog_rows(vol) {
+        Ok(rows) => catalog::page(&rows, offset, kabi::MAX_MESSAGE),
+        Err(why) => format!("err {why}"),
+    }
+}
+
+/// The catalogue's rows: the current generation's packages, each with the index
+/// entry this boot saw for its object, or else its own header; then the image's
+/// and the mirror's offers.
+fn catalog_rows(vol: &mut dyn Volume) -> Result<Vec<catalog::Row>, String> {
+    let (image, mirror) = KNOWN.lock().clone();
+    let current = store::current(vol)?;
+    let mut installed = Vec::new();
+    for package in store::generation(vol, current)?.packages {
+        let seen = image.iter().chain(&mirror).find(|i| i.sha == package.sha);
+        let index = match seen {
+            Some(index) => Index {
+                grants: package.grants.clone(),
+                ..index.clone()
+            },
+            None => {
+                let object = vol
+                    .read(&store::object_path(&package.sha))?
+                    .ok_or_else(|| format!("{}'s object is not in the store", package.name))?;
+                let files = bundle::files(&object).map_err(String::from)?;
+                let text = files
+                    .first()
+                    .and_then(|(_, text)| core::str::from_utf8(text).ok())
+                    .ok_or_else(|| format!("{}: no header", package.name))?;
+                let header = Header::parse(text)?;
+                let size = object.len() as u64;
+                Index::of_header(&header, text, package.sha, size, package.grants.clone())
+            }
+        };
+        installed.push(index);
+    }
+    Ok(catalog::rows(&installed, &image, &mirror))
 }
 
 fn idle() -> ! {
@@ -199,6 +274,7 @@ fn image(vol: &mut FsVolume<Calls>, step: &str) -> Result<String, String> {
     let time = now(vol);
     let checked = kaipkg::image::check(&mut BootRepo, kaipkg::PROVIDED)
         .map_err(|why| format!("the image's repository is refused: {why}"))?;
+    KNOWN.lock().0 = checked.indexes.clone();
     for (path, why) in &checked.refused {
         println!("pkg: the image's {path} is refused: {why}");
     }
@@ -291,6 +367,7 @@ fn mirror(vol: &mut FsVolume<Calls>, step: &str) -> Result<String, String> {
     for (path, why) in &listing.refused {
         println!("pkg: the mirror's {path} is refused: {why}");
     }
+    KNOWN.lock().1 = listing.indexes.clone();
     let store = Store::default();
     let mut ledger = NoLedger;
     let mut cx = Ctx {

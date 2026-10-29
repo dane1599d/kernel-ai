@@ -151,6 +151,7 @@ pub fn run(loaded: &Loaded, seed: u64, target_dir: &Path) -> Result<(bool, Strin
             line: line.into(),
             state: String::new(),
             timeout_ms: TIMEOUT_MS,
+            read: None,
         };
         let started = std::time::Instant::now();
         // Rounds are the decodes (each starts with its cache count); tokens are
