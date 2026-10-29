@@ -27,6 +27,7 @@ pub mod model;
 pub mod modelhint;
 pub mod net;
 pub mod part;
+pub mod pkgrepo;
 pub mod plan;
 pub mod policy;
 pub mod probe;

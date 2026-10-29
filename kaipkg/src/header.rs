@@ -51,6 +51,21 @@ pub struct Depends {
     pub range: Range,
 }
 
+impl Depends {
+    /// `<name> <range>`, a `depends` line after its key, as a header and an
+    /// index entry's `depends` both hold it.
+    pub fn parse(text: &str) -> Result<Self, &'static str> {
+        let (name, range) = text.split_once(' ').ok_or("a depends line has no range")?;
+        if !name.starts_with("kai:") {
+            valid_name(name)?;
+        }
+        Ok(Depends {
+            name: name.into(),
+            range: Range::parse(range)?,
+        })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Header {
     pub name: String,
@@ -171,15 +186,7 @@ impl Header {
             rest = more;
         }
         while let Some(dep) = rest.first().and_then(|l| l.strip_prefix("depends ")) {
-            let (name, range) = dep.split_once(' ').ok_or("a depends line has no range")?;
-            if !name.starts_with("kai:") {
-                valid_name(name)?;
-            }
-            let range = Range::parse(range)?;
-            header.depends.push(Depends {
-                name: name.into(),
-                range,
-            });
+            header.depends.push(Depends::parse(dep)?);
             rest = &rest[1..];
         }
         if matches!(kind, Kind::Model | Kind::LinuxLayer) {

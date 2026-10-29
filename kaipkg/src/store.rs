@@ -68,6 +68,17 @@ pub trait Source {
     fn fetch(&mut self, entry: &Entry, offset: u64, len: usize) -> Result<Vec<u8>, String>;
 }
 
+/// An object already in memory, as the image's packages are.
+struct Local<'a>(&'a [u8]);
+
+impl Source for Local<'_> {
+    fn fetch(&mut self, _: &Entry, offset: u64, len: usize) -> Result<Vec<u8>, String> {
+        let start = (offset as usize).min(self.0.len());
+        let end = start.saturating_add(len).min(self.0.len());
+        Ok(self.0[start..end].to_vec())
+    }
+}
+
 /// The largest piece a download asks for: a 192 KiB body keeps the whole
 /// response under llm's 256 KiB limit (ADR 0011 §8).
 pub const PIECE: usize = 192 << 10;
@@ -245,6 +256,30 @@ impl Store {
         cx.ledger.switched(cx.vol, 1, &first)?;
         cx.vol.commit()?;
         Ok(true)
+    }
+
+    /// [`Store::setup`] from the image's checked packages ([`crate::image`]):
+    /// each object is stored, checked against its entry as a download is, then
+    /// generation 1 names them all, explicit, with their grants. Ok(false) when
+    /// the store already has a generation; then nothing is stored.
+    pub fn seed(&self, cx: &mut Ctx<'_>, image: &[(Entry, Vec<u8>)]) -> Result<bool, Error> {
+        if cx.vol.read(CURRENT)?.is_some() {
+            return Ok(false);
+        }
+        for (entry, bytes) in image {
+            self.fetch(cx, &mut Local(bytes), entry)?;
+        }
+        let packages = image
+            .iter()
+            .map(|(entry, _)| Installed {
+                name: entry.name.clone(),
+                version: entry.version,
+                sha: entry.sha,
+                explicit: true,
+                grants: entry.grants.clone(),
+            })
+            .collect();
+        self.setup(cx, packages)
     }
 
     /// The one transaction of a switch (S11-2): the new generation, `current`,
