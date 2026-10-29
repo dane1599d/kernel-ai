@@ -180,11 +180,13 @@ fn a_click_and_the_agent_reach_on_ui_as_the_same_event() {
     let at = Point::new(b.x + b.w / 2, b.y + b.h / 2);
     g.ui_input(w, Input::Button { at, down: true }).unwrap();
     g.ui_input(w, Input::Button { at, down: false }).unwrap();
+    assert!(g.last_call_by_user(), "a click is a person's input");
     // on-ui(window, pressed(1)): the window, case 0, node 1.
     let seen: Vec<u32> = (0..3).map(|i| word(&mut g, EVENT + 4 * i)).collect();
     assert_eq!((seen, word(&mut g, EVENT + 24)), (vec![w, 0, 1], 1));
     assert_eq!(g.ui_act(w, 1, Action::Click, None), Ok(Ok(())));
     assert_eq!(word(&mut g, EVENT + 24), 2);
+    assert!(!g.last_call_by_user(), "the agent's action is not");
     assert_eq!(
         g.ui_act(w, 9, Action::Click, None),
         Ok(Err(crate::ActRefused::Node(uikit::ActError::NoNode)))

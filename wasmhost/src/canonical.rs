@@ -41,12 +41,22 @@ pub struct CoreInstance {
     actions: Option<Actions>,
     /// The `kai:ui/input` `on-ui` export, when the module has one.
     pub(crate) on_ui: Option<String>,
+    /// Whether the last guest call was made while a person's key or click was
+    /// handled ([`CoreInstance::last_call_by_user`]).
+    pub(crate) by_user: bool,
 }
 
 impl CoreInstance {
     /// Gives the instance the action rows its requests are typed by.
     pub fn set_actions(&mut self, actions: Actions) {
         self.actions = Some(actions);
+    }
+
+    /// Whether the most recent guest call was made while a person's key or
+    /// click was being handled (`ui_input`, `ui_events_user`), not for the
+    /// agent's `ui_act`, an event or anything else.
+    pub fn last_call_by_user(&self) -> bool {
+        self.by_user
     }
 }
 
@@ -91,6 +101,7 @@ pub fn load_core(
         call: None,
         view: None,
         ui: Default::default(),
+        user_input: false,
         memory: None,
     };
     let mut store = Store::new(&engine, state);
@@ -131,6 +142,7 @@ pub fn load_core(
         lifecycle,
         actions: None,
         on_ui,
+        by_user: false,
     })
 }
 
@@ -248,6 +260,8 @@ impl CoreInstance {
         let state = self.store.data_mut();
         state.lines = 0;
         state.panic_at = None;
+        let by_user = state.user_input;
+        self.by_user = by_user;
         appabi::call(self, func, args).map_err(|trap| {
             self.last
                 .take()
