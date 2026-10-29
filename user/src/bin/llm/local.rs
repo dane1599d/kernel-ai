@@ -430,6 +430,11 @@ impl Local {
         self.engine.about().name.as_deref().unwrap_or("(unnamed)")
     }
 
+    /// The last answer's decode speed, in tenths of a token a second.
+    pub fn tps10(&self) -> u32 {
+        llmproto::health::tps10(self.last.and_then(|speed| speed.per_second()))
+    }
+
     /// What `health` says: the model, the tier, the context and the last speed.
     pub fn describe(&self) -> String {
         let about = self.engine.about();

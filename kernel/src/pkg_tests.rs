@@ -44,6 +44,10 @@ pub enum Step {
     Image,
     ImageAgain,
     ImageTampered,
+    Mirror,
+    MirrorAgain,
+    MirrorTampered,
+    MirrorRollback,
 }
 
 impl Step {
@@ -74,6 +78,21 @@ impl Step {
         }
     }
 
+    /// The word after `test=pkg-install`: none for boot 1. Before the heap, as
+    /// [`Step::from_cmdline`], so it allocates nothing.
+    pub fn mirror_from_cmdline(cmdline: &str) -> Self {
+        let has = |word| cmdline.split_whitespace().any(|w| w == word);
+        if has("tampered") {
+            Step::MirrorTampered
+        } else if has("rollback") {
+            Step::MirrorRollback
+        } else if has("again") {
+            Step::MirrorAgain
+        } else {
+            Step::Mirror
+        }
+    }
+
     fn name(self) -> &'static str {
         match self {
             Step::Install => "install",
@@ -82,6 +101,10 @@ impl Step {
             Step::Image => "image",
             Step::ImageAgain => "image-again",
             Step::ImageTampered => "image-tampered",
+            Step::Mirror => "mirror",
+            Step::MirrorAgain => "mirror-again",
+            Step::MirrorTampered => "mirror-tampered",
+            Step::MirrorRollback => "mirror-rollback",
         }
     }
 
@@ -89,6 +112,9 @@ impl Step {
         match self {
             Step::Install | Step::Undo | Step::Check => "pkg-store",
             Step::Image | Step::ImageAgain | Step::ImageTampered => "pkg-image",
+            Step::Mirror | Step::MirrorAgain | Step::MirrorTampered | Step::MirrorRollback => {
+                "pkg-install"
+            }
         }
     }
 
@@ -100,6 +126,13 @@ impl Step {
             Step::Check => (3, 3),
             Step::Image | Step::ImageTampered => (1, 1),
             Step::ImageAgain => (2, 1),
+            // An install from the mirror; then undo and the install again.
+            Step::Mirror => (1, 2),
+            Step::MirrorAgain => (2, 4),
+            // A tampered mirror switches nothing: generation 1 stays.
+            Step::MirrorTampered => (1, 1),
+            // Boot 2 of the older-snapshot case: boot 1 installed from the newer.
+            Step::MirrorRollback => (2, 2),
         }
     }
 }
@@ -113,8 +146,8 @@ pub fn plan(step: Step) -> String {
     let fs = kabi::plan::FS;
     let step_name = step.name();
     match step.case() {
-        "pkg-image" => format!(
-            "{fs}\n{CLIENT} dir=pkg bootfiles=pkgrepo caps=call uses=supervisor pages=2048 stack_pages=128 step={step_name}\n{}",
+        "pkg-image" | "pkg-install" => format!(
+            "{fs}\n{CLIENT} dir=pkg bootfiles=pkgrepo caps=call+serve uses=supervisor pages=2048 stack_pages=128 step={step_name}\n{}",
             kabi::plan::notes_from_pkg()
         ),
         _ => format!("{fs}\n{CLIENT} dir=pkg pages=2048 stack_pages=128 step={step_name}"),
@@ -135,7 +168,9 @@ pub fn check(step: Step) -> Result<(), &'static str> {
     match step {
         Step::Install => only_its_folder()?,
         Step::Image | Step::ImageAgain | Step::ImageTampered => image_generation(step)?,
+        Step::Mirror => mirror_installed()?,
         Step::Undo | Step::Check => {}
+        Step::MirrorAgain | Step::MirrorTampered | Step::MirrorRollback => {}
     }
     log!("{case}: boot {boot}: fs shows generation {generation} current, as pkg left it");
     Ok(())
@@ -231,6 +266,57 @@ fn only_its_folder() -> Result<(), &'static str> {
         return Err("pkg-store: pkg's startup Dirs are not just /system/pkg");
     }
     log!("pkg-store: pkg holds no capability bits and starts with only /system/pkg's Dir");
+    Ok(())
+}
+
+/// Generation 2 holds `big`, from the mirror, beside the image's notes.
+fn mirror_installed() -> Result<(), &'static str> {
+    let second = read("gen/2")?;
+    let second = core::str::from_utf8(&second).map_err(|_| "pkg-install: gen/2 is not text")?;
+    let named = |name: &str| {
+        second
+            .lines()
+            .any(|l| l.starts_with(&format!("pkg {name} ")))
+    };
+    if !named("big") || !named("notes") {
+        log!("pkg-install: gen/2 is {second:?}");
+        return Err("pkg-install: generation 2 is not notes and big");
+    }
+    log!("pkg-install: generation 2 holds big from the mirror beside the image's notes");
+    catalogue_lists_them()
+}
+
+/// `pkg` answers the Apps sheet's `catalog` (P4 task 3): big and notes as
+/// installed, then the mirror's `extra`, which is not.
+fn catalogue_lists_them() -> Result<(), &'static str> {
+    let mut answer = None;
+    for _ in 0..WAIT_MS / 50 {
+        if let Ok(reply) = ipc::call(CLIENT, b"catalog 0", CALL_MS) {
+            answer = Some(reply);
+            break;
+        }
+        threads::sleep_ms(50);
+    }
+    let answer = answer.ok_or("pkg-install: pkg never answered catalog")?;
+    let text =
+        core::str::from_utf8(&answer).map_err(|_| "pkg-install: the catalogue is not text")?;
+    let rows: Vec<&str> = text.lines().collect();
+    let wanted = [
+        "kai-catalog 1",
+        "installed\tbig\t1.0.0\tdata\t",
+        "installed\tnotes\t1.0.0\tapp\t",
+        "mirror\textra\t1.0.0\tdata\t",
+    ];
+    let listed = rows.len() == wanted.len()
+        && rows
+            .iter()
+            .zip(wanted)
+            .all(|(row, start)| row.starts_with(start));
+    if !listed {
+        log!("pkg-install: the catalogue is {text:?}");
+        return Err("pkg-install: the catalogue does not list installed then offered");
+    }
+    log!("pkg-install: the catalogue lists big and notes installed, then the mirror's extra");
     Ok(())
 }
 

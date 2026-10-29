@@ -18,6 +18,7 @@ use livecore::{artifact, diff};
 mod building;
 mod job;
 mod replay;
+pub mod view;
 
 /// How long the kernel's build thread waits for the build service's answer.
 pub const BUILD_TIMEOUT_MS: u64 = 150_000;
@@ -382,6 +383,11 @@ fn run(session: &mut Session, command: Command<'_>) -> String {
         Command::Change(n, text) => session.change(n, text).map(|()| at(session, n)),
         Command::Insert(n, text) => session.insert(n, text).map(|()| at(session, n)),
         Command::Append(n, text) => session.insert(n + 1, text).map(|()| at(session, n + 1)),
+        Command::Split { line, col, indent } => session
+            .split(line, col, indent)
+            .map(|()| at(session, line + 1)),
+        Command::Join(line) => session.join(line).map(|()| at(session, line)),
+        Command::View(from, to) => Ok(view::render(session, from, to)),
         Command::Delete(from, to) => session.delete(from, to).map(|()| {
             format!(
                 "deleted {} lines; {} has {}",

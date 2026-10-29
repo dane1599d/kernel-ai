@@ -11,6 +11,13 @@ pub struct ProcessInfo {
     pub pid: u64,
     pub name_len: u64,
     pub name: [u8; MAX_NAME],
+    /// Pages counted against its quota now: those its address space holds
+    /// (mapped pages and page tables) and the `Shm` objects it made.
+    pub pages: u64,
+    /// CPU time its threads have used since it started, in nanoseconds. A
+    /// reader takes two snapshots and divides the difference by the time between
+    /// them (`uptime_ns`) for a share.
+    pub cpu_ns: u64,
 }
 
 impl ProcessInfo {
@@ -19,6 +26,8 @@ impl ProcessInfo {
             pid: 0,
             name_len: 0,
             name: [0; MAX_NAME],
+            pages: 0,
+            cpu_ns: 0,
         }
     }
 
