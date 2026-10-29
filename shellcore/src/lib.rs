@@ -223,8 +223,6 @@ pub trait Host {
     fn rules_write(&self, _text: &str) -> Result<(), String> {
         Ok(())
     }
-    /// The standing instructions as `/system/state/standing` holds them
-    /// (`kai-standing 1`), read once at start (P3 task 11).
     /// The keep-running list as `/system/state/keep` holds it.
     fn keep_read(&self) -> Option<String> {
         None
@@ -236,6 +234,8 @@ pub trait Host {
     fn keep_running(&self, _app: &str, _on: bool) -> Result<(), String> {
         Err(String::from("apps cannot be kept running here"))
     }
+    /// The standing instructions as `/system/state/standing` holds them
+    /// (`kai-standing 1`), read once at start (P3 task 11).
     fn standing_read(&self) -> Option<String> {
         None
     }
