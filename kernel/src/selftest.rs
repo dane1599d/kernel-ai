@@ -149,6 +149,8 @@ pub enum SelfTest {
     DeskBoot,
     /// The AI panel takes focus and queues a typed line (P3 task 7).
     DeskPanel,
+    /// `desk-panel-shell` (P3 task 7): the shell takes the panel's line.
+    DeskPanelShell,
     /// An app's kai:ui window on the desktop, closed from its control (P3 task 9).
     UiWindow,
     /// Asks answered on `desktop`'s card, and on the console when it dies (P3 task 7).
@@ -316,6 +318,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=app-on-demand" => Some(SelfTest::AppOnDemand),
             "test=desk-boot" => Some(SelfTest::DeskBoot),
             "test=desk-panel" => Some(SelfTest::DeskPanel),
+            "test=desk-panel-shell" => Some(SelfTest::DeskPanelShell),
             "test=ui-window" => Some(SelfTest::UiWindow),
             "test=desk-card" => Some(SelfTest::DeskCard),
             "test=desk-standing" => Some(SelfTest::DeskStanding),
@@ -399,6 +402,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::FilesChurn { .. }
             | SelfTest::DeskBoot
             | SelfTest::DeskPanel
+            | SelfTest::DeskPanelShell
             | SelfTest::UiWindow
             | SelfTest::DeskCard
             | SelfTest::DeskStanding
@@ -487,6 +491,16 @@ pub fn plan(test: SelfTest) -> Option<String> {
         // The shell calls `cc` for the `c>` prompt, so cc comes first.
         plan.push('\n');
         plan.push_str(kabi::plan::CC);
+        // On the desktop the shell has a route to `desktop`, for the panel:
+        // `desktop` is planned first, as a route's target must be.
+        let shell = match test {
+            SelfTest::DeskPanelShell => {
+                plan.push('\n');
+                plan.push_str(crate::desk_tests::BOOT_PLAN);
+                kabi::plan::SHELL_DESK
+            }
+            _ => shell,
+        };
         plan.push('\n');
         plan.push_str(shell);
     }

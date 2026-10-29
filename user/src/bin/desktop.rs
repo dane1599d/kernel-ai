@@ -32,6 +32,7 @@
 
 extern crate alloc;
 
+use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use deskcore::askcard::Card;
@@ -41,6 +42,7 @@ use deskcore::geom::{Point, Rect};
 use deskcore::paint::{self, Bar, Painter, Scene};
 use deskcore::paint_panel;
 use deskcore::panel::Panel;
+use deskcore::panel_wire;
 use deskcore::server::{Buffer, Client, Need};
 use deskcore::watch::Watch;
 use gfx2d::{Canvas, Fonts, Image};
@@ -478,6 +480,10 @@ fn tick_panel(state: &mut State) {
 
 fn serve(state: &mut State, bytes: &[u8], info: &RecvInfo) {
     let pid = info.caller_pid;
+    if let Some(reply) = panel_request(state, bytes, pid) {
+        let _ = sys::reply_h(reply.as_bytes(), &[]);
+        return;
+    }
     let new = !state.clients.iter().any(|c| c.pid == pid);
     if new {
         let label = name_of(pid);
@@ -525,6 +531,42 @@ fn serve(state: &mut State, bytes: &[u8], info: &RecvInfo) {
             let _ = sys::reply_h(b"", &[]);
         }
     }
+}
+
+/// The shell's `panel take` and `panel state` (P3 task 7,
+/// `deskcore::panel_wire`): its answer, or `None` for a window client's
+/// message. Only the shell may take the panel's lines or set its state.
+fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
+    let text = core::str::from_utf8(bytes).ok()?;
+    if !text.starts_with("panel ") {
+        return None;
+    }
+    if name_of(pid) != "shell" {
+        return Some(String::from("err only the shell talks to the panel"));
+    }
+    if text == panel_wire::TAKE {
+        let request = state.panel.take();
+        if request.is_some() {
+            println!("desktop: the shell took the panel's request");
+        }
+        return Some(panel_wire::encode_take(request.as_ref()));
+    }
+    let Some(shown) = panel_wire::parse_state(text) else {
+        return Some(String::from("err not a panel request"));
+    };
+    let word = match &shown {
+        deskcore::panel::State::Idle => "idle",
+        deskcore::panel::State::Thinking { .. } => "thinking",
+        deskcore::panel::State::Acting { .. } => "acting",
+        deskcore::panel::State::Done { .. } => "done",
+        deskcore::panel::State::Refused { .. } => "refused",
+    };
+    if state.panel.set_state(shown) {
+        // Its kind only: the line is the shell's result, which may name a file.
+        println!("desktop: the panel shows {word}");
+        state.extra.push(state.desk.panel());
+    }
+    Some(String::from("ok"))
 }
 
 fn apply_need(state: &mut State, at: usize, pid: u64, need: Need, handle: Option<Handle>) {
