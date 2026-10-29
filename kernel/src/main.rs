@@ -100,6 +100,7 @@ mod power;
 mod process;
 mod profile_tests;
 mod qemu;
+mod saved_tests;
 mod sched_control;
 mod sched_tests;
 mod script_tests;
@@ -348,6 +349,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Part => run_case(part_tests::check),
         SelfTest::ModelStore { bad } => run_case(|| model_tests::store(cmdline(), bad)),
         SelfTest::Files { .. } => run_case(|| files_tests::check(cmdline())),
+        SelfTest::AppSaved { reread } => run_case(|| saved_tests::check(reread)),
         SelfTest::FilesRestart => run_case(files_tests::restart),
         SelfTest::FilesDeadClient => run_case(files_tests::dead_client),
         SelfTest::FilesActions => run_case(files_tests::actions),
