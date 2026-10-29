@@ -389,8 +389,12 @@ fn serve(state: &mut State, bytes: &[u8], info: &RecvInfo) {
         // registry's globals), not an empty reply, so it opens its windows
         // again (`term` committed to its old surface each time the console
         // changed, and never heard the greeting).
-        Err(_) if new => {
+        Err(surfabi::wire::Error::UnknownObject) if new => {
             println!("desktop: pid {pid} spoke to an earlier desktop; greeting it");
+            // Windows the message opened before it failed go with the old
+            // connection, not left on the desk.
+            let effects = state.clients[at].close_all(&mut state.desk);
+            deliver(state, &effects);
             let label = state.clients[at].label.clone();
             state.clients[at] = Client::new(pid, &label);
             let reply = state.clients[at].take_events(kabi::MAX_MESSAGE);
