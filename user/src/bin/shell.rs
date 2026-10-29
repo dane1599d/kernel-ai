@@ -73,8 +73,6 @@ fn desktop() -> Option<kabi::handle::Handle> {
     user::route(3)
 }
 
-/// How long the shell waits for a line before it looks at the AI panel.
-const PANEL_POLL_MS: u64 = 250;
 const DESKTOP_CALL_MS: u64 = 5_000;
 
 /// One panel request to `desktop`: its answer.
@@ -116,6 +114,33 @@ fn take_panel(shell: &mut Shell) {
         Ok(answer) if answer == "ok" => {}
         Ok(answer) => println!("the panel's state was not set: {answer}"),
         Err(why) => println!("the panel's state was not set: {why}"),
+    }
+}
+
+/// Takes an app's oldest effects from `desktop`, runs them through the agent
+/// core, and reports what came of each; `desktop` hands the results to the
+/// app. `desktop` names the app, from its record of who queued them.
+fn take_effects(shell: &mut Shell) {
+    use deskcore::effects::{self, Done};
+    let Some(route) = desktop() else {
+        return;
+    };
+    let Ok(answer) = ask_desktop(route, effects::TAKE) else {
+        return;
+    };
+    let Some(Some((app, lines))) = effects::parse_take(&answer) else {
+        return;
+    };
+    let results: Vec<Done> = shell
+        .run_effects(app, lines)
+        .into_iter()
+        .map(|done| Done {
+            ticket: done.ticket,
+            outcome: done.outcome,
+        })
+        .collect();
+    if let Err(why) = ask_desktop(route, &effects::encode_done(app, &results)) {
+        println!("{app}'s effect results were not sent: {why}");
     }
 }
 
@@ -287,6 +312,10 @@ impl Host for System {
 
     fn restart_service(&self, name: &str, proof: Proof) -> Result<(), String> {
         supervise(&with_proof(supervise::Request::Restart(name), proof)?)
+    }
+
+    fn triggers(&self) -> Option<&dyn shellcore::standing::Triggers> {
+        Some(&Firings)
     }
 
     /// One `profile` request to the supervisor per process (P3 task 12). One it
@@ -468,6 +497,57 @@ impl Host for System {
     }
 }
 
+/// Standing instructions' events and actions (P3 task 11). The kernel's event
+/// box holds every window, idle and time event, so nothing is asked to watch; a
+/// firing goes to its owner, the supervisor, with the rule the Allow gave the
+/// shell, which the supervisor checks with RULE_CHECK.
+struct Firings;
+
+impl shellcore::standing::Triggers for Firings {
+    fn watch(&self, _when: &shellcore::standing::When) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn unwatch(&self, _when: &shellcore::standing::When) {}
+
+    /// `suspend <app> rule` or `resume <app> rule`; `undo` sends the inverse.
+    fn run(&self, _rule: u64, action: &str, app: &str, undo: bool) -> Result<(), String> {
+        let request = match (action, undo) {
+            ("app_suspend", false) | ("app_resume", true) => supervise::Request::Suspend(app),
+            ("app_resume", false) | ("app_suspend", true) => supervise::Request::Resume(app),
+            _ => return Err(format!("{action} has no owner to run it here")),
+        };
+        let text = ask_supervisor(&request.encode(supervise::Proof::Rule))?;
+        match text.split_once(' ').unwrap_or((&text, "")) {
+            ("ok", _) => Ok(()),
+            ("err", why) => Err(why.to_string()),
+            _ => Err(format!("the supervisor's answer was malformed: {text}")),
+        }
+    }
+}
+
+/// The longest the shell waits for a line before it looks at the event box
+/// again: a post wakes it sooner (`Woken`), so this only paces the minute
+/// clock's `time` events.
+const WAKE_WAIT_MS: u64 = 2_000;
+
+/// Takes the kernel's event box and hands each event to the standing
+/// instructions; a paused rule's note goes to the log.
+fn take_events(shell: &mut Shell, buf: &mut [u8]) {
+    let Ok(len) = sys::event_read(buf) else {
+        return;
+    };
+    let text = core::str::from_utf8(&buf[..len.min(buf.len())]).unwrap_or("");
+    for event in text
+        .lines()
+        .filter_map(shellcore::standing::Event::from_line)
+    {
+        if let Some(note) = shell.on_event(&event) {
+            println!("{note}");
+        }
+    }
+}
+
 fn main() -> i32 {
     let args = args();
     let mut shell = Shell::new(
@@ -483,17 +563,25 @@ fn main() -> i32 {
     );
     println!("up (restart {})", arg(&args, "restart").unwrap_or("0"));
     let mut line = vec![0u8; kabi::MAX_MESSAGE];
-    // On a desktop the shell looks at the AI panel between lines.
-    let wait_ms = match desktop() {
-        Some(_) => PANEL_POLL_MS,
-        None => 0,
-    };
+    let mut events = vec![0u8; kabi::event::READ_BYTES];
+    // The first wait binds the shell's service, so the next pass's read of the
+    // event box is admitted and makes the shell the box's reader; until then a
+    // post could not wake it.
+    let mut wait_ms = 1;
     loop {
+        // Between lines: what happened on the desktop since the last look, then
+        // the panel's line and the apps' effects. A post to the event box wakes
+        // the wait at once, so a click's effect does not wait for a poll.
+        take_events(&mut shell, &mut events);
         take_panel(&mut shell);
+        take_effects(&mut shell);
         let mut caller = u64::MAX;
         let len = match sys::svc_recv(&mut line, wait_ms, &mut caller) {
             Ok(len) => len.min(line.len()),
-            Err(kabi::Error::TimedOut) => continue,
+            Err(kabi::Error::TimedOut | kabi::Error::Woken) => {
+                wait_ms = WAKE_WAIT_MS;
+                continue;
+            }
             Err(error) => {
                 println!("svc_recv failed: {error:?}");
                 sys::sleep_ms(100);

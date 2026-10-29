@@ -15,6 +15,7 @@ mod actions;
 mod apart;
 mod centry;
 mod cmode;
+mod effects;
 mod files;
 mod fuzz;
 mod log;
