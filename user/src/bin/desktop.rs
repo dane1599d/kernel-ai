@@ -346,6 +346,7 @@ fn deliver(state: &mut State, effects: &[Effect]) {
                         _ => 0,
                     };
                     println!("desktop: the panel queued a request ({len} characters)");
+                    wake_shell();
                 }
                 changed
             }
@@ -495,6 +496,14 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
         let request = state.panel.take();
         if request.is_some() {
             println!("desktop: the shell took the panel's request");
+            // From the Enter to the take: the wake's latency (under 100 ms).
+            if let deskcore::panel::State::Thinking { since_ms } = *state.panel.state() {
+                let ms = now_ms().saturating_sub(since_ms);
+                let within = if ms < 100 { "within" } else { "over" };
+                println!(
+                    "desktop: the panel's request was taken {ms} ms after Enter ({within} 100 ms)"
+                );
+            }
         }
         return Some(panel_wire::encode_take(request.as_ref()));
     }
@@ -533,6 +542,7 @@ fn effects_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> 
         }
         let refused = state.effects.put(&caller, lines);
         println!("desktop: {caller} queued effects ({refused} refused)");
+        wake_shell();
         return Some(String::from("ok"));
     }
     if text == effects::RESULTS {
@@ -634,6 +644,14 @@ fn report(state: &mut State) {
             other => println!("desktop: focus {other:?}"),
         }
         state.focus = focus;
+    }
+}
+
+/// Posts `work` to the kernel's event box, which wakes the shell to take what
+/// was queued for it now, not at its next look.
+fn wake_shell() {
+    if let Err(error) = sys::event_post("work") {
+        println!("desktop: cannot wake the shell: {error:?}");
     }
 }
 

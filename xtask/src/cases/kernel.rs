@@ -133,6 +133,11 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("desk-ask", "test=desk-ask")
     },
+    // P4: a post to the event box wakes the shell, never in place of a line.
+    TestCase {
+        expect: &["event-wake: 10 terminal lines, each after a post, all came back as lines"],
+        ..case("event-wake", "test=event-wake")
+    },
     // P3 task 11: an app suspended and resumed through its host.
     TestCase {
         expect: &[
@@ -180,6 +185,7 @@ pub(super) const CASES: &[TestCase] = &[
         expect: &[
             "desktop: the panel queued a request (2 characters)",
             "desktop: the shell took the panel's request",
+            "ms after Enter (within 100 ms)",
             "desktop: the panel shows ",
             "desk-panel-shell: typed \"hi\" in the panel",
         ],
