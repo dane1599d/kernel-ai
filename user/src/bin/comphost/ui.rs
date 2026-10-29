@@ -149,13 +149,6 @@ impl Ui {
         if inputs.is_empty() {
             return Ok(());
         }
-        // Input for the kept window of a suspended app resumes it first.
-        if let Some(reply) = host.wake()? {
-            println!(
-                "comphost: resumed for window input: {}",
-                String::from_utf8_lossy(&reply)
-            );
-        }
         for (app, input) in inputs {
             // Typed input is a transaction too: what the app saves or asks for
             // because of it is kept like an action call's.
