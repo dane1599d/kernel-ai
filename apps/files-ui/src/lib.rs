@@ -233,9 +233,9 @@ pub fn build(files: &Files) -> Vec<Entry> {
             DETAIL,
             wide(),
             Widget::TextLine(TextField {
-                label: String::from("Move or rename to"),
+                label: String::from("Rename to"),
                 value: String::from(files.rename_text()),
-                placeholder: String::from("A new name, or folder/name"),
+                placeholder: String::from("A new name"),
                 max_len: comp_files::names::MAX_PATH as u32,
             }),
         ),
@@ -246,7 +246,12 @@ pub fn build(files: &Files) -> Vec<Entry> {
             Layout::FIT,
             button("Open", Some("files_open")),
         ),
-        entry(MOVE, BUTTONS, Layout::FIT, button("Move", Some("fs_move"))),
+        entry(
+            MOVE,
+            BUTTONS,
+            Layout::FIT,
+            button("Rename", Some("fs_move")),
+        ),
         entry(
             TRASH,
             BUTTONS,

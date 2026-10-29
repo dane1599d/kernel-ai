@@ -15,10 +15,10 @@
 [10] scroll_view ""
 [11] group ""
 [2000] label "Nothing selected"
-[12] text_input "Move or rename to" = ""
+[12] text_input "Rename to" = ""
 [13] group ""
 [14] button "Open" runs files_open
-[15] button "Move" runs fs_move
+[15] button "Rename" runs fs_move
 [16] button "Trash" runs fs_trash
 [17] button "Restore" runs fs_restore
 [18] label "2 folders, 2 files"

@@ -73,10 +73,17 @@ pub struct Listing {
     pub more: bool,
 }
 
-/// `fs_list`'s text: one name a line, a folder's with a `/` after it.
+/// `fs_list`'s text: one name a line, a folder's with a `/` after it. Lines end
+/// at `\n` alone, so a name with a `\r` in it is left out (not shortened), and
+/// the shell, which writes the text, turns a name's own control characters into
+/// U+FFFD before it joins the lines.
 pub fn parse_listing(text: &str) -> Listing {
     let mut out = Listing::default();
-    for line in text.lines() {
+    if text.is_empty() {
+        return out;
+    }
+    let body = text.strip_suffix('\n').unwrap_or(text);
+    for line in body.split('\n') {
         let (name, kind) = match line.strip_suffix('/') {
             Some(name) => (name, Kind::Dir),
             None => (line, Kind::File),
@@ -144,6 +151,18 @@ mod tests {
         assert_eq!(l.items[2].kind, Kind::File);
         assert_eq!(l.skipped, 6);
         assert!(!l.more);
+    }
+
+    #[test]
+    fn a_carriage_return_leaves_the_name_out_and_an_empty_listing_has_no_names() {
+        let l = parse_listing("report.txt\r\nok.txt\n");
+        let names: Vec<_> = l.items.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(names, ["ok.txt"]);
+        assert_eq!(l.skipped, 1);
+        assert_eq!(parse_listing(""), Listing::default());
+        // One trailing newline ends the last name; a blank line is a bad name.
+        assert_eq!(parse_listing("a\n").items.len(), 1);
+        assert_eq!(parse_listing("a\n\n").skipped, 1);
     }
 
     #[test]

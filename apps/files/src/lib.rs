@@ -81,13 +81,16 @@ enum Then {
     OrFile,
 }
 
+/// What a queued effect was for. A change carries `nav`, the listing count when
+/// it was asked: if a listing was asked since, that listing was queued after the
+/// change and the OS runs effects in order, so it already shows the change.
 enum Pending {
     List { dir: String, then: Then, nav: u32 },
     Peek { pick: u32 },
     Read { pick: u32 },
-    Move { to: String },
-    Trash { path: String },
-    Restore { path: String },
+    Move { to: String, nav: u32 },
+    Trash { path: String, nav: u32 },
+    Restore { path: String, nav: u32 },
 }
 
 pub struct Files {
@@ -262,6 +265,25 @@ impl Files {
         self.list(os, &dir, select.map_or(Then::Nothing, Then::Select));
     }
 
+    /// After a change that was asked when the listing count was `nav`: lists this
+    /// folder again, unless a listing was asked since. That one was queued after
+    /// the change, and the OS runs effects in order, so it shows the change;
+    /// listing again would only drop the navigation it carries.
+    fn relist_unless_listed_since(&mut self, os: &mut dyn Os, nav: u32, select: Option<String>) {
+        if nav == self.nav {
+            self.relist(os, select);
+        }
+    }
+
+    /// Nothing is selected. A read or peek still on its way for the old
+    /// selection is dropped when it arrives.
+    fn clear_selection(&mut self) {
+        self.pick = self.pick.wrapping_add(1);
+        self.selected = None;
+        self.rename.clear();
+        self.preview = Preview::None;
+    }
+
     /// One folder up, with the folder it came from selected.
     pub fn up(&mut self, os: &mut dyn Os) {
         if self.dir.is_empty() {
@@ -318,39 +340,40 @@ impl Files {
         self.rename = text.to_string();
     }
 
-    /// Where the name field sends the selected item: a plain name renames it in
-    /// this folder, `folder/name` is a path from the home folder, and `folder/`
-    /// moves it into that folder under its own name.
+    /// Where the name field sends the selected item: a new name in this folder.
+    /// `fs_move` renames within one folder only (the shell's `FsChange::Move` and
+    /// fsserve's `Rename` refuse anything else), so a name with a `/` is refused
+    /// here rather than sent to fail.
     fn target(&self, from_name: &str) -> Result<String, &'static str> {
         let text = self.rename.trim();
-        let to = match text {
-            "" => return Err("Type where to move it, or a new name."),
-            t if t.ends_with('/') => join(&t[..t.len() - 1], from_name),
-            t if t.contains('/') => path_ok(t).then(|| t.to_string()),
-            t => join(&self.dir, t),
-        };
-        let to = to.ok_or("That is not a name or path I can use.")?;
-        if Some(to.as_str()) == join(&self.dir, from_name).as_deref() {
+        if text.is_empty() {
+            return Err("Type a new name first.");
+        }
+        if text.contains('/') {
+            return Err("Moving to another folder comes later; rename within this one.");
+        }
+        let to = join(&self.dir, text).ok_or("That is not a name I can use.")?;
+        if text == from_name {
             return Err("It is already called that.");
         }
-        let taken = parent(&to) == self.dir && self.items.iter().any(|i| i.name == file_name(&to));
-        if taken {
+        if self.items.iter().any(|i| i.name == text) {
             return Err("There is already one with that name.");
         }
         Ok(to)
     }
 
-    /// Moves or renames the selected item, as the name field says.
+    /// Renames the selected item to what the name field says.
     pub fn move_selected(&mut self, os: &mut dyn Os) {
         let Some(name) = self.selected.clone() else {
-            return self.fail("Pick something to move first.");
+            return self.fail("Pick something to rename first.");
         };
         match self.target(&name) {
             Err(why) => self.fail(why),
             Ok(to) => {
                 let from = join(&self.dir, &name);
                 let call = from.as_deref().and_then(|from| calls::mv(from, &to));
-                self.ask(os, call, Pending::Move { to });
+                let nav = self.nav;
+                self.ask(os, call, Pending::Move { to, nav });
             }
         }
     }
@@ -363,7 +386,8 @@ impl Files {
         match join(&self.dir, &name) {
             Some(path) => {
                 let call = calls::trash(&path);
-                self.ask(os, call, Pending::Trash { path });
+                let nav = self.nav;
+                self.ask(os, call, Pending::Trash { path, nav });
             }
             None => self.fail("That path is too long to trash."),
         }
@@ -377,7 +401,8 @@ impl Files {
             );
         };
         let call = calls::restore(&path);
-        self.ask(os, call, Pending::Restore { path });
+        let nav = self.nav;
+        self.ask(os, call, Pending::Restore { path, nav });
     }
 
     /// `files_open`: a folder, or a file in its folder with the file selected.
@@ -423,9 +448,7 @@ impl Files {
                 self.items = listing.items;
                 self.skipped = listing.skipped;
                 self.more = listing.more;
-                self.selected = None;
-                self.rename.clear();
-                self.preview = Preview::None;
+                self.clear_selection();
                 if let Then::Select(name) = then {
                     // A name that is gone leaves nothing selected.
                     let _ = self.select(os, &name);
@@ -475,14 +498,14 @@ impl Files {
                 self.preview = Preview::Failed(tame(&why, MESSAGE_CHARS));
                 true
             }
-            (Pending::Move { to }, Ok(_)) => {
-                self.status = Status::Done(format!("Moved to {}.", tame(&shown(&to), 60)));
-                // Keep the moved item selected if it is still in this folder.
+            (Pending::Move { to, nav }, Ok(_)) => {
+                self.status = Status::Done(format!("Renamed to {}.", tame(file_name(&to), 60)));
+                // Keep the renamed item selected if it is still in this folder.
                 let select = (parent(&to) == self.dir).then(|| file_name(&to).to_string());
-                self.relist(os, select);
+                self.relist_unless_listed_since(os, nav, select);
                 true
             }
-            (Pending::Trash { path }, Ok(_)) => {
+            (Pending::Trash { path, nav }, Ok(_)) => {
                 if self.trashed.len() == MAX_TRASHED {
                     self.trashed.remove(0);
                 }
@@ -491,17 +514,15 @@ impl Files {
                     "{} is in the trash. Restore or `undo` brings it back.",
                     tame(file_name(&path), 40)
                 ));
-                self.selected = None;
-                self.preview = Preview::None;
-                self.rename.clear();
-                self.relist(os, None);
+                self.clear_selection();
+                self.relist_unless_listed_since(os, nav, None);
                 true
             }
-            (Pending::Restore { path }, Ok(_)) => {
+            (Pending::Restore { path, nav }, Ok(_)) => {
                 self.trashed.retain(|p| *p != path);
                 self.status = Status::Done(format!("Restored {}.", tame(&shown(&path), 60)));
                 let select = (parent(&path) == self.dir).then(|| file_name(&path).to_string());
-                self.relist(os, select);
+                self.relist_unless_listed_since(os, nav, select);
                 true
             }
             (Pending::Move { .. } | Pending::Trash { .. } | Pending::Restore { .. }, Err(why)) => {
