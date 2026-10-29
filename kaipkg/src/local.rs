@@ -14,9 +14,11 @@
 //!   (`app:<name>/<world>@<version>`, as the packer reads one), newer than the
 //!   build it replaces; [`next`] proposes `0.0.<n>` for `cc build` to write.
 //!   `local` holds the newest build of each name only.
-//! - **Only apps:** a build on plain `kai:app/component` is an artifact only,
-//!   since ADR 0011 has no component package kind; the shell sends `pkg` apps
-//!   only.
+//! - **Only apps:** an app's artifact has a `kai.app` section naming it; a
+//!   build on plain `kai:app/component` has none and is an artifact only, since
+//!   ADR 0011 has no component package kind.
+//! - **One version:** the manifest's label carries the world's version with
+//!   dashes (`0-0-3`), so the two cannot disagree.
 
 use crate::bundle::{self, ARTIFACT, HEADER};
 use crate::generation::Time;
@@ -38,6 +40,8 @@ pub const DIR: &str = "pkg/local";
 pub const KEY: &str = "pkg/local/key";
 /// The world every app built in the OS is on (ADR 0012 D7).
 pub const WORLD: &str = "kai:app@0.1";
+/// An app's ADR 0001 D9 section, which a plain component lacks.
+pub const APP_SECTION: &str = "kai.app";
 /// Every build's summary: data, as any summary is.
 pub const SUMMARY: &str = "Built in the OS with cc";
 /// Its metadata comes from no network, and its check, the image's, reads no
@@ -115,6 +119,14 @@ pub fn publish(
         .map(|(_, version)| version)
         .ok_or_else(|| format!("{name}'s world {} is not its own app's", manifest.world))?;
     let version = Version::parse(version).map_err(|why| format!("{name}'s version: {why}"))?;
+    let label = format!("{}-{}-{}", version.major, version.minor, version.patch);
+    if manifest.version != label {
+        return Err(format!(
+            "{name}'s manifest is version {}, not {label} as its world says",
+            manifest.version
+        ));
+    }
+    is_app(artifact, &name)?;
     let mut held = held(vol)?;
     if let Some(at) = held.iter().position(|(header, _, _)| header.name == name) {
         let old = held[at].0.version;
@@ -135,6 +147,21 @@ pub fn publish(
     held.push((header, text, bytes));
     write(vol, key, &held, now)?;
     Ok(Published { name, version })
+}
+
+/// Whether `artifact` is an app's: its `kai.app` section (ADR 0001 D9's
+/// `kai-app 1`) names it `name`. A build on plain `kai:app/component` has none,
+/// and is an artifact only.
+fn is_app(artifact: &[u8], name: &str) -> Result<(), String> {
+    let section = livecore::artifact::custom_section(artifact, APP_SECTION)?
+        .ok_or_else(|| format!("{name} has no {APP_SECTION}: only apps install from local"))?;
+    let text = core::str::from_utf8(section).map_err(|_| "its kai.app is not text")?;
+    let mut lines = text.lines();
+    let named = lines.next() == Some("kai-app 1") && lines.any(|l| l == format!("id {name}"));
+    match named {
+        true => Ok(()),
+        false => Err(format!("its {APP_SECTION} is not a kai-app 1 for {name}")),
+    }
 }
 
 /// The builds `local` holds: each one's header, header text and bytes.
@@ -309,12 +336,20 @@ mod tests {
 
     /// An app `cc build` might write: `name` at `version`, from `source`.
     fn artifact(name: &str, version: &str, source: &str) -> Vec<u8> {
+        let mut module = component(name, version, source);
+        let app = format!("kai-app 1\nid {name}\nabi 1.0\n");
+        append_custom_section(&mut module, APP_SECTION, app.as_bytes());
+        module
+    }
+
+    /// The same build on plain `kai:app/component`: no `kai.app`.
+    fn component(name: &str, version: &str, source: &str) -> Vec<u8> {
         let mut module = Vec::from(&b"\0asm\x01\0\0\0"[..]);
         let world = format!("app:{name}/{name}@{version}");
         let manifest = Manifest {
             lifecycle: 2,
             component: name.into(),
-            version: "v1".into(),
+            version: version.replace('.', "-"),
             world: world.clone(),
             engine: "wasmi".into(),
             features: "-".into(),
@@ -389,6 +424,23 @@ mod tests {
         assert_eq!(kept(&checked), ["hello 0.0.2", "other 1.2.0"]);
         let targets = vol.list(&format!("{DIR}/targets")).unwrap();
         assert_eq!(targets, ["hello-0.0.2.kpkg", "other-1.2.0.kpkg"]);
+    }
+
+    #[test]
+    fn a_plain_component_or_a_label_that_differs_from_the_world_is_refused() {
+        let mut vol = MemVolume::default();
+        let plain = component("hello", "0.0.3", "int x;\n");
+        let err = publish(&mut vol, &key(1), &plain, &[], NOW).unwrap_err();
+        assert!(err.ends_with("only apps install from local"), "{err}");
+        let app = artifact("hello", "0.0.3", "int x;\n");
+        // The label is the world's version with dashes.
+        let label = b"0-0-3";
+        let mut bent = app.clone();
+        let at = bent.windows(label.len()).position(|w| w == label).unwrap();
+        bent[at..at + label.len()].copy_from_slice(b"0-0-4");
+        let err = publish(&mut vol, &key(1), &bent, &[], NOW).unwrap_err();
+        assert!(err.contains("not 0-0-3 as its world says"), "{err}");
+        assert!(vol.files().is_empty());
     }
 
     #[test]
