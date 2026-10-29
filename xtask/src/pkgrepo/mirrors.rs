@@ -35,6 +35,12 @@ pub fn big() -> Package {
     package("big", "1.0.0", &vec![7u8; 300 << 10])
 }
 
+/// A small package the mirror offers and no case installs, so the catalogue
+/// has an offer to list (P4 task 3).
+pub fn extra() -> Package {
+    package("extra", "1.0.0", b"an offer")
+}
+
 /// A `data` package named `name` at `version` holding `payload`.
 pub fn package(name: &str, version: &str, payload: &[u8]) -> Package {
     let header_text = format!(
@@ -118,6 +124,7 @@ pub fn build(
     now: Time,
 ) -> Result<Repository, String> {
     let mut all = packages.to_vec();
+    all.push(extra());
     let big = big();
     let target = format!("targets/{}.big-1.0.0.kpkg", crate::sha256_hex(&big.bytes));
     match kind {
