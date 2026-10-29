@@ -21,6 +21,7 @@ pub mod location;
 pub mod manifest;
 mod probation;
 pub mod scenario;
+mod serve_with;
 pub mod settings;
 mod start;
 pub mod state;
@@ -34,6 +35,8 @@ pub mod txn;
 mod undo;
 pub mod uploads;
 pub mod why;
+
+pub use serve_with::Performed;
 
 use alloc::string::String;
 use alloc::vec::Vec;

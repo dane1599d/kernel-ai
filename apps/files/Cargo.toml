@@ -1,0 +1,16 @@
+[package]
+name = "comp-files"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The Files app's model (P4 task 5): the folder it shows, what is selected, the
+# preview, and the `fs_*` calls it asks the OS for as effects (ADR 0003 section 4),
+# so tiers and undo stay the OS's. `no_std` + `alloc` and free of `kai:ui`, so the
+# host tests run it as is; the window (`comp-files-ui`, then the component) draws it.
+[lib]
+doctest = false
+
+[dev-dependencies]
+appabi = { path = "../../appabi" }

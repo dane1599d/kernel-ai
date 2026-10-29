@@ -128,6 +128,37 @@ impl Index {
         Ok(())
     }
 
+    /// An entry for a package no index lists, an installed one whose repository
+    /// is gone: what its own header says, with its object's SHA-256 and size and
+    /// the grants its generation gave it.
+    pub fn of_header(
+        header: &Header,
+        text: &str,
+        sha: Sha,
+        size: u64,
+        grants: Vec<String>,
+    ) -> Self {
+        let depends = text
+            .lines()
+            .filter_map(|line| line.strip_prefix("depends "))
+            .map(String::from)
+            .collect();
+        Index {
+            name: header.name.clone(),
+            version: header.version,
+            kind: header.kind.name().into(),
+            summary: header.summary.clone(),
+            licence: header.licence.clone(),
+            world: header.world.clone(),
+            depends,
+            grants,
+            actions: Vec::new(),
+            yanked: false,
+            sha,
+            size,
+        }
+    }
+
     /// What resolution and the store need of it.
     pub fn entry(&self) -> Result<Entry, String> {
         let depends = self

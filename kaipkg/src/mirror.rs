@@ -114,7 +114,11 @@ impl<E: Exchange> Source for Mirror<E> {
             entry.name,
             entry.version
         );
-        Ok(self.range(&path, offset, len)?.unwrap_or_default())
+        // A target the index lists but the mirror doesn't serve (403 or 404,
+        // say while it syncs) is a fetch error, so the store keeps what it has
+        // of it; an empty piece would end the object short, as a tampered one.
+        self.range(&path, offset, len)?
+            .ok_or_else(|| format!("the mirror has no {path}"))
     }
 }
 
@@ -125,16 +129,23 @@ pub struct TufCache<'a> {
     pub vol: &'a mut dyn Volume,
 }
 
+/// The action a save is (ADR 0004 §4): the cache's own, no logged action's
+/// (ADR 0002), so undoing one never takes the cache back with it.
+pub const SAVE_ACTION: u64 = 0;
+
 impl Cache for TufCache<'_> {
-    fn load(&mut self, role: &str) -> Option<Vec<u8>> {
+    fn load(&mut self, role: &str) -> Result<Option<Vec<u8>>, kaituf::Error> {
         self.vol
             .read(&format!("{TUF_DIR}/{role}.json"))
-            .ok()
-            .flatten()
+            .map_err(kaituf::Error::Io)
     }
 
+    /// One action, so one kaifs commit with its undo record: outside an
+    /// action `fs` makes the truncate durable before the new bytes, and a
+    /// crash between them would leave the root or the rollback floor empty.
     fn save(&mut self, role: &str, bytes: &[u8]) -> Result<(), kaituf::Error> {
         let path = format!("{TUF_DIR}/{role}.json");
+        self.vol.begin(SAVE_ACTION).map_err(kaituf::Error::Io)?;
         self.vol.write(&path, bytes).map_err(kaituf::Error::Io)?;
         self.vol.commit().map_err(kaituf::Error::Io)
     }
@@ -147,6 +158,8 @@ pub struct Listing {
     pub entries: Vec<Entry>,
     /// Each refused target's path, and why.
     pub refused: Vec<(String, String)>,
+    /// Each listed package's index entry, for the catalogue (`crate::catalog`).
+    pub indexes: Vec<Index>,
 }
 
 /// The mirror's packages at `now` (seconds since 1970 UTC): its metadata
@@ -166,13 +179,16 @@ pub fn index<E: Exchange>(
         let parsed = match updater.target(&path) {
             Ok(Some(target)) => Index::parse(&target).and_then(|index| {
                 index.check_path(&target)?;
-                index.entry()
+                Ok((index.entry()?, index))
             }),
             Ok(None) => Err("no trusted role names it".into()),
             Err(why) => Err(why.to_string()),
         };
         match parsed {
-            Ok(entry) => listing.entries.push(entry),
+            Ok((entry, index)) => {
+                listing.entries.push(entry);
+                listing.indexes.push(index);
+            }
             Err(why) => listing.refused.push((path, why)),
         }
     }

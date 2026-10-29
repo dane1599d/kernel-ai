@@ -41,6 +41,8 @@ pub struct CoreInstance {
     actions: Option<Actions>,
     /// The `kai:ui/input` `on-ui` export, when the module has one.
     pub(crate) on_ui: Option<String>,
+    /// The export `kai:app/events.on-event` is, if the app has one.
+    pub(crate) on_event: Option<String>,
 }
 
 impl CoreInstance {
@@ -120,6 +122,10 @@ pub fn load_core(
         .iter()
         .find(|f| f.interface == crate::ui::INPUT && f.name == "on-ui")
         .and_then(|f| export_for(&module, f));
+    let on_event = tables::EXPORTS
+        .iter()
+        .find(|f| f.interface == "kai:app/events" && f.name == "on-event")
+        .and_then(|f| export_for(&module, f));
     Ok(CoreInstance {
         store,
         instance,
@@ -131,6 +137,7 @@ pub fn load_core(
         lifecycle,
         actions: None,
         on_ui,
+        on_event,
     })
 }
 
