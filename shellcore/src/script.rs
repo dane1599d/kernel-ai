@@ -627,7 +627,7 @@ impl Host for Stub {
     fn ui(&self, call: &crate::ui::UiCall) -> Result<String, String> {
         use crate::ui::UiCall;
         Ok(String::from(match call {
-            UiCall::Windows => "w1	x	x	1",
+            UiCall::Windows => "w1\tx\tx\t1",
             UiCall::Focus(_) => "none",
             UiCall::Close(window) => return Ok(window.clone()),
             _ => "",

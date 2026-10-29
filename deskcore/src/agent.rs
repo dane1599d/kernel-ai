@@ -13,7 +13,10 @@
 //!   close control, and decides;
 //! - `ui act <window> <node> <action>\t<value>` → `ok`: an AccessKit
 //!   `ActionRequest` to the app for a node of the window's last view, never
-//!   synthetic input. The agent's outline moves to the window;
+//!   synthetic input. The agent's outline moves to the window. A node no
+//!   view of the window showed is `err unknown node; view w3 first`;
+//! - `ui check <window> <node> <action>` → `ok`, or `ui act`'s refusal: the
+//!   shell asks before it puts a call to the user;
 //! - `ui agent <window>` or `ui agent none` → `ok`: the outline while a run
 //!   drives a window, or none. A key or click by the user there stops the run
 //!   ([`crate::desk::Effect::TookOver`]).
@@ -45,6 +48,11 @@ pub enum Request {
         action: u32,
         value: String,
     },
+    Check {
+        window: String,
+        node: String,
+        action: u32,
+    },
     Agent(Option<String>),
 }
 
@@ -62,6 +70,11 @@ impl Request {
                 action,
                 value,
             } => format!("ui act {window} {node} {action}\t{value}"),
+            Self::Check {
+                window,
+                node,
+                action,
+            } => format!("ui check {window} {node} {action}"),
             Self::Agent(Some(w)) => format!("ui agent {w}"),
             Self::Agent(None) => "ui agent none".into(),
         }
@@ -80,6 +93,18 @@ impl Request {
             "close" if word(arg) => Self::Close(arg.into()),
             "agent" if arg == "none" => Self::Agent(None),
             "agent" if word(arg) => Self::Agent(Some(arg.into())),
+            "check" => {
+                let mut words = arg.split(' ');
+                let (window, node, action) = (words.next()?, words.next()?, words.next()?);
+                if words.next().is_some() || !word(window) || !word(node) {
+                    return None;
+                }
+                Self::Check {
+                    window: window.into(),
+                    node: node.into(),
+                    action: action.parse().ok().filter(|a| *a < 16)?,
+                }
+            }
             "act" => {
                 let (head, value) = arg.split_once('\t')?;
                 let mut words = head.split(' ');
@@ -188,18 +213,20 @@ impl Agent {
                 value,
             } => {
                 let window = find(desk, &window)?;
-                let id = self
-                    .views
-                    .iter()
-                    .find(|(w, _)| *w == window)
-                    .and_then(|(_, v)| v.node(&node))
-                    .ok_or_else(|| {
-                        format!("{node} is not in the window's last view; view it again")
-                    })?;
+                let id = self.checked(&*clients, window, &node, action)?;
                 if !clients.act(window, id, action, &value) {
                     return Err(format!("{node} does not take that action"));
                 }
                 desk.set_agent(Some(window));
+                Ok(String::from("ok"))
+            }
+            Request::Check {
+                window,
+                node,
+                action,
+            } => {
+                let window = find(desk, &window)?;
+                self.checked(&*clients, window, &node, action)?;
                 Ok(String::from("ok"))
             }
             Request::Agent(name) => {
@@ -207,6 +234,32 @@ impl Agent {
                 desk.set_agent(window);
                 Ok(String::from("ok"))
             }
+        }
+    }
+
+    /// The tree's id of `node` in `window`'s latest view, if it offers
+    /// `action`. A node no view showed (an id the model guessed) is unknown, and
+    /// the answer says what to do instead.
+    fn checked(
+        &self,
+        clients: &dyn Clients,
+        window: WindowId,
+        node: &str,
+        action: u32,
+    ) -> Result<u32, String> {
+        let id = self
+            .views
+            .iter()
+            .find(|(w, _)| *w == window)
+            .and_then(|(_, v)| v.node(node))
+            .ok_or_else(|| format!("unknown node; view {} first", view::window_id(window)))?;
+        let offers = clients
+            .tree(window)
+            .and_then(|tree| tree.node(id))
+            .is_some_and(|n| action < 16 && n.actions & (1 << action) != 0);
+        match offers {
+            true => Ok(id),
+            false => Err(format!("{node} does not take that action")),
         }
     }
 

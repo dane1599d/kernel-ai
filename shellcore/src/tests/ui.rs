@@ -25,6 +25,10 @@ fn desktop(host: &FakeHost) {
         UiCall::Focus(_) => Ok(String::from("w1")),
         UiCall::Close(window) => Ok(window.clone()),
         UiCall::Open { .. } => Ok(String::from("opened w5")),
+        // Only the view's ids are known: `b2` and `t1`.
+        UiCall::Check { node, .. } if node != "b2" && node != "t1" => {
+            Err(String::from("unknown node; view w2 first"))
+        }
         _ => Ok(String::new()),
     }));
 }
@@ -201,4 +205,54 @@ fn the_window_list_reads_back_into_the_state_line() {
     for bad in ["x2\tnotes\tN\t1", "w2\tnotes\tN", "w2\tnotes\tN\tyes"] {
         assert!(parse_windows(bad).is_err(), "{bad}");
     }
+}
+
+#[test]
+fn a_guessed_node_is_refused_back_to_the_model_which_views_then_acts() {
+    let (host, mut shell) = with_calls(vec![
+        call(
+            r#"{"name":"ui_act","arguments":{"window":"notes","node":"new-note","action":"click"}}"#,
+        ),
+        call(r#"{"name":"ui_view","arguments":{"window":"w2"}}"#),
+        call(r#"{"name":"ui_act","arguments":{"window":"w2","node":"b2","action":"click"}}"#),
+    ]);
+    desktop(&host);
+    let reply = shell.eval("click New note");
+    let reads = host.act_reads.borrow().clone();
+    assert_eq!(reads.len(), 3);
+    // Round two read desktop's refusal, round three the view.
+    let refusal = reads[1].clone().unwrap();
+    assert!(refusal.call.contains("new-note"));
+    assert_eq!(refusal.data, "unknown node; view w2 first");
+    assert_eq!(reads[2].clone().unwrap().data, VIEW);
+    // The guessed id never reached the user; the viewed one asks.
+    let shown = "ui_act(\"w2\", \"b2\", \"click\")";
+    assert!(reply.to_wire().ends_with(shown), "{reply:?}");
+    assert!(
+        !host
+            .ui_calls
+            .borrow()
+            .iter()
+            .any(|c| matches!(c, UiCall::Act { .. }))
+    );
+}
+
+#[test]
+fn a_node_still_unknown_after_two_reads_is_refused_with_desktops_words() {
+    let guess = |node: &str| {
+        call(&format!(
+            r#"{{"name":"ui_act","arguments":{{"window":"notes","node":"{node}","action":"click"}}}}"#
+        ))
+    };
+    let view = call(r#"{"name":"ui_view","arguments":{"window":"notes"}}"#);
+    let (host, mut shell) = with_calls(vec![guess("a"), view, guess("b")]);
+    desktop(&host);
+    let reply = shell.eval("click New note");
+    assert_eq!(reply, Reply::err("unknown node; view w2 first"));
+    assert_eq!(host.act_reads.borrow().len(), 3, "no fourth round");
+    // A known node goes to consent at once, with no extra round.
+    let (host, mut shell) = with_calls(vec![guess("b2")]);
+    desktop(&host);
+    shell.eval("click New note");
+    assert_eq!(host.act_reads.borrow().len(), 1);
 }

@@ -34,6 +34,14 @@ pub enum UiCall {
     /// Puts keyboard focus back where `ui_focus` found it: `w2`, `panel`, `none`.
     Refocus(String),
     Close(String),
+    /// Whether `node` is in the window's latest view and takes `action`,
+    /// before the call goes to consent: `Err("unknown node; view w3 first")`
+    /// for a node no view showed.
+    Check {
+        window: String,
+        node: String,
+        action: u32,
+    },
     /// `action` is the bit number of `surfabi::tree::action`.
     Act {
         window: String,
@@ -91,71 +99,125 @@ pub fn action_bit(action: &str) -> Result<u32, String> {
 /// What the first round's call comes to: the call to execute, and whether it
 /// was decided after reading a view.
 pub(crate) enum Round {
-    /// Not a view: execute it as it came.
+    /// Nothing was read: execute it as it came.
     First(Call),
-    /// The call the model made after reading the view.
+    /// The call the model made after reading a view or a refusal.
     Second(Call),
-    /// The view could not be read, or no second call came: this is the reply.
+    /// A read failed, or no call came after it: this is the reply.
     Failed(Reply),
 }
 
+/// Reads the model may make before it acts: a view, and a refusal that says
+/// to view first (a `ui_act` on a node no view showed). One view at most.
+const MAX_READS: usize = 2;
+
 impl Shell {
-    /// `call`, or, if it reads a view, the call the model makes with the view
-    /// in front of it (the module's note).
+    /// `call`, or the call the model makes with what it read in front of it: a
+    /// view it asked for, or `desktop`'s refusal of a node it guessed, which says
+    /// which window to view first (the module's note).
     pub(crate) fn second_round(&mut self, id: u64, asked: &ActRequest, call: Call) -> Round {
-        if call.name != "ui_view" {
-            return Round::First(call);
-        }
-        let window = call
-            .arguments
-            .get("window")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        let view = match self.host.ui(&UiCall::View(window.clone())) {
-            Ok(view) => view,
-            Err(why) => {
-                return Round::Failed(Reply::err(format!("I could not look at {window}: {why}")));
-            }
-        };
-        self.host.audit(&format!(
-            "request {id}: read the view of {window} for a second round"
-        ));
-        let again = ActRequest {
-            read: Some(Read {
-                call: call.text(),
-                data: view,
-            }),
-            ..asked.clone()
-        };
-        match self.host.act(&again) {
-            Ok(next) if next.name == "ui_view" => Round::Failed(Reply::err(
-                "I looked at the window once; say what to do in it",
-            )),
-            // These do not go through a row's consent, so the view could steer
-            // them past it: after a view only rows, `say` and `clarify` come.
-            Ok(next) if matches!(next.name.as_str(), "script" | "undo") => {
-                Round::Failed(Reply::err(format!(
-                    "after looking at a window I act only in it; ask for {} on its own",
-                    next.name
-                )))
-            }
-            Ok(next) => {
-                self.host.audit(&format!(
-                    "request {id}: after the view, the model called {}",
-                    next.text()
+        let (mut call, mut reads, mut viewed) = (call, 0, false);
+        loop {
+            let data = match call.name.as_str() {
+                "ui_view" if viewed => {
+                    return Round::Failed(Reply::err(
+                        "I looked at the window once; say what to do in it",
+                    ));
+                }
+                "ui_view" => match self.read_view(&call) {
+                    Ok(view) => {
+                        viewed = true;
+                        view
+                    }
+                    Err(reply) => return Round::Failed(reply),
+                },
+                "ui_act" => match self.unknown_node(&call) {
+                    Some(refusal) if reads == MAX_READS => {
+                        return Round::Failed(Reply::err(refusal));
+                    }
+                    Some(refusal) => refusal,
+                    None if reads == 0 => return Round::First(call),
+                    None => return Round::Second(call),
+                },
+                _ if reads == 0 => return Round::First(call),
+                // These do not go through a row's consent, so what was read
+                // could steer them past it: after a read only rows, `say` and
+                // `clarify` come.
+                "script" | "undo" => {
+                    return Round::Failed(Reply::err(format!(
+                        "after looking at a window I act only in it; ask for {} on its own",
+                        call.name
+                    )));
+                }
+                _ => return Round::Second(call),
+            };
+            if reads == MAX_READS {
+                return Round::Failed(Reply::err(
+                    "I looked at the window once; say what to do in it",
                 ));
-                Round::Second(next)
             }
-            Err(error @ (ActError::Local(_) | ActError::CutOff | ActError::NotACall)) => {
-                Round::Failed(Reply::err(format!(
-                    "the model gave no call after the view: {}",
-                    error.describe()
-                )))
-            }
-            Err(ActError::Unavailable(why)) => Round::Failed(Reply::err(why)),
+            reads += 1;
+            self.host.audit(&format!(
+                "request {id}: {} read for round {}",
+                call.name,
+                reads + 1
+            ));
+            let again = ActRequest {
+                read: Some(Read {
+                    call: call.text(),
+                    data,
+                }),
+                ..asked.clone()
+            };
+            call = match self.host.act(&again) {
+                Ok(next) => {
+                    self.host.audit(&format!(
+                        "request {id}: then the model called {}",
+                        next.text()
+                    ));
+                    next
+                }
+                Err(error @ (ActError::Local(_) | ActError::CutOff | ActError::NotACall)) => {
+                    return Round::Failed(Reply::err(format!(
+                        "the model gave no call after reading the window: {}",
+                        error.describe()
+                    )));
+                }
+                Err(ActError::Unavailable(why)) => return Round::Failed(Reply::err(why)),
+            };
         }
     }
+
+    /// The view `call` (a `ui_view`) asks for, or why there is none.
+    fn read_view(&self, call: &Call) -> Result<String, Reply> {
+        let window = text(call, "window");
+        self.host
+            .ui(&UiCall::View(window.into()))
+            .map_err(|why| Reply::err(format!("I could not look at {window}: {why}")))
+    }
+
+    /// `desktop`'s refusal of `call` (a `ui_act`) when its node is in no view
+    /// of the window: "unknown node; view w3 first". `None` when the node is
+    /// known, or when only the act itself can say (no desktop, a bad action):
+    /// the call then goes on to consent as it came.
+    fn unknown_node(&self, call: &Call) -> Option<String> {
+        let check = UiCall::Check {
+            window: text(call, "window").into(),
+            node: text(call, "node").into(),
+            action: action_bit(text(call, "action")).ok()?,
+        };
+        match self.host.ui(&check) {
+            Err(why) if why.starts_with("unknown node") => Some(why),
+            _ => None,
+        }
+    }
+}
+
+fn text<'a>(call: &'a Call, name: &str) -> &'a str {
+    call.arguments
+        .get(name)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
 }
 
 /// What undoes a `ui_open` that answered `answer` for `app`: closing the
