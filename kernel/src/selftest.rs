@@ -141,12 +141,20 @@ pub enum SelfTest {
     DeskAsk,
     /// An app suspended and resumed through its host (P3 task 11).
     AppSuspend,
+    /// An app not started at boot, started by the first request to it (P3 task 12b).
+    AppOnDemand,
     /// The OS boots to the desktop, whose screen matches its golden (P3 task 6).
     DeskBoot,
     /// The AI panel takes focus and queues a typed line (P3 task 7).
     DeskPanel,
     /// An app's kai:ui window on the desktop, closed from its control (P3 task 9).
     UiWindow,
+    /// Asks answered on `desktop`'s card, and on the console when it dies (P3 task 7).
+    DeskCard,
+    /// A standing instruction fired by Notes' window minimized and restored (P3 task 11).
+    DeskStanding,
+    /// The keyboard reaches an app's widgets (key input for uikit apps).
+    UiKeys,
     DeskTerm,
     /// `scriptrun` through a Job, and spike S01-1's M3 and M5 (P1 task 14).
     Scriptrun,
@@ -302,9 +310,13 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=desk-restart" => Some(SelfTest::DeskRestart),
             "test=desk-ask" => Some(SelfTest::DeskAsk),
             "test=app-suspend" => Some(SelfTest::AppSuspend),
+            "test=app-on-demand" => Some(SelfTest::AppOnDemand),
             "test=desk-boot" => Some(SelfTest::DeskBoot),
             "test=desk-panel" => Some(SelfTest::DeskPanel),
             "test=ui-window" => Some(SelfTest::UiWindow),
+            "test=desk-card" => Some(SelfTest::DeskCard),
+            "test=desk-standing" => Some(SelfTest::DeskStanding),
+            "test=ui-keys" => Some(SelfTest::UiKeys),
             "test=desk-term" => Some(SelfTest::DeskTerm),
             "test=scriptrun" => Some(SelfTest::Scriptrun),
             "test=fpu" => Some(SelfTest::Fpu),
@@ -359,6 +371,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::Act(_)
             | SelfTest::Live
             | SelfTest::AppSuspend
+            | SelfTest::AppOnDemand
             | SelfTest::Edit
             | SelfTest::Manifest
             | SelfTest::ManifestGood
@@ -383,6 +396,9 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DeskBoot
             | SelfTest::DeskPanel
             | SelfTest::UiWindow
+            | SelfTest::DeskCard
+            | SelfTest::DeskStanding
+            | SelfTest::UiKeys
             | SelfTest::DeskTerm
             | SelfTest::TuneRevert
             | SelfTest::TuneStall
@@ -401,6 +417,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
         SelfTest::Live => format!("{}\n{}", kabi::plan::NOTES_TEST, crate::llm::plan_line()),
         SelfTest::Part => String::from(kabi::plan::FS),
         SelfTest::AppSuspend => kabi::plan::notes("2", None),
+        SelfTest::AppOnDemand => crate::demand_tests::plan(),
         // llm first, so it asks for the model while fs still fills it.
         SelfTest::ModelStore { bad: false } => {
             format!("{}\n{}", crate::llm::plan_line(), kabi::plan::FS)
@@ -439,6 +456,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
         SelfTest::Net
             | SelfTest::Live
             | SelfTest::AppSuspend
+            | SelfTest::AppOnDemand
             | SelfTest::Edit
             | SelfTest::Manifest
             | SelfTest::ManifestGood
@@ -477,6 +495,14 @@ pub fn plan(test: SelfTest) -> Option<String> {
         plan.push_str(kabi::plan::UPDATED);
         plan.push_str(" after=restart step=");
         plan.push_str(step);
+        // `updated.<word>`: a word for `updated`'s line, as `restart=window`.
+        for word in crate::cmdline()
+            .split_whitespace()
+            .filter_map(|w| w.strip_prefix("updated."))
+        {
+            plan.push(' ');
+            plan.push_str(word);
+        }
     }
     // `act-rule` stops processes the supervisor does not restart, and one
     // service it does.
@@ -517,7 +543,7 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
     }
     if matches!(
         test,
-        SelfTest::DeskWindows | SelfTest::DeskRestart | SelfTest::DeskAsk
+        SelfTest::DeskWindows | SelfTest::DeskRestart | SelfTest::DeskAsk | SelfTest::DeskCard
     ) {
         plan.push('\n');
         plan.push_str(crate::desk_tests::PLAN);
@@ -529,6 +555,14 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
     if test == SelfTest::UiWindow {
         plan.push('\n');
         plan.push_str(crate::ui_tests::PLAN);
+    }
+    if test == SelfTest::DeskStanding {
+        plan.push('\n');
+        plan.push_str(crate::standing_tests::PLAN);
+    }
+    if test == SelfTest::UiKeys {
+        plan.push('\n');
+        plan.push_str(crate::keys_tests::PLAN);
     }
     if test == SelfTest::DeskTerm {
         plan.push('\n');

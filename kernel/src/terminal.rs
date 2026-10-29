@@ -16,7 +16,7 @@
 use crate::console::{self, FORM_FEED, Screen};
 use crate::display::claim;
 use crate::keyboard::Decoder;
-use crate::{edit_mode, hpet, ipc, llm, log, memory, net, serial, smp, threads};
+use crate::{ask_box, edit_mode, hpet, ipc, llm, log, memory, net, serial, smp, threads};
 use alloc::format;
 use alloc::string::String;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -207,10 +207,24 @@ pub fn run(_: usize) {
     }
 }
 
+/// Sends `line` to the shell as if typed, and answers each menu it asks on its
+/// one surface, as [`run`] does. Whether one was asked. For boot cases that
+/// need the shell's own ask (`desk-standing`).
+pub(crate) fn shell_line_answered(line: &str) -> bool {
+    let mut decoder = Decoder::new();
+    let mut waiting = shell_line(line);
+    let mut asked = false;
+    while let Some(Waiting::Menu(menu)) = waiting {
+        asked = true;
+        waiting = choose(&mut decoder, menu);
+    }
+    asked
+}
+
 /// Shows `menu` on the console, reads its answer, then sends it to the shell
 /// with what an Allow minted.
 fn choose(decoder: &mut Decoder, mut menu: Menu) -> Option<Waiting> {
-    let answer = answer_on_console(decoder, &mut menu);
+    let answer = answer(decoder, &mut menu);
     let (prompt, _) = menu.input();
     finish_line(prompt, answer.word(), "");
     // Allow mints the call's ONCE (and an "Always allow" its rule node); the
@@ -228,6 +242,62 @@ fn choose(decoder: &mut Decoder, mut menu: Menu) -> Option<Waiting> {
             shell_line(&menu::answer_line(menu.id, Answer::Deny))
         }
     }
+}
+
+/// Asks `menu` on its one answering surface, which the kernel picks: `desktop`'s
+/// ask card while `desktop` shows and its trusted layer is alive, else the
+/// console (ADR 0005 §7). A card withdrawn before an answer, because `desktop`
+/// stopped showing or reading, goes to the console after.
+pub(crate) fn answer(decoder: &mut Decoder, menu: &mut Menu) -> Answer {
+    match answer_on_card(menu) {
+        Some(answer) => answer,
+        None => answer_on_console(decoder, menu),
+    }
+}
+
+/// Posts `menu` to `desktop`'s card and waits for its answer: None if the card
+/// was never shown or was withdrawn unanswered. Unanswered after the card's
+/// countdown, it is Deny.
+fn answer_on_card(menu: &Menu) -> Option<Answer> {
+    if !claim::showing() || !ask_box::alive() {
+        return None;
+    }
+    if !ask_box::post(menu.id, menu.call(), menu.question()) {
+        return None;
+    }
+    AWAITING_ANSWER.store(true, Ordering::Release);
+    log!("ask: {} went to desktop's card", menu.id);
+    let start = hpet::nanos();
+    let answer = loop {
+        if let Some(answered) = ask_box::finish(false) {
+            break answered;
+        }
+        let gone = !claim::showing() || !ask_box::alive();
+        let late = hpet::nanos().saturating_sub(start) > ask_box::WAIT_NS;
+        if gone || late {
+            match ask_box::finish(true) {
+                Some(Some(answer)) => break Some(answer),
+                _ if late => break Some(Answer::Deny),
+                _ => {
+                    log!(
+                        "ask: {} came back from the card; the console asks it",
+                        menu.id
+                    );
+                    break None;
+                }
+            }
+        }
+        threads::sleep_ms(20);
+    };
+    AWAITING_ANSWER.store(false, Ordering::Release);
+    if let Some(answer) = answer {
+        log!(
+            "ask: {} answered {} on desktop's card",
+            menu.id,
+            answer.word()
+        );
+    }
+    answer
 }
 
 /// Shows `menu` on the console and reads keys until one picks a choice. The

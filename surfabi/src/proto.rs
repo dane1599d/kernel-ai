@@ -128,6 +128,9 @@ pub enum Request<'a> {
     },
     /// The client closes its window (`xdg_toplevel.destroy`).
     ToplevelDestroy,
+    /// Whether the window holds changes not yet kept: `window_close` closes a
+    /// window without one at once, and asks first for one with (ADR 0005 §6).
+    SetUnsaved(bool),
     // popup
     Position {
         anchor: u32,
@@ -143,9 +146,11 @@ pub enum Request<'a> {
     // a11y: records of [`crate::tree`], applied at `A11yCommit`
     TreeUpdate(&'a [u8]),
     A11yCommit,
+    /// The declared action (`<app>_<function>`) a node runs, so the agent's
+    /// `ui_act` on it takes that action's tier; an empty name unbinds it.
     BindAction {
         node: u32,
-        action: u32,
+        action: &'a str,
     },
     // panel
     Layer(u32),
@@ -215,6 +220,11 @@ impl<'a> Request<'a> {
             },
             (I::Toplevel, 4) => Request::AckConfigure { serial: r.uint()? },
             (I::Toplevel, 5) => Request::ToplevelDestroy,
+            (I::Toplevel, 6) => Request::SetUnsaved(match r.uint()? {
+                0 => false,
+                1 => true,
+                _ => return Err(Error::BadArg),
+            }),
             (I::Popup, 0) => Request::Position {
                 anchor: r.uint()?,
                 gravity: r.uint()?,
@@ -227,7 +237,7 @@ impl<'a> Request<'a> {
             (I::A11y, 1) => Request::A11yCommit,
             (I::A11y, 2) => Request::BindAction {
                 node: r.uint()?,
-                action: r.uint()?,
+                action: r.string()?,
             },
             (I::Panel, 0) => Request::Layer(r.uint()?),
             (I::Panel, 1) => Request::ExclusiveZone(r.size()?),
@@ -285,6 +295,7 @@ impl<'a> Request<'a> {
             Request::SetMaxSize { width, height } => w(3).int(width as i32).int(height as i32),
             Request::AckConfigure { serial } => w(4).uint(serial),
             Request::ToplevelDestroy => w(5),
+            Request::SetUnsaved(unsaved) => w(6).uint(unsaved as u32),
             Request::Position {
                 anchor,
                 gravity,
@@ -295,7 +306,7 @@ impl<'a> Request<'a> {
             Request::SetCursor(name) => w(0).string(name),
             Request::TreeUpdate(bytes) => w(0).array(bytes),
             Request::A11yCommit => w(1),
-            Request::BindAction { node, action } => w(2).uint(node).uint(action),
+            Request::BindAction { node, action } => w(2).uint(node).string(action),
             Request::Layer(layer) => w(0).uint(layer),
             Request::ExclusiveZone(px) => w(1).int(px as i32),
         };

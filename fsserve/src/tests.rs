@@ -857,6 +857,83 @@ fn the_update_snapshot_is_taken_and_restored_only_on_system_updates() {
 }
 
 #[test]
+fn system_settings_is_read_only_through_its_badge() {
+    let mut disk = MemDisk::new(BLOCKS);
+    let (mut c, _) = Client::start(&mut disk);
+    assert_ne!(c.server.system_settings, 0);
+    // The Settings app writes through its own folder; here, `fs` itself.
+    let dir = c.server.system_settings;
+    let ino = {
+        let fs = c.server.fs();
+        fs.set_volume(SYSTEM.into()).unwrap();
+        let ino = fs.create(dir, "updates.cbor").unwrap();
+        fs.write_file(ino, b"window").unwrap();
+        fs.commit().unwrap();
+        ino
+    };
+    assert_ne!(ino, 0);
+    let settings = kabi::fs::SYSTEM_SETTINGS;
+    let read = Rights::READ | Rights::ENUMERATE;
+    let open = |rights: Rights, how: How| Request::Open {
+        path: "updates.cbor".into(),
+        rights: rights.bits(),
+        how,
+    };
+    let (_, file) = c.call(ALICE, settings, read, open(Rights::READ, How::Existing));
+    assert_eq!(c.read(&file.unwrap()).unwrap(), b"window");
+    // A read-only handle opens nothing for writing and makes nothing.
+    let reply = c.call(
+        ALICE,
+        settings,
+        read,
+        open(Rights::READ | Rights::WRITE, How::Existing),
+    );
+    assert_eq!(failed(reply), Error::Permission);
+    let reply = c.call(ALICE, settings, read, open(Rights::READ, How::CreateFile));
+    assert_eq!(failed(reply), Error::Permission);
+    // A handle that somehow carries WRITE still opens nothing writable, and
+    // what it opens is read only.
+    let reply = c.call(
+        ALICE,
+        settings,
+        DIR_RIGHTS,
+        open(Rights::READ | Rights::WRITE, How::Existing),
+    );
+    assert_eq!(failed(reply), Error::Permission);
+    let (_, file) = c.call(
+        ALICE,
+        settings,
+        DIR_RIGHTS,
+        open(Rights::READ, How::Existing),
+    );
+    let file = file.unwrap();
+    assert!(!file.rights.contains(Rights::WRITE));
+    assert!(!matches!(c.write(&file, 0, b"x"), Reply::Done));
+    let reply = c.call(
+        ALICE,
+        settings,
+        DIR_RIGHTS,
+        Request::Open {
+            path: String::new(),
+            rights: DIR_RIGHTS.bits(),
+            how: How::Existing,
+        },
+    );
+    assert_eq!(failed(reply), Error::Permission);
+    // And `fs` refuses a change through the badge even with every right.
+    for request in [
+        Request::Trash {
+            name: "updates.cbor".into(),
+        },
+        Request::Begin { action: 0 },
+        open(Rights::READ, How::Mkdir),
+    ] {
+        let reply = c.call(ALICE, settings, DIR_RIGHTS, request);
+        assert_eq!(failed(reply), Error::Permission);
+    }
+}
+
+#[test]
 fn an_update_restore_keeps_system_trust_and_the_standing_rules() {
     let mut disk = MemDisk::new(BLOCKS);
     let (mut c, _) = Client::start(&mut disk);

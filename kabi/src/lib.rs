@@ -15,6 +15,7 @@ pub mod cap;
 pub mod device;
 pub mod display;
 mod error;
+pub mod event;
 pub mod fs;
 pub mod handle;
 pub mod input;

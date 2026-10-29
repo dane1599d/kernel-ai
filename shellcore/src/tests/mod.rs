@@ -25,6 +25,7 @@ mod scripts;
 mod standing;
 mod transaction;
 mod tune;
+mod ui;
 
 /// A host whose clock moves `step_ns` on every reading.
 struct FakeHost {
@@ -54,6 +55,11 @@ struct FakeHost {
     act_lines: RefCell<Vec<String>>,
     /// The State each `act` request carried, and what `state` gives.
     act_states: RefCell<Vec<String>>,
+    /// Each act request's second-round read (P3 task 10).
+    act_reads: RefCell<Vec<Option<llmproto::act::Read>>>,
+    /// What the shell asked `desktop`, and how `desktop` answers.
+    ui_calls: RefCell<Vec<crate::ui::UiCall>>,
+    ui_answer: RefCell<Option<UiAnswer>>,
     state: RefCell<crate::state::State>,
     /// Turns sent to the conversation memory, and how often it was forgotten.
     remembered: RefCell<Vec<(String, String, String)>>,
@@ -136,6 +142,8 @@ type Files = std::collections::BTreeMap<String, String>;
 
 type Apart = alloc::boxed::Box<dyn Fn(&str) -> Result<String, String>>;
 
+type UiAnswer = alloc::boxed::Box<dyn Fn(&crate::ui::UiCall) -> Result<String, String>>;
+
 impl FakeHost {
     /// The supervisor's side: `err already ...` when nothing changes.
     fn set_running(&self, name: &str, running: bool) -> Result<(), String> {
@@ -199,6 +207,9 @@ impl FakeHost {
             calls: RefCell::new(VecDeque::new()),
             act_lines: RefCell::new(Vec::new()),
             act_states: RefCell::new(Vec::new()),
+            act_reads: RefCell::new(Vec::new()),
+            ui_calls: RefCell::new(Vec::new()),
+            ui_answer: RefCell::new(None),
             state: RefCell::new(crate::state::State::default()),
             remembered: RefCell::new(Vec::new()),
             forgot: Cell::new(0),
@@ -566,9 +577,18 @@ impl Host for FakeHost {
         self.state.borrow().clone()
     }
 
+    fn ui(&self, call: &crate::ui::UiCall) -> Result<String, String> {
+        self.ui_calls.borrow_mut().push(call.clone());
+        match self.ui_answer.borrow().as_ref() {
+            Some(answer) => answer(call),
+            None => crate::ui::no_desktop(),
+        }
+    }
+
     fn act(&self, request: &ActRequest) -> Result<Call, ActError> {
         self.act_lines.borrow_mut().push(request.line.clone());
         self.act_states.borrow_mut().push(request.state.clone());
+        self.act_reads.borrow_mut().push(request.read.clone());
         self.calls
             .borrow_mut()
             .pop_front()
