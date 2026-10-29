@@ -5,7 +5,7 @@
 
 use crate::askcard::Card;
 use crate::geom::Rect;
-use crate::paint::{Painter, baseline, fill, g};
+use crate::paint::{Painter, fill, g};
 use crate::trusted::{self, Ask, LINE, PADDING};
 use alloc::vec::Vec;
 use gfx2d::Canvas;
@@ -55,7 +55,7 @@ impl Painter {
         );
         let text_clip = inner.intersect(&clip).unwrap_or_default();
         let mut top = inner.y;
-        let y = baseline(top, LINE, TypeStyle::Label);
+        let y = self.baseline(top, LINE, TypeStyle::Label);
         self.draw_text(
             c,
             text_clip,
@@ -80,7 +80,7 @@ impl Painter {
             if top + LINE > inner.bottom() - trusted::BUTTON_H {
                 break;
             }
-            let y = baseline(top, LINE, TypeStyle::Mono);
+            let y = self.baseline(top, LINE, TypeStyle::Mono);
             let x = inner.x as f32;
             match mono {
                 true => {
@@ -119,7 +119,7 @@ impl Painter {
         };
         let (w, _) = self.text.measure(TypeStyle::Label, label);
         let x = r.x as f32 + (r.w as f32 - w) / 2.0;
-        let y = baseline(r.y, r.h, TypeStyle::Label);
+        let y = self.baseline(r.y, r.h, TypeStyle::Label);
         let inside = r.intersect(&clip).unwrap_or_default();
         self.draw_text(c, inside, x, y, TypeStyle::Label, ink, label);
     }
