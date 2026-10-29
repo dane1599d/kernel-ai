@@ -14,6 +14,8 @@ const NAME: &str = "Kernel AI build service";
 const EMAIL: &str = "build@kernel-ai.invalid";
 /// Build inputs that must be committed before dev mode starts.
 const INPUTS: &[&str] = &[
+    // P4's apps live beside the components (P4 plan section 4, item 1).
+    "apps",
     "components",
     "compsdk",
     "kabi",
@@ -22,6 +24,8 @@ const INPUTS: &[&str] = &[
     "Cargo.lock",
     "rust-toolchain.toml",
     ".cargo",
+    // Windowed apps' boot versions build on it (notes-window).
+    "uikit",
 ];
 
 /// Runs git in `dir` with the environment variables that would point it at
