@@ -158,6 +158,8 @@ pub struct Listing {
     pub entries: Vec<Entry>,
     /// Each refused target's path, and why.
     pub refused: Vec<(String, String)>,
+    /// Each listed package's index entry, for the catalogue (`crate::catalog`).
+    pub indexes: Vec<Index>,
 }
 
 /// The mirror's packages at `now` (seconds since 1970 UTC): its metadata
@@ -177,13 +179,16 @@ pub fn index<E: Exchange>(
         let parsed = match updater.target(&path) {
             Ok(Some(target)) => Index::parse(&target).and_then(|index| {
                 index.check_path(&target)?;
-                index.entry()
+                Ok((index.entry()?, index))
             }),
             Ok(None) => Err("no trusted role names it".into()),
             Err(why) => Err(why.to_string()),
         };
         match parsed {
-            Ok(entry) => listing.entries.push(entry),
+            Ok((entry, index)) => {
+                listing.entries.push(entry);
+                listing.indexes.push(index);
+            }
             Err(why) => listing.refused.push((path, why)),
         }
     }
