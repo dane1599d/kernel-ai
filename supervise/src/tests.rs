@@ -328,6 +328,11 @@ fn stop_and_start_requests_parse_and_are_checked() {
         ),
         ("stop build-1 rule", (Request::Stop("build-1"), Proof::Rule)),
         (
+            "suspend notes rule",
+            (Request::Suspend("notes"), Proof::Rule),
+        ),
+        ("resume notes rule", (Request::Resume("notes"), Proof::Rule)),
+        (
             "stop build-1 undo id=4",
             (Request::Stop("build-1"), Proof::Undo(4)),
         ),
@@ -599,6 +604,126 @@ fn routes_form_no_cycle_and_never_reach_the_shell_or_edit() {
             plan.errors
         );
     }
+}
+
+#[test]
+fn a_demand_line_waits_for_the_kernels_demand() {
+    let plan = parse_plan(
+        "notes program=comphost caps=serve start=demand\nshell caps=serve\nodd start=later\ntwice start=demand start=demand\nlone unsupervised start=demand",
+    );
+    assert_eq!(plan.services.len(), 2, "{:?}", plan.errors);
+    assert_eq!(plan.errors.len(), 3, "{:?}", plan.errors);
+    assert_eq!(plan.services[0].start, Start::Demand);
+    assert_eq!(plan.services[1].start, Start::Boot);
+    assert_eq!(parse_demand("demand notes"), Some("notes"));
+    for bad in [
+        "demand",
+        "demand notes x",
+        "demand no/tes",
+        "start notes",
+        "",
+    ] {
+        assert_eq!(parse_demand(bad), None, "{bad:?}");
+    }
+    let specs: Vec<&ServiceSpec> = plan.services.iter().collect();
+    let mut records = vec![Record::new("notes"), Record::new("shell")];
+    let idle = [false, false];
+    assert_eq!(
+        check_demand("notes", &specs, &records, 0, &idle),
+        Ok(Some(0))
+    );
+    // Only the kernel asks, and only for a start=demand line.
+    assert!(check_demand("notes", &specs, &records, 7, &idle).is_err());
+    assert!(check_demand("shell", &specs, &records, 0, &idle).is_err());
+    assert!(check_demand("nobody", &specs, &records, 0, &idle).is_err());
+    // Already starting or running: nothing to do.
+    assert_eq!(
+        check_demand("notes", &specs, &records, 0, &[true, false]),
+        Ok(None)
+    );
+    records[0].pid = 9;
+    assert_eq!(check_demand("notes", &specs, &records, 0, &idle), Ok(None));
+    // Stopped by the user: a demand does not undo that.
+    records[0].pid = 0;
+    records[0].stopped = true;
+    assert_eq!(
+        check_demand("notes", &specs, &records, 0, &idle),
+        Err("err stopped")
+    );
+}
+
+#[test]
+fn a_demand_does_not_restart_a_service_past_its_cap() {
+    let plan = parse_plan("notes program=comphost caps=serve start=demand");
+    let specs: Vec<&ServiceSpec> = plan.services.iter().collect();
+    let mut records = vec![Record::new("notes")];
+    records[0].gave_up = true;
+    assert_eq!(
+        check_demand("notes", &specs, &records, 0, &[false]),
+        Err("err gave up")
+    );
+    // While it backs off it is starting, so a demand adds nothing either.
+    records[0].gave_up = false;
+    assert_eq!(
+        check_demand("notes", &specs, &records, 0, &[true]),
+        Ok(None)
+    );
+}
+
+#[test]
+fn start_starts_a_demand_service_not_started_yet() {
+    let starts = [Start::Demand, Start::Boot];
+    let mut records = vec![Record::new("notes"), Record::new("files")];
+    // Never started: `start` starts it, as a demand would.
+    assert_eq!(check_for(Request::Start("notes"), &records, &starts), Ok(0));
+    // A boot service that runs is not stopped, so `start` is refused as before.
+    records[1].pid = 4;
+    assert_eq!(
+        check_for(Request::Start("files"), &records, &starts),
+        Err("err not stopped")
+    );
+    // Once the demand service runs, `start` is refused like any other.
+    records[0].pid = 9;
+    assert_eq!(
+        check_for(Request::Start("notes"), &records, &starts),
+        Err("err not stopped")
+    );
+    // `check` alone knows no starts: unchanged.
+    records[0].pid = 0;
+    assert_eq!(
+        check(Request::Start("notes"), &records),
+        Err("err not stopped")
+    );
+}
+
+#[test]
+fn suspend_and_resume_need_a_once_or_a_rule() {
+    let once = Proof::Once(Once { badge: 1, id: 2 });
+    for request in [Request::Suspend("notes"), Request::Resume("notes")] {
+        assert_eq!(proof_fits(request, Proof::Rule), Ok(()));
+        assert_eq!(proof_fits(request, once), Ok(()));
+        for proof in [Proof::None, Proof::Entry(2), Proof::Undo(2)] {
+            assert!(proof_fits(request, proof).is_err(), "{request:?} {proof:?}");
+        }
+        assert_eq!(
+            Request::parse(&request.encode(Proof::Rule)),
+            Some((request, Proof::Rule))
+        );
+    }
+    assert_eq!(
+        Request::Suspend("notes").call().as_deref(),
+        Some("app_suspend(\"notes\")")
+    );
+    assert_eq!(
+        Request::Resume("notes").call().as_deref(),
+        Some("app_resume(\"notes\")")
+    );
+    let records = vec![Record::new("shell"), Record::new("notes")];
+    assert_eq!(
+        check(Request::Suspend("shell"), &records),
+        Err("err protected")
+    );
+    assert_eq!(check(Request::Suspend("notes"), &records), Ok(1));
 }
 
 const RUN_PLAN: &str = "fs caps=serve\n\

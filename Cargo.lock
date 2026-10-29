@@ -510,6 +510,7 @@ name = "deskcore"
 version = "0.1.0-dev"
 dependencies = [
  "gfx2d",
+ "kabi",
  "libm",
  "look",
  "sha2",
