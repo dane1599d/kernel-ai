@@ -29,10 +29,14 @@ static LIMIT_NS: [AtomicU64; MAX_PROCESSES] = [const { AtomicU64::new(0) }; MAX_
 static SERVING_CALL: [AtomicUsize; MAX_PROCESSES] = [const { AtomicUsize::new(0) }; MAX_PROCESSES];
 static SERVING_ID: [AtomicU64; MAX_PROCESSES] = [const { AtomicU64::new(0) }; MAX_PROCESSES];
 static SERVING_UNTIL: [AtomicU64; MAX_PROCESSES] = [const { AtomicU64::new(0) }; MAX_PROCESSES];
+/// CPU time each process's threads have used since it started (METRICS), every
+/// charge counted, exempt or not.
+static CPU_NS: [AtomicU64; MAX_PROCESSES] = [const { AtomicU64::new(0) }; MAX_PROCESSES];
 
 /// A new process in `slot`: its limit, and no call served.
 pub fn start_process(slot: usize, limit_ms: u64) {
     LIMIT_NS[slot].store(limit_ms.saturating_mul(1_000_000), Ordering::Relaxed);
+    CPU_NS[slot].store(0, Ordering::Relaxed);
     SERVING_CALL[slot].store(0, Ordering::Release);
 }
 
@@ -85,11 +89,17 @@ fn charge(tid: Tid, decide: bool) {
     let Some(slot) = slot_of(tid) else {
         return;
     };
+    CPU_NS[slot].fetch_add(now.saturating_sub(since), Ordering::Relaxed);
     let limit = LIMIT_NS[slot].load(Ordering::Relaxed);
     let (_, runaway) = BURSTS.charge(tid, since, now, serving_until(slot), limit);
     if decide && runaway {
         request_kill(slot, ExitReason::Runaway, limit / 1_000_000);
     }
+}
+
+/// CPU time the process in `slot` has used since it started, in nanoseconds.
+pub fn cpu_ns(slot: usize) -> u64 {
+    CPU_NS[slot].load(Ordering::Relaxed)
 }
 
 /// `tid` leaves its CPU (called by every context switch): only adds its time.

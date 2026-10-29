@@ -48,6 +48,9 @@ pub struct Checked {
     pub packages: Vec<(Entry, Vec<u8>)>,
     /// Each refused target's path, and why.
     pub refused: Vec<(String, String)>,
+    /// The index entry of each kept package, for the catalogue
+    /// (`crate::catalog`).
+    pub indexes: Vec<Index>,
 }
 
 struct Metadata<'a>(&'a mut dyn Files);
@@ -64,8 +67,8 @@ impl Remote for Metadata<'_> {
 struct Memory(BTreeMap<String, Vec<u8>>);
 
 impl Cache for Memory {
-    fn load(&mut self, role: &str) -> Option<Vec<u8>> {
-        self.0.get(role).cloned()
+    fn load(&mut self, role: &str) -> Result<Option<Vec<u8>>, kaituf::Error> {
+        Ok(self.0.get(role).cloned())
     }
 
     fn save(&mut self, role: &str, bytes: &[u8]) -> Result<(), kaituf::Error> {
@@ -74,16 +77,18 @@ impl Cache for Memory {
     }
 }
 
-/// The image repository in `files`, checked at `now` (seconds since 1970 UTC),
-/// as a closure over `provided`, the OS's virtual packages: a package whose
-/// dependencies the kept ones and `provided` do not meet is refused too, in
-/// resolution's words. An error means the metadata did not verify, and nothing
-/// in it is kept.
-pub fn check(
-    files: &mut dyn Files,
-    now: u64,
-    provided: &[(&str, Version)],
-) -> Result<Checked, String> {
+/// The time the image repository is checked at: before every expiry date. It
+/// comes from the boot medium with the kernel, so it is as trusted as the image
+/// is, and checked against the date an image would refuse its own packages a
+/// week after it was built, once its timestamp ran out.
+const UNEXPIRED: u64 = 0;
+
+/// The image repository in `files`, its expiry dates not checked
+/// ([`UNEXPIRED`]), as a closure over `provided`, the OS's virtual packages: a
+/// package whose dependencies the kept ones and `provided` do not meet is
+/// refused too, in resolution's words. An error means the metadata did not
+/// verify, and nothing in it is kept.
+pub fn check(files: &mut dyn Files, provided: &[(&str, Version)]) -> Result<Checked, String> {
     let root = files
         .file(ROOT, updater::ROOT_MAX)?
         .ok_or_else(|| format!("the image has no {ROOT}"))?;
@@ -94,7 +99,7 @@ pub fn check(
     {
         let tuf = |e: kaituf::Error| e.to_string();
         let mut remote = Metadata(files);
-        let mut updater = Updater::new(&mut remote, &mut cache, now).map_err(tuf)?;
+        let mut updater = Updater::new(&mut remote, &mut cache, UNEXPIRED).map_err(tuf)?;
         updater.refresh().map_err(tuf)?;
         for path in updater.listed(ROLE, "targets").map_err(tuf)? {
             match updater.target(&path) {
@@ -109,15 +114,24 @@ pub fn check(
     for target in listed {
         let kept = |name: &str| checked.packages.iter().any(|(e, _)| e.name == name);
         match package(files, &target) {
-            Ok((entry, _)) if kept(&entry.name) => {
+            Ok((entry, ..)) if kept(&entry.name) => {
                 let why = format!("the image has another version of {}", entry.name);
                 checked.refused.push((target.path, why));
             }
-            Ok(package) => checked.packages.push(package),
+            Ok((entry, bytes, index)) => {
+                checked.packages.push((entry, bytes));
+                checked.indexes.push(index);
+            }
             Err(why) => checked.refused.push((target.path, why)),
         }
     }
     close(&mut checked, provided);
+    let kept = |i: &Index| {
+        let same = |e: &Entry| e.name == i.name && e.version == i.version;
+        checked.packages.iter().any(|(e, _)| same(e))
+    };
+    let indexes = core::mem::take(&mut checked.indexes);
+    checked.indexes = indexes.into_iter().filter(|i| kept(i)).collect();
     Ok(checked)
 }
 
@@ -146,18 +160,23 @@ fn close(checked: &mut Checked, provided: &[(&str, Version)]) {
 
 /// `target`'s bytes from the image, at its target path, checked, and its index
 /// entry.
-fn package(files: &mut dyn Files, target: &TargetFile) -> Result<(Entry, Vec<u8>), String> {
+fn package(files: &mut dyn Files, target: &TargetFile) -> Result<(Entry, Vec<u8>, Index), String> {
     let bytes = files
         .file(&format!("{TARGETS}/{}", target.path), target.length)?
         .ok_or("it is not in the image")?;
     updater::check_target(target, &bytes).map_err(|e| e.to_string())?;
-    Ok((entry(target, &bytes)?, bytes))
+    let (entry, index) = entry_and_index(target, &bytes)?;
+    Ok((entry, bytes, index))
 }
 
 /// `target`'s index entry, each of whose `custom.kai` fields must be what the
 /// package's own header says ([`Index::matches`]); `bytes` are the package,
 /// already checked against `target`.
 pub fn entry(target: &TargetFile, bytes: &[u8]) -> Result<Entry, String> {
+    entry_and_index(target, bytes).map(|(entry, _)| entry)
+}
+
+fn entry_and_index(target: &TargetFile, bytes: &[u8]) -> Result<(Entry, Index), String> {
     let index = Index::parse(target)?;
     let files = bundle::files(bytes)?;
     let text = files
@@ -168,7 +187,7 @@ pub fn entry(target: &TargetFile, bytes: &[u8]) -> Result<Entry, String> {
     let text = core::str::from_utf8(text).map_err(|_| "its header is not text")?;
     index.matches(&Header::parse(text)?, text)?;
     index.check_path(target)?;
-    index.entry()
+    Ok((index.entry()?, index))
 }
 
 #[cfg(test)]

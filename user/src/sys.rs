@@ -832,7 +832,11 @@ pub fn comp_control(component: &str, request: &str, reply: &mut [u8]) -> Result<
     .map(|len| len as usize)
 }
 
-/// As [`http`], to the build service the kernel was booted with (needs PUBLISH).
+/// The date, seconds since 1970 UTC; only for the holder of `/system/pkg`.
+pub fn pkg_time() -> Result<u64, Error> {
+    call(call::PKG_TIME, [0; 6])
+}
+
 /// Sends `request`, as `kabi::pkgrepo::request` builds it, to the fixed `pkgrepo=`
 /// mirror; the response's length. Only for the holder of `/system/pkg`.
 pub fn pkg_fetch(request: &HttpRequest) -> Result<usize, Error> {
@@ -843,6 +847,7 @@ pub fn pkg_fetch(request: &HttpRequest) -> Result<usize, Error> {
     .map(|len| len as usize)
 }
 
+/// As [`http`], to the build service the kernel was booted with (needs PUBLISH).
 pub fn build(request: &HttpRequest) -> Result<usize, Error> {
     call(
         call::BUILD,
@@ -1145,6 +1150,22 @@ pub fn part_peer_alive(handle: Handle, pid: u64) -> Result<u64, Error> {
     call(
         call::PART_PEER_ALIVE,
         [u64::from(handle.0), pid, 0, 0, 0, 0],
+    )
+}
+
+/// Hands the kernel the model store's model, `extents` (first block, blocks) of
+/// the partition from byte `offset` of the file (P2 task 10); the bytes filled.
+pub fn model_fill(partition: Handle, extents: &[(u64, u64)], offset: u64) -> Result<u64, Error> {
+    call(
+        call::MODEL_FILL,
+        [
+            u64::from(partition.0),
+            extents.as_ptr() as u64,
+            extents.len() as u64,
+            offset,
+            0,
+            0,
+        ],
     )
 }
 

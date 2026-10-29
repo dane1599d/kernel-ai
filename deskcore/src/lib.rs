@@ -26,6 +26,7 @@ pub mod panel_wire;
 pub mod scale;
 pub mod server;
 pub mod trusted;
+pub mod view;
 pub mod watch;
 
 #[cfg(test)]

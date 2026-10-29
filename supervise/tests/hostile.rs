@@ -30,8 +30,11 @@ fn grants_only_what_it_says(bytes: &[u8]) {
                 .expect("a parsed service has its line");
             line.split_whitespace().any(|w| w == word)
         };
-        if !service.dirs.is_empty() {
-            assert_eq!(service.dirs, [Folder::Pkg], "{text:?}");
+        if !service.dirs.is_empty() && service.dirs != [Folder::Pkg] {
+            // A mutation that reached `updated`'s folders is the other test's.
+            assert_eq!(service.program, "updated", "{text:?}");
+            assert_eq!(service.name, "updated", "{text:?}");
+        } else if !service.dirs.is_empty() {
             assert!(says("dir=pkg"), "{text:?}");
         }
         if let Some(boot) = service.boot {
@@ -60,6 +63,46 @@ fn near_misses_of_dir_pkg_are_refused() {
         let plan = parse_plan(&format!("pkg {word}"));
         let granted = plan.services.iter().any(|s| !s.dirs.is_empty());
         assert!(!granted, "{word}");
+    }
+}
+
+/// `updated`'s plan line (ADR 0008 §10) beside others that try for its folders.
+const UPDATED_PLAN: &str = "fs caps=serve+partition\n\
+    updated caps=update dir=trust+updates step=update\n\
+    notes caps=serve dir=trust\n\
+    pkg dir=pkg+updates\n\
+    shell program=updated dir=updates caps=call\n";
+
+/// The folder a `dir=` word's part names.
+fn named(part: &str) -> Option<Folder> {
+    Folder::parse(part)
+}
+
+/// Every folder a service came out with is named in its own line's `dir=` word,
+/// and `/system/trust` and `/system/updates` go only to the program `updated`.
+fn trust_and_updates_go_only_to_updated(bytes: &[u8]) {
+    let Ok(text) = core::str::from_utf8(bytes) else {
+        return;
+    };
+    let plan = parse_plan(text);
+    for service in &plan.services {
+        if service.dirs.is_empty() {
+            continue;
+        }
+        let line = text
+            .lines()
+            .find(|l| l.split_whitespace().next() == Some(service.name.as_str()))
+            .expect("a parsed service has its line");
+        let word: Vec<Folder> = line
+            .split_whitespace()
+            .filter_map(|w| w.strip_prefix("dir="))
+            .flat_map(|v| v.split('+').filter_map(named).collect::<Vec<_>>())
+            .collect();
+        assert_eq!(service.dirs, word, "{line:?}");
+        if service.dirs.iter().any(|d| *d != Folder::Pkg) {
+            assert_eq!(service.program, "updated", "{line:?}");
+            assert_eq!(service.name, "updated", "{line:?}");
+        }
     }
 }
 
@@ -95,6 +138,34 @@ fn confined(bytes: &[u8]) {
         let plain = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-');
         assert!(name.chars().all(plain), "{path:?}");
     }
+}
+
+#[test]
+fn only_updated_gets_the_trust_and_updates_folders() {
+    let plan = parse_plan(UPDATED_PLAN);
+    let dirs = |name: &str| {
+        plan.services
+            .iter()
+            .find(|s| s.name == name)
+            .map(|s| s.dirs.clone())
+    };
+    assert_eq!(dirs("updated"), Some(vec![Folder::Trust, Folder::Updates]));
+    // A line for another program asking for them is refused whole.
+    assert_eq!(dirs("notes"), None);
+    assert_eq!(dirs("pkg"), None);
+    // Running the program `updated` under another name is refused too: the
+    // name and the program must both be `updated`, as for the UPDATE capability.
+    assert_eq!(dirs("shell"), None);
+    assert_eq!(plan.errors.len(), 3, "{:?}", plan.errors);
+    fuzz(
+        UPDATED_PLAN.as_bytes(),
+        0xd2,
+        5_000,
+        trust_and_updates_go_only_to_updated,
+    );
+    truncations(UPDATED_PLAN.as_bytes(), |_, cut| {
+        trust_and_updates_go_only_to_updated(cut)
+    });
 }
 
 #[test]

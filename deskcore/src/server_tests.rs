@@ -335,3 +335,126 @@ fn the_desk_windows_case_coordinates_hold() {
         Hit::Window(left, Part::Close)
     );
 }
+
+/// A window with an `a11y` object (8) and its tree: a window, a button that
+/// clicks, a text field.
+fn tree_window() -> (Desk, Client, crate::desk::WindowId) {
+    let mut desk = Desk::new(1280, 800);
+    let mut client = Client::new(5, "notes");
+    client.handle(&mut desk, &setup(), true).unwrap();
+    client.pool_mapped(2);
+    let needs = client.handle(&mut desk, &show(), false).unwrap();
+    let [Need::Show { window, .. }] = needs[..] else {
+        panic!("{needs:?}");
+    };
+    client
+        .handle(&mut desk, &bytes(&[(3, Request::GetA11y { id: 8 })]), false)
+        .unwrap();
+    (desk, client, window)
+}
+
+fn tree_bytes(button_name: &str) -> Vec<u8> {
+    use surfabi::tree::{Node, Role, Update, action};
+    let node = |id, role, name: &str, actions, children: Vec<u32>| Node {
+        id,
+        role,
+        flags: 0,
+        actions,
+        x: 0,
+        y: 0,
+        w: 10,
+        h: 10,
+        name: name.into(),
+        value: alloc::string::String::new(),
+        children,
+    };
+    Update {
+        root: 1,
+        focus: 1,
+        nodes: vec![
+            node(1, Role::Window, "Notes", 0, vec![2, 3]),
+            node(2, Role::Button, button_name, action::CLICK, vec![]),
+            node(3, Role::TextInput, "Title", action::SET_VALUE, vec![]),
+        ],
+    }
+    .encode()
+}
+
+#[test]
+fn a_committed_tree_is_kept_and_may_come_in_parts() {
+    let (mut desk, mut client, window) = tree_window();
+    assert_eq!(client.tree(window).unwrap().nodes.len(), 0);
+    let tree = tree_bytes("New note");
+    let (a, b) = tree.split_at(40);
+    let parts = bytes(&[(8, Request::TreeUpdate(a)), (8, Request::TreeUpdate(b))]);
+    client.handle(&mut desk, &parts, false).unwrap();
+    // Nothing applies before the commit.
+    assert_eq!(client.tree(window).unwrap().nodes.len(), 0);
+    client
+        .handle(&mut desk, &bytes(&[(8, Request::A11yCommit)]), false)
+        .unwrap();
+    let kept = client.tree(window).unwrap();
+    assert_eq!(kept.node(2).unwrap().name, "New note");
+    assert_eq!(kept.nodes.len(), 3);
+}
+
+#[test]
+fn a_bad_tree_closes_the_connection_and_the_old_tree_stays() {
+    let (mut desk, mut client, window) = tree_window();
+    let good = bytes(&[
+        (8, Request::TreeUpdate(&tree_bytes("New note"))),
+        (8, Request::A11yCommit),
+    ]);
+    client.handle(&mut desk, &good, false).unwrap();
+    let mut bad = tree_bytes("Evil");
+    bad[8] = 0xFF; // a node count past the bytes
+    let bad = bytes(&[(8, Request::TreeUpdate(&bad)), (8, Request::A11yCommit)]);
+    assert_eq!(client.handle(&mut desk, &bad, false), Err(Error::BadArg));
+    assert_eq!(
+        client.tree(window).unwrap().node(2).unwrap().name,
+        "New note"
+    );
+    // A tree for an `a11y` object nobody made is an unknown object.
+    let stray = bytes(&[(9, Request::A11yCommit)]);
+    assert!(client.handle(&mut desk, &stray, false).is_err());
+}
+
+#[test]
+fn act_sends_an_action_request_only_for_an_action_the_node_offers() {
+    let (mut desk, mut client, window) = tree_window();
+    let tree = bytes(&[
+        (8, Request::TreeUpdate(&tree_bytes("New note"))),
+        (8, Request::A11yCommit),
+    ]);
+    client.handle(&mut desk, &tree, false).unwrap();
+    events(&mut client);
+    // CLICK is bit 0, SET_VALUE bit 2.
+    assert!(client.act(window, 2, 0, ""));
+    assert!(client.act(window, 3, 2, "Groceries"));
+    assert!(!client.act(window, 2, 2, "x"), "a button takes no value");
+    assert!(!client.act(window, 9, 0, ""), "no such node");
+    assert!(!client.act(crate::desk::WindowId(99), 2, 0, ""));
+    let sent = events(&mut client);
+    let requests: Vec<Event> = sent
+        .iter()
+        .map(|(object, op, args)| {
+            assert_eq!(*object, 8);
+            Event::decode(Interface::A11y, *op, args).unwrap()
+        })
+        .collect();
+    assert_eq!(
+        requests,
+        [
+            Event::ActionRequest {
+                node: 2,
+                action: 0,
+                value: ""
+            },
+            Event::ActionRequest {
+                node: 3,
+                action: 2,
+                value: "Groceries"
+            },
+        ]
+    );
+}
