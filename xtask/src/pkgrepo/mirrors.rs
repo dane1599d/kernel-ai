@@ -52,6 +52,7 @@ pub fn package(name: &str, version: &str, payload: &[u8]) -> Package {
         header_text,
         actions: Vec::new(),
         grants: Vec::new(),
+        effects: Vec::new(),
     }
 }
 

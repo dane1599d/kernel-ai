@@ -19,6 +19,7 @@
 //! store mounted after a crash carries on.
 
 use crate::bundle::{self, HEADER};
+use crate::effects;
 use crate::generation::{Generation, Installed, Time};
 use crate::header::Header;
 use crate::resolve::{self, Entry, Want};
@@ -109,6 +110,8 @@ pub enum Refused {
     BadHash(String),
     /// The object's own header differs from its index entry (cargo's rule).
     HeaderDiffers(String),
+    /// The app's artifact declares other effects than its index entry lists.
+    EffectsDiffer(String),
     /// The package failed a probation before; `force` installs it anyway.
     Failed(String),
     NoGeneration(u64),
@@ -338,10 +341,18 @@ impl Store {
         let why = if got.len() as u64 != entry.size || sha256(&got) != entry.sha {
             Some(Refused::BadHash(entry.name.clone()))
         } else {
-            let same = object_header(&got).is_ok_and(|h| {
-                h.name == entry.name && h.version == entry.version && h.depends == entry.depends
-            });
-            (!same).then(|| Refused::HeaderDiffers(entry.name.clone()))
+            match object_header(&got) {
+                Ok(h)
+                    if h.name == entry.name
+                        && h.version == entry.version
+                        && h.depends == entry.depends =>
+                {
+                    effects::check(&h, &got, &entry.effects)
+                        .is_err()
+                        .then(|| Refused::EffectsDiffer(entry.name.clone()))
+                }
+                _ => Some(Refused::HeaderDiffers(entry.name.clone())),
+            }
         };
         if let Some(why) = why {
             cx.vol.remove(&partial)?;

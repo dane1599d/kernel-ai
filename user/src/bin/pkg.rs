@@ -202,8 +202,10 @@ fn catalog_rows(vol: &mut dyn Volume) -> Result<Vec<catalog::Row>, String> {
                     .and_then(|(_, text)| core::str::from_utf8(text).ok())
                     .ok_or_else(|| format!("{}: no header", package.name))?;
                 let header = Header::parse(text)?;
+                let effects = kaipkg::effects::declared(&header, &object)?;
                 let size = object.len() as u64;
-                Index::of_header(&header, text, package.sha, size, package.grants.clone())
+                let grants = package.grants.clone();
+                Index::of_header(&header, text, (package.sha, size), grants, effects)
             }
         };
         installed.push(index);
@@ -560,6 +562,7 @@ fn entry(bytes: &[u8]) -> Entry {
         size: bytes.len() as u64,
         depends: Vec::new(),
         grants: Vec::new(),
+        effects: Vec::new(),
         yanked: false,
     }
 }

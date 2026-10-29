@@ -263,6 +263,7 @@ pub fn entry_for(p: &Package, bytes: &[u8]) -> Entry {
             })
             .collect(),
         grants: p.grants.iter().map(|g| g.to_string()).collect(),
+        effects: Vec::new(),
         yanked: false,
     }
 }

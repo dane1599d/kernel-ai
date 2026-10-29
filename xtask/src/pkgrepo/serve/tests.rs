@@ -38,6 +38,7 @@ fn data(len: usize) -> Package {
         header_text,
         actions: Vec::new(),
         grants: Vec::new(),
+        effects: Vec::new(),
         bytes,
     }
 }
@@ -254,6 +255,7 @@ fn entries(repo: &Repository) -> Vec<Entry> {
                     })
                     .collect(),
                 grants: kai["grants"].as_array().unwrap().iter().map(text).collect(),
+                effects: Vec::new(),
                 yanked: kai["yanked"].as_bool().unwrap(),
             }
         })

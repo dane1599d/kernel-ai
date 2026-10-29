@@ -941,6 +941,7 @@ dependencies = [
  "kabi",
  "kaifs",
  "kaituf",
+ "livecore",
  "llmproto",
  "serde_json",
  "sha2",
