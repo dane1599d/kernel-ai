@@ -22,9 +22,9 @@ pub const MAX_JOURNAL: usize = 128 * 1024;
 /// Room a `replay <from>` header takes in a message.
 const HEADER: usize = 24;
 /// Commands that reach the host or a component, or change nothing.
-const SKIPPED: [&str; 4] = ["build", "try", "help", "status"];
+const SKIPPED: [&str; 5] = ["build", "try", "help", "status", "view"];
 /// Commands that change the text.
-const EDITS: [&str; 6] = ["s", "c", "i", "a", "d", "undo"];
+const EDITS: [&str; 8] = ["s", "c", "i", "a", "d", "split", "join", "undo"];
 /// How a fresh open's reply ends when it dropped another session's edits, which a
 /// replay into a fresh service never does.
 const DROPPED: &[u8] = b"; dropped the unbuilt edits to ";
