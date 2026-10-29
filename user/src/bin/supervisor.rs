@@ -15,6 +15,10 @@
 //! rule, checked with RULE_CHECK, the kernel sends the app its `ctl` (APP_CTL)
 //! and the app's answer is the reply.
 //! `services` lists them, for the shell to tell a service from a process.
+//! `profile <pid> <class> <pages|->` sets one process's CPU class and page quota
+//! for a resource profile (P3 task 12), for the shell alone: PROC_CLASS_SET and
+//! PROC_QUOTA_SET need SUPERVISE, and the kernel's floors refuse a protected
+//! process. The answer is what the process had, for `undo`.
 
 #![no_std]
 #![no_main]
@@ -26,7 +30,7 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use kabi::{ExitReason, ExitRecord, SpawnRequest};
-use supervise::{Decision, Proof, Record, Request, ServiceSpec};
+use supervise::{Decision, Proof, Record, Request, ServiceSpec, Start};
 use user::sys::Event;
 use user::{println, sys};
 
@@ -45,6 +49,9 @@ struct Service {
     /// The shell's log entry whose `start` is the latest change to it, for its
     /// undo; cleared by any stop or restart.
     started_by: Option<u64>,
+    /// A `start=pkg` service's package version, from the store holder's `run`;
+    /// until then it stays down.
+    version: Option<String>,
 }
 
 fn now_ms() -> u64 {
@@ -101,6 +108,7 @@ fn main() -> i32 {
                 start_at_ms: None,
                 restart_on_exit: false,
                 started_by: None,
+                version: None,
             }
         })
         .collect();
@@ -118,10 +126,12 @@ fn main() -> i32 {
             .find(|(_, name)| *name == service.spec.name)
             .map(|&(pid, _)| pid);
         service.record.pid = service.pid.unwrap_or(0);
+        // A `start=pkg` app waits for the store holder's `run`.
         if service.pid.is_none()
             && !service.record.gave_up
             && !service.record.stopped
             && service.start_at_ms.is_none()
+            && service.spec.start == Start::Boot
         {
             service.start_at_ms = Some(now);
         }
@@ -136,6 +146,8 @@ fn main() -> i32 {
         );
     }
     save(&services);
+    // The class each process was last set to by a profile; any other runs normal.
+    let mut classes: Vec<(u64, u64)> = Vec::new();
     loop {
         let now = now_ms();
         let mut started = false;
@@ -153,7 +165,7 @@ fn main() -> i32 {
         let timeout = next_start.map_or(1000, |at| at.saturating_sub(now_ms()).clamp(1, 1000));
         match sys::wait_event(timeout) {
             Ok(Event::Exit(exit)) => on_exit(&mut services, &exit),
-            Ok(Event::Request) => serve(&mut services),
+            Ok(Event::Request) => serve(&mut services, &mut classes),
             Ok(Event::Timeout) => {}
             Err(error) => {
                 println!("wait_child failed: {error:?}");
@@ -164,7 +176,7 @@ fn main() -> i32 {
 }
 
 /// Takes the waiting request and answers it: `ok`, or why not.
-fn serve(services: &mut [Service]) {
+fn serve(services: &mut [Service], classes: &mut Vec<(u64, u64)>) {
     let mut buf = [0u8; 128];
     let mut caller = 0;
     // The request is already queued, so this does not wait.
@@ -172,7 +184,10 @@ fn serve(services: &mut [Service]) {
         return;
     };
     let text = core::str::from_utf8(&buf[..len.min(buf.len())]).unwrap_or("");
-    let reply = handle(services, text, caller);
+    let reply = match supervise::profile::Set::parse(text) {
+        Some(set) => set_profile(services, classes, set, caller),
+        None => handle(services, text, caller),
+    };
     if let Err(error) = sys::svc_reply(reply.as_bytes()) {
         println!("cannot answer {text:?}: {error:?}");
     }
@@ -182,6 +197,9 @@ fn handle(services: &mut [Service], text: &str, caller: u64) -> String {
     let records: Vec<Record> = services.iter().map(|s| s.record.clone()).collect();
     if text.trim() == supervise::SERVICES {
         return supervise::listing(&records);
+    }
+    if let Some(run) = supervise::Run::parse(text) {
+        return run_package(services, run, caller);
     }
     let Some((request, proof)) = Request::parse(text) else {
         return String::from("err unknown request");
@@ -268,6 +286,50 @@ fn app_ctl(name: &str, resume: bool) -> String {
     }
 }
 
+/// `profile <pid> <class> <pages|->`, from the shell only: the class, then the
+/// quota; what the process had before. A quota the kernel refuses puts the
+/// class back, so a refused request changes nothing.
+fn set_profile(
+    services: &[Service],
+    classes: &mut Vec<(u64, u64)>,
+    set: supervise::profile::Set,
+    caller: u64,
+) -> String {
+    let shell = services
+        .iter()
+        .find(|s| s.spec.name == "shell")
+        .and_then(|s| s.pid);
+    if shell != Some(caller) {
+        return String::from("err only the shell sets profiles");
+    }
+    let class_before = classes
+        .iter()
+        .find(|(pid, _)| *pid == set.pid)
+        .map_or(0, |(_, class)| *class);
+    if let Err(error) = sys::proc_class_set(set.pid, set.class) {
+        println!("profile: pid {} class {}: {error:?}", set.pid, set.class);
+        return format!("err {error:?}");
+    }
+    let pages_before = match set.pages {
+        None => None,
+        Some(pages) => match sys::proc_quota_set(set.pid, pages) {
+            Ok(old) => Some(old),
+            Err(error) => {
+                let _ = sys::proc_class_set(set.pid, class_before);
+                println!("profile: pid {} quota {pages}: {error:?}", set.pid);
+                return format!("err {error:?}");
+            }
+        },
+    };
+    classes.retain(|(pid, _)| *pid != set.pid);
+    classes.push((set.pid, set.class));
+    supervise::profile::encode_before(supervise::profile::Set {
+        pid: set.pid,
+        class: class_before,
+        pages: pages_before,
+    })
+}
+
 /// A `ONCE` or a rule, checked through the kernel; any other proof needs no call.
 fn check_proof(request: Request, proof: Proof, caller: u64) -> Result<(), String> {
     let call = request
@@ -304,9 +366,52 @@ fn running_services() -> Vec<(u64, String)> {
         .collect()
 }
 
+/// `run <name> version=<label>` from `caller`: a `start=pkg` app on the package
+/// version the store holder added, and only from that holder
+/// (`supervise::check_run`). A running app keeps its version: swapping one is
+/// comphost's, under probation.
+fn run_package(services: &mut [Service], run: supervise::Run, caller: u64) -> String {
+    let held: Vec<(&ServiceSpec, Option<u64>)> =
+        services.iter().map(|s| (&s.spec, s.pid)).collect();
+    let index = match supervise::check_run(run, &held, caller) {
+        Ok(index) => index,
+        Err(why) => {
+            println!("{:?} from pid {caller} refused: {why}", run.encode());
+            return String::from(why);
+        }
+    };
+    let service = &mut services[index];
+    let name = service.spec.name.clone();
+    if service.pid.is_some() {
+        return match service.version.as_deref() == Some(run.version) {
+            true => String::from("ok"),
+            false => String::from(supervise::RUNS_ANOTHER),
+        };
+    }
+    service.version = Some(String::from(run.version));
+    service.record.stopped = false;
+    service.record.gave_up = false;
+    service.start_at_ms = Some(now_ms());
+    println!("{name} starts on package version {} for pkg", run.version);
+    save(services);
+    String::from("ok")
+}
+
 fn start(service: &mut Service, now: u64) {
+    let version = match (service.spec.start, &service.version) {
+        (Start::Boot, _) => String::new(),
+        (Start::Pkg, Some(version)) => format!(" version={version}"),
+        (Start::Pkg, None) => {
+            println!("{} waits for pkg to name its version", service.spec.name);
+            service.start_at_ms = None;
+            return;
+        }
+    };
     // The restart count goes to the program, so a restart is visible from outside.
-    let args = format!("restart={} {}", service.record.restarts, service.spec.args);
+    let args = format!(
+        "restart={} {}{version}",
+        service.record.restarts, service.spec.args
+    );
     let name = service.spec.name.as_bytes();
     let program = service.spec.program.as_bytes();
     let request = SpawnRequest {

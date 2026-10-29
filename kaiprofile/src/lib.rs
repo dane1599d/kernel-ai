@@ -43,6 +43,8 @@ pub const MAX_LINES: usize = 64;
 pub const MAX_LINE: usize = 200;
 /// The lowest page quota PROC_QUOTA_SET takes.
 pub const MIN_PAGES: u64 = 64;
+/// The page quota `quiet` gives every app: 64 MiB.
+pub const QUIET_PAGES: u64 = 16_384;
 /// The processes a profile may never name; the kernel protects them too.
 pub const PROTECTED: [&str; 4] = ["shell", "supervisor", "llm", "desktop"];
 
@@ -207,10 +209,10 @@ pub fn builtin() -> Vec<Profile> {
                 line(Target::Others, Class::Normal, None),
             ],
         ),
-        // Everything but the system waits.
+        // Everything but the system waits, and grows no past 64 MiB.
         profile(
             "quiet",
-            alloc::vec![line(Target::Others, Class::Background, None)]
+            alloc::vec![line(Target::Others, Class::Background, Some(QUIET_PAGES))],
         ),
     ]
 }
