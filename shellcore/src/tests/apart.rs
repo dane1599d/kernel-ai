@@ -41,6 +41,7 @@ fn a_result_survives_the_wire_and_its_text_cannot_forge_a_change() {
                 after: (policy::ROUND_ROBIN, 1),
             }),
         }],
+        value: None,
     };
     let decoded = apart::decode(&apart::encode(&ran)).unwrap();
     assert_eq!(

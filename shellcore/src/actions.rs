@@ -194,7 +194,8 @@ impl Shell {
     /// are all run-tier, else here. A child that ended without an answer changed
     /// what the spec taken before its claim says it changed, and that is put back.
     fn run(&self, checked: &Checked, consent: Consent) -> script::Ran {
-        if crate::apart::may_run_apart(checked) {
+        // A `c>` entry's call runs here, so its value comes back.
+        if self.c_entry.is_none() && crate::apart::may_run_apart(checked) {
             let before = undo::current_spec(self.host.as_ref());
             let unreadable = "the script's process gave an answer the shell cannot read";
             match self.host.run_apart(&crate::apart::request(checked)) {
@@ -223,6 +224,12 @@ impl Shell {
             (None, false) => Proof::None,
         };
         let ran = self.run(checked, Consent { entry: id, proof });
+        self.last_value = ran.value.clone();
+        let result = match ran.ok {
+            true => Ok(ran.value.clone()),
+            false => Err(ran.text.clone()),
+        };
+        self.asked_done(id, Some(result));
         for done in &ran.done {
             let tier = tiers::of(self.tiers, &done.action);
             self.host.audit(&format!(
@@ -465,6 +472,7 @@ impl Shell {
             Ok(consent) => consent,
             Err(note) => {
                 self.record(id, &pending.request, &pending.checked.script, "declined");
+                self.asked_done(id, None);
                 self.remember(&pending, "Not run: declined");
                 return Reply::ok(format!("script {id} not run{note}"));
             }

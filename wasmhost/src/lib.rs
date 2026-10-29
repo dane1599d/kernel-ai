@@ -38,6 +38,8 @@ mod ui_tests;
 #[cfg(test)]
 mod ui_txn_tests;
 mod uival;
+#[cfg(test)]
+mod user_tests;
 
 use alloc::format;
 use alloc::string::ToString;

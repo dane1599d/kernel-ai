@@ -63,6 +63,7 @@ impl Checked {
 type RhaiResult<T> = Result<T, Box<EvalAltResult>>;
 
 mod apps;
+mod look;
 mod windows;
 
 fn rhai_error(message: impl Into<String>) -> Box<EvalAltResult> {
@@ -362,6 +363,9 @@ fn bind(engine: &mut Engine, name: &'static str, tx: &Tx) -> bool {
                 });
             }
             name if name.starts_with("fs_") => return bind_file(engine, name, h, tx),
+            "appearance_set" => {
+                look::bind(engine, h, tx);
+            }
             name if agentabi::UI_ROWS.iter().any(|r| r.name == name) => {
                 return windows::bind(engine, name, h, tx);
             }
@@ -646,6 +650,12 @@ impl Host for Stub {
     fn app_call(&self, _: &str, _: &str) -> Result<String, String> {
         Ok(alloc::format!("{}\n", livecore::call::REPLY_HEADER))
     }
+    fn appearance_read(&self) -> Option<String> {
+        self.0.appearance_read()
+    }
+    fn appearance_write(&self, _: &str) -> Result<(), String> {
+        Ok(())
+    }
     fn ui(&self, call: &crate::ui::UiCall) -> Result<String, String> {
         use crate::ui::UiCall;
         Ok(String::from(match call {
@@ -860,6 +870,8 @@ pub struct Ran {
     /// The first change to each resource, with the value it replaced. The caller
     /// puts them back when `ok` is false.
     pub done: Vec<Done>,
+    /// The script's last value, run in the shell; `None` from a child.
+    pub value: Option<Dynamic>,
 }
 
 /// Runs a script with the real OS, granted only the calls the plan found. Its
@@ -879,11 +891,13 @@ pub fn run_as(checked: &Checked, host: &Rc<dyn Host>, config: &Config, consent: 
     line.begin(host.as_ref(), config);
     let result = engine::eval(&engine, &mut Scope::new(), &checked.ast, config.exec);
     let mut text = line.take_output();
+    let mut last = None;
     let mut ok = match result {
         Ok(value) => {
             if !value.is_unit() {
                 text.push_str(&show::value(&value));
             }
+            last = Some(value);
             true
         }
         Err(error) => {
@@ -896,7 +910,12 @@ pub fn run_as(checked: &Checked, host: &Rc<dyn Host>, config: &Config, consent: 
         ok = flush(queued, &mut text);
     }
     let done = tx.journal.take();
-    Ran { ok, text, done }
+    Ran {
+        ok,
+        text,
+        done,
+        value: last,
+    }
 }
 
 /// Sends what a successful run queued, in order, stopping at the first that fails.
