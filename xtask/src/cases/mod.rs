@@ -7,6 +7,7 @@ mod components;
 mod devices;
 mod kernel;
 mod network;
+mod pkg;
 mod storage;
 mod updates;
 
@@ -84,6 +85,20 @@ pub struct TestCase {
     /// `boot=n` to the command line, waits for `files: boot n:` and kills QEMU
     /// a seeded moment later; boot `cuts + 1` adds `last` and must pass.
     pub cuts: u32,
+    /// A model put in `kai-data`'s model store before the boot (`xtask fs mkfs`,
+    /// then `import --model`), with its length and hash on the command line;
+    /// needs `data`.
+    pub store: Option<Fixture>,
+    /// After the import, the hint's FNV-1a64 is changed (its CRC kept good), so
+    /// the kernel must refuse the model `fs` fills.
+    pub store_bad_fnv: bool,
+    /// One byte of this package's target in the image's repository flipped, the
+    /// bundle's digests recomputed, so only its signed metadata can tell (P4
+    /// task 1's tamper case).
+    pub tampered: Option<&'static str>,
+    /// The package mirror the guest reaches at `pkgrepo=` (P4 task 2), signed by
+    /// the image's keys, or a tampered one.
+    pub mirror: Option<crate::pkgrepo::mirrors::MirrorKind>,
 }
 
 /// What a case's update disk holds.
@@ -119,6 +134,10 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         slots: false,
         update: None,
         cuts: 0,
+        store: None,
+        store_bad_fnv: false,
+        tampered: None,
+        mirror: None,
     }
 }
 
@@ -135,6 +154,7 @@ const LANES: &[&[TestCase]] = &[
     network::CASES,
     storage::CASES,
     updates::CASES,
+    pkg::CASES,
 ];
 
 /// The cases `cargo xtask test` boots.
@@ -165,6 +185,7 @@ mod tests {
             network::CASES,
             storage::CASES,
             updates::CASES,
+            pkg::CASES,
         ];
         assert_eq!(
             cases.len(),

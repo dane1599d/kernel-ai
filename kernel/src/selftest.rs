@@ -20,9 +20,12 @@ pub enum ActCase {
     Convo,
     FsAct,
     FsUndo,
+    FsTrash,
     /// `fs-undo-reboot`'s first boot, then its second (`reread`).
     FsUndoReboot,
     FsUndoRebooted,
+    /// `profile-switch` (P3 task 12): profiles through the supervisor.
+    Profile,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -98,6 +101,17 @@ pub enum SelfTest {
         boot: u64,
         last: bool,
     },
+    /// P2 task 13, `pkg-store`: kaipkg's store in `pkg` over `fs`, across three
+    /// boots on one data disk; and P4 task 1, `pkg-image`: the image's signed
+    /// repository as generation 1.
+    PkgStore(crate::pkg_tests::Step),
+    /// P2 task 10, `model-store`: with no `kai-model` disk, `fs` fills the runs
+    /// the boot reserved from `kai-modelhint 1` with the store's sealed model;
+    /// with `bad`, the hint's FNV-1a64 is not the file's, and the kernel refuses
+    /// it.
+    ModelStore {
+        bad: bool,
+    },
     /// L3: the model is held in memory and mapped into `llm`, and survives it.
     Model,
     /// L4: `ask` is answered by the model on the disk, with no LLM server.
@@ -108,10 +122,14 @@ pub enum SelfTest {
     Latency,
     /// PROC_STOP and the supervisor's `stop` and `start` (P1 task 15).
     ProcStop,
+    /// Each process's pages and CPU time through METRICS (for P4's Monitor).
+    ProcUsage,
     /// `Shm` and spike S01-1's M6 (P1 task 14).
     Shm,
     /// Anonymous memory reserved, committed and given back (lane M).
     Mem,
+    /// Resource profiles: a quota stops a commit, a class shows, floors hold (P3 task 12).
+    Profile,
     /// The raised table limits (P3 task 4, ADR 0003 §6): 40 processes at once.
     ManyProcesses,
     /// `desktop` claims the screen; Ctrl+Alt+F12 switches it (P3 task 2).
@@ -194,6 +212,8 @@ pub enum SelfTest {
 
 const DEFAULT_STORM_SECONDS: u64 = 60;
 
+/// The self-test the command line names. It runs at the top of `kmain`, before
+/// the heap exists, so nothing it calls may allocate.
 pub fn from_cmdline(cmdline: &str) -> SelfTest {
     cmdline
         .split_whitespace()
@@ -229,6 +249,8 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=act-convo" => Some(SelfTest::Act(ActCase::Convo)),
             "test=fs-act" => Some(SelfTest::Act(ActCase::FsAct)),
             "test=fs-undo" => Some(SelfTest::Act(ActCase::FsUndo)),
+            "test=fs-trash" => Some(SelfTest::Act(ActCase::FsTrash)),
+            "test=profile-switch" => Some(SelfTest::Act(ActCase::Profile)),
             "test=fs-undo-reboot" => Some(SelfTest::Act(
                 match cmdline.split_whitespace().any(|w| w == "reread") {
                     true => ActCase::FsUndoRebooted,
@@ -245,6 +267,9 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=blk-write" => Some(SelfTest::BlkWrite),
             "test=blk-flush" => Some(SelfTest::BlkFlush),
             "test=part" => Some(SelfTest::Part),
+            "test=model-store" => Some(SelfTest::ModelStore {
+                bad: cmdline.split_whitespace().any(|w| w == "bad"),
+            }),
             "test=files" => Some(SelfTest::Files {
                 reread: cmdline.split_whitespace().any(|w| w == "reread"),
             }),
@@ -259,13 +284,24 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
                     .unwrap_or(0),
                 last: cmdline.split_whitespace().any(|w| w == "last"),
             }),
+            "test=pkg-store" => Some(SelfTest::PkgStore(crate::pkg_tests::Step::from_cmdline(
+                cmdline,
+            ))),
+            "test=pkg-image" => Some(SelfTest::PkgStore(
+                crate::pkg_tests::Step::image_from_cmdline(cmdline),
+            )),
+            "test=pkg-install" => Some(SelfTest::PkgStore(
+                crate::pkg_tests::Step::mirror_from_cmdline(cmdline),
+            )),
             "test=model" => Some(SelfTest::Model),
             "test=local-ask" => Some(SelfTest::LocalAsk),
             "test=local-script" => Some(SelfTest::LocalScript),
             "test=latency" => Some(SelfTest::Latency),
             "test=proc-stop" => Some(SelfTest::ProcStop),
+            "test=proc-usage" => Some(SelfTest::ProcUsage),
             "test=shm" => Some(SelfTest::Shm),
             "test=mem" => Some(SelfTest::Mem),
+            "test=profile" => Some(SelfTest::Profile),
             "test=many-processes" => Some(SelfTest::ManyProcesses),
             "test=display-claim" => Some(SelfTest::DisplayClaim),
             "test=desk-windows" => Some(SelfTest::DeskWindows),
@@ -339,11 +375,14 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::LocalScript
             | SelfTest::Latency
             | SelfTest::ProcStop
+            | SelfTest::ProcUsage
             | SelfTest::Part
+            | SelfTest::ModelStore { .. }
             | SelfTest::ManyProcesses
             | SelfTest::Files { .. }
             | SelfTest::FilesRestart
             | SelfTest::FilesDeadClient
+            | SelfTest::PkgStore(_)
             | SelfTest::DisplayClaim
             | SelfTest::DeskWindows
             | SelfTest::DeskRestart
@@ -374,6 +413,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
         SelfTest::Live => format!("{}\n{}", kabi::plan::NOTES_TEST, crate::llm::plan_line()),
         SelfTest::Part => String::from(kabi::plan::FS),
         SelfTest::AppSuspend => kabi::plan::notes("2", None),
+        SelfTest::ModelStore { .. } => String::from(kabi::plan::FS),
         SelfTest::Files { reread } => {
             crate::files_tests::plan(if reread { "read" } else { "write" })
         }
@@ -383,6 +423,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
         SelfTest::FilesChurn { boot, .. } => {
             crate::files_tests::plan(&alloc::format!("churn boot={boot}"))
         }
+        SelfTest::PkgStore(step) => crate::pkg_tests::plan(step),
         SelfTest::Edit | SelfTest::Manifest | SelfTest::ManifestGood => {
             let mut plan = match test {
                 SelfTest::Edit => String::from(kabi::plan::NOTES_EDIT_TEST),
@@ -410,11 +451,13 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::Manifest
             | SelfTest::ManifestGood
             | SelfTest::Part
+            | SelfTest::ModelStore { .. }
             | SelfTest::Files { .. }
             | SelfTest::FilesRestart
             | SelfTest::FilesDeadClient
             | SelfTest::FilesActions
             | SelfTest::FilesChurn { .. }
+            | SelfTest::PkgStore(_)
     ) {
         // The file system service starts before the shell, once there is a
         // `kai-data` partition for it (ADR 0004).
@@ -448,6 +491,10 @@ pub fn plan(test: SelfTest) -> Option<String> {
     if test == SelfTest::Act(ActCase::Rule) {
         plan.push_str("\nspin-a program=spinner burst_ms=3600000 unsupervised\nspin-b program=spinner burst_ms=3600000 unsupervised\nspin-c program=spinner burst_ms=3600000 unsupervised\nspin-d program=spinner burst_ms=3600000");
     }
+    // `profile-switch` sets two apps' classes and quotas.
+    if test == SelfTest::Act(ActCase::Profile) {
+        plan.push_str("\nspin-a program=spinner burst_ms=3600000 unsupervised\nspin-b program=spinner burst_ms=3600000 unsupervised");
+    }
     // `act-convo` asks to stop two processes and declines both.
     if test == SelfTest::Act(ActCase::Convo) {
         plan.push_str(
@@ -464,6 +511,10 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
     if test == SelfTest::ProcStop {
         plan.push('\n');
         plan.push_str(crate::stop_tests::PLAN);
+    }
+    if test == SelfTest::ProcUsage {
+        plan.push('\n');
+        plan.push_str(crate::usage_tests::PLAN);
     }
     if test == SelfTest::ManyProcesses {
         plan.push_str(&crate::many_tests::plan());

@@ -16,6 +16,7 @@
 
 extern crate alloc;
 
+pub mod batch;
 mod buffer;
 mod lookup;
 #[cfg(test)]
@@ -27,18 +28,22 @@ use fsproto::{
     Cursor, Error, How, Kind, Listing, MAX_DATA, MAX_LIST, MAX_ROWS, Outcome, Reply, Request, Stat,
     Version,
 };
-use kabi::fs::{Badge, HOME, HOME_USER, MODELS, SYSTEM, SYSTEM_STATE};
+use kabi::fs::{
+    Badge, HOME, HOME_USER, MODELS, SYSTEM, SYSTEM_PKG, SYSTEM_STATE, SYSTEM_TRUST, SYSTEM_UPDATES,
+};
 use kabi::handle::Rights;
 use kaifs::ns::Listed;
 use kaifs::{BlockDev, FileType, Fs, Inode, ROOT};
 
 /// The folders `fs` makes at its first mount if `cargo xtask fs mkfs` did not
 /// (P2 plan §4.5), by volume.
-const FOLDERS: [(u8, &str); 4] = [
+const FOLDERS: [(u8, &str); 6] = [
     (HOME, "user"),
     (SYSTEM, "settings"),
     (SYSTEM, "state"),
     (SYSTEM, "pkg"),
+    (SYSTEM, "trust"),
+    (SYSTEM, "updates"),
 ];
 
 /// Rights every minted handle carries, as the kernel's startup handles do.
@@ -111,8 +116,14 @@ pub struct Server<D: BlockDev> {
     home_user: u64,
     /// `/system/state`'s object id in `system`: what [`SYSTEM_STATE`] names.
     system_state: u64,
-    /// This disk's epoch, in every badge but [`HOME_USER`] and
-    /// [`SYSTEM_STATE`] ([`kabi::fs`]).
+    /// `/system/pkg`'s object id in `system`: what [`SYSTEM_PKG`] names, the
+    /// folder a plan line's `dir=pkg` grants (ADR 0011 §12).
+    system_pkg: u64,
+    /// `/system/trust` and `/system/updates`: what [`SYSTEM_TRUST`] and
+    /// [`SYSTEM_UPDATES`] name, the folders `updated`'s `dir=` grants.
+    system_trust: u64,
+    system_updates: u64,
+    /// This disk's epoch, in every badge but the fixed ones ([`kabi::fs`]).
     epoch: u16,
     /// The clock at mount: kaifs's times are this plus time since boot, so they
     /// never go back across reboots (there is no wall clock yet).
@@ -150,13 +161,26 @@ impl<D: BlockDev> Server<D> {
             owner: None,
             home_user: 0,
             system_state: 0,
+            system_pkg: 0,
+            system_trust: 0,
+            system_updates: 0,
             epoch: 0,
             base,
             pending: None,
             cache: None,
             alive: |_| true,
         };
-        (server.home_user, server.system_state, server.epoch) = server.prepare(&uuid)?;
+        let fixed = server.prepare(&uuid)?;
+        (
+            server.home_user,
+            server.system_state,
+            [
+                server.system_pkg,
+                server.system_trust,
+                server.system_updates,
+            ],
+            server.epoch,
+        ) = fixed;
         Ok((server, started))
     }
 
@@ -184,8 +208,9 @@ impl<D: BlockDev> Server<D> {
     }
 
     /// Makes the missing [`FOLDERS`], and the disk's epoch if it has none, in
-    /// one commit; `/home/user`'s and `/system/state`'s ids and the epoch.
-    fn prepare(&mut self, uuid: &[u8; 16]) -> Result<(u64, u64, u16), kaifs::Error> {
+    /// one commit; `/home/user`'s, `/system/state`'s and `/system/pkg`'s ids and
+    /// the epoch.
+    fn prepare(&mut self, uuid: &[u8; 16]) -> Result<(u64, u64, [u64; 3], u16), kaifs::Error> {
         let fs = self.fs();
         let writable = fs.writable();
         let mut made = false;
@@ -200,7 +225,7 @@ impl<D: BlockDev> Server<D> {
         let epoch = match fs.get_xattr(ROOT, EPOCH)? {
             Some(bytes) if bytes.len() == 2 => u16::from_le_bytes([bytes[0], bytes[1]]),
             _ => {
-                // Never 0, which only the two fixed badges carry.
+                // Never 0, which only the fixed badges carry.
                 let drawn = u16::from_le_bytes([uuid[0], uuid[1]]) & kabi::fs::EPOCH_MASK;
                 let epoch = drawn.max(1);
                 if writable {
@@ -214,9 +239,14 @@ impl<D: BlockDev> Server<D> {
             fs.commit()?;
         }
         let system_state = fs.lookup(ROOT, "state")?.map_or(0, |e| e.ino);
+        // The plan-line folders: `/system/pkg`, `/system/trust`, `/system/updates`.
+        let mut granted = [0; 3];
+        for (id, name) in granted.iter_mut().zip(["pkg", "trust", "updates"]) {
+            *id = fs.lookup(ROOT, name)?.map_or(0, |e| e.ino);
+        }
         fs.set_volume(HOME.into())?;
         let home_user = fs.lookup(ROOT, "user")?.map_or(0, |e| e.ino);
-        Ok((home_user, system_state, epoch))
+        Ok((home_user, system_state, granted, epoch))
     }
 
     /// The badge for `object` of `volume` on this disk.
@@ -248,6 +278,26 @@ impl<D: BlockDev> Server<D> {
             }
         };
         self.badge(SYSTEM, true, ino)
+    }
+
+    /// The model store's file for `sha256` (`<hex>.gguf` in the `models`
+    /// volume's root, sealed) and its `kai-data` block runs in file order, for
+    /// MODEL_FILL (P2 task 10); `None` if the store has no such sealed file.
+    pub fn model_extents(&mut self, sha256: &[u8; 32]) -> Result<Option<Vec<(u64, u64)>>, Error> {
+        let mut name = alloc::string::String::with_capacity(69);
+        for byte in sha256 {
+            name.push_str(&alloc::format!("{byte:02x}"));
+        }
+        name.push_str(".gguf");
+        let fs = self.fs();
+        fs.set_volume(MODELS.into()).map_err(error)?;
+        let Some(entry) = fs.lookup(ROOT, &name).map_err(error)? else {
+            return Ok(None);
+        };
+        if !fs.is_sealed(entry.ino).map_err(error)? {
+            return Ok(None);
+        }
+        fs.sealed_extents(entry.ino).map(Some).map_err(error)
     }
 
     /// The commit generation now.
@@ -360,7 +410,10 @@ impl<D: BlockDev> Server<D> {
             epoch,
             object,
         } = Badge::parse(badge);
-        let fixed = badge == HOME_USER || badge == SYSTEM_STATE;
+        let fixed = matches!(
+            badge,
+            HOME_USER | SYSTEM_STATE | SYSTEM_PKG | SYSTEM_TRUST | SYSTEM_UPDATES
+        );
         let ours = epoch == self.epoch || fixed;
         if !matches!(volume, SYSTEM | HOME | MODELS) || !ours {
             return Err(Error::NotFound);
@@ -368,6 +421,9 @@ impl<D: BlockDev> Server<D> {
         let object = match badge {
             HOME_USER => self.home_user,
             SYSTEM_STATE => self.system_state,
+            SYSTEM_PKG => self.system_pkg,
+            SYSTEM_TRUST => self.system_trust,
+            SYSTEM_UPDATES => self.system_updates,
             _ => object,
         };
         let fs = self.fs();
@@ -538,8 +594,47 @@ impl<D: BlockDev> Server<D> {
                 let (free, total) = self.fs().space();
                 Reply::Space { free, total }
             }
+            Request::UpdateSnapshot => {
+                self.updates_only(call)?;
+                let fs = self.fs();
+                fs.set_volume(SYSTEM.into()).map_err(error)?;
+                let id = fs
+                    .snapshot_as(kaifs::vol::SnapKind::Update, 0, 0)
+                    .map_err(error)?;
+                let generation = self.commit()?;
+                Reply::Snapshot { id, generation }
+            }
+            Request::UpdateRestore { id } => {
+                self.updates_only(call)?;
+                let fs = self.fs();
+                fs.set_volume(SYSTEM.into()).map_err(error)?;
+                let update = fs
+                    .snapshots()
+                    .get(&id)
+                    .is_some_and(|s| s.kind == kaifs::vol::SnapKind::Update);
+                if !update || !fs.restore_snapshot(id).map_err(error)? {
+                    return Err(Error::Invalid);
+                }
+                let generation = self.commit()?;
+                Reply::Committed { generation }
+            }
         };
         Ok((reply, None))
+    }
+
+    /// The `update` snapshot's requests come only on `/system/updates`'s `Dir`
+    /// with WRITE, and never inside an action: each commits on its own, so in
+    /// the caller's own action it would commit that action half done (Invalid),
+    /// and another caller's is Busy.
+    fn updates_only(&self, call: &Call) -> Result<(), Error> {
+        if call.badge != SYSTEM_UPDATES || !call.rights.contains(Rights::WRITE) {
+            return Err(Error::Permission);
+        }
+        match self.owner {
+            Some(owner) if owner == call.caller => Err(Error::Invalid),
+            Some(_) => Err(Error::Busy),
+            None => Ok(()),
+        }
     }
 
     fn owned(&self, caller: u64) -> Result<(), Error> {
@@ -649,7 +744,9 @@ fn changes(request: &Request) -> bool {
         | Request::Restore { .. }
         | Request::TrashRestore { .. }
         | Request::EmptyTrash
-        | Request::Sync => true,
+        | Request::Sync
+        | Request::UpdateSnapshot
+        | Request::UpdateRestore { .. } => true,
         Request::Stat
         | Request::List { .. }
         | Request::Read { .. }

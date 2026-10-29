@@ -26,7 +26,18 @@ fn paint(name: &str, desk: &Desk, w: i32, h: i32) -> String {
 }
 
 fn paint_with(name: &str, desk: &Desk, panel: &Panel, w: i32, h: i32) -> String {
-    let mut painter = Painter::new(FONTS).expect("the fonts parse");
+    let painter = Painter::new(FONTS).expect("the fonts parse");
+    paint_in(painter, name, desk, panel, w, h)
+}
+
+fn paint_in(
+    mut painter: Painter,
+    name: &str,
+    desk: &Desk,
+    panel: &Panel,
+    w: i32,
+    h: i32,
+) -> String {
     let mut image = Image::new(w, h);
     let mut canvas = image.canvas();
     let scene = Scene {
@@ -181,4 +192,67 @@ fn an_ask_card_paints_above_a_window() {
         }
         std::fs::write(std::format!("{dir}/ask.ppm"), ppm).expect("the preview is written");
     }
+}
+
+/// Each shipped theme's golden: two windows, the second focused (with its
+/// shadow), and the panel listening, at 1280x800. Its digest is pinned, so a
+/// change to a theme or to the painter shows here; `DESK_PREVIEW=dir` writes
+/// each as a PPM to look at.
+const THEME_GOLDENS: [(&str, &str); 4] = [
+    (
+        "dark",
+        "2ae768f82c71346dd1ab0f53f15773ab068d2c61593a6c92810004e8e48a1fe2",
+    ),
+    (
+        "light",
+        "1cf2b98a8ee129d45b9d1c779456263ca84552b69b47ff6c8a55fac6c54b4e18",
+    ),
+    (
+        "high-contrast",
+        "39d559a8200d7be449e591d40dab07d0790ff94d7779e8237beefcedc44d4273",
+    ),
+    (
+        "legible",
+        "e020bd960b4571791e3888e688f538cbfc80cd4908d4eb0f8506bc20612c3144",
+    ),
+];
+
+#[test]
+fn each_shipped_theme_paints_its_golden() {
+    let mut desk = Desk::new(1280, 800);
+    desk.open(1, "notes", "Notes", Size { w: 400, h: 300 }, true);
+    desk.open(2, "shell", "Terminal", Size { w: 520, h: 320 }, true);
+    let mut panel = Panel::new();
+    panel.set_focus(true);
+    let mut seen: Vec<String> = Vec::new();
+    for theme in look::theme::shipped() {
+        let mut painter = Painter::new(FONTS).expect("the fonts parse");
+        painter.set_theme(&theme);
+        let name = std::format!("theme-{}", theme.name);
+        let got = paint_in(painter, &name, &desk, &panel, 1280, 800);
+        let want = THEME_GOLDENS
+            .iter()
+            .find(|(n, _)| *n == theme.name)
+            .map(|(_, sha)| *sha);
+        assert_eq!(Some(got.as_str()), want, "{}'s golden changed", theme.name);
+        assert!(
+            !seen.contains(&got),
+            "{} paints like another theme",
+            theme.name
+        );
+        seen.push(got);
+    }
+}
+
+/// The dark theme read from its file paints what the built-in dark palette
+/// paints: `set_theme` changes nothing until the theme does.
+#[test]
+fn the_dark_theme_paints_the_default_desk() {
+    let desk = Desk::new(1280, 800);
+    let panel = Panel::new();
+    let default = paint_with("default", &desk, &panel, 1280, 800);
+    let mut painter = Painter::new(FONTS).expect("the fonts parse");
+    let dark = look::theme::Theme::parse(&look::theme::shipped()[0].encode()).unwrap();
+    painter.set_theme(&dark);
+    assert_eq!(paint_in(painter, "dark", &desk, &panel, 1280, 800), default);
 }

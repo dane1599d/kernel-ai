@@ -370,10 +370,15 @@ pub fn spawn_service(slot: usize, request_ptr: u64) -> Result<u64, Error> {
             .min(kabi::layout::MAX_STACK_PAGES),
     };
     let me = super::identity(slot).pid;
-    // Its routes come from the kernel's own copy of the plan, never the request.
-    let uses = uses_of(name);
-    let uses: Vec<&str> = uses.iter().map(String::as_str).collect();
-    let pid = spawn(&SpawnRequest {
+    // Its routes, folders and boot files come from the kernel's own copy of the
+    // plan, never the request: the plan line is the authority (ADR 0011 §12).
+    // Its folders and boot files go only to the program the line names.
+    let grants = plan_grants(name, program).map_err(|why| {
+        log!("supervision: {why}");
+        Error::Permission
+    })?;
+    let uses: Vec<&str> = grants.uses.iter().map(String::as_str).collect();
+    let request = SpawnRequest {
         name,
         program,
         args: &args[..args_len],
@@ -381,7 +386,8 @@ pub fn spawn_service(slot: usize, request_ptr: u64) -> Result<u64, Error> {
         spawner: me,
         supervisor: false,
         uses: &uses,
-    })?;
+    };
+    let pid = super::spawn_in(&request, Vec::new(), false, &grants).map_err(|(error, _)| error)?;
     if program == name {
         log!("process {name} (pid {pid}) started by the supervisor");
     } else {
@@ -510,17 +516,14 @@ fn clear_state() {
     drop(old);
 }
 
-/// The services the plan's line for `name` gives it routes to (`uses=`); none
-/// for a service the plan does not list, or whose line does not parse.
-pub fn uses_of(name: &str) -> Vec<String> {
-    PLAN.get()
-        .and_then(|plan| {
-            supervise::parse_plan(plan)
-                .services
-                .into_iter()
-                .find(|service| service.name == name)
-        })
-        .map_or_else(Vec::new, |service| service.uses)
+/// The routes (`uses=`), folders (`dir=`) and boot files (`bootfiles=`) the kernel's
+/// plan grants service `name` running `program` (`supervise::Plan::grants`);
+/// none for a service it does not list, or whose line does not parse.
+pub fn plan_grants(name: &str, program: &str) -> Result<supervise::Grants, String> {
+    match PLAN.get() {
+        Some(plan) => supervise::parse_plan(plan).grants(name, program),
+        None => Ok(Default::default()),
+    }
 }
 
 pub fn plan(slot: usize, ptr: u64, cap: u64) -> Result<u64, Error> {

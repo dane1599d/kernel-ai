@@ -6,6 +6,7 @@ mod effects;
 mod fake;
 mod fallback;
 mod napper;
+mod package;
 mod rehearsal;
 mod suspend;
 

@@ -3,6 +3,7 @@
 
 use super::{TestCase, case};
 use crate::blklog::{Data, Expect};
+use crate::disk::Fixture;
 
 const VIRTIO: Data = Data {
     nvme: false,
@@ -164,6 +165,11 @@ pub(super) const CASES: &[TestCase] = &[
         data: Some(VIRTIO),
         ..case("fs-undo", "test=fs-undo")
     },
+    TestCase {
+        expect: &["fs-trash: trash and restore ran with undo, and emptying the trash asked first"],
+        data: Some(VIRTIO),
+        ..case("fs-trash", "test=fs-trash")
+    },
     // P2 task 12: the change and its log line in one commit, undone after a reboot.
     TestCase {
         expect: &["fs-undo-reboot: boot 1 created notes.txt, its log line in the same commit"],
@@ -191,5 +197,29 @@ pub(super) const CASES: &[TestCase] = &[
             ..RAW
         }),
         ..case("blk-flush-bug", "test=blk-flush blkbug=noflush")
+    },
+    // P2 task 10: no kai-model disk; the model is in kai-data's store, and fs
+    // fills the runs the boot reserved from kai-modelhint 1.
+    TestCase {
+        expect: &[
+            "model: 2101245 bytes reserved for the model store's model; fs fills them",
+            "model-store: fs filled 2101245 bytes from /system/models",
+        ],
+        server: false,
+        data: Some(VIRTIO),
+        store: Some(Fixture::Gguf),
+        ..case("model-store", "test=model-store")
+    },
+    // The same store with the hint's FNV-1a64 changed: what fs fills is refused.
+    TestCase {
+        expect: &[
+            "model: the model store's file is refused: its FNV-1a64 is not the hint's",
+            "model-store: the store's blob is refused",
+        ],
+        server: false,
+        data: Some(VIRTIO),
+        store: Some(Fixture::Gguf),
+        store_bad_fnv: true,
+        ..case("model-store-bad", "test=model-store bad")
     },
 ];

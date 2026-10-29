@@ -411,7 +411,7 @@ fn bind_file(engine: &mut Engine, name: &'static str, h: Rc<dyn Host>, tx: Tx) -
                 let path = home(name, path)?;
                 let (change, before, after) = match name {
                     "fs_trash" => (FsChange::Trash(path), "there", "in the trash"),
-                    _ => (FsChange::Restore(path), "as it was", "restored"),
+                    _ => (FsChange::Restore(path), "in the trash", "restored"),
                 };
                 let txn = h.fs_change(change).map_err(fail)?;
                 tx.changed(file_done(name, path, before, after, Some(txn)));

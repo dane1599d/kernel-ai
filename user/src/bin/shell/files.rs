@@ -241,9 +241,27 @@ fn make(home: Handle, change: FsChange) -> Result<(), String> {
                 expect_done(dir, Request::Trash { name: name.into() })
             })
         }
-        FsChange::Restore(_) | FsChange::EmptyTrash => Err(String::from(
-            "restoring from the trash and emptying it come with the trash's rows in fs",
-        )),
+        // The newest trashed item that was at `path` goes back there.
+        FsChange::Restore(path) => {
+            let request = Request::TrashRestore {
+                path: path.to_string(),
+            };
+            match ask(home, request)?.0 {
+                Reply::Done => Ok(()),
+                Reply::Failed(Error::Exists) => Err(format!(
+                    "{path} exists again; move it away first to restore the trashed one"
+                )),
+                Reply::Failed(Error::NotFound) => Err(format!(
+                    "nothing trashed was at {path}, or its folder is gone"
+                )),
+                other => Err(unexpected(&other)),
+            }
+        }
+        // For good: what the trash held cannot come back.
+        FsChange::EmptyTrash => match ask(home, Request::EmptyTrash)?.0 {
+            Reply::Emptied { .. } => Ok(()),
+            other => Err(unexpected(&other)),
+        },
     }
 }
 
@@ -388,9 +406,18 @@ fn list(dir: Handle) -> Result<Vec<String>, String> {
         };
         match ask(dir, request)?.0 {
             Reply::Listed { names: page, more } => {
-                names.extend(page.into_iter().map(|l| match l.kind {
-                    fsproto::Kind::Dir => format!("{}/", l.name),
-                    fsproto::Kind::File => l.name,
+                names.extend(page.into_iter().map(|l| {
+                    // The answer joins names with `\n`, so a name's own control
+                    // characters (a `\n`) must not split it into several names.
+                    let name: String = l
+                        .name
+                        .chars()
+                        .map(|c| if c.is_control() { '\u{fffd}' } else { c })
+                        .collect();
+                    match l.kind {
+                        fsproto::Kind::Dir => format!("{name}/"),
+                        fsproto::Kind::File => name,
+                    }
                 }));
                 if more.is_none() || names.len() >= LIST_MAX {
                     return Ok(names);
