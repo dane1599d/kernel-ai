@@ -7,6 +7,7 @@ extern crate alloc;
 pub mod compiler;
 mod dis;
 mod engine;
+pub mod rows;
 pub mod service;
 pub mod session;
 
