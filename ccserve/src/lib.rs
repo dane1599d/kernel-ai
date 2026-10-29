@@ -58,6 +58,32 @@ pub const XCC_HEADERS: [(&str, &[u8]); 9] = [
     ),
 ];
 
+/// The most `cc` holds at once, in bytes, which its plan line's `pages=`
+/// (`kabi::plan::CC`) must cover; a test checks it does. Fixed parts are
+/// measured and rounded up; the kept modules are an estimate.
+pub mod budget {
+    use crate::{compiler, session};
+
+    /// The `cc` program as loaded: 3.1 MiB in a dev build.
+    pub const IMAGE: u64 = 4 << 20;
+    /// `stack_pages=512`.
+    pub const STACK: u64 = 2 << 20;
+    /// cc.wasm translated, eagerly: about 1.4 MiB in S12-1.
+    pub const COMPILER: u64 = 3 << 19;
+    /// One kept entry's module and instance, estimated.
+    pub const ENTRY: u64 = 16 << 10;
+
+    /// The whole: the fixed parts, one compile, one session, every kept entry.
+    pub const fn total() -> u64 {
+        IMAGE
+            + STACK
+            + COMPILER
+            + compiler::MAX_MEMORY as u64
+            + session::SESSION_MEMORY as u64
+            + ENTRY * session::MAX_ENTRIES as u64
+    }
+}
+
 /// One entry's compile, and its run, each get this long (D3).
 pub const LINE_NS: u64 = 2_000_000_000;
 

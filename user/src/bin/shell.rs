@@ -58,6 +58,15 @@ fn supervisor() -> kabi::handle::Handle {
     user::route(1).unwrap_or(kabi::handle::Handle::NONE)
 }
 
+/// The route to `cc`, the `c>` prompt's compiler: the third in `uses=llm+supervisor+cc`.
+fn cc_route() -> kabi::handle::Handle {
+    user::route(2).unwrap_or(kabi::handle::Handle::NONE)
+}
+
+/// cc's wait for one entry: a compile and a run of 2 s each, and on its first
+/// request, translating cc.wasm and compiling kairt.
+const CC_CALL_MS: u64 = 30_000;
+
 /// The supervisor's wait for a stop or a start: a stop waits for the process to end.
 const SUPERVISOR_CALL_MS: u64 = 10_000;
 
@@ -103,6 +112,14 @@ fn ask_supervisor(request: &str) -> Result<String, String> {
 impl Host for System {
     fn now_ns(&self) -> u64 {
         sys::time_ns()
+    }
+
+    fn cc(&self, request: &[u8]) -> Result<Vec<u8>, String> {
+        let mut reply = vec![0u8; kabi::MAX_MESSAGE];
+        let len = sys::call_route(cc_route(), request, &mut reply, CC_CALL_MS)
+            .map_err(|error| format!("{error:?}"))?;
+        reply.truncate(len.min(kabi::MAX_MESSAGE));
+        Ok(reply)
     }
 
     fn interrupted(&self) -> bool {

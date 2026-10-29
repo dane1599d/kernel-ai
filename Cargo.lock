@@ -179,6 +179,7 @@ name = "ccserve"
 version = "0.1.0-dev"
 dependencies = [
  "agentabi",
+ "kabi",
  "kailink",
  "promptcore",
  "serde_json",
@@ -1456,10 +1457,12 @@ name = "shellcore"
 version = "0.1.0-dev"
 dependencies = [
  "agentabi",
+ "ccserve",
  "kabi",
  "kaigrants",
  "kaiprofile",
  "llmproto",
+ "promptcore",
  "rhai",
  "sched",
  "serde_json",
@@ -1765,6 +1768,7 @@ version = "0.1.0-dev"
 dependencies = [
  "appabi",
  "bootslot",
+ "ccserve",
  "cpufeat",
  "deskcore",
  "ecdsa",
@@ -1784,6 +1788,7 @@ dependencies = [
  "llmproto",
  "look",
  "p256",
+ "promptcore",
  "quant",
  "sched",
  "serde_json",
