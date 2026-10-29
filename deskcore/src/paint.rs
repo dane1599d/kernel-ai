@@ -153,7 +153,12 @@ impl Painter {
                     let (width, height) = (c.width as i32, c.height as i32);
                     let card = trusted::card(width, height, &ask);
                     fill(c, card, clip, self.palette.raised);
-                    fill(c, Rect::new(card.x, card.y, card.w, 3), clip, self.palette.ask);
+                    fill(
+                        c,
+                        Rect::new(card.x, card.y, card.w, 3),
+                        clip,
+                        self.palette.ask,
+                    );
                 }
             }
         }
