@@ -1380,6 +1380,7 @@ dependencies = [
  "kaigrants",
  "kaiprofile",
  "llmproto",
+ "look",
  "rhai",
  "sched",
  "serde_json",

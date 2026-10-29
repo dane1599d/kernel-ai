@@ -320,6 +320,21 @@ impl Host for System {
         self.state.read(files::STANDING)
     }
 
+    fn appearance_read(&self) -> Option<String> {
+        self.state.read(files::APPEARANCE)
+    }
+
+    /// Saved with the line's files, as the rules are. `desktop` takes it up
+    /// when it next starts (live redraw is desktop's follow-up).
+    fn appearance_write(&self, text: &str) -> Result<(), String> {
+        match self.files.is_open() {
+            true => self.state.write_in(files::APPEARANCE, text),
+            false => self
+                .state
+                .write(files::APPEARANCE, text, self.files.next_action()),
+        }
+    }
+
     /// As the rules are written: with the line's files, if it changed any.
     fn standing_write(&self, text: &str) -> Result<(), String> {
         match self.files.is_open() {

@@ -62,6 +62,8 @@ impl Checked {
 
 type RhaiResult<T> = Result<T, Box<EvalAltResult>>;
 
+mod look;
+
 fn rhai_error(message: impl Into<String>) -> Box<EvalAltResult> {
     let message: String = message.into();
     message.into()
@@ -347,6 +349,9 @@ fn bind(engine: &mut Engine, name: &'static str, tx: &Tx) -> bool {
                 });
             }
             name if name.starts_with("fs_") => return bind_file(engine, name, h, tx),
+            "appearance_set" => {
+                look::bind(engine, h, tx);
+            }
             _ => return false,
         }
     }
@@ -616,6 +621,12 @@ impl Host for Stub {
     }
     fn fs_change(&self, _: FsChange) -> Result<u64, String> {
         Ok(0)
+    }
+    fn appearance_read(&self) -> Option<String> {
+        self.0.appearance_read()
+    }
+    fn appearance_write(&self, _: &str) -> Result<(), String> {
+        Ok(())
     }
     fn ask(&self, _: &str) -> Result<String, String> {
         Err("not available to scripts".into())

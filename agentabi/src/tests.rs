@@ -54,6 +54,8 @@ fn derived_tiers_match_the_seamless_actions_table() {
         ("service_stop", Tier::Ask),
         ("service_start", Tier::Run),
         ("service_restart", Tier::Ask),
+        // P4: one appearance setting, undone by its old value.
+        ("appearance_set", Tier::Run),
         ("fixed", Tier::Run),
         ("floor", Tier::Run),
     ];
