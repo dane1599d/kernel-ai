@@ -26,6 +26,7 @@ pub mod actlog;
 mod agentcore;
 pub mod analyse;
 pub mod apart;
+mod appearance;
 mod brackets;
 mod commands;
 pub mod data;
@@ -173,6 +174,14 @@ pub trait Host {
     /// used up by its first check, so two requests could not both pass.
     fn restart_service(&self, _name: &str, _proof: Proof) -> Result<(), String> {
         Err(String::from("services cannot be restarted here"))
+    }
+    /// The user's appearance as `kai-appearance 1` text (P4 task 8).
+    fn appearance_read(&self) -> Option<String> {
+        None
+    }
+    /// Saves the appearance and has `desktop` draw with it.
+    fn appearance_write(&self, _text: &str) -> Result<(), String> {
+        Err(String::from("there is no appearance to set here"))
     }
     /// One of the agent's window rows, asked of `desktop` (P3 task 10): the
     /// answer after its `ok`, or why not.

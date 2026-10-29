@@ -337,10 +337,16 @@ pub const SCRIPT_API: [Action; 7] = [
 /// Rows a tagged call runs but a script may not: what they change asks once, so
 /// a script's one consent could not cover them. The script prompt does not list
 /// them; they reach the model only through the act pack.
-pub const CALL_ONLY: [Action; 4] = [PROCESS_STOP, SERVICE_STOP, SERVICE_START, SERVICE_RESTART];
+pub const CALL_ONLY: [Action; 5] = [
+    PROCESS_STOP,
+    SERVICE_STOP,
+    SERVICE_START,
+    SERVICE_RESTART,
+    crate::APPEARANCE_SET,
+];
 /// Every row the shell's script engine binds: the script API, then the call-only
 /// rows, which only a tagged call's one-line script is given.
-pub const BOUND: [Action; 11] = [
+pub const BOUND: [Action; 12] = [
     CPUS,
     MEMORY,
     UPTIME_MS,
@@ -352,6 +358,7 @@ pub const BOUND: [Action; 11] = [
     SERVICE_STOP,
     SERVICE_START,
     SERVICE_RESTART,
+    crate::APPEARANCE_SET,
 ];
 /// The pure functions every strict engine adds besides the OS functions it grants.
 pub const HELPERS: [Action; 2] = [FIXED, FLOOR];
@@ -398,7 +405,7 @@ pub const RULES_REMOVE: Action = Action {
 pub const TYPED_ONLY: [Action; 2] = [RULES, RULES_REMOVE];
 
 /// Every OS row.
-pub const ROWS: [Action; 36] = [
+pub const ROWS: [Action; 37] = [
     CPUS,
     MEMORY,
     UPTIME_MS,
@@ -435,4 +442,5 @@ pub const ROWS: [Action; 36] = [
     crate::UI_FOCUS,
     crate::WINDOW_CLOSE,
     crate::UI_ACT,
+    crate::APPEARANCE_SET,
 ];
