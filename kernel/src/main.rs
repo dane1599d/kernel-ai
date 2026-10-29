@@ -38,6 +38,7 @@ mod clock;
 mod compute_tests;
 mod console;
 mod cpu;
+mod demand_tests;
 mod desk_tests;
 mod devhost;
 mod device_tests;
@@ -67,6 +68,7 @@ mod input;
 mod ipc;
 mod irq;
 mod keyboard;
+mod keys_tests;
 mod latency_tests;
 mod lines;
 mod live_commands;
@@ -365,12 +367,14 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::DeskRestart => run_case(desk_tests::restart),
         SelfTest::DeskAsk => run_case(ask_tests::check),
         SelfTest::AppSuspend => run_case(suspend_tests::check),
+        SelfTest::AppOnDemand => run_case(demand_tests::check),
         SelfTest::DeskBoot => run_case(desk_tests::boot_check),
         SelfTest::DeskPanel => run_case(desk_tests::panel_check),
         SelfTest::DeskPanelShell => run_case(desk_tests::panel_shell_check),
         SelfTest::UiWindow => run_case(ui_tests::check),
         SelfTest::DeskCard => run_case(card_tests::check),
         SelfTest::DeskStanding => run_case(standing_tests::check),
+        SelfTest::UiKeys => run_case(keys_tests::check),
         SelfTest::DeskTerm => run_case(term_tests::check),
         SelfTest::Scriptrun => run_case(scriptrun_tests::check),
         SelfTest::Fpu => run_case(fpu_tests::fpu_check),

@@ -171,7 +171,14 @@ Production grade is a multi-year program. The long poles are P6 (a browser) and 
 
 The cases are act-plain, act-run, act-ask, act-rule, act-undo, act-rollback, act-inject, act-never, act-vague, act-convo and pkg-local. Fluency: 48/50 (run 40458081415). actbench on main, seeds 42, 1 and 2 (run 40458077413): seeds 42 and 1 each: exact single calls 57/60, false runs 0 (bait and negation) and 0 from State, false asks on plain requests 2 (bar 6 or fewer), ambiguous clarified or asked 17/20 and 16/20 (bar 16), median free tokens per single call 6 (bar 12 or fewer), two-turn memory 19/20 (bar 18), M8 fluency through the script 47/50 (bar 45); pack_id 5cb3671b050b730e, mock pack 1,632 tokens. Seed 2, run by itself on main (run 40486461241) after the first job's 240 minutes ran out, matches them, with ambiguous 16/20; all three seeds pass. The plan and its 19 tasks are in `docs/plans/p1-agent-core.md`.
 
-**Next step:** P2, files and storage, from `docs/plans/p2-files-storage.md`; P3's plan is in `docs/plans/`. Spikes run on `spike/*` branches.
+**P2 status (2026-10-29):** **closing, not yet done**.
+- **Built:** a writable `kai-data` disk on virtio-blk and NVMe; kaifs format 1 with volumes, snapshots, undo, trash, retention and the GC; the ring-3 `fs` service over `kai-fs 1`, with `Dir` and `File` handles; and the model store with MODEL_FILL.
+- **On main:** `blk-write`, `fs-reboot`, `fs-restart`, `fs-dead-client`, the power cut (`fs-actions`, `fs-powercut`, VirtualBox 20/20), the file rows and undo (`fs-act`, `fs-undo`, `fs-undo-reboot`), the trash with restore-by-name and empty-trash (`fs-trash`), `pkg-store`, and the model store (`model-store`, `model-store-bad`, and `llm` mapping the store's model; #236, #261, #314).
+- **Not met yet:** files moved through kaifs at 12 MB/s in a release build under KVM, under S04-2's bar (the IPC alone passed). One disk call per 4 KiB block is now batched (#325), not re-measured since (#262 open); slow IPC round trips remain.
+
+The P2 close row in `docs/decisions.md` has each case and gap.
+
+**Next step:** P2's open items above, while P3 (the desktop) and P4 go on from `docs/plans/`. Spikes run on `spike/*` branches.
 
 ## 4. Testing strategy
 

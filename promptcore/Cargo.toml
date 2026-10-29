@@ -1,0 +1,14 @@
+[package]
+name = "promptcore"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The `c>` prompt's front end (ADR 0012 D1-D4, D11): splits a typed entry into
+# C items, applies the five conveniences, writes the prelude of live
+# definitions, keeps the definitions and their undo journal, and reads and
+# writes `kai-cc 1`. `no_std` + `alloc` and no dependencies, so `cc`, the shell
+# and the host tests share one parser of untrusted source.
+[lib]
+doctest = false
