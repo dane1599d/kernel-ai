@@ -81,13 +81,12 @@ pub fn pump<E: Env<Instance = LiveInstance>>(host: &mut Host<E>) {
                 (request.ticket, outcome)
             })
             .collect();
-        host.each_instance(|instance, _, shown| {
-            if let (LiveInstance::V2(core), true) = (instance, shown) {
-                for (ticket, outcome) in &answers {
-                    // A fault in `on-reply` is the app's, handled as any other.
-                    let _ = core.edit_reply(*ticket, outcome.clone());
-                }
-            }
-        });
+        for (ticket, outcome) in answers {
+            // An answer is a call into the app like a window's input: a
+            // transaction of its own, so a fault in `on-reply` is the version's,
+            // reported and reloaded from its checkpoint, and what the call did
+            // is kept only if it did not fault.
+            crate::ui::serve_shown(host, |core| core.edit_reply(ticket, outcome));
+        }
     }
 }

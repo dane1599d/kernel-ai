@@ -5,7 +5,8 @@
 //! gives the app the answer in a later call, `replies.on-reply`
 //! ([`CoreInstance::edit_reply`]). So a call never waits on the edit service,
 //! and a version rehearsed beside the active one cannot send an edit twice
-//! while it runs: only the shown version's queue is taken.
+//! while it runs: only the shown version's queue is taken. A call that is not
+//! wrapped in a transaction cannot send, as it cannot use storage or effects.
 //!
 //! The interface is linked only for an instance loaded with the `edit` grant
 //! ([`Grants`]); without it the import fails to link, and the version does not
@@ -67,6 +68,14 @@ pub(crate) fn send(mut caller: Caller<'_, HostState>, ptr: i32, len: i32) -> Res
                 .map(<[u8]>::to_vec)
         })
         .ok_or_else(|| Error::new("bytes outside memory"))?;
+    // Only inside a transaction (an action, a window's input, an event), as for
+    // storage and effects: a probation's `init`, `health` or `self-test` cannot
+    // send an edit by itself.
+    if caller.data().call.is_none() {
+        return Err(Error::new(alloc::format!(
+            "{EDIT} send: only inside a call that a transaction wraps"
+        )));
+    }
     let host = &mut caller.data_mut().edit;
     if host.queue.len() >= MAX_QUEUED {
         return Err(Error::new(alloc::format!(

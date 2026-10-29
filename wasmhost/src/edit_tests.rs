@@ -6,6 +6,7 @@ extern crate std;
 use crate::{CoreInstance, Grants, Limits, load_core, load_core_granted};
 use alloc::string::String;
 use alloc::vec::Vec;
+use livecore::txn::{Inputs, Storage};
 use livecore::{Fault, Instance, Reason};
 
 const LIMITS: Limits = Limits {
@@ -49,6 +50,13 @@ const GUEST: &str = r#"(module
     global.get $size
     i32.or)
   (func (export "kai:edit/replies@0.1.0#on-reply") (param i32 i32 i32 i32)
+    ;; Ticket 99 is an app that traps.
+    local.get 0
+    i32.const 99
+    i32.eq
+    if
+      unreachable
+    end
     local.get 0
     global.set $ticket
     local.get 1
@@ -65,6 +73,19 @@ fn refused(result: Result<CoreInstance, Fault>) -> Fault {
         Err(fault) => fault,
         Ok(_) => panic!("expected a fault"),
     }
+}
+
+/// Runs `f` inside a transaction, as `Host::serve_with` wraps a call.
+fn in_call<R>(app: &mut CoreInstance, f: impl FnOnce(&mut CoreInstance) -> R) -> R {
+    let inputs = Inputs {
+        now_ms: 0,
+        seed: 0,
+        first_ticket: 0,
+    };
+    app.begin(&Storage::new(), inputs);
+    let result = f(app);
+    app.finish();
+    result
 }
 
 fn granted() -> Grants {
@@ -84,8 +105,12 @@ fn an_app_without_the_grant_does_not_link() {
 #[test]
 fn send_queues_a_message_with_a_ticket_and_taking_empties_the_queue() {
     let mut app = load_core_granted(&guest(), LIMITS, None, granted()).unwrap();
-    assert_eq!(app.health().unwrap(), 0, "the first ticket");
-    assert_eq!(app.health().unwrap(), 1);
+    assert_eq!(
+        in_call(&mut app, |a| a.health()).unwrap(),
+        0,
+        "the first ticket"
+    );
+    assert_eq!(in_call(&mut app, |a| a.health()).unwrap(), 1);
     let sent = app.take_edits();
     assert_eq!(sent.len(), 2);
     assert_eq!(
@@ -95,16 +120,25 @@ fn send_queues_a_message_with_a_ticket_and_taking_empties_the_queue() {
     assert_eq!(sent[1].ticket, 1);
     assert!(app.take_edits().is_empty());
     // Tickets go on, so an answer is never taken for a later message's.
-    assert_eq!(app.health().unwrap(), 2);
+    assert_eq!(in_call(&mut app, |a| a.health()).unwrap(), 2);
+}
+
+#[test]
+fn send_outside_a_transaction_is_a_fault() {
+    // A probation's `health`, or any call a transaction does not wrap, cannot send.
+    let mut app = load_core_granted(&guest(), LIMITS, None, granted()).unwrap();
+    let fault = app.health().expect_err("no transaction");
+    assert!(fault.detail.contains("transaction"), "{}", fault.detail);
+    assert!(app.take_edits().is_empty());
 }
 
 #[test]
 fn too_many_messages_before_comphost_takes_them_is_a_fault() {
     let mut app = load_core_granted(&guest(), LIMITS, None, granted()).unwrap();
     for _ in 0..crate::edit::MAX_QUEUED {
-        app.health().unwrap();
+        in_call(&mut app, |a| a.health()).unwrap();
     }
-    let fault = app.health().expect_err("the ninth message traps");
+    let fault = in_call(&mut app, |a| a.health()).expect_err("one past the limit traps");
     assert!(fault.detail.contains("queued"), "{}", fault.detail);
     assert_eq!(app.take_edits().len(), crate::edit::MAX_QUEUED);
 }
@@ -120,6 +154,21 @@ fn a_reply_reaches_the_app_as_a_result_with_its_ticket() {
     app.edit_reply(9, Err(String::from("the edit service is not running")))
         .unwrap();
     assert_eq!(app.self_test().unwrap(), 9 << 24 | 1 << 16 | 31);
+}
+
+#[test]
+fn a_trap_in_on_reply_comes_back_as_the_calls_fault_not_swallowed() {
+    // comphost runs the answer inside `Host::serve_with`, which reports and
+    // reloads a version that faulted; that needs the fault here.
+    let mut app = load_core_granted(&guest(), LIMITS, None, granted()).unwrap();
+    let fault = in_call(&mut app, |a| a.edit_reply(99, Ok(Vec::new()))).expect_err("a trap");
+    assert_ne!(fault.reason, Reason::Link);
+    // The next answer still works on a fresh call.
+    let mut app = load_core_granted(&guest(), LIMITS, None, granted()).unwrap();
+    assert_eq!(
+        in_call(&mut app, |a| a.edit_reply(5, Ok(Vec::new()))),
+        Ok(())
+    );
 }
 
 #[test]
