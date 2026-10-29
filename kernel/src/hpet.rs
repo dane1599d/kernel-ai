@@ -65,7 +65,22 @@ fn read32(offset: u64) -> u32 {
 
 /// The main counter, never torn (see [`acpitables::hpet_counter`]). A torn read
 /// once put a sleeping thread 43 s in the future and lost it from the storm case.
+/// Reads of the HPET's main counter since boot: each one exits to the
+/// hypervisor in a VM, so M6 counts them.
+static READS: AtomicU64 = AtomicU64::new(0);
+
+/// How many times the HPET's main counter has been read.
+pub fn reads() -> u64 {
+    READS.load(Ordering::Relaxed)
+}
+
+/// Whether `nanos` reads the TSC (`clock=tsc` settled) rather than the HPET.
+pub fn tsc_clock() -> bool {
+    TSC_MULT.load(Ordering::Acquire) != 0
+}
+
 fn main_counter() -> u64 {
+    READS.fetch_add(1, Ordering::Relaxed);
     let last = LAST_TICKS.load(Ordering::Relaxed);
     let (ticks, split) = acpitables::hpet_counter::read(
         || read(MAIN_COUNTER),

@@ -3,6 +3,7 @@
 //! on `ctl swap` from the kernel. The logic is the host-tested `livecore::host`;
 //! this program connects it to the COMP_* calls and the service endpoint, and,
 //! with a route to `desktop`, the app's `kai:ui` windows to the screen (`ui`).
+//! An app left unused naps (P3 task 12b): see [`livecore::napper`].
 
 #![no_std]
 #![no_main]
@@ -16,10 +17,14 @@ use kabi::live::{MAX_ARTIFACT, MAX_CHECKPOINT, Restore};
 use livecore::Fault;
 use livecore::host::{Env, Host, Report, Restored};
 use livecore::local::restored_of;
+use livecore::nap::Nap;
+use livecore::napper::{Napped, Napper};
 use livecore::settings::Settings;
 use user::{arg, args, println, sys};
 use wasmhost::{Limits, LiveInstance};
 
+#[path = "comphost/disk.rs"]
+mod disk;
 #[path = "comphost/ui.rs"]
 mod ui;
 
@@ -43,6 +48,9 @@ struct SysEnv {
     limits: Limits,
     /// Whether the app's windows reach `desktop`.
     windows: bool,
+    /// The app's saved state on disk, with a plan line's `dir=apps`; opened
+    /// at the first restore, which names the app.
+    disk: Option<disk::Disk>,
 }
 
 fn version_log(line: &str) {
@@ -66,7 +74,14 @@ impl Env for SysEnv {
     }
 
     fn report(&mut self, event: &Report<'_>) -> Result<(), Error> {
-        sys::comp_event(&event.to_raw())
+        sys::comp_event(&event.to_raw())?;
+        // A checkpoint the kernel took is the app's to keep across a reboot.
+        if event.kind == kabi::live::kind::CHECKPOINT
+            && let Some(disk) = self.disk.as_mut()
+        {
+            disk.save(event.schema as u32, event.blob);
+        }
+        Ok(())
     }
 
     fn restore(&mut self) -> Result<Restored, Error> {
@@ -74,7 +89,14 @@ impl Env for SysEnv {
         let mut checkpoint = vec![0u8; MAX_CHECKPOINT];
         let len = sys::comp_restore(&mut restore, &mut checkpoint)?;
         checkpoint.truncate(len.min(MAX_CHECKPOINT));
-        Ok(restored_of(&restore, &checkpoint))
+        let mut restored = restored_of(&restore, &checkpoint);
+        if self.disk.is_none() {
+            self.disk = disk::Disk::open(&restored.name);
+        }
+        // After a reboot the kernel has nothing; the disk may.
+        let saved = self.disk.as_mut().and_then(|d| d.load(MAX_CHECKPOINT));
+        livecore::saved::merge(&mut restored, saved);
+        Ok(restored)
     }
 
     fn load(&mut self, module: &[u8], quiet: bool) -> Result<LiveInstance, Fault> {
@@ -114,6 +136,7 @@ fn main() -> i32 {
     let mut windows = ui::Ui::new();
     let mut env = SysEnv {
         windows: windows.is_some(),
+        disk: None,
         limits: Limits {
             fuel_call: settings.fuel_call,
             fuel_life: settings.fuel_life,
@@ -127,6 +150,7 @@ fn main() -> i32 {
             return livecore::host::EXIT_REFUSED;
         }
     };
+    let mut napper = Napper::new(Nap::new(settings.nap_ms, now_ms()));
     let mut host = match Host::start(env, &name, settings) {
         Ok(host) => host,
         Err(exit) => {
@@ -151,12 +175,22 @@ fn main() -> i32 {
             (true, 0) => ui::POLL_MS,
             (true, ms) => ms.min(ui::POLL_MS),
         };
+        let wait = napper.wait(&host, wait, now_ms());
         let mut caller = u64::MAX;
         match sys::svc_recv(&mut request, wait, &mut caller) {
             Ok(len) => {
                 let len = len.min(request.len());
                 let heap_before = user::heap_bytes();
-                let mut reply = match host.handle(caller, &request[..len]) {
+                let reply = napper
+                    .request(&mut host, caller, &request[..len], now_ms())
+                    .and_then(|(reply, napped)| {
+                        log_nap(&name, napped);
+                        match reply {
+                            Some(reply) => Ok(reply),
+                            None => host.handle(caller, &request[..len]),
+                        }
+                    });
+                let mut reply = match reply {
                     Ok(reply) => reply,
                     Err(exit) => {
                         println!("{}", exit.why);
@@ -169,16 +203,31 @@ fn main() -> i32 {
                     println!("svc_reply failed: {error:?}");
                 }
                 tick_at = deadline(host.timeout_ms());
+                napper.after(&host, now_ms());
                 if let Some(ui) = windows.as_mut() {
                     ui.pump(&mut host);
                 }
             }
             Err(Error::TimedOut) => {
                 if let Some(ui) = windows.as_mut().filter(|ui| ui.has_windows())
-                    && let Err(exit) = ui.poll(&mut host)
+                    && let Err(exit) = ui
+                        .poll(&mut host)
+                        .and_then(|()| {
+                            // A close or an agent's action may have woken it.
+                            napper.after(&host, now_ms());
+                            napper.focus(&mut host, ui.take_focused(), now_ms())
+                        })
+                        .map(|napped| log_nap(&name, napped))
                 {
                     println!("{}", exit.why);
                     return exit.code;
+                }
+                match napper.tick(&mut host, now_ms()) {
+                    Ok(napped) => log_nap(&name, napped),
+                    Err(exit) => {
+                        println!("{}", exit.why);
+                        return exit.code;
+                    }
                 }
                 if tick_at != 0 && now_ms() >= tick_at {
                     if let Err(exit) = host.tick() {
@@ -219,4 +268,16 @@ fn now_ms() -> u64 {
 /// When a wait of `ms` started now ends; 0 for none.
 fn deadline(ms: u64) -> u64 {
     if ms == 0 { 0 } else { now_ms() + ms }
+}
+
+/// The nap's log lines.
+fn log_nap(name: &str, napped: Option<Napped>) {
+    match napped {
+        Some(Napped::Napped) => println!("comphost: {name} napped, unused"),
+        Some(Napped::Woke(reply)) => println!(
+            "comphost: woke from its nap: {}",
+            alloc::string::String::from_utf8_lossy(&reply)
+        ),
+        None => {}
+    }
 }

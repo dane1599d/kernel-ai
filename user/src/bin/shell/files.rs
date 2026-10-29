@@ -295,6 +295,8 @@ pub const LOG: &str = "log";
 pub const RULES: &str = "rules";
 /// The standing instructions' store (`kai-standing 1`, P3 task 11).
 pub const STANDING: &str = "standing";
+/// The user's appearance (`kai-appearance 1`, P4 task 8).
+pub const APPEARANCE: &str = "appearance";
 
 impl State {
     /// File `name` as `/system/state` holds it; `None` with no such file or no
