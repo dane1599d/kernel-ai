@@ -141,6 +141,29 @@ impl<T: Transport> FsVolume<T> {
         }
     }
 
+    /// The whole file `file` is a handle to, at most `max` bytes: a file
+    /// another process moved to `pkg`, such as the artifact `cc build` wrote,
+    /// read through that handle and nothing else.
+    pub fn read_handle(&mut self, file: T::Handle, max: u64) -> Result<Vec<u8>, String> {
+        let size = self.size(file)?;
+        if size > max {
+            return Err(format!("the file is {size} bytes, over {max}"));
+        }
+        let mut out = Vec::with_capacity(size as usize);
+        while (out.len() as u64) < size {
+            let want = (size - out.len() as u64).min(fsproto::MAX_DATA as u64) as u32;
+            let request = Request::Read {
+                off: out.len() as u64,
+                len: want,
+            };
+            match self.ask(file, request)? {
+                (Reply::Data(data), _) if !data.is_empty() => out.extend_from_slice(&data),
+                (other, _) => return Err(format!("{other:?}")),
+            }
+        }
+        Ok(out)
+    }
+
     fn size(&mut self, file: T::Handle) -> Result<u64, String> {
         match self.ask(file, Request::Stat)? {
             (Reply::Stat(stat), _) => Ok(stat.size),
@@ -225,22 +248,9 @@ impl<T: Transport> Volume for FsVolume<T> {
         let Some(file) = self.open(&path, How::Existing, Rights::READ.bits())? else {
             return Ok(None);
         };
-        let result = (|| {
-            let size = self.size(file)?;
-            let mut out = Vec::with_capacity(size as usize);
-            while (out.len() as u64) < size {
-                let want = (size - out.len() as u64).min(fsproto::MAX_DATA as u64) as u32;
-                let request = Request::Read {
-                    off: out.len() as u64,
-                    len: want,
-                };
-                match self.ask(file, request)? {
-                    (Reply::Data(data), _) if !data.is_empty() => out.extend_from_slice(&data),
-                    (other, _) => return Err(format!("reading {path}: {other:?}")),
-                }
-            }
-            Ok(out)
-        })();
+        let result = self
+            .read_handle(file, u64::MAX)
+            .map_err(|why| format!("reading {path}: {why}"));
         self.transport.close(file);
         result.map(Some)
     }

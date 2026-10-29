@@ -23,10 +23,10 @@ use crate::generation::Time;
 use crate::header::{Header, valid_name};
 use crate::image::{self, Checked, Files, ROOT};
 use crate::mirror::SAVE_ACTION;
-use crate::resolve::Entry;
+use crate::resolve::{Entry, Want};
 use crate::sign::{self, Key, Keys, Periods, Target};
-use crate::store::{Source, Volume};
-use crate::version::Version;
+use crate::store::{self, Ctx, Source, Store, Volume};
+use crate::version::{Range, Version};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -236,6 +236,35 @@ pub fn check(
     image::check(&mut InVolume(vol), provided)
 }
 
+/// The names of the builds `local` holds.
+pub fn names(vol: &mut dyn Volume) -> Result<Vec<String>, String> {
+    Ok(held(vol)?
+        .into_iter()
+        .map(|(header, _, _)| header.name)
+        .collect())
+}
+
+/// `published` installed from `checked`, what [`check`] kept of `local`, into
+/// a new generation: exactly its version, so a rebuild replaces the build
+/// installed before it. The generation's number.
+pub fn install(
+    store: &Store,
+    cx: &mut Ctx<'_>,
+    checked: &Checked,
+    published: &Published,
+    provided: &[(&str, Version)],
+) -> Result<u64, store::Error> {
+    let entries: Vec<Entry> = checked.packages.iter().map(|(e, _)| e.clone()).collect();
+    let exactly = Range::parse(&format!("={}", published.version))
+        .map_err(|why| store::Error::Store(why.into()))?;
+    let want = [Want {
+        name: &published.name,
+        range: Some(exactly),
+    }];
+    let mut source = Held(&checked.packages);
+    store.install(cx, &mut source, &entries, provided, &want, false)
+}
+
 /// `local`'s files, from the store's volume.
 struct InVolume<'a>(&'a mut dyn Volume);
 
@@ -270,8 +299,7 @@ mod tests {
     use super::*;
     use crate::generation::Generation;
     use crate::memvol::MemVolume;
-    use crate::resolve::Want;
-    use crate::store::{self, Ctx, Ledger, Store};
+    use crate::store::Ledger;
     use core::cell::Cell;
     use kabi::live::{ACTIONS_SECTION, MANIFEST_SECTION, SOURCE_SECTION};
     use livecore::artifact::{Manifest, append_custom_section};
@@ -429,37 +457,50 @@ mod tests {
     }
 
     #[test]
-    fn a_build_installs_from_local_as_a_generation_and_undo_takes_it_out() {
+    fn a_build_installs_from_local_as_a_generation_and_a_rebuild_replaces_it() {
         let mut vol = MemVolume::default();
         let key = key(1);
-        let hello = artifact("hello", "0.0.1", "int main(void) { return 0; }\n");
-        publish(&mut vol, &key, &hello, &[], NOW).unwrap();
-        let checked = check(&mut vol, &key, PROVIDED).unwrap();
-        let entries: Vec<Entry> = checked.packages.iter().map(|(e, _)| e.clone()).collect();
         let mut ledger = NoLedger;
+        let store = Store::default();
+        let mut build = |vol: &mut MemVolume, version: &str, source: &str| -> u64 {
+            let app = artifact("hello", version, source);
+            let published = publish(vol, &key, &app, &[], NOW).unwrap();
+            let checked = check(vol, &key, PROVIDED).unwrap();
+            let mut cx = Ctx {
+                vol,
+                ledger: &mut ledger,
+                now: NOW,
+                action: 1,
+            };
+            install(&store, &mut cx, &checked, &published, PROVIDED).unwrap()
+        };
         let mut cx = Ctx {
             vol: &mut vol,
-            ledger: &mut ledger,
+            ledger: &mut NoLedger,
             now: NOW,
             action: 1,
         };
-        let store = Store::default();
         store.setup(&mut cx, Vec::new()).unwrap();
-        let want = [Want {
-            name: "hello",
-            range: None,
-        }];
-        let mut source = Held(&checked.packages);
-        let n = store
-            .install(&mut cx, &mut source, &entries, PROVIDED, &want, false)
-            .unwrap();
-        assert_eq!(n, 2);
-        let names = |vol: &mut dyn Volume, n| -> Vec<String> {
+        let installed = |vol: &mut dyn Volume, n| -> Vec<String> {
             let generation = store::generation(vol, n).unwrap();
-            generation.packages.into_iter().map(|p| p.name).collect()
+            let packages = generation.packages.into_iter();
+            packages
+                .map(|p| format!("{} {}", p.name, p.version))
+                .collect()
         };
-        assert_eq!(names(cx.vol, 2), ["hello"]);
-        assert_eq!(store.rollback(&mut cx, 1), Ok(3));
-        assert!(names(cx.vol, 3).is_empty());
+        assert_eq!(build(&mut vol, "0.0.1", "int x;\n"), 2);
+        assert_eq!(installed(&mut vol, 2), ["hello 0.0.1"]);
+        assert_eq!(build(&mut vol, "0.0.2", "int y;\n"), 3);
+        assert_eq!(installed(&mut vol, 3), ["hello 0.0.2"]);
+        // Undo is the generation switch back: the build before, then none.
+        let mut cx = Ctx {
+            vol: &mut vol,
+            ledger: &mut NoLedger,
+            now: NOW,
+            action: 1,
+        };
+        assert_eq!(store.rollback(&mut cx, 2), Ok(4));
+        assert_eq!(installed(&mut vol, 4), ["hello 0.0.1"]);
+        assert_eq!(names(&mut vol), Ok(alloc::vec![String::from("hello")]));
     }
 }
