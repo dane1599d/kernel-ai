@@ -93,7 +93,12 @@ pub fn pump<E: Env<Instance = LiveInstance>>(host: &mut Host<E>, gate: &mut Gate
             // transaction of its own, so a fault in `on-reply` is the version's,
             // reported and reloaded from its checkpoint, and what the call did
             // is kept only if it did not fault.
-            crate::ui::serve_shown(host, |core| core.edit_reply(ticket, outcome));
+            if crate::ui::serve_shown(host, |core| core.edit_reply(ticket, outcome)).is_none() {
+                // It faulted and was reloaded from its checkpoint, or nothing
+                // serves: the reloaded version never asked for the answers still
+                // waiting, and its queue is gone, so there is nothing more to do.
+                return;
+            }
         }
     }
 }
