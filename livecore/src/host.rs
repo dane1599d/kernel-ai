@@ -269,7 +269,12 @@ impl<E: Env> Core<E> {
         let manifest = artifact::parse(&artifact)
             .map_err(|why| Fault::new(Reason::Manifest, why))?
             .manifest;
-        if manifest.component != self.name || manifest.version != label {
+        // A package version's label is its artifact's digest, which the
+        // kernel's store checked when `pkg` added it (P4 task 1); its manifest
+        // names the version it was built as. Every other label is the
+        // manifest's own.
+        let named = manifest.version == label || kabi::live::is_package_label(label);
+        if manifest.component != self.name || !named {
             return Err(Fault::new(
                 Reason::Manifest,
                 format!(
