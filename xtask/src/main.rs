@@ -79,6 +79,7 @@ mod wsl;
 use options::{Accel, Options, Task, parse_args};
 use sha2::{Digest, Sha256};
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
@@ -160,9 +161,9 @@ fn execute(options: &Options) -> Result<(), String> {
     let target_dir = root.join("target");
     let mut modules = esp::boot_modules(&kernel, &programs, &root)?;
     // The built-in apps as the image's signed repository (ADR 0011 §8).
-    let repository = pkgrepo::image_modules(&root, &versions)?;
+    let mut image = pkgrepo::image(&root, &versions)?;
     modules.extend(versions);
-    modules.extend(repository);
+    modules.extend(std::mem::take(&mut image.modules));
     let efi = ensure_limine(&target_dir)?;
     let esp = target_dir.join("esp");
     // `--accel wsl`: QEMU runs inside WSL2, behind wsl.exe (wsl/launch.rs).
@@ -236,6 +237,8 @@ fn execute(options: &Options) -> Result<(), String> {
     let llm = format!("10.0.2.2:{}", mock.port);
     let llm_args = llm_cmdline(Some(&llm), Some(mock_llm::MODEL));
     let mut failures = Vec::new();
+    // Each kind of package mirror a case names, started once (P4 task 2).
+    let mut mirrors: HashMap<pkgrepo::mirrors::MirrorKind, u16> = HashMap::new();
     let cases = if options.task == Task::Soak {
         cases::SOAK_CASES.iter().collect()
     } else {
@@ -268,6 +271,17 @@ fn execute(options: &Options) -> Result<(), String> {
             }
             if case.dns {
                 cmdline = format!("{cmdline} {}", mock_dns.cmdline());
+            }
+            if let Some(kind) = case.mirror {
+                let port = match mirrors.get(&kind) {
+                    Some(&port) => port,
+                    None => {
+                        let port = pkgrepo::serve_mirror(&image, kind)?;
+                        mirrors.insert(kind, port);
+                        port
+                    }
+                };
+                cmdline = format!("{cmdline} pkgrepo=10.0.2.2:{port}");
             }
             let disk = match disk::for_case(case, &target_dir) {
                 Ok(disk) => disk,
