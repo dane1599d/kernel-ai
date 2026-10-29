@@ -1,5 +1,7 @@
-#ifndef KAI_H
-#define KAI_H
+/* kai.h's fixed part (ADR 0012 D1): HolyC's type names, the calls that show
+ * a value, and kairt's Print. The service wraps it in its include guard and
+ * adds the OS's actions after it (ccserve/src/rows), so this file has no guard
+ * of its own. */
 typedef void U0;
 typedef signed char I8;
 typedef short I16;
@@ -31,4 +33,3 @@ __KAI_IMPORT("__show_ptr") void __kai_show_ptr(const void *value);
     unsigned long long: __kai_show_u64, \
     default: __kai_show_i64)(x)
 I64 Print(const char *fmt, ...);
-#endif

@@ -178,8 +178,10 @@ dependencies = [
 name = "ccserve"
 version = "0.1.0-dev"
 dependencies = [
+ "agentabi",
  "kailink",
  "promptcore",
+ "serde_json",
  "sha2",
  "wasihost",
  "wasmi",

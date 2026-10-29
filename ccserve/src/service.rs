@@ -51,6 +51,18 @@ pub trait Effects {
     /// The effect's result for the shell's answer, writing any text result
     /// into `memory`.
     fn answer(&self, name: &str, args: &[u64], ok: bool, result: &str, memory: &mut [u8]) -> i64;
+    /// C declarations of the imports, added to kai.h.
+    fn declarations(&self) -> String {
+        String::new()
+    }
+}
+
+/// kai.h: the fixed part and `effects`' declarations, in one include guard.
+pub fn kai_h(effects: &dyn Effects) -> String {
+    format!(
+        "#ifndef KAI_H\n#define KAI_H\n{KAI_H}{}#endif\n",
+        effects.declarations()
+    )
 }
 
 pub struct Service<E> {
@@ -87,8 +99,9 @@ impl<E: Effects> Service<E> {
         effects: E,
         host: &dyn Host,
     ) -> Result<Self, String> {
+        let kai_h = kai_h(&effects);
         let mut all: Vec<(&str, &[u8])> = headers.to_vec();
-        all.push(("kai.h", KAI_H.as_bytes()));
+        all.push(("kai.h", kai_h.as_bytes()));
         let compiler = Compiler::new(cc_wasm, &all)?;
         let kairt = compiler
             .compile(KAIRT, &mut Budget::new(host, 10 * LINE_NS))
