@@ -1,6 +1,7 @@
 //! Drawing the desk (ADR 0005 §5, §8): the desk, each window's chrome and
 //! content, the focused window's shadow, the agent's outline, the top bar, the
-//! panel, the ask card and the cursor, in Ember Workbench's dark tokens and type.
+//! panel, the ask card and the cursor, in the theme's tokens and type (Ember
+//! Workbench's dark one until [`Painter::set_theme`]).
 //! Pure: the same [`Scene`] gives the same pixels, on the host as in `desktop`,
 //! so the look is pinned by a host test and by `desk-boot`'s golden. The panel
 //! is drawn in `paint_panel.rs`.
@@ -20,7 +21,8 @@ use crate::trusted;
 use alloc::format;
 use gfx2d::shadow::Shadow;
 use gfx2d::{Canvas, Fonts, Image, Text};
-use look::{DARK, TypeStyle};
+use look::theme::Theme;
+use look::{DARK, Palette, TypeStyle};
 
 /// How far outside a frame its drawing reaches: the shadow fits in the grabs.
 pub const SHADOW_REACH: i32 = chrome::GRAB;
@@ -55,6 +57,8 @@ pub struct Scene<'a> {
 
 pub struct Painter {
     pub(crate) text: Text,
+    /// The theme's colours.
+    pub(crate) palette: Palette,
     near: Shadow,
     far: Shadow,
 }
@@ -87,10 +91,22 @@ impl Painter {
     /// None when a font does not parse.
     pub fn new(fonts: Fonts) -> Option<Painter> {
         Some(Painter {
-            text: Text::new(fonts, true)?,
+            text: Text::new(fonts, DARK.dark)?,
+            palette: DARK,
             near: Shadow::new(2, 96, 0),
             far: Shadow::new(SHADOW_REACH, 64, 0),
         })
+    }
+
+    /// Paints in `theme` from now on; the caller repaints the whole screen.
+    pub fn set_theme(&mut self, theme: &Theme) {
+        self.palette = theme.palette();
+        self.text.set_theme(theme);
+    }
+
+    /// The theme's colours, for what `desktop` draws itself (the cursor).
+    pub fn palette(&self) -> &Palette {
+        &self.palette
     }
 
     /// Paints everything inside `clip`. `content` draws window `id`'s pixels
@@ -104,7 +120,7 @@ impl Painter {
         content: &mut dyn FnMut(WindowId, &mut Canvas<'_>, Rect) -> bool,
     ) {
         let (desk, bar) = (scene.desk, scene.bar);
-        c.fill(g(clip), opaque(DARK.desk));
+        c.fill(g(clip), opaque(self.palette.desk));
         for window in desk.windows().iter().filter(|w| !w.minimized) {
             if reach(window.frame).intersect(&clip).is_none() {
                 continue;
@@ -118,7 +134,7 @@ impl Painter {
             let at = (window.frame.x, window.frame.y);
             c.draw_window(&layer, at, g(clip), chrome::RADIUS, true);
             if desk.agent() == Some(window.id) {
-                outline(c, trusted::outline(window.frame), clip);
+                outline(c, trusted::outline(window.frame), clip, self.palette.ai);
             }
         }
         if desk.top_bar().intersect(&clip).is_some() {
@@ -136,8 +152,8 @@ impl Painter {
                 _ => {
                     let (width, height) = (c.width as i32, c.height as i32);
                     let card = trusted::card(width, height, &ask);
-                    fill(c, card, clip, DARK.raised);
-                    fill(c, Rect::new(card.x, card.y, card.w, 3), clip, DARK.ask);
+                    fill(c, card, clip, self.palette.raised);
+                    fill(c, Rect::new(card.x, card.y, card.w, 3), clip, self.palette.ask);
                 }
             }
         }
@@ -154,18 +170,22 @@ impl Painter {
         let local = Rect::new(0, 0, window.frame.w, window.frame.h);
         let mut layer = Image::new(local.w, local.h);
         let mut c = layer.canvas();
-        let line = if focused { DARK.line_strong } else { DARK.line };
+        let line = if focused {
+            self.palette.line_strong
+        } else {
+            self.palette.line
+        };
         c.fill(g(local), opaque(line));
         let bar = chrome::title_bar(local);
-        c.fill(g(bar), opaque(DARK.window));
+        c.fill(g(bar), opaque(self.palette.window));
         let controls = chrome::controls(local);
         let text_end = controls[2].1.x - chrome::CONTROL_GAP;
         let text_clip = Rect::new(bar.x, bar.y, text_end - bar.x, bar.h);
         let (label, title) = match focused {
-            true => (DARK.muted, DARK.text),
-            false => (DARK.dim, DARK.dim),
+            true => (self.palette.muted, self.palette.text),
+            false => (self.palette.dim, self.palette.dim),
         };
-        let y = baseline(bar.y, bar.h, TypeStyle::MonoTitle);
+        let y = self.baseline(bar.y, bar.h, TypeStyle::MonoTitle);
         let style = TypeStyle::MonoTitle;
         let x = (bar.x + PAD) as f32;
         let x = x + self.draw_text(&mut c, text_clip, x, y, style, label, &window.label);
@@ -174,11 +194,20 @@ impl Painter {
             self.draw_text(&mut c, text_clip, x, y, style, title, &rest);
         }
         for (part, r) in controls {
-            icon(&mut c, part, r, if focused { DARK.muted } else { DARK.dim });
+            icon(
+                &mut c,
+                part,
+                r,
+                if focused {
+                    self.palette.muted
+                } else {
+                    self.palette.dim
+                },
+            );
         }
         let inside = chrome::content_of(local);
         if !content(window.id, &mut c, inside) {
-            c.fill(g(inside), opaque(DARK.window));
+            c.fill(g(inside), opaque(self.palette.window));
         }
         layer.round_corners(chrome::RADIUS);
         layer
@@ -204,22 +233,30 @@ impl Painter {
         let Some(clip) = area.intersect(&clip) else {
             return;
         };
-        fill(c, area, clip, DARK.window);
+        fill(c, area, clip, self.palette.window);
         let rule = Rect::new(area.x, area.bottom() - 1, area.w, 1);
-        fill(c, rule, clip, DARK.line);
+        fill(c, rule, clip, self.palette.line);
         let h = area.h - 1;
         // The brand: an ember ring and the name, as the console's status bar.
         let r = 5;
         let (cx, cy) = (area.x + PAD + r, area.y + h / 2);
-        disc(c, clip, (cx, cy), r as f32, DARK.ai);
-        disc(c, clip, (cx, cy), r as f32 / 2.0, DARK.window);
-        let y = baseline(area.y, h, TypeStyle::Label);
+        disc(c, clip, (cx, cy), r as f32, self.palette.ai);
+        disc(c, clip, (cx, cy), r as f32 / 2.0, self.palette.window);
+        let y = self.baseline(area.y, h, TypeStyle::Label);
         let x = (cx + r + 8) as f32;
-        let x = x + self.draw_text(c, clip, x, y, TypeStyle::Label, DARK.text, "Kernel AI");
+        let x = x + self.draw_text(
+            c,
+            clip,
+            x,
+            y,
+            TypeStyle::Label,
+            self.palette.text,
+            "Kernel AI",
+        );
         // Tabs, bottom to top as the windows stack.
         let stats = stats_area(area.w);
         let mut x = x as i32 + 2 * PAD;
-        let y = baseline(area.y, h, TypeStyle::MonoTitle);
+        let y = self.baseline(area.y, h, TypeStyle::MonoTitle);
         for window in desk.windows() {
             let name = if window.title.is_empty() {
                 &window.label
@@ -235,11 +272,11 @@ impl Painter {
             let focused = desk.focus() == Focus::Window(window.id);
             let color = match (focused, window.minimized) {
                 (true, _) => {
-                    fill(c, tab, clip, DARK.raised);
-                    DARK.text
+                    fill(c, tab, clip, self.palette.raised);
+                    self.palette.text
                 }
-                (false, true) => DARK.dim,
-                (false, false) => DARK.muted,
+                (false, true) => self.palette.dim,
+                (false, false) => self.palette.muted,
             };
             let inside = tab.intersect(&clip).unwrap_or_default();
             let tx = (x + PAD) as f32;
@@ -256,23 +293,23 @@ impl Painter {
         };
         let style = TypeStyle::MonoTitle;
         let (dot, model) = match bar.model {
-            true => (DARK.ok, "model ready"),
-            false => (DARK.dim, "no model"),
+            true => (self.palette.ok, "model ready"),
+            false => (self.palette.dim, "no model"),
         };
         let used = format!("{}", bar.mem_used_mib);
         let total = format!("/{} MiB", bar.mem_total_mib);
         let parts: [(&str, u32); 4] = [
-            (model, DARK.text),
-            ("   mem ", DARK.dim),
-            (&used, DARK.text),
-            (&total, DARK.dim),
+            (model, self.palette.text),
+            ("   mem ", self.palette.dim),
+            (&used, self.palette.text),
+            (&total, self.palette.dim),
         ];
         let width: f32 = parts
             .iter()
             .map(|(t, _)| self.text.measure(style, t).0)
             .sum();
         let mut x = (area.right() - PAD) as f32 - width;
-        let y = baseline(area.y, area.h, style);
+        let y = self.baseline(area.y, area.h, style);
         disc(c, clip, (x as i32 - 10, area.y + area.h / 2), 3.0, dot);
         for (text, color) in parts {
             x += self.draw_text(c, clip, x, y, style, color, text);
@@ -284,7 +321,7 @@ impl Painter {
         let r = cursor_box(at).intersect(&clip).unwrap_or_default();
         for y in r.y..r.bottom() {
             for x in r.x..r.right() {
-                if let Some(color) = arrow(x - at.x, y - at.y) {
+                if let Some(color) = arrow(x - at.x, y - at.y, &self.palette) {
                     c.fill(gfx2d::Rect::new(x, y, 1, 1), color);
                 }
             }
@@ -294,20 +331,26 @@ impl Painter {
 
 /// The arrow's pixel at `(x, y)` from its tip: `text` inside a `desk` edge,
 /// None outside it. The hardware cursor's image is the same arrow.
-pub fn arrow(x: i32, y: i32) -> Option<u32> {
+pub fn arrow(x: i32, y: i32, palette: &Palette) -> Option<u32> {
     let width = y.min(11);
     if !(0..18).contains(&y) || !(0..=width).contains(&x) {
         return None;
     }
     let edge = x == 0 || x == width || y == 17;
-    Some(opaque(if edge { DARK.desk } else { DARK.text }))
+    Some(opaque(if edge { palette.desk } else { palette.text }))
 }
 
 /// The baseline for `style` centred in a band `h` px tall from `top`: the
 /// capitals' height, about 0.72 of the size, in the middle.
-pub(crate) fn baseline(top: i32, h: i32, style: TypeStyle) -> i32 {
-    let size = look::style(style, false).size;
+pub(crate) fn baseline(top: i32, h: i32, size: f32) -> i32 {
     top + libm::roundf((h as f32 + 0.72 * size) / 2.0) as i32
+}
+
+impl Painter {
+    /// [`baseline`] for the theme's `style`.
+    pub(crate) fn baseline(&self, top: i32, h: i32, style: TypeStyle) -> i32 {
+        baseline(top, h, self.text.style(style).size)
+    }
 }
 
 pub(crate) fn fill(c: &mut Canvas<'_>, r: Rect, clip: Rect, rgb: u32) {
@@ -316,7 +359,7 @@ pub(crate) fn fill(c: &mut Canvas<'_>, r: Rect, clip: Rect, rgb: u32) {
     }
 }
 
-fn outline(c: &mut Canvas<'_>, r: Rect, clip: Rect) {
+fn outline(c: &mut Canvas<'_>, r: Rect, clip: Rect, rgb: u32) {
     let t = trusted::OUTLINE;
     for edge in [
         Rect::new(r.x, r.y, r.w, t),
@@ -324,7 +367,7 @@ fn outline(c: &mut Canvas<'_>, r: Rect, clip: Rect) {
         Rect::new(r.x, r.y, t, r.h),
         Rect::new(r.right() - t, r.y, t, r.h),
     ] {
-        fill(c, edge, clip, DARK.ai);
+        fill(c, edge, clip, rgb);
     }
 }
 
