@@ -363,3 +363,34 @@ fn the_oldest_due_thread_goes_first_even_out_of_ring_order() {
     }
     assert_eq!(drain(&mut policy), [1, 2, 3]);
 }
+
+/// Resource profiles (P3 task 12) make whole apps `background`: a busy one must
+/// still run while a normal one is busy too, so no profile starves anything.
+/// Both threads run till their slice ends, one tick a millisecond, and are
+/// queued again; over a second each gets a fair part of the CPU.
+#[test]
+fn a_busy_background_thread_still_runs_beside_a_busy_normal_one() {
+    let mut policy = Classes::new(params(6 * MS, 20 * MS));
+    policy.set_class(2, Class::Background);
+    policy.enqueue(1, EnqueueReason::New);
+    policy.enqueue(2, EnqueueReason::New);
+    let mut ran = [0u64; 3];
+    let mut current = policy.pick_next().unwrap();
+    let mut slice = 0;
+    for _ in 0..1_000 {
+        ran[current] += 1;
+        slice += MS;
+        if policy.tick(current, slice) {
+            policy.enqueue(current, EnqueueReason::Preempted);
+            current = policy.pick_next().unwrap();
+            slice = 0;
+        }
+    }
+    // Neither gets less than a third of the second.
+    assert!(
+        ran[1] > 333 && ran[2] > 333,
+        "normal {} ms, background {} ms",
+        ran[1],
+        ran[2]
+    );
+}

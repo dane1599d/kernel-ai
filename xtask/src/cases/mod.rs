@@ -89,6 +89,10 @@ pub struct TestCase {
     /// then `import --model`), with its length and hash on the command line;
     /// needs `data`.
     pub store: Option<Fixture>,
+    /// One byte of this package's target in the image's repository flipped, the
+    /// bundle's digests recomputed, so only its signed metadata can tell (P4
+    /// task 1's tamper case).
+    pub tampered: Option<&'static str>,
 }
 
 /// What a case's update disk holds.
@@ -125,6 +129,7 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         update: None,
         cuts: 0,
         store: None,
+        tampered: None,
     }
 }
 

@@ -55,7 +55,9 @@ fn main() -> i32 {
     let mut uuid = [0u8; 16];
     uuid[..8].copy_from_slice(&sys::time_ns().to_le_bytes());
     uuid[8..].copy_from_slice(&info.sectors.to_le_bytes());
-    let disk = kaifs::cache::Cached::new(dev::PartDev::new(part, &info), CACHE_BLOCKS);
+    // kaifs, its block cache, then runs of up to 128 KiB a PART_* call.
+    let runs = fsserve::batch::Batched::new(dev::PartDev::new(part, &info));
+    let disk = kaifs::cache::Cached::new(runs, CACHE_BLOCKS);
     let mut server = match Server::start(disk, uuid) {
         Ok((server, started)) => {
             let how = match started {
