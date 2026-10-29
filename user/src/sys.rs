@@ -557,6 +557,16 @@ impl AppCtl {
     }
 }
 
+/// Fills `buf` (at most [`kabi::call::ENTROPY_MAX`] bytes) with random bytes from
+/// the kernel (ENTROPY). NoEntropy on a CPU that gives none: make no key then.
+pub fn entropy(buf: &mut [u8]) -> Result<usize, Error> {
+    call(
+        call::ENTROPY,
+        [buf.as_mut_ptr() as u64, buf.len() as u64, 0, 0, 0, 0],
+    )
+    .map(|n| n as usize)
+}
+
 /// `verb`'s `ctl` request to app `name`, sent by the kernel (APP_CTL); the
 /// app's reply goes into `reply`. For the supervisor.
 pub fn app_ctl(name: &str, verb: AppCtl, reply: &mut [u8]) -> Result<usize, Error> {

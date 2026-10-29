@@ -25,6 +25,8 @@ pub(super) const CASES: &[TestCase] = &[
     // revoke and ONCE; spike S01-1's M1 and M2.
     TestCase {
         expect: &[
+            "entropy: seeded from RD",
+            "[handles] handles: ENTROPY gave two different draws with no capability, and refused 257 bytes",
             "[handles] handles: every check passed",
             "[hcli] handles: a request and a handle went to the server and back through a route",
             "handles: CALL_H, RECV_H and REPLY_H moved a request and a handle there and back",
