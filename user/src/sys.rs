@@ -536,6 +536,16 @@ pub fn event_read(buf: &mut [u8]) -> Result<usize, Error> {
     .map(|n| n as usize)
 }
 
+/// Fills `buf` (at most [`kabi::call::ENTROPY_MAX`] bytes) with random bytes from
+/// the kernel (ENTROPY). NoEntropy on a CPU that gives none: make no key then.
+pub fn entropy(buf: &mut [u8]) -> Result<usize, Error> {
+    call(
+        call::ENTROPY,
+        [buf.as_mut_ptr() as u64, buf.len() as u64, 0, 0, 0, 0],
+    )
+    .map(|n| n as usize)
+}
+
 /// `ctl suspend`, or with `resume` `ctl resume`, to app `name`, sent by the
 /// kernel (APP_CTL); the app's reply goes into `reply`. For the supervisor.
 pub fn app_ctl(name: &str, resume: bool, reply: &mut [u8]) -> Result<usize, Error> {

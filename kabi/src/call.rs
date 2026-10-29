@@ -13,7 +13,7 @@
 //! | 66-70 | S-io (P2) | PART_INFO, PART_READ, PART_WRITE, PART_FLUSH; ENDPOINT_MINT |
 //! | 71-72 | K | PROC_STOP_ONCE, RULE_CHECK |
 //! | 73-79 | G-core (P3) | DISPLAY_CLAIM, DISPLAY_FLUSH, DISPLAY_CURSOR, DISPLAY_CURSOR_MOVE, INPUT_READ, TERM_READ, INPUT_TO_CONSOLE |
-//! | 80-89 | K, spare | MODEL_FILL 80 and 81 held (S-io, P2 task 10); ONCE_CHECK_FOR 82; P2 task 12's grants |
+//! | 80-89 | K, spare | MODEL_FILL 80 and 81 held (S-io, P2 task 10); ONCE_CHECK_FOR 82; ENTROPY 83; P2 task 12's grants |
 //! | 90-99 | S-engine (P2) | |
 //! | 100-109 | P, packages (P2) | BOOT_READ, COMP_ADD, PKG_FETCH, PKG_TIME |
 //! | 110-119 | A-core | |
@@ -355,6 +355,16 @@ pub const MODEL_FILL: u64 = 80;
 /// kernel's own request, holds no table and is not checked for one. Numbered at
 /// merge (lane K's spare block).
 pub const ONCE_CHECK_FOR: u64 = 82;
+/// `entropy(buf, len) -> len`: fills `buf` with `len` random bytes, at most
+/// [`ENTROPY_MAX`], from the kernel's ChaCha20 generator, seeded at boot from the
+/// CPU's RDSEED (or RDRAND) and reseeded from it every minute or MiB. Needs no
+/// capability, like getrandom: for keys (S-engine's device key) and TLS (P5).
+/// TooBig, with nothing written, over [`ENTROPY_MAX`];
+/// [`super::Error::NoEntropy`] on a CPU with neither instruction, so a caller
+/// never gets weak bytes and refuses to make a key.
+pub const ENTROPY: u64 = 83;
+/// The most bytes one [`ENTROPY`] call returns.
+pub const ENTROPY_MAX: usize = 256;
 
 // ---- G-core, 73-79 ----
 
