@@ -317,6 +317,7 @@ fn keep(services: &mut [Service], records: &[Record], name: &str, on: bool, call
             return String::from(why);
         }
     };
+    let was = services[index].record.keep;
     services[index].record.keep = on;
     save(services);
     let word = if on { "on" } else { "off" };
@@ -329,7 +330,14 @@ fn keep(services: &mut [Service], records: &[Record], name: &str, on: bool, call
     } else {
         sys::AppCtl::KeepOff
     };
-    send_ctl(name, verb)
+    let reply = send_ctl(name, verb);
+    // A running app that did not take it: the record goes back, so the shell's
+    // refusal and the supervisor agree.
+    if !reply.starts_with("ok") {
+        services[index].record.keep = was;
+        save(services);
+    }
+    reply
 }
 
 /// `ctl suspend` (or, `resume`, `ctl resume`) to app `name` through the kernel:
