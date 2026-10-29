@@ -191,12 +191,40 @@ impl Session {
         link::link(self, &object::Object::parse(object)?, allow)
     }
 
-    /// Records what `linked` defined, once its entry has run.
-    pub fn commit(&mut self, linked: &Linked) {
+    /// Records what `linked` defined, once its entry has run; returns what it
+    /// replaced, for [`Session::revert`].
+    pub fn commit(&mut self, linked: &Linked) -> Commit {
+        let mut replaced = Vec::with_capacity(linked.defs.len());
         for def in &linked.defs {
-            self.symbols.insert(def.name.clone(), def.symbol.clone());
+            let old = self.symbols.insert(def.name.clone(), def.symbol.clone());
+            replaced.push((def.name.clone(), old));
         }
+        self.reserve(linked);
+        Commit { replaced }
+    }
+
+    /// Keeps the table slots and data `linked` used, defining nothing: for an
+    /// entry that failed after its module was instantiated, whose code and data
+    /// a stored pointer may still reach.
+    pub fn reserve(&mut self, linked: &Linked) {
         self.next_slot = self.next_slot.max(linked.table_size);
         self.data_end = self.data_end.max(linked.data_end);
     }
+
+    /// Puts back the symbols a commit replaced. Its slots and data stay
+    /// reserved, for the same reason as [`Session::reserve`].
+    pub fn revert(&mut self, commit: Commit) {
+        for (name, old) in commit.replaced.into_iter().rev() {
+            match old {
+                Some(symbol) => self.symbols.insert(name, symbol),
+                None => self.symbols.remove(&name),
+            };
+        }
+    }
+}
+
+/// What one commit replaced: each name it defined, with its symbol before.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Commit {
+    replaced: Vec<(String, Option<Symbol>)>,
 }

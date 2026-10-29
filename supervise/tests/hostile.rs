@@ -30,11 +30,12 @@ fn grants_only_what_it_says(bytes: &[u8]) {
                 .expect("a parsed service has its line");
             line.split_whitespace().any(|w| w == word)
         };
-        if !service.dirs.is_empty() && service.dirs != [Folder::Pkg] {
+        let updated_only = |d: &Folder| matches!(d, Folder::Trust | Folder::Updates);
+        if service.dirs.iter().any(updated_only) {
             // A mutation that reached `updated`'s folders is the other test's.
             assert_eq!(service.program, "updated", "{text:?}");
             assert_eq!(service.name, "updated", "{text:?}");
-        } else if !service.dirs.is_empty() {
+        } else if service.dirs.contains(&Folder::Pkg) {
             assert!(says("dir=pkg"), "{text:?}");
         }
         if let Some(boot) = service.boot {
@@ -99,7 +100,11 @@ fn trust_and_updates_go_only_to_updated(bytes: &[u8]) {
             .flat_map(|v| v.split('+').filter_map(named).collect::<Vec<_>>())
             .collect();
         assert_eq!(service.dirs, word, "{line:?}");
-        if service.dirs.iter().any(|d| *d != Folder::Pkg) {
+        if service
+            .dirs
+            .iter()
+            .any(|d| matches!(d, Folder::Trust | Folder::Updates))
+        {
             assert_eq!(service.program, "updated", "{line:?}");
             assert_eq!(service.name, "updated", "{line:?}");
         }
@@ -166,6 +171,30 @@ fn only_updated_gets_the_trust_and_updates_folders() {
     truncations(UPDATED_PLAN.as_bytes(), |_, cut| {
         trust_and_updates_go_only_to_updated(cut)
     });
+}
+
+/// `dir=settings` reads the Settings app's files: any service may be given it,
+/// and its `Dir` is read only.
+#[test]
+fn dir_settings_goes_to_any_service_and_only_reads() {
+    let plan = parse_plan(
+        "updated caps=update dir=trust+updates+settings\n\
+         desktop dir=settings\n",
+    );
+    assert!(plan.errors.is_empty(), "{:?}", plan.errors);
+    let dirs: Vec<Vec<Folder>> = plan.services.iter().map(|s| s.dirs.clone()).collect();
+    assert_eq!(
+        dirs,
+        vec![
+            vec![Folder::Trust, Folder::Updates, Folder::Settings],
+            vec![Folder::Settings],
+        ]
+    );
+    assert!(Folder::Settings.read_only());
+    assert_eq!(Folder::Settings.badge(), kabi::fs::SYSTEM_SETTINGS);
+    for writable in [Folder::Pkg, Folder::Trust, Folder::Updates] {
+        assert!(!writable.read_only());
+    }
 }
 
 #[test]

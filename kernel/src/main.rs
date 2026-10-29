@@ -67,6 +67,7 @@ mod input;
 mod ipc;
 mod irq;
 mod keyboard;
+mod keys_tests;
 mod latency_tests;
 mod lines;
 mod live_commands;
@@ -370,6 +371,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::UiWindow => run_case(ui_tests::check),
         SelfTest::DeskCard => run_case(card_tests::check),
         SelfTest::DeskStanding => run_case(standing_tests::check),
+        SelfTest::UiKeys => run_case(keys_tests::check),
         SelfTest::DeskTerm => run_case(term_tests::check),
         SelfTest::Scriptrun => run_case(scriptrun_tests::check),
         SelfTest::Fpu => run_case(fpu_tests::fpu_check),

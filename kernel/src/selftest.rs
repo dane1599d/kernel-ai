@@ -151,6 +151,8 @@ pub enum SelfTest {
     DeskCard,
     /// A standing instruction fired by Notes' window minimized and restored (P3 task 11).
     DeskStanding,
+    /// The keyboard reaches an app's widgets (key input for uikit apps).
+    UiKeys,
     DeskTerm,
     /// `scriptrun` through a Job, and spike S01-1's M3 and M5 (P1 task 14).
     Scriptrun,
@@ -311,6 +313,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=ui-window" => Some(SelfTest::UiWindow),
             "test=desk-card" => Some(SelfTest::DeskCard),
             "test=desk-standing" => Some(SelfTest::DeskStanding),
+            "test=ui-keys" => Some(SelfTest::UiKeys),
             "test=desk-term" => Some(SelfTest::DeskTerm),
             "test=scriptrun" => Some(SelfTest::Scriptrun),
             "test=fpu" => Some(SelfTest::Fpu),
@@ -391,6 +394,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::UiWindow
             | SelfTest::DeskCard
             | SelfTest::DeskStanding
+            | SelfTest::UiKeys
             | SelfTest::DeskTerm
             | SelfTest::TuneRevert
             | SelfTest::TuneStall
@@ -409,7 +413,11 @@ pub fn plan(test: SelfTest) -> Option<String> {
         SelfTest::Live => format!("{}\n{}", kabi::plan::NOTES_TEST, crate::llm::plan_line()),
         SelfTest::Part => String::from(kabi::plan::FS),
         SelfTest::AppSuspend => kabi::plan::notes("2", None),
-        SelfTest::ModelStore { .. } => String::from(kabi::plan::FS),
+        // llm first, so it asks for the model while fs still fills it.
+        SelfTest::ModelStore { bad: false } => {
+            format!("{}\n{}", crate::llm::plan_line(), kabi::plan::FS)
+        }
+        SelfTest::ModelStore { bad: true } => String::from(kabi::plan::FS),
         SelfTest::Files { reread } => {
             crate::files_tests::plan(if reread { "read" } else { "write" })
         }
@@ -481,6 +489,14 @@ pub fn plan(test: SelfTest) -> Option<String> {
         plan.push_str(kabi::plan::UPDATED);
         plan.push_str(" after=restart step=");
         plan.push_str(step);
+        // `updated.<word>`: a word for `updated`'s line, as `restart=window`.
+        for word in crate::cmdline()
+            .split_whitespace()
+            .filter_map(|w| w.strip_prefix("updated."))
+        {
+            plan.push(' ');
+            plan.push_str(word);
+        }
     }
     // `act-rule` stops processes the supervisor does not restart, and one
     // service it does.
@@ -537,6 +553,10 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
     if test == SelfTest::DeskStanding {
         plan.push('\n');
         plan.push_str(crate::standing_tests::PLAN);
+    }
+    if test == SelfTest::UiKeys {
+        plan.push('\n');
+        plan.push_str(crate::keys_tests::PLAN);
     }
     if test == SelfTest::DeskTerm {
         plan.push('\n');
