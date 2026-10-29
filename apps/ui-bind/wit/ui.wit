@@ -1,0 +1,9 @@
+/// The part of `kai:ui/app@0.1.0` that `comp-ui-bind` binds for every app with a
+/// window: the app draws through `view` and gets its input from `input`. An
+/// app's own `actions` interface is bound by the app's crate.
+package kai:uibind@0.1.0;
+
+world window-only {
+    import kai:ui/view@0.1.0;
+    export kai:ui/input@0.1.0;
+}

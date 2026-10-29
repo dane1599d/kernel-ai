@@ -72,6 +72,11 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("proc-stop", "test=proc-stop")
     },
+    // P4's Monitor: each process's pages and CPU time through METRICS.
+    TestCase {
+        expect: &["proc-usage: each process's pages and CPU time came through METRICS"],
+        ..case("proc-usage", "test=proc-usage")
+    },
     // P3 task 4: the raised table limits hold 40 processes at once.
     TestCase {
         expect: &["many-processes: 40 idle processes ran at once beside the shell and llm"],
@@ -149,6 +154,16 @@ pub(super) const CASES: &[TestCase] = &[
             "app-suspend: notes gave ",
         ],
         ..case("app-suspend", "test=app-suspend")
+    },
+    // P3 task 12b: an app starts on its first request, not at boot.
+    TestCase {
+        expect: &[
+            "app-on-demand: notes is not running after boot",
+            "notes starts on demand",
+            "ipc: notes asked for on demand",
+            "app-on-demand: the first request started notes, and it answered",
+        ],
+        ..case("app-on-demand", "test=app-on-demand")
     },
     // Lane M: anonymous memory comes back on release and on exit.
     TestCase {
@@ -229,6 +244,14 @@ pub(super) const CASES: &[TestCase] = &[
             "desk-standing: restoring Notes resumed it, with its note intact",
         ],
         ..case("desk-standing", "test=desk-standing")
+    },
+    // Key input for uikit apps: the keyboard reaches Notes' widgets.
+    TestCase {
+        keys: &[&["tab", "tab", "ret", "tab", "tab", "h", "i"]],
+        expect: &[
+            "ui-keys: Tab, Enter and typed text reached Notes' widgets through desktop and comphost",
+        ],
+        ..case("ui-keys", "test=ui-keys")
     },
     // P3 task 8: the kernel's terminal in a window, and an ask typed there.
     TestCase {

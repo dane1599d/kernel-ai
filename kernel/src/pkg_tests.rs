@@ -33,6 +33,8 @@ use kabi::handle::{Handle, Rights};
 
 const SERVICE: &str = "fs";
 const CLIENT: &str = "pkg";
+/// `pkg` again in `pkg-install`, from a plan line without `dir=pkg`.
+const PROBE: &str = "pkg-probe";
 const CALL_MS: u64 = 10_000;
 const WAIT_MS: u64 = 180_000;
 
@@ -44,6 +46,10 @@ pub enum Step {
     Image,
     ImageAgain,
     ImageTampered,
+    Mirror,
+    MirrorAgain,
+    MirrorTampered,
+    MirrorRollback,
 }
 
 impl Step {
@@ -74,6 +80,21 @@ impl Step {
         }
     }
 
+    /// The word after `test=pkg-install`: none for boot 1. Before the heap, as
+    /// [`Step::from_cmdline`], so it allocates nothing.
+    pub fn mirror_from_cmdline(cmdline: &str) -> Self {
+        let has = |word| cmdline.split_whitespace().any(|w| w == word);
+        if has("tampered") {
+            Step::MirrorTampered
+        } else if has("rollback") {
+            Step::MirrorRollback
+        } else if has("again") {
+            Step::MirrorAgain
+        } else {
+            Step::Mirror
+        }
+    }
+
     fn name(self) -> &'static str {
         match self {
             Step::Install => "install",
@@ -82,6 +103,10 @@ impl Step {
             Step::Image => "image",
             Step::ImageAgain => "image-again",
             Step::ImageTampered => "image-tampered",
+            Step::Mirror => "mirror",
+            Step::MirrorAgain => "mirror-again",
+            Step::MirrorTampered => "mirror-tampered",
+            Step::MirrorRollback => "mirror-rollback",
         }
     }
 
@@ -89,6 +114,9 @@ impl Step {
         match self {
             Step::Install | Step::Undo | Step::Check => "pkg-store",
             Step::Image | Step::ImageAgain | Step::ImageTampered => "pkg-image",
+            Step::Mirror | Step::MirrorAgain | Step::MirrorTampered | Step::MirrorRollback => {
+                "pkg-install"
+            }
         }
     }
 
@@ -100,6 +128,13 @@ impl Step {
             Step::Check => (3, 3),
             Step::Image | Step::ImageTampered => (1, 1),
             Step::ImageAgain => (2, 1),
+            // An install from the mirror; then undo and the install again.
+            Step::Mirror => (1, 2),
+            Step::MirrorAgain => (2, 4),
+            // A tampered mirror switches nothing: generation 1 stays.
+            Step::MirrorTampered => (1, 1),
+            // Boot 2 of the older-snapshot case: boot 1 installed from the newer.
+            Step::MirrorRollback => (2, 2),
         }
     }
 }
@@ -108,14 +143,19 @@ impl Step {
 /// reads the image's repository and has a route to the supervisor, and notes is
 /// a `start=pkg` app, not a version the boot manifest names. `pkg` needs a
 /// deeper stack than the 16-page default: fsproto's minicbor decoder recurses,
-/// and overflowed it in `Decoder::array`.
+/// and overflowed it in `Decoder::array`. `pkg-install` runs `pkg` again as
+/// [`PROBE`], from a line without `dir=pkg`.
 pub fn plan(step: Step) -> String {
     let fs = kabi::plan::FS;
     let step_name = step.name();
     match step.case() {
-        "pkg-image" => format!(
-            "{fs}\n{CLIENT} dir=pkg bootfiles=pkgrepo caps=call uses=supervisor pages=2048 stack_pages=128 step={step_name}\n{}",
-            kabi::plan::notes_from_pkg()
+        "pkg-image" | "pkg-install" => format!(
+            "{fs}\n{CLIENT} dir=pkg bootfiles=pkgrepo caps=call+serve uses=supervisor pages=2048 stack_pages=128 step={step_name}\n{}{}",
+            kabi::plan::notes_from_pkg(),
+            match step.case() {
+                "pkg-install" => format!("\n{PROBE} program={CLIENT} caps=serve step=not-holder"),
+                _ => String::new(),
+            }
         ),
         _ => format!("{fs}\n{CLIENT} dir=pkg pages=2048 stack_pages=128 step={step_name}"),
     }
@@ -135,7 +175,9 @@ pub fn check(step: Step) -> Result<(), &'static str> {
     match step {
         Step::Install => only_its_folder()?,
         Step::Image | Step::ImageAgain | Step::ImageTampered => image_generation(step)?,
+        Step::Mirror => mirror_installed()?,
         Step::Undo | Step::Check => {}
+        Step::MirrorAgain | Step::MirrorTampered | Step::MirrorRollback => {}
     }
     log!("{case}: boot {boot}: fs shows generation {generation} current, as pkg left it");
     Ok(())
@@ -231,6 +273,80 @@ fn only_its_folder() -> Result<(), &'static str> {
         return Err("pkg-store: pkg's startup Dirs are not just /system/pkg");
     }
     log!("pkg-store: pkg holds no capability bits and starts with only /system/pkg's Dir");
+    Ok(())
+}
+
+/// Generation 2 holds `big`, from the mirror, beside the image's notes.
+fn mirror_installed() -> Result<(), &'static str> {
+    let second = read("gen/2")?;
+    let second = core::str::from_utf8(&second).map_err(|_| "pkg-install: gen/2 is not text")?;
+    let named = |name: &str| {
+        second
+            .lines()
+            .any(|l| l.starts_with(&format!("pkg {name} ")))
+    };
+    if !named("big") || !named("notes") {
+        log!("pkg-install: gen/2 is {second:?}");
+        return Err("pkg-install: generation 2 is not notes and big");
+    }
+    log!("pkg-install: generation 2 holds big from the mirror beside the image's notes");
+    catalogue_lists_them()?;
+    only_the_holder_calls()
+}
+
+/// `name`'s answer to `request`, asked again until it serves, or None.
+fn answer_of(name: &str, request: &[u8]) -> Option<Vec<u8>> {
+    for _ in 0..WAIT_MS / 50 {
+        if let Ok(reply) = ipc::call(name, request, CALL_MS) {
+            return Some(reply);
+        }
+        threads::sleep_ms(50);
+    }
+    None
+}
+
+/// [`PROBE`], `pkg` from a plan line without `dir=pkg`, got Permission from
+/// each call of lane P's block, PKG_FETCH among them with a request the
+/// holder's mirror would answer.
+fn only_the_holder_calls() -> Result<(), &'static str> {
+    let answer = answer_of(PROBE, b"result").ok_or("pkg-install: pkg-probe never answered")?;
+    if answer != b"ok" {
+        log!(
+            "pkg-install: pkg-probe says {:?}",
+            core::str::from_utf8(&answer)
+        );
+        return Err("pkg-install: a process without /system/pkg was not refused");
+    }
+    log!(
+        "pkg-install: a process without /system/pkg gets Permission from BOOT_READ, COMP_ADD, PKG_FETCH and PKG_TIME"
+    );
+    Ok(())
+}
+
+/// `pkg` answers the Apps sheet's `catalog` (P4 task 3): big and notes as
+/// installed, then the mirror's `extra`, which is not.
+fn catalogue_lists_them() -> Result<(), &'static str> {
+    let answer =
+        answer_of(CLIENT, b"catalog 0").ok_or("pkg-install: pkg never answered catalog")?;
+    let text =
+        core::str::from_utf8(&answer).map_err(|_| "pkg-install: the catalogue is not text")?;
+    let rows: Vec<&str> = text.lines().collect();
+    let wanted = [
+        "kai-catalog 1",
+        "installed\tbig\t1.0.0\tdata\t",
+        "installed\tnotes\t1.0.0\tapp\t",
+        "mirror\textra\t1.0.0\tdata\t",
+    ];
+    let listed = rows.len() == wanted.len()
+        && rows
+            .iter()
+            .zip(wanted)
+            .all(|(row, start)| row.starts_with(start));
+    if !listed {
+        log!("pkg-install: the catalogue is {text:?}");
+        return Err("pkg-install: the catalogue does not list installed then offered");
+    }
+    log!("pkg-install: the catalogue lists big and notes installed, then the mirror's extra");
     Ok(())
 }
 

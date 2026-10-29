@@ -14,7 +14,8 @@ use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use harfrust::{Buffer, ShaperFont};
-use look::{Family, TypeStyle};
+use look::theme::Theme;
+use look::{Family, Type, TypeStyle};
 use skrifa::instance::{LocationRef, Size};
 use skrifa::outline::{DrawSettings, HintingInstance, OutlinePen, SmoothMode, Target};
 use skrifa::raw::TableProvider;
@@ -146,8 +147,9 @@ pub struct Text {
     index: BTreeMap<Key, u32>,
     hinting: BTreeMap<(Face, u32, u16), HintingInstance>,
     table: [u8; 256],
-    /// The legible setting (ADR 0005 §8).
-    pub legible: bool,
+    /// Each type style's family, size and weight, in [`TypeStyle::ALL`]'s
+    /// order: the theme's ([`Text::set_theme`]), `look`'s by default.
+    styles: [Type; 7],
     /// Glyphs rasterised so far, for the atlas's figures.
     pub misses: u64,
 }
@@ -161,7 +163,7 @@ impl Text {
             index: BTreeMap::new(),
             hinting: BTreeMap::new(),
             table: table(if dark { 0.8 } else { 1.0 }),
-            legible: false,
+            styles: TypeStyle::ALL.map(|style| look::style(style, false)),
             misses: 0,
         })
     }
@@ -172,6 +174,19 @@ impl Text {
         self.clear();
     }
 
+    /// Draws in `theme`'s type styles (its text size and legible type) and
+    /// with its coverage table; the atlas starts again.
+    pub fn set_theme(&mut self, theme: &Theme) {
+        self.styles = TypeStyle::ALL.map(|style| theme.style(style));
+        self.set_dark(theme.dark());
+    }
+
+    /// `style`'s type as this draws it.
+    pub fn style(&self, style: TypeStyle) -> Type {
+        let at = TypeStyle::ALL.iter().position(|s| *s == style).unwrap_or(0);
+        self.styles[at]
+    }
+
     /// Empties the atlas.
     pub fn clear(&mut self) {
         self.atlas.clear();
@@ -179,7 +194,7 @@ impl Text {
     }
 
     fn run(&self, style: TypeStyle, scale: f32) -> (Run, f32) {
-        let t = look::style(style, self.legible);
+        let t = self.style(style);
         let run = Run {
             face: face_of(t.family),
             size: t.size * scale,

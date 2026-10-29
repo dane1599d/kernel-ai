@@ -11,6 +11,7 @@ extern crate alloc;
 #[cfg(test)]
 extern crate std;
 
+pub mod agent;
 pub mod askcard;
 pub mod chrome;
 pub mod compose;
@@ -27,6 +28,7 @@ pub mod panel_wire;
 pub mod scale;
 pub mod server;
 pub mod trusted;
+pub mod view;
 pub mod watch;
 
 #[cfg(test)]
@@ -37,3 +39,6 @@ mod server_tests;
 
 #[cfg(test)]
 mod paint_tests;
+
+#[cfg(test)]
+mod agent_tests;

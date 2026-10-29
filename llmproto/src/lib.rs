@@ -13,6 +13,7 @@ pub mod act;
 pub mod chat;
 pub mod examples;
 pub mod explain;
+pub mod health;
 pub mod http;
 #[cfg(any(feature = "local", test))]
 pub mod local;
