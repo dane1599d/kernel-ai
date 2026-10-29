@@ -105,9 +105,11 @@ struct State {
     leased_at: Option<u64>,
     /// The focused window, and whether the kernel lent the keys for it.
     asked: Option<(WindowId, bool)>,
-    /// What the user chose, and what the screen is painted in.
+    /// What the user chose, and what the painter paints in: kept with the
+    /// painter across a lost screen, and the default (what `Painter::new`
+    /// paints) at first, so the first frame does no theme work for it.
     appearance: Appearance,
-    painted_in: Option<Appearance>,
+    painted_in: Appearance,
 }
 
 fn main() -> i32 {
@@ -116,6 +118,7 @@ fn main() -> i32 {
         return 1;
     };
     let appearance = starting_appearance();
+    let mut painted_in = Appearance::default();
     loop {
         let Some(screen) = claim() else {
             if !wait_for_screen() {
@@ -146,11 +149,12 @@ fn main() -> i32 {
             leased_at: None,
             asked: None,
             appearance: appearance.clone(),
-            painted_in: None,
+            painted_in,
         };
         println!("desktop: claimed {width}x{height}");
         let result = run(&mut state, &screen);
         painter = state.painter;
+        painted_in = state.painted_in;
         let Some(back) = result else {
             return 1;
         };
@@ -641,9 +645,11 @@ fn starting_appearance() -> Appearance {
 }
 
 /// Paints in the appearance's theme from this frame on, when it changed: the
-/// whole screen again, and the hardware cursor in its colours.
+/// whole screen again, and the hardware cursor in its colours. Nothing while the
+/// painter already paints in it, so a first frame in the default theme costs
+/// what it did before themes (display-claim reads a key typed during it).
 fn theme(state: &mut State, screen: &Screen) {
-    if state.painted_in.as_ref() == Some(&state.appearance) {
+    if state.painted_in == state.appearance {
         return;
     }
     let theme = match state.appearance.resolve(&Shipped) {
@@ -659,10 +665,8 @@ fn theme(state: &mut State, screen: &Screen) {
     if screen.info.cursor != 0 {
         let _ = sys::display_cursor(&arrow(state.painter.palette()), (0, 0));
     }
-    if state.painted_in.is_some() || state.appearance != Appearance::default() {
-        println!("desktop: painting in the {} theme", theme.name);
-    }
-    state.painted_in = Some(state.appearance.clone());
+    println!("desktop: painting in the {} theme", theme.name);
+    state.painted_in = state.appearance.clone();
 }
 
 /// Waits for the screen to come back: `false` on an error.
