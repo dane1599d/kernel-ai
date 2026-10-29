@@ -9,6 +9,8 @@ publish = false
 agentabi = { path = "../agentabi" }
 bpe = { path = "../bpe" }
 cpufeat = { path = "../cpufeat" }
+# S05-2's mock trees, counted by `cargo xtask tokens`.
+deskcore = { path = "../deskcore", features = ["mock"] }
 gguf = { path = "../gguf" }
 infer = { path = "../infer" }
 diskmap = { path = "../diskmap" }
