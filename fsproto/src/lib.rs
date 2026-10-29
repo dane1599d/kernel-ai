@@ -198,6 +198,15 @@ pub enum Request {
         #[n(0)]
         id: u64,
     },
+    /// Drops `update` snapshot `id`, and commits: once its update committed,
+    /// or `system` was restored from it, nothing needs it again and its blocks
+    /// go to the GC. On the same handle as [`Request::UpdateSnapshot`], never
+    /// inside an action; Invalid for an id that is not an `update` snapshot.
+    #[n(22)]
+    UpdateDrop {
+        #[n(0)]
+        id: u64,
+    },
 }
 
 /// Where a listing goes on: the last name it gave, with its hash.

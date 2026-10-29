@@ -168,14 +168,33 @@ const A_UPDATES: TestCase = TestCase {
     )
 };
 
-/// `update-disk` boot 3: B, written from the update disk, boots its trial.
-/// `update-disk` boot 4: B again, its try spent on boot 3.
-const B_AGAIN: TestCase = TestCase {
+/// `update-disk` boot 5: committed B finds `pending` and clears it, with no
+/// restore.
+const B_HELD: TestCase = TestCase {
     data: Some(DATA),
     ..boot(
-        "update-disk (4: still kai-b)",
-        "test=slot panic=reset",
-        &["slots: up in kai-b (trial, 1 tries left)"],
+        "update-disk (5: the update held)",
+        "test=update updated=reconcile panic=reset",
+        &[
+            "slots: booted kai-b (record read)",
+            "updated: release 2 in B committed; the update held",
+            "updated: update snapshot ",
+            " is dropped",
+            "updated: reconciled: Held",
+        ],
+    )
+};
+/// `update-disk` boot 4: B again, its try spent on boot 3, and it commits.
+const B_AGAIN: TestCase = TestCase {
+    then: Some(&B_HELD),
+    data: Some(DATA),
+    ..boot(
+        "update-disk (4: kai-b commits)",
+        "test=slot slot-do=commit panic=reset",
+        &[
+            "slots: up in kai-b (trial, 1 tries left)",
+            "slots: committed kai-b",
+        ],
     )
 };
 /// `update-disk` boot 3: B boots release 2, and the same disk offered again is
@@ -190,6 +209,7 @@ const B_FROM_DISK: TestCase = TestCase {
         &[
             "slots: booted kai-b (record read)",
             "slots: up in kai-b (trial, 2 tries left)",
+            "updated: reconciled: OnTrial",
             "updated: the trusted root is /system/trust's",
             "updated: FAIL refused: release 2 is not newer than 2 (anti-rollback)",
             "updated: restarting into the running slot",
@@ -274,6 +294,97 @@ const A_IDLE: TestCase = TestCase {
     )
 };
 
+/// A rollback boot of `update-rollback`: slot-disk, on the case's data disk.
+const fn rb(
+    name: &'static str,
+    cmdline: &'static str,
+    expect: &'static [&'static str],
+    then: Option<&'static TestCase>,
+) -> TestCase {
+    TestCase {
+        then,
+        data: Some(DATA),
+        ..boot(name, cmdline, expect)
+    }
+}
+
+/// `update-rollback` boot 10: A, back after B failed all its tries, restores
+/// `system` from the snapshot taken before B's first boot.
+const RB_RESTORE: TestCase = rb(
+    "update-rollback (10: kai-a restores system)",
+    "test=update updated=reconcile panic=reset",
+    &[
+        "slots: booted kai-a (record read)",
+        "slots: kai-b cannot boot (Unbootable)",
+        "updated: release 2 in B failed before it committed; restored the system volume from update snapshot ",
+        "updated: pending is gone after the restore",
+        "updated: update snapshot ",
+        " is dropped",
+        "updated: reconciled: Restored",
+    ],
+    None,
+);
+const RB_R3: TestCase = rb(
+    "update-rollback (9: R moves to kai-a)",
+    "test=slot panic=reset",
+    &["slots: R arms kai-a (committed)"],
+    Some(&RB_RESTORE),
+);
+const RB_B3: TestCase = rb(
+    "update-rollback (8: kai-b fails a third time)",
+    "test=slot slot-do=panic panic=reset",
+    &["slots: fault recorded in kai-b; R boots next"],
+    Some(&RB_R3),
+);
+const RB_R2: TestCase = rb(
+    "update-rollback (7: R tries kai-b again)",
+    "test=slot panic=reset",
+    &["slots: R arms kai-b (trial)"],
+    Some(&RB_B3),
+);
+const RB_B2: TestCase = rb(
+    "update-rollback (6: kai-b fails again)",
+    "test=slot slot-do=panic panic=reset",
+    &["slots: fault recorded in kai-b; R boots next"],
+    Some(&RB_R2),
+);
+const RB_R1: TestCase = rb(
+    "update-rollback (5: R tries kai-b again)",
+    "test=slot panic=reset",
+    &["slots: R arms kai-b (trial)"],
+    Some(&RB_B2),
+);
+const RB_B1: TestCase = rb(
+    "update-rollback (4: kai-b, release 2, fails before its checks)",
+    "test=slot slot-do=panic panic=reset",
+    &[
+        "slots: booted kai-b (record read)",
+        "slots: fault recorded in kai-b; R boots next",
+    ],
+    Some(&RB_R1),
+);
+/// `update-rollback` boot 3: committed A takes release 2 from the update disk
+/// into B, with the snapshot and `pending` recorded first.
+const RB_UPDATE: TestCase = TestCase {
+    update: Some(UpdateDisk { tampered: false }),
+    ..rb(
+        "update-rollback (3: kai-a writes kai-b from the disk)",
+        "test=update updated=update panic=reset",
+        &[
+            "updated: wrote release 2 into B and checked its sha256",
+            "updated: took update snapshot ",
+            "update: restarting into kai-b",
+        ],
+        Some(&RB_B1),
+    )
+};
+const RB_COMMIT: TestCase = rb(
+    "update-rollback (2: kai-a commits)",
+    "test=slot slot-do=commit panic=reset",
+    &["slots: committed kai-a"],
+    Some(&RB_UPDATE),
+);
+
 pub(super) const CASES: &[TestCase] = &[
     // Spikes S08-3 and S11-1: P-256 and Ed25519 verification, a 1,000-target
     // `packages` role and SHA-256 in soft-float ring 3, reported in the log.
@@ -313,4 +424,12 @@ pub(super) const CASES: &[TestCase] = &[
         then: Some(&A_REFUSES),
         ..boot("update-tampered", "test=slot panic=reset", INSTALL)
     },
+    // The way back (ADR 0008 §10): a new slot that fails before it commits
+    // leaves the old slot to restore `system` from the update snapshot.
+    rb(
+        "update-rollback",
+        "test=slot panic=reset",
+        INSTALL,
+        Some(&RB_COMMIT),
+    ),
 ];

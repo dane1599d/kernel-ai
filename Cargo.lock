@@ -200,6 +200,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "comp-monitor"
+version = "0.1.0-dev"
+dependencies = [
+ "appabi",
+]
+
+[[package]]
+name = "comp-monitor-ui"
+version = "0.1.0-dev"
+dependencies = [
+ "agentabi",
+ "comp-monitor",
+ "uikit",
+]
+
+[[package]]
 name = "comp-notes"
 version = "0.1.0-dev"
 dependencies = [
