@@ -1,0 +1,23 @@
+# xcc's self-hosted C compiler, built for the `c>` prompt (ADR 0012 D2; ADR 0009
+# D4's record for whole trees).
+name = "xcc"
+url = "https://github.com/tyfkda/xcc"
+commit = "631e318432aeaaf72d6d2dfc93085766934314a2"
+spdx = "MIT"
+copyright = "Copyright (c) 2024 tyfkda"
+files = [
+    "cc.wasm: `make wcc-gen2` at the commit, wcc compiled by itself (S12-1, PR #73); its SHA-256 is cc.wasm.sha256",
+    "include/{stdarg,stdbool,stddef,stdint,limits,float,inttypes,string,stdnoreturn}.h: the commit's include/, unchanged",
+    "LICENSE: the commit's LICENSE",
+]
+changes = "none"
+why = """
+cc embeds cc.wasm and runs it on wasmi to compile each entry at c>. The binary is
+kept here rather than built by every build, so building the OS needs no C
+toolchain. It is rebuilt and compared with `cargo xtask ccwasm --check`, which
+needs git, make, a host C compiler and llvm-ar (Linux or WSL2); the `ccwasm`
+workflow runs it whenever this directory or the build changes, and on main.
+gen2 and gen3 differ only in
+the `name` custom section (S12-1). The headers are the ones session code may
+include; kairt supplies the few functions they declare that sessions use.
+"""

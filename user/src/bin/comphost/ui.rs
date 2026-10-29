@@ -11,6 +11,7 @@ use gfx2d::Canvas;
 use gfx2d::text::{Fonts, Text};
 use kabi::handle::{Handle, Rights};
 use livecore::host::{Env, Host};
+use livecore::{Fault, Performed};
 use uikit::Frame;
 use uikit::layout::Measure;
 use uikit::style::TypeStyle;
@@ -128,22 +129,62 @@ impl Ui {
         }
     }
 
-    /// Asks `desktop` for its events and acts on them.
+    /// Asks `desktop` for its events and acts on them, then hands the app the
+    /// input `desktop` posted to its windows' event rings.
     pub fn poll<E: Env<Instance = LiveInstance>>(&mut self, host: &mut Host<E>) {
         let mut told = core::mem::take(&mut self.later);
         if let Ok(len) = sys::call_route(self.route, &[], &mut self.reply, CALL_MS) {
             told.extend(self.desk.told(&self.reply[..len.min(self.reply.len())]));
         }
         self.act(host, told);
+        let inputs = self.take_input();
+        if inputs.is_empty() {
+            return;
+        }
+        for (app, input) in inputs {
+            // Typed input is a transaction too: what the app saves or asks for
+            // because of it is kept like an action call's.
+            let _ = serve_shown(host, |core| core.ui_input(app, input));
+        }
+        self.pump(host);
+    }
+
+    /// The input waiting in each window's event ring, as `uikit` input: keys
+    /// with their text, buttons and pointer moves (ADR 0005 §3).
+    fn take_input(&mut self) -> Vec<(u32, uikit::input::Input)> {
+        let mut out = Vec::new();
+        for pool in &self.pools {
+            if (pool.bytes as usize) < surfabi::header::PAGE {
+                continue;
+            }
+            // SAFETY: the pool is mapped read-write at `address` for `bytes`,
+            // at least a page; its first page is the header set up at `open`.
+            let page = unsafe { &mut *(pool.address as *mut [u8; surfabi::header::PAGE]) };
+            loop {
+                match surfabi::header::take(page) {
+                    Ok(Some(event)) => {
+                        if let Some(input) = self.desk.seat_state.input(&event) {
+                            out.push((pool.app, input));
+                        }
+                    }
+                    // One it cannot read is skipped.
+                    Err(()) => {}
+                    Ok(None) => break,
+                }
+            }
+        }
+        out
     }
 
     fn act<E: Env<Instance = LiveInstance>>(&mut self, host: &mut Host<E>, told: Vec<Told>) {
         for t in told {
             match t {
                 Told::Restarted => self.reopen(),
-                Told::Close(window) => with_shown(host, |core| {
-                    let _ = core.ui_events(window, &[UiEvent::CloseRequested]);
-                }),
+                Told::Close(window) => {
+                    let _ = serve_shown(host, |core| {
+                        core.ui_events(window, &[UiEvent::CloseRequested])
+                    });
+                }
                 Told::Action {
                     window,
                     node,
@@ -159,8 +200,9 @@ impl Ui {
                     else {
                         continue;
                     };
-                    with_shown(host, |core| {
-                        let _ = core.ui_act(window, node, action, value.clone());
+                    let _ = serve_shown(host, |core| {
+                        core.ui_act(window, node, action, value.clone())
+                            .map(|_refused_or_not| ())
                     });
                 }
             }
@@ -219,8 +261,15 @@ impl Ui {
             address,
             bytes: open.pool_bytes,
         };
+        // The header page first: `desktop` posts the window's input to its ring.
+        let header = surfabi::header::new_page(open.pool_bytes);
+        // SAFETY: the pool is mapped read-write at `address`, a page at least.
+        unsafe {
+            core::ptr::copy_nonoverlapping(header.as_ptr(), address as *mut u8, header.len())
+        };
         self.paint(&pool, open.target, frame);
-        let rights = Rights::MAP | Rights::READ | Rights::TRANSFER;
+        // Write, so `desktop` can post input to the header page's ring.
+        let rights = Rights::MAP | Rights::READ | Rights::WRITE | Rights::TRANSFER;
         let sent =
             sys::handle_dup(shm, rights).is_ok_and(|copy| self.send(&open.calls, Some(copy)));
         self.pools.push(pool);
@@ -304,16 +353,38 @@ fn release(pool: &Pool) {
     let _ = sys::handle_close(pool.shm);
 }
 
-/// Runs `f` on the shown version's instance, when it is a `lifecycle 2` one.
-fn with_shown<E: Env<Instance = LiveInstance>>(
+/// Runs `f` on the serving version's instance as one transaction, when it is a
+/// `lifecycle 2` one: what the app does about a window event (storage writes
+/// and effects) is committed with its checkpoint, like an action call's. The
+/// effects it queued come back for whoever runs them; a version that faulted
+/// was reloaded, and gives nothing.
+fn serve_shown<E: Env<Instance = LiveInstance>>(
     host: &mut Host<E>,
-    mut f: impl FnMut(&mut wasmhost::CoreInstance),
-) {
-    host.each_instance(|instance, _, shown| {
-        if let (LiveInstance::V2(core), true) = (instance, shown) {
-            f(core);
-        }
+    f: impl FnOnce(&mut wasmhost::CoreInstance) -> Result<(), Fault>,
+) -> Option<Performed> {
+    let served = host.serve_with(|instance| match instance {
+        LiveInstance::V2(core) => f(core),
+        _ => Ok(()),
     });
+    match served {
+        Ok(done) => {
+            let performed = done.map(|((), performed)| performed);
+            // Until the effect transport (A-core) carries these to the agent core,
+            // say what is dropped, so a window's missing effect is not silent.
+            if let Some(performed) = performed.as_ref().filter(|p| !p.is_empty()) {
+                println!(
+                    "comphost: dropped {} effect(s) from a window event: {}",
+                    performed.txn.effects.len(),
+                    performed.effect_lines().trim_end().replace('\n', "; ")
+                );
+            }
+            performed
+        }
+        Err(exit) => {
+            println!("comphost: {}", exit.why);
+            None
+        }
+    }
 }
 
 /// Boxes a measure for `CoreInstance::set_measure`.

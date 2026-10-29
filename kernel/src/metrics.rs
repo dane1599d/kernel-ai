@@ -27,13 +27,15 @@ fn take() -> Metrics {
     m.heap_allocations = allocations as u64;
     m.heap_bytes = bytes as u64;
     m.uptime_ns = hpet::nanos();
-    process::services(|pid, name| {
+    process::services_usage(|pid, name, pages, cpu_ns| {
         let index = m.process_count as usize;
         if index < MAX_METRIC_PROCESSES {
             let (bytes, len) = name.bytes();
             m.processes[index].pid = pid;
             m.processes[index].name = bytes;
             m.processes[index].name_len = len as u64;
+            m.processes[index].pages = pages;
+            m.processes[index].cpu_ns = cpu_ns;
             m.process_count += 1;
         } else {
             m.processes_omitted += 1;

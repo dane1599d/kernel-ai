@@ -1,0 +1,27 @@
+[package]
+name = "ccserve"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The `cc` service's logic (ADR 0012 D2-D5, D11): the compiler's Store, where
+# xcc's cc.wasm runs over wasihost, and the session's Store, where each entry is
+# linked by kailink and run; fuel slices, the deadline and Ctrl-C; need and
+# resume; undo; `:dis`. The ring-3 `cc` program is a thin loop around it, so the
+# host tests run the same code. Built at opt-level 2 in dev builds, like
+# wasmhost: wasmi's host-function glue crashes when unoptimised.
+[lib]
+doctest = false
+
+[dependencies]
+agentabi = { path = "../agentabi" }
+kailink = { path = "../kailink" }
+promptcore = { path = "../promptcore" }
+serde_json = { version = "1.0.154", default-features = false, features = ["alloc"] }
+wasihost = { path = "../wasihost" }
+wasmi = { version = "2.0.0", default-features = false, features = ["validate", "portable-dispatch"] }
+wasmparser = { version = "0.228.0", default-features = false }
+
+[dev-dependencies]
+sha2 = "0.11.1"

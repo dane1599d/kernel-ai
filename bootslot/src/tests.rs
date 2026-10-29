@@ -210,3 +210,60 @@ fn an_install_arms_a_as_a_trial_and_every_sequence_after_it_keeps_the_rule() {
     let mut path = [Event::Up; 8];
     assert!(explore(nv, 6, &mut path, 0) > 0);
 }
+
+/// From A committed at release 1: B staged with release 2 and armed.
+fn staged() -> Nv {
+    let mut nv = installed();
+    stage_begin(&mut nv, Slot::B);
+    stage_end(&mut nv, Slot::B, 2);
+    restart_into(&mut nv, Slot::B);
+    nv
+}
+
+#[test]
+fn a_staged_update_is_waiting_until_it_boots_then_on_trial() {
+    let mut nv = staged();
+    assert_eq!(trial(&nv.record, Slot::B, 2, Slot::A), Trial::Waiting);
+    assert_eq!(step(&mut nv, Event::Up), Slot::B);
+    assert_eq!(trial(&nv.record, Slot::B, 2, Slot::B), Trial::OnTrial);
+}
+
+#[test]
+fn an_update_that_commits_held() {
+    let mut nv = staged();
+    assert_eq!(step(&mut nv, Event::UpCommit), Slot::B);
+    for running in [Slot::A, Slot::B, Slot::R] {
+        assert_eq!(trial(&nv.record, Slot::B, 2, running), Trial::Held);
+    }
+}
+
+#[test]
+fn an_update_that_spends_its_tries_failed_and_only_then() {
+    let mut nv = staged();
+    let mut boots = 0;
+    while trial(&nv.record, Slot::B, 2, Slot::A) != Trial::Failed {
+        // Until the last try is spent, the trial may still commit.
+        assert_eq!(trial(&nv.record, Slot::B, 2, Slot::A), Trial::Waiting);
+        step(&mut nv, Event::Fault);
+        boots += 1;
+        assert!(boots < 20, "B never gave up");
+    }
+    assert_eq!(nv.record.slot(Slot::B).reason, Reason::Unbootable);
+}
+
+#[test]
+fn an_update_that_never_finished_staging_or_was_replaced_is_abandoned() {
+    let mut nv = installed();
+    stage_begin(&mut nv, Slot::B);
+    // The last BOOTREC_SET failed: B is still being written.
+    assert_eq!(trial(&nv.record, Slot::B, 2, Slot::A), Trial::Abandoned);
+    stage_end(&mut nv, Slot::B, 3);
+    assert_eq!(trial(&nv.record, Slot::B, 2, Slot::A), Trial::Abandoned);
+}
+
+#[test]
+fn an_nvram_reinstall_never_reads_as_a_failed_update() {
+    let mut nv = staged();
+    install(&mut nv, 2);
+    assert_eq!(trial(&nv.record, Slot::B, 2, Slot::A), Trial::Waiting);
+}
