@@ -26,6 +26,7 @@
 extern crate alloc;
 
 mod disk;
+mod folders;
 
 use alloc::format;
 use alloc::string::String;

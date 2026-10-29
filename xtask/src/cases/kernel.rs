@@ -72,6 +72,11 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("proc-stop", "test=proc-stop")
     },
+    // P4's Monitor: each process's pages and CPU time through METRICS.
+    TestCase {
+        expect: &["proc-usage: each process's pages and CPU time came through METRICS"],
+        ..case("proc-usage", "test=proc-usage")
+    },
     // P3 task 4: the raised table limits hold 40 processes at once.
     TestCase {
         expect: &["many-processes: 40 idle processes ran at once beside the shell and llm"],

@@ -20,6 +20,8 @@ use kabi::{ExitReason, Limits, cap};
 use mm::PAGE_SIZE;
 
 const EXIT_TIMEOUT_MS: u64 = 10_000;
+/// How long `model-store` waits for `fs` to mount and fill the model.
+const STORE_WAIT_MS: u64 = 60_000;
 /// The llm plan line's burst limit.
 const BURST_MS: u64 = 10_000;
 
@@ -86,6 +88,70 @@ pub fn check(cmdline: &str) -> Result<(), &'static str> {
 
 /// The FNV-1a hash of the model's bytes, read from its runs, or 0 when the rest
 /// of the last run, which ring 3 can read too, is not all zero.
+/// `model-store`: no `kai-model` disk, so the boot reserved runs from
+/// `kai-modelhint 1`; `fs`, once mounted, fills them from the store with
+/// MODEL_FILL. The model must then be published, holding the file xtask
+/// imported (its length and FNV-1a64 on the command line), and MODEL_MAP no
+/// longer waits. With `bad`, the hint's FNV-1a64 is not the file's: the kernel
+/// must refuse what `fs` filled and publish nothing.
+pub fn store(cmdline: &str, bad: bool) -> Result<(), &'static str> {
+    if bad {
+        return refused();
+    }
+    let attached = Attached::from_cmdline(cmdline);
+    let (Some(len), Some(fnv)) = (attached.len, attached.fnv) else {
+        return Err("model-store: the command line has no model_len= and model_fnv=");
+    };
+    let start = hpet::nanos();
+    let model = loop {
+        if let Some(model) = model::get() {
+            break model;
+        }
+        if model::rejected().is_some() || !model::fill::pending() {
+            // The fill may have ended between the two looks.
+            if let Some(model) = model::get() {
+                break model;
+            }
+            return Err("model-store: fs did not fill the model");
+        }
+        if hpet::nanos().saturating_sub(start) > STORE_WAIT_MS * 1_000_000 {
+            return Err("model-store: no model from the store in time");
+        }
+        threads::sleep_ms(50);
+    };
+    if model.len() != len || frames_hash(model) != fnv {
+        return Err("model-store: the frames do not hold the file xtask imported");
+    }
+    log!(
+        "model-store: fs filled {len} bytes from /system/models in {} ms; length and FNV-1a64 match",
+        hpet::nanos().saturating_sub(start) / 1_000_000
+    );
+    Ok(())
+}
+
+/// `model-store`'s bad blob: the fill ends in a refusal, and no model is
+/// published.
+fn refused() -> Result<(), &'static str> {
+    let start = hpet::nanos();
+    let why = loop {
+        if let Some(why) = model::rejected() {
+            break why;
+        }
+        if model::get().is_some() {
+            return Err("model-store: a blob whose FNV-1a64 is not the hint's was published");
+        }
+        if hpet::nanos().saturating_sub(start) > STORE_WAIT_MS * 1_000_000 {
+            return Err("model-store: the bad blob was neither refused nor published in time");
+        }
+        threads::sleep_ms(50);
+    };
+    if model::get().is_some() || model::fill::pending() {
+        return Err("model-store: a refused model is still published or waited on");
+    }
+    log!("model-store: the store's blob is refused ({why}); no model is published");
+    Ok(())
+}
+
 fn frames_hash(model: &model::Model) -> u64 {
     let hhdm = memory::hhdm();
     let mut hash = Fnv1a::new();
