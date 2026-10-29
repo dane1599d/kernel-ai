@@ -8,16 +8,8 @@
 //! stops reading never grows kernel memory, and the next read says how many
 //! were lost.
 
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use kabi::event::{BOX, DAY_MINUTES, DROPPED, Event, Kind};
 use spin::Mutex;
-
-/// The pid that reads the box, 0 before any read: a post wakes it.
-static READER: AtomicU64 = AtomicU64::new(0);
-/// A post came since the reader last read or was woken: its `svc_recv`
-/// returns `Woken` once. One wake a post at most, so a reader that never reads
-/// does not spin; reading clears it too.
-static WOKEN: AtomicBool = AtomicBool::new(false);
 use x86_64::instructions::interrupts::without_interrupts;
 
 struct Ring {
@@ -29,6 +21,12 @@ struct Ring {
     dropped: u64,
     /// The minute (since 1970) of the last read, 0 before the first.
     minute: u64,
+    /// The pid that reads the box, 0 before any read or once it exited: a
+    /// post wakes it. Only EVENT_READ, which admits the box's reader, sets it.
+    reader: u64,
+    /// A post came since the reader last read or was woken: its `svc_recv`
+    /// returns `Woken` once, so a reader that never reads does not spin.
+    woken: bool,
 }
 
 impl Ring {
@@ -69,6 +67,8 @@ static RING: Mutex<Ring> = Mutex::new(Ring {
     len: 0,
     dropped: 0,
     minute: 0,
+    reader: 0,
+    woken: false,
 });
 
 fn with<R>(f: impl FnOnce(&mut Ring) -> R) -> R {
@@ -76,32 +76,61 @@ fn with<R>(f: impl FnOnce(&mut Ring) -> R) -> R {
 }
 
 /// Keeps `event`, dropping the oldest when the box is full, and wakes the
-/// box's reader if it waits in `svc_recv`.
+/// box's reader if it waits in `svc_recv`. The wake is set under the box's
+/// lock; the reader is woken after it, outside.
 pub fn post(event: Event) {
-    with(|ring| ring.push(event));
-    WOKEN.store(true, Ordering::SeqCst);
-    match READER.load(Ordering::SeqCst) {
-        0 => {}
-        pid => crate::ipc::wake_server(pid),
+    let reader = with(|ring| {
+        ring.push(event);
+        ring.woken = true;
+        ring.reader
+    });
+    if reader != 0 {
+        crate::ipc::wake_server(reader);
     }
 }
 
 /// Whether process `pid` is the reader and a post came since it last looked.
 pub fn woken(pid: u64) -> bool {
-    pid != 0 && READER.load(Ordering::SeqCst) == pid && WOKEN.load(Ordering::SeqCst)
+    pid != 0 && with(|ring| ring.reader == pid && ring.woken)
 }
 
 /// Takes the wake for `pid`, once: whether there was one.
 pub fn take_wake(pid: u64) -> bool {
-    woken(pid) && WOKEN.swap(false, Ordering::SeqCst)
+    pid != 0
+        && with(|ring| {
+            let mine = ring.reader == pid && ring.woken;
+            if mine {
+                ring.woken = false;
+            }
+            mine
+        })
 }
 
-/// Takes every event for reader `pid`, oldest first, after the count of those
-/// dropped (0 when none were); `pid` is the box's reader from now on, whom a
-/// post wakes. The minutes begun since the last read come last.
+/// The box's reader, 0 for none (for `event-wake`).
+pub fn reader() -> u64 {
+    with(|ring| ring.reader)
+}
+
+/// Process `pid` ended: it reads the box no more, so a later process with its
+/// pid, or none, inherits nothing.
+pub fn forget(pid: u64) {
+    with(|ring| {
+        if ring.reader == pid {
+            ring.reader = 0;
+            ring.woken = false;
+        }
+    });
+}
+
+/// Takes every event for reader `pid`, which EVENT_READ admitted, oldest first,
+/// after the count of those dropped (0 when none were); `pid` is the box's
+/// reader from now on, whom a post wakes. The minutes begun since the last read
+/// come last.
 pub fn take_for(pid: u64) -> (u64, [Option<Event>; BOX]) {
-    READER.store(pid, Ordering::SeqCst);
-    WOKEN.store(false, Ordering::SeqCst);
+    with(|ring| {
+        ring.reader = pid;
+        ring.woken = false;
+    });
     take()
 }
 

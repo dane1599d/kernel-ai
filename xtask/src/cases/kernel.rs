@@ -135,7 +135,10 @@ pub(super) const CASES: &[TestCase] = &[
     },
     // P4: a post to the event box wakes the shell, never in place of a line.
     TestCase {
-        expect: &["event-wake: 10 terminal lines, each after a post, all came back as lines"],
+        expect: &[
+            "event-wake: 10 terminal lines, each after a post, all came back as lines",
+            "event-wake: the ended shell's wake went with it; the new shell reads the box",
+        ],
         ..case("event-wake", "test=event-wake")
     },
     // P3 task 11: an app suspended and resumed through its host.
