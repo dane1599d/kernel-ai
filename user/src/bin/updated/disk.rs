@@ -9,6 +9,7 @@
 //! computed on the way; it becomes a trial only if length and hash match.
 
 use crate::folders::{self, Folders};
+use crate::window::Staged;
 use crate::{pause, record, restore, set, slot_of};
 use alloc::collections::BTreeMap;
 use alloc::format;
@@ -153,7 +154,10 @@ impl Cache for Trust {
 }
 
 /// `step=update`.
-pub fn update(handle: Handle) -> Result<(), String> {
+/// `step=update`: stages the update disk's release into the other slot, and
+/// restarts into it at once when `restart_now`; otherwise its one-shot is set
+/// and the restart waits (`window.rs`).
+pub fn update(handle: Handle, restart_now: bool) -> Result<Staged, String> {
     let mut root = vec![0u8; ROOT_MAX];
     let len = sys::trust_root(handle, &mut root).map_err(|e| format!("TRUST_ROOT: {e:?}"))?;
     root.truncate(len);
@@ -259,15 +263,20 @@ pub fn update(handle: Handle) -> Result<(), String> {
     }
     bootslot::stage_end(&mut nv, other, release_seq);
     bootslot::restart_into(&mut nv, other);
-    println!("updated: restarting into {other:?}");
-    let staged = set(handle, &nv, true);
+    if restart_now {
+        println!("updated: restarting into {other:?}");
+    }
+    let staged = set(handle, &nv, restart_now);
     if staged.is_err() {
         // The slot stays Updating and never boots: nothing to restore later.
         if let Some(updates) = dirs.updates {
             let _ = folders::write(updates, restore::PENDING, b"");
         }
     }
-    staged
+    staged.map(|()| Staged {
+        slot: other,
+        release_seq,
+    })
 }
 
 /// Copies `length` bytes from `offset` of the update disk into slot `to` and
