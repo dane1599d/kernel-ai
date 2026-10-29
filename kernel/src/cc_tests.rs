@@ -1,21 +1,26 @@
 //! P4 task 12's exit case (`test=c-prompt`): the `c>` prompt through the
 //! ring-3 shell and the `cc` service, called exactly as the terminal calls the
-//! shell. A definition, a call, a redefinition that switches its caller,
-//! `:dis`, an entry left open, then a `kai` call that goes through the one
-//! door, and its `undo`. Then S12-1's compile time over a 200-line prelude,
-//! reported only.
+//! shell. `cc` is planned with `start=demand`: it is not running until the
+//! first entry's call starts it. A definition, a call, a redefinition that
+//! switches its caller, `:dis`, an entry left open, then a `kai` call that
+//! goes through the one door, and its `undo`. Then S12-1's compile time over a
+//! 200-line prelude, reported only.
 
 use crate::sched_control::calls::MIN_POLICY_INTERVAL_NS;
 use crate::shell_tests::Expect::{self, Contains, Exact, StartsWith};
 use crate::shell_tests::{expect_lines, start};
-use crate::{hpet, ipc, log, threads};
+use crate::{hpet, ipc, log, process, threads};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-const MODES_AND_DEFINITIONS: &[(&str, Expect)] = &[
+/// `:c` sends cc nothing; the first entry does.
+const FIRST_ENTRY: &[(&str, Expect)] = &[
     (":c", StartsWith("ok C mode")),
     ("I64 Sq(I64 x) { return x * x; }", Exact("ok ")),
+];
+
+const DEFINITIONS: &[(&str, Expect)] = &[
     ("I64 Twice(I64 x) { return Sq(x) * 2; }", Exact("ok ")),
     ("Twice(3)", Exact("ok = 18")),
     // The redefinition writes Sq's table slot: Twice calls the new body.
@@ -56,7 +61,17 @@ const LINE_TIMEOUT_MS: u64 = 30_000;
 
 pub fn check() -> Result<(), &'static str> {
     let shell = start()?;
-    expect_lines(MODES_AND_DEFINITIONS)?;
+    // The supervisor starts the plan in order, cc before the shell: had it
+    // started cc at boot, it would be running by now.
+    if !process::named("cc").is_empty() {
+        return Err("c-prompt: cc ran before the first entry");
+    }
+    expect_lines(FIRST_ENTRY)?;
+    if process::named("cc").is_empty() {
+        return Err("c-prompt: the first entry was answered but cc is not running");
+    }
+    log!("c-prompt: cc was not running until the first entry started it");
+    expect_lines(DEFINITIONS)?;
     threads::sleep_ms(MIN_POLICY_INTERVAL_NS / 1_000_000 + 10);
     expect_lines(UNDO)?;
     log!(

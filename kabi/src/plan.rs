@@ -14,10 +14,11 @@ pub const SHELL: &str = "shell caps=serve+call+policy+stop+script uses=llm+super
 pub const SHELL_FILES: &str = "shell caps=serve+call+policy+stop+script+files+state uses=llm+supervisor+cc pages=4096 stack_pages=512 burst_ms=5000";
 /// The `c>` prompt's compiler (ADR 0012 D2; P4 task 12): xcc's cc.wasm and the
 /// sessions, on wasmi, holding no authority. Planned before the shell, which
-/// calls it. Its pages cover `ccserve::budget`: the program, its stack, the
-/// compiler and one compile, one session and the modules it keeps (P4 plan's
-/// 3,680 counted the heap alone).
-pub const CC: &str = "cc caps=serve pages=5120 stack_pages=512 burst_ms=5000";
+/// calls it, and started on demand: the first `c>` entry's call starts it, so
+/// it holds no memory before then. Its pages cover `ccserve::budget`: the
+/// program, its stack, the compiler and one compile, one session and the
+/// modules it keeps (P4 plan's 3,680 counted the heap alone).
+pub const CC: &str = "cc start=demand caps=serve pages=5120 stack_pages=512 burst_ms=5000";
 /// The file system service (ADR 0004): the only holder of the `kai-data`
 /// partition. Planned before the shell, and only when the disk has `kai-data`.
 /// Its pages hold a 16 MiB block cache and kaifs's working state. `kai-fs 1`'s

@@ -55,6 +55,8 @@ fn the_plan_the_kernel_sends_parses() {
     let cc = &plan.services[1];
     assert_eq!((cc.name.as_str(), cc.limits.caps), ("cc", cap::SERVE));
     assert!(cc.uses.is_empty());
+    // It starts when the shell first calls it, not at boot.
+    assert_eq!(cc.start, Start::Demand);
     let shell = &plan.services[2];
     assert_eq!(shell.name, "shell");
     assert_eq!(
