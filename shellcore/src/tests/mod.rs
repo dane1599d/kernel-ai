@@ -21,6 +21,7 @@ mod more;
 mod packages;
 mod profiles;
 mod scripts;
+mod settings;
 mod standing;
 mod transaction;
 mod tune;
@@ -58,6 +59,9 @@ struct FakeHost {
     remembered: RefCell<Vec<(String, String, String)>>,
     forgot: Cell<u32>,
     audit: RefCell<Vec<String>>,
+    /// What the supervisor was told to keep running, and the saved list.
+    kept: RefCell<Vec<(String, bool)>>,
+    keep_file: RefCell<Option<String>>,
     /// The trusted path's ONCE book: badge, digest, and whether it was used.
     once: RefCell<Vec<(u64, [u8; 32], bool)>>,
     /// Rule handles revoked.
@@ -200,6 +204,8 @@ impl FakeHost {
             remembered: RefCell::new(Vec::new()),
             forgot: Cell::new(0),
             audit: RefCell::new(Vec::new()),
+            kept: RefCell::new(Vec::new()),
+            keep_file: RefCell::new(None),
             once: RefCell::new(Vec::new()),
             revoked: RefCell::new(Vec::new()),
             procs: RefCell::new(alloc::vec![
@@ -576,6 +582,20 @@ impl Host for FakeHost {
         let child = apart.as_ref()?;
         self.apart_requests.borrow_mut().push(request.into());
         Some(child(request))
+    }
+
+    fn keep_read(&self) -> Option<String> {
+        self.keep_file.borrow().clone()
+    }
+
+    fn keep_write(&self, text: &str) -> Result<(), String> {
+        *self.keep_file.borrow_mut() = Some(String::from(text));
+        Ok(())
+    }
+
+    fn keep_running(&self, app: &str, on: bool) -> Result<(), String> {
+        self.kept.borrow_mut().push((String::from(app), on));
+        Ok(())
     }
 
     fn audit(&self, text: &str) {

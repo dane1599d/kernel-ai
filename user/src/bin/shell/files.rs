@@ -295,6 +295,8 @@ pub const LOG: &str = "log";
 pub const RULES: &str = "rules";
 /// The standing instructions' store (`kai-standing 1`, P3 task 11).
 pub const STANDING: &str = "standing";
+/// The apps kept running, never napped (`kai-keep 1`, P4).
+pub const KEEP: &str = "keep";
 
 impl State {
     /// File `name` as `/system/state` holds it; `None` with no such file or no
