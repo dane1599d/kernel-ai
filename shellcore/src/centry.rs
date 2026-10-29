@@ -41,6 +41,18 @@ pub(crate) struct CEntry {
 /// What a call of an entry came to, for `ccserve`'s `resume`.
 pub type CallValue = Result<Value, String>;
 
+/// Whether `name` is a row a `c>` entry may call: the bound OS rows and the
+/// file and package rows, as `kai.h` declares them.
+pub(crate) fn kai_row(name: &str) -> bool {
+    [
+        &agentabi::BOUND[..],
+        &agentabi::FS_ROWS,
+        &agentabi::PKG_ROWS,
+    ]
+    .iter()
+    .any(|rows| rows.iter().any(|row| row.name == name))
+}
+
 impl Shell {
     /// Begins C entry `request`, as the user typed it: its token.
     pub fn entry_begin(&mut self, request: &str) -> u64 {
@@ -59,6 +71,11 @@ impl Shell {
         let Some(request) = self.c_entry.as_ref().map(|e| e.request.clone()) else {
             return crate::agentcore::outcome_refused("no C entry is running");
         };
+        // A second guard behind the C checker's: only the rows `kai.h` binds.
+        if !kai_row(&call.name) {
+            let why = format!("{} is not a kai call", call.name);
+            return crate::agentcore::outcome_refused(&why);
+        }
         let id = self.next_id;
         self.next_id += 1;
         self.last_value = None;
