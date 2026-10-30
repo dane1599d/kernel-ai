@@ -64,6 +64,8 @@ user::entry!(main);
 
 #[path = "desktop/agent.rs"]
 mod agent;
+#[path = "desktop/perf.rs"]
+mod perf;
 
 /// The fonts ADR 0005 §8 names, built in until P2's files carry them.
 const FONTS: Fonts = Fonts {
@@ -141,6 +143,8 @@ struct State {
     /// paints) at first, so the first frame does no theme work for it.
     appearance: Appearance,
     painted_in: Appearance,
+    /// Frame and key timings for `desk-perf`, with `perf=on` only.
+    perf: Option<perf::Perf>,
 }
 
 fn main() -> i32 {
@@ -187,6 +191,7 @@ fn main() -> i32 {
             asked: None,
             appearance: appearance.clone(),
             painted_in,
+            perf: perf::from_args(),
         };
         println!("desktop: claimed {width}x{height}");
         let result = run(&mut state, &screen);
@@ -241,7 +246,7 @@ fn run(state: &mut State, screen: &Screen) -> Option<bool> {
         }
         let mut info = RecvInfo::default();
         if let Ok(len) = sys::recv_h(&mut request, CLIENT_WAIT_MS, &mut info) {
-            serve(state, &request[..len.min(request.len())], &info);
+            serve(state, screen, &request[..len.min(request.len())], &info);
         }
         report(state);
         post_events(state);
@@ -334,6 +339,9 @@ fn input(state: &mut State, screen: &Screen, event: &InputEvent) {
         }
         Kind::Key => {
             println!("desktop: key {:#x} {}", event.code, event.value);
+            if event.value != 0 {
+                perf::key(state, event.time_ns);
+            }
             Some(Input::Key {
                 usage: event.code,
                 down: event.value != 0,
@@ -510,8 +518,12 @@ fn tick_panel(state: &mut State) {
     }
 }
 
-fn serve(state: &mut State, bytes: &[u8], info: &RecvInfo) {
+fn serve(state: &mut State, screen: &Screen, bytes: &[u8], info: &RecvInfo) {
     let pid = info.caller_pid;
+    if let Some(reply) = perf::request(state, screen, bytes, pid) {
+        let _ = sys::reply_h(reply.as_bytes(), &[]);
+        return;
+    }
     if let Some(reply) = panel_request(state, bytes, pid) {
         let _ = sys::reply_h(reply.as_bytes(), &[]);
         return;
@@ -813,6 +825,7 @@ fn draw(state: &mut State, screen: &Screen) {
         .iter()
         .filter_map(|r| paint::reach(*r).intersect(&bounds))
         .collect();
+    let started = sys::time_ns();
     let mut frame = state.frame.canvas();
     let (shown, pools) = (&state.shown, &state.pools);
     let scene = Scene {
@@ -850,6 +863,7 @@ fn draw(state: &mut State, screen: &Screen) {
             state.painter.cursor(&mut frame, clip, state.desk.pointer());
         }
     }
+    let rendered = sys::time_ns();
     copy_to_screen(&state.frame.px, state.width, screen, &damage);
     let rects: Vec<FlushRect> = damage
         .iter()
@@ -863,6 +877,8 @@ fn draw(state: &mut State, screen: &Screen) {
     for chunk in rects.chunks(kabi::display::MAX_FLUSH) {
         let _ = sys::display_flush(chunk);
     }
+    let flushed = sys::time_ns();
+    perf::drew(state, rendered - started, flushed - rendered, flushed);
     if !state.drawn {
         state.drawn = true;
         println!("desktop: drew the desk at {}x{}", state.width, state.height);

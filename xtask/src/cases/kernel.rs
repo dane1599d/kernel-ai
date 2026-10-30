@@ -263,6 +263,33 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("desk-standing", "test=desk-standing")
     },
+    // P3's exit case: no standing instruction from text the AI read (a note the
+    // mock model was steered by), and no firing outside the rule allowed.
+    TestCase {
+        expect: &[
+            "desk-standing-refused: the note's instruction made no rule, asked nothing, and its refusal is logged",
+            "supervisor: refused service_stop(\"notes-window\") for pid ",
+            "desk-standing-refused: a firing outside the allowed rule was refused and logged, and nothing asked",
+        ],
+        ..case("desk-standing-refused", "test=desk-standing-refused")
+    },
+    // P3's exit case: S05-1's budgets on the real `desktop` at 1920x1080, gated
+    // by the kernel's check under KVM, recorded under TCG.
+    TestCase {
+        gpu: true,
+        memory_mib: Some(2048),
+        min_timeout: Some(std::time::Duration::from_secs(1_200)),
+        expect: &[
+            "desk-perf: (a) full composite at 1920x1080: ",
+            "desk-perf: (b) drag render: ",
+            "desk-perf: (b) drag flush: ",
+            "desk-perf: (c) text page ",
+            "desk-perf: (e) key to flush: ",
+            "desk-perf: (f) drag under load, render+flush: ",
+            "desk-perf: the figures are in",
+        ],
+        ..case("desk-perf", "test=desk-perf display=1920x1080")
+    },
     // Key input for uikit apps: the keyboard reaches Notes' widgets.
     TestCase {
         keys: &[&["tab", "tab", "ret", "tab", "tab", "h", "i"]],

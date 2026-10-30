@@ -504,9 +504,11 @@ fn check_proof(request: Request, proof: Proof, caller: u64) -> Result<(), String
             sys::once_check_for(caller, once.badge, &digest)
                 .map_err(|error| format!("err ONCE {error:?}"))
         }
-        Proof::Rule => {
-            sys::rule_check(caller, &call).map_err(|error| format!("err rule {error:?}"))
-        }
+        Proof::Rule => sys::rule_check(caller, &call).map_err(|error| {
+            // Logged, never asked about: a firing is the rule's or nothing.
+            println!("supervisor: refused {call} for pid {caller}: no rule covers it ({error:?})");
+            format!("err rule {error:?}")
+        }),
         Proof::None | Proof::Entry(_) | Proof::Undo(_) => Ok(()),
     }
 }
