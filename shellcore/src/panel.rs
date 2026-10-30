@@ -31,13 +31,15 @@ const FAILED: &str = "it did not run: `show` in the terminal says why";
 const C_WAITS: &str = "a C entry waits for an answer: answer it in the terminal first";
 const C_LINE: &str = "C goes in the terminal";
 
-/// What a panel line may change of the terminal's own state, set aside.
-struct Terminal {
-    partial: Option<String>,
-    clarifying: Option<String>,
-    pending: Option<crate::actions::Pending>,
-    undo_asking: Option<u64>,
-    c: crate::cmode::CMode,
+/// What a panel line may change of the terminal's own state, set aside. An
+/// app's terminal (`appline`) keeps one of its own.
+#[derive(Default)]
+pub(crate) struct Terminal {
+    pub(crate) partial: Option<String>,
+    pub(crate) clarifying: Option<String>,
+    pub(crate) pending: Option<crate::actions::Pending>,
+    pub(crate) undo_asking: Option<u64>,
+    pub(crate) c: crate::cmode::CMode,
 }
 
 impl Shell {
