@@ -52,6 +52,7 @@ mod edit_session;
 mod edit_tests;
 mod efi;
 mod efi_tests;
+mod entropy;
 mod entry;
 mod event_box;
 mod fault;
@@ -473,6 +474,7 @@ fn init_devices() -> &'static acpitables::Platform {
         hpet::init(hpet)?;
         hpet::select_clock(cmdline());
         timer::init()?;
+        entropy::init();
         // ADR 0007 section 8: no 8042 when the FADT says the machine has none.
         if platform.no_8042 {
             log!("i8042: the FADT says this machine has no 8042; skipped");
