@@ -226,12 +226,15 @@ opt-level = 2
 [profile.dev.package.kaifs]
 opt-level = 2
 
-# `desktop`'s drawing, at the level S05-1's spike was measured at (3):
-# unoptimised, a full 1920x1080 composite took 50 ms where its budget is 8, and
-# at 2 the warm text page missed its 4 ms (`desk-perf`, #461). Their debug
-# assertions and overflow checks stay on.
+# `desktop`'s drawing, built as S05-1's spike was measured (opt-level 3):
+# unoptimised, a full 1920x1080 composite took 50 ms where its budget is 8
+# (`desk-perf`, #461). `gfx2d` also drops overflow checks and debug assertions,
+# as the spike did: checked, its per-pixel blends (`blend_row`) do not
+# vectorise, and the warm text page missed its 4 ms even at level 3.
 [profile.dev.package.gfx2d]
 opt-level = 3
+overflow-checks = false
+debug-assertions = false
 
 [profile.dev.package.deskcore]
 opt-level = 3
