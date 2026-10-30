@@ -77,6 +77,21 @@ impl ModelState {
             _ => return None,
         })
     }
+
+    /// The state a `health` word names (`llmproto::health::State::word`); a test
+    /// keeps the two lists together.
+    pub fn from_health_word(word: &str) -> Option<ModelState> {
+        Some(match word {
+            "waiting" => ModelState::Waiting,
+            "warming" => ModelState::Warming,
+            "ready" => ModelState::Ready,
+            "remote" => ModelState::Remote,
+            "failed" => ModelState::Failed,
+            "none" => ModelState::NoModel,
+            "busy" => ModelState::Busy,
+            _ => return None,
+        })
+    }
 }
 
 /// The model's state and the last answer's decode speed.

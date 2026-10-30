@@ -17,7 +17,7 @@ const INDEX: &str = r#"{"actions":["hello_greet"],"depends":["kai:app ^0.1"],"gr
 /// `kai` without the fields the header does not hold.
 fn header_fields(mut kai: Value) -> Value {
     if let Some(map) = kai.as_object_mut() {
-        for key in ["grants", "actions", "yanked"] {
+        for key in ["grants", "actions", "effects", "yanked"] {
             map.remove(key);
         }
     }

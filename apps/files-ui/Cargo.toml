@@ -13,6 +13,7 @@ doctest = false
 
 [dependencies]
 comp-files = { path = "../files" }
+comp-ui-bind = { path = "../ui-bind" }
 uikit = { path = "../../uikit" }
 
 [dev-dependencies]

@@ -163,6 +163,8 @@ pub enum SelfTest {
     DeskPanel,
     /// `desk-panel-shell` (P3 task 7): the shell takes the panel's line.
     DeskPanelShell,
+    /// `desk-catalog` (P4 task 3): the Apps sheet lists `pkg`'s catalogue.
+    DeskCatalog,
     /// An app's kai:ui window on the desktop, closed from its control (P3 task 9).
     UiWindow,
     /// An unused app naps and a click wakes it (P3 task 12b).
@@ -174,6 +176,10 @@ pub enum SelfTest {
     /// The keyboard reaches an app's widgets (key input for uikit apps).
     UiKeys,
     DeskTerm,
+    /// `desk-agent` (P3 task 10): the agent opens Notes and acts inside it.
+    DeskAgent,
+    /// `desk-takeover` (P3 task 10): a key in the agent's window stops it.
+    DeskTakeover,
     /// `scriptrun` through a Job, and spike S01-1's M3 and M5 (P1 task 14).
     Scriptrun,
     /// L2: processes keep their vector state across switches and CPUs, and start clean.
@@ -339,12 +345,15 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=desk-boot" => Some(SelfTest::DeskBoot),
             "test=desk-panel" => Some(SelfTest::DeskPanel),
             "test=desk-panel-shell" => Some(SelfTest::DeskPanelShell),
+            "test=desk-catalog" => Some(SelfTest::DeskCatalog),
             "test=ui-window" => Some(SelfTest::UiWindow),
             "test=desk-nap" => Some(SelfTest::DeskNap),
             "test=desk-card" => Some(SelfTest::DeskCard),
             "test=desk-standing" => Some(SelfTest::DeskStanding),
             "test=ui-keys" => Some(SelfTest::UiKeys),
             "test=desk-term" => Some(SelfTest::DeskTerm),
+            "test=desk-agent" => Some(SelfTest::DeskAgent),
+            "test=desk-takeover" => Some(SelfTest::DeskTakeover),
             "test=scriptrun" => Some(SelfTest::Scriptrun),
             "test=fpu" => Some(SelfTest::Fpu),
             "test=probe" => Some(SelfTest::Probe),
@@ -426,12 +435,15 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DeskBoot
             | SelfTest::DeskPanel
             | SelfTest::DeskPanelShell
+            | SelfTest::DeskCatalog
             | SelfTest::UiWindow
             | SelfTest::DeskNap
             | SelfTest::DeskCard
             | SelfTest::DeskStanding
             | SelfTest::UiKeys
             | SelfTest::DeskTerm
+            | SelfTest::DeskAgent
+            | SelfTest::DeskTakeover
             | SelfTest::TuneRevert
             | SelfTest::TuneStall
             | SelfTest::Tune
@@ -474,6 +486,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             crate::files_tests::plan(&alloc::format!("churn boot={boot}"))
         }
         SelfTest::PkgStore(step) => crate::pkg_tests::plan(step),
+        SelfTest::DeskCatalog => crate::catalog_tests::plan(),
         SelfTest::Edit | SelfTest::Manifest | SelfTest::ManifestGood => {
             let mut plan = match test {
                 SelfTest::Edit => String::from(kabi::plan::NOTES_EDIT_TEST),
@@ -510,6 +523,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::FilesActions
             | SelfTest::FilesChurn { .. }
             | SelfTest::PkgStore(_)
+            | SelfTest::DeskCatalog
     ) {
         // The file system service starts before the shell, once there is a
         // `kai-data` partition for it (ADR 0004).
@@ -538,6 +552,11 @@ pub fn plan(test: SelfTest) -> Option<String> {
             SelfTest::Act(ActCase::AppTerminal) => {
                 plan.push('\n');
                 plan.push_str(crate::app_terminal_tests::PLAN);
+                kabi::plan::SHELL_DESK
+            }
+            SelfTest::DeskAgent | SelfTest::DeskTakeover => {
+                plan.push('\n');
+                plan.push_str(crate::agent_desk_tests::DESK);
                 kabi::plan::SHELL_DESK
             }
             _ => shell,
@@ -633,6 +652,10 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
     if test == SelfTest::DeskTerm {
         plan.push('\n');
         plan.push_str(crate::term_tests::PLAN);
+    }
+    if matches!(test, SelfTest::DeskAgent | SelfTest::DeskTakeover) {
+        plan.push('\n');
+        plan.push_str(crate::agent_desk_tests::APPS);
     }
     if test == SelfTest::None {
         plan.push('\n');

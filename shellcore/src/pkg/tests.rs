@@ -61,6 +61,42 @@ fn a_remove_takes_the_dependencies_nothing_else_needs() {
     );
 }
 
+/// An app whose effects may call two file rows, as Files declares (AP-1).
+static FILES: Package = Package {
+    name: "files",
+    version: "1.0.0",
+    kind: "app",
+    summary: "Your files",
+    licence: "MPL-2.0",
+    size_kb: 50,
+    grants: &[],
+    effects: &["fs_read", "fs_list"],
+    depends: &[],
+};
+
+#[test]
+fn an_install_whose_effects_call_os_rows_asks_and_its_card_lists_them() {
+    let switch = |added: Vec<&'static Package>| Switch {
+        to: Store::default().next(String::from("test"), Vec::new()),
+        grants: each_of(&added, |p| p.grants),
+        effects: each_of(&added, |p| p.effects),
+        removed: Vec::new(),
+        added,
+    };
+    let files = switch(vec![&FILES]);
+    assert!(files.asks());
+    assert_eq!(files.needs(), "its effects may call fs_list, fs_read");
+    let weather = find("weather").unwrap();
+    let both = switch(vec![&FILES, weather]);
+    assert_eq!(
+        both.needs(),
+        "it needs network; its effects may call fs_list, fs_read"
+    );
+    let notes = switch(vec![find("notes").unwrap()]);
+    assert!(!notes.asks());
+    assert_eq!(notes.needs(), "");
+}
+
 #[test]
 fn what_needs_a_permission_says_so_and_unknown_names_say_why() {
     let store = Store::default();

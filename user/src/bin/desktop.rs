@@ -26,11 +26,16 @@
 //!   [`LEASE_RENEW_NS`], and ended when the focus moves (P3 task 8). The
 //!   kernel, not `desktop`, decides which client is the terminal: it lends the
 //!   keys only for the window of a process holding TERM.
+//! - `apps` sent in the panel opens the Apps sheet, with what `pkg` lists
+//!   ([`apps`], P4 task 3).
 
 #![no_std]
 #![no_main]
 
 extern crate alloc;
+
+#[path = "desktop/apps.rs"]
+mod apps;
 
 use alloc::string::String;
 use alloc::vec;
@@ -56,6 +61,9 @@ use surfabi::Format;
 use user::{println, sys};
 
 user::entry!(main);
+
+#[path = "desktop/agent.rs"]
+mod agent;
 
 /// The fonts ADR 0005 §8 names, built in until P2's files carry them.
 const FONTS: Fonts = Fonts {
@@ -107,8 +115,12 @@ struct State {
     drawn: bool,
     /// The AI panel's line and the state the shell reports.
     panel: Panel,
+    /// The Apps sheet, while it is up: it takes the panel's keys.
+    sheet: Option<deskcore::catalog::Sheet>,
     /// Apps' effects waiting for the shell, and what came of them.
     effects: effects::Queue,
+    /// The agent's views of windows, for its `ui` rows (P3 task 10).
+    agent: deskcore::agent::Agent,
     /// When the panel's "thinking 4s" was last redrawn.
     ticked_ms: u64,
     /// The ask card up now, as the kernel posted it.
@@ -162,7 +174,9 @@ fn main() -> i32 {
             draws_cursor: screen.info.cursor == 0,
             drawn: false,
             panel: Panel::new(),
+            sheet: None,
             effects: effects::Queue::default(),
+            agent: deskcore::agent::Agent::default(),
             ticked_ms: 0,
             card: None,
             asked_ms: 0,
@@ -360,7 +374,12 @@ fn deliver(state: &mut State, effects: &[Effect]) {
             answer_ask(state, id, yes);
             continue;
         }
+        if let Effect::TookOver { window } = *effect {
+            agent::took_over(state, window);
+            continue;
+        }
         let changed = match *effect {
+            Effect::PanelKey { usage, down } if apps::key(state, usage, down, now) => false,
             Effect::PanelKey { usage, down } => {
                 let before = state.panel.waiting();
                 let changed = state.panel.key(usage, down, now);
@@ -373,9 +392,17 @@ fn deliver(state: &mut State, effects: &[Effect]) {
                     println!("desktop: the panel queued a request ({len} characters)");
                     wake_shell();
                 }
+                if state.panel.take_apps() {
+                    apps::open(state);
+                }
                 changed
             }
-            Effect::Focus(focus) => state.panel.set_focus(focus == Focus::Panel),
+            Effect::Focus(focus) => {
+                if focus != Focus::Panel {
+                    apps::close(state);
+                }
+                state.panel.set_focus(focus == Focus::Panel)
+            }
             _ => false,
         };
         if changed {
@@ -486,6 +513,10 @@ fn tick_panel(state: &mut State) {
 fn serve(state: &mut State, bytes: &[u8], info: &RecvInfo) {
     let pid = info.caller_pid;
     if let Some(reply) = panel_request(state, bytes, pid) {
+        let _ = sys::reply_h(reply.as_bytes(), &[]);
+        return;
+    }
+    if let Some(reply) = agent::request(state, bytes, pid) {
         let _ = sys::reply_h(reply.as_bytes(), &[]);
         return;
     }
@@ -661,7 +692,10 @@ fn apply_need(state: &mut State, at: usize, pid: u64, need: Need, handle: Option
             state.shown.retain(|(w, ..)| *w != window);
             state.shown.push((window, pid, buffer));
         }
-        Need::Closed { window } => state.shown.retain(|(w, ..)| *w != window),
+        Need::Closed { window } => {
+            state.shown.retain(|(w, ..)| *w != window);
+            state.agent.closed(window);
+        }
     }
 }
 
@@ -813,6 +847,11 @@ fn draw(state: &mut State, screen: &Screen) {
     };
     for &clip in &damage {
         state.painter.paint(&mut frame, clip, &scene, &mut content);
+        if let Some(sheet) = &state.sheet {
+            let area =
+                deskcore::paint_catalog::sheet(state.width, state.height, sheet.apps().len());
+            state.painter.catalog(&mut frame, clip, area, sheet);
+        }
         if state.draws_cursor {
             state.painter.cursor(&mut frame, clip, state.desk.pointer());
         }
