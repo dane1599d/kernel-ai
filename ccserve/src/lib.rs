@@ -58,6 +58,41 @@ pub const XCC_HEADERS: [(&str, &[u8]); 9] = [
     ),
 ];
 
+/// What `cc build` compiles components and apps against (ADR 0012 D7):
+/// `cargo xtask cc-bind`'s bindings for each world, and the `<stdlib.h>` they
+/// include.
+pub mod bind {
+    /// One world's bindings.
+    pub struct World {
+        /// Its header's name, as its glue includes it.
+        pub header_name: &'static str,
+        pub header: &'static [u8],
+        /// wit-bindgen's glue: the imports, the export wrappers, `cabi_realloc`.
+        pub glue: &'static str,
+        /// `<symbol> <export name>` lines, for the link: wcc reads no
+        /// `export_name`.
+        pub exports: &'static str,
+    }
+
+    /// `kai:app/component`.
+    pub const COMPONENT: World = World {
+        header_name: "component.h",
+        header: include_bytes!("../kai/bind/component.h"),
+        glue: include_str!("../kai/bind/component.c"),
+        exports: include_str!("../kai/bind/component.exports"),
+    };
+
+    /// `kai:app/app` with an empty `actions` export.
+    pub const APP: World = World {
+        header_name: "app.h",
+        header: include_bytes!("../kai/bind/app.h"),
+        glue: include_str!("../kai/bind/app.c"),
+        exports: include_str!("../kai/bind/app.exports"),
+    };
+
+    pub const STDLIB_H: &[u8] = include_bytes!("../kai/stdlib.h");
+}
+
 /// One entry's compile, and its run, each get this long (D3).
 pub const LINE_NS: u64 = 2_000_000_000;
 

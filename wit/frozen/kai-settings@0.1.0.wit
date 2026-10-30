@@ -1,0 +1,62 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The Kernel AI contributors
+
+/// Reading and changing the system's settings, for the Settings app (P4 task 7).
+/// Like `kai:edit`, this is a granted interface, not part of `kai:app` (which is
+/// frozen): only an app whose package holds the `settings` grant can import it,
+/// and a component that imports it without the grant does not stage
+/// (`Reason::Link`). It adds no row for the AI: what a request does is the
+/// OS's, not the model's, so the model's view and the typed-only rows stay as
+/// they are.
+///
+/// A request is one line of printable ASCII, `<verb> [<arguments>]`, and is not
+/// run inside the call that makes it: the host sends it after the call and tells
+/// the app the answer in a later one. A *read* may be sent at any time. A
+/// *change* is passed on only when the call that sent it was started by a real
+/// key or click from the person at the desktop, and a call may send one change;
+/// a change an app sends from `init`, an answer, a timer or an action the AI
+/// synthesised is refused with an error answer, so the AI cannot drive the
+/// Settings window into revoking or removing anything.
+package kai:settings@0.1.0;
+
+interface settings {
+    /// Queues `request` for the system and returns its ticket. The whole request
+    /// must be one of these, exactly:
+    ///
+    /// - reads: `rules`, `grants`, `about`, `profiles`, `apps` (the apps that can
+    ///   nap), `file appearance`, `file apps` and `file updates` (a settings
+    ///   file's bytes);
+    /// - changes, where a name is 1 to 24 printable ASCII bytes with one space
+    ///   at most between words:
+    ///   - `appearance-set <setting> <value>`, a setting of `theme`, `scale`,
+    ///     `text_size`, `token`, `reduced_motion` or `legible`, and a value of
+    ///     up to 64 bytes;
+    ///   - `profile-set <name>`;
+    ///   - `rules-remove <n>` or `rules-remove S<n>`, up to four digits;
+    ///   - `grants-revoke <id>`, decimal;
+    ///   - `keep-running on|off <app>`;
+    ///   - `restart-window <start> <end>` (minutes of the day, below 1440 and
+    ///     different) or `restart-window off`.
+    ///
+    /// Refused (the call traps) when `request` is anything else, is longer than
+    /// 512 bytes, is not printable ASCII, is a second change in the same call, or
+    /// 16 requests are waiting for the host already.
+    send: func(request: string) -> u32;
+}
+
+/// What the system answered.
+interface replies {
+    /// The answer to the request with this ticket: text (or a settings file's
+    /// bytes, at most 64 KiB) for a read, a line saying what was done for a
+    /// change, or why there is none (the system is not running, refused it, or
+    /// the request was a change the person did not make; at most 200 printable
+    /// ASCII bytes). A ticket is not reused while this instance runs; a new
+    /// instance starts again from 0.
+    on-reply: func(ticket: u32, outcome: result<list<u8>, string>);
+}
+
+/// An app that reads and changes settings: the two halves of the grant.
+world settings-access {
+    import settings;
+    export replies;
+}

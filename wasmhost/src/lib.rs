@@ -23,9 +23,13 @@ pub mod desk;
 #[cfg(test)]
 mod desk_tests;
 mod effects;
+pub mod grants;
 mod instance;
 pub mod linear;
 pub mod link;
+pub mod settings;
+#[cfg(test)]
+mod settings_tests;
 pub mod surface;
 #[cfg(test)]
 mod surface_tests;
@@ -43,9 +47,11 @@ mod user_tests;
 
 use alloc::format;
 use alloc::string::ToString;
-pub use canonical::{CoreInstance, load_core};
+pub use canonical::{CoreInstance, load_core, load_core_granted};
+pub use grants::Grants;
 pub use instance::WasmInstance;
 use livecore::{Fault, Reason};
+pub use settings::{Kind as SettingsKind, SettingsRequest};
 pub use tables::{EXPORTS, IMPORTS};
 pub use ui::{ActRefused, AppEvent, MAX_UPDATES, Update};
 use wasmi::{CompilationMode, Config, EnforcedLimits, Engine, Module};
@@ -123,6 +129,17 @@ pub fn load_live(
     limits: Limits,
     log: Option<LogSink>,
 ) -> Result<LiveInstance, Fault> {
+    load_live_granted(artifact, limits, log, Grants::default())
+}
+
+/// As [`load_live`], for a version whose package holds `grants` (`kai:settings`).
+#[inline(never)]
+pub fn load_live_granted(
+    artifact: &[u8],
+    limits: Limits,
+    log: Option<LogSink>,
+    grants: Grants,
+) -> Result<LiveInstance, Fault> {
     let parsed = match livecore::artifact::parse(artifact) {
         Ok(parsed) => Some(parsed),
         // A manifest that is there must hold, or the version would load as
@@ -135,7 +152,7 @@ pub fn load_live(
             let rows = parsed.and_then(|a| a.actions).unwrap_or_default();
             let actions = livecore::actions::parse(rows)
                 .map_err(|why| Fault::new(Reason::Link, format!("kai.actions: {why}")))?;
-            let mut instance = load_core(artifact, limits, log)?;
+            let mut instance = load_core_granted(artifact, limits, log, grants)?;
             instance.set_actions(actions);
             Ok(LiveInstance::V2(instance))
         }

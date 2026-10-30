@@ -5,6 +5,7 @@ use crate::desk::{self, Desk, Told};
 use alloc::vec::Vec;
 use deskcore::desk::{Desk as Screen, Effect, Focus};
 use deskcore::server::{Client, Need};
+use surfabi::proto::{Interface, Request};
 use uikit::layout::FixedAdvance;
 use uikit::widget::{Layout, ROOT, Widget};
 use uikit::{Frame, Window};
@@ -164,3 +165,65 @@ fn desktop_learns_a_buttons_action_and_the_windows_unsaved_changes() {
     assert!(!client.unsaved(window));
     assert_eq!(client.bound_action(window, button), None);
 }
+
+#[test]
+fn desktop_learns_a_private_window_before_its_contents() {
+    let mut screen = Screen::new(1280, 800);
+    let mut client = Client::new(7, "settings-window");
+    let mut d = Desk::new();
+    client.take_events(8192);
+    let mut win = Window::new("Settings", 320, 200);
+    win.set_agent_private(true);
+    let first = bound(&mut win, None, false);
+    let Err(open) = d.frame(1, &first) else {
+        panic!("a first frame opens a window");
+    };
+    // The flag comes before the tree: no message holds the contents first.
+    let all: Vec<u8> = open.calls.concat();
+    let tree = crate::surface::tree_update(&first).encode();
+    let flag = position(&all, |m| m == &Request::SetAgentPrivate(true)).expect("the flag");
+    let tree = position(&all, |m| m == &Request::TreeUpdate(&tree)).expect("the tree");
+    assert!(flag < tree, "flag is message {flag}, tree {tree}");
+    let needs = serve(&mut client, &mut screen, &open.calls, true);
+    let [Need::MapPool { pool, .. }, Need::Show { window, .. }] = needs[..] else {
+        panic!("{needs:?}");
+    };
+    client.pool_mapped(pool);
+    assert!(client.agent_private(window));
+    // Shared again: told once, not on every frame.
+    win.set_agent_private(false);
+    let Ok(show) = d.frame(1, &bound(&mut win, None, false)) else {
+        panic!("an open window takes new pictures");
+    };
+    serve(&mut client, &mut screen, &show.calls, false);
+    assert!(!client.agent_private(window));
+    let Ok(show) = d.frame(1, &bound(&mut win, None, false)) else {
+        panic!("an open window takes new pictures");
+    };
+    let shared = |m: &Request<'_>| m == &Request::SetAgentPrivate(false);
+    assert_eq!(position(&show.calls.concat(), shared), None);
+}
+
+/// The index of the first message in `calls` that `is` picks, as `desktop`
+/// would read it on whichever object it went to.
+fn position(calls: &[u8], is: impl Fn(&Request<'_>) -> bool) -> Option<usize> {
+    let mut rest = calls;
+    let mut index = 0;
+    while !rest.is_empty() {
+        let (header, args, after) = surfabi::wire::split(rest).ok()?;
+        let picked = INTERFACES.iter().any(|&interface| {
+            Request::decode(interface, header.opcode, args).is_ok_and(|m| {
+                m.encode(header.object)
+                    .is_ok_and(|bytes| bytes.len() == header.size as usize)
+                    && is(&m)
+            })
+        });
+        if picked {
+            return Some(index);
+        }
+        (rest, index) = (after, index + 1);
+    }
+    None
+}
+
+const INTERFACES: [Interface; 2] = [Interface::Toplevel, Interface::A11y];

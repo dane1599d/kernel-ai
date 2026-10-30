@@ -1,0 +1,14 @@
+/// The Settings app as its manifest names it: a live component with its window,
+/// its action and the granted `kai:settings` interface. It changes the system
+/// only through `kai:settings`, so it has no storage, clock or effects.
+package app:settings-window@1.0.0;
+
+world settings-window {
+    include kai:app/component@0.1.0;
+    import kai:settings/settings@0.1.0;
+    import kai:ui/view@0.1.1;
+    export kai:ui/input@0.1.1;
+    export kai:app/events@0.1.0;
+    export kai:settings/replies@0.1.0;
+    export app:settings/actions@1.0.0;
+}
