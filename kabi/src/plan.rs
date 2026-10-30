@@ -47,6 +47,10 @@ pub fn notes(version: &str, fallback: Option<&str>) -> String {
         None => format!("{NOTES_BASE} version={version}"),
     }
 }
+/// The Files app (P4 task 5), `comphost` serving `files-window` with a route to
+/// `desktop` for its window. It reads and changes files through effects the
+/// shell runs; a case without the shell leaves them unanswered.
+pub const FILES_WINDOW: &str = "files-window program=comphost caps=serve+component+call uses=desktop pages=8192 stack_pages=512 burst_ms=20000 version=1";
 /// The System monitor (P4 task 9), `comphost` serving `monitor-window`: a route
 /// to `desktop` for its window, and after it one to `llm`, which comphost asks
 /// for `health` and for nothing else. comphost takes the second route to be llm's,

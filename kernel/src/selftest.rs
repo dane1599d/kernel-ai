@@ -165,6 +165,8 @@ pub enum SelfTest {
     /// The System monitor's window on the desktop, given a sample of the machine
     /// and closed from its control (P4 task 9).
     AppMonitor,
+    /// The Files window on the desktop, shown and closed from its control (P4 task 5).
+    AppFiles,
     /// An unused app naps and a click wakes it (P3 task 12b).
     DeskNap,
     /// Asks answered on `desktop`'s card, and on the console when it dies (P3 task 7).
@@ -344,6 +346,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=desk-catalog" => Some(SelfTest::DeskCatalog),
             "test=ui-window" => Some(SelfTest::UiWindow),
             "test=app-monitor" => Some(SelfTest::AppMonitor),
+            "test=app-files" => Some(SelfTest::AppFiles),
             "test=desk-nap" => Some(SelfTest::DeskNap),
             "test=desk-card" => Some(SelfTest::DeskCard),
             "test=desk-standing" => Some(SelfTest::DeskStanding),
@@ -434,6 +437,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DeskCatalog
             | SelfTest::UiWindow
             | SelfTest::AppMonitor
+            | SelfTest::AppFiles
             | SelfTest::DeskNap
             | SelfTest::DeskCard
             | SelfTest::DeskStanding
@@ -627,6 +631,10 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
     if test == SelfTest::AppMonitor {
         plan.push('\n');
         plan.push_str(&crate::app_tests::monitor_plan());
+    }
+    if test == SelfTest::AppFiles {
+        plan.push('\n');
+        plan.push_str(&crate::app_tests::files_plan());
     }
     if test == SelfTest::DeskNap {
         plan.push('\n');

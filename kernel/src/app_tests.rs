@@ -25,6 +25,16 @@ pub fn monitor_plan() -> String {
     )
 }
 
+/// The plan lines `test=app-files` adds: `desktop`, then the Files app with its
+/// route to it. No shell runs, so the listing the app asks for waits unanswered;
+/// the case shows the window, not the files in it.
+pub fn files_plan() -> String {
+    format!(
+        "desktop caps=display+input+serve pages=8192 stack_pages=512\n{}",
+        kabi::plan::FILES_WINDOW
+    )
+}
+
 const WAIT_MS: u64 = 60_000;
 /// Time for comphost to start the app, paint its first frame and, for the
 /// Monitor, give it a sample, under TCG.
@@ -78,5 +88,14 @@ pub fn monitor_check() -> Result<(), &'static str> {
         640,
         "app-monitor: the desktop never took the screen",
         "app-monitor: the Monitor's window was shown, and its close control pressed",
+    )
+}
+
+pub fn files_check() -> Result<(), &'static str> {
+    window_check(
+        "files-window",
+        720,
+        "app-files: the desktop never took the screen",
+        "app-files: the Files window was shown, and its close control pressed",
     )
 }

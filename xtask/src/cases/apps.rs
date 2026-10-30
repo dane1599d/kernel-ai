@@ -18,4 +18,16 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("app-monitor", "test=app-monitor")
     },
+    // P4 task 5: the Files window on the desktop, shown and closed from its
+    // control. No shell runs, so what it asks the OS for waits unanswered.
+    TestCase {
+        expect: &[
+            "comphost: window 1 \"Files\" shown at 720x460",
+            "desktop: window 1 \"Files\" opened at 48,52 size 722x494",
+            "comphost: window 1 closed",
+            "desktop: window 1 closed",
+            "app-files: the Files window was shown, and its close control pressed",
+        ],
+        ..case("app-files", "test=app-files")
+    },
 ];
