@@ -19,34 +19,23 @@ pub(super) const CASES: &[TestCase] = &[
     },
     // P4 task 11: the editor app. The agent's door opens Notes' source at a line in
     // the editor's window; once the case has clicked into it the host types a
-    // comment (`// src/lib.rs:6`) and Ctrl-B, and the edit builds in the background;
-    // then it clicks on that link with Ctrl held, and the editor shows line 6.
+    // comment (`// src/lib.rs:6`) a few keys a stage, each stage waited for in the
+    // editor's own status (so TCG is as good as KVM), then Ctrl-B, and the edit
+    // builds in the background; then the case clicks on that link with Ctrl held,
+    // and the editor shows line 6.
     TestCase {
         keys: &[
-            &[
-                "slash",
-                "slash",
-                "spc",
-                "s",
-                "r",
-                "c",
-                "slash",
-                "l",
-                "i",
-                "b",
-                "dot",
-                "r",
-                "s",
-                "shift-semicolon",
-                "6",
-                "ctrl-b",
-            ],
+            &["slash", "slash", "spc", "s", "r"],
+            &["c", "slash", "l", "i", "b"],
+            &["dot", "r", "s", "shift-semicolon", "6"],
+            &["ctrl-b"],
             // Ctrl held for the case's click on the link, which it makes inside the hold.
             &["!sendkey ctrl 8000"],
         ],
         expect: &[
             "app-editor: the agent opened Notes' src/lib.rs at line 1 in the editor",
             "[edit] built e",
+            "app-editor: the host's keys were typed in the editor",
             "app-editor: an edit typed in the editor was built in the background",
             "app-editor: a Ctrl-click on a source link in the editor opened its line",
         ],

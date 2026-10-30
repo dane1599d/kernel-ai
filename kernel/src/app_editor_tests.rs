@@ -11,8 +11,13 @@
 //! build gate takes it as the person's, and the host builds in the background; the
 //! step ends when the build's upload is in the component store. Last the host holds
 //! Ctrl while the case clicks on the link, and the editor shows the linked line.
-//! Each step shows in comphost's, `desktop`'s and the edit service's log lines,
-//! which the case in `xtask/src/cases/components.rs` expects.
+//!
+//! Nothing here waits for a time: each step of the host's keys (a stage in the
+//! case's table, sent when this test logs `ready for keys`) is waited for in the
+//! editor's own status, which shows the cursor and the edits, so a slow guest
+//! (TCG, a painting desktop) only takes longer. Each step shows in comphost's,
+//! `desktop`'s and the edit service's log lines, which the case in
+//! `xtask/src/cases/components.rs` expects.
 
 use crate::display::claim;
 use crate::process::components;
@@ -41,17 +46,15 @@ pub fn plan() -> String {
 
 const NAME: &str = "editor";
 const CALL_MS: u64 = 60_000;
-const WAIT_MS: u64 = 90_000;
+/// For a step to show in the editor, under TCG.
+const WAIT_MS: u64 = 120_000;
 /// A build on the host, from the key to the upload, under TCG.
 const BUILD_MS: u64 = 200_000;
 /// Time for comphost to start the app and paint its first frame under TCG.
 const OPEN_MS: u64 = 10_000;
-/// Time for the window to take a click.
-const CLICK_MS: u64 = 2_000;
-/// Time for the host's keys to be typed and Ctrl-B to be taken.
-const KEYS_MS: u64 = 8_000;
 /// Time for the host's Ctrl to be down before the click: the harness answers the
-/// log line, QEMU queues the key, and the hold outlasts the three reports.
+/// log line and QEMU queues the key at once, so this is long enough on any guest,
+/// and the hold outlasts the three reports.
 const CTRL_LEAD_MS: u64 = 2_000;
 /// Between two looks at the app's status, each of which also lets it look at a
 /// running build.
@@ -63,6 +66,9 @@ const START: (i32, i32) = (640, 400);
 /// 48,52, under its 34 px title bar and the app's own title line, and the click is
 /// well right of the gutter and within the lines' text.
 const CODE: (i32, i32) = (48 + 300, 52 + 100);
+/// How many keys each of the case's typing stages types (`// sr`, `c/lib`,
+/// `.rs:6`, one cell each); the case's table has these stages, then Ctrl-B.
+const TYPED: [u32; 3] = [5, 5, 5];
 /// From that click to the typed link: the comment starts at the click's cell and
 /// its `src/lib.rs:6` takes cells 3 to 14 of it, so 9 cells right is in the middle
 /// of it, for any cell 8 to 10 px wide.
@@ -77,6 +83,15 @@ fn status() -> Result<String, &'static str> {
     ipc::call(NAME, STATUS.as_bytes(), CALL_MS)
         .map(|reply| String::from_utf8_lossy(&reply).into_owned())
         .map_err(|_| "app-editor: the editor did not answer for its status")
+}
+
+/// The cursor, as (line, column), in a status such as `... lib.rs; line 2, column
+/// 43; 1 edit(s) ...`.
+fn cursor(status: &str) -> Option<(u32, u32)> {
+    let rest = &status[status.find("; line ")? + "; line ".len()..];
+    let (line, rest) = rest.split_once(", column ")?;
+    let column: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    Some((line.parse().ok()?, column.parse().ok()?))
 }
 
 /// Looks at the app's status until `done` likes it. The status is also what makes
@@ -147,21 +162,38 @@ fn open_source() -> Result<(), &'static str> {
     Ok(())
 }
 
-/// A click into the window gives its code view the keys; the host types a comment
-/// and Ctrl-B, and the build's upload arrives in the component store.
-fn type_and_build() -> Result<(), &'static str> {
+/// A click into the code view, which gives it the keys and moves the cursor; the
+/// cursor it moved to.
+fn click_in() -> Result<(u32, u32), &'static str> {
+    let before = cursor(&status()?);
     report(CODE.0 - START.0, CODE.1 - START.1, 0);
     report(0, 0, 1);
     report(0, 0, 0);
-    threads::sleep_ms(CLICK_MS);
+    let said = until("the click to move the editor's cursor", WAIT_MS, |said| {
+        cursor(said).is_some() && cursor(said) != before
+    })?;
+    cursor(&said).ok_or("app-editor: the editor's status has no cursor")
+}
+
+/// The host types a comment, a few keys a stage, each stage seen in the cursor;
+/// then Ctrl-B, and the build's upload arrives in the component store.
+fn type_and_build(from: (u32, u32)) -> Result<(), &'static str> {
+    let mut column = from.1;
+    for keys in TYPED {
+        log!("app-editor: ready for keys");
+        column += keys;
+        until("the typed keys to show in the editor", WAIT_MS, |said| {
+            cursor(said) == Some((from.0, column))
+        })?;
+    }
+    log!("app-editor: the host's keys were typed in the editor");
     log!("app-editor: ready for keys");
-    threads::sleep_ms(KEYS_MS);
-    let typed = until(
+    let sent = until(
         "the typed edit to reach the edit service",
         WAIT_MS,
         |said| !said.contains("; 0 edit(s)"),
     )?;
-    log!("app-editor: after the keys, {}", typed.replace('\n', "; "));
+    log!("app-editor: after Ctrl-B, {}", sent.replace('\n', "; "));
     for _ in 0..BUILD_MS / POLL_MS {
         if built() {
             log!("app-editor: an edit typed in the editor was built in the background");
@@ -199,6 +231,7 @@ fn ctrl_click() -> Result<(), &'static str> {
 pub fn check() -> Result<(), &'static str> {
     desktop_and_apps()?;
     open_source()?;
-    type_and_build()?;
+    let at = click_in()?;
+    type_and_build(at)?;
     ctrl_click()
 }
