@@ -77,6 +77,7 @@ pub const CHANGES: &[&str] = &[
     "profile-set",
     "rules-remove",
     "grants-revoke",
+    "grants-restore",
     "keep-running",
     "restart-window",
 ];
@@ -153,8 +154,36 @@ fn window(text: &str) -> bool {
     }
 }
 
+/// An app as the shell names it in `grants`, its plan-line name: 1 to
+/// [`MAX_NAME`] bytes of lowercase letters, digits and `-` (shellcore's
+/// `valid_name`), so a request splits on spaces alone.
+fn app_ok(text: &str) -> bool {
+    !text.is_empty()
+        && text.len() <= MAX_NAME
+        && text
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+/// An effect row an app declares (`notes_add`), as the shell keeps it: a
+/// lowercase letter, then lowercase letters, digits and `_`, at most
+/// [`MAX_NAME`] bytes, since the undo holds it in a `kabi` name.
+fn row_ok(text: &str) -> bool {
+    text.len() <= MAX_NAME
+        && text.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
+        && text
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+}
+
+/// `<app> <row>`, as `grants-revoke` and `grants-restore` take them.
+fn app_row(args: &str) -> bool {
+    args.split_once(' ')
+        .is_some_and(|(app, row)| app_ok(app) && row_ok(row))
+}
+
 /// What `request` is, or why it is not a request an app may send. A read is one
-/// of [`READS`], exactly. A change is a verb of [`CHANGES`] with arguments that
+/// of [`READS`], exactly, or `grants <app>`. A change is a verb of [`CHANGES`] with arguments that
 /// fit that verb's grammar. Only printable ASCII is allowed, so no control,
 /// bidirectional or look-alike character reaches a log or a handler.
 pub fn classify(request: &str) -> Result<Kind, String> {
@@ -167,7 +196,7 @@ pub fn classify(request: &str) -> Result<Kind, String> {
     if !printable(request) {
         return Err(String::from("only printable ASCII"));
     }
-    if READS.contains(&request) {
+    if READS.contains(&request) || request.strip_prefix("grants ").is_some_and(app_ok) {
         return Ok(Kind::Read);
     }
     let (verb, args) = match request.split_once(' ') {
@@ -180,7 +209,7 @@ pub fn classify(request: &str) -> Result<Kind, String> {
         }),
         "profile-set" => name_ok(args, MAX_NAME),
         "rules-remove" => rule(args),
-        "grants-revoke" => number(args, 10).is_some(),
+        "grants-revoke" | "grants-restore" => app_row(args),
         "keep-running" => args
             .split_once(' ')
             .is_some_and(|(flag, app)| matches!(flag, "on" | "off") && name_ok(app, MAX_NAME)),
