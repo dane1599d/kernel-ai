@@ -222,6 +222,24 @@ pub fn present(vol: &mut dyn Volume, sha: &Sha) -> Result<bool, String> {
 }
 
 /// An object's own header.
+/// `change` as action `action` (ADR 0004 §4): committed, or aborted if any of
+/// it fails, so a failure never leaves an action open that blocks every other
+/// writer of the volume.
+pub fn in_action(
+    vol: &mut dyn Volume,
+    action: u64,
+    change: impl FnOnce(&mut dyn Volume) -> Result<(), String>,
+) -> Result<(), String> {
+    vol.begin(action)?;
+    match change(vol).and_then(|()| vol.commit()) {
+        Ok(()) => Ok(()),
+        Err(why) => {
+            let _ = vol.abort();
+            Err(why)
+        }
+    }
+}
+
 fn object_header(bytes: &[u8]) -> Result<Header, String> {
     let files = bundle::files(bytes)?;
     let (_, header) = files
@@ -250,13 +268,12 @@ impl Store {
             why: "image".into(),
             packages: image,
         };
-        cx.vol.begin(cx.action)?;
-        cx.vol
-            .write(&alloc::format!("{GENS}/1"), first.format().as_bytes())?;
-        cx.vol.write(CURRENT, b"1\n")?;
-        cx.vol.write(GOOD, b"1\n")?;
-        cx.ledger.switched(cx.vol, 1, &first)?;
-        cx.vol.commit()?;
+        in_action(cx.vol, cx.action, |vol| {
+            vol.write(&alloc::format!("{GENS}/1"), first.format().as_bytes())?;
+            vol.write(CURRENT, b"1\n")?;
+            vol.write(GOOD, b"1\n")?;
+            cx.ledger.switched(vol, 1, &first)
+        })?;
         Ok(true)
     }
 
@@ -306,15 +323,14 @@ impl Store {
             failed_text.push_str(&hex(sha));
             failed_text.push('\n');
         }
-        cx.vol.begin(cx.action)?;
-        cx.vol
-            .write(&alloc::format!("{GENS}/{n}"), next.format().as_bytes())?;
-        if !failed_now.is_empty() {
-            cx.vol.write(FAILED, failed_text.as_bytes())?;
-        }
-        cx.vol.write(CURRENT, alloc::format!("{n}\n").as_bytes())?;
-        cx.ledger.switched(cx.vol, n, &next)?;
-        cx.vol.commit()?;
+        in_action(cx.vol, cx.action, |vol| {
+            vol.write(&alloc::format!("{GENS}/{n}"), next.format().as_bytes())?;
+            if !failed_now.is_empty() {
+                vol.write(FAILED, failed_text.as_bytes())?;
+            }
+            vol.write(CURRENT, alloc::format!("{n}\n").as_bytes())?;
+            cx.ledger.switched(vol, n, &next)
+        })?;
         Ok(n)
     }
 
@@ -550,15 +566,15 @@ impl Store {
         if old.is_empty() && objects.is_empty() {
             return refuse(Refused::NothingToDo);
         }
-        cx.vol.begin(cx.action)?;
-        for g in &old {
-            cx.vol.remove(&alloc::format!("{GENS}/{g}"))?;
-        }
-        for o in &objects {
-            cx.vol.remove(&alloc::format!("{OBJECTS}/{o}"))?;
-        }
-        cx.ledger.collected(cx.vol, &old, objects.len())?;
-        cx.vol.commit()?;
+        in_action(cx.vol, cx.action, |vol| {
+            for g in &old {
+                vol.remove(&alloc::format!("{GENS}/{g}"))?;
+            }
+            for o in &objects {
+                vol.remove(&alloc::format!("{OBJECTS}/{o}"))?;
+            }
+            cx.ledger.collected(vol, &old, objects.len())
+        })?;
         Ok((old.len(), objects.len()))
     }
 }
@@ -644,4 +660,73 @@ pub fn check(vol: &mut dyn Volume, store: &Store, now: Time) -> Result<Summary, 
         objects,
         failed: failed(vol)?.len(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memvol::MemVolume;
+
+    /// A volume whose writes to `current` fail, as a full disk's would.
+    struct Full(MemVolume);
+
+    impl Volume for Full {
+        fn begin(&mut self, action: u64) -> Result<(), String> {
+            self.0.begin(action)
+        }
+        fn commit(&mut self) -> Result<(), String> {
+            self.0.commit()
+        }
+        fn abort(&mut self) -> Result<(), String> {
+            self.0.abort()
+        }
+        fn read(&mut self, path: &str) -> Result<Option<Vec<u8>>, String> {
+            self.0.read(path)
+        }
+        fn list(&mut self, dir: &str) -> Result<Vec<String>, String> {
+            self.0.list(dir)
+        }
+        fn write(&mut self, path: &str, bytes: &[u8]) -> Result<(), String> {
+            match path == CURRENT {
+                true => Err("no space".into()),
+                false => self.0.write(path, bytes),
+            }
+        }
+        fn append(&mut self, path: &str, bytes: &[u8]) -> Result<(), String> {
+            self.0.append(path, bytes)
+        }
+        fn rename(&mut self, from: &str, to: &str) -> Result<(), String> {
+            self.0.rename(from, to)
+        }
+        fn remove(&mut self, path: &str) -> Result<(), String> {
+            self.0.remove(path)
+        }
+    }
+
+    struct NoLedger;
+
+    impl Ledger for NoLedger {
+        fn switched(&mut self, _: &mut dyn Volume, _: u64, _: &Generation) -> Result<(), String> {
+            Ok(())
+        }
+        fn collected(&mut self, _: &mut dyn Volume, _: &[u64], _: usize) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_switch_that_fails_partway_aborts_its_action() {
+        let mut vol = Full(MemVolume::default());
+        let mut cx = Ctx {
+            vol: &mut vol,
+            ledger: &mut NoLedger,
+            now: Time(1),
+            action: 1,
+        };
+        let failed = Store::default().setup(&mut cx, Vec::new());
+        assert_eq!(failed, Err(Error::Store("no space".into())));
+        assert!(vol.0.files().is_empty(), "nothing of it is kept");
+        // No action is left open to block the next writer.
+        assert_eq!(vol.0.begin(2), Ok(()));
+    }
 }

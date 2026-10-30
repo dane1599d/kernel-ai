@@ -211,6 +211,9 @@ fn handle(services: &mut [Service], text: &str, caller: u64) -> String {
     if let Some(run) = supervise::Run::parse(text) {
         return run_package(services, run, caller);
     }
+    if let Some(withdraw) = supervise::Run::parse_withdraw(text) {
+        return withdraw_package(services, withdraw, caller);
+    }
     if let Some((name, on)) = supervise::keep::parse(text) {
         return keep(services, &records, name, on, caller);
     }
@@ -474,6 +477,44 @@ fn run_package(services: &mut [Service], run: supervise::Run, caller: u64) -> St
     service.record.gave_up = false;
     service.start_at_ms = Some(now_ms());
     println!("{name} starts on package version {} for pkg", run.version);
+    save(services);
+    String::from("ok")
+}
+
+/// `withdraw <name> version=<label>` from `caller`: the store holder took that
+/// package version back out (an undo), so the `start=pkg` app ends if it runs
+/// it and waits for `pkg` to name a version again. Only from that holder
+/// (`supervise::check_run`); an app on another version keeps running.
+fn withdraw_package(services: &mut [Service], withdraw: supervise::Run, caller: u64) -> String {
+    let held: Vec<(&ServiceSpec, Option<u64>)> =
+        services.iter().map(|s| (&s.spec, s.pid)).collect();
+    let index = match supervise::check_run(withdraw, &held, caller) {
+        Ok(index) => index,
+        Err(why) => {
+            println!(
+                "{:?} from pid {caller} refused: {why}",
+                withdraw.encode_withdraw()
+            );
+            return String::from(why);
+        }
+    };
+    let service = &mut services[index];
+    if service.version.as_deref() != Some(withdraw.version) {
+        return String::from("ok");
+    }
+    let name = service.spec.name.clone();
+    service.version = None;
+    service.start_at_ms = None;
+    if let Some(pid) = service.pid
+        && let Err(error) = sys::kill(pid)
+    {
+        println!("cannot end {name} (pid {pid}): {error:?}");
+        return format!("err cannot end it: {error:?}");
+    }
+    println!(
+        "{name} ends: pkg took package version {} back out",
+        withdraw.version
+    );
     save(services);
     String::from("ok")
 }
