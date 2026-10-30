@@ -38,6 +38,12 @@ pub fn write(dirs: &[PathBuf], world: &str) -> Result<String, String> {
         .get(world_name)
         .ok_or_else(|| format!("{package} has no world {world_name}"))?;
     let mut out = format!("kai-actions 1\nworld {world}\n");
+    // The OS rows the app's effects may call, from a `kai: effects=a,b` line
+    // of the world's doc comment (P4): none if it has none.
+    let effects = world_effects(resolve.worlds[world_id].docs.contents.as_deref());
+    if !effects.is_empty() {
+        out.push_str(&format!("effects {}\n", effects.join(" ")));
+    }
     for item in resolve.worlds[world_id].exports.values() {
         let WorldItem::Interface { id, .. } = item else {
             continue;
@@ -70,6 +76,17 @@ pub fn write(dirs: &[PathBuf], world: &str) -> Result<String, String> {
     }
     livecore::actions::parse(&out).map_err(|why| format!("{world}: {why}"))?;
     Ok(out)
+}
+
+/// The rows a world's `kai: effects=a,b` doc line names.
+fn world_effects(docs: Option<&str>) -> Vec<String> {
+    docs.unwrap_or("")
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("kai: effects="))
+        .flat_map(|list| list.split(','))
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .collect()
 }
 
 fn version(name: &wit_parser::PackageName) -> Result<String, String> {
@@ -296,6 +313,8 @@ mod tests {
         let text = write(&notes_dirs(), "app:notes/notes@1.0.0").unwrap();
         let actions = livecore::actions::parse(&text).unwrap();
         assert_eq!(actions.world, "app:notes/notes@1.0.0");
+        // Notes keeps its notes in its own storage: its effects call no row.
+        assert!(actions.effects.is_empty());
         let names: Vec<&str> = actions.rows.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(
             names,
@@ -321,6 +340,13 @@ mod tests {
         );
         assert!(text.contains("sig func(word: string) -> list<u32>\n"));
         assert!(text.contains("sig func(id: u32) -> option<string>\n"));
+    }
+
+    #[test]
+    fn a_worlds_effects_line_comes_from_its_docs() {
+        let docs = "The Files app.\nkai: effects=fs_list, fs_read,fs_move\n";
+        assert_eq!(world_effects(Some(docs)), ["fs_list", "fs_read", "fs_move"]);
+        assert!(world_effects(None).is_empty());
     }
 
     #[test]

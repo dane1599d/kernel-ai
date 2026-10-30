@@ -24,6 +24,8 @@ pub enum ActCase {
     /// `fs-undo-reboot`'s first boot, then its second (`reread`).
     FsUndoReboot,
     FsUndoRebooted,
+    /// `app-route` (P4): the agent calls an app's row through the supervisor.
+    AppRoute,
     /// `profile-switch` (P3 task 12): profiles through the supervisor.
     Profile,
 }
@@ -266,6 +268,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=fs-act" => Some(SelfTest::Act(ActCase::FsAct)),
             "test=fs-undo" => Some(SelfTest::Act(ActCase::FsUndo)),
             "test=fs-trash" => Some(SelfTest::Act(ActCase::FsTrash)),
+            "test=app-route" => Some(SelfTest::Act(ActCase::AppRoute)),
             "test=profile-switch" => Some(SelfTest::Act(ActCase::Profile)),
             "test=fs-undo-reboot" => Some(SelfTest::Act(
                 match cmdline.split_whitespace().any(|w| w == "reread") {
@@ -442,6 +445,14 @@ pub fn plan(test: SelfTest) -> Option<String> {
         SelfTest::Live => format!("{}\n{}", kabi::plan::NOTES_TEST, crate::llm::plan_line()),
         SelfTest::Part => String::from(kabi::plan::FS),
         SelfTest::AppSuspend => kabi::plan::notes("2", None),
+        // notes is listed before the shell, whose call reaches it through the
+        // supervisor, never a route.
+        SelfTest::Act(ActCase::AppRoute) => format!(
+            "{}
+{}",
+            crate::llm::plan_line(),
+            kabi::plan::notes("2", None)
+        ),
         SelfTest::AppSaved { .. } => crate::saved_tests::plan(),
         SelfTest::AppOnDemand => crate::demand_tests::plan(),
         // llm first, so it asks for the model while fs still fills it.

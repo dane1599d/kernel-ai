@@ -15,6 +15,8 @@
 //! rule, checked with RULE_CHECK, the kernel sends the app its `ctl` (APP_CTL)
 //! and the app's answer is the reply.
 //! `services` lists them, for the shell to tell a service from a process.
+//! `app-call <app>` forwards the shell's `kai-call 1` or `kai-undo 1` to an
+//! app through the kernel (APP_CALL), starting the app first if it is down.
 //! A `start=demand` service is not started at boot: `demand <name>`, which only
 //! the kernel sends, when a call first waits for it, starts it (P3 task 12b).
 //! `profile <pid> <class> <pages|->` sets one process's CPU class and page quota
@@ -184,7 +186,8 @@ fn main() -> i32 {
 
 /// Takes the waiting request and answers it: `ok`, or why not.
 fn serve(services: &mut [Service], classes: &mut Vec<(u64, u64)>) {
-    let mut buf = [0u8; 128];
+    // One message: an `app-call` carries a whole `kai-call 1`.
+    let mut buf = vec![0u8; supervise::appcall::MAX_SERVED];
     let mut caller = 0;
     // The request is already queued, so this does not wait.
     let Ok(len) = sys::svc_recv(&mut buf, 1, &mut caller) else {
@@ -204,6 +207,9 @@ fn handle(services: &mut [Service], text: &str, caller: u64) -> String {
     let records: Vec<Record> = services.iter().map(|s| s.record.clone()).collect();
     if text.trim() == supervise::SERVICES {
         return supervise::listing(&records);
+    }
+    if let Some((app, request)) = supervise::appcall::parse(text) {
+        return app_call(services, app, request, caller);
     }
     if let Some(name) = supervise::parse_demand(text) {
         return demand(services, &records, name, caller);
@@ -364,6 +370,72 @@ fn send_ctl(name: &str, verb: sys::AppCtl) -> String {
             text
         }
         Err(error) => format!("err cannot reach {name}: {error:?}"),
+    }
+}
+
+const APP_START_POLL_MS: u64 = 100;
+
+/// `app-call <app>`: the shell's request to app `app`, through the kernel. The
+/// app's own reply, or `err ...`. An app that is down, and not stopped or given
+/// up on, is started and the call tried again once it serves. The whole call,
+/// the start too, takes at most `supervise::appcall::WAIT_MS`; past that the
+/// answer is `err timeout`.
+fn app_call(services: &mut [Service], app: &str, request: &str, caller: u64) -> String {
+    let caller_name = running_services()
+        .into_iter()
+        .find(|(pid, _)| *pid == caller)
+        .map(|(_, name)| name)
+        .unwrap_or_default();
+    let specs: Vec<&ServiceSpec> = services.iter().map(|s| &s.spec).collect();
+    let index = match supervise::appcall::check(&caller_name, app, request, &specs) {
+        Ok(index) => index,
+        Err(why) => return String::from(why),
+    };
+    let mut reply = vec![0u8; kabi::MAX_MESSAGE];
+    let deadline = now_ms() + supervise::appcall::WAIT_MS;
+    let first = sys::app_call(app, request, &mut reply, left(deadline));
+    let len = match first {
+        Err(kabi::Error::NotFound) => {
+            let service = &mut services[index];
+            if service.record.stopped || service.record.gave_up {
+                return format!("err {app} is stopped");
+            }
+            if service.pid.is_none() {
+                println!("{app} starts for a call");
+                start(service, now_ms());
+            }
+            retry(app, request, &mut reply, deadline)
+        }
+        other => other,
+    };
+    match len {
+        Ok(len) => String::from_utf8_lossy(&reply[..len.min(reply.len())]).into_owned(),
+        Err(kabi::Error::TimedOut) => {
+            println!("{app} did not answer a call in time");
+            format!(
+                "{} {app} did not answer in time",
+                supervise::appcall::TIMEOUT
+            )
+        }
+        Err(error) => format!("err cannot reach {app}: {error:?}"),
+    }
+}
+
+/// The milliseconds left until `deadline`, at least 1.
+fn left(deadline: u64) -> u32 {
+    u32::try_from(deadline.saturating_sub(now_ms()).max(1)).unwrap_or(u32::MAX)
+}
+
+/// The call again once `app` serves, until `deadline`.
+fn retry(app: &str, request: &str, reply: &mut [u8], deadline: u64) -> Result<usize, kabi::Error> {
+    loop {
+        match sys::app_call(app, request, reply, left(deadline)) {
+            Err(kabi::Error::NotFound) if now_ms() < deadline => {
+                sys::sleep_ms(APP_START_POLL_MS);
+            }
+            Err(kabi::Error::NotFound) => return Err(kabi::Error::TimedOut),
+            other => return other,
+        }
     }
 }
 
