@@ -15,15 +15,15 @@
 //! | 73-79 | G-core (P3) | DISPLAY_CLAIM, DISPLAY_FLUSH, DISPLAY_CURSOR, DISPLAY_CURSOR_MOVE, INPUT_READ, TERM_READ, INPUT_TO_CONSOLE |
 //! | 80-89 | K, spare | MODEL_FILL 80 and 81 held (S-io, P2 task 10); ONCE_CHECK_FOR 82; P2 task 12's grants |
 //! | 90-99 | S-engine (P2) | |
-//! | 100-109 | P, packages (P2) | |
+//! | 100-109 | P, packages (P2) | BOOT_READ, COMP_ADD, PKG_FETCH, PKG_TIME |
 //! | 110-119 | A-core | |
 //! | 120-129 | model lane | |
 //! | 130-139 | D, drivers (ADR 0007) | RING_ATTACH, RING_NOTIFY, NOTIFY_WAIT, INPUT_PUSH |
 //! | 140-149 | C, components | |
 //! | 150-159 | V, virtual machines (P6) | |
-//! | 160-169 | M, memory | MEM_RESERVE, MEM_COMMIT, MEM_RELEASE |
+//! | 160-169 | M, memory | MEM_RESERVE, MEM_COMMIT, MEM_RELEASE, PROC_QUOTA_SET, PROC_CLASS_SET |
 //! | 170-179 | U, updates (P4) | SLOT_INFO, SLOT_READ, SLOT_WRITE, SLOT_FLUSH, BOOTREC_GET, BOOTREC_SET, TRUST_ROOT, TRUST_TIME |
-//! | 180-189 | not given yet | a lane asks lane K for a block |
+//! | 180-189 | G-core (P3), second block | ASK_READ, ASK_ANSWER, EVENT_POST, EVENT_READ, APP_CTL, APP_CALL |
 //! | 190-191 | S-io (P2), second block | PART_PEER_ALIVE |
 
 /// `exit(code: i32) -> !`
@@ -119,7 +119,8 @@ pub const BUILD: u64 = 27;
 /// linking the kernel's window of 2 MiB pages, which takes nothing from the
 /// page quota; returns its length in bytes, and calling it again maps nothing
 /// new. NotFound when no model is loaded, Invalid if the window cannot be
-/// linked. Needs [`super::cap::MODEL`].
+/// linked, Busy while the model store's model is reserved and not yet filled
+/// ([`MODEL_FILL`]; `llm` asks again). Needs [`super::cap::MODEL`].
 pub const MODEL_MAP: u64 = 28;
 /// `thread_spawn(entry, arg, cpu, stack_pages) -> index`: starts a worker of this
 /// process at `entry` with `arg` in RDI, pinned to CPU `cpu` (below the CPUs
@@ -336,6 +337,17 @@ pub const PROC_STOP_ONCE: u64 = 71;
 /// it (ADR 0002 D2a). Needs [`super::cap::SUPERVISE`]. Permission when no rule
 /// covers it; NotFound for no such process.
 pub const RULE_CHECK: u64 = 72;
+/// `model_fill(partition, extents, count, offset) -> filled` (P2 task 10, ADR
+/// 0004 §8; from lane K's block 80-89): copies the model store's model into the
+/// runs the kernel reserved at boot from `kai-modelhint 1`. `extents` points to
+/// `count` (first block, blocks) pairs of u64, at most 64, naming 4 KiB blocks of
+/// the partition in file order, starting at byte `offset` of the file, which
+/// must be where the last call stopped. Returns the bytes filled so far; at the
+/// model's length the kernel checks its GGUF header and FNV-1a64 and makes it
+/// the model, or refuses it (Invalid). `count` 0 gives up: `fs` found the hinted
+/// file missing or short, the runs are freed and MODEL_MAP answers NotFound.
+/// Needs a `Partition` handle with READ. NotFound when no model is waiting.
+pub const MODEL_FILL: u64 = 80;
 /// `once_check_for(pid, badge, digest_ptr) -> 0`: [`ONCE_CHECK`] for a server
 /// that runs a call for process `pid`: the `ONCE` must also be one `pid`
 /// holds, so a process that only saw the badge cannot spend it. Needs
@@ -395,6 +407,29 @@ pub const INPUT_TO_CONSOLE: u64 = 79;
 
 // ---- P, 100-109 ----
 
+/// `boot_read(path_ptr, path_len, buf, cap) -> len`: copies the boot bundle's
+/// file `path` into `buf` when it fits; its length either way. Only for a process
+/// whose plan line's `bootfiles=` names the folder `path` lies beneath, run as that
+/// line's own program (P4 task 1: `pkg` reads the image's signed repository).
+pub const BOOT_READ: u64 = 100;
+/// `comp_add(&live::Add) -> 0`: adds a version of a component from an
+/// installed package, labelled `p-` and the first 12 hex digits of its SHA-256,
+/// which the kernel computes and checks against the full digest given. It only
+/// adds: a label already there is Busy, a full store NoMemory and an artifact
+/// over [`crate::live::MAX_ARTIFACT`] TooBig. Only for the holder of `/system/pkg`
+/// (its plan line's `dir=pkg`, run as that line's own program).
+pub const COMP_ADD: u64 = 101;
+/// `pkg_fetch(&HttpRequest) -> response len`: sends the request to the fixed
+/// `pkgrepo=` mirror (ADR 0011 §8) and copies its response out, as [`HTTP`] does
+/// for `llm=`. The request must be exactly one `crate::pkgrepo::request` builds,
+/// a GET of at most 192 KiB of one repository file (Invalid otherwise); NotFound
+/// when the command line names no mirror. Only for the holder of `/system/pkg`.
+pub const PKG_FETCH: u64 = 102;
+/// `pkg_time() -> seconds`: the date, seconds since 1970 UTC (Limine's date at
+/// boot plus the time since), for `kaituf`'s expiry checks in `pkg`; NotFound
+/// when the firmware gave none. Only for the holder of `/system/pkg`.
+pub const PKG_TIME: u64 = 103;
+
 // ---- A-core, 110-119 ----
 
 // ---- D, 130-139 ----
@@ -420,6 +455,17 @@ pub const MEM_COMMIT: u64 = 161;
 /// gives every committed page back to the system; how many. NotFound for any
 /// other address.
 pub const MEM_RELEASE: u64 = 162;
+/// `proc_quota_set(pid, pages) -> old`: process `pid`'s page quota, which its
+/// heap, `Shm` objects and MEM_COMMIT charge against, becomes `pages`; the old
+/// one. Pages held past a lower quota stay, and the next allocation fails.
+/// Invalid under 64 pages; Permission to lower the shell's, the supervisor's,
+/// the model service's or `desktop`'s. Needs SUPERVISE (P3 task 12).
+pub const PROC_QUOTA_SET: u64 = 163;
+/// `proc_class_set(pid, class) -> 0`: process `pid` runs `normal` (0) or
+/// `background` (1) on the `classes` policy from now on, every thread; SCHED_STATS
+/// shows it. Permission to make the shell, the supervisor, the model service or
+/// `desktop` background; Busy while a tuning trial runs. Needs SUPERVISE.
+pub const PROC_CLASS_SET: u64 = 164;
 
 // ---- U, 170-179 ----
 
@@ -461,6 +507,57 @@ pub const TRUST_ROOT: u64 = 176;
 /// the time since boot, the clock TUF's expiry checks use (ADR 0008 §7).
 /// NotFound when the firmware gave no date. Needs READ.
 pub const TRUST_TIME: u64 = 177;
+
+// ---- G-core, second block, 180-189 ----
+
+/// `ask_read(handle, buf, cap) -> len`: the ask waiting for `desktop`'s card, as
+/// its log entry id, its call in canonical text (`termcore::once::call_text`)
+/// and its question, one per line; 0 when none waits. Reading marks the trusted
+/// layer alive: the kernel posts asks to the card only while `desktop` reads,
+/// and asks on the console otherwise (ADR 0005 §7). TooBig, with nothing
+/// written, when `cap` is too small. Needs an `Ask` handle, which the kernel
+/// gives only to the service `desktop` running the program `desktop`.
+pub const ASK_READ: u64 = 180;
+/// `ask_answer(handle, id, yes, digest_ptr) -> 0`: answers ask `id` from the
+/// card, Run (`yes` 1) or Don't (0). `digest_ptr` points at the 32-byte
+/// `termcore::once::digest_call` of the call the card showed; NotFound, and
+/// no answer, unless that is the posted ask's. The kernel then mints the
+/// `ONCE` as for the console's menu. Needs an `Ask` handle.
+pub const ASK_ANSWER: u64 = 181;
+/// `event_post(line_ptr, line_len) -> 0`: puts one event for standing
+/// instructions in the kernel's box (P3 task 11), one line as
+/// [`super::event::Event::parse`] reads it: a window event or idle. Invalid for
+/// any other line, and for `time`, which the kernel adds itself. Only the
+/// display holder posts: it needs [`super::cap::DISPLAY`], which the kernel
+/// gives only to `desktop`. The box keeps [`super::event::BOX`] events; past
+/// that the oldest goes, and is counted.
+pub const EVENT_POST: u64 = 182;
+/// `event_read(buf, cap) -> len`: takes the box's events, one line each,
+/// oldest first, then a `time <minute>` (UTC) for each minute of the day begun
+/// since the last read; first `dropped <n>` when events were lost since the
+/// last read. 0 when none wait. Only the process serving `shell` may read.
+/// TooBig, with nothing taken, when `cap` is under
+/// [`super::event::READ_BYTES`].
+pub const EVENT_READ: u64 = 183;
+/// `app_ctl(name_ptr, name_len, verb, buf, cap) -> len`: the kernel sends
+/// `ctl suspend` (`verb` 0), `ctl resume` (1), `ctl keep-running on` (2) or
+/// `ctl keep-running off` (3) to the app service `name`, as its own request,
+/// and writes the reply into `buf`. For the supervisor, which runs
+/// `app_suspend` and `app_resume` for a standing instruction after RULE_CHECK
+/// (P3 task 11), and the shell's keep-running switch (P3 task 12b): needs
+/// [`super::cap::SUPERVISE`]. Invalid for another verb; NotFound with no such
+/// service; TimedOut when it does not answer.
+pub const APP_CTL: u64 = 184;
+/// `app_call(name_ptr, name_len, req_ptr, req_len, buf, cap | wait_ms << 32) -> len`: the
+/// kernel sends `req`, a `kai-call 1`, a `kai-undo 1` or `kai-actions 1`, of at most
+/// [`super::ipc::MAX_MESSAGE`] bytes, to the app service `name` (a process
+/// holding [`super::cap::COMPONENT`]), and writes its reply into `buf`. For
+/// the supervisor, which forwards the agent core's calls to apps' actions (P4,
+/// a v0.1 bridge until per-app routes): needs [`super::cap::SUPERVISE`].
+/// NotFound at once when no such app serves, so the supervisor can start it;
+/// Invalid for any other request; TimedOut when it does not answer within
+/// `wait_ms` (0, or more than 5,000, is 5,000).
+pub const APP_CALL: u64 = 185;
 
 // ---- S-io, second block, 190-191 ----
 

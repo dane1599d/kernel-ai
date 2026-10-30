@@ -23,24 +23,34 @@ mod lookup;
 mod tests;
 mod trash;
 
+use alloc::string::String;
 use alloc::vec::Vec;
 use fsproto::{
     Cursor, Error, How, Kind, Listing, MAX_DATA, MAX_LIST, MAX_ROWS, Outcome, Reply, Request, Stat,
     Version,
 };
-use kabi::fs::{Badge, HOME, HOME_USER, MODELS, SYSTEM, SYSTEM_PKG, SYSTEM_STATE};
+use kabi::fs::{
+    Badge, HOME, HOME_USER, MODELS, SYSTEM, SYSTEM_APPS, SYSTEM_PKG, SYSTEM_SETTINGS, SYSTEM_STATE,
+    SYSTEM_TRUST, SYSTEM_UPDATES,
+};
 use kabi::handle::Rights;
 use kaifs::ns::Listed;
 use kaifs::{BlockDev, FileType, Fs, Inode, ROOT};
 
 /// The folders `fs` makes at its first mount if `cargo xtask fs mkfs` did not
 /// (P2 plan §4.5), by volume.
-const FOLDERS: [(u8, &str); 4] = [
+const FOLDERS: [(u8, &str); 7] = [
     (HOME, "user"),
     (SYSTEM, "settings"),
     (SYSTEM, "state"),
     (SYSTEM, "pkg"),
+    (SYSTEM, "trust"),
+    (SYSTEM, "updates"),
+    (SYSTEM, "apps"),
 ];
+
+/// The most a [`SYSTEM_SETTINGS`] handle may use, however it was made.
+const SETTINGS_RIGHTS: Rights = Rights::READ.union(Rights::ENUMERATE).union(BASE);
 
 /// Rights every minted handle carries, as the kernel's startup handles do.
 pub const BASE: Rights = Rights::DUPLICATE
@@ -104,6 +114,15 @@ pub enum Started {
     Formatted,
 }
 
+/// `/system/state`'s files an update restore keeps ([`Server::kept`]): the
+/// standing rules (`shellcore::rules`).
+const KEPT_STATE: &[&str] = &["rules"];
+/// Names listed at a time while keeping `/system/trust`.
+const KEPT_PAGE: usize = 64;
+
+/// A kept file: its folder, its name, and its bytes (`None`: not there).
+type Kept = (u64, String, Option<Vec<u8>>);
+
 pub struct Server<D: BlockDev> {
     fs: Fs<D>,
     /// The caller whose action is open.
@@ -115,6 +134,15 @@ pub struct Server<D: BlockDev> {
     /// `/system/pkg`'s object id in `system`: what [`SYSTEM_PKG`] names, the
     /// folder a plan line's `dir=pkg` grants (ADR 0011 §12).
     system_pkg: u64,
+    /// `/system/trust` and `/system/updates`: what [`SYSTEM_TRUST`] and
+    /// [`SYSTEM_UPDATES`] name, the folders `updated`'s `dir=` grants.
+    system_trust: u64,
+    system_updates: u64,
+    /// `/system/settings`: what [`SYSTEM_SETTINGS`] names, read only.
+    system_settings: u64,
+    /// `/system/apps`'s object id in `system`: what [`SYSTEM_APPS`] names, the
+    /// folder a plan line's `dir=apps` grants.
+    system_apps: u64,
     /// This disk's epoch, in every badge but the fixed ones ([`kabi::fs`]).
     epoch: u16,
     /// The clock at mount: kaifs's times are this plus time since boot, so they
@@ -154,6 +182,10 @@ impl<D: BlockDev> Server<D> {
             home_user: 0,
             system_state: 0,
             system_pkg: 0,
+            system_trust: 0,
+            system_updates: 0,
+            system_settings: 0,
+            system_apps: 0,
             epoch: 0,
             base,
             pending: None,
@@ -164,7 +196,13 @@ impl<D: BlockDev> Server<D> {
         (
             server.home_user,
             server.system_state,
-            server.system_pkg,
+            [
+                server.system_pkg,
+                server.system_trust,
+                server.system_updates,
+                server.system_settings,
+                server.system_apps,
+            ],
             server.epoch,
         ) = fixed;
         Ok((server, started))
@@ -196,7 +234,7 @@ impl<D: BlockDev> Server<D> {
     /// Makes the missing [`FOLDERS`], and the disk's epoch if it has none, in
     /// one commit; `/home/user`'s, `/system/state`'s and `/system/pkg`'s ids and
     /// the epoch.
-    fn prepare(&mut self, uuid: &[u8; 16]) -> Result<(u64, u64, u64, u16), kaifs::Error> {
+    fn prepare(&mut self, uuid: &[u8; 16]) -> Result<(u64, u64, [u64; 5], u16), kaifs::Error> {
         let fs = self.fs();
         let writable = fs.writable();
         let mut made = false;
@@ -225,10 +263,16 @@ impl<D: BlockDev> Server<D> {
             fs.commit()?;
         }
         let system_state = fs.lookup(ROOT, "state")?.map_or(0, |e| e.ino);
-        let system_pkg = fs.lookup(ROOT, "pkg")?.map_or(0, |e| e.ino);
+        // The plan-line folders: `/system/pkg`, `/system/trust`, `/system/updates`,
+        // `/system/settings`, `/system/apps`.
+        let mut granted = [0; 5];
+        let names = ["pkg", "trust", "updates", "settings", "apps"];
+        for (id, name) in granted.iter_mut().zip(names) {
+            *id = fs.lookup(ROOT, name)?.map_or(0, |e| e.ino);
+        }
         fs.set_volume(HOME.into())?;
         let home_user = fs.lookup(ROOT, "user")?.map_or(0, |e| e.ino);
-        Ok((home_user, system_state, system_pkg, epoch))
+        Ok((home_user, system_state, granted, epoch))
     }
 
     /// The badge for `object` of `volume` on this disk.
@@ -260,6 +304,26 @@ impl<D: BlockDev> Server<D> {
             }
         };
         self.badge(SYSTEM, true, ino)
+    }
+
+    /// The model store's file for `sha256` (`<hex>.gguf` in the `models`
+    /// volume's root, sealed) and its `kai-data` block runs in file order, for
+    /// MODEL_FILL (P2 task 10); `None` if the store has no such sealed file.
+    pub fn model_extents(&mut self, sha256: &[u8; 32]) -> Result<Option<Vec<(u64, u64)>>, Error> {
+        let mut name = alloc::string::String::with_capacity(69);
+        for byte in sha256 {
+            name.push_str(&alloc::format!("{byte:02x}"));
+        }
+        name.push_str(".gguf");
+        let fs = self.fs();
+        fs.set_volume(MODELS.into()).map_err(error)?;
+        let Some(entry) = fs.lookup(ROOT, &name).map_err(error)? else {
+            return Ok(None);
+        };
+        if !fs.is_sealed(entry.ino).map_err(error)? {
+            return Ok(None);
+        }
+        fs.sealed_extents(entry.ino).map(Some).map_err(error)
     }
 
     /// The commit generation now.
@@ -325,8 +389,25 @@ impl<D: BlockDev> Server<D> {
     }
 
     fn answer(&mut self, call: &Call) -> Result<(Reply, Option<Mint>), Error> {
+        // `/system/settings` is read only through its fixed badge, whatever
+        // rights the handle carries: nothing it opens gets more than READ and
+        // ENUMERATE either.
+        let read_only;
+        let call = match call.badge == SYSTEM_SETTINGS {
+            true => {
+                read_only = Call {
+                    rights: call.rights & SETTINGS_RIGHTS,
+                    ..*call
+                };
+                &read_only
+            }
+            false => call,
+        };
         let request = fsproto::decode_request(call.request)?;
         let changes = changes(&request);
+        if changes && call.badge == SYSTEM_SETTINGS {
+            return Err(Error::Permission);
+        }
         if changes && self.owner.is_some_and(|o| o != call.caller) {
             self.reap();
         }
@@ -372,7 +453,16 @@ impl<D: BlockDev> Server<D> {
             epoch,
             object,
         } = Badge::parse(badge);
-        let fixed = matches!(badge, HOME_USER | SYSTEM_STATE | SYSTEM_PKG);
+        let fixed = matches!(
+            badge,
+            HOME_USER
+                | SYSTEM_STATE
+                | SYSTEM_PKG
+                | SYSTEM_TRUST
+                | SYSTEM_UPDATES
+                | SYSTEM_SETTINGS
+                | SYSTEM_APPS
+        );
         let ours = epoch == self.epoch || fixed;
         if !matches!(volume, SYSTEM | HOME | MODELS) || !ours {
             return Err(Error::NotFound);
@@ -381,6 +471,10 @@ impl<D: BlockDev> Server<D> {
             HOME_USER => self.home_user,
             SYSTEM_STATE => self.system_state,
             SYSTEM_PKG => self.system_pkg,
+            SYSTEM_TRUST => self.system_trust,
+            SYSTEM_UPDATES => self.system_updates,
+            SYSTEM_SETTINGS => self.system_settings,
+            SYSTEM_APPS => self.system_apps,
             _ => object,
         };
         let fs = self.fs();
@@ -551,8 +645,155 @@ impl<D: BlockDev> Server<D> {
                 let (free, total) = self.fs().space();
                 Reply::Space { free, total }
             }
+            Request::UpdateSnapshot => {
+                self.updates_only(call)?;
+                let fs = self.fs();
+                fs.set_volume(SYSTEM.into()).map_err(error)?;
+                let id = fs
+                    .snapshot_as(kaifs::vol::SnapKind::Update, 0, 0)
+                    .map_err(error)?;
+                let generation = self.commit()?;
+                Reply::Snapshot { id, generation }
+            }
+            Request::UpdateRestore { id } => {
+                self.updates_only(call)?;
+                let fs = self.fs();
+                fs.set_volume(SYSTEM.into()).map_err(error)?;
+                let update = fs
+                    .snapshots()
+                    .get(&id)
+                    .is_some_and(|s| s.kind == kaifs::vol::SnapKind::Update);
+                if !update {
+                    return Err(Error::Invalid);
+                }
+                let kept = self.kept().map_err(error)?;
+                let restored = (|| {
+                    let fs = self.fs();
+                    if !fs.restore_snapshot(id)? {
+                        return Ok(false);
+                    }
+                    self.put_back(&kept)?;
+                    Ok(true)
+                })();
+                match restored {
+                    Ok(true) => {}
+                    Ok(false) => return Err(Error::Invalid),
+                    Err(e) => {
+                        self.drop_changes();
+                        return Err(error(e));
+                    }
+                }
+                let generation = self.commit()?;
+                Reply::Committed { generation }
+            }
+            Request::UpdateDrop { id } => {
+                self.updates_only(call)?;
+                let fs = self.fs();
+                fs.set_volume(SYSTEM.into()).map_err(error)?;
+                let update = fs
+                    .snapshots()
+                    .get(&id)
+                    .is_some_and(|s| s.kind == kaifs::vol::SnapKind::Update);
+                if !update || !fs.drop_snapshot(id).map_err(error)? {
+                    return Err(Error::Invalid);
+                }
+                let generation = self.commit()?;
+                Reply::Committed { generation }
+            }
         };
         Ok((reply, None))
+    }
+
+    /// What an update restore keeps from the live tree (ADR 0008 §7, §10):
+    /// every file in `/system/trust` and `/system/state`'s [`KEPT_STATE`], with
+    /// their bytes, or `None` for a kept name that is not there. Going back,
+    /// they would bring back a root a rotation revoked, replayed metadata, and
+    /// rules the user removed.
+    fn kept(&mut self) -> Result<Vec<Kept>, kaifs::Error> {
+        let (trust, state) = (self.system_trust, self.system_state);
+        let fs = self.fs();
+        let mut kept = Vec::new();
+        if trust != 0 {
+            let mut after = None;
+            loop {
+                let page = fs.list(trust, after.as_ref(), KEPT_PAGE)?;
+                for listed in &page {
+                    if listed.entry.kind == FileType::File {
+                        let bytes = fs.read_file(listed.entry.ino)?;
+                        kept.push((trust, listed.entry.name.clone(), Some(bytes)));
+                    }
+                }
+                if page.len() < KEPT_PAGE {
+                    break;
+                }
+                after = page.into_iter().last();
+            }
+        }
+        if state != 0 {
+            for name in KEPT_STATE {
+                let bytes = match fs.lookup(state, name)? {
+                    Some(entry) if entry.kind == FileType::File => Some(fs.read_file(entry.ino)?),
+                    _ => None,
+                };
+                kept.push((state, (*name).into(), bytes));
+            }
+        }
+        Ok(kept)
+    }
+
+    /// Writes [`Server::kept`]'s files back over the restored tree; a trust
+    /// file the restored tree has and the live one did not goes.
+    fn put_back(&mut self, kept: &[Kept]) -> Result<(), kaifs::Error> {
+        let trust = self.system_trust;
+        let fs = self.fs();
+        if trust != 0 {
+            let mut stale = Vec::new();
+            let mut after = None;
+            loop {
+                let page = fs.list(trust, after.as_ref(), KEPT_PAGE)?;
+                for listed in &page {
+                    let name = &listed.entry.name;
+                    if !kept.iter().any(|(dir, n, _)| *dir == trust && n == name) {
+                        stale.push(name.clone());
+                    }
+                }
+                if page.len() < KEPT_PAGE {
+                    break;
+                }
+                after = page.into_iter().last();
+            }
+            for name in stale {
+                fs.remove(trust, &name)?;
+            }
+        }
+        for (dir, name, bytes) in kept {
+            let there = fs.lookup(*dir, name)?;
+            match (bytes, there) {
+                (Some(bytes), Some(entry)) => fs.write_file(entry.ino, bytes)?,
+                (Some(bytes), None) => {
+                    let ino = fs.create(*dir, name)?;
+                    fs.write_file(ino, bytes)?;
+                }
+                (None, Some(_)) => fs.remove(*dir, name)?,
+                (None, None) => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// The `update` snapshot's requests come only on `/system/updates`'s `Dir`
+    /// with WRITE, and never inside an action: each commits on its own, so in
+    /// the caller's own action it would commit that action half done (Invalid),
+    /// and another caller's is Busy.
+    fn updates_only(&self, call: &Call) -> Result<(), Error> {
+        if call.badge != SYSTEM_UPDATES || !call.rights.contains(Rights::WRITE) {
+            return Err(Error::Permission);
+        }
+        match self.owner {
+            Some(owner) if owner == call.caller => Err(Error::Invalid),
+            Some(_) => Err(Error::Busy),
+            None => Ok(()),
+        }
     }
 
     fn owned(&self, caller: u64) -> Result<(), Error> {
@@ -662,7 +903,10 @@ fn changes(request: &Request) -> bool {
         | Request::Restore { .. }
         | Request::TrashRestore { .. }
         | Request::EmptyTrash
-        | Request::Sync => true,
+        | Request::Sync
+        | Request::UpdateSnapshot
+        | Request::UpdateRestore { .. }
+        | Request::UpdateDrop { .. } => true,
         Request::Stat
         | Request::List { .. }
         | Request::Read { .. }

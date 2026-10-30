@@ -14,10 +14,15 @@ doctest = false
 
 [dependencies]
 gfx2d = { path = "../gfx2d" }
+kabi = { path = "../kabi" }
 libm = "0.2.16"
 look = { path = "../look" }
 surfabi = { path = "../surfabi" }
 termcore = { path = "../termcore" }
+
+[features]
+# S05-2's mock trees (`view::mock`), for `cargo xtask tokens`.
+mock = []
 
 [dev-dependencies]
 sha2 = "0.11.1"

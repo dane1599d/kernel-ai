@@ -16,6 +16,8 @@
 //! freeing the process's tables, and never frees it, so a restarted llm maps the
 //! model at once and takes no frame for it.
 
+#[path = "model/fill.rs"]
+pub mod fill;
 #[path = "model/progress.rs"]
 mod progress;
 #[path = "model/window.rs"]
@@ -235,35 +237,65 @@ pub fn load(cmdline: &str) {
         }),
     };
     let Some((from, copied)) = found else {
+        // No boot module and no disk: the model store's, if kai-data names one
+        // (P2 task 10). `fs` fills it once it has mounted.
+        if let Some(hint) = fill::hint() {
+            match fill::reserve(hint) {
+                Ok(()) => log!(
+                    "model: {} bytes reserved for the model store's model; fs fills them",
+                    hint.len
+                ),
+                Err(why) => {
+                    log!("model: {why}; the model store's model is ignored");
+                    reject(why);
+                }
+            }
+        }
         return;
     };
     match copied {
         Ok(model) => {
-            let runs = model.runs.len() as u64;
-            match window::build(runs, |k| model.run(k)) {
-                Ok(built) => {
-                    log!(
-                        "model: {} bytes of GGUF v3 copied from {from} into {runs} runs of 2 MiB in {} ms; window of {} page tables",
-                        model.len,
-                        (hpet::nanos() - started) / 1_000_000,
-                        mm::window::table_frames(runs)
-                    );
-                    WINDOW.call_once(|| built);
-                    MODEL.call_once(|| model);
-                    LOADS.fetch_add(1, Ordering::SeqCst);
-                }
-                Err(why) => {
-                    log!("model: {why}; {from} is ignored");
-                    free_runs(&model.runs);
-                    REJECTED.call_once(|| String::from(why));
-                }
+            let (len, runs) = (model.len, model.runs.len() as u64);
+            if publish(model, from, None).is_ok() {
+                log!(
+                    "model: {len} bytes of GGUF v3 copied from {from} into {runs} runs of 2 MiB in {} ms; window of {} page tables",
+                    (hpet::nanos() - started) / 1_000_000,
+                    mm::window::table_frames(runs)
+                );
             }
         }
         Err(why) => {
             log!("model: {why}; {from} is ignored");
-            REJECTED.call_once(|| why);
+            reject(why);
         }
     }
+}
+
+/// Builds `model`'s window and makes it the boot's model, once; frees it if
+/// the window cannot be built. `sha256` names it when the command line did not.
+fn publish(model: Model, from: &str, sha256: Option<[u8; 32]>) -> Result<(), &'static str> {
+    match window::build(model.runs.len() as u64, |k| model.run(k)) {
+        Ok(built) => {
+            if let Some(sha) = sha256 {
+                SHA256.call_once(|| sha);
+            }
+            WINDOW.call_once(|| built);
+            MODEL.call_once(|| model);
+            LOADS.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+        Err(why) => {
+            log!("model: {why}; {from} is ignored");
+            free_runs(&model.runs);
+            reject(String::from(why));
+            Err(why)
+        }
+    }
+}
+
+/// Notes why the boot's model was not kept, for `:model`.
+fn reject(why: String) {
+    REJECTED.call_once(|| why);
 }
 
 fn free_runs(runs: &[u32]) {
@@ -378,6 +410,10 @@ fn may_map(slot: usize) -> bool {
 pub fn map(slot: usize) -> Result<u64, Error> {
     if !may_map(slot) {
         return Err(Error::Permission);
+    }
+    // The model store's model is reserved but not yet filled: try again soon.
+    if fill::pending() {
+        return Err(Error::Busy);
     }
     let model = MODEL.get().ok_or(Error::NotFound)?;
     let pdpt = TEST_WINDOW

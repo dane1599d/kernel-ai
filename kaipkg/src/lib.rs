@@ -3,11 +3,20 @@
 //! switches between.
 //!
 //! - [`bundle`]: `kai-pkg 1`, length-framed files with plain relative paths;
+//! - [`catalog`]: the Apps sheet's rows, installed then offered, in
+//!   `kai-catalog 1`;
 //! - [`header`]: `kai-package 1`, the package's first file, parsed strictly;
 //! - [`version`]: SemVer versions and the `^`, `~`, `=` and comparison ranges;
 //! - [`resolve`]: no solver (§6): the newest compatible version that is not
 //!   yanked, keeping an installed version that already satisfies;
 //! - [`generation`]: `kai-gen 1`, one numbered list of installed packages;
+//! - [`image`]: the image's signed repository, checked with `kaituf`, as
+//!   generation 1's packages;
+//! - [`index`]: a package's `custom.kai` index entry, and cargo's rule against
+//!   its header;
+//! - [`mirror`]: installs from the fixed `pkgrepo=` mirror, its metadata checked
+//!   with `kaituf`, its packages fetched in pieces;
+//! - [`memvol`]: the store's volume in memory;
 //! - [`fsvol`]: the store's [`store::Volume`] over `kai-fs 1`, as `pkg` holds
 //!   `/system/pkg`;
 //! - [`store`]: `/system/pkg`'s objects, generations, `current`, `good`, failed
@@ -24,15 +33,25 @@ extern crate alloc;
 extern crate std;
 
 pub mod bundle;
+pub mod catalog;
 pub mod fsvol;
 pub mod generation;
 pub mod header;
+pub mod image;
+pub mod index;
+pub mod memvol;
+pub mod mirror;
 pub mod resolve;
 pub mod store;
 pub mod version;
 
 use alloc::string::String;
 use sha2::{Digest, Sha256};
+use version::Version;
+
+/// The OS's virtual packages (§6): the `kai:*` WIT packages it provides, which
+/// an app's `world` depends on.
+pub const PROVIDED: &[(&str, Version)] = &[("kai:app", Version::new(0, 1, 0))];
 
 /// An object's name: its SHA-256.
 pub type Sha = [u8; 32];

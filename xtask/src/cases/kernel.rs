@@ -72,6 +72,11 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("proc-stop", "test=proc-stop")
     },
+    // P4's Monitor: each process's pages and CPU time through METRICS.
+    TestCase {
+        expect: &["proc-usage: each process's pages and CPU time came through METRICS"],
+        ..case("proc-usage", "test=proc-usage")
+    },
     // P3 task 4: the raised table limits hold 40 processes at once.
     TestCase {
         expect: &["many-processes: 40 idle processes ran at once beside the shell and llm"],
@@ -133,6 +138,21 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("desk-ask", "test=desk-ask")
     },
+    // P4: the agent calls an installed app's row through the supervisor.
+    TestCase {
+        expect: &[
+            "app-route: the agent's notes_add reached notes through the supervisor, and undo put it back",
+        ],
+        ..case("app-route", "test=app-route")
+    },
+    // P4: a post to the event box wakes the shell, never in place of a line.
+    TestCase {
+        expect: &[
+            "event-wake: 10 terminal lines, each after a post, all came back as lines",
+            "event-wake: the ended shell's wake went with it; the new shell reads the box",
+        ],
+        ..case("event-wake", "test=event-wake")
+    },
     // P3 task 11: an app suspended and resumed through its host.
     TestCase {
         expect: &[
@@ -141,6 +161,16 @@ pub(super) const CASES: &[TestCase] = &[
             "app-suspend: notes gave ",
         ],
         ..case("app-suspend", "test=app-suspend")
+    },
+    // P3 task 12b: an app starts on its first request, not at boot.
+    TestCase {
+        expect: &[
+            "app-on-demand: notes is not running after boot",
+            "notes starts on demand",
+            "ipc: notes asked for on demand",
+            "app-on-demand: the first request started notes, and it answered",
+        ],
+        ..case("app-on-demand", "test=app-on-demand")
     },
     // Lane M: anonymous memory comes back on release and on exit.
     TestCase {
@@ -174,6 +204,18 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("desk-panel", "test=desk-panel")
     },
+    // P3 task 7: the shell takes the panel's line from `desktop` and reports
+    // its result back.
+    TestCase {
+        expect: &[
+            "desktop: the panel queued a request (2 characters)",
+            "desktop: the shell took the panel's request",
+            "ms after Enter (within 100 ms)",
+            "desktop: the panel shows ",
+            "desk-panel-shell: typed \"hi\" in the panel",
+        ],
+        ..case("desk-panel-shell", "test=desk-panel-shell")
+    },
     // P3 task 9: an app's kai:ui window on the desktop, closed from its control.
     TestCase {
         expect: &[
@@ -184,6 +226,48 @@ pub(super) const CASES: &[TestCase] = &[
             "ui-window: Notes opened its window and pressed its close control",
         ],
         ..case("ui-window", "test=ui-window")
+    },
+    // P3 task 12b: an unused app naps, and a click wakes it with its state.
+    TestCase {
+        expect: &[
+            "comphost: notes-window napped, unused",
+            "comphost: woke from its nap: ok resumed notes-window 1",
+            "desk-nap: Notes napped unused, gave its memory back, and a click woke it with its note",
+        ],
+        ..case("desk-nap", "test=desk-nap")
+    },
+    // P3 task 7: asks answered on desktop's card, and on the console when it dies.
+    TestCase {
+        expect: &[
+            "ask: 1 went to desktop's card",
+            "desktop: ask 1 shows on the card",
+            "desktop: ask 1 answered yes",
+            "desk-card: an ask went to desktop's card, and y on it allowed",
+            "desktop: ask 2 answered no",
+            "desk-card: a letter and Enter did not answer the card, and n denied",
+            "ask: 3 came back from the card; the console asks it",
+            "desk-card: with desktop killed, the ask came back and the console answered it",
+        ],
+        ..case("desk-card", "test=desk-card")
+    },
+    // P3 task 11: a standing instruction fired by Notes' window events.
+    TestCase {
+        expect: &[
+            "desk-standing: the rule was allowed on the card, and the shell holds it",
+            "desktop: event minimize notes-window",
+            "desk-standing: minimizing Notes fired the rule, and Notes is suspended",
+            "desktop: event restore notes-window",
+            "desk-standing: restoring Notes resumed it, with its note intact",
+        ],
+        ..case("desk-standing", "test=desk-standing")
+    },
+    // Key input for uikit apps: the keyboard reaches Notes' widgets.
+    TestCase {
+        keys: &[&["tab", "tab", "ret", "tab", "tab", "h", "i"]],
+        expect: &[
+            "ui-keys: Tab, Enter and typed text reached Notes' widgets through desktop and comphost",
+        ],
+        ..case("ui-keys", "test=ui-keys")
     },
     // P3 task 8: the kernel's terminal in a window, and an ask typed there.
     TestCase {
@@ -206,6 +290,13 @@ pub(super) const CASES: &[TestCase] = &[
             "desk-term: with the focus elsewhere the keys went to desktop, and nothing asked",
         ],
         ..case("desk-term", "test=desk-term")
+    },
+    // P3 task 12: resource profiles' kernel half.
+    TestCase {
+        expect: &[
+            "profile: a quota stopped a commit, a class showed in SCHED_STATS, and the floors held",
+        ],
+        ..case("profile", "test=profile")
     },
     // P1 task 14: shared pages, and spike S01-1's M6.
     TestCase {

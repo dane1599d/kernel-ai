@@ -12,9 +12,11 @@ use kaifs::MemDisk;
 use kaipkg::bundle;
 use kaipkg::fsvol::{FsVolume, Transport};
 use kaipkg::generation::{Generation, Time};
+use kaipkg::mirror::TufCache;
 use kaipkg::resolve::{Entry, Want};
 use kaipkg::store::{self, Ctx, Error, Ledger, Refused, Source, Store, Volume};
 use kaipkg::version::Version;
+use kaituf::updater::Cache;
 
 const PROVIDED: &[(&str, Version)] = &[("kai:app", Version::new(0, 1, 0))];
 
@@ -25,6 +27,9 @@ struct Served<'d> {
     server: Server<&'d mut MemDisk>,
     now: u64,
     calls: usize,
+    /// The call `fs` stops at, as a crash there would: it and every later one
+    /// fail without reaching the server.
+    stop_at: usize,
 }
 
 impl Transport for Served<'_> {
@@ -37,6 +42,9 @@ impl Transport for Served<'_> {
     ) -> Result<(Reply, Option<Badge>), String> {
         self.now += 1_000;
         self.calls += 1;
+        if self.calls >= self.stop_at {
+            return Err("fs stopped".into());
+        }
         let bytes = fsproto::encode_request(&request);
         let answer = self.server.call(&Call {
             caller: 7,
@@ -60,6 +68,7 @@ fn volume(disk: &mut MemDisk) -> FsVolume<Served<'_>> {
         server,
         now: 0,
         calls: 0,
+        stop_at: usize::MAX,
     };
     FsVolume::new(served, (HOME_USER, DIR_RIGHTS))
 }
@@ -266,4 +275,39 @@ fn a_package_whose_bytes_differ_is_refused_and_not_kept() {
     assert!(vol.list(store::PARTIAL).unwrap().is_empty());
     assert!(vol.list(store::OBJECTS).unwrap().is_empty());
     assert_eq!(store::current(&mut vol), Ok(1));
+}
+
+#[test]
+fn a_tuf_cache_save_stopped_at_any_call_keeps_the_copy_before_it() {
+    let mut disk = MemDisk::new(16 * 1024);
+    // Several of fs's writes each, so a save has calls between its truncate
+    // and its last bytes.
+    let old = vec![b'o'; 3 * fsproto::MAX_DATA + 5];
+    let new = vec![b'n'; 3 * fsproto::MAX_DATA + 9];
+    let mut vol = volume(&mut disk);
+    TufCache { vol: &mut vol }.save("timestamp", &old).unwrap();
+    drop(vol);
+    for stop in 1.. {
+        let mut vol = volume(&mut disk);
+        vol.transport.stop_at = vol.transport.calls + stop;
+        let saved = TufCache { vol: &mut vol }.save("timestamp", &new);
+        drop(vol);
+        // fs started again on the disk, as after a reboot.
+        let mut vol = volume(&mut disk);
+        let kept = TufCache { vol: &mut vol }.load("timestamp").unwrap();
+        if saved.is_ok() {
+            assert_eq!(kept, Some(new), "the save that finished");
+            assert!(stop > 4, "the save took {stop} calls");
+            break;
+        }
+        assert_eq!(
+            kept.as_ref(),
+            Some(&old),
+            "stopped at the save's call {stop}"
+        );
+    }
+    // A copy that can't be read is an error, never "nothing kept".
+    let mut vol = volume(&mut disk);
+    vol.transport.stop_at = vol.transport.calls + 2;
+    assert!(TufCache { vol: &mut vol }.load("timestamp").is_err());
 }

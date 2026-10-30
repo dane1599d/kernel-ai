@@ -154,19 +154,14 @@ fn an_answer_to_an_old_question_is_dropped() {
     app.files.refresh(&mut app.os);
     let fresh = app.os.calls.len() as u32;
     assert!(!app.answer_to(stale, Ok("old/")));
-    assert!(app.answer_to(
-        fresh,
-        Ok("a.txt
-b.txt
-c.txt")
-    ));
+    assert!(app.answer_to(fresh, Ok("a.txt\nb.txt\nc.txt")));
     assert_eq!(app.files.items().len(), 3);
     // An answer to a ticket it never asked is nothing.
     assert!(!app.answer_to(9_999, Ok("x")));
 }
 
 #[test]
-fn a_name_in_the_field_renames_and_a_path_moves() {
+fn a_name_in_the_field_renames_and_the_folder_is_listed_again() {
     let mut app = App::with("docs/\nnotes.txt\n");
     app.files.select(&mut app.os, "notes.txt").unwrap();
     app.answer(Ok("hi"));
@@ -177,60 +172,151 @@ fn a_name_in_the_field_renames_and_a_path_moves() {
     assert!(app.answer(Ok("")));
     assert_eq!(
         app.files.status(),
-        &Status::Done("Moved to plan.txt.".into())
+        &Status::Done("Renamed to plan.txt.".into())
     );
-    // The folder is listed again, with the moved file selected.
+    // The folder is listed again, with the renamed file selected.
     assert_eq!(app.last(), r#"fs_list {path: ""}"#);
     app.answer(Ok("docs/\nplan.txt"));
     assert_eq!(app.files.selected(), Some("plan.txt"));
-
-    // `folder/` moves it in under its own name.
-    app.answer(Ok("hi"));
-    app.files.set_rename("docs/");
-    app.files.move_selected(&mut app.os);
-    assert_eq!(
-        app.last(),
-        r#"fs_move {from: "plan.txt", to: "docs/plan.txt"}"#
-    );
-    app.answer(Ok(""));
-    app.answer(Ok("docs/"));
-    assert_eq!(app.files.selected(), None);
-
-    // A path from home names the new place.
-    let mut app = App::with("a.txt\n");
-    app.files.select(&mut app.os, "a.txt").unwrap();
-    app.files.set_rename("docs/b.txt");
-    app.files.move_selected(&mut app.os);
-    assert_eq!(app.last(), r#"fs_move {from: "a.txt", to: "docs/b.txt"}"#);
 }
 
 #[test]
-fn a_move_it_cannot_make_asks_nothing() {
+fn moving_to_another_folder_is_refused_before_the_os_is_asked() {
+    // `fs_move` renames within one folder; the shell and fsserve refuse the rest.
+    let mut app = App::with("docs/\nplan.txt\n");
+    app.files.select(&mut app.os, "plan.txt").unwrap();
+    let n = app.os.calls.len();
+    for text in [
+        "docs/",
+        "docs/plan.txt",
+        "docs/b.txt",
+        "/abs",
+        "x/../y",
+        "../out",
+    ] {
+        app.files.set_rename(text);
+        app.files.move_selected(&mut app.os);
+        assert_eq!(
+            app.files.status(),
+            &Status::Failed("Moving to another folder comes later; rename within this one.".into()),
+            "{text:?}"
+        );
+        assert_eq!(app.os.calls.len(), n, "{text:?}");
+    }
+}
+
+#[test]
+fn a_rename_it_cannot_make_asks_nothing() {
     let mut app = App::with("a.txt\nb.txt\n");
     let n = app.os.calls.len();
     app.files.move_selected(&mut app.os);
     assert_eq!(
         app.files.status(),
-        &Status::Failed("Pick something to move first.".into())
+        &Status::Failed("Pick something to rename first.".into())
     );
     app.files.select(&mut app.os, "a.txt").unwrap();
     let n = n + 1;
     for (text, why) in [
-        ("", "Type where to move it, or a new name."),
-        ("   ", "Type where to move it, or a new name."),
+        ("", "Type a new name first."),
+        ("   ", "Type a new name first."),
         ("a.txt", "It is already called that."),
         ("b.txt", "There is already one with that name."),
-        ("../out", "That is not a name or path I can use."),
-        ("x/../y", "That is not a name or path I can use."),
-        ("/abs", "That is not a name or path I can use."),
-        ("bad\nname", "That is not a name or path I can use."),
-        ("docs//", "That is not a name or path I can use."),
+        ("bad\nname", "That is not a name I can use."),
+        (".", "That is not a name I can use."),
+        ("..", "That is not a name I can use."),
     ] {
         app.files.set_rename(text);
         app.files.move_selected(&mut app.os);
         assert_eq!(app.files.status(), &Status::Failed(why.into()), "{text:?}");
         assert_eq!(app.os.calls.len(), n, "{text:?}");
     }
+}
+
+#[test]
+fn a_change_answered_after_a_newer_navigation_does_not_drop_it() {
+    // The user renames a.txt, then opens docs before the rename is answered.
+    let mut app = App::with("a.txt\ndocs/\n");
+    app.files.select(&mut app.os, "a.txt").unwrap();
+    app.answer(Ok("hi"));
+    app.files.set_rename("b.txt");
+    app.files.move_selected(&mut app.os);
+    let moved = app.os.calls.len() as u32;
+    app.files.select(&mut app.os, "docs").unwrap();
+    app.answer(Ok("old/"));
+    app.files.open_selected(&mut app.os);
+    let opened = app.os.calls.len() as u32;
+    let asked = app.os.calls.len();
+
+    // Answers in order: the rename's Ok asks for no listing of its own, and the
+    // open lands in docs.
+    assert!(app.answer_to(moved, Ok("")));
+    assert_eq!(app.os.calls.len(), asked);
+    assert!(app.answer_to(opened, Ok("old/\nnote.md")));
+    assert_eq!(app.files.dir(), "docs");
+    assert_eq!(app.names(), ["old/", "note.md"]);
+}
+
+#[test]
+fn trash_and_restore_answered_after_a_newer_navigation_ask_for_no_listing() {
+    let mut app = App::with("a.txt\ndocs/\n");
+    app.files.select(&mut app.os, "a.txt").unwrap();
+    app.answer(Ok("hi"));
+    app.files.trash_selected(&mut app.os);
+    let trashed = app.os.calls.len() as u32;
+    app.files.refresh(&mut app.os);
+    let listed = app.os.calls.len() as u32;
+    let asked = app.os.calls.len();
+    assert!(app.answer_to(trashed, Ok("")));
+    assert_eq!(app.os.calls.len(), asked);
+    // The refresh was queued after the trash, so it shows it.
+    assert!(app.answer_to(listed, Ok("docs/")));
+    assert_eq!(app.names(), ["docs/"]);
+
+    app.files.restore_last(&mut app.os);
+    let restored = app.os.calls.len() as u32;
+    app.files.act_open(&mut app.os, "docs").unwrap();
+    let asked = app.os.calls.len();
+    assert!(app.answer_to(restored, Ok("")));
+    assert_eq!(app.os.calls.len(), asked);
+}
+
+#[test]
+fn a_read_or_peek_for_a_cleared_selection_is_dropped() {
+    // A listing clears the selection: a read still on its way is dropped.
+    let mut app = App::with("a.txt\ndocs/\n");
+    app.files.select(&mut app.os, "a.txt").unwrap();
+    let read = app.os.calls.len() as u32;
+    app.files.act_open(&mut app.os, "docs").unwrap();
+    let listed = app.os.calls.len() as u32;
+    assert!(app.answer_to(listed, Ok("note.md")));
+    assert!(!app.answer_to(read, Ok("text of a.txt, a file of the old folder")));
+    assert_eq!(app.files.preview(), &Preview::None);
+    assert_eq!(app.files.selected(), None);
+
+    // A trash clears it too: a peek still on its way is dropped.
+    let mut app = App::with("a.txt\ndocs/\n");
+    app.files.select(&mut app.os, "docs").unwrap();
+    let peek = app.os.calls.len() as u32;
+    app.files.trash_selected(&mut app.os);
+    let trashed = app.os.calls.len() as u32;
+    assert!(app.answer_to(trashed, Ok("")));
+    assert!(!app.answer_to(peek, Ok("x.md")));
+    assert_eq!(app.files.preview(), &Preview::None);
+}
+
+#[test]
+fn a_name_with_a_newline_cannot_become_other_names() {
+    // The shell writes such a name with U+FFFD for the newline; if one ever came
+    // through whole, the line would still not become a usable name.
+    let mut app = App::with("x\u{fffd}readme.txt\nreadme.txt\nreport.txt\r\nok.txt\n");
+    let names = app.names();
+    assert_eq!(names, ["ok.txt", "readme.txt", "x\u{fffd}readme.txt"]);
+    assert_eq!(app.files.left_out().0, 1);
+    // Selecting the lookalike asks for its own name, never another's.
+    app.files
+        .select(&mut app.os, "x\u{fffd}readme.txt")
+        .unwrap();
+    assert_eq!(app.last(), "fs_read {path: \"x\u{fffd}readme.txt\"}");
 }
 
 #[test]
@@ -466,13 +552,24 @@ fn answers_in_any_order_leave_a_consistent_window() {
 }
 
 #[test]
-fn a_window_can_come_back_to_a_folder_and_list_it() {
-    let mut files = Files::at("docs/old");
-    let mut os = comp_files::fake::Queue::default();
-    assert_eq!(files.dir(), "docs/old");
+fn a_restarted_window_lists_the_folder_it_was_in_and_a_bad_path_means_home() {
+    let mut os = Queue::default();
+    let mut files = Files::at("docs/2026");
+    assert_eq!(files.dir(), "docs/2026");
     files.refresh(&mut os);
-    assert_eq!(os.calls[0].args, r#"{path: "docs/old"}"#);
-    // A path that is not one is home.
-    assert_eq!(Files::at("../etc").dir(), "");
-    assert_eq!(Files::at("/abs").dir(), "");
+    assert_eq!(
+        (os.calls[0].name, os.calls[0].args.as_str()),
+        ("fs_list", r#"{path: "docs/2026"}"#)
+    );
+    for bad in [
+        "../x",
+        "/etc",
+        "a//b",
+        "a\nb",
+        "a/./b",
+        "a/../b",
+        &"x".repeat(1000),
+    ] {
+        assert_eq!(Files::at(bad).dir(), "", "{bad:?}");
+    }
 }

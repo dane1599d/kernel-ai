@@ -62,6 +62,9 @@ pub enum Told {
     },
     /// A second `desktop` greeted the connection: every window must open again.
     Restarted,
+    /// One of the app's windows took the keyboard focus (`seat.focus_in`): a
+    /// click on it, or Alt+Tab to it.
+    Focus(u32),
 }
 
 struct Window {
@@ -76,6 +79,12 @@ struct Window {
     height: u32,
     /// The buffer the last commit showed.
     front: usize,
+    /// The declared actions `desktop` was last told its nodes run, by wire id.
+    bound: Vec<(u32, String)>,
+    /// What `desktop` was last told of its unsaved changes.
+    unsaved: bool,
+    /// Whether `desktop` was last told it is kept from the agent.
+    agent_private: bool,
 }
 
 impl Window {
@@ -169,7 +178,9 @@ impl Desk {
             if let Some(title) = (!frame.title.is_empty()).then_some(frame.title.as_str()) {
                 encode(&mut requests, win.toplevel, Request::SetTitle(title));
             }
+            push_private(&mut requests, win, frame);
             push_tree(&mut requests, win.a11y, &tree);
+            push_state(&mut requests, win, frame);
             return Ok(Show {
                 target: win.target(back),
                 damage,
@@ -193,6 +204,9 @@ impl Desk {
             width: w,
             height: h,
             front: 0,
+            bound: Vec::new(),
+            unsaved: false,
+            agent_private: false,
         };
         let pool_bytes = PAGE as u32 + BUFFERS * win.buffer_bytes();
         encode(&mut requests, REGISTRY, bind(POOL, "pool", win.pool));
@@ -239,7 +253,10 @@ impl Desk {
         let all = Rect { x: 0, y: 0, w, h };
         encode(&mut requests, win.surface, Request::DamageBuffer(all));
         encode(&mut requests, win.surface, Request::Commit);
+        let mut win = win;
+        push_private(&mut requests, &mut win, frame);
         push_tree(&mut requests, win.a11y, &tree);
+        push_state(&mut requests, &mut win, frame);
         let target = win.target(0);
         self.windows.push(win);
         Err(Open {
@@ -294,10 +311,14 @@ impl Desk {
                 continue;
             }
             if Some(header.object) == self.seat {
-                if let Ok(Event::Modifiers(mask)) =
-                    Event::decode(Interface::Seat, header.opcode, args)
-                {
-                    self.seat_state.modifiers(mask);
+                match Event::decode(Interface::Seat, header.opcode, args) {
+                    Ok(Event::Modifiers(mask)) => self.seat_state.modifiers(mask),
+                    Ok(Event::FocusIn { surface }) => {
+                        if let Some(w) = self.windows.iter().find(|w| w.surface == surface) {
+                            out.push(Told::Focus(w.app));
+                        }
+                    }
+                    _ => {}
                 }
                 continue;
             }
@@ -351,6 +372,53 @@ fn bind(name: u32, interface: &str, id: u32) -> Request<'_> {
         interface,
         version: 1,
         id,
+    }
+}
+
+/// `toplevel.set_agent_private` when it changed: before the tree, so `desktop`
+/// never holds a private window's contents as shared.
+fn push_private(out: &mut Vec<u8>, win: &mut Window, frame: &Frame) {
+    if frame.agent_private != win.agent_private {
+        encode(
+            out,
+            win.toplevel,
+            Request::SetAgentPrivate(frame.agent_private),
+        );
+        win.agent_private = frame.agent_private;
+    }
+}
+
+/// What changed of the frame's bound actions and unsaved changes since
+/// `desktop` was last told: `a11y.bind_action` for each node bound anew, to
+/// another action or no longer (an empty name), then `toplevel.set_unsaved`.
+fn push_state(out: &mut Vec<u8>, win: &mut Window, frame: &Frame) {
+    let bound: Vec<(u32, String)> = frame
+        .a11y
+        .iter()
+        .filter_map(|n| Some((surface::wire_id(n.id), n.bound.clone()?)))
+        .collect();
+    for (node, _) in win
+        .bound
+        .iter()
+        .filter(|(n, _)| !bound.iter().any(|(m, _)| m == n))
+    {
+        let unbind = Request::BindAction {
+            node: *node,
+            action: "",
+        };
+        encode(out, win.a11y, unbind);
+    }
+    for (node, action) in bound.iter().filter(|b| !win.bound.contains(b)) {
+        let bind = Request::BindAction {
+            node: *node,
+            action,
+        };
+        encode(out, win.a11y, bind);
+    }
+    win.bound = bound;
+    if frame.unsaved != win.unsaved {
+        encode(out, win.toplevel, Request::SetUnsaved(frame.unsaved));
+        win.unsaved = frame.unsaved;
     }
 }
 

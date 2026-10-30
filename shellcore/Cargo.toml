@@ -7,9 +7,12 @@ publish = false
 
 [dependencies]
 agentabi = { path = "../agentabi" }
+appabi = { path = "../appabi" }
 kabi = { path = "../kabi" }
 kaigrants = { path = "../kaigrants" }
 kaiprofile = { path = "../kaiprofile" }
+livecore = { path = "../livecore" }
+look = { path = "../look" }
 llmproto = { path = "../llmproto" }
 sched = { path = "../sched" }
 termcore = { path = "../termcore" }

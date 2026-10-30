@@ -43,7 +43,7 @@ const BYTES_PER_TOKEN: f32 = 3.46;
 /// arguments is decoded once more with [`group_text`] after the request
 /// (`local::act`). Scripts are written by the script prompt, which keeps
 /// every function, so they are untouched. Here: the component revert, and the
-/// package and file groups (ADR 0010 §6's amendment: a new group lands here,
+/// package, file and window (`ui`) groups (ADR 0010 §6's amendment: a new group lands here,
 /// and is shown in full only on a measured actbench gain within the budget).
 /// The system's reads stay in full: their return types are how `act` tells a
 /// question `script` can answer from one it cannot (run 40486342534 indexed
@@ -68,6 +68,18 @@ pub const INDEX: &[(&str, &[&str])] = &[
             "fs_empty_trash",
         ],
     ),
+    (
+        "ui",
+        &[
+            "ui_windows",
+            "ui_view",
+            "ui_open",
+            "ui_focus",
+            "ui_act",
+            "window_close",
+        ],
+    ),
+    ("appearance", &["appearance_set"]),
 ];
 
 /// Each index group's gloss, at most [`GLOSS_TOKENS`] (ADR 0010 §6's
@@ -79,6 +91,8 @@ pub const GLOSS: &[(&str, &str)] = &[
     ("pkg", "install, remove or find packages"),
     ("files", "list or read files"),
     ("file_edits", "write, rename, trash or restore files"),
+    ("ui", "open, close, switch to or type in apps"),
+    ("appearance", "theme, text size, motion or legible type"),
 ];
 /// The longest a gloss may be, in estimated tokens.
 pub const GLOSS_TOKENS: usize = 12;

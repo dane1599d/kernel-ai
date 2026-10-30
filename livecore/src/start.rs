@@ -4,7 +4,8 @@
 //! boot manifest's good version falls back to 2).
 
 use crate::host::{
-    Core, EXIT_NO_VERSION, EXIT_REFUSED, Env, Exit, Host, Mode, Report, Version, exit, export_own,
+    Core, EXIT_NO_VERSION, EXIT_REFUSED, Env, Exit, Host, Mode, Report, Restored, Version, exit,
+    export_own,
 };
 use crate::settings::Settings;
 use crate::{Fault, Instance, Reason};
@@ -29,6 +30,10 @@ impl<E: Env> Host<E> {
                 ..Report::new(kind::ROLLBACK)
             })?;
             restored.phase = phase::STEADY;
+        }
+        if restored.phase == phase::EMPTY && !restored.checkpoint.is_empty() {
+            let mode = Self::from_saved(&mut core, &restored)?;
+            return Ok(Self { core, mode });
         }
         if restored.phase == phase::EMPTY {
             let mode = Self::first(&mut core)?;
@@ -91,6 +96,60 @@ impl<E: Env> Host<E> {
         core.env
             .log(&format!("{}; starting {fallback} instead", failed.why));
         load(core, &fallback).and_then(|version| Self::fresh(core, version))
+    }
+
+    /// After a reboot: the kernel has nothing, but the app's own folder held a
+    /// checkpoint ([`crate::saved`]). The configured version imports it, as a
+    /// restore from the ledger would, and the kernel is told; a checkpoint it
+    /// refuses disables the app until `ctl reset`, never starting it empty over
+    /// what was saved.
+    fn from_saved(core: &mut Core<E>, saved: &Restored) -> Result<Mode<E::Instance>, Exit> {
+        match crate::state::split(&saved.checkpoint) {
+            Ok((state, storage)) => {
+                core.checkpoint = state;
+                core.storage = storage;
+            }
+            Err(_) => core.checkpoint = saved.checkpoint.clone(),
+        }
+        let label = core.settings.version.clone();
+        let mut version = load(core, &label)?;
+        match restore_into(&mut version, &core.checkpoint, saved.schema) {
+            Ok(blob) => {
+                let storage = core.storage.clone();
+                core.report(&Report {
+                    label: &label,
+                    schema: u64::from(version.schema),
+                    blob: &blob,
+                    storage: Some(&storage),
+                    ..Report::new(kind::RESTORED)
+                })?;
+                core.env.log(&format!(
+                    "live: {} {label} restored from its saved state",
+                    core.name
+                ));
+                core.checkpoint = blob;
+                Ok(Mode::Serving(version))
+            }
+            Err(fault) => {
+                // The kernel's ledger is empty after a reboot: it learns the
+                // version from an empty start first, then that it is disabled.
+                // Requests are refused until `ctl reset`, so the saved state is
+                // not written over until the user chooses to.
+                let mode = Self::fresh(core, version)?;
+                let Mode::Serving(version) = mode else {
+                    return Ok(mode);
+                };
+                core.report(&Report {
+                    reason: Some(fault.reason),
+                    detail: &fault.detail,
+                    ..Report::new(kind::DISABLED)
+                })?;
+                Ok(Mode::Disabled {
+                    version,
+                    why: format!("its saved state: {}: {}", fault.reason.name(), fault.detail),
+                })
+            }
+        }
     }
 
     /// Starts `version` empty.

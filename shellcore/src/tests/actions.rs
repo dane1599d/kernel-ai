@@ -37,11 +37,13 @@ const SWITCH: &str = "set_policy(\"round-robin\");";
 #[test]
 fn every_function_a_script_can_call_has_a_tier_and_no_row_names_a_missing_one() {
     // The engine binds the script API, the call-only rows (a tagged call's
-    // one-line script) and the file rows; the helpers come with every engine.
+    // one-line script), the file rows and the window rows; the helpers come
+    // with every engine.
     let callable = || {
         agentabi::BOUND
             .iter()
             .chain(&agentabi::FS_ROWS)
+            .chain(&agentabi::UI_ROWS)
             .map(|f| f.name)
             .chain(HELPERS.iter().copied())
     };
@@ -405,6 +407,7 @@ fn the_generated_tier_table_is_the_seamless_actions_one() {
         ("service_stop", Tier::Ask),
         ("service_start", Tier::Run),
         ("service_restart", Tier::Ask),
+        ("appearance_set", Tier::Run),
         ("fs_list", Tier::Run),
         ("fs_read", Tier::Run),
         ("fs_history", Tier::Run),
@@ -415,6 +418,12 @@ fn the_generated_tier_table_is_the_seamless_actions_one() {
         ("fs_trash", Tier::Run),
         ("fs_restore", Tier::Run),
         ("fs_empty_trash", Tier::Ask),
+        ("ui_windows", Tier::Run),
+        ("ui_view", Tier::Run),
+        ("ui_open", Tier::Run),
+        ("ui_focus", Tier::Run),
+        ("window_close", Tier::Ask),
+        ("ui_act", Tier::Ask),
         ("fixed", Tier::Run),
         ("floor", Tier::Run),
     ];

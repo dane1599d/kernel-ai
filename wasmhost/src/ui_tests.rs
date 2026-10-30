@@ -180,11 +180,13 @@ fn a_click_and_the_agent_reach_on_ui_as_the_same_event() {
     let at = Point::new(b.x + b.w / 2, b.y + b.h / 2);
     g.ui_input(w, Input::Button { at, down: true }).unwrap();
     g.ui_input(w, Input::Button { at, down: false }).unwrap();
+    assert!(g.last_call_by_user(), "a click is a person's input");
     // on-ui(window, pressed(1)): the window, case 0, node 1.
     let seen: Vec<u32> = (0..3).map(|i| word(&mut g, EVENT + 4 * i)).collect();
     assert_eq!((seen, word(&mut g, EVENT + 24)), (vec![w, 0, 1], 1));
     assert_eq!(g.ui_act(w, 1, Action::Click, None), Ok(Ok(())));
     assert_eq!(word(&mut g, EVENT + 24), 2);
+    assert!(!g.last_call_by_user(), "the agent's action is not");
     assert_eq!(
         g.ui_act(w, 9, Action::Click, None),
         Ok(Err(crate::ActRefused::Node(uikit::ActError::NoNode)))
@@ -306,4 +308,104 @@ fn the_notes_window_guest_shows_its_window_and_takes_clicks() {
     g.ui_events(w, &[uikit::widget::UiEvent::CloseRequested])
         .unwrap();
     assert_eq!(g.take_ui(), vec![Update::Closed(w)]);
+}
+
+/// Keys as `desktop` posts them reach Notes' widgets through `uikit`'s routing
+/// (the real guest, when built): Tab, Tab and Enter press "New note"; two more
+/// Tabs reach the editor, and typing edits the note.
+#[test]
+fn keys_drive_the_notes_window_guest() {
+    use livecore::Instance;
+    use uikit::input::{Key, Mods};
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../target/wasm32-unknown-unknown/component/comp_notes_window.wasm"
+    );
+    let Ok(wasm) = std::fs::read(path) else {
+        std::eprintln!("skipped: build comp-notes-window for wasm32 first");
+        return;
+    };
+    let mut g = load_core(&wasm, LIMITS, None).unwrap();
+    g.view(&livecore::txn::Storage::new());
+    assert_eq!(g.init(), Ok(0));
+    let w = match g.take_ui().pop() {
+        Some(Update::Frame { window, .. }) => window,
+        other => panic!("{other:?}"),
+    };
+    let press = |g: &mut crate::CoreInstance, key: Key, text: &str| {
+        for down in [true, false] {
+            let input = Input::Key {
+                key,
+                down,
+                mods: Mods::default(),
+                text: if down {
+                    String::from(text)
+                } else {
+                    String::new()
+                },
+            };
+            g.ui_input(w, input).unwrap();
+        }
+    };
+    press(&mut g, Key::Tab, "");
+    press(&mut g, Key::Tab, "");
+    press(&mut g, Key::Enter, "");
+    let get = appabi::Func {
+        export: String::from("app:notes/actions@1.0.0#get"),
+        params: vec![Ty::U32],
+        result: Some(Ty::Option(Box::new(Ty::String))),
+    };
+    let note = |g: &mut crate::CoreInstance| Instance::call(g, &get, &[Val::U32(1)]).unwrap();
+    assert_eq!(
+        note(&mut g),
+        Some(Val::Option(Some(Box::new(Val::String(String::new())))))
+    );
+    press(&mut g, Key::Tab, "");
+    press(&mut g, Key::Tab, "");
+    press(&mut g, Key::Other(0x0B), "h");
+    press(&mut g, Key::Other(0x0C), "i");
+    assert_eq!(
+        note(&mut g),
+        Some(Val::Option(Some(Box::new(Val::String(String::from("hi"))))))
+    );
+}
+
+/// `set-agent-private` on window 1 of a host holding one open window.
+fn keep_private(host: &mut crate::ui::UiHost, private: bool) -> Result<(), String> {
+    let args = [Val::U32(1), Val::Bool(private)];
+    crate::ui::run(host, "set-agent-private", &args).map(|done| {
+        assert_eq!(done, Ok(None));
+    })
+}
+
+#[test]
+fn only_a_granted_app_keeps_a_window_from_the_agent() {
+    let mut host = crate::ui::UiHost::default();
+    let open = [Val::String("Settings".into()), Val::U16(320), Val::U16(200)];
+    assert_eq!(crate::ui::run(&mut host, "open", &open), Ok(Ok(Some(1))));
+    // Without the grant the call traps, and the window stays shared.
+    let refused = keep_private(&mut host, true).unwrap_err();
+    assert!(refused.contains("grant"), "{refused}");
+    let frame = host
+        .ui
+        .window(1)
+        .unwrap()
+        .commit(&uikit::layout::FixedAdvance);
+    assert!(!frame.agent_private);
+    // With it, the flag shows at the next commit, and can be lifted again.
+    host.may_be_private = true;
+    keep_private(&mut host, true).unwrap();
+    let frame = host
+        .ui
+        .window(1)
+        .unwrap()
+        .commit(&uikit::layout::FixedAdvance);
+    assert!(frame.agent_private);
+    keep_private(&mut host, false).unwrap();
+    let frame = host
+        .ui
+        .window(1)
+        .unwrap()
+        .commit(&uikit::layout::FixedAdvance);
+    assert!(!frame.agent_private);
 }

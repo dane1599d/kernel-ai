@@ -96,20 +96,96 @@ fn a_lines_folders_go_only_to_its_own_program() {
         "fs caps=serve\npkg dir=pkg\nstore program=pkgd dir=pkg\nnotes caps=call uses=fs",
     );
     assert!(plan.errors.is_empty(), "{:?}", plan.errors);
-    let (_, dirs) = plan.grants("pkg", "pkg").unwrap();
-    assert_eq!(dirs, [Folder::Pkg]);
+    assert_eq!(plan.grants("pkg", "pkg").unwrap().dirs, [Folder::Pkg]);
     // The name kept, the program swapped: refused, never started without it.
     let refused = plan.grants("pkg", "notes").unwrap_err();
     assert!(refused.contains("for program pkg, not notes"), "{refused}");
+    // comphost's apps get their saved state's folder the same way.
+    let apps = parse_plan("notes program=comphost dir=apps version=2");
+    assert!(apps.errors.is_empty(), "{:?}", apps.errors);
+    assert_eq!(
+        apps.grants("notes", "comphost").unwrap().dirs,
+        [Folder::Apps]
+    );
     // A line's `program=` is the program its folder goes to, not its name.
-    assert_eq!(plan.grants("store", "pkgd").unwrap().1, [Folder::Pkg]);
+    assert_eq!(plan.grants("store", "pkgd").unwrap().dirs, [Folder::Pkg]);
     assert!(plan.grants("store", "store").is_err());
     // A line with no folder keeps today's rule; routes come as before.
+    let notes = Grants {
+        uses: vec!["fs".into()],
+        ..Grants::default()
+    };
+    assert_eq!(plan.grants("notes", "comphost"), Ok(notes));
+    assert_eq!(plan.grants("absent", "pkg"), Ok(Grants::default()));
+}
+
+#[test]
+fn boot_files_go_only_to_the_lines_own_program() {
+    let plan = parse_plan("pkg dir=pkg bootfiles=pkgrepo\nimager program=pkg bootfiles=pkgrepo");
+    assert!(plan.errors.is_empty(), "{:?}", plan.errors);
+    // `boot=` stays the program's own word, as fs-powercut's filecheck uses it.
+    let churn = parse_plan("filecheck caps=files step=churn boot=1");
+    assert!(churn.errors.is_empty(), "{:?}", churn.errors);
+    assert_eq!(churn.services[0].args, "step=churn boot=1");
+    assert_eq!(churn.services[0].boot, None);
+    assert_eq!(plan.services[0].boot, Some(BootFiles::Pkgrepo));
     assert_eq!(
-        plan.grants("notes", "comphost"),
-        Ok((vec!["fs".into()], vec![]))
+        plan.grants("pkg", "pkg").unwrap().boot,
+        Some(BootFiles::Pkgrepo)
     );
-    assert_eq!(plan.grants("absent", "pkg"), Ok(Default::default()));
+    let refused = plan.grants("imager", "imager").unwrap_err();
+    assert!(
+        refused.contains("its bootfiles= is for program pkg"),
+        "{refused}"
+    );
+    assert!(plan.grants("pkg", "comphost").is_err());
+    assert_eq!(parse_plan("pkg").services[0].boot, None);
+    for bad in [
+        "pkg bootfiles=",
+        "pkg bootfiles=pkgrepo/",
+        "pkg bootfiles=Pkgrepo",
+        "pkg bootfiles=comp",
+        "pkg bootfiles=pkgrepo+pkgrepo",
+        "pkg bootfiles=pkgrepo bootfiles=pkgrepo",
+        "pkg bootfiles=pkgrepo unsupervised",
+    ] {
+        let plan = parse_plan(bad);
+        assert!(plan.services.is_empty() && plan.errors.len() == 1, "{bad}");
+    }
+}
+
+#[test]
+fn boot_files_reach_only_beneath_their_folder() {
+    let repo = BootFiles::Pkgrepo;
+    for good in [
+        "pkgrepo/metadata/1.root.json",
+        "pkgrepo/targets/0a1b.notes-1.0.0.kpkg",
+        "pkgrepo/x",
+    ] {
+        assert!(repo.allows(good), "{good}");
+    }
+    let long = format!("pkgrepo/{}", "a".repeat(MAX_BOOT_PATH));
+    for bad in [
+        "",
+        "pkgrepo",
+        "pkgrepo/",
+        "/pkgrepo/x",
+        "pkgrepo//x",
+        "pkgrepo/x/",
+        "pkgrepo/../kernel.lines",
+        "pkgrepo/metadata/../../kernel.lines",
+        "pkgrepo/./x",
+        "pkgrepo/..",
+        "pkgrepo\\x",
+        "pkgrepo/x y",
+        "pkgrepo/é",
+        "pkgrepox/y",
+        "comp/notes/2.wasm",
+        "kernel.lines",
+        &long,
+    ] {
+        assert!(!repo.allows(bad), "{bad:?}");
+    }
 }
 
 #[test]
@@ -206,6 +282,7 @@ fn state_round_trips_and_damage_is_ignored() {
             recent: vec![10, 20, 30],
             gave_up: false,
             stopped: false,
+            keep: true,
             pid: 42,
             started_ms: 1234,
         },
@@ -216,6 +293,7 @@ fn state_round_trips_and_damage_is_ignored() {
             recent: vec![],
             gave_up: true,
             stopped: true,
+            keep: false,
             pid: 0,
             started_ms: 0,
         },
@@ -224,7 +302,7 @@ fn state_round_trips_and_damage_is_ignored() {
     assert!(decode(b"").is_empty());
     assert!(decode(b"garbage").is_empty());
     assert!(decode(&[0xFF, 0xFE]).is_empty());
-    let damaged = alloc::format!("{STATE_MAGIC}\ncrasher x 1 0 0 0 0\nhog 2 0 0 0 7 99");
+    let damaged = alloc::format!("{STATE_MAGIC}\ncrasher x 1 0 0 0 0 0\nhog 2 0 0 0 0 7 99");
     // State in an older layout reads as none rather than as shifted fields.
     assert!(decode(b"supervisor-state 2\nhog 2 0 0 7").is_empty());
     assert_eq!(decode(damaged.as_bytes()).len(), 1);
@@ -239,6 +317,73 @@ hog 2 1 0 7 99 5",
         (2, 7, vec![5])
     );
     assert!(!old[0].stopped);
+    // Version 4 had no keep flag: its records carry over, none kept, a stop kept.
+    let old = decode(
+        b"supervisor-state 4
+hog 2 1 0 1 7 99 5",
+    );
+    assert_eq!(old.len(), 1);
+    assert_eq!(
+        (
+            old[0].stopped,
+            old[0].keep,
+            old[0].pid,
+            old[0].recent.clone()
+        ),
+        (true, false, 7, vec![5])
+    );
+}
+
+#[test]
+fn keep_requests_parse() {
+    assert_eq!(keep::parse("keep notes on"), Some(("notes", true)));
+    assert_eq!(keep::parse("keep notes off"), Some(("notes", false)));
+    assert_eq!(
+        keep::parse(&keep::encode("files-window", true)),
+        Some(("files-window", true))
+    );
+    for bad in [
+        "keep",
+        "keep notes",
+        "keep notes yes",
+        "keep notes on now",
+        "keep no/tes on",
+        "keep  on",
+        "stop notes",
+        "",
+    ] {
+        assert_eq!(keep::parse(bad), None, "{bad:?}");
+    }
+}
+
+#[test]
+fn only_the_shell_keeps_only_apps_running() {
+    let plan = parse_plan(
+        "notes program=comphost caps=serve+component\nshell caps=serve\nfiles caps=serve\nllm program=comphost caps=serve",
+    );
+    assert_eq!(plan.errors, Vec::<String>::new());
+    let specs: Vec<&ServiceSpec> = plan.services.iter().collect();
+    let records: Vec<Record> = specs.iter().map(|s| Record::new(&s.name)).collect();
+    let shell = Some(3);
+    assert_eq!(keep::check("notes", &specs, &records, 3, shell), Ok(0));
+    // Anyone else, or with no shell running, is refused.
+    assert!(keep::check("notes", &specs, &records, 4, shell).is_err());
+    assert!(keep::check("notes", &specs, &records, 0, shell).is_err());
+    assert!(keep::check("notes", &specs, &records, 3, None).is_err());
+    // Only an app's line naps, so only it may be kept.
+    assert_eq!(
+        keep::check("files", &specs, &records, 3, shell),
+        Err("err not an app")
+    );
+    assert_eq!(
+        keep::check("nobody", &specs, &records, 3, shell),
+        Err("err unknown service")
+    );
+    // A protected name is refused even on a comphost line.
+    assert_eq!(
+        keep::check("llm", &specs, &records, 3, shell),
+        Err("err protected")
+    );
 }
 
 #[test]
@@ -258,6 +403,11 @@ fn stop_and_start_requests_parse_and_are_checked() {
             (Request::Restart("build-1"), Proof::Once(once)),
         ),
         ("stop build-1 rule", (Request::Stop("build-1"), Proof::Rule)),
+        (
+            "suspend notes rule",
+            (Request::Suspend("notes"), Proof::Rule),
+        ),
+        ("resume notes rule", (Request::Resume("notes"), Proof::Rule)),
         (
             "stop build-1 undo id=4",
             (Request::Stop("build-1"), Proof::Undo(4)),
@@ -529,5 +679,189 @@ fn routes_form_no_cycle_and_never_reach_the_shell_or_edit() {
             "{bad}: {:?}",
             plan.errors
         );
+    }
+}
+
+#[test]
+fn a_demand_line_waits_for_the_kernels_demand() {
+    let plan = parse_plan(
+        "notes program=comphost caps=serve start=demand\nshell caps=serve\nodd start=later\ntwice start=demand start=demand\nlone unsupervised start=demand",
+    );
+    assert_eq!(plan.services.len(), 2, "{:?}", plan.errors);
+    assert_eq!(plan.errors.len(), 3, "{:?}", plan.errors);
+    assert_eq!(plan.services[0].start, Start::Demand);
+    assert_eq!(plan.services[1].start, Start::Boot);
+    assert_eq!(parse_demand("demand notes"), Some("notes"));
+    for bad in [
+        "demand",
+        "demand notes x",
+        "demand no/tes",
+        "start notes",
+        "",
+    ] {
+        assert_eq!(parse_demand(bad), None, "{bad:?}");
+    }
+    let specs: Vec<&ServiceSpec> = plan.services.iter().collect();
+    let mut records = vec![Record::new("notes"), Record::new("shell")];
+    let idle = [false, false];
+    assert_eq!(
+        check_demand("notes", &specs, &records, 0, &idle),
+        Ok(Some(0))
+    );
+    // Only the kernel asks, and only for a start=demand line.
+    assert!(check_demand("notes", &specs, &records, 7, &idle).is_err());
+    assert!(check_demand("shell", &specs, &records, 0, &idle).is_err());
+    assert!(check_demand("nobody", &specs, &records, 0, &idle).is_err());
+    // Already starting or running: nothing to do.
+    assert_eq!(
+        check_demand("notes", &specs, &records, 0, &[true, false]),
+        Ok(None)
+    );
+    records[0].pid = 9;
+    assert_eq!(check_demand("notes", &specs, &records, 0, &idle), Ok(None));
+    // Stopped by the user: a demand does not undo that.
+    records[0].pid = 0;
+    records[0].stopped = true;
+    assert_eq!(
+        check_demand("notes", &specs, &records, 0, &idle),
+        Err("err stopped")
+    );
+}
+
+#[test]
+fn a_demand_does_not_restart_a_service_past_its_cap() {
+    let plan = parse_plan("notes program=comphost caps=serve start=demand");
+    let specs: Vec<&ServiceSpec> = plan.services.iter().collect();
+    let mut records = vec![Record::new("notes")];
+    records[0].gave_up = true;
+    assert_eq!(
+        check_demand("notes", &specs, &records, 0, &[false]),
+        Err("err gave up")
+    );
+    // While it backs off it is starting, so a demand adds nothing either.
+    records[0].gave_up = false;
+    assert_eq!(
+        check_demand("notes", &specs, &records, 0, &[true]),
+        Ok(None)
+    );
+}
+
+#[test]
+fn start_starts_a_demand_service_not_started_yet() {
+    let starts = [Start::Demand, Start::Boot];
+    let mut records = vec![Record::new("notes"), Record::new("files")];
+    // Never started: `start` starts it, as a demand would.
+    assert_eq!(check_for(Request::Start("notes"), &records, &starts), Ok(0));
+    // A boot service that runs is not stopped, so `start` is refused as before.
+    records[1].pid = 4;
+    assert_eq!(
+        check_for(Request::Start("files"), &records, &starts),
+        Err("err not stopped")
+    );
+    // Once the demand service runs, `start` is refused like any other.
+    records[0].pid = 9;
+    assert_eq!(
+        check_for(Request::Start("notes"), &records, &starts),
+        Err("err not stopped")
+    );
+    // `check` alone knows no starts: unchanged.
+    records[0].pid = 0;
+    assert_eq!(
+        check(Request::Start("notes"), &records),
+        Err("err not stopped")
+    );
+}
+
+#[test]
+fn suspend_and_resume_need_a_once_or_a_rule() {
+    let once = Proof::Once(Once { badge: 1, id: 2 });
+    for request in [Request::Suspend("notes"), Request::Resume("notes")] {
+        assert_eq!(proof_fits(request, Proof::Rule), Ok(()));
+        assert_eq!(proof_fits(request, once), Ok(()));
+        for proof in [Proof::None, Proof::Entry(2), Proof::Undo(2)] {
+            assert!(proof_fits(request, proof).is_err(), "{request:?} {proof:?}");
+        }
+        assert_eq!(
+            Request::parse(&request.encode(Proof::Rule)),
+            Some((request, Proof::Rule))
+        );
+    }
+    assert_eq!(
+        Request::Suspend("notes").call().as_deref(),
+        Some("app_suspend(\"notes\")")
+    );
+    assert_eq!(
+        Request::Resume("notes").call().as_deref(),
+        Some("app_resume(\"notes\")")
+    );
+    let records = vec![Record::new("shell"), Record::new("notes")];
+    assert_eq!(
+        check(Request::Suspend("shell"), &records),
+        Err("err protected")
+    );
+    assert_eq!(check(Request::Suspend("notes"), &records), Ok(1));
+}
+
+const RUN_PLAN: &str = "fs caps=serve\n\
+    pkg dir=pkg bootfiles=pkgrepo caps=call uses=supervisor\n\
+    notes program=comphost caps=serve+component start=pkg\n\
+    shell caps=call";
+
+#[test]
+fn a_start_pkg_line_waits_for_pkg_and_names_no_version() {
+    let plan = parse_plan(RUN_PLAN);
+    assert!(plan.errors.is_empty(), "{:?}", plan.errors);
+    let notes = plan.services.iter().find(|s| s.name == "notes").unwrap();
+    assert_eq!(notes.start, Start::Pkg);
+    assert_eq!(notes.args, "");
+    assert_eq!(parse_plan("notes").services[0].start, Start::Boot);
+    for bad in [
+        "notes start=",
+        "notes start=boot",
+        "notes start=PKG",
+        "notes start=pkg start=pkg",
+        "notes start=pkg version=2",
+        "notes start=pkg unsupervised",
+    ] {
+        let plan = parse_plan(bad);
+        assert!(plan.services.is_empty() && plan.errors.len() == 1, "{bad}");
+    }
+}
+
+#[test]
+fn only_the_store_holder_may_run_a_package_version() {
+    let plan = parse_plan(RUN_PLAN);
+    let pids = [Some(10), Some(11), None, Some(13)];
+    let held: Vec<(&ServiceSpec, Option<u64>)> = plan.services.iter().zip(pids).collect();
+    let run = Run::parse("run notes version=p-0a1b2c3d4e5f").unwrap();
+    assert_eq!(run.encode(), "run notes version=p-0a1b2c3d4e5f");
+    assert_eq!(check_run(run, &held, 11), Ok(2));
+    // fs, the shell, the kernel and an unknown pid are not the store's holder.
+    for caller in [10, 13, 0, 99] {
+        assert!(check_run(run, &held, caller).is_err(), "{caller}");
+    }
+    // A holder that is not running holds nothing.
+    let stopped: Vec<(&ServiceSpec, Option<u64>)> = plan
+        .services
+        .iter()
+        .zip([Some(10), None, None, Some(13)])
+        .collect();
+    assert!(check_run(run, &stopped, 11).is_err());
+    let shell = Run::parse("run shell version=p-0a1b2c3d4e5f").unwrap();
+    assert_eq!(
+        check_run(shell, &held, 11),
+        Err("err not a start=pkg service")
+    );
+    for bad in [
+        "run notes",
+        "run notes version=2",
+        "run notes version=c-0a1b2c3d4e5f",
+        "run notes version=p-0A1B2C3D4E5F",
+        "run notes version=p-0a1b2c3d4e5",
+        "run notes version=p-0a1b2c3d4e5f extra",
+        "run no/tes version=p-0a1b2c3d4e5f",
+        "start notes",
+    ] {
+        assert_eq!(Run::parse(bad), None, "{bad}");
     }
 }

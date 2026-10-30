@@ -161,6 +161,7 @@ pub fn on_exit(pid: u64) {
     state.holder = None;
     state.taken_back = false;
     input::end_lease();
+    crate::ask_box::on_desktop_exit();
     if let Some(grant) = state.showing.take() {
         drop(state);
         to_console(grant);
@@ -249,6 +250,11 @@ fn frames(surface: &Surface) -> Result<(u64, u64), Error> {
 }
 
 /// Whether the process in `slot` shows on the screen now.
+/// Whether a holder shows on the screen now.
+pub fn showing() -> bool {
+    STATE.lock().showing.is_some()
+}
+
 pub fn shows(slot: usize) -> bool {
     let pid = process::identity(slot).pid;
     let state = STATE.lock();

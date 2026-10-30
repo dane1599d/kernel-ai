@@ -7,6 +7,7 @@
 //! are fixed for the call.
 
 use crate::effects::{self, OpenCall};
+use crate::grants::Grants;
 use crate::instance::{HostState, classify, fault, log, panic};
 use crate::link::{self, WitFunc};
 use crate::{Limits, LogSink, config, tables};
@@ -41,14 +42,26 @@ pub struct CoreInstance {
     actions: Option<Actions>,
     /// The `kai:ui/input` `on-ui` export, when the module has one.
     pub(crate) on_ui: Option<String>,
+    /// Whether the last guest call was made while a person's key or click was
+    /// handled ([`CoreInstance::last_call_by_user`]).
+    pub(crate) by_user: bool,
     /// The export `kai:app/events.on-event` is, if the app has one.
     pub(crate) on_event: Option<String>,
+    /// The `kai:settings/replies` `on-reply` export, when the module has one.
+    pub(crate) on_settings_reply: Option<String>,
 }
 
 impl CoreInstance {
     /// Gives the instance the action rows its requests are typed by.
     pub fn set_actions(&mut self, actions: Actions) {
         self.actions = Some(actions);
+    }
+
+    /// Whether the most recent guest call was made while a person's key or
+    /// click was being handled (`ui_input`, `ui_events_user`), not for the
+    /// agent's `ui_act`, an event or anything else.
+    pub fn last_call_by_user(&self) -> bool {
+        self.by_user
     }
 }
 
@@ -64,6 +77,18 @@ pub fn load_core(
     limits: Limits,
     log_sink: Option<LogSink>,
 ) -> Result<CoreInstance, Fault> {
+    load_core_granted(wasm, limits, log_sink, Grants::default())
+}
+
+/// As [`load_core`], for a version whose package holds `grants`: without a
+/// grant, an import of the interface it opens does not link.
+#[inline(never)]
+pub fn load_core_granted(
+    wasm: &[u8],
+    limits: Limits,
+    log_sink: Option<LogSink>,
+    grants: Grants,
+) -> Result<CoreInstance, Fault> {
     if wasm.len() > kabi::live::MAX_ARTIFACT {
         return Err(Fault::new(Reason::Compile, "the module is too large"));
     }
@@ -73,7 +98,7 @@ pub fn load_core(
     let bytes = moved.as_ref().map_or(wasm, |(moved, _)| moved.as_slice());
     let module = Module::new(&engine, bytes)
         .map_err(|error| Fault::new(Reason::Compile, error.to_string()))?;
-    let mut linker = link_imports(&engine, &module)?;
+    let mut linker = link_imports(&engine, &module, grants)?;
     let state = HostState {
         limits: StoreLimitsBuilder::new()
             .memory_size(limits.memory_bytes)
@@ -93,6 +118,8 @@ pub fn load_core(
         call: None,
         view: None,
         ui: Default::default(),
+        user_input: false,
+        settings: Default::default(),
         memory: None,
     };
     let mut store = Store::new(&engine, state);
@@ -126,6 +153,10 @@ pub fn load_core(
         .iter()
         .find(|f| f.interface == "kai:app/events" && f.name == "on-event")
         .and_then(|f| export_for(&module, f));
+    let on_settings_reply = tables::EXPORTS
+        .iter()
+        .find(|f| f.interface == crate::settings::REPLIES && f.name == "on-reply")
+        .and_then(|f| export_for(&module, f));
     Ok(CoreInstance {
         store,
         instance,
@@ -137,7 +168,9 @@ pub fn load_core(
         lifecycle,
         actions: None,
         on_ui,
+        by_user: false,
         on_event,
+        on_settings_reply,
     })
 }
 
@@ -165,7 +198,11 @@ fn own_memory(
 }
 
 /// Binds every import the module makes, or fails naming the first it cannot.
-fn link_imports(engine: &Engine, module: &Module) -> Result<Linker<HostState>, Fault> {
+fn link_imports(
+    engine: &Engine,
+    module: &Module,
+    grants: Grants,
+) -> Result<Linker<HostState>, Fault> {
     let mut linker = Linker::<HostState>::new(engine);
     for import in module.imports() {
         let (qualified, name) = (import.module(), import.name());
@@ -200,6 +237,14 @@ fn link_imports(engine: &Engine, module: &Module) -> Result<Linker<HostState>, F
             ("kai:app/storage", "put") => linker.func_wrap(qualified, name, effects::put),
             ("kai:app/storage", "delete") => linker.func_wrap(qualified, name, effects::delete),
             ("kai:app/effects", "request") => linker.func_wrap(qualified, name, effects::request),
+            (crate::settings::SETTINGS, _) if !crate::settings::granted(grants) => {
+                return Err(link_err(format!(
+                    "{qualified} needs the settings grant, which this app's package does not hold"
+                )));
+            }
+            (crate::settings::SETTINGS, "send") => {
+                linker.func_wrap(qualified, name, crate::settings::send)
+            }
             (crate::ui::VIEW, _) => linker.func_new(
                 qualified,
                 name,
@@ -255,11 +300,18 @@ impl CoreInstance {
         let state = self.store.data_mut();
         state.lines = 0;
         state.panic_at = None;
-        appabi::call(self, func, args).map_err(|trap| {
+        let by_user = state.user_input;
+        self.by_user = by_user;
+        self.settings_call_begins();
+        let result = appabi::call(self, func, args).map_err(|trap| {
             self.last
                 .take()
                 .unwrap_or_else(|| Fault::new(Reason::Abi, trap.0))
-        })
+        });
+        if result.is_err() {
+            self.settings_call_faulted();
+        }
+        result
     }
 
     /// Calls lifecycle function `name`.

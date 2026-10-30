@@ -37,7 +37,7 @@ fn s32_of(v: Option<&Val>) -> Result<i32, String> {
     }
 }
 
-fn bool_of(v: Option<&Val>) -> Result<bool, String> {
+pub(crate) fn bool_of(v: Option<&Val>) -> Result<bool, String> {
     match v {
         Some(Val::Bool(b)) => Ok(*b),
         other => Err(bad("bool", other)),

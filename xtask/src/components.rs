@@ -46,6 +46,17 @@ const FILES_DIRS: &[&str] = &[FILES_WINDOW, "apps/files", "apps/files-ui", "apps
 const FILES_WINDOW_WIT: &str = "apps/files-window/wit";
 /// `app:files/actions`, which the window exports.
 const FILES_WIT: &str = "apps/files/wit";
+/// The Settings app (P4 task 7): its window, model, tree and the shared `kai:ui` glue.
+const SETTINGS_WINDOW: &str = "apps/settings-window";
+const SETTINGS_DIRS: &[&str] = &[
+    SETTINGS_WINDOW,
+    "apps/settings",
+    "apps/settings-ui",
+    "apps/ui-bind",
+];
+const SETTINGS_WINDOW_WIT: &str = "apps/settings-window/wit";
+/// `app:settings/actions`, which the window exports.
+const SETTINGS_WIT: &str = "apps/settings/wit";
 
 /// `notes` from `components/notes`: version 2, and every upload the edit loop
 /// builds.
@@ -112,6 +123,22 @@ pub const VERSIONS: &[Version] = &[
             dirs: FILES_DIRS,
             feature: None,
             wit: &[FILES_WINDOW_WIT, "wit/kai-ui", FILES_WIT],
+        },
+    },
+    // The Settings app (P4 task 7), a window over the system's settings.
+    Version {
+        label: "1",
+        recipe: Recipe {
+            component: "settings-window",
+            krate: "comp-settings-window",
+            dirs: SETTINGS_DIRS,
+            feature: None,
+            wit: &[
+                SETTINGS_WINDOW_WIT,
+                "wit/kai-ui",
+                "wit/kai-settings",
+                SETTINGS_WIT,
+            ],
         },
     },
 ];
@@ -337,6 +364,27 @@ mod tests {
                 std::format!("app:files/actions@1.0.0#{export}")
             );
         }
+    }
+
+    /// The Settings build carries its own action row, under its world.
+    #[test]
+    fn the_settings_build_packs_with_the_settings_action() {
+        let settings = VERSIONS
+            .iter()
+            .find(|v| v.recipe.component == "settings-window")
+            .unwrap();
+        let module = Vec::from(&b"\0asm\x01\0\0\0"[..]);
+        let root = crate::workspace_root();
+        let source = artifact::bundle(&[("apps/settings-window/src/lib.rs", b"//")]);
+        let bytes = pack(&root, &settings.recipe, settings.label, module, &source).unwrap();
+        let parsed = artifact::parse(&bytes).unwrap();
+        assert_eq!(
+            parsed.manifest.world,
+            "app:settings-window/settings-window@1.0.0"
+        );
+        let actions = livecore::actions::parse(parsed.actions.unwrap()).unwrap();
+        let open = actions.by_name("settings_open").unwrap();
+        assert_eq!(open.export, "app:settings/actions@1.0.0#open");
     }
 
     #[test]

@@ -420,6 +420,64 @@ pub const IMPORTS: &[WitFunc] = &[
             ))
         },
     },
+    WitFunc {
+        interface: "kai:ui/view",
+        version: "0.1",
+        name: "set-unsaved",
+        core_params: &[CoreTy::I32, CoreTy::I32, CoreTy::I32],
+        core_results: &[],
+        params: || vec![Ty::U32, Ty::Bool],
+        result: || {
+            Some(Ty::Result(
+                None,
+                Some(Box::new(Ty::Enum(vec![
+                    String::from("no-window"),
+                    String::from("no-node"),
+                    String::from("bad-parent"),
+                    String::from("too-big"),
+                    String::from("too-many-windows"),
+                ]))),
+            ))
+        },
+    },
+    WitFunc {
+        interface: "kai:ui/view",
+        version: "0.1",
+        name: "set-agent-private",
+        core_params: &[CoreTy::I32, CoreTy::I32, CoreTy::I32],
+        core_results: &[],
+        params: || vec![Ty::U32, Ty::Bool],
+        result: || {
+            Some(Ty::Result(
+                None,
+                Some(Box::new(Ty::Enum(vec![
+                    String::from("no-window"),
+                    String::from("no-node"),
+                    String::from("bad-parent"),
+                    String::from("too-big"),
+                    String::from("too-many-windows"),
+                ]))),
+            ))
+        },
+    },
+    WitFunc {
+        interface: "kai:system/system",
+        version: "0.1",
+        name: "read",
+        core_params: &[],
+        core_results: &[CoreTy::I32],
+        params: || vec![],
+        result: || Some(Ty::U32),
+    },
+    WitFunc {
+        interface: "kai:settings/settings",
+        version: "0.1",
+        name: "send",
+        core_params: &[CoreTy::I32, CoreTy::I32],
+        core_results: &[CoreTy::I32],
+        params: || vec![Ty::String],
+        result: || Some(Ty::U32),
+    },
 ];
 
 pub const EXPORTS: &[WitFunc] = &[
@@ -555,6 +613,40 @@ pub const EXPORTS: &[WitFunc] = &[
                     (String::from("submitted"), Some(Ty::U32)),
                     (String::from("close-requested"), Some(Ty::U32)),
                 ]),
+            ]
+        },
+        result: || None,
+    },
+    WitFunc {
+        interface: "kai:system/samples",
+        version: "0.1",
+        name: "on-sample",
+        core_params: &[CoreTy::I32, CoreTy::I32, CoreTy::I32, CoreTy::I32],
+        core_results: &[],
+        params: || {
+            vec![
+                Ty::U32,
+                Ty::Result(
+                    Some(Box::new(Ty::List(Box::new(Ty::U8)))),
+                    Some(Box::new(Ty::String)),
+                ),
+            ]
+        },
+        result: || None,
+    },
+    WitFunc {
+        interface: "kai:settings/replies",
+        version: "0.1",
+        name: "on-reply",
+        core_params: &[CoreTy::I32, CoreTy::I32, CoreTy::I32, CoreTy::I32],
+        core_results: &[],
+        params: || {
+            vec![
+                Ty::U32,
+                Ty::Result(
+                    Some(Box::new(Ty::List(Box::new(Ty::U8)))),
+                    Some(Box::new(Ty::String)),
+                ),
             ]
         },
         result: || None,

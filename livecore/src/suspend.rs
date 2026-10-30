@@ -58,6 +58,9 @@ impl<E: Env> Core<E> {
             Ok(instance) => instance,
             Err(fault) => return Err(Box::new((parked, fault))),
         };
+        // As at start and reload: an app that keeps its data in storage reads it
+        // while it restores.
+        instance.view(&self.storage);
         let restored = if self.checkpoint.is_empty() {
             instance.init()
         } else {

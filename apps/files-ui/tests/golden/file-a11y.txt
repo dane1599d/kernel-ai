@@ -17,10 +17,10 @@
 [2000] label "Groceries"
 [2001] label " milk"
 [2002] label " eggs"
-[12] text_input "Move or rename to" = "notes.txt"
+[12] text_input "Rename to" = "notes.txt"
 [13] group ""
 [14] button "Open" runs files_open
-[15] button "Move" runs fs_move
+[15] button "Rename" runs fs_move
 [16] button "Trash" runs fs_trash
 [17] button "Restore" runs fs_restore
 [18] label "2 folders, 2 files"

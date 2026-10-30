@@ -75,6 +75,14 @@ pub fn init() {
     FILES.call_once(|| files);
 }
 
+/// The file at `path` exactly, a path from the bundle's top (`/boot/` as Limine
+/// names it), once the heap is up.
+pub fn exact(path: &str) -> Option<&'static [u8]> {
+    all()
+        .find(|(p, _)| p.strip_prefix("/boot/") == Some(path))
+        .map(|(_, data)| data)
+}
+
 /// The files, as `(path, bytes)`.
 pub fn all() -> impl Iterator<Item = (&'static str, &'static [u8])> + Clone {
     FILES

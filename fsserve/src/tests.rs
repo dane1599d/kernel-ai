@@ -491,6 +491,36 @@ fn an_aborted_action_drops_its_pending_writes() {
 }
 
 #[test]
+fn the_apps_dir_holds_each_app_s_folder_and_reaches_no_further() {
+    let mut disk = MemDisk::new(BLOCKS);
+    let (mut c, _) = Client::start(&mut disk);
+    let apps = |c: &mut Client, path: &str, how: How| {
+        let request = Request::Open {
+            path: path.into(),
+            rights: (Rights::READ | Rights::WRITE | Rights::CREATE).bits(),
+            how,
+        };
+        c.call(ALICE, kabi::fs::SYSTEM_APPS, DIR_RIGHTS, request)
+    };
+    let (_, here) = apps(&mut c, ".", How::Existing);
+    assert_eq!(
+        Badge::parse(here.unwrap().badge).object,
+        c.server.system_apps
+    );
+    assert!(c.server.system_apps != 0 && c.server.system_apps != c.server.system_pkg);
+    let (reply, folder) = apps(&mut c, "notes", How::Mkdir);
+    assert!(matches!(reply, Reply::Opened(..)), "{reply:?}");
+    assert!(folder.is_some());
+    for path in ["..", "../state", "../pkg"] {
+        assert_eq!(
+            failed(apps(&mut c, path, How::Existing)),
+            Error::Invalid,
+            "{path}"
+        );
+    }
+}
+
+#[test]
 fn the_pkg_dir_reaches_only_beneath_system_pkg() {
     let mut disk = MemDisk::new(BLOCKS);
     let (mut c, _) = Client::start(&mut disk);
@@ -801,4 +831,327 @@ fn a_long_trash_comes_in_pages() {
     let all = c.trash_paths(HOME_USER);
     let want: Vec<String> = (0..count).map(|i| format!("f{i}")).collect();
     assert_eq!(all, want);
+}
+
+#[test]
+fn the_update_snapshot_is_taken_and_restored_only_on_system_updates() {
+    let mut disk = MemDisk::new(BLOCKS);
+    let (mut c, _) = Client::start(&mut disk);
+    let updates = kabi::fs::SYSTEM_UPDATES;
+    assert_ne!(c.server.system_updates, 0);
+    assert_ne!(c.server.system_trust, c.server.system_updates);
+    // A file in `/system/state` before the snapshot, then changed after it.
+    let state = |c: &mut Client, how: How| {
+        let request = Request::Open {
+            path: "marker".into(),
+            rights: (Rights::READ | Rights::WRITE).bits(),
+            how,
+        };
+        c.call(ALICE, kabi::fs::SYSTEM_STATE, DIR_RIGHTS, request)
+    };
+    let (_, marker) = state(&mut c, How::CreateFile);
+    let marker = marker.unwrap();
+    c.write(&marker, 0, b"before");
+    let (reply, _) = c.call(ALICE, updates, DIR_RIGHTS, Request::UpdateSnapshot);
+    let Reply::Snapshot { id, .. } = reply else {
+        panic!("{reply:?}");
+    };
+    c.write(&marker, 0, b"after!");
+    // Every other handle is refused, and so is a Dir without WRITE.
+    for badge in [
+        kabi::fs::SYSTEM_STATE,
+        kabi::fs::SYSTEM_PKG,
+        kabi::fs::SYSTEM_TRUST,
+        kabi::fs::HOME_USER,
+    ] {
+        let reply = c.call(ALICE, badge, DIR_RIGHTS, Request::UpdateSnapshot);
+        assert_eq!(failed(reply), Error::Permission);
+        let reply = c.call(ALICE, badge, DIR_RIGHTS, Request::UpdateRestore { id });
+        assert_eq!(failed(reply), Error::Permission);
+    }
+    let read_only = DIR_RIGHTS.difference(Rights::WRITE);
+    let reply = c.call(ALICE, updates, read_only, Request::UpdateSnapshot);
+    assert_eq!(failed(reply), Error::Permission);
+    // Only an update snapshot restores.
+    let reply = c.call(
+        ALICE,
+        updates,
+        DIR_RIGHTS,
+        Request::UpdateRestore { id: id + 99 },
+    );
+    assert_eq!(failed(reply), Error::Invalid);
+    let (reply, _) = c.call(ALICE, updates, DIR_RIGHTS, Request::UpdateRestore { id });
+    assert!(matches!(reply, Reply::Committed { .. }), "{reply:?}");
+    let (_, marker) = state(&mut c, How::Existing);
+    assert_eq!(c.read(&marker.unwrap()).unwrap(), b"before");
+}
+
+#[test]
+fn system_settings_is_read_only_through_its_badge() {
+    let mut disk = MemDisk::new(BLOCKS);
+    let (mut c, _) = Client::start(&mut disk);
+    assert_ne!(c.server.system_settings, 0);
+    // The Settings app writes through its own folder; here, `fs` itself.
+    let dir = c.server.system_settings;
+    let ino = {
+        let fs = c.server.fs();
+        fs.set_volume(SYSTEM.into()).unwrap();
+        let ino = fs.create(dir, "updates.cbor").unwrap();
+        fs.write_file(ino, b"window").unwrap();
+        fs.commit().unwrap();
+        ino
+    };
+    assert_ne!(ino, 0);
+    let settings = kabi::fs::SYSTEM_SETTINGS;
+    let read = Rights::READ | Rights::ENUMERATE;
+    let open = |rights: Rights, how: How| Request::Open {
+        path: "updates.cbor".into(),
+        rights: rights.bits(),
+        how,
+    };
+    let (_, file) = c.call(ALICE, settings, read, open(Rights::READ, How::Existing));
+    assert_eq!(c.read(&file.unwrap()).unwrap(), b"window");
+    // A read-only handle opens nothing for writing and makes nothing.
+    let reply = c.call(
+        ALICE,
+        settings,
+        read,
+        open(Rights::READ | Rights::WRITE, How::Existing),
+    );
+    assert_eq!(failed(reply), Error::Permission);
+    let reply = c.call(ALICE, settings, read, open(Rights::READ, How::CreateFile));
+    assert_eq!(failed(reply), Error::Permission);
+    // A handle that somehow carries WRITE still opens nothing writable, and
+    // what it opens is read only.
+    let reply = c.call(
+        ALICE,
+        settings,
+        DIR_RIGHTS,
+        open(Rights::READ | Rights::WRITE, How::Existing),
+    );
+    assert_eq!(failed(reply), Error::Permission);
+    let (_, file) = c.call(
+        ALICE,
+        settings,
+        DIR_RIGHTS,
+        open(Rights::READ, How::Existing),
+    );
+    let file = file.unwrap();
+    assert!(!file.rights.contains(Rights::WRITE));
+    assert!(!matches!(c.write(&file, 0, b"x"), Reply::Done));
+    let reply = c.call(
+        ALICE,
+        settings,
+        DIR_RIGHTS,
+        Request::Open {
+            path: String::new(),
+            rights: DIR_RIGHTS.bits(),
+            how: How::Existing,
+        },
+    );
+    assert_eq!(failed(reply), Error::Permission);
+    // And `fs` refuses a change through the badge even with every right.
+    for request in [
+        Request::Trash {
+            name: "updates.cbor".into(),
+        },
+        Request::Begin { action: 0 },
+        open(Rights::READ, How::Mkdir),
+    ] {
+        let reply = c.call(ALICE, settings, DIR_RIGHTS, request);
+        assert_eq!(failed(reply), Error::Permission);
+    }
+}
+
+#[test]
+fn an_update_restore_keeps_system_trust_and_the_standing_rules() {
+    let mut disk = MemDisk::new(BLOCKS);
+    let (mut c, _) = Client::start(&mut disk);
+    let updates = kabi::fs::SYSTEM_UPDATES;
+    let open = |c: &mut Client, badge: u64, name: &str, how: How| {
+        let request = Request::Open {
+            path: name.into(),
+            rights: (Rights::READ | Rights::WRITE).bits(),
+            how,
+        };
+        c.call(ALICE, badge, DIR_RIGHTS, request).1
+    };
+    let (trust, state) = (kabi::fs::SYSTEM_TRUST, kabi::fs::SYSTEM_STATE);
+    let root = open(&mut c, trust, "root.json", How::CreateFile).unwrap();
+    c.write(&root, 0, b"root v1");
+    let old = open(&mut c, trust, "old.json", How::CreateFile).unwrap();
+    c.write(&old, 0, b"gone after");
+    let rules = open(&mut c, state, "rules", How::CreateFile).unwrap();
+    c.write(&rules, 0, b"always allow x");
+    let marker = open(&mut c, state, "marker", How::CreateFile).unwrap();
+    c.write(&marker, 0, b"before");
+    let (reply, _) = c.call(ALICE, updates, DIR_RIGHTS, Request::UpdateSnapshot);
+    let Reply::Snapshot { id, .. } = reply else {
+        panic!("{reply:?}");
+    };
+    // On the failed slot: a rotation, a newer timestamp, a removed file, a
+    // revoked rule, and an ordinary change.
+    c.write(&root, 0, b"root v2");
+    let timestamp = open(&mut c, trust, "timestamp.json", How::CreateFile).unwrap();
+    c.write(&timestamp, 0, b"timestamp v11");
+    let reply = c.call(
+        ALICE,
+        trust,
+        DIR_RIGHTS,
+        Request::Trash {
+            name: "old.json".into(),
+        },
+    );
+    assert!(matches!(reply.0, Reply::Done), "{reply:?}");
+    let reply = c.call(
+        ALICE,
+        state,
+        DIR_RIGHTS,
+        Request::Trash {
+            name: "rules".into(),
+        },
+    );
+    assert!(matches!(reply.0, Reply::Done), "{reply:?}");
+    c.write(&marker, 0, b"after!");
+    let (reply, _) = c.call(ALICE, updates, DIR_RIGHTS, Request::UpdateRestore { id });
+    assert!(matches!(reply, Reply::Committed { .. }), "{reply:?}");
+    // The ordinary change went back; trust and the rules did not.
+    let marker = open(&mut c, state, "marker", How::Existing).unwrap();
+    assert_eq!(c.read(&marker).unwrap(), b"before");
+    let root = open(&mut c, trust, "root.json", How::Existing).unwrap();
+    assert_eq!(c.read(&root).unwrap(), b"root v2");
+    let timestamp = open(&mut c, trust, "timestamp.json", How::Existing).unwrap();
+    assert_eq!(c.read(&timestamp).unwrap(), b"timestamp v11");
+    assert!(open(&mut c, trust, "old.json", How::Existing).is_none());
+    assert!(open(&mut c, state, "rules", How::Existing).is_none());
+}
+
+#[test]
+fn the_update_snapshot_is_refused_inside_any_action() {
+    let mut disk = MemDisk::new(BLOCKS);
+    let (mut c, _) = Client::start(&mut disk);
+    let updates = kabi::fs::SYSTEM_UPDATES;
+    let (reply, _) = c.call(ALICE, updates, DIR_RIGHTS, Request::UpdateSnapshot);
+    let Reply::Snapshot { id, .. } = reply else {
+        panic!("{reply:?}");
+    };
+    // Alice opens an action on the same folder and changes a file in it.
+    let begin = Request::Begin { action: 1 };
+    assert_eq!(c.call(ALICE, updates, DIR_RIGHTS, begin).0, Reply::Done);
+    let open = Request::Open {
+        path: "pending".into(),
+        rights: (Rights::READ | Rights::WRITE).bits(),
+        how: How::CreateFile,
+    };
+    let (_, file) = c.call(ALICE, updates, DIR_RIGHTS, open);
+    assert_eq!(c.write(&file.unwrap(), 0, b"half"), Reply::Done);
+    // Neither request may commit her action half done, nor may Bob's.
+    for caller in [ALICE, BOB] {
+        let want = if caller == ALICE {
+            Error::Invalid
+        } else {
+            Error::Busy
+        };
+        let reply = c.call(caller, updates, DIR_RIGHTS, Request::UpdateSnapshot);
+        assert_eq!(failed(reply), want);
+        let reply = c.call(caller, updates, DIR_RIGHTS, Request::UpdateRestore { id });
+        assert_eq!(failed(reply), want);
+    }
+    // Her action is still hers and still open: Abort drops the half write.
+    assert_eq!(
+        c.call(ALICE, updates, DIR_RIGHTS, Request::Abort).0,
+        Reply::Done
+    );
+    let open = Request::Open {
+        path: "pending".into(),
+        rights: Rights::READ.bits(),
+        how: How::Existing,
+    };
+    assert_eq!(
+        failed(c.call(ALICE, updates, DIR_RIGHTS, open)),
+        Error::NotFound
+    );
+    // Outside any action the snapshot goes through again.
+    let (reply, _) = c.call(ALICE, updates, DIR_RIGHTS, Request::UpdateSnapshot);
+    assert!(matches!(reply, Reply::Snapshot { .. }), "{reply:?}");
+}
+
+#[test]
+fn an_update_snapshot_is_dropped_only_on_system_updates_and_only_once() {
+    let mut disk = MemDisk::new(BLOCKS);
+    let (mut c, _) = Client::start(&mut disk);
+    let updates = kabi::fs::SYSTEM_UPDATES;
+    let (reply, _) = c.call(ALICE, updates, DIR_RIGHTS, Request::UpdateSnapshot);
+    let Reply::Snapshot { id, .. } = reply else {
+        panic!("{reply:?}");
+    };
+    let remove = Request::UpdateDrop { id };
+    let reply = c.call(ALICE, kabi::fs::SYSTEM_STATE, DIR_RIGHTS, remove.clone());
+    assert_eq!(failed(reply), Error::Permission);
+    let begin = Request::Begin { action: 1 };
+    assert_eq!(c.call(ALICE, updates, DIR_RIGHTS, begin).0, Reply::Done);
+    assert_eq!(
+        failed(c.call(ALICE, updates, DIR_RIGHTS, remove.clone())),
+        Error::Invalid
+    );
+    assert_eq!(
+        failed(c.call(BOB, updates, DIR_RIGHTS, remove.clone())),
+        Error::Busy
+    );
+    assert_eq!(
+        c.call(ALICE, updates, DIR_RIGHTS, Request::Abort).0,
+        Reply::Done
+    );
+    let (reply, _) = c.call(ALICE, updates, DIR_RIGHTS, remove.clone());
+    assert!(matches!(reply, Reply::Committed { .. }), "{reply:?}");
+    // Gone: a second drop, and a restore from it, are refused.
+    assert_eq!(
+        failed(c.call(ALICE, updates, DIR_RIGHTS, remove)),
+        Error::Invalid
+    );
+    let restore = Request::UpdateRestore { id };
+    assert_eq!(
+        failed(c.call(ALICE, updates, DIR_RIGHTS, restore)),
+        Error::Invalid
+    );
+    // It stays gone across a restart.
+    drop(c);
+    let (mut c, _) = Client::start(&mut disk);
+    let restore = Request::UpdateRestore { id };
+    assert_eq!(
+        failed(c.call(ALICE, updates, DIR_RIGHTS, restore)),
+        Error::Invalid
+    );
+}
+
+#[test]
+fn the_model_store_hands_over_a_sealed_models_runs() {
+    let mut disk = MemDisk::new(BLOCKS);
+    let (mut c, _) = Client::start(&mut disk);
+    let sha = [0x5a; 32];
+    let name: String = sha.iter().map(|b| format!("{b:02x}")).collect::<String>() + ".gguf";
+    assert_eq!(c.server.model_extents(&sha), Ok(None), "no model yet");
+    let len = (5 << 20) + 1234;
+    let fs = &mut c.server.fs;
+    fs.set_volume(MODELS.into()).unwrap();
+    let mut at = 0u64;
+    fs.write_sealed(ROOT, &name, len, &mut |piece: &mut [u8]| {
+        for byte in piece.iter_mut() {
+            *byte = (at % 251) as u8;
+            at += 1;
+        }
+        Ok(())
+    })
+    .unwrap();
+    fs.commit().unwrap();
+    let extents = c
+        .server
+        .model_extents(&sha)
+        .unwrap()
+        .expect("the sealed model");
+    let blocks: u64 = extents.iter().map(|&(_, n)| n).sum();
+    assert_eq!(blocks, len.div_ceil(4096), "{extents:?}");
+    assert!(extents.len() <= 3, "few runs: {extents:?}");
+    // A plain file of that name is not the model.
+    assert_eq!(c.server.model_extents(&[0x11; 32]), Ok(None));
 }

@@ -41,12 +41,15 @@ pub struct Outcome {
     /// Why, from consent and the row.
     pub why: Why,
     pub reply: Reply,
+    /// A `c>` entry's call: its value as JSON, or why there is none; `None`
+    /// while it asks (P4 task 12).
+    pub value: Option<crate::centry::CallValue>,
 }
 
 /// How a call's arguments read as consent sees them, and as Rhai literals.
-struct Arguments {
+pub(crate) struct Arguments {
     values: Vec<(&'static str, String)>,
-    rhai: Vec<String>,
+    pub(crate) rhai: Vec<String>,
 }
 
 impl Shell {
@@ -58,6 +61,7 @@ impl Shell {
             // Data, never consent (ADR 0010 §5): it reaches the model only.
             state: self.state_line().unwrap_or_default(),
             timeout_ms: SCRIPT_ROUND_MS,
+            read: None,
         };
         let call = match self.host.act(&asked) {
             Ok(call) => call,
@@ -88,7 +92,20 @@ impl Shell {
         };
         self.host
             .audit(&format!("request {id}: the model called {}", call.text()));
+        // A view the model asked for comes back to it once (ADR 0005 §6).
+        let call = match self.second_round(id, &asked, call) {
+            crate::ui::Round::First(call) => call,
+            crate::ui::Round::Second(call) => {
+                self.steered = Some("ui");
+                call
+            }
+            crate::ui::Round::Failed(reply) => {
+                self.record(id, request, "", &format!("refused: {}", reply.text));
+                return Some(reply);
+            }
+        };
         let outcome = self.execute(id, request, &call);
+        self.steered = None;
         // A turn that asked is remembered once it is answered (`actions`).
         match &mut self.pending {
             Some(pending) if outcome.reply.confirm == Some(id) => {
@@ -112,10 +129,28 @@ impl Shell {
             "clarify" => self.pseudo_clarify(id, request, call),
             "script" => self.pseudo_script(id, request, call),
             "undo" => self.pseudo_undo(call),
-            name => match agentabi::find(&agentabi::ROWS, name) {
+            name => match self.row(name) {
                 Some(row) => self.call_row(id, request, row, call),
                 None => self.refuse(id, request, call, Why::Unknown, "no such action"),
             },
+        }
+    }
+
+    /// The row named `name`: the OS's, then an installed app's (P4).
+    pub(crate) fn row(&self, name: &str) -> Option<&'static Action> {
+        agentabi::find(&agentabi::ROWS, name).or_else(|| {
+            crate::apps::load_for(self.host.as_ref(), name);
+            let apps = self.host.apps()?;
+            apps.borrow().rows.find(name).map(|r| r.row)
+        })
+    }
+
+    /// The rows `row` is decided or checked among: an app's row alone, every
+    /// other among the OS's `rows`.
+    fn rows_for(&self, row: &'static Action, rows: &'static [Action]) -> &'static [Action] {
+        match row.owner {
+            agentabi::Owner::App(_) => core::slice::from_ref(row),
+            _ => rows,
         }
     }
 
@@ -203,12 +238,22 @@ impl Shell {
                 (*name, value)
             })
             .collect();
+        // A call made after reading a view was decided by data (ADR 0002 D6),
+        // as are a `c>` entry's later calls after it read content.
+        let seen = self.c_entry.as_ref().and_then(|entry| entry.seen);
+        let control = self.steered.or(seen).map_or(Label::Literal, Label::Content);
         let planned = [Planned {
             name: row.name,
             args: &values,
-            control: Label::Literal,
+            control,
         }];
-        let decision = consent::decide(request, &planned, &agentabi::ROWS)[0];
+        let decision = match row.owner {
+            agentabi::Owner::App(_) => {
+                let rows: Vec<Action> = agentabi::ROWS.iter().copied().chain([*row]).collect();
+                consent::decide(request, &planned, &rows)[0]
+            }
+            _ => consent::decide(request, &planned, &agentabi::ROWS)[0],
+        };
         if decision.tier == Tier::Never {
             return self.refuse(id, request, call, decision.why, "it is never run");
         }
@@ -216,11 +261,17 @@ impl Shell {
             let reply = self.pkg_call(id, request, row.name, &args.values, decision);
             return outcome(decision.tier, decision.why, reply);
         }
-        // A file row's one-line script is found among the file rows, every other
-        // row's among the bound ones.
-        let rows: &'static [Action] = match agentabi::FS_ROWS.iter().any(|r| r.name == row.name) {
-            true => &agentabi::FS_ROWS,
-            false => &agentabi::BOUND,
+        // A file or window row's one-line script is found among its own rows,
+        // every other row's among the bound ones.
+        let own = |rows: &[Action]| rows.iter().any(|r| r.name == row.name);
+        let rows: &'static [Action] = if own(&agentabi::FS_ROWS) {
+            &agentabi::FS_ROWS
+        } else if own(&agentabi::UI_ROWS) {
+            &agentabi::UI_ROWS
+        } else if own(&agentabi::GRANT_ROWS) {
+            &agentabi::GRANT_ROWS
+        } else {
+            self.rows_for(row, &agentabi::BOUND)
         };
         if !rows.iter().any(|r| r.name == row.name) {
             let why = format!("{} is typed at the prompt for now, not called", row.name);
@@ -229,9 +280,12 @@ impl Shell {
         // What a content read returns is `Data`: `show` is the one way it comes
         // out, to the user and not back to the model (ADR 0002 D6).
         let called = format!("{}({})", row.name, args.rhai.join(", "));
-        let script = match row.ret {
-            RetType::Data => format!("show({called});"),
-            _ => format!("{called};"),
+        // A `c>` entry's call gives its value back to the program; anyone
+        // else's Data is shown to the user only.
+        let script = match (row.ret, self.c_entry.is_some()) {
+            (_, true) => called,
+            (RetType::Data, false) => format!("show({called});"),
+            (_, false) => format!("{called};"),
         };
         let answer = Answer {
             script,
@@ -469,7 +523,19 @@ pub(crate) fn remember(host: &dyn crate::Host, line: &str, call: &str, reply: &s
 }
 
 fn outcome(tier: Tier, why: Why, reply: Reply) -> Outcome {
-    Outcome { tier, why, reply }
+    Outcome {
+        tier,
+        why,
+        reply,
+        value: None,
+    }
+}
+
+/// A call refused before any row was found.
+pub(crate) fn outcome_refused(why: &str) -> Outcome {
+    let mut refused = outcome(Tier::Never, Why::Unknown, Reply::err(why));
+    refused.value = Some(Err(alloc::format!("refused: {why}")));
+    refused
 }
 
 /// A string argument, or "" when the model left it out.
@@ -483,7 +549,7 @@ fn text_arg(call: &Call, name: &str) -> String {
 
 /// A call's arguments in the row's order, checked against its types: as text for
 /// consent and as Rhai literals for the one-line script.
-fn arguments(row: &'static Action, call: &Call) -> Result<Arguments, String> {
+pub(crate) fn arguments(row: &'static Action, call: &Call) -> Result<Arguments, String> {
     if let Some(extra) = call
         .arguments
         .keys()
@@ -496,7 +562,9 @@ fn arguments(row: &'static Action, call: &Call) -> Result<Arguments, String> {
         rhai: Vec::new(),
     };
     for arg in row.args {
-        let Some(value) = call.arguments.get(arg.name) else {
+        // An optional argument left out, or given as null, is a shorter call.
+        let given = call.arguments.get(arg.name).filter(|v| !v.is_null());
+        let Some(value) = given else {
             if matches!(arg.ty, ArgType::Opt(_)) {
                 continue;
             }

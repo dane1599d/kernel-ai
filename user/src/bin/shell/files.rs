@@ -295,6 +295,10 @@ pub const LOG: &str = "log";
 pub const RULES: &str = "rules";
 /// The standing instructions' store (`kai-standing 1`, P3 task 11).
 pub const STANDING: &str = "standing";
+/// The user's appearance (`kai-appearance 1`, P4 task 8).
+pub const APPEARANCE: &str = "appearance";
+/// The rows withheld from apps' effects (`kai-withheld 1`, P4 task 7).
+pub const WITHHELD: &str = "withheld";
 
 impl State {
     /// File `name` as `/system/state` holds it; `None` with no such file or no
@@ -406,9 +410,18 @@ fn list(dir: Handle) -> Result<Vec<String>, String> {
         };
         match ask(dir, request)?.0 {
             Reply::Listed { names: page, more } => {
-                names.extend(page.into_iter().map(|l| match l.kind {
-                    fsproto::Kind::Dir => format!("{}/", l.name),
-                    fsproto::Kind::File => l.name,
+                names.extend(page.into_iter().map(|l| {
+                    // The answer joins names with `\n`, so a name's own control
+                    // characters (a `\n`) must not split it into several names.
+                    let name: String = l
+                        .name
+                        .chars()
+                        .map(|c| if c.is_control() { '\u{fffd}' } else { c })
+                        .collect();
+                    match l.kind {
+                        fsproto::Kind::Dir => format!("{name}/"),
+                        fsproto::Kind::File => name,
+                    }
                 }));
                 if more.is_none() || names.len() >= LIST_MAX {
                     return Ok(names);

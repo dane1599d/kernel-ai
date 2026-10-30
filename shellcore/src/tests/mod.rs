@@ -13,17 +13,23 @@ use std::collections::VecDeque;
 mod act;
 mod actions;
 mod apart;
+mod apps;
+mod centry;
+mod effects;
 mod files;
 mod fuzz;
 mod log;
 mod logdisk;
+mod look;
 mod more;
 mod packages;
+mod panel;
 mod profiles;
 mod scripts;
 mod standing;
 mod transaction;
 mod tune;
+mod ui;
 
 /// A host whose clock moves `step_ns` on every reading.
 struct FakeHost {
@@ -53,11 +59,22 @@ struct FakeHost {
     act_lines: RefCell<Vec<String>>,
     /// The State each `act` request carried, and what `state` gives.
     act_states: RefCell<Vec<String>>,
+    /// Each act request's second-round read (P3 task 10).
+    act_reads: RefCell<Vec<Option<llmproto::act::Read>>>,
+    /// What the shell asked `desktop`, and how `desktop` answers.
+    ui_calls: RefCell<Vec<crate::ui::UiCall>>,
+    ui_answer: RefCell<Option<UiAnswer>>,
     state: RefCell<crate::state::State>,
     /// Turns sent to the conversation memory, and how often it was forgotten.
     remembered: RefCell<Vec<(String, String, String)>>,
     forgot: Cell<u32>,
     audit: RefCell<Vec<String>>,
+    /// The installed apps' rows, and what each `app_call` sent and answers.
+    apps: RefCell<crate::apps::Apps>,
+    app_requests: RefCell<Vec<(String, String)>>,
+    app_replies: RefCell<VecDeque<String>>,
+    /// The saved appearance (`kai-appearance 1`).
+    appearance: RefCell<Option<String>>,
     /// The trusted path's ONCE book: badge, digest, and whether it was used.
     once: RefCell<Vec<(u64, [u8; 32], bool)>>,
     /// Rule handles revoked.
@@ -88,6 +105,7 @@ struct FakeHost {
     log_writes: Cell<u32>,
     /// `/system/state/rules`.
     rules_disk: RefCell<Option<String>>,
+    pub withheld_disk: RefCell<Option<String>>,
     /// `/system/state/standing`, and the event source and owners standing
     /// instructions run through, when `triggers_on` is set.
     standing_disk: RefCell<Option<String>>,
@@ -132,6 +150,8 @@ impl crate::standing::Triggers for FakeTriggers {
 type Files = std::collections::BTreeMap<String, String>;
 
 type Apart = alloc::boxed::Box<dyn Fn(&str) -> Result<String, String>>;
+
+type UiAnswer = alloc::boxed::Box<dyn Fn(&crate::ui::UiCall) -> Result<String, String>>;
 
 impl FakeHost {
     /// The supervisor's side: `err already ...` when nothing changes.
@@ -196,10 +216,17 @@ impl FakeHost {
             calls: RefCell::new(VecDeque::new()),
             act_lines: RefCell::new(Vec::new()),
             act_states: RefCell::new(Vec::new()),
+            act_reads: RefCell::new(Vec::new()),
+            ui_calls: RefCell::new(Vec::new()),
+            ui_answer: RefCell::new(None),
             state: RefCell::new(crate::state::State::default()),
             remembered: RefCell::new(Vec::new()),
             forgot: Cell::new(0),
             audit: RefCell::new(Vec::new()),
+            apps: RefCell::new(crate::apps::Apps::default()),
+            app_requests: RefCell::new(Vec::new()),
+            app_replies: RefCell::new(VecDeque::new()),
+            appearance: RefCell::new(None),
             once: RefCell::new(Vec::new()),
             revoked: RefCell::new(Vec::new()),
             procs: RefCell::new(alloc::vec![
@@ -219,6 +246,7 @@ impl FakeHost {
             log_disk: RefCell::new(None),
             log_writes: Cell::new(0),
             rules_disk: RefCell::new(None),
+            withheld_disk: RefCell::new(None),
             standing_disk: RefCell::new(None),
             triggers_on: Cell::new(false),
             triggers: FakeTriggers::default(),
@@ -441,6 +469,15 @@ impl Host for FakeHost {
         Ok(())
     }
 
+    fn withheld_read(&self) -> Option<String> {
+        self.withheld_disk.borrow().clone()
+    }
+
+    fn withheld_write(&self, text: &str) -> Result<(), String> {
+        *self.withheld_disk.borrow_mut() = Some(text.into());
+        Ok(())
+    }
+
     fn fs_read(&self, read: FsRead) -> Result<String, String> {
         let files = self.files.borrow();
         match read {
@@ -562,9 +599,18 @@ impl Host for FakeHost {
         self.state.borrow().clone()
     }
 
+    fn ui(&self, call: &crate::ui::UiCall) -> Result<String, String> {
+        self.ui_calls.borrow_mut().push(call.clone());
+        match self.ui_answer.borrow().as_ref() {
+            Some(answer) => answer(call),
+            None => crate::ui::no_desktop(),
+        }
+    }
+
     fn act(&self, request: &ActRequest) -> Result<Call, ActError> {
         self.act_lines.borrow_mut().push(request.line.clone());
         self.act_states.borrow_mut().push(request.state.clone());
+        self.act_reads.borrow_mut().push(request.read.clone());
         self.calls
             .borrow_mut()
             .pop_front()
@@ -576,6 +622,29 @@ impl Host for FakeHost {
         let child = apart.as_ref()?;
         self.apart_requests.borrow_mut().push(request.into());
         Some(child(request))
+    }
+
+    fn apps(&self) -> Option<&RefCell<crate::apps::Apps>> {
+        Some(&self.apps)
+    }
+
+    fn app_call(&self, app: &str, request: &str) -> Result<String, String> {
+        self.app_requests
+            .borrow_mut()
+            .push((String::from(app), String::from(request)));
+        self.app_replies
+            .borrow_mut()
+            .pop_front()
+            .ok_or_else(|| String::from("the app did not answer"))
+    }
+
+    fn appearance_read(&self) -> Option<String> {
+        self.appearance.borrow().clone()
+    }
+
+    fn appearance_write(&self, text: &str) -> Result<(), String> {
+        *self.appearance.borrow_mut() = Some(String::from(text));
+        Ok(())
     }
 
     fn audit(&self, text: &str) {

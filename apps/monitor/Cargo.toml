@@ -1,0 +1,14 @@
+[package]
+name = "comp-monitor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The System monitor's model (P4 task 9): the processes, CPU and memory it
+# shows, and the model's state and tokens/s, from the samples the host hands in
+# (the kernel's METRICS and llm's health), and `process_stop` as an effect
+# (ADR 0003 section 4). `no_std` + `alloc` and free of `kai:ui`, so the host
+# tests run it as is; the window (`comp-monitor-ui`, then the component) draws it.
+[lib]
+doctest = false

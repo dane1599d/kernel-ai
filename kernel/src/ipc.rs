@@ -16,7 +16,7 @@
 //! fail at once and queued ones wait for the next instance.
 
 use crate::process::{self, MAX_PROCESSES, Name, uaccess};
-use crate::{hpet, threads};
+use crate::{hpet, log, threads};
 use alloc::vec::Vec;
 use captable::Entry;
 use core::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
@@ -120,6 +120,19 @@ fn wake(tid: Option<Tid>) {
     }
 }
 
+/// Wakes the server of process `pid` if it waits in `svc_recv`, which then
+/// returns `Woken` (an event box it reads got an event).
+pub fn wake_server(pid: u64) {
+    let waiting = with_ipc(|ipc| {
+        ipc.endpoints
+            .iter()
+            .flatten()
+            .find(|e| e.server_pid == pid)
+            .and_then(|e| e.waiting)
+    });
+    wake(waiting);
+}
+
 fn find(ipc: &Ipc, name: &str) -> Option<usize> {
     ipc.endpoints
         .iter()
@@ -221,6 +234,9 @@ pub fn wait_bound(
     deadline_ns: u64,
     cancel: impl Fn() -> bool,
 ) -> Result<(), CallError> {
+    if server_of(name).is_none() {
+        demand(name);
+    }
     while server_of(name).is_none() {
         if cancel() {
             return Err(CallError::Cancelled);
@@ -231,6 +247,27 @@ pub fn wait_bound(
         threads::sleep_ms(BIND_POLL_MS);
     }
     Ok(())
+}
+
+/// How long the kernel waits for the supervisor to take a `demand`.
+const DEMAND_MS: u64 = 2_000;
+
+/// A call waits for `start=demand` service `name`, which is not running: the
+/// kernel asks the supervisor to start it (P3 task 12b), once for this wait.
+/// The supervisor takes `demand` only from the kernel.
+fn demand(name: &str) {
+    if name == supervise::SUPERVISOR || !process::supervision::on_demand(name) {
+        return;
+    }
+    let request = alloc::format!("{} {name}", supervise::DEMAND);
+    match call("supervisor", request.as_bytes(), DEMAND_MS) {
+        Ok(reply) if reply == b"ok" => log!("ipc: {name} asked for on demand"),
+        Ok(reply) => log!(
+            "ipc: the supervisor did not start {name}: {}",
+            alloc::string::String::from_utf8_lossy(&reply)
+        ),
+        Err(error) => log!("ipc: the supervisor did not take the demand for {name}: {error:?}"),
+    }
 }
 
 /// A call that was sent and not yet collected with [`finish`].
@@ -516,7 +553,20 @@ pub fn recv_with(
             process::burst::serving(slot, opened);
             return Ok((request.len() as u64, caller_pid, extra));
         }
-        let ready = || PENDING[endpoint].load(Ordering::SeqCst) > 0 || process::killed(slot);
+        // No request: an event box this process reads may have woken it.
+        if crate::event_box::take_wake(me.pid) {
+            with_ipc(|ipc| {
+                if let Some(entry) = ipc.endpoints[endpoint].as_mut() {
+                    entry.waiting = None;
+                }
+            });
+            return Err(Error::Woken);
+        }
+        let ready = || {
+            PENDING[endpoint].load(Ordering::SeqCst) > 0
+                || process::killed(slot)
+                || crate::event_box::woken(me.pid)
+        };
         if !ready() && hpet::nanos() < deadline {
             threads::sleep_until_unless(deadline, ready);
         }
