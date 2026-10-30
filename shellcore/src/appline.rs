@@ -35,6 +35,10 @@ pub(crate) const SHELL_LINE: &str = "shell_line";
 pub const TERMINAL_APP: &str = "terminal-window";
 /// Why a `shell_line` that did not come from a person's input is refused.
 pub(crate) const NOT_BY_A_PERSON: &str = "shell_line runs only for a key or click in the window";
+/// Why a line is refused while the console's C entry waits on its question.
+const C_WAITS: &str = "a C entry waits for an answer: answer it in the console first";
+/// Why `:c` and `:rhai` are refused: C goes in the console.
+const C_LINE: &str = "C goes in the console";
 /// What an app that asked gets back, in place of the question.
 const ASKS: &str = "it asks first: ask in the console, which shows the script";
 /// Most bytes of an answer sent back, so that with its `…` it fits the most
@@ -101,11 +105,21 @@ impl Shell {
         if line.starts_with("answer ") {
             return Reply::err("answers go on the question's own prompt");
         }
+        // While the console's C entry waits on its question, its log entry
+        // takes in whatever is logged after it began: no line runs between.
+        if self.c_waiting() {
+            return Reply::err(C_WAITS);
+        }
+        // C is the console's: an app line is always Rhai, and does not switch.
+        if line == ":c" || line.starts_with(":c ") || line == ":rhai" {
+            return Reply::err(C_LINE);
+        }
         let console = crate::panel::Terminal {
             partial: self.partial.take(),
             clarifying: self.clarifying.take(),
             pending: self.pending.take(),
             undo_asking: self.undo_asking.take(),
+            c: core::mem::take(&mut self.c),
         };
         // The console's tune proposal is its own: a line here neither answers
         // it nor lapses it, and one it leaves is dropped below.
@@ -115,6 +129,7 @@ impl Shell {
         self.clarifying = mine.clarifying;
         self.pending = mine.pending;
         self.undo_asking = mine.undo_asking;
+        self.c = mine.c;
         self.asked_model = false;
         self.worded = false;
         self.done_line = None;
@@ -135,12 +150,14 @@ impl Shell {
             clarifying: self.clarifying.take(),
             pending: None,
             undo_asking: None,
+            c: core::mem::take(&mut self.c),
         };
         self.fronts.insert(String::from(app), kept);
         self.partial = console.partial;
         self.clarifying = console.clarifying;
         self.pending = console.pending;
         self.undo_asking = console.undo_asking;
+        self.c = console.c;
         reply
     }
 }

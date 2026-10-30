@@ -15,6 +15,7 @@ mod actions;
 mod apart;
 mod appline;
 mod centry;
+mod cmode;
 mod effects;
 mod files;
 mod fuzz;
@@ -89,6 +90,12 @@ struct FakeHost {
     proofs: RefCell<Vec<(String, Proof)>>,
     /// Services started, with the entry that started them: the supervisor's memory.
     started_by: RefCell<Vec<(String, u64)>>,
+    /// The `cc` service, once a test starts one (`c>`).
+    cc: RefCell<Option<ccserve::Service<ccserve::rows::Rows>>>,
+    /// Replies a test scripts for cc, given before the service answers, and
+    /// every request the shell sent cc.
+    cc_script: RefCell<VecDeque<Vec<u8>>>,
+    cc_sent: RefCell<Vec<String>>,
     /// The `fs` server's files, and each transaction's files before and after.
     files: RefCell<std::collections::BTreeMap<String, String>>,
     txns: RefCell<Vec<(Files, Files)>>,
@@ -231,6 +238,9 @@ impl FakeHost {
             apart_requests: RefCell::new(Vec::new()),
             proofs: RefCell::new(Vec::new()),
             started_by: RefCell::new(Vec::new()),
+            cc: RefCell::new(None),
+            cc_script: RefCell::new(VecDeque::new()),
+            cc_sent: RefCell::new(Vec::new()),
             files: RefCell::new(Files::new()),
             txns: RefCell::new(Vec::new()),
             one_action: Cell::new(false),
@@ -617,6 +627,19 @@ impl Host for FakeHost {
 
     fn audit(&self, text: &str) {
         self.audit.borrow_mut().push(String::from(text));
+    }
+
+    fn cc(&self, request: &[u8]) -> Result<Vec<u8>, String> {
+        self.cc_sent
+            .borrow_mut()
+            .push(String::from_utf8_lossy(request).into_owned());
+        if let Some(reply) = self.cc_script.borrow_mut().pop_front() {
+            return Ok(reply);
+        }
+        match self.cc.borrow_mut().as_mut() {
+            Some(service) => Ok(service.handle(request, &cmode::CcClock)),
+            None => Err(String::from("cc is not running")),
+        }
     }
 }
 

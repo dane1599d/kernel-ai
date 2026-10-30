@@ -205,3 +205,60 @@ fn every_line_it_runs_is_audited() {
         host.audit.borrow()
     );
 }
+
+fn c_shell(host: &Rc<FakeHost>) -> Shell {
+    let service = ccserve::Service::new(
+        ccserve::CC_WASM,
+        &ccserve::XCC_HEADERS,
+        ccserve::rows::Rows::os(),
+        &super::cmode::CcClock,
+    )
+    .expect("cc starts");
+    *host.cc.borrow_mut() = Some(service);
+    let mut shell = shell(host);
+    let entered = shell.eval(":c");
+    assert!(entered.ok && shell.at_c(), "{entered:?}");
+    shell
+}
+
+/// A line from the Terminal app runs at kai> while the console is at c>, never
+/// reaches cc, and leaves the console's open entry and session.
+#[test]
+fn a_terminal_apps_line_runs_at_kai_and_leaves_c_alone() {
+    let host = FakeHost::new();
+    let mut shell = c_shell(&host);
+    assert!(shell.eval("I64 Sq(I64 x) { return x * x; }").ok);
+    assert!(shell.eval("I64 F(I64 x) {").more);
+    let sent = host.cc_sent.borrow().len();
+    assert_eq!(typed(&mut shell, "1 + 2"), Ok(String::from("ok 3")));
+    for line in [":c 6 * 7", ":c", ":rhai"] {
+        assert_eq!(
+            typed(&mut shell, line),
+            Ok(String::from("err C goes in the console")),
+            "{line}"
+        );
+    }
+    assert_eq!(host.cc_sent.borrow().len(), sent);
+    assert!(shell.at_c());
+    assert!(shell.eval("  return Sq(x); }").ok);
+    assert_eq!(shell.eval("F(3)").text, "= 9");
+}
+
+/// While a C entry waits on its question an app line is refused, and the
+/// console's answer still finishes the entry.
+#[test]
+fn the_consoles_answer_finishes_a_c_entry_after_an_app_line() {
+    let host = FakeHost::new();
+    *host.procs.borrow_mut() = vec![String::from("notes")];
+    let mut shell = c_shell(&host);
+    let id = shell
+        .eval("process_stop(\"notes\")")
+        .confirm
+        .expect("a stop asks");
+    let said = typed(&mut shell, "1 + 2").unwrap();
+    assert!(said.starts_with("err a C entry waits"), "{said}");
+    let once = host.mint(id, "process_stop(\"notes\")");
+    let allowed = shell.eval(&format!("answer {id} allow once={once}"));
+    assert!(allowed.text.ends_with("= 0"), "{allowed:?}");
+    assert!(host.procs.borrow().is_empty());
+}
