@@ -15,6 +15,7 @@ extern crate alloc;
 pub mod consent;
 mod desk;
 mod files;
+mod grants;
 mod look;
 mod names;
 mod rows;
@@ -23,6 +24,7 @@ mod ui;
 
 pub use desk::*;
 pub use files::*;
+pub use grants::*;
 pub use look::*;
 pub use names::{RESERVED_GROUPS, is_reserved, takes_os_name};
 pub use rows::*;

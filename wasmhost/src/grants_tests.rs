@@ -5,6 +5,8 @@ use crate::grants::{FromImage, Grants, MAX_IMAGE_VERSIONS, is_boot_label};
 const SETTINGS: Grants = Grants {
     settings: true,
     shell_line: false,
+    system: false,
+    edit: false,
 };
 
 #[test]

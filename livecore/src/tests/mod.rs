@@ -8,6 +8,7 @@ mod fallback;
 mod napper;
 mod package;
 mod rehearsal;
+mod rows;
 mod saved;
 mod suspend;
 

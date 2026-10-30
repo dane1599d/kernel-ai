@@ -13,6 +13,7 @@ extern crate std;
 
 pub mod agent;
 pub mod askcard;
+pub mod catalog;
 pub mod chrome;
 pub mod compose;
 pub mod damage;
@@ -22,6 +23,7 @@ pub mod geom;
 pub mod keymap;
 pub mod paint;
 pub mod paint_card;
+pub mod paint_catalog;
 pub mod paint_panel;
 pub mod panel;
 pub mod panel_wire;
