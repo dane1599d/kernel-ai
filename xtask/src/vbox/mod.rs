@@ -214,6 +214,7 @@ fn build_esp(cmdline: &str) -> Result<PathBuf, String> {
     let target_dir = root.join("target");
     let mut modules = esp::boot_modules(&kernel, &programs, &root)?;
     modules.extend(components::build(&root)?);
+    components::check_no_test_only(&modules)?;
     let efi = crate::ensure_limine(&target_dir)?;
     let esp = target_dir.join("vbox-esp");
     esp::make_esp(&esp, &kernel, &modules, &efi, cmdline)?;

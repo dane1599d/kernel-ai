@@ -139,7 +139,7 @@ fn execute(options: &Options) -> Result<(), String> {
     let kernel = build_kernel(&root, options)?;
     floatguard::check(&kernel)?;
     let programs = userbuild::build_user(&root, options)?;
-    let versions = components::build(&root)?;
+    let versions = components::build_for_tests(&root)?;
     if options.task == Task::Build {
         println!("xtask: kernel built at {}", kernel.display());
         println!("xtask: {} user programs built", programs.len());

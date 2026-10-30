@@ -193,13 +193,52 @@ pub const VERSIONS: &[Version] = &[
     },
 ];
 
-/// Builds and packs every version.
+/// Versions only the test images carry: a fixture that exists to be driven by a
+/// boot case, never shipped. [`build`] leaves them out, so the release and slot
+/// images, the VM image and the package repository never hold one;
+/// [`build_for_tests`] adds them for the images `cargo xtask test` boots, and
+/// [`check_no_test_only`] fails an image that has one. A version here is not also
+/// in [`VERSIONS`].
+pub const TEST_ONLY: &[Version] = &[];
+
+/// Builds and packs every version that ships.
 pub fn build(root: &Path) -> Result<Vec<Module>, String> {
     check_target()?;
     VERSIONS
         .iter()
         .map(|version| build_one(root, version))
         .collect()
+}
+
+/// [`build`], and the [`TEST_ONLY`] fixtures too: for the images the boot cases
+/// run, and nothing else.
+pub fn build_for_tests(root: &Path) -> Result<Vec<Module>, String> {
+    check_target()?;
+    VERSIONS
+        .iter()
+        .chain(TEST_ONLY)
+        .map(|version| build_one(root, version))
+        .collect()
+}
+
+/// Fails if one of `modules` is a [`TEST_ONLY`] fixture: what an image that
+/// ships (the release and slot images, a VM image) is checked with before it is
+/// made.
+pub fn check_no_test_only(modules: &[Module]) -> Result<(), String> {
+    check_none_of(modules, TEST_ONLY)
+}
+
+fn check_none_of(modules: &[Module], fixtures: &[Version]) -> Result<(), String> {
+    for fixture in fixtures {
+        let prefix = format!("comp/{}/", fixture.recipe.component);
+        if let Some(found) = modules.iter().find(|m| m.path.starts_with(&prefix)) {
+            return Err(format!(
+                "{} is a test fixture and must not ship in this image",
+                found.path
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn check_target() -> Result<(), String> {
@@ -378,6 +417,77 @@ mod tests {
         assert!(paths.contains(&"components/fixtures/notes-bad/src/lib.rs"));
         assert!(paths.contains(&"components/notes/Cargo.toml"));
         assert!(paths.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    fn fixture(component: &'static str) -> Version {
+        Version {
+            label: "1",
+            recipe: Recipe {
+                component,
+                krate: "none",
+                dirs: &[],
+                feature: None,
+                wit: &[],
+            },
+        }
+    }
+
+    #[test]
+    fn the_test_only_versions_are_not_in_the_set_that_ships() {
+        for fixture in TEST_ONLY {
+            assert!(
+                !VERSIONS
+                    .iter()
+                    .any(|v| v.recipe.component == fixture.recipe.component),
+                "{}",
+                fixture.recipe.component
+            );
+            assert!(kabi::live::valid_label(fixture.label));
+            let root = crate::workspace_root();
+            assert!(fixture.recipe.wit.iter().all(|w| root.join(w).is_dir()));
+            for dir in fixture.recipe.dirs {
+                assert!(root.join(dir).join("Cargo.toml").exists(), "{dir}");
+            }
+        }
+    }
+
+    #[test]
+    fn an_image_that_ships_refuses_a_fixture() {
+        let module = |path: &str| Module {
+            path: path.into(),
+            bytes: Vec::new(),
+        };
+        let fixtures = [fixture("fixture-window")];
+        let clean = [
+            module("comp/notes/1.wasm"),
+            module("comp/settings-window/1.wasm"),
+        ];
+        assert_eq!(check_none_of(&clean, &fixtures), Ok(()));
+        let dirty = [
+            module("comp/notes/1.wasm"),
+            module("comp/fixture-window/1.wasm"),
+        ];
+        let why = check_none_of(&dirty, &fixtures).unwrap_err();
+        assert!(why.contains("comp/fixture-window/1.wasm"), "{why}");
+        // A component whose name only starts the same is not the fixture.
+        let near = [module("comp/fixture-window-x/1.wasm")];
+        assert_eq!(check_none_of(&near, &fixtures), Ok(()));
+        // The list that ships is checked with `check_no_test_only`.
+        assert_eq!(check_no_test_only(&clean), Ok(()));
+    }
+
+    /// The images that ship call the check before they are made, and the test
+    /// images are the only ones built with the fixtures.
+    #[test]
+    fn the_shipping_images_run_the_check_and_only_the_test_images_build_fixtures() {
+        for (name, source) in [
+            ("release_image.rs", include_str!("release_image.rs")),
+            ("vbox/mod.rs", include_str!("vbox/mod.rs")),
+        ] {
+            assert!(source.contains("components::check_no_test_only("), "{name}");
+            assert!(!source.contains("build_for_tests"), "{name}");
+        }
+        assert!(include_str!("main.rs").contains("components::build_for_tests("));
     }
 
     /// Notes' window build carries Notes' own action rows, under its world.
