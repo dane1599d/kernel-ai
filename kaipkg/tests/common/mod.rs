@@ -78,6 +78,10 @@ impl<D: BlockDev> Volume for KaifsVol<D> {
         self.fs.begin(action).map_err(fs_err)
     }
 
+    fn abort(&mut self) -> Result<(), String> {
+        self.fs.abort().map(|_| ()).map_err(fs_err)
+    }
+
     fn commit(&mut self) -> Result<(), String> {
         self.fs.commit().map_err(fs_err)?;
         if let Some((store, now)) = self.track {
@@ -263,6 +267,7 @@ pub fn entry_for(p: &Package, bytes: &[u8]) -> Entry {
             })
             .collect(),
         grants: p.grants.iter().map(|g| g.to_string()).collect(),
+        effects: Vec::new(),
         yanked: false,
     }
 }

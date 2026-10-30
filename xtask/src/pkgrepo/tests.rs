@@ -1,8 +1,9 @@
 use super::mirrors::tampered;
-use super::tuf::{self, Key, canonical};
+use super::tuf::{self, Key};
 use super::*;
 use ed25519_compact::{PublicKey, Signature};
 use kaipkg::header::Kind;
+use kaipkg::sign::canonical;
 use kaipkg::version::Version;
 use serde_json::Map;
 
@@ -175,7 +176,7 @@ fn verify(repo: &Repository, now: Time) -> Result<Vec<(String, Vec<u8>)>, String
         return Err("targets is not the snapshot's version".into());
     }
     let delegation = &top["delegations"]["roles"][0];
-    if delegation["name"] != tuf::PACKAGES || delegation["paths"] != json!(["*.kpkg"]) {
+    if delegation["name"] != kaipkg::sign::PACKAGES || delegation["paths"] != json!(["*.kpkg"]) {
         return Err("targets does not delegate *.kpkg to packages".into());
     }
     let delegated_keys = top["delegations"]["keys"]
@@ -336,6 +337,34 @@ fn the_index_holds_the_headers_fields_and_the_artifacts_actions() {
             .unwrap()
             .contains(&json!("notes_find"))
     );
+    assert!(index.get("effects").is_none(), "notes declares no effects");
+}
+
+#[test]
+fn only_rows_an_app_may_call_are_packed_as_its_effects() {
+    let rows = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+    assert_eq!(
+        super::declarable(rows(&["fs_list", "fs_read"])),
+        Ok(rows(&["fs_list", "fs_read"]))
+    );
+    for never in ["pkg_install", "rules_remove", "service_start"] {
+        let err = super::declarable(rows(&["fs_read", never])).unwrap_err();
+        assert!(err.contains(never), "{err}");
+    }
+}
+
+#[test]
+fn an_index_listing_other_effects_than_the_artifact_is_refused_by_name() {
+    let mut notes = notes();
+    notes.effects = vec!["fs_read".into()];
+    assert_eq!(notes.index()["effects"], json!(["fs_read"]));
+    let repo = tuf::build(&[notes, hello()], &keys(1), NOW).unwrap();
+    let (kept, refused) = image(repo).unwrap();
+    assert_eq!(kept, ["hello-1.0.0.kpkg"]);
+    assert_eq!(
+        refused,
+        ["notes-1.0.0.kpkg: its artifact's effects are not its index entry's"]
+    );
 }
 
 #[test]
@@ -482,6 +511,7 @@ pub(super) fn hello() -> Package {
         header_text: header_text.into(),
         actions: Vec::new(),
         grants: Vec::new(),
+        effects: Vec::new(),
         bytes,
     }
 }

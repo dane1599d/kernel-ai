@@ -309,6 +309,7 @@ mod tests {
             depends: Vec::new(),
             grants: Vec::new(),
             actions: Vec::new(),
+            effects: Vec::new(),
             yanked: false,
             sha: [0; 32],
             size: 74_510,
@@ -376,7 +377,13 @@ mod tests {
     fn an_installed_package_no_index_lists_shows_its_own_header() {
         let text = "kai-package 1\nname hello\nversion 1.0.0\nkind data\nsummary A greeting\nlicence MIT\n";
         let header = crate::header::Header::parse(text).unwrap();
-        let own = Index::of_header(&header, text, [7; 32], 300, alloc::vec!["files".into()]);
+        let own = Index::of_header(
+            &header,
+            text,
+            ([7; 32], 300),
+            alloc::vec!["files".into()],
+            Vec::new(),
+        );
         let rows = rows(&[own], &[], &[]);
         assert_eq!(rows.len(), 1);
         let row = &rows[0];

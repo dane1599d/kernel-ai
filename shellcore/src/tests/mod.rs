@@ -26,6 +26,7 @@ mod packages;
 mod panel;
 mod profiles;
 mod scripts;
+mod settings;
 mod standing;
 mod transaction;
 mod tune;
@@ -69,6 +70,9 @@ struct FakeHost {
     remembered: RefCell<Vec<(String, String, String)>>,
     forgot: Cell<u32>,
     audit: RefCell<Vec<String>>,
+    /// What the supervisor was told to keep running, and the saved list.
+    kept: RefCell<Vec<(String, bool)>>,
+    keep_file: RefCell<Option<String>>,
     /// The installed apps' rows, and what each `app_call` sent and answers.
     apps: RefCell<crate::apps::Apps>,
     app_requests: RefCell<Vec<(String, String)>>,
@@ -223,6 +227,8 @@ impl FakeHost {
             remembered: RefCell::new(Vec::new()),
             forgot: Cell::new(0),
             audit: RefCell::new(Vec::new()),
+            kept: RefCell::new(Vec::new()),
+            keep_file: RefCell::new(None),
             apps: RefCell::new(crate::apps::Apps::default()),
             app_requests: RefCell::new(Vec::new()),
             app_replies: RefCell::new(VecDeque::new()),
@@ -622,6 +628,20 @@ impl Host for FakeHost {
         let child = apart.as_ref()?;
         self.apart_requests.borrow_mut().push(request.into());
         Some(child(request))
+    }
+
+    fn keep_read(&self) -> Option<String> {
+        self.keep_file.borrow().clone()
+    }
+
+    fn keep_write(&self, text: &str) -> Result<(), String> {
+        *self.keep_file.borrow_mut() = Some(String::from(text));
+        Ok(())
+    }
+
+    fn keep_running(&self, app: &str, on: bool) -> Result<(), String> {
+        self.kept.borrow_mut().push((String::from(app), on));
+        Ok(())
     }
 
     fn apps(&self) -> Option<&RefCell<crate::apps::Apps>> {
