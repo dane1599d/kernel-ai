@@ -20,6 +20,7 @@ use livecore::local::restored_of;
 use livecore::nap::Nap;
 use livecore::napper::{Napped, Napper};
 use livecore::settings::Settings;
+use sha2::{Digest, Sha256};
 use user::{arg, args, println, sys};
 use wasmhost::{Limits, LiveInstance};
 
@@ -27,6 +28,8 @@ use wasmhost::{Limits, LiveInstance};
 mod disk;
 #[path = "comphost/edit.rs"]
 mod edit;
+#[path = "comphost/settings.rs"]
+mod kai_settings;
 #[path = "comphost/system.rs"]
 mod system;
 #[path = "comphost/ui.rs"]
@@ -55,11 +58,18 @@ struct SysEnv {
     /// The app's saved state on disk, with a plan line's `dir=apps`; opened
     /// at the first restore, which names the app.
     disk: Option<disk::Disk>,
-    /// What the app may import beyond `kai:app` and `kai:ui`: `edit` if the kernel
-    /// gave this process an `Edit` handle, and `system` if the plan line's name for
-    /// it (the kernel's, never its package's) is the System monitor's.
+    /// What the app may import beyond `kai:app` and `kai:ui`: `settings`,
+    /// `shell_line` and `system` from the plan line's name for it (the kernel's),
+    /// `edit` if the kernel gave this process an `Edit` handle; never from its
+    /// package.
     grants: wasmhost::Grants,
+    /// The image's own versions fetched, by digest: only they get `grants`.
+    image: wasmhost::grants::FromImage,
 }
+
+/// The one app whose effects go to the shell as the user's when a person's key
+/// or click caused them (the Terminal's `shell_line`): the plan line's name.
+const TERMINAL_APP: &str = "terminal-window";
 
 fn version_log(line: &str) {
     println!("{line}");
@@ -76,7 +86,10 @@ impl Env for SysEnv {
         }
         let mut artifact = vec![0u8; len];
         match sys::comp_fetch(label, &mut artifact)? {
-            fetched if fetched == len => Ok(artifact),
+            fetched if fetched == len => {
+                self.image.fetched(label, Sha256::digest(&artifact).into());
+                Ok(artifact)
+            }
             _ => Err(Error::Invalid),
         }
     }
@@ -111,9 +124,22 @@ impl Env for SysEnv {
         // The sink stays attached; quiet only mutes it, so a standby that becomes
         // the active version again logs as before.
         // The manifest's `lifecycle` picks the contract: 1 hand-bound, 2 kai:live.
+        // The grants hold only for the image's own versions: an upload or a
+        // package version swapped in under this name runs without them.
+        let grants = self
+            .image
+            .grants_for(&Sha256::digest(module).into(), self.grants);
+        if grants != self.grants {
+            println!("comphost: this version is not the image's; it runs without its grants");
+        }
         let mut instance =
-            wasmhost::load_live_granted(module, self.limits, Some(version_log), self.grants)?;
+            wasmhost::load_live_granted(module, self.limits, Some(version_log), grants)?;
         livecore::Instance::quiet(&mut instance, quiet);
+        // The Settings window is kept from the agent: its rules and grants are
+        // typed-only data, and Kai must not park focus on Revoke.
+        if let LiveInstance::V2(core) = &mut instance {
+            core.allow_agent_private(grants.settings);
+        }
         // Its windows are laid out with the fonts they are drawn with.
         if let (LiveInstance::V2(core), true) = (&mut instance, self.windows)
             && let Some(measure) = ui::measure()
@@ -147,6 +173,7 @@ fn main() -> i32 {
         windows: windows.is_some(),
         disk: None,
         grants: edit::grants(),
+        image: wasmhost::grants::FromImage::default(),
         limits: Limits {
             fuel_call: settings.fuel_call,
             fuel_life: settings.fuel_life,
@@ -160,6 +187,12 @@ fn main() -> i32 {
             return livecore::host::EXIT_REFUSED;
         }
     };
+    // The plan line's name is the grant: `desktop` and the shell check it too.
+    env.grants.settings = name == kai_settings::SETTINGS_APP;
+    env.grants.shell_line = name == TERMINAL_APP;
+    if let (true, Some(ui)) = (env.grants.settings, windows.as_mut()) {
+        ui.carry_settings();
+    }
     // The editor's rules for what it may send; none for an app without the grant.
     let mut edits = env.grants.edit.then(editcore::gate::Gate::new);
     // The plan line's name is the grant: only the System monitor reads the
@@ -181,6 +214,8 @@ fn main() -> i32 {
     );
     settle(&mut windows, &mut edits, &mut host);
     let mut request = vec![0u8; kabi::MAX_MESSAGE];
+    // Whether the nap holds a lease for settings requests in flight.
+    let mut settings_leased = false;
     // When the host's own wait ends; 0 is never.
     let mut tick_at = deadline(host.timeout_ms());
     // Whether the nap holds a lease for a read of the machine waiting.
@@ -246,6 +281,13 @@ fn main() -> i32 {
                 {
                     println!("{}", exit.why);
                     return exit.code;
+                }
+                // A settings request waiting for its answer is use: the app
+                // does not nap until it has it.
+                let busy = windows.as_ref().is_some_and(ui::Ui::settings_busy);
+                if busy != settings_leased {
+                    napper.nap.lease(busy);
+                    settings_leased = busy;
                 }
                 settle(&mut windows, &mut edits, &mut host);
                 match napper.tick(&mut host, now_ms()) {

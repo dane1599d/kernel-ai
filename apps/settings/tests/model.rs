@@ -1,56 +1,80 @@
 //! The Settings model on the host: its files round trip and survive hostile
-//! bytes, grants read as plain words by app, and each choice gives the intent
+//! bytes, effect rows grouped by app, and each choice gives the intent
 //! the OS carries out, or none when there is nothing to do.
 
-use comp_settings::access::by_app;
+use comp_settings::access;
 use comp_settings::files::{Appearance, Apps, DAY_MINUTES, Updates};
 use comp_settings::{Intent, RuleLine, RuleRef, Settings};
 
-const GRANTS: &str = "kai-grants 1\n\
-grant 41 app=notes kind=dir object=/home/user/notes rights=read+write+enumerate from=picker life=persistent signer=- made=2026-11-02T10:14:00Z\n\
-grant 42 app=browser kind=host object=example.org rights=connect from=request:7 life=session signer=- made=2026-11-02T10:15:00Z\n\
-grant 43 app=notes kind=file object=/home/user/todo.txt rights=read from=install life=persistent signer=- made=2026-11-02T10:16:00Z\n";
+const GRANTS: &str = "notes\tnotes_add\tallowed\n\
+browser\tnet_fetch\twithheld\n\
+notes\tfs_write\twithheld\n";
 
 fn settings() -> Settings {
     Settings {
-        access: by_app(&kaigrants::parse(GRANTS).unwrap()),
+        access: access::parse(GRANTS).unwrap(),
         nappable: vec!["files".into(), "notes".into()],
         ..Settings::default()
     }
 }
 
 #[test]
-fn grants_read_as_plain_words_grouped_by_app() {
+fn effect_rows_are_grouped_by_app_with_what_each_may_do() {
     let s = settings();
     let names: Vec<&str> = s.access.iter().map(|a| a.app.as_str()).collect();
     assert_eq!(names, ["browser", "notes"]);
     let notes = &s.access[1].access;
     assert_eq!(notes.len(), 2);
-    assert_eq!(notes[0].grant, 41);
     assert_eq!(
-        notes[0].what,
-        "Read, write and enumerate the folder /home/user/notes"
+        (notes[0].row.as_str(), notes[0].allowed),
+        ("notes_add", true)
     );
-    assert_eq!(notes[0].why, "You chose it in a file picker");
-    assert_eq!(notes[1].what, "Read the file /home/user/todo.txt");
-    let browser = &s.access[0].access[0];
-    assert_eq!(browser.what, "Connect to example.org");
     assert_eq!(
-        browser.why,
-        "You allowed it when asked (log entry 7), until restart"
+        (notes[1].row.as_str(), notes[1].allowed),
+        ("fs_write", false)
+    );
+    let browser = &s.access[0].access[0];
+    assert_eq!(
+        (browser.row.as_str(), browser.allowed),
+        ("net_fetch", false)
     );
 }
 
 #[test]
-fn revoking_names_only_a_held_grant_and_its_app_goes_when_empty() {
+fn revoking_names_only_an_allowed_row_and_restoring_only_a_withheld_one() {
     let mut s = settings();
-    assert_eq!(s.revoke(99), None);
-    let intent = s.revoke(42).unwrap();
-    assert_eq!(intent, Intent::Revoke(42));
-    s.applied(&intent);
-    let names: Vec<&str> = s.access.iter().map(|a| a.app.as_str()).collect();
-    assert_eq!(names, ["notes"]);
-    assert_eq!(s.revoke(42), None);
+    // Not listed, or in the wrong state for the choice.
+    assert_eq!(s.revoke("notes", "nope"), None);
+    assert_eq!(s.revoke("nobody", "notes_add"), None);
+    assert_eq!(s.revoke("notes", "fs_write"), None);
+    assert_eq!(s.restore("notes", "notes_add"), None);
+    assert_eq!(s.restore("nobody", "fs_write"), None);
+
+    let revoke = s.revoke("notes", "notes_add").unwrap();
+    assert_eq!(
+        revoke,
+        Intent::Revoke {
+            app: "notes".into(),
+            row: "notes_add".into()
+        }
+    );
+    s.applied(&revoke);
+    // The row stays listed, now withheld, and can be given back; a second
+    // revoke names nothing.
+    assert!(!s.access[1].access[0].allowed);
+    assert_eq!(s.revoke("notes", "notes_add"), None);
+    let restore = s.restore("notes", "notes_add").unwrap();
+    assert_eq!(
+        restore,
+        Intent::Restore {
+            app: "notes".into(),
+            row: "notes_add".into()
+        }
+    );
+    s.applied(&restore);
+    assert!(s.access[1].access[0].allowed);
+    // The other app's row of the same name is not touched.
+    assert!(!s.access[0].access[0].allowed);
 }
 
 #[test]

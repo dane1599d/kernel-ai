@@ -2,26 +2,24 @@
 //! page's tree is one `uikit` takes, switching pages sends only what changed,
 //! and each control gives the model's intent.
 
-use comp_settings::access::by_app;
+use comp_settings::access;
 use comp_settings::files::Apps;
 use comp_settings::{About, Intent, Page, RuleLine, RuleRef, Settings};
 use comp_settings_ui::{
-    APP_LIST, Change, END, Entry, KEEP, LEGIBLE, PROFILES, REMOVE, REVOKE, SIZE, START, TABS,
-    THEME, View, WINDOW_ON, build, clock, diff, on_ui, redraw,
+    APP_LIST, Change, END, Entry, KEEP, LEGIBLE, PROFILES, REMOVE, RESTORE, REVOKE, SIZE, START,
+    TABS, THEME, View, WINDOW_ON, build, clock, diff, on_ui, redraw,
 };
 use uikit::layout::FixedAdvance;
 use uikit::widget::{UiEvent, Value};
 use uikit::window::Window;
 
-const GRANTS: &str = "kai-grants 1\n\
-grant 41 app=notes kind=dir object=/home/user/notes rights=read+write from=picker life=persistent signer=- made=2026-11-02T10:14:00Z\n\
-grant 42 app=browser kind=host object=example.org rights=connect from=request:7 life=session signer=- made=2026-11-02T10:15:00Z\n";
+const GRANTS: &str = "notes\tnotes_add\tallowed\nbrowser\tnet_fetch\tallowed\n";
 
 fn settings() -> Settings {
     let mut apps = Apps::default();
     apps.set("notes", true);
     Settings {
-        access: by_app(&kaigrants::parse(GRANTS).unwrap()),
+        access: access::parse(GRANTS).unwrap(),
         rules: vec![
             RuleLine {
                 id: RuleRef::Rule(3),
@@ -134,7 +132,7 @@ fn appearance_controls_give_appearance_set() {
 }
 
 #[test]
-fn revoke_needs_a_chosen_app_and_names_its_grant() {
+fn revoke_needs_a_chosen_app_and_names_its_row() {
     let s = settings();
     let mut view = View::page(1);
     build(&s, &mut view);
@@ -144,63 +142,118 @@ fn revoke_needs_a_chosen_app_and_names_its_grant() {
     build(&s, &mut view);
     assert_eq!(
         on_ui(&s, &mut view, &UiEvent::Pressed(REVOKE)).1,
-        Some(Intent::Revoke(41))
+        Some(Intent::Revoke {
+            app: "notes".into(),
+            row: "notes_add".into()
+        })
     );
     assert_eq!(on_ui(&s, &mut view, &UiEvent::Pressed(REVOKE + 1)).1, None);
+    // A row that is allowed has no Restore to press.
+    assert_eq!(on_ui(&s, &mut view, &UiEvent::Pressed(RESTORE)).1, None);
     on_ui(&s, &mut view, &UiEvent::Changed(APP_LIST, Value::Index(9)));
     assert_eq!(view.app, None);
 }
 
-const MORE_GRANTS: &str = "kai-grants 1\n\
-grant 41 app=notes kind=dir object=/home/user/notes rights=read+write from=picker life=persistent signer=- made=2026-11-02T10:14:00Z\n\
-grant 42 app=browser kind=host object=example.org rights=connect from=request:7 life=session signer=- made=2026-11-02T10:15:00Z\n\
-grant 43 app=notes kind=dir object=/home/user/drafts rights=read from=picker life=persistent signer=- made=2026-11-02T10:16:00Z\n";
+const MORE_GRANTS: &str = "notes\tnotes_add\tallowed\n\
+browser\tnet_fetch\tallowed\n\
+notes\tfs_write\tallowed\n";
 
-/// A press that comes again after its row went (a double-click, a repeated
-/// Enter, the agent retrying) names nothing, never the row that moved up.
+fn pick(s: &Settings, view: &mut View, app: &str) {
+    let at = s.access.iter().position(|a| a.app == app).unwrap();
+    on_ui(
+        s,
+        view,
+        &UiEvent::Changed(APP_LIST, Value::Index(at as u32)),
+    );
+    assert_eq!(view.app.as_deref(), Some(app));
+    build(s, view);
+}
+
+fn press(s: &Settings, view: &mut View, id: u32) -> Option<Intent> {
+    on_ui(s, view, &UiEvent::Pressed(id)).1
+}
+
+/// A press that comes again after its row changed (a double-click, a repeated
+/// Enter, the agent retrying) never does the opposite, and never names another
+/// row: Revoke and Restore are separate buttons, and each sits in its row's slot.
 #[test]
-fn a_second_press_after_a_revoke_never_names_another_grant() {
+fn a_second_press_after_a_revoke_never_undoes_it_or_names_another_row() {
     let mut s = Settings {
-        access: by_app(&kaigrants::parse(MORE_GRANTS).unwrap()),
+        access: access::parse(MORE_GRANTS).unwrap(),
         ..settings()
     };
     let mut view = View::page(1);
     build(&s, &mut view);
-    let browser = s.access.iter().position(|a| a.app == "browser").unwrap();
-    on_ui(
-        &s,
-        &mut view,
-        &UiEvent::Changed(APP_LIST, Value::Index(browser as u32)),
+    pick(&s, &mut view, "browser");
+    let revoke = press(&s, &mut view, REVOKE).unwrap();
+    assert_eq!(
+        revoke,
+        Intent::Revoke {
+            app: "browser".into(),
+            row: "net_fetch".into()
+        }
     );
-    build(&s, &mut view);
-    let revoke = on_ui(&s, &mut view, &UiEvent::Pressed(REVOKE)).1;
-    assert_eq!(revoke, Some(Intent::Revoke(42)));
-    s.applied(&revoke.unwrap());
+    s.applied(&revoke);
     let tree = build(&s, &mut view);
-    // Browser is gone, so nothing is chosen, and the same press does nothing.
+    // The row stays, withheld: its button is Restore now.
     assert!(!tree.iter().any(|e| e.id == REVOKE));
-    assert_eq!(on_ui(&s, &mut view, &UiEvent::Pressed(REVOKE)).1, None);
-    // Within one app: the first grant's button names only that grant.
-    let notes = s.access.iter().position(|a| a.app == "notes").unwrap();
-    on_ui(
-        &s,
-        &mut view,
-        &UiEvent::Changed(APP_LIST, Value::Index(notes as u32)),
+    assert!(tree.iter().any(|e| e.id == RESTORE));
+    assert_eq!(press(&s, &mut view, REVOKE), None);
+    let restore = press(&s, &mut view, RESTORE).unwrap();
+    assert_eq!(
+        restore,
+        Intent::Restore {
+            app: "browser".into(),
+            row: "net_fetch".into()
+        }
     );
-    build(&s, &mut view);
-    let first = on_ui(&s, &mut view, &UiEvent::Pressed(REVOKE)).1.unwrap();
-    let Intent::Revoke(gone) = first else {
+    s.applied(&restore);
+    let tree = build(&s, &mut view);
+    assert!(tree.iter().any(|e| e.id == REVOKE));
+    assert!(!tree.iter().any(|e| e.id == RESTORE));
+    assert_eq!(press(&s, &mut view, RESTORE), None);
+
+    // Within one app: each button names only its own row.
+    pick(&s, &mut view, "notes");
+    let first = press(&s, &mut view, REVOKE).unwrap();
+    let Intent::Revoke { ref row, .. } = first else {
         panic!("{first:?}");
     };
+    assert_eq!(row, "notes_add");
     s.applied(&first);
     build(&s, &mut view);
-    assert_eq!(view.app.as_deref(), Some("notes"));
-    assert_eq!(on_ui(&s, &mut view, &UiEvent::Pressed(REVOKE)).1, None);
-    let other = if gone == 41 { 43 } else { 41 };
+    assert_eq!(press(&s, &mut view, REVOKE), None);
+    assert_eq!(press(&s, &mut view, RESTORE + 1), None);
     assert_eq!(
-        on_ui(&s, &mut view, &UiEvent::Pressed(REVOKE + 1)).1,
-        Some(Intent::Revoke(other))
+        press(&s, &mut view, REVOKE + 1),
+        Some(Intent::Revoke {
+            app: "notes".into(),
+            row: "fs_write".into()
+        })
     );
+    assert!(matches!(
+        press(&s, &mut view, RESTORE),
+        Some(Intent::Restore { .. })
+    ));
+}
+
+/// The row says whether the app may call it, and the app says nothing the shell
+/// did not list.
+#[test]
+fn a_row_says_allowed_or_withheld() {
+    let s = Settings {
+        access: access::parse("notes\tnotes_add\tallowed\nnotes\tfs_write\twithheld\n").unwrap(),
+        ..Settings::default()
+    };
+    let mut view = View::page(1);
+    view.app = Some("notes".into());
+    build(&s, &mut view);
+    let tree = build(&s, &mut view);
+    let shown = names(&tree);
+    assert!(shown.iter().any(|n| n == "notes_add: allowed"), "{shown:?}");
+    assert!(shown.iter().any(|n| n == "fs_write: withheld"), "{shown:?}");
+    assert!(shown.iter().any(|n| n == "Revoke"), "{shown:?}");
+    assert!(shown.iter().any(|n| n == "Restore"), "{shown:?}");
 }
 
 #[test]
@@ -318,11 +371,10 @@ fn every_page_at_its_limit_has_unique_ids_and_fits_one_window() {
     let s = Settings {
         access: vec![AppAccess {
             app: "many".into(),
-            access: (0..n as u32)
-                .map(|grant| Access {
-                    grant,
-                    what: format!("Read and write the file /home/user/{grant:0>200}"),
-                    why: "test".into(),
+            access: (0..n)
+                .map(|i| Access {
+                    row: format!("row{i}"),
+                    allowed: i % 2 == 0,
                 })
                 .collect(),
         }],

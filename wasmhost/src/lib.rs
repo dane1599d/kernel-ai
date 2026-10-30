@@ -30,10 +30,15 @@ pub mod edit;
 mod edit_tests;
 mod effects;
 pub mod grants;
+#[cfg(test)]
+mod grants_tests;
 mod instance;
 pub mod linear;
 pub mod link;
 pub mod settings;
+pub mod settings_ledger;
+#[cfg(test)]
+mod settings_ledger_tests;
 #[cfg(test)]
 mod settings_tests;
 pub mod surface;
