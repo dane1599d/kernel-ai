@@ -169,6 +169,10 @@ pub enum SelfTest {
     /// The keyboard reaches an app's widgets (key input for uikit apps).
     UiKeys,
     DeskTerm,
+    /// `desk-agent` (P3 task 10): the agent opens Notes and acts inside it.
+    DeskAgent,
+    /// `desk-takeover` (P3 task 10): a key in the agent's window stops it.
+    DeskTakeover,
     /// `scriptrun` through a Job, and spike S01-1's M3 and M5 (P1 task 14).
     Scriptrun,
     /// L2: processes keep their vector state across switches and CPUs, and start clean.
@@ -338,6 +342,8 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=desk-standing" => Some(SelfTest::DeskStanding),
             "test=ui-keys" => Some(SelfTest::UiKeys),
             "test=desk-term" => Some(SelfTest::DeskTerm),
+            "test=desk-agent" => Some(SelfTest::DeskAgent),
+            "test=desk-takeover" => Some(SelfTest::DeskTakeover),
             "test=scriptrun" => Some(SelfTest::Scriptrun),
             "test=fpu" => Some(SelfTest::Fpu),
             "test=probe" => Some(SelfTest::Probe),
@@ -424,6 +430,8 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DeskStanding
             | SelfTest::UiKeys
             | SelfTest::DeskTerm
+            | SelfTest::DeskAgent
+            | SelfTest::DeskTakeover
             | SelfTest::TuneRevert
             | SelfTest::TuneStall
             | SelfTest::Tune
@@ -522,6 +530,11 @@ pub fn plan(test: SelfTest) -> Option<String> {
                 plan.push_str(crate::desk_tests::BOOT_PLAN);
                 kabi::plan::SHELL_DESK
             }
+            SelfTest::DeskAgent | SelfTest::DeskTakeover => {
+                plan.push('\n');
+                plan.push_str(crate::agent_desk_tests::DESK);
+                kabi::plan::SHELL_DESK
+            }
             _ => shell,
         };
         plan.push('\n');
@@ -615,6 +628,10 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
     if test == SelfTest::DeskTerm {
         plan.push('\n');
         plan.push_str(crate::term_tests::PLAN);
+    }
+    if matches!(test, SelfTest::DeskAgent | SelfTest::DeskTakeover) {
+        plan.push('\n');
+        plan.push_str(crate::agent_desk_tests::APPS);
     }
     if test == SelfTest::None {
         plan.push('\n');

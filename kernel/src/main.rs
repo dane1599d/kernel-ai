@@ -18,6 +18,7 @@
 extern crate alloc;
 
 mod act_tests;
+mod agent_desk_tests;
 mod allow;
 mod apic;
 mod app_route_tests;
@@ -383,6 +384,8 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::DeskStanding => run_case(standing_tests::check),
         SelfTest::UiKeys => run_case(keys_tests::check),
         SelfTest::DeskTerm => run_case(term_tests::check),
+        SelfTest::DeskAgent => run_case(agent_desk_tests::agent_check),
+        SelfTest::DeskTakeover => run_case(agent_desk_tests::takeover_check),
         SelfTest::Scriptrun => run_case(scriptrun_tests::check),
         SelfTest::Fpu => run_case(fpu_tests::fpu_check),
         SelfTest::Probe => run_case(fpu_tests::probe_check),
