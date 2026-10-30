@@ -11,6 +11,8 @@ use surfabi::tree::{Role, Tree};
 struct Fake {
     trees: Vec<(WindowId, Tree)>,
     sent: Vec<(WindowId, u32, u32, String)>,
+    /// The windows whose apps keep them from the agent.
+    private: Vec<WindowId>,
 }
 
 impl Clients for Fake {
@@ -19,6 +21,10 @@ impl Clients for Fake {
             .iter()
             .find(|(w, _)| *w == window)
             .map(|(_, t)| t)
+    }
+
+    fn private(&self, window: WindowId) -> bool {
+        self.private.contains(&window)
     }
 
     fn act(&mut self, window: WindowId, node: u32, action: u32, value: &str) -> bool {
@@ -46,6 +52,7 @@ fn desktop() -> (Desk, Fake, WindowId, WindowId) {
     let fake = Fake {
         trees: vec![(notes, m.tree()), (term, Tree::default())],
         sent: Vec::new(),
+        private: Vec::new(),
     };
     (desk, fake, notes, term)
 }
@@ -150,6 +157,55 @@ fn a_view_then_an_act_reaches_the_app_and_moves_the_outline() {
     agent.closed(notes);
     let (gone, _) = agent.answer(&mut desk, &mut fake, "ui act notes b2 0\t");
     assert_eq!(gone, "err unknown node; view w1 first");
+}
+
+#[test]
+fn a_private_window_shows_its_title_alone_and_takes_no_act_or_focus() {
+    let (mut desk, mut fake, notes, _) = desktop();
+    fake.private.push(notes);
+    let mut agent = Agent::default();
+    let (view, _) = agent.answer(&mut desk, &mut fake, "ui view notes");
+    // The window line (with its title, as every view has), then no node.
+    assert!(view.starts_with("ok windows: "), "{view}");
+    assert!(view.ends_with("\nw1: private"), "{view}");
+    assert!(
+        !view.contains("Search") && !view.contains("New note"),
+        "{view}"
+    );
+    let refused = "err notes is private: its app keeps it from the agent";
+    let refused_w1 = "err w1 is private: its app keeps it from the agent";
+    for (request, want) in [
+        ("ui act notes b2 0\t", refused_w1),
+        ("ui check notes b2 0", refused_w1),
+        ("ui focus notes", refused),
+        ("ui refocus notes", refused),
+    ] {
+        let (answer, effects) = agent.answer(&mut desk, &mut fake, request);
+        assert_eq!(answer, want, "{request}");
+        assert!(effects.is_empty(), "{request}");
+    }
+    assert!(fake.sent.is_empty());
+    assert_eq!(desk.agent(), None);
+}
+
+#[test]
+fn a_window_that_turns_private_after_a_view_takes_no_act() {
+    let (mut desk, mut fake, notes, _) = desktop();
+    let mut agent = Agent::default();
+    agent.answer(&mut desk, &mut fake, "ui view notes");
+    assert_eq!(
+        agent.answer(&mut desk, &mut fake, "ui check notes b2 0").0,
+        "ok"
+    );
+    fake.private.push(notes);
+    let (act, _) = agent.answer(&mut desk, &mut fake, "ui act notes b2 0\t");
+    assert_eq!(act, "err w1 is private: its app keeps it from the agent");
+    // Its view went with the next one, so turning shared again needs a new view.
+    agent.answer(&mut desk, &mut fake, "ui view notes");
+    fake.private.clear();
+    let (stale, _) = agent.answer(&mut desk, &mut fake, "ui act notes b2 0\t");
+    assert_eq!(stale, "err unknown node; view w1 first");
+    assert!(fake.sent.is_empty());
 }
 
 #[test]
