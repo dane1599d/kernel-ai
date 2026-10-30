@@ -77,8 +77,13 @@ pub struct Store {
 pub struct Disk {
     pub id: u32,
     pub label: String,
+    /// Its size, in whole sectors: a file attached as a disk is rounded up to
+    /// [`SECTOR`] bytes, so the disk does not say the file's own length.
     pub length: u64,
 }
+
+/// A disk's sector, in bytes.
+pub const SECTOR: u64 = 512;
 
 /// Why an import was refused.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -91,6 +96,9 @@ pub enum Refusal {
     Hash { id: String },
     /// The role's target is under a licence the project does not take.
     Licence(String),
+    /// The disk is the size of two of the role's targets, `.0` and `.1`, so
+    /// which one it holds is not known before it is read.
+    TwoSizes(String, String),
 }
 
 impl Refusal {
@@ -101,6 +109,7 @@ impl Refusal {
             Refusal::Hash { id } => {
                 format!("it is the size of {id}, but its SHA-256 is not the one the role signs")
             }
+            Refusal::TwoSizes(a, b) => format!("it is the size of both {a} and {b}"),
             Refusal::Licence(l) => {
                 format!("it is under {l}; the project takes Apache-2.0 or MIT models only")
             }
@@ -129,10 +138,23 @@ pub fn check<'a>(
     }
 }
 
-/// Whether a blob of `length` bytes could be one of the role's targets: the
+/// The one target of the role a disk of `disk` bytes could hold, from its
+/// first byte: one whose length rounds up to the disk's whole sectors. The
+/// import then reads exactly that many bytes and holds them to [`check`].
+pub fn on_disk(signed: &[Signed], disk: u64) -> Result<&Signed, Refusal> {
+    let fits = |s: &&Signed| s.length <= disk && disk - s.length < SECTOR;
+    let mut targets = signed.iter().filter(fits);
+    match (targets.next(), targets.next()) {
+        (Some(one), None) => Ok(one),
+        (Some(a), Some(b)) => Err(Refusal::TwoSizes(a.id.clone(), b.id.clone())),
+        (None, _) => Err(Refusal::NotSigned),
+    }
+}
+
+/// Whether a disk of `disk` bytes could hold one of the role's targets: the
 /// check before a disk is read at all.
-pub fn could_be(signed: &[Signed], length: u64) -> bool {
-    signed.iter().any(|s| s.length == length)
+pub fn could_be(signed: &[Signed], disk: u64) -> bool {
+    on_disk(signed, disk).is_ok()
 }
 
 /// An import, as the window shows it.
@@ -308,11 +330,13 @@ impl Models {
                 self.store.next = (self.store.running != Some(*sha256)).then_some(*sha256);
             }
             Intent::Import(id) => {
+                // The bytes the import reads: the target's, not the disk's.
                 let length = self
                     .disks
                     .iter()
                     .find(|d| d.id == *id)
-                    .map_or(0, |d| d.length);
+                    .and_then(|d| on_disk(&self.signed, d.length).ok())
+                    .map_or(0, |s| s.length);
                 self.import = Some(Import::Copying {
                     disk: *id,
                     done: 0,

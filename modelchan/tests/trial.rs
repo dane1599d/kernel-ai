@@ -1,0 +1,150 @@
+//! `kai-modeltrial 1` and the probation a switched model is on.
+
+use modelchan::trial::{Decision, Health, MAX_WHY, State, Switch, Trial, decide, switch};
+
+const OLD: [u8; 32] = [0x11; 32];
+const NEW: [u8; 32] = [0x22; 32];
+const OTHER: [u8; 32] = [0x33; 32];
+
+fn pending(candidate: [u8; 32], previous: Option<[u8; 32]>) -> Trial {
+    Trial {
+        candidate,
+        previous,
+        state: State::Pending,
+    }
+}
+
+#[test]
+fn a_record_reads_back_as_written() {
+    let records = [
+        pending(NEW, Some(OLD)),
+        pending(NEW, None),
+        Trial {
+            state: State::Kept,
+            ..pending(NEW, Some(OLD))
+        },
+        Trial {
+            state: State::RolledBack("it did not load within 300 s".into()),
+            ..pending(NEW, Some(OLD))
+        },
+    ];
+    for record in records {
+        assert_eq!(Trial::parse(&record.encode()), Ok(record.clone()));
+    }
+    assert_eq!(
+        pending(NEW, None).encode(),
+        format!(
+            "kai-modeltrial 1\ncandidate {}\nprevious none\nstate pending\n",
+            "22".repeat(32)
+        )
+    );
+}
+
+#[test]
+fn a_why_is_kept_to_one_short_line() {
+    let long = format!("panic\nin {}", "x".repeat(400));
+    let record = Trial {
+        state: State::RolledBack(long),
+        ..pending(NEW, Some(OLD))
+    };
+    let back = Trial::parse(&record.encode()).unwrap();
+    let State::RolledBack(why) = back.state else {
+        panic!("{back:?}")
+    };
+    assert!(
+        why.starts_with("panic in xxx") && why.len() <= MAX_WHY,
+        "{why}"
+    );
+    let blank = Trial {
+        state: State::RolledBack("\n".into()),
+        ..pending(NEW, Some(OLD))
+    };
+    let back = Trial::parse(&blank.encode()).unwrap();
+    assert_eq!(back.state, State::RolledBack("no reason was given".into()));
+}
+
+#[test]
+fn a_malformed_record_is_refused() {
+    let good = pending(NEW, Some(OLD)).encode();
+    let rolled = Trial {
+        state: State::RolledBack("x".into()),
+        ..pending(NEW, Some(OLD))
+    }
+    .encode();
+    let bad = [
+        good.trim_end().to_string(),
+        good.replace("kai-modeltrial 1", "kai-modeltrial 2"),
+        good.replace(
+            &"22".repeat(32),
+            &"2".repeat(64).to_uppercase().replace('2', "A"),
+        ),
+        good.replace(&"11".repeat(32), "11"),
+        good.replace("state pending", "state kept-ish"),
+        good.replace("candidate ", "candidate  "),
+        format!("{good}extra\n"),
+        good.replace("\nprevious", "\nprevius"),
+        rolled.replace("why x", "why "),
+        rolled.replace("why x", &format!("why {}", "y".repeat(MAX_WHY + 1))),
+        rolled.replace("\nwhy x", ""),
+        String::new(),
+    ];
+    for text in bad {
+        assert!(Trial::parse(&text).is_err(), "{text:?}");
+    }
+}
+
+#[test]
+fn a_switch_tries_another_model_and_undo_cancels_it() {
+    // From OLD to NEW: a trial, with OLD to go back to.
+    let tried = switch(Some(OLD), None, NEW);
+    assert_eq!(tried, Switch::Try(pending(NEW, Some(OLD))));
+    let Switch::Try(record) = tried else {
+        unreachable!()
+    };
+    // Again: nothing more to do. Back to OLD before the restart: cancelled.
+    assert_eq!(switch(Some(OLD), Some(&record), NEW), Switch::Nothing);
+    assert_eq!(switch(Some(OLD), Some(&record), OLD), Switch::Cancel);
+    // A third model replaces the pending one, still going back to OLD.
+    assert_eq!(
+        switch(Some(OLD), Some(&record), OTHER),
+        Switch::Try(pending(OTHER, Some(OLD)))
+    );
+    // The running model, with nothing pending: nothing.
+    assert_eq!(switch(Some(OLD), None, OLD), Switch::Nothing);
+    let kept = Trial {
+        state: State::Kept,
+        ..record.clone()
+    };
+    assert_eq!(switch(Some(NEW), Some(&kept), NEW), Switch::Nothing);
+    assert_eq!(
+        switch(Some(NEW), Some(&kept), OLD),
+        Switch::Try(pending(OLD, Some(NEW)))
+    );
+    // No model ran: the trial goes back to none.
+    assert_eq!(switch(None, None, NEW), Switch::Try(pending(NEW, None)));
+}
+
+#[test]
+fn the_candidate_is_kept_only_once_it_loads() {
+    const FNV: u64 = 0xfeed;
+    let limit = 300_000;
+    assert_eq!(
+        decide(FNV, Health::Ready { fnv: FNV }, 5, limit),
+        Decision::Keep
+    );
+    assert_eq!(decide(FNV, Health::NotYet, 1_000, limit), Decision::Wait);
+    let back = |health, waited| match decide(FNV, health, waited, limit) {
+        Decision::RollBack(why) => why,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(back(Health::NotYet, limit), "it did not load within 300 s");
+    assert_eq!(
+        back(Health::Ready { fnv: 1 }, 5),
+        "another model started in its place"
+    );
+    assert_eq!(back(Health::NoModel, 5), "no model started");
+    assert_eq!(
+        back(Health::Failed("refused header\nline two"), 5),
+        "it did not load: refused header line two"
+    );
+}
