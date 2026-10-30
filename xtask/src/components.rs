@@ -60,7 +60,6 @@ const SETTINGS_WIT: &str = "apps/settings/wit";
 /// The editor (P4 task 11): its window, the model's tree and the shared glue.
 const EDITOR_WINDOW: &str = "apps/editor-window";
 const EDITOR_DIRS: &[&str] = &[EDITOR_WINDOW, "apps/editor-ui", "apps/ui-bind"];
-const EDITOR_WINDOW_WIT: &str = "apps/editor-window/wit";
 /// `app:editor/actions`, which the window exports.
 const EDITOR_WIT: &str = "apps/editor/wit";
 
@@ -151,17 +150,11 @@ pub const VERSIONS: &[Version] = &[
     Version {
         label: "1",
         recipe: Recipe {
-            component: "editor-window",
+            component: "editor",
             krate: "comp-editor-window",
             dirs: EDITOR_DIRS,
             feature: None,
-            wit: &[
-                EDITOR_WINDOW_WIT,
-                "wit/kai-ui",
-                "wit/kai-edit",
-                "wit/kai-code",
-                EDITOR_WIT,
-            ],
+            wit: &["wit/kai-ui", "wit/kai-edit", "wit/kai-code", EDITOR_WIT],
         },
     },
 ];
@@ -415,17 +408,14 @@ mod tests {
     fn the_editor_build_packs_with_the_editor_actions() {
         let editor = VERSIONS
             .iter()
-            .find(|v| v.recipe.component == "editor-window")
+            .find(|v| v.recipe.component == "editor")
             .unwrap();
-        let module = Vec::from(&b" asm   "[..]);
+        let module = Vec::from(&b"\0asm\x01\0\0\0"[..]);
         let root = crate::workspace_root();
         let source = artifact::bundle(&[("apps/editor-window/src/lib.rs", b"//")]);
         let bytes = pack(&root, &editor.recipe, editor.label, module, &source).unwrap();
         let parsed = artifact::parse(&bytes).unwrap();
-        assert_eq!(
-            parsed.manifest.world,
-            "app:editor-window/editor-window@1.0.0"
-        );
+        assert_eq!(parsed.manifest.world, "app:editor/editor@1.0.0");
         let actions = livecore::actions::parse(parsed.actions.unwrap()).unwrap();
         let open = actions.by_name("editor_open").unwrap();
         assert_eq!(open.export, "app:editor/actions@1.0.0#open");

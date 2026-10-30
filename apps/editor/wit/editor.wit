@@ -17,6 +17,21 @@ interface actions {
     status: func() -> string;
 }
 
+/// The editor as its manifest names it: a live component with its window, its
+/// code view and its two actions, and the granted `kai:edit` interface through
+/// which it reaches the edit service. It has no storage or effects of its own.
+world editor {
+    include kai:app/component@0.1.0;
+    import kai:app/clock@0.1.0;
+    import kai:edit/edit@0.1.0;
+    import kai:ui/view@0.1.1;
+    import kai:code/code@0.1.0;
+    export kai:ui/input@0.1.1;
+    export kai:code/code-input@0.1.0;
+    export kai:edit/replies@0.1.0;
+    export actions;
+}
+
 /// The part an editor crate binds itself; `compsdk` binds `kai:app/component`.
 world actions-only {
     export actions;

@@ -16,7 +16,14 @@ use uikit::widget::{self as w, NodeId, UiError};
 mod actions {
     wit_bindgen::generate!({
         world: "app:editor/actions-only",
-        path: ["../../wit/kai-live", "../../wit/kai-app", "../editor/wit"],
+        path: [
+            "../../wit/kai-live",
+            "../../wit/kai-app",
+            "../../wit/kai-ui",
+            "../../wit/kai-edit",
+            "../../wit/kai-code",
+            "../editor/wit",
+        ],
     });
     pub use exports::app::editor::actions::Guest;
 }

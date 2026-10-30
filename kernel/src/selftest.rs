@@ -162,6 +162,9 @@ pub enum SelfTest {
     DeskCatalog,
     /// An app's kai:ui window on the desktop, closed from its control (P3 task 9).
     UiWindow,
+    /// The editor app's window on the desktop, opened by the agent's door, typed
+    /// into and built in the background (P4 task 11).
+    AppEditor,
     /// An unused app naps and a click wakes it (P3 task 12b).
     DeskNap,
     /// Asks answered on `desktop`'s card, and on the console when it dies (P3 task 7).
@@ -340,6 +343,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=desk-panel-shell" => Some(SelfTest::DeskPanelShell),
             "test=desk-catalog" => Some(SelfTest::DeskCatalog),
             "test=ui-window" => Some(SelfTest::UiWindow),
+            "test=app-editor" => Some(SelfTest::AppEditor),
             "test=desk-nap" => Some(SelfTest::DeskNap),
             "test=desk-card" => Some(SelfTest::DeskCard),
             "test=desk-standing" => Some(SelfTest::DeskStanding),
@@ -429,6 +433,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DeskPanelShell
             | SelfTest::DeskCatalog
             | SelfTest::UiWindow
+            | SelfTest::AppEditor
             | SelfTest::DeskNap
             | SelfTest::DeskCard
             | SelfTest::DeskStanding
@@ -618,6 +623,10 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
     if test == SelfTest::UiWindow {
         plan.push('\n');
         plan.push_str(crate::ui_tests::PLAN);
+    }
+    if test == SelfTest::AppEditor {
+        plan.push('\n');
+        plan.push_str(&crate::app_editor_tests::plan());
     }
     if test == SelfTest::DeskNap {
         plan.push('\n');
