@@ -25,7 +25,7 @@ use llmproto::chat::Completion;
 use llmproto::script::{self, Answer, AnswerError, ScriptRequest};
 use llmproto::tune::{self, TuneRequest};
 use shellcore::targets::Service;
-use shellcore::{DEFAULT_CONFIG, Host, Proof, SCRIPT_ROUND_MS, Shell};
+use shellcore::{DEFAULT_CONFIG, Host, PanelResult, Proof, SCRIPT_ROUND_MS, Shell};
 use user::{arg, args, logln, println, sys};
 
 user::entry!(main);
@@ -56,6 +56,56 @@ fn llm() -> kabi::handle::Handle {
 /// The route to the supervisor: the second in the shell's `uses=llm+supervisor`.
 fn supervisor() -> kabi::handle::Handle {
     user::route(1).unwrap_or(kabi::handle::Handle::NONE)
+}
+
+/// The route to `desktop`, third in `uses=llm+supervisor+desktop`, on a desktop
+/// only (P3 task 7).
+fn desktop() -> Option<kabi::handle::Handle> {
+    user::route(2)
+}
+
+const DESKTOP_CALL_MS: u64 = 5_000;
+
+/// One panel request to `desktop`: its answer.
+fn ask_desktop(route: kabi::handle::Handle, request: &str) -> Result<String, String> {
+    let mut reply = vec![0u8; kabi::MAX_MESSAGE];
+    let len = sys::call_route(route, request.as_bytes(), &mut reply, DESKTOP_CALL_MS)
+        .map_err(|error| format!("desktop did not answer ({error:?})"))?;
+    Ok(String::from_utf8_lossy(&reply[..len.min(reply.len())]).into_owned())
+}
+
+/// Takes the panel's oldest request, runs a line apart from the terminal's
+/// entry and questions (`Shell::eval_panel`), and reports what came of it:
+/// code's result line, or why not, never the model's words. The panel shows
+/// thinking from the Enter until then. A line that asks first is asked in the
+/// terminal for now; the panel says so.
+fn take_panel(shell: &mut Shell) {
+    use deskcore::panel::{Request, State};
+    use deskcore::panel_wire;
+    let Some(route) = desktop() else {
+        return;
+    };
+    let Ok(answer) = ask_desktop(route, panel_wire::TAKE) else {
+        return;
+    };
+    let shown = match panel_wire::parse_take(&answer) {
+        Some(Some(Request::Line(line))) => match shell.eval_panel(&line) {
+            PanelResult::Done(line) => State::Done { line },
+            PanelResult::Refused(reason) => State::Refused { reason },
+        },
+        // Esc after the shell took the line: it has run already, one line at
+        // a time, and its result stays shown. Esc before is desktop's own: the
+        // line never came here.
+        _ => return,
+    };
+    let Some(request) = panel_wire::encode_state(&shown) else {
+        return;
+    };
+    match ask_desktop(route, &request) {
+        Ok(answer) if answer == "ok" => {}
+        Ok(answer) => println!("the panel's state was not set: {answer}"),
+        Err(why) => println!("the panel's state was not set: {why}"),
+    }
 }
 
 /// The supervisor's wait for a stop or a start: a stop waits for the process to end.
@@ -447,7 +497,8 @@ impl shellcore::standing::Triggers for Firings {
     }
 }
 
-/// How long the shell waits for a line before it looks at the event box.
+/// How long the shell waits for a line before it looks at the event box and
+/// the AI panel.
 const EVENT_POLL_MS: u64 = 250;
 
 /// Takes the kernel's event box and hands each event to the standing
@@ -484,8 +535,10 @@ fn main() -> i32 {
     let mut line = vec![0u8; kabi::MAX_MESSAGE];
     let mut events = vec![0u8; kabi::event::READ_BYTES];
     loop {
-        // Between lines: what happened on the desktop since the last look.
+        // Between lines: what happened on the desktop since the last look,
+        // and the AI panel's line.
         take_events(&mut shell, &mut events);
+        take_panel(&mut shell);
         let mut caller = u64::MAX;
         let len = match sys::svc_recv(&mut line, EVENT_POLL_MS, &mut caller) {
             Ok(len) => len.min(line.len()),

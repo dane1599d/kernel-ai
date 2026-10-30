@@ -152,6 +152,8 @@ pub enum SelfTest {
     DeskBoot,
     /// The AI panel takes focus and queues a typed line (P3 task 7).
     DeskPanel,
+    /// `desk-panel-shell` (P3 task 7): the shell takes the panel's line.
+    DeskPanelShell,
     /// An app's kai:ui window on the desktop, closed from its control (P3 task 9).
     UiWindow,
     /// An unused app naps and a click wakes it (P3 task 12b).
@@ -323,6 +325,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=app-on-demand" => Some(SelfTest::AppOnDemand),
             "test=desk-boot" => Some(SelfTest::DeskBoot),
             "test=desk-panel" => Some(SelfTest::DeskPanel),
+            "test=desk-panel-shell" => Some(SelfTest::DeskPanelShell),
             "test=ui-window" => Some(SelfTest::UiWindow),
             "test=desk-nap" => Some(SelfTest::DeskNap),
             "test=desk-card" => Some(SelfTest::DeskCard),
@@ -407,6 +410,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::FilesChurn { .. }
             | SelfTest::DeskBoot
             | SelfTest::DeskPanel
+            | SelfTest::DeskPanelShell
             | SelfTest::UiWindow
             | SelfTest::DeskNap
             | SelfTest::DeskCard
@@ -494,6 +498,16 @@ pub fn plan(test: SelfTest) -> Option<String> {
                 kabi::plan::SHELL_FILES
             }
             false => kabi::plan::SHELL,
+        };
+        // On the desktop the shell has a route to `desktop`, for the panel:
+        // `desktop` is planned first, as a route's target must be.
+        let shell = match test {
+            SelfTest::DeskPanelShell => {
+                plan.push('\n');
+                plan.push_str(crate::desk_tests::BOOT_PLAN);
+                kabi::plan::SHELL_DESK
+            }
+            _ => shell,
         };
         plan.push('\n');
         plan.push_str(shell);

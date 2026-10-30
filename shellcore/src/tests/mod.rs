@@ -21,6 +21,7 @@ mod logdisk;
 mod look;
 mod more;
 mod packages;
+mod panel;
 mod profiles;
 mod scripts;
 mod standing;
