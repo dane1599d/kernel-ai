@@ -323,7 +323,15 @@ impl Store {
     /// `.partial` (resuming what is there), then checked and renamed in.
     fn fetch(&self, cx: &mut Ctx<'_>, source: &mut dyn Source, entry: &Entry) -> Result<(), Error> {
         if present(cx.vol, &entry.sha)? {
-            return Ok(());
+            // Already here, and checked when it came; but this entry's effects
+            // are what the card showed, so they must be the object's too.
+            let object = cx.vol.read(&object_path(&entry.sha))?.unwrap_or_default();
+            let declared =
+                object_header(&object).and_then(|h| effects::check(&h, &object, &entry.effects));
+            return match declared {
+                Ok(()) => Ok(()),
+                Err(_) => refuse(Refused::EffectsDiffer(entry.name.clone())),
+            };
         }
         let partial = partial_path(&entry.sha);
         let mut have = cx.vol.read(&partial)?.map_or(0, |b| b.len() as u64);

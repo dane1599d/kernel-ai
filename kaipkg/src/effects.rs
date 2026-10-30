@@ -136,9 +136,18 @@ pub(crate) mod tests {
     /// The store installs `files` from `index`'s entry listing `effects`.
     fn install(object: &[u8], effects: &[&str]) -> Result<u64, crate::store::Error> {
         let mut vol = crate::memvol::MemVolume::default();
+        install_on(&mut vol, object, effects)
+    }
+
+    /// [`install`] on `vol`, which may hold the object already.
+    fn install_on(
+        vol: &mut crate::memvol::MemVolume,
+        object: &[u8],
+        effects: &[&str],
+    ) -> Result<u64, crate::store::Error> {
         let mut ledger = NoLedger;
         let mut cx = crate::store::Ctx {
-            vol: &mut vol,
+            vol,
             ledger: &mut ledger,
             now: crate::generation::Time(100),
             action: 1,
@@ -172,5 +181,34 @@ pub(crate) mod tests {
         };
         assert_eq!(install(&object, &["fs_list"]), refused());
         assert_eq!(install(&object, &[]), refused());
+    }
+
+    #[test]
+    fn an_object_already_stored_is_held_to_each_new_entrys_effects() {
+        let (_, object) = app("effects fs_list fs_read\n");
+        let mut vol = crate::memvol::MemVolume::default();
+        assert_eq!(
+            install_on(&mut vol, &object, &["fs_list", "fs_read"]),
+            Ok(2)
+        );
+        // Undone, its object stays in the store for the next install.
+        let mut cx = crate::store::Ctx {
+            vol: &mut vol,
+            ledger: &mut NoLedger,
+            now: crate::generation::Time(100),
+            action: 1,
+        };
+        assert_eq!(crate::store::Store::default().rollback(&mut cx, 1), Ok(3));
+        // An entry for the same bytes that lists fewer rows is refused, though
+        // nothing is downloaded: the card would show less than it calls.
+        let why = crate::store::Refused::EffectsDiffer("files".into());
+        assert_eq!(
+            install_on(&mut vol, &object, &["fs_read"]),
+            Err(crate::store::Error::Refused(why))
+        );
+        assert_eq!(
+            install_on(&mut vol, &object, &["fs_list", "fs_read"]),
+            Ok(4)
+        );
     }
 }
