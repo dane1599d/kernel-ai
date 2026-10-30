@@ -248,6 +248,9 @@ dependencies = [
 [[package]]
 name = "comp-monitor"
 version = "0.1.0-dev"
+dependencies = [
+ "systemabi",
+]
 
 [[package]]
 name = "comp-monitor-ui"
@@ -255,6 +258,7 @@ version = "0.1.0-dev"
 dependencies = [
  "agentabi",
  "comp-monitor",
+ "comp-ui-bind",
  "uikit",
 ]
 
