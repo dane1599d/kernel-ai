@@ -126,9 +126,13 @@ impl Shell {
                 }
                 self.keep_running(&logged, name, on)
             }
-            ("appearance-set" | "restart-window", _) => {
-                Err(format!("{verb} is not answered here yet"))
+            ("appearance-set", rest) => {
+                let (setting, value) = rest
+                    .split_once(' ')
+                    .ok_or_else(|| String::from("appearance-set takes a setting and a value"))?;
+                self.appearance_by_click(&logged, setting, value)
             }
+            ("restart-window", _) => Err(format!("{verb} is not answered here yet")),
             _ => Err(String::from("not a settings request")),
         }
     }
@@ -166,6 +170,37 @@ impl Shell {
 
     /// Keeps app `name` running (`on`) or lets it nap: the supervisor is told,
     /// the list is saved, and the change is logged with its undo.
+    /// `appearance-set`: the `appearance_set` row's change, from a click, with
+    /// its undo; the row's words. `look` refuses a setting or value it does not
+    /// take, and that refusal is the answer.
+    fn appearance_by_click(
+        &mut self,
+        request: &str,
+        setting: &str,
+        value: &str,
+    ) -> Result<String, String> {
+        let change = crate::appearance::changed(self.host.as_ref(), setting, value)?;
+        let words = change.after.clone();
+        let id = self.next_id;
+        self.next_id += 1;
+        self.log.push(Entry {
+            id,
+            t_ns: self.host.now_ns(),
+            form: Form::Call,
+            of: None,
+            tier: Some(Tier::Run),
+            pack: None,
+            consent: String::from(CLICK),
+            state: State::Done,
+            request: String::from(request),
+            script: format!("appearance_set(\"{setting}\", \"{value}\")"),
+            outcome: words.clone(),
+            changes: alloc::vec![change],
+        });
+        self.save_log();
+        Ok(words)
+    }
+
     fn keep_running(&mut self, request: &str, name: &str, on: bool) -> Result<String, String> {
         if !self.app_names()?.iter().any(|app| app == name) {
             return Err(format!("{name} is no app that can nap"));
