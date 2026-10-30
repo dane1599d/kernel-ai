@@ -4,6 +4,21 @@
 use crate::{Memory, Proc};
 use alloc::format;
 use alloc::string::String;
+use systemabi::ModelState;
+
+/// What the model is doing, as the window says it.
+pub fn model_word(state: ModelState) -> &'static str {
+    match state {
+        ModelState::Waiting => "waiting for its model",
+        ModelState::Warming => "warming up",
+        ModelState::Ready => "ready",
+        ModelState::Remote => "answering from a server",
+        ModelState::Failed => "failed",
+        ModelState::NoModel => "no model",
+        ModelState::Busy => "busy",
+        ModelState::Unknown => "not reported",
+    }
+}
 
 /// A CPU share in thousandths: `12.3%`.
 pub fn cpu(permille: Option<u32>) -> String {

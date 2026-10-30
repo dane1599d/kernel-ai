@@ -12,3 +12,6 @@ publish = false
 # tests run it as is; the window (`comp-monitor-ui`, then the component) draws it.
 [lib]
 doctest = false
+
+[dependencies]
+systemabi = { path = "../../systemabi" }
