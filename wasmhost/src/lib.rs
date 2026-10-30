@@ -33,6 +33,9 @@ mod settings_tests;
 pub mod surface;
 #[cfg(test)]
 mod surface_tests;
+pub mod system;
+#[cfg(test)]
+mod system_tests;
 mod tables;
 #[cfg(test)]
 mod tests;

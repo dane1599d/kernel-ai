@@ -1943,6 +1943,7 @@ dependencies = [
  "kabi",
  "livecore",
  "surfabi",
+ "systemabi",
  "uikit",
  "wasmi",
  "wasmi_core",
