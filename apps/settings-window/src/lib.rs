@@ -39,6 +39,10 @@ pub const SCHEMA: u32 = 1;
 pub const TITLE: &str = "Settings";
 /// Most requests waiting for an answer.
 const MAX_PENDING: usize = 32;
+/// Most `grants <app>` reads waiting at once. The host keeps at most
+/// `wasmhost::settings::MAX_QUEUED` requests of a call, and the shell lists up
+/// to 32 apps, so the rest are asked as these are answered.
+const ROWS_IN_FLIGHT: usize = 4;
 
 /// What the checkpoint keeps: the page shown, so a restart comes back to it.
 /// Everything else is read again.
@@ -65,6 +69,19 @@ fn entry(e: &Entry) -> tree::Entry {
     }
 }
 
+/// Opens the window and keeps it from the agent before any of its tree is
+/// sent: the rules and grants it shows are typed-only data, and Kai must not
+/// read them or park focus on Revoke. If the system will not keep it private
+/// the window is closed again, so it is never shown shared.
+fn open_private(sink: &mut dyn Sink) -> Result<u32, UiError> {
+    let id = sink.open(TITLE, SIZE.0, SIZE.1)?;
+    if let Err(e) = sink.set_agent_private(id, true) {
+        let _ = sink.close(id);
+        return Err(e);
+    }
+    Ok(id)
+}
+
 impl Shown {
     /// Opens the window if it is closed, sends what changed to reach `next`
     /// ([`comp_settings_ui::redraw`], which puts back a control the model
@@ -78,7 +95,7 @@ impl Shown {
     ) -> Result<(), UiError> {
         let (id, last) = match self.window.take() {
             Some(open) => open,
-            None => (sink.open(TITLE, SIZE.0, SIZE.1)?, Vec::new()),
+            None => (open_private(sink)?, Vec::new()),
         };
         let sent = comp_settings_ui::redraw(&last, &next, view)
             .iter()
@@ -100,6 +117,8 @@ impl Shown {
 enum Pending {
     /// Put the answer on a page.
     Read(Read),
+    /// Put the answer on a page as the rows of this app.
+    Rows(String),
     /// Show the change.
     Change(Applied),
 }
@@ -132,6 +151,8 @@ pub struct SettingsWindow {
     shown: Shown,
     /// Requests sent and not answered, by ticket.
     pending: Vec<(u32, Pending)>,
+    /// Apps whose rows are still to be asked for, next first.
+    to_ask: Vec<String>,
 }
 
 impl SettingsWindow {
@@ -141,6 +162,7 @@ impl SettingsWindow {
             view: View::page(page),
             shown: Shown::default(),
             pending: Vec::new(),
+            to_ask: Vec::new(),
         }
     }
 
@@ -178,8 +200,23 @@ impl SettingsWindow {
         self.pending.push((ticket, what));
     }
 
+    /// Asks for the rows of the next apps, as many as may wait at once.
+    fn ask_rows(&mut self) {
+        let waiting = |p: &Vec<(u32, Pending)>| {
+            p.iter()
+                .filter(|(_, what)| matches!(what, Pending::Rows(_)))
+                .count()
+        };
+        while waiting(&self.pending) < ROWS_IN_FLIGHT && !self.to_ask.is_empty() {
+            let app = self.to_ask.remove(0);
+            let ticket = send(&alloc::format!("grants {app}"));
+            self.wait_for(ticket, Pending::Rows(app));
+        }
+    }
+
     /// Asks for everything the pages show.
     fn read_all(&mut self) {
+        self.to_ask.clear();
         for read in Read::ALL {
             let ticket = send(read.request());
             self.wait_for(ticket, Pending::Read(read));
@@ -202,9 +239,13 @@ impl SettingsWindow {
         let (_, what) = self.pending.remove(at);
         match (what, outcome) {
             (_, Err(why)) => log(&alloc::format!("settings: refused: {why}")),
-            (Pending::Read(read), Ok(answer)) => {
-                if let Err(why) = read.apply(&mut self.settings, &answer) {
-                    log(&alloc::format!("settings: {}: {why}", read.request()));
+            (Pending::Read(read), Ok(answer)) => match read.apply(&mut self.settings, &answer) {
+                Ok(apps) => self.to_ask = apps,
+                Err(why) => log(&alloc::format!("settings: {}: {why}", read.request())),
+            },
+            (Pending::Rows(app), Ok(answer)) => {
+                if let Err(why) = replies::apply_rows(&mut self.settings, &app, &answer) {
+                    log(&alloc::format!("settings: grants {app}: {why}"));
                 }
             }
             (Pending::Change(then), Ok(_)) => match then {
@@ -214,6 +255,9 @@ impl SettingsWindow {
                 Applied::Intent(intent) => self.settings.applied(&intent),
             },
         }
+        // Whatever the answer was, the next apps' rows are asked for as room
+        // comes.
+        self.ask_rows();
         self.present_logged();
     }
 

@@ -264,6 +264,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "comp-monitor-window"
+version = "0.1.0-dev"
+dependencies = [
+ "appabi",
+ "comp-monitor",
+ "comp-monitor-ui",
+ "comp-ui-bind",
+ "compsdk",
+ "livecore",
+ "minicbor",
+ "systemabi",
+ "uikit",
+ "wasmhost",
+ "wit-bindgen",
+]
+
+[[package]]
 name = "comp-notes"
 version = "0.1.0-dev"
 dependencies = [
@@ -315,7 +332,6 @@ dependencies = [
 name = "comp-settings"
 version = "0.1.0-dev"
 dependencies = [
- "kaigrants",
  "kaiprofile",
  "look",
  "minicbor",
@@ -326,7 +342,6 @@ name = "comp-settings-ui"
 version = "0.1.0-dev"
 dependencies = [
  "comp-settings",
- "kaigrants",
  "look",
  "uikit",
 ]
@@ -340,7 +355,6 @@ dependencies = [
  "comp-settings-ui",
  "comp-ui-bind",
  "compsdk",
- "kaigrants",
  "livecore",
  "minicbor",
  "uikit",
