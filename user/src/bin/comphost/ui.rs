@@ -134,7 +134,9 @@ impl Ui {
                 return;
             }
             for (window, node, rows, cells) in sized {
-                serve_shown(host, |core| core.code_size(window, node, rows, cells));
+                let performed = serve_shown(host, |core| core.code_size(window, node, rows, cells));
+                // What the app queued while it handled the size goes out as for a close.
+                self.forward(performed);
             }
         }
     }

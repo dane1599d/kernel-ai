@@ -346,11 +346,16 @@ impl Window {
     }
 
     fn key(&mut self, key: Key, mods: Mods, text: &str, out: &mut Vec<UiEvent>) {
-        // A code view takes every key but `desktop`'s own (Super), Tab and
+        // Ctrl+Tab and Ctrl+Shift+Tab step through the focus ring from anywhere,
+        // a code view included, so focus can always leave one (WCAG 2.1.2).
+        let ctrl_tab =
+            key == Key::Tab && mods.0 & (Mods::CTRL | Mods::ALT | Mods::SUPER) == Mods::CTRL;
+        // A code view takes every other key but `desktop`'s own (Super), Tab and
         // Escape included, and tells the app by name.
         if let Some(f) = self.st.focus
             && matches!(self.tree.get(f).map(|n| &n.widget), Some(Widget::Code(_)))
             && mods.0 & Mods::SUPER == 0
+            && !ctrl_tab
         {
             if !crate::code::is_modifier(key) {
                 // What the key types, if it types anything: no control character.
@@ -368,7 +373,7 @@ impl Window {
             }
             return;
         }
-        if key == Key::Tab && !mods.command() {
+        if key == Key::Tab && (!mods.command() || ctrl_tab) {
             let ring = self.focus_ring();
             if ring.is_empty() {
                 return;
