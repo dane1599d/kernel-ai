@@ -52,6 +52,9 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         build: true,
         min_timeout: Some(Duration::from_secs(300)),
+        // The page budget is half the free frames: with `desktop`, Notes, the edit
+        // service and a second comphost the 512 MiB base leaves the editor out.
+        memory_mib: Some(1024),
         ..case("app-editor", "test=app-editor")
     },
     TestCase {
