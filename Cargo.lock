@@ -264,6 +264,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "comp-monitor-window"
+version = "0.1.0-dev"
+dependencies = [
+ "appabi",
+ "comp-monitor",
+ "comp-monitor-ui",
+ "comp-ui-bind",
+ "compsdk",
+ "livecore",
+ "minicbor",
+ "systemabi",
+ "uikit",
+ "wasmhost",
+ "wit-bindgen",
+]
+
+[[package]]
 name = "comp-notes"
 version = "0.1.0-dev"
 dependencies = [
