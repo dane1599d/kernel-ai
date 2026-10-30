@@ -119,6 +119,39 @@ fn keep_running_tells_the_supervisor_saves_the_list_and_undoes() {
 }
 
 #[test]
+fn a_settings_file_is_its_one_format_and_empty_when_nothing_is_saved() {
+    let host = host();
+    let mut shell = shell(&host);
+    let app = crate::settings::SETTINGS_APP;
+    for area in ["appearance", "apps", "updates"] {
+        let read = shell.settings(app, &format!("file {area}"), false);
+        assert_eq!(read.as_deref(), Ok(""), "{area}");
+    }
+    let saved = "kai-appearance 1\ntheme dark\n";
+    *host.appearance.borrow_mut() = Some(String::from(saved));
+    assert_eq!(
+        shell.settings(app, "file appearance", false).as_deref(),
+        Ok(saved)
+    );
+    shell.settings(app, "keep-running on notes", true).unwrap();
+    assert_eq!(
+        shell.settings(app, "file apps", false).as_deref(),
+        Ok("kai-keep 1\nnotes\n")
+    );
+    // Text past the appearance's bound is refused whole, and no other area is a file.
+    *host.appearance.borrow_mut() = Some("a".repeat(::look::appearance::MAX_BYTES + 1));
+    assert!(shell.settings(app, "file appearance", false).is_err());
+    for bad in [
+        "file",
+        "file keep",
+        "file ../appearance",
+        "file appearance x",
+    ] {
+        assert!(shell.settings(app, bad, false).is_err(), "{bad:?}");
+    }
+}
+
+#[test]
 fn the_kept_apps_are_told_to_the_supervisor_at_boot() {
     let host = host();
     *host.keep_file.borrow_mut() = Some(String::from("kai-keep 1\nnotes\n"));
