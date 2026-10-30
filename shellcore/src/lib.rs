@@ -45,6 +45,7 @@ mod profiles;
 mod rules;
 pub mod script;
 mod settings;
+pub use settings::SETTINGS_APP;
 mod show;
 pub mod standing;
 pub mod state;
