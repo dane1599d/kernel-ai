@@ -27,12 +27,14 @@ livecore = { path = "../livecore" }
 look = { path = "../look" }
 editcore = { path = "../editcore" }
 fsproto = { path = "../fsproto" }
+ccserve = { path = "../ccserve" }
 fsserve = { path = "../fsserve" }
 kaifs = { path = "../kaifs", default-features = false }
 kaibundle = { path = "../kaibundle" }
 kaipkg = { path = "../kaipkg" }
 kaituf = { path = "../kaituf" }
 llmproto = { path = "../llmproto", features = ["local"] }
+promptcore = { path = "../promptcore" }
 quant = { path = "../quant" }
 sched = { path = "../sched" }
 serde_json = { version = "1.0.154", default-features = false, features = ["alloc"] }

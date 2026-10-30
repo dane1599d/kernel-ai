@@ -112,15 +112,16 @@ fn reads(row: &[char], text: &str) -> bool {
 }
 
 /// The width of the prompt that starts the row, through its `> `: `kai> `,
-/// `edit <name>> `, or a question's `... yes/no> ` or `... y/n> `.
+/// `c> ` and `..> ` (ADR 0012 D1), `edit <name>> `, or a question's
+/// `... yes/no> ` or `... y/n> `.
 fn prompt_width(row: &[char]) -> Option<usize> {
     let end = row.windows(2).position(|pair| pair == ['>', ' '])?;
     let head = &row[..end];
-    let is_kai = head == ['k', 'a', 'i'];
+    let is_prompt = head == ['k', 'a', 'i'] || head == ['c'] || head == ['.', '.'];
     let is_edit = starts(head, "edit ") && head.len() > 5 && !head[5..].contains(&' ');
     let is_question = head.ends_with(&['y', 'e', 's', '/', 'n', 'o'])
         || head.ends_with(&['?', ' ', 'y', '/', 'n']);
-    (is_kai || is_edit || is_question).then_some(end + 2)
+    (is_prompt || is_edit || is_question).then_some(end + 2)
 }
 
 /// The width of a log line's lowercase `tag:` and its colon, followed by a blank or
@@ -213,6 +214,9 @@ mod tests {
         assert_eq!(kind("kai> hello"), Kind::Input { prompt: 5 });
         assert_eq!(kind("kai> "), Kind::Input { prompt: 5 });
         assert_eq!(kind("edit notes> undo"), Kind::Input { prompt: 12 });
+        assert_eq!(kind("c> I64 Sq(I64 x) {"), Kind::Input { prompt: 3 });
+        assert_eq!(kind("..> return x * x; }"), Kind::Input { prompt: 4 });
+        assert_eq!(kind("abc> x"), Kind::Log { tag: 0 });
         assert_eq!(kind("run script 3? yes/no> no"), Kind::Input { prompt: 22 });
         assert_eq!(kind("run script 3? y/n> y"), Kind::Input { prompt: 19 });
         assert_eq!(kind("x y/n> z"), Kind::Log { tag: 0 });
