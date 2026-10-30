@@ -626,7 +626,7 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
     }
     if test == SelfTest::AppMonitor {
         plan.push('\n');
-        plan.push_str(&crate::monitor_tests::plan());
+        plan.push_str(&crate::app_tests::monitor_plan());
     }
     if test == SelfTest::DeskNap {
         plan.push('\n');

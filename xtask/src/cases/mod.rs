@@ -3,6 +3,7 @@
 //! (ADR 0000 section 4) keeps its cases in a table of its own, joined in [`LANES`].
 
 mod agent;
+mod apps;
 mod components;
 mod devices;
 mod kernel;
@@ -155,6 +156,7 @@ const LANES: &[&[TestCase]] = &[
     storage::CASES,
     updates::CASES,
     pkg::CASES,
+    apps::CASES,
 ];
 
 /// The cases `cargo xtask test` boots.
@@ -186,6 +188,7 @@ mod tests {
             storage::CASES,
             updates::CASES,
             pkg::CASES,
+            apps::CASES,
         ];
         assert_eq!(
             cases.len(),

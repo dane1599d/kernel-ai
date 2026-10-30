@@ -22,6 +22,7 @@ mod agent_desk_tests;
 mod allow;
 mod apic;
 mod app_route_tests;
+mod app_tests;
 mod appbench_tests;
 mod ask_box;
 mod ask_tests;
@@ -88,7 +89,6 @@ mod memory;
 mod metrics;
 mod model;
 mod model_tests;
-mod monitor_tests;
 mod nap_tests;
 mod net;
 mod net_commands;
@@ -383,7 +383,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::DeskPanelShell => run_case(desk_tests::panel_shell_check),
         SelfTest::DeskCatalog => run_case(catalog_tests::check),
         SelfTest::UiWindow => run_case(ui_tests::check),
-        SelfTest::AppMonitor => run_case(monitor_tests::check),
+        SelfTest::AppMonitor => run_case(app_tests::monitor_check),
         SelfTest::DeskNap => run_case(nap_tests::check),
         SelfTest::DeskCard => run_case(card_tests::check),
         SelfTest::DeskStanding => run_case(standing_tests::check),
