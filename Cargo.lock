@@ -1482,6 +1482,7 @@ name = "shellcore"
 version = "0.1.0-dev"
 dependencies = [
  "agentabi",
+ "appabi",
  "kabi",
  "kaigrants",
  "kaiprofile",
