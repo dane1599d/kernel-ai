@@ -8,12 +8,14 @@ publish = false
 [dependencies]
 agentabi = { path = "../agentabi" }
 appabi = { path = "../appabi" }
+comp-models = { path = "../apps/models" }
 kabi = { path = "../kabi" }
 kaigrants = { path = "../kaigrants" }
 kaiprofile = { path = "../kaiprofile" }
 livecore = { path = "../livecore" }
 look = { path = "../look" }
 llmproto = { path = "../llmproto" }
+modelchan = { path = "../modelchan" }
 sched = { path = "../sched" }
 termcore = { path = "../termcore" }
 serde_json = { version = "1.0.154", default-features = false, features = ["alloc"] }

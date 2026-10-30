@@ -68,6 +68,14 @@ pub enum Inverse {
     /// Close `window`, which `ui_open` opened for `app`. It asks first, since
     /// the window may hold work by now.
     Reclose { window: Name, app: Name },
+    /// Use model `back` from the next restart again, while the next restart's
+    /// model is still `from` (P4 task 10's `model_use`); none when no model
+    /// was in use, which cannot be gone back to. The shell asks `updated`
+    /// (`Shell::revert_entry`).
+    Model {
+        back: Option<[u8; 32]>,
+        from: [u8; 32],
+    },
     /// Withhold `row` from `app`'s effects again (`withheld`), or give it back:
     /// the undo of `grant_restore` and of `grant_revoke` (P4 task 7).
     Grant {
@@ -155,6 +163,7 @@ pub fn target(inverse: Inverse) -> String {
         Inverse::Reopen(app) => format!("{} open", app.as_str()),
         Inverse::Reclose { app, .. } => format!("{} closed", app.as_str()),
         Inverse::Grant { app, row, withheld } => grant_words(app, row, withheld),
+        Inverse::Model { .. } => String::from("the model before, from the next restart"),
     }
 }
 
@@ -273,9 +282,9 @@ fn revert_one(
                 .map(|_| grant_words(app, row, withheld))
                 .map_err(Refused::Failed)
         }
-        Inverse::Instruction { .. } | Inverse::Profile { .. } => Err(Refused::Failed(
-            String::from("it is put back by the shell's own store"),
-        )),
+        Inverse::Instruction { .. } | Inverse::Profile { .. } | Inverse::Model { .. } => Err(
+            Refused::Failed(String::from("it is put back by the shell's own store")),
+        ),
     }
 }
 
@@ -338,6 +347,11 @@ pub fn reverse(inverse: Inverse) -> Inverse {
             row,
             withheld: !withheld,
         },
+        // With no model before there was nothing to undo to, so no redo either.
+        Inverse::Model { back, from } => Inverse::Model {
+            back: Some(from),
+            from: back.unwrap_or(from),
+        },
     }
 }
 
@@ -391,6 +405,11 @@ pub fn inverse_word(inverse: Option<Inverse>) -> String {
             app.as_str(),
             row.as_str(),
             u8::from(withheld)
+        ),
+        Some(Inverse::Model { back, from }) => format!(
+            "model:{}:{}",
+            back.map_or_else(|| String::from("none"), |b| comp_models::hex(&b)),
+            comp_models::hex(&from)
         ),
     }
 }
@@ -451,6 +470,17 @@ pub fn parse_inverse(text: &str) -> Option<Option<Inverse>> {
             row: Name::new(parts.next()?)?,
             withheld: flag(parts.next())?,
         },
+        "model" => {
+            let sha = |part: Option<&str>| modelchan::listing::sha256(part?).ok();
+            let back = match parts.next()? {
+                "none" => None,
+                hex => Some(sha(Some(hex))?),
+            };
+            Inverse::Model {
+                back,
+                from: sha(parts.next())?,
+            }
+        }
         _ => return None,
     }))
 }

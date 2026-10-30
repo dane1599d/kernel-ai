@@ -330,6 +330,64 @@ pub const PKG_SEARCH: Action = Action {
 /// Rows the shell's package store answers (`shellcore::packages`).
 pub const PKG_ROWS: [Action; 4] = [PKG_INSTALL, PKG_REMOVE, PKG_LIST, PKG_SEARCH];
 
+/// A model named in the request: a signed target's id or name, or the first
+/// hex digits of its SHA-256 (`comp_models::Models::find`).
+const MODEL: Arg = Arg {
+    from_request: true,
+    ..arg("name", ArgType::Text { max: 64 }, Role::Target)
+};
+
+/// `models` (ADR 0008 §11; P4 task 10): the stored and signed models, each with
+/// its licence and whether it runs, is next, or is on trial.
+pub const MODEL_LIST: Action = Action {
+    owner: Owner::Service("updated"),
+    ..read(
+        "model_list",
+        "stored and signed AI models",
+        RetType::Of(STRING),
+    )
+};
+
+/// `model_use <name>`: a stored model the signed role takes, used from the
+/// next restart on trial; `undo` keeps the model before.
+pub const MODEL_USE: Action = Action {
+    name: "model_use",
+    doc: "uses a stored model from the next restart",
+    args: &[MODEL],
+    facts: Facts::LOCAL_CHANGE,
+    inverse: Inverse::Restore,
+    cues: &["model", "switch"],
+    returns: Returns::System,
+    ret: RetType::Unit,
+    owner: Owner::Service("updated"),
+    needs: 0,
+    min_tier: Tier::Run,
+    old_name: None,
+};
+
+/// `model_fetch disk`: the attached disk's model copied into the store, if the
+/// signed role names it by length and SHA-256. It asks once: it brings
+/// gigabytes of new bytes. The one source is the import disk until P5's
+/// downloads.
+pub const MODEL_FETCH: Action = Action {
+    name: "model_fetch",
+    doc: "imports a signed model from the attached disk",
+    args: &[arg("source", ArgType::Enum(&["disk"]), Role::Option)],
+    // No undo yet: an imported model stays until a later row removes it, so
+    // it is marked destructive, and asks, as every row with no undo does.
+    facts: Facts {
+        destructive: true,
+        ..Facts::LOCAL_CHANGE
+    },
+    inverse: Inverse::None("an imported model stays in the store"),
+    cues: &["import", "fetch", "download"],
+    min_tier: Tier::Ask,
+    ..MODEL_USE
+};
+
+/// Rows `updated` answers through the shell (`shellcore::models`).
+pub const MODEL_ROWS: [Action; 3] = [MODEL_LIST, MODEL_USE, MODEL_FETCH];
+
 /// The functions LLM-written scripts may call, in the order the prompt lists them.
 pub const SCRIPT_API: [Action; 7] = [
     CPUS, MEMORY, UPTIME_MS, PROCESSES, THREADS, GET_POLICY, SET_POLICY,
@@ -405,7 +463,7 @@ pub const RULES_REMOVE: Action = Action {
 pub const TYPED_ONLY: [Action; 2] = [RULES, RULES_REMOVE];
 
 /// Every OS row.
-pub const ROWS: [Action; 39] = [
+pub const ROWS: [Action; 42] = [
     CPUS,
     MEMORY,
     UPTIME_MS,
@@ -445,4 +503,7 @@ pub const ROWS: [Action; 39] = [
     crate::APPEARANCE_SET,
     crate::GRANT_REVOKE,
     crate::GRANT_RESTORE,
+    MODEL_LIST,
+    MODEL_USE,
+    MODEL_FETCH,
 ];
