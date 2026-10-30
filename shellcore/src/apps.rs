@@ -175,9 +175,11 @@ struct Loaded {
 }
 
 /// The package `app` fronts: a `<pkg>-window` service whose world is
-/// `app:<pkg>/…` is its package's window, so its rows may be `<pkg>_*` (Notes'
-/// window declares `notes_add`). The service's name is the plan line's, which
-/// the kernel holds to, so a package cannot claim another's rows by its world.
+/// `app:<pkg>/…`, or its own `app:<pkg>-window/…` as xtask packs a window, is
+/// its package's window, so its rows may be `<pkg>_*` (Notes' window declares
+/// `notes_add`), each running an `app:<pkg>/` export ([`fronted_export`]). The
+/// service's name is the plan line's, which the kernel holds to, so a package
+/// cannot claim another's rows by its world.
 pub fn fronts<'a>(app: &'a str, world: &str) -> Option<&'a str> {
     let pkg = app.strip_suffix("-window")?;
     let (named, _) = world.strip_prefix("app:")?.split_once('/')?;
@@ -186,7 +188,23 @@ pub fn fronts<'a>(app: &'a str, world: &str) -> Option<&'a str> {
         && pkg
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
-    (package && named == pkg).then_some(pkg)
+    (package && (named == pkg || named == app)).then_some(pkg)
+}
+
+/// Why a window's row may not take its package's name: a `<pkg>_*` row must run
+/// `<pkg>`'s own export (`notes_add` runs `app:notes/actions@1.0.0#add`).
+fn fronted_export(app: &str, fronts: Option<&str>, row: &ActionRow) -> Result<(), String> {
+    let Some(pkg) = fronts else {
+        return Ok(());
+    };
+    let own = format!("{}_", app.replace('-', "_"));
+    if row.name.starts_with(&own) || row.export.starts_with(&format!("app:{pkg}/")) {
+        return Ok(());
+    }
+    Err(format!(
+        "{app}'s action {} runs {}, not {pkg}'s",
+        row.name, row.export
+    ))
 }
 
 /// The OS rows an app may declare for its effects (P4, deny by default): the
@@ -260,8 +278,11 @@ impl AppRows {
             return Err(format!("{app} declares over {MAX_ROWS} actions"));
         }
         // A window fronts its package's rows while the package's own service
-        // holds none, and the reverse: one owner for a prefix.
-        let fronts = fronts(app, &parsed.world);
+        // holds none, and the reverse: one owner for a prefix. A window that
+        // declares only its own `<app>_*` rows fronts nothing.
+        let own = format!("{}_", app.replace('-', "_"));
+        let fronts = fronts(app, &parsed.world)
+            .filter(|_| parsed.rows.iter().any(|row| !row.name.starts_with(&own)));
         if let Some(pkg) = fronts
             && self.has(pkg)
         {
@@ -282,6 +303,7 @@ impl AppRows {
         // Every check on names comes before anything is leaked.
         for row in &parsed.rows {
             self.name_free(app, fronts, &row.name, others)?;
+            fronted_export(app, fronts, row)?;
         }
         if let Some(row) = parsed.effects.iter().find(|row| !declarable(row)) {
             return Err(format!(
@@ -627,6 +649,32 @@ end
         assert_eq!(fronts("-window", "app:/x"), None);
         assert_eq!(fronts("Notes-window", "app:Notes/x"), None);
         assert_eq!(fronts("no_tes-window", "app:no_tes/x"), None);
+    }
+
+    #[test]
+    fn a_window_packed_under_its_own_world_fronts_only_its_packages_exports() {
+        // xtask packs Notes' window as `app:notes-window/notes-window@1.0.0`.
+        let packed = NOTES.replace(
+            "world app:notes/notes@1.0.0",
+            "world app:notes-window/notes-window@1.0.0",
+        );
+        assert_eq!(
+            fronts("notes-window", "app:notes-window/notes-window@1.0.0"),
+            Some("notes")
+        );
+        let mut apps = AppRows::default();
+        assert_eq!(apps.load("notes-window", &packed), Ok(2));
+        assert!(apps.find_in("notes-window", "notes_add").is_some());
+        // A `notes_*` row must run Notes' own export, not another package's.
+        let other = packed.replace(
+            "export app:notes/actions@1.0.0#add",
+            "export app:files/actions@1.0.0#trash",
+        );
+        let err = AppRows::default().load("notes-window", &other).unwrap_err();
+        assert!(
+            err.contains("runs app:files/actions@1.0.0#trash, not notes's"),
+            "{err}"
+        );
     }
 
     #[test]
