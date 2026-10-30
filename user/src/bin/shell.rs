@@ -727,6 +727,7 @@ fn main() -> i32 {
         take_panel(&mut shell);
         take_effects(&mut shell);
         take_settings(&mut shell);
+        shell.retry_keep();
         let mut caller = u64::MAX;
         let len = match sys::svc_recv(&mut line, wait_ms, &mut caller) {
             Ok(len) => len.min(line.len()),

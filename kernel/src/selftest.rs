@@ -172,6 +172,11 @@ pub enum SelfTest {
     AppEditor,
     /// An unused app naps and a click wakes it (P3 task 12b).
     DeskNap,
+    /// Settings' keep-running switch, shell only, kept across a reboot (P4
+    /// task 7): boot 1, then boot 2 (`reread`).
+    KeepRunning {
+        reread: bool,
+    },
     /// Asks answered on `desktop`'s card, and on the console when it dies (P3 task 7).
     DeskCard,
     /// A standing instruction fired by Notes' window minimized and restored (P3 task 11).
@@ -354,6 +359,9 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=ui-window" => Some(SelfTest::UiWindow),
             "test=app-editor" => Some(SelfTest::AppEditor),
             "test=desk-nap" => Some(SelfTest::DeskNap),
+            "test=keep-running" => Some(SelfTest::KeepRunning {
+                reread: cmdline.split_whitespace().any(|w| w == "reread"),
+            }),
             "test=desk-card" => Some(SelfTest::DeskCard),
             "test=desk-standing" => Some(SelfTest::DeskStanding),
             "test=ui-keys" => Some(SelfTest::UiKeys),
@@ -446,6 +454,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::UiWindow
             | SelfTest::AppEditor
             | SelfTest::DeskNap
+            | SelfTest::KeepRunning { .. }
             | SelfTest::DeskCard
             | SelfTest::DeskStanding
             | SelfTest::UiKeys
@@ -567,6 +576,11 @@ pub fn plan(test: SelfTest) -> Option<String> {
                 plan.push('\n');
                 plan.push_str(crate::agent_desk_tests::DESK);
                 kabi::plan::SHELL_DESK
+            }
+            SelfTest::KeepRunning { .. } => {
+                plan.push('\n');
+                plan.push_str(crate::keep_tests::PLAN);
+                crate::keep_tests::SHELL
             }
             _ => shell,
         };

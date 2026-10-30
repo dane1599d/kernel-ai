@@ -471,6 +471,9 @@ pub struct Shell {
     profiles: profiles::Profiles,
     /// The apps kept running, never napped (`/system/state/keep`).
     keep: Vec<String>,
+    /// Saved kept apps the supervisor could not reach yet at boot (an app not
+    /// serving yet), and when to try them again and when to give up.
+    keep_waiting: settings::KeepWaiting,
     /// Each standing instruction's last profile switch, which its "until" puts back.
     fired_profiles: Vec<(u64, u64)>,
     /// Installed software: the image's repository and its generations.
@@ -555,6 +558,7 @@ impl Shell {
             instructions_removed: Vec::new(),
             profiles: profiles::Profiles::default(),
             keep: Vec::new(),
+            keep_waiting: settings::KeepWaiting::default(),
             fired_profiles: Vec::new(),
             pkgs: pkg::Store::default(),
             said_no_sudo: false,
