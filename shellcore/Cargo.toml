@@ -11,6 +11,7 @@ appabi = { path = "../appabi" }
 kabi = { path = "../kabi" }
 kaigrants = { path = "../kaigrants" }
 kaiprofile = { path = "../kaiprofile" }
+livecore = { path = "../livecore" }
 look = { path = "../look" }
 llmproto = { path = "../llmproto" }
 promptcore = { path = "../promptcore" }

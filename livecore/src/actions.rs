@@ -16,6 +16,9 @@
 //! end
 //! ```
 //!
+//! After `world`, an optional `effects <row> ...` line names the OS rows the
+//! app's effects may call (P4): any other effect is refused.
+//!
 //! Per action, in this order: `action`, `export`, `doc`, any `type` lines, `sig`,
 //! one `arg` per parameter in order, optional `facts`, optional `cues`, `inverse`,
 //! `end`. `type <name> = record|enum|variant|flags { ... }` names a type `sig` and
@@ -123,12 +126,16 @@ impl ActionRow {
     }
 }
 
-/// A section: the world and its rows.
+/// A section: the world, the OS rows its effects may call, and its rows.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Actions {
     pub world: String,
+    pub effects: Vec<String>,
     pub rows: Vec<ActionRow>,
 }
+
+/// Most OS rows one app's effects may name.
+pub const MAX_EFFECT_ROWS: usize = 32;
 
 impl Actions {
     pub fn by_export(&self, export: &str) -> Option<&ActionRow> {
@@ -150,6 +157,16 @@ pub fn parse(text: &str) -> Result<Actions, String> {
         return Err("not a kai-actions 1 section".into());
     }
     let world = field(lines.next(), "world")?.to_string();
+    let mut effects = Vec::new();
+    if let Some(line) = lines.next_if(|l| l.starts_with("effects ")) {
+        for name in line["effects ".len()..].split_whitespace() {
+            valid_name(name)?;
+            if effects.len() == MAX_EFFECT_ROWS {
+                return Err(format!("more than {MAX_EFFECT_ROWS} effect rows"));
+            }
+            effects.push(name.to_string());
+        }
+    }
     let mut rows: Vec<ActionRow> = Vec::new();
     while let Some(line) = lines.next() {
         if line.len() > MAX_LINE {
@@ -165,7 +182,11 @@ pub fn parse(text: &str) -> Result<Actions, String> {
         }
         rows.push(action(name, &mut lines)?);
     }
-    Ok(Actions { world, rows })
+    Ok(Actions {
+        world,
+        effects,
+        rows,
+    })
 }
 
 fn field<'a>(line: Option<&'a str>, key: &str) -> Result<&'a str, String> {
@@ -629,6 +650,22 @@ end
                 ),
             ])
         );
+    }
+
+    #[test]
+    fn an_effects_line_names_the_rows_effects_may_call() {
+        assert!(parse(NOTES).unwrap().effects.is_empty());
+        let text = NOTES.replacen(
+            "world app:notes/notes@1.0.0
+",
+            "world app:notes/notes@1.0.0
+effects fs_list fs_read
+",
+            1,
+        );
+        assert_eq!(parse(&text).unwrap().effects, ["fs_list", "fs_read"]);
+        let bad = text.replace("fs_read", "Fs-Read");
+        assert!(parse(&bad).is_err());
     }
 
     #[test]

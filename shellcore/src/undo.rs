@@ -50,6 +50,12 @@ pub enum Inverse {
     /// or put a removed one back (`undo` of `rules_remove`). The shell's store
     /// does it (`Shell::revert_entry`), not the host.
     Instruction { id: u64, made: bool },
+    /// Keep app `app` running (`on`) or let it nap again, as it was before a
+    /// Settings toggle. The shell's list does it (`Shell::revert_keep`).
+    Keep { app: Name, on: bool },
+    /// Put app `app`'s state back from before its call kept as `id` (ADR 0003
+    /// §4's checkpoint undo, `kai-undo 1`): the app runs its own inverse.
+    App { app: Name, id: u64 },
     /// Set appearance `setting` back to `before`, while it is still `after`
     /// (P4 task 8's `appearance_set`).
     Appearance {
@@ -65,6 +71,13 @@ pub enum Inverse {
     /// Close `window`, which `ui_open` opened for `app`. It asks first, since
     /// the window may hold work by now.
     Reclose { window: Name, app: Name },
+    /// Withhold `row` from `app`'s effects again (`withheld`), or give it back:
+    /// the undo of `grant_restore` and of `grant_revoke` (P4 task 7).
+    Grant {
+        app: Name,
+        row: Name,
+        withheld: bool,
+    },
 }
 
 /// A service name held without the heap, so an inverse stays `Copy`.
@@ -135,6 +148,8 @@ pub fn target(inverse: Inverse) -> String {
         Inverse::Instruction { id, made: true } => format!("standing instruction S{id} removed"),
         Inverse::Instruction { id, made: false } => format!("standing instruction S{id}"),
         Inverse::Profile { .. } => String::from("the profile before"),
+        Inverse::Keep { app, .. } => format!("{} keep-running as before", app.as_str()),
+        Inverse::App { app, .. } => format!("{} as it was", app.as_str()),
         Inverse::Appearance {
             setting, before, ..
         } => {
@@ -143,7 +158,14 @@ pub fn target(inverse: Inverse) -> String {
         Inverse::Refocus { to, .. } => format!("focus on {}", to.as_str()),
         Inverse::Reopen(app) => format!("{} open", app.as_str()),
         Inverse::Reclose { app, .. } => format!("{} closed", app.as_str()),
+        Inverse::Grant { app, row, withheld } => grant_words(app, row, withheld),
     }
+}
+
+/// `notes may not call fs_write`, `notes may call fs_write`.
+fn grant_words(app: Name, row: Name, withheld: bool) -> String {
+    let may = if withheld { "may not" } else { "may" };
+    format!("{} {may} call {}", app.as_str(), row.as_str())
 }
 
 /// Puts one change back; what it did, or why it did not. Compare-and-set: a value
@@ -165,6 +187,14 @@ pub fn revert(
             Err(crate::FsRefused::Later(what)) => Err(Refused::Moved(what)),
             Err(crate::FsRefused::Failed(why)) => Err(Refused::Failed(why)),
         },
+        // An app's undo is kept as a call of its own, so its redo undoes that.
+        Inverse::App { app, id } => {
+            let redo = crate::apps::undo(host, app.as_str(), id, anyway)?;
+            Ok((
+                format!("{} as it was", app.as_str()),
+                Inverse::App { app, id: redo },
+            ))
+        }
         Inverse::Fired {
             rule,
             action,
@@ -234,15 +264,22 @@ fn revert_one(
         | Inverse::Fired { .. }
         | Inverse::Refocus { .. }
         | Inverse::Reopen(_)
-        | Inverse::Reclose { .. } => Err(Refused::Failed(String::from("it is put back by revert"))),
+        | Inverse::Reclose { .. }
+        | Inverse::App { .. } => Err(Refused::Failed(String::from("it is put back by revert"))),
         Inverse::Appearance {
             setting,
             before,
             after,
         } => crate::appearance::revert(host, setting, before, after, anyway),
-        Inverse::Instruction { .. } | Inverse::Profile { .. } => Err(Refused::Failed(
-            String::from("it is put back by the shell's own store"),
-        )),
+        // Setting it twice changes nothing, so this needs no compare.
+        Inverse::Grant { app, row, withheld } => {
+            crate::grants::set(host, app.as_str(), row.as_str(), withheld)
+                .map(|_| grant_words(app, row, withheld))
+                .map_err(Refused::Failed)
+        }
+        Inverse::Instruction { .. } | Inverse::Profile { .. } | Inverse::Keep { .. } => Err(
+            Refused::Failed(String::from("it is put back by the shell's own store")),
+        ),
     }
 }
 
@@ -269,8 +306,10 @@ pub fn reverse(inverse: Inverse) -> Inverse {
         Inverse::Started(name) => Inverse::Stopped(name),
         Inverse::Stopped(name) => Inverse::Started(name),
         Inverse::Generation { from, to } => Inverse::Generation { from: to, to: from },
-        // Only the `fs` server knows the restore's own transaction ([`revert`]).
+        // Only the `fs` server knows the restore's own transaction ([`revert`]),
+        // and only the app its undo's id.
         Inverse::Fs { txn } => Inverse::Fs { txn },
+        Inverse::App { app, id } => Inverse::App { app, id },
         Inverse::Fired {
             rule,
             action,
@@ -283,6 +322,7 @@ pub fn reverse(inverse: Inverse) -> Inverse {
             undo: !undo,
         },
         Inverse::Instruction { id, made } => Inverse::Instruction { id, made: !made },
+        Inverse::Keep { app, on } => Inverse::Keep { app, on: !on },
         Inverse::Appearance {
             setting,
             before,
@@ -298,6 +338,11 @@ pub fn reverse(inverse: Inverse) -> Inverse {
         // `revert` names the window a reopen made; this is only its fallback.
         Inverse::Reopen(app) => Inverse::Reclose { window: app, app },
         Inverse::Reclose { app, .. } => Inverse::Reopen(app),
+        Inverse::Grant { app, row, withheld } => Inverse::Grant {
+            app,
+            row,
+            withheld: !withheld,
+        },
     }
 }
 
@@ -328,6 +373,8 @@ pub fn inverse_word(inverse: Option<Inverse>) -> String {
         ),
         Some(Inverse::Instruction { id, made }) => format!("instruction:{id}:{}", u8::from(made)),
         Some(Inverse::Profile { key }) => format!("profile:{key}"),
+        Some(Inverse::Keep { app, on }) => format!("keep:{}:{}", app.as_str(), u8::from(on)),
+        Some(Inverse::App { app, id }) => format!("app:{}:{id}", app.as_str()),
         Some(Inverse::Appearance {
             setting,
             before,
@@ -345,6 +392,12 @@ pub fn inverse_word(inverse: Option<Inverse>) -> String {
         Some(Inverse::Reclose { window, app }) => {
             format!("reclose:{}:{}", window.as_str(), app.as_str())
         }
+        Some(Inverse::Grant { app, row, withheld }) => format!(
+            "grant:{}:{}:{}",
+            app.as_str(),
+            row.as_str(),
+            u8::from(withheld)
+        ),
     }
 }
 
@@ -377,6 +430,14 @@ pub fn parse_inverse(text: &str) -> Option<Option<Inverse>> {
         "profile" => Inverse::Profile {
             key: number(parts.next())?,
         },
+        "keep" => Inverse::Keep {
+            app: Name::new(parts.next()?)?,
+            on: flag(parts.next())?,
+        },
+        "app" => Inverse::App {
+            app: Name::new(parts.next()?)?,
+            id: number(parts.next())?,
+        },
         "appearance" => Inverse::Appearance {
             setting: Name::new(parts.next()?)?,
             before: Name::new(parts.next()?)?,
@@ -394,6 +455,11 @@ pub fn parse_inverse(text: &str) -> Option<Option<Inverse>> {
         "reclose" => Inverse::Reclose {
             window: Name::new(parts.next()?)?,
             app: Name::new(parts.next()?)?,
+        },
+        "grant" => Inverse::Grant {
+            app: Name::new(parts.next()?)?,
+            row: Name::new(parts.next()?)?,
+            withheld: flag(parts.next())?,
         },
         _ => return None,
     }))

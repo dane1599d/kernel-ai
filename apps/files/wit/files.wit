@@ -1,0 +1,28 @@
+/// The Files app (ADR 0003 section 1). Each action's first doc line is its
+/// description for the model; `kai:` lines give its facts, inverse and cues, and
+/// each `kai: arg` line one argument's bounds and role (ADR 0003 section 5). They
+/// only move the window's view: changing files is the OS's own `fs_*` rows, so
+/// tiers and undo stay the OS's.
+package app:files@1.0.0;
+
+interface actions {
+    /// Open a folder in the Files window, or a file in its folder.
+    /// kai: read-only=yes destructive=no idempotent=yes open-world=no inverse=none cues=open,folder,show
+    /// kai: arg path max=255 role=target from-request
+    open: func(path: string) -> result<string, string>;
+
+    /// Show where a file is: its folder, with the file selected.
+    /// kai: read-only=yes destructive=no idempotent=yes open-world=no inverse=none cues=reveal,where,locate
+    /// kai: arg path max=255 role=target from-request
+    reveal: func(path: string) -> result<string, string>;
+
+    /// Select a name in the folder the Files window shows.
+    /// kai: read-only=yes destructive=no idempotent=yes open-world=no inverse=none cues=select,pick,choose
+    /// kai: arg name max=255 role=target from-request
+    select: func(name: string) -> result<string, string>;
+}
+
+/// The part a Files crate binds itself; `compsdk` binds `kai:app/component`.
+world actions-only {
+    export actions;
+}
