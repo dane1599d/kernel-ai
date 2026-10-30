@@ -202,7 +202,7 @@ fn fronted_export(app: &str, fronts: Option<&str>, row: &ActionRow) -> Result<()
         return Ok(());
     }
     Err(format!(
-        "{app}'s action {} runs {}, not {pkg}'s",
+        "{app}'s action {} runs {}, not the {pkg} package's",
         row.name, row.export
     ))
 }
@@ -672,7 +672,7 @@ end
         );
         let err = AppRows::default().load("notes-window", &other).unwrap_err();
         assert!(
-            err.contains("runs app:files/actions@1.0.0#trash, not notes's"),
+            err.contains("runs app:files/actions@1.0.0#trash, not the notes package's"),
             "{err}"
         );
     }
