@@ -199,7 +199,23 @@ pub const VERSIONS: &[Version] = &[
 /// [`build_for_tests`] adds them for the images `cargo xtask test` boots, and
 /// [`check_no_test_only`] fails an image that has one. A version here is not also
 /// in [`VERSIONS`].
-pub const TEST_ONLY: &[Version] = &[];
+pub const TEST_ONLY: &[Version] = &[
+    // The `app-settings` case revokes and restores its one read-only `fs_list`
+    // row in Settings, and presses its button between (P4 task 7).
+    Version {
+        label: "1",
+        recipe: Recipe {
+            component: "fixture-window",
+            krate: "comp-grant-fixture",
+            dirs: FIXTURE_DIRS,
+            feature: None,
+            wit: &["apps/grant-fixture/wit", "wit/kai-ui"],
+        },
+    },
+];
+
+/// The test fixtures' directories: the window, and the shared `kai:ui` glue.
+const FIXTURE_DIRS: &[&str] = &["apps/grant-fixture", "apps/ui-bind"];
 
 /// Builds and packs every version that ships.
 pub fn build(root: &Path) -> Result<Vec<Module>, String> {
@@ -580,6 +596,25 @@ mod tests {
         let actions = livecore::actions::parse(parsed.actions.unwrap()).unwrap();
         let open = actions.by_name("settings_open").unwrap();
         assert_eq!(open.export, "app:settings/actions@1.0.0#open");
+    }
+
+    /// The Settings fixture packs with a window and its one effect row.
+    #[test]
+    fn the_settings_fixture_packs_with_its_one_effect_row() {
+        let fixture = TEST_ONLY
+            .iter()
+            .find(|v| v.recipe.component == "fixture-window")
+            .unwrap();
+        let module = Vec::from(&b"\0asm\x01\0\0\0"[..]);
+        let root = crate::workspace_root();
+        let source = artifact::bundle(&[("apps/grant-fixture/src/lib.rs", b"//")]);
+        let bytes = pack(&root, &fixture.recipe, fixture.label, module, &source).unwrap();
+        let parsed = artifact::parse(&bytes).unwrap();
+        assert_eq!(
+            parsed.manifest.world,
+            "app:fixture-window/fixture-window@1.0.0"
+        );
+        assert!(parsed.actions.unwrap().contains("fs_list"));
     }
 
     /// The Terminal build carries its three rows, under its world.

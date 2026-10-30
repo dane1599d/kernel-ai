@@ -133,6 +133,18 @@ impl Read {
     }
 }
 
+/// What `grants <app>` left on the page for the log: how many rows the app has
+/// and how many are withheld. Counts only, never a row's name.
+pub fn rows_summary(settings: &Settings, app: &str) -> String {
+    let rows = settings
+        .access
+        .iter()
+        .find(|a| a.app == app)
+        .map_or(&[][..], |a| a.access.as_slice());
+    let withheld = rows.iter().filter(|x| !x.allowed).count();
+    format!("grants {app} {} rows, {withheld} withheld", rows.len())
+}
+
 /// Puts the answer to `grants <app>` on the Access page: that app's rows, and
 /// no other app's. An app with no rows left is taken off the page.
 pub fn apply_rows(settings: &mut Settings, app: &str, answer: &[u8]) -> Result<(), String> {

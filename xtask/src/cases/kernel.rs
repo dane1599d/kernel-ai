@@ -343,11 +343,22 @@ pub(super) const CASES: &[TestCase] = &[
                 "i", "g", "h", "t", "spc", "t", "h", "e", "m", "e", "ret",
             ],
             &[
+                "o", "p", "e", "n", "spc", "f", "i", "x", "t", "u", "r", "e", "ret",
+            ],
+            &[
                 "o", "p", "e", "n", "spc", "s", "e", "t", "t", "i", "n", "g", "s", "ret",
             ],
-            // In Settings' window: the Theme button, then the Updates page's
-            // switch for the restart window (see `apps/settings-ui/tests/keys.rs`).
-            &["tab", "tab", "ret"],
+            // A person's keys in the fixture's window and Settings' (the
+            // sequences are pinned in `apps/settings-ui/tests/keys.rs`): press
+            // the fixture's button; revoke its row in Settings; press (refused);
+            // restore the row; press (runs); then the Theme button, and the
+            // Updates page's switch for the restart window.
+            &["tab", "ret"],
+            &["tab", "right", "tab", "down", "tab", "ret"],
+            &["tab", "ret"],
+            &["tab", "tab", "tab", "ret"],
+            &["tab", "ret"],
+            &["tab", "left", "tab", "ret"],
             &[
                 "tab", "tab", "tab", "right", "right", "right", "right", "tab", "spc",
             ],
@@ -363,7 +374,16 @@ pub(super) const CASES: &[TestCase] = &[
             "comphost: the first settings answer reached the app",
             "app-settings: the theme was set before Settings opened",
             "settings: appearance theme light",
+            "app-settings: ui_open started the fixture and its window opened",
             "app-settings: keys were pressed in Settings' window",
+            // The revoke, held end to end: the fixture's `fs_list` runs, is
+            // refused after Settings revokes the row (and Settings reads back
+            // that the shell now holds it withheld), and runs again once it is
+            // restored.
+            "fixture: fs_list ok #1",
+            "settings: grants fixture-window 1 rows, 1 withheld",
+            "fixture: fs_list refused #2",
+            "fixture: fs_list ok #3",
             // The theme after light, set by the key press and read back from the
             // shell, and the restart window set from the page and read back
             // through `file updates`.
