@@ -32,6 +32,7 @@
 
 extern crate alloc;
 
+use alloc::format;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -651,7 +652,7 @@ fn settings_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String>
                 wake_shell();
                 String::from("ok")
             }
-            Err(why) => alloc::format!("err {why}"),
+            Err(why) => format!("err {why}"),
         });
     }
     if text == settings::RESULTS {
