@@ -42,6 +42,9 @@ pub const MAX_REQUEST: usize = 512;
 pub const MAX_QUEUED: usize = 16;
 /// Longest name sent (a profile, an app): `kabi::MAX_NAME`.
 pub const MAX_NAME: usize = 24;
+/// Longest effect row `grants-revoke` and `grants-restore` name, as an app's
+/// declared action (`deskcore`'s `MAX_ACTION`).
+pub const MAX_ROW: usize = 64;
 /// Longest value of `appearance-set`.
 pub const MAX_VALUE: usize = 64;
 /// Largest answer the app is given; a larger one is replaced by an error.
@@ -77,6 +80,7 @@ pub const CHANGES: &[&str] = &[
     "profile-set",
     "rules-remove",
     "grants-revoke",
+    "grants-restore",
     "keep-running",
     "restart-window",
 ];
@@ -153,8 +157,36 @@ fn window(text: &str) -> bool {
     }
 }
 
+/// An app as the shell names it in `grants`: 1 to [`MAX_NAME`] bytes of
+/// lowercase letters, digits, `-` and `_`, so a request splits on spaces alone.
+fn app_ok(text: &str) -> bool {
+    !text.is_empty()
+        && text.len() <= MAX_NAME
+        && text
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
+}
+
+/// An effect row an app declares (`notes_add`): 1 to [`MAX_ROW`] bytes of
+/// lowercase letters, digits and `_`, neither starting nor ending with `_`.
+fn row_ok(text: &str) -> bool {
+    !text.is_empty()
+        && text.len() <= MAX_ROW
+        && !text.starts_with('_')
+        && !text.ends_with('_')
+        && text
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+}
+
+/// `<app> <row>`, as `grants-revoke` and `grants-restore` take them.
+fn app_row(args: &str) -> bool {
+    args.split_once(' ')
+        .is_some_and(|(app, row)| app_ok(app) && row_ok(row))
+}
+
 /// What `request` is, or why it is not a request an app may send. A read is one
-/// of [`READS`], exactly. A change is a verb of [`CHANGES`] with arguments that
+/// of [`READS`], exactly, or `grants <app>`. A change is a verb of [`CHANGES`] with arguments that
 /// fit that verb's grammar. Only printable ASCII is allowed, so no control,
 /// bidirectional or look-alike character reaches a log or a handler.
 pub fn classify(request: &str) -> Result<Kind, String> {
@@ -167,7 +199,7 @@ pub fn classify(request: &str) -> Result<Kind, String> {
     if !printable(request) {
         return Err(String::from("only printable ASCII"));
     }
-    if READS.contains(&request) {
+    if READS.contains(&request) || request.strip_prefix("grants ").is_some_and(app_ok) {
         return Ok(Kind::Read);
     }
     let (verb, args) = match request.split_once(' ') {
@@ -180,7 +212,7 @@ pub fn classify(request: &str) -> Result<Kind, String> {
         }),
         "profile-set" => name_ok(args, MAX_NAME),
         "rules-remove" => rule(args),
-        "grants-revoke" => number(args, 10).is_some(),
+        "grants-revoke" | "grants-restore" => app_row(args),
         "keep-running" => args
             .split_once(' ')
             .is_some_and(|(flag, app)| matches!(flag, "on" | "off") && name_ok(app, MAX_NAME)),
