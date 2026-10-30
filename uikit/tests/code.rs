@@ -227,6 +227,55 @@ fn every_key_reaches_the_app_by_name_with_its_text_and_modifiers() {
 }
 
 #[test]
+fn ctrl_tab_leaves_a_code_view_for_the_next_control_and_comes_back() {
+    const BUTTON: u32 = 6;
+    let mut w = window(sample());
+    w.put(
+        BUTTON,
+        ROOT,
+        Layout::FIT,
+        Widget::Button {
+            text: "Build".into(),
+            action: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(w.focus_node(), Some(NODE));
+    // The key is the focus ring's: the app is told nothing.
+    assert!(w.input(press(Key::Tab, Mods::CTRL, "	"), &M).is_empty());
+    assert_eq!(w.focus_node(), Some(BUTTON));
+    // From the button the ring wraps back to the code view.
+    assert!(w.input(press(Key::Tab, Mods::CTRL, "	"), &M).is_empty());
+    assert_eq!(w.focus_node(), Some(NODE));
+    // With Shift it goes the other way round.
+    let both = Mods::CTRL | Mods::SHIFT;
+    assert!(w.input(press(Key::Tab, both, "	"), &M).is_empty());
+    assert_eq!(w.focus_node(), Some(BUTTON));
+    assert!(w.input(press(Key::Tab, both, "	"), &M).is_empty());
+    assert_eq!(w.focus_node(), Some(NODE));
+    // Plain Tab, and Tab with Alt, are still the app's.
+    let tab = |mods: u8| UiEvent::Key {
+        node: NODE,
+        name: "tab".into(),
+        text: String::new(),
+        mods,
+    };
+    assert_eq!(w.input(press(Key::Tab, 0, "	"), &M), [tab(0)]);
+    assert_eq!(
+        w.input(press(Key::Tab, Mods::CTRL | Mods::ALT, "	"), &M),
+        [tab(Mods::CTRL | Mods::ALT)]
+    );
+    assert_eq!(w.focus_node(), Some(NODE));
+}
+
+#[test]
+fn a_lone_code_view_keeps_focus_on_ctrl_tab_and_still_tells_the_app_nothing() {
+    let mut w = window(sample());
+    assert!(w.input(press(Key::Tab, Mods::CTRL, "	"), &M).is_empty());
+    assert_eq!(w.focus_node(), Some(NODE));
+}
+
+#[test]
 fn a_view_that_does_not_have_focus_gives_the_app_no_keys() {
     let mut w = Window::new("Editor", 400, 300);
     w.put(NODE, ROOT, Layout::FILL, Widget::Code(sample()))

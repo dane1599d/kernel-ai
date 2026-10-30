@@ -74,7 +74,7 @@ pub enum Input {
     Button {
         at: Point,
         down: bool,
-        /// The modifiers held, as for a key: a Ctrl-click is not a click.
+        /// The modifiers held, as for a key; only a code view reports them.
         mods: Mods,
     },
     /// Wheel steps, positive down.
