@@ -23,6 +23,8 @@ use wasmhost::{AppEvent, LiveInstance, Update, surface};
 
 /// How long a call to `desktop` may take.
 const CALL_MS: u64 = 5_000;
+/// Times one pump tells the app the size of its code views and looks again.
+const SIZE_ROUNDS: usize = 4;
 /// How often an app with windows asks `desktop` for its events.
 pub const POLL_MS: u64 = 20;
 
@@ -123,8 +125,31 @@ impl Ui {
     /// open with their last frame, so the user can restore one and a standing
     /// instruction's "until restore" can come (P3 task 11).
     pub fn pump<E: Env<Instance = LiveInstance>>(&mut self, host: &mut Host<E>) {
+        // A code view's size is told to the app in a call of its own, which may
+        // change what it shows (a few rounds: the size settles at once, but an app
+        // that changed its layout on every size would not).
+        for _ in 0..SIZE_ROUNDS {
+            let sized = self.pump_once(host);
+            if sized.is_empty() {
+                return;
+            }
+            for (window, node, rows, cells) in sized {
+                let performed = serve_shown(host, |core| core.code_size(window, node, rows, cells));
+                // What the app queued while it handled the size goes out as for a close.
+                self.forward(performed);
+            }
+        }
+    }
+
+    /// One look at what the instances committed; the code views whose size the
+    /// app is yet to be told.
+    fn pump_once<E: Env<Instance = LiveInstance>>(
+        &mut self,
+        host: &mut Host<E>,
+    ) -> Vec<(u32, u32, u16, u16)> {
+        let mut sized = Vec::new();
         if host.suspended() {
-            return;
+            return sized;
         }
         let mut updates = Vec::new();
         let mut label = None;
@@ -150,8 +175,15 @@ impl Ui {
                     self.frames.retain(|(app, _)| *app != window);
                     self.close(window);
                 }
+                Update::CodeSize {
+                    window,
+                    node,
+                    rows,
+                    cells,
+                } => sized.push((window, node, rows, cells)),
             }
         }
+        sized
     }
 
     /// Asks `desktop` for its events and acts on them, then hands the app the

@@ -19,6 +19,9 @@
 extern crate alloc;
 
 mod canonical;
+mod code;
+#[cfg(test)]
+mod code_tests;
 pub mod desk;
 #[cfg(test)]
 mod desk_tests;

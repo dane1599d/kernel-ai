@@ -42,6 +42,8 @@ pub struct CoreInstance {
     actions: Option<Actions>,
     /// The `kai:ui/input` `on-ui` export, when the module has one.
     pub(crate) on_ui: Option<String>,
+    /// The `kai:code/code-input` exports the module has.
+    pub(crate) code: alloc::boxed::Box<crate::code::CodeExports>,
     /// Whether the last guest call was made while a person's key or click was
     /// handled ([`CoreInstance::last_call_by_user`]).
     pub(crate) by_user: bool,
@@ -182,6 +184,7 @@ pub fn load_core_granted(
         lifecycle,
         actions: None,
         on_ui,
+        code: alloc::boxed::Box::new(crate::code::CodeExports::of(&module)),
         by_user: false,
         on_event,
         on_settings_reply,
@@ -275,7 +278,7 @@ fn link_imports(
                 )));
             }
             (crate::edit::EDIT, "send") => linker.func_wrap(qualified, name, crate::edit::send),
-            (crate::ui::VIEW, _) => linker.func_new(
+            (crate::code::CODE, _) | (crate::ui::VIEW, _) => linker.func_new(
                 qualified,
                 name,
                 ty.clone(),
@@ -293,7 +296,7 @@ fn link_imports(
 }
 
 /// The module's export for `interface`'s `name` at a version that links.
-fn export_for(module: &Module, entry: &WitFunc) -> Option<String> {
+pub(crate) fn export_for(module: &Module, entry: &WitFunc) -> Option<String> {
     module.exports().find_map(|export| {
         let (qualified, name) = export.name().split_once('#')?;
         let (interface, version) = link::split(qualified)?;
