@@ -16,6 +16,7 @@ const CALLS: &[u64] = &[
     call::BUILD_START,
     call::BUILD_POLL,
     call::COMP_CONTROL,
+    call::EDIT_CALL,
 ];
 
 /// One of [`CALLS`], or `None` for a number this area does not have.
@@ -61,8 +62,54 @@ fn run(slot: usize, number: u64, a: &[u64; 6]) -> Result<u64, Error> {
             need(slot, cap::PUBLISH)?;
             crate::process::components::control(slot, a[0])
         }
+        call::EDIT_CALL => {
+            need(slot, cap::EDIT)?;
+            edit_call(slot, a[0], a[1], a[2], a[3])
+        }
         _ => Err(Error::NotFound),
     }
+}
+
+/// EDIT_CALL: one open or command for the edit service, through the kernel's
+/// journal. Only what an app may send gets through ([`editcore::ipc::for_app`]),
+/// and the wait ends if the caller is killed or stopped.
+fn edit_call(
+    slot: usize,
+    msg: u64,
+    msg_len: u64,
+    reply: u64,
+    reply_cap: u64,
+) -> Result<u64, Error> {
+    let len = usize::try_from(msg_len).map_err(|_| Error::Invalid)?;
+    let room = usize::try_from(reply_cap).unwrap_or(usize::MAX);
+    if len == 0 || len > kabi::MAX_MESSAGE || room < kabi::MAX_MESSAGE {
+        return Err(Error::Invalid);
+    }
+    let mut message = alloc::vec![0u8; len];
+    uaccess::copy_from_user(slot, msg, &mut message)?;
+    editcore::ipc::for_app(&message).map_err(|_| Error::Invalid)?;
+    // The edit is done and journaled by the time the answer is copied, so a reply
+    // buffer that cannot be written must be found out first, or a retry would
+    // make the same edit twice.
+    writable(slot, reply, kabi::MAX_MESSAGE)?;
+    let cancel = || crate::process::killed(slot) || crate::process::interrupt_pending(slot);
+    let answer = crate::edit_session::call_for_app(&message, &cancel);
+    if crate::process::killed(slot) {
+        return Err(Error::Dead);
+    }
+    uaccess::copy_to_user(slot, reply, answer.as_bytes())?;
+    Ok(answer.len() as u64)
+}
+
+/// Whether `len` bytes at `addr` can be written: one byte in each page, and the
+/// last. (Zeroes them, which the caller's own buffer can take.)
+fn writable(slot: usize, addr: u64, len: usize) -> Result<(), Error> {
+    const PAGE: usize = 4096;
+    for offset in (0..len).step_by(PAGE).chain([len - 1]) {
+        let at = addr.checked_add(offset as u64).ok_or(Error::Invalid)?;
+        uaccess::copy_to_user(slot, at, &[0])?;
+    }
+    Ok(())
 }
 
 /// BUILD_START: hands a build to the background job.

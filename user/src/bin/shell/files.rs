@@ -299,6 +299,8 @@ pub const STANDING: &str = "standing";
 pub const KEEP: &str = "keep";
 /// The user's appearance (`kai-appearance 1`, P4 task 8).
 pub const APPEARANCE: &str = "appearance";
+/// The rows withheld from apps' effects (`kai-withheld 1`, P4 task 7).
+pub const WITHHELD: &str = "withheld";
 
 impl State {
     /// File `name` as `/system/state` holds it; `None` with no such file or no
