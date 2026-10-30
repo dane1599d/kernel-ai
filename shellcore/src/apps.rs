@@ -327,6 +327,11 @@ impl AppRows {
             .any(|l| l.app == app && l.effects.iter().any(|e| e == row))
     }
 
+    /// The apps whose rows are loaded, in load order.
+    pub fn apps(&self) -> impl Iterator<Item = &str> + '_ {
+        self.loaded.iter().map(|l| l.app.as_str())
+    }
+
     /// Whether `app`'s rows are loaded.
     pub fn has(&self, app: &str) -> bool {
         self.loaded.iter().any(|l| l.app == app)
