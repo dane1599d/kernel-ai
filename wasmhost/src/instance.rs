@@ -35,6 +35,14 @@ pub(crate) struct HostState {
     pub(crate) view: Option<livecore::txn::Storage>,
     /// The app's windows (`kai:ui`, lifecycle 2).
     pub(crate) ui: crate::ui::UiHost,
+    /// True only while a real key or click is being handled
+    /// ([`crate::CoreInstance::ui_input`], [`crate::CoreInstance::ui_events_user`]).
+    /// A host function that must tell a person's input from the agent's
+    /// `ui_act` reads it; everything else, replies and events included, leaves it
+    /// false, so the default is to refuse.
+    pub(crate) user_input: bool,
+    /// The settings requests the app sent and comphost has not taken (`kai:settings`).
+    pub(crate) settings: crate::settings::SettingsHost,
 }
 
 /// Most bytes of a panic's file path read from the version.
@@ -165,6 +173,8 @@ impl WasmInstance {
             call: None,
             view: None,
             ui: Default::default(),
+            user_input: false,
+            settings: Default::default(),
         };
         let mut store = Store::new(engine, state);
         store.limiter(|state| &mut state.limits);

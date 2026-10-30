@@ -28,10 +28,13 @@ pub enum Error {
     BadHandle = 13,
     /// The handle's grant was revoked. Old programs read it as `Invalid`.
     Revoked = 14,
+    /// `svc_recv` returned early because an event box this process reads got an
+    /// event; no request was taken. Only a box's reader ever gets it.
+    Woken = 15,
 }
 
 impl Error {
-    pub const ALL: [Error; 14] = [
+    pub const ALL: [Error; 15] = [
         Error::Permission,
         Error::Fault,
         Error::Invalid,
@@ -46,6 +49,7 @@ impl Error {
         Error::Unavailable,
         Error::BadHandle,
         Error::Revoked,
+        Error::Woken,
     ];
 
     /// The value placed in RAX.

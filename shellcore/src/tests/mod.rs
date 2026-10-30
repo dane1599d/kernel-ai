@@ -13,12 +13,16 @@ use std::collections::VecDeque;
 mod act;
 mod actions;
 mod apart;
+mod centry;
+mod effects;
 mod files;
 mod fuzz;
 mod log;
 mod logdisk;
+mod look;
 mod more;
 mod packages;
+mod panel;
 mod profiles;
 mod scripts;
 mod settings;
@@ -68,6 +72,8 @@ struct FakeHost {
     /// What the supervisor was told to keep running, and the saved list.
     kept: RefCell<Vec<(String, bool)>>,
     keep_file: RefCell<Option<String>>,
+    /// The saved appearance (`kai-appearance 1`).
+    appearance: RefCell<Option<String>>,
     /// The trusted path's ONCE book: badge, digest, and whether it was used.
     once: RefCell<Vec<(u64, [u8; 32], bool)>>,
     /// Rule handles revoked.
@@ -217,6 +223,7 @@ impl FakeHost {
             audit: RefCell::new(Vec::new()),
             kept: RefCell::new(Vec::new()),
             keep_file: RefCell::new(None),
+            appearance: RefCell::new(None),
             once: RefCell::new(Vec::new()),
             revoked: RefCell::new(Vec::new()),
             procs: RefCell::new(alloc::vec![
@@ -615,6 +622,15 @@ impl Host for FakeHost {
 
     fn keep_running(&self, app: &str, on: bool) -> Result<(), String> {
         self.kept.borrow_mut().push((String::from(app), on));
+        Ok(())
+    }
+
+    fn appearance_read(&self) -> Option<String> {
+        self.appearance.borrow().clone()
+    }
+
+    fn appearance_write(&self, text: &str) -> Result<(), String> {
+        *self.appearance.borrow_mut() = Some(String::from(text));
         Ok(())
     }
 

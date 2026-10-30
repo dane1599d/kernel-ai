@@ -636,6 +636,19 @@ fn a_window_is_saved_until_its_app_says_otherwise() {
 }
 
 #[test]
+fn a_window_is_shared_with_the_agent_until_its_app_keeps_it_private() {
+    let (mut desk, mut client, window) = tree_window();
+    assert!(!client.agent_private(window));
+    let private = |on| bytes(&[(5, Request::SetAgentPrivate(on))]);
+    client.handle(&mut desk, &private(true), false).unwrap();
+    assert!(client.agent_private(window));
+    // Its unsaved changes are a separate flag.
+    assert!(!client.unsaved(window));
+    client.handle(&mut desk, &private(false), false).unwrap();
+    assert!(!client.agent_private(window));
+}
+
+#[test]
 fn a_window_of_another_name_binds_its_apps_rows() {
     // Notes' window runs as `notes-window` and binds the Notes app's `notes_add`.
     let mut desk = Desk::new(1280, 800);

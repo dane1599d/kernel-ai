@@ -297,6 +297,8 @@ pub const RULES: &str = "rules";
 pub const STANDING: &str = "standing";
 /// The apps kept running, never napped (`kai-keep 1`, P4).
 pub const KEEP: &str = "keep";
+/// The user's appearance (`kai-appearance 1`, P4 task 8).
+pub const APPEARANCE: &str = "appearance";
 
 impl State {
     /// File `name` as `/system/state` holds it; `None` with no such file or no

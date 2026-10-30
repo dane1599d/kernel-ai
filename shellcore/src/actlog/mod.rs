@@ -199,6 +199,20 @@ impl ActLog {
         })
     }
 
+    /// Takes the entries after `id` out of the log, oldest first, leaving the
+    /// system's records: a `c>` entry's calls, to be logged as one.
+    pub fn take_entries_after(&mut self, id: u64) -> Vec<Entry> {
+        let mut taken = Vec::new();
+        self.records.retain(|record| match record {
+            Record::Entry(e) if e.id > id => {
+                taken.push(e.clone());
+                false
+            }
+            _ => true,
+        });
+        taken
+    }
+
     pub fn get(&self, id: u64) -> Option<&Entry> {
         self.entries().find(|e| e.id == id)
     }

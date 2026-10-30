@@ -148,7 +148,14 @@ impl Default for Store {
 
 /// Why nothing switched, in code's words.
 fn unknown(name: &str) -> String {
-    format!("No Kernel AI package named {name}. Linux packages need the Linux layer (v0.2).")
+    format!(
+        concat!(
+            "No ",
+            kabi::product_name!(),
+            " package named {}. Linux packages need the Linux layer (v0.2)."
+        ),
+        name
+    )
 }
 
 impl Store {

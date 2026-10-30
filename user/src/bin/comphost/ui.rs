@@ -7,6 +7,7 @@
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
+use deskcore::effects;
 use gfx2d::Canvas;
 use gfx2d::text::{Fonts, Text};
 use kabi::handle::{Handle, Rights};
@@ -18,7 +19,7 @@ use uikit::style::TypeStyle;
 use uikit::widget::UiEvent;
 use user::{println, sys};
 use wasmhost::desk::{Desk, Open, Show, Target, Told};
-use wasmhost::{LiveInstance, Update, surface};
+use wasmhost::{AppEvent, LiveInstance, Update, surface};
 
 /// How long a call to `desktop` may take.
 const CALL_MS: u64 = 5_000;
@@ -73,6 +74,9 @@ pub struct Ui {
     /// poll.
     later: Vec<Told>,
     reply: Vec<u8>,
+    /// The tickets sent to `desktop` with no result yet: only then does a poll
+    /// ask for results, and only theirs reach the app.
+    sent: effects::Sent,
 }
 
 impl Ui {
@@ -93,11 +97,18 @@ impl Ui {
             focused: false,
             later: Vec::new(),
             reply: alloc::vec![0u8; kabi::MAX_MESSAGE],
+            sent: effects::Sent::default(),
         })
     }
 
     pub fn has_windows(&self) -> bool {
         !self.frames.is_empty()
+    }
+
+    /// Whether comphost should poll: a window is open, or an effect's result
+    /// is still to come (one queued as the last window closed, too).
+    pub fn wants_poll(&self) -> bool {
+        self.has_windows() || self.sent.awaits()
     }
 
     /// Whether one of its windows took focus since the last call: use, for
@@ -149,27 +160,85 @@ impl Ui {
         &mut self,
         host: &mut Host<E>,
     ) -> Result<(), Exit> {
-        let mut told = core::mem::take(&mut self.later);
-        if let Ok(len) = sys::call_route(self.route, &[], &mut self.reply, CALL_MS) {
-            told.extend(self.desk.told(&self.reply[..len.min(self.reply.len())]));
+        if self.has_windows() || !self.later.is_empty() {
+            let mut told = core::mem::take(&mut self.later);
+            if let Ok(len) = sys::call_route(self.route, &[], &mut self.reply, CALL_MS) {
+                told.extend(self.desk.told(&self.reply[..len.min(self.reply.len())]));
+            }
+            self.act(host, told)?;
         }
-        self.act(host, told)?;
-        // A suspended app's input waits in its rings: serving it would wake the
-        // app, and what resumes it (a rule's `until`, `ctl resume`) goes first.
+        // A suspended app's input waits in its rings, and its effects' results
+        // at `desktop`: serving either would wake the app, and what resumes it
+        // (a rule's `until`, `ctl resume`) goes first.
         if host.suspended() {
             return Ok(());
         }
         let inputs = self.take_input();
-        if inputs.is_empty() {
-            return Ok(());
-        }
+        let typed = !inputs.is_empty();
         for (app, input) in inputs {
             // Typed input is a transaction too: what the app saves or asks for
             // because of it is kept like an action call's.
-            let _ = serve_shown(host, |core| core.ui_input(app, input));
+            let performed = serve_shown(host, |core| core.ui_input(app, input));
+            self.forward(performed);
+        }
+        if typed {
+            self.pump(host);
+        }
+        self.deliver(host);
+        Ok(())
+    }
+
+    /// Sends what the app's transaction queued to `desktop`, for the shell to
+    /// run; `desktop` knows which app this is from the kernel, not from us.
+    fn forward(&mut self, performed: Option<Performed>) {
+        let Some(performed) = performed.filter(|p| !p.is_empty()) else {
+            return;
+        };
+        let lines = performed.effect_lines();
+        let request = alloc::format!("{}{lines}", effects::PUT);
+        match sys::call_route(self.route, request.as_bytes(), &mut self.reply, CALL_MS) {
+            Ok(len) if &self.reply[..len.min(self.reply.len())] == b"ok" => {
+                self.sent.record(&lines);
+            }
+            Ok(len) => println!(
+                "comphost: desktop refused the effects: {}",
+                String::from_utf8_lossy(&self.reply[..len.min(self.reply.len())])
+            ),
+            Err(error) => println!("comphost: desktop did not take the effects ({error:?})"),
+        }
+    }
+
+    /// Gives the app what came of its effects, one `effect-done` each, for
+    /// tickets it sent only; what it queues in answer goes out the same way.
+    fn deliver<E: Env<Instance = LiveInstance>>(&mut self, host: &mut Host<E>) {
+        if !self.sent.awaits() {
+            return;
+        }
+        let Ok(len) = sys::call_route(
+            self.route,
+            effects::RESULTS.as_bytes(),
+            &mut self.reply,
+            CALL_MS,
+        ) else {
+            return;
+        };
+        let text = String::from_utf8_lossy(&self.reply[..len.min(self.reply.len())]).into_owned();
+        let (accepted, stray) = self.sent.accept(effects::parse_results(&text));
+        for ticket in stray {
+            println!("comphost: dropped a result for ticket {ticket}, which it did not send");
+        }
+        for done in accepted {
+            let ticket = done.ticket;
+            let event = AppEvent::EffectDone {
+                ticket,
+                outcome: done.outcome,
+            };
+            match serve_shown(host, |core| core.deliver_event(&event)) {
+                Some(performed) => self.forward(Some(performed)),
+                None => println!("comphost: the result for ticket {ticket} did not reach the app"),
+            }
         }
         self.pump(host);
-        Ok(())
     }
 
     /// The input waiting in each window's event ring, as `uikit` input: keys
@@ -221,9 +290,10 @@ impl Ui {
                 Told::Restarted => self.reopen(),
                 Told::Focus(_) => self.focused = true,
                 Told::Close(window) => {
-                    let _ = serve_shown(host, |core| {
+                    let performed = serve_shown(host, |core| {
                         core.ui_events(window, &[UiEvent::CloseRequested])
                     });
+                    self.forward(performed);
                 }
                 Told::Action {
                     window,
@@ -240,10 +310,11 @@ impl Ui {
                     else {
                         continue;
                     };
-                    let _ = serve_shown(host, |core| {
+                    let performed = serve_shown(host, |core| {
                         core.ui_act(window, node, action, value.clone())
                             .map(|_refused_or_not| ())
                     });
+                    self.forward(performed);
                 }
             }
         }
@@ -408,19 +479,7 @@ fn serve_shown<E: Env<Instance = LiveInstance>>(
         _ => Ok(()),
     });
     match served {
-        Ok(done) => {
-            let performed = done.map(|((), performed)| performed);
-            // Until the effect transport (A-core) carries these to the agent core,
-            // say what is dropped, so a window's missing effect is not silent.
-            if let Some(performed) = performed.as_ref().filter(|p| !p.is_empty()) {
-                println!(
-                    "comphost: dropped {} effect(s) from a window event: {}",
-                    performed.txn.effects.len(),
-                    performed.effect_lines().trim_end().replace('\n', "; ")
-                );
-            }
-            performed
-        }
+        Ok(done) => done.map(|((), performed)| performed),
         Err(exit) => {
             println!("comphost: {}", exit.why);
             None

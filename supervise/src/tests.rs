@@ -100,6 +100,13 @@ fn a_lines_folders_go_only_to_its_own_program() {
     // The name kept, the program swapped: refused, never started without it.
     let refused = plan.grants("pkg", "notes").unwrap_err();
     assert!(refused.contains("for program pkg, not notes"), "{refused}");
+    // comphost's apps get their saved state's folder the same way.
+    let apps = parse_plan("notes program=comphost dir=apps version=2");
+    assert!(apps.errors.is_empty(), "{:?}", apps.errors);
+    assert_eq!(
+        apps.grants("notes", "comphost").unwrap().dirs,
+        [Folder::Apps]
+    );
     // A line's `program=` is the program its folder goes to, not its name.
     assert_eq!(plan.grants("store", "pkgd").unwrap().dirs, [Folder::Pkg]);
     assert!(plan.grants("store", "store").is_err());
