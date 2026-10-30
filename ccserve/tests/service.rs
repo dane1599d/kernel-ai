@@ -155,6 +155,23 @@ fn the_deadline_and_ctrl_c_stop_a_run() {
     assert_eq!(cc.value("1 + 1"), "i64 2");
 }
 
+/// The deadline follows the host's line budget, which the `cc` program
+/// stretches when QEMU emulates the CPU.
+#[test]
+fn the_deadline_follows_the_hosts_line_budget() {
+    let mut cc = Cc::open();
+    // Each clock read takes a whole 2 s, so D3's budget stops the entry at
+    // its first check.
+    cc.clock.step_ns.set(ccserve::LINE_NS);
+    let stopped = cc.eval("1 + 1");
+    assert!(
+        stopped.iter().any(|record| record.ends_with("deadline")),
+        "{stopped:?}"
+    );
+    cc.clock.line_ns.set(1_000 * ccserve::LINE_NS);
+    assert_eq!(cc.value("1 + 1"), "i64 2");
+}
+
 #[test]
 fn output_stops_at_six_kib() {
     let mut cc = Cc::open();

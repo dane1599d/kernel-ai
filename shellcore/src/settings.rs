@@ -38,6 +38,11 @@ const _: () = assert!(
     MAX_EFFECT_ROWS * (MAX_NAME + 1 + livecore::actions::MAX_NAME + 1 + "withheld".len() + 1)
         <= MAX_ANSWER
 );
+/// At most this many apps kept running.
+const MAX_KEPT: usize = 64;
+// `file appearance` and `file apps` each fit one answer at their worst.
+const _: () = assert!(look::appearance::MAX_BYTES <= MAX_ANSWER);
+const _: () = assert!(KEEP_HEADER.len() + MAX_KEPT * (MAX_NAME + 1) < MAX_ANSWER);
 /// The services that are the system's, not apps that nap.
 const SYSTEM: &[&str] = &[
     "shell",
@@ -98,7 +103,7 @@ impl Shell {
             ("about", "") => Ok(about()),
             ("profiles", "") => Ok(self.profile_lines()),
             ("apps", "") => self.app_names().map(|names| names.join("\n")),
-            ("file", _) => Err(String::from("comphost reads the settings files itself")),
+            ("file", area) => self.settings_file(area),
             ("profile-set", name) if valid_name(name) => self
                 .profile_set_by_click(&logged, name)
                 .map(|was| format!("profile {name} (was {was})")),
@@ -305,8 +310,34 @@ impl Shell {
         Ok(format!("{name} {row} {now}"))
     }
 
+    /// `file <area>`: a settings page's saved state, in its one format, for the
+    /// Settings app to decode. Empty is "nothing saved", which the app shows as
+    /// the defaults.
+    /// - `appearance`: the `kai-appearance 1` text as it is saved; text past
+    ///   its bound is refused, not cut.
+    /// - `apps`: the keep-running list in force, as `kai-keep 1` text (a list
+    ///   on disk out of shape was set aside at start, so none is kept).
+    /// - `updates`: empty, until a restart-window writer exists.
+    fn settings_file(&self, area: &str) -> Result<String, String> {
+        match area {
+            "appearance" => match self.host.appearance_read() {
+                Some(text) if text.len() > look::appearance::MAX_BYTES => {
+                    Err(String::from("the saved appearance is out of shape"))
+                }
+                saved => Ok(saved.unwrap_or_default()),
+            },
+            "apps" if self.keep.is_empty() => Ok(String::new()),
+            "apps" => Ok(keep_text(&self.keep)),
+            "updates" => Ok(String::new()),
+            _ => Err(String::from("not a settings file")),
+        }
+    }
+
     /// Tells the supervisor and saves the list: `name` kept running or not.
     pub(crate) fn set_keep(&mut self, name: &str, on: bool) -> Result<(), String> {
+        if on && !self.keep.iter().any(|app| app == name) && self.keep.len() >= MAX_KEPT {
+            return Err(format!("at most {MAX_KEPT} apps are kept running"));
+        }
         self.host.keep_running(name, on)?;
         self.keep.retain(|app| app != name);
         if on {
@@ -403,7 +434,7 @@ fn parse_keep(text: &str) -> Option<Vec<String>> {
         return None;
     }
     let apps: Vec<String> = lines.filter(|l| !l.is_empty()).map(String::from).collect();
-    match apps.iter().all(|app| valid_name(app)) && apps.len() <= 64 {
+    match apps.iter().all(|app| valid_name(app)) && apps.len() <= MAX_KEPT {
         true => Some(apps),
         false => None,
     }
