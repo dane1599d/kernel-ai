@@ -47,10 +47,10 @@ pub fn test_root() -> Result<&'static TestRoot, String> {
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| format!("the clock is before 1970: {e}"))?;
     let made = TestRoot {
-        root: Key::generate()?,
-        targets: Key::generate()?,
-        snapshot: Key::generate()?,
-        timestamp: Key::generate()?,
+        root: tuf::generate_key()?,
+        targets: tuf::generate_key()?,
+        snapshot: tuf::generate_key()?,
+        timestamp: tuf::generate_key()?,
         now: Time(now.as_secs()),
     };
     Ok(ROOT.get_or_init(|| made))

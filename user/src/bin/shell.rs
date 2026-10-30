@@ -12,6 +12,8 @@ extern crate alloc;
 mod apart;
 #[path = "shell/files.rs"]
 mod files;
+#[path = "shell/ui.rs"]
+mod ui;
 
 use alloc::boxed::Box;
 use alloc::format;
@@ -45,6 +47,8 @@ struct System {
     pool: apart::Pool,
     files: files::Files,
     state: files::State,
+    /// The installed apps' rows, loaded as the agent first calls them (P4).
+    apps: core::cell::RefCell<shellcore::apps::Apps>,
 }
 
 /// The route to the llm service: the shell's plan line has `uses=llm`, its only
@@ -89,10 +93,13 @@ fn take_panel(shell: &mut Shell) {
         return;
     };
     let shown = match panel_wire::parse_take(&answer) {
-        Some(Some(Request::Line(line))) => match shell.eval_panel(&line) {
-            PanelResult::Done(line) => State::Done { line },
-            PanelResult::Refused(reason) => State::Refused { reason },
-        },
+        Some(Some(Request::Line(line))) => {
+            ui::begin();
+            match shell.eval_panel(&line) {
+                PanelResult::Done(line) => State::Done { line },
+                PanelResult::Refused(reason) => State::Refused { reason },
+            }
+        }
         // Esc after the shell took the line: it has run already, one line at
         // a time, and its result stays shown. Esc before is desktop's own: the
         // line never came here.
@@ -207,6 +214,35 @@ fn with_proof(request: supervise::Request, proof: Proof) -> Result<String, Strin
     Ok(request.encode(proof))
 }
 
+/// How long an app's call may take through the supervisor: its start, then
+/// the call (`supervise::appcall`).
+const APP_CALL_MS: u64 = 8_000;
+
+/// `request` to app `app` through the supervisor's `app-call` (APP_CALL): the
+/// app's reply, or why not. The supervisor waits at most 5 s on one call; a
+/// timeout is tried once more.
+fn ask_app(app: &str, request: &str) -> Result<String, String> {
+    match ask_app_once(app, request) {
+        Err(why) if why.starts_with("timeout") => {
+            println!("{app} did not answer in time; asking once more");
+            ask_app_once(app, request)
+        }
+        other => other,
+    }
+}
+
+fn ask_app_once(app: &str, request: &str) -> Result<String, String> {
+    let mut reply = vec![0u8; kabi::MAX_MESSAGE];
+    let call = supervise::appcall::encode(app, request);
+    let len = sys::call_route(supervisor(), call.as_bytes(), &mut reply, APP_CALL_MS)
+        .map_err(|error| format!("the supervisor did not answer ({error:?})"))?;
+    let text = String::from_utf8_lossy(&reply[..len.min(reply.len())]).into_owned();
+    match text.strip_prefix("err ") {
+        Some(why) => Err(why.to_string()),
+        None => Ok(text),
+    }
+}
+
 /// Sends `request` to the supervisor over the route; its answer.
 fn ask_supervisor(request: &str) -> Result<String, String> {
     let mut reply = vec![0u8; 2048];
@@ -224,6 +260,14 @@ fn ask_supervisor(request: &str) -> Result<String, String> {
 impl Host for System {
     fn now_ns(&self) -> u64 {
         sys::time_ns()
+    }
+
+    fn apps(&self) -> Option<&core::cell::RefCell<shellcore::apps::Apps>> {
+        Some(&self.apps)
+    }
+
+    fn app_call(&self, app: &str, request: &str) -> Result<String, String> {
+        ask_app(app, request)
     }
 
     fn interrupted(&self) -> bool {
@@ -460,8 +504,7 @@ impl Host for System {
 
     /// `keep <app> on|off` to the supervisor, which keeps the app from napping.
     fn keep_running(&self, app: &str, on: bool) -> Result<(), String> {
-        let word = if on { "on" } else { "off" };
-        supervise(&format!("keep {app} {word}"))
+        supervise(&supervise::keep::encode(app, on))
     }
 
     fn appearance_read(&self) -> Option<String> {
@@ -498,6 +541,28 @@ impl Host for System {
                 .state
                 .write(files::RULES, text, self.files.next_action()),
         }
+    }
+
+    fn withheld_read(&self) -> Option<String> {
+        self.state.read(files::WITHHELD)
+    }
+
+    /// As the rules are written: with the line's files, if it changed any.
+    fn withheld_write(&self, text: &str) -> Result<(), String> {
+        match self.files.is_open() {
+            true => self.state.write_in(files::WITHHELD, text),
+            false => self
+                .state
+                .write(files::WITHHELD, text, self.files.next_action()),
+        }
+    }
+
+    fn ui(&self, call: &shellcore::ui::UiCall) -> Result<String, String> {
+        ui::call(call)
+    }
+
+    fn state(&self) -> shellcore::state::State {
+        ui::state(shellcore::state::State::default())
     }
 
     fn fs_read(&self, read: shellcore::FsRead) -> Result<String, String> {
@@ -618,6 +683,7 @@ fn main() -> i32 {
                 pool: apart::Pool::new(),
                 files,
                 state,
+                apps: core::cell::RefCell::default(),
             })
         },
         DEFAULT_CONFIG,
@@ -653,6 +719,10 @@ fn main() -> i32 {
         // Only the kernel terminal may run shell lines.
         let mut reply = if caller == 0 {
             let text = core::str::from_utf8(&line[..len]).unwrap_or("");
+            // An answer to a menu goes on with its run; any other line starts one.
+            if !text.starts_with("answer ") {
+                ui::begin();
+            }
             shell.eval(text).to_wire()
         } else {
             String::from("err the shell answers only the terminal")

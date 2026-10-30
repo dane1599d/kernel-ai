@@ -226,3 +226,20 @@ fn mutated_samples_never_panic_and_what_parses_round_trips() {
     }
     assert!(parsed > 1000, "only {parsed} mutated samples still parsed");
 }
+
+#[test]
+fn the_health_words_are_the_llm_services_words() {
+    use llmproto::health::State;
+    let mut seen = Vec::new();
+    for state in State::ALL {
+        let ours = ModelState::from_health_word(state.word())
+            .unwrap_or_else(|| panic!("no state for {:?}", state.word()));
+        assert_ne!(ours, ModelState::Unknown, "{}", state.word());
+        assert!(!seen.contains(&ours), "{} repeats a state", state.word());
+        seen.push(ours);
+    }
+    assert_eq!(seen.len(), State::ALL.len());
+    for word in ["", "Ready", "ready ", "unknown", "sleepy"] {
+        assert_eq!(ModelState::from_health_word(word), None, "{word:?}");
+    }
+}

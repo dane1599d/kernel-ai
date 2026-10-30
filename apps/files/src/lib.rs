@@ -169,6 +169,16 @@ impl Files {
         }
     }
 
+    /// A window that shows `dir` once it is listed, where a restarted app comes
+    /// back to; a path the file rows would not take is home.
+    pub fn at(dir: &str) -> Self {
+        let mut files = Self::new();
+        if path_ok(dir) {
+            files.dir = String::from(dir);
+        }
+        files
+    }
+
     /// The folder shown, relative to the home folder; `""` is home.
     pub fn dir(&self) -> &str {
         &self.dir

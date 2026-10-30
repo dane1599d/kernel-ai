@@ -145,3 +145,28 @@ fn keep_running_on_wakes_a_napping_app_but_not_a_rule_s_suspend() {
     let (_, woke) = n.request(&mut h, 0, b"ctl keep-running on", 1).unwrap();
     assert!(woke.is_none() && h.suspended());
 }
+
+#[test]
+fn the_agents_look_at_an_apps_rows_neither_wakes_it_nor_counts_as_use() {
+    let k = kernel(&[V1]);
+    let mut h = host(&k);
+    let mut n = napper();
+    n.tick(&mut h, NAP).unwrap();
+    // From the supervisor, for the agent core: answered from the artifact.
+    for request in [b"kai-actions 1".as_slice(), b"kai-actions 1\n"] {
+        let (reply, woke) = n.request(&mut h, 9, request, NAP + 1).unwrap();
+        assert!(
+            reply.is_none() && woke.is_none(),
+            "{request:?} goes to the host"
+        );
+        h.handle(9, request).unwrap();
+        n.after(&h, NAP + 1);
+    }
+    assert!(h.suspended() && n.nap.is_napping(), "still napping");
+    // Nor does it put off the next nap of a running app.
+    let k = kernel(&[V1]);
+    let mut h = host(&k);
+    let mut n = napper();
+    n.request(&mut h, 9, b"kai-actions 1", NAP - 1).unwrap();
+    assert_eq!(n.tick(&mut h, NAP), Ok(Some(Napped::Napped)));
+}

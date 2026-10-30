@@ -25,6 +25,8 @@ pub(super) const CASES: &[TestCase] = &[
     // revoke and ONCE; spike S01-1's M1 and M2.
     TestCase {
         expect: &[
+            "entropy: seeded from RD",
+            "[handles] handles: ENTROPY gave two different draws with no capability, and refused 257 bytes",
             "[handles] handles: every check passed",
             "[hcli] handles: a request and a handle went to the server and back through a route",
             "handles: CALL_H, RECV_H and REPLY_H moved a request and a handle there and back",
@@ -137,6 +139,13 @@ pub(super) const CASES: &[TestCase] = &[
             "desk-ask: the restarted desktop got the keys, with no lease left over",
         ],
         ..case("desk-ask", "test=desk-ask")
+    },
+    // P4: the agent calls an installed app's row through the supervisor.
+    TestCase {
+        expect: &[
+            "app-route: the agent's notes_add reached notes through the supervisor, and undo put it back",
+        ],
+        ..case("app-route", "test=app-route")
     },
     // P4: a post to the event box wakes the shell, never in place of a line.
     TestCase {
@@ -283,6 +292,48 @@ pub(super) const CASES: &[TestCase] = &[
             "desk-term: with the focus elsewhere the keys went to desktop, and nothing asked",
         ],
         ..case("desk-term", "test=desk-term")
+    },
+    // P3 task 10: the agent opens Notes through `ui_open`, reads its view and
+    // acts in it after a yes on desktop's card.
+    TestCase {
+        keys: &[
+            &["o", "p", "e", "n", "spc", "n", "o", "t", "e", "s", "ret"],
+            &[
+                "s", "e", "a", "r", "c", "h", "spc", "n", "o", "t", "e", "s", "spc", "f", "o", "r",
+                "spc", "m", "i", "l", "k", "ret",
+            ],
+            &["y"],
+        ],
+        expect: &[
+            "desktop: the agent's ui windows: ok",
+            "desk-agent: ui_open started Notes and its window opened",
+            "desktop: the agent's ui view: ok",
+            "desktop: the agent's ui check: ok",
+            "desktop: the agent's ui act: ok",
+            "comphost: the agent acted in window ",
+            "desk-agent: the agent opened Notes, read its view and typed in it after a yes",
+        ],
+        ..case("desk-agent", "test=desk-agent")
+    },
+    // P3 task 10: a key in the window the agent drives stops it, and the panel
+    // says so.
+    TestCase {
+        keys: &[
+            &["o", "p", "e", "n", "spc", "n", "o", "t", "e", "s", "ret"],
+            &[
+                "s", "w", "i", "t", "c", "h", "spc", "t", "o", "spc", "n", "o", "t", "e", "s",
+                "ret",
+            ],
+            &["a"],
+        ],
+        expect: &[
+            "desk-takeover: ui_open started Notes and its window opened",
+            "desktop: the agent's ui focus: ok",
+            "desktop: the user took over w",
+            "the panel says: Stopped: you took over",
+            "desk-takeover: a key in the window the agent drove stopped it",
+        ],
+        ..case("desk-takeover", "test=desk-takeover")
     },
     // P3 task 12: resource profiles' kernel half.
     TestCase {
