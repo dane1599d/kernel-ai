@@ -333,6 +333,10 @@ pub(super) const CASES: &[TestCase] = &[
             log: None,
             gpt: true,
         }),
+        // The file system service, the shell, the desktop, the terminal and
+        // Settings (32 MiB of pages each for the last) outgrew the default 512 MiB:
+        // the first boot with the data disk could not start settings-window.
+        memory_mib: Some(1024),
         keys: &[
             &[
                 "s", "w", "i", "t", "c", "h", "spc", "t", "o", "spc", "t", "h", "e", "spc", "l",
