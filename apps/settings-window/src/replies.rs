@@ -403,11 +403,15 @@ mod tests {
     #[test]
     fn a_settings_file_is_read_with_its_own_decoder() {
         let mut s = Settings::default();
-        let apps = Apps {
-            keep_running: alloc::vec![String::from("notes")],
-        };
-        Read::FileApps.apply(&mut s, &apps.encode()).unwrap();
+        Read::FileApps
+            .apply(&mut s, b"kai-keep 1\nnotes\n")
+            .unwrap();
         assert!(s.apps.keeps("notes"));
+        Read::FileAppearance
+            .apply(&mut s, b"kai-appearance 1\ntheme = light\nlegible = on\n")
+            .unwrap();
+        assert_eq!(s.appearance.theme, "light");
+        assert!(s.appearance.legible);
         let updates = Updates {
             restart_window: Some((120, 300)),
         };
