@@ -119,11 +119,11 @@ fn take_effects(shell: &mut Shell) {
     let Ok(answer) = ask_desktop(route, effects::TAKE) else {
         return;
     };
-    let Some(Some((app, lines))) = effects::parse_take(&answer) else {
+    let Some(Some((app, user, lines))) = effects::parse_take(&answer) else {
         return;
     };
     let results: Vec<Done> = shell
-        .run_effects(app, lines)
+        .run_effects_from(app, lines, user)
         .into_iter()
         .map(|done| Done {
             ticket: done.ticket,

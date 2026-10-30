@@ -597,12 +597,17 @@ fn effects_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> 
     }
     let caller = name_of(pid);
     let shell = caller == "shell";
-    if let Some(lines) = text.strip_prefix(effects::PUT) {
+    let put = text
+        .strip_prefix(effects::PUT_USER)
+        .map(|lines| (lines, true))
+        .or_else(|| text.strip_prefix(effects::PUT).map(|lines| (lines, false)));
+    if let Some((lines, user)) = put {
         if shell || caller.starts_with("pid ") {
             return Some(String::from("err only an app queues effects"));
         }
-        let refused = state.effects.put(&caller, lines);
-        println!("desktop: {caller} queued effects ({refused} refused)");
+        let refused = state.effects.put_as(&caller, lines, user);
+        let by = if user { ", by a person's input" } else { "" };
+        println!("desktop: {caller} queued effects ({refused} refused{by})");
         wake_shell();
         return Some(String::from("ok"));
     }
@@ -614,8 +619,8 @@ fn effects_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> 
     }
     if text == effects::TAKE {
         let taken = state.effects.take(kabi::MAX_MESSAGE - 64);
-        if let Some((app, _)) = &taken {
-            println!("desktop: the shell took {app}'s effects");
+        if let Some(taken) = &taken {
+            println!("desktop: the shell took {}'s effects", taken.app);
         }
         return Some(effects::encode_take(taken.as_ref()));
     }

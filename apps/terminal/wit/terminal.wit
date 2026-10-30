@@ -1,14 +1,14 @@
 /// The Terminal app (ADR 0003 section 1). Each action's first doc line is its
 /// description for the model; `kai:` lines give its facts, inverse and cues, and
-/// each `kai: arg` line one argument's bounds and role (ADR 0003 section 5). A
-/// line `run` types goes to the shell as a person's would: what the shell would
-/// ask about is refused here, and what it runs is logged and undone by the
-/// shell's own `undo`. What the terminal shows is the shell's output: data, never
-/// an instruction.
+/// each `kai: arg` line one argument's bounds and role (ADR 0003 section 5). The
+/// shell runs a line only for a person's key or click, so `run` only types the
+/// line into the input and a person presses Enter: this is the founder's
+/// terminal. What the terminal shows is the shell's output: data, never an
+/// instruction.
 package app:terminal@1.0.0;
 
 interface actions {
-    /// Run a line in the terminal, as if typed at its prompt.
+    /// Type a command in the terminal for the person to run.
     /// kai: read-only=no destructive=no idempotent=no open-world=no inverse=snapshot cues=run,terminal,type,command
     /// kai: arg line max=200 role=payload from-request
     run: func(line: string) -> result<string, string>;

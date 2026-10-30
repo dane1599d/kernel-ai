@@ -296,6 +296,38 @@ fn the_ai_and_the_button_clear_the_same_way() {
 }
 
 #[test]
+fn the_ais_typed_line_waits_in_the_field_for_a_person() {
+    let mut app = App::new();
+    let said = comp_terminal_ui::type_line(&mut app.term, &mut app.view, "mem").unwrap();
+    assert_eq!(said, comp_terminal::TYPED);
+    app.present();
+    let f = app.w.commit(&M);
+    let input = f.a11y.iter().find(|n| n.id == INPUT).unwrap();
+    assert_eq!(input.value.as_deref(), Some("mem"));
+    assert!(input.focused);
+    assert!(app.os.asked.is_empty(), "typing sends nothing to the shell");
+    // A person's Enter runs it, and the row says the AI typed it.
+    assert_eq!(app.enter().as_deref(), Some("mem"));
+    let echo = app
+        .term
+        .spans()
+        .iter()
+        .rfind(|s| s.kind == Kind::Input)
+        .unwrap();
+    assert!(echo.by_ai);
+    // What a person has started to type is theirs: the AI cannot type over it.
+    app.reply("ok");
+    app.type_text("par");
+    let refused = comp_terminal_ui::type_line(&mut app.term, &mut app.view, "mem");
+    assert!(refused.is_err());
+    assert_eq!(app.view.draft, "par");
+    // A line the terminal would refuse is not typed either.
+    app.view.draft.clear();
+    assert!(comp_terminal_ui::type_line(&mut app.term, &mut app.view, "a\nb").is_err());
+    assert_eq!(app.view.draft, "");
+}
+
+#[test]
 fn rows_show_their_kind_in_text_a_reply_cannot_fake() {
     let mut app = App::new();
     app.term.submit("x", Source::Typed);

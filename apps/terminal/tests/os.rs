@@ -119,38 +119,72 @@ fn lines_over_the_byte_bound_are_refused_and_the_rest_fit_the_effect() {
 }
 
 #[test]
-fn the_ai_runs_reads_and_clears_through_the_same_path() {
+fn the_ai_types_a_line_and_a_person_runs_it() {
     let mut t = Terminal::new();
     let mut os = Recorder::default();
-    let said = t.act_run(&mut os, "mem").unwrap();
-    assert!(said.starts_with("running; read the output with terminal_read since "));
-    let row: u32 = said.rsplit(' ').next().unwrap().parse().unwrap();
-    assert_eq!(t.spans().iter().find(|s| s.seq == row).unwrap().text, "mem");
-    assert!(t.spans().last().unwrap().by_ai);
-    // Not yet answered: a second run is refused, and so is an empty one later.
-    assert_eq!(
-        t.act_run(&mut os, "mem"),
-        Err("wait: the last line is still running".to_string())
-    );
+    // terminal_run only types: nothing goes to the shell.
+    assert_eq!(t.act_run("  mem  "), Ok(comp_terminal::TYPED.to_string()));
+    assert!(os.asked.is_empty());
+    assert_eq!(t.spans().last().unwrap().text, comp_terminal::STAGED);
+    assert_eq!(t.phase(), Phase::Ready);
+    // A person presses Enter on it as it is: the row is the AI's.
+    assert!(matches!(
+        t.run(&mut os, "mem", Source::Typed),
+        Submitted::Send(_)
+    ));
+    let echo = t.spans().last().unwrap();
+    assert!(echo.by_ai && echo.text == "mem");
+    let row = echo.seq;
     let ticket = os.last_ticket().unwrap();
     t.done(&mut os, ticket, Ok("ok free 12 MiB".into()));
     let read = t.act_read(row).unwrap();
     let rows: Vec<&str> = read.lines().collect();
     assert_eq!(rows[0], format!("next {} ready", t.next_seq()));
     assert_eq!(rows[1], format!("{row} input kai> mem"));
-    // The refused second run left a notice between the line and its answer.
-    assert_eq!(
-        rows[2],
-        format!("{} notice wait: the last line is still running", row + 1)
-    );
-    assert_eq!(rows[3], format!("{} reply free 12 MiB", row + 2));
-    assert_eq!(
-        t.act_run(&mut os, " "),
-        Err("there is nothing to run".into())
-    );
+    assert_eq!(rows[2], format!("{} reply free 12 MiB", row + 1));
     assert_eq!(t.act_clear(), Ok("cleared".to_string()));
     assert!(t.spans().is_empty());
-    assert_eq!(t.act_run(&mut os, ":clear"), Ok("cleared".to_string()));
+}
+
+#[test]
+fn a_line_a_person_changed_or_typed_is_theirs() {
+    let mut t = Terminal::new();
+    let mut os = Recorder::default();
+    t.act_run("mem").unwrap();
+    // Changed before Enter: the person's own line.
+    t.run(&mut os, "mem -v", Source::Typed);
+    assert!(!t.spans().last().unwrap().by_ai);
+    let ticket = os.last_ticket().unwrap();
+    t.done(&mut os, ticket, Ok("ok".into()));
+    // The AI's staging is spent: the same text typed later is the person's.
+    t.run(&mut os, "mem", Source::Typed);
+    assert!(!t.spans().last().unwrap().by_ai);
+}
+
+#[test]
+fn the_ai_cannot_type_a_line_the_terminal_would_refuse() {
+    let mut t = Terminal::new();
+    let mut os = Recorder::default();
+    for (line, why) in [
+        (" ", "there is nothing to type"),
+        ("a\nb", "a line holds no control characters or newlines"),
+        (
+            "answer 3 yes",
+            "answers are given only on a question's own card",
+        ),
+    ] {
+        assert_eq!(t.act_run(line), Err(why.to_string()), "{line:?}");
+    }
+    t.run(&mut os, "slow", Source::Typed);
+    assert_eq!(
+        t.act_run("mem"),
+        Err("wait: the last line is still running".to_string())
+    );
+    // Nothing was staged by any of them.
+    let ticket = os.last_ticket().unwrap();
+    t.done(&mut os, ticket, Ok("ok".into()));
+    t.run(&mut os, "mem", Source::Typed);
+    assert!(!t.spans().last().unwrap().by_ai);
 }
 
 #[test]

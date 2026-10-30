@@ -14,9 +14,10 @@
 //!   question, and the terminal takes no line until the trusted path has
 //!   answered it (ADR 0005 section 7). The one thing a window may do is
 //!   decline: [`Terminal::cancel`].
-//! - **The AI's hands.** `terminal_run` is [`Terminal::submit`] with
-//!   [`Source::Ai`] and `terminal_read` is [`Terminal::read`], so the AI and the
-//!   user use the same input path and the same rules.
+//! - **The AI's hands.** `terminal_read` is [`Terminal::read`]. `terminal_run`
+//!   only types: [`Terminal::stage`] puts a line in the input for a person to
+//!   run with Enter, because the shell runs a line only for a person's key or
+//!   click. The row then says the AI typed it. This is the founder's terminal.
 
 #![no_std]
 
@@ -105,7 +106,9 @@ impl Ask {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
     Typed,
-    /// The AI, through `terminal_run`. The scrollback says so.
+    /// A line run for the AI by a host that lets it. The component does not: its
+    /// lines are a person's, marked "by the AI" only when the AI typed them
+    /// ([`Terminal::stage`]).
     Ai,
 }
 
@@ -121,6 +124,8 @@ pub enum Refusal {
     Control,
     /// It reads like `answer <id> ...`, which only the trusted path sends.
     Answer,
+    /// Nothing to type.
+    Empty,
 }
 
 impl Refusal {
@@ -131,6 +136,7 @@ impl Refusal {
             Self::TooLong => "that line is longer than 200 characters or 250 bytes",
             Self::Control => "a line holds no control characters or newlines",
             Self::Answer => "answers are given only on a question's own card",
+            Self::Empty => "there is nothing to type",
         }
     }
 }
@@ -155,6 +161,9 @@ pub struct Terminal {
     /// The ticket of the effect the shell has not answered. It is not saved:
     /// an effect does not outlive the app that queued it.
     in_flight: Option<u32>,
+    /// The line the AI typed into the input, until a person runs or changes it.
+    /// Not saved.
+    staged: Option<String>,
 }
 
 impl Default for Terminal {
@@ -172,6 +181,7 @@ impl Terminal {
             base: String::from(DEFAULT_PROMPT),
             phase: Phase::Ready,
             in_flight: None,
+            staged: None,
         };
         t.push(Kind::Notice, "", GREETING, false);
         t
@@ -218,14 +228,40 @@ impl Terminal {
         }
     }
 
-    fn refuse(&mut self, why: Refusal) -> Submitted {
+    /// Says why a line was not taken, in the scrollback.
+    fn note(&mut self, why: Refusal) -> Refusal {
         self.push(Kind::Notice, "", why.message(), false);
-        Submitted::Refused(why)
+        why
     }
 
-    /// A line typed at the prompt, by the user or by the AI. It is echoed, and
-    /// unless the terminal handles it ([`Submitted::Local`]) the caller sends it
-    /// to the shell.
+    fn refuse(&mut self, why: Refusal) -> Submitted {
+        Submitted::Refused(self.note(why))
+    }
+
+    /// `terminal_run`: the AI types `line` into the input, for a person to run
+    /// with Enter. Nothing is sent to the shell, and a person may change or drop
+    /// the line first. The line as it will show in the input.
+    pub fn stage(&mut self, line: &str) -> Result<String, Refusal> {
+        match self.phase {
+            Phase::Waiting => return Err(self.note(Refusal::Busy)),
+            Phase::Asking(_) => return Err(self.note(Refusal::Asking)),
+            Phase::Ready | Phase::Continuing => {}
+        }
+        let line = line.trim();
+        if line.is_empty() {
+            return Err(self.note(Refusal::Empty));
+        }
+        if let Some(why) = vet(line) {
+            return Err(self.note(why));
+        }
+        self.staged = Some(String::from(line));
+        self.push(Kind::Notice, "", STAGED, false);
+        Ok(String::from(line))
+    }
+
+    /// A line typed at the prompt and run with Enter. It is echoed, and unless
+    /// the terminal handles it ([`Submitted::Local`]) the caller sends it to the
+    /// shell.
     pub fn submit(&mut self, line: &str, source: Source) -> Submitted {
         match self.phase {
             Phase::Waiting => return self.refuse(Refusal::Busy),
@@ -237,14 +273,8 @@ impl Terminal {
         if line.is_empty() && !continuing {
             return Submitted::Nothing;
         }
-        if line.chars().any(char::is_control) {
-            return self.refuse(Refusal::Control);
-        }
-        if line.chars().count() > MAX_LINE || line.len() > MAX_SENT_BYTES {
-            return self.refuse(Refusal::TooLong);
-        }
-        if is_answer(line) {
-            return self.refuse(Refusal::Answer);
+        if let Some(why) = vet(line) {
+            return self.refuse(why);
         }
         if !continuing && line == ":clear" {
             self.clear();
@@ -252,7 +282,14 @@ impl Terminal {
         }
         let prompt = String::from(self.prompt());
         let shown = fit(&clean(line).lines.join(" "));
-        self.push(Kind::Input, &prompt, &shown, source == Source::Ai);
+        // A line the AI typed and a person ran as it was is the AI's.
+        let typed_by_ai = self.staged.take().is_some_and(|staged| staged == line);
+        self.push(
+            Kind::Input,
+            &prompt,
+            &shown,
+            source == Source::Ai || typed_by_ai,
+        );
         self.phase = Phase::Waiting;
         Submitted::Send(String::from(line))
     }
@@ -412,6 +449,25 @@ impl Terminal {
     }
 }
 
+/// What `terminal_run` answers.
+pub const TYPED: &str = "typed in the terminal's input line; a person presses Enter to run it";
+/// Said under a line the AI typed.
+pub const STAGED: &str = "The AI typed a line for you: press Enter to run it.";
+
+/// Why `line`, trimmed and not empty, cannot be a line: a control character (a
+/// newline included, since a line is one line), too long, or an answer.
+fn vet(line: &str) -> Option<Refusal> {
+    if line.chars().any(char::is_control) {
+        Some(Refusal::Control)
+    } else if line.chars().count() > MAX_LINE || line.len() > MAX_SENT_BYTES {
+        Some(Refusal::TooLong)
+    } else if is_answer(line) {
+        Some(Refusal::Answer)
+    } else {
+        None
+    }
+}
+
 /// Whether `line` looks like `answer <id> ...`, which only a question's own
 /// card sends (the kernel terminal refuses it too).
 fn is_answer(line: &str) -> bool {
@@ -430,19 +486,13 @@ pub fn valid_prompt(prompt: &str) -> bool {
 }
 
 impl Terminal {
-    /// `terminal_run`: the AI types `line` as a person would. The line goes to
-    /// the shell as an effect; its output arrives later, for `terminal_read`.
-    pub fn act_run(&mut self, os: &mut dyn Os, line: &str) -> Result<String, String> {
-        match self.run(os, line, Source::Ai) {
-            Submitted::Send(_) => {
-                let row = self.spans.last().map_or(0, |s| s.seq);
-                Ok(format!(
-                    "running; read the output with terminal_read since {row}"
-                ))
-            }
-            Submitted::Local => Ok(String::from("cleared")),
-            Submitted::Nothing => Err(String::from("there is nothing to run")),
-            Submitted::Refused(why) => Err(String::from(why.message())),
+    /// `terminal_run`: the AI types `line` into the input ([`Terminal::stage`]);
+    /// a person presses Enter to run it, and `terminal_read` then shows what the
+    /// shell said.
+    pub fn act_run(&mut self, line: &str) -> Result<String, String> {
+        match self.stage(line) {
+            Ok(_) => Ok(String::from(TYPED)),
+            Err(why) => Err(String::from(why.message())),
         }
     }
 

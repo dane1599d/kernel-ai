@@ -11,8 +11,12 @@
 //!   is dropped, as the panel's is: an app cannot ask on its own behalf, and
 //!   only the console and the desktop's card answer (ADR 0005 section 7). What
 //!   runs at once, local and undoable, is logged and undone like any line.
-//! - **Only the Terminal may send one**, until packages declare their effects
-//!   (`shell_line` is not a registry row, so no tier decides it).
+//! - **Only the Terminal may send one**, and only for a person's key or click.
+//!   `shell_line` is not a registry row, so no tier decides it, and no package
+//!   may declare it: the grant is the process the image's plan line names
+//!   [`TERMINAL_APP`], a name no package can take (a package name is at most 12
+//!   bytes). A line queued by an action call, a reply or `init` is refused
+//!   ([`Shell::run_effects_from`]), so the AI cannot type for the founder.
 //!
 //! The answer is the shell's wire reply (`ok ...`, `err ...` or `more`) as one
 //! line, with `\` and newlines escaped (`\\`, `\n`), because an effect's result
@@ -29,6 +33,8 @@ use appabi::{Ty, Val, wave};
 pub(crate) const SHELL_LINE: &str = "shell_line";
 /// The app that may run shell lines: the Terminal's component.
 pub const TERMINAL_APP: &str = "terminal-window";
+/// Why a `shell_line` that did not come from a person's input is refused.
+pub(crate) const NOT_BY_A_PERSON: &str = "shell_line runs only for a key or click in the window";
 /// What an app that asked gets back, in place of the question.
 const ASKS: &str = "it asks first: ask in the console, which shows the script";
 /// Most bytes of an answer sent back: under the transport's 200 with the `…`.

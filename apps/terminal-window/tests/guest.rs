@@ -115,7 +115,7 @@ fn ok_text(r: Option<Val>) -> String {
 /// A person types `line` and presses Enter.
 fn type_line(g: &mut CoreInstance, w: u32, line: &str) -> Vec<String> {
     let (r, txn) = call(g, |g| {
-        g.ui_events(
+        g.ui_events_user(
             w,
             &[
                 UiEvent::Changed(INPUT, Value::Text(line.to_string())),
@@ -124,6 +124,7 @@ fn type_line(g: &mut CoreInstance, w: u32, line: &str) -> Vec<String> {
         )
     });
     r.unwrap();
+    assert!(g.last_call_by_user(), "a key is a person's input");
     effects(&txn)
 }
 
@@ -198,11 +199,12 @@ fn a_typed_line_goes_to_the_shell_and_its_answer_comes_back() {
 }
 
 #[test]
-fn the_ais_three_actions_share_the_input_path() {
+fn the_ai_types_and_reads_and_a_person_runs_the_line() {
     let Some(mut g) = load() else { return };
-    let (_, _) = frame(&mut g);
+    let (w, _) = frame(&mut g);
 
-    // terminal_run answers at once with where to read from, and queues the line.
+    // terminal_run only types: no effect is queued, and the line waits in the
+    // input line for a person.
     let (r, txn) = call(&mut g, |g| {
         Instance::call(
             g,
@@ -210,32 +212,46 @@ fn the_ais_three_actions_share_the_input_path() {
             &[Val::String("mem".into())],
         )
     });
-    let said = ok_text(r.unwrap());
+    assert_eq!(ok_text(r.unwrap()), comp_terminal::TYPED);
     assert!(
-        said.starts_with("running; read the output with terminal_read since "),
-        "{said}"
+        !g.last_call_by_user(),
+        "an action call is not a person's input"
     );
-    let row: u32 = said.rsplit(' ').next().unwrap().parse().unwrap();
-    assert_eq!(effects(&txn), [r#"shell_line {line: "mem"}"#]);
-    // The window shows the line as the AI's.
+    assert!(effects(&txn).is_empty());
     let (_, f) = frame(&mut g);
-    assert!(names(&f).contains(&String::from("by the AI")));
+    let input = f.a11y.iter().find(|n| n.id == INPUT).unwrap();
+    assert_eq!(input.value.as_deref(), Some("mem"));
+    assert!(
+        names(&f)
+            .iter()
+            .any(|n| n.starts_with("The AI typed a line for you"))
+    );
 
-    // A second run while one is with the shell is refused.
+    // It does not type over a field that has text in it.
     let (r, txn) = call(&mut g, |g| {
         Instance::call(
             g,
             &action("run", vec![Ty::String]),
-            &[Val::String("mem".into())],
+            &[Val::String("ps".into())],
         )
     });
     assert!(matches!(r.unwrap(), Some(Val::Result(Err(_)))));
     assert!(effects(&txn).is_empty());
 
+    // The person presses Enter on it as it is: one effect, and the row is the AI's.
+    let (r, txn) = call(&mut g, |g| {
+        g.ui_events_user(w, &[UiEvent::Submitted(INPUT)])
+    });
+    r.unwrap();
+    assert!(g.last_call_by_user());
+    assert_eq!(effects(&txn), [r#"shell_line {line: "mem"}"#]);
+    let (_, f) = frame(&mut g);
+    assert!(names(&f).contains(&String::from("by the AI")));
+
     // The shell's answer arrives; terminal_read gives the typed rows.
     done(&mut g, 1, Ok("ok free 12 MiB"));
     let (r, _) = call(&mut g, |g| {
-        Instance::call(g, &action("read", vec![Ty::U32]), &[Val::U32(row)])
+        Instance::call(g, &action("read", vec![Ty::U32]), &[Val::U32(0)])
     });
     let read = ok_text(r.unwrap());
     let lines: Vec<&str> = read.lines().collect();
@@ -249,6 +265,12 @@ fn the_ais_three_actions_share_the_input_path() {
     );
     assert!(
         lines.iter().any(|l| l.ends_with(" reply free 12 MiB")),
+        "{read}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains(" notice The AI typed a line for you")),
         "{read}"
     );
 

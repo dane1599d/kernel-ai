@@ -102,8 +102,15 @@ impl TerminalWindow {
     #[cfg(not(target_family = "wasm"))]
     fn present_logged(&mut self) {}
 
-    /// `terminal_run` and `terminal_clear` run `f` on the model, then redraw to
-    /// show what it did.
+    /// `terminal_run`: types `line` into the input for a person to run, and
+    /// redraws. Nothing is queued: the shell runs a line only for a person's key.
+    pub fn type_line(&mut self, line: &str) -> Result<String, String> {
+        let said = comp_terminal_ui::type_line(&mut self.term, &mut self.view, line);
+        self.present_logged();
+        said
+    }
+
+    /// `terminal_clear` runs `f` on the model, then redraws to show what it did.
     pub fn act(
         &mut self,
         f: impl FnOnce(&mut Terminal, &mut Effects) -> Result<String, String>,

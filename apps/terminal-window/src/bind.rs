@@ -23,7 +23,7 @@ fn started<R>(f: impl FnOnce(&mut TerminalWindow) -> R) -> R {
 
 impl Guest for Bound {
     fn run(line: String) -> Result<String, String> {
-        started(|app| app.act(|term, os| term.act_run(os, &line)))
+        started(|app| app.type_line(&line))
     }
 
     fn read(since: u32) -> Result<String, String> {

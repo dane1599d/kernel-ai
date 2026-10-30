@@ -135,8 +135,16 @@ fn call_of(row: &'static Action, args: &str) -> Result<Call, String> {
 impl Shell {
     /// Runs app `app`'s effect lines, oldest first: what each came to. `app` is
     /// the caller's record of who replied. Past [`MAX_EFFECTS`], the rest are
-    /// refused, not run.
+    /// refused, not run. Not from a person's input: see [`Shell::run_effects_from`].
     pub fn run_effects(&mut self, app: &str, lines: &str) -> Vec<EffectDone> {
+        self.run_effects_from(app, lines, false)
+    }
+
+    /// [`Shell::run_effects`] for lines queued while `user` says a person's key
+    /// or click was handled (`wasmhost`'s `user_input`, carried by comphost and
+    /// `desktop`). `shell_line` runs only then: it is the Terminal's own line,
+    /// and neither the AI nor the app by itself may type for the founder.
+    pub fn run_effects_from(&mut self, app: &str, lines: &str, user: bool) -> Vec<EffectDone> {
         let mut out = Vec::new();
         for (ticket, effect) in lines.lines().filter_map(parse_line) {
             let outcome = match (out.len() < MAX_EFFECTS, effect) {
@@ -147,7 +155,10 @@ impl Shell {
                     Ok(String::new())
                 }
                 (true, Ok(Effect::Call { name, args })) if name == crate::appline::SHELL_LINE => {
-                    self.run_shell_line(app, &args)
+                    match user {
+                        true => self.run_shell_line(app, &args),
+                        false => Err(String::from(crate::appline::NOT_BY_A_PERSON)),
+                    }
                 }
                 (true, Ok(Effect::Call { name, args })) => {
                     self.run_effect(app, ticket, &name, &args)

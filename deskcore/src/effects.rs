@@ -6,8 +6,12 @@
 //!   `effect <ticket> <WAVE>` lines;
 //! - from an app, `effects results` → `<ticket>\tok|err\t<text>` lines (or
 //!   nothing): what came of its effects, oldest first, taken;
-//! - from the shell, `effects take` → `none`, or `app <name>\n<effect lines>`:
-//!   one app's oldest effects;
+//! - from an app, `effects put user\n<effect lines>` → `ok`: the same, for
+//!   lines queued while a person's key or click was handled (comphost says so;
+//!   `desktop` takes its word only as the app's own, never for another);
+//! - from the shell, `effects take` → `none`, or `app <name>\n<effect lines>`
+//!   (`app <name> user\n...` for lines queued by a person's input): one app's
+//!   oldest effects, all of one kind;
 //! - from the shell, `effects done <name>\n<result lines>` → `ok`.
 //!
 //! Which app queued the lines is `desktop`'s own record of the caller (the
@@ -21,6 +25,7 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 pub const PUT: &str = "effects put\n";
+pub const PUT_USER: &str = "effects put user\n";
 pub const RESULTS: &str = "effects results";
 pub const TAKE: &str = "effects take";
 const DONE: &str = "effects done ";
@@ -40,11 +45,21 @@ pub struct Done {
     pub outcome: Result<String, String>,
 }
 
+/// One app's effects as the shell takes them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Taken {
+    pub app: String,
+    /// Whether a person's key or click queued them.
+    pub user: bool,
+    pub lines: Vec<String>,
+}
+
 /// Every app's waiting effects and results.
 #[derive(Default)]
 pub struct Queue {
-    /// Effect lines by app, oldest first.
-    effects: Vec<(String, VecDeque<String>)>,
+    /// Effect lines by app, oldest first, each with whether a person's input
+    /// queued it.
+    effects: Vec<(String, VecDeque<(bool, String)>)>,
     /// Results by app, oldest first.
     results: Vec<(String, VecDeque<Done>)>,
     /// Where the next take starts looking: round the apps in turn, so one
@@ -53,9 +68,15 @@ pub struct Queue {
 }
 
 impl Queue {
-    /// Queues `app`'s effect lines; how many were refused as over the limit or
-    /// out of shape, each of which gets an error result.
+    /// Queues `app`'s effect lines, not from a person's input.
     pub fn put(&mut self, app: &str, lines: &str) -> usize {
+        self.put_as(app, lines, false)
+    }
+
+    /// Queues `app`'s effect lines, queued by a person's input if `user`; how
+    /// many were refused as over the limit or out of shape, each of which gets
+    /// an error result.
+    pub fn put_as(&mut self, app: &str, lines: &str, user: bool) -> usize {
         let mut refused = Vec::new();
         let waiting = entry(&mut self.effects, app);
         for line in lines.lines() {
@@ -67,7 +88,7 @@ impl Queue {
             } else if waiting.len() == MAX_QUEUED {
                 "too many effects are waiting; try again"
             } else {
-                waiting.push_back(line.to_string());
+                waiting.push_back((user, line.to_string()));
                 continue;
             };
             refused.push(Done {
@@ -82,25 +103,31 @@ impl Queue {
         count
     }
 
-    /// One app's oldest effects, at most `budget` bytes of lines (always at
-    /// least one), the apps taking turns; `None` when nothing waits.
-    pub fn take(&mut self, budget: usize) -> Option<(String, Vec<String>)> {
+    /// One app's oldest effects, all queued the same way, at most `budget` bytes
+    /// of lines (always at least one), the apps taking turns; `None` when
+    /// nothing waits.
+    pub fn take(&mut self, budget: usize) -> Option<Taken> {
         let count = self.effects.len();
         let at = (0..count)
             .map(|step| (self.next + step) % count)
             .find(|&at| !self.effects[at].1.is_empty())?;
         self.next = (at + 1) % count;
         let (app, waiting) = &mut self.effects[at];
+        let user = waiting.front().is_some_and(|(user, _)| *user);
         let mut lines = Vec::new();
         let mut used = 0;
-        while let Some(line) = waiting.front() {
-            if !lines.is_empty() && used + line.len() + 1 > budget {
+        while let Some((by, line)) = waiting.front() {
+            if *by != user || (!lines.is_empty() && used + line.len() + 1 > budget) {
                 break;
             }
             used += line.len() + 1;
-            lines.extend(waiting.pop_front());
+            lines.extend(waiting.pop_front().map(|(_, line)| line));
         }
-        Some((app.clone(), lines))
+        Some(Taken {
+            app: app.clone(),
+            user,
+            lines,
+        })
     }
 
     /// Records what came of one of `app`'s effects.
@@ -183,22 +210,28 @@ pub fn ticket_of(line: &str) -> Option<u32> {
 }
 
 /// The answer to [`TAKE`].
-pub fn encode_take(taken: Option<&(String, Vec<String>)>) -> String {
+pub fn encode_take(taken: Option<&Taken>) -> String {
     match taken {
-        Some((app, lines)) => format!("app {app}\n{}", lines.join("\n")),
+        Some(Taken { app, user, lines }) => {
+            let by = if *user { " user" } else { "" };
+            format!("app {app}{by}\n{}", lines.join("\n"))
+        }
         None => String::from("none"),
     }
 }
 
-/// [`encode_take`] read back: the app and its effect lines, `Some(None)` for
-/// none, `None` for anything else.
-pub fn parse_take(text: &str) -> Option<Option<(&str, &str)>> {
+/// [`encode_take`] read back: the app, whether a person's input queued its
+/// lines, and the lines; `Some(None)` for none, `None` for anything else.
+pub fn parse_take(text: &str) -> Option<Option<(&str, bool, &str)>> {
     if text == "none" {
         return Some(None);
     }
     let (head, lines) = text.split_once('\n').unwrap_or((text, ""));
-    let app = head.strip_prefix("app ")?;
-    Some(Some((app, lines)))
+    let head = head.strip_prefix("app ")?;
+    Some(Some(match head.strip_suffix(" user") {
+        Some(app) => (app, true, lines),
+        None => (head, false, lines),
+    }))
 }
 
 /// Results as lines: `<ticket>\tok|err\t<text>`.
@@ -263,6 +296,72 @@ mod tests {
         format!("effect {ticket} notify(\"n\")")
     }
 
+    fn taken(app: &str, user: bool, lines: &[String]) -> Taken {
+        Taken {
+            app: String::from(app),
+            user,
+            lines: lines.to_vec(),
+        }
+    }
+
+    #[test]
+    fn a_persons_lines_are_taken_apart_from_the_rest_and_keep_their_flag() {
+        let mut queue = Queue::default();
+        queue.put_as("terminal-window", &line(1), true);
+        queue.put("terminal-window", &line(2));
+        queue.put_as(
+            "terminal-window",
+            &format!("{}\n{}", line(3), line(4)),
+            true,
+        );
+        let first = queue.take(4096).unwrap();
+        assert_eq!(first, taken("terminal-window", true, &[line(1)]));
+        assert_eq!(
+            queue.take(4096),
+            Some(taken("terminal-window", false, &[line(2)]))
+        );
+        assert_eq!(
+            queue.take(4096),
+            Some(taken("terminal-window", true, &[line(3), line(4)]))
+        );
+        assert_eq!(queue.take(4096), None);
+    }
+
+    #[test]
+    fn a_refused_persons_line_still_gets_its_error_result() {
+        let mut queue = Queue::default();
+        let long = format!("effect 7 notify(\"{}\")", "x".repeat(MAX_LINE));
+        assert_eq!(queue.put_as("terminal-window", &long, true), 1);
+        assert_eq!(queue.results("terminal-window")[0].ticket, 7);
+        assert_eq!(queue.take(4096), None);
+    }
+
+    #[test]
+    fn the_flag_rides_the_wire_only_as_the_word_user() {
+        let user = taken("terminal-window", true, &[line(1)]);
+        let text = encode_take(Some(&user));
+        assert!(text.starts_with("app terminal-window user\n"));
+        assert_eq!(
+            parse_take(&text),
+            Some(Some(("terminal-window", true, line(1).as_str())))
+        );
+        let plain = taken("terminal-window", false, &[line(1)]);
+        assert_eq!(
+            parse_take(&encode_take(Some(&plain))),
+            Some(Some(("terminal-window", false, line(1).as_str())))
+        );
+        // The word is a suffix of the app, not part of a line's text.
+        let sneaky = taken(
+            "files",
+            false,
+            &[String::from("effect 1 notify(\"x user\")")],
+        );
+        assert_eq!(
+            parse_take(&encode_take(Some(&sneaky))).map(|t| t.map(|(a, u, _)| (a, u))),
+            Some(Some(("files", false)))
+        );
+    }
+
     #[test]
     fn effects_wait_by_app_and_the_shell_takes_one_apps_at_a_time() {
         let mut queue = Queue::default();
@@ -270,12 +369,9 @@ mod tests {
         assert_eq!(queue.put("monitor", &line(9)), 0);
         assert_eq!(
             queue.take(4096),
-            Some((String::from("files"), alloc::vec![line(1), line(2)]))
+            Some(taken("files", false, &[line(1), line(2)]))
         );
-        assert_eq!(
-            queue.take(4096),
-            Some((String::from("monitor"), alloc::vec![line(9)]))
-        );
+        assert_eq!(queue.take(4096), Some(taken("monitor", false, &[line(9)])));
         assert_eq!(queue.take(4096), None);
     }
 
@@ -293,7 +389,7 @@ mod tests {
         queue.put("monitor", &line(9));
         let budget = line(0).len() + 1;
         let order: Vec<String> =
-            core::iter::from_fn(|| queue.take(budget).map(|(app, _)| app)).collect();
+            core::iter::from_fn(|| queue.take(budget).map(|t| t.app)).collect();
         assert_eq!(order, ["files", "monitor", "files", "files", "files"]);
     }
 
@@ -301,8 +397,8 @@ mod tests {
     fn a_take_keeps_to_its_budget_but_always_moves() {
         let mut queue = Queue::default();
         queue.put("files", &format!("{}\n{}", line(1), line(2)));
-        assert_eq!(queue.take(1).map(|(_, l)| l), Some(alloc::vec![line(1)]));
-        assert_eq!(queue.take(1).map(|(_, l)| l), Some(alloc::vec![line(2)]));
+        assert_eq!(queue.take(1).map(|t| t.lines), Some(alloc::vec![line(1)]));
+        assert_eq!(queue.take(1).map(|t| t.lines), Some(alloc::vec![line(2)]));
     }
 
     #[test]
@@ -315,7 +411,7 @@ mod tests {
         assert_eq!(results[0].ticket, MAX_QUEUED as u32);
         assert!(results[0].outcome.is_err());
         assert_eq!(
-            queue.take(usize::MAX).map(|(_, l)| l.len()),
+            queue.take(usize::MAX).map(|t| t.lines.len()),
             Some(MAX_QUEUED)
         );
     }
@@ -380,10 +476,13 @@ mod tests {
 
     #[test]
     fn the_wire_reads_back() {
-        let taken = (String::from("files"), alloc::vec![line(1), line(2)]);
+        let taken = taken("files", false, &[line(1), line(2)]);
         let text = encode_take(Some(&taken));
         let lines = format!("{}\n{}", line(1), line(2));
-        assert_eq!(parse_take(&text), Some(Some(("files", lines.as_str()))));
+        assert_eq!(
+            parse_take(&text),
+            Some(Some(("files", false, lines.as_str())))
+        );
         assert_eq!(parse_take(&encode_take(None)), Some(None));
         assert_eq!(parse_take("app"), None);
 

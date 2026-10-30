@@ -22,9 +22,9 @@ fn effect(ticket: u32, text: &str) -> String {
     )
 }
 
-/// What the terminal app gets for `text`.
+/// What the terminal app gets for `text` typed by a person.
 fn typed(shell: &mut Shell, text: &str) -> Result<String, String> {
-    let done = shell.run_effects(TERMINAL_APP, &effect(1, text));
+    let done = shell.run_effects_from(TERMINAL_APP, &effect(1, text), true);
     assert_eq!(done.len(), 1);
     done[0].outcome.clone()
 }
@@ -84,7 +84,7 @@ fn only_the_terminal_may_run_lines_and_never_an_answer() {
     let host = FakeHost::new();
     let mut shell = shell(&host);
     for app in ["files", "notes-window", "settings", ""] {
-        let done = shell.run_effects(app, &effect(1, "1 + 1"));
+        let done = shell.run_effects_from(app, &effect(1, "1 + 1"), true);
         assert!(
             matches!(&done[0].outcome, Err(why) if why.contains("may not run shell lines")),
             "{app}: {done:?}"
@@ -94,6 +94,31 @@ fn only_the_terminal_may_run_lines_and_never_an_answer() {
         typed(&mut shell, "answer 1 yes"),
         Ok(String::from("err answers go on the question's own prompt"))
     );
+}
+
+#[test]
+fn only_a_persons_key_or_click_may_type_a_line() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    // Queued by an action call (the AI's), a reply or init: the plain entry.
+    let done = shell.run_effects(TERMINAL_APP, &effect(1, "policy rr"));
+    assert!(
+        matches!(&done[0].outcome, Err(why) if why.contains("only for a key or click")),
+        "{done:?}"
+    );
+    let done = shell.run_effects_from(TERMINAL_APP, &effect(2, "policy rr"), false);
+    assert!(done[0].outcome.is_err());
+    assert_eq!(host.policy.get(), None);
+    // The refusal is audited like any refused effect.
+    assert!(
+        host.audit
+            .borrow()
+            .iter()
+            .any(|l| l.starts_with("terminal-window's effect 1 refused"))
+    );
+    // The same line from a person runs.
+    let done = shell.run_effects_from(TERMINAL_APP, &effect(3, "policy rr"), true);
+    assert!(done[0].outcome.is_ok(), "{done:?}");
 }
 
 #[test]
@@ -107,7 +132,7 @@ fn bad_arguments_come_back_as_errors() {
         "x",
     ] {
         let line = format!("effect 1 call({{name: \"shell_line\", args: \"{args}\"}})");
-        let done = shell.run_effects(TERMINAL_APP, &line);
+        let done = shell.run_effects_from(TERMINAL_APP, &line, true);
         assert!(done[0].outcome.is_err(), "{args}: {done:?}");
     }
 }

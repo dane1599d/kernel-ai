@@ -249,6 +249,22 @@ pub fn on_ui(term: &mut Terminal, os: &mut dyn Os, view: &mut View, e: &UiEvent)
     }
 }
 
+/// `terminal_run`: the AI types `line` into the input line for a person to run
+/// with Enter. It goes in only if the field is empty: what a person has started
+/// to type is theirs to finish.
+pub fn type_line(term: &mut Terminal, view: &mut View, line: &str) -> Result<String, String> {
+    if !view.draft.trim().is_empty() {
+        return Err(String::from(
+            "the input line has text in it; a person is typing",
+        ));
+    }
+    let typed = term
+        .stage(line)
+        .map_err(|why| String::from(why.message()))?;
+    view.draft = typed;
+    Ok(String::from(comp_terminal::TYPED))
+}
+
 /// What to send to bring the window to the model's tree.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Next {
