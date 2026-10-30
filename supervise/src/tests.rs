@@ -911,3 +911,23 @@ fn a_withdraw_reads_as_a_run_and_is_gated_as_one() {
     );
     assert_eq!(Run::parse_withdraw("withdraw notes"), None);
 }
+
+#[test]
+fn the_editor_holds_the_edit_capability_by_name_and_routes_to_desktop() {
+    let plan = parse_plan(&alloc::format!(
+        "desktop caps=display+input+serve\n{}",
+        kabi::plan::EDITOR
+    ));
+    assert!(plan.errors.is_empty(), "{:?}", plan.errors);
+    let editor = &plan.services[1];
+    // The kernel pins `cap::EDIT` to the service of this name running comphost.
+    assert_eq!(editor.name, "editor");
+    assert_eq!(editor.program, "comphost");
+    assert_eq!(editor.uses, ["desktop"]);
+    assert_eq!(
+        editor.limits.caps,
+        cap::SERVE | cap::COMPONENT | cap::CALL | cap::EDIT
+    );
+    // Without `desktop` before it the line is an error, not a route elsewhere.
+    assert!(!parse_plan(kabi::plan::EDITOR).errors.is_empty());
+}
