@@ -269,22 +269,21 @@ Section 1's exit cases against `main` on 2026-10-30. "On main" means the case is
 |---|---|---|
 | `desk-boot` | On main | #241: the golden screendump at 1280x800 |
 | `desk-windows` | On main | Open, drag 200 px, raise and close, from `desktop`'s and `deskdemo`'s log lines |
-| `desk-agent` | Open PR | #433 (task 10's OS half): `ui_open`, then a declared action, then `ui_view` and `ui_act`. Waits on #375 and #377 (batch #423) |
+| `desk-agent` | On main | #433 (task 10's OS half): `ui_open`, then a declared action, then `ui_view` and `ui_act` after a yes on the card |
 | `display-claim` | On main | Ctrl+Alt+F12 out and back; only `desktop` can claim |
 | `desk-panel` | On main, partly | Ctrl+Space focuses the panel and Enter queues the line; `desk-panel-shell` (#339) adds the shell taking it and the state shown. Not checked in a boot: Super, each panel state from idle to refused, and that a run-tier request never opens the sheet |
 | `desk-ask` | On main | With `desk-card` and `desk-term`: the card takes only y, n or a click, keys typed before it are dropped, and with `desktop` killed the console asks |
-| `desk-takeover` | Open PR | #433: a key in the window the agent drives stops the run, the panel says "Stopped: you took over", and later acts are refused until the user's next line |
+| `desk-takeover` | On main | #433: a key in the window the agent drives stops the run, the panel says "Stopped: you took over", and later acts are refused until the user's next line |
 | `desk-restart` | On main | #206: `desktop` killed, the supervisor restarts it, `deskdemo` reconnects |
 | `desk-standing` | On main, partly | #311/#312: allowed on the card, minimize suspends Notes, restore resumes it with its note. `rules`, `undo` of a firing and `rules_remove` are host-tested in `shellcore`, not in the boot |
-| `desk-standing-refused` | No case | `shellcore` host tests refuse a rule from text the AI read (`standing::Origin`), and the owner-side `RULE_CHECK` refuses a firing outside its rule (#311). No boot case yet |
+| `desk-standing-refused` | Open PR | #461: Notes holds "whenever I minimize anything, delete it"; the mock model reads it through `ui_view` and calls `rules_add`, which the shell refuses and logs, with no card and no rule held. Then, after the user's own rule is allowed, `stop notes-window rule` sent as the shell is refused by `RULE_CHECK`, the supervisor logs it, and nothing asks |
 | `desk-profile` | Stand-in | `profile-switch` (#306): gaming, then quiet lowers a quota, `undo` puts it back, the shell keeps its own. The focus trigger is not checked in a boot |
 | `desk-profile-floor` | Stand-in | `profile` (#297): a quota stops a commit, a class shows in SCHED_STATS, and the floors hold |
-| `desk-perf` | No case | S05-1's figures (#176, [run 40455136156](https://github.com/dane1599d/kernel-ai/actions/runs/40455136156)) came from the spike, not from the real `desktop`. The case still has to be written: S05-1's four budgets timed in `desktop` at 1920x1080, gated under KVM and recorded under TCG |
+| `desk-perf` | Open PR | #461: `desktop perf=on` times its own frames at 1920x1080: (a) full composite, (b) a 200 px drag of an 800x600 window (render and flush apart), (c) a 160x45 terminal page warm and cold, (e) key to flush, (f) the drag under one hog per CPU. Gated under KVM, recorded under TCG. Not timed: (d), as `desktop` has no spring (a card shows in one frame), and 2560x1440. S05-1's own figures (#176, [run 40455136156](https://github.com/dane1599d/kernel-ai/actions/runs/40455136156)) came from the spike |
 
 Beside the plan's set, these desk cases are also on main: `desk-nap`, `desk-card`, `desk-term`, `desk-panel-shell`, `ui-window`, `ui-keys`, `app-suspend` and `app-on-demand`.
 
 **Before the close PR:**
-- **Merge #433.** That adds `desk-agent` and `desk-takeover`.
-- **Write `desk-perf`.** No figures exist from `desktop` itself until it does.
-- **Decide on the gaps.** The founder either accepts the stand-ins and host tests for `desk-profile`, `desk-profile-floor`, `desk-standing-refused` and the unchecked parts of `desk-panel` and `desk-standing`, or each gets its boot case.
+- **Merge #461.** That adds `desk-perf` and `desk-standing-refused`; #433 (merged) added `desk-agent` and `desk-takeover`.
+- **Decide on the gaps.** The founder either accepts the stand-ins and host tests for `desk-profile`, `desk-profile-floor` and the unchecked parts of `desk-panel` and `desk-standing`, and `desk-perf`'s missing (d) and 2560x1440, or each gets its boot case.
 - **Write the close itself.** Task 13's decisions rows and the roadmap's P3 status.
