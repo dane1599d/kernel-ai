@@ -59,9 +59,9 @@ struct SysEnv {
     /// at the first restore, which names the app.
     disk: Option<disk::Disk>,
     /// What the app may import beyond `kai:app` and `kai:ui`: `settings`,
-    /// `shell_line` and `system` from the plan line's name for it (the kernel's),
-    /// `edit` if the kernel gave this process an `Edit` handle; never from its
-    /// package.
+    /// `shell_line` and `system` from the plan line's name for it (the
+    /// kernel's), `edit` if the kernel gave this process an `Edit` handle; never
+    /// from its package.
     grants: wasmhost::Grants,
     /// The image's own versions fetched, by digest: only they get `grants`.
     image: wasmhost::grants::FromImage,
