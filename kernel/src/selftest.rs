@@ -550,6 +550,11 @@ pub fn plan(test: SelfTest) -> Option<String> {
                 plan.push_str(crate::agent_desk_tests::DESK);
                 kabi::plan::SHELL_DESK
             }
+            SelfTest::KeepRunning { .. } => {
+                plan.push('\n');
+                plan.push_str(crate::keep_tests::PLAN);
+                crate::keep_tests::SHELL
+            }
             _ => shell,
         };
         plan.push('\n');
@@ -631,10 +636,6 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
     if test == SelfTest::DeskNap {
         plan.push('\n');
         plan.push_str(crate::nap_tests::PLAN);
-    }
-    if matches!(test, SelfTest::KeepRunning { .. }) {
-        plan.push('\n');
-        plan.push_str(crate::keep_tests::PLAN);
     }
     if test == SelfTest::DeskStanding {
         plan.push('\n');

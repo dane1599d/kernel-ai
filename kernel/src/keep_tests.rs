@@ -20,7 +20,11 @@ use alloc::string::String;
 
 const APP: &str = "notes-window";
 const SETTINGS: &str = "settings-window";
-/// The plan lines this case adds; the stand-in only has to be alive.
+/// The shell with its files and `/system/state` (the data disk) and a route to
+/// `desktop`, third, for the Settings app's requests.
+pub const SHELL: &str = "shell caps=serve+call+policy+stop+script+files+state uses=llm+supervisor+desktop pages=4096 stack_pages=512 burst_ms=5000";
+/// The plan lines this case adds, before the shell, as a route's target must
+/// be; the stand-in only has to be alive.
 pub const PLAN: &str = "desktop caps=display+input+serve pages=8192 stack_pages=512\n\
      notes-window program=comphost caps=serve+component+call uses=desktop pages=8192 stack_pages=512 burst_ms=20000 version=1 nap_ms=3000\n\
      settings-window program=spinner pages=64 idle=1";
