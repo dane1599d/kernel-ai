@@ -7,6 +7,7 @@
 
 extern crate alloc;
 
+pub mod keep;
 pub mod profile;
 
 use alloc::format;
@@ -817,6 +818,9 @@ pub struct Record {
     /// Stopped by a `stop` request: not restarted, even by a new supervisor,
     /// until `start`.
     pub stopped: bool,
+    /// Kept running by the user's switch ([`keep`]): an app that never naps,
+    /// passed `keep=1` at each start.
+    pub keep: bool,
     /// The running instance's pid, or 0. Lets a restarted supervisor match exit
     /// records for instances started by its predecessor.
     pub pid: u64,
@@ -857,8 +861,10 @@ impl Record {
     }
 }
 
-const STATE_MAGIC: &str = "supervisor-state 4";
-/// The state before `stopped`, still read so an update keeps the counts.
+const STATE_MAGIC: &str = "supervisor-state 5";
+/// The state before `keep`, still read so an update keeps the counts.
+const STATE_MAGIC_4: &str = "supervisor-state 4";
+/// The state before `stopped`, still read too.
 const STATE_MAGIC_3: &str = "supervisor-state 3";
 
 /// Encodes records for the kernel-held state region.
@@ -867,12 +873,13 @@ pub fn encode(records: &[Record]) -> String {
     for record in records {
         text.push('\n');
         text.push_str(&format!(
-            "{} {} {} {} {} {} {}",
+            "{} {} {} {} {} {} {} {}",
             record.name,
             record.restarts,
             record.quick_failures,
             u8::from(record.gave_up),
             u8::from(record.stopped),
+            u8::from(record.keep),
             record.pid,
             record.started_ms
         ));
@@ -890,9 +897,10 @@ pub fn decode(bytes: &[u8]) -> Vec<Record> {
         return Vec::new();
     };
     let mut lines = text.lines();
-    let has_stopped = match lines.next() {
-        Some(STATE_MAGIC) => true,
-        Some(STATE_MAGIC_3) => false,
+    let (has_stopped, has_keep) = match lines.next() {
+        Some(STATE_MAGIC) => (true, true),
+        Some(STATE_MAGIC_4) => (true, false),
+        Some(STATE_MAGIC_3) => (false, false),
         _ => return Vec::new(),
     };
     lines
@@ -903,6 +911,7 @@ pub fn decode(bytes: &[u8]) -> Vec<Record> {
             let quick_failures = words.next()?.parse().ok()?;
             let gave_up = words.next()? == "1";
             let stopped = has_stopped && words.next()? == "1";
+            let keep = has_keep && words.next()? == "1";
             let pid = words.next()?.parse().ok()?;
             let started_ms = words.next()?.parse().ok()?;
             let recent = words
@@ -916,6 +925,7 @@ pub fn decode(bytes: &[u8]) -> Vec<Record> {
                 recent,
                 gave_up,
                 stopped,
+                keep,
                 pid,
                 started_ms,
             })

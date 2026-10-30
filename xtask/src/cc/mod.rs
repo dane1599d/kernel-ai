@@ -11,6 +11,8 @@
 //! section-by-section comparison: at the pinned commit only the `name` custom
 //! section differs (S12-1).
 
+pub mod bind;
+
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::Path;

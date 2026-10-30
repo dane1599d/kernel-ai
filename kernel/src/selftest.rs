@@ -148,6 +148,8 @@ pub enum SelfTest {
     DeskAsk,
     /// An app suspended and resumed through its host (P3 task 11).
     AppSuspend,
+    /// `event-wake` (P4): a post wakes the shell, never in place of a line.
+    EventWake,
     /// An app not started at boot, started by the first request to it (P3 task 12b).
     AppOnDemand,
     /// The OS boots to the desktop, whose screen matches its golden (P3 task 6).
@@ -325,6 +327,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=desk-restart" => Some(SelfTest::DeskRestart),
             "test=desk-ask" => Some(SelfTest::DeskAsk),
             "test=app-suspend" => Some(SelfTest::AppSuspend),
+            "test=event-wake" => Some(SelfTest::EventWake),
             "test=app-on-demand" => Some(SelfTest::AppOnDemand),
             "test=desk-boot" => Some(SelfTest::DeskBoot),
             "test=desk-panel" => Some(SelfTest::DeskPanel),
@@ -388,6 +391,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::Act(_)
             | SelfTest::Live
             | SelfTest::AppSuspend
+            | SelfTest::EventWake
             | SelfTest::AppOnDemand
             | SelfTest::Edit
             | SelfTest::Manifest

@@ -123,3 +123,25 @@ fn the_keep_running_switch_is_answered_and_holds_it_awake() {
         .unwrap();
     assert_eq!(n.tick(&mut h, 11 * NAP), Ok(Some(Napped::Napped)));
 }
+
+#[test]
+fn keep_running_on_wakes_a_napping_app_but_not_a_rule_s_suspend() {
+    let k = kernel(&[V1]);
+    let mut h = host(&k);
+    let mut n = napper();
+    n.tick(&mut h, NAP).unwrap();
+    let (reply, woke) = n
+        .request(&mut h, 0, b"ctl keep-running on", NAP + 1)
+        .unwrap();
+    assert_eq!(text(reply), "ok keep-running on");
+    assert!(matches!(woke, Some(Napped::Woke(_))));
+    assert!(!h.suspended() && !n.nap.is_napping());
+    assert_eq!(n.tick(&mut h, 10 * NAP), Ok(None), "and it stays awake");
+    // A rule's suspend is the rule's to end: the switch only stops the nap.
+    let k = kernel(&[V1]);
+    let mut h = host(&k);
+    let mut n = napper();
+    assert_eq!(call(&mut h, "ctl suspend"), "ok suspended counter 1");
+    let (_, woke) = n.request(&mut h, 0, b"ctl keep-running on", 1).unwrap();
+    assert!(woke.is_none() && h.suspended());
+}
