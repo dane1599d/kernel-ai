@@ -273,8 +273,9 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("desk-standing-refused", "test=desk-standing-refused")
     },
-    // P3's exit case: S05-1's budgets on the real `desktop` at 1920x1080, gated
-    // by the kernel's check under KVM, recorded under TCG.
+    // P3's exit case: S05-1's budgets on the real `desktop` at 1920x1080. Recorded
+    // until the tuning follow-up: under KVM each miss logs `desk-perf: OVER
+    // BUDGET ...`; under TCG nothing is judged.
     TestCase {
         gpu: true,
         memory_mib: Some(2048),

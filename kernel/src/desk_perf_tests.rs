@@ -9,8 +9,11 @@
 //! - (f): (b) again with one `work` hog per CPU under `classes`, as S05-1's
 //!   scene (f) ran.
 //!
-//! Gated under KVM only: a line over its budget fails the case there. Under
-//! TCG the figures are recorded and not judged, with fewer frames.
+//! Recorded, not a gate, until P3's tuning follow-up brings every figure
+//! within its budget (the manager, 2026-10-30): under KVM each miss is one
+//! `desk-perf: OVER BUDGET <figure> <value> ms (budget ...)` line, so every
+//! batch log shows it. Under TCG the figures are recorded and not judged, with
+//! fewer frames.
 
 use crate::desk_tests::{desktop_shows, wait};
 use crate::process::{self, SpawnRequest};
@@ -133,16 +136,21 @@ pub fn check() -> Result<(), &'static str> {
     lines.push(b'\n');
     lines.extend(loaded?);
     log!("desk-perf: the figures are in");
-    let over = lines.windows(6).any(|w| w == b": OVER");
-    match (gated, over) {
-        (true, true) => Err("desk-perf: a figure is over its budget under KVM"),
-        (true, false) => {
-            log!("desk-perf: gated under KVM, and every figure is within its budget");
-            Ok(())
-        }
-        (false, _) => {
-            log!("desk-perf: recorded without KVM, not gated");
-            Ok(())
-        }
+    if !gated {
+        log!("desk-perf: recorded without KVM, not judged");
+        return Ok(());
     }
+    let text = core::str::from_utf8(&lines).unwrap_or("");
+    let misses: Vec<&str> = text
+        .lines()
+        .filter(|l| l.starts_with("OVER BUDGET "))
+        .collect();
+    for miss in &misses {
+        log!("desk-perf: {miss}");
+    }
+    log!(
+        "desk-perf: judged under KVM: {} figures over budget",
+        misses.len()
+    );
+    Ok(())
 }

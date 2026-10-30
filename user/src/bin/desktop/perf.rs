@@ -43,6 +43,10 @@ const MAX_KEYS: usize = 1_000;
 /// Where (b) takes hold of the window: this far into its title bar.
 const GRIP: (i32, i32) = (100, chrome::TITLE_BAR / 2);
 
+/// Starts the reply line after a figure over its budget:
+/// `OVER BUDGET <figure> <value> ms (budget <p99|max> <b> ms)`.
+const OVER_BUDGET: &str = "OVER BUDGET ";
+
 const NS_PER_MS: u64 = 1_000_000;
 /// S05-1's budgets at 1920x1080, in ns.
 const FULL_P99: u64 = 8 * NS_PER_MS;
@@ -123,7 +127,8 @@ pub fn request(state: &mut State, screen: &Screen, bytes: &[u8], pid: u64) -> Op
         ["drag"] => drag(state, screen, "(f) drag under load, render+flush", true),
         _ => return Some(String::from("err unknown perf request")),
     };
-    for l in &lines {
+    // The kernel says which misses count: only under KVM.
+    for l in lines.iter().filter(|l| !l.starts_with(OVER_BUDGET)) {
         println!("desk-perf: {l}");
     }
     Some(lines.join("\n"))
@@ -306,7 +311,7 @@ fn line(name: &str, samples: &[u64], budget: u64, pick: Pick) -> String {
         Pick::Max => (max, "max"),
     };
     let verdict = if judged <= budget { "within" } else { "OVER" };
-    format!(
+    let mut text = format!(
         "{name}: n={} p50 {} p95 {} p99 {} max {} ms, budget {label} {} ms: {verdict}",
         sorted.len(),
         ms(at(50)),
@@ -314,7 +319,15 @@ fn line(name: &str, samples: &[u64], budget: u64, pick: Pick) -> String {
         ms(p99),
         ms(max),
         ms(budget),
-    )
+    );
+    if judged > budget {
+        text.push_str(&format!(
+            "\n{OVER_BUDGET}{name} {} ms (budget {label} {} ms)",
+            ms(judged),
+            ms(budget)
+        ));
+    }
+    text
 }
 
 fn ms(ns: u64) -> String {
