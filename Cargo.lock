@@ -179,11 +179,14 @@ name = "ccserve"
 version = "0.1.0-dev"
 dependencies = [
  "agentabi",
+ "kabi",
  "kailink",
+ "livecore",
  "promptcore",
  "serde_json",
  "sha2",
  "wasihost",
+ "wasmhost",
  "wasmi",
  "wasmparser 0.228.0",
 ]

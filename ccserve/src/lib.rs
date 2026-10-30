@@ -4,6 +4,7 @@
 
 extern crate alloc;
 
+pub mod build;
 pub mod compiler;
 mod dis;
 mod engine;
