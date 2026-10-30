@@ -42,6 +42,9 @@ fn granted() -> Grants {
 
 fn start(wasm: &[u8]) -> CoreInstance {
     let mut g = load_core_granted(wasm, LIMITS, None, granted()).unwrap();
+    // As comphost loads it for the settings grant: its window may be kept from
+    // the agent.
+    g.allow_agent_private(true);
     // As the host loads it: storage readable, empty.
     g.view(&Storage::new());
     assert_eq!(g.init(), Ok(0));
@@ -114,6 +117,38 @@ fn without_the_grant_the_app_does_not_stage() {
     };
     assert_eq!(fault.reason, livecore::Reason::Link);
     assert!(fault.detail.contains("settings grant"), "{}", fault.detail);
+}
+
+/// The rules and grants are typed-only data: the window is kept from the agent
+/// from its first frame on, whatever page it shows.
+#[test]
+fn its_window_is_kept_from_the_agent_from_the_first_frame() {
+    let Some(mut g) = load() else { return };
+    let (w, first) = frame(&mut g);
+    assert!(first.agent_private);
+    call(&mut g, |g| {
+        g.ui_events(w, &[UiEvent::Changed(TABS, Value::Index(2))])
+            .unwrap()
+    });
+    assert!(frame(&mut g).1.agent_private);
+    call(&mut g, |g| g.deliver_event(&AppEvent::Started)).unwrap();
+    let asked = sent(&mut g);
+    answer(&mut g, asked[0].0, Ok("1 allow stop of cache"));
+    assert!(frame(&mut g).1.agent_private);
+}
+
+/// If the system image did not let the version keep its window private, the
+/// version does not start and no window is shown, shared or not.
+#[test]
+fn without_leave_to_keep_a_window_private_it_does_not_start() {
+    let Some(wasm) = wasm() else { return };
+    let mut g = load_core_granted(&wasm, LIMITS, None, granted()).unwrap();
+    g.view(&Storage::new());
+    let fault = g
+        .init()
+        .expect_err("opening a shared Settings window must fail");
+    assert!(fault.detail.contains("private"), "{}", fault.detail);
+    assert!(g.take_ui().is_empty());
 }
 
 #[test]
