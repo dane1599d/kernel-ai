@@ -213,7 +213,24 @@ version = "0.1.0-dev"
 dependencies = [
  "agentabi",
  "comp-files",
+ "comp-ui-bind",
  "uikit",
+]
+
+[[package]]
+name = "comp-files-window"
+version = "0.1.0-dev"
+dependencies = [
+ "appabi",
+ "comp-files",
+ "comp-files-ui",
+ "comp-ui-bind",
+ "compsdk",
+ "livecore",
+ "minicbor",
+ "uikit",
+ "wasmhost",
+ "wit-bindgen",
 ]
 
 [[package]]
