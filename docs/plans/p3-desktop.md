@@ -260,3 +260,31 @@ S05-2's pass mark is each P4 app's view at most 300 tokens. Past that, the proje
 - **GPU share in profiles:** the reserved `gpu` field, once GPU support lands (P7+).
 - **`kai-surface 2`:** GPU buffers, only when GPU work starts (ADR 0005, question 4).
 - **Waiting on the founder:** section 2's questions.
+
+## 10. Close status (task 13, draft of 2026-10-30)
+
+Section 1's exit cases against `main` on 2026-10-30. "On main" means the case is in `xtask/src/cases` and so in `ci.yml`'s boot shards, under KVM and TCG. P3 closes once every row is on main or the founder accepts the stand-in named for it.
+
+| Exit case | Status | Where, and what is left |
+|---|---|---|
+| `desk-boot` | On main | #241: the golden screendump at 1280x800 |
+| `desk-windows` | On main | Open, drag 200 px, raise and close, from `desktop`'s and `deskdemo`'s log lines |
+| `desk-agent` | Open PR | #433 (task 10's OS half): `ui_open`, then a declared action, then `ui_view` and `ui_act`. Waits on #375 and #377 (batch #423) |
+| `display-claim` | On main | Ctrl+Alt+F12 out and back; only `desktop` can claim |
+| `desk-panel` | On main, partly | Ctrl+Space focuses the panel and Enter queues the line; `desk-panel-shell` (#339) adds the shell taking it and the state shown. Not checked in a boot: Super, each panel state from idle to refused, and that a run-tier request never opens the sheet |
+| `desk-ask` | On main | With `desk-card` and `desk-term`: the card takes only y, n or a click, keys typed before it are dropped, and with `desktop` killed the console asks |
+| `desk-takeover` | Open PR | #433: a key in the window the agent drives stops the run, the panel says "Stopped: you took over", and later acts are refused until the user's next line |
+| `desk-restart` | On main | #206: `desktop` killed, the supervisor restarts it, `deskdemo` reconnects |
+| `desk-standing` | On main, partly | #311/#312: allowed on the card, minimize suspends Notes, restore resumes it with its note. `rules`, `undo` of a firing and `rules_remove` are host-tested in `shellcore`, not in the boot |
+| `desk-standing-refused` | No case | `shellcore` host tests refuse a rule from text the AI read (`standing::Origin`), and the owner-side `RULE_CHECK` refuses a firing outside its rule (#311). No boot case yet |
+| `desk-profile` | Stand-in | `profile-switch` (#306): gaming, then quiet lowers a quota, `undo` puts it back, the shell keeps its own. The focus trigger is not checked in a boot |
+| `desk-profile-floor` | Stand-in | `profile` (#297): a quota stops a commit, a class shows in SCHED_STATS, and the floors hold |
+| `desk-perf` | No case | S05-1's figures (#176, [run 40455136156](https://github.com/dane1599d/kernel-ai/actions/runs/40455136156)) came from the spike, not from the real `desktop`. The case still has to be written: S05-1's four budgets timed in `desktop` at 1920x1080, gated under KVM and recorded under TCG |
+
+Beside the plan's set, these desk cases are also on main: `desk-nap`, `desk-card`, `desk-term`, `desk-panel-shell`, `ui-window`, `ui-keys`, `app-suspend` and `app-on-demand`.
+
+**Before the close PR:**
+- **Merge #433.** That adds `desk-agent` and `desk-takeover`.
+- **Write `desk-perf`.** No figures exist from `desktop` itself until it does.
+- **Decide on the gaps.** The founder either accepts the stand-ins and host tests for `desk-profile`, `desk-profile-floor`, `desk-standing-refused` and the unchecked parts of `desk-panel` and `desk-standing`, or each gets its boot case.
+- **Write the close itself.** Task 13's decisions rows and the roadmap's P3 status.
