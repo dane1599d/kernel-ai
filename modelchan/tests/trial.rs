@@ -1,6 +1,8 @@
 //! `kai-modeltrial 1` and the probation a switched model is on.
 
-use modelchan::trial::{Decision, Health, MAX_WHY, State, Switch, Trial, decide, switch};
+use modelchan::trial::{
+    AtBoot, Decision, HUNG, Health, MAX_WHY, State, Switch, Trial, at_boot, decide, switch,
+};
 
 const OLD: [u8; 32] = [0x11; 32];
 const NEW: [u8; 32] = [0x22; 32];
@@ -19,6 +21,10 @@ fn a_record_reads_back_as_written() {
     let records = [
         pending(NEW, Some(OLD)),
         pending(NEW, None),
+        Trial {
+            state: State::Attempted,
+            ..pending(NEW, Some(OLD))
+        },
         Trial {
             state: State::Kept,
             ..pending(NEW, Some(OLD))
@@ -146,5 +152,48 @@ fn the_candidate_is_kept_only_once_it_loads() {
     assert_eq!(
         back(Health::Failed("refused header\nline two"), 5),
         "it did not load: refused header line two"
+    );
+}
+
+#[test]
+fn a_boot_marks_a_trial_attempted_and_one_never_decided_rolls_back() {
+    let record = pending(NEW, Some(OLD));
+    let attempted = Trial {
+        state: State::Attempted,
+        ..record.clone()
+    };
+    assert_eq!(at_boot(Some(&record)), AtBoot::Try(attempted.clone()));
+    // That boot hung before it decided: the next one does not try again.
+    assert_eq!(
+        at_boot(Some(&attempted)),
+        AtBoot::RollBack(Trial {
+            state: State::RolledBack(HUNG.into()),
+            ..record.clone()
+        })
+    );
+    let decided = [
+        Trial {
+            state: State::Kept,
+            ..record.clone()
+        },
+        Trial {
+            state: State::RolledBack("no model started".into()),
+            ..record.clone()
+        },
+    ];
+    for t in &decided {
+        assert_eq!(at_boot(Some(t)), AtBoot::Nothing);
+    }
+    assert_eq!(at_boot(None), AtBoot::Nothing);
+    // An attempted trial is undecided: replaced or cancelled as a pending one is.
+    assert_eq!(switch(Some(OLD), Some(&attempted), NEW), Switch::Nothing);
+    assert_eq!(
+        switch(Some(NEW), Some(&attempted), OLD),
+        Switch::Try(pending(OLD, Some(NEW)))
+    );
+    assert_eq!(switch(Some(OLD), Some(&attempted), OLD), Switch::Cancel);
+    assert_eq!(
+        switch(Some(OLD), Some(&attempted), OTHER),
+        Switch::Try(pending(OTHER, Some(OLD)))
     );
 }

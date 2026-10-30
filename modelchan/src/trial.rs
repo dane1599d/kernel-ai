@@ -1,9 +1,13 @@
 //! A model on trial (ADR 0008 §6 and §11): `model_use` names a stored model
 //! for the next restart, since the kernel maps its model once per boot.
 //! `updated` writes `kai-modeltrial 1` beside `/system/updates`' other records,
-//! then has `fs` point `kai-modelhint 1` at the candidate. At the next boot the
-//! candidate is kept once `llm` reports it loaded, and otherwise the hint goes
-//! back to the model before, with the reason recorded for the model manager.
+//! then has `fs` point `kai-modelhint 1` at the candidate. The next boot marks
+//! the trial `attempted` ([`at_boot`]) before anything waits on `llm`, then
+//! keeps the candidate once `llm` reports it loaded ([`decide`]), or points the
+//! hint back at the model before and records why for the model manager. A boot
+//! that finds a trial already `attempted` and never decided rolls it back at
+//! once: the candidate hung that boot before `updated` could judge it, so it is
+//! not tried again (K, 2026-10-30).
 //!
 //! The record is text, one field a line:
 //!
@@ -11,7 +15,7 @@
 //! kai-modeltrial 1
 //! candidate <64 hex>
 //! previous <64 hex> | none
-//! state pending | kept | rolled-back
+//! state pending | attempted | kept | rolled-back
 //! why <text>                  (rolled-back only)
 //! ```
 //!
@@ -32,6 +36,8 @@ pub const MAX_WHY: usize = 200;
 pub enum State {
     /// The next boot tries the candidate.
     Pending,
+    /// A boot is trying it: written before that boot waits on `llm`.
+    Attempted,
     Kept,
     /// The candidate did not load, and why; the hint is back on `previous`.
     RolledBack(String),
@@ -53,6 +59,7 @@ impl Trial {
             .map_or_else(|| "none".to_string(), |p| hex(&p));
         let state = match &self.state {
             State::Pending => "pending".to_string(),
+            State::Attempted => "attempted".to_string(),
             State::Kept => "kept".to_string(),
             State::RolledBack(why) => match clean(why) {
                 why if why.trim().is_empty() => "rolled-back\nwhy no reason was given".into(),
@@ -88,6 +95,7 @@ impl Trial {
         };
         let state = match field("state")? {
             "pending" => State::Pending,
+            "attempted" => State::Attempted,
             "kept" => State::Kept,
             "rolled-back" => {
                 let why = field("why")?;
@@ -153,9 +161,11 @@ pub enum Switch {
 }
 
 /// `model_use` of the stored model `to`, with `running` the model this boot
-/// runs and `record` the last trial, if any.
+/// runs and `record` the last trial, if any. An attempted trial is still
+/// undecided, so it is replaced or cancelled as a pending one is.
 pub fn switch(running: Option<Sha256>, record: Option<&Trial>, to: Sha256) -> Switch {
-    let pending = record.filter(|t| t.state == State::Pending);
+    let undecided = |t: &&Trial| matches!(t.state, State::Pending | State::Attempted);
+    let pending = record.filter(undecided);
     match pending {
         Some(t) if t.candidate == to => Switch::Nothing,
         Some(_) if running == Some(to) => Switch::Cancel,
@@ -168,6 +178,36 @@ pub fn switch(running: Option<Sha256>, record: Option<&Trial>, to: Sha256) -> Sw
     }
 }
 
+/// The reason a trial a boot found already attempted is rolled back with.
+pub const HUNG: &str = "it never finished loading";
+
+/// What a boot does first with the last trial, before it waits on anything.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AtBoot {
+    /// No trial is undecided.
+    Nothing,
+    /// Write this record, marked attempted, then wait on `llm` and [`decide`].
+    Try(Trial),
+    /// A boot tried it and never decided: point the hint back at `previous`
+    /// and write this record, without trying it again.
+    RollBack(Trial),
+}
+
+/// The first step of a boot with `record` the last trial.
+pub fn at_boot(record: Option<&Trial>) -> AtBoot {
+    match record {
+        Some(t) if t.state == State::Pending => AtBoot::Try(Trial {
+            state: State::Attempted,
+            ..t.clone()
+        }),
+        Some(t) if t.state == State::Attempted => AtBoot::RollBack(Trial {
+            state: State::RolledBack(HUNG.into()),
+            ..t.clone()
+        }),
+        _ => AtBoot::Nothing,
+    }
+}
+
 /// What `llm` says of its model, as `updated` reads its `health` reply.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Health<'a> {
@@ -176,6 +216,9 @@ pub enum Health<'a> {
         fnv: u64,
     },
     Failed(&'a str),
+    /// It has no model. Final: `llm` maps its model, or learns there is none,
+    /// before it serves at all, so while the store fills it gives no answer
+    /// ([`Health::NotYet`]) rather than this.
     NoModel,
     /// No answer yet: it is still mapping or warming the model.
     NotYet,
@@ -190,8 +233,9 @@ pub enum Decision {
     RollBack(String),
 }
 
-/// The pending trial's outcome, given the candidate's FNV-1a64, what `llm`
-/// says, and how long this boot has waited of `limit_ms`.
+/// The attempted trial's outcome, given the candidate's FNV-1a64, what `llm`
+/// says, and how long this boot has waited of `limit_ms`. Only `Keep` moves
+/// it to `kept`.
 pub fn decide(fnv: u64, health: Health<'_>, waited_ms: u64, limit_ms: u64) -> Decision {
     match health {
         Health::Ready { fnv: loaded } if loaded == fnv => Decision::Keep,

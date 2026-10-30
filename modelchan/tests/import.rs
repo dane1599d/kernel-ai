@@ -45,12 +45,18 @@ fn disk(bytes: &[u8]) -> Vec<u8> {
 /// Streams `disk` in `chunk`-byte reads, as `updated` reads 128 KiB sectors.
 fn import(role: &[Signed], disk: &[u8], chunk: usize) -> Result<Imported, Refusal> {
     let mut importing = start(role, disk.len() as u64)?;
-    let mut at = 0;
-    while importing.done() < importing.length() {
+    let (mut at, mut blob) = (0, Vec::new());
+    while importing.read() < importing.disk() {
         let end = (at + chunk).min(disk.len());
-        importing.push(&disk[at..end])?;
+        blob.extend_from_slice(importing.push(&disk[at..end])?);
         at = end;
     }
+    assert_eq!(blob.len() as u64, importing.length());
+    assert_eq!(
+        &blob[..],
+        &disk[..blob.len()],
+        "the blob is the file's bytes"
+    );
     importing.finish(role)
 }
 
@@ -116,23 +122,30 @@ fn bytes_that_are_not_the_signed_ones_are_refused() {
     // A read that stopped early cannot give the signed hash.
     let mut short = start(&role, 4608).unwrap();
     short.push(&model[..2000]).unwrap();
-    assert_eq!(
-        short.finish(&role),
-        Err(Refusal::Hash {
-            id: "fixture".into()
-        })
-    );
+    assert_eq!(short.finish(&role), Err(Refusal::Short));
+    // Every byte of the file but none of the disk's last sector is short too.
+    let mut partial = start(&role, 4608).unwrap();
+    partial.push(&model).unwrap();
+    assert_eq!(partial.finish(&role), Err(Refusal::Short));
     let empty = start(&role, 4608).unwrap();
-    assert_eq!(empty.finish(&role), Err(Refusal::NotGguf));
+    assert_eq!(empty.finish(&role), Err(Refusal::Short));
 }
 
 #[test]
-fn the_sectors_past_the_file_are_never_hashed() {
+fn the_sectors_past_the_file_must_be_zeros_and_are_never_hashed() {
     let model = gguf(4100);
     let role = [signed("fixture", &model)];
     let mut padded = disk(&model);
-    for b in &mut padded[4100..] {
-        *b = 0xff;
-    }
     assert_eq!(import(&role, &padded, 4096).unwrap().sha256, sha(&model));
+    padded[4607] = 1;
+    for chunk in [1, 100, 4096, 8192] {
+        assert_eq!(import(&role, &padded, chunk), Err(Refusal::Trailing));
+    }
+    // Bytes past the disk's size are not taken.
+    let mut importing = start(&role, 4608).unwrap();
+    let mut longer = disk(&model);
+    longer.extend_from_slice(&[0xff; 600]);
+    assert_eq!(importing.push(&longer).unwrap(), &model[..]);
+    assert_eq!(importing.read(), 4608);
+    assert_eq!(importing.finish(&role).unwrap().length, 4100);
 }

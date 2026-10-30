@@ -99,6 +99,10 @@ pub enum Refusal {
     /// The disk is the size of two of the role's targets, `.0` and `.1`, so
     /// which one it holds is not known before it is read.
     TwoSizes(String, String),
+    /// The disk ended before all of the target's bytes were read.
+    Short,
+    /// The disk holds bytes other than zeros after the target's.
+    Trailing,
 }
 
 impl Refusal {
@@ -110,6 +114,8 @@ impl Refusal {
                 format!("it is the size of {id}, but its SHA-256 is not the one the role signs")
             }
             Refusal::TwoSizes(a, b) => format!("it is the size of both {a} and {b}"),
+            Refusal::Short => String::from("the disk ended before the model did"),
+            Refusal::Trailing => String::from("the disk holds other bytes after the model"),
             Refusal::Licence(l) => {
                 format!("it is under {l}; the project takes Apache-2.0 or MIT models only")
             }
@@ -307,11 +313,12 @@ impl Models {
     }
 
     /// Using `sha256` from the next restart, if the store holds it, the role
-    /// does not put it under a licence the project refuses, and the next
-    /// restart would not use it anyway.
+    /// signs it under a licence the project takes, and the next restart would
+    /// not use it anyway. A stored blob the role does not name is listed but
+    /// never used: no unsigned GGUF becomes the model (K, 2026-10-30).
     pub fn use_model(&self, sha256: &Sha256) -> Option<Intent> {
         let row = self.row(sha256)?;
-        let allowed = row.state != State::Available && row.signed.is_none_or(Signed::licence_ok);
+        let allowed = row.state != State::Available && row.signed.is_some_and(Signed::licence_ok);
         (allowed && self.next() != Some(*sha256)).then_some(Intent::Use(*sha256))
     }
 

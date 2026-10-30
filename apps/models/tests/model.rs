@@ -165,9 +165,9 @@ fn use_switches_to_a_stored_model_and_back() {
     let back = m.use_model(&SMALL).unwrap();
     m.applied(&back);
     assert_eq!((m.store.next, m.next()), (None, Some(SMALL)));
-    // A stored blob the role does not name may be used; one the role puts
-    // under a licence the project refuses may not.
-    assert_eq!(m.use_model(&DEV), Some(Intent::Use(DEV)));
+    // Only a signed model is used: not a stored blob the role does not name,
+    // nor one the role puts under a licence the project refuses.
+    assert_eq!(m.use_model(&DEV), None);
     m.signed[1].licence = "CC-BY-NC-4.0".into();
     assert_eq!(m.use_model(&LARGE), None);
 }
