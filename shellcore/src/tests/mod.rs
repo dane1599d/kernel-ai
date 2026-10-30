@@ -13,6 +13,7 @@ use std::collections::VecDeque;
 mod act;
 mod actions;
 mod apart;
+mod apps;
 mod centry;
 mod effects;
 mod files;
@@ -68,6 +69,10 @@ struct FakeHost {
     remembered: RefCell<Vec<(String, String, String)>>,
     forgot: Cell<u32>,
     audit: RefCell<Vec<String>>,
+    /// The installed apps' rows, and what each `app_call` sent and answers.
+    apps: RefCell<crate::apps::Apps>,
+    app_requests: RefCell<Vec<(String, String)>>,
+    app_replies: RefCell<VecDeque<String>>,
     /// The saved appearance (`kai-appearance 1`).
     appearance: RefCell<Option<String>>,
     /// The trusted path's ONCE book: badge, digest, and whether it was used.
@@ -217,6 +222,9 @@ impl FakeHost {
             remembered: RefCell::new(Vec::new()),
             forgot: Cell::new(0),
             audit: RefCell::new(Vec::new()),
+            apps: RefCell::new(crate::apps::Apps::default()),
+            app_requests: RefCell::new(Vec::new()),
+            app_replies: RefCell::new(VecDeque::new()),
             appearance: RefCell::new(None),
             once: RefCell::new(Vec::new()),
             revoked: RefCell::new(Vec::new()),
@@ -603,6 +611,20 @@ impl Host for FakeHost {
         let child = apart.as_ref()?;
         self.apart_requests.borrow_mut().push(request.into());
         Some(child(request))
+    }
+
+    fn apps(&self) -> Option<&RefCell<crate::apps::Apps>> {
+        Some(&self.apps)
+    }
+
+    fn app_call(&self, app: &str, request: &str) -> Result<String, String> {
+        self.app_requests
+            .borrow_mut()
+            .push((String::from(app), String::from(request)));
+        self.app_replies
+            .borrow_mut()
+            .pop_front()
+            .ok_or_else(|| String::from("the app did not answer"))
     }
 
     fn appearance_read(&self) -> Option<String> {

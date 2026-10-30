@@ -27,6 +27,7 @@ mod agentcore;
 pub mod analyse;
 pub mod apart;
 mod appearance;
+pub mod apps;
 mod brackets;
 mod centry;
 mod commands;
@@ -181,6 +182,16 @@ pub trait Host {
     /// used up by its first check, so two requests could not both pass.
     fn restart_service(&self, _name: &str, _proof: Proof) -> Result<(), String> {
         Err(String::from("services cannot be restarted here"))
+    }
+    /// The installed apps' rows and the effects their calls queued (P4);
+    /// `None` where there are no apps.
+    fn apps(&self) -> Option<&core::cell::RefCell<apps::Apps>> {
+        None
+    }
+    /// A `kai-call 1`, `kai-undo 1` or `kai-actions 1` to app `app`, through the
+    /// supervisor's `app-call`: the app's reply, or why not.
+    fn app_call(&self, _app: &str, _request: &str) -> Result<String, String> {
+        Err(String::from("there are no apps here"))
     }
     /// The user's appearance as `kai-appearance 1` text (P4 task 8).
     fn appearance_read(&self) -> Option<String> {

@@ -50,6 +50,9 @@ pub enum Inverse {
     /// or put a removed one back (`undo` of `rules_remove`). The shell's store
     /// does it (`Shell::revert_entry`), not the host.
     Instruction { id: u64, made: bool },
+    /// Put app `app`'s state back from before its call kept as `id` (ADR 0003
+    /// §4's checkpoint undo, `kai-undo 1`): the app runs its own inverse.
+    App { app: Name, id: u64 },
     /// Set appearance `setting` back to `before`, while it is still `after`
     /// (P4 task 8's `appearance_set`).
     Appearance {
@@ -135,6 +138,7 @@ pub fn target(inverse: Inverse) -> String {
         Inverse::Instruction { id, made: true } => format!("standing instruction S{id} removed"),
         Inverse::Instruction { id, made: false } => format!("standing instruction S{id}"),
         Inverse::Profile { .. } => String::from("the profile before"),
+        Inverse::App { app, .. } => format!("{} as it was", app.as_str()),
         Inverse::Appearance {
             setting, before, ..
         } => {
@@ -165,6 +169,14 @@ pub fn revert(
             Err(crate::FsRefused::Later(what)) => Err(Refused::Moved(what)),
             Err(crate::FsRefused::Failed(why)) => Err(Refused::Failed(why)),
         },
+        // An app's undo is kept as a call of its own, so its redo undoes that.
+        Inverse::App { app, id } => {
+            let redo = crate::apps::undo(host, app.as_str(), id, anyway)?;
+            Ok((
+                format!("{} as it was", app.as_str()),
+                Inverse::App { app, id: redo },
+            ))
+        }
         Inverse::Fired {
             rule,
             action,
@@ -234,7 +246,8 @@ fn revert_one(
         | Inverse::Fired { .. }
         | Inverse::Refocus { .. }
         | Inverse::Reopen(_)
-        | Inverse::Reclose { .. } => Err(Refused::Failed(String::from("it is put back by revert"))),
+        | Inverse::Reclose { .. }
+        | Inverse::App { .. } => Err(Refused::Failed(String::from("it is put back by revert"))),
         Inverse::Appearance {
             setting,
             before,
@@ -269,8 +282,10 @@ pub fn reverse(inverse: Inverse) -> Inverse {
         Inverse::Started(name) => Inverse::Stopped(name),
         Inverse::Stopped(name) => Inverse::Started(name),
         Inverse::Generation { from, to } => Inverse::Generation { from: to, to: from },
-        // Only the `fs` server knows the restore's own transaction ([`revert`]).
+        // Only the `fs` server knows the restore's own transaction ([`revert`]),
+        // and only the app its undo's id.
         Inverse::Fs { txn } => Inverse::Fs { txn },
+        Inverse::App { app, id } => Inverse::App { app, id },
         Inverse::Fired {
             rule,
             action,
@@ -328,6 +343,7 @@ pub fn inverse_word(inverse: Option<Inverse>) -> String {
         ),
         Some(Inverse::Instruction { id, made }) => format!("instruction:{id}:{}", u8::from(made)),
         Some(Inverse::Profile { key }) => format!("profile:{key}"),
+        Some(Inverse::App { app, id }) => format!("app:{}:{id}", app.as_str()),
         Some(Inverse::Appearance {
             setting,
             before,
@@ -376,6 +392,10 @@ pub fn parse_inverse(text: &str) -> Option<Option<Inverse>> {
         },
         "profile" => Inverse::Profile {
             key: number(parts.next())?,
+        },
+        "app" => Inverse::App {
+            app: Name::new(parts.next()?)?,
+            id: number(parts.next())?,
         },
         "appearance" => Inverse::Appearance {
             setting: Name::new(parts.next()?)?,
