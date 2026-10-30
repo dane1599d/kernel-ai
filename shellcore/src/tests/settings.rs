@@ -201,6 +201,23 @@ fn a_saved_kept_app_not_serving_yet_is_tried_again_then_given_up() {
 }
 
 #[test]
+fn a_kept_app_still_waiting_at_boot_shows_kept_in_the_apps_file() {
+    let host = host_with_keep("kai-keep 1\nnotes\n");
+    host.keep_fails.set(u32::MAX);
+    let mut shell = shell(&host);
+    let app = crate::settings::SETTINGS_APP;
+    assert_eq!(
+        shell.settings(app, "file apps", false).as_deref(),
+        Ok("kai-keep 1\nnotes\n")
+    );
+    // Once given up on, it is no longer shown kept.
+    host.clock
+        .set(host.clock.get() + crate::settings::KEEP_RETRY_FOR_NS + 1);
+    shell.retry_keep();
+    assert_eq!(shell.settings(app, "file apps", false).as_deref(), Ok(""));
+}
+
+#[test]
 fn a_saved_kept_app_the_supervisor_refuses_for_another_reason_is_audited_at_once() {
     let host = host_with_keep("kai-keep 1\nnotes\n");
     *host.keep_refusal.borrow_mut() = Some(String::from("no app notes"));
