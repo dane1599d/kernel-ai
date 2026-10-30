@@ -52,6 +52,9 @@ struct Service {
     /// Ended by a `restart` request: start it as soon as it is gone, with no
     /// backoff and no restart counted.
     restart_on_exit: bool,
+    /// Ended by pkg's `withdraw`: when it is gone it waits for a version, with
+    /// no restart counted and none scheduled.
+    withdrawn: bool,
     /// The shell's log entry whose `start` is the latest change to it, for its
     /// undo; cleared by any stop or restart.
     started_by: Option<u64>,
@@ -113,6 +116,7 @@ fn main() -> i32 {
                 started_ms,
                 start_at_ms: None,
                 restart_on_exit: false,
+                withdrawn: false,
                 started_by: None,
                 version: None,
             }
@@ -483,8 +487,10 @@ fn run_package(services: &mut [Service], run: supervise::Run, caller: u64) -> St
 
 /// `withdraw <name> version=<label>` from `caller`: the store holder took that
 /// package version back out (an undo), so the `start=pkg` app ends if it runs
-/// it and waits for `pkg` to name a version again. Only from that holder
-/// (`supervise::check_run`); an app on another version keeps running.
+/// it and waits for `pkg` to name a version again, its end counted as no crash
+/// (`withdrawn`). Only from that holder (`supervise::check_run`); an app on
+/// another version keeps running. Until the app's exit is seen its pid stays
+/// set, so a `run` arriving in that gap is RUNS_ANOTHER, which `pkg` may retry.
 fn withdraw_package(services: &mut [Service], withdraw: supervise::Run, caller: u64) -> String {
     let held: Vec<(&ServiceSpec, Option<u64>)> =
         services.iter().map(|s| (&s.spec, s.pid)).collect();
@@ -503,14 +509,16 @@ fn withdraw_package(services: &mut [Service], withdraw: supervise::Run, caller: 
         return String::from("ok");
     }
     let name = service.spec.name.clone();
+    if let Some(pid) = service.pid {
+        service.withdrawn = true;
+        if let Err(error) = sys::kill(pid) {
+            service.withdrawn = false;
+            println!("cannot end {name} (pid {pid}): {error:?}");
+            return format!("err cannot end it: {error:?}");
+        }
+    }
     service.version = None;
     service.start_at_ms = None;
-    if let Some(pid) = service.pid
-        && let Err(error) = sys::kill(pid)
-    {
-        println!("cannot end {name} (pid {pid}): {error:?}");
-        return format!("err cannot end it: {error:?}");
-    }
     println!(
         "{name} ends: pkg took package version {} back out",
         withdraw.version
@@ -577,6 +585,13 @@ fn on_exit(services: &mut [Service], exit: &ExitRecord) {
     let now = now_ms();
     let reason = ExitReason::from_raw(exit.reason).map_or("ended", ExitReason::name);
     let name = &service.spec.name;
+    if service.withdrawn {
+        service.withdrawn = false;
+        println!("{name} {reason}; withdrawn, so not restarted: it waits for pkg");
+        service.start_at_ms = None;
+        save(services);
+        return;
+    }
     if service.restart_on_exit {
         service.restart_on_exit = false;
         println!("{name} {reason}; restarting on request");
