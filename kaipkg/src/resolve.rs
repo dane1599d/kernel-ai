@@ -22,6 +22,8 @@ pub struct Entry {
     pub size: u64,
     pub depends: Vec<Depends>,
     pub grants: Vec<String>,
+    /// The OS rows its effects may call, as its index entry lists them.
+    pub effects: Vec<String>,
     pub yanked: bool,
 }
 
@@ -186,6 +188,7 @@ mod tests {
                 })
                 .collect(),
             grants: vec![],
+            effects: Vec::new(),
             yanked,
         }
     }

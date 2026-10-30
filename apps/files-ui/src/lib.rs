@@ -12,15 +12,13 @@
 
 extern crate alloc;
 
-mod tree;
-
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use comp_files::names::Kind;
 use comp_files::{Files, Os, Preview, Status, shown, tame};
-pub use tree::{Change, Entry, diff};
-use tree::{column, entry, label, row, wide};
+pub use comp_ui_bind::tree::{Change, Entry, diff};
+use comp_ui_bind::tree::{column, entry, label, row, wide};
 use uikit::style::{Tone, TypeStyle};
 use uikit::widget::{Axis, Layout, NodeId, ROOT, Size, TextField, UiEvent, Value, Widget};
 

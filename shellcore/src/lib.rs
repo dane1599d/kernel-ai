@@ -27,12 +27,14 @@ mod agentcore;
 pub mod analyse;
 pub mod apart;
 mod appearance;
+pub mod apps;
 mod brackets;
 mod centry;
 mod commands;
 pub mod data;
 mod effects;
 mod engine;
+pub mod grants;
 mod instructions;
 mod packages;
 mod panel;
@@ -184,6 +186,16 @@ pub trait Host {
     fn restart_service(&self, _name: &str, _proof: Proof) -> Result<(), String> {
         Err(String::from("services cannot be restarted here"))
     }
+    /// The installed apps' rows and the effects their calls queued (P4);
+    /// `None` where there are no apps.
+    fn apps(&self) -> Option<&core::cell::RefCell<apps::Apps>> {
+        None
+    }
+    /// A `kai-call 1`, `kai-undo 1` or `kai-actions 1` to app `app`, through the
+    /// supervisor's `app-call`: the app's reply, or why not.
+    fn app_call(&self, _app: &str, _request: &str) -> Result<String, String> {
+        Err(String::from("there are no apps here"))
+    }
     /// The user's appearance as `kai-appearance 1` text (P4 task 8).
     fn appearance_read(&self) -> Option<String> {
         None
@@ -250,6 +262,15 @@ pub trait Host {
     /// `keep <app> on|off` to the supervisor: app `app` naps or is kept running.
     fn keep_running(&self, _app: &str, _on: bool) -> Result<(), String> {
         Err(String::from("apps cannot be kept running here"))
+    }
+    /// The rows taken back from apps' effects, as `/system/state/withheld`
+    /// holds them (`kai-withheld 1`, P4 task 7).
+    fn withheld_read(&self) -> Option<String> {
+        None
+    }
+    /// Writes the whole withheld file, before a change takes effect.
+    fn withheld_write(&self, _text: &str) -> Result<(), String> {
+        Err(String::from("grants cannot be revoked here"))
     }
     /// The standing instructions as `/system/state/standing` holds them
     /// (`kai-standing 1`), read once at start (P3 task 11).
@@ -545,6 +566,13 @@ impl Shell {
         .with_saved_rules()
         .with_saved_standing()
         .with_saved_keep()
+        .with_saved_withheld()
+    }
+
+    /// The rows withheld from apps' effects, checked at boot.
+    fn with_saved_withheld(self) -> Self {
+        grants::check_saved(self.host.as_ref());
+        self
     }
 
     /// The log `/system/log` holds, so `undo` works across a reboot; a text that

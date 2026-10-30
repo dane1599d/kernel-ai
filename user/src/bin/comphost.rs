@@ -26,6 +26,8 @@ use wasmhost::{Limits, LiveInstance};
 
 #[path = "comphost/disk.rs"]
 mod disk;
+#[path = "comphost/edit.rs"]
+mod edit;
 #[path = "comphost/settings.rs"]
 mod kai_settings;
 #[path = "comphost/ui.rs"]
@@ -54,8 +56,9 @@ struct SysEnv {
     /// The app's saved state on disk, with a plan line's `dir=apps`; opened
     /// at the first restore, which names the app.
     disk: Option<disk::Disk>,
-    /// What the app may import beyond `kai:app` and `kai:ui`, from the plan
-    /// line's name for it (the kernel's), never from its package.
+    /// What the app may import beyond `kai:app` and `kai:ui`: `settings` and
+    /// `shell_line` from the plan line's name for it (the kernel's), `edit` if
+    /// the kernel gave this process an `Edit` handle; never from its package.
     grants: wasmhost::Grants,
     /// The image's own versions fetched, by digest: only they get `grants`.
     image: wasmhost::grants::FromImage,
@@ -166,7 +169,7 @@ fn main() -> i32 {
     let mut env = SysEnv {
         windows: windows.is_some(),
         disk: None,
-        grants: wasmhost::Grants::default(),
+        grants: edit::grants(),
         image: wasmhost::grants::FromImage::default(),
         limits: Limits {
             fuel_call: settings.fuel_call,
@@ -187,6 +190,8 @@ fn main() -> i32 {
     if let (true, Some(ui)) = (env.grants.settings, windows.as_mut()) {
         ui.carry_settings();
     }
+    // The editor's rules for what it may send; none for an app without the grant.
+    let mut edits = env.grants.edit.then(editcore::gate::Gate::new);
     let mut napper = Napper::new(Nap::new(settings.nap_ms, now_ms()));
     napper.nap.keep_running(settings.keep_running);
     let mut host = match Host::start(env, &name, settings) {
@@ -200,9 +205,7 @@ fn main() -> i32 {
         "up (restart {}): serving {name}",
         arg(&args, "restart").unwrap_or("0")
     );
-    if let Some(ui) = windows.as_mut() {
-        ui.pump(&mut host);
-    }
+    settle(&mut windows, &mut edits, &mut host);
     let mut request = vec![0u8; kabi::MAX_MESSAGE];
     // Whether the nap holds a lease for settings requests in flight.
     let mut leased = false;
@@ -244,9 +247,7 @@ fn main() -> i32 {
                 }
                 tick_at = deadline(host.timeout_ms());
                 napper.after(&host, now_ms());
-                if let Some(ui) = windows.as_mut() {
-                    ui.pump(&mut host);
-                }
+                settle(&mut windows, &mut edits, &mut host);
             }
             Err(Error::TimedOut) => {
                 if let Some(ui) = windows.as_mut().filter(|ui| ui.wants_poll())
@@ -269,6 +270,7 @@ fn main() -> i32 {
                     napper.nap.lease(busy);
                     leased = busy;
                 }
+                settle(&mut windows, &mut edits, &mut host);
                 match napper.tick(&mut host, now_ms()) {
                     Ok(napped) => log_nap(&name, napped),
                     Err(exit) => {
@@ -282,9 +284,7 @@ fn main() -> i32 {
                         return exit.code;
                     }
                     tick_at = deadline(host.timeout_ms());
-                    if let Some(ui) = windows.as_mut() {
-                        ui.pump(&mut host);
-                    }
+                    settle(&mut windows, &mut edits, &mut host);
                 }
             }
             Err(error) => {
@@ -292,6 +292,21 @@ fn main() -> i32 {
                 sys::sleep_ms(100);
             }
         }
+    }
+}
+
+/// What the instances did that leaves comphost: the editor's messages go to the
+/// edit service, then the windows' frames to `desktop`.
+fn settle(
+    windows: &mut Option<ui::Ui>,
+    edits: &mut Option<editcore::gate::Gate>,
+    host: &mut Host<SysEnv>,
+) {
+    if let Some(gate) = edits.as_mut() {
+        edit::pump(host, gate);
+    }
+    if let Some(ui) = windows.as_mut() {
+        ui.pump(host);
     }
 }
 

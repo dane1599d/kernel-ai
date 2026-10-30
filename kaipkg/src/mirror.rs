@@ -194,3 +194,50 @@ pub fn index<E: Exchange>(
     }
     Ok(listing)
 }
+
+/// The package names the mirror's [`ROLE`] listed when this device last
+/// trusted it: its copy in [`TUF_DIR`], verified when it was saved. None before
+/// the device first lists the mirror. Unlike a listing, it needs no network, so
+/// `local` can refuse a mirror package's name while the mirror is away.
+pub fn cached_names(vol: &mut dyn Volume) -> Result<Vec<String>, String> {
+    let Some(bytes) = vol.read(&format!("{TUF_DIR}/{ROLE}.json"))? else {
+        return Ok(Vec::new());
+    };
+    let role: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|_| "the mirror's cached role is not JSON")?;
+    let targets = role["signed"]["targets"]
+        .as_object()
+        .ok_or("the mirror's cached role lists no targets")?;
+    targets
+        .values()
+        .map(|target| {
+            target["custom"]["kai"]["name"]
+                .as_str()
+                .map(String::from)
+                .ok_or_else(|| String::from("a cached target names no package"))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memvol::MemVolume;
+
+    #[test]
+    fn the_names_the_mirror_last_listed_are_read_from_its_cached_role() {
+        let mut vol = MemVolume::default();
+        assert_eq!(cached_names(&mut vol), Ok(Vec::new()), "never listed");
+        let role = r#"{"signed":{"targets":{
+            "big-1.0.0.kpkg":{"custom":{"kai":{"name":"big"}}},
+            "extra-1.0.0.kpkg":{"custom":{"kai":{"name":"extra"}}}}}}"#;
+        vol.write(&format!("{TUF_DIR}/{ROLE}.json"), role.as_bytes())
+            .unwrap();
+        assert_eq!(
+            cached_names(&mut vol),
+            Ok(alloc::vec![String::from("big"), String::from("extra")])
+        );
+        vol.write(&format!("{TUF_DIR}/{ROLE}.json"), b"{").unwrap();
+        assert!(cached_names(&mut vol).is_err());
+    }
+}
