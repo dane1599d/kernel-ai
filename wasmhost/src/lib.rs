@@ -25,6 +25,9 @@ mod code_tests;
 pub mod desk;
 #[cfg(test)]
 mod desk_tests;
+pub mod edit;
+#[cfg(test)]
+mod edit_tests;
 mod effects;
 pub mod grants;
 mod instance;
@@ -51,6 +54,7 @@ mod user_tests;
 use alloc::format;
 use alloc::string::ToString;
 pub use canonical::{CoreInstance, load_core, load_core_granted};
+pub use edit::EditRequest;
 pub use grants::Grants;
 pub use instance::WasmInstance;
 use livecore::{Fault, Reason};
@@ -135,7 +139,8 @@ pub fn load_live(
     load_live_granted(artifact, limits, log, Grants::default())
 }
 
-/// As [`load_live`], for a version whose package holds `grants` (`kai:settings`).
+/// As [`load_live`], for a version whose package holds `grants` (`kai:settings`,
+/// `kai:edit`).
 #[inline(never)]
 pub fn load_live_granted(
     artifact: &[u8],

@@ -20,6 +20,7 @@ const WORLDS: &[(&str, &str)] = &[
     ("kai:system", "system-read"),
     ("kai:settings", "settings-access"),
     ("kai:code", "coding"),
+    ("kai:edit", "editing"),
 ];
 
 pub fn main(args: &[String]) -> Result<(), String> {

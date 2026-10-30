@@ -500,7 +500,7 @@ fn release(pool: &Pool) {
 /// and effects) is committed with its checkpoint, like an action call's. The
 /// effects it queued come back for whoever runs them; a version that faulted
 /// was reloaded, and gives nothing.
-fn serve_shown<E: Env<Instance = LiveInstance>>(
+pub(crate) fn serve_shown<E: Env<Instance = LiveInstance>>(
     host: &mut Host<E>,
     f: impl FnOnce(&mut wasmhost::CoreInstance) -> Result<(), Fault>,
 ) -> Option<Performed> {
