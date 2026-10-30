@@ -144,7 +144,7 @@ pub(super) const CASES: &[TestCase] = &[
             "app-route: the agent's notes_add reached notes through the supervisor, and undo put it back",
         ],
         ..case("app-route", "test=app-route")
-    }
+    },
     // P4: a post to the event box wakes the shell, never in place of a line.
     TestCase {
         expect: &[
