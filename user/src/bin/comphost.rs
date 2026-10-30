@@ -215,7 +215,7 @@ fn main() -> i32 {
     settle(&mut windows, &mut edits, &mut host);
     let mut request = vec![0u8; kabi::MAX_MESSAGE];
     // Whether the nap holds a lease for settings requests in flight.
-    let mut leased = false;
+    let mut settings_leased = false;
     // When the host's own wait ends; 0 is never.
     let mut tick_at = deadline(host.timeout_ms());
     // Whether the nap holds a lease for a read of the machine waiting.
@@ -285,9 +285,9 @@ fn main() -> i32 {
                 // A settings request waiting for its answer is use: the app
                 // does not nap until it has it.
                 let busy = windows.as_ref().is_some_and(ui::Ui::settings_busy);
-                if busy != leased {
+                if busy != settings_leased {
                     napper.nap.lease(busy);
-                    leased = busy;
+                    settings_leased = busy;
                 }
                 settle(&mut windows, &mut edits, &mut host);
                 match napper.tick(&mut host, now_ms()) {
