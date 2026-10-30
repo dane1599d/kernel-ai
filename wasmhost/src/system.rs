@@ -16,10 +16,13 @@
 //! ([`Grants`]); without it the import fails to link, and the version does not
 //! stage (`Reason::Link`).
 //!
-//! Tickets count from 0 for each instance. comphost must therefore drop the reads
-//! it still holds when it starts a new instance (a nap and resume, or a swap),
-//! or an old read's answer would reach a new instance as the answer to its own
-//! first read.
+//! Tickets count from 0 for each instance, so a read's answer must go to the
+//! instance that made it and to no later one. comphost keeps that by never
+//! holding a read itself: a read waits in the instance's own queue
+//! ([`CoreInstance::system_waiting`] says whether one does, which also keeps the
+//! app from napping), and comphost takes it ([`CoreInstance::take_system`]) only
+//! when it can answer in the same step. A reloaded, resumed or swapped instance
+//! starts with an empty queue, so it is never answered for its predecessor.
 
 use crate::canonical::CoreInstance;
 use crate::grants::Grants;
@@ -30,7 +33,9 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 use appabi::Val;
+use kabi::{MAX_METRIC_PROCESSES, Metrics};
 use livecore::{Fault, Reason};
+use systemabi::{ModelStatus, ProcSample, Sample};
 use wasmi::{Caller, Error};
 
 /// The interface whose function this module serves.
@@ -88,6 +93,11 @@ impl CoreInstance {
         host.queue.truncate(start);
     }
 
+    /// Whether a read waits to be answered.
+    pub fn system_waiting(&self) -> bool {
+        !self.store.data().system.queue.is_empty()
+    }
+
     /// The tickets of the reads the app made since the last call here, oldest
     /// first.
     pub fn take_system(&mut self) -> Vec<u32> {
@@ -120,5 +130,38 @@ impl CoreInstance {
         };
         livecore::Instance::call(self, &entry.func(export), &[Val::U32(ticket), outcome])?;
         Ok(())
+    }
+}
+
+/// The sample the kernel's `METRICS` and the model's status make. Total for any
+/// bytes the kernel could have written: a count past the list is cut to it (and
+/// counted as omitted), a number too large for the sample is its largest, and a
+/// name that is not text is `?`.
+pub fn sample_of(metrics: &Metrics, model: ModelStatus) -> Sample {
+    let listed = usize::try_from(metrics.process_count)
+        .unwrap_or(usize::MAX)
+        .min(MAX_METRIC_PROCESSES);
+    let beyond = metrics
+        .process_count
+        .saturating_sub(MAX_METRIC_PROCESSES as u64);
+    let omitted = metrics.processes_omitted.saturating_add(beyond);
+    let procs = metrics.processes[..listed]
+        .iter()
+        .map(|p| ProcSample {
+            pid: u32::try_from(p.pid).unwrap_or(u32::MAX),
+            name: String::from(p.name()),
+            pages: p.pages,
+            cpu_ns: p.cpu_ns,
+        })
+        .collect();
+    Sample {
+        uptime_ns: metrics.uptime_ns,
+        cpus: u32::try_from(metrics.cpus).unwrap_or(u32::MAX),
+        free_pages: metrics.free_frames,
+        total_pages: metrics.total_frames,
+        heap_bytes: metrics.heap_bytes,
+        procs,
+        omitted: u32::try_from(omitted).unwrap_or(u32::MAX),
+        model,
     }
 }

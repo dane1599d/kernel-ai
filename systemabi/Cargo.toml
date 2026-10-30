@@ -11,3 +11,7 @@ publish = false
 # the host, the component and the tests all use the same code.
 [lib]
 doctest = false
+
+# Only the test that keeps `ModelState`'s health words with llm's.
+[dev-dependencies]
+llmproto = { path = "../llmproto" }

@@ -222,3 +222,91 @@ fn the_instance_trait_reaches_the_same_queue() {
     assert!(Instance::health(&mut app).is_ok());
     assert_eq!(app.take_system(), vec![0, 1]);
 }
+
+fn metrics_with(procs: &[(u64, &[u8], u64, u64)]) -> kabi::Metrics {
+    let mut metrics = kabi::Metrics::empty();
+    metrics.cpus = 4;
+    metrics.free_frames = 384_000;
+    metrics.total_frames = 1_048_576;
+    metrics.heap_bytes = 839_680;
+    metrics.uptime_ns = 754_000_000_000;
+    metrics.process_count = procs.len() as u64;
+    for (slot, (pid, name, pages, cpu_ns)) in metrics.processes.iter_mut().zip(procs) {
+        slot.pid = *pid;
+        slot.name_len = name.len() as u64;
+        slot.name[..name.len()].copy_from_slice(name);
+        slot.pages = *pages;
+        slot.cpu_ns = *cpu_ns;
+    }
+    metrics
+}
+
+#[test]
+fn the_kernels_metrics_become_a_sample() {
+    let metrics = metrics_with(&[(1, b"supervisor", 75, 5_000_000), (4, b"llm", 600_000, 9)]);
+    let model = systemabi::ModelStatus {
+        state: systemabi::ModelState::Ready,
+        tps10: 85,
+    };
+    let sample = crate::system::sample_of(&metrics, model);
+    assert_eq!(
+        (
+            sample.uptime_ns,
+            sample.cpus,
+            sample.free_pages,
+            sample.total_pages
+        ),
+        (754_000_000_000, 4, 384_000, 1_048_576)
+    );
+    assert_eq!(sample.heap_bytes, 839_680);
+    assert_eq!(sample.omitted, 0);
+    assert_eq!(sample.model, model);
+    let listed: Vec<_> = sample
+        .procs
+        .iter()
+        .map(|p| (p.pid, p.name.as_str(), p.pages, p.cpu_ns))
+        .collect();
+    assert_eq!(
+        listed,
+        [(1, "supervisor", 75, 5_000_000), (4, "llm", 600_000, 9)]
+    );
+    // What the host writes is what the monitor reads.
+    assert_eq!(systemabi::Sample::parse(&sample.encode()), Ok(sample));
+}
+
+#[test]
+fn metrics_with_absurd_numbers_still_make_a_sample_that_parses() {
+    let mut metrics = metrics_with(&[(u64::MAX, b"\xff\xfe not text", u64::MAX, u64::MAX)]);
+    metrics.cpus = u64::MAX;
+    metrics.process_count = u64::MAX;
+    metrics.processes_omitted = u64::MAX;
+    metrics.processes[1].name_len = u64::MAX;
+    let sample = crate::system::sample_of(&metrics, systemabi::ModelStatus::UNKNOWN);
+    assert_eq!(sample.procs.len(), kabi::MAX_METRIC_PROCESSES);
+    assert_eq!(sample.procs[0].pid, u32::MAX);
+    assert_eq!(sample.procs[0].name, "?");
+    assert_eq!(sample.cpus, u32::MAX);
+    assert_eq!(sample.omitted, u32::MAX);
+    assert_eq!(systemabi::Sample::parse(&sample.encode()), Ok(sample));
+}
+
+#[test]
+fn processes_past_the_kernels_list_are_counted_as_omitted() {
+    let mut metrics = metrics_with(&[(1, b"a", 1, 1)]);
+    metrics.process_count = kabi::MAX_METRIC_PROCESSES as u64 + 3;
+    metrics.processes_omitted = 2;
+    let sample = crate::system::sample_of(&metrics, systemabi::ModelStatus::UNKNOWN);
+    assert_eq!(sample.procs.len(), kabi::MAX_METRIC_PROCESSES);
+    assert_eq!(sample.omitted, 5);
+}
+
+#[test]
+fn a_waiting_read_is_seen_without_taking_it() {
+    let mut app = app_reading(1);
+    assert!(!app.system_waiting());
+    app.health().unwrap();
+    assert!(app.system_waiting());
+    assert!(app.system_waiting(), "looking does not take it");
+    assert_eq!(app.take_system(), vec![0]);
+    assert!(!app.system_waiting());
+}
