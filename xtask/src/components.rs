@@ -67,6 +67,19 @@ const TERMINAL_DIRS: &[&str] = &[
     "apps/ui-bind",
 ];
 const TERMINAL_WINDOW_WIT: &str = "apps/terminal-window/wit";
+/// The System monitor (P4 task 9): its window, model, tree, the sample format it
+/// reads (`systemabi`) and the shared `kai:ui` glue.
+const MONITOR_WINDOW: &str = "apps/monitor-window";
+const MONITOR_DIRS: &[&str] = &[
+    MONITOR_WINDOW,
+    "apps/monitor",
+    "apps/monitor-ui",
+    "apps/ui-bind",
+    "systemabi",
+];
+const MONITOR_WINDOW_WIT: &str = "apps/monitor-window/wit";
+/// `app:monitor/actions`, which the window exports.
+const MONITOR_WIT: &str = "apps/monitor/wit";
 
 /// `notes` from `components/notes`: version 2, and every upload the edit loop
 /// builds.
@@ -159,6 +172,22 @@ pub const VERSIONS: &[Version] = &[
                 "wit/kai-ui",
                 "wit/kai-settings",
                 SETTINGS_WIT,
+            ],
+        },
+    },
+    // The System monitor (P4 task 9), a window over a reading of the machine.
+    Version {
+        label: "1",
+        recipe: Recipe {
+            component: "monitor-window",
+            krate: "comp-monitor-window",
+            dirs: MONITOR_DIRS,
+            feature: None,
+            wit: &[
+                MONITOR_WINDOW_WIT,
+                "wit/kai-ui",
+                "wit/kai-system",
+                MONITOR_WIT,
             ],
         },
     },
@@ -443,6 +472,32 @@ mod tests {
             assert_eq!(
                 row.export,
                 format!("app:terminal-window/actions@1.0.0#{export}")
+            );
+        }
+    }
+
+    /// The Monitor build carries its own action rows, under its world.
+    #[test]
+    fn the_monitor_build_packs_with_the_monitor_actions() {
+        let monitor = VERSIONS
+            .iter()
+            .find(|v| v.recipe.component == "monitor-window")
+            .unwrap();
+        let module = Vec::from(&b"\0asm\x01\0\0\0"[..]);
+        let root = crate::workspace_root();
+        let source = artifact::bundle(&[("apps/monitor-window/src/lib.rs", b"//")]);
+        let bytes = pack(&root, &monitor.recipe, monitor.label, module, &source).unwrap();
+        let parsed = artifact::parse(&bytes).unwrap();
+        assert_eq!(
+            parsed.manifest.world,
+            "app:monitor-window/monitor-window@1.0.0"
+        );
+        let actions = livecore::actions::parse(parsed.actions.unwrap()).unwrap();
+        for (row, export) in [("monitor_sort", "sort"), ("monitor_select", "select")] {
+            let found = actions.by_name(row).unwrap();
+            assert_eq!(
+                found.export,
+                std::format!("app:monitor/actions@1.0.0#{export}")
             );
         }
     }
