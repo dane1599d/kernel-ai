@@ -147,7 +147,16 @@ fn floors(app: u64, service: u64) -> Result<(), &'static str> {
     log!(
         "desk-profile-floor: the supervisor, the shell and desktop were not made background, nor their quotas lowered"
     );
-    // free / 2.
+    // free / 2, and a size that would overflow a sum.
+    if !refused(
+        shell,
+        app,
+        "normal",
+        &format!("{}", u64::MAX),
+        "err NoMemory",
+    )? {
+        return Err("desk-profile-floor: a quota of u64::MAX pages was taken");
+    }
     let over = PAGES + room() + 1;
     if !refused(shell, app, "normal", &format!("{over}"), "err NoMemory")? {
         return Err("desk-profile-floor: a raise past the admission budget was taken");

@@ -62,7 +62,10 @@ pub fn quota_set(pid: u64, pages: u64) -> Result<u64, Error> {
                 .filter(|p| p.live())
                 .map(|p| p.limits.max_pages)
                 .sum();
-            if committed - old + pages > super::page_budget() {
+            // The others' quotas include none of this one's, and the
+            // comparison never adds `pages`, so no size of it can overflow.
+            let others = committed.saturating_sub(old);
+            if pages > super::page_budget().saturating_sub(others) {
                 return Err(Error::NoMemory);
             }
         }
