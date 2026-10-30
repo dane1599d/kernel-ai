@@ -61,6 +61,10 @@ impl Sink for View {
     fn close(&mut self, window: u32) -> Result<(), UiError> {
         view::close(window).map_err(error)
     }
+
+    fn focus(&mut self, window: u32, node: NodeId) -> Result<(), UiError> {
+        view::focus(window, node).map_err(error)
+    }
 }
 
 fn size(s: w::Size) -> t::Size {

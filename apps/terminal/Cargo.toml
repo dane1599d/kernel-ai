@@ -7,7 +7,7 @@ publish = false
 
 # The Terminal app's model (P4 task 4): today's shell in an app window, as typed
 # spans. It keeps the scrollback, the input phases (`kai> `, `..> `, a line with
-# the shell, a question the trusted path answers) and what `terminal_read` says.
+# the shell, a question the trusted path answers) and what `terminal_window_read` says.
 # `no_std` + `alloc` and free of `kai:ui`, so the host tests run it as is; the
 # window (`comp-terminal-ui`, then the component) draws it.
 [lib]
