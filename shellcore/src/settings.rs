@@ -19,6 +19,7 @@ use crate::{Reply, Shell};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use livecore::actions::MAX_EFFECT_ROWS;
 
 /// The app that holds the settings grant.
 pub const SETTINGS_APP: &str = "settings-window";
@@ -26,6 +27,22 @@ pub const SETTINGS_APP: &str = "settings-window";
 pub const MAX_REQUEST: usize = 512;
 /// The longest app or profile name.
 const MAX_NAME: usize = 24;
+/// The longest answer desktop's `kai:settings` wire carries; past it the
+/// Settings app gets an error, never a cut answer. A copy of
+/// `deskcore::settings_wire::MAX_ANSWER` (shellcore does not depend on
+/// deskcore); the shell binary, which has both, checks they agree.
+pub const MAX_ANSWER: usize = 4096;
+// `grants` alone and `grants <app>` each fit one answer at their worst.
+const _: () = assert!(crate::apps::MAX_LOADS * (MAX_NAME + 1) <= MAX_ANSWER);
+const _: () = assert!(
+    MAX_EFFECT_ROWS * (MAX_NAME + 1 + livecore::actions::MAX_NAME + 1 + "withheld".len() + 1)
+        <= MAX_ANSWER
+);
+/// At most this many apps kept running.
+const MAX_KEPT: usize = 64;
+// `file appearance` and `file apps` each fit one answer at their worst.
+const _: () = assert!(look::appearance::MAX_BYTES <= MAX_ANSWER);
+const _: () = assert!(KEEP_HEADER.len() + MAX_KEPT * (MAX_NAME + 1) < MAX_ANSWER);
 /// The services that are the system's, not apps that nap.
 const SYSTEM: &[&str] = &[
     "shell",
@@ -112,8 +129,8 @@ impl Shell {
             // What each app's effects may call: its declared rows, each allowed
             // or withheld (P4 task 7). Built-in imports and its own storage are
             // not rows, so they are not listed or revocable in v0.1.
-            ("grants", "") => Ok(self.grant_lines(None)),
-            ("grants", name) if valid_name(name) => Ok(self.grant_lines(Some(name))),
+            ("grants", "") => Ok(self.granted_apps()),
+            ("grants", name) if valid_name(name) => Ok(self.grant_lines(name)),
             ("grants-revoke" | "grants-restore", rest) => {
                 let (name, row) = rest
                     .split_once(' ')
@@ -123,7 +140,7 @@ impl Shell {
             ("about", "") => Ok(about()),
             ("profiles", "") => Ok(self.profile_lines()),
             ("apps", "") => self.app_names().map(|names| names.join("\n")),
-            ("file", _) => Err(String::from("comphost reads the settings files itself")),
+            ("file", area) => self.settings_file(area),
             ("profile-set", name) if valid_name(name) => self
                 .profile_set_by_click(&logged, name)
                 .map(|was| format!("profile {name} (was {was})")),
@@ -223,31 +240,46 @@ impl Shell {
         Ok(format!("{name} keep-running {}", word(on)))
     }
 
-    /// `grants`: one line a declared effect row, `<app>\t<row>\tallowed` or
-    /// `withheld`, for `only` or every app whose rows are loaded.
-    fn grant_lines(&self, only: Option<&str>) -> String {
-        if let Some(app) = only {
-            crate::apps::load_app(self.host.as_ref(), app);
-        }
+    /// `grants` alone: the apps whose packages declare effect rows, one a line,
+    /// for Settings to ask `grants <app>` of each. Every app's rows at once
+    /// would outgrow one answer; at most [`crate::apps::MAX_LOADS`] names fit.
+    /// Both forms list only apps whose rows are loaded: an installed app shows
+    /// once it has loaded.
+    fn granted_apps(&self) -> String {
+        let Some(apps) = self.host.apps() else {
+            return String::new();
+        };
+        let apps = apps.borrow();
+        let names: Vec<&str> = apps
+            .rows
+            .apps()
+            .filter(|app| !apps.rows.effects_of(app).is_empty())
+            .collect();
+        names.join("\n")
+    }
+
+    /// `grants <app>`: one line a declared effect row, `<app>\t<row>\tallowed`
+    /// or `withheld`; at most [`MAX_EFFECT_ROWS`] lines, so one answer holds it.
+    fn grant_lines(&self, app: &str) -> String {
+        crate::apps::load_app(self.host.as_ref(), app);
         let host = self.host.as_ref();
         let Some(apps) = host.apps() else {
             return String::new();
         };
-        let names: Vec<String> = match only {
-            Some(app) => alloc::vec![app.to_string()],
-            None => apps.borrow().rows.apps().map(str::to_string).collect(),
-        };
-        let mut lines = Vec::new();
-        for app in &names {
-            let allowed = crate::grants::allowed(host, app);
-            for row in apps.borrow().rows.effects_of(app) {
+        let allowed = crate::grants::allowed(host, app);
+        let lines: Vec<String> = apps
+            .borrow()
+            .rows
+            .effects_of(app)
+            .iter()
+            .map(|row| {
                 let state = match allowed.contains(row) {
                     true => "allowed",
                     false => "withheld",
                 };
-                lines.push(format!("{app}\t{row}\t{state}"));
-            }
-        }
+                format!("{app}\t{row}\t{state}")
+            })
+            .collect();
         lines.join("\n")
     }
 
@@ -315,8 +347,34 @@ impl Shell {
         Ok(format!("{name} {row} {now}"))
     }
 
+    /// `file <area>`: a settings page's saved state, in its one format, for the
+    /// Settings app to decode. Empty is "nothing saved", which the app shows as
+    /// the defaults.
+    /// - `appearance`: the `kai-appearance 1` text as it is saved; text past
+    ///   its bound is refused, not cut.
+    /// - `apps`: the keep-running list in force, as `kai-keep 1` text (a list
+    ///   on disk out of shape was set aside at start, so none is kept).
+    /// - `updates`: empty, until a restart-window writer exists.
+    fn settings_file(&self, area: &str) -> Result<String, String> {
+        match area {
+            "appearance" => match self.host.appearance_read() {
+                Some(text) if text.len() > look::appearance::MAX_BYTES => {
+                    Err(String::from("the saved appearance is out of shape"))
+                }
+                saved => Ok(saved.unwrap_or_default()),
+            },
+            "apps" if self.keep.is_empty() => Ok(String::new()),
+            "apps" => Ok(keep_text(&self.keep)),
+            "updates" => Ok(String::new()),
+            _ => Err(String::from("not a settings file")),
+        }
+    }
+
     /// Tells the supervisor and saves the list: `name` kept running or not.
     pub(crate) fn set_keep(&mut self, name: &str, on: bool) -> Result<(), String> {
+        if on && !self.keep.iter().any(|app| app == name) && self.keep.len() >= MAX_KEPT {
+            return Err(format!("at most {MAX_KEPT} apps are kept running"));
+        }
         self.host.keep_running(name, on)?;
         self.keep_waiting.forget(name);
         self.keep.retain(|app| app != name);
@@ -448,7 +506,7 @@ fn parse_keep(text: &str) -> Option<Vec<String>> {
         return None;
     }
     let apps: Vec<String> = lines.filter(|l| !l.is_empty()).map(String::from).collect();
-    match apps.iter().all(|app| valid_name(app)) && apps.len() <= 64 {
+    match apps.iter().all(|app| valid_name(app)) && apps.len() <= MAX_KEPT {
         true => Some(apps),
         false => None,
     }

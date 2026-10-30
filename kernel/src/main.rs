@@ -22,6 +22,7 @@ mod agent_desk_tests;
 mod allow;
 mod apic;
 mod app_route_tests;
+mod app_terminal_tests;
 mod appbench_tests;
 mod ask_box;
 mod ask_tests;
