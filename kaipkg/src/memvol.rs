@@ -1,7 +1,7 @@
 //! The store's [`Volume`] in memory: where later generations live until reboot
 //! when there is no `kai-data` disk (ADR 0011 §5), and the host tests' volume
 //! where a real filesystem would only slow them down. A transaction keeps a copy
-//! of the files from [`Volume::begin`], which [`MemVolume::abort`] puts back.
+//! of the files from [`Volume::begin`], which [`Volume::abort`] puts back.
 
 use crate::store::Volume;
 use alloc::collections::BTreeMap;
@@ -16,14 +16,6 @@ pub struct MemVolume {
 }
 
 impl MemVolume {
-    /// Ends an open transaction with nothing of it kept, as a crash before its
-    /// commit does on disk.
-    pub fn abort(&mut self) {
-        if let Some(before) = self.before.take() {
-            self.files = before;
-        }
-    }
-
     /// Every file, by path.
     pub fn files(&self) -> &BTreeMap<String, Vec<u8>> {
         &self.files
@@ -41,6 +33,15 @@ impl Volume for MemVolume {
 
     fn commit(&mut self) -> Result<(), String> {
         self.before = None;
+        Ok(())
+    }
+
+    /// Ends an open transaction with nothing of it kept, as a crash before its
+    /// commit does on disk.
+    fn abort(&mut self) -> Result<(), String> {
+        if let Some(before) = self.before.take() {
+            self.files = before;
+        }
         Ok(())
     }
 

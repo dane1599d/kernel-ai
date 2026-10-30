@@ -51,6 +51,8 @@ pub struct CoreInstance {
     pub(crate) on_settings_reply: Option<String>,
     /// The `kai:system/samples` `on-sample` export, when the module has one.
     pub(crate) on_system_sample: Option<String>,
+    /// The `kai:edit/replies` `on-reply` export, when the module has one.
+    pub(crate) on_edit_reply: Option<String>,
 }
 
 impl CoreInstance {
@@ -123,6 +125,7 @@ pub fn load_core_granted(
         user_input: false,
         settings: Default::default(),
         system: Default::default(),
+        edit: Default::default(),
         memory: None,
     };
     let mut store = Store::new(&engine, state);
@@ -164,6 +167,10 @@ pub fn load_core_granted(
         .iter()
         .find(|f| f.interface == crate::system::SAMPLES && f.name == "on-sample")
         .and_then(|f| export_for(&module, f));
+    let on_edit_reply = tables::EXPORTS
+        .iter()
+        .find(|f| f.interface == crate::edit::REPLIES && f.name == "on-reply")
+        .and_then(|f| export_for(&module, f));
     Ok(CoreInstance {
         store,
         instance,
@@ -179,6 +186,7 @@ pub fn load_core_granted(
         on_event,
         on_settings_reply,
         on_system_sample,
+        on_edit_reply,
     })
 }
 
@@ -261,6 +269,12 @@ fn link_imports(
             (crate::system::SYSTEM, "read") => {
                 linker.func_wrap(qualified, name, crate::system::read)
             }
+            (crate::edit::EDIT, _) if !grants.edit => {
+                return Err(link_err(format!(
+                    "{qualified} needs the edit grant, which this app's package does not hold"
+                )));
+            }
+            (crate::edit::EDIT, "send") => linker.func_wrap(qualified, name, crate::edit::send),
             (crate::ui::VIEW, _) => linker.func_new(
                 qualified,
                 name,

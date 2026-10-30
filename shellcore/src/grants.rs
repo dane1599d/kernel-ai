@@ -93,6 +93,11 @@ fn valid(name: &str, sep: char) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == sep)
 }
 
+/// Whether `row` is a row name the withheld file and an undo can hold.
+pub fn valid_row(row: &str) -> bool {
+    valid(row, '_')
+}
+
 /// The pairs withheld now: none with no file; why not, for a file out of
 /// shape, which must not be read as none.
 fn current(host: &dyn Host) -> Result<Withheld, String> {

@@ -12,6 +12,8 @@ extern crate alloc;
 mod apart;
 #[path = "shell/files.rs"]
 mod files;
+#[path = "shell/ui.rs"]
+mod ui;
 
 use alloc::boxed::Box;
 use alloc::format;
@@ -91,10 +93,13 @@ fn take_panel(shell: &mut Shell) {
         return;
     };
     let shown = match panel_wire::parse_take(&answer) {
-        Some(Some(Request::Line(line))) => match shell.eval_panel(&line) {
-            PanelResult::Done(line) => State::Done { line },
-            PanelResult::Refused(reason) => State::Refused { reason },
-        },
+        Some(Some(Request::Line(line))) => {
+            ui::begin();
+            match shell.eval_panel(&line) {
+                PanelResult::Done(line) => State::Done { line },
+                PanelResult::Refused(reason) => State::Refused { reason },
+            }
+        }
         // Esc after the shell took the line: it has run already, one line at
         // a time, and its result stays shown. Esc before is desktop's own: the
         // line never came here.
@@ -440,6 +445,24 @@ impl Host for System {
         self.state.read(files::STANDING)
     }
 
+    fn keep_read(&self) -> Option<String> {
+        self.state.read(files::KEEP)
+    }
+
+    fn keep_write(&self, text: &str) -> Result<(), String> {
+        match self.files.is_open() {
+            true => self.state.write_in(files::KEEP, text),
+            false => self
+                .state
+                .write(files::KEEP, text, self.files.next_action()),
+        }
+    }
+
+    /// `keep <app> on|off` to the supervisor, which keeps the app from napping.
+    fn keep_running(&self, app: &str, on: bool) -> Result<(), String> {
+        supervise(&supervise::keep::encode(app, on))
+    }
+
     fn appearance_read(&self) -> Option<String> {
         self.state.read(files::APPEARANCE)
     }
@@ -488,6 +511,14 @@ impl Host for System {
                 .state
                 .write(files::WITHHELD, text, self.files.next_action()),
         }
+    }
+
+    fn ui(&self, call: &shellcore::ui::UiCall) -> Result<String, String> {
+        ui::call(call)
+    }
+
+    fn state(&self) -> shellcore::state::State {
+        ui::state(shellcore::state::State::default())
     }
 
     fn fs_read(&self, read: shellcore::FsRead) -> Result<String, String> {
@@ -643,6 +674,10 @@ fn main() -> i32 {
         // Only the kernel terminal may run shell lines.
         let mut reply = if caller == 0 {
             let text = core::str::from_utf8(&line[..len]).unwrap_or("");
+            // An answer to a menu goes on with its run; any other line starts one.
+            if !text.starts_with("answer ") {
+                ui::begin();
+            }
             shell.eval(text).to_wire()
         } else {
             String::from("err the shell answers only the terminal")

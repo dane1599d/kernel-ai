@@ -40,6 +40,12 @@ const KAI_WIT: &[&str] = &["wit/kai-live", "wit/kai-app"];
 const WINDOW: &str = "components/notes-window";
 const NOTES_UI: &str = "components/notes-ui";
 const WINDOW_WIT: &str = "components/notes-window/wit";
+/// The Files app (P4 task 5): its window, model, tree and the shared `kai:ui` glue.
+const FILES_WINDOW: &str = "apps/files-window";
+const FILES_DIRS: &[&str] = &[FILES_WINDOW, "apps/files", "apps/files-ui", "apps/ui-bind"];
+const FILES_WINDOW_WIT: &str = "apps/files-window/wit";
+/// `app:files/actions`, which the window exports.
+const FILES_WIT: &str = "apps/files/wit";
 /// The Settings app (P4 task 7): its window, model, tree and the shared `kai:ui` glue.
 const SETTINGS_WINDOW: &str = "apps/settings-window";
 const SETTINGS_DIRS: &[&str] = &[
@@ -119,6 +125,17 @@ pub const VERSIONS: &[Version] = &[
             dirs: &[WINDOW, NOTES_UI, NOTES],
             feature: None,
             wit: &[WINDOW_WIT, "wit/kai-ui", NOTES_WIT],
+        },
+    },
+    // The Files app (P4 task 5), a window over the OS's file rows.
+    Version {
+        label: "1",
+        recipe: Recipe {
+            component: "files-window",
+            krate: "comp-files-window",
+            dirs: FILES_DIRS,
+            feature: None,
+            wit: &[FILES_WINDOW_WIT, "wit/kai-ui", FILES_WIT],
         },
     },
     // The Settings app (P4 task 7), a window over the system's settings.
@@ -349,6 +366,33 @@ mod tests {
         let actions = livecore::actions::parse(parsed.actions.unwrap()).unwrap();
         let add = actions.by_name("notes_add").unwrap();
         assert_eq!(add.export, "app:notes/actions@1.0.0#add");
+    }
+
+    /// The Files build carries its own action rows, under its world.
+    #[test]
+    fn the_files_build_packs_with_files_actions() {
+        let files = VERSIONS
+            .iter()
+            .find(|v| v.recipe.component == "files-window")
+            .unwrap();
+        let module = Vec::from(&b"\0asm\x01\0\0\0"[..]);
+        let root = crate::workspace_root();
+        let source = artifact::bundle(&[("apps/files-window/src/lib.rs", b"//")]);
+        let bytes = pack(&root, &files.recipe, files.label, module, &source).unwrap();
+        let parsed = artifact::parse(&bytes).unwrap();
+        assert_eq!(parsed.manifest.world, "app:files-window/files-window@1.0.0");
+        let actions = livecore::actions::parse(parsed.actions.unwrap()).unwrap();
+        for (row, export) in [
+            ("files_open", "open"),
+            ("files_reveal", "reveal"),
+            ("files_select", "select"),
+        ] {
+            let found = actions.by_name(row).unwrap();
+            assert_eq!(
+                found.export,
+                std::format!("app:files/actions@1.0.0#{export}")
+            );
+        }
     }
 
     /// The Settings build carries its own action row, under its world.

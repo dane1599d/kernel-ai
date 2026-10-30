@@ -35,6 +35,8 @@ const DEFAULT_PAGES: u64 = 1024;
 const DEFAULT_BURST_MS: u64 = 2000;
 /// The one program that may hold `cap::COMPONENT`.
 pub const COMPONENT_HOST: &str = "comphost";
+/// The one component that may hold `cap::EDIT`: the editor app (P4 task 11).
+pub const EDITOR: &str = "editor";
 /// The one service that may hold `cap::STOP`.
 pub const STOPPER: &str = "shell";
 /// The service, running the program of the same name, that may hold the screen
@@ -338,6 +340,11 @@ pub fn spawn_service(slot: usize, request_ptr: u64) -> Result<u64, Error> {
     }
     // The console's rows are the terminal window's alone.
     if request.limits.caps & cap::TERM != 0 && (name != TERM || program != TERM) {
+        return Err(Error::Permission);
+    }
+    // Editing for an app is comphost's alone, serving the editor, and sent only
+    // for an app whose package holds the `edit` grant (P4 task 11).
+    if request.limits.caps & cap::EDIT != 0 && (name != EDITOR || program != COMPONENT_HOST) {
         return Err(Error::Permission);
     }
     // The slots and the boot record are `updated`'s alone (ADR 0008 §10).
