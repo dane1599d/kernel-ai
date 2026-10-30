@@ -1,0 +1,16 @@
+[package]
+name = "csprng"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The kernel's random-number generator (ENTROPY): ChaCha20 seeded from the CPU,
+# with fast key erasure and periodic reseeding. `no_std`, so the kernel and the
+# host tests share it; the hardware reads stay in the kernel.
+[lib]
+doctest = false
+
+[dependencies]
+rand_chacha = { version = "0.10.0", default-features = false }
+rand_core = { version = "0.10.1", default-features = false }

@@ -78,9 +78,9 @@ impl Shell {
             tier: Tier::Run,
             consent,
         };
-        match switch.grants.is_empty() {
-            true => self.pkg_switch(id, request, &call, switch, how),
-            false => self.pkg_ask(id, request, &call, switch, Why::NoUndo),
+        match switch.asks() {
+            false => self.pkg_switch(id, request, &call, switch, how),
+            true => self.pkg_ask(id, request, &call, switch, Why::NoUndo),
         }
     }
 
@@ -114,7 +114,7 @@ impl Shell {
             Err(why) => return Reply::err(why),
         };
         let call = call(row, &[arg("name")]);
-        match (decision.tier, decision.why, switch.grants.is_empty()) {
+        match (decision.tier, decision.why, !switch.asks()) {
             // A vague line's reading is the AI's pick: an install it chose asks.
             (Tier::Run, Why::TakenAs, _) if row == "pkg_install" => {
                 self.pkg_ask(id, request, &call, switch, Why::Added)
@@ -137,16 +137,27 @@ impl Shell {
     }
 
     /// Asks once about a switch, on the Allow / Deny menu; nothing changes yet.
+    /// The card names what it installs and what that needs: its permissions,
+    /// and the OS rows its packages' effects may call.
     fn pkg_ask(&mut self, id: u64, request: &str, call: &str, switch: Switch, why: Why) -> Reply {
-        let needs = match switch.grants.as_slice() {
-            [] => String::new(),
-            grants => format!("; it needs {}", grants.join(", ")),
+        let needs = switch.needs();
+        let (audit, subject) = match needs.is_empty() {
+            true => (String::new(), None),
+            false => {
+                let names: Vec<String> = switch
+                    .added
+                    .iter()
+                    .map(|p| format!("{} {}", p.name, p.version))
+                    .collect();
+                let subject = format!("{} ({needs})", names.join(", "));
+                (format!("; {needs}"), Some(subject))
+            }
         };
         self.host.audit(&format!(
-            "request {id}: {call} asks ({}{needs})",
+            "request {id}: {call} asks ({}{audit})",
             switch.what()
         ));
-        let reply = self.ask_call(id, request, Checked::shown_only(call), why, None, None);
+        let reply = self.ask_call(id, request, Checked::shown_only(call), why, None, subject);
         if let Some(pending) = &mut self.pending {
             pending.pkg = Some(switch);
         }

@@ -13,13 +13,13 @@
 //! | 66-70 | S-io (P2) | PART_INFO, PART_READ, PART_WRITE, PART_FLUSH; ENDPOINT_MINT |
 //! | 71-72 | K | PROC_STOP_ONCE, RULE_CHECK |
 //! | 73-79 | G-core (P3) | DISPLAY_CLAIM, DISPLAY_FLUSH, DISPLAY_CURSOR, DISPLAY_CURSOR_MOVE, INPUT_READ, TERM_READ, INPUT_TO_CONSOLE |
-//! | 80-89 | K, spare | MODEL_FILL 80 and 81 held (S-io, P2 task 10); ONCE_CHECK_FOR 82; P2 task 12's grants |
+//! | 80-89 | K, spare | MODEL_FILL 80 and 81 held (S-io, P2 task 10); ONCE_CHECK_FOR 82; ENTROPY 83; P2 task 12's grants |
 //! | 90-99 | S-engine (P2) | |
 //! | 100-109 | P, packages (P2) | BOOT_READ, COMP_ADD, PKG_FETCH, PKG_TIME |
 //! | 110-119 | A-core | |
 //! | 120-129 | model lane | |
 //! | 130-139 | D, drivers (ADR 0007) | RING_ATTACH, RING_NOTIFY, NOTIFY_WAIT, INPUT_PUSH |
-//! | 140-149 | C, components | |
+//! | 140-149 | C, components | EDIT_CALL (lane E) |
 //! | 150-159 | V, virtual machines (P6) | |
 //! | 160-169 | M, memory | MEM_RESERVE, MEM_COMMIT, MEM_RELEASE, PROC_QUOTA_SET, PROC_CLASS_SET |
 //! | 170-179 | U, updates (P4) | SLOT_INFO, SLOT_READ, SLOT_WRITE, SLOT_FLUSH, BOOTREC_GET, BOOTREC_SET, TRUST_ROOT, TRUST_TIME |
@@ -355,6 +355,16 @@ pub const MODEL_FILL: u64 = 80;
 /// kernel's own request, holds no table and is not checked for one. Numbered at
 /// merge (lane K's spare block).
 pub const ONCE_CHECK_FOR: u64 = 82;
+/// `entropy(buf, len) -> len`: fills `buf` with `len` random bytes, at most
+/// [`ENTROPY_MAX`], from the kernel's ChaCha20 generator, seeded at boot from the
+/// CPU's RDSEED (or RDRAND) and reseeded from it every minute or MiB. Needs no
+/// capability, like getrandom: for keys (S-engine's device key) and TLS (P5).
+/// TooBig, with nothing written, over [`ENTROPY_MAX`];
+/// [`super::Error::NoEntropy`] on a CPU with neither instruction, so a caller
+/// never gets weak bytes and refuses to make a key.
+pub const ENTROPY: u64 = 83;
+/// The most bytes one [`ENTROPY`] call returns.
+pub const ENTROPY_MAX: usize = 256;
 
 // ---- G-core, 73-79 ----
 
@@ -435,6 +445,20 @@ pub const PKG_TIME: u64 = 103;
 // ---- D, 130-139 ----
 
 // ---- C, 140-149 ----
+
+/// `edit_call(msg, msg_len, reply, reply_cap) -> len`: sends the edit
+/// service one request, as the kernel's own edit mode does, through the
+/// kernel's session journal (so a restarted service gets the session back), and
+/// copies its answer to `reply`. Only `comphost` holds the `Edit` handle, and
+/// it sends only for an app whose package holds the `edit` grant (needs
+/// [`super::cap::EDIT`], as COMP_FETCH needs COMPONENT). `msg` is an
+/// `open ...` or a `cmd ...` (`editcore::ipc`) of at most
+/// [`super::MAX_MESSAGE`] bytes: a sync or a replay is the kernel's alone, and
+/// `cmd try`, which can take a minute, is refused, all as Invalid. The answer
+/// keeps the line a build moved the cursor with (`#at path:line`) and is cut to
+/// [`super::MAX_MESSAGE`]; `reply_cap` below that is Invalid. NotFound when
+/// the edit service is not running. Numbered at merge, the first of C's block.
+pub const EDIT_CALL: u64 = 140;
 
 // ---- V, 150-159 ----
 

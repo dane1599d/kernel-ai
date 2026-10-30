@@ -81,8 +81,14 @@ impl<T: Transport> FsVolume<T> {
         on: T::Handle,
         request: Request,
     ) -> Result<(Reply, Option<T::Handle>), String> {
+        // The request's name only: its fields may be a file's bytes, such as
+        // the device key's seed.
         let what = format!("{request:?}");
-        let what = &what[..what.len().min(48)];
+        let what = String::from(
+            what.split(|c: char| !c.is_ascii_alphanumeric())
+                .next()
+                .unwrap_or(""),
+        );
         self.transport
             .call(on, request)
             .map_err(|e| format!("{what}: {e}"))
@@ -139,6 +145,29 @@ impl<T: Transport> FsVolume<T> {
                 .open(path, How::CreateFile, file_rights())?
                 .ok_or_else(|| format!("{path} came back without a handle")),
         }
+    }
+
+    /// The whole file `file` is a handle to, at most `max` bytes: a file
+    /// another process moved to `pkg`, such as the artifact `cc build` wrote,
+    /// read through that handle and nothing else.
+    pub fn read_handle(&mut self, file: T::Handle, max: u64) -> Result<Vec<u8>, String> {
+        let size = self.size(file)?;
+        if size > max {
+            return Err(format!("the file is {size} bytes, over {max}"));
+        }
+        let mut out = Vec::with_capacity(size as usize);
+        while (out.len() as u64) < size {
+            let want = (size - out.len() as u64).min(fsproto::MAX_DATA as u64) as u32;
+            let request = Request::Read {
+                off: out.len() as u64,
+                len: want,
+            };
+            match self.ask(file, request)? {
+                (Reply::Data(data), _) if !data.is_empty() => out.extend_from_slice(&data),
+                (other, _) => return Err(format!("{other:?}")),
+            }
+        }
+        Ok(out)
     }
 
     fn size(&mut self, file: T::Handle) -> Result<u64, String> {
@@ -209,6 +238,13 @@ impl<T: Transport> Volume for FsVolume<T> {
         Ok(())
     }
 
+    fn abort(&mut self) -> Result<(), String> {
+        match core::mem::take(&mut self.in_action) {
+            true => self.done(self.root, Request::Abort),
+            false => Ok(()),
+        }
+    }
+
     fn commit(&mut self) -> Result<(), String> {
         let request = match core::mem::take(&mut self.in_action) {
             true => Request::Commit,
@@ -225,22 +261,9 @@ impl<T: Transport> Volume for FsVolume<T> {
         let Some(file) = self.open(&path, How::Existing, Rights::READ.bits())? else {
             return Ok(None);
         };
-        let result = (|| {
-            let size = self.size(file)?;
-            let mut out = Vec::with_capacity(size as usize);
-            while (out.len() as u64) < size {
-                let want = (size - out.len() as u64).min(fsproto::MAX_DATA as u64) as u32;
-                let request = Request::Read {
-                    off: out.len() as u64,
-                    len: want,
-                };
-                match self.ask(file, request)? {
-                    (Reply::Data(data), _) if !data.is_empty() => out.extend_from_slice(&data),
-                    (other, _) => return Err(format!("reading {path}: {other:?}")),
-                }
-            }
-            Ok(out)
-        })();
+        let result = self
+            .read_handle(file, u64::MAX)
+            .map_err(|why| format!("reading {path}: {why}"));
         self.transport.close(file);
         result.map(Some)
     }

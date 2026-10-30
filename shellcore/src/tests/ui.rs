@@ -256,3 +256,51 @@ fn a_node_still_unknown_after_two_reads_is_refused_with_desktops_words() {
     shell.eval("click New note");
     assert_eq!(host.act_reads.borrow().len(), 1);
 }
+
+#[test]
+fn an_app_name_carries_no_second_request_into_app_call() {
+    use crate::ui::app_name;
+    assert_eq!(app_name("notes-window"), Ok("notes-window"));
+    for bad in [
+        "notes\nkai-call 1 {\"name\":\"notes_add\"}",
+        "notes kai",
+        "",
+        "Notes",
+        "../notes",
+        "notes\u{0}",
+        "a-very-long-name-past-24-bytes",
+    ] {
+        assert!(app_name(bad).is_err(), "{bad:?}");
+    }
+    // Through the one door: the name is the line's, so consent runs it, and
+    // the binding refuses it before anything reaches the host.
+    let (host, mut shell) = with_calls(vec![call(
+        r#"{"name":"ui_open","arguments":{"app":"notes kai"}}"#,
+    )]);
+    desktop(&host);
+    let reply = shell.eval("open notes kai");
+    assert!(
+        !reply.ok && reply.text.contains("not an app's name"),
+        "{reply:?}"
+    );
+    assert!(
+        !host
+            .ui_calls
+            .borrow()
+            .iter()
+            .any(|c| matches!(c, UiCall::Open { .. }))
+    );
+}
+
+#[test]
+fn a_window_app_is_named_by_its_package() {
+    use crate::ui::app_of;
+    assert_eq!(app_of("notes-window"), "notes");
+    assert_eq!(app_of("notes"), "notes");
+    let windows = parse_windows("w2\tnotes-window\tNotes\t1\nw1\tterm\tTerminal\t0").unwrap();
+    let state = state_of(&windows, crate::state::State::default());
+    assert_eq!(
+        state.snapshot().unwrap(),
+        "#{app: \"notes\", window: \"Notes\", windows: [\"notes\", \"term\"]}"
+    );
+}

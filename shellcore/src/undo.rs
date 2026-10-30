@@ -50,6 +50,9 @@ pub enum Inverse {
     /// or put a removed one back (`undo` of `rules_remove`). The shell's store
     /// does it (`Shell::revert_entry`), not the host.
     Instruction { id: u64, made: bool },
+    /// Keep app `app` running (`on`) or let it nap again, as it was before a
+    /// Settings toggle. The shell's list does it (`Shell::revert_keep`).
+    Keep { app: Name, on: bool },
     /// Put app `app`'s state back from before its call kept as `id` (ADR 0003
     /// §4's checkpoint undo, `kai-undo 1`): the app runs its own inverse.
     App { app: Name, id: u64 },
@@ -153,6 +156,7 @@ pub fn target(inverse: Inverse) -> String {
         Inverse::Instruction { id, made: true } => format!("standing instruction S{id} removed"),
         Inverse::Instruction { id, made: false } => format!("standing instruction S{id}"),
         Inverse::Profile { .. } => String::from("the profile before"),
+        Inverse::Keep { app, .. } => format!("{} keep-running as before", app.as_str()),
         Inverse::App { app, .. } => format!("{} as it was", app.as_str()),
         Inverse::Appearance {
             setting, before, ..
@@ -282,9 +286,12 @@ fn revert_one(
                 .map(|_| grant_words(app, row, withheld))
                 .map_err(Refused::Failed)
         }
-        Inverse::Instruction { .. } | Inverse::Profile { .. } | Inverse::Model { .. } => Err(
-            Refused::Failed(String::from("it is put back by the shell's own store")),
-        ),
+        Inverse::Instruction { .. }
+        | Inverse::Profile { .. }
+        | Inverse::Keep { .. }
+        | Inverse::Model { .. } => Err(Refused::Failed(String::from(
+            "it is put back by the shell's own store",
+        ))),
     }
 }
 
@@ -327,6 +334,7 @@ pub fn reverse(inverse: Inverse) -> Inverse {
             undo: !undo,
         },
         Inverse::Instruction { id, made } => Inverse::Instruction { id, made: !made },
+        Inverse::Keep { app, on } => Inverse::Keep { app, on: !on },
         Inverse::Appearance {
             setting,
             before,
@@ -382,6 +390,7 @@ pub fn inverse_word(inverse: Option<Inverse>) -> String {
         ),
         Some(Inverse::Instruction { id, made }) => format!("instruction:{id}:{}", u8::from(made)),
         Some(Inverse::Profile { key }) => format!("profile:{key}"),
+        Some(Inverse::Keep { app, on }) => format!("keep:{}:{}", app.as_str(), u8::from(on)),
         Some(Inverse::App { app, id }) => format!("app:{}:{id}", app.as_str()),
         Some(Inverse::Appearance {
             setting,
@@ -442,6 +451,10 @@ pub fn parse_inverse(text: &str) -> Option<Option<Inverse>> {
         },
         "profile" => Inverse::Profile {
             key: number(parts.next())?,
+        },
+        "keep" => Inverse::Keep {
+            app: Name::new(parts.next()?)?,
+            on: flag(parts.next())?,
         },
         "app" => Inverse::App {
             app: Name::new(parts.next()?)?,

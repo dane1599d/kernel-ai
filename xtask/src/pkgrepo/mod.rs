@@ -80,6 +80,9 @@ pub struct Package {
     /// The `kai-grants 1` names its `kai-app 1` text asks for. No artifact has
     /// a `kai.app` section yet (ADR 0001), so this is empty.
     pub grants: Vec<String>,
+    /// The OS rows its effects may call, as its artifact's `kai.actions`
+    /// declares them (`kaipkg::effects`).
+    pub effects: Vec<String>,
     pub bytes: Vec<u8>,
 }
 
@@ -90,7 +93,8 @@ impl Package {
     }
 
     /// Its `custom.kai` index fields (ADR 0011 §3): the header's, then the
-    /// grants and actions, then `yanked`. `depends` keeps the header's text.
+    /// grants and actions, then `yanked`, and `effects` for an app that declares
+    /// some. `depends` keeps the header's text.
     pub fn index(&self) -> Value {
         let depends: Vec<&str> = self
             .header_text
@@ -108,8 +112,13 @@ impl Package {
             "actions": self.actions,
             "yanked": false,
         });
-        if let (Some(world), Value::Object(map)) = (&self.header.world, &mut index) {
-            map.insert("world".into(), world.as_str().into());
+        if let Value::Object(map) = &mut index {
+            if let Some(world) = &self.header.world {
+                map.insert("world".into(), world.as_str().into());
+            }
+            if !self.effects.is_empty() {
+                map.insert("effects".into(), self.effects.clone().into());
+            }
         }
         index
     }
@@ -347,6 +356,7 @@ pub fn pack(root: &Path, app: &App, artifact: &[u8]) -> Result<Package, String> 
         }
         actions.push(row.name.clone());
     }
+    let effects = declarable(rows.effects).map_err(fail)?;
     // The world is a dependency on the OS's virtual package (ADR 0011 §6).
     let (package, minor) = world.split_once('@').ok_or("a world has no version")?;
     let header_text = format!(
@@ -365,8 +375,18 @@ pub fn pack(root: &Path, app: &App, artifact: &[u8]) -> Result<Package, String> 
         header_text,
         actions,
         grants: Vec::new(),
+        effects,
         bytes,
     })
+}
+
+/// `effects`, an artifact's declared rows, if an app may declare each: one no
+/// app may call never ships, as the OS would refuse the app.
+fn declarable(effects: Vec<String>) -> Result<Vec<String>, String> {
+    match effects.iter().find(|row| !shellcore::apps::declarable(row)) {
+        Some(row) => Err(format!("its effects call {row}, which no app may")),
+        None => Ok(effects),
+    }
 }
 
 /// `kai:app@<major>.<minor>`, the one `kai:app` version `world` (such as
