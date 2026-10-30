@@ -13,7 +13,7 @@ use crate::{hpet, log};
 use alloc::vec;
 use alloc::vec::Vec;
 
-const SERIAL: &str = "kai-data";
+const SERIAL: &str = kabi::fs::DATA_SERIAL;
 const COMMITS: u64 = 200;
 const BLOCK: usize = 4096;
 const SECTORS_PER_BLOCK: u64 = 8;

@@ -209,7 +209,7 @@ static PARTITIONS: Mutex<Vec<Found>> = Mutex::new(Vec::new());
 
 /// The partition types the kernel looks for, and their names for log lines.
 const KNOWN: [(diskmap::Guid, &str); 5] = [
-    (diskmap::KAI_DATA_TYPE, "kai-data"),
+    (diskmap::KAI_DATA_TYPE, kabi::fs::DATA_SERIAL),
     (diskmap::KAI_CACHE_TYPE, "kai-cache"),
     // The slots (ADR 0008 §1), reached only through `updated`'s SLOT_* calls.
     (diskmap::KAI_R_TYPE, "kai-r"),
