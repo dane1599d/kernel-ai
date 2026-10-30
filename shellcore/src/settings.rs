@@ -168,8 +168,6 @@ impl Shell {
         self.switch_profile(id, name, logged).map(|(was, _)| was)
     }
 
-    /// Keeps app `name` running (`on`) or lets it nap: the supervisor is told,
-    /// the list is saved, and the change is logged with its undo.
     /// `appearance-set`: the `appearance_set` row's change, from a click, with
     /// its undo; the row's words. `look` refuses a setting or value it does not
     /// take, and that refusal is the answer.
@@ -200,6 +198,8 @@ impl Shell {
         Ok(words)
     }
 
+    /// Keeps app `name` running (`on`) or lets it nap: the supervisor is told,
+    /// the list is saved, and the change is logged with its undo.
     fn keep_running(&mut self, request: &str, name: &str, on: bool) -> Result<String, String> {
         if !self.app_names()?.iter().any(|app| app == name) {
             return Err(format!("{name} is no app that can nap"));
