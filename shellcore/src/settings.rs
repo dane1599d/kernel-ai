@@ -224,6 +224,12 @@ impl Shell {
         row: &str,
         withhold: bool,
     ) -> Result<String, String> {
+        // The names first: nothing changes, and nothing is logged, for a pair
+        // the log and its undo could not hold.
+        let named = valid_name(name) && crate::grants::valid_row(row);
+        let (true, Some(app), Some(row_name)) = (named, Name::new(name), Name::new(row)) else {
+            return Err(String::from("not an app and a row"));
+        };
         let host = self.host.as_ref();
         let changed = match withhold {
             true => crate::grants::revoke(host, name, row)?,
@@ -236,9 +242,6 @@ impl Shell {
         if !changed {
             return Ok(format!("{name} {row} is {now} already"));
         }
-        let (Some(app), Some(row_name)) = (Name::new(name), Name::new(row)) else {
-            return Err(String::from("not an app and a row"));
-        };
         let action = if withhold {
             "grant_revoke"
         } else {

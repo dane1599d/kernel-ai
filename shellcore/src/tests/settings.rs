@@ -198,3 +198,26 @@ fn settings_lists_each_declared_row_and_a_click_withholds_one_with_undo() {
         Some("kai-withheld 1\n")
     );
 }
+
+#[test]
+fn an_odd_name_in_a_grant_change_changes_and_logs_nothing() {
+    let host = host();
+    host.apps.borrow_mut().rows.load("files", FILES).unwrap();
+    *host.withheld_disk.borrow_mut() = Some(String::from("kai-withheld 1\nfiles fs_list\n"));
+    let mut shell = shell(&host);
+    let app = crate::settings::SETTINGS_APP;
+    let next = shell.next_id;
+    for bad in [
+        "grants-restore files Fs_List",
+        "grants-restore files fs_list\"x",
+        "grants-revoke Files fs_read",
+        "grants-restore files a_row_name_far_too_long_to_hold",
+    ] {
+        assert!(shell.settings(app, bad, true).is_err(), "{bad:?}");
+    }
+    assert_eq!(shell.next_id, next, "nothing was logged");
+    assert_eq!(
+        host.withheld_disk.borrow().as_deref(),
+        Some("kai-withheld 1\nfiles fs_list\n")
+    );
+}
