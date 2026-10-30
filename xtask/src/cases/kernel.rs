@@ -353,6 +353,17 @@ pub(super) const CASES: &[TestCase] = &[
             "comphost: the first settings answer reached the app",
             "app-settings: the theme was set before Settings opened",
             "settings: appearance theme light",
+            // What each other page was given, from the app's log (its window is
+            // private to the agent): the rules, the apps with rows, About, the
+            // profiles, the apps that can nap, the keep-running list and the
+            // restart window.
+            "settings: rules ",
+            "settings: grants ",
+            "settings: about ",
+            "settings: profiles ",
+            "settings: apps ",
+            "settings: keep running ",
+            "settings: restart window off",
             "app-settings: ui_open started Settings and its window opened",
             "desktop: the agent's ui view: ok (private window)",
             "desktop: the agent's ui act: refused (private window)",
