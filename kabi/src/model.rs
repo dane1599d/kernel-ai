@@ -12,6 +12,23 @@ use alloc::vec::Vec;
 pub const SERIAL: &str = "kai-model";
 /// The magic every GGUF file starts with.
 pub const MAGIC: [u8; 4] = *b"GGUF";
+
+/// Serials that give a disk another role, so it is never taken for the model
+/// by its content (K, 2026-10-30): the update disk, the import disk, whose GGUF
+/// file is only to be imported, and the data disk.
+pub const ROLE_SERIALS: [&str; 3] = [
+    crate::update::DISK_SERIAL,
+    crate::update::IMPORT_SERIAL,
+    "kai-data",
+];
+
+/// Whether the disk with `serial`, whose first sector is `first`, may be the
+/// model when no disk has [`SERIAL`]: one that starts with GGUF's magic and has
+/// no other role. VirtualBox gives NVMe disks a serial of its own, so there the
+/// content is what tells the model disk apart.
+pub fn may_be_model(serial: &str, first: &[u8]) -> bool {
+    first.starts_with(&MAGIC) && !ROLE_SERIALS.contains(&serial)
+}
 /// The one GGUF version ring 3's reader takes.
 pub const VERSION: u32 = 3;
 
@@ -222,6 +239,23 @@ pub fn shape(text: &str) -> alloc::string::String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_disk_with_a_role_is_never_the_model() {
+        let gguf = b"GGUF\x03\0\0\0rest of the file";
+        assert!(super::may_be_model("VBOX NVMe 1234", gguf));
+        for serial in ["kai-import", "kai-update", "kai-data"] {
+            assert!(!super::may_be_model(serial, gguf), "{serial}");
+        }
+        assert!(!super::may_be_model("other", b"KAIREPLAY1\n"));
+        assert!(!super::may_be_model("other", b""));
+        // The import and update disks are slots no slot number shares.
+        use crate::update::{A, B, DISK, IMPORT, NONE, R};
+        let numbers = [R, A, B, DISK, IMPORT, NONE];
+        for (i, n) in numbers.iter().enumerate() {
+            assert!(numbers[i + 1..].iter().all(|m| m != n));
+        }
+    }
+
     #[test]
     fn a_shape_reads_each_number_as_n() {
         let host = super::shape("ok #{ejections: 13, migrations: 61, switches: 9876}");
