@@ -130,7 +130,8 @@ fn execute(options: &Options) -> Result<(), String> {
     let root = workspace_root();
     if options.task == Task::Smoke {
         let before = buildsvc::verify::real_repo(&root)?;
-        let versions = components::build(&root)?;
+        // The smoke drives the broken notes versions too.
+        let versions = components::build_for_tests(&root)?;
         smoke::run(&versions)?;
         edit_smoke::run(&root, &versions)?;
         boot_smoke::run(&root, &versions)?;

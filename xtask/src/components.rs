@@ -228,13 +228,20 @@ pub fn check_no_test_only(modules: &[Module]) -> Result<(), String> {
     check_none_of(modules, TEST_ONLY)
 }
 
+/// Where a version's module sits on the boot drive.
+fn module_path(version: &Version) -> String {
+    format!("comp/{}/{}.wasm", version.recipe.component, version.label)
+}
+
+/// By exact module path: a component may ship some versions and keep others for
+/// the tests (notes ships 1 and 2 and tests 3-import), so the component's name
+/// alone is not the fixture.
 fn check_none_of(modules: &[Module], fixtures: &[Version]) -> Result<(), String> {
     for fixture in fixtures {
-        let prefix = format!("comp/{}/", fixture.recipe.component);
-        if let Some(found) = modules.iter().find(|m| m.path.starts_with(&prefix)) {
+        let path = module_path(fixture);
+        if modules.iter().any(|m| m.path == path) {
             return Err(format!(
-                "{} is a test fixture and must not ship in this image",
-                found.path
+                "{path} is a test fixture and must not ship in this image"
             ));
         }
     }
@@ -304,7 +311,7 @@ fn build_one(root: &Path, version: &Version) -> Result<Module, String> {
         source_len / 1024
     );
     Ok(Module {
-        path: format!("comp/{}/{}.wasm", version.recipe.component, version.label),
+        path: module_path(version),
         bytes,
     })
 }
@@ -467,10 +474,15 @@ mod tests {
             module("comp/notes/1.wasm"),
             module("comp/fixture-window/1.wasm"),
         ];
+        assert_eq!(module_path(&fixtures[0]), "comp/fixture-window/1.wasm");
         let why = check_none_of(&dirty, &fixtures).unwrap_err();
         assert!(why.contains("comp/fixture-window/1.wasm"), "{why}");
-        // A component whose name only starts the same is not the fixture.
-        let near = [module("comp/fixture-window-x/1.wasm")];
+        // A component whose name only starts the same, or another version of the
+        // same component, is not the fixture.
+        let near = [
+            module("comp/fixture-window-x/1.wasm"),
+            module("comp/fixture-window/2.wasm"),
+        ];
         assert_eq!(check_none_of(&near, &fixtures), Ok(()));
         // The list that ships is checked with `check_no_test_only`.
         assert_eq!(check_no_test_only(&clean), Ok(()));
@@ -487,7 +499,15 @@ mod tests {
             assert!(source.contains("components::check_no_test_only("), "{name}");
             assert!(!source.contains("build_for_tests"), "{name}");
         }
-        assert!(include_str!("main.rs").contains("components::build_for_tests("));
+        // The tasks that boot test cases (build, test, the smoke) and tune build
+        // the test images, with the fixtures; none of them packs only what ships.
+        for (name, source) in [
+            ("main.rs", include_str!("main.rs")),
+            ("tune/boot.rs", include_str!("tune/boot.rs")),
+        ] {
+            assert!(source.contains("components::build_for_tests("), "{name}");
+            assert!(!source.contains("components::build("), "{name}");
+        }
     }
 
     /// Notes' window build carries Notes' own action rows, under its world.
