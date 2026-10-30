@@ -20,6 +20,7 @@ use livecore::local::restored_of;
 use livecore::nap::Nap;
 use livecore::napper::{Napped, Napper};
 use livecore::settings::Settings;
+use sha2::{Digest, Sha256};
 use user::{arg, args, println, sys};
 use wasmhost::{Limits, LiveInstance};
 
@@ -56,6 +57,8 @@ struct SysEnv {
     /// What the app may import beyond `kai:app` and `kai:ui`, from the plan
     /// line's name for it (the kernel's), never from its package.
     grants: wasmhost::Grants,
+    /// The image's own versions fetched, by digest: only they get `grants`.
+    image: wasmhost::grants::FromImage,
 }
 
 fn version_log(line: &str) {
@@ -73,7 +76,10 @@ impl Env for SysEnv {
         }
         let mut artifact = vec![0u8; len];
         match sys::comp_fetch(label, &mut artifact)? {
-            fetched if fetched == len => Ok(artifact),
+            fetched if fetched == len => {
+                self.image.fetched(label, Sha256::digest(&artifact).into());
+                Ok(artifact)
+            }
             _ => Err(Error::Invalid),
         }
     }
@@ -108,13 +114,21 @@ impl Env for SysEnv {
         // The sink stays attached; quiet only mutes it, so a standby that becomes
         // the active version again logs as before.
         // The manifest's `lifecycle` picks the contract: 1 hand-bound, 2 kai:live.
+        // The grants hold only for the image's own versions: an upload or a
+        // package version swapped in under this name runs without them.
+        let grants = self
+            .image
+            .grants_for(&Sha256::digest(module).into(), self.grants);
+        if grants != self.grants {
+            println!("comphost: this version is not the image's; it runs without its grants");
+        }
         let mut instance =
-            wasmhost::load_live_granted(module, self.limits, Some(version_log), self.grants)?;
+            wasmhost::load_live_granted(module, self.limits, Some(version_log), grants)?;
         livecore::Instance::quiet(&mut instance, quiet);
         // The Settings window is kept from the agent: its rules and grants are
         // typed-only data, and Kai must not park focus on Revoke.
         if let LiveInstance::V2(core) = &mut instance {
-            core.allow_agent_private(self.grants.settings);
+            core.allow_agent_private(grants.settings);
         }
         // Its windows are laid out with the fonts they are drawn with.
         if let (LiveInstance::V2(core), true) = (&mut instance, self.windows)
@@ -149,6 +163,7 @@ fn main() -> i32 {
         windows: windows.is_some(),
         disk: None,
         grants: wasmhost::Grants::default(),
+        image: wasmhost::grants::FromImage::default(),
         limits: Limits {
             fuel_call: settings.fuel_call,
             fuel_life: settings.fuel_life,

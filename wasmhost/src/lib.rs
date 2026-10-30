@@ -24,6 +24,8 @@ pub mod desk;
 mod desk_tests;
 mod effects;
 pub mod grants;
+#[cfg(test)]
+mod grants_tests;
 mod instance;
 pub mod linear;
 pub mod link;
