@@ -27,6 +27,8 @@ use wasmhost::{Limits, LiveInstance};
 mod disk;
 #[path = "comphost/edit.rs"]
 mod edit;
+#[path = "comphost/system.rs"]
+mod system;
 #[path = "comphost/ui.rs"]
 mod ui;
 
@@ -53,8 +55,9 @@ struct SysEnv {
     /// The app's saved state on disk, with a plan line's `dir=apps`; opened
     /// at the first restore, which names the app.
     disk: Option<disk::Disk>,
-    /// What the app's package is granted: `edit` if the kernel gave this process
-    /// an `Edit` handle.
+    /// What the app may import beyond `kai:app` and `kai:ui`: `edit` if the kernel
+    /// gave this process an `Edit` handle, and `system` if the plan line's name for
+    /// it (the kernel's, never its package's) is the System monitor's.
     grants: wasmhost::Grants,
 }
 
@@ -159,6 +162,10 @@ fn main() -> i32 {
     };
     // The editor's rules for what it may send; none for an app without the grant.
     let mut edits = env.grants.edit.then(editcore::gate::Gate::new);
+    // The plan line's name is the grant: only the System monitor reads the
+    // machine, and only it has the route to llm for `health`.
+    env.grants.system = name == system::MONITOR_APP;
+    let mut source = env.grants.system.then(system::Source::new);
     let mut napper = Napper::new(Nap::new(settings.nap_ms, now_ms()));
     napper.nap.keep_running(settings.keep_running);
     let mut host = match Host::start(env, &name, settings) {
@@ -176,6 +183,8 @@ fn main() -> i32 {
     let mut request = vec![0u8; kabi::MAX_MESSAGE];
     // When the host's own wait ends; 0 is never.
     let mut tick_at = deadline(host.timeout_ms());
+    // Whether the nap holds a lease for a read of the machine waiting.
+    let mut leased = false;
     loop {
         let open = windows.as_ref().is_some_and(ui::Ui::wants_poll);
         let wait = match (open, host.timeout_ms()) {
@@ -183,6 +192,16 @@ fn main() -> i32 {
             (true, 0) => ui::POLL_MS,
             (true, ms) => ms.min(ui::POLL_MS),
         };
+        // A read waiting for its sample is use: the app does not nap until it
+        // has it, and the wait ends when the sample is due.
+        let due = source
+            .as_ref()
+            .and_then(|source| source.wait_ms(&mut host, now_ms()));
+        if due.is_some() != leased {
+            leased = due.is_some();
+            napper.nap.lease(leased);
+        }
+        let wait = soonest(wait, due);
         let wait = napper.wait(&host, wait, now_ms());
         let mut caller = u64::MAX;
         match sys::svc_recv(&mut request, wait, &mut caller) {
@@ -250,6 +269,23 @@ fn main() -> i32 {
                 sys::sleep_ms(100);
             }
         }
+        // A read of the machine that is due is answered, and what the app drew
+        // for the sample is shown.
+        if let Some(source) = source.as_mut()
+            && source.pump(&mut host, now_ms())
+        {
+            settle(&mut windows, &mut edits, &mut host);
+        }
+    }
+}
+
+/// The shorter of the host's wait (0 is never) and the time until a read is due
+/// (at least 1, since 0 would mean never).
+fn soonest(wait: u64, due: Option<u64>) -> u64 {
+    match due {
+        None => wait,
+        Some(ms) if wait == 0 => ms.max(1),
+        Some(ms) => wait.min(ms.max(1)),
     }
 }
 

@@ -179,6 +179,7 @@ name = "ccserve"
 version = "0.1.0-dev"
 dependencies = [
  "agentabi",
+ "kabi",
  "kailink",
  "promptcore",
  "serde_json",
@@ -361,6 +362,21 @@ version = "0.1.0-dev"
 dependencies = [
  "comp-terminal",
  "uikit",
+]
+
+[[package]]
+name = "comp-terminal-window"
+version = "0.1.0-dev"
+dependencies = [
+ "appabi",
+ "comp-terminal",
+ "comp-terminal-ui",
+ "comp-ui-bind",
+ "compsdk",
+ "livecore",
+ "uikit",
+ "wasmhost",
+ "wit-bindgen",
 ]
 
 [[package]]
@@ -1534,12 +1550,14 @@ version = "0.1.0-dev"
 dependencies = [
  "agentabi",
  "appabi",
+ "ccserve",
  "kabi",
  "kaigrants",
  "kaiprofile",
  "livecore",
  "llmproto",
  "look",
+ "promptcore",
  "rhai",
  "sched",
  "serde_json",
@@ -1852,6 +1870,7 @@ version = "0.1.0-dev"
 dependencies = [
  "appabi",
  "bootslot",
+ "ccserve",
  "cpufeat",
  "deskcore",
  "ecdsa",
@@ -1871,6 +1890,7 @@ dependencies = [
  "llmproto",
  "look",
  "p256",
+ "promptcore",
  "quant",
  "sched",
  "serde_json",
@@ -1879,6 +1899,7 @@ dependencies = [
  "spin 0.12.3",
  "supervise",
  "surfabi",
+ "systemabi",
  "talc",
  "termcore",
  "uikit",
@@ -1997,6 +2018,7 @@ dependencies = [
  "deskcore",
  "kabi",
  "livecore",
+ "llmproto",
  "surfabi",
  "systemabi",
  "uikit",

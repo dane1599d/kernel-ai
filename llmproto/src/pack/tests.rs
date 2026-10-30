@@ -173,3 +173,95 @@ fn index_rows_are_named_once_and_shown_in_full_on_demand() {
     // An index line is not a row's own line: no other name is shown by it.
     assert!(!shows(&pack, "component_list"));
 }
+
+/// An app row for the tests: an OS row's shape under an app's name.
+fn app_row(name: &'static str, like: &str) -> &'static Action {
+    let like = agentabi::find(&agentabi::ROWS, like).unwrap();
+    std::boxed::Box::leak(std::boxed::Box::new(Action { name, ..*like }))
+}
+
+fn notes() -> apps::AppGroup {
+    apps::AppGroup {
+        app: "notes".into(),
+        rows: std::vec![
+            app_row("notes_add", "fs_create"),
+            app_row("notes_count", "cpus")
+        ],
+    }
+}
+
+#[test]
+fn the_apps_turn_names_each_apps_rows_on_one_line() {
+    let (turn, left_out) = apps::turn(&[notes()]);
+    assert_eq!(
+        turn,
+        std::format!("{}\nnotes: notes_add notes_count", apps::APPS_HEADING)
+    );
+    assert!(left_out.is_empty());
+    // Its full lines are the OS's rendering of the rows, one each.
+    let text = apps::group_text(&notes());
+    assert!(
+        text.starts_with("## notes\nnotes_add(path: string, text: string)"),
+        "{text}"
+    );
+    assert!(text.contains("\nnotes_count() -> int"), "{text}");
+    // No apps, no turn; an app with no rows is left out.
+    assert_eq!(apps::turn(&[]).0, "");
+    let empty = apps::AppGroup {
+        app: "empty".into(),
+        rows: std::vec![],
+    };
+    assert_eq!(
+        apps::turn(&[empty]),
+        (String::new(), std::vec!["empty".into()])
+    );
+}
+
+#[test]
+fn apps_past_the_budget_are_left_out_and_the_rest_fit_it() {
+    let names: std::vec::Vec<&'static str> = (0..40)
+        .map(|i| &*std::boxed::Box::leak(std::format!("app{i}_do_something_long").into_boxed_str()))
+        .collect();
+    let groups: std::vec::Vec<apps::AppGroup> = (0..40)
+        .map(|i| apps::AppGroup {
+            app: std::format!("app{i}"),
+            rows: std::vec![app_row(names[i], "cpus"); 3],
+        })
+        .collect();
+    let (turn, left_out) = apps::turn(&groups);
+    assert!(
+        estimate_tokens(&turn) <= apps::APPS_BUDGET,
+        "{}",
+        estimate_tokens(&turn)
+    );
+    assert!(!left_out.is_empty());
+    assert!(turn.contains("\napp0: "));
+    assert!(!turn.contains(&std::format!("\n{}: ", left_out[0])));
+}
+
+#[test]
+fn the_apps_wire_reads_back_whole_entries_only() {
+    let answers = [
+        ("notes", "version 2\nkai-actions 1\n"),
+        ("settings", "version 1\nx\n"),
+    ];
+    let (text, left_out) = apps::wire(&answers, 1 << 12);
+    assert!(left_out.is_empty());
+    assert_eq!(apps::entries(&text), Some(answers.to_vec()));
+    // An entry that would not fit is left out whole, never cut.
+    let (text, left_out) = apps::wire(&answers, 40);
+    assert_eq!(left_out, std::vec![String::from("settings")]);
+    assert_eq!(apps::entries(&text), Some(std::vec![answers[0]]));
+    assert_eq!(apps::entries(""), Some(std::vec![]));
+    for bad in [
+        "app notes 99\nshort",
+        "app notes\nx",
+        "app no/tes 1\nx",
+        "app  1\nx",
+        "apps notes 1\nx",
+        "app notes 1",
+        "app notes -1\n",
+    ] {
+        assert_eq!(apps::entries(bad), None, "{bad}");
+    }
+}
