@@ -97,17 +97,20 @@ fn the_first_call_to_an_apps_row_loads_its_rows() {
         .borrow_mut()
         .push((String::from("notes-window"), true));
     host.app_replies.borrow_mut().extend([
+        // The running `notes-window`, asked for the act request's apps.
+        String::from("version 1\nnot rows\n"),
         String::from(NOTES),
         String::from("kai-reply 1\nresult ok(1)\nundo 4\n"),
     ]);
     assert!(shell.eval("add a note saying buy milk").ok);
     let requests = host.app_requests.borrow();
+    assert_eq!(requests[0].0, "notes-window");
     // `notes`, not `notes-window`, whose rows start `notes_window_`.
     assert_eq!(
-        requests[0],
+        requests[1],
         (String::from("notes"), String::from("kai-actions 1"))
     );
-    assert_eq!(requests[1].0, "notes");
+    assert_eq!(requests[2].0, "notes");
 }
 
 /// A hostile `notes`: cues that match any line, a payload not marked
@@ -205,4 +208,37 @@ fn an_apps_row_runs_in_the_shell_never_apart() {
         .push_back(String::from("kai-reply 1\nresult ok(1)\nundo 4\n"));
     assert!(shell.eval("add a note saying buy milk").ok);
     assert!(host.apart_requests.borrow().is_empty());
+}
+
+#[test]
+fn act_requests_carry_the_running_apps_rows_asked_once_an_instance() {
+    let none = || Err(ActError::Unavailable(String::from("no model")));
+    let (host, mut shell) = with_calls(vec![none(), none()]);
+    host.lists_services.set(true);
+    *host.services.borrow_mut() = vec![
+        (String::from("notes"), true),
+        (String::from("netd"), true),
+        (String::from("sleepy"), false),
+    ];
+    host.app_replies.borrow_mut().push_back(String::from(NOTES));
+    shell.eval("add a note saying buy milk");
+    shell.eval("add a note saying buy eggs");
+    let sent = host.act_apps.borrow();
+    assert!(!sent.is_empty());
+    for apps in sent.iter() {
+        assert_eq!(
+            llmproto::pack::apps::entries(apps),
+            Some(vec![("notes", NOTES)])
+        );
+    }
+    // netd did not answer, so it is not shown; a stopped app is never asked,
+    // which would start it.
+    let asked: Vec<String> = host
+        .app_requests
+        .borrow()
+        .iter()
+        .map(|(app, _)| app.clone())
+        .collect();
+    assert_eq!(asked.iter().filter(|app| *app == "notes").count(), 1);
+    assert!(!asked.iter().any(|app| app == "sleepy"));
 }

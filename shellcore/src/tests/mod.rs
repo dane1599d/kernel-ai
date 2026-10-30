@@ -61,6 +61,7 @@ struct FakeHost {
     act_states: RefCell<Vec<String>>,
     /// Each act request's second-round read (P3 task 10).
     act_reads: RefCell<Vec<Option<llmproto::act::Read>>>,
+    act_apps: RefCell<Vec<String>>,
     /// What the shell asked `desktop`, and how `desktop` answers.
     ui_calls: RefCell<Vec<crate::ui::UiCall>>,
     ui_answer: RefCell<Option<UiAnswer>>,
@@ -216,6 +217,7 @@ impl FakeHost {
             act_lines: RefCell::new(Vec::new()),
             act_states: RefCell::new(Vec::new()),
             act_reads: RefCell::new(Vec::new()),
+            act_apps: RefCell::new(Vec::new()),
             ui_calls: RefCell::new(Vec::new()),
             ui_answer: RefCell::new(None),
             state: RefCell::new(crate::state::State::default()),
@@ -600,6 +602,7 @@ impl Host for FakeHost {
         self.act_lines.borrow_mut().push(request.line.clone());
         self.act_states.borrow_mut().push(request.state.clone());
         self.act_reads.borrow_mut().push(request.read.clone());
+        self.act_apps.borrow_mut().push(request.apps.clone());
         self.calls
             .borrow_mut()
             .pop_front()

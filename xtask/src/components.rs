@@ -203,6 +203,20 @@ fn build_one(root: &Path, version: &Version) -> Result<Module, String> {
     })
 }
 
+fn world(recipe: &Recipe) -> String {
+    format!("app:{0}/{0}@1.0.0", recipe.component)
+}
+
+/// The app's `kai-actions 1` section, from its WIT under `root`.
+pub fn actions(root: &Path, recipe: &Recipe) -> Result<String, String> {
+    let dirs: Vec<PathBuf> = KAI_WIT
+        .iter()
+        .chain(recipe.wit)
+        .map(|dir| root.join(dir))
+        .collect();
+    crate::kai_actions::write(&dirs, &world(recipe))
+}
+
 /// The module with its manifest, action rows and source sections appended. The
 /// rows come from the app's WIT under `root`.
 pub fn pack(
@@ -212,13 +226,8 @@ pub fn pack(
     mut module: Vec<u8>,
     source: &[u8],
 ) -> Result<Vec<u8>, String> {
-    let world = format!("app:{0}/{0}@1.0.0", recipe.component);
-    let dirs: Vec<PathBuf> = KAI_WIT
-        .iter()
-        .chain(recipe.wit)
-        .map(|dir| root.join(dir))
-        .collect();
-    let actions = crate::kai_actions::write(&dirs, &world)?;
+    let world = world(recipe);
+    let actions = actions(root, recipe)?;
     let manifest = Manifest {
         lifecycle: 2,
         component: recipe.component.into(),
