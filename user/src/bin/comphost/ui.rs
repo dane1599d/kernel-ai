@@ -135,8 +135,9 @@ impl Ui {
             }
             for (window, node, rows, cells) in sized {
                 let performed = serve_shown(host, |core| core.code_size(window, node, rows, cells));
-                // What the app queued while it handled the size goes out as for a close.
-                self.forward(performed);
+                // What the app queued while it handled the size goes out as for a close:
+                // a layout is never a person's key or click.
+                self.forward(performed, false);
             }
         }
     }
@@ -211,7 +212,7 @@ impl Ui {
             // Typed input is a transaction too: what the app saves or asks for
             // because of it is kept like an action call's.
             let performed = serve_shown(host, |core| core.ui_input(app, input));
-            self.forward(performed);
+            self.forward(performed, true);
         }
         if typed {
             self.pump(host);
@@ -222,12 +223,19 @@ impl Ui {
 
     /// Sends what the app's transaction queued to `desktop`, for the shell to
     /// run; `desktop` knows which app this is from the kernel, not from us.
-    fn forward(&mut self, performed: Option<Performed>) {
+    /// `user` is true only for a transaction a person's key or click caused
+    /// (`ui_input`): never a close, a reply, an `ui_act` from the agent or a call.
+    fn forward(&mut self, performed: Option<Performed>, user: bool) {
         let Some(performed) = performed.filter(|p| !p.is_empty()) else {
             return;
         };
         let lines = performed.effect_lines();
-        let request = alloc::format!("{}{lines}", effects::PUT);
+        let put = if user {
+            effects::PUT_USER
+        } else {
+            effects::PUT
+        };
+        let request = alloc::format!("{put}{lines}");
         match sys::call_route(self.route, request.as_bytes(), &mut self.reply, CALL_MS) {
             Ok(len) if &self.reply[..len.min(self.reply.len())] == b"ok" => {
                 self.sent.record(&lines);
@@ -266,7 +274,7 @@ impl Ui {
                 outcome: done.outcome,
             };
             match serve_shown(host, |core| core.deliver_event(&event)) {
-                Some(performed) => self.forward(Some(performed)),
+                Some(performed) => self.forward(Some(performed), false),
                 None => println!("comphost: the result for ticket {ticket} did not reach the app"),
             }
         }
@@ -325,7 +333,7 @@ impl Ui {
                     let performed = serve_shown(host, |core| {
                         core.ui_events(window, &[UiEvent::CloseRequested])
                     });
-                    self.forward(performed);
+                    self.forward(performed, false);
                 }
                 Told::Action {
                     window,
@@ -348,7 +356,7 @@ impl Ui {
                         core.ui_act(window, node, action, value.clone())
                             .map(|_refused_or_not| ())
                     });
-                    self.forward(performed);
+                    self.forward(performed, false);
                 }
             }
         }

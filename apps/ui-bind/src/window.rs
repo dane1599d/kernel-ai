@@ -14,6 +14,11 @@ pub trait Sink {
     fn remove(&mut self, window: u32, node: NodeId) -> Result<(), UiError>;
     fn commit(&mut self, window: u32) -> Result<(), UiError>;
     fn close(&mut self, window: u32) -> Result<(), UiError>;
+    /// Gives keyboard focus to `node`, which must take it. Apps that leave focus
+    /// to the user need not say.
+    fn focus(&mut self, _window: u32, _node: NodeId) -> Result<(), UiError> {
+        Ok(())
+    }
 }
 
 /// The window an app has open, and the tree it was last sent.

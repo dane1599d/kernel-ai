@@ -3,6 +3,7 @@
 //! read as hostile.
 
 use super::*;
+use crate::settings::SETTINGS_APP;
 
 fn host() -> Rc<FakeHost> {
     let host = FakeHost::new();
@@ -21,7 +22,7 @@ fn only_settings_asks_and_a_change_needs_a_click() {
     let mut shell = shell(&host);
     assert!(shell.settings("notes", "profiles", true).is_err());
     let err = shell
-        .settings("settings", "keep-running on notes", false)
+        .settings(SETTINGS_APP, "keep-running on notes", false)
         .unwrap_err();
     assert!(err.contains("key or a click"), "{err}");
     assert!(host.kept.borrow().is_empty());
@@ -45,10 +46,10 @@ fn the_grammar_is_exact_and_arguments_are_hostile() {
         "file ../x",
         "delete-everything",
     ] {
-        assert!(shell.settings("settings", bad, true).is_err(), "{bad:?}");
+        assert!(shell.settings(SETTINGS_APP, bad, true).is_err(), "{bad:?}");
     }
     let long = format!("profile-set {}", "a".repeat(600));
-    assert!(shell.settings("settings", &long, true).is_err());
+    assert!(shell.settings(SETTINGS_APP, &long, true).is_err());
     assert!(host.kept.borrow().is_empty());
 }
 
@@ -56,16 +57,16 @@ fn the_grammar_is_exact_and_arguments_are_hostile() {
 fn reads_answer_in_the_apps_format() {
     let host = host();
     let mut shell = shell(&host);
-    let profiles = shell.settings("settings", "profiles", false).unwrap();
+    let profiles = shell.settings(SETTINGS_APP, "profiles", false).unwrap();
     assert!(profiles.lines().any(|l| l == "* default"), "{profiles}");
     assert_eq!(
-        shell.settings("settings", "rules", false),
+        shell.settings(SETTINGS_APP, "rules", false),
         Ok(String::new())
     );
-    let about = shell.settings("settings", "about", false).unwrap();
+    let about = shell.settings(SETTINGS_APP, "about", false).unwrap();
     assert!(about.contains("licence: MPL-2.0"), "{about}");
     assert_eq!(
-        shell.settings("settings", "apps", false),
+        shell.settings(SETTINGS_APP, "apps", false),
         Ok(String::from("notes\nfiles"))
     );
 }
@@ -76,10 +77,10 @@ fn a_profile_set_by_click_is_logged_as_the_click_and_undoes() {
     let mut shell = shell(&host);
     assert!(
         shell
-            .settings("settings", "profile-set quiet", true)
+            .settings(SETTINGS_APP, "profile-set quiet", true)
             .is_ok()
     );
-    let profiles = shell.settings("settings", "profiles", false).unwrap();
+    let profiles = shell.settings(SETTINGS_APP, "profiles", false).unwrap();
     assert!(profiles.lines().any(|l| l == "* quiet"), "{profiles}");
     assert!(
         shell.log.text().contains("user-click:settings"),
@@ -87,7 +88,7 @@ fn a_profile_set_by_click_is_logged_as_the_click_and_undoes() {
         shell.log.text()
     );
     assert!(shell.eval("undo").ok);
-    let profiles = shell.settings("settings", "profiles", false).unwrap();
+    let profiles = shell.settings(SETTINGS_APP, "profiles", false).unwrap();
     assert!(profiles.lines().any(|l| l == "* default"), "{profiles}");
 }
 
@@ -96,7 +97,7 @@ fn keep_running_tells_the_supervisor_saves_the_list_and_undoes() {
     let host = host();
     let mut shell = shell(&host);
     assert_eq!(
-        shell.settings("settings", "keep-running on notes", true),
+        shell.settings(SETTINGS_APP, "keep-running on notes", true),
         Ok(String::from("notes keep-running on"))
     );
     assert_eq!(*host.kept.borrow(), [(String::from("notes"), true)]);
@@ -107,7 +108,7 @@ fn keep_running_tells_the_supervisor_saves_the_list_and_undoes() {
     // A system service is no app to keep.
     assert!(
         shell
-            .settings("settings", "keep-running on desktop", true)
+            .settings(SETTINGS_APP, "keep-running on desktop", true)
             .is_err()
     );
     assert!(shell.eval("undo").text.starts_with("Undone: "));

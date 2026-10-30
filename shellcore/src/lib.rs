@@ -27,9 +27,11 @@ mod agentcore;
 pub mod analyse;
 pub mod apart;
 mod appearance;
+pub mod appline;
 pub mod apps;
 mod brackets;
 mod centry;
+mod cmode;
 mod commands;
 pub mod data;
 mod effects;
@@ -43,6 +45,7 @@ mod profiles;
 mod rules;
 pub mod script;
 mod settings;
+pub use settings::SETTINGS_APP;
 mod show;
 pub mod standing;
 pub mod state;
@@ -207,6 +210,11 @@ pub trait Host {
     /// answer after its `ok`, or why not.
     fn ui(&self, _call: &ui::UiCall) -> Result<String, String> {
         ui::no_desktop()
+    }
+    /// One `kai-cc 1` message to the `cc` service, and its reply (ADR 0012;
+    /// the `c>` prompt).
+    fn cc(&self, _request: &[u8]) -> Result<Vec<u8>, String> {
+        Err(String::from("there is no c> service here"))
     }
     /// A read of the user's files: its text, or why there is none.
     fn fs_read(&self, _read: FsRead) -> Result<String, String> {
@@ -478,6 +486,9 @@ pub struct Shell {
     partial: Option<String>,
     /// A request the model asked to clarify: the next line is joined to it.
     clarifying: Option<String>,
+    /// The terminals of apps that run shell lines, by app (`appline`): each has an
+    /// entry, question and proposal of its own.
+    fronts: alloc::collections::BTreeMap<String, panel::Terminal>,
     /// Since the last panel line: whether the line went to the model, whether
     /// it answered in words, and code's result line for what ran.
     asked_model: bool,
@@ -500,6 +511,8 @@ pub struct Shell {
     last_value: Option<rhai::Dynamic>,
     value_rets: Vec<(u64, agentabi::RetType)>,
     values: Vec<(u64, centry::CallValue)>,
+    /// The `c>` prompt's state.
+    c: cmode::CMode,
 }
 
 impl Shell {
@@ -549,6 +562,7 @@ impl Shell {
             last_output: None,
             partial: None,
             clarifying: None,
+            fronts: alloc::collections::BTreeMap::new(),
             asked_model: false,
             worded: false,
             done_line: None,
@@ -560,6 +574,7 @@ impl Shell {
             last_value: None,
             value_rets: Vec::new(),
             values: Vec::new(),
+            c: cmode::CMode::default(),
         }
         .with_saved_log()
         .with_saved_rules()
@@ -650,8 +665,12 @@ impl Shell {
     }
 
     fn eval_line(&mut self, input: &str) -> Reply {
+        // An open Rhai entry takes the next line first, `:c` included.
         if let Some(entry) = self.partial.take() {
             return self.continue_entry(entry, input);
+        }
+        if let Some(reply) = self.c_line(input) {
+            return reply;
         }
         let input = input.trim();
         self.last_output = None;
