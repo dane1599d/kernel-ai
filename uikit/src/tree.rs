@@ -71,6 +71,7 @@ impl Tree {
         if id == ROOT || id == parent {
             return Err(UiError::BadParent);
         }
+        widget.check()?;
         let weight = widget.weight();
         if let Some(old) = self.nodes.get(&id) {
             if old.parent != parent || old.children.len() > widget.max_children() {

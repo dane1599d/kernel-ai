@@ -21,7 +21,7 @@ use uikit::a11y::Action;
 use uikit::geom::Rect;
 use uikit::input::Input;
 use uikit::layout::{FixedAdvance, Measure};
-use uikit::widget::{UiError, UiEvent, Value};
+use uikit::widget::{UiError, UiEvent, Value, Widget};
 use uikit::{ActError, Frame, Ui};
 use wasmi::{Caller, Error, Extern};
 
@@ -41,6 +41,15 @@ pub enum Update {
     Frame { window: u32, frame: Frame },
     /// The app closed the window.
     Closed(u32),
+    /// A code view (`kai:code`) shows this many rows and cells now, or showed for
+    /// the first time. The app is told in a call of its own
+    /// ([`CoreInstance::code_size`]), since it cannot be told while it commits.
+    CodeSize {
+        window: u32,
+        node: u32,
+        rows: u16,
+        cells: u16,
+    },
 }
 
 /// An instance's windows and the updates comphost has not taken.
@@ -48,6 +57,8 @@ pub enum Update {
 pub(crate) struct UiHost {
     pub(crate) ui: Ui,
     pub(crate) updates: Vec<Update>,
+    /// What each code view showed when last told, by (window, node).
+    sizes: alloc::collections::BTreeMap<(u32, u32), (u16, u16)>,
     measure: Option<Box<dyn Measure>>,
     /// Whether the app may keep a window from the agent (`set-agent-private`):
     /// only one the system image grants it, as comphost says.
@@ -78,9 +89,34 @@ impl UiHost {
     }
 
     fn closed(&mut self, window: u32) {
-        self.updates
-            .retain(|u| !matches!(u, Update::Frame { window: w, .. } if *w == window));
+        self.updates.retain(|u| {
+            !matches!(
+                u,
+                Update::Frame { window: w, .. } | Update::CodeSize { window: w, .. } if *w == window
+            )
+        });
+        self.sizes.retain(|(w, _), _| *w != window);
         self.updates.push(Update::Closed(window));
+    }
+
+    /// Notes what a code view shows, as an update when it changed; a newer size
+    /// for the same view replaces one comphost has not taken.
+    fn sized(&mut self, window: u32, node: u32, rows: u16, cells: u16) {
+        if self.sizes.insert((window, node), (rows, cells)) == Some((rows, cells)) {
+            return;
+        }
+        self.updates.retain(|u| {
+            !matches!(
+                u,
+                Update::CodeSize { window: w, node: n, .. } if (*w, *n) == (window, node)
+            )
+        });
+        self.updates.push(Update::CodeSize {
+            window,
+            node,
+            rows,
+            cells,
+        });
     }
 }
 
@@ -169,8 +205,13 @@ pub(crate) fn view(
         caller: &mut caller,
     };
     let (args, ret) = appabi::lift_args(&mut guest, &func, &core).map_err(|t| Error::new(t.0))?;
-    let result = run(&mut guest.caller.data_mut().ui, entry.name, &args)
-        .map_err(|why| Error::new(format!("{VIEW} {}: {why}", entry.name)))?;
+    let result = run_in(
+        &mut guest.caller.data_mut().ui,
+        entry.interface,
+        entry.name,
+        &args,
+    )
+    .map_err(|why| Error::new(format!("{VIEW} {}: {why}", entry.name)))?;
     let value = match result {
         Ok(Some(id)) => Val::Result(Ok(Some(Box::new(Val::U32(id))))),
         Ok(None) => Val::Result(Ok(None)),
@@ -184,8 +225,20 @@ pub(crate) fn view(
 
 /// The call itself: `Ok(Ok(id))` for `open`, `Ok(Ok(None))` for the rest, the
 /// app's error, or why its arguments make no sense (a trap).
+#[cfg(test)]
 pub(crate) fn run(
     host: &mut UiHost,
+    name: &str,
+    args: &[Val],
+) -> Result<Result<Option<u32>, UiError>, String> {
+    run_in(host, VIEW, name, args)
+}
+
+/// [`run`] for a function of `interface`: `kai:ui/view` or `kai:code/code`, whose
+/// `put` takes a code view.
+pub(crate) fn run_in(
+    host: &mut UiHost,
+    interface: &str,
     name: &str,
     args: &[Val],
 ) -> Result<Result<Option<u32>, UiError>, String> {
@@ -206,7 +259,13 @@ pub(crate) fn run(
         }
         "put" => {
             let (node, parent) = (node()?, u32_of(args.get(2))?);
-            let (layout, widget) = (layout(args.get(3))?, widget(args.get(4))?);
+            // `kai:code/code.put` takes a code view where `view.put` takes a widget.
+            let widget = if interface == crate::code::CODE {
+                Widget::Code(uival::code_view(args.get(4))?)
+            } else {
+                widget(args.get(4))?
+            };
+            let layout = layout(args.get(3))?;
             host.ui
                 .window(window)
                 .and_then(|w| w.put(node, parent, layout, widget))
@@ -222,7 +281,12 @@ pub(crate) fn run(
         "commit" => {
             let m = measure(&host.measure);
             let frame = host.ui.window(window).map(|w| w.commit(m));
-            frame.map(|frame| host.shown(window, frame))
+            frame.map(|frame| {
+                for &(node, rows, cells) in &frame.code_sizes {
+                    host.sized(window, node, rows, cells);
+                }
+                host.shown(window, frame)
+            })
         }
         "close" => host.ui.close(window).map(|()| host.closed(window)),
         "set-unsaved" => {
@@ -324,17 +388,25 @@ impl CoreInstance {
     /// Gives the app `events` from `window`, one `on-ui` call each. An app that
     /// does not export `kai:ui/input` gets none.
     pub fn ui_events(&mut self, window: u32, events: &[UiEvent]) -> Result<(), Fault> {
-        let Some(export) = self.on_ui.clone() else {
-            return Ok(());
+        let on_ui = match self.on_ui.clone() {
+            Some(export) => {
+                let entry = tables::EXPORTS
+                    .iter()
+                    .find(|f| f.interface == INPUT && f.name == "on-ui")
+                    .ok_or_else(|| Fault::new(Reason::Host, "no kai:ui/input table"))?;
+                Some(entry.func(export))
+            }
+            None => None,
         };
-        let entry = tables::EXPORTS
-            .iter()
-            .find(|f| f.interface == INPUT && f.name == "on-ui")
-            .ok_or_else(|| Fault::new(Reason::Host, "no kai:ui/input table"))?;
-        let func = entry.func(export);
         for e in events {
-            let args = [Val::U32(window), uival::event(window, e)];
-            livecore::Instance::call(self, &func, &args)?;
+            // A code view's key, click or wheel goes to `kai:code/code-input`.
+            let Some(event) = uival::event(window, e) else {
+                self.code_event(window, e)?;
+                continue;
+            };
+            if let Some(func) = &on_ui {
+                livecore::Instance::call(self, func, &[Val::U32(window), event])?;
+            }
         }
         Ok(())
     }
