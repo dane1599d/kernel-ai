@@ -38,8 +38,10 @@ pub(crate) struct HostState {
     /// True only while a real key or click is being handled
     /// ([`crate::CoreInstance::ui_input`], [`crate::CoreInstance::ui_events_user`]).
     /// A host function that must tell a person's input from the agent's
-    /// `ui_act` reads it; everything else, replies and events included, leaves it
-    /// false, so the default is to refuse.
+    /// `ui_act` reads it; everything else, events and timers included, leaves it
+    /// false, so the default is to refuse. The one exception is the answer to a
+    /// `kai:edit` message a person's key caused, which carries it on
+    /// ([`crate::edit::MAX_CHAIN`]).
     pub(crate) user_input: bool,
     /// The settings requests the app sent and comphost has not taken (`kai:settings`).
     pub(crate) settings: crate::settings::SettingsHost,

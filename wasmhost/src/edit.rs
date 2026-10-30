@@ -47,11 +47,24 @@ pub struct EditRequest {
     pub user: bool,
 }
 
+/// How many answers deep a person's key still counts as the cause: the key sends
+/// a message, its answer makes the app send the next, and so on to this many.
+/// An editor sends one message at a time, so an edit typed and then a build asked
+/// for is two or three of these; a chain that never ends is cut off here.
+pub const MAX_CHAIN: u8 = 16;
+/// Most tickets remembered as a person's; the oldest are forgotten first.
+const MAX_BY_PERSON: usize = 2 * MAX_QUEUED;
+
 /// The messages not yet taken, and the next ticket.
 #[derive(Default)]
 pub(crate) struct EditHost {
     pub(crate) queue: Vec<EditRequest>,
     next: u32,
+    /// Tickets sent for a person, with how many answers deep each is (0 for the
+    /// message their key sent itself).
+    by_person: Vec<(u32, u8)>,
+    /// How many answers deep the call in progress is, if a person's chain.
+    depth: u8,
 }
 
 /// `edit.send(message) -> u32`: the message's ticket.
@@ -90,12 +103,28 @@ pub(crate) fn send(mut caller: Caller<'_, HostState>, ptr: i32, len: i32) -> Res
     }
     let ticket = host.next;
     host.next = host.next.wrapping_add(1);
+    if user {
+        if host.by_person.len() >= MAX_BY_PERSON {
+            host.by_person.remove(0);
+        }
+        host.by_person.push((ticket, host.depth));
+    }
     host.queue.push(EditRequest {
         ticket,
         message,
         user,
     });
     Ok(ticket as i32)
+}
+
+impl EditHost {
+    /// Forgets `ticket`; if a person's key caused it and the chain is not at
+    /// its end, how deep the call that answers it is.
+    fn continued(&mut self, ticket: u32) -> Option<u8> {
+        let at = self.by_person.iter().position(|(t, _)| *t == ticket)?;
+        let (_, depth) = self.by_person.remove(at);
+        (depth < MAX_CHAIN).then_some(depth + 1)
+    }
 }
 
 impl CoreInstance {
@@ -122,7 +151,24 @@ impl CoreInstance {
             Ok(bytes) => Val::Result(Ok(Some(Box::new(Val::Bytes(bytes))))),
             Err(why) => Val::Result(Err(Some(Box::new(Val::String(why))))),
         };
-        livecore::Instance::call(self, &entry.func(export), &[Val::U32(ticket), outcome])?;
-        Ok(())
+        // The answer to a message a person's key caused is part of what the key
+        // does: the editor sends an edit, and when it is answered the build the
+        // person asked for behind it. So what the app sends in that call is the
+        // person's too, down to `MAX_CHAIN` answers. An answer to anything else,
+        // the agent's `ui_act` included, starts no chain.
+        let chain = self.store.data_mut().edit.continued(ticket);
+        if let Some(depth) = chain {
+            let state = self.store.data_mut();
+            state.user_input = true;
+            state.edit.depth = depth;
+        }
+        let result =
+            livecore::Instance::call(self, &entry.func(export), &[Val::U32(ticket), outcome]);
+        if chain.is_some() {
+            let state = self.store.data_mut();
+            state.user_input = false;
+            state.edit.depth = 0;
+        }
+        result.map(|_| ())
     }
 }
