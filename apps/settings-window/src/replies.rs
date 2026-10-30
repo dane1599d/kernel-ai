@@ -6,7 +6,7 @@
 //! | Read | Answer |
 //! |---|---|
 //! | `rules` | one line a rule: `<n> <words>` or `S<n> <words>` |
-//! | `grants` | `kai-grants 1` text |
+//! | `grants` | one line an effect row: `<app>`, `<row>` and `allowed` or `withheld`, tab apart |
 //! | `about` | `<key>: <value>` lines for `version`, `commit`, `licence`, `source` and `notices` |
 //! | `profiles` | one name a line, the one in use marked `* ` |
 //! | `apps` | the names of the apps that can nap, one a line |
@@ -14,7 +14,7 @@
 
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use comp_settings::access::by_app;
+use comp_settings::access;
 use comp_settings::files::{Appearance, Apps, Updates};
 use comp_settings::{RuleLine, RuleRef, Settings};
 
@@ -82,9 +82,8 @@ impl Read {
                 match self {
                     Read::Rules => settings.rules = rules(text),
                     Read::Grants => {
-                        let grants = kaigrants::parse(text)
-                            .map_err(|e| alloc::format!("the grants are not readable: {e:?}"))?;
-                        settings.access = by_app(&grants);
+                        settings.access = access::parse(text)
+                            .ok_or_else(|| String::from("the grants are not readable"))?;
                     }
                     Read::About => settings.about = about(text),
                     Read::Profiles => {
@@ -304,13 +303,38 @@ mod tests {
     }
 
     #[test]
-    fn the_grants_are_read_with_the_grants_parser() {
+    fn the_grants_are_the_shells_effect_rows() {
         let mut s = Settings::default();
-        assert!(Read::Grants.apply(&mut s, b"not kai-grants").is_err());
+        assert!(Read::Grants.apply(&mut s, b"not a row").is_err());
         assert!(Read::Grants.apply(&mut s, &[0xff, 0xfe]).is_err());
         assert!(s.access.is_empty());
-        Read::Grants.apply(&mut s, b"kai-grants 1\n").unwrap();
+        Read::Grants.apply(&mut s, b"").unwrap();
         assert!(s.access.is_empty());
+        let rows = "notes\tnotes_add\tallowed\nnotes\tfs_write\twithheld\n";
+        Read::Grants.apply(&mut s, rows.as_bytes()).unwrap();
+        assert_eq!(s.access.len(), 1);
+        assert_eq!(s.access[0].access.len(), 2);
+        // A later answer with nothing readable leaves the page as it was.
+        assert!(Read::Grants.apply(&mut s, b"junk").is_err());
+        assert_eq!(s.access.len(), 1);
+    }
+
+    /// What the app takes from the shell is what it can send back.
+    #[test]
+    fn every_row_listed_is_a_row_the_host_takes_in_a_request() {
+        let rows = "a-b\tfs_list\tallowed\nc2\tx9\twithheld\n";
+        let mut s = Settings::default();
+        Read::Grants.apply(&mut s, rows.as_bytes()).unwrap();
+        for app in &s.access {
+            let read = alloc::format!("grants {}", app.app);
+            assert_eq!(classify(&read), Ok(Kind::Read), "{read}");
+            for x in &app.access {
+                for verb in ["grants-revoke", "grants-restore"] {
+                    let request = alloc::format!("{verb} {} {}", app.app, x.row);
+                    assert_eq!(classify(&request), Ok(Kind::Change), "{request}");
+                }
+            }
+        }
     }
 
     #[test]

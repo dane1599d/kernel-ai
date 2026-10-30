@@ -6,7 +6,7 @@
 //! --profile component` has not run (CI runs it first).
 
 use appabi::{Func, Ty, Val};
-use comp_settings_ui::{LEGIBLE, TABS, THEME};
+use comp_settings_ui::{APP_LIST, LEGIBLE, RESTORE, REVOKE, TABS, THEME};
 use livecore::Instance;
 use livecore::txn::{Inputs, Storage};
 use uikit::widget::{UiEvent, Value};
@@ -251,6 +251,71 @@ fn only_a_change_a_persons_input_caused_is_marked_as_theirs() {
             .iter()
             .all(|r| r.kind == SettingsKind::Read)
     );
+}
+
+#[test]
+fn an_apps_effect_row_is_revoked_and_restored_by_app_and_row() {
+    let Some(mut g) = load() else { return };
+    let (w, _) = frame(&mut g);
+    call(&mut g, |g| g.deliver_event(&AppEvent::Started)).unwrap();
+    let asked = sent(&mut g);
+    assert_eq!(asked[1].2, "grants");
+    let rows = "notes\tnotes_add\tallowed\nnotes\tfs_write\twithheld\n";
+    answer(&mut g, asked[1].0, Ok(rows));
+    g.take_ui();
+
+    // The page of what apps can do, with the one app chosen.
+    call(&mut g, |g| {
+        g.ui_events(w, &[UiEvent::Changed(TABS, Value::Index(1))])
+            .unwrap()
+    });
+    g.take_ui();
+    call(&mut g, |g| {
+        g.ui_events(w, &[UiEvent::Changed(APP_LIST, Value::Index(0))])
+            .unwrap()
+    });
+    let shown = names(&frame(&mut g).1);
+    assert!(shown.iter().any(|n| n == "notes_add: allowed"), "{shown:?}");
+    assert!(shown.iter().any(|n| n == "fs_write: withheld"), "{shown:?}");
+
+    // A real click on Revoke asks for exactly that row, and the row shows as
+    // withheld only once the shell says it is done.
+    call(&mut g, |g| {
+        g.ui_events_user(w, &[UiEvent::Pressed(REVOKE)]).unwrap()
+    });
+    let asked = g.take_settings();
+    assert_eq!(asked.len(), 1);
+    assert_eq!(asked[0].request, "grants-revoke notes notes_add");
+    assert_eq!((asked[0].kind, asked[0].user), (SettingsKind::Change, true));
+    assert!(g.take_ui().is_empty());
+    answer(&mut g, asked[0].ticket, Ok("notes notes_add withheld"));
+    let shown = names(&frame(&mut g).1);
+    assert!(
+        shown.iter().any(|n| n == "notes_add: withheld"),
+        "{shown:?}"
+    );
+
+    // Restore the other one; a refused change puts the page back as it was.
+    call(&mut g, |g| {
+        g.ui_events(w, &[UiEvent::Pressed(RESTORE + 1)]).unwrap()
+    });
+    let asked = g.take_settings();
+    assert_eq!(asked.len(), 1);
+    assert_eq!(asked[0].request, "grants-restore notes fs_write");
+    assert!(!asked[0].user, "the agent's press is not a click");
+    answer(
+        &mut g,
+        asked[0].ticket,
+        Err("a change needs a key or a click"),
+    );
+    let shown = names(&frame(&mut g).1);
+    assert!(shown.iter().any(|n| n == "fs_write: withheld"), "{shown:?}");
+
+    // A press on the button the row no longer has asks for nothing.
+    call(&mut g, |g| {
+        g.ui_events_user(w, &[UiEvent::Pressed(REVOKE)]).unwrap()
+    });
+    assert!(g.take_settings().is_empty());
 }
 
 #[test]
