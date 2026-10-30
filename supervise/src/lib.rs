@@ -15,6 +15,8 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use kabi::{Limits, cap};
 
+pub mod appcall;
+
 /// Defaults for a service that does not set its own limits.
 pub const DEFAULT_PAGES: u64 = 1024;
 pub const DEFAULT_BURST_MS: u64 = 2000;

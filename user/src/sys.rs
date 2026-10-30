@@ -584,6 +584,27 @@ pub fn app_ctl(name: &str, verb: AppCtl, reply: &mut [u8]) -> Result<usize, Erro
     .map(|n| n as usize)
 }
 
+/// `request`, a `kai-call 1` or `kai-undo 1`, to app `name`, sent by the kernel
+/// (APP_CALL), waiting at most `wait_ms`; the app's reply goes into `reply`.
+/// For the supervisor.
+pub fn app_call(name: &str, request: &str, reply: &mut [u8], wait_ms: u32) -> Result<usize, Error> {
+    let cap = u64::try_from(reply.len())
+        .unwrap_or(0)
+        .min(u64::from(u32::MAX));
+    call(
+        call::APP_CALL,
+        [
+            name.as_ptr() as u64,
+            name.len() as u64,
+            request.as_ptr() as u64,
+            request.len() as u64,
+            reply.as_mut_ptr() as u64,
+            cap | (u64::from(wait_ms) << 32),
+        ],
+    )
+    .map(|n| n as usize)
+}
+
 /// Puts these rectangles of the claimed back buffer on screen.
 pub fn display_flush(rects: &[kabi::display::FlushRect]) -> Result<u64, Error> {
     call(
