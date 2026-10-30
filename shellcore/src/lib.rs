@@ -26,12 +26,16 @@ pub mod actlog;
 mod agentcore;
 pub mod analyse;
 pub mod apart;
+mod appearance;
 mod brackets;
+mod centry;
 mod commands;
 pub mod data;
+mod effects;
 mod engine;
 mod instructions;
 mod packages;
+mod panel;
 mod pkg;
 mod profiles;
 mod rules;
@@ -48,11 +52,14 @@ mod undo;
 mod undoing;
 
 use actions::Pending;
+pub use agentcore::Outcome;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::rc::Rc;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+pub use centry::CallValue;
+pub use effects::EffectDone;
 pub use engine::Exec;
 use engine::Line;
 use kabi::sched::{SchedStats, TrialRequest};
@@ -60,6 +67,7 @@ use llmproto::act::{ActError, ActRequest, Call};
 use llmproto::chat::Completion;
 use llmproto::script::{Answer, AnswerError, ScriptRequest};
 use llmproto::tune::TuneRequest;
+pub use panel::PanelResult;
 use rhai::{AST, Dynamic, Engine, EvalAltResult, Scope};
 use tiers::Tier;
 
@@ -174,6 +182,14 @@ pub trait Host {
     /// used up by its first check, so two requests could not both pass.
     fn restart_service(&self, _name: &str, _proof: Proof) -> Result<(), String> {
         Err(String::from("services cannot be restarted here"))
+    }
+    /// The user's appearance as `kai-appearance 1` text (P4 task 8).
+    fn appearance_read(&self) -> Option<String> {
+        None
+    }
+    /// Saves the appearance and has `desktop` draw with it.
+    fn appearance_write(&self, _text: &str) -> Result<(), String> {
+        Err(String::from("there is no appearance to set here"))
     }
     /// One of the agent's window rows, asked of `desktop` (P3 task 10): the
     /// answer after its `ok`, or why not.
@@ -441,6 +457,11 @@ pub struct Shell {
     partial: Option<String>,
     /// A request the model asked to clarify: the next line is joined to it.
     clarifying: Option<String>,
+    /// Since the last panel line: whether the line went to the model, whether
+    /// it answered in words, and code's result line for what ran.
+    asked_model: bool,
+    worded: bool,
+    done_line: Option<String>,
     /// The `pack_id` of the pack the model is given, logged with each model turn
     /// (ADR 0010 §7): the same one llm reports for its `act` slot.
     pack_id: u64,
@@ -453,6 +474,11 @@ pub struct Shell {
     /// The source of the data the call now running was decided after (a
     /// view's second round), for consent (ADR 0002 D6).
     steered: Option<&'static str>,
+    /// The `c>` entry now running, and its calls' values (P4 task 12).
+    c_entry: Option<centry::CEntry>,
+    last_value: Option<rhai::Dynamic>,
+    value_rets: Vec<(u64, agentabi::RetType)>,
+    values: Vec<(u64, centry::CallValue)>,
 }
 
 impl Shell {
@@ -502,10 +528,17 @@ impl Shell {
             last_output: None,
             partial: None,
             clarifying: None,
+            asked_model: false,
+            worded: false,
+            done_line: None,
             pack_id: llmproto::pack::act_pack_id(),
             saved_log: None,
             owner_once: None,
             steered: None,
+            c_entry: None,
+            last_value: None,
+            value_rets: Vec::new(),
+            values: Vec::new(),
         }
         .with_saved_log()
         .with_saved_rules()
@@ -794,6 +827,7 @@ impl Shell {
         if request.is_empty() {
             return Reply::err("usage: ? <what you want done>");
         }
+        self.asked_model = true;
         let id = self.next_id;
         self.next_id += 1;
         self.host.audit(&format!(
@@ -854,6 +888,7 @@ impl Shell {
     }
 
     fn say(&mut self, id: u64, request: &str, reply: String) -> Reply {
+        self.worded = true;
         self.record(id, request, "", "answered in words");
         Reply::ok(reply)
     }

@@ -180,11 +180,13 @@ fn a_click_and_the_agent_reach_on_ui_as_the_same_event() {
     let at = Point::new(b.x + b.w / 2, b.y + b.h / 2);
     g.ui_input(w, Input::Button { at, down: true }).unwrap();
     g.ui_input(w, Input::Button { at, down: false }).unwrap();
+    assert!(g.last_call_by_user(), "a click is a person's input");
     // on-ui(window, pressed(1)): the window, case 0, node 1.
     let seen: Vec<u32> = (0..3).map(|i| word(&mut g, EVENT + 4 * i)).collect();
     assert_eq!((seen, word(&mut g, EVENT + 24)), (vec![w, 0, 1], 1));
     assert_eq!(g.ui_act(w, 1, Action::Click, None), Ok(Ok(())));
     assert_eq!(word(&mut g, EVENT + 24), 2);
+    assert!(!g.last_call_by_user(), "the agent's action is not");
     assert_eq!(
         g.ui_act(w, 9, Action::Click, None),
         Ok(Err(crate::ActRefused::Node(uikit::ActError::NoNode)))
@@ -366,4 +368,44 @@ fn keys_drive_the_notes_window_guest() {
         note(&mut g),
         Some(Val::Option(Some(Box::new(Val::String(String::from("hi"))))))
     );
+}
+
+/// `set-agent-private` on window 1 of a host holding one open window.
+fn keep_private(host: &mut crate::ui::UiHost, private: bool) -> Result<(), String> {
+    let args = [Val::U32(1), Val::Bool(private)];
+    crate::ui::run(host, "set-agent-private", &args).map(|done| {
+        assert_eq!(done, Ok(None));
+    })
+}
+
+#[test]
+fn only_a_granted_app_keeps_a_window_from_the_agent() {
+    let mut host = crate::ui::UiHost::default();
+    let open = [Val::String("Settings".into()), Val::U16(320), Val::U16(200)];
+    assert_eq!(crate::ui::run(&mut host, "open", &open), Ok(Ok(Some(1))));
+    // Without the grant the call traps, and the window stays shared.
+    let refused = keep_private(&mut host, true).unwrap_err();
+    assert!(refused.contains("grant"), "{refused}");
+    let frame = host
+        .ui
+        .window(1)
+        .unwrap()
+        .commit(&uikit::layout::FixedAdvance);
+    assert!(!frame.agent_private);
+    // With it, the flag shows at the next commit, and can be lifted again.
+    host.may_be_private = true;
+    keep_private(&mut host, true).unwrap();
+    let frame = host
+        .ui
+        .window(1)
+        .unwrap()
+        .commit(&uikit::layout::FixedAdvance);
+    assert!(frame.agent_private);
+    keep_private(&mut host, false).unwrap();
+    let frame = host
+        .ui
+        .window(1)
+        .unwrap()
+        .commit(&uikit::layout::FixedAdvance);
+    assert!(!frame.agent_private);
 }

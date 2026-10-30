@@ -112,6 +112,10 @@ pub enum Folder {
     /// that follows a setting (`updated`'s restart window; the desktop's
     /// appearance and the supervisor's profiles next).
     Settings,
+    /// `/system/apps`, where comphost keeps each app's saved state: one folder
+    /// per app, named for it (P4). comphost is the OS's own host and the app's
+    /// wasm never reaches `fs`, so a host only touches its own app's folder.
+    Apps,
 }
 
 impl Folder {
@@ -121,6 +125,7 @@ impl Folder {
             "trust" => Some(Folder::Trust),
             "updates" => Some(Folder::Updates),
             "settings" => Some(Folder::Settings),
+            "apps" => Some(Folder::Apps),
             _ => None,
         }
     }
@@ -132,6 +137,7 @@ impl Folder {
             Folder::Trust => kabi::fs::SYSTEM_TRUST,
             Folder::Updates => kabi::fs::SYSTEM_UPDATES,
             Folder::Settings => kabi::fs::SYSTEM_SETTINGS,
+            Folder::Apps => kabi::fs::SYSTEM_APPS,
         }
     }
 
@@ -146,7 +152,7 @@ impl Folder {
     /// (ADR 0008 §10), as the kernel's UPDATE capability is.
     pub fn only_for(self) -> Option<&'static str> {
         match self {
-            Folder::Pkg | Folder::Settings => None,
+            Folder::Pkg | Folder::Settings | Folder::Apps => None,
             Folder::Trust | Folder::Updates => Some(UPDATED),
         }
     }

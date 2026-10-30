@@ -7,88 +7,76 @@
 //! with no allocation: past that the oldest goes and is counted, so a shell that
 //! stops reading never grows kernel memory, and the next read says how many
 //! were lost.
+//!
+//! The ring and its wake are `kabi::event_ring`, tested on the host; here is its
+//! lock, the clock, and the wake of the reader's `svc_recv` (P4). A `work` post
+//! only wakes the reader and takes no slot.
 
-use kabi::event::{BOX, DAY_MINUTES, DROPPED, Event, Kind};
+use core::sync::atomic::{AtomicU64, Ordering};
+use kabi::event::{BOX, DROPPED, Event};
+use kabi::event_ring::Ring;
 use spin::Mutex;
 use x86_64::instructions::interrupts::without_interrupts;
 
-struct Ring {
-    events: [Option<Event>; BOX],
-    /// Where the oldest is.
-    head: usize,
-    len: usize,
-    /// Lost since the last read.
-    dropped: u64,
-    /// The minute (since 1970) of the last read, 0 before the first.
-    minute: u64,
-}
-
-impl Ring {
-    /// Keeps `event`, dropping the oldest when the box is full.
-    fn push(&mut self, event: Event) {
-        if self.len == BOX {
-            self.head = (self.head + 1) % BOX;
-            self.len -= 1;
-            self.dropped += 1;
-        }
-        let at = (self.head + self.len) % BOX;
-        self.events[at] = Some(event);
-        self.len += 1;
-    }
-
-    /// Adds the minutes of the day that began since the last read: at most a
-    /// box's worth, the rest counted as dropped.
-    fn add_minutes(&mut self, now: u64) {
-        let last = core::mem::replace(&mut self.minute, now);
-        if last == 0 || now <= last {
-            return;
-        }
-        let begun = now - last;
-        let kept = begun.min(BOX as u64);
-        self.dropped += begun - kept;
-        for minute in now + 1 - kept..=now {
-            let of_day = (minute % u64::from(DAY_MINUTES)) as u16;
-            if let Some(event) = Event::timed(Kind::Time(of_day)) {
-                self.push(event);
-            }
-        }
-    }
-}
-
-static RING: Mutex<Ring> = Mutex::new(Ring {
-    events: [None; BOX],
-    head: 0,
-    len: 0,
-    dropped: 0,
-    minute: 0,
-});
+static RING: Mutex<Ring> = Mutex::new(Ring::new());
+/// A copy of the box's reader, set only under the lock with it: `svc_recv`
+/// of any other server checks it first and never takes the lock.
+static READER: AtomicU64 = AtomicU64::new(0);
 
 fn with<R>(f: impl FnOnce(&mut Ring) -> R) -> R {
-    without_interrupts(|| f(&mut RING.lock()))
-}
-
-/// Keeps `event`, dropping the oldest when the box is full.
-pub fn post(event: Event) {
-    with(|ring| ring.push(event))
-}
-
-/// Takes every event, oldest first, after the count of those dropped (0 when
-/// none were). The minutes begun since the last read come last.
-pub fn take() -> (u64, [Option<Event>; BOX]) {
-    let minute = crate::clock::unix_seconds().map_or(0, |seconds| seconds / 60);
-    with(|ring| {
-        if minute != 0 {
-            ring.add_minutes(minute);
-        }
-        let mut out = [None; BOX];
-        for (n, slot) in out.iter_mut().take(ring.len).enumerate() {
-            *slot = ring.events[(ring.head + n) % BOX].take();
-        }
-        let dropped = core::mem::take(&mut ring.dropped);
-        ring.head = 0;
-        ring.len = 0;
-        (dropped, out)
+    without_interrupts(|| {
+        let mut ring = RING.lock();
+        let out = f(&mut ring);
+        READER.store(ring.reader(), Ordering::SeqCst);
+        out
     })
+}
+
+/// Keeps `event` (a `work` event only wakes: it takes no slot), dropping the
+/// oldest when the box is full, and wakes the box's reader if it waits in
+/// `svc_recv`. The wake is set under the box's lock; the reader is woken after
+/// it, outside.
+pub fn post(event: Event) {
+    let reader = with(|ring| ring.post(event));
+    if reader != 0 {
+        crate::ipc::wake_server(reader);
+    }
+}
+
+/// Whether process `pid` is the reader and a post came since it last looked.
+pub fn woken(pid: u64) -> bool {
+    pid != 0 && READER.load(Ordering::SeqCst) == pid && with(|ring| ring.woken(pid))
+}
+
+/// Takes the wake for `pid`, once: whether there was one. A wake that lands
+/// as the wait's deadline passes leaves that `svc_recv` `TimedOut`, and the
+/// next returns `Woken` at once.
+pub fn take_wake(pid: u64) -> bool {
+    pid != 0 && READER.load(Ordering::SeqCst) == pid && with(|ring| ring.take_wake(pid))
+}
+
+/// The box's reader, 0 for none (for `event-wake`).
+pub fn reader() -> u64 {
+    with(|ring| ring.reader())
+}
+
+/// Process `pid` ended: it reads the box no more, so a later process with its
+/// pid, or none, inherits nothing.
+pub fn forget(pid: u64) {
+    with(|ring| ring.forget(pid));
+}
+
+fn minute_now() -> u64 {
+    crate::clock::unix_seconds().map_or(0, |seconds| seconds / 60)
+}
+
+/// Takes every event for reader `pid`, which EVENT_READ admitted, oldest first,
+/// after the count of those dropped (0 when none were); `pid` is the box's
+/// reader from now on, whom a post wakes. The minutes begun since the last read
+/// come last.
+pub fn take_for(pid: u64) -> (u64, [Option<Event>; BOX]) {
+    let minute = minute_now();
+    with(|ring| ring.take_for(pid, minute))
 }
 
 /// EVENT_READ's text for what [`take`] gave: `dropped <n>` first when some

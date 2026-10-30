@@ -72,12 +72,10 @@ fn sort_button(mon: &Monitor, sort: Sort) -> Widget {
 }
 
 fn model_line(mon: &Monitor) -> String {
-    match mon.model() {
-        None => String::from("Model: not reported"),
-        Some(m) => match m.tokens_per_s_x10 {
-            Some(t) => format!("Model: {}, {}", m.state, view::tokens(Some(t))),
-            None => format!("Model: {}", m.state),
-        },
+    let m = mon.model();
+    match m.tps10 {
+        0 => format!("Model: {}", m.state.word()),
+        t => format!("Model: {}, {}", m.state.word(), view::tokens(Some(t))),
     }
 }
 
@@ -218,7 +216,9 @@ pub fn on_ui(mon: &mut Monitor, os: &mut dyn Os, e: &UiEvent) -> bool {
         UiEvent::Pressed(SORT_MEMORY) => mon.press_sort(Sort::Memory),
         UiEvent::Pressed(SORT_NAME) => mon.press_sort(Sort::Name),
         UiEvent::Pressed(SORT_PID) => mon.press_sort(Sort::Pid),
-        UiEvent::Pressed(REFRESH) => mon.refresh(os),
+        // The component reads a new sample after every event, so there is
+        // nothing for the model to do: the press only redraws.
+        UiEvent::Pressed(REFRESH) => {}
         UiEvent::Pressed(STOP) => mon.stop_selected(os),
         UiEvent::Changed(TABLE, Value::Index(i)) => return mon.select_index(*i as usize),
         _ => return false,

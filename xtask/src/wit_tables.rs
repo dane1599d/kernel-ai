@@ -14,7 +14,12 @@ use wit_parser::{Function, Handle, Resolve, Type, TypeDefKind, WorldItem};
 /// Where the generated tables live.
 pub const OUTPUT: &str = "wasmhost/src/tables.rs";
 /// The worlds whose imports and exports the host serves, as (package, world).
-const WORLDS: &[(&str, &str)] = &[("kai:app", "app"), ("kai:ui", "app")];
+const WORLDS: &[(&str, &str)] = &[
+    ("kai:app", "app"),
+    ("kai:ui", "app"),
+    ("kai:system", "system-read"),
+    ("kai:settings", "settings-access"),
+];
 
 pub fn main(args: &[String]) -> Result<(), String> {
     let root = crate::workspace_root();
