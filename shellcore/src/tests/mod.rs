@@ -13,6 +13,7 @@ use std::collections::VecDeque;
 mod act;
 mod actions;
 mod apart;
+mod appline;
 mod centry;
 mod effects;
 mod files;

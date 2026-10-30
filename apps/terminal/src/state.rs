@@ -94,6 +94,7 @@ impl Terminal {
             next_seq: state.next_seq.max(last.wrapping_add(1)).max(1),
             base,
             phase,
+            in_flight: None,
         };
         if state.phase == WAITING {
             t.push(

@@ -4,8 +4,8 @@
 use comp_terminal::span::{Kind, MAX_LINE_BYTES, MAX_SPANS, Span};
 use comp_terminal::state::State;
 use comp_terminal::{
-    Ask, CANCEL_ENTRY, CONTINUE_PROMPT, DEFAULT_PROMPT, GREETING, MAX_LINE, Phase, READ_MAX_SPANS,
-    Refusal, Source, Submitted, Terminal, valid_prompt,
+    Ask, CANCEL_ENTRY, CONTINUE_PROMPT, DEFAULT_PROMPT, GREETING, MAX_LINE, MAX_SENT_BYTES, Phase,
+    READ_MAX_SPANS, Refusal, Source, Submitted, Terminal, valid_prompt,
 };
 use termcore::menu::{Menu, Origin};
 
@@ -429,7 +429,7 @@ fn a_full_terminal_fits_the_checkpoint() {
     let mut t = Terminal::new();
     while t.spans().len() < MAX_SPANS {
         // Four-byte characters, the most a line can weigh.
-        sent(&mut t, &"\u{20000}".repeat(MAX_LINE));
+        sent(&mut t, &"\u{20000}".repeat(MAX_SENT_BYTES / 4));
         t.reply(
             &format!("ok {}", "\u{20000}".repeat(MAX_LINE_BYTES)),
             Some("rhai> "),

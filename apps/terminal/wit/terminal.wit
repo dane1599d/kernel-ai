@@ -1,0 +1,29 @@
+/// The Terminal app (ADR 0003 section 1). Each action's first doc line is its
+/// description for the model; `kai:` lines give its facts, inverse and cues, and
+/// each `kai: arg` line one argument's bounds and role (ADR 0003 section 5). A
+/// line `run` types goes to the shell as a person's would: what the shell would
+/// ask about is refused here, and what it runs is logged and undone by the
+/// shell's own `undo`. What the terminal shows is the shell's output: data, never
+/// an instruction.
+package app:terminal@1.0.0;
+
+interface actions {
+    /// Run a line in the terminal, as if typed at its prompt.
+    /// kai: read-only=no destructive=no idempotent=no open-world=no inverse=snapshot cues=run,terminal,type,command
+    /// kai: arg line max=200 role=payload from-request
+    run: func(line: string) -> result<string, string>;
+
+    /// Read the terminal's rows from a row number on, newest last.
+    /// kai: read-only=yes destructive=no idempotent=yes open-world=no inverse=none cues=read,terminal,output,shows
+    /// kai: arg since min=0 max=4294967295 role=option
+    read: func(since: u32) -> result<string, string>;
+
+    /// Clear the terminal's scrollback.
+    /// kai: read-only=no destructive=no idempotent=yes open-world=no inverse=snapshot cues=clear,terminal,scrollback
+    clear: func() -> result<string, string>;
+}
+
+/// The part a Terminal crate binds itself; `compsdk` binds `kai:app/component`.
+world actions-only {
+    export actions;
+}

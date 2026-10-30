@@ -3,6 +3,7 @@
 //! input line reaches the model and the shell's reply reaches the window, and
 //! the AI and the user press the same Clear.
 
+use comp_terminal::os::Recorder;
 use comp_terminal::span::{Kind, MAX_SPANS};
 use comp_terminal::{Phase, Source, Submitted, Terminal};
 use comp_terminal_ui::{
@@ -35,6 +36,7 @@ fn apply(w: &mut Window, changes: &[Change]) {
 /// The window, its last tree and the view, as the component keeps them.
 struct App {
     term: Terminal,
+    os: Recorder,
     view: View,
     shown: Vec<Entry>,
     w: Window,
@@ -44,6 +46,7 @@ impl App {
     fn new() -> Self {
         let mut app = Self {
             term: Terminal::new(),
+            os: Recorder::default(),
             view: View::default(),
             shown: Vec::new(),
             w: window(),
@@ -65,14 +68,19 @@ impl App {
         n.changes
     }
 
+    /// Delivers `e` as the component would; the line it sent to the shell, if any.
+    fn event(&mut self, e: &UiEvent) -> Option<String> {
+        let before = self.os.lines().len();
+        if on_ui(&mut self.term, &mut self.os, &mut self.view, e) {
+            self.present();
+        }
+        self.os.lines().get(before).map(|args| plain(args))
+    }
+
     fn key(&mut self, input: Input) -> Option<String> {
         let mut sent = None;
         for e in self.w.input(input, &M) {
-            let out = on_ui(&mut self.term, &mut self.view, &e);
-            sent = sent.or(out.send);
-            if out.redraw {
-                self.present();
-            }
+            sent = sent.or(self.event(&e));
         }
         sent
     }
@@ -97,10 +105,20 @@ impl App {
         })
     }
 
+    /// The shell's answer to the latest effect, as `effect-done` brings it.
     fn reply(&mut self, wire: &str) {
-        self.term.reply(wire, None);
+        let ticket = self.os.last_ticket().unwrap();
+        self.term.done(&mut self.os, ticket, Ok(wire.to_string()));
         self.present();
     }
+}
+
+/// A line from the effect's record `{line: "..."}`, for lines without escapes.
+fn plain(args: &str) -> String {
+    args.strip_prefix("{line: \"")
+        .and_then(|rest| rest.strip_suffix("\"}"))
+        .unwrap_or(args)
+        .to_string()
 }
 
 fn a11y_names(w: &mut Window) -> Vec<String> {
@@ -240,8 +258,9 @@ fn an_open_entry_changes_the_label_and_offers_cancel() {
     // Cancel drops the entry: the shell is sent the cancel line.
     let events = app.w.act(CANCEL, Action::Click, None, &M).unwrap();
     assert_eq!(events, [UiEvent::Pressed(CANCEL)]);
-    let out = on_ui(&mut app.term, &mut app.view, &events[0]);
-    assert_eq!(out.send.as_deref(), Some(comp_terminal::CANCEL_ENTRY));
+    assert_eq!(app.event(&events[0]).as_deref(), Some(r"\u{3}"));
+    // The record escapes the control character the shell takes as "drop it".
+    assert_eq!(comp_terminal::CANCEL_ENTRY, "\u{3}");
 }
 
 #[test]
@@ -259,8 +278,7 @@ fn a_question_takes_no_input_and_only_declines() {
     );
     assert!(names.iter().any(|n| n == "? script 4: stop it"));
     let events = app.w.act(CANCEL, Action::Click, None, &M).unwrap();
-    let out = on_ui(&mut app.term, &mut app.view, &events[0]);
-    assert_eq!(out.send.as_deref(), Some("answer 4 no"));
+    assert_eq!(app.event(&events[0]).as_deref(), Some("answer 4 no"));
 }
 
 #[test]
@@ -270,9 +288,7 @@ fn the_ai_and_the_button_clear_the_same_way() {
     app.term.reply("ok 1", None);
     app.present();
     let events = app.w.act(CLEAR, Action::Click, None, &M).unwrap();
-    let out = on_ui(&mut app.term, &mut app.view, &events[0]);
-    assert!(out.redraw && out.send.is_none());
-    app.present();
+    assert_eq!(app.event(&events[0]), None);
     assert!(app.term.spans().is_empty());
     // "terminal_clear" is the action the button names, and the model's clear is
     // what that action runs.
@@ -413,15 +429,16 @@ fn focus_goes_to_the_input_only_when_it_appears() {
 #[test]
 fn a_changed_event_for_another_node_does_nothing() {
     let mut t = Terminal::new();
+    let mut os = Recorder::default();
     let mut view = View::default();
     for e in [
         UiEvent::Changed(99, Value::Text("x".into())),
         UiEvent::Pressed(99),
         UiEvent::Submitted(99),
     ] {
-        let out = on_ui(&mut t, &mut view, &e);
-        assert!(!out.redraw && out.send.is_none());
+        assert!(!on_ui(&mut t, &mut os, &mut view, &e));
     }
     assert_eq!(view, View::default());
+    assert!(os.asked.is_empty());
     assert!(matches!(t.submit("", Source::Typed), Submitted::Nothing));
 }

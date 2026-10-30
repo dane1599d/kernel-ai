@@ -1,0 +1,17 @@
+/// The Terminal app as its manifest names it: a live component with its window
+/// and its actions. The shell runs its lines only through the one effect it
+/// declares, and it has no storage and no clock of its own to read.
+package app:terminal-window@1.0.0;
+
+/// The effects the app queues, and the only ones the agent core runs for it
+/// (effects are deny-by-default). `shell_line` is not a registry row: the shell
+/// runs it for a package that declares it, as its own line.
+/// kai: effects=shell_line
+world terminal-window {
+    include kai:app/component@0.1.0;
+    import kai:app/effects@0.1.0;
+    import kai:ui/view@0.1.1;
+    export kai:ui/input@0.1.1;
+    export kai:app/events@0.1.0;
+    export app:terminal/actions@1.0.0;
+}

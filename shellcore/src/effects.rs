@@ -146,6 +146,9 @@ impl Shell {
                     self.host.audit(&format!("{app} notes: {text}"));
                     Ok(String::new())
                 }
+                (true, Ok(Effect::Call { name, args })) if name == crate::appline::SHELL_LINE => {
+                    self.run_shell_line(app, &args)
+                }
                 (true, Ok(Effect::Call { name, args })) => {
                     self.run_effect(app, ticket, &name, &args)
                 }

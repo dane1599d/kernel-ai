@@ -17,8 +17,9 @@ mod tree;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
+use comp_terminal::os::Os;
 use comp_terminal::span::{Kind, Span, wrap};
-use comp_terminal::{MAX_LINE, Phase, Terminal};
+use comp_terminal::{MAX_LINE, Phase, Source, Submitted, Terminal};
 use uikit::style::{Tone, TypeStyle};
 use uikit::widget::{Axis, Layout, NodeId, ROOT, Size, TextField, UiEvent, Value, Widget};
 
@@ -63,15 +64,6 @@ pub struct View {
     /// the last tree put there. It differs from `draft` just after a line is
     /// sent, until the cleared draft reaches the window.
     pub held: String,
-}
-
-/// What an event asks of the component.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Outcome {
-    /// Whether the tree may have changed.
-    pub redraw: bool,
-    /// A line for the shell, which the component sends as an effect.
-    pub send: Option<String>,
 }
 
 fn tone(kind: Kind) -> Tone {
@@ -227,39 +219,33 @@ pub fn wants_focus(old: &[Entry], new: &[Entry]) -> Option<NodeId> {
     (has(new) && !has(old)).then_some(INPUT)
 }
 
-/// Handles one event from the window.
-pub fn on_ui(term: &mut Terminal, view: &mut View, e: &UiEvent) -> Outcome {
+/// Handles one event from the window; whether the tree may have changed. A line
+/// goes to the shell as an effect asked of `os`.
+pub fn on_ui(term: &mut Terminal, os: &mut dyn Os, view: &mut View, e: &UiEvent) -> bool {
     match e {
         UiEvent::Changed(INPUT, Value::Text(text)) => {
             view.draft = text.chars().take(MAX_LINE).collect();
             // The field already shows it, so there is nothing to send.
             view.held.clone_from(&view.draft);
-            Outcome::default()
+            false
         }
         UiEvent::Submitted(INPUT) => {
             let line = core::mem::take(&mut view.draft);
-            let send = match term.submit(&line, comp_terminal::Source::Typed) {
-                comp_terminal::Submitted::Send(line) => Some(line),
-                comp_terminal::Submitted::Refused(_) => {
-                    view.draft = line;
-                    None
-                }
-                comp_terminal::Submitted::Nothing | comp_terminal::Submitted::Local => None,
-            };
-            Outcome { redraw: true, send }
+            // A refused line stays in the field to be fixed.
+            if let Submitted::Refused(_) = term.run(os, &line, Source::Typed) {
+                view.draft = line;
+            }
+            true
         }
         UiEvent::Pressed(CLEAR) => {
             term.clear();
-            Outcome {
-                redraw: true,
-                send: None,
-            }
+            true
         }
-        UiEvent::Pressed(CANCEL) => Outcome {
-            redraw: true,
-            send: term.cancel(),
-        },
-        _ => Outcome::default(),
+        UiEvent::Pressed(CANCEL) => {
+            term.stop(os);
+            true
+        }
+        _ => false,
     }
 }
 

@@ -1,0 +1,29 @@
+[package]
+name = "comp-terminal-window"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The Terminal app in the OS (P4 task 4): `comp-terminal`'s model and
+# `comp-terminal-ui`'s window bound to `kai:ui` (`comp-ui-bind`) and to the one
+# effect the shell runs, `shell_line`. The app's own actions are
+# `app:terminal/actions`.
+[lib]
+crate-type = ["cdylib", "rlib"]
+doctest = false
+
+[dependencies]
+comp-terminal = { path = "../terminal" }
+comp-terminal-ui = { path = "../terminal-ui" }
+comp-ui-bind = { path = "../ui-bind" }
+compsdk = { path = "../../compsdk" }
+uikit = { path = "../../uikit" }
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+wit-bindgen = { version = "=0.63.0", default-features = false, features = ["macros", "realloc"] }
+
+[dev-dependencies]
+appabi = { path = "../../appabi" }
+livecore = { path = "../../livecore" }
+wasmhost = { path = "../../wasmhost" }

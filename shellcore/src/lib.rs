@@ -27,6 +27,7 @@ mod agentcore;
 pub mod analyse;
 pub mod apart;
 mod appearance;
+mod appline;
 mod brackets;
 mod centry;
 mod commands;
@@ -443,6 +444,9 @@ pub struct Shell {
     partial: Option<String>,
     /// A request the model asked to clarify: the next line is joined to it.
     clarifying: Option<String>,
+    /// The terminals of apps that run shell lines, by app (`appline`): each has an
+    /// entry, question and proposal of its own.
+    fronts: alloc::collections::BTreeMap<String, panel::Terminal>,
     /// Since the last panel line: whether the line went to the model, whether
     /// it answered in words, and code's result line for what ran.
     asked_model: bool,
@@ -513,6 +517,7 @@ impl Shell {
             last_output: None,
             partial: None,
             clarifying: None,
+            fronts: alloc::collections::BTreeMap::new(),
             asked_model: false,
             worded: false,
             done_line: None,

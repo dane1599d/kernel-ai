@@ -25,12 +25,14 @@ const WORDS: &str = "it answered in words: ask in the terminal to read them";
 const OPEN: &str = "a bracket is still open: type the whole line in the terminal";
 const FAILED: &str = "it did not run: `show` in the terminal says why";
 
-/// What a panel line may change of the terminal's own state, set aside.
-struct Terminal {
-    partial: Option<String>,
-    clarifying: Option<String>,
-    pending: Option<crate::actions::Pending>,
-    undo_asking: Option<u64>,
+/// What a panel line may change of the terminal's own state, set aside. An
+/// app's terminal (`appline`) keeps one of its own.
+#[derive(Default)]
+pub(crate) struct Terminal {
+    pub(crate) partial: Option<String>,
+    pub(crate) clarifying: Option<String>,
+    pub(crate) pending: Option<crate::actions::Pending>,
+    pub(crate) undo_asking: Option<u64>,
 }
 
 impl Shell {

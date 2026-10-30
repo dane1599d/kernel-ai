@@ -22,6 +22,7 @@
 
 extern crate alloc;
 
+pub mod os;
 pub mod span;
 pub mod state;
 pub mod wire;
@@ -29,12 +30,16 @@ pub mod wire;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
+use os::{Os, SHELL_LINE, shell_line_args, unescape};
 use span::{Kind, MAX_SPANS, Span, clean, fit};
 use termcore::menu::{Answer, answer_line};
 use wire::Wire;
 
 /// Longest line the prompt takes, in characters (the kernel terminal's).
 pub const MAX_LINE: usize = 200;
+/// Longest line in bytes, so that its effect (`os::shell_line_args`, where a
+/// quote or a backslash takes two bytes) fits the 512 bytes an effect may carry.
+pub const MAX_SENT_BYTES: usize = 250;
 /// The prompt before the shell reports another.
 pub const DEFAULT_PROMPT: &str = "kai> ";
 /// The prompt for the rest of an open entry.
@@ -123,7 +128,7 @@ impl Refusal {
         match self {
             Self::Busy => "wait: the last line is still running",
             Self::Asking => "a question is waiting; answer it on the AI panel's card",
-            Self::TooLong => "that line is longer than 200 characters",
+            Self::TooLong => "that line is longer than 200 characters or 250 bytes",
             Self::Control => "a line holds no control characters or newlines",
             Self::Answer => "answers are given only on a question's own card",
         }
@@ -147,6 +152,9 @@ pub struct Terminal {
     next_seq: u32,
     base: String,
     phase: Phase,
+    /// The ticket of the effect the shell has not answered. It is not saved:
+    /// an effect does not outlive the app that queued it.
+    in_flight: Option<u32>,
 }
 
 impl Default for Terminal {
@@ -163,6 +171,7 @@ impl Terminal {
             next_seq: 1,
             base: String::from(DEFAULT_PROMPT),
             phase: Phase::Ready,
+            in_flight: None,
         };
         t.push(Kind::Notice, "", GREETING, false);
         t
@@ -231,7 +240,7 @@ impl Terminal {
         if line.chars().any(char::is_control) {
             return self.refuse(Refusal::Control);
         }
-        if line.chars().count() > MAX_LINE {
+        if line.chars().count() > MAX_LINE || line.len() > MAX_SENT_BYTES {
             return self.refuse(Refusal::TooLong);
         }
         if is_answer(line) {
@@ -324,6 +333,53 @@ impl Terminal {
         self.spans.clear();
     }
 
+    /// Queues `line` for the shell and remembers its ticket.
+    fn queue(&mut self, os: &mut dyn Os, line: &str) {
+        self.in_flight = Some(os.request(SHELL_LINE, shell_line_args(line)));
+    }
+
+    /// [`Terminal::submit`], then the effect that sends the line to the shell.
+    /// A person's Enter and the AI's `terminal_run` both come here.
+    pub fn run(&mut self, os: &mut dyn Os, line: &str, source: Source) -> Submitted {
+        let submitted = self.submit(line, source);
+        if let Submitted::Send(line) = &submitted {
+            self.queue(os, line);
+        }
+        submitted
+    }
+
+    /// [`Terminal::cancel`], then the effect that sends its line; whether there
+    /// was one.
+    pub fn stop(&mut self, os: &mut dyn Os) -> bool {
+        match self.cancel() {
+            Some(line) => {
+                self.queue(os, &line);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The result of the effect with `ticket`: the shell's wire reply, or why the
+    /// OS did not run the line. Whether it was ours and the window changed.
+    pub fn done(&mut self, os: &mut dyn Os, ticket: u32, outcome: Result<String, String>) -> bool {
+        if self.in_flight != Some(ticket) {
+            return false;
+        }
+        self.in_flight = None;
+        let back = match outcome {
+            Ok(wire) => self.reply(&unescape(&wire), None),
+            Err(why) => {
+                self.said(Kind::Error, &format!("the OS did not run it: {why}"));
+                None
+            }
+        };
+        if let Some(line) = back {
+            self.queue(os, &line);
+        }
+        true
+    }
+
     /// What `terminal_read` returns: `next <seq> <phase>` (the number to ask
     /// from next time), then at most [`READ_MAX_SPANS`] rows from `since` on,
     /// newest last, as `<seq> <kind> <text>`; `skipped <n>` names older rows
@@ -371,4 +427,33 @@ pub fn valid_prompt(prompt: &str) -> bool {
         && prompt.ends_with("> ")
         && !prompt.starts_with(' ')
         && prompt.bytes().all(|b| (b' '..=b'~').contains(&b))
+}
+
+impl Terminal {
+    /// `terminal_run`: the AI types `line` as a person would. The line goes to
+    /// the shell as an effect; its output arrives later, for `terminal_read`.
+    pub fn act_run(&mut self, os: &mut dyn Os, line: &str) -> Result<String, String> {
+        match self.run(os, line, Source::Ai) {
+            Submitted::Send(_) => {
+                let row = self.spans.last().map_or(0, |s| s.seq);
+                Ok(format!(
+                    "running; read the output with terminal_read since {row}"
+                ))
+            }
+            Submitted::Local => Ok(String::from("cleared")),
+            Submitted::Nothing => Err(String::from("there is nothing to run")),
+            Submitted::Refused(why) => Err(String::from(why.message())),
+        }
+    }
+
+    /// `terminal_read`: the rows from `since` on ([`Terminal::read`]).
+    pub fn act_read(&self, since: u32) -> Result<String, String> {
+        Ok(self.read(since))
+    }
+
+    /// `terminal_clear`: the scrollback empties.
+    pub fn act_clear(&mut self) -> Result<String, String> {
+        self.clear();
+        Ok(String::from("cleared"))
+    }
 }
