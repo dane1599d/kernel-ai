@@ -19,7 +19,7 @@ pub const MAGIC: [u8; 4] = *b"GGUF";
 pub const ROLE_SERIALS: [&str; 3] = [
     crate::update::DISK_SERIAL,
     crate::update::IMPORT_SERIAL,
-    "kai-data",
+    crate::fs::DATA_SERIAL,
 ];
 
 /// Whether the disk with `serial`, whose first sector is `first`, may be the
