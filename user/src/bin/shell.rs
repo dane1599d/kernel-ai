@@ -476,6 +476,20 @@ impl Host for System {
         }
     }
 
+    fn withheld_read(&self) -> Option<String> {
+        self.state.read(files::WITHHELD)
+    }
+
+    /// As the rules are written: with the line's files, if it changed any.
+    fn withheld_write(&self, text: &str) -> Result<(), String> {
+        match self.files.is_open() {
+            true => self.state.write_in(files::WITHHELD, text),
+            false => self
+                .state
+                .write(files::WITHHELD, text, self.files.next_action()),
+        }
+    }
+
     fn fs_read(&self, read: shellcore::FsRead) -> Result<String, String> {
         self.files.read(read)
     }

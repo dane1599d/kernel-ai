@@ -199,7 +199,8 @@ impl Shell {
             .host
             .apps()
             .is_some_and(|apps| apps.borrow().rows.may_effect(app, name));
-        if !declared {
+        // A row the user withheld is refused as one never declared (P4 task 7).
+        if !declared || crate::grants::is_withheld(self.host.as_ref(), app, name) {
             return Err(format!("{app} does not declare effects that call {name}"));
         }
         // A change derives Run only with an inverse, so this is local and undoable.

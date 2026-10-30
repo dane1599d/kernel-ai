@@ -105,6 +105,7 @@ struct FakeHost {
     log_writes: Cell<u32>,
     /// `/system/state/rules`.
     rules_disk: RefCell<Option<String>>,
+    pub withheld_disk: RefCell<Option<String>>,
     /// `/system/state/standing`, and the event source and owners standing
     /// instructions run through, when `triggers_on` is set.
     standing_disk: RefCell<Option<String>>,
@@ -245,6 +246,7 @@ impl FakeHost {
             log_disk: RefCell::new(None),
             log_writes: Cell::new(0),
             rules_disk: RefCell::new(None),
+            withheld_disk: RefCell::new(None),
             standing_disk: RefCell::new(None),
             triggers_on: Cell::new(false),
             triggers: FakeTriggers::default(),
@@ -464,6 +466,15 @@ impl Host for FakeHost {
 
     fn rules_write(&self, text: &str) -> Result<(), String> {
         *self.rules_disk.borrow_mut() = Some(text.into());
+        Ok(())
+    }
+
+    fn withheld_read(&self) -> Option<String> {
+        self.withheld_disk.borrow().clone()
+    }
+
+    fn withheld_write(&self, text: &str) -> Result<(), String> {
+        *self.withheld_disk.borrow_mut() = Some(text.into());
         Ok(())
     }
 
