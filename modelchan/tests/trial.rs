@@ -8,9 +8,15 @@ const OLD: [u8; 32] = [0x11; 32];
 const NEW: [u8; 32] = [0x22; 32];
 const OTHER: [u8; 32] = [0x33; 32];
 
+/// A model's FNV-1a64, made up for the test.
+fn fnv_of(model: [u8; 32]) -> u64 {
+    u64::from(model[0]) * 0x0101_0101_0101_0101
+}
+
 fn pending(candidate: [u8; 32], previous: Option<[u8; 32]>) -> Trial {
     Trial {
         candidate,
+        fnv: fnv_of(candidate),
         previous,
         state: State::Pending,
     }
@@ -40,7 +46,7 @@ fn a_record_reads_back_as_written() {
     assert_eq!(
         pending(NEW, None).encode(),
         format!(
-            "kai-modeltrial 1\ncandidate {}\nprevious none\nstate pending\n",
+            "kai-modeltrial 1\ncandidate {}\nfnv 2222222222222222\nprevious none\nstate pending\n",
             "22".repeat(32)
         )
     );
@@ -89,6 +95,10 @@ fn a_malformed_record_is_refused() {
         good.replace("candidate ", "candidate  "),
         format!("{good}extra\n"),
         good.replace("\nprevious", "\nprevius"),
+        good.replace("fnv 2222222222222222", "fnv 222222222222222G"),
+        good.replace("fnv 2222222222222222", "fnv 2222222222222222A"),
+        good.replace("fnv 2222222222222222", "fnv 22222222"),
+        good.replace("\nfnv 2222222222222222", ""),
         rolled.replace("why x", "why "),
         rolled.replace("why x", &format!("why {}", "y".repeat(MAX_WHY + 1))),
         rolled.replace("\nwhy x", ""),
@@ -102,32 +112,44 @@ fn a_malformed_record_is_refused() {
 #[test]
 fn a_switch_tries_another_model_and_undo_cancels_it() {
     // From OLD to NEW: a trial, with OLD to go back to.
-    let tried = switch(Some(OLD), None, NEW);
+    let tried = switch(Some(OLD), None, NEW, fnv_of(NEW));
     assert_eq!(tried, Switch::Try(pending(NEW, Some(OLD))));
     let Switch::Try(record) = tried else {
         unreachable!()
     };
     // Again: nothing more to do. Back to OLD before the restart: cancelled.
-    assert_eq!(switch(Some(OLD), Some(&record), NEW), Switch::Nothing);
-    assert_eq!(switch(Some(OLD), Some(&record), OLD), Switch::Cancel);
+    assert_eq!(
+        switch(Some(OLD), Some(&record), NEW, fnv_of(NEW)),
+        Switch::Nothing
+    );
+    assert_eq!(
+        switch(Some(OLD), Some(&record), OLD, fnv_of(OLD)),
+        Switch::Cancel
+    );
     // A third model replaces the pending one, still going back to OLD.
     assert_eq!(
-        switch(Some(OLD), Some(&record), OTHER),
+        switch(Some(OLD), Some(&record), OTHER, fnv_of(OTHER)),
         Switch::Try(pending(OTHER, Some(OLD)))
     );
     // The running model, with nothing pending: nothing.
-    assert_eq!(switch(Some(OLD), None, OLD), Switch::Nothing);
+    assert_eq!(switch(Some(OLD), None, OLD, fnv_of(OLD)), Switch::Nothing);
     let kept = Trial {
         state: State::Kept,
         ..record.clone()
     };
-    assert_eq!(switch(Some(NEW), Some(&kept), NEW), Switch::Nothing);
     assert_eq!(
-        switch(Some(NEW), Some(&kept), OLD),
+        switch(Some(NEW), Some(&kept), NEW, fnv_of(NEW)),
+        Switch::Nothing
+    );
+    assert_eq!(
+        switch(Some(NEW), Some(&kept), OLD, fnv_of(OLD)),
         Switch::Try(pending(OLD, Some(NEW)))
     );
     // No model ran: the trial goes back to none.
-    assert_eq!(switch(None, None, NEW), Switch::Try(pending(NEW, None)));
+    assert_eq!(
+        switch(None, None, NEW, fnv_of(NEW)),
+        Switch::Try(pending(NEW, None))
+    );
 }
 
 #[test]
@@ -186,14 +208,20 @@ fn a_boot_marks_a_trial_attempted_and_one_never_decided_rolls_back() {
     }
     assert_eq!(at_boot(None), AtBoot::Nothing);
     // An attempted trial is undecided: replaced or cancelled as a pending one is.
-    assert_eq!(switch(Some(OLD), Some(&attempted), NEW), Switch::Nothing);
     assert_eq!(
-        switch(Some(NEW), Some(&attempted), OLD),
+        switch(Some(OLD), Some(&attempted), NEW, fnv_of(NEW)),
+        Switch::Nothing
+    );
+    assert_eq!(
+        switch(Some(NEW), Some(&attempted), OLD, fnv_of(OLD)),
         Switch::Try(pending(OLD, Some(NEW)))
     );
-    assert_eq!(switch(Some(OLD), Some(&attempted), OLD), Switch::Cancel);
     assert_eq!(
-        switch(Some(OLD), Some(&attempted), OTHER),
+        switch(Some(OLD), Some(&attempted), OLD, fnv_of(OLD)),
+        Switch::Cancel
+    );
+    assert_eq!(
+        switch(Some(OLD), Some(&attempted), OTHER, fnv_of(OTHER)),
         Switch::Try(pending(OTHER, Some(OLD)))
     );
 }

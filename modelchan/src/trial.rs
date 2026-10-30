@@ -14,6 +14,7 @@
 //! ```text
 //! kai-modeltrial 1
 //! candidate <64 hex>
+//! fnv <16 hex>                (the candidate's FNV-1a64, as `fs` keeps it)
 //! previous <64 hex> | none
 //! state pending | attempted | kept | rolled-back
 //! why <text>                  (rolled-back only)
@@ -46,6 +47,9 @@ pub enum State {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Trial {
     pub candidate: Sha256,
+    /// The candidate's FNV-1a64, which `fs` keeps for its blob: what `llm`
+    /// must report loaded for the candidate to be kept ([`decide`]).
+    pub fnv: u64,
     /// The model the machine ran before, which a rollback goes back to; none
     /// when it ran no model.
     pub previous: Option<Sha256>,
@@ -67,8 +71,9 @@ impl Trial {
             },
         };
         format!(
-            "{MAGIC}\ncandidate {}\nprevious {previous}\nstate {state}\n",
-            hex(&self.candidate)
+            "{MAGIC}\ncandidate {}\nfnv {:016x}\nprevious {previous}\nstate {state}\n",
+            hex(&self.candidate),
+            self.fnv
         )
     }
 
@@ -89,6 +94,12 @@ impl Trial {
                 .ok_or_else(|| format!("no {key} line"))
         };
         let candidate = sha(field("candidate")?).ok_or("candidate is not a SHA-256")?;
+        let fnv = field("fnv")?;
+        let lower = |b: u8| b.is_ascii_digit() || (b'a'..=b'f').contains(&b);
+        if fnv.len() != 16 || !fnv.bytes().all(lower) {
+            return Err("fnv is not 16 lower-case hex digits".into());
+        }
+        let fnv = u64::from_str_radix(fnv, 16).map_err(|_| "fnv is not hex")?;
         let previous = match field("previous")? {
             "none" => None,
             text => Some(sha(text).ok_or("previous is not a SHA-256")?),
@@ -112,6 +123,7 @@ impl Trial {
         }
         Ok(Trial {
             candidate,
+            fnv,
             previous,
             state,
         })
@@ -160,10 +172,11 @@ pub enum Switch {
     Cancel,
 }
 
-/// `model_use` of the stored model `to`, with `running` the model this boot
-/// runs and `record` the last trial, if any. An attempted trial is still
-/// undecided, so it is replaced or cancelled as a pending one is.
-pub fn switch(running: Option<Sha256>, record: Option<&Trial>, to: Sha256) -> Switch {
+/// `model_use` of the stored model `to`, whose FNV-1a64 is `fnv`, with
+/// `running` the model this boot runs and `record` the last trial, if any. An
+/// attempted trial is still undecided, so it is replaced or cancelled as a
+/// pending one is.
+pub fn switch(running: Option<Sha256>, record: Option<&Trial>, to: Sha256, fnv: u64) -> Switch {
     let undecided = |t: &&Trial| matches!(t.state, State::Pending | State::Attempted);
     let pending = record.filter(undecided);
     match pending {
@@ -172,6 +185,7 @@ pub fn switch(running: Option<Sha256>, record: Option<&Trial>, to: Sha256) -> Sw
         _ if running == Some(to) => Switch::Nothing,
         _ => Switch::Try(Trial {
             candidate: to,
+            fnv,
             previous: running,
             state: State::Pending,
         }),
