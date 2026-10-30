@@ -124,6 +124,11 @@ fn take_panel(shell: &mut Shell) {
     }
 }
 
+// A Terminal line's answer, with its `…`, fits what the transport carries of a
+// person's result.
+const _: () =
+    assert!(shellcore::appline::MAX_ANSWER + '…'.len_utf8() <= deskcore::effects::MAX_LINE_TEXT);
+
 /// Takes an app's oldest effects from `desktop`, runs them through the agent
 /// core, and reports what came of each; `desktop` hands the results to the
 /// app. `desktop` names the app, from its record of who queued them.
@@ -135,18 +140,18 @@ fn take_effects(shell: &mut Shell) {
     let Ok(answer) = ask_desktop(route, effects::TAKE) else {
         return;
     };
-    let Some(Some((app, lines))) = effects::parse_take(&answer) else {
+    let Some(Some((app, user, lines))) = effects::parse_take(&answer) else {
         return;
     };
     let results: Vec<Done> = shell
-        .run_effects(app, lines)
+        .run_effects_from(app, lines, user)
         .into_iter()
         .map(|done| Done {
             ticket: done.ticket,
             outcome: done.outcome,
         })
         .collect();
-    if let Err(why) = ask_desktop(route, &effects::encode_done(app, &results)) {
+    if let Err(why) = ask_desktop(route, &effects::encode_done_as(app, user, &results)) {
         println!("{app}'s effect results were not sent: {why}");
     }
 }
