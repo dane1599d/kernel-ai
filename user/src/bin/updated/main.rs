@@ -191,7 +191,9 @@ fn serve(mut channel: Option<models::Channel>) -> ! {
     let Some(channel) = channel.as_mut() else {
         idle()
     };
-    let mut request = [0u8; REQUEST];
+    // One byte more than a request may be: the kernel cuts a longer one to
+    // the buffer, so a full buffer means too long.
+    let mut request = [0u8; REQUEST + 1];
     loop {
         let wait = if channel.busy() { 10 } else { 60_000 };
         let mut info = RecvInfo::default();
@@ -202,9 +204,10 @@ fn serve(mut channel: Option<models::Channel>) -> ! {
                     let _ = sys::handle_close(Handle(*moved));
                 }
                 let text = core::str::from_utf8(&request[..len.min(REQUEST)]).unwrap_or("");
-                let mut reply = match from_shell(info.caller_pid) {
-                    true => channel.answer(text),
-                    false => String::from("err only the shell may ask"),
+                let mut reply = match (from_shell(info.caller_pid), len > REQUEST) {
+                    (false, _) => String::from("err only the shell may ask"),
+                    (true, true) => String::from("err request too long"),
+                    (true, false) => channel.answer(text),
                 };
                 let mut end = reply.len().min(kabi::MAX_MESSAGE);
                 while !reply.is_char_boundary(end) {
@@ -214,10 +217,18 @@ fn serve(mut channel: Option<models::Channel>) -> ! {
                 let _ = sys::svc_reply(reply.as_bytes());
             }
             Err(Error::TimedOut) => channel.tick(),
-            Err(_) => loop {
+            // No `serve` in the plan line (Permission): work without serving.
+            Err(Error::NotFound | Error::Permission) => loop {
                 channel.tick();
                 sys::sleep_ms(if channel.busy() { 10 } else { 60_000 });
             },
+            // Anything else is one receive gone wrong, not the end of serving
+            // (K's review of #447).
+            Err(why) => {
+                println!("updated: a receive failed: {why:?}");
+                channel.tick();
+                sys::sleep_ms(1_000);
+            }
         }
     }
 }

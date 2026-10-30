@@ -338,6 +338,12 @@ impl Channel {
     /// `model_use`: the stored, signed model `sha256` from the next restart,
     /// on trial; or back to the running one before it.
     fn use_model(&mut self, sha256: &Sha256) -> Result<String, String> {
+        // The record and the hint are written outside an action, which the
+        // import holds until its blob is whole (K's review of #447).
+        if self.import.is_some() {
+            println!("updated: models use refused: an import is running");
+            return Err(String::from("an import is running; ask again once it ends"));
+        }
         let models = self.models()?;
         if models.use_model(sha256).is_none() && models.store.running != Some(*sha256) {
             return Err(format!(
@@ -370,6 +376,14 @@ impl Channel {
     fn start_import(&mut self) -> Result<String, String> {
         if self.import.is_some() {
             return Err(String::from("an import is running"));
+        }
+        // A trial's verdict writes its record, which an import's open action
+        // would block, so an import waits for the trial to end.
+        if self.probation.is_some() {
+            println!("updated: models import refused: a model is on trial");
+            return Err(String::from(
+                "a model is on trial; ask again once it is kept or rolled back",
+            ));
         }
         let info = sys::slot_info(self.update, IMPORT).map_err(|_| "no import disk")?;
         let signed = role()?;
