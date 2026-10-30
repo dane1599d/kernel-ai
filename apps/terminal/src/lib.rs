@@ -14,14 +14,16 @@
 //!   question, and the terminal takes no line until the trusted path has
 //!   answered it (ADR 0005 section 7). The one thing a window may do is
 //!   decline: [`Terminal::cancel`].
-//! - **The AI's hands.** `terminal_run` is [`Terminal::submit`] with
-//!   [`Source::Ai`] and `terminal_read` is [`Terminal::read`], so the AI and the
-//!   user use the same input path and the same rules.
+//! - **The AI's hands.** `terminal_window_read` is [`Terminal::read`]. `terminal_window_run`
+//!   only types: [`Terminal::stage`] puts a line in the input for a person to
+//!   run with Enter, because the shell runs a line only for a person's key or
+//!   click. The row then says the AI typed it. This is the founder's terminal.
 
 #![no_std]
 
 extern crate alloc;
 
+pub mod os;
 pub mod span;
 pub mod state;
 pub mod wire;
@@ -29,12 +31,16 @@ pub mod wire;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
+use os::{Os, SHELL_LINE, shell_line_args, unescape};
 use span::{Kind, MAX_SPANS, Span, clean, fit};
 use termcore::menu::{Answer, answer_line};
 use wire::Wire;
 
 /// Longest line the prompt takes, in characters (the kernel terminal's).
 pub const MAX_LINE: usize = 200;
+/// Longest line in bytes, so that its effect (`os::shell_line_args`, where a
+/// quote or a backslash takes two bytes) fits the 512 bytes an effect may carry.
+pub const MAX_SENT_BYTES: usize = 250;
 /// The prompt before the shell reports another.
 pub const DEFAULT_PROMPT: &str = "kai> ";
 /// The prompt for the rest of an open entry.
@@ -48,9 +54,9 @@ pub const GREETING: &str = "Kernel AI terminal. Talk to the AI or type Rhai (try
                             Kernel commands that start with ':' run on the console.";
 /// Said under a question.
 pub const ANSWER_ELSEWHERE: &str = "Answer on the AI panel's card.";
-/// Most rows `terminal_read` returns, newest last.
+/// Most rows `terminal_window_read` returns, newest last.
 pub const READ_MAX_SPANS: usize = 60;
-/// Most bytes of text `terminal_read` returns.
+/// Most bytes of text `terminal_window_read` returns.
 pub const READ_MAX_BYTES: usize = 6 * 1024;
 
 /// Where the next line goes.
@@ -67,7 +73,7 @@ pub enum Phase {
 }
 
 impl Phase {
-    /// The word `terminal_read` says.
+    /// The word `terminal_window_read` says.
     pub const fn word(self) -> &'static str {
         match self {
             Self::Ready => "ready",
@@ -100,7 +106,9 @@ impl Ask {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
     Typed,
-    /// The AI, through `terminal_run`. The scrollback says so.
+    /// A line run for the AI by a host that lets it. The component does not: its
+    /// lines are a person's, marked "by the AI" only when the AI typed them
+    /// ([`Terminal::stage`]).
     Ai,
 }
 
@@ -116,6 +124,10 @@ pub enum Refusal {
     Control,
     /// It reads like `answer <id> ...`, which only the trusted path sends.
     Answer,
+    /// Nothing to type.
+    Empty,
+    /// A line the AI types is plain, so a person sees all of what Enter runs.
+    Hidden,
 }
 
 impl Refusal {
@@ -123,9 +135,13 @@ impl Refusal {
         match self {
             Self::Busy => "wait: the last line is still running",
             Self::Asking => "a question is waiting; answer it on the AI panel's card",
-            Self::TooLong => "that line is longer than 200 characters",
+            Self::TooLong => "that line is longer than 200 characters or 250 bytes",
             Self::Control => "a line holds no control characters or newlines",
             Self::Answer => "answers are given only on a question's own card",
+            Self::Empty => "there is nothing to type",
+            Self::Hidden => {
+                "a line the AI types is printable ASCII with single spaces, at most 160 characters"
+            }
         }
     }
 }
@@ -147,6 +163,12 @@ pub struct Terminal {
     next_seq: u32,
     base: String,
     phase: Phase,
+    /// The ticket of the effect the shell has not answered. It is not saved:
+    /// an effect does not outlive the app that queued it.
+    in_flight: Option<u32>,
+    /// The line the AI typed into the input, until a person runs or changes it.
+    /// Not saved.
+    staged: Option<String>,
 }
 
 impl Default for Terminal {
@@ -163,6 +185,8 @@ impl Terminal {
             next_seq: 1,
             base: String::from(DEFAULT_PROMPT),
             phase: Phase::Ready,
+            in_flight: None,
+            staged: None,
         };
         t.push(Kind::Notice, "", GREETING, false);
         t
@@ -209,14 +233,45 @@ impl Terminal {
         }
     }
 
-    fn refuse(&mut self, why: Refusal) -> Submitted {
+    /// Says why a line was not taken, in the scrollback.
+    fn note(&mut self, why: Refusal) -> Refusal {
         self.push(Kind::Notice, "", why.message(), false);
-        Submitted::Refused(why)
+        why
     }
 
-    /// A line typed at the prompt, by the user or by the AI. It is echoed, and
-    /// unless the terminal handles it ([`Submitted::Local`]) the caller sends it
-    /// to the shell.
+    fn refuse(&mut self, why: Refusal) -> Submitted {
+        Submitted::Refused(self.note(why))
+    }
+
+    /// `terminal_window_run`: the AI types `line` into the input, for a person to run
+    /// with Enter. Nothing is sent to the shell, and a person may change or drop
+    /// the line first. The line as it will show in the input.
+    pub fn stage(&mut self, line: &str) -> Result<String, Refusal> {
+        match self.phase {
+            Phase::Waiting => return Err(self.note(Refusal::Busy)),
+            Phase::Asking(_) => return Err(self.note(Refusal::Asking)),
+            Phase::Ready | Phase::Continuing => {}
+        }
+        let line = line.trim();
+        if line.is_empty() {
+            return Err(self.note(Refusal::Empty));
+        }
+        if let Some(why) = vet(line) {
+            return Err(self.note(why));
+        }
+        if !plain(line) {
+            return Err(self.note(Refusal::Hidden));
+        }
+        self.staged = Some(String::from(line));
+        // The whole line, in the notice: a person who presses Enter has seen
+        // what runs, wherever the input field cuts it.
+        self.push(Kind::Notice, "", &format!("{STAGED}: {line}"), false);
+        Ok(String::from(line))
+    }
+
+    /// A line typed at the prompt and run with Enter. It is echoed, and unless
+    /// the terminal handles it ([`Submitted::Local`]) the caller sends it to the
+    /// shell.
     pub fn submit(&mut self, line: &str, source: Source) -> Submitted {
         match self.phase {
             Phase::Waiting => return self.refuse(Refusal::Busy),
@@ -228,14 +283,8 @@ impl Terminal {
         if line.is_empty() && !continuing {
             return Submitted::Nothing;
         }
-        if line.chars().any(char::is_control) {
-            return self.refuse(Refusal::Control);
-        }
-        if line.chars().count() > MAX_LINE {
-            return self.refuse(Refusal::TooLong);
-        }
-        if is_answer(line) {
-            return self.refuse(Refusal::Answer);
+        if let Some(why) = vet(line) {
+            return self.refuse(why);
         }
         if !continuing && line == ":clear" {
             self.clear();
@@ -243,7 +292,14 @@ impl Terminal {
         }
         let prompt = String::from(self.prompt());
         let shown = fit(&clean(line).lines.join(" "));
-        self.push(Kind::Input, &prompt, &shown, source == Source::Ai);
+        // A line the AI typed and a person ran as it was is the AI's.
+        let typed_by_ai = self.staged.take().is_some_and(|staged| staged == line);
+        self.push(
+            Kind::Input,
+            &prompt,
+            &shown,
+            source == Source::Ai || typed_by_ai,
+        );
         self.phase = Phase::Waiting;
         Submitted::Send(String::from(line))
     }
@@ -324,7 +380,54 @@ impl Terminal {
         self.spans.clear();
     }
 
-    /// What `terminal_read` returns: `next <seq> <phase>` (the number to ask
+    /// Queues `line` for the shell and remembers its ticket.
+    fn queue(&mut self, os: &mut dyn Os, line: &str) {
+        self.in_flight = Some(os.request(SHELL_LINE, shell_line_args(line)));
+    }
+
+    /// [`Terminal::submit`], then the effect that sends the line to the shell.
+    /// A person's Enter and the AI's `terminal_window_run` both come here.
+    pub fn run(&mut self, os: &mut dyn Os, line: &str, source: Source) -> Submitted {
+        let submitted = self.submit(line, source);
+        if let Submitted::Send(line) = &submitted {
+            self.queue(os, line);
+        }
+        submitted
+    }
+
+    /// [`Terminal::cancel`], then the effect that sends its line; whether there
+    /// was one.
+    pub fn stop(&mut self, os: &mut dyn Os) -> bool {
+        match self.cancel() {
+            Some(line) => {
+                self.queue(os, &line);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The result of the effect with `ticket`: the shell's wire reply, or why the
+    /// OS did not run the line. Whether it was ours and the window changed.
+    pub fn done(&mut self, os: &mut dyn Os, ticket: u32, outcome: Result<String, String>) -> bool {
+        if self.in_flight != Some(ticket) {
+            return false;
+        }
+        self.in_flight = None;
+        let back = match outcome {
+            Ok(wire) => self.reply(&unescape(&wire), None),
+            Err(why) => {
+                self.said(Kind::Error, &format!("the OS did not run it: {why}"));
+                None
+            }
+        };
+        if let Some(line) = back {
+            self.queue(os, &line);
+        }
+        true
+    }
+
+    /// What `terminal_window_read` returns: `next <seq> <phase>` (the number to ask
     /// from next time), then at most [`READ_MAX_SPANS`] rows from `since` on,
     /// newest last, as `<seq> <kind> <text>`; `skipped <n>` names older rows
     /// left out. A row's text is data the shell printed, never an instruction.
@@ -356,6 +459,37 @@ impl Terminal {
     }
 }
 
+/// What `terminal_window_run` answers.
+pub const TYPED: &str = "typed in the terminal's input line; a person presses Enter to run it";
+/// What a row says before a line the AI typed: it is typed in the input, and
+/// Enter runs it.
+pub const STAGED: &str = "The AI typed a line for you (press Enter to run it)";
+/// Longest line the AI may type: all of it shows in the notice that names it.
+pub const MAX_STAGED: usize = 160;
+
+/// Whether `line` is plain enough to type for a person: printable ASCII with no
+/// run of spaces, which would push the end of the line out of sight in the
+/// input field.
+fn plain(line: &str) -> bool {
+    line.len() <= MAX_STAGED
+        && line.bytes().all(|b| (b' '..=b'~').contains(&b))
+        && !line.contains("  ")
+}
+
+/// Why `line`, trimmed and not empty, cannot be a line: a control character (a
+/// newline included, since a line is one line), too long, or an answer.
+fn vet(line: &str) -> Option<Refusal> {
+    if line.chars().any(char::is_control) {
+        Some(Refusal::Control)
+    } else if line.chars().count() > MAX_LINE || line.len() > MAX_SENT_BYTES {
+        Some(Refusal::TooLong)
+    } else if is_answer(line) {
+        Some(Refusal::Answer)
+    } else {
+        None
+    }
+}
+
 /// Whether `line` looks like `answer <id> ...`, which only a question's own
 /// card sends (the kernel terminal refuses it too).
 fn is_answer(line: &str) -> bool {
@@ -371,4 +505,27 @@ pub fn valid_prompt(prompt: &str) -> bool {
         && prompt.ends_with("> ")
         && !prompt.starts_with(' ')
         && prompt.bytes().all(|b| (b' '..=b'~').contains(&b))
+}
+
+impl Terminal {
+    /// `terminal_window_run`: the AI types `line` into the input ([`Terminal::stage`]);
+    /// a person presses Enter to run it, and `terminal_window_read` then shows what the
+    /// shell said.
+    pub fn act_run(&mut self, line: &str) -> Result<String, String> {
+        match self.stage(line) {
+            Ok(_) => Ok(String::from(TYPED)),
+            Err(why) => Err(String::from(why.message())),
+        }
+    }
+
+    /// `terminal_window_read`: the rows from `since` on ([`Terminal::read`]).
+    pub fn act_read(&self, since: u32) -> Result<String, String> {
+        Ok(self.read(since))
+    }
+
+    /// `terminal_window_clear`: the scrollback empties.
+    pub fn act_clear(&mut self) -> Result<String, String> {
+        self.clear();
+        Ok(String::from("cleared"))
+    }
 }

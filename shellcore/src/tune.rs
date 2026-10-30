@@ -197,10 +197,24 @@ fn ms(ns: u64) -> String {
     two_sig(ns / 1000, 3)
 }
 
+/// The proposal that waits for its yes, set aside while another terminal's
+/// line runs ([`Tuner::set_aside`]).
+pub(crate) struct Aside(Option<Proposal>);
+
 impl Tuner {
     /// A line other than the answer came: the proposal lapses.
     pub(crate) fn discard(&mut self) {
         self.pending = None;
+    }
+
+    /// Takes the waiting proposal out of reach of the next line, which is
+    /// another terminal's; [`Tuner::restore`] puts it back.
+    pub(crate) fn set_aside(&mut self) -> Aside {
+        Aside(self.pending.take())
+    }
+
+    pub(crate) fn restore(&mut self, aside: Aside) {
+        self.pending = aside.0;
     }
 
     /// Whether a proposal waits for its answer.

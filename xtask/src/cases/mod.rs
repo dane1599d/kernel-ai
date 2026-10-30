@@ -4,6 +4,7 @@
 
 mod agent;
 mod apps;
+mod cc;
 mod components;
 mod devices;
 mod kernel;
@@ -151,6 +152,7 @@ const LANES: &[&[TestCase]] = &[
     kernel::CASES,
     devices::CASES,
     agent::CASES,
+    cc::CASES,
     components::CASES,
     network::CASES,
     storage::CASES,
@@ -183,6 +185,7 @@ mod tests {
             kernel::CASES,
             devices::CASES,
             agent::CASES,
+            cc::CASES,
             components::CASES,
             network::CASES,
             storage::CASES,
