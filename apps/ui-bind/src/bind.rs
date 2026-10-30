@@ -62,6 +62,10 @@ impl Sink for View {
         view::close(window).map_err(error)
     }
 
+    fn set_agent_private(&mut self, window: u32, private: bool) -> Result<(), UiError> {
+        view::set_agent_private(window, private).map_err(error)
+    }
+
     fn focus(&mut self, window: u32, node: NodeId) -> Result<(), UiError> {
         view::focus(window, node).map_err(error)
     }
