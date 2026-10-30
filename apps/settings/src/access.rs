@@ -1,6 +1,7 @@
 //! "What each app can do" (ADR 0001 D8, P4 task 7): the effect rows each app
-//! declares, as the shell lists them (`grants`: one line a row,
-//! `<app>\t<row>\tallowed` or `withheld`), grouped by app. Settings withholds a
+//! declares, as the shell lists them: `grants` names the apps that have any,
+//! and `grants <app>` gives one line a row, `<app>\t<row>\tallowed` or
+//! `withheld`, so no answer outgrows one message. Settings withholds a
 //! row and gives it back; it never makes a grant. Both go through the shell,
 //! which logs them and undoes them, and a row stays listed whichever it is.
 
@@ -11,6 +12,8 @@ use alloc::vec::Vec;
 pub const MAX_NAME: usize = 24;
 /// Most rows read from one answer.
 pub const MAX_ROWS: usize = 1024;
+/// Most apps read from `grants` (the shell lists at most as many).
+pub const MAX_APPS: usize = 32;
 
 /// One effect row of an app, and whether its effects may call it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -100,9 +103,69 @@ pub fn parse(text: &str) -> Option<Vec<AppAccess>> {
     (seen == 0 || kept > 0).then_some(apps)
 }
 
+/// The apps with effect rows, from the shell's `grants` text (one name a line).
+/// A line that is not an app name is left out, and so is a name listed twice;
+/// at most [`MAX_APPS`] are kept. `None` if there were lines and none of them
+/// was an app name.
+pub fn parse_apps(text: &str) -> Option<Vec<String>> {
+    let mut apps: Vec<String> = Vec::new();
+    let mut seen = 0;
+    for line in text.lines().filter(|l| !l.is_empty()) {
+        seen += 1;
+        if app_ok(line) && apps.len() < MAX_APPS && !apps.iter().any(|a| a == line) {
+            apps.push(String::from(line));
+        }
+    }
+    (seen == 0 || !apps.is_empty()).then_some(apps)
+}
+
+/// `app`'s rows from the shell's `grants <app>` text. Only lines for `app`
+/// count, so an answer never adds another app's rows. Lines that are not rows
+/// are left out, and so is a row listed twice (the first stands); `None` if
+/// there were lines and none of them was a row of `app`.
+pub fn parse_app(app: &str, text: &str) -> Option<Vec<Access>> {
+    let mut rows: Vec<Access> = Vec::new();
+    let mut seen = 0;
+    for line in text.lines().filter(|l| !l.is_empty()) {
+        seen += 1;
+        let Some((of, name, allowed)) = row(line) else {
+            continue;
+        };
+        if of != app || rows.len() == MAX_ROWS || rows.iter().any(|x| x.row == name) {
+            continue;
+        }
+        rows.push(Access {
+            row: String::from(name),
+            allowed,
+        });
+    }
+    (seen == 0 || !rows.is_empty()).then_some(rows)
+}
+
+/// Makes `rows` the rows of `app` in `access`, which is kept by app name; no
+/// rows takes the app out.
+pub fn put(access: &mut Vec<AppAccess>, app: &str, rows: Vec<Access>) {
+    let at = access.binary_search_by(|a| a.app.as_str().cmp(app));
+    match (at, rows.is_empty()) {
+        (Ok(at), true) => {
+            access.remove(at);
+        }
+        (Ok(at), false) => access[at].access = rows,
+        (Err(at), false) => access.insert(
+            at,
+            AppAccess {
+                app: String::from(app),
+                access: rows,
+            },
+        ),
+        (Err(_), true) => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
 
     #[test]
     fn names_follow_the_shells_shapes() {
@@ -170,6 +233,55 @@ mod tests {
         assert_eq!(parse("\n\n"), Some(Vec::new()));
         assert_eq!(parse("not kai-grants"), None);
         assert_eq!(parse("kai-grants 1\n"), None);
+    }
+
+    #[test]
+    fn grants_names_the_apps_and_leaves_out_what_is_not_a_name() {
+        let got =
+            parse_apps("notes\nfiles-window\nnotes\nNotes\nbad name\nnotes\tfs_list\tallowed\n\n");
+        assert_eq!(
+            got,
+            Some(vec![String::from("notes"), String::from("files-window")])
+        );
+        assert_eq!(parse_apps(""), Some(Vec::new()));
+        assert_eq!(parse_apps("Notes\nx y"), None);
+        let many: String = (0..MAX_APPS + 10)
+            .map(|i| alloc::format!("app{i}\n"))
+            .collect();
+        assert_eq!(parse_apps(&many).unwrap().len(), MAX_APPS);
+    }
+
+    #[test]
+    fn an_apps_rows_are_only_lines_for_that_app() {
+        let text = "notes\tnotes_add\tallowed\n\
+                    files\tfs_list\tallowed\n\
+                    notes\tfs_write\twithheld\n\
+                    notes\tnotes_add\twithheld\n";
+        let got = parse_app("notes", text).unwrap();
+        let rows: Vec<(&str, bool)> = got.iter().map(|x| (x.row.as_str(), x.allowed)).collect();
+        assert_eq!(rows, [("notes_add", true), ("fs_write", false)]);
+        // Rows of another app are not this app's; nothing of its own is none.
+        assert_eq!(parse_app("browser", text), None);
+        assert_eq!(parse_app("browser", ""), Some(Vec::new()));
+    }
+
+    #[test]
+    fn put_keeps_the_apps_in_order_and_an_app_with_no_rows_goes() {
+        let row = |name: &str| Access {
+            row: String::from(name),
+            allowed: true,
+        };
+        let mut access = Vec::new();
+        put(&mut access, "notes", vec![row("a")]);
+        put(&mut access, "files", vec![row("b")]);
+        let names: Vec<&str> = access.iter().map(|a| a.app.as_str()).collect();
+        assert_eq!(names, ["files", "notes"]);
+        put(&mut access, "notes", vec![row("c"), row("d")]);
+        assert_eq!(access[1].access.len(), 2);
+        put(&mut access, "files", Vec::new());
+        put(&mut access, "nobody", Vec::new());
+        assert_eq!(access.len(), 1);
+        assert_eq!(access[0].app, "notes");
     }
 
     #[test]
