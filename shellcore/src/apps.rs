@@ -150,6 +150,35 @@ pub(crate) fn wire(host: &dyn crate::Host) -> String {
 /// (`supervise::appcall::check`), less its `err `.
 const NOT_AN_APP: &str = "no such app";
 
+/// Loads app `app`'s rows, by its name, if they are not loaded yet: for its
+/// effects, which may come before any call to its rows.
+pub(crate) fn load_app(host: &dyn crate::Host, app: &str) {
+    let Some(apps) = host.apps() else {
+        return;
+    };
+    if apps.borrow().rows.has(app) || apps.borrow().rows.failed(app) {
+        return;
+    }
+    let others: Vec<String> = host
+        .services()
+        .map(|all| {
+            all.into_iter()
+                .map(|s| s.name)
+                .filter(|n| n != app)
+                .collect()
+        })
+        .unwrap_or_default();
+    let answer = match host.app_call(app, "kai-actions 1") {
+        Ok(answer) => answer,
+        Err(why) => return host.audit(&format!("{app}'s rows were not asked for: {why}")),
+    };
+    let loaded = apps.borrow_mut().rows.load_among(app, &answer, &others);
+    match loaded {
+        Ok(count) => host.audit(&format!("{app}'s {count} actions loaded")),
+        Err(why) => host.audit(&why),
+    }
+}
+
 /// `kai-undo 1` of app `app`'s call kept as `id`, with `force` if `anyway`:
 /// the undo's own id, which undoes it again, or why not.
 pub(crate) fn undo(
@@ -197,6 +226,16 @@ struct Loaded {
     rows: Vec<AppRow>,
     /// The `kai-actions 1` answer the rows came from, for llm (`wire`).
     answer: String,
+    /// The OS rows its effects may call, as its package declares them.
+    effects: Vec<String>,
+}
+
+/// The OS rows an app may declare for its effects (P4, deny by default): the
+/// file rows, in `/home/user` as the shell holds it. Every other row, the
+/// package, rule, grant, profile, update and service rows above all, stays the
+/// user's and Kai's to run, and a package declaring one does not load.
+pub fn declarable(row: &str) -> bool {
+    agentabi::FS_ROWS.iter().any(|r| r.name == row)
 }
 
 /// Every app's rows, the newest version of each.
@@ -284,6 +323,11 @@ impl AppRows {
         for row in &parsed.rows {
             self.name_free(app, &row.name, others)?;
         }
+        if let Some(row) = parsed.effects.iter().find(|row| !declarable(row)) {
+            return Err(format!(
+                "{app} declares effects that call {row}, which no app may"
+            ));
+        }
         // From here on rows are leaked, so the load counts even if one fails.
         self.loads += 1;
         let rows = parsed
@@ -298,6 +342,7 @@ impl AppRows {
             version: version.to_string(),
             rows,
             answer: answer.to_string(),
+            effects: parsed.effects.clone(),
         });
         Ok(count)
     }
@@ -362,6 +407,22 @@ impl AppRows {
             .filter(|l| l.app == app)
             .flat_map(|l| l.rows.iter().map(|r| r.row))
             .collect()
+    }
+
+    /// The OS rows `app`'s package declares for its effects; none while its
+    /// rows are not loaded.
+    pub fn effects_of(&self, app: &str) -> &[String] {
+        self.loaded
+            .iter()
+            .find(|l| l.app == app)
+            .map_or(&[], |l| l.effects.as_slice())
+    }
+
+    /// Whether `app`'s package declares that its effects may call `row`.
+    pub fn may_effect(&self, app: &str, row: &str) -> bool {
+        self.loaded
+            .iter()
+            .any(|l| l.app == app && l.effects.iter().any(|e| e == row))
     }
 
     /// Whether `app`'s rows are loaded.

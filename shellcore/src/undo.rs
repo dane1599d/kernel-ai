@@ -68,6 +68,13 @@ pub enum Inverse {
     /// Close `window`, which `ui_open` opened for `app`. It asks first, since
     /// the window may hold work by now.
     Reclose { window: Name, app: Name },
+    /// Withhold `row` from `app`'s effects again (`withheld`), or give it back:
+    /// the undo of `grant_restore` and of `grant_revoke` (P4 task 7).
+    Grant {
+        app: Name,
+        row: Name,
+        withheld: bool,
+    },
 }
 
 /// A service name held without the heap, so an inverse stays `Copy`.
@@ -147,7 +154,14 @@ pub fn target(inverse: Inverse) -> String {
         Inverse::Refocus { to, .. } => format!("focus on {}", to.as_str()),
         Inverse::Reopen(app) => format!("{} open", app.as_str()),
         Inverse::Reclose { app, .. } => format!("{} closed", app.as_str()),
+        Inverse::Grant { app, row, withheld } => grant_words(app, row, withheld),
     }
+}
+
+/// `notes may not call fs_write`, `notes may call fs_write`.
+fn grant_words(app: Name, row: Name, withheld: bool) -> String {
+    let may = if withheld { "may not" } else { "may" };
+    format!("{} {may} call {}", app.as_str(), row.as_str())
 }
 
 /// Puts one change back; what it did, or why it did not. Compare-and-set: a value
@@ -253,6 +267,12 @@ fn revert_one(
             before,
             after,
         } => crate::appearance::revert(host, setting, before, after, anyway),
+        // Setting it twice changes nothing, so this needs no compare.
+        Inverse::Grant { app, row, withheld } => {
+            crate::grants::set(host, app.as_str(), row.as_str(), withheld)
+                .map(|_| grant_words(app, row, withheld))
+                .map_err(Refused::Failed)
+        }
         Inverse::Instruction { .. } | Inverse::Profile { .. } => Err(Refused::Failed(
             String::from("it is put back by the shell's own store"),
         )),
@@ -313,6 +333,11 @@ pub fn reverse(inverse: Inverse) -> Inverse {
         // `revert` names the window a reopen made; this is only its fallback.
         Inverse::Reopen(app) => Inverse::Reclose { window: app, app },
         Inverse::Reclose { app, .. } => Inverse::Reopen(app),
+        Inverse::Grant { app, row, withheld } => Inverse::Grant {
+            app,
+            row,
+            withheld: !withheld,
+        },
     }
 }
 
@@ -361,6 +386,12 @@ pub fn inverse_word(inverse: Option<Inverse>) -> String {
         Some(Inverse::Reclose { window, app }) => {
             format!("reclose:{}:{}", window.as_str(), app.as_str())
         }
+        Some(Inverse::Grant { app, row, withheld }) => format!(
+            "grant:{}:{}:{}",
+            app.as_str(),
+            row.as_str(),
+            u8::from(withheld)
+        ),
     }
 }
 
@@ -414,6 +445,11 @@ pub fn parse_inverse(text: &str) -> Option<Option<Inverse>> {
         "reclose" => Inverse::Reclose {
             window: Name::new(parts.next()?)?,
             app: Name::new(parts.next()?)?,
+        },
+        "grant" => Inverse::Grant {
+            app: Name::new(parts.next()?)?,
+            row: Name::new(parts.next()?)?,
+            withheld: flag(parts.next())?,
         },
         _ => return None,
     }))

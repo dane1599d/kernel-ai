@@ -63,6 +63,7 @@ impl Checked {
 type RhaiResult<T> = Result<T, Box<EvalAltResult>>;
 
 mod apps;
+mod grants;
 mod look;
 mod windows;
 
@@ -168,6 +169,7 @@ fn register(engine: &mut Engine, granted: &[&'static str], tx: &Tx) {
         .iter()
         .chain(&agentabi::FS_ROWS)
         .chain(&agentabi::UI_ROWS)
+        .chain(&agentabi::GRANT_ROWS)
         .filter(|row| granted.contains(&row.name))
     {
         bind(engine, row.name, tx);
@@ -368,6 +370,9 @@ fn bind(engine: &mut Engine, name: &'static str, tx: &Tx) -> bool {
             }
             name if agentabi::UI_ROWS.iter().any(|r| r.name == name) => {
                 return windows::bind(engine, name, h, tx);
+            }
+            name if agentabi::GRANT_ROWS.iter().any(|r| r.name == name) => {
+                return grants::bind(engine, name, h, tx);
             }
             _ => return false,
         }
@@ -580,6 +585,7 @@ fn split(plan: &Plan, rows: &'static [agentabi::Action]) -> (Vec<&'static str>, 
             .chain(&agentabi::FS_ROWS)
             .chain(apps.clone())
             .chain(&agentabi::UI_ROWS)
+            .chain(&agentabi::GRANT_ROWS)
             .filter(|f| f.effect() == effect && names.contains(&f.name))
             .map(|f| f.name)
             .collect()
@@ -646,6 +652,13 @@ impl Host for Stub {
     }
     fn apps(&self) -> Option<&core::cell::RefCell<crate::apps::Apps>> {
         self.0.apps()
+    }
+    fn withheld_read(&self) -> Option<String> {
+        self.0.withheld_read()
+    }
+    // A trial withholds nothing: the file is the one copy.
+    fn withheld_write(&self, _: &str) -> Result<(), String> {
+        Ok(())
     }
     fn app_call(&self, _: &str, _: &str) -> Result<String, String> {
         Ok(alloc::format!("{}\n", livecore::call::REPLY_HEADER))

@@ -34,6 +34,7 @@ mod commands;
 pub mod data;
 mod effects;
 mod engine;
+pub mod grants;
 mod instructions;
 mod packages;
 mod panel;
@@ -248,6 +249,15 @@ pub trait Host {
     /// Writes the whole rules file, after a rule is added or removed.
     fn rules_write(&self, _text: &str) -> Result<(), String> {
         Ok(())
+    }
+    /// The rows taken back from apps' effects, as `/system/state/withheld`
+    /// holds them (`kai-withheld 1`, P4 task 7).
+    fn withheld_read(&self) -> Option<String> {
+        None
+    }
+    /// Writes the whole withheld file, before a change takes effect.
+    fn withheld_write(&self, _text: &str) -> Result<(), String> {
+        Err(String::from("grants cannot be revoked here"))
     }
     /// The standing instructions as `/system/state/standing` holds them
     /// (`kai-standing 1`), read once at start (P3 task 11).
@@ -539,6 +549,13 @@ impl Shell {
         .with_saved_log()
         .with_saved_rules()
         .with_saved_standing()
+        .with_saved_withheld()
+    }
+
+    /// The rows withheld from apps' effects, checked at boot.
+    fn with_saved_withheld(self) -> Self {
+        grants::check_saved(self.host.as_ref());
+        self
     }
 
     /// The log `/system/log` holds, so `undo` works across a reboot; a text that

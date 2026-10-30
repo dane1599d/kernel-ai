@@ -41,6 +41,8 @@ pub const RESERVED_GROUPS: &[&str] = &[
     "tune",
     "component",
     "rules",
+    // P4 task 7.
+    "grant",
 ];
 
 /// Whether `package` is reserved: an OS row group.
