@@ -44,3 +44,16 @@ fn it_remembers_the_latest_image_versions() {
     let last = [MAX_IMAGE_VERSIONS as u8; 32];
     assert_eq!(image.grants_for(&last, SETTINGS), SETTINGS);
 }
+
+#[test]
+fn an_instance_says_what_it_was_granted() {
+    let limits = crate::Limits {
+        fuel_call: 1_000_000,
+        fuel_life: 1_000_000,
+        memory_bytes: 1 << 20,
+    };
+    let module = wat::parse_str(r#"(module (memory (export "memory") 1))"#).unwrap();
+    let load = |grants| crate::load_core_granted(&module, limits, None, grants).unwrap();
+    assert_eq!(load(SETTINGS).grants(), SETTINGS);
+    assert_eq!(load(Grants::default()).grants(), Grants::default());
+}

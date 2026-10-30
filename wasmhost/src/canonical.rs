@@ -51,6 +51,8 @@ pub struct CoreInstance {
     pub(crate) on_settings_reply: Option<String>,
     /// Which load this is: no two instances of this process share one.
     serial: u64,
+    /// What it was loaded with leave to do beyond `kai:app` and `kai:ui`.
+    grants: Grants,
 }
 
 impl CoreInstance {
@@ -72,6 +74,13 @@ impl CoreInstance {
     /// tickets start again, is never answered for its predecessor.
     pub fn serial(&self) -> u64 {
         self.serial
+    }
+
+    /// The grants it was loaded with: none for a version that is not the
+    /// image's own (`grants::FromImage`), so a privilege the host gives outside
+    /// an import (an effect sent as the user's) can be checked here too.
+    pub fn grants(&self) -> Grants {
+        self.grants
     }
 }
 
@@ -185,6 +194,7 @@ pub fn load_core_granted(
         on_event,
         on_settings_reply,
         serial: SERIALS.fetch_add(1, core::sync::atomic::Ordering::Relaxed),
+        grants,
     })
 }
 
