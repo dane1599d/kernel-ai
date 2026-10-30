@@ -27,9 +27,11 @@ pub const SETTINGS_APP: &str = "settings";
 pub const MAX_REQUEST: usize = 512;
 /// The longest app or profile name.
 const MAX_NAME: usize = 24;
-/// The longest answer desktop's `kai:settings` wire carries (its
-/// `MAX_ANSWER`); past it the Settings app gets an error, never a cut answer.
-const MAX_ANSWER: usize = 4096;
+/// The longest answer desktop's `kai:settings` wire carries; past it the
+/// Settings app gets an error, never a cut answer. A copy of
+/// `deskcore::settings_wire::MAX_ANSWER` (shellcore does not depend on
+/// deskcore); the shell binary, which has both, checks they agree.
+pub const MAX_ANSWER: usize = 4096;
 // `grants` alone and `grants <app>` each fit one answer at their worst.
 const _: () = assert!(crate::apps::MAX_LOADS * (MAX_NAME + 1) <= MAX_ANSWER);
 const _: () = assert!(
@@ -199,6 +201,8 @@ impl Shell {
     /// `grants` alone: the apps whose packages declare effect rows, one a line,
     /// for Settings to ask `grants <app>` of each. Every app's rows at once
     /// would outgrow one answer; at most [`crate::apps::MAX_LOADS`] names fit.
+    /// Both forms list only apps whose rows are loaded: an installed app shows
+    /// once it has loaded.
     fn granted_apps(&self) -> String {
         let Some(apps) = self.host.apps() else {
             return String::new();
