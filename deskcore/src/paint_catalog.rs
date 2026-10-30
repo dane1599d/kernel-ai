@@ -7,11 +7,11 @@
 use crate::catalog::{App, Sheet, Source};
 use crate::chrome::PANEL;
 use crate::geom::Rect;
-use crate::paint::{Painter, baseline, fill};
+use crate::paint::{Painter, fill};
 use alloc::format;
 use alloc::string::String;
 use gfx2d::Canvas;
-use look::{DARK, TypeStyle};
+use look::TypeStyle;
 
 /// The widest the sheet grows.
 pub const SHEET_MAX: i32 = 720;
@@ -71,20 +71,28 @@ impl Painter {
         let Some(clip) = area.intersect(&clip) else {
             return;
         };
-        fill(c, area, clip, DARK.window);
+        fill(c, area, clip, self.palette.window);
         fill(
             c,
             Rect::new(area.x, area.y, area.w, 1),
             clip,
-            DARK.line_strong,
+            self.palette.line_strong,
         );
         let x = (area.x + PADDING) as f32;
-        let head = baseline(area.y, HEAD, TypeStyle::Heading);
-        self.draw_text(c, clip, x, head, TypeStyle::Heading, DARK.text, "Apps");
+        let head = self.baseline(area.y, HEAD, TypeStyle::Heading);
+        self.draw_text(
+            c,
+            clip,
+            x,
+            head,
+            TypeStyle::Heading,
+            self.palette.text,
+            "Apps",
+        );
         if sheet.apps().is_empty() {
-            let y = baseline(area.y + HEAD, ROW, TypeStyle::Body);
+            let y = self.baseline(area.y + HEAD, ROW, TypeStyle::Body);
             let empty = "No apps to show.";
-            self.draw_text(c, clip, x, y, TypeStyle::Body, DARK.dim, empty);
+            self.draw_text(c, clip, x, y, TypeStyle::Body, self.palette.dim, empty);
             return;
         }
         let rows = visible(area.h);
@@ -93,15 +101,22 @@ impl Painter {
             let top = area.y + HEAD + i32::try_from(n - first).unwrap_or(0) * ROW;
             let row = Rect::new(area.x, top, area.w, ROW);
             if n == sheet.selected_index() {
-                fill(c, row, clip, DARK.raised);
-                fill(c, Rect::new(area.x, top, EDGE, ROW), clip, DARK.ai);
+                fill(c, row, clip, self.palette.raised);
+                fill(c, Rect::new(area.x, top, EDGE, ROW), clip, self.palette.ai);
             }
             let Some(row_clip) = row.intersect(&clip) else {
                 continue;
             };
-            let line = baseline(top + 6, 20, TypeStyle::Label);
-            let after =
-                self.draw_text(c, row_clip, x, line, TypeStyle::Label, DARK.text, &app.name);
+            let line = self.baseline(top + 6, 20, TypeStyle::Label);
+            let after = self.draw_text(
+                c,
+                row_clip,
+                x,
+                line,
+                TypeStyle::Label,
+                self.palette.text,
+                &app.name,
+            );
             let gap = after + 12.0;
             self.draw_text(
                 c,
@@ -109,17 +124,17 @@ impl Painter {
                 gap,
                 line,
                 TypeStyle::Small,
-                DARK.muted,
+                self.palette.muted,
                 &facts(app),
             );
-            let summary = baseline(top + 26, 20, TypeStyle::Body);
+            let summary = self.baseline(top + 26, 20, TypeStyle::Body);
             self.draw_text(
                 c,
                 row_clip,
                 x,
                 summary,
                 TypeStyle::Body,
-                DARK.dim,
+                self.palette.dim,
                 &app.summary,
             );
         }
@@ -196,7 +211,11 @@ mod tests {
         let mut list = Sheet::new(rows());
         let (w, h) = (1280, 800);
         let area = sheet(w, h, list.apps().len());
-        let (window, raised, ember) = (rgb(DARK.window), rgb(DARK.raised), rgb(DARK.ai));
+        let (window, raised, ember) = (
+            rgb(look::DARK.window),
+            rgb(look::DARK.raised),
+            rgb(look::DARK.ai),
+        );
         let mut image = Image::new(w, h);
         painter.catalog(&mut image.canvas(), Rect::new(0, 0, w, h), area, &list);
         let first = area.y + HEAD;

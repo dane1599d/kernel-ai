@@ -156,6 +156,8 @@ pub enum SelfTest {
     DeskPanel,
     /// `desk-panel-shell` (P3 task 7): the shell takes the panel's line.
     DeskPanelShell,
+    /// `desk-catalog` (P4 task 3): the Apps sheet lists `pkg`'s catalogue.
+    DeskCatalog,
     /// An app's kai:ui window on the desktop, closed from its control (P3 task 9).
     UiWindow,
     /// An unused app naps and a click wakes it (P3 task 12b).
@@ -329,6 +331,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=desk-boot" => Some(SelfTest::DeskBoot),
             "test=desk-panel" => Some(SelfTest::DeskPanel),
             "test=desk-panel-shell" => Some(SelfTest::DeskPanelShell),
+            "test=desk-catalog" => Some(SelfTest::DeskCatalog),
             "test=ui-window" => Some(SelfTest::UiWindow),
             "test=desk-nap" => Some(SelfTest::DeskNap),
             "test=desk-card" => Some(SelfTest::DeskCard),
@@ -415,6 +418,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DeskBoot
             | SelfTest::DeskPanel
             | SelfTest::DeskPanelShell
+            | SelfTest::DeskCatalog
             | SelfTest::UiWindow
             | SelfTest::DeskNap
             | SelfTest::DeskCard
@@ -455,6 +459,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             crate::files_tests::plan(&alloc::format!("churn boot={boot}"))
         }
         SelfTest::PkgStore(step) => crate::pkg_tests::plan(step),
+        SelfTest::DeskCatalog => crate::catalog_tests::plan(),
         SelfTest::Edit | SelfTest::Manifest | SelfTest::ManifestGood => {
             let mut plan = match test {
                 SelfTest::Edit => String::from(kabi::plan::NOTES_EDIT_TEST),
@@ -491,6 +496,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::FilesActions
             | SelfTest::FilesChurn { .. }
             | SelfTest::PkgStore(_)
+            | SelfTest::DeskCatalog
     ) {
         // The file system service starts before the shell, once there is a
         // `kai-data` partition for it (ADR 0004).
