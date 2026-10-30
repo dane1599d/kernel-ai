@@ -601,7 +601,8 @@ impl<D: BlockDev> Server<D> {
             }
             Request::Commit => {
                 self.owned(call.caller)?;
-                // A blob begun and not finished is never made durable.
+                // Refused before the action changes hands, so its owner can
+                // still finish or abort the blob.
                 if self.sealing.is_some() {
                     return Err(Error::Invalid);
                 }
@@ -895,7 +896,12 @@ impl<D: BlockDev> Server<D> {
 
     /// Commits, or drops the changes if the commit fails; a commit that landed
     /// whole despite the error counts as done (its changes are on the disk).
+    /// A model blob begun and not finished is never made durable, whatever
+    /// commits: Commit, Sync, or a change outside an action (S-io's review).
     fn commit(&mut self) -> Result<u64, Error> {
+        if self.sealing.is_some() {
+            return Err(Error::Invalid);
+        }
         let before = self.fs.committed;
         match self.fs.commit() {
             Ok(generation) => Ok(generation),

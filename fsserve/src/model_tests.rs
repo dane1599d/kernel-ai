@@ -165,6 +165,34 @@ fn a_blob_is_written_only_whole_in_its_owners_action_on_the_store() {
 }
 
 #[test]
+fn no_commit_makes_a_half_blob_durable() {
+    let mut disk = MemDisk::new(BLOCKS);
+    let (mut c, _) = Client::start(&mut disk);
+    let bytes = model(20_000);
+    let name = name_of(&bytes);
+    assert_eq!(
+        store(&mut c, ALICE, Request::Begin { action: 1 }),
+        Reply::Done
+    );
+    let begin = Request::SealedBegin {
+        name: name.clone(),
+        len: bytes.len() as u64,
+    };
+    assert_eq!(store(&mut c, ALICE, begin), Reply::Done);
+    let push = Request::SealedPush {
+        data: bytes[..7000].to_vec(),
+    };
+    assert_eq!(store(&mut c, ALICE, push), Reply::Done);
+    // Sync commits too, so it is refused as Commit is.
+    assert_eq!(fail(store(&mut c, ALICE, Request::Sync)), Error::Invalid);
+    assert_eq!(fail(store(&mut c, ALICE, Request::Commit)), Error::Invalid);
+    assert_eq!(store(&mut c, ALICE, Request::Abort), Reply::Done);
+    let fs = &mut c.server.fs;
+    fs.set_volume(MODELS.into()).unwrap();
+    assert!(fs.lookup(ROOT, &name).unwrap().is_none());
+}
+
+#[test]
 fn the_hint_names_only_a_sealed_blob_and_is_written_outside_an_action() {
     let mut disk = MemDisk::new(BLOCKS);
     let (mut c, _) = Client::start(&mut disk);
@@ -245,5 +273,27 @@ fn the_hint_names_only_a_sealed_blob_and_is_written_outside_an_action() {
             .model_extents(&Sha256::digest(&bytes).into())
             .unwrap()
             .is_some()
+    );
+    // Each request takes its volume from its own badge: after the store's
+    // calls left `models` selected, `system` and `home` answer as themselves.
+    assert_eq!(store(&mut c, ALICE, hint(Some(&name))), Reply::Done);
+    let updates = c.call(ALICE, SYSTEM_UPDATES, DIR_RIGHTS, Request::Stat).0;
+    assert!(matches!(updates, Reply::Stat(_)), "{updates:?}");
+    let listed = |c: &mut Client<'_>, badge| {
+        let list = Request::List {
+            after: None,
+            max: 16,
+        };
+        match c.call(ALICE, badge, DIR_RIGHTS, list).0 {
+            Reply::Listed { names, .. } => names.into_iter().map(|l| l.name).collect::<Vec<_>>(),
+            other => panic!("{other:?}"),
+        }
+    };
+    let home = listed(&mut c, HOME_USER);
+    let models = listed(&mut c, MODELS_ROOT);
+    assert!(!home.contains(&name), "{home:?}");
+    assert!(
+        models.contains(&name) && models.contains(&plain),
+        "{models:?}"
     );
 }
