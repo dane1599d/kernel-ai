@@ -1,0 +1,29 @@
+/// The System monitor (ADR 0003 section 1). Each action's first doc line is its
+/// description for the model; `kai:` lines give its facts, inverse and cues, and
+/// each `kai: arg` line one argument's bounds and role (ADR 0003 section 5). They
+/// only move the window's view: the numbers come to the app through
+/// `kai:system`, and stopping a process is the OS's own `process_stop`, which
+/// asks the user, so tiers and the log stay the OS's.
+package app:monitor@1.0.0;
+
+interface actions {
+    /// Sort the System monitor's process table by cpu, memory, name or pid; the
+    /// same word again reverses it. The answer names the first process.
+    /// kai: read-only=yes destructive=no idempotent=no open-world=no inverse=none cues=sort,order,rank,biggest,busiest
+    /// kai: arg by max=16 role=option from-request
+    sort: func(by: string) -> result<string, string>;
+
+    /// Select a process in the System monitor by its name.
+    /// kai: read-only=yes destructive=no idempotent=yes open-world=no inverse=none cues=select,pick,choose,process
+    /// kai: arg name max=64 role=target from-request
+    select: func(name: string) -> result<string, string>;
+}
+
+/// The part a Monitor crate binds itself, besides `kai:ui` (`comp-ui-bind`) and
+/// `kai:app/component` (`compsdk`): its two actions, and `kai:system`, the
+/// reading of the machine it is granted.
+world bound {
+    import kai:system/system@0.1.0;
+    export kai:system/samples@0.1.0;
+    export actions;
+}

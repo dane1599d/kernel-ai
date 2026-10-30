@@ -389,3 +389,36 @@ fn a_sample_the_host_wrote_is_the_sample_the_monitor_reads() {
             .any(|p| p.name == "llm" && p.cpu_permille.is_some())
     );
 }
+
+#[test]
+fn an_unreadable_sample_is_said_and_the_next_good_one_clears_it() {
+    let mut mon = running();
+    let before = names(&mon).len();
+    mon.no_reading("the system could not be read");
+    assert!(matches!(mon.status(), Status::Failed(m) if m.contains("could not be read")));
+    // The last picture stays.
+    assert_eq!(names(&mon).len(), before);
+    mon.update(&usual(3 * SEC, 612 * MS));
+    assert_eq!(mon.status(), &Status::Ready);
+
+    // A message about something else is not cleared by a sample.
+    let mut os = Queue::default();
+    mon.act_select("shell").unwrap();
+    mon.stop_selected(&mut os);
+    mon.done(1, Ok(String::new()));
+    mon.no_reading("x");
+    mon.done(99, Ok(String::new()));
+    mon.update(&usual(4 * SEC, 612 * MS));
+    assert_eq!(mon.status(), &Status::Ready);
+    mon.stop_selected(&mut os);
+    mon.done(2, Err("the user said no".into()));
+    mon.update(&usual(5 * SEC, 612 * MS));
+    assert!(matches!(mon.status(), Status::Failed(m) if m.contains("said no")));
+
+    // Odd text is data.
+    mon.no_reading("a\u{1b}[31m\u{202e} very long ".repeat(20).as_str());
+    let Status::Failed(text) = mon.status() else {
+        panic!("{:?}", mon.status());
+    };
+    assert!(text.chars().all(|c| !c.is_control()) && text.chars().count() <= 120);
+}
