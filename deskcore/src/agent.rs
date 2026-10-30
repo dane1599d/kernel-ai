@@ -19,7 +19,22 @@
 //!   shell asks before it puts a call to the user;
 //! - `ui agent <window>` or `ui agent none` → `ok`: the outline while a run
 //!   drives a window, or none. A key or click by the user there stops the run
-//!   ([`crate::desk::Effect::TookOver`]).
+//!   ([`crate::desk::Effect::TookOver`], [`Agent::took_over`]): from then on
+//!   `ui act`, `ui check`, `ui focus`, `ui close` and `ui agent <window>` are
+//!   refused with `err stopped: you took over`, until the shell's next request
+//!   begins with `ui agent none`.
+//!
+//! A private window (`toplevel.set_agent_private`, ADR 0005 §6) is kept from
+//! the agent: `ui view` answers the window line and `w3: private` with no
+//! nodes, and `ui act`, `ui check`, `ui focus` and a `ui refocus` into it are
+//! refused. It is asked at each request, so a window that turns private later
+//! is kept from then on, and a view taken before cannot be acted on.
+//!
+//! A private window (`toplevel.set_agent_private`, ADR 0005 §6) is kept from
+//! the agent: `ui view` answers the window line and `w3: private` with no
+//! nodes, and `ui act`, `ui check`, `ui focus` and a `ui refocus` into it are
+//! refused. It is asked at each request, so a window that turns private later
+//! is kept from then on, and a view taken before cannot be acted on.
 //!
 //! Anything else is `err <why>`, in words the shell shows. `desktop` takes these
 //! from the shell alone.
@@ -125,18 +140,38 @@ impl Request {
     }
 }
 
-/// What `desktop` keeps for the agent: each window's last view.
+/// What `desktop` keeps for the agent: each window's last view, and whether
+/// the user took over from the run.
 #[derive(Default)]
 pub struct Agent {
     views: Vec<(WindowId, View)>,
+    stopped: bool,
 }
 
+/// The refusal while the user has taken over (ADR 0005 §6).
+pub const STOPPED: &str = "stopped: you took over";
+
 /// What answering a request needs of `desktop` beyond the desk: each window's
-/// tree, and sending an `ActionRequest` to its app.
+/// tree, whether its app keeps it from the agent, and sending an
+/// `ActionRequest` to its app.
 pub trait Clients {
     fn tree(&self, window: WindowId) -> Option<&Tree>;
+    /// Whether `window`'s app keeps it from the agent
+    /// (`toplevel.set_agent_private`, [`crate::server::Client::agent_private`]).
+    /// Asked at every request, so a window that turns private after its tree
+    /// came is kept from then on.
+    fn private(&self, window: WindowId) -> bool;
     /// Whether the app was asked: the node offers the action.
     fn act(&mut self, window: WindowId, node: u32, action: u32, value: &str) -> bool;
+}
+
+/// What `ui view` of a private window says after its window line, in place of
+/// its nodes.
+pub const PRIVATE: &str = "private";
+
+/// The refusal for acting in, or focusing, a private window.
+fn kept_private(name: &str) -> String {
+    format!("{name} is private: its app keeps it from the agent")
 }
 
 impl Agent {
@@ -167,6 +202,17 @@ impl Agent {
         request: Request,
         effects: &mut Vec<Effect>,
     ) -> Result<String, String> {
+        let acts = matches!(
+            request,
+            Request::Act { .. }
+                | Request::Check { .. }
+                | Request::Focus(_)
+                | Request::Close(_)
+                | Request::Agent(Some(_))
+        );
+        if self.stopped && acts {
+            return Err(String::from(STOPPED));
+        }
         let find = |desk: &Desk, name: &str| {
             find_window(desk, name).ok_or_else(|| format!("no window is {name}"))
         };
@@ -174,6 +220,13 @@ impl Agent {
             Request::Windows => Ok(windows_text(&view::listed(desk))),
             Request::View(name) => {
                 let window = find(desk, &name)?;
+                if clients.private(window) {
+                    // Its title is in the window line; no node, and no view
+                    // kept, so no short id from before can be acted on.
+                    self.views.retain(|(w, _)| *w != window);
+                    let list = view::windows_line(&view::listed(desk));
+                    return Ok(format!("ok {list}\n{}: {PRIVATE}", view::window_id(window)));
+                }
                 let empty = Tree::default();
                 let tree = clients.tree(window).unwrap_or(&empty);
                 let view = view::project(&view::listed(desk), window, tree);
@@ -184,15 +237,27 @@ impl Agent {
             }
             Request::Focus(name) => {
                 let window = find(desk, &name)?;
+                if clients.private(window) {
+                    return Err(kept_private(&name));
+                }
                 let before = focus_name(desk.focus());
                 desk.activate(window, effects);
+                // The agent drives the window it moved to: it has the outline.
+                desk.set_agent(Some(window));
                 Ok(format!("ok {before}"))
             }
             Request::Refocus(before) => {
                 match before.as_str() {
                     "panel" => desk.set_focus(Focus::Panel, effects),
                     "none" => desk.set_focus(Focus::Nothing, effects),
-                    name => desk.activate(find(desk, name)?, effects),
+                    // An undo puts focus back, but never into a private window.
+                    name => {
+                        let window = find(desk, name)?;
+                        if clients.private(window) {
+                            return Err(kept_private(name));
+                        }
+                        desk.activate(window, effects)
+                    }
                 }
                 Ok(String::from("ok"))
             }
@@ -229,6 +294,12 @@ impl Agent {
                 self.checked(&*clients, window, &node, action)?;
                 Ok(String::from("ok"))
             }
+            Request::Agent(None) => {
+                // The shell's next request: a new run.
+                self.stopped = false;
+                desk.set_agent(None);
+                Ok(String::from("ok"))
+            }
             Request::Agent(name) => {
                 let window = name.map(|n| find(desk, &n)).transpose()?;
                 desk.set_agent(window);
@@ -247,6 +318,9 @@ impl Agent {
         node: &str,
         action: u32,
     ) -> Result<u32, String> {
+        if clients.private(window) {
+            return Err(kept_private(&view::window_id(window)));
+        }
         let id = self
             .views
             .iter()
@@ -263,14 +337,21 @@ impl Agent {
         }
     }
 
+    /// The user acted in the window the agent was driving: the rest of the run
+    /// acts on nothing.
+    pub fn took_over(&mut self) {
+        self.stopped = true;
+    }
+
     /// A window closed: its view goes.
     pub fn closed(&mut self, window: WindowId) {
         self.views.retain(|(w, _)| *w != window);
     }
 }
 
-/// `w3` by its id, or an app's frontmost window by the app's name (or the
-/// title, when no app has that name), case aside.
+/// `w3` by its id, or an app's frontmost window by the app's name, by the
+/// package a `<pkg>-window` app shows (`notes` for `notes-window`), or by the
+/// title, when no app has that name, case aside.
 pub fn find_window(desk: &Desk, name: &str) -> Option<WindowId> {
     let listed = view::listed(desk);
     if let Some(id) = view::parse_window(name) {
@@ -282,7 +363,12 @@ pub fn find_window(desk: &Desk, name: &str) -> Option<WindowId> {
             .find(|l| key(l).eq_ignore_ascii_case(name))
             .map(|l| l.id)
     };
-    by(|l| &l.app).or_else(|| by(|l| &l.title))
+    fn package(l: &Listed) -> &str {
+        l.app.strip_suffix("-window").unwrap_or_default()
+    }
+    by(|l| &l.app)
+        .or_else(|| by(package))
+        .or_else(|| by(|l| &l.title))
 }
 
 /// `ui windows`' answer: one line a window, its fields without tabs or breaks.

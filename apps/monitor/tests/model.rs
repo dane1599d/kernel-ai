@@ -370,3 +370,22 @@ fn any_numbers_at_all_leave_a_sane_window() {
         assert_eq!(mon.selected().is_some(), mon.selected_index().is_some());
     }
 }
+
+#[test]
+fn a_sample_the_host_wrote_is_the_sample_the_monitor_reads() {
+    // comphost writes `Sample::encode`; the component parses it with
+    // `Sample::parse` and hands it to the model.
+    let mut mon = Monitor::new();
+    for seconds in [1, 2] {
+        let wire = usual(seconds * SEC, 612 * MS).encode();
+        let sample = Sample::parse(&wire).expect("what the host writes parses");
+        mon.update(&sample);
+    }
+    assert_eq!(names(&mon), names(&running()));
+    assert_eq!(mon.model(), READY);
+    assert!(
+        mon.procs()
+            .iter()
+            .any(|p| p.name == "llm" && p.cpu_permille.is_some())
+    );
+}

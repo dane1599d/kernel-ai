@@ -95,7 +95,7 @@ impl Step {
         }
     }
 
-    fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Step::Install => "install",
             Step::Undo => "undo",
@@ -392,7 +392,7 @@ fn read(path: &str) -> Result<Vec<u8>, &'static str> {
 }
 
 /// Waits until `/system/pkg/<path>` exists.
-fn wait_for(path: &str) -> Result<(), ()> {
+pub(crate) fn wait_for(path: &str) -> Result<(), ()> {
     for _ in 0..WAIT_MS / 50 {
         let open = Request::Open {
             path: path.into(),
