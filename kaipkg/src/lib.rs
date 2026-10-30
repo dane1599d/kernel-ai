@@ -16,6 +16,7 @@
 //!   its header;
 //! - [`mirror`]: installs from the fixed `pkgrepo=` mirror, its metadata checked
 //!   with `kaituf`, its packages fetched in pieces;
+//! - [`models`]: the image's signed `models` role, the models a user may import;
 //! - [`memvol`]: the store's volume in memory;
 //! - [`fsvol`]: the store's [`store::Volume`] over `kai-fs 1`, as `pkg` holds
 //!   `/system/pkg`;
@@ -41,6 +42,7 @@ pub mod image;
 pub mod index;
 pub mod memvol;
 pub mod mirror;
+pub mod models;
 pub mod resolve;
 pub mod store;
 pub mod version;
