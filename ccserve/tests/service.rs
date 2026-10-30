@@ -313,3 +313,20 @@ fn reset_and_sessions() {
     );
     assert_eq!(cc.send("nonsense"), ["err 0 not a request"]);
 }
+
+/// cc's plan line covers everything it may hold at once.
+#[test]
+fn the_plan_line_covers_the_budget() {
+    let pages: u64 = kabi::plan::CC
+        .split_whitespace()
+        .find_map(|word| word.strip_prefix("pages="))
+        .and_then(|n| n.parse().ok())
+        .expect("cc's plan line names its pages");
+    let budget = ccserve::budget::total();
+    assert!(
+        budget <= pages * 4096,
+        "cc may hold {} KiB, its plan gives {} KiB",
+        budget / 1024,
+        pages * 4
+    );
+}
