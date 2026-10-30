@@ -34,6 +34,7 @@
 
 extern crate alloc;
 
+use alloc::format;
 #[path = "desktop/apps.rs"]
 mod apps;
 
@@ -50,6 +51,7 @@ use deskcore::paint_panel;
 use deskcore::panel::Panel;
 use deskcore::panel_wire;
 use deskcore::server::{Buffer, Client, Need};
+use deskcore::settings_wire as settings;
 use deskcore::watch::Watch;
 use gfx2d::{Canvas, Fonts, Image};
 use kabi::display::{DisplayInfo, FlushRect};
@@ -119,6 +121,8 @@ struct State {
     sheet: Option<deskcore::catalog::Sheet>,
     /// Apps' effects waiting for the shell, and what came of them.
     effects: effects::Queue,
+    /// The Settings app's requests for the shell, and the shell's answers.
+    settings: settings::Queue,
     /// The agent's views of windows, for its `ui` rows (P3 task 10).
     agent: deskcore::agent::Agent,
     /// When the panel's "thinking 4s" was last redrawn.
@@ -176,6 +180,7 @@ fn main() -> i32 {
             panel: Panel::new(),
             sheet: None,
             effects: effects::Queue::default(),
+            settings: settings::Queue::default(),
             agent: deskcore::agent::Agent::default(),
             ticked_ms: 0,
             card: None,
@@ -516,6 +521,10 @@ fn serve(state: &mut State, bytes: &[u8], info: &RecvInfo) {
         let _ = sys::reply_h(reply.as_bytes(), &[]);
         return;
     }
+    if let Some(reply) = settings_request(state, bytes, pid) {
+        let _ = sys::reply_h(reply.as_bytes(), &[]);
+        return;
+    }
     if let Some(reply) = agent::request(state, bytes, pid) {
         let _ = sys::reply_h(reply.as_bytes(), &[]);
         return;
@@ -663,6 +672,55 @@ fn effects_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> 
         state.effects.finish(app, done);
     }
     Some(String::from("ok"))
+}
+
+/// A `settings ...` request (`deskcore::settings_wire`): only the Settings
+/// app's process may put or read answers, and only the shell may take and
+/// answer; anything else is not one, for the next handler.
+fn settings_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
+    let text = core::str::from_utf8(bytes).ok()?;
+    if !text.starts_with("settings ") {
+        return None;
+    }
+    let caller = name_of(pid);
+    if let Some(lines) = text.strip_prefix(settings::PUT) {
+        return Some(match state.settings.put(&caller, lines) {
+            Ok(()) => {
+                wake_shell();
+                String::from("ok")
+            }
+            Err(why) => format!("err {why}"),
+        });
+    }
+    if text == settings::RESULTS {
+        return Some(match caller == settings::SETTINGS_APP {
+            true => state.settings.results(kabi::MAX_MESSAGE - 64),
+            false => String::from("err not the settings app"),
+        });
+    }
+    if caller != "shell" {
+        return Some(String::from("err only the shell answers settings"));
+    }
+    if text == settings::TAKE {
+        let taken = state.settings.take(kabi::MAX_MESSAGE - 64);
+        return Some(settings::encode_take(taken.as_deref()));
+    }
+    let Some(body) = text
+        .strip_prefix(settings::DONE)
+        .and_then(|rest| rest.strip_prefix(settings::SETTINGS_APP))
+        .and_then(|rest| rest.strip_prefix('\n'))
+    else {
+        return Some(String::from("err not a settings request"));
+    };
+    match settings::parse_answers(body) {
+        Some(answers) => {
+            for answer in answers {
+                state.settings.finish(answer);
+            }
+            Some(String::from("ok"))
+        }
+        None => Some(String::from("err the answers are out of shape")),
+    }
 }
 
 fn apply_need(state: &mut State, at: usize, pid: u64, need: Need, handle: Option<Handle>) {
