@@ -1,8 +1,11 @@
 //! `test=app-terminal` (P4 task 4's exit case): the AI types a command into the
 //! Terminal app through its action, and only a person's key runs it. The
 //! mock model answers "type 1 + 2 in the terminal" with `terminal_window_run`,
-//! which the shell loads from the app on first use and calls through the
-//! supervisor; the line waits in the app's input and nothing ran. Then the
+//! which the shell loads from the app on first use. An app's row is cued only by
+//! its function's own word (`run`), which the line does not use, so the shell
+//! asks first with its Allow / Deny menu and nothing is typed. The trusted path
+//! allows it (as `act-ask` does), the shell calls the app through the
+//! supervisor, and the line waits in the app's input; nothing ran. Then the
 //! harness presses Enter, which `desktop` posts to the window, comphost hands
 //! to `uikit`, and the app turns into a `shell_line` effect marked as a
 //! person's: `desktop` queues it, the shell runs it in the app's own terminal
@@ -10,10 +13,11 @@
 //! `terminal_window_read`.
 
 use crate::display::claim;
-use crate::shell_tests::Expect::{Contains, StartsWith};
+use crate::shell_tests::Expect::Contains;
 use crate::shell_tests::expect_lines;
-use crate::{console, ipc, log, process, threads};
+use crate::{allow, console, ipc, log, process, threads};
 use alloc::string::String;
+use termcore::menu::{self, Answer};
 
 const NAME: &str = "terminal-window";
 /// The plan lines this case adds, after the shell's `cc` and before the shell,
@@ -29,12 +33,51 @@ const SETTLE_MS: u64 = 2_000;
 /// How long Enter may take to become a reply row.
 const REPLY_MS: u64 = 60_000;
 const READ: &str = "kai-call 1\nfunc app:terminal-window/actions@1.0.0#read\nargs {since: 0}\n";
+/// The request the mock model answers with `terminal_window_run`.
+const TYPE: &str = "type 1 + 2 in the terminal";
 
 /// What the app's rows say now, as the app answers its `read` action.
 fn rows() -> Result<String, &'static str> {
     ipc::call(NAME, READ.as_bytes(), CALL_MS)
         .map(|reply| String::from_utf8_lossy(&reply).into_owned())
         .map_err(|_| "app-terminal: terminal-window did not reply")
+}
+
+/// The shell's raw reply to `line`.
+fn reply_to(line: &str) -> Result<String, &'static str> {
+    let reply = ipc::call("shell", line.as_bytes(), CALL_MS)
+        .map_err(|_| "app-terminal: the shell did not reply")?;
+    Ok(String::from_utf8_lossy(&reply).into_owned())
+}
+
+/// The AI asks to type the line: the shell must come back with its menu, which
+/// the trusted path then allows, and the shell's reply to the Allow.
+fn type_after_allow() -> Result<String, &'static str> {
+    let reply = reply_to(TYPE)?;
+    let menu = menu::Menu::decode(&reply).map_err(|_| {
+        log!("app-terminal: {TYPE:?} answered {reply:?}, not a menu");
+        "app-terminal: the AI's typing did not ask first"
+    })?;
+    if !menu.call().contains("terminal_window_run") {
+        log!("app-terminal: the menu showed {:?}", menu.call());
+        return Err("app-terminal: the menu did not show the Terminal's row");
+    }
+    // Asked, so nothing is typed yet.
+    let before = rows()?;
+    log!(
+        "app-terminal: while the menu waits, the rows are {}",
+        before.replace('\n', "; ")
+    );
+    if before.contains("The AI typed a line for you") {
+        return Err("app-terminal: the line was typed before the Allow");
+    }
+    let allowed = allow::allow(menu.id, menu.call(), Answer::Allow)
+        .ok()
+        .flatten()
+        .ok_or("app-terminal: the trusted path could not mint a ONCE")?;
+    let reply = reply_to(&menu::granted_line(menu.id, Answer::Allow, allowed.granted));
+    allow::end(&allowed);
+    reply
 }
 
 pub fn check() -> Result<(), &'static str> {
@@ -53,8 +96,12 @@ pub fn check() -> Result<(), &'static str> {
     }
     threads::sleep_ms(OPEN_MS);
 
-    // The AI types the line; the app answers at once.
-    expect_lines(&[("type 1 + 2 in the terminal", StartsWith("ok "))])?;
+    // The AI asks to type the line; once allowed, the app answers at once.
+    let allowed = type_after_allow()?;
+    if !allowed.starts_with("ok ") {
+        log!("app-terminal: the Allow answered {allowed:?}");
+        return Err("app-terminal: the allowed typing did not run");
+    }
     threads::sleep_ms(SETTLE_MS);
     let typed = rows()?;
     log!(
