@@ -45,6 +45,8 @@ struct System {
     pool: apart::Pool,
     files: files::Files,
     state: files::State,
+    /// The installed apps' rows, loaded as the agent first calls them (P4).
+    apps: core::cell::RefCell<shellcore::apps::Apps>,
 }
 
 /// The route to the llm service: the shell's plan line has `uses=llm`, its only
@@ -163,6 +165,35 @@ fn with_proof(request: supervise::Request, proof: Proof) -> Result<String, Strin
     Ok(request.encode(proof))
 }
 
+/// How long an app's call may take through the supervisor: its start, then
+/// the call (`supervise::appcall`).
+const APP_CALL_MS: u64 = 8_000;
+
+/// `request` to app `app` through the supervisor's `app-call` (APP_CALL): the
+/// app's reply, or why not. The supervisor waits at most 5 s on one call; a
+/// timeout is tried once more.
+fn ask_app(app: &str, request: &str) -> Result<String, String> {
+    match ask_app_once(app, request) {
+        Err(why) if why.starts_with("timeout") => {
+            println!("{app} did not answer in time; asking once more");
+            ask_app_once(app, request)
+        }
+        other => other,
+    }
+}
+
+fn ask_app_once(app: &str, request: &str) -> Result<String, String> {
+    let mut reply = vec![0u8; kabi::MAX_MESSAGE];
+    let call = supervise::appcall::encode(app, request);
+    let len = sys::call_route(supervisor(), call.as_bytes(), &mut reply, APP_CALL_MS)
+        .map_err(|error| format!("the supervisor did not answer ({error:?})"))?;
+    let text = String::from_utf8_lossy(&reply[..len.min(reply.len())]).into_owned();
+    match text.strip_prefix("err ") {
+        Some(why) => Err(why.to_string()),
+        None => Ok(text),
+    }
+}
+
 /// Sends `request` to the supervisor over the route; its answer.
 fn ask_supervisor(request: &str) -> Result<String, String> {
     let mut reply = vec![0u8; 2048];
@@ -180,6 +211,14 @@ fn ask_supervisor(request: &str) -> Result<String, String> {
 impl Host for System {
     fn now_ns(&self) -> u64 {
         sys::time_ns()
+    }
+
+    fn apps(&self) -> Option<&core::cell::RefCell<shellcore::apps::Apps>> {
+        Some(&self.apps)
+    }
+
+    fn app_call(&self, app: &str, request: &str) -> Result<String, String> {
+        ask_app(app, request)
     }
 
     fn interrupted(&self) -> bool {
@@ -456,6 +495,20 @@ impl Host for System {
         }
     }
 
+    fn withheld_read(&self) -> Option<String> {
+        self.state.read(files::WITHHELD)
+    }
+
+    /// As the rules are written: with the line's files, if it changed any.
+    fn withheld_write(&self, text: &str) -> Result<(), String> {
+        match self.files.is_open() {
+            true => self.state.write_in(files::WITHHELD, text),
+            false => self
+                .state
+                .write(files::WITHHELD, text, self.files.next_action()),
+        }
+    }
+
     fn fs_read(&self, read: shellcore::FsRead) -> Result<String, String> {
         self.files.read(read)
     }
@@ -574,6 +627,7 @@ fn main() -> i32 {
                 pool: apart::Pool::new(),
                 files,
                 state,
+                apps: core::cell::RefCell::default(),
             })
         },
         DEFAULT_CONFIG,

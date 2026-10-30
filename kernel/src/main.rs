@@ -20,6 +20,7 @@ extern crate alloc;
 mod act_tests;
 mod allow;
 mod apic;
+mod app_route_tests;
 mod appbench_tests;
 mod ask_box;
 mod ask_tests;

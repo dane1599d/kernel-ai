@@ -37,7 +37,11 @@ const RESULT: &str = "ran 1";
 pub fn may_run_apart(checked: &Checked) -> bool {
     !checked.script.is_empty()
         && checked.plan.names().iter().all(|name| {
-            !agentabi::CALL_ONLY.iter().any(|row| row.name == *name) && !name.starts_with("fs_")
+            !agentabi::CALL_ONLY.iter().any(|row| row.name == *name)
+                && !name.starts_with("fs_")
+                // An app's row is the shell's to call: its rows and the
+                // supervisor's route are here, not in the child.
+                && crate::apps::is_os_row(name)
         })
 }
 
