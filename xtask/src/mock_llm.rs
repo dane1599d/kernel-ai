@@ -681,6 +681,7 @@ mod act_tests {
             line: line.to_string(),
             timeout_ms: 0,
             read: None,
+            apps: String::new(),
         };
         let chat = llmproto::act::request(&request, &history);
         let messages: Vec<_> = chat
