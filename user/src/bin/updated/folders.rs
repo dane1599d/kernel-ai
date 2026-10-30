@@ -23,6 +23,8 @@ pub struct Folders {
     pub updates: Option<Handle>,
     /// `/system/settings`, read only: the restart window (`window.rs`).
     pub settings: Option<Handle>,
+    /// The `models` volume's root, the model store (`models.rs`).
+    pub models: Option<Handle>,
 }
 
 impl Folders {
@@ -54,6 +56,7 @@ impl Folders {
             trust: served()?,
             updates: served()?,
             settings: served()?,
+            models: served()?,
         })
     }
 }
@@ -63,7 +66,7 @@ impl Folders {
 const BUSY_TRIES: u32 = 50;
 const BUSY_MS: u64 = 100;
 
-fn ask(on: Handle, request: &Request) -> Result<(Reply, Option<Handle>), String> {
+pub(crate) fn ask(on: Handle, request: &Request) -> Result<(Reply, Option<Handle>), String> {
     for _ in 1..BUSY_TRIES {
         match ask_once(on, request)? {
             (Reply::Failed(fsproto::Error::Busy), _) => sys::sleep_ms(BUSY_MS),

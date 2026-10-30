@@ -423,6 +423,22 @@ const W_STAGE: TestCase = TestCase {
     )
 };
 
+/// `model-import` boot 2: the store's hint names the fixture, which the kernel
+/// maps from the store and `llm` cannot run, so its trial rolls back.
+const M_TRIAL: TestCase = TestCase {
+    expect: &[
+        "model: 2101245 bytes reserved for the model store's model; fs fills them",
+        "updated: model 73174ba39c9a is on trial",
+        "updated: model 73174ba39c9a rolled back: it did not load: ",
+    ],
+    server: false,
+    data: Some(DATA),
+    ..case(
+        "model-import (2: the fixture's trial rolls back)",
+        "test=update updated=probation",
+    )
+};
+
 pub(super) const CASES: &[TestCase] = &[
     // Spikes S08-3 and S11-1: P-256 and Ed25519 verification, a 1,000-target
     // `packages` role and SHA-256 in soft-float ring 3, reported in the log.
@@ -457,6 +473,23 @@ pub(super) const CASES: &[TestCase] = &[
         then: Some(&A_FROM_DISK),
         data: Some(DATA),
         ..boot("update-disk", "test=slot panic=reset", INSTALL)
+    },
+    // The model channel (P4 task 10): the import disk's fixture, a target of the
+    // signed `models` role, is imported into the store and used from the next
+    // restart; that boot judges its trial.
+    TestCase {
+        then: Some(&M_TRIAL),
+        data: Some(DATA),
+        import: Some(Fixture::Gguf),
+        expect: &[
+            "block: kai-import disk holds a GGUF file; a disk with a role is never the model",
+            "updated: models: 4 signed, 0 stored",
+            "updated: ok importing fixture 2101245",
+            "updated: imported fixture (73174ba39c9a), 2101245 bytes",
+            "updated: model_use fixture: the next restart uses it, on trial",
+        ],
+        server: false,
+        ..case("model-import", "test=update updated=models")
     },
     // The restart window (P4 question 10): staged, then a restart only inside it.
     TestCase {

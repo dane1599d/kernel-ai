@@ -1808,6 +1808,7 @@ version = "0.1.0-dev"
 dependencies = [
  "appabi",
  "bootslot",
+ "comp-models",
  "cpufeat",
  "deskcore",
  "ecdsa",
@@ -1826,6 +1827,7 @@ dependencies = [
  "livecore",
  "llmproto",
  "look",
+ "modelchan",
  "p256",
  "quant",
  "sched",
