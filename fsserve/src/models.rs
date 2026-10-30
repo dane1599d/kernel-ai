@@ -153,29 +153,50 @@ impl<D: BlockDev> Server<D> {
         }
         let mut block = [0u8; BLOCK];
         if let Some(name) = name {
-            let sha256 = blob_sha(name).ok_or(Error::Invalid)?;
-            let fs = self.fs();
-            fs.set_volume(MODELS.into()).map_err(error)?;
-            let entry = fs
-                .lookup(ROOT, name)
-                .map_err(error)?
-                .ok_or(Error::Invalid)?;
-            if !fs.is_sealed(entry.ino).map_err(error)? {
-                return Err(Error::Invalid);
-            }
-            let len = fs.stat(entry.ino).map_err(error)?.size;
-            let fnv = fs
-                .get_xattr(entry.ino, FNV_ATTR)
-                .map_err(error)?
-                .and_then(|bytes| <[u8; 8]>::try_from(bytes.as_slice()).ok())
-                .map(u64::from_le_bytes)
-                .ok_or(Error::Invalid)?;
-            let hint = Hint { len, fnv, sha256 };
+            let hint = self.sealed_blob(name)?;
             block[..kabi::modelhint::SIZE].copy_from_slice(&hint.encode());
         }
         let dev = &mut self.fs.io.dev;
         dev.write(0, &block).map_err(|_| Error::Io)?;
         dev.flush().map_err(|_| Error::Io)?;
         Ok(Reply::Done)
+    }
+
+    /// Sealed blob `name`'s length and kept FNV-1a64, read only.
+    pub(crate) fn model_info(
+        &mut self,
+        call: &Call,
+        target: &Target,
+        name: &str,
+    ) -> Result<Reply, Error> {
+        let store = call.badge == MODELS_ROOT && !target.file && target.object == ROOT;
+        if !store || !call.rights.contains(Rights::READ) {
+            return Err(Error::Permission);
+        }
+        let Hint { len, fnv, .. } = self.sealed_blob(name)?;
+        Ok(Reply::Model { len, fnv })
+    }
+
+    /// The hint for sealed blob `name` of the store: Invalid for a name that
+    /// is not one, or a blob without the FNV `fs` keeps.
+    fn sealed_blob(&mut self, name: &str) -> Result<Hint, Error> {
+        let sha256 = blob_sha(name).ok_or(Error::Invalid)?;
+        let fs = self.fs();
+        fs.set_volume(MODELS.into()).map_err(error)?;
+        let entry = fs
+            .lookup(ROOT, name)
+            .map_err(error)?
+            .ok_or(Error::Invalid)?;
+        if !fs.is_sealed(entry.ino).map_err(error)? {
+            return Err(Error::Invalid);
+        }
+        let len = fs.stat(entry.ino).map_err(error)?.size;
+        let fnv = fs
+            .get_xattr(entry.ino, FNV_ATTR)
+            .map_err(error)?
+            .and_then(|bytes| <[u8; 8]>::try_from(bytes.as_slice()).ok())
+            .map(u64::from_le_bytes)
+            .ok_or(Error::Invalid)?;
+        Ok(Hint { len, fnv, sha256 })
     }
 }

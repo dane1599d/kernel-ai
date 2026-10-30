@@ -240,6 +240,15 @@ pub enum Request {
         #[n(0)]
         name: Option<String>,
     },
+    /// Sealed blob `name`'s length and the FNV-1a64 `fs` kept for it, which a
+    /// hint for it would carry: [`Reply::Model`]. Read only, on the same
+    /// handle as [`Request::SealedBegin`]; Invalid for a name that is not a
+    /// sealed blob of the store.
+    #[n(27)]
+    ModelInfo {
+        #[n(0)]
+        name: String,
+    },
 }
 
 /// Where a listing goes on: the last name it gave, with its hash.
@@ -466,6 +475,14 @@ pub enum Reply {
         id: u64,
         #[n(1)]
         generation: u64,
+    },
+    /// [`Request::ModelInfo`]'s answer.
+    #[n(15)]
+    Model {
+        #[n(0)]
+        len: u64,
+        #[n(1)]
+        fnv: u64,
     },
 }
 

@@ -192,6 +192,26 @@ fn the_hint_names_only_a_sealed_blob_and_is_written_outside_an_action() {
     let elsewhere = c.call(ALICE, SYSTEM_UPDATES, DIR_RIGHTS, hint(None)).0;
     assert_eq!(fail(elsewhere), Error::Permission);
     assert_eq!(store(&mut c, ALICE, hint(Some(&name))), Reply::Done);
+    // What the hint names, read back without writing it.
+    let mut want = kabi::model::Fnv1a::new();
+    want.update(&bytes);
+    let info = Request::ModelInfo { name: name.clone() };
+    assert_eq!(
+        store(&mut c, BOB, info.clone()),
+        Reply::Model {
+            len: bytes.len() as u64,
+            fnv: want.finish(),
+        }
+    );
+    let read_only = DIR_RIGHTS.difference(Rights::WRITE);
+    let reply = c.call(BOB, MODELS_ROOT, read_only, info.clone()).0;
+    assert!(matches!(reply, Reply::Model { .. }), "{reply:?}");
+    let home = c.call(BOB, HOME_USER, DIR_RIGHTS, info).0;
+    assert_eq!(fail(home), Error::Permission);
+    let missing = Request::ModelInfo {
+        name: name_of(b"missing"),
+    };
+    assert_eq!(fail(store(&mut c, BOB, missing)), Error::Invalid);
     let mut block = [0u8; kaifs::BLOCK];
     c.server.fs.io.dev.read(0, &mut block).unwrap();
     let mut fnv = kabi::model::Fnv1a::new();

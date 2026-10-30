@@ -716,6 +716,7 @@ impl<D: BlockDev> Server<D> {
             Request::SealedPush { data } => self.sealed_push(call, target, &data)?,
             Request::SealedFinish => self.sealed_finish(call, target)?,
             Request::ModelHint { name } => self.model_hint(call, target, name.as_deref())?,
+            Request::ModelInfo { name } => self.model_info(call, target, &name)?,
         };
         Ok((reply, None))
     }
@@ -935,7 +936,8 @@ fn changes(request: &Request) -> bool {
         | Request::Changes { .. }
         | Request::Df
         | Request::Generation
-        | Request::TrashList { .. } => false,
+        | Request::TrashList { .. }
+        | Request::ModelInfo { .. } => false,
     }
 }
 
