@@ -13,6 +13,7 @@ doctest = false
 
 [dependencies]
 agentabi = { path = "../agentabi" }
+ed25519-compact = { version = "2.6.0", default-features = false, features = ["opt_size"] }
 fsproto = { path = "../fsproto" }
 kabi = { path = "../kabi" }
 kaituf = { path = "../kaituf" }

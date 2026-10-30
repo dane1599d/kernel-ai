@@ -965,6 +965,7 @@ name = "kaipkg"
 version = "0.1.0-dev"
 dependencies = [
  "agentabi",
+ "ed25519-compact",
  "fsproto",
  "fsserve",
  "kabi",

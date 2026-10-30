@@ -37,7 +37,7 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use fsproto::{Reply, Request};
 use kabi::Error;
-use kabi::handle::{Handle, HandleInfo, Kind, MAX_STARTUP, MAX_TRANSFER};
+use kabi::handle::{Handle, HandleInfo, Kind, MAX_STARTUP, MAX_TRANSFER, RecvInfo};
 use kaipkg::bundle;
 use kaipkg::catalog;
 use kaipkg::fsvol::{FsVolume, Transport};
@@ -51,6 +51,8 @@ use kaipkg::store::{self, Ctx, Ledger, Source, Store, Volume};
 use kaipkg::version::Version;
 use kaituf::updater::Cache;
 use user::{println, sys};
+
+mod local;
 
 user::entry!(main);
 
@@ -97,7 +99,9 @@ fn main() -> i32 {
             println!("pkg: FAIL cannot leave case/{step}.done: {why}");
         }
     }
-    serve(|text| answer(&mut vol, text))
+    serve(|text, moved, caller| {
+        local::answer(&mut vol, text, moved, caller).unwrap_or_else(|| answer(&mut vol, text))
+    })
 }
 
 /// `step=not-holder`: `pkg` from a plan line without `dir=pkg`, so it holds no
@@ -134,24 +138,39 @@ fn not_holder() -> ! {
         false => wrong.join("; "),
     };
     println!("pkg: without /system/pkg: {line}");
-    serve(|_| line.clone())
+    serve(|_, _, _| line.clone())
 }
 
 /// What the image's repository and the mirror listed at this boot, as index
 /// entries, for the catalogue.
 static KNOWN: spin::Mutex<(Vec<Index>, Vec<Index>)> = spin::Mutex::new((Vec::new(), Vec::new()));
 
-/// After its step, `pkg` answers on its endpoint with `answer`: the Apps
-/// sheet's `catalog <offset>` (P4 task 3); with no `serve` in its plan line it
-/// idles.
-fn serve(mut answer: impl FnMut(&str) -> String) -> ! {
+/// After its step, `pkg` answers on its endpoint with `answer`, given each
+/// request, the handles it moved and the pid of the process that sent it: the
+/// Apps sheet's `catalog <offset>` (P4 task 3) and `cc build`'s `local`
+/// requests (P4 task 13, [`local`]). Every handle a request moved is closed
+/// once it is answered, and an answer is at most one message. With no `serve`
+/// in its plan line it idles.
+fn serve(mut answer: impl FnMut(&str, &[Handle], u64) -> String) -> ! {
     let mut request = [0u8; 64];
     loop {
-        let mut caller = 0;
-        match sys::svc_recv(&mut request, 60_000, &mut caller) {
+        let mut info = RecvInfo::default();
+        match sys::recv_h(&mut request, 60_000, &mut info) {
             Ok(len) => {
                 let text = core::str::from_utf8(&request[..len.min(request.len())]).unwrap_or("");
-                let reply = answer(text);
+                let count = (info.handle_count as usize).min(MAX_TRANSFER);
+                let moved: Vec<Handle> = info.handles[..count].iter().map(|h| Handle(*h)).collect();
+                let mut reply = answer(text, &moved, info.caller_pid);
+                for handle in moved {
+                    let _ = sys::handle_close(handle);
+                }
+                if reply.len() > kabi::MAX_MESSAGE {
+                    let mut end = kabi::MAX_MESSAGE;
+                    while !reply.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    reply.truncate(end);
+                }
                 if let Err(why) = sys::svc_reply(reply.as_bytes()) {
                     println!("pkg: cannot answer {text:?}: {why:?}");
                 }

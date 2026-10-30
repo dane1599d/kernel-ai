@@ -9,6 +9,7 @@
 //!   its index entry's, held to each other;
 //! - [`header`]: `kai-package 1`, the package's first file, parsed strictly;
 //! - [`version`]: SemVer versions and the `^`, `~`, `=` and comparison ranges;
+//! - [`sign`]: writing a TUF repository, the packer's and `local`'s;
 //! - [`resolve`]: no solver (§6): the newest compatible version that is not
 //!   yanked, keeping an installed version that already satisfies;
 //! - [`generation`]: `kai-gen 1`, one numbered list of installed packages;
@@ -16,6 +17,8 @@
 //!   generation 1's packages;
 //! - [`index`]: a package's `custom.kai` index entry, and cargo's rule against
 //!   its header;
+//! - [`local`]: the device's own repository, for apps built with `cc build`,
+//!   signed by its device key;
 //! - [`mirror`]: installs from the fixed `pkgrepo=` mirror, its metadata checked
 //!   with `kaituf`, its packages fetched in pieces;
 //! - [`memvol`]: the store's volume in memory;
@@ -42,9 +45,11 @@ pub mod generation;
 pub mod header;
 pub mod image;
 pub mod index;
+pub mod local;
 pub mod memvol;
 pub mod mirror;
 pub mod resolve;
+pub mod sign;
 pub mod store;
 pub mod version;
 
