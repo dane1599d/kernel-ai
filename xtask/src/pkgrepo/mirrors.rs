@@ -61,6 +61,7 @@ fn described(name: &str, version: &str, summary: &str, payload: &[u8]) -> Packag
         header_text,
         actions: Vec::new(),
         grants: Vec::new(),
+        effects: Vec::new(),
     }
 }
 
