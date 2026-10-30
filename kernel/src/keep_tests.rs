@@ -20,9 +20,10 @@ use alloc::string::String;
 
 const APP: &str = "notes-window";
 const SETTINGS: &str = "settings-window";
-/// The shell with its files and `/system/state` (the data disk) and a route to
-/// `desktop`, third, for the Settings app's requests.
-pub const SHELL: &str = "shell caps=serve+call+policy+stop+script+files+state uses=llm+supervisor+desktop pages=4096 stack_pages=512 burst_ms=5000";
+/// [`kabi::plan::SHELL_DESK`] with its files and `/system/state` (the data
+/// disk): its route to `desktop`, fourth after `cc`, takes the Settings app's
+/// requests. The routes' order is the shell binary's, so it follows SHELL_DESK.
+pub const SHELL: &str = "shell caps=serve+call+policy+stop+script+files+state uses=llm+supervisor+cc+desktop pages=4096 stack_pages=512 burst_ms=5000";
 /// The plan lines this case adds, before the shell, as a route's target must
 /// be; the stand-in only has to be alive.
 pub const PLAN: &str = "desktop caps=display+input+serve pages=8192 stack_pages=512\n\
@@ -122,6 +123,12 @@ fn answer_to(mut answers: &str, ticket: u32) -> Option<String> {
     None
 }
 
+/// A plan line's `uses=` field: the routes, in the order the program numbers them.
+fn routes(line: &str) -> Option<&str> {
+    line.split_whitespace()
+        .find_map(|field| field.strip_prefix("uses="))
+}
+
 fn up() -> Result<(), &'static str> {
     wait(
         "desktop, the shell, Notes and the Settings stand-in",
@@ -137,6 +144,9 @@ fn up() -> Result<(), &'static str> {
 }
 
 pub fn check(reread: bool) -> Result<(), &'static str> {
+    if routes(SHELL) != routes(kabi::plan::SHELL_DESK) {
+        return Err("keep-running: the case's shell routes differ from SHELL_DESK's");
+    }
     up()?;
     if reread {
         return check_replayed();

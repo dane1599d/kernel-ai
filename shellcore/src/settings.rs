@@ -57,6 +57,12 @@ pub(crate) struct KeepWaiting {
     until_ns: u64,
 }
 
+/// The supervisor's refusal for an app it runs that does not serve yet; any
+/// other refusal is final.
+fn not_serving_yet(why: &str) -> bool {
+    why.starts_with("cannot reach ")
+}
+
 impl KeepWaiting {
     fn wait(&mut self, app: String, now: u64) {
         if self.apps.is_empty() {
@@ -354,7 +360,10 @@ impl Shell {
             match self.host.keep_running(&app, true) {
                 Ok(()) => self.keep.push(app),
                 // An app the supervisor started may not serve yet: try again.
-                Err(_) => self.keep_waiting.wait(app, now),
+                Err(why) if not_serving_yet(&why) => self.keep_waiting.wait(app, now),
+                Err(why) => self
+                    .host
+                    .audit(&format!("{app} is not kept running: {why}")),
             }
         }
         self
@@ -372,10 +381,12 @@ impl Shell {
         for app in waiting {
             match self.host.keep_running(&app, true) {
                 Ok(()) => self.keep.push(app),
-                Err(why) if now >= self.keep_waiting.until_ns => self
+                Err(why) if not_serving_yet(&why) && now < self.keep_waiting.until_ns => {
+                    still.push(app)
+                }
+                Err(why) => self
                     .host
                     .audit(&format!("{app} is not kept running: {why}")),
-                Err(_) => still.push(app),
             }
         }
         self.keep_waiting.apps = still;

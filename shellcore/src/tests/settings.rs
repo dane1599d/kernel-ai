@@ -167,6 +167,26 @@ fn a_saved_kept_app_not_serving_yet_is_tried_again_then_given_up() {
     assert!(host.kept.borrow().is_empty());
 }
 
+#[test]
+fn a_saved_kept_app_the_supervisor_refuses_for_another_reason_is_audited_at_once() {
+    let host = host_with_keep("kai-keep 1\nnotes\n");
+    *host.keep_refusal.borrow_mut() = Some(String::from("no app notes"));
+    let mut shell = shell(&host);
+    assert!(
+        host.audit
+            .borrow()
+            .iter()
+            .any(|line| line == "notes is not kept running: no app notes"),
+        "{:?}",
+        host.audit.borrow()
+    );
+    // Not tried again once the supervisor would take it.
+    *host.keep_refusal.borrow_mut() = None;
+    host.clock.set(host.clock.get() + 1_000_000_000);
+    shell.retry_keep();
+    assert!(host.kept.borrow().is_empty());
+}
+
 fn host_with_keep(text: &str) -> Rc<FakeHost> {
     let host = host();
     *host.keep_file.borrow_mut() = Some(String::from(text));

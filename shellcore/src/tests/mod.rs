@@ -79,6 +79,9 @@ struct FakeHost {
     /// How many `keep` requests the supervisor refuses next, as one for an app
     /// not serving yet.
     keep_fails: Cell<u32>,
+    /// A refusal the supervisor gives every `keep` request, as for an app it
+    /// does not run.
+    keep_refusal: RefCell<Option<String>>,
     /// The installed apps' rows, and what each `app_call` sent and answers.
     apps: RefCell<crate::apps::Apps>,
     app_requests: RefCell<Vec<(String, String)>>,
@@ -243,6 +246,7 @@ impl FakeHost {
             kept: RefCell::new(Vec::new()),
             keep_file: RefCell::new(None),
             keep_fails: Cell::new(0),
+            keep_refusal: RefCell::new(None),
             apps: RefCell::new(crate::apps::Apps::default()),
             app_requests: RefCell::new(Vec::new()),
             app_replies: RefCell::new(VecDeque::new()),
@@ -661,6 +665,9 @@ impl Host for FakeHost {
         if self.keep_fails.get() > 0 {
             self.keep_fails.set(self.keep_fails.get() - 1);
             return Err(format!("cannot reach {app}: NotFound"));
+        }
+        if let Some(why) = self.keep_refusal.borrow().as_ref() {
+            return Err(why.clone());
         }
         self.kept.borrow_mut().push((String::from(app), on));
         Ok(())
