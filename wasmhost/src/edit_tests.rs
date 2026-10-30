@@ -253,12 +253,14 @@ fn what_an_answer_makes_the_app_send_is_the_persons_when_their_key_caused_the_me
     // Each answer to a person's message makes the next one theirs too.
     for _ in 0..3 {
         in_call(&mut app, |a| a.edit_reply(ticket, Ok(Vec::new()))).unwrap();
+        // The mark is `kai:edit`'s alone: nothing else takes the answer's call
+        // for a person's (`kai:settings` reads `user_input`).
+        assert!(!app.store.data().user_input);
+        assert!(!app.last_call_by_user());
         let (next, user) = only_one(&mut app);
         assert!(user, "ticket {next}");
         ticket = next;
     }
-    // And the flag is down again once the answer's call is over.
-    assert!(!app.store.data().user_input);
 }
 
 #[test]
@@ -310,11 +312,25 @@ fn an_answer_counts_once_and_a_trap_in_it_leaves_the_flag_down() {
     in_call(&mut app, |a| a.edit_reply(ticket, Ok(Vec::new()))).unwrap();
     assert!(!only_one(&mut app).1);
     // An app that traps while it handles the person's chain does not leave the
-    // flag up for the next call.
-    let mut app = load_core_granted(&guest(), LIMITS, None, granted()).unwrap();
+    // mark up for the next call.
+    let wasm = wat::parse_str(CHAIN.replace(
+        r#"(func (export "kai:edit/replies@0.1.0#on-reply") (param i32 i32 i32 i32)"#,
+        r#"(func (export "kai:edit/replies@0.1.0#on-reply") (param i32 i32 i32 i32)
+    local.get 0
+    i32.const 1
+    i32.eq
+    if
+      unreachable
+    end"#,
+    ))
+    .unwrap();
+    let mut app = load_core_granted(&wasm, LIMITS, None, granted()).unwrap();
     in_call(&mut app, |a| a.ui_events_user(1, &[UiEvent::Pressed(2)])).unwrap();
-    assert_eq!(app.take_edits().len(), 1);
-    // GUEST's on-reply traps for ticket 99, which no person's message has.
-    assert!(in_call(&mut app, |a| a.edit_reply(99, Ok(Vec::new()))).is_err());
-    assert!(!app.store.data().user_input);
+    let (first, _) = only_one(&mut app);
+    in_call(&mut app, |a| a.edit_reply(first, Ok(Vec::new()))).unwrap();
+    let (second, user) = only_one(&mut app);
+    assert!(user);
+    assert!(in_call(&mut app, |a| a.edit_reply(second, Ok(Vec::new()))).is_err());
+    in_call(&mut app, |a| a.ui_events(1, &[UiEvent::Pressed(2)])).unwrap();
+    assert!(!only_one(&mut app).1);
 }
