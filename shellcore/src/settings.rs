@@ -19,6 +19,7 @@ use crate::{Reply, Shell};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use livecore::actions::MAX_EFFECT_ROWS;
 
 /// The app that holds the settings grant.
 pub const SETTINGS_APP: &str = "settings";
@@ -26,6 +27,15 @@ pub const SETTINGS_APP: &str = "settings";
 pub const MAX_REQUEST: usize = 512;
 /// The longest app or profile name.
 const MAX_NAME: usize = 24;
+/// The longest answer desktop's `kai:settings` wire carries (its
+/// `MAX_ANSWER`); past it the Settings app gets an error, never a cut answer.
+const MAX_ANSWER: usize = 4096;
+// `grants` alone and `grants <app>` each fit one answer at their worst.
+const _: () = assert!(crate::apps::MAX_LOADS * (MAX_NAME + 1) <= MAX_ANSWER);
+const _: () = assert!(
+    MAX_EFFECT_ROWS * (MAX_NAME + 1 + livecore::actions::MAX_NAME + 1 + "withheld".len() + 1)
+        <= MAX_ANSWER
+);
 /// The services that are the system's, not apps that nap.
 const SYSTEM: &[&str] = &[
     "shell",
@@ -75,8 +85,8 @@ impl Shell {
             // What each app's effects may call: its declared rows, each allowed
             // or withheld (P4 task 7). Built-in imports and its own storage are
             // not rows, so they are not listed or revocable in v0.1.
-            ("grants", "") => Ok(self.grant_lines(None)),
-            ("grants", name) if valid_name(name) => Ok(self.grant_lines(Some(name))),
+            ("grants", "") => Ok(self.granted_apps()),
+            ("grants", name) if valid_name(name) => Ok(self.grant_lines(name)),
             ("grants-revoke" | "grants-restore", rest) => {
                 let (name, row) = rest
                     .split_once(' ')
@@ -186,31 +196,44 @@ impl Shell {
         Ok(format!("{name} keep-running {}", word(on)))
     }
 
-    /// `grants`: one line a declared effect row, `<app>\t<row>\tallowed` or
-    /// `withheld`, for `only` or every app whose rows are loaded.
-    fn grant_lines(&self, only: Option<&str>) -> String {
-        if let Some(app) = only {
-            crate::apps::load_app(self.host.as_ref(), app);
-        }
+    /// `grants` alone: the apps whose packages declare effect rows, one a line,
+    /// for Settings to ask `grants <app>` of each. Every app's rows at once
+    /// would outgrow one answer; at most [`crate::apps::MAX_LOADS`] names fit.
+    fn granted_apps(&self) -> String {
+        let Some(apps) = self.host.apps() else {
+            return String::new();
+        };
+        let apps = apps.borrow();
+        let names: Vec<&str> = apps
+            .rows
+            .apps()
+            .filter(|app| !apps.rows.effects_of(app).is_empty())
+            .collect();
+        names.join("\n")
+    }
+
+    /// `grants <app>`: one line a declared effect row, `<app>\t<row>\tallowed`
+    /// or `withheld`; at most [`MAX_EFFECT_ROWS`] lines, so one answer holds it.
+    fn grant_lines(&self, app: &str) -> String {
+        crate::apps::load_app(self.host.as_ref(), app);
         let host = self.host.as_ref();
         let Some(apps) = host.apps() else {
             return String::new();
         };
-        let names: Vec<String> = match only {
-            Some(app) => alloc::vec![app.to_string()],
-            None => apps.borrow().rows.apps().map(str::to_string).collect(),
-        };
-        let mut lines = Vec::new();
-        for app in &names {
-            let allowed = crate::grants::allowed(host, app);
-            for row in apps.borrow().rows.effects_of(app) {
+        let allowed = crate::grants::allowed(host, app);
+        let lines: Vec<String> = apps
+            .borrow()
+            .rows
+            .effects_of(app)
+            .iter()
+            .map(|row| {
                 let state = match allowed.contains(row) {
                     true => "allowed",
                     false => "withheld",
                 };
-                lines.push(format!("{app}\t{row}\t{state}"));
-            }
-        }
+                format!("{app}\t{row}\t{state}")
+            })
+            .collect();
         lines.join("\n")
     }
 

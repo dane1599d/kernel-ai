@@ -157,7 +157,10 @@ fn settings_lists_each_declared_row_and_a_click_withholds_one_with_undo() {
     let mut shell = shell(&host);
     let app = crate::settings::SETTINGS_APP;
     let all = "files\tfs_list\tallowed\nfiles\tfs_read\tallowed\nfiles\tfs_move\tallowed";
-    assert_eq!(shell.settings(app, "grants", false).as_deref(), Ok(all));
+    assert_eq!(
+        shell.settings(app, "grants files", false).as_deref(),
+        Ok(all)
+    );
     // A change needs the user's own click.
     assert!(
         shell
@@ -183,7 +186,10 @@ fn settings_lists_each_declared_row_and_a_click_withholds_one_with_undo() {
             .is_err()
     );
     assert!(shell.eval("undo").text.starts_with("Undone: "));
-    assert_eq!(shell.settings(app, "grants", false).as_deref(), Ok(all));
+    assert_eq!(
+        shell.settings(app, "grants files", false).as_deref(),
+        Ok(all)
+    );
     shell
         .settings(app, "grants-revoke files fs_read", true)
         .unwrap();
@@ -196,6 +202,25 @@ fn settings_lists_each_declared_row_and_a_click_withholds_one_with_undo() {
     assert_eq!(
         host.withheld_disk.borrow().as_deref(),
         Some("kai-withheld 1\n")
+    );
+}
+
+#[test]
+fn grants_alone_names_only_the_apps_with_effect_rows_for_settings_to_ask_each() {
+    let host = host();
+    let quiet = FILES
+        .replace("world app:files/files@1.0.0", "world app:notes/notes@1.0.0")
+        .replace("effects fs_list fs_read fs_move\n", "")
+        .replace("files_open", "notes_open")
+        .replace("app:files/actions", "app:notes/actions");
+    host.apps.borrow_mut().rows.load("files", FILES).unwrap();
+    host.apps.borrow_mut().rows.load("notes", &quiet).unwrap();
+    let mut shell = shell(&host);
+    let app = crate::settings::SETTINGS_APP;
+    assert_eq!(shell.settings(app, "grants", false).as_deref(), Ok("files"));
+    assert_eq!(
+        shell.settings(app, "grants notes", false).as_deref(),
+        Ok("")
     );
 }
 
