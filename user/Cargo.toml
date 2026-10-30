@@ -38,6 +38,7 @@ sched = { path = "../sched" }
 serde_json = { version = "1.0.154", default-features = false, features = ["alloc"] }
 sha2 = { version = "0.11.1", default-features = false }
 supervise = { path = "../supervise" }
+systemabi = { path = "../systemabi" }
 kaiprofile = { path = "../kaiprofile" }
 shellcore = { path = "../shellcore" }
 termcore = { path = "../termcore" }
