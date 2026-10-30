@@ -26,12 +26,14 @@ const DOWN: [u8; 4] = [0xE0, 0x50, 0xE0, 0xD0];
 const ENTER: [u8; 2] = [0x1C, 0x9C];
 
 /// `pkg`'s plan, then `desktop` (planned after `pkg`, its route's target), the
-/// model and the shell with its route to `desktop`.
+/// model, `cc` (the shell's third route, started on demand) and the shell with
+/// its route to `desktop`.
 pub fn plan() -> String {
     format!(
-        "{}\n{DESKTOP}\n{}\n{}",
+        "{}\n{DESKTOP}\n{}\n{}\n{}",
         crate::pkg_tests::plan(Step::Mirror),
         crate::llm::plan_line(),
+        kabi::plan::CC,
         kabi::plan::SHELL_DESK
     )
 }
