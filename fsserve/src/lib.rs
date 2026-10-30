@@ -20,6 +20,9 @@ pub mod batch;
 mod buffer;
 mod lookup;
 #[cfg(test)]
+mod model_tests;
+pub mod models;
+#[cfg(test)]
 mod tests;
 mod trash;
 
@@ -30,8 +33,8 @@ use fsproto::{
     Version,
 };
 use kabi::fs::{
-    Badge, HOME, HOME_USER, MODELS, SYSTEM, SYSTEM_APPS, SYSTEM_PKG, SYSTEM_SETTINGS, SYSTEM_STATE,
-    SYSTEM_TRUST, SYSTEM_UPDATES,
+    Badge, HOME, HOME_USER, MODELS, MODELS_ROOT, SYSTEM, SYSTEM_APPS, SYSTEM_PKG, SYSTEM_SETTINGS,
+    SYSTEM_STATE, SYSTEM_TRUST, SYSTEM_UPDATES,
 };
 use kabi::handle::Rights;
 use kaifs::ns::Listed;
@@ -155,6 +158,8 @@ pub struct Server<D: BlockDev> {
     /// Whether a caller (a pid) still runs: a dead owner's action is aborted
     /// ([`Server::set_alive`]).
     alive: fn(u64) -> bool,
+    /// The model store's blob being written in the open action ([`models`]).
+    sealing: Option<models::Sealing>,
 }
 
 /// The object a checked badge names.
@@ -191,6 +196,7 @@ impl<D: BlockDev> Server<D> {
             pending: None,
             cache: None,
             alive: |_| true,
+            sealing: None,
         };
         let fixed = server.prepare(&uuid)?;
         (
@@ -462,6 +468,7 @@ impl<D: BlockDev> Server<D> {
                 | SYSTEM_UPDATES
                 | SYSTEM_SETTINGS
                 | SYSTEM_APPS
+                | MODELS_ROOT
         );
         let ours = epoch == self.epoch || fixed;
         if !matches!(volume, SYSTEM | HOME | MODELS) || !ours {
@@ -475,6 +482,7 @@ impl<D: BlockDev> Server<D> {
             SYSTEM_UPDATES => self.system_updates,
             SYSTEM_SETTINGS => self.system_settings,
             SYSTEM_APPS => self.system_apps,
+            MODELS_ROOT => ROOT,
             _ => object,
         };
         let fs = self.fs();
@@ -593,6 +601,10 @@ impl<D: BlockDev> Server<D> {
             }
             Request::Commit => {
                 self.owned(call.caller)?;
+                // A blob begun and not finished is never made durable.
+                if self.sealing.is_some() {
+                    return Err(Error::Invalid);
+                }
                 let generation = self.commit();
                 self.owner = None;
                 Reply::Committed {
@@ -700,6 +712,11 @@ impl<D: BlockDev> Server<D> {
                 let generation = self.commit()?;
                 Reply::Committed { generation }
             }
+            Request::SealedBegin { name, len } => self.sealed_begin(call, target, &name, len)?,
+            Request::SealedPush { data } => self.sealed_push(call, target, &data)?,
+            Request::SealedFinish => self.sealed_finish(call, target)?,
+            Request::ModelHint { name } => self.model_hint(call, target, name.as_deref())?,
+            Request::ModelInfo { name } => self.model_info(call, target, &name)?,
         };
         Ok((reply, None))
     }
@@ -869,6 +886,7 @@ impl<D: BlockDev> Server<D> {
     fn drop_changes(&mut self) -> u64 {
         self.owner = None;
         self.pending = None;
+        self.sealing = None;
         self.cache = None;
         // A disk that no longer mounts leaves nothing to serve: `fs` exits and
         // its supervisor starts it again.
@@ -906,7 +924,11 @@ fn changes(request: &Request) -> bool {
         | Request::Sync
         | Request::UpdateSnapshot
         | Request::UpdateRestore { .. }
-        | Request::UpdateDrop { .. } => true,
+        | Request::UpdateDrop { .. }
+        | Request::SealedBegin { .. }
+        | Request::SealedPush { .. }
+        | Request::SealedFinish
+        | Request::ModelHint { .. } => true,
         Request::Stat
         | Request::List { .. }
         | Request::Read { .. }
@@ -914,7 +936,8 @@ fn changes(request: &Request) -> bool {
         | Request::Changes { .. }
         | Request::Df
         | Request::Generation
-        | Request::TrashList { .. } => false,
+        | Request::TrashList { .. }
+        | Request::ModelInfo { .. } => false,
     }
 }
 
