@@ -352,8 +352,9 @@ impl Shell {
     /// the defaults.
     /// - `appearance`: the `kai-appearance 1` text as it is saved; text past
     ///   its bound is refused, not cut.
-    /// - `apps`: the keep-running list in force, as `kai-keep 1` text (a list
-    ///   on disk out of shape was set aside at start, so none is kept).
+    /// - `apps`: the keep-running list in force, with apps still waiting at
+    ///   boot, as `kai-keep 1` text (a list on disk out of shape was set aside
+    ///   at start, so none is kept).
     /// - `updates`: empty, until a restart-window writer exists.
     fn settings_file(&self, area: &str) -> Result<String, String> {
         match area {
@@ -363,16 +364,29 @@ impl Shell {
                 }
                 saved => Ok(saved.unwrap_or_default()),
             },
-            "apps" if self.keep.is_empty() => Ok(String::new()),
-            "apps" => Ok(keep_text(&self.keep)),
+            "apps" => match self.saved_keep() {
+                saved if saved.is_empty() => Ok(String::new()),
+                saved => Ok(keep_text(&saved)),
+            },
             "updates" => Ok(String::new()),
             _ => Err(String::from("not a settings file")),
         }
     }
 
+    /// The kept apps, with those still waiting at boot: they stay saved, and
+    /// Settings shows them kept.
+    fn saved_keep(&self) -> Vec<String> {
+        self.keep
+            .iter()
+            .chain(&self.keep_waiting.apps)
+            .cloned()
+            .collect()
+    }
+
     /// Tells the supervisor and saves the list: `name` kept running or not.
     pub(crate) fn set_keep(&mut self, name: &str, on: bool) -> Result<(), String> {
-        if on && !self.keep.iter().any(|app| app == name) && self.keep.len() >= MAX_KEPT {
+        let saved = self.saved_keep();
+        if on && !saved.iter().any(|app| app == name) && saved.len() >= MAX_KEPT {
             return Err(format!("at most {MAX_KEPT} apps are kept running"));
         }
         self.host.keep_running(name, on)?;
@@ -381,14 +395,7 @@ impl Shell {
         if on {
             self.keep.push(name.to_string());
         }
-        // An app still waiting at boot stays saved.
-        let saved: Vec<String> = self
-            .keep
-            .iter()
-            .chain(&self.keep_waiting.apps)
-            .cloned()
-            .collect();
-        let text = keep_text(&saved);
+        let text = keep_text(&self.saved_keep());
         if let Err(why) = self.host.keep_write(&text) {
             self.host
                 .audit(&format!("the keep-running list was not saved: {why}"));

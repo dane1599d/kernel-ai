@@ -45,7 +45,7 @@ mod profiles;
 mod rules;
 pub mod script;
 mod settings;
-pub use settings::SETTINGS_APP;
+pub use settings::{MAX_ANSWER as SETTINGS_MAX_ANSWER, SETTINGS_APP};
 mod show;
 pub mod standing;
 pub mod state;
