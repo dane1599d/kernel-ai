@@ -34,8 +34,9 @@ impl Default for Appearance {
     }
 }
 
-/// The shell's keep-running list (`kai-keep 1`): the apps the user keeps running, which app nap never
-/// suspends (founder, 2026-10-28; P3 task 12b). Sorted, each once.
+/// The shell's keep-running list (`kai-keep 1`): the apps the user keeps
+/// running, which app nap never suspends (founder, 2026-10-28; P3 task 12b).
+/// Sorted, each once.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Apps {
     pub keep_running: Vec<String>,
