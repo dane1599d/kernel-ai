@@ -2,7 +2,10 @@
 
 use crate::grants::{FromImage, Grants, MAX_IMAGE_VERSIONS, is_boot_label};
 
-const SETTINGS: Grants = Grants { settings: true };
+const SETTINGS: Grants = Grants {
+    settings: true,
+    shell_line: false,
+};
 
 #[test]
 fn only_a_label_neither_an_upload_nor_a_package_is_the_images() {
@@ -56,4 +59,17 @@ fn an_instance_says_what_it_was_granted() {
     let load = |grants| crate::load_core_granted(&module, limits, None, grants).unwrap();
     assert_eq!(load(SETTINGS).grants(), SETTINGS);
     assert_eq!(load(Grants::default()).grants(), Grants::default());
+}
+
+#[test]
+fn the_terminals_user_effects_follow_the_same_rule() {
+    let terminal = Grants {
+        shell_line: true,
+        ..Grants::default()
+    };
+    let mut image = FromImage::default();
+    image.fetched("1", [1; 32]);
+    image.fetched("e2", [2; 32]);
+    assert!(image.grants_for(&[1; 32], terminal).shell_line);
+    assert!(!image.grants_for(&[2; 32], terminal).shell_line);
 }

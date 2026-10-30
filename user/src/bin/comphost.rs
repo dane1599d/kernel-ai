@@ -61,6 +61,10 @@ struct SysEnv {
     image: wasmhost::grants::FromImage,
 }
 
+/// The one app whose effects go to the shell as the user's when a person's key
+/// or click caused them (the Terminal's `shell_line`): the plan line's name.
+const TERMINAL_APP: &str = "terminal-window";
+
 fn version_log(line: &str) {
     println!("{line}");
 }
@@ -179,6 +183,7 @@ fn main() -> i32 {
     };
     // The plan line's name is the grant: `desktop` and the shell check it too.
     env.grants.settings = name == kai_settings::SETTINGS_APP;
+    env.grants.shell_line = name == TERMINAL_APP;
     if let (true, Some(ui)) = (env.grants.settings, windows.as_mut()) {
         ui.carry_settings();
     }

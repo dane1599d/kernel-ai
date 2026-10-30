@@ -16,6 +16,10 @@ use alloc::vec::Vec;
 pub struct Grants {
     /// May import `kai:settings/settings`.
     pub settings: bool,
+    /// Its effects a person's key or click caused go to the shell as the
+    /// user's (`effects put user`): the Terminal's `shell_line`. Not an import,
+    /// so nothing links on it; comphost reads it from the shown instance.
+    pub shell_line: bool,
 }
 
 /// The artifacts the host fetched under a boot label: the signed image's own
