@@ -12,6 +12,8 @@
 pub struct Grants {
     /// May import `kai:settings/settings`.
     pub settings: bool,
+    /// May import `kai:system/system` (the System monitor only).
+    pub system: bool,
     /// May import `kai:edit/edit`.
     pub edit: bool,
 }

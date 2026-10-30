@@ -1714,6 +1714,9 @@ dependencies = [
 [[package]]
 name = "systemabi"
 version = "0.1.0-dev"
+dependencies = [
+ "llmproto",
+]
 
 [[package]]
 name = "talc"
@@ -1995,6 +1998,7 @@ dependencies = [
  "kabi",
  "livecore",
  "surfabi",
+ "systemabi",
  "uikit",
  "wasmi",
  "wasmi_core",

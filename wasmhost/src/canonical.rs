@@ -49,6 +49,8 @@ pub struct CoreInstance {
     pub(crate) on_event: Option<String>,
     /// The `kai:settings/replies` `on-reply` export, when the module has one.
     pub(crate) on_settings_reply: Option<String>,
+    /// The `kai:system/samples` `on-sample` export, when the module has one.
+    pub(crate) on_system_sample: Option<String>,
     /// The `kai:edit/replies` `on-reply` export, when the module has one.
     pub(crate) on_edit_reply: Option<String>,
 }
@@ -122,6 +124,7 @@ pub fn load_core_granted(
         ui: Default::default(),
         user_input: false,
         settings: Default::default(),
+        system: Default::default(),
         edit: Default::default(),
         memory: None,
     };
@@ -160,6 +163,10 @@ pub fn load_core_granted(
         .iter()
         .find(|f| f.interface == crate::settings::REPLIES && f.name == "on-reply")
         .and_then(|f| export_for(&module, f));
+    let on_system_sample = tables::EXPORTS
+        .iter()
+        .find(|f| f.interface == crate::system::SAMPLES && f.name == "on-sample")
+        .and_then(|f| export_for(&module, f));
     let on_edit_reply = tables::EXPORTS
         .iter()
         .find(|f| f.interface == crate::edit::REPLIES && f.name == "on-reply")
@@ -178,6 +185,7 @@ pub fn load_core_granted(
         by_user: false,
         on_event,
         on_settings_reply,
+        on_system_sample,
         on_edit_reply,
     })
 }
@@ -253,6 +261,14 @@ fn link_imports(
             (crate::settings::SETTINGS, "send") => {
                 linker.func_wrap(qualified, name, crate::settings::send)
             }
+            (crate::system::SYSTEM, _) if !crate::system::granted(grants) => {
+                return Err(link_err(format!(
+                    "{qualified} needs the system grant, which this app's package does not hold"
+                )));
+            }
+            (crate::system::SYSTEM, "read") => {
+                linker.func_wrap(qualified, name, crate::system::read)
+            }
             (crate::edit::EDIT, _) if !grants.edit => {
                 return Err(link_err(format!(
                     "{qualified} needs the edit grant, which this app's package does not hold"
@@ -317,6 +333,7 @@ impl CoreInstance {
         let by_user = state.user_input;
         self.by_user = by_user;
         self.settings_call_begins();
+        self.system_call_begins();
         let result = appabi::call(self, func, args).map_err(|trap| {
             self.last
                 .take()
@@ -324,6 +341,7 @@ impl CoreInstance {
         });
         if result.is_err() {
             self.settings_call_faulted();
+            self.system_call_faulted();
         }
         result
     }
