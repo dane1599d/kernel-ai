@@ -294,7 +294,8 @@ pub(super) const CASES: &[TestCase] = &[
         ..case("desk-term", "test=desk-term")
     },
     // P3 task 10: the agent opens Notes through `ui_open`, reads its view and
-    // acts in it after a yes on desktop's card.
+    // acts in it after a yes on desktop's card, then runs Notes' own
+    // `notes_add`, which Notes' window fronts.
     TestCase {
         keys: &[
             &["o", "p", "e", "n", "spc", "n", "o", "t", "e", "s", "ret"],
@@ -303,6 +304,10 @@ pub(super) const CASES: &[TestCase] = &[
                 "spc", "m", "i", "l", "k", "ret",
             ],
             &["y"],
+            &[
+                "a", "d", "d", "spc", "a", "spc", "n", "o", "t", "e", "spc", "s", "a", "y", "i",
+                "n", "g", "spc", "b", "u", "y", "spc", "m", "i", "l", "k", "ret",
+            ],
         ],
         expect: &[
             "desktop: the agent's ui windows: ok",
@@ -312,6 +317,7 @@ pub(super) const CASES: &[TestCase] = &[
             "desktop: the agent's ui act: ok",
             "comphost: the agent acted in window ",
             "desk-agent: the agent opened Notes, read its view and typed in it after a yes",
+            "desk-agent: Notes' notes_add, loaded from its window, added the note",
         ],
         ..case("desk-agent", "test=desk-agent")
     },
