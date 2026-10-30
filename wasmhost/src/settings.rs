@@ -42,9 +42,6 @@ pub const MAX_REQUEST: usize = 512;
 pub const MAX_QUEUED: usize = 16;
 /// Longest name sent (a profile, an app): `kabi::MAX_NAME`.
 pub const MAX_NAME: usize = 24;
-/// Longest effect row `grants-revoke` and `grants-restore` name, as an app's
-/// declared action (`deskcore`'s `MAX_ACTION`).
-pub const MAX_ROW: usize = 64;
 /// Longest value of `appearance-set`.
 pub const MAX_VALUE: usize = 64;
 /// Largest answer the app is given; a larger one is replaced by an error.
@@ -157,23 +154,23 @@ fn window(text: &str) -> bool {
     }
 }
 
-/// An app as the shell names it in `grants`: 1 to [`MAX_NAME`] bytes of
-/// lowercase letters, digits, `-` and `_`, so a request splits on spaces alone.
+/// An app as the shell names it in `grants`, its plan-line name: 1 to
+/// [`MAX_NAME`] bytes of lowercase letters, digits and `-` (shellcore's
+/// `valid_name`), so a request splits on spaces alone.
 fn app_ok(text: &str) -> bool {
     !text.is_empty()
         && text.len() <= MAX_NAME
         && text
             .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
-/// An effect row an app declares (`notes_add`): 1 to [`MAX_ROW`] bytes of
-/// lowercase letters, digits and `_`, neither starting nor ending with `_`.
+/// An effect row an app declares (`notes_add`), as the shell keeps it: a
+/// lowercase letter, then lowercase letters, digits and `_`, at most
+/// [`MAX_NAME`] bytes, since the undo holds it in a `kabi` name.
 fn row_ok(text: &str) -> bool {
-    !text.is_empty()
-        && text.len() <= MAX_ROW
-        && !text.starts_with('_')
-        && !text.ends_with('_')
+    text.len() <= MAX_NAME
+        && text.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
         && text
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')

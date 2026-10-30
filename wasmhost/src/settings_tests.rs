@@ -233,7 +233,7 @@ fn every_read_is_an_exact_line_and_nothing_else_is_a_read() {
         assert_eq!(classify(read), Ok(Kind::Read), "{read}");
     }
     // One app's grants, as the shell lists them.
-    for read in ["grants notes", "grants files-window", "grants app_2"] {
+    for read in ["grants notes", "grants files-window", "grants app2"] {
         assert_eq!(classify(read), Ok(Kind::Read), "{read}");
     }
     let not_reads = [
@@ -244,6 +244,7 @@ fn every_read_is_an_exact_line_and_nothing_else_is_a_read() {
         "grants notes x",
         "grants ../notes",
         "grants abcdefghijklmnopqrstuvwxy",
+        "grants notes_app",
         "rules x",
         "rules ",
         " rules",
@@ -283,6 +284,8 @@ fn every_change_takes_its_own_arguments_and_nothing_looser() {
         "rules-remove S12",
         "grants-revoke notes notes_add",
         "grants-restore files-window files_open2",
+        "grants-revoke notes a",
+        "grants-revoke notes notes_",
         "keep-running on notes",
         "keep-running off my app",
         "restart-window 120 300",
@@ -329,7 +332,9 @@ fn every_change_takes_its_own_arguments_and_nothing_looser() {
         "grants-revoke Notes notes_add",
         "grants-revoke notes notes-add",
         "grants-revoke notes _notes",
-        "grants-revoke notes notes_",
+        "grants-revoke notes 1notes",
+        "grants-revoke notes_app notes_add",
+        "grants-revoke notes abcdefghijklmnopqrstuvwxy",
         "grants-revoke notes NOTES_ADD",
         "grants-revoke abcdefghijklmnopqrstuvwxy notes_add",
         "grants-restore",
