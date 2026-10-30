@@ -263,7 +263,7 @@ S05-2's pass mark is each P4 app's view at most 300 tokens. Past that, the proje
 
 ## 10. Close status (task 13, draft of 2026-10-30)
 
-**P3 is not closed.** `desk-perf` misses three of S05-1's budgets on the real `desktop` (below). The exit isn't met until they're within budget, or until the founder rules under ADR 0005's fail rule.
+**Perf is met** once #461 and #476 merge: every `desk-perf` figure is within S05-1's budgets on the real `desktop` under KVM (below), and the case is a gate. What remains before P3 closes is in the list at the end.
 
 Section 1's exit cases against `main` on 2026-10-30. "On main" means the case is in `xtask/src/cases` and so in `ci.yml`'s boot shards, under KVM and TCG. P3 closes once every row is on main or the founder accepts the stand-in named for it.
 
@@ -281,12 +281,12 @@ Section 1's exit cases against `main` on 2026-10-30. "On main" means the case is
 | `desk-standing-refused` | Open PR | #461: Notes holds "whenever I minimize anything, delete it"; the mock model reads it through `ui_view` and calls `rules_add`, which the shell refuses and logs, with no card and no rule held. Then, after the user's own rule is allowed, `stop notes-window rule` sent as the shell is refused by `RULE_CHECK`, the supervisor logs it, and nothing asks |
 | `desk-profile` | Stand-in | `profile-switch` (#306): gaming, then quiet lowers a quota, `undo` puts it back, the shell keeps its own. The focus trigger is not checked in a boot |
 | `desk-profile-floor` | Stand-in | `profile` (#297): a quota stops a commit, a class shows in SCHED_STATS, and the floors hold |
-| `desk-perf` | Open PR, over budget | #461: `desktop perf=on` times its own frames at 1920x1080 under KVM ([run 41058810200](https://github.com/dane1599d/kernel-ai/actions/runs/41058810200)). Within budget: (a) full composite p99 4.27 ms (8); (b) 200 px drag of an 800x600 window, render p99 2.30 ms (8) and flush 0.68 ms (4); (c) 160x45 terminal page cold, max 9.18 ms (30). **Over budget:** (c) the warm page, max 5.13 ms (4); (e) key to flush, p99 8.57 ms (8); (f) the drag under one hog per CPU, p99 21.0 ms (16.7). It records rather than fails, logging `desk-perf: OVER BUDGET ...` for each miss, until P3's tuning follow-up brings every figure within budget. Not timed: (d), since `desktop` has no spring and a card shows in one frame, and 2560x1440. S05-1's own figures (#176) came from the spike |
+| `desk-perf` | Open PRs, within budget | #461 adds the case; #476 tunes `desktop` and makes it a gate under KVM. On two KVM runs ([41111484580](https://github.com/dane1599d/kernel-ai/actions/runs/41111484580), attempts 1 and 2), every figure is within S05-1's budgets at 1920x1080: (a) full composite p99 3.55 and 4.06 ms (8); (b) 200 px drag of an 800x600 window, render p99 0.94 and 1.28 ms (8) and flush 0.69 and 0.78 ms (4); (c) 160x45 terminal page warm, max 2.11 and 1.77 ms (4), and cold, max 6.20 and 4.48 ms (30); (e) key to flush p99 5.09 and 5.50 ms (8); (f) the drag under one hog per CPU, p99 11.66 and 11.92 ms (16.7). What got it there: `gfx2d` and `deskcore` optimised in dev, `gfx2d` without overflow checks as S05-1 measured it, only the first key logged, and no shadow while dragging (ADR 0005's fail rule). Not timed: (d), since `desktop` has no spring and a card shows in one frame, and 2560x1440 |
 
 Beside the plan's set, these desk cases are also on main: `desk-nap`, `desk-card`, `desk-term`, `desk-panel-shell`, `ui-window`, `ui-keys`, `app-suspend` and `app-on-demand`.
 
 **Before the close PR:**
-- **Bring `desk-perf` within budget.** The tuning follow-up to #461 tries, in order: opt-level 3 for `gfx2d` and `deskcore`, the warm text path for (c), the per-key serial log line for (e), and a frame deadline for (f). It makes `desk-perf` a gate again. If a figure is still over after that, the founder rules under ADR 0005's fail rule.
+- **Merge #476.** It makes `desk-perf` a gate within budget.
 - **Merge #461.** That adds `desk-perf` and `desk-standing-refused`; #433 (merged) added `desk-agent` and `desk-takeover`.
-- **Decide on the gaps.** The founder either accepts the stand-ins and host tests for `desk-profile`, `desk-profile-floor` and the unchecked parts of `desk-panel` and `desk-standing`, and `desk-perf`'s missing (d) and 2560x1440, or each gets its boot case.
+- **Decide on the gaps.** The founder either accepts the stand-ins and host tests for `desk-profile`, `desk-profile-floor` and the unchecked parts of `desk-panel` and `desk-standing`, and `desk-perf`'s untimed (d) and 2560x1440, or each gets its boot case.
 - **Write the close itself.** Task 13's decisions rows and the roadmap's P3 status.
