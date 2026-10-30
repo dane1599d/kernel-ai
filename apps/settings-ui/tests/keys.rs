@@ -5,7 +5,7 @@
 //! keyboard changes a setting the way the case does.
 
 use comp_settings::files::Appearance;
-use comp_settings::{Intent, Page, Settings};
+use comp_settings::{Intent, Page, RuleLine, RuleRef, Settings};
 use comp_settings_ui::{
     Change, DEFAULT_WINDOW, Entry, SIZE, View, WINDOW_ON, build, diff, on_ui, redraw,
 };
@@ -198,15 +198,20 @@ fn a_row_is_revoked_and_restored_by_keys() {
 }
 
 /// Everything the boot case sends to Settings' window, in its order, with the
-/// OS's answers applied between: the revoke and the restore of the fixture's row,
-/// then the theme, then the restart window. QEMU names them `tab right tab down
-/// tab ret`, `tab tab tab ret`, `tab left tab ret` and `tab tab tab right right
-/// right right tab spc`.
+/// OS's answers applied between: the removal of the rule the case added, the
+/// revoke and the restore of the fixture's row, then the theme, then the restart
+/// window. QEMU names them `tab right right tab ret`, `tab left tab down tab ret`,
+/// `tab tab tab ret`, `tab left tab ret` and `tab tab tab right right right right
+/// tab spc`.
 #[test]
 fn the_boot_cases_whole_session_in_settings_window() {
     let access = comp_settings::access::parse("fixture-window\tfs_list\tallowed\n").unwrap();
     let mut w = Keyed::new(Settings {
         access,
+        rules: vec![RuleLine {
+            id: RuleRef::Instruction(1),
+            text: "on time(22:00) -> app_suspend(game)".into(),
+        }],
         ..settings()
     });
     let run = |w: &mut Keyed, keys: &[Key]| -> Vec<Intent> {
@@ -216,11 +221,20 @@ fn the_boot_cases_whole_session_in_settings_window() {
         assert_eq!(sent.len(), 1, "{sent:?}");
         sent.into_iter().next().unwrap()
     };
+    // The standing rule the case added: the Rules page's Remove button.
+    let remove = one(run(
+        &mut w,
+        &[Key::Tab, Key::Right, Key::Right, Key::Tab, Key::Enter],
+    ));
+    assert_eq!(remove, Intent::RemoveRule(RuleRef::Instruction(1)));
+    w.apply(&remove);
+    assert_eq!(w.view.page, 2);
+    // Back one page, to what apps can do.
     let revoke = one(run(
         &mut w,
         &[
             Key::Tab,
-            Key::Right,
+            Key::Left,
             Key::Tab,
             Key::Down,
             Key::Tab,

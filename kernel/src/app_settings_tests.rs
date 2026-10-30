@@ -64,6 +64,16 @@ pub fn check() -> Result<(), &'static str> {
     terminal_keys(CASE, &mut at)?;
     threads::sleep_ms(KEYS_MS);
     log!("{CASE}: the theme was set before Settings opened");
+    // "rules_add on time(22:00) -> app_suspend(game)": a standing instruction,
+    // asked on `desktop`'s card; `y` allows it. Settings lists it when it starts.
+    terminal_keys(CASE, &mut at)?;
+    wait(CASE, "the ask on desktop's card", ask_box::shown)?;
+    threads::sleep_ms(KEYS_MS);
+    // "y" on the card.
+    log!("{CASE}: ready for keys");
+    wait(CASE, "the card's answer", || !ask_box::shown())?;
+    threads::sleep_ms(KEYS_MS);
+    log!("{CASE}: a standing rule was added before Settings opened");
     // "open fixture": the test app, first, so its frame is the second.
     terminal_keys(CASE, &mut at)?;
     wait(CASE, "ui_open to start the fixture", || {
@@ -81,14 +91,16 @@ pub fn check() -> Result<(), &'static str> {
     log!("{CASE}: ui_open started Settings and its window opened");
     // A person's keys in two windows, a gesture the OS can tell from the
     // agent's: a key in the fixture queues its one `fs_list` and the OS runs it;
-    // in Settings, `tab right tab down tab ret` revokes that row and the next
-    // key in the fixture is refused; `tab tab tab ret` restores it and the one
-    // after runs; `tab left tab ret` presses the Theme button; and `tab tab tab
-    // right right right right tab spc` goes round to the Updates page and its
-    // switch, which turns the restart window on. Each change is read back from
-    // the shell (`apps/settings-ui/tests/keys.rs` pins the sequences).
+    // in Settings, `tab right right tab ret` removes the rule from the Rules
+    // page; `tab left tab down tab ret` revokes that row and the next key in the
+    // fixture is refused; `tab tab tab ret` restores it and the one after runs;
+    // `tab left tab ret` presses the Theme button; and `tab tab tab right right
+    // right right tab spc` goes round to the Updates page and its switch, which
+    // turns the restart window on. Each change is read back from the shell
+    // (`apps/settings-ui/tests/keys.rs` pins the sequences).
     const SETTLE_MS: u64 = 2 * KEYS_MS;
     keys_in(CASE, &mut at, FIXTURE_TITLE, SETTLE_MS);
+    keys_in(CASE, &mut at, SETTINGS_TITLE, SETTLE_MS);
     keys_in(CASE, &mut at, SETTINGS_TITLE, SETTLE_MS);
     keys_in(CASE, &mut at, FIXTURE_TITLE, SETTLE_MS);
     keys_in(CASE, &mut at, SETTINGS_TITLE, SETTLE_MS);

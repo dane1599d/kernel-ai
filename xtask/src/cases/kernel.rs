@@ -342,6 +342,57 @@ pub(super) const CASES: &[TestCase] = &[
                 "s", "w", "i", "t", "c", "h", "spc", "t", "o", "spc", "t", "h", "e", "spc", "l",
                 "i", "g", "h", "t", "spc", "t", "h", "e", "m", "e", "ret",
             ],
+            // A standing rule, typed as the user's own line: `rules_add on
+            // time(22:00) -> app_suspend(game)`, asked on the card, and a yes.
+            &[
+                "r",
+                "u",
+                "l",
+                "e",
+                "s",
+                "shift-minus",
+                "a",
+                "d",
+                "d",
+                "spc",
+                "o",
+                "n",
+                "spc",
+                "t",
+                "i",
+                "m",
+                "e",
+                "shift-9",
+                "2",
+                "2",
+                "shift-semicolon",
+                "0",
+                "0",
+                "shift-0",
+                "spc",
+                "minus",
+                "shift-dot",
+                "spc",
+                "a",
+                "p",
+                "p",
+                "shift-minus",
+                "s",
+                "u",
+                "s",
+                "p",
+                "e",
+                "n",
+                "d",
+                "shift-9",
+                "g",
+                "a",
+                "m",
+                "e",
+                "shift-0",
+                "ret",
+            ],
+            &["y"],
             &[
                 "o", "p", "e", "n", "spc", "f", "i", "x", "t", "u", "r", "e", "ret",
             ],
@@ -350,11 +401,13 @@ pub(super) const CASES: &[TestCase] = &[
             ],
             // A person's keys in the fixture's window and Settings' (the
             // sequences are pinned in `apps/settings-ui/tests/keys.rs`): press
-            // the fixture's button; revoke its row in Settings; press (refused);
-            // restore the row; press (runs); then the Theme button, and the
-            // Updates page's switch for the restart window.
+            // the fixture's button; remove the rule on the Rules page; revoke the
+            // fixture's row; press (refused); restore the row; press (runs);
+            // then the Theme button, and the Updates page's switch for the
+            // restart window.
             &["tab", "ret"],
-            &["tab", "right", "tab", "down", "tab", "ret"],
+            &["tab", "right", "right", "tab", "ret"],
+            &["tab", "left", "tab", "down", "tab", "ret"],
             &["tab", "ret"],
             &["tab", "tab", "tab", "ret"],
             &["tab", "ret"],
@@ -374,6 +427,11 @@ pub(super) const CASES: &[TestCase] = &[
             "comphost: the first settings answer reached the app",
             "app-settings: the theme was set before Settings opened",
             "settings: appearance theme light",
+            "app-settings: a standing rule was added before Settings opened",
+            // The rule Settings lists, and gone once it is removed by key and
+            // the rules are read again.
+            "settings: rules 1",
+            "settings: rules 0",
             "app-settings: ui_open started the fixture and its window opened",
             "app-settings: keys were pressed in Settings' window",
             // The revoke, held end to end: the fixture's `fs_list` runs, is
