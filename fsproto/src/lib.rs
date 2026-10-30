@@ -207,6 +207,39 @@ pub enum Request {
         #[n(0)]
         id: u64,
     },
+    /// Starts `name`, `<64 hex>.gguf`, as a sealed blob of `len` bytes in the
+    /// model store (P4 task 10). Only on the `Dir` for the `models` volume's
+    /// root ([`kabi::fs::MODELS_ROOT`]) with WRITE, and only inside the
+    /// caller's own action, which holds one blob at a time.
+    #[n(23)]
+    SealedBegin {
+        #[n(0)]
+        name: String,
+        #[n(1)]
+        len: u64,
+    },
+    /// The blob's next bytes, at most [`MAX_DATA`].
+    #[n(24)]
+    SealedPush {
+        #[n(0)]
+        #[cbor(with = "minicbor::bytes")]
+        data: Vec<u8>,
+    },
+    /// Ends the blob once every byte is in. `fs` hashes the bytes itself:
+    /// their SHA-256 must be the one the name gives, else Invalid, and their
+    /// FNV-1a64 is kept for the hint. The caller then commits its action.
+    #[n(25)]
+    SealedFinish,
+    /// Points `kai-modelhint 1` at sealed blob `name`, or clears it with none,
+    /// so the next boot maps that model, or none. On the same handle as
+    /// [`Request::SealedBegin`], never inside an action: `fs` writes the hint
+    /// in `kai-data`'s first block, outside the filesystem. Invalid for a name
+    /// that is not a sealed blob of the store.
+    #[n(26)]
+    ModelHint {
+        #[n(0)]
+        name: Option<String>,
+    },
 }
 
 /// Where a listing goes on: the last name it gave, with its hash.
