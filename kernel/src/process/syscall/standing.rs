@@ -73,7 +73,7 @@ fn read(slot: usize, buf_ptr: u64, cap_bytes: u64) -> Result<u64, Error> {
     if cap_bytes < READ_BYTES as u64 {
         return Err(Error::TooBig);
     }
-    let (dropped, events) = event_box::take();
+    let (dropped, events) = event_box::take_for(pid);
     let text = event_box::text(dropped, &events);
     copy_to_user(slot, buf_ptr, text.as_bytes())?;
     Ok(text.len() as u64)

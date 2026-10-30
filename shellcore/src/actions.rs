@@ -262,7 +262,9 @@ impl Shell {
                 "Done"
             };
             let tail = if undoable { ". undo" } else { "" };
-            text.push_str(&format!("{lead}: {}{tail}", what.join("; ")));
+            let line = format!("{lead}: {}{tail}", what.join("; "));
+            text.push_str(&line);
+            self.done_line = Some(line);
         } else if text.is_empty() && ran.ok {
             text = match checked.summary.is_empty() {
                 true => String::from("Done."),

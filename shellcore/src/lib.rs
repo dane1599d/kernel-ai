@@ -31,9 +31,11 @@ mod brackets;
 mod centry;
 mod commands;
 pub mod data;
+mod effects;
 mod engine;
 mod instructions;
 mod packages;
+mod panel;
 mod pkg;
 mod profiles;
 mod rules;
@@ -56,6 +58,7 @@ use alloc::rc::Rc;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 pub use centry::CallValue;
+pub use effects::EffectDone;
 pub use engine::Exec;
 use engine::Line;
 use kabi::sched::{SchedStats, TrialRequest};
@@ -63,6 +66,7 @@ use llmproto::act::{ActError, ActRequest, Call};
 use llmproto::chat::Completion;
 use llmproto::script::{Answer, AnswerError, ScriptRequest};
 use llmproto::tune::TuneRequest;
+pub use panel::PanelResult;
 use rhai::{AST, Dynamic, Engine, EvalAltResult, Scope};
 use tiers::Tier;
 
@@ -439,6 +443,11 @@ pub struct Shell {
     partial: Option<String>,
     /// A request the model asked to clarify: the next line is joined to it.
     clarifying: Option<String>,
+    /// Since the last panel line: whether the line went to the model, whether
+    /// it answered in words, and code's result line for what ran.
+    asked_model: bool,
+    worded: bool,
+    done_line: Option<String>,
     /// The `pack_id` of the pack the model is given, logged with each model turn
     /// (ADR 0010 §7): the same one llm reports for its `act` slot.
     pack_id: u64,
@@ -504,6 +513,9 @@ impl Shell {
             last_output: None,
             partial: None,
             clarifying: None,
+            asked_model: false,
+            worded: false,
+            done_line: None,
             pack_id: llmproto::pack::act_pack_id(),
             saved_log: None,
             owner_once: None,
@@ -799,6 +811,7 @@ impl Shell {
         if request.is_empty() {
             return Reply::err("usage: ? <what you want done>");
         }
+        self.asked_model = true;
         let id = self.next_id;
         self.next_id += 1;
         self.host.audit(&format!(
@@ -859,6 +872,7 @@ impl Shell {
     }
 
     fn say(&mut self, id: u64, request: &str, reply: String) -> Reply {
+        self.worded = true;
         self.record(id, request, "", "answered in words");
         Reply::ok(reply)
     }
