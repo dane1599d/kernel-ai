@@ -4,12 +4,15 @@
 //! The top-level roles are root, targets, snapshot and timestamp; targets
 //! delegates every `*.kpkg` to the role `packages`, which lists each package as
 //! a target `<name>-<version>.kpkg` with its length, SHA-256 and `custom.kai`
-//! index fields. Snapshots are consistent, so the layout is:
+//! index fields, and every `*.gguf` to the role `models` (ADR 0008 §6), which
+//! lists each model as `<id>.gguf` ([`super::models`]). A model's bytes are
+//! never in the repository. Snapshots are consistent, so the layout is:
 //!
 //! ```text
 //! metadata/1.root.json
 //! metadata/1.targets.json
 //! metadata/1.packages.json
+//! metadata/1.models.json
 //! metadata/1.snapshot.json
 //! metadata/timestamp.json
 //! targets/<sha256>.notes-1.0.0.kpkg
@@ -20,6 +23,7 @@
 //! signature is over the canonical bytes of its `signed` object.
 
 use super::Package;
+use super::models::Model;
 use ed25519_compact::{KeyPair, Seed};
 use kaipkg::generation::Time;
 use serde_json::{Map, Value, json};
@@ -35,6 +39,9 @@ const TIMESTAMP_DAYS: u64 = 7;
 /// The delegated role every package sits under, and what it may sign for.
 pub const PACKAGES: &str = "packages";
 const PACKAGE_PATHS: &str = "*.kpkg";
+/// The delegated role every model sits under, and what it may sign for.
+pub const MODELS: &str = kaipkg::models::ROLE;
+const MODEL_PATHS: &str = "*.gguf";
 
 /// One role's Ed25519 key.
 pub struct Key {
@@ -82,10 +89,11 @@ pub struct Keys {
     pub snapshot: Key,
     pub timestamp: Key,
     pub packages: Key,
+    pub models: Key,
 }
 
 impl Keys {
-    /// A throwaway test root: five fresh keys.
+    /// A throwaway test root: six fresh keys.
     pub fn generate() -> Result<Self, String> {
         Ok(Keys {
             root: Key::generate()?,
@@ -93,6 +101,7 @@ impl Keys {
             snapshot: Key::generate()?,
             timestamp: Key::generate()?,
             packages: Key::generate()?,
+            models: Key::generate()?,
         })
     }
 }
@@ -102,9 +111,19 @@ pub struct Repository {
     pub files: Vec<(String, Vec<u8>)>,
 }
 
-/// The repository for `packages`, every role at version 1, signed by `keys`,
-/// with expiry counted from `now`.
+/// The repository for `packages`, with no models: [`build_with_models`].
 pub fn build(packages: &[Package], keys: &Keys, now: Time) -> Result<Repository, String> {
+    build_with_models(packages, &[], keys, now)
+}
+
+/// The repository for `packages` and `models`, every role at version 1, signed
+/// by `keys`, with expiry counted from `now`.
+pub fn build_with_models(
+    packages: &[Package],
+    models: &[Model],
+    keys: &Keys,
+    now: Time,
+) -> Result<Repository, String> {
     let expires = |days: u64| Time(now.0 + days * DAY).format();
     let mut files = Vec::new();
     let mut targets = Map::new();
@@ -124,6 +143,21 @@ pub fn build(packages: &[Package], keys: &Keys, now: Time) -> Result<Repository,
             }),
         );
         files.push((format!("targets/{sha}.{target}"), package.bytes.clone()));
+    }
+    let mut model_targets = Map::new();
+    for model in models {
+        let target = model.target();
+        if !names.insert(target.clone()) {
+            return Err(format!("{target} is in the repository twice"));
+        }
+        model_targets.insert(
+            target,
+            json!({
+                "length": model.length,
+                "hashes": { "sha256": model.sha256 },
+                "custom": { "kai": model.index() },
+            }),
+        );
     }
     let root = json!({
         "_type": "root",
@@ -146,23 +180,34 @@ pub fn build(packages: &[Package], keys: &Keys, now: Time) -> Result<Repository,
         "expires": expires(TARGETS_DAYS),
         "targets": {},
         "delegations": {
-            "keys": key_map(&[&keys.packages]),
-            "roles": [{
-                "name": PACKAGES,
-                "keyids": [keys.packages.id()],
-                "threshold": 1,
-                "terminating": true,
-                "paths": [PACKAGE_PATHS],
-            }],
+            "keys": key_map(&[&keys.packages, &keys.models]),
+            "roles": [
+                {
+                    "name": PACKAGES,
+                    "keyids": [keys.packages.id()],
+                    "threshold": 1,
+                    "terminating": true,
+                    "paths": [PACKAGE_PATHS],
+                },
+                {
+                    "name": MODELS,
+                    "keyids": [keys.models.id()],
+                    "threshold": 1,
+                    "terminating": true,
+                    "paths": [MODEL_PATHS],
+                },
+            ],
         },
     });
-    let delegated = json!({
-        "_type": "targets",
-        "spec_version": SPEC_VERSION,
-        "version": 1,
-        "expires": expires(TARGETS_DAYS),
-        "targets": targets,
-    });
+    let delegated = |targets: Map<String, Value>| {
+        json!({
+            "_type": "targets",
+            "spec_version": SPEC_VERSION,
+            "version": 1,
+            "expires": expires(TARGETS_DAYS),
+            "targets": targets,
+        })
+    };
     let snapshot = json!({
         "_type": "snapshot",
         "spec_version": SPEC_VERSION,
@@ -171,6 +216,7 @@ pub fn build(packages: &[Package], keys: &Keys, now: Time) -> Result<Repository,
         "meta": {
             "targets.json": { "version": 1 },
             "packages.json": { "version": 1 },
+            "models.json": { "version": 1 },
         },
     });
     let snapshot = envelope(&snapshot, &keys.snapshot)?;
@@ -195,7 +241,11 @@ pub fn build(packages: &[Package], keys: &Keys, now: Time) -> Result<Repository,
         ),
         (
             "metadata/1.packages.json".into(),
-            envelope(&delegated, &keys.packages)?,
+            envelope(&delegated(targets), &keys.packages)?,
+        ),
+        (
+            "metadata/1.models.json".into(),
+            envelope(&delegated(model_targets), &keys.models)?,
         ),
         ("metadata/1.snapshot.json".into(), snapshot),
         (
