@@ -550,3 +550,26 @@ fn answers_in_any_order_leave_a_consistent_window() {
         assert!(app.files.items().len() <= MAX_ITEMS);
     }
 }
+
+#[test]
+fn a_restarted_window_lists_the_folder_it_was_in_and_a_bad_path_means_home() {
+    let mut os = Queue::default();
+    let mut files = Files::at("docs/2026");
+    assert_eq!(files.dir(), "docs/2026");
+    files.refresh(&mut os);
+    assert_eq!(
+        (os.calls[0].name, os.calls[0].args.as_str()),
+        ("fs_list", r#"{path: "docs/2026"}"#)
+    );
+    for bad in [
+        "../x",
+        "/etc",
+        "a//b",
+        "a\nb",
+        "a/./b",
+        "a/../b",
+        &"x".repeat(1000),
+    ] {
+        assert_eq!(Files::at(bad).dir(), "", "{bad:?}");
+    }
+}

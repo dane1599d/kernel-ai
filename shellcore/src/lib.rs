@@ -42,6 +42,7 @@ mod pkg;
 mod profiles;
 mod rules;
 pub mod script;
+mod settings;
 mod show;
 pub mod standing;
 pub mod state;
@@ -250,6 +251,17 @@ pub trait Host {
     fn rules_write(&self, _text: &str) -> Result<(), String> {
         Ok(())
     }
+    /// The keep-running list as `/system/state/keep` holds it.
+    fn keep_read(&self) -> Option<String> {
+        None
+    }
+    fn keep_write(&self, _text: &str) -> Result<(), String> {
+        Err(String::from("there is no /system/state here"))
+    }
+    /// `keep <app> on|off` to the supervisor: app `app` naps or is kept running.
+    fn keep_running(&self, _app: &str, _on: bool) -> Result<(), String> {
+        Err(String::from("apps cannot be kept running here"))
+    }
     /// The rows taken back from apps' effects, as `/system/state/withheld`
     /// holds them (`kai-withheld 1`, P4 task 7).
     fn withheld_read(&self) -> Option<String> {
@@ -449,6 +461,8 @@ pub struct Shell {
     instructions_removed: Vec<standing::Rule>,
     /// Resource profiles (P3 task 12), in RAM until `/system/settings`.
     profiles: profiles::Profiles,
+    /// The apps kept running, never napped (`/system/state/keep`).
+    keep: Vec<String>,
     /// Each standing instruction's last profile switch, which its "until" puts back.
     fired_profiles: Vec<(u64, u64)>,
     /// Installed software: the image's repository and its generations.
@@ -527,6 +541,7 @@ impl Shell {
             standing: standing::Standing::default(),
             instructions_removed: Vec::new(),
             profiles: profiles::Profiles::default(),
+            keep: Vec::new(),
             fired_profiles: Vec::new(),
             pkgs: pkg::Store::default(),
             said_no_sudo: false,
@@ -549,6 +564,7 @@ impl Shell {
         .with_saved_log()
         .with_saved_rules()
         .with_saved_standing()
+        .with_saved_keep()
         .with_saved_withheld()
     }
 

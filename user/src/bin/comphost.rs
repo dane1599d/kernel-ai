@@ -25,6 +25,8 @@ use wasmhost::{Limits, LiveInstance};
 
 #[path = "comphost/disk.rs"]
 mod disk;
+#[path = "comphost/edit.rs"]
+mod edit;
 #[path = "comphost/system.rs"]
 mod system;
 #[path = "comphost/ui.rs"]
@@ -53,8 +55,9 @@ struct SysEnv {
     /// The app's saved state on disk, with a plan line's `dir=apps`; opened
     /// at the first restore, which names the app.
     disk: Option<disk::Disk>,
-    /// What the app may import beyond `kai:app` and `kai:ui`, from the plan
-    /// line's name for it (the kernel's), never from its package.
+    /// What the app may import beyond `kai:app` and `kai:ui`: `edit` if the kernel
+    /// gave this process an `Edit` handle, and `system` if the plan line's name for
+    /// it (the kernel's, never its package's) is the System monitor's.
     grants: wasmhost::Grants,
 }
 
@@ -143,7 +146,7 @@ fn main() -> i32 {
     let mut env = SysEnv {
         windows: windows.is_some(),
         disk: None,
-        grants: wasmhost::Grants::default(),
+        grants: edit::grants(),
         limits: Limits {
             fuel_call: settings.fuel_call,
             fuel_life: settings.fuel_life,
@@ -157,6 +160,8 @@ fn main() -> i32 {
             return livecore::host::EXIT_REFUSED;
         }
     };
+    // The editor's rules for what it may send; none for an app without the grant.
+    let mut edits = env.grants.edit.then(editcore::gate::Gate::new);
     // The plan line's name is the grant: only the System monitor reads the
     // machine, and only it has the route to llm for `health`.
     env.grants.system = name == system::MONITOR_APP;
@@ -174,9 +179,7 @@ fn main() -> i32 {
         "up (restart {}): serving {name}",
         arg(&args, "restart").unwrap_or("0")
     );
-    if let Some(ui) = windows.as_mut() {
-        ui.pump(&mut host);
-    }
+    settle(&mut windows, &mut edits, &mut host);
     let mut request = vec![0u8; kabi::MAX_MESSAGE];
     // When the host's own wait ends; 0 is never.
     let mut tick_at = deadline(host.timeout_ms());
@@ -228,9 +231,7 @@ fn main() -> i32 {
                 }
                 tick_at = deadline(host.timeout_ms());
                 napper.after(&host, now_ms());
-                if let Some(ui) = windows.as_mut() {
-                    ui.pump(&mut host);
-                }
+                settle(&mut windows, &mut edits, &mut host);
             }
             Err(Error::TimedOut) => {
                 if let Some(ui) = windows.as_mut().filter(|ui| ui.wants_poll())
@@ -246,6 +247,7 @@ fn main() -> i32 {
                     println!("{}", exit.why);
                     return exit.code;
                 }
+                settle(&mut windows, &mut edits, &mut host);
                 match napper.tick(&mut host, now_ms()) {
                     Ok(napped) => log_nap(&name, napped),
                     Err(exit) => {
@@ -259,9 +261,7 @@ fn main() -> i32 {
                         return exit.code;
                     }
                     tick_at = deadline(host.timeout_ms());
-                    if let Some(ui) = windows.as_mut() {
-                        ui.pump(&mut host);
-                    }
+                    settle(&mut windows, &mut edits, &mut host);
                 }
             }
             Err(error) => {
@@ -273,9 +273,8 @@ fn main() -> i32 {
         // for the sample is shown.
         if let Some(source) = source.as_mut()
             && source.pump(&mut host, now_ms())
-            && let Some(ui) = windows.as_mut()
         {
-            ui.pump(&mut host);
+            settle(&mut windows, &mut edits, &mut host);
         }
     }
 }
@@ -287,6 +286,21 @@ fn soonest(wait: u64, due: Option<u64>) -> u64 {
         None => wait,
         Some(ms) if wait == 0 => ms.max(1),
         Some(ms) => wait.min(ms.max(1)),
+    }
+}
+
+/// What the instances did that leaves comphost: the editor's messages go to the
+/// edit service, then the windows' frames to `desktop`.
+fn settle(
+    windows: &mut Option<ui::Ui>,
+    edits: &mut Option<editcore::gate::Gate>,
+    host: &mut Host<SysEnv>,
+) {
+    if let Some(gate) = edits.as_mut() {
+        edit::pump(host, gate);
+    }
+    if let Some(ui) = windows.as_mut() {
+        ui.pump(host);
     }
 }
 

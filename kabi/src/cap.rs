@@ -75,6 +75,11 @@ pub const UPDATE: u64 = 1 << 18;
 /// nothing else can answer an ask, and only the kernel mints the `ONCE`.
 /// Numbered at merge, after `UPDATE` (1 << 18, #268).
 pub const ASK: u64 = 1 << 19;
+/// Send the edit service an open or an edit command for an app that holds the
+/// `edit` grant ([`super::call::EDIT_CALL`]): an `Edit` handle with CALL. The
+/// kernel grants it only to the service named `comphost` running the `comphost`
+/// program (P4 task 11). Numbered at merge, after `ASK` (1 << 19).
+pub const EDIT: u64 = 1 << 20;
 /// Every capability a supervisor may grant.
 pub const GRANTABLE: u64 = SERVE
     | NET
@@ -94,4 +99,5 @@ pub const GRANTABLE: u64 = SERVE
     | INPUT
     | TERM
     | UPDATE
-    | ASK;
+    | ASK
+    | EDIT;

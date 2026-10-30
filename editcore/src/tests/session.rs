@@ -180,3 +180,22 @@ fn overlapping_matches_count_as_more_than_one() {
     );
     assert_eq!(lib_text(&session), "x = 1000;\n");
 }
+
+#[test]
+fn an_edit_cannot_grow_the_source_past_what_a_build_takes() {
+    let mut session = open("a\nb\n");
+    let room = crate::MAX_BUNDLE;
+    let big = "x".repeat(room);
+    assert!(session.change(1, &big).unwrap_err().contains("would pass"));
+    assert!(session.insert(1, &big).is_err());
+    assert!(session.substitute(None, "a", &big).is_err());
+    assert!(!session.changed());
+    // Fill most of the room, then see that the next line that does not fit is
+    // refused while a smaller one still goes in.
+    session.change(1, &"y".repeat(room - 2_000)).unwrap();
+    assert!(session.insert(2, &"z".repeat(3_000)).is_err());
+    session.insert(2, "small").unwrap();
+    assert!(session.undo());
+    assert!(session.undo());
+    assert!(!session.changed());
+}

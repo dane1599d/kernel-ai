@@ -33,12 +33,14 @@ const RESULT: &str = "ran 1";
 /// make with the handles it is given. Ask-tier rows (the stops) stay in the shell
 /// until the child can show the kernel their ONCE (task 14, part B), and so do
 /// file rows: the child holds no `Dir`, and `fs` keys an open action by the
-/// caller's process (P2 task 11).
+/// caller's process (P2 task 11). So do the window rows: `desktop` answers the
+/// shell alone, over the shell's route (P3 task 10).
 pub fn may_run_apart(checked: &Checked) -> bool {
     !checked.script.is_empty()
         && checked.plan.names().iter().all(|name| {
             !agentabi::CALL_ONLY.iter().any(|row| row.name == *name)
                 && !name.starts_with("fs_")
+                && !agentabi::UI_ROWS.iter().any(|row| row.name == *name)
                 // An app's row is the shell's to call: its rows and the
                 // supervisor's route are here, not in the child.
                 && crate::apps::is_os_row(name)
