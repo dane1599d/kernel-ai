@@ -310,3 +310,48 @@ fn a_waiting_read_is_seen_without_taking_it() {
     assert_eq!(app.take_system(), vec![0]);
     assert!(!app.system_waiting());
 }
+
+#[test]
+fn the_llm_services_health_replies_become_the_models_status() {
+    use llmproto::health::{State, Status};
+    use systemabi::{ModelState, ModelStatus};
+    // Every state the service can report, in the text it ends a reply with.
+    for state in State::ALL {
+        let status = Status { state, tps10: 85 };
+        let reply = format!("ok model 12 bytes; local model x; {}", status.line());
+        let got = crate::system::model_status_of(&reply);
+        assert_eq!(got.tps10, 85, "{reply}");
+        assert_eq!(
+            Some(got.state),
+            ModelState::from_health_word(state.word()),
+            "{reply}"
+        );
+    }
+    // The error the service gives with no model and no server.
+    let none = format!("err {}", llmproto::chat::NO_MODEL);
+    assert_eq!(
+        crate::system::model_status_of(&none),
+        ModelStatus {
+            state: ModelState::NoModel,
+            tps10: 0
+        }
+    );
+    // Anything else is not reported, however it is shaped.
+    for reply in [
+        "",
+        "ok",
+        "err",
+        "err the model cannot run: x",
+        "ok x; status state=sleepy tps10=1",
+        "ok x; status state=ready tps10=-1",
+        "ok x; status state=ready tps10=1 more",
+        "ok status state=ready tps10=1 \u{1b}[31m",
+        "ERR No AI model is set up. Everything else works; type :setup",
+    ] {
+        assert_eq!(
+            crate::system::model_status_of(reply),
+            ModelStatus::UNKNOWN,
+            "{reply:?}"
+        );
+    }
+}
