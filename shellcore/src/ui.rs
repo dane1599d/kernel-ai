@@ -83,11 +83,29 @@ pub fn parse_windows(text: &str) -> Result<Vec<Window>, String> {
 pub fn state_of(windows: &[Window], base: State) -> State {
     let focused = windows.iter().find(|w| w.focused);
     State {
-        app: focused.map(|w| w.app.clone()),
+        app: focused.map(|w| app_of(&w.app).into()),
         window: focused.map(|w| w.title.clone()),
-        windows: windows.iter().map(|w| w.app.clone()).collect(),
+        windows: windows.iter().map(|w| app_of(&w.app).into()).collect(),
         ..base
     }
+}
+
+/// `app` as `ui_open` may name it: a service name's characters and length
+/// (`kabi::event::valid_name`, `kabi::MAX_NAME`), so it cannot carry a second
+/// request into the
+/// supervisor's `app-call <app>\n<request>`.
+pub fn app_name(app: &str) -> Result<&str, String> {
+    match kabi::event::valid_name(app) && app.len() <= kabi::MAX_NAME {
+        true => Ok(app),
+        false => Err(format!("{app:?} is not an app's name")),
+    }
+}
+
+/// The name the agent knows an app's window by: a `<pkg>-window` service is
+/// `<pkg>`'s window (`notes-window` is Notes'), so `ui_open("notes")`, the
+/// State line and a window's name all say `notes`.
+pub fn app_of(service: &str) -> &str {
+    service.strip_suffix("-window").unwrap_or(service)
 }
 
 /// `ui_act`'s action word as `surfabi`'s bit number.

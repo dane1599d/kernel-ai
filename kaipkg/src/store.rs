@@ -19,6 +19,7 @@
 //! store mounted after a crash carries on.
 
 use crate::bundle::{self, HEADER};
+use crate::effects;
 use crate::generation::{Generation, Installed, Time};
 use crate::header::Header;
 use crate::resolve::{self, Entry, Want};
@@ -36,6 +37,8 @@ pub trait Volume {
     /// Opens the action `action` (ADR 0004 §4).
     fn begin(&mut self, action: u64) -> Result<(), String>;
     fn commit(&mut self) -> Result<(), String>;
+    /// Drops the open action and everything in it; nothing when none is open.
+    fn abort(&mut self) -> Result<(), String>;
     fn read(&mut self, path: &str) -> Result<Option<Vec<u8>>, String>;
     /// The names directly in folder `dir`; none when it does not exist.
     fn list(&mut self, dir: &str) -> Result<Vec<String>, String>;
@@ -109,6 +112,8 @@ pub enum Refused {
     BadHash(String),
     /// The object's own header differs from its index entry (cargo's rule).
     HeaderDiffers(String),
+    /// The app's artifact declares other effects than its index entry lists.
+    EffectsDiffer(String),
     /// The package failed a probation before; `force` installs it anyway.
     Failed(String),
     NoGeneration(u64),
@@ -220,6 +225,24 @@ pub fn present(vol: &mut dyn Volume, sha: &Sha) -> Result<bool, String> {
 }
 
 /// An object's own header.
+/// `change` as action `action` (ADR 0004 §4): committed, or aborted if any of
+/// it fails, so a failure never leaves an action open that blocks every other
+/// writer of the volume.
+pub fn in_action(
+    vol: &mut dyn Volume,
+    action: u64,
+    change: impl FnOnce(&mut dyn Volume) -> Result<(), String>,
+) -> Result<(), String> {
+    vol.begin(action)?;
+    match change(vol).and_then(|()| vol.commit()) {
+        Ok(()) => Ok(()),
+        Err(why) => {
+            let _ = vol.abort();
+            Err(why)
+        }
+    }
+}
+
 fn object_header(bytes: &[u8]) -> Result<Header, String> {
     let files = bundle::files(bytes)?;
     let (_, header) = files
@@ -248,13 +271,12 @@ impl Store {
             why: "image".into(),
             packages: image,
         };
-        cx.vol.begin(cx.action)?;
-        cx.vol
-            .write(&alloc::format!("{GENS}/1"), first.format().as_bytes())?;
-        cx.vol.write(CURRENT, b"1\n")?;
-        cx.vol.write(GOOD, b"1\n")?;
-        cx.ledger.switched(cx.vol, 1, &first)?;
-        cx.vol.commit()?;
+        in_action(cx.vol, cx.action, |vol| {
+            vol.write(&alloc::format!("{GENS}/1"), first.format().as_bytes())?;
+            vol.write(CURRENT, b"1\n")?;
+            vol.write(GOOD, b"1\n")?;
+            cx.ledger.switched(vol, 1, &first)
+        })?;
         Ok(true)
     }
 
@@ -304,15 +326,14 @@ impl Store {
             failed_text.push_str(&hex(sha));
             failed_text.push('\n');
         }
-        cx.vol.begin(cx.action)?;
-        cx.vol
-            .write(&alloc::format!("{GENS}/{n}"), next.format().as_bytes())?;
-        if !failed_now.is_empty() {
-            cx.vol.write(FAILED, failed_text.as_bytes())?;
-        }
-        cx.vol.write(CURRENT, alloc::format!("{n}\n").as_bytes())?;
-        cx.ledger.switched(cx.vol, n, &next)?;
-        cx.vol.commit()?;
+        in_action(cx.vol, cx.action, |vol| {
+            vol.write(&alloc::format!("{GENS}/{n}"), next.format().as_bytes())?;
+            if !failed_now.is_empty() {
+                vol.write(FAILED, failed_text.as_bytes())?;
+            }
+            vol.write(CURRENT, alloc::format!("{n}\n").as_bytes())?;
+            cx.ledger.switched(vol, n, &next)
+        })?;
         Ok(n)
     }
 
@@ -320,7 +341,15 @@ impl Store {
     /// `.partial` (resuming what is there), then checked and renamed in.
     fn fetch(&self, cx: &mut Ctx<'_>, source: &mut dyn Source, entry: &Entry) -> Result<(), Error> {
         if present(cx.vol, &entry.sha)? {
-            return Ok(());
+            // Already here, and checked when it came; but this entry's effects
+            // are what the card showed, so they must be the object's too.
+            let object = cx.vol.read(&object_path(&entry.sha))?.unwrap_or_default();
+            let declared =
+                object_header(&object).and_then(|h| effects::check(&h, &object, &entry.effects));
+            return match declared {
+                Ok(()) => Ok(()),
+                Err(_) => refuse(Refused::EffectsDiffer(entry.name.clone())),
+            };
         }
         let partial = partial_path(&entry.sha);
         let mut have = cx.vol.read(&partial)?.map_or(0, |b| b.len() as u64);
@@ -338,10 +367,18 @@ impl Store {
         let why = if got.len() as u64 != entry.size || sha256(&got) != entry.sha {
             Some(Refused::BadHash(entry.name.clone()))
         } else {
-            let same = object_header(&got).is_ok_and(|h| {
-                h.name == entry.name && h.version == entry.version && h.depends == entry.depends
-            });
-            (!same).then(|| Refused::HeaderDiffers(entry.name.clone()))
+            match object_header(&got) {
+                Ok(h)
+                    if h.name == entry.name
+                        && h.version == entry.version
+                        && h.depends == entry.depends =>
+                {
+                    effects::check(&h, &got, &entry.effects)
+                        .is_err()
+                        .then(|| Refused::EffectsDiffer(entry.name.clone()))
+                }
+                _ => Some(Refused::HeaderDiffers(entry.name.clone())),
+            }
         };
         if let Some(why) = why {
             cx.vol.remove(&partial)?;
@@ -548,15 +585,15 @@ impl Store {
         if old.is_empty() && objects.is_empty() {
             return refuse(Refused::NothingToDo);
         }
-        cx.vol.begin(cx.action)?;
-        for g in &old {
-            cx.vol.remove(&alloc::format!("{GENS}/{g}"))?;
-        }
-        for o in &objects {
-            cx.vol.remove(&alloc::format!("{OBJECTS}/{o}"))?;
-        }
-        cx.ledger.collected(cx.vol, &old, objects.len())?;
-        cx.vol.commit()?;
+        in_action(cx.vol, cx.action, |vol| {
+            for g in &old {
+                vol.remove(&alloc::format!("{GENS}/{g}"))?;
+            }
+            for o in &objects {
+                vol.remove(&alloc::format!("{OBJECTS}/{o}"))?;
+            }
+            cx.ledger.collected(vol, &old, objects.len())
+        })?;
         Ok((old.len(), objects.len()))
     }
 }
@@ -642,4 +679,73 @@ pub fn check(vol: &mut dyn Volume, store: &Store, now: Time) -> Result<Summary, 
         objects,
         failed: failed(vol)?.len(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memvol::MemVolume;
+
+    /// A volume whose writes to `current` fail, as a full disk's would.
+    struct Full(MemVolume);
+
+    impl Volume for Full {
+        fn begin(&mut self, action: u64) -> Result<(), String> {
+            self.0.begin(action)
+        }
+        fn commit(&mut self) -> Result<(), String> {
+            self.0.commit()
+        }
+        fn abort(&mut self) -> Result<(), String> {
+            self.0.abort()
+        }
+        fn read(&mut self, path: &str) -> Result<Option<Vec<u8>>, String> {
+            self.0.read(path)
+        }
+        fn list(&mut self, dir: &str) -> Result<Vec<String>, String> {
+            self.0.list(dir)
+        }
+        fn write(&mut self, path: &str, bytes: &[u8]) -> Result<(), String> {
+            match path == CURRENT {
+                true => Err("no space".into()),
+                false => self.0.write(path, bytes),
+            }
+        }
+        fn append(&mut self, path: &str, bytes: &[u8]) -> Result<(), String> {
+            self.0.append(path, bytes)
+        }
+        fn rename(&mut self, from: &str, to: &str) -> Result<(), String> {
+            self.0.rename(from, to)
+        }
+        fn remove(&mut self, path: &str) -> Result<(), String> {
+            self.0.remove(path)
+        }
+    }
+
+    struct NoLedger;
+
+    impl Ledger for NoLedger {
+        fn switched(&mut self, _: &mut dyn Volume, _: u64, _: &Generation) -> Result<(), String> {
+            Ok(())
+        }
+        fn collected(&mut self, _: &mut dyn Volume, _: &[u64], _: usize) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_switch_that_fails_partway_aborts_its_action() {
+        let mut vol = Full(MemVolume::default());
+        let mut cx = Ctx {
+            vol: &mut vol,
+            ledger: &mut NoLedger,
+            now: Time(1),
+            action: 1,
+        };
+        let failed = Store::default().setup(&mut cx, Vec::new());
+        assert_eq!(failed, Err(Error::Store("no space".into())));
+        assert!(vol.0.files().is_empty(), "nothing of it is kept");
+        // No action is left open to block the next writer.
+        assert_eq!(vol.0.begin(2), Ok(()));
+    }
 }

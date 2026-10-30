@@ -100,6 +100,7 @@ fn entry(name: &str, bytes: &[u8]) -> Entry {
         size: bytes.len() as u64,
         depends: Vec::new(),
         grants: Vec::new(),
+        effects: Vec::new(),
         yanked: false,
     }
 }
