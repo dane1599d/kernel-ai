@@ -6,20 +6,17 @@
 //!   the shell its handle, so the shell holds a rule covering
 //!   `app_suspend("notes-window")` and its inverse, and nothing else.
 //! - Notes' minimize control is clicked: `desktop` posts `minimize
-//!   notes-window` to the event box. The firing goes to the supervisor as
-//!   `suspend notes-window rule` from the shell; the supervisor checks the rule
-//!   with RULE_CHECK and the kernel sends Notes `ctl suspend`, freeing its
-//!   instance. The same request from a process holding no rule is refused.
+//!   notes-window` to the event box. The shell takes it between lines and fires
+//!   the rule: `suspend notes-window rule` to the supervisor, which checks the
+//!   rule with RULE_CHECK, and the kernel sends Notes `ctl suspend`, freeing
+//!   its instance. The firing is the shell's own log entry. The same request
+//!   from a process holding no rule is refused.
 //! - Alt+Tab restores the window: `desktop` posts `restore notes-window`, the
 //!   firing's `until` resumes Notes the same way, and its note is still there.
-//!
-//! Until the shell reads the box and fires itself (A-core's half of task 11),
-//! this case takes the box's events and sends the shell's request on the
-//! shell's behalf, with the shell's pid, so the rule check is the real one.
 
 use crate::display::claim;
 use crate::pointer::{self, Event, Motion, Source};
-use crate::{ask_box, event_box, handle, hpet, ipc, log, process, terminal, threads};
+use crate::{ask_box, handle, hpet, ipc, log, process, terminal, threads};
 use alloc::string::String;
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -97,18 +94,19 @@ fn slot_of(pid: u64) -> Option<usize> {
     process::with_table(|t| t.iter().position(|p| p.live() && p.pid == pid))
 }
 
-/// Waits for `line` in the event box, keeping nothing else.
-fn event(line: &'static str) -> Result<(), &'static str> {
-    wait(line, || {
-        let (_, events) = event_box::take();
-        let text = event_box::text(0, &events);
-        if !text.is_empty() {
-            log!(
-                "desk-standing: box: {}",
-                text.trim_end().replace('\n', ", ")
-            );
-        }
-        text.lines().any(|l| l == line)
+/// Waits for the shell's action log to hold a done firing of rule 1 whose
+/// script is `script`: the shell took the event and fired by itself.
+fn fired(script: &'static str) -> Result<(), &'static str> {
+    wait(script, || {
+        let Ok(log) = ipc::call("shell", b"log actlog", CALL_MS) else {
+            return false;
+        };
+        let log = String::from_utf8_lossy(&log);
+        // An entry's E line, then its R and O, then its C with the script.
+        log.split("\nE ").any(|entry| {
+            entry.contains("form=standing tier=run consent=standing:1 state=done")
+                && entry.contains(script)
+        })
     })
 }
 
@@ -146,33 +144,22 @@ pub fn check() -> Result<(), &'static str> {
         return Err("desk-standing: the Allow did not give the shell exactly the rule");
     }
     log!("desk-standing: the rule was allowed on the card, and the shell holds it");
-    // Minimize: the event, then the firing.
-    let _ = event_box::take();
+    // Minimize: the event, which the shell takes, then its firing.
     report(MINIMIZE.0 - START.0, MINIMIZE.1 - START.1, 0);
     report(0, 0, 1);
     report(0, 0, 0);
-    event("minimize notes-window")?;
+    fired("\napp_suspend(\"notes-window\")")?;
     let desktop = pid_of("desktop")?;
     let refused = supervisor_as(desktop, "suspend notes-window rule")?;
     if !refused.starts_with("err rule") {
         log!("desk-standing: without the rule: {refused}");
         return Err("desk-standing: a process without the rule suspended Notes");
     }
-    let suspended = supervisor_as(shell, "suspend notes-window rule")?;
-    log!("desk-standing: {suspended}");
-    if !suspended.starts_with("ok suspended") {
-        return Err("desk-standing: the firing did not suspend Notes");
-    }
     log!("desk-standing: minimizing Notes fired the rule, and Notes is suspended");
-    // Restore: the event, then the "until".
+    // Restore: the event, then the "until", which the shell fires as well.
     threads::sleep_ms(1_000);
     crate::claim_tests::type_keys(&ALT_TAB);
-    event("restore notes-window")?;
-    let resumed = supervisor_as(shell, "resume notes-window rule")?;
-    log!("desk-standing: {resumed}");
-    if !resumed.starts_with("ok resumed") {
-        return Err("desk-standing: the until did not resume Notes");
-    }
+    fired("undo app_suspend(\"notes-window\")")?;
     let count = "kai-call 1\nfunc app:notes/actions@1.0.0#count\nargs {}\n";
     if !notes(count)?.contains("{notes: 1, words: 2}") {
         return Err("desk-standing: the note did not come back");

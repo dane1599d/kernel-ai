@@ -134,6 +134,7 @@ mod usage_tests;
 mod usb;
 mod version;
 mod virtio;
+mod wake_tests;
 mod workload;
 
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -371,9 +372,11 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::DeskRestart => run_case(desk_tests::restart),
         SelfTest::DeskAsk => run_case(ask_tests::check),
         SelfTest::AppSuspend => run_case(suspend_tests::check),
+        SelfTest::EventWake => run_case(wake_tests::check),
         SelfTest::AppOnDemand => run_case(demand_tests::check),
         SelfTest::DeskBoot => run_case(desk_tests::boot_check),
         SelfTest::DeskPanel => run_case(desk_tests::panel_check),
+        SelfTest::DeskPanelShell => run_case(desk_tests::panel_shell_check),
         SelfTest::UiWindow => run_case(ui_tests::check),
         SelfTest::DeskNap => run_case(nap_tests::check),
         SelfTest::DeskCard => run_case(card_tests::check),

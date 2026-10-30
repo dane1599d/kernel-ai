@@ -369,3 +369,43 @@ fn keys_drive_the_notes_window_guest() {
         Some(Val::Option(Some(Box::new(Val::String(String::from("hi"))))))
     );
 }
+
+/// `set-agent-private` on window 1 of a host holding one open window.
+fn keep_private(host: &mut crate::ui::UiHost, private: bool) -> Result<(), String> {
+    let args = [Val::U32(1), Val::Bool(private)];
+    crate::ui::run(host, "set-agent-private", &args).map(|done| {
+        assert_eq!(done, Ok(None));
+    })
+}
+
+#[test]
+fn only_a_granted_app_keeps_a_window_from_the_agent() {
+    let mut host = crate::ui::UiHost::default();
+    let open = [Val::String("Settings".into()), Val::U16(320), Val::U16(200)];
+    assert_eq!(crate::ui::run(&mut host, "open", &open), Ok(Ok(Some(1))));
+    // Without the grant the call traps, and the window stays shared.
+    let refused = keep_private(&mut host, true).unwrap_err();
+    assert!(refused.contains("grant"), "{refused}");
+    let frame = host
+        .ui
+        .window(1)
+        .unwrap()
+        .commit(&uikit::layout::FixedAdvance);
+    assert!(!frame.agent_private);
+    // With it, the flag shows at the next commit, and can be lifted again.
+    host.may_be_private = true;
+    keep_private(&mut host, true).unwrap();
+    let frame = host
+        .ui
+        .window(1)
+        .unwrap()
+        .commit(&uikit::layout::FixedAdvance);
+    assert!(frame.agent_private);
+    keep_private(&mut host, false).unwrap();
+    let frame = host
+        .ui
+        .window(1)
+        .unwrap()
+        .commit(&uikit::layout::FixedAdvance);
+    assert!(!frame.agent_private);
+}

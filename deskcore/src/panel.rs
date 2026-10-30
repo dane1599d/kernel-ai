@@ -150,7 +150,14 @@ impl Panel {
     /// Esc: stops a request being thought about, else clears the line.
     fn escape(&mut self) -> bool {
         if matches!(self.state, State::Thinking { .. }) {
-            self.queue(Request::Stop);
+            // A line still waiting never reaches the shell; one it took is
+            // told to stop.
+            match self.waiting.back() {
+                Some(Request::Line(_)) => {
+                    self.waiting.pop_back();
+                }
+                _ => self.queue(Request::Stop),
+            }
             self.state = State::Idle;
             return true;
         }
@@ -223,6 +230,15 @@ mod tests {
         tap(&mut panel, &[0x29]);
         assert_eq!(panel.text(), "");
         assert_eq!(panel.take(), None);
+    }
+
+    #[test]
+    fn esc_before_the_shell_takes_a_line_takes_it_back() {
+        let mut panel = Panel::new();
+        tap(&mut panel, &[0x0B, 0x28]);
+        tap(&mut panel, &[0x29]);
+        assert_eq!(panel.take(), None);
+        assert_eq!(panel.state(), &State::Idle);
     }
 
     #[test]

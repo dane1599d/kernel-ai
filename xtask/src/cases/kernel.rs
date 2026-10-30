@@ -140,6 +140,14 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("desk-ask", "test=desk-ask")
     },
+    // P4: a post to the event box wakes the shell, never in place of a line.
+    TestCase {
+        expect: &[
+            "event-wake: 10 terminal lines, each after a post, all came back as lines",
+            "event-wake: the ended shell's wake went with it; the new shell reads the box",
+        ],
+        ..case("event-wake", "test=event-wake")
+    },
     // P3 task 11: an app suspended and resumed through its host.
     TestCase {
         expect: &[
@@ -190,6 +198,18 @@ pub(super) const CASES: &[TestCase] = &[
             "desk-panel: typed Ctrl+Space, \"hi\" and Enter",
         ],
         ..case("desk-panel", "test=desk-panel")
+    },
+    // P3 task 7: the shell takes the panel's line from `desktop` and reports
+    // its result back.
+    TestCase {
+        expect: &[
+            "desktop: the panel queued a request (2 characters)",
+            "desktop: the shell took the panel's request",
+            "ms after Enter (within 100 ms)",
+            "desktop: the panel shows ",
+            "desk-panel-shell: typed \"hi\" in the panel",
+        ],
+        ..case("desk-panel-shell", "test=desk-panel-shell")
     },
     // P3 task 9: an app's kai:ui window on the desktop, closed from its control.
     TestCase {

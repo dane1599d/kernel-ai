@@ -59,3 +59,5 @@ __KAI_IMPORT("fs_trash") I64 fs_trash(const char *path);
 __KAI_IMPORT("fs_restore") I64 fs_restore(const char *path);
 /* no undo */
 __KAI_IMPORT("fs_empty_trash") I64 fs_empty_trash(void);
+/* sets an appearance setting: theme, text size, motion and so on */
+__KAI_IMPORT("appearance_set") I64 appearance_set(const char *setting, const char *value);

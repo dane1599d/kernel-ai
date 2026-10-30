@@ -41,6 +41,8 @@ pub(crate) struct HostState {
     /// `ui_act` reads it; everything else, replies and events included, leaves it
     /// false, so the default is to refuse.
     pub(crate) user_input: bool,
+    /// The settings requests the app sent and comphost has not taken (`kai:settings`).
+    pub(crate) settings: crate::settings::SettingsHost,
 }
 
 /// Most bytes of a panic's file path read from the version.
@@ -172,6 +174,7 @@ impl WasmInstance {
             view: None,
             ui: Default::default(),
             user_input: false,
+            settings: Default::default(),
         };
         let mut store = Store::new(engine, state);
         store.limiter(|state| &mut state.limits);
