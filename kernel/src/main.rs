@@ -34,6 +34,7 @@ mod bootfiles;
 mod build_job;
 mod build_service;
 mod card_tests;
+mod catalog_tests;
 mod claim_tests;
 mod clock;
 mod compute_tests;
@@ -377,6 +378,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::DeskBoot => run_case(desk_tests::boot_check),
         SelfTest::DeskPanel => run_case(desk_tests::panel_check),
         SelfTest::DeskPanelShell => run_case(desk_tests::panel_shell_check),
+        SelfTest::DeskCatalog => run_case(catalog_tests::check),
         SelfTest::UiWindow => run_case(ui_tests::check),
         SelfTest::DeskNap => run_case(nap_tests::check),
         SelfTest::DeskCard => run_case(card_tests::check),

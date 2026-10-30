@@ -47,7 +47,7 @@ pub(crate) fn report(dx: i32, dy: i32, buttons: u8) {
     threads::sleep_ms(STEP_MS);
 }
 
-fn wait(what: &'static str, mut done: impl FnMut() -> bool) -> Result<(), &'static str> {
+pub(crate) fn wait(what: &'static str, mut done: impl FnMut() -> bool) -> Result<(), &'static str> {
     for _ in 0..WAIT_MS / 50 {
         if done() {
             return Ok(());
@@ -125,7 +125,7 @@ pub fn restart() -> Result<(), &'static str> {
 }
 
 /// Whether `desktop` holds the screen.
-fn desktop_shows() -> bool {
+pub(crate) fn desktop_shows() -> bool {
     let desktop = process::named("desktop").first().map(|&(pid, _)| pid);
     let slot = desktop
         .and_then(|pid| process::with_table(|t| t.iter().position(|p| p.live() && p.pid == pid)));
