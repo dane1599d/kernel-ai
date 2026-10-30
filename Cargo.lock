@@ -179,6 +179,7 @@ name = "ccserve"
 version = "0.1.0-dev"
 dependencies = [
  "agentabi",
+ "kabi",
  "kailink",
  "promptcore",
  "serde_json",
@@ -263,6 +264,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "comp-monitor-window"
+version = "0.1.0-dev"
+dependencies = [
+ "appabi",
+ "comp-monitor",
+ "comp-monitor-ui",
+ "comp-ui-bind",
+ "compsdk",
+ "livecore",
+ "minicbor",
+ "systemabi",
+ "uikit",
+ "wasmhost",
+ "wit-bindgen",
+]
+
+[[package]]
 name = "comp-notes"
 version = "0.1.0-dev"
 dependencies = [
@@ -314,7 +332,6 @@ dependencies = [
 name = "comp-settings"
 version = "0.1.0-dev"
 dependencies = [
- "kaigrants",
  "kaiprofile",
  "look",
  "minicbor",
@@ -325,7 +342,6 @@ name = "comp-settings-ui"
 version = "0.1.0-dev"
 dependencies = [
  "comp-settings",
- "kaigrants",
  "look",
  "uikit",
 ]
@@ -339,7 +355,6 @@ dependencies = [
  "comp-settings-ui",
  "comp-ui-bind",
  "compsdk",
- "kaigrants",
  "livecore",
  "minicbor",
  "uikit",
@@ -361,6 +376,21 @@ version = "0.1.0-dev"
 dependencies = [
  "comp-terminal",
  "uikit",
+]
+
+[[package]]
+name = "comp-terminal-window"
+version = "0.1.0-dev"
+dependencies = [
+ "appabi",
+ "comp-terminal",
+ "comp-terminal-ui",
+ "comp-ui-bind",
+ "compsdk",
+ "livecore",
+ "uikit",
+ "wasmhost",
+ "wit-bindgen",
 ]
 
 [[package]]
@@ -1534,12 +1564,14 @@ version = "0.1.0-dev"
 dependencies = [
  "agentabi",
  "appabi",
+ "ccserve",
  "kabi",
  "kaigrants",
  "kaiprofile",
  "livecore",
  "llmproto",
  "look",
+ "promptcore",
  "rhai",
  "sched",
  "serde_json",
@@ -1852,6 +1884,7 @@ version = "0.1.0-dev"
 dependencies = [
  "appabi",
  "bootslot",
+ "ccserve",
  "cpufeat",
  "deskcore",
  "ecdsa",
@@ -1871,6 +1904,7 @@ dependencies = [
  "llmproto",
  "look",
  "p256",
+ "promptcore",
  "quant",
  "sched",
  "serde_json",
@@ -1879,6 +1913,7 @@ dependencies = [
  "spin 0.12.3",
  "supervise",
  "surfabi",
+ "systemabi",
  "talc",
  "termcore",
  "uikit",
@@ -1997,6 +2032,7 @@ dependencies = [
  "deskcore",
  "kabi",
  "livecore",
+ "llmproto",
  "surfabi",
  "systemabi",
  "uikit",

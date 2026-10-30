@@ -26,6 +26,9 @@ pub enum ActCase {
     FsUndoRebooted,
     /// `app-route` (P4): the agent calls an app's row through the supervisor.
     AppRoute,
+    /// `app-terminal` (P4 task 4): the agent types into the Terminal app and a
+    /// person's Enter runs the line.
+    AppTerminal,
     /// `profile-switch` (P3 task 12): profiles through the supervisor.
     Profile,
 }
@@ -56,6 +59,8 @@ pub enum SelfTest {
     Terminal,
     /// M8a: the Rhai shell answers a fixed list of lines correctly.
     Shell,
+    /// P4 task 12: the `c>` prompt through the shell and `cc` (ADR 0012).
+    CPrompt,
     /// M8b: LLM-written scripts are checked and run by their tier.
     Scripts,
     /// P1 task 7: one tagged call through the one door. `act-plain`: plain
@@ -261,6 +266,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=net" => Some(SelfTest::Net),
             "test=terminal" => Some(SelfTest::Terminal),
             "test=shell" => Some(SelfTest::Shell),
+            "test=c-prompt" => Some(SelfTest::CPrompt),
             "test=scripts" => Some(SelfTest::Scripts),
             "test=act-plain" => Some(SelfTest::Act(ActCase::Plain)),
             "test=act-run" => Some(SelfTest::Act(ActCase::Run)),
@@ -277,6 +283,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=fs-undo" => Some(SelfTest::Act(ActCase::FsUndo)),
             "test=fs-trash" => Some(SelfTest::Act(ActCase::FsTrash)),
             "test=app-route" => Some(SelfTest::Act(ActCase::AppRoute)),
+            "test=app-terminal" => Some(SelfTest::Act(ActCase::AppTerminal)),
             "test=profile-switch" => Some(SelfTest::Act(ActCase::Profile)),
             "test=fs-undo-reboot" => Some(SelfTest::Act(
                 match cmdline.split_whitespace().any(|w| w == "reread") {
@@ -403,6 +410,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::Net
             | SelfTest::Terminal
             | SelfTest::Shell
+            | SelfTest::CPrompt
             | SelfTest::Scripts
             | SelfTest::Act(_)
             | SelfTest::Live
@@ -537,12 +545,22 @@ pub fn plan(test: SelfTest) -> Option<String> {
             }
             false => kabi::plan::SHELL,
         };
+        // The shell calls `cc` for the `c>` prompt, so cc comes first.
+        plan.push('\n');
+        plan.push_str(kabi::plan::CC);
         // On the desktop the shell has a route to `desktop`, for the panel:
         // `desktop` is planned first, as a route's target must be.
         let shell = match test {
             SelfTest::DeskPanelShell => {
                 plan.push('\n');
                 plan.push_str(crate::desk_tests::BOOT_PLAN);
+                kabi::plan::SHELL_DESK
+            }
+            // The app is planned before the shell, whose call reaches it through
+            // the supervisor, and after `desktop`, which its window needs.
+            SelfTest::Act(ActCase::AppTerminal) => {
+                plan.push('\n');
+                plan.push_str(crate::app_terminal_tests::PLAN);
                 kabi::plan::SHELL_DESK
             }
             SelfTest::DeskAgent | SelfTest::DeskTakeover | SelfTest::DeskStandingRefused => {

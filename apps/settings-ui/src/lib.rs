@@ -16,6 +16,7 @@ mod tree;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
+use comp_settings::access::Access;
 use comp_settings::files::DAY_MINUTES;
 use comp_settings::{Page, RuleRef, Settings};
 pub use events::{on_ui, redraw};
@@ -45,6 +46,9 @@ pub const APP_ITEM: NodeId = 1000;
 pub const ACCESS: NodeId = 2000;
 pub const ACCESS_TEXT: NodeId = 3000;
 pub const REVOKE: NodeId = 4000;
+// A row withheld shows Restore in the slot where Revoke was, under an id of its
+// own, so a press meant for one never does the other.
+pub const RESTORE: NodeId = 11_000;
 // Rules and profiles.
 pub const RULES: NodeId = 30;
 pub const NO_RULES: NodeId = 32;
@@ -91,7 +95,8 @@ pub struct View {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Shown {
     pub(crate) apps: Vec<String>,
-    pub(crate) grants: Slots<u32>,
+    /// The rows of the app chosen, by name.
+    pub(crate) grants: Slots<String>,
     pub(crate) rules: Slots<RuleRef>,
     pub(crate) profiles: Vec<String>,
     pub(crate) keep: Slots<String>,
@@ -191,7 +196,7 @@ fn access(s: &Settings, view: &mut View, tree: &mut Vec<Entry>) {
             PAGE,
             wide(),
             label(
-                "No app has been given anything.",
+                "No app has anything to allow or withhold.",
                 TypeStyle::Body,
                 Tone::Muted,
             ),
@@ -234,8 +239,13 @@ fn access(s: &Settings, view: &mut View, tree: &mut Vec<Entry>) {
         view.shown.grants = Slots::default();
         return;
     };
-    let grants: Vec<u32> = app.access.iter().map(|x| x.grant).collect();
-    let slots = view.shown.grants.place(&grants);
+    let rows: Vec<String> = app
+        .access
+        .iter()
+        .take(MAX_ROWS)
+        .map(|x| x.row.clone())
+        .collect();
+    let slots = view.shown.grants.place(&rows);
     let mut fitted = 0;
     for (x, slot) in app.access.iter().zip(slots) {
         let at = ACCESS + slot as u32;
@@ -245,18 +255,14 @@ fn access(s: &Settings, view: &mut View, tree: &mut Vec<Entry>) {
                 ACCESS_TEXT + slot as u32,
                 at,
                 wide(),
-                label(
-                    &format!("{} ({})", x.what, x.why),
-                    TypeStyle::Body,
-                    Tone::Normal,
-                ),
+                label(&access_text(x), TypeStyle::Body, Tone::Normal),
             ),
             entry(
-                REVOKE + slot as u32,
+                button_id(x.allowed) + slot as u32,
                 at,
                 Layout::FIT,
                 Widget::Button {
-                    text: String::from("Revoke"),
+                    text: String::from(if x.allowed { "Revoke" } else { "Restore" }),
                     action: None,
                 },
             ),
@@ -268,6 +274,20 @@ fn access(s: &Settings, view: &mut View, tree: &mut Vec<Entry>) {
         fitted += 1;
     }
     more(tree, MORE_ACCESS, app.access.len() - fitted);
+}
+
+/// What a row says: the effect and whether the app may call it.
+fn access_text(x: &Access) -> String {
+    match x.allowed {
+        true => format!("{}: allowed", x.row),
+        false => format!("{}: withheld", x.row),
+    }
+}
+
+/// The id block of the button a row has: Revoke while it is allowed, Restore
+/// once it is withheld.
+fn button_id(allowed: bool) -> NodeId {
+    if allowed { REVOKE } else { RESTORE }
 }
 
 /// "`n` more not shown" under the rows, if any did not fit.

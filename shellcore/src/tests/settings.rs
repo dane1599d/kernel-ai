@@ -3,6 +3,7 @@
 //! read as hostile.
 
 use super::*;
+use crate::settings::SETTINGS_APP;
 
 fn host() -> Rc<FakeHost> {
     let host = FakeHost::new();
@@ -21,7 +22,7 @@ fn only_settings_asks_and_a_change_needs_a_click() {
     let mut shell = shell(&host);
     assert!(shell.settings("notes", "profiles", true).is_err());
     let err = shell
-        .settings("settings", "keep-running on notes", false)
+        .settings(SETTINGS_APP, "keep-running on notes", false)
         .unwrap_err();
     assert!(err.contains("key or a click"), "{err}");
     assert!(host.kept.borrow().is_empty());
@@ -45,10 +46,10 @@ fn the_grammar_is_exact_and_arguments_are_hostile() {
         "file ../x",
         "delete-everything",
     ] {
-        assert!(shell.settings("settings", bad, true).is_err(), "{bad:?}");
+        assert!(shell.settings(SETTINGS_APP, bad, true).is_err(), "{bad:?}");
     }
     let long = format!("profile-set {}", "a".repeat(600));
-    assert!(shell.settings("settings", &long, true).is_err());
+    assert!(shell.settings(SETTINGS_APP, &long, true).is_err());
     assert!(host.kept.borrow().is_empty());
 }
 
@@ -56,16 +57,16 @@ fn the_grammar_is_exact_and_arguments_are_hostile() {
 fn reads_answer_in_the_apps_format() {
     let host = host();
     let mut shell = shell(&host);
-    let profiles = shell.settings("settings", "profiles", false).unwrap();
+    let profiles = shell.settings(SETTINGS_APP, "profiles", false).unwrap();
     assert!(profiles.lines().any(|l| l == "* default"), "{profiles}");
     assert_eq!(
-        shell.settings("settings", "rules", false),
+        shell.settings(SETTINGS_APP, "rules", false),
         Ok(String::new())
     );
-    let about = shell.settings("settings", "about", false).unwrap();
+    let about = shell.settings(SETTINGS_APP, "about", false).unwrap();
     assert!(about.contains("licence: MPL-2.0"), "{about}");
     assert_eq!(
-        shell.settings("settings", "apps", false),
+        shell.settings(SETTINGS_APP, "apps", false),
         Ok(String::from("notes\nfiles"))
     );
 }
@@ -76,10 +77,10 @@ fn a_profile_set_by_click_is_logged_as_the_click_and_undoes() {
     let mut shell = shell(&host);
     assert!(
         shell
-            .settings("settings", "profile-set quiet", true)
+            .settings(SETTINGS_APP, "profile-set quiet", true)
             .is_ok()
     );
-    let profiles = shell.settings("settings", "profiles", false).unwrap();
+    let profiles = shell.settings(SETTINGS_APP, "profiles", false).unwrap();
     assert!(profiles.lines().any(|l| l == "* quiet"), "{profiles}");
     assert!(
         shell.log.text().contains("user-click:settings"),
@@ -87,7 +88,7 @@ fn a_profile_set_by_click_is_logged_as_the_click_and_undoes() {
         shell.log.text()
     );
     assert!(shell.eval("undo").ok);
-    let profiles = shell.settings("settings", "profiles", false).unwrap();
+    let profiles = shell.settings(SETTINGS_APP, "profiles", false).unwrap();
     assert!(profiles.lines().any(|l| l == "* default"), "{profiles}");
 }
 
@@ -96,7 +97,7 @@ fn keep_running_tells_the_supervisor_saves_the_list_and_undoes() {
     let host = host();
     let mut shell = shell(&host);
     assert_eq!(
-        shell.settings("settings", "keep-running on notes", true),
+        shell.settings(SETTINGS_APP, "keep-running on notes", true),
         Ok(String::from("notes keep-running on"))
     );
     assert_eq!(*host.kept.borrow(), [(String::from("notes"), true)]);
@@ -107,7 +108,7 @@ fn keep_running_tells_the_supervisor_saves_the_list_and_undoes() {
     // A system service is no app to keep.
     assert!(
         shell
-            .settings("settings", "keep-running on desktop", true)
+            .settings(SETTINGS_APP, "keep-running on desktop", true)
             .is_err()
     );
     assert!(shell.eval("undo").text.starts_with("Undone: "));
@@ -116,6 +117,39 @@ fn keep_running_tells_the_supervisor_saves_the_list_and_undoes() {
         Some(&(String::from("notes"), false))
     );
     assert_eq!(host.keep_file.borrow().as_deref(), Some("kai-keep 1\n"));
+}
+
+#[test]
+fn a_settings_file_is_its_one_format_and_empty_when_nothing_is_saved() {
+    let host = host();
+    let mut shell = shell(&host);
+    let app = crate::settings::SETTINGS_APP;
+    for area in ["appearance", "apps", "updates"] {
+        let read = shell.settings(app, &format!("file {area}"), false);
+        assert_eq!(read.as_deref(), Ok(""), "{area}");
+    }
+    let saved = "kai-appearance 1\ntheme dark\n";
+    *host.appearance.borrow_mut() = Some(String::from(saved));
+    assert_eq!(
+        shell.settings(app, "file appearance", false).as_deref(),
+        Ok(saved)
+    );
+    shell.settings(app, "keep-running on notes", true).unwrap();
+    assert_eq!(
+        shell.settings(app, "file apps", false).as_deref(),
+        Ok("kai-keep 1\nnotes\n")
+    );
+    // Text past the appearance's bound is refused whole, and no other area is a file.
+    *host.appearance.borrow_mut() = Some("a".repeat(::look::appearance::MAX_BYTES + 1));
+    assert!(shell.settings(app, "file appearance", false).is_err());
+    for bad in [
+        "file",
+        "file keep",
+        "file ../appearance",
+        "file appearance x",
+    ] {
+        assert!(shell.settings(app, bad, false).is_err(), "{bad:?}");
+    }
 }
 
 #[test]
@@ -157,7 +191,10 @@ fn settings_lists_each_declared_row_and_a_click_withholds_one_with_undo() {
     let mut shell = shell(&host);
     let app = crate::settings::SETTINGS_APP;
     let all = "files\tfs_list\tallowed\nfiles\tfs_read\tallowed\nfiles\tfs_move\tallowed";
-    assert_eq!(shell.settings(app, "grants", false).as_deref(), Ok(all));
+    assert_eq!(
+        shell.settings(app, "grants files", false).as_deref(),
+        Ok(all)
+    );
     // A change needs the user's own click.
     assert!(
         shell
@@ -183,7 +220,10 @@ fn settings_lists_each_declared_row_and_a_click_withholds_one_with_undo() {
             .is_err()
     );
     assert!(shell.eval("undo").text.starts_with("Undone: "));
-    assert_eq!(shell.settings(app, "grants", false).as_deref(), Ok(all));
+    assert_eq!(
+        shell.settings(app, "grants files", false).as_deref(),
+        Ok(all)
+    );
     shell
         .settings(app, "grants-revoke files fs_read", true)
         .unwrap();
@@ -196,6 +236,25 @@ fn settings_lists_each_declared_row_and_a_click_withholds_one_with_undo() {
     assert_eq!(
         host.withheld_disk.borrow().as_deref(),
         Some("kai-withheld 1\n")
+    );
+}
+
+#[test]
+fn grants_alone_names_only_the_apps_with_effect_rows_for_settings_to_ask_each() {
+    let host = host();
+    let quiet = FILES
+        .replace("world app:files/files@1.0.0", "world app:notes/notes@1.0.0")
+        .replace("effects fs_list fs_read fs_move\n", "")
+        .replace("files_open", "notes_open")
+        .replace("app:files/actions", "app:notes/actions");
+    host.apps.borrow_mut().rows.load("files", FILES).unwrap();
+    host.apps.borrow_mut().rows.load("notes", &quiet).unwrap();
+    let mut shell = shell(&host);
+    let app = crate::settings::SETTINGS_APP;
+    assert_eq!(shell.settings(app, "grants", false).as_deref(), Ok("files"));
+    assert_eq!(
+        shell.settings(app, "grants notes", false).as_deref(),
+        Ok("")
     );
 }
 

@@ -3,6 +3,8 @@
 //! (ADR 0000 section 4) keeps its cases in a table of its own, joined in [`LANES`].
 
 mod agent;
+mod apps;
+mod cc;
 mod components;
 mod devices;
 mod kernel;
@@ -150,6 +152,8 @@ const LANES: &[&[TestCase]] = &[
     kernel::CASES,
     devices::CASES,
     agent::CASES,
+    apps::CASES,
+    cc::CASES,
     components::CASES,
     network::CASES,
     storage::CASES,
@@ -181,6 +185,8 @@ mod tests {
             kernel::CASES,
             devices::CASES,
             agent::CASES,
+            apps::CASES,
+            cc::CASES,
             components::CASES,
             network::CASES,
             storage::CASES,

@@ -58,6 +58,29 @@ const SETTINGS_WINDOW_WIT: &str = "apps/settings-window/wit";
 /// `app:settings/actions`, which the window exports.
 const SETTINGS_WIT: &str = "apps/settings/wit";
 
+/// The Terminal app (P4 task 4): its window, model, tree and the shared `kai:ui` glue.
+const TERMINAL_WINDOW: &str = "apps/terminal-window";
+const TERMINAL_DIRS: &[&str] = &[
+    TERMINAL_WINDOW,
+    "apps/terminal",
+    "apps/terminal-ui",
+    "apps/ui-bind",
+];
+const TERMINAL_WINDOW_WIT: &str = "apps/terminal-window/wit";
+/// The System monitor (P4 task 9): its window, model, tree, the sample format it
+/// reads (`systemabi`) and the shared `kai:ui` glue.
+const MONITOR_WINDOW: &str = "apps/monitor-window";
+const MONITOR_DIRS: &[&str] = &[
+    MONITOR_WINDOW,
+    "apps/monitor",
+    "apps/monitor-ui",
+    "apps/ui-bind",
+    "systemabi",
+];
+const MONITOR_WINDOW_WIT: &str = "apps/monitor-window/wit";
+/// `app:monitor/actions`, which the window exports.
+const MONITOR_WIT: &str = "apps/monitor/wit";
+
 /// `notes` from `components/notes`: version 2, and every upload the edit loop
 /// builds.
 pub const NOTES_RECIPE: Recipe = Recipe {
@@ -125,6 +148,17 @@ pub const VERSIONS: &[Version] = &[
             wit: &[FILES_WINDOW_WIT, "wit/kai-ui", FILES_WIT],
         },
     },
+    // The Terminal app (P4 task 4), today's shell in a window.
+    Version {
+        label: "1",
+        recipe: Recipe {
+            component: "terminal-window",
+            krate: "comp-terminal-window",
+            dirs: TERMINAL_DIRS,
+            feature: None,
+            wit: &[TERMINAL_WINDOW_WIT, "wit/kai-ui"],
+        },
+    },
     // The Settings app (P4 task 7), a window over the system's settings.
     Version {
         label: "1",
@@ -138,6 +172,22 @@ pub const VERSIONS: &[Version] = &[
                 "wit/kai-ui",
                 "wit/kai-settings",
                 SETTINGS_WIT,
+            ],
+        },
+    },
+    // The System monitor (P4 task 9), a window over a reading of the machine.
+    Version {
+        label: "1",
+        recipe: Recipe {
+            component: "monitor-window",
+            krate: "comp-monitor-window",
+            dirs: MONITOR_DIRS,
+            feature: None,
+            wit: &[
+                MONITOR_WINDOW_WIT,
+                "wit/kai-ui",
+                "wit/kai-system",
+                MONITOR_WIT,
             ],
         },
     },
@@ -220,6 +270,20 @@ fn build_one(root: &Path, version: &Version) -> Result<Module, String> {
     })
 }
 
+fn world(recipe: &Recipe) -> String {
+    format!("app:{0}/{0}@1.0.0", recipe.component)
+}
+
+/// The app's `kai-actions 1` section, from its WIT under `root`.
+pub fn actions(root: &Path, recipe: &Recipe) -> Result<String, String> {
+    let dirs: Vec<PathBuf> = KAI_WIT
+        .iter()
+        .chain(recipe.wit)
+        .map(|dir| root.join(dir))
+        .collect();
+    crate::kai_actions::write(&dirs, &world(recipe))
+}
+
 /// The module with its manifest, action rows and source sections appended. The
 /// rows come from the app's WIT under `root`.
 pub fn pack(
@@ -229,13 +293,8 @@ pub fn pack(
     mut module: Vec<u8>,
     source: &[u8],
 ) -> Result<Vec<u8>, String> {
-    let world = format!("app:{0}/{0}@1.0.0", recipe.component);
-    let dirs: Vec<PathBuf> = KAI_WIT
-        .iter()
-        .chain(recipe.wit)
-        .map(|dir| root.join(dir))
-        .collect();
-    let actions = crate::kai_actions::write(&dirs, &world)?;
+    let world = world(recipe);
+    let actions = actions(root, recipe)?;
     let manifest = Manifest {
         lifecycle: 2,
         component: recipe.component.into(),
@@ -337,6 +396,12 @@ mod tests {
         let actions = livecore::actions::parse(parsed.actions.unwrap()).unwrap();
         let add = actions.by_name("notes_add").unwrap();
         assert_eq!(add.export, "app:notes/actions@1.0.0#add");
+        // The shell loads them for the `notes-window` service, which fronts
+        // Notes' rows (docs/decisions.md, A-core's `<pkg>-window` rule).
+        let answer = format!("version 1\n{}", parsed.actions.unwrap());
+        let mut rows = shellcore::apps::AppRows::default();
+        assert_eq!(rows.load("notes-window", &answer), Ok(actions.rows.len()));
+        assert!(rows.find_in("notes-window", "notes_add").is_some());
     }
 
     /// The Files build carries its own action rows, under its world.
@@ -385,6 +450,62 @@ mod tests {
         let actions = livecore::actions::parse(parsed.actions.unwrap()).unwrap();
         let open = actions.by_name("settings_open").unwrap();
         assert_eq!(open.export, "app:settings/actions@1.0.0#open");
+    }
+
+    /// The Terminal build carries its three rows, under its world.
+    #[test]
+    fn the_terminal_build_packs_with_its_three_actions() {
+        let terminal = VERSIONS
+            .iter()
+            .find(|v| v.recipe.component == "terminal-window")
+            .unwrap();
+        let module = Vec::from(&b"\0asm\x01\0\0\0"[..]);
+        let root = crate::workspace_root();
+        let source = artifact::bundle(&[("apps/terminal-window/src/lib.rs", b"//")]);
+        let bytes = pack(&root, &terminal.recipe, terminal.label, module, &source).unwrap();
+        let parsed = artifact::parse(&bytes).unwrap();
+        assert_eq!(
+            parsed.manifest.world,
+            "app:terminal-window/terminal-window@1.0.0"
+        );
+        let actions = livecore::actions::parse(parsed.actions.unwrap()).unwrap();
+        for (name, export) in [
+            ("terminal_window_run", "run"),
+            ("terminal_window_read", "read"),
+            ("terminal_window_clear", "clear"),
+        ] {
+            let row = actions.by_name(name).unwrap();
+            assert_eq!(
+                row.export,
+                format!("app:terminal-window/actions@1.0.0#{export}")
+            );
+        }
+    }
+
+    /// The Monitor build carries its own action rows, under its world.
+    #[test]
+    fn the_monitor_build_packs_with_the_monitor_actions() {
+        let monitor = VERSIONS
+            .iter()
+            .find(|v| v.recipe.component == "monitor-window")
+            .unwrap();
+        let module = Vec::from(&b"\0asm\x01\0\0\0"[..]);
+        let root = crate::workspace_root();
+        let source = artifact::bundle(&[("apps/monitor-window/src/lib.rs", b"//")]);
+        let bytes = pack(&root, &monitor.recipe, monitor.label, module, &source).unwrap();
+        let parsed = artifact::parse(&bytes).unwrap();
+        assert_eq!(
+            parsed.manifest.world,
+            "app:monitor-window/monitor-window@1.0.0"
+        );
+        let actions = livecore::actions::parse(parsed.actions.unwrap()).unwrap();
+        for (row, export) in [("monitor_sort", "sort"), ("monitor_select", "select")] {
+            let found = actions.by_name(row).unwrap();
+            assert_eq!(
+                found.export,
+                std::format!("app:monitor/actions@1.0.0#{export}")
+            );
+        }
     }
 
     #[test]

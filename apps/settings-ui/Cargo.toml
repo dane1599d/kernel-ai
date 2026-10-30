@@ -16,5 +16,4 @@ comp-settings = { path = "../settings" }
 uikit = { path = "../../uikit" }
 
 [dev-dependencies]
-kaigrants = { path = "../../kaigrants" }
 look = { path = "../../look" }

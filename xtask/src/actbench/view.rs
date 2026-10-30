@@ -294,7 +294,7 @@ fn ask(
 
 /// The arm at `seed`: whether it meets [`BAR`], and its Markdown rows.
 pub fn run(loaded: &Loaded, seed: u64, target_dir: &Path) -> Result<(bool, String), String> {
-    let grammar = local_act::grammar().map_err(|e| e.to_string())?;
+    let grammar = super::apps::grammar()?;
     let mut records = Vec::new();
     let (mut passed, mut first_ok, mut views) = (0, 0, 0);
     for &(line, app, want) in TASKS {
@@ -304,6 +304,7 @@ pub fn run(loaded: &Loaded, seed: u64, target_dir: &Path) -> Result<(bool, Strin
             state: state(&windows),
             timeout_ms: TIMEOUT_MS,
             read: None,
+            apps: String::new(),
         };
         let started = std::time::Instant::now();
         let Rounds {
