@@ -181,7 +181,12 @@ struct Loaded {
 pub fn fronts<'a>(app: &'a str, world: &str) -> Option<&'a str> {
     let pkg = app.strip_suffix("-window")?;
     let (named, _) = world.strip_prefix("app:")?.split_once('/')?;
-    (named == pkg).then_some(pkg)
+    // Fails closed on its own: an empty or odd name fronts nothing.
+    let package = pkg.starts_with(|c: char| c.is_ascii_lowercase())
+        && pkg
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+    (package && named == pkg).then_some(pkg)
 }
 
 /// The OS rows an app may declare for its effects (P4, deny by default): the
@@ -613,6 +618,10 @@ end
         );
         assert_eq!(fronts("notes", "app:notes/notes@1.0.0"), None);
         assert_eq!(fronts("notes-window", "app:notes-x/n@1"), None);
+        // No name, or one no package could have, fronts nothing.
+        assert_eq!(fronts("-window", "app:/x"), None);
+        assert_eq!(fronts("Notes-window", "app:Notes/x"), None);
+        assert_eq!(fronts("no_tes-window", "app:no_tes/x"), None);
     }
 
     #[test]
