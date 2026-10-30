@@ -270,6 +270,8 @@ const PERMS: &[(&str, &str)] = &[
     ("ui_act", "ui.act"),
     ("model_use", "model.use"),
     ("rules_remove", "grants.narrow"),
+    ("grant_revoke", "grants.narrow"),
+    ("grant_restore", "grants.widen"),
     ("rules", "grants.read"),
     ("browser_open", "net.connect"),
     ("email_send", "net.send"),
