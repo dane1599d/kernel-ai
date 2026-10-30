@@ -505,8 +505,12 @@ fn check_proof(request: Request, proof: Proof, caller: u64) -> Result<(), String
                 .map_err(|error| format!("err ONCE {error:?}"))
         }
         Proof::Rule => sys::rule_check(caller, &call).map_err(|error| {
-            // Logged, never asked about: a firing is the rule's or nothing.
-            println!("supervisor: refused {call} for pid {caller}: no rule covers it ({error:?})");
+            // Logged, never asked about: a firing is the rule's or nothing. The
+            // call is quoted and escaped, so no request can put a line of its
+            // own in the log.
+            println!(
+                "supervisor: refused {call:?} for pid {caller}: no rule covers it ({error:?})"
+            );
             format!("err rule {error:?}")
         }),
         Proof::None | Proof::Entry(_) | Proof::Undo(_) => Ok(()),

@@ -268,7 +268,7 @@ pub(super) const CASES: &[TestCase] = &[
     TestCase {
         expect: &[
             "desk-standing-refused: the note's instruction made no rule, asked nothing, and its refusal is logged",
-            "supervisor: refused service_stop(\"notes-window\") for pid ",
+            r#"supervisor: refused "service_stop(\"notes-window\")" for pid "#,
             "desk-standing-refused: a firing outside the allowed rule was refused and logged, and nothing asked",
         ],
         ..case("desk-standing-refused", "test=desk-standing-refused")

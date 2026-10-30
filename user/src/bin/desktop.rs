@@ -825,7 +825,9 @@ fn draw(state: &mut State, screen: &Screen) {
         .iter()
         .filter_map(|r| paint::reach(*r).intersect(&bounds))
         .collect();
-    let started = sys::time_ns();
+    // Timed only for `desk-perf`: no TIME calls on the normal path.
+    let timed = state.perf.is_some();
+    let started = if timed { sys::time_ns() } else { 0 };
     let mut frame = state.frame.canvas();
     let (shown, pools) = (&state.shown, &state.pools);
     let scene = Scene {
@@ -863,7 +865,7 @@ fn draw(state: &mut State, screen: &Screen) {
             state.painter.cursor(&mut frame, clip, state.desk.pointer());
         }
     }
-    let rendered = sys::time_ns();
+    let rendered = if timed { sys::time_ns() } else { 0 };
     copy_to_screen(&state.frame.px, state.width, screen, &damage);
     let rects: Vec<FlushRect> = damage
         .iter()
@@ -877,8 +879,10 @@ fn draw(state: &mut State, screen: &Screen) {
     for chunk in rects.chunks(kabi::display::MAX_FLUSH) {
         let _ = sys::display_flush(chunk);
     }
-    let flushed = sys::time_ns();
-    perf::drew(state, rendered - started, flushed - rendered, flushed);
+    if timed {
+        let flushed = sys::time_ns();
+        perf::drew(state, rendered - started, flushed - rendered, flushed);
+    }
     if !state.drawn {
         state.drawn = true;
         println!("desktop: drew the desk at {}x{}", state.width, state.height);

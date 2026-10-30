@@ -9,7 +9,9 @@
 //!   times and cold (an empty atlas) [`COLD_PAGES`] times.
 //! - `perf forget`: drops the keys timed so far.
 //! - `perf keys`: (e), each key since `perf forget` from the kernel's input
-//!   event to the flush that showed it.
+//!   event to the next flush. That flush carries the key's damage, since each
+//!   loop takes input before it draws; a key that changes nothing is timed to
+//!   whatever frame comes next, so it can only read long, never short.
 //! - `perf drag`: (b) again, for (f) under the load the kernel starts.
 //!
 //! S05-1's (d) is the sheet's spring, and this desktop has none: a card shows
