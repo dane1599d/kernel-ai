@@ -22,7 +22,7 @@ use wasmhost::desk::{Desk, Open, Show, Target, Told};
 use wasmhost::{AppEvent, LiveInstance, Update, surface};
 
 /// How long a call to `desktop` may take.
-const CALL_MS: u64 = 5_000;
+pub(crate) const CALL_MS: u64 = 5_000;
 /// How often an app with windows asks `desktop` for its events.
 pub const POLL_MS: u64 = 20;
 
@@ -77,6 +77,8 @@ pub struct Ui {
     /// The tickets sent to `desktop` with no result yet: only then does a poll
     /// ask for results, and only theirs reach the app.
     sent: effects::Sent,
+    /// The `kai:settings` requests' way to the shell, for the Settings app only.
+    settings: Option<crate::kai_settings::Forward>,
 }
 
 impl Ui {
@@ -98,7 +100,21 @@ impl Ui {
             later: Vec::new(),
             reply: alloc::vec![0u8; kabi::MAX_MESSAGE],
             sent: effects::Sent::default(),
+            settings: None,
         })
+    }
+
+    /// Carries `kai:settings` requests for this app: only the Settings app's,
+    /// which the system image grants it.
+    pub fn carry_settings(&mut self) {
+        self.settings = Some(crate::kai_settings::Forward::default());
+    }
+
+    /// Whether a `kai:settings` request waits for its answer.
+    pub fn settings_busy(&self) -> bool {
+        self.settings
+            .as_ref()
+            .is_some_and(crate::kai_settings::Forward::busy)
     }
 
     pub fn has_windows(&self) -> bool {
@@ -108,7 +124,7 @@ impl Ui {
     /// Whether comphost should poll: a window is open, or an effect's result
     /// is still to come (one queued as the last window closed, too).
     pub fn wants_poll(&self) -> bool {
-        self.has_windows() || self.sent.awaits()
+        self.has_windows() || self.sent.awaits() || self.settings_busy()
     }
 
     /// Whether one of its windows took focus since the last call: use, for
@@ -185,6 +201,11 @@ impl Ui {
             self.pump(host);
         }
         self.deliver(host);
+        if let Some(forward) = self.settings.as_mut()
+            && forward.pump(host, self.route, &mut self.reply)
+        {
+            self.pump(host);
+        }
         Ok(())
     }
 
@@ -470,7 +491,7 @@ fn release(pool: &Pool) {
 /// and effects) is committed with its checkpoint, like an action call's. The
 /// effects it queued come back for whoever runs them; a version that faulted
 /// was reloaded, and gives nothing.
-fn serve_shown<E: Env<Instance = LiveInstance>>(
+pub(crate) fn serve_shown<E: Env<Instance = LiveInstance>>(
     host: &mut Host<E>,
     f: impl FnOnce(&mut wasmhost::CoreInstance) -> Result<(), Fault>,
 ) -> Option<Performed> {

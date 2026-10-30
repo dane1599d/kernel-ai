@@ -25,6 +25,8 @@ use wasmhost::{Limits, LiveInstance};
 
 #[path = "comphost/disk.rs"]
 mod disk;
+#[path = "comphost/settings.rs"]
+mod kai_settings;
 #[path = "comphost/ui.rs"]
 mod ui;
 
@@ -51,6 +53,9 @@ struct SysEnv {
     /// The app's saved state on disk, with a plan line's `dir=apps`; opened
     /// at the first restore, which names the app.
     disk: Option<disk::Disk>,
+    /// What the app may import beyond `kai:app` and `kai:ui`, from the plan
+    /// line's name for it (the kernel's), never from its package.
+    grants: wasmhost::Grants,
 }
 
 fn version_log(line: &str) {
@@ -103,8 +108,14 @@ impl Env for SysEnv {
         // The sink stays attached; quiet only mutes it, so a standby that becomes
         // the active version again logs as before.
         // The manifest's `lifecycle` picks the contract: 1 hand-bound, 2 kai:live.
-        let mut instance = wasmhost::load_live(module, self.limits, Some(version_log))?;
+        let mut instance =
+            wasmhost::load_live_granted(module, self.limits, Some(version_log), self.grants)?;
         livecore::Instance::quiet(&mut instance, quiet);
+        // The Settings window is kept from the agent: its rules and grants are
+        // typed-only data, and Kai must not park focus on Revoke.
+        if let LiveInstance::V2(core) = &mut instance {
+            core.allow_agent_private(self.grants.settings);
+        }
         // Its windows are laid out with the fonts they are drawn with.
         if let (LiveInstance::V2(core), true) = (&mut instance, self.windows)
             && let Some(measure) = ui::measure()
@@ -137,6 +148,7 @@ fn main() -> i32 {
     let mut env = SysEnv {
         windows: windows.is_some(),
         disk: None,
+        grants: wasmhost::Grants::default(),
         limits: Limits {
             fuel_call: settings.fuel_call,
             fuel_life: settings.fuel_life,
@@ -150,6 +162,11 @@ fn main() -> i32 {
             return livecore::host::EXIT_REFUSED;
         }
     };
+    // The plan line's name is the grant: `desktop` and the shell check it too.
+    env.grants.settings = name == kai_settings::SETTINGS_APP;
+    if let (true, Some(ui)) = (env.grants.settings, windows.as_mut()) {
+        ui.carry_settings();
+    }
     let mut napper = Napper::new(Nap::new(settings.nap_ms, now_ms()));
     napper.nap.keep_running(settings.keep_running);
     let mut host = match Host::start(env, &name, settings) {
@@ -167,6 +184,8 @@ fn main() -> i32 {
         ui.pump(&mut host);
     }
     let mut request = vec![0u8; kabi::MAX_MESSAGE];
+    // Whether the nap holds a lease for settings requests in flight.
+    let mut leased = false;
     // When the host's own wait ends; 0 is never.
     let mut tick_at = deadline(host.timeout_ms());
     loop {
@@ -222,6 +241,13 @@ fn main() -> i32 {
                 {
                     println!("{}", exit.why);
                     return exit.code;
+                }
+                // A settings request waiting for its answer is use: the app
+                // does not nap until it has it.
+                let busy = windows.as_ref().is_some_and(ui::Ui::settings_busy);
+                if busy != leased {
+                    napper.nap.lease(busy);
+                    leased = busy;
                 }
                 match napper.tick(&mut host, now_ms()) {
                     Ok(napped) => log_nap(&name, napped),

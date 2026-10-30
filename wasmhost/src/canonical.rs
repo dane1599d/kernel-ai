@@ -49,6 +49,8 @@ pub struct CoreInstance {
     pub(crate) on_event: Option<String>,
     /// The `kai:settings/replies` `on-reply` export, when the module has one.
     pub(crate) on_settings_reply: Option<String>,
+    /// Which load this is: no two instances of this process share one.
+    serial: u64,
 }
 
 impl CoreInstance {
@@ -63,7 +65,18 @@ impl CoreInstance {
     pub fn last_call_by_user(&self) -> bool {
         self.by_user
     }
+
+    /// Which load of a module this instance is, never shared by two in this
+    /// process: the host keys what it owes an instance (an answer to a ticket
+    /// the instance gave) by it, so a reloaded or resumed instance, whose
+    /// tickets start again, is never answered for its predecessor.
+    pub fn serial(&self) -> u64 {
+        self.serial
+    }
 }
+
+/// The next [`CoreInstance::serial`].
+static SERIALS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
 
 fn link_err(detail: impl Into<String>) -> Fault {
     Fault::new(Reason::Link, detail)
@@ -171,6 +184,7 @@ pub fn load_core_granted(
         by_user: false,
         on_event,
         on_settings_reply,
+        serial: SERIALS.fetch_add(1, core::sync::atomic::Ordering::Relaxed),
     })
 }
 
