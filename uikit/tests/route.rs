@@ -35,8 +35,22 @@ fn centre(w: &mut Window, id: u32) -> Point {
 }
 
 fn click(w: &mut Window, at: Point) -> Vec<UiEvent> {
-    let mut out = w.input(Input::Button { at, down: true }, &M);
-    out.extend(w.input(Input::Button { at, down: false }, &M));
+    let mut out = w.input(
+        Input::Button {
+            at,
+            down: true,
+            mods: Default::default(),
+        },
+        &M,
+    );
+    out.extend(w.input(
+        Input::Button {
+            at,
+            down: false,
+            mods: Default::default(),
+        },
+        &M,
+    ));
     out
 }
 
@@ -56,11 +70,19 @@ fn a_click_and_the_agent_press_the_same_button() {
 fn releasing_off_the_button_does_not_press_it() {
     let mut w = common::notes();
     let at = centre(&mut w, 3);
-    w.input(Input::Button { at, down: true }, &M);
+    w.input(
+        Input::Button {
+            at,
+            down: true,
+            mods: Default::default(),
+        },
+        &M,
+    );
     let out = w.input(
         Input::Button {
             at: Point::new(470, 290),
             down: false,
+            mods: Default::default(),
         },
         &M,
     );
