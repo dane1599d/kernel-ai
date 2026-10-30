@@ -15,6 +15,8 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use kabi::{Limits, cap};
 
+pub mod appcall;
+
 /// Defaults for a service that does not set its own limits.
 pub const DEFAULT_PAGES: u64 = 1024;
 pub const DEFAULT_BURST_MS: u64 = 2000;
@@ -236,18 +238,36 @@ pub struct Run<'a> {
 
 impl<'a> Run<'a> {
     pub fn parse(text: &'a str) -> Option<Self> {
+        Self::parse_verb(text, "run")
+    }
+
+    pub fn encode(self) -> String {
+        format!("run {} version={}", self.name, self.version)
+    }
+
+    /// `withdraw <name> version=<label>`: the holder of `/system/pkg` took
+    /// package version `label` of `start=pkg` service `name` back out of the
+    /// current generation (an undo), so the app ends if it runs that version,
+    /// and waits until `pkg` names one again. Gated as a `run` is
+    /// ([`check_run`]).
+    pub fn parse_withdraw(text: &'a str) -> Option<Self> {
+        Self::parse_verb(text, "withdraw")
+    }
+
+    pub fn encode_withdraw(self) -> String {
+        format!("withdraw {} version={}", self.name, self.version)
+    }
+
+    fn parse_verb(text: &'a str, verb: &str) -> Option<Self> {
         let mut words = text.split_whitespace();
-        let (Some("run"), Some(name), Some(version), None) =
+        let (Some(said), Some(name), Some(version), None) =
             (words.next(), words.next(), words.next(), words.next())
         else {
             return None;
         };
         let version = version.strip_prefix("version=")?;
-        (valid_name(name) && kabi::live::is_package_label(version)).then_some(Run { name, version })
-    }
-
-    pub fn encode(self) -> String {
-        format!("run {} version={}", self.name, self.version)
+        (said == verb && valid_name(name) && kabi::live::is_package_label(version))
+            .then_some(Run { name, version })
     }
 }
 

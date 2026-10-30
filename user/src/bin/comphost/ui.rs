@@ -342,6 +342,8 @@ impl Ui {
                     else {
                         continue;
                     };
+                    // Not the value: it may be anything the model wrote.
+                    println!("comphost: the agent acted in window {window}");
                     let performed = serve_shown(host, |core| {
                         core.ui_act(window, node, action, value.clone())
                             .map(|_refused_or_not| ())

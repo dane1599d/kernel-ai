@@ -19,8 +19,8 @@ const WORLDS: &[(&str, &str)] = &[
     ("kai:ui", "app"),
     ("kai:system", "system-read"),
     ("kai:settings", "settings-access"),
-    ("kai:code", "coding"),
     ("kai:edit", "editing"),
+    ("kai:code", "coding"),
 ];
 
 pub fn main(args: &[String]) -> Result<(), String> {

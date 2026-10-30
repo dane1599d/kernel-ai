@@ -17,8 +17,10 @@ extern crate std;
 
 pub mod calls;
 pub mod fake;
-pub mod sample;
 pub mod view;
+
+/// The sample the host hands in is `systemabi`'s, the format `kai:system` carries.
+pub use systemabi as sample;
 
 use alloc::format;
 use alloc::string::{String, ToString};

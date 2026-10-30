@@ -479,6 +479,15 @@ pub const IMPORTS: &[WitFunc] = &[
         result: || Some(Ty::U32),
     },
     WitFunc {
+        interface: "kai:edit/edit",
+        version: "0.1",
+        name: "send",
+        core_params: &[CoreTy::I32, CoreTy::I32],
+        core_results: &[CoreTy::I32],
+        params: || vec![Ty::List(Box::new(Ty::U8))],
+        result: || Some(Ty::U32),
+    },
+    WitFunc {
         interface: "kai:code/code",
         version: "0.1",
         name: "put",
@@ -566,15 +575,6 @@ pub const IMPORTS: &[WitFunc] = &[
                 ]))),
             ))
         },
-    },
-    WitFunc {
-        interface: "kai:edit/edit",
-        version: "0.1",
-        name: "send",
-        core_params: &[CoreTy::I32, CoreTy::I32],
-        core_results: &[CoreTy::I32],
-        params: || vec![Ty::List(Box::new(Ty::U8))],
-        result: || Some(Ty::U32),
     },
 ];
 
@@ -750,6 +750,23 @@ pub const EXPORTS: &[WitFunc] = &[
         result: || None,
     },
     WitFunc {
+        interface: "kai:edit/replies",
+        version: "0.1",
+        name: "on-reply",
+        core_params: &[CoreTy::I32, CoreTy::I32, CoreTy::I32, CoreTy::I32],
+        core_results: &[],
+        params: || {
+            vec![
+                Ty::U32,
+                Ty::Result(
+                    Some(Box::new(Ty::List(Box::new(Ty::U8)))),
+                    Some(Box::new(Ty::String)),
+                ),
+            ]
+        },
+        result: || None,
+    },
+    WitFunc {
         interface: "kai:code/code-input",
         version: "0.1",
         name: "on-key",
@@ -824,23 +841,6 @@ pub const EXPORTS: &[WitFunc] = &[
                     (String::from("rows"), Ty::U16),
                     (String::from("cells"), Ty::U16),
                 ]),
-            ]
-        },
-        result: || None,
-    },
-    WitFunc {
-        interface: "kai:edit/replies",
-        version: "0.1",
-        name: "on-reply",
-        core_params: &[CoreTy::I32, CoreTy::I32, CoreTy::I32, CoreTy::I32],
-        core_results: &[],
-        params: || {
-            vec![
-                Ty::U32,
-                Ty::Result(
-                    Some(Box::new(Ty::List(Box::new(Ty::U8)))),
-                    Some(Box::new(Ty::String)),
-                ),
             ]
         },
         result: || None,

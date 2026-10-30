@@ -60,7 +60,8 @@ impl Napper {
     /// Before a request from `caller`: the keep-running switch is answered
     /// here, and turning it on wakes a napping app; a rule's `ctl suspend` takes a napping app over (so focus no
     /// longer wakes it) and is answered here; status, suspend and resume pass
-    /// as they are; anything else is use and wakes a napping app first, so even
+    /// as they are, as does the agent core's `kai-actions 1` from anyone;
+    /// anything else is use and wakes a napping app first, so even
     /// `ctl swap` finds it running. `Some` is the reply, `None` hands the
     /// request to the host.
     pub fn request<E: Env>(
@@ -100,6 +101,11 @@ impl Napper {
             return Ok((Some(reply), None));
         }
         if caller == 0 && as_it_is(request) {
+            return Ok((None, None));
+        }
+        // The agent's look at the rows is answered from the loaded artifact,
+        // with no call into the app: not use, and no reason to wake it.
+        if crate::rows::is_request(request) {
             return Ok((None, None));
         }
         self.nap.used(now_ms);

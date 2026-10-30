@@ -13,7 +13,7 @@
 //! | 66-70 | S-io (P2) | PART_INFO, PART_READ, PART_WRITE, PART_FLUSH; ENDPOINT_MINT |
 //! | 71-72 | K | PROC_STOP_ONCE, RULE_CHECK |
 //! | 73-79 | G-core (P3) | DISPLAY_CLAIM, DISPLAY_FLUSH, DISPLAY_CURSOR, DISPLAY_CURSOR_MOVE, INPUT_READ, TERM_READ, INPUT_TO_CONSOLE |
-//! | 80-89 | K, spare | MODEL_FILL 80 and 81 held (S-io, P2 task 10); ONCE_CHECK_FOR 82; P2 task 12's grants |
+//! | 80-89 | K, spare | MODEL_FILL 80 and 81 held (S-io, P2 task 10); ONCE_CHECK_FOR 82; ENTROPY 83; P2 task 12's grants |
 //! | 90-99 | S-engine (P2) | |
 //! | 100-109 | P, packages (P2) | BOOT_READ, COMP_ADD, PKG_FETCH, PKG_TIME |
 //! | 110-119 | A-core | |
@@ -23,7 +23,7 @@
 //! | 150-159 | V, virtual machines (P6) | |
 //! | 160-169 | M, memory | MEM_RESERVE, MEM_COMMIT, MEM_RELEASE, PROC_QUOTA_SET, PROC_CLASS_SET |
 //! | 170-179 | U, updates (P4) | SLOT_INFO, SLOT_READ, SLOT_WRITE, SLOT_FLUSH, BOOTREC_GET, BOOTREC_SET, TRUST_ROOT, TRUST_TIME |
-//! | 180-189 | G-core (P3), second block | ASK_READ, ASK_ANSWER, EVENT_POST, EVENT_READ, APP_CTL |
+//! | 180-189 | G-core (P3), second block | ASK_READ, ASK_ANSWER, EVENT_POST, EVENT_READ, APP_CTL, APP_CALL |
 //! | 190-191 | S-io (P2), second block | PART_PEER_ALIVE |
 
 /// `exit(code: i32) -> !`
@@ -355,6 +355,16 @@ pub const MODEL_FILL: u64 = 80;
 /// kernel's own request, holds no table and is not checked for one. Numbered at
 /// merge (lane K's spare block).
 pub const ONCE_CHECK_FOR: u64 = 82;
+/// `entropy(buf, len) -> len`: fills `buf` with `len` random bytes, at most
+/// [`ENTROPY_MAX`], from the kernel's ChaCha20 generator, seeded at boot from the
+/// CPU's RDSEED (or RDRAND) and reseeded from it every minute or MiB. Needs no
+/// capability, like getrandom: for keys (S-engine's device key) and TLS (P5).
+/// TooBig, with nothing written, over [`ENTROPY_MAX`];
+/// [`super::Error::NoEntropy`] on a CPU with neither instruction, so a caller
+/// never gets weak bytes and refuses to make a key.
+pub const ENTROPY: u64 = 83;
+/// The most bytes one [`ENTROPY`] call returns.
+pub const ENTROPY_MAX: usize = 256;
 
 // ---- G-core, 73-79 ----
 
@@ -562,6 +572,16 @@ pub const EVENT_READ: u64 = 183;
 /// [`super::cap::SUPERVISE`]. Invalid for another verb; NotFound with no such
 /// service; TimedOut when it does not answer.
 pub const APP_CTL: u64 = 184;
+/// `app_call(name_ptr, name_len, req_ptr, req_len, buf, cap | wait_ms << 32) -> len`: the
+/// kernel sends `req`, a `kai-call 1`, a `kai-undo 1` or `kai-actions 1`, of at most
+/// [`super::ipc::MAX_MESSAGE`] bytes, to the app service `name` (a process
+/// holding [`super::cap::COMPONENT`]), and writes its reply into `buf`. For
+/// the supervisor, which forwards the agent core's calls to apps' actions (P4,
+/// a v0.1 bridge until per-app routes): needs [`super::cap::SUPERVISE`].
+/// NotFound at once when no such app serves, so the supervisor can start it;
+/// Invalid for any other request; TimedOut when it does not answer within
+/// `wait_ms` (0, or more than 5,000, is 5,000).
+pub const APP_CALL: u64 = 185;
 
 // ---- S-io, second block, 190-191 ----
 

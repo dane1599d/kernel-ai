@@ -877,3 +877,26 @@ fn only_the_store_holder_may_run_a_package_version() {
         assert_eq!(Run::parse(bad), None, "{bad}");
     }
 }
+
+#[test]
+fn a_withdraw_reads_as_a_run_and_is_gated_as_one() {
+    let plan = parse_plan(RUN_PLAN);
+    let pids = [Some(10), Some(11), None, Some(13)];
+    let held: Vec<(&ServiceSpec, Option<u64>)> = plan.services.iter().zip(pids).collect();
+    let withdraw = Run::parse_withdraw("withdraw notes version=p-0a1b2c3d4e5f").unwrap();
+    assert_eq!(
+        withdraw.encode_withdraw(),
+        "withdraw notes version=p-0a1b2c3d4e5f"
+    );
+    assert_eq!(check_run(withdraw, &held, 11), Ok(2));
+    for caller in [10, 13, 0, 99] {
+        assert!(check_run(withdraw, &held, caller).is_err(), "{caller}");
+    }
+    // Each verb reads only itself.
+    assert_eq!(Run::parse("withdraw notes version=p-0a1b2c3d4e5f"), None);
+    assert_eq!(
+        Run::parse_withdraw("run notes version=p-0a1b2c3d4e5f"),
+        None
+    );
+    assert_eq!(Run::parse_withdraw("withdraw notes"), None);
+}
