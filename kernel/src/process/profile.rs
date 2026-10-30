@@ -1,13 +1,34 @@
 //! Resource profiles' kernel half (P3 task 12): a process's page quota
 //! (PROC_QUOTA_SET), which the heap, `Shm` and MEM_COMMIT all charge against,
 //! and its CPU class on M10's `classes` policy (PROC_CLASS_SET). Both need
-//! SUPERVISE. A profile can never starve what the user needs to stay in
-//! control: the shell, the supervisor, the model service and `desktop`, which
-//! holds the trusted layer, are never made `background`, and their quota is
-//! never set below what they have.
+//! SUPERVISE. The floors are the kernel's, whatever the shell asked (P3 plan,
+//! "Resource profiles' floors"):
+//! - what the user needs to stay in control, the shell, the supervisor, the
+//!   model service (its pages and KV cache) and `desktop`, which holds the
+//!   trusted layer, are never made `background`, and their quota is never set
+//!   below what they have;
+//! - no quota is raised past the global admission rule: every live process's
+//!   quota adds up to at most the budget (free / 2 at boot), so the kernel's
+//!   own half of memory is never promised away;
+//! - a system service, one holding a capability of the running system
+//!   ([`SYSTEM_CAPS`]: the terminal's TERM, `fs`'s PARTITION and the like), is
+//!   never made `background`, so it keeps its CPU share under every profile.
 
 use crate::sched_control;
-use kabi::Error;
+use kabi::{Error, cap};
+
+/// Capabilities that make a process part of the running system rather than an
+/// app: apps (`comphost`) and the user's own programs hold none of them.
+pub const SYSTEM_CAPS: u64 = cap::SUPERVISE
+    | cap::NET
+    | cap::POLICY
+    | cap::MODEL
+    | cap::PARTITION
+    | cap::SYSTEM_STATE
+    | cap::DISPLAY
+    | cap::INPUT
+    | cap::TERM
+    | cap::UPDATE;
 
 /// The quota a profile may not go below for anyone: enough for a program's
 /// image, stack and a little heap.
@@ -27,15 +48,25 @@ pub fn quota_set(pid: u64, pages: u64) -> Result<u64, Error> {
         return Err(Error::Invalid);
     }
     super::with_table(|table| {
-        let process = table
-            .iter_mut()
-            .find(|p| p.live() && p.pid == pid && pid != 0)
+        let at = table
+            .iter()
+            .position(|p| p.live() && p.pid == pid && pid != 0)
             .ok_or(Error::NotFound)?;
-        let old = process.limits.max_pages;
-        if floored(process.name.as_str()) && pages < old {
+        let old = table[at].limits.max_pages;
+        if floored(table[at].name.as_str()) && pages < old {
             return Err(Error::Permission);
         }
-        process.limits.max_pages = pages;
+        if pages > old {
+            let committed: u64 = table
+                .iter()
+                .filter(|p| p.live())
+                .map(|p| p.limits.max_pages)
+                .sum();
+            if committed - old + pages > super::page_budget() {
+                return Err(Error::NoMemory);
+            }
+        }
+        table[at].limits.max_pages = pages;
         Ok(old)
     })
 }
@@ -49,8 +80,14 @@ pub fn class_set(pid: u64, class: u64) -> Result<u64, Error> {
         1 => true,
         _ => return Err(Error::Invalid),
     };
-    let (name, _) = super::name_of(pid).ok_or(Error::NotFound)?;
-    if background && floored(name.as_str()) {
+    let (name, caps) = super::with_table(|table| {
+        table
+            .iter()
+            .find(|p| p.live() && p.pid == pid && p.state != super::State::Exiting)
+            .map(|p| (p.name, p.limits.caps))
+    })
+    .ok_or(Error::NotFound)?;
+    if background && (floored(name.as_str()) || caps & SYSTEM_CAPS != 0) {
         return Err(Error::Permission);
     }
     sched_control::label(pid, background)?;
