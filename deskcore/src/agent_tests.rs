@@ -246,6 +246,11 @@ fn focus_says_where_it_was_and_refocus_puts_it_back() {
     assert_eq!(desk.focus(), Focus::Window(notes));
     assert!(effects.contains(&Effect::Focus(Focus::Window(notes))));
     assert_eq!(desk.windows().last().unwrap().id, notes, "it rose");
+    assert_eq!(
+        desk.agent(),
+        Some(notes),
+        "the agent drives it: the outline"
+    );
     let before = moved.strip_prefix("ok ").unwrap();
     let (back, _) = agent.answer(&mut desk, &mut fake, &alloc::format!("ui refocus {before}"));
     assert_eq!(back, "ok");
@@ -287,6 +292,45 @@ fn a_key_in_the_window_the_agent_drives_stops_the_run() {
     agent.answer(&mut desk, &mut fake, "ui agent notes");
     agent.answer(&mut desk, &mut fake, "ui agent none");
     assert_eq!(desk.agent(), None);
+    // The rest of the run acts on nothing; looking is still allowed.
+    agent.took_over();
+    for request in [
+        "ui focus notes",
+        "ui act notes b2 0\t",
+        "ui close notes",
+        "ui agent notes",
+    ] {
+        let (refused, effects) = agent.answer(&mut desk, &mut fake, request);
+        assert_eq!(refused, "err stopped: you took over", "{request}");
+        assert!(effects.is_empty(), "{request}");
+    }
+    assert!(
+        agent
+            .answer(&mut desk, &mut fake, "ui view notes")
+            .0
+            .starts_with("ok ")
+    );
+    assert!(fake.sent.is_empty());
+    // The shell's next request starts a new run.
+    agent.answer(&mut desk, &mut fake, "ui agent none");
+    assert!(
+        agent
+            .answer(&mut desk, &mut fake, "ui focus notes")
+            .0
+            .starts_with("ok ")
+    );
     let (garbage, _) = agent.answer(&mut desk, &mut fake, "rm -rf /");
     assert_eq!(garbage, "err desktop does not know that request");
+}
+
+#[test]
+fn a_window_app_is_found_by_its_package_name() {
+    let mut desk = Desk::new(1280, 800);
+    let size = Size { w: 300, h: 200 };
+    let (notes, _) = desk.open(1, "notes-window", "Notes", size, true);
+    let (files, _) = desk.open(2, "files", "Documents", size, true);
+    assert_eq!(find_window(&desk, "notes-window"), Some(notes));
+    assert_eq!(find_window(&desk, "notes"), Some(notes));
+    assert_eq!(find_window(&desk, "files"), Some(files));
+    assert_eq!(find_window(&desk, "window"), None);
 }

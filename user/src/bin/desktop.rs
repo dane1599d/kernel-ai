@@ -62,6 +62,9 @@ use user::{println, sys};
 
 user::entry!(main);
 
+#[path = "desktop/agent.rs"]
+mod agent;
+
 /// The fonts ADR 0005 §8 names, built in until P2's files carry them.
 const FONTS: Fonts = Fonts {
     sans: include_bytes!("../../../assets/fonts/InterVariable.ttf"),
@@ -116,6 +119,8 @@ struct State {
     sheet: Option<deskcore::catalog::Sheet>,
     /// Apps' effects waiting for the shell, and what came of them.
     effects: effects::Queue,
+    /// The agent's views of windows, for its `ui` rows (P3 task 10).
+    agent: deskcore::agent::Agent,
     /// When the panel's "thinking 4s" was last redrawn.
     ticked_ms: u64,
     /// The ask card up now, as the kernel posted it.
@@ -171,6 +176,7 @@ fn main() -> i32 {
             panel: Panel::new(),
             sheet: None,
             effects: effects::Queue::default(),
+            agent: deskcore::agent::Agent::default(),
             ticked_ms: 0,
             card: None,
             asked_ms: 0,
@@ -368,6 +374,10 @@ fn deliver(state: &mut State, effects: &[Effect]) {
             answer_ask(state, id, yes);
             continue;
         }
+        if let Effect::TookOver { window } = *effect {
+            agent::took_over(state, window);
+            continue;
+        }
         let changed = match *effect {
             Effect::PanelKey { usage, down } if apps::key(state, usage, down, now) => false,
             Effect::PanelKey { usage, down } => {
@@ -503,6 +513,10 @@ fn tick_panel(state: &mut State) {
 fn serve(state: &mut State, bytes: &[u8], info: &RecvInfo) {
     let pid = info.caller_pid;
     if let Some(reply) = panel_request(state, bytes, pid) {
+        let _ = sys::reply_h(reply.as_bytes(), &[]);
+        return;
+    }
+    if let Some(reply) = agent::request(state, bytes, pid) {
         let _ = sys::reply_h(reply.as_bytes(), &[]);
         return;
     }
@@ -672,7 +686,10 @@ fn apply_need(state: &mut State, at: usize, pid: u64, need: Need, handle: Option
             state.shown.retain(|(w, ..)| *w != window);
             state.shown.push((window, pid, buffer));
         }
-        Need::Closed { window } => state.shown.retain(|(w, ..)| *w != window),
+        Need::Closed { window } => {
+            state.shown.retain(|(w, ..)| *w != window);
+            state.agent.closed(window);
+        }
     }
 }
 
