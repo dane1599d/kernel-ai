@@ -217,6 +217,13 @@ interface view {
     /// shows at the next `commit`.
     @since(version = 0.1.1)
     set-unsaved: func(window: window-id, unsaved: bool) -> result<_, ui-error>;
+    /// Keeps the window from the agent: its `ui_view` shows only the title and
+    /// that it is private, and its `ui_act` is refused, focus included. The
+    /// user sees and uses it as any window. Only an app the system image
+    /// grants it (Settings) may: for any other the call traps. A window starts
+    /// shared; it shows before the window's contents reach `desktop`.
+    @since(version = 0.1.1)
+    set-agent-private: func(window: window-id, %private: bool) -> result<_, ui-error>;
 }
 
 /// What `uikit` tells the app. A click by the user and an `ui_act` by the agent

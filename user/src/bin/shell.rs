@@ -577,9 +577,10 @@ impl shellcore::standing::Triggers for Firings {
     }
 }
 
-/// How long the shell waits for a line before it looks at the event box and
-/// the AI panel.
-const EVENT_POLL_MS: u64 = 250;
+/// The longest the shell waits for a line before it looks at the event box
+/// again: a post wakes it sooner (`Woken`), so this only paces the minute
+/// clock's `time` events.
+const WAKE_WAIT_MS: u64 = 2_000;
 
 /// Takes the kernel's event box and hands each event to the standing
 /// instructions; a paused rule's note goes to the log.
@@ -615,16 +616,24 @@ fn main() -> i32 {
     println!("up (restart {})", arg(&args, "restart").unwrap_or("0"));
     let mut line = vec![0u8; kabi::MAX_MESSAGE];
     let mut events = vec![0u8; kabi::event::READ_BYTES];
+    // The first wait binds the shell's service, so the next pass's read of the
+    // event box is admitted and makes the shell the box's reader; until then a
+    // post could not wake it.
+    let mut wait_ms = 1;
     loop {
-        // Between lines: what happened on the desktop since the last look,
-        // and the AI panel's line.
+        // Between lines: what happened on the desktop since the last look, then
+        // the panel's line and the apps' effects. A post to the event box wakes
+        // the wait at once, so a click's effect does not wait for a poll.
         take_events(&mut shell, &mut events);
         take_panel(&mut shell);
         take_effects(&mut shell);
         let mut caller = u64::MAX;
-        let len = match sys::svc_recv(&mut line, EVENT_POLL_MS, &mut caller) {
+        let len = match sys::svc_recv(&mut line, wait_ms, &mut caller) {
             Ok(len) => len.min(line.len()),
-            Err(kabi::Error::TimedOut) => continue,
+            Err(kabi::Error::TimedOut | kabi::Error::Woken) => {
+                wait_ms = WAKE_WAIT_MS;
+                continue;
+            }
             Err(error) => {
                 println!("svc_recv failed: {error:?}");
                 sys::sleep_ms(100);

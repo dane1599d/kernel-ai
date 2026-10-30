@@ -120,6 +120,19 @@ fn wake(tid: Option<Tid>) {
     }
 }
 
+/// Wakes the server of process `pid` if it waits in `svc_recv`, which then
+/// returns `Woken` (an event box it reads got an event).
+pub fn wake_server(pid: u64) {
+    let waiting = with_ipc(|ipc| {
+        ipc.endpoints
+            .iter()
+            .flatten()
+            .find(|e| e.server_pid == pid)
+            .and_then(|e| e.waiting)
+    });
+    wake(waiting);
+}
+
 fn find(ipc: &Ipc, name: &str) -> Option<usize> {
     ipc.endpoints
         .iter()
@@ -540,7 +553,20 @@ pub fn recv_with(
             process::burst::serving(slot, opened);
             return Ok((request.len() as u64, caller_pid, extra));
         }
-        let ready = || PENDING[endpoint].load(Ordering::SeqCst) > 0 || process::killed(slot);
+        // No request: an event box this process reads may have woken it.
+        if crate::event_box::take_wake(me.pid) {
+            with_ipc(|ipc| {
+                if let Some(entry) = ipc.endpoints[endpoint].as_mut() {
+                    entry.waiting = None;
+                }
+            });
+            return Err(Error::Woken);
+        }
+        let ready = || {
+            PENDING[endpoint].load(Ordering::SeqCst) > 0
+                || process::killed(slot)
+                || crate::event_box::woken(me.pid)
+        };
         if !ready() && hpet::nanos() < deadline {
             threads::sleep_until_unless(deadline, ready);
         }
