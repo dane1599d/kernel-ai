@@ -62,6 +62,7 @@ impl Shell {
                 | "profile-set"
                 | "rules-remove"
                 | "grants-revoke"
+                | "grants-restore"
                 | "keep-running"
                 | "restart-window"
         );
@@ -71,8 +72,17 @@ impl Shell {
         let logged = format!("settings: {request}");
         match (verb, rest) {
             ("rules", "") => Ok(self.rules_lines()),
-            // The shell's own records; a grant is the powerbox's, not the shell's.
-            ("grants", "") => self.rules.text(),
+            // What each app's effects may call: its declared rows, each allowed
+            // or withheld (P4 task 7). Built-in imports and its own storage are
+            // not rows, so they are not listed or revocable in v0.1.
+            ("grants", "") => Ok(self.grant_lines(None)),
+            ("grants", name) if valid_name(name) => Ok(self.grant_lines(Some(name))),
+            ("grants-revoke" | "grants-restore", rest) => {
+                let (name, row) = rest
+                    .split_once(' ')
+                    .ok_or_else(|| format!("{verb} takes an app and a row"))?;
+                self.grant_by_click(&logged, name, row, verb == "grants-revoke")
+            }
             ("about", "") => Ok(about()),
             ("profiles", "") => Ok(self.profile_lines()),
             ("apps", "") => self.app_names().map(|names| names.join("\n")),
@@ -99,7 +109,7 @@ impl Shell {
                 }
                 self.keep_running(&logged, name, on)
             }
-            ("appearance-set" | "grants-revoke" | "restart-window", _) => {
+            ("appearance-set" | "restart-window", _) => {
                 Err(format!("{verb} is not answered here yet"))
             }
             _ => Err(String::from("not a settings request")),
@@ -174,6 +184,95 @@ impl Shell {
         });
         self.save_log();
         Ok(format!("{name} keep-running {}", word(on)))
+    }
+
+    /// `grants`: one line a declared effect row, `<app>\t<row>\tallowed` or
+    /// `withheld`, for `only` or every app whose rows are loaded.
+    fn grant_lines(&self, only: Option<&str>) -> String {
+        if let Some(app) = only {
+            crate::apps::load_app(self.host.as_ref(), app);
+        }
+        let host = self.host.as_ref();
+        let Some(apps) = host.apps() else {
+            return String::new();
+        };
+        let names: Vec<String> = match only {
+            Some(app) => alloc::vec![app.to_string()],
+            None => apps.borrow().rows.apps().map(str::to_string).collect(),
+        };
+        let mut lines = Vec::new();
+        for app in &names {
+            let allowed = crate::grants::allowed(host, app);
+            for row in apps.borrow().rows.effects_of(app) {
+                let state = match allowed.contains(row) {
+                    true => "allowed",
+                    false => "withheld",
+                };
+                lines.push(format!("{app}\t{row}\t{state}"));
+            }
+        }
+        lines.join("\n")
+    }
+
+    /// `grants-revoke` or `grants-restore` from a click: `row` withheld from
+    /// `name`'s effects or given back, logged as the user's click with its
+    /// undo. Revoking takes only a row the app declares.
+    fn grant_by_click(
+        &mut self,
+        request: &str,
+        name: &str,
+        row: &str,
+        withhold: bool,
+    ) -> Result<String, String> {
+        let host = self.host.as_ref();
+        let changed = match withhold {
+            true => crate::grants::revoke(host, name, row)?,
+            false => crate::grants::set(host, name, row, false)?,
+        };
+        let (was, now) = match withhold {
+            true => ("allowed", "withheld"),
+            false => ("withheld", "allowed"),
+        };
+        if !changed {
+            return Ok(format!("{name} {row} is {now} already"));
+        }
+        let (Some(app), Some(row_name)) = (Name::new(name), Name::new(row)) else {
+            return Err(String::from("not an app and a row"));
+        };
+        let action = if withhold {
+            "grant_revoke"
+        } else {
+            "grant_restore"
+        };
+        let id = self.next_id;
+        self.next_id += 1;
+        self.log.push(Entry {
+            id,
+            t_ns: self.host.now_ns(),
+            form: Form::Call,
+            of: None,
+            tier: Some(Tier::Run),
+            pack: None,
+            consent: String::from(CLICK),
+            state: State::Done,
+            request: String::from(request),
+            script: format!("{action}(\"{name}\", \"{row}\")"),
+            outcome: format!("{name} {row} {now}"),
+            changes: alloc::vec![Change {
+                action: String::from(action),
+                owner: String::from("shell"),
+                res: format!("{name}'s effects calling {row}"),
+                before: String::from(was),
+                after: String::from(now),
+                inverse: Some(Inverse::Grant {
+                    app,
+                    row: row_name,
+                    withheld: !withhold,
+                }),
+            }],
+        });
+        self.save_log();
+        Ok(format!("{name} {row} {now}"))
     }
 
     /// Tells the supervisor and saves the list: `name` kept running or not.

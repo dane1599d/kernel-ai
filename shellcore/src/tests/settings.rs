@@ -134,3 +134,67 @@ fn host_with_keep(text: &str) -> Rc<FakeHost> {
     *host.keep_file.borrow_mut() = Some(String::from(text));
     host
 }
+
+/// A `files` app whose effects may call three file rows.
+const FILES: &str = "version 1
+kai-actions 1
+world app:files/files@1.0.0
+effects fs_list fs_read fs_move
+action files_open
+export app:files/actions@1.0.0#open
+doc Open a folder.
+sig func(path: string)
+arg path text max=255 role=target from-request
+facts read-only=yes destructive=no idempotent=yes open-world=no
+inverse none
+end
+";
+
+#[test]
+fn settings_lists_each_declared_row_and_a_click_withholds_one_with_undo() {
+    let host = host();
+    host.apps.borrow_mut().rows.load("files", FILES).unwrap();
+    let mut shell = shell(&host);
+    let app = crate::settings::SETTINGS_APP;
+    let all = "files\tfs_list\tallowed\nfiles\tfs_read\tallowed\nfiles\tfs_move\tallowed";
+    assert_eq!(shell.settings(app, "grants", false).as_deref(), Ok(all));
+    // A change needs the user's own click.
+    assert!(
+        shell
+            .settings(app, "grants-revoke files fs_list", false)
+            .is_err()
+    );
+    assert_eq!(
+        shell
+            .settings(app, "grants-revoke files fs_list", true)
+            .as_deref(),
+        Ok("files fs_list withheld")
+    );
+    let listed = shell.settings(app, "grants files", false).unwrap();
+    assert!(listed.starts_with("files\tfs_list\twithheld\n"), "{listed}");
+    assert_eq!(
+        host.withheld_disk.borrow().as_deref(),
+        Some("kai-withheld 1\nfiles fs_list\n")
+    );
+    // Only a row the app declares; a row given back is the user's click too.
+    assert!(
+        shell
+            .settings(app, "grants-revoke files set_policy", true)
+            .is_err()
+    );
+    assert!(shell.eval("undo").text.starts_with("Undone: "));
+    assert_eq!(shell.settings(app, "grants", false).as_deref(), Ok(all));
+    shell
+        .settings(app, "grants-revoke files fs_read", true)
+        .unwrap();
+    assert_eq!(
+        shell
+            .settings(app, "grants-restore files fs_read", true)
+            .as_deref(),
+        Ok("files fs_read allowed")
+    );
+    assert_eq!(
+        host.withheld_disk.borrow().as_deref(),
+        Some("kai-withheld 1\n")
+    );
+}

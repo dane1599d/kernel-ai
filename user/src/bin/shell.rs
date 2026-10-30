@@ -455,8 +455,7 @@ impl Host for System {
 
     /// `keep <app> on|off` to the supervisor, which keeps the app from napping.
     fn keep_running(&self, app: &str, on: bool) -> Result<(), String> {
-        let word = if on { "on" } else { "off" };
-        supervise(&format!("keep {app} {word}"))
+        supervise(&supervise::keep::encode(app, on))
     }
 
     fn appearance_read(&self) -> Option<String> {
