@@ -651,7 +651,7 @@ fn settings_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String>
                 wake_shell();
                 String::from("ok")
             }
-            Err(why) => format!("err {why}"),
+            Err(why) => alloc::format!("err {why}"),
         });
     }
     if text == settings::RESULTS {
