@@ -108,6 +108,33 @@ fn take_panel(shell: &mut Shell) {
     }
 }
 
+/// Takes an app's oldest effects from `desktop`, runs them through the agent
+/// core, and reports what came of each; `desktop` hands the results to the
+/// app. `desktop` names the app, from its record of who queued them.
+fn take_effects(shell: &mut Shell) {
+    use deskcore::effects::{self, Done};
+    let Some(route) = desktop() else {
+        return;
+    };
+    let Ok(answer) = ask_desktop(route, effects::TAKE) else {
+        return;
+    };
+    let Some(Some((app, lines))) = effects::parse_take(&answer) else {
+        return;
+    };
+    let results: Vec<Done> = shell
+        .run_effects(app, lines)
+        .into_iter()
+        .map(|done| Done {
+            ticket: done.ticket,
+            outcome: done.outcome,
+        })
+        .collect();
+    if let Err(why) = ask_desktop(route, &effects::encode_done(app, &results)) {
+        println!("{app}'s effect results were not sent: {why}");
+    }
+}
+
 /// The supervisor's wait for a stop or a start: a stop waits for the process to end.
 const SUPERVISOR_CALL_MS: u64 = 10_000;
 
@@ -539,6 +566,7 @@ fn main() -> i32 {
         // and the AI panel's line.
         take_events(&mut shell, &mut events);
         take_panel(&mut shell);
+        take_effects(&mut shell);
         let mut caller = u64::MAX;
         let len = match sys::svc_recv(&mut line, EVENT_POLL_MS, &mut caller) {
             Ok(len) => len.min(line.len()),

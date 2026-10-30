@@ -38,6 +38,7 @@ use alloc::vec::Vec;
 use deskcore::askcard::Card;
 use deskcore::compose::{Pixels, Source};
 use deskcore::desk::{Button, Desk, Effect, Focus, Input, WindowId};
+use deskcore::effects;
 use deskcore::geom::{Point, Rect};
 use deskcore::paint::{self, Bar, Painter, Scene};
 use deskcore::paint_panel;
@@ -106,6 +107,8 @@ struct State {
     drawn: bool,
     /// The AI panel's line and the state the shell reports.
     panel: Panel,
+    /// Apps' effects waiting for the shell, and what came of them.
+    effects: effects::Queue,
     /// When the panel's "thinking 4s" was last redrawn.
     ticked_ms: u64,
     /// The ask card up now, as the kernel posted it.
@@ -159,6 +162,7 @@ fn main() -> i32 {
             draws_cursor: screen.info.cursor == 0,
             drawn: false,
             panel: Panel::new(),
+            effects: effects::Queue::default(),
             ticked_ms: 0,
             card: None,
             asked_ms: 0,
@@ -484,6 +488,10 @@ fn serve(state: &mut State, bytes: &[u8], info: &RecvInfo) {
         let _ = sys::reply_h(reply.as_bytes(), &[]);
         return;
     }
+    if let Some(reply) = effects_request(state, bytes, pid) {
+        let _ = sys::reply_h(reply.as_bytes(), &[]);
+        return;
+    }
     let new = !state.clients.iter().any(|c| c.pid == pid);
     if new {
         let label = name_of(pid);
@@ -565,6 +573,47 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
         // Its kind only: the line is the shell's result, which may name a file.
         println!("desktop: the panel shows {word}");
         state.extra.push(state.desk.panel());
+    }
+    Some(String::from("ok"))
+}
+
+/// An app's `effects put` and `effects results`, and the shell's `effects
+/// take` and `effects done` (P4, `deskcore::effects`): its answer, or `None`
+/// for a window client's message. The app is the kernel's name for the
+/// caller, never anything it sent.
+fn effects_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
+    let text = core::str::from_utf8(bytes).ok()?;
+    if !text.starts_with("effects ") {
+        return None;
+    }
+    let caller = name_of(pid);
+    let shell = caller == "shell";
+    if let Some(lines) = text.strip_prefix(effects::PUT) {
+        if shell || caller.starts_with("pid ") {
+            return Some(String::from("err only an app queues effects"));
+        }
+        let refused = state.effects.put(&caller, lines);
+        println!("desktop: {caller} queued effects ({refused} refused)");
+        return Some(String::from("ok"));
+    }
+    if text == effects::RESULTS {
+        return Some(effects::encode_results(&state.effects.results(&caller)));
+    }
+    if !shell {
+        return Some(String::from("err only the shell runs effects"));
+    }
+    if text == effects::TAKE {
+        let taken = state.effects.take(kabi::MAX_MESSAGE - 64);
+        if let Some((app, _)) = &taken {
+            println!("desktop: the shell took {app}'s effects");
+        }
+        return Some(effects::encode_take(taken.as_ref()));
+    }
+    let Some((app, results)) = effects::parse_done(text) else {
+        return Some(String::from("err not an effects request"));
+    };
+    for done in results {
+        state.effects.finish(app, done);
     }
     Some(String::from("ok"))
 }
