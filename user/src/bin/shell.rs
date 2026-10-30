@@ -135,6 +135,50 @@ fn take_effects(shell: &mut Shell) {
     }
 }
 
+// The shell and `desktop` name the one process that may ask alike.
+const _: () = assert!(same(
+    shellcore::SETTINGS_APP,
+    deskcore::settings_wire::SETTINGS_APP
+));
+
+const fn same(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut at = 0;
+    while at < a.len() {
+        if a[at] != b[at] {
+            return false;
+        }
+        at += 1;
+    }
+    true
+}
+
+/// Answers the Settings app's waiting `kai:settings` requests, which `desktop`
+/// holds (`deskcore::settings_wire`): the app is `desktop`'s record of the
+/// caller, and `Shell::settings` checks it again.
+fn take_settings(shell: &mut Shell) {
+    use deskcore::settings_wire::{self as wire, Answer};
+    let Some(route) = desktop() else {
+        return;
+    };
+    let Ok(answer) = ask_desktop(route, wire::TAKE) else {
+        return;
+    };
+    let Some(Some((app, requests))) = wire::parse_take(&answer) else {
+        return;
+    };
+    let answers: Vec<Answer> = requests
+        .iter()
+        .map(|r| Answer::new(r.ticket, shell.settings(app, &r.text, r.user)))
+        .collect();
+    if let Err(why) = ask_desktop(route, &wire::encode_done(app, &answers)) {
+        println!("{app}'s settings answers were not sent: {why}");
+    }
+}
+
 /// The supervisor's wait for a stop or a start: a stop waits for the process to end.
 const SUPERVISOR_CALL_MS: u64 = 10_000;
 
@@ -592,6 +636,7 @@ fn main() -> i32 {
         take_events(&mut shell, &mut events);
         take_panel(&mut shell);
         take_effects(&mut shell);
+        take_settings(&mut shell);
         let mut caller = u64::MAX;
         let len = match sys::svc_recv(&mut line, wait_ms, &mut caller) {
             Ok(len) => len.min(line.len()),
