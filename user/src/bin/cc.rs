@@ -23,7 +23,16 @@ use user::{println, sys};
 
 user::entry!(main);
 
-struct Process;
+/// How much longer each compile and run may take when QEMU emulates the CPU
+/// (TCG). cc runs about 25 times slower there than under KVM (cc.wasm's first
+/// translation: 4.8 s against 0.2 s), so an entry over a 200-line session
+/// passes D3's 2 s. At 12 s each, a compile and a run still answer within the
+/// shell's 30 s wait for an entry. KVM and real hardware keep 2 s.
+const TCG_STRETCH: u64 = 6;
+
+struct Process {
+    line_ns: u64,
+}
 
 impl Host for Process {
     fn now_ns(&self) -> u64 {
@@ -33,11 +42,29 @@ impl Host for Process {
     fn interrupted(&self) -> bool {
         sys::interrupted()
     }
+
+    fn line_ns(&self) -> u64 {
+        self.line_ns
+    }
+}
+
+/// D3's line budget, stretched only when CPUID names QEMU's emulated CPU.
+fn line_ns() -> u64 {
+    match cpufeat::hypervisor_signature() {
+        Some(signature) if &signature == b"TCGTCGTCGTCG" => ccserve::LINE_NS * TCG_STRETCH,
+        _ => ccserve::LINE_NS,
+    }
 }
 
 fn main() -> i32 {
     println!("up; cc.wasm loads on the first request");
-    let host = Process;
+    let host = Process { line_ns: line_ns() };
+    if host.line_ns != ccserve::LINE_NS {
+        println!(
+            "QEMU emulates the CPU, so each compile and run gets {} ms",
+            host.line_ns / 1_000_000
+        );
+    }
     let mut service: Option<Service<Rows>> = None;
     let mut request = vec![0u8; kabi::MAX_MESSAGE];
     loop {
