@@ -19,11 +19,11 @@
 //! | 110-119 | A-core | |
 //! | 120-129 | model lane | |
 //! | 130-139 | D, drivers (ADR 0007) | RING_ATTACH, RING_NOTIFY, NOTIFY_WAIT, INPUT_PUSH |
-//! | 140-149 | C, components | |
+//! | 140-149 | C, components | EDIT_CALL (lane E) |
 //! | 150-159 | V, virtual machines (P6) | |
 //! | 160-169 | M, memory | MEM_RESERVE, MEM_COMMIT, MEM_RELEASE, PROC_QUOTA_SET, PROC_CLASS_SET |
 //! | 170-179 | U, updates (P4) | SLOT_INFO, SLOT_READ, SLOT_WRITE, SLOT_FLUSH, BOOTREC_GET, BOOTREC_SET, TRUST_ROOT, TRUST_TIME |
-//! | 180-189 | G-core (P3), second block | ASK_READ, ASK_ANSWER, EVENT_POST, EVENT_READ, APP_CTL |
+//! | 180-189 | G-core (P3), second block | ASK_READ, ASK_ANSWER, EVENT_POST, EVENT_READ, APP_CTL, APP_CALL |
 //! | 190-191 | S-io (P2), second block | PART_PEER_ALIVE |
 
 /// `exit(code: i32) -> !`
@@ -436,6 +436,20 @@ pub const PKG_TIME: u64 = 103;
 
 // ---- C, 140-149 ----
 
+/// `edit_call(msg, msg_len, reply, reply_cap) -> len`: sends the edit
+/// service one request, as the kernel's own edit mode does, through the
+/// kernel's session journal (so a restarted service gets the session back), and
+/// copies its answer to `reply`. Only `comphost` holds the `Edit` handle, and
+/// it sends only for an app whose package holds the `edit` grant (needs
+/// [`super::cap::EDIT`], as COMP_FETCH needs COMPONENT). `msg` is an
+/// `open ...` or a `cmd ...` (`editcore::ipc`) of at most
+/// [`super::MAX_MESSAGE`] bytes: a sync or a replay is the kernel's alone, and
+/// `cmd try`, which can take a minute, is refused, all as Invalid. The answer
+/// keeps the line a build moved the cursor with (`#at path:line`) and is cut to
+/// [`super::MAX_MESSAGE`]; `reply_cap` below that is Invalid. NotFound when
+/// the edit service is not running. Numbered at merge, the first of C's block.
+pub const EDIT_CALL: u64 = 140;
+
 // ---- V, 150-159 ----
 
 // ---- M, 160-169 ----
@@ -548,6 +562,16 @@ pub const EVENT_READ: u64 = 183;
 /// [`super::cap::SUPERVISE`]. Invalid for another verb; NotFound with no such
 /// service; TimedOut when it does not answer.
 pub const APP_CTL: u64 = 184;
+/// `app_call(name_ptr, name_len, req_ptr, req_len, buf, cap | wait_ms << 32) -> len`: the
+/// kernel sends `req`, a `kai-call 1`, a `kai-undo 1` or `kai-actions 1`, of at most
+/// [`super::ipc::MAX_MESSAGE`] bytes, to the app service `name` (a process
+/// holding [`super::cap::COMPONENT`]), and writes its reply into `buf`. For
+/// the supervisor, which forwards the agent core's calls to apps' actions (P4,
+/// a v0.1 bridge until per-app routes): needs [`super::cap::SUPERVISE`].
+/// NotFound at once when no such app serves, so the supervisor can start it;
+/// Invalid for any other request; TimedOut when it does not answer within
+/// `wait_ms` (0, or more than 5,000, is 5,000).
+pub const APP_CALL: u64 = 185;
 
 // ---- S-io, second block, 190-191 ----
 

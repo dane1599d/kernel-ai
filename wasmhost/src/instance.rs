@@ -45,6 +45,8 @@ pub(crate) struct HostState {
     pub(crate) settings: crate::settings::SettingsHost,
     /// The reads of the machine the app made and comphost has not taken (`kai:system`).
     pub(crate) system: crate::system::SystemHost,
+    /// The edit messages the app sent and comphost has not taken (`kai:edit`).
+    pub(crate) edit: crate::edit::EditHost,
 }
 
 /// Most bytes of a panic's file path read from the version.
@@ -178,6 +180,7 @@ impl WasmInstance {
             user_input: false,
             settings: Default::default(),
             system: Default::default(),
+            edit: Default::default(),
         };
         let mut store = Store::new(engine, state);
         store.limiter(|state| &mut state.limits);
