@@ -17,10 +17,10 @@ use crate::agent_desk_tests::{KEYS_MS, OPEN_MS, START, terminal_keys, wait};
 use crate::display::claim;
 use crate::{ask_box, log, process, terminal, threads};
 
-/// `desktop`'s shell with a state directory as well, planned after the `fs`
-/// service the case's data disk starts: the theme the case sets is saved there,
-/// and the shell answers Settings' `file appearance` from it.
-pub const SHELL: &str = "shell caps=serve+call+policy+stop+script+files+state uses=llm+supervisor+desktop pages=4096 stack_pages=512 burst_ms=5000";
+/// `desktop`'s shell with a state directory as well (`SHELL_DESK_FILES`), planned
+/// after the `fs` service the case's data disk starts: the theme the case sets is
+/// saved there, and the shell answers Settings' `file appearance` from it.
+pub const SHELL: &str = kabi::plan::SHELL_DESK_FILES;
 
 /// The terminal's window, and Settings' as an app that starts only when
 /// `ui_open` asks for it. Its name is the grant: `desktop` and the shell check
