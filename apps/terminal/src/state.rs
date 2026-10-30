@@ -3,7 +3,7 @@
 //! where the next line goes. Read back, it is checked as input from outside:
 //! limits are applied again and anything unknown is dropped.
 
-use crate::span::{Kind, MAX_SPANS, Span, fit};
+use crate::span::{Kind, MAX_SPANS, Span, clean, fit, visible};
 use crate::{Ask, DEFAULT_PROMPT, Phase, Terminal, valid_prompt};
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -59,8 +59,8 @@ impl Terminal {
             .spans
             .into_iter()
             .map(|s| Span {
-                prompt: s.prompt.chars().take(crate::MAX_PROMPT).collect(),
-                text: fit(&s.text),
+                prompt: visible(&s.prompt).chars().take(crate::MAX_PROMPT).collect(),
+                text: fit(&clean(&s.text).lines.join(" ")),
                 ..s
             })
             .collect();
@@ -94,6 +94,8 @@ impl Terminal {
             next_seq: state.next_seq.max(last.wrapping_add(1)).max(1),
             base,
             phase,
+            in_flight: None,
+            staged: None,
         };
         if state.phase == WAITING {
             t.push(

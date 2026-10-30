@@ -22,6 +22,11 @@ pub trait Sink {
         let _ = (window, private);
         Err(UiError::NoWindow)
     }
+    /// Gives keyboard focus to `node`, which must take it. Apps that leave focus
+    /// to the user need not say.
+    fn focus(&mut self, _window: u32, _node: NodeId) -> Result<(), UiError> {
+        Ok(())
+    }
 }
 
 /// The window an app has open, and the tree it was last sent.

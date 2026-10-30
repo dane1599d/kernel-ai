@@ -8,7 +8,11 @@
 //!   cannot show it yet;
 //! - what the panel shows is code's: the result line of what ran, or a fixed
 //!   reason. The model's words, a model-written script's prints and its
-//!   summary are never shown there.
+//!   summary are never shown there;
+//! - C is the terminal's (P4 task 12): a panel line runs at `kai>` even when
+//!   the terminal is at `c>`, and `:c` and `:rhai` are refused. While a C
+//!   entry waits on its question, a panel line is refused: the entry's log
+//!   entry takes in what is logged after it began.
 
 use crate::{Reply, Shell};
 use alloc::string::String;
@@ -24,13 +28,18 @@ const ASKS: &str = "it asks first: ask in the terminal, which shows the script";
 const WORDS: &str = "it answered in words: ask in the terminal to read them";
 const OPEN: &str = "a bracket is still open: type the whole line in the terminal";
 const FAILED: &str = "it did not run: `show` in the terminal says why";
+const C_WAITS: &str = "a C entry waits for an answer: answer it in the terminal first";
+const C_LINE: &str = "C goes in the terminal";
 
-/// What a panel line may change of the terminal's own state, set aside.
-struct Terminal {
-    partial: Option<String>,
-    clarifying: Option<String>,
-    pending: Option<crate::actions::Pending>,
-    undo_asking: Option<u64>,
+/// What a panel line may change of the terminal's own state, set aside. An
+/// app's terminal (`appline`) keeps one of its own.
+#[derive(Default)]
+pub(crate) struct Terminal {
+    pub(crate) partial: Option<String>,
+    pub(crate) clarifying: Option<String>,
+    pub(crate) pending: Option<crate::actions::Pending>,
+    pub(crate) undo_asking: Option<u64>,
+    pub(crate) c: crate::cmode::CMode,
 }
 
 impl Shell {
@@ -40,11 +49,18 @@ impl Shell {
         if line.starts_with("answer ") {
             return PanelResult::Refused(String::from("answers go in the terminal"));
         }
+        if self.c_waiting() {
+            return PanelResult::Refused(String::from(C_WAITS));
+        }
+        if line == ":c" || line.starts_with(":c ") || line == ":rhai" {
+            return PanelResult::Refused(String::from(C_LINE));
+        }
         let terminal = Terminal {
             partial: self.partial.take(),
             clarifying: self.clarifying.take(),
             pending: self.pending.take(),
             undo_asking: self.undo_asking.take(),
+            c: core::mem::take(&mut self.c),
         };
         self.asked_model = false;
         self.worded = false;
@@ -60,6 +76,7 @@ impl Shell {
         self.clarifying = terminal.clarifying;
         self.pending = terminal.pending;
         self.undo_asking = terminal.undo_asking;
+        self.c = terminal.c;
         result
     }
 
