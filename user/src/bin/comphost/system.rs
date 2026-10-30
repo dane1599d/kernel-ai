@@ -32,13 +32,18 @@ pub const MONITOR_APP: &str = "monitor-window";
 /// each second, not as many as it can ask for.
 const PERIOD_MS: u64 = 1_000;
 /// How long `health` may take before the model is shown busy. The service answers
-/// one request at a time, and loading or answering one is one long call.
-const HEALTH_MS: u64 = 250;
+/// one request at a time, and loading or answering one is one long call; an idle
+/// service replies at once, so a short wait only costs the window a little while
+/// the model is busy (lane C's point on a call that blocks input).
+const HEALTH_MS: u64 = 100;
 /// Room for llm's `health` reply.
 const REPLY: usize = 1024;
 
 pub struct Source {
-    /// The route to llm, when the plan line has one after `desktop`.
+    /// The route to llm: the second route, so the plan line's `uses=` must list
+    /// `desktop` then `llm` (`uses=desktop+llm`) and nothing between them. The
+    /// order matters, and the image's plan line for [`MONITOR_APP`] pins it with
+    /// a test; with no second route the model is not reported.
     llm: Option<Handle>,
     /// The earliest time the next sample may be taken, in milliseconds.
     next_ms: u64,
