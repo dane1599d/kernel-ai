@@ -32,7 +32,8 @@ pub const DONE: &str = "settings done ";
 pub const SETTINGS_APP: &str = "settings-window";
 /// Requests that may wait for the shell.
 pub const MAX_WAITING: usize = 8;
-/// Answers that may wait for `comphost`; the oldest go first.
+/// Answers that may wait for `comphost`; past it the oldest goes unanswered,
+/// so `comphost` times out a ticket it hears nothing for.
 pub const MAX_ANSWERS: usize = 32;
 /// The longest request kept.
 pub const MAX_REQUEST: usize = 512;
@@ -210,6 +211,26 @@ pub fn encode_done(app: &str, answers: &[Answer]) -> String {
     format!("{DONE}{app}\n{body}")
 }
 
+/// [`encode_done`] in as many requests as it takes, each of whole answers and
+/// at most `budget` bytes: a taken batch of eight 4 KiB answers is larger than
+/// one message, and a lost `done` would leave its tickets unanswered.
+pub fn encode_done_chunks(app: &str, answers: &[Answer], budget: usize) -> Vec<String> {
+    let head = format!("{DONE}{app}\n");
+    let mut out = Vec::new();
+    let mut chunk = head.clone();
+    for answer in answers {
+        let text = answer.encode();
+        if chunk.len() > head.len() && chunk.len() + text.len() > budget {
+            out.push(core::mem::replace(&mut chunk, head.clone()));
+        }
+        chunk.push_str(&text);
+    }
+    if chunk.len() > head.len() {
+        out.push(chunk);
+    }
+    out
+}
+
 /// Answers as [`RESULTS`] and [`DONE`] carry them; `None` for any out of
 /// shape, so a cut message is never read as a shorter answer.
 pub fn parse_answers(mut text: &str) -> Option<Vec<Answer>> {
@@ -324,6 +345,38 @@ mod tests {
         assert_eq!(queue.take(8192).map(|t| t.len()), Some(MAX_WAITING));
         let refused = parse_answers(&queue.results(8192)).unwrap();
         assert_eq!(refused[0].outcome, Err("too many waiting".into()));
+    }
+
+    #[test]
+    fn eight_full_answers_all_reach_results_across_messages() {
+        const MESSAGE: usize = 8192;
+        let mut queue = Queue::default();
+        let lines: Vec<String> = (0..MAX_WAITING as u32)
+            .map(|t| format!("{t}\t0\trules"))
+            .collect();
+        queue.put(SETTINGS_APP, &lines.join("\n")).unwrap();
+        let taken = queue.take(MESSAGE - 64).unwrap();
+        assert_eq!(taken.len(), MAX_WAITING);
+        let answers: Vec<Answer> = taken
+            .iter()
+            .map(|r| Answer::new(r.ticket, Ok("x".repeat(MAX_ANSWER))))
+            .collect();
+        let head = format!("{DONE}{SETTINGS_APP}\n");
+        for request in encode_done_chunks(SETTINGS_APP, &answers, MESSAGE) {
+            assert!(request.len() <= MESSAGE);
+            for answer in parse_answers(request.strip_prefix(&head).unwrap()).unwrap() {
+                queue.finish(answer);
+            }
+        }
+        let mut seen = Vec::new();
+        loop {
+            let text = queue.results(MESSAGE - 64);
+            if text.is_empty() {
+                break;
+            }
+            seen.extend(parse_answers(&text).unwrap().into_iter().map(|a| a.ticket));
+        }
+        assert_eq!(seen, (0..MAX_WAITING as u32).collect::<Vec<_>>());
     }
 
     #[test]

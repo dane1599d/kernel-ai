@@ -282,8 +282,9 @@ pub(crate) fn granted(grants: Grants) -> bool {
     grants.settings
 }
 
-/// An error text the app is given: printable ASCII, and cut.
-fn error_text(why: &str) -> String {
+/// An error text the app is given: printable ASCII, and cut (`kai:system` gives
+/// its error texts the same way).
+pub(crate) fn error_text(why: &str) -> String {
     why.chars()
         .map(|c| {
             if c.is_ascii() && printable(c.encode_utf8(&mut [0; 4])) {

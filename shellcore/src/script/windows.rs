@@ -53,6 +53,7 @@ pub(super) fn bind(engine: &mut Engine, name: &'static str, h: Rc<dyn Host>, tx:
                     None => &[app],
                 };
                 tx.approved(name, live)?;
+                crate::ui::app_name(app).map_err(fail)?;
                 let call = UiCall::Open {
                     app: app.into(),
                     arg: arg.map(String::from),
