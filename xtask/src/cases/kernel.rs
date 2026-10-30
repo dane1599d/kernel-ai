@@ -295,13 +295,10 @@ pub(super) const CASES: &[TestCase] = &[
     // acts in it after a yes on desktop's card.
     TestCase {
         keys: &[
+            &["o", "p", "e", "n", "spc", "n", "o", "t", "e", "s", "ret"],
             &[
-                "o", "p", "e", "n", "spc", "n", "o", "t", "e", "s", "minus", "w", "i", "n", "d",
-                "o", "w", "ret",
-            ],
-            &[
-                "s", "e", "a", "r", "c", "h", "spc", "n", "o", "t", "e", "s", "minus", "w", "i",
-                "n", "d", "o", "w", "spc", "f", "o", "r", "spc", "m", "i", "l", "k", "ret",
+                "s", "e", "a", "r", "c", "h", "spc", "n", "o", "t", "e", "s", "spc", "f", "o", "r",
+                "spc", "m", "i", "l", "k", "ret",
             ],
             &["y"],
         ],
@@ -320,13 +317,10 @@ pub(super) const CASES: &[TestCase] = &[
     // says so.
     TestCase {
         keys: &[
-            &[
-                "o", "p", "e", "n", "spc", "n", "o", "t", "e", "s", "minus", "w", "i", "n", "d",
-                "o", "w", "ret",
-            ],
+            &["o", "p", "e", "n", "spc", "n", "o", "t", "e", "s", "ret"],
             &[
                 "s", "w", "i", "t", "c", "h", "spc", "t", "o", "spc", "n", "o", "t", "e", "s",
-                "minus", "w", "i", "n", "d", "o", "w", "ret",
+                "ret",
             ],
             &["a"],
         ],

@@ -69,6 +69,7 @@ pub fn call(call: &UiCall) -> Result<String, String> {
 /// focus, from `w1`), or `opened w5` once the app, started if it was not
 /// running, shows its window.
 fn open(route: kabi::handle::Handle, app: &str, arg: Option<&str>) -> Result<String, String> {
+    let app = rows::app_name(app)?;
     if arg.is_some_and(|arg| !arg.is_empty()) {
         return Err(format!(
             "{app} cannot be opened with an argument yet; open it, then act in it"
@@ -76,16 +77,21 @@ fn open(route: kabi::handle::Handle, app: &str, arg: Option<&str>) -> Result<Str
     }
     let mine = |list: &[Window]| {
         list.iter()
-            .find(|w| w.app.eq_ignore_ascii_case(app))
+            .find(|w| rows::app_of(&w.app).eq_ignore_ascii_case(rows::app_of(app)))
             .map(|w| w.id.clone())
     };
     if let Some(id) = mine(&windows(route)?) {
         let before = call(&UiCall::Focus(id.clone()))?;
         return Ok(format!("focused {id} {before}"));
     }
-    app_call(app, "kai-actions 1")?;
+    // An app's window is its `<app>-window` service, when the plan has one.
+    let window = format!("{}-window", rows::app_of(app));
+    app_call(&window, "kai-actions 1").or_else(|_| app_call(app, "kai-actions 1"))?;
     let mut waited = 0;
     while waited < WINDOW_WAIT_MS {
+        if sys::interrupted() {
+            return Err(format!("stopped while {app} was opening"));
+        }
         if let Some(id) = mine(&windows(route)?) {
             return Ok(format!("opened {id}"));
         }

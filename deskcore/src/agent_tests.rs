@@ -322,3 +322,15 @@ fn a_key_in_the_window_the_agent_drives_stops_the_run() {
     let (garbage, _) = agent.answer(&mut desk, &mut fake, "rm -rf /");
     assert_eq!(garbage, "err desktop does not know that request");
 }
+
+#[test]
+fn a_window_app_is_found_by_its_package_name() {
+    let mut desk = Desk::new(1280, 800);
+    let size = Size { w: 300, h: 200 };
+    let (notes, _) = desk.open(1, "notes-window", "Notes", size, true);
+    let (files, _) = desk.open(2, "files", "Documents", size, true);
+    assert_eq!(find_window(&desk, "notes-window"), Some(notes));
+    assert_eq!(find_window(&desk, "notes"), Some(notes));
+    assert_eq!(find_window(&desk, "files"), Some(files));
+    assert_eq!(find_window(&desk, "window"), None);
+}

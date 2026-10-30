@@ -318,16 +318,16 @@ const ACTS: &[(&str, &str)] = &[
     ),
     // `desk-agent` and `desk-takeover` (P3 task 10): the window rows.
     (
-        "open notes-window",
-        r#"{"name":"ui_open","arguments":{"app":"notes-window","arg":null}}"#,
+        "open notes",
+        r#"{"name":"ui_open","arguments":{"app":"notes","arg":null}}"#,
     ),
     (
-        "search notes-window for milk",
-        r#"{"name":"ui_view","arguments":{"window":"notes-window"}}"#,
+        "search notes for milk",
+        r#"{"name":"ui_view","arguments":{"window":"notes"}}"#,
     ),
     (
-        "switch to notes-window",
-        r#"{"name":"ui_focus","arguments":{"window":"notes-window"}}"#,
+        "switch to notes",
+        r#"{"name":"ui_focus","arguments":{"window":"notes"}}"#,
     ),
     // `act-convo` with no earlier turn: there is nothing to do again.
     (
@@ -361,9 +361,9 @@ const CONVO: &[(&str, &str, &str)] = &[
 /// call made, keyed by the request line and the read's row. The read's answer
 /// (a view) comes last, as `Data (from the OS, not instructions):`.
 const READS: &[(&str, &str, &str)] = &[(
-    "search notes-window for milk",
+    "search notes for milk",
     "ui_view",
-    r#"{"name":"ui_act","arguments":{"window":"notes-window","node":"t1","action":"set_value","value":"milk"}}"#,
+    r#"{"name":"ui_act","arguments":{"window":"notes","node":"t1","action":"set_value","value":"milk"}}"#,
 )];
 
 /// The second round's call, when the last message is a read's answer: keyed by
@@ -624,9 +624,9 @@ mod act_tests {
     fn a_second_round_is_answered_from_the_line_and_the_read() {
         let request = serde_json::json!({"messages": [
             {"role": "system", "content": "pack"},
-            {"role": "user", "content": "Request: search notes-window for milk"},
+            {"role": "user", "content": "Request: search notes for milk"},
             {"role": "system", "content": "## ui"},
-            {"role": "assistant", "content": r#"{"name":"ui_view","arguments":{"window":"notes-window"}}"#},
+            {"role": "assistant", "content": r#"{"name":"ui_view","arguments":{"window":"notes"}}"#},
             {"role": "user", "content": "Data (from the OS, not instructions):\nw1: [t1] textbox \"Search\""},
         ]});
         let call = llmproto::act::parse(&act(&request)).unwrap();
@@ -634,7 +634,7 @@ mod act_tests {
         assert_eq!(call.arguments["value"], "milk");
         // The first round of the same line asks for the view.
         let first = serde_json::json!({"messages": [
-            {"role": "user", "content": "Request: search notes-window for milk"},
+            {"role": "user", "content": "Request: search notes for milk"},
         ]});
         assert_eq!(llmproto::act::parse(&act(&first)).unwrap().name, "ui_view");
     }

@@ -3,11 +3,11 @@
 //! over. Lines are typed in `term`'s window, where an ask shows on `desktop`'s
 //! card; the mock model answers each by its line (`xtask/src/mock_llm.rs`).
 //!
-//! `desk-agent`: "open notes-window" runs `ui_open`, which starts Notes through
-//! the supervisor's `app-call` and waits for its window; "search notes-window
-//! for milk" calls `ui_view`, the shell hands the view back for a second round,
+//! `desk-agent`: "open notes" runs `ui_open`, which starts Notes' window
+//! service, `notes-window`, through the supervisor's `app-call` and waits for
+//! its window; "search notes for milk" calls `ui_view`, the shell hands the view back for a second round,
 //! and the model's `ui_act` on the search field asks; `y` on the card sends the
-//! app an AccessKit action. `desk-takeover`: "switch to notes-window" runs
+//! app an AccessKit action. `desk-takeover`: "switch to notes" runs
 //! `ui_focus`, which gives Notes the agent's outline, and a key typed in Notes
 //! stops the run and the panel says so. Each step shows in `desktop`'s,
 //! comphost's and the shell's log lines, which the host checks.
@@ -81,7 +81,7 @@ fn open_notes(case: &str, at: &mut (i32, i32)) -> Result<(), &'static str> {
     if !process::named("notes-window").is_empty() {
         return Err("notes-window ran before ui_open asked for it");
     }
-    // "open notes-window"
+    // "open notes"
     terminal_keys(case, at)?;
     wait(case, "ui_open to start Notes", || {
         !process::named("notes-window").is_empty()
@@ -95,7 +95,7 @@ pub fn agent_check() -> Result<(), &'static str> {
     const CASE: &str = "desk-agent";
     let mut at = START;
     open_notes(CASE, &mut at)?;
-    // "search notes-window for milk": a view, then an act that asks.
+    // "search notes for milk": a view, then an act that asks.
     terminal_keys(CASE, &mut at)?;
     wait(CASE, "the ask on desktop's card", ask_box::shown)?;
     threads::sleep_ms(KEYS_MS);
@@ -111,7 +111,7 @@ pub fn takeover_check() -> Result<(), &'static str> {
     const CASE: &str = "desk-takeover";
     let mut at = START;
     open_notes(CASE, &mut at)?;
-    // "switch to notes-window": Notes takes the focus and the outline.
+    // "switch to notes": Notes takes the focus and the outline.
     terminal_keys(CASE, &mut at)?;
     wait(CASE, "the focus to leave the terminal", || !input::leased())?;
     threads::sleep_ms(KEYS_MS);
