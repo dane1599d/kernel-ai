@@ -34,7 +34,10 @@ fn wasm() -> Option<Vec<u8>> {
 }
 
 fn granted() -> Grants {
-    Grants { settings: true }
+    Grants {
+        settings: true,
+        ..Grants::default()
+    }
 }
 
 fn start(wasm: &[u8]) -> CoreInstance {
