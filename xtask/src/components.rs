@@ -367,6 +367,12 @@ mod tests {
         let actions = livecore::actions::parse(parsed.actions.unwrap()).unwrap();
         let add = actions.by_name("notes_add").unwrap();
         assert_eq!(add.export, "app:notes/actions@1.0.0#add");
+        // The shell loads them for the `notes-window` service, which fronts
+        // Notes' rows (docs/decisions.md, A-core's `<pkg>-window` rule).
+        let answer = format!("version 1\n{}", parsed.actions.unwrap());
+        let mut rows = shellcore::apps::AppRows::default();
+        assert_eq!(rows.load("notes-window", &answer), Ok(actions.rows.len()));
+        assert!(rows.find_in("notes-window", "notes_add").is_some());
     }
 
     /// The Files build carries its own action rows, under its world.
