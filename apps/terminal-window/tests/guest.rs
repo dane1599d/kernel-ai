@@ -1,6 +1,6 @@
 //! The Terminal component as built for wasm32, run in `wasmhost` with no OS: it
 //! opens its window when it starts, turns a person's Enter and the AI's
-//! `terminal_run` into one `shell_line` effect each inside a transaction, shows
+//! `terminal_window_run` into one `shell_line` effect each inside a transaction, shows
 //! the shell's answer when the OS delivers it, and comes back with its
 //! scrollback. It is skipped when `cargo build -p comp-terminal-window --target
 //! wasm32-unknown-unknown --profile component` has not run (CI runs it first).
@@ -93,7 +93,7 @@ fn done(g: &mut CoreInstance, ticket: u32, outcome: Result<&str, &str>) -> Vec<S
 
 fn action(name: &str, params: Vec<Ty>) -> Func {
     Func {
-        export: format!("app:terminal/actions@1.0.0#{name}"),
+        export: format!("app:terminal-window/actions@1.0.0#{name}"),
         params,
         result: Some(Ty::Result(
             Some(Box::new(Ty::String)),
@@ -203,7 +203,7 @@ fn the_ai_types_and_reads_and_a_person_runs_the_line() {
     let Some(mut g) = load() else { return };
     let (w, _) = frame(&mut g);
 
-    // terminal_run only types: no effect is queued, and the line waits in the
+    // terminal_window_run only types: no effect is queued, and the line waits in the
     // input line for a person.
     let (r, txn) = call(&mut g, |g| {
         Instance::call(
@@ -248,7 +248,7 @@ fn the_ai_types_and_reads_and_a_person_runs_the_line() {
     let (_, f) = frame(&mut g);
     assert!(names(&f).contains(&String::from("by the AI")));
 
-    // The shell's answer arrives; terminal_read gives the typed rows.
+    // The shell's answer arrives; terminal_window_read gives the typed rows.
     done(&mut g, 1, Ok("ok free 12 MiB"));
     let (r, _) = call(&mut g, |g| {
         Instance::call(g, &action("read", vec![Ty::U32]), &[Val::U32(0)])
@@ -274,7 +274,7 @@ fn the_ai_types_and_reads_and_a_person_runs_the_line() {
         "{read}"
     );
 
-    // terminal_clear empties the scrollback and the window shows it.
+    // terminal_window_clear empties the scrollback and the window shows it.
     let (r, _) = call(&mut g, |g| Instance::call(g, &action("clear", vec![]), &[]));
     assert_eq!(ok_text(r.unwrap()), "cleared");
     let (_, f) = frame(&mut g);

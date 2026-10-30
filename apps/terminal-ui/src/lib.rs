@@ -2,7 +2,7 @@
 //! one row per line, drawn by its kind, and under it the input line with the
 //! shell's prompt as its label. The tree is rebuilt whole from the model after
 //! each event and [`diff`]ed against the last one, so only what changed goes to
-//! the host. "Clear" is bound to `terminal_clear`, so the agent sees the same
+//! the host. "Clear" is bound to `terminal_window_clear`, so the agent sees the same
 //! words and tier as the button.
 //!
 //! The input is not a child of the scrollback's column, so a new row never
@@ -48,10 +48,10 @@ pub const SIZE: (u16, u16) = (800, 520);
 /// Characters a line gets before it wraps: the window's width in JetBrains Mono
 /// 14 px, less its padding and scroll bar.
 pub const COLS: usize = 88;
-/// Rows the tree holds; older ones stay in the model and `terminal_read`.
+/// Rows the tree holds; older ones stay in the model and `terminal_window_read`.
 pub const SHOWN_SPANS: usize = 100;
 /// The action the Clear button runs.
-pub const CLEAR_ACTION: &str = "terminal_clear";
+pub const CLEAR_ACTION: &str = "terminal_window_clear";
 const AI_TAG: &str = "by the AI";
 const PLACEHOLDER: &str = "Type a command, or ask the AI";
 
@@ -249,7 +249,7 @@ pub fn on_ui(term: &mut Terminal, os: &mut dyn Os, view: &mut View, e: &UiEvent)
     }
 }
 
-/// `terminal_run`: the AI types `line` into the input line for a person to run
+/// `terminal_window_run`: the AI types `line` into the input line for a person to run
 /// with Enter. It goes in only if the field is empty: what a person has started
 /// to type is theirs to finish.
 pub fn type_line(term: &mut Terminal, view: &mut View, line: &str) -> Result<String, String> {

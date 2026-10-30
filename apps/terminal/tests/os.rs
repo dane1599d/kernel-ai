@@ -122,7 +122,7 @@ fn lines_over_the_byte_bound_are_refused_and_the_rest_fit_the_effect() {
 fn the_ai_types_a_line_and_a_person_runs_it() {
     let mut t = Terminal::new();
     let mut os = Recorder::default();
-    // terminal_run only types: nothing goes to the shell.
+    // terminal_window_run only types: nothing goes to the shell.
     assert_eq!(t.act_run("  mem  "), Ok(comp_terminal::TYPED.to_string()));
     assert!(os.asked.is_empty());
     assert_eq!(

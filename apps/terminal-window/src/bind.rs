@@ -1,16 +1,21 @@
-//! `app:terminal/actions@1.0.0`'s bindings (`apps/terminal/wit/terminal.wit`,
-//! world `actions-only`): each function reaches the one instance through
+//! `app:terminal-window/actions@1.0.0`'s bindings (`wit/window.wit`, world
+//! `actions-only`): each function reaches the one instance through
 //! `compsdk::with`, runs on the model and redraws the window.
 
 use crate::TerminalWindow;
 use alloc::string::String;
 
 wit_bindgen::generate!({
-    world: "app:terminal/actions-only",
-    path: ["../../wit/kai-live", "../../wit/kai-app", "../terminal/wit"],
+    world: "app:terminal-window/actions-only",
+    path: [
+        "../../wit/kai-live",
+        "../../wit/kai-app",
+        "../../wit/kai-ui",
+        "wit",
+    ],
 });
 
-use exports::app::terminal::actions::Guest;
+use exports::app::terminal_window::actions::Guest;
 
 struct Bound;
 

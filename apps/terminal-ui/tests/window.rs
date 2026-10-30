@@ -290,9 +290,9 @@ fn the_ai_and_the_button_clear_the_same_way() {
     let events = app.w.act(CLEAR, Action::Click, None, &M).unwrap();
     assert_eq!(app.event(&events[0]), None);
     assert!(app.term.spans().is_empty());
-    // "terminal_clear" is the action the button names, and the model's clear is
+    // "terminal_window_clear" is the action the button names, and the model's clear is
     // what that action runs.
-    assert_eq!(CLEAR_ACTION, "terminal_clear");
+    assert_eq!(CLEAR_ACTION, "terminal_window_clear");
 }
 
 #[test]

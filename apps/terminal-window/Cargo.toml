@@ -8,7 +8,7 @@ publish = false
 # The Terminal app in the OS (P4 task 4): `comp-terminal`'s model and
 # `comp-terminal-ui`'s window bound to `kai:ui` (`comp-ui-bind`) and to the one
 # effect the shell runs, `shell_line`. The app's own actions are
-# `app:terminal/actions`.
+# `app:terminal-window/actions`.
 [lib]
 crate-type = ["cdylib", "rlib"]
 doctest = false

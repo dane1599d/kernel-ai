@@ -1,7 +1,7 @@
 //! The Terminal app in the OS (P4 task 4): [`TerminalWindow`] is `comp-terminal`'s
 //! model with the window `comp-terminal-ui` builds from it. It opens its window
 //! when it starts, redraws after each event, and sends every line, a person's
-//! Enter or the AI's `terminal_run`, to the shell as one effect, `shell_line`.
+//! Enter or the AI's `terminal_window_run`, to the shell as one effect, `shell_line`.
 //! What the shell answers comes back as an `effect-done` event.
 //!
 //! Effects and the app's reply to them run in a transaction (`Host::serve_with`
@@ -102,7 +102,7 @@ impl TerminalWindow {
     #[cfg(not(target_family = "wasm"))]
     fn present_logged(&mut self) {}
 
-    /// `terminal_run`: types `line` into the input for a person to run, and
+    /// `terminal_window_run`: types `line` into the input for a person to run, and
     /// redraws. Nothing is queued: the shell runs a line only for a person's key.
     pub fn type_line(&mut self, line: &str) -> Result<String, String> {
         let said = comp_terminal_ui::type_line(&mut self.term, &mut self.view, line);
@@ -110,7 +110,7 @@ impl TerminalWindow {
         said
     }
 
-    /// `terminal_clear` runs `f` on the model, then redraws to show what it did.
+    /// `terminal_window_clear` runs `f` on the model, then redraws to show what it did.
     pub fn act(
         &mut self,
         f: impl FnOnce(&mut Terminal, &mut Effects) -> Result<String, String>,

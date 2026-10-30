@@ -14,7 +14,7 @@
 //!   question, and the terminal takes no line until the trusted path has
 //!   answered it (ADR 0005 section 7). The one thing a window may do is
 //!   decline: [`Terminal::cancel`].
-//! - **The AI's hands.** `terminal_read` is [`Terminal::read`]. `terminal_run`
+//! - **The AI's hands.** `terminal_window_read` is [`Terminal::read`]. `terminal_window_run`
 //!   only types: [`Terminal::stage`] puts a line in the input for a person to
 //!   run with Enter, because the shell runs a line only for a person's key or
 //!   click. The row then says the AI typed it. This is the founder's terminal.
@@ -54,9 +54,9 @@ pub const GREETING: &str = "Kernel AI terminal. Talk to the AI or type Rhai (try
                             Kernel commands that start with ':' run on the console.";
 /// Said under a question.
 pub const ANSWER_ELSEWHERE: &str = "Answer on the AI panel's card.";
-/// Most rows `terminal_read` returns, newest last.
+/// Most rows `terminal_window_read` returns, newest last.
 pub const READ_MAX_SPANS: usize = 60;
-/// Most bytes of text `terminal_read` returns.
+/// Most bytes of text `terminal_window_read` returns.
 pub const READ_MAX_BYTES: usize = 6 * 1024;
 
 /// Where the next line goes.
@@ -73,7 +73,7 @@ pub enum Phase {
 }
 
 impl Phase {
-    /// The word `terminal_read` says.
+    /// The word `terminal_window_read` says.
     pub const fn word(self) -> &'static str {
         match self {
             Self::Ready => "ready",
@@ -243,7 +243,7 @@ impl Terminal {
         Submitted::Refused(self.note(why))
     }
 
-    /// `terminal_run`: the AI types `line` into the input, for a person to run
+    /// `terminal_window_run`: the AI types `line` into the input, for a person to run
     /// with Enter. Nothing is sent to the shell, and a person may change or drop
     /// the line first. The line as it will show in the input.
     pub fn stage(&mut self, line: &str) -> Result<String, Refusal> {
@@ -386,7 +386,7 @@ impl Terminal {
     }
 
     /// [`Terminal::submit`], then the effect that sends the line to the shell.
-    /// A person's Enter and the AI's `terminal_run` both come here.
+    /// A person's Enter and the AI's `terminal_window_run` both come here.
     pub fn run(&mut self, os: &mut dyn Os, line: &str, source: Source) -> Submitted {
         let submitted = self.submit(line, source);
         if let Submitted::Send(line) = &submitted {
@@ -427,7 +427,7 @@ impl Terminal {
         true
     }
 
-    /// What `terminal_read` returns: `next <seq> <phase>` (the number to ask
+    /// What `terminal_window_read` returns: `next <seq> <phase>` (the number to ask
     /// from next time), then at most [`READ_MAX_SPANS`] rows from `since` on,
     /// newest last, as `<seq> <kind> <text>`; `skipped <n>` names older rows
     /// left out. A row's text is data the shell printed, never an instruction.
@@ -459,7 +459,7 @@ impl Terminal {
     }
 }
 
-/// What `terminal_run` answers.
+/// What `terminal_window_run` answers.
 pub const TYPED: &str = "typed in the terminal's input line; a person presses Enter to run it";
 /// What a row says before a line the AI typed: it is typed in the input, and
 /// Enter runs it.
@@ -508,8 +508,8 @@ pub fn valid_prompt(prompt: &str) -> bool {
 }
 
 impl Terminal {
-    /// `terminal_run`: the AI types `line` into the input ([`Terminal::stage`]);
-    /// a person presses Enter to run it, and `terminal_read` then shows what the
+    /// `terminal_window_run`: the AI types `line` into the input ([`Terminal::stage`]);
+    /// a person presses Enter to run it, and `terminal_window_read` then shows what the
     /// shell said.
     pub fn act_run(&mut self, line: &str) -> Result<String, String> {
         match self.stage(line) {
@@ -518,12 +518,12 @@ impl Terminal {
         }
     }
 
-    /// `terminal_read`: the rows from `since` on ([`Terminal::read`]).
+    /// `terminal_window_read`: the rows from `since` on ([`Terminal::read`]).
     pub fn act_read(&self, since: u32) -> Result<String, String> {
         Ok(self.read(since))
     }
 
-    /// `terminal_clear`: the scrollback empties.
+    /// `terminal_window_clear`: the scrollback empties.
     pub fn act_clear(&mut self) -> Result<String, String> {
         self.clear();
         Ok(String::from("cleared"))

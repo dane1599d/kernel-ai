@@ -61,8 +61,6 @@ const TERMINAL_DIRS: &[&str] = &[
     "apps/ui-bind",
 ];
 const TERMINAL_WINDOW_WIT: &str = "apps/terminal-window/wit";
-/// `app:terminal/actions`, which the window exports.
-const TERMINAL_WIT: &str = "apps/terminal/wit";
 
 /// `notes` from `components/notes`: version 2, and every upload the edit loop
 /// builds.
@@ -128,7 +126,7 @@ pub const VERSIONS: &[Version] = &[
             krate: "comp-terminal-window",
             dirs: TERMINAL_DIRS,
             feature: None,
-            wit: &[TERMINAL_WINDOW_WIT, "wit/kai-ui", TERMINAL_WIT],
+            wit: &[TERMINAL_WINDOW_WIT, "wit/kai-ui"],
         },
     },
     // The Settings app (P4 task 7), a window over the system's settings.
@@ -384,12 +382,15 @@ mod tests {
         );
         let actions = livecore::actions::parse(parsed.actions.unwrap()).unwrap();
         for (name, export) in [
-            ("terminal_run", "run"),
-            ("terminal_read", "read"),
-            ("terminal_clear", "clear"),
+            ("terminal_window_run", "run"),
+            ("terminal_window_read", "read"),
+            ("terminal_window_clear", "clear"),
         ] {
             let row = actions.by_name(name).unwrap();
-            assert_eq!(row.export, format!("app:terminal/actions@1.0.0#{export}"));
+            assert_eq!(
+                row.export,
+                format!("app:terminal-window/actions@1.0.0#{export}")
+            );
         }
     }
 

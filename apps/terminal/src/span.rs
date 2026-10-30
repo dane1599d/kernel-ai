@@ -40,7 +40,7 @@ pub enum Kind {
 }
 
 impl Kind {
-    /// The word `terminal_read` and the agent's view use.
+    /// The word `terminal_window_read` and the agent's view use.
     pub const fn name(self) -> &'static str {
         match self {
             Self::Input => "input",
@@ -77,7 +77,7 @@ pub struct Span {
     pub prompt: String,
     #[n(3)]
     pub text: String,
-    /// Whether the AI typed the line (an input), through `terminal_run`.
+    /// Whether the AI typed the line (an input), through `terminal_window_run`.
     #[n(4)]
     pub by_ai: bool,
 }
