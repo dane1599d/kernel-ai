@@ -10,12 +10,12 @@
 //!   no other.
 //! - `switch-back <to> <from>`, from the shell only: its undo of such an
 //!   install, back to `<from>`'s parent `<to>`, only while `<from>` is still
-//!   current; `ok generation <n>`.
+//!   current, and each app it takes out ends (`withdraw`); `ok generation <n>`.
 //!
 //! Anything that fails is `err <why>`. Every other holder of a `uses=pkg`
 //! route (the desktop's catalogue, say) reads, never installs or switches.
 
-use super::{BootRepo, Calls, KNOWN, NoLedger, now, start_apps};
+use super::{BootRepo, Calls, KNOWN, NoLedger, now, start_apps, withdraw_apps};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -212,6 +212,16 @@ fn switch_back(vol: &mut FsVolume<Calls>, rest: &str) -> Result<String, String> 
         .rollback(&mut cx, to)
         .map_err(|e| format!("{e:?}"))?;
     println!("pkg: switched back from generation {from} to {to}'s packages as generation {n}");
+    // The switch is made; an app it took out ends, and one that does not is
+    // shown, never hidden.
+    match withdraw_apps(vol, from, n) {
+        Ok(ended) => {
+            for line in ended {
+                println!("pkg: ended, undone: {line}");
+            }
+        }
+        Err(why) => println!("pkg: generation {n} is current, but its undone apps run on: {why}"),
+    }
     Ok(format!("ok generation {n}"))
 }
 

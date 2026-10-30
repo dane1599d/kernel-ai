@@ -81,24 +81,8 @@ pub fn device_key(
         return Ok(Key::from_seed(seed));
     }
     let seed = entropy()?;
-    in_action(vol, |vol| vol.write(KEY, &seed))?;
+    store::in_action(vol, SAVE_ACTION, |vol| vol.write(KEY, &seed))?;
     Ok(Key::from_seed(seed))
-}
-
-/// `change` as one action: committed, or aborted if any of it fails, so a
-/// failure never leaves an action open that blocks every other writer.
-fn in_action(
-    vol: &mut dyn Volume,
-    change: impl FnOnce(&mut dyn Volume) -> Result<(), String>,
-) -> Result<(), String> {
-    vol.begin(SAVE_ACTION)?;
-    match change(vol).and_then(|()| vol.commit()) {
-        Ok(()) => Ok(()),
-        Err(why) => {
-            let _ = vol.abort();
-            Err(why)
-        }
-    }
 }
 
 /// A build put in `local`.
@@ -290,7 +274,7 @@ fn write(vol: &mut dyn Volume, key: &Key, held: &[Build], now: Time) -> Result<(
         .into_iter()
         .filter(|file| !targets.iter().any(|t| t.path == *file))
         .collect();
-    in_action(vol, |vol| {
+    store::in_action(vol, SAVE_ACTION, |vol| {
         for file in gone {
             vol.remove(&format!("{DIR}/targets/{file}"))?;
         }

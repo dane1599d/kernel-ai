@@ -515,24 +515,11 @@ fn start_apps(vol: &mut dyn Volume, n: u64) -> Result<Vec<String>, String> {
     let mut started = Vec::new();
     for package in store::generation(vol, n)?.packages {
         let name = &package.name;
-        let object = vol
-            .read(&store::object_path(&package.sha))?
-            .ok_or_else(|| format!("{name}'s object is not in the store"))?;
-        let files = bundle::files(&object).map_err(|why| format!("{name}: {why}"))?;
-        let header = files
-            .first()
-            .and_then(|(_, text)| core::str::from_utf8(text).ok())
-            .ok_or_else(|| format!("{name}: no header"))?;
-        if Header::parse(header)?.kind != PackageKind::App {
+        let Some(artifact) = app_artifact(vol, name, &package.sha)? else {
             continue;
-        }
-        let artifact = files
-            .iter()
-            .find(|(path, _)| *path == bundle::ARTIFACT)
-            .map(|(_, bytes)| *bytes)
-            .ok_or_else(|| format!("{name}: an app without {}", bundle::ARTIFACT))?;
-        let sha = kaipkg::sha256(artifact);
-        match sys::comp_add(name, artifact, &sha) {
+        };
+        let sha = kaipkg::sha256(&artifact);
+        match sys::comp_add(name, &artifact, &sha) {
             Ok(()) | Err(Error::Busy) => {}
             Err(e) => return Err(format!("COMP_ADD {name}: {e:?}")),
         }
@@ -562,6 +549,66 @@ fn start_apps(vol: &mut dyn Volume, n: u64) -> Result<Vec<String>, String> {
         }
     }
     Ok(started)
+}
+
+/// The artifact of package `name`, whose object is `sha`, if it is an app.
+fn app_artifact(
+    vol: &mut dyn Volume,
+    name: &str,
+    sha: &kaipkg::Sha,
+) -> Result<Option<Vec<u8>>, String> {
+    let object = vol
+        .read(&store::object_path(sha))?
+        .ok_or_else(|| format!("{name}'s object is not in the store"))?;
+    let files = bundle::files(&object).map_err(|why| format!("{name}: {why}"))?;
+    let header = files
+        .first()
+        .and_then(|(_, text)| core::str::from_utf8(text).ok())
+        .ok_or_else(|| format!("{name}: no header"))?;
+    if Header::parse(header)?.kind != PackageKind::App {
+        return Ok(None);
+    }
+    let artifact = files
+        .iter()
+        .find(|(path, _)| *path == bundle::ARTIFACT)
+        .map(|(_, bytes)| bytes.to_vec())
+        .ok_or_else(|| format!("{name}: an app without {}", bundle::ARTIFACT))?;
+    Ok(Some(artifact))
+}
+
+/// Each app generation `from` held that generation `to` does not, withdrawn
+/// from the supervisor (`withdraw`), so an undo ends the build it took out;
+/// `name as label` for each one that was running.
+fn withdraw_apps(vol: &mut dyn Volume, from: u64, to: u64) -> Result<Vec<String>, String> {
+    let kept = store::generation(vol, to)?.packages;
+    let mut ended = Vec::new();
+    for package in store::generation(vol, from)?.packages {
+        if kept.iter().any(|k| k.sha == package.sha) {
+            continue;
+        }
+        let name = &package.name;
+        let Some(artifact) = app_artifact(vol, name, &package.sha)? else {
+            continue;
+        };
+        let label = kabi::live::package_label(&kaipkg::sha256(&artifact));
+        let withdraw = supervise::Run {
+            name,
+            version: &label,
+        };
+        let mut reply = [0u8; 256];
+        let len = sys::call_route(
+            supervisor(),
+            withdraw.encode_withdraw().as_bytes(),
+            &mut reply,
+            CALL_MS,
+        )
+        .map_err(|e| format!("the supervisor did not answer {name}'s withdraw: {e:?}"))?;
+        match core::str::from_utf8(&reply[..len.min(reply.len())]).unwrap_or("") {
+            "ok" => ended.push(format!("{name} as {label}")),
+            other => println!("pkg: {name} ({label}) is not withdrawn: {other}"),
+        }
+    }
+    Ok(ended)
 }
 
 /// `hello` 1.0.0: its header, then a payload no two runs differ in.
