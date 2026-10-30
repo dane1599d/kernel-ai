@@ -93,6 +93,50 @@ fn a_profile_set_by_click_is_logged_as_the_click_and_undoes() {
 }
 
 #[test]
+fn appearance_set_by_click_saves_the_setting_is_logged_as_the_click_and_undoes() {
+    let host = host();
+    let mut shell = shell(&host);
+    let theme = |host: &FakeHost| crate::appearance::current(host).theme;
+    let words = shell
+        .settings(SETTINGS_APP, "appearance-set theme light", true)
+        .unwrap();
+    assert!(!words.is_empty());
+    assert_eq!(theme(&host), "light");
+    assert!(
+        shell.log.text().contains("user-click:settings"),
+        "{}",
+        shell.log.text()
+    );
+    assert!(
+        shell
+            .settings(SETTINGS_APP, "appearance-set legible on", true)
+            .is_ok()
+    );
+    assert!(crate::appearance::current(host.as_ref()).legible);
+    // look's refusal is the answer, and nothing is saved for it.
+    let saved = host.appearance.borrow().clone();
+    let refused = shell.settings(SETTINGS_APP, "appearance-set theme neon", true);
+    assert!(refused.is_err(), "{refused:?}");
+    assert!(
+        shell
+            .settings(SETTINGS_APP, "appearance-set theme", true)
+            .is_err()
+    );
+    assert_eq!(*host.appearance.borrow(), saved);
+    // Without a click, nothing changes.
+    assert!(
+        shell
+            .settings(SETTINGS_APP, "appearance-set theme dark", false)
+            .is_err()
+    );
+    assert_eq!(theme(&host), "light");
+    // Undo takes back the newest change, legible, and leaves the theme.
+    assert!(shell.eval("undo").text.starts_with("Undone: "));
+    assert!(!crate::appearance::current(host.as_ref()).legible);
+    assert_eq!(theme(&host), "light");
+}
+
+#[test]
 fn keep_running_tells_the_supervisor_saves_the_list_and_undoes() {
     let host = host();
     let mut shell = shell(&host);
