@@ -315,7 +315,6 @@ dependencies = [
 name = "comp-settings"
 version = "0.1.0-dev"
 dependencies = [
- "kaigrants",
  "kaiprofile",
  "look",
  "minicbor",
@@ -326,7 +325,6 @@ name = "comp-settings-ui"
 version = "0.1.0-dev"
 dependencies = [
  "comp-settings",
- "kaigrants",
  "look",
  "uikit",
 ]
@@ -340,7 +338,6 @@ dependencies = [
  "comp-settings-ui",
  "comp-ui-bind",
  "compsdk",
- "kaigrants",
  "livecore",
  "minicbor",
  "uikit",
