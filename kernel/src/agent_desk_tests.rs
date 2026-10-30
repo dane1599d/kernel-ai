@@ -29,21 +29,21 @@ pub const APPS: &str = "term uses=desktop caps=call+term pages=4096 stack_pages=
      notes-window program=comphost caps=serve+component+call uses=desktop pages=8192 stack_pages=512 burst_ms=20000 version=1 start=demand";
 const WAIT_MS: u64 = 60_000;
 /// Where `desktop` starts the pointer: the middle of 1280x800.
-const START: (i32, i32) = (640, 400);
+pub(crate) const START: (i32, i32) = (640, 400);
 /// The Terminal's title bar: its frame is the first, at 48,52, and Notes' the
 /// second, at 80,84, below it.
 const TERM_TITLE: (i32, i32) = (150, 60);
 /// Time for comphost to start Notes and paint its first frame under TCG.
-const OPEN_MS: u64 = 20_000;
+pub(crate) const OPEN_MS: u64 = 20_000;
 /// Time for the harness's keys, and for the shell to take a line.
-const KEYS_MS: u64 = 4_000;
+pub(crate) const KEYS_MS: u64 = 4_000;
 /// Notes' own count, asked of its window while the agent's `notes_add` runs.
 const COUNT: &str = "kai-call 1\nfunc app:notes/actions@1.0.0#count\nargs {}\n";
 /// Between counts: each is a call into comphost, so not every 50 ms.
 const COUNT_MS: u64 = 1_000;
 const CALL_MS: u64 = 10_000;
 
-fn wait(
+pub(crate) fn wait(
     case: &str,
     what: &'static str,
     mut done: impl FnMut() -> bool,
@@ -67,7 +67,7 @@ fn click(at: &mut (i32, i32), to: (i32, i32)) {
 }
 
 /// Gives the Terminal window the keys, and asks the host for the next line.
-fn terminal_keys(case: &str, at: &mut (i32, i32)) -> Result<(), &'static str> {
+pub(crate) fn terminal_keys(case: &str, at: &mut (i32, i32)) -> Result<(), &'static str> {
     click(at, TERM_TITLE);
     wait(
         case,

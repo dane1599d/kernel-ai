@@ -16,14 +16,18 @@ use deskcore::settings_wire::{self as wire, MAX_WAITING};
 use kabi::handle::Handle;
 use livecore::host::{Env, Host};
 use user::{println, sys};
-use wasmhost::LiveInstance;
 use wasmhost::settings_ledger::{Ledger, Owed};
+use wasmhost::{AppEvent, LiveInstance};
 
 pub use deskcore::settings_wire::SETTINGS_APP;
 
 #[derive(Default)]
 pub struct Forward {
     ledger: Ledger,
+    /// Whether an answer has reached the app yet, for the one line that says so.
+    told: bool,
+    /// The serial of the instance last told `started`.
+    started: Option<u64>,
 }
 
 impl Forward {
@@ -41,12 +45,35 @@ impl Forward {
         route: Handle,
         reply: &mut [u8],
     ) -> bool {
+        self.start(host);
         let mut owed = self.take(host);
         owed.extend(self.send(route, reply));
         owed.extend(self.results(route, reply));
         let any = !owed.is_empty();
-        give(host, owed);
+        let given = give(host, owed);
+        if given && !self.told {
+            self.told = true;
+            println!("comphost: the first settings answer reached the app");
+        }
         any
+    }
+
+    /// Tells the shown version it started, once for each instance shown: that
+    /// is when the app asks for what its pages show. A standby's requests are
+    /// dropped, so it could not ask any earlier (at `init`), and nothing else
+    /// tells an app it was shown.
+    fn start<E: Env<Instance = LiveInstance>>(&mut self, host: &mut Host<E>) {
+        let Some(serial) = shown_serial(host) else {
+            return;
+        };
+        if self.started == Some(serial) {
+            return;
+        }
+        self.started = Some(serial);
+        let started = crate::ui::serve_shown(host, |core| core.deliver_event(&AppEvent::Started));
+        if started.is_none() {
+            println!("comphost: the Settings app could not be told it started");
+        }
     }
 
     /// The shown version's requests; a standby's are dropped, so a rehearsed
@@ -125,8 +152,9 @@ impl Forward {
 /// Gives each answer to the instance that asked, if it is still the one shown;
 /// each is a transaction, like a window's input. One for an instance that is
 /// gone is dropped: its successor never asked, and a suspended app is not
-/// woken for it.
-fn give<E: Env<Instance = LiveInstance>>(host: &mut Host<E>, owed: Vec<Owed>) {
+/// woken for it. Whether any reached the app.
+fn give<E: Env<Instance = LiveInstance>>(host: &mut Host<E>, owed: Vec<Owed>) -> bool {
+    let mut given = false;
     for answer in owed {
         let ticket = answer.ticket;
         if !answer.is_for(shown_serial(host)) {
@@ -136,8 +164,11 @@ fn give<E: Env<Instance = LiveInstance>>(host: &mut Host<E>, owed: Vec<Owed>) {
         let outcome = answer.outcome;
         if crate::ui::serve_shown(host, |core| core.settings_reply(ticket, outcome)).is_none() {
             println!("comphost: the settings answer to ticket {ticket} did not reach the app");
+        } else {
+            given = true;
         }
     }
+    given
 }
 
 /// The serial of the shown version's instance, if one is loaded.

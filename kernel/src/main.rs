@@ -23,6 +23,7 @@ mod allow;
 mod apic;
 mod app_editor_tests;
 mod app_route_tests;
+mod app_settings_tests;
 mod app_terminal_tests;
 mod appbench_tests;
 mod ask_box;
@@ -393,6 +394,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::UiKeys => run_case(keys_tests::check),
         SelfTest::DeskTerm => run_case(term_tests::check),
         SelfTest::DeskAgent => run_case(agent_desk_tests::agent_check),
+        SelfTest::AppSettings => run_case(app_settings_tests::check),
         SelfTest::DeskTakeover => run_case(agent_desk_tests::takeover_check),
         SelfTest::Scriptrun => run_case(scriptrun_tests::check),
         SelfTest::Fpu => run_case(fpu_tests::fpu_check),
