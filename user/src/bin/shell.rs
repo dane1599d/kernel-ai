@@ -526,6 +526,20 @@ impl Host for System {
         }
     }
 
+    fn restart_read(&self) -> Option<String> {
+        self.state.read(files::RESTART)
+    }
+
+    /// As the keep-running list is: with the line's files, if it changed any.
+    fn restart_write(&self, text: &str) -> Result<(), String> {
+        match self.files.is_open() {
+            true => self.state.write_in(files::RESTART, text),
+            false => self
+                .state
+                .write(files::RESTART, text, self.files.next_action()),
+        }
+    }
+
     /// `keep <app> on|off` to the supervisor, which keeps the app from napping.
     fn keep_running(&self, app: &str, on: bool) -> Result<(), String> {
         supervise(&supervise::keep::encode(app, on))

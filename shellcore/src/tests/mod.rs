@@ -76,6 +76,8 @@ struct FakeHost {
     /// What the supervisor was told to keep running, and the saved list.
     kept: RefCell<Vec<(String, bool)>>,
     keep_file: RefCell<Option<String>>,
+    /// The saved restart window (`kai-updates 1`).
+    restart_file: RefCell<Option<String>>,
     /// The installed apps' rows, and what each `app_call` sent and answers.
     apps: RefCell<crate::apps::Apps>,
     app_requests: RefCell<Vec<(String, String)>>,
@@ -239,6 +241,7 @@ impl FakeHost {
             audit: RefCell::new(Vec::new()),
             kept: RefCell::new(Vec::new()),
             keep_file: RefCell::new(None),
+            restart_file: RefCell::new(None),
             apps: RefCell::new(crate::apps::Apps::default()),
             app_requests: RefCell::new(Vec::new()),
             app_replies: RefCell::new(VecDeque::new()),
@@ -655,6 +658,15 @@ impl Host for FakeHost {
 
     fn keep_running(&self, app: &str, on: bool) -> Result<(), String> {
         self.kept.borrow_mut().push((String::from(app), on));
+        Ok(())
+    }
+
+    fn restart_read(&self) -> Option<String> {
+        self.restart_file.borrow().clone()
+    }
+
+    fn restart_write(&self, text: &str) -> Result<(), String> {
+        *self.restart_file.borrow_mut() = Some(String::from(text));
         Ok(())
     }
 
