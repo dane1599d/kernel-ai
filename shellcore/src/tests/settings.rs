@@ -130,6 +130,43 @@ fn the_kept_apps_are_told_to_the_supervisor_at_boot() {
     assert!(bad.kept.borrow().is_empty());
 }
 
+#[test]
+fn a_saved_kept_app_not_serving_yet_is_tried_again_then_given_up() {
+    let host = host_with_keep("kai-keep 1\nnotes\n");
+    host.keep_fails.set(2);
+    let mut first = shell(&host);
+    // Refused once at boot, once more on the first retry, then taken.
+    first.retry_keep();
+    assert!(host.kept.borrow().is_empty(), "not due yet");
+    host.clock.set(host.clock.get() + 1_000_000_000);
+    first.retry_keep();
+    host.clock.set(host.clock.get() + 1_000_000_000);
+    first.retry_keep();
+    assert_eq!(*host.kept.borrow(), [(String::from("notes"), true)]);
+    assert_eq!(
+        first.settings(crate::settings::SETTINGS_APP, "keep-running on notes", true),
+        Ok(String::from("notes keep-running is on already"))
+    );
+    // One the supervisor never takes is audited once the retries run out.
+    let host = host_with_keep("kai-keep 1\nnotes\n");
+    host.keep_fails.set(u32::MAX);
+    let mut shell = shell(&host);
+    host.clock
+        .set(host.clock.get() + crate::settings::KEEP_RETRY_FOR_NS + 1);
+    shell.retry_keep();
+    assert!(
+        host.audit
+            .borrow()
+            .iter()
+            .any(|line| line.starts_with("notes is not kept running")),
+        "{:?}",
+        host.audit.borrow()
+    );
+    host.clock.set(host.clock.get() + 1_000_000_000);
+    shell.retry_keep();
+    assert!(host.kept.borrow().is_empty());
+}
+
 fn host_with_keep(text: &str) -> Rc<FakeHost> {
     let host = host();
     *host.keep_file.borrow_mut() = Some(String::from(text));
