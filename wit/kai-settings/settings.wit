@@ -23,9 +23,10 @@ interface settings {
     /// Queues `request` for the system and returns its ticket. The whole request
     /// must be one of these, exactly:
     ///
-    /// - reads: `rules`, `grants`, `about`, `profiles`, `apps` (the apps that can
-    ///   nap), `file appearance`, `file apps` and `file updates` (a settings
-    ///   file's bytes);
+    /// - reads: `rules`, `grants` (the apps that have effect rows) or `grants <app>` (one
+    ///   app's rows, an app being 1 to 24 lowercase letters, digits or `-`),
+    ///   `about`, `profiles`, `apps` (the apps that can nap), `file appearance`,
+    ///   `file apps` and `file updates` (a settings file's bytes);
     /// - changes, where a name is 1 to 24 printable ASCII bytes with one space
     ///   at most between words:
     ///   - `appearance-set <setting> <value>`, a setting of `theme`, `scale`,
@@ -33,7 +34,9 @@ interface settings {
     ///     up to 64 bytes;
     ///   - `profile-set <name>`;
     ///   - `rules-remove <n>` or `rules-remove S<n>`, up to four digits;
-    ///   - `grants-revoke <id>`, decimal;
+    ///   - `grants-revoke <app> <row>` and `grants-restore <app> <row>`, a row
+    ///     being a lowercase letter then lowercase letters, digits or `_`, up to
+    ///     24 bytes;
     ///   - `keep-running on|off <app>`;
     ///   - `restart-window <start> <end>` (minutes of the day, below 1440 and
     ///     different) or `restart-window off`.

@@ -9,7 +9,8 @@
 //! | `Appearance` | `appearance-set <setting> <value>`, one for each changed setting |
 //! | `UseProfile` | `profile-set <name>` |
 //! | `RemoveRule` | `rules-remove <n>` or `rules-remove S<n>` |
-//! | `Revoke` | `grants-revoke <id>` |
+//! | `Revoke` | `grants-revoke <app> <row>` |
+//! | `Restore` | `grants-restore <app> <row>` |
 //! | `KeepRunning` | `keep-running on\|off <app>` |
 //! | `RestartWindow` | `restart-window <start> <end>` or `restart-window off` |
 //!
@@ -21,6 +22,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use comp_settings::Intent;
+use comp_settings::access::{app_ok, row_ok};
 use comp_settings::files::Appearance;
 
 /// Longest theme name sent, in bytes (the host's `MAX_VALUE`).
@@ -101,13 +103,21 @@ pub fn plan(before: &Appearance, intent: &Intent) -> Vec<Planned> {
             one(format!("profile-set {name}"))
         }
         Intent::RemoveRule(rule) => one(format!("rules-remove {}", rule.word())),
-        Intent::Revoke(grant) => one(format!("grants-revoke {grant}")),
+        Intent::Revoke { app, row } if app_ok(app) && row_ok(row) => {
+            one(format!("grants-revoke {app} {row}"))
+        }
+        Intent::Restore { app, row } if app_ok(app) && row_ok(row) => {
+            one(format!("grants-restore {app} {row}"))
+        }
         Intent::KeepRunning { app, on: keep } if name_ok(app, MAX_APP) => {
             one(format!("keep-running {} {app}", on(*keep)))
         }
         Intent::RestartWindow(Some((start, end))) => one(format!("restart-window {start} {end}")),
         Intent::RestartWindow(None) => one(String::from("restart-window off")),
-        Intent::UseProfile(_) | Intent::KeepRunning { .. } => Vec::new(),
+        Intent::UseProfile(_)
+        | Intent::KeepRunning { .. }
+        | Intent::Revoke { .. }
+        | Intent::Restore { .. } => Vec::new(),
     }
 }
 
@@ -177,7 +187,20 @@ mod tests {
                 Intent::RemoveRule(RuleRef::Instruction(2)),
                 "rules-remove S2",
             ),
-            (Intent::Revoke(7), "grants-revoke 7"),
+            (
+                Intent::Revoke {
+                    app: "notes".into(),
+                    row: "notes_add".into(),
+                },
+                "grants-revoke notes notes_add",
+            ),
+            (
+                Intent::Restore {
+                    app: "files-window".into(),
+                    row: "fs_list".into(),
+                },
+                "grants-restore files-window fs_list",
+            ),
             (
                 Intent::KeepRunning {
                     app: "notes".into(),
@@ -229,6 +252,42 @@ mod tests {
     }
 
     #[test]
+    fn an_app_or_row_the_shell_would_not_hold_is_not_sent() {
+        let revoke = |app: &str, row: &str| Intent::Revoke {
+            app: app.into(),
+            row: row.into(),
+        };
+        let restore = |app: &str, row: &str| Intent::Restore {
+            app: app.into(),
+            row: row.into(),
+        };
+        let bad = [
+            ("", "notes_add"),
+            ("notes", ""),
+            ("Notes", "notes_add"),
+            ("notes", "Notes_add"),
+            ("no tes", "notes_add"),
+            ("notes", "notes add"),
+            ("notes", "notes_add\nrules-remove 1"),
+            ("notes\tx", "notes_add"),
+            ("notes_app", "notes_add"),
+            ("notes", "notes-add"),
+            ("notes", "1notes"),
+            ("abcdefghijklmnopqrstuvwxy", "notes_add"),
+            ("notes", "abcdefghijklmnopqrstuvwxy"),
+        ];
+        for (app, row) in bad {
+            assert!(requests(&revoke(app, row)).is_empty(), "{app:?} {row:?}");
+            assert!(requests(&restore(app, row)).is_empty(), "{app:?} {row:?}");
+            // The host would have trapped on each, had it been sent.
+            for verb in ["grants-revoke", "grants-restore"] {
+                let line = format!("{verb} {app} {row}");
+                assert!(classify(&line).is_err(), "{line:?}");
+            }
+        }
+    }
+
+    #[test]
     fn the_names_the_app_sends_are_the_names_the_host_takes() {
         let names = [
             "",
@@ -267,7 +326,14 @@ mod tests {
             }),
             Intent::UseProfile("quiet".into()),
             Intent::RemoveRule(RuleRef::Rule(1)),
-            Intent::Revoke(1),
+            Intent::Revoke {
+                app: "notes".into(),
+                row: "notes_add".into(),
+            },
+            Intent::Restore {
+                app: "notes".into(),
+                row: "notes_add".into(),
+            },
             Intent::KeepRunning {
                 app: "notes".into(),
                 on: true,
