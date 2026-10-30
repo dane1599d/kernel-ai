@@ -23,8 +23,8 @@ interface settings {
     /// Queues `request` for the system and returns its ticket. The whole request
     /// must be one of these, exactly:
     ///
-    /// - reads: `rules`, `grants` (every app's effect rows, or `grants <app>` for
-    ///   one app, an app being 1 to 24 lowercase letters, digits or `-`),
+    /// - reads: `rules`, `grants` (the apps that have effect rows) or `grants <app>` (one
+    ///   app's rows, an app being 1 to 24 lowercase letters, digits or `-`),
     ///   `about`, `profiles`, `apps` (the apps that can nap), `file appearance`,
     ///   `file apps` and `file updates` (a settings file's bytes);
     /// - changes, where a name is 1 to 24 printable ASCII bytes with one space

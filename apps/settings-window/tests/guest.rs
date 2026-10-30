@@ -295,8 +295,16 @@ fn an_apps_effect_row_is_revoked_and_restored_by_app_and_row() {
     call(&mut g, |g| g.deliver_event(&AppEvent::Started)).unwrap();
     let asked = sent(&mut g);
     assert_eq!(asked[1].2, "grants");
+    // `grants` names the apps; the app then asks for each one's rows.
+    answer(&mut g, asked[1].0, Ok("notes\n"));
+    let next = sent(&mut g);
+    assert_eq!(next.len(), 1);
+    assert_eq!(
+        (next[0].1, next[0].2.as_str()),
+        (SettingsKind::Read, "grants notes")
+    );
     let rows = "notes\tnotes_add\tallowed\nnotes\tfs_write\twithheld\n";
-    answer(&mut g, asked[1].0, Ok(rows));
+    answer(&mut g, next[0].0, Ok(rows));
     g.take_ui();
 
     // The page of what apps can do, with the one app chosen.
@@ -351,6 +359,42 @@ fn an_apps_effect_row_is_revoked_and_restored_by_app_and_row() {
         g.ui_events_user(w, &[UiEvent::Pressed(REVOKE)]).unwrap()
     });
     assert!(g.take_settings().is_empty());
+}
+
+/// The shell lists up to 32 apps, and the host takes only `MAX_QUEUED` requests
+/// of a call: the rows are asked for a few at a time, each answer making room
+/// for the next, and never more than the host would trap on.
+#[test]
+fn the_rows_of_many_apps_are_asked_for_as_answers_make_room() {
+    let Some(mut g) = load() else { return };
+    frame(&mut g);
+    call(&mut g, |g| g.deliver_event(&AppEvent::Started)).unwrap();
+    let asked = sent(&mut g);
+    let names: String = (0..40).map(|i| format!("app{i}\n")).collect();
+    answer(&mut g, asked[1].0, Ok(&names));
+    let mut order = Vec::new();
+    let mut waiting = sent(&mut g);
+    assert!(
+        !waiting.is_empty() && waiting.len() <= MAX_QUEUED,
+        "{waiting:?}"
+    );
+    while let Some((ticket, kind, request)) = waiting.pop() {
+        assert_eq!(kind, SettingsKind::Read);
+        let app = request.strip_prefix("grants ").unwrap().to_string();
+        order.push(app.clone());
+        answer(&mut g, ticket, Ok(&format!("{app}\tfs_list\tallowed\n")));
+        // Each answer asks for at most the next one.
+        let more = sent(&mut g);
+        assert!(more.len() <= 1, "{more:?}");
+        waiting.extend(more);
+        assert!(order.len() <= 40, "asked for more than were named");
+    }
+    // The first 32 were asked for, once each; no more are listed than that.
+    assert_eq!(order.len(), 32);
+    let mut unique = order.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(unique.len(), 32);
 }
 
 #[test]
