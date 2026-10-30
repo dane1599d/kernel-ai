@@ -11,6 +11,10 @@ const DATA: Data = Data {
     gpt: true,
 };
 
+/// fs on the data disk, desktop and Notes together pass the page budget (half
+/// the free memory) of the default 512 MiB guest.
+const KEEP_RUNNING_MIB: u64 = 1024;
+
 /// Boot 2 of `keep-running`: the shell replays `/system/state/keep`.
 const KEEP_RUNNING_2: TestCase = TestCase {
     expect: &[
@@ -19,6 +23,7 @@ const KEEP_RUNNING_2: TestCase = TestCase {
         "keep-running: boot 2 let notes-window go, and it napped",
     ],
     data: Some(DATA),
+    memory_mib: Some(KEEP_RUNNING_MIB),
     ..case("keep-running (boot 2)", "test=keep-running reread")
 };
 
@@ -226,6 +231,7 @@ pub(super) const CASES: &[TestCase] = &[
             "keep-running: boot 1 kept notes-window running from a Settings click, shell only",
         ],
         data: Some(DATA),
+        memory_mib: Some(KEEP_RUNNING_MIB),
         then: Some(&KEEP_RUNNING_2),
         ..case("keep-running", "test=keep-running")
     },
