@@ -14,20 +14,26 @@ use crate::dev::BlockDev;
 use crate::fs::{Fs, record_of, sealed_of};
 use crate::items::{K_DATA, MAX_FILE, SEALED_CHUNK};
 use crate::tree::Key;
-use alloc::vec;
 use alloc::vec::Vec;
 
 /// A sealed file being written in order, for bytes that arrive in many small
 /// pieces, such as a blob streamed to `fs` a message at a time: [`Fs::begin_sealed`],
 /// then [`Fs::push_sealed`] until every byte is in, then [`Fs::finish_sealed`].
-/// It holds one 2 MiB piece. It belongs to the transaction it was begun in: the
-/// caller commits after `finish_sealed`, or aborts and drops it.
+/// It holds one 2 MiB piece.
+///
+/// It belongs to the transaction it was begun in, and `fs` keeps begin to
+/// finish in one action: the caller commits after `finish_sealed`. After any
+/// error, the caller aborts and drops the writer. Once that transaction ends,
+/// by commit or abort, the writer is refused, so a stale one can neither add
+/// records to a freed inode nor make a half blob durable.
 pub struct SealedWriter {
     ino: u64,
     len: u64,
     /// Bytes written as SEALED records so far.
     at: u64,
     piece: Vec<u8>,
+    /// [`Fs::ended`] when it was begun.
+    ended: u64,
 }
 
 impl SealedWriter {
@@ -42,6 +48,11 @@ impl SealedWriter {
 
     pub fn is_empty(&self) -> bool {
         self.len == 0
+    }
+
+    /// The length of the piece being filled: the next 2 MiB, or what is left.
+    fn want(&self) -> usize {
+        (self.len - self.at).min(SEALED_CHUNK) as usize
     }
 }
 
@@ -58,11 +69,11 @@ impl<D: BlockDev> Fs<D> {
         fill: &mut dyn FnMut(&mut [u8]) -> Result<(), Error>,
     ) -> Result<u64, Error> {
         let mut writer = self.begin_sealed(dir, name, len)?;
-        let mut piece = vec![0; len.min(SEALED_CHUNK) as usize];
-        while writer.done() < len {
-            let n = (len - writer.done()).min(SEALED_CHUNK) as usize;
-            fill(&mut piece[..n])?;
-            self.push_sealed(&mut writer, &piece[..n])?;
+        while writer.at < len {
+            // Filled in place: the writer's piece is the only buffer.
+            writer.piece.resize(writer.want(), 0);
+            fill(&mut writer.piece)?;
+            self.put_piece(&mut writer)?;
         }
         self.finish_sealed(writer)
     }
@@ -79,6 +90,7 @@ impl<D: BlockDev> Fs<D> {
             len,
             at: 0,
             piece: Vec::with_capacity(len.min(SEALED_CHUNK) as usize),
+            ended: self.ended,
         })
     }
 
@@ -89,18 +101,16 @@ impl<D: BlockDev> Fs<D> {
         writer: &mut SealedWriter,
         mut bytes: &[u8],
     ) -> Result<(), Error> {
+        self.current(writer)?;
         if bytes.len() as u64 > writer.len - writer.done() {
             return Err(Error::Invalid("more bytes than the sealed file's length"));
         }
         while !bytes.is_empty() {
-            let want = (writer.len - writer.at).min(SEALED_CHUNK) as usize;
-            let take = (want - writer.piece.len()).min(bytes.len());
+            let take = (writer.want() - writer.piece.len()).min(bytes.len());
             writer.piece.extend_from_slice(&bytes[..take]);
             bytes = &bytes[take..];
-            if writer.piece.len() == want {
-                self.put_sealed(Key::new(writer.ino, K_DATA, writer.at), &writer.piece)?;
-                writer.at += want as u64;
-                writer.piece.clear();
+            if writer.piece.len() == writer.want() {
+                self.put_piece(writer)?;
             }
         }
         Ok(())
@@ -108,6 +118,7 @@ impl<D: BlockDev> Fs<D> {
 
     /// Ends the file once every byte is in; its inode.
     pub fn finish_sealed(&mut self, writer: SealedWriter) -> Result<u64, Error> {
+        self.current(&writer)?;
         if writer.at != writer.len {
             return Err(Error::Invalid("a sealed file is missing bytes"));
         }
@@ -116,6 +127,22 @@ impl<D: BlockDev> Fs<D> {
         (inode.mtime, inode.ctime) = (self.clock, self.clock);
         self.put_inode(writer.ino, &inode)?;
         Ok(writer.ino)
+    }
+
+    /// Refuses a writer whose transaction has ended.
+    fn current(&self, writer: &SealedWriter) -> Result<(), Error> {
+        match writer.ended == self.ended {
+            true => Ok(()),
+            false => Err(Error::Invalid("a sealed writer outlived its transaction")),
+        }
+    }
+
+    /// Writes the writer's full piece as one SEALED record.
+    fn put_piece(&mut self, writer: &mut SealedWriter) -> Result<(), Error> {
+        self.put_sealed(Key::new(writer.ino, K_DATA, writer.at), &writer.piece)?;
+        writer.at += writer.piece.len() as u64;
+        writer.piece.clear();
+        Ok(())
     }
 
     /// Whether `ino` is a sealed file.
@@ -171,6 +198,7 @@ mod tests {
     use crate::repair::repair;
     use crate::{Error, MemDisk};
     use alloc::string::String;
+    use alloc::vec;
 
     /// A disk with a sealed blob of three pieces and an ordinary file.
     fn with_blob() -> (Fs<MemDisk>, u64, u64) {
@@ -299,6 +327,30 @@ mod tests {
         assert!(empty.is_empty());
         let ino = fs.finish_sealed(empty).unwrap();
         assert_eq!(fs.stat(ino).unwrap().size, 0);
+    }
+
+    #[test]
+    fn a_writer_is_refused_once_its_transaction_ends() {
+        let stale = Error::Invalid("a sealed writer outlived its transaction");
+        let mut fs = Fs::mkfs(MemDisk::new(8192), [6; 16], "stale").unwrap();
+        fs.set_volume(MODELS).unwrap();
+        // Aborted: the stale writer must not add records to a freed inode.
+        let mut writer = fs.begin_sealed(ROOT, "a.gguf", 5000).unwrap();
+        fs.push_sealed(&mut writer, &[1; 3000]).unwrap();
+        fs.abort().unwrap();
+        assert_eq!(fs.push_sealed(&mut writer, &[1; 2000]), Err(stale));
+        assert_eq!(fs.finish_sealed(writer), Err(stale));
+        let reused = fs.create(ROOT, "plain").unwrap();
+        fs.commit().unwrap();
+        assert!(!fs.is_sealed(reused).unwrap());
+        // Committed mid-stream, which `fs` never does: the rest is refused.
+        let mut writer = fs.begin_sealed(ROOT, "b.gguf", 3 * SEALED_CHUNK).unwrap();
+        fs.push_sealed(&mut writer, &vec![2; SEALED_CHUNK as usize])
+            .unwrap();
+        fs.commit().unwrap();
+        let more = vec![2; SEALED_CHUNK as usize];
+        assert_eq!(fs.push_sealed(&mut writer, &more), Err(stale));
+        assert_eq!(fs.finish_sealed(writer), Err(stale));
     }
 
     #[test]
