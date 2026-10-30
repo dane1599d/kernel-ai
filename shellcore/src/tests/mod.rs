@@ -20,6 +20,7 @@ mod files;
 mod fuzz;
 mod log;
 mod logdisk;
+mod look;
 mod more;
 mod packages;
 mod panel;
@@ -68,6 +69,8 @@ struct FakeHost {
     remembered: RefCell<Vec<(String, String, String)>>,
     forgot: Cell<u32>,
     audit: RefCell<Vec<String>>,
+    /// The saved appearance (`kai-appearance 1`).
+    appearance: RefCell<Option<String>>,
     /// The trusted path's ONCE book: badge, digest, and whether it was used.
     once: RefCell<Vec<(u64, [u8; 32], bool)>>,
     /// Rule handles revoked.
@@ -221,6 +224,7 @@ impl FakeHost {
             remembered: RefCell::new(Vec::new()),
             forgot: Cell::new(0),
             audit: RefCell::new(Vec::new()),
+            appearance: RefCell::new(None),
             once: RefCell::new(Vec::new()),
             revoked: RefCell::new(Vec::new()),
             procs: RefCell::new(alloc::vec![
@@ -609,6 +613,15 @@ impl Host for FakeHost {
         let child = apart.as_ref()?;
         self.apart_requests.borrow_mut().push(request.into());
         Some(child(request))
+    }
+
+    fn appearance_read(&self) -> Option<String> {
+        self.appearance.borrow().clone()
+    }
+
+    fn appearance_write(&self, text: &str) -> Result<(), String> {
+        *self.appearance.borrow_mut() = Some(String::from(text));
+        Ok(())
     }
 
     fn audit(&self, text: &str) {

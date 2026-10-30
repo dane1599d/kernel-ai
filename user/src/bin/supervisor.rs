@@ -21,6 +21,10 @@
 //! for a resource profile (P3 task 12), for the shell alone: PROC_CLASS_SET and
 //! PROC_QUOTA_SET need SUPERVISE, and the kernel's floors refuse a protected
 //! process. The answer is what the process had, for `undo`.
+//! `keep <name> on|off`, also for the shell alone, keeps an app from napping
+//! (`supervise::keep`): the flag lives in its record and goes to it as `keep=1`
+//! at each start, and to a running app at once as the kernel's
+//! `ctl keep-running on|off`.
 
 #![no_std]
 #![no_main]
@@ -207,6 +211,9 @@ fn handle(services: &mut [Service], text: &str, caller: u64) -> String {
     if let Some(run) = supervise::Run::parse(text) {
         return run_package(services, run, caller);
     }
+    if let Some((name, on)) = supervise::keep::parse(text) {
+        return keep(services, &records, name, on, caller);
+    }
     let Some((request, proof)) = Request::parse(text) else {
         return String::from("err unknown request");
     };
@@ -292,17 +299,68 @@ fn demand(services: &mut [Service], records: &[Record], name: &str, caller: u64)
     }
 }
 
+/// `keep <name> on|off` from the shell: the flag goes in the app's record,
+/// which passes `keep=1` at each start, and a running app hears it at once.
+fn keep(services: &mut [Service], records: &[Record], name: &str, on: bool, caller: u64) -> String {
+    let specs: Vec<&ServiceSpec> = services.iter().map(|s| &s.spec).collect();
+    let shell = services
+        .iter()
+        .find(|s| s.spec.name == "shell")
+        .and_then(|s| s.pid);
+    let index = match supervise::keep::check(name, &specs, records, caller, shell) {
+        Ok(index) => index,
+        Err(why) => {
+            println!(
+                "{:?} from pid {caller} refused: {why}",
+                supervise::keep::encode(name, on)
+            );
+            return String::from(why);
+        }
+    };
+    let was = services[index].record.keep;
+    services[index].record.keep = on;
+    save(services);
+    let word = if on { "on" } else { "off" };
+    if services[index].pid.is_none() {
+        println!("{name} keep-running {word}, from its next start");
+        return format!("ok keep-running {word}");
+    }
+    let verb = if on {
+        sys::AppCtl::KeepOn
+    } else {
+        sys::AppCtl::KeepOff
+    };
+    let reply = send_ctl(name, verb);
+    // A running app that did not take it: the record goes back, so the shell's
+    // refusal and the supervisor agree.
+    if !reply.starts_with("ok") {
+        services[index].record.keep = was;
+        save(services);
+    }
+    reply
+}
+
 /// `ctl suspend` (or, `resume`, `ctl resume`) to app `name` through the kernel:
 /// the app's own answer, `ok ...` or `err ...`.
 fn app_ctl(name: &str, resume: bool) -> String {
+    send_ctl(
+        name,
+        if resume {
+            sys::AppCtl::Resume
+        } else {
+            sys::AppCtl::Suspend
+        },
+    )
+}
+
+/// `verb`'s `ctl` request to app `name` through the kernel (APP_CTL): the
+/// app's own answer.
+fn send_ctl(name: &str, verb: sys::AppCtl) -> String {
     let mut reply = [0u8; 256];
-    match sys::app_ctl(name, resume, &mut reply) {
+    match sys::app_ctl(name, verb, &mut reply) {
         Ok(len) => {
             let text = String::from_utf8_lossy(&reply[..len.min(reply.len())]).into_owned();
-            println!(
-                "{name} {}: {text}",
-                if resume { "resume" } else { "suspend" }
-            );
+            println!("{name} {}: {text}", verb.word());
             text
         }
         Err(error) => format!("err cannot reach {name}: {error:?}"),
@@ -431,8 +489,12 @@ fn start(service: &mut Service, now: u64) {
         }
     };
     // The restart count goes to the program, so a restart is visible from outside.
+    let keep = match service.record.keep {
+        true => format!(" {}", supervise::keep::ARG),
+        false => String::new(),
+    };
     let args = format!(
-        "restart={} {}{version}",
+        "restart={} {}{version}{keep}",
         service.record.restarts, service.spec.args
     );
     let name = service.spec.name.as_bytes();

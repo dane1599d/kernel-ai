@@ -536,15 +536,36 @@ pub fn event_read(buf: &mut [u8]) -> Result<usize, Error> {
     .map(|n| n as usize)
 }
 
-/// `ctl suspend`, or with `resume` `ctl resume`, to app `name`, sent by the
-/// kernel (APP_CTL); the app's reply goes into `reply`. For the supervisor.
-pub fn app_ctl(name: &str, resume: bool, reply: &mut [u8]) -> Result<usize, Error> {
+/// The `ctl` requests APP_CTL sends an app, by their verb numbers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AppCtl {
+    Suspend = 0,
+    Resume = 1,
+    KeepOn = 2,
+    KeepOff = 3,
+}
+
+impl AppCtl {
+    /// For the log: `suspend`, `resume`, `keep-running on|off`.
+    pub fn word(self) -> &'static str {
+        match self {
+            AppCtl::Suspend => "suspend",
+            AppCtl::Resume => "resume",
+            AppCtl::KeepOn => "keep-running on",
+            AppCtl::KeepOff => "keep-running off",
+        }
+    }
+}
+
+/// `verb`'s `ctl` request to app `name`, sent by the kernel (APP_CTL); the
+/// app's reply goes into `reply`. For the supervisor.
+pub fn app_ctl(name: &str, verb: AppCtl, reply: &mut [u8]) -> Result<usize, Error> {
     call(
         call::APP_CTL,
         [
             name.as_ptr() as u64,
             name.len() as u64,
-            u64::from(resume),
+            verb as u64,
             reply.as_mut_ptr() as u64,
             reply.len() as u64,
             0,

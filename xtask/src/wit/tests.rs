@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 #[test]
 fn the_tree_matches_its_frozen_copies() {
     let root = crate::workspace_root().join("wit");
-    assert_eq!(check(&root), Ok(3));
+    assert_eq!(check(&root), Ok(5));
 }
 
 const FROZEN: &str = "package demo:pkg@0.1.0;

@@ -218,11 +218,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "comp-monitor"
+name = "comp-models"
+version = "0.1.0-dev"
+
+[[package]]
+name = "comp-models-ui"
 version = "0.1.0-dev"
 dependencies = [
- "appabi",
+ "comp-models",
+ "uikit",
 ]
+
+[[package]]
+name = "comp-monitor"
+version = "0.1.0-dev"
 
 [[package]]
 name = "comp-monitor-ui"
@@ -299,6 +308,23 @@ dependencies = [
  "kaigrants",
  "look",
  "uikit",
+]
+
+[[package]]
+name = "comp-settings-window"
+version = "0.1.0-dev"
+dependencies = [
+ "appabi",
+ "comp-settings",
+ "comp-settings-ui",
+ "comp-ui-bind",
+ "compsdk",
+ "kaigrants",
+ "livecore",
+ "minicbor",
+ "uikit",
+ "wasmhost",
+ "wit-bindgen",
 ]
 
 [[package]]
@@ -1463,6 +1489,7 @@ dependencies = [
  "kaigrants",
  "kaiprofile",
  "llmproto",
+ "look",
  "promptcore",
  "rhai",
  "sched",
@@ -1634,6 +1661,10 @@ dependencies = [
  "quote",
  "syn 3.0.9",
 ]
+
+[[package]]
+name = "systemabi"
+version = "0.1.0-dev"
 
 [[package]]
 name = "talc"
@@ -2023,6 +2054,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "wit-bindgen-c"
+version = "0.63.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e9dae58bbb3240ed529a9c8e0eeca4650d4c0e86f0b7cf30f43e53bb35f4f97d"
+dependencies = [
+ "anyhow",
+ "heck",
+ "indexmap",
+ "wasm-encoder",
+ "wasm-metadata",
+ "wit-bindgen-core",
+ "wit-component",
+]
+
+[[package]]
 name = "wit-bindgen-core"
 version = "0.63.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2172,6 +2218,8 @@ dependencies = [
  "uelf",
  "wasmhost",
  "wat",
+ "wit-bindgen-c",
+ "wit-bindgen-core",
  "wit-parser",
 ]
 

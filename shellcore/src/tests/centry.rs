@@ -117,3 +117,23 @@ fn a_call_with_no_entry_running_is_refused() {
     assert!(matches!(rr.value, Some(Err(_))));
     assert_eq!(host.policy.get(), None);
 }
+
+#[test]
+fn a_row_kai_h_does_not_bind_is_refused_before_the_door() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    shell.entry_begin("tune(); notes_add(\"x\");");
+    for name in ["tune", "component_revert", "notes_add"] {
+        let json = format!(r#"{{"name":"{name}","arguments":{{}}}}"#);
+        let refused = shell.entry_call(&call(&json));
+        assert_eq!(
+            refused.value,
+            Some(Err(format!("refused: {name} is not a kai call")))
+        );
+    }
+    assert_eq!(
+        shell.entry_end(true),
+        None,
+        "nothing ran, so nothing is logged"
+    );
+}

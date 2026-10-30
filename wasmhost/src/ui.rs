@@ -49,6 +49,9 @@ pub(crate) struct UiHost {
     pub(crate) ui: Ui,
     pub(crate) updates: Vec<Update>,
     measure: Option<Box<dyn Measure>>,
+    /// Whether the app may keep a window from the agent (`set-agent-private`):
+    /// only one the system image grants it, as comphost says.
+    pub(crate) may_be_private: bool,
 }
 
 /// The measure the windows are laid out with.
@@ -181,7 +184,7 @@ pub(crate) fn view(
 
 /// The call itself: `Ok(Ok(id))` for `open`, `Ok(Ok(None))` for the rest, the
 /// app's error, or why its arguments make no sense (a trap).
-fn run(
+pub(crate) fn run(
     host: &mut UiHost,
     name: &str,
     args: &[Val],
@@ -226,6 +229,13 @@ fn run(
             let unsaved = bool_of(args.get(1))?;
             host.ui.window(window).map(|w| w.set_unsaved(unsaved))
         }
+        "set-agent-private" => {
+            let private = bool_of(args.get(1))?;
+            if !host.may_be_private {
+                return Err("set-agent-private needs the system image's grant".into());
+            }
+            host.ui.window(window).map(|w| w.set_agent_private(private))
+        }
         other => return Err(format!("{other} is not a view function")),
     };
     Ok(done.map(|()| None))
@@ -243,6 +253,13 @@ impl CoreInstance {
     /// comphost draws with.
     pub fn set_measure(&mut self, measure: Box<dyn Measure>) {
         self.store.data_mut().ui.measure = Some(measure);
+    }
+
+    /// Lets the app keep its windows from the agent (`set-agent-private`), for
+    /// an app the system image grants it, never from its own manifest. Without
+    /// it, the call traps.
+    pub fn allow_agent_private(&mut self, allowed: bool) {
+        self.store.data_mut().ui.may_be_private = allowed;
     }
 
     /// What comphost shows next, oldest first; taking them empties the list.
@@ -264,7 +281,20 @@ impl CoreInstance {
         let Ok(events) = events else {
             return Ok(());
         };
-        self.ui_events(window, &events)
+        self.ui_events_user(window, &events)
+    }
+
+    /// As [`CoreInstance::ui_events`], for events a person caused with a real key
+    /// or click: while the app handles them, a granted import can tell they are
+    /// the person's (`HostState::user_input`). [`CoreInstance::ui_input`] is this
+    /// for the input comphost routes from desktop; the agent's `ui_act` and every
+    /// other source go through `ui_events`, so they are never taken for a
+    /// person's.
+    pub fn ui_events_user(&mut self, window: u32, events: &[UiEvent]) -> Result<(), Fault> {
+        self.store.data_mut().user_input = true;
+        let result = self.ui_events(window, events);
+        self.store.data_mut().user_input = false;
+        result
     }
 
     /// The agent's AccessKit action on a node, which reaches the app as the same

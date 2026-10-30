@@ -1,10 +1,11 @@
 //! The System monitor window on the host: golden display lists of its views,
 //! drawn by `uikit` with `FixedAdvance`, the round trip from window events to
-//! the calls the OS is asked for, and that every state's tree is one `uikit`
+//! the call the OS is asked for, and that every state's tree is one `uikit`
 //! accepts. Set `UIKIT_BLESS=1` to rewrite the goldens, and review the diff.
 
-use comp_monitor::Monitor;
 use comp_monitor::fake::Queue;
+use comp_monitor::sample::{ModelState, ModelStatus, ProcSample, Sample};
+use comp_monitor::{MAX_PROCS, Monitor, Sort};
 use comp_monitor_ui::{
     self as ui, Change, Entry, REFRESH, SORT_CPU, SORT_MEMORY, SORT_NAME, SORT_PID, STOP, TABLE,
 };
@@ -14,10 +15,8 @@ use uikit::layout::FixedAdvance as M;
 use uikit::widget::{UiEvent, Value, Widget};
 use uikit::{Frame, Window};
 
-const PROCS: &str = r#"[{pid: 1, name: "supervisor", cpu-permille: some(5), mem-kib: some(300)},
- {pid: 4, name: "llm", cpu-permille: some(612), mem-kib: some(2400000)},
- {pid: 7, name: "desktop", cpu-permille: some(80), mem-kib: some(41000)},
- {pid: 9, name: "shell", cpu-permille: none, mem-kib: none}]"#;
+const MS: u64 = 1_000_000;
+const SEC: u64 = 1_000_000_000;
 
 fn golden(name: &str, text: &str) {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -34,6 +33,40 @@ fn golden(name: &str, text: &str) {
     assert_eq!(text, want, "{name} differs from {}", path.display());
 }
 
+fn proc(pid: u32, name: &str, pages: u64, cpu_ns: u64) -> ProcSample {
+    ProcSample {
+        pid,
+        name: name.into(),
+        pages,
+        cpu_ns,
+    }
+}
+
+/// A 4-CPU machine with 1,500 of 4,096 MiB free; its processes use CPU at the
+/// same rate, so the share is the same whenever it is sampled.
+fn usual(seconds: u64, model: ModelStatus) -> Sample {
+    Sample {
+        uptime_ns: 754 * SEC + seconds * SEC,
+        cpus: 4,
+        free_pages: 1500 * 256,
+        total_pages: 4096 * 256,
+        heap_bytes: 820 * 1024,
+        procs: vec![
+            proc(1, "supervisor", 75, 5 * MS * seconds),
+            proc(4, "llm", 600_000, 612 * MS * seconds),
+            proc(7, "desktop", 10_250, 80 * MS * seconds),
+            proc(9, "shell", 40, 0),
+        ],
+        omitted: 0,
+        model,
+    }
+}
+
+const ANSWERING: ModelStatus = ModelStatus {
+    state: ModelState::Ready,
+    tps10: 125,
+};
+
 struct App {
     mon: Monitor,
     os: Queue,
@@ -47,28 +80,12 @@ impl App {
         }
     }
 
-    /// A refresh, answered with the usual numbers.
+    /// Two samples a second apart, so every process has a share.
     fn full() -> Self {
         let mut app = Self::new();
-        app.mon.refresh(&mut app.os);
-        app.answer("processes", Ok(PROCS));
-        app.answer(
-            "memory",
-            Ok("{free-mib: 1500, total-mib: 4096, heap-kib: 820}"),
-        );
-        app.answer("cpus", Ok("4"));
-        app.answer("uptime_ms", Ok("754000"));
-        app.answer(
-            "model_state",
-            Ok(r#"{state: "answering", tokens-per-s-x10: some(125)}"#),
-        );
+        app.mon.update(&usual(1, ANSWERING));
+        app.mon.update(&usual(2, ANSWERING));
         app
-    }
-
-    fn answer(&mut self, row: &str, outcome: Result<&str, &str>) {
-        let ticket = self.os.ticket_of(row).unwrap();
-        let outcome = outcome.map(String::from).map_err(String::from);
-        self.mon.done(&mut self.os, ticket, outcome);
     }
 
     fn tree(&self) -> Vec<Entry> {
@@ -136,14 +153,9 @@ fn a_process_selected_and_sorted_by_memory() {
 }
 
 #[test]
-fn the_rows_as_they_are_today() {
+fn the_first_sample_has_no_shares_and_the_model_not_yet_reported() {
     let mut app = App::new();
-    app.mon.refresh(&mut app.os);
-    app.answer(
-        "processes",
-        Ok(r#"[{pid: 3, name: "shell"}, {pid: 1, name: "supervisor"}]"#),
-    );
-    app.answer("model_state", Err("no such row"));
+    app.mon.update(&usual(1, ModelStatus::UNKNOWN));
     let f = frame(&app.tree());
     golden("bare", &f.list.to_string());
     golden("bare-a11y", &a11y(&f));
@@ -161,14 +173,12 @@ fn the_buttons_are_bound_to_the_rows_they_run() {
     }
     assert_eq!(bound(STOP).as_deref(), Some("process_stop"));
     assert_eq!(bound(REFRESH), None);
-    // The rows the monitor reads and stops with are the OS's.
-    for name in ["processes", "memory", "cpus", "uptime_ms", "process_stop"] {
-        assert!(agentabi::ROWS.iter().any(|r| r.name == name), "{name}");
-    }
+    // The row the monitor stops with is the OS's.
+    assert!(agentabi::ROWS.iter().any(|r| r.name == "process_stop"));
 }
 
 #[test]
-fn clicks_in_the_window_become_the_calls_the_os_is_asked_for() {
+fn clicks_in_the_window_become_the_call_the_os_is_asked_for() {
     let mut app = App::full();
     let old = app.tree();
     let mut win = window(&old);
@@ -182,10 +192,8 @@ fn clicks_in_the_window_become_the_calls_the_os_is_asked_for() {
         assert!(app.event(e));
     }
     assert_eq!(app.mon.selected().unwrap().name, "desktop");
-    let before = app.os.calls.len();
     assert!(app.event(&UiEvent::Pressed(STOP)));
-    let call = app.os.calls.last().unwrap();
-    assert_eq!(app.os.calls.len(), before + 1);
+    let call = &app.os.calls[0];
     assert_eq!(
         (call.name, call.args.as_str()),
         ("process_stop", r#"{name: "desktop"}"#)
@@ -195,16 +203,15 @@ fn clicks_in_the_window_become_the_calls_the_os_is_asked_for() {
     assert!(app.event(&UiEvent::Pressed(SORT_MEMORY)));
     assert_eq!(app.mon.procs()[0].name, "llm");
     assert!(app.event(&UiEvent::Pressed(SORT_MEMORY)));
-    assert_eq!(app.mon.procs()[0].name, "supervisor");
+    assert_eq!(app.mon.procs()[0].name, "shell");
     assert!(app.event(&UiEvent::Pressed(SORT_NAME)));
     assert_eq!(app.mon.procs()[0].name, "desktop");
     assert!(app.event(&UiEvent::Pressed(SORT_PID)));
     assert_eq!(app.mon.procs()[0].pid, 1);
 
-    // Refresh asks the five reads again.
-    let before = app.os.calls.len();
+    // Refresh only redraws: the component reads a new sample after any event.
     assert!(app.event(&UiEvent::Pressed(REFRESH)));
-    assert_eq!(app.os.calls.len(), before + 5);
+    assert_eq!(app.os.calls.len(), 1);
 
     // What the window does not use changes nothing.
     assert!(!app.event(&UiEvent::Pressed(9_999)));
@@ -215,9 +222,8 @@ fn clicks_in_the_window_become_the_calls_the_os_is_asked_for() {
 #[test]
 fn stop_with_nothing_selected_asks_nothing() {
     let mut app = App::full();
-    let before = app.os.calls.len();
     assert!(app.event(&UiEvent::Pressed(STOP)));
-    assert_eq!(app.os.calls.len(), before);
+    assert!(app.os.calls.is_empty());
     let tree = app.tree();
     let status = tree.iter().find(|e| e.id == ui::STATUS).unwrap();
     assert!(
@@ -245,30 +251,29 @@ fn every_state_is_a_tree_the_window_accepts_and_the_diff_sends_less() {
     step(&app, &mut shown, &mut win, 1);
     app.mon.act_select("llm").unwrap();
     step(&app, &mut shown, &mut win, 2);
-    app.mon.press_sort(comp_monitor::Sort::Name);
+    app.mon.press_sort(Sort::Name);
     step(&app, &mut shown, &mut win, 3);
-    app.mon.refresh(&mut app.os);
-    app.answer("memory", Err("the kernel went away"));
+    app.mon.update(&usual(3, ModelStatus::UNKNOWN));
     step(&app, &mut shown, &mut win, 4);
+    app.mon.stop_selected(&mut app.os);
+    app.mon.done(1, Err("the user said no".into()));
+    step(&app, &mut shown, &mut win, 5);
     assert!(ui::diff(&shown, &shown).is_empty());
 }
 
 #[test]
 fn a_full_process_table_is_a_window_the_tree_limits_allow() {
     let mut app = App::new();
-    app.mon.refresh(&mut app.os);
-    let list: Vec<String> = (0..300)
+    let procs = (0..300)
         .map(|i| {
-            format!(
-                "{{pid: {i}, name: \"{}\\u{{1b}}[31m{i}\", cpu-permille: some({}), mem-kib: some({})}}",
-                "n".repeat(80),
-                i * 3 % 1000,
-                i * 977
-            )
+            let name = format!("{}\u{1b}[31m{i}", "n".repeat(80));
+            proc(i, &name, u64::from(i) * 977, u64::from(i) * 3 * MS)
         })
         .collect();
-    app.answer("processes", Ok(&format!("[{}]", list.join(", "))));
-    assert_eq!(app.mon.procs().len(), comp_monitor::rows::MAX_PROCS);
+    let mut s = usual(1, ANSWERING);
+    s.procs = procs;
+    app.mon.update(&s);
+    assert_eq!(app.mon.procs().len(), MAX_PROCS);
     let tree = app.tree();
     // A real window takes it, and nothing it shows has a control character.
     let f = frame(&tree);

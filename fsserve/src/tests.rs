@@ -491,6 +491,36 @@ fn an_aborted_action_drops_its_pending_writes() {
 }
 
 #[test]
+fn the_apps_dir_holds_each_app_s_folder_and_reaches_no_further() {
+    let mut disk = MemDisk::new(BLOCKS);
+    let (mut c, _) = Client::start(&mut disk);
+    let apps = |c: &mut Client, path: &str, how: How| {
+        let request = Request::Open {
+            path: path.into(),
+            rights: (Rights::READ | Rights::WRITE | Rights::CREATE).bits(),
+            how,
+        };
+        c.call(ALICE, kabi::fs::SYSTEM_APPS, DIR_RIGHTS, request)
+    };
+    let (_, here) = apps(&mut c, ".", How::Existing);
+    assert_eq!(
+        Badge::parse(here.unwrap().badge).object,
+        c.server.system_apps
+    );
+    assert!(c.server.system_apps != 0 && c.server.system_apps != c.server.system_pkg);
+    let (reply, folder) = apps(&mut c, "notes", How::Mkdir);
+    assert!(matches!(reply, Reply::Opened(..)), "{reply:?}");
+    assert!(folder.is_some());
+    for path in ["..", "../state", "../pkg"] {
+        assert_eq!(
+            failed(apps(&mut c, path, How::Existing)),
+            Error::Invalid,
+            "{path}"
+        );
+    }
+}
+
+#[test]
 fn the_pkg_dir_reaches_only_beneath_system_pkg() {
     let mut disk = MemDisk::new(BLOCKS);
     let (mut c, _) = Client::start(&mut disk);

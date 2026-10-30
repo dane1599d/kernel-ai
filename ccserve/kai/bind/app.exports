@@ -1,0 +1,9 @@
+__wasm_export_exports_kai_live_lifecycle_save_post_return cabi_post_kai:live/lifecycle@0.1.0#save
+cabi_realloc cabi_realloc
+__wasm_export_exports_kai_app_events_on_event kai:app/events@0.1.0#on-event
+__wasm_export_exports_kai_live_lifecycle_schema kai:live/lifecycle@0.1.0#schema
+__wasm_export_exports_kai_live_lifecycle_init kai:live/lifecycle@0.1.0#init
+__wasm_export_exports_kai_live_lifecycle_migrate kai:live/lifecycle@0.1.0#migrate
+__wasm_export_exports_kai_live_lifecycle_save kai:live/lifecycle@0.1.0#save
+__wasm_export_exports_kai_live_lifecycle_health kai:live/lifecycle@0.1.0#health
+__wasm_export_exports_kai_live_lifecycle_self_test kai:live/lifecycle@0.1.0#self-test
