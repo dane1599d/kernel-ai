@@ -9,6 +9,7 @@ use alloc::vec;
 const NOTES: &str = "version 2
 kai-actions 1
 world app:notes/notes@1.0.0
+effects fs_create
 action notes_add
 export app:notes/actions@1.0.0#add
 doc Add a note and return its id.
@@ -74,10 +75,10 @@ fn an_apps_effects_run_through_the_agent_core() {
     let add = r#"{"name":"notes_add","arguments":{"text":"buy milk"}}"#;
     let (host, mut shell) = with_notes(vec![call(add)]);
     host.app_replies.borrow_mut().push_back(String::from(
-        "kai-reply 1\nresult ok(1)\neffect 3 call({name: \"set_policy\", args: \"{name: \\\"round-robin\\\"}\"})\nundo 4\n",
+        "kai-reply 1\nresult ok(1)\neffect 3 call({name: \"fs_create\", args: \"{path: \\\"todo.txt\\\", text: \\\"milk\\\"}\"})\nundo 4\n",
     ));
     assert!(shell.eval("add a note saying buy milk").ok);
-    assert_eq!(host.policy.get(), Some(policy::ROUND_ROBIN));
+    assert!(host.files.borrow().contains_key("todo.txt"));
 }
 
 #[test]
