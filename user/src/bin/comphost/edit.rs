@@ -34,7 +34,10 @@ pub fn grants() -> Grants {
     let edit = handles[..count.min(MAX_STARTUP)]
         .iter()
         .any(|h| h.kind() == Some(Kind::Edit));
-    Grants { edit }
+    Grants {
+        edit,
+        ..Grants::default()
+    }
 }
 
 /// One message to the edit service, and its answer or why there is none.

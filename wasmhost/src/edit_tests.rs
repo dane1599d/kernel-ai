@@ -91,7 +91,10 @@ fn in_call<R>(app: &mut CoreInstance, f: impl FnOnce(&mut CoreInstance) -> R) ->
 }
 
 fn granted() -> Grants {
-    Grants { edit: true }
+    Grants {
+        edit: true,
+        ..Grants::default()
+    }
 }
 
 #[test]
