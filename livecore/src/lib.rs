@@ -22,6 +22,7 @@ pub mod manifest;
 pub mod nap;
 pub mod napper;
 mod probation;
+pub mod rows;
 pub mod saved;
 pub mod scenario;
 mod serve_with;

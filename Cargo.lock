@@ -1507,6 +1507,7 @@ dependencies = [
  "kabi",
  "kaigrants",
  "kaiprofile",
+ "livecore",
  "llmproto",
  "look",
  "rhai",
