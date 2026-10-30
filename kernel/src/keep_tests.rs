@@ -2,7 +2,10 @@
 //! Notes (`notes-window`) runs with a 3-second nap. A stand-in for the Settings
 //! app runs as the plan line `settings-window` (this test plan only, never the
 //! image's), and the case sends `desktop` its `settings put` requests as that
-//! process, so the shell hears them with the kernel's name for the app.
+//! process, so the shell hears them with the kernel's name for the app. The
+//! stand-in bypasses comphost: its forwarding (#426) is covered by AP-4's
+//! `app-settings` case, and this one covers desktop, the shell, the supervisor
+//! and the disk.
 //! - Boot 1: the supervisor refuses `keep` from anyone but the shell, and the
 //!   shell refuses a change without a key or a click (user=0). With user=1 the
 //!   shell sends `keep notes-window on` and saves `/system/state/keep`; Notes
