@@ -295,6 +295,8 @@ pub const LOG: &str = "log";
 pub const RULES: &str = "rules";
 /// The standing instructions' store (`kai-standing 1`, P3 task 11).
 pub const STANDING: &str = "standing";
+/// The apps kept running, never napped (`kai-keep 1`, P4).
+pub const KEEP: &str = "keep";
 /// The user's appearance (`kai-appearance 1`, P4 task 8).
 pub const APPEARANCE: &str = "appearance";
 /// The rows withheld from apps' effects (`kai-withheld 1`, P4 task 7).

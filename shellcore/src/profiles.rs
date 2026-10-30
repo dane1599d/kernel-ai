@@ -64,6 +64,20 @@ impl Shell {
         Reply::ok(lines.join("\n"))
     }
 
+    /// The profiles, one a line, the one in force marked `* `.
+    pub(crate) fn profile_lines(&self) -> String {
+        let lines: Vec<String> = self
+            .profiles
+            .list
+            .iter()
+            .map(|p| match p.name == self.profiles.now {
+                true => format!("* {}", p.name),
+                false => p.name.clone(),
+            })
+            .collect();
+        lines.join("\n")
+    }
+
     /// `profile <name>`: plainly asked, so it runs at once, with `undo`.
     pub(crate) fn profile_command(&mut self, request: &str, name: &str) -> Reply {
         let id = self.next_id;

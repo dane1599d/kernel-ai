@@ -317,6 +317,8 @@ impl Ui {
                     else {
                         continue;
                     };
+                    // Not the value: it may be anything the model wrote.
+                    println!("comphost: the agent acted in window {window}");
                     let performed = serve_shown(host, |core| {
                         core.ui_act(window, node, action, value.clone())
                             .map(|_refused_or_not| ())
@@ -477,7 +479,7 @@ fn release(pool: &Pool) {
 /// and effects) is committed with its checkpoint, like an action call's. The
 /// effects it queued come back for whoever runs them; a version that faulted
 /// was reloaded, and gives nothing.
-fn serve_shown<E: Env<Instance = LiveInstance>>(
+pub(crate) fn serve_shown<E: Env<Instance = LiveInstance>>(
     host: &mut Host<E>,
     f: impl FnOnce(&mut wasmhost::CoreInstance) -> Result<(), Fault>,
 ) -> Option<Performed> {

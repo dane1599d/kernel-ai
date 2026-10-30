@@ -107,7 +107,10 @@ fn refused(result: Result<CoreInstance, Fault>) -> Fault {
 }
 
 fn granted() -> Grants {
-    Grants { settings: true }
+    Grants {
+        settings: true,
+        ..Grants::default()
+    }
 }
 
 fn app_sending(texts: &[&str]) -> CoreInstance {
