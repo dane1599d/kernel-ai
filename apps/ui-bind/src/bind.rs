@@ -61,6 +61,10 @@ impl Sink for View {
     fn close(&mut self, window: u32) -> Result<(), UiError> {
         view::close(window).map_err(error)
     }
+
+    fn set_agent_private(&mut self, window: u32, private: bool) -> Result<(), UiError> {
+        view::set_agent_private(window, private).map_err(error)
+    }
 }
 
 fn size(s: w::Size) -> t::Size {
