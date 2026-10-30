@@ -14,6 +14,14 @@ pub trait Sink {
     fn remove(&mut self, window: u32, node: NodeId) -> Result<(), UiError>;
     fn commit(&mut self, window: u32) -> Result<(), UiError>;
     fn close(&mut self, window: u32) -> Result<(), UiError>;
+    /// Keeps `window` from the agent (`set-agent-private`): its `ui_view` shows
+    /// only the title and `ui_act` is refused. Only an app the system image
+    /// grants it (Settings) may ask. A sink that cannot refuses, so an app that
+    /// needs it never shows a window that is shared.
+    fn set_agent_private(&mut self, window: u32, private: bool) -> Result<(), UiError> {
+        let _ = (window, private);
+        Err(UiError::NoWindow)
+    }
 }
 
 /// The window an app has open, and the tree it was last sent.

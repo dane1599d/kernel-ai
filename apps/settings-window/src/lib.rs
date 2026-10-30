@@ -65,6 +65,19 @@ fn entry(e: &Entry) -> tree::Entry {
     }
 }
 
+/// Opens the window and keeps it from the agent before any of its tree is
+/// sent: the rules and grants it shows are typed-only data, and Kai must not
+/// read them or park focus on Revoke. If the system will not keep it private
+/// the window is closed again, so it is never shown shared.
+fn open_private(sink: &mut dyn Sink) -> Result<u32, UiError> {
+    let id = sink.open(TITLE, SIZE.0, SIZE.1)?;
+    if let Err(e) = sink.set_agent_private(id, true) {
+        let _ = sink.close(id);
+        return Err(e);
+    }
+    Ok(id)
+}
+
 impl Shown {
     /// Opens the window if it is closed, sends what changed to reach `next`
     /// ([`comp_settings_ui::redraw`], which puts back a control the model
@@ -78,7 +91,7 @@ impl Shown {
     ) -> Result<(), UiError> {
         let (id, last) = match self.window.take() {
             Some(open) => open,
-            None => (sink.open(TITLE, SIZE.0, SIZE.1)?, Vec::new()),
+            None => (open_private(sink)?, Vec::new()),
         };
         let sent = comp_settings_ui::redraw(&last, &next, view)
             .iter()
