@@ -44,6 +44,37 @@ const SYSTEM: &[&str] = &[
 const CLICK: &str = "user-click:settings";
 /// The first line of `/system/state/keep`.
 const KEEP_HEADER: &str = "kai-keep 1";
+/// How often a saved kept app the supervisor could not reach is tried again.
+const KEEP_RETRY_NS: u64 = 500_000_000;
+/// How long after boot it is tried before it is audited and dropped.
+pub const KEEP_RETRY_FOR_NS: u64 = 30_000_000_000;
+
+/// Saved kept apps waiting to be told to the supervisor again.
+#[derive(Default)]
+pub(crate) struct KeepWaiting {
+    apps: Vec<String>,
+    next_ns: u64,
+    until_ns: u64,
+}
+
+impl KeepWaiting {
+    fn wait(&mut self, app: String, now: u64) {
+        if self.apps.is_empty() {
+            self.next_ns = now + KEEP_RETRY_NS;
+            self.until_ns = now + KEEP_RETRY_FOR_NS;
+        }
+        self.apps.push(app);
+    }
+
+    fn due(&self, now: u64) -> bool {
+        !self.apps.is_empty() && now >= self.next_ns
+    }
+
+    /// The user's own change to `app` wins over the saved one.
+    fn forget(&mut self, app: &str) {
+        self.apps.retain(|a| a != app);
+    }
+}
 
 impl Shell {
     /// Answers a `kai:settings` request from app `app`: the answer's text, or
@@ -281,11 +312,19 @@ impl Shell {
     /// Tells the supervisor and saves the list: `name` kept running or not.
     pub(crate) fn set_keep(&mut self, name: &str, on: bool) -> Result<(), String> {
         self.host.keep_running(name, on)?;
+        self.keep_waiting.forget(name);
         self.keep.retain(|app| app != name);
         if on {
             self.keep.push(name.to_string());
         }
-        let text = keep_text(&self.keep);
+        // An app still waiting at boot stays saved.
+        let saved: Vec<String> = self
+            .keep
+            .iter()
+            .chain(&self.keep_waiting.apps)
+            .cloned()
+            .collect();
+        let text = keep_text(&saved);
         if let Err(why) = self.host.keep_write(&text) {
             self.host
                 .audit(&format!("the keep-running list was not saved: {why}"));
@@ -310,15 +349,37 @@ impl Shell {
                 .audit("the keep-running list is out of shape; no app is kept");
             return self;
         };
+        let now = self.host.now_ns();
         for app in apps {
             match self.host.keep_running(&app, true) {
                 Ok(()) => self.keep.push(app),
-                Err(why) => self
-                    .host
-                    .audit(&format!("{app} is not kept running: {why}")),
+                // An app the supervisor started may not serve yet: try again.
+                Err(_) => self.keep_waiting.wait(app, now),
             }
         }
         self
+    }
+
+    /// Tries the saved kept apps the supervisor could not reach at boot again,
+    /// between lines; past [`KEEP_RETRY_FOR_NS`], each is audited and dropped.
+    pub fn retry_keep(&mut self) {
+        let now = self.host.now_ns();
+        if !self.keep_waiting.due(now) {
+            return;
+        }
+        let waiting = core::mem::take(&mut self.keep_waiting.apps);
+        let mut still = Vec::new();
+        for app in waiting {
+            match self.host.keep_running(&app, true) {
+                Ok(()) => self.keep.push(app),
+                Err(why) if now >= self.keep_waiting.until_ns => self
+                    .host
+                    .audit(&format!("{app} is not kept running: {why}")),
+                Err(_) => still.push(app),
+            }
+        }
+        self.keep_waiting.apps = still;
+        self.keep_waiting.next_ns = now + KEEP_RETRY_NS;
     }
 }
 
