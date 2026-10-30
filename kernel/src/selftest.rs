@@ -56,6 +56,8 @@ pub enum SelfTest {
     Terminal,
     /// M8a: the Rhai shell answers a fixed list of lines correctly.
     Shell,
+    /// P4 task 12: the `c>` prompt through the shell and `cc` (ADR 0012).
+    CPrompt,
     /// M8b: LLM-written scripts are checked and run by their tier.
     Scripts,
     /// P1 task 7: one tagged call through the one door. `act-plain`: plain
@@ -261,6 +263,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=net" => Some(SelfTest::Net),
             "test=terminal" => Some(SelfTest::Terminal),
             "test=shell" => Some(SelfTest::Shell),
+            "test=c-prompt" => Some(SelfTest::CPrompt),
             "test=scripts" => Some(SelfTest::Scripts),
             "test=act-plain" => Some(SelfTest::Act(ActCase::Plain)),
             "test=act-run" => Some(SelfTest::Act(ActCase::Run)),
@@ -404,6 +407,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::Net
             | SelfTest::Terminal
             | SelfTest::Shell
+            | SelfTest::CPrompt
             | SelfTest::Scripts
             | SelfTest::Act(_)
             | SelfTest::Live
@@ -537,6 +541,9 @@ pub fn plan(test: SelfTest) -> Option<String> {
             }
             false => kabi::plan::SHELL,
         };
+        // The shell calls `cc` for the `c>` prompt, so cc comes first.
+        plan.push('\n');
+        plan.push_str(kabi::plan::CC);
         // On the desktop the shell has a route to `desktop`, for the panel:
         // `desktop` is planned first, as a route's target must be.
         let shell = match test {

@@ -40,7 +40,7 @@ pub enum Kind {
 }
 
 impl Kind {
-    /// The word `terminal_read` and the agent's view use.
+    /// The word `terminal_window_read` and the agent's view use.
     pub const fn name(self) -> &'static str {
         match self {
             Self::Input => "input",
@@ -77,7 +77,7 @@ pub struct Span {
     pub prompt: String,
     #[n(3)]
     pub text: String,
-    /// Whether the AI typed the line (an input), through `terminal_run`.
+    /// Whether the AI typed the line (an input), through `terminal_window_run`.
     #[n(4)]
     pub by_ai: bool,
 }
@@ -99,7 +99,7 @@ pub fn clean(text: &str) -> Cleaned {
         match ch {
             '\n' => shown.push('\n'),
             '\t' => shown.push(' '),
-            c if c.is_control() => {}
+            c if c.is_control() || hidden(c) => {}
             c => match plain(c) {
                 Plain::Keep => shown.push(c),
                 Plain::Text(t) => shown.push_str(t),
@@ -124,6 +124,27 @@ pub struct Cleaned {
     pub lines: Vec<String>,
     /// Whether lines or bytes past the limits were left out.
     pub cut: bool,
+}
+
+/// Characters that draw nothing or reorder what is drawn around them: the
+/// zero-width and bidirectional controls, the line and paragraph separators and
+/// the byte-order mark. A row never shows them.
+fn hidden(c: char) -> bool {
+    matches!(
+        c,
+        '\u{200B}'..='\u{200F}'
+            | '\u{2028}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206F}'
+            | '\u{FEFF}'
+    )
+}
+
+/// `text` without control characters or [`hidden`] ones, blanks kept.
+pub fn visible(text: &str) -> String {
+    text.chars()
+        .filter(|&c| !c.is_control() && !hidden(c))
+        .collect()
 }
 
 /// `line` without trailing blanks, cut to [`MAX_LINE_BYTES`] with a `…`.
@@ -177,6 +198,12 @@ mod tests {
         let c = clean("a\tb\u{1b}[31mred\r\n\u{1F600} done\u{1F680}");
         assert_eq!(c.lines, ["a b[31mred", ":) done"]);
         assert!(!c.cut);
+    }
+
+    #[test]
+    fn clean_drops_characters_that_hide_or_reorder_text() {
+        let c = clean("a\u{200B}b\u{202E}c\u{2066}d\u{FEFF}e\u{2028}f");
+        assert_eq!(c.lines, ["abcdef"]);
     }
 
     #[test]

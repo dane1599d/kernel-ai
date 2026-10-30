@@ -62,10 +62,19 @@ fn supervisor() -> kabi::handle::Handle {
     user::route(1).unwrap_or(kabi::handle::Handle::NONE)
 }
 
-/// The route to `desktop`, third in `uses=llm+supervisor+desktop`, on a desktop
-/// only (P3 task 7).
+/// The route to `cc`, the `c>` prompt's compiler: the third in `uses=llm+supervisor+cc`.
+fn cc_route() -> kabi::handle::Handle {
+    user::route(2).unwrap_or(kabi::handle::Handle::NONE)
+}
+
+/// cc's wait for one entry: a compile and a run of 2 s each, and on its first
+/// request, translating cc.wasm and compiling kairt.
+const CC_CALL_MS: u64 = 30_000;
+
+/// The route to `desktop`, fourth in `uses=llm+supervisor+cc+desktop`, on a
+/// desktop only (P3 task 7).
 fn desktop() -> Option<kabi::handle::Handle> {
-    user::route(2)
+    user::route(3)
 }
 
 const DESKTOP_CALL_MS: u64 = 5_000;
@@ -115,6 +124,11 @@ fn take_panel(shell: &mut Shell) {
     }
 }
 
+// A Terminal line's answer, with its `…`, fits what the transport carries of a
+// person's result.
+const _: () =
+    assert!(shellcore::appline::MAX_ANSWER + '…'.len_utf8() <= deskcore::effects::MAX_LINE_TEXT);
+
 /// Takes an app's oldest effects from `desktop`, runs them through the agent
 /// core, and reports what came of each; `desktop` hands the results to the
 /// app. `desktop` names the app, from its record of who queued them.
@@ -126,18 +140,18 @@ fn take_effects(shell: &mut Shell) {
     let Ok(answer) = ask_desktop(route, effects::TAKE) else {
         return;
     };
-    let Some(Some((app, lines))) = effects::parse_take(&answer) else {
+    let Some(Some((app, user, lines))) = effects::parse_take(&answer) else {
         return;
     };
     let results: Vec<Done> = shell
-        .run_effects(app, lines)
+        .run_effects_from(app, lines, user)
         .into_iter()
         .map(|done| Done {
             ticket: done.ticket,
             outcome: done.outcome,
         })
         .collect();
-    if let Err(why) = ask_desktop(route, &effects::encode_done(app, &results)) {
+    if let Err(why) = ask_desktop(route, &effects::encode_done_as(app, user, &results)) {
         println!("{app}'s effect results were not sent: {why}");
     }
 }
@@ -262,6 +276,14 @@ fn ask_supervisor(request: &str) -> Result<String, String> {
 impl Host for System {
     fn now_ns(&self) -> u64 {
         sys::time_ns()
+    }
+
+    fn cc(&self, request: &[u8]) -> Result<Vec<u8>, String> {
+        let mut reply = vec![0u8; kabi::MAX_MESSAGE];
+        let len = sys::call_route(cc_route(), request, &mut reply, CC_CALL_MS)
+            .map_err(|error| format!("{error:?}"))?;
+        reply.truncate(len.min(kabi::MAX_MESSAGE));
+        Ok(reply)
     }
 
     fn apps(&self) -> Option<&core::cell::RefCell<shellcore::apps::Apps>> {
