@@ -124,10 +124,14 @@ impl Stopped {
     }
 }
 
-/// Time left for one entry's compile or run, checked between fuel slices.
+/// Time left for one entry's compile or run, or a whole build's compiles,
+/// checked between fuel slices.
 pub struct Budget<'a> {
     host: &'a dyn Host,
     deadline_ns: u64,
+    /// Fuel the compiles under this budget have used, which
+    /// [`compiler::MAX_FUEL`] caps should the clock fail.
+    compile_fuel: u64,
 }
 
 impl<'a> Budget<'a> {
@@ -135,11 +139,19 @@ impl<'a> Budget<'a> {
         Self {
             host,
             deadline_ns: host.now_ns().saturating_add(ns),
+            compile_fuel: 0,
         }
     }
 
     pub fn now(&self) -> u64 {
         self.host.now_ns()
+    }
+
+    /// Counts `fuel` spent compiling; false once the compiles under this
+    /// budget have used [`compiler::MAX_FUEL`].
+    pub(crate) fn spend_compile(&mut self, fuel: u64) -> bool {
+        self.compile_fuel = self.compile_fuel.saturating_add(fuel);
+        self.compile_fuel < compiler::MAX_FUEL
     }
 
     pub fn check(&self) -> Result<(), Stopped> {

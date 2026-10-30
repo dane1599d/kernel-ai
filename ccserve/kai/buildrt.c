@@ -28,7 +28,7 @@ typedef struct Block {
 } Block;
 
 static Block *free_list;
-/* The heap's end, and the first byte never handed out; 0 before first use. */
+/* The heap's end, and the first byte at its end never handed out. */
 static uintptr_t heap_end;
 static uintptr_t heap_top;
 
@@ -36,21 +36,23 @@ static size_t round_up(size_t n) {
     return (n + ALIGN - 1) & ~(size_t)(ALIGN - 1);
 }
 
-/* Makes at least `need` bytes free at heap_top, in whole pages. */
+/* Makes at least `need` bytes free at heap_top, in whole pages. Memory that
+ * grew by other means since lies past heap_end, so the heap starts again at
+ * memory's end and never hands that out. */
 static int grow(size_t need) {
-    if (heap_end == 0) {
-        size_t pages = (size_t)__builtin_wasm_memory_size(0);
-        if (pages == 0 || pages >= MAX_PAGES)
-            return 0;
-        heap_end = (uintptr_t)pages * PAGE;
+    size_t now = (size_t)__builtin_wasm_memory_size(0);
+    if (now == 0 || now >= MAX_PAGES)
+        return 0;
+    if ((uintptr_t)now * PAGE != heap_end) {
+        heap_end = (uintptr_t)now * PAGE;
         heap_top = heap_end;
     }
     if (heap_end - heap_top >= need)
         return 1;
     size_t pages = (need - (heap_end - heap_top) + PAGE - 1) / PAGE;
-    if (pages >= MAX_PAGES - heap_end / PAGE)
+    if (pages >= MAX_PAGES - now)
         return 0;
-    if (__builtin_wasm_memory_grow(0, pages) == -1)
+    if (__builtin_wasm_memory_grow(0, pages) != (int)now)
         return 0;
     heap_end += (uintptr_t)pages * PAGE;
     return 1;

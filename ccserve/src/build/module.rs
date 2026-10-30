@@ -283,34 +283,5 @@ impl<'a> Bytes<'a> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_leb_round_trips_and_a_long_one_is_refused() {
-        for value in [0, 1, 127, 128, 300, u32::MAX] {
-            let mut out = Vec::new();
-            push_leb(&mut out, value);
-            assert_eq!(Bytes::new(&out).leb(), Ok(value));
-        }
-        assert!(
-            Bytes::new(&[0x80, 0x80, 0x80, 0x80, 0x80, 0x01])
-                .leb()
-                .is_err()
-        );
-        assert!(Bytes::new(&[0xff, 0xff, 0xff, 0xff, 0x7f]).leb().is_err());
-        assert!(Bytes::new(&[0x80]).leb().is_err());
-    }
-
-    #[test]
-    fn a_code_section_whose_bodies_run_short_or_long_is_refused() {
-        // Two bodies of one byte each, then a stray byte.
-        assert!(code_section(&[2, 1, 0x0b, 1, 0x0b, 0xff], 0).is_err());
-        assert!(code_section(&[2, 1, 0x0b, 5, 0x0b], 0).is_err());
-        assert!(code_section(&[1, 1, 0x0b], 1).is_err());
-        assert_eq!(
-            code_section(&[1, 2, 0x00, 0x0b], 0),
-            Ok(alloc::vec![1, 3, 0, 0, 0x0b])
-        );
-    }
-}
+#[path = "module_tests.rs"]
+mod tests;

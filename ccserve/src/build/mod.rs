@@ -17,8 +17,9 @@ use crate::{Budget, XCC_HEADERS};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use kabi::live::{ACTIONS_SECTION, MANIFEST_SECTION, MAX_ARTIFACT, SOURCE_SECTION};
+use kabi::live::{ACTIONS_SECTION, MANIFEST_SECTION, MAX_ARTIFACT, SOURCE_SECTION, valid_label};
 use livecore::artifact::{self, Manifest, append_custom_section};
+use livecore::manifest::World as WitWorld;
 use sha2::{Digest, Sha256};
 
 /// The runtime every build links: the allocator, `abort` and `<string.h>`.
@@ -41,6 +42,9 @@ pub const STACK: u32 = 64 << 10;
 pub const MAX_FILES: usize = 64;
 /// Longest file name.
 pub const MAX_FILE_NAME: usize = 64;
+/// Most bytes of objects a build holds for its link: what wcc's link could
+/// load at all, so a source that expands into huge objects stops early.
+pub const MAX_OBJECTS: usize = 4 << 20;
 /// What an artifact says when its sources name no one licence.
 pub const NO_LICENCE: &str = "NOASSERTION";
 
@@ -126,34 +130,123 @@ pub fn compiler(cc: &Compiler) -> Result<Compiler, String> {
 
 /// Builds `build` with `compiler` (from [`compiler`]).
 pub fn build(compiler: &Compiler, build: &Build, budget: &mut Budget) -> Result<Built, BuildError> {
-    valid_name(build.name)?;
-    let version = valid_version(build.version)?;
-    let mut files = build.files.to_vec();
-    files.sort_by(|a, b| a.0.cmp(b.0));
-    valid_files(&files)?;
-    let bundle = artifact::bundle(&files);
-    if bundle.len() > artifact::MAX_SOURCE {
-        return Err(BuildError::Request(format!(
-            "the sources are over {} KiB",
-            artifact::MAX_SOURCE >> 10
-        )));
-    }
+    let request = Request::check(build)?;
     let world = build.kind.world();
+    let (objects, imports) = compile(compiler, world, &request.files, budget)?;
+    let linked = link(compiler, world, &objects, budget)?;
+    let module = module::finish(&linked, &imports, world.exports).map_err(BuildError::Module)?;
+    // As wasmhost will load it. wcc's linker keeps one type per import, so a
+    // call through a world import declared with another type fails here.
+    let engine = wasmi::Engine::new(&crate::engine::config(true));
+    wasmi::Module::validate(&engine, &module)
+        .map_err(|e| BuildError::Module(format!("the module does not validate: {e}")))?;
+    write(module, build.kind, &request)
+}
 
-    let one = |files: &[(&str, &[u8])], name: &str, budget: &mut Budget| {
-        compiler
-            .compile_in(files, name, budget)
-            .map_err(|e| BuildError::Compile(name.to_string(), e))
-    };
-    let glue = one(&[("glue.c", world.glue.as_bytes())], "glue.c", budget)?;
-    let imports = module::world_imports(&glue).map_err(BuildError::Module)?;
-    let mut objects = Vec::from([
-        glue,
-        one(&[("buildrt.c", BUILDRT.as_bytes())], "buildrt.c", budget)?,
-    ]);
-    for (name, _) in files.iter().filter(|(n, _)| n.ends_with(".c")) {
-        objects.push(one(&files, name, budget)?);
+/// A request that passed its checks, which all come before anything compiles.
+struct Request<'a> {
+    name: &'a str,
+    /// Sorted by name.
+    files: Vec<(&'a str, &'a [u8])>,
+    /// `kai.source`: the files' bundle.
+    bundle: Vec<u8>,
+    /// `app:<name>/<name>@<version>`.
+    world: String,
+    /// The manifest's version label, `<major>-<minor>-<patch>`.
+    label: String,
+}
+
+impl<'a> Request<'a> {
+    fn check(build: &Build<'a>) -> Result<Self, BuildError> {
+        let name = build.name;
+        valid_name(name)?;
+        let (major, minor, patch) = valid_version(build.version)?;
+        let world = format!("app:{name}/{name}@{major}.{minor}.{patch}");
+        if WitWorld::parse(&world).is_none() {
+            return Err(BuildError::Request(format!(
+                "{name} is not a WIT name: each part between - starts with a letter"
+            )));
+        }
+        let label = format!("{major}-{minor}-{patch}");
+        if !valid_label(&label) {
+            return Err(BuildError::Request(format!(
+                "{} is too long for a version label",
+                build.version
+            )));
+        }
+        let mut files = build.files.to_vec();
+        files.sort_by(|a, b| a.0.cmp(b.0));
+        valid_files(&files)?;
+        let bundle = artifact::bundle(&files);
+        if bundle.len() > artifact::MAX_SOURCE {
+            return Err(BuildError::Request(format!(
+                "the sources are over {} KiB",
+                artifact::MAX_SOURCE >> 10
+            )));
+        }
+        Ok(Self {
+            name,
+            files,
+            bundle,
+            world,
+            label,
+        })
     }
+}
+
+/// The objects a build holds for its link: at most [`MAX_OBJECTS`] bytes.
+#[derive(Default)]
+struct Objects {
+    list: Vec<Vec<u8>>,
+    bytes: usize,
+}
+
+impl Objects {
+    /// Holds `name`'s object, unless it takes them past the cap.
+    fn hold(&mut self, name: &str, object: Vec<u8>) -> Result<(), BuildError> {
+        self.bytes = self.bytes.saturating_add(object.len());
+        if self.bytes > MAX_OBJECTS {
+            return Err(BuildError::Module(format!(
+                "{name} takes the objects over {} MiB",
+                MAX_OBJECTS >> 20
+            )));
+        }
+        self.list.push(object);
+        Ok(())
+    }
+}
+
+/// The objects to link, the world's glue first, then [`BUILDRT`] and each
+/// `.c`; and the world's imports, read from the glue's object.
+fn compile(
+    compiler: &Compiler,
+    world: &World,
+    files: &[(&str, &[u8])],
+    budget: &mut Budget,
+) -> Result<(Vec<Vec<u8>>, Vec<module::Import>), BuildError> {
+    let mut objects = Objects::default();
+    let mut one = |sources: &[(&str, &[u8])], name: &str, budget: &mut Budget| {
+        let object = compiler
+            .compile_in(sources, name, budget)
+            .map_err(|e| BuildError::Compile(name.to_string(), e))?;
+        objects.hold(name, object)
+    };
+    one(&[("glue.c", world.glue.as_bytes())], "glue.c", budget)?;
+    one(&[("buildrt.c", BUILDRT.as_bytes())], "buildrt.c", budget)?;
+    for (name, _) in files.iter().filter(|(n, _)| n.ends_with(".c")) {
+        one(files, name, budget)?;
+    }
+    let imports = module::world_imports(&objects.list[0]).map_err(BuildError::Module)?;
+    Ok((objects.list, imports))
+}
+
+/// wcc's link of `objects`, exporting the world's symbols and [`module::TRAP`].
+fn link(
+    compiler: &Compiler,
+    world: &World,
+    objects: &[Vec<u8>],
+    budget: &mut Budget,
+) -> Result<Vec<u8>, BuildError> {
     let names: Vec<String> = (0..objects.len()).map(|i| format!("{i}.o")).collect();
     let named: Vec<(&str, &[u8])> = names
         .iter()
@@ -169,43 +262,35 @@ pub fn build(compiler: &Compiler, build: &Build, budget: &mut Budget) -> Result<
     let linked = compiler
         .link(&named, &exports, STACK, budget)
         .map_err(BuildError::Link)?;
-    let module = module::finish(&linked, &imports, world.exports).map_err(BuildError::Module)?;
-    // As wasmhost will load it. wcc's linker keeps one type per import, so a
-    // call through a world import declared with another type fails here.
-    let engine = wasmi::Engine::new(&crate::engine::config(true));
-    wasmi::Module::validate(&engine, &module)
-        .map_err(|e| BuildError::Module(format!("the module does not validate: {e}")))?;
-    write(module, build, &version, &files, &bundle)
+    match linked.len() > MAX_ARTIFACT {
+        true => Err(BuildError::Module(format!(
+            "the module is over {} KiB",
+            MAX_ARTIFACT >> 10
+        ))),
+        false => Ok(linked),
+    }
 }
 
-/// The module with the artifact's sections; `bundle` is `files`'.
-fn write(
-    mut module: Vec<u8>,
-    build: &Build,
-    version: &(u32, u32, u32),
-    files: &[(&str, &[u8])],
-    bundle: &[u8],
-) -> Result<Built, BuildError> {
-    let source = hex(&Sha256::digest(bundle));
-    let name = build.name;
-    let (major, minor, patch) = version;
-    let world = format!("app:{name}/{name}@{major}.{minor}.{patch}");
+/// The module with the artifact's sections.
+fn write(mut module: Vec<u8>, kind: Kind, request: &Request) -> Result<Built, BuildError> {
+    let source = hex(&Sha256::digest(&request.bundle));
+    let name = request.name;
     let manifest = Manifest {
         lifecycle: 2,
         component: name.into(),
-        version: format!("{major}-{minor}-{patch}"),
-        world: world.clone(),
+        version: request.label.clone(),
+        world: request.world.clone(),
         engine: "wasmi".into(),
         features: "-".into(),
-        licence: licence_of(files),
+        licence: licence_of(&request.files),
         build: hex(&Sha256::digest(&module)),
         source: source.clone(),
     };
     append_custom_section(&mut module, MANIFEST_SECTION, manifest.format().as_bytes());
-    append_custom_section(&mut module, SOURCE_SECTION, bundle);
-    let actions = format!("kai-actions 1\nworld {world}\n");
+    append_custom_section(&mut module, SOURCE_SECTION, &request.bundle);
+    let actions = format!("kai-actions 1\nworld {}\n", request.world);
     append_custom_section(&mut module, ACTIONS_SECTION, actions.as_bytes());
-    if build.kind == Kind::App {
+    if kind == Kind::App {
         let app = format!("kai-app 1\nid {name}\nabi 1.0\n");
         append_custom_section(&mut module, APP_SECTION, app.as_bytes());
     }
@@ -334,4 +419,22 @@ fn valid_licence(licence: &str) -> bool {
         && licence
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b" .+-()".contains(&b))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::vec;
+
+    #[test]
+    fn objects_past_the_cap_are_refused_naming_the_file() {
+        let mut objects = Objects::default();
+        objects.hold("a.c", vec![0; MAX_OBJECTS - 1]).unwrap();
+        objects.hold("b.c", vec![0; 1]).unwrap();
+        match objects.hold("c.c", vec![0; 1]) {
+            Err(BuildError::Module(why)) => assert!(why.starts_with("c.c "), "{why}"),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(objects.list.len(), 2);
+    }
 }

@@ -16,8 +16,9 @@ use wasmi::{
 /// Fuel per slice: a few milliseconds of work, so the deadline and Ctrl-C are
 /// seen promptly.
 pub const SLICE: u64 = 1_000_000;
-/// Most fuel one compile may use, should the clock fail: about 13 times what
-/// S12-1's 1,000-line prelude needed (73.7 M).
+/// Most fuel the compiles under one [`Budget`] may use, should the clock fail:
+/// an entry's compile, or every wcc run of a build. About 13 times what S12-1's
+/// 1,000-line prelude needed (73.7 M).
 pub const MAX_FUEL: u64 = 1_000_000_000;
 /// Most linear memory one compile may use: S12-1's pass bar. Its peak was
 /// 1,152 KiB.
@@ -245,7 +246,6 @@ fn run(
         Some(status) => Ok(status),
         None => Err(CompileError::Compiler(format!("cc.wasm trapped: {error}"))),
     };
-    let mut used = 0u64;
     store
         .set_fuel(SLICE)
         .map_err(|e| CompileError::Compiler(e.to_string()))?;
@@ -254,8 +254,7 @@ fn run(
         match call {
             Ok(ResumableCall::Finished) => return Ok(0),
             Ok(ResumableCall::OutOfFuel(out)) => {
-                used += SLICE;
-                if used >= MAX_FUEL {
+                if !budget.spend_compile(SLICE) {
                     return Err(CompileError::Compiler(
                         "the compile used too much fuel".into(),
                     ));

@@ -195,6 +195,13 @@ static uint32_t check(void) {
     free(zeros);
     free(moved);
     free(NULL);
+    /* Memory grown by other means is never handed out. */
+    char *before = malloc(16);
+    int old = __builtin_wasm_memory_grow(0, 1);
+    if (!before || old < 0) return 10;
+    char *region = (char *)((uintptr_t)old * 65536);
+    char *after = malloc(70000);
+    if (!after || (after < region + 65536 && after + 70000 > region)) return 11;
     return 0;
 }
 "#;
@@ -342,6 +349,33 @@ fn the_same_input_builds_the_same_bytes() {
 }
 
 #[test]
+fn the_provenance_names_the_pinned_xcc() {
+    let upstream = include_str!("../../third_party/xcc/UPSTREAM.toml");
+    assert!(upstream.contains(&format!("commit = \"{}\"", build::XCC_COMMIT)));
+}
+
+#[test]
+fn sources_that_expand_into_huge_objects_stop_before_the_link() {
+    // Each source is a few bytes; its object holds 1.5 MiB of data. wcc spends
+    // about 400 M fuel on each, so the build's fuel cap, there should the
+    // clock fail, stops it at the third, as the 4 MiB object cap would.
+    let big = "static const unsigned char big[1572864] = {1};\n";
+    let files: Vec<String> = (0..3).map(|i| format!("big{i}.c")).collect();
+    let mut sources: Vec<(&str, &[u8])> =
+        files.iter().map(|n| (n.as_str(), big.as_bytes())).collect();
+    let main = component("return 0;", "");
+    sources.push(("main.c", main.as_bytes()));
+    match try_build("hello", Kind::Component, &sources) {
+        Err(BuildError::Compile(name, CompileError::Compiler(why))) => {
+            assert_eq!(name, "big2.c");
+            assert!(why.contains("too much fuel"), "{why}");
+        }
+        Err(BuildError::Module(why)) => assert!(why.contains("over 4 MiB"), "{why}"),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
 fn names_versions_and_files_are_checked_before_anything_compiles() {
     let ok = component("return 0;", "");
     let ok: &[u8] = ok.as_bytes();
@@ -368,6 +402,10 @@ fn names_versions_and_files_are_checked_before_anything_compiles() {
         "",
         "fs",
         "pkg",
+        // Package names, but not WIT names.
+        "app-2",
+        "a-",
+        "ab--c",
     ] {
         refused(name, "0.0.1", &[("hello.c", ok)]);
     }
@@ -381,6 +419,8 @@ fn names_versions_and_files_are_checked_before_anything_compiles() {
         "0.0.-1",
         "1000000000.0.0",
         " 0.0.1",
+        // Over a manifest label's 16 bytes.
+        "100000000.100000.1",
     ] {
         refused("hello", version, &[("hello.c", ok)]);
     }
