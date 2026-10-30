@@ -174,8 +174,10 @@ fn take_settings(shell: &mut Shell) {
         .iter()
         .map(|r| Answer::new(r.ticket, shell.settings(app, &r.text, r.user)))
         .collect();
-    if let Err(why) = ask_desktop(route, &wire::encode_done(app, &answers)) {
-        println!("{app}'s settings answers were not sent: {why}");
+    for done in wire::encode_done_chunks(app, &answers, kabi::MAX_MESSAGE) {
+        if let Err(why) = ask_desktop(route, &done) {
+            println!("{app}'s settings answers were not sent: {why}");
+        }
     }
 }
 
