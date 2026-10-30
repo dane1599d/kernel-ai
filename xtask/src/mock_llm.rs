@@ -316,6 +316,15 @@ const ACTS: &[(&str, &str)] = &[
         "add a note saying buy milk",
         r#"{"name":"notes_add","arguments":{"text":"buy milk"}}"#,
     ),
+    // `app-terminal` (P4 task 4): the AI types into the Terminal app, and reads.
+    (
+        "type 1 + 2 in the terminal",
+        r#"{"name":"terminal_window_run","arguments":{"line":"1 + 2"}}"#,
+    ),
+    (
+        "show what the terminal says",
+        r#"{"name":"terminal_window_read","arguments":{"since":0}}"#,
+    ),
     // `act-convo` with no earlier turn: there is nothing to do again.
     (
         "do it again",

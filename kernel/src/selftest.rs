@@ -26,6 +26,9 @@ pub enum ActCase {
     FsUndoRebooted,
     /// `app-route` (P4): the agent calls an app's row through the supervisor.
     AppRoute,
+    /// `app-terminal` (P4 task 4): the agent types into the Terminal app and a
+    /// person's Enter runs the line.
+    AppTerminal,
     /// `profile-switch` (P3 task 12): profiles through the supervisor.
     Profile,
 }
@@ -269,6 +272,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=fs-undo" => Some(SelfTest::Act(ActCase::FsUndo)),
             "test=fs-trash" => Some(SelfTest::Act(ActCase::FsTrash)),
             "test=app-route" => Some(SelfTest::Act(ActCase::AppRoute)),
+            "test=app-terminal" => Some(SelfTest::Act(ActCase::AppTerminal)),
             "test=profile-switch" => Some(SelfTest::Act(ActCase::Profile)),
             "test=fs-undo-reboot" => Some(SelfTest::Act(
                 match cmdline.split_whitespace().any(|w| w == "reread") {
@@ -527,6 +531,13 @@ pub fn plan(test: SelfTest) -> Option<String> {
             SelfTest::DeskPanelShell => {
                 plan.push('\n');
                 plan.push_str(crate::desk_tests::BOOT_PLAN);
+                kabi::plan::SHELL_DESK
+            }
+            // The app is planned before the shell, whose call reaches it through
+            // the supervisor, and after `desktop`, which its window needs.
+            SelfTest::Act(ActCase::AppTerminal) => {
+                plan.push('\n');
+                plan.push_str(crate::app_terminal_tests::PLAN);
                 kabi::plan::SHELL_DESK
             }
             _ => shell,
