@@ -8,11 +8,15 @@
 //! Metadata that does not verify refuses the whole role, as for packages
 //! ([`crate::image`]). Each target is then read on its own and one that is
 //! malformed is refused by path; the rest are kept. The fields are data the
-//! model manager shows, never instructions, so each is short plain text. The
-//! licence is not judged here: the import refuses one the project does not
-//! take, and says so.
+//! model manager shows, never instructions, so each is short plain text with
+//! nothing that reorders or hides the text around it, as a catalogue summary
+//! is drawn. The licence must have an SPDX expression's shape, as a package
+//! header's must, but which licences are taken is not judged here: the import
+//! refuses one the project does not take, and says so.
 
 use crate::Sha;
+use crate::catalog::reorders;
+use crate::header::valid_licence;
 use crate::image::{self, Files};
 use crate::index::sha256;
 use alloc::format;
@@ -95,19 +99,24 @@ pub fn parse(target: &TargetFile) -> Result<Model, String> {
             .get(key)
             .and_then(Value::as_str)
             .ok_or_else(|| format!("custom.kai.{key} is not a string"))?;
-        if value.is_empty() || value.len() > MAX_TEXT || value.chars().any(char::is_control) {
+        let hidden = |c: char| c.is_control() || reorders(c);
+        if value.is_empty() || value.len() > MAX_TEXT || value.chars().any(hidden) {
             return Err(format!(
                 "custom.kai.{key} is not 1 to {MAX_TEXT} bytes of plain text"
             ));
         }
         Ok(value.into())
     };
+    let licence = text("licence")?;
+    if !valid_licence(&licence) {
+        return Err("custom.kai.licence is not an SPDX expression".into());
+    }
     Ok(Model {
         id: id.into(),
         name: text("name")?,
         length: target.length,
         sha256: sha256(target)?,
-        licence: text("licence")?,
+        licence,
         source: text("source")?,
     })
 }
@@ -160,6 +169,21 @@ mod tests {
         assert!(with("name", json!(7)).contains("not a string"));
         assert!(with("name", json!("")).contains("plain text"));
         assert!(with("source", json!("a\nb")).contains("plain text"));
+        for hidden in ['\u{202E}', '\u{200B}', '\u{2066}', '\u{FEFF}', '\u{061C}'] {
+            let name = format!("Qwen{hidden}3");
+            assert!(
+                with("name", json!(name)).contains("plain text"),
+                "{hidden:?}"
+            );
+        }
+        assert!(with("licence", json!("MIT; rm -rf")).contains("SPDX"));
+        assert!(with("licence", json!("MIT/X11")).contains("SPDX"));
+        let ok = parse(&target("m.gguf", {
+            let mut kai = fields();
+            kai["licence"] = json!("Apache-2.0 OR MIT");
+            kai
+        }));
+        assert_eq!(ok.unwrap().licence, "Apache-2.0 OR MIT");
         let long = "x".repeat(MAX_TEXT + 1);
         assert!(with("licence", json!(long)).contains("plain text"));
         assert!(with("extra", json!("x")).contains("unknown field extra"));
