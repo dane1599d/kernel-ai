@@ -43,6 +43,9 @@ pub const RESERVED_GROUPS: &[&str] = &[
     "rules",
     // P4 task 7.
     "grant",
+    // P4 task 4: the Terminal's `shell_line`, which is not a row, so no
+    // package `shell` may export `line` beside it.
+    "shell",
 ];
 
 /// Whether `package` is reserved: an OS row group.
@@ -55,11 +58,17 @@ pub fn is_reserved(package: &str) -> bool {
 /// package is refused.
 pub fn takes_os_name(package: &str, function: &str) -> bool {
     let name = alloc::format!("{package}_{function}").replace('-', "_");
-    ROWS.iter()
-        .chain(&TYPED_ONLY)
-        .chain(&HELPERS)
-        .any(|row| row.name == name)
+    PSEUDO_EFFECTS.contains(&name.as_str())
+        || ROWS
+            .iter()
+            .chain(&TYPED_ONLY)
+            .chain(&HELPERS)
+            .any(|row| row.name == name)
 }
+
+/// Effects the shell runs that are not registry rows: the Terminal's
+/// `shell_line` (P4 task 4). No app's action may take their names either.
+pub const PSEUDO_EFFECTS: &[&str] = &["shell_line"];
 
 #[cfg(test)]
 mod tests {
@@ -97,6 +106,11 @@ mod tests {
 
     #[test]
     fn a_function_named_like_an_os_row_is_caught() {
+        assert!(takes_os_name("shell", "line"));
+        for name in PSEUDO_EFFECTS {
+            let group = name.split('_').next().unwrap_or(name);
+            assert!(is_reserved(group), "{name}'s group is not reserved");
+        }
         assert!(takes_os_name("set", "policy"));
         assert!(takes_os_name("pkg", "install"));
         assert!(takes_os_name("process", "stop"));
