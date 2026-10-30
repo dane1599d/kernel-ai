@@ -153,4 +153,6 @@ pub mod metric {
     pub const DIVIDER: i32 = 1;
     /// Space between a toggle or a slider and its label.
     pub const INLINE_GAP: i32 = 8;
+    /// Space inside a code view's box.
+    pub const CODE_PAD: i32 = 6;
 }
