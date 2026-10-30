@@ -47,8 +47,8 @@ pub fn shell_line_args(line: &str) -> String {
 }
 
 /// The shell's one-line answer as its wire reply. The shell writes a newline as
-/// backslash and `n`, and a backslash as two, so that the answer is one line
-/// (`shellcore`'s `appline`); any other backslash stays.
+/// backslash and `n`, a tab as backslash and `t`, and a backslash as two, so that
+/// the answer is one line (`shellcore`'s `appline`); any other backslash stays.
 pub fn unescape(line: &str) -> String {
     let mut out = String::new();
     let mut chars = line.chars();
@@ -61,6 +61,10 @@ pub fn unescape(line: &str) -> String {
             Some('n') => {
                 chars.next();
                 out.push('\n');
+            }
+            Some('t') => {
+                chars.next();
+                out.push('\t');
             }
             Some('\\') => {
                 chars.next();
@@ -122,9 +126,10 @@ mod tests {
     #[test]
     fn the_shells_one_line_answer_reads_back_as_its_wire_reply() {
         assert_eq!(unescape(r"ok a\nb\\c"), "ok a\nb\\c");
+        assert_eq!(unescape(r"ok a\tb"), "ok a\tb");
         assert_eq!(unescape("ok plain"), "ok plain");
         // A lone backslash, and one before another character, stay.
-        assert_eq!(unescape(r"ok a\tb\"), r"ok a\tb\");
+        assert_eq!(unescape(r"ok a\qb\"), r"ok a\qb\");
         assert_eq!(unescape(r"\\n"), r"\n");
         assert_eq!(unescape(""), "");
     }

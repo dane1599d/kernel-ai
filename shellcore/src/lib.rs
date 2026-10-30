@@ -27,7 +27,7 @@ mod agentcore;
 pub mod analyse;
 pub mod apart;
 mod appearance;
-mod appline;
+pub mod appline;
 mod brackets;
 mod centry;
 mod commands;

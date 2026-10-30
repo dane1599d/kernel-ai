@@ -145,17 +145,63 @@ fn the_answer_is_one_line_escaped_and_cut_at_a_character() {
         typed(&mut shell, r#""a\nb\\c""#),
         Ok(String::from(r"ok a\nb\\c"))
     );
-    let long = typed(&mut shell, r#"let s = ""; for i in 0..300 { s += "é"; } s"#).unwrap();
-    assert!(long.len() <= 190 + '…'.len_utf8(), "{} bytes", long.len());
+    let long = typed(
+        &mut shell,
+        r#"let s = ""; for i in 0..1500 { s += "é"; } s"#,
+    )
+    .unwrap();
+    assert!(
+        long.len() <= crate::appline::MAX_ANSWER + '…'.len_utf8(),
+        "{} bytes",
+        long.len()
+    );
     assert!(long.ends_with('…') && long.starts_with("ok é"), "{long}");
     assert!(!long.contains('\n'));
     // A cut never lands inside an escape: every backslash in what is left pairs.
     let tail = typed(
         &mut shell,
-        r#"let s = ""; for i in 0..300 { s += "\n"; } s"#,
+        r#"let s = ""; for i in 0..1500 { s += "\n"; } s"#,
     )
     .unwrap();
-    assert!(tail.len() <= 190 + '…'.len_utf8(), "{tail}");
+    assert!(
+        tail.len() <= crate::appline::MAX_ANSWER + '…'.len_utf8(),
+        "{tail}"
+    );
     let body = tail.strip_suffix('…').unwrap().strip_prefix("ok ").unwrap();
     assert!(!body.contains('\n') && body.matches('\\').count() == body.matches("\\n").count());
+}
+
+#[test]
+fn a_tab_in_the_answer_is_escaped_too() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    assert_eq!(typed(&mut shell, r#""a\tb""#), Ok(String::from(r"ok a\tb")));
+}
+
+#[test]
+fn the_answer_may_be_as_long_as_the_transport_carries_of_a_persons_result() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    let said = typed(
+        &mut shell,
+        r#"let s = ""; for i in 0..3000 { s += "x"; } s"#,
+    )
+    .unwrap();
+    assert_eq!(said.len(), crate::appline::MAX_ANSWER + '…'.len_utf8());
+    assert!(said.ends_with('…'));
+}
+
+#[test]
+fn every_line_it_runs_is_audited() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    typed(&mut shell, "1 + 1").unwrap();
+    assert!(
+        host.audit
+            .borrow()
+            .iter()
+            .any(|l| l == r#"terminal-window ran the line "1 + 1""#),
+        "{:?}",
+        host.audit.borrow()
+    );
 }

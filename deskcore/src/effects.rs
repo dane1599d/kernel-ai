@@ -37,6 +37,14 @@ pub const MAX_RESULTS: usize = 32;
 pub const MAX_LINE: usize = 1024;
 /// The longest result text sent back.
 pub const MAX_TEXT: usize = 200;
+/// The transport's ceiling for one result's text, which only a person's input
+/// (a Terminal line's answer) may use: the shell cuts the results of a batch a
+/// person's key or click queued here ([`encode_done_as`]) and every other
+/// result at [`MAX_TEXT`].
+pub const MAX_LINE_TEXT: usize = 2048;
+/// What one message to or from `desktop` may carry of results, less room for
+/// the framing (`kabi::MAX_MESSAGE`).
+pub const MESSAGE_BUDGET: usize = kabi::MAX_MESSAGE - 64;
 
 /// What one effect came to, as `desktop` carries it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -139,13 +147,23 @@ impl Queue {
         results.push_back(done);
     }
 
-    /// `app`'s results, oldest first; taking them empties its list.
-    pub fn results(&mut self, app: &str) -> Vec<Done> {
-        self.results
-            .iter_mut()
-            .find(|(name, _)| name == app)
-            .map(|(_, results)| results.drain(..).collect())
-            .unwrap_or_default()
+    /// `app`'s oldest results that fit `budget` bytes once encoded (always at
+    /// least one), taken off its list; the rest wait for the next call.
+    pub fn results(&mut self, app: &str, budget: usize) -> Vec<Done> {
+        let Some((_, waiting)) = self.results.iter_mut().find(|(name, _)| name == app) else {
+            return Vec::new();
+        };
+        let mut taken = Vec::new();
+        let mut used = 0;
+        while let Some(done) = waiting.front() {
+            let size = encoded_len(done);
+            if !taken.is_empty() && used + size > budget {
+                break;
+            }
+            used += size;
+            taken.extend(waiting.pop_front());
+        }
+        taken
     }
 }
 
@@ -234,19 +252,35 @@ pub fn parse_take(text: &str) -> Option<Option<(&str, bool, &str)>> {
     }))
 }
 
-/// Results as lines: `<ticket>\tok|err\t<text>`.
+/// Results as lines: `<ticket>\tok|err\t<text>`, each text one line cut at
+/// [`MAX_LINE_TEXT`]: what `desktop` hands an app, the shell having cut each
+/// already.
 pub fn encode_results(results: &[Done]) -> String {
+    encode_results_at(results, MAX_LINE_TEXT)
+}
+
+fn encode_results_at(results: &[Done], cap: usize) -> String {
     let lines: Vec<String> = results
         .iter()
         .map(|done| {
-            let (word, text) = match &done.outcome {
-                Ok(text) => ("ok", text),
-                Err(text) => ("err", text),
-            };
-            format!("{}\t{word}\t{}", done.ticket, one_line(text))
+            let (word, text) = word_and_text(done);
+            format!("{}\t{word}\t{}", done.ticket, one_line(text, cap))
         })
         .collect();
     lines.join("\n")
+}
+
+fn word_and_text(done: &Done) -> (&'static str, &String) {
+    match &done.outcome {
+        Ok(text) => ("ok", text),
+        Err(text) => ("err", text),
+    }
+}
+
+/// Bytes one result takes in [`encode_results`], its newline included.
+fn encoded_len(done: &Done) -> usize {
+    let (word, text) = word_and_text(done);
+    done.ticket.to_string().len() + word.len() + 3 + one_line(text, MAX_LINE_TEXT).len()
 }
 
 /// [`encode_results`] read back; lines out of shape are skipped.
@@ -267,9 +301,21 @@ pub fn parse_results(text: &str) -> Vec<Done> {
         .collect()
 }
 
-/// The shell's report on `app`'s effects, as its request.
+/// The shell's report on `app`'s effects, as its request: each text cut at
+/// [`MAX_TEXT`].
 pub fn encode_done(app: &str, results: &[Done]) -> String {
-    format!("{DONE}{app}\n{}", encode_results(results))
+    encode_done_as(app, false, results)
+}
+
+/// [`encode_done`] for a batch that a person's input queued if `user`: its
+/// texts may be [`MAX_LINE_TEXT`] long. The request is one message, so the
+/// results share what is left of it.
+pub fn encode_done_as(app: &str, user: bool, results: &[Done]) -> String {
+    let cap = if user { MAX_LINE_TEXT } else { MAX_TEXT };
+    let room = MESSAGE_BUDGET.saturating_sub(DONE.len() + app.len() + 1);
+    // A ticket, two tabs, the word and the newline take well under 24 bytes.
+    let each = (room / results.len().max(1)).saturating_sub(24).max(1);
+    format!("{DONE}{app}\n{}", encode_results_at(results, cap.min(each)))
 }
 
 /// An [`encode_done`] request read back; `None` for anything else.
@@ -279,9 +325,9 @@ pub fn parse_done(text: &str) -> Option<(&str, Vec<Done>)> {
     Some((app, parse_results(lines)))
 }
 
-fn one_line(text: &str) -> String {
+fn one_line(text: &str, cap: usize) -> String {
     let line = text.lines().next().unwrap_or("").replace('\t', " ");
-    let mut end = line.len().min(MAX_TEXT);
+    let mut end = line.len().min(cap);
     while !line.is_char_boundary(end) {
         end -= 1;
     }
@@ -302,6 +348,86 @@ mod tests {
             user,
             lines: lines.to_vec(),
         }
+    }
+
+    fn done_text(ticket: u32, text: &str) -> Done {
+        Done {
+            ticket,
+            outcome: Ok(text.to_string()),
+        }
+    }
+
+    /// Shell to desktop to app, as the three of them pass a result.
+    fn through(app: &str, user: bool, results: &[Done]) -> Vec<Done> {
+        let request = encode_done_as(app, user, results);
+        assert!(
+            request.len() <= kabi::MAX_MESSAGE,
+            "{} bytes",
+            request.len()
+        );
+        let (name, parsed) = parse_done(&request).unwrap();
+        let mut queue = Queue::default();
+        for done in parsed {
+            queue.finish(name, done);
+        }
+        let mut back = Vec::new();
+        loop {
+            let batch = queue.results(name, MESSAGE_BUDGET);
+            if batch.is_empty() {
+                return back;
+            }
+            let text = encode_results(&batch);
+            assert!(text.len() <= MESSAGE_BUDGET + 64, "{} bytes", text.len());
+            back.extend(parse_results(&text));
+        }
+    }
+
+    #[test]
+    fn a_two_kib_result_from_a_persons_batch_arrives_whole() {
+        let text = "x".repeat(MAX_LINE_TEXT);
+        let back = through("terminal-window", true, &[done_text(1, &text)]);
+        assert_eq!(back, [done_text(1, &text)]);
+        // Over the ceiling it is cut there, at a character.
+        let over = "\u{e9}".repeat(MAX_LINE_TEXT);
+        let back = through("terminal-window", true, &[done_text(2, &over)]);
+        let Ok(cut) = &back[0].outcome else { panic!() };
+        assert!(cut.len() <= MAX_LINE_TEXT && over.starts_with(cut.as_str()));
+    }
+
+    #[test]
+    fn any_other_result_is_still_cut_at_two_hundred() {
+        let text = "y".repeat(MAX_LINE_TEXT);
+        let back = through("files", false, &[done_text(1, &text)]);
+        assert_eq!(back[0].outcome, Ok("y".repeat(MAX_TEXT)));
+    }
+
+    #[test]
+    fn results_over_one_message_come_back_across_calls_and_none_is_lost() {
+        let mut queue = Queue::default();
+        let text = "z".repeat(MAX_LINE_TEXT);
+        for ticket in 1..=6 {
+            queue.finish("terminal-window", done_text(ticket, &text));
+        }
+        let first = queue.results("terminal-window", MESSAGE_BUDGET);
+        assert!(!first.is_empty() && first.len() < 6, "{}", first.len());
+        assert!(encode_results(&first).len() <= MESSAGE_BUDGET);
+        let rest = queue.results("terminal-window", MESSAGE_BUDGET);
+        let tickets: Vec<u32> = first.iter().chain(&rest).map(|d| d.ticket).collect();
+        assert_eq!(tickets, [1, 2, 3, 4, 5, 6][..tickets.len()]);
+        // However small the budget, one result still moves.
+        assert_eq!(queue.results("terminal-window", 0).len(), 1);
+    }
+
+    #[test]
+    fn a_batch_of_many_long_results_shares_one_request() {
+        let text = "w".repeat(MAX_LINE_TEXT);
+        let batch: Vec<Done> = (1..=16).map(|t| done_text(t, &text)).collect();
+        let back = through("terminal-window", true, &batch);
+        assert_eq!(back.len(), 16);
+        assert!(
+            back.iter()
+                .all(|d| matches!(&d.outcome, Ok(t) if !t.is_empty()))
+        );
     }
 
     #[test]
@@ -332,7 +458,7 @@ mod tests {
         let mut queue = Queue::default();
         let long = format!("effect 7 notify(\"{}\")", "x".repeat(MAX_LINE));
         assert_eq!(queue.put_as("terminal-window", &long, true), 1);
-        assert_eq!(queue.results("terminal-window")[0].ticket, 7);
+        assert_eq!(queue.results("terminal-window", 4096)[0].ticket, 7);
         assert_eq!(queue.take(4096), None);
     }
 
@@ -406,7 +532,7 @@ mod tests {
         let mut queue = Queue::default();
         let lines: Vec<String> = (0..=MAX_QUEUED as u32).map(line).collect();
         assert_eq!(queue.put("files", &lines.join("\n")), 1);
-        let results = queue.results("files");
+        let results = queue.results("files", MESSAGE_BUDGET);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].ticket, MAX_QUEUED as u32);
         assert!(results[0].outcome.is_err());
@@ -435,11 +561,11 @@ mod tests {
                 },
             );
         }
-        assert!(queue.results("monitor").is_empty());
-        let results = queue.results("files");
+        assert!(queue.results("monitor", MESSAGE_BUDGET).is_empty());
+        let results = queue.results("files", MESSAGE_BUDGET);
         assert_eq!(results.len(), MAX_RESULTS);
         assert_eq!(results[0].ticket, 2);
-        assert!(queue.results("files").is_empty());
+        assert!(queue.results("files", MESSAGE_BUDGET).is_empty());
     }
 
     #[test]

@@ -612,7 +612,8 @@ fn effects_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> 
         return Some(String::from("ok"));
     }
     if text == effects::RESULTS {
-        return Some(effects::encode_results(&state.effects.results(&caller)));
+        let results = state.effects.results(&caller, effects::MESSAGE_BUDGET);
+        return Some(effects::encode_results(&results));
     }
     if !shell {
         return Some(String::from("err only the shell runs effects"));

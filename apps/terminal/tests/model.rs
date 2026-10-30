@@ -537,3 +537,24 @@ fn mutated_state_bytes_never_panic() {
     }
     assert!(decoded > 100, "only {decoded} mutations decoded");
 }
+
+#[test]
+fn saved_text_loses_characters_that_hide_or_reorder() {
+    let span = Span {
+        seq: 1,
+        kind: Kind::Reply,
+        prompt: "k\u{200B}ai> ".to_string(),
+        text: "a\u{202E}b\u{2028}c".to_string(),
+        by_ai: false,
+    };
+    let state = State {
+        spans: vec![span],
+        next_seq: 2,
+        prompt: DEFAULT_PROMPT.to_string(),
+        phase: 0,
+        ask: 0,
+    };
+    let t = Terminal::from_state(state);
+    assert_eq!(t.spans()[0].prompt, "kai> ");
+    assert_eq!(t.spans()[0].text, "abc");
+}

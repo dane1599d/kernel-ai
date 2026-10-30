@@ -37,8 +37,10 @@ pub const TERMINAL_APP: &str = "terminal-window";
 pub(crate) const NOT_BY_A_PERSON: &str = "shell_line runs only for a key or click in the window";
 /// What an app that asked gets back, in place of the question.
 const ASKS: &str = "it asks first: ask in the console, which shows the script";
-/// Most bytes of an answer sent back: under the transport's 200 with the `…`.
-const MAX_ANSWER: usize = 190;
+/// Most bytes of an answer sent back, so that with its `…` it fits the most
+/// the transport carries of a person's result (`deskcore::effects::MAX_LINE_TEXT`,
+/// which `user`'s `shell` checks at compile time).
+pub const MAX_ANSWER: usize = 2038;
 
 /// The line of `shell_line({line: "..."})`.
 fn line_of(args: &str) -> Result<String, String> {
@@ -62,6 +64,7 @@ fn one_line(wire: &str) -> String {
         let piece: &str = match ch {
             '\\' => "\\\\",
             '\n' => "\\n",
+            '\t' => "\\t",
             _ => "",
         };
         let width = if piece.is_empty() { ch.len_utf8() } else { 2 };
@@ -88,6 +91,7 @@ impl Shell {
             return Err(format!("{app} may not run shell lines"));
         }
         let line = line_of(args)?;
+        self.host.audit(&format!("{app} ran the line {line:?}"));
         Ok(one_line(&self.eval_app(app, &line).to_wire()))
     }
 
@@ -103,6 +107,9 @@ impl Shell {
             pending: self.pending.take(),
             undo_asking: self.undo_asking.take(),
         };
+        // The console's tune proposal is its own: a line here neither answers
+        // it nor lapses it, and one it leaves is dropped below.
+        let console_tune = self.tuner.set_aside();
         let mine = self.fronts.remove(app).unwrap_or_default();
         self.partial = mine.partial;
         self.clarifying = mine.clarifying;
@@ -121,6 +128,8 @@ impl Shell {
             self.undo_asking = None;
             reply = Reply::err(ASKS);
         }
+        self.tuner.discard();
+        self.tuner.restore(console_tune);
         let kept = crate::panel::Terminal {
             partial: self.partial.take(),
             clarifying: self.clarifying.take(),

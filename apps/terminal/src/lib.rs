@@ -126,6 +126,8 @@ pub enum Refusal {
     Answer,
     /// Nothing to type.
     Empty,
+    /// A line the AI types is plain, so a person sees all of what Enter runs.
+    Hidden,
 }
 
 impl Refusal {
@@ -137,6 +139,9 @@ impl Refusal {
             Self::Control => "a line holds no control characters or newlines",
             Self::Answer => "answers are given only on a question's own card",
             Self::Empty => "there is nothing to type",
+            Self::Hidden => {
+                "a line the AI types is printable ASCII with single spaces, at most 160 characters"
+            }
         }
     }
 }
@@ -254,8 +259,13 @@ impl Terminal {
         if let Some(why) = vet(line) {
             return Err(self.note(why));
         }
+        if !plain(line) {
+            return Err(self.note(Refusal::Hidden));
+        }
         self.staged = Some(String::from(line));
-        self.push(Kind::Notice, "", STAGED, false);
+        // The whole line, in the notice: a person who presses Enter has seen
+        // what runs, wherever the input field cuts it.
+        self.push(Kind::Notice, "", &format!("{STAGED}: {line}"), false);
         Ok(String::from(line))
     }
 
@@ -451,8 +461,20 @@ impl Terminal {
 
 /// What `terminal_run` answers.
 pub const TYPED: &str = "typed in the terminal's input line; a person presses Enter to run it";
-/// Said under a line the AI typed.
-pub const STAGED: &str = "The AI typed a line for you: press Enter to run it.";
+/// What a row says before a line the AI typed: it is typed in the input, and
+/// Enter runs it.
+pub const STAGED: &str = "The AI typed a line for you (press Enter to run it)";
+/// Longest line the AI may type: all of it shows in the notice that names it.
+pub const MAX_STAGED: usize = 160;
+
+/// Whether `line` is plain enough to type for a person: printable ASCII with no
+/// run of spaces, which would push the end of the line out of sight in the
+/// input field.
+fn plain(line: &str) -> bool {
+    line.len() <= MAX_STAGED
+        && line.bytes().all(|b| (b' '..=b'~').contains(&b))
+        && !line.contains("  ")
+}
 
 /// Why `line`, trimmed and not empty, cannot be a line: a control character (a
 /// newline included, since a line is one line), too long, or an answer.

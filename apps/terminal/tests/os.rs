@@ -125,7 +125,10 @@ fn the_ai_types_a_line_and_a_person_runs_it() {
     // terminal_run only types: nothing goes to the shell.
     assert_eq!(t.act_run("  mem  "), Ok(comp_terminal::TYPED.to_string()));
     assert!(os.asked.is_empty());
-    assert_eq!(t.spans().last().unwrap().text, comp_terminal::STAGED);
+    assert_eq!(
+        t.spans().last().unwrap().text,
+        format!("{}: mem", comp_terminal::STAGED)
+    );
     assert_eq!(t.phase(), Phase::Ready);
     // A person presses Enter on it as it is: the row is the AI's.
     assert!(matches!(
@@ -207,4 +210,50 @@ fn a_recorder_numbers_its_effects_from_one() {
     let mut os = Recorder::default();
     assert_eq!(os.request(SHELL_LINE, String::new()), 1);
     assert_eq!(os.request(SHELL_LINE, String::new()), 2);
+}
+
+#[test]
+fn a_line_the_ai_types_shows_whole_to_the_person_who_runs_it() {
+    let mut t = Terminal::new();
+    let line = "echo 1";
+    t.act_run(line).unwrap();
+    // The notice carries all of it, wherever the input field cuts it.
+    assert!(t.spans().last().unwrap().text.ends_with(line));
+    // So a line that would hide its end is not typed: a run of spaces, a
+    // character outside printable ASCII, or more than the notice shows.
+    let hidden_tail = format!("ls{}; rm x", " ".repeat(120));
+    for bad in [
+        hidden_tail.as_str(),
+        "say \u{202E}hi",
+        "caf\u{e9}",
+        &"x".repeat(comp_terminal::MAX_STAGED + 1),
+        "a  b",
+    ] {
+        assert_eq!(
+            t.act_run(bad),
+            Err(comp_terminal::Refusal::Hidden.message().to_string()),
+            "{bad:?}"
+        );
+    }
+    // At the limit, with single spaces, it is typed and shown whole.
+    let longest = ["w"; comp_terminal::MAX_STAGED / 2].join(" ");
+    assert!(longest.len() <= comp_terminal::MAX_STAGED);
+    t.act_run(&longest).unwrap();
+    assert!(t.spans().last().unwrap().text.ends_with(&longest));
+}
+
+#[test]
+fn the_longest_effect_line_fits_what_desktop_keeps() {
+    // The whole `effect <ticket> call(...)` line, with the arguments quoted a
+    // second time inside it, for a line of nothing but quotes (each takes four
+    // bytes by then): deskcore refuses a line over 1024 bytes.
+    let worst = "\"".repeat(comp_terminal::MAX_LINE);
+    let args = comp_terminal::os::shell_line_args(&worst);
+    let line = format!(
+        "effect {} call({{name: {}, args: {}}})",
+        u32::MAX,
+        comp_terminal::os::quote(comp_terminal::os::SHELL_LINE),
+        comp_terminal::os::quote(&args)
+    );
+    assert!(line.len() <= 1024, "{} bytes", line.len());
 }
