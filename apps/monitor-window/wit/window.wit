@@ -10,9 +10,9 @@ package app:monitor-window@1.0.0;
 world monitor-window {
     include kai:app/component@0.1.0;
     import kai:app/effects@0.1.0;
-    import kai:ui/view@0.1.0;
+    import kai:ui/view@0.1.1;
     import kai:system/system@0.1.0;
-    export kai:ui/input@0.1.0;
+    export kai:ui/input@0.1.1;
     export kai:app/events@0.1.0;
     export kai:system/samples@0.1.0;
     export app:monitor/actions@1.0.0;

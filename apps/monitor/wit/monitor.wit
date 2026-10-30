@@ -7,8 +7,7 @@
 package app:monitor@1.0.0;
 
 interface actions {
-    /// Sort the System monitor's process table by cpu, memory, name or pid; the
-    /// same word again reverses it. The answer names the first process.
+    /// Sort the System monitor's table by cpu, memory, name or pid.
     /// kai: read-only=yes destructive=no idempotent=no open-world=no inverse=none cues=sort,order,rank,biggest,busiest
     /// kai: arg by max=16 role=option from-request
     sort: func(by: string) -> result<string, string>;
