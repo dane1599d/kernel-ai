@@ -370,6 +370,8 @@ impl Event {
             kabi::event::Kind::Close => Kind::Close,
             kabi::event::Kind::Idle(minutes) => Kind::Idle(minutes),
             kabi::event::Kind::Time(minute) => Kind::Time(minute),
+            // Desktop's wake: work for the shell, not a rule's event.
+            kabi::event::Kind::Work => return None,
         };
         Some(Event {
             when: When {

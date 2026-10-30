@@ -73,7 +73,7 @@ fn read(slot: usize, buf_ptr: u64, cap_bytes: u64) -> Result<u64, Error> {
     if cap_bytes < READ_BYTES as u64 {
         return Err(Error::TooBig);
     }
-    let (dropped, events) = event_box::take();
+    let (dropped, events) = event_box::take_for(pid);
     let text = event_box::text(dropped, &events);
     copy_to_user(slot, buf_ptr, text.as_bytes())?;
     Ok(text.len() as u64)
@@ -127,12 +127,15 @@ fn app_call(slot: usize, a: &[u64; 6]) -> Result<u64, Error> {
     Ok(reply.len() as u64)
 }
 
-/// APP_CTL: `ctl suspend` or `ctl resume` to app `name`, as the kernel.
+/// APP_CTL: `ctl suspend`, `ctl resume` or `ctl keep-running on|off` to app
+/// `name`, as the kernel.
 fn app_ctl(slot: usize, ptr: u64, len: u64, verb: u64, buf: u64, cap: u64) -> Result<u64, Error> {
     need(slot, cap::SUPERVISE)?;
     let request: &[u8] = match verb {
         0 => b"ctl suspend",
         1 => b"ctl resume",
+        2 => b"ctl keep-running on",
+        3 => b"ctl keep-running off",
         _ => return Err(Error::Invalid),
     };
     let mut name = [0u8; kabi::event::MAX_NAME];

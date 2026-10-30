@@ -38,6 +38,9 @@ pub enum Kind {
     Idle(u16),
     /// This minute of the day began.
     Time(u16),
+    /// `desktop` queued work for the shell (a panel line, an app's effects):
+    /// the post wakes it to take the work at once. No standing rule fires on it.
+    Work,
 }
 
 /// One event: a kind and, for a window event, the app it names.
@@ -77,6 +80,7 @@ impl Event {
         let ok = match kind {
             Kind::Idle(minutes) => (1..=MAX_IDLE).contains(&minutes),
             Kind::Time(minute) => minute < DAY_MINUTES,
+            Kind::Work => true,
             _ => false,
         };
         ok.then_some(Event {
@@ -93,6 +97,9 @@ impl Event {
 
     /// One line, strictly: anything else is `None`.
     pub fn parse(line: &str) -> Option<Self> {
+        if line == "work" {
+            return Event::timed(Kind::Work);
+        }
         let (word, arg) = line.split_once(' ')?;
         let number = || -> Option<u16> {
             (!arg.starts_with('0') || arg == "0")
@@ -119,6 +126,7 @@ impl Event {
             Kind::Close => write!(out, "close {}", self.app()),
             Kind::Idle(minutes) => write!(out, "idle {minutes}"),
             Kind::Time(minute) => write!(out, "time {minute}"),
+            Kind::Work => write!(out, "work"),
         }
     }
 }

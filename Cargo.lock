@@ -310,6 +310,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "comp-settings-window"
+version = "0.1.0-dev"
+dependencies = [
+ "appabi",
+ "comp-settings",
+ "comp-settings-ui",
+ "comp-ui-bind",
+ "compsdk",
+ "kaigrants",
+ "livecore",
+ "minicbor",
+ "uikit",
+ "wasmhost",
+ "wit-bindgen",
+]
+
+[[package]]
 name = "comp-terminal"
 version = "0.1.0-dev"
 dependencies = [
@@ -2033,6 +2050,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "wit-bindgen-c"
+version = "0.63.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e9dae58bbb3240ed529a9c8e0eeca4650d4c0e86f0b7cf30f43e53bb35f4f97d"
+dependencies = [
+ "anyhow",
+ "heck",
+ "indexmap",
+ "wasm-encoder",
+ "wasm-metadata",
+ "wit-bindgen-core",
+ "wit-component",
+]
+
+[[package]]
 name = "wit-bindgen-core"
 version = "0.63.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2182,6 +2214,8 @@ dependencies = [
  "uelf",
  "wasmhost",
  "wat",
+ "wit-bindgen-c",
+ "wit-bindgen-core",
  "wit-parser",
 ]
 

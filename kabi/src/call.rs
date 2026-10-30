@@ -540,11 +540,13 @@ pub const EVENT_POST: u64 = 182;
 /// [`super::event::READ_BYTES`].
 pub const EVENT_READ: u64 = 183;
 /// `app_ctl(name_ptr, name_len, verb, buf, cap) -> len`: the kernel sends
-/// `ctl suspend` (`verb` 0) or `ctl resume` (1) to the app service `name`, as
-/// its own request, and writes the reply into `buf`. For the supervisor, which
-/// runs `app_suspend` and `app_resume` for a standing instruction after
-/// RULE_CHECK (P3 task 11): needs [`super::cap::SUPERVISE`]. NotFound with no
-/// such service; TimedOut when it does not answer.
+/// `ctl suspend` (`verb` 0), `ctl resume` (1), `ctl keep-running on` (2) or
+/// `ctl keep-running off` (3) to the app service `name`, as its own request,
+/// and writes the reply into `buf`. For the supervisor, which runs
+/// `app_suspend` and `app_resume` for a standing instruction after RULE_CHECK
+/// (P3 task 11), and the shell's keep-running switch (P3 task 12b): needs
+/// [`super::cap::SUPERVISE`]. Invalid for another verb; NotFound with no such
+/// service; TimedOut when it does not answer.
 pub const APP_CTL: u64 = 184;
 /// `app_call(name_ptr, name_len, req_ptr, req_len, buf, cap | wait_ms << 32) -> len`: the
 /// kernel sends `req`, a `kai-call 1`, a `kai-undo 1` or `kai-actions 1`, of at most

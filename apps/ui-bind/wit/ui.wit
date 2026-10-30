@@ -4,6 +4,6 @@
 package kai:uibind@0.1.0;
 
 world window-only {
-    import kai:ui/view@0.1.0;
-    export kai:ui/input@0.1.0;
+    import kai:ui/view@0.1.1;
+    export kai:ui/input@0.1.1;
 }
