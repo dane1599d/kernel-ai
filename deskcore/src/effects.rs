@@ -415,7 +415,11 @@ mod tests {
         let tickets: Vec<u32> = first.iter().chain(&rest).map(|d| d.ticket).collect();
         assert_eq!(tickets, [1, 2, 3, 4, 5, 6][..tickets.len()]);
         // However small the budget, one result still moves.
+        queue.finish("terminal-window", done_text(7, "a"));
+        queue.finish("terminal-window", done_text(8, "b"));
         assert_eq!(queue.results("terminal-window", 0).len(), 1);
+        assert_eq!(queue.results("terminal-window", 0).len(), 1);
+        assert!(queue.results("terminal-window", 0).is_empty());
     }
 
     #[test]
