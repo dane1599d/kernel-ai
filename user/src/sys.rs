@@ -889,6 +889,24 @@ pub fn pkg_fetch(request: &HttpRequest) -> Result<usize, Error> {
     .map(|len| len as usize)
 }
 
+/// Sends the edit service one open or command for an app that holds the `edit`
+/// grant, through the kernel's journal; its answer goes into `reply`, which must
+/// hold [`kabi::MAX_MESSAGE`] bytes, and its length comes back (needs EDIT).
+pub fn edit_call(message: &[u8], reply: &mut [u8]) -> Result<usize, Error> {
+    call(
+        call::EDIT_CALL,
+        [
+            message.as_ptr() as u64,
+            message.len() as u64,
+            reply.as_mut_ptr() as u64,
+            reply.len() as u64,
+            0,
+            0,
+        ],
+    )
+    .map(|len| len as usize)
+}
+
 /// As [`http`], to the build service the kernel was booted with (needs PUBLISH).
 pub fn build(request: &HttpRequest) -> Result<usize, Error> {
     call(

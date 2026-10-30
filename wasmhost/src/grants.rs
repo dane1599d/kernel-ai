@@ -1,5 +1,5 @@
 //! What a version is granted when it loads. A granted interface (`kai:settings`
-//! today; `kai:edit` and `kai:system` add theirs) is linked only for a version
+//! and `kai:edit`; `kai:system` adds its own) is linked only for a version
 //! whose [`Grants`] allow it: without the grant, the import does not link and the
 //! version does not stage (`Reason::Link`).
 //!
@@ -12,4 +12,6 @@
 pub struct Grants {
     /// May import `kai:settings/settings`.
     pub settings: bool,
+    /// May import `kai:edit/edit`.
+    pub edit: bool,
 }
