@@ -200,8 +200,7 @@ impl Shell {
         setting: &str,
         value: &str,
     ) -> Result<String, String> {
-        let change = crate::appearance::changed(self.host.as_ref(), setting, value)?;
-        let words = change.after.clone();
+        let (change, words) = crate::appearance::changed(self.host.as_ref(), setting, value)?;
         let id = self.next_id;
         self.next_id += 1;
         self.log.push(Entry {

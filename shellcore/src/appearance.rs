@@ -50,9 +50,14 @@ pub(crate) fn set(host: &dyn Host, setting: &str, value: &str) -> Result<(String
 }
 
 /// Sets `setting` to `value` and saves it, as `appearance_set` does from a
-/// script or a Settings click: the change to log, with its undo. A colour's
-/// undo clears it: its old colour is not held.
-pub(crate) fn changed(host: &dyn Host, setting: &str, value: &str) -> Result<Change, String> {
+/// script or a Settings click: the change to log, with its undo, and look's
+/// words for it. The change holds the values alone, as every row's does, so a
+/// reply shows each once. A colour's undo clears it: its old colour is not held.
+pub(crate) fn changed(
+    host: &dyn Host,
+    setting: &str,
+    value: &str,
+) -> Result<(Change, String), String> {
     let (before, words) = set(host, setting, value)?;
     let before = match setting {
         "token" => String::from(value.split(' ').next().unwrap_or(value)),
@@ -62,18 +67,22 @@ pub(crate) fn changed(host: &dyn Host, setting: &str, value: &str) -> Result<Cha
     let named = |text: &str| {
         Name::new(text).ok_or_else(|| format!("appearance_set: {text:?} is too long to undo"))
     };
-    Ok(Change {
+    let change = Change {
         action: String::from("appearance_set"),
         owner: String::from("desktop"),
         res: format!("appearance {setting}"),
         before: before.clone(),
-        after: words,
+        after: match setting {
+            "token" => String::from(value),
+            _ => after.clone(),
+        },
         inverse: Some(Inverse::Appearance {
             setting: named(setting)?,
             before: named(&before)?,
             after: named(&after)?,
         }),
-    })
+    };
+    Ok((change, words))
 }
 
 /// `undo`: puts `setting` back to `before`, unless something else set it

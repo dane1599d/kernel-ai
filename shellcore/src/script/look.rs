@@ -10,7 +10,8 @@ pub(super) fn bind(engine: &mut Engine, h: Rc<dyn Host>, tx: Tx) {
     let name = "appearance_set";
     engine.register_fn(name, move |setting: &str, value: &str| -> RhaiResult<()> {
         tx.approved(name, &[setting, value])?;
-        let change = crate::appearance::changed(h.as_ref(), setting, value).map_err(rhai_error)?;
+        let (change, _) =
+            crate::appearance::changed(h.as_ref(), setting, value).map_err(rhai_error)?;
         tx.changed(change);
         Ok(())
     });
