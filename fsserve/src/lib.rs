@@ -835,21 +835,23 @@ impl<D: BlockDev> Server<D> {
         })
     }
 
-    /// Restores action `txn` as action `action`, if all it changed lies in
-    /// folder `dir` (the handle's) or the volume's trash ([`Fs::restore_within`]):
-    /// a handle reverts nothing in a folder it was not given.
+    /// Restores action `txn` as action `action`, if all it changed, and all the
+    /// restore changes, lies in folder `dir` (the handle's), its trashed items
+    /// counted by where they came from ([`Fs::restore_within`]): a handle
+    /// reverts nothing in a folder it was not given.
     fn restore(&mut self, dir: u64, txn: u64, action: u64) -> Result<Reply, Error> {
         let fs = self.fs();
-        if !fs.restore_within(txn, dir).map_err(error)? {
-            return Err(Error::Permission);
-        }
         let volume = fs.volume();
         let done = (|| {
             fs.begin(action)?;
-            fs.restore(txn)
+            fs.restore_within(txn, dir)
         })();
         let done = match done {
-            Ok(rows) => self.commit().map(|generation| (rows, generation)),
+            Ok(Some(rows)) => self.commit().map(|generation| (rows, generation)),
+            Ok(None) => {
+                self.drop_changes();
+                Err(Error::Permission)
+            }
             Err(e) => {
                 self.drop_changes();
                 Err(error(e))
