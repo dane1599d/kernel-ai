@@ -87,19 +87,15 @@ impl Shell {
         let back = models.next();
         let call = canonical("model_use", name);
         match (decision.tier, decision.why) {
-            // A model the AI picked asks once.
+            // A model the AI picked for a vague line asks once.
             (Tier::Run, Why::TakenAs) => {
-                self.model_ask(id, request, &call, Waiting::Use { to, back }, Why::Added)
+                self.model_ask(id, request, &call, Waiting::Use { to, back }, Why::TakenAs)
             }
-            (Tier::Run, why) => {
-                let consent = match why {
-                    Why::TakenAs => "taken-as",
-                    _ => "asked",
-                };
+            (Tier::Run, _) => {
                 let how = How {
                     form: Form::Call,
                     tier: Tier::Run,
-                    consent: String::from(consent),
+                    consent: String::from("asked"),
                 };
                 self.model_switch(id, request, &call, to, back, how)
             }
@@ -223,11 +219,12 @@ impl Shell {
     }
 
     /// `undo` of `model_use`: the model before for the next restart, while the
-    /// next restart's model is still `from`.
+    /// next restart's model is still `from`, or (`anyway`) whatever it is.
     pub(crate) fn model_back(
         &mut self,
         back: Option<Sha256>,
         from: Sha256,
+        anyway: bool,
     ) -> Result<String, Refused> {
         let back = back.ok_or_else(|| {
             Refused::Failed(String::from(
@@ -235,8 +232,10 @@ impl Shell {
             ))
         })?;
         let models = self.models_now().map_err(Refused::Failed)?;
-        if models.next() != Some(from) {
-            return Err(Refused::Moved(String::from("another model since")));
+        let next = models.next();
+        if next != Some(from) && !anyway {
+            let now = next.map_or_else(|| String::from("none"), |s| String::from(&hex(&s)[..12]));
+            return Err(Refused::Moved(now));
         }
         let answer = self
             .host

@@ -355,10 +355,15 @@ pub fn reverse(inverse: Inverse) -> Inverse {
             row,
             withheld: !withheld,
         },
-        // With no model before there was nothing to undo to, so no redo either.
-        Inverse::Model { back, from } => Inverse::Model {
+        // With no model before there was nothing to undo to, so no redo either:
+        // the inverse stays one that refuses.
+        Inverse::Model { back: None, from } => Inverse::Model { back: None, from },
+        Inverse::Model {
+            back: Some(back),
+            from,
+        } => Inverse::Model {
             back: Some(from),
-            from: back.unwrap_or(from),
+            from: back,
         },
     }
 }

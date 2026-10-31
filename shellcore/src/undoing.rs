@@ -116,7 +116,7 @@ impl Shell {
                     .map(|(text, redo)| (text, undo::Inverse::Profile { key: redo }))
                     .map_err(Refused::Failed),
                 undo::Inverse::Model { back, from } => self
-                    .model_back(back, from)
+                    .model_back(back, from, anyway)
                     .map(|text| (text, undo::reverse(inverse))),
                 other => {
                     let ids = undo::Ids {

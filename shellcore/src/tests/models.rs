@@ -111,6 +111,43 @@ fn a_named_switch_runs_and_undo_keeps_the_model_before() {
 }
 
 #[test]
+fn undo_after_another_switch_asks_before_putting_the_model_back() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    host.calls.borrow_mut().push_back(call(
+        r#"{"name":"model_use","arguments":{"name":"qwen3-0.6b"}}"#,
+    ));
+    shell.eval("please switch the model to qwen3-0.6b");
+    // Another model for the next restart since, not this shell's switch.
+    host.models.borrow_mut().store.next = Some(UNSIGNED);
+    let now = &hex(&UNSIGNED)[..12];
+    let asked = shell.eval("undo");
+    assert!(
+        asked.text.contains(&format!("changed since (now {now})")) && asked.text.ends_with("y/n"),
+        "{asked:?}"
+    );
+    let sent = host.model_requests.borrow().len();
+    assert_eq!(shell.eval("n"), ok("Not undone; `undo` asks again"));
+    assert_eq!(
+        host.model_requests.borrow().len(),
+        sent,
+        "nothing was asked"
+    );
+    shell.eval("undo");
+    assert_eq!(
+        shell.eval("Yes"),
+        ok("Undone: the model before, from the next restart")
+    );
+    let asked = host.model_requests.borrow().clone();
+    assert_eq!(asked.last(), Some(&format!("models use {}", hex(&QWEN))));
+    assert_eq!(
+        host.models.borrow().store.next,
+        None,
+        "the running model again"
+    );
+}
+
+#[test]
 fn only_a_stored_signed_model_is_used() {
     let host = FakeHost::new();
     let mut shell = shell(&host);
