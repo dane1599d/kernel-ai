@@ -12,9 +12,11 @@ precedence = "closest"
 SPDX-FileCopyrightText = "The Kernel AI contributors"
 SPDX-License-Identifier = "MPL-2.0"
 
-# Compiled into programs written for Kernel AI (ADR 0009 D1).
+# Compiled into programs written for Kernel AI (ADR 0009 D1); ccserve/kai/bind is
+# wit-bindgen-c's output from wit/ (`cargo xtask cc-bind`), which `cc build`
+# compiles into components and apps.
 [[annotations]]
-path = ["kabi/**", "compsdk/**", "wit/**"]
+path = ["kabi/**", "compsdk/**", "wit/**", "ccserve/kai/bind/**", "ccserve/kai/stdlib.h"]
 precedence = "closest"
 SPDX-FileCopyrightText = "The Kernel AI contributors"
 SPDX-License-Identifier = "MIT OR Apache-2.0"
@@ -45,3 +47,10 @@ path = ["assets/fonts/JetBrainsMono-Variable.ttf", "assets/fonts/JetBrainsMono-O
 precedence = "closest"
 SPDX-FileCopyrightText = "2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono)"
 SPDX-License-Identifier = "OFL-1.1"
+
+# xcc's compiler and headers, unchanged (ADR 0012 D2; third_party/xcc/UPSTREAM.toml).
+[[annotations]]
+path = "third_party/xcc/**"
+precedence = "closest"
+SPDX-FileCopyrightText = "2024 tyfkda"
+SPDX-License-Identifier = "MIT"

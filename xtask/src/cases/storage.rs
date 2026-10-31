@@ -3,6 +3,7 @@
 
 use super::{TestCase, case};
 use crate::blklog::{Data, Expect};
+use crate::disk::Fixture;
 
 const VIRTIO: Data = Data {
     nvme: false,
@@ -40,6 +41,17 @@ const FS_REBOOT_2: TestCase = TestCase {
     server: false,
     data: Some(VIRTIO),
     ..case("fs-reboot (boot 2)", "test=files reread")
+};
+
+/// Boot 2 of `app-saved`: the app starts from its saved state.
+const APP_SAVED_2: TestCase = TestCase {
+    expect: &[
+        "live: notes-window 1 restored from its saved state",
+        "app-saved: boot 2 found boot 1's note, restored from the app's saved state",
+    ],
+    server: false,
+    data: Some(VIRTIO),
+    ..case("app-saved (boot 2)", "test=app-saved reread")
 };
 
 /// Boot 2 of `fs-undo-reboot`: the log on disk still undoes boot 1's change.
@@ -105,6 +117,14 @@ pub(super) const CASES: &[TestCase] = &[
         data: Some(VIRTIO),
         then: Some(&FS_REBOOT_2),
         ..case("fs-reboot", "test=files")
+    },
+    // P4: an app's state survives a reboot through its own folder (dir=apps).
+    TestCase {
+        expect: &["app-saved: boot 1 added a note"],
+        server: false,
+        data: Some(VIRTIO),
+        then: Some(&APP_SAVED_2),
+        ..case("app-saved", "test=app-saved")
     },
     TestCase {
         expect: &[
@@ -196,5 +216,32 @@ pub(super) const CASES: &[TestCase] = &[
             ..RAW
         }),
         ..case("blk-flush-bug", "test=blk-flush blkbug=noflush")
+    },
+    // P2 task 10: no kai-model disk; the model is in kai-data's store, and fs
+    // fills the runs the boot reserved from kai-modelhint 1.
+    TestCase {
+        expect: &[
+            "model: 2101245 bytes reserved for the model store's model; fs fills them",
+            "model-store: fs filled 2101245 bytes from /system/models",
+            "[llm] model: waiting for the model store to fill the model",
+            "[llm] model: the model store filled the model",
+            "model-store: llm waited for the fill and maps the store's model",
+        ],
+        server: false,
+        data: Some(VIRTIO),
+        store: Some(Fixture::Gguf),
+        ..case("model-store", "test=model-store")
+    },
+    // The same store with the hint's FNV-1a64 changed: what fs fills is refused.
+    TestCase {
+        expect: &[
+            "model: the model store's file is refused: its FNV-1a64 is not the hint's",
+            "model-store: the store's blob is refused",
+        ],
+        server: false,
+        data: Some(VIRTIO),
+        store: Some(Fixture::Gguf),
+        store_bad_fnv: true,
+        ..case("model-store-bad", "test=model-store bad")
     },
 ];

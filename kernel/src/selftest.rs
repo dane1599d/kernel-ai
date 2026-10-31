@@ -24,6 +24,11 @@ pub enum ActCase {
     /// `fs-undo-reboot`'s first boot, then its second (`reread`).
     FsUndoReboot,
     FsUndoRebooted,
+    /// `app-route` (P4): the agent calls an app's row through the supervisor.
+    AppRoute,
+    /// `app-terminal` (P4 task 4): the agent types into the Terminal app and a
+    /// person's Enter runs the line.
+    AppTerminal,
     /// `profile-switch` (P3 task 12): profiles through the supervisor.
     Profile,
 }
@@ -54,6 +59,8 @@ pub enum SelfTest {
     Terminal,
     /// M8a: the Rhai shell answers a fixed list of lines correctly.
     Shell,
+    /// P4 task 12: the `c>` prompt through the shell and `cc` (ADR 0012).
+    CPrompt,
     /// M8b: LLM-written scripts are checked and run by their tier.
     Scripts,
     /// P1 task 7: one tagged call through the one door. `act-plain`: plain
@@ -86,6 +93,11 @@ pub enum SelfTest {
     Files {
         reread: bool,
     },
+    /// An app's state survives a reboot through its folder (P4): boot 1, then
+    /// boot 2 (`reread`).
+    AppSaved {
+        reread: bool,
+    },
     /// P2 task 8, `fs-restart`: `fs` killed mid-action leaves nothing half done,
     /// and a `File` handle works again.
     FilesRestart,
@@ -105,6 +117,13 @@ pub enum SelfTest {
     /// boots on one data disk; and P4 task 1, `pkg-image`: the image's signed
     /// repository as generation 1.
     PkgStore(crate::pkg_tests::Step),
+    /// P2 task 10, `model-store`: with no `kai-model` disk, `fs` fills the runs
+    /// the boot reserved from `kai-modelhint 1` with the store's sealed model;
+    /// with `bad`, the hint's FNV-1a64 is not the file's, and the kernel refuses
+    /// it.
+    ModelStore {
+        bad: bool,
+    },
     /// L3: the model is held in memory and mapped into `llm`, and survives it.
     Model,
     /// L4: `ask` is answered by the model on the disk, with no LLM server.
@@ -115,6 +134,8 @@ pub enum SelfTest {
     Latency,
     /// PROC_STOP and the supervisor's `stop` and `start` (P1 task 15).
     ProcStop,
+    /// Each process's pages and CPU time through METRICS (for P4's Monitor).
+    ProcUsage,
     /// `Shm` and spike S01-1's M6 (P1 task 14).
     Shm,
     /// Anonymous memory reserved, committed and given back (lane M).
@@ -132,13 +153,40 @@ pub enum SelfTest {
     DeskAsk,
     /// An app suspended and resumed through its host (P3 task 11).
     AppSuspend,
+    /// `event-wake` (P4): a post wakes the shell, never in place of a line.
+    EventWake,
+    /// An app not started at boot, started by the first request to it (P3 task 12b).
+    AppOnDemand,
     /// The OS boots to the desktop, whose screen matches its golden (P3 task 6).
     DeskBoot,
     /// The AI panel takes focus and queues a typed line (P3 task 7).
     DeskPanel,
+    /// `desk-panel-shell` (P3 task 7): the shell takes the panel's line.
+    DeskPanelShell,
+    /// `desk-catalog` (P4 task 3): the Apps sheet lists `pkg`'s catalogue.
+    DeskCatalog,
     /// An app's kai:ui window on the desktop, closed from its control (P3 task 9).
     UiWindow,
+    /// An unused app naps and a click wakes it (P3 task 12b).
+    DeskNap,
+    /// Settings' keep-running switch, shell only, kept across a reboot (P4
+    /// task 7): boot 1, then boot 2 (`reread`).
+    KeepRunning {
+        reread: bool,
+    },
+    /// Asks answered on `desktop`'s card, and on the console when it dies (P3 task 7).
+    DeskCard,
+    /// A standing instruction fired by Notes' window minimized and restored (P3 task 11).
+    DeskStanding,
+    /// The keyboard reaches an app's widgets (key input for uikit apps).
+    UiKeys,
     DeskTerm,
+    /// `desk-agent` (P3 task 10): the agent opens Notes and acts inside it.
+    DeskAgent,
+    /// The Settings app on the desktop, its window kept from the agent (P4 task 7).
+    AppSettings,
+    /// `desk-takeover` (P3 task 10): a key in the agent's window stops it.
+    DeskTakeover,
     /// `scriptrun` through a Job, and spike S01-1's M3 and M5 (P1 task 14).
     Scriptrun,
     /// L2: processes keep their vector state across switches and CPUs, and start clean.
@@ -220,6 +268,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=net" => Some(SelfTest::Net),
             "test=terminal" => Some(SelfTest::Terminal),
             "test=shell" => Some(SelfTest::Shell),
+            "test=c-prompt" => Some(SelfTest::CPrompt),
             "test=scripts" => Some(SelfTest::Scripts),
             "test=act-plain" => Some(SelfTest::Act(ActCase::Plain)),
             "test=act-run" => Some(SelfTest::Act(ActCase::Run)),
@@ -235,6 +284,8 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=fs-act" => Some(SelfTest::Act(ActCase::FsAct)),
             "test=fs-undo" => Some(SelfTest::Act(ActCase::FsUndo)),
             "test=fs-trash" => Some(SelfTest::Act(ActCase::FsTrash)),
+            "test=app-route" => Some(SelfTest::Act(ActCase::AppRoute)),
+            "test=app-terminal" => Some(SelfTest::Act(ActCase::AppTerminal)),
             "test=profile-switch" => Some(SelfTest::Act(ActCase::Profile)),
             "test=fs-undo-reboot" => Some(SelfTest::Act(
                 match cmdline.split_whitespace().any(|w| w == "reread") {
@@ -252,7 +303,13 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=blk-write" => Some(SelfTest::BlkWrite),
             "test=blk-flush" => Some(SelfTest::BlkFlush),
             "test=part" => Some(SelfTest::Part),
+            "test=model-store" => Some(SelfTest::ModelStore {
+                bad: cmdline.split_whitespace().any(|w| w == "bad"),
+            }),
             "test=files" => Some(SelfTest::Files {
+                reread: cmdline.split_whitespace().any(|w| w == "reread"),
+            }),
+            "test=app-saved" => Some(SelfTest::AppSaved {
                 reread: cmdline.split_whitespace().any(|w| w == "reread"),
             }),
             "test=files-restart" => Some(SelfTest::FilesRestart),
@@ -280,6 +337,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=local-script" => Some(SelfTest::LocalScript),
             "test=latency" => Some(SelfTest::Latency),
             "test=proc-stop" => Some(SelfTest::ProcStop),
+            "test=proc-usage" => Some(SelfTest::ProcUsage),
             "test=shm" => Some(SelfTest::Shm),
             "test=mem" => Some(SelfTest::Mem),
             "test=profile" => Some(SelfTest::Profile),
@@ -289,10 +347,24 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=desk-restart" => Some(SelfTest::DeskRestart),
             "test=desk-ask" => Some(SelfTest::DeskAsk),
             "test=app-suspend" => Some(SelfTest::AppSuspend),
+            "test=event-wake" => Some(SelfTest::EventWake),
+            "test=app-on-demand" => Some(SelfTest::AppOnDemand),
             "test=desk-boot" => Some(SelfTest::DeskBoot),
             "test=desk-panel" => Some(SelfTest::DeskPanel),
+            "test=desk-panel-shell" => Some(SelfTest::DeskPanelShell),
+            "test=desk-catalog" => Some(SelfTest::DeskCatalog),
             "test=ui-window" => Some(SelfTest::UiWindow),
+            "test=desk-nap" => Some(SelfTest::DeskNap),
+            "test=keep-running" => Some(SelfTest::KeepRunning {
+                reread: cmdline.split_whitespace().any(|w| w == "reread"),
+            }),
+            "test=desk-card" => Some(SelfTest::DeskCard),
+            "test=desk-standing" => Some(SelfTest::DeskStanding),
+            "test=ui-keys" => Some(SelfTest::UiKeys),
             "test=desk-term" => Some(SelfTest::DeskTerm),
+            "test=desk-agent" => Some(SelfTest::DeskAgent),
+            "test=app-settings" => Some(SelfTest::AppSettings),
+            "test=desk-takeover" => Some(SelfTest::DeskTakeover),
             "test=scriptrun" => Some(SelfTest::Scriptrun),
             "test=fpu" => Some(SelfTest::Fpu),
             "test=probe" => Some(SelfTest::Probe),
@@ -342,10 +414,13 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::Net
             | SelfTest::Terminal
             | SelfTest::Shell
+            | SelfTest::CPrompt
             | SelfTest::Scripts
             | SelfTest::Act(_)
             | SelfTest::Live
             | SelfTest::AppSuspend
+            | SelfTest::EventWake
+            | SelfTest::AppOnDemand
             | SelfTest::Edit
             | SelfTest::Manifest
             | SelfTest::ManifestGood
@@ -353,9 +428,12 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::LocalScript
             | SelfTest::Latency
             | SelfTest::ProcStop
+            | SelfTest::ProcUsage
             | SelfTest::Part
+            | SelfTest::ModelStore { .. }
             | SelfTest::ManyProcesses
             | SelfTest::Files { .. }
+            | SelfTest::AppSaved { .. }
             | SelfTest::FilesRestart
             | SelfTest::FilesDeadClient
             | SelfTest::PkgStore(_)
@@ -367,8 +445,18 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::FilesChurn { .. }
             | SelfTest::DeskBoot
             | SelfTest::DeskPanel
+            | SelfTest::DeskPanelShell
+            | SelfTest::DeskCatalog
             | SelfTest::UiWindow
+            | SelfTest::DeskNap
+            | SelfTest::KeepRunning { .. }
+            | SelfTest::DeskCard
+            | SelfTest::DeskStanding
+            | SelfTest::UiKeys
             | SelfTest::DeskTerm
+            | SelfTest::DeskAgent
+            | SelfTest::AppSettings
+            | SelfTest::DeskTakeover
             | SelfTest::TuneRevert
             | SelfTest::TuneStall
             | SelfTest::Tune
@@ -386,6 +474,21 @@ pub fn plan(test: SelfTest) -> Option<String> {
         SelfTest::Live => format!("{}\n{}", kabi::plan::NOTES_TEST, crate::llm::plan_line()),
         SelfTest::Part => String::from(kabi::plan::FS),
         SelfTest::AppSuspend => kabi::plan::notes("2", None),
+        // notes is listed before the shell, whose call reaches it through the
+        // supervisor, never a route.
+        SelfTest::Act(ActCase::AppRoute) => format!(
+            "{}
+{}",
+            crate::llm::plan_line(),
+            kabi::plan::notes("2", None)
+        ),
+        SelfTest::AppSaved { .. } => crate::saved_tests::plan(),
+        SelfTest::AppOnDemand => crate::demand_tests::plan(),
+        // llm first, so it asks for the model while fs still fills it.
+        SelfTest::ModelStore { bad: false } => {
+            format!("{}\n{}", crate::llm::plan_line(), kabi::plan::FS)
+        }
+        SelfTest::ModelStore { bad: true } => String::from(kabi::plan::FS),
         SelfTest::Files { reread } => {
             crate::files_tests::plan(if reread { "read" } else { "write" })
         }
@@ -396,6 +499,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             crate::files_tests::plan(&alloc::format!("churn boot={boot}"))
         }
         SelfTest::PkgStore(step) => crate::pkg_tests::plan(step),
+        SelfTest::DeskCatalog => crate::catalog_tests::plan(),
         SelfTest::Edit | SelfTest::Manifest | SelfTest::ManifestGood => {
             let mut plan = match test {
                 SelfTest::Edit => String::from(kabi::plan::NOTES_EDIT_TEST),
@@ -419,16 +523,20 @@ pub fn plan(test: SelfTest) -> Option<String> {
         SelfTest::Net
             | SelfTest::Live
             | SelfTest::AppSuspend
+            | SelfTest::AppOnDemand
             | SelfTest::Edit
             | SelfTest::Manifest
             | SelfTest::ManifestGood
             | SelfTest::Part
+            | SelfTest::AppSaved { .. }
+            | SelfTest::ModelStore { .. }
             | SelfTest::Files { .. }
             | SelfTest::FilesRestart
             | SelfTest::FilesDeadClient
             | SelfTest::FilesActions
             | SelfTest::FilesChurn { .. }
             | SelfTest::PkgStore(_)
+            | SelfTest::DeskCatalog
     ) {
         // The file system service starts before the shell, once there is a
         // `kai-data` partition for it (ADR 0004).
@@ -440,6 +548,36 @@ pub fn plan(test: SelfTest) -> Option<String> {
                 kabi::plan::SHELL_FILES
             }
             false => kabi::plan::SHELL,
+        };
+        // The shell calls `cc` for the `c>` prompt, so cc comes first.
+        plan.push('\n');
+        plan.push_str(kabi::plan::CC);
+        // On the desktop the shell has a route to `desktop`, for the panel:
+        // `desktop` is planned first, as a route's target must be.
+        let shell = match test {
+            SelfTest::DeskPanelShell => {
+                plan.push('\n');
+                plan.push_str(crate::desk_tests::BOOT_PLAN);
+                kabi::plan::SHELL_DESK
+            }
+            // The app is planned before the shell, whose call reaches it through
+            // the supervisor, and after `desktop`, which its window needs.
+            SelfTest::Act(ActCase::AppTerminal) => {
+                plan.push('\n');
+                plan.push_str(crate::app_terminal_tests::PLAN);
+                kabi::plan::SHELL_DESK
+            }
+            SelfTest::DeskAgent | SelfTest::DeskTakeover | SelfTest::AppSettings => {
+                plan.push('\n');
+                plan.push_str(crate::agent_desk_tests::DESK);
+                kabi::plan::SHELL_DESK
+            }
+            SelfTest::KeepRunning { .. } => {
+                plan.push('\n');
+                plan.push_str(crate::keep_tests::PLAN);
+                crate::keep_tests::SHELL
+            }
+            _ => shell,
         };
         plan.push('\n');
         plan.push_str(shell);
@@ -456,6 +594,14 @@ pub fn plan(test: SelfTest) -> Option<String> {
         plan.push_str(kabi::plan::UPDATED);
         plan.push_str(" after=restart step=");
         plan.push_str(step);
+        // `updated.<word>`: a word for `updated`'s line, as `restart=window`.
+        for word in crate::cmdline()
+            .split_whitespace()
+            .filter_map(|w| w.strip_prefix("updated."))
+        {
+            plan.push(' ');
+            plan.push_str(word);
+        }
     }
     // `act-rule` stops processes the supervisor does not restart, and one
     // service it does.
@@ -483,6 +629,10 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
         plan.push('\n');
         plan.push_str(crate::stop_tests::PLAN);
     }
+    if test == SelfTest::ProcUsage {
+        plan.push('\n');
+        plan.push_str(crate::usage_tests::PLAN);
+    }
     if test == SelfTest::ManyProcesses {
         plan.push_str(&crate::many_tests::plan());
     }
@@ -492,7 +642,7 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
     }
     if matches!(
         test,
-        SelfTest::DeskWindows | SelfTest::DeskRestart | SelfTest::DeskAsk
+        SelfTest::DeskWindows | SelfTest::DeskRestart | SelfTest::DeskAsk | SelfTest::DeskCard
     ) {
         plan.push('\n');
         plan.push_str(crate::desk_tests::PLAN);
@@ -505,9 +655,29 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
         plan.push('\n');
         plan.push_str(crate::ui_tests::PLAN);
     }
+    if test == SelfTest::DeskNap {
+        plan.push('\n');
+        plan.push_str(crate::nap_tests::PLAN);
+    }
+    if test == SelfTest::DeskStanding {
+        plan.push('\n');
+        plan.push_str(crate::standing_tests::PLAN);
+    }
+    if test == SelfTest::UiKeys {
+        plan.push('\n');
+        plan.push_str(crate::keys_tests::PLAN);
+    }
     if test == SelfTest::DeskTerm {
         plan.push('\n');
         plan.push_str(crate::term_tests::PLAN);
+    }
+    if matches!(test, SelfTest::DeskAgent | SelfTest::DeskTakeover) {
+        plan.push('\n');
+        plan.push_str(crate::agent_desk_tests::APPS);
+    }
+    if test == SelfTest::AppSettings {
+        plan.push('\n');
+        plan.push_str(crate::app_settings_tests::APPS);
     }
     if test == SelfTest::None {
         plan.push('\n');

@@ -48,3 +48,5 @@ component (roll back a component): component_revert
 pkg (install, remove or find packages): pkg_install pkg_remove pkg_list pkg_search
 files (list or read files): fs_list fs_read fs_history fs_changes
 file_edits (write, rename, trash or restore files): fs_create fs_write fs_move fs_trash fs_restore fs_empty_trash
+ui (open, close, switch to or type in apps): ui_windows ui_view ui_open ui_focus ui_act window_close
+appearance (theme, text size, motion or legible type): appearance_set

@@ -28,6 +28,9 @@ pub struct Package {
     pub size_kb: u32,
     /// What it needs that ADR 0001 makes the user choose: installing it asks.
     pub grants: &'static [&'static str],
+    /// The OS rows its effects may call, as its index entry lists them (P4,
+    /// deny by default): installing it asks, and its card lists them.
+    pub effects: &'static [&'static str],
     pub depends: &'static [&'static str],
 }
 
@@ -42,6 +45,7 @@ pub const REPOSITORY: &[Package] = &[
         licence: "MPL-2.0",
         size_kb: 74,
         grants: &[],
+        effects: &[],
         depends: &["spell-en"],
     },
     Package {
@@ -52,6 +56,7 @@ pub const REPOSITORY: &[Package] = &[
         licence: "MIT",
         size_kb: 410,
         grants: &[],
+        effects: &[],
         depends: &[],
     },
     Package {
@@ -62,9 +67,24 @@ pub const REPOSITORY: &[Package] = &[
         licence: "MIT",
         size_kb: 38,
         grants: &["network"],
+        effects: &[],
         depends: &[],
     },
 ];
+
+/// Each of the `packages`' `list`s, sorted, once.
+fn each_of(
+    packages: &[&'static Package],
+    list: impl Fn(&Package) -> &'static [&'static str],
+) -> Vec<&'static str> {
+    let mut all: Vec<&'static str> = packages
+        .iter()
+        .flat_map(|p| list(p).iter().copied())
+        .collect();
+    all.sort_unstable();
+    all.dedup();
+    all
+}
 
 /// The repository's entry for `name`.
 pub fn find(name: &str) -> Option<&'static Package> {
@@ -98,9 +118,30 @@ pub struct Switch {
     pub added: Vec<&'static Package>,
     pub removed: Vec<&'static Package>,
     pub grants: Vec<&'static str>,
+    /// The OS rows the added packages' effects may call.
+    pub effects: Vec<&'static str>,
 }
 
 impl Switch {
+    /// Whether it asks first: it needs a new permission, or its packages
+    /// declare effects the user should see before they run.
+    pub fn asks(&self) -> bool {
+        !self.grants.is_empty() || !self.effects.is_empty()
+    }
+
+    /// What its card says it needs: `it needs network; its effects may call
+    /// fs_list, fs_read`, or nothing.
+    pub fn needs(&self) -> String {
+        let mut parts = Vec::new();
+        if !self.grants.is_empty() {
+            parts.push(format!("it needs {}", self.grants.join(", ")));
+        }
+        if !self.effects.is_empty() {
+            parts.push(format!("its effects may call {}", self.effects.join(", ")));
+        }
+        parts.join("; ")
+    }
+
     /// `installed notes 2.0.0 (74 KB), with spell-en 1.2.3` or
     /// `removed notes 2.0.0, and spell-en 1.2.3`.
     pub fn what(&self) -> String {
@@ -148,7 +189,14 @@ impl Default for Store {
 
 /// Why nothing switched, in code's words.
 fn unknown(name: &str) -> String {
-    format!("No Kernel AI package named {name}. Linux packages need the Linux layer (v0.2).")
+    format!(
+        concat!(
+            "No ",
+            kabi::product_name!(),
+            " package named {}. Linux packages need the Linux layer (v0.2)."
+        ),
+        name
+    )
 }
 
 impl Store {
@@ -209,18 +257,15 @@ impl Store {
                 }
             }
         }
-        let mut grants: Vec<&'static str> = added
-            .iter()
-            .flat_map(|p| p.grants.iter().copied())
-            .collect();
-        grants.sort_unstable();
-        grants.dedup();
+        let grants = each_of(&added, |p| p.grants);
+        let effects = each_of(&added, |p| p.effects);
         let why = format!("install {}", names.join(" "));
         Ok(Switch {
             to: self.next(why, installed),
             added,
             removed: Vec::new(),
             grants,
+            effects,
         })
     }
 
@@ -252,6 +297,7 @@ impl Store {
             added: Vec::new(),
             removed,
             grants: Vec::new(),
+            effects: Vec::new(),
         })
     }
 
@@ -284,6 +330,7 @@ impl Store {
                 .map(|i| i.package)
                 .collect(),
             grants: Vec::new(),
+            effects: Vec::new(),
         })
     }
 
@@ -357,8 +404,12 @@ impl Store {
                     [] => String::from("nothing new"),
                     grants => grants.join(", "),
                 };
+                let effects = match p.effects {
+                    [] => String::new(),
+                    rows => format!(" Its effects may call {}.", rows.join(", ")),
+                };
                 format!(
-                    "{} {} ({}, {} KB, {}): {}. Needs {needs}.",
+                    "{} {} ({}, {} KB, {}): {}. Needs {needs}.{effects}",
                     p.name, p.version, p.kind, p.size_kb, p.licence, p.summary
                 )
             }

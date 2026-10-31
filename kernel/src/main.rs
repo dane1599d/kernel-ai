@@ -18,9 +18,14 @@
 extern crate alloc;
 
 mod act_tests;
+mod agent_desk_tests;
 mod allow;
 mod apic;
+mod app_route_tests;
+mod app_settings_tests;
+mod app_terminal_tests;
 mod appbench_tests;
+mod ask_box;
 mod ask_tests;
 mod backtrace;
 mod bigmap_tests;
@@ -31,11 +36,15 @@ mod boot_manifest;
 mod bootfiles;
 mod build_job;
 mod build_service;
+mod card_tests;
+mod catalog_tests;
+mod cc_tests;
 mod claim_tests;
 mod clock;
 mod compute_tests;
 mod console;
 mod cpu;
+mod demand_tests;
 mod desk_tests;
 mod devhost;
 mod device_tests;
@@ -47,7 +56,9 @@ mod edit_session;
 mod edit_tests;
 mod efi;
 mod efi_tests;
+mod entropy;
 mod entry;
+mod event_box;
 mod fault;
 mod faults;
 mod files_tests;
@@ -63,7 +74,9 @@ mod idt;
 mod input;
 mod ipc;
 mod irq;
+mod keep_tests;
 mod keyboard;
+mod keys_tests;
 mod latency_tests;
 mod lines;
 mod live_commands;
@@ -79,6 +92,7 @@ mod memory;
 mod metrics;
 mod model;
 mod model_tests;
+mod nap_tests;
 mod net;
 mod net_commands;
 mod net_tests;
@@ -94,6 +108,7 @@ mod power;
 mod process;
 mod profile_tests;
 mod qemu;
+mod saved_tests;
 mod sched_control;
 mod sched_tests;
 mod script_tests;
@@ -108,6 +123,7 @@ mod smp;
 mod smp_tests;
 #[cfg(feature = "spikes")]
 mod spikes;
+mod standing_tests;
 mod stop_tests;
 mod suspend_tests;
 mod term_tests;
@@ -121,9 +137,11 @@ mod tune_local_tests;
 mod tune_stall_tests;
 mod tune_tests;
 mod ui_tests;
+mod usage_tests;
 mod usb;
 mod version;
 mod virtio;
+mod wake_tests;
 mod workload;
 
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -328,6 +346,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Net => run_case(llm::self_test),
         SelfTest::Terminal => run_case(terminal::self_test),
         SelfTest::Shell => run_case(shell_tests::check),
+        SelfTest::CPrompt => run_case(cc_tests::check),
         SelfTest::Scripts => run_case(script_tests::check),
         SelfTest::Act(which) => run_case(|| act_tests::check(which)),
         SelfTest::Live => run_case(live_tests::check),
@@ -338,7 +357,9 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::BlkWrite => run_case(|| blk_tests::check_write(cmdline())),
         SelfTest::BlkFlush => run_case(|| blkflush_tests::check(cmdline())),
         SelfTest::Part => run_case(part_tests::check),
+        SelfTest::ModelStore { bad } => run_case(|| model_tests::store(cmdline(), bad)),
         SelfTest::Files { .. } => run_case(|| files_tests::check(cmdline())),
+        SelfTest::AppSaved { reread } => run_case(|| saved_tests::check(reread)),
         SelfTest::FilesRestart => run_case(files_tests::restart),
         SelfTest::FilesDeadClient => run_case(files_tests::dead_client),
         SelfTest::FilesActions => run_case(files_tests::actions),
@@ -349,6 +370,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::LocalScript => run_case(|| local_tests::check_script(cmdline())),
         SelfTest::Latency => run_case(latency_tests::check),
         SelfTest::ProcStop => run_case(stop_tests::check),
+        SelfTest::ProcUsage => run_case(usage_tests::check),
         SelfTest::Shm => run_case(shm_tests::check),
         SelfTest::Mem => run_case(mem_tests::check),
         SelfTest::Profile => run_case(profile_tests::check),
@@ -358,10 +380,22 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::DeskRestart => run_case(desk_tests::restart),
         SelfTest::DeskAsk => run_case(ask_tests::check),
         SelfTest::AppSuspend => run_case(suspend_tests::check),
+        SelfTest::EventWake => run_case(wake_tests::check),
+        SelfTest::AppOnDemand => run_case(demand_tests::check),
         SelfTest::DeskBoot => run_case(desk_tests::boot_check),
         SelfTest::DeskPanel => run_case(desk_tests::panel_check),
+        SelfTest::DeskPanelShell => run_case(desk_tests::panel_shell_check),
+        SelfTest::DeskCatalog => run_case(catalog_tests::check),
         SelfTest::UiWindow => run_case(ui_tests::check),
+        SelfTest::DeskNap => run_case(nap_tests::check),
+        SelfTest::KeepRunning { reread } => run_case(|| keep_tests::check(reread)),
+        SelfTest::DeskCard => run_case(card_tests::check),
+        SelfTest::DeskStanding => run_case(standing_tests::check),
+        SelfTest::UiKeys => run_case(keys_tests::check),
         SelfTest::DeskTerm => run_case(term_tests::check),
+        SelfTest::DeskAgent => run_case(agent_desk_tests::agent_check),
+        SelfTest::AppSettings => run_case(app_settings_tests::check),
+        SelfTest::DeskTakeover => run_case(agent_desk_tests::takeover_check),
         SelfTest::Scriptrun => run_case(scriptrun_tests::check),
         SelfTest::Fpu => run_case(fpu_tests::fpu_check),
         SelfTest::Probe => run_case(fpu_tests::probe_check),
@@ -450,6 +484,7 @@ fn init_devices() -> &'static acpitables::Platform {
         hpet::init(hpet)?;
         hpet::select_clock(cmdline());
         timer::init()?;
+        entropy::init();
         // ADR 0007 section 8: no 8042 when the FADT says the machine has none.
         if platform.no_8042 {
             log!("i8042: the FADT says this machine has no 8042; skipped");

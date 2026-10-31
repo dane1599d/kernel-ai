@@ -24,6 +24,13 @@ pub struct Frame {
     /// What changed since the last frame, in window-local logical px.
     pub damage: Vec<Rect>,
     pub a11y: Vec<A11yNode>,
+    /// Whether the window holds changes not yet kept.
+    pub unsaved: bool,
+    /// Whether the window is kept from the agent's view and actions.
+    pub agent_private: bool,
+    /// For each code view: its node, how many rows and how many text cells it
+    /// shows now, so the app can fill it.
+    pub code_sizes: Vec<(NodeId, u16, u16)>,
 }
 
 pub struct Window {
@@ -37,6 +44,8 @@ pub struct Window {
     pub(crate) dirty: bool,
     /// Whether all of it must be redrawn (first frame, resize).
     full: bool,
+    unsaved: bool,
+    agent_private: bool,
 }
 
 impl Window {
@@ -50,6 +59,8 @@ impl Window {
             last: None,
             dirty: true,
             full: true,
+            unsaved: false,
+            agent_private: false,
         }
     }
 
@@ -73,6 +84,32 @@ impl Window {
     pub fn set_title(&mut self, title: &str) {
         self.title = String::from(title);
         self.dirty = true;
+    }
+
+    /// Whether the window holds changes not yet kept; it shows at the next
+    /// commit, as the title does.
+    pub fn set_unsaved(&mut self, unsaved: bool) {
+        if self.unsaved != unsaved {
+            self.unsaved = unsaved;
+            self.dirty = true;
+        }
+    }
+
+    pub fn unsaved(&self) -> bool {
+        self.unsaved
+    }
+
+    /// Whether the window is kept from the agent; it shows at the next commit,
+    /// before the window's contents. Who may set it is the host's to decide.
+    pub fn set_agent_private(&mut self, private: bool) {
+        if self.agent_private != private {
+            self.agent_private = private;
+            self.dirty = true;
+        }
+    }
+
+    pub fn agent_private(&self) -> bool {
+        self.agent_private
     }
 
     /// `desktop`'s configure: the window's new size.
@@ -153,6 +190,19 @@ impl Window {
             _ => alloc::vec![window],
         };
         let a11y = a11y::build(&self.tree, &self.places, &self.st, &self.title);
+        let code_sizes = self
+            .tree
+            .preorder()
+            .into_iter()
+            .filter_map(|id| {
+                let Some(Widget::Code(v)) = self.tree.get(id).map(|n| &n.widget) else {
+                    return None;
+                };
+                let rect = self.places.get(&id)?.rect;
+                let (rows, cells) = crate::code::grid(m, rect, v.gutter_width);
+                Some((id, rows, cells))
+            })
+            .collect();
         self.last = Some(list.clone());
         self.dirty = false;
         self.full = false;
@@ -162,6 +212,9 @@ impl Window {
             list,
             damage,
             a11y,
+            unsaved: self.unsaved,
+            agent_private: self.agent_private,
+            code_sizes,
         }
     }
 }

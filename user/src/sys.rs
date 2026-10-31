@@ -498,6 +498,113 @@ pub fn display_claim(info: &mut kabi::display::DisplayInfo) -> Result<Handle, Er
     .map(|h| Handle(h as u32))
 }
 
+/// The ask waiting for the card, as its id, call and question, one per line,
+/// into `buf`; 0 when none waits. Keeps the trusted layer alive (ASK_READ).
+pub fn ask_read(buf: &mut [u8]) -> Result<usize, Error> {
+    call(
+        call::ASK_READ,
+        [0, buf.as_mut_ptr() as u64, buf.len() as u64, 0, 0, 0],
+    )
+    .map(|n| n as usize)
+}
+
+/// Answers ask `id` from the card, with the `ONCE` digest of the call it
+/// showed (ASK_ANSWER).
+pub fn ask_answer(id: u64, yes: bool, digest: &[u8; 32]) -> Result<u64, Error> {
+    call(
+        call::ASK_ANSWER,
+        [0, id, u64::from(yes), digest.as_ptr() as u64, 0, 0],
+    )
+}
+
+/// Puts one event for standing instructions in the kernel's box (EVENT_POST):
+/// a line [`kabi::event::Event::parse`] reads. For `desktop`.
+pub fn event_post(line: &str) -> Result<u64, Error> {
+    call(
+        call::EVENT_POST,
+        [line.as_ptr() as u64, line.len() as u64, 0, 0, 0, 0],
+    )
+}
+
+/// Takes the box's events, one line each (EVENT_READ); `buf` must hold
+/// [`kabi::event::READ_BYTES`]. For the shell.
+pub fn event_read(buf: &mut [u8]) -> Result<usize, Error> {
+    call(
+        call::EVENT_READ,
+        [buf.as_mut_ptr() as u64, buf.len() as u64, 0, 0, 0, 0],
+    )
+    .map(|n| n as usize)
+}
+
+/// The `ctl` requests APP_CTL sends an app, by their verb numbers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AppCtl {
+    Suspend = 0,
+    Resume = 1,
+    KeepOn = 2,
+    KeepOff = 3,
+}
+
+impl AppCtl {
+    /// For the log: `suspend`, `resume`, `keep-running on|off`.
+    pub fn word(self) -> &'static str {
+        match self {
+            AppCtl::Suspend => "suspend",
+            AppCtl::Resume => "resume",
+            AppCtl::KeepOn => "keep-running on",
+            AppCtl::KeepOff => "keep-running off",
+        }
+    }
+}
+
+/// Fills `buf` (at most [`kabi::call::ENTROPY_MAX`] bytes) with random bytes from
+/// the kernel (ENTROPY). NoEntropy on a CPU that gives none: make no key then.
+pub fn entropy(buf: &mut [u8]) -> Result<usize, Error> {
+    call(
+        call::ENTROPY,
+        [buf.as_mut_ptr() as u64, buf.len() as u64, 0, 0, 0, 0],
+    )
+    .map(|n| n as usize)
+}
+
+/// `verb`'s `ctl` request to app `name`, sent by the kernel (APP_CTL); the
+/// app's reply goes into `reply`. For the supervisor.
+pub fn app_ctl(name: &str, verb: AppCtl, reply: &mut [u8]) -> Result<usize, Error> {
+    call(
+        call::APP_CTL,
+        [
+            name.as_ptr() as u64,
+            name.len() as u64,
+            verb as u64,
+            reply.as_mut_ptr() as u64,
+            reply.len() as u64,
+            0,
+        ],
+    )
+    .map(|n| n as usize)
+}
+
+/// `request`, a `kai-call 1` or `kai-undo 1`, to app `name`, sent by the kernel
+/// (APP_CALL), waiting at most `wait_ms`; the app's reply goes into `reply`.
+/// For the supervisor.
+pub fn app_call(name: &str, request: &str, reply: &mut [u8], wait_ms: u32) -> Result<usize, Error> {
+    let cap = u64::try_from(reply.len())
+        .unwrap_or(0)
+        .min(u64::from(u32::MAX));
+    call(
+        call::APP_CALL,
+        [
+            name.as_ptr() as u64,
+            name.len() as u64,
+            request.as_ptr() as u64,
+            request.len() as u64,
+            reply.as_mut_ptr() as u64,
+            cap | (u64::from(wait_ms) << 32),
+        ],
+    )
+    .map(|n| n as usize)
+}
+
 /// Puts these rectangles of the claimed back buffer on screen.
 pub fn display_flush(rects: &[kabi::display::FlushRect]) -> Result<u64, Error> {
     call(
@@ -788,6 +895,24 @@ pub fn pkg_fetch(request: &HttpRequest) -> Result<usize, Error> {
     call(
         call::PKG_FETCH,
         [request as *const HttpRequest as u64, 0, 0, 0, 0, 0],
+    )
+    .map(|len| len as usize)
+}
+
+/// Sends the edit service one open or command for an app that holds the `edit`
+/// grant, through the kernel's journal; its answer goes into `reply`, which must
+/// hold [`kabi::MAX_MESSAGE`] bytes, and its length comes back (needs EDIT).
+pub fn edit_call(message: &[u8], reply: &mut [u8]) -> Result<usize, Error> {
+    call(
+        call::EDIT_CALL,
+        [
+            message.as_ptr() as u64,
+            message.len() as u64,
+            reply.as_mut_ptr() as u64,
+            reply.len() as u64,
+            0,
+            0,
+        ],
     )
     .map(|len| len as usize)
 }
@@ -1095,6 +1220,22 @@ pub fn part_peer_alive(handle: Handle, pid: u64) -> Result<u64, Error> {
     call(
         call::PART_PEER_ALIVE,
         [u64::from(handle.0), pid, 0, 0, 0, 0],
+    )
+}
+
+/// Hands the kernel the model store's model, `extents` (first block, blocks) of
+/// the partition from byte `offset` of the file (P2 task 10); the bytes filled.
+pub fn model_fill(partition: Handle, extents: &[(u64, u64)], offset: u64) -> Result<u64, Error> {
+    call(
+        call::MODEL_FILL,
+        [
+            u64::from(partition.0),
+            extents.as_ptr() as u64,
+            extents.len() as u64,
+            offset,
+            0,
+            0,
+        ],
     )
 }
 

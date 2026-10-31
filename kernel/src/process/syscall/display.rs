@@ -25,6 +25,8 @@ const CALLS: &[u64] = &[
     call::INPUT_READ,
     call::TERM_READ,
     call::INPUT_TO_CONSOLE,
+    call::ASK_READ,
+    call::ASK_ANSWER,
 ];
 
 /// The most events one INPUT_READ returns.
@@ -41,6 +43,8 @@ pub(super) fn handle(slot: usize, number: u64, a: &[u64; 6]) -> Option<Result<u6
         call::DISPLAY_CURSOR_MOVE => cursor_move(slot, a[0], a[1]),
         call::TERM_READ => term_read(slot, a[0], a[1], a[2]),
         call::INPUT_TO_CONSOLE => to_console(slot, a[0], a[1]),
+        call::ASK_READ => ask_read(slot, a[1], a[2]),
+        call::ASK_ANSWER => ask_answer(slot, a[1], a[2], a[3]),
         _ => read(slot, a[0], a[1], a[2]),
     })
 }
@@ -187,4 +191,31 @@ fn to_console(slot: usize, on: u64, pid: u64) -> Result<u64, Error> {
     }
     input::lease(on == 1);
     Ok(0)
+}
+
+/// ASK_READ: the ask posted for the card, if any; marks the trusted layer alive.
+fn ask_read(slot: usize, buf_ptr: u64, cap_bytes: u64) -> Result<u64, Error> {
+    need(slot, cap::ASK)?;
+    let mut text = alloc::string::String::new();
+    crate::ask_box::read(&mut text);
+    if text.len() as u64 > cap_bytes {
+        return Err(Error::TooBig);
+    }
+    copy_to_user(slot, buf_ptr, text.as_bytes())?;
+    Ok(text.len() as u64)
+}
+
+/// ASK_ANSWER: the card's answer to ask `id`, with the digest of the call it
+/// showed.
+fn ask_answer(slot: usize, id: u64, yes: u64, digest_ptr: u64) -> Result<u64, Error> {
+    need(slot, cap::ASK)?;
+    if yes > 1 {
+        return Err(Error::Invalid);
+    }
+    let mut digest = [0u8; 32];
+    copy_from_user(slot, digest_ptr, &mut digest)?;
+    match crate::ask_box::answer(id, yes == 1, &digest) {
+        true => Ok(0),
+        false => Err(Error::NotFound),
+    }
 }

@@ -1,0 +1,63 @@
+node 0 clip 0,0 640x440
+  fill 0,0 640x440 window r0
+node 3 clip 0,0 640x440
+  text 12,12 body text "CPUs: 4"
+node 4 clip 0,0 640x440
+  text 68,12 body muted "Up 12m 36s"
+node 5 clip 0,0 640x440
+  fill 12,51 160x6 line r3
+  fill 12,51 101x6 accent r3
+  text 180,44 body text "Memory: 2596 of 4096 MiB used"
+node 7 clip 0,0 640x440
+  fill 12,76 116x28 raised r6
+  stroke 12,76 116x28 line_strong w1 r6
+  text 22,81 label text "CPU high-low"
+node 8 clip 0,0 640x440
+  fill 128,76 68x28 raised r6
+  stroke 128,76 68x28 line_strong w1 r6
+  text 138,81 label text "Memory"
+node 9 clip 0,0 640x440
+  fill 196,76 52x28 raised r6
+  stroke 196,76 52x28 line_strong w1 r6
+  text 206,81 label text "Name"
+node 10 clip 0,0 640x440
+  fill 248,76 44x28 raised r6
+  stroke 248,76 44x28 line_strong w1 r6
+  text 258,81 label text "PID"
+node 11 clip 0,0 640x440
+  fill 292,76 76x28 raised r6
+  stroke 292,76 76x28 line_strong w1 r6
+  text 302,81 label text "Refresh"
+node 12 clip 0,0 640x440
+  stroke 12,112 616x228 line_strong w1 r6
+  text 23,116 label muted "PID"
+  text 23,139 body text "4"
+  text 23,163 body text "7"
+  text 23,187 body text "1"
+  text 23,211 body text "9"
+  text 67,116 label muted "Name"
+  text 67,139 body text "llm"
+  text 67,163 body text "desktop"
+  text 67,187 body text "supervisor"
+  text 67,211 body text "shell"
+  text 167,116 label muted "CPU"
+  text 167,139 body text "61.2%"
+  text 167,163 body text "8.0%"
+  text 167,187 body text "0.5%"
+  text 167,211 body text "0.0%"
+  text 227,116 label muted "Memory"
+  text 227,139 body text "2.2 GiB"
+  text 227,163 body text "40.0 MiB"
+  text 227,187 body text "300 KiB"
+  text 227,211 body text "160 KiB"
+  fill 13,136 614x1 line r0
+node 13 clip 0,0 640x440
+  text 12,348 body text "Model: ready, 12.5 tokens/s"
+node 15 clip 0,0 640x440
+  fill 12,376 52x28 raised r6
+  stroke 12,376 52x28 line_strong w1 r6
+  text 22,381 label text "Stop"
+node 16 clip 0,0 640x440
+  text 64,376 small muted "Pick a process to stop it"
+node 17 clip 0,0 640x440
+  text 12,412 small muted "4 processes"

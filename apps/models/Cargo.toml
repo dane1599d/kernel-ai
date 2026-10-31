@@ -1,0 +1,13 @@
+[package]
+name = "comp-models"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The model manager's model (P4 task 10): the models in `/system/models` and in
+# the signed `models` role, imports from an attached disk checked against the
+# role, and `model_use`. `no_std` + `alloc` and free of `kai:ui`, so the host
+# tests run it as is; the window (`comp-models-ui`, then the component) draws it.
+[lib]
+doctest = false

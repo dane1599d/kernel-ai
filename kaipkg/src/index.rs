@@ -1,6 +1,7 @@
 //! A package's index entry (ADR 0011 §3): the `custom.kai` fields its signed
 //! TUF target carries, read before its bytes are. Each field is required but
-//! `world`, which only an `app` has, and no other is allowed. Once the bytes are
+//! `world`, which only an `app` has, and `effects`, which only an app that
+//! declares some has; no other is allowed. Once the bytes are
 //! here, [`Index::matches`] holds cargo's rule: the package's own header must say
 //! what its entry says.
 
@@ -15,9 +16,9 @@ use kaituf::meta::TargetFile;
 use serde_json::{Map, Value};
 
 /// `custom.kai`'s fields, in the packer's order.
-const FIELDS: [&str; 10] = [
+const FIELDS: [&str; 11] = [
     "name", "version", "kind", "summary", "licence", "depends", "grants", "actions", "yanked",
-    "world",
+    "world", "effects",
 ];
 
 /// One target's index entry.
@@ -34,6 +35,8 @@ pub struct Index {
     pub depends: Vec<String>,
     pub grants: Vec<String>,
     pub actions: Vec<String>,
+    /// The OS rows its effects may call ([`crate::effects`]); none if absent.
+    pub effects: Vec<String>,
     pub yanked: bool,
     /// The target's SHA-256 and length.
     pub sha: Sha,
@@ -78,6 +81,10 @@ impl Index {
             depends: strings(kai, "depends")?,
             grants: strings(kai, "grants")?,
             actions: strings(kai, "actions")?,
+            effects: match kai.contains_key("effects") {
+                true => strings(kai, "effects")?,
+                false => Vec::new(),
+            },
             yanked: kai
                 .get("yanked")
                 .and_then(Value::as_bool)
@@ -128,6 +135,38 @@ impl Index {
         Ok(())
     }
 
+    /// An entry for a package no index lists, an installed one whose repository
+    /// is gone: what its own header says, with its object's SHA-256 and size,
+    /// the grants its generation gave it and the effects its artifact declares.
+    pub fn of_header(
+        header: &Header,
+        text: &str,
+        (sha, size): (Sha, u64),
+        grants: Vec<String>,
+        effects: Vec<String>,
+    ) -> Self {
+        let depends = text
+            .lines()
+            .filter_map(|line| line.strip_prefix("depends "))
+            .map(String::from)
+            .collect();
+        Index {
+            name: header.name.clone(),
+            version: header.version,
+            kind: header.kind.name().into(),
+            summary: header.summary.clone(),
+            licence: header.licence.clone(),
+            world: header.world.clone(),
+            depends,
+            grants,
+            actions: Vec::new(),
+            effects,
+            yanked: false,
+            sha,
+            size,
+        }
+    }
+
     /// What resolution and the store need of it.
     pub fn entry(&self) -> Result<Entry, String> {
         let depends = self
@@ -142,6 +181,7 @@ impl Index {
             size: self.size,
             depends,
             grants: self.grants.clone(),
+            effects: self.effects.clone(),
             yanked: self.yanked,
         })
     }

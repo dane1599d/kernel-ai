@@ -14,7 +14,9 @@ doctest = false
 appabi = { path = "../appabi" }
 kabi = { path = "../kabi" }
 livecore = { path = "../livecore" }
+llmproto = { path = "../llmproto" }
 surfabi = { path = "../surfabi" }
+systemabi = { path = "../systemabi" }
 uikit = { path = "../uikit" }
 # portable-dispatch: the default tail-call dispatch grows the native stack with
 # every instruction when debug assertions are on, as they are in dev builds.

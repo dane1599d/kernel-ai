@@ -1,0 +1,20 @@
+[package]
+name = "comp-files-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The Files app's window as a `kai:ui` tree (ADR 0005 section 4), as
+# `comp-notes-ui` is Notes': built whole from the model after each event and
+# diffed, with no wasm dependency, so the host tests drive it through `uikit`.
+[lib]
+doctest = false
+
+[dependencies]
+comp-files = { path = "../files" }
+comp-ui-bind = { path = "../ui-bind" }
+uikit = { path = "../../uikit" }
+
+[dev-dependencies]
+agentabi = { path = "../../agentabi" }

@@ -60,7 +60,15 @@ fn stream() -> Vec<u8> {
         (5, Request::SetAppId("app:notes")),
         (3, Request::GetA11y { id: 6 }),
         (6, Request::TreeUpdate(&[1, 2, 3, 4, 5])),
-        (6, Request::BindAction { node: 2, action: 0 }),
+        (
+            6,
+            Request::BindAction {
+                node: 2,
+                action: "notes_save",
+            },
+        ),
+        (5, Request::SetUnsaved(true)),
+        (5, Request::SetAgentPrivate(true)),
         (3, Request::Attach { buffer: 4 }),
         (
             3,
@@ -108,7 +116,7 @@ fn check_stream(bytes: &[u8]) {
 #[test]
 fn the_stream_at_every_prefix() {
     let sample = stream();
-    assert_eq!(serve(&sample), Ok(14));
+    assert_eq!(serve(&sample), Ok(16));
     hostile::truncations(&sample, |_, prefix| {
         // A prefix is a run of whole messages and then, at most, a short one.
         match serve(prefix) {

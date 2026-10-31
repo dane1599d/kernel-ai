@@ -24,6 +24,11 @@ pub struct Settings {
     pub fuel_life: u64,
     /// Linear memory per instance.
     pub memory_kib: u64,
+    /// Unused time before the app naps (P3 task 12b); 0 never naps.
+    pub nap_ms: u64,
+    /// Kept running by the user's switch (`keep=1`, which the supervisor adds):
+    /// it never naps until `ctl keep-running off`.
+    pub keep_running: bool,
 }
 
 impl Settings {
@@ -36,6 +41,8 @@ impl Settings {
         fuel_call: 5_000_000,
         fuel_life: 20_000_000,
         memory_kib: 2048,
+        nap_ms: 120_000,
+        keep_running: false,
     };
 
     /// Reads `key=value` words. `version` is required; `restart`, which the
@@ -64,6 +71,8 @@ impl Settings {
                 "fuel_call" => settings.fuel_call = number(1, 10_000_000_000)?,
                 "fuel_life" => settings.fuel_life = number(1, 10_000_000_000)?,
                 "memory_kib" => settings.memory_kib = number(64, 16 * 1024)?,
+                "nap_ms" => settings.nap_ms = number(0, 86_400_000)?,
+                "keep" => settings.keep_running = number(0, 1)? == 1,
                 "restart" => {}
                 other => return Err(format!("unknown setting {other:?}")),
             }
@@ -90,6 +99,21 @@ mod tests {
         let settings = Settings::parse("version=c-0123456789ab fallback=2").unwrap();
         assert_eq!(settings.fallback.as_deref(), Some("2"));
         assert_eq!(Settings::parse("version=2").unwrap().fallback, None);
+        assert_eq!(Settings::parse("version=2").unwrap().nap_ms, 120_000);
+        assert_eq!(Settings::parse("version=2 nap_ms=0").unwrap().nap_ms, 0);
+    }
+
+    #[test]
+    fn keep_comes_from_the_supervisor_as_0_or_1() {
+        assert!(!Settings::parse("version=2").unwrap().keep_running);
+        assert!(
+            Settings::parse("restart=1 version=2 keep=1")
+                .unwrap()
+                .keep_running
+        );
+        assert!(!Settings::parse("version=2 keep=0").unwrap().keep_running);
+        assert!(Settings::parse("version=2 keep=yes").is_err());
+        assert!(Settings::parse("version=2 keep=2").is_err());
     }
 
     #[test]

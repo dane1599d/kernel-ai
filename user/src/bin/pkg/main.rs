@@ -37,18 +37,22 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use fsproto::{Reply, Request};
 use kabi::Error;
-use kabi::handle::{Handle, HandleInfo, Kind, MAX_STARTUP, MAX_TRANSFER};
+use kabi::handle::{Handle, HandleInfo, Kind, MAX_STARTUP, MAX_TRANSFER, RecvInfo};
 use kaipkg::bundle;
+use kaipkg::catalog;
 use kaipkg::fsvol::{FsVolume, Transport};
 use kaipkg::generation::{Generation, Time};
 use kaipkg::header::{Header, Kind as PackageKind};
 use kaipkg::image::Files;
+use kaipkg::index::Index;
 use kaipkg::mirror::{self, Exchange, Mirror, TufCache};
 use kaipkg::resolve::{Entry, Want};
 use kaipkg::store::{self, Ctx, Ledger, Source, Store, Volume};
 use kaipkg::version::Version;
 use kaituf::updater::Cache;
 use user::{println, sys};
+
+mod local;
 
 user::entry!(main);
 
@@ -63,6 +67,9 @@ fn main() -> i32 {
     let step = args
         .split_whitespace()
         .find_map(|w| w.strip_prefix("step="));
+    if step == Some("not-holder") {
+        not_holder();
+    }
     let Some(root) = startup_dir() else {
         println!("pkg: FAIL no Dir handle for /system/pkg at startup");
         idle();
@@ -92,7 +99,137 @@ fn main() -> i32 {
             println!("pkg: FAIL cannot leave case/{step}.done: {why}");
         }
     }
-    idle()
+    serve(|text, moved, caller| {
+        local::answer(&mut vol, text, moved, caller).unwrap_or_else(|| answer(&mut vol, text))
+    })
+}
+
+/// `step=not-holder`: `pkg` from a plan line without `dir=pkg`, so it holds no
+/// `/system/pkg`. Each call of lane P's block must be Permission, each with
+/// arguments the holder's would pass, so a dropped gate would let it through.
+/// It answers `ok` or what went wrong on its endpoint: the kernel's half asks,
+/// rather than racing its line to the end of the boot.
+fn not_holder() -> ! {
+    let mut buf = [0u8; 16];
+    let request = kabi::pkgrepo::request("/metadata/timestamp.json", 0, 99).unwrap_or_default();
+    let artifact = b"not a package";
+    let calls = [
+        (
+            "BOOT_READ",
+            sys::boot_read("pkgrepo/metadata/1.root.json", &mut buf).map(|_| ()),
+        ),
+        (
+            "COMP_ADD",
+            sys::comp_add("notes", artifact, &kaipkg::sha256(artifact)),
+        ),
+        (
+            "PKG_FETCH",
+            pkg_fetch(request.as_bytes(), &mut buf).map(|_| ()),
+        ),
+        ("PKG_TIME", sys::pkg_time().map(|_| ())),
+    ];
+    let wrong: Vec<String> = calls
+        .iter()
+        .filter(|(_, got)| !matches!(got, Err(Error::Permission)))
+        .map(|(name, got)| format!("{name} gave {got:?}, not Permission"))
+        .collect();
+    let line = match wrong.is_empty() {
+        true => String::from("ok"),
+        false => wrong.join("; "),
+    };
+    println!("pkg: without /system/pkg: {line}");
+    serve(|_, _, _| line.clone())
+}
+
+/// What the image's repository and the mirror listed at this boot, as index
+/// entries, for the catalogue.
+static KNOWN: spin::Mutex<(Vec<Index>, Vec<Index>)> = spin::Mutex::new((Vec::new(), Vec::new()));
+
+/// After its step, `pkg` answers on its endpoint with `answer`, given each
+/// request, the handles it moved and the pid of the process that sent it: the
+/// Apps sheet's `catalog <offset>` (P4 task 3) and `cc build`'s `local`
+/// requests (P4 task 13, [`local`]). Every handle a request moved is closed
+/// once it is answered, and an answer is at most one message. With no `serve`
+/// in its plan line it idles.
+fn serve(mut answer: impl FnMut(&str, &[Handle], u64) -> String) -> ! {
+    let mut request = [0u8; 64];
+    loop {
+        let mut info = RecvInfo::default();
+        match sys::recv_h(&mut request, 60_000, &mut info) {
+            Ok(len) => {
+                let text = core::str::from_utf8(&request[..len.min(request.len())]).unwrap_or("");
+                let count = (info.handle_count as usize).min(MAX_TRANSFER);
+                let moved: Vec<Handle> = info.handles[..count].iter().map(|h| Handle(*h)).collect();
+                let mut reply = answer(text, &moved, info.caller_pid);
+                for handle in moved {
+                    let _ = sys::handle_close(handle);
+                }
+                if reply.len() > kabi::MAX_MESSAGE {
+                    let mut end = kabi::MAX_MESSAGE;
+                    while !reply.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    reply.truncate(end);
+                }
+                if let Err(why) = sys::svc_reply(reply.as_bytes()) {
+                    println!("pkg: cannot answer {text:?}: {why:?}");
+                }
+            }
+            Err(Error::TimedOut) => {}
+            Err(_) => idle(),
+        }
+    }
+}
+
+/// `catalog` or `catalog <offset>`: one page of `kai-catalog 1`.
+fn answer(vol: &mut dyn Volume, text: &str) -> String {
+    let offset = match text.split_once(' ') {
+        None if text == "catalog" => Some(0),
+        Some(("catalog", n)) => n.parse::<usize>().ok(),
+        _ => None,
+    };
+    let Some(offset) = offset else {
+        return String::from("err unknown request");
+    };
+    match catalog_rows(vol) {
+        Ok(rows) => catalog::page(&rows, offset, kabi::MAX_MESSAGE),
+        Err(why) => format!("err {why}"),
+    }
+}
+
+/// The catalogue's rows: the current generation's packages, each with the index
+/// entry this boot saw for its object, or else its own header; then the image's
+/// and the mirror's offers.
+fn catalog_rows(vol: &mut dyn Volume) -> Result<Vec<catalog::Row>, String> {
+    let (image, mirror) = KNOWN.lock().clone();
+    let current = store::current(vol)?;
+    let mut installed = Vec::new();
+    for package in store::generation(vol, current)?.packages {
+        let seen = image.iter().chain(&mirror).find(|i| i.sha == package.sha);
+        let index = match seen {
+            Some(index) => Index {
+                grants: package.grants.clone(),
+                ..index.clone()
+            },
+            None => {
+                let object = vol
+                    .read(&store::object_path(&package.sha))?
+                    .ok_or_else(|| format!("{}'s object is not in the store", package.name))?;
+                let files = bundle::files(&object).map_err(String::from)?;
+                let text = files
+                    .first()
+                    .and_then(|(_, text)| core::str::from_utf8(text).ok())
+                    .ok_or_else(|| format!("{}: no header", package.name))?;
+                let header = Header::parse(text)?;
+                let effects = kaipkg::effects::declared(&header, &object)?;
+                let size = object.len() as u64;
+                let grants = package.grants.clone();
+                Index::of_header(&header, text, (package.sha, size), grants, effects)
+            }
+        };
+        installed.push(index);
+    }
+    Ok(catalog::rows(&installed, &image, &mirror))
 }
 
 fn idle() -> ! {
@@ -199,6 +336,7 @@ fn image(vol: &mut FsVolume<Calls>, step: &str) -> Result<String, String> {
     let time = now(vol);
     let checked = kaipkg::image::check(&mut BootRepo, kaipkg::PROVIDED)
         .map_err(|why| format!("the image's repository is refused: {why}"))?;
+    KNOWN.lock().0 = checked.indexes.clone();
     for (path, why) in &checked.refused {
         println!("pkg: the image's {path} is refused: {why}");
     }
@@ -250,28 +388,54 @@ struct Fetch;
 impl Exchange for Fetch {
     fn exchange(&mut self, request: &[u8]) -> Result<Vec<u8>, String> {
         let mut response = alloc::vec![0u8; llmproto::http::MAX_RESPONSE];
-        let call = kabi::HttpRequest {
-            request_ptr: request.as_ptr() as u64,
-            request_len: request.len() as u64,
-            response_ptr: response.as_mut_ptr() as u64,
-            response_cap: response.len() as u64,
-            timeout_ms: CALL_MS,
-        };
-        let len = sys::pkg_fetch(&call).map_err(|e| format!("PKG_FETCH: {e:?}"))?;
+        let len = pkg_fetch(request, &mut response).map_err(|e| format!("PKG_FETCH: {e:?}"))?;
         response.truncate(len);
         Ok(response)
+    }
+}
+
+/// PKG_FETCH of `request`, its answer into `response`.
+fn pkg_fetch(request: &[u8], response: &mut [u8]) -> Result<usize, Error> {
+    let call = kabi::HttpRequest {
+        request_ptr: request.as_ptr() as u64,
+        request_len: request.len() as u64,
+        response_ptr: response.as_mut_ptr() as u64,
+        response_cap: response.len() as u64,
+        timeout_ms: CALL_MS,
+    };
+    sys::pkg_fetch(&call)
+}
+
+/// PKG_FETCH sends only what `kabi::pkgrepo::request` builds, the holder's
+/// requests too: one byte off it (HTTP/1.0 for HTTP/1.1) is Invalid, refused
+/// before the kernel sends anything.
+fn bent_request_refused() -> Result<(), String> {
+    let request = kabi::pkgrepo::request("/metadata/timestamp.json", 0, 99)?;
+    let bent = request.replacen("HTTP/1.1", "HTTP/1.0", 1);
+    match pkg_fetch(bent.as_bytes(), &mut [0u8; 16]) {
+        Err(Error::Invalid) => {
+            println!("pkg: PKG_FETCH refuses a request one byte off kabi::pkgrepo's");
+            Ok(())
+        }
+        other => Err(format!(
+            "a request one byte off gave {other:?}, not Invalid"
+        )),
     }
 }
 
 /// `step=mirror*` (P4 task 2): generation 1 from the image, as `step=image`,
 /// then an install from the `pkgrepo=` mirror, checked with `kaituf` against
 /// the root the image carries:
-/// - `mirror`: [`FROM_MIRROR`] installs, fetched in pieces;
+/// - `mirror`: [`FROM_MIRROR`] installs, fetched in pieces, after a request one
+///   byte off is refused ([`bent_request_refused`]);
 /// - `mirror-again` (boot 2): undo, then the same install again, from the store;
 /// - `mirror-tampered`, `mirror-rollback`: the mirror is tampered with, and the
 ///   install is refused by name.
 fn mirror(vol: &mut FsVolume<Calls>, step: &str) -> Result<String, String> {
     image(vol, step)?;
+    if step == "mirror" {
+        bent_request_refused()?;
+    }
     let mut cache = TufCache { vol };
     if cache.load("root").map_err(|e| e.to_string())?.is_none() {
         let image_root = BootRepo
@@ -291,6 +455,7 @@ fn mirror(vol: &mut FsVolume<Calls>, step: &str) -> Result<String, String> {
     for (path, why) in &listing.refused {
         println!("pkg: the mirror's {path} is refused: {why}");
     }
+    KNOWN.lock().1 = listing.indexes.clone();
     let store = Store::default();
     let mut ledger = NoLedger;
     let mut cx = Ctx {
@@ -350,24 +515,11 @@ fn start_apps(vol: &mut dyn Volume, n: u64) -> Result<Vec<String>, String> {
     let mut started = Vec::new();
     for package in store::generation(vol, n)?.packages {
         let name = &package.name;
-        let object = vol
-            .read(&store::object_path(&package.sha))?
-            .ok_or_else(|| format!("{name}'s object is not in the store"))?;
-        let files = bundle::files(&object).map_err(|why| format!("{name}: {why}"))?;
-        let header = files
-            .first()
-            .and_then(|(_, text)| core::str::from_utf8(text).ok())
-            .ok_or_else(|| format!("{name}: no header"))?;
-        if Header::parse(header)?.kind != PackageKind::App {
+        let Some(artifact) = app_artifact(vol, name, &package.sha)? else {
             continue;
-        }
-        let artifact = files
-            .iter()
-            .find(|(path, _)| *path == bundle::ARTIFACT)
-            .map(|(_, bytes)| *bytes)
-            .ok_or_else(|| format!("{name}: an app without {}", bundle::ARTIFACT))?;
-        let sha = kaipkg::sha256(artifact);
-        match sys::comp_add(name, artifact, &sha) {
+        };
+        let sha = kaipkg::sha256(&artifact);
+        match sys::comp_add(name, &artifact, &sha) {
             Ok(()) | Err(Error::Busy) => {}
             Err(e) => return Err(format!("COMP_ADD {name}: {e:?}")),
         }
@@ -399,6 +551,66 @@ fn start_apps(vol: &mut dyn Volume, n: u64) -> Result<Vec<String>, String> {
     Ok(started)
 }
 
+/// The artifact of package `name`, whose object is `sha`, if it is an app.
+fn app_artifact(
+    vol: &mut dyn Volume,
+    name: &str,
+    sha: &kaipkg::Sha,
+) -> Result<Option<Vec<u8>>, String> {
+    let object = vol
+        .read(&store::object_path(sha))?
+        .ok_or_else(|| format!("{name}'s object is not in the store"))?;
+    let files = bundle::files(&object).map_err(|why| format!("{name}: {why}"))?;
+    let header = files
+        .first()
+        .and_then(|(_, text)| core::str::from_utf8(text).ok())
+        .ok_or_else(|| format!("{name}: no header"))?;
+    if Header::parse(header)?.kind != PackageKind::App {
+        return Ok(None);
+    }
+    let artifact = files
+        .iter()
+        .find(|(path, _)| *path == bundle::ARTIFACT)
+        .map(|(_, bytes)| bytes.to_vec())
+        .ok_or_else(|| format!("{name}: an app without {}", bundle::ARTIFACT))?;
+    Ok(Some(artifact))
+}
+
+/// Each app generation `from` held that generation `to` does not, withdrawn
+/// from the supervisor (`withdraw`), so an undo ends the build it took out;
+/// `name as label` for each one that was running.
+fn withdraw_apps(vol: &mut dyn Volume, from: u64, to: u64) -> Result<Vec<String>, String> {
+    let kept = store::generation(vol, to)?.packages;
+    let mut ended = Vec::new();
+    for package in store::generation(vol, from)?.packages {
+        if kept.iter().any(|k| k.sha == package.sha) {
+            continue;
+        }
+        let name = &package.name;
+        let Some(artifact) = app_artifact(vol, name, &package.sha)? else {
+            continue;
+        };
+        let label = kabi::live::package_label(&kaipkg::sha256(&artifact));
+        let withdraw = supervise::Run {
+            name,
+            version: &label,
+        };
+        let mut reply = [0u8; 256];
+        let len = sys::call_route(
+            supervisor(),
+            withdraw.encode_withdraw().as_bytes(),
+            &mut reply,
+            CALL_MS,
+        )
+        .map_err(|e| format!("the supervisor did not answer {name}'s withdraw: {e:?}"))?;
+        match core::str::from_utf8(&reply[..len.min(reply.len())]).unwrap_or("") {
+            "ok" => ended.push(format!("{name} as {label}")),
+            other => println!("pkg: {name} ({label}) is not withdrawn: {other}"),
+        }
+    }
+    Ok(ended)
+}
+
 /// `hello` 1.0.0: its header, then a payload no two runs differ in.
 fn hello() -> Vec<u8> {
     let header = "kai-package 1\nname hello\nversion 1.0.0\nkind data\n\
@@ -416,6 +628,7 @@ fn entry(bytes: &[u8]) -> Entry {
         size: bytes.len() as u64,
         depends: Vec::new(),
         grants: Vec::new(),
+        effects: Vec::new(),
         yanked: false,
     }
 }

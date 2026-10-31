@@ -73,7 +73,7 @@ pub fn route_name(id: u64) -> Option<Name> {
 /// The startup handles for capability bits `caps` (ADR 0001 D3's table), for the
 /// process `pid`. CALL gives a route only through `uses=`, so none here.
 pub fn startup(caps: u64, pid: u64) -> Vec<Entry> {
-    let rows: [(u64, Kind, Rights, u64); 18] = [
+    let rows: [(u64, Kind, Rights, u64); 20] = [
         // MINT under the `system` root, which is never revoked (ADR 0001 D3).
         (
             cap::SUPERVISE,
@@ -145,6 +145,8 @@ pub fn startup(caps: u64, pid: u64) -> Vec<Entry> {
         (cap::INPUT, Kind::Input, Rights::READ, 0),
         // The console's rows, for the terminal window: read-only.
         (cap::TERM, Kind::Term, Rights::READ, 0),
+        // The edit service through the kernel's journal, for `comphost` (P4 task 11).
+        (cap::EDIT, Kind::Edit, Rights::CALL, 0),
         // The slots and the boot record, never the ESP or `kai-data` (ADR 0008 §10).
         (
             cap::UPDATE,
@@ -152,6 +154,8 @@ pub fn startup(caps: u64, pid: u64) -> Vec<Entry> {
             Rights::INSPECT.union(Rights::READ).union(Rights::WRITE),
             kabi::update::SYSTEM,
         ),
+        // The asks for the card, `desktop`'s alone (ADR 0005 §7).
+        (cap::ASK, Kind::Ask, Rights::READ.union(Rights::WRITE), 0),
     ];
     rows.iter()
         .filter(|(bit, ..)| caps & bit != 0)
@@ -187,7 +191,11 @@ fn state_dir(fs: u64) -> Entry {
 /// The startup `Dir` for a folder a plan line grants, on the `fs` route `fs`.
 /// Its badge names the folder for `fs`, which looks it up itself.
 fn folder_dir(fs: u64, folder: supervise::Folder) -> Entry {
-    let mut dir = Entry::new(Kind::Dir, HOME_RIGHTS | BASE, fs);
+    let rights = match folder.read_only() {
+        true => READ_RIGHTS,
+        false => HOME_RIGHTS,
+    };
+    let mut dir = Entry::new(Kind::Dir, rights | BASE, fs);
     dir.badge = folder.badge();
     dir
 }
@@ -198,6 +206,9 @@ const HOME_RIGHTS: Rights = Rights::READ
     .union(Rights::ENUMERATE)
     .union(Rights::CREATE)
     .union(Rights::DELETE);
+
+/// What a read-only folder's startup `Dir` allows ([`supervise::Folder::read_only`]).
+const READ_RIGHTS: Rights = Rights::READ.union(Rights::ENUMERATE);
 
 /// The handle kind and right that stand for capability bit `bit` in `need`;
 /// `None` for a bit no handle stands for.
@@ -221,6 +232,8 @@ pub fn required(bit: u64) -> Option<(Kind, Rights)> {
         cap::INPUT => (Kind::Input, Rights::READ),
         cap::TERM => (Kind::Term, Rights::READ),
         cap::UPDATE => (Kind::Update, Rights::WRITE),
+        cap::ASK => (Kind::Ask, Rights::WRITE),
+        cap::EDIT => (Kind::Edit, Rights::CALL),
         _ => return None,
     })
 }
@@ -246,6 +259,8 @@ pub fn ceiling_allows(caps: u64, kind: Kind) -> bool {
         (Kind::Input, cap::INPUT),
         (Kind::Term, cap::TERM),
         (Kind::Update, cap::UPDATE),
+        (Kind::Ask, cap::ASK),
+        (Kind::Edit, cap::EDIT),
     ];
     bits.iter()
         .find(|(k, _)| *k == kind)

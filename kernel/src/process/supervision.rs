@@ -35,6 +35,8 @@ const DEFAULT_PAGES: u64 = 1024;
 const DEFAULT_BURST_MS: u64 = 2000;
 /// The one program that may hold `cap::COMPONENT`.
 pub const COMPONENT_HOST: &str = "comphost";
+/// The one component that may hold `cap::EDIT`: the editor app (P4 task 11).
+pub const EDITOR: &str = "editor";
 /// The one service that may hold `cap::STOP`.
 pub const STOPPER: &str = "shell";
 /// The service, running the program of the same name, that may hold the screen
@@ -332,8 +334,17 @@ pub fn spawn_service(slot: usize, request_ptr: u64) -> Result<u64, Error> {
     {
         return Err(Error::Permission);
     }
+    // Answering asks is the desktop's alone (ADR 0005 §7).
+    if request.limits.caps & cap::ASK != 0 && (name != DESKTOP || program != DESKTOP) {
+        return Err(Error::Permission);
+    }
     // The console's rows are the terminal window's alone.
     if request.limits.caps & cap::TERM != 0 && (name != TERM || program != TERM) {
+        return Err(Error::Permission);
+    }
+    // Editing for an app is comphost's alone, serving the editor, and sent only
+    // for an app whose package holds the `edit` grant (P4 task 11).
+    if request.limits.caps & cap::EDIT != 0 && (name != EDITOR || program != COMPONENT_HOST) {
         return Err(Error::Permission);
     }
     // The slots and the boot record are `updated`'s alone (ADR 0008 §10).
@@ -520,6 +531,18 @@ pub fn plan_grants(name: &str, program: &str) -> Result<supervise::Grants, Strin
         Some(plan) => supervise::parse_plan(plan).grants(name, program),
         None => Ok(Default::default()),
     }
+}
+
+/// Whether the kernel's own plan starts service `name` on demand
+/// (`start=demand`, P3 task 12b): not at boot, but when a call first waits for
+/// it.
+pub fn on_demand(name: &str) -> bool {
+    PLAN.get().is_some_and(|plan| {
+        supervise::parse_plan(plan)
+            .services
+            .iter()
+            .any(|s| s.name == name && s.start == supervise::Start::Demand)
+    })
 }
 
 pub fn plan(slot: usize, ptr: u64, cap: u64) -> Result<u64, Error> {

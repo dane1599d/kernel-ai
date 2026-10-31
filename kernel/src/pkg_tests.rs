@@ -33,6 +33,8 @@ use kabi::handle::{Handle, Rights};
 
 const SERVICE: &str = "fs";
 const CLIENT: &str = "pkg";
+/// `pkg` again in `pkg-install`, from a plan line without `dir=pkg`.
+const PROBE: &str = "pkg-probe";
 const CALL_MS: u64 = 10_000;
 const WAIT_MS: u64 = 180_000;
 
@@ -93,7 +95,7 @@ impl Step {
         }
     }
 
-    fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Step::Install => "install",
             Step::Undo => "undo",
@@ -141,14 +143,19 @@ impl Step {
 /// reads the image's repository and has a route to the supervisor, and notes is
 /// a `start=pkg` app, not a version the boot manifest names. `pkg` needs a
 /// deeper stack than the 16-page default: fsproto's minicbor decoder recurses,
-/// and overflowed it in `Decoder::array`.
+/// and overflowed it in `Decoder::array`. `pkg-install` runs `pkg` again as
+/// [`PROBE`], from a line without `dir=pkg`.
 pub fn plan(step: Step) -> String {
     let fs = kabi::plan::FS;
     let step_name = step.name();
     match step.case() {
         "pkg-image" | "pkg-install" => format!(
-            "{fs}\n{CLIENT} dir=pkg bootfiles=pkgrepo caps=call uses=supervisor pages=2048 stack_pages=128 step={step_name}\n{}",
-            kabi::plan::notes_from_pkg()
+            "{fs}\n{CLIENT} dir=pkg bootfiles=pkgrepo caps=call+serve uses=supervisor pages=2048 stack_pages=128 step={step_name}\n{}{}",
+            kabi::plan::notes_from_pkg(),
+            match step.case() {
+                "pkg-install" => format!("\n{PROBE} program={CLIENT} caps=serve step=not-holder"),
+                _ => String::new(),
+            }
         ),
         _ => format!("{fs}\n{CLIENT} dir=pkg pages=2048 stack_pages=128 step={step_name}"),
     }
@@ -283,6 +290,63 @@ fn mirror_installed() -> Result<(), &'static str> {
         return Err("pkg-install: generation 2 is not notes and big");
     }
     log!("pkg-install: generation 2 holds big from the mirror beside the image's notes");
+    catalogue_lists_them()?;
+    only_the_holder_calls()
+}
+
+/// `name`'s answer to `request`, asked again until it serves, or None.
+fn answer_of(name: &str, request: &[u8]) -> Option<Vec<u8>> {
+    for _ in 0..WAIT_MS / 50 {
+        if let Ok(reply) = ipc::call(name, request, CALL_MS) {
+            return Some(reply);
+        }
+        threads::sleep_ms(50);
+    }
+    None
+}
+
+/// [`PROBE`], `pkg` from a plan line without `dir=pkg`, got Permission from
+/// each call of lane P's block, PKG_FETCH among them with a request the
+/// holder's mirror would answer.
+fn only_the_holder_calls() -> Result<(), &'static str> {
+    let answer = answer_of(PROBE, b"result").ok_or("pkg-install: pkg-probe never answered")?;
+    if answer != b"ok" {
+        log!(
+            "pkg-install: pkg-probe says {:?}",
+            core::str::from_utf8(&answer)
+        );
+        return Err("pkg-install: a process without /system/pkg was not refused");
+    }
+    log!(
+        "pkg-install: a process without /system/pkg gets Permission from BOOT_READ, COMP_ADD, PKG_FETCH and PKG_TIME"
+    );
+    Ok(())
+}
+
+/// `pkg` answers the Apps sheet's `catalog` (P4 task 3): big and notes as
+/// installed, then the mirror's `extra`, which is not.
+fn catalogue_lists_them() -> Result<(), &'static str> {
+    let answer =
+        answer_of(CLIENT, b"catalog 0").ok_or("pkg-install: pkg never answered catalog")?;
+    let text =
+        core::str::from_utf8(&answer).map_err(|_| "pkg-install: the catalogue is not text")?;
+    let rows: Vec<&str> = text.lines().collect();
+    let wanted = [
+        "kai-catalog 1",
+        "installed\tbig\t1.0.0\tdata\t",
+        "installed\tnotes\t1.0.0\tapp\t",
+        "mirror\textra\t1.0.0\tdata\t",
+    ];
+    let listed = rows.len() == wanted.len()
+        && rows
+            .iter()
+            .zip(wanted)
+            .all(|(row, start)| row.starts_with(start));
+    if !listed {
+        log!("pkg-install: the catalogue is {text:?}");
+        return Err("pkg-install: the catalogue does not list installed then offered");
+    }
+    log!("pkg-install: the catalogue lists big and notes installed, then the mirror's extra");
     Ok(())
 }
 
@@ -328,7 +392,7 @@ fn read(path: &str) -> Result<Vec<u8>, &'static str> {
 }
 
 /// Waits until `/system/pkg/<path>` exists.
-fn wait_for(path: &str) -> Result<(), ()> {
+pub(crate) fn wait_for(path: &str) -> Result<(), ()> {
     for _ in 0..WAIT_MS / 50 {
         let open = Request::Open {
             path: path.into(),

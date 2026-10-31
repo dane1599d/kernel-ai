@@ -10,6 +10,7 @@
 mod component;
 mod core;
 mod device;
+mod entropy;
 mod handle;
 mod job;
 mod net;
@@ -26,6 +27,7 @@ pub(crate) mod fs;
 
 // G-core (P3).
 mod display;
+mod standing;
 
 // U, updates (ADR 0008).
 mod update;
@@ -91,12 +93,14 @@ const AREAS: &[Area] = &[
     device::handle,
     shm::handle,
     job::handle,
+    entropy::handle,
     // Model lane. Interim (S10-3): goes at P2 task 10.
     model_kv::handle,
     // S-io (P2).
     fs::handle,
     // G-core (P3).
     display::handle,
+    standing::handle,
     // U, updates (ADR 0008).
     update::handle,
     // M, memory (P3).

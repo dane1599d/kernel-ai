@@ -19,8 +19,13 @@ pub mod ledger;
 pub mod local;
 pub mod location;
 pub mod manifest;
+pub mod nap;
+pub mod napper;
 mod probation;
+pub mod rows;
+pub mod saved;
 pub mod scenario;
+mod serve_with;
 pub mod settings;
 mod start;
 pub mod state;
@@ -34,6 +39,8 @@ pub mod txn;
 mod undo;
 pub mod uploads;
 pub mod why;
+
+pub use serve_with::Performed;
 
 use alloc::string::String;
 use alloc::vec::Vec;

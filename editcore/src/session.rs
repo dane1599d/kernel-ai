@@ -10,6 +10,8 @@ use livecore::artifact;
 
 /// Edits [`Session::undo`] can take back.
 pub const UNDO: usize = 32;
+/// The most spaces a split indents the new line by.
+pub const MAX_INDENT: usize = 80;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ending {
@@ -99,6 +101,14 @@ impl File {
         }
     }
 
+    /// The bytes the file writes back.
+    fn byte_len(&self) -> usize {
+        self.lines
+            .iter()
+            .map(|line| line.text.len() + line.ending.bytes().len())
+            .sum()
+    }
+
     fn lacks_final_newline(&self) -> bool {
         self.lines
             .last()
@@ -112,6 +122,13 @@ fn check_text(text: &str) -> Result<(), String> {
         return Err("a line cannot hold a line break or control characters".into());
     }
     Ok(())
+}
+
+/// The byte offset of character `col` of `text`; one past the last character is
+/// the end of the line.
+fn byte_at(text: &str, col: usize) -> Option<usize> {
+    let starts = text.char_indices().map(|(at, _)| at);
+    starts.chain(core::iter::once(text.len())).nth(col)
 }
 
 #[derive(Clone, Debug)]
@@ -176,6 +193,16 @@ impl Session {
 
     pub fn line(&self) -> usize {
         self.line
+    }
+
+    /// The current file's place in [`Self::files`].
+    pub fn current_index(&self) -> usize {
+        self.current
+    }
+
+    /// Whether an edit can be taken back.
+    pub fn can_undo(&self) -> bool {
+        !self.undo.is_empty()
     }
 
     /// The bundle as opened.
@@ -268,6 +295,17 @@ impl Session {
         Ok(())
     }
 
+    /// Whether the bundle can take `added` more bytes and still go to the build
+    /// service: an edit makes a copy of the file to undo it, so a file that could
+    /// grow without bound would too.
+    fn check_room(&self, added: usize) -> Result<(), String> {
+        let now: usize = self.files.iter().map(File::byte_len).sum();
+        if now.saturating_add(added) > MAX_BUNDLE {
+            return Err(format!("the source would pass {} KiB", MAX_BUNDLE / 1024));
+        }
+        Ok(())
+    }
+
     /// Runs one edit of the current file, so it can be undone.
     fn edit(&mut self, change: impl FnOnce(&mut File) -> usize) {
         let snapshot = Snapshot {
@@ -289,6 +327,7 @@ impl Session {
             return Err("nothing to replace".into());
         }
         check_text(new)?;
+        self.check_room(new.len().saturating_sub(old.len()))?;
         if let Some(n) = n {
             self.check_line(n)?;
         }
@@ -327,6 +366,8 @@ impl Session {
     pub fn change(&mut self, n: usize, text: &str) -> Result<(), String> {
         self.check_line(n)?;
         check_text(text)?;
+        let was = self.current().lines[n - 1].text.len();
+        self.check_room(text.len().saturating_sub(was))?;
         self.edit(|file| {
             file.lines[n - 1].text = text.to_string();
             n
@@ -344,6 +385,7 @@ impl Session {
         if self.current().len() >= MAX_LINES {
             return Err(format!("a file holds at most {MAX_LINES} lines"));
         }
+        self.check_room(text.len() + 2)?;
         self.edit(|file| {
             let mut ending = file.ending();
             if n == len + 1 && file.lacks_final_newline() {
@@ -356,6 +398,50 @@ impl Session {
                 ending,
             };
             file.lines.insert(n - 1, line);
+            n
+        });
+        Ok(())
+    }
+
+    /// Breaks line `n` after its first `col` characters; the rest becomes line
+    /// `n + 1`, led by `indent` spaces. One edit, so one `undo` takes it back.
+    pub fn split(&mut self, n: usize, col: usize, indent: usize) -> Result<(), String> {
+        self.check_line(n)?;
+        if self.current().len() >= MAX_LINES {
+            return Err(format!("a file holds at most {MAX_LINES} lines"));
+        }
+        if indent > MAX_INDENT {
+            return Err(format!("an indent is at most {MAX_INDENT} spaces"));
+        }
+        let Some(at) = byte_at(&self.current().lines[n - 1].text, col) else {
+            return Err(format!("line {n} has no column {col}"));
+        };
+        self.edit(|file| {
+            let last = n == file.len();
+            let mut ending = file.lines[n - 1].ending;
+            if last && file.lacks_final_newline() {
+                // The head now ends; the tail has no newline, as the line had none.
+                file.lines[n - 1].ending = file.ending();
+                ending = Ending::None;
+            }
+            let tail = file.lines[n - 1].text.split_off(at);
+            let mut text = " ".repeat(indent);
+            text.push_str(&tail);
+            file.lines.insert(n, Line { text, ending });
+            n + 1
+        });
+        Ok(())
+    }
+
+    /// Joins line `n + 1` onto the end of line `n`. One edit.
+    pub fn join(&mut self, n: usize) -> Result<(), String> {
+        self.check_line(n)?;
+        self.check_line(n + 1)?;
+        self.edit(|file| {
+            let next = file.lines.remove(n);
+            let line = &mut file.lines[n - 1];
+            line.text.push_str(&next.text);
+            line.ending = next.ending;
             n
         });
         Ok(())

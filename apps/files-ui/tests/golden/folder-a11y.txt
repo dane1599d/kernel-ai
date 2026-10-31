@@ -1,0 +1,22 @@
+[0] window "Files"
+[1] group ""
+[2] group ""
+[3] button "Up" runs files_open
+[4] label "Home / docs"
+[5] button "Refresh"
+[6] split ""
+[7] list "Files" = "2 items, selected 1"
+[1000] label "2024/"
+[1001] label "plan.md"
+[8] group ""
+[9] label "plan.md"
+[10] scroll_view ""
+[11] group ""
+[2000] label "plan.md: not text"
+[12] text_input "Rename to" = "plan.md"
+[13] group ""
+[14] button "Open" runs files_open
+[15] button "Rename" runs fs_move
+[16] button "Trash" runs fs_trash
+[17] button "Restore" runs fs_restore
+[18] label "1 folders, 1 files"

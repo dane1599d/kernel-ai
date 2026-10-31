@@ -18,6 +18,9 @@
 //! - `os`: the OS rows' own requests ([`os::TASKS`], such as "stop build-3" and
 //!   "restart the indexer") through llm's `act` path on the OS pack and the one
 //!   door's name resolution, each against what must run; it passes at 9 of 10.
+//! - `view`: view-then-act ([`view::TASKS`], ADR 0005 §6) in a desktop of
+//!   S05-2's mock windows: `ui_view`, then `ui_act` on the right control after
+//!   reading the view as `Data`. Reported, not gated yet.
 //!
 //! Code decides what each call would do ([`consent`]), so false runs and asks
 //! are counted, and [`score`] holds S02-1's thresholds. The layout is ADR
@@ -26,6 +29,7 @@
 //! all the runner's CPUs (the same bits as one). Every run is written to
 //! `target/actbench/<unix time>-<arm>-s<seed>.jsonl`, headed by `pack_id`.
 
+mod apps;
 mod consent;
 mod grammar;
 mod m8;
@@ -34,6 +38,7 @@ mod registry;
 mod render;
 mod score;
 mod tasks;
+mod view;
 
 use crate::fluency::host::GateHost;
 use crate::fluency::local::Shared;
@@ -83,6 +88,10 @@ enum Kind {
     M8,
     /// The OS rows' calls on llm's own `act` path ([`os`]).
     Os,
+    /// View-then-act on llm's own `act` path ([`view`]).
+    View,
+    /// The shipped apps' rows on llm's own `act` path ([`os::APP_TASKS`]).
+    Apps,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -132,6 +141,28 @@ impl Arm {
             "os" => {
                 return Ok(Self {
                     kind: Kind::Os,
+                    rows: 0,
+                    no_think: false,
+                    rules: false,
+                    m8script: false,
+                    ship: true,
+                    index: false,
+                });
+            }
+            "apps" => {
+                return Ok(Self {
+                    kind: Kind::Apps,
+                    rows: 0,
+                    no_think: false,
+                    rules: false,
+                    m8script: false,
+                    ship: true,
+                    index: false,
+                });
+            }
+            "view" => {
+                return Ok(Self {
+                    kind: Kind::View,
                     rows: 0,
                     no_think: false,
                     rules: false,
@@ -194,6 +225,8 @@ impl Arm {
             Kind::M8 if self.no_think => "m8".into(),
             Kind::M8 => "m8-a0".into(),
             Kind::Os => "os".into(),
+            Kind::View => "view".into(),
+            Kind::Apps => "apps".into(),
             Kind::Tagged(_) if self.ship => "act".into(),
             Kind::Tagged(format) => format!(
                 "{}{}{}{}{}@{}",
@@ -444,8 +477,11 @@ fn run_arm(
     options: &Options,
     target_dir: &Path,
 ) -> Result<(bool, String), String> {
-    if arm.kind == Kind::Os {
-        return os::run(loaded, seed, target_dir);
+    match arm.kind {
+        Kind::Os => return os::run(loaded, seed, target_dir),
+        Kind::View => return view::run(loaded, seed, target_dir),
+        Kind::Apps => return os::run_apps(loaded, seed, target_dir),
+        _ => {}
     }
     let started = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -462,7 +498,7 @@ fn run_arm(
     let mut records = Vec::new();
     let mut scored = Vec::new();
     let m8 = match arm.kind {
-        Kind::Os => unreachable!("arm os returned above"),
+        Kind::Os | Kind::View | Kind::Apps => unreachable!("arms os, view and apps returned above"),
         Kind::M8 => {
             header["pack_id"] = json!(null);
             let engine = loaded.engine.clone();
@@ -564,8 +600,8 @@ fn run_arm(
             options.m8.then(|| {
                 if arm.ship {
                     let engine = loaded.engine.clone();
-                    let grammar =
-                        Rc::new(llmproto::local::act::grammar().expect("the OS rows decode"));
+                    // What ships: the OS rows and the shipped apps' turn.
+                    let grammar = Rc::new(apps::grammar().expect("the shipped rows decode"));
                     return run_m8(
                         options.limit,
                         &move || m8::shipping(engine.clone(), grammar.clone()),
@@ -591,7 +627,7 @@ fn run_arm(
         }
     };
     let gates = match arm.kind {
-        Kind::Os => unreachable!("arm os returned above"),
+        Kind::Os | Kind::View | Kind::Apps => unreachable!("arms os, view and apps returned above"),
         Kind::M8 => score::gates(&[], m8).split_off(7),
         Kind::Tagged(_) if options.only_m8 => score::gates(&[], m8).split_off(7),
         Kind::Tagged(_) => score::gates(&scored, m8),

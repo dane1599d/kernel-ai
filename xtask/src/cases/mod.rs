@@ -3,6 +3,8 @@
 //! (ADR 0000 section 4) keeps its cases in a table of its own, joined in [`LANES`].
 
 mod agent;
+mod apps;
+mod cc;
 mod components;
 mod devices;
 mod kernel;
@@ -85,6 +87,13 @@ pub struct TestCase {
     /// `boot=n` to the command line, waits for `files: boot n:` and kills QEMU
     /// a seeded moment later; boot `cuts + 1` adds `last` and must pass.
     pub cuts: u32,
+    /// A model put in `kai-data`'s model store before the boot (`xtask fs mkfs`,
+    /// then `import --model`), with its length and hash on the command line;
+    /// needs `data`.
+    pub store: Option<Fixture>,
+    /// After the import, the hint's FNV-1a64 is changed (its CRC kept good), so
+    /// the kernel must refuse the model `fs` fills.
+    pub store_bad_fnv: bool,
     /// One byte of this package's target in the image's repository flipped, the
     /// bundle's digests recomputed, so only its signed metadata can tell (P4
     /// task 1's tamper case).
@@ -127,6 +136,8 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         slots: false,
         update: None,
         cuts: 0,
+        store: None,
+        store_bad_fnv: false,
         tampered: None,
         mirror: None,
     }
@@ -141,6 +152,8 @@ const LANES: &[&[TestCase]] = &[
     kernel::CASES,
     devices::CASES,
     agent::CASES,
+    apps::CASES,
+    cc::CASES,
     components::CASES,
     network::CASES,
     storage::CASES,
@@ -172,6 +185,8 @@ mod tests {
             kernel::CASES,
             devices::CASES,
             agent::CASES,
+            apps::CASES,
+            cc::CASES,
             components::CASES,
             network::CASES,
             storage::CASES,

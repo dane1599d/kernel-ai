@@ -5,6 +5,10 @@
 //! is doing back the same way: calls go one way (ADR 0005 §7), so `desktop`
 //! never calls the shell. The state shown on the right is the shell's, never
 //! read from reply text.
+//!
+//! The line [`APPS`] is the launcher's own: it opens the Apps sheet (P4 task 3)
+//! in `desktop` and never reaches the shell. What the sheet asks for comes back
+//! as a line, [`Panel::send`], so it goes the way a typed one does.
 
 use crate::desk::usage;
 use crate::keymap;
@@ -18,6 +22,8 @@ pub const MAX_LINE: usize = 400;
 /// Requests waiting for the shell, at most: an agent that stopped taking them
 /// does not make the panel grow without bound.
 const MAX_WAITING: usize = 8;
+/// The line that opens the Apps sheet.
+pub const APPS: &str = "apps";
 
 /// What the panel shows on its right, as the shell last reported it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -50,6 +56,8 @@ pub struct Panel {
     shift: u8,
     ctrl: u8,
     waiting: VecDeque<Request>,
+    /// [`APPS`] was sent and the sheet has not been opened for it yet.
+    apps: bool,
 }
 
 impl Default for Panel {
@@ -67,6 +75,7 @@ impl Panel {
             shift: 0,
             ctrl: 0,
             waiting: VecDeque::new(),
+            apps: false,
         }
     }
 
@@ -137,20 +146,39 @@ impl Panel {
             Outcome::Changed => true,
             Outcome::Cleared(_) => true,
             Outcome::Submitted(text) => {
-                if text.trim().is_empty() {
-                    return true;
+                match text.trim() {
+                    "" => {}
+                    APPS => self.apps = true,
+                    _ => self.send(text, now_ms),
                 }
-                self.queue(Request::Line(text));
-                self.state = State::Thinking { since_ms: now_ms };
                 true
             }
         }
     }
 
+    /// Queues `text` for the shell as though it was typed and sent: the Apps
+    /// sheet's `install <name>`.
+    pub fn send(&mut self, text: String, now_ms: u64) {
+        self.queue(Request::Line(text));
+        self.state = State::Thinking { since_ms: now_ms };
+    }
+
+    /// Whether [`APPS`] was sent since the last look.
+    pub fn take_apps(&mut self) -> bool {
+        core::mem::take(&mut self.apps)
+    }
+
     /// Esc: stops a request being thought about, else clears the line.
     fn escape(&mut self) -> bool {
         if matches!(self.state, State::Thinking { .. }) {
-            self.queue(Request::Stop);
+            // A line still waiting never reaches the shell; one it took is
+            // told to stop.
+            match self.waiting.back() {
+                Some(Request::Line(_)) => {
+                    self.waiting.pop_back();
+                }
+                _ => self.queue(Request::Stop),
+            }
             self.state = State::Idle;
             return true;
         }
@@ -226,6 +254,15 @@ mod tests {
     }
 
     #[test]
+    fn esc_before_the_shell_takes_a_line_takes_it_back() {
+        let mut panel = Panel::new();
+        tap(&mut panel, &[0x0B, 0x28]);
+        tap(&mut panel, &[0x29]);
+        assert_eq!(panel.take(), None);
+        assert_eq!(panel.state(), &State::Idle);
+    }
+
+    #[test]
     fn a_blank_line_sends_nothing_and_the_queue_is_bounded() {
         let mut panel = Panel::new();
         tap(&mut panel, &[0x2C, 0x28]);
@@ -234,6 +271,21 @@ mod tests {
             tap(&mut panel, &[0x04, 0x28]);
         }
         assert_eq!(core::iter::from_fn(|| panel.take()).count(), MAX_WAITING);
+    }
+
+    #[test]
+    fn apps_opens_the_sheet_and_never_reaches_the_shell() {
+        let mut panel = Panel::new();
+        // "apps", then Enter.
+        tap(&mut panel, &[0x04, 0x13, 0x13, 0x16, 0x28]);
+        assert!(panel.take_apps());
+        assert!(!panel.take_apps(), "once per Enter");
+        assert_eq!(panel.take(), None);
+        assert_eq!(panel.state(), &State::Idle);
+        assert_eq!(panel.text(), "");
+        panel.send("install notes".into(), 7);
+        assert_eq!(panel.take(), Some(Request::Line("install notes".into())));
+        assert_eq!(panel.state(), &State::Thinking { since_ms: 7 });
     }
 
     #[test]

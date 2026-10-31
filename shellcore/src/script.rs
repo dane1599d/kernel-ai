@@ -62,6 +62,11 @@ impl Checked {
 
 type RhaiResult<T> = Result<T, Box<EvalAltResult>>;
 
+mod apps;
+mod grants;
+mod look;
+mod windows;
+
 fn rhai_error(message: impl Into<String>) -> Box<EvalAltResult> {
     let message: String = message.into();
     message.into()
@@ -130,7 +135,7 @@ impl Tx {
         let mut journal = self.journal.borrow_mut();
         // Each file change is a transaction of its own, so each keeps its own
         // inverse; `undo` restores them newest first.
-        if matches!(done.inverse, Some(Inverse::Fs { .. })) {
+        if matches!(done.inverse, Some(Inverse::Fs { .. } | Inverse::App { .. })) {
             journal.push(done);
             return;
         }
@@ -163,9 +168,22 @@ fn register(engine: &mut Engine, granted: &[&'static str], tx: &Tx) {
     for row in agentabi::BOUND
         .iter()
         .chain(&agentabi::FS_ROWS)
+        .chain(&agentabi::UI_ROWS)
+        .chain(&agentabi::GRANT_ROWS)
         .filter(|row| granted.contains(&row.name))
     {
         bind(engine, row.name, tx);
+    }
+    // An installed app's rows (P4), granted as any row is.
+    let Some(apps) = tx.host.apps() else {
+        return;
+    };
+    let rows: Vec<crate::apps::AppRow> = granted
+        .iter()
+        .filter_map(|name| apps.borrow().rows.find(name).cloned())
+        .collect();
+    for row in rows {
+        apps::bind(engine, row, tx);
     }
 }
 
@@ -347,6 +365,15 @@ fn bind(engine: &mut Engine, name: &'static str, tx: &Tx) -> bool {
                 });
             }
             name if name.starts_with("fs_") => return bind_file(engine, name, h, tx),
+            "appearance_set" => {
+                look::bind(engine, h, tx);
+            }
+            name if agentabi::UI_ROWS.iter().any(|r| r.name == name) => {
+                return windows::bind(engine, name, h, tx);
+            }
+            name if agentabi::GRANT_ROWS.iter().any(|r| r.name == name) => {
+                return grants::bind(engine, name, h, tx);
+            }
             _ => return false,
         }
     }
@@ -547,12 +574,18 @@ fn strict(line: &Rc<Line>, config: &Config, granted: &[&'static str], tx: &Tx) -
 }
 
 /// The plan's calls, reads and changes apart, each in the registry's order.
-fn split(plan: &Plan) -> (Vec<&'static str>, Vec<&'static str>) {
+fn split(plan: &Plan, rows: &'static [agentabi::Action]) -> (Vec<&'static str>, Vec<&'static str>) {
     let names = plan.names();
+    let apps = rows
+        .iter()
+        .filter(|row| matches!(row.owner, agentabi::Owner::App(_)));
     let pick = |effect| {
         agentabi::BOUND
             .iter()
             .chain(&agentabi::FS_ROWS)
+            .chain(apps.clone())
+            .chain(&agentabi::UI_ROWS)
+            .chain(&agentabi::GRANT_ROWS)
             .filter(|f| f.effect() == effect && names.contains(&f.name))
             .map(|f| f.name)
             .collect()
@@ -616,6 +649,34 @@ impl Host for Stub {
     }
     fn fs_change(&self, _: FsChange) -> Result<u64, String> {
         Ok(0)
+    }
+    fn apps(&self) -> Option<&core::cell::RefCell<crate::apps::Apps>> {
+        self.0.apps()
+    }
+    fn withheld_read(&self) -> Option<String> {
+        self.0.withheld_read()
+    }
+    // A trial withholds nothing: the file is the one copy.
+    fn withheld_write(&self, _: &str) -> Result<(), String> {
+        Ok(())
+    }
+    fn app_call(&self, _: &str, _: &str) -> Result<String, String> {
+        Ok(alloc::format!("{}\n", livecore::call::REPLY_HEADER))
+    }
+    fn appearance_read(&self) -> Option<String> {
+        self.0.appearance_read()
+    }
+    fn appearance_write(&self, _: &str) -> Result<(), String> {
+        Ok(())
+    }
+    fn ui(&self, call: &crate::ui::UiCall) -> Result<String, String> {
+        use crate::ui::UiCall;
+        Ok(String::from(match call {
+            UiCall::Windows => "w1\tx\tx\t1",
+            UiCall::Focus(_) => "none",
+            UiCall::Close(window) => return Ok(window.clone()),
+            _ => "",
+        }))
     }
     fn ask(&self, _: &str) -> Result<String, String> {
         Err("not available to scripts".into())
@@ -712,7 +773,7 @@ pub(crate) fn check_against(
         .compile(&script)
         .map_err(|error| refuse(format!("syntax error: {error}")))?;
     let plan = Rc::new(analyse::analyse(&ast, rows));
-    let (reads, changes) = split(&plan);
+    let (reads, changes) = split(&plan, rows);
     let granted = plan.names();
     let trial = strict(&line, config, &granted, &Tx::new(&stub, &plan));
     line.begin(stub.as_ref(), config);
@@ -822,6 +883,8 @@ pub struct Ran {
     /// The first change to each resource, with the value it replaced. The caller
     /// puts them back when `ok` is false.
     pub done: Vec<Done>,
+    /// The script's last value, run in the shell; `None` from a child.
+    pub value: Option<Dynamic>,
 }
 
 /// Runs a script with the real OS, granted only the calls the plan found. Its
@@ -841,11 +904,13 @@ pub fn run_as(checked: &Checked, host: &Rc<dyn Host>, config: &Config, consent: 
     line.begin(host.as_ref(), config);
     let result = engine::eval(&engine, &mut Scope::new(), &checked.ast, config.exec);
     let mut text = line.take_output();
+    let mut last = None;
     let mut ok = match result {
         Ok(value) => {
             if !value.is_unit() {
                 text.push_str(&show::value(&value));
             }
+            last = Some(value);
             true
         }
         Err(error) => {
@@ -858,7 +923,12 @@ pub fn run_as(checked: &Checked, host: &Rc<dyn Host>, config: &Config, consent: 
         ok = flush(queued, &mut text);
     }
     let done = tx.journal.take();
-    Ran { ok, text, done }
+    Ran {
+        ok,
+        text,
+        done,
+        value: last,
+    }
 }
 
 /// Sends what a successful run queued, in order, stopping at the first that fails.

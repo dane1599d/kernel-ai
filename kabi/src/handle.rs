@@ -91,10 +91,17 @@ pub enum Kind {
     /// The slots and the boot record ([`crate::update`]): only `updated`'s.
     /// Numbered at merge, after the terminal window's `Term` (18, #252).
     Update = 19,
+    /// The asks waiting for `desktop`'s card, to read and answer: only
+    /// `desktop`'s. Numbered at merge, after `Update` (19, #268).
+    Ask = 20,
+    /// The edit service, through the kernel's journal ([`crate::call::EDIT_CALL`]):
+    /// only `comphost`'s, for the editor app's `edit` grant. Numbered at merge,
+    /// after `Ask` (20, #268).
+    Edit = 21,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 19] = [
+    pub const ALL: [Kind; 21] = [
         Kind::Process,
         Kind::Job,
         Kind::Endpoint,
@@ -114,6 +121,8 @@ impl Kind {
         Kind::Input,
         Kind::Term,
         Kind::Update,
+        Kind::Ask,
+        Kind::Edit,
     ];
 
     pub fn from_raw(raw: u32) -> Option<Kind> {
@@ -141,6 +150,8 @@ impl Kind {
             Kind::Input => "input",
             Kind::Term => "term",
             Kind::Update => "update",
+            Kind::Ask => "ask",
+            Kind::Edit => "edit",
         }
     }
 }
@@ -291,6 +302,6 @@ mod tests {
             assert_eq!(Kind::from_raw(kind as u32), Some(kind));
         }
         assert_eq!(Kind::from_raw(0), None);
-        assert_eq!(Kind::from_raw(20), None);
+        assert_eq!(Kind::from_raw(22), None);
     }
 }

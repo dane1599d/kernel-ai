@@ -110,6 +110,27 @@ pub fn decode_ipc(bytes: &[u8]) -> Result<Ipc<'_>, &'static str> {
     Err("an unknown request")
 }
 
+/// Whether an app that holds the `edit` grant may send `message` to the edit
+/// service: an open, or a command of one line. A sync or a replay is the
+/// kernel's alone, and `try` is left to the kernel's editor, since it can take a
+/// minute with the caller waiting.
+pub fn for_app(message: &[u8]) -> Result<(), &'static str> {
+    match decode_ipc(message)? {
+        Ipc::Open { .. } => Ok(()),
+        Ipc::Cmd(line) if line.chars().any(|c| c.is_control() && c != '\t') => {
+            Err("a command holds a control character")
+        }
+        Ipc::Cmd(line) if line.len() > crate::journal::MAX_COMMAND => {
+            Err("a command too long to journal")
+        }
+        Ipc::Cmd(line) if line.split(' ').next() == Some("try") => {
+            Err("try is for the kernel's editor")
+        }
+        Ipc::Cmd(_) => Ok(()),
+        _ => Err("only an open or a command"),
+    }
+}
+
 /// The edit service's answer to a sync of job `seq`: the commit git recorded, or
 /// empty when git tracks no commit for it. Anything else is an error to retry.
 pub fn parse_ack(reply: &[u8], seq: u64) -> Result<String, String> {

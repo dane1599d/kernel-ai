@@ -1,0 +1,51 @@
+node 0 clip 0,0 720x460
+  fill 0,0 720x460 window r0
+node 3 clip 0,0 720x460
+  fill 12,12 36x28 raised r6
+  stroke 12,12 36x28 line_strong w1 r6
+  text 22,17 label text "Up"
+node 4 clip 0,0 720x460
+  text 48,12 mono muted "Home / docs"
+node 5 clip 0,0 720x460
+  fill 632,12 76x28 raised r6
+  stroke 632,12 76x28 line_strong w1 r6
+  text 642,17 label text "Refresh"
+node 6 clip 0,0 720x460
+  fill 220,48 1x376 line r0
+node 7 clip 9,45 214x382
+  stroke 12,48 208x376 line_strong w1 r6
+  fill 13,73 206x24 raised r0
+  fill 13,73 2x24 accent r0
+node 1000 clip 10,46 212x380
+  text 13,49 body accent "2024/"
+node 1001 clip 10,46 212x380
+  text 13,73 body text "plan.md"
+node 9 clip 218,45 493x382
+  text 233,60 heading text "plan.md"
+node 2000 clip 230,89 469x234
+  text 233,92 mono error "plan.md: not text"
+node 12 clip 218,45 493x382
+  text 233,328 small muted "Rename to"
+  fill 233,348 463x28 desk r6
+  stroke 233,348 463x28 line_strong w1 r6
+  clip 234,349 461x26
+  text 243,352 body text "plan.md"
+  unclip
+node 14 clip 218,45 493x382
+  fill 233,384 52x28 raised r6
+  stroke 233,384 52x28 line_strong w1 r6
+  text 243,389 label text "Open"
+node 15 clip 218,45 493x382
+  fill 285,384 68x28 raised r6
+  stroke 285,384 68x28 line_strong w1 r6
+  text 295,389 label text "Rename"
+node 16 clip 218,45 493x382
+  fill 353,384 60x28 raised r6
+  stroke 353,384 60x28 line_strong w1 r6
+  text 363,389 label text "Trash"
+node 17 clip 218,45 493x382
+  fill 413,384 76x28 raised r6
+  stroke 413,384 76x28 line_strong w1 r6
+  text 423,389 label text "Restore"
+node 18 clip 0,0 720x460
+  text 12,432 small muted "1 folders, 1 files"

@@ -67,6 +67,24 @@ pub const TASKS: &[(&str, Want)] = &[
 ];
 /// Share of [`TASKS`] that must come right: 18 of 19.
 pub const BAR: f64 = 0.9;
+
+/// Arm `apps` (P4 task 15): requests for the shipped apps' rows, which the
+/// apps turn names and the second round writes (`actbench::apps`). Reported
+/// at [`BAR`], not gated yet; `notes` is the one app whose rows load today.
+pub const APP_TASKS: &[(&str, Want)] = &[
+    ("add a note saying buy milk", Row("notes_add", "buy milk")),
+    (
+        "make a note: call the dentist",
+        Row("notes_add", "call the dentist"),
+    ),
+    ("how many notes do I have?", Row("notes_count", "")),
+    ("find my notes that mention milk", Row("notes_find", "milk")),
+    ("do I have any notes about eggs?", Row("notes_find", "eggs")),
+    ("which version of notes is running?", Row("notes_about", "")),
+    // The OS's rows still answer their own requests with the apps shown.
+    ("show me what is in notes.txt", Row("fs_read", "notes.txt")),
+    ("remove the notes package", Row("pkg_remove", "notes")),
+];
 /// The time llm gives one call.
 const TIMEOUT_MS: u64 = 60_000;
 
@@ -142,15 +160,32 @@ fn meets(call: &Call, want: Want) -> bool {
 
 /// The arm at `seed`: whether it meets [`BAR`], and its Markdown rows.
 pub fn run(loaded: &Loaded, seed: u64, target_dir: &Path) -> Result<(bool, String), String> {
-    let grammar = local_act::grammar().map_err(|e| e.to_string())?;
+    run_tasks(loaded, seed, target_dir, "os", TASKS)
+}
+
+/// Arm `apps` at `seed`, reported: whether it met [`BAR`], and its rows.
+pub fn run_apps(loaded: &Loaded, seed: u64, target_dir: &Path) -> Result<(bool, String), String> {
+    run_tasks(loaded, seed, target_dir, "apps", APP_TASKS)
+}
+
+fn run_tasks(
+    loaded: &Loaded,
+    seed: u64,
+    target_dir: &Path,
+    arm: &str,
+    tasks: &[(&str, Want)],
+) -> Result<(bool, String), String> {
+    let grammar = super::apps::grammar()?;
     let mut records = Vec::new();
     let mut passed = 0;
     let (mut all_rounds, mut all_tokens) = (0, 0);
-    for &(line, want) in TASKS {
+    for &(line, want) in tasks {
         let request = ActRequest {
             line: line.into(),
             state: String::new(),
             timeout_ms: TIMEOUT_MS,
+            read: None,
+            apps: String::new(),
         };
         let started = std::time::Instant::now();
         // Rounds are the decodes (each starts with its cache count); tokens are
@@ -189,30 +224,30 @@ pub fn run(loaded: &Loaded, seed: u64, target_dir: &Path) -> Result<(bool, Strin
             "rounds": rounds, "tokens": tokens,
         }));
     }
-    let need = (TASKS.len() as f64 * BAR).ceil() as usize;
+    let need = (tasks.len() as f64 * BAR).ceil() as usize;
     let passes = passed >= need;
-    let per = |total: usize| total as f64 / TASKS.len() as f64;
+    let per = |total: usize| total as f64 / tasks.len() as f64;
     println!(
-        "xtask: actbench os seed {seed}: {} {passed}/{} requests (pass >= {need}); \
+        "xtask: actbench {arm} seed {seed}: {} {passed}/{} requests (pass >= {need}); \
          {:.2} rounds and {:.0} tokens a request",
         if passes { "pass" } else { "FAIL" },
-        TASKS.len(),
+        tasks.len(),
         per(all_rounds),
         per(all_tokens)
     );
     let dir = target_dir.join("actbench");
     fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let path = dir.join(format!("os-s{seed}.jsonl"));
+    let path = dir.join(format!("{arm}-s{seed}.jsonl"));
     let lines: Vec<String> = records.iter().map(Value::to_string).collect();
     fs::write(&path, lines.join("\n") + "\n").map_err(|e| format!("{}: {e}", path.display()))?;
     let mark = if passes { "yes" } else { "**no**" };
     let rows = format!(
-        "\n### os seed {seed}\n\n| Bar | Value | Pass |\n|---|---|---|\n\
-         | OS requests through the door (>= {need}/{}) | {passed}/{} | {mark} |\n\
+        "\n### {arm} seed {seed}\n\n| Bar | Value | Pass |\n|---|---|---|\n\
+         | Requests through the door (>= {need}/{}) | {passed}/{} | {mark} |\n\
          | Decode rounds a request | {:.2} | |\n\
          | Tokens computed a request | {:.0} | |\n",
-        TASKS.len(),
-        TASKS.len(),
+        tasks.len(),
+        tasks.len(),
         per(all_rounds),
         per(all_tokens)
     );
@@ -237,6 +272,24 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn every_wanted_app_row_is_a_shipped_apps_or_the_os_packs() {
+        let groups = super::super::apps::shipped().unwrap();
+        for (line, want) in APP_TASKS {
+            if let Row(row, _) = want {
+                let shipped = groups.iter().any(|g| g.rows.iter().any(|r| r.name == *row));
+                let os = llmproto::pack::rows().iter().any(|r| r.name == *row);
+                assert!(shipped || os, "{line}: {row}");
+            }
+        }
+        let add = call(r#"{"name":"notes_add","arguments":{"text":"buy milk"}}"#);
+        assert!(meets(&add, Row("notes_add", "buy milk")));
+        let find = call(r#"{"name":"notes_find","arguments":{"word":"milk"}}"#);
+        assert!(meets(&find, Row("notes_find", "milk")));
+        let count = call(r#"{"name":"notes_count","arguments":{}}"#);
+        assert!(meets(&count, Row("notes_count", "")));
     }
 
     #[test]

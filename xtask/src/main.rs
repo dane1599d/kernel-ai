@@ -17,6 +17,8 @@
 //! cargo xtask doctor   (can this PC run Kernel AI in an accelerated VM, and what to fix; read-only)
 //! cargo xtask vbox [--start [--headless]]   (the VirtualBox VM "Kernel AI"; see vbox/mod.rs)
 //! cargo xtask wit-tables [--check]   (wasmhost/src/tables.rs from wit/: the host tables of the kai:app world)
+//! cargo xtask ccwasm [--check] [--no-gen3]   (third_party/xcc/cc.wasm from xcc's pinned commit; Linux or WSL2; see cc/mod.rs)
+//! cargo xtask cc-bind [--check]   (ccserve/kai/bind/: the C bindings `cc build` compiles against, from wit/; see cc/bind.rs)
 //! cargo xtask licences check   (every licence in the tree and the dependency graph is allowed and has its text; see licences.rs)
 //! cargo xtask notices [--check]   (writes or checks NOTICES.txt, the third-party notices the image carries; see notices.rs)
 //! cargo xtask fs mkfs|import|ls|cat|check|replay ...   (kaifs data disks on the host, no WSL; see fs/mod.rs)
@@ -37,6 +39,7 @@ mod blklog;
 mod boot_smoke;
 mod buildsvc;
 mod cases;
+mod cc;
 mod components;
 mod disk;
 mod doctor;
@@ -100,6 +103,8 @@ fn main() -> ExitCode {
         Some("latency") => latency::main(&args[1..]),
         Some("doctor") => doctor::main(&args[1..]),
         Some("vbox") => vbox::main(&args[1..]),
+        Some("ccwasm") => cc::main(&args[1..], &workspace_root()),
+        Some("cc-bind") => cc::bind::main(&args[1..]),
         Some("licences") => licences::main(&args[1..]),
         Some("notices") => notices::main(&args[1..]),
         Some("wit-check") => wit::main(&args[1..]),
@@ -125,7 +130,8 @@ fn execute(options: &Options) -> Result<(), String> {
     let root = workspace_root();
     if options.task == Task::Smoke {
         let before = buildsvc::verify::real_repo(&root)?;
-        let versions = components::build(&root)?;
+        // The smoke drives the broken notes versions too.
+        let versions = components::build_for_tests(&root)?;
         smoke::run(&versions)?;
         edit_smoke::run(&root, &versions)?;
         boot_smoke::run(&root, &versions)?;
@@ -134,7 +140,7 @@ fn execute(options: &Options) -> Result<(), String> {
     let kernel = build_kernel(&root, options)?;
     floatguard::check(&kernel)?;
     let programs = userbuild::build_user(&root, options)?;
-    let versions = components::build(&root)?;
+    let versions = components::build_for_tests(&root)?;
     if options.task == Task::Build {
         println!("xtask: kernel built at {}", kernel.display());
         println!("xtask: {} user programs built", programs.len());
@@ -264,6 +270,11 @@ fn execute(options: &Options) -> Result<(), String> {
             };
             let server = if case.server { llm_args.as_str() } else { "" };
             let mut cmdline = format!("{} {server}", case.cmdline);
+            // `XTASK_CMDLINE` adds words to every case's kernel command line
+            // (the perf job's `clock=tsc` run).
+            if let Ok(extra) = env::var("XTASK_CMDLINE") {
+                cmdline = format!("{cmdline} {extra}");
+            }
             let cutting = case.cuts > 0 && boot <= case.cuts;
             if case.cuts > 0 {
                 let last = if cutting { "" } else { " last" };
@@ -293,6 +304,15 @@ fn execute(options: &Options) -> Result<(), String> {
             };
             if let Some(disk) = &disk {
                 cmdline = format!("{cmdline} {}", disk.cmdline());
+            }
+            // A model for kai-data's store, named on the command line as a
+            // kai-model disk would be (P2 task 10).
+            let store = match case.store {
+                Some(fixture) => Some(fixture.write(&target_dir.join("store"))?),
+                None => None,
+            };
+            if let Some(model) = &store {
+                cmdline = format!("{cmdline} {}", model.cmdline());
             }
             // The boot manifest's versions join the boot drive for this case only.
             let shared = modules.len();
@@ -346,13 +366,25 @@ fn execute(options: &Options) -> Result<(), String> {
             }
             let monitor = qemu::free_port()?;
             let sizing = options::Sizing {
-                mem_mib: options.sizing.mem_mib.max(case.memory_mib),
+                // A store model needs the memory a kai-model disk would.
+                mem_mib: options
+                    .sizing
+                    .mem_mib
+                    .max(case.memory_mib)
+                    .max(store.as_ref().map(disk::ModelDisk::memory_mib)),
                 ..options.sizing
             };
             let mut args = qemu::args(&firmware, accel, true, disk.as_ref(), sizing);
             if let Some(data) = case.data {
                 if fresh {
                     blklog::prepare(&target_dir, data)?;
+                    if let Some(model) = &store {
+                        let image = target_dir.join(blklog::IMAGE);
+                        store_model(&image, model.path())?;
+                        if case.store_bad_fnv {
+                            damage_hint(&image)?;
+                        }
+                    }
                 }
                 args.extend(blklog::qemu_args(data));
             }
@@ -686,8 +718,71 @@ fn run_checked(command: &mut Command) -> Result<(), String> {
     }
 }
 
+/// Makes `image` a kaifs data disk holding `model` in its model store, named
+/// in `kai-modelhint 1`: `xtask fs mkfs`, then `import --model`.
+/// Flips one bit of the FNV-1a64 in `image`'s `kai-modelhint 1` and writes it
+/// back with a good CRC, so the hint still verifies but no longer matches the
+/// model (`xtask fs mkfs` puts `kai-data` at 2 MiB).
+fn damage_hint(image: &std::path::Path) -> Result<(), String> {
+    use std::io::{Read, Seek, SeekFrom, Write};
+    let shown = image.display();
+    let at = SeekFrom::Start(blklog::DATA_FIRST * 512);
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(image)
+        .map_err(|e| format!("{shown}: {e}"))?;
+    let mut sector = [0u8; 512];
+    file.seek(at)
+        .and_then(|_| file.read_exact(&mut sector))
+        .map_err(|e| format!("{shown}: {e}"))?;
+    let mut hint = kabi::modelhint::Hint::decode(&sector)
+        .ok_or_else(|| format!("{shown}: no kai-modelhint 1 at kai-data's start"))?;
+    hint.fnv ^= 1;
+    file.seek(at)
+        .and_then(|_| file.write_all(&hint.encode()))
+        .and_then(|_| file.sync_all())
+        .map_err(|e| format!("{shown}: {e}"))
+}
+
+fn store_model(image: &std::path::Path, model: &std::path::Path) -> Result<(), String> {
+    let image = image.display().to_string();
+    let words = |w: &[&str]| w.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    fs_tool::main(&words(&["mkfs", &image, "--size", "64", "--force"]))?;
+    let model = model.display().to_string();
+    fs_tool::main(&words(&["import", "--model", &image, &model]))
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_damaged_hint_still_verifies_but_names_another_fnv() {
+        use std::io::{Read, Seek, SeekFrom};
+        let dir = std::env::temp_dir().join(format!("kai-hint-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (image, model) = (dir.join("kai-data.img"), dir.join("model.gguf"));
+        let mut bytes = b"GGUF\x03\0\0\0".to_vec();
+        bytes.resize(100_000, 7);
+        std::fs::write(&model, &bytes).unwrap();
+        super::store_model(&image, &model).unwrap();
+        let hint = || {
+            let mut file = std::fs::File::open(&image).unwrap();
+            let mut sector = [0u8; 512];
+            file.seek(SeekFrom::Start(super::blklog::DATA_FIRST * 512))
+                .unwrap();
+            file.read_exact(&mut sector).unwrap();
+            kabi::modelhint::Hint::decode(&sector).unwrap()
+        };
+        let good = hint();
+        assert_eq!(good.len, 100_000);
+        super::damage_hint(&image).unwrap();
+        let bad = hint();
+        assert_eq!(bad.fnv, good.fnv ^ 1);
+        assert_eq!((bad.len, bad.sha256), (good.len, good.sha256));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     use super::*;
 
     #[test]

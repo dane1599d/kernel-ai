@@ -317,8 +317,10 @@ pub const SLOTS: local::act::Slots = local::act::Slots::TWO;
 
 pub struct Local {
     engine: Engine<'static>,
-    /// The tagged call's grammar over the pack's rows, built once.
+    /// The tagged call's grammar over the pack's rows and the installed apps'
+    /// rows, built again when the apps change.
     grammar: local::act::Grammar,
+    apps: crate::apps::Apps,
     /// Conversation memory for `act`, in RAM only (P1 plan section 4).
     history: History,
     last: Option<Speed>,
@@ -348,6 +350,7 @@ impl Local {
         Ok(Self {
             engine,
             grammar,
+            apps: crate::apps::Apps::default(),
             history: History::new(),
             last: None,
             prefill_rate: None,
@@ -430,6 +433,11 @@ impl Local {
         self.engine.about().name.as_deref().unwrap_or("(unnamed)")
     }
 
+    /// The last answer's decode speed, in tenths of a token a second.
+    pub fn tps10(&self) -> u32 {
+        llmproto::health::tps10(self.last.and_then(|speed| speed.per_second()))
+    }
+
     /// What `health` says: the model, the tier, the context and the last speed.
     pub fn describe(&self) -> String {
         let about = self.engine.about();
@@ -493,6 +501,9 @@ impl Local {
         // The pool's figures and the picks' time from here on are this request's.
         crate::workers::report();
         self.engine.take_picking();
+        if let Some(grammar) = self.apps.update(&request.apps) {
+            self.grammar = grammar;
+        }
         let clock = core::cell::RefCell::new(Clock::new(
             request.timeout_ms.min(act::SERVICE_TIMEOUT_MS),
             self.prefill_rate,
@@ -527,8 +538,8 @@ impl Local {
     /// Keeps a finished turn the shell wrote (`remember`), within history's
     /// budget. Returns a line for the log.
     pub fn remember(&mut self, turn: Turn) -> String {
-        let dropped = local::act::remember(&self.engine, &mut self.history, turn);
-        let budget = local::act::history_budget(&self.engine);
+        let dropped = local::act::remember(&self.engine, &self.grammar, &mut self.history, turn);
+        let budget = local::act::history_budget(&self.engine, &self.grammar);
         let kept = self.history.len();
         let tokens = self.history.tokens();
         match dropped {
@@ -548,7 +559,7 @@ impl Local {
         self.engine.use_slot(SLOTS.act);
         let mut slept = 0;
         let mut meter = Meter::new();
-        let warmed = local::act::warm(&mut self.engine, &self.history, |step| {
+        let warmed = local::act::warm(&mut self.engine, &self.grammar, &self.history, |step| {
             meter.step(&step);
             if sys::time_ns() - slept < SLEEP_EVERY_NS {
                 return Next::Continue;

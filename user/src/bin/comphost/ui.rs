@@ -7,20 +7,24 @@
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
+use deskcore::effects;
 use gfx2d::Canvas;
 use gfx2d::text::{Fonts, Text};
 use kabi::handle::{Handle, Rights};
-use livecore::host::{Env, Host};
+use livecore::host::{Env, Exit, Host};
+use livecore::{Fault, Performed};
 use uikit::Frame;
 use uikit::layout::Measure;
 use uikit::style::TypeStyle;
 use uikit::widget::UiEvent;
 use user::{println, sys};
 use wasmhost::desk::{Desk, Open, Show, Target, Told};
-use wasmhost::{LiveInstance, Update, surface};
+use wasmhost::{AppEvent, LiveInstance, Update, surface};
 
 /// How long a call to `desktop` may take.
-const CALL_MS: u64 = 5_000;
+pub(crate) const CALL_MS: u64 = 5_000;
+/// Times one pump tells the app the size of its code views and looks again.
+const SIZE_ROUNDS: usize = 4;
 /// How often an app with windows asks `desktop` for its events.
 pub const POLL_MS: u64 = 20;
 
@@ -66,10 +70,17 @@ pub struct Ui {
     frames: Vec<(u32, Frame)>,
     /// The version whose windows show.
     shown: Option<String>,
+    /// Whether one of its windows took focus since [`Ui::take_focused`].
+    focused: bool,
     /// Events that came back with the window's own calls, acted on at the next
     /// poll.
     later: Vec<Told>,
     reply: Vec<u8>,
+    /// The tickets sent to `desktop` with no result yet: only then does a poll
+    /// ask for results, and only theirs reach the app.
+    sent: effects::Sent,
+    /// The `kai:settings` requests' way to the shell, for the Settings app only.
+    settings: Option<crate::kai_settings::Forward>,
 }
 
 impl Ui {
@@ -87,19 +98,76 @@ impl Ui {
             pools: Vec::new(),
             frames: Vec::new(),
             shown: None,
+            focused: false,
             later: Vec::new(),
             reply: alloc::vec![0u8; kabi::MAX_MESSAGE],
+            sent: effects::Sent::default(),
+            settings: None,
         })
+    }
+
+    /// Carries `kai:settings` requests for this app: only the Settings app's,
+    /// which the system image grants it.
+    pub fn carry_settings(&mut self) {
+        self.settings = Some(crate::kai_settings::Forward::default());
+    }
+
+    /// Whether a `kai:settings` request waits for its answer.
+    pub fn settings_busy(&self) -> bool {
+        self.settings
+            .as_ref()
+            .is_some_and(crate::kai_settings::Forward::busy)
     }
 
     pub fn has_windows(&self) -> bool {
         !self.frames.is_empty()
     }
 
+    /// Whether comphost should poll: a window is open, or an effect's result
+    /// is still to come (one queued as the last window closed, too).
+    pub fn wants_poll(&self) -> bool {
+        self.has_windows() || self.sent.awaits() || self.settings_busy()
+    }
+
+    /// Whether one of its windows took focus since the last call: use, for
+    /// app nap (P3 task 12b).
+    pub fn take_focused(&mut self) -> bool {
+        core::mem::take(&mut self.focused)
+    }
+
     /// Shows what the instances committed since the last call: the shown
     /// version's frames and closes, and nothing of a standby's. A new version
-    /// shown closes the old one's windows first.
+    /// shown closes the old one's windows first. A suspended app's windows stay
+    /// open with their last frame, so the user can restore one and a standing
+    /// instruction's "until restore" can come (P3 task 11).
     pub fn pump<E: Env<Instance = LiveInstance>>(&mut self, host: &mut Host<E>) {
+        // A code view's size is told to the app in a call of its own, which may
+        // change what it shows (a few rounds: the size settles at once, but an app
+        // that changed its layout on every size would not).
+        for _ in 0..SIZE_ROUNDS {
+            let sized = self.pump_once(host);
+            if sized.is_empty() {
+                return;
+            }
+            for (window, node, rows, cells) in sized {
+                let performed = serve_shown(host, |core| core.code_size(window, node, rows, cells));
+                // What the app queued while it handled the size goes out as for a close:
+                // a layout is never a person's key or click.
+                self.forward(performed, false);
+            }
+        }
+    }
+
+    /// One look at what the instances committed; the code views whose size the
+    /// app is yet to be told.
+    fn pump_once<E: Env<Instance = LiveInstance>>(
+        &mut self,
+        host: &mut Host<E>,
+    ) -> Vec<(u32, u32, u16, u16)> {
+        let mut sized = Vec::new();
+        if host.suspended() {
+            return sized;
+        }
         let mut updates = Vec::new();
         let mut label = None;
         host.each_instance(|instance, version, shown| {
@@ -124,26 +192,170 @@ impl Ui {
                     self.frames.retain(|(app, _)| *app != window);
                     self.close(window);
                 }
+                Update::CodeSize {
+                    window,
+                    node,
+                    rows,
+                    cells,
+                } => sized.push((window, node, rows, cells)),
             }
         }
+        sized
     }
 
-    /// Asks `desktop` for its events and acts on them.
-    pub fn poll<E: Env<Instance = LiveInstance>>(&mut self, host: &mut Host<E>) {
-        let mut told = core::mem::take(&mut self.later);
-        if let Ok(len) = sys::call_route(self.route, &[], &mut self.reply, CALL_MS) {
-            told.extend(self.desk.told(&self.reply[..len.min(self.reply.len())]));
+    /// Asks `desktop` for its events and acts on them, then hands the app the
+    /// input `desktop` posted to its windows' event rings.
+    pub fn poll<E: Env<Instance = LiveInstance>>(
+        &mut self,
+        host: &mut Host<E>,
+    ) -> Result<(), Exit> {
+        if self.has_windows() || !self.later.is_empty() {
+            let mut told = core::mem::take(&mut self.later);
+            if let Ok(len) = sys::call_route(self.route, &[], &mut self.reply, CALL_MS) {
+                told.extend(self.desk.told(&self.reply[..len.min(self.reply.len())]));
+            }
+            self.act(host, told)?;
         }
-        self.act(host, told);
+        // A suspended app's input waits in its rings, and its effects' results
+        // at `desktop`: serving either would wake the app, and what resumes it
+        // (a rule's `until`, `ctl resume`) goes first.
+        if host.suspended() {
+            return Ok(());
+        }
+        let inputs = self.take_input();
+        let typed = !inputs.is_empty();
+        for (app, input) in inputs {
+            // Typed input is a transaction too: what the app saves or asks for
+            // because of it is kept like an action call's.
+            let performed = serve_shown(host, |core| core.ui_input(app, input));
+            self.forward(performed, true);
+        }
+        if typed {
+            self.pump(host);
+        }
+        self.deliver(host);
+        if let Some(forward) = self.settings.as_mut()
+            && forward.pump(host, self.route, &mut self.reply)
+        {
+            self.pump(host);
+        }
+        Ok(())
     }
 
-    fn act<E: Env<Instance = LiveInstance>>(&mut self, host: &mut Host<E>, told: Vec<Told>) {
+    /// Sends what the app's transaction queued to `desktop`, for the shell to
+    /// run; `desktop` knows which app this is from the kernel, not from us.
+    /// `user` is true only for a transaction a person's key or click caused
+    /// (`ui_input`): never a close, a reply, an `ui_act` from the agent or a call.
+    fn forward(&mut self, performed: Option<Performed>, user: bool) {
+        let Some(performed) = performed.filter(|p| !p.is_empty()) else {
+            return;
+        };
+        let lines = performed.effect_lines();
+        let put = if user {
+            effects::PUT_USER
+        } else {
+            effects::PUT
+        };
+        let request = alloc::format!("{put}{lines}");
+        match sys::call_route(self.route, request.as_bytes(), &mut self.reply, CALL_MS) {
+            Ok(len) if &self.reply[..len.min(self.reply.len())] == b"ok" => {
+                self.sent.record(&lines);
+            }
+            Ok(len) => println!(
+                "comphost: desktop refused the effects: {}",
+                String::from_utf8_lossy(&self.reply[..len.min(self.reply.len())])
+            ),
+            Err(error) => println!("comphost: desktop did not take the effects ({error:?})"),
+        }
+    }
+
+    /// Gives the app what came of its effects, one `effect-done` each, for
+    /// tickets it sent only; what it queues in answer goes out the same way.
+    fn deliver<E: Env<Instance = LiveInstance>>(&mut self, host: &mut Host<E>) {
+        if !self.sent.awaits() {
+            return;
+        }
+        let Ok(len) = sys::call_route(
+            self.route,
+            effects::RESULTS.as_bytes(),
+            &mut self.reply,
+            CALL_MS,
+        ) else {
+            return;
+        };
+        let text = String::from_utf8_lossy(&self.reply[..len.min(self.reply.len())]).into_owned();
+        let (accepted, stray) = self.sent.accept(effects::parse_results(&text));
+        for ticket in stray {
+            println!("comphost: dropped a result for ticket {ticket}, which it did not send");
+        }
+        for done in accepted {
+            let ticket = done.ticket;
+            let event = AppEvent::EffectDone {
+                ticket,
+                outcome: done.outcome,
+            };
+            match serve_shown(host, |core| core.deliver_event(&event)) {
+                Some(performed) => self.forward(Some(performed), false),
+                None => println!("comphost: the result for ticket {ticket} did not reach the app"),
+            }
+        }
+        self.pump(host);
+    }
+
+    /// The input waiting in each window's event ring, as `uikit` input: keys
+    /// with their text, buttons and pointer moves (ADR 0005 §3).
+    fn take_input(&mut self) -> Vec<(u32, uikit::input::Input)> {
+        let mut out = Vec::new();
+        for pool in &self.pools {
+            if (pool.bytes as usize) < surfabi::header::PAGE {
+                continue;
+            }
+            // SAFETY: the pool is mapped read-write at `address` for `bytes`,
+            // at least a page; its first page is the header set up at `open`.
+            let page = unsafe { &mut *(pool.address as *mut [u8; surfabi::header::PAGE]) };
+            loop {
+                match surfabi::header::take(page) {
+                    Ok(Some(event)) => {
+                        if let Some(input) = self.desk.seat_state.input(&event) {
+                            out.push((pool.app, input));
+                        }
+                    }
+                    // One it cannot read is skipped.
+                    Err(()) => {}
+                    Ok(None) => break,
+                }
+            }
+        }
+        out
+    }
+
+    /// Hands `desktop`'s events to the app. A close or an action on the kept
+    /// window of a suspended app resumes it first, so it is not dropped.
+    fn act<E: Env<Instance = LiveInstance>>(
+        &mut self,
+        host: &mut Host<E>,
+        told: Vec<Told>,
+    ) -> Result<(), Exit> {
         for t in told {
+            // A focus wakes only an app comphost napped itself (its caller
+            // decides); a close or an action wakes any suspended app.
+            if !matches!(t, Told::Restarted | Told::Focus(_))
+                && let Some(reply) = host.wake()?
+            {
+                println!(
+                    "comphost: resumed for a window event: {}",
+                    String::from_utf8_lossy(&reply)
+                );
+            }
             match t {
                 Told::Restarted => self.reopen(),
-                Told::Close(window) => with_shown(host, |core| {
-                    let _ = core.ui_events(window, &[UiEvent::CloseRequested]);
-                }),
+                Told::Focus(_) => self.focused = true,
+                Told::Close(window) => {
+                    let performed = serve_shown(host, |core| {
+                        core.ui_events(window, &[UiEvent::CloseRequested])
+                    });
+                    self.forward(performed, false);
+                }
                 Told::Action {
                     window,
                     node,
@@ -159,13 +371,18 @@ impl Ui {
                     else {
                         continue;
                     };
-                    with_shown(host, |core| {
-                        let _ = core.ui_act(window, node, action, value.clone());
+                    // Not the value: it may be anything the model wrote.
+                    println!("comphost: the agent acted in window {window}");
+                    let performed = serve_shown(host, |core| {
+                        core.ui_act(window, node, action, value.clone())
+                            .map(|_refused_or_not| ())
                     });
+                    self.forward(performed, false);
                 }
             }
         }
         self.pump(host);
+        Ok(())
     }
 
     /// A new `desktop`: every window opens again from its last frame.
@@ -219,8 +436,15 @@ impl Ui {
             address,
             bytes: open.pool_bytes,
         };
+        // The header page first: `desktop` posts the window's input to its ring.
+        let header = surfabi::header::new_page(open.pool_bytes);
+        // SAFETY: the pool is mapped read-write at `address`, a page at least.
+        unsafe {
+            core::ptr::copy_nonoverlapping(header.as_ptr(), address as *mut u8, header.len())
+        };
         self.paint(&pool, open.target, frame);
-        let rights = Rights::MAP | Rights::READ | Rights::TRANSFER;
+        // Write, so `desktop` can post input to the header page's ring.
+        let rights = Rights::MAP | Rights::READ | Rights::WRITE | Rights::TRANSFER;
         let sent =
             sys::handle_dup(shm, rights).is_ok_and(|copy| self.send(&open.calls, Some(copy)));
         self.pools.push(pool);
@@ -304,16 +528,26 @@ fn release(pool: &Pool) {
     let _ = sys::handle_close(pool.shm);
 }
 
-/// Runs `f` on the shown version's instance, when it is a `lifecycle 2` one.
-fn with_shown<E: Env<Instance = LiveInstance>>(
+/// Runs `f` on the serving version's instance as one transaction, when it is a
+/// `lifecycle 2` one: what the app does about a window event (storage writes
+/// and effects) is committed with its checkpoint, like an action call's. The
+/// effects it queued come back for whoever runs them; a version that faulted
+/// was reloaded, and gives nothing.
+pub(crate) fn serve_shown<E: Env<Instance = LiveInstance>>(
     host: &mut Host<E>,
-    mut f: impl FnMut(&mut wasmhost::CoreInstance),
-) {
-    host.each_instance(|instance, _, shown| {
-        if let (LiveInstance::V2(core), true) = (instance, shown) {
-            f(core);
-        }
+    f: impl FnOnce(&mut wasmhost::CoreInstance) -> Result<(), Fault>,
+) -> Option<Performed> {
+    let served = host.serve_with(|instance| match instance {
+        LiveInstance::V2(core) => f(core),
+        _ => Ok(()),
     });
+    match served {
+        Ok(done) => done.map(|((), performed)| performed),
+        Err(exit) => {
+            println!("comphost: {}", exit.why);
+            None
+        }
+    }
 }
 
 /// Boxes a measure for `CoreInstance::set_measure`.

@@ -175,7 +175,7 @@ pub(crate) struct Core<E> {
     /// Calls served, which make each call's seed.
     calls: u64,
     /// The ticket the next performed effect gets.
-    next_ticket: u32,
+    pub(crate) next_ticket: u32,
     /// Undo for the last calls that changed the state.
     pub history: History,
 }
@@ -333,27 +333,7 @@ impl<E: Env> Core<E> {
         let reply = version.instance.handle(request);
         let txn = version.instance.finish();
         let reply = reply?;
-        if txn.effects.len() > txn::MAX_EFFECTS {
-            return Err(Fault::new(
-                Reason::Abi,
-                format!(
-                    "it queued {} effects; at most {} a call",
-                    txn.effects.len(),
-                    txn::MAX_EFFECTS
-                ),
-            ));
-        }
-        for effect in &txn.effects {
-            effect.check().map_err(|why| Fault::new(Reason::Abi, why))?;
-        }
-        let effects = txn.effect_lines(inputs.first_ticket);
-        // Room for an `undo` line too.
-        if reply.len() + effects.len() + 32 > kabi::MAX_MESSAGE {
-            return Err(Fault::new(
-                Reason::Abi,
-                "its reply and effects are over one message",
-            ));
-        }
+        check_txn(&txn, inputs, reply.len())?;
         Ok((reply, txn))
     }
 
@@ -363,6 +343,17 @@ impl<E: Env> Core<E> {
         &mut self,
         version: &mut Version<E::Instance>,
         txn: &Txn,
+    ) -> Result<Option<u64>, Stop> {
+        self.commit_as(version, txn, true)
+    }
+
+    /// [`Core::commit`], recording an undo entry only if `undoable`: a window's
+    /// own edits are not the agent's changes, and would fill the history.
+    pub(crate) fn commit_as(
+        &mut self,
+        version: &mut Version<E::Instance>,
+        txn: &Txn,
+        undoable: bool,
     ) -> Result<Option<u64>, Stop> {
         let blob = export_own(version)?;
         let mut storage = self.storage.clone();
@@ -395,7 +386,7 @@ impl<E: Env> Core<E> {
             state: self.checkpoint.clone(),
             storage: self.storage.clone(),
         };
-        Ok(Some(self.history.record(before, after)))
+        Ok(undoable.then(|| self.history.record(before, after)))
     }
 
     /// The reply sent for a call whose effects are performed: after a
@@ -490,6 +481,34 @@ impl<E: Env> Core<E> {
     }
 }
 
+/// Checks what a call did against the limits: over them is the version's fault.
+/// `reply_len` is the length of the reply the effects ride in, 0 for a call that
+/// has none.
+pub(crate) fn check_txn(txn: &Txn, inputs: Inputs, reply_len: usize) -> Result<(), Fault> {
+    if txn.effects.len() > txn::MAX_EFFECTS {
+        return Err(Fault::new(
+            Reason::Abi,
+            format!(
+                "it queued {} effects; at most {} a call",
+                txn.effects.len(),
+                txn::MAX_EFFECTS
+            ),
+        ));
+    }
+    for effect in &txn.effects {
+        effect.check().map_err(|why| Fault::new(Reason::Abi, why))?;
+    }
+    let effects = txn.effect_lines(inputs.first_ticket);
+    // Room for an `undo` line too.
+    if reply_len + effects.len() + 32 > kabi::MAX_MESSAGE {
+        return Err(Fault::new(
+            Reason::Abi,
+            "its reply and effects are over one message",
+        ));
+    }
+    Ok(())
+}
+
 /// A version's own state, checked to be in its own schema.
 pub(crate) fn export_own<I: Instance>(version: &mut Version<I>) -> Result<Vec<u8>, Fault> {
     let blob = version
@@ -509,6 +528,10 @@ pub(crate) fn export_own<I: Instance>(version: &mut Version<I>) -> Result<Vec<u8
 impl<E: Env> Host<E> {
     /// Answers one request from `caller` (0 is the kernel).
     pub fn handle(&mut self, caller: u64, request: &[u8]) -> Result<Vec<u8>, Exit> {
+        // The rows come from the loaded artifact, with no call into the app.
+        if crate::rows::is_request(request) {
+            return Ok(text(self.rows()));
+        }
         let mode = core::mem::replace(&mut self.mode, Mode::Moving);
         let (mode, reply) = match request.strip_prefix(kabi::live::CONTROL_PREFIX.as_bytes()) {
             Some(_) if caller != 0 => {
@@ -577,6 +600,29 @@ impl<E: Env> Host<E> {
             // Suspended: no instance, so no windows.
             Mode::Suspended(_) | Mode::Moving => {}
         }
+    }
+
+    /// The component's name.
+    pub fn name(&self) -> &str {
+        &self.core.name
+    }
+
+    /// Whether the app is suspended (`ctl suspend`): no instance, its state
+    /// saved.
+    pub fn suspended(&self) -> bool {
+        matches!(self.mode, Mode::Suspended(_))
+    }
+
+    /// Brings a suspended app back, as `ctl resume` from the kernel does, so an
+    /// event for its kept window (a close, an agent's action) reaches it
+    /// instead of being dropped. The resume's reply, or `None` when the app was
+    /// not suspended.
+    pub fn wake(&mut self) -> Result<Option<Vec<u8>>, Exit> {
+        if !self.suspended() {
+            return Ok(None);
+        }
+        let request = alloc::format!("{}resume", kabi::live::CONTROL_PREFIX);
+        self.handle(0, request.as_bytes()).map(Some)
     }
 
     /// How long to wait for a request before [`Host::tick`]; 0 is forever.

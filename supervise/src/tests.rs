@@ -34,6 +34,18 @@ fn the_local_llm_line_names_the_model_capability() {
 }
 
 #[test]
+fn the_editor_comphost_line_names_the_edit_capability() {
+    let plan =
+        parse_plan("editor program=comphost caps=serve+component+call+edit version=1").services;
+    assert_eq!(
+        plan[0].limits.caps,
+        cap::SERVE | cap::COMPONENT | cap::CALL | cap::EDIT
+    );
+    assert_eq!(plan[0].args, "version=1");
+    assert_ne!(cap::GRANTABLE & cap::EDIT, 0);
+}
+
+#[test]
 fn plan_can_tune_the_restart_policy_per_service() {
     let plan = parse_plan("crasher backoff_max_ms=200 max_restarts=1000 after_ms=150").services;
     assert_eq!(plan[0].policy.max_backoff_ms, 200);
@@ -45,18 +57,25 @@ fn plan_can_tune_the_restart_policy_per_service() {
 #[test]
 fn the_plan_the_kernel_sends_parses() {
     let text = alloc::format!(
-        "llm caps=serve+net burst_ms=10000 pages=1024 host=10.0.2.2:8080 model=org/model-7b\n{}",
+        "llm caps=serve+net burst_ms=10000 pages=1024 host=10.0.2.2:8080 model=org/model-7b\n{}\n{}",
+        kabi::plan::CC,
         kabi::plan::SHELL
     );
     let plan = parse_plan(&text);
     assert_eq!(plan.errors, Vec::<String>::new());
-    let shell = &plan.services[1];
+    // cc holds no authority but its service endpoint.
+    let cc = &plan.services[1];
+    assert_eq!((cc.name.as_str(), cc.limits.caps), ("cc", cap::SERVE));
+    assert!(cc.uses.is_empty());
+    // It starts when the shell first calls it, not at boot.
+    assert_eq!(cc.start, Start::Demand);
+    let shell = &plan.services[2];
     assert_eq!(shell.name, "shell");
     assert_eq!(
         shell.limits.caps,
         cap::SERVE | cap::CALL | cap::POLICY | cap::STOP | cap::SCRIPT
     );
-    assert_eq!(shell.uses, ["llm", SUPERVISOR]);
+    assert_eq!(shell.uses, ["llm", SUPERVISOR, "cc"]);
     assert_eq!(shell.limits.stack_pages, 512);
     assert!(shell.limits.stack_pages < shell.limits.max_pages);
     assert_eq!(
@@ -100,6 +119,13 @@ fn a_lines_folders_go_only_to_its_own_program() {
     // The name kept, the program swapped: refused, never started without it.
     let refused = plan.grants("pkg", "notes").unwrap_err();
     assert!(refused.contains("for program pkg, not notes"), "{refused}");
+    // comphost's apps get their saved state's folder the same way.
+    let apps = parse_plan("notes program=comphost dir=apps version=2");
+    assert!(apps.errors.is_empty(), "{:?}", apps.errors);
+    assert_eq!(
+        apps.grants("notes", "comphost").unwrap().dirs,
+        [Folder::Apps]
+    );
     // A line's `program=` is the program its folder goes to, not its name.
     assert_eq!(plan.grants("store", "pkgd").unwrap().dirs, [Folder::Pkg]);
     assert!(plan.grants("store", "store").is_err());
@@ -275,6 +301,7 @@ fn state_round_trips_and_damage_is_ignored() {
             recent: vec![10, 20, 30],
             gave_up: false,
             stopped: false,
+            keep: true,
             pid: 42,
             started_ms: 1234,
         },
@@ -285,6 +312,7 @@ fn state_round_trips_and_damage_is_ignored() {
             recent: vec![],
             gave_up: true,
             stopped: true,
+            keep: false,
             pid: 0,
             started_ms: 0,
         },
@@ -293,7 +321,7 @@ fn state_round_trips_and_damage_is_ignored() {
     assert!(decode(b"").is_empty());
     assert!(decode(b"garbage").is_empty());
     assert!(decode(&[0xFF, 0xFE]).is_empty());
-    let damaged = alloc::format!("{STATE_MAGIC}\ncrasher x 1 0 0 0 0\nhog 2 0 0 0 7 99");
+    let damaged = alloc::format!("{STATE_MAGIC}\ncrasher x 1 0 0 0 0 0\nhog 2 0 0 0 0 7 99");
     // State in an older layout reads as none rather than as shifted fields.
     assert!(decode(b"supervisor-state 2\nhog 2 0 0 7").is_empty());
     assert_eq!(decode(damaged.as_bytes()).len(), 1);
@@ -308,6 +336,73 @@ hog 2 1 0 7 99 5",
         (2, 7, vec![5])
     );
     assert!(!old[0].stopped);
+    // Version 4 had no keep flag: its records carry over, none kept, a stop kept.
+    let old = decode(
+        b"supervisor-state 4
+hog 2 1 0 1 7 99 5",
+    );
+    assert_eq!(old.len(), 1);
+    assert_eq!(
+        (
+            old[0].stopped,
+            old[0].keep,
+            old[0].pid,
+            old[0].recent.clone()
+        ),
+        (true, false, 7, vec![5])
+    );
+}
+
+#[test]
+fn keep_requests_parse() {
+    assert_eq!(keep::parse("keep notes on"), Some(("notes", true)));
+    assert_eq!(keep::parse("keep notes off"), Some(("notes", false)));
+    assert_eq!(
+        keep::parse(&keep::encode("files-window", true)),
+        Some(("files-window", true))
+    );
+    for bad in [
+        "keep",
+        "keep notes",
+        "keep notes yes",
+        "keep notes on now",
+        "keep no/tes on",
+        "keep  on",
+        "stop notes",
+        "",
+    ] {
+        assert_eq!(keep::parse(bad), None, "{bad:?}");
+    }
+}
+
+#[test]
+fn only_the_shell_keeps_only_apps_running() {
+    let plan = parse_plan(
+        "notes program=comphost caps=serve+component\nshell caps=serve\nfiles caps=serve\nllm program=comphost caps=serve",
+    );
+    assert_eq!(plan.errors, Vec::<String>::new());
+    let specs: Vec<&ServiceSpec> = plan.services.iter().collect();
+    let records: Vec<Record> = specs.iter().map(|s| Record::new(&s.name)).collect();
+    let shell = Some(3);
+    assert_eq!(keep::check("notes", &specs, &records, 3, shell), Ok(0));
+    // Anyone else, or with no shell running, is refused.
+    assert!(keep::check("notes", &specs, &records, 4, shell).is_err());
+    assert!(keep::check("notes", &specs, &records, 0, shell).is_err());
+    assert!(keep::check("notes", &specs, &records, 3, None).is_err());
+    // Only an app's line naps, so only it may be kept.
+    assert_eq!(
+        keep::check("files", &specs, &records, 3, shell),
+        Err("err not an app")
+    );
+    assert_eq!(
+        keep::check("nobody", &specs, &records, 3, shell),
+        Err("err unknown service")
+    );
+    // A protected name is refused even on a comphost line.
+    assert_eq!(
+        keep::check("llm", &specs, &records, 3, shell),
+        Err("err protected")
+    );
 }
 
 #[test]
@@ -327,6 +422,11 @@ fn stop_and_start_requests_parse_and_are_checked() {
             (Request::Restart("build-1"), Proof::Once(once)),
         ),
         ("stop build-1 rule", (Request::Stop("build-1"), Proof::Rule)),
+        (
+            "suspend notes rule",
+            (Request::Suspend("notes"), Proof::Rule),
+        ),
+        ("resume notes rule", (Request::Resume("notes"), Proof::Rule)),
         (
             "stop build-1 undo id=4",
             (Request::Stop("build-1"), Proof::Undo(4)),
@@ -523,10 +623,14 @@ fn program_names_the_program_and_is_not_passed_on() {
     // Without the key, a service runs the program of its own name.
     let plan = parse_plan(&alloc::format!(
         "llm caps=serve
+{}
 {}",
+        kabi::plan::CC,
         kabi::plan::SHELL
     ));
-    let shell = &plan.services[1];
+    assert_eq!(plan.errors, Vec::<String>::new());
+    assert_eq!(plan.services[1].program, "cc");
+    let shell = &plan.services[2];
     assert_eq!(shell.program, "shell");
 }
 
@@ -601,6 +705,126 @@ fn routes_form_no_cycle_and_never_reach_the_shell_or_edit() {
     }
 }
 
+#[test]
+fn a_demand_line_waits_for_the_kernels_demand() {
+    let plan = parse_plan(
+        "notes program=comphost caps=serve start=demand\nshell caps=serve\nodd start=later\ntwice start=demand start=demand\nlone unsupervised start=demand",
+    );
+    assert_eq!(plan.services.len(), 2, "{:?}", plan.errors);
+    assert_eq!(plan.errors.len(), 3, "{:?}", plan.errors);
+    assert_eq!(plan.services[0].start, Start::Demand);
+    assert_eq!(plan.services[1].start, Start::Boot);
+    assert_eq!(parse_demand("demand notes"), Some("notes"));
+    for bad in [
+        "demand",
+        "demand notes x",
+        "demand no/tes",
+        "start notes",
+        "",
+    ] {
+        assert_eq!(parse_demand(bad), None, "{bad:?}");
+    }
+    let specs: Vec<&ServiceSpec> = plan.services.iter().collect();
+    let mut records = vec![Record::new("notes"), Record::new("shell")];
+    let idle = [false, false];
+    assert_eq!(
+        check_demand("notes", &specs, &records, 0, &idle),
+        Ok(Some(0))
+    );
+    // Only the kernel asks, and only for a start=demand line.
+    assert!(check_demand("notes", &specs, &records, 7, &idle).is_err());
+    assert!(check_demand("shell", &specs, &records, 0, &idle).is_err());
+    assert!(check_demand("nobody", &specs, &records, 0, &idle).is_err());
+    // Already starting or running: nothing to do.
+    assert_eq!(
+        check_demand("notes", &specs, &records, 0, &[true, false]),
+        Ok(None)
+    );
+    records[0].pid = 9;
+    assert_eq!(check_demand("notes", &specs, &records, 0, &idle), Ok(None));
+    // Stopped by the user: a demand does not undo that.
+    records[0].pid = 0;
+    records[0].stopped = true;
+    assert_eq!(
+        check_demand("notes", &specs, &records, 0, &idle),
+        Err("err stopped")
+    );
+}
+
+#[test]
+fn a_demand_does_not_restart_a_service_past_its_cap() {
+    let plan = parse_plan("notes program=comphost caps=serve start=demand");
+    let specs: Vec<&ServiceSpec> = plan.services.iter().collect();
+    let mut records = vec![Record::new("notes")];
+    records[0].gave_up = true;
+    assert_eq!(
+        check_demand("notes", &specs, &records, 0, &[false]),
+        Err("err gave up")
+    );
+    // While it backs off it is starting, so a demand adds nothing either.
+    records[0].gave_up = false;
+    assert_eq!(
+        check_demand("notes", &specs, &records, 0, &[true]),
+        Ok(None)
+    );
+}
+
+#[test]
+fn start_starts_a_demand_service_not_started_yet() {
+    let starts = [Start::Demand, Start::Boot];
+    let mut records = vec![Record::new("notes"), Record::new("files")];
+    // Never started: `start` starts it, as a demand would.
+    assert_eq!(check_for(Request::Start("notes"), &records, &starts), Ok(0));
+    // A boot service that runs is not stopped, so `start` is refused as before.
+    records[1].pid = 4;
+    assert_eq!(
+        check_for(Request::Start("files"), &records, &starts),
+        Err("err not stopped")
+    );
+    // Once the demand service runs, `start` is refused like any other.
+    records[0].pid = 9;
+    assert_eq!(
+        check_for(Request::Start("notes"), &records, &starts),
+        Err("err not stopped")
+    );
+    // `check` alone knows no starts: unchanged.
+    records[0].pid = 0;
+    assert_eq!(
+        check(Request::Start("notes"), &records),
+        Err("err not stopped")
+    );
+}
+
+#[test]
+fn suspend_and_resume_need_a_once_or_a_rule() {
+    let once = Proof::Once(Once { badge: 1, id: 2 });
+    for request in [Request::Suspend("notes"), Request::Resume("notes")] {
+        assert_eq!(proof_fits(request, Proof::Rule), Ok(()));
+        assert_eq!(proof_fits(request, once), Ok(()));
+        for proof in [Proof::None, Proof::Entry(2), Proof::Undo(2)] {
+            assert!(proof_fits(request, proof).is_err(), "{request:?} {proof:?}");
+        }
+        assert_eq!(
+            Request::parse(&request.encode(Proof::Rule)),
+            Some((request, Proof::Rule))
+        );
+    }
+    assert_eq!(
+        Request::Suspend("notes").call().as_deref(),
+        Some("app_suspend(\"notes\")")
+    );
+    assert_eq!(
+        Request::Resume("notes").call().as_deref(),
+        Some("app_resume(\"notes\")")
+    );
+    let records = vec![Record::new("shell"), Record::new("notes")];
+    assert_eq!(
+        check(Request::Suspend("shell"), &records),
+        Err("err protected")
+    );
+    assert_eq!(check(Request::Suspend("notes"), &records), Ok(1));
+}
+
 const RUN_PLAN: &str = "fs caps=serve\n\
     pkg dir=pkg bootfiles=pkgrepo caps=call uses=supervisor\n\
     notes program=comphost caps=serve+component start=pkg\n\
@@ -663,4 +887,27 @@ fn only_the_store_holder_may_run_a_package_version() {
     ] {
         assert_eq!(Run::parse(bad), None, "{bad}");
     }
+}
+
+#[test]
+fn a_withdraw_reads_as_a_run_and_is_gated_as_one() {
+    let plan = parse_plan(RUN_PLAN);
+    let pids = [Some(10), Some(11), None, Some(13)];
+    let held: Vec<(&ServiceSpec, Option<u64>)> = plan.services.iter().zip(pids).collect();
+    let withdraw = Run::parse_withdraw("withdraw notes version=p-0a1b2c3d4e5f").unwrap();
+    assert_eq!(
+        withdraw.encode_withdraw(),
+        "withdraw notes version=p-0a1b2c3d4e5f"
+    );
+    assert_eq!(check_run(withdraw, &held, 11), Ok(2));
+    for caller in [10, 13, 0, 99] {
+        assert!(check_run(withdraw, &held, caller).is_err(), "{caller}");
+    }
+    // Each verb reads only itself.
+    assert_eq!(Run::parse("withdraw notes version=p-0a1b2c3d4e5f"), None);
+    assert_eq!(
+        Run::parse_withdraw("run notes version=p-0a1b2c3d4e5f"),
+        None
+    );
+    assert_eq!(Run::parse_withdraw("withdraw notes"), None);
 }

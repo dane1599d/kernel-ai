@@ -10,12 +10,23 @@
 //! ONCE_CHECK against the call shown (ADR 0001 D6); a standing rule the caller
 //! holds, checked with RULE_CHECK; or, for a stop, an undo of the start the shell
 //! made as that log entry, with nothing changed since. A start needs none. Its
-//! own restarts need none either.
+//! own restarts need none either. `suspend <name>` and `resume <name>` run a
+//! standing instruction's `app_suspend` and `app_resume` (P3 task 11): with a
+//! rule, checked with RULE_CHECK, the kernel sends the app its `ctl` (APP_CTL)
+//! and the app's answer is the reply.
 //! `services` lists them, for the shell to tell a service from a process.
+//! `app-call <app>` forwards the shell's `kai-call 1` or `kai-undo 1` to an
+//! app through the kernel (APP_CALL), starting the app first if it is down.
+//! A `start=demand` service is not started at boot: `demand <name>`, which only
+//! the kernel sends, when a call first waits for it, starts it (P3 task 12b).
 //! `profile <pid> <class> <pages|->` sets one process's CPU class and page quota
 //! for a resource profile (P3 task 12), for the shell alone: PROC_CLASS_SET and
 //! PROC_QUOTA_SET need SUPERVISE, and the kernel's floors refuse a protected
 //! process. The answer is what the process had, for `undo`.
+//! `keep <name> on|off`, also for the shell alone, keeps an app from napping
+//! (`supervise::keep`): the flag lives in its record and goes to it as `keep=1`
+//! at each start, and to a running app at once as the kernel's
+//! `ctl keep-running on|off`.
 
 #![no_std]
 #![no_main]
@@ -43,6 +54,9 @@ struct Service {
     /// Ended by a `restart` request: start it as soon as it is gone, with no
     /// backoff and no restart counted.
     restart_on_exit: bool,
+    /// Ended by pkg's `withdraw`: when it is gone it waits for a version, with
+    /// no restart counted and none scheduled.
+    withdrawn: bool,
     /// The shell's log entry whose `start` is the latest change to it, for its
     /// undo; cleared by any stop or restart.
     started_by: Option<u64>,
@@ -104,6 +118,7 @@ fn main() -> i32 {
                 started_ms,
                 start_at_ms: None,
                 restart_on_exit: false,
+                withdrawn: false,
                 started_by: None,
                 version: None,
             }
@@ -123,7 +138,8 @@ fn main() -> i32 {
             .find(|(_, name)| *name == service.spec.name)
             .map(|&(pid, _)| pid);
         service.record.pid = service.pid.unwrap_or(0);
-        // A `start=pkg` app waits for the store holder's `run`.
+        // A `start=pkg` app waits for the store holder's `run`, and a
+        // `start=demand` service for the kernel's `demand`.
         if service.pid.is_none()
             && !service.record.gave_up
             && !service.record.stopped
@@ -174,7 +190,8 @@ fn main() -> i32 {
 
 /// Takes the waiting request and answers it: `ok`, or why not.
 fn serve(services: &mut [Service], classes: &mut Vec<(u64, u64)>) {
-    let mut buf = [0u8; 128];
+    // One message: an `app-call` carries a whole `kai-call 1`.
+    let mut buf = vec![0u8; supervise::appcall::MAX_SERVED];
     let mut caller = 0;
     // The request is already queued, so this does not wait.
     let Ok(len) = sys::svc_recv(&mut buf, 1, &mut caller) else {
@@ -195,8 +212,20 @@ fn handle(services: &mut [Service], text: &str, caller: u64) -> String {
     if text.trim() == supervise::SERVICES {
         return supervise::listing(&records);
     }
+    if let Some((app, request)) = supervise::appcall::parse(text) {
+        return app_call(services, app, request, caller);
+    }
+    if let Some(name) = supervise::parse_demand(text) {
+        return demand(services, &records, name, caller);
+    }
     if let Some(run) = supervise::Run::parse(text) {
         return run_package(services, run, caller);
+    }
+    if let Some(withdraw) = supervise::Run::parse_withdraw(text) {
+        return withdraw_package(services, withdraw, caller);
+    }
+    if let Some((name, on)) = supervise::keep::parse(text) {
+        return keep(services, &records, name, on, caller);
     }
     let Some((request, proof)) = Request::parse(text) else {
         return String::from("err unknown request");
@@ -209,12 +238,16 @@ fn handle(services: &mut [Service], text: &str, caller: u64) -> String {
         println!("{text:?} refused: {why}");
         return why;
     }
-    let index = match supervise::check(request, &records) {
+    let starts: Vec<Start> = services.iter().map(|s| s.spec.start).collect();
+    let index = match supervise::check_for(request, &records, &starts) {
         Ok(index) => index,
         Err(why) => return String::from(why),
     };
     let service = &mut services[index];
     let name = service.spec.name.clone();
+    if let Request::Suspend(_) | Request::Resume(_) = request {
+        return app_ctl(&name, matches!(request, Request::Resume(_)));
+    }
     if let Proof::Undo(id) = proof
         && service.started_by != Some(id)
     {
@@ -241,6 +274,7 @@ fn handle(services: &mut [Service], text: &str, caller: u64) -> String {
             service.start_at_ms = Some(now_ms());
             println!("{name} started on request");
         }
+        Request::Suspend(_) | Request::Resume(_) => {}
         Request::Restart(_) => {
             service.record.stopped = false;
             service.record.gave_up = false;
@@ -260,6 +294,156 @@ fn handle(services: &mut [Service], text: &str, caller: u64) -> String {
     }
     save(services);
     String::from("ok")
+}
+
+/// `demand <name>` from the kernel: a call waits for `start=demand` service
+/// `name`, so it starts now (P3 task 12b).
+fn demand(services: &mut [Service], records: &[Record], name: &str, caller: u64) -> String {
+    let specs: Vec<&ServiceSpec> = services.iter().map(|s| &s.spec).collect();
+    let starting: Vec<bool> = services.iter().map(|s| s.start_at_ms.is_some()).collect();
+    match supervise::check_demand(name, &specs, records, caller, &starting) {
+        Ok(Some(index)) => {
+            services[index].start_at_ms = Some(now_ms());
+            println!("{name} starts on demand");
+            String::from("ok")
+        }
+        Ok(None) => String::from("ok"),
+        Err(why) => why.into(),
+    }
+}
+
+/// `keep <name> on|off` from the shell: the flag goes in the app's record,
+/// which passes `keep=1` at each start, and a running app hears it at once.
+fn keep(services: &mut [Service], records: &[Record], name: &str, on: bool, caller: u64) -> String {
+    let specs: Vec<&ServiceSpec> = services.iter().map(|s| &s.spec).collect();
+    let shell = services
+        .iter()
+        .find(|s| s.spec.name == "shell")
+        .and_then(|s| s.pid);
+    let index = match supervise::keep::check(name, &specs, records, caller, shell) {
+        Ok(index) => index,
+        Err(why) => {
+            println!(
+                "{:?} from pid {caller} refused: {why}",
+                supervise::keep::encode(name, on)
+            );
+            return String::from(why);
+        }
+    };
+    let was = services[index].record.keep;
+    services[index].record.keep = on;
+    save(services);
+    let word = if on { "on" } else { "off" };
+    if services[index].pid.is_none() {
+        println!("{name} keep-running {word}, from its next start");
+        return format!("ok keep-running {word}");
+    }
+    let verb = if on {
+        sys::AppCtl::KeepOn
+    } else {
+        sys::AppCtl::KeepOff
+    };
+    let reply = send_ctl(name, verb);
+    // A running app that did not take it: the record goes back, so the shell's
+    // refusal and the supervisor agree.
+    if !reply.starts_with("ok") {
+        services[index].record.keep = was;
+        save(services);
+    }
+    reply
+}
+
+/// `ctl suspend` (or, `resume`, `ctl resume`) to app `name` through the kernel:
+/// the app's own answer, `ok ...` or `err ...`.
+fn app_ctl(name: &str, resume: bool) -> String {
+    send_ctl(
+        name,
+        if resume {
+            sys::AppCtl::Resume
+        } else {
+            sys::AppCtl::Suspend
+        },
+    )
+}
+
+/// `verb`'s `ctl` request to app `name` through the kernel (APP_CTL): the
+/// app's own answer.
+fn send_ctl(name: &str, verb: sys::AppCtl) -> String {
+    let mut reply = [0u8; 256];
+    match sys::app_ctl(name, verb, &mut reply) {
+        Ok(len) => {
+            let text = String::from_utf8_lossy(&reply[..len.min(reply.len())]).into_owned();
+            println!("{name} {}: {text}", verb.word());
+            text
+        }
+        Err(error) => format!("err cannot reach {name}: {error:?}"),
+    }
+}
+
+const APP_START_POLL_MS: u64 = 100;
+
+/// `app-call <app>`: the shell's request to app `app`, through the kernel. The
+/// app's own reply, or `err ...`. An app that is down, and not stopped or given
+/// up on, is started and the call tried again once it serves. The whole call,
+/// the start too, takes at most `supervise::appcall::WAIT_MS`; past that the
+/// answer is `err timeout`.
+fn app_call(services: &mut [Service], app: &str, request: &str, caller: u64) -> String {
+    let caller_name = running_services()
+        .into_iter()
+        .find(|(pid, _)| *pid == caller)
+        .map(|(_, name)| name)
+        .unwrap_or_default();
+    let specs: Vec<&ServiceSpec> = services.iter().map(|s| &s.spec).collect();
+    let index = match supervise::appcall::check(&caller_name, app, request, &specs) {
+        Ok(index) => index,
+        Err(why) => return String::from(why),
+    };
+    let mut reply = vec![0u8; kabi::MAX_MESSAGE];
+    let deadline = now_ms() + supervise::appcall::WAIT_MS;
+    let first = sys::app_call(app, request, &mut reply, left(deadline));
+    let len = match first {
+        Err(kabi::Error::NotFound) => {
+            let service = &mut services[index];
+            if service.record.stopped || service.record.gave_up {
+                return format!("err {app} is stopped");
+            }
+            if service.pid.is_none() {
+                println!("{app} starts for a call");
+                start(service, now_ms());
+            }
+            retry(app, request, &mut reply, deadline)
+        }
+        other => other,
+    };
+    match len {
+        Ok(len) => String::from_utf8_lossy(&reply[..len.min(reply.len())]).into_owned(),
+        Err(kabi::Error::TimedOut) => {
+            println!("{app} did not answer a call in time");
+            format!(
+                "{} {app} did not answer in time",
+                supervise::appcall::TIMEOUT
+            )
+        }
+        Err(error) => format!("err cannot reach {app}: {error:?}"),
+    }
+}
+
+/// The milliseconds left until `deadline`, at least 1.
+fn left(deadline: u64) -> u32 {
+    u32::try_from(deadline.saturating_sub(now_ms()).max(1)).unwrap_or(u32::MAX)
+}
+
+/// The call again once `app` serves, until `deadline`.
+fn retry(app: &str, request: &str, reply: &mut [u8], deadline: u64) -> Result<usize, kabi::Error> {
+    loop {
+        match sys::app_call(app, request, reply, left(deadline)) {
+            Err(kabi::Error::NotFound) if now_ms() < deadline => {
+                sys::sleep_ms(APP_START_POLL_MS);
+            }
+            Err(kabi::Error::NotFound) => return Err(kabi::Error::TimedOut),
+            other => return other,
+        }
+    }
 }
 
 /// `profile <pid> <class> <pages|->`, from the shell only: the class, then the
@@ -373,9 +557,51 @@ fn run_package(services: &mut [Service], run: supervise::Run, caller: u64) -> St
     String::from("ok")
 }
 
+/// `withdraw <name> version=<label>` from `caller`: the store holder took that
+/// package version back out (an undo), so the `start=pkg` app ends if it runs
+/// it and waits for `pkg` to name a version again, its end counted as no crash
+/// (`withdrawn`). Only from that holder (`supervise::check_run`); an app on
+/// another version keeps running. Until the app's exit is seen its pid stays
+/// set, so a `run` arriving in that gap is RUNS_ANOTHER, which `pkg` may retry.
+fn withdraw_package(services: &mut [Service], withdraw: supervise::Run, caller: u64) -> String {
+    let held: Vec<(&ServiceSpec, Option<u64>)> =
+        services.iter().map(|s| (&s.spec, s.pid)).collect();
+    let index = match supervise::check_run(withdraw, &held, caller) {
+        Ok(index) => index,
+        Err(why) => {
+            println!(
+                "{:?} from pid {caller} refused: {why}",
+                withdraw.encode_withdraw()
+            );
+            return String::from(why);
+        }
+    };
+    let service = &mut services[index];
+    if service.version.as_deref() != Some(withdraw.version) {
+        return String::from("ok");
+    }
+    let name = service.spec.name.clone();
+    if let Some(pid) = service.pid {
+        service.withdrawn = true;
+        if let Err(error) = sys::kill(pid) {
+            service.withdrawn = false;
+            println!("cannot end {name} (pid {pid}): {error:?}");
+            return format!("err cannot end it: {error:?}");
+        }
+    }
+    service.version = None;
+    service.start_at_ms = None;
+    println!(
+        "{name} ends: pkg took package version {} back out",
+        withdraw.version
+    );
+    save(services);
+    String::from("ok")
+}
+
 fn start(service: &mut Service, now: u64) {
     let version = match (service.spec.start, &service.version) {
-        (Start::Boot, _) => String::new(),
+        (Start::Boot | Start::Demand, _) => String::new(),
         (Start::Pkg, Some(version)) => format!(" version={version}"),
         (Start::Pkg, None) => {
             println!("{} waits for pkg to name its version", service.spec.name);
@@ -384,8 +610,12 @@ fn start(service: &mut Service, now: u64) {
         }
     };
     // The restart count goes to the program, so a restart is visible from outside.
+    let keep = match service.record.keep {
+        true => format!(" {}", supervise::keep::ARG),
+        false => String::new(),
+    };
     let args = format!(
-        "restart={} {}{version}",
+        "restart={} {}{version}{keep}",
         service.record.restarts, service.spec.args
     );
     let name = service.spec.name.as_bytes();
@@ -427,6 +657,13 @@ fn on_exit(services: &mut [Service], exit: &ExitRecord) {
     let now = now_ms();
     let reason = ExitReason::from_raw(exit.reason).map_or("ended", ExitReason::name);
     let name = &service.spec.name;
+    if service.withdrawn {
+        service.withdrawn = false;
+        println!("{name} {reason}; withdrawn, so not restarted: it waits for pkg");
+        service.start_at_ms = None;
+        save(services);
+        return;
+    }
     if service.restart_on_exit {
         service.restart_on_exit = false;
         println!("{name} {reason}; restarting on request");

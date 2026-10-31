@@ -20,7 +20,9 @@ fn the_lists_cover_every_row_once() {
         .chain(&CALL_ONLY)
         .chain(&HELPERS)
         .chain(&COMMANDS)
-        .chain(&FS_ROWS);
+        .chain(&FS_ROWS)
+        .chain(&UI_ROWS)
+        .chain(&GRANT_ROWS);
     assert_eq!(listed.clone().count(), ROWS.len());
     for row in listed {
         assert!(ROWS.iter().any(|r| r.name == row.name), "{}", row.name);
@@ -54,6 +56,8 @@ fn derived_tiers_match_the_seamless_actions_table() {
         ("service_stop", Tier::Ask),
         ("service_start", Tier::Run),
         ("service_restart", Tier::Ask),
+        // P4: one appearance setting, undone by its old value.
+        ("appearance_set", Tier::Run),
         ("fixed", Tier::Run),
         ("floor", Tier::Run),
     ];

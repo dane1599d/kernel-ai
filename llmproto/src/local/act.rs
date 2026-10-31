@@ -11,6 +11,7 @@
 
 use crate::act::{self, ActError, ActRequest, Call, History, LANGS, Turn};
 use crate::chat;
+use crate::pack::apps::{self, AppGroup};
 use crate::script;
 use agentabi::ArgType;
 use alloc::boxed::Box;
@@ -127,16 +128,38 @@ pub fn actions(rows: &[&'static agentabi::Action]) -> Vec<Action<'static>> {
 /// takes every row and pseudo-action, but an index-only row closes with no
 /// arguments: the pack shows only its name, so the call stops after it. A
 /// row of those that takes arguments has a second grammar of its own, used
-/// once more with its group's full lines after the request.
+/// once more with its group's full lines after the request. Installed apps'
+/// rows are all index-only (`pack::apps`).
 pub struct Grammar {
     first: Tagged<'static>,
     second: Vec<(&'static str, Tagged<'static>)>,
+    apps: Vec<AppGroup>,
+    apps_turn: String,
 }
 
 impl Grammar {
     /// The grammar every answer starts under.
     pub fn first(&self) -> &Tagged<'static> {
         &self.first
+    }
+
+    /// The apps this grammar was built with, in its apps turn or not.
+    pub fn apps(&self) -> &[AppGroup] {
+        &self.apps
+    }
+
+    /// The apps turn the prompt carries after MODE, or "".
+    pub fn apps_turn(&self) -> &str {
+        &self.apps_turn
+    }
+
+    /// The full lines a call naming `name` is decoded with the second time,
+    /// when it is index-only: its pack group's, or its app's.
+    fn second_lines(&self, name: &str) -> Option<String> {
+        match crate::pack::indexed(name) {
+            Some((group, _)) => Some(crate::pack::group_text(group)),
+            None => apps::group_of(&self.apps, name).map(apps::group_text),
+        }
     }
 
     /// The grammar for the second round of a call naming `name`, when it is
@@ -152,27 +175,46 @@ impl Grammar {
 /// The grammars over the pack's rows (`llmproto::pack::rows`) and the
 /// pseudo-actions.
 pub fn grammar() -> Result<Grammar, infer::Error> {
-    let full = actions(&crate::pack::rows());
+    grammar_with(&[])
+}
+
+/// [`grammar`] with the rows of the apps in `groups` that fit the apps turn
+/// (`pack::apps::turn`); an app left out of the turn cannot be named either.
+/// Each build leaks its actions, so llm builds one only when its apps change.
+pub fn grammar_with(groups: &[AppGroup]) -> Result<Grammar, infer::Error> {
+    let (apps_turn, left_out) = apps::turn(groups);
+    let shown: Vec<AppGroup> = groups
+        .iter()
+        .filter(|group| !left_out.contains(&group.app))
+        .cloned()
+        .collect();
+    let mut rows = crate::pack::rows();
+    rows.extend(shown.iter().flat_map(|group| group.rows.iter().copied()));
+    let index_only =
+        |name: &str| crate::pack::indexed(name).is_some() || apps::group_of(&shown, name).is_some();
+    let full = actions(&rows);
     let mut second = Vec::new();
     for action in full.iter().filter(|a| !a.args.is_empty()) {
-        if crate::pack::indexed(action.name).is_some() {
+        if index_only(action.name) {
             let one: &'static [Action<'static>] = Vec::leak(alloc::vec![*action]);
             second.push((action.name, Tagged::new(one)?));
         }
     }
     let first: Vec<Action<'static>> = full
         .into_iter()
-        .map(|action| match crate::pack::indexed(action.name) {
-            Some(_) => Action {
+        .map(|action| match index_only(action.name) {
+            true => Action {
                 args: &[],
                 ..action
             },
-            None => action,
+            false => action,
         })
         .collect();
     Ok(Grammar {
         first: Tagged::new(Vec::leak(first))?,
         second,
+        apps: shown,
+        apps_turn,
     })
 }
 
@@ -270,17 +312,23 @@ pub fn act(
     history: &History,
     mut on_step: impl FnMut(Step) -> Next,
 ) -> Result<Call, ActError> {
-    let mut asked = act::request(&within_budget(engine, request), history);
+    let mut asked = act::request_with(
+        &within_budget(engine, request),
+        history,
+        grammar.apps_turn(),
+    );
     let call = decode(engine, grammar.first(), &asked, &mut on_step)?;
-    let (Some(second), Some((group, _))) =
-        (grammar.second(&call.name), crate::pack::indexed(&call.name))
+    let (Some(second), Some(lines)) =
+        (grammar.second(&call.name), grammar.second_lines(&call.name))
     else {
         return Ok(call);
     };
-    asked.messages.push(chat::Message::new(
-        chat::Role::System,
-        &crate::pack::group_text(group),
-    ));
+    // A second round whose read was in the same group shows its lines already.
+    if !asked.messages.iter().any(|m| m.content == lines) {
+        asked
+            .messages
+            .push(chat::Message::new(chat::Role::System, &lines));
+    }
     decode(engine, second, &asked, &mut on_step)
 }
 
@@ -315,18 +363,20 @@ fn decode(
     }
 }
 
-/// The tokens the pack and its MODE turn take in `engine`'s prompt.
-pub fn pack_tokens(engine: &Engine<'_>) -> usize {
+/// The tokens the pack, its MODE turn and `grammar`'s apps turn take in
+/// `engine`'s prompt.
+pub fn pack_tokens(engine: &Engine<'_>, grammar: &Grammar) -> usize {
     let prefix = chat::Request {
-        messages: act::prefix(&History::new()),
+        messages: act::prefix_with(&History::new(), grammar.apps_turn()),
         max_tokens: 1,
     };
     engine.conversation_tokens(&super::turns(&prefix))
 }
 
-/// History's budget in `engine`: `act::history::budget` of its context.
-pub fn history_budget(engine: &Engine<'_>) -> usize {
-    act::history::budget(engine.about().context, pack_tokens(engine))
+/// History's budget in `engine`: `act::history::budget` of its context, after
+/// the apps turn too.
+pub fn history_budget(engine: &Engine<'_>, grammar: &Grammar) -> usize {
+    act::history::budget(engine.about().context, pack_tokens(engine, grammar))
 }
 
 /// The tokens `turn` adds to the prompt, template included (a little over,
@@ -341,9 +391,9 @@ pub fn turn_tokens(engine: &Engine<'_>, turn: &Turn) -> usize {
 
 /// Keeps `turn` in `history` within `engine`'s budget. Returns whether older
 /// turns were dropped.
-pub fn remember(engine: &Engine<'_>, history: &mut History, turn: Turn) -> bool {
+pub fn remember(engine: &Engine<'_>, grammar: &Grammar, history: &mut History, turn: Turn) -> bool {
     let cost = turn_tokens(engine, &turn);
-    history.push(turn, cost, history_budget(engine))
+    history.push(turn, cost, history_budget(engine, grammar))
 }
 
 /// Compaction (P1 plan section 4): computes the pack, the MODE turn and the
@@ -352,11 +402,12 @@ pub fn remember(engine: &Engine<'_>, history: &mut History, turn: Turn) -> bool 
 /// stays.
 pub fn warm(
     engine: &mut Engine<'_>,
+    grammar: &Grammar,
     history: &History,
     on_step: impl FnMut(Step) -> Next,
 ) -> Result<(), infer::Error> {
     let prefix = chat::Request {
-        messages: act::prefix(history),
+        messages: act::prefix_with(history, grammar.apps_turn()),
         max_tokens: 1,
     };
     engine
@@ -451,6 +502,55 @@ mod tests {
         assert!(grammar.second("set_policy").is_none());
     }
 
+    #[test]
+    fn an_apps_row_is_named_first_then_written_from_its_full_lines() {
+        let row = |name, like| {
+            let like = agentabi::find(&agentabi::ROWS, like).unwrap();
+            &*Box::leak(Box::new(agentabi::Action { name, ..*like }))
+        };
+        let notes = AppGroup {
+            app: "notes".into(),
+            rows: alloc::vec![row("notes_add", "fs_create"), row("notes_count", "cpus")],
+        };
+        let grammar = grammar_with(&[notes]).unwrap();
+        assert!(
+            grammar
+                .apps_turn()
+                .ends_with("\nnotes: notes_add notes_count")
+        );
+        let g = grammar.first();
+        for text in [
+            r#"{"name":"notes_add","arguments":{}}"#,
+            r#"{"name":"notes_count","arguments":{}}"#,
+        ] {
+            let state = g.advance(g.start(), text.as_bytes()).unwrap();
+            assert!(g.is_done(&state), "{text}");
+        }
+        let text = r#"{"name":"notes_add","arguments":{"path":"a","text":"milk"}}"#;
+        let second = grammar.second("notes_add").unwrap();
+        let state = second.advance(second.start(), text.as_bytes()).unwrap();
+        assert!(second.is_done(&state));
+        assert!(grammar.second("notes_count").is_none());
+        let lines = grammar.second_lines("notes_add").unwrap();
+        assert!(lines.starts_with("## notes\nnotes_add("), "{lines}");
+        // The OS's rows keep their own groups, and no apps leaves today's grammar.
+        assert_eq!(
+            grammar.second_lines("fs_create"),
+            Some(crate::pack::group_text("file_edits"))
+        );
+        assert_eq!(super::grammar().unwrap().apps_turn(), "");
+        assert!(
+            super::grammar()
+                .unwrap()
+                .first()
+                .advance(
+                    super::grammar().unwrap().first().start(),
+                    br#"{"name":"notes_add""#
+                )
+                .is_err()
+        );
+    }
+
     /// The State line stays while it and the request fit 224 real tokens, and
     /// goes once they pass it; the request itself is never cut.
     #[test]
@@ -465,6 +565,8 @@ mod tests {
             line: "stop this".into(),
             state: "#{dir: \"/home/user\", net: \"up\"}".into(),
             timeout_ms: 1,
+            read: None,
+            apps: String::new(),
         };
         assert_eq!(within_budget(&engine, &short), short);
         let windows = (0..20)
@@ -504,6 +606,8 @@ mod tests {
             line: "switch to round robin".into(),
             state: String::new(),
             timeout_ms: 1,
+            read: None,
+            apps: String::new(),
         };
         let budget = infer::chat::Budget {
             kv_bytes: 64 << 20,
@@ -555,8 +659,11 @@ mod tests {
         let mut engine = Engine::load(&bytes, quant::Tier::best(), 3072, budget).unwrap();
         // The fixture's trained context is 2,048, which leaves history nothing;
         // the budget is the plan's formula over this engine's numbers.
-        let (context, pack) = (engine.about().context, pack_tokens(&engine));
-        assert_eq!(history_budget(&engine), act::history::budget(context, pack));
+        let (context, pack) = (engine.about().context, pack_tokens(&engine, &g));
+        assert_eq!(
+            history_budget(&engine, &g),
+            act::history::budget(context, pack)
+        );
         assert!(pack > 100, "{pack}");
         let mut history = History::new();
         let turn = Turn {
@@ -567,11 +674,13 @@ mod tests {
         let cost = turn_tokens(&engine, &turn);
         assert!(cost > 10 && cost < 100, "{cost}");
         assert!(!history.push(turn, cost, act::history::HISTORY_MAX));
-        warm(&mut engine, &history, |_| Next::Continue).unwrap();
+        warm(&mut engine, &g, &history, |_| Next::Continue).unwrap();
         let request = ActRequest {
             line: "undo that".into(),
             state: String::new(),
             timeout_ms: 1,
+            read: None,
+            apps: String::new(),
         };
         let mut cached = 0;
         let warm_answer = act(&mut engine, &g, &request, &history, |step| {

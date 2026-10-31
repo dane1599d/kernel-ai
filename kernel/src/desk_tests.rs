@@ -17,10 +17,10 @@ use crate::pointer::{self, Event, Motion, Source};
 use crate::{console, input, log, process, threads};
 
 /// The plan lines this case adds.
-pub const PLAN: &str = "desktop caps=display+input+serve pages=8192 stack_pages=512\n\
+pub const PLAN: &str = "desktop caps=display+input+serve+ask pages=8192 stack_pages=512\n\
      deskdemo uses=desktop caps=call";
 /// The plan line `test=desk-boot` adds: the desktop, no client.
-pub const BOOT_PLAN: &str = "desktop caps=display+input+serve pages=8192 stack_pages=512";
+pub const BOOT_PLAN: &str = "desktop caps=display+input+serve+ask pages=8192 stack_pages=512";
 const WAIT_MS: u64 = 60_000;
 /// How long the screen must go without a flush before the screendump.
 const STILL_MS: u64 = 1_000;
@@ -47,7 +47,7 @@ pub(crate) fn report(dx: i32, dy: i32, buttons: u8) {
     threads::sleep_ms(STEP_MS);
 }
 
-fn wait(what: &'static str, mut done: impl FnMut() -> bool) -> Result<(), &'static str> {
+pub(crate) fn wait(what: &'static str, mut done: impl FnMut() -> bool) -> Result<(), &'static str> {
     for _ in 0..WAIT_MS / 50 {
         if done() {
             return Ok(());
@@ -125,7 +125,7 @@ pub fn restart() -> Result<(), &'static str> {
 }
 
 /// Whether `desktop` holds the screen.
-fn desktop_shows() -> bool {
+pub(crate) fn desktop_shows() -> bool {
     let desktop = process::named("desktop").first().map(|&(pid, _)| pid);
     let slot = desktop
         .and_then(|pid| process::with_table(|t| t.iter().position(|p| p.live() && p.pid == pid)));
@@ -151,6 +151,26 @@ pub fn boot_check() -> Result<(), &'static str> {
     log!("desk-boot: desktop drew the desk; ready for keys (a screendump, then Enter)");
     wait("the screendump's Enter", || input::keys() > keys)?;
     log!("desk-boot: desktop booted to the desk and the screendump was taken");
+    Ok(())
+}
+
+/// `test=desk-panel-shell` (P3 task 7): a line typed in the panel reaches the
+/// shell, which takes it from `desktop` and reports what came of it; `desktop`
+/// logs both, which the host checks. The shell calls `desktop`, never the other
+/// way.
+pub fn panel_shell_check() -> Result<(), &'static str> {
+    const CTRL_SPACE: [u8; 4] = [0x1D, 0x39, 0xB9, 0x9D];
+    const HI_ENTER: [u8; 6] = [0x23, 0xA3, 0x17, 0x97, 0x1C, 0x9C];
+    wait("desktop to draw", || {
+        desktop_shows() && claim::flushes() > 0
+    })?;
+    wait("the shell", || crate::ipc::server_of("shell").is_some())?;
+    crate::claim_tests::type_keys(&CTRL_SPACE);
+    threads::sleep_ms(STEP_MS);
+    crate::claim_tests::type_keys(&HI_ENTER);
+    // The shell looks every 250 ms; the model answers a greeting in words.
+    threads::sleep_ms(10_000);
+    log!("desk-panel-shell: typed \"hi\" in the panel");
     Ok(())
 }
 
