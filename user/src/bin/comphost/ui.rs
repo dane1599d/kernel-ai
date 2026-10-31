@@ -227,8 +227,15 @@ impl Ui {
         for (app, input) in inputs {
             // Typed input is a transaction too: what the app saves or asks for
             // because of it is kept like an action call's.
-            let performed = serve_shown(host, |core| core.ui_input(app, input));
-            self.forward(performed, true);
+            // Its effects go as the person's only from an instance granted
+            // `shell_line`: the image's own Terminal, never another app, an
+            // upload or a package swapped in under its name.
+            let mut granted = false;
+            let performed = serve_shown(host, |core| {
+                granted = core.grants().shell_line;
+                core.ui_input(app, input)
+            });
+            self.forward(performed, granted);
         }
         if typed {
             self.pump(host);
@@ -245,7 +252,8 @@ impl Ui {
     /// Sends what the app's transaction queued to `desktop`, for the shell to
     /// run; `desktop` knows which app this is from the kernel, not from us.
     /// `user` is true only for a transaction a person's key or click caused
-    /// (`ui_input`): never a close, a reply, an `ui_act` from the agent or a call.
+    /// (`ui_input`) in an instance granted `shell_line`: never a close, a
+    /// reply, an `ui_act` from the agent or a call, nor another app's input.
     fn forward(&mut self, performed: Option<Performed>, user: bool) {
         let Some(performed) = performed.filter(|p| !p.is_empty()) else {
             return;
