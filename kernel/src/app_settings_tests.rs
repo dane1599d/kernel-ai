@@ -17,6 +17,11 @@ use crate::agent_desk_tests::{KEYS_MS, OPEN_MS, START, terminal_keys, wait};
 use crate::display::claim;
 use crate::{ask_box, log, process, terminal, threads};
 
+/// `desktop`'s shell with a state directory as well (`SHELL_DESK_FILES`), planned
+/// after the `fs` service the case's data disk starts: the theme the case sets is
+/// saved there, and the shell answers Settings' `file appearance` from it.
+pub const SHELL: &str = kabi::plan::SHELL_DESK_FILES;
+
 /// The terminal's window, and Settings' as an app that starts only when
 /// `ui_open` asks for it. Its name is the grant: `desktop` and the shell check
 /// it again.
@@ -35,6 +40,11 @@ pub fn check() -> Result<(), &'static str> {
     if !process::named("settings-window").is_empty() {
         return Err("settings-window ran before ui_open asked for it");
     }
+    // "switch to the light theme": `appearance_set` runs at once and the shell
+    // saves it, before Settings is there to read it.
+    terminal_keys(CASE, &mut at)?;
+    threads::sleep_ms(KEYS_MS);
+    log!("{CASE}: the theme was set before Settings opened");
     // "open settings"
     terminal_keys(CASE, &mut at)?;
     wait(CASE, "ui_open to start Settings", || {

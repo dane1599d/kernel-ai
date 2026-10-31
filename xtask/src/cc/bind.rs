@@ -114,10 +114,24 @@ pub fn generate(wit_root: &Path) -> Result<Vec<(String, String)>, String> {
     Ok(out)
 }
 
-/// `text` with its import attributes in the spelling wcc reads.
+/// The glue's call into the `*_component_type.o` that `wasm-tools component
+/// new` reads, from this comment to the end of its function: a core-module
+/// artifact links no such object.
+const FORCE_LINK: &str = "\n// Ensure that the *_component_type.o object is linked in\n";
+
+/// `text` with its import attributes in the spelling wcc reads, and without
+/// the call into the component type object.
 fn for_wcc(text: &str) -> String {
-    text.replace("__import_module__(", "import_module(")
-        .replace("__import_name__(", "import_name(")
+    let text = text
+        .replace("__import_module__(", "import_module(")
+        .replace("__import_name__(", "import_name(");
+    let Some(start) = text.find(FORCE_LINK) else {
+        return text;
+    };
+    match text[start..].find("\n}\n") {
+        Some(end) => format!("{}{}", &text[..start], &text[start + end + 3..]),
+        None => text,
+    }
 }
 
 /// One `<symbol> <export name>` line for each `__export_name__` in `text`: the
@@ -170,6 +184,21 @@ mod tests {
         }
         let app = &files.iter().find(|(n, _)| n == "app.c").unwrap().1;
         assert!(app.contains("import_module(\"kai:app/effects@0.1.0\")"));
+    }
+
+    #[test]
+    fn the_glue_calls_no_component_type_object() {
+        let files = generate(&crate::workspace_root().join("wit")).unwrap();
+        for (name, text) in &files {
+            assert!(!text.contains("__component_type_object"), "{name}");
+        }
+        assert_eq!(for_wcc("a\n}\n"), "a\n}\n");
+        assert_eq!(
+            for_wcc(&format!(
+                "a\n}}\n{FORCE_LINK}\nvoid f(void) {{\n  g();\n}}\n"
+            )),
+            "a\n}\n"
+        );
     }
 
     #[test]
