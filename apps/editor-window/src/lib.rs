@@ -53,6 +53,8 @@ pub trait Host: Sink {
     /// Queues `message` for the edit service; the ticket its answer comes under.
     fn send(&mut self, message: &[u8]) -> u32;
     fn now_ms(&self) -> u64;
+    /// A line for the log.
+    fn note(&mut self, _text: &str) {}
 }
 
 pub struct EditorWindow {
@@ -131,10 +133,26 @@ impl EditorWindow {
         text: &str,
         mods: u8,
     ) -> Result<(), UiError> {
-        if let Some(input) = keys::key_input(name, text, mods) {
+        let input = keys::key_input(name, text, mods);
+        // A modified key is rare, and says nothing of what was typed.
+        if mods != 0 {
+            let busy = self.screen.busy();
+            host.note(&format!(
+                "editor: key {name} with {mods} is {input:?} (busy {busy})"
+            ));
+        }
+        if let Some(input) = input {
             self.screen.input(input);
         }
-        self.settle(host)
+        let settled = self.settle(host);
+        if mods != 0 {
+            let busy = self.screen.busy();
+            let sent = self.tickets.len();
+            host.note(&format!(
+                "editor: after it busy {busy}, {sent} sent and unanswered"
+            ));
+        }
+        settled
     }
 
     /// A click at row `row` and text cell `cell` of the code view.

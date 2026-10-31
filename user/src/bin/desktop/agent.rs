@@ -55,7 +55,14 @@ pub fn request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
     } else {
         "ok"
     };
-    println!("desktop: the agent's ui {verb}: {outcome}");
+    // Said of a window kept from the agent, so a case can tell it from any
+    // other answer or refusal.
+    let kept = if deskcore::agent::says_private(&answer) {
+        " (private window)"
+    } else {
+        ""
+    };
+    println!("desktop: the agent's ui {verb}: {outcome}{kept}");
     deliver(state, &effects);
     Some(answer)
 }

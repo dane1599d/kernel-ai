@@ -83,6 +83,20 @@ pub struct Ui {
     settings: Option<crate::kai_settings::Forward>,
 }
 
+/// Modified keys and focus changes, for the log: rare, and they carry no typed text.
+fn log_input(window: u32, input: &uikit::input::Input) {
+    use uikit::input::{Input, Mods};
+    match input {
+        Input::Key {
+            key, down, mods, ..
+        } if *mods != Mods::default() => {
+            println!("comphost: window {window}: key {key:?} down {down} with {mods:?}");
+        }
+        Input::FocusIn | Input::FocusOut => println!("comphost: window {window}: {input:?}"),
+        _ => {}
+    }
+}
+
 impl Ui {
     /// The windows' side, when the plan gave a route to `desktop`.
     pub fn new() -> Option<Self> {
@@ -317,6 +331,7 @@ impl Ui {
                 match surfabi::header::take(page) {
                     Ok(Some(event)) => {
                         if let Some(input) = self.desk.seat_state.input(&event) {
+                            log_input(pool.app, &input);
                             out.push((pool.app, input));
                         }
                     }

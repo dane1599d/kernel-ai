@@ -157,6 +157,10 @@ impl Host for Os {
     fn now_ms(&self) -> u64 {
         compsdk::app::now_ms()
     }
+
+    fn note(&mut self, text: &str) {
+        compsdk::log(text);
+    }
 }
 
 struct Bound;
