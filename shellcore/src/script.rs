@@ -479,7 +479,7 @@ fn home<'a>(name: &str, path: &'a str) -> RhaiResult<&'a str> {
 
 /// One file change: `file notes.txt created (was absent)`, undone by restoring
 /// transaction `txn`.
-fn file_done(
+pub(crate) fn file_done(
     action: &'static str,
     path: &str,
     before: &str,

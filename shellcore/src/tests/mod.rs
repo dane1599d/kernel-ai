@@ -17,6 +17,7 @@ mod appline;
 mod apps;
 mod centry;
 mod cmode;
+mod door;
 mod effects;
 mod files;
 mod fuzz;
@@ -520,7 +521,7 @@ impl Host for FakeHost {
                     "
 ",
                 )),
-            FsRead::Read(path) => files
+            FsRead::Read(path) | FsRead::Whole(path) => files
                 .get(path)
                 .cloned()
                 .ok_or_else(|| String::from("NotFound")),

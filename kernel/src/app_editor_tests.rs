@@ -44,14 +44,14 @@ pub fn plan() -> String {
     plan
 }
 
-const NAME: &str = "editor";
+pub(crate) const NAME: &str = "editor";
 const CALL_MS: u64 = 60_000;
 /// For a step to show in the editor, under TCG.
-const WAIT_MS: u64 = 120_000;
+pub(crate) const WAIT_MS: u64 = 120_000;
 /// A build on the host, from the key to the upload, under TCG.
 const BUILD_MS: u64 = 200_000;
 /// Time for comphost to start the app and paint its first frame under TCG.
-const OPEN_MS: u64 = 10_000;
+pub(crate) const OPEN_MS: u64 = 10_000;
 /// Time for the host's Ctrl to be down before the click: the harness answers the
 /// log line and QEMU queues the key at once, so this is long enough on any guest,
 /// and the hold outlasts the three reports.
@@ -79,7 +79,7 @@ const LINKED: &str = "line 6,";
 const OPEN: &str = "kai-call 1\nfunc app:editor/actions@1.0.0#open\nargs {component: \"notes\", path: \"src/lib.rs\", line: 1}\n";
 const STATUS: &str = "kai-call 1\nfunc app:editor/actions@1.0.0#status\nargs {}\n";
 
-fn status() -> Result<String, &'static str> {
+pub(crate) fn status() -> Result<String, &'static str> {
     ipc::call(NAME, STATUS.as_bytes(), CALL_MS)
         .map(|reply| String::from_utf8_lossy(&reply).into_owned())
         .map_err(|_| "app-editor: the editor did not answer for its status")
@@ -87,7 +87,7 @@ fn status() -> Result<String, &'static str> {
 
 /// The cursor, as (line, column), in a status such as `... lib.rs; line 2, column
 /// 43; 1 edit(s) ...`.
-fn cursor(status: &str) -> Option<(u32, u32)> {
+pub(crate) fn cursor(status: &str) -> Option<(u32, u32)> {
     let rest = &status[status.find("; line ")? + "; line ".len()..];
     let (line, rest) = rest.split_once(", column ")?;
     let column: String = rest.chars().take_while(char::is_ascii_digit).collect();
@@ -96,7 +96,7 @@ fn cursor(status: &str) -> Option<(u32, u32)> {
 
 /// Looks at the app's status until `done` likes it. The status is also what makes
 /// the app look at a build that is running, as it has no timer of its own.
-fn until(
+pub(crate) fn until(
     what: &'static str,
     ms: u64,
     mut done: impl FnMut(&str) -> bool,

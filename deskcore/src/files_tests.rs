@@ -1,7 +1,9 @@
 //! The file door's box: a write and a read from the first word to the last, who
 //! may use it, how much, and how long.
 
-use crate::files::{CHUNK, DOOR_APP, Files, IDLE_MS, MAX_BYTES, MAX_TRANSFERS, SHELL};
+use crate::files::{
+    CHUNK, DOOR_APP, Files, IDLE_MS, MAX_BYTES, MAX_TRANSFERS, Op, SHELL, parse_job,
+};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -203,6 +205,10 @@ fn a_bad_path_or_size_is_refused_before_anything_is_kept() {
         "/home/user/a:b",
         "/home//x",
         "/",
+        "/system/log",
+        "/home/other/x",
+        "/home/user",
+        "/home/user/../../system/log",
     ] {
         let reply = app(&mut files, &format!("files start 1 read {path}"));
         assert!(reply.starts_with("err "), "{path}: {reply}");
@@ -365,4 +371,32 @@ fn a_user_mark_travels_with_a_write_and_a_read_has_none() {
     let mut bytes: Vec<u8> = Vec::new();
     bytes.extend_from_slice(shell(&mut files, "files fetch 0 0").as_bytes());
     assert_eq!(bytes, b"ok\nx");
+}
+
+#[test]
+fn a_job_line_reads_back_as_the_job_the_shell_does() {
+    let mut files = Files::default();
+    app(
+        &mut files,
+        &format!("files start 3 write new user 4 {PATH}"),
+    );
+    app(&mut files, "files data 3 0\nabcd");
+    let write = parse_job(&shell(&mut files, "files take")).unwrap();
+    assert_eq!(
+        (
+            write.app.as_str(),
+            write.op,
+            write.user,
+            write.total,
+            write.path.as_str()
+        ),
+        ("editor", Op::Write { create: true }, true, 4, PATH)
+    );
+    app(&mut files, &format!("files start 4 read {PATH}"));
+    let read = parse_job(&shell(&mut files, "files take")).unwrap();
+    assert_eq!((read.op, read.user, read.total), (Op::Read, false, 0));
+    assert_eq!(parse_job("none"), None);
+    assert_eq!(parse_job("job x editor read /a"), None);
+    assert_eq!(parse_job("job 1 editor write maybe user 3 /a"), None);
+    assert_eq!(parse_job("err busy"), None);
 }

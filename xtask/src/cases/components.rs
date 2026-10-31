@@ -46,6 +46,43 @@ pub(super) const CASES: &[TestCase] = &[
         memory_mib: Some(1024),
         ..case("app-editor", "test=app-editor")
     },
+    // P4 task 11, on the default boot: the editor opens a file of the person's own
+    // (Ctrl-O and a path), a typed edit is saved with Ctrl-S through the file door
+    // and the shell's file rows as one logged action, and `undo` puts the file back.
+    TestCase {
+        // A writable `kai-data` disk: the shell's `/home/user` is on it.
+        data: Some(crate::blklog::Data {
+            nvme: false,
+            log: None,
+            gpt: true,
+        }),
+        keys: &[
+            // Ctrl-O asks for a path; the first half of /home/user/todo.txt.
+            &[
+                "ctrl-o", "slash", "h", "o", "m", "e", "slash", "u", "s", "e", "r",
+            ],
+            // The rest and Enter: the file opens.
+            &["slash", "t", "o", "d", "o", "dot", "t", "x", "t", "ret"],
+            // One typed letter, then Ctrl-S.
+            &["z"],
+            &["ctrl-s"],
+        ],
+        expect: &[
+            "app-editor-files: the shell made the file the editor will open",
+            "app-editor-files: Ctrl-O opened the file in the editor",
+            "comphost: files: read /home/user/todo.txt (person false) answered 24 bytes",
+            "app-editor-files: a typed letter showed in the file",
+            "comphost: files: write /home/user/todo.txt (person true) answered 0 bytes",
+            "app-editor-files: Ctrl-S saved the file through the shell",
+            "app-editor-files: the file on the disk has the edit",
+            "app-editor-files: undo put the file back as it was",
+        ],
+        min_timeout: Some(Duration::from_secs(300)),
+        // The file system service, the shell, the desktop and the editor (32 MiB of
+        // pages for the last) outgrow the default 512 MiB, as for app-settings.
+        memory_mib: Some(1024),
+        ..case("app-editor-files", "test=app-editor-files")
+    },
     TestCase {
         build: true,
         prepare: Some(crate::boot_smoke::prepare_manifest),

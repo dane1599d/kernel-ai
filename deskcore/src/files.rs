@@ -50,6 +50,9 @@ pub const MAX_TRANSFERS: usize = 2;
 pub const IDLE_MS: u64 = 120_000;
 /// Longest path a transfer names.
 pub const MAX_PATH: usize = 255;
+/// Where the door's files are: the person's own tree. Anything else (`/system/...`)
+/// is refused here and again by the shell.
+pub const HOME: &str = "/home/user/";
 
 /// What a transfer does.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -137,6 +140,9 @@ pub fn check_path(path: &str) -> Result<(), String> {
     if path.len() > MAX_PATH {
         return Err(format!("the path is over {MAX_PATH} bytes"));
     }
+    if !path.starts_with(HOME) {
+        return Err(format!("{path}: the file door reaches only {HOME}..."));
+    }
     let bad = |c: char| c.is_whitespace() || c.is_control() || c == ':' || c == '\\';
     if plain.chars().any(bad) {
         return Err(format!(
@@ -150,6 +156,40 @@ pub fn check_path(path: &str) -> Result<(), String> {
         return Err(format!("{path}: empty, . and .. segments are not allowed"));
     }
     Ok(())
+}
+
+/// A job line as `files take` gives it (`job <id> <app> read <path>` or
+/// `job <id> <app> write <new|old> <user|-> <total> <path>`); `None` for `none`
+/// or anything else.
+pub fn parse_job(line: &str) -> Option<Job> {
+    let words: Vec<&str> = line.split(' ').collect();
+    let (id, app, op, user, total, path) = match words.as_slice() {
+        ["job", id, app, "read", path] => (id, app, Op::Read, false, 0, path),
+        [
+            "job",
+            id,
+            app,
+            "write",
+            how @ ("new" | "old"),
+            user @ ("user" | "-"),
+            total,
+            path,
+        ] => {
+            let op = Op::Write {
+                create: *how == "new",
+            };
+            (id, app, op, *user == "user", total.parse().ok()?, path)
+        }
+        _ => return None,
+    };
+    Some(Job {
+        id: id.parse().ok()?,
+        app: app.to_string(),
+        op,
+        user,
+        path: path.to_string(),
+        total,
+    })
 }
 
 impl Files {
