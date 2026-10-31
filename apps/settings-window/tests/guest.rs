@@ -460,22 +460,45 @@ fn the_agent_opens_a_page_by_its_word() {
 }
 
 #[test]
-fn it_comes_back_to_the_page_it_was_showing() {
+fn the_page_shown_is_not_state_so_a_read_only_open_changes_nothing_and_a_restart_starts_over() {
     let Some(wasm) = wasm() else { return };
     let mut g = start(&wasm);
     let (w, _) = frame(&mut g);
+    let before = Instance::export(&mut g, 0).unwrap().unwrap();
+    // `settings_open` is declared read-only, and the host refuses a read-only
+    // row that changes the checkpoint: the page it moves is not in it.
+    let r = call(&mut g, |g| {
+        Instance::call(g, &open_page(), &[Val::String("access".into())])
+    });
+    assert!(matches!(r.unwrap().unwrap(), Val::Result(Ok(_))));
+    g.take_ui();
+    assert_eq!(Instance::export(&mut g, 0).unwrap().unwrap(), before);
+    // Nor does the person's own page switch.
     call(&mut g, |g| {
         g.ui_events(w, &[UiEvent::Changed(TABS, Value::Index(3))])
             .unwrap()
     });
     g.take_ui();
     let saved = Instance::export(&mut g, 0).unwrap().unwrap();
+    assert_eq!(saved, before);
+    // A restart starts on the first page, with the Appearance page's button.
     let mut h = start(&wasm);
     assert_eq!(h.import(&saved, 1), Ok(0));
     let (_, f) = frame(&mut h);
-    // Page 3 is "Keep running"; the Appearance page's theme button is gone.
-    assert!(!names(&f).iter().any(|n| n.starts_with("Theme: ")));
+    assert!(names(&f).iter().any(|n| n.starts_with("Theme: ")));
     // A state it cannot read and another schema are refused, not guessed at.
     assert_eq!(h.import(b"junk", 1), Ok(2));
     assert_eq!(h.import(&saved, 9), Ok(1));
+    // The state today's version saved, with the page in it, still imports (a
+    // live update from it): the page is dropped and the window starts over.
+    #[derive(minicbor::Encode)]
+    struct Old {
+        #[n(0)]
+        page: u32,
+    }
+    let old = compsdk::state::encode(1, &Old { page: 3 });
+    let mut j = start(&wasm);
+    assert_eq!(j.import(&old, 1), Ok(0));
+    let (_, f) = frame(&mut j);
+    assert!(names(&f).iter().any(|n| n.starts_with("Theme: ")));
 }
