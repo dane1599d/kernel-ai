@@ -234,6 +234,21 @@ impl Screen {
         self.quit
     }
 
+    /// The cursor's line (from 1) and column (from 0) in the file on screen.
+    pub fn position(&self) -> (usize, usize) {
+        (self.line, self.col)
+    }
+
+    /// Whether a build is running on the host.
+    pub fn is_building(&self) -> bool {
+        self.building
+    }
+
+    /// How many edits the draft holds, those not yet answered included.
+    pub fn edits(&self) -> usize {
+        self.log.len() + self.unanswered_edits().count()
+    }
+
     /// Opens `component` (its running version by default), with the cursor at
     /// `at` if one is given. Edits not built in a session already open are
     /// never dropped for it; the service says so.
