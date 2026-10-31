@@ -178,6 +178,11 @@ pub enum SelfTest {
     DeskCard,
     /// A standing instruction fired by Notes' window minimized and restored (P3 task 11).
     DeskStanding,
+    /// No standing instruction from text the AI read, and no firing outside
+    /// the rule allowed (P3's exit case).
+    DeskStandingRefused,
+    /// S05-1's budgets timed on the real `desktop` (P3's exit case).
+    DeskPerf,
     /// The keyboard reaches an app's widgets (key input for uikit apps).
     UiKeys,
     DeskTerm,
@@ -360,6 +365,8 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             }),
             "test=desk-card" => Some(SelfTest::DeskCard),
             "test=desk-standing" => Some(SelfTest::DeskStanding),
+            "test=desk-standing-refused" => Some(SelfTest::DeskStandingRefused),
+            "test=desk-perf" => Some(SelfTest::DeskPerf),
             "test=ui-keys" => Some(SelfTest::UiKeys),
             "test=desk-term" => Some(SelfTest::DeskTerm),
             "test=desk-agent" => Some(SelfTest::DeskAgent),
@@ -452,6 +459,8 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::KeepRunning { .. }
             | SelfTest::DeskCard
             | SelfTest::DeskStanding
+            | SelfTest::DeskStandingRefused
+            | SelfTest::DeskPerf
             | SelfTest::UiKeys
             | SelfTest::DeskTerm
             | SelfTest::DeskAgent
@@ -567,7 +576,10 @@ pub fn plan(test: SelfTest) -> Option<String> {
                 plan.push_str(crate::app_terminal_tests::PLAN);
                 kabi::plan::SHELL_DESK
             }
-            SelfTest::DeskAgent | SelfTest::DeskTakeover | SelfTest::AppSettings => {
+            SelfTest::DeskAgent
+            | SelfTest::DeskTakeover
+            | SelfTest::DeskStandingRefused
+            | SelfTest::AppSettings => {
                 plan.push('\n');
                 plan.push_str(crate::agent_desk_tests::DESK);
                 kabi::plan::SHELL_DESK
@@ -662,6 +674,14 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
     if test == SelfTest::DeskStanding {
         plan.push('\n');
         plan.push_str(crate::standing_tests::PLAN);
+    }
+    if test == SelfTest::DeskStandingRefused {
+        plan.push('\n');
+        plan.push_str(crate::standing_tests::NOTES);
+    }
+    if test == SelfTest::DeskPerf {
+        plan.push('\n');
+        plan.push_str(crate::desk_perf_tests::PLAN);
     }
     if test == SelfTest::UiKeys {
         plan.push('\n');
