@@ -230,17 +230,15 @@ fn cc_text(reply: &[u8]) -> Result<String, String> {
 
 /// Hands the artifact at `path` to `pkg`'s `local` as a File that can only be
 /// read: the text after its `ok`.
-pub fn install(files: &Files, pkg: Handle, name: &str, path: &str) -> Result<String, String> {
+pub fn install(pkg: Handle, name: &str, path: &str) -> Result<String, String> {
     let file = match WRITTEN.lock().take() {
         Some((written, file)) if written == path => file,
+        // Only what this build wrote goes to pkg, never a file found by path.
         other => {
             if let Some((_, old)) = other {
                 files::close(old);
             }
-            let relative = path
-                .strip_prefix("/home/user/")
-                .ok_or("the artifact is not under /home/user")?;
-            files::open(files.home_dir()?, relative, How::Existing, Rights::READ)?
+            return Err(format!("{path} is not the artifact this build wrote"));
         }
     };
     let read_only = sys::handle_dup(file, Rights::READ | Rights::TRANSFER);

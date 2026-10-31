@@ -306,7 +306,7 @@ impl Host for System {
     }
 
     fn pkg_local(&self, name: &str, path: &str) -> Result<String, String> {
-        build::install(&self.files, pkg_route()?, name, path)
+        build::install(pkg_route()?, name, path)
     }
 
     fn apps(&self) -> Option<&core::cell::RefCell<shellcore::apps::Apps>> {
