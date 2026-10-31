@@ -1,0 +1,38 @@
+/// The editor (ADR 0003 section 1, P4 task 11): a full-screen window over the edit
+/// service. Its actions only move the editor to a place and say where it is: an
+/// edit is typed in the window, and a build starts from a key or a click there,
+/// never from an action (`wasmhost`'s `user` flag, comphost's build gate).
+package app:editor@1.0.0;
+
+interface actions {
+    /// Open a component's source in the editor window at a line.
+    /// kai: read-only=yes destructive=no idempotent=yes open-world=no inverse=none cues=edit,source,code,open,line
+    /// kai: arg component max=24 role=target from-request
+    /// kai: arg path max=64 role=target from-request
+    /// kai: arg line min=1 max=99999 role=target from-request
+    open: func(component: string, path: string, line: u32) -> result<string, string>;
+
+    /// Say where the editor is and how its last build went.
+    /// kai: read-only=yes destructive=no idempotent=yes open-world=no inverse=none cues=editor,where,status
+    status: func() -> string;
+}
+
+/// The editor as its manifest names it: a live component with its window, its
+/// code view and its two actions, and the granted `kai:edit` interface through
+/// which it reaches the edit service. It has no storage or effects of its own.
+world editor {
+    include kai:app/component@0.1.0;
+    import kai:app/clock@0.1.0;
+    import kai:edit/edit@0.1.0;
+    import kai:ui/view@0.1.1;
+    import kai:code/code@0.1.0;
+    export kai:ui/input@0.1.1;
+    export kai:code/code-input@0.1.0;
+    export kai:edit/replies@0.1.0;
+    export actions;
+}
+
+/// The part an editor crate binds itself; `compsdk` binds `kai:app/component`.
+world actions-only {
+    export actions;
+}
