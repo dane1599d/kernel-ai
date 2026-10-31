@@ -29,6 +29,7 @@
 //! all the runner's CPUs (the same bits as one). Every run is written to
 //! `target/actbench/<unix time>-<arm>-s<seed>.jsonl`, headed by `pack_id`.
 
+mod apps;
 mod consent;
 mod grammar;
 mod m8;
@@ -89,6 +90,8 @@ enum Kind {
     Os,
     /// View-then-act on llm's own `act` path ([`view`]).
     View,
+    /// The shipped apps' rows on llm's own `act` path ([`os::APP_TASKS`]).
+    Apps,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -138,6 +141,17 @@ impl Arm {
             "os" => {
                 return Ok(Self {
                     kind: Kind::Os,
+                    rows: 0,
+                    no_think: false,
+                    rules: false,
+                    m8script: false,
+                    ship: true,
+                    index: false,
+                });
+            }
+            "apps" => {
+                return Ok(Self {
+                    kind: Kind::Apps,
                     rows: 0,
                     no_think: false,
                     rules: false,
@@ -212,6 +226,7 @@ impl Arm {
             Kind::M8 => "m8-a0".into(),
             Kind::Os => "os".into(),
             Kind::View => "view".into(),
+            Kind::Apps => "apps".into(),
             Kind::Tagged(_) if self.ship => "act".into(),
             Kind::Tagged(format) => format!(
                 "{}{}{}{}{}@{}",
@@ -465,6 +480,7 @@ fn run_arm(
     match arm.kind {
         Kind::Os => return os::run(loaded, seed, target_dir),
         Kind::View => return view::run(loaded, seed, target_dir),
+        Kind::Apps => return os::run_apps(loaded, seed, target_dir),
         _ => {}
     }
     let started = SystemTime::now()
@@ -482,7 +498,7 @@ fn run_arm(
     let mut records = Vec::new();
     let mut scored = Vec::new();
     let m8 = match arm.kind {
-        Kind::Os | Kind::View => unreachable!("arms os and view returned above"),
+        Kind::Os | Kind::View | Kind::Apps => unreachable!("arms os, view and apps returned above"),
         Kind::M8 => {
             header["pack_id"] = json!(null);
             let engine = loaded.engine.clone();
@@ -584,8 +600,8 @@ fn run_arm(
             options.m8.then(|| {
                 if arm.ship {
                     let engine = loaded.engine.clone();
-                    let grammar =
-                        Rc::new(llmproto::local::act::grammar().expect("the OS rows decode"));
+                    // What ships: the OS rows and the shipped apps' turn.
+                    let grammar = Rc::new(apps::grammar().expect("the shipped rows decode"));
                     return run_m8(
                         options.limit,
                         &move || m8::shipping(engine.clone(), grammar.clone()),
@@ -611,7 +627,7 @@ fn run_arm(
         }
     };
     let gates = match arm.kind {
-        Kind::Os | Kind::View => unreachable!("arms os and view returned above"),
+        Kind::Os | Kind::View | Kind::Apps => unreachable!("arms os, view and apps returned above"),
         Kind::M8 => score::gates(&[], m8).split_off(7),
         Kind::Tagged(_) if options.only_m8 => score::gates(&[], m8).split_off(7),
         Kind::Tagged(_) => score::gates(&scored, m8),

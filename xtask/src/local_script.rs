@@ -171,7 +171,12 @@ impl Host for Acting {
             result: result.to_string(),
         };
         if let Some(turn) = act::history::decode_remember(&act::history::encode_remember(&turn)) {
-            local::act::remember(&self.engine.borrow(), &mut self.history.borrow_mut(), turn);
+            local::act::remember(
+                &self.engine.borrow(),
+                &self.grammar,
+                &mut self.history.borrow_mut(),
+                turn,
+            );
         }
     }
 

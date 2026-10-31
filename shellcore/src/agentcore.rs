@@ -62,6 +62,7 @@ impl Shell {
             state: self.state_line().unwrap_or_default(),
             timeout_ms: SCRIPT_ROUND_MS,
             read: None,
+            apps: crate::apps::wire(self.host.as_ref()),
         };
         let call = match self.host.act(&asked) {
             Ok(call) => call,

@@ -14,6 +14,7 @@ doctest = false
 appabi = { path = "../appabi" }
 kabi = { path = "../kabi" }
 livecore = { path = "../livecore" }
+llmproto = { path = "../llmproto" }
 surfabi = { path = "../surfabi" }
 systemabi = { path = "../systemabi" }
 uikit = { path = "../uikit" }

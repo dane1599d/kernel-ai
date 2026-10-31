@@ -19,9 +19,9 @@ pub const SLICE: u64 = 1_000_000;
 /// Most fuel one compile may use, should the clock fail: about 13 times what
 /// S12-1's 1,000-line prelude needed (73.7 M).
 pub const MAX_FUEL: u64 = 1_000_000_000;
-/// Most linear memory one compile may use: S12-1's pass bar. Its peak was
-/// 1,152 KiB.
-pub const MAX_MEMORY: usize = 32 << 20;
+/// Most linear memory one compile may use, within cc's [`crate::budget`]:
+/// S12-1's peak was 1,152 KiB with a 1,000-line prelude.
+pub const MAX_MEMORY: usize = 4 << 20;
 
 /// A compile's Store data: the WASI host and its memory limit.
 struct Compiling {

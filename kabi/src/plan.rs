@@ -7,14 +7,21 @@ use alloc::string::String;
 /// The Rhai shell: it serves the terminal, calls the llm service through its one
 /// route, may switch the scheduling policy, and needs a large stack for Rhai's
 /// recursion.
-pub const SHELL: &str = "shell caps=serve+call+policy+stop+script uses=llm+supervisor pages=4096 stack_pages=512 burst_ms=5000";
+pub const SHELL: &str = "shell caps=serve+call+policy+stop+script uses=llm+supervisor+cc pages=4096 stack_pages=512 burst_ms=5000";
 /// [`SHELL`] once `fs` runs: with `files`, its `Dir` for `/home/user`, for the
 /// file rows (P2 task 11), and `state`, its `Dir` for `/system/state`, for the
 /// action log (P2 task 12).
-/// [`SHELL`] on a desktop: with a route to `desktop`, third, which it takes the
-/// AI panel's requests from and reports their states to (P3 task 7).
-pub const SHELL_DESK: &str = "shell caps=serve+call+policy+stop+script uses=llm+supervisor+desktop pages=4096 stack_pages=512 burst_ms=5000";
-pub const SHELL_FILES: &str = "shell caps=serve+call+policy+stop+script+files+state uses=llm+supervisor pages=4096 stack_pages=512 burst_ms=5000";
+pub const SHELL_FILES: &str = "shell caps=serve+call+policy+stop+script+files+state uses=llm+supervisor+cc pages=4096 stack_pages=512 burst_ms=5000";
+/// [`SHELL`] on a desktop: with a route to `desktop`, fourth, after `cc`, which
+/// it takes the AI panel's requests from and reports their states to (P3 task 7).
+pub const SHELL_DESK: &str = "shell caps=serve+call+policy+stop+script uses=llm+supervisor+cc+desktop pages=4096 stack_pages=512 burst_ms=5000";
+/// The `c>` prompt's compiler (ADR 0012 D2; P4 task 12): xcc's cc.wasm and the
+/// sessions, on wasmi, holding no authority. Planned before the shell, which
+/// calls it, and started on demand: the first `c>` entry's call starts it, so
+/// it holds no memory before then. Its pages cover `ccserve::budget`: the
+/// program, its stack, the compiler and one compile, one session and the
+/// modules it keeps (P4 plan's 3,680 counted the heap alone).
+pub const CC: &str = "cc start=demand caps=serve pages=5120 stack_pages=512 burst_ms=5000";
 /// The file system service (ADR 0004): the only holder of the `kai-data`
 /// partition. Planned before the shell, and only when the disk has `kai-data`.
 /// Its pages hold a 16 MiB block cache and kaifs's working state. `kai-fs 1`'s

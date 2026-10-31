@@ -15,6 +15,7 @@
 //! estimate to it with [`estimate_tokens`]'s margin, and the token-count
 //! workflow counts the real tokens (`cargo xtask tokens`).
 
+pub mod apps;
 mod dsl1;
 
 pub use dsl1::INDEX_HEADING;

@@ -165,3 +165,24 @@ pub fn sample_of(metrics: &Metrics, model: ModelStatus) -> Sample {
         model,
     }
 }
+
+/// The model's status from the llm service's reply to `health`: the status its
+/// text ends with, `no model` for the error it gives when it has neither a model
+/// nor a server, and not reported for anything else.
+pub fn model_status_of(reply: &str) -> ModelStatus {
+    if let Some(status) = llmproto::health::Status::of(reply) {
+        let state = systemabi::ModelState::from_health_word(status.state.word())
+            .unwrap_or(systemabi::ModelState::Unknown);
+        return ModelStatus {
+            state,
+            tps10: status.tps10,
+        };
+    }
+    match reply.strip_prefix("err ") {
+        Some(why) if why.starts_with(llmproto::chat::NO_MODEL) => ModelStatus {
+            state: systemabi::ModelState::NoModel,
+            tps10: 0,
+        },
+        _ => ModelStatus::UNKNOWN,
+    }
+}
