@@ -931,3 +931,26 @@ fn the_editor_holds_the_edit_capability_by_name_and_routes_to_desktop() {
     // Without `desktop` before it the line is an error, not a route elsewhere.
     assert!(!parse_plan(kabi::plan::EDITOR).errors.is_empty());
 }
+
+#[test]
+fn the_monitor_s_routes_are_desktop_then_llm_and_the_name_is_the_grant() {
+    let plan = parse_plan(&alloc::format!(
+        "desktop caps=display+input+serve\nllm caps=serve+net\n{}",
+        kabi::plan::MONITOR_WINDOW
+    ));
+    assert!(plan.errors.is_empty(), "{:?}", plan.errors);
+    let monitor = &plan.services[2];
+    assert_eq!(monitor.name, "monitor-window");
+    assert_eq!(monitor.program, "comphost");
+    // comphost reads the first route as desktop's and the second as llm's.
+    assert_eq!(monitor.uses, ["desktop", "llm"]);
+    // The supervisor takes the other order too; only this test says it is wrong
+    // for comphost, which would send `health` to desktop.
+    let swapped = kabi::plan::MONITOR_WINDOW.replace("desktop+llm", "llm+desktop");
+    let plan = parse_plan(&alloc::format!(
+        "desktop caps=display+input+serve\nllm caps=serve+net\n{swapped}"
+    ));
+    assert_eq!(plan.services[2].uses, ["llm", "desktop"]);
+    // Without the services before it the line is an error, not a route elsewhere.
+    assert!(!parse_plan(kabi::plan::MONITOR_WINDOW).errors.is_empty());
+}

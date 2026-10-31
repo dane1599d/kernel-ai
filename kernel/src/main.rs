@@ -25,6 +25,7 @@ mod app_editor_tests;
 mod app_route_tests;
 mod app_settings_tests;
 mod app_terminal_tests;
+mod app_window_tests;
 mod appbench_tests;
 mod ask_box;
 mod ask_tests;
@@ -389,6 +390,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::DeskCatalog => run_case(catalog_tests::check),
         SelfTest::UiWindow => run_case(ui_tests::check),
         SelfTest::AppEditor => run_case(app_editor_tests::check),
+        SelfTest::UiMonitor => run_case(app_window_tests::monitor_check),
         SelfTest::DeskNap => run_case(nap_tests::check),
         SelfTest::KeepRunning { reread } => run_case(|| keep_tests::check(reread)),
         SelfTest::DeskCard => run_case(card_tests::check),
