@@ -1010,6 +1010,55 @@ fn the_update_snapshot_is_taken_and_restored_only_on_system_updates() {
 }
 
 #[test]
+fn the_restart_window_is_written_through_state_and_only_read_through_its_badge() {
+    let mut disk = MemDisk::new(BLOCKS);
+    let (mut c, _) = Client::start(&mut disk);
+    assert_ne!(c.server.system_restart, 0);
+    let open = |path: &str, rights: Rights, how: How| Request::Open {
+        path: path.into(),
+        rights: rights.bits(),
+        how,
+    };
+    // The shell writes it through its `/system/state`.
+    let (_, file) = c.call(
+        ALICE,
+        kabi::fs::SYSTEM_STATE,
+        DIR_RIGHTS,
+        open(
+            "restart/window",
+            Rights::READ | Rights::WRITE,
+            How::CreateFile,
+        ),
+    );
+    let file = file.unwrap();
+    assert!(matches!(c.write(&file, 0, b"kai-updates 1\n"), Reply::Done));
+    // `updated` reads it through `dir=restart`, and changes nothing there.
+    let restart = kabi::fs::SYSTEM_RESTART;
+    let (_, file) = c.call(
+        ALICE,
+        restart,
+        DIR_RIGHTS,
+        open("window", Rights::READ, How::Existing),
+    );
+    assert_eq!(c.read(&file.unwrap()).unwrap(), b"kai-updates 1\n");
+    for request in [
+        open("window", Rights::READ | Rights::WRITE, How::Existing),
+        open("other", Rights::READ, How::CreateFile),
+        open("../log", Rights::READ, How::Existing),
+        Request::Trash {
+            name: "window".into(),
+        },
+        Request::Begin { action: 0 },
+    ] {
+        let reply = c.call(ALICE, restart, DIR_RIGHTS, request.clone());
+        assert!(
+            matches!(reply.0, Reply::Failed(_)),
+            "{request:?}: {reply:?}"
+        );
+    }
+}
+
+#[test]
 fn system_settings_is_read_only_through_its_badge() {
     let mut disk = MemDisk::new(BLOCKS);
     let (mut c, _) = Client::start(&mut disk);
