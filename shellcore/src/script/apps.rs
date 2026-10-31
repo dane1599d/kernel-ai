@@ -111,8 +111,15 @@ fn done_words(row: &AppRow) -> String {
         .filter(|clause| !clause.is_empty());
     let what = match clause {
         Some(clause) => {
+            // An acronym ("PID of ...") keeps its capitals.
+            let acronym = clause
+                .chars()
+                .nth(1)
+                .is_some_and(|c| c.is_ascii_uppercase());
             let mut chars = clause.chars();
-            let first = chars.next().map(|c| c.to_ascii_lowercase());
+            let first = chars
+                .next()
+                .map(|c| if acronym { c } else { c.to_ascii_lowercase() });
             first.into_iter().chain(chars).collect()
         }
         None => String::from(row.row.name),
