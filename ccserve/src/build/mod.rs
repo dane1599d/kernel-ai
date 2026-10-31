@@ -10,6 +10,7 @@
 //! kind alone, and its source hash is [`Built::provenance`]'s.
 
 pub mod module;
+pub mod shm;
 
 use crate::bind::{self, World};
 use crate::compiler::{CompileError, Compiler};
@@ -64,6 +65,39 @@ impl Kind {
             Kind::App => &bind::APP,
         }
     }
+
+    /// What `files` build: an app if one of them includes the app world's
+    /// header (`#include <app.h>` or `"app.h"`), else a component.
+    pub fn of(files: &[(&str, &[u8])]) -> Kind {
+        let header = bind::APP.header_name;
+        let includes_app = |text: &[u8]| {
+            let text = String::from_utf8_lossy(text);
+            text.lines().any(|line| {
+                let Some(rest) = line.trim_start().strip_prefix('#') else {
+                    return false;
+                };
+                let Some(name) = rest.trim_start().strip_prefix("include") else {
+                    return false;
+                };
+                // Bytes, not a str slice: a split character must not panic.
+                let name = name.trim().as_bytes();
+                name.len() == header.len() + 2
+                    && matches!(name[0], b'<' | b'"')
+                    && &name[1..name.len() - 1] == header.as_bytes()
+            })
+        };
+        match files.iter().any(|(_, text)| includes_app(text)) {
+            true => Kind::App,
+            false => Kind::Component,
+        }
+    }
+
+    pub fn word(self) -> &'static str {
+        match self {
+            Kind::Component => "component",
+            Kind::App => "app",
+        }
+    }
 }
 
 /// What to build.
@@ -115,6 +149,23 @@ pub enum BuildError {
     /// The linked module asks for or offers what its world does not, or the
     /// artifact would not load.
     Module(String),
+}
+
+impl BuildError {
+    /// The error as the shell shows it, or why the build was stopped, which
+    /// the reply says with a `trap`.
+    pub fn text(&self) -> Result<String, crate::Stopped> {
+        let compile = |e: &CompileError| match e {
+            CompileError::Source(messages) => Ok(messages.clone()),
+            CompileError::Stopped(stop) => Err(*stop),
+            CompileError::Compiler(why) => Ok(format!("cc: {why}")),
+        };
+        match self {
+            BuildError::Request(why) | BuildError::Module(why) => Ok(why.clone()),
+            BuildError::Compile(name, e) => compile(e).map(|why| format!("{name}: {why}")),
+            BuildError::Link(e) => compile(e).map(|why| format!("the link: {why}")),
+        }
+    }
 }
 
 /// `cc`'s compiler with the headers builds include: xcc's, `<stdlib.h>` and
@@ -436,5 +487,20 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert_eq!(objects.list.len(), 2);
+    }
+
+    /// Security review: an `#include` line that splits a character where the
+    /// header's name would end is not an app's, and does not panic.
+    #[test]
+    fn the_kind_is_read_from_includes_whatever_their_bytes() {
+        let of = |text: &[u8]| Kind::of(&[("a.c", text)]);
+        assert_eq!(of(b"#include <app.h>\n"), Kind::App);
+        assert_eq!(of(b"  #  include \"app.h\"\n"), Kind::App);
+        assert_eq!(of(b"#include <component.h>\n"), Kind::Component);
+        assert_eq!(of("#include <abcd\u{e9}\n".as_bytes()), Kind::Component);
+        assert_eq!(of(b"#include <app.\xff\n"), Kind::Component);
+        assert_eq!(of(b"#include <\xff\xfeapp.h>\n"), Kind::Component);
+        assert_eq!(of(b"// #include <app.h>\n"), Kind::Component);
+        assert_eq!(of(b"#include <app.hh>\n"), Kind::Component);
     }
 }

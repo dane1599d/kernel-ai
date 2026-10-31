@@ -38,6 +38,7 @@ mod build_job;
 mod build_service;
 mod card_tests;
 mod catalog_tests;
+mod cc_build_tests;
 mod cc_tests;
 mod claim_tests;
 mod clock;
@@ -347,6 +348,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Terminal => run_case(terminal::self_test),
         SelfTest::Shell => run_case(shell_tests::check),
         SelfTest::CPrompt => run_case(cc_tests::check),
+        SelfTest::CBuild => run_case(cc_build_tests::check),
         SelfTest::Scripts => run_case(script_tests::check),
         SelfTest::Act(which) => run_case(|| act_tests::check(which)),
         SelfTest::Live => run_case(live_tests::check),

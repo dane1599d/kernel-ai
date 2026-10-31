@@ -18,7 +18,7 @@ fn requests_read_and_write_back() {
         "dis Sq",
         "defs",
         "reset",
-        "build hello-app",
+        "build hello-app 0.0.12",
         "eval 0\n",
     ] {
         let request = Request::parse(text).unwrap_or_else(|e| panic!("{text}: {e}"));
@@ -46,7 +46,11 @@ fn requests_read_and_write_back() {
         "dis 9lives",
         "dis a-b",
         "resume 1 maybe\nx",
-        "build ../x",
+        "build ../x 0.0.1",
+        "build hello",
+        "build hello 0.0.1 x",
+        "build hello 1.0-rc",
+        "build hello 0.0.1\nint x;",
         too_long.as_str(),
     ] {
         assert!(Request::parse(text).is_err(), "{text:?}");
