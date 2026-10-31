@@ -72,31 +72,71 @@ pub fn check() -> Result<(), &'static str> {
     Ok(())
 }
 
-/// A process holding what is left of the admission budget, less than one
-/// app's window needs.
-fn hold_the_rest() -> Result<u64, &'static str> {
+/// What the admission budget still has room for.
+fn room() -> u64 {
     let committed: u64 = process::with_table(|t| {
         t.iter()
             .filter(|p| p.live())
             .map(|p| p.limits.max_pages)
             .sum()
     });
-    let room = process::page_budget().saturating_sub(committed);
-    process::spawn(&SpawnRequest {
-        name: "memory-hold",
-        program: "handles",
-        args: b"mode=mem",
-        limits: Limits {
-            max_pages: room.saturating_sub(64).max(64),
-            max_burst_ms: 30_000,
-            caps: 0,
-            stack_pages: 0,
-        },
-        spawner: 0,
-        supervisor: false,
-        uses: &[],
-    })
-    .map_err(|_| "desk-no-memory: cannot start the process that holds the rest")
+    process::page_budget().saturating_sub(committed)
+}
+
+/// Names for the processes that hold the rest, one quota each at most
+/// [`process::MAX_PAGES_PER_PROCESS`].
+const HOLDS: [&str; 8] = [
+    "memory-hold-1",
+    "memory-hold-2",
+    "memory-hold-3",
+    "memory-hold-4",
+    "memory-hold-5",
+    "memory-hold-6",
+    "memory-hold-7",
+    "memory-hold-8",
+];
+/// Left in the budget: less than one app's window (8192 pages) needs.
+const LEFT: u64 = 64;
+
+/// Processes holding what is left of the admission budget, less [`LEFT`].
+fn hold_the_rest() -> Result<alloc::vec::Vec<u64>, &'static str> {
+    let mut holds = alloc::vec::Vec::new();
+    for name in HOLDS {
+        let pages = room()
+            .saturating_sub(LEFT)
+            .min(process::MAX_PAGES_PER_PROCESS);
+        if pages < 64 {
+            return Ok(holds);
+        }
+        let pid = process::spawn(&SpawnRequest {
+            name,
+            program: "handles",
+            args: b"mode=mem",
+            limits: Limits {
+                max_pages: pages,
+                max_burst_ms: 30_000,
+                caps: 0,
+                stack_pages: 0,
+            },
+            spawner: 0,
+            supervisor: false,
+            uses: &[],
+        });
+        match pid {
+            Ok(pid) => holds.push(pid),
+            Err(error) => {
+                log!("desk-no-memory: cannot start {name} with {pages} pages: {error:?}");
+                for pid in holds {
+                    let _ = process::kill(pid, ExitReason::Killed);
+                }
+                return Err("desk-no-memory: cannot start the processes that hold the rest");
+            }
+        }
+    }
+    match room() < 8192 {
+        true => Ok(holds),
+        false => Err("desk-no-memory: the budget is too large to hold"),
+    }
 }
 
 /// The shell's answer to `open notes`, as the terminal gets it: the same reply
@@ -114,9 +154,11 @@ const RETRY_WAIT_MS: u64 = 5_000;
 
 pub fn no_memory_check() -> Result<(), &'static str> {
     system_up()?;
-    let hold = hold_the_rest()?;
+    let holds = hold_the_rest()?;
     let answer = open_notes();
-    let _ = process::kill(hold, ExitReason::Killed);
+    for pid in holds {
+        let _ = process::kill(pid, ExitReason::Killed);
+    }
     let answer = answer?;
     if !answer.contains(NOT_ENOUGH) {
         log!("desk-no-memory: open notes answered {answer:?}");

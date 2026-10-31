@@ -549,6 +549,7 @@ fn start_apps(vol: &mut dyn Volume, n: u64) -> Result<Vec<String>, String> {
             "ok" => None,
             supervise::NOT_FROM_PKG => Some("its plan line runs a local version"),
             supervise::RUNS_ANOTHER => Some("it already runs another version"),
+            supervise::NOT_PLANNED => Some("this system plans no service for it"),
             _ => return Err(format!("the supervisor refused {name}'s run: {reply}")),
         };
         match shadowed {
