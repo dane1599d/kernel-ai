@@ -241,16 +241,16 @@ impl SettingsWindow {
             (_, Err(why)) => log(&alloc::format!("settings: refused: {why}")),
             (Pending::Read(read), Ok(answer)) => match read.apply(&mut self.settings, &answer) {
                 Ok(apps) => {
+                    // What each page was given, for the log: the window is
+                    // private to the agent, so a case reads it here.
+                    log(&alloc::format!(
+                        "settings: {}",
+                        read.summary(&self.settings, apps.len())
+                    ));
                     // Only `grants` names apps to ask for; another read's answer
                     // must not empty the queue.
                     if read == Read::Grants {
                         self.to_ask = apps;
-                    }
-                    if read == Read::FileAppearance {
-                        log(&alloc::format!(
-                            "settings: appearance theme {}",
-                            self.settings.appearance.theme
-                        ));
                     }
                 }
                 Err(why) => log(&alloc::format!("settings: {}: {why}", read.request())),
