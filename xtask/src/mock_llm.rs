@@ -361,7 +361,7 @@ const ACTS: &[(&str, &str)] = &[
         r#"{"name":"fs_create","arguments":{"path":"ideas.txt","text":"ideas"}}"#,
     ),
     (
-        "open files",
+        "open the files app",
         r#"{"name":"ui_open","arguments":{"app":"files","arg":null}}"#,
     ),
     (
@@ -385,7 +385,7 @@ const ACTS: &[(&str, &str)] = &[
         r#"{"name":"appearance_set","arguments":{"setting":"theme","value":"light"}}"#,
     ),
     (
-        "bring files to the front",
+        "switch to files",
         r#"{"name":"ui_focus","arguments":{"window":"files"}}"#,
     ),
     // `act-convo` with no earlier turn: there is nothing to do again.

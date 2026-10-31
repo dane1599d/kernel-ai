@@ -9,10 +9,11 @@
 use crate::agent_desk_tests::DESK;
 use crate::claim_tests::type_keys;
 use crate::display::claim;
-use crate::{ask_box, ipc, log, process, terminal, threads};
+use crate::{allow, ask_box, ipc, log, process, terminal, threads};
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
+use termcore::menu::{self, Answer};
 
 const CASE: &str = "desk-tour";
 /// The shell with a route to `desktop`, `cc` for its prompt, and `files` and
@@ -64,15 +65,43 @@ fn shot(name: &str) {
 
 /// A line to the shell, as the console sends it; its reply is logged. A row
 /// runs only from the model's script, so each step is a request the mock
-/// model answers (`xtask/src/mock_llm.rs`).
+/// model answers (`xtask/src/mock_llm.rs`). A step the shell asks about is
+/// allowed through the trusted path, as `app-terminal` allows its line.
 fn line(text: &str) {
+    let Some(reply) = say(text) else {
+        return;
+    };
+    let Ok(asked) = menu::Menu::decode(&reply) else {
+        return;
+    };
+    let Some(allowed) = allow::allow(asked.id, asked.call(), Answer::Allow)
+        .ok()
+        .flatten()
+    else {
+        log!("{CASE}: {text:?}: the trusted path could not allow it");
+        return;
+    };
+    say(&menu::granted_line(
+        asked.id,
+        Answer::Allow,
+        allowed.granted,
+    ));
+    allow::end(&allowed);
+}
+
+/// One line to the shell; its reply, whose first line is logged.
+fn say(text: &str) -> Option<String> {
     match ipc::call("shell", text.as_bytes(), CALL_MS) {
         Ok(reply) => {
-            let reply = String::from_utf8_lossy(&reply);
+            let reply = String::from_utf8_lossy(&reply).into_owned();
             let first = reply.lines().next().unwrap_or("");
             log!("{CASE}: {text:?} -> {first}");
+            Some(reply)
         }
-        Err(_) => log!("{CASE}: {text:?}: the shell did not reply"),
+        Err(_) => {
+            log!("{CASE}: {text:?}: the shell did not reply");
+            None
+        }
     }
 }
 
@@ -163,7 +192,7 @@ pub fn check() -> Result<(), &'static str> {
     // Esc closes the sheet and leaves the panel.
     type_keys(&[0x01, 0x81]);
 
-    open("files", "open files");
+    open("files", "open the files app");
     shot("03-files");
 
     open("terminal", "open the terminal");
@@ -208,7 +237,7 @@ pub fn check() -> Result<(), &'static str> {
     shot("11-light");
 
     // Overlapping windows, Files brought to the front and focused.
-    line("bring files to the front");
+    line("switch to files");
     shot("12-overlap");
 
     log!("{CASE}: the tour is done");
