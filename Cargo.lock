@@ -752,6 +752,7 @@ dependencies = [
  "fsproto",
  "kabi",
  "kaifs",
+ "sha2",
 ]
 
 [[package]]
@@ -1192,6 +1193,15 @@ dependencies = [
 [[package]]
 name = "mm"
 version = "0.1.0-dev"
+
+[[package]]
+name = "modelchan"
+version = "0.1.0-dev"
+dependencies = [
+ "comp-models",
+ "kabi",
+ "sha2",
+]
 
 [[package]]
 name = "netcore"
@@ -1885,6 +1895,7 @@ dependencies = [
  "appabi",
  "bootslot",
  "ccserve",
+ "comp-models",
  "cpufeat",
  "deskcore",
  "ecdsa",
@@ -1903,6 +1914,7 @@ dependencies = [
  "livecore",
  "llmproto",
  "look",
+ "modelchan",
  "p256",
  "promptcore",
  "quant",
