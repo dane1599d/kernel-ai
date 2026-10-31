@@ -1,7 +1,7 @@
 //! AP, the apps (P4): one case for each built-in app. The Terminal's is driven by
 //! the agent through the mock model, which answers a request by its text; the
 //! Monitor's boots the app's plan line on the desktop and watches its window
-//! through comphost's and `desktop`'s log lines (`kernel/src/app_tests.rs`).
+//! through comphost's and `desktop`'s log lines (`kernel/src/app_window_tests.rs`).
 
 use super::{TestCase, case};
 
@@ -24,8 +24,8 @@ pub(super) const CASES: &[TestCase] = &[
             "comphost: the first system sample reached the monitor",
             "comphost: window 1 closed",
             "desktop: window 1 closed",
-            "app-monitor: the Monitor's window was shown, and its close control pressed",
+            "ui-monitor: the Monitor's window was shown, and its close control pressed",
         ],
-        ..case("app-monitor", "test=app-monitor")
+        ..case("ui-monitor", "test=ui-monitor")
     },
 ];
