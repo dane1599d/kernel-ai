@@ -91,6 +91,14 @@ pub fn title(text: &str) -> String {
     out
 }
 
+/// `n` and `noun`, plural but for one: "1 note", "2 notes".
+fn counted(n: u32, noun: &str) -> String {
+    match n {
+        1 => format!("1 {noun}"),
+        _ => format!("{n} {noun}s"),
+    }
+}
+
 fn entry(id: NodeId, parent: NodeId, layout: Layout, widget: Widget) -> Entry {
     Entry {
         id,
@@ -206,8 +214,12 @@ pub fn build(notes: &Notes, view: &View) -> Vec<Entry> {
     });
     let tally = notes.count();
     let status = match (shown.len(), view.search.trim().is_empty()) {
-        (_, true) => format!("{} notes, {} words", tally.notes, tally.words),
-        (n, false) => format!("{n} of {} notes match", tally.notes),
+        (_, true) => format!(
+            "{}, {}",
+            counted(tally.notes, "note"),
+            counted(tally.words, "word")
+        ),
+        (n, false) => format!("{n} of {} match", counted(tally.notes, "note")),
     };
     tree.push(entry(
         STATUS,
@@ -328,5 +340,17 @@ pub fn on_ui(notes: &mut Notes, view: &mut View, e: &UiEvent) -> bool {
             first.is_some()
         }
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::counted;
+
+    #[test]
+    fn one_of_a_thing_is_not_plural() {
+        assert_eq!(counted(1, "note"), "1 note");
+        assert_eq!(counted(0, "note"), "0 notes");
+        assert_eq!(counted(2, "word"), "2 words");
     }
 }

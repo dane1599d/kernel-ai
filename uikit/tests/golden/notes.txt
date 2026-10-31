@@ -11,9 +11,9 @@ node 4 clip 0,0 170x300
   fill 13,49 141x24 raised r0
   fill 13,49 2x24 accent r0
 node 10 clip 10,46 147x244
-  text 13,49 body text "Groceries"
+  text 21,49 body text "Groceries"
 node 11 clip 10,46 147x244
-  text 13,73 body text "Ideas"
+  text 21,73 body text "Ideas"
 node 6 clip 165,0 315x300
   text 180,12 small muted "Title"
   fill 180,32 288x28 desk r6

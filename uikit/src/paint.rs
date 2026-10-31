@@ -164,10 +164,17 @@ fn ops_of(
             let item = selected
                 .and_then(|s| node.children.get(s as usize))
                 .and_then(|c| places.get(c));
+            // The selected row is marked the list's whole width, past the
+            // item's own padding.
             if let Some(p) = item {
-                ops.push(fill(p.rect, Token::Raised, 0));
+                let inner = r.inset(1);
                 ops.push(fill(
-                    Rect::new(p.rect.x, p.rect.y, 2, p.rect.h),
+                    Rect::new(inner.x, p.rect.y, inner.w, p.rect.h),
+                    Token::Raised,
+                    0,
+                ));
+                ops.push(fill(
+                    Rect::new(inner.x, p.rect.y, 2, p.rect.h),
                     Token::Accent,
                     0,
                 ));

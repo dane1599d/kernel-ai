@@ -190,6 +190,10 @@ fn lists_select_by_click_and_by_arrow() {
         w.act(4, Action::SetValue, Some(Value::Index(9)), &M),
         Err(ActError::BadValue)
     );
+    // A row's padding, left of its text, is part of the row.
+    let item = w_rect(&mut w, 11);
+    let pad = Point::new(item.x - 4, item.y + item.h / 2);
+    assert_eq!(click(&mut w, pad), [UiEvent::Changed(4, Value::Index(1))]);
 }
 
 #[test]
