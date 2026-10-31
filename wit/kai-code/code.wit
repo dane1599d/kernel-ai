@@ -1,0 +1,155 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The Kernel AI contributors
+
+/// The code view: a grid of mono text the app owns, such as an editor's lines or a
+/// terminal's screen, which takes raw keys and clicks. `kai:ui`'s widgets edit
+/// their own text and tell the app only the result, which an editor cannot work
+/// from (Backspace at the start of a line joins two; Ctrl-click follows a link),
+/// so this is its own package, an addition beside `kai:ui` and not a change to
+/// it: the frozen `kai:ui@0.1.0` stays as it was.
+///
+/// The app sends the rows to show, with a gutter, coloured runs, a caret and a
+/// highlighted row; `uikit` draws them in the mono style and tells the app what
+/// was typed and where, and how many rows and cells fit. One cell is one
+/// character wide, so the app lays its text out in cells (a tab is spread to
+/// spaces before it is sent). The agent's view of the window has one node for it,
+/// its rows as the value, cut to 4,096 bytes.
+///
+/// It names the window and the node as `kai:ui` does, and repeats the few types
+/// `put` needs (`layout`, `tone` and the error) with `kai:ui`'s cases in `kai:ui`'s
+/// order: a package that names another's types at an exact version cannot be
+/// frozen, since the frozen copy would need the other's frozen version and the
+/// tree its current one.
+package kai:code@0.1.0;
+
+interface types {
+    /// A window the app opened with `kai:ui/view.open`.
+    type window-id = u32;
+    /// A node, chosen by the app and unique in its window.
+    type node-id = u32;
+
+    /// As `kai:ui/types.tone`.
+    enum tone {
+        normal,
+        muted,
+        dim,
+        accent,
+        ok,
+        error,
+    }
+
+    /// As `kai:ui/types.size`.
+    variant extent {
+        fit,
+        fill(u16),
+        fixed(u16),
+    }
+
+    /// As `kai:ui/types.insets`.
+    record insets {
+        top: u16,
+        right: u16,
+        bottom: u16,
+        left: u16,
+    }
+
+    /// As `kai:ui/types.layout`.
+    record layout {
+        width: extent,
+        height: extent,
+        padding: insets,
+        gap: u16,
+    }
+
+    /// As `kai:ui/types.ui-error`.
+    enum code-error {
+        no-window,
+        no-node,
+        bad-parent,
+        too-big,
+        too-many-windows,
+    }
+}
+
+interface code {
+    use types.{window-id, node-id, layout, tone, code-error};
+
+    /// A run of one row's cells, `start` to `end` (not including it).
+    record span {
+        start: u16,
+        end: u16,
+        tone: tone,
+        /// Drawn underlined: a source link.
+        link: bool,
+    }
+
+    record row {
+        /// The row's text, one character a cell; at most 400.
+        text: string,
+        /// Drawn dim and right-aligned in the gutter; empty for none.
+        gutter: string,
+        /// At most 32, each within the text.
+        spans: list<span>,
+    }
+
+    record code-view {
+        /// The accessible name, such as `notes 2: lib.rs`.
+        label: string,
+        /// Cells at the left kept for the gutter.
+        gutter-width: u16,
+        /// At most 200 rows.
+        rows: list<row>,
+        /// The caret's row and cell, after the gutter; none hides it.
+        cursor: option<tuple<u32, u32>>,
+        /// A row drawn highlighted.
+        selected: option<u32>,
+    }
+
+    /// Adds or replaces a code view as the last child of `parent` (keeping its
+    /// place if it exists). It takes keyboard focus like a text field, and while it
+    /// has focus every key but `desktop`'s own (Super) is the app's.
+    put: func(window: window-id, node: node-id, parent: node-id, layout: layout, view: code-view) -> result<_, code-error>;
+}
+
+/// What `uikit` tells the app about a code view.
+interface code-input {
+    use types.{window-id, node-id};
+
+    /// A key pressed. `name` is `a`..`z`, `0`..`9`, `f1`..`f12`, `enter`, `esc`,
+    /// `backspace`, `tab`, `space`, `delete`, `left`, `right`, `up`, `down`,
+    /// `home`, `end`, `pageup`, `pagedown`, a punctuation mark as itself, or
+    /// `hid-0x..` for a key with no name here. `text` is what it types (empty for
+    /// a command key). `mods`: shift 1, ctrl 2, alt 4, super 8.
+    record key-event {
+        name: string,
+        text: string,
+        mods: u8,
+    }
+
+    /// A click: `row` from the first shown row, `cell` from the first text cell
+    /// (0 in the gutter), with the modifiers held.
+    record click-event {
+        row: u32,
+        cell: u32,
+        mods: u8,
+    }
+
+    /// How much of the view shows: sent when it first does and whenever layout
+    /// changes it.
+    record grid {
+        rows: u16,
+        cells: u16,
+    }
+
+    on-key: func(window: window-id, node: node-id, e: key-event);
+    on-click: func(window: window-id, node: node-id, e: click-event);
+    /// The wheel turned over the view: rows, positive down.
+    on-scroll: func(window: window-id, node: node-id, rows: s32);
+    on-size: func(window: window-id, node: node-id, g: grid);
+}
+
+/// An app with a code view.
+world coding {
+    import code;
+    export code-input;
+}

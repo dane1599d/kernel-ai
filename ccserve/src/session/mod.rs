@@ -17,7 +17,7 @@
 
 mod imports;
 
-use crate::{Budget, Host, LINE_NS, Stopped, dis, engine};
+use crate::{Budget, Host, Stopped, dis, engine};
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -181,7 +181,7 @@ impl Session {
     }
 
     /// Links, instantiates and runs entry `seq`'s object; `run` is its run
-    /// function, given the 2 s line budget. Drops a suspended run first.
+    /// function, given the host's line budget. Drops a suspended run first.
     pub fn start(
         &mut self,
         seq: u64,
@@ -190,7 +190,7 @@ impl Session {
         host: &dyn Host,
     ) -> Result<Step, Failure> {
         self.abort();
-        let budget = &Budget::new(host, LINE_NS);
+        let budget = &Budget::new(host, host.line_ns());
         if self.instances >= MAX_ENTRIES {
             return Err(Failure::Full);
         }
@@ -235,7 +235,7 @@ impl Session {
             return Err(Failure::Internal("no run is waiting".into()));
         };
         let Pending { running, call } = *pending;
-        let budget = &Budget::new(host, LINE_NS.saturating_sub(running.run_ns));
+        let budget = &Budget::new(host, host.line_ns().saturating_sub(running.run_ns));
         // Effects answered at once come back here without the run running out
         // of fuel, so the budget is checked on every resume too.
         if let Err(stop) = budget.check() {

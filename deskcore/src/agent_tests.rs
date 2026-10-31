@@ -334,3 +334,27 @@ fn a_window_app_is_found_by_its_package_name() {
     assert_eq!(find_window(&desk, "files"), Some(files));
     assert_eq!(find_window(&desk, "window"), None);
 }
+
+#[test]
+fn only_the_answers_about_a_private_window_say_so() {
+    use crate::agent::says_private;
+    assert!(says_private("ok windows: w1 \"Settings\"\nw1: private"));
+    assert!(says_private(
+        "err w1 is private: its app keeps it from the agent"
+    ));
+    assert!(says_private(
+        "err settings is private: its app keeps it from the agent"
+    ));
+    for other in [
+        "ok",
+        "ok windows: w1 \"Notes\"\nw1: group \"Search\"",
+        "ok windows: w1 \"private\"\nt1: text private",
+        "err unknown node; view w1 first",
+        "ok windows: w1\nw: private",
+        "ok windows: w1\nw1 : private",
+        "ok w1 is private: its app keeps it from the agent",
+        "",
+    ] {
+        assert!(!says_private(other), "{other:?}");
+    }
+}

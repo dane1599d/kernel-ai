@@ -22,7 +22,9 @@ use wasmhost::desk::{Desk, Open, Show, Target, Told};
 use wasmhost::{AppEvent, LiveInstance, Update, surface};
 
 /// How long a call to `desktop` may take.
-const CALL_MS: u64 = 5_000;
+pub(crate) const CALL_MS: u64 = 5_000;
+/// Times one pump tells the app the size of its code views and looks again.
+const SIZE_ROUNDS: usize = 4;
 /// How often an app with windows asks `desktop` for its events.
 pub const POLL_MS: u64 = 20;
 
@@ -77,6 +79,8 @@ pub struct Ui {
     /// The tickets sent to `desktop` with no result yet: only then does a poll
     /// ask for results, and only theirs reach the app.
     sent: effects::Sent,
+    /// The `kai:settings` requests' way to the shell, for the Settings app only.
+    settings: Option<crate::kai_settings::Forward>,
 }
 
 impl Ui {
@@ -98,7 +102,21 @@ impl Ui {
             later: Vec::new(),
             reply: alloc::vec![0u8; kabi::MAX_MESSAGE],
             sent: effects::Sent::default(),
+            settings: None,
         })
+    }
+
+    /// Carries `kai:settings` requests for this app: only the Settings app's,
+    /// which the system image grants it.
+    pub fn carry_settings(&mut self) {
+        self.settings = Some(crate::kai_settings::Forward::default());
+    }
+
+    /// Whether a `kai:settings` request waits for its answer.
+    pub fn settings_busy(&self) -> bool {
+        self.settings
+            .as_ref()
+            .is_some_and(crate::kai_settings::Forward::busy)
     }
 
     pub fn has_windows(&self) -> bool {
@@ -108,7 +126,7 @@ impl Ui {
     /// Whether comphost should poll: a window is open, or an effect's result
     /// is still to come (one queued as the last window closed, too).
     pub fn wants_poll(&self) -> bool {
-        self.has_windows() || self.sent.awaits()
+        self.has_windows() || self.sent.awaits() || self.settings_busy()
     }
 
     /// Whether one of its windows took focus since the last call: use, for
@@ -123,8 +141,32 @@ impl Ui {
     /// open with their last frame, so the user can restore one and a standing
     /// instruction's "until restore" can come (P3 task 11).
     pub fn pump<E: Env<Instance = LiveInstance>>(&mut self, host: &mut Host<E>) {
+        // A code view's size is told to the app in a call of its own, which may
+        // change what it shows (a few rounds: the size settles at once, but an app
+        // that changed its layout on every size would not).
+        for _ in 0..SIZE_ROUNDS {
+            let sized = self.pump_once(host);
+            if sized.is_empty() {
+                return;
+            }
+            for (window, node, rows, cells) in sized {
+                let performed = serve_shown(host, |core| core.code_size(window, node, rows, cells));
+                // What the app queued while it handled the size goes out as for a close:
+                // a layout is never a person's key or click.
+                self.forward(performed, false);
+            }
+        }
+    }
+
+    /// One look at what the instances committed; the code views whose size the
+    /// app is yet to be told.
+    fn pump_once<E: Env<Instance = LiveInstance>>(
+        &mut self,
+        host: &mut Host<E>,
+    ) -> Vec<(u32, u32, u16, u16)> {
+        let mut sized = Vec::new();
         if host.suspended() {
-            return;
+            return sized;
         }
         let mut updates = Vec::new();
         let mut label = None;
@@ -150,8 +192,15 @@ impl Ui {
                     self.frames.retain(|(app, _)| *app != window);
                     self.close(window);
                 }
+                Update::CodeSize {
+                    window,
+                    node,
+                    rows,
+                    cells,
+                } => sized.push((window, node, rows, cells)),
             }
         }
+        sized
     }
 
     /// Asks `desktop` for its events and acts on them, then hands the app the
@@ -185,6 +234,11 @@ impl Ui {
             self.pump(host);
         }
         self.deliver(host);
+        if let Some(forward) = self.settings.as_mut()
+            && forward.pump(host, self.route, &mut self.reply)
+        {
+            self.pump(host);
+        }
         Ok(())
     }
 
