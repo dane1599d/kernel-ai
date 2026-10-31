@@ -32,6 +32,10 @@ pub enum Inverse {
     /// the switch made) still is. The shell's package store does it
     /// (`Shell::revert_entry`), not the host.
     Generation { from: u64, to: u64 },
+    /// Make generation `to` of `pkg`'s store current again while `from`, the
+    /// one a `cc build` install made, still is: `pkg`'s `switch-back`, which
+    /// goes back to the parent only, so an install is not redone (P4 task 13).
+    Local { from: u64, to: u64 },
     /// Restore what `fs` transaction `txn` replaced (P2 task 11); the `fs`
     /// server refuses one over a later change.
     Fs { txn: u64 },
@@ -142,7 +146,7 @@ pub fn target(inverse: Inverse) -> String {
         Inverse::Spec { policy, preset, .. } => spec_name(policy, preset),
         Inverse::Started(name) => format!("{} stopped", name.as_str()),
         Inverse::Stopped(name) => format!("{} running", name.as_str()),
-        Inverse::Generation { to, .. } => format!("generation {to}"),
+        Inverse::Generation { to, .. } | Inverse::Local { to, .. } => format!("generation {to}"),
         Inverse::Fs { .. } => String::from("the files as they were"),
         Inverse::Fired { app, .. } => format!("{} as it was", app.as_str()),
         Inverse::Instruction { id, made: true } => format!("standing instruction S{id} removed"),
@@ -257,6 +261,13 @@ fn revert_one(
             .start_service(name.as_str(), ids.next)
             .map(|()| format!("service {} started again", name.as_str()))
             .map_err(Refused::Failed),
+        Inverse::Local { from, to } if to < from => host
+            .pkg(&format!("switch-back {to} {from}"))
+            .map(|_| format!("packages back to generation {to}"))
+            .map_err(Refused::Failed),
+        Inverse::Local { .. } => Err(Refused::Failed(String::from(
+            "a cc build is installed again by cc build",
+        ))),
         Inverse::Generation { .. } => Err(Refused::Failed(String::from(
             "a package switch is put back by the shell's store",
         ))),
@@ -306,6 +317,7 @@ pub fn reverse(inverse: Inverse) -> Inverse {
         Inverse::Started(name) => Inverse::Stopped(name),
         Inverse::Stopped(name) => Inverse::Started(name),
         Inverse::Generation { from, to } => Inverse::Generation { from: to, to: from },
+        Inverse::Local { from, to } => Inverse::Local { from: to, to: from },
         // Only the `fs` server knows the restore's own transaction ([`revert`]),
         // and only the app its undo's id.
         Inverse::Fs { txn } => Inverse::Fs { txn },
@@ -359,6 +371,7 @@ pub fn inverse_word(inverse: Option<Inverse>) -> String {
         Some(Inverse::Started(name)) => format!("started:{}", name.as_str()),
         Some(Inverse::Stopped(name)) => format!("stopped:{}", name.as_str()),
         Some(Inverse::Generation { from, to }) => format!("generation:{from}:{to}"),
+        Some(Inverse::Local { from, to }) => format!("local:{from}:{to}"),
         Some(Inverse::Fs { txn }) => format!("fs:{txn}"),
         Some(Inverse::Fired {
             rule,
@@ -415,6 +428,10 @@ pub fn parse_inverse(text: &str) -> Option<Option<Inverse>> {
         "started" => Inverse::Started(Name::new(parts.next()?)?),
         "stopped" => Inverse::Stopped(Name::new(parts.next()?)?),
         "generation" => Inverse::Generation {
+            from: number(parts.next())?,
+            to: number(parts.next())?,
+        },
+        "local" => Inverse::Local {
             from: number(parts.next())?,
             to: number(parts.next())?,
         },

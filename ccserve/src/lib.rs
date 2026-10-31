@@ -63,7 +63,7 @@ pub const XCC_HEADERS: [(&str, &[u8]); 9] = [
 /// (`kabi::plan::CC`) must cover; a test checks it does. Fixed parts are
 /// measured and rounded up; the kept modules are an estimate.
 pub mod budget {
-    use crate::{compiler, session};
+    use crate::{build, compiler, session};
 
     /// The `cc` program as loaded: 3.1 MiB in a dev build.
     pub const IMAGE: u64 = 4 << 20;
@@ -73,8 +73,15 @@ pub mod budget {
     pub const COMPILER: u64 = 3 << 19;
     /// One kept entry's module and instance, estimated.
     pub const ENTRY: u64 = 16 << 10;
+    /// A `cc build` at its height, beside the session: its objects, their
+    /// copies in the link's scratch tree, its source bundle, and the linked
+    /// module, its rewrite and the artifact, each at most an artifact long.
+    pub const BUILD: u64 = 2 * build::MAX_OBJECTS as u64
+        + livecore::artifact::MAX_SOURCE as u64
+        + 3 * kabi::live::MAX_ARTIFACT as u64;
 
-    /// The whole: the fixed parts, one compile, one session, every kept entry.
+    /// The whole: the fixed parts, one compile, one session, every kept entry,
+    /// and a build.
     pub const fn total() -> u64 {
         IMAGE
             + STACK
@@ -82,6 +89,7 @@ pub mod budget {
             + compiler::MAX_MEMORY as u64
             + session::SESSION_MEMORY as u64
             + ENTRY * session::MAX_ENTRIES as u64
+            + BUILD
     }
 }
 

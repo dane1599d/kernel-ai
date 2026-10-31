@@ -15,6 +15,7 @@ mod actions;
 mod apart;
 mod appline;
 mod apps;
+mod ccbuild;
 mod centry;
 mod cmode;
 mod effects;
@@ -112,6 +113,11 @@ struct FakeHost {
     /// every request the shell sent cc.
     cc_script: RefCell<VecDeque<Vec<u8>>>,
     cc_sent: RefCell<Vec<String>>,
+    /// `cc build`'s calls to `pkg` and the host, in order, the answers a
+    /// test scripts for `pkg`, and what `cc_build` gives.
+    pkg_sent: RefCell<Vec<String>>,
+    pkg_answers: RefCell<VecDeque<Result<String, String>>>,
+    cc_built: RefCell<Option<Result<crate::ccbuild::CcBuilt, String>>>,
     /// The `fs` server's files, and each transaction's files before and after.
     files: RefCell<std::collections::BTreeMap<String, String>>,
     txns: RefCell<Vec<(Files, Files)>>,
@@ -266,6 +272,9 @@ impl FakeHost {
             cc: RefCell::new(None),
             cc_script: RefCell::new(VecDeque::new()),
             cc_sent: RefCell::new(Vec::new()),
+            pkg_sent: RefCell::new(Vec::new()),
+            pkg_answers: RefCell::new(VecDeque::new()),
+            cc_built: RefCell::new(None),
             files: RefCell::new(Files::new()),
             txns: RefCell::new(Vec::new()),
             one_action: Cell::new(false),
@@ -698,6 +707,24 @@ impl Host for FakeHost {
 
     fn audit(&self, text: &str) {
         self.audit.borrow_mut().push(String::from(text));
+    }
+
+    fn pkg(&self, request: &str) -> Result<String, String> {
+        self.pkg_sent.borrow_mut().push(String::from(request));
+        let answer = self.pkg_answers.borrow_mut().pop_front();
+        answer.unwrap_or_else(|| Err(String::from("no pkg here")))
+    }
+
+    fn cc_build(&self, name: &str, version: &str) -> Result<crate::ccbuild::CcBuilt, String> {
+        self.pkg_sent
+            .borrow_mut()
+            .push(format!("cc_build {name} {version}"));
+        let built = self.cc_built.borrow_mut().take();
+        built.unwrap_or_else(|| Err(String::from("no cc here")))
+    }
+
+    fn pkg_local(&self, name: &str, path: &str) -> Result<String, String> {
+        self.pkg(&format!("local {name} {path}"))
     }
 
     fn cc(&self, request: &[u8]) -> Result<Vec<u8>, String> {

@@ -30,6 +30,7 @@ mod appearance;
 pub mod appline;
 pub mod apps;
 mod brackets;
+pub mod ccbuild;
 mod centry;
 mod cmode;
 mod commands;
@@ -215,6 +216,22 @@ pub trait Host {
     /// the `c>` prompt).
     fn cc(&self, _request: &[u8]) -> Result<Vec<u8>, String> {
         Err(String::from("there is no c> service here"))
+    }
+    /// One request to `pkg` through the shell's route to it: the text after
+    /// its `ok`, or why not (P4 task 13).
+    fn pkg(&self, _request: &str) -> Result<String, String> {
+        Err(String::from("there is no pkg service here"))
+    }
+    /// `cc build`'s work outside the shell's logic: component `name`'s
+    /// sources, read from [`ccbuild::DIR`], built by `cc` at `version`, and the
+    /// artifact written beside them.
+    fn cc_build(&self, _name: &str, _version: &str) -> Result<ccbuild::CcBuilt, String> {
+        Err(String::from("cc build needs the files and cc here"))
+    }
+    /// Hands the artifact at `path` to `pkg`'s `local` as a read-only File:
+    /// the text after its `ok`.
+    fn pkg_local(&self, _name: &str, _path: &str) -> Result<String, String> {
+        Err(String::from("there is no pkg service here"))
     }
     /// A read of the user's files: its text, or why there is none.
     fn fs_read(&self, _read: FsRead) -> Result<String, String> {
