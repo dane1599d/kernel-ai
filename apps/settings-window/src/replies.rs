@@ -13,11 +13,13 @@
 //! | `apps` | the names of the apps that can nap, one a line |
 //! | `file appearance`, `file apps`, `file updates` | the settings file's bytes |
 
+use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use comp_settings::access;
 use comp_settings::files::{Appearance, Apps, Updates};
 use comp_settings::{RuleLine, RuleRef, Settings};
+use comp_settings_ui::clock;
 
 /// Most lines kept of a list.
 pub const MAX_LINES: usize = 64;
@@ -103,6 +105,31 @@ impl Read {
             }
         }
         Ok(Vec::new())
+    }
+}
+
+impl Read {
+    /// One line saying what the answer put on the page, for the log: counts and
+    /// the names the pages show, never a rule's or a grant's words, since the
+    /// window is private to the agent. `apps` is what [`Read::apply`] gave.
+    pub fn summary(self, settings: &Settings, apps: usize) -> String {
+        match self {
+            Read::Rules => format!("rules {}", settings.rules.len()),
+            Read::Grants => format!("grants {apps} apps"),
+            Read::About => format!("about {}", settings.about.version),
+            Read::Profiles => format!(
+                "profiles {}, in force {}",
+                settings.profiles.len(),
+                settings.profile.as_deref().unwrap_or("none")
+            ),
+            Read::Apps => format!("apps {} can nap", settings.nappable.len()),
+            Read::FileAppearance => format!("appearance theme {}", settings.appearance.theme),
+            Read::FileApps => format!("keep running {}", settings.apps.keep_running.len()),
+            Read::FileUpdates => match settings.updates.restart_window {
+                Some((start, end)) => format!("restart window {}-{}", clock(start), clock(end)),
+                None => String::from("restart window off"),
+            },
+        }
     }
 }
 
@@ -412,10 +439,41 @@ mod tests {
             .unwrap();
         assert_eq!(s.appearance.theme, "light");
         assert!(s.appearance.legible);
-        let updates = Updates {
-            restart_window: Some((120, 300)),
-        };
-        Read::FileUpdates.apply(&mut s, &updates.encode()).unwrap();
+        Read::FileUpdates
+            .apply(&mut s, b"kai-updates 1\nrestart-window 120 300\n")
+            .unwrap();
         assert_eq!(s.updates.restart_window, Some((120, 300)));
+    }
+
+    #[test]
+    fn each_read_says_what_it_put_on_the_pages_without_the_words_of_a_rule() {
+        let mut s = Settings::default();
+        let mut say = |read: Read, text: &str| {
+            let apps = read.apply(&mut s, text.as_bytes()).unwrap();
+            read.summary(&s, apps.len())
+        };
+        let rules = "1 allow stop of cache\nS2 on idle -> x\n";
+        assert_eq!(say(Read::Rules, rules), "rules 2");
+        assert_eq!(say(Read::Grants, "notes\nfiles\n"), "grants 2 apps");
+        assert_eq!(
+            say(Read::About, "version: 0.1.0-dev\ncommit: abc\n"),
+            "about 0.1.0-dev"
+        );
+        assert_eq!(
+            say(Read::Profiles, "balanced\n* quiet\nfocus\n"),
+            "profiles 3, in force quiet"
+        );
+        assert_eq!(say(Read::Apps, "notes\nfiles\n"), "apps 2 can nap");
+        assert_eq!(
+            say(Read::FileAppearance, "kai-appearance 1\ntheme = light\n"),
+            "appearance theme light"
+        );
+        assert_eq!(say(Read::FileApps, "kai-keep 1\nnotes\n"), "keep running 1");
+        assert_eq!(say(Read::FileUpdates, ""), "restart window off");
+        assert_eq!(
+            say(Read::FileUpdates, "kai-updates 1\nrestart-window 120 300\n"),
+            "restart window 02:00-05:00"
+        );
+        assert!(!say(Read::Rules, rules).contains("cache"));
     }
 }
