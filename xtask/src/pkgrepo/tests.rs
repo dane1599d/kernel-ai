@@ -77,17 +77,21 @@ fn an_app_whose_parts_disagree_is_refused() {
     let artifact = notes_artifact();
     let app = |name, summary, licence| App {
         name,
+        component: "notes",
         label: "2",
         summary,
         licence,
-        wit: components::NOTES_RECIPE.wit[0],
+        wit: components::NOTES_RECIPE.wit,
     };
     let refused = |app: App, bytes: &[u8], why: &str| {
         let err = pack(&root, &app, bytes).err().expect("refused");
         assert!(err.contains(why), "{err}");
     };
     refused(
-        app("memo", "Notes", "MPL-2.0"),
+        App {
+            component: "memo",
+            ..app("memo", "Notes", "MPL-2.0")
+        },
         &artifact,
         "is component notes",
     );
@@ -108,6 +112,69 @@ fn an_app_whose_parts_disagree_is_refused() {
         b"\0asm\x01\0\0\0",
         "no kai.manifest",
     );
+}
+
+/// The Notes window, `comp/notes-window/1.wasm` on the boot drive, around a
+/// stub module: its real manifest and action rows.
+fn notes_window() -> (App, Vec<u8>) {
+    let version = components::VERSIONS
+        .iter()
+        .find(|v| v.recipe.component == "notes-window")
+        .unwrap();
+    let module = Vec::from(&b"\0asm\x01\0\0\0"[..]);
+    let source = artifact::bundle(&[("components/notes-window/src/lib.rs", b"//")]);
+    let root = crate::workspace_root();
+    let artifact = components::pack(&root, &version.recipe, version.label, module, &source);
+    let app = App {
+        name: "notes",
+        component: "notes-window",
+        label: version.label,
+        summary: "Plain-text notes the AI can read and write",
+        licence: "MPL-2.0",
+        wit: version.recipe.wit,
+    };
+    (app, artifact.unwrap())
+}
+
+#[test]
+fn a_window_packs_as_its_apps_package_and_runs_as_the_window() {
+    let (app, artifact) = notes_window();
+    let package = pack(&crate::workspace_root(), &app, &artifact).unwrap();
+    assert_eq!(package.header.name, "notes");
+    assert_eq!(package.header.kind, Kind::App);
+    let service = kaipkg::app::service(&package.header, &package.bytes);
+    assert_eq!(service, Ok(Some("notes-window".into())));
+    // The window fronts Notes' rows, so they keep Notes' prefix.
+    assert!(!package.actions.is_empty());
+    assert!(package.actions.iter().all(|a| a.starts_with("notes_")));
+    let repo = tuf::build(&[package], &keys(1), NOW).unwrap();
+    let (kept, refused) = image(repo).unwrap();
+    assert_eq!(
+        (kept, refused),
+        (vec!["notes-1.0.0.kpkg".to_string()], vec![])
+    );
+}
+
+#[test]
+fn a_package_carries_only_its_own_window() {
+    let root = crate::workspace_root();
+    let (app, artifact) = notes_window();
+    let files = App {
+        name: "files",
+        component: "files-window",
+        ..notes_window().0
+    };
+    let err = pack(&root, &files, &artifact).err().unwrap();
+    assert!(
+        err.contains("the artifact is component notes-window"),
+        "{err}"
+    );
+    let other = App {
+        component: "files-window",
+        ..app
+    };
+    let err = pack(&root, &other, &artifact).err().unwrap();
+    assert!(err.contains("not files-window"), "{err}");
 }
 
 #[test]
