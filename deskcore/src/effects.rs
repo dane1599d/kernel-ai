@@ -715,6 +715,22 @@ mod tests {
         parse_results(&wire).remove(0)
     }
 
+    /// The desktop tour's Files window (`03-files`): `notes.txt`, `plan.txt` and
+    /// `ideas.txt` were created, `fs_list` answered all three, and the app was
+    /// told only the first line. Through the shell, `desktop` and `comphost`, an
+    /// app's own listing and a person's both reach it whole.
+    #[test]
+    fn a_folder_of_three_files_reaches_the_app_with_all_three() {
+        let listing = "ideas.txt\nnotes.txt\nplan.txt\n";
+        for user in [false, true] {
+            let got = through("files-window", user, &[ok(listing)]);
+            assert_eq!(got, alloc::vec![ok(listing)], "user {user}");
+        }
+        // With a folder in it, and among other results of the same reply.
+        let mixed = alloc::vec![ok("Done: x"), ok("docs/\nnotes.txt\n"), ok("plain")];
+        assert_eq!(through("files-window", false, &mixed), mixed);
+    }
+
     #[test]
     fn a_listing_arrives_with_every_name() {
         let listing = "ideas.txt\nnotes.txt\nplan.txt\n";
