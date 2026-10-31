@@ -2,11 +2,19 @@
 # it downloads the pinned qwen3-4b-2507 file named in xtask/models.json, checks
 # its SHA-256, runs `cargo xtask fluency --local qwen3-4b-2507` through Kernel
 # AI's own engine and uploads the run's jsonl. Started by hand only (Actions tab,
-# "Fluency gate on the real model", Run workflow).
+# "Fluency gate on the real model", Run workflow). Language `c` runs spike
+# S12-2 (ADR 0012): the same tasks as Kai C programs with the c-1 card, each
+# compiled by cc.wasm on this runner (`--c`).
 name: Fluency gate on the real model
 
 on:
   workflow_dispatch:
+    inputs:
+      language:
+        description: "rhai (the M8 gate) or c (spike S12-2)"
+        type: choice
+        options: [rhai, c]
+        default: rhai
 
 permissions:
   contents: read
@@ -59,11 +67,12 @@ jobs:
       - name: Run the gate's 50 tasks on the local engine
         env:
           KAI_MODELS: ${{ runner.temp }}/kai-models
-        run: cargo xtask fluency --local "$MODEL_ID"
+          C_FLAG: ${{ inputs.language == 'c' && '--c' || '' }}
+        run: cargo xtask fluency --local "$MODEL_ID" $C_FLAG
       - name: Upload the run
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: fluency-${{ env.MODEL_ID }}-${{ github.run_id }}
+          name: fluency-${{ inputs.language }}-${{ env.MODEL_ID }}-${{ github.run_id }}
           path: target/fluency/*.jsonl
           if-no-files-found: warn

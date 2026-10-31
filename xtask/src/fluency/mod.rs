@@ -1,5 +1,8 @@
 //! `cargo xtask fluency --llm HOST:PORT --model NAME [--repeat N]`, or
-//! `cargo xtask fluency --local ID [--store DIR]`
+//! `cargo xtask fluency --local ID [--store DIR] [--c]`
+//!
+//! With `--c` (spike S12-2, ADR 0012) the same 50 tasks ask for Kai C
+//! programs instead of Rhai scripts, run by the real `cc` service ([`c`]).
 //!
 //! The M8b gate: does the model write scripts the shell accepts, and do they do
 //! what was asked? Each task goes through the OS's own path: the same chat
@@ -12,6 +15,7 @@
 //! [`REPAIRED_GATE`]% pass after at most one repair. Every run is written to
 //! `target/fluency/<unix time>.jsonl`.
 
+pub(crate) mod c;
 #[cfg(test)]
 mod grain;
 pub(crate) mod host;
@@ -265,10 +269,13 @@ enum Backend {
 struct Options {
     backend: Backend,
     repeat: u32,
+    /// Kai C programs instead of Rhai scripts (spike S12-2).
+    c: bool,
 }
 
 fn parse(args: &[String]) -> Result<Options, String> {
     let (mut server, mut model, mut local, mut store, mut repeat) = (None, None, None, None, 1);
+    let mut c = false;
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
         let mut value = |what: &str| rest.next().cloned().ok_or(format!("{arg} expects {what}"));
@@ -277,6 +284,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--model" => model = Some(value("a model name")?),
             "--local" => local = Some(value("a catalog model id")?),
             "--store" => store = Some(value("a directory")?),
+            "--c" => c = true,
             "--repeat" => {
                 repeat = value("a count")?
                     .parse()
@@ -304,7 +312,10 @@ fn parse(args: &[String]) -> Result<Options, String> {
             model: model.ok_or("fluency needs --model NAME")?,
         },
     };
-    Ok(Options { backend, repeat })
+    if c && !matches!(backend, Backend::Local { .. }) {
+        return Err("--c goes with --local".into());
+    }
+    Ok(Options { backend, repeat, c })
 }
 
 /// Pass counts over a set of runs.
@@ -343,12 +354,19 @@ fn clip(text: &str, max: usize) -> String {
     }
 }
 
-fn record(number: usize, repeat: u32, task: &Task, outcome: &Outcome, ms: u128) -> Value {
+fn record(
+    number: usize,
+    repeat: u32,
+    task: &Task,
+    reference: &str,
+    outcome: &Outcome,
+    ms: u128,
+) -> Value {
     json!({
         "task": number + 1,
         "repeat": repeat + 1,
         "request": task.request,
-        "reference": task.reference,
+        "reference": reference,
         "rounds": outcome.rounds,
         "passed": outcome.failure.is_none(),
         "first_try": outcome.first_try(),
@@ -411,8 +429,12 @@ pub fn main(args: &[String], target_dir: &Path) -> Result<(), String> {
             Backend::Local { id, store } => {
                 let (engine, line) = local::load(id, store.as_deref())?;
                 println!("xtask: fluency: local model {line}");
+                let c = options.c;
                 (
-                    Box::new(move || local::transport(engine.clone())),
+                    Box::new(move || match c {
+                        true => local::program_transport(engine.clone()),
+                        false => local::transport(engine.clone()),
+                    }),
                     id.clone(),
                     format!("local: {line}"),
                 )
@@ -422,13 +444,18 @@ pub fn main(args: &[String], target_dir: &Path) -> Result<(), String> {
         "model": model,
         "server": server,
         "repeat": options.repeat,
+        "language": if options.c { "c" } else { "rhai" },
         "tasks": TASKS.len(),
         // Normalised, so CRLF and LF checkouts of one commit record the same hash.
         "tasks_sha256": crate::sha256_hex(tasks_text().as_bytes()),
         "started_unix": started,
     })];
+    let language = match options.c {
+        true => "Kai C programs with the c-1 card (spike S12-2)",
+        false => "Rhai scripts",
+    };
     println!(
-        "xtask: fluency gate, {} tasks x {} against {server} ({model})",
+        "xtask: fluency gate, {} tasks x {} as {language} against {server} ({model})",
         TASKS.len(),
         options.repeat,
     );
@@ -436,10 +463,13 @@ pub fn main(args: &[String], target_dir: &Path) -> Result<(), String> {
     for repeat in 0..options.repeat {
         for (number, task) in TASKS.iter().enumerate() {
             let clock = Instant::now();
-            let outcome = attempt(task, transport());
+            let (outcome, reference) = match options.c {
+                true => (c::attempt(task, &transport()), c::REFERENCES[number]),
+                false => (attempt(task, transport()), task.reference),
+            };
             let ms = clock.elapsed().as_millis();
             show(number, task, &outcome, ms);
-            records.push(record(number, repeat, task, &outcome, ms));
+            records.push(record(number, repeat, task, reference, &outcome, ms));
             outcomes.push(outcome);
         }
     }

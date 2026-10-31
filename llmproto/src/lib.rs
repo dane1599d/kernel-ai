@@ -19,6 +19,7 @@ pub mod http;
 pub mod local;
 pub mod openai;
 pub mod pack;
+pub mod program;
 pub mod script;
 pub mod text;
 pub mod tune;
