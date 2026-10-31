@@ -12,7 +12,5 @@
 [11] button "Refresh"
 [12] table "Processes" = "4 rows, selected \"4 | llm | 61.2% | 2.2 GiB\""
 [13] label "Model: ready, 12.5 tokens/s"
-[14] group ""
-[15] button "Stop" runs process_stop
-[16] label "Stops every process named llm"
+[16] label "To stop llm, ask Kai; it asks you first"
 [17] label "4 processes"
