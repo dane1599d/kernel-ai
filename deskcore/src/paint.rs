@@ -195,11 +195,13 @@ impl Painter {
         let y = self.baseline(bar.y, bar.h, TypeStyle::MonoTitle);
         let style = TypeStyle::MonoTitle;
         let x = (bar.x + PAD) as f32;
-        let x = x + self.draw_text(&mut c, text_clip, x, y, style, label, &window.label);
-        if !window.title.is_empty() {
-            let rest = format!("  {}", window.title);
-            self.draw_text(&mut c, text_clip, x, y, style, title, &rest);
-        }
+        // The app's own title, as the top bar's tabs show it; the service name
+        // only for a window that sets none. The name stays in the logs and the
+        // agent's view.
+        match window.title.is_empty() {
+            true => self.draw_text(&mut c, text_clip, x, y, style, label, &window.label),
+            false => self.draw_text(&mut c, text_clip, x, y, style, title, &window.title),
+        };
         for (part, r) in controls {
             icon(
                 &mut c,

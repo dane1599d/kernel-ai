@@ -361,6 +361,31 @@ fn an_apps_effect_row_is_revoked_and_restored_by_app_and_row() {
     assert!(g.take_settings().is_empty());
 }
 
+/// The shell answers `file appearance` with the saved `kai-appearance 1` text:
+/// the Appearance page shows its theme, and an empty answer (nothing saved) or
+/// text that is not that leaves the defaults.
+#[test]
+fn the_appearance_page_shows_the_theme_the_shell_saved() {
+    let Some(mut g) = load() else { return };
+    let (_, first) = frame(&mut g);
+    assert_eq!(theme_of(&first), "dark");
+    call(&mut g, |g| g.deliver_event(&AppEvent::Started)).unwrap();
+    let asked = sent(&mut g);
+    assert_eq!(asked[5].2, "file appearance");
+    answer(&mut g, asked[5].0, Ok("kai-appearance 1\ntheme = light\n"));
+    assert_eq!(theme_of(&frame(&mut g).1), "light");
+    // Nothing saved is an empty answer; text that is not the file, or a theme
+    // that is not shipped, is not taken either: the defaults stay.
+    for unsaved in ["", "junk", "kai-appearance 1\ntheme = neon\n"] {
+        let Some(mut h) = load() else { return };
+        frame(&mut h);
+        call(&mut h, |h| h.deliver_event(&AppEvent::Started)).unwrap();
+        let asked = sent(&mut h);
+        answer(&mut h, asked[5].0, Ok(unsaved));
+        assert_eq!(theme_of(&frame(&mut h).1), "dark", "{unsaved:?}");
+    }
+}
+
 /// The shell lists up to 32 apps, and the host takes only `MAX_QUEUED` requests
 /// of a call: the rows are asked for a few at a time, each answer making room
 /// for the next, and never more than the host would trap on.
@@ -372,6 +397,13 @@ fn the_rows_of_many_apps_are_asked_for_as_answers_make_room() {
     let asked = sent(&mut g);
     let names: String = (0..40).map(|i| format!("app{i}\n")).collect();
     answer(&mut g, asked[1].0, Ok(&names));
+    // The other start reads are answered while the rows are still to be asked
+    // for; none of them may empty the queue of apps.
+    for (i, (ticket, ..)) in asked.iter().enumerate() {
+        if i != 1 {
+            answer(&mut g, *ticket, Ok(""));
+        }
+    }
     let mut order = Vec::new();
     let mut waiting = sent(&mut g);
     assert!(
@@ -428,22 +460,45 @@ fn the_agent_opens_a_page_by_its_word() {
 }
 
 #[test]
-fn it_comes_back_to_the_page_it_was_showing() {
+fn the_page_shown_is_not_state_so_a_read_only_open_changes_nothing_and_a_restart_starts_over() {
     let Some(wasm) = wasm() else { return };
     let mut g = start(&wasm);
     let (w, _) = frame(&mut g);
+    let before = Instance::export(&mut g, 0).unwrap().unwrap();
+    // `settings_open` is declared read-only, and the host refuses a read-only
+    // row that changes the checkpoint: the page it moves is not in it.
+    let r = call(&mut g, |g| {
+        Instance::call(g, &open_page(), &[Val::String("access".into())])
+    });
+    assert!(matches!(r.unwrap().unwrap(), Val::Result(Ok(_))));
+    g.take_ui();
+    assert_eq!(Instance::export(&mut g, 0).unwrap().unwrap(), before);
+    // Nor does the person's own page switch.
     call(&mut g, |g| {
         g.ui_events(w, &[UiEvent::Changed(TABS, Value::Index(3))])
             .unwrap()
     });
     g.take_ui();
     let saved = Instance::export(&mut g, 0).unwrap().unwrap();
+    assert_eq!(saved, before);
+    // A restart starts on the first page, with the Appearance page's button.
     let mut h = start(&wasm);
     assert_eq!(h.import(&saved, 1), Ok(0));
     let (_, f) = frame(&mut h);
-    // Page 3 is "Keep running"; the Appearance page's theme button is gone.
-    assert!(!names(&f).iter().any(|n| n.starts_with("Theme: ")));
+    assert!(names(&f).iter().any(|n| n.starts_with("Theme: ")));
     // A state it cannot read and another schema are refused, not guessed at.
     assert_eq!(h.import(b"junk", 1), Ok(2));
     assert_eq!(h.import(&saved, 9), Ok(1));
+    // The state today's version saved, with the page in it, still imports (a
+    // live update from it): the page is dropped and the window starts over.
+    #[derive(minicbor::Encode)]
+    struct Old {
+        #[n(0)]
+        page: u32,
+    }
+    let old = compsdk::state::encode(1, &Old { page: 3 });
+    let mut j = start(&wasm);
+    assert_eq!(j.import(&old, 1), Ok(0));
+    let (_, f) = frame(&mut j);
+    assert!(names(&f).iter().any(|n| n.starts_with("Theme: ")));
 }
