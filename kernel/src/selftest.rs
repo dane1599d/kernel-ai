@@ -473,14 +473,16 @@ pub fn plan(test: SelfTest) -> Option<String> {
         return None;
     }
     // The v0.1 system (`kabi::plan::system`): what the default boot plans, and
-    // what `desk-default` boots unchanged, then the boot manifest's `notes` and
-    // the edit service.
+    // what `desk-default` boots unchanged. With a build service (`build=`, the
+    // edit loop), the boot manifest's headless `notes`, which `:edit notes` and
+    // the editor build, and the edit service follow; without one no user sees
+    // `notes`, and it would cost 32 MiB of the admission budget at boot.
     if matches!(test, SelfTest::None | SelfTest::DeskDefault) {
         let files = crate::block::has_partition(diskmap::KAI_DATA_TYPE);
         let mut plan = kabi::plan::system::plan(&crate::llm::plan_line(), files);
-        plan.push('\n');
-        plan.push_str(&crate::boot_manifest::plan_line());
         if let Some(edit) = crate::build_service::plan_line() {
+            plan.push('\n');
+            plan.push_str(&crate::boot_manifest::plan_line());
             plan.push('\n');
             plan.push_str(&edit);
         }

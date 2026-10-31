@@ -11,8 +11,8 @@
 //!   started when first opened, from the panel, the Apps sheet or `ui_open`;
 //! - the shell, with its route to `desktop`.
 //!
-//! The boot manifest's `notes` and the edit service come after, from the
-//! kernel, as before.
+//! With a build service (`build=`), the kernel adds the boot manifest's headless
+//! `notes` and the edit service after these; a boot without one runs neither.
 
 use super::{CC, FS};
 use alloc::string::String;
