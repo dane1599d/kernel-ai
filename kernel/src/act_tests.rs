@@ -317,6 +317,7 @@ pub fn check(which: ActCase) -> Result<(), &'static str> {
         ActCase::Convo => convo(),
         ActCase::AppRoute => crate::app_route_tests::check(),
         ActCase::AppTerminal => crate::app_terminal_tests::check(),
+        ActCase::AppMonitor => crate::app_monitor_tests::check(),
         ActCase::FsAct => expect_lines(FS_ACT).map(|()| {
             log!("fs-act: a plain create and move ran at once on kai-data, and a read showed only to the user");
         }),

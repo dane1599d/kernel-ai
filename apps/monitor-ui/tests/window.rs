@@ -1,13 +1,11 @@
 //! The System monitor window on the host: golden display lists of its views,
 //! drawn by `uikit` with `FixedAdvance`, the round trip from window events to
-//! the call the OS is asked for, and that every state's tree is one `uikit`
-//! accepts. Set `UIKIT_BLESS=1` to rewrite the goldens, and review the diff.
+//! the model, and that every state's tree is one `uikit` accepts. Set `UIKIT_BLESS=1` to rewrite the goldens, and review the diff.
 
-use comp_monitor::fake::Queue;
 use comp_monitor::sample::{ModelState, ModelStatus, ProcSample, Sample};
 use comp_monitor::{MAX_PROCS, Monitor, Sort};
 use comp_monitor_ui::{
-    self as ui, Change, Entry, REFRESH, SORT_CPU, SORT_MEMORY, SORT_NAME, SORT_PID, STOP, TABLE,
+    self as ui, Change, Entry, REFRESH, SORT_CPU, SORT_MEMORY, SORT_NAME, SORT_PID, TABLE,
 };
 use std::path::PathBuf;
 use uikit::a11y::Action;
@@ -69,14 +67,12 @@ const ANSWERING: ModelStatus = ModelStatus {
 
 struct App {
     mon: Monitor,
-    os: Queue,
 }
 
 impl App {
     fn new() -> Self {
         Self {
             mon: Monitor::new(),
-            os: Queue::default(),
         }
     }
 
@@ -93,7 +89,7 @@ impl App {
     }
 
     fn event(&mut self, e: &UiEvent) -> bool {
-        ui::on_ui(&mut self.mon, &mut self.os, e)
+        ui::on_ui(&mut self.mon, e)
     }
 }
 
@@ -171,20 +167,22 @@ fn the_buttons_are_bound_to_the_rows_they_run() {
     for sort in [SORT_CPU, SORT_MEMORY, SORT_NAME, SORT_PID] {
         assert_eq!(bound(sort).as_deref(), Some("monitor_sort"));
     }
-    assert_eq!(bound(STOP).as_deref(), Some("process_stop"));
     assert_eq!(bound(REFRESH), None);
-    // The row the monitor stops with is the OS's.
-    assert!(agentabi::ROWS.iter().any(|r| r.name == "process_stop"));
+    // The window has no button bound to the OS: stopping a process is Kai's.
+    assert!(tree.iter().all(|e| !matches!(
+        &e.widget,
+        Widget::Button { action: Some(a), .. } if a != "monitor_sort"
+    )));
 }
 
 #[test]
-fn clicks_in_the_window_become_the_call_the_os_is_asked_for() {
+fn clicks_in_the_window_move_the_model() {
     let mut app = App::full();
     let old = app.tree();
     let mut win = window(&old);
     win.commit(&M);
 
-    // The user clicks the second row, then Stop.
+    // The user clicks the second row.
     let picked = win
         .act(TABLE, Action::SetValue, Some(Value::Index(1)), &M)
         .unwrap();
@@ -192,12 +190,6 @@ fn clicks_in_the_window_become_the_call_the_os_is_asked_for() {
         assert!(app.event(e));
     }
     assert_eq!(app.mon.selected().unwrap().name, "desktop");
-    assert!(app.event(&UiEvent::Pressed(STOP)));
-    let call = &app.os.calls[0];
-    assert_eq!(
-        (call.name, call.args.as_str()),
-        ("process_stop", r#"{name: "desktop"}"#)
-    );
 
     // A sort button sorts, and the same button reverses.
     assert!(app.event(&UiEvent::Pressed(SORT_MEMORY)));
@@ -211,7 +203,6 @@ fn clicks_in_the_window_become_the_call_the_os_is_asked_for() {
 
     // Refresh only redraws: the component reads a new sample after any event.
     assert!(app.event(&UiEvent::Pressed(REFRESH)));
-    assert_eq!(app.os.calls.len(), 1);
 
     // What the window does not use changes nothing.
     assert!(!app.event(&UiEvent::Pressed(9_999)));
@@ -220,14 +211,21 @@ fn clicks_in_the_window_become_the_call_the_os_is_asked_for() {
 }
 
 #[test]
-fn stop_with_nothing_selected_asks_nothing() {
+fn the_hint_points_to_kai_for_a_stop_and_names_the_process_picked() {
     let mut app = App::full();
-    assert!(app.event(&UiEvent::Pressed(STOP)));
-    assert!(app.os.calls.is_empty());
-    let tree = app.tree();
-    let status = tree.iter().find(|e| e.id == ui::STATUS).unwrap();
+    let hint = |app: &App| {
+        let tree = app.tree();
+        match &tree.iter().find(|e| e.id == ui::HINT).unwrap().widget {
+            Widget::Label { text, .. } => text.clone(),
+            other => panic!("{other:?}"),
+        }
+    };
+    assert!(hint(&app).contains("ask Kai"), "{}", hint(&app));
+    app.mon.act_select("llm").unwrap();
+    let hint = hint(&app);
     assert!(
-        matches!(&status.widget, Widget::Label { text, .. } if text.contains("Pick a process"))
+        hint.contains("stop llm") && hint.contains("ask Kai"),
+        "{hint}"
     );
 }
 
@@ -255,8 +253,7 @@ fn every_state_is_a_tree_the_window_accepts_and_the_diff_sends_less() {
     step(&app, &mut shown, &mut win, 3);
     app.mon.update(&usual(3, ModelStatus::UNKNOWN));
     step(&app, &mut shown, &mut win, 4);
-    app.mon.stop_selected(&mut app.os);
-    app.mon.done(1, Err("the user said no".into()));
+    app.mon.no_reading("the system could not be read");
     step(&app, &mut shown, &mut win, 5);
     assert!(ui::diff(&shown, &shown).is_empty());
 }

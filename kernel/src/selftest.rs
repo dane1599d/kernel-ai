@@ -29,6 +29,9 @@ pub enum ActCase {
     /// `app-terminal` (P4 task 4): the agent types into the Terminal app and a
     /// person's Enter runs the line.
     AppTerminal,
+    /// `app-monitor` (P4 task 9): the agent sorts the Monitor by memory, and
+    /// stopping a process asks.
+    AppMonitor,
     /// `profile-switch` (P3 task 12): profiles through the supervisor.
     Profile,
 }
@@ -289,6 +292,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=fs-trash" => Some(SelfTest::Act(ActCase::FsTrash)),
             "test=app-route" => Some(SelfTest::Act(ActCase::AppRoute)),
             "test=app-terminal" => Some(SelfTest::Act(ActCase::AppTerminal)),
+            "test=app-monitor" => Some(SelfTest::Act(ActCase::AppMonitor)),
             "test=profile-switch" => Some(SelfTest::Act(ActCase::Profile)),
             "test=fs-undo-reboot" => Some(SelfTest::Act(
                 match cmdline.split_whitespace().any(|w| w == "reread") {
@@ -570,6 +574,11 @@ pub fn plan(test: SelfTest) -> Option<String> {
             SelfTest::Act(ActCase::AppTerminal) => {
                 plan.push('\n');
                 plan.push_str(crate::app_terminal_tests::PLAN);
+                kabi::plan::SHELL_DESK
+            }
+            SelfTest::Act(ActCase::AppMonitor) => {
+                plan.push('\n');
+                plan.push_str(&crate::app_monitor_tests::plan());
                 kabi::plan::SHELL_DESK
             }
             SelfTest::DeskAgent | SelfTest::DeskTakeover | SelfTest::AppSettings => {
