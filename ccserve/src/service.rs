@@ -14,7 +14,7 @@
 use crate::compiler::CompileError;
 use crate::dis::MAX_TEXT;
 use crate::session::{Done, Failure, Step};
-use crate::{Budget, Compiler, Host, LINE_NS, Session};
+use crate::{Budget, Compiler, Host, Session};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -104,7 +104,10 @@ impl<E: Effects> Service<E> {
         all.push(("kai.h", kai_h.as_bytes()));
         let compiler = Compiler::new(cc_wasm, &all)?;
         let kairt = compiler
-            .compile(KAIRT, &mut Budget::new(host, 10 * LINE_NS))
+            .compile(
+                KAIRT,
+                &mut Budget::new(host, host.line_ns().saturating_mul(10)),
+            )
             .map_err(|e| format!("kairt: {e:?}"))?;
         Ok(Self {
             compiler,
@@ -243,7 +246,7 @@ fn compile(
     prepared: &Prepared,
     host: &dyn Host,
 ) -> Result<Vec<u8>, CompileError> {
-    let budget = &mut Budget::new(host, LINE_NS);
+    let budget = &mut Budget::new(host, host.line_ns());
     match (
         compiler.compile(&prepared.source, budget),
         &prepared.fallback,

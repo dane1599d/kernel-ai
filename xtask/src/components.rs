@@ -40,6 +40,12 @@ const KAI_WIT: &[&str] = &["wit/kai-live", "wit/kai-app"];
 const WINDOW: &str = "components/notes-window";
 const NOTES_UI: &str = "components/notes-ui";
 const WINDOW_WIT: &str = "components/notes-window/wit";
+/// The Files app (P4 task 5): its window, model, tree and the shared `kai:ui` glue.
+const FILES_WINDOW: &str = "apps/files-window";
+const FILES_DIRS: &[&str] = &[FILES_WINDOW, "apps/files", "apps/files-ui", "apps/ui-bind"];
+const FILES_WINDOW_WIT: &str = "apps/files-window/wit";
+/// `app:files/actions`, which the window exports.
+const FILES_WIT: &str = "apps/files/wit";
 /// The Settings app (P4 task 7): its window, model, tree and the shared `kai:ui` glue.
 const SETTINGS_WINDOW: &str = "apps/settings-window";
 const SETTINGS_DIRS: &[&str] = &[
@@ -51,6 +57,29 @@ const SETTINGS_DIRS: &[&str] = &[
 const SETTINGS_WINDOW_WIT: &str = "apps/settings-window/wit";
 /// `app:settings/actions`, which the window exports.
 const SETTINGS_WIT: &str = "apps/settings/wit";
+
+/// The Terminal app (P4 task 4): its window, model, tree and the shared `kai:ui` glue.
+const TERMINAL_WINDOW: &str = "apps/terminal-window";
+const TERMINAL_DIRS: &[&str] = &[
+    TERMINAL_WINDOW,
+    "apps/terminal",
+    "apps/terminal-ui",
+    "apps/ui-bind",
+];
+const TERMINAL_WINDOW_WIT: &str = "apps/terminal-window/wit";
+/// The System monitor (P4 task 9): its window, model, tree, the sample format it
+/// reads (`systemabi`) and the shared `kai:ui` glue.
+const MONITOR_WINDOW: &str = "apps/monitor-window";
+const MONITOR_DIRS: &[&str] = &[
+    MONITOR_WINDOW,
+    "apps/monitor",
+    "apps/monitor-ui",
+    "apps/ui-bind",
+    "systemabi",
+];
+const MONITOR_WINDOW_WIT: &str = "apps/monitor-window/wit";
+/// `app:monitor/actions`, which the window exports.
+const MONITOR_WIT: &str = "apps/monitor/wit";
 
 /// `notes` from `components/notes`: version 2, and every upload the edit loop
 /// builds.
@@ -108,6 +137,28 @@ pub const VERSIONS: &[Version] = &[
             wit: &[WINDOW_WIT, "wit/kai-ui", NOTES_WIT],
         },
     },
+    // The Files app (P4 task 5), a window over the OS's file rows.
+    Version {
+        label: "1",
+        recipe: Recipe {
+            component: "files-window",
+            krate: "comp-files-window",
+            dirs: FILES_DIRS,
+            feature: None,
+            wit: &[FILES_WINDOW_WIT, "wit/kai-ui", FILES_WIT],
+        },
+    },
+    // The Terminal app (P4 task 4), today's shell in a window.
+    Version {
+        label: "1",
+        recipe: Recipe {
+            component: "terminal-window",
+            krate: "comp-terminal-window",
+            dirs: TERMINAL_DIRS,
+            feature: None,
+            wit: &[TERMINAL_WINDOW_WIT, "wit/kai-ui"],
+        },
+    },
     // The Settings app (P4 task 7), a window over the system's settings.
     Version {
         label: "1",
@@ -124,15 +175,77 @@ pub const VERSIONS: &[Version] = &[
             ],
         },
     },
+    // The System monitor (P4 task 9), a window over a reading of the machine.
+    Version {
+        label: "1",
+        recipe: Recipe {
+            component: "monitor-window",
+            krate: "comp-monitor-window",
+            dirs: MONITOR_DIRS,
+            feature: None,
+            wit: &[
+                MONITOR_WINDOW_WIT,
+                "wit/kai-ui",
+                "wit/kai-system",
+                MONITOR_WIT,
+            ],
+        },
+    },
 ];
 
-/// Builds and packs every version.
+/// Versions only the test images carry: a fixture that exists to be driven by a
+/// boot case, never shipped. [`build`] leaves them out, so the release and slot
+/// images, the VM image and the package repository never hold one;
+/// [`build_for_tests`] adds them for the images `cargo xtask test` boots, and
+/// [`check_no_test_only`] fails an image that has one. A version here is not also
+/// in [`VERSIONS`].
+pub const TEST_ONLY: &[Version] = &[];
+
+/// Builds and packs every version that ships.
 pub fn build(root: &Path) -> Result<Vec<Module>, String> {
     check_target()?;
     VERSIONS
         .iter()
         .map(|version| build_one(root, version))
         .collect()
+}
+
+/// [`build`], and the [`TEST_ONLY`] fixtures too: for the images the boot cases
+/// run, and nothing else.
+pub fn build_for_tests(root: &Path) -> Result<Vec<Module>, String> {
+    check_target()?;
+    VERSIONS
+        .iter()
+        .chain(TEST_ONLY)
+        .map(|version| build_one(root, version))
+        .collect()
+}
+
+/// Fails if one of `modules` is a [`TEST_ONLY`] fixture: what an image that
+/// ships (the release and slot images, a VM image) is checked with before it is
+/// made.
+pub fn check_no_test_only(modules: &[Module]) -> Result<(), String> {
+    check_none_of(modules, TEST_ONLY)
+}
+
+/// Where a version's module sits on the boot drive.
+fn module_path(version: &Version) -> String {
+    format!("comp/{}/{}.wasm", version.recipe.component, version.label)
+}
+
+/// By exact module path: a component may ship some versions and keep others for
+/// the tests (notes ships 1 and 2 and tests 3-import), so the component's name
+/// alone is not the fixture.
+fn check_none_of(modules: &[Module], fixtures: &[Version]) -> Result<(), String> {
+    for fixture in fixtures {
+        let path = module_path(fixture);
+        if modules.iter().any(|m| m.path == path) {
+            return Err(format!(
+                "{path} is a test fixture and must not ship in this image"
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn check_target() -> Result<(), String> {
@@ -198,9 +311,23 @@ fn build_one(root: &Path, version: &Version) -> Result<Module, String> {
         source_len / 1024
     );
     Ok(Module {
-        path: format!("comp/{}/{}.wasm", version.recipe.component, version.label),
+        path: module_path(version),
         bytes,
     })
+}
+
+fn world(recipe: &Recipe) -> String {
+    format!("app:{0}/{0}@1.0.0", recipe.component)
+}
+
+/// The app's `kai-actions 1` section, from its WIT under `root`.
+pub fn actions(root: &Path, recipe: &Recipe) -> Result<String, String> {
+    let dirs: Vec<PathBuf> = KAI_WIT
+        .iter()
+        .chain(recipe.wit)
+        .map(|dir| root.join(dir))
+        .collect();
+    crate::kai_actions::write(&dirs, &world(recipe))
 }
 
 /// The module with its manifest, action rows and source sections appended. The
@@ -212,13 +339,8 @@ pub fn pack(
     mut module: Vec<u8>,
     source: &[u8],
 ) -> Result<Vec<u8>, String> {
-    let world = format!("app:{0}/{0}@1.0.0", recipe.component);
-    let dirs: Vec<PathBuf> = KAI_WIT
-        .iter()
-        .chain(recipe.wit)
-        .map(|dir| root.join(dir))
-        .collect();
-    let actions = crate::kai_actions::write(&dirs, &world)?;
+    let world = world(recipe);
+    let actions = actions(root, recipe)?;
     let manifest = Manifest {
         lifecycle: 2,
         component: recipe.component.into(),
@@ -304,6 +426,90 @@ mod tests {
         assert!(paths.windows(2).all(|pair| pair[0] < pair[1]));
     }
 
+    fn fixture(component: &'static str) -> Version {
+        Version {
+            label: "1",
+            recipe: Recipe {
+                component,
+                krate: "none",
+                dirs: &[],
+                feature: None,
+                wit: &[],
+            },
+        }
+    }
+
+    #[test]
+    fn the_test_only_versions_are_not_in_the_set_that_ships() {
+        for fixture in TEST_ONLY {
+            assert!(
+                !VERSIONS
+                    .iter()
+                    .any(|v| v.recipe.component == fixture.recipe.component),
+                "{}",
+                fixture.recipe.component
+            );
+            assert!(kabi::live::valid_label(fixture.label));
+            let root = crate::workspace_root();
+            assert!(fixture.recipe.wit.iter().all(|w| root.join(w).is_dir()));
+            for dir in fixture.recipe.dirs {
+                assert!(root.join(dir).join("Cargo.toml").exists(), "{dir}");
+            }
+        }
+    }
+
+    #[test]
+    fn an_image_that_ships_refuses_a_fixture() {
+        let module = |path: &str| Module {
+            path: path.into(),
+            bytes: Vec::new(),
+        };
+        let fixtures = [fixture("fixture-window")];
+        let clean = [
+            module("comp/notes/1.wasm"),
+            module("comp/settings-window/1.wasm"),
+        ];
+        assert_eq!(check_none_of(&clean, &fixtures), Ok(()));
+        let dirty = [
+            module("comp/notes/1.wasm"),
+            module("comp/fixture-window/1.wasm"),
+        ];
+        assert_eq!(module_path(&fixtures[0]), "comp/fixture-window/1.wasm");
+        let why = check_none_of(&dirty, &fixtures).unwrap_err();
+        assert!(why.contains("comp/fixture-window/1.wasm"), "{why}");
+        // A component whose name only starts the same, or another version of the
+        // same component, is not the fixture.
+        let near = [
+            module("comp/fixture-window-x/1.wasm"),
+            module("comp/fixture-window/2.wasm"),
+        ];
+        assert_eq!(check_none_of(&near, &fixtures), Ok(()));
+        // The list that ships is checked with `check_no_test_only`.
+        assert_eq!(check_no_test_only(&clean), Ok(()));
+    }
+
+    /// The images that ship call the check before they are made, and the test
+    /// images are the only ones built with the fixtures.
+    #[test]
+    fn the_shipping_images_run_the_check_and_only_the_test_images_build_fixtures() {
+        for (name, source) in [
+            ("release_image.rs", include_str!("release_image.rs")),
+            ("vbox/mod.rs", include_str!("vbox/mod.rs")),
+        ] {
+            assert!(source.contains("components::check_no_test_only("), "{name}");
+            assert!(!source.contains("build_for_tests"), "{name}");
+        }
+        // The tasks that boot test cases (build, test, the smoke) and tune build
+        // the test images, with the fixtures; none of them packs only what ships.
+        for (name, source) in [
+            ("main.rs", include_str!("main.rs")),
+            ("tune/boot.rs", include_str!("tune/boot.rs")),
+        ] {
+            assert!(source.contains("components::build_for_tests("), "{name}");
+            assert!(!source.contains("components::build("), "{name}");
+        }
+    }
+
     /// Notes' window build carries Notes' own action rows, under its world.
     #[test]
     fn the_window_build_packs_with_notes_actions() {
@@ -320,6 +526,39 @@ mod tests {
         let actions = livecore::actions::parse(parsed.actions.unwrap()).unwrap();
         let add = actions.by_name("notes_add").unwrap();
         assert_eq!(add.export, "app:notes/actions@1.0.0#add");
+        // The shell loads them for the `notes-window` service, which fronts
+        // Notes' rows (docs/decisions.md, A-core's `<pkg>-window` rule).
+        let answer = format!("version 1\n{}", parsed.actions.unwrap());
+        let mut rows = shellcore::apps::AppRows::default();
+        assert_eq!(rows.load("notes-window", &answer), Ok(actions.rows.len()));
+        assert!(rows.find_in("notes-window", "notes_add").is_some());
+    }
+
+    /// The Files build carries its own action rows, under its world.
+    #[test]
+    fn the_files_build_packs_with_files_actions() {
+        let files = VERSIONS
+            .iter()
+            .find(|v| v.recipe.component == "files-window")
+            .unwrap();
+        let module = Vec::from(&b"\0asm\x01\0\0\0"[..]);
+        let root = crate::workspace_root();
+        let source = artifact::bundle(&[("apps/files-window/src/lib.rs", b"//")]);
+        let bytes = pack(&root, &files.recipe, files.label, module, &source).unwrap();
+        let parsed = artifact::parse(&bytes).unwrap();
+        assert_eq!(parsed.manifest.world, "app:files-window/files-window@1.0.0");
+        let actions = livecore::actions::parse(parsed.actions.unwrap()).unwrap();
+        for (row, export) in [
+            ("files_open", "open"),
+            ("files_reveal", "reveal"),
+            ("files_select", "select"),
+        ] {
+            let found = actions.by_name(row).unwrap();
+            assert_eq!(
+                found.export,
+                std::format!("app:files/actions@1.0.0#{export}")
+            );
+        }
     }
 
     /// The Settings build carries its own action row, under its world.
@@ -341,6 +580,62 @@ mod tests {
         let actions = livecore::actions::parse(parsed.actions.unwrap()).unwrap();
         let open = actions.by_name("settings_open").unwrap();
         assert_eq!(open.export, "app:settings/actions@1.0.0#open");
+    }
+
+    /// The Terminal build carries its three rows, under its world.
+    #[test]
+    fn the_terminal_build_packs_with_its_three_actions() {
+        let terminal = VERSIONS
+            .iter()
+            .find(|v| v.recipe.component == "terminal-window")
+            .unwrap();
+        let module = Vec::from(&b"\0asm\x01\0\0\0"[..]);
+        let root = crate::workspace_root();
+        let source = artifact::bundle(&[("apps/terminal-window/src/lib.rs", b"//")]);
+        let bytes = pack(&root, &terminal.recipe, terminal.label, module, &source).unwrap();
+        let parsed = artifact::parse(&bytes).unwrap();
+        assert_eq!(
+            parsed.manifest.world,
+            "app:terminal-window/terminal-window@1.0.0"
+        );
+        let actions = livecore::actions::parse(parsed.actions.unwrap()).unwrap();
+        for (name, export) in [
+            ("terminal_window_run", "run"),
+            ("terminal_window_read", "read"),
+            ("terminal_window_clear", "clear"),
+        ] {
+            let row = actions.by_name(name).unwrap();
+            assert_eq!(
+                row.export,
+                format!("app:terminal-window/actions@1.0.0#{export}")
+            );
+        }
+    }
+
+    /// The Monitor build carries its own action rows, under its world.
+    #[test]
+    fn the_monitor_build_packs_with_the_monitor_actions() {
+        let monitor = VERSIONS
+            .iter()
+            .find(|v| v.recipe.component == "monitor-window")
+            .unwrap();
+        let module = Vec::from(&b"\0asm\x01\0\0\0"[..]);
+        let root = crate::workspace_root();
+        let source = artifact::bundle(&[("apps/monitor-window/src/lib.rs", b"//")]);
+        let bytes = pack(&root, &monitor.recipe, monitor.label, module, &source).unwrap();
+        let parsed = artifact::parse(&bytes).unwrap();
+        assert_eq!(
+            parsed.manifest.world,
+            "app:monitor-window/monitor-window@1.0.0"
+        );
+        let actions = livecore::actions::parse(parsed.actions.unwrap()).unwrap();
+        for (row, export) in [("monitor_sort", "sort"), ("monitor_select", "select")] {
+            let found = actions.by_name(row).unwrap();
+            assert_eq!(
+                found.export,
+                std::format!("app:monitor/actions@1.0.0#{export}")
+            );
+        }
     }
 
     #[test]

@@ -2,7 +2,7 @@
 //! one row per line, drawn by its kind, and under it the input line with the
 //! shell's prompt as its label. The tree is rebuilt whole from the model after
 //! each event and [`diff`]ed against the last one, so only what changed goes to
-//! the host. "Clear" is bound to `terminal_clear`, so the agent sees the same
+//! the host. "Clear" is bound to `terminal_window_clear`, so the agent sees the same
 //! words and tier as the button.
 //!
 //! The input is not a child of the scrollback's column, so a new row never
@@ -17,8 +17,9 @@ mod tree;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
+use comp_terminal::os::Os;
 use comp_terminal::span::{Kind, Span, wrap};
-use comp_terminal::{MAX_LINE, Phase, Terminal};
+use comp_terminal::{MAX_LINE, Phase, Source, Submitted, Terminal};
 use uikit::style::{Tone, TypeStyle};
 use uikit::widget::{Axis, Layout, NodeId, ROOT, Size, TextField, UiEvent, Value, Widget};
 
@@ -47,10 +48,10 @@ pub const SIZE: (u16, u16) = (800, 520);
 /// Characters a line gets before it wraps: the window's width in JetBrains Mono
 /// 14 px, less its padding and scroll bar.
 pub const COLS: usize = 88;
-/// Rows the tree holds; older ones stay in the model and `terminal_read`.
+/// Rows the tree holds; older ones stay in the model and `terminal_window_read`.
 pub const SHOWN_SPANS: usize = 100;
 /// The action the Clear button runs.
-pub const CLEAR_ACTION: &str = "terminal_clear";
+pub const CLEAR_ACTION: &str = "terminal_window_clear";
 const AI_TAG: &str = "by the AI";
 const PLACEHOLDER: &str = "Type a command, or ask the AI";
 
@@ -63,15 +64,6 @@ pub struct View {
     /// the last tree put there. It differs from `draft` just after a line is
     /// sent, until the cleared draft reaches the window.
     pub held: String,
-}
-
-/// What an event asks of the component.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Outcome {
-    /// Whether the tree may have changed.
-    pub redraw: bool,
-    /// A line for the shell, which the component sends as an effect.
-    pub send: Option<String>,
 }
 
 fn tone(kind: Kind) -> Tone {
@@ -227,40 +219,50 @@ pub fn wants_focus(old: &[Entry], new: &[Entry]) -> Option<NodeId> {
     (has(new) && !has(old)).then_some(INPUT)
 }
 
-/// Handles one event from the window.
-pub fn on_ui(term: &mut Terminal, view: &mut View, e: &UiEvent) -> Outcome {
+/// Handles one event from the window; whether the tree may have changed. A line
+/// goes to the shell as an effect asked of `os`.
+pub fn on_ui(term: &mut Terminal, os: &mut dyn Os, view: &mut View, e: &UiEvent) -> bool {
     match e {
         UiEvent::Changed(INPUT, Value::Text(text)) => {
             view.draft = text.chars().take(MAX_LINE).collect();
             // The field already shows it, so there is nothing to send.
             view.held.clone_from(&view.draft);
-            Outcome::default()
+            false
         }
         UiEvent::Submitted(INPUT) => {
             let line = core::mem::take(&mut view.draft);
-            let send = match term.submit(&line, comp_terminal::Source::Typed) {
-                comp_terminal::Submitted::Send(line) => Some(line),
-                comp_terminal::Submitted::Refused(_) => {
-                    view.draft = line;
-                    None
-                }
-                comp_terminal::Submitted::Nothing | comp_terminal::Submitted::Local => None,
-            };
-            Outcome { redraw: true, send }
+            // A refused line stays in the field to be fixed.
+            if let Submitted::Refused(_) = term.run(os, &line, Source::Typed) {
+                view.draft = line;
+            }
+            true
         }
         UiEvent::Pressed(CLEAR) => {
             term.clear();
-            Outcome {
-                redraw: true,
-                send: None,
-            }
+            true
         }
-        UiEvent::Pressed(CANCEL) => Outcome {
-            redraw: true,
-            send: term.cancel(),
-        },
-        _ => Outcome::default(),
+        UiEvent::Pressed(CANCEL) => {
+            term.stop(os);
+            true
+        }
+        _ => false,
     }
+}
+
+/// `terminal_window_run`: the AI types `line` into the input line for a person to run
+/// with Enter. It goes in only if the field is empty: what a person has started
+/// to type is theirs to finish.
+pub fn type_line(term: &mut Terminal, view: &mut View, line: &str) -> Result<String, String> {
+    if !view.draft.trim().is_empty() {
+        return Err(String::from(
+            "the input line has text in it; a person is typing",
+        ));
+    }
+    let typed = term
+        .stage(line)
+        .map_err(|why| String::from(why.message()))?;
+    view.draft = typed;
+    Ok(String::from(comp_terminal::TYPED))
 }
 
 /// What to send to bring the window to the model's tree.

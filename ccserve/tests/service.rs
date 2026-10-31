@@ -155,6 +155,23 @@ fn the_deadline_and_ctrl_c_stop_a_run() {
     assert_eq!(cc.value("1 + 1"), "i64 2");
 }
 
+/// The deadline follows the host's line budget, which the `cc` program
+/// stretches when QEMU emulates the CPU.
+#[test]
+fn the_deadline_follows_the_hosts_line_budget() {
+    let mut cc = Cc::open();
+    // Each clock read takes a whole 2 s, so D3's budget stops the entry at
+    // its first check.
+    cc.clock.step_ns.set(ccserve::LINE_NS);
+    let stopped = cc.eval("1 + 1");
+    assert!(
+        stopped.iter().any(|record| record.ends_with("deadline")),
+        "{stopped:?}"
+    );
+    cc.clock.line_ns.set(1_000 * ccserve::LINE_NS);
+    assert_eq!(cc.value("1 + 1"), "i64 2");
+}
+
 #[test]
 fn output_stops_at_six_kib() {
     let mut cc = Cc::open();
@@ -312,4 +329,21 @@ fn reset_and_sessions() {
         ["err 0 cc build comes with P4 task 13"]
     );
     assert_eq!(cc.send("nonsense"), ["err 0 not a request"]);
+}
+
+/// cc's plan line covers everything it may hold at once.
+#[test]
+fn the_plan_line_covers_the_budget() {
+    let pages: u64 = kabi::plan::CC
+        .split_whitespace()
+        .find_map(|word| word.strip_prefix("pages="))
+        .and_then(|n| n.parse().ok())
+        .expect("cc's plan line names its pages");
+    let budget = ccserve::budget::total();
+    assert!(
+        budget <= pages * 4096,
+        "cc may hold {} KiB, its plan gives {} KiB",
+        budget / 1024,
+        pages * 4
+    );
 }

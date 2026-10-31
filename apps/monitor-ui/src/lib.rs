@@ -11,15 +11,13 @@
 
 extern crate alloc;
 
-mod tree;
-
 use alloc::format;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use comp_monitor::{Monitor, Os, Sort, Status, tame, view};
-pub use tree::{Change, Entry, diff};
-use tree::{column, entry, label, row, wide};
+pub use comp_ui_bind::tree::{Change, Entry, diff};
+use comp_ui_bind::tree::{column, entry, label, row, wide};
 use uikit::style::{Tone, TypeStyle};
 use uikit::widget::{Axis, Layout, NodeId, ROOT, UiEvent, Value, Widget};
 
@@ -74,8 +72,12 @@ fn sort_button(mon: &Monitor, sort: Sort) -> Widget {
 fn model_line(mon: &Monitor) -> String {
     let m = mon.model();
     match m.tps10 {
-        0 => format!("Model: {}", m.state.word()),
-        t => format!("Model: {}, {}", m.state.word(), view::tokens(Some(t))),
+        0 => format!("Model: {}", view::model_word(m.state)),
+        t => format!(
+            "Model: {}, {}",
+            view::model_word(m.state),
+            view::tokens(Some(t))
+        ),
     }
 }
 

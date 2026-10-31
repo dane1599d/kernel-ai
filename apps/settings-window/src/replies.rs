@@ -6,7 +6,8 @@
 //! | Read | Answer |
 //! |---|---|
 //! | `rules` | one line a rule: `<n> <words>` or `S<n> <words>` |
-//! | `grants` | `kai-grants 1` text |
+//! | `grants` | the names of the apps that have effect rows, one a line |
+//! | `grants <app>` | one line a row of that app: `<app>`, `<row>` and `allowed` or `withheld`, tab apart |
 //! | `about` | `<key>: <value>` lines for `version`, `commit`, `licence`, `source` and `notices` |
 //! | `profiles` | one name a line, the one in use marked `* ` |
 //! | `apps` | the names of the apps that can nap, one a line |
@@ -14,7 +15,7 @@
 
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use comp_settings::access::by_app;
+use comp_settings::access;
 use comp_settings::files::{Appearance, Apps, Updates};
 use comp_settings::{RuleLine, RuleRef, Settings};
 
@@ -67,8 +68,10 @@ impl Read {
         }
     }
 
-    /// Puts the answer on the pages, or says why it cannot.
-    pub fn apply(self, settings: &mut Settings, answer: &[u8]) -> Result<(), String> {
+    /// Puts the answer on the pages, or says why it cannot. `grants` gives the
+    /// apps whose rows are still to be read (`grants <app>`, [`apply_rows`]);
+    /// the other reads give none.
+    pub fn apply(self, settings: &mut Settings, answer: &[u8]) -> Result<Vec<String>, String> {
         if answer.len() > MAX_ANSWER {
             return Err(String::from("the answer is too large"));
         }
@@ -82,9 +85,11 @@ impl Read {
                 match self {
                     Read::Rules => settings.rules = rules(text),
                     Read::Grants => {
-                        let grants = kaigrants::parse(text)
-                            .map_err(|e| alloc::format!("the grants are not readable: {e:?}"))?;
-                        settings.access = by_app(&grants);
+                        let apps = access::parse_apps(text)
+                            .ok_or_else(|| String::from("the apps with rows are not readable"))?;
+                        // An app no longer listed has nothing left to show.
+                        settings.access.retain(|a| apps.contains(&a.app));
+                        return Ok(apps);
                     }
                     Read::About => settings.about = about(text),
                     Read::Profiles => {
@@ -97,8 +102,21 @@ impl Read {
                 }
             }
         }
-        Ok(())
+        Ok(Vec::new())
     }
+}
+
+/// Puts the answer to `grants <app>` on the Access page: that app's rows, and
+/// no other app's. An app with no rows left is taken off the page.
+pub fn apply_rows(settings: &mut Settings, app: &str, answer: &[u8]) -> Result<(), String> {
+    if answer.len() > MAX_ANSWER {
+        return Err(String::from("the answer is too large"));
+    }
+    let text = core::str::from_utf8(answer).map_err(|_| String::from("the answer is not text"))?;
+    let rows =
+        access::parse_app(app, text).ok_or_else(|| String::from("the rows are not readable"))?;
+    access::put(&mut settings.access, app, rows);
+    Ok(())
 }
 
 /// Characters that are not drawn as themselves: controls, the zero-width and
@@ -304,13 +322,72 @@ mod tests {
     }
 
     #[test]
-    fn the_grants_are_read_with_the_grants_parser() {
+    fn grants_names_the_apps_and_an_app_no_longer_named_leaves_the_page() {
         let mut s = Settings::default();
-        assert!(Read::Grants.apply(&mut s, b"not kai-grants").is_err());
+        assert!(Read::Grants.apply(&mut s, b"Not An App").is_err());
         assert!(Read::Grants.apply(&mut s, &[0xff, 0xfe]).is_err());
+        assert_eq!(
+            Read::Grants.apply(&mut s, b"").unwrap(),
+            Vec::<String>::new()
+        );
+        let apps = Read::Grants
+            .apply(&mut s, b"notes\nfiles\nnotes\n")
+            .unwrap();
+        assert_eq!(apps, ["notes", "files"]);
+        apply_rows(&mut s, "notes", b"notes\tnotes_add\tallowed\n").unwrap();
+        apply_rows(&mut s, "files", b"files\tfs_list\twithheld\n").unwrap();
+        assert_eq!(s.access.len(), 2);
+        // A later list without `files` takes its rows off the page; one with
+        // nothing readable leaves the page as it was.
+        assert_eq!(Read::Grants.apply(&mut s, b"notes\n").unwrap(), ["notes"]);
+        assert_eq!(s.access.len(), 1);
+        assert!(Read::Grants.apply(&mut s, b"junk here").is_err());
+        assert_eq!(s.access.len(), 1);
+    }
+
+    #[test]
+    fn an_apps_rows_are_its_own_and_nothing_else_is_put_on_the_page() {
+        let mut s = Settings::default();
+        let rows = "notes\tnotes_add\tallowed\nnotes\tfs_write\twithheld\n";
+        apply_rows(&mut s, "notes", rows.as_bytes()).unwrap();
+        assert_eq!(s.access.len(), 1);
+        assert_eq!(s.access[0].access.len(), 2);
+        // Another app's lines in this app's answer are not put on the page.
+        let mixed = "notes\tnotes_add\tallowed\nbrowser\tnet_fetch\tallowed\n";
+        apply_rows(&mut s, "notes", mixed.as_bytes()).unwrap();
+        assert_eq!(s.access.len(), 1);
+        assert_eq!(s.access[0].access.len(), 1);
+        // Only another app's lines, or junk, is refused and leaves the page.
+        assert!(apply_rows(&mut s, "notes", b"browser\tnet_fetch\tallowed\n").is_err());
+        assert!(apply_rows(&mut s, "notes", b"junk").is_err());
+        assert!(apply_rows(&mut s, "notes", &[0xff, 0xfe]).is_err());
+        assert_eq!(s.access[0].access.len(), 1);
+        // No rows left takes the app off the page.
+        apply_rows(&mut s, "notes", b"").unwrap();
         assert!(s.access.is_empty());
-        Read::Grants.apply(&mut s, b"kai-grants 1\n").unwrap();
-        assert!(s.access.is_empty());
+        let big = alloc::vec![b'\n'; MAX_ANSWER + 1];
+        assert!(apply_rows(&mut s, "notes", &big).is_err());
+    }
+
+    /// What the app takes from the shell is what it can send back.
+    #[test]
+    fn every_app_and_row_listed_is_one_the_host_takes_in_a_request() {
+        let mut s = Settings::default();
+        let apps = Read::Grants.apply(&mut s, b"a-b\nc2\n").unwrap();
+        for app in &apps {
+            let read = alloc::format!("grants {app}");
+            assert_eq!(classify(&read), Ok(Kind::Read), "{read}");
+        }
+        apply_rows(&mut s, "a-b", b"a-b\tfs_list\tallowed\n").unwrap();
+        apply_rows(&mut s, "c2", b"c2\tx9\twithheld\n").unwrap();
+        for app in &s.access {
+            for x in &app.access {
+                for verb in ["grants-revoke", "grants-restore"] {
+                    let request = alloc::format!("{verb} {} {}", app.app, x.row);
+                    assert_eq!(classify(&request), Ok(Kind::Change), "{request}");
+                }
+            }
+        }
     }
 
     #[test]

@@ -6,7 +6,7 @@
 //! --profile component` has not run (CI runs it first).
 
 use appabi::{Func, Ty, Val};
-use comp_settings_ui::{LEGIBLE, TABS, THEME};
+use comp_settings_ui::{APP_LIST, LEGIBLE, RESTORE, REVOKE, TABS, THEME};
 use livecore::Instance;
 use livecore::txn::{Inputs, Storage};
 use uikit::widget::{UiEvent, Value};
@@ -34,11 +34,17 @@ fn wasm() -> Option<Vec<u8>> {
 }
 
 fn granted() -> Grants {
-    Grants { settings: true }
+    Grants {
+        settings: true,
+        ..Grants::default()
+    }
 }
 
 fn start(wasm: &[u8]) -> CoreInstance {
     let mut g = load_core_granted(wasm, LIMITS, None, granted()).unwrap();
+    // As comphost loads it for the settings grant: its window may be kept from
+    // the agent.
+    g.allow_agent_private(true);
     // As the host loads it: storage readable, empty.
     g.view(&Storage::new());
     assert_eq!(g.init(), Ok(0));
@@ -111,6 +117,38 @@ fn without_the_grant_the_app_does_not_stage() {
     };
     assert_eq!(fault.reason, livecore::Reason::Link);
     assert!(fault.detail.contains("settings grant"), "{}", fault.detail);
+}
+
+/// The rules and grants are typed-only data: the window is kept from the agent
+/// from its first frame on, whatever page it shows.
+#[test]
+fn its_window_is_kept_from_the_agent_from_the_first_frame() {
+    let Some(mut g) = load() else { return };
+    let (w, first) = frame(&mut g);
+    assert!(first.agent_private);
+    call(&mut g, |g| {
+        g.ui_events(w, &[UiEvent::Changed(TABS, Value::Index(2))])
+            .unwrap()
+    });
+    assert!(frame(&mut g).1.agent_private);
+    call(&mut g, |g| g.deliver_event(&AppEvent::Started)).unwrap();
+    let asked = sent(&mut g);
+    answer(&mut g, asked[0].0, Ok("1 allow stop of cache"));
+    assert!(frame(&mut g).1.agent_private);
+}
+
+/// If the system image did not let the version keep its window private, the
+/// version does not start and no window is shown, shared or not.
+#[test]
+fn without_leave_to_keep_a_window_private_it_does_not_start() {
+    let Some(wasm) = wasm() else { return };
+    let mut g = load_core_granted(&wasm, LIMITS, None, granted()).unwrap();
+    g.view(&Storage::new());
+    let fault = g
+        .init()
+        .expect_err("opening a shared Settings window must fail");
+    assert!(fault.detail.contains("private"), "{}", fault.detail);
+    assert!(g.take_ui().is_empty());
 }
 
 #[test]
@@ -248,6 +286,115 @@ fn only_a_change_a_persons_input_caused_is_marked_as_theirs() {
             .iter()
             .all(|r| r.kind == SettingsKind::Read)
     );
+}
+
+#[test]
+fn an_apps_effect_row_is_revoked_and_restored_by_app_and_row() {
+    let Some(mut g) = load() else { return };
+    let (w, _) = frame(&mut g);
+    call(&mut g, |g| g.deliver_event(&AppEvent::Started)).unwrap();
+    let asked = sent(&mut g);
+    assert_eq!(asked[1].2, "grants");
+    // `grants` names the apps; the app then asks for each one's rows.
+    answer(&mut g, asked[1].0, Ok("notes\n"));
+    let next = sent(&mut g);
+    assert_eq!(next.len(), 1);
+    assert_eq!(
+        (next[0].1, next[0].2.as_str()),
+        (SettingsKind::Read, "grants notes")
+    );
+    let rows = "notes\tnotes_add\tallowed\nnotes\tfs_write\twithheld\n";
+    answer(&mut g, next[0].0, Ok(rows));
+    g.take_ui();
+
+    // The page of what apps can do, with the one app chosen.
+    call(&mut g, |g| {
+        g.ui_events(w, &[UiEvent::Changed(TABS, Value::Index(1))])
+            .unwrap()
+    });
+    g.take_ui();
+    call(&mut g, |g| {
+        g.ui_events(w, &[UiEvent::Changed(APP_LIST, Value::Index(0))])
+            .unwrap()
+    });
+    let shown = names(&frame(&mut g).1);
+    assert!(shown.iter().any(|n| n == "notes_add: allowed"), "{shown:?}");
+    assert!(shown.iter().any(|n| n == "fs_write: withheld"), "{shown:?}");
+
+    // A real click on Revoke asks for exactly that row, and the row shows as
+    // withheld only once the shell says it is done.
+    call(&mut g, |g| {
+        g.ui_events_user(w, &[UiEvent::Pressed(REVOKE)]).unwrap()
+    });
+    let asked = g.take_settings();
+    assert_eq!(asked.len(), 1);
+    assert_eq!(asked[0].request, "grants-revoke notes notes_add");
+    assert_eq!((asked[0].kind, asked[0].user), (SettingsKind::Change, true));
+    assert!(g.take_ui().is_empty());
+    answer(&mut g, asked[0].ticket, Ok("notes notes_add withheld"));
+    let shown = names(&frame(&mut g).1);
+    assert!(
+        shown.iter().any(|n| n == "notes_add: withheld"),
+        "{shown:?}"
+    );
+
+    // Restore the other one; a refused change puts the page back as it was.
+    call(&mut g, |g| {
+        g.ui_events(w, &[UiEvent::Pressed(RESTORE + 1)]).unwrap()
+    });
+    let asked = g.take_settings();
+    assert_eq!(asked.len(), 1);
+    assert_eq!(asked[0].request, "grants-restore notes fs_write");
+    assert!(!asked[0].user, "the agent's press is not a click");
+    answer(
+        &mut g,
+        asked[0].ticket,
+        Err("a change needs a key or a click"),
+    );
+    let shown = names(&frame(&mut g).1);
+    assert!(shown.iter().any(|n| n == "fs_write: withheld"), "{shown:?}");
+
+    // A press on the button the row no longer has asks for nothing.
+    call(&mut g, |g| {
+        g.ui_events_user(w, &[UiEvent::Pressed(REVOKE)]).unwrap()
+    });
+    assert!(g.take_settings().is_empty());
+}
+
+/// The shell lists up to 32 apps, and the host takes only `MAX_QUEUED` requests
+/// of a call: the rows are asked for a few at a time, each answer making room
+/// for the next, and never more than the host would trap on.
+#[test]
+fn the_rows_of_many_apps_are_asked_for_as_answers_make_room() {
+    let Some(mut g) = load() else { return };
+    frame(&mut g);
+    call(&mut g, |g| g.deliver_event(&AppEvent::Started)).unwrap();
+    let asked = sent(&mut g);
+    let names: String = (0..40).map(|i| format!("app{i}\n")).collect();
+    answer(&mut g, asked[1].0, Ok(&names));
+    let mut order = Vec::new();
+    let mut waiting = sent(&mut g);
+    assert!(
+        !waiting.is_empty() && waiting.len() <= MAX_QUEUED,
+        "{waiting:?}"
+    );
+    while let Some((ticket, kind, request)) = waiting.pop() {
+        assert_eq!(kind, SettingsKind::Read);
+        let app = request.strip_prefix("grants ").unwrap().to_string();
+        order.push(app.clone());
+        answer(&mut g, ticket, Ok(&format!("{app}\tfs_list\tallowed\n")));
+        // Each answer asks for at most the next one.
+        let more = sent(&mut g);
+        assert!(more.len() <= 1, "{more:?}");
+        waiting.extend(more);
+        assert!(order.len() <= 40, "asked for more than were named");
+    }
+    // The first 32 were asked for, once each; no more are listed than that.
+    assert_eq!(order.len(), 32);
+    let mut unique = order.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(unique.len(), 32);
 }
 
 #[test]

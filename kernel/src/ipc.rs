@@ -446,9 +446,20 @@ pub fn call(name: &str, request: &[u8], timeout_ms: u64) -> Result<Vec<u8>, Call
 /// [`call`], with the pid that answered: a service restarted while the call was
 /// queued answers as its new process.
 pub fn call_from(name: &str, request: &[u8], timeout_ms: u64) -> Result<(Vec<u8>, u64), CallError> {
+    call_from_unless(name, request, timeout_ms, || false)
+}
+
+/// [`call_from`], which also gives up, as Cancelled, when `cancel()` says so
+/// (checked whenever the caller wakes): a call made for a process that was killed.
+pub fn call_from_unless(
+    name: &str,
+    request: &[u8],
+    timeout_ms: u64,
+    cancel: impl Fn() -> bool,
+) -> Result<(Vec<u8>, u64), CallError> {
     let deadline = hpet::nanos().saturating_add(timeout_ms.saturating_mul(1_000_000));
-    wait_bound(name, deadline, || false)?;
-    call_as_from(name, request, 0, deadline, || false)
+    wait_bound(name, deadline, &cancel)?;
+    call_as_from(name, request, 0, deadline, &cancel)
 }
 
 /// The `svc_recv` system call: waits for the next request to this process's service.

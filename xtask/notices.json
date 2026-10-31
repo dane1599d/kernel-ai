@@ -47,6 +47,14 @@
       "in": "assets/fonts, the desktop's monospace type (ADR 0005)"
     },
     {
+      "name": "xcc",
+      "version": "631e318 (wcc compiled by itself, third_party/xcc)",
+      "licence": "MIT",
+      "crate": "ccserve",
+      "copyright": ["Copyright (c) 2024 tyfkda"],
+      "in": "the cc program: the c> prompt's compiler, cc.wasm, and the headers it includes"
+    },
+    {
       "name": "Unicode Character Database",
       "version": "16.0",
       "licence": "Unicode-3.0",

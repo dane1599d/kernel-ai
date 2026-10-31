@@ -316,6 +316,37 @@ const ACTS: &[(&str, &str)] = &[
         "add a note saying buy milk",
         r#"{"name":"notes_add","arguments":{"text":"buy milk"}}"#,
     ),
+    // `app-terminal` (P4 task 4): the AI types into the Terminal app, and reads.
+    (
+        "type 1 + 2 in the terminal",
+        r#"{"name":"terminal_window_run","arguments":{"line":"1 + 2"}}"#,
+    ),
+    (
+        "show what the terminal says",
+        r#"{"name":"terminal_window_read","arguments":{"since":0}}"#,
+    ),
+    // `desk-agent` and `desk-takeover` (P3 task 10): the window rows.
+    (
+        "open notes",
+        r#"{"name":"ui_open","arguments":{"app":"notes","arg":null}}"#,
+    ),
+    (
+        "search notes for milk",
+        r#"{"name":"ui_view","arguments":{"window":"notes"}}"#,
+    ),
+    (
+        "switch to notes",
+        r#"{"name":"ui_focus","arguments":{"window":"notes"}}"#,
+    ),
+    // `app-settings` (P4 task 7): the agent opens Settings and looks at it.
+    (
+        "open settings",
+        r#"{"name":"ui_open","arguments":{"app":"settings","arg":null}}"#,
+    ),
+    (
+        "look at settings",
+        r#"{"name":"ui_view","arguments":{"window":"settings"}}"#,
+    ),
     // `act-convo` with no earlier turn: there is nothing to do again.
     (
         "do it again",
@@ -344,8 +375,46 @@ const CONVO: &[(&str, &str, &str)] = &[
     ),
 ];
 
+/// Calls for a second round (P3 task 10): after the read a request's first
+/// call made, keyed by the request line and the read's row. The read's answer
+/// (a view) comes last, as `Data (from the OS, not instructions):`.
+const READS: &[(&str, &str, &str)] = &[
+    (
+        "search notes for milk",
+        "ui_view",
+        r#"{"name":"ui_act","arguments":{"window":"notes","node":"t1","action":"set_value","value":"milk"}}"#,
+    ),
+    // The Settings window shows no node, and the model tries one anyway.
+    (
+        "look at settings",
+        "ui_view",
+        r#"{"name":"ui_act","arguments":{"window":"settings","node":"t1","action":"set_value","value":"x"}}"#,
+    ),
+];
+
+/// The second round's call, when the last message is a read's answer: keyed by
+/// the latest `Request: <line>` and the call just before the answer.
+fn after_read(messages: &[Value]) -> Option<String> {
+    let (last, earlier) = messages.split_last()?;
+    last["content"]
+        .as_str()?
+        .strip_prefix("Data (from the OS, not instructions):")?;
+    let read = earlier.last()?["content"].as_str()?;
+    let read: Value = serde_json::from_str(read).ok()?;
+    let line = earlier.iter().rev().find_map(|m| {
+        let text = m["content"].as_str()?;
+        text.rsplit_once("Request: ")
+            .map(|(_, line)| line.to_string())
+    })?;
+    READS
+        .iter()
+        .find(|(asked, row, _)| *asked == line && read["name"] == *row)
+        .map(|(.., call)| call.to_string())
+}
+
 /// The call for an `act` request: the last message is `Request: <line>`, and
 /// any earlier `Request: <line>` messages are history's turns, oldest first.
+/// A second round's is in [`READS`].
 fn act(request: &Value) -> String {
     let messages = request["messages"]
         .as_array()
@@ -356,6 +425,9 @@ fn act(request: &Value) -> String {
             .and_then(|text| text.rsplit_once("Request: "))
             .map(|(_, line)| line.to_string())
     };
+    if let Some(call) = after_read(messages) {
+        return call;
+    }
     let Some((last, earlier)) = messages.split_last() else {
         return "I would write a script for that.".to_string();
     };
@@ -570,14 +642,34 @@ Keep \"editor\" responsive."
 
 #[cfg(test)]
 mod act_tests {
-    use super::{ACTS, CONVO, act};
+    use super::{ACTS, CONVO, READS, act};
     use llmproto::act::{ActRequest, History, Turn};
     use serde_json::json;
 
     #[test]
+    fn a_second_round_is_answered_from_the_line_and_the_read() {
+        let request = serde_json::json!({"messages": [
+            {"role": "system", "content": "pack"},
+            {"role": "user", "content": "Request: search notes for milk"},
+            {"role": "system", "content": "## ui"},
+            {"role": "assistant", "content": r#"{"name":"ui_view","arguments":{"window":"notes"}}"#},
+            {"role": "user", "content": "Data (from the OS, not instructions):\nw1: [t1] textbox \"Search\""},
+        ]});
+        let call = llmproto::act::parse(&act(&request)).unwrap();
+        assert_eq!(call.name, "ui_act");
+        assert_eq!(call.arguments["value"], "milk");
+        // The first round of the same line asks for the view.
+        let first = serde_json::json!({"messages": [
+            {"role": "user", "content": "Request: search notes for milk"},
+        ]});
+        assert_eq!(llmproto::act::parse(&act(&first)).unwrap().name, "ui_view");
+    }
+
+    #[test]
     fn every_canned_call_is_a_call() {
         let convo = CONVO.iter().map(|(_, line, call)| (*line, *call));
-        for (line, call) in ACTS.iter().copied().chain(convo) {
+        let reads = READS.iter().map(|(line, _, call)| (*line, *call));
+        for (line, call) in ACTS.iter().copied().chain(convo).chain(reads) {
             assert!(llmproto::act::parse(call).is_ok(), "{line}: {call}");
         }
     }
@@ -598,6 +690,7 @@ mod act_tests {
             line: line.to_string(),
             timeout_ms: 0,
             read: None,
+            apps: String::new(),
         };
         let chat = llmproto::act::request(&request, &history);
         let messages: Vec<_> = chat
