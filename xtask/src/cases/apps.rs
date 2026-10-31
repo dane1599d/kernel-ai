@@ -15,6 +15,16 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("app-terminal", "test=app-terminal")
     },
+    // P4 task 9's exit case: the agent sorts the Monitor by memory and it names
+    // the top process, the Monitor lists a spinner, and stopping that asks.
+    TestCase {
+        expect: &[
+            "app-monitor: \"sort the monitor by memory\" answered ",
+            "app-monitor: \"select spin-a in the monitor\" answered ",
+            "app-monitor: the agent sorted the Monitor by memory and it named its top process, it found spin-a, and stopping spin-a asked and ended on Deny",
+        ],
+        ..case("app-monitor", "test=app-monitor")
+    },
     // P4 task 9: the System monitor's window on the desktop, given a sample of
     // the machine by comphost (granted by the plan line's name), then closed.
     TestCase {

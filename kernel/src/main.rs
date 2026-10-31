@@ -21,6 +21,7 @@ mod act_tests;
 mod agent_desk_tests;
 mod allow;
 mod apic;
+mod app_monitor_tests;
 mod app_route_tests;
 mod app_settings_tests;
 mod app_terminal_tests;

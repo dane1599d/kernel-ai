@@ -325,6 +325,15 @@ const ACTS: &[(&str, &str)] = &[
         "show what the terminal says",
         r#"{"name":"terminal_window_read","arguments":{"since":0}}"#,
     ),
+    // `app-monitor` (P4 task 9): the agent sorts the Monitor and selects a process in it.
+    (
+        "sort the monitor by memory",
+        r#"{"name":"monitor_sort","arguments":{"by":"memory"}}"#,
+    ),
+    (
+        "select spin-a in the monitor",
+        r#"{"name":"monitor_select","arguments":{"name":"spin-a"}}"#,
+    ),
     // `desk-agent` and `desk-takeover` (P3 task 10): the window rows.
     (
         "open notes",
