@@ -16,6 +16,7 @@
 //! workflow counts the real tokens (`cargo xtask tokens`).
 
 pub mod apps;
+pub mod c1;
 mod dsl1;
 
 pub use dsl1::INDEX_HEADING;
@@ -142,15 +143,18 @@ pub const MODE_ACT: &str =
 pub enum Format {
     M8,
     Dsl1,
+    /// The Kai C card for program requests (ADR 0012, spike S12-2).
+    C1,
 }
 
 impl Format {
-    pub const ALL: [Self; 2] = [Self::M8, Self::Dsl1];
+    pub const ALL: [Self; 3] = [Self::M8, Self::Dsl1, Self::C1];
 
     pub const fn name(self) -> &'static str {
         match self {
             Self::M8 => "m8",
             Self::Dsl1 => "dsl-1",
+            Self::C1 => "c-1",
         }
     }
 }
@@ -169,6 +173,7 @@ pub fn render(format: Format) -> String {
     match format {
         Format::M8 => crate::script::system_prompt(),
         Format::Dsl1 => dsl1::render(&rows()),
+        Format::C1 => c1::render(),
     }
 }
 

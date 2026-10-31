@@ -59,6 +59,22 @@ pub fn transport(engine: Shared) -> Transport {
     })
 }
 
+/// Program requests (spike S12-2) answered by `engine` with the `c-1` card
+/// (`llmproto::local::program`), within the same time limit. There is no
+/// wire for them yet, so they go to the engine directly.
+pub fn program_transport(engine: Shared) -> Transport {
+    Box::new(move |request: &ScriptRequest| {
+        let limit = Duration::from_millis(request.timeout_ms.min(script::SERVICE_TIMEOUT_MS));
+        let started = Instant::now();
+        llmproto::local::program(&mut engine.borrow_mut(), request, |_| {
+            match started.elapsed() >= limit {
+                true => Next::Stop,
+                false => Next::Continue,
+            }
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::tasks::TASKS;

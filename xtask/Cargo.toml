@@ -8,6 +8,9 @@ publish = false
 [dependencies]
 agentabi = { path = "../agentabi" }
 bpe = { path = "../bpe" }
+# Spike S12-2: the real `cc` service runs the model's C (fluency/c.rs).
+ccserve = { path = "../ccserve" }
+promptcore = { path = "../promptcore" }
 cpufeat = { path = "../cpufeat" }
 # S05-2's mock trees, counted by `cargo xtask tokens`.
 deskcore = { path = "../deskcore", features = ["mock"] }

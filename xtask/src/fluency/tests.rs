@@ -245,6 +245,7 @@ fn options_need_a_server_and_a_model() {
                 model: "qwen3-8b".into(),
             },
             repeat: 3,
+            c: false,
         })
     );
     assert!(parse(&args(&["--llm", "192.168.1.50:8080"])).is_err());
@@ -265,6 +266,7 @@ fn local_options_name_a_catalog_model_and_maybe_a_store() {
                 store: Some("E:\\models".into()),
             },
             repeat: 1,
+            c: false,
         })
     );
     assert!(parse(&args(&["--local", "qwen3-0.6b", "--llm", "h:1"])).is_err());

@@ -157,10 +157,35 @@ pub fn script_with(
         .as_ref()
         .map(|(script, error)| script::Repair { script, error });
     let asked = script::request_with(&request.request, repair, no_think);
+    enveloped(engine, &asked, on_step)
+}
+
+/// A Kai C program for `request` (ADR 0012, spike S12-2): the `c-1` card's
+/// conversation ([`crate::program::request`]), decoded as a script is, under
+/// [`SCRIPT_SHAPE`], and checked by [`script::answer`].
+pub fn program(
+    engine: &mut Engine<'_>,
+    request: &ScriptRequest,
+    on_step: impl FnMut(Step) -> Next,
+) -> Result<Answer, AnswerError> {
+    let repair = request
+        .repair
+        .as_ref()
+        .map(|(script, error)| script::Repair { script, error });
+    let asked = crate::program::request(&request.request, repair);
+    enveloped(engine, &asked, on_step)
+}
+
+/// `asked`'s answer in the script envelope, seeded, under [`SCRIPT_SHAPE`].
+fn enveloped(
+    engine: &mut Engine<'_>,
+    asked: &chat::Request,
+    on_step: impl FnMut(Step) -> Next,
+) -> Result<Answer, AnswerError> {
     let mut sampler = Sampler::seeded(script::TEMPERATURE, script::SEED);
     let reply = engine
         .reply(
-            &turns(&asked),
+            &turns(asked),
             asked.max_tokens as usize,
             &mut sampler,
             Some(&SCRIPT_SHAPE),
