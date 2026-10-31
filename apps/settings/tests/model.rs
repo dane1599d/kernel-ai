@@ -124,51 +124,97 @@ fn a_window_past_midnight_allows_both_sides() {
     assert!(!Updates::default().allows(0));
 }
 
-#[test]
-fn the_files_round_trip() {
-    let a = Appearance {
-        theme: look::THEMES[1].name.into(),
-        legible: true,
-        reduced_motion: true,
-    };
-    assert_eq!(Appearance::decode(&a.encode()), a);
-    let mut apps = Apps::default();
-    apps.set("notes", true);
-    apps.set("files", true);
-    assert_eq!(apps.keep_running, ["files", "notes"]);
-    assert_eq!(Apps::decode(&apps.encode()), apps);
-    for w in [None, Some((1, 2)), Some((1439, 0))] {
-        let u = Updates { restart_window: w };
-        assert_eq!(Updates::decode(&u.encode()), u);
-    }
-}
+const SAVED: &str = "kai-appearance 1\ntheme = light\nscale = 150\nreduced_motion = on\n";
 
 #[test]
-fn unknown_keys_are_skipped_and_an_unknown_theme_is_the_default() {
-    // [1, {"future": [1, 2], "theme": "neon", "legible": true}]
-    let bytes = [
-        0x82, 0x01, 0xA3, 0x66, b'f', b'u', b't', b'u', b'r', b'e', 0x82, 0x01, 0x02, 0x65, b't',
-        b'h', b'e', b'm', b'e', 0x64, b'n', b'e', b'o', b'n', 0x67, b'l', b'e', b'g', b'i', b'b',
-        b'l', b'e', 0xF5,
-    ];
-    let a = Appearance::decode(&bytes);
+fn the_shells_appearance_text_gives_the_theme_and_the_two_switches() {
+    let a = Appearance::decode(SAVED.as_bytes());
+    assert_eq!(a.theme, "light");
+    assert!(a.reduced_motion && !a.legible);
+    let a = Appearance::decode(b"kai-appearance 1\nlegible = on\n");
     assert_eq!(a.theme, Appearance::default().theme);
     assert!(a.legible);
 }
 
 #[test]
+fn an_empty_or_unreadable_appearance_is_the_defaults() {
+    let d = Appearance::default();
+    for bad in [
+        &b""[..],
+        b"junk",
+        b"kai-appearance 2\ntheme = light\n",
+        b"kai-appearance 1\ntheme = neon\n",
+        b"kai-appearance 1\nlegible = maybe\n",
+        &[0xff, 0xfe, 0x00],
+    ] {
+        assert_eq!(Appearance::decode(bad), d, "{bad:?}");
+    }
+}
+
+#[test]
+fn the_shells_keep_list_is_a_header_and_one_app_a_line() {
+    let apps = Apps::decode(b"kai-keep 1\nnotes\nfiles\nnotes\nBad Name\n\nterminal-window\n");
+    assert_eq!(apps.keep_running, ["files", "notes", "terminal-window"]);
+    assert!(apps.keeps("notes") && !apps.keeps("browser"));
+    // Nothing kept is an empty answer; anything without the header is no list.
+    for none in [
+        &b""[..],
+        b"notes\nfiles\n",
+        b"kai-keep 2\nnotes\n",
+        &[0xff, 0xfe],
+    ] {
+        assert!(Apps::decode(none).keep_running.is_empty(), "{none:?}");
+    }
+}
+
+#[test]
+fn the_shells_restart_window_text_gives_the_window() {
+    for (text, want) in [
+        ("kai-updates 1\nrestart-window 120 300\n", Some((120, 300))),
+        ("kai-updates 1\nrestart-window 1439 0\n", Some((1439, 0))),
+        (
+            "kai-updates 1\nrestart-window 0 1\nrestart-window 5 6\n",
+            Some((5, 6)),
+        ),
+        ("kai-updates 1\n", None),
+    ] {
+        assert_eq!(
+            Updates::decode(text.as_bytes()).restart_window,
+            want,
+            "{text:?}"
+        );
+    }
+}
+
+#[test]
+fn nothing_set_or_a_window_that_is_not_one_is_no_window() {
+    for none in [
+        &b""[..],
+        b"junk",
+        b"kai-updates 2\nrestart-window 120 300\n",
+        b"restart-window 120 300\n",
+        b"kai-updates 1\nrestart-window 300 300\n",
+        b"kai-updates 1\nrestart-window 1440 5\n",
+        b"kai-updates 1\nrestart-window 5 1440\n",
+        b"kai-updates 1\nrestart-window +5 6\n",
+        b"kai-updates 1\nrestart-window 5\n",
+        b"kai-updates 1\nrestart-window 5 6 7\n",
+        b"kai-updates 1\nrestart-window  5 6\n",
+        b"kai-updates 1\nrestart-window off\n",
+        &[0xff, 0xfe],
+    ] {
+        assert_eq!(Updates::decode(none), Updates::default(), "{none:?}");
+    }
+}
+
+#[test]
 fn hostile_bytes_give_defaults_never_a_panic() {
-    let samples = [
-        Appearance::default().encode(),
-        {
-            let mut apps = Apps::default();
-            apps.set("notes", true);
-            apps.encode()
-        },
-        Updates {
-            restart_window: Some((10, 20)),
-        }
-        .encode(),
+    let mut apps = Apps::default();
+    apps.set("notes", true);
+    let samples: [Vec<u8>; 3] = [
+        SAVED.as_bytes().to_vec(),
+        b"kai-keep 1\nnotes\nfiles\n".to_vec(),
+        b"kai-updates 1\nrestart-window 10 20\n".to_vec(),
     ];
     let mut seed = 0x2545_F491_4F6C_DD1Du64;
     for sample in &samples {
@@ -180,7 +226,8 @@ fn hostile_bytes_give_defaults_never_a_panic() {
             let at = (seed as usize) % bytes.len();
             bytes[at] = (seed >> 24) as u8;
             bytes.truncate(bytes.len() - (seed as usize >> 40) % 3);
-            let _ = Appearance::decode(&bytes);
+            let a = Appearance::decode(&bytes);
+            assert!(look::THEMES.iter().any(|p| p.name == a.theme));
             let apps = Apps::decode(&bytes);
             assert!(apps.keep_running.windows(2).all(|w| w[0] < w[1]));
             let u = Updates::decode(&bytes);

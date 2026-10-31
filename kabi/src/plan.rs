@@ -15,6 +15,11 @@ pub const SHELL_FILES: &str = "shell caps=serve+call+policy+stop+script+files+st
 /// [`SHELL`] on a desktop: with a route to `desktop`, fourth, after `cc`, which
 /// it takes the AI panel's requests from and reports their states to (P3 task 7).
 pub const SHELL_DESK: &str = "shell caps=serve+call+policy+stop+script uses=llm+supervisor+cc+desktop pages=4096 stack_pages=512 burst_ms=5000";
+/// [`SHELL_DESK`] with the file system too, for a case that has the desktop and
+/// a state directory in one shell (`app-settings` saves a theme and shows it in
+/// Settings): the same routes, so `desktop` stays fourth, and `files` and `state`
+/// added to the caps (a test holds the two lines together).
+pub const SHELL_DESK_FILES: &str = "shell caps=serve+call+policy+stop+script+files+state uses=llm+supervisor+cc+desktop pages=4096 stack_pages=512 burst_ms=5000";
 /// The `c>` prompt's compiler (ADR 0012 D2; P4 task 12): xcc's cc.wasm and the
 /// sessions, on wasmi, holding no authority. Planned before the shell, which
 /// calls it, and started on demand: the first `c>` entry's call starts it, so
@@ -33,7 +38,7 @@ pub const FS: &str = "fs caps=serve+partition pages=8192 stack_pages=64 burst_ms
 /// larger stack, which counts within its pages with a 512 KiB root buffer and
 /// two 128 KiB slot buffers.
 pub const UPDATED: &str =
-    "updated caps=update dir=trust+updates+settings pages=2048 stack_pages=128 burst_ms=5000";
+    "updated caps=update dir=trust+updates+restart pages=2048 stack_pages=128 burst_ms=5000";
 /// The live `notes` component, run by the shared `comphost` program, without its
 /// arguments.
 const NOTES_BASE: &str =
@@ -54,6 +59,13 @@ pub fn notes(version: &str, fallback: Option<&str>) -> String {
         None => format!("{NOTES_BASE} version={version}"),
     }
 }
+/// The System monitor (P4 task 9), `comphost` serving `monitor-window`: a route
+/// to `desktop` for its window, and after it one to `llm`, which comphost asks
+/// for `health` and for nothing else. comphost takes the second route to be llm's,
+/// so the order in `uses=` is part of the line (a test in `supervise` pins it);
+/// the name is the grant of `kai:system`, which no other line may carry. Planned
+/// after `desktop` and `llm`.
+pub const MONITOR_WINDOW: &str = "monitor-window program=comphost caps=serve+component+call uses=desktop+llm pages=8192 stack_pages=512 burst_ms=20000 version=1";
 /// Probation ended by calls alone, so a test runs the same under KVM and TCG.
 pub const CALLS_ONLY: &str = "probation_calls=3 probation_ms=0";
 /// For the M9a test: version 1, with probation ended by calls alone, so the test
@@ -64,3 +76,18 @@ pub const NOTES_EDIT_TEST: &str = "notes program=comphost caps=serve+component p
 /// The edit service, planned only when the kernel has a build service. The
 /// kernel appends `host=IP:PORT token=HEX`.
 pub const EDIT_BASE: &str = "edit caps=serve+publish pages=2048 burst_ms=10000";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_desk_shell_with_files_is_the_desk_shell_with_two_caps_more() {
+        assert_eq!(
+            SHELL_DESK_FILES,
+            SHELL_DESK
+                .replacen("+script ", "+script+files+state ", 1)
+                .as_str()
+        );
+    }
+}
