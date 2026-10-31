@@ -298,6 +298,11 @@ impl Desk {
         let mut greeting = false;
         while let Ok((header, args, next)) = wire::split(reply) {
             reply = next;
+            // Only `Global` (opcode 0) is a greeting; the registry's other
+            // events (the theme) are no new desktop.
+            if header.object == REGISTRY && header.opcode != 0 {
+                continue;
+            }
             if header.object == REGISTRY {
                 // A greeting's globals come together: the first greeting is
                 // this connection's own, any later one another desktop's.

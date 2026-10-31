@@ -26,6 +26,7 @@ mod app_settings_tests;
 mod app_terminal_tests;
 mod app_window_tests;
 mod appbench_tests;
+mod appearance_tests;
 mod ask_box;
 mod ask_tests;
 mod backtrace;
@@ -391,6 +392,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::UiMonitor => run_case(app_window_tests::monitor_check),
         SelfTest::DeskNap => run_case(nap_tests::check),
         SelfTest::KeepRunning { reread } => run_case(|| keep_tests::check(reread)),
+        SelfTest::DeskAppearance => run_case(appearance_tests::check),
         SelfTest::DeskCard => run_case(card_tests::check),
         SelfTest::DeskStanding => run_case(standing_tests::check),
         SelfTest::UiKeys => run_case(keys_tests::check),
