@@ -146,6 +146,42 @@ fn ring_events_become_uikit_input_with_the_seat_s_modifiers() {
 }
 
 #[test]
+fn a_modifier_key_in_the_ring_sets_the_modifiers_for_the_keys_after_it() {
+    // A slow guest reads the ring before the seat's `modifiers` message: Ctrl-B,
+    // as the ring has it, must still be Ctrl's.
+    let mut seat = Seat::default();
+    let mods_of = |input: Option<Input>| match input {
+        Some(Input::Key { mods, .. }) => Some(mods),
+        _ => None,
+    };
+    let ctrl = Some(Mods(Mods::CTRL));
+    assert_eq!(mods_of(seat.input(&input(Kind::Key, 0xE0, 1, ""))), ctrl);
+    assert_eq!(mods_of(seat.input(&input(Kind::Key, 0x05, 1, ""))), ctrl);
+    assert_eq!(mods_of(seat.input(&input(Kind::Key, 0x05, 0, ""))), ctrl);
+    // The release is the first key without it.
+    assert_eq!(
+        mods_of(seat.input(&input(Kind::Key, 0xE0, 0, ""))),
+        Some(Mods::default())
+    );
+    assert_eq!(
+        mods_of(seat.input(&input(Kind::Key, 0x05, 1, "b"))),
+        Some(Mods::default())
+    );
+    // Shift and Alt together, either side's key, and one let go.
+    seat.input(&input(Kind::Key, 0xE5, 1, ""));
+    let both = seat.input(&input(Kind::Key, 0xE2, 1, ""));
+    assert_eq!(mods_of(both), Some(Mods(Mods::SHIFT | Mods::ALT)));
+    let one = seat.input(&input(Kind::Key, 0xE1, 0, ""));
+    assert_eq!(mods_of(one), Some(Mods(Mods::ALT)));
+    // The seat's own message still says what is held when a window gains focus.
+    seat.modifiers(u32::from(Mods::SUPER));
+    assert_eq!(
+        mods_of(seat.input(&input(Kind::Key, 0x05, 1, ""))),
+        Some(Mods(Mods::SUPER))
+    );
+}
+
+#[test]
 fn action_requests_name_a_node_an_action_and_a_value_for_its_role() {
     let f = frame("");
     // Bit 0 is click; ids on the wire are one past uikit's.
