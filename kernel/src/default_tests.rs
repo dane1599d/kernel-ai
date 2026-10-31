@@ -111,7 +111,7 @@ fn hold_the_rest() -> Result<alloc::vec::Vec<u64>, &'static str> {
         let pid = process::spawn(&SpawnRequest {
             name,
             program: "handles",
-            args: b"mode=mem",
+            args: b"mode=idle",
             limits: Limits {
                 max_pages: pages,
                 max_burst_ms: 30_000,
