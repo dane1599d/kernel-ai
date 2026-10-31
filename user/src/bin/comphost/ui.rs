@@ -246,7 +246,7 @@ impl Ui {
     /// run; `desktop` knows which app this is from the kernel, not from us.
     /// `user` is true only for a transaction a person's key or click caused
     /// (`ui_input`): never a close, a reply, an `ui_act` from the agent or a call.
-    fn forward(&mut self, performed: Option<Performed>, user: bool) {
+    pub(crate) fn forward(&mut self, performed: Option<Performed>, user: bool) {
         let Some(performed) = performed.filter(|p| !p.is_empty()) else {
             return;
         };

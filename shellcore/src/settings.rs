@@ -19,6 +19,7 @@ use crate::{Reply, Shell};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use bootslot::window;
 use livecore::actions::MAX_EFFECT_ROWS;
 
 /// The app that holds the settings grant.
@@ -169,7 +170,27 @@ impl Shell {
                     .ok_or_else(|| String::from("appearance-set takes a setting and a value"))?;
                 self.appearance_by_click(&logged, setting, value)
             }
-            ("restart-window", _) => Err(format!("{verb} is not answered here yet")),
+            ("restart-window", rest) => {
+                let wanted = match rest.split_once(' ') {
+                    None if rest == "off" => None,
+                    Some((start, end)) => Some(
+                        start
+                            .parse()
+                            .ok()
+                            .zip(end.parse().ok())
+                            .and_then(|(start, end)| window::window(start, end))
+                            .ok_or_else(|| {
+                                String::from("a restart window is two different minutes of a day")
+                            })?,
+                    ),
+                    None => {
+                        return Err(String::from(
+                            "restart-window takes a start and an end, or off",
+                        ));
+                    }
+                };
+                self.restart_window(&logged, wanted)
+            }
             _ => Err(String::from("not a settings request")),
         }
     }
@@ -233,6 +254,53 @@ impl Shell {
         });
         self.save_log();
         Ok(words)
+    }
+
+    /// The restart window saved for `updated`; none for no file or one out of
+    /// shape, which `updated` reads as none too.
+    fn saved_window(&self) -> Option<(u16, u16)> {
+        window::restart_window(&self.host.restart_read()?)
+    }
+
+    /// `restart-window`: saves the window `updated` restarts into a staged
+    /// release within, or none (`off`, the default: only the user's
+    /// "restart"), and logs the click. `off` is the way back, so it has no undo.
+    fn restart_window(
+        &mut self,
+        request: &str,
+        wanted: Option<(u16, u16)>,
+    ) -> Result<String, String> {
+        let was = self.saved_window();
+        if was == wanted {
+            return Ok(format!("restart window {} already", span(wanted)));
+        }
+        self.host.restart_write(&restart_text(wanted))?;
+        let outcome = format!("restart window {}", span(wanted));
+        let id = self.next_id;
+        self.next_id += 1;
+        self.log.push(Entry {
+            id,
+            t_ns: self.host.now_ns(),
+            form: Form::Call,
+            of: None,
+            tier: Some(Tier::Run),
+            pack: None,
+            consent: String::from(CLICK),
+            state: State::Done,
+            request: String::from(request),
+            script: format!("restart_window(\"{}\")", span(wanted)),
+            outcome: outcome.clone(),
+            changes: alloc::vec![Change {
+                action: String::from("restart_window"),
+                owner: String::from("updated"),
+                res: String::from("restart window"),
+                before: span(was),
+                after: span(wanted),
+                inverse: None,
+            }],
+        });
+        self.save_log();
+        Ok(outcome)
     }
 
     /// Keeps app `name` running (`on`) or lets it nap: the supervisor is told,
@@ -389,7 +457,8 @@ impl Shell {
     /// - `apps`: the keep-running list in force, with apps still waiting at
     ///   boot, as `kai-keep 1` text (a list on disk out of shape was set aside
     ///   at start, so none is kept).
-    /// - `updates`: empty, until a restart-window writer exists.
+    /// - `updates`: the restart window in force as `kai-updates 1` text, or
+    ///   empty for none (a saved file out of shape is none, as for `updated`).
     fn settings_file(&self, area: &str) -> Result<String, String> {
         match area {
             "appearance" => match self.host.appearance_read() {
@@ -402,7 +471,10 @@ impl Shell {
                 saved if saved.is_empty() => Ok(String::new()),
                 saved => Ok(keep_text(&saved)),
             },
-            "updates" => Ok(String::new()),
+            "updates" => Ok(match self.saved_window() {
+                Some(w) => restart_text(Some(w)),
+                None => String::new(),
+            }),
             _ => Err(String::from("not a settings file")),
         }
     }
@@ -529,6 +601,23 @@ fn about() -> String {
         env!("CARGO_PKG_VERSION"),
         option_env!("KAI_COMMIT").unwrap_or("unknown")
     )
+}
+
+/// `kai-updates 1` text for `w`: the window's line only while one is set.
+fn restart_text(w: Option<(u16, u16)>) -> String {
+    match w {
+        Some((start, end)) => format!("{}\n{} {start} {end}\n", window::HEADER, window::LINE),
+        None => format!("{}\n", window::HEADER),
+    }
+}
+
+/// `hh:mm-hh:mm UTC`, as a Settings answer and the log show a window.
+fn span(w: Option<(u16, u16)>) -> String {
+    let clock = |m: u16| format!("{:02}:{:02}", m / 60, m % 60);
+    match w {
+        Some((start, end)) => format!("{}-{} UTC", clock(start), clock(end)),
+        None => String::from("off"),
+    }
 }
 
 fn keep_text(apps: &[String]) -> String {
