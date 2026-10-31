@@ -1,19 +1,24 @@
 //! `test=app-editor-files` (P4 task 11, the editor on the default boot): the editor
-//! opens a file of the person's own, and a typed edit is saved through the file door
-//! and the shell.
+//! makes, saves and reopens a file of the person's own through the file door and the
+//! shell, and `undo` takes a save back.
 //!
 //! There is no build service and no edit service: the editor is `desktop`'s window
-//! app with the `kai:files` grant, and the shell has the person's files. The case
-//! has the shell make `/home/user/todo.txt` (a typed line, as a person would). The
-//! host then presses Ctrl-O, types the path and Enter, and the editor reads the file
-//! through comphost, `desktop` and the shell and shows it; a typed letter and Ctrl-S
-//! write it back the same way, as one logged action. The case reads the file from
-//! the shell, then types `undo`, and the file is as it was.
+//! app with the `kai:files` grant, and the shell has the person's files. A typed
+//! shell line cannot call the file rows (those are a model script's), so the editor
+//! makes the file itself, as a person would:
 //!
-//! Each step of the host's keys (a stage in the case's table, sent when this test
-//! logs `ready for keys`) is waited for in the editor's own status, so a slow guest
-//! (TCG) only takes longer. Each step shows in comphost's and this test's log lines,
-//! which the case in `xtask/src/cases/components.rs` expects.
+//! 1. Ctrl-O and the path `/home/user/todo.txt`, which is not there: the editor opens
+//!    a new file;
+//! 2. four typed letters and Ctrl-S: the file is made (`fs_create`, 4 bytes);
+//! 3. one more letter and Ctrl-S: the file is replaced (`fs_write`, 5 bytes);
+//! 4. `undo`, typed at the shell: the second save is taken back;
+//! 5. Ctrl-O and the path again: the editor reads the file, and comphost's log says it
+//!    came back as the 4 bytes of the first save.
+//!
+//! Each step of the host's keys (a stage in the case's table, sent when this test logs
+//! `ready for keys`) is waited for in the editor's own status, so a slow guest (TCG)
+//! only takes longer. Each step shows in comphost's and this test's log lines, which the
+//! case in `xtask/src/cases/components.rs` expects.
 
 use crate::app_editor_tests::{NAME, OPEN_MS, WAIT_MS, cursor, status, until};
 use crate::display::claim;
@@ -25,10 +30,6 @@ use alloc::string::String;
 pub const DESKTOP: &str = "desktop caps=display+input+serve pages=8192 stack_pages=512";
 
 const CALL_MS: u64 = 60_000;
-/// The file as the shell makes it: 24 bytes.
-const MAKE: &str = "fs_create(\"todo.txt\", \"buy milk\\ncall Ann\\nsleep\\n\");";
-const READ: &str = "show(fs_read(\"todo.txt\"));";
-const AFTER_EDIT: &str = "zbuy milk";
 
 /// The shell's wire reply to `line`, as a typed line.
 fn shell(line: &str) -> Result<String, &'static str> {
@@ -57,73 +58,55 @@ fn desktop_and_editor() -> Result<(), &'static str> {
     Ok(())
 }
 
-/// A typed line that makes the file.
-fn make_the_file() -> Result<(), &'static str> {
-    let reply = shell(MAKE)?;
-    if !reply.starts_with("ok") {
-        log!("app-editor-files: the shell answered {reply:?}");
-        return Err("app-editor-files: the shell could not make the file");
-    }
-    log!("app-editor-files: the shell made the file the editor will open");
+/// Whether the editor shows a file of its own (its title starts `file disk:`).
+fn showing_file(said: &str) -> bool {
+    said.starts_with("file disk:") && said.contains("todo.txt")
+}
+
+/// Ctrl-O and the path: two stages of the host's keys, sent in order.
+fn ask_to_open() {
+    log!("app-editor-files: ready for keys");
+    log!("app-editor-files: ready for keys");
+}
+
+/// A path that is not there opens a new file.
+fn open_new() -> Result<(), &'static str> {
+    ask_to_open();
+    until("a new file to open in the editor", WAIT_MS, |said| {
+        showing_file(said) && cursor(said) == Some((1, 0))
+    })?;
+    log!("app-editor-files: Ctrl-O on a path that is not there opened a new file");
     Ok(())
 }
 
-/// The host types Ctrl-O and the path; the editor shows the file.
-fn open_file() -> Result<(), &'static str> {
-    // Ctrl-O and the first half of the path, then the rest and Enter: two stages the
-    // host sends in order.
+/// Typed letters, then Ctrl-S; the editor says how many bytes it saved.
+fn type_and_save(column: u32, bytes: &str, what: &'static str) -> Result<(), &'static str> {
     log!("app-editor-files: ready for keys");
-    log!("app-editor-files: ready for keys");
-    until("the file to open in the editor", WAIT_MS, |said| {
-        said.contains("todo.txt") && cursor(said).is_some()
+    until("the typed letters to show", WAIT_MS, |said| {
+        cursor(said) == Some((1, column))
     })?;
-    log!("app-editor-files: Ctrl-O opened the file in the editor");
-    Ok(())
-}
-
-/// One typed letter shows in the cursor; Ctrl-S writes the file and the editor says so.
-fn type_and_save() -> Result<(), &'static str> {
-    log!("app-editor-files: ready for keys");
-    until("the typed letter to show", WAIT_MS, |said| {
-        cursor(said).is_some_and(|(_, column)| column == 1)
-    })?;
-    log!("app-editor-files: a typed letter showed in the file");
     log!("app-editor-files: ready for keys");
     let said = until("the editor to say it saved the file", WAIT_MS, |said| {
-        said.contains("saved ")
+        said.contains(&alloc::format!("saved /home/user/todo.txt ({bytes} bytes)"))
     })?;
-    log!(
-        "app-editor-files: after Ctrl-S, {}",
-        said.replace('\n', "; ")
-    );
-    log!("app-editor-files: Ctrl-S saved the file through the shell");
+    log!("app-editor-files: {what}: {}", said.replace('\n', "; "));
     Ok(())
 }
 
-/// The file the shell reads now.
-fn disk() -> Result<String, &'static str> {
-    shell(READ)
-}
-
-/// The file on the disk has the edit; `undo` puts it back as it was.
-fn disk_and_undo() -> Result<(), &'static str> {
-    let now = disk()?;
-    if !now.contains(AFTER_EDIT) {
-        log!("app-editor-files: the disk has {now:?}");
-        return Err("app-editor-files: the saved file is not on the disk");
-    }
-    log!("app-editor-files: the file on the disk has the edit");
+/// `undo` takes the last save back, and the editor reads the file again.
+fn undo_and_reopen() -> Result<(), &'static str> {
     let undone = shell("undo")?;
     if !undone.starts_with("ok") {
         log!("app-editor-files: undo answered {undone:?}");
         return Err("app-editor-files: undo did not run");
     }
-    let back = disk()?;
-    if back.contains(AFTER_EDIT) || !back.contains("buy milk") {
-        log!("app-editor-files: after undo the disk has {back:?}");
-        return Err("app-editor-files: undo did not put the file back");
-    }
-    log!("app-editor-files: undo put the file back as it was");
+    log!("app-editor-files: undo took the second save back");
+    ask_to_open();
+    // The new screen starts at line 1, column 0; the old one was at the end of the text.
+    until("the file to be read again", WAIT_MS, |said| {
+        showing_file(said) && cursor(said) == Some((1, 0))
+    })?;
+    log!("app-editor-files: the file read again is the first save's");
     Ok(())
 }
 
@@ -133,9 +116,8 @@ pub fn check() -> Result<(), &'static str> {
         "app-editor-files: the editor says {}",
         status()?.replace('\n', "; ")
     );
-    make_the_file()?;
-    open_file()?;
-    type_and_save()?;
-    disk_and_undo()?;
-    Ok(())
+    open_new()?;
+    type_and_save(4, "4", "Ctrl-S made the file")?;
+    type_and_save(5, "5", "Ctrl-S replaced the file")?;
+    undo_and_reopen()
 }

@@ -46,9 +46,9 @@ pub(super) const CASES: &[TestCase] = &[
         memory_mib: Some(1024),
         ..case("app-editor", "test=app-editor")
     },
-    // P4 task 11, on the default boot: the editor opens a file of the person's own
-    // (Ctrl-O and a path), a typed edit is saved with Ctrl-S through the file door
-    // and the shell's file rows as one logged action, and `undo` puts the file back.
+    // P4 task 11, on the default boot: the editor makes a file of the person's own (Ctrl-O
+    // and a path that is not there, typed letters, Ctrl-S), replaces it, and after an
+    // `undo` typed at the shell reads it again as the first save left it.
     TestCase {
         // A writable `kai-data` disk: the shell's `/home/user` is on it.
         data: Some(crate::blklog::Data {
@@ -57,25 +57,32 @@ pub(super) const CASES: &[TestCase] = &[
             gpt: true,
         }),
         keys: &[
-            // Ctrl-O asks for a path; the first half of /home/user/todo.txt.
+            // Ctrl-O asks for a path; the first half of /home/user/todo.txt, then the rest
+            // and Enter: the path is not there, so a new file opens.
             &[
                 "ctrl-o", "slash", "h", "o", "m", "e", "slash", "u", "s", "e", "r",
             ],
-            // The rest and Enter: the file opens.
             &["slash", "t", "o", "d", "o", "dot", "t", "x", "t", "ret"],
-            // One typed letter, then Ctrl-S.
+            // Four letters, then Ctrl-S makes the file; one more and Ctrl-S replaces it.
+            &["a", "b", "c", "d"],
+            &["ctrl-s"],
             &["z"],
             &["ctrl-s"],
+            // After `undo`, the same path again: the file is read back.
+            &[
+                "ctrl-o", "slash", "h", "o", "m", "e", "slash", "u", "s", "e", "r",
+            ],
+            &["slash", "t", "o", "d", "o", "dot", "t", "x", "t", "ret"],
         ],
         expect: &[
-            "app-editor-files: the shell made the file the editor will open",
-            "app-editor-files: Ctrl-O opened the file in the editor",
-            "comphost: files: read /home/user/todo.txt (person false) answered 24 bytes",
-            "app-editor-files: a typed letter showed in the file",
+            "comphost: files: read /home/user/todo.txt (person false) failed: missing: /home/user/todo.txt is not there",
+            "app-editor-files: Ctrl-O on a path that is not there opened a new file",
             "comphost: files: write /home/user/todo.txt (person true) answered 0 bytes",
-            "app-editor-files: Ctrl-S saved the file through the shell",
-            "app-editor-files: the file on the disk has the edit",
-            "app-editor-files: undo put the file back as it was",
+            "app-editor-files: Ctrl-S made the file: ",
+            "app-editor-files: Ctrl-S replaced the file: ",
+            "app-editor-files: undo took the second save back",
+            "comphost: files: read /home/user/todo.txt (person false) answered 4 bytes",
+            "app-editor-files: the file read again is the first save's",
         ],
         min_timeout: Some(Duration::from_secs(300)),
         // The file system service, the shell, the desktop and the editor (32 MiB of
