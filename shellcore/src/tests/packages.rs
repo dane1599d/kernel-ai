@@ -74,6 +74,11 @@ fn an_install_that_needs_a_new_permission_asks_once() {
     let reply = shell.eval("install weather");
     let wire = reply.to_wire();
     assert!(wire.starts_with("menu 1 asked\n"), "{wire}");
+    // The card names what it installs and what that needs.
+    assert!(
+        wire.contains("weather 0.1.0 (it needs network) with pkg_install"),
+        "{wire}"
+    );
     assert!(wire.ends_with("\npkg_install(\"weather\")"), "{wire}");
     assert_eq!(
         shell.eval("pkg list"),

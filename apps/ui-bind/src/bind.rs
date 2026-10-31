@@ -40,14 +40,12 @@ impl Sink for View {
     }
 
     fn put(&mut self, window: u32, e: &Entry) -> Result<(), UiError> {
-        view::put(
-            window,
-            e.id,
-            e.parent,
-            layout(&e.layout),
-            &widget(&e.widget),
-        )
-        .map_err(error)
+        // `kai:ui/view` has no code view: it goes through `kai:code/code`, which
+        // an app that has one binds itself.
+        let Some(widget) = widget(&e.widget) else {
+            return Err(UiError::BadParent);
+        };
+        view::put(window, e.id, e.parent, layout(&e.layout), &widget).map_err(error)
     }
 
     fn remove(&mut self, window: u32, node: NodeId) -> Result<(), UiError> {
@@ -60,6 +58,14 @@ impl Sink for View {
 
     fn close(&mut self, window: u32) -> Result<(), UiError> {
         view::close(window).map_err(error)
+    }
+
+    fn set_agent_private(&mut self, window: u32, private: bool) -> Result<(), UiError> {
+        view::set_agent_private(window, private).map_err(error)
+    }
+
+    fn focus(&mut self, window: u32, node: NodeId) -> Result<(), UiError> {
+        view::focus(window, node).map_err(error)
     }
 }
 
@@ -125,9 +131,10 @@ fn field(f: &w::TextField) -> t::TextField {
     }
 }
 
-fn widget(x: &w::Widget) -> t::Widget {
+/// The widget as `kai:ui` has it; none for those it does not carry.
+fn widget(x: &w::Widget) -> Option<t::Widget> {
     use w::Widget as W;
-    match x {
+    Some(match x {
         W::Stack { axis: a } => t::Widget::Stack(t::Stack { axis: axis(*a) }),
         W::Label {
             text,
@@ -197,7 +204,8 @@ fn widget(x: &w::Widget) -> t::Widget {
             label: label.clone(),
             done: *done,
         }),
-    }
+        W::Code(_) => return None,
+    })
 }
 
 /// An event from `kai:ui/input`, as `uikit`'s.

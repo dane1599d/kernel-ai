@@ -16,6 +16,7 @@
 //! fails is refused by name and left out; the rest are kept.
 
 use crate::bundle::{self, HEADER};
+use crate::effects;
 use crate::header::Header;
 use crate::index::Index;
 use crate::resolve::{self, Entry, Want};
@@ -170,8 +171,9 @@ fn package(files: &mut dyn Files, target: &TargetFile) -> Result<(Entry, Vec<u8>
 }
 
 /// `target`'s index entry, each of whose `custom.kai` fields must be what the
-/// package's own header says ([`Index::matches`]); `bytes` are the package,
-/// already checked against `target`.
+/// package's own header says ([`Index::matches`]), and its effects what its
+/// artifact declares ([`effects::check`]); `bytes` are the package, already
+/// checked against `target`.
 pub fn entry(target: &TargetFile, bytes: &[u8]) -> Result<Entry, String> {
     entry_and_index(target, bytes).map(|(entry, _)| entry)
 }
@@ -185,7 +187,9 @@ fn entry_and_index(target: &TargetFile, bytes: &[u8]) -> Result<(Entry, Index), 
         .map(|(_, text)| *text)
         .ok_or("its first file is not kai-package")?;
     let text = core::str::from_utf8(text).map_err(|_| "its header is not text")?;
-    index.matches(&Header::parse(text)?, text)?;
+    let header = Header::parse(text)?;
+    index.matches(&header, text)?;
+    effects::check(&header, bytes, &index.effects)?;
     index.check_path(target)?;
     Ok((index.entry()?, index))
 }

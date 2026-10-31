@@ -34,6 +34,18 @@ fn the_local_llm_line_names_the_model_capability() {
 }
 
 #[test]
+fn the_editor_comphost_line_names_the_edit_capability() {
+    let plan =
+        parse_plan("editor program=comphost caps=serve+component+call+edit version=1").services;
+    assert_eq!(
+        plan[0].limits.caps,
+        cap::SERVE | cap::COMPONENT | cap::CALL | cap::EDIT
+    );
+    assert_eq!(plan[0].args, "version=1");
+    assert_ne!(cap::GRANTABLE & cap::EDIT, 0);
+}
+
+#[test]
 fn plan_can_tune_the_restart_policy_per_service() {
     let plan = parse_plan("crasher backoff_max_ms=200 max_restarts=1000 after_ms=150").services;
     assert_eq!(plan[0].policy.max_backoff_ms, 200);
@@ -45,18 +57,25 @@ fn plan_can_tune_the_restart_policy_per_service() {
 #[test]
 fn the_plan_the_kernel_sends_parses() {
     let text = alloc::format!(
-        "llm caps=serve+net burst_ms=10000 pages=1024 host=10.0.2.2:8080 model=org/model-7b\n{}",
+        "llm caps=serve+net burst_ms=10000 pages=1024 host=10.0.2.2:8080 model=org/model-7b\n{}\n{}",
+        kabi::plan::CC,
         kabi::plan::SHELL
     );
     let plan = parse_plan(&text);
     assert_eq!(plan.errors, Vec::<String>::new());
-    let shell = &plan.services[1];
+    // cc holds no authority but its service endpoint.
+    let cc = &plan.services[1];
+    assert_eq!((cc.name.as_str(), cc.limits.caps), ("cc", cap::SERVE));
+    assert!(cc.uses.is_empty());
+    // It starts when the shell first calls it, not at boot.
+    assert_eq!(cc.start, Start::Demand);
+    let shell = &plan.services[2];
     assert_eq!(shell.name, "shell");
     assert_eq!(
         shell.limits.caps,
         cap::SERVE | cap::CALL | cap::POLICY | cap::STOP | cap::SCRIPT
     );
-    assert_eq!(shell.uses, ["llm", SUPERVISOR]);
+    assert_eq!(shell.uses, ["llm", SUPERVISOR, "cc"]);
     assert_eq!(shell.limits.stack_pages, 512);
     assert!(shell.limits.stack_pages < shell.limits.max_pages);
     assert_eq!(
@@ -604,10 +623,14 @@ fn program_names_the_program_and_is_not_passed_on() {
     // Without the key, a service runs the program of its own name.
     let plan = parse_plan(&alloc::format!(
         "llm caps=serve
+{}
 {}",
+        kabi::plan::CC,
         kabi::plan::SHELL
     ));
-    let shell = &plan.services[1];
+    assert_eq!(plan.errors, Vec::<String>::new());
+    assert_eq!(plan.services[1].program, "cc");
+    let shell = &plan.services[2];
     assert_eq!(shell.program, "shell");
 }
 
@@ -864,4 +887,27 @@ fn only_the_store_holder_may_run_a_package_version() {
     ] {
         assert_eq!(Run::parse(bad), None, "{bad}");
     }
+}
+
+#[test]
+fn a_withdraw_reads_as_a_run_and_is_gated_as_one() {
+    let plan = parse_plan(RUN_PLAN);
+    let pids = [Some(10), Some(11), None, Some(13)];
+    let held: Vec<(&ServiceSpec, Option<u64>)> = plan.services.iter().zip(pids).collect();
+    let withdraw = Run::parse_withdraw("withdraw notes version=p-0a1b2c3d4e5f").unwrap();
+    assert_eq!(
+        withdraw.encode_withdraw(),
+        "withdraw notes version=p-0a1b2c3d4e5f"
+    );
+    assert_eq!(check_run(withdraw, &held, 11), Ok(2));
+    for caller in [10, 13, 0, 99] {
+        assert!(check_run(withdraw, &held, caller).is_err(), "{caller}");
+    }
+    // Each verb reads only itself.
+    assert_eq!(Run::parse("withdraw notes version=p-0a1b2c3d4e5f"), None);
+    assert_eq!(
+        Run::parse_withdraw("run notes version=p-0a1b2c3d4e5f"),
+        None
+    );
+    assert_eq!(Run::parse_withdraw("withdraw notes"), None);
 }

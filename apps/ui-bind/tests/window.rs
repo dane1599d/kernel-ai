@@ -137,6 +137,15 @@ fn a_refused_put_keeps_the_last_tree_so_the_next_present_sends_it_again() {
     assert_eq!(frame(&mut host).list, frame(&mut fresh).list);
 }
 
+/// A sink that does not say it can keep a window from the agent refuses, so an
+/// app that needs a private window is never shown shared by one that cannot.
+#[test]
+fn a_sink_that_cannot_keep_a_window_private_refuses() {
+    let mut host = Host::default();
+    assert_eq!(host.set_agent_private(7, true), Err(UiError::NoWindow));
+    assert_eq!(host.set_agent_private(7, false), Err(UiError::NoWindow));
+}
+
 #[test]
 fn a_window_that_cannot_open_is_an_error_and_a_closed_one_is_forgotten() {
     struct Full;

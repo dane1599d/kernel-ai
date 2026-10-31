@@ -10,6 +10,7 @@
 mod component;
 mod core;
 mod device;
+mod entropy;
 mod handle;
 mod job;
 mod net;
@@ -92,6 +93,7 @@ const AREAS: &[Area] = &[
     device::handle,
     shm::handle,
     job::handle,
+    entropy::handle,
     // Model lane. Interim (S10-3): goes at P2 task 10.
     model_kv::handle,
     // S-io (P2).

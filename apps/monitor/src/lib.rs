@@ -17,8 +17,10 @@ extern crate std;
 
 pub mod calls;
 pub mod fake;
-pub mod sample;
 pub mod view;
+
+/// The sample the host hands in is `systemabi`'s, the format `kai:system` carries.
+pub use systemabi as sample;
 
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -143,6 +145,9 @@ pub struct Monitor {
     status: Status,
     /// Tickets of `process_stop` effects, by the name they were asked for.
     pending: Vec<(u32, String)>,
+    /// Whether `status` says the last sample could not be read, which the next
+    /// good one clears.
+    unreadable: bool,
 }
 
 impl Default for Monitor {
@@ -201,6 +206,7 @@ impl Monitor {
             selected: None,
             status: Status::Ready,
             pending: Vec::new(),
+            unreadable: false,
         }
     }
 
@@ -261,6 +267,14 @@ impl Monitor {
 
     fn fail(&mut self, why: &str) {
         self.status = Status::Failed(tame(why, MESSAGE_CHARS));
+        self.unreadable = false;
+    }
+
+    /// The host could not give a sample, or gave bytes that are not one: the
+    /// window keeps the last picture and says so, until the next good sample.
+    pub fn no_reading(&mut self, why: &str) {
+        self.fail(&format!("The machine could not be read: {}", tame(why, 80)));
+        self.unreadable = true;
     }
 
     /// Takes in a new sample: the numbers it holds, and each process's CPU share
@@ -268,6 +282,9 @@ impl Monitor {
     /// keeps the older one as the baseline, so two reads in a moment cannot make
     /// a rate of nothing over nothing.
     pub fn update(&mut self, s: &Sample) {
+        if core::mem::take(&mut self.unreadable) {
+            self.status = Status::Ready;
+        }
         self.cpus = Some(s.cpus).filter(|&n| n > 0);
         self.uptime_ms = Some(s.uptime_ns / 1_000_000);
         self.memory = (s.total_pages > 0 && s.free_pages <= s.total_pages).then_some(Memory {
@@ -420,7 +437,10 @@ impl Monitor {
         };
         let (_, name) = self.pending.remove(at);
         match outcome {
-            Ok(_) => self.status = Status::Done(format!("Stopped {}.", tame(&name, 40))),
+            Ok(_) => {
+                self.status = Status::Done(format!("Stopped {}.", tame(&name, 40)));
+                self.unreadable = false;
+            }
             Err(why) => self.fail(&why),
         }
         true

@@ -19,20 +19,34 @@
 extern crate alloc;
 
 mod canonical;
+mod code;
+#[cfg(test)]
+mod code_tests;
 pub mod desk;
 #[cfg(test)]
 mod desk_tests;
+pub mod edit;
+#[cfg(test)]
+mod edit_tests;
 mod effects;
 pub mod grants;
+#[cfg(test)]
+mod grants_tests;
 mod instance;
 pub mod linear;
 pub mod link;
 pub mod settings;
+pub mod settings_ledger;
+#[cfg(test)]
+mod settings_ledger_tests;
 #[cfg(test)]
 mod settings_tests;
 pub mod surface;
 #[cfg(test)]
 mod surface_tests;
+pub mod system;
+#[cfg(test)]
+mod system_tests;
 mod tables;
 #[cfg(test)]
 mod tests;
@@ -48,6 +62,7 @@ mod user_tests;
 use alloc::format;
 use alloc::string::ToString;
 pub use canonical::{CoreInstance, load_core, load_core_granted};
+pub use edit::EditRequest;
 pub use grants::Grants;
 pub use instance::WasmInstance;
 use livecore::{Fault, Reason};
@@ -115,6 +130,10 @@ pub fn load(wasm: &[u8], limits: Limits, log: Option<LogSink>) -> Result<WasmIns
 
 /// A version as comphost runs it: `lifecycle 1` (hand-bound `kai-lifecycle-1`) or
 /// `lifecycle 2` (`kai:live` through the canonical ABI), as its manifest says.
+// `V2` is the contract in use and grows with each granted interface's export
+// name (`settings`, `edit`, `system`); `V1` is the old hand-bound one. Boxing `V2`
+// would put a pointer in front of every call for a size nobody holds many of.
+#[allow(clippy::large_enum_variant)]
 pub enum LiveInstance {
     V1(WasmInstance),
     V2(CoreInstance),
@@ -132,7 +151,8 @@ pub fn load_live(
     load_live_granted(artifact, limits, log, Grants::default())
 }
 
-/// As [`load_live`], for a version whose package holds `grants` (`kai:settings`).
+/// As [`load_live`], for a version whose package holds `grants` (`kai:settings`,
+/// `kai:edit`).
 #[inline(never)]
 pub fn load_live_granted(
     artifact: &[u8],

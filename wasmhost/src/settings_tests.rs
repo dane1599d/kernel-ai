@@ -107,7 +107,10 @@ fn refused(result: Result<CoreInstance, Fault>) -> Fault {
 }
 
 fn granted() -> Grants {
-    Grants { settings: true }
+    Grants {
+        settings: true,
+        ..Grants::default()
+    }
 }
 
 fn app_sending(texts: &[&str]) -> CoreInstance {
@@ -151,11 +154,17 @@ fn send_queues_a_request_with_a_ticket_and_a_kind_and_taking_empties_the_queue()
 
 #[test]
 fn a_read_and_a_change_may_share_a_call_but_two_changes_may_not() {
-    let mut app = app_sending(&["rules", "grants-revoke 3"]);
+    let mut app = app_sending(&["rules", "grants-revoke notes notes_add"]);
     app.health().unwrap();
-    assert_eq!(requests(&app.take_settings()), ["rules", "grants-revoke 3"]);
+    assert_eq!(
+        requests(&app.take_settings()),
+        ["rules", "grants-revoke notes notes_add"]
+    );
 
-    let mut app = app_sending(&["grants-revoke 3", "grants-revoke 4"]);
+    let mut app = app_sending(&[
+        "grants-revoke notes notes_add",
+        "grants-restore notes notes_add",
+    ]);
     let fault = app.health().expect_err("the second change traps");
     assert!(fault.detail.contains("one change"), "{}", fault.detail);
     assert!(
@@ -163,7 +172,7 @@ fn a_read_and_a_change_may_share_a_call_but_two_changes_may_not() {
         "a call that faulted leaves nothing queued"
     );
     // A later call has its own allowance.
-    let mut app = app_sending(&["grants-revoke 3"]);
+    let mut app = app_sending(&["grants-revoke notes notes_add"]);
     app.health().unwrap();
     app.health().unwrap();
     assert_eq!(app.take_settings().len(), 2);
@@ -223,7 +232,19 @@ fn every_read_is_an_exact_line_and_nothing_else_is_a_read() {
     for read in READS {
         assert_eq!(classify(read), Ok(Kind::Read), "{read}");
     }
+    // One app's grants, as the shell lists them.
+    for read in ["grants notes", "grants files-window", "grants app2"] {
+        assert_eq!(classify(read), Ok(Kind::Read), "{read}");
+    }
     let not_reads = [
+        "grants ",
+        "grants  notes",
+        "grants notes ",
+        "grants Notes",
+        "grants notes x",
+        "grants ../notes",
+        "grants abcdefghijklmnopqrstuvwxy",
+        "grants notes_app",
         "rules x",
         "rules ",
         " rules",
@@ -261,7 +282,10 @@ fn every_change_takes_its_own_arguments_and_nothing_looser() {
         "profile-set deep focus",
         "rules-remove 3",
         "rules-remove S12",
-        "grants-revoke 7",
+        "grants-revoke notes notes_add",
+        "grants-restore files-window files_open2",
+        "grants-revoke notes a",
+        "grants-revoke notes notes_",
         "keep-running on notes",
         "keep-running off my app",
         "restart-window 120 300",
@@ -300,9 +324,21 @@ fn every_change_takes_its_own_arguments_and_nothing_looser() {
         "rules-remove 12345",
         "rules-remove #3",
         "grants-revoke",
-        "grants-revoke 1 2",
-        "grants-revoke 99999999999",
-        "grants-revoke 4294967296",
+        "grants-revoke 7",
+        "grants-revoke notes",
+        "grants-revoke notes ",
+        "grants-revoke  notes notes_add",
+        "grants-revoke notes notes_add extra",
+        "grants-revoke Notes notes_add",
+        "grants-revoke notes notes-add",
+        "grants-revoke notes _notes",
+        "grants-revoke notes 1notes",
+        "grants-revoke notes_app notes_add",
+        "grants-revoke notes abcdefghijklmnopqrstuvwxy",
+        "grants-revoke notes NOTES_ADD",
+        "grants-revoke abcdefghijklmnopqrstuvwxy notes_add",
+        "grants-restore",
+        "grants-restore notes",
         "keep-running",
         "keep-running on",
         "keep-running on ",

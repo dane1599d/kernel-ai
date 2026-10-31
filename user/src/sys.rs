@@ -557,6 +557,16 @@ impl AppCtl {
     }
 }
 
+/// Fills `buf` (at most [`kabi::call::ENTROPY_MAX`] bytes) with random bytes from
+/// the kernel (ENTROPY). NoEntropy on a CPU that gives none: make no key then.
+pub fn entropy(buf: &mut [u8]) -> Result<usize, Error> {
+    call(
+        call::ENTROPY,
+        [buf.as_mut_ptr() as u64, buf.len() as u64, 0, 0, 0, 0],
+    )
+    .map(|n| n as usize)
+}
+
 /// `verb`'s `ctl` request to app `name`, sent by the kernel (APP_CTL); the
 /// app's reply goes into `reply`. For the supervisor.
 pub fn app_ctl(name: &str, verb: AppCtl, reply: &mut [u8]) -> Result<usize, Error> {
@@ -885,6 +895,24 @@ pub fn pkg_fetch(request: &HttpRequest) -> Result<usize, Error> {
     call(
         call::PKG_FETCH,
         [request as *const HttpRequest as u64, 0, 0, 0, 0, 0],
+    )
+    .map(|len| len as usize)
+}
+
+/// Sends the edit service one open or command for an app that holds the `edit`
+/// grant, through the kernel's journal; its answer goes into `reply`, which must
+/// hold [`kabi::MAX_MESSAGE`] bytes, and its length comes back (needs EDIT).
+pub fn edit_call(message: &[u8], reply: &mut [u8]) -> Result<usize, Error> {
+    call(
+        call::EDIT_CALL,
+        [
+            message.as_ptr() as u64,
+            message.len() as u64,
+            reply.as_mut_ptr() as u64,
+            reply.len() as u64,
+            0,
+            0,
+        ],
     )
     .map(|len| len as usize)
 }
