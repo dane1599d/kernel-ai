@@ -79,6 +79,21 @@ fn done(g: &mut CoreInstance, ticket: u32, outcome: Result<&str, &str>) {
     r.unwrap();
 }
 
+/// The host will not start a version that cannot export its own state ("it
+/// cannot export its own state", found by the first `full-ci` boot), so the
+/// fixture exports an empty one and takes it back.
+#[test]
+fn it_exports_its_own_state_and_takes_it_back() {
+    let Some(mut g) = load() else { return };
+    let saved = Instance::export(&mut g, 0).unwrap().unwrap();
+    assert_eq!(livecore::state::schema_of(&saved), Some(1));
+    let mut h = load().unwrap();
+    assert_eq!(h.import(&saved, 1), Ok(0));
+    // Not its schema, and not a state: refused, as the host expects.
+    assert_eq!(h.import(&saved, 9), Ok(1));
+    assert_eq!(h.import(b"junk", 1), Ok(2));
+}
+
 #[test]
 fn a_press_queues_one_fs_list_and_the_outcome_is_logged() {
     let Some(mut g) = load() else { return };

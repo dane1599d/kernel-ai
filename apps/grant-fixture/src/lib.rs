@@ -171,12 +171,21 @@ impl Component for Fixture {
         app
     }
 
-    fn import(_state: &[u8], _from_schema: u32) -> Result<Self, ImportError> {
-        Err(ImportError::Unsupported)
+    /// The fixture keeps nothing, but the host asks every version for a state it
+    /// can read back, so the state is an empty one and a moved fixture starts
+    /// again.
+    fn import(state: &[u8], from_schema: u32) -> Result<Self, ImportError> {
+        if from_schema != SCHEMA {
+            return Err(ImportError::Unsupported);
+        }
+        compsdk::state::decode::<()>(state, SCHEMA).ok_or(ImportError::Bad)?;
+        let mut app = Self::new();
+        app.present_logged();
+        Ok(app)
     }
 
-    fn export(&self, _schema: u32) -> Option<Vec<u8>> {
-        None
+    fn export(&self, schema: u32) -> Option<Vec<u8>> {
+        (schema == SCHEMA).then(|| compsdk::state::encode(SCHEMA, &()))
     }
 
     fn health(&self) -> u32 {
