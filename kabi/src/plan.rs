@@ -33,7 +33,7 @@ pub const FS: &str = "fs caps=serve+partition pages=8192 stack_pages=64 burst_ms
 /// larger stack, which counts within its pages with a 512 KiB root buffer and
 /// two 128 KiB slot buffers.
 pub const UPDATED: &str =
-    "updated caps=update dir=trust+updates+settings pages=2048 stack_pages=128 burst_ms=5000";
+    "updated caps=update dir=trust+updates+restart pages=2048 stack_pages=128 burst_ms=5000";
 /// The live `notes` component, run by the shared `comphost` program, without its
 /// arguments.
 const NOTES_BASE: &str =

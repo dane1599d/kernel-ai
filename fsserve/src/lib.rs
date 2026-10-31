@@ -30,8 +30,8 @@ use fsproto::{
     Version,
 };
 use kabi::fs::{
-    Badge, HOME, HOME_USER, MODELS, SYSTEM, SYSTEM_APPS, SYSTEM_PKG, SYSTEM_SETTINGS, SYSTEM_STATE,
-    SYSTEM_TRUST, SYSTEM_UPDATES,
+    Badge, HOME, HOME_USER, MODELS, SYSTEM, SYSTEM_APPS, SYSTEM_PKG, SYSTEM_RESTART,
+    SYSTEM_SETTINGS, SYSTEM_STATE, SYSTEM_TRUST, SYSTEM_UPDATES,
 };
 use kabi::handle::Rights;
 use kaifs::ns::Listed;
@@ -49,7 +49,17 @@ const FOLDERS: [(u8, &str); 7] = [
     (SYSTEM, "apps"),
 ];
 
-/// The most a [`SYSTEM_SETTINGS`] handle may use, however it was made.
+/// `/system/state`'s folder for the restart window, which `dir=restart` grants
+/// alone ([`SYSTEM_RESTART`]); made at mount, as [`FOLDERS`] are.
+const RESTART: &str = "restart";
+
+/// Whether `badge` is a fixed folder read only through it: `/system/settings`
+/// and `/system/state/restart`.
+fn read_only(badge: u64) -> bool {
+    matches!(badge, SYSTEM_SETTINGS | SYSTEM_RESTART)
+}
+
+/// The most a read-only folder's handle may use, however it was made.
 const SETTINGS_RIGHTS: Rights = Rights::READ.union(Rights::ENUMERATE).union(BASE);
 
 /// Rights every minted handle carries, as the kernel's startup handles do.
@@ -140,6 +150,8 @@ pub struct Server<D: BlockDev> {
     system_updates: u64,
     /// `/system/settings`: what [`SYSTEM_SETTINGS`] names, read only.
     system_settings: u64,
+    /// `/system/state/restart`: what [`SYSTEM_RESTART`] names, read only.
+    system_restart: u64,
     /// `/system/apps`'s object id in `system`: what [`SYSTEM_APPS`] names, the
     /// folder a plan line's `dir=apps` grants.
     system_apps: u64,
@@ -185,6 +197,7 @@ impl<D: BlockDev> Server<D> {
             system_trust: 0,
             system_updates: 0,
             system_settings: 0,
+            system_restart: 0,
             system_apps: 0,
             epoch: 0,
             base,
@@ -202,6 +215,7 @@ impl<D: BlockDev> Server<D> {
                 server.system_updates,
                 server.system_settings,
                 server.system_apps,
+                server.system_restart,
             ],
             server.epoch,
         ) = fixed;
@@ -234,7 +248,7 @@ impl<D: BlockDev> Server<D> {
     /// Makes the missing [`FOLDERS`], and the disk's epoch if it has none, in
     /// one commit; `/home/user`'s, `/system/state`'s and `/system/pkg`'s ids and
     /// the epoch.
-    fn prepare(&mut self, uuid: &[u8; 16]) -> Result<(u64, u64, [u64; 5], u16), kaifs::Error> {
+    fn prepare(&mut self, uuid: &[u8; 16]) -> Result<(u64, u64, [u64; 6], u16), kaifs::Error> {
         let fs = self.fs();
         let writable = fs.writable();
         let mut made = false;
@@ -246,6 +260,13 @@ impl<D: BlockDev> Server<D> {
             }
         }
         fs.set_volume(SYSTEM.into())?;
+        if let Some(state) = fs.lookup(ROOT, "state")?
+            && fs.lookup(state.ino, RESTART)?.is_none()
+            && writable
+        {
+            fs.mkdir(state.ino, RESTART)?;
+            made = true;
+        }
         let epoch = match fs.get_xattr(ROOT, EPOCH)? {
             Some(bytes) if bytes.len() == 2 => u16::from_le_bytes([bytes[0], bytes[1]]),
             _ => {
@@ -264,11 +285,14 @@ impl<D: BlockDev> Server<D> {
         }
         let system_state = fs.lookup(ROOT, "state")?.map_or(0, |e| e.ino);
         // The plan-line folders: `/system/pkg`, `/system/trust`, `/system/updates`,
-        // `/system/settings`, `/system/apps`.
-        let mut granted = [0; 5];
+        // `/system/settings`, `/system/apps`, and `/system/state/restart`.
+        let mut granted = [0; 6];
         let names = ["pkg", "trust", "updates", "settings", "apps"];
         for (id, name) in granted.iter_mut().zip(names) {
             *id = fs.lookup(ROOT, name)?.map_or(0, |e| e.ino);
+        }
+        if system_state != 0 {
+            granted[5] = fs.lookup(system_state, RESTART)?.map_or(0, |e| e.ino);
         }
         fs.set_volume(HOME.into())?;
         let home_user = fs.lookup(ROOT, "user")?.map_or(0, |e| e.ino);
@@ -389,23 +413,23 @@ impl<D: BlockDev> Server<D> {
     }
 
     fn answer(&mut self, call: &Call) -> Result<(Reply, Option<Mint>), Error> {
-        // `/system/settings` is read only through its fixed badge, whatever
-        // rights the handle carries: nothing it opens gets more than READ and
-        // ENUMERATE either.
-        let read_only;
-        let call = match call.badge == SYSTEM_SETTINGS {
+        // `/system/settings` and `/system/state/restart` are read only through
+        // their fixed badges, whatever rights the handle carries: nothing they
+        // open gets more than READ and ENUMERATE either.
+        let narrowed;
+        let call = match read_only(call.badge) {
             true => {
-                read_only = Call {
+                narrowed = Call {
                     rights: call.rights & SETTINGS_RIGHTS,
                     ..*call
                 };
-                &read_only
+                &narrowed
             }
             false => call,
         };
         let request = fsproto::decode_request(call.request)?;
         let changes = changes(&request);
-        if changes && call.badge == SYSTEM_SETTINGS {
+        if changes && read_only(call.badge) {
             return Err(Error::Permission);
         }
         if changes && self.owner.is_some_and(|o| o != call.caller) {
@@ -462,6 +486,7 @@ impl<D: BlockDev> Server<D> {
                 | SYSTEM_UPDATES
                 | SYSTEM_SETTINGS
                 | SYSTEM_APPS
+                | SYSTEM_RESTART
         );
         let ours = epoch == self.epoch || fixed;
         if !matches!(volume, SYSTEM | HOME | MODELS) || !ours {
@@ -475,6 +500,7 @@ impl<D: BlockDev> Server<D> {
             SYSTEM_UPDATES => self.system_updates,
             SYSTEM_SETTINGS => self.system_settings,
             SYSTEM_APPS => self.system_apps,
+            SYSTEM_RESTART => self.system_restart,
             _ => object,
         };
         let fs = self.fs();
