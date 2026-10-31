@@ -7,6 +7,7 @@ const SETTINGS: Grants = Grants {
     shell_line: false,
     system: false,
     edit: false,
+    files: false,
 };
 
 #[test]
