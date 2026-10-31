@@ -770,6 +770,53 @@ fn a_demand_does_not_restart_a_service_past_its_cap() {
 }
 
 #[test]
+fn a_pkg_demand_line_takes_pkgs_version_and_starts_at_the_first_demand() {
+    let plan = parse_plan(
+        "pkg dir=pkg caps=call uses=supervisor\n\
+         notes-window program=comphost caps=serve+component start=pkg-demand nap_ms=120000\n\
+         shell caps=call",
+    );
+    assert!(plan.errors.is_empty(), "{:?}", plan.errors);
+    let window = &plan.services[1];
+    assert_eq!(window.start, Start::PkgDemand);
+    assert!(window.start.from_pkg() && window.start.on_demand());
+    for bad in [
+        "notes start=pkg-demand version=1",
+        "notes start=pkg-demand start=demand",
+        "notes start=pkg-demand unsupervised",
+        "notes start=demand-pkg",
+    ] {
+        let plan = parse_plan(bad);
+        assert!(plan.services.is_empty() && plan.errors.len() == 1, "{bad}");
+    }
+    // pkg may name its version, as for start=pkg.
+    let held: Vec<(&ServiceSpec, Option<u64>)> = plan
+        .services
+        .iter()
+        .zip([Some(11), None, Some(13)])
+        .collect();
+    let run = Run::parse("run notes-window version=p-0a1b2c3d4e5f").unwrap();
+    assert_eq!(check_run(run, &held, 11), Ok(1));
+    // And the kernel's demand starts it, as for start=demand.
+    let specs: Vec<&ServiceSpec> = plan.services.iter().collect();
+    let records: Vec<Record> = specs.iter().map(|s| Record::new(&s.name)).collect();
+    let idle = [false; 3];
+    let demand = check_demand("notes-window", &specs, &records, 0, &idle);
+    assert_eq!(demand, Ok(Some(1)));
+    // A run starts it at once only when a demand came first.
+    assert!(!starts_on_run(Start::PkgDemand, false));
+    assert!(starts_on_run(Start::PkgDemand, true));
+    assert!(starts_on_run(Start::Pkg, false));
+    assert!(!starts_on_run(Start::Demand, true));
+    // The user's start of one not started yet starts it, as a demand would.
+    let starts = [Start::Boot, Start::PkgDemand, Start::Boot];
+    assert_eq!(
+        check_for(Request::Start("notes-window"), &records, &starts),
+        Ok(1)
+    );
+}
+
+#[test]
 fn start_starts_a_demand_service_not_started_yet() {
     let starts = [Start::Demand, Start::Boot];
     let mut records = vec![Record::new("notes"), Record::new("files")];

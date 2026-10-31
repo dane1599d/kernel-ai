@@ -534,14 +534,14 @@ pub fn plan_grants(name: &str, program: &str) -> Result<supervise::Grants, Strin
 }
 
 /// Whether the kernel's own plan starts service `name` on demand
-/// (`start=demand`, P3 task 12b): not at boot, but when a call first waits for
-/// it.
+/// (`start=demand` or `start=pkg-demand`, P3 task 12b): not at boot, but when a
+/// call first waits for it.
 pub fn on_demand(name: &str) -> bool {
     PLAN.get().is_some_and(|plan| {
         supervise::parse_plan(plan)
             .services
             .iter()
-            .any(|s| s.name == name && s.start == supervise::Start::Demand)
+            .any(|s| s.name == name && s.start.on_demand())
     })
 }
 

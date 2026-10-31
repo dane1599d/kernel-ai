@@ -60,8 +60,8 @@ pub fn parse_demand(text: &str) -> Option<&str> {
 
 /// The index among `specs` of the service `demand <name>` asks for, if the
 /// supervisor should start it now: the request is the kernel's (`caller` 0),
-/// the line says `start=demand`, it is not running, and the user has not
-/// stopped it. `Ok(None)` when it already runs or is starting.
+/// the line says `start=demand` or `start=pkg-demand`, it is not running, and
+/// the user has not stopped it. `Ok(None)` when it already runs or is starting.
 pub fn check_demand(
     name: &str,
     specs: &[&ServiceSpec],
@@ -76,7 +76,7 @@ pub fn check_demand(
         .iter()
         .position(|s| s.name == name)
         .ok_or("err unknown service")?;
-    if specs[index].start != Start::Demand {
+    if !specs[index].start.on_demand() {
         return Err("err not a start=demand service");
     }
     let record = &records[index];
@@ -225,6 +225,34 @@ pub enum Start {
     /// first needs it. A call that waits for it makes the kernel send the
     /// supervisor [`DEMAND`] for it ([`check_demand`]).
     Demand,
+    /// `start=pkg-demand`, a built-in window app (P4): on the package version
+    /// `pkg`'s [`Run`] names, as `start=pkg`, but started at the first demand,
+    /// as `start=demand`. A demand before the version waits for it
+    /// ([`starts_on_run`]).
+    PkgDemand,
+}
+
+impl Start {
+    /// Whether `pkg`'s [`Run`] names its version.
+    pub fn from_pkg(self) -> bool {
+        matches!(self, Start::Pkg | Start::PkgDemand)
+    }
+
+    /// Whether a call that waits for it starts it ([`check_demand`]).
+    pub fn on_demand(self) -> bool {
+        matches!(self, Start::Demand | Start::PkgDemand)
+    }
+}
+
+/// Whether a service starts when `pkg`'s [`Run`] names its version: a
+/// `start=pkg` one at once, a `start=pkg-demand` one only if a demand came
+/// while it had none (`demanded`); else at its first demand.
+pub fn starts_on_run(start: Start, demanded: bool) -> bool {
+    match start {
+        Start::Pkg => true,
+        Start::PkgDemand => demanded,
+        Start::Boot | Start::Demand => false,
+    }
 }
 
 /// `run <name> version=<label>`: the holder of `/system/pkg` asks for `start=pkg`
@@ -271,8 +299,9 @@ impl<'a> Run<'a> {
     }
 }
 
-/// The answer to a `run` for a service whose plan line is not `start=pkg`, as a
-/// local override's is: `pkg` shows it as shadowed, not as a failure.
+/// The answer to a `run` for a service whose plan line is not `start=pkg` or
+/// `start=pkg-demand`, as a local override's is: `pkg` shows it as shadowed,
+/// not as a failure.
 pub const NOT_FROM_PKG: &str = "err not a start=pkg service";
 /// The answer to a `run` for an app that already serves another version.
 pub const RUNS_ANOTHER: &str = "err it runs another version";
@@ -297,7 +326,7 @@ pub fn check_run(
         .position(|(spec, _)| spec.name == run.name)
         .ok_or("err unknown service")?;
     match services[index].0.start {
-        Start::Pkg => Ok(index),
+        Start::Pkg | Start::PkgDemand => Ok(index),
         Start::Boot | Start::Demand => Err(NOT_FROM_PKG),
     }
 }
@@ -510,8 +539,9 @@ pub fn check(request: Request, records: &[Record]) -> Result<usize, &'static str
 }
 
 /// [`check`], knowing each record's [`Start`] (`starts`, by index; a record
-/// past its end starts at boot): a `start` of a `start=demand` service that
-/// has not started yet starts it, as its first demand would.
+/// past its end starts at boot): a `start` of a `start=demand` or
+/// `start=pkg-demand` service that has not started yet starts it, as its first
+/// demand would.
 pub fn check_for(
     request: Request,
     records: &[Record],
@@ -526,7 +556,7 @@ pub fn check_for(
         .position(|record| record.name == name)
         .ok_or("err unknown service")?;
     let record = &records[index];
-    let waiting = starts.get(index) == Some(&Start::Demand) && record.pid == 0;
+    let waiting = starts.get(index).is_some_and(|s| s.on_demand()) && record.pid == 0;
     match (request, record.stopped) {
         (Request::Stop(_), true) => Err("err already stopped"),
         // A service the supervisor gave up on starts again on request too, and
@@ -576,7 +606,7 @@ impl Plan {
 
 /// Reads the plan: one service per line, `name [program=P] [pages=N] [stack_pages=N]
 /// [burst_ms=N] [caps=serve+net+call+policy+component+publish+model+threads+resolve+stop+script]
-/// [uses=A+B] [dir=pkg] [bootfiles=pkgrepo] [start=pkg|demand] [backoff_max_ms=N] [max_restarts=N] [unsupervised] [other=args ...]`. The supervisor keys set limits,
+/// [uses=A+B] [dir=pkg] [bootfiles=pkgrepo] [start=pkg|demand|pkg-demand] [backoff_max_ms=N] [max_restarts=N] [unsupervised] [other=args ...]`. The supervisor keys set limits,
 /// routes, folders and policy; everything else is passed to the program. A bad line skips only
 /// that service, so one typo cannot keep every other service down.
 pub fn parse_plan(text: &str) -> Plan {
@@ -663,9 +693,10 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
                 start = Some(match value {
                     "pkg" => Start::Pkg,
                     "demand" => Start::Demand,
+                    "pkg-demand" => Start::PkgDemand,
                     _ => {
                         return Err(format!(
-                            "{name}: start= is pkg, demand or not given, not {value:?}"
+                            "{name}: start= is pkg, demand, pkg-demand or not given, not {value:?}"
                         ));
                     }
                 });
@@ -699,7 +730,7 @@ fn parse_line(line: &str, earlier: &[ServiceSpec]) -> Result<ServiceSpec, String
         return Err(format!("{name}: an unsupervised process takes no start="));
     }
     // A package's version comes from `pkg`'s request, never the plan.
-    if start == Start::Pkg && args.iter().any(|a| a.starts_with("version=")) {
+    if start.from_pkg() && args.iter().any(|a| a.starts_with("version=")) {
         return Err(format!("{name}: a start=pkg line names no version="));
     }
     Ok(ServiceSpec {
