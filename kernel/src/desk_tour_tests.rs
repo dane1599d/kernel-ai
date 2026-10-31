@@ -62,7 +62,9 @@ fn shot(name: &str) {
     threads::sleep_ms(SHOT_MS);
 }
 
-/// A line to the shell, as the console sends it; its reply is logged.
+/// A line to the shell, as the console sends it; its reply is logged. A row
+/// runs only from the model's script, so each step is a request the mock
+/// model answers (`xtask/src/mock_llm.rs`).
 fn line(text: &str) {
     match ipc::call("shell", text.as_bytes(), CALL_MS) {
         Ok(reply) => {
@@ -74,9 +76,10 @@ fn line(text: &str) {
     }
 }
 
-/// Opens `app` with `ui_open` and waits for its process and first frames.
-fn open(app: &str) {
-    line(&alloc::format!("ui_open(\"{app}\")"));
+/// Asks for `app`'s window (`request`, which the model answers with
+/// `ui_open`) and waits for its process and first frames.
+fn open(app: &str, request: &str) {
+    line(request);
     let service = alloc::format!("{app}-window");
     if wait("the app to start", || !process::named(&service).is_empty()) {
         threads::sleep_ms(OPEN_MS);
@@ -142,13 +145,13 @@ pub fn check() -> Result<(), &'static str> {
         return Err("desk-tour: the desktop never came up");
     }
     // Pictures, not animations: reduced motion, and files for Files to show.
-    line("appearance_set(\"reduced_motion\", \"on\")");
-    for (name, text) in [
-        ("plan.txt", "the plan"),
-        ("ideas.txt", "ideas"),
-        ("shopping.txt", "milk"),
+    for request in [
+        "turn on reduced motion",
+        "create notes.txt saying hello",
+        "create plan.txt saying the plan",
+        "create ideas.txt saying ideas",
     ] {
-        line(&alloc::format!("fs_create(\"{name}\", \"{text}\")"));
+        line(request);
     }
     shot("01-desktop");
 
@@ -160,16 +163,16 @@ pub fn check() -> Result<(), &'static str> {
     // Esc closes the sheet and leaves the panel.
     type_keys(&[0x01, 0x81]);
 
-    open("files");
+    open("files", "open files");
     shot("03-files");
 
-    open("terminal");
+    open("terminal", "open the terminal");
     type_text("1 + 2\n");
     threads::sleep_ms(SETTLE_MS);
     type_text("6 * 7\n");
     shot("04-terminal");
 
-    open("notes");
+    open("notes", "open notes");
     // Kai adds the note from the panel, as a person would ask.
     type_keys(&CTRL_SPACE);
     threads::sleep_ms(SETTLE_MS);
@@ -177,13 +180,13 @@ pub fn check() -> Result<(), &'static str> {
     threads::sleep_ms(SETTLE_MS);
     shot("05-notes");
 
-    open("settings");
-    line("settings_open(\"appearance\")");
+    open("settings", "open settings");
+    line("show the appearance settings");
     shot("06-settings-appearance");
-    line("settings_open(\"access\")");
+    line("show the access settings");
     shot("07-settings-access");
 
-    open("monitor");
+    open("monitor", "open the monitor");
     shot("08-monitor");
 
     // Kai acting: the panel's done state from Notes' step is behind; an ask
@@ -201,11 +204,11 @@ pub fn check() -> Result<(), &'static str> {
     }
     shot("10-kai-done");
 
-    line("appearance_set(\"theme\", \"light\")");
+    line("use the light theme");
     shot("11-light");
 
     // Overlapping windows, Files brought to the front and focused.
-    line("ui_focus(\"files\")");
+    line("bring files to the front");
     shot("12-overlap");
 
     log!("{CASE}: the tour is done");
