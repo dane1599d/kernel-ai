@@ -22,8 +22,9 @@
 //!   arguments (`theme=light`, `legible=on`, ...), each an `appearance_set`
 //!   setting.
 //! - While the terminal window (`term`'s) has focus, the keys go to the
-//!   kernel's terminal instead: a lease (INPUT_TO_CONSOLE) renewed every
-//!   [`LEASE_RENEW_NS`], and ended when the focus moves (P3 task 8). The
+//!   kernel's terminal instead: a lease (INPUT_TO_CONSOLE), asked for again
+//!   every [`LEASE_ASK_NS`] as the kernel ends it on a click, Alt+Tab or the
+//!   screen changing hands, and ended when the focus moves (P3 task 8). The
 //!   kernel, not `desktop`, decides which client is the terminal: it lends the
 //!   keys only for the window of a process holding TERM.
 //! - `apps` sent in the panel opens the Apps sheet, with what `pkg` lists
@@ -79,9 +80,9 @@ const BAR_EVERY_NS: u64 = 1_000_000_000;
 /// Waits for input or a client, in turn, so neither starves.
 const INPUT_WAIT_MS: u64 = 2;
 const CLIENT_WAIT_MS: u64 = 2;
-/// How often the lease is renewed while that window has focus: well inside the
-/// kernel's one second.
-const LEASE_RENEW_NS: u64 = 250_000_000;
+/// How often the lease is asked for again while that window has focus. No
+/// timer ends it in the kernel: this only restores one the kernel ended.
+const LEASE_ASK_NS: u64 = 250_000_000;
 
 struct Pool {
     pid: u64,
@@ -266,8 +267,10 @@ fn run(state: &mut State, screen: &Screen) -> Option<bool> {
 }
 
 /// Lends the keys to the kernel's terminal while the terminal window has
-/// focus, renewing the lease; ends it once the focus moves. The kernel says
-/// which window that is: it refuses the lease for any other client.
+/// focus, asking again in case the kernel ended the lease; ends it once the
+/// focus moves. The kernel says which window that is: it refuses the lease for
+/// any other client. Each time the keys are lent the desk forgets the keys it
+/// holds down, as their releases now go to the console.
 fn lease(state: &mut State) {
     let focused = match state.desk.focus() {
         Focus::Window(id) => state
@@ -288,7 +291,7 @@ fn lease(state: &mut State) {
     };
     let fresh = state
         .leased_at
-        .is_some_and(|at| now.saturating_sub(at) < LEASE_RENEW_NS);
+        .is_some_and(|at| now.saturating_sub(at) < LEASE_ASK_NS);
     match state.asked {
         // Not the terminal: asked once for this focus.
         Some((asked, false)) if asked == id => return,
@@ -296,6 +299,9 @@ fn lease(state: &mut State) {
         _ => {}
     }
     let lent = sys::input_to_console(true, pid).is_ok();
+    if lent {
+        state.desk.keys_lent();
+    }
     match (lent, state.leased_at.is_some()) {
         (true, false) => println!("desktop: the terminal window has the keys"),
         (false, true) => println!("desktop: the keys are the desktop's again"),

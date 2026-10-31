@@ -448,6 +448,18 @@ fn a_y_held_before_the_card_cannot_answer_it_and_buttons_can() {
 }
 
 #[test]
+fn a_key_whose_release_went_to_the_terminal_can_answer_the_next_card() {
+    let (mut desk, _) = desk_with(1);
+    desk.show_ask(1, 1);
+    assert!(key(&mut desk, usage::Y, true).contains(&Effect::Answer { id: 1, yes: true }));
+    // Focus is back on the terminal window: desktop lends the keys, and the
+    // y's release goes to the console, never to the desk.
+    desk.keys_lent();
+    desk.show_ask(2, 1);
+    assert!(key(&mut desk, usage::Y, true).contains(&Effect::Answer { id: 2, yes: true }));
+}
+
+#[test]
 fn a_key_or_click_in_the_agents_window_takes_over() {
     let (mut desk, ids) = desk_with(2);
     desk.set_agent(Some(ids[1]));
