@@ -201,6 +201,31 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
 
 [[package]]
+name = "comp-editor-ui"
+version = "0.1.0-dev"
+dependencies = [
+ "comp-ui-bind",
+ "editcore",
+ "uikit",
+]
+
+[[package]]
+name = "comp-editor-window"
+version = "0.1.0-dev"
+dependencies = [
+ "appabi",
+ "comp-editor-ui",
+ "comp-ui-bind",
+ "compsdk",
+ "editcore",
+ "livecore",
+ "minicbor",
+ "uikit",
+ "wasmhost",
+ "wit-bindgen",
+]
+
+[[package]]
 name = "comp-files"
 version = "0.1.0-dev"
 dependencies = [
@@ -256,7 +281,6 @@ dependencies = [
 name = "comp-monitor-ui"
 version = "0.1.0-dev"
 dependencies = [
- "agentabi",
  "comp-monitor",
  "comp-ui-bind",
  "uikit",
