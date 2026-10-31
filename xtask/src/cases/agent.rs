@@ -94,11 +94,14 @@ pub(super) const CASES: &[TestCase] = &[
         ..case("act-undo", "test=act-undo")
     },
     // P3 task 12: resource profiles through the supervisor's PROC_CLASS_SET and
-    // PROC_QUOTA_SET.
+    // PROC_QUOTA_SET. `quiet` sets each spinner's quota to 64 MiB, up from the
+    // 4 MiB default, so the guest needs room for both under the admission rule
+    // (free / 2) that PROC_QUOTA_SET now holds a raise to.
     TestCase {
         expect: &[
             "profile-switch: gaming sent the apps back, quiet lowered a quota, undo put it back, and the shell kept its own",
         ],
+        memory_mib: Some(1024),
         ..case("profile-switch", "test=profile-switch")
     },
     TestCase {
