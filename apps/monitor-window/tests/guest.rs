@@ -1,18 +1,18 @@
 //! The Monitor component as built for wasm32, run in `wasmhost` with no OS: it
 //! opens its window when it starts and asks for a sample, turns each sample the
-//! host gives into the window and asks for the next, queues `process_stop` as an
-//! effect when a click or Stop asks for it, and stops reading when its window is
-//! closed. It is skipped when `cargo build -p comp-monitor-window --target
+//! host gives into the window and asks for the next, queues no effect (stopping a
+//! process is the OS's `process_stop`, which no app may declare), and stops
+//! reading when its window is closed. It is skipped when `cargo build -p comp-monitor-window --target
 //! wasm32-unknown-unknown --profile component` has not run (CI runs it first).
 
 use appabi::{Func, Ty, Val};
-use comp_monitor_ui::{SORT_NAME, STOP, TABLE};
+use comp_monitor_ui::{SORT_NAME, TABLE};
 use livecore::txn::{Effect, Inputs, Storage, Txn};
 use livecore::{Instance, Reason};
 use systemabi::{ModelState, ModelStatus, ProcSample, Sample};
 use uikit::a11y::Action;
 use uikit::widget::{UiEvent, Value};
-use wasmhost::{AppEvent, CoreInstance, Grants, Limits, Update, load_core, load_core_granted};
+use wasmhost::{CoreInstance, Grants, Limits, Update, load_core, load_core_granted};
 
 const LIMITS: Limits = Limits {
     fuel_call: 5_000_000,
@@ -136,14 +136,6 @@ fn sample(g: &mut CoreInstance, ticket: u32, outcome: Result<Vec<u8>, String>) -
     effects(&txn)
 }
 
-fn done(g: &mut CoreInstance, ticket: u32, outcome: Result<&str, &str>) {
-    let outcome = outcome.map(String::from).map_err(String::from);
-    let (r, _) = call(g, |g| {
-        g.deliver_event(&AppEvent::EffectDone { ticket, outcome })
-    });
-    r.unwrap();
-}
-
 fn action(name: &str) -> Func {
     Func {
         export: format!("app:monitor/actions@1.0.0#{name}"),
@@ -156,7 +148,7 @@ fn action(name: &str) -> Func {
 }
 
 #[test]
-fn the_monitor_guest_reads_the_machine_and_asks_the_os_to_stop_a_process() {
+fn the_monitor_guest_reads_the_machine_and_sends_a_stop_to_kai() {
     let Some(mut g) = load() else { return };
 
     // Its window is there at once, with nothing in it, and one read waits.
@@ -184,20 +176,25 @@ fn the_monitor_guest_reads_the_machine_and_asks_the_os_to_stop_a_process() {
     );
     assert_eq!(g.take_system(), [2]);
 
-    // Picking the busiest row and pressing Stop asks the OS, by name.
-    let (r, _) = call(&mut g, |g| {
+    // Picking the busiest row names it in the hint, which sends the user to Kai
+    // for a stop; the click queues no effect, and no control in the window is bound
+    // to `process_stop`.
+    let (r, txn) = call(&mut g, |g| {
         g.ui_act(w, TABLE, Action::SetValue, Some(Value::Index(0)))
     });
     assert_eq!(r, Ok(Ok(())));
-    let (r, txn) = call(&mut g, |g| g.ui_events(w, &[UiEvent::Pressed(STOP)]));
-    r.unwrap();
-    assert_eq!(effects(&txn), [r#"process_stop {name: "llm"}"#]);
-    g.take_ui();
-
-    // The OS's refusal shows in the window.
-    done(&mut g, 1, Err("the user said no"));
+    assert!(effects(&txn).is_empty());
     let (_, f) = frame(&mut g);
-    assert!(names(&f).contains(&String::from("the user said no")));
+    assert!(
+        names(&f).iter().any(|n| n.contains("To stop llm, ask Kai")),
+        "{:?}",
+        names(&f)
+    );
+    assert!(
+        !f.a11y
+            .iter()
+            .any(|n| n.bound.as_deref() == Some("process_stop"))
+    );
 }
 
 #[test]
