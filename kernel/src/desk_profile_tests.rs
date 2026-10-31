@@ -42,6 +42,9 @@ const YES: [u8; 2] = [0x15, 0x95];
 static ASKED: AtomicBool = AtomicBool::new(false);
 static DONE: AtomicBool = AtomicBool::new(false);
 static UNDONE: AtomicBool = AtomicBool::new(false);
+/// Firings `undo` may have to take back: the click's, and one at most from
+/// a focus posted before the rule was made.
+const MAX_UNDOS: usize = 3;
 
 fn wait(what: &'static str, mut done: impl FnMut() -> bool) -> Result<(), &'static str> {
     for _ in 0..WAIT_MS / 50 {
@@ -140,9 +143,17 @@ pub fn check() -> Result<(), &'static str> {
     log!(
         "desk-profile: focusing Notes switched to gaming: both apps went to the background, their quotas and the system untouched"
     );
-    // Undo puts default back.
-    threads::spawn("undoer", undoer, 0)?;
-    wait("the undo", || UNDONE.load(Ordering::Acquire))?;
+    // Undo puts default back. The rule may have fired more than once (a focus
+    // posted before it was made can fire it too), so each `undo` takes one
+    // firing back, until `default` is in force.
+    for _ in 0..MAX_UNDOS {
+        UNDONE.store(false, Ordering::Release);
+        threads::spawn("undoer", undoer, 0)?;
+        wait("the undo", || UNDONE.load(Ordering::Acquire))?;
+        if settings(&APPS).as_deref() == Some(apps.as_slice()) {
+            break;
+        }
+    }
     if settings(&APPS).as_deref() != Some(apps.as_slice()) {
         return Err("desk-profile: undo did not put the apps back as they were");
     }
