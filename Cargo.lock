@@ -181,10 +181,12 @@ dependencies = [
  "agentabi",
  "kabi",
  "kailink",
+ "livecore",
  "promptcore",
  "serde_json",
  "sha2",
  "wasihost",
+ "wasmhost",
  "wasmi",
  "wasmparser 0.228.0",
 ]

@@ -240,7 +240,19 @@ impl SettingsWindow {
         match (what, outcome) {
             (_, Err(why)) => log(&alloc::format!("settings: refused: {why}")),
             (Pending::Read(read), Ok(answer)) => match read.apply(&mut self.settings, &answer) {
-                Ok(apps) => self.to_ask = apps,
+                Ok(apps) => {
+                    // Only `grants` names apps to ask for; another read's answer
+                    // must not empty the queue.
+                    if read == Read::Grants {
+                        self.to_ask = apps;
+                    }
+                    if read == Read::FileAppearance {
+                        log(&alloc::format!(
+                            "settings: appearance theme {}",
+                            self.settings.appearance.theme
+                        ));
+                    }
+                }
                 Err(why) => log(&alloc::format!("settings: {}: {why}", read.request())),
             },
             (Pending::Rows(app), Ok(answer)) => {
