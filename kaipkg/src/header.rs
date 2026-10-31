@@ -82,9 +82,11 @@ pub struct Header {
     pub blob: Option<(Sha, u64)>,
 }
 
-/// Whether `name` may name a package: `[a-z][a-z0-9-]{1,11}`, and not an OS
-/// row group (`agentabi::RESERVED_GROUPS`, the one list CI, `pkg` and the
-/// registry check), so a package `fs` exporting `list` cannot make `fs_list`.
+/// Whether `name` may name a package: `[a-z][a-z0-9-]{1,11}`, not an OS row
+/// group (`agentabi::RESERVED_GROUPS`, the one list CI, `pkg` and the registry
+/// check), so a package `fs` exporting `list` cannot make `fs_list`, and not a
+/// window's service, `<x>-window`, which only package `<x>` runs
+/// ([`crate::app`]).
 pub fn valid_name(name: &str) -> Result<(), &'static str> {
     let bytes = name.as_bytes();
     let shaped = (2..=12).contains(&bytes.len())
@@ -97,6 +99,9 @@ pub fn valid_name(name: &str) -> Result<(), &'static str> {
     }
     if agentabi::is_reserved(name) {
         return Err("a package name is an OS row group");
+    }
+    if name.ends_with(crate::app::WINDOW) {
+        return Err("a package name ending -window is an app's window");
     }
     Ok(())
 }
@@ -238,7 +243,14 @@ mod tests {
 
     #[test]
     fn names_follow_the_rule() {
-        for good in ["notes", "spell-en", "a1", "abcdefghijkl"] {
+        for good in [
+            "notes",
+            "spell-en",
+            "a1",
+            "abcdefghijkl",
+            "windowsill",
+            "my-windows",
+        ] {
             assert_eq!(valid_name(good), Ok(()), "{good}");
         }
         for bad in [
@@ -251,6 +263,8 @@ mod tests {
             "pkg",
             "no_tes",
             "nö",
+            "notes-window",
+            "a-window",
         ] {
             assert!(valid_name(bad).is_err(), "{bad}");
         }
