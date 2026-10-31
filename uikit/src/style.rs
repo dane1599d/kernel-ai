@@ -129,6 +129,8 @@ pub mod metric {
     pub const LABEL_GAP: i32 = 4;
     /// Rows of lists and tables.
     pub const ROW_H: i32 = 24;
+    /// Space left and right of a list item, inside the list's frame.
+    pub const ITEM_PAD: i32 = 8;
     /// The tab bar.
     pub const TAB_H: i32 = 32;
     pub const TAB_PAD: i32 = 12;
