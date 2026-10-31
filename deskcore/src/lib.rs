@@ -29,6 +29,7 @@ pub mod panel;
 pub mod panel_wire;
 pub mod scale;
 pub mod server;
+pub mod settings_wire;
 pub mod trusted;
 pub mod view;
 pub mod watch;

@@ -26,6 +26,9 @@ pub enum ActCase {
     FsUndoRebooted,
     /// `app-route` (P4): the agent calls an app's row through the supervisor.
     AppRoute,
+    /// `app-terminal` (P4 task 4): the agent types into the Terminal app and a
+    /// person's Enter runs the line.
+    AppTerminal,
     /// `profile-switch` (P3 task 12): profiles through the supervisor.
     Profile,
 }
@@ -56,6 +59,8 @@ pub enum SelfTest {
     Terminal,
     /// M8a: the Rhai shell answers a fixed list of lines correctly.
     Shell,
+    /// P4 task 12: the `c>` prompt through the shell and `cc` (ADR 0012).
+    CPrompt,
     /// M8b: LLM-written scripts are checked and run by their tier.
     Scripts,
     /// P1 task 7: one tagged call through the one door. `act-plain`: plain
@@ -164,6 +169,11 @@ pub enum SelfTest {
     UiWindow,
     /// An unused app naps and a click wakes it (P3 task 12b).
     DeskNap,
+    /// Settings' keep-running switch, shell only, kept across a reboot (P4
+    /// task 7): boot 1, then boot 2 (`reread`).
+    KeepRunning {
+        reread: bool,
+    },
     /// Asks answered on `desktop`'s card, and on the console when it dies (P3 task 7).
     DeskCard,
     /// A standing instruction fired by Notes' window minimized and restored (P3 task 11).
@@ -173,6 +183,8 @@ pub enum SelfTest {
     DeskTerm,
     /// `desk-agent` (P3 task 10): the agent opens Notes and acts inside it.
     DeskAgent,
+    /// The Settings app on the desktop, its window kept from the agent (P4 task 7).
+    AppSettings,
     /// `desk-takeover` (P3 task 10): a key in the agent's window stops it.
     DeskTakeover,
     /// `scriptrun` through a Job, and spike S01-1's M3 and M5 (P1 task 14).
@@ -256,6 +268,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=net" => Some(SelfTest::Net),
             "test=terminal" => Some(SelfTest::Terminal),
             "test=shell" => Some(SelfTest::Shell),
+            "test=c-prompt" => Some(SelfTest::CPrompt),
             "test=scripts" => Some(SelfTest::Scripts),
             "test=act-plain" => Some(SelfTest::Act(ActCase::Plain)),
             "test=act-run" => Some(SelfTest::Act(ActCase::Run)),
@@ -272,6 +285,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=fs-undo" => Some(SelfTest::Act(ActCase::FsUndo)),
             "test=fs-trash" => Some(SelfTest::Act(ActCase::FsTrash)),
             "test=app-route" => Some(SelfTest::Act(ActCase::AppRoute)),
+            "test=app-terminal" => Some(SelfTest::Act(ActCase::AppTerminal)),
             "test=profile-switch" => Some(SelfTest::Act(ActCase::Profile)),
             "test=fs-undo-reboot" => Some(SelfTest::Act(
                 match cmdline.split_whitespace().any(|w| w == "reread") {
@@ -341,11 +355,15 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=desk-catalog" => Some(SelfTest::DeskCatalog),
             "test=ui-window" => Some(SelfTest::UiWindow),
             "test=desk-nap" => Some(SelfTest::DeskNap),
+            "test=keep-running" => Some(SelfTest::KeepRunning {
+                reread: cmdline.split_whitespace().any(|w| w == "reread"),
+            }),
             "test=desk-card" => Some(SelfTest::DeskCard),
             "test=desk-standing" => Some(SelfTest::DeskStanding),
             "test=ui-keys" => Some(SelfTest::UiKeys),
             "test=desk-term" => Some(SelfTest::DeskTerm),
             "test=desk-agent" => Some(SelfTest::DeskAgent),
+            "test=app-settings" => Some(SelfTest::AppSettings),
             "test=desk-takeover" => Some(SelfTest::DeskTakeover),
             "test=scriptrun" => Some(SelfTest::Scriptrun),
             "test=fpu" => Some(SelfTest::Fpu),
@@ -396,6 +414,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::Net
             | SelfTest::Terminal
             | SelfTest::Shell
+            | SelfTest::CPrompt
             | SelfTest::Scripts
             | SelfTest::Act(_)
             | SelfTest::Live
@@ -430,11 +449,13 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DeskCatalog
             | SelfTest::UiWindow
             | SelfTest::DeskNap
+            | SelfTest::KeepRunning { .. }
             | SelfTest::DeskCard
             | SelfTest::DeskStanding
             | SelfTest::UiKeys
             | SelfTest::DeskTerm
             | SelfTest::DeskAgent
+            | SelfTest::AppSettings
             | SelfTest::DeskTakeover
             | SelfTest::TuneRevert
             | SelfTest::TuneStall
@@ -528,6 +549,9 @@ pub fn plan(test: SelfTest) -> Option<String> {
             }
             false => kabi::plan::SHELL,
         };
+        // The shell calls `cc` for the `c>` prompt, so cc comes first.
+        plan.push('\n');
+        plan.push_str(kabi::plan::CC);
         // On the desktop the shell has a route to `desktop`, for the panel:
         // `desktop` is planned first, as a route's target must be.
         let shell = match test {
@@ -536,10 +560,22 @@ pub fn plan(test: SelfTest) -> Option<String> {
                 plan.push_str(crate::desk_tests::BOOT_PLAN);
                 kabi::plan::SHELL_DESK
             }
-            SelfTest::DeskAgent | SelfTest::DeskTakeover => {
+            // The app is planned before the shell, whose call reaches it through
+            // the supervisor, and after `desktop`, which its window needs.
+            SelfTest::Act(ActCase::AppTerminal) => {
+                plan.push('\n');
+                plan.push_str(crate::app_terminal_tests::PLAN);
+                kabi::plan::SHELL_DESK
+            }
+            SelfTest::DeskAgent | SelfTest::DeskTakeover | SelfTest::AppSettings => {
                 plan.push('\n');
                 plan.push_str(crate::agent_desk_tests::DESK);
                 kabi::plan::SHELL_DESK
+            }
+            SelfTest::KeepRunning { .. } => {
+                plan.push('\n');
+                plan.push_str(crate::keep_tests::PLAN);
+                crate::keep_tests::SHELL
             }
             _ => shell,
         };
@@ -638,6 +674,10 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
     if matches!(test, SelfTest::DeskAgent | SelfTest::DeskTakeover) {
         plan.push('\n');
         plan.push_str(crate::agent_desk_tests::APPS);
+    }
+    if test == SelfTest::AppSettings {
+        plan.push('\n');
+        plan.push_str(crate::app_settings_tests::APPS);
     }
     if test == SelfTest::None {
         plan.push('\n');

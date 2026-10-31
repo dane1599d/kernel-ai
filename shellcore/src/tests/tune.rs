@@ -307,3 +307,36 @@ fn a_bare_y_or_n_answers_a_tune_proposal() {
         "{verdict:?}"
     );
 }
+
+/// A Terminal app's line is another terminal's: it neither answers the
+/// console's tune proposal nor lets it lapse, and one it leaves is dropped.
+#[test]
+fn a_terminal_apps_line_leaves_the_consoles_tune_proposal_alone() {
+    use crate::appline::TERMINAL_APP;
+    let line = |ticket: u32, text: &str| {
+        format!(r#"effect {ticket} call({{name: "shell_line", args: "{{line: \"{text}\"}}"}})"#)
+    };
+    let host = TuneHost::new(&answer("classes", "gentle", &["build-1"]), Ending::Kept);
+    let mut shell = Shell::new(host.clone(), DEFAULT_CONFIG);
+    let card = shell.eval("tune editor");
+    assert_eq!(card.confirm, Some(1), "{card:?}");
+    // The app's bare yes is not the console's.
+    shell.run_effects_from(TERMINAL_APP, &line(1, "y"), true);
+    assert!(
+        host.trials.borrow().is_empty(),
+        "an app's yes started a trial"
+    );
+    // The app proposes its own, which asks and is dropped, so a later yes in the
+    // app answers nothing either.
+    let asked = shell.run_effects_from(TERMINAL_APP, &line(2, "tune editor"), true);
+    assert!(matches!(&asked[0].outcome, Ok(t) if t.starts_with("err it asks first")));
+    shell.run_effects_from(TERMINAL_APP, &line(3, "y"), true);
+    assert!(host.trials.borrow().is_empty());
+    // The console's proposal still waits for its own answer.
+    let verdict = shell.eval("y");
+    assert!(
+        verdict.text.starts_with("Kept classes/gentle"),
+        "{verdict:?}"
+    );
+    assert_eq!(host.trials.borrow().len(), 1);
+}

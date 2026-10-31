@@ -62,10 +62,19 @@ fn supervisor() -> kabi::handle::Handle {
     user::route(1).unwrap_or(kabi::handle::Handle::NONE)
 }
 
-/// The route to `desktop`, third in `uses=llm+supervisor+desktop`, on a desktop
-/// only (P3 task 7).
+/// The route to `cc`, the `c>` prompt's compiler: the third in `uses=llm+supervisor+cc`.
+fn cc_route() -> kabi::handle::Handle {
+    user::route(2).unwrap_or(kabi::handle::Handle::NONE)
+}
+
+/// cc's wait for one entry: a compile and a run of 2 s each, and on its first
+/// request, translating cc.wasm and compiling kairt.
+const CC_CALL_MS: u64 = 30_000;
+
+/// The route to `desktop`, fourth in `uses=llm+supervisor+cc+desktop`, on a
+/// desktop only (P3 task 7).
 fn desktop() -> Option<kabi::handle::Handle> {
-    user::route(2)
+    user::route(3)
 }
 
 const DESKTOP_CALL_MS: u64 = 5_000;
@@ -115,6 +124,14 @@ fn take_panel(shell: &mut Shell) {
     }
 }
 
+// A Terminal line's answer, with its `…`, fits what the transport carries of a
+// person's result.
+const _: () =
+    assert!(shellcore::appline::MAX_ANSWER + '…'.len_utf8() <= deskcore::effects::MAX_LINE_TEXT);
+
+// shellcore's copy of the Settings wire's answer bound is desktop's.
+const _: () = assert!(shellcore::SETTINGS_MAX_ANSWER == deskcore::settings_wire::MAX_ANSWER);
+
 /// Takes an app's oldest effects from `desktop`, runs them through the agent
 /// core, and reports what came of each; `desktop` hands the results to the
 /// app. `desktop` names the app, from its record of who queued them.
@@ -126,19 +143,65 @@ fn take_effects(shell: &mut Shell) {
     let Ok(answer) = ask_desktop(route, effects::TAKE) else {
         return;
     };
-    let Some(Some((app, lines))) = effects::parse_take(&answer) else {
+    let Some(Some((app, user, lines))) = effects::parse_take(&answer) else {
         return;
     };
     let results: Vec<Done> = shell
-        .run_effects(app, lines)
+        .run_effects_from(app, lines, user)
         .into_iter()
         .map(|done| Done {
             ticket: done.ticket,
             outcome: done.outcome,
         })
         .collect();
-    if let Err(why) = ask_desktop(route, &effects::encode_done(app, &results)) {
+    if let Err(why) = ask_desktop(route, &effects::encode_done_as(app, user, &results)) {
         println!("{app}'s effect results were not sent: {why}");
+    }
+}
+
+// The shell and `desktop` name the one process that may ask alike.
+const _: () = assert!(same(
+    shellcore::SETTINGS_APP,
+    deskcore::settings_wire::SETTINGS_APP
+));
+
+const fn same(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut at = 0;
+    while at < a.len() {
+        if a[at] != b[at] {
+            return false;
+        }
+        at += 1;
+    }
+    true
+}
+
+/// Answers the Settings app's waiting `kai:settings` requests, which `desktop`
+/// holds (`deskcore::settings_wire`): the app is `desktop`'s record of the
+/// caller, and `Shell::settings` checks it again.
+fn take_settings(shell: &mut Shell) {
+    use deskcore::settings_wire::{self as wire, Answer};
+    let Some(route) = desktop() else {
+        return;
+    };
+    let Ok(answer) = ask_desktop(route, wire::TAKE) else {
+        return;
+    };
+    let Some(Some((app, requests))) = wire::parse_take(&answer) else {
+        return;
+    };
+    let answers: Vec<Answer> = requests
+        .iter()
+        .map(|r| Answer::new(r.ticket, shell.settings(app, &r.text, r.user)))
+        .collect();
+    for done in wire::encode_done_chunks(app, &answers, kabi::MAX_MESSAGE) {
+        if let Err(why) = ask_desktop(route, &done) {
+            println!("{app}'s settings answers were not sent: {why}");
+        }
     }
 }
 
@@ -216,6 +279,14 @@ fn ask_supervisor(request: &str) -> Result<String, String> {
 impl Host for System {
     fn now_ns(&self) -> u64 {
         sys::time_ns()
+    }
+
+    fn cc(&self, request: &[u8]) -> Result<Vec<u8>, String> {
+        let mut reply = vec![0u8; kabi::MAX_MESSAGE];
+        let len = sys::call_route(cc_route(), request, &mut reply, CC_CALL_MS)
+            .map_err(|error| format!("{error:?}"))?;
+        reply.truncate(len.min(kabi::MAX_MESSAGE));
+        Ok(reply)
     }
 
     fn apps(&self) -> Option<&core::cell::RefCell<shellcore::apps::Apps>> {
@@ -658,6 +729,8 @@ fn main() -> i32 {
         take_events(&mut shell, &mut events);
         take_panel(&mut shell);
         take_effects(&mut shell);
+        take_settings(&mut shell);
+        shell.retry_keep();
         let mut caller = u64::MAX;
         let len = match sys::svc_recv(&mut line, wait_ms, &mut caller) {
             Ok(len) => len.min(line.len()),

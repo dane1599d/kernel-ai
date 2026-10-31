@@ -7,14 +7,17 @@
 //! service, `notes-window`, through the supervisor's `app-call` and waits for
 //! its window; "search notes for milk" calls `ui_view`, the shell hands the view back for a second round,
 //! and the model's `ui_act` on the search field asks; `y` on the card sends the
-//! app an AccessKit action. `desk-takeover`: "switch to notes" runs
+//! app an AccessKit action; "add a note saying buy milk" runs Notes' declared
+//! `notes_add`, which the shell loads from `notes-window` (the window fronts
+//! Notes' rows) and calls over the app route. `desk-takeover`: "switch to notes" runs
 //! `ui_focus`, which gives Notes the agent's outline, and a key typed in Notes
 //! stops the run and the panel says so. Each step shows in `desktop`'s,
 //! comphost's and the shell's log lines, which the host checks.
 
 use crate::desk_tests::report;
 use crate::display::claim;
-use crate::{ask_box, input, log, process, terminal, threads};
+use crate::{ask_box, input, ipc, log, process, terminal, threads};
+use alloc::string::String;
 
 /// `desktop` as `desk-term` runs it, with the ask card (`ask`). Planned before
 /// the shell, whose route to it is the shell's third.
@@ -26,16 +29,21 @@ pub const APPS: &str = "term uses=desktop caps=call+term pages=4096 stack_pages=
      notes-window program=comphost caps=serve+component+call uses=desktop pages=8192 stack_pages=512 burst_ms=20000 version=1 start=demand";
 const WAIT_MS: u64 = 60_000;
 /// Where `desktop` starts the pointer: the middle of 1280x800.
-const START: (i32, i32) = (640, 400);
+pub(crate) const START: (i32, i32) = (640, 400);
 /// The Terminal's title bar: its frame is the first, at 48,52, and Notes' the
 /// second, at 80,84, below it.
 const TERM_TITLE: (i32, i32) = (150, 60);
 /// Time for comphost to start Notes and paint its first frame under TCG.
-const OPEN_MS: u64 = 20_000;
+pub(crate) const OPEN_MS: u64 = 20_000;
 /// Time for the harness's keys, and for the shell to take a line.
-const KEYS_MS: u64 = 4_000;
+pub(crate) const KEYS_MS: u64 = 4_000;
+/// Notes' own count, asked of its window while the agent's `notes_add` runs.
+const COUNT: &str = "kai-call 1\nfunc app:notes/actions@1.0.0#count\nargs {}\n";
+/// Between counts: each is a call into comphost, so not every 50 ms.
+const COUNT_MS: u64 = 1_000;
+const CALL_MS: u64 = 10_000;
 
-fn wait(
+pub(crate) fn wait(
     case: &str,
     what: &'static str,
     mut done: impl FnMut() -> bool,
@@ -59,7 +67,7 @@ fn click(at: &mut (i32, i32), to: (i32, i32)) {
 }
 
 /// Gives the Terminal window the keys, and asks the host for the next line.
-fn terminal_keys(case: &str, at: &mut (i32, i32)) -> Result<(), &'static str> {
+pub(crate) fn terminal_keys(case: &str, at: &mut (i32, i32)) -> Result<(), &'static str> {
     click(at, TERM_TITLE);
     wait(
         case,
@@ -104,6 +112,18 @@ pub fn agent_check() -> Result<(), &'static str> {
     wait(CASE, "the card's answer", || !ask_box::shown())?;
     threads::sleep_ms(KEYS_MS);
     log!("desk-agent: the agent opened Notes, read its view and typed in it after a yes");
+    // "add a note saying buy milk": Notes' own action, through its window.
+    terminal_keys(CASE, &mut at)?;
+    let added = (0..WAIT_MS / COUNT_MS).any(|_| {
+        threads::sleep_ms(COUNT_MS);
+        ipc::call("notes-window", COUNT.as_bytes(), CALL_MS)
+            .is_ok_and(|reply| String::from_utf8_lossy(&reply).contains("notes: 1,"))
+    });
+    if !added {
+        log!("{CASE}: timed out waiting for notes_add to add the note");
+        return Err("notes_add to add the note");
+    }
+    log!("desk-agent: Notes' notes_add, loaded from its window, added the note");
     Ok(())
 }
 

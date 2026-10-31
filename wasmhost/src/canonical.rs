@@ -42,6 +42,8 @@ pub struct CoreInstance {
     actions: Option<Actions>,
     /// The `kai:ui/input` `on-ui` export, when the module has one.
     pub(crate) on_ui: Option<String>,
+    /// The `kai:code/code-input` exports the module has.
+    pub(crate) code: alloc::boxed::Box<crate::code::CodeExports>,
     /// Whether the last guest call was made while a person's key or click was
     /// handled ([`CoreInstance::last_call_by_user`]).
     pub(crate) by_user: bool,
@@ -49,6 +51,10 @@ pub struct CoreInstance {
     pub(crate) on_event: Option<String>,
     /// The `kai:settings/replies` `on-reply` export, when the module has one.
     pub(crate) on_settings_reply: Option<String>,
+    /// Which load this is: no two instances of this process share one.
+    serial: u64,
+    /// What it was loaded with leave to do beyond `kai:app` and `kai:ui`.
+    grants: Grants,
     /// The `kai:system/samples` `on-sample` export, when the module has one.
     pub(crate) on_system_sample: Option<String>,
     /// The `kai:edit/replies` `on-reply` export, when the module has one.
@@ -67,7 +73,25 @@ impl CoreInstance {
     pub fn last_call_by_user(&self) -> bool {
         self.by_user
     }
+
+    /// Which load of a module this instance is, never shared by two in this
+    /// process: the host keys what it owes an instance (an answer to a ticket
+    /// the instance gave) by it, so a reloaded or resumed instance, whose
+    /// tickets start again, is never answered for its predecessor.
+    pub fn serial(&self) -> u64 {
+        self.serial
+    }
+
+    /// The grants it was loaded with: none for a version that is not the
+    /// image's own (`grants::FromImage`), so a privilege the host gives outside
+    /// an import (an effect sent as the user's) can be checked here too.
+    pub fn grants(&self) -> Grants {
+        self.grants
+    }
 }
+
+/// The next [`CoreInstance::serial`].
+static SERIALS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
 
 fn link_err(detail: impl Into<String>) -> Fault {
     Fault::new(Reason::Link, detail)
@@ -182,9 +206,12 @@ pub fn load_core_granted(
         lifecycle,
         actions: None,
         on_ui,
+        code: alloc::boxed::Box::new(crate::code::CodeExports::of(&module)),
         by_user: false,
         on_event,
         on_settings_reply,
+        serial: SERIALS.fetch_add(1, core::sync::atomic::Ordering::Relaxed),
+        grants,
         on_system_sample,
         on_edit_reply,
     })
@@ -275,7 +302,7 @@ fn link_imports(
                 )));
             }
             (crate::edit::EDIT, "send") => linker.func_wrap(qualified, name, crate::edit::send),
-            (crate::ui::VIEW, _) => linker.func_new(
+            (crate::code::CODE, _) | (crate::ui::VIEW, _) => linker.func_new(
                 qualified,
                 name,
                 ty.clone(),
@@ -293,7 +320,7 @@ fn link_imports(
 }
 
 /// The module's export for `interface`'s `name` at a version that links.
-fn export_for(module: &Module, entry: &WitFunc) -> Option<String> {
+pub(crate) fn export_for(module: &Module, entry: &WitFunc) -> Option<String> {
     module.exports().find_map(|export| {
         let (qualified, name) = export.name().split_once('#')?;
         let (interface, version) = link::split(qualified)?;

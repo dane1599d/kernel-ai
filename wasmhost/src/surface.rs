@@ -181,6 +181,7 @@ impl Seat {
             Kind::Button if code == LEFT_BUTTON => Input::Button {
                 at,
                 down: value != 0,
+                mods: self.mods,
             },
             Kind::Wheel if code == 0 => Input::Wheel { at, dy: value },
             Kind::Key => {

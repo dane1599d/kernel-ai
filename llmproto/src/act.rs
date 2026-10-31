@@ -2,7 +2,8 @@
 //! built, answered by one tagged call, `{"name":..,"arguments":{..}}`, a row of
 //! the registry or one of the pseudo-actions `say`, `clarify` and
 //! `script(code, lang)`. The prompt is ADR 0010's layout: the pack, the `act`
-//! MODE turn, then the request with its State line, with no `/no_think`
+//! MODE turn, the installed apps' turn (`pack::apps`), then the request with its
+//! State line, with no `/no_think`
 //! (S10-1's arm A0 adopted it, #33). The shell owns what a call may do; this
 //! module only frames it and checks that it is a call.
 
@@ -38,6 +39,9 @@ pub const READ_CALL_MAX_BYTES: usize = 512;
 /// Longest data a second round carries: a view of at most 300 tokens (ADR 0005
 /// §6) at under 3 bytes a token, with room.
 pub const READ_DATA_MAX_BYTES: usize = 1536;
+/// Longest `apps` text: what one message has left after the other texts at
+/// their longest and the header.
+pub const APPS_MAX_BYTES: usize = 5120;
 
 /// What the shell asks the llm service for.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -49,6 +53,9 @@ pub struct ActRequest {
     /// The second round of view-then-act (ADR 0005 §6): the read this request's
     /// first call made and what it answered. `None` for a first round.
     pub read: Option<Read>,
+    /// The installed apps' `kai-actions 1` answers the shell loaded, as
+    /// `pack::apps::wire` writes them, or "" for none.
+    pub apps: String,
 }
 
 /// A read the model called for this same request, such as `ui_view`, and its
@@ -67,19 +74,26 @@ fn clip(text: &str, max: usize) -> &str {
 }
 
 impl ActRequest {
-    /// `act <timeout> <line len> <state len>`, then `<call len> <data len>` for
-    /// a second round, a newline, then the texts.
+    /// `act <timeout> <line len> <state len> <apps len>`, then `<call len>
+    /// <data len>` for a second round, a newline, then the texts.
     pub fn encode(&self) -> String {
         let line = clip(&self.line, LINE_MAX_BYTES);
         let state = clip(&self.state, STATE_MAX_BYTES);
-        let head = format!("act {} {} {}", self.timeout_ms, line.len(), state.len());
+        let apps = clip(&self.apps, APPS_MAX_BYTES);
+        let head = format!(
+            "act {} {} {} {}",
+            self.timeout_ms,
+            line.len(),
+            state.len(),
+            apps.len()
+        );
         match &self.read {
-            None => format!("{head}\n{line}{state}"),
+            None => format!("{head}\n{line}{state}{apps}"),
             Some(read) => {
                 let call = clip(&read.call, READ_CALL_MAX_BYTES);
                 let data = clip(&read.data, READ_DATA_MAX_BYTES);
                 format!(
-                    "{head} {} {}\n{line}{state}{call}{data}",
+                    "{head} {} {}\n{line}{state}{apps}{call}{data}",
                     call.len(),
                     data.len()
                 )
@@ -96,10 +110,11 @@ impl ActRequest {
             .collect::<Option<_>>()?;
         let (timeout, lens) = numbers.split_first()?;
         let limits: &[usize] = match lens.len() {
-            2 => &[LINE_MAX_BYTES, STATE_MAX_BYTES],
-            4 => &[
+            3 => &[LINE_MAX_BYTES, STATE_MAX_BYTES, APPS_MAX_BYTES],
+            5 => &[
                 LINE_MAX_BYTES,
                 STATE_MAX_BYTES,
+                APPS_MAX_BYTES,
                 READ_CALL_MAX_BYTES,
                 READ_DATA_MAX_BYTES,
             ],
@@ -116,7 +131,7 @@ impl ActRequest {
             return None;
         }
         let mut texts = texts.into_iter();
-        let (line, state) = (texts.next()?, texts.next()?);
+        let (line, state, apps) = (texts.next()?, texts.next()?, texts.next()?);
         let read = match (texts.next(), texts.next()) {
             (Some(call), Some(data)) => Some(Read { call, data }),
             _ => None,
@@ -126,6 +141,7 @@ impl ActRequest {
             state,
             timeout_ms: *timeout as u64,
             read,
+            apps,
         })
     }
 }
@@ -141,10 +157,20 @@ pub fn user_text(state: &str, line: &str) -> String {
 /// What every `act` prompt starts with: the `dsl-1` pack, the `act` MODE turn,
 /// then the history turns. The llm service warms the cache with it while idle.
 pub fn prefix(history: &History) -> Vec<Message> {
+    prefix_with(history, "")
+}
+
+/// [`prefix`] with the installed apps' turn (`pack::apps::turn`) after MODE,
+/// when there is one: before history, so it stays cached from one request to
+/// the next while the static pack and its `pack_id` stay as they are.
+pub fn prefix_with(history: &History, apps: &str) -> Vec<Message> {
     let mut messages = alloc::vec![
         Message::new(Role::System, &pack::render(Format::Dsl1)),
         Message::new(Role::System, MODE_ACT),
     ];
+    if !apps.is_empty() {
+        messages.push(Message::new(Role::System, apps));
+    }
     messages.extend(history.messages());
     messages
 }
@@ -155,7 +181,12 @@ pub fn prefix(history: &History) -> Vec<Message> {
 /// lines when the pack names that row on its index line only (ADR 0010 §6),
 /// and the read's answer as [`data_text`].
 pub fn request(act: &ActRequest, history: &History) -> chat::Request {
-    let mut messages = prefix(history);
+    request_with(act, history, "")
+}
+
+/// [`request`] after [`prefix_with`]'s apps turn `apps`.
+pub fn request_with(act: &ActRequest, history: &History, apps: &str) -> chat::Request {
+    let mut messages = prefix_with(history, apps);
     messages.push(Message::new(Role::User, &user_text(&act.state, &act.line)));
     if let Some(read) = &act.read {
         let group = parse(&read.call)
@@ -273,6 +304,7 @@ mod tests {
             state: "focused=build-3".into(),
             timeout_ms: 5000,
             read: None,
+            apps: String::new(),
         };
         assert_eq!(ActRequest::decode(&asked.encode()), Some(asked));
         let long = ActRequest {
@@ -280,6 +312,7 @@ mod tests {
             state: String::new(),
             timeout_ms: 1,
             read: None,
+            apps: String::new(),
         };
         assert_eq!(
             ActRequest::decode(&long.encode()).unwrap().line.len(),
@@ -303,6 +336,7 @@ mod tests {
                 state: "focused=build-3".into(),
                 timeout_ms: 1,
                 read: None,
+                apps: String::new(),
             },
             &History::new(),
         );
@@ -327,6 +361,7 @@ mod tests {
             state: String::new(),
             timeout_ms: 1,
             read: None,
+            apps: String::new(),
         };
         let asked = request_with(&request, &history);
         assert_eq!(asked.messages.len(), 6);
@@ -334,6 +369,33 @@ mod tests {
         assert_eq!(asked.messages[3].role, Role::Assistant);
         assert_eq!(asked.messages[5].content, "Request: undo that");
         assert_eq!(prefix(&history).len(), 5);
+    }
+
+    #[test]
+    fn apps_survive_the_wire_and_their_turn_follows_mode() {
+        let asked = ActRequest {
+            apps: "app notes 3\nabc".into(),
+            ..second_round()
+        };
+        assert_eq!(ActRequest::decode(&asked.encode()), Some(asked.clone()));
+        let first = ActRequest {
+            read: None,
+            ..asked
+        };
+        assert_eq!(ActRequest::decode(&first.encode()), Some(first.clone()));
+        let history = History::new();
+        let with = super::request_with(&first, &history, "## apps\nnotes: notes_add");
+        assert_eq!(with.messages[1].content, MODE_ACT);
+        assert_eq!(with.messages[2].content, "## apps\nnotes: notes_add");
+        assert_eq!(
+            with.messages.len(),
+            request(&first, &history).messages.len() + 1
+        );
+        // No apps, the prompt is today's.
+        assert_eq!(
+            super::request_with(&first, &history, ""),
+            request(&first, &history)
+        );
     }
 
     fn second_round() -> ActRequest {
@@ -345,6 +407,7 @@ mod tests {
                 call: r#"{"name":"ui_view","arguments":{"window":"notes"}}"#.into(),
                 data: "windows: [w1] notes (focused)\nw1: [t1] textbox \"Title\"".into(),
             }),
+            apps: String::new(),
         }
     }
 
@@ -363,10 +426,12 @@ mod tests {
         assert_eq!(back.call.len(), READ_CALL_MAX_BYTES);
         assert_eq!(back.data.len(), READ_DATA_MAX_BYTES);
         for bad in [
-            "act 1 0 0 0\n",
-            "act 1 0 0 1 1\nabc",
-            "act 1 0 0 1 2000\nx",
-            "act 1 0 0 1 1 1\nabc",
+            "act 1 0 0\n",
+            "act 1 0 0 0 0\n",
+            "act 1 0 0 0 1 1\nabc",
+            "act 1 0 0 0 1 2000\nx",
+            "act 1 0 0 6000\nx",
+            "act 1 0 0 0 1 1 1\nabc",
         ] {
             assert_eq!(ActRequest::decode(bad), None, "{bad}");
         }
