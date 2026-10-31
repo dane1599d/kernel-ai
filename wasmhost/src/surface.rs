@@ -146,6 +146,18 @@ pub fn tree_update(frame: &Frame) -> tree::Update {
     }
 }
 
+/// The [`Mods`] bit of a Shift, Ctrl, Alt or Super key's HID usage (0xE0 to 0xE7,
+/// left side then right).
+fn modifier_bit(usage: u16) -> Option<u8> {
+    match usage {
+        0xE1 | 0xE5 => Some(Mods::SHIFT),
+        0xE0 | 0xE4 => Some(Mods::CTRL),
+        0xE2 | 0xE6 => Some(Mods::ALT),
+        0xE3 | 0xE7 => Some(Mods::SUPER),
+        _ => None,
+    }
+}
+
 /// What the glue keeps between seat messages: the modifiers held.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Seat {
@@ -153,14 +165,18 @@ pub struct Seat {
 }
 
 impl Seat {
-    /// `seat.modifiers(mask)`.
+    /// `seat.modifiers(mask)`: what is held when the window gains the seat, and
+    /// every change after it.
     pub fn modifiers(&mut self, mask: u32) {
         self.mods = Mods((mask & 0xF) as u8);
     }
 
     /// One ring event as `uikit` input; none for what a window does not take
-    /// (frame and buffer events, other buttons, horizontal wheels).
-    pub fn input(&self, event: &Event) -> Option<Input> {
+    /// (frame and buffer events, other buttons, horizontal wheels). A modifier
+    /// key's own event changes the modifiers at its place in the ring, as the
+    /// seat's message comes by another road: a slow guest can read a Ctrl-B from
+    /// the ring before the message that Ctrl is held.
+    pub fn input(&mut self, event: &Event) -> Option<Input> {
         let Event::Input {
             event,
             x,
@@ -185,6 +201,13 @@ impl Seat {
             },
             Kind::Wheel if code == 0 => Input::Wheel { at, dy: value },
             Kind::Key => {
+                if let Some(bit) = modifier_bit(code) {
+                    self.mods = Mods(if value != 0 {
+                        self.mods.0 | bit
+                    } else {
+                        self.mods.0 & !bit
+                    });
+                }
                 let typed = text.get(..usize::from(*len)).unwrap_or(&[]);
                 Input::Key {
                     key: Key::from_hid(code),

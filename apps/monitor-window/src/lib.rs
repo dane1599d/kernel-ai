@@ -3,8 +3,9 @@
 //! when it starts and asks the host for a sample of the machine (`kai:system`,
 //! granted to this app alone); each sample that comes back updates the model, is
 //! drawn, and is followed by the next read, which the host paces to one a second.
-//! Stopping a process is an effect, `process_stop`, an OS row that asks the user
-//! first; what the OS answers comes back as an `effect-done` event.
+//! It queues no effect: stopping a process is the OS's `process_stop`, which asks,
+//! and the agent core runs only the file rows for an app, so the window tells the
+//! user to ask Kai.
 //!
 //! When the window is closed the app stops reading, so nothing waits on the host
 //! and the app can nap like any other. A sample or an answer that arrives after
@@ -19,11 +20,10 @@ mod bind;
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use comp_monitor::calls::Call;
 use comp_monitor::sample::Sample;
-use comp_monitor::{Monitor, Os, Sort};
+use comp_monitor::{Monitor, Sort};
 use comp_ui_bind::{OnUi, Shown, Sink};
-use compsdk::app::{Effect, Event, Events};
+use compsdk::app::{Event, Events};
 use compsdk::{Component, ImportError};
 use minicbor::{Decode, Encode};
 use uikit::widget::{UiError, UiEvent};
@@ -39,18 +39,6 @@ pub struct V1 {
     pub sort: String,
     #[n(1)]
     pub flipped: bool,
-}
-
-/// The effect queue: `kai:app/effects`.
-pub struct Effects;
-
-impl Os for Effects {
-    fn request(&mut self, call: &Call) -> u32 {
-        compsdk::app::request(Effect::Call {
-            name: String::from(call.name),
-            args: call.args.clone(),
-        })
-    }
 }
 
 pub struct MonitorWindow {
@@ -156,7 +144,7 @@ impl OnUi for MonitorWindow {
             self.open = false;
             return self.shown.closed(sink, window).map(|_| ());
         }
-        match comp_monitor_ui::on_ui(&mut self.monitor, &mut Effects, event) {
+        match comp_monitor_ui::on_ui(&mut self.monitor, event) {
             true => self.present(sink),
             false => Ok(()),
         }
@@ -164,16 +152,9 @@ impl OnUi for MonitorWindow {
 }
 
 impl Events for MonitorWindow {
-    fn on_event(&mut self, event: Event) {
-        match event {
-            Event::Started => {}
-            Event::EffectDone { ticket, outcome } => {
-                if self.monitor.done(ticket, outcome) {
-                    self.present_logged();
-                }
-            }
-        }
-    }
+    /// Nothing queues an effect, so there is no answer to wait for; `started` needs
+    /// nothing either (the first read was asked for in `init`).
+    fn on_event(&mut self, _event: Event) {}
 }
 
 impl Component for MonitorWindow {
