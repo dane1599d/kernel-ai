@@ -3,7 +3,7 @@
 
 use comp_models::{
     Disk, Import, Intent, MIN_PREFIX, Models, Refusal, Sha256, Signed, State, Store, Stored, check,
-    could_be, hex, size,
+    could_be, hex, on_disk, size,
 };
 
 const SMALL: Sha256 = [0x11; 32];
@@ -53,7 +53,8 @@ fn models() -> Models {
             Disk {
                 id: 4,
                 label: "kai-model".into(),
-                length: 7000,
+                // A 7,000-byte file, attached: whole sectors.
+                length: 7168,
             },
             Disk {
                 id: 5,
@@ -85,7 +86,24 @@ fn check_takes_a_signed_blob_and_refuses_the_rest() {
         check(&gpl, 5000, &LARGE),
         Err(Refusal::Licence("GPL-3.0-only".into()))
     );
-    assert!(could_be(&m.signed, 7000) && !could_be(&m.signed, 7001));
+    // A disk is the file rounded up to whole sectors.
+    assert_eq!(on_disk(&m.signed, 7168).map(|s| &*s.id), Ok("away"));
+    assert_eq!(on_disk(&m.signed, 7000).map(|s| &*s.id), Ok("away"));
+    assert_eq!(on_disk(&m.signed, 7512), Err(Refusal::NotSigned));
+    assert_eq!(on_disk(&m.signed, 6999), Err(Refusal::NotSigned));
+    assert!(could_be(&m.signed, 1024) && !could_be(&m.signed, 1536));
+    let mut twins = m.signed.clone();
+    twins[2].length = 5100;
+    assert_eq!(
+        on_disk(&twins, 5120),
+        Err(Refusal::TwoSizes("large".into(), "away".into()))
+    );
+    assert!(!could_be(&twins, 5120));
+    assert!(
+        Refusal::TwoSizes("a".into(), "b".into())
+            .why()
+            .contains("both a and b")
+    );
 }
 
 #[test]
@@ -147,9 +165,9 @@ fn use_switches_to_a_stored_model_and_back() {
     let back = m.use_model(&SMALL).unwrap();
     m.applied(&back);
     assert_eq!((m.store.next, m.next()), (None, Some(SMALL)));
-    // A stored blob the role does not name may be used; one the role puts
-    // under a licence the project refuses may not.
-    assert_eq!(m.use_model(&DEV), Some(Intent::Use(DEV)));
+    // Only a signed model is used: not a stored blob the role does not name,
+    // nor one the role puts under a licence the project refuses.
+    assert_eq!(m.use_model(&DEV), None);
     m.signed[1].licence = "CC-BY-NC-4.0".into();
     assert_eq!(m.use_model(&LARGE), None);
 }

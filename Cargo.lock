@@ -1194,6 +1194,15 @@ name = "mm"
 version = "0.1.0-dev"
 
 [[package]]
+name = "modelchan"
+version = "0.1.0-dev"
+dependencies = [
+ "comp-models",
+ "kabi",
+ "sha2",
+]
+
+[[package]]
 name = "netcore"
 version = "0.1.0-dev"
 dependencies = [
