@@ -133,10 +133,40 @@ fn call_of(row: &'static Action, args: &str) -> Result<Call, String> {
 }
 
 impl Shell {
+    /// Runs what the apps' calls in the last run queued (P4): each through
+    /// [`Shell::run_effects`], with its own tier, log and undo.
+    pub(crate) fn run_app_effects(&mut self) {
+        let Some(queued) = self
+            .host
+            .apps()
+            .map(|apps| apps.borrow_mut().take_effects())
+        else {
+            return;
+        };
+        for (app, lines) in queued {
+            for done in self.run_effects(&app, &lines) {
+                if let Err(why) = done.outcome {
+                    self.host.audit(&format!(
+                        "{app}'s effect {} did not run: {why}",
+                        done.ticket
+                    ));
+                }
+            }
+        }
+    }
+
     /// Runs app `app`'s effect lines, oldest first: what each came to. `app` is
     /// the caller's record of who replied. Past [`MAX_EFFECTS`], the rest are
-    /// refused, not run.
+    /// refused, not run. Not from a person's input: see [`Shell::run_effects_from`].
     pub fn run_effects(&mut self, app: &str, lines: &str) -> Vec<EffectDone> {
+        self.run_effects_from(app, lines, false)
+    }
+
+    /// [`Shell::run_effects`] for lines queued while `user` says a person's key
+    /// or click was handled (`wasmhost`'s `user_input`, carried by comphost and
+    /// `desktop`). `shell_line` runs only then: it is the Terminal's own line,
+    /// and neither the AI nor the app by itself may type for the founder.
+    pub fn run_effects_from(&mut self, app: &str, lines: &str, user: bool) -> Vec<EffectDone> {
         let mut out = Vec::new();
         for (ticket, effect) in lines.lines().filter_map(parse_line) {
             let outcome = match (out.len() < MAX_EFFECTS, effect) {
@@ -145,6 +175,12 @@ impl Shell {
                 (true, Ok(Effect::Notify(text))) => {
                     self.host.audit(&format!("{app} notes: {text}"));
                     Ok(String::new())
+                }
+                (true, Ok(Effect::Call { name, args })) if name == crate::appline::SHELL_LINE => {
+                    match user {
+                        true => self.run_shell_line(app, &args),
+                        false => Err(String::from(crate::appline::NOT_BY_A_PERSON)),
+                    }
                 }
                 (true, Ok(Effect::Call { name, args })) => {
                     self.run_effect(app, ticket, &name, &args)
@@ -170,6 +206,17 @@ impl Shell {
     ) -> Result<String, String> {
         let row = agentabi::find(&agentabi::ROWS, name)
             .ok_or_else(|| format!("{name} is no action an app may call"))?;
+        // Only a row the app's package declares for its effects, deny by
+        // default: no app installs, removes or rules on its own (P4).
+        crate::apps::load_app(self.host.as_ref(), app);
+        let declared = self
+            .host
+            .apps()
+            .is_some_and(|apps| apps.borrow().rows.may_effect(app, name));
+        // A row the user withheld is refused as one never declared (P4 task 7).
+        if !declared || crate::grants::is_withheld(self.host.as_ref(), app, name) {
+            return Err(format!("{app} does not declare effects that call {name}"));
+        }
         // A change derives Run only with an inverse, so this is local and undoable.
         let at_once = agentabi::derive(row) == Tier::Run;
         if !at_once || row.facts.open_world || row.facts.destructive {

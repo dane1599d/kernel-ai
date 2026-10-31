@@ -158,6 +158,7 @@ fn ops_of(
             }
             ops.push(Op::PopClip);
         }
+        Widget::Code(v) => ops.extend(crate::code::ops(m, v, r, focused)),
         Widget::ItemList { selected, .. } => {
             ops.push(frame(r, Token::LineStrong));
             let item = selected

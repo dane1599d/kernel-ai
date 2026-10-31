@@ -86,7 +86,12 @@ fn changed(settings: &Settings, view: &View, id: NodeId, value: &Value) -> Optio
 
 fn pressed(settings: &Settings, view: &View, id: NodeId) -> Option<Intent> {
     if let Some(slot) = nth(id, REVOKE) {
-        return settings.revoke(*view.shown.grants.get(slot)?);
+        let app = view.app.as_deref()?;
+        return settings.revoke(app, view.shown.grants.get(slot)?);
+    }
+    if let Some(slot) = nth(id, RESTORE) {
+        let app = view.app.as_deref()?;
+        return settings.restore(app, view.shown.grants.get(slot)?);
     }
     let rule = *view.shown.rules.get(nth(id, REMOVE)?)?;
     settings

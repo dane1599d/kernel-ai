@@ -26,11 +26,17 @@
 //!   [`LEASE_RENEW_NS`], and ended when the focus moves (P3 task 8). The
 //!   kernel, not `desktop`, decides which client is the terminal: it lends the
 //!   keys only for the window of a process holding TERM.
+//! - `apps` sent in the panel opens the Apps sheet, with what `pkg` lists
+//!   ([`apps`], P4 task 3).
 
 #![no_std]
 #![no_main]
 
 extern crate alloc;
+
+use alloc::format;
+#[path = "desktop/apps.rs"]
+mod apps;
 
 use alloc::string::String;
 use alloc::vec;
@@ -45,6 +51,7 @@ use deskcore::paint_panel;
 use deskcore::panel::Panel;
 use deskcore::panel_wire;
 use deskcore::server::{Buffer, Client, Need};
+use deskcore::settings_wire as settings;
 use deskcore::watch::Watch;
 use gfx2d::{Canvas, Fonts, Image};
 use kabi::display::{DisplayInfo, FlushRect};
@@ -56,6 +63,9 @@ use surfabi::Format;
 use user::{println, sys};
 
 user::entry!(main);
+
+#[path = "desktop/agent.rs"]
+mod agent;
 
 /// The fonts ADR 0005 §8 names, built in until P2's files carry them.
 const FONTS: Fonts = Fonts {
@@ -107,8 +117,14 @@ struct State {
     drawn: bool,
     /// The AI panel's line and the state the shell reports.
     panel: Panel,
+    /// The Apps sheet, while it is up: it takes the panel's keys.
+    sheet: Option<deskcore::catalog::Sheet>,
     /// Apps' effects waiting for the shell, and what came of them.
     effects: effects::Queue,
+    /// The Settings app's requests for the shell, and the shell's answers.
+    settings: settings::Queue,
+    /// The agent's views of windows, for its `ui` rows (P3 task 10).
+    agent: deskcore::agent::Agent,
     /// When the panel's "thinking 4s" was last redrawn.
     ticked_ms: u64,
     /// The ask card up now, as the kernel posted it.
@@ -162,7 +178,10 @@ fn main() -> i32 {
             draws_cursor: screen.info.cursor == 0,
             drawn: false,
             panel: Panel::new(),
+            sheet: None,
             effects: effects::Queue::default(),
+            settings: settings::Queue::default(),
+            agent: deskcore::agent::Agent::default(),
             ticked_ms: 0,
             card: None,
             asked_ms: 0,
@@ -360,7 +379,12 @@ fn deliver(state: &mut State, effects: &[Effect]) {
             answer_ask(state, id, yes);
             continue;
         }
+        if let Effect::TookOver { window } = *effect {
+            agent::took_over(state, window);
+            continue;
+        }
         let changed = match *effect {
+            Effect::PanelKey { usage, down } if apps::key(state, usage, down, now) => false,
             Effect::PanelKey { usage, down } => {
                 let before = state.panel.waiting();
                 let changed = state.panel.key(usage, down, now);
@@ -373,9 +397,17 @@ fn deliver(state: &mut State, effects: &[Effect]) {
                     println!("desktop: the panel queued a request ({len} characters)");
                     wake_shell();
                 }
+                if state.panel.take_apps() {
+                    apps::open(state);
+                }
                 changed
             }
-            Effect::Focus(focus) => state.panel.set_focus(focus == Focus::Panel),
+            Effect::Focus(focus) => {
+                if focus != Focus::Panel {
+                    apps::close(state);
+                }
+                state.panel.set_focus(focus == Focus::Panel)
+            }
             _ => false,
         };
         if changed {
@@ -489,6 +521,14 @@ fn serve(state: &mut State, bytes: &[u8], info: &RecvInfo) {
         let _ = sys::reply_h(reply.as_bytes(), &[]);
         return;
     }
+    if let Some(reply) = settings_request(state, bytes, pid) {
+        let _ = sys::reply_h(reply.as_bytes(), &[]);
+        return;
+    }
+    if let Some(reply) = agent::request(state, bytes, pid) {
+        let _ = sys::reply_h(reply.as_bytes(), &[]);
+        return;
+    }
     if let Some(reply) = effects_request(state, bytes, pid) {
         let _ = sys::reply_h(reply.as_bytes(), &[]);
         return;
@@ -597,25 +637,31 @@ fn effects_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> 
     }
     let caller = name_of(pid);
     let shell = caller == "shell";
-    if let Some(lines) = text.strip_prefix(effects::PUT) {
+    let put = text
+        .strip_prefix(effects::PUT_USER)
+        .map(|lines| (lines, true))
+        .or_else(|| text.strip_prefix(effects::PUT).map(|lines| (lines, false)));
+    if let Some((lines, user)) = put {
         if shell || caller.starts_with("pid ") {
             return Some(String::from("err only an app queues effects"));
         }
-        let refused = state.effects.put(&caller, lines);
-        println!("desktop: {caller} queued effects ({refused} refused)");
+        let refused = state.effects.put_as(&caller, lines, user);
+        let by = if user { ", by a person's input" } else { "" };
+        println!("desktop: {caller} queued effects ({refused} refused{by})");
         wake_shell();
         return Some(String::from("ok"));
     }
     if text == effects::RESULTS {
-        return Some(effects::encode_results(&state.effects.results(&caller)));
+        let results = state.effects.results(&caller, effects::MESSAGE_BUDGET);
+        return Some(effects::encode_results(&results));
     }
     if !shell {
         return Some(String::from("err only the shell runs effects"));
     }
     if text == effects::TAKE {
         let taken = state.effects.take(kabi::MAX_MESSAGE - 64);
-        if let Some((app, _)) = &taken {
-            println!("desktop: the shell took {app}'s effects");
+        if let Some(taken) = &taken {
+            println!("desktop: the shell took {}'s effects", taken.app);
         }
         return Some(effects::encode_take(taken.as_ref()));
     }
@@ -626,6 +672,55 @@ fn effects_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> 
         state.effects.finish(app, done);
     }
     Some(String::from("ok"))
+}
+
+/// A `settings ...` request (`deskcore::settings_wire`): only the Settings
+/// app's process may put or read answers, and only the shell may take and
+/// answer; anything else is not one, for the next handler.
+fn settings_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
+    let text = core::str::from_utf8(bytes).ok()?;
+    if !text.starts_with("settings ") {
+        return None;
+    }
+    let caller = name_of(pid);
+    if let Some(lines) = text.strip_prefix(settings::PUT) {
+        return Some(match state.settings.put(&caller, lines) {
+            Ok(()) => {
+                wake_shell();
+                String::from("ok")
+            }
+            Err(why) => format!("err {why}"),
+        });
+    }
+    if text == settings::RESULTS {
+        return Some(match caller == settings::SETTINGS_APP {
+            true => state.settings.results(kabi::MAX_MESSAGE - 64),
+            false => String::from("err not the settings app"),
+        });
+    }
+    if caller != "shell" {
+        return Some(String::from("err only the shell answers settings"));
+    }
+    if text == settings::TAKE {
+        let taken = state.settings.take(kabi::MAX_MESSAGE - 64);
+        return Some(settings::encode_take(taken.as_deref()));
+    }
+    let Some(body) = text
+        .strip_prefix(settings::DONE)
+        .and_then(|rest| rest.strip_prefix(settings::SETTINGS_APP))
+        .and_then(|rest| rest.strip_prefix('\n'))
+    else {
+        return Some(String::from("err not a settings request"));
+    };
+    match settings::parse_answers(body) {
+        Some(answers) => {
+            for answer in answers {
+                state.settings.finish(answer);
+            }
+            Some(String::from("ok"))
+        }
+        None => Some(String::from("err the answers are out of shape")),
+    }
 }
 
 fn apply_need(state: &mut State, at: usize, pid: u64, need: Need, handle: Option<Handle>) {
@@ -655,7 +750,10 @@ fn apply_need(state: &mut State, at: usize, pid: u64, need: Need, handle: Option
             state.shown.retain(|(w, ..)| *w != window);
             state.shown.push((window, pid, buffer));
         }
-        Need::Closed { window } => state.shown.retain(|(w, ..)| *w != window),
+        Need::Closed { window } => {
+            state.shown.retain(|(w, ..)| *w != window);
+            state.agent.closed(window);
+        }
     }
 }
 
@@ -807,6 +905,11 @@ fn draw(state: &mut State, screen: &Screen) {
     };
     for &clip in &damage {
         state.painter.paint(&mut frame, clip, &scene, &mut content);
+        if let Some(sheet) = &state.sheet {
+            let area =
+                deskcore::paint_catalog::sheet(state.width, state.height, sheet.apps().len());
+            state.painter.catalog(&mut frame, clip, area, sheet);
+        }
         if state.draws_cursor {
             state.painter.cursor(&mut frame, clip, state.desk.pointer());
         }

@@ -147,3 +147,24 @@ fn ask_tier_rows_stay_in_the_shell_until_part_b() {
     let read = super::scripts::checks("print(cpus());").unwrap();
     assert!(apart::may_run_apart(&read));
 }
+
+#[test]
+fn window_rows_stay_in_the_shell_which_alone_reaches_desktop() {
+    let host = FakeHost::new();
+    let dyn_host: Rc<dyn Host> = host.clone();
+    for script in [
+        "ui_open(\"notes\");",
+        "ui_focus(\"notes\");",
+        "show(ui_view(\"notes\"));",
+        "print(ui_windows().len());",
+    ] {
+        let call = Answer {
+            summary: String::new(),
+            script: String::from(script),
+        };
+        let checked =
+            crate::script::check_against(&call, &dyn_host, &DEFAULT_CONFIG, &agentabi::UI_ROWS)
+                .unwrap();
+        assert!(!apart::may_run_apart(&checked), "{script}");
+    }
+}

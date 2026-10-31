@@ -13,7 +13,10 @@ use std::collections::VecDeque;
 mod act;
 mod actions;
 mod apart;
+mod appline;
+mod apps;
 mod centry;
+mod cmode;
 mod effects;
 mod files;
 mod fuzz;
@@ -25,6 +28,7 @@ mod packages;
 mod panel;
 mod profiles;
 mod scripts;
+mod settings;
 mod standing;
 mod transaction;
 mod tune;
@@ -60,6 +64,7 @@ struct FakeHost {
     act_states: RefCell<Vec<String>>,
     /// Each act request's second-round read (P3 task 10).
     act_reads: RefCell<Vec<Option<llmproto::act::Read>>>,
+    act_apps: RefCell<Vec<String>>,
     /// What the shell asked `desktop`, and how `desktop` answers.
     ui_calls: RefCell<Vec<crate::ui::UiCall>>,
     ui_answer: RefCell<Option<UiAnswer>>,
@@ -68,6 +73,19 @@ struct FakeHost {
     remembered: RefCell<Vec<(String, String, String)>>,
     forgot: Cell<u32>,
     audit: RefCell<Vec<String>>,
+    /// What the supervisor was told to keep running, and the saved list.
+    kept: RefCell<Vec<(String, bool)>>,
+    keep_file: RefCell<Option<String>>,
+    /// How many `keep` requests the supervisor refuses next, as one for an app
+    /// not serving yet.
+    keep_fails: Cell<u32>,
+    /// A refusal the supervisor gives every `keep` request, as for an app it
+    /// does not run.
+    keep_refusal: RefCell<Option<String>>,
+    /// The installed apps' rows, and what each `app_call` sent and answers.
+    apps: RefCell<crate::apps::Apps>,
+    app_requests: RefCell<Vec<(String, String)>>,
+    app_replies: RefCell<VecDeque<String>>,
     /// The saved appearance (`kai-appearance 1`).
     appearance: RefCell<Option<String>>,
     /// The trusted path's ONCE book: badge, digest, and whether it was used.
@@ -88,6 +106,12 @@ struct FakeHost {
     proofs: RefCell<Vec<(String, Proof)>>,
     /// Services started, with the entry that started them: the supervisor's memory.
     started_by: RefCell<Vec<(String, u64)>>,
+    /// The `cc` service, once a test starts one (`c>`).
+    cc: RefCell<Option<ccserve::Service<ccserve::rows::Rows>>>,
+    /// Replies a test scripts for cc, given before the service answers, and
+    /// every request the shell sent cc.
+    cc_script: RefCell<VecDeque<Vec<u8>>>,
+    cc_sent: RefCell<Vec<String>>,
     /// The `fs` server's files, and each transaction's files before and after.
     files: RefCell<std::collections::BTreeMap<String, String>>,
     txns: RefCell<Vec<(Files, Files)>>,
@@ -100,6 +124,7 @@ struct FakeHost {
     log_writes: Cell<u32>,
     /// `/system/state/rules`.
     rules_disk: RefCell<Option<String>>,
+    pub withheld_disk: RefCell<Option<String>>,
     /// `/system/state/standing`, and the event source and owners standing
     /// instructions run through, when `triggers_on` is set.
     standing_disk: RefCell<Option<String>>,
@@ -211,12 +236,20 @@ impl FakeHost {
             act_lines: RefCell::new(Vec::new()),
             act_states: RefCell::new(Vec::new()),
             act_reads: RefCell::new(Vec::new()),
+            act_apps: RefCell::new(Vec::new()),
             ui_calls: RefCell::new(Vec::new()),
             ui_answer: RefCell::new(None),
             state: RefCell::new(crate::state::State::default()),
             remembered: RefCell::new(Vec::new()),
             forgot: Cell::new(0),
             audit: RefCell::new(Vec::new()),
+            kept: RefCell::new(Vec::new()),
+            keep_file: RefCell::new(None),
+            keep_fails: Cell::new(0),
+            keep_refusal: RefCell::new(None),
+            apps: RefCell::new(crate::apps::Apps::default()),
+            app_requests: RefCell::new(Vec::new()),
+            app_replies: RefCell::new(VecDeque::new()),
             appearance: RefCell::new(None),
             once: RefCell::new(Vec::new()),
             revoked: RefCell::new(Vec::new()),
@@ -230,6 +263,9 @@ impl FakeHost {
             apart_requests: RefCell::new(Vec::new()),
             proofs: RefCell::new(Vec::new()),
             started_by: RefCell::new(Vec::new()),
+            cc: RefCell::new(None),
+            cc_script: RefCell::new(VecDeque::new()),
+            cc_sent: RefCell::new(Vec::new()),
             files: RefCell::new(Files::new()),
             txns: RefCell::new(Vec::new()),
             one_action: Cell::new(false),
@@ -237,6 +273,7 @@ impl FakeHost {
             log_disk: RefCell::new(None),
             log_writes: Cell::new(0),
             rules_disk: RefCell::new(None),
+            withheld_disk: RefCell::new(None),
             standing_disk: RefCell::new(None),
             triggers_on: Cell::new(false),
             triggers: FakeTriggers::default(),
@@ -459,6 +496,15 @@ impl Host for FakeHost {
         Ok(())
     }
 
+    fn withheld_read(&self) -> Option<String> {
+        self.withheld_disk.borrow().clone()
+    }
+
+    fn withheld_write(&self, text: &str) -> Result<(), String> {
+        *self.withheld_disk.borrow_mut() = Some(text.into());
+        Ok(())
+    }
+
     fn fs_read(&self, read: FsRead) -> Result<String, String> {
         let files = self.files.borrow();
         match read {
@@ -592,6 +638,7 @@ impl Host for FakeHost {
         self.act_lines.borrow_mut().push(request.line.clone());
         self.act_states.borrow_mut().push(request.state.clone());
         self.act_reads.borrow_mut().push(request.read.clone());
+        self.act_apps.borrow_mut().push(request.apps.clone());
         self.calls
             .borrow_mut()
             .pop_front()
@@ -605,6 +652,41 @@ impl Host for FakeHost {
         Some(child(request))
     }
 
+    fn keep_read(&self) -> Option<String> {
+        self.keep_file.borrow().clone()
+    }
+
+    fn keep_write(&self, text: &str) -> Result<(), String> {
+        *self.keep_file.borrow_mut() = Some(String::from(text));
+        Ok(())
+    }
+
+    fn keep_running(&self, app: &str, on: bool) -> Result<(), String> {
+        if self.keep_fails.get() > 0 {
+            self.keep_fails.set(self.keep_fails.get() - 1);
+            return Err(format!("cannot reach {app}: NotFound"));
+        }
+        if let Some(why) = self.keep_refusal.borrow().as_ref() {
+            return Err(why.clone());
+        }
+        self.kept.borrow_mut().push((String::from(app), on));
+        Ok(())
+    }
+
+    fn apps(&self) -> Option<&RefCell<crate::apps::Apps>> {
+        Some(&self.apps)
+    }
+
+    fn app_call(&self, app: &str, request: &str) -> Result<String, String> {
+        self.app_requests
+            .borrow_mut()
+            .push((String::from(app), String::from(request)));
+        self.app_replies
+            .borrow_mut()
+            .pop_front()
+            .ok_or_else(|| String::from("the app did not answer"))
+    }
+
     fn appearance_read(&self) -> Option<String> {
         self.appearance.borrow().clone()
     }
@@ -616,6 +698,19 @@ impl Host for FakeHost {
 
     fn audit(&self, text: &str) {
         self.audit.borrow_mut().push(String::from(text));
+    }
+
+    fn cc(&self, request: &[u8]) -> Result<Vec<u8>, String> {
+        self.cc_sent
+            .borrow_mut()
+            .push(String::from_utf8_lossy(request).into_owned());
+        if let Some(reply) = self.cc_script.borrow_mut().pop_front() {
+            return Ok(reply);
+        }
+        match self.cc.borrow_mut().as_mut() {
+            Some(service) => Ok(service.handle(request, &cmode::CcClock)),
+            None => Err(String::from("cc is not running")),
+        }
     }
 }
 

@@ -13,6 +13,9 @@ pub struct Clock {
     pub step_ns: Cell<u64>,
     now: Cell<u64>,
     pub interrupted: Cell<bool>,
+    /// The line budget the host gives, as the `cc` program stretches it
+    /// under an emulated CPU.
+    pub line_ns: Cell<u64>,
 }
 
 impl Clock {
@@ -21,6 +24,7 @@ impl Clock {
             step_ns: Cell::new(0),
             now: Cell::new(0),
             interrupted: Cell::new(false),
+            line_ns: Cell::new(ccserve::LINE_NS),
         }
     }
 }
@@ -35,6 +39,10 @@ impl Host for Clock {
 
     fn interrupted(&self) -> bool {
         self.interrupted.get()
+    }
+
+    fn line_ns(&self) -> u64 {
+        self.line_ns.get()
     }
 }
 

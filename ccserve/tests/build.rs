@@ -356,19 +356,30 @@ fn the_provenance_names_the_pinned_xcc() {
 
 #[test]
 fn sources_that_expand_into_huge_objects_stop_before_the_link() {
-    // Each source is a few bytes; its object holds 1.5 MiB of data. wcc spends
-    // about 400 M fuel on each, so the build's fuel cap, there should the
-    // clock fail, stops it at the third, as the 4 MiB object cap would.
-    let big = "static const unsigned char big[1572864] = {1};\n";
-    let files: Vec<String> = (0..3).map(|i| format!("big{i}.c")).collect();
+    let main = component("return 0;", "");
+    // A few bytes of source whose compile needs more than a compile's 4 MiB
+    // of memory (`compiler::MAX_MEMORY`): cc.wasm traps, naming the file.
+    let huge = "static const unsigned char big[1572864] = {1};\n";
+    let sources: Vec<(&str, &[u8])> =
+        vec![("huge.c", huge.as_bytes()), ("main.c", main.as_bytes())];
+    match try_build("hello", Kind::Component, &sources) {
+        Err(BuildError::Compile(name, CompileError::Compiler(why))) => {
+            assert_eq!(name, "huge.c", "{why}");
+        }
+        other => panic!("{other:?}"),
+    }
+    // Each of these compiles within it, its object holding 256 KiB of data,
+    // and wcc spends about 67 M fuel on each. The build's fuel cap, there
+    // should the clock fail, stops it at the sixteenth, as the 4 MiB object
+    // cap would at about the same file.
+    let big = "static const unsigned char big[262144] = {1};\n";
+    let files: Vec<String> = (0..17).map(|i| format!("big{i:02}.c")).collect();
     let mut sources: Vec<(&str, &[u8])> =
         files.iter().map(|n| (n.as_str(), big.as_bytes())).collect();
-    let main = component("return 0;", "");
     sources.push(("main.c", main.as_bytes()));
     match try_build("hello", Kind::Component, &sources) {
         Err(BuildError::Compile(name, CompileError::Compiler(why))) => {
-            assert_eq!(name, "big2.c");
-            assert!(why.contains("too much fuel"), "{why}");
+            assert!(why.contains("too much fuel"), "{name}: {why}");
         }
         Err(BuildError::Module(why)) => assert!(why.contains("over 4 MiB"), "{why}"),
         other => panic!("{other:?}"),
