@@ -169,9 +169,27 @@ pub trait Clients {
 /// its nodes.
 pub const PRIVATE: &str = "private";
 
+/// What the refusal for acting in, or focusing, a private window ends with.
+const KEPT_PRIVATE: &str = " is private: its app keeps it from the agent";
+
 /// The refusal for acting in, or focusing, a private window.
 fn kept_private(name: &str) -> String {
-    format!("{name} is private: its app keeps it from the agent")
+    format!("{name}{KEPT_PRIVATE}")
+}
+
+/// Whether `answer` is one of the two things said of a window kept from the
+/// agent: the `ui view` that shows only its title (`w3: private`), or the
+/// refusal to act in it. `desktop` marks its log line with it, so a case can
+/// tell either from any other answer.
+pub fn says_private(answer: &str) -> bool {
+    let view_line = |line: &str| {
+        line.strip_prefix('w')
+            .and_then(|rest| rest.split_once(": "))
+            .is_some_and(|(n, word)| {
+                !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) && word == PRIVATE
+            })
+    };
+    answer.lines().any(view_line) || (answer.starts_with("err ") && answer.ends_with(KEPT_PRIVATE))
 }
 
 impl Agent {

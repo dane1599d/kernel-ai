@@ -1,10 +1,9 @@
 //! The Settings app's model (P4 task 7): what each page shows and what the
-//! user's choices ask for. It reads what the OS hands it (grants, rules,
-//! profiles, the About facts and the three settings files) and answers each
-//! choice with an [`Intent`]; the window carries the intent out through the
-//! agent's rows (`appearance_set`, the grant rows, `profile_set`, `rules_remove`
-//! and the keep-running switch), so every change is logged and undoable as if
-//! the agent had made it. Nothing here touches the OS itself.
+//! user's choices ask for. It reads what the OS hands it (the apps' effect
+//! rows, rules, profiles, the About facts and the three settings files) and
+//! answers each choice with an [`Intent`]; the window carries the intent out as
+//! a `kai:settings` request, which the shell logs and can undo. Nothing here
+//! touches the OS itself.
 
 #![no_std]
 
@@ -109,8 +108,10 @@ pub struct RuleLine {
 pub enum Intent {
     /// `appearance_set`.
     Appearance(Appearance),
-    /// The grant revoke row, by grant id.
-    Revoke(u32),
+    /// Withholds one effect row from an app (`grants-revoke <app> <row>`).
+    Revoke { app: String, row: String },
+    /// Gives a withheld row back (`grants-restore <app> <row>`).
+    Restore { app: String, row: String },
     /// `rules_remove`, with [`RuleRef::word`].
     RemoveRule(RuleRef),
     /// `profile_set`.
@@ -151,13 +152,26 @@ impl Settings {
         })
     }
 
-    /// Revoking `grant`, if some app holds it.
-    pub fn revoke(&self, grant: u32) -> Option<Intent> {
-        let held = self
-            .access
-            .iter()
-            .any(|a| a.access.iter().any(|x| x.grant == grant));
-        held.then_some(Intent::Revoke(grant))
+    /// The row `row` of `app`, if the shell listed it.
+    fn row(&self, app: &str, row: &str) -> Option<&access::Access> {
+        let app = self.access.iter().find(|a| a.app == app)?;
+        app.access.iter().find(|x| x.row == row)
+    }
+
+    /// Withholding `row` from `app`, if it is listed and allowed now.
+    pub fn revoke(&self, app: &str, row: &str) -> Option<Intent> {
+        self.row(app, row)?.allowed.then(|| Intent::Revoke {
+            app: String::from(app),
+            row: String::from(row),
+        })
+    }
+
+    /// Giving `row` back to `app`, if it is listed and withheld now.
+    pub fn restore(&self, app: &str, row: &str) -> Option<Intent> {
+        (!self.row(app, row)?.allowed).then(|| Intent::Restore {
+            app: String::from(app),
+            row: String::from(row),
+        })
     }
 
     /// Flipping `app`'s keep-running switch, if it is an app that naps.
@@ -179,16 +193,24 @@ impl Settings {
         (window != self.updates.restart_window).then_some(Intent::RestartWindow(window))
     }
 
+    /// Records that `app`'s `row` is allowed or withheld now; a row that is not
+    /// listed stays unlisted.
+    fn allow(&mut self, app: &str, row: &str, allowed: bool) {
+        let rows = self.access.iter_mut().filter(|a| a.app == app);
+        for x in rows
+            .flat_map(|a| a.access.iter_mut())
+            .filter(|x| x.row == row)
+        {
+            x.allowed = allowed;
+        }
+    }
+
     /// Applies an intent the OS carried out, so the pages show it.
     pub fn applied(&mut self, intent: &Intent) {
         match intent {
             Intent::Appearance(a) => self.appearance = a.clone(),
-            Intent::Revoke(grant) => {
-                for app in &mut self.access {
-                    app.access.retain(|x| x.grant != *grant);
-                }
-                self.access.retain(|a| !a.access.is_empty());
-            }
+            Intent::Revoke { app, row } => self.allow(app, row, false),
+            Intent::Restore { app, row } => self.allow(app, row, true),
             Intent::RemoveRule(id) => self.rules.retain(|r| r.id != *id),
             Intent::UseProfile(name) => self.profile = Some(name.clone()),
             Intent::KeepRunning { app, on } => {

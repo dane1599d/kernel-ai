@@ -128,12 +128,17 @@ pub trait Host {
     fn now_ns(&self) -> u64;
     /// Whether Ctrl-C was pressed for the request being served.
     fn interrupted(&self) -> bool;
+    /// How long one entry's compile, and its run, each get: D3's [`LINE_NS`],
+    /// unless the machine is emulated and runs everything many times slower.
+    fn line_ns(&self) -> u64 {
+        LINE_NS
+    }
 }
 
 /// Why work stopped before it ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stopped {
-    /// The 2 s line budget ran out.
+    /// The line budget ran out.
     Deadline,
     /// Ctrl-C.
     Interrupted,

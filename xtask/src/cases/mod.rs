@@ -152,13 +152,13 @@ const LANES: &[&[TestCase]] = &[
     kernel::CASES,
     devices::CASES,
     agent::CASES,
+    apps::CASES,
     cc::CASES,
     components::CASES,
     network::CASES,
     storage::CASES,
     updates::CASES,
     pkg::CASES,
-    apps::CASES,
 ];
 
 /// The cases `cargo xtask test` boots.
@@ -185,13 +185,13 @@ mod tests {
             kernel::CASES,
             devices::CASES,
             agent::CASES,
+            apps::CASES,
             cc::CASES,
             components::CASES,
             network::CASES,
             storage::CASES,
             updates::CASES,
             pkg::CASES,
-            apps::CASES,
         ];
         assert_eq!(
             cases.len(),
