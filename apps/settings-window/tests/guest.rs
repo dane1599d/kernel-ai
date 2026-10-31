@@ -457,4 +457,16 @@ fn the_page_shown_is_not_state_so_a_read_only_open_changes_nothing_and_a_restart
     // A state it cannot read and another schema are refused, not guessed at.
     assert_eq!(h.import(b"junk", 1), Ok(2));
     assert_eq!(h.import(&saved, 9), Ok(1));
+    // The state today's version saved, with the page in it, still imports (a
+    // live update from it): the page is dropped and the window starts over.
+    #[derive(minicbor::Encode)]
+    struct Old {
+        #[n(0)]
+        page: u32,
+    }
+    let old = compsdk::state::encode(1, &Old { page: 3 });
+    let mut j = start(&wasm);
+    assert_eq!(j.import(&old, 1), Ok(0));
+    let (_, f) = frame(&mut j);
+    assert!(names(&f).iter().any(|n| n.starts_with("Theme: ")));
 }
