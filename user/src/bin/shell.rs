@@ -55,10 +55,29 @@ struct System {
     /// When `desktop` was last offered it, so one that is down costs a call
     /// only every [`APPEARANCE_RETRY_NS`].
     appearance_tried_ns: core::cell::Cell<u64>,
+    /// The `desktop` last given it, by pid: a new one (a restart) is given it
+    /// again.
+    desktop_pid: core::cell::Cell<u64>,
+    /// When the shell last looked for a new `desktop`.
+    desktop_looked_ns: core::cell::Cell<u64>,
 }
 
 /// How often an appearance `desktop` did not take is offered again.
 const APPEARANCE_RETRY_NS: u64 = 10_000_000_000;
+/// How often the shell looks for a `desktop` that started or restarted since
+/// it last gave it the appearance.
+const DESKTOP_LOOK_NS: u64 = 2_000_000_000;
+
+/// The running `desktop`'s pid, from the kernel's METRICS.
+fn desktop_pid() -> Option<u64> {
+    let metrics = sys::metrics().ok()?;
+    metrics
+        .processes
+        .iter()
+        .take(metrics.process_count as usize)
+        .find(|p| p.name() == "desktop")
+        .map(|p| p.pid)
+}
 
 /// The route to the llm service: the shell's plan line has `uses=llm`, its only
 /// route.
@@ -97,10 +116,21 @@ fn ask_desktop(route: kabi::handle::Handle, request: &str) -> Result<String, Str
 }
 
 /// Gives `desktop` the saved appearance, when it is due: at start (a
-/// `desktop` that starts after the shell gets it on a later pass) and after
-/// each change. No desktop, or nothing saved, leaves nothing to do.
+/// `desktop` that starts after the shell gets it on a later pass), after each
+/// change, and to each new `desktop` (a restart). No desktop, or nothing
+/// saved, leaves nothing to do.
 fn give_appearance(system: &System) {
     let now = sys::time_ns();
+    // A `desktop` that started or restarted (the supervisor's restart, a new
+    // boot) starts from its plan line: give it the saved appearance again.
+    if now.saturating_sub(system.desktop_looked_ns.get()) >= DESKTOP_LOOK_NS {
+        system.desktop_looked_ns.set(now);
+        if let Some(pid) = desktop_pid().filter(|&pid| pid != system.desktop_pid.get()) {
+            system.desktop_pid.set(pid);
+            system.appearance_due.set(true);
+            system.appearance_tried_ns.set(0);
+        }
+    }
     if !system.appearance_due.get()
         || now.saturating_sub(system.appearance_tried_ns.get()) < APPEARANCE_RETRY_NS
             && system.appearance_tried_ns.get() != 0
@@ -750,6 +780,8 @@ fn main() -> i32 {
             apps: core::cell::RefCell::default(),
             appearance_due: core::cell::Cell::new(true),
             appearance_tried_ns: core::cell::Cell::new(0),
+            desktop_pid: core::cell::Cell::new(0),
+            desktop_looked_ns: core::cell::Cell::new(0),
         })
     };
     let mut shell = Shell::new(system.clone(), DEFAULT_CONFIG);
