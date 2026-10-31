@@ -183,6 +183,9 @@ pub enum SelfTest {
     DeskTerm,
     /// `desk-agent` (P3 task 10): the agent opens Notes and acts inside it.
     DeskAgent,
+    /// The v0.1 system as the default boot plans it: the desktop, the Apps
+    /// sheet's catalogue, and an app opened (`desk-default`).
+    DeskDefault,
     /// The Settings app on the desktop, its window kept from the agent (P4 task 7).
     AppSettings,
     /// `desk-takeover` (P3 task 10): a key in the agent's window stops it.
@@ -363,6 +366,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=ui-keys" => Some(SelfTest::UiKeys),
             "test=desk-term" => Some(SelfTest::DeskTerm),
             "test=desk-agent" => Some(SelfTest::DeskAgent),
+            "test=desk-default" => Some(SelfTest::DeskDefault),
             "test=app-settings" => Some(SelfTest::AppSettings),
             "test=desk-takeover" => Some(SelfTest::DeskTakeover),
             "test=scriptrun" => Some(SelfTest::Scriptrun),
@@ -455,6 +459,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::UiKeys
             | SelfTest::DeskTerm
             | SelfTest::DeskAgent
+            | SelfTest::DeskDefault
             | SelfTest::AppSettings
             | SelfTest::DeskTakeover
             | SelfTest::TuneRevert
@@ -466,6 +471,20 @@ pub fn plan(test: SelfTest) -> Option<String> {
     );
     if !wanted {
         return None;
+    }
+    // The v0.1 system (`kabi::plan::system`): what the default boot plans, and
+    // what `desk-default` boots unchanged, then the boot manifest's `notes` and
+    // the edit service.
+    if matches!(test, SelfTest::None | SelfTest::DeskDefault) {
+        let files = crate::block::has_partition(diskmap::KAI_DATA_TYPE);
+        let mut plan = kabi::plan::system::plan(&crate::llm::plan_line(), files);
+        plan.push('\n');
+        plan.push_str(&crate::boot_manifest::plan_line());
+        if let Some(edit) = crate::build_service::plan_line() {
+            plan.push('\n');
+            plan.push_str(&edit);
+        }
+        return Some(plan);
     }
     // The live, edit and manifest cases need only their services, with probation
     // ended by calls; the live case also needs llm for `:why`, and the others the
@@ -678,14 +697,6 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
     if test == SelfTest::AppSettings {
         plan.push('\n');
         plan.push_str(crate::app_settings_tests::APPS);
-    }
-    if test == SelfTest::None {
-        plan.push('\n');
-        plan.push_str(&crate::boot_manifest::plan_line());
-        if let Some(edit) = crate::build_service::plan_line() {
-            plan.push('\n');
-            plan.push_str(&edit);
-        }
     }
     Some(plan)
 }

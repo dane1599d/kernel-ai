@@ -101,6 +101,24 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..install("desk-catalog", "test=desk-catalog", MirrorKind::Signed)
     },
+    // The v0.1 system as the default boot plans it (`kabi::plan::system`), with
+    // no plan line of the case's own: the desktop comes up, `pkg` seeds the
+    // image's repository with no `step=`, the Apps sheet lists it, and Enter on
+    // `notes` opens Notes' window through the shell and the model's `ui_open`.
+    TestCase {
+        server: true,
+        data: Some(VIRTIO),
+        expect: &[
+            "pkg: the image's repository verified, ",
+            "desktop: drew the desk at ",
+            "desktop: the Apps sheet lists ",
+            "desktop: the Apps sheet sent \"open notes\"",
+            "process notes-window (pid ",
+            "desktop: window 1 \"Notes\" opened at ",
+            "desk-default: the desktop came up, the Apps sheet listed the catalogue, and Enter opened notes-window",
+        ],
+        ..case("desk-default", "test=desk-default")
+    },
     // P4 task 2: `pkg` installs from the `pkgrepo=` mirror through PKG_FETCH, in
     // 192 KiB ranges, checked with kaituf against the root the image carries
     // (the mirror is signed by the image's own per-build keys); undo, then the
