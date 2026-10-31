@@ -28,7 +28,8 @@ impl Booter {
         let kernel = crate::build_kernel(&root, &options)?;
         crate::floatguard::check(&kernel)?;
         let programs = crate::userbuild::build_user(&root, &options)?;
-        let versions = crate::components::build(&root)?;
+        // The tune cases boot test images.
+        let versions = crate::components::build_for_tests(&root)?;
         let target_dir = root.join("target");
         let mut modules = esp::boot_modules(&kernel, &programs, &root)?;
         modules.extend(versions);

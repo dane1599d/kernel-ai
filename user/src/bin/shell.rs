@@ -129,6 +129,9 @@ fn take_panel(shell: &mut Shell) {
 const _: () =
     assert!(shellcore::appline::MAX_ANSWER + '…'.len_utf8() <= deskcore::effects::MAX_LINE_TEXT);
 
+// shellcore's copy of the Settings wire's answer bound is desktop's.
+const _: () = assert!(shellcore::SETTINGS_MAX_ANSWER == deskcore::settings_wire::MAX_ANSWER);
+
 /// Takes an app's oldest effects from `desktop`, runs them through the agent
 /// core, and reports what came of each; `desktop` hands the results to the
 /// app. `desktop` names the app, from its record of who queued them.
@@ -741,6 +744,7 @@ fn main() -> i32 {
         take_panel(&mut shell);
         take_effects(&mut shell);
         take_settings(&mut shell);
+        shell.retry_keep();
         let mut caller = u64::MAX;
         let len = match sys::svc_recv(&mut line, wait_ms, &mut caller) {
             Ok(len) => len.min(line.len()),

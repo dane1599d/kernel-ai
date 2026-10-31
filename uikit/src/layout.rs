@@ -207,6 +207,7 @@ fn natural_of(
         Widget::Scroll { .. } => kids.first().copied().unwrap_or((0, 0)),
         Widget::Split { axis, .. } => along(*axis, DIVIDER),
         Widget::Image { .. } => (64, 64),
+        Widget::Code(v) => crate::code::natural(m, v),
         Widget::Progress { label, .. } => (
             PROGRESS_W + INLINE_GAP + m.advance(TypeStyle::Body, label),
             CONTROL_H,
