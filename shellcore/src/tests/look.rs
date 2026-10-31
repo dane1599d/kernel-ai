@@ -25,6 +25,9 @@ fn a_plain_theme_switch_runs_saves_and_undoes() {
     let (host, mut shell) = with_calls(vec![call(light)]);
     let reply = shell.eval("switch to the light theme");
     assert!(reply.ok && reply.text.ends_with(". undo"), "{reply:?}");
+    // Each word once: the setting, its value, and what it was.
+    assert_eq!(reply.text.matches("theme").count(), 1, "{reply:?}");
+    assert_eq!(reply.text.matches("(was dark)").count(), 1, "{reply:?}");
     assert_eq!(theme(&host), "light");
     assert!(
         host.appearance

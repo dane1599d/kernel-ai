@@ -79,7 +79,48 @@ pub struct TextField {
 /// The most bytes a text field takes, whatever its `max_len` says.
 pub const MAX_TEXT: u32 = 65_536;
 
-/// The v0.1 widgets (ADR 0005 section 4).
+/// Most rows a code view holds, and most cells of one row's text.
+pub const MAX_CODE_ROWS: usize = 200;
+pub const MAX_CODE_CELLS: usize = 400;
+/// Most spans on one row.
+pub const MAX_CODE_SPANS: usize = 32;
+
+/// A run of one code row's cells, `from` to `to` (not including it), drawn in
+/// `tone`, underlined when it is a link.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CodeSpan {
+    pub from: u16,
+    pub to: u16,
+    pub tone: Tone,
+    pub link: bool,
+}
+
+/// One row of a code view: text whose every character is one cell (tabs already
+/// spread), the gutter text beside it, and the runs drawn apart.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CodeRow {
+    pub text: String,
+    pub gutter: String,
+    pub spans: Vec<CodeSpan>,
+}
+
+/// A grid of mono text the app owns, such as an editor's lines or a terminal's
+/// screen, which takes raw keys and clicks (`kai:code`). The app sends the rows
+/// to show; uikit draws them and tells the app what was typed and where.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CodeView {
+    /// Its accessible name.
+    pub label: String,
+    /// Cells at the left kept for the gutter.
+    pub gutter_width: u16,
+    pub rows: Vec<CodeRow>,
+    /// The caret's row and cell (after the gutter); none hides it.
+    pub cursor: Option<(u32, u32)>,
+    /// A row drawn highlighted.
+    pub selected: Option<u32>,
+}
+
+/// The v0.1 widgets (ADR 0005 section 4), and the code view (`kai:code`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Widget {
     Stack {
@@ -142,9 +183,30 @@ pub enum Widget {
         /// Per mille; none while it cannot tell.
         done: Option<u16>,
     },
+    Code(CodeView),
 }
 
 impl Widget {
+    /// Whether the widget is within the limits an app is held to.
+    pub fn check(&self) -> Result<(), UiError> {
+        let Self::Code(v) = self else {
+            return Ok(());
+        };
+        let spans_ok = |r: &CodeRow| {
+            r.spans.len() <= MAX_CODE_SPANS
+                && r.spans
+                    .iter()
+                    .all(|s| s.from < s.to && usize::from(s.to) <= MAX_CODE_CELLS)
+        };
+        let rows_ok = v.rows.iter().all(|r| {
+            r.text.chars().count() <= MAX_CODE_CELLS && r.gutter.len() <= 16 && spans_ok(r)
+        });
+        if v.rows.len() > MAX_CODE_ROWS || !rows_ok {
+            return Err(UiError::TooBig);
+        }
+        Ok(())
+    }
+
     /// How many children it may hold (`usize::MAX` for any number).
     pub fn max_children(&self) -> usize {
         match self {
@@ -168,6 +230,7 @@ impl Widget {
                 | Self::Toggle { .. }
                 | Self::Slider { .. }
                 | Self::Menu { .. }
+                | Self::Code(_)
         )
     }
 
@@ -195,6 +258,14 @@ impl Widget {
             Self::Tabs { labels, .. } => strings(labels),
             Self::Menu { label, items } => label.len() + strings(items),
             Self::Image { label, source } => label.len() + source.len(),
+            Self::Code(v) => {
+                let rows: usize = v
+                    .rows
+                    .iter()
+                    .map(|r| r.text.len() + r.gutter.len() + 8 * r.spans.len() + 8)
+                    .sum();
+                v.label.len() + rows
+            }
         }
     }
 }
@@ -215,6 +286,29 @@ pub enum UiEvent {
     Changed(NodeId, Value),
     Submitted(NodeId),
     CloseRequested,
+    /// A key pressed while a code view had focus (`kai:code/code-input.on-key`):
+    /// its name (`a`, `enter`, `up`, `backspace`, `pagedown`, `f1`...), what it
+    /// types (empty for a command key) and the modifiers held (shift 1, ctrl 2,
+    /// alt 4, super 8).
+    Key {
+        node: NodeId,
+        name: String,
+        text: String,
+        mods: u8,
+    },
+    /// A click on a code view: the row from its first shown row and the cell
+    /// from its first text cell (0 in the gutter), with the modifiers held.
+    Click {
+        node: NodeId,
+        row: u32,
+        cell: u32,
+        mods: u8,
+    },
+    /// The wheel turned over a code view: rows, positive down.
+    Scroll {
+        node: NodeId,
+        rows: i32,
+    },
 }
 
 /// Why the tree refused a change, as `kai:ui/types.ui-error`.

@@ -1,7 +1,31 @@
 //! A, the agent: the llm service, the shell, the terminal, scripts and tune.
 
 use super::{TestCase, case};
+use crate::blklog::Data;
 use crate::disk::Fixture;
+
+/// A fresh `kai-data` disk, for the shell's `/system/state`.
+const DATA: Data = Data {
+    nvme: false,
+    log: None,
+    gpt: true,
+};
+
+/// fs on the data disk, desktop and Notes together pass the page budget (half
+/// the free memory) of the default 512 MiB guest.
+const KEEP_RUNNING_MIB: u64 = 1024;
+
+/// Boot 2 of `keep-running`: the shell replays `/system/state/keep`.
+const KEEP_RUNNING_2: TestCase = TestCase {
+    expect: &[
+        "keep-running: boot 2 kept notes-window running from /system/state/keep",
+        "keep-running: user=1: ok notes-window keep-running off",
+        "keep-running: boot 2 let notes-window go, and it napped",
+    ],
+    data: Some(DATA),
+    memory_mib: Some(KEEP_RUNNING_MIB),
+    ..case("keep-running (boot 2)", "test=keep-running reread")
+};
 
 /// "ask hi" and Enter, at the terminal, which sends it through the shell to llm.
 const ASK_HI: &[&str] = &["a", "s", "k", "spc", "h", "i", "ret"];
@@ -196,5 +220,19 @@ pub(super) const CASES: &[TestCase] = &[
             "local-script: the local model's script got the host's outcome, twice, with no server",
         ],
         ..case("local-script", "test=local-script")
+    },
+    // P4 task 7: Settings' keep-running switch reaches the supervisor through
+    // the shell alone, holds a napping app awake, and survives a reboot.
+    TestCase {
+        expect: &[
+            "keep-running: keep from the Settings app itself: err only the shell keeps apps running",
+            "keep-running: user=0: err a change needs a key or a click",
+            "keep-running: user=1: ok notes-window keep-running on",
+            "keep-running: boot 1 kept notes-window running from a Settings click, shell only",
+        ],
+        data: Some(DATA),
+        memory_mib: Some(KEEP_RUNNING_MIB),
+        then: Some(&KEEP_RUNNING_2),
+        ..case("keep-running", "test=keep-running")
     },
 ];
