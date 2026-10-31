@@ -91,6 +91,65 @@ pub const NOTES_RECIPE: Recipe = Recipe {
     wit: &[NOTES_WIT],
 };
 
+/// Notes with its window (P3 task 9): the build P4 ships, its own component so
+/// the edit loop's `notes` is untouched. Package `notes` carries it.
+pub const NOTES_WINDOW_RECIPE: Recipe = Recipe {
+    component: "notes-window",
+    krate: "comp-notes-window",
+    dirs: &[WINDOW, NOTES_UI, NOTES],
+    feature: None,
+    wit: &[WINDOW_WIT, "wit/kai-ui", NOTES_WIT],
+};
+
+/// The Files app (P4 task 5), a window over the OS's file rows.
+pub const FILES_WINDOW_RECIPE: Recipe = Recipe {
+    component: "files-window",
+    krate: "comp-files-window",
+    dirs: FILES_DIRS,
+    feature: None,
+    wit: &[FILES_WINDOW_WIT, "wit/kai-ui", FILES_WIT],
+};
+
+/// The Terminal app (P4 task 4), today's shell in a window.
+pub const TERMINAL_WINDOW_RECIPE: Recipe = Recipe {
+    component: "terminal-window",
+    krate: "comp-terminal-window",
+    dirs: TERMINAL_DIRS,
+    feature: None,
+    wit: &[TERMINAL_WINDOW_WIT, "wit/kai-ui"],
+};
+
+/// The Settings app (P4 task 7), a window over the system's settings.
+pub const SETTINGS_WINDOW_RECIPE: Recipe = Recipe {
+    component: "settings-window",
+    krate: "comp-settings-window",
+    dirs: SETTINGS_DIRS,
+    feature: None,
+    wit: &[
+        SETTINGS_WINDOW_WIT,
+        "wit/kai-ui",
+        "wit/kai-settings",
+        SETTINGS_WIT,
+    ],
+};
+
+/// The System monitor (P4 task 9), a window over a reading of the machine.
+pub const MONITOR_WINDOW_RECIPE: Recipe = Recipe {
+    component: "monitor-window",
+    krate: "comp-monitor-window",
+    dirs: MONITOR_DIRS,
+    feature: None,
+    wit: &[
+        MONITOR_WINDOW_WIT,
+        "wit/kai-ui",
+        "wit/kai-system",
+        MONITOR_WIT,
+    ],
+};
+
+/// The label every window's one version has on the boot drive.
+pub const WINDOW_LABEL: &str = "1";
+
 const fn bad(label: &'static str, feature: &'static str) -> Version {
     Version {
         label,
@@ -125,71 +184,26 @@ pub const VERSIONS: &[Version] = &[
     bad("3-health", "bug-health"),
     bad("3-trap", "bug-trap"),
     bad("3-spin", "bug-spin"),
-    // Notes with its window (P3 task 9): the build P4 ships, its own component
-    // so the edit loop's `notes` is untouched.
+    // The windows P4 ships, each also a package of the image's repository.
     Version {
-        label: "1",
-        recipe: Recipe {
-            component: "notes-window",
-            krate: "comp-notes-window",
-            dirs: &[WINDOW, NOTES_UI, NOTES],
-            feature: None,
-            wit: &[WINDOW_WIT, "wit/kai-ui", NOTES_WIT],
-        },
+        label: WINDOW_LABEL,
+        recipe: NOTES_WINDOW_RECIPE,
     },
-    // The Files app (P4 task 5), a window over the OS's file rows.
     Version {
-        label: "1",
-        recipe: Recipe {
-            component: "files-window",
-            krate: "comp-files-window",
-            dirs: FILES_DIRS,
-            feature: None,
-            wit: &[FILES_WINDOW_WIT, "wit/kai-ui", FILES_WIT],
-        },
+        label: WINDOW_LABEL,
+        recipe: FILES_WINDOW_RECIPE,
     },
-    // The Terminal app (P4 task 4), today's shell in a window.
     Version {
-        label: "1",
-        recipe: Recipe {
-            component: "terminal-window",
-            krate: "comp-terminal-window",
-            dirs: TERMINAL_DIRS,
-            feature: None,
-            wit: &[TERMINAL_WINDOW_WIT, "wit/kai-ui"],
-        },
+        label: WINDOW_LABEL,
+        recipe: TERMINAL_WINDOW_RECIPE,
     },
-    // The Settings app (P4 task 7), a window over the system's settings.
     Version {
-        label: "1",
-        recipe: Recipe {
-            component: "settings-window",
-            krate: "comp-settings-window",
-            dirs: SETTINGS_DIRS,
-            feature: None,
-            wit: &[
-                SETTINGS_WINDOW_WIT,
-                "wit/kai-ui",
-                "wit/kai-settings",
-                SETTINGS_WIT,
-            ],
-        },
+        label: WINDOW_LABEL,
+        recipe: SETTINGS_WINDOW_RECIPE,
     },
-    // The System monitor (P4 task 9), a window over a reading of the machine.
     Version {
-        label: "1",
-        recipe: Recipe {
-            component: "monitor-window",
-            krate: "comp-monitor-window",
-            dirs: MONITOR_DIRS,
-            feature: None,
-            wit: &[
-                MONITOR_WINDOW_WIT,
-                "wit/kai-ui",
-                "wit/kai-system",
-                MONITOR_WIT,
-            ],
-        },
+        label: WINDOW_LABEL,
+        recipe: MONITOR_WINDOW_RECIPE,
     },
 ];
 
