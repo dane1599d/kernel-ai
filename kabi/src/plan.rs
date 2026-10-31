@@ -64,3 +64,8 @@ pub const NOTES_EDIT_TEST: &str = "notes program=comphost caps=serve+component p
 /// The edit service, planned only when the kernel has a build service. The
 /// kernel appends `host=IP:PORT token=HEX`.
 pub const EDIT_BASE: &str = "edit caps=serve+publish pages=2048 burst_ms=10000";
+/// The editor app (P4 task 11), `comphost` serving the `editor` component with a
+/// route to `desktop` for its window. The kernel gives `cap::EDIT` to the service
+/// of this name and no other, so the name is the grant of `kai:edit`, which sends
+/// the app's messages to the edit service (`EDIT_CALL`). Planned after `desktop`.
+pub const EDITOR: &str = "editor program=comphost caps=serve+component+call+edit uses=desktop pages=8192 stack_pages=512 burst_ms=20000 version=1";

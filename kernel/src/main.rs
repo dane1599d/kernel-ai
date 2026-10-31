@@ -21,6 +21,7 @@ mod act_tests;
 mod agent_desk_tests;
 mod allow;
 mod apic;
+mod app_editor_tests;
 mod app_route_tests;
 mod app_settings_tests;
 mod app_terminal_tests;
@@ -387,6 +388,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::DeskPanelShell => run_case(desk_tests::panel_shell_check),
         SelfTest::DeskCatalog => run_case(catalog_tests::check),
         SelfTest::UiWindow => run_case(ui_tests::check),
+        SelfTest::AppEditor => run_case(app_editor_tests::check),
         SelfTest::DeskNap => run_case(nap_tests::check),
         SelfTest::KeepRunning { reread } => run_case(|| keep_tests::check(reread)),
         SelfTest::DeskCard => run_case(card_tests::check),
