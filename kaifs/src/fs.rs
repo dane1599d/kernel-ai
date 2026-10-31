@@ -134,6 +134,9 @@ pub struct Fs<D> {
     /// The volume item calls act on.
     pub(crate) active: u64,
     pub(crate) action: Option<Action>,
+    /// Transactions ended so far, by commit or abort: state kept across calls,
+    /// such as a [`crate::SealedWriter`], belongs to the one it was made in.
+    pub(crate) ended: u64,
     /// The GC pass running, if any.
     pub(crate) gc: Option<crate::gc::Gc>,
     writable: bool,
@@ -203,6 +206,7 @@ impl<D: BlockDev> Fs<D> {
                 .collect(),
             active: volumes[0].0,
             action: None,
+            ended: 0,
             gc: None,
             writable: true,
             repairable: true,
@@ -252,6 +256,7 @@ impl<D: BlockDev> Fs<D> {
             vols: loaded.vols,
             active: loaded.active,
             action: None,
+            ended: 0,
             gc: None,
             writable: rules.writable && info.durable(),
             repairable: rules.repairable,
@@ -717,6 +722,8 @@ impl<D: BlockDev> Fs<D> {
         if !self.writable {
             return Err(Error::ReadOnly);
         }
+        // First, as in `abort`: a failed commit ends the transaction too.
+        self.ended += 1;
         let generation = self.io.txn;
         if let Some(action) = self.action {
             self.write_undo(action, generation)?;

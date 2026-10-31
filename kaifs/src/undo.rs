@@ -58,7 +58,7 @@ pub struct Version {
 
 /// The live tree, or a snapshot's tree, of the active volume.
 #[derive(Clone, Copy)]
-enum View {
+pub(crate) enum View {
     Live,
     Tree(BlockPtr),
 }
@@ -72,7 +72,12 @@ impl<D: BlockDev> Fs<D> {
     }
 
     /// The raw items of object `oid` of kind `kind` in `view`.
-    fn items_in(&mut self, view: View, oid: u64, kind: u8) -> Result<Vec<(Key, Vec<u8>)>, Error> {
+    pub(crate) fn items_in(
+        &mut self,
+        view: View,
+        oid: u64,
+        kind: u8,
+    ) -> Result<Vec<(Key, Vec<u8>)>, Error> {
         let mut out = Vec::new();
         let mut visit = |key: &Key, raw: &[u8]| {
             let mine = key.oid == oid && key.kind == kind;
@@ -89,7 +94,7 @@ impl<D: BlockDev> Fs<D> {
         Ok(out)
     }
 
-    fn inode_in(&mut self, view: View, ino: u64) -> Result<Option<Inode>, Error> {
+    pub(crate) fn inode_in(&mut self, view: View, ino: u64) -> Result<Option<Inode>, Error> {
         match self.raw_in(view, &Key::new(ino, K_INODE, 0))? {
             None => Ok(None),
             Some(raw) => {
@@ -100,7 +105,12 @@ impl<D: BlockDev> Fs<D> {
     }
 
     /// The name `ino` has in its folder `parent` in `view`.
-    fn name_in(&mut self, view: View, parent: u64, ino: u64) -> Result<Option<Entry>, Error> {
+    pub(crate) fn name_in(
+        &mut self,
+        view: View,
+        parent: u64,
+        ino: u64,
+    ) -> Result<Option<Entry>, Error> {
         for (_, raw) in self.items_in(view, parent, K_DIRENT)? {
             let bytes = inline_of(&raw).ok_or(Error::Corrupt("folder names"))?;
             if let Some(e) = decode_names(bytes)?.into_iter().find(|e| e.ino == ino) {
