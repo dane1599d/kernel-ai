@@ -11,11 +11,12 @@
 //! sent while one runs waits its turn. A standby version, rehearsed beside the
 //! active one during probation, has its queue emptied and dropped.
 
+use crate::started::shown_serial;
 use alloc::collections::VecDeque;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use deskcore::files::{CHUNK, IDLE_MS};
+use deskcore::files::{CHUNK, IDLE_MS, MAX_BYTES};
 use kabi::handle::Handle;
 use livecore::host::{Env, Host};
 use user::{println, sys};
@@ -44,16 +45,25 @@ enum Step {
     Get { got: Vec<u8> },
 }
 
+/// A request and the instance that asked it: tickets restart at 0 in a new instance, so
+/// an answer is delivered only while that instance is the one shown.
+struct Queued {
+    serial: u64,
+    request: FilesRequest,
+}
+
 struct Active {
+    serial: u64,
     request: FilesRequest,
     step: Step,
     began_ms: u64,
 }
 
 impl Active {
-    fn new(request: FilesRequest) -> Self {
+    fn new(queued: Queued) -> Self {
         Self {
-            request,
+            serial: queued.serial,
+            request: queued.request,
             step: Step::Start,
             began_ms: now_ms(),
         }
@@ -73,7 +83,7 @@ enum Next {
 /// The editor's file requests on their way, and the route to `desktop`.
 pub struct Relay {
     route: Option<Handle>,
-    waiting: VecDeque<FilesRequest>,
+    waiting: VecDeque<Queued>,
     active: Option<Active>,
     reply: Vec<u8>,
 }
@@ -108,6 +118,21 @@ impl Relay {
     /// Takes what the shown version queued, moves the transfer a few steps and
     /// tells the app what came of the ones that are done.
     pub fn pump<E: Env<Instance = LiveInstance>>(&mut self, host: &mut Host<E>) {
+        // After a swap the old version's work is dropped, not answered to the new one: its
+        // tickets mean nothing there. `desktop` drops the old transfer when the new version
+        // starts its own, or when it ages out.
+        let shown = shown_serial(host);
+        self.waiting.retain(|queued| Some(queued.serial) == shown);
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|a| Some(a.serial) != shown)
+        {
+            println!(
+                "comphost: files: the version that asked was swapped out; its transfer is dropped"
+            );
+            self.active = None;
+        }
         for (ticket, why) in self.take(host) {
             if !answer(host, ticket, Err(why)) {
                 return;
@@ -152,11 +177,13 @@ impl Relay {
     /// for, with why.
     fn take<E: Env<Instance = LiveInstance>>(&mut self, host: &mut Host<E>) -> Vec<(u32, String)> {
         let mut queued: Vec<FilesRequest> = Vec::new();
+        let mut serial = 0;
         host.each_instance(|instance, _, shown| {
             if let LiveInstance::V2(core) = instance {
                 let taken = core.take_files();
                 if shown {
                     queued = taken;
+                    serial = core.serial();
                 }
             }
         });
@@ -166,7 +193,7 @@ impl Relay {
                 let why = String::from("too many files are waiting; try again");
                 refused.push((request.ticket, why));
             } else {
-                self.waiting.push_back(request);
+                self.waiting.push_back(Queued { serial, request });
             }
         }
         refused
@@ -291,12 +318,13 @@ impl Relay {
 /// `ok <total>\n<bytes>` as the total and the bytes.
 fn split_piece(reply: &[u8]) -> Option<(usize, &[u8])> {
     let at = reply.iter().position(|&b| b == b'\n')?;
-    let total = core::str::from_utf8(&reply[..at])
+    let total: usize = core::str::from_utf8(&reply[..at])
         .ok()?
         .strip_prefix("ok ")?
         .parse()
         .ok()?;
-    Some((total, &reply[at + 1..]))
+    // A file is at most what the door holds; a bigger total is not desktop's.
+    (total <= MAX_BYTES).then_some((total, &reply[at + 1..]))
 }
 
 /// What an `err <why>` reply says; anything else is an odd answer.
