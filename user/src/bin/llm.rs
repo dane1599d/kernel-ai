@@ -20,6 +20,8 @@
 extern crate alloc;
 
 // A program's crate root sits in src/bin, so its modules are named by path.
+#[path = "llm/apps.rs"]
+mod apps;
 #[path = "llm/kvfile.rs"]
 mod kvfile;
 #[path = "llm/local.rs"]

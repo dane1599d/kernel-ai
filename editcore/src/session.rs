@@ -101,6 +101,14 @@ impl File {
         }
     }
 
+    /// The bytes the file writes back.
+    fn byte_len(&self) -> usize {
+        self.lines
+            .iter()
+            .map(|line| line.text.len() + line.ending.bytes().len())
+            .sum()
+    }
+
     fn lacks_final_newline(&self) -> bool {
         self.lines
             .last()
@@ -287,6 +295,17 @@ impl Session {
         Ok(())
     }
 
+    /// Whether the bundle can take `added` more bytes and still go to the build
+    /// service: an edit makes a copy of the file to undo it, so a file that could
+    /// grow without bound would too.
+    fn check_room(&self, added: usize) -> Result<(), String> {
+        let now: usize = self.files.iter().map(File::byte_len).sum();
+        if now.saturating_add(added) > MAX_BUNDLE {
+            return Err(format!("the source would pass {} KiB", MAX_BUNDLE / 1024));
+        }
+        Ok(())
+    }
+
     /// Runs one edit of the current file, so it can be undone.
     fn edit(&mut self, change: impl FnOnce(&mut File) -> usize) {
         let snapshot = Snapshot {
@@ -308,6 +327,7 @@ impl Session {
             return Err("nothing to replace".into());
         }
         check_text(new)?;
+        self.check_room(new.len().saturating_sub(old.len()))?;
         if let Some(n) = n {
             self.check_line(n)?;
         }
@@ -346,6 +366,8 @@ impl Session {
     pub fn change(&mut self, n: usize, text: &str) -> Result<(), String> {
         self.check_line(n)?;
         check_text(text)?;
+        let was = self.current().lines[n - 1].text.len();
+        self.check_room(text.len().saturating_sub(was))?;
         self.edit(|file| {
             file.lines[n - 1].text = text.to_string();
             n
@@ -363,6 +385,7 @@ impl Session {
         if self.current().len() >= MAX_LINES {
             return Err(format!("a file holds at most {MAX_LINES} lines"));
         }
+        self.check_room(text.len() + 2)?;
         self.edit(|file| {
             let mut ending = file.ending();
             if n == len + 1 && file.lacks_final_newline() {

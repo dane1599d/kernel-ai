@@ -1,4 +1,5 @@
-//! The session's Store (ADR 0012 D4): one memory (1 MiB, growing to 64 MiB),
+//! The session's Store (ADR 0012 D4): one memory (1 MiB, growing to
+//! [`SESSION_MEMORY`]),
 //! one funcref table (at most 4,096 slots) and one stack pointer, shared by
 //! every module kailink links into it. kairt is linked first.
 //!
@@ -16,7 +17,7 @@
 
 mod imports;
 
-use crate::{Budget, Host, LINE_NS, Stopped, dis, engine};
+use crate::{Budget, Host, Stopped, dis, engine};
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -36,8 +37,12 @@ pub const MAX_OUTPUT: usize = 6 << 10;
 pub const MAX_SHOWN: usize = 1024;
 /// Most modules one Store holds. wasmi keeps every instance until the Store
 /// drops; D4's compaction would relink them, and until it is built `:reset`
-/// starts again.
-pub const MAX_ENTRIES: usize = 512;
+/// starts again. Within cc's [`crate::budget`].
+pub const MAX_ENTRIES: usize = 256;
+/// Most linear memory one session may grow to, within cc's
+/// [`crate::budget`]. D4's 64 MiB waits for a measured reason to raise the
+/// plan.
+pub const SESSION_MEMORY: u32 = 4 << 20;
 /// Fuel per slice of a run.
 pub const SLICE: u64 = 1_000_000;
 
@@ -118,7 +123,10 @@ impl Session {
     /// A Store with kairt's object linked in; `effects` are the `kai` imports
     /// that suspend the run.
     pub fn new(kairt: &[u8], effects: Vec<(String, LinkType)>) -> Result<Self, String> {
-        let layout = Layout::default();
+        let layout = Layout {
+            memory_limit: SESSION_MEMORY,
+            ..Layout::default()
+        };
         let engine = Engine::new(&engine::config(true));
         let mut store = Store::new(&engine, State::default());
         let memory_type = MemoryType::new(16, Some(layout.memory_limit / PAGE));
@@ -173,7 +181,7 @@ impl Session {
     }
 
     /// Links, instantiates and runs entry `seq`'s object; `run` is its run
-    /// function, given the 2 s line budget. Drops a suspended run first.
+    /// function, given the host's line budget. Drops a suspended run first.
     pub fn start(
         &mut self,
         seq: u64,
@@ -182,7 +190,7 @@ impl Session {
         host: &dyn Host,
     ) -> Result<Step, Failure> {
         self.abort();
-        let budget = &Budget::new(host, LINE_NS);
+        let budget = &Budget::new(host, host.line_ns());
         if self.instances >= MAX_ENTRIES {
             return Err(Failure::Full);
         }
@@ -227,7 +235,7 @@ impl Session {
             return Err(Failure::Internal("no run is waiting".into()));
         };
         let Pending { running, call } = *pending;
-        let budget = &Budget::new(host, LINE_NS.saturating_sub(running.run_ns));
+        let budget = &Budget::new(host, host.line_ns().saturating_sub(running.run_ns));
         // Effects answered at once come back here without the run running out
         // of fuel, so the budget is checked on every resume too.
         if let Err(stop) = budget.check() {

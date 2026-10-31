@@ -37,7 +37,7 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use fsproto::{Reply, Request};
 use kabi::Error;
-use kabi::handle::{Handle, HandleInfo, Kind, MAX_STARTUP, MAX_TRANSFER};
+use kabi::handle::{Handle, HandleInfo, Kind, MAX_STARTUP, MAX_TRANSFER, RecvInfo};
 use kaipkg::bundle;
 use kaipkg::catalog;
 use kaipkg::fsvol::{FsVolume, Transport};
@@ -51,6 +51,8 @@ use kaipkg::store::{self, Ctx, Ledger, Source, Store, Volume};
 use kaipkg::version::Version;
 use kaituf::updater::Cache;
 use user::{println, sys};
+
+mod local;
 
 user::entry!(main);
 
@@ -97,7 +99,9 @@ fn main() -> i32 {
             println!("pkg: FAIL cannot leave case/{step}.done: {why}");
         }
     }
-    serve(|text| answer(&mut vol, text))
+    serve(|text, moved, caller| {
+        local::answer(&mut vol, text, moved, caller).unwrap_or_else(|| answer(&mut vol, text))
+    })
 }
 
 /// `step=not-holder`: `pkg` from a plan line without `dir=pkg`, so it holds no
@@ -134,24 +138,39 @@ fn not_holder() -> ! {
         false => wrong.join("; "),
     };
     println!("pkg: without /system/pkg: {line}");
-    serve(|_| line.clone())
+    serve(|_, _, _| line.clone())
 }
 
 /// What the image's repository and the mirror listed at this boot, as index
 /// entries, for the catalogue.
 static KNOWN: spin::Mutex<(Vec<Index>, Vec<Index>)> = spin::Mutex::new((Vec::new(), Vec::new()));
 
-/// After its step, `pkg` answers on its endpoint with `answer`: the Apps
-/// sheet's `catalog <offset>` (P4 task 3); with no `serve` in its plan line it
-/// idles.
-fn serve(mut answer: impl FnMut(&str) -> String) -> ! {
+/// After its step, `pkg` answers on its endpoint with `answer`, given each
+/// request, the handles it moved and the pid of the process that sent it: the
+/// Apps sheet's `catalog <offset>` (P4 task 3) and `cc build`'s `local`
+/// requests (P4 task 13, [`local`]). Every handle a request moved is closed
+/// once it is answered, and an answer is at most one message. With no `serve`
+/// in its plan line it idles.
+fn serve(mut answer: impl FnMut(&str, &[Handle], u64) -> String) -> ! {
     let mut request = [0u8; 64];
     loop {
-        let mut caller = 0;
-        match sys::svc_recv(&mut request, 60_000, &mut caller) {
+        let mut info = RecvInfo::default();
+        match sys::recv_h(&mut request, 60_000, &mut info) {
             Ok(len) => {
                 let text = core::str::from_utf8(&request[..len.min(request.len())]).unwrap_or("");
-                let reply = answer(text);
+                let count = (info.handle_count as usize).min(MAX_TRANSFER);
+                let moved: Vec<Handle> = info.handles[..count].iter().map(|h| Handle(*h)).collect();
+                let mut reply = answer(text, &moved, info.caller_pid);
+                for handle in moved {
+                    let _ = sys::handle_close(handle);
+                }
+                if reply.len() > kabi::MAX_MESSAGE {
+                    let mut end = kabi::MAX_MESSAGE;
+                    while !reply.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    reply.truncate(end);
+                }
                 if let Err(why) = sys::svc_reply(reply.as_bytes()) {
                     println!("pkg: cannot answer {text:?}: {why:?}");
                 }
@@ -202,8 +221,10 @@ fn catalog_rows(vol: &mut dyn Volume) -> Result<Vec<catalog::Row>, String> {
                     .and_then(|(_, text)| core::str::from_utf8(text).ok())
                     .ok_or_else(|| format!("{}: no header", package.name))?;
                 let header = Header::parse(text)?;
+                let effects = kaipkg::effects::declared(&header, &object)?;
                 let size = object.len() as u64;
-                Index::of_header(&header, text, package.sha, size, package.grants.clone())
+                let grants = package.grants.clone();
+                Index::of_header(&header, text, (package.sha, size), grants, effects)
             }
         };
         installed.push(index);
@@ -494,24 +515,11 @@ fn start_apps(vol: &mut dyn Volume, n: u64) -> Result<Vec<String>, String> {
     let mut started = Vec::new();
     for package in store::generation(vol, n)?.packages {
         let name = &package.name;
-        let object = vol
-            .read(&store::object_path(&package.sha))?
-            .ok_or_else(|| format!("{name}'s object is not in the store"))?;
-        let files = bundle::files(&object).map_err(|why| format!("{name}: {why}"))?;
-        let header = files
-            .first()
-            .and_then(|(_, text)| core::str::from_utf8(text).ok())
-            .ok_or_else(|| format!("{name}: no header"))?;
-        if Header::parse(header)?.kind != PackageKind::App {
+        let Some(artifact) = app_artifact(vol, name, &package.sha)? else {
             continue;
-        }
-        let artifact = files
-            .iter()
-            .find(|(path, _)| *path == bundle::ARTIFACT)
-            .map(|(_, bytes)| *bytes)
-            .ok_or_else(|| format!("{name}: an app without {}", bundle::ARTIFACT))?;
-        let sha = kaipkg::sha256(artifact);
-        match sys::comp_add(name, artifact, &sha) {
+        };
+        let sha = kaipkg::sha256(&artifact);
+        match sys::comp_add(name, &artifact, &sha) {
             Ok(()) | Err(Error::Busy) => {}
             Err(e) => return Err(format!("COMP_ADD {name}: {e:?}")),
         }
@@ -543,6 +551,66 @@ fn start_apps(vol: &mut dyn Volume, n: u64) -> Result<Vec<String>, String> {
     Ok(started)
 }
 
+/// The artifact of package `name`, whose object is `sha`, if it is an app.
+fn app_artifact(
+    vol: &mut dyn Volume,
+    name: &str,
+    sha: &kaipkg::Sha,
+) -> Result<Option<Vec<u8>>, String> {
+    let object = vol
+        .read(&store::object_path(sha))?
+        .ok_or_else(|| format!("{name}'s object is not in the store"))?;
+    let files = bundle::files(&object).map_err(|why| format!("{name}: {why}"))?;
+    let header = files
+        .first()
+        .and_then(|(_, text)| core::str::from_utf8(text).ok())
+        .ok_or_else(|| format!("{name}: no header"))?;
+    if Header::parse(header)?.kind != PackageKind::App {
+        return Ok(None);
+    }
+    let artifact = files
+        .iter()
+        .find(|(path, _)| *path == bundle::ARTIFACT)
+        .map(|(_, bytes)| bytes.to_vec())
+        .ok_or_else(|| format!("{name}: an app without {}", bundle::ARTIFACT))?;
+    Ok(Some(artifact))
+}
+
+/// Each app generation `from` held that generation `to` does not, withdrawn
+/// from the supervisor (`withdraw`), so an undo ends the build it took out;
+/// `name as label` for each one that was running.
+fn withdraw_apps(vol: &mut dyn Volume, from: u64, to: u64) -> Result<Vec<String>, String> {
+    let kept = store::generation(vol, to)?.packages;
+    let mut ended = Vec::new();
+    for package in store::generation(vol, from)?.packages {
+        if kept.iter().any(|k| k.sha == package.sha) {
+            continue;
+        }
+        let name = &package.name;
+        let Some(artifact) = app_artifact(vol, name, &package.sha)? else {
+            continue;
+        };
+        let label = kabi::live::package_label(&kaipkg::sha256(&artifact));
+        let withdraw = supervise::Run {
+            name,
+            version: &label,
+        };
+        let mut reply = [0u8; 256];
+        let len = sys::call_route(
+            supervisor(),
+            withdraw.encode_withdraw().as_bytes(),
+            &mut reply,
+            CALL_MS,
+        )
+        .map_err(|e| format!("the supervisor did not answer {name}'s withdraw: {e:?}"))?;
+        match core::str::from_utf8(&reply[..len.min(reply.len())]).unwrap_or("") {
+            "ok" => ended.push(format!("{name} as {label}")),
+            other => println!("pkg: {name} ({label}) is not withdrawn: {other}"),
+        }
+    }
+    Ok(ended)
+}
+
 /// `hello` 1.0.0: its header, then a payload no two runs differ in.
 fn hello() -> Vec<u8> {
     let header = "kai-package 1\nname hello\nversion 1.0.0\nkind data\n\
@@ -560,6 +628,7 @@ fn entry(bytes: &[u8]) -> Entry {
         size: bytes.len() as u64,
         depends: Vec::new(),
         grants: Vec::new(),
+        effects: Vec::new(),
         yanked: false,
     }
 }

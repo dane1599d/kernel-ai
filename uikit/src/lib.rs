@@ -11,6 +11,7 @@ extern crate alloc;
 
 pub mod a11y;
 mod act;
+pub mod code;
 pub mod geom;
 pub mod input;
 pub mod layout;

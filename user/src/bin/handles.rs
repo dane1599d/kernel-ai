@@ -52,6 +52,8 @@ use kabi::handle::{ABI, Handle, HandleInfo, Kind, RecvInfo, Rights, TABLE_MAX};
 use kabi::sched::SchedStats;
 use user::{arg, args, println, sys};
 
+#[path = "handles/entropy.rs"]
+mod entropy;
 #[path = "handles/mem.rs"]
 mod mem;
 
@@ -554,6 +556,7 @@ fn client() -> Result<(), &'static str> {
 }
 
 fn checks() -> Result<(), &'static str> {
+    entropy::check()?;
     let abi = sys::abi_info().map_err(|_| "abi_info failed")?;
     if (abi.major, abi.minor) != ABI
         || abi.max_call != kabi::call::MAX as u32

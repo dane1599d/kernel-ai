@@ -19,10 +19,12 @@ use crate::keyboard::Decoder;
 use crate::{ask_box, edit_mode, hpet, ipc, llm, log, memory, net, serial, smp, threads};
 use alloc::format;
 use alloc::string::String;
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use llmproto::text::{printable, wrap};
 use termcore::line::{Line, Outcome};
 use termcore::menu::{self, Answer, Gate, Menu, Step};
+use termcore::route::{Route, route};
 
 const PROMPT: &str = "kai> ";
 const MAX_LINE: usize = 200;
@@ -97,7 +99,24 @@ const HELP: &[(&str, &str)] = &[
         "the latest n lines kept off the screen (30 by default)",
     ),
     (":clear", "clear the screen"),
+    (
+        ":c [entry]",
+        "C mode (c>): each entry compiles and runs on Enter; or one entry",
+    ),
+    (":rhai", "back from C mode to kai>"),
+    (
+        ":dis f / :defs / :reset",
+        "at c>: f's code, the definitions, a new session",
+    ),
 ];
+
+/// At `c>` rather than `kai>` (ADR 0012 D1): set and cleared by the shell's
+/// answers to `:c` and `:rhai`, and cleared when the shell restarts.
+static C_MODE: AtomicBool = AtomicBool::new(false);
+/// The shell's pid at its last line, to see a restart.
+static SHELL_PID: AtomicU64 = AtomicU64::new(0);
+/// The C mode prompt.
+const C_PROMPT: &str = "c> ";
 
 /// Lines `:log` shows when it is not given a number.
 const LOG_LINES: usize = 30;
@@ -155,7 +174,12 @@ pub fn run(_: usize) {
             Some(Waiting::Confirm(confirm)) => confirm.prompt(),
             Some(Waiting::Apply(p)) => format!("apply {} to {}? yes/no> ", p.label, p.component),
             Some(Waiting::More) => CONTINUE_PROMPT.into(),
-            Some(Waiting::Menu(_)) | None => edit_mode::prompt().unwrap_or_else(|| PROMPT.into()),
+            Some(Waiting::Menu(_)) | None => {
+                edit_mode::prompt().unwrap_or_else(|| match C_MODE.load(Ordering::Relaxed) {
+                    true => C_PROMPT.into(),
+                    false => PROMPT.into(),
+                })
+            }
         };
         let asks = matches!(waiting, Some(Waiting::Confirm(_) | Waiting::Apply(_)));
         // The question is answered on the console, and only by keys typed once
@@ -195,14 +219,17 @@ pub fn run(_: usize) {
             }
             Some(Waiting::Menu(_)) | None => {}
         }
-        match line.strip_prefix(':') {
-            Some(command) => waiting = kernel_command(command.trim()),
-            None if line.is_empty() => {}
-            None if edit_mode::editing().is_some() => {
+        let editing = edit_mode::editing().is_some();
+        match route(line, C_MODE.load(Ordering::Relaxed)) {
+            Route::Mode => waiting = shell_mode_line(line),
+            Route::ShellCommand => waiting = shell_line(line),
+            Route::Kernel => waiting = kernel_command(line[1..].trim()),
+            Route::Nothing => {}
+            Route::Refused | Route::Shell if editing => {
                 edit_mode::show(&edit_mode::editor_line(line));
             }
-            None if is_answer(line) => log!("! scripts are answered only at their own prompt"),
-            None => waiting = shell_line(line),
+            Route::Refused => log!("! scripts are answered only at their own prompt"),
+            Route::Shell => waiting = shell_line(line),
         }
     }
 }
@@ -368,16 +395,44 @@ fn finish_line(prompt: &str, text: &str, mark: &str) {
 /// Sends a line to the shell and prints its answer. Returns what the next line is
 /// for: a script that waits for the user's yes, or the rest of an open entry.
 fn shell_line(line: &str) -> Option<Waiting> {
+    let reply = shell_reply(line)?;
+    show_shell_reply(&reply)
+}
+
+/// `:c`, `:rhai` and the C session's commands: the shell's reply, not the
+/// line, decides the prompt, so a shell that refused keeps `kai> `.
+fn shell_mode_line(line: &str) -> Option<Waiting> {
+    let reply = shell_reply(line)?;
+    if reply.starts_with(b"ok C mode") || reply == b"ok already in C mode" {
+        C_MODE.store(true, Ordering::Relaxed);
+    } else if reply == b"ok back at kai>" || reply == b"ok already at kai>" {
+        C_MODE.store(false, Ordering::Relaxed);
+    }
+    show_shell_reply(&reply)
+}
+
+/// Sends `line` to the shell: its reply, or `None` once the console says why
+/// there is none. A shell that restarted comes back at `kai>`, so a new pid
+/// clears C mode, and a line typed at `c>` for the old shell is not sent.
+fn shell_reply(line: &str) -> Option<Vec<u8>> {
     let start_deadline = hpet::nanos() + SHELL_START_WAIT_NS;
     if ipc::wait_bound("shell", start_deadline, || false).is_err() {
         log!("shell not running; kernel commands start with ':' (try :help)");
+        return None;
+    }
+    if let Some(pid) = ipc::server_of("shell")
+        && SHELL_PID.swap(pid, Ordering::Relaxed) != pid
+        && C_MODE.swap(false, Ordering::Relaxed)
+    {
+        // The line was typed as C: a new shell would read it as Rhai.
+        log!("! the shell restarted at kai>; the line was not sent (:c goes back to C)");
         return None;
     }
     console::status::set_busy(true);
     let reply = ipc::call("shell", line.as_bytes(), SHELL_TIMEOUT_MS);
     console::status::set_busy(false);
     match reply {
-        Ok(reply) => show_shell_reply(&reply),
+        Ok(reply) => Some(reply),
         Err(error) => {
             log!("shell: no answer ({error:?})");
             None
@@ -450,14 +505,6 @@ fn menu_reply(reply: &[u8]) -> Option<Waiting> {
             id.and_then(|id| shell_line(&menu::answer_line(id, Answer::Deny)))
         }
     }
-}
-
-/// Whether a line typed at the `kai> ` prompt looks like an answer to a script,
-/// `answer <id> ...`, which only the confirm prompt may send.
-fn is_answer(line: &str) -> bool {
-    line.strip_prefix("answer ")
-        .and_then(|rest| rest.split(' ').next())
-        .is_some_and(|id| id.parse::<u64>().is_ok())
 }
 
 /// Whether `body`, printed with a two-character lead and followed by the prompt,
