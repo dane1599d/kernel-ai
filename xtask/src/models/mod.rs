@@ -13,7 +13,7 @@ mod bench;
 mod bench_4b;
 mod bench_prefill;
 mod bench_project;
-mod catalog;
+pub(crate) mod catalog;
 mod chat;
 mod check;
 mod decode;

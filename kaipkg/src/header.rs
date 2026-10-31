@@ -118,7 +118,7 @@ fn valid_world(world: &str) -> bool {
 }
 
 /// An SPDX expression's shape: identifiers, `AND`, `OR`, `WITH` and parentheses.
-fn valid_licence(licence: &str) -> bool {
+pub(crate) fn valid_licence(licence: &str) -> bool {
     !licence.is_empty()
         && licence.bytes().all(|b| {
             b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'+' | b' ' | b'(' | b')')
