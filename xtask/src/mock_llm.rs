@@ -350,6 +350,10 @@ const ACTS: &[(&str, &str)] = &[
         r#"{"name":"appearance_set","arguments":{"setting":"theme","value":"light"}}"#,
     ),
     (
+        "open fixture",
+        r#"{"name":"ui_open","arguments":{"app":"fixture","arg":null}}"#,
+    ),
+    (
         "open settings",
         r#"{"name":"ui_open","arguments":{"app":"settings","arg":null}}"#,
     ),
