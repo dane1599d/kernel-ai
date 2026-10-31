@@ -44,13 +44,12 @@ const MAX_PENDING: usize = 32;
 /// to 32 apps, so the rest are asked as these are answered.
 const ROWS_IN_FLIGHT: usize = 4;
 
-/// What the checkpoint keeps: the page shown, so a restart comes back to it.
-/// Everything else is read again.
+/// What the checkpoint keeps: nothing. The page shown is not state, because
+/// `settings_open` moves it and is a read-only row, and the host refuses a
+/// read-only row that changes the checkpoint (the desktop tour caught it). A
+/// restart starts on the first page; everything the pages show is read again.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
-pub struct V1 {
-    #[n(0)]
-    pub page: u32,
-}
+pub struct V1 {}
 
 /// The window the app has open, and the tree it was last sent.
 #[derive(Default)]
@@ -349,28 +348,21 @@ impl Component for SettingsWindow {
         app
     }
 
-    /// The page the last version showed; a page that is not one is refused.
+    /// A new version starts on the first page; a state it cannot read, or of
+    /// another schema, is refused.
     fn import(state: &[u8], from_schema: u32) -> Result<Self, ImportError> {
         if from_schema != SCHEMA {
             return Err(ImportError::Unsupported);
         }
-        let v1: V1 = compsdk::state::decode(state, SCHEMA).ok_or(ImportError::Bad)?;
-        let page = usize::try_from(v1.page).map_err(|_| ImportError::Bad)?;
-        if page >= Page::ALL.len() {
-            return Err(ImportError::Bad);
-        }
-        let mut app = Self::new(page);
+        let _: V1 = compsdk::state::decode(state, SCHEMA).ok_or(ImportError::Bad)?;
+        let mut app = Self::new(0);
         app.present_logged();
         Ok(app)
     }
 
+    /// The same bytes whatever page is shown.
     fn export(&self, schema: u32) -> Option<Vec<u8>> {
-        (schema == SCHEMA).then(|| {
-            let v1 = V1 {
-                page: self.view.page as u32,
-            };
-            compsdk::state::encode(SCHEMA, &v1)
-        })
+        (schema == SCHEMA).then(|| compsdk::state::encode(SCHEMA, &V1 {}))
     }
 
     fn health(&self) -> u32 {

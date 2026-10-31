@@ -15,6 +15,3 @@ doctest = false
 comp-monitor = { path = "../monitor" }
 comp-ui-bind = { path = "../ui-bind" }
 uikit = { path = "../../uikit" }
-
-[dev-dependencies]
-agentabi = { path = "../../agentabi" }

@@ -330,6 +330,11 @@ const ACTS: &[(&str, &str)] = &[
         "open notes",
         r#"{"name":"ui_open","arguments":{"app":"notes","arg":null}}"#,
     ),
+    // `desk-appearance` (P4 task 8): the theme, from the user's own words.
+    (
+        "set the theme to light",
+        r#"{"name":"appearance_set","arguments":{"setting":"theme","value":"light"}}"#,
+    ),
     (
         "search notes for milk",
         r#"{"name":"ui_view","arguments":{"window":"notes"}}"#,

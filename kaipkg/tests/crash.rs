@@ -202,7 +202,7 @@ fn run_sequence(seed: u64, ledger: &mut dyn Ledger, report: &mut Report) -> Resu
                 let want = [Want { name, range: None }];
                 store.install(&mut cx, &mut repo, &index, OS, &want, false)
             }
-            Op::Remove(name) => store.remove(&mut cx, &index(), OS, name),
+            Op::Remove(name) => store.remove(&mut cx, &index(), OS, &[], name),
             Op::Rollback(k) => {
                 let gens = store::generations(cx.vol)?;
                 store.rollback(&mut cx, gens[(k % gens.len() as u64) as usize])

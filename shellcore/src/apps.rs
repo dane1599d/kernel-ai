@@ -658,6 +658,19 @@ fn arg_type(kind: &ArgKind, ty: &Ty, min: Option<i64>, max: Option<i64>) -> Opti
     })
 }
 
+/// An app as people name it: its package, not its `-window` service, with a
+/// capital: `Notes` for `notes-window`.
+pub(crate) fn title(service: &str) -> String {
+    let name = service.strip_suffix("-window").unwrap_or(service);
+    let mut chars = name.chars();
+    chars
+        .next()
+        .map(|c| c.to_ascii_uppercase())
+        .into_iter()
+        .chain(chars)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

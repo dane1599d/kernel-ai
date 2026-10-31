@@ -16,8 +16,9 @@ use wasmi::{
 /// Fuel per slice: a few milliseconds of work, so the deadline and Ctrl-C are
 /// seen promptly.
 pub const SLICE: u64 = 1_000_000;
-/// Most fuel one compile may use, should the clock fail: about 13 times what
-/// S12-1's 1,000-line prelude needed (73.7 M).
+/// Most fuel the compiles under one [`Budget`] may use, should the clock fail:
+/// an entry's compile, or every wcc run of a build. About 13 times what S12-1's
+/// 1,000-line prelude needed (73.7 M).
 pub const MAX_FUEL: u64 = 1_000_000_000;
 /// Most linear memory one compile may use, within cc's [`crate::budget`]:
 /// S12-1's peak was 1,152 KiB with a 1,000-line prelude.
@@ -62,12 +63,22 @@ impl Compiler {
         })
     }
 
+    /// The same translated compiler with `headers` as `/kai/include`.
+    pub fn with_headers(&self, headers: &[(&str, &[u8])]) -> Result<Self, String> {
+        let mut kai = Tree::default();
+        for (path, data) in headers {
+            kai.add_kai(&format!("include/{path}"), data.to_vec())
+                .map_err(|e| format!("{path}: errno {}", e.0))?;
+        }
+        Ok(Self {
+            engine: self.engine.clone(),
+            module: self.module.clone(),
+            kai,
+        })
+    }
+
     /// Compiles `source` as `/w/entry.c` to a relocatable object.
     pub fn compile(&self, source: &str, budget: &mut Budget) -> Result<Vec<u8>, CompileError> {
-        let fail = |e: String| CompileError::Compiler(e);
-        let mut tree = self.kai.clone();
-        tree.put_scratch("entry.c", source.as_bytes())
-            .map_err(|e| fail(format!("entry.c: errno {}", e.0)))?;
         let args = [
             "wcc",
             "-c",
@@ -77,8 +88,79 @@ impl Compiler {
             "/w/entry.o",
             "/w/entry.c",
         ];
-        let wasi = Wasi::new(tree, &args, Limits::default())
-            .map_err(|e| fail(format!("errno {}", e.0)))?;
+        self.wcc(
+            &[("entry.c", source.as_bytes())],
+            &args,
+            "/w/entry.o",
+            budget,
+        )
+    }
+
+    /// Compiles `/w/<source>` to a relocatable object, with `files` (which
+    /// hold it) in `/w`, so its `#include "…"` finds its neighbours.
+    pub fn compile_in(
+        &self,
+        files: &[(&str, &[u8])],
+        source: &str,
+        budget: &mut Budget,
+    ) -> Result<Vec<u8>, CompileError> {
+        let input = format!("/w/{source}");
+        let args = [
+            "wcc",
+            "-c",
+            "-nostdinc",
+            "-I/kai/include",
+            "-o",
+            "/w/out.o",
+            &input,
+        ];
+        self.wcc(files, &args, "/w/out.o", budget)
+    }
+
+    /// Links `objects`, each put in `/w` by its name, into a module with no
+    /// entry point and no libraries that exports `exports` by symbol name, with
+    /// a `stack`-byte stack. A symbol nothing defines is an error that names it.
+    pub fn link(
+        &self,
+        objects: &[(&str, &[u8])],
+        exports: &[&str],
+        stack: u32,
+        budget: &mut Budget,
+    ) -> Result<Vec<u8>, CompileError> {
+        let exports = exports.join(",");
+        let stack = format!("--stack-size={stack}");
+        let paths: Vec<String> = objects.iter().map(|(n, _)| format!("/w/{n}")).collect();
+        let mut args = vec![
+            "wcc",
+            "-nostdlib",
+            "--entry-point=",
+            &stack,
+            "-e",
+            &exports,
+            "-o",
+            "/w/out.wasm",
+        ];
+        args.extend(paths.iter().map(String::as_str));
+        self.wcc(objects, &args, "/w/out.wasm", budget)
+    }
+
+    /// Runs wcc with `args` over a tree holding `/kai` and `files` in `/w`;
+    /// the file it wrote at `output`.
+    fn wcc(
+        &self,
+        files: &[(&str, &[u8])],
+        args: &[&str],
+        output: &str,
+        budget: &mut Budget,
+    ) -> Result<Vec<u8>, CompileError> {
+        let fail = |e: String| CompileError::Compiler(e);
+        let mut tree = self.kai.clone();
+        for (name, data) in files {
+            tree.put_scratch(name, data)
+                .map_err(|e| fail(format!("{name}: errno {}", e.0)))?;
+        }
+        let wasi =
+            Wasi::new(tree, args, Limits::default()).map_err(|e| fail(format!("errno {}", e.0)))?;
         let limits = StoreLimitsBuilder::new()
             .memory_size(MAX_MEMORY)
             .instances(1)
@@ -98,9 +180,9 @@ impl Compiler {
             let stderr = String::from_utf8_lossy(wasi.stderr()).into_owned();
             return Err(CompileError::Source(stderr));
         }
-        match wasi.tree().read("/w/entry.o") {
-            Some(object) => Ok(object.to_vec()),
-            None => Err(fail("wcc wrote no object".into())),
+        match wasi.tree().read(output) {
+            Some(out) => Ok(out.to_vec()),
+            None => Err(fail(format!("wcc wrote no {output}"))),
         }
     }
 
@@ -164,7 +246,6 @@ fn run(
         Some(status) => Ok(status),
         None => Err(CompileError::Compiler(format!("cc.wasm trapped: {error}"))),
     };
-    let mut used = 0u64;
     store
         .set_fuel(SLICE)
         .map_err(|e| CompileError::Compiler(e.to_string()))?;
@@ -173,8 +254,7 @@ fn run(
         match call {
             Ok(ResumableCall::Finished) => return Ok(0),
             Ok(ResumableCall::OutOfFuel(out)) => {
-                used += SLICE;
-                if used >= MAX_FUEL {
+                if !budget.spend_compile(SLICE) {
                     return Err(CompileError::Compiler(
                         "the compile used too much fuel".into(),
                     ));

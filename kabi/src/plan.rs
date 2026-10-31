@@ -59,6 +59,13 @@ pub fn notes(version: &str, fallback: Option<&str>) -> String {
         None => format!("{NOTES_BASE} version={version}"),
     }
 }
+/// The System monitor (P4 task 9), `comphost` serving `monitor-window`: a route
+/// to `desktop` for its window, and after it one to `llm`, which comphost asks
+/// for `health` and for nothing else. comphost takes the second route to be llm's,
+/// so the order in `uses=` is part of the line (a test in `supervise` pins it);
+/// the name is the grant of `kai:system`, which no other line may carry. Planned
+/// after `desktop` and `llm`.
+pub const MONITOR_WINDOW: &str = "monitor-window program=comphost caps=serve+component+call uses=desktop+llm pages=8192 stack_pages=512 burst_ms=20000 version=1";
 /// Probation ended by calls alone, so a test runs the same under KVM and TCG.
 pub const CALLS_ONLY: &str = "probation_calls=3 probation_ms=0";
 /// For the M9a test: version 1, with probation ended by calls alone, so the test

@@ -104,8 +104,9 @@ const fn bad(label: &'static str, feature: &'static str) -> Version {
     }
 }
 
-/// Every version on the boot drive: `notes` 1 and 2, and the broken ones the M9a
-/// test expects to roll back.
+/// Every version that ships on the boot drive: `notes` 1 and 2 and the apps.
+/// The broken `notes` versions the M9a test expects to roll back are
+/// [`TEST_ONLY`].
 pub const VERSIONS: &[Version] = &[
     Version {
         label: "1",
@@ -121,10 +122,6 @@ pub const VERSIONS: &[Version] = &[
         label: "2",
         recipe: NOTES_RECIPE,
     },
-    bad("3-import", "bug-import"),
-    bad("3-health", "bug-health"),
-    bad("3-trap", "bug-trap"),
-    bad("3-spin", "bug-spin"),
     // Notes with its window (P3 task 9): the build P4 ships, its own component
     // so the edit loop's `notes` is untouched.
     Version {
@@ -200,6 +197,13 @@ pub const VERSIONS: &[Version] = &[
 /// [`check_no_test_only`] fails an image that has one. A version here is not also
 /// in [`VERSIONS`].
 pub const TEST_ONLY: &[Version] = &[
+    // `notes` versions that fail to import, fail their health check, trap and
+    // spin: live-update rolls each back (M9a), and `:fault notes` names
+    // 3-trap's panic. A release must never offer one to update into.
+    bad("3-import", "bug-import"),
+    bad("3-health", "bug-health"),
+    bad("3-trap", "bug-trap"),
+    bad("3-spin", "bug-spin"),
     // The `app-settings` case revokes and restores its one read-only `fs_list`
     // row in Settings, and presses its button between (P4 task 7).
     Version {
@@ -417,12 +421,13 @@ mod tests {
     #[test]
     fn the_versions_are_distinct_and_their_crates_exist() {
         let root = crate::workspace_root();
-        for (index, version) in VERSIONS.iter().enumerate() {
+        let all: Vec<&Version> = VERSIONS.iter().chain(TEST_ONLY).collect();
+        for (index, version) in all.iter().enumerate() {
             assert!(kabi::live::valid_label(version.label), "{}", version.label);
             let same = |v: &Version| {
                 (v.recipe.component, v.label) == (version.recipe.component, version.label)
             };
-            assert!(!VERSIONS[..index].iter().any(same));
+            assert!(!all[..index].iter().any(|v| same(v)));
             assert!(version.recipe.wit.iter().all(|w| root.join(w).is_dir()));
             for dir in version.recipe.dirs {
                 assert!(root.join(dir).join("Cargo.toml").exists(), "{dir}");
@@ -461,9 +466,9 @@ mod tests {
             assert!(
                 !VERSIONS
                     .iter()
-                    .any(|v| v.recipe.component == fixture.recipe.component),
+                    .any(|v| module_path(v) == module_path(fixture)),
                 "{}",
-                fixture.recipe.component
+                module_path(fixture)
             );
             assert!(kabi::live::valid_label(fixture.label));
             let root = crate::workspace_root();
@@ -500,8 +505,16 @@ mod tests {
             module("comp/fixture-window/2.wasm"),
         ];
         assert_eq!(check_none_of(&near, &fixtures), Ok(()));
-        // The list that ships is checked with `check_no_test_only`.
+        // The list that ships is checked with `check_no_test_only`: `notes` 1
+        // and 2 ship, its broken versions do not.
         assert_eq!(check_no_test_only(&clean), Ok(()));
+        let shipped: Vec<Module> = VERSIONS.iter().map(|v| module(&module_path(v))).collect();
+        assert_eq!(check_no_test_only(&shipped), Ok(()));
+        for broken in ["3-import", "3-health", "3-trap", "3-spin"] {
+            let path = std::format!("comp/notes/{broken}.wasm");
+            let why = check_no_test_only(&[module("comp/notes/2.wasm"), module(&path)]);
+            assert!(why.unwrap_err().contains(&path), "{broken}");
+        }
     }
 
     /// The images that ship call the check before they are made, and the test
@@ -680,8 +693,8 @@ mod tests {
         let root = crate::workspace_root();
         let bytes = pack(
             &root,
-            &VERSIONS[2].recipe,
-            VERSIONS[2].label,
+            &TEST_ONLY[0].recipe,
+            TEST_ONLY[0].label,
             module.clone(),
             &source,
         )
