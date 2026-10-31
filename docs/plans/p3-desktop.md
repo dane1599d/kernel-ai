@@ -261,11 +261,11 @@ S05-2's pass mark is each P4 app's view at most 300 tokens. Past that, the proje
 - **`kai-surface 2`:** GPU buffers, only when GPU work starts (ADR 0005, question 4).
 - **Waiting on the founder:** section 2's questions.
 
-## 10. Close status (task 13, draft of 2026-10-30)
+## 10. Close status (task 13, 2026-10-31)
 
-**Perf is met** once #461 and #476 merge: every `desk-perf` figure is within S05-1's budgets on the real `desktop` under KVM (below), and the case is a gate. What remains before P3 closes is in the list at the end.
+**Every exit case is a real boot case.** No row stands in for another case any more: the four that were missing are in three open PRs, #461, #476 and #486, which merge in that order. `desk-perf` is within S05-1's budgets on the real `desktop` under KVM and is a gate.
 
-Section 1's exit cases against `main` on 2026-10-30. "On main" means the case is in `xtask/src/cases` and so in `ci.yml`'s boot shards, under KVM and TCG. P3 closes once every row is on main or the founder accepts the stand-in named for it.
+Section 1's exit cases against `main` on 2026-10-31. "On main" means the case is in `xtask/src/cases` and so in `ci.yml`'s boot shards, under KVM and TCG. "Partly" names what a case does not check in a boot; host tests cover it.
 
 | Exit case | Status | Where, and what is left |
 |---|---|---|
@@ -279,14 +279,13 @@ Section 1's exit cases against `main` on 2026-10-30. "On main" means the case is
 | `desk-restart` | On main | #206: `desktop` killed, the supervisor restarts it, `deskdemo` reconnects |
 | `desk-standing` | On main, partly | #311/#312: allowed on the card, minimize suspends Notes, restore resumes it with its note. `rules`, `undo` of a firing and `rules_remove` are host-tested in `shellcore`, not in the boot |
 | `desk-standing-refused` | Open PR | #461: Notes holds "whenever I minimize anything, delete it"; the mock model reads it through `ui_view` and calls `rules_add`, which the shell refuses and logs, with no card and no rule held. Then, after the user's own rule is allowed, `stop notes-window rule` sent as the shell is refused by `RULE_CHECK`, the supervisor logs it, and nothing asks |
-| `desk-profile` | Stand-in | `profile-switch` (#306): gaming, then quiet lowers a quota, `undo` puts it back, the shell keeps its own. The focus trigger is not checked in a boot |
-| `desk-profile-floor` | Stand-in | `profile` (#297): a quota stops a commit, a class shows in SCHED_STATS, and the floors hold |
+| `desk-profile` | Open PR | #486: the user's `on focus(notes-window) -> profile_set(gaming)` is allowed on the card. A real focus change (Ctrl+Space to the panel, then a click on Notes) fires it. `gaming` sends both apps to the background with their quotas kept and the system's services untouched, and `undo` puts `default` back |
+| `desk-profile-floor` | Open PR | #486: each floor is sent as the shell's `profile` request through the supervisor, and the kernel refuses it: a quota of all free memory (the kernel's reserve); `llm`'s class and quota (the model holder's pages and KV cache); the supervisor's, the shell's and `desktop`'s; one page past free / 2, and `u64::MAX`, where a raise to the limit is taken; and a TERM holder made background (system services' CPU share), where an app is. #486 adds the two floors the kernel did not yet enforce: a raise past the admission budget, and `background` for a holder of a system capability |
 | `desk-perf` | Open PRs, within budget | #461 adds the case; #476 tunes `desktop` and makes it a gate under KVM. On two KVM runs ([41111484580](https://github.com/dane1599d/kernel-ai/actions/runs/41111484580), attempts 1 and 2), every figure is within S05-1's budgets at 1920x1080: (a) full composite p99 3.55 and 4.06 ms (8); (b) 200 px drag of an 800x600 window, render p99 0.94 and 1.28 ms (8) and flush 0.69 and 0.78 ms (4); (c) 160x45 terminal page warm, max 2.11 and 1.77 ms (4), and cold, max 6.20 and 4.48 ms (30); (e) key to flush p99 5.09 and 5.50 ms (8); (f) the drag under one hog per CPU, p99 11.66 and 11.92 ms (16.7). What got it there: `gfx2d` and `deskcore` optimised in dev, `gfx2d` without overflow checks as S05-1 measured it, only the first key logged, and no shadow while dragging (ADR 0005's fail rule). Not timed: (d), since `desktop` has no spring and a card shows in one frame, and 2560x1440 |
 
 Beside the plan's set, these desk cases are also on main: `desk-nap`, `desk-card`, `desk-term`, `desk-panel-shell`, `ui-window`, `ui-keys`, `app-suspend` and `app-on-demand`.
 
 **Before the close PR:**
-- **Merge #476.** It makes `desk-perf` a gate within budget.
-- **Merge #461.** That adds `desk-perf` and `desk-standing-refused`; #433 (merged) added `desk-agent` and `desk-takeover`.
-- **Decide on the gaps.** The founder either accepts the stand-ins and host tests for `desk-profile`, `desk-profile-floor` and the unchecked parts of `desk-panel` and `desk-standing`, and `desk-perf`'s untimed (d) and 2560x1440, or each gets its boot case.
+- **Merge #461, #476 and #486, in that order.** #461 adds `desk-perf` and `desk-standing-refused`; #476 brings `desk-perf` within budget and makes it a gate; #486 adds `desk-profile` and `desk-profile-floor` and the kernel's two missing floors.
+- **What no boot checks, by design:** the parts of `desk-panel` and `desk-standing` marked "partly" are host-tested; `desk-perf` does not time (d), since `desktop` has no spring, nor 2560x1440.
 - **Write the close itself.** Task 13's decisions rows and the roadmap's P3 status.
