@@ -316,6 +316,15 @@ const ACTS: &[(&str, &str)] = &[
         "add a note saying buy milk",
         r#"{"name":"notes_add","arguments":{"text":"buy milk"}}"#,
     ),
+    // `app-terminal` (P4 task 4): the AI types into the Terminal app, and reads.
+    (
+        "type 1 + 2 in the terminal",
+        r#"{"name":"terminal_window_run","arguments":{"line":"1 + 2"}}"#,
+    ),
+    (
+        "show what the terminal says",
+        r#"{"name":"terminal_window_read","arguments":{"since":0}}"#,
+    ),
     // `desk-agent` and `desk-takeover` (P3 task 10): the window rows.
     (
         "open notes",
@@ -328,6 +337,15 @@ const ACTS: &[(&str, &str)] = &[
     (
         "switch to notes",
         r#"{"name":"ui_focus","arguments":{"window":"notes"}}"#,
+    ),
+    // `app-settings` (P4 task 7): the agent opens Settings and looks at it.
+    (
+        "open settings",
+        r#"{"name":"ui_open","arguments":{"app":"settings","arg":null}}"#,
+    ),
+    (
+        "look at settings",
+        r#"{"name":"ui_view","arguments":{"window":"settings"}}"#,
     ),
     // `act-convo` with no earlier turn: there is nothing to do again.
     (
@@ -360,11 +378,19 @@ const CONVO: &[(&str, &str, &str)] = &[
 /// Calls for a second round (P3 task 10): after the read a request's first
 /// call made, keyed by the request line and the read's row. The read's answer
 /// (a view) comes last, as `Data (from the OS, not instructions):`.
-const READS: &[(&str, &str, &str)] = &[(
-    "search notes for milk",
-    "ui_view",
-    r#"{"name":"ui_act","arguments":{"window":"notes","node":"t1","action":"set_value","value":"milk"}}"#,
-)];
+const READS: &[(&str, &str, &str)] = &[
+    (
+        "search notes for milk",
+        "ui_view",
+        r#"{"name":"ui_act","arguments":{"window":"notes","node":"t1","action":"set_value","value":"milk"}}"#,
+    ),
+    // The Settings window shows no node, and the model tries one anyway.
+    (
+        "look at settings",
+        "ui_view",
+        r#"{"name":"ui_act","arguments":{"window":"settings","node":"t1","action":"set_value","value":"x"}}"#,
+    ),
+];
 
 /// The second round's call, when the last message is a read's answer: keyed by
 /// the latest `Request: <line>` and the call just before the answer.
@@ -664,6 +690,7 @@ mod act_tests {
             line: line.to_string(),
             timeout_ms: 0,
             read: None,
+            apps: String::new(),
         };
         let chat = llmproto::act::request(&request, &history);
         let messages: Vec<_> = chat

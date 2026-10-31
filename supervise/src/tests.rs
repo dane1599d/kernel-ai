@@ -57,18 +57,25 @@ fn plan_can_tune_the_restart_policy_per_service() {
 #[test]
 fn the_plan_the_kernel_sends_parses() {
     let text = alloc::format!(
-        "llm caps=serve+net burst_ms=10000 pages=1024 host=10.0.2.2:8080 model=org/model-7b\n{}",
+        "llm caps=serve+net burst_ms=10000 pages=1024 host=10.0.2.2:8080 model=org/model-7b\n{}\n{}",
+        kabi::plan::CC,
         kabi::plan::SHELL
     );
     let plan = parse_plan(&text);
     assert_eq!(plan.errors, Vec::<String>::new());
-    let shell = &plan.services[1];
+    // cc holds no authority but its service endpoint.
+    let cc = &plan.services[1];
+    assert_eq!((cc.name.as_str(), cc.limits.caps), ("cc", cap::SERVE));
+    assert!(cc.uses.is_empty());
+    // It starts when the shell first calls it, not at boot.
+    assert_eq!(cc.start, Start::Demand);
+    let shell = &plan.services[2];
     assert_eq!(shell.name, "shell");
     assert_eq!(
         shell.limits.caps,
         cap::SERVE | cap::CALL | cap::POLICY | cap::STOP | cap::SCRIPT
     );
-    assert_eq!(shell.uses, ["llm", SUPERVISOR]);
+    assert_eq!(shell.uses, ["llm", SUPERVISOR, "cc"]);
     assert_eq!(shell.limits.stack_pages, 512);
     assert!(shell.limits.stack_pages < shell.limits.max_pages);
     assert_eq!(
@@ -634,10 +641,14 @@ fn program_names_the_program_and_is_not_passed_on() {
     // Without the key, a service runs the program of its own name.
     let plan = parse_plan(&alloc::format!(
         "llm caps=serve
+{}
 {}",
+        kabi::plan::CC,
         kabi::plan::SHELL
     ));
-    let shell = &plan.services[1];
+    assert_eq!(plan.errors, Vec::<String>::new());
+    assert_eq!(plan.services[1].program, "cc");
+    let shell = &plan.services[2];
     assert_eq!(shell.program, "shell");
 }
 

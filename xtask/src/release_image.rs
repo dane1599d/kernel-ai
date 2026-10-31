@@ -44,6 +44,8 @@ pub fn main(args: &[String]) -> Result<(), String> {
     let target_dir = root.join("target");
     let mut modules = esp::boot_modules(&kernel, &programs, &root)?;
     modules.extend(components::build(&root)?);
+    // Nothing that exists to be driven by a boot case ships.
+    components::check_no_test_only(&modules)?;
     let release_seq = release_seq(&root)?;
     let record = image::slots::slot_record(&root, release_seq);
     // R's install and the commit read the slot's own `kai-slot 1` (`kernel/src/slots.rs`).
