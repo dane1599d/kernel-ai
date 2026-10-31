@@ -168,10 +168,42 @@ fn the_shells_keep_list_is_a_header_and_one_app_a_line() {
 }
 
 #[test]
-fn the_restart_window_file_round_trips() {
-    for w in [None, Some((1, 2)), Some((1439, 0))] {
-        let u = Updates { restart_window: w };
-        assert_eq!(Updates::decode(&u.encode()), u);
+fn the_shells_restart_window_text_gives_the_window() {
+    for (text, want) in [
+        ("kai-updates 1\nrestart-window 120 300\n", Some((120, 300))),
+        ("kai-updates 1\nrestart-window 1439 0\n", Some((1439, 0))),
+        (
+            "kai-updates 1\nrestart-window 0 1\nrestart-window 5 6\n",
+            Some((5, 6)),
+        ),
+        ("kai-updates 1\n", None),
+    ] {
+        assert_eq!(
+            Updates::decode(text.as_bytes()).restart_window,
+            want,
+            "{text:?}"
+        );
+    }
+}
+
+#[test]
+fn nothing_set_or_a_window_that_is_not_one_is_no_window() {
+    for none in [
+        &b""[..],
+        b"junk",
+        b"kai-updates 2\nrestart-window 120 300\n",
+        b"restart-window 120 300\n",
+        b"kai-updates 1\nrestart-window 300 300\n",
+        b"kai-updates 1\nrestart-window 1440 5\n",
+        b"kai-updates 1\nrestart-window 5 1440\n",
+        b"kai-updates 1\nrestart-window +5 6\n",
+        b"kai-updates 1\nrestart-window 5\n",
+        b"kai-updates 1\nrestart-window 5 6 7\n",
+        b"kai-updates 1\nrestart-window  5 6\n",
+        b"kai-updates 1\nrestart-window off\n",
+        &[0xff, 0xfe],
+    ] {
+        assert_eq!(Updates::decode(none), Updates::default(), "{none:?}");
     }
 }
 
@@ -182,10 +214,7 @@ fn hostile_bytes_give_defaults_never_a_panic() {
     let samples: [Vec<u8>; 3] = [
         SAVED.as_bytes().to_vec(),
         b"kai-keep 1\nnotes\nfiles\n".to_vec(),
-        Updates {
-            restart_window: Some((10, 20)),
-        }
-        .encode(),
+        b"kai-updates 1\nrestart-window 10 20\n".to_vec(),
     ];
     let mut seed = 0x2545_F491_4F6C_DD1Du64;
     for sample in &samples {

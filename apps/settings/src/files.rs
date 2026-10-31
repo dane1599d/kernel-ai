@@ -1,17 +1,10 @@
 //! What the Settings pages read of the system's settings. The shell keeps
-//! the appearance and the keep-running list and answers `file appearance` and
-//! `file apps` with them as text (A-core's `kai-appearance 1` and `kai-keep 1`);
-//! the restart window is still `updates.cbor` (`[schema, body]` in CBOR, the
-//! body a map with text keys; a reader takes the keys it knows and skips the
-//! rest). A file it cannot read at all, or an empty answer, gives the defaults.
+//! them and answers `file appearance`, `file apps` and `file updates` with them
+//! as text (A-core's `kai-appearance 1`, `kai-keep 1` and `kai-updates 1`). An
+//! empty answer, or one out of shape, gives the defaults.
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use minicbor::data::Type;
-use minicbor::{Decoder, Encoder};
-
-/// The schema every area's file is written with.
-pub const SCHEMA: u32 = 1;
 
 /// The shell's saved appearance (`kai-appearance 1`, `look::appearance`): the
 /// theme by `look` palette name, and the two switches ADR 0005 §8 names. The
@@ -42,9 +35,10 @@ pub struct Apps {
     pub keep_running: Vec<String>,
 }
 
-/// `updates.cbor`: when an update may restart the machine by itself (ADR 0008
-/// question 3, P4 plan question 10). `None`, the default, means only when the
-/// user says "restart"; otherwise minutes after local midnight, start and end.
+/// The shell's restart window (`kai-updates 1`): when an update may restart the
+/// machine by itself (ADR 0008 question 3, P4 plan question 10). `None`, the
+/// default, means only when the user says "restart"; otherwise minutes after
+/// midnight, start and end.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Updates {
     pub restart_window: Option<(u16, u16)>,
@@ -52,32 +46,6 @@ pub struct Updates {
 
 /// Minutes in a day: a window's ends are below it.
 pub const DAY_MINUTES: u16 = 24 * 60;
-
-fn header(e: &mut Encoder<&mut Vec<u8>>, keys: u64) {
-    // Writing to a Vec cannot fail.
-    let _ = e
-        .array(2)
-        .and_then(|e| e.u32(SCHEMA))
-        .and_then(|e| e.map(keys));
-}
-
-/// The body's map after a `[SCHEMA, ...]` header, as (key, decoder at its value).
-fn body(bytes: &[u8], mut each: impl FnMut(&str, &mut Decoder<'_>) -> Option<()>) -> Option<()> {
-    let mut d = Decoder::new(bytes);
-    if d.array().ok()? != Some(2) || d.u32().ok()? != SCHEMA {
-        return None;
-    }
-    let len = d.map().ok()??;
-    for _ in 0..len {
-        let key = d.str().ok()?;
-        let at = d.position();
-        if each(key, &mut d).is_none() {
-            d.set_position(at);
-            d.skip().ok()?;
-        }
-    }
-    Some(())
-}
 
 impl Appearance {
     /// The shell's `kai-appearance 1` text over the defaults. Text that is not
@@ -146,42 +114,39 @@ impl Apps {
     }
 }
 
-impl Updates {
-    pub fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::new();
-        let mut e = Encoder::new(&mut out);
-        header(&mut e, 1);
-        let _ = e.str("restart_window");
-        let _ = match self.restart_window {
-            Some((start, end)) => e
-                .array(2)
-                .and_then(|e| e.u16(start))
-                .and_then(|e| e.u16(end)),
-            None => e.null(),
-        };
-        out
-    }
+/// The first line of the shell's restart-window text.
+pub const UPDATES_HEADER: &str = "kai-updates 1";
 
-    /// A window whose ends are not minutes of a day, or are the same minute,
-    /// is no window.
+/// A minute of the day as digits alone, so a sign or a space is not one.
+fn minute(word: &str) -> Option<u16> {
+    let digits = !word.is_empty() && word.len() <= 4 && word.bytes().all(|b| b.is_ascii_digit());
+    digits.then(|| word.parse().ok()).flatten()
+}
+
+impl Updates {
+    /// The shell's `kai-updates 1` text: the header, then `restart-window
+    /// <start> <end>` while one is set. An empty answer (none), anything out of
+    /// shape, or a window whose ends are not two different minutes of a day is
+    /// no window.
     pub fn decode(bytes: &[u8]) -> Self {
-        let mut u = Updates::default();
-        body(bytes, |key, d| {
-            if key != "restart_window" {
-                return None;
+        let mut updates = Updates::default();
+        let Ok(text) = core::str::from_utf8(bytes) else {
+            return updates;
+        };
+        let mut lines = text.lines();
+        if lines.next() != Some(UPDATES_HEADER) {
+            return updates;
+        }
+        for line in lines {
+            let mut words = line.split(' ');
+            if let (Some("restart-window"), Some(start), Some(end), None) =
+                (words.next(), words.next(), words.next(), words.next())
+                && let (Some(start), Some(end)) = (minute(start), minute(end))
+            {
+                updates.restart_window = window(start, end);
             }
-            if d.datatype().ok()? == Type::Null {
-                d.null().ok()?;
-                return Some(());
-            }
-            if d.array().ok()? != Some(2) {
-                return None;
-            }
-            let (start, end) = (d.u16().ok()?, d.u16().ok()?);
-            u.restart_window = window(start, end);
-            Some(())
-        });
-        u
+        }
+        updates
     }
 
     /// Whether minute `now` of the day falls in the window; a window may run
