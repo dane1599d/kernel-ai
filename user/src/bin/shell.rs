@@ -49,7 +49,16 @@ struct System {
     state: files::State,
     /// The installed apps' rows, loaded as the agent first calls them (P4).
     apps: core::cell::RefCell<shellcore::apps::Apps>,
+    /// The saved appearance is still to reach `desktop`: at start, and after
+    /// each change ([`give_appearance`]).
+    appearance_due: core::cell::Cell<bool>,
+    /// When `desktop` was last offered it, so one that is down costs a call
+    /// only every [`APPEARANCE_RETRY_NS`].
+    appearance_tried_ns: core::cell::Cell<u64>,
 }
+
+/// How often an appearance `desktop` did not take is offered again.
+const APPEARANCE_RETRY_NS: u64 = 10_000_000_000;
 
 /// The route to the llm service: the shell's plan line has `uses=llm`, its only
 /// route.
@@ -85,6 +94,32 @@ fn ask_desktop(route: kabi::handle::Handle, request: &str) -> Result<String, Str
     let len = sys::call_route(route, request.as_bytes(), &mut reply, DESKTOP_CALL_MS)
         .map_err(|error| format!("desktop did not answer ({error:?})"))?;
     Ok(String::from_utf8_lossy(&reply[..len.min(reply.len())]).into_owned())
+}
+
+/// Gives `desktop` the saved appearance, when it is due: at start (a
+/// `desktop` that starts after the shell gets it on a later pass) and after
+/// each change. No desktop, or nothing saved, leaves nothing to do.
+fn give_appearance(system: &System) {
+    let now = sys::time_ns();
+    if !system.appearance_due.get()
+        || now.saturating_sub(system.appearance_tried_ns.get()) < APPEARANCE_RETRY_NS
+            && system.appearance_tried_ns.get() != 0
+    {
+        return;
+    }
+    let (Some(route), Some(text)) = (desktop(), system.state.read(files::APPEARANCE)) else {
+        system.appearance_due.set(false);
+        return;
+    };
+    system.appearance_tried_ns.set(now);
+    let request = deskcore::panel_wire::encode_appearance(&text);
+    // Not up yet, or busy: offered again on a later pass.
+    if let Ok(reply) = ask_desktop(route, &request) {
+        if reply != "ok" {
+            println!("desktop did not take the saved appearance: {reply}");
+        }
+        system.appearance_due.set(false);
+    }
 }
 
 /// Takes the panel's oldest request, runs a line apart from the terminal's
@@ -538,15 +573,18 @@ impl Host for System {
         self.state.read(files::APPEARANCE)
     }
 
-    /// Saved with the line's files, as the rules are. `desktop` takes it up
-    /// when it next starts (live redraw is desktop's follow-up).
+    /// Saved with the line's files, as the rules are; then `desktop` paints in
+    /// it at once ([`give_appearance`], between lines).
     fn appearance_write(&self, text: &str) -> Result<(), String> {
         match self.files.is_open() {
             true => self.state.write_in(files::APPEARANCE, text),
             false => self
                 .state
                 .write(files::APPEARANCE, text, self.files.next_action()),
-        }
+        }?;
+        self.appearance_due.set(true);
+        self.appearance_tried_ns.set(0);
+        Ok(())
     }
 
     /// As the rules are written: with the line's files, if it changed any.
@@ -703,18 +741,18 @@ fn take_events(shell: &mut Shell, buf: &mut [u8]) {
 
 fn main() -> i32 {
     let args = args();
-    let mut shell = Shell::new(
-        {
-            let (files, state) = files::Files::new();
-            Rc::new(System {
-                pool: apart::Pool::new(),
-                files,
-                state,
-                apps: core::cell::RefCell::default(),
-            })
-        },
-        DEFAULT_CONFIG,
-    );
+    let system = {
+        let (files, state) = files::Files::new();
+        Rc::new(System {
+            pool: apart::Pool::new(),
+            files,
+            state,
+            apps: core::cell::RefCell::default(),
+            appearance_due: core::cell::Cell::new(true),
+            appearance_tried_ns: core::cell::Cell::new(0),
+        })
+    };
+    let mut shell = Shell::new(system.clone(), DEFAULT_CONFIG);
     println!("up (restart {})", arg(&args, "restart").unwrap_or("0"));
     let mut line = vec![0u8; kabi::MAX_MESSAGE];
     let mut events = vec![0u8; kabi::event::READ_BYTES];
@@ -730,6 +768,7 @@ fn main() -> i32 {
         take_panel(&mut shell);
         take_effects(&mut shell);
         take_settings(&mut shell);
+        give_appearance(&system);
         shell.retry_keep();
         let mut caller = u64::MAX;
         let len = match sys::svc_recv(&mut line, wait_ms, &mut caller) {
