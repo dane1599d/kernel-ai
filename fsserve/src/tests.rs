@@ -890,6 +890,30 @@ fn the_trash_lists_by_path_and_gives_back_by_name() {
 }
 
 #[test]
+fn a_file_named_info_cbor_goes_to_the_trash_and_back() {
+    let mut disk = MemDisk::new(BLOCKS);
+    let (mut c, _) = Client::start(&mut disk);
+    let file = c.open("info.cbor", How::CreateFile).unwrap();
+    c.write(&file, 0, b"my own notes");
+    // Inside an action, as the shell trashes.
+    assert_eq!(c.home(Request::Begin { action: 7 }).0, Reply::Done);
+    c.trash(HOME_USER, "info.cbor");
+    let committed = c.home(Request::Commit).0;
+    assert!(
+        matches!(committed, Reply::Committed { .. }),
+        "{committed:?}"
+    );
+    assert_eq!(c.trash_paths(HOME_USER), ["info.cbor"]);
+    let back = c.home(Request::TrashRestore {
+        path: "info.cbor".into(),
+    });
+    assert_eq!(back.0, Reply::Done);
+    let file = c.open("info.cbor", How::Existing).unwrap();
+    assert_eq!(c.read(&file), Ok(b"my own notes".to_vec()));
+    assert!(c.trash_paths(HOME_USER).is_empty());
+}
+
+#[test]
 fn a_restore_from_the_trash_is_undone_like_any_action() {
     let mut disk = MemDisk::new(BLOCKS);
     let (mut c, _) = Client::start(&mut disk);
