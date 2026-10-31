@@ -93,6 +93,50 @@ fn a_profile_set_by_click_is_logged_as_the_click_and_undoes() {
 }
 
 #[test]
+fn appearance_set_by_click_saves_the_setting_is_logged_as_the_click_and_undoes() {
+    let host = host();
+    let mut shell = shell(&host);
+    let theme = |host: &FakeHost| crate::appearance::current(host).theme;
+    let words = shell
+        .settings(SETTINGS_APP, "appearance-set theme light", true)
+        .unwrap();
+    assert!(!words.is_empty());
+    assert_eq!(theme(&host), "light");
+    assert!(
+        shell.log.text().contains("user-click:settings"),
+        "{}",
+        shell.log.text()
+    );
+    assert!(
+        shell
+            .settings(SETTINGS_APP, "appearance-set legible on", true)
+            .is_ok()
+    );
+    assert!(crate::appearance::current(host.as_ref()).legible);
+    // look's refusal is the answer, and nothing is saved for it.
+    let saved = host.appearance.borrow().clone();
+    let refused = shell.settings(SETTINGS_APP, "appearance-set theme neon", true);
+    assert!(refused.is_err(), "{refused:?}");
+    assert!(
+        shell
+            .settings(SETTINGS_APP, "appearance-set theme", true)
+            .is_err()
+    );
+    assert_eq!(*host.appearance.borrow(), saved);
+    // Without a click, nothing changes.
+    assert!(
+        shell
+            .settings(SETTINGS_APP, "appearance-set theme dark", false)
+            .is_err()
+    );
+    assert_eq!(theme(&host), "light");
+    // Undo takes back the newest change, legible, and leaves the theme.
+    assert!(shell.eval("undo").text.starts_with("Undone: "));
+    assert!(!crate::appearance::current(host.as_ref()).legible);
+    assert_eq!(theme(&host), "light");
+}
+
+#[test]
 fn keep_running_tells_the_supervisor_saves_the_list_and_undoes() {
     let host = host();
     let mut shell = shell(&host);
@@ -161,6 +205,80 @@ fn the_kept_apps_are_told_to_the_supervisor_at_boot() {
     let bad = host_with_keep("kai-keep 1\nNot An App\n");
     let _shell = shell(&bad);
     assert!(bad.kept.borrow().is_empty());
+}
+
+#[test]
+fn a_saved_kept_app_not_serving_yet_is_tried_again_then_given_up() {
+    let host = host_with_keep("kai-keep 1\nnotes\n");
+    host.keep_fails.set(2);
+    let mut first = shell(&host);
+    // Refused once at boot, once more on the first retry, then taken.
+    first.retry_keep();
+    assert!(host.kept.borrow().is_empty(), "not due yet");
+    host.clock.set(host.clock.get() + 1_000_000_000);
+    first.retry_keep();
+    host.clock.set(host.clock.get() + 1_000_000_000);
+    first.retry_keep();
+    assert_eq!(*host.kept.borrow(), [(String::from("notes"), true)]);
+    assert_eq!(
+        first.settings(crate::settings::SETTINGS_APP, "keep-running on notes", true),
+        Ok(String::from("notes keep-running is on already"))
+    );
+    // One the supervisor never takes is audited once the retries run out.
+    let host = host_with_keep("kai-keep 1\nnotes\n");
+    host.keep_fails.set(u32::MAX);
+    let mut shell = shell(&host);
+    host.clock
+        .set(host.clock.get() + crate::settings::KEEP_RETRY_FOR_NS + 1);
+    shell.retry_keep();
+    assert!(
+        host.audit
+            .borrow()
+            .iter()
+            .any(|line| line.starts_with("notes is not kept running")),
+        "{:?}",
+        host.audit.borrow()
+    );
+    host.clock.set(host.clock.get() + 1_000_000_000);
+    shell.retry_keep();
+    assert!(host.kept.borrow().is_empty());
+}
+
+#[test]
+fn a_kept_app_still_waiting_at_boot_shows_kept_in_the_apps_file() {
+    let host = host_with_keep("kai-keep 1\nnotes\n");
+    host.keep_fails.set(u32::MAX);
+    let mut shell = shell(&host);
+    let app = crate::settings::SETTINGS_APP;
+    assert_eq!(
+        shell.settings(app, "file apps", false).as_deref(),
+        Ok("kai-keep 1\nnotes\n")
+    );
+    // Once given up on, it is no longer shown kept.
+    host.clock
+        .set(host.clock.get() + crate::settings::KEEP_RETRY_FOR_NS + 1);
+    shell.retry_keep();
+    assert_eq!(shell.settings(app, "file apps", false).as_deref(), Ok(""));
+}
+
+#[test]
+fn a_saved_kept_app_the_supervisor_refuses_for_another_reason_is_audited_at_once() {
+    let host = host_with_keep("kai-keep 1\nnotes\n");
+    *host.keep_refusal.borrow_mut() = Some(String::from("no app notes"));
+    let mut shell = shell(&host);
+    assert!(
+        host.audit
+            .borrow()
+            .iter()
+            .any(|line| line == "notes is not kept running: no app notes"),
+        "{:?}",
+        host.audit.borrow()
+    );
+    // Not tried again once the supervisor would take it.
+    *host.keep_refusal.borrow_mut() = None;
+    host.clock.set(host.clock.get() + 1_000_000_000);
+    shell.retry_keep();
+    assert!(host.kept.borrow().is_empty());
 }
 
 fn host_with_keep(text: &str) -> Rc<FakeHost> {

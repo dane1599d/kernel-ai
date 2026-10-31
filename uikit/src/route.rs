@@ -104,8 +104,14 @@ impl Window {
                 self.dirty = true;
             }
             Input::PointerMove(p) => self.pointer_move(p, m, &mut out),
-            Input::Button { at, down: true } => self.press(at, m, &mut out),
-            Input::Button { at, down: false } => {
+            Input::Button {
+                at,
+                down: true,
+                mods,
+            } => self.press(at, mods, m, &mut out),
+            Input::Button {
+                at, down: false, ..
+            } => {
                 if let Some(b) = self.st.pressed.take() {
                     self.dirty = true;
                     let on = self
@@ -122,6 +128,16 @@ impl Window {
                 }
             }
             Input::Wheel { at, dy } => {
+                let code = self
+                    .hit(at)
+                    .and_then(|h| self.up(h, |w| matches!(w, Widget::Code(_))));
+                if let Some(node) = code {
+                    out.push(UiEvent::Scroll {
+                        node,
+                        rows: dy.saturating_mul(3),
+                    });
+                    return out;
+                }
                 let scroll = self
                     .hit(at)
                     .and_then(|h| self.up(h, |w| matches!(w, Widget::Scroll { .. })));
@@ -214,7 +230,7 @@ impl Window {
         best.1
     }
 
-    fn press(&mut self, at: Point, m: &dyn Measure, out: &mut Vec<UiEvent>) {
+    fn press(&mut self, at: Point, mods: Mods, m: &dyn Measure, out: &mut Vec<UiEvent>) {
         if let Some(menu) = self.st.menu.take() {
             self.st.menu_hover = None;
             self.dirty = true;
@@ -249,6 +265,15 @@ impl Window {
                 self.dirty = true;
             }
             Widget::Toggle { on, .. } => out.extend(self.change(t, Value::On(!on)).ok().flatten()),
+            Widget::Code(v) => {
+                let (row, cell) = crate::code::at(m, r, v.gutter_width, at);
+                out.push(UiEvent::Click {
+                    node: t,
+                    row,
+                    cell,
+                    mods: mods.0,
+                });
+            }
             Widget::TextLine(f) | Widget::TextArea(f) => {
                 let area = matches!(
                     self.tree.get(t).map(|n| &n.widget),
@@ -321,7 +346,34 @@ impl Window {
     }
 
     fn key(&mut self, key: Key, mods: Mods, text: &str, out: &mut Vec<UiEvent>) {
-        if key == Key::Tab && !mods.command() {
+        // Ctrl+Tab and Ctrl+Shift+Tab step through the focus ring from anywhere,
+        // a code view included, so focus can always leave one (WCAG 2.1.2).
+        let ctrl_tab =
+            key == Key::Tab && mods.0 & (Mods::CTRL | Mods::ALT | Mods::SUPER) == Mods::CTRL;
+        // A code view takes every other key but `desktop`'s own (Super), Tab and
+        // Escape included, and tells the app by name.
+        if let Some(f) = self.st.focus
+            && matches!(self.tree.get(f).map(|n| &n.widget), Some(Widget::Code(_)))
+            && mods.0 & Mods::SUPER == 0
+            && !ctrl_tab
+        {
+            if !crate::code::is_modifier(key) {
+                // What the key types, if it types anything: no control character.
+                let typed = if mods.command() || text.chars().any(char::is_control) {
+                    ""
+                } else {
+                    text
+                };
+                out.push(UiEvent::Key {
+                    node: f,
+                    name: crate::code::key_name(key),
+                    text: String::from(typed),
+                    mods: mods.0,
+                });
+            }
+            return;
+        }
+        if key == Key::Tab && (!mods.command() || ctrl_tab) {
             let ring = self.focus_ring();
             if ring.is_empty() {
                 return;

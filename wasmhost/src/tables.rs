@@ -487,6 +487,95 @@ pub const IMPORTS: &[WitFunc] = &[
         params: || vec![Ty::List(Box::new(Ty::U8))],
         result: || Some(Ty::U32),
     },
+    WitFunc {
+        interface: "kai:code/code",
+        version: "0.1",
+        name: "put",
+        core_params: &[CoreTy::I32, CoreTy::I32],
+        core_results: &[],
+        params: || {
+            vec![
+                Ty::U32,
+                Ty::U32,
+                Ty::U32,
+                Ty::Record(vec![
+                    (
+                        String::from("width"),
+                        Ty::Variant(vec![
+                            (String::from("fit"), None),
+                            (String::from("fill"), Some(Ty::U16)),
+                            (String::from("fixed"), Some(Ty::U16)),
+                        ]),
+                    ),
+                    (
+                        String::from("height"),
+                        Ty::Variant(vec![
+                            (String::from("fit"), None),
+                            (String::from("fill"), Some(Ty::U16)),
+                            (String::from("fixed"), Some(Ty::U16)),
+                        ]),
+                    ),
+                    (
+                        String::from("padding"),
+                        Ty::Record(vec![
+                            (String::from("top"), Ty::U16),
+                            (String::from("right"), Ty::U16),
+                            (String::from("bottom"), Ty::U16),
+                            (String::from("left"), Ty::U16),
+                        ]),
+                    ),
+                    (String::from("gap"), Ty::U16),
+                ]),
+                Ty::Record(vec![
+                    (String::from("label"), Ty::String),
+                    (String::from("gutter-width"), Ty::U16),
+                    (
+                        String::from("rows"),
+                        Ty::List(Box::new(Ty::Record(vec![
+                            (String::from("text"), Ty::String),
+                            (String::from("gutter"), Ty::String),
+                            (
+                                String::from("spans"),
+                                Ty::List(Box::new(Ty::Record(vec![
+                                    (String::from("start"), Ty::U16),
+                                    (String::from("end"), Ty::U16),
+                                    (
+                                        String::from("tone"),
+                                        Ty::Enum(vec![
+                                            String::from("normal"),
+                                            String::from("muted"),
+                                            String::from("dim"),
+                                            String::from("accent"),
+                                            String::from("ok"),
+                                            String::from("error"),
+                                        ]),
+                                    ),
+                                    (String::from("link"), Ty::Bool),
+                                ]))),
+                            ),
+                        ]))),
+                    ),
+                    (
+                        String::from("cursor"),
+                        Ty::Option(Box::new(Ty::Tuple(vec![Ty::U32, Ty::U32]))),
+                    ),
+                    (String::from("selected"), Ty::Option(Box::new(Ty::U32))),
+                ]),
+            ]
+        },
+        result: || {
+            Some(Ty::Result(
+                None,
+                Some(Box::new(Ty::Enum(vec![
+                    String::from("no-window"),
+                    String::from("no-node"),
+                    String::from("bad-parent"),
+                    String::from("too-big"),
+                    String::from("too-many-windows"),
+                ]))),
+            ))
+        },
+    },
 ];
 
 pub const EXPORTS: &[WitFunc] = &[
@@ -673,6 +762,85 @@ pub const EXPORTS: &[WitFunc] = &[
                     Some(Box::new(Ty::List(Box::new(Ty::U8)))),
                     Some(Box::new(Ty::String)),
                 ),
+            ]
+        },
+        result: || None,
+    },
+    WitFunc {
+        interface: "kai:code/code-input",
+        version: "0.1",
+        name: "on-key",
+        core_params: &[
+            CoreTy::I32,
+            CoreTy::I32,
+            CoreTy::I32,
+            CoreTy::I32,
+            CoreTy::I32,
+            CoreTy::I32,
+            CoreTy::I32,
+        ],
+        core_results: &[],
+        params: || {
+            vec![
+                Ty::U32,
+                Ty::U32,
+                Ty::Record(vec![
+                    (String::from("name"), Ty::String),
+                    (String::from("text"), Ty::String),
+                    (String::from("mods"), Ty::U8),
+                ]),
+            ]
+        },
+        result: || None,
+    },
+    WitFunc {
+        interface: "kai:code/code-input",
+        version: "0.1",
+        name: "on-click",
+        core_params: &[
+            CoreTy::I32,
+            CoreTy::I32,
+            CoreTy::I32,
+            CoreTy::I32,
+            CoreTy::I32,
+        ],
+        core_results: &[],
+        params: || {
+            vec![
+                Ty::U32,
+                Ty::U32,
+                Ty::Record(vec![
+                    (String::from("row"), Ty::U32),
+                    (String::from("cell"), Ty::U32),
+                    (String::from("mods"), Ty::U8),
+                ]),
+            ]
+        },
+        result: || None,
+    },
+    WitFunc {
+        interface: "kai:code/code-input",
+        version: "0.1",
+        name: "on-scroll",
+        core_params: &[CoreTy::I32, CoreTy::I32, CoreTy::I32],
+        core_results: &[],
+        params: || vec![Ty::U32, Ty::U32, Ty::S32],
+        result: || None,
+    },
+    WitFunc {
+        interface: "kai:code/code-input",
+        version: "0.1",
+        name: "on-size",
+        core_params: &[CoreTy::I32, CoreTy::I32, CoreTy::I32, CoreTy::I32],
+        core_results: &[],
+        params: || {
+            vec![
+                Ty::U32,
+                Ty::U32,
+                Ty::Record(vec![
+                    (String::from("rows"), Ty::U16),
+                    (String::from("cells"), Ty::U16),
+                ]),
             ]
         },
         result: || None,

@@ -349,6 +349,32 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("desk-agent", "test=desk-agent")
     },
+    // P4 task 7: the Settings app runs as the system image plans it, its reads
+    // go through comphost and desktop to the shell and back, and its window is
+    // kept from the agent: the view shows only that it is private, and an act in
+    // it is refused after a yes.
+    TestCase {
+        keys: &[
+            &[
+                "o", "p", "e", "n", "spc", "s", "e", "t", "t", "i", "n", "g", "s", "ret",
+            ],
+            &[
+                "l", "o", "o", "k", "spc", "a", "t", "spc", "s", "e", "t", "t", "i", "n", "g", "s",
+                "ret",
+            ],
+            &["y"],
+        ],
+        expect: &[
+            "comphost: window 1 \"Settings\" shown at 640x460",
+            "\"Settings\" opened at ",
+            "comphost: the first settings answer reached the app",
+            "app-settings: ui_open started Settings and its window opened",
+            "desktop: the agent's ui view: ok (private window)",
+            "desktop: the agent's ui act: refused (private window)",
+            "app-settings: the agent looked at Settings, saw only that it is private, and could not act in it",
+        ],
+        ..case("app-settings", "test=app-settings")
+    },
     // P3 task 10: a key in the window the agent drives stops it, and the panel
     // says so.
     TestCase {

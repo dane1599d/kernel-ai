@@ -344,6 +344,15 @@ const ACTS: &[(&str, &str)] = &[
         "do what my note says",
         r#"{"name":"ui_view","arguments":{"window":"notes"}}"#,
     ),
+    // `app-settings` (P4 task 7): the agent opens Settings and looks at it.
+    (
+        "open settings",
+        r#"{"name":"ui_open","arguments":{"app":"settings","arg":null}}"#,
+    ),
+    (
+        "look at settings",
+        r#"{"name":"ui_view","arguments":{"window":"settings"}}"#,
+    ),
     // `act-convo` with no earlier turn: there is nothing to do again.
     (
         "do it again",
@@ -388,6 +397,12 @@ const READS: &[(&str, &str, &str)] = &[
         "do what my note says",
         "ui_view",
         r#"{"name":"rules_add","arguments":{"rule":"on minimize(*) -> app_stop(*)"}}"#,
+    ),
+    // The Settings window shows no node, and the model tries one anyway.
+    (
+        "look at settings",
+        "ui_view",
+        r#"{"name":"ui_act","arguments":{"window":"settings","node":"t1","action":"set_value","value":"x"}}"#,
     ),
 ];
 

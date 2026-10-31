@@ -28,6 +28,9 @@ pub struct Frame {
     pub unsaved: bool,
     /// Whether the window is kept from the agent's view and actions.
     pub agent_private: bool,
+    /// For each code view: its node, how many rows and how many text cells it
+    /// shows now, so the app can fill it.
+    pub code_sizes: Vec<(NodeId, u16, u16)>,
 }
 
 pub struct Window {
@@ -187,6 +190,19 @@ impl Window {
             _ => alloc::vec![window],
         };
         let a11y = a11y::build(&self.tree, &self.places, &self.st, &self.title);
+        let code_sizes = self
+            .tree
+            .preorder()
+            .into_iter()
+            .filter_map(|id| {
+                let Some(Widget::Code(v)) = self.tree.get(id).map(|n| &n.widget) else {
+                    return None;
+                };
+                let rect = self.places.get(&id)?.rect;
+                let (rows, cells) = crate::code::grid(m, rect, v.gutter_width);
+                Some((id, rows, cells))
+            })
+            .collect();
         self.last = Some(list.clone());
         self.dirty = false;
         self.full = false;
@@ -198,6 +214,7 @@ impl Window {
             a11y,
             unsaved: self.unsaved,
             agent_private: self.agent_private,
+            code_sizes,
         }
     }
 }
