@@ -342,12 +342,77 @@ pub(super) const CASES: &[TestCase] = &[
                 "s", "w", "i", "t", "c", "h", "spc", "t", "o", "spc", "t", "h", "e", "spc", "l",
                 "i", "g", "h", "t", "spc", "t", "h", "e", "m", "e", "ret",
             ],
+            // A standing rule, typed as the user's own line: `rules_add on
+            // time(22:00) -> app_suspend(game)`, asked on the card, and a yes.
+            &[
+                "r",
+                "u",
+                "l",
+                "e",
+                "s",
+                "shift-minus",
+                "a",
+                "d",
+                "d",
+                "spc",
+                "o",
+                "n",
+                "spc",
+                "t",
+                "i",
+                "m",
+                "e",
+                "shift-9",
+                "2",
+                "2",
+                "shift-semicolon",
+                "0",
+                "0",
+                "shift-0",
+                "spc",
+                "minus",
+                "shift-dot",
+                "spc",
+                "a",
+                "p",
+                "p",
+                "shift-minus",
+                "s",
+                "u",
+                "s",
+                "p",
+                "e",
+                "n",
+                "d",
+                "shift-9",
+                "g",
+                "a",
+                "m",
+                "e",
+                "shift-0",
+                "ret",
+            ],
+            &["y"],
+            &[
+                "o", "p", "e", "n", "spc", "f", "i", "x", "t", "u", "r", "e", "ret",
+            ],
             &[
                 "o", "p", "e", "n", "spc", "s", "e", "t", "t", "i", "n", "g", "s", "ret",
             ],
-            // In Settings' window: the Theme button, then the Updates page's
-            // switch for the restart window (see `apps/settings-ui/tests/keys.rs`).
-            &["tab", "tab", "ret"],
+            // A person's keys in the fixture's window and Settings' (the
+            // sequences are pinned in `apps/settings-ui/tests/keys.rs`): Alt+Tab
+            // raises the fixture, under the Terminal until then, and the
+            // fixture's button is pressed; remove the rule on the Rules page;
+            // revoke the fixture's row; press (refused); restore the row; press
+            // (runs); then the Theme button, and the Updates page's switch for
+            // the restart window.
+            &["alt-tab", "tab", "ret"],
+            &["tab", "right", "right", "tab", "ret"],
+            &["tab", "left", "tab", "down", "tab", "ret"],
+            &["tab", "ret"],
+            &["tab", "tab", "tab", "ret"],
+            &["tab", "ret"],
+            &["tab", "left", "tab", "ret"],
             &[
                 "tab", "tab", "tab", "right", "right", "right", "right", "tab", "spc",
             ],
@@ -355,7 +420,14 @@ pub(super) const CASES: &[TestCase] = &[
                 "l", "o", "o", "k", "spc", "a", "t", "spc", "s", "e", "t", "t", "i", "n", "g", "s",
                 "ret",
             ],
-            &["y"],
+            // Two presses: the first card's `y` can lose its release to the
+            // console (the Terminal window takes the keys back at once and the
+            // kernel sends a release only to the console during a lease), which
+            // leaves `y` held in the desk, and a held key cannot answer a card.
+            // The first press then only clears it, and the second answers; if
+            // nothing was held the second lands in the Terminal's prompt, where
+            // nothing reads it.
+            &["y", "y"],
         ],
         expect: &[
             "comphost: window 1 \"Settings\" shown at 640x460",
@@ -363,7 +435,21 @@ pub(super) const CASES: &[TestCase] = &[
             "comphost: the first settings answer reached the app",
             "app-settings: the theme was set before Settings opened",
             "settings: appearance theme light",
+            "app-settings: a standing rule was added before Settings opened",
+            // The rule Settings lists, and gone once it is removed by key and
+            // the rules are read again.
+            "settings: rules 1",
+            "settings: rules 0",
+            "app-settings: ui_open started the fixture and its window opened",
             "app-settings: keys were pressed in Settings' window",
+            // The revoke, held end to end: the fixture's `fs_list` runs, is
+            // refused after Settings revokes the row (and Settings reads back
+            // that the shell now holds it withheld), and runs again once it is
+            // restored.
+            "fixture: fs_list ok #1",
+            "settings: grants fixture-window 1 rows, 1 withheld",
+            "fixture: fs_list refused #2",
+            "fixture: fs_list ok #3",
             // The theme after light, set by the key press and read back from the
             // shell, and the restart window set from the page and read back
             // through `file updates`.
