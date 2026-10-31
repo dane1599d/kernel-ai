@@ -212,6 +212,10 @@ jobs:
           XTASK_CASE: shm
           XTASK_CMDLINE: clock=tsc
         run: cargo xtask test --release --accel kvm --timeout 300
+      - name: S04-2 through kaifs, release build (P2 close, item 4)
+        env:
+          XTASK_CASE: part
+        run: cargo xtask test --release --accel kvm --timeout 300
     timeout-minutes: 30
 
   # M10a-2's spike, not a gate: boots `icount-probe` twice under single-threaded
