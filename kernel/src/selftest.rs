@@ -169,6 +169,11 @@ pub enum SelfTest {
     UiWindow,
     /// An unused app naps and a click wakes it (P3 task 12b).
     DeskNap,
+    /// Settings' keep-running switch, shell only, kept across a reboot (P4
+    /// task 7): boot 1, then boot 2 (`reread`).
+    KeepRunning {
+        reread: bool,
+    },
     /// Asks answered on `desktop`'s card, and on the console when it dies (P3 task 7).
     DeskCard,
     /// A standing instruction fired by Notes' window minimized and restored (P3 task 11).
@@ -178,6 +183,8 @@ pub enum SelfTest {
     DeskTerm,
     /// `desk-agent` (P3 task 10): the agent opens Notes and acts inside it.
     DeskAgent,
+    /// The Settings app on the desktop, its window kept from the agent (P4 task 7).
+    AppSettings,
     /// `desk-takeover` (P3 task 10): a key in the agent's window stops it.
     DeskTakeover,
     /// `scriptrun` through a Job, and spike S01-1's M3 and M5 (P1 task 14).
@@ -348,11 +355,15 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=desk-catalog" => Some(SelfTest::DeskCatalog),
             "test=ui-window" => Some(SelfTest::UiWindow),
             "test=desk-nap" => Some(SelfTest::DeskNap),
+            "test=keep-running" => Some(SelfTest::KeepRunning {
+                reread: cmdline.split_whitespace().any(|w| w == "reread"),
+            }),
             "test=desk-card" => Some(SelfTest::DeskCard),
             "test=desk-standing" => Some(SelfTest::DeskStanding),
             "test=ui-keys" => Some(SelfTest::UiKeys),
             "test=desk-term" => Some(SelfTest::DeskTerm),
             "test=desk-agent" => Some(SelfTest::DeskAgent),
+            "test=app-settings" => Some(SelfTest::AppSettings),
             "test=desk-takeover" => Some(SelfTest::DeskTakeover),
             "test=scriptrun" => Some(SelfTest::Scriptrun),
             "test=fpu" => Some(SelfTest::Fpu),
@@ -438,11 +449,13 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DeskCatalog
             | SelfTest::UiWindow
             | SelfTest::DeskNap
+            | SelfTest::KeepRunning { .. }
             | SelfTest::DeskCard
             | SelfTest::DeskStanding
             | SelfTest::UiKeys
             | SelfTest::DeskTerm
             | SelfTest::DeskAgent
+            | SelfTest::AppSettings
             | SelfTest::DeskTakeover
             | SelfTest::TuneRevert
             | SelfTest::TuneStall
@@ -554,10 +567,15 @@ pub fn plan(test: SelfTest) -> Option<String> {
                 plan.push_str(crate::app_terminal_tests::PLAN);
                 kabi::plan::SHELL_DESK
             }
-            SelfTest::DeskAgent | SelfTest::DeskTakeover => {
+            SelfTest::DeskAgent | SelfTest::DeskTakeover | SelfTest::AppSettings => {
                 plan.push('\n');
                 plan.push_str(crate::agent_desk_tests::DESK);
                 kabi::plan::SHELL_DESK
+            }
+            SelfTest::KeepRunning { .. } => {
+                plan.push('\n');
+                plan.push_str(crate::keep_tests::PLAN);
+                crate::keep_tests::SHELL
             }
             _ => shell,
         };
@@ -656,6 +674,10 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
     if matches!(test, SelfTest::DeskAgent | SelfTest::DeskTakeover) {
         plan.push('\n');
         plan.push_str(crate::agent_desk_tests::APPS);
+    }
+    if test == SelfTest::AppSettings {
+        plan.push('\n');
+        plan.push_str(crate::app_settings_tests::APPS);
     }
     if test == SelfTest::None {
         plan.push('\n');

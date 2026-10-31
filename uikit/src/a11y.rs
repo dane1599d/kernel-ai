@@ -146,6 +146,14 @@ fn node_of(tree: &Tree, id: NodeId, title: &str) -> Option<Entry> {
             acts(&[Focus, SetValue]),
             None,
         ),
+        // One node, however many rows: its rows as the value, cut short.
+        Widget::Code(v) => (
+            Role::MultilineText,
+            v.label.clone(),
+            Some(crate::code::a11y_value(v)),
+            acts(&[Focus]),
+            None,
+        ),
         Widget::ItemList { label, selected } => {
             let v = format!(
                 "{} items{}",
