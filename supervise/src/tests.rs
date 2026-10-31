@@ -911,3 +911,38 @@ fn a_withdraw_reads_as_a_run_and_is_gated_as_one() {
     );
     assert_eq!(Run::parse_withdraw("withdraw notes"), None);
 }
+
+/// The v0.1 system (`kabi::plan::system`), the default boot's and
+/// `desk-default`'s: with and without `kai-data`, every line parses, every
+/// route names a service planned before it, and every app starts on demand.
+#[test]
+fn the_v0_1_system_plan_parses_and_its_routes_come_first() {
+    let llm = "llm caps=serve+net burst_ms=10000 pages=1024 host=10.0.2.2:8080 model=org/model-7b";
+    for files in [true, false] {
+        let plan = parse_plan(&kabi::plan::system::plan(llm, files));
+        assert_eq!(plan.errors, Vec::<String>::new(), "files={files}");
+        for (at, service) in plan.services.iter().enumerate() {
+            for target in &service.uses {
+                let earlier = plan.services[..at].iter().any(|s| s.name == *target);
+                assert!(
+                    earlier || target == "supervisor",
+                    "{}'s route to {target} (files={files})",
+                    service.name
+                );
+            }
+        }
+        let named = |name: &str| plan.services.iter().find(|s| s.name == name);
+        for app in kabi::plan::system::APPS {
+            let name = app.split(' ').next().unwrap_or_default();
+            let service = named(name).expect("every app is planned");
+            assert_eq!(service.start, Start::Demand, "{name}");
+            assert_eq!(service.program, "comphost", "{name}");
+        }
+        let shell = named("shell").expect("the shell is planned");
+        assert_eq!(shell.uses.last().map(String::as_str), Some("desktop"));
+        assert_eq!(named("pkg").is_some(), files);
+        assert_eq!(named("fs").is_some(), files);
+        let desktop = named("desktop").expect("the desktop is planned");
+        assert_eq!(desktop.uses.contains(&String::from("pkg")), files);
+    }
+}

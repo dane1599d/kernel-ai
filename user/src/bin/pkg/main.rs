@@ -4,6 +4,10 @@
 //! which it reads with BOOT_READ beneath `pkgrepo/` (its plan line's
 //! `bootfiles=pkgrepo`) and checks with `kaituf` (`kaipkg::image`).
 //!
+//! With no `step=`, as the v0.1 system plans it (`kabi::plan::system`), it does
+//! what `step=image` does, the image's repository as generation 1 if the store
+//! has none and its apps started, and leaves no case file; then it serves.
+//!
 //! For boot case `pkg-image`, `step=image`, `image-again` and `image-tampered`
 //! each check the image's repository, print each package it refuses by name,
 //! and make the rest generation 1 if the store has no generation yet. Each first
@@ -77,12 +81,14 @@ fn main() -> i32 {
     let mut vol = FsVolume::new(Calls, root);
     let result = match step {
         Some(step @ ("install" | "undo" | "check")) => run(&mut vol, step),
-        Some(step @ ("image" | "image-again" | "image-tampered")) => image(&mut vol, step),
+        Some(step @ ("image" | "image-again" | "image-tampered")) => image(&mut vol, Some(step)),
         Some(step @ ("mirror" | "mirror-again" | "mirror-tampered" | "mirror-rollback")) => {
             mirror(&mut vol, step)
         }
-        _ => Err(String::from(
-            "no step=install, undo, check, image or mirror",
+        // The system's boot: the image's repository, no case file.
+        None => image(&mut vol, None),
+        Some(other) => Err(format!(
+            "step={other} is not install, undo, check, image or mirror"
         )),
     };
     match result {
@@ -329,7 +335,9 @@ fn outside_refused() -> Result<(), String> {
 
 /// `step=image*`: the image's repository checked, its refusals printed, and
 /// the rest made generation 1 if the store has no generation.
-fn image(vol: &mut FsVolume<Calls>, step: &str) -> Result<String, String> {
+/// The image's repository as generation 1 if the store has none, and its apps
+/// started; `step` names the case file it leaves, none at a system boot.
+fn image(vol: &mut FsVolume<Calls>, step: Option<&str>) -> Result<String, String> {
     outside_refused()?;
     let store = Store::default();
     let mut ledger = NoLedger;
@@ -375,7 +383,9 @@ fn image(vol: &mut FsVolume<Calls>, step: &str) -> Result<String, String> {
         true => format!("generation {current} holds no app to start"),
         false => format!("started from generation {current}: {}", started.join(", ")),
     };
-    cx.vol.write(&format!("pkg/case/{step}"), line.as_bytes())?;
+    if let Some(step) = step {
+        cx.vol.write(&format!("pkg/case/{step}"), line.as_bytes())?;
+    }
     Ok(line)
 }
 
@@ -432,7 +442,7 @@ fn bent_request_refused() -> Result<(), String> {
 /// - `mirror-tampered`, `mirror-rollback`: the mirror is tampered with, and the
 ///   install is refused by name.
 fn mirror(vol: &mut FsVolume<Calls>, step: &str) -> Result<String, String> {
-    image(vol, step)?;
+    image(vol, Some(step))?;
     if step == "mirror" {
         bent_request_refused()?;
     }

@@ -4,6 +4,8 @@
 use alloc::format;
 use alloc::string::String;
 
+pub mod system;
+
 /// The Rhai shell: it serves the terminal, calls the llm service through its one
 /// route, may switch the scheduling policy, and needs a large stack for Rhai's
 /// recursion.
