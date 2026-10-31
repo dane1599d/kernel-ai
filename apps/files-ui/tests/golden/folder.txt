@@ -5,7 +5,7 @@ node 3 clip 0,0 720x460
   stroke 12,12 36x28 line_strong w1 r6
   text 22,17 label text "Up"
 node 4 clip 0,0 720x460
-  text 48,12 mono muted "Home / docs"
+  text 56,12 mono muted "Home / docs"
 node 5 clip 0,0 720x460
   fill 632,12 76x28 raised r6
   stroke 632,12 76x28 line_strong w1 r6
@@ -36,16 +36,16 @@ node 14 clip 218,45 493x382
   stroke 233,384 52x28 line_strong w1 r6
   text 243,389 label text "Open"
 node 15 clip 218,45 493x382
-  fill 285,384 68x28 raised r6
-  stroke 285,384 68x28 line_strong w1 r6
-  text 295,389 label text "Rename"
+  fill 293,384 68x28 raised r6
+  stroke 293,384 68x28 line_strong w1 r6
+  text 303,389 label text "Rename"
 node 16 clip 218,45 493x382
-  fill 353,384 60x28 raised r6
-  stroke 353,384 60x28 line_strong w1 r6
-  text 363,389 label text "Trash"
+  fill 369,384 60x28 raised r6
+  stroke 369,384 60x28 line_strong w1 r6
+  text 379,389 label text "Trash"
 node 17 clip 218,45 493x382
-  fill 413,384 76x28 raised r6
-  stroke 413,384 76x28 line_strong w1 r6
-  text 423,389 label text "Restore"
+  fill 437,384 76x28 raised r6
+  stroke 437,384 76x28 line_strong w1 r6
+  text 447,389 label text "Restore"
 node 18 clip 0,0 720x460
-  text 12,432 small muted "1 folders, 1 files"
+  text 12,432 small muted "1 folder, 1 file"
