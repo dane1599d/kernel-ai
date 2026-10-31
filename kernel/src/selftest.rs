@@ -170,6 +170,8 @@ pub enum SelfTest {
     /// The System monitor's window on the desktop, given a sample of the machine
     /// and closed from its control (P4 task 9).
     UiMonitor,
+    /// The Files window on the desktop, shown and closed from its control (P4 task 5).
+    UiFiles,
     /// An unused app naps and a click wakes it (P3 task 12b).
     DeskNap,
     /// Settings' keep-running switch, shell only, kept across a reboot (P4
@@ -358,6 +360,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=desk-catalog" => Some(SelfTest::DeskCatalog),
             "test=ui-window" => Some(SelfTest::UiWindow),
             "test=ui-monitor" => Some(SelfTest::UiMonitor),
+            "test=ui-files" => Some(SelfTest::UiFiles),
             "test=desk-nap" => Some(SelfTest::DeskNap),
             "test=keep-running" => Some(SelfTest::KeepRunning {
                 reread: cmdline.split_whitespace().any(|w| w == "reread"),
@@ -453,6 +456,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DeskCatalog
             | SelfTest::UiWindow
             | SelfTest::UiMonitor
+            | SelfTest::UiFiles
             | SelfTest::DeskNap
             | SelfTest::KeepRunning { .. }
             | SelfTest::DeskCard
@@ -663,6 +667,10 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
     if test == SelfTest::UiMonitor {
         plan.push('\n');
         plan.push_str(&crate::app_window_tests::monitor_plan());
+    }
+    if test == SelfTest::UiFiles {
+        plan.push('\n');
+        plan.push_str(&crate::app_window_tests::files_plan());
     }
     if test == SelfTest::DeskNap {
         plan.push('\n');

@@ -389,6 +389,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::DeskCatalog => run_case(catalog_tests::check),
         SelfTest::UiWindow => run_case(ui_tests::check),
         SelfTest::UiMonitor => run_case(app_window_tests::monitor_check),
+        SelfTest::UiFiles => run_case(app_window_tests::files_check),
         SelfTest::DeskNap => run_case(nap_tests::check),
         SelfTest::KeepRunning { reread } => run_case(|| keep_tests::check(reread)),
         SelfTest::DeskCard => run_case(card_tests::check),
