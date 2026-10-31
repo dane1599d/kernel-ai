@@ -70,9 +70,9 @@ fn call(row: &AppRow, tx: &Tx, args: &mut [&mut Dynamic]) -> RhaiResult<Data> {
         tx.changed(Done {
             action: name.into(),
             owner: row.app.into(),
-            res: format!("app {}", row.app),
-            before: String::from("as it was"),
-            after: String::from("changed"),
+            res: format!("{}{}", crate::actlog::APP_RES, row.app),
+            before: String::new(),
+            after: done_words(row),
             inverse: Some(Inverse::App { app, id }),
         });
     }
@@ -95,6 +95,29 @@ fn call(row: &AppRow, tx: &Tx, args: &mut [&mut Dynamic]) -> RhaiResult<Data> {
         });
     }
     Ok(Data::new(row.app, reply.result.unwrap_or_default()))
+}
+
+/// What a change by `row` says it did: its doc's first clause in the app,
+/// `add a note in Notes` for `notes-window`'s "Add a note and return its id.",
+/// or its name with no doc.
+fn done_words(row: &AppRow) -> String {
+    let clause = row
+        .row
+        .doc
+        .split('.')
+        .next()
+        .and_then(|first| first.split(" and ").next())
+        .map(str::trim)
+        .filter(|clause| !clause.is_empty());
+    let what = match clause {
+        Some(clause) => {
+            let mut chars = clause.chars();
+            let first = chars.next().map(|c| c.to_ascii_lowercase());
+            first.into_iter().chain(chars).collect()
+        }
+        None => String::from(row.row.name),
+    };
+    format!("{what} in {}", crate::apps::title(row.app))
 }
 
 /// The call's arguments as the WAVE record `ty` is; a left-out option is none.

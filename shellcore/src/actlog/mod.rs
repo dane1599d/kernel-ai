@@ -94,10 +94,23 @@ pub struct Change {
     pub inverse: Option<Inverse>,
 }
 
+/// The start of an installed app's resource, `app <service>`: two changes to
+/// one app overlap, whichever rows made them.
+pub const APP_RES: &str = "app ";
+
 impl Change {
-    /// `policy round-robin (was interactive)`, as the result line says it.
+    /// `policy round-robin (was interactive)`, as the result line says it; with
+    /// no value before, no "(was …)". An app's change says itself in `after`
+    /// (`add a note in Notes`): its `app <service>` resource is for overlap.
     pub fn what(&self) -> String {
-        format!("{} {} (was {})", self.res, self.after, self.before)
+        let said = match self.res.starts_with(APP_RES) {
+            true => self.after.clone(),
+            false => format!("{} {}", self.res, self.after),
+        };
+        match self.before.is_empty() {
+            true => said,
+            false => format!("{said} (was {})", self.before),
+        }
     }
 }
 
