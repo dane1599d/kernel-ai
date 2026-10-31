@@ -71,7 +71,11 @@ impl Screen {
             'f' => self.mode = Mode::Prompt(PromptKind::Find, String::new()),
             'g' => self.mode = Mode::Prompt(PromptKind::Goto, String::new()),
             'e' => self.mode = Mode::Prompt(PromptKind::Command, String::new()),
+            'o' if self.file_mode || self.place.is_none() => {
+                self.mode = Mode::Prompt(PromptKind::OpenPath, String::new());
+            }
             'o' => self.files_pager(),
+            's' => self.save = true,
             'q' => self.quit = true,
             _ => {}
         }
@@ -149,6 +153,7 @@ impl Screen {
                 _ => self.say(format!("{text:?} is not a line number"), true),
             },
             PromptKind::Command => self.command(text),
+            PromptKind::OpenPath => self.open = Some(String::from(text)),
         }
     }
 

@@ -49,6 +49,8 @@ pub(crate) struct HostState {
     pub(crate) system: crate::system::SystemHost,
     /// The edit messages the app sent and comphost has not taken (`kai:edit`).
     pub(crate) edit: crate::edit::EditHost,
+    /// The file requests the app sent and comphost has not taken (`kai:files`).
+    pub(crate) files: crate::files::FilesHost,
 }
 
 /// Most bytes of a panic's file path read from the version.
@@ -183,6 +185,7 @@ impl WasmInstance {
             settings: Default::default(),
             system: Default::default(),
             edit: Default::default(),
+            files: Default::default(),
         };
         let mut store = Store::new(engine, state);
         store.limiter(|state| &mut state.limits);

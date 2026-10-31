@@ -21,6 +21,7 @@ mod actions {
             "../../wit/kai-app",
             "../../wit/kai-ui",
             "../../wit/kai-edit",
+            "../../wit/kai-files",
             "../../wit/kai-code",
             "../editor/wit",
         ],
@@ -35,6 +36,15 @@ mod edit {
     });
     pub use exports::kai::edit::replies::Guest;
     pub use kai::edit::edit::send;
+}
+
+mod files {
+    wit_bindgen::generate!({
+        world: "kai:files/filing",
+        path: ["../../wit/kai-files"],
+    });
+    pub use exports::kai::files::replies::Guest;
+    pub use kai::files::files::{read, write};
 }
 
 mod code {
@@ -161,6 +171,14 @@ impl Host for Os {
     fn note(&mut self, text: &str) {
         compsdk::log(text);
     }
+
+    fn read_file(&mut self, path: &str) -> u32 {
+        files::read(path)
+    }
+
+    fn write_file(&mut self, path: &str, data: &[u8], create: bool) -> u32 {
+        files::write(path, data, create)
+    }
 }
 
 struct Bound;
@@ -197,6 +215,12 @@ impl edit::Guest for Bound {
     }
 }
 
+impl files::Guest for Bound {
+    fn on_done(ticket: u32, outcome: Result<Vec<u8>, String>) {
+        run(|app, os| app.on_reply(os, ticket, outcome));
+    }
+}
+
 impl code::Guest for Bound {
     fn on_key(_window: u32, _node: u32, e: code::KeyEvent) {
         run(|app, os| app.on_key(os, &e.name, &e.text, e.mods));
@@ -217,4 +241,5 @@ impl code::Guest for Bound {
 
 actions::export!(Bound with_types_in actions);
 edit::export!(Bound with_types_in edit);
+files::export!(Bound with_types_in files);
 code::export!(Bound with_types_in code);
