@@ -5,6 +5,11 @@ use super::{TestCase, case};
 use crate::blklog::Data;
 use std::time::Duration;
 
+/// fs, pkg, notes, the model, the shell, cc (8,192 pages) and the built app
+/// together pass the page budget (half the free memory) of the default
+/// 512 MiB guest.
+const C_BUILD_MIB: u64 = 1024;
+
 /// `fs`'s disk, for `/home/user` and `pkg`'s store.
 const VIRTIO: Data = Data {
     nvme: false,
@@ -40,6 +45,7 @@ pub(super) const CASES: &[TestCase] = &[
             "c-build: undo switched back to generation 1, and the next build is 0.0.2",
         ],
         data: Some(VIRTIO),
+        memory_mib: Some(C_BUILD_MIB),
         min_timeout: Some(Duration::from_secs(600)),
         ..case("c-build", "test=c-build")
     },

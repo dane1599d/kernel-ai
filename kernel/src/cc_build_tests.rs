@@ -15,7 +15,7 @@
 use crate::files_tests::ask;
 use crate::pkg_tests::{Step, wait_for};
 use crate::shell_tests::start;
-use crate::{ipc, log};
+use crate::{ipc, log, threads};
 use alloc::format;
 use alloc::string::String;
 use fsproto::{How, Reply, Request};
@@ -46,6 +46,8 @@ void exports_kai_app_events_on_event(exports_kai_app_events_event_t *e) {
     exports_kai_app_events_event_free(e);
 }
 ";
+/// Time for `pkg` to sync its marker.
+const SYNC_MS: u64 = 1_000;
 /// A build's line: cc.wasm's translation on the first, the build itself, and
 /// `pkg`'s publish, check and install, under TCG too.
 const BUILD_MS: u64 = 280_000;
@@ -64,6 +66,9 @@ pub fn plan() -> String {
 pub fn check() -> Result<(), &'static str> {
     wait_for(&format!("case/{}.done", Step::Image.name()))
         .map_err(|_| "c-build: pkg did not finish its image step")?;
+    // The marker is durable once written, but `pkg` syncs it next, and an
+    // action of the kernel's begun first would make that sync Busy.
+    threads::sleep_ms(SYNC_MS);
     write_sources()?;
     start()?;
     let first = line("cc build hello")?;
