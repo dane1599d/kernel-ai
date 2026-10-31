@@ -6,8 +6,8 @@
 //! - `local <component>`, from the shell only, with the artifact's File handle
 //!   moved by CALL_H, and nothing else: published into `local`, signed by the
 //!   device key, checked, installed as a new generation and started; `ok <name>
-//!   <version> generation <n>`. `pkg` reads that one file through its handle and
-//!   no other.
+//!   <version> generation <n> from <parent>`, which the shell's undo switches
+//!   back to. `pkg` reads that one file through its handle and no other.
 //! - `switch-back <to> <from>`, from the shell only: its undo of such an
 //!   install, back to `<from>`'s parent `<to>`, only while `<from>` is still
 //!   current, and each app it takes out ends (`withdraw`); `ok generation <n>`.
@@ -119,8 +119,10 @@ fn install(
         kaipkg::PROVIDED,
     )
     .map_err(|e| format!("{e:?}"))?;
-    // The switch is made: the reply says so, with its generation for the
-    // shell's undo, even if starting the app fails.
+    // The switch is made: the reply says so, with its generation and its
+    // parent for the shell's undo, even if starting the app fails or the
+    // parent cannot be read (then the shell has no undo to offer).
+    let parent = store::generation(vol, n).ok().map(|g| g.parent);
     match start_apps(vol, n) {
         Ok(started) => {
             for line in started {
@@ -129,10 +131,11 @@ fn install(
         }
         Err(why) => println!("pkg: generation {n} is current, but not started: {why}"),
     }
-    Ok(format!(
-        "ok {} {} generation {n}",
-        published.name, published.version
-    ))
+    let made = format!("ok {} {} generation {n}", published.name, published.version);
+    Ok(match parent {
+        Some(parent) => format!("{made} from {parent}"),
+        None => made,
+    })
 }
 
 /// The names a build cannot take: every package the image's repository holds,

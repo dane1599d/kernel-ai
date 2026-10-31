@@ -14,14 +14,38 @@ pub const SHELL: &str = "shell caps=serve+call+policy+stop+script uses=llm+super
 pub const SHELL_FILES: &str = "shell caps=serve+call+policy+stop+script+files+state uses=llm+supervisor+cc pages=4096 stack_pages=512 burst_ms=5000";
 /// [`SHELL`] on a desktop: with a route to `desktop`, fourth, after `cc`, which
 /// it takes the AI panel's requests from and reports their states to (P3 task 7).
-pub const SHELL_DESK: &str = "shell caps=serve+call+policy+stop+script uses=llm+supervisor+cc+desktop pages=4096 stack_pages=512 burst_ms=5000";
+///
+/// A shell line names its routes after `cc` in `routes=`, in `uses=`'s order,
+/// and the shell finds each by that name ([`SHELL_ROUTES`]). Every new route
+/// goes last, so no route's place moves.
+pub const SHELL_DESK: &str = "shell caps=serve+call+policy+stop+script uses=llm+supervisor+cc+desktop routes=desktop pages=4096 stack_pages=512 burst_ms=5000";
+/// [`SHELL_FILES`] with a route to `pkg`, for `cc build`'s `local-next`, `local`
+/// and its undo (P4 task 13): planned when `pkg` is, after it.
+pub const SHELL_BUILD: &str = "shell caps=serve+call+policy+stop+script+files+state uses=llm+supervisor+cc+pkg routes=pkg pages=4096 stack_pages=512 burst_ms=5000";
+/// The routes every shell line has before its `routes=`: `llm`, the
+/// supervisor and `cc`.
+pub const SHELL_ROUTES: usize = 3;
+/// Every shell line the kernel plans, for the check that each one's `routes=`
+/// names its routes after `cc`.
+pub const SHELL_LINES: [&str; 4] = [SHELL, SHELL_FILES, SHELL_DESK, SHELL_BUILD];
+
+/// The place of the route named `name` among a shell line's routes, where
+/// `routes` is its `routes=` value: the routes after the first
+/// [`SHELL_ROUTES`], in order. Empty words name no route and take no place.
+pub fn shell_route(routes: &str, name: &str) -> Option<usize> {
+    let at = routes
+        .split('+')
+        .filter(|word| !word.is_empty())
+        .position(|word| word == name)?;
+    Some(SHELL_ROUTES + at)
+}
 /// The `c>` prompt's compiler (ADR 0012 D2; P4 task 12): xcc's cc.wasm and the
 /// sessions, on wasmi, holding no authority. Planned before the shell, which
 /// calls it, and started on demand: the first `c>` entry's call starts it, so
 /// it holds no memory before then. Its pages cover `ccserve::budget`: the
 /// program, its stack, the compiler and one compile, one session and the
-/// modules it keeps (P4 plan's 3,680 counted the heap alone).
-pub const CC: &str = "cc start=demand caps=serve pages=5120 stack_pages=512 burst_ms=5000";
+/// modules it keeps, and a `cc build` (P4 plan's 3,680 counted the heap alone).
+pub const CC: &str = "cc start=demand caps=serve pages=8192 stack_pages=512 burst_ms=5000";
 /// The file system service (ADR 0004): the only holder of the `kai-data`
 /// partition. Planned before the shell, and only when the disk has `kai-data`.
 /// Its pages hold a 16 MiB block cache and kaifs's working state. `kai-fs 1`'s

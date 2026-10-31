@@ -92,6 +92,12 @@ impl Shell {
             }
             self.c_abandon("another line came first");
         }
+        // Not C at either prompt: `crate::ccbuild`.
+        if let Some(name) = line.strip_prefix("cc build")
+            && (name.is_empty() || name.starts_with(' '))
+        {
+            return Some(self.cc_build(line, name.trim()));
+        }
         if !self.c.on {
             return match line.strip_prefix(":c") {
                 Some("") => {

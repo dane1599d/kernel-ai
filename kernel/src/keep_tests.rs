@@ -23,7 +23,7 @@ const SETTINGS: &str = "settings-window";
 /// [`kabi::plan::SHELL_DESK`] with its files and `/system/state` (the data
 /// disk): its route to `desktop`, fourth after `cc`, takes the Settings app's
 /// requests. The routes' order is the shell binary's, so it follows SHELL_DESK.
-pub const SHELL: &str = "shell caps=serve+call+policy+stop+script+files+state uses=llm+supervisor+cc+desktop pages=4096 stack_pages=512 burst_ms=5000";
+pub const SHELL: &str = "shell caps=serve+call+policy+stop+script+files+state uses=llm+supervisor+cc+desktop routes=desktop pages=4096 stack_pages=512 burst_ms=5000";
 /// The plan lines this case adds, before the shell, as a route's target must
 /// be; the stand-in only has to be alive.
 pub const PLAN: &str = "desktop caps=display+input+serve pages=8192 stack_pages=512\n\

@@ -6,7 +6,8 @@
 //! cc.wasm is translated, and kairt compiled, on the first request rather than
 //! at boot: until someone types `:c`, cc only waits. It holds no authority
 //! (`caps=serve`): a session reaches only its imports, and an effect goes back
-//! to the shell as a `need`.
+//! to the shell as a `need`. A `cc build` brings its sources in an `Shm`,
+//! which cc maps for that request alone and writes the artifact into.
 
 #![no_std]
 #![no_main]
@@ -15,9 +16,12 @@ extern crate alloc;
 
 use alloc::format;
 use alloc::vec;
+use alloc::vec::Vec;
+use ccserve::build::shm;
 use ccserve::rows::Rows;
 use ccserve::{Host, Service};
 use kabi::Error;
+use kabi::handle::{Handle, Kind, RecvInfo};
 use promptcore::wire::{Record, Reply};
 use user::{println, sys};
 
@@ -68,16 +72,18 @@ fn main() -> i32 {
     let mut service: Option<Service<Rows>> = None;
     let mut request = vec![0u8; kabi::MAX_MESSAGE];
     loop {
-        let mut caller = 0;
-        let len = match sys::svc_recv(&mut request, 0, &mut caller) {
+        let mut info = RecvInfo::default();
+        let len = match sys::recv_h(&mut request, 0, &mut info) {
             Ok(len) => len.min(request.len()),
             Err(Error::TimedOut) => continue,
             Err(error) => {
-                println!("svc_recv failed: {error:?}");
+                println!("recv_h failed: {error:?}");
                 sys::sleep_ms(100);
                 continue;
             }
         };
+        let count = (info.handle_count as usize).min(info.handles.len());
+        let moved: Vec<Handle> = info.handles[..count].iter().map(|&h| Handle(h)).collect();
         if service.is_none() {
             let start = sys::time_ns();
             match Service::new(ccserve::CC_WASM, &ccserve::XCC_HEADERS, Rows::os(), &host) {
@@ -86,25 +92,59 @@ fn main() -> i32 {
                     println!("cc.wasm translated and kairt compiled in {ms} ms");
                     service = Some(loaded);
                 }
-                Err(why) => {
-                    println!("cannot start: {why}");
-                    let mut reply = Reply::new(kabi::MAX_MESSAGE);
-                    let text = format!("cc cannot start: {why}");
-                    let _ = reply.push(&Record::Err {
-                        line: 0,
-                        text: text.as_bytes(),
-                    });
-                    let _ = sys::svc_reply(&reply.into_bytes());
-                    continue;
-                }
+                Err(why) => println!("cannot start: {why}"),
             }
         }
-        let Some(service) = service.as_mut() else {
-            continue;
+        let reply = match service.as_mut() {
+            Some(service) => answer(service, &request[..len], &moved, &host),
+            None => refusal("cc cannot start"),
         };
-        let reply = service.handle(&request[..len], &host);
+        for handle in moved {
+            let _ = sys::handle_close(handle);
+        }
         if let Err(error) = sys::svc_reply(&reply) {
             println!("svc_reply failed: {error:?}");
         }
     }
+}
+
+/// `request`'s reply. A `build` brings one `Shm`, mapped read-write for it.
+fn answer(
+    service: &mut Service<Rows>,
+    request: &[u8],
+    moved: &[Handle],
+    host: &Process,
+) -> Vec<u8> {
+    let shm = match moved {
+        [] => return service.handle(request, host),
+        [shm] => *shm,
+        _ => return refusal("a request brings one Shm at most"),
+    };
+    let is_shm = sys::handle_info(shm).is_ok_and(|info| info.kind() == Some(Kind::Shm));
+    if !is_shm {
+        return refusal("a request brings an Shm, not another kind");
+    }
+    let address = match sys::shm_map(shm, true) {
+        Ok(address) => address,
+        Err(error) => return refusal(&format!("cc cannot map the Shm: {error:?}")),
+    };
+    // SAFETY: the kernel mapped the Shm read-write at `address`; the shell
+    // makes it `shm::BYTES` long (a shorter one faults cc, see `shm`). Nothing
+    // else refers to it, and it is unmapped before the slice's last use ends.
+    let bytes = unsafe { core::slice::from_raw_parts_mut(address as *mut u8, shm::BYTES) };
+    let reply = service.handle_with(request, Some(bytes), host);
+    if let Err(error) = sys::shm_unmap(address) {
+        println!("shm_unmap failed: {error:?}");
+    }
+    reply
+}
+
+/// An `err` reply.
+fn refusal(text: &str) -> Vec<u8> {
+    let mut reply = Reply::new(kabi::MAX_MESSAGE);
+    let _ = reply.push(&Record::Err {
+        line: 0,
+        text: text.as_bytes(),
+    });
+    reply.into_bytes()
 }
