@@ -572,10 +572,17 @@ pub fn plan(test: SelfTest) -> Option<String> {
                 plan.push_str(crate::app_terminal_tests::PLAN);
                 kabi::plan::SHELL_DESK
             }
-            SelfTest::DeskAgent | SelfTest::DeskTakeover | SelfTest::AppSettings => {
+            SelfTest::DeskAgent | SelfTest::DeskTakeover => {
                 plan.push('\n');
                 plan.push_str(crate::agent_desk_tests::DESK);
                 kabi::plan::SHELL_DESK
+            }
+            // Settings reads what the shell saved, so its shell has a state
+            // directory as well as the desktop.
+            SelfTest::AppSettings => {
+                plan.push('\n');
+                plan.push_str(crate::agent_desk_tests::DESK);
+                crate::app_settings_tests::SHELL
             }
             SelfTest::KeepRunning { .. } => {
                 plan.push('\n');

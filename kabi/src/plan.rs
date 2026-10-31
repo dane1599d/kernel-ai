@@ -15,6 +15,11 @@ pub const SHELL_FILES: &str = "shell caps=serve+call+policy+stop+script+files+st
 /// [`SHELL`] on a desktop: with a route to `desktop`, fourth, after `cc`, which
 /// it takes the AI panel's requests from and reports their states to (P3 task 7).
 pub const SHELL_DESK: &str = "shell caps=serve+call+policy+stop+script uses=llm+supervisor+cc+desktop pages=4096 stack_pages=512 burst_ms=5000";
+/// [`SHELL_DESK`] with the file system too, for a case that has the desktop and
+/// a state directory in one shell (`app-settings` saves a theme and shows it in
+/// Settings): the same routes, so `desktop` stays fourth, and `files` and `state`
+/// added to the caps (a test holds the two lines together).
+pub const SHELL_DESK_FILES: &str = "shell caps=serve+call+policy+stop+script+files+state uses=llm+supervisor+cc+desktop pages=4096 stack_pages=512 burst_ms=5000";
 /// The `c>` prompt's compiler (ADR 0012 D2; P4 task 12): xcc's cc.wasm and the
 /// sessions, on wasmi, holding no authority. Planned before the shell, which
 /// calls it, and started on demand: the first `c>` entry's call starts it, so
@@ -71,3 +76,18 @@ pub const NOTES_EDIT_TEST: &str = "notes program=comphost caps=serve+component p
 /// The edit service, planned only when the kernel has a build service. The
 /// kernel appends `host=IP:PORT token=HEX`.
 pub const EDIT_BASE: &str = "edit caps=serve+publish pages=2048 burst_ms=10000";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_desk_shell_with_files_is_the_desk_shell_with_two_caps_more() {
+        assert_eq!(
+            SHELL_DESK_FILES,
+            SHELL_DESK
+                .replacen("+script ", "+script+files+state ", 1)
+                .as_str()
+        );
+    }
+}
