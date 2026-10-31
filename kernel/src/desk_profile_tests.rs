@@ -146,6 +146,8 @@ pub fn check() -> Result<(), &'static str> {
     // Undo puts default back. The rule may have fired more than once (a focus
     // posted before it was made can fire it too), so each `undo` takes one
     // firing back, until `default` is in force.
+    // TODO(#524): once a rule fires only on events posted after it was made,
+    // one `undo` is enough; drop this loop.
     for _ in 0..MAX_UNDOS {
         UNDONE.store(false, Ordering::Release);
         threads::spawn("undoer", undoer, 0)?;
