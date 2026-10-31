@@ -175,6 +175,9 @@ pub enum SelfTest {
     UiMonitor,
     /// An unused app naps and a click wakes it (P3 task 12b).
     DeskNap,
+    /// A saved appearance repaints `desktop` at once and holds across its
+    /// restart (P4 task 8).
+    DeskAppearance,
     /// Settings' keep-running switch, shell only, kept across a reboot (P4
     /// task 7): boot 1, then boot 2 (`reread`).
     KeepRunning {
@@ -363,6 +366,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=app-editor" => Some(SelfTest::AppEditor),
             "test=ui-monitor" => Some(SelfTest::UiMonitor),
             "test=desk-nap" => Some(SelfTest::DeskNap),
+            "test=desk-appearance" => Some(SelfTest::DeskAppearance),
             "test=keep-running" => Some(SelfTest::KeepRunning {
                 reread: cmdline.split_whitespace().any(|w| w == "reread"),
             }),
@@ -460,6 +464,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::UiMonitor
             | SelfTest::DeskNap
             | SelfTest::KeepRunning { .. }
+            | SelfTest::DeskAppearance
             | SelfTest::DeskCard
             | SelfTest::DeskStanding
             | SelfTest::UiKeys
@@ -592,6 +597,14 @@ pub fn plan(test: SelfTest) -> Option<String> {
             SelfTest::KeepRunning { .. } => {
                 plan.push('\n');
                 plan.push_str(crate::keep_tests::PLAN);
+                crate::keep_tests::SHELL
+            }
+            // The desktop with its card, before the shell with `files` and
+            // `state` (the appearance is saved in `/system/state`) and its
+            // route to `desktop`.
+            SelfTest::DeskAppearance => {
+                plan.push('\n');
+                plan.push_str(crate::desk_tests::BOOT_PLAN);
                 crate::keep_tests::SHELL
             }
             _ => shell,

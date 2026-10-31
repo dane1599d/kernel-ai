@@ -81,6 +81,9 @@ pub struct Ui {
     sent: effects::Sent,
     /// The `kai:settings` requests' way to the shell, for the Settings app only.
     settings: Option<crate::kai_settings::Forward>,
+    /// The desktop's theme, by name, and the colours its windows paint in.
+    theme: String,
+    palette: look::Palette,
 }
 
 /// Modified keys and focus changes, for the log: rare, and they carry no typed text.
@@ -117,6 +120,8 @@ impl Ui {
             reply: alloc::vec![0u8; kabi::MAX_MESSAGE],
             sent: effects::Sent::default(),
             settings: None,
+            theme: String::from(look::DARK.name),
+            palette: look::DARK,
         })
     }
 
@@ -354,7 +359,7 @@ impl Ui {
         for t in told {
             // A focus wakes only an app comphost napped itself (its caller
             // decides); a close or an action wakes any suspended app.
-            if !matches!(t, Told::Restarted | Told::Focus(_))
+            if !matches!(t, Told::Restarted | Told::Focus(_) | Told::Theme(_))
                 && let Some(reply) = host.wake()?
             {
                 println!(
@@ -365,6 +370,7 @@ impl Ui {
             match t {
                 Told::Restarted => self.reopen(),
                 Told::Focus(_) => self.focused = true,
+                Told::Theme(name) => self.set_theme(&name),
                 Told::Close(window) => {
                     let performed = serve_shown(host, |core| {
                         core.ui_events(window, &[UiEvent::CloseRequested])
@@ -398,6 +404,29 @@ impl Ui {
         }
         self.pump(host);
         Ok(())
+    }
+
+    /// Paints in the desktop's theme `name` from now on: every open window
+    /// again, whole, from its last frame. A theme `look` does not ship keeps
+    /// the one in use. Layout still measures with the starting type, so the
+    /// legible theme's own type sizes are not taken yet.
+    fn set_theme(&mut self, name: &str) {
+        if name == self.theme {
+            return;
+        }
+        let Some(theme) = look::theme::shipped().into_iter().find(|t| t.name == name) else {
+            println!("comphost: the desktop's theme {name:?} is not one it knows");
+            return;
+        };
+        self.palette = theme.palette();
+        self.text.set_theme(&theme);
+        self.theme = String::from(name);
+        for (app, mut frame) in core::mem::take(&mut self.frames) {
+            let (w, h) = frame.size;
+            frame.damage = alloc::vec![uikit::geom::Rect::new(0, 0, w, h)];
+            self.show(app, frame);
+        }
+        println!("comphost: painting in the {name} theme");
     }
 
     /// A new `desktop`: every window opens again from its last frame.
@@ -503,7 +532,7 @@ impl Ui {
         };
         let all = canvas.bounds();
         let mut painter = uipaint::Painter {
-            palette: &look::DARK,
+            palette: &self.palette,
             text: &mut self.text,
             scale: uipaint::Scale::of(uipaint::SCALE_ONE),
         };

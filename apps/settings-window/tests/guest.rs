@@ -223,9 +223,20 @@ fn a_choice_is_a_request_and_shows_once_the_answer_says_it_is_done() {
         "nothing is redrawn until it is done"
     );
 
-    // Done: now the button says the new theme.
+    // Done: now the button says the new theme, and the app asks what the system
+    // kept, so the page shows its word for it.
     answer(&mut g, ticket, Ok("theme changed"));
     assert_eq!(theme_of(&frame(&mut g).1), value);
+    let again = sent(&mut g);
+    assert_eq!(again.len(), 1, "{again:?}");
+    assert_eq!(
+        (again[0].1, again[0].2.as_str()),
+        (SettingsKind::Read, "file appearance")
+    );
+    // The system keeps something else (a limit it has): the page shows that.
+    answer(&mut g, again[0].0, Ok("kai-appearance 1\ntheme = light\n"));
+    assert_eq!(theme_of(&frame(&mut g).1), "light");
+    let value = String::from("light");
 
     // A refused switch (comphost passes a change on only for a real key or
     // click) leaves the page as it was.
@@ -247,6 +258,7 @@ fn a_choice_is_a_request_and_shows_once_the_answer_says_it_is_done() {
     assert_eq!(asked[0].2, "appearance-set legible on");
     answer(&mut g, asked[0].0, Ok("legible on"));
     g.take_ui();
+    assert_eq!(sent(&mut g)[0].2, "file appearance");
 
     // Moving between pages asks the system for nothing.
     call(&mut g, |g| {
