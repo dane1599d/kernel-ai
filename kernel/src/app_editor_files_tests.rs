@@ -22,6 +22,7 @@
 
 use crate::app_editor_tests::{NAME, OPEN_MS, WAIT_MS, cursor, status, until};
 use crate::display::claim;
+use crate::ui_tests::report;
 use crate::{console, ipc, log, process, threads};
 use alloc::string::String;
 
@@ -30,6 +31,12 @@ use alloc::string::String;
 pub const DESKTOP: &str = "desktop caps=display+input+serve pages=8192 stack_pages=512";
 
 const CALL_MS: u64 = 60_000;
+/// For the click to be handled before the host's first key: the events are in order, so this is only
+/// a margin under TCG.
+const CLICK_MS: u64 = 1_500;
+/// Where `desktop` starts the pointer, and a place inside the code view (as the editor's case has it).
+const START: (i32, i32) = (640, 400);
+const CODE: (i32, i32) = (48 + 300, 52 + 100);
 
 /// The shell's wire reply to `line`, as a typed line.
 fn shell(line: &str) -> Result<String, &'static str> {
@@ -63,6 +70,16 @@ fn showing_file(said: &str) -> bool {
     said.starts_with("file disk:") && said.contains("todo.txt")
 }
 
+/// A click into the code view gives it the keys: the window has the focus from the start, but
+/// a key goes to the node that has it, and nothing has until one is clicked.
+fn click_into_the_code() {
+    report(CODE.0 - START.0, CODE.1 - START.1, 0);
+    report(0, 0, 1);
+    report(0, 0, 0);
+    log!("app-editor-files: clicked into the code view");
+    threads::sleep_ms(CLICK_MS);
+}
+
 /// Ctrl-O and the path: two stages of the host's keys, sent in order.
 fn ask_to_open() {
     log!("app-editor-files: ready for keys");
@@ -71,6 +88,7 @@ fn ask_to_open() {
 
 /// A path that is not there opens a new file.
 fn open_new() -> Result<(), &'static str> {
+    click_into_the_code();
     ask_to_open();
     until("a new file to open in the editor", WAIT_MS, |said| {
         showing_file(said) && cursor(said) == Some((1, 0))
