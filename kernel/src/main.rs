@@ -22,6 +22,8 @@ mod agent_desk_tests;
 mod allow;
 mod apic;
 mod app_route_tests;
+mod app_settings_tests;
+mod app_terminal_tests;
 mod appbench_tests;
 mod ask_box;
 mod ask_tests;
@@ -36,6 +38,7 @@ mod build_job;
 mod build_service;
 mod card_tests;
 mod catalog_tests;
+mod cc_tests;
 mod claim_tests;
 mod clock;
 mod compute_tests;
@@ -71,6 +74,7 @@ mod idt;
 mod input;
 mod ipc;
 mod irq;
+mod keep_tests;
 mod keyboard;
 mod keys_tests;
 mod latency_tests;
@@ -342,6 +346,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Net => run_case(llm::self_test),
         SelfTest::Terminal => run_case(terminal::self_test),
         SelfTest::Shell => run_case(shell_tests::check),
+        SelfTest::CPrompt => run_case(cc_tests::check),
         SelfTest::Scripts => run_case(script_tests::check),
         SelfTest::Act(which) => run_case(|| act_tests::check(which)),
         SelfTest::Live => run_case(live_tests::check),
@@ -383,11 +388,13 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::DeskCatalog => run_case(catalog_tests::check),
         SelfTest::UiWindow => run_case(ui_tests::check),
         SelfTest::DeskNap => run_case(nap_tests::check),
+        SelfTest::KeepRunning { reread } => run_case(|| keep_tests::check(reread)),
         SelfTest::DeskCard => run_case(card_tests::check),
         SelfTest::DeskStanding => run_case(standing_tests::check),
         SelfTest::UiKeys => run_case(keys_tests::check),
         SelfTest::DeskTerm => run_case(term_tests::check),
         SelfTest::DeskAgent => run_case(agent_desk_tests::agent_check),
+        SelfTest::AppSettings => run_case(app_settings_tests::check),
         SelfTest::DeskTakeover => run_case(agent_desk_tests::takeover_check),
         SelfTest::Scriptrun => run_case(scriptrun_tests::check),
         SelfTest::Fpu => run_case(fpu_tests::fpu_check),

@@ -17,7 +17,6 @@ comp-settings = { path = "../settings" }
 comp-settings-ui = { path = "../settings-ui" }
 comp-ui-bind = { path = "../ui-bind" }
 compsdk = { path = "../../compsdk" }
-kaigrants = { path = "../../kaigrants" }
 minicbor = { version = "2.3.0", default-features = false, features = ["alloc", "derive"] }
 uikit = { path = "../../uikit" }
 

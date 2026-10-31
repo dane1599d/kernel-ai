@@ -24,4 +24,5 @@ wasmi = { version = "2.0.0", default-features = false, features = ["validate", "
 wasmparser = { version = "0.228.0", default-features = false }
 
 [dev-dependencies]
+kabi = { path = "../kabi" }
 sha2 = "0.11.1"

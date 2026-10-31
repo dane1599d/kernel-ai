@@ -10,7 +10,9 @@ use alloc::vec;
 use alloc::vec::Vec;
 use appabi::Val;
 use uikit::style::{Tone, TypeStyle};
-use uikit::widget::{Axis, Insets, Layout, Size, TextField, UiEvent, Value, Widget};
+use uikit::widget::{
+    Axis, CodeRow, CodeSpan, CodeView, Insets, Layout, Size, TextField, UiEvent, Value, Widget,
+};
 
 fn bad(what: &str, v: Option<&Val>) -> String {
     format!("{what} expected, got {v:?}")
@@ -229,10 +231,64 @@ pub(crate) fn widget(v: Option<&Val>) -> Result<Widget, String> {
     })
 }
 
-/// An event from `window` as `kai:ui/input`'s `ui-event`.
-pub(crate) fn event(window: u32, e: &UiEvent) -> Val {
+fn tone(v: Option<&Val>) -> Result<Tone, String> {
+    picked(&TONES, v, "tone")
+}
+
+fn code_span(v: Option<&Val>) -> Result<CodeSpan, String> {
+    let f = fields(v)?;
+    Ok(CodeSpan {
+        from: u16_of(f.first())?,
+        to: u16_of(f.get(1))?,
+        tone: tone(f.get(2))?,
+        link: bool_of(f.get(3))?,
+    })
+}
+
+fn code_row(v: Option<&Val>) -> Result<CodeRow, String> {
+    let f = fields(v)?;
+    let spans = match f.get(2) {
+        Some(Val::List(items)) => items
+            .iter()
+            .map(|s| code_span(Some(s)))
+            .collect::<Result<_, _>>()?,
+        other => return Err(bad("list<span>", other)),
+    };
+    Ok(CodeRow {
+        text: str_of(f.first())?,
+        gutter: str_of(f.get(1))?,
+        spans,
+    })
+}
+
+/// A `kai:code/code` `code-view` record.
+pub(crate) fn code_view(v: Option<&Val>) -> Result<CodeView, String> {
+    let f = fields(v)?;
+    let rows = match f.get(2) {
+        Some(Val::List(items)) => items
+            .iter()
+            .map(|r| code_row(Some(r)))
+            .collect::<Result<_, _>>()?,
+        other => return Err(bad("list<row>", other)),
+    };
+    let cursor = |v: Option<&Val>| match v {
+        Some(Val::Tuple(t)) => Ok((u32_of(t.first())?, u32_of(t.get(1))?)),
+        other => Err(bad("tuple<u32, u32>", other)),
+    };
+    Ok(CodeView {
+        label: str_of(f.first())?,
+        gutter_width: u16_of(f.get(1))?,
+        rows,
+        cursor: option(f.get(3), cursor)?,
+        selected: option(f.get(4), u32_of)?,
+    })
+}
+
+/// An event from `window` as `kai:ui/input`'s `ui-event`; None for the code
+/// view's, which go to `kai:code/code-input` ([`crate::CoreInstance::code_event`]).
+pub(crate) fn event(window: u32, e: &UiEvent) -> Option<Val> {
     let some = |v: Val| Some(Box::new(v));
-    match e {
+    Some(match e {
         UiEvent::Pressed(node) => Val::Variant(0, some(Val::U32(*node))),
         UiEvent::Changed(node, value) => {
             let value = match value {
@@ -245,5 +301,6 @@ pub(crate) fn event(window: u32, e: &UiEvent) -> Val {
         }
         UiEvent::Submitted(node) => Val::Variant(2, some(Val::U32(*node))),
         UiEvent::CloseRequested => Val::Variant(3, some(Val::U32(window))),
-    }
+        UiEvent::Key { .. } | UiEvent::Click { .. } | UiEvent::Scroll { .. } => return None,
+    })
 }

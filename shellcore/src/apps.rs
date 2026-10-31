@@ -93,6 +93,73 @@ pub(crate) fn load_for(host: &dyn crate::Host, name: &str) {
     }
 }
 
+/// The `apps` text of an `act` request (P4 task 15): the `kai-actions 1`
+/// answers of the running apps, so the model sees their rows
+/// (`llmproto::pack::apps`). Each running instance is asked once; a service
+/// that is not an app is not asked again until reboot, and one that is not
+/// running is neither asked (that would start it) nor shown.
+pub(crate) fn wire(host: &dyn crate::Host) -> String {
+    let (Some(apps), Ok(services)) = (host.apps(), host.services()) else {
+        return String::new();
+    };
+    let running: Vec<&crate::targets::Service> = services
+        .iter()
+        .filter(|s| s.pid != 0 && !s.stopped)
+        .collect();
+    for service in &running {
+        let app = service.name.as_str();
+        let known = {
+            let rows = &apps.borrow().rows;
+            rows.failed(app) || rows.asked(app) == Some(service.pid)
+        };
+        if known {
+            continue;
+        }
+        apps.borrow_mut()
+            .rows
+            .asked
+            .push((app.to_string(), service.pid));
+        let answer = match host.app_call(app, livecore::rows::REQUEST) {
+            Ok(answer) => answer,
+            Err(why) if why == NOT_AN_APP => {
+                apps.borrow_mut().rows.failed.push(app.to_string());
+                continue;
+            }
+            Err(why) => {
+                host.audit(&format!("{app}'s rows were not asked for: {why}"));
+                continue;
+            }
+        };
+        let others: Vec<String> = services
+            .iter()
+            .map(|s| s.name.clone())
+            .filter(|name| name != app)
+            .collect();
+        let loaded = apps.borrow_mut().rows.load_among(app, &answer, &others);
+        match loaded {
+            Ok(count) => host.audit(&format!("{app}'s {count} actions loaded")),
+            Err(why) => host.audit(&why),
+        }
+    }
+    let apps = apps.borrow();
+    let answers: Vec<(&str, &str)> = running
+        .iter()
+        .filter_map(|s| Some((s.name.as_str(), apps.rows.answer(&s.name)?)))
+        .collect();
+    let (text, left_out) = llmproto::pack::apps::wire(&answers, llmproto::act::APPS_MAX_BYTES);
+    if !left_out.is_empty() {
+        host.audit(&format!(
+            "past one act request, left out of the prompt: {}",
+            left_out.join(" ")
+        ));
+    }
+    text
+}
+
+/// The supervisor's answer for a service that is not an app
+/// (`supervise::appcall::check`), less its `err `.
+const NOT_AN_APP: &str = "no such app";
+
 /// Loads app `app`'s rows, by its name, if they are not loaded yet: for its
 /// effects, which may come before any call to its rows.
 pub(crate) fn load_app(host: &dyn crate::Host, app: &str) {
@@ -167,6 +234,8 @@ struct Loaded {
     app: String,
     version: String,
     rows: Vec<AppRow>,
+    /// The `kai-actions 1` answer the rows came from, for llm (`wire`).
+    answer: String,
     /// The OS rows its effects may call, as its package declares them.
     effects: Vec<String>,
     /// The package a `<pkg>-window` service fronts, whose `<pkg>_` rows it
@@ -175,9 +244,11 @@ struct Loaded {
 }
 
 /// The package `app` fronts: a `<pkg>-window` service whose world is
-/// `app:<pkg>/…` is its package's window, so its rows may be `<pkg>_*` (Notes'
-/// window declares `notes_add`). The service's name is the plan line's, which
-/// the kernel holds to, so a package cannot claim another's rows by its world.
+/// `app:<pkg>/…`, or its own `app:<pkg>-window/…` as xtask packs a window, is
+/// its package's window, so its rows may be `<pkg>_*` (Notes' window declares
+/// `notes_add`), each running an `app:<pkg>/` export ([`fronted_export`]). The
+/// service's name is the plan line's, which the kernel holds to, so a package
+/// cannot claim another's rows by its world.
 pub fn fronts<'a>(app: &'a str, world: &str) -> Option<&'a str> {
     let pkg = app.strip_suffix("-window")?;
     let (named, _) = world.strip_prefix("app:")?.split_once('/')?;
@@ -186,7 +257,23 @@ pub fn fronts<'a>(app: &'a str, world: &str) -> Option<&'a str> {
         && pkg
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
-    (package && named == pkg).then_some(pkg)
+    (package && (named == pkg || named == app)).then_some(pkg)
+}
+
+/// Why a window's row may not take its package's name: a `<pkg>_*` row must run
+/// `<pkg>`'s own export (`notes_add` runs `app:notes/actions@1.0.0#add`).
+fn fronted_export(app: &str, fronts: Option<&str>, row: &ActionRow) -> Result<(), String> {
+    let Some(pkg) = fronts else {
+        return Ok(());
+    };
+    let own = format!("{}_", app.replace('-', "_"));
+    if row.name.starts_with(&own) || row.export.starts_with(&format!("app:{pkg}/")) {
+        return Ok(());
+    }
+    Err(format!(
+        "{app}'s action {} runs {}, not the {pkg} package's",
+        row.name, row.export
+    ))
 }
 
 /// The OS rows an app may declare for its effects (P4, deny by default): the
@@ -204,6 +291,8 @@ pub struct AppRows {
     loads: usize,
     /// Apps whose rows did not load: not asked again until reboot.
     failed: Vec<String>,
+    /// (app, pid) of each running instance [`wire`] asked for its rows.
+    asked: Vec<(String, u64)>,
 }
 
 impl AppRows {
@@ -229,6 +318,23 @@ impl AppRows {
             self.failed.push(app.to_string());
         }
         loaded
+    }
+
+    /// The pid of `app`'s instance [`wire`] last asked for its rows.
+    fn asked(&self, app: &str) -> Option<u64> {
+        self.asked
+            .iter()
+            .rev()
+            .find(|(name, _)| name == app)
+            .map(|(_, pid)| *pid)
+    }
+
+    /// The `kai-actions 1` answer `app`'s loaded rows came from.
+    pub fn answer(&self, app: &str) -> Option<&str> {
+        self.loaded
+            .iter()
+            .find(|l| l.app == app)
+            .map(|l| l.answer.as_str())
     }
 
     /// Whether `app`'s rows failed to load since boot.
@@ -260,8 +366,11 @@ impl AppRows {
             return Err(format!("{app} declares over {MAX_ROWS} actions"));
         }
         // A window fronts its package's rows while the package's own service
-        // holds none, and the reverse: one owner for a prefix.
-        let fronts = fronts(app, &parsed.world);
+        // holds none, and the reverse: one owner for a prefix. A window that
+        // declares only its own `<app>_*` rows fronts nothing.
+        let own = format!("{}_", app.replace('-', "_"));
+        let fronts = fronts(app, &parsed.world)
+            .filter(|_| parsed.rows.iter().any(|row| !row.name.starts_with(&own)));
         if let Some(pkg) = fronts
             && self.has(pkg)
         {
@@ -282,6 +391,7 @@ impl AppRows {
         // Every check on names comes before anything is leaked.
         for row in &parsed.rows {
             self.name_free(app, fronts, &row.name, others)?;
+            fronted_export(app, fronts, row)?;
         }
         if let Some(row) = parsed.effects.iter().find(|row| !declarable(row)) {
             return Err(format!(
@@ -301,6 +411,7 @@ impl AppRows {
             app: app.to_string(),
             version: version.to_string(),
             rows,
+            answer: answer.to_string(),
             effects: parsed.effects.clone(),
             fronts: fronts.map(str::to_string),
         });
@@ -369,6 +480,15 @@ impl AppRows {
         self.loaded
             .iter()
             .flat_map(|l| l.rows.iter().map(|r| r.row))
+    }
+
+    /// App `app`'s loaded rows, in the order it declares them.
+    pub fn rows_of(&self, app: &str) -> Vec<&'static Action> {
+        self.loaded
+            .iter()
+            .filter(|l| l.app == app)
+            .flat_map(|l| l.rows.iter().map(|r| r.row))
+            .collect()
     }
 
     /// The OS rows `app`'s package declares for its effects; none while its
@@ -627,6 +747,32 @@ end
         assert_eq!(fronts("-window", "app:/x"), None);
         assert_eq!(fronts("Notes-window", "app:Notes/x"), None);
         assert_eq!(fronts("no_tes-window", "app:no_tes/x"), None);
+    }
+
+    #[test]
+    fn a_window_packed_under_its_own_world_fronts_only_its_packages_exports() {
+        // xtask packs Notes' window as `app:notes-window/notes-window@1.0.0`.
+        let packed = NOTES.replace(
+            "world app:notes/notes@1.0.0",
+            "world app:notes-window/notes-window@1.0.0",
+        );
+        assert_eq!(
+            fronts("notes-window", "app:notes-window/notes-window@1.0.0"),
+            Some("notes")
+        );
+        let mut apps = AppRows::default();
+        assert_eq!(apps.load("notes-window", &packed), Ok(2));
+        assert!(apps.find_in("notes-window", "notes_add").is_some());
+        // A `notes_*` row must run Notes' own export, not another package's.
+        let other = packed.replace(
+            "export app:notes/actions@1.0.0#add",
+            "export app:files/actions@1.0.0#trash",
+        );
+        let err = AppRows::default().load("notes-window", &other).unwrap_err();
+        assert!(
+            err.contains("runs app:files/actions@1.0.0#trash, not the notes package's"),
+            "{err}"
+        );
     }
 
     #[test]

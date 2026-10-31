@@ -58,12 +58,14 @@ jobs:
           cargo build -p comp-notes-window --target wasm32-unknown-unknown --profile component
           cargo build -p comp-files-window --target wasm32-unknown-unknown --profile component
           cargo build -p comp-settings-window --target wasm32-unknown-unknown --profile component
-          cargo clippy -Zjson-target-spec -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem -p user --target user/x86_64-kai-user.json --lib --bin llm --bin desktop --bin probe --bin vecstress --bin workers --bin comphost --bin appbench --bin term -- -D warnings
+          cargo build -p comp-terminal-window --target wasm32-unknown-unknown --profile component
+          cargo build -p comp-monitor-window --target wasm32-unknown-unknown --profile component
+          cargo clippy -Zjson-target-spec -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem -p user --target user/x86_64-kai-user.json --lib --bin llm --bin desktop --bin probe --bin vecstress --bin workers --bin comphost --bin appbench --bin term --bin cc -- -D warnings
       # termcore and the Terminal app's model are no_std and build for wasm32 (P4 task 4; the model lane reviews).
       - run: cargo clippy -p compsdk -p comp-notes -p comp-notes-v1 -p comp-viewbench -p termcore -p comp-terminal --target wasm32-unknown-unknown -- -D warnings
       # Alone: with comp-notes in the same run its exports would be on.
       - run: cargo clippy -p comp-notes-window --target wasm32-unknown-unknown -- -D warnings
-      - run: cargo clippy -p comp-ui-bind -p comp-files-window -p comp-settings-window --target wasm32-unknown-unknown -- -D warnings
+      - run: cargo clippy -p comp-ui-bind -p comp-files-window -p comp-settings-window -p comp-terminal-window -p comp-monitor-window --target wasm32-unknown-unknown -- -D warnings
       - name: Clippy for each broken notes version
         run: for bug in bug-import bug-health bug-trap bug-spin; do cargo clippy -p comp-notes-bad --target wasm32-unknown-unknown --features $bug -- -D warnings; done
       - run: cargo test --features linetable/alloc,kaibundle/alloc
@@ -169,7 +171,9 @@ jobs:
         run: cargo xtask test --accel ${{ matrix.accel }} --timeout 300 --shard ${{ matrix.shard }}/3
     # TCG shards run about twice as long as KVM ones: on 2026-10-28 main's slowest
     # TCG shard took 19 of its 20 minutes, and batch #340's timed out mid-case.
-    timeout-minutes: ${{ matrix.accel == 'tcg' && 35 || 20 }}
+    # On 2026-10-30 KVM shards took 16-18 minutes with 45 cases each, and two
+    # hit the 20-minute limit on #460, so both limits got room for new cases.
+    timeout-minutes: ${{ matrix.accel == 'tcg' && 50 || 30 }}
 
   # Performance pass marks, judged on the release kernel (decisions, 2026-10-27):
   # the boot jobs' debug kernel leaves the `kernel` crate unoptimised, so its
