@@ -22,9 +22,10 @@
 //!   arguments (`theme=light`, `legible=on`, ...), each an `appearance_set`
 //!   setting.
 //! - While the terminal window (`term`'s) has focus, the keys go to the
-//!   kernel's terminal instead: a lease (INPUT_TO_CONSOLE), asked for again
-//!   every [`LEASE_ASK_NS`] as the kernel ends it on a click, Alt+Tab or the
-//!   screen changing hands, and ended when the focus moves (P3 task 8). The
+//!   kernel's terminal instead: a lease (INPUT_TO_CONSOLE, `deskcore::lease`),
+//!   asked for again at once after a click and every `lease::ASK_NS` in case
+//!   the kernel ended it on Alt+Tab or the screen changing hands, and ended
+//!   when the focus moves (P3 task 8). The
 //!   kernel, not `desktop`, decides which client is the terminal: it lends the
 //!   keys only for the window of a process holding TERM.
 //! - `apps` sent in the panel opens the Apps sheet, with what `pkg` lists
@@ -47,6 +48,7 @@ use deskcore::compose::{Pixels, Source};
 use deskcore::desk::{Button, Desk, Effect, Focus, Input, WindowId};
 use deskcore::effects;
 use deskcore::geom::{Point, Rect};
+use deskcore::lease::{Lease, Step};
 use deskcore::paint::{self, Bar, Painter, Scene};
 use deskcore::paint_panel;
 use deskcore::panel::Panel;
@@ -80,9 +82,6 @@ const BAR_EVERY_NS: u64 = 1_000_000_000;
 /// Waits for input or a client, in turn, so neither starves.
 const INPUT_WAIT_MS: u64 = 2;
 const CLIENT_WAIT_MS: u64 = 2;
-/// How often the lease is asked for again while that window has focus. No
-/// timer ends it in the kernel: this only restores one the kernel ended.
-const LEASE_ASK_NS: u64 = 250_000_000;
 
 struct Pool {
     pid: u64,
@@ -137,10 +136,8 @@ struct State {
     focus: Focus,
     /// What standing instructions hear about: window events and idle.
     watch: Watch,
-    /// When the keys were last lent to the kernel's terminal, while they are.
-    leased_at: Option<u64>,
-    /// The focused window, and whether the kernel lent the keys for it.
-    asked: Option<(WindowId, bool)>,
+    /// The keyboard lease to the kernel's terminal, as desktop knows it.
+    lease: Lease,
     /// What the user chose, and what the painter paints in: kept with the
     /// painter across a lost screen, and the default (what `Painter::new`
     /// paints) at first, so the first frame does no theme work for it.
@@ -192,8 +189,7 @@ fn main() -> i32 {
             known: Vec::new(),
             focus: Focus::Nothing,
             watch: Watch::new(now_ms()),
-            leased_at: None,
-            asked: None,
+            lease: Lease::new(),
             appearance: appearance.clone(),
             painted_in,
             theme_name: theme_name.clone(),
@@ -269,7 +265,7 @@ fn run(state: &mut State, screen: &Screen) -> Option<bool> {
 /// Lends the keys to the kernel's terminal while the terminal window has
 /// focus, asking again in case the kernel ended the lease; ends it once the
 /// focus moves. The kernel says which window that is: it refuses the lease for
-/// any other client. Each time the keys are lent the desk forgets the keys it
+/// any other client. When the keys are newly lent the desk forgets the keys it
 /// holds down, as their releases now go to the console.
 fn lease(state: &mut State) {
     let focused = match state.desk.focus() {
@@ -281,34 +277,29 @@ fn lease(state: &mut State) {
         _ => None,
     };
     let now = sys::time_ns();
-    let Some((id, pid)) = focused else {
-        if state.leased_at.take().is_some() {
+    match state.lease.step(focused.map(|(id, _)| id), now) {
+        Step::Stay => {}
+        Step::End => {
             let _ = sys::input_to_console(false, 0);
             println!("desktop: the keys are the desktop's again");
+            state.lease.forget();
         }
-        state.asked = None;
-        return;
-    };
-    let fresh = state
-        .leased_at
-        .is_some_and(|at| now.saturating_sub(at) < LEASE_ASK_NS);
-    match state.asked {
-        // Not the terminal: asked once for this focus.
-        Some((asked, false)) if asked == id => return,
-        Some((asked, true)) if asked == id && fresh => return,
-        _ => {}
+        Step::Ask => {
+            let Some((id, pid)) = focused else {
+                return;
+            };
+            let lent = sys::input_to_console(true, pid).is_ok();
+            let lent = state.lease.asked(id, lent, now);
+            if lent.new {
+                state.desk.keys_lent();
+            }
+            match lent.moved {
+                Some(true) => println!("desktop: the terminal window has the keys"),
+                Some(false) => println!("desktop: the keys are the desktop's again"),
+                None => {}
+            }
+        }
     }
-    let lent = sys::input_to_console(true, pid).is_ok();
-    if lent {
-        state.desk.keys_lent();
-    }
-    match (lent, state.leased_at.is_some()) {
-        (true, false) => println!("desktop: the terminal window has the keys"),
-        (false, true) => println!("desktop: the keys are the desktop's again"),
-        _ => {}
-    }
-    state.asked = Some((id, lent));
-    state.leased_at = lent.then_some(now);
 }
 
 /// One kernel input event, in logical px at scale 1.
@@ -344,6 +335,10 @@ fn input(state: &mut State, screen: &Screen, event: &InputEvent) {
                 2 => Button::Right,
                 _ => Button::Middle,
             };
+            if event.value != 0 {
+                // The kernel ended any lease on the press: lend again this pass.
+                state.lease.forget();
+            }
             Some(Input::Button {
                 button,
                 down: event.value != 0,
