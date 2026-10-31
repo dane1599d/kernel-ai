@@ -167,6 +167,9 @@ pub enum SelfTest {
     DeskCatalog,
     /// An app's kai:ui window on the desktop, closed from its control (P3 task 9).
     UiWindow,
+    /// The System monitor's window on the desktop, given a sample of the machine
+    /// and closed from its control (P4 task 9).
+    UiMonitor,
     /// An unused app naps and a click wakes it (P3 task 12b).
     DeskNap,
     /// Settings' keep-running switch, shell only, kept across a reboot (P4
@@ -354,6 +357,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=desk-panel-shell" => Some(SelfTest::DeskPanelShell),
             "test=desk-catalog" => Some(SelfTest::DeskCatalog),
             "test=ui-window" => Some(SelfTest::UiWindow),
+            "test=ui-monitor" => Some(SelfTest::UiMonitor),
             "test=desk-nap" => Some(SelfTest::DeskNap),
             "test=keep-running" => Some(SelfTest::KeepRunning {
                 reread: cmdline.split_whitespace().any(|w| w == "reread"),
@@ -448,6 +452,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DeskPanelShell
             | SelfTest::DeskCatalog
             | SelfTest::UiWindow
+            | SelfTest::UiMonitor
             | SelfTest::DeskNap
             | SelfTest::KeepRunning { .. }
             | SelfTest::DeskCard
@@ -567,10 +572,17 @@ pub fn plan(test: SelfTest) -> Option<String> {
                 plan.push_str(crate::app_terminal_tests::PLAN);
                 kabi::plan::SHELL_DESK
             }
-            SelfTest::DeskAgent | SelfTest::DeskTakeover | SelfTest::AppSettings => {
+            SelfTest::DeskAgent | SelfTest::DeskTakeover => {
                 plan.push('\n');
                 plan.push_str(crate::agent_desk_tests::DESK);
                 kabi::plan::SHELL_DESK
+            }
+            // Settings reads what the shell saved, so its shell has a state
+            // directory as well as the desktop.
+            SelfTest::AppSettings => {
+                plan.push('\n');
+                plan.push_str(crate::agent_desk_tests::DESK);
+                crate::app_settings_tests::SHELL
             }
             SelfTest::KeepRunning { .. } => {
                 plan.push('\n');
@@ -654,6 +666,10 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
     if test == SelfTest::UiWindow {
         plan.push('\n');
         plan.push_str(crate::ui_tests::PLAN);
+    }
+    if test == SelfTest::UiMonitor {
+        plan.push('\n');
+        plan.push_str(&crate::app_window_tests::monitor_plan());
     }
     if test == SelfTest::DeskNap {
         plan.push('\n');

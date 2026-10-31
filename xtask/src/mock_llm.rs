@@ -338,7 +338,12 @@ const ACTS: &[(&str, &str)] = &[
         "switch to notes",
         r#"{"name":"ui_focus","arguments":{"window":"notes"}}"#,
     ),
-    // `app-settings` (P4 task 7): the agent opens Settings and looks at it.
+    // `app-settings` (P4 task 7): the agent sets the theme, opens Settings and
+    // looks at it.
+    (
+        "switch to the light theme",
+        r#"{"name":"appearance_set","arguments":{"setting":"theme","value":"light"}}"#,
+    ),
     (
         "open settings",
         r#"{"name":"ui_open","arguments":{"app":"settings","arg":null}}"#,

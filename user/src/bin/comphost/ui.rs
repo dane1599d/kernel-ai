@@ -254,7 +254,7 @@ impl Ui {
     /// `user` is true only for a transaction a person's key or click caused
     /// (`ui_input`) in an instance granted `shell_line`: never a close, a
     /// reply, an `ui_act` from the agent or a call, nor another app's input.
-    fn forward(&mut self, performed: Option<Performed>, user: bool) {
+    pub(crate) fn forward(&mut self, performed: Option<Performed>, user: bool) {
         let Some(performed) = performed.filter(|p| !p.is_empty()) else {
             return;
         };
