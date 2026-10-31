@@ -185,7 +185,13 @@ pub const VERSIONS: &[Version] = &[
             krate: "comp-editor-window",
             dirs: EDITOR_DIRS,
             feature: None,
-            wit: &["wit/kai-ui", "wit/kai-edit", "wit/kai-code", EDITOR_WIT],
+            wit: &[
+                "wit/kai-ui",
+                "wit/kai-edit",
+                "wit/kai-files",
+                "wit/kai-code",
+                EDITOR_WIT,
+            ],
         },
     },
     // The System monitor (P4 task 9), a window over a reading of the machine.

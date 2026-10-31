@@ -13,6 +13,10 @@
 //! The agent's two actions only move the editor and say where it is; an edit is
 //! typed, and a build starts from a key or a click in the window, never from an
 //! action (comphost's build gate, on `wasmhost`'s `user` flag).
+//!
+//! The editor also opens a file of the person's own: Ctrl-O asks for its path and
+//! Ctrl-S saves it, through the OS's file door ([`files`]). The file's lines are
+//! then edited here and the edit service is not asked about them.
 
 #![cfg_attr(target_family = "wasm", no_std)]
 
@@ -20,6 +24,7 @@ extern crate alloc;
 
 #[cfg(target_family = "wasm")]
 mod bind;
+mod files;
 pub mod keys;
 
 use alloc::format;
@@ -29,6 +34,7 @@ use comp_editor_ui as ui;
 use comp_ui_bind::{OnUi, Shown, Sink};
 use compsdk::{Component, ImportError};
 use editcore::screen::{Input, Key, Screen};
+use files::Files;
 use minicbor::{Decode, Encode};
 use uikit::widget::{UiError, UiEvent};
 
@@ -38,6 +44,8 @@ pub const SCHEMA: u32 = 1;
 const START: (usize, usize) = (24, 80);
 /// Most requests sent and not answered.
 const MAX_PENDING: usize = 8;
+/// What an editor with nothing open says, so a person who opens it knows what to do.
+const EMPTY: &str = "No file is open: Ctrl-O opens one by its path.";
 
 /// What the checkpoint keeps. Nothing yet: the session lives in the edit
 /// service, and a draft in storage is a later step.
@@ -47,14 +55,20 @@ pub struct V1 {
     pub reserved: u32,
 }
 
-/// What the editor needs of the OS besides drawing: `kai:edit/edit.send`, and the
-/// call's clock.
+/// What the editor needs of the OS besides drawing: `kai:edit/edit.send`, the
+/// file door (`kai:files`) and the call's clock.
 pub trait Host: Sink {
     /// Queues `message` for the edit service; the ticket its answer comes under.
     fn send(&mut self, message: &[u8]) -> u32;
     fn now_ms(&self) -> u64;
     /// A line for the log.
     fn note(&mut self, _text: &str) {}
+    /// Queues a read of the whole file at `path` (`kai:files`): the ticket the
+    /// file's bytes, or why not, come back under.
+    fn read_file(&mut self, path: &str) -> u32;
+    /// Queues `data` as the whole text of the file at `path`, made when `create`
+    /// and replaced otherwise: the ticket the answer comes back under.
+    fn write_file(&mut self, path: &str, data: &[u8], create: bool) -> u32;
 }
 
 pub struct EditorWindow {
@@ -62,14 +76,22 @@ pub struct EditorWindow {
     shown: Shown,
     /// Requests sent and not answered: (ticket, the screen's number for it).
     tickets: Vec<(u32, u32)>,
+    /// The file of the person's own that is open, if any, and its transfer.
+    files: Files,
+    /// The screen's rows and columns as the code view last said, for a new screen.
+    grid: (usize, usize),
 }
 
 impl EditorWindow {
     fn new() -> Self {
+        let mut screen = Screen::new(START.0, START.1);
+        screen.note(EMPTY, false);
         Self {
-            screen: Screen::new(START.0, START.1),
+            screen,
             shown: Shown::new(),
             tickets: Vec::new(),
+            files: Files::default(),
+            grid: START,
         }
     }
 
@@ -89,7 +111,11 @@ impl EditorWindow {
     }
 
     /// Sends what the screen wants sent; it has one request in flight at a time.
+    /// With a file open the file answers, in this call.
     fn pump(&mut self, host: &mut dyn Host) {
+        if self.files.answer(&mut self.screen) {
+            return;
+        }
         while self.tickets.len() < MAX_PENDING {
             let Some(out) = self.screen.next_request() else {
                 break;
@@ -114,6 +140,10 @@ impl EditorWindow {
         ticket: u32,
         outcome: Result<Vec<u8>, String>,
     ) -> Result<(), UiError> {
+        if self.files.owns(ticket) {
+            self.files.reply(&mut self.screen, self.grid, outcome);
+            return self.settle(host);
+        }
         let Some(at) = self.tickets.iter().position(|(t, _)| *t == ticket) else {
             return Ok(());
         };
@@ -144,7 +174,10 @@ impl EditorWindow {
         if let Some(input) = input {
             self.screen.input(input);
         }
-        let settled = self.settle(host);
+        let mut settled = self.settle(host);
+        if self.take_file_wishes(host) {
+            settled = settled.and(self.settle(host));
+        }
         if mods != 0 {
             let busy = self.screen.busy();
             let sent = self.tickets.len();
@@ -153,6 +186,20 @@ impl EditorWindow {
             ));
         }
         settled
+    }
+
+    /// Ctrl-O's path and Ctrl-S, which the screen only notes: the file is the
+    /// window's to open and save. Whether either was asked for.
+    fn take_file_wishes(&mut self, host: &mut dyn Host) -> bool {
+        let open = self.screen.take_open();
+        let save = self.screen.take_save();
+        if let Some(path) = &open {
+            self.files.ask_open(host, &mut self.screen, path);
+        }
+        if save {
+            self.files.ask_save(host, &mut self.screen);
+        }
+        open.is_some() || save
     }
 
     /// A click at row `row` and text cell `cell` of the code view.
@@ -181,8 +228,8 @@ impl EditorWindow {
     /// The code view shows `rows` rows of `cells` text cells.
     pub fn on_size(&mut self, host: &mut dyn Host, rows: u16, cells: u16) -> Result<(), UiError> {
         let gutter = self.screen.view().gutter;
-        self.screen
-            .resize(usize::from(rows).max(1), usize::from(cells) + gutter);
+        self.grid = (usize::from(rows).max(1), usize::from(cells) + gutter);
+        self.screen.resize(self.grid.0, self.grid.1);
         self.settle(host)
     }
 
@@ -205,6 +252,12 @@ impl EditorWindow {
         if line == 0 || line > 99_999 {
             return Err(String::from("Lines count from 1."));
         }
+        if self.files.unsaved(&self.screen) {
+            return Err(String::from(
+                "The editor holds edits that are not saved or built; save or reset them first.",
+            ));
+        }
+        self.files.close(&mut self.screen, self.grid);
         self.screen.open(component, None, Some((path, line)));
         self.settle(host)
             .map_err(|e| format!("the window: {e:?}"))?;

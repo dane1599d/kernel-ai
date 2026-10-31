@@ -24,11 +24,13 @@ world editor {
     include kai:app/component@0.1.0;
     import kai:app/clock@0.1.0;
     import kai:edit/edit@0.1.0;
+    import kai:files/files@0.1.0;
     import kai:ui/view@0.1.1;
     import kai:code/code@0.1.0;
     export kai:ui/input@0.1.1;
     export kai:code/code-input@0.1.0;
     export kai:edit/replies@0.1.0;
+    export kai:files/replies@0.1.0;
     export actions;
 }
 
