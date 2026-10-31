@@ -396,6 +396,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::DeskTerm => run_case(term_tests::check),
         SelfTest::DeskAgent => run_case(agent_desk_tests::agent_check),
         SelfTest::DeskDefault => run_case(default_tests::check),
+        SelfTest::DeskNoMemory => run_case(default_tests::no_memory_check),
         SelfTest::AppSettings => run_case(app_settings_tests::check),
         SelfTest::DeskTakeover => run_case(agent_desk_tests::takeover_check),
         SelfTest::Scriptrun => run_case(scriptrun_tests::check),

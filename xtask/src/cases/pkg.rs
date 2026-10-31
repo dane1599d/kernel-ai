@@ -123,6 +123,19 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("desk-default", "test=desk-default")
     },
+    // The same system with what is left of the admission budget taken first: the
+    // kernel refuses Notes' window, the supervisor answers at once, and the
+    // shell says so plainly instead of failing silently.
+    TestCase {
+        server: true,
+        data: Some(VIRTIO),
+        memory_mib: Some(2048),
+        expect: &[
+            "cannot start notes-window: NoMemory",
+            "desk-no-memory: with no memory left, opening Notes said so plainly: Not enough memory to open Notes",
+        ],
+        ..case("desk-no-memory", "test=desk-no-memory")
+    },
     // P4 task 2: `pkg` installs from the `pkgrepo=` mirror through PKG_FETCH, in
     // 192 KiB ranges, checked with kaituf against the root the image carries
     // (the mirror is signed by the image's own per-build keys); undo, then the
