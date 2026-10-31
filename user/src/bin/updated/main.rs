@@ -20,10 +20,12 @@
 //! `step=models` exercises the model channel (`models.rs`) for the `models`
 //! case: the list, the import of the import disk's fixture, and `model_use`.
 //!
-//! It prints a line for each step that passed, or `updated: FAIL ...`. Then,
-//! with `serve` in its plan line, it answers the shell's model requests and
-//! judges a model on trial; without, it idles: the supervisor would restart an
-//! exited service.
+//! It prints a line for each step that passed, or `updated: FAIL ...`. With no
+//! step, as every boot with a shell plans it (`kabi::plan::with_updated`), it
+//! does nothing at boot but settle a model trial left pending. Then, with
+//! `serve` in its plan line, it answers the shell's model requests and judges
+//! a model on trial; without, it idles: the supervisor would restart an exited
+//! service.
 
 #![no_std]
 #![no_main]
@@ -186,16 +188,16 @@ fn from_shell(pid: u64) -> bool {
 /// Answers the shell's model requests on `updated`'s endpoint, and between
 /// them judges a trial and moves an import on; with no endpoint, only that.
 /// Every request is at most [`REQUEST`] bytes and every answer one message.
+/// With no model store (no `fs`), each request is answered at once that there
+/// is none, so the shell never waits on it.
 fn serve(mut channel: Option<models::Channel>) -> ! {
     const REQUEST: usize = 128;
-    let Some(channel) = channel.as_mut() else {
-        idle()
-    };
     // One byte more than a request may be: the kernel cuts a longer one to
     // the buffer, so a full buffer means too long.
     let mut request = [0u8; REQUEST + 1];
     loop {
-        let wait = if channel.busy() { 10 } else { 60_000 };
+        let busy = channel.as_ref().is_some_and(models::Channel::busy);
+        let wait = if busy { 10 } else { 60_000 };
         let mut info = RecvInfo::default();
         match sys::recv_h(&mut request, wait, &mut info) {
             Ok(len) => {
@@ -207,7 +209,10 @@ fn serve(mut channel: Option<models::Channel>) -> ! {
                 let mut reply = match (from_shell(info.caller_pid), len > REQUEST) {
                     (false, _) => String::from("err only the shell may ask"),
                     (true, true) => String::from("err request too long"),
-                    (true, false) => channel.answer(text),
+                    (true, false) => match channel.as_mut() {
+                        Some(channel) => channel.answer(text),
+                        None => String::from("err there is no model store: no data disk"),
+                    },
                 };
                 let mut end = reply.len().min(kabi::MAX_MESSAGE);
                 while !reply.is_char_boundary(end) {
@@ -216,20 +221,31 @@ fn serve(mut channel: Option<models::Channel>) -> ! {
                 reply.truncate(end);
                 let _ = sys::svc_reply(reply.as_bytes());
             }
-            Err(Error::TimedOut) => channel.tick(),
+            Err(Error::TimedOut) => tick(&mut channel),
             // No `serve` in the plan line (Permission): work without serving.
-            Err(Error::NotFound | Error::Permission) => loop {
-                channel.tick();
-                sys::sleep_ms(if channel.busy() { 10 } else { 60_000 });
-            },
+            Err(Error::NotFound | Error::Permission) => {
+                let Some(channel) = channel.as_mut() else {
+                    idle()
+                };
+                loop {
+                    channel.tick();
+                    sys::sleep_ms(if channel.busy() { 10 } else { 60_000 });
+                }
+            }
             // Anything else is one receive gone wrong, not the end of serving
             // (K's review of #447).
             Err(why) => {
                 println!("updated: a receive failed: {why:?}");
-                channel.tick();
+                tick(&mut channel);
                 sys::sleep_ms(1_000);
             }
         }
+    }
+}
+
+fn tick(channel: &mut Option<models::Channel>) {
+    if let Some(channel) = channel.as_mut() {
+        channel.tick();
     }
 }
 

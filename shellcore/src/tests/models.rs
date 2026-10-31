@@ -77,6 +77,21 @@ fn the_list_names_each_model_with_its_licence_and_state() {
 }
 
 #[test]
+fn with_no_model_store_the_list_says_why() {
+    let host = FakeHost::new();
+    *host.model_answer.borrow_mut() = Some("err there is no model store: no data disk".into());
+    let mut shell = shell(&host);
+    host.calls
+        .borrow_mut()
+        .push_back(call(r#"{"name":"model_list","arguments":{}}"#));
+    let reply = shell.eval("which AI models do I have");
+    assert!(
+        !reply.ok && reply.text.contains("there is no model store: no data disk"),
+        "{reply:?}"
+    );
+}
+
+#[test]
 fn a_named_switch_runs_and_undo_keeps_the_model_before() {
     let host = FakeHost::new();
     let mut shell = shell(&host);

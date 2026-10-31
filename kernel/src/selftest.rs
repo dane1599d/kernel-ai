@@ -401,6 +401,29 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
         .unwrap_or(SelfTest::None)
 }
 
+/// The words after `updated`'s plan line: none, so it settles a model trial and
+/// then serves the shell, except in `update`, which runs a step of the update
+/// service (`updated=`, `check` by default; a refusal restarts into the running
+/// slot) and takes any `updated.<word>` as a word, as `restart=window`.
+fn updated_words(test: SelfTest) -> String {
+    if test != SelfTest::Update {
+        return String::new();
+    }
+    let step = crate::cmdline()
+        .split_whitespace()
+        .find_map(|w| w.strip_prefix("updated="))
+        .unwrap_or("check");
+    let mut words = format!(" after=restart step={step}");
+    for word in crate::cmdline()
+        .split_whitespace()
+        .filter_map(|w| w.strip_prefix("updated."))
+    {
+        words.push(' ');
+        words.push_str(word);
+    }
+    words
+}
+
 /// The service plan for this boot, or None for the boots that run no user space.
 /// Not for `test`: its exact frame and heap leak checks must not race processes
 /// starting up.
@@ -579,29 +602,9 @@ pub fn plan(test: SelfTest) -> Option<String> {
             }
             _ => shell,
         };
+        // `updated`, the shell's model channel, comes just before it.
         plan.push('\n');
-        plan.push_str(shell);
-    }
-    // `update` runs the update service's check once the shell is up.
-    if test == SelfTest::Update {
-        // `updated=update`: an update from the update disk in place of the
-        // check; in both, a refusal restarts into the running slot.
-        let step = crate::cmdline()
-            .split_whitespace()
-            .find_map(|w| w.strip_prefix("updated="))
-            .unwrap_or("check");
-        plan.push('\n');
-        plan.push_str(kabi::plan::UPDATED);
-        plan.push_str(" after=restart step=");
-        plan.push_str(step);
-        // `updated.<word>`: a word for `updated`'s line, as `restart=window`.
-        for word in crate::cmdline()
-            .split_whitespace()
-            .filter_map(|w| w.strip_prefix("updated."))
-        {
-            plan.push(' ');
-            plan.push_str(word);
-        }
+        plan.push_str(&kabi::plan::with_updated(shell, &updated_words(test)));
     }
     // `act-rule` stops processes the supervisor does not restart, and one
     // service it does.
