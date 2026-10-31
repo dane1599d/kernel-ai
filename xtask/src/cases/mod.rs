@@ -11,6 +11,7 @@ mod kernel;
 mod network;
 mod pkg;
 mod storage;
+mod tour;
 mod updates;
 
 use crate::buildsvc::BuildService;
@@ -168,6 +169,11 @@ pub fn test_cases() -> Vec<&'static TestCase> {
 
 /// The M5 exit test: a 10-minute spawn, exit and sleep storm.
 pub const SOAK_CASES: &[TestCase] = &[case("storm-10min", "test=storm-600")];
+
+/// Cases booted only when `XTASK_CASE` names one: the screenshot tour.
+pub fn named_only() -> Vec<&'static TestCase> {
+    tour::CASES.iter().collect()
+}
 
 #[cfg(test)]
 mod tests {
