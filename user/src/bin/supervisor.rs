@@ -645,7 +645,14 @@ fn start(service: &mut Service, now: u64) -> Result<(), kabi::Error> {
         }
         Err(error) => {
             println!("cannot start {}: {error:?}", service.spec.name);
-            service.start_at_ms = Some(now + 1000);
+            // An app that starts on demand and found no memory waits for the
+            // next demand: it must not open by itself once memory frees, after
+            // the person was told it could not (lane C's review of #519).
+            let asked_for = service.spec.start == Start::Demand;
+            service.start_at_ms = match (asked_for, error) {
+                (true, kabi::Error::NoMemory) => None,
+                _ => Some(now + 1000),
+            };
             Err(error)
         }
     }

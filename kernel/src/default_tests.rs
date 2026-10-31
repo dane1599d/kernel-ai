@@ -109,6 +109,8 @@ fn open_notes() -> Result<String, &'static str> {
 
 /// The supervisor's app-call waits 5 s at most, and the shell's 15 s.
 const OPEN_MS: u64 = 60_000;
+/// Several times the supervisor's one-second retry of a refused start.
+const RETRY_WAIT_MS: u64 = 5_000;
 
 pub fn no_memory_check() -> Result<(), &'static str> {
     system_up()?;
@@ -120,8 +122,11 @@ pub fn no_memory_check() -> Result<(), &'static str> {
         log!("desk-no-memory: open notes answered {answer:?}");
         return Err("desk-no-memory: the shell did not say there is no memory");
     }
+    // Memory is free again; the app waits to be asked, and does not open by
+    // itself past the supervisor's one-second retry.
+    threads::sleep_ms(RETRY_WAIT_MS);
     if !process::named(APP).is_empty() {
-        return Err("desk-no-memory: notes-window started with no memory for it");
+        return Err("desk-no-memory: notes-window opened by itself once memory freed");
     }
     log!("desk-no-memory: with no memory left, opening Notes said so plainly: {NOT_ENOUGH}");
     Ok(())
