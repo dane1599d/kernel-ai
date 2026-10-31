@@ -29,7 +29,7 @@ node 11 clip 0,0 640x440
   stroke 324,76 76x28 line_strong w1 r6
   text 334,81 label text "Refresh"
 node 12 clip 0,0 640x440
-  stroke 12,112 616x228 line_strong w1 r6
+  stroke 12,112 616x240 line_strong w1 r6
   fill 13,137 614x24 raised r0
   text 23,116 label muted "PID"
   text 23,139 body text "4"
@@ -53,12 +53,8 @@ node 12 clip 0,0 640x440
   text 227,211 body text "160 KiB"
   fill 13,136 614x1 line r0
 node 13 clip 0,0 640x440
-  text 12,348 body text "Model: ready, 12.5 tokens/s"
-node 15 clip 0,0 640x440
-  fill 12,376 52x28 raised r6
-  stroke 12,376 52x28 line_strong w1 r6
-  text 22,381 label text "Stop"
+  text 12,360 body text "Model: ready, 12.5 tokens/s"
 node 16 clip 0,0 640x440
-  text 72,376 small muted "Stops every process named llm"
+  text 12,388 small muted "To stop llm, ask Kai; it asks you first"
 node 17 clip 0,0 640x440
   text 12,412 small muted "4 processes"

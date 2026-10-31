@@ -167,11 +167,17 @@ pub enum SelfTest {
     DeskCatalog,
     /// An app's kai:ui window on the desktop, closed from its control (P3 task 9).
     UiWindow,
+    /// The editor app's window on the desktop, opened by the agent's door, typed
+    /// into and built in the background (P4 task 11).
+    AppEditor,
     /// The System monitor's window on the desktop, given a sample of the machine
     /// and closed from its control (P4 task 9).
     UiMonitor,
     /// An unused app naps and a click wakes it (P3 task 12b).
     DeskNap,
+    /// A saved appearance repaints `desktop` at once and holds across its
+    /// restart (P4 task 8).
+    DeskAppearance,
     /// Settings' keep-running switch, shell only, kept across a reboot (P4
     /// task 7): boot 1, then boot 2 (`reread`).
     KeepRunning {
@@ -194,6 +200,8 @@ pub enum SelfTest {
     DeskNoMemory,
     /// The Settings app on the desktop, its window kept from the agent (P4 task 7).
     AppSettings,
+    /// `test=desk-tour`: screenshots of the desktop and its apps, not a gate.
+    DeskTour,
     /// `desk-takeover` (P3 task 10): a key in the agent's window stops it.
     DeskTakeover,
     /// `scriptrun` through a Job, and spike S01-1's M3 and M5 (P1 task 14).
@@ -363,8 +371,10 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=desk-panel-shell" => Some(SelfTest::DeskPanelShell),
             "test=desk-catalog" => Some(SelfTest::DeskCatalog),
             "test=ui-window" => Some(SelfTest::UiWindow),
+            "test=app-editor" => Some(SelfTest::AppEditor),
             "test=ui-monitor" => Some(SelfTest::UiMonitor),
             "test=desk-nap" => Some(SelfTest::DeskNap),
+            "test=desk-appearance" => Some(SelfTest::DeskAppearance),
             "test=keep-running" => Some(SelfTest::KeepRunning {
                 reread: cmdline.split_whitespace().any(|w| w == "reread"),
             }),
@@ -376,6 +386,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=desk-default" => Some(SelfTest::DeskDefault),
             "test=desk-no-memory" => Some(SelfTest::DeskNoMemory),
             "test=app-settings" => Some(SelfTest::AppSettings),
+            "test=desk-tour" => Some(SelfTest::DeskTour),
             "test=desk-takeover" => Some(SelfTest::DeskTakeover),
             "test=scriptrun" => Some(SelfTest::Scriptrun),
             "test=fpu" => Some(SelfTest::Fpu),
@@ -460,9 +471,11 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DeskPanelShell
             | SelfTest::DeskCatalog
             | SelfTest::UiWindow
+            | SelfTest::AppEditor
             | SelfTest::UiMonitor
             | SelfTest::DeskNap
             | SelfTest::KeepRunning { .. }
+            | SelfTest::DeskAppearance
             | SelfTest::DeskCard
             | SelfTest::DeskStanding
             | SelfTest::UiKeys
@@ -471,6 +484,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DeskDefault
             | SelfTest::DeskNoMemory
             | SelfTest::AppSettings
+            | SelfTest::DeskTour
             | SelfTest::DeskTakeover
             | SelfTest::TuneRevert
             | SelfTest::TuneStall
@@ -606,6 +620,11 @@ pub fn plan(test: SelfTest) -> Option<String> {
                 plan.push_str(crate::agent_desk_tests::DESK);
                 kabi::plan::SHELL_DESK
             }
+            SelfTest::DeskTour => {
+                plan.push('\n');
+                plan.push_str(crate::desk_tour_tests::DESKTOP);
+                crate::desk_tour_tests::SHELL
+            }
             // Settings reads what the shell saved, so its shell has a state
             // directory as well as the desktop.
             SelfTest::AppSettings => {
@@ -616,6 +635,14 @@ pub fn plan(test: SelfTest) -> Option<String> {
             SelfTest::KeepRunning { .. } => {
                 plan.push('\n');
                 plan.push_str(crate::keep_tests::PLAN);
+                crate::keep_tests::SHELL
+            }
+            // The desktop with its card, before the shell with `files` and
+            // `state` (the appearance is saved in `/system/state`) and its
+            // route to `desktop`.
+            SelfTest::DeskAppearance => {
+                plan.push('\n');
+                plan.push_str(crate::desk_tests::BOOT_PLAN);
                 crate::keep_tests::SHELL
             }
             _ => shell,
@@ -696,6 +723,10 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
         plan.push('\n');
         plan.push_str(crate::ui_tests::PLAN);
     }
+    if test == SelfTest::AppEditor {
+        plan.push('\n');
+        plan.push_str(&crate::app_editor_tests::plan());
+    }
     if test == SelfTest::UiMonitor {
         plan.push('\n');
         plan.push_str(&crate::app_window_tests::monitor_plan());
@@ -723,6 +754,10 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
     if test == SelfTest::AppSettings {
         plan.push('\n');
         plan.push_str(crate::app_settings_tests::APPS);
+    }
+    if test == SelfTest::DeskTour {
+        plan.push('\n');
+        plan.push_str(crate::desk_tour_tests::APPS);
     }
     Some(plan)
 }

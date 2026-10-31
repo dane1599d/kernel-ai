@@ -7,6 +7,9 @@
 //!   `idle`, `acting <call>\t<target>`, `done <line>` and `refused <reason>`.
 //!   (Thinking is the panel's own, from the Enter that queued the line.)
 //!
+//! - `appearance <kai-appearance 1 text>` → `ok` or `err <why>`: the appearance
+//!   the shell just saved (P4 task 8), for `desktop` to paint in at once.
+//!
 //! `desktop` takes these from the shell alone. The texts are the shell's code
 //! results and reasons, never the model's words, and are cut to one line.
 
@@ -15,6 +18,19 @@ use alloc::format;
 use alloc::string::{String, ToString};
 
 pub const TAKE: &str = "panel take";
+/// Before the shell's saved appearance.
+pub const APPEARANCE: &str = "appearance ";
+
+/// The shell's saved appearance, `kai-appearance 1` text, as a request.
+pub fn encode_appearance(text: &str) -> String {
+    format!("{APPEARANCE}{text}")
+}
+
+/// The appearance text an [`encode_appearance`] request carries; `None` for any
+/// other request. `look` checks the text itself.
+pub fn parse_appearance(request: &str) -> Option<&str> {
+    request.strip_prefix(APPEARANCE)
+}
 const STATE: &str = "panel state ";
 /// The longest text a state carries: the panel shows one line.
 pub const MAX_TEXT: usize = 200;
@@ -98,6 +114,21 @@ fn one_line(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_appearance_goes_whole_and_nothing_else_is_taken_for_it() {
+        let text = "kai-appearance 1\ntheme light\n";
+        let request = super::encode_appearance(text);
+        assert_eq!(super::parse_appearance(&request), Some(text));
+        for other in [
+            "appearance",
+            "panel take",
+            "panel state idle",
+            " appearance x",
+        ] {
+            assert_eq!(super::parse_appearance(other), None, "{other:?}");
+        }
+    }
+
     use super::*;
 
     #[test]

@@ -259,12 +259,21 @@ impl SettingsWindow {
                     log(&alloc::format!("settings: grants {app}: {why}"));
                 }
             }
-            (Pending::Change(then), Ok(_)) => match then {
-                Applied::Theme(theme) => self.settings.appearance.theme = theme,
-                Applied::Legible(on) => self.settings.appearance.legible = on,
-                Applied::ReducedMotion(on) => self.settings.appearance.reduced_motion = on,
-                Applied::Intent(intent) => self.settings.applied(&intent),
-            },
+            (Pending::Change(then), Ok(_)) => {
+                // What the shell kept is read again, so the page shows its word
+                // for it and not only what was asked.
+                let again = then.read_back();
+                match then {
+                    Applied::Theme(theme) => self.settings.appearance.theme = theme,
+                    Applied::Legible(on) => self.settings.appearance.legible = on,
+                    Applied::ReducedMotion(on) => self.settings.appearance.reduced_motion = on,
+                    Applied::Intent(intent) => self.settings.applied(&intent),
+                }
+                if let Some(read) = again {
+                    let ticket = send(read.request());
+                    self.wait_for(ticket, Pending::Read(read));
+                }
+            }
         }
         // Whatever the answer was, the next apps' rows are asked for as room
         // comes.

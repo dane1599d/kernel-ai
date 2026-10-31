@@ -136,6 +136,19 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("desk-no-memory", "test=desk-no-memory")
     },
+    // P4 task 8: a saved appearance repaints `desktop` at once and holds across
+    // its restart, read from the screen's own pixels. `kai-data` holds the
+    // appearance (`/system/state`).
+    TestCase {
+        server: true,
+        data: Some(VIRTIO),
+        expect: &[
+            "desktop: painting in the light theme",
+            "desk-appearance: the saved light theme painted the desk at once",
+            "desk-appearance: the restarted desktop painted the saved light theme",
+        ],
+        ..case("desk-appearance", "test=desk-appearance")
+    },
     // P4 task 2: `pkg` installs from the `pkgrepo=` mirror through PKG_FETCH, in
     // 192 KiB ranges, checked with kaituf against the root the image carries
     // (the mirror is signed by the image's own per-build keys); undo, then the

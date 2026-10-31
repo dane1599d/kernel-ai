@@ -1,11 +1,10 @@
 //! The monitor model on the host: how it reads a sample, how two samples make a
-//! CPU share, how it sorts and selects, what it asks the OS to stop, and that
+//! CPU share, how it sorts and selects, what the status line says of a sample it could not read, and that
 //! odd numbers change nothing but what the window shows.
 
 #[path = "../../../testkit/hostile.rs"]
 mod hostile;
 
-use comp_monitor::fake::Queue;
 use comp_monitor::sample::{ModelState, ModelStatus, ProcSample, Sample};
 use comp_monitor::{MAX_PROCS, Monitor, NAME_CHARS, Sort, Status, view};
 
@@ -241,41 +240,7 @@ fn selecting_by_name_or_row_keeps_the_process_through_a_new_sample() {
 }
 
 #[test]
-fn stopping_asks_the_os_by_name_and_only_for_a_name_it_can_give() {
-    let mut os = Queue::default();
-    let mut mon = running();
-    mon.stop_selected(&mut os);
-    assert_eq!(
-        mon.status(),
-        &Status::Failed("Pick a process to stop first.".into())
-    );
-    assert!(os.calls.is_empty());
-
-    mon.act_select("llm").unwrap();
-    mon.stop_selected(&mut os);
-    let call = &os.calls[0];
-    assert_eq!(
-        (call.name, call.args.as_str()),
-        ("process_stop", r#"{name: "llm"}"#)
-    );
-    assert!(mon.busy());
-
-    // The user said no, or the row refused: the status says so.
-    assert!(mon.done(1, Err("not allowed".into())));
-    assert_eq!(mon.status(), &Status::Failed("not allowed".into()));
-    assert!(!mon.busy());
-
-    // It stopped.
-    mon.stop_selected(&mut os);
-    assert!(mon.done(2, Ok(String::new())));
-    assert_eq!(mon.status(), &Status::Done("Stopped llm.".into()));
-    // An answer to nothing asked is nothing.
-    assert!(!mon.done(99, Ok(String::new())));
-}
-
-#[test]
-fn a_name_that_was_cut_or_changed_is_never_given_to_the_stop_row() {
-    let mut os = Queue::default();
+fn a_name_the_kernel_gave_is_shown_cut_and_without_control_characters() {
     let mut mon = Monitor::new();
     let long = "x".repeat(NAME_CHARS + 10);
     mon.update(&sample(
@@ -287,16 +252,13 @@ fn a_name_that_was_cut_or_changed_is_never_given_to_the_stop_row() {
             proc(4, "back\\slash", 1, 0),
         ],
     ));
-    for pid in [1, 2, 3, 4] {
-        let i = mon.procs().iter().position(|p| p.pid == pid).unwrap();
-        assert!(mon.select_index(i));
-        mon.stop_selected(&mut os);
-        assert!(matches!(mon.status(), Status::Failed(_)), "pid {pid}");
-    }
-    assert!(os.calls.is_empty());
+    assert_eq!(mon.procs().len(), 4);
     assert!(mon.procs().iter().all(|p| {
         p.name.chars().count() <= NAME_CHARS + 1 && p.name.chars().all(|c| !c.is_control())
     }));
+    // Quotes and backslashes are text, kept as they came.
+    assert!(mon.procs().iter().any(|p| p.name == "q\"uote"));
+    assert!(mon.procs().iter().any(|p| p.name == "back\\slash"));
 }
 
 #[test]
@@ -400,20 +362,6 @@ fn an_unreadable_sample_is_said_and_the_next_good_one_clears_it() {
     assert_eq!(names(&mon).len(), before);
     mon.update(&usual(3 * SEC, 612 * MS));
     assert_eq!(mon.status(), &Status::Ready);
-
-    // A message about something else is not cleared by a sample.
-    let mut os = Queue::default();
-    mon.act_select("shell").unwrap();
-    mon.stop_selected(&mut os);
-    mon.done(1, Ok(String::new()));
-    mon.no_reading("x");
-    mon.done(99, Ok(String::new()));
-    mon.update(&usual(4 * SEC, 612 * MS));
-    assert_eq!(mon.status(), &Status::Ready);
-    mon.stop_selected(&mut os);
-    mon.done(2, Err("the user said no".into()));
-    mon.update(&usual(5 * SEC, 612 * MS));
-    assert!(matches!(mon.status(), Status::Failed(m) if m.contains("said no")));
 
     // Odd text is data.
     mon.no_reading("a\u{1b}[31m\u{202e} very long ".repeat(20).as_str());

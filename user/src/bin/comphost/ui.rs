@@ -81,6 +81,23 @@ pub struct Ui {
     sent: effects::Sent,
     /// The `kai:settings` requests' way to the shell, for the Settings app only.
     settings: Option<crate::kai_settings::Forward>,
+    /// The desktop's theme, by name, and the colours its windows paint in.
+    theme: String,
+    palette: look::Palette,
+}
+
+/// Modified keys and focus changes, for the log: rare, and they carry no typed text.
+fn log_input(window: u32, input: &uikit::input::Input) {
+    use uikit::input::{Input, Mods};
+    match input {
+        Input::Key {
+            key, down, mods, ..
+        } if *mods != Mods::default() => {
+            println!("comphost: window {window}: key {key:?} down {down} with {mods:?}");
+        }
+        Input::FocusIn | Input::FocusOut => println!("comphost: window {window}: {input:?}"),
+        _ => {}
+    }
 }
 
 impl Ui {
@@ -103,6 +120,8 @@ impl Ui {
             reply: alloc::vec![0u8; kabi::MAX_MESSAGE],
             sent: effects::Sent::default(),
             settings: None,
+            theme: String::from(look::DARK.name),
+            palette: look::DARK,
         })
     }
 
@@ -227,8 +246,15 @@ impl Ui {
         for (app, input) in inputs {
             // Typed input is a transaction too: what the app saves or asks for
             // because of it is kept like an action call's.
-            let performed = serve_shown(host, |core| core.ui_input(app, input));
-            self.forward(performed, true);
+            // Its effects go as the person's only from an instance granted
+            // `shell_line`: the image's own Terminal, never another app, an
+            // upload or a package swapped in under its name.
+            let mut granted = false;
+            let performed = serve_shown(host, |core| {
+                granted = core.grants().shell_line;
+                core.ui_input(app, input)
+            });
+            self.forward(performed, granted);
         }
         if typed {
             self.pump(host);
@@ -245,7 +271,8 @@ impl Ui {
     /// Sends what the app's transaction queued to `desktop`, for the shell to
     /// run; `desktop` knows which app this is from the kernel, not from us.
     /// `user` is true only for a transaction a person's key or click caused
-    /// (`ui_input`): never a close, a reply, an `ui_act` from the agent or a call.
+    /// (`ui_input`) in an instance granted `shell_line`: never a close, a
+    /// reply, an `ui_act` from the agent or a call, nor another app's input.
     pub(crate) fn forward(&mut self, performed: Option<Performed>, user: bool) {
         let Some(performed) = performed.filter(|p| !p.is_empty()) else {
             return;
@@ -317,6 +344,7 @@ impl Ui {
                 match surfabi::header::take(page) {
                     Ok(Some(event)) => {
                         if let Some(input) = self.desk.seat_state.input(&event) {
+                            log_input(pool.app, &input);
                             out.push((pool.app, input));
                         }
                     }
@@ -339,7 +367,7 @@ impl Ui {
         for t in told {
             // A focus wakes only an app comphost napped itself (its caller
             // decides); a close or an action wakes any suspended app.
-            if !matches!(t, Told::Restarted | Told::Focus(_))
+            if !matches!(t, Told::Restarted | Told::Focus(_) | Told::Theme(_))
                 && let Some(reply) = host.wake()?
             {
                 println!(
@@ -350,6 +378,7 @@ impl Ui {
             match t {
                 Told::Restarted => self.reopen(),
                 Told::Focus(_) => self.focused = true,
+                Told::Theme(name) => self.set_theme(&name),
                 Told::Close(window) => {
                     let performed = serve_shown(host, |core| {
                         core.ui_events(window, &[UiEvent::CloseRequested])
@@ -383,6 +412,29 @@ impl Ui {
         }
         self.pump(host);
         Ok(())
+    }
+
+    /// Paints in the desktop's theme `name` from now on: every open window
+    /// again, whole, from its last frame. A theme `look` does not ship keeps
+    /// the one in use. Layout still measures with the starting type, so the
+    /// legible theme's own type sizes are not taken yet.
+    fn set_theme(&mut self, name: &str) {
+        if name == self.theme {
+            return;
+        }
+        let Some(theme) = look::theme::shipped().into_iter().find(|t| t.name == name) else {
+            println!("comphost: the desktop's theme {name:?} is not one it knows");
+            return;
+        };
+        self.palette = theme.palette();
+        self.text.set_theme(&theme);
+        self.theme = String::from(name);
+        for (app, mut frame) in core::mem::take(&mut self.frames) {
+            let (w, h) = frame.size;
+            frame.damage = alloc::vec![uikit::geom::Rect::new(0, 0, w, h)];
+            self.show(app, frame);
+        }
+        println!("comphost: painting in the {name} theme");
     }
 
     /// A new `desktop`: every window opens again from its last frame.
@@ -488,7 +540,7 @@ impl Ui {
         };
         let all = canvas.bounds();
         let mut painter = uipaint::Painter {
-            palette: &look::DARK,
+            palette: &self.palette,
             text: &mut self.text,
             scale: uipaint::Scale::of(uipaint::SCALE_ONE),
         };
