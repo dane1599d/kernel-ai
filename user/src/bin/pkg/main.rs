@@ -372,7 +372,7 @@ fn image(vol: &mut FsVolume<Calls>, step: &str) -> Result<String, String> {
     );
     let started = start_apps(cx.vol, current)?;
     let line = match started.is_empty() {
-        true => format!("generation {current} holds no app to start"),
+        true => format!("generation {current} starts no app from a package"),
         false => format!("started from generation {current}: {}", started.join(", ")),
     };
     cx.vol.write(&format!("pkg/case/{step}"), line.as_bytes())?;
