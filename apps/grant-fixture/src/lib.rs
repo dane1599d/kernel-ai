@@ -226,4 +226,30 @@ mod tests {
         assert_eq!(tree.len(), 3);
         assert!(tree.iter().any(|e| e.id == PING));
     }
+
+    /// The keys the `app-settings` case sends (`tab`, `ret`) press the button in a
+    /// real `uikit::Window`, the way a person at the keyboard would.
+    #[test]
+    fn tab_then_enter_presses_the_button() {
+        use uikit::input::{Input, Key, Mods};
+        use uikit::layout::FixedAdvance;
+        use uikit::window::Window;
+
+        let mut window = Window::new("Fixture", SIZE.0, SIZE.1);
+        for e in build() {
+            window.put(e.id, e.parent, e.layout, e.widget).unwrap();
+        }
+        window.commit(&FixedAdvance);
+        let mut key = |key| {
+            let ev = Input::Key {
+                key,
+                down: true,
+                mods: Mods::default(),
+                text: String::new(),
+            };
+            window.input(ev, &FixedAdvance)
+        };
+        assert!(!key(Key::Tab).contains(&UiEvent::Pressed(PING)));
+        assert!(key(Key::Enter).contains(&UiEvent::Pressed(PING)));
+    }
 }

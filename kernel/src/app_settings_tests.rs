@@ -22,8 +22,10 @@ use crate::{ask_box, log, process, terminal, threads};
 /// saved there, and the shell answers Settings' `file appearance` from it.
 pub const SHELL: &str = kabi::plan::SHELL_DESK_FILES;
 
-/// The fixture's title bar: its frame is the second, at 80,84, below the
-/// Terminal's, and the click lands 8 px down and 60 px across.
+/// The fixture's title bar: its frame is the second, at 80,84, and the click
+/// lands 8 px down and 60 px across. The Terminal is under it once Alt+Tab has
+/// raised the fixture (see `check`); it covers the fixture before that, as typing
+/// into it raises it.
 const FIXTURE_TITLE: (i32, i32) = (140, 92);
 /// Settings' title bar: its frame is the third, at 112,116. The click is 500 px
 /// across, past the fixture's frame (80..402), so neither window can cover the
@@ -38,13 +40,18 @@ pub const APPS: &str = "term uses=desktop caps=call+term pages=4096 stack_pages=
      fixture-window program=comphost caps=serve+component+call uses=desktop pages=8192 stack_pages=512 burst_ms=20000 version=1 start=demand\n\
      settings-window program=comphost caps=serve+component+call uses=desktop pages=8192 stack_pages=512 burst_ms=20000 version=1 start=demand";
 
-/// A click on `title` gives that window the keys; then the harness sends one
-/// stage of keys, and the effects of those keys have `settle_ms` to show.
-fn keys_in(case: &str, at: &mut (i32, i32), title: (i32, i32), settle_ms: u64) {
-    click(at, title);
+/// One stage of keys to the window that has them: the harness sends them, and
+/// their effects have `settle_ms` to show.
+fn keys_here(case: &str, settle_ms: u64) {
     threads::sleep_ms(1_000);
     log!("{case}: ready for keys");
     threads::sleep_ms(settle_ms);
+}
+
+/// A click on `title` gives that window the keys, then one stage of them.
+fn keys_in(case: &str, at: &mut (i32, i32), title: (i32, i32), settle_ms: u64) {
+    click(at, title);
+    keys_here(case, settle_ms);
 }
 
 pub fn check() -> Result<(), &'static str> {
@@ -99,7 +106,12 @@ pub fn check() -> Result<(), &'static str> {
     // turns the restart window on. Each change is read back from the shell
     // (`apps/settings-ui/tests/keys.rs` pins the sequences).
     const SETTLE_MS: u64 = 2 * KEYS_MS;
-    keys_in(CASE, &mut at, FIXTURE_TITLE, SETTLE_MS);
+    // The stack is now the fixture, the Terminal (typing raised it over the
+    // fixture) and Settings. The first stage is Alt+Tab, which raises the
+    // bottom window, the fixture, and gives it the keys, so no click is needed
+    // on a title bar the Terminal covers. Clicks after that find the Terminal
+    // at the bottom, and both title bars free.
+    keys_here(CASE, SETTLE_MS);
     keys_in(CASE, &mut at, SETTINGS_TITLE, SETTLE_MS);
     keys_in(CASE, &mut at, SETTINGS_TITLE, SETTLE_MS);
     keys_in(CASE, &mut at, FIXTURE_TITLE, SETTLE_MS);

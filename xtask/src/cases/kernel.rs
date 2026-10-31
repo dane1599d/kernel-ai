@@ -400,12 +400,13 @@ pub(super) const CASES: &[TestCase] = &[
                 "o", "p", "e", "n", "spc", "s", "e", "t", "t", "i", "n", "g", "s", "ret",
             ],
             // A person's keys in the fixture's window and Settings' (the
-            // sequences are pinned in `apps/settings-ui/tests/keys.rs`): press
-            // the fixture's button; remove the rule on the Rules page; revoke the
-            // fixture's row; press (refused); restore the row; press (runs);
-            // then the Theme button, and the Updates page's switch for the
-            // restart window.
-            &["tab", "ret"],
+            // sequences are pinned in `apps/settings-ui/tests/keys.rs`): Alt+Tab
+            // raises the fixture, under the Terminal until then, and the
+            // fixture's button is pressed; remove the rule on the Rules page;
+            // revoke the fixture's row; press (refused); restore the row; press
+            // (runs); then the Theme button, and the Updates page's switch for
+            // the restart window.
+            &["alt-tab", "tab", "ret"],
             &["tab", "right", "right", "tab", "ret"],
             &["tab", "left", "tab", "down", "tab", "ret"],
             &["tab", "ret"],
