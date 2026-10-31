@@ -45,6 +45,7 @@ pub(super) fn keys(base: u8) -> Keys {
         snapshot: key(2),
         timestamp: key(3),
         packages: key(4),
+        models: key(5),
     }
 }
 
@@ -309,6 +310,7 @@ fn the_repository_verifies_as_a_tuf_client_would() {
     assert_eq!(
         paths,
         [
+            "metadata/1.models.json",
             "metadata/1.packages.json",
             "metadata/1.root.json",
             "metadata/1.snapshot.json",
@@ -388,7 +390,7 @@ fn each_role_expires_after_adr_0008s_period() {
 }
 
 /// `path`'s JSON with `edit` applied, written canonically and not signed again.
-fn edited_json(repo: &Repository, path: &str, edit: impl Fn(&mut Value)) -> Repository {
+pub(super) fn edited_json(repo: &Repository, path: &str, edit: impl Fn(&mut Value)) -> Repository {
     tampered(repo, path, |bytes| {
         let mut value: Value = serde_json::from_slice(bytes).unwrap();
         edit(&mut value);

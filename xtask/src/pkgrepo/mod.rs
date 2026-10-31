@@ -7,19 +7,23 @@
 //! the artifact's component and licence against the header's, its action names
 //! against the `<name>_` prefix and the OS's rows, and the header's `world`
 //! against the `kai:app` version the artifact's WIT world includes. The
-//! packages then go into a TUF repository signed by a fresh test root
-//! ([`tuf`]), written to DIR (default `target/pkgrepo`).
+//! packages, with the catalog's models in a `models` role ([`models`]), then go
+//! into a TUF repository signed by a fresh test root ([`tuf`]), written to DIR
+//! (default `target/pkgrepo`).
 //!
 //! `cargo xtask pkgrepo serve [--port PORT]` builds the same into
 //! `target/pkgrepo` and serves it as a mirror ([`serve`]; P4 task 2's host
 //! half) until stopped.
 
 pub mod mirrors;
+pub mod models;
 mod serve;
 pub(crate) mod tuf;
 
 #[cfg(test)]
 mod mirror_tests;
+#[cfg(test)]
+mod model_tests;
 #[cfg(test)]
 mod tests;
 
@@ -161,15 +165,18 @@ pub struct Image {
 }
 
 /// The image's repository: every app of [`APPS`] packed from `versions`, the
-/// boot drive's, and signed by a fresh test root (P4 plan §4, item 3).
+/// boot drive's, and the models of [`models::for_image`], signed by a fresh
+/// test root (P4 plan §4, item 3).
 pub fn image(root: &Path, versions: &[Module]) -> Result<Image, String> {
     let packages = pack_all(root, versions)?;
+    let models = models::for_image()?;
     let keys = Keys::generate()?;
     let now = unix_now()?;
-    let repository = tuf::build(&packages, &keys, now)?;
+    let repository = tuf::build_with_models(&packages, &models, &keys, now)?;
     println!(
-        "xtask: the image's repository: {} packages signed by test root {}",
+        "xtask: the image's repository: {} packages and {} models signed by test root {}",
         packages.len(),
+        models.len(),
         &keys.root.id()[..12]
     );
     Ok(Image {
@@ -239,13 +246,14 @@ pub fn flip(modules: &mut [Module], package: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Packs the apps, signs them into a repository with a fresh test root, and
-/// writes it to `dir`.
+/// Packs the apps, signs them and the catalog's models into a repository with
+/// a fresh test root, and writes it to `dir`.
 fn build(root: &Path, dir: &Path) -> Result<Repository, String> {
     let versions = components::build(root)?;
     let packages = pack_all(root, &versions)?;
     let keys = Keys::generate()?;
-    let repository = tuf::build(&packages, &keys, unix_now()?)?;
+    let models = models::catalog()?;
+    let repository = tuf::build_with_models(&packages, &models, &keys, unix_now()?)?;
     write(&repository, dir)?;
     for package in &packages {
         println!(

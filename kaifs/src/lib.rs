@@ -81,6 +81,7 @@ pub use dev::{BlockDev, DevInfo, Image, IoError, MemDisk, Op, RecordingDisk};
 pub use format::{BlockPtr, Superblock};
 pub use fs::{Fs, Value};
 pub use items::{FileType, Inode, ROOT};
+pub use sealed::SealedWriter;
 pub use tree::Key;
 
 /// Bytes in a block, and in a tree node.

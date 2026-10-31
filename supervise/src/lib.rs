@@ -118,6 +118,10 @@ pub enum Folder {
     /// per app, named for it (P4). comphost is the OS's own host and the app's
     /// wasm never reaches `fs`, so a host only touches its own app's folder.
     Apps,
+    /// The `models` volume's root, the model store: `updated`'s only, which
+    /// imports a signed model into it and points `kai-modelhint 1` at one
+    /// (P4 task 10).
+    Models,
 }
 
 impl Folder {
@@ -128,6 +132,7 @@ impl Folder {
             "updates" => Some(Folder::Updates),
             "settings" => Some(Folder::Settings),
             "apps" => Some(Folder::Apps),
+            "models" => Some(Folder::Models),
             _ => None,
         }
     }
@@ -140,6 +145,7 @@ impl Folder {
             Folder::Updates => kabi::fs::SYSTEM_UPDATES,
             Folder::Settings => kabi::fs::SYSTEM_SETTINGS,
             Folder::Apps => kabi::fs::SYSTEM_APPS,
+            Folder::Models => kabi::fs::MODELS_ROOT,
         }
     }
 
@@ -155,7 +161,7 @@ impl Folder {
     pub fn only_for(self) -> Option<&'static str> {
         match self {
             Folder::Pkg | Folder::Settings | Folder::Apps => None,
-            Folder::Trust | Folder::Updates => Some(UPDATED),
+            Folder::Trust | Folder::Updates | Folder::Models => Some(UPDATED),
         }
     }
 }
