@@ -83,3 +83,31 @@ pub fn plan(llm: &str, files: bool) -> String {
     }
     plan
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::vec::Vec;
+
+    /// `line`'s words, its `caps=` word apart.
+    fn split(line: &str) -> (Vec<&str>, Option<&str>) {
+        let caps = line.split_whitespace().find(|w| w.starts_with("caps="));
+        let rest = line
+            .split_whitespace()
+            .filter(|w| !w.starts_with("caps="))
+            .collect();
+        (rest, caps)
+    }
+
+    /// [`SHELL_DESK_FILES`] is [`super::super::SHELL_DESK`] with
+    /// [`super::super::SHELL_FILES`]'s caps, word for word: a change to the
+    /// shell's routes or limits in one fails here until the other follows.
+    #[test]
+    fn the_desktop_shell_with_files_is_shell_desk_with_shell_files_caps() {
+        let (desk, _) = split(super::super::SHELL_DESK);
+        let (files_desk, files_caps) = split(SHELL_DESK_FILES);
+        let (_, files) = split(super::super::SHELL_FILES);
+        assert_eq!(files_desk, desk);
+        assert_eq!(files_caps, files);
+    }
+}
