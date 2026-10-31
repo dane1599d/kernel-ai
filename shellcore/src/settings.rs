@@ -61,6 +61,43 @@ const SYSTEM: &[&str] = &[
 const CLICK: &str = "user-click:settings";
 /// The first line of `/system/state/keep`.
 const KEEP_HEADER: &str = "kai-keep 1";
+/// How often a saved kept app the supervisor could not reach is tried again.
+const KEEP_RETRY_NS: u64 = 500_000_000;
+/// How long after boot it is tried before it is audited and dropped.
+pub const KEEP_RETRY_FOR_NS: u64 = 30_000_000_000;
+
+/// Saved kept apps waiting to be told to the supervisor again.
+#[derive(Default)]
+pub(crate) struct KeepWaiting {
+    apps: Vec<String>,
+    next_ns: u64,
+    until_ns: u64,
+}
+
+/// The supervisor's refusal for an app it runs that does not serve yet; any
+/// other refusal is final.
+fn not_serving_yet(why: &str) -> bool {
+    why.starts_with("cannot reach ")
+}
+
+impl KeepWaiting {
+    fn wait(&mut self, app: String, now: u64) {
+        if self.apps.is_empty() {
+            self.next_ns = now + KEEP_RETRY_NS;
+            self.until_ns = now + KEEP_RETRY_FOR_NS;
+        }
+        self.apps.push(app);
+    }
+
+    fn due(&self, now: u64) -> bool {
+        !self.apps.is_empty() && now >= self.next_ns
+    }
+
+    /// The user's own change to `app` wins over the saved one.
+    fn forget(&mut self, app: &str) {
+        self.apps.retain(|a| a != app);
+    }
+}
 
 impl Shell {
     /// Answers a `kai:settings` request from app `app`: the answer's text, or
@@ -126,9 +163,13 @@ impl Shell {
                 }
                 self.keep_running(&logged, name, on)
             }
-            ("appearance-set" | "restart-window", _) => {
-                Err(format!("{verb} is not answered here yet"))
+            ("appearance-set", rest) => {
+                let (setting, value) = rest
+                    .split_once(' ')
+                    .ok_or_else(|| String::from("appearance-set takes a setting and a value"))?;
+                self.appearance_by_click(&logged, setting, value)
             }
+            ("restart-window", _) => Err(format!("{verb} is not answered here yet")),
             _ => Err(String::from("not a settings request")),
         }
     }
@@ -162,6 +203,36 @@ impl Shell {
             request,
         };
         self.switch_profile(id, name, logged).map(|(was, _)| was)
+    }
+
+    /// `appearance-set`: the `appearance_set` row's change, from a click, with
+    /// its undo; the row's words. `look` refuses a setting or value it does not
+    /// take, and that refusal is the answer.
+    fn appearance_by_click(
+        &mut self,
+        request: &str,
+        setting: &str,
+        value: &str,
+    ) -> Result<String, String> {
+        let (change, words) = crate::appearance::changed(self.host.as_ref(), setting, value)?;
+        let id = self.next_id;
+        self.next_id += 1;
+        self.log.push(Entry {
+            id,
+            t_ns: self.host.now_ns(),
+            form: Form::Call,
+            of: None,
+            tier: Some(Tier::Run),
+            pack: None,
+            consent: String::from(CLICK),
+            state: State::Done,
+            request: String::from(request),
+            script: format!("appearance_set(\"{setting}\", \"{value}\")"),
+            outcome: words.clone(),
+            changes: alloc::vec![change],
+        });
+        self.save_log();
+        Ok(words)
     }
 
     /// Keeps app `name` running (`on`) or lets it nap: the supervisor is told,
@@ -315,8 +386,9 @@ impl Shell {
     /// the defaults.
     /// - `appearance`: the `kai-appearance 1` text as it is saved; text past
     ///   its bound is refused, not cut.
-    /// - `apps`: the keep-running list in force, as `kai-keep 1` text (a list
-    ///   on disk out of shape was set aside at start, so none is kept).
+    /// - `apps`: the keep-running list in force, with apps still waiting at
+    ///   boot, as `kai-keep 1` text (a list on disk out of shape was set aside
+    ///   at start, so none is kept).
     /// - `updates`: empty, until a restart-window writer exists.
     fn settings_file(&self, area: &str) -> Result<String, String> {
         match area {
@@ -326,24 +398,38 @@ impl Shell {
                 }
                 saved => Ok(saved.unwrap_or_default()),
             },
-            "apps" if self.keep.is_empty() => Ok(String::new()),
-            "apps" => Ok(keep_text(&self.keep)),
+            "apps" => match self.saved_keep() {
+                saved if saved.is_empty() => Ok(String::new()),
+                saved => Ok(keep_text(&saved)),
+            },
             "updates" => Ok(String::new()),
             _ => Err(String::from("not a settings file")),
         }
     }
 
+    /// The kept apps, with those still waiting at boot: they stay saved, and
+    /// Settings shows them kept.
+    fn saved_keep(&self) -> Vec<String> {
+        self.keep
+            .iter()
+            .chain(&self.keep_waiting.apps)
+            .cloned()
+            .collect()
+    }
+
     /// Tells the supervisor and saves the list: `name` kept running or not.
     pub(crate) fn set_keep(&mut self, name: &str, on: bool) -> Result<(), String> {
-        if on && !self.keep.iter().any(|app| app == name) && self.keep.len() >= MAX_KEPT {
+        let saved = self.saved_keep();
+        if on && !saved.iter().any(|app| app == name) && saved.len() >= MAX_KEPT {
             return Err(format!("at most {MAX_KEPT} apps are kept running"));
         }
         self.host.keep_running(name, on)?;
+        self.keep_waiting.forget(name);
         self.keep.retain(|app| app != name);
         if on {
             self.keep.push(name.to_string());
         }
-        let text = keep_text(&self.keep);
+        let text = keep_text(&self.saved_keep());
         if let Err(why) = self.host.keep_write(&text) {
             self.host
                 .audit(&format!("the keep-running list was not saved: {why}"));
@@ -368,15 +454,42 @@ impl Shell {
                 .audit("the keep-running list is out of shape; no app is kept");
             return self;
         };
+        let now = self.host.now_ns();
         for app in apps {
             match self.host.keep_running(&app, true) {
                 Ok(()) => self.keep.push(app),
+                // An app the supervisor started may not serve yet: try again.
+                Err(why) if not_serving_yet(&why) => self.keep_waiting.wait(app, now),
                 Err(why) => self
                     .host
                     .audit(&format!("{app} is not kept running: {why}")),
             }
         }
         self
+    }
+
+    /// Tries the saved kept apps the supervisor could not reach at boot again,
+    /// between lines; past [`KEEP_RETRY_FOR_NS`], each is audited and dropped.
+    pub fn retry_keep(&mut self) {
+        let now = self.host.now_ns();
+        if !self.keep_waiting.due(now) {
+            return;
+        }
+        let waiting = core::mem::take(&mut self.keep_waiting.apps);
+        let mut still = Vec::new();
+        for app in waiting {
+            match self.host.keep_running(&app, true) {
+                Ok(()) => self.keep.push(app),
+                Err(why) if not_serving_yet(&why) && now < self.keep_waiting.until_ns => {
+                    still.push(app)
+                }
+                Err(why) => self
+                    .host
+                    .audit(&format!("{app} is not kept running: {why}")),
+            }
+        }
+        self.keep_waiting.apps = still;
+        self.keep_waiting.next_ns = now + KEEP_RETRY_NS;
     }
 }
 

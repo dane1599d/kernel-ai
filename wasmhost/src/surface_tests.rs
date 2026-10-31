@@ -119,7 +119,11 @@ fn ring_events_become_uikit_input_with_the_seat_s_modifiers() {
     );
     assert_eq!(
         seat.input(&input(Kind::Button, 1, 1, "")),
-        Some(Input::Button { at, down: true })
+        Some(Input::Button {
+            at,
+            down: true,
+            mods: Default::default()
+        })
     );
     assert_eq!(seat.input(&input(Kind::Button, 2, 1, "")), None);
     assert_eq!(seat.input(&input(Kind::Screen, 0, 1, "")), None);
