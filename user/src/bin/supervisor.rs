@@ -18,7 +18,10 @@
 //! `app-call <app>` forwards the shell's `kai-call 1` or `kai-undo 1` to an
 //! app through the kernel (APP_CALL), starting the app first if it is down.
 //! A `start=demand` service is not started at boot: `demand <name>`, which only
-//! the kernel sends, when a call first waits for it, starts it (P3 task 12b).
+//! the kernel sends, when a call first waits for it, starts it (P3 task 12b). A
+//! `start=pkg-demand` one, a built-in window app, also needs `pkg`'s `run` for
+//! its version: a demand before it waits for it, and a `run` before any demand
+//! only records the version.
 //! `profile <pid> <class> <pages|->` sets one process's CPU class and page quota
 //! for a resource profile (P3 task 12), for the shell alone: PROC_CLASS_SET and
 //! PROC_QUOTA_SET need SUPERVISE, and the kernel's floors refuse a protected
@@ -63,6 +66,9 @@ struct Service {
     /// A `start=pkg` service's package version, from the store holder's `run`;
     /// until then it stays down.
     version: Option<String>,
+    /// A `start=pkg-demand` service was asked for (a demand, or the user's
+    /// `start`) before `pkg` named its version: it starts when the `run` comes.
+    demanded: bool,
 }
 
 fn now_ms() -> u64 {
@@ -121,6 +127,7 @@ fn main() -> i32 {
                 withdrawn: false,
                 started_by: None,
                 version: None,
+                demanded: false,
             }
         })
         .collect();
@@ -551,8 +558,16 @@ fn run_package(services: &mut [Service], run: supervise::Run, caller: u64) -> St
     service.version = Some(String::from(run.version));
     service.record.stopped = false;
     service.record.gave_up = false;
-    service.start_at_ms = Some(now_ms());
-    println!("{name} starts on package version {} for pkg", run.version);
+    match supervise::starts_on_run(service.spec.start, core::mem::take(&mut service.demanded)) {
+        true => {
+            service.start_at_ms = Some(now_ms());
+            println!("{name} starts on package version {} for pkg", run.version);
+        }
+        false => println!(
+            "{name} runs package version {} for pkg when first asked for",
+            run.version
+        ),
+    }
     save(services);
     String::from("ok")
 }
@@ -602,10 +617,11 @@ fn withdraw_package(services: &mut [Service], withdraw: supervise::Run, caller: 
 fn start(service: &mut Service, now: u64) {
     let version = match (service.spec.start, &service.version) {
         (Start::Boot | Start::Demand, _) => String::new(),
-        (Start::Pkg, Some(version)) => format!(" version={version}"),
-        (Start::Pkg, None) => {
+        (Start::Pkg | Start::PkgDemand, Some(version)) => format!(" version={version}"),
+        (Start::Pkg | Start::PkgDemand, None) => {
             println!("{} waits for pkg to name its version", service.spec.name);
             service.start_at_ms = None;
+            service.demanded = true;
             return;
         }
     };
