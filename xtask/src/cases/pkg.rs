@@ -105,9 +105,13 @@ pub(super) const CASES: &[TestCase] = &[
     // no plan line of the case's own: the desktop comes up, `pkg` seeds the
     // image's repository with no `step=`, the Apps sheet lists it, and Enter on
     // `notes` opens Notes' window through the shell and the model's `ui_open`.
+    // The whole system and an app fit the admission budget (free / 2) only with
+    // more than the 512 MiB default: `desktop`, `fs` and each app's window are
+    // 32 MiB each.
     TestCase {
         server: true,
         data: Some(VIRTIO),
+        memory_mib: Some(2048),
         expect: &[
             "pkg: the image's repository verified, ",
             "desktop: drew the desk at ",
