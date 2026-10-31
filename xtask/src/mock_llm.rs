@@ -344,7 +344,12 @@ const ACTS: &[(&str, &str)] = &[
         "do what my note says",
         r#"{"name":"ui_view","arguments":{"window":"notes"}}"#,
     ),
-    // `app-settings` (P4 task 7): the agent opens Settings and looks at it.
+    // `app-settings` (P4 task 7): the agent sets the theme, opens Settings and
+    // looks at it.
+    (
+        "switch to the light theme",
+        r#"{"name":"appearance_set","arguments":{"setting":"theme","value":"light"}}"#,
+    ),
     (
         "open settings",
         r#"{"name":"ui_open","arguments":{"app":"settings","arg":null}}"#,
