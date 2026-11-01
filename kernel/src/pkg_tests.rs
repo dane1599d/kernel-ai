@@ -15,13 +15,18 @@
 //!
 //! `test=pkg-image [again|tampered]` (P4 task 1): `pkg`'s plan line adds
 //! `bootfiles=pkgrepo`, and it makes the image's signed repository generation 1:
-//! - boot 1, `step=image`: generation 1 holds notes, from the image;
+//! - boot 1, `step=image`: generation 1 holds the five window apps, from the
+//!   image;
 //! - boot 2, `again`: generation 1 is still current, seeded once;
 //! - `tampered`, its own case on a fresh disk, with one byte of notes's target
-//!   flipped in the bundle: notes is refused by name, generation 1 is empty.
+//!   flipped in the bundle: notes is refused by name, and generation 1 holds
+//!   the other four.
 //!
 //! Its kernel half reads `gen/1` through `fs` as well, and checks that `pkg`
-//! holds the plan's `bootfiles=pkgrepo`.
+//! holds the plan's `bootfiles=pkgrepo`, and that `pkg` added no package
+//! version of any window: no plan line here runs one from a package, so `pkg`'s
+//! `may-run` finds none to load (in v0.1 every built-in window runs the image's
+//! own version).
 
 use crate::process;
 use crate::{handle, ipc, log, threads};
@@ -140,8 +145,7 @@ impl Step {
 }
 
 /// Plan lines: `fs`, then `pkg` with `/system/pkg`. For `pkg-image`, `pkg` also
-/// reads the image's repository and has a route to the supervisor, and notes is
-/// a `start=pkg` app, not a version the boot manifest names. `pkg` needs a
+/// reads the image's repository and has a route to the supervisor. `pkg` needs a
 /// deeper stack than the 16-page default: fsproto's minicbor decoder recurses,
 /// and overflowed it in `Decoder::array`. `pkg-install` runs `pkg` again as
 /// [`PROBE`], from a line without `dir=pkg`.
@@ -150,8 +154,7 @@ pub fn plan(step: Step) -> String {
     let step_name = step.name();
     match step.case() {
         "pkg-image" | "pkg-install" => format!(
-            "{fs}\n{CLIENT} dir=pkg bootfiles=pkgrepo caps=call+serve uses=supervisor pages=2048 stack_pages=128 step={step_name}\n{}{}",
-            kabi::plan::notes_from_pkg(),
+            "{fs}\n{CLIENT} dir=pkg bootfiles=pkgrepo caps=call+serve uses=supervisor pages=2048 stack_pages=128 step={step_name}{}",
             match step.case() {
                 "pkg-install" => format!("\n{PROBE} program={CLIENT} caps=serve step=not-holder"),
                 _ => String::new(),
@@ -183,17 +186,35 @@ pub fn check(step: Step) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// Generation 1 is the image's, notes, or nothing when notes's target was
-/// tampered with; and `pkg` holds the plan's `bootfiles=pkgrepo`.
+/// The image's packages, the window apps, each at 1.0.0, and the service each
+/// runs as.
+const WINDOWS: [(&str, &str); 5] = [
+    ("files", "files-window"),
+    ("monitor", "monitor-window"),
+    ("notes", "notes-window"),
+    ("settings", "settings-window"),
+    ("terminal", "terminal-window"),
+];
+
+/// Generation 1 is the image's, the window apps, without notes when notes's
+/// target was tampered with; and `pkg` holds the plan's `bootfiles=pkgrepo`.
 fn image_generation(step: Step) -> Result<(), &'static str> {
     let first = read("gen/1")?;
     let first = core::str::from_utf8(&first).map_err(|_| "pkg-image: gen/1 is not text")?;
     let packages: Vec<&str> = first.lines().filter(|l| l.starts_with("pkg ")).collect();
-    let wanted = match step {
-        Step::ImageTampered => packages.is_empty(),
-        _ => packages.len() == 1 && packages[0].starts_with("pkg notes 1.0.0 "),
-    };
-    if !wanted {
+    let mut held: Vec<&str> = packages
+        .iter()
+        .filter_map(|line| {
+            let mut words = line.split(' ').skip(1);
+            let (name, version) = (words.next()?, words.next()?);
+            (version == "1.0.0").then_some(name)
+        })
+        .collect();
+    held.sort_unstable();
+    let tampered = matches!(step, Step::ImageTampered);
+    let windows = WINDOWS.iter().map(|(name, _)| *name);
+    let image: Vec<&str> = windows.filter(|n| !tampered || *n != "notes").collect();
+    if held != image || held.len() != packages.len() {
         log!("pkg-image: gen/1 holds {packages:?}");
         return Err("pkg-image: generation 1 is not the image's packages");
     }
@@ -207,47 +228,28 @@ fn image_generation(step: Step) -> Result<(), &'static str> {
         return Err("pkg-image: pkg does not hold bootfiles=pkgrepo");
     }
     match step {
-        Step::ImageTampered => {
-            log!("pkg-image: generation 1 holds no package: the tampered notes is not in it")
-        }
-        _ => {
-            log!("pkg-image: generation 1 is notes 1.0.0, from the image's signed repository");
-            serves_its_package()?;
-        }
+        Step::ImageTampered => log!(
+            "pkg-image: generation 1 holds the four windows but notes: the tampered notes is not in it"
+        ),
+        _ => log!(
+            "pkg-image: generation 1 is the five window apps at 1.0.0, from the image's signed repository"
+        ),
     }
-    Ok(())
+    no_window_loaded()
 }
 
-/// notes serves on a package version (`p-` and 12 hex digits) that the store
-/// holds with the full SHA-256 of its bytes, which the kernel hashes again here.
-fn serves_its_package() -> Result<(), &'static str> {
-    let mut active = None;
-    for _ in 0..WAIT_MS / 50 {
-        let ledger = process::components::ledger("notes");
-        let label = ledger.as_ref().and_then(|l| l.active().map(String::from));
-        if ipc::server_of("notes").is_some()
-            && let Some(label) = label.filter(|l| kabi::live::is_package_label(l))
-        {
-            active = Some(label);
-            break;
+/// `pkg` added no package version of any window: no plan line here runs one
+/// from a package, so its `may-run` said so before any COMP_ADD.
+fn no_window_loaded() -> Result<(), &'static str> {
+    for (name, service) in WINDOWS {
+        let added = process::components::component(service)
+            .is_some_and(|c| c.labels().any(kabi::live::is_package_label));
+        if added {
+            log!("pkg-image: {name}'s window {service} has a package version");
+            return Err("pkg-image: pkg loaded a window no plan line runs from a package");
         }
-        threads::sleep_ms(50);
     }
-    let label = active.ok_or("pkg-image: notes never served on a package version")?;
-    let component = process::components::component("notes").ok_or("pkg-image: no notes")?;
-    let version = component
-        .version(&label)
-        .ok_or("pkg-image: notes's active version is not stored")?;
-    let livecore::store::Origin::Package { sha } = version.origin else {
-        return Err("pkg-image: notes's active version is not a package's");
-    };
-    let bytes = version.bytes.as_slice().to_vec();
-    if livecore::store::PackageArtifact::check(bytes, &sha).is_err()
-        || kabi::live::package_label(&sha) != label
-    {
-        return Err("pkg-image: notes's package version is not the digest it names");
-    }
-    log!("pkg-image: notes serves on package version {label}, its full SHA-256 checked");
+    log!("pkg-image: pkg loaded no window: no plan line here runs one from a package");
     Ok(())
 }
 
@@ -323,8 +325,8 @@ fn only_the_holder_calls() -> Result<(), &'static str> {
     Ok(())
 }
 
-/// `pkg` answers the Apps sheet's `catalog` (P4 task 3): big and notes as
-/// installed, then the mirror's `extra`, which is not.
+/// `pkg` answers the Apps sheet's `catalog` (P4 task 3): big and the image's
+/// five windows as installed, then the mirror's `extra`, which is not.
 fn catalogue_lists_them() -> Result<(), &'static str> {
     let answer =
         answer_of(CLIENT, b"catalog 0").ok_or("pkg-install: pkg never answered catalog")?;
@@ -334,7 +336,11 @@ fn catalogue_lists_them() -> Result<(), &'static str> {
     let wanted = [
         "kai-catalog 1",
         "installed\tbig\t1.0.0\tdata\t",
+        "installed\tfiles\t1.0.0\tapp\t",
+        "installed\tmonitor\t1.0.0\tapp\t",
         "installed\tnotes\t1.0.0\tapp\t",
+        "installed\tsettings\t1.0.0\tapp\t",
+        "installed\tterminal\t1.0.0\tapp\t",
         "mirror\textra\t1.0.0\tdata\t",
     ];
     let listed = rows.len() == wanted.len()
@@ -346,7 +352,9 @@ fn catalogue_lists_them() -> Result<(), &'static str> {
         log!("pkg-install: the catalogue is {text:?}");
         return Err("pkg-install: the catalogue does not list installed then offered");
     }
-    log!("pkg-install: the catalogue lists big and notes installed, then the mirror's extra");
+    log!(
+        "pkg-install: the catalogue lists big and the five windows installed, then the mirror's extra"
+    );
     Ok(())
 }
 
