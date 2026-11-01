@@ -16,7 +16,7 @@ use crate::display::claim;
 use crate::{ask_box, ipc, log, process, sched_control, terminal, threads};
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// The plan lines this case adds: `desktop`, Notes' window, and two apps the
 /// supervisor starts and does not keep.
@@ -25,6 +25,8 @@ pub const PLAN: &str = "desktop caps=display+input+serve+ask pages=8192 stack_pa
      spin-a program=spinner burst_ms=3600000 unsupervised\n\
      spin-b program=spinner burst_ms=3600000 unsupervised";
 const RULE: &str = "rules_add on focus(notes-window) -> profile_set(gaming)";
+/// The firing's script, as the log has it.
+const GAMING: &str = "profile_set(\"gaming\")";
 const APPS: [&str; 2] = ["spin-a", "spin-b"];
 const SYSTEM: [&str; 4] = ["shell", "supervisor", "desktop", "notes-window"];
 const WAIT_MS: u64 = 60_000;
@@ -42,9 +44,8 @@ const YES: [u8; 2] = [0x15, 0x95];
 static ASKED: AtomicBool = AtomicBool::new(false);
 static DONE: AtomicBool = AtomicBool::new(false);
 static UNDONE: AtomicBool = AtomicBool::new(false);
-/// Firings `undo` may have to take back: the click's, and one at most from
-/// a focus posted before the rule was made.
-const MAX_UNDOS: usize = 3;
+/// The log entry `undoer` takes back.
+static UNDO_ID: AtomicU64 = AtomicU64::new(0);
 
 fn wait(what: &'static str, mut done: impl FnMut() -> bool) -> Result<(), &'static str> {
     for _ in 0..WAIT_MS / 50 {
@@ -64,7 +65,8 @@ fn liner(_: usize) {
 }
 
 fn undoer(_: usize) {
-    terminal::shell_line_answered("undo");
+    let id = UNDO_ID.load(Ordering::Acquire);
+    terminal::shell_line_answered(&alloc::format!("undo #{id}"));
     UNDONE.store(true, Ordering::Release);
 }
 
@@ -83,15 +85,20 @@ fn settings(names: &[&str]) -> Option<Vec<(u64, u64, bool)>> {
         .collect()
 }
 
-/// Whether the shell's log holds a done firing of rule 1 with `script`.
-fn fired(script: &str) -> bool {
+/// The ids of the shell's log entries for done firings of rule 1 with
+/// `script`, oldest first.
+fn firings(script: &str) -> Vec<u64> {
     let Ok(log) = ipc::call("shell", b"log actlog", CALL_MS) else {
-        return false;
+        return Vec::new();
     };
-    String::from_utf8_lossy(&log).split("\nE ").any(|entry| {
-        entry.contains("form=standing tier=run consent=standing:1 state=done")
-            && entry.contains(script)
-    })
+    String::from_utf8_lossy(&log)
+        .split("\nE ")
+        .filter(|entry| {
+            entry.contains("form=standing tier=run consent=standing:1 state=done")
+                && entry.contains(script)
+        })
+        .filter_map(|entry| entry.split_whitespace().next()?.parse().ok())
+        .collect()
 }
 
 pub fn check() -> Result<(), &'static str> {
@@ -129,7 +136,7 @@ pub fn check() -> Result<(), &'static str> {
     report(NOTES_TITLE.0 - START.0, NOTES_TITLE.1 - START.1, 0);
     report(0, 0, 1);
     report(0, 0, 0);
-    wait("the rule's firing", || fired("profile_set(\"gaming\")"))?;
+    wait("the rule's firing", || !firings(GAMING).is_empty())?;
     // Exactly gaming: the apps back, quotas kept, the system untouched.
     let after = settings(&APPS).ok_or("desk-profile: an app is gone")?;
     let kept = settings(&SYSTEM).ok_or("desk-profile: a service is gone")?;
@@ -143,12 +150,14 @@ pub fn check() -> Result<(), &'static str> {
     log!(
         "desk-profile: focusing Notes switched to gaming: both apps went to the background, their quotas and the system untouched"
     );
-    // Undo puts default back. The rule may have fired more than once (a focus
-    // posted before it was made can fire it too), so each `undo` takes one
-    // firing back, until `default` is in force.
+    // Undo puts default back. The rule may have fired more than once (the
+    // focus coming back from the card fires it too), so each firing is undone
+    // by its id, newest first, until `default` is in force: a bare `undo`
+    // after the first would undo that undo, never the firing before it.
     // TODO(#524): once a rule fires only on events posted after it was made,
     // one `undo` is enough; drop this loop.
-    for _ in 0..MAX_UNDOS {
+    for id in firings(GAMING).into_iter().rev() {
+        UNDO_ID.store(id, Ordering::Release);
         UNDONE.store(false, Ordering::Release);
         threads::spawn("undoer", undoer, 0)?;
         wait("the undo", || UNDONE.load(Ordering::Acquire))?;
