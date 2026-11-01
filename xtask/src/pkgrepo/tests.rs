@@ -18,14 +18,15 @@ impl Repository {
     }
 }
 
-/// notes' artifact around a stub module: the real manifest and action rows.
+/// The Notes window's artifact, package `notes`'s, around a stub module: the
+/// real manifest and action rows.
 fn notes_artifact() -> Vec<u8> {
     let root = crate::workspace_root();
     let module = Vec::from(&b"\0asm\x01\0\0\0"[..]);
-    let source = artifact::bundle(&[("components/notes/src/lib.rs", b"//")]);
+    let source = artifact::bundle(&[("components/notes-window/src/lib.rs", b"//")]);
     components::pack(
         &root,
-        &components::NOTES_RECIPE,
+        &components::NOTES_WINDOW_RECIPE,
         APPS[0].label,
         module,
         &source,
@@ -77,11 +78,9 @@ fn an_app_whose_parts_disagree_is_refused() {
     let artifact = notes_artifact();
     let app = |name, summary, licence| App {
         name,
-        component: "notes",
-        label: "2",
         summary,
         licence,
-        wit: components::NOTES_RECIPE.wit,
+        ..APPS[0]
     };
     let refused = |app: App, bytes: &[u8], why: &str| {
         let err = pack(&root, &app, bytes).err().expect("refused");
@@ -89,11 +88,11 @@ fn an_app_whose_parts_disagree_is_refused() {
     };
     refused(
         App {
-            component: "memo",
+            component: "memo-window",
             ..app("memo", "Notes", "MPL-2.0")
         },
         &artifact,
-        "is component notes",
+        "is component notes-window",
     );
     refused(
         app("notes", "Notes", "MIT"),
@@ -178,9 +177,47 @@ fn a_package_carries_only_its_own_window() {
 }
 
 #[test]
+fn every_built_in_package_is_the_boot_drives_build_byte_for_byte() {
+    // comphost grants Settings, the Monitor, the Terminal and the editor only to
+    // code it fetched under a boot label, so the image's package of each app must
+    // be that very artifact, never one the packer built again.
+    let root = crate::workspace_root();
+    let versions: Vec<crate::esp::Module> = APPS
+        .iter()
+        .map(|app| {
+            let version = components::VERSIONS
+                .iter()
+                .find(|v| v.recipe.component == app.component && v.label == app.label)
+                .unwrap_or_else(|| panic!("{} is not on the boot drive", app.component));
+            let module = Vec::from(&b"\0asm\x01\0\0\0"[..]);
+            let source = artifact::bundle(&[("src/lib.rs", app.name.as_bytes())]);
+            let bytes = components::pack(&root, &version.recipe, app.label, module, &source);
+            crate::esp::Module {
+                path: format!("comp/{}/{}.wasm", app.component, app.label),
+                bytes: bytes.unwrap(),
+            }
+        })
+        .collect();
+    let packages = pack_all(&root, &versions).unwrap();
+    assert_eq!(packages.len(), APPS.len());
+    for ((package, version), app) in packages.iter().zip(&versions).zip(APPS) {
+        let files = kaipkg::bundle::files(&package.bytes).unwrap();
+        let (_, artifact) = files.iter().find(|(p, _)| *p == ARTIFACT).unwrap();
+        assert_eq!(*artifact, &version.bytes[..], "{}", app.name);
+        let service = kaipkg::app::service(&package.header, &package.bytes);
+        assert_eq!(service, Ok(Some(app.component.to_string())));
+        assert!(
+            kaipkg::app::may_run_as(app.name, app.component),
+            "{}",
+            app.name
+        );
+    }
+}
+
+#[test]
 fn a_missing_boot_version_is_named() {
     let err = pack_all(&crate::workspace_root(), &[]).err().unwrap();
-    assert_eq!(err, "comp/notes/2.wasm was not built");
+    assert_eq!(err, "comp/notes-window/1.wasm was not built");
 }
 
 /// What a TUF client checks (TUF 1.0.37 §5), over `repo` at `now`: each role

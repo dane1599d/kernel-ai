@@ -9,6 +9,7 @@
 //! - `desktop`, with a route to `pkg` when it runs (the Apps sheet);
 //! - the apps, each `start=demand` (the founder's decision of 2026-10-28):
 //!   started when first opened, from the panel, the Apps sheet or `ui_open`;
+//!   with `kai-data`, the editor too, which opens and saves the person's files;
 //! - the shell, with its route to `desktop`.
 //!
 //! With a build service (`build=`), the kernel adds the boot manifest's headless
@@ -33,12 +34,18 @@ pub const PKG: &str =
 /// [`super::SHELL_DESK`]'s routes.
 pub const SHELL_DESK_FILES: &str = "shell caps=serve+call+policy+stop+script+files+state uses=llm+supervisor+cc+desktop pages=4096 stack_pages=512 burst_ms=5000";
 
-/// What every app's line shares: the shared host, its window on `desktop`.
+/// What every app's line shares: the shared host, its window on `desktop`, and
+/// any caps beyond an app's own.
 macro_rules! app {
     ($name:literal, $uses:literal) => {
+        app!($name, $uses, "")
+    };
+    ($name:literal, $uses:literal, $caps:literal) => {
         concat!(
             $name,
-            " program=comphost caps=serve+component+call uses=",
+            " program=comphost caps=serve+component+call",
+            $caps,
+            " uses=",
             $uses,
             " pages=8192 stack_pages=512 burst_ms=20000 version=1 start=demand"
         )
@@ -56,6 +63,12 @@ pub const APPS: [&str; 5] = [
     app!("monitor-window", "desktop+llm"),
 ];
 
+/// The editor ([`super::EDITOR`], started on demand), with `edit`, which the
+/// kernel grants comphost under this name alone. It is planned only with
+/// `kai-data`: it opens and saves the person's files through the shell's
+/// `files`, and a boot with no build service has no source for it to edit.
+pub const EDITOR_APP: &str = app!("editor", "desktop", "+edit");
+
 /// The system's lines after `llm`'s, in plan order; `files` when the disk has
 /// a `kai-data` partition, so `fs` and `pkg` run.
 pub fn lines(files: bool) -> Vec<&'static str> {
@@ -66,6 +79,9 @@ pub fn lines(files: bool) -> Vec<&'static str> {
     lines.push(CC);
     lines.push(if files { DESKTOP_PKG } else { DESKTOP });
     lines.extend(APPS);
+    if files {
+        lines.push(EDITOR_APP);
+    }
     lines.push(if files {
         SHELL_DESK_FILES
     } else {
@@ -109,5 +125,15 @@ mod tests {
         let (_, files) = split(super::super::SHELL_FILES);
         assert_eq!(files_desk, desk);
         assert_eq!(files_caps, files);
+    }
+
+    /// [`EDITOR_APP`] is the line `app-editor` boots, [`super::super::EDITOR`],
+    /// started on demand; and only a boot with `kai-data` plans it.
+    #[test]
+    fn the_editor_is_the_app_editor_line_on_demand_with_kai_data_only() {
+        let on_demand = alloc::format!("{} start=demand", super::super::EDITOR);
+        assert_eq!(EDITOR_APP, on_demand);
+        assert!(lines(true).contains(&EDITOR_APP));
+        assert!(!lines(false).contains(&EDITOR_APP));
     }
 }

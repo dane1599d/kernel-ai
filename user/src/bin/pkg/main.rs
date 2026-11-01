@@ -380,7 +380,7 @@ fn image(vol: &mut FsVolume<Calls>, step: Option<&str>) -> Result<String, String
     );
     let started = start_apps(cx.vol, current)?;
     let line = match started.is_empty() {
-        true => format!("generation {current} holds no app to start"),
+        true => format!("generation {current} starts no app from a package"),
         false => format!("started from generation {current}: {}", started.join(", ")),
     };
     if let Some(step) = step {
@@ -518,10 +518,13 @@ fn supervisor() -> Handle {
     user::route(0).unwrap_or(Handle::NONE)
 }
 
-/// Each app of generation `n`, its artifact added as a package version of its
-/// component (COMP_ADD, which only adds: Busy when it is there already) and
-/// started on it by the supervisor (`run`) as its service, its own name or its
-/// window's (`kaipkg::app`); `name version as label` for each.
+/// Each app of generation `n` whose plan line takes a package version (`may-run`
+/// asks first), its artifact added as a package version of its component
+/// (COMP_ADD, which only adds: Busy when it is there already) and started on
+/// it by the supervisor (`run`) as its service, its own name or its window's
+/// (`kaipkg::app`); `name version as label` for each. An app the plan runs
+/// from the image's own version, as every built-in window does in v0.1, or
+/// does not run at all, is said so and never loaded.
 fn start_apps(vol: &mut dyn Volume, n: u64) -> Result<Vec<String>, String> {
     let mut started = Vec::new();
     for package in store::generation(vol, n)?.packages {
@@ -529,6 +532,27 @@ fn start_apps(vol: &mut dyn Volume, n: u64) -> Result<Vec<String>, String> {
         let Some((service, artifact)) = app_artifact(vol, name, &package.sha)? else {
             continue;
         };
+        let version = package.version;
+        let ask = supervise::encode_may_run(&service);
+        let mut reply = [0u8; 256];
+        let len = sys::call_route(supervisor(), ask.as_bytes(), &mut reply, CALL_MS)
+            .map_err(|e| format!("the supervisor did not answer {service}'s may-run: {e:?}"))?;
+        let not_here = match core::str::from_utf8(&reply[..len.min(reply.len())]).unwrap_or("") {
+            "ok" => None,
+            supervise::NOT_FROM_PKG => Some("its plan line runs the image's version"),
+            supervise::NOT_PLANNED => Some("this system plans no service for it"),
+            other => {
+                return Err(format!(
+                    "the supervisor refused {service}'s may-run: {other}"
+                ));
+            }
+        };
+        if let Some(why) = not_here {
+            println!(
+                "pkg: {name} {version} is installed and not started from generation {n}: {why}"
+            );
+            continue;
+        }
         let sha = kaipkg::sha256(&artifact);
         match sys::comp_add(&service, &artifact, &sha) {
             Ok(()) | Err(Error::Busy) => {}
@@ -543,14 +567,11 @@ fn start_apps(vol: &mut dyn Volume, n: u64) -> Result<Vec<String>, String> {
         let len = sys::call_route(supervisor(), run.encode().as_bytes(), &mut reply, CALL_MS)
             .map_err(|e| format!("the supervisor did not answer {name}'s run: {e:?}"))?;
         let reply = core::str::from_utf8(&reply[..len.min(reply.len())]).unwrap_or("");
-        let version = package.version;
-        // Another version runs it: a local override (its plan line is not
-        // `start=pkg`) or one already serving. Shown, never hidden.
+        // Another version already serves it: shown, never hidden. `may-run`
+        // answered for a plan line that takes no package version.
         let shadowed = match reply {
             "ok" => None,
-            supervise::NOT_FROM_PKG => Some("its plan line runs a local version"),
             supervise::RUNS_ANOTHER => Some("it already runs another version"),
-            supervise::NOT_PLANNED => Some("this system plans no service for it"),
             _ => return Err(format!("the supervisor refused {name}'s run: {reply}")),
         };
         match shadowed {
