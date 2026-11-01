@@ -62,17 +62,6 @@ fn showing() -> Option<u64> {
     claim::shows(slot).then_some(pid)
 }
 
-/// Waits `ms`, renewing the lease as `desktop` does while the window has focus.
-/// The kernel's own `input::lease`, under INPUT_TO_CONSOLE's checks.
-fn hold(ms: u64, leased: bool) {
-    for _ in 0..ms / 100 {
-        if leased {
-            input::lease(true);
-        }
-        threads::sleep_ms(100);
-    }
-}
-
 /// One ask after `y` and Enter were typed with the keys `leased` or not.
 fn round(leased: bool) -> Result<(), &'static str> {
     let how = if leased {
@@ -86,7 +75,12 @@ fn round(leased: bool) -> Result<(), &'static str> {
         input::lease(true);
     }
     log!("desk-ask: ready for keys");
-    hold(KEYS_MS, leased);
+    // One lease, never renewed: it holds however long the keys take, and only
+    // desktop, a click or the screen changing hands ends it.
+    threads::sleep_ms(KEYS_MS);
+    if leased && !input::leased() {
+        return Err("desk-ask: the lease ended on its own, with nobody ending it");
+    }
     let queued = input::keys() > before;
     if queued == leased {
         log!("desk-ask: keys typed {how} went the wrong way");
@@ -176,7 +170,7 @@ pub fn check() -> Result<(), &'static str> {
     }
     let before = input::keys();
     log!("desk-ask: ready for keys");
-    hold(KEYS_MS, false);
+    threads::sleep_ms(KEYS_MS);
     if input::keys() == before {
         return Err("desk-ask: keys did not reach the new desktop");
     }
