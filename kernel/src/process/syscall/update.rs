@@ -36,8 +36,15 @@ const CALLS: &[u64] = &[
     call::TRUST_TIME,
 ];
 
-/// The update disk's QEMU serial, as the model disk's is `kai-model`.
-const UPDATE_DISK: &str = "kai-update";
+/// The serial of the read-only disk SLOT_INFO and SLOT_READ take for `which`
+/// in place of a slot: the update disk, or the import disk (P4 task 10).
+fn disk_serial(which: u64) -> Option<&'static str> {
+    match which {
+        update::DISK => Some(update::DISK_SERIAL),
+        update::IMPORT => Some(update::IMPORT_SERIAL),
+        _ => None,
+    }
+}
 /// The bundle entry holding the slot's TUF root.
 const ROOT_FILE: &str = "kai.root.json";
 
@@ -52,13 +59,18 @@ pub(super) fn handle(slot: usize, number: u64, a: &[u64; 6]) -> Option<Result<u6
     }
     CALLS.contains(&number).then(|| match number {
         call::SLOT_INFO => info(slot, a[0], a[1], a[2]),
-        call::SLOT_READ if a[1] == update::DISK => {
+        call::SLOT_READ if disk_serial(a[1]).is_some() => {
             checked(slot, a[0], Rights::READ)?;
-            disk_read(slot, a[2], a[3], a[4])
+            disk_read(slot, a[1], a[2], a[3], a[4])
         }
         call::SLOT_READ => {
             checked(slot, a[0], Rights::READ)?;
             read_in(slot, kind_of(a[1])?, a[2], a[3], a[4])
+        }
+        // The update and import disks are read-only, whatever the handle says.
+        call::SLOT_WRITE if disk_serial(a[1]).is_some() => {
+            checked(slot, a[0], Rights::WRITE)?;
+            Err(Error::Permission)
         }
         call::SLOT_WRITE => {
             checked(slot, a[0], Rights::WRITE)?;
@@ -131,15 +143,17 @@ fn writable(target: Slot) -> bool {
     }
 }
 
-/// Reads `len` bytes from `sector` of the update disk into the caller's `buf`.
-fn disk_read(slot: usize, sector: u64, buf: u64, len: u64) -> Result<u64, Error> {
+/// Reads `len` bytes from `sector` of the update or import disk, `which`, into
+/// the caller's `buf`.
+fn disk_read(slot: usize, which: u64, sector: u64, buf: u64, len: u64) -> Result<u64, Error> {
+    let serial = disk_serial(which).ok_or(Error::Invalid)?;
     if len == 0 || len > MAX_IO || !len.is_multiple_of(SECTOR) {
         return Err(Error::Invalid);
     }
     let mut data = Vec::new();
     data.try_reserve_exact(len as usize)
         .map_err(|_| Error::NoMemory)?;
-    block::with_disk(UPDATE_DISK, |disk| {
+    block::with_disk(serial, |disk| {
         let count = len / SECTOR;
         if sector
             .checked_add(count)
@@ -164,9 +178,8 @@ fn disk_read(slot: usize, sector: u64, buf: u64, len: u64) -> Result<u64, Error>
 
 fn info(slot: usize, raw: u64, which: u64, out: u64) -> Result<u64, Error> {
     checked(slot, raw, Rights::INSPECT)?;
-    if which == update::DISK {
-        let sectors =
-            block::with_disk(UPDATE_DISK, |disk| disk.sectors()).ok_or(Error::NotFound)?;
+    if let Some(serial) = disk_serial(which) {
+        let sectors = block::with_disk(serial, |disk| disk.sectors()).ok_or(Error::NotFound)?;
         return info_out(slot, out, sectors, 0);
     }
     let target = slot_of(which)?;
