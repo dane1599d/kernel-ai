@@ -245,7 +245,7 @@ impl Fixture {
 
     /// Every fixture is an odd number of bytes, not whole 512-byte sectors; the
     /// filler ones are a few MiB.
-    fn bytes(self) -> Vec<u8> {
+    pub(crate) fn bytes(self) -> Vec<u8> {
         let (lead, seed, len): (&[u8], u64, usize) = match self {
             Fixture::Raw => (
                 b"Kernel AI blk fixture, not a model\n",
