@@ -1,0 +1,28 @@
+[package]
+name = "comp-grant-fixture"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# A test fixture for the `app-settings` boot case (P4 task 7), never shipped: a
+# window with one button whose press queues one read-only `fs_list` effect, and
+# a log line saying whether the OS ran it or refused it. The case revokes and
+# restores that row in Settings and presses the button between. Only test images
+# carry it (`xtask`'s `components::TEST_ONLY`); a release image refuses to build
+# with it in.
+[lib]
+crate-type = ["cdylib", "rlib"]
+doctest = false
+
+[dependencies]
+comp-ui-bind = { path = "../ui-bind" }
+compsdk = { path = "../../compsdk" }
+uikit = { path = "../../uikit" }
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+wit-bindgen = { version = "=0.63.0", default-features = false, features = ["macros", "realloc"] }
+
+[dev-dependencies]
+livecore = { path = "../../livecore" }
+wasmhost = { path = "../../wasmhost" }
