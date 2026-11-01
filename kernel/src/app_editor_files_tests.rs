@@ -65,9 +65,10 @@ fn desktop_and_editor() -> Result<(), &'static str> {
     Ok(())
 }
 
-/// Whether the editor shows a file of its own (its title starts `file disk:`).
+/// Whether the editor shows a file of its own: its reply is `kai-reply 1` and a `result` that
+/// starts with the title `file disk: <path>`.
 fn showing_file(said: &str) -> bool {
-    said.starts_with("file disk:") && said.contains("todo.txt")
+    said.contains("result \"file disk: ") && said.contains("todo.txt")
 }
 
 /// A click into the code view gives it the keys: the window has the focus from the start, but
