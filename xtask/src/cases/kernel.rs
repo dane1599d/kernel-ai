@@ -448,14 +448,7 @@ pub(super) const CASES: &[TestCase] = &[
                 "l", "o", "o", "k", "spc", "a", "t", "spc", "s", "e", "t", "t", "i", "n", "g", "s",
                 "ret",
             ],
-            // Two presses: the first card's `y` can lose its release to the
-            // console (the Terminal window takes the keys back at once and the
-            // kernel sends a release only to the console during a lease), which
-            // leaves `y` held in the desk, and a held key cannot answer a card.
-            // The first press then only clears it, and the second answers; if
-            // nothing was held the second lands in the Terminal's prompt, where
-            // nothing reads it.
-            &["y", "y"],
+            &["y"],
         ],
         expect: &[
             "comphost: window 1 \"Settings\" shown at 640x460",
