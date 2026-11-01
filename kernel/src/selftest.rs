@@ -192,6 +192,10 @@ pub enum SelfTest {
     DeskStandingRefused,
     /// S05-1's budgets timed on the real `desktop` (P3's exit case).
     DeskPerf,
+    /// A profile applied exactly, switched by a focus change, undone (P3's exit case).
+    DeskProfile,
+    /// Every resource-profile floor refused by the kernel (P3's exit case).
+    DeskProfileFloor,
     /// The keyboard reaches an app's widgets (key input for uikit apps).
     UiKeys,
     DeskTerm,
@@ -387,6 +391,8 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=desk-standing" => Some(SelfTest::DeskStanding),
             "test=desk-standing-refused" => Some(SelfTest::DeskStandingRefused),
             "test=desk-perf" => Some(SelfTest::DeskPerf),
+            "test=desk-profile" => Some(SelfTest::DeskProfile),
+            "test=desk-profile-floor" => Some(SelfTest::DeskProfileFloor),
             "test=ui-keys" => Some(SelfTest::UiKeys),
             "test=desk-term" => Some(SelfTest::DeskTerm),
             "test=desk-agent" => Some(SelfTest::DeskAgent),
@@ -487,6 +493,8 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DeskStanding
             | SelfTest::DeskStandingRefused
             | SelfTest::DeskPerf
+            | SelfTest::DeskProfile
+            | SelfTest::DeskProfileFloor
             | SelfTest::UiKeys
             | SelfTest::DeskTerm
             | SelfTest::DeskAgent
@@ -755,6 +763,14 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
     if test == SelfTest::DeskPerf {
         plan.push('\n');
         plan.push_str(crate::desk_perf_tests::PLAN);
+    }
+    if test == SelfTest::DeskProfile {
+        plan.push('\n');
+        plan.push_str(crate::desk_profile_tests::PLAN);
+    }
+    if test == SelfTest::DeskProfileFloor {
+        plan.push('\n');
+        plan.push_str(crate::profile_floor_tests::PLAN);
     }
     if test == SelfTest::UiKeys {
         plan.push('\n');
