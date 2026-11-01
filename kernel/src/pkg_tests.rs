@@ -15,17 +15,17 @@
 //!
 //! `test=pkg-image [again|tampered]` (P4 task 1): `pkg`'s plan line adds
 //! `bootfiles=pkgrepo`, and it makes the image's signed repository generation 1:
-//! - boot 1, `step=image`: generation 1 holds the five window apps, from the
-//!   image;
+//! - boot 1, `step=image`: generation 1 holds the six apps, the five windows
+//!   and the editor, from the image;
 //! - boot 2, `again`: generation 1 is still current, seeded once;
 //! - `tampered`, its own case on a fresh disk, with one byte of notes's target
 //!   flipped in the bundle: notes is refused by name, and generation 1 holds
-//!   the other four.
+//!   the other five.
 //!
 //! Its kernel half reads `gen/1` through `fs` as well, and checks that `pkg`
 //! holds the plan's `bootfiles=pkgrepo`, and that `pkg` added no package
-//! version of any window: no plan line here runs one from a package, so `pkg`'s
-//! `may-run` finds none to load (in v0.1 every built-in window runs the image's
+//! version of any app: no plan line here runs one from a package, so `pkg`'s
+//! `may-run` finds none to load (in v0.1 every built-in app runs the image's
 //! own version).
 
 use crate::process;
@@ -186,9 +186,10 @@ pub fn check(step: Step) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// The image's packages, the window apps, each at 1.0.0, and the service each
-/// runs as.
-const WINDOWS: [(&str, &str); 5] = [
+/// The image's packages, the window apps and the editor, each at 1.0.0, and the
+/// service each runs as.
+const WINDOWS: [(&str, &str); 6] = [
+    ("editor", "editor"),
     ("files", "files-window"),
     ("monitor", "monitor-window"),
     ("notes", "notes-window"),
@@ -196,7 +197,7 @@ const WINDOWS: [(&str, &str); 5] = [
     ("terminal", "terminal-window"),
 ];
 
-/// Generation 1 is the image's, the window apps, without notes when notes's
+/// Generation 1 is the image's, its six apps, without notes when notes's
 /// target was tampered with; and `pkg` holds the plan's `bootfiles=pkgrepo`.
 fn image_generation(step: Step) -> Result<(), &'static str> {
     let first = read("gen/1")?;
@@ -229,10 +230,10 @@ fn image_generation(step: Step) -> Result<(), &'static str> {
     }
     match step {
         Step::ImageTampered => log!(
-            "pkg-image: generation 1 holds the four windows but notes: the tampered notes is not in it"
+            "pkg-image: generation 1 holds the five apps but notes: the tampered notes is not in it"
         ),
         _ => log!(
-            "pkg-image: generation 1 is the five window apps at 1.0.0, from the image's signed repository"
+            "pkg-image: generation 1 is the six apps at 1.0.0, from the image's signed repository"
         ),
     }
     no_window_loaded()
@@ -326,7 +327,7 @@ fn only_the_holder_calls() -> Result<(), &'static str> {
 }
 
 /// `pkg` answers the Apps sheet's `catalog` (P4 task 3): big and the image's
-/// five windows as installed, then the mirror's `extra`, which is not.
+/// six apps as installed, then the mirror's `extra`, which is not.
 fn catalogue_lists_them() -> Result<(), &'static str> {
     let answer =
         answer_of(CLIENT, b"catalog 0").ok_or("pkg-install: pkg never answered catalog")?;
@@ -336,6 +337,7 @@ fn catalogue_lists_them() -> Result<(), &'static str> {
     let wanted = [
         "kai-catalog 1",
         "installed\tbig\t1.0.0\tdata\t",
+        "installed\teditor\t1.0.0\tapp\t",
         "installed\tfiles\t1.0.0\tapp\t",
         "installed\tmonitor\t1.0.0\tapp\t",
         "installed\tnotes\t1.0.0\tapp\t",
@@ -353,7 +355,7 @@ fn catalogue_lists_them() -> Result<(), &'static str> {
         return Err("pkg-install: the catalogue does not list installed then offered");
     }
     log!(
-        "pkg-install: the catalogue lists big and the five windows installed, then the mirror's extra"
+        "pkg-install: the catalogue lists big and the six apps installed, then the mirror's extra"
     );
     Ok(())
 }

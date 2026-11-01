@@ -178,9 +178,9 @@ fn a_package_carries_only_its_own_window() {
 
 #[test]
 fn every_built_in_package_is_the_boot_drives_build_byte_for_byte() {
-    // comphost grants Settings, the Monitor and the Terminal only to code it
-    // fetched under a boot label, so the image's package of each window must be
-    // that very artifact, never one the packer built again.
+    // comphost grants Settings, the Monitor, the Terminal and the editor only to
+    // code it fetched under a boot label, so the image's package of each app must
+    // be that very artifact, never one the packer built again.
     let root = crate::workspace_root();
     let versions: Vec<crate::esp::Module> = APPS
         .iter()
@@ -206,7 +206,11 @@ fn every_built_in_package_is_the_boot_drives_build_byte_for_byte() {
         assert_eq!(*artifact, &version.bytes[..], "{}", app.name);
         let service = kaipkg::app::service(&package.header, &package.bytes);
         assert_eq!(service, Ok(Some(app.component.to_string())));
-        assert!(app.component.ends_with(kaipkg::app::WINDOW), "{}", app.name);
+        assert!(
+            kaipkg::app::may_run_as(app.name, app.component),
+            "{}",
+            app.name
+        );
     }
 }
 

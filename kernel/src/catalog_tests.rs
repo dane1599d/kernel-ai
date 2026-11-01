@@ -2,9 +2,9 @@
 //! first step (big from the mirror, beside the image's notes), `desktop` has a
 //! `uses=pkg` route, and the shell takes the panel's lines. The case types
 //! Ctrl+Space, `apps` and Enter: `desktop` asks `pkg` for the catalogue and
-//! lists big and the image's five windows installed, then the mirror's `extra`,
+//! lists big and the image's six apps installed, then the mirror's `extra`,
 //! whose index summary is written as an instruction and is logged as text. Then
-//! Down six times and Enter on `extra`: the sheet sends `install extra`, by the
+//! Down seven times and Enter on `extra`: the sheet sends `install extra`, by the
 //! row's own
 //! name, and the shell takes it as it takes a typed line. The host checks
 //! `desktop`'s lines; with no mock model on the command line, any request to
@@ -50,8 +50,8 @@ pub fn check() -> Result<(), &'static str> {
     threads::sleep_ms(STEP_MS);
     crate::claim_tests::type_keys(&APPS_ENTER);
     threads::sleep_ms(STEP_MS * 3);
-    // Past big, files, monitor, notes, settings and terminal.
-    for _ in 0..6 {
+    // Past big, editor, files, monitor, notes, settings and terminal.
+    for _ in 0..7 {
         crate::claim_tests::type_keys(&DOWN);
         threads::sleep_ms(STEP_MS);
     }

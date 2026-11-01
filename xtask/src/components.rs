@@ -152,6 +152,23 @@ pub const MONITOR_WINDOW_RECIPE: Recipe = Recipe {
     ],
 };
 
+/// The editor (P4 task 11), a window over the edit service and the person's
+/// files. Its component is `editor`, not `editor-window`: the kernel grants
+/// `edit` to that name alone.
+pub const EDITOR_RECIPE: Recipe = Recipe {
+    component: "editor",
+    krate: "comp-editor-window",
+    dirs: EDITOR_DIRS,
+    feature: None,
+    wit: &[
+        "wit/kai-ui",
+        "wit/kai-edit",
+        "wit/kai-files",
+        "wit/kai-code",
+        EDITOR_WIT,
+    ],
+};
+
 /// The label every window's one version has on the boot drive.
 pub const WINDOW_LABEL: &str = "1";
 
@@ -203,22 +220,9 @@ pub const VERSIONS: &[Version] = &[
         label: WINDOW_LABEL,
         recipe: SETTINGS_WINDOW_RECIPE,
     },
-    // The editor (P4 task 11), a window over the edit service.
     Version {
-        label: "1",
-        recipe: Recipe {
-            component: "editor",
-            krate: "comp-editor-window",
-            dirs: EDITOR_DIRS,
-            feature: None,
-            wit: &[
-                "wit/kai-ui",
-                "wit/kai-edit",
-                "wit/kai-files",
-                "wit/kai-code",
-                EDITOR_WIT,
-            ],
-        },
+        label: WINDOW_LABEL,
+        recipe: EDITOR_RECIPE,
     },
     Version {
         label: WINDOW_LABEL,

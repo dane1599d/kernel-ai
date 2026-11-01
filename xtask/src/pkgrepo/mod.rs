@@ -73,8 +73,7 @@ const fn window(name: &'static str, recipe: &components::Recipe, summary: &'stat
     }
 }
 
-/// Every built-in app: P4's windows (P4 plan, tasks 4-11). The editor joins
-/// when it lands.
+/// Every built-in app: P4's windows and the editor (P4 plan, tasks 4-11).
 pub const APPS: &[App] = &[
     window(
         "notes",
@@ -100,6 +99,11 @@ pub const APPS: &[App] = &[
         "monitor",
         &components::MONITOR_WINDOW_RECIPE,
         "What the machine is doing: processes, memory and the model",
+    ),
+    window(
+        "editor",
+        &components::EDITOR_RECIPE,
+        "A code editor for your files and the system's source",
     ),
 ];
 
