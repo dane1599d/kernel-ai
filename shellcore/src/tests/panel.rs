@@ -20,7 +20,8 @@ fn a_run_tier_request_shows_codes_line() {
     let (host, mut shell) = with_calls(vec![call(RR)]);
     assert_eq!(
         shell.eval_panel("switch to round robin"),
-        PanelResult::Done("Done: policy round-robin (was interactive). undo".into())
+        // Desktop draws the undo control, so the line does not say it.
+        PanelResult::Done("Done: policy round-robin (was interactive).".into())
     );
     assert_eq!(host.policy.get(), Some(policy::ROUND_ROBIN));
 }

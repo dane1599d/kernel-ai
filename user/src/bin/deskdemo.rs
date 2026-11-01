@@ -101,7 +101,7 @@ fn main() -> i32 {
         while let Ok((header, args, next)) = wire::split(rest) {
             rest = next;
             // Globals come only on a new connection: this is another desktop.
-            if header.object == REGISTRY {
+            if header.object == REGISTRY && header.opcode == 0 {
                 restarted = true;
                 continue;
             }

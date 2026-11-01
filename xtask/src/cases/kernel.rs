@@ -373,6 +373,12 @@ pub(super) const CASES: &[TestCase] = &[
             &[
                 "o", "p", "e", "n", "spc", "s", "e", "t", "t", "i", "n", "g", "s", "ret",
             ],
+            // In Settings' window: the Theme button, then the Updates page's
+            // switch for the restart window (see `apps/settings-ui/tests/keys.rs`).
+            &["tab", "tab", "ret"],
+            &[
+                "tab", "tab", "tab", "right", "right", "right", "right", "tab", "spc",
+            ],
             &[
                 "l", "o", "o", "k", "spc", "a", "t", "spc", "s", "e", "t", "t", "i", "n", "g", "s",
                 "ret",
@@ -385,6 +391,12 @@ pub(super) const CASES: &[TestCase] = &[
             "comphost: the first settings answer reached the app",
             "app-settings: the theme was set before Settings opened",
             "settings: appearance theme light",
+            "app-settings: keys were pressed in Settings' window",
+            // The theme after light, set by the key press and read back from the
+            // shell, and the restart window set from the page and read back
+            // through `file updates`.
+            "settings: appearance theme high-contrast",
+            "settings: restart window 02:00-05:00",
             // What each other page was given, from the app's log (its window is
             // private to the agent): the rules, the apps with rows, About, the
             // profiles, the apps that can nap, the keep-running list and the
