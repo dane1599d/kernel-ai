@@ -2,6 +2,7 @@
 //! serves them, and `desktop`'s events read back.
 
 use crate::desk::{self, Desk, Told};
+use alloc::string::String;
 use alloc::vec::Vec;
 use deskcore::desk::{Desk as Screen, Effect, Focus};
 use deskcore::server::{Client, Need};
@@ -74,6 +75,12 @@ fn a_window_opens_shows_new_pictures_and_closes() {
     let needs = serve(&mut client, &mut screen, &[d.closed(1)], false);
     assert_eq!(needs, [Need::Closed { window }]);
     assert!(d.windows().is_empty() && screen.window(window).is_none());
+    // The desktop's theme reaches the app by name, and is no new greeting.
+    client.theme("light");
+    assert_eq!(
+        d.told(&client.take_events(8192)),
+        [Told::Theme(String::from("light"))]
+    );
     // Another desktop's greeting is a restart.
     let again = Client::new(8, "notes-window").take_events(8192);
     assert_eq!(d.told(&again), [Told::Restarted]);

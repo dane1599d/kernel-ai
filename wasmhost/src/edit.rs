@@ -47,11 +47,26 @@ pub struct EditRequest {
     pub user: bool,
 }
 
+/// How many answers deep a person's key still counts as the cause: the key sends
+/// a message, its answer makes the app send the next, and so on to this many.
+/// An editor sends one message at a time, so an edit typed and then a build asked
+/// for is two or three of these; a chain that never ends is cut off here.
+pub const MAX_CHAIN: u8 = 16;
+/// Most tickets remembered as a person's; the oldest are forgotten first.
+const MAX_BY_PERSON: usize = 2 * MAX_QUEUED;
+
 /// The messages not yet taken, and the next ticket.
 #[derive(Default)]
 pub(crate) struct EditHost {
     pub(crate) queue: Vec<EditRequest>,
     next: u32,
+    /// Tickets sent for a person, with how many answers deep each is (0 for the
+    /// message their key sent itself).
+    by_person: Vec<(u32, u8)>,
+    /// How many answers deep the call in progress is, while it answers a
+    /// message a person's key sent. `HostState::user_input` stays down for it, so
+    /// no other granted interface takes the call for the person's.
+    chain: Option<u8>,
 }
 
 /// `edit.send(message) -> u32`: the message's ticket.
@@ -81,7 +96,8 @@ pub(crate) fn send(mut caller: Caller<'_, HostState>, ptr: i32, len: i32) -> Res
             "{EDIT} send: only inside a call that a transaction wraps"
         )));
     }
-    let user = caller.data().user_input;
+    let chain = caller.data().edit.chain;
+    let user = caller.data().user_input || chain.is_some();
     let host = &mut caller.data_mut().edit;
     if host.queue.len() >= MAX_QUEUED {
         return Err(Error::new(alloc::format!(
@@ -90,12 +106,28 @@ pub(crate) fn send(mut caller: Caller<'_, HostState>, ptr: i32, len: i32) -> Res
     }
     let ticket = host.next;
     host.next = host.next.wrapping_add(1);
+    if user {
+        if host.by_person.len() >= MAX_BY_PERSON {
+            host.by_person.remove(0);
+        }
+        host.by_person.push((ticket, chain.unwrap_or(0)));
+    }
     host.queue.push(EditRequest {
         ticket,
         message,
         user,
     });
     Ok(ticket as i32)
+}
+
+impl EditHost {
+    /// Forgets `ticket`; if a person's key caused it and the chain is not at
+    /// its end, how deep the call that answers it is.
+    fn continued(&mut self, ticket: u32) -> Option<u8> {
+        let at = self.by_person.iter().position(|(t, _)| *t == ticket)?;
+        let (_, depth) = self.by_person.remove(at);
+        (depth < MAX_CHAIN).then_some(depth + 1)
+    }
 }
 
 impl CoreInstance {
@@ -122,7 +154,19 @@ impl CoreInstance {
             Ok(bytes) => Val::Result(Ok(Some(Box::new(Val::Bytes(bytes))))),
             Err(why) => Val::Result(Err(Some(Box::new(Val::String(why))))),
         };
-        livecore::Instance::call(self, &entry.func(export), &[Val::U32(ticket), outcome])?;
-        Ok(())
+        // The answer to a message a person's key caused is part of what the key
+        // does: the editor sends an edit, and when it is answered the build the
+        // person asked for behind it. So what the app sends to the edit service
+        // in that call is marked as the person's too, down to `MAX_CHAIN`
+        // answers. Only `send` here reads the mark: `user_input` stays down, so
+        // `kai:settings` and `last_call_by_user` never see a chained answer as
+        // the person's. An answer to anything else, the agent's `ui_act`
+        // included, starts no chain.
+        let chain = self.store.data_mut().edit.continued(ticket);
+        self.store.data_mut().edit.chain = chain;
+        let result =
+            livecore::Instance::call(self, &entry.func(export), &[Val::U32(ticket), outcome]);
+        self.store.data_mut().edit.chain = None;
+        result.map(|_| ())
     }
 }

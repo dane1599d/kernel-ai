@@ -281,6 +281,10 @@ impl<'a> Run<'a> {
 pub const NOT_FROM_PKG: &str = "err not a start=pkg service";
 /// The answer to a `run` for an app that already serves another version.
 pub const RUNS_ANOTHER: &str = "err it runs another version";
+/// The answer to a `run` for an app the plan has no line for: the image's
+/// repository holds it, but this system does not run it (the v0.1 system has
+/// no headless `notes` without a build service). `pkg` shows it, not a failure.
+pub const NOT_PLANNED: &str = "err unknown service";
 
 /// The index among `services` (each spec with its running pid) of the service
 /// `run` names, if `caller` may ask for it: the running instance of a service
@@ -300,7 +304,7 @@ pub fn check_run(
     let index = services
         .iter()
         .position(|(spec, _)| spec.name == run.name)
-        .ok_or("err unknown service")?;
+        .ok_or(NOT_PLANNED)?;
     match services[index].0.start {
         Start::Pkg => Ok(index),
         Start::Boot | Start::Demand => Err(NOT_FROM_PKG),

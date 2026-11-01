@@ -95,6 +95,11 @@ fn a_change_decided_after_a_view_asks_even_when_the_line_asks_for_it() {
     desktop(&host);
     let reply = shell.eval("look at notes and switch to round robin");
     assert!(reply.to_wire().starts_with("menu 1 "), "{reply:?}");
+    // The question says where Kai took it from, in words.
+    assert!(
+        reply.text.contains("Kai took it from what a window shows."),
+        "{reply:?}"
+    );
     assert_eq!(host.policy.get(), None);
 }
 

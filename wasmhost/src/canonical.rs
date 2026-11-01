@@ -59,6 +59,8 @@ pub struct CoreInstance {
     pub(crate) on_system_sample: Option<String>,
     /// The `kai:edit/replies` `on-reply` export, when the module has one.
     pub(crate) on_edit_reply: Option<String>,
+    /// The `kai:files/replies` `on-done` export, when the module has one.
+    pub(crate) on_files_reply: Option<String>,
 }
 
 impl CoreInstance {
@@ -150,6 +152,7 @@ pub fn load_core_granted(
         settings: Default::default(),
         system: Default::default(),
         edit: Default::default(),
+        files: Default::default(),
         memory: None,
     };
     let mut store = Store::new(&engine, state);
@@ -195,6 +198,10 @@ pub fn load_core_granted(
         .iter()
         .find(|f| f.interface == crate::edit::REPLIES && f.name == "on-reply")
         .and_then(|f| export_for(&module, f));
+    let on_files_reply = tables::EXPORTS
+        .iter()
+        .find(|f| f.interface == crate::files::REPLIES && f.name == "on-done")
+        .and_then(|f| export_for(&module, f));
     Ok(CoreInstance {
         store,
         instance,
@@ -214,6 +221,7 @@ pub fn load_core_granted(
         grants,
         on_system_sample,
         on_edit_reply,
+        on_files_reply,
     })
 }
 
@@ -302,6 +310,15 @@ fn link_imports(
                 )));
             }
             (crate::edit::EDIT, "send") => linker.func_wrap(qualified, name, crate::edit::send),
+            (crate::files::FILES, _) if !grants.files => {
+                return Err(link_err(format!(
+                    "{qualified} needs the files grant, which this app's package does not hold"
+                )));
+            }
+            (crate::files::FILES, "read") => linker.func_wrap(qualified, name, crate::files::read),
+            (crate::files::FILES, "write") => {
+                linker.func_wrap(qualified, name, crate::files::write)
+            }
             (crate::code::CODE, _) | (crate::ui::VIEW, _) => linker.func_new(
                 qualified,
                 name,
