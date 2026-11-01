@@ -48,6 +48,11 @@ fn an_apps_row_runs_as_a_kai_call_and_undo_puts_its_state_back() {
         .extend([String::from("kai-reply 1\nresult ok(1)\nundo 4\n")]);
     let reply = shell.eval("add a note saying buy milk");
     assert!(reply.ok, "{reply:?}");
+    // The done line says what the row did, in the app people know.
+    assert!(
+        reply.text.ends_with("Done: add a note in Notes. undo"),
+        "{reply:?}"
+    );
     let (app, request) = host.app_requests.borrow()[0].clone();
     assert_eq!(app, "notes");
     assert_eq!(

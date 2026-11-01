@@ -69,6 +69,7 @@ pub mod ns;
 pub mod ns_check;
 pub mod repair;
 pub mod repair_fs;
+pub mod scope;
 pub mod sealed;
 pub mod trash;
 pub mod tree;

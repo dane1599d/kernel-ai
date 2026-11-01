@@ -16,11 +16,11 @@
 //! fails is refused by name and left out; the rest are kept.
 
 use crate::bundle::{self, HEADER};
-use crate::effects;
 use crate::header::Header;
 use crate::index::Index;
 use crate::resolve::{self, Entry, Want};
 use crate::version::Version;
+use crate::{app, effects};
 use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -185,9 +185,10 @@ fn package(files: &mut dyn Files, target: &TargetFile) -> Result<(Entry, Vec<u8>
 }
 
 /// `target`'s index entry, each of whose `custom.kai` fields must be what the
-/// package's own header says ([`Index::matches`]), and its effects what its
-/// artifact declares ([`effects::check`]); `bytes` are the package, already
-/// checked against `target`.
+/// package's own header says ([`Index::matches`]), its effects what its
+/// artifact declares ([`effects::check`]), and its artifact its own or its
+/// window's ([`app::service`]); `bytes` are the package, already checked
+/// against `target`.
 pub fn entry(target: &TargetFile, bytes: &[u8]) -> Result<Entry, String> {
     entry_and_index(target, bytes).map(|(entry, _)| entry)
 }
@@ -204,6 +205,7 @@ fn entry_and_index(target: &TargetFile, bytes: &[u8]) -> Result<(Entry, Index), 
     let header = Header::parse(text)?;
     index.matches(&header, text)?;
     effects::check(&header, bytes, &index.effects)?;
+    app::service(&header, bytes)?;
     index.check_path(target)?;
     Ok((index.entry()?, index))
 }

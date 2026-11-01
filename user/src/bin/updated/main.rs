@@ -19,6 +19,10 @@
 //!
 //! `step=models` exercises the model channel (`models.rs`) for the `models`
 //! case: the list, the import of the import disk's fixture, and `model_use`.
+//! `step=probation`, that case's next boot, waits until the trial is kept or
+//! rolled back. Neither restarts into a slot: each leaves `case-<step>.done`
+//! in `/system/updates`, which ends the boot (the kernel's
+//! `model_import_tests`).
 //!
 //! It prints a line for each step that passed, or `updated: FAIL ...`. With no
 //! step, as every boot with a shell plans it (`kabi::plan::with_updated`), it
@@ -98,6 +102,7 @@ fn main() -> i32 {
         (_, Err(why)) => Err(why),
         (Some("check"), _) => check(handle),
         (Some("models"), _) => models_check(channel.as_mut()),
+        (Some("probation"), _) => probation_check(channel.as_mut()),
         (Some("update"), _) => {
             let now = !args.split_whitespace().any(|w| w == "restart=window");
             disk::update(handle, now).map(|staged| {
@@ -115,6 +120,14 @@ fn main() -> i32 {
         }
         _ => Ok(()),
     };
+    // The model steps restart into no slot: the kernel's half of their case
+    // ends the boot once this marker is there, after their lines.
+    if let (Ok(()), Some(step @ ("models" | "probation")), Some(channel)) =
+        (&result, step, channel.as_ref())
+        && let Err(why) = channel.mark_done(step)
+    {
+        println!("updated: FAIL cannot leave case-{step}.done: {why}");
+    }
     if let Err(why) = result {
         println!("updated: FAIL {why}");
         // In the update cases, a refused update ends the boot too, back into
@@ -124,6 +137,18 @@ fn main() -> i32 {
         }
     }
     serve(channel)
+}
+
+/// The `models` case's second boot: the trial `at_boot` began, judged from
+/// `llm`'s health until it is kept or rolled back.
+fn probation_check(channel: Option<&mut models::Channel>) -> Result<(), String> {
+    const TICK_MS: u64 = 100;
+    let channel = channel.ok_or("no model store")?;
+    while channel.on_trial() {
+        channel.tick();
+        sys::sleep_ms(TICK_MS);
+    }
+    Ok(())
 }
 
 /// The `models` case's step: the list, the import disk's model imported, and

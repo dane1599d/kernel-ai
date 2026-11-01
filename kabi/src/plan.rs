@@ -4,6 +4,8 @@
 use alloc::format;
 use alloc::string::String;
 
+pub mod system;
+
 /// The shell's routes in its lines' `uses=` order. The shell finds each by its
 /// index ([`shell_route`]), since a route carries no name, so every shell line
 /// lists them in this order, `desktop` on a desktop only.
@@ -33,13 +35,23 @@ pub const SHELL_FILES: &str = "shell caps=serve+call+policy+stop+script+files+st
 /// which it takes the AI panel's requests from and reports their states to (P3
 /// task 7).
 pub const SHELL_DESK: &str = "shell caps=serve+call+policy+stop+script uses=llm+supervisor+cc+updated+desktop pages=4096 stack_pages=512 burst_ms=5000";
+/// [`SHELL_DESK`] with the file system too, for a case that has the desktop and
+/// a state directory in one shell (`app-settings` saves a theme and shows it in
+/// Settings): the same routes, so `desktop` stays fifth, and `files` and `state`
+/// added to the caps (a test holds the two lines together).
+pub const SHELL_DESK_FILES: &str = "shell caps=serve+call+policy+stop+script+files+state uses=llm+supervisor+cc+updated+desktop pages=4096 stack_pages=512 burst_ms=5000";
+
+/// `updated`'s words when it starts only on the shell's first model request,
+/// as `cc` does: it holds no memory before then (K's condition that it does no
+/// models work until the shell asks).
+pub const ON_DEMAND: &str = " start=demand";
 
 /// `shell`, a shell line, with `updated`'s line just before it, `words` after
-/// that (` step=check`, or nothing). Every plan with a shell line takes it from
-/// here: the shell's routes must name services listed before it, and
-/// `updated`'s own, `llm`, comes earlier still. With no step, `updated` does
-/// nothing at boot but settle a model trial left pending, and then answers
-/// the shell's model requests.
+/// that: [`ON_DEMAND`], a step (` step=check`), or nothing, for one started at
+/// boot. Every plan with a shell line takes it from here: the shell's routes
+/// must name services listed before it, and `updated`'s own, `llm`, comes
+/// earlier still. With no step, `updated` does nothing at start but settle a
+/// model trial left pending, and then answers the shell's model requests.
 pub fn with_updated(shell: &str, words: &str) -> String {
     format!("{UPDATED}{words}\n{shell}")
 }
@@ -64,7 +76,7 @@ pub const FS: &str = "fs caps=serve+partition pages=8192 stack_pages=64 burst_ms
 /// model on trial, writes the model store (`dir=models`), and reads the signed
 /// `models` role from the image's repository (`bootfiles=pkgrepo`).
 pub const UPDATED: &str = "updated caps=update+serve+call uses=llm \
-    dir=trust+updates+settings+models bootfiles=pkgrepo pages=2048 stack_pages=128 burst_ms=5000";
+    dir=trust+updates+restart+models bootfiles=pkgrepo pages=2048 stack_pages=128 burst_ms=5000";
 /// The live `notes` component, run by the shared `comphost` program, without its
 /// arguments.
 const NOTES_BASE: &str =
@@ -85,6 +97,13 @@ pub fn notes(version: &str, fallback: Option<&str>) -> String {
         None => format!("{NOTES_BASE} version={version}"),
     }
 }
+/// The System monitor (P4 task 9), `comphost` serving `monitor-window`: a route
+/// to `desktop` for its window, and after it one to `llm`, which comphost asks
+/// for `health` and for nothing else. comphost takes the second route to be llm's,
+/// so the order in `uses=` is part of the line (a test in `supervise` pins it);
+/// the name is the grant of `kai:system`, which no other line may carry. Planned
+/// after `desktop` and `llm`.
+pub const MONITOR_WINDOW: &str = "monitor-window program=comphost caps=serve+component+call uses=desktop+llm pages=8192 stack_pages=512 burst_ms=20000 version=1";
 /// Probation ended by calls alone, so a test runs the same under KVM and TCG.
 pub const CALLS_ONLY: &str = "probation_calls=3 probation_ms=0";
 /// For the M9a test: version 1, with probation ended by calls alone, so the test
@@ -95,6 +114,11 @@ pub const NOTES_EDIT_TEST: &str = "notes program=comphost caps=serve+component p
 /// The edit service, planned only when the kernel has a build service. The
 /// kernel appends `host=IP:PORT token=HEX`.
 pub const EDIT_BASE: &str = "edit caps=serve+publish pages=2048 burst_ms=10000";
+/// The editor app (P4 task 11), `comphost` serving the `editor` component with a
+/// route to `desktop` for its window. The kernel gives `cap::EDIT` to the service
+/// of this name and no other, so the name is the grant of `kai:edit`, which sends
+/// the app's messages to the edit service (`EDIT_CALL`). Planned after `desktop`.
+pub const EDITOR: &str = "editor program=comphost caps=serve+component+call+edit uses=desktop pages=8192 stack_pages=512 burst_ms=20000 version=1";
 
 #[cfg(test)]
 mod tests {
@@ -123,6 +147,8 @@ mod tests {
         assert_eq!(uses(SHELL), routes[..shell_route::DESKTOP]);
         assert_eq!(uses(SHELL_FILES), routes[..shell_route::DESKTOP]);
         assert_eq!(uses(SHELL_DESK), routes);
+        assert_eq!(uses(SHELL_DESK_FILES), routes);
+        assert_eq!(uses(system::SHELL_DESK_FILES), routes);
     }
 
     #[test]
@@ -132,5 +158,17 @@ mod tests {
         assert_eq!(lines, [format!("{UPDATED} step=check").as_str(), SHELL]);
         assert_eq!(uses(UPDATED), ["llm"]);
         assert_eq!(with_updated(SHELL_DESK, "").lines().next(), Some(UPDATED));
+        let demand = with_updated(SHELL_DESK, ON_DEMAND);
+        assert!(demand.lines().next().unwrap().ends_with(" start=demand"));
+    }
+
+    #[test]
+    fn the_desk_shell_with_files_is_the_desk_shell_with_two_caps_more() {
+        assert_eq!(
+            SHELL_DESK_FILES,
+            SHELL_DESK
+                .replacen("+script ", "+script+files+state ", 1)
+                .as_str()
+        );
     }
 }

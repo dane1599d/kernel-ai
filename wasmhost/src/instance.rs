@@ -38,8 +38,10 @@ pub(crate) struct HostState {
     /// True only while a real key or click is being handled
     /// ([`crate::CoreInstance::ui_input`], [`crate::CoreInstance::ui_events_user`]).
     /// A host function that must tell a person's input from the agent's
-    /// `ui_act` reads it; everything else, replies and events included, leaves it
-    /// false, so the default is to refuse.
+    /// `ui_act` reads it; everything else, replies, events and timers included,
+    /// leaves it false, so the default is to refuse. (`kai:edit` carries a
+    /// person's mark through the answers to its own messages itself,
+    /// [`crate::edit::MAX_CHAIN`], without raising this.)
     pub(crate) user_input: bool,
     /// The settings requests the app sent and comphost has not taken (`kai:settings`).
     pub(crate) settings: crate::settings::SettingsHost,
@@ -47,6 +49,8 @@ pub(crate) struct HostState {
     pub(crate) system: crate::system::SystemHost,
     /// The edit messages the app sent and comphost has not taken (`kai:edit`).
     pub(crate) edit: crate::edit::EditHost,
+    /// The file requests the app sent and comphost has not taken (`kai:files`).
+    pub(crate) files: crate::files::FilesHost,
 }
 
 /// Most bytes of a panic's file path read from the version.
@@ -181,6 +185,7 @@ impl WasmInstance {
             settings: Default::default(),
             system: Default::default(),
             edit: Default::default(),
+            files: Default::default(),
         };
         let mut store = Store::new(engine, state);
         store.limiter(|state| &mut state.limits);

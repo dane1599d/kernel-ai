@@ -59,7 +59,7 @@ pub(crate) fn wait(
 }
 
 /// Clicks at `to`, moving there from `at`.
-fn click(at: &mut (i32, i32), to: (i32, i32)) {
+pub(crate) fn click(at: &mut (i32, i32), to: (i32, i32)) {
     report(to.0 - at.0, to.1 - at.1, 0);
     *at = to;
     report(0, 0, 1);

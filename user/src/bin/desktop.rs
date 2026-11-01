@@ -145,6 +145,8 @@ struct State {
     /// paints) at first, so the first frame does no theme work for it.
     appearance: Appearance,
     painted_in: Appearance,
+    /// The theme's name, as clients are told it (`surfabi`'s `Theme`).
+    theme_name: String,
 }
 
 fn main() -> i32 {
@@ -152,8 +154,9 @@ fn main() -> i32 {
         println!("desktop: the built-in fonts do not parse");
         return 1;
     };
-    let appearance = starting_appearance();
+    let mut appearance = starting_appearance();
     let mut painted_in = Appearance::default();
+    let mut theme_name = Appearance::default().theme.clone();
     loop {
         let Some(screen) = claim() else {
             if !wait_for_screen() {
@@ -192,11 +195,14 @@ fn main() -> i32 {
             asked: None,
             appearance: appearance.clone(),
             painted_in,
+            theme_name: theme_name.clone(),
         };
         println!("desktop: claimed {width}x{height}");
         let result = run(&mut state, &screen);
         painter = state.painter;
         painted_in = state.painted_in;
+        appearance = state.appearance;
+        theme_name = state.theme_name;
         let Some(back) = result else {
             return 1;
         };
@@ -521,6 +527,10 @@ fn serve(state: &mut State, bytes: &[u8], info: &RecvInfo) {
         let _ = sys::reply_h(reply.as_bytes(), &[]);
         return;
     }
+    if let Some(reply) = appearance_request(state, bytes, pid) {
+        let _ = sys::reply_h(reply.as_bytes(), &[]);
+        return;
+    }
     if let Some(reply) = settings_request(state, bytes, pid) {
         let _ = sys::reply_h(reply.as_bytes(), &[]);
         return;
@@ -536,7 +546,9 @@ fn serve(state: &mut State, bytes: &[u8], info: &RecvInfo) {
     let new = !state.clients.iter().any(|c| c.pid == pid);
     if new {
         let label = name_of(pid);
-        state.clients.push(Client::new(pid, &label));
+        let mut client = Client::new(pid, &label);
+        client.theme(&state.theme_name);
+        state.clients.push(client);
     }
     let Some(at) = state.clients.iter().position(|c| c.pid == pid) else {
         return;
@@ -564,6 +576,7 @@ fn serve(state: &mut State, bytes: &[u8], info: &RecvInfo) {
             deliver(state, &effects);
             let label = state.clients[at].label.clone();
             state.clients[at] = Client::new(pid, &label);
+            state.clients[at].theme(&state.theme_name);
             let reply = state.clients[at].take_events(kabi::MAX_MESSAGE);
             let _ = sys::reply_h(&reply, &[]);
         }
@@ -624,6 +637,27 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
         state.extra.push(state.desk.panel());
     }
     Some(String::from("ok"))
+}
+
+/// The shell's saved appearance (`panel_wire::APPEARANCE`): painted in from
+/// the next frame, the whole screen and the cursor (`theme`). Only the shell's,
+/// by the kernel's name for the caller, and only text `look` takes.
+fn appearance_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
+    let text = core::str::from_utf8(bytes).ok()?;
+    let saved = panel_wire::parse_appearance(text)?;
+    if name_of(pid) != "shell" {
+        return Some(String::from("err only the shell sets the appearance"));
+    }
+    match Appearance::decode(saved, &Shipped) {
+        Ok(appearance) => {
+            state.appearance = appearance;
+            Some(String::from("ok"))
+        }
+        Err(why) => {
+            println!("desktop: the saved appearance is refused ({})", why.0);
+            Some(alloc::format!("err the appearance is refused: {}", why.0))
+        }
+    }
 }
 
 /// An app's `effects put` and `effects results`, and the shell's `effects
@@ -1030,6 +1064,11 @@ fn theme(state: &mut State, screen: &Screen) {
         let _ = sys::display_cursor(&arrow(state.painter.palette()), (0, 0));
     }
     println!("desktop: painting in the {} theme", theme.name);
+    // Every client paints in it too, from its next poll.
+    state.theme_name = String::from(theme.name.as_str());
+    for client in &mut state.clients {
+        client.theme(&state.theme_name);
+    }
     state.painted_in = state.appearance.clone();
 }
 

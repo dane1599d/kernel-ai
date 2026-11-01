@@ -119,7 +119,7 @@ fn the_files_guest_lists_previews_and_asks_the_os_for_its_changes() {
     let (_, f) = frame(&mut g);
     let n = names(&f);
     assert!(n.iter().any(|t| t == "docs/") && n.iter().any(|t| t == "notes.txt"));
-    assert!(n.iter().any(|t| t == "1 folders, 2 files"), "{n:?}");
+    assert!(n.iter().any(|t| t == "1 folder, 2 files"), "{n:?}");
 
     // A click on the second name asks for that file, and its text previews.
     let (r, txn) = call(&mut g, |g| {
@@ -191,6 +191,26 @@ fn the_files_guest_lists_previews_and_asks_the_os_for_its_changes() {
     let (r, _) = call(&mut g, |g| g.ui_events(w, &[UiEvent::CloseRequested]));
     r.unwrap();
     assert_eq!(g.take_ui(), vec![Update::Closed(w)]);
+}
+
+/// The desktop tour's Files window (`03-files`) listed `ideas.txt` alone for
+/// a folder of three files: the shell's `fs_list` answer, one name a line, lost
+/// all but one line on the way. The built app shows every name it is given, and
+/// says "3 files".
+#[test]
+fn a_folder_of_three_files_shows_all_three_and_says_three_files() {
+    let Some(mut g) = load() else { return };
+    frame(&mut g);
+    call(&mut g, |g| g.deliver_event(&AppEvent::Started))
+        .0
+        .unwrap();
+    done(&mut g, 1, Ok("ideas.txt\nnotes.txt\nplan.txt\n"));
+    let (_, f) = frame(&mut g);
+    let n = names(&f);
+    for name in ["ideas.txt", "notes.txt", "plan.txt"] {
+        assert!(n.iter().any(|t| t == name), "{name} is missing: {n:?}");
+    }
+    assert!(n.iter().any(|t| t == "0 folders, 3 files"), "{n:?}");
 }
 
 #[test]

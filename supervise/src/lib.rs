@@ -111,13 +111,16 @@ pub enum Folder {
     /// (ADR 0008 §10): `updated`'s only.
     Updates,
     /// `/system/settings`, the Settings app's files, read only: for a service
-    /// that follows a setting (`updated`'s restart window; the desktop's
-    /// appearance and the supervisor's profiles next).
+    /// that follows a setting (the desktop's appearance and the supervisor's
+    /// profiles next). Nothing writes it in v0.1.
     Settings,
     /// `/system/apps`, where comphost keeps each app's saved state: one folder
     /// per app, named for it (P4). comphost is the OS's own host and the app's
     /// wasm never reaches `fs`, so a host only touches its own app's folder.
     Apps,
+    /// `/system/state/restart`, read only: the restart window the shell saves
+    /// from a Settings click (`kai-updates 1`), `updated`'s alone.
+    Restart,
     /// The `models` volume's root, the model store: `updated`'s only, which
     /// imports a signed model into it and points `kai-modelhint 1` at one
     /// (P4 task 10).
@@ -132,6 +135,7 @@ impl Folder {
             "updates" => Some(Folder::Updates),
             "settings" => Some(Folder::Settings),
             "apps" => Some(Folder::Apps),
+            "restart" => Some(Folder::Restart),
             "models" => Some(Folder::Models),
             _ => None,
         }
@@ -145,6 +149,7 @@ impl Folder {
             Folder::Updates => kabi::fs::SYSTEM_UPDATES,
             Folder::Settings => kabi::fs::SYSTEM_SETTINGS,
             Folder::Apps => kabi::fs::SYSTEM_APPS,
+            Folder::Restart => kabi::fs::SYSTEM_RESTART,
             Folder::Models => kabi::fs::MODELS_ROOT,
         }
     }
@@ -152,16 +157,17 @@ impl Folder {
     /// Whether its `Dir` only reads: the kernel gives it READ and ENUMERATE, and
     /// `fs` refuses a change through it whatever the handle says.
     pub fn read_only(self) -> bool {
-        matches!(self, Folder::Settings)
+        matches!(self, Folder::Settings | Folder::Restart)
     }
 
     /// The one service, by name and by program, a line granting it must be, if
-    /// it has one: the trust store and the updates folder are `updated`'s alone
-    /// (ADR 0008 §10), as the kernel's UPDATE capability is.
+    /// it has one: the trust store, the updates folder, the restart window and
+    /// the model store are `updated`'s alone (ADR 0008 §10), as the kernel's
+    /// UPDATE capability is.
     pub fn only_for(self) -> Option<&'static str> {
         match self {
             Folder::Pkg | Folder::Settings | Folder::Apps => None,
-            Folder::Trust | Folder::Updates | Folder::Models => Some(UPDATED),
+            Folder::Trust | Folder::Updates | Folder::Restart | Folder::Models => Some(UPDATED),
         }
     }
 }
@@ -282,6 +288,10 @@ impl<'a> Run<'a> {
 pub const NOT_FROM_PKG: &str = "err not a start=pkg service";
 /// The answer to a `run` for an app that already serves another version.
 pub const RUNS_ANOTHER: &str = "err it runs another version";
+/// The answer to a `run` for an app the plan has no line for: the image's
+/// repository holds it, but this system does not run it (the v0.1 system has
+/// no headless `notes` without a build service). `pkg` shows it, not a failure.
+pub const NOT_PLANNED: &str = "err unknown service";
 
 /// The index among `services` (each spec with its running pid) of the service
 /// `run` names, if `caller` may ask for it: the running instance of a service
@@ -301,7 +311,7 @@ pub fn check_run(
     let index = services
         .iter()
         .position(|(spec, _)| spec.name == run.name)
-        .ok_or("err unknown service")?;
+        .ok_or(NOT_PLANNED)?;
     match services[index].0.start {
         Start::Pkg => Ok(index),
         Start::Boot | Start::Demand => Err(NOT_FROM_PKG),

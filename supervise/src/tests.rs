@@ -936,3 +936,86 @@ fn a_withdraw_reads_as_a_run_and_is_gated_as_one() {
     );
     assert_eq!(Run::parse_withdraw("withdraw notes"), None);
 }
+
+/// The v0.1 system (`kabi::plan::system`), the default boot's and
+/// `desk-default`'s: with and without `kai-data`, every line parses, every
+/// route names a service planned before it, and every app starts on demand.
+#[test]
+fn the_v0_1_system_plan_parses_and_its_routes_come_first() {
+    let llm = "llm caps=serve+net burst_ms=10000 pages=1024 host=10.0.2.2:8080 model=org/model-7b";
+    for files in [true, false] {
+        let plan = parse_plan(&kabi::plan::system::plan(llm, files));
+        assert_eq!(plan.errors, Vec::<String>::new(), "files={files}");
+        for (at, service) in plan.services.iter().enumerate() {
+            for target in &service.uses {
+                let earlier = plan.services[..at].iter().any(|s| s.name == *target);
+                assert!(
+                    earlier || target == "supervisor",
+                    "{}'s route to {target} (files={files})",
+                    service.name
+                );
+            }
+        }
+        let named = |name: &str| plan.services.iter().find(|s| s.name == name);
+        for app in kabi::plan::system::APPS {
+            let name = app.split(' ').next().unwrap_or_default();
+            let service = named(name).expect("every app is planned");
+            assert_eq!(service.start, Start::Demand, "{name}");
+            assert_eq!(service.program, "comphost", "{name}");
+        }
+        let shell = named("shell").expect("the shell is planned");
+        assert_eq!(shell.uses.last().map(String::as_str), Some("desktop"));
+        assert_eq!(named("pkg").is_some(), files);
+        assert_eq!(named("fs").is_some(), files);
+        let desktop = named("desktop").expect("the desktop is planned");
+        assert_eq!(desktop.uses.contains(&String::from("pkg")), files);
+    }
+    // The System monitor's line is main's own, started on demand.
+    assert!(
+        kabi::plan::system::APPS
+            .contains(&alloc::format!("{} start=demand", kabi::plan::MONITOR_WINDOW).as_str())
+    );
+}
+
+#[test]
+fn the_editor_holds_the_edit_capability_by_name_and_routes_to_desktop() {
+    let plan = parse_plan(&alloc::format!(
+        "desktop caps=display+input+serve\n{}",
+        kabi::plan::EDITOR
+    ));
+    assert!(plan.errors.is_empty(), "{:?}", plan.errors);
+    let editor = &plan.services[1];
+    // The kernel pins `cap::EDIT` to the service of this name running comphost.
+    assert_eq!(editor.name, "editor");
+    assert_eq!(editor.program, "comphost");
+    assert_eq!(editor.uses, ["desktop"]);
+    assert_eq!(
+        editor.limits.caps,
+        cap::SERVE | cap::COMPONENT | cap::CALL | cap::EDIT
+    );
+    // Without `desktop` before it the line is an error, not a route elsewhere.
+    assert!(!parse_plan(kabi::plan::EDITOR).errors.is_empty());
+}
+
+#[test]
+fn the_monitor_s_routes_are_desktop_then_llm_and_the_name_is_the_grant() {
+    let plan = parse_plan(&alloc::format!(
+        "desktop caps=display+input+serve\nllm caps=serve+net\n{}",
+        kabi::plan::MONITOR_WINDOW
+    ));
+    assert!(plan.errors.is_empty(), "{:?}", plan.errors);
+    let monitor = &plan.services[2];
+    assert_eq!(monitor.name, "monitor-window");
+    assert_eq!(monitor.program, "comphost");
+    // comphost reads the first route as desktop's and the second as llm's.
+    assert_eq!(monitor.uses, ["desktop", "llm"]);
+    // The supervisor takes the other order too; only this test says it is wrong
+    // for comphost, which would send `health` to desktop.
+    let swapped = kabi::plan::MONITOR_WINDOW.replace("desktop+llm", "llm+desktop");
+    let plan = parse_plan(&alloc::format!(
+        "desktop caps=display+input+serve\nllm caps=serve+net\n{swapped}"
+    ));
+    assert_eq!(plan.services[2].uses, ["llm", "desktop"]);
+    // Without the services before it the line is an error, not a route elsewhere.
+    assert!(!parse_plan(kabi::plan::MONITOR_WINDOW).errors.is_empty());
+}

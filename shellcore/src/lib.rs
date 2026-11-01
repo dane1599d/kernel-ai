@@ -277,6 +277,14 @@ pub trait Host {
     fn keep_running(&self, _app: &str, _on: bool) -> Result<(), String> {
         Err(String::from("apps cannot be kept running here"))
     }
+    /// The restart window as `/system/state/restart/window` holds it
+    /// (`kai-updates 1`), which `updated` follows.
+    fn restart_read(&self) -> Option<String> {
+        None
+    }
+    fn restart_write(&self, _text: &str) -> Result<(), String> {
+        Err(String::from("there is no /system/state here"))
+    }
     /// The rows taken back from apps' effects, as `/system/state/withheld`
     /// holds them (`kai-withheld 1`, P4 task 7).
     fn withheld_read(&self) -> Option<String> {

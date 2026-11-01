@@ -204,6 +204,17 @@ impl Channel {
         self.import.is_some() || self.probation.is_some()
     }
 
+    /// Whether a model is on trial, its probation not yet decided.
+    pub fn on_trial(&self) -> bool {
+        self.probation.is_some()
+    }
+
+    /// Leaves `case-<step>.done` in `/system/updates` for the kernel's half of
+    /// the `models` case, which ends the boot only once it is there.
+    pub fn mark_done(&self, step: &str) -> Result<(), String> {
+        folders::write(self.updates, &format!("case-{step}.done"), b"")
+    }
+
     fn judge(&mut self) -> Result<(), String> {
         let Some((trial, started)) = self.probation.clone() else {
             return Ok(());
