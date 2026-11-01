@@ -9,7 +9,9 @@
 //! - `desktop`, with a route to `pkg` when it runs (the Apps sheet);
 //! - the apps, each `start=demand` (the founder's decision of 2026-10-28):
 //!   started when first opened, from the panel, the Apps sheet or `ui_open`;
-//! - the shell, with its route to `desktop`.
+//! - `updated`, the model channel, started at boot, so a model trial the last
+//!   boot left is judged then ([`super::with_updated`]; P4 task 10);
+//! - the shell, with its routes to `updated` and `desktop`.
 //!
 //! With a build service (`build=`), the kernel adds the boot manifest's headless
 //! `notes` and the edit service after these; a boot without one runs neither.
@@ -30,8 +32,8 @@ pub const DESKTOP: &str =
 pub const PKG: &str =
     "pkg dir=pkg bootfiles=pkgrepo caps=call+serve uses=supervisor pages=2048 stack_pages=128";
 /// The shell on a desktop with `fs`: [`super::SHELL_FILES`]'s caps and
-/// [`super::SHELL_DESK`]'s routes.
-pub const SHELL_DESK_FILES: &str = "shell caps=serve+call+policy+stop+script+files+state uses=llm+supervisor+cc+desktop pages=4096 stack_pages=512 burst_ms=5000";
+/// [`super::SHELL_DESK`]'s routes, the one line [`super::SHELL_DESK_FILES`].
+pub const SHELL_DESK_FILES: &str = super::SHELL_DESK_FILES;
 
 /// What every app's line shares: the shared host, its window on `desktop`.
 macro_rules! app {
@@ -56,8 +58,9 @@ pub const APPS: [&str; 5] = [
     app!("monitor-window", "desktop+llm"),
 ];
 
-/// The system's lines after `llm`'s, in plan order; `files` when the disk has
-/// a `kai-data` partition, so `fs` and `pkg` run.
+/// The system's lines after `llm`'s and before `updated`'s and the shell's, in
+/// plan order; `files` when the disk has a `kai-data` partition, so `fs` and
+/// `pkg` run.
 pub fn lines(files: bool) -> Vec<&'static str> {
     let mut lines = Vec::new();
     if files {
@@ -66,21 +69,27 @@ pub fn lines(files: bool) -> Vec<&'static str> {
     lines.push(CC);
     lines.push(if files { DESKTOP_PKG } else { DESKTOP });
     lines.extend(APPS);
-    lines.push(if files {
-        SHELL_DESK_FILES
-    } else {
-        super::SHELL_DESK
-    });
     lines
 }
 
-/// The whole system plan: `llm`'s line, then [`lines`].
+/// The system's shell line.
+pub fn shell(files: bool) -> &'static str {
+    match files {
+        true => SHELL_DESK_FILES,
+        false => super::SHELL_DESK,
+    }
+}
+
+/// The whole system plan: `llm`'s line, [`lines`], then the shell with
+/// `updated` just before it, started at boot.
 pub fn plan(llm: &str, files: bool) -> String {
     let mut plan = String::from(llm);
     for line in lines(files) {
         plan.push('\n');
         plan.push_str(line);
     }
+    plan.push('\n');
+    plan.push_str(&super::with_updated(shell(files), ""));
     plan
 }
 

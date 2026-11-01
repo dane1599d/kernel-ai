@@ -79,30 +79,42 @@ fn desktop_pid() -> Option<u64> {
         .map(|p| p.pid)
 }
 
-/// The route to the llm service: the shell's plan line has `uses=llm`, its only
-/// route.
+// The shell's routes, by their index in its plan line's
+// `uses=llm+supervisor+cc+updated(+desktop)` (`kabi::plan::SHELL_ROUTES`).
+use kabi::plan::shell_route;
+
+/// The route to the llm service.
 fn llm() -> kabi::handle::Handle {
-    user::route(0).unwrap_or(kabi::handle::Handle::NONE)
+    user::route(shell_route::LLM).unwrap_or(kabi::handle::Handle::NONE)
 }
 
-/// The route to the supervisor: the second in the shell's `uses=llm+supervisor`.
+/// The route to the supervisor.
 fn supervisor() -> kabi::handle::Handle {
-    user::route(1).unwrap_or(kabi::handle::Handle::NONE)
+    user::route(shell_route::SUPERVISOR).unwrap_or(kabi::handle::Handle::NONE)
 }
 
-/// The route to `cc`, the `c>` prompt's compiler: the third in `uses=llm+supervisor+cc`.
+/// The route to `cc`, the `c>` prompt's compiler.
 fn cc_route() -> kabi::handle::Handle {
-    user::route(2).unwrap_or(kabi::handle::Handle::NONE)
+    user::route(shell_route::CC).unwrap_or(kabi::handle::Handle::NONE)
 }
 
 /// cc's wait for one entry: a compile and a run of 2 s each, and on its first
 /// request, translating cc.wasm and compiling kairt.
 const CC_CALL_MS: u64 = 30_000;
 
-/// The route to `desktop`, fourth in `uses=llm+supervisor+cc+desktop`, on a
-/// desktop only (P3 task 7).
+/// The route to `updated`, the model channel (P4 task 10).
+fn updated() -> kabi::handle::Handle {
+    user::route(shell_route::UPDATED).unwrap_or(kabi::handle::Handle::NONE)
+}
+
+/// `updated`'s wait for one model request: a list reads the store and checks
+/// the signed role, and a switch commits the trial record and the hint; an
+/// import only starts, and goes on between requests.
+const UPDATED_CALL_MS: u64 = 10_000;
+
+/// The route to `desktop`, on a desktop only (P3 task 7).
 fn desktop() -> Option<kabi::handle::Handle> {
-    user::route(3)
+    user::route(shell_route::DESKTOP)
 }
 
 const DESKTOP_CALL_MS: u64 = 5_000;
@@ -352,6 +364,15 @@ impl Host for System {
             .map_err(|error| format!("{error:?}"))?;
         reply.truncate(len.min(kabi::MAX_MESSAGE));
         Ok(reply)
+    }
+
+    fn models(&self, request: &str) -> Result<String, String> {
+        let mut reply = vec![0u8; kabi::MAX_MESSAGE];
+        let len = sys::call_route(updated(), request.as_bytes(), &mut reply, UPDATED_CALL_MS)
+            .map_err(|error| format!("the model channel did not answer ({error:?})"))?;
+        let text = core::str::from_utf8(&reply[..len.min(reply.len())])
+            .map_err(|_| String::from("the model channel's answer is not text"))?;
+        Ok(text.to_string())
     }
 
     fn apps(&self) -> Option<&core::cell::RefCell<shellcore::apps::Apps>> {

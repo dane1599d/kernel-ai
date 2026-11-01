@@ -6,22 +6,55 @@ use alloc::string::String;
 
 pub mod system;
 
-/// The Rhai shell: it serves the terminal, calls the llm service through its one
-/// route, may switch the scheduling policy, and needs a large stack for Rhai's
-/// recursion.
-pub const SHELL: &str = "shell caps=serve+call+policy+stop+script uses=llm+supervisor+cc pages=4096 stack_pages=512 burst_ms=5000";
+/// The shell's routes in its lines' `uses=` order. The shell finds each by its
+/// index ([`shell_route`]), since a route carries no name, so every shell line
+/// lists them in this order, `desktop` on a desktop only.
+pub const SHELL_ROUTES: [&str; 5] = ["llm", "supervisor", "cc", "updated", "desktop"];
+
+/// Each of [`SHELL_ROUTES`]'s index, as `user::route` takes it.
+pub mod shell_route {
+    pub const LLM: usize = 0;
+    pub const SUPERVISOR: usize = 1;
+    /// The `c>` prompt's compiler.
+    pub const CC: usize = 2;
+    /// The model channel (P4 task 10).
+    pub const UPDATED: usize = 3;
+    /// The desktop, for the AI panel (P3 task 7), on a desktop only.
+    pub const DESKTOP: usize = 4;
+}
+
+/// The Rhai shell: it serves the terminal, calls the llm service, the
+/// supervisor, `cc` and `updated` ([`SHELL_ROUTES`]), may switch the scheduling
+/// policy, and needs a large stack for Rhai's recursion.
+pub const SHELL: &str = "shell caps=serve+call+policy+stop+script uses=llm+supervisor+cc+updated pages=4096 stack_pages=512 burst_ms=5000";
 /// [`SHELL`] once `fs` runs: with `files`, its `Dir` for `/home/user`, for the
 /// file rows (P2 task 11), and `state`, its `Dir` for `/system/state`, for the
 /// action log (P2 task 12).
-pub const SHELL_FILES: &str = "shell caps=serve+call+policy+stop+script+files+state uses=llm+supervisor+cc pages=4096 stack_pages=512 burst_ms=5000";
-/// [`SHELL`] on a desktop: with a route to `desktop`, fourth, after `cc`, which
-/// it takes the AI panel's requests from and reports their states to (P3 task 7).
-pub const SHELL_DESK: &str = "shell caps=serve+call+policy+stop+script uses=llm+supervisor+cc+desktop pages=4096 stack_pages=512 burst_ms=5000";
+pub const SHELL_FILES: &str = "shell caps=serve+call+policy+stop+script+files+state uses=llm+supervisor+cc+updated pages=4096 stack_pages=512 burst_ms=5000";
+/// [`SHELL`] on a desktop: with a route to `desktop`, fifth, after `updated`,
+/// which it takes the AI panel's requests from and reports their states to (P3
+/// task 7).
+pub const SHELL_DESK: &str = "shell caps=serve+call+policy+stop+script uses=llm+supervisor+cc+updated+desktop pages=4096 stack_pages=512 burst_ms=5000";
 /// [`SHELL_DESK`] with the file system too, for a case that has the desktop and
 /// a state directory in one shell (`app-settings` saves a theme and shows it in
-/// Settings): the same routes, so `desktop` stays fourth, and `files` and `state`
+/// Settings): the same routes, so `desktop` stays fifth, and `files` and `state`
 /// added to the caps (a test holds the two lines together).
-pub const SHELL_DESK_FILES: &str = "shell caps=serve+call+policy+stop+script+files+state uses=llm+supervisor+cc+desktop pages=4096 stack_pages=512 burst_ms=5000";
+pub const SHELL_DESK_FILES: &str = "shell caps=serve+call+policy+stop+script+files+state uses=llm+supervisor+cc+updated+desktop pages=4096 stack_pages=512 burst_ms=5000";
+
+/// `updated`'s words when it starts only on the shell's first model request,
+/// as `cc` does: it holds no memory before then (K's condition that it does no
+/// models work until the shell asks).
+pub const ON_DEMAND: &str = " start=demand";
+
+/// `shell`, a shell line, with `updated`'s line just before it, `words` after
+/// that: [`ON_DEMAND`], a step (` step=check`), or nothing, for one started at
+/// boot. Every plan with a shell line takes it from here: the shell's routes
+/// must name services listed before it, and `updated`'s own, `llm`, comes
+/// earlier still. With no step, `updated` does nothing at start but settle a
+/// model trial left pending, and then answers the shell's model requests.
+pub fn with_updated(shell: &str, words: &str) -> String {
+    format!("{UPDATED}{words}\n{shell}")
+}
 /// The `c>` prompt's compiler (ADR 0012 D2; P4 task 12): xcc's cc.wasm and the
 /// sessions, on wasmi, holding no authority. Planned before the shell, which
 /// calls it, and started on demand: the first `c>` entry's call starts it, so
@@ -90,6 +123,44 @@ pub const EDITOR: &str = "editor program=comphost caps=serve+component+call+edit
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec::Vec;
+
+    fn uses(line: &str) -> Vec<&str> {
+        line.split_whitespace()
+            .find_map(|w| w.strip_prefix("uses="))
+            .map_or_else(Vec::new, |u| u.split('+').collect())
+    }
+
+    #[test]
+    fn each_shell_line_lists_its_routes_in_the_shells_order() {
+        let routes = SHELL_ROUTES;
+        let named = [
+            (shell_route::LLM, "llm"),
+            (shell_route::SUPERVISOR, "supervisor"),
+            (shell_route::CC, "cc"),
+            (shell_route::UPDATED, "updated"),
+            (shell_route::DESKTOP, "desktop"),
+        ];
+        for (index, name) in named {
+            assert_eq!(routes[index], name);
+        }
+        assert_eq!(uses(SHELL), routes[..shell_route::DESKTOP]);
+        assert_eq!(uses(SHELL_FILES), routes[..shell_route::DESKTOP]);
+        assert_eq!(uses(SHELL_DESK), routes);
+        assert_eq!(uses(SHELL_DESK_FILES), routes);
+        assert_eq!(uses(system::SHELL_DESK_FILES), routes);
+    }
+
+    #[test]
+    fn updated_is_planned_just_before_the_shell() {
+        let plan = with_updated(SHELL, " step=check");
+        let lines: Vec<&str> = plan.lines().collect();
+        assert_eq!(lines, [format!("{UPDATED} step=check").as_str(), SHELL]);
+        assert_eq!(uses(UPDATED), ["llm"]);
+        assert_eq!(with_updated(SHELL_DESK, "").lines().next(), Some(UPDATED));
+        let demand = with_updated(SHELL_DESK, ON_DEMAND);
+        assert!(demand.lines().next().unwrap().ends_with(" start=demand"));
+    }
 
     #[test]
     fn the_desk_shell_with_files_is_the_desk_shell_with_two_caps_more() {

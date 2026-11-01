@@ -140,6 +140,8 @@ struct FakeHost {
     /// What `updated` holds for the model rows, and each request it was sent.
     models: RefCell<comp_models::Models>,
     model_requests: RefCell<Vec<String>>,
+    /// What `updated` answers every request with instead, when set.
+    model_answer: RefCell<Option<String>>,
 }
 
 /// What standing instructions asked the desktop and the owners for.
@@ -288,6 +290,7 @@ impl FakeHost {
             focused: RefCell::new(None),
             models: RefCell::new(models::store()),
             model_requests: RefCell::new(Vec::new()),
+            model_answer: RefCell::new(None),
         })
     }
 }
@@ -708,6 +711,9 @@ impl Host for FakeHost {
     /// `updated`'s answers, as `models.rs` there gives them.
     fn models(&self, request: &str) -> Result<String, String> {
         self.model_requests.borrow_mut().push(String::from(request));
+        if let Some(answer) = self.model_answer.borrow().clone() {
+            return Ok(answer);
+        }
         let mut m = self.models.borrow_mut();
         let words: Vec<&str> = request.split(' ').collect();
         Ok(match words.as_slice() {
