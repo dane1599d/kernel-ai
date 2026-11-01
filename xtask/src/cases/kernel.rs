@@ -291,6 +291,30 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("desk-perf", "test=desk-perf display=1920x1080")
     },
+    // P3's exit case: a profile applied exactly, switched by a real focus change
+    // through the user's rule, and undone.
+    TestCase {
+        expect: &[
+            "desk-profile: the focus rule was allowed on the card",
+            "desktop: event focus notes-window",
+            "desk-profile: focusing Notes switched to gaming: both apps went to the background, their quotas and the system untouched",
+            "desk-profile: undo put default back: both apps normal again",
+        ],
+        ..case("desk-profile", "test=desk-profile")
+    },
+    // P3's exit case: each resource-profile floor, asked for as the shell asks,
+    // refused by the kernel.
+    TestCase {
+        expect: &[
+            "desk-profile-floor: the kernel's reserve: a quota of all ",
+            "desk-profile-floor: the model holder: llm was not made background, nor its quota lowered",
+            "desk-profile-floor: the supervisor, the shell and desktop were not made background, nor their quotas lowered",
+            "desk-profile-floor: free / 2: a raise one page past the admission budget was refused, and one to it was taken",
+            "desk-profile-floor: system services' CPU share: a service holding TERM was not made background, and an app was",
+            "desk-profile-floor: every floor held, whatever the shell asked",
+        ],
+        ..case("desk-profile-floor", "test=desk-profile-floor")
+    },
     // Key input for uikit apps: the keyboard reaches Notes' widgets.
     TestCase {
         keys: &[&["tab", "tab", "ret", "tab", "tab", "h", "i"]],

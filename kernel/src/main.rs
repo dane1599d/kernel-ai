@@ -50,6 +50,7 @@ mod cpu;
 mod default_tests;
 mod demand_tests;
 mod desk_perf_tests;
+mod desk_profile_tests;
 mod desk_tests;
 mod desk_tour_tests;
 mod devhost;
@@ -112,6 +113,7 @@ mod pointer;
 mod port;
 mod power;
 mod process;
+mod profile_floor_tests;
 mod profile_tests;
 mod qemu;
 mod saved_tests;
@@ -402,6 +404,8 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::DeskStanding => run_case(standing_tests::check),
         SelfTest::DeskStandingRefused => run_case(standing_tests::refused_check),
         SelfTest::DeskPerf => run_case(desk_perf_tests::check),
+        SelfTest::DeskProfile => run_case(desk_profile_tests::check),
+        SelfTest::DeskProfileFloor => run_case(profile_floor_tests::check),
         SelfTest::UiKeys => run_case(keys_tests::check),
         SelfTest::DeskTerm => run_case(term_tests::check),
         SelfTest::DeskAgent => run_case(agent_desk_tests::agent_check),
