@@ -74,6 +74,14 @@ impl Host for Os {
     fn now_ms(&self) -> u64 {
         self.now
     }
+
+    fn read_file(&mut self, path: &str) -> u32 {
+        panic!("this test opens no file: {path}");
+    }
+
+    fn write_file(&mut self, path: &str, _data: &[u8], _create: bool) -> u32 {
+        panic!("this test saves no file: {path}");
+    }
 }
 
 impl Os {

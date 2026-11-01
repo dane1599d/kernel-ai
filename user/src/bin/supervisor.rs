@@ -166,7 +166,7 @@ fn main() -> i32 {
         let mut started = false;
         for service in &mut services {
             if service.start_at_ms.is_some_and(|at| now >= at) {
-                start(service, now);
+                let _ = start(service, now);
                 started = true;
             }
         }
@@ -409,7 +409,10 @@ fn app_call(services: &mut [Service], app: &str, request: &str, caller: u64) -> 
             }
             if service.pid.is_none() {
                 println!("{app} starts for a call");
-                start(service, now_ms());
+                // Refused for memory: say so at once, not after the wait.
+                if start(service, now_ms()) == Err(kabi::Error::NoMemory) {
+                    return supervise::appcall::no_memory(app);
+                }
             }
             retry(app, request, &mut reply, deadline)
         }
@@ -504,9 +507,15 @@ fn check_proof(request: Request, proof: Proof, caller: u64) -> Result<(), String
             sys::once_check_for(caller, once.badge, &digest)
                 .map_err(|error| format!("err ONCE {error:?}"))
         }
-        Proof::Rule => {
-            sys::rule_check(caller, &call).map_err(|error| format!("err rule {error:?}"))
-        }
+        Proof::Rule => sys::rule_check(caller, &call).map_err(|error| {
+            // Logged, never asked about: a firing is the rule's or nothing. The
+            // call is quoted and escaped, so no request can put a line of its
+            // own in the log.
+            println!(
+                "supervisor: refused {call:?} for pid {caller}: no rule covers it ({error:?})"
+            );
+            format!("err rule {error:?}")
+        }),
         Proof::None | Proof::Entry(_) | Proof::Undo(_) => Ok(()),
     }
 }
@@ -599,14 +608,16 @@ fn withdraw_package(services: &mut [Service], withdraw: supervise::Run, caller: 
     String::from("ok")
 }
 
-fn start(service: &mut Service, now: u64) {
+/// Starts `service`; the kernel's refusal, for a caller that answers for it.
+/// A refused start is tried again a second later, as before.
+fn start(service: &mut Service, now: u64) -> Result<(), kabi::Error> {
     let version = match (service.spec.start, &service.version) {
         (Start::Boot | Start::Demand, _) => String::new(),
         (Start::Pkg, Some(version)) => format!(" version={version}"),
         (Start::Pkg, None) => {
             println!("{} waits for pkg to name its version", service.spec.name);
             service.start_at_ms = None;
-            return;
+            return Ok(());
         }
     };
     // The restart count goes to the program, so a restart is visible from outside.
@@ -636,10 +647,19 @@ fn start(service: &mut Service, now: u64) {
             service.started_ms = now;
             service.record.started_ms = now;
             service.start_at_ms = None;
+            Ok(())
         }
         Err(error) => {
             println!("cannot start {}: {error:?}", service.spec.name);
-            service.start_at_ms = Some(now + 1000);
+            // An app that starts on demand and found no memory waits for the
+            // next demand: it must not open by itself once memory frees, after
+            // the person was told it could not (lane C's review of #519).
+            let asked_for = service.spec.start == Start::Demand;
+            service.start_at_ms = match (asked_for, error) {
+                (true, kabi::Error::NoMemory) => None,
+                _ => Some(now + 1000),
+            };
+            Err(error)
         }
     }
 }

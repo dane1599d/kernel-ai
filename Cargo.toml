@@ -60,6 +60,7 @@ members = [
     "look",
     "llmproto",
     "mm",
+    "modelchan",
     "netcore",
     "nvme",
     "pci",
@@ -142,6 +143,7 @@ default-members = [
     "look",
     "llmproto",
     "mm",
+    "modelchan",
     "netcore",
     "nvme",
     "pci",
@@ -230,6 +232,19 @@ opt-level = 2
 # task 9), over 100,000 for 200 file actions, and the `fs` service runs it on
 # every request. Its debug assertions and overflow checks stay on.
 [profile.dev.package.kaifs]
+opt-level = 2
+
+# `desktop`'s drawing, optimised: unoptimised, a full 1920x1080 composite took
+# 50 ms where S05-1's budget is 8 (`desk-perf`, #461); level 3 measured no
+# better than 2. `gfx2d` also drops overflow checks and debug assertions, as
+# S05-1's spike did: checked, its per-pixel blends (`blend_row`) do not
+# vectorise, and the warm text page missed its 4 ms.
+[profile.dev.package.gfx2d]
+opt-level = 2
+overflow-checks = false
+debug-assertions = false
+
+[profile.dev.package.deskcore]
 opt-level = 2
 
 [profile.release]

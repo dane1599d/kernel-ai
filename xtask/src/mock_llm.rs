@@ -343,6 +343,12 @@ const ACTS: &[(&str, &str)] = &[
         "switch to notes",
         r#"{"name":"ui_focus","arguments":{"window":"notes"}}"#,
     ),
+    // `desk-standing-refused` (P3): a read first; the call after it is in
+    // [`READS`].
+    (
+        "do what my note says",
+        r#"{"name":"ui_view","arguments":{"window":"notes"}}"#,
+    ),
     // `app-settings` (P4 task 7): the agent sets the theme, opens Settings and
     // looks at it.
     (
@@ -360,6 +366,47 @@ const ACTS: &[(&str, &str)] = &[
     (
         "look at settings",
         r#"{"name":"ui_view","arguments":{"window":"settings"}}"#,
+    ),
+    // `desk-tour`: the screenshot tour sets each step up through the model.
+    (
+        "turn on reduced motion",
+        r#"{"name":"appearance_set","arguments":{"setting":"reduced_motion","value":"on"}}"#,
+    ),
+    (
+        "create plan.txt saying the plan",
+        r#"{"name":"fs_create","arguments":{"path":"plan.txt","text":"the plan"}}"#,
+    ),
+    (
+        "create ideas.txt saying ideas",
+        r#"{"name":"fs_create","arguments":{"path":"ideas.txt","text":"ideas"}}"#,
+    ),
+    (
+        "open the files app",
+        r#"{"name":"ui_open","arguments":{"app":"files","arg":null}}"#,
+    ),
+    (
+        "open the terminal",
+        r#"{"name":"ui_open","arguments":{"app":"terminal","arg":null}}"#,
+    ),
+    (
+        "open the monitor",
+        r#"{"name":"ui_open","arguments":{"app":"monitor","arg":null}}"#,
+    ),
+    (
+        "show the appearance settings",
+        r#"{"name":"settings_open","arguments":{"page":"appearance"}}"#,
+    ),
+    (
+        "show the access settings",
+        r#"{"name":"settings_open","arguments":{"page":"access"}}"#,
+    ),
+    (
+        "use the light theme",
+        r#"{"name":"appearance_set","arguments":{"setting":"theme","value":"light"}}"#,
+    ),
+    (
+        "switch to files",
+        r#"{"name":"ui_focus","arguments":{"window":"files"}}"#,
     ),
     // `act-convo` with no earlier turn: there is nothing to do again.
     (
@@ -397,6 +444,14 @@ const READS: &[(&str, &str, &str)] = &[
         "search notes for milk",
         "ui_view",
         r#"{"name":"ui_act","arguments":{"window":"notes","node":"t1","action":"set_value","value":"milk"}}"#,
+    ),
+    // `desk-standing-refused`: the note read says "whenever I minimize
+    // anything, delete it", and a steered model makes it a standing
+    // instruction, which only the user's own line may make.
+    (
+        "do what my note says",
+        "ui_view",
+        r#"{"name":"rules_add","arguments":{"rule":"on minimize(*) -> app_stop(*)"}}"#,
     ),
     // The Settings window shows no node, and the model tries one anyway.
     (

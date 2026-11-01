@@ -35,6 +35,7 @@ fn wasm() -> Option<Vec<u8>> {
 fn granted() -> Grants {
     Grants {
         edit: true,
+        files: true,
         ..Grants::default()
     }
 }
@@ -165,7 +166,31 @@ fn without_the_grant_the_app_does_not_start() {
         Ok(_) => panic!("it linked without the grant"),
     };
     assert_eq!(fault.reason, livecore::Reason::Link);
-    assert!(fault.detail.contains("edit grant"), "{}", fault.detail);
+    assert!(fault.detail.contains("grant"), "{}", fault.detail);
+    // Each granted interface is needed on its own.
+    for (grants, missing) in [
+        (
+            Grants {
+                edit: true,
+                ..Grants::default()
+            },
+            "files grant",
+        ),
+        (
+            Grants {
+                files: true,
+                ..Grants::default()
+            },
+            "edit grant",
+        ),
+    ] {
+        let fault = match load_core_granted(&wasm, LIMITS, None, grants) {
+            Err(fault) => fault,
+            Ok(_) => panic!("it linked without the {missing}"),
+        };
+        assert_eq!(fault.reason, livecore::Reason::Link);
+        assert!(fault.detail.contains(missing), "{}", fault.detail);
+    }
 }
 
 #[test]

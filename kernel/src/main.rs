@@ -47,8 +47,11 @@ mod clock;
 mod compute_tests;
 mod console;
 mod cpu;
+mod default_tests;
 mod demand_tests;
+mod desk_perf_tests;
 mod desk_tests;
+mod desk_tour_tests;
 mod devhost;
 mod device_tests;
 mod devices;
@@ -397,10 +400,15 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::DeskAppearance => run_case(appearance_tests::check),
         SelfTest::DeskCard => run_case(card_tests::check),
         SelfTest::DeskStanding => run_case(standing_tests::check),
+        SelfTest::DeskStandingRefused => run_case(standing_tests::refused_check),
+        SelfTest::DeskPerf => run_case(desk_perf_tests::check),
         SelfTest::UiKeys => run_case(keys_tests::check),
         SelfTest::DeskTerm => run_case(term_tests::check),
         SelfTest::DeskAgent => run_case(agent_desk_tests::agent_check),
+        SelfTest::DeskDefault => run_case(default_tests::check),
+        SelfTest::DeskNoMemory => run_case(default_tests::no_memory_check),
         SelfTest::AppSettings => run_case(app_settings_tests::check),
+        SelfTest::DeskTour => run_case(desk_tour_tests::check),
         SelfTest::DeskTakeover => run_case(agent_desk_tests::takeover_check),
         SelfTest::Scriptrun => run_case(scriptrun_tests::check),
         SelfTest::Fpu => run_case(fpu_tests::fpu_check),

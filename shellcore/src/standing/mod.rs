@@ -69,6 +69,12 @@ pub trait Triggers {
     /// its last firing did, for `undo` or its "until". The action's owner checks
     /// that a live rule covers it, never the shell alone.
     fn run(&self, rule: u64, action: &str, app: &str, undo: bool) -> Result<(), String>;
+    /// Every event waiting in the event box, taken, as EVENT_READ's lines: the
+    /// shell hands them to the rules there are before it makes a new one, so an
+    /// event from before a rule never fires it (#524).
+    fn waiting(&self) -> String {
+        String::new()
+    }
 }
 
 /// Where a rule came from. Only the user's own line may make one (ADR 0002's

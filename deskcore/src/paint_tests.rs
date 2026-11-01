@@ -256,3 +256,28 @@ fn the_dark_theme_paints_the_default_desk() {
     painter.set_theme(&dark);
     assert_eq!(paint_in(painter, "dark", &desk, &panel, 1280, 800), default);
 }
+
+#[test]
+fn a_dragged_window_has_no_shadow_until_it_is_let_go() {
+    use crate::desk::{Button, Input};
+    use crate::geom::Point;
+    let mut desk = Desk::new(1280, 800);
+    let (id, _) = desk.open(1, "notes", "Notes", Size { w: 400, h: 300 }, true);
+    let frame = desk.windows()[0].frame;
+    desk.input(Input::Motion(Point {
+        x: frame.x + 60,
+        y: frame.y + 10,
+    }));
+    let shadowed = paint("shadowed", &desk, 1280, 800);
+    let press = |desk: &mut Desk, down: bool| {
+        desk.input(Input::Button {
+            button: Button::Left,
+            down,
+        })
+    };
+    press(&mut desk, true);
+    assert_eq!(desk.dragged(), Some(id));
+    assert_ne!(paint("dragged", &desk, 1280, 800), shadowed);
+    press(&mut desk, false);
+    assert_eq!(paint("let-go", &desk, 1280, 800), shadowed);
+}

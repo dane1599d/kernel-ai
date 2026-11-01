@@ -16,6 +16,7 @@ use crate::{Reply, Shell};
 use agentabi::consent::Why;
 use alloc::format;
 use alloc::string::String;
+use alloc::vec::Vec;
 use termcore::menu::read_answer;
 
 impl Shell {
@@ -87,6 +88,7 @@ impl Shell {
             };
             return Reply::ok(format!("No standing instruction made{why}"));
         }
+        self.settle_events();
         let made = self.standing.create(
             Origin::Line,
             draft.on.clone(),
@@ -165,12 +167,33 @@ impl Shell {
             })?;
         let rule = self.instructions_removed.remove(at);
         let draft = draft_of(&rule);
+        self.settle_events();
         if let Err(refused) = self.standing.put_back(rule) {
             return Err(refusal(&refused));
         }
         self.watch(&draft);
         self.save_standing();
         Ok(format!("standing instruction S{rule_id} back"))
+    }
+
+    /// EVENT_READ's lines, each event in turn to the rules there are: the notes
+    /// for the panel, one a paused rule.
+    pub fn on_events(&mut self, text: &str) -> Vec<String> {
+        text.lines()
+            .filter_map(Event::from_line)
+            .filter_map(|event| self.on_event(&event))
+            .collect()
+    }
+
+    /// Hands the events already waiting to the rules there are, before a rule
+    /// is made or put back: an event from before a rule never fires it (#524).
+    fn settle_events(&mut self) {
+        let Some(waiting) = self.host.triggers().map(|t| t.waiting()) else {
+            return;
+        };
+        for note in self.on_events(&waiting) {
+            self.host.audit(&note);
+        }
     }
 
     /// One event from the desktop or a timer: the firings it asks for run, each
@@ -210,6 +233,11 @@ impl Shell {
         else {
             return;
         };
+        // A firing that changes nothing is no entry and needs no undo (#524):
+        // the switch that put this profile in force keeps its own.
+        if rule.action == "profile_set" && !undo && self.profile_in_force(&rule.target) {
+            return;
+        }
         let id = self.next_id;
         self.next_id += 1;
         let script = match undo {
@@ -284,11 +312,17 @@ impl Shell {
                 self.fired_profiles.retain(|(r, _)| *r != rule);
                 self.fired_profiles.push((rule, key));
             }),
+            // Its "until" puts back only its own switch, while that is still the
+            // newest: a person's own switch since stays.
             (true, Some(at)) => {
                 let (_, key) = self.fired_profiles.remove(at);
+                if !self.profile_switch_is_latest(key) {
+                    return;
+                }
                 self.revert_entry_profile(id, (rule, key), request)
             }
-            (true, None) => Err(String::from("nothing of its to put back")),
+            // Nothing of its in force (its firing changed nothing): no entry.
+            (true, None) => return,
         };
         if let Err(why) = done {
             self.host
