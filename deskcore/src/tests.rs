@@ -161,6 +161,7 @@ fn the_title_bar_drags_a_window_200_px_and_damages_both_places() {
         down: true,
     });
     desk.take_damage();
+    assert_eq!(desk.dragged(), Some(ids[0]));
     desk.input(at((grab.0 + 200, grab.1)));
     let moved = desk.window(ids[0]).unwrap().frame;
     assert_eq!(moved, frame.translate(200, 0));
@@ -171,12 +172,20 @@ fn the_title_bar_drags_a_window_200_px_and_damages_both_places() {
         button: Button::Left,
         down: false,
     });
+    let released = desk.take_damage();
+    assert!(
+        released.iter().any(|d| d.intersect(&moved) == Some(moved)),
+        "{released:?}"
+    );
     desk.input(at((10, 400)));
     assert_eq!(
         desk.window(ids[0]).unwrap().frame,
         moved,
         "released: no more moving"
     );
+    // While it moved it was the dragged window; let go, it is not, and its
+    // place is damaged so its shadow is drawn again.
+    assert_eq!(desk.dragged(), None);
     // Dragged up, the title bar stops at the top of the work area.
     let grab = (moved.x + 60, moved.y + 10);
     desk.input(at(grab));

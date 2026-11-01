@@ -247,6 +247,16 @@ impl Desk {
         self.focus
     }
 
+    /// The window being moved or resized, until it is let go. It is drawn
+    /// without its shadow meanwhile (ADR 0005's fail rule for a drag under
+    /// load, `desk-perf`'s (f)).
+    pub fn dragged(&self) -> Option<WindowId> {
+        match self.grab {
+            Some(Grab::Move { window, .. } | Grab::Resize { window, .. }) => Some(window),
+            None => None,
+        }
+    }
+
     pub fn pointer(&self) -> Point {
         self.pointer
     }
@@ -485,7 +495,12 @@ impl Desk {
 
     fn button(&mut self, button: Button, down: bool, effects: &mut Vec<Effect>) {
         if !down {
-            if self.grab.take().is_some() {
+            if let Some(id) = self.dragged() {
+                // Let go: its shadow comes back, so its place is drawn again.
+                if let Some(frame) = self.window(id).map(|w| w.frame) {
+                    self.damage.add(frame);
+                }
+                self.grab = None;
                 return;
             }
             if let Some(window) = self.over

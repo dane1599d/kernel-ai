@@ -117,6 +117,9 @@ struct State {
     draws_cursor: bool,
     /// The first frame is on the screen.
     drawn: bool,
+    /// A key has been logged since the claim: only the first is, so what the
+    /// user types never reaches the serial log, and a frame never waits on it.
+    key_logged: bool,
     /// The AI panel's line and the state the shell reports.
     panel: Panel,
     /// The Apps sheet, while it is up: it takes the panel's keys.
@@ -182,6 +185,7 @@ fn main() -> i32 {
             extra: Vec::new(),
             draws_cursor: screen.info.cursor == 0,
             drawn: false,
+            key_logged: false,
             panel: Panel::new(),
             sheet: None,
             effects: effects::Queue::default(),
@@ -350,7 +354,10 @@ fn input(state: &mut State, screen: &Screen, event: &InputEvent) {
             })
         }
         Kind::Key => {
-            println!("desktop: key {:#x} {}", event.code, event.value);
+            if !state.key_logged {
+                state.key_logged = true;
+                println!("desktop: key {:#x} {}", event.code, event.value);
+            }
             if event.value != 0 {
                 perf::key(state, event.time_ns);
             }

@@ -9,11 +9,9 @@
 //! - (f): (b) again with one `work` hog per CPU under `classes`, as S05-1's
 //!   scene (f) ran.
 //!
-//! Recorded, not a gate, until P3's tuning follow-up brings every figure
-//! within its budget (the manager, 2026-10-30): under KVM each miss is one
-//! `desk-perf: OVER BUDGET <figure> <value> ms (budget ...)` line, so every
-//! batch log shows it. Under TCG the figures are recorded and not judged, with
-//! fewer frames.
+//! A gate under KVM: each miss is one `desk-perf: OVER BUDGET <figure> <value>
+//! ms (budget ...)` line, and any miss fails the case. Under TCG the figures
+//! are recorded and not judged, with fewer frames.
 
 use crate::desk_tests::{desktop_shows, wait};
 use crate::process::{self, SpawnRequest};
@@ -152,5 +150,8 @@ pub fn check() -> Result<(), &'static str> {
         "desk-perf: judged under KVM: {} figures over budget",
         misses.len()
     );
-    Ok(())
+    match misses.is_empty() {
+        true => Ok(()),
+        false => Err("desk-perf: a figure is over its budget under KVM"),
+    }
 }
