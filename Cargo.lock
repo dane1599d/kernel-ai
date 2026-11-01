@@ -774,6 +774,7 @@ dependencies = [
  "fsproto",
  "kabi",
  "kaifs",
+ "sha2",
 ]
 
 [[package]]
