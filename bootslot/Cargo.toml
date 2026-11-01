@@ -6,4 +6,3 @@ license.workspace = true
 publish = false
 
 [dependencies]
-minicbor = { version = "2.3.0", default-features = false }

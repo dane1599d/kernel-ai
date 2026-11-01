@@ -255,7 +255,12 @@ fn execute(options: &Options) -> Result<(), String> {
         .enumerate()
         .filter(|&(index, _)| options::in_shard(options.shard, index))
         .map(|(_, case)| case)
-        // `XTASK_CASE=name` boots only that case.
+        // `XTASK_CASE=name` boots only that case, which may be one booted only
+        // when named (the screenshot tour).
+        .chain(match env::var("XTASK_CASE") {
+            Ok(_) if options.task != Task::Soak => cases::named_only(),
+            _ => Vec::new(),
+        })
         .filter(|case| env::var("XTASK_CASE").map_or(true, |only| only == case.name))
         .collect::<Vec<_>>();
     for &first in &cases {

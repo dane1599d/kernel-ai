@@ -28,8 +28,12 @@ use wasmhost::{Limits, LiveInstance};
 mod disk;
 #[path = "comphost/edit.rs"]
 mod edit;
+#[path = "comphost/files.rs"]
+mod files;
 #[path = "comphost/settings.rs"]
 mod kai_settings;
+#[path = "comphost/started.rs"]
+mod started;
 #[path = "comphost/system.rs"]
 mod system;
 #[path = "comphost/ui.rs"]
@@ -70,6 +74,8 @@ struct SysEnv {
 /// The one app whose effects go to the shell as the user's when a person's key
 /// or click caused them (the Terminal's `shell_line`): the plan line's name.
 const TERMINAL_APP: &str = "terminal-window";
+/// The editor's plan line name, which the file door is granted to (`kai:files`).
+const EDITOR_APP: &str = "editor";
 
 fn version_log(line: &str) {
     println!("{line}");
@@ -190,6 +196,7 @@ fn main() -> i32 {
     // The plan line's name is the grant: `desktop` and the shell check it too.
     env.grants.settings = name == kai_settings::SETTINGS_APP;
     env.grants.shell_line = name == TERMINAL_APP;
+    env.grants.files = name == EDITOR_APP;
     if let (true, Some(ui)) = (env.grants.settings, windows.as_mut()) {
         ui.carry_settings();
     }
@@ -216,11 +223,25 @@ fn main() -> i32 {
     let mut request = vec![0u8; kabi::MAX_MESSAGE];
     // Whether the nap holds a lease for settings requests in flight.
     let mut settings_leased = false;
+    let mut started = started::Started::default();
     // When the host's own wait ends; 0 is never.
     let mut tick_at = deadline(host.timeout_ms());
     // Whether the nap holds a lease for a read of the machine waiting.
     let mut leased = false;
     loop {
+        // The shown instance is told it started, once: a new version or a
+        // resumed app is told again (`started.rs`).
+        if let Some(performed) = started.tell(&mut host) {
+            match windows.as_mut() {
+                // Not the person's: no key or click caused it.
+                Some(ui) => ui.forward(Some(performed), false),
+                None if !performed.is_empty() => {
+                    println!("comphost: what the app did as it started has no desktop to go to");
+                }
+                None => {}
+            }
+            settle(&mut windows, &mut edits, &mut host);
+        }
         let open = windows.as_ref().is_some_and(ui::Ui::wants_poll);
         let wait = match (open, host.timeout_ms()) {
             (false, ms) => ms,
@@ -340,6 +361,7 @@ fn settle(
 ) {
     if let Some(gate) = edits.as_mut() {
         edit::pump(host, gate);
+        files::pump(host);
     }
     if let Some(ui) = windows.as_mut() {
         ui.pump(host);

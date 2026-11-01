@@ -1,10 +1,12 @@
-//! `updated`'s folders on `kai-data`, from its plan line's `dir=trust+updates+settings`
-//! (ADR 0008 §7, §10): `/system/trust` keeps the TUF metadata `kaituf` verified,
-//! so the next refresh starts from the newest root and refuses replayed
-//! metadata; `/system/updates` is the handle the `update` snapshot of `system`
-//! is taken on before a new slot's first boot; `/system/settings`, read only,
-//! holds the restart window. Without `kai-data` none exists, and `updated`
-//! keeps its metadata in memory for the one refresh.
+//! `updated`'s folders on `kai-data`, from its plan line's
+//! `dir=trust+updates+restart+models` (ADR 0008 §7, §10): `/system/trust`
+//! keeps the TUF metadata `kaituf` verified, so the next refresh starts from
+//! the newest root and refuses replayed metadata; `/system/updates` is the
+//! handle the `update` snapshot of `system` is taken on before a new slot's
+//! first boot; `/system/state/restart`, read only, holds the restart window
+//! the shell saves; the `models` volume's root is the model store. Without
+//! `kai-data` none exists, and `updated` keeps its metadata in memory for the
+//! one refresh.
 
 use alloc::format;
 use alloc::string::String;
@@ -21,8 +23,8 @@ const CALL_MS: u64 = 10_000;
 pub struct Folders {
     pub trust: Option<Handle>,
     pub updates: Option<Handle>,
-    /// `/system/settings`, read only: the restart window (`window.rs`).
-    pub settings: Option<Handle>,
+    /// `/system/state/restart`, read only: the restart window (`window.rs`).
+    pub restart: Option<Handle>,
     /// The `models` volume's root, the model store (`models.rs`).
     pub models: Option<Handle>,
 }
@@ -55,7 +57,7 @@ impl Folders {
         Ok(Folders {
             trust: served()?,
             updates: served()?,
-            settings: served()?,
+            restart: served()?,
             models: served()?,
         })
     }
@@ -122,7 +124,7 @@ fn open(dir: Handle, name: &str, how: How, rights: Rights) -> Result<Option<Hand
 
 /// The whole of `name` in `dir`, or `None` if there is no such file.
 pub fn read(dir: Handle, name: &str) -> Result<Option<Vec<u8>>, String> {
-    // READ only: `/system/settings`'s Dir gives nothing more.
+    // READ only: the restart folder's Dir gives nothing more.
     let Some(file) = open(dir, name, How::Existing, Rights::READ)? else {
         return Ok(None);
     };

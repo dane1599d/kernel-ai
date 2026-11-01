@@ -3,7 +3,7 @@ node 0 clip 0,0 640x440
 node 3 clip 0,0 640x440
   text 12,12 body text "CPUs: 4"
 node 4 clip 0,0 640x440
-  text 68,12 body muted "Up 12m 36s"
+  text 76,12 body muted "Up 12m 36s"
 node 5 clip 0,0 640x440
   fill 12,51 160x6 line r3
   fill 12,51 101x6 accent r3
@@ -13,23 +13,23 @@ node 7 clip 0,0 640x440
   stroke 12,76 116x28 line_strong w1 r6
   text 22,81 label text "CPU high-low"
 node 8 clip 0,0 640x440
-  fill 128,76 68x28 raised r6
-  stroke 128,76 68x28 line_strong w1 r6
-  text 138,81 label text "Memory"
+  fill 136,76 68x28 raised r6
+  stroke 136,76 68x28 line_strong w1 r6
+  text 146,81 label text "Memory"
 node 9 clip 0,0 640x440
-  fill 196,76 52x28 raised r6
-  stroke 196,76 52x28 line_strong w1 r6
-  text 206,81 label text "Name"
+  fill 212,76 52x28 raised r6
+  stroke 212,76 52x28 line_strong w1 r6
+  text 222,81 label text "Name"
 node 10 clip 0,0 640x440
-  fill 248,76 44x28 raised r6
-  stroke 248,76 44x28 line_strong w1 r6
-  text 258,81 label text "PID"
+  fill 272,76 44x28 raised r6
+  stroke 272,76 44x28 line_strong w1 r6
+  text 282,81 label text "PID"
 node 11 clip 0,0 640x440
-  fill 292,76 76x28 raised r6
-  stroke 292,76 76x28 line_strong w1 r6
-  text 302,81 label text "Refresh"
+  fill 324,76 76x28 raised r6
+  stroke 324,76 76x28 line_strong w1 r6
+  text 334,81 label text "Refresh"
 node 12 clip 0,0 640x440
-  stroke 12,112 616x228 line_strong w1 r6
+  stroke 12,112 616x240 line_strong w1 r6
   text 23,116 label muted "PID"
   text 23,139 body text "4"
   text 23,163 body text "7"
@@ -52,12 +52,8 @@ node 12 clip 0,0 640x440
   text 227,211 body text "160 KiB"
   fill 13,136 614x1 line r0
 node 13 clip 0,0 640x440
-  text 12,348 body text "Model: ready, 12.5 tokens/s"
-node 15 clip 0,0 640x440
-  fill 12,376 52x28 raised r6
-  stroke 12,376 52x28 line_strong w1 r6
-  text 22,381 label text "Stop"
+  text 12,360 body text "Model: ready, 12.5 tokens/s"
 node 16 clip 0,0 640x440
-  text 64,376 small muted "Pick a process to stop it"
+  text 12,388 small muted "Pick a process; to stop it, ask Kai"
 node 17 clip 0,0 640x440
   text 12,412 small muted "4 processes"
