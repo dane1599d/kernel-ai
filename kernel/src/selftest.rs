@@ -424,13 +424,15 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
         .unwrap_or(SelfTest::None)
 }
 
-/// The words after `updated`'s plan line: none, so it settles a model trial and
-/// then serves the shell, except in `update`, which runs a step of the update
-/// service (`updated=`, `check` by default; a refusal restarts into the running
-/// slot) and takes any `updated.<word>` as a word, as `restart=window`.
+/// The words after `updated`'s plan line in a test boot: `start=demand`
+/// ([`kabi::plan::ON_DEMAND`]), so it holds no memory until the shell's first
+/// model request, except in `update`, which runs a step of the update service
+/// at boot (`updated=`, `check` by default; a refusal restarts into the
+/// running slot) and takes any `updated.<word>` as a word, as `restart=window`.
+/// The default boot starts it at boot (`kabi::plan::system`).
 fn updated_words(test: SelfTest) -> String {
     if test != SelfTest::Update {
-        return String::new();
+        return String::from(kabi::plan::ON_DEMAND);
     }
     let step = crate::cmdline()
         .split_whitespace()

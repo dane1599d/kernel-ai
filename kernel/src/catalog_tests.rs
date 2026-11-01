@@ -34,7 +34,7 @@ pub fn plan() -> String {
         crate::pkg_tests::plan(Step::Mirror),
         crate::llm::plan_line(),
         kabi::plan::CC,
-        kabi::plan::with_updated(kabi::plan::SHELL_DESK, "")
+        kabi::plan::with_updated(kabi::plan::SHELL_DESK, kabi::plan::ON_DEMAND)
     )
 }
 
