@@ -168,6 +168,11 @@ impl Shell {
         Ok((was, key))
     }
 
+    /// Whether `name` is the profile in force.
+    pub(crate) fn profile_in_force(&self, name: &str) -> bool {
+        self.profiles.now == name
+    }
+
     /// `undo` of a switch: every process's settings from before it, and the
     /// profile it was; its text and the key that redoes it.
     pub(crate) fn revert_profile(&mut self, key: u64) -> Result<(String, u64), String> {

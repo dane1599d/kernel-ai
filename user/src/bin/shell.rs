@@ -745,6 +745,14 @@ impl shellcore::standing::Triggers for Firings {
 
     fn unwatch(&self, _when: &shellcore::standing::When) {}
 
+    fn waiting(&self) -> String {
+        let mut buf = vec![0u8; kabi::event::READ_BYTES];
+        match sys::event_read(&mut buf) {
+            Ok(len) => String::from_utf8_lossy(&buf[..len.min(buf.len())]).into_owned(),
+            Err(_) => String::new(),
+        }
+    }
+
     /// `suspend <app> rule` or `resume <app> rule`; `undo` sends the inverse.
     fn run(&self, _rule: u64, action: &str, app: &str, undo: bool) -> Result<(), String> {
         let request = match (action, undo) {
@@ -773,13 +781,8 @@ fn take_events(shell: &mut Shell, buf: &mut [u8]) {
         return;
     };
     let text = core::str::from_utf8(&buf[..len.min(buf.len())]).unwrap_or("");
-    for event in text
-        .lines()
-        .filter_map(shellcore::standing::Event::from_line)
-    {
-        if let Some(note) = shell.on_event(&event) {
-            println!("{note}");
-        }
+    for note in shell.on_events(text) {
+        println!("{note}");
     }
 }
 
