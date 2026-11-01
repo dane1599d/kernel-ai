@@ -4,14 +4,17 @@ section 3; CI only, by ADR 0011 question 3). Run by .github/workflows/pkgrepo.ym
 From the repository's own 1.root.json, python-tuf 7.0.1's ngclient refreshes the
 top-level roles over HTTP, finds every package through the delegated `packages`
 role, downloads it, and checks its length and SHA-256. Each package's header must
-name what its `custom.kai` index entry says. Then one byte of a package is
-changed, and a fresh client must refuse it.
+name what its `custom.kai` index entry says. It finds every model of
+xtask/models.json through the delegated `models` role, with the length, SHA-256,
+name and licence the catalog pins (ADR 0008 section 6; no model is downloaded).
+Then one byte of a package is changed, and a fresh client must refuse it.
 
 Usage: python check_tuf.py REPO_DIR
 """
 
 import functools
 import http.server
+import json
 import sys
 import tempfile
 import threading
@@ -62,6 +65,24 @@ def header(package: bytes) -> dict[str, list[str]]:
     return fields
 
 
+def check_models(updater: Updater) -> None:
+    """Each model of the catalog as the `models` role signs it."""
+    catalog = Path(__file__).resolve().parents[2] / "models.json"
+    for model in json.loads(catalog.read_text())["models"]:
+        target = f"{model['id']}.gguf"
+        info = updater.get_targetinfo(target)
+        if info is None:
+            sys.exit(f"python-tuf finds no {target}")
+        kai = info.unrecognized_fields["custom"]["kai"]
+        signed = (info.length, info.hashes.get("sha256"), kai["name"], kai["licence"])
+        pinned = (model["size"], model["sha256"], model["name"], model["license"])
+        if signed != pinned:
+            sys.exit(f"{target}: the role signs {signed}, the catalog pins {pinned}")
+        if model["revision"] not in kai["source"]:
+            sys.exit(f"{target}: its source {kai['source']} is not at the pinned revision")
+        print(f"python-tuf: {target} signed by the models role, {info.length} bytes, {kai['licence']}")
+
+
 def main() -> None:
     repo = Path(sys.argv[1])
     root = repo / "metadata" / "1.root.json"
@@ -92,6 +113,7 @@ def main() -> None:
             if target != f"{kai['name']}-{kai['version']}.kpkg":
                 sys.exit(f"{target} is not named for its name and version")
             print(f"python-tuf: {target} verified, {len(package)} bytes, actions {kai['actions']}")
+        check_models(good)
 
         changed = files[0]
         original = changed.read_bytes()

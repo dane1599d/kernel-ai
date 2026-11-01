@@ -4,12 +4,15 @@
 //! The top-level roles are root, targets, snapshot and timestamp; targets
 //! delegates every `*.kpkg` to the role `packages`, which lists each package as
 //! a target `<name>-<version>.kpkg` with its length, SHA-256 and `custom.kai`
-//! index fields. Snapshots are consistent, so the layout is:
+//! index fields, and every `*.gguf` to the role `models` (ADR 0008 §6), which
+//! lists each model as `<id>.gguf` ([`super::models`]). A model's bytes are
+//! never in the repository. Snapshots are consistent, so the layout is:
 //!
 //! ```text
 //! metadata/1.root.json
 //! metadata/1.targets.json
 //! metadata/1.packages.json
+//! metadata/1.models.json
 //! metadata/1.snapshot.json
 //! metadata/timestamp.json
 //! targets/<sha256>.notes-1.0.0.kpkg
@@ -21,6 +24,7 @@
 //! `kaipkg::sign`'s, which `pkg` signs its `local` repository with too.
 
 use super::Package;
+use super::models::Model;
 use ed25519_compact::Seed;
 use kaipkg::generation::Time;
 use kaipkg::sign::{self, ADR_0008, Target};
@@ -40,10 +44,11 @@ pub struct Keys {
     pub snapshot: Key,
     pub timestamp: Key,
     pub packages: Key,
+    pub models: Key,
 }
 
 impl Keys {
-    /// A throwaway test root: five fresh keys.
+    /// A throwaway test root: six fresh keys.
     pub fn generate() -> Result<Self, String> {
         Ok(Keys {
             root: generate_key()?,
@@ -51,6 +56,7 @@ impl Keys {
             snapshot: generate_key()?,
             timestamp: generate_key()?,
             packages: generate_key()?,
+            models: generate_key()?,
         })
     }
 
@@ -61,6 +67,7 @@ impl Keys {
             snapshot: &self.snapshot,
             timestamp: &self.timestamp,
             packages: &self.packages,
+            models: Some(&self.models),
         }
     }
 }
@@ -70,9 +77,19 @@ pub struct Repository {
     pub files: Vec<(String, Vec<u8>)>,
 }
 
-/// The repository for `packages`, every role at version 1, signed by `keys`,
-/// with ADR 0008 §7's expiry counted from `now`.
+/// The repository for `packages`, with no models: [`build_with_models`].
 pub fn build(packages: &[Package], keys: &Keys, now: Time) -> Result<Repository, String> {
+    build_with_models(packages, &[], keys, now)
+}
+
+/// The repository for `packages` and `models`, every role at version 1, signed
+/// by `keys`, with ADR 0008 §7's expiry counted from `now`.
+pub fn build_with_models(
+    packages: &[Package],
+    models: &[Model],
+    keys: &Keys,
+    now: Time,
+) -> Result<Repository, String> {
     let targets: Vec<Target> = packages
         .iter()
         .map(|package| Target {
@@ -81,6 +98,19 @@ pub fn build(packages: &[Package], keys: &Keys, now: Time) -> Result<Repository,
             kai: package.index(),
         })
         .collect();
-    let files = sign::build(&targets, &keys.roles(), now, ADR_0008)?;
+    let models = models
+        .iter()
+        .map(|model| {
+            let sha256 = kaipkg::unhex(&model.sha256)
+                .ok_or_else(|| format!("{}'s SHA-256 is not 64 hex digits", model.id))?;
+            Ok(sign::Model {
+                path: model.target(),
+                length: model.length,
+                sha256,
+                kai: model.index(),
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let files = sign::build_with_models(&targets, &models, &keys.roles(), now, ADR_0008)?;
     Ok(Repository { files })
 }

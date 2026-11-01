@@ -17,8 +17,17 @@
 //!    release 2;
 //! 5. *restart into* it: BOOTREC_SET with the restart flag.
 //!
-//! It prints a line for each step that passed, or `updated: FAIL ...`, then
-//! idles: the supervisor would restart an exited service.
+//! `step=models` exercises the model channel (`models.rs`) for the `models`
+//! case: the list, the import of the import disk's fixture, and `model_use`.
+//! `step=probation`, that case's next boot, waits until the trial is kept or
+//! rolled back. Neither restarts into a slot: each leaves `case-<step>.done`
+//! in `/system/updates`, which ends the boot (the kernel's
+//! `model_import_tests`).
+//!
+//! It prints a line for each step that passed, or `updated: FAIL ...`. Then,
+//! with `serve` in its plan line, it answers the shell's model requests and
+//! judges a model on trial; without, it idles: the supervisor would restart an
+//! exited service.
 
 #![no_std]
 #![no_main]
@@ -27,6 +36,7 @@ extern crate alloc;
 
 mod disk;
 mod folders;
+mod models;
 mod restore;
 mod window;
 
@@ -35,8 +45,8 @@ use alloc::string::String;
 use alloc::vec;
 use bootslot::{Nv, Record, Slot};
 use kabi::Error;
-use kabi::handle::{Handle, HandleInfo, Kind, MAX_STARTUP};
-use kabi::update::{MAX_IO, NONE, SECTOR, WRITABLE};
+use kabi::handle::{Handle, HandleInfo, Kind, MAX_STARTUP, MAX_TRANSFER, RecvInfo};
+use kabi::update::{DISK, IMPORT, MAX_IO, NONE, SECTOR, WRITABLE};
 use user::{println, sys};
 
 user::entry!(main);
@@ -75,9 +85,22 @@ fn main() -> i32 {
     {
         println!("updated: reconciled: {outcome:?}");
     }
+    // The model channel: a trial the last boot left is settled before anything
+    // waits on `llm` (`models.rs`). The plan line's one route is to `llm`.
+    let folders = folders::Folders::from_startup().ok();
+    let mut channel = folders
+        .as_ref()
+        .and_then(|f| models::Channel::open(handle, f, user::route(0)));
+    if let Some(channel) = &mut channel
+        && let Err(why) = channel.at_boot()
+    {
+        println!("updated: model trial: {why}");
+    }
     let result = match (step, reconciled) {
         (_, Err(why)) => Err(why),
         (Some("check"), _) => check(handle),
+        (Some("models"), _) => models_check(channel.as_mut()),
+        (Some("probation"), _) => probation_check(channel.as_mut()),
         (Some("update"), _) => {
             let now = !args.split_whitespace().any(|w| w == "restart=window");
             disk::update(handle, now).map(|staged| {
@@ -95,6 +118,14 @@ fn main() -> i32 {
         }
         _ => Ok(()),
     };
+    // The model steps restart into no slot: the kernel's half of their case
+    // ends the boot once this marker is there, after their lines.
+    if let (Ok(()), Some(step @ ("models" | "probation")), Some(channel)) =
+        (&result, step, channel.as_ref())
+        && let Err(why) = channel.mark_done(step)
+    {
+        println!("updated: FAIL cannot leave case-{step}.done: {why}");
+    }
     if let Err(why) = result {
         println!("updated: FAIL {why}");
         // In the update cases, a refused update ends the boot too, back into
@@ -103,7 +134,128 @@ fn main() -> i32 {
             restart_here(handle);
         }
     }
-    idle()
+    serve(channel)
+}
+
+/// The `models` case's second boot: the trial `at_boot` began, judged from
+/// `llm`'s health until it is kept or rolled back.
+fn probation_check(channel: Option<&mut models::Channel>) -> Result<(), String> {
+    const TICK_MS: u64 = 100;
+    let channel = channel.ok_or("no model store")?;
+    while channel.on_trial() {
+        channel.tick();
+        sys::sleep_ms(TICK_MS);
+    }
+    Ok(())
+}
+
+/// The `models` case's step: the list, the import disk's model imported, and
+/// `model_use` of it for the next restart.
+fn models_check(channel: Option<&mut models::Channel>) -> Result<(), String> {
+    let channel = channel.ok_or("no model store")?;
+    let listed = |channel: &mut models::Channel| {
+        let text = channel.answer("models");
+        modelchan::listing::parse(&text).map_err(|why| format!("models: {why}: {text}"))
+    };
+    let before = listed(channel)?;
+    println!(
+        "updated: models: {} signed, {} stored",
+        before.signed.len(),
+        before.store.blobs.len()
+    );
+    let started = channel.answer("models import");
+    if !started.starts_with("ok importing ") {
+        return Err(format!("models import: {started}"));
+    }
+    println!("updated: {started}");
+    let ended = loop {
+        channel.tick();
+        let progress = channel.answer("models progress");
+        if !progress.starts_with("ok ") || !progress.as_bytes()[3].is_ascii_digit() {
+            break progress;
+        }
+    };
+    let Some(id) = ended.strip_prefix("ok imported ") else {
+        return Err(format!("models import ended: {ended}"));
+    };
+    let after = listed(channel)?;
+    let sha = after
+        .signed
+        .iter()
+        .find(|s| s.id == id)
+        .map(|s| s.sha256)
+        .ok_or("the imported model is not in the role")?;
+    if !after.store.blobs.iter().any(|b| b.sha256 == sha) {
+        return Err(String::from("the imported model is not in the store"));
+    }
+    let used = channel.answer(&format!("models use {}", comp_models::hex(&sha)));
+    if !used.starts_with("ok next ") {
+        return Err(format!("models use: {used}"));
+    }
+    println!("updated: model_use {id}: the next restart uses it, on trial");
+    Ok(())
+}
+
+/// The process the kernel named `shell` from its plan line, the only one the
+/// model requests are answered for (K, 2026-10-30); never pid 0.
+fn from_shell(pid: u64) -> bool {
+    let Ok(metrics) = sys::metrics() else {
+        return false;
+    };
+    let count = (metrics.process_count as usize).min(metrics.processes.len());
+    metrics.processes[..count]
+        .iter()
+        .any(|p| p.pid == pid && pid != 0 && p.name() == "shell")
+}
+
+/// Answers the shell's model requests on `updated`'s endpoint, and between
+/// them judges a trial and moves an import on; with no endpoint, only that.
+/// Every request is at most [`REQUEST`] bytes and every answer one message.
+fn serve(mut channel: Option<models::Channel>) -> ! {
+    const REQUEST: usize = 128;
+    let Some(channel) = channel.as_mut() else {
+        idle()
+    };
+    // One byte more than a request may be: the kernel cuts a longer one to
+    // the buffer, so a full buffer means too long.
+    let mut request = [0u8; REQUEST + 1];
+    loop {
+        let wait = if channel.busy() { 10 } else { 60_000 };
+        let mut info = RecvInfo::default();
+        match sys::recv_h(&mut request, wait, &mut info) {
+            Ok(len) => {
+                let count = (info.handle_count as usize).min(MAX_TRANSFER);
+                for moved in &info.handles[..count] {
+                    let _ = sys::handle_close(Handle(*moved));
+                }
+                let text = core::str::from_utf8(&request[..len.min(REQUEST)]).unwrap_or("");
+                let mut reply = match (from_shell(info.caller_pid), len > REQUEST) {
+                    (false, _) => String::from("err only the shell may ask"),
+                    (true, true) => String::from("err request too long"),
+                    (true, false) => channel.answer(text),
+                };
+                let mut end = reply.len().min(kabi::MAX_MESSAGE);
+                while !reply.is_char_boundary(end) {
+                    end -= 1;
+                }
+                reply.truncate(end);
+                let _ = sys::svc_reply(reply.as_bytes());
+            }
+            Err(Error::TimedOut) => channel.tick(),
+            // No `serve` in the plan line (Permission): work without serving.
+            Err(Error::NotFound | Error::Permission) => loop {
+                channel.tick();
+                sys::sleep_ms(if channel.busy() { 10 } else { 60_000 });
+            },
+            // Anything else is one receive gone wrong, not the end of serving
+            // (K's review of #447).
+            Err(why) => {
+                println!("updated: a receive failed: {why:?}");
+                channel.tick();
+                sys::sleep_ms(1_000);
+            }
+        }
+    }
 }
 
 /// Restarts into the slot this boot runs in, with the record as it stands.
@@ -162,6 +314,7 @@ fn check(handle: Handle) -> Result<(), String> {
         return Err(String::from("SLOT_WRITE took R from a trial slot"));
     }
     println!("updated: SLOT_WRITE refuses the active slot, and R from a trial slot");
+    import_disk(handle)?;
 
     let mut nv = Nv {
         record: record(handle)?,
@@ -191,6 +344,32 @@ fn check(handle: Handle) -> Result<(), String> {
     );
     println!("updated: restarting into {other:?}");
     set(handle, &nv, true)
+}
+
+/// The import disk, when one is attached (P4 task 10): SLOT_INFO and SLOT_READ
+/// take it as the update disk, and SLOT_WRITE refuses it, as it does the update
+/// disk.
+fn import_disk(handle: Handle) -> Result<(), String> {
+    let Ok(info) = sys::slot_info(handle, IMPORT) else {
+        return Ok(());
+    };
+    let mut first = [0u8; SECTOR as usize];
+    sys::slot_read(handle, IMPORT, 0, &mut first).map_err(|e| format!("SLOT_READ: {e:?}"))?;
+    if !first.starts_with(&kabi::model::MAGIC) {
+        return Err(String::from(
+            "the import disk does not start with GGUF's magic",
+        ));
+    }
+    for disk in [IMPORT, DISK] {
+        if sys::slot_write(handle, disk, 0, &first) != Err(Error::Permission) {
+            return Err(format!("SLOT_WRITE did not refuse disk {disk}"));
+        }
+    }
+    println!(
+        "updated: the import disk reads, {} sectors of a GGUF file, and SLOT_WRITE refuses it",
+        info.sectors
+    );
+    Ok(())
 }
 
 pub(crate) fn set(handle: Handle, nv: &Nv, restart: bool) -> Result<(), String> {

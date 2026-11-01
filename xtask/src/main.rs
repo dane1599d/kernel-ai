@@ -402,6 +402,17 @@ fn execute(options: &Options) -> Result<(), String> {
             if let Some(name) = &update_disk {
                 args.extend(qemu::update_disk_args(name));
             }
+            if let Some(fixture) = case.import {
+                let disk = fixture.write(&target_dir.join("import"))?;
+                // By its path in `target/`, where QEMU runs, as the update disk.
+                let name = disk
+                    .path()
+                    .strip_prefix(&target_dir)
+                    .map_err(|_| format!("{} is not in target/", disk.path().display()))?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                args.extend(qemu::import_disk_args(&name));
+            }
             if case.gpu {
                 args.extend(screen::gpu_args());
             }

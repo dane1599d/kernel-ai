@@ -8,22 +8,22 @@ use alloc::vec;
 use fsproto::{decode_reply, encode_request};
 use kaifs::MemDisk;
 
-const BLOCKS: u64 = 16 * 1024;
-const ALICE: u64 = 7;
-const BOB: u64 = 8;
+pub(crate) const BLOCKS: u64 = 16 * 1024;
+pub(crate) const ALICE: u64 = 7;
+pub(crate) const BOB: u64 = 8;
 
-struct Client<'d> {
-    server: Server<&'d mut MemDisk>,
+pub(crate) struct Client<'d> {
+    pub(crate) server: Server<&'d mut MemDisk>,
     now: u64,
 }
 
 impl<'d> Client<'d> {
-    fn start(disk: &'d mut MemDisk) -> (Self, Started) {
+    pub(crate) fn start(disk: &'d mut MemDisk) -> (Self, Started) {
         let (server, started) = Server::start(disk, [7; 16]).unwrap();
         (Client { server, now: 0 }, started)
     }
 
-    fn call(
+    pub(crate) fn call(
         &mut self,
         caller: u64,
         badge: u64,
