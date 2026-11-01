@@ -109,6 +109,26 @@ fn input(kind: Kind, code: u16, value: i32, text: &str) -> Event {
     }
 }
 
+/// A key event, whose `x` carries the modifiers held with it (24.8).
+fn key(code: u16, value: i32, text: &str, mods: u8) -> Event {
+    match input(Kind::Key, code, value, text) {
+        Event::Input {
+            event,
+            y,
+            text,
+            len,
+            ..
+        } => Event::Input {
+            event,
+            x: i32::from(mods) << 8,
+            y,
+            text,
+            len,
+        },
+        other => other,
+    }
+}
+
 #[test]
 fn ring_events_become_uikit_input_with_the_seat_s_modifiers() {
     let mut seat = Seat::default();
@@ -131,9 +151,8 @@ fn ring_events_become_uikit_input_with_the_seat_s_modifiers() {
         seat.input(&input(Kind::Wheel, 0, -2, "")),
         Some(Input::Wheel { at, dy: -2 })
     );
-    seat.modifiers(u32::from(Mods::SHIFT));
     assert_eq!(
-        seat.input(&input(Kind::Key, 0x04, 1, "A")),
+        seat.input(&key(0x04, 1, "A", Mods::SHIFT)),
         Some(Input::Key {
             key: Key::Other(0x04),
             down: true,
@@ -141,44 +160,65 @@ fn ring_events_become_uikit_input_with_the_seat_s_modifiers() {
             text: "A".into(),
         })
     );
+    // A button has the modifiers the seat last knew: the key's.
+    assert!(matches!(
+        seat.input(&input(Kind::Button, 1, 1, "")),
+        Some(Input::Button {
+            mods: Mods(Mods::SHIFT),
+            ..
+        })
+    ));
     let done = Event::FrameDone { seq: 1, time_ns: 0 };
     assert_eq!(seat.input(&done), None);
 }
 
 #[test]
-fn a_modifier_key_in_the_ring_sets_the_modifiers_for_the_keys_after_it() {
-    // A slow guest reads the ring before the seat's `modifiers` message: Ctrl-B,
-    // as the ring has it, must still be Ctrl's.
+fn a_key_says_what_was_held_whatever_the_seat_s_message_and_when_it_comes() {
+    // Ctrl-B as the ring has it: Ctrl down, B down, B up, Ctrl up, each with what was held.
     let mut seat = Seat::default();
     let mods_of = |input: Option<Input>| match input {
         Some(Input::Key { mods, .. }) => Some(mods),
         _ => None,
     };
     let ctrl = Some(Mods(Mods::CTRL));
-    assert_eq!(mods_of(seat.input(&input(Kind::Key, 0xE0, 1, ""))), ctrl);
-    assert_eq!(mods_of(seat.input(&input(Kind::Key, 0x05, 1, ""))), ctrl);
-    assert_eq!(mods_of(seat.input(&input(Kind::Key, 0x05, 0, ""))), ctrl);
-    // The release is the first key without it.
+    let none = Some(Mods::default());
+    assert_eq!(mods_of(seat.input(&key(0xE0, 1, "", Mods::CTRL))), ctrl);
+    // The seat's message comes late, by another road, and says Ctrl is up (it was
+    // sent for the release that follows): the keys still carry Ctrl.
+    seat.modifiers(0);
+    assert_eq!(mods_of(seat.input(&key(0x05, 1, "", Mods::CTRL))), ctrl);
+    assert_eq!(mods_of(seat.input(&key(0x05, 0, "", Mods::CTRL))), ctrl);
+    seat.modifiers(u32::from(Mods::SHIFT));
+    assert_eq!(mods_of(seat.input(&key(0xE0, 0, "", 0))), none);
+    assert_eq!(mods_of(seat.input(&key(0x05, 1, "b", 0))), none);
+    // Shift and Alt together, then one let go: each event is the set at its time.
+    let both = Mods::SHIFT | Mods::ALT;
     assert_eq!(
-        mods_of(seat.input(&input(Kind::Key, 0xE0, 0, ""))),
-        Some(Mods::default())
+        mods_of(seat.input(&key(0xE2, 1, "", both))),
+        Some(Mods(both))
     );
     assert_eq!(
-        mods_of(seat.input(&input(Kind::Key, 0x05, 1, "b"))),
-        Some(Mods::default())
+        mods_of(seat.input(&key(0xE1, 0, "", Mods::ALT))),
+        Some(Mods(Mods::ALT))
     );
-    // Shift and Alt together, either side's key, and one let go.
-    seat.input(&input(Kind::Key, 0xE5, 1, ""));
-    let both = seat.input(&input(Kind::Key, 0xE2, 1, ""));
-    assert_eq!(mods_of(both), Some(Mods(Mods::SHIFT | Mods::ALT)));
-    let one = seat.input(&input(Kind::Key, 0xE1, 0, ""));
-    assert_eq!(mods_of(one), Some(Mods(Mods::ALT)));
-    // The seat's own message still says what is held when a window gains focus.
-    seat.modifiers(u32::from(Mods::SUPER));
-    assert_eq!(
-        mods_of(seat.input(&input(Kind::Key, 0x05, 1, ""))),
-        Some(Mods(Mods::SUPER))
-    );
+    // A button after them has the key's set.
+    assert!(matches!(
+        seat.input(&input(Kind::Button, 1, 1, "")),
+        Some(Input::Button {
+            mods: Mods(Mods::ALT),
+            ..
+        })
+    ));
+    // The seat's message is still how a button learns of a modifier held before the
+    // window had the keys.
+    seat.modifiers(u32::from(Mods::CTRL));
+    assert!(matches!(
+        seat.input(&input(Kind::Button, 1, 1, "")),
+        Some(Input::Button {
+            mods: Mods(Mods::CTRL),
+            ..
+        })
+    ));
 }
 
 #[test]

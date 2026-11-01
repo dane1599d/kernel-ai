@@ -395,6 +395,16 @@ impl Desk {
         }
     }
 
+    /// The keys went to the kernel's terminal (INPUT_TO_CONSOLE): the releases
+    /// of keys down now go there too, so the desk forgets them, or a key the
+    /// desk still thinks held could not answer the next ask card. Modifiers
+    /// stay, as they track what the panel's shortcuts see.
+    pub fn keys_lent(&mut self) {
+        let modifier = |k: &u16| (usage::LEFT_CTRL..=usage::RIGHT_GUI).contains(k);
+        self.down.retain(modifier);
+        self.held.retain(modifier);
+    }
+
     pub fn input(&mut self, input: Input) -> Vec<Effect> {
         let mut effects = Vec::new();
         if let Input::Key { usage: code, down } = input {

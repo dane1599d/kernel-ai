@@ -87,6 +87,47 @@ fn a_window_opens_shows_new_pictures_and_closes() {
 }
 
 #[test]
+fn a_late_modifiers_message_never_changes_the_keys_already_in_the_ring() {
+    let mut screen = Screen::new(1280, 800);
+    let mut client = Client::new(7, "editor");
+    let mut d = Desk::new();
+    d.told(&client.take_events(8192));
+    let Err(open) = d.frame(1, &frame("Editor", 320, 200, "Go")) else {
+        panic!("a first frame opens a window");
+    };
+    let needs = serve(&mut client, &mut screen, &open.calls, true);
+    let [Need::MapPool { pool, .. }, Need::Show { window, .. }] = needs[..] else {
+        panic!("{needs:?}");
+    };
+    client.pool_mapped(pool);
+    client.take_events(8192);
+    // Ctrl-B, as `desktop` hands it over: each key into the ring, and Ctrl's
+    // press and release as `seat.modifiers` messages too.
+    let key = |usage, down| Effect::Key {
+        window,
+        usage,
+        down,
+    };
+    client.apply(&[
+        key(0xE0, true),
+        key(0x05, true),
+        key(0x05, false),
+        key(0xE0, false),
+    ]);
+    let ring: Vec<_> = client.take_posts().into_iter().map(|(_, e)| e).collect();
+    assert_eq!(ring.len(), 4);
+    // The app reads Ctrl's press from the ring, then is busy while the rest
+    // come, and reads both messages, the release last, before the ring's B.
+    d.seat_state.input(&ring[0]);
+    d.told(&client.take_events(8192));
+    let b = d.seat_state.input(&ring[1]);
+    let Some(uikit::input::Input::Key { mods, down, .. }) = b else {
+        panic!("{b:?}");
+    };
+    assert!(down && mods.0 & uikit::input::Mods::CTRL != 0, "{mods:?}");
+}
+
+#[test]
 fn a_new_size_is_a_new_window_and_a_restart_forgets_them() {
     let mut d = Desk::new();
     assert!(d.frame(1, &frame("a", 100, 100, "x")).is_err());

@@ -219,7 +219,12 @@ impl Client {
         {
             len = ch.encode_utf8(&mut text).len() as u8;
         }
-        let (x, y) = at.map_or((0, 0), |p| (p.x << 8, p.y << 8));
+        // A key has no place: it carries the modifiers held with it, its own change
+        // included, so a client need not match the seat's message to the ring.
+        let (x, y) = match kind {
+            Kind::Key => ((self.mods as i32) << 8, 0),
+            _ => at.map_or((0, 0), |p| (p.x << 8, p.y << 8)),
+        };
         let event = RingEvent::Input {
             event: InputEvent {
                 time_ns: 0,
