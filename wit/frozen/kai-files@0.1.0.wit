@@ -1,0 +1,50 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The Kernel AI contributors
+
+/// Reading and writing a file of the person's own, for the editor (P4). Like
+/// `kai:edit`, this is a granted interface, not part of `kai:app` (which is
+/// frozen): only an app whose package holds the `files` grant can import it, and
+/// a component that imports it without the grant does not stage (`Reason::Link`).
+/// A request is not run inside the call that makes it: the host sends it after
+/// the call and tells the app the answer in a later one.
+///
+/// The interface says what is wanted, a whole file or a whole file's new text,
+/// and nothing of how it travels: the OS may move the bytes in pieces or in a
+/// shared page, and an app does not change when it does. What the OS does with a
+/// request is its own file rows (`fs_read`, `fs_create`, `fs_write`), so tiers,
+/// the action log and undo are the OS's; a request it refuses comes back as the
+/// reason.
+package kai:files@0.1.0;
+
+interface files {
+    /// Queues a read of the whole file at `path` and returns its ticket. A path
+    /// is absolute (`/home/user/notes.txt`): at most 255 bytes, plain segments,
+    /// no spaces, colons, backslashes or control characters. Traps when `path`
+    /// is not one, or when 2 requests are waiting for the host already.
+    read: func(path: string) -> u32;
+
+    /// Queues `data` as the whole text of the file at `path` and returns its
+    /// ticket. With `create` the file must not exist yet and is made; without it
+    /// the file is replaced. `data` is at most 262,144 bytes. A write is passed
+    /// on only when the call that sent it was started by a real key or click from
+    /// the person at the desktop; an app's write from `init`, an answer, a timer
+    /// or an action the AI synthesised is refused with an error answer. Traps
+    /// when `path` is not a path (as for `read`), when `data` is longer, or when
+    /// 2 requests are waiting for the host already.
+    write: func(path: string, data: list<u8>, create: bool) -> u32;
+}
+
+/// What the OS answered.
+interface replies {
+    /// The answer to the request with this ticket: for a read, the file's bytes;
+    /// for a write, no bytes. Or why there is none: a reason in words for the
+    /// person, starting `missing` when a read's path is not there. Tickets are not
+    /// reused while the app runs.
+    on-done: func(ticket: u32, outcome: result<list<u8>, string>);
+}
+
+/// An app that reads and writes files: the two halves of the grant.
+world filing {
+    import files;
+    export replies;
+}

@@ -48,25 +48,29 @@ pub const ARTIFACT: &str = bundle::ARTIFACT;
 /// A built-in app: the version on the boot drive it is packed from, and the
 /// header fields the artifact does not carry.
 pub struct App {
-    /// The package name, which must be the artifact's component.
+    /// The package name, the app's as the agent and the Apps sheet know it.
     pub name: &'static str,
-    /// The boot drive's version, `comp/<name>/<label>.wasm`.
+    /// The artifact's component, the service it runs as: the package's name,
+    /// or its window, `<name>-window` (`kaipkg::app`).
+    pub component: &'static str,
+    /// The boot drive's version, `comp/<component>/<label>.wasm`.
     pub label: &'static str,
     /// At most 80 bytes; data, never instructions.
     pub summary: &'static str,
     /// Must be the artifact's own licence.
     pub licence: &'static str,
-    /// The app's WIT package directory.
-    pub wit: &'static str,
+    /// The app's WIT package directories, as its recipe builds it.
+    pub wit: &'static [&'static str],
 }
 
 /// Every built-in app. P4's apps join as they land (P4 plan, tasks 4-11).
 pub const APPS: &[App] = &[App {
     name: "notes",
+    component: "notes",
     label: livecore::boot::BUILT_IN,
     summary: "Plain-text notes the AI can read and write",
     licence: "MPL-2.0",
-    wit: components::NOTES_RECIPE.wit[0],
+    wit: components::NOTES_RECIPE.wit,
 }];
 
 /// One packed package and the index fields its artifact gives.
@@ -290,7 +294,7 @@ pub fn pack_all(root: &Path, versions: &[Module]) -> Result<Vec<Package>, String
     let mut actions = BTreeSet::new();
     let mut packages = Vec::new();
     for app in APPS {
-        let path = format!("comp/{}/{}.wasm", app.name, app.label);
+        let path = format!("comp/{}/{}.wasm", app.component, app.label);
         let module = versions
             .iter()
             .find(|m| m.path == path)
@@ -311,9 +315,15 @@ pub fn pack_all(root: &Path, versions: &[Module]) -> Result<Vec<Package>, String
 /// `app`'s package around `artifact`, or why its parts disagree.
 pub fn pack(root: &Path, app: &App, artifact: &[u8]) -> Result<Package, String> {
     let fail = |why: String| format!("{}: {why}", app.name);
+    if !kaipkg::app::may_run_as(app.name, app.component) {
+        return Err(fail(format!(
+            "it may carry only itself or its window, not {}",
+            app.component
+        )));
+    }
     let parsed = artifact::parse(artifact).map_err(fail)?;
     let manifest = &parsed.manifest;
-    if manifest.component != app.name {
+    if manifest.component != app.component {
         return Err(fail(format!(
             "the artifact is component {}",
             manifest.component
@@ -327,13 +337,13 @@ pub fn pack(root: &Path, app: &App, artifact: &[u8]) -> Result<Package, String> 
     }
     let version = manifest
         .world
-        .strip_prefix(&format!("app:{}/", app.name))
+        .strip_prefix(&format!("app:{}/", app.component))
         .and_then(|rest| rest.split_once('@'))
         .map(|(_, version)| version)
         .ok_or_else(|| {
             fail(format!(
                 "the artifact's world {} is not app:{}/",
-                manifest.world, app.name
+                manifest.world, app.component
             ))
         })?;
     let world = kai_app_world(root, app, &manifest.world).map_err(fail)?;
@@ -393,7 +403,12 @@ fn declarable(effects: Vec<String>) -> Result<Vec<String>, String> {
 /// `app:notes/notes@1.0.0`) imports or exports interfaces of.
 fn kai_app_world(root: &Path, app: &App, world: &str) -> Result<String, String> {
     let mut dirs = kai_wit(root)?;
-    dirs.push(root.join(app.wit));
+    // A recipe names the `wit/` packages it needs too, which are there already.
+    for wit in app.wit.iter().map(|wit| root.join(wit)) {
+        if !dirs.contains(&wit) {
+            dirs.push(wit);
+        }
+    }
     let (resolve, packages) = crate::wit::load_dirs(&dirs)?;
     let (package, name) = world
         .split_once('/')

@@ -118,7 +118,12 @@ fn status(files: &Files) -> (String, Tone) {
     }
     let folders = files.items().iter().filter(|i| i.kind == Kind::Dir).count();
     let (skipped, more) = files.left_out();
-    let mut text = format!("{folders} folders, {} files", files.items().len() - folders);
+    let plain = files.items().len() - folders;
+    let mut text = format!(
+        "{folders} {}, {plain} {}",
+        if folders == 1 { "folder" } else { "folders" },
+        if plain == 1 { "file" } else { "files" },
+    );
     if more {
         text.push_str(", and maybe more");
     }
@@ -127,6 +132,15 @@ fn status(files: &Files) -> (String, Tone) {
     }
     (text, Tone::Muted)
 }
+
+/// A row's layout: as wide as its parent, with a gap between its children, so the
+/// Up button does not run into the folder's name, nor a button into the next.
+fn spaced() -> Layout {
+    Layout { gap: GAP, ..wide() }
+}
+
+/// The gap between a row's children, in logical px.
+const GAP: u16 = 8;
 
 /// The whole tree for this model, parents before children.
 pub fn build(files: &Files) -> Vec<Entry> {
@@ -138,7 +152,7 @@ pub fn build(files: &Files) -> Vec<Entry> {
             column(12, 8),
             Widget::Stack { axis: Axis::Column }
         ),
-        entry(BAR, COLUMN, wide(), row()),
+        entry(BAR, COLUMN, spaced(), row()),
         entry(UP, BAR, Layout::FIT, button("Up", Some("files_open"))),
         entry(
             TRAIL,
@@ -237,7 +251,7 @@ pub fn build(files: &Files) -> Vec<Entry> {
                 max_len: comp_files::names::MAX_PATH as u32,
             }),
         ),
-        entry(BUTTONS, DETAIL, wide(), row()),
+        entry(BUTTONS, DETAIL, spaced(), row()),
         entry(
             OPEN,
             BUTTONS,

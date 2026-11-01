@@ -4,6 +4,10 @@
 //! which it reads with BOOT_READ beneath `pkgrepo/` (its plan line's
 //! `bootfiles=pkgrepo`) and checks with `kaituf` (`kaipkg::image`).
 //!
+//! With no `step=`, as the v0.1 system plans it (`kabi::plan::system`), it does
+//! what `step=image` does, the image's repository as generation 1 if the store
+//! has none and its apps started, and leaves no case file; then it serves.
+//!
 //! For boot case `pkg-image`, `step=image`, `image-again` and `image-tampered`
 //! each check the image's repository, print each package it refuses by name,
 //! and make the rest generation 1 if the store has no generation yet. Each first
@@ -77,12 +81,14 @@ fn main() -> i32 {
     let mut vol = FsVolume::new(Calls, root);
     let result = match step {
         Some(step @ ("install" | "undo" | "check")) => run(&mut vol, step),
-        Some(step @ ("image" | "image-again" | "image-tampered")) => image(&mut vol, step),
+        Some(step @ ("image" | "image-again" | "image-tampered")) => image(&mut vol, Some(step)),
         Some(step @ ("mirror" | "mirror-again" | "mirror-tampered" | "mirror-rollback")) => {
             mirror(&mut vol, step)
         }
-        _ => Err(String::from(
-            "no step=install, undo, check, image or mirror",
+        // The system's boot: the image's repository, no case file.
+        None => image(&mut vol, None),
+        Some(other) => Err(format!(
+            "step={other} is not install, undo, check, image or mirror"
         )),
     };
     match result {
@@ -329,7 +335,9 @@ fn outside_refused() -> Result<(), String> {
 
 /// `step=image*`: the image's repository checked, its refusals printed, and
 /// the rest made generation 1 if the store has no generation.
-fn image(vol: &mut FsVolume<Calls>, step: &str) -> Result<String, String> {
+/// The image's repository as generation 1 if the store has none, and its apps
+/// started; `step` names the case file it leaves, none at a system boot.
+fn image(vol: &mut FsVolume<Calls>, step: Option<&str>) -> Result<String, String> {
     outside_refused()?;
     let store = Store::default();
     let mut ledger = NoLedger;
@@ -375,7 +383,9 @@ fn image(vol: &mut FsVolume<Calls>, step: &str) -> Result<String, String> {
         true => format!("generation {current} holds no app to start"),
         false => format!("started from generation {current}: {}", started.join(", ")),
     };
-    cx.vol.write(&format!("pkg/case/{step}"), line.as_bytes())?;
+    if let Some(step) = step {
+        cx.vol.write(&format!("pkg/case/{step}"), line.as_bytes())?;
+    }
     Ok(line)
 }
 
@@ -432,7 +442,7 @@ fn bent_request_refused() -> Result<(), String> {
 /// - `mirror-tampered`, `mirror-rollback`: the mirror is tampered with, and the
 ///   install is refused by name.
 fn mirror(vol: &mut FsVolume<Calls>, step: &str) -> Result<String, String> {
-    image(vol, step)?;
+    image(vol, Some(step))?;
     if step == "mirror" {
         bent_request_refused()?;
     }
@@ -510,22 +520,23 @@ fn supervisor() -> Handle {
 
 /// Each app of generation `n`, its artifact added as a package version of its
 /// component (COMP_ADD, which only adds: Busy when it is there already) and
-/// started on it by the supervisor (`run`); `name version as label` for each.
+/// started on it by the supervisor (`run`) as its service, its own name or its
+/// window's (`kaipkg::app`); `name version as label` for each.
 fn start_apps(vol: &mut dyn Volume, n: u64) -> Result<Vec<String>, String> {
     let mut started = Vec::new();
     for package in store::generation(vol, n)?.packages {
         let name = &package.name;
-        let Some(artifact) = app_artifact(vol, name, &package.sha)? else {
+        let Some((service, artifact)) = app_artifact(vol, name, &package.sha)? else {
             continue;
         };
         let sha = kaipkg::sha256(&artifact);
-        match sys::comp_add(name, &artifact, &sha) {
+        match sys::comp_add(&service, &artifact, &sha) {
             Ok(()) | Err(Error::Busy) => {}
-            Err(e) => return Err(format!("COMP_ADD {name}: {e:?}")),
+            Err(e) => return Err(format!("COMP_ADD {service}: {e:?}")),
         }
         let label = kabi::live::package_label(&sha);
         let run = supervise::Run {
-            name,
+            name: &service,
             version: &label,
         };
         let mut reply = [0u8; 256];
@@ -539,6 +550,7 @@ fn start_apps(vol: &mut dyn Volume, n: u64) -> Result<Vec<String>, String> {
             "ok" => None,
             supervise::NOT_FROM_PKG => Some("its plan line runs a local version"),
             supervise::RUNS_ANOTHER => Some("it already runs another version"),
+            supervise::NOT_PLANNED => Some("this system plans no service for it"),
             _ => return Err(format!("the supervisor refused {name}'s run: {reply}")),
         };
         match shadowed {
@@ -551,12 +563,14 @@ fn start_apps(vol: &mut dyn Volume, n: u64) -> Result<Vec<String>, String> {
     Ok(started)
 }
 
-/// The artifact of package `name`, whose object is `sha`, if it is an app.
+/// The service package `name`, whose object is `sha`, runs as and its artifact,
+/// if it is an app: an artifact of another app's component is refused
+/// (`kaipkg::app::service`).
 fn app_artifact(
     vol: &mut dyn Volume,
     name: &str,
     sha: &kaipkg::Sha,
-) -> Result<Option<Vec<u8>>, String> {
+) -> Result<Option<(String, Vec<u8>)>, String> {
     let object = vol
         .read(&store::object_path(sha))?
         .ok_or_else(|| format!("{name}'s object is not in the store"))?;
@@ -565,15 +579,19 @@ fn app_artifact(
         .first()
         .and_then(|(_, text)| core::str::from_utf8(text).ok())
         .ok_or_else(|| format!("{name}: no header"))?;
-    if Header::parse(header)?.kind != PackageKind::App {
+    let header = Header::parse(header)?;
+    if header.kind != PackageKind::App {
         return Ok(None);
     }
+    let service = kaipkg::app::service(&header, &object)
+        .map_err(|why| format!("{name}: {why}"))?
+        .ok_or_else(|| format!("{name}: an app without {}", bundle::ARTIFACT))?;
     let artifact = files
         .iter()
         .find(|(path, _)| *path == bundle::ARTIFACT)
         .map(|(_, bytes)| bytes.to_vec())
         .ok_or_else(|| format!("{name}: an app without {}", bundle::ARTIFACT))?;
-    Ok(Some(artifact))
+    Ok(Some((service, artifact)))
 }
 
 /// Each app generation `from` held that generation `to` does not, withdrawn
@@ -587,12 +605,12 @@ fn withdraw_apps(vol: &mut dyn Volume, from: u64, to: u64) -> Result<Vec<String>
             continue;
         }
         let name = &package.name;
-        let Some(artifact) = app_artifact(vol, name, &package.sha)? else {
+        let Some((service, artifact)) = app_artifact(vol, name, &package.sha)? else {
             continue;
         };
         let label = kabi::live::package_label(&kaipkg::sha256(&artifact));
         let withdraw = supervise::Run {
-            name,
+            name: &service,
             version: &label,
         };
         let mut reply = [0u8; 256];
