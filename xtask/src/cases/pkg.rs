@@ -101,6 +101,28 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..install("desk-catalog", "test=desk-catalog", MirrorKind::Signed)
     },
+    // The v0.1 system as the default boot plans it (`kabi::plan::system`), with
+    // no plan line of the case's own: the desktop comes up, `pkg` seeds the
+    // image's repository with no `step=`, the Apps sheet lists it, and Enter on
+    // `notes` opens Notes' window through the shell and the model's `ui_open`.
+    // The whole system and an app fit the admission budget (free / 2) only with
+    // more than the 512 MiB default: `desktop`, `fs` and each app's window are
+    // 32 MiB each.
+    TestCase {
+        server: true,
+        data: Some(VIRTIO),
+        memory_mib: Some(2048),
+        expect: &[
+            "pkg: the image's repository verified, ",
+            "desktop: drew the desk at ",
+            "desktop: the Apps sheet lists ",
+            "desktop: the Apps sheet sent \"open notes\"",
+            "process notes-window (pid ",
+            "desktop: window 1 \"Notes\" opened at ",
+            "desk-default: the desktop came up, the Apps sheet listed the catalogue, and Enter opened notes-window",
+        ],
+        ..case("desk-default", "test=desk-default")
+    },
     // P4 task 8: a saved appearance repaints `desktop` at once and holds across
     // its restart, read from the screen's own pixels. `kai-data` holds the
     // appearance (`/system/state`).
