@@ -312,11 +312,17 @@ impl Shell {
                 self.fired_profiles.retain(|(r, _)| *r != rule);
                 self.fired_profiles.push((rule, key));
             }),
+            // Its "until" puts back only its own switch, while that is still the
+            // newest: a person's own switch since stays.
             (true, Some(at)) => {
                 let (_, key) = self.fired_profiles.remove(at);
+                if !self.profile_switch_is_latest(key) {
+                    return;
+                }
                 self.revert_entry_profile(id, (rule, key), request)
             }
-            (true, None) => Err(String::from("nothing of its to put back")),
+            // Nothing of its in force (its firing changed nothing): no entry.
+            (true, None) => return,
         };
         if let Err(why) = done {
             self.host

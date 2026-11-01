@@ -168,6 +168,11 @@ impl Shell {
         Ok((was, key))
     }
 
+    /// Whether switch `key` is the newest one kept: nothing switched since.
+    pub(crate) fn profile_switch_is_latest(&self, key: u64) -> bool {
+        self.profiles.back.last().is_some_and(|(k, _, _)| *k == key)
+    }
+
     /// Whether `name` is the profile in force.
     pub(crate) fn profile_in_force(&self, name: &str) -> bool {
         self.profiles.now == name
