@@ -24,7 +24,7 @@ use std::path::Path;
 pub const IMAGE: &str = "kai-data.img";
 pub const LOG: &str = "kai-data.log";
 /// The serial the guest finds the disk by.
-pub const SERIAL: &str = "kai-data";
+pub const SERIAL: &str = kabi::fs::DATA_SERIAL;
 /// The disk's size: 64 MiB.
 pub const DISK_BYTES: u64 = 64 << 20;
 /// Commits the guest makes (kernel/src/blkflush_tests.rs).

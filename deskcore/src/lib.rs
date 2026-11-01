@@ -22,6 +22,7 @@ pub mod effects;
 pub mod files;
 pub mod geom;
 pub mod keymap;
+pub mod lease;
 pub mod paint;
 pub mod paint_card;
 pub mod paint_catalog;
@@ -49,3 +50,6 @@ mod agent_tests;
 
 #[cfg(test)]
 mod files_tests;
+
+#[cfg(test)]
+mod lease_tests;

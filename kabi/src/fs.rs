@@ -10,6 +10,10 @@
 //! from before a restore or from another disk, finds nothing, never another
 //! object.
 
+/// The `kai-data` disk's name: its partition's in the log, and the virtio
+/// serial the tests attach it by.
+pub const DATA_SERIAL: &str = "kai-data";
+
 /// kaifs's volumes, as a badge holds them.
 pub const SYSTEM: u8 = 1;
 pub const HOME: u8 = 2;

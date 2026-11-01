@@ -71,6 +71,68 @@ fn an_unknown_profile_or_no_supervisor_changes_nothing() {
     assert_eq!(shell.eval("undo"), Reply::err("nothing to undo"));
 }
 
+/// #524, as `desk-profile` found it: Notes' window took focus as it opened, so
+/// a `focus` waited in the event box when the rule was made. That event goes to
+/// the rules there were, never the new one; the real focus fires it once; a
+/// firing that changes nothing logs nothing; and one `undo` is back to default.
+#[test]
+fn a_rule_fires_only_on_events_after_it_and_one_undo_takes_it_back() {
+    let host = host();
+    host.triggers_on.set(true);
+    let mut shell = shell(&host);
+    let rule = "on focus(game) -> profile_set(gaming)";
+    shell.eval(&format!("rules_add {rule}"));
+    *host.triggers.waiting.borrow_mut() = String::from("focus game\n");
+    let once = host.mint(1, &format!("rules_add(\"{rule}\")"));
+    assert!(shell.eval(&format!("answer 1 allow once={once}")).ok);
+    assert!(
+        host.triggers.waiting.borrow().is_empty(),
+        "the box was read"
+    );
+    assert!(shell.eval("profile").text.starts_with("default (now)"));
+    let focus = crate::standing::Event {
+        when: crate::standing::When {
+            kind: crate::standing::Kind::Focus,
+            app: String::from("game"),
+        },
+        cause: None,
+    };
+    assert_eq!(shell.on_event(&focus), None);
+    assert!(shell.eval("profile").text.contains("gaming (now)"));
+    // Again: gaming is in force already, so nothing changes and nothing is logged.
+    let last = shell.log.last_id();
+    assert_eq!(shell.on_event(&focus), None);
+    assert_eq!(shell.log.last_id(), last);
+    assert_eq!(shell.eval("undo"), ok("Undone: profile back to default"));
+    assert!(shell.eval("profile").text.starts_with("default (now)"));
+}
+
+/// A rule's "until" puts back only its own switch: a person's switch since
+/// stays, and the until logs nothing (lane C on #537).
+#[test]
+fn an_until_leaves_a_profile_the_person_chose_since() {
+    let host = host();
+    host.triggers_on.set(true);
+    let mut shell = shell(&host);
+    let rule = "on focus(game) -> profile_set(gaming) until close(game)";
+    shell.eval(&format!("rules_add {rule}"));
+    let once = host.mint(1, &format!("rules_add(\"{rule}\")"));
+    assert!(shell.eval(&format!("answer 1 allow once={once}")).ok);
+    let event = |kind| crate::standing::Event {
+        when: crate::standing::When {
+            kind,
+            app: String::from("game"),
+        },
+        cause: None,
+    };
+    assert_eq!(shell.on_event(&event(crate::standing::Kind::Focus)), None);
+    assert!(shell.eval("profile quiet").ok);
+    let last = shell.log.last_id();
+    assert_eq!(shell.on_event(&event(crate::standing::Kind::Close)), None);
+    assert!(shell.eval("profile").text.contains("quiet (now)"));
+    assert_eq!(shell.log.last_id(), last);
+}
+
 #[test]
 fn a_standing_instruction_switches_on_focus_and_back_on_close() {
     let host = host();
