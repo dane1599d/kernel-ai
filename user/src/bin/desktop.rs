@@ -121,6 +121,8 @@ struct State {
     sheet: Option<deskcore::catalog::Sheet>,
     /// Apps' effects waiting for the shell, and what came of them.
     effects: effects::Queue,
+    /// The editor's files on their way to or from the shell, while they are.
+    files: deskcore::files::Files,
     /// The Settings app's requests for the shell, and the shell's answers.
     settings: settings::Queue,
     /// The agent's views of windows, for its `ui` rows (P3 task 10).
@@ -183,6 +185,7 @@ fn main() -> i32 {
             panel: Panel::new(),
             sheet: None,
             effects: effects::Queue::default(),
+            files: deskcore::files::Files::default(),
             settings: settings::Queue::default(),
             agent: deskcore::agent::Agent::default(),
             ticked_ms: 0,
@@ -543,6 +546,10 @@ fn serve(state: &mut State, bytes: &[u8], info: &RecvInfo) {
         let _ = sys::reply_h(reply.as_bytes(), &[]);
         return;
     }
+    if let Some(reply) = files_request(state, bytes, pid) {
+        let _ = sys::reply_h(&reply, &[]);
+        return;
+    }
     let new = !state.clients.iter().any(|c| c.pid == pid);
     if new {
         let label = name_of(pid);
@@ -658,6 +665,18 @@ fn appearance_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<Strin
             Some(alloc::format!("err the appearance is refused: {}", why.0))
         }
     }
+}
+
+/// The editor's and the shell's file requests (P4, `deskcore::files`): the
+/// answer, or `None` for another message. The caller is the kernel's name for it,
+/// never anything it sent.
+fn files_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<Vec<u8>> {
+    let caller = name_of(pid);
+    let reply = state.files.request(&caller, bytes, now_ms())?;
+    if reply.wake {
+        wake_shell();
+    }
+    Some(reply.bytes)
 }
 
 /// An app's `effects put` and `effects results`, and the shell's `effects

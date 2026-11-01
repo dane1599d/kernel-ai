@@ -237,7 +237,11 @@ pub enum Event {
     BufferRelease { offset: u32 },
     /// Input for this surface, at `x`, `y` in surface-local logical units (24.8),
     /// and for a key the text it types (up to 4 bytes of UTF-8, `len` of them),
-    /// so a native app needs no keymap.
+    /// so a native app needs no keymap. A key has no place: its `x` carries the
+    /// modifiers held with it (shift 1, ctrl 2, alt 4, super 8) in the 24.8 place,
+    /// a modifier key's own event included, so the ring alone says what was held
+    /// and the seat's `modifiers` message (which another road delivers, at
+    /// another time) is only for a button's.
     Input {
         event: InputEvent,
         x: i32,

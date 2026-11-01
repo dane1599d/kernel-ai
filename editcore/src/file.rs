@@ -37,6 +37,8 @@ pub const MAX_BYTES: usize = MAX_BUNDLE - 512;
 pub const NOTHING_TO_BUILD: &str = "a file is saved with Ctrl-S; there is nothing to build here";
 /// Longest path a file request names (`kai:files`).
 pub const MAX_PATH: usize = 255;
+/// Where the OS's file door reaches: the person's own tree (`/system/...` is not).
+pub const HOME: &str = "/home/user/";
 
 /// Why `path` is not one the OS takes (`kai:files`): absolute, plain segments, no
 /// whitespace, colon, backslash or control character, at most [`MAX_PATH`] bytes.
@@ -45,6 +47,9 @@ pub fn check_path(path: &str) -> Result<(), String> {
     let plain = path
         .strip_prefix('/')
         .ok_or_else(|| format!("{path:?} is not an absolute path, such as /home/user/notes.txt"))?;
+    if !path.starts_with(HOME) {
+        return Err(format!("{path}: the editor opens files under {HOME}..."));
+    }
     if path.len() > MAX_PATH {
         return Err(format!("the path is over {MAX_PATH} bytes"));
     }

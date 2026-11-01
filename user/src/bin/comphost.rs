@@ -202,6 +202,8 @@ fn main() -> i32 {
     }
     // The editor's rules for what it may send; none for an app without the grant.
     let mut edits = env.grants.edit.then(editcore::gate::Gate::new);
+    // The editor's files go to `desktop` in pieces; only the plan line `editor`.
+    let mut relay = env.grants.files.then(files::Relay::new);
     // The plan line's name is the grant: only the System monitor reads the
     // machine, and only it has the route to llm for `health`.
     env.grants.system = name == system::MONITOR_APP;
@@ -219,7 +221,7 @@ fn main() -> i32 {
         "up (restart {}): serving {name}",
         arg(&args, "restart").unwrap_or("0")
     );
-    settle(&mut windows, &mut edits, &mut host);
+    settle(&mut windows, &mut edits, &mut relay, &mut host);
     let mut request = vec![0u8; kabi::MAX_MESSAGE];
     // Whether the nap holds a lease for settings requests in flight.
     let mut settings_leased = false;
@@ -240,7 +242,7 @@ fn main() -> i32 {
                 }
                 None => {}
             }
-            settle(&mut windows, &mut edits, &mut host);
+            settle(&mut windows, &mut edits, &mut relay, &mut host);
         }
         let open = windows.as_ref().is_some_and(ui::Ui::wants_poll);
         let wait = match (open, host.timeout_ms()) {
@@ -287,7 +289,7 @@ fn main() -> i32 {
                 }
                 tick_at = deadline(host.timeout_ms());
                 napper.after(&host, now_ms());
-                settle(&mut windows, &mut edits, &mut host);
+                settle(&mut windows, &mut edits, &mut relay, &mut host);
             }
             Err(Error::TimedOut) => {
                 if let Some(ui) = windows.as_mut().filter(|ui| ui.wants_poll())
@@ -303,14 +305,15 @@ fn main() -> i32 {
                     println!("{}", exit.why);
                     return exit.code;
                 }
-                // A settings request waiting for its answer is use: the app
-                // does not nap until it has it.
-                let busy = windows.as_ref().is_some_and(ui::Ui::settings_busy);
+                // A settings request or a file waiting for its answer is use: the
+                // app does not nap until it has it.
+                let busy = windows.as_ref().is_some_and(ui::Ui::settings_busy)
+                    || relay.as_ref().is_some_and(files::Relay::busy);
                 if busy != settings_leased {
                     napper.nap.lease(busy);
                     settings_leased = busy;
                 }
-                settle(&mut windows, &mut edits, &mut host);
+                settle(&mut windows, &mut edits, &mut relay, &mut host);
                 match napper.tick(&mut host, now_ms()) {
                     Ok(napped) => log_nap(&name, napped),
                     Err(exit) => {
@@ -324,7 +327,7 @@ fn main() -> i32 {
                         return exit.code;
                     }
                     tick_at = deadline(host.timeout_ms());
-                    settle(&mut windows, &mut edits, &mut host);
+                    settle(&mut windows, &mut edits, &mut relay, &mut host);
                 }
             }
             Err(error) => {
@@ -337,7 +340,7 @@ fn main() -> i32 {
         if let Some(source) = source.as_mut()
             && source.pump(&mut host, now_ms())
         {
-            settle(&mut windows, &mut edits, &mut host);
+            settle(&mut windows, &mut edits, &mut relay, &mut host);
         }
     }
 }
@@ -353,15 +356,18 @@ fn soonest(wait: u64, due: Option<u64>) -> u64 {
 }
 
 /// What the instances did that leaves comphost: the editor's messages go to the
-/// edit service, then the windows' frames to `desktop`.
+/// edit service and its files to `desktop`, then the windows' frames.
 fn settle(
     windows: &mut Option<ui::Ui>,
     edits: &mut Option<editcore::gate::Gate>,
+    relay: &mut Option<files::Relay>,
     host: &mut Host<SysEnv>,
 ) {
     if let Some(gate) = edits.as_mut() {
         edit::pump(host, gate);
-        files::pump(host);
+    }
+    if let Some(relay) = relay.as_mut() {
+        relay.pump(host);
     }
     if let Some(ui) = windows.as_mut() {
         ui.pump(host);

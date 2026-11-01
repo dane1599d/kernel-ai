@@ -46,6 +46,50 @@ pub(super) const CASES: &[TestCase] = &[
         memory_mib: Some(1024),
         ..case("app-editor", "test=app-editor")
     },
+    // P4 task 11, on the default boot: the editor makes a file of the person's own (Ctrl-O
+    // and a path that is not there, typed letters, Ctrl-S), replaces it, and after an
+    // `undo` typed at the shell reads it again as the first save left it.
+    TestCase {
+        // A writable `kai-data` disk: the shell's `/home/user` is on it.
+        data: Some(crate::blklog::Data {
+            nvme: false,
+            log: None,
+            gpt: true,
+        }),
+        keys: &[
+            // Ctrl-O asks for a path; the first half of /home/user/todo.txt, then the rest
+            // and Enter: the path is not there, so a new file opens.
+            &[
+                "ctrl-o", "slash", "h", "o", "m", "e", "slash", "u", "s", "e", "r",
+            ],
+            &["slash", "t", "o", "d", "o", "dot", "t", "x", "t", "ret"],
+            // Four letters, then Ctrl-S makes the file; one more and Ctrl-S replaces it.
+            &["a", "b", "c", "d"],
+            &["ctrl-s"],
+            &["z"],
+            &["ctrl-s"],
+            // After `undo`, the same path again: the file is read back.
+            &[
+                "ctrl-o", "slash", "h", "o", "m", "e", "slash", "u", "s", "e", "r",
+            ],
+            &["slash", "t", "o", "d", "o", "dot", "t", "x", "t", "ret"],
+        ],
+        expect: &[
+            "comphost: files: read /home/user/todo.txt (person true) failed: missing: /home/user/todo.txt is not there",
+            "app-editor-files: Ctrl-O on a path that is not there opened a new file",
+            "comphost: files: write /home/user/todo.txt (person true) answered 0 bytes",
+            "app-editor-files: Ctrl-S made the file: ",
+            "app-editor-files: Ctrl-S replaced the file: ",
+            "app-editor-files: undo took the second save back",
+            "comphost: files: read /home/user/todo.txt (person true) answered 4 bytes",
+            "app-editor-files: the file read again is the first save's",
+        ],
+        min_timeout: Some(Duration::from_secs(300)),
+        // The file system service, the shell, the desktop and the editor (32 MiB of
+        // pages for the last) outgrow the default 512 MiB, as for app-settings.
+        memory_mib: Some(1024),
+        ..case("app-editor-files", "test=app-editor-files")
+    },
     TestCase {
         build: true,
         prepare: Some(crate::boot_smoke::prepare_manifest),

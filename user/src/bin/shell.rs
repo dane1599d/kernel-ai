@@ -229,6 +229,89 @@ const _: () = assert!(same(
     shellcore::SETTINGS_APP,
     deskcore::settings_wire::SETTINGS_APP
 ));
+// The same for the editor's file door.
+const _: () = assert!(same(shellcore::door::DOOR_APP, deskcore::files::DOOR_APP));
+
+/// One request to `desktop`, answered in bytes: a file's piece is not always text.
+fn ask_desktop_bytes(route: kabi::handle::Handle, request: &[u8]) -> Result<Vec<u8>, String> {
+    let mut reply = vec![0u8; kabi::MAX_MESSAGE];
+    let len = sys::call_route(route, request, &mut reply, DESKTOP_CALL_MS)
+        .map_err(|error| format!("desktop did not answer ({error:?})"))?;
+    reply.truncate(len.min(reply.len()));
+    Ok(reply)
+}
+
+/// Most files taken in one pass of the loop.
+const FILES_PER_PASS: usize = 4;
+
+/// The editor's files, a few at a time: each complete transfer `desktop` holds is
+/// done through the agent core's door (`Shell::door_read`, `Shell::door_write`),
+/// and what came of it goes back, a write's reason or a read's bytes.
+fn take_files(shell: &mut Shell) {
+    use deskcore::files::parse_job;
+    let Some(route) = desktop() else {
+        return;
+    };
+    for _ in 0..FILES_PER_PASS {
+        let Ok(answer) = ask_desktop(route, "files take") else {
+            return;
+        };
+        let Some(job) = parse_job(&answer) else {
+            return;
+        };
+        let done = match do_file_job(shell, route, &job) {
+            Ok(()) => format!("files done {} ok", job.id),
+            Err(why) => {
+                // One line, as `desktop` keeps it.
+                let why: String = why
+                    .chars()
+                    .map(|c| if c.is_control() { ' ' } else { c })
+                    .collect();
+                format!("files done {} err {}", job.id, why.trim())
+            }
+        };
+        if let Err(why) = ask_desktop(route, &done) {
+            println!("the editor's file {} was not reported: {why}", job.id);
+        }
+    }
+}
+
+/// One transfer: a write fetches its pieces and saves; a read reads and fills.
+fn do_file_job(
+    shell: &mut Shell,
+    route: kabi::handle::Handle,
+    job: &deskcore::files::Job,
+) -> Result<(), String> {
+    use deskcore::files::{CHUNK, Op};
+    match job.op {
+        Op::Read => {
+            let bytes = shell.door_read(&job.app, &job.path)?;
+            let total = bytes.len();
+            for (i, piece) in bytes.chunks(CHUNK).enumerate() {
+                let head = format!("files fill {} {} {total}\n", job.id, i * CHUNK);
+                let mut message = head.into_bytes();
+                message.extend_from_slice(piece);
+                if ask_desktop_bytes(route, &message)? != b"ok" {
+                    return Err(String::from("desktop did not take the file"));
+                }
+            }
+            Ok(())
+        }
+        Op::Write { create } => {
+            let mut bytes: Vec<u8> = Vec::with_capacity(job.total);
+            while bytes.len() < job.total {
+                let request = format!("files fetch {} {}", job.id, bytes.len());
+                let reply = ask_desktop_bytes(route, request.as_bytes())?;
+                let piece = reply
+                    .strip_prefix(b"ok\n")
+                    .filter(|piece| !piece.is_empty())
+                    .ok_or_else(|| String::from("desktop did not give the file"))?;
+                bytes.extend_from_slice(piece);
+            }
+            shell.door_write(&job.app, &job.path, &bytes, create, job.user)
+        }
+    }
+}
 
 const fn same(a: &str, b: &str) -> bool {
     let (a, b) = (a.as_bytes(), b.as_bytes());
@@ -813,6 +896,7 @@ fn main() -> i32 {
         take_events(&mut shell, &mut events);
         take_panel(&mut shell);
         take_effects(&mut shell);
+        take_files(&mut shell);
         take_settings(&mut shell);
         give_appearance(&system);
         shell.retry_keep();

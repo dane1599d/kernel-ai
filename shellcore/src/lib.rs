@@ -34,6 +34,7 @@ mod centry;
 mod cmode;
 mod commands;
 pub mod data;
+pub mod door;
 mod effects;
 mod engine;
 pub mod grants;
@@ -100,6 +101,9 @@ pub enum Proof {
 pub enum FsRead<'a> {
     List(&'a str),
     Read(&'a str),
+    /// The whole file or an error, for the editor's door: no cut at a few
+    /// messages (`Read` hands a script a prefix), and it must be text.
+    Whole(&'a str),
     History(&'a str),
     Changes,
 }

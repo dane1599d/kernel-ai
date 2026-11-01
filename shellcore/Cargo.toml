@@ -19,6 +19,7 @@ promptcore = { path = "../promptcore" }
 sched = { path = "../sched" }
 termcore = { path = "../termcore" }
 serde_json = { version = "1.0.154", default-features = false, features = ["alloc"] }
+sha2 = { version = "0.11.1", default-features = false }
 rhai = { version = "=1.27.0", default-features = false, features = ["no_std", "no_float", "no_custom_syntax", "no_module", "internals"] }
 
 [dev-dependencies]

@@ -349,7 +349,7 @@ impl Shell {
 
     /// Logs a run with its changes.
     #[allow(clippy::too_many_arguments)]
-    fn log_entry(
+    pub(crate) fn log_entry(
         &mut self,
         id: u64,
         request: &str,

@@ -317,7 +317,12 @@ fn another_file_is_not_opened_over_edits_that_are_not_saved() {
 #[test]
 fn a_path_the_door_would_refuse_never_leaves_the_editor() {
     let (mut app, mut os) = window();
-    for path in ["todo.txt", "/home/../etc/passwd", "/home/user/a b"] {
+    for path in [
+        "todo.txt",
+        "/home/../etc/passwd",
+        "/home/user/a b",
+        "/system/log",
+    ] {
         open_path(&mut app, &mut os, path);
         assert!(os.log.is_empty(), "{path}: {:?}", os.log);
         assert!(os.status().len() > 3);
