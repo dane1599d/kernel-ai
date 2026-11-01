@@ -10,6 +10,10 @@
 //! from before a restore or from another disk, finds nothing, never another
 //! object.
 
+/// The `kai-data` disk's name: its partition's in the log, and the virtio
+/// serial the tests attach it by.
+pub const DATA_SERIAL: &str = "kai-data";
+
 /// kaifs's volumes, as a badge holds them.
 pub const SYSTEM: u8 = 1;
 pub const HOME: u8 = 2;
@@ -140,6 +144,18 @@ pub const SYSTEM_RESTART: u64 = Badge {
 }
 .raw();
 
+/// The badge of the startup `Dir` a plan line's `dir=models` grants: the
+/// `models` volume's root, the model store (ADR 0004 §8), where only `updated`
+/// writes, a sealed blob at a time (P4 task 10). Fixed, as [`HOME_USER`] is for
+/// its volume.
+pub const MODELS_ROOT: u64 = Badge {
+    volume: MODELS,
+    file: false,
+    epoch: 0,
+    object: 0,
+}
+.raw();
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -182,6 +198,7 @@ mod tests {
             SYSTEM_SETTINGS,
             SYSTEM_APPS,
             SYSTEM_RESTART,
+            MODELS_ROOT,
         ];
         for (i, a) in fixed.iter().enumerate() {
             assert_eq!(Badge::parse(*a).epoch, 0);

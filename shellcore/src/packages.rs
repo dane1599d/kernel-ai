@@ -170,6 +170,23 @@ impl Shell {
         let Some(switch) = pending.pkg.clone() else {
             return Reply::err("nothing to confirm");
         };
+        if let Err(reply) = self.allowed(&pending, text) {
+            return reply;
+        }
+        let how = How {
+            consent: String::from("yes"),
+            ..pending.how.clone()
+        };
+        let reply = self.pkg_switch(id, &pending.request, &pending.checked.script, switch, how);
+        self.remember(&pending, &reply.text);
+        reply
+    }
+
+    /// Whether `text` answers `pending`'s Allow / Deny menu with an Allow whose
+    /// ONCE checks; otherwise the call is recorded as declined, and the reply
+    /// says so.
+    pub(crate) fn allowed(&mut self, pending: &Pending, text: &str) -> Result<(), Reply> {
+        let id = pending.id;
         let checked = match (read_answer(text.trim()), &pending.menu) {
             (Some((answer, granted)), Some(call)) if answer != termcore::menu::Answer::Deny => {
                 granted
@@ -183,23 +200,17 @@ impl Shell {
             }
             _ => Err(String::new()),
         };
-        if let Err(why) = checked {
-            self.record(id, &pending.request, &pending.checked.script, "declined");
-            self.remember(&pending, "Not run: declined");
-            let why = if why.is_empty() {
-                why
-            } else {
-                format!(": {why}")
-            };
-            return Reply::ok(format!("script {id} not run{why}"));
-        }
-        let how = How {
-            consent: String::from("yes"),
-            ..pending.how.clone()
+        let Err(why) = checked else {
+            return Ok(());
         };
-        let reply = self.pkg_switch(id, &pending.request, &pending.checked.script, switch, how);
-        self.remember(&pending, &reply.text);
-        reply
+        self.record(id, &pending.request, &pending.checked.script, "declined");
+        self.remember(pending, "Not run: declined");
+        let why = if why.is_empty() {
+            why
+        } else {
+            format!(": {why}")
+        };
+        Err(Reply::ok(format!("script {id} not run{why}")))
     }
 
     /// Makes a switch and logs it, with the generation switch as its undo.

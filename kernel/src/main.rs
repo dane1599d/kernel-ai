@@ -96,6 +96,7 @@ mod mem_tests;
 mod memory;
 mod metrics;
 mod model;
+mod model_import_tests;
 mod model_tests;
 mod nap_tests;
 mod net;
@@ -444,7 +445,11 @@ extern "C" fn boot_continue() -> ! {
             slots::on_boot(true);
             test_exit(ExitCode::Success)
         }
-        SelfTest::Update => slots::update_case(),
+        // The model channel's steps restart into no slot (P4 task 10).
+        SelfTest::Update => match model_import_tests::step() {
+            Some(step) => run_case(|| model_import_tests::check(step)),
+            None => slots::update_case(),
+        },
         SelfTest::Probation => slots::probation_case(),
         SelfTest::None => slots::on_boot(false),
         SelfTest::Boot => {}

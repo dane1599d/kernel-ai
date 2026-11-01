@@ -23,6 +23,7 @@ mod fuzz;
 mod log;
 mod logdisk;
 mod look;
+mod models;
 mod more;
 mod packages;
 mod panel;
@@ -136,6 +137,9 @@ struct FakeHost {
     /// not here runs normal with 4,096 pages. And the app with focus.
     profile_state: RefCell<std::collections::BTreeMap<String, (kaiprofile::Class, u64)>>,
     focused: RefCell<Option<String>>,
+    /// What `updated` holds for the model rows, and each request it was sent.
+    models: RefCell<comp_models::Models>,
+    model_requests: RefCell<Vec<String>>,
 }
 
 /// What standing instructions asked the desktop and the owners for.
@@ -282,6 +286,8 @@ impl FakeHost {
             triggers: FakeTriggers::default(),
             profile_state: RefCell::new(std::collections::BTreeMap::new()),
             focused: RefCell::new(None),
+            models: RefCell::new(models::store()),
+            model_requests: RefCell::new(Vec::new()),
         })
     }
 }
@@ -697,6 +703,32 @@ impl Host for FakeHost {
             .borrow_mut()
             .pop_front()
             .ok_or_else(|| String::from("the app did not answer"))
+    }
+
+    /// `updated`'s answers, as `models.rs` there gives them.
+    fn models(&self, request: &str) -> Result<String, String> {
+        self.model_requests.borrow_mut().push(String::from(request));
+        let mut m = self.models.borrow_mut();
+        let words: Vec<&str> = request.split(' ').collect();
+        Ok(match words.as_slice() {
+            ["models"] => modelchan::listing::encode(&m),
+            ["models", "import"] => String::from("ok importing fixture 4096"),
+            ["models", "use", hex] => {
+                let sha = modelchan::listing::sha256(hex)?;
+                match (m.store.running == Some(sha), m.next() == Some(sha)) {
+                    (_, true) => String::from("ok already"),
+                    (true, false) => {
+                        m.store.next = None;
+                        String::from("ok cancelled")
+                    }
+                    (false, false) => {
+                        m.store.next = Some(sha);
+                        format!("ok next {hex}")
+                    }
+                }
+            }
+            _ => String::from("err unknown request"),
+        })
     }
 
     fn appearance_read(&self) -> Option<String> {
