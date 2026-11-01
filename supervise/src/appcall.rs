@@ -31,6 +31,19 @@ pub const WAIT_MS: u64 = 5_000;
 /// The answer when the app did not answer in [`WAIT_MS`]; the shell may try
 /// once more.
 pub const TIMEOUT: &str = "err timeout";
+/// Before the app's name, the answer when the kernel refused to start it for
+/// memory (the admission rule, free / 2): no wait, and nothing to retry.
+pub const NO_MEMORY: &str = "err no memory to start ";
+
+/// [`NO_MEMORY`] for `app`.
+pub fn no_memory(app: &str) -> alloc::string::String {
+    alloc::format!("{NO_MEMORY}{app}")
+}
+
+/// The app an answer says there was no memory to start, if it says that.
+pub fn no_memory_for(answer: &str) -> Option<&str> {
+    answer.strip_prefix(NO_MEMORY).filter(|app| !app.is_empty())
+}
 /// The supervisor's request buffer: one message, so a full `app-call` fits.
 pub const MAX_SERVED: usize = kabi::MAX_MESSAGE;
 
@@ -107,5 +120,20 @@ mod tests {
         let full = format!("kai-call 1\n{}", "x".repeat(MAX_REQUEST - 11));
         assert!(check("shell", "notes", &full, &specs).is_ok());
         assert!(encode("notes-window-long-name", &full).len() <= MAX_SERVED);
+    }
+
+    #[test]
+    fn no_memory_names_its_app_and_nothing_else_reads_as_it() {
+        let answer = no_memory("notes-window");
+        assert_eq!(answer, "err no memory to start notes-window");
+        assert_eq!(no_memory_for(&answer), Some("notes-window"));
+        for other in [
+            TIMEOUT,
+            "err no memory to start ",
+            "ok",
+            "err notes is stopped",
+        ] {
+            assert_eq!(no_memory_for(other), None, "{other:?}");
+        }
     }
 }

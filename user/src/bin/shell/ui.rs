@@ -86,7 +86,14 @@ fn open(route: kabi::handle::Handle, app: &str, arg: Option<&str>) -> Result<Str
     }
     // An app's window is its `<app>-window` service, when the plan has one.
     let window = format!("{}-window", rows::app_of(app));
-    app_call(&window, "kai-actions 1").or_else(|_| app_call(app, "kai-actions 1"))?;
+    match app_call(&window, "kai-actions 1") {
+        Ok(_) => {}
+        // Its window exists but there is no room for it: say so, as is.
+        Err(why) if why.starts_with(NOT_ENOUGH) => return Err(why),
+        Err(_) => {
+            app_call(app, "kai-actions 1")?;
+        }
+    }
     let mut waited = 0;
     while waited < WINDOW_WAIT_MS {
         if sys::interrupted() {
@@ -106,6 +113,19 @@ fn windows(route: kabi::handle::Handle) -> Result<alloc::vec::Vec<Window>, Strin
     rows::parse_windows(&list)
 }
 
+/// What `ui_open` and the panel say when there is no memory to open an app.
+const NOT_ENOUGH: &str = "Not enough memory to open ";
+
+/// An app as a person knows it: `notes-window` is Notes.
+fn display_name(service: &str) -> String {
+    let app = rows::app_of(service);
+    let mut chars = app.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
 /// The supervisor's `app-call`: `kai-actions 1` is answered by the app's host
 /// from what it loaded, never by its code, and starts the app if it is down.
 fn app_call(app: &str, request: &str) -> Result<String, String> {
@@ -114,6 +134,11 @@ fn app_call(app: &str, request: &str) -> Result<String, String> {
     let len = sys::call_route(supervisor(), text.as_bytes(), &mut reply, APP_CALL_MS)
         .map_err(|error| format!("the supervisor did not answer ({error:?})"))?;
     let answer = String::from_utf8_lossy(&reply[..len.min(reply.len())]).into_owned();
+    // The kernel refused the start for memory: the person's own words for it,
+    // with the app as they know it ("Notes").
+    if let Some(service) = supervise::appcall::no_memory_for(&answer) {
+        return Err(format!("{NOT_ENOUGH}{}", display_name(service)));
+    }
     match answer.strip_prefix("err ") {
         Some(why) => Err(format!("{app} could not be opened: {why}")),
         None => Ok(answer),
