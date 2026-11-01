@@ -308,3 +308,26 @@ fn a_deep_chain_and_a_wide_tree_cost_no_recursion() {
     .unwrap();
     assert_eq!(tree.nodes.len(), n as usize);
 }
+
+/// The theme rides the registry as opcode 1, so a client that takes only
+/// opcode 0 (`Global`) as a greeting never mistakes it for a new desktop.
+#[test]
+fn the_theme_event_round_trips_and_is_no_greeting() {
+    use surfabi::proto::{Event as Wire, Interface};
+    let bytes = Wire::Theme("light").encode(REGISTRY).unwrap();
+    let (header, args, rest) = wire::split(&bytes).unwrap();
+    assert!(rest.is_empty());
+    assert_eq!((header.object, header.opcode), (REGISTRY, 1));
+    assert_eq!(
+        Wire::decode(Interface::Registry, header.opcode, args),
+        Ok(Wire::Theme("light"))
+    );
+    let global = Wire::Global {
+        name: 1,
+        interface: "pool",
+        version: 1,
+    }
+    .encode(REGISTRY)
+    .unwrap();
+    assert_eq!(wire::split(&global).unwrap().0.opcode, 0);
+}

@@ -71,6 +71,7 @@ fn main() -> i32 {
         Some("shm") => shm,
         Some("job") => job,
         Some("mem") => mem::mem,
+        Some("idle") => idle,
         _ => checks,
     };
     match run() {
@@ -455,6 +456,14 @@ fn grants() -> Result<(), &'static str> {
 }
 
 /// Takes one call and holds it for 3 s before answering.
+/// `mode=idle`: does nothing until killed, holding the pages it was admitted
+/// with (`desk-no-memory` takes the rest of the admission budget this way).
+fn idle() -> Result<(), &'static str> {
+    loop {
+        sys::sleep_ms(60_000);
+    }
+}
+
 fn hold() -> Result<(), &'static str> {
     let mut buf = [0u8; 16];
     let mut info = RecvInfo::default();

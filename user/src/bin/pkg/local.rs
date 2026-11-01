@@ -66,10 +66,11 @@ fn from_shell(pid: u64) -> bool {
         .any(|p| p.pid == pid && pid != 0 && p.name() == SHELL)
 }
 
-/// `local-next <component>`.
+/// `local-next <component>`: a question any caller may ask, so it makes no
+/// device key; with none, `local` holds no build.
 fn next(vol: &mut FsVolume<Calls>, component: &str) -> Result<String, String> {
-    let key = local::device_key(vol, entropy)?;
-    let version = local::next(vol, &key, kaipkg::PROVIDED, component)?;
+    let key = local::saved_key(vol)?;
+    let version = local::next(vol, key.as_ref(), kaipkg::PROVIDED, component)?;
     Ok(format!("ok {version}"))
 }
 

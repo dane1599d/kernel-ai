@@ -44,13 +44,12 @@ const MAX_PENDING: usize = 32;
 /// to 32 apps, so the rest are asked as these are answered.
 const ROWS_IN_FLIGHT: usize = 4;
 
-/// What the checkpoint keeps: the page shown, so a restart comes back to it.
-/// Everything else is read again.
+/// What the checkpoint keeps: nothing. The page shown is not state, because
+/// `settings_open` moves it and is a read-only row, and the host refuses a
+/// read-only row that changes the checkpoint (the desktop tour caught it). A
+/// restart starts on the first page; everything the pages show is read again.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
-pub struct V1 {
-    #[n(0)]
-    pub page: u32,
-}
+pub struct V1 {}
 
 /// The window the app has open, and the tree it was last sent.
 #[derive(Default)]
@@ -240,7 +239,19 @@ impl SettingsWindow {
         match (what, outcome) {
             (_, Err(why)) => log(&alloc::format!("settings: refused: {why}")),
             (Pending::Read(read), Ok(answer)) => match read.apply(&mut self.settings, &answer) {
-                Ok(apps) => self.to_ask = apps,
+                Ok(apps) => {
+                    // What each page was given, for the log: the window is
+                    // private to the agent, so a case reads it here.
+                    log(&alloc::format!(
+                        "settings: {}",
+                        read.summary(&self.settings, apps.len())
+                    ));
+                    // Only `grants` names apps to ask for; another read's answer
+                    // must not empty the queue.
+                    if read == Read::Grants {
+                        self.to_ask = apps;
+                    }
+                }
                 Err(why) => log(&alloc::format!("settings: {}: {why}", read.request())),
             },
             (Pending::Rows(app), Ok(answer)) => {
@@ -248,12 +259,21 @@ impl SettingsWindow {
                     log(&alloc::format!("settings: grants {app}: {why}"));
                 }
             }
-            (Pending::Change(then), Ok(_)) => match then {
-                Applied::Theme(theme) => self.settings.appearance.theme = theme,
-                Applied::Legible(on) => self.settings.appearance.legible = on,
-                Applied::ReducedMotion(on) => self.settings.appearance.reduced_motion = on,
-                Applied::Intent(intent) => self.settings.applied(&intent),
-            },
+            (Pending::Change(then), Ok(_)) => {
+                // What the shell kept is read again, so the page shows its word
+                // for it and not only what was asked.
+                let again = then.read_back();
+                match then {
+                    Applied::Theme(theme) => self.settings.appearance.theme = theme,
+                    Applied::Legible(on) => self.settings.appearance.legible = on,
+                    Applied::ReducedMotion(on) => self.settings.appearance.reduced_motion = on,
+                    Applied::Intent(intent) => self.settings.applied(&intent),
+                }
+                if let Some(read) = again {
+                    let ticket = send(read.request());
+                    self.wait_for(ticket, Pending::Read(read));
+                }
+            }
         }
         // Whatever the answer was, the next apps' rows are asked for as room
         // comes.
@@ -313,28 +333,21 @@ impl Component for SettingsWindow {
         app
     }
 
-    /// The page the last version showed; a page that is not one is refused.
+    /// A new version starts on the first page; a state it cannot read, or of
+    /// another schema, is refused.
     fn import(state: &[u8], from_schema: u32) -> Result<Self, ImportError> {
         if from_schema != SCHEMA {
             return Err(ImportError::Unsupported);
         }
-        let v1: V1 = compsdk::state::decode(state, SCHEMA).ok_or(ImportError::Bad)?;
-        let page = usize::try_from(v1.page).map_err(|_| ImportError::Bad)?;
-        if page >= Page::ALL.len() {
-            return Err(ImportError::Bad);
-        }
-        let mut app = Self::new(page);
+        let _: V1 = compsdk::state::decode(state, SCHEMA).ok_or(ImportError::Bad)?;
+        let mut app = Self::new(0);
         app.present_logged();
         Ok(app)
     }
 
+    /// The same bytes whatever page is shown.
     fn export(&self, schema: u32) -> Option<Vec<u8>> {
-        (schema == SCHEMA).then(|| {
-            let v1 = V1 {
-                page: self.view.page as u32,
-            };
-            compsdk::state::encode(SCHEMA, &v1)
-        })
+        (schema == SCHEMA).then(|| compsdk::state::encode(SCHEMA, &V1 {}))
     }
 
     fn health(&self) -> u32 {

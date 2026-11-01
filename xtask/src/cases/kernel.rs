@@ -326,9 +326,30 @@ pub(super) const CASES: &[TestCase] = &[
     // kept from the agent: the view shows only that it is private, and an act in
     // it is refused after a yes.
     TestCase {
+        // A writable `kai-data` disk, so the shell can save the theme the first
+        // line sets and answer Settings' `file appearance` with it.
+        data: Some(crate::blklog::Data {
+            nvme: false,
+            log: None,
+            gpt: true,
+        }),
+        // The file system service, the shell, the desktop, the terminal and
+        // Settings (32 MiB of pages each for the last) outgrew the default 512 MiB:
+        // the first boot with the data disk could not start settings-window.
+        memory_mib: Some(1024),
         keys: &[
             &[
+                "s", "w", "i", "t", "c", "h", "spc", "t", "o", "spc", "t", "h", "e", "spc", "l",
+                "i", "g", "h", "t", "spc", "t", "h", "e", "m", "e", "ret",
+            ],
+            &[
                 "o", "p", "e", "n", "spc", "s", "e", "t", "t", "i", "n", "g", "s", "ret",
+            ],
+            // In Settings' window: the Theme button, then the Updates page's
+            // switch for the restart window (see `apps/settings-ui/tests/keys.rs`).
+            &["tab", "tab", "ret"],
+            &[
+                "tab", "tab", "tab", "right", "right", "right", "right", "tab", "spc",
             ],
             &[
                 "l", "o", "o", "k", "spc", "a", "t", "spc", "s", "e", "t", "t", "i", "n", "g", "s",
@@ -340,6 +361,25 @@ pub(super) const CASES: &[TestCase] = &[
             "comphost: window 1 \"Settings\" shown at 640x460",
             "\"Settings\" opened at ",
             "comphost: the first settings answer reached the app",
+            "app-settings: the theme was set before Settings opened",
+            "settings: appearance theme light",
+            "app-settings: keys were pressed in Settings' window",
+            // The theme after light, set by the key press and read back from the
+            // shell, and the restart window set from the page and read back
+            // through `file updates`.
+            "settings: appearance theme high-contrast",
+            "settings: restart window 02:00-05:00",
+            // What each other page was given, from the app's log (its window is
+            // private to the agent): the rules, the apps with rows, About, the
+            // profiles, the apps that can nap, the keep-running list and the
+            // restart window.
+            "settings: rules ",
+            "settings: grants ",
+            "settings: about ",
+            "settings: profiles ",
+            "settings: apps ",
+            "settings: keep running ",
+            "settings: restart window off",
             "app-settings: ui_open started Settings and its window opened",
             "desktop: the agent's ui view: ok (private window)",
             "desktop: the agent's ui act: refused (private window)",

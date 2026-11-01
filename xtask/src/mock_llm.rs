@@ -330,6 +330,11 @@ const ACTS: &[(&str, &str)] = &[
         "open notes",
         r#"{"name":"ui_open","arguments":{"app":"notes","arg":null}}"#,
     ),
+    // `desk-appearance` (P4 task 8): the theme, from the user's own words.
+    (
+        "set the theme to light",
+        r#"{"name":"appearance_set","arguments":{"setting":"theme","value":"light"}}"#,
+    ),
     (
         "search notes for milk",
         r#"{"name":"ui_view","arguments":{"window":"notes"}}"#,
@@ -338,7 +343,12 @@ const ACTS: &[(&str, &str)] = &[
         "switch to notes",
         r#"{"name":"ui_focus","arguments":{"window":"notes"}}"#,
     ),
-    // `app-settings` (P4 task 7): the agent opens Settings and looks at it.
+    // `app-settings` (P4 task 7): the agent sets the theme, opens Settings and
+    // looks at it.
+    (
+        "switch to the light theme",
+        r#"{"name":"appearance_set","arguments":{"setting":"theme","value":"light"}}"#,
+    ),
     (
         "open settings",
         r#"{"name":"ui_open","arguments":{"app":"settings","arg":null}}"#,
@@ -346,6 +356,47 @@ const ACTS: &[(&str, &str)] = &[
     (
         "look at settings",
         r#"{"name":"ui_view","arguments":{"window":"settings"}}"#,
+    ),
+    // `desk-tour`: the screenshot tour sets each step up through the model.
+    (
+        "turn on reduced motion",
+        r#"{"name":"appearance_set","arguments":{"setting":"reduced_motion","value":"on"}}"#,
+    ),
+    (
+        "create plan.txt saying the plan",
+        r#"{"name":"fs_create","arguments":{"path":"plan.txt","text":"the plan"}}"#,
+    ),
+    (
+        "create ideas.txt saying ideas",
+        r#"{"name":"fs_create","arguments":{"path":"ideas.txt","text":"ideas"}}"#,
+    ),
+    (
+        "open the files app",
+        r#"{"name":"ui_open","arguments":{"app":"files","arg":null}}"#,
+    ),
+    (
+        "open the terminal",
+        r#"{"name":"ui_open","arguments":{"app":"terminal","arg":null}}"#,
+    ),
+    (
+        "open the monitor",
+        r#"{"name":"ui_open","arguments":{"app":"monitor","arg":null}}"#,
+    ),
+    (
+        "show the appearance settings",
+        r#"{"name":"settings_open","arguments":{"page":"appearance"}}"#,
+    ),
+    (
+        "show the access settings",
+        r#"{"name":"settings_open","arguments":{"page":"access"}}"#,
+    ),
+    (
+        "use the light theme",
+        r#"{"name":"appearance_set","arguments":{"setting":"theme","value":"light"}}"#,
+    ),
+    (
+        "switch to files",
+        r#"{"name":"ui_focus","arguments":{"window":"files"}}"#,
     ),
     // `act-convo` with no earlier turn: there is nothing to do again.
     (

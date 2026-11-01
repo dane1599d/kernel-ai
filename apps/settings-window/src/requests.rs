@@ -40,6 +40,23 @@ pub enum Applied {
     Intent(Intent),
 }
 
+impl Applied {
+    /// The read that asks the system what it kept after this change, if the
+    /// change is one the system keeps a file for.
+    pub fn read_back(&self) -> Option<crate::replies::Read> {
+        use crate::replies::Read;
+        match self {
+            Applied::Theme(_) | Applied::Legible(_) | Applied::ReducedMotion(_) => {
+                Some(Read::FileAppearance)
+            }
+            Applied::Intent(Intent::Appearance(_)) => Some(Read::FileAppearance),
+            Applied::Intent(Intent::KeepRunning { .. }) => Some(Read::FileApps),
+            Applied::Intent(Intent::RestartWindow(_)) => Some(Read::FileUpdates),
+            Applied::Intent(_) => None,
+        }
+    }
+}
+
 /// One request and what it changes when it is done.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Planned {
@@ -313,6 +330,36 @@ mod tests {
         assert_eq!(MAX_PROFILE, wasmhost::settings::MAX_NAME);
         assert_eq!(MAX_APP, wasmhost::settings::MAX_NAME);
         assert_eq!(MAX_THEME, wasmhost::settings::MAX_VALUE);
+    }
+
+    /// A change the system keeps a file for is read again once it is done.
+    #[test]
+    fn a_change_to_what_the_system_keeps_is_read_back() {
+        use crate::replies::Read;
+        let read = |intent: Intent| {
+            plan(&dark(), &intent)
+                .first()
+                .map(|p| p.then.read_back())
+                .unwrap()
+        };
+        let theme = Intent::Appearance(Appearance {
+            theme: "light".into(),
+            ..dark()
+        });
+        assert_eq!(read(theme), Some(Read::FileAppearance));
+        let keep = Intent::KeepRunning {
+            app: "notes".into(),
+            on: true,
+        };
+        assert_eq!(read(keep), Some(Read::FileApps));
+        assert_eq!(
+            read(Intent::RestartWindow(Some((120, 300)))),
+            Some(Read::FileUpdates)
+        );
+        assert_eq!(read(Intent::RestartWindow(None)), Some(Read::FileUpdates));
+        // Rules, profiles and grants are not files the pages read back.
+        assert_eq!(read(Intent::UseProfile("quiet".into())), None);
+        assert_eq!(read(Intent::RemoveRule(RuleRef::Rule(1))), None);
     }
 
     /// The host accepts every request as the kind the intent is: a change.

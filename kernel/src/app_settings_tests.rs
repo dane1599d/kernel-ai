@@ -13,9 +13,18 @@
 //! and, after a yes, is refused by `desktop`. Each step shows in `desktop`'s and
 //! comphost's log lines, which the host checks.
 
-use crate::agent_desk_tests::{KEYS_MS, OPEN_MS, START, terminal_keys, wait};
+use crate::agent_desk_tests::{KEYS_MS, OPEN_MS, START, click, terminal_keys, wait};
 use crate::display::claim;
 use crate::{ask_box, log, process, terminal, threads};
+
+/// `desktop`'s shell with a state directory as well (`SHELL_DESK_FILES`), planned
+/// after the `fs` service the case's data disk starts: the theme the case sets is
+/// saved there, and the shell answers Settings' `file appearance` from it.
+pub const SHELL: &str = kabi::plan::SHELL_DESK_FILES;
+
+/// Settings' title bar: its frame is the second, at 80,84, below the Terminal's,
+/// and the click lands 8 px down and 102 px across, as the Terminal's does.
+const SETTINGS_TITLE: (i32, i32) = (182, 92);
 
 /// The terminal's window, and Settings' as an app that starts only when
 /// `ui_open` asks for it. Its name is the grant: `desktop` and the shell check
@@ -35,6 +44,11 @@ pub fn check() -> Result<(), &'static str> {
     if !process::named("settings-window").is_empty() {
         return Err("settings-window ran before ui_open asked for it");
     }
+    // "switch to the light theme": `appearance_set` runs at once and the shell
+    // saves it, before Settings is there to read it.
+    terminal_keys(CASE, &mut at)?;
+    threads::sleep_ms(KEYS_MS);
+    log!("{CASE}: the theme was set before Settings opened");
     // "open settings"
     terminal_keys(CASE, &mut at)?;
     wait(CASE, "ui_open to start Settings", || {
@@ -43,6 +57,18 @@ pub fn check() -> Result<(), &'static str> {
     // The app opens its window, reads its pages and gets its answers.
     threads::sleep_ms(OPEN_MS);
     log!("{CASE}: ui_open started Settings and its window opened");
+    // A click on Settings' title bar gives it the keys, and then a person's
+    // keys: a gesture the OS can tell from the agent's. `tab tab ret` presses
+    // the Theme button, and `tab tab tab right right right right tab spc` goes
+    // round to the page tabs, to the Updates page and its switch, which turns
+    // the restart window on. Each change is read back from the shell.
+    click(&mut at, SETTINGS_TITLE);
+    threads::sleep_ms(KEYS_MS);
+    log!("{CASE}: ready for keys");
+    threads::sleep_ms(2 * KEYS_MS);
+    log!("{CASE}: ready for keys");
+    threads::sleep_ms(2 * KEYS_MS);
+    log!("{CASE}: keys were pressed in Settings' window");
     // "look at settings": a view of a private window, then an act that asks.
     terminal_keys(CASE, &mut at)?;
     wait(CASE, "the ask on desktop's card", ask_box::shown)?;

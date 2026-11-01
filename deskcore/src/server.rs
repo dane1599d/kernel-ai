@@ -124,6 +124,12 @@ impl Client {
         client
     }
 
+    /// Tells the client the desktop's theme, by name: at connect and after a
+    /// change (`surfabi`'s `Theme`).
+    pub fn theme(&mut self, name: &str) {
+        self.send(REGISTRY, Event::Theme(name));
+    }
+
     fn send(&mut self, object: u32, event: Event) {
         if let Ok(bytes) = event.encode(object) {
             self.events.extend_from_slice(&bytes);
