@@ -195,6 +195,9 @@ pub enum SelfTest {
     /// The v0.1 system as the default boot plans it: the desktop, the Apps
     /// sheet's catalogue, and an app opened (`desk-default`).
     DeskDefault,
+    /// The same system with no memory left for an app: opening it says so
+    /// (`desk-no-memory`).
+    DeskNoMemory,
     /// The Settings app on the desktop, its window kept from the agent (P4 task 7).
     AppSettings,
     /// `test=desk-tour`: screenshots of the desktop and its apps, not a gate.
@@ -381,6 +384,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=desk-term" => Some(SelfTest::DeskTerm),
             "test=desk-agent" => Some(SelfTest::DeskAgent),
             "test=desk-default" => Some(SelfTest::DeskDefault),
+            "test=desk-no-memory" => Some(SelfTest::DeskNoMemory),
             "test=app-settings" => Some(SelfTest::AppSettings),
             "test=desk-tour" => Some(SelfTest::DeskTour),
             "test=desk-takeover" => Some(SelfTest::DeskTakeover),
@@ -478,6 +482,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DeskTerm
             | SelfTest::DeskAgent
             | SelfTest::DeskDefault
+            | SelfTest::DeskNoMemory
             | SelfTest::AppSettings
             | SelfTest::DeskTour
             | SelfTest::DeskTakeover
@@ -496,7 +501,10 @@ pub fn plan(test: SelfTest) -> Option<String> {
     // edit loop), the boot manifest's headless `notes`, which `:edit notes` and
     // the editor build, and the edit service follow; without one no user sees
     // `notes`, and it would cost 32 MiB of the admission budget at boot.
-    if matches!(test, SelfTest::None | SelfTest::DeskDefault) {
+    if matches!(
+        test,
+        SelfTest::None | SelfTest::DeskDefault | SelfTest::DeskNoMemory
+    ) {
         let files = crate::block::has_partition(diskmap::KAI_DATA_TYPE);
         let mut plan = kabi::plan::system::plan(&crate::llm::plan_line(), files);
         if let Some(edit) = crate::build_service::plan_line() {
