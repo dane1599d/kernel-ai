@@ -8,6 +8,7 @@ publish = false
 [dependencies]
 agentabi = { path = "../agentabi" }
 appabi = { path = "../appabi" }
+bootslot = { path = "../bootslot" }
 comp-models = { path = "../apps/models" }
 kabi = { path = "../kabi" }
 kaigrants = { path = "../kaigrants" }

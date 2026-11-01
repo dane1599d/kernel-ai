@@ -2,6 +2,7 @@
 //! resolution, and the store of objects and numbered generations that `pkg`
 //! switches between.
 //!
+//! - [`app`]: the service an app package runs as, its own name or its window;
 //! - [`bundle`]: `kai-pkg 1`, length-framed files with plain relative paths;
 //! - [`catalog`]: the Apps sheet's rows, installed then offered, in
 //!   `kai-catalog 1`;
@@ -38,6 +39,7 @@ extern crate alloc;
 #[cfg(test)]
 extern crate std;
 
+pub mod app;
 pub mod bundle;
 pub mod catalog;
 pub mod effects;

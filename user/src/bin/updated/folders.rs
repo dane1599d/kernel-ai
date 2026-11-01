@@ -1,15 +1,18 @@
-//! `updated`'s folders on `kai-data`, from its plan line's `dir=trust+updates+settings`
-//! (ADR 0008 §7, §10): `/system/trust` keeps the TUF metadata `kaituf` verified,
-//! so the next refresh starts from the newest root and refuses replayed
-//! metadata; `/system/updates` is the handle the `update` snapshot of `system`
-//! is taken on before a new slot's first boot; `/system/settings`, read only,
-//! holds the restart window. Without `kai-data` none exists, and `updated`
-//! keeps its metadata in memory for the one refresh.
+//! `updated`'s folders on `kai-data`, from its plan line's
+//! `dir=trust+updates+restart+models` (ADR 0008 §7, §10): `/system/trust`
+//! keeps the TUF metadata `kaituf` verified, so the next refresh starts from
+//! the newest root and refuses replayed metadata; `/system/updates` is the
+//! handle the `update` snapshot of `system` is taken on before a new slot's
+//! first boot; `/system/state/restart`, read only, holds the restart window
+//! the shell saves; the `models` volume's root is the model store. Without
+//! `kai-data` none exists, and `updated` keeps its metadata in memory for the
+//! one refresh.
 
 use alloc::format;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, Ordering};
 use fsproto::{How, MAX_DATA, Reply, Request};
 use kabi::Error;
 use kabi::handle::{Handle, HandleInfo, Kind, MAX_STARTUP, MAX_TRANSFER, Rights};
@@ -18,34 +21,46 @@ use user::sys;
 const CALL_MS: u64 = 10_000;
 
 /// The startup `Dir`s, in the order the plan line names them.
+#[derive(Default)]
 pub struct Folders {
     pub trust: Option<Handle>,
     pub updates: Option<Handle>,
-    /// `/system/settings`, read only: the restart window (`window.rs`).
-    pub settings: Option<Handle>,
+    /// `/system/state/restart`, read only: the restart window (`window.rs`).
+    pub restart: Option<Handle>,
     /// The `models` volume's root, the model store (`models.rs`).
     pub models: Option<Handle>,
 }
+
+/// Set once a probe found no `fs` at all: a boot without `kai-data` never
+/// gains one, so later reads of the folders know at once.
+static NO_FS: AtomicBool = AtomicBool::new(false);
 
 impl Folders {
     /// A `Dir` with no `fs` behind it (no `kai-data` on this machine: the call
     /// is Unavailable), or one `fs` refuses (mounted read-only without the
     /// folders), is none. An `fs` that is there but does not answer is an
-    /// error: guessing "none" would skip the cache and the snapshot.
+    /// error: guessing "none" would skip the cache and the snapshot. Every
+    /// `Dir` is a route to the one `fs`, so the first one's probe answers for
+    /// all: each probe call waits out its deadline when no `fs` binds.
     pub fn from_startup() -> Result<Folders, String> {
         let mut handles = [HandleInfo::default(); MAX_STARTUP];
         let count = sys::startup(&mut handles).unwrap_or(0);
         let mut dirs = handles[..count.min(MAX_STARTUP)]
             .iter()
             .filter(|h| h.kind() == Some(Kind::Dir))
-            .map(|h| Handle(h.handle));
+            .map(|h| Handle(h.handle))
+            .peekable();
+        let Some(&first) = dirs.peek() else {
+            return Ok(Folders::default());
+        };
+        if NO_FS.load(Ordering::Relaxed) || !served_by_fs(first) {
+            NO_FS.store(true, Ordering::Relaxed);
+            return Ok(Folders::default());
+        }
         let mut served = || -> Result<Option<Handle>, String> {
             let Some(dir) = dirs.next() else {
                 return Ok(None);
             };
-            if !served_by_fs(dir) {
-                return Ok(None);
-            }
             match ask(dir, &Request::Stat)? {
                 (Reply::Stat(_), _) => Ok(Some(dir)),
                 (Reply::Failed(_), _) => Ok(None),
@@ -55,7 +70,7 @@ impl Folders {
         Ok(Folders {
             trust: served()?,
             updates: served()?,
-            settings: served()?,
+            restart: served()?,
             models: served()?,
         })
     }
@@ -122,7 +137,7 @@ fn open(dir: Handle, name: &str, how: How, rights: Rights) -> Result<Option<Hand
 
 /// The whole of `name` in `dir`, or `None` if there is no such file.
 pub fn read(dir: Handle, name: &str) -> Result<Option<Vec<u8>>, String> {
-    // READ only: `/system/settings`'s Dir gives nothing more.
+    // READ only: the restart folder's Dir gives nothing more.
     let Some(file) = open(dir, name, How::Existing, Rights::READ)? else {
         return Ok(None);
     };
