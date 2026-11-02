@@ -16,7 +16,7 @@ use crate::display::claim;
 use crate::{ask_box, ipc, log, process, sched_control, terminal, threads};
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 /// The plan lines this case adds: `desktop`, Notes' window, and two apps the
 /// supervisor starts and does not keep.
@@ -44,8 +44,6 @@ const YES: [u8; 2] = [0x15, 0x95];
 static ASKED: AtomicBool = AtomicBool::new(false);
 static DONE: AtomicBool = AtomicBool::new(false);
 static UNDONE: AtomicBool = AtomicBool::new(false);
-/// The log entry `undoer` takes back.
-static UNDO_ID: AtomicU64 = AtomicU64::new(0);
 
 fn wait(what: &'static str, mut done: impl FnMut() -> bool) -> Result<(), &'static str> {
     for _ in 0..WAIT_MS / 50 {
@@ -65,8 +63,7 @@ fn liner(_: usize) {
 }
 
 fn undoer(_: usize) {
-    let id = UNDO_ID.load(Ordering::Acquire);
-    terminal::shell_line_answered(&alloc::format!("undo #{id}"));
+    terminal::shell_line_answered("undo");
     UNDONE.store(true, Ordering::Release);
 }
 
@@ -150,21 +147,14 @@ pub fn check() -> Result<(), &'static str> {
     log!(
         "desk-profile: focusing Notes switched to gaming: both apps went to the background, their quotas and the system untouched"
     );
-    // Undo puts default back. The rule may have fired more than once (the
-    // focus coming back from the card fires it too), so each firing is undone
-    // by its id, newest first, until `default` is in force: a bare `undo`
-    // after the first would undo that undo, never the firing before it.
-    // TODO(#524): once a rule fires only on events posted after it was made,
-    // one `undo` is enough; drop this loop.
-    for id in firings(GAMING).into_iter().rev() {
-        UNDO_ID.store(id, Ordering::Release);
-        UNDONE.store(false, Ordering::Release);
-        threads::spawn("undoer", undoer, 0)?;
-        wait("the undo", || UNDONE.load(Ordering::Acquire))?;
-        if settings(&APPS).as_deref() == Some(apps.as_slice()) {
-            break;
-        }
+    // The rule fires only on events after it was made, and a firing that
+    // changes nothing logs nothing (#524): the click's is the one firing.
+    if firings(GAMING).len() != 1 {
+        return Err("desk-profile: the rule's firing is not logged exactly once");
     }
+    // Undo of that firing puts default back.
+    threads::spawn("undoer", undoer, 0)?;
+    wait("the undo", || UNDONE.load(Ordering::Acquire))?;
     if settings(&APPS).as_deref() != Some(apps.as_slice()) {
         return Err("desk-profile: undo did not put the apps back as they were");
     }
