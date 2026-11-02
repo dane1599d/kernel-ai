@@ -5,11 +5,62 @@
 //! Shared runners are noisy, so the gate is best of two: a scene with a miss
 //! is measured once more in the same boot, and only a figure over its budget
 //! in both runs fails the case ([`still_over`]). The budgets stay as they are.
+//!
+//! A runner can be slow for a whole boot, not only noisy, and then no budget
+//! can be met. So under KVM the kernel first has `desktop` time a fixed
+//! reference work ([`reference_work`]), which shares no code with the desk, so
+//! a slower desk never makes the runner look slow. A median over
+//! [`SLOW_FACTOR`] times [`REFERENCE_BASELINE_NS`] ([`too_slow`]) means the
+//! figures are reported and not gated.
 
 use alloc::vec::Vec;
 
 /// Starts the line after a figure over its budget.
 pub const OVER_BUDGET: &str = "OVER BUDGET ";
+
+/// Starts `desktop`'s reply to `perf reference`: `reference p50 <ns> ns: ...`.
+pub const REFERENCE: &str = "reference p50 ";
+/// The reference work's median on GitHub's runners under KVM, in ns, as
+/// recorded in `docs/decisions.md`.
+pub const REFERENCE_BASELINE_NS: u64 = 1_500_000;
+/// A median this many times the baseline is a runner too slow to judge.
+pub const SLOW_FACTOR: u64 = 2;
+/// The reference work's buffer, in 32-bit words: 2 MiB.
+pub const REFERENCE_WORDS: usize = 512 * 1024;
+/// How many times one reference work fills and reads its buffer.
+const REFERENCE_PASSES: u32 = 4;
+
+/// The reference work: [`REFERENCE_PASSES`] times, `words` filled from a
+/// xorshift seeded by `seed` and the pass, then folded into the result. Plain
+/// integer work and memory traffic, as a composite is, and fixed: it changes
+/// only if this function does, which moves the baseline.
+pub fn reference_work(words: &mut [u32], seed: u32) -> u32 {
+    let mut folded = seed;
+    for pass in 0..REFERENCE_PASSES {
+        let mut x = (seed ^ pass.wrapping_mul(0x9E37_79B9)) | 1;
+        for word in words.iter_mut() {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            *word = x;
+        }
+        for &word in words.iter() {
+            folded = folded.rotate_left(5) ^ word;
+        }
+    }
+    folded
+}
+
+/// The median in `desktop`'s reply to `perf reference`, in ns.
+pub fn reference_ns(reply: &str) -> Option<u64> {
+    let rest = reply.lines().find_map(|l| l.strip_prefix(REFERENCE))?;
+    rest.split_once(" ns")?.0.parse().ok()
+}
+
+/// Whether a reference median of `p50_ns` is a runner too slow to judge.
+pub fn too_slow(p50_ns: u64) -> bool {
+    p50_ns > REFERENCE_BASELINE_NS.saturating_mul(SLOW_FACTOR)
+}
 
 /// The figures over budget in `reply`, by name: `(c) text page 160x45 warm`
 /// for `OVER BUDGET (c) text page 160x45 warm 5.14 ms (budget max 4.00 ms)`.
@@ -53,5 +104,31 @@ mod tests {
         assert_eq!(still_over(&first, &["(b) drag flush"]), ["(b) drag flush"]);
         assert!(still_over(&first, &[]).is_empty());
         assert!(still_over(&[], &["(b) drag flush"]).is_empty());
+    }
+
+    #[test]
+    fn the_reference_work_is_fixed_by_its_seed_and_fills_its_buffer() {
+        let mut a = alloc::vec![0u32; 4096];
+        let mut b = alloc::vec![0u32; 4096];
+        assert_eq!(reference_work(&mut a, 7), reference_work(&mut b, 7));
+        assert_eq!(a, b);
+        assert!(a.iter().all(|&w| w != 0));
+        assert_ne!(reference_work(&mut a, 7), reference_work(&mut b, 8));
+    }
+
+    #[test]
+    fn the_reference_median_is_read_from_desktops_reply() {
+        let reply = "reference p50 1234567 ns: n=21 p50 1.23 max 1.40 ms";
+        assert_eq!(reference_ns(reply), Some(1_234_567));
+        assert_eq!(reference_ns("(a) full composite: ..."), None);
+        assert_eq!(reference_ns("reference p50 fast ns"), None);
+    }
+
+    #[test]
+    fn a_runner_is_too_slow_only_past_twice_the_baseline() {
+        assert!(!too_slow(REFERENCE_BASELINE_NS));
+        assert!(!too_slow(REFERENCE_BASELINE_NS * SLOW_FACTOR));
+        assert!(too_slow(REFERENCE_BASELINE_NS * SLOW_FACTOR + 1));
+        assert!(!too_slow(0));
     }
 }
