@@ -73,6 +73,13 @@ pub fn misses(reply: &str) -> Vec<&str> {
         .collect()
 }
 
+/// How many times the baseline a reference median of `p50_ns` is, to a
+/// tenth: `2.8` for 44.56 ms against 16.
+pub fn times_baseline(p50_ns: u64) -> alloc::string::String {
+    let tenths = p50_ns.saturating_mul(10) / REFERENCE_BASELINE_NS;
+    alloc::format!("{}.{}", tenths / 10, tenths % 10)
+}
+
 /// The figures over budget in both runs of one scene, by name.
 pub fn still_over<'a>(first: &[&'a str], second: &[&str]) -> Vec<&'a str> {
     first
@@ -130,5 +137,12 @@ mod tests {
         assert!(!too_slow(REFERENCE_BASELINE_NS * SLOW_FACTOR));
         assert!(too_slow(REFERENCE_BASELINE_NS * SLOW_FACTOR + 1));
         assert!(!too_slow(0));
+    }
+
+    #[test]
+    fn slowness_is_told_in_tenths_of_the_baseline() {
+        assert_eq!(times_baseline(REFERENCE_BASELINE_NS), "1.0");
+        assert_eq!(times_baseline(REFERENCE_BASELINE_NS * 28 / 10), "2.8");
+        assert_eq!(times_baseline(REFERENCE_BASELINE_NS * 2 + 1), "2.0");
     }
 }
