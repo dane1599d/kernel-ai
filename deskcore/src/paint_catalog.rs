@@ -108,7 +108,7 @@ impl Painter {
                 continue;
             };
             let line = self.baseline(top + 6, 20, TypeStyle::Label);
-            let after = self.draw_text(
+            let advance = self.draw_text(
                 c,
                 row_clip,
                 x,
@@ -117,7 +117,8 @@ impl Painter {
                 self.palette.text,
                 &app.name,
             );
-            let gap = after + 12.0;
+            // `draw_text` gives the name's advance, not where it ends.
+            let gap = x + advance + 12.0;
             self.draw_text(
                 c,
                 row_clip,
@@ -238,5 +239,31 @@ mod tests {
         painter.catalog(&mut again.canvas(), Rect::new(0, 0, w, h), area, &list);
         assert_eq!(at(&again, area.right() - 2, second + 1), raised);
         assert_eq!(at(&again, area.right() - 2, first + 1), window);
+    }
+
+    /// The facts follow the name on its line. `draw_text` gives the advance,
+    /// not the end, and a sheet that took it for the end drew the facts from
+    /// the screen's left, so only their tail showed, in the sheet's padding.
+    #[test]
+    fn the_facts_follow_the_name_and_nothing_lands_in_the_padding() {
+        let mut painter = Painter::new(FONTS).expect("the fonts parse");
+        let (w, h) = (1280, 800);
+        let mut list = Sheet::new(rows());
+        list.key(0x51);
+        let area = sheet(w, h, list.apps().len());
+        let window = rgb(look::DARK.window);
+        let mut image = Image::new(w, h);
+        painter.catalog(&mut image.canvas(), Rect::new(0, 0, w, h), area, &list);
+        let inked = |xs: core::ops::Range<i32>, ys: core::ops::Range<i32>| {
+            ys.flat_map(|y| xs.clone().map(move |x| (x, y)))
+                .filter(|&(x, y)| at(&image, x, y) != window)
+                .count()
+        };
+        // Down raised the second row, so the first is on the sheet's colour.
+        let top = area.y + HEAD;
+        assert_eq!(inked(area.x..area.x + PADDING, top..top + ROW), 0);
+        // The name is short: ink well past it is the facts'.
+        let line = top + 6..top + 26;
+        assert!(inked(area.x + PADDING + 100..area.right(), line) > 100);
     }
 }
