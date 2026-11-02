@@ -59,15 +59,53 @@ pub struct App {
     pub wit: &'static [&'static str],
 }
 
-/// Every built-in app. P4's apps join as they land (P4 plan, tasks 4-11).
-pub const APPS: &[App] = &[App {
-    name: "notes",
-    component: "notes",
-    label: livecore::boot::BUILT_IN,
-    summary: "Plain-text notes the AI can read and write",
-    licence: "MPL-2.0",
-    wit: components::NOTES_RECIPE.wit,
-}];
+/// A built-in window app: package `name` around the boot drive's own build of
+/// `recipe`, byte for byte, so the Apps sheet lists it as installed while its
+/// plan line runs the image's version (v0.1; the window apps' decision row).
+const fn window(name: &'static str, recipe: &components::Recipe, summary: &'static str) -> App {
+    App {
+        name,
+        component: recipe.component,
+        label: components::WINDOW_LABEL,
+        summary,
+        licence: "MPL-2.0",
+        wit: recipe.wit,
+    }
+}
+
+/// Every built-in app: P4's windows and the editor (P4 plan, tasks 4-11).
+pub const APPS: &[App] = &[
+    window(
+        "notes",
+        &components::NOTES_WINDOW_RECIPE,
+        "Plain-text notes the AI can read and write",
+    ),
+    window(
+        "files",
+        &components::FILES_WINDOW_RECIPE,
+        "Your files: browse, move, trash and restore them",
+    ),
+    window(
+        "terminal",
+        &components::TERMINAL_WINDOW_RECIPE,
+        "The shell in a window",
+    ),
+    window(
+        "settings",
+        &components::SETTINGS_WINDOW_RECIPE,
+        "Appearance, permissions and the system's settings",
+    ),
+    window(
+        "monitor",
+        &components::MONITOR_WINDOW_RECIPE,
+        "What the machine is doing: processes, memory and the model",
+    ),
+    window(
+        "editor",
+        &components::EDITOR_RECIPE,
+        "A code editor for your files and the system's source",
+    ),
+];
 
 /// One packed package and the index fields its artifact gives.
 #[derive(Clone)]
