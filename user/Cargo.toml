@@ -33,6 +33,8 @@ kaifs = { path = "../kaifs", default-features = false }
 kaibundle = { path = "../kaibundle" }
 kaipkg = { path = "../kaipkg" }
 kaituf = { path = "../kaituf" }
+modelchan = { path = "../modelchan" }
+comp-models = { path = "../apps/models" }
 llmproto = { path = "../llmproto", features = ["local"] }
 promptcore = { path = "../promptcore" }
 quant = { path = "../quant" }
