@@ -74,12 +74,22 @@ fn main() -> i32 {
         idle();
     };
     // The kernel's boot lever writes the record first; until it has, the boot
-    // record answers Busy.
-    for _ in 0..LEVER_WAIT_MS / 100 {
-        if sys::bootrec_get(handle) != Err(Error::Busy) {
-            break;
-        }
+    // record answers Busy. A boot off a slot image has no lever, and answers at
+    // once.
+    let mut waits = 0;
+    while waits < LEVER_WAIT_MS / 100 && sys::bootrec_get(handle) == Err(Error::Busy) {
         sys::sleep_ms(100);
+        waits += 1;
+    }
+    match waits {
+        0 => println!("updated: the boot record answered at once"),
+        n if n == LEVER_WAIT_MS / 100 => {
+            println!("updated: the boot record was still Busy after {LEVER_WAIT_MS} ms")
+        }
+        n => println!(
+            "updated: the boot record answered after the boot lever ({} ms)",
+            n * 100
+        ),
     }
     // Every start first settles an update left in flight (`restore.rs`).
     let reconciled = restore::reconcile(handle);
