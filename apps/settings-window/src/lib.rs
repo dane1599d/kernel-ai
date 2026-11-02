@@ -255,14 +255,25 @@ impl SettingsWindow {
                 Err(why) => log(&alloc::format!("settings: {}: {why}", read.request())),
             },
             (Pending::Rows(app), Ok(answer)) => {
-                if let Err(why) = replies::apply_rows(&mut self.settings, &app, &answer) {
-                    log(&alloc::format!("settings: grants {app}: {why}"));
+                match replies::apply_rows(&mut self.settings, &app, &answer) {
+                    Ok(()) => log(&alloc::format!(
+                        "settings: {}",
+                        replies::rows_summary(&self.settings, &app)
+                    )),
+                    Err(why) => log(&alloc::format!("settings: grants {app}: {why}")),
                 }
             }
             (Pending::Change(then), Ok(_)) => {
                 // What the shell kept is read again, so the page shows its word
                 // for it and not only what was asked.
                 let again = then.read_back();
+                // A row withheld or given back is read again for that app.
+                let rows = match &then {
+                    Applied::Intent(Intent::Revoke { app, .. } | Intent::Restore { app, .. }) => {
+                        Some(app.clone())
+                    }
+                    _ => None,
+                };
                 match then {
                     Applied::Theme(theme) => self.settings.appearance.theme = theme,
                     Applied::Legible(on) => self.settings.appearance.legible = on,
@@ -272,6 +283,10 @@ impl SettingsWindow {
                 if let Some(read) = again {
                     let ticket = send(read.request());
                     self.wait_for(ticket, Pending::Read(read));
+                }
+                if let Some(app) = rows {
+                    let ticket = send(&alloc::format!("grants {app}"));
+                    self.wait_for(ticket, Pending::Rows(app));
                 }
             }
         }

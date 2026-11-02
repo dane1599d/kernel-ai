@@ -349,6 +349,21 @@ fn an_apps_effect_row_is_revoked_and_restored_by_app_and_row() {
         shown.iter().any(|n| n == "notes_add: withheld"),
         "{shown:?}"
     );
+    // The app asks the shell what it holds for that app now, and the page shows
+    // that: here the shell says both rows are withheld.
+    let again = g.take_settings();
+    assert_eq!(again.len(), 1);
+    assert_eq!(
+        (again[0].kind, again[0].request.as_str()),
+        (SettingsKind::Read, "grants notes")
+    );
+    let held = "notes\tnotes_add\twithheld\nnotes\tfs_write\twithheld\n";
+    answer(&mut g, again[0].ticket, Ok(held));
+    let shown = names(&frame(&mut g).1);
+    assert!(
+        shown.iter().any(|n| n == "notes_add: withheld"),
+        "{shown:?}"
+    );
 
     // Restore the other one; a refused change puts the page back as it was.
     call(&mut g, |g| {

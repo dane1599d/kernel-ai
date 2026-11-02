@@ -5,7 +5,7 @@
 //! keyboard changes a setting the way the case does.
 
 use comp_settings::files::Appearance;
-use comp_settings::{Intent, Page, Settings};
+use comp_settings::{Intent, Page, RuleLine, RuleRef, Settings};
 use comp_settings_ui::{
     Change, DEFAULT_WINDOW, Entry, SIZE, View, WINDOW_ON, build, diff, on_ui, redraw,
 };
@@ -38,6 +38,20 @@ impl Keyed {
             window,
             tree,
         }
+    }
+
+    /// The model takes `intent` (the OS said it was done) and the page is drawn.
+    fn apply(&mut self, intent: &Intent) {
+        self.settings.applied(intent);
+        let next = build(&self.settings, &mut self.view);
+        for change in redraw(&self.tree, &next, &mut self.view) {
+            match change {
+                Change::Put(e) => self.window.put(e.id, e.parent, e.layout, e.widget).unwrap(),
+                Change::Remove(id) => self.window.remove(id).unwrap(),
+            }
+        }
+        self.tree = next;
+        self.window.commit(&FixedAdvance);
     }
 
     /// One key press and release; what the model is asked to do because of it.
@@ -139,4 +153,117 @@ fn the_boot_cases_two_key_sequences_in_one_session() {
     assert_eq!(sent.len(), 2, "{sent:?}");
     assert!(matches!(&sent[0], Intent::Appearance(_)), "{sent:?}");
     assert_eq!(sent[1], Intent::RestartWindow(Some(DEFAULT_WINDOW)));
+}
+
+/// The keys that revoke an app's row in Settings and give it back, as the boot
+/// case sends them: `tab right tab down tab ret` to the Revoke button of the
+/// only app, then, once the row shows withheld, `tab tab tab ret` to Restore.
+#[test]
+fn a_row_is_revoked_and_restored_by_keys() {
+    let access = comp_settings::access::parse("fixture-window\tfs_list\tallowed\n").unwrap();
+    let mut w = Keyed::new(Settings {
+        access,
+        ..settings()
+    });
+    let mut sent = Vec::new();
+    for key in [
+        Key::Tab,
+        Key::Right,
+        Key::Tab,
+        Key::Down,
+        Key::Tab,
+        Key::Enter,
+    ] {
+        sent.extend(w.key(key));
+    }
+    let revoke = Intent::Revoke {
+        app: "fixture-window".into(),
+        row: "fs_list".into(),
+    };
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0], revoke);
+    w.apply(&revoke);
+    // The Revoke button is gone, and focus with it; Tab starts again.
+    let mut sent = Vec::new();
+    for key in [Key::Tab, Key::Tab, Key::Tab, Key::Enter] {
+        sent.extend(w.key(key));
+    }
+    assert_eq!(
+        sent,
+        [Intent::Restore {
+            app: "fixture-window".into(),
+            row: "fs_list".into(),
+        }]
+    );
+}
+
+/// Everything the boot case sends to Settings' window, in its order, with the
+/// OS's answers applied between: the removal of the rule the case added, the
+/// revoke and the restore of the fixture's row, then the theme, then the restart
+/// window. QEMU names them `tab right right tab ret`, `tab left tab down tab ret`,
+/// `tab tab tab ret`, `tab left tab ret` and `tab tab tab right right right right
+/// tab spc`.
+#[test]
+fn the_boot_cases_whole_session_in_settings_window() {
+    let access = comp_settings::access::parse("fixture-window\tfs_list\tallowed\n").unwrap();
+    let mut w = Keyed::new(Settings {
+        access,
+        rules: vec![RuleLine {
+            id: RuleRef::Instruction(1),
+            text: "on time(22:00) -> app_suspend(game)".into(),
+        }],
+        ..settings()
+    });
+    let run = |w: &mut Keyed, keys: &[Key]| -> Vec<Intent> {
+        keys.iter().flat_map(|k| w.key(*k)).collect()
+    };
+    let one = |sent: Vec<Intent>| -> Intent {
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        sent.into_iter().next().unwrap()
+    };
+    // The standing rule the case added: the Rules page's Remove button.
+    let remove = one(run(
+        &mut w,
+        &[Key::Tab, Key::Right, Key::Right, Key::Tab, Key::Enter],
+    ));
+    assert_eq!(remove, Intent::RemoveRule(RuleRef::Instruction(1)));
+    w.apply(&remove);
+    assert_eq!(w.view.page, 2);
+    // Back one page, to what apps can do.
+    let revoke = one(run(
+        &mut w,
+        &[
+            Key::Tab,
+            Key::Left,
+            Key::Tab,
+            Key::Down,
+            Key::Tab,
+            Key::Enter,
+        ],
+    ));
+    assert!(matches!(revoke, Intent::Revoke { .. }), "{revoke:?}");
+    w.apply(&revoke);
+    let restore = one(run(&mut w, &[Key::Tab, Key::Tab, Key::Tab, Key::Enter]));
+    assert!(matches!(restore, Intent::Restore { .. }), "{restore:?}");
+    w.apply(&restore);
+    // Back to the Appearance page and its Theme button.
+    let theme = one(run(&mut w, &[Key::Tab, Key::Left, Key::Tab, Key::Enter]));
+    assert!(matches!(theme, Intent::Appearance(_)), "{theme:?}");
+    assert_eq!(w.view.page, 0);
+    // Round to the page tabs, the Updates page and its switch.
+    let window = one(run(
+        &mut w,
+        &[
+            Key::Tab,
+            Key::Tab,
+            Key::Tab,
+            Key::Right,
+            Key::Right,
+            Key::Right,
+            Key::Right,
+            Key::Tab,
+            Key::Space,
+        ],
+    ));
+    assert_eq!(window, Intent::RestartWindow(Some(DEFAULT_WINDOW)));
 }

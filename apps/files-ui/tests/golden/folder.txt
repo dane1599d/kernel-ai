@@ -17,9 +17,9 @@ node 7 clip 9,45 214x382
   fill 13,73 206x24 raised r0
   fill 13,73 2x24 accent r0
 node 1000 clip 10,46 212x380
-  text 13,49 body accent "2024/"
+  text 21,49 body accent "2024/"
 node 1001 clip 10,46 212x380
-  text 13,73 body text "plan.md"
+  text 21,73 body text "plan.md"
 node 9 clip 218,45 493x382
   text 233,60 heading text "plan.md"
 node 2000 clip 230,89 469x234

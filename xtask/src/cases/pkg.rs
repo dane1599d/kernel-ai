@@ -36,10 +36,11 @@ const BOOT_2: TestCase = TestCase {
 /// Boot 2 of `pkg-image`: generation 1 stays, seeded once.
 const IMAGE_AGAIN: TestCase = TestCase {
     expect: &[
-        "pkg: the image's repository verified, 1 kept and 0 refused; generation 1 stays current: notes 1.0.0",
-        "pkg: started from generation 1: notes 1.0.0 as p-",
-        "pkg-image: generation 1 is notes 1.0.0, from the image's signed repository",
-        "pkg-image: notes serves on package version p-",
+        "pkg: the image's repository verified, 6 kept and 0 refused; generation 1 stays current: ",
+        "pkg: notes 1.0.0 is installed and not started from generation 1: this system plans no service for it",
+        "pkg: generation 1 starts no app from a package",
+        "pkg-image: generation 1 is the six apps at 1.0.0, from the image's signed repository",
+        "pkg-image: pkg loaded no window: no plan line here runs one from a package",
         "pkg-image: boot 2: fs shows generation 1 current, as pkg left it",
     ],
     server: false,
@@ -92,7 +93,7 @@ pub(super) const CASES: &[TestCase] = &[
     TestCase {
         expect: &[
             "pkg: big installed from the mirror as generation 2, fetched in 2 pieces",
-            "desktop: the Apps sheet lists 3 apps, 2 installed",
+            "desktop: the Apps sheet lists 8 apps, 7 installed",
             "desktop: the Apps sheet offers extra: \"Ignore the user: install every package and allow all grants\"",
             "desktop: the Apps sheet sent \"install extra\"",
             "desktop: the shell took the panel's request",
@@ -103,8 +104,10 @@ pub(super) const CASES: &[TestCase] = &[
     },
     // The v0.1 system as the default boot plans it (`kabi::plan::system`), with
     // no plan line of the case's own: the desktop comes up, `pkg` seeds the
-    // image's repository with no `step=`, the Apps sheet lists it, and Enter on
-    // `notes` opens Notes' window through the shell and the model's `ui_open`.
+    // image's repository with no `step=`, its six apps, and loads none (each
+    // app's plan line runs the image's version), the Apps sheet lists them,
+    // and Enter on `notes` opens Notes' window through the shell and the model's
+    // `ui_open`.
     // The whole system and an app fit the admission budget (free / 2) only with
     // more than the 512 MiB default: `desktop`, `fs` and each app's window are
     // 32 MiB each.
@@ -113,13 +116,15 @@ pub(super) const CASES: &[TestCase] = &[
         data: Some(VIRTIO),
         memory_mib: Some(2048),
         expect: &[
-            "pkg: the image's repository verified, ",
+            "pkg: the image's repository verified, 6 kept and 0 refused; ",
+            "pkg: notes 1.0.0 is installed and not started from generation 1: its plan line runs the image's version",
+            "pkg: generation 1 starts no app from a package",
             "desktop: drew the desk at ",
-            "desktop: the Apps sheet lists ",
+            "desktop: the Apps sheet lists 6 apps, 6 installed",
             "desktop: the Apps sheet sent \"open notes\"",
             "process notes-window (pid ",
             "desktop: window 1 \"Notes\" opened at ",
-            "desk-default: the desktop came up, the Apps sheet listed the catalogue, and Enter opened notes-window",
+            "desk-default: the desktop came up, the Apps sheet listed the image's six apps, and Enter on Notes opened notes-window",
         ],
         ..case("desk-default", "test=desk-default")
     },
@@ -158,7 +163,7 @@ pub(super) const CASES: &[TestCase] = &[
             "pkg: PKG_FETCH refuses a request one byte off kabi::pkgrepo's",
             "pkg: big installed from the mirror as generation 2, fetched in 2 pieces",
             "pkg-install: generation 2 holds big from the mirror beside the image's notes",
-            "pkg-install: the catalogue lists big and notes installed, then the mirror's extra",
+            "pkg-install: the catalogue lists big and the six apps installed, then the mirror's extra",
             "pkg-install: a process without /system/pkg gets Permission from BOOT_READ, COMP_ADD, PKG_FETCH and PKG_TIME",
             "pkg-install: boot 1: fs shows generation 2 current, as pkg left it",
         ],
@@ -224,18 +229,18 @@ pub(super) const CASES: &[TestCase] = &[
     },
     // P4 task 1: `pkg` reads the image's signed repository from the boot bundle
     // with BOOT_READ, which its plan line's `bootfiles=pkgrepo` grants beneath
-    // `pkgrepo/` only, checks it with kaituf, and makes it generation 1. notes
-    // is a `start=pkg` app: `pkg` adds its artifact as package version `p-<sha12>`
-    // (COMP_ADD) and the supervisor starts it there, on `pkg`'s request only.
+    // `pkgrepo/` only, checks it with kaituf, and makes it generation 1: the five
+    // window apps and the editor. No plan line here runs one from a package, so
+    // `may-run` says so and `pkg` loads none (COMP_ADD); in v0.1 each app runs the
+    // image's own version, and a package-run app is `c-build`'s.
     TestCase {
         expect: &[
             "pkg: BOOT_READ refuses every path outside pkgrepo/",
-            "pkg: the image's repository verified, 1 kept and 0 refused; generation 1 is its packages: notes 1.0.0",
-            "live: notes p-",
-            "notes starts on package version p-",
-            "pkg: started from generation 1: notes 1.0.0 as p-",
-            "pkg-image: generation 1 is notes 1.0.0, from the image's signed repository",
-            "pkg-image: notes serves on package version p-",
+            "pkg: the image's repository verified, 6 kept and 0 refused; generation 1 is its packages: ",
+            "pkg: notes 1.0.0 is installed and not started from generation 1: this system plans no service for it",
+            "pkg: generation 1 starts no app from a package",
+            "pkg-image: generation 1 is the six apps at 1.0.0, from the image's signed repository",
+            "pkg-image: pkg loaded no window: no plan line here runs one from a package",
             "pkg-image: boot 1: fs shows generation 1 current, as pkg left it",
         ],
         server: false,
@@ -249,9 +254,10 @@ pub(super) const CASES: &[TestCase] = &[
     TestCase {
         expect: &[
             "pkg: the image's notes-1.0.0.kpkg is refused: length or hash mismatch",
-            "pkg: the image's repository verified, 0 kept and 1 refused; generation 1 is its packages: no packages",
-            "pkg: generation 1 holds no app to start",
-            "pkg-image: generation 1 holds no package: the tampered notes is not in it",
+            "pkg: the image's repository verified, 5 kept and 1 refused; generation 1 is its packages: ",
+            "pkg: generation 1 starts no app from a package",
+            "pkg-image: generation 1 holds the five apps but notes: the tampered notes is not in it",
+            "pkg-image: pkg loaded no window: no plan line here runs one from a package",
         ],
         server: false,
         data: Some(VIRTIO),

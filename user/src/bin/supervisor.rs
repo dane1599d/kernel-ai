@@ -218,6 +218,14 @@ fn handle(services: &mut [Service], text: &str, caller: u64) -> String {
     if let Some(name) = supervise::parse_demand(text) {
         return demand(services, &records, name, caller);
     }
+    if let Some(name) = supervise::parse_may_run(text) {
+        let held: Vec<(&ServiceSpec, Option<u64>)> =
+            services.iter().map(|s| (&s.spec, s.pid)).collect();
+        return match supervise::check_run_name(name, &held, caller) {
+            Ok(_) => String::from("ok"),
+            Err(why) => String::from(why),
+        };
+    }
     if let Some(run) = supervise::Run::parse(text) {
         return run_package(services, run, caller);
     }
