@@ -274,8 +274,8 @@ pub(super) const CASES: &[TestCase] = &[
         ..case("desk-standing-refused", "test=desk-standing-refused")
     },
     // P3's exit case: S05-1's budgets on the real `desktop` at 1920x1080, a gate
-    // under KVM (each miss logs `desk-perf: OVER BUDGET ...` and fails it);
-    // under TCG nothing is judged.
+    // under KVM, best of two (a scene with a miss is measured once more, and a
+    // figure over budget in both runs fails it); under TCG nothing is judged.
     TestCase {
         gpu: true,
         memory_mib: Some(2048),
