@@ -27,6 +27,7 @@ use deskcore::geom::Rect;
 use gfx2d::term::{self, Layout};
 use gfx2d::{Image, Text};
 use kabi::input::{InputEvent, Kind};
+use kabi::perf::OVER_BUDGET;
 use termcore::style::Kind as Row;
 use user::{println, sys};
 
@@ -43,9 +44,6 @@ const MAX_KEYS: usize = 1_000;
 /// Where (b) takes hold of the window: this far into its title bar.
 const GRIP: (i32, i32) = (100, chrome::TITLE_BAR / 2);
 
-/// Starts the reply line after a figure over its budget:
-/// `OVER BUDGET <figure> <value> ms (budget <p99|max> <b> ms)`.
-const OVER_BUDGET: &str = "OVER BUDGET ";
 
 const NS_PER_MS: u64 = 1_000_000;
 /// S05-1's budgets at 1920x1080, in ns.
