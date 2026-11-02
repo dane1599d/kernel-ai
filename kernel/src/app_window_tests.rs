@@ -97,6 +97,9 @@ pub fn monitor_check() -> Result<(), &'static str> {
 }
 
 pub fn models_check() -> Result<(), &'static str> {
+    // The boot lever first, as the default boot runs it: until it has, `updated`
+    // waits (up to 2 minutes) before it serves the window's list.
+    crate::slots::on_boot(false);
     window_check(
         "models-window",
         640,

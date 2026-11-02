@@ -37,19 +37,24 @@ const PERIOD_MS: u64 = 1_000;
 /// asks llm for its `health` (at most 3 s while the model is busy), one request
 /// at a time; the window waits for the list only when it asks.
 const LIST_MS: u64 = 5_000;
-/// How many times in a row a read waits on `updated` not serving yet before it
-/// is told so: `updated` starts at boot, and the window may ask before it
-/// serves. The first try waits up to [`LIST_MS`]; each one after it up to
-/// [`NOT_YET_MS`], with as long again before the next, so the window answers
-/// keys between tries (lane C's review of #568). About 30 s in all.
+/// How many times in a row a read waits on `updated` before it is told why
+/// there is no list: `updated` starts at boot, and the window may ask before it
+/// serves. A try waits up to [`LIST_MS`]; one after a try that found `updated`
+/// not serving waits up to [`NOT_YET_MS`], so the window answers keys between
+/// tries (lane C's review of #568), and each comes [`NOT_YET_MS`] after the
+/// last ended. About 30 s in all.
 const STARTING_TRIES: u32 = 30;
-/// A later try's wait for `updated` to serve, and the pause after it.
+/// A short try's wait for `updated` to serve, and the pause after any try.
 const NOT_YET_MS: u64 = 500;
 
 /// Why there is no list.
 enum NoList {
-    /// `updated` is not serving yet: worth asking again.
+    /// `updated` is not serving yet (the kernel waited the try's time for it):
+    /// the next try is short.
     NotYet(String),
+    /// A short try reached `updated` serving but not done: the next try waits
+    /// up to [`LIST_MS`].
+    Slow(String),
     Why(String),
 }
 
@@ -63,8 +68,10 @@ pub struct Lister {
     reply: Vec<u8>,
     /// Whether the log has said that the first list reached the app.
     said: bool,
-    /// The tries in a row that found `updated` not serving yet.
+    /// The tries in a row that found no list yet.
     tries: u32,
+    /// Whether the next try is a short one: the last found `updated` not serving.
+    short: bool,
 }
 
 impl Lister {
@@ -75,6 +82,7 @@ impl Lister {
             reply: alloc::vec![0u8; kabi::MAX_MESSAGE],
             said: false,
             tries: 0,
+            short: false,
         }
     }
 
@@ -117,17 +125,18 @@ impl Lister {
         }
         self.next_ms = now_ms.saturating_add(PERIOD_MS);
         let list = match self.list() {
-            Err(NoList::NotYet(_)) if self.tries < STARTING_TRIES => {
+            Err(NoList::NotYet(_) | NoList::Slow(_)) if self.tries < STARTING_TRIES => {
                 self.tries += 1;
                 // From when this try ended, which may be a full wait later.
                 let ended_ms = sys::time_ns() / 1_000_000;
                 self.next_ms = ended_ms.saturating_add(NOT_YET_MS);
                 return false;
             }
-            Err(NoList::NotYet(why) | NoList::Why(why)) => Err(why),
+            Err(NoList::NotYet(why) | NoList::Slow(why) | NoList::Why(why)) => Err(why),
             Ok(list) => Ok(list),
         };
         self.tries = 0;
+        self.short = false;
         let bytes = list.as_ref().map(String::len);
         let answered = crate::ui::serve_shown(host, |core| {
             for ticket in core.take_models() {
@@ -155,19 +164,21 @@ impl Lister {
                 "this window has no route to the update service",
             ))
         })?;
-        let starting = self.tries > 0;
-        let wait_ms = if starting { NOT_YET_MS } else { LIST_MS };
-        let len =
-            sys::call_route(route, LIST.as_bytes(), &mut self.reply, wait_ms).map_err(|error| {
-                let why = format!("the update service did not answer ({error:?})");
-                match error {
-                    // The kernel waited the call's time for it to serve.
-                    Error::Unavailable => NoList::NotYet(why),
-                    // A short try may reach it as it starts serving.
-                    Error::TimedOut if starting => NoList::NotYet(why),
-                    _ => NoList::Why(why),
-                }
-            })?;
+        let short = self.short;
+        let wait_ms = if short { NOT_YET_MS } else { LIST_MS };
+        let called = sys::call_route(route, LIST.as_bytes(), &mut self.reply, wait_ms);
+        // Only a try that found it not serving makes the next one short.
+        self.short = called == Err(Error::Unavailable);
+        let len = called.map_err(|error| {
+            let why = format!("the update service did not answer ({error:?})");
+            match error {
+                // The kernel waited the try's time for it to serve.
+                Error::Unavailable => NoList::NotYet(why),
+                // Serving, but a short try did not wait for its answer.
+                Error::TimedOut if short => NoList::Slow(why),
+                _ => NoList::Why(why),
+            }
+        })?;
         let text = core::str::from_utf8(&self.reply[..len.min(self.reply.len())])
             .map_err(|_| NoList::Why(String::from("the update service's list is not text")))?;
         match text.strip_prefix("err ") {
