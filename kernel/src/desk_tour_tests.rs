@@ -6,7 +6,6 @@
 //! that does not come out as planned is logged and the tour goes on, so the
 //! pictures show what is really there.
 
-use crate::agent_desk_tests::DESK;
 use crate::claim_tests::type_keys;
 use crate::display::claim;
 use crate::{allow, ask_box, ipc, log, process, terminal, threads};
@@ -15,19 +14,10 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
 use termcore::menu::{self, Answer};
 
+// The tour boots the v0.1 system as the default boot plans it
+// (`kabi::plan::system`, no plan line of its own) on a disk with `kai-data`,
+// where the theme and the files are saved: its pictures are the real boot's.
 const CASE: &str = "desk-tour";
-/// The shell with a route to `desktop`, `cc` for its prompt, and `files` and
-/// `state` on the case's data disk: the theme and the files are saved there.
-pub const SHELL: &str = "shell caps=serve+call+policy+stop+script+files+state uses=llm+supervisor+cc+desktop pages=4096 stack_pages=512 burst_ms=5000";
-/// Every app the image packs, each started when it is first opened. The
-/// System monitor's routes are `desktop` then `llm` (`comphost/system.rs`).
-pub const APPS: &str = "notes-window program=comphost caps=serve+component+call uses=desktop pages=8192 stack_pages=512 burst_ms=20000 version=1 start=demand\n\
-     files-window program=comphost caps=serve+component+call uses=desktop pages=8192 stack_pages=512 burst_ms=20000 version=1 start=demand\n\
-     terminal-window program=comphost caps=serve+component+call uses=desktop pages=8192 stack_pages=512 burst_ms=20000 version=1 start=demand\n\
-     settings-window program=comphost caps=serve+component+call uses=desktop pages=8192 stack_pages=512 burst_ms=20000 version=1 start=demand\n\
-     monitor-window program=comphost caps=serve+component+call uses=desktop+llm pages=8192 stack_pages=512 burst_ms=20000 version=1 start=demand";
-/// `desktop`, planned before the shell, whose route it is.
-pub const DESKTOP: &str = DESK;
 const WAIT_MS: u64 = 60_000;
 const CALL_MS: u64 = 30_000;
 /// Time for comphost to start an app and paint its first frames.
