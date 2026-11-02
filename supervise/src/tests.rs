@@ -126,6 +126,24 @@ fn a_lines_folders_go_only_to_its_own_program() {
         apps.grants("notes", "comphost").unwrap().dirs,
         [Folder::Apps]
     );
+    // The model store is `updated`'s alone, as the trust store and updates are.
+    let updated = parse_plan("updated caps=update dir=trust+updates+settings+models");
+    assert!(updated.errors.is_empty(), "{:?}", updated.errors);
+    let dirs = [
+        Folder::Trust,
+        Folder::Updates,
+        Folder::Settings,
+        Folder::Models,
+    ];
+    assert_eq!(updated.grants("updated", "updated").unwrap().dirs, dirs);
+    assert_eq!(Folder::Models.badge(), kabi::fs::MODELS_ROOT);
+    assert!(!Folder::Models.read_only());
+    let other = parse_plan("pkg dir=models");
+    assert!(
+        !other.errors.is_empty() || other.grants("pkg", "pkg").is_err(),
+        "{:?}",
+        other.errors
+    );
     // A line's `program=` is the program its folder goes to, not its name.
     assert_eq!(plan.grants("store", "pkgd").unwrap().dirs, [Folder::Pkg]);
     assert!(plan.grants("store", "store").is_err());

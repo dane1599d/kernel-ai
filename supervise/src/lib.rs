@@ -121,6 +121,10 @@ pub enum Folder {
     /// `/system/state/restart`, read only: the restart window the shell saves
     /// from a Settings click (`kai-updates 1`), `updated`'s alone.
     Restart,
+    /// The `models` volume's root, the model store: `updated`'s only, which
+    /// imports a signed model into it and points `kai-modelhint 1` at one
+    /// (P4 task 10).
+    Models,
 }
 
 impl Folder {
@@ -132,6 +136,7 @@ impl Folder {
             "settings" => Some(Folder::Settings),
             "apps" => Some(Folder::Apps),
             "restart" => Some(Folder::Restart),
+            "models" => Some(Folder::Models),
             _ => None,
         }
     }
@@ -145,6 +150,7 @@ impl Folder {
             Folder::Settings => kabi::fs::SYSTEM_SETTINGS,
             Folder::Apps => kabi::fs::SYSTEM_APPS,
             Folder::Restart => kabi::fs::SYSTEM_RESTART,
+            Folder::Models => kabi::fs::MODELS_ROOT,
         }
     }
 
@@ -155,12 +161,13 @@ impl Folder {
     }
 
     /// The one service, by name and by program, a line granting it must be, if
-    /// it has one: the trust store, the updates folder and the restart window
-    /// are `updated`'s alone (ADR 0008 §10), as the kernel's UPDATE capability is.
+    /// it has one: the trust store, the updates folder, the restart window and
+    /// the model store are `updated`'s alone (ADR 0008 §10), as the kernel's
+    /// UPDATE capability is.
     pub fn only_for(self) -> Option<&'static str> {
         match self {
             Folder::Pkg | Folder::Settings | Folder::Apps => None,
-            Folder::Trust | Folder::Updates | Folder::Restart => Some(UPDATED),
+            Folder::Trust | Folder::Updates | Folder::Restart | Folder::Models => Some(UPDATED),
         }
     }
 }
