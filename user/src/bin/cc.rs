@@ -131,8 +131,10 @@ fn answer(
     // SAFETY: the kernel mapped the Shm read-write at `address`, in a slot of
     // its own (`kabi::layout::SHM_SLOT`, 1 GiB), and the shell makes it
     // `shm::BYTES` long. Past a shorter one's pages the slot is unmapped, so it
-    // faults cc and reaches no other memory. Nothing else refers to it, and the
-    // slice is not used after the unmap.
+    // faults cc and reaches no other memory. The shell maps it too, but it is
+    // blocked in `call_h` until this reply, and cc copies the bundle out
+    // before it reads it all the same (`shm::serve`). The slice is not used
+    // after the unmap.
     // TODO: refuse a short Shm once HANDLE_INFO reports an Shm's pages.
     let bytes = unsafe { core::slice::from_raw_parts_mut(address as *mut u8, shm::BYTES) };
     let reply = service.handle_with(request, Some(bytes), host);

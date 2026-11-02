@@ -4,7 +4,7 @@
 //!
 //! The shell makes the `Shm` [`PAGES`] long and cc maps that much. A shorter
 //! one faults cc, which only the shell can call, and cc starts again on its
-//! next request.
+//! next request. The shell then takes the artifact only if [`check`] holds.
 
 use super::{Build, BuildError, Kind};
 use crate::{Budget, Compiler};
@@ -12,6 +12,7 @@ use alloc::format;
 use alloc::string::String;
 use kabi::live::MAX_ARTIFACT;
 use livecore::artifact::{self, MAX_SOURCE};
+use sha2::{Digest, Sha256};
 
 /// Builds the bundle in `shm` as `component` at `version` and writes the
 /// artifact over it. The reply's text: `<kind> <bytes> <provenance>`.
@@ -42,6 +43,43 @@ pub fn serve(
         built.artifact.len(),
         built.provenance()
     ))
+}
+
+/// The shell's check of `artifact`, which cc wrote back for `bundle`, built as
+/// `name` at `version`, against cc's reply: `bytes` long, from sources whose
+/// SHA-256 is `source`. It must load, be that long and be for the world
+/// `app:<name>/<name>@<version>`. Its `kai.source` must be `bundle` itself,
+/// and its manifest and `source` must both name that bundle's hash. So a cc
+/// that misbehaves on hostile C cannot hand `pkg` an artifact of other sources
+/// for the device key to sign.
+pub fn check(
+    artifact: &[u8],
+    bundle: &[u8],
+    name: &str,
+    version: &str,
+    bytes: usize,
+    source: &str,
+) -> Result<(), String> {
+    if bytes != artifact.len() {
+        return Err(format!(
+            "cc said {bytes} bytes but wrote {}",
+            artifact.len()
+        ));
+    }
+    let parsed =
+        artifact::parse(artifact).map_err(|why| format!("cc's artifact does not load: {why}"))?;
+    let manifest = &parsed.manifest;
+    let world = format!("app:{name}/{name}@{version}");
+    if manifest.component != name || manifest.world != world {
+        return Err(format!("cc built {}, not {world}", manifest.world));
+    }
+    let sent = super::hex(&Sha256::digest(bundle));
+    if parsed.source != bundle || manifest.source != sent || source != sent {
+        return Err(String::from(
+            "the artifact's sources are not the ones the shell sent",
+        ));
+    }
+    Ok(())
 }
 
 /// The `Shm`'s pages: room for the largest artifact and its length.

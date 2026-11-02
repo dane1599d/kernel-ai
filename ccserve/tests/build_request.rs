@@ -117,6 +117,63 @@ fn local_publishes_and_checks_an_apps_artifact() {
     assert!(refused.is_err());
 }
 
+/// The source hash at the end of a build's reply (D7's provenance line).
+fn source_of(text: &str) -> &str {
+    text.rsplit(' ').next().unwrap()
+}
+
+/// K's review: the shell takes an artifact only if it carries the bundle the
+/// shell sent, so one of other sources is refused even with an honest claim.
+/// cc bundles the files sorted by name, which is why the shell sorts them.
+#[test]
+fn the_shell_takes_only_an_artifact_of_the_sources_it_sent() {
+    let mut cc = Cc::open();
+    let files: &[(&str, &[u8])] = &[("main.c", APP.as_bytes())];
+    let bundle = livecore::artifact::bundle(files);
+    let (artifact, text) = built(&mut cc, "greeter", "0.0.1", files);
+    let (bytes, source) = (artifact.len(), source_of(&text));
+    let check = |artifact: &[u8], name: &str, version: &str, bytes: usize, source: &str| {
+        shm::check(artifact, &bundle, name, version, bytes, source)
+    };
+    assert_eq!(check(&artifact, "greeter", "0.0.1", bytes, source), Ok(()));
+
+    let other = format!("{APP}// another build\n");
+    let (forged, forged_text) = built(&mut cc, "greeter", "0.0.1", &[("main.c", other.as_bytes())]);
+    let forged_source = source_of(&forged_text);
+    let refused = check(&forged, "greeter", "0.0.1", forged.len(), forged_source);
+    assert_eq!(
+        refused,
+        Err(String::from(
+            "the artifact's sources are not the ones the shell sent"
+        ))
+    );
+    assert!(check(&artifact, "greeter", "0.0.1", bytes, forged_source).is_err());
+    assert!(check(&artifact, "greeter", "0.0.1", bytes + 1, source).is_err());
+    assert!(check(&artifact, "other", "0.0.1", bytes, source).is_err());
+    assert!(check(&artifact, "greeter", "0.0.2", bytes, source).is_err());
+    assert!(
+        check(
+            &artifact[..bytes - 1],
+            "greeter",
+            "0.0.1",
+            bytes - 1,
+            source
+        )
+        .is_err()
+    );
+
+    let header: &[u8] = b"#define GREETING 1\n";
+    let unsorted: &[(&str, &[u8])] = &[("main.c", APP.as_bytes()), ("a.h", header)];
+    let sorted: &[(&str, &[u8])] = &[("a.h", header), ("main.c", APP.as_bytes())];
+    let (two, two_text) = built(&mut cc, "greeter", "0.0.1", unsorted);
+    let claim = (two.len(), source_of(&two_text));
+    for (files, ok) in [(unsorted, false), (sorted, true)] {
+        let bundle = livecore::artifact::bundle(files);
+        let checked = shm::check(&two, &bundle, "greeter", "0.0.1", claim.0, claim.1);
+        assert_eq!(checked.is_ok(), ok, "{checked:?}");
+    }
+}
+
 #[test]
 fn a_build_without_its_shm_or_with_a_bad_one_is_refused() {
     let mut cc = Cc::open();

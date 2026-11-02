@@ -5,7 +5,7 @@
 //! - sent to `cc` in an `Shm` (`ccserve::build::shm`), which cc writes the
 //!   artifact over. One `Shm` serves every build: its pages count against
 //!   the shell's quota until it ends;
-//! - the artifact checked (its name, version and source hash) and written to
+//! - the artifact checked against the bundle sent (`shm::check`) and written to
 //!   `/home/user/c/<name>.kai` in an action of its own. The file is the
 //!   build's own output, so the write replaces the last build's with no log
 //!   entry of its own: the line's entry is the install;
@@ -48,7 +48,10 @@ fn folder() -> &'static str {
 /// Builds component `name` at `version` through `cc`, and writes its artifact.
 pub fn build(files: &Files, cc: Handle, name: &str, version: &str) -> Result<CcBuilt, String> {
     let home = files.home_dir()?;
-    let sources = sources(home, &format!("{}/{name}", folder()))?;
+    let mut sources = sources(home, &format!("{}/{name}", folder()))?;
+    // cc bundles the files sorted by name, so the shell does too: the artifact
+    // then carries this very bundle, which `shm::check` compares.
+    sources.sort_by(|a, b| a.0.cmp(&b.0));
     let named: Vec<(&str, &[u8])> = sources
         .iter()
         .map(|(file, bytes)| (file.as_str(), bytes.as_slice()))
@@ -59,7 +62,14 @@ pub fn build(files: &Files, cc: Handle, name: &str, version: &str) -> Result<CcB
     }
     let (text, artifact) = ask_cc(cc, name, version, &bundle)?;
     let built = CcBuilt::from_reply(&text, format!("{DIR}/{name}.kai"))?;
-    check(&built, &artifact, name, version)?;
+    shm::check(
+        &artifact,
+        &bundle,
+        name,
+        version,
+        built.bytes,
+        built.source(),
+    )?;
     let path = format!("{}/{name}.kai", folder());
     let file = files
         .put_whole(&path, &artifact)
@@ -68,32 +78,6 @@ pub fn build(files: &Files, cc: Handle, name: &str, version: &str) -> Result<CcB
         files::close(old);
     }
     Ok(built)
-}
-
-/// What cc wrote is what it said, for `name` at `version`: its length, its
-/// manifest's name and world, and the hash of the sources it carries.
-fn check(built: &CcBuilt, artifact: &[u8], name: &str, version: &str) -> Result<(), String> {
-    if built.bytes != artifact.len() {
-        return Err(format!(
-            "cc said {} bytes but wrote {}",
-            built.bytes,
-            artifact.len()
-        ));
-    }
-    let parsed = livecore::artifact::parse(artifact)
-        .map_err(|why| format!("cc's artifact does not load: {why}"))?;
-    let manifest = &parsed.manifest;
-    let source = kaipkg::hex(&kaipkg::sha256(parsed.source));
-    let world = format!("app:{name}/{name}@{version}");
-    if manifest.component != name || manifest.world != world {
-        return Err(format!("cc built {}, not {world}", manifest.world));
-    }
-    if manifest.source != built.source() || source != built.source() {
-        return Err(String::from(
-            "the artifact's sources are not the ones cc named",
-        ));
-    }
-    Ok(())
 }
 
 /// The `.c` and `.h` files in the folder at `path` beneath `home`, read whole.
