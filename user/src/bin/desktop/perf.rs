@@ -44,7 +44,6 @@ const MAX_KEYS: usize = 1_000;
 /// Where (b) takes hold of the window: this far into its title bar.
 const GRIP: (i32, i32) = (100, chrome::TITLE_BAR / 2);
 
-
 const NS_PER_MS: u64 = 1_000_000;
 /// S05-1's budgets at 1920x1080, in ns.
 const FULL_P99: u64 = 8 * NS_PER_MS;
