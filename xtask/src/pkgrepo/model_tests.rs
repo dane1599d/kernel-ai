@@ -86,6 +86,10 @@ fn the_catalog_is_signed_as_it_is_pinned() {
     }
     // The import finds a disk's target by its length, so the two differ.
     assert_ne!(models::fixture().length, models::fixture_2().length);
+    // The boot cases name each by its SHA-256's first 12 digits
+    // (`model-import`, `app-models`): a change to the filler fails here first.
+    assert!(models::fixture().sha256.starts_with("73174ba39c9a"));
+    assert!(models::fixture_2().sha256.starts_with("cc73ee264158"));
     // Every field reads back within the OS's limits.
     let repo = tuf::build_with_models(&[], &models::for_image().unwrap(), &keys(1), NOW);
     assert_eq!(read(repo.unwrap()).unwrap().refused, []);

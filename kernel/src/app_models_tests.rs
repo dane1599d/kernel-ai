@@ -93,9 +93,10 @@ pub fn check() -> Result<(), &'static str> {
             "undo",
             Exact("ok Undone: the model before, from the next restart"),
         ),
+        // `fixture` runs throughout (no restart); the undo shows in `fixture-2`
+        // going back from next to stored.
         (LIST, Contains("(fixture-2): stored")),
     ])?;
-    list_until("(fixture): in use")?;
     log!(
         "app-models: the agent listed the models, imported fixture-2 checked against the signed role, used it, and undo put fixture back"
     );
