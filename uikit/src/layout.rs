@@ -85,6 +85,18 @@ pub fn area_lines(f: &TextField) -> i32 {
     (f.value.split('\n').count() as i32).max(metric::AREA_LINES)
 }
 
+/// The rows a table `h` tall shows, under its heading: the first, and how many.
+/// It scrolls only as far as keeps row `selected` in view, so a table given less
+/// height than it asks for never draws past its frame.
+pub fn table_window(rows: usize, selected: Option<u32>, h: i32) -> (usize, usize) {
+    let fit = ((h - 2) / metric::ROW_H - 1).max(0) as usize;
+    let first = match selected.map(|s| s as usize) {
+        Some(s) if s < rows && fit > 0 && s >= fit => s + 1 - fit,
+        _ => 0,
+    };
+    (first, fit.min(rows - first))
+}
+
 /// The width of each table column.
 pub fn column_widths(
     m: &dyn Measure,

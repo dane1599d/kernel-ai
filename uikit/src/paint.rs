@@ -182,8 +182,10 @@ fn ops_of(
             ops.push(frame(r, Token::LineStrong));
             let widths = layout::column_widths(m, columns, rows);
             let inner = r.inset(1);
-            if let Some(s) = selected.filter(|&s| (s as usize) < rows.len()) {
-                let y = inner.y + (s as i32 + 1) * ROW_H;
+            let (first, shown) = layout::table_window(rows.len(), *selected, r.h);
+            let seen = first..first + shown;
+            if let Some(s) = selected.map(|s| s as usize).filter(|s| seen.contains(s)) {
+                let y = inner.y + ((s - first) as i32 + 1) * ROW_H;
                 ops.push(fill(
                     Rect::new(inner.x, y, inner.w, ROW_H),
                     Token::Raised,
@@ -201,7 +203,7 @@ fn ops_of(
                         c,
                     ));
                 }
-                for (j, row) in rows.iter().enumerate() {
+                for (j, row) in rows[seen.clone()].iter().enumerate() {
                     if let Some(c) = row.get(i) {
                         let cell = Rect::new(x, inner.y + (j as i32 + 1) * ROW_H, *w, ROW_H);
                         ops.push(text_in(m, cell, TypeStyle::Body, Token::Text, c));
