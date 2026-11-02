@@ -1,7 +1,7 @@
 //! What a version is granted when it loads. A granted interface (`kai:settings`,
-//! `kai:system`, `kai:edit` and `kai:files`) is linked only for a version
-//! whose [`Grants`] allow it: without the grant, the import does not link and the
-//! version does not stage (`Reason::Link`).
+//! `kai:system`, `kai:models`, `kai:edit` and `kai:files`) is linked only for a
+//! version whose [`Grants`] allow it: without the grant, the import does not
+//! link and the version does not stage (`Reason::Link`).
 //!
 //! The grant comes from the system image's plan line (or a plan argument comphost
 //! reads from it), never from a package's own manifest, until package grants
@@ -22,6 +22,8 @@ pub struct Grants {
     pub shell_line: bool,
     /// May import `kai:system/system` (the System monitor only).
     pub system: bool,
+    /// May import `kai:models/models` (the model manager's window only).
+    pub models: bool,
     /// May import `kai:edit/edit`.
     pub edit: bool,
     /// May import `kai:files/files` (the editor only).

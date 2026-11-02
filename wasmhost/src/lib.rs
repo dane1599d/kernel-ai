@@ -38,6 +38,10 @@ mod grants_tests;
 mod instance;
 pub mod linear;
 pub mod link;
+pub mod models;
+#[cfg(test)]
+mod models_tests;
+mod reads;
 pub mod settings;
 pub mod settings_ledger;
 #[cfg(test)]

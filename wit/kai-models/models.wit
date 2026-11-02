@@ -1,0 +1,40 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The Kernel AI contributors
+
+/// The model list, for the model manager's window (P4 task 10): the stored and
+/// signed models, the one in use, the next restart's and the last trial, each
+/// signed one with its licence. Like `kai:system`, this is a granted interface,
+/// not part of `kai:app` (which is frozen): only the app the system image names
+/// `models-window` holds the `models` grant, and a component that imports it
+/// without the grant does not stage (`Reason::Link`). It reads only. A switch or
+/// an import is Kai's `model_use` or `model_fetch`, logged and undoable, so the
+/// window asks the person to ask Kai.
+///
+/// `read` only queues. The host takes the queue after the call, asks the update
+/// service for its list, and tells the app the answer in a later call, so a call
+/// never waits on the system, and a version rehearsed beside the active one
+/// cannot read twice: only the shown version's queue is taken. The answer is the
+/// list as `kai-models 1` text, at most one IPC message (8 KiB); the app parses
+/// it as it would any input, and a list it cannot parse is one it does not show.
+package kai:models@0.1.0;
+
+interface models {
+    /// Asks for the list and returns its ticket. Refused (the call traps) when 4
+    /// reads are waiting for the host already.
+    read: func() -> u32;
+}
+
+/// What the update service answered.
+interface listing {
+    /// The answer to the read with this ticket: the list, or why there is none
+    /// (no model store, or the service did not answer; at most 200 printable
+    /// ASCII bytes). A ticket is not reused while this instance runs; a new
+    /// instance starts again from 0.
+    on-listing: func(ticket: u32, outcome: result<string, string>);
+}
+
+/// An app that reads the model list: the two halves of the grant.
+world models-read {
+    import models;
+    export listing;
+}

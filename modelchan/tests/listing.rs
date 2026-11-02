@@ -1,7 +1,7 @@
 //! `kai-models 1` and what `llm`'s health says it loaded.
 
 use comp_models::{Models, Signed, Store, Stored};
-use modelchan::listing::{encode, loaded, parse};
+use modelchan::listing::{encode, encode_within, loaded, parse};
 
 fn signed(id: &str, sha: u8, length: u64) -> Signed {
     Signed {
@@ -55,6 +55,53 @@ fn a_list_reads_back_as_written() {
     let empty = Models::default();
     assert_eq!(encode(&empty), "kai-models 1\n");
     assert_eq!(parse("kai-models 1\n"), Ok(empty));
+}
+
+#[test]
+fn a_list_that_fits_is_written_as_it_always_is() {
+    let m = models();
+    let all = encode(&m);
+    assert_eq!(encode_within(&m, all.len()), all);
+    assert_eq!(encode_within(&m, usize::MAX), all);
+}
+
+/// A role of `n` targets with long names, one of them stored and running.
+fn long_role(n: u8) -> Models {
+    let mut m = Models::default();
+    for i in 0..n {
+        let mut s = signed(&format!("model-{i}"), i, 1000 + u64::from(i));
+        s.name = "n".repeat(200);
+        m.signed.push(s);
+    }
+    m.store.blobs.push(Stored {
+        sha256: [n - 1; 32],
+        length: 1000 + u64::from(n - 1),
+    });
+    m.store.running = Some([n - 1; 32]);
+    m
+}
+
+#[test]
+fn a_list_too_long_for_one_message_keeps_what_matters_and_still_parses() {
+    let m = long_role(100);
+    let max = kabi::MAX_MESSAGE;
+    assert!(encode(&m).len() > max);
+    let cut = encode_within(&m, max);
+    assert!(cut.len() <= max);
+    let back = parse(&cut).unwrap();
+    // The running model, its blob and its role target come first, though the
+    // target is the role's last.
+    assert_eq!(back.store, m.store);
+    assert_eq!(back.signed[0], m.signed[99]);
+    // Then the role's first targets, as many as fit, in order.
+    assert!(back.signed.len() > 1 && back.signed.len() < m.signed.len());
+    assert_eq!(back.signed[1..], m.signed[..back.signed.len() - 1]);
+}
+
+#[test]
+fn a_budget_too_small_for_any_line_still_gives_a_list() {
+    let cut = encode_within(&long_role(3), "kai-models 1\n".len());
+    assert_eq!(parse(&cut), Ok(Models::default()));
 }
 
 #[test]

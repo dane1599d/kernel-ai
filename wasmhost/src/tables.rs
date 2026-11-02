@@ -470,6 +470,15 @@ pub const IMPORTS: &[WitFunc] = &[
         result: || Some(Ty::U32),
     },
     WitFunc {
+        interface: "kai:models/models",
+        version: "0.1",
+        name: "read",
+        core_params: &[],
+        core_results: &[CoreTy::I32],
+        params: || vec![],
+        result: || Some(Ty::U32),
+    },
+    WitFunc {
         interface: "kai:settings/settings",
         version: "0.1",
         name: "send",
@@ -752,6 +761,20 @@ pub const EXPORTS: &[WitFunc] = &[
                     Some(Box::new(Ty::List(Box::new(Ty::U8)))),
                     Some(Box::new(Ty::String)),
                 ),
+            ]
+        },
+        result: || None,
+    },
+    WitFunc {
+        interface: "kai:models/listing",
+        version: "0.1",
+        name: "on-listing",
+        core_params: &[CoreTy::I32, CoreTy::I32, CoreTy::I32, CoreTy::I32],
+        core_results: &[],
+        params: || {
+            vec![
+                Ty::U32,
+                Ty::Result(Some(Box::new(Ty::String)), Some(Box::new(Ty::String))),
             ]
         },
         result: || None,
