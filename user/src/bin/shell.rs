@@ -10,8 +10,12 @@ extern crate alloc;
 // A program's crate root sits in src/bin, so its modules are named by path.
 #[path = "shell/apart.rs"]
 mod apart;
+#[path = "shell/build.rs"]
+mod build;
 #[path = "shell/files.rs"]
 mod files;
+#[path = "shell/routes.rs"]
+mod routes;
 #[path = "shell/ui.rs"]
 mod ui;
 
@@ -79,8 +83,9 @@ fn desktop_pid() -> Option<u64> {
         .map(|p| p.pid)
 }
 
-// The shell's routes, by their index in its plan line's
-// `uses=llm+supervisor+cc+updated(+desktop)` (`kabi::plan::SHELL_ROUTES`).
+// The shell's first routes, by their index in its plan line's
+// `uses=llm+supervisor+cc+updated` (`kabi::plan::SHELL_ROUTES`); those after
+// them by name (`shell/routes.rs`).
 use kabi::plan::shell_route;
 
 /// The route to the llm service.
@@ -112,9 +117,14 @@ fn updated() -> kabi::handle::Handle {
 /// import only starts, and goes on between requests.
 const UPDATED_CALL_MS: u64 = 10_000;
 
-/// The route to `desktop`, on a desktop only (P3 task 7).
+/// The route to `desktop`, on a desktop only (P3 task 7): `routes=desktop`.
 fn desktop() -> Option<kabi::handle::Handle> {
-    user::route(shell_route::DESKTOP)
+    routes::named("desktop")
+}
+
+/// The route to `pkg`, where `cc build` installs (P4 task 13): `routes=pkg`.
+fn pkg_route() -> Result<kabi::handle::Handle, String> {
+    routes::named("pkg").ok_or_else(|| String::from("this shell has no route to pkg"))
 }
 
 const DESKTOP_CALL_MS: u64 = 5_000;
@@ -447,6 +457,18 @@ impl Host for System {
             .map_err(|error| format!("{error:?}"))?;
         reply.truncate(len.min(kabi::MAX_MESSAGE));
         Ok(reply)
+    }
+
+    fn pkg(&self, request: &str) -> Result<String, String> {
+        build::ask_pkg(pkg_route()?, request)
+    }
+
+    fn cc_build(&self, name: &str, version: &str) -> Result<shellcore::ccbuild::CcBuilt, String> {
+        build::build(&self.files, cc_route(), name, version)
+    }
+
+    fn pkg_local(&self, name: &str, path: &str) -> Result<String, String> {
+        build::install(pkg_route()?, name, path)
     }
 
     fn models(&self, request: &str) -> Result<String, String> {

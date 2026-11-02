@@ -42,7 +42,7 @@ fn every_request_kind_bent() {
         b"undo",
         b"defs",
         b"reset",
-        b"build x",
+        b"build x 0.0.1",
         b"replay 3\nI64 Q(void) { return 1; }",
         b"open main origin=user",
     ];

@@ -325,8 +325,8 @@ fn reset_and_sessions() {
         ["err 0 model-written C is not enabled"]
     );
     assert_eq!(
-        cc.send("build hello"),
-        ["err 0 cc build comes with P4 task 13"]
+        cc.send("build hello 0.0.1"),
+        ["err 0 build brings its sources in an Shm"]
     );
     assert_eq!(cc.send("nonsense"), ["err 0 not a request"]);
 }
