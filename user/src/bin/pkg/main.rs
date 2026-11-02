@@ -272,6 +272,10 @@ impl Transport for Calls {
     fn close(&mut self, handle: Handle) {
         let _ = sys::handle_close(handle);
     }
+
+    fn wait_ms(&mut self, ms: u64) {
+        sys::sleep_ms(ms);
+    }
 }
 
 /// Grants and the `actlog 1` line join the switch's transaction once `pkg`
