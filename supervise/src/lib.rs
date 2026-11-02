@@ -121,6 +121,10 @@ pub enum Folder {
     /// `/system/state/restart`, read only: the restart window the shell saves
     /// from a Settings click (`kai-updates 1`), `updated`'s alone.
     Restart,
+    /// The `models` volume's root, the model store: `updated`'s only, which
+    /// imports a signed model into it and points `kai-modelhint 1` at one
+    /// (P4 task 10).
+    Models,
 }
 
 impl Folder {
@@ -132,6 +136,7 @@ impl Folder {
             "settings" => Some(Folder::Settings),
             "apps" => Some(Folder::Apps),
             "restart" => Some(Folder::Restart),
+            "models" => Some(Folder::Models),
             _ => None,
         }
     }
@@ -145,6 +150,7 @@ impl Folder {
             Folder::Settings => kabi::fs::SYSTEM_SETTINGS,
             Folder::Apps => kabi::fs::SYSTEM_APPS,
             Folder::Restart => kabi::fs::SYSTEM_RESTART,
+            Folder::Models => kabi::fs::MODELS_ROOT,
         }
     }
 
@@ -155,12 +161,13 @@ impl Folder {
     }
 
     /// The one service, by name and by program, a line granting it must be, if
-    /// it has one: the trust store, the updates folder and the restart window
-    /// are `updated`'s alone (ADR 0008 §10), as the kernel's UPDATE capability is.
+    /// it has one: the trust store, the updates folder, the restart window and
+    /// the model store are `updated`'s alone (ADR 0008 §10), as the kernel's
+    /// UPDATE capability is.
     pub fn only_for(self) -> Option<&'static str> {
         match self {
             Folder::Pkg | Folder::Settings | Folder::Apps => None,
-            Folder::Trust | Folder::Updates | Folder::Restart => Some(UPDATED),
+            Folder::Trust | Folder::Updates | Folder::Restart | Folder::Models => Some(UPDATED),
         }
     }
 }
@@ -286,12 +293,41 @@ pub const RUNS_ANOTHER: &str = "err it runs another version";
 /// no headless `notes` without a build service). `pkg` shows it, not a failure.
 pub const NOT_PLANNED: &str = "err unknown service";
 
-/// The index among `services` (each spec with its running pid) of the service
-/// `run` names, if `caller` may ask for it: the running instance of a service
-/// whose plan line grants `/system/pkg` (`dir=pkg`), and only for a `start=pkg`
-/// service. The kernel checks the holder's program when it spawns it.
+/// `may-run <name>`: whether `pkg` may start service `name` on a package version,
+/// asked before it adds one (COMP_ADD), so an app whose plan line runs the
+/// image's own version, as every built-in window does in v0.1, is never loaded
+/// a second time. Gated as a [`Run`] is ([`check_run_name`]), and it starts
+/// nothing: the answer is `ok`, [`NOT_FROM_PKG`] or why not.
+pub const MAY_RUN: &str = "may-run";
+
+pub fn parse_may_run(text: &str) -> Option<&str> {
+    let mut words = text.split_whitespace();
+    match (words.next(), words.next(), words.next()) {
+        (Some(MAY_RUN), Some(name), None) if valid_name(name) => Some(name),
+        _ => None,
+    }
+}
+
+pub fn encode_may_run(name: &str) -> String {
+    format!("{MAY_RUN} {name}")
+}
+
+/// [`check_run_name`] for the service `run` names.
 pub fn check_run(
     run: Run,
+    services: &[(&ServiceSpec, Option<u64>)],
+    caller: u64,
+) -> Result<usize, &'static str> {
+    check_run_name(run.name, services, caller)
+}
+
+/// The index among `services` (each spec with its running pid) of service
+/// `name`, if `caller` may run a package version of it: the running instance of
+/// a service whose plan line grants `/system/pkg` (`dir=pkg`), and only for a
+/// `start=pkg` service. The kernel checks the holder's program when it spawns
+/// it.
+pub fn check_run_name(
+    name: &str,
     services: &[(&ServiceSpec, Option<u64>)],
     caller: u64,
 ) -> Result<usize, &'static str> {
@@ -303,7 +339,7 @@ pub fn check_run(
     }
     let index = services
         .iter()
-        .position(|(spec, _)| spec.name == run.name)
+        .position(|(spec, _)| spec.name == name)
         .ok_or(NOT_PLANNED)?;
     match services[index].0.start {
         Start::Pkg => Ok(index),

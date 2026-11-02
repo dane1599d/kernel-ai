@@ -52,6 +52,7 @@ impl Applied {
             Applied::Intent(Intent::Appearance(_)) => Some(Read::FileAppearance),
             Applied::Intent(Intent::KeepRunning { .. }) => Some(Read::FileApps),
             Applied::Intent(Intent::RestartWindow(_)) => Some(Read::FileUpdates),
+            Applied::Intent(Intent::RemoveRule(_)) => Some(Read::Rules),
             Applied::Intent(_) => None,
         }
     }
@@ -357,9 +358,12 @@ mod tests {
             Some(Read::FileUpdates)
         );
         assert_eq!(read(Intent::RestartWindow(None)), Some(Read::FileUpdates));
-        // Rules, profiles and grants are not files the pages read back.
+        assert_eq!(
+            read(Intent::RemoveRule(RuleRef::Rule(1))),
+            Some(Read::Rules)
+        );
+        // A profile is not a file the pages read back.
         assert_eq!(read(Intent::UseProfile("quiet".into())), None);
-        assert_eq!(read(Intent::RemoveRule(RuleRef::Rule(1))), None);
     }
 
     /// The host accepts every request as the kind the intent is: a change.

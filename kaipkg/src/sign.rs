@@ -5,12 +5,18 @@
 //! The top-level roles are root, targets, snapshot and timestamp; targets
 //! delegates every `*.kpkg` to the role `packages`, which lists each package as
 //! a target `<name>-<version>.kpkg` with its length, SHA-256 and `custom.kai`
-//! index fields. Snapshots are consistent, so the layout is:
+//! index fields. With a models key, targets also delegates every `*.gguf` to
+//! the role `models` (ADR 0008 §6), which lists each model as `<id>.gguf`
+//! ([`crate::models`]); a model's bytes are never in the repository. A device's
+//! own repository has no models key, so it signs no models: only the image's
+//! role says which a user may import. Snapshots are consistent, so the layout
+//! is:
 //!
 //! ```text
 //! metadata/1.root.json
 //! metadata/1.targets.json
 //! metadata/1.packages.json
+//! metadata/1.models.json
 //! metadata/1.snapshot.json
 //! metadata/timestamp.json
 //! targets/<sha256>.notes-1.0.0.kpkg
@@ -21,10 +27,11 @@
 //! canonical bytes of its `signed` object.
 
 use crate::generation::Time;
-use crate::{hex, sha256};
+use crate::{Sha, hex, sha256};
 use alloc::collections::BTreeSet;
 use alloc::format;
 use alloc::string::{String, ToString};
+use alloc::vec;
 use alloc::vec::Vec;
 use ed25519_compact::{KeyPair, Seed};
 use serde_json::{Map, Value, json};
@@ -34,6 +41,9 @@ const DAY: u64 = 86_400;
 /// The delegated role every package sits under, and what it may sign for.
 pub const PACKAGES: &str = "packages";
 const PACKAGE_PATHS: &str = "*.kpkg";
+/// The delegated role every model sits under, and what it may sign for.
+pub const MODELS: &str = crate::models::ROLE;
+const MODEL_PATHS: &str = "*.gguf";
 
 /// How long each role's metadata stays valid, in days.
 #[derive(Clone, Copy, Debug)]
@@ -94,10 +104,13 @@ pub struct Keys<'a> {
     pub snapshot: &'a Key,
     pub timestamp: &'a Key,
     pub packages: &'a Key,
+    /// The `models` role's, or none for a repository that signs no models.
+    pub models: Option<&'a Key>,
 }
 
 impl<'a> Keys<'a> {
-    /// One key for every role, as a device's own repository has.
+    /// One key for every role, as a device's own repository has; it has no
+    /// `models` role.
     pub fn one(key: &'a Key) -> Self {
         Keys {
             root: key,
@@ -105,6 +118,7 @@ impl<'a> Keys<'a> {
             snapshot: key,
             timestamp: key,
             packages: key,
+            models: None,
         }
     }
 }
@@ -117,14 +131,39 @@ pub struct Target {
     pub kai: Value,
 }
 
-/// The repository for `targets`, every role at version 1, signed by `keys`,
-/// expiring `periods` after `now`: its files, by path from its top.
+/// One model as a target of the `models` role: its path `<id>.gguf`, the
+/// length and SHA-256 of the GGUF, and its `custom.kai` fields. The weights are
+/// not in the repository, so it has no bytes.
+pub struct Model {
+    pub path: String,
+    pub length: u64,
+    pub sha256: Sha,
+    pub kai: Value,
+}
+
+/// The repository for `targets`, with no models: [`build_with_models`].
 pub fn build(
     targets: &[Target],
     keys: &Keys<'_>,
     now: Time,
     periods: Periods,
 ) -> Result<Vec<(String, Vec<u8>)>, String> {
+    build_with_models(targets, &[], keys, now, periods)
+}
+
+/// The repository for `targets` and `models`, every role at version 1, signed
+/// by `keys`, expiring `periods` after `now`: its files, by path from its top.
+/// The `models` role is there when `keys` has its key, empty or not.
+pub fn build_with_models(
+    targets: &[Target],
+    models: &[Model],
+    keys: &Keys<'_>,
+    now: Time,
+    periods: Periods,
+) -> Result<Vec<(String, Vec<u8>)>, String> {
+    if keys.models.is_none() && !models.is_empty() {
+        return Err("models are signed only with a models key".into());
+    }
     let expires = |days: u64| Time(now.0 + days * DAY).format();
     let mut files = Vec::new();
     let mut listed = Map::new();
@@ -147,6 +186,7 @@ pub fn build(
             target.bytes.clone(),
         ));
     }
+    let model_targets = listed_models(models, &mut names)?;
     let root = json!({
         "_type": "root",
         "spec_version": SPEC_VERSION,
@@ -161,39 +201,39 @@ pub fn build(
             "timestamp": role(keys.timestamp),
         },
     });
+    let mut delegated_keys = vec![keys.packages];
+    let mut roles = vec![delegation(PACKAGES, keys.packages, PACKAGE_PATHS)];
+    let mut meta = Map::new();
+    meta.insert("targets.json".into(), json!({ "version": 1 }));
+    meta.insert("packages.json".into(), json!({ "version": 1 }));
+    if let Some(key) = keys.models {
+        delegated_keys.push(key);
+        roles.push(delegation(MODELS, key, MODEL_PATHS));
+        meta.insert(format!("{MODELS}.json"), json!({ "version": 1 }));
+    }
     let top = json!({
         "_type": "targets",
         "spec_version": SPEC_VERSION,
         "version": 1,
         "expires": expires(periods.targets),
         "targets": {},
-        "delegations": {
-            "keys": key_map(&[keys.packages]),
-            "roles": [{
-                "name": PACKAGES,
-                "keyids": [keys.packages.id()],
-                "threshold": 1,
-                "terminating": true,
-                "paths": [PACKAGE_PATHS],
-            }],
-        },
+        "delegations": { "keys": key_map(&delegated_keys), "roles": roles },
     });
-    let delegated = json!({
-        "_type": "targets",
-        "spec_version": SPEC_VERSION,
-        "version": 1,
-        "expires": expires(periods.targets),
-        "targets": listed,
-    });
+    let delegated = |targets: Map<String, Value>| {
+        json!({
+            "_type": "targets",
+            "spec_version": SPEC_VERSION,
+            "version": 1,
+            "expires": expires(periods.targets),
+            "targets": targets,
+        })
+    };
     let snapshot = json!({
         "_type": "snapshot",
         "spec_version": SPEC_VERSION,
         "version": 1,
         "expires": expires(periods.snapshot),
-        "meta": {
-            "targets.json": { "version": 1 },
-            "packages.json": { "version": 1 },
-        },
+        "meta": meta,
     });
     let snapshot = envelope(&snapshot, keys.snapshot)?;
     let timestamp = json!({
@@ -217,7 +257,7 @@ pub fn build(
         ),
         (
             "metadata/1.packages.json".into(),
-            envelope(&delegated, keys.packages)?,
+            envelope(&delegated(listed), keys.packages)?,
         ),
         ("metadata/1.snapshot.json".into(), snapshot),
         (
@@ -225,7 +265,49 @@ pub fn build(
             envelope(&timestamp, keys.timestamp)?,
         ),
     ]);
+    if let Some(key) = keys.models {
+        files.push((
+            format!("metadata/1.{MODELS}.json"),
+            envelope(&delegated(model_targets), key)?,
+        ));
+    }
     Ok(files)
+}
+
+/// `models` as the `models` role's targets, each path new to `names`.
+fn listed_models(
+    models: &[Model],
+    names: &mut BTreeSet<String>,
+) -> Result<Map<String, Value>, String> {
+    let mut listed = Map::new();
+    for model in models {
+        if !model.path.ends_with(crate::models::EXTENSION) {
+            return Err(format!("{} is not a model's path", model.path));
+        }
+        if !names.insert(model.path.clone()) {
+            return Err(format!("{} is in the repository twice", model.path));
+        }
+        listed.insert(
+            model.path.clone(),
+            json!({
+                "length": model.length,
+                "hashes": { "sha256": hex(&model.sha256) },
+                "custom": { "kai": model.kai },
+            }),
+        );
+    }
+    Ok(listed)
+}
+
+/// A terminating delegation of `paths` to the role `name`, signed by `key`.
+fn delegation(name: &str, key: &Key, paths: &str) -> Value {
+    json!({
+        "name": name,
+        "keyids": [key.id()],
+        "threshold": 1,
+        "terminating": true,
+        "paths": [paths],
+    })
 }
 
 /// `keys` as a role's `keys` map: each key's id to its public key.
@@ -277,5 +359,53 @@ mod tests {
              224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"
         );
         assert_eq!(key.id(), hex(&sha256(&canonical(&key.public()).unwrap())));
+    }
+
+    fn model() -> Model {
+        Model {
+            path: "tiny.gguf".into(),
+            length: 4096,
+            sha256: [7; 32],
+            kai: json!({ "name": "Tiny" }),
+        }
+    }
+
+    fn paths(files: &[(String, Vec<u8>)]) -> Vec<&str> {
+        files.iter().map(|(p, _)| p.as_str()).collect()
+    }
+
+    #[test]
+    fn a_devices_own_repository_signs_no_models() {
+        let key = Key::from_seed([1; Seed::BYTES]);
+        let local = build(&[], &Keys::one(&key), Time(0), ADR_0008).unwrap();
+        assert!(paths(&local).iter().all(|p| !p.contains(MODELS)));
+        let with = build_with_models(&[], &[model()], &Keys::one(&key), Time(0), ADR_0008);
+        assert!(with.is_err(), "no models key, no models");
+    }
+
+    #[test]
+    fn a_models_key_signs_each_model_without_its_bytes() {
+        let key = Key::from_seed([1; Seed::BYTES]);
+        let models_key = Key::from_seed([2; Seed::BYTES]);
+        let keys = Keys {
+            models: Some(&models_key),
+            ..Keys::one(&key)
+        };
+        let files = build_with_models(&[], &[model()], &keys, Time(0), ADR_0008).unwrap();
+        assert!(paths(&files).iter().all(|p| !p.starts_with("targets/")));
+        let (_, role) = files
+            .iter()
+            .find(|(p, _)| p == "metadata/1.models.json")
+            .unwrap();
+        let role: Value = serde_json::from_slice(role).unwrap();
+        let target = &role["signed"]["targets"]["tiny.gguf"];
+        assert_eq!(target["length"], 4096);
+        assert_eq!(target["hashes"]["sha256"], hex(&[7; 32]));
+        assert_eq!(role["signatures"][0]["keyid"], models_key.id());
+        let not_a_model = Model {
+            path: "tiny.kpkg".into(),
+            ..model()
+        };
+        assert!(build_with_models(&[], &[not_a_model], &keys, Time(0), ADR_0008).is_err());
     }
 }

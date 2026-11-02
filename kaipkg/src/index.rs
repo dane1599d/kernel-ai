@@ -206,7 +206,7 @@ fn strings(kai: &Map<String, Value>, key: &str) -> Result<Vec<String>, String> {
 }
 
 /// The SHA-256 `target` names, which every index entry has.
-fn sha256(target: &TargetFile) -> Result<Sha, String> {
+pub(crate) fn sha256(target: &TargetFile) -> Result<Sha, String> {
     target
         .hashes
         .iter()

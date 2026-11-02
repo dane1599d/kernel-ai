@@ -170,6 +170,9 @@ pub enum SelfTest {
     /// The editor app's window on the desktop, opened by the agent's door, typed
     /// into and built in the background (P4 task 11).
     AppEditor,
+    /// The editor opens a file of the person's own, saves it through the file door and
+    /// the shell, and `undo` puts it back (P4 task 11).
+    AppEditorFiles,
     /// The System monitor's window on the desktop, given a sample of the machine
     /// and closed from its control (P4 task 9).
     UiMonitor,
@@ -192,6 +195,10 @@ pub enum SelfTest {
     DeskStandingRefused,
     /// S05-1's budgets timed on the real `desktop` (P3's exit case).
     DeskPerf,
+    /// A profile applied exactly, switched by a focus change, undone (P3's exit case).
+    DeskProfile,
+    /// Every resource-profile floor refused by the kernel (P3's exit case).
+    DeskProfileFloor,
     /// The keyboard reaches an app's widgets (key input for uikit apps).
     UiKeys,
     DeskTerm,
@@ -377,6 +384,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=desk-catalog" => Some(SelfTest::DeskCatalog),
             "test=ui-window" => Some(SelfTest::UiWindow),
             "test=app-editor" => Some(SelfTest::AppEditor),
+            "test=app-editor-files" => Some(SelfTest::AppEditorFiles),
             "test=ui-monitor" => Some(SelfTest::UiMonitor),
             "test=desk-nap" => Some(SelfTest::DeskNap),
             "test=desk-appearance" => Some(SelfTest::DeskAppearance),
@@ -387,6 +395,8 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=desk-standing" => Some(SelfTest::DeskStanding),
             "test=desk-standing-refused" => Some(SelfTest::DeskStandingRefused),
             "test=desk-perf" => Some(SelfTest::DeskPerf),
+            "test=desk-profile" => Some(SelfTest::DeskProfile),
+            "test=desk-profile-floor" => Some(SelfTest::DeskProfileFloor),
             "test=ui-keys" => Some(SelfTest::UiKeys),
             "test=desk-term" => Some(SelfTest::DeskTerm),
             "test=desk-agent" => Some(SelfTest::DeskAgent),
@@ -479,6 +489,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DeskCatalog
             | SelfTest::UiWindow
             | SelfTest::AppEditor
+            | SelfTest::AppEditorFiles
             | SelfTest::UiMonitor
             | SelfTest::DeskNap
             | SelfTest::KeepRunning { .. }
@@ -487,6 +498,8 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DeskStanding
             | SelfTest::DeskStandingRefused
             | SelfTest::DeskPerf
+            | SelfTest::DeskProfile
+            | SelfTest::DeskProfileFloor
             | SelfTest::UiKeys
             | SelfTest::DeskTerm
             | SelfTest::DeskAgent
@@ -630,6 +643,13 @@ pub fn plan(test: SelfTest) -> Option<String> {
                 plan.push_str(crate::agent_desk_tests::DESK);
                 kabi::plan::SHELL_DESK
             }
+            // The editor saves through the shell's file rows, so its shell has `files`
+            // and a route to `desktop`; the editor itself is planned after the shell.
+            SelfTest::AppEditorFiles => {
+                plan.push('\n');
+                plan.push_str(crate::app_editor_files_tests::DESKTOP);
+                kabi::plan::SHELL_DESK_FILES
+            }
             // Settings reads what the shell saved, so its shell has a state
             // directory as well as the desktop.
             SelfTest::AppSettings => {
@@ -728,6 +748,10 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
         plan.push('\n');
         plan.push_str(crate::ui_tests::PLAN);
     }
+    if test == SelfTest::AppEditorFiles {
+        plan.push('\n');
+        plan.push_str(kabi::plan::EDITOR);
+    }
     if test == SelfTest::AppEditor {
         plan.push('\n');
         plan.push_str(&crate::app_editor_tests::plan());
@@ -751,6 +775,14 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
     if test == SelfTest::DeskPerf {
         plan.push('\n');
         plan.push_str(crate::desk_perf_tests::PLAN);
+    }
+    if test == SelfTest::DeskProfile {
+        plan.push('\n');
+        plan.push_str(crate::desk_profile_tests::PLAN);
+    }
+    if test == SelfTest::DeskProfileFloor {
+        plan.push('\n');
+        plan.push_str(crate::profile_floor_tests::PLAN);
     }
     if test == SelfTest::UiKeys {
         plan.push('\n');

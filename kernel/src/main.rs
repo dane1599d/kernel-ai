@@ -21,6 +21,7 @@ mod act_tests;
 mod agent_desk_tests;
 mod allow;
 mod apic;
+mod app_editor_files_tests;
 mod app_editor_tests;
 mod app_route_tests;
 mod app_settings_tests;
@@ -50,6 +51,7 @@ mod cpu;
 mod default_tests;
 mod demand_tests;
 mod desk_perf_tests;
+mod desk_profile_tests;
 mod desk_tests;
 mod desk_tour_tests;
 mod devhost;
@@ -97,6 +99,7 @@ mod mem_tests;
 mod memory;
 mod metrics;
 mod model;
+mod model_import_tests;
 mod model_tests;
 mod nap_tests;
 mod net;
@@ -112,6 +115,7 @@ mod pointer;
 mod port;
 mod power;
 mod process;
+mod profile_floor_tests;
 mod profile_tests;
 mod qemu;
 mod saved_tests;
@@ -394,6 +398,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::DeskCatalog => run_case(catalog_tests::check),
         SelfTest::UiWindow => run_case(ui_tests::check),
         SelfTest::AppEditor => run_case(app_editor_tests::check),
+        SelfTest::AppEditorFiles => run_case(app_editor_files_tests::check),
         SelfTest::UiMonitor => run_case(app_window_tests::monitor_check),
         SelfTest::DeskNap => run_case(nap_tests::check),
         SelfTest::KeepRunning { reread } => run_case(|| keep_tests::check(reread)),
@@ -402,6 +407,8 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::DeskStanding => run_case(standing_tests::check),
         SelfTest::DeskStandingRefused => run_case(standing_tests::refused_check),
         SelfTest::DeskPerf => run_case(desk_perf_tests::check),
+        SelfTest::DeskProfile => run_case(desk_profile_tests::check),
+        SelfTest::DeskProfileFloor => run_case(profile_floor_tests::check),
         SelfTest::UiKeys => run_case(keys_tests::check),
         SelfTest::DeskTerm => run_case(term_tests::check),
         SelfTest::DeskAgent => run_case(agent_desk_tests::agent_check),
@@ -447,7 +454,11 @@ extern "C" fn boot_continue() -> ! {
             slots::on_boot(true);
             test_exit(ExitCode::Success)
         }
-        SelfTest::Update => slots::update_case(),
+        // The model channel's steps restart into no slot (P4 task 10).
+        SelfTest::Update => match model_import_tests::step() {
+            Some(step) => run_case(|| model_import_tests::check(step)),
+            None => slots::update_case(),
+        },
         SelfTest::Probation => slots::probation_case(),
         SelfTest::None => slots::on_boot(false),
         SelfTest::Boot => {}
