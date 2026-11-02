@@ -12,7 +12,7 @@ use crate::{Fault, Instance, Reason};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use kabi::live::{kind, phase};
+use kabi::live::{is_package_label, kind, phase};
 
 impl<E: Env> Host<E> {
     /// Starts from the kernel's ledger: finishes a swap a dead host left open,
@@ -78,7 +78,33 @@ impl<E: Env> Host<E> {
                 }
             }
         };
+        let mode = Self::follow_pkg(&mut core, mode)?;
         Ok(Self { core, mode })
+    }
+
+    /// `pkg` names the package version a `start=pkg` app runs; after an undo
+    /// withdrew the one the ledger still names active, it may name another.
+    /// That one is swapped in and committed at once, with no probation, since
+    /// the withdrawn one must not answer first; the state moves and the
+    /// candidate is checked as in any swap, and a swap it fails leaves the old
+    /// version serving, as any rollback does. Only a package version replaces
+    /// a package version: a build the person swapped in stays.
+    fn follow_pkg(core: &mut Core<E>, mode: Mode<E::Instance>) -> Result<Mode<E::Instance>, Exit> {
+        let named = core.settings.version.clone();
+        let Mode::Serving(active) = mode else {
+            return Ok(mode);
+        };
+        if active.label == named || !is_package_label(&named) || !is_package_label(&active.label) {
+            return Ok(Mode::Serving(active));
+        }
+        let was = active.label.clone();
+        let (mode, reply) = crate::swap::swap(core, active, &named, false, false)?;
+        let reply = String::from_utf8_lossy(&reply).into_owned();
+        core.env.log(&format!(
+            "{} runs {was} but pkg names {named}: {reply}",
+            core.name
+        ));
+        Ok(mode)
     }
 
     /// A fresh start on the configured version, or on the fallback when that one
