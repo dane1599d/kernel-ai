@@ -19,6 +19,7 @@ pub mod compose;
 pub mod damage;
 pub mod desk;
 pub mod effects;
+pub mod files;
 pub mod geom;
 pub mod keymap;
 pub mod lease;
@@ -46,6 +47,9 @@ mod paint_tests;
 
 #[cfg(test)]
 mod agent_tests;
+
+#[cfg(test)]
+mod files_tests;
 
 #[cfg(test)]
 mod lease_tests;
