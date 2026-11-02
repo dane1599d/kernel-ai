@@ -10,7 +10,7 @@ use comp_settings_ui::{
     TABS, THEME, View, WINDOW_ON, build, clock, diff, on_ui, redraw,
 };
 use uikit::layout::FixedAdvance;
-use uikit::widget::{UiEvent, Value};
+use uikit::widget::{UiEvent, Value, Widget};
 use uikit::window::Window;
 
 const GRANTS: &str = "notes\tnotes_add\tallowed\nbrowser\tnet_fetch\tallowed\n";
@@ -131,12 +131,31 @@ fn appearance_controls_give_appearance_set() {
     assert_eq!(intent, None);
 }
 
+/// Which app the list highlights, if any.
+fn highlighted(tree: &[Entry]) -> Option<u32> {
+    tree.iter().find_map(|e| match e.widget {
+        Widget::ItemList { selected, .. } if e.id == APP_LIST => Some(selected),
+        _ => None,
+    })?
+}
+
 #[test]
-fn revoke_needs_a_chosen_app_and_names_its_row() {
+fn revoke_needs_a_drawn_app_and_names_its_row() {
     let s = settings();
     let mut view = View::page(1);
-    build(&s, &mut view);
+    // Before the page is drawn nothing is shown, so a press names nothing.
     assert_eq!(on_ui(&s, &mut view, &UiEvent::Pressed(REVOKE)).1, None);
+    // Drawn, it shows the first app (browser, by name) and that app's rows.
+    build(&s, &mut view);
+    assert_eq!(view.app.as_deref(), Some("browser"));
+    assert_eq!(
+        on_ui(&s, &mut view, &UiEvent::Pressed(REVOKE)).1,
+        Some(Intent::Revoke {
+            app: "browser".into(),
+            row: "net_fetch".into()
+        })
+    );
+    // A choice moves to another app and its rows.
     on_ui(&s, &mut view, &UiEvent::Changed(APP_LIST, Value::Index(1)));
     assert_eq!(view.app.as_deref(), Some("notes"));
     build(&s, &mut view);
@@ -152,6 +171,41 @@ fn revoke_needs_a_chosen_app_and_names_its_row() {
     assert_eq!(on_ui(&s, &mut view, &UiEvent::Pressed(RESTORE)).1, None);
     on_ui(&s, &mut view, &UiEvent::Changed(APP_LIST, Value::Index(9)));
     assert_eq!(view.app, None);
+}
+
+#[test]
+fn the_first_app_is_chosen_and_highlighted_until_another_is() {
+    let s = settings();
+    let mut view = View::page(1);
+    let tree = build(&s, &mut view);
+    assert_eq!(view.app.as_deref(), Some("browser"));
+    assert_eq!(highlighted(&tree), Some(0));
+    assert!(names(&tree).iter().any(|n| n == "net_fetch: allowed"));
+    // An app chosen earlier stays chosen across draws.
+    on_ui(&s, &mut view, &UiEvent::Changed(APP_LIST, Value::Index(1)));
+    let tree = build(&s, &mut view);
+    assert_eq!(view.app.as_deref(), Some("notes"));
+    assert_eq!(highlighted(&tree), Some(1));
+    // One that has gone from the list falls back to the first.
+    view.app = Some("gone".into());
+    let tree = build(&s, &mut view);
+    assert_eq!(view.app.as_deref(), Some("browser"));
+    assert_eq!(highlighted(&tree), Some(0));
+}
+
+#[test]
+fn no_apps_means_the_plain_line_and_no_chosen_app() {
+    let s = Settings::default();
+    let mut view = View::page(1);
+    view.app = Some("notes".into());
+    let tree = build(&s, &mut view);
+    assert_eq!(view.app, None);
+    assert_eq!(highlighted(&tree), None);
+    assert!(
+        names(&tree)
+            .iter()
+            .any(|n| n == "No app has anything to allow or withhold.")
+    );
 }
 
 const MORE_GRANTS: &str = "notes\tnotes_add\tallowed\n\

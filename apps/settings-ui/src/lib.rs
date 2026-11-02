@@ -191,6 +191,8 @@ fn appearance(s: &Settings, tree: &mut Vec<Entry>) {
 fn access(s: &Settings, view: &mut View, tree: &mut Vec<Entry>) {
     view.shown.apps.clear();
     if s.access.is_empty() {
+        view.app = None;
+        view.shown.grants = Slots::default();
         tree.push(entry(
             NO_ACCESS,
             PAGE,
@@ -228,10 +230,15 @@ fn access(s: &Settings, view: &mut View, tree: &mut Vec<Entry>) {
         tree.push(item);
     }
     more(tree, MORE_APPS, s.access.len() - view.shown.apps.len());
+    // The page opens on the first app, so its rows show without a choice first;
+    // so does an app chosen earlier that is no longer listed. A press names
+    // what is shown, so the app is set here, not only by a choice.
     let selected = view
         .app
         .as_ref()
-        .and_then(|name| view.shown.apps.iter().position(|n| n == name));
+        .and_then(|name| view.shown.apps.iter().position(|n| n == name))
+        .or_else(|| (!view.shown.apps.is_empty()).then_some(0));
+    view.app = selected.map(|i| view.shown.apps[i].clone());
     if let Widget::ItemList { selected: at, .. } = &mut tree[list].widget {
         *at = selected.map(|i| i as u32);
     }

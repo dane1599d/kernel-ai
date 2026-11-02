@@ -99,8 +99,9 @@ pub fn check() -> Result<(), &'static str> {
     // A person's keys in two windows, a gesture the OS can tell from the
     // agent's: a key in the fixture queues its one `fs_list` and the OS runs it;
     // in Settings, `tab right right tab ret` removes the rule from the Rules
-    // page; `tab left tab down tab ret` revokes that row and the next key in the
-    // fixture is refused; `tab tab tab ret` restores it and the one after runs;
+    // page; `tab left tab tab ret` revokes that row (the page has chosen the
+    // first app) and the next key in the fixture is refused; `tab tab tab ret`
+    // restores it and the one after runs;
     // `tab left tab ret` presses the Theme button; and `tab tab tab right right
     // right right tab spc` goes round to the Updates page and its switch, which
     // turns the restart window on. Each change is read back from the shell

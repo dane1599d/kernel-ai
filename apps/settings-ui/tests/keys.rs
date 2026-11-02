@@ -156,8 +156,9 @@ fn the_boot_cases_two_key_sequences_in_one_session() {
 }
 
 /// The keys that revoke an app's row in Settings and give it back, as the boot
-/// case sends them: `tab right tab down tab ret` to the Revoke button of the
-/// only app, then, once the row shows withheld, `tab tab tab ret` to Restore.
+/// case sends them: `tab right tab tab ret` to the Revoke button of the first
+/// app, which the page has chosen without a key, then, once the row shows
+/// withheld, `tab tab tab ret` to Restore.
 #[test]
 fn a_row_is_revoked_and_restored_by_keys() {
     let access = comp_settings::access::parse("fixture-window\tfs_list\tallowed\n").unwrap();
@@ -166,14 +167,7 @@ fn a_row_is_revoked_and_restored_by_keys() {
         ..settings()
     });
     let mut sent = Vec::new();
-    for key in [
-        Key::Tab,
-        Key::Right,
-        Key::Tab,
-        Key::Down,
-        Key::Tab,
-        Key::Enter,
-    ] {
+    for key in [Key::Tab, Key::Right, Key::Tab, Key::Tab, Key::Enter] {
         sent.extend(w.key(key));
     }
     let revoke = Intent::Revoke {
@@ -197,10 +191,40 @@ fn a_row_is_revoked_and_restored_by_keys() {
     );
 }
 
+/// With two apps listed the page starts on the first, and Down in the list
+/// moves to the second and its rows: the Revoke button that follows names it.
+#[test]
+fn down_in_the_list_moves_to_the_next_app_and_its_rows() {
+    let access =
+        comp_settings::access::parse("alpha\talpha_row\tallowed\nbeta\tbeta_row\tallowed\n")
+            .unwrap();
+    let mut w = Keyed::new(Settings {
+        access,
+        ..settings()
+    });
+    for key in [Key::Tab, Key::Right, Key::Tab] {
+        assert!(w.key(key).is_empty());
+    }
+    assert_eq!(w.view.app.as_deref(), Some("alpha"));
+    assert!(w.key(Key::Down).is_empty());
+    assert_eq!(w.view.app.as_deref(), Some("beta"));
+    let mut sent = Vec::new();
+    for key in [Key::Tab, Key::Enter] {
+        sent.extend(w.key(key));
+    }
+    assert_eq!(
+        sent,
+        [Intent::Revoke {
+            app: "beta".into(),
+            row: "beta_row".into(),
+        }]
+    );
+}
+
 /// Everything the boot case sends to Settings' window, in its order, with the
 /// OS's answers applied between: the removal of the rule the case added, the
 /// revoke and the restore of the fixture's row, then the theme, then the restart
-/// window. QEMU names them `tab right right tab ret`, `tab left tab down tab ret`,
+/// window. QEMU names them `tab right right tab ret`, `tab left tab tab ret`,
 /// `tab tab tab ret`, `tab left tab ret` and `tab tab tab right right right right
 /// tab spc`.
 #[test]
@@ -232,14 +256,7 @@ fn the_boot_cases_whole_session_in_settings_window() {
     // Back one page, to what apps can do.
     let revoke = one(run(
         &mut w,
-        &[
-            Key::Tab,
-            Key::Left,
-            Key::Tab,
-            Key::Down,
-            Key::Tab,
-            Key::Enter,
-        ],
+        &[Key::Tab, Key::Left, Key::Tab, Key::Tab, Key::Enter],
     ));
     assert!(matches!(revoke, Intent::Revoke { .. }), "{revoke:?}");
     w.apply(&revoke);

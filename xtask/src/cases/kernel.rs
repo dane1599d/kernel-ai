@@ -460,7 +460,7 @@ pub(super) const CASES: &[TestCase] = &[
             // the restart window.
             &["alt-tab", "tab", "ret"],
             &["tab", "right", "right", "tab", "ret"],
-            &["tab", "left", "tab", "down", "tab", "ret"],
+            &["tab", "left", "tab", "tab", "ret"],
             &["tab", "ret"],
             &["tab", "tab", "tab", "ret"],
             &["tab", "ret"],
