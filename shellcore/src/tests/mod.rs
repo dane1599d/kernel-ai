@@ -145,6 +145,8 @@ pub(super) struct FakeTriggers {
     pub runs: RefCell<Vec<(u64, String, String, bool)>>,
     /// The owner's answer: `Err` when it finds no live rule covering a firing.
     pub refuse: RefCell<Option<String>>,
+    /// The event box's lines waiting to be read.
+    pub waiting: RefCell<String>,
 }
 
 impl crate::standing::Triggers for FakeTriggers {
@@ -165,6 +167,10 @@ impl crate::standing::Triggers for FakeTriggers {
             .borrow_mut()
             .push((rule, action.into(), app.into(), undo));
         Ok(())
+    }
+
+    fn waiting(&self) -> String {
+        core::mem::take(&mut *self.waiting.borrow_mut())
     }
 }
 

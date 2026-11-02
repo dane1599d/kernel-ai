@@ -18,10 +18,11 @@ use user::{println, sys};
 
 user::entry!(main);
 
-const W: u32 = 300;
-const H: u32 = 200;
-const BUFFER: u32 = W * H * 4;
-const POOL: u32 = 4096 + 2 * BUFFER;
+/// Each window's content, unless `size=WxH` on the plan line says another
+/// (`desk-perf` drags an 800x600 one, as S05-1's scene (b) did), at most
+/// [`MAX_SIDE`] a side.
+const DEFAULT: Size = Size { w: 300, h: 200 };
+const MAX_SIDE: u32 = 1600;
 const CALL_MS: u64 = 5_000;
 /// How often it asks `desktop` for its events.
 const POLL_MS: u64 = 20;
@@ -32,12 +33,42 @@ const WINDOWS: [(u32, u32, u32, &str, u32); 2] = [
     (10, 12, 11, "Right", 0xFF8A_4F2B),
 ];
 
+#[derive(Clone, Copy)]
+struct Size {
+    w: u32,
+    h: u32,
+}
+
+impl Size {
+    fn from_args() -> Size {
+        let args = user::args();
+        let asked = user::arg(&args, "size").and_then(|s| {
+            let (w, h) = s.split_once('x')?;
+            Some(Size {
+                w: w.parse().ok()?,
+                h: h.parse().ok()?,
+            })
+        });
+        let fits = |side: u32| (1..=MAX_SIDE).contains(&side);
+        asked.filter(|s| fits(s.w) && fits(s.h)).unwrap_or(DEFAULT)
+    }
+
+    fn buffer(self) -> u32 {
+        self.w * self.h * 4
+    }
+
+    fn pool(self) -> u32 {
+        4096 + 2 * self.buffer()
+    }
+}
+
 fn main() -> i32 {
     let Some(route) = user::route(0) else {
         println!("deskdemo: no route to desktop");
         return 1;
     };
-    let pages = u64::from(POOL).div_ceil(4096);
+    let size = Size::from_args();
+    let pages = u64::from(size.pool()).div_ceil(4096);
     let Ok(shm) = sys::shm_create(pages) else {
         println!("deskdemo: no memory for its pool");
         return 1;
@@ -50,10 +81,10 @@ fn main() -> i32 {
     let pool =
         unsafe { core::slice::from_raw_parts_mut(address as *mut u32, pages as usize * 1024) };
     for (n, window) in WINDOWS.iter().enumerate() {
-        let start = (4096 + n as u32 * BUFFER) as usize / 4;
-        pool[start..start + (W * H) as usize].fill(window.4);
+        let start = (4096 + n as u32 * size.buffer()) as usize / 4;
+        pool[start..start + (size.w * size.h) as usize].fill(window.4);
     }
-    if !open(route, shm) {
+    if !open(route, shm, size) {
         return 1;
     }
     println!("deskdemo: opened Left and Right");
@@ -85,7 +116,7 @@ fn main() -> i32 {
             }
         }
         if restarted {
-            if open(route, shm) {
+            if open(route, shm, size) {
                 open_now = [true; 2];
                 println!("deskdemo: reopened Left and Right after desktop restarted");
             }
@@ -106,7 +137,7 @@ fn main() -> i32 {
 
 /// Opens both windows on the pool `shm`, sending `desktop` a copy of the
 /// handle so the pool stays this client's for another `desktop` later.
-fn open(route: Handle, shm: Handle) -> bool {
+fn open(route: Handle, shm: Handle, size: Size) -> bool {
     let rights = Rights::MAP | Rights::READ | Rights::TRANSFER;
     let Ok(copy) = sys::handle_dup(shm, rights) else {
         println!("deskdemo: cannot copy its pool's handle");
@@ -122,9 +153,10 @@ fn open(route: Handle, shm: Handle) -> bool {
             id: 2,
         },
     ));
-    requests.push((2, Request::PoolCreate { size: POOL }));
+    requests.push((2, Request::PoolCreate { size: size.pool() }));
+    let (w, h) = (size.w, size.h);
     for (n, (surface, toplevel, buffer, title, _)) in WINDOWS.iter().enumerate() {
-        let offset = 4096 + n as u32 * BUFFER;
+        let offset = 4096 + n as u32 * size.buffer();
         requests.extend([
             (
                 REGISTRY,
@@ -140,24 +172,16 @@ fn open(route: Handle, shm: Handle) -> bool {
                 Request::PoolBuffer {
                     id: *buffer,
                     offset,
-                    width: W,
-                    height: H,
-                    stride: W * 4,
+                    width: w,
+                    height: h,
+                    stride: w * 4,
                     format: Format::Xrgb8888,
                 },
             ),
             (*surface, Request::GetToplevel { id: *toplevel }),
             (*toplevel, Request::SetTitle(title)),
             (*surface, Request::Attach { buffer: *buffer }),
-            (
-                *surface,
-                Request::DamageBuffer(Rect {
-                    x: 0,
-                    y: 0,
-                    w: W,
-                    h: H,
-                }),
-            ),
+            (*surface, Request::DamageBuffer(Rect { x: 0, y: 0, w, h })),
             (*surface, Request::Commit),
         ]);
     }
