@@ -356,7 +356,7 @@ const ACTS: &[(&str, &str)] = &[
         r#"{"name":"model_list","arguments":{}}"#,
     ),
     (
-        "import the model on the attached disk",
+        "fetch the model from the attached disk",
         r#"{"name":"model_fetch","arguments":{"source":"disk"}}"#,
     ),
     (

@@ -7,7 +7,7 @@
 //!
 //! - "list the AI models" (`model_list`) shows `fixture` in use and
 //!   `fixture-2` signed but not stored;
-//! - "import the model on the attached disk" (`model_fetch`) asks once, as a
+//! - "fetch the model from the attached disk" (`model_fetch`) asks once, as a
 //!   row with no undo does; the trusted path allows it, and `updated` stores
 //!   the disk's bytes only once their length and SHA-256 are the target's;
 //! - "use the fixture-2 model" (`model_use`) runs, since the line names it:
@@ -21,7 +21,7 @@ use alloc::string::String;
 use termcore::menu::{self, Answer};
 
 const LIST: &str = "list the AI models";
-const IMPORT: &str = "import the model on the attached disk";
+const IMPORT: &str = "fetch the model from the attached disk";
 const CALL_MS: u64 = 60_000;
 /// How long `updated` may take to list once it is up, and then to store the
 /// import, under TCG.
