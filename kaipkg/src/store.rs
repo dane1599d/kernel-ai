@@ -19,12 +19,11 @@
 //! store mounted after a crash carries on.
 
 use crate::bundle::{self, HEADER};
-use crate::effects;
 use crate::generation::{Generation, Installed, Time};
 use crate::header::Header;
 use crate::resolve::{self, Entry, Want};
 use crate::version::Version;
-use crate::{Sha, hex, sha256, unhex};
+use crate::{Sha, app, effects, hex, sha256, unhex};
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -114,6 +113,12 @@ pub enum Refused {
     HeaderDiffers(String),
     /// The app's artifact declares other effects than its index entry lists.
     EffectsDiffer(String),
+    /// The app's artifact is another component than the package or its window
+    /// (`app::service`), so it would run as another app.
+    AnotherApp(String),
+    /// The package is pinned: the image's apps, which the plan names, stay
+    /// installed (v0.1); updating, undoing and switching back still work.
+    Pinned(String),
     /// The package failed a probation before; `force` installs it anyway.
     Failed(String),
     NoGeneration(u64),
@@ -373,9 +378,13 @@ impl Store {
                         && h.version == entry.version
                         && h.depends == entry.depends =>
                 {
-                    effects::check(&h, &got, &entry.effects)
-                        .is_err()
-                        .then(|| Refused::EffectsDiffer(entry.name.clone()))
+                    if effects::check(&h, &got, &entry.effects).is_err() {
+                        Some(Refused::EffectsDiffer(entry.name.clone()))
+                    } else {
+                        app::service(&h, &got)
+                            .is_err()
+                            .then(|| Refused::AnotherApp(entry.name.clone()))
+                    }
                 }
                 _ => Some(Refused::HeaderDiffers(entry.name.clone())),
             }
@@ -461,18 +470,24 @@ impl Store {
     }
 
     /// Removes `name` and the dependencies nothing else needs, and switches.
-    /// `provided` are the OS's `kai:*` packages, as for [`Store::install`].
+    /// `provided` are the OS's `kai:*` packages, as for [`Store::install`];
+    /// `pinned` are what may not be removed, for v0.1 the image's apps, which
+    /// the plan names.
     pub fn remove(
         &self,
         cx: &mut Ctx<'_>,
         index: &[Entry],
         provided: &[(&str, Version)],
+        pinned: &[&str],
         name: &str,
     ) -> Result<u64, Error> {
         let cur = current(cx.vol)?;
         let now = generation(cx.vol, cur)?;
         if !now.packages.iter().any(|p| p.explicit && p.name == name) {
             return refuse(Refused::NotInstalled(name.into()));
+        }
+        if pinned.contains(&name) {
+            return refuse(Refused::Pinned(name.into()));
         }
         let keep: Vec<Want<'_>> = now
             .packages

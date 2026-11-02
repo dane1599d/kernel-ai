@@ -5,6 +5,7 @@ extern crate std;
 mod building;
 mod command;
 mod fake;
+mod file;
 mod journal;
 mod restart;
 mod rules;

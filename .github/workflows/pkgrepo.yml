@@ -2,7 +2,8 @@
 # `cargo xtask pkgrepo build` packs the built-in apps and writes a TUF repository
 # signed by a fresh test root; python-tuf 7.0.1's client (CI only, ADR 0011
 # question 3) verifies it, downloads every package, and refuses one with a
-# changed byte. Host only: no VM and no model. Runs on pull requests and pushes
+# changed byte, and finds every model of xtask/models.json in the `models`
+# role. Host only: no VM and no model. Runs on pull requests and pushes
 # to main that change the packer or kaipkg, and by hand.
 name: pkgrepo
 
@@ -13,11 +14,13 @@ on:
     paths:
       - xtask/src/pkgrepo/**
       - kaipkg/**
+      - xtask/models.json
       - .github/workflows/pkgrepo.yml
   pull_request:
     paths:
       - xtask/src/pkgrepo/**
       - kaipkg/**
+      - xtask/models.json
       - .github/workflows/pkgrepo.yml
 
 permissions:

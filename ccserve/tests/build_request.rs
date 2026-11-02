@@ -105,7 +105,7 @@ fn local_publishes_and_checks_an_apps_artifact() {
     assert_eq!(published.name, "greeter");
     let checked = kaipkg::local::check(&mut vol, &key, kaipkg::PROVIDED).unwrap();
     assert!(checked.refused.is_empty(), "{:?}", checked.refused);
-    let next = kaipkg::local::next(&mut vol, &key, kaipkg::PROVIDED, "greeter").unwrap();
+    let next = kaipkg::local::next(&mut vol, Some(&key), kaipkg::PROVIDED, "greeter").unwrap();
     assert_eq!(next.to_string(), "0.0.2");
 
     let source = APP

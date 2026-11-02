@@ -30,6 +30,28 @@ struct Served<'d> {
     /// The call `fs` stops at, as a crash there would: it and every later one
     /// fail without reaching the server.
     stop_at: usize,
+    /// The waits `pkg` has made on Busy.
+    waits: u32,
+    /// After this many waits the other caller's action commits, if it ever does.
+    other_commits_after: Option<u32>,
+}
+
+/// Another caller of `fs`, as the shell is.
+const OTHER: u64 = 8;
+
+impl Served<'_> {
+    fn other(&mut self, request: Request) -> Reply {
+        self.now += 1_000;
+        let bytes = fsproto::encode_request(&request);
+        let answer = self.server.call(&Call {
+            caller: OTHER,
+            badge: HOME_USER,
+            rights: DIR_RIGHTS,
+            request: &bytes,
+            now: self.now,
+        });
+        fsproto::decode_reply(&answer.reply).unwrap()
+    }
 }
 
 impl Transport for Served<'_> {
@@ -58,6 +80,17 @@ impl Transport for Served<'_> {
     }
 
     fn close(&mut self, _: Badge) {}
+
+    fn wait_ms(&mut self, ms: u64) {
+        self.now += ms;
+        self.waits += 1;
+        if self.other_commits_after == Some(self.waits) {
+            assert!(matches!(
+                self.other(Request::Commit),
+                Reply::Committed { .. }
+            ));
+        }
+    }
 }
 
 /// The store over a server started on `disk`, rooted at `/home/user` (the
@@ -69,6 +102,8 @@ fn volume(disk: &mut MemDisk) -> FsVolume<Served<'_>> {
         now: 0,
         calls: 0,
         stop_at: usize::MAX,
+        waits: 0,
+        other_commits_after: None,
     };
     FsVolume::new(served, (HOME_USER, DIR_RIGHTS))
 }
@@ -145,6 +180,41 @@ fn names(vol: &mut dyn Volume, n: u64) -> Vec<String> {
         .iter()
         .map(|p| p.name.clone())
         .collect()
+}
+
+/// The boot race: the shell's first change holds `fs` in its action as `pkg`
+/// sets its store up. `fs` answers `pkg` Busy until the action commits, and the
+/// store is set up once it has.
+#[test]
+fn the_store_is_set_up_once_another_callers_action_lets_fs_go() {
+    let mut disk = MemDisk::new(16 * 1024);
+    let mut vol = volume(&mut disk);
+    assert_eq!(
+        vol.transport.other(Request::Begin { action: 9 }),
+        Reply::Done
+    );
+    vol.transport.other_commits_after = Some(3);
+    with(&mut vol, 100, |store, cx| {
+        assert_eq!(store.setup(cx, Vec::new()), Ok(true));
+    });
+    assert_eq!(vol.transport.waits, 3);
+    assert!(store::generation(&mut vol, 1).is_ok());
+}
+
+/// An action that never ends is waited out, about 10 s, then Busy is the
+/// store's error, as any other of `fs`'s is.
+#[test]
+fn busy_for_longer_than_the_bound_is_an_error() {
+    let mut disk = MemDisk::new(16 * 1024);
+    let mut vol = volume(&mut disk);
+    assert_eq!(
+        vol.transport.other(Request::Begin { action: 9 }),
+        Reply::Done
+    );
+    with(&mut vol, 100, |store, cx| {
+        assert!(store.setup(cx, Vec::new()).is_err());
+    });
+    assert_eq!(vol.transport.waits, kaipkg::fsvol::BUSY_TRIES);
 }
 
 #[test]

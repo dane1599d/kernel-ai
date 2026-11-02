@@ -114,6 +114,12 @@ impl Files {
                 close(file);
                 text
             }
+            FsRead::Whole(path) => {
+                let file = open(home, path, How::Existing, Rights::READ)?;
+                let text = read_whole(file);
+                close(file);
+                text
+            }
             FsRead::History(path) => {
                 let file = open(home, path, How::Existing, Rights::READ)?;
                 let answer = ask(file, Request::History);
@@ -343,6 +349,28 @@ pub const KEEP: &str = "keep";
 pub const APPEARANCE: &str = "appearance";
 /// The rows withheld from apps' effects (`kai-withheld 1`, P4 task 7).
 pub const WITHHELD: &str = "withheld";
+/// The restart window (`kai-updates 1`), in the folder `updated`'s read-only
+/// `dir=restart` gives it alone.
+pub const RESTART: &str = "restart/window";
+const _: () = {
+    let (path, folder, file) = (
+        RESTART.as_bytes(),
+        bootslot::window::FOLDER.as_bytes(),
+        bootslot::window::FILE.as_bytes(),
+    );
+    assert!(path.len() == folder.len() + 1 + file.len());
+    let mut i = 0;
+    while i < folder.len() {
+        assert!(path[i] == folder[i]);
+        i += 1;
+    }
+    assert!(path[folder.len()] == b'/');
+    let mut j = 0;
+    while j < file.len() {
+        assert!(path[folder.len() + 1 + j] == file[j]);
+        j += 1;
+    }
+};
 
 impl State {
     /// File `name` as `/system/state` holds it; `None` with no such file or no
@@ -497,6 +525,37 @@ fn read_all(file: Handle) -> Result<String, String> {
         }
     }
     Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// A whole file as text, for the editor's door: never cut short, so a file over
+/// [`shellcore::door::MAX_BYTES`] is an error, not a prefix, and one that is not
+/// text is an error, not a lossy copy that a save would then write over it.
+fn read_whole(file: Handle) -> Result<String, String> {
+    let mut bytes = Vec::new();
+    loop {
+        let request = Request::Read {
+            off: bytes.len() as u64,
+            len: fsproto::MAX_DATA as u32,
+        };
+        match ask(file, request)?.0 {
+            Reply::Data(data) if data.is_empty() => break,
+            Reply::Data(data) => {
+                let short = data.len() < fsproto::MAX_DATA;
+                bytes.extend_from_slice(&data);
+                if bytes.len() > shellcore::door::MAX_BYTES {
+                    return Err(format!(
+                        "the file is over {} KiB, which the editor opens",
+                        shellcore::door::MAX_BYTES / 1024
+                    ));
+                }
+                if short {
+                    break;
+                }
+            }
+            other => return Err(unexpected(&other)),
+        }
+    }
+    String::from_utf8(bytes).map_err(|_| String::from("the file is not text"))
 }
 
 fn write_all(file: Handle, bytes: &[u8]) -> Result<(), String> {

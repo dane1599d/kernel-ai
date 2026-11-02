@@ -48,6 +48,8 @@ pub struct Source {
     /// The earliest time the next sample may be taken, in milliseconds.
     next_ms: u64,
     reply: Vec<u8>,
+    /// Whether the log has said that the first sample reached the app.
+    said: bool,
 }
 
 impl Source {
@@ -56,6 +58,7 @@ impl Source {
             llm: user::route(1),
             next_ms: 0,
             reply: alloc::vec![0u8; REPLY],
+            said: false,
         }
     }
 
@@ -97,14 +100,21 @@ impl Source {
         }
         let sample = self.sample();
         self.next_ms = now_ms.saturating_add(PERIOD_MS);
+        let bytes = sample.as_ref().map(Vec::len);
         let answered = crate::ui::serve_shown(host, |core| {
             for ticket in core.take_system() {
                 core.system_sample(ticket, sample.clone())?;
             }
             Ok(())
         });
-        if answered.is_none() {
-            println!("comphost: the system sample did not reach the app");
+        match (answered, bytes) {
+            (None, _) => println!("comphost: the system sample did not reach the app"),
+            // Said once, so a log shows that the app was given the machine.
+            (Some(_), Ok(len)) if !self.said => {
+                self.said = true;
+                println!("comphost: the first system sample reached the monitor ({len} bytes)");
+            }
+            _ => {}
         }
         true
     }

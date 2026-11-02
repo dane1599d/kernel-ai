@@ -8,6 +8,7 @@
 
 use super::{TestCase, UpdateDisk, case};
 use crate::blklog::Data;
+use crate::disk::Fixture;
 
 /// A `kai-data` disk for `fs`, so `updated` has `/system/trust` and
 /// `/system/updates`; one per chained case, kept across its boots.
@@ -149,10 +150,13 @@ const B_UP: TestCase = boot(
         "slots: next boot kai-b",
     ],
 );
-/// `update-stage` boot 2: `updated` in A checks the Update calls, writes B and
-/// restarts into it.
+/// `update-stage` boot 2: `updated` in A checks the Update calls, the import
+/// disk's among them, writes B and restarts into it. The import disk holds a
+/// GGUF file and no disk is `kai-model`, so the kernel must not take it for
+/// the model (P4 task 10).
 const A_UPDATES: TestCase = TestCase {
     then: Some(&B_UP),
+    import: Some(Fixture::Gguf),
     ..boot(
         "update-stage (2: updated stages kai-b)",
         "test=update panic=reset",
@@ -160,7 +164,9 @@ const A_UPDATES: TestCase = TestCase {
             "slots: up in kai-a (trial, 2 tries left)",
             "updated: slots R ",
             "this boot runs in A",
+            "block: kai-import disk holds a GGUF file; a disk with a role is never the model",
             "updated: SLOT_WRITE refuses the active slot, and R from a trial slot",
+            "updated: the import disk reads, 4104 sectors of a GGUF file, and SLOT_WRITE refuses it",
             "updated: BOOTREC_SET refuses a bad record and arming a slot being written",
             "updated: staged B as release 2: ",
             "update: restarting into kai-b",
@@ -395,7 +401,7 @@ const W_B: TestCase = TestCase {
     )
 };
 /// `update-window` boot 2: `updated` stages B without restarting, reads
-/// `/system/settings` through its read-only `dir=settings`, then restarts into
+/// `/system/state/restart` through its read-only `dir=restart`, then restarts into
 /// B inside the restart window (`window=now`, from the current minute) after
 /// a heads-up.
 const W_STAGE: TestCase = TestCase {
@@ -408,12 +414,31 @@ const W_STAGE: TestCase = TestCase {
         &[
             "updated: wrote release 2 into B and checked its sha256",
             "updated: took update snapshot ",
-            "updated: /system/settings has no updates.cbor",
+            "updated: no restart window is saved",
             "updated: release 2 is staged in B; the restart window is ",
             "updated: restarting into B in 2 s, inside the restart window",
             "updated: restarting into B in the restart window",
             "update: restarting into kai-b",
         ],
+    )
+};
+
+/// `model-import` boot 2: the store's hint names the fixture, which the kernel
+/// maps from the store and `llm` cannot run, so its trial rolls back.
+const M_TRIAL: TestCase = TestCase {
+    expect: &[
+        "model: 2101245 bytes reserved for the model store's model; fs fills them",
+        "updated: model 73174ba39c9a is on trial",
+        "updated: model 73174ba39c9a rolled back: it did not load: ",
+    ],
+    server: false,
+    data: Some(DATA),
+    // The imported fixture is now the store's model: the boot reserves its
+    // runs only with the memory a case with that store gets (`store:`).
+    memory_mib: Some(crate::disk::memory_mib_for(crate::disk::GGUF_LEN as u64)),
+    ..case(
+        "model-import (2: the fixture's trial rolls back)",
+        "test=update updated=probation",
     )
 };
 
@@ -451,6 +476,23 @@ pub(super) const CASES: &[TestCase] = &[
         then: Some(&A_FROM_DISK),
         data: Some(DATA),
         ..boot("update-disk", "test=slot panic=reset", INSTALL)
+    },
+    // The model channel (P4 task 10): the import disk's fixture, a target of the
+    // signed `models` role, is imported into the store and used from the next
+    // restart; that boot judges its trial.
+    TestCase {
+        then: Some(&M_TRIAL),
+        data: Some(DATA),
+        import: Some(Fixture::Gguf),
+        expect: &[
+            "block: kai-import disk holds a GGUF file; a disk with a role is never the model",
+            "updated: models: 5 signed, 0 stored",
+            "updated: ok importing fixture 2101245",
+            "updated: imported fixture (73174ba39c9a), 2101245 bytes",
+            "updated: model_use fixture: the next restart uses it, on trial",
+        ],
+        server: false,
+        ..case("model-import", "test=update updated=models")
     },
     // The restart window (P4 question 10): staged, then a restart only inside it.
     TestCase {

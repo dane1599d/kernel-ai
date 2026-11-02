@@ -18,14 +18,15 @@ impl Repository {
     }
 }
 
-/// notes' artifact around a stub module: the real manifest and action rows.
+/// The Notes window's artifact, package `notes`'s, around a stub module: the
+/// real manifest and action rows.
 fn notes_artifact() -> Vec<u8> {
     let root = crate::workspace_root();
     let module = Vec::from(&b"\0asm\x01\0\0\0"[..]);
-    let source = artifact::bundle(&[("components/notes/src/lib.rs", b"//")]);
+    let source = artifact::bundle(&[("components/notes-window/src/lib.rs", b"//")]);
     components::pack(
         &root,
-        &components::NOTES_RECIPE,
+        &components::NOTES_WINDOW_RECIPE,
         APPS[0].label,
         module,
         &source,
@@ -45,6 +46,7 @@ pub(super) fn keys(base: u8) -> Keys {
         snapshot: key(2),
         timestamp: key(3),
         packages: key(4),
+        models: key(5),
     }
 }
 
@@ -77,19 +79,21 @@ fn an_app_whose_parts_disagree_is_refused() {
     let artifact = notes_artifact();
     let app = |name, summary, licence| App {
         name,
-        label: "2",
         summary,
         licence,
-        wit: components::NOTES_RECIPE.wit[0],
+        ..APPS[0]
     };
     let refused = |app: App, bytes: &[u8], why: &str| {
         let err = pack(&root, &app, bytes).err().expect("refused");
         assert!(err.contains(why), "{err}");
     };
     refused(
-        app("memo", "Notes", "MPL-2.0"),
+        App {
+            component: "memo-window",
+            ..app("memo", "Notes", "MPL-2.0")
+        },
         &artifact,
-        "is component notes",
+        "is component notes-window",
     );
     refused(
         app("notes", "Notes", "MIT"),
@@ -110,10 +114,111 @@ fn an_app_whose_parts_disagree_is_refused() {
     );
 }
 
+/// The Notes window, `comp/notes-window/1.wasm` on the boot drive, around a
+/// stub module: its real manifest and action rows.
+fn notes_window() -> (App, Vec<u8>) {
+    let version = components::VERSIONS
+        .iter()
+        .find(|v| v.recipe.component == "notes-window")
+        .unwrap();
+    let module = Vec::from(&b"\0asm\x01\0\0\0"[..]);
+    let source = artifact::bundle(&[("components/notes-window/src/lib.rs", b"//")]);
+    let root = crate::workspace_root();
+    let artifact = components::pack(&root, &version.recipe, version.label, module, &source);
+    let app = App {
+        name: "notes",
+        component: "notes-window",
+        label: version.label,
+        summary: "Plain-text notes the AI can read and write",
+        licence: "MPL-2.0",
+        wit: version.recipe.wit,
+    };
+    (app, artifact.unwrap())
+}
+
+#[test]
+fn a_window_packs_as_its_apps_package_and_runs_as_the_window() {
+    let (app, artifact) = notes_window();
+    let package = pack(&crate::workspace_root(), &app, &artifact).unwrap();
+    assert_eq!(package.header.name, "notes");
+    assert_eq!(package.header.kind, Kind::App);
+    let service = kaipkg::app::service(&package.header, &package.bytes);
+    assert_eq!(service, Ok(Some("notes-window".into())));
+    // The window fronts Notes' rows, so they keep Notes' prefix.
+    assert!(!package.actions.is_empty());
+    assert!(package.actions.iter().all(|a| a.starts_with("notes_")));
+    let repo = tuf::build(&[package], &keys(1), NOW).unwrap();
+    let (kept, refused) = image(repo).unwrap();
+    assert_eq!(
+        (kept, refused),
+        (vec!["notes-1.0.0.kpkg".to_string()], vec![])
+    );
+}
+
+#[test]
+fn a_package_carries_only_its_own_window() {
+    let root = crate::workspace_root();
+    let (app, artifact) = notes_window();
+    let files = App {
+        name: "files",
+        component: "files-window",
+        ..notes_window().0
+    };
+    let err = pack(&root, &files, &artifact).err().unwrap();
+    assert!(
+        err.contains("the artifact is component notes-window"),
+        "{err}"
+    );
+    let other = App {
+        component: "files-window",
+        ..app
+    };
+    let err = pack(&root, &other, &artifact).err().unwrap();
+    assert!(err.contains("not files-window"), "{err}");
+}
+
+#[test]
+fn every_built_in_package_is_the_boot_drives_build_byte_for_byte() {
+    // comphost grants Settings, the Monitor, the Terminal and the editor only to
+    // code it fetched under a boot label, so the image's package of each app must
+    // be that very artifact, never one the packer built again.
+    let root = crate::workspace_root();
+    let versions: Vec<crate::esp::Module> = APPS
+        .iter()
+        .map(|app| {
+            let version = components::VERSIONS
+                .iter()
+                .find(|v| v.recipe.component == app.component && v.label == app.label)
+                .unwrap_or_else(|| panic!("{} is not on the boot drive", app.component));
+            let module = Vec::from(&b"\0asm\x01\0\0\0"[..]);
+            let source = artifact::bundle(&[("src/lib.rs", app.name.as_bytes())]);
+            let bytes = components::pack(&root, &version.recipe, app.label, module, &source);
+            crate::esp::Module {
+                path: format!("comp/{}/{}.wasm", app.component, app.label),
+                bytes: bytes.unwrap(),
+            }
+        })
+        .collect();
+    let packages = pack_all(&root, &versions).unwrap();
+    assert_eq!(packages.len(), APPS.len());
+    for ((package, version), app) in packages.iter().zip(&versions).zip(APPS) {
+        let files = kaipkg::bundle::files(&package.bytes).unwrap();
+        let (_, artifact) = files.iter().find(|(p, _)| *p == ARTIFACT).unwrap();
+        assert_eq!(*artifact, &version.bytes[..], "{}", app.name);
+        let service = kaipkg::app::service(&package.header, &package.bytes);
+        assert_eq!(service, Ok(Some(app.component.to_string())));
+        assert!(
+            kaipkg::app::may_run_as(app.name, app.component),
+            "{}",
+            app.name
+        );
+    }
+}
+
 #[test]
 fn a_missing_boot_version_is_named() {
     let err = pack_all(&crate::workspace_root(), &[]).err().unwrap();
-    assert_eq!(err, "comp/notes/2.wasm was not built");
+    assert_eq!(err, "comp/notes-window/1.wasm was not built");
 }
 
 /// What a TUF client checks (TUF 1.0.37 §5), over `repo` at `now`: each role
@@ -309,6 +414,7 @@ fn the_repository_verifies_as_a_tuf_client_would() {
     assert_eq!(
         paths,
         [
+            "metadata/1.models.json",
             "metadata/1.packages.json",
             "metadata/1.root.json",
             "metadata/1.snapshot.json",
@@ -388,7 +494,7 @@ fn each_role_expires_after_adr_0008s_period() {
 }
 
 /// `path`'s JSON with `edit` applied, written canonically and not signed again.
-fn edited_json(repo: &Repository, path: &str, edit: impl Fn(&mut Value)) -> Repository {
+pub(super) fn edited_json(repo: &Repository, path: &str, edit: impl Fn(&mut Value)) -> Repository {
     tampered(repo, path, |bytes| {
         let mut value: Value = serde_json::from_slice(bytes).unwrap();
         edit(&mut value);

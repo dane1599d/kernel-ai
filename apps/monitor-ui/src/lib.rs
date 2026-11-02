@@ -1,11 +1,13 @@
 //! The System monitor's window on `kai:ui` (ADR 0005 section 4): the machine's
-//! numbers, a sort row, the process table, the model's line and a Stop button.
+//! numbers, a sort row, the process table, the model's line and a hint.
 //! The tree is rebuilt whole from the model after each event and [`diff`]ed
 //! against the last one, as Notes' is.
 //!
-//! The sort buttons are bound to the app's own `monitor_sort`, and Stop to the
-//! OS's `process_stop`, so the user reads, the agent sees and the log says the
-//! same words. Process names are the system's data and are drawn as text.
+//! The sort buttons are bound to the app's own `monitor_sort`, so the user reads,
+//! the agent sees and the log says the same words. There is no Stop button:
+//! stopping a process is the OS's `process_stop`, which asks, and no app may
+//! declare it as an effect, so the hint says to ask Kai. Process names are the
+//! system's data and are drawn as text.
 
 #![no_std]
 
@@ -15,7 +17,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
-use comp_monitor::{Monitor, Os, Sort, Status, tame, view};
+use comp_monitor::{Monitor, Sort, Status, tame, view};
 pub use comp_ui_bind::tree::{Change, Entry, diff};
 use comp_ui_bind::tree::{column, entry, label, row, wide};
 use uikit::style::{Tone, TypeStyle};
@@ -34,8 +36,6 @@ pub const SORT_PID: NodeId = 10;
 pub const REFRESH: NodeId = 11;
 pub const TABLE: NodeId = 12;
 pub const MODEL: NodeId = 13;
-pub const ACTIONS: NodeId = 14;
-pub const STOP: NodeId = 15;
 pub const HINT: NodeId = 16;
 pub const STATUS: NodeId = 17;
 /// The window's size when it opens, in logical px.
@@ -84,11 +84,18 @@ fn model_line(mon: &Monitor) -> String {
 fn status(mon: &Monitor) -> (String, Tone) {
     match mon.status() {
         Status::Failed(why) => (why.clone(), Tone::Error),
-        Status::Done(what) => (what.clone(), Tone::Ok),
-        Status::Ready if mon.busy() => (String::from("Reading…"), Tone::Muted),
         Status::Ready => (format!("{} processes", mon.procs().len()), Tone::Muted),
     }
 }
+
+/// A row's layout: as wide as its parent, with a gap between its children, so a
+/// count does not run into the uptime after it, nor a sort button into the next.
+fn spaced() -> Layout {
+    Layout { gap: GAP, ..wide() }
+}
+
+/// The gap between a row's children, in logical px.
+const GAP: u16 = 8;
 
 /// The whole tree for this model, parents before children.
 pub fn build(mon: &Monitor) -> Vec<Entry> {
@@ -105,9 +112,8 @@ pub fn build(mon: &Monitor) -> Vec<Entry> {
         })
         .collect();
     let hint = match mon.selected() {
-        Some(p) if p.exact => format!("Stops every process named {}", tame(&p.name, 32)),
-        Some(_) => String::from("This name cannot be stopped from here"),
-        None => String::from("Pick a process to stop it"),
+        Some(p) => format!("To stop {}, ask Kai; it asks you first", tame(&p.name, 32)),
+        None => String::from("Pick a process; to stop it, ask Kai"),
     };
     let (text, tone) = status(mon);
     alloc::vec![
@@ -117,7 +123,7 @@ pub fn build(mon: &Monitor) -> Vec<Entry> {
             column(12, 8),
             Widget::Stack { axis: Axis::Column }
         ),
-        entry(SUMMARY, COLUMN, wide(), row()),
+        entry(SUMMARY, COLUMN, spaced(), row()),
         entry(
             CPUS,
             SUMMARY,
@@ -150,7 +156,7 @@ pub fn build(mon: &Monitor) -> Vec<Entry> {
                 done: view::used_permille(mon.memory()),
             },
         ),
-        entry(BAR, COLUMN, wide(), row()),
+        entry(BAR, COLUMN, spaced(), row()),
         entry(SORT_CPU, BAR, Layout::FIT, sort_button(mon, Sort::Cpu)),
         entry(
             SORT_MEMORY,
@@ -191,19 +197,9 @@ pub fn build(mon: &Monitor) -> Vec<Entry> {
             wide(),
             label(&model_line(mon), TypeStyle::Body, Tone::Normal),
         ),
-        entry(ACTIONS, COLUMN, wide(), row()),
-        entry(
-            STOP,
-            ACTIONS,
-            Layout::FIT,
-            Widget::Button {
-                text: String::from("Stop"),
-                action: Some(String::from("process_stop")),
-            },
-        ),
         entry(
             HINT,
-            ACTIONS,
+            COLUMN,
             wide(),
             label(&hint, TypeStyle::Small, Tone::Muted)
         ),
@@ -212,7 +208,7 @@ pub fn build(mon: &Monitor) -> Vec<Entry> {
 }
 
 /// Handles one event from the window; whether the tree may have changed.
-pub fn on_ui(mon: &mut Monitor, os: &mut dyn Os, e: &UiEvent) -> bool {
+pub fn on_ui(mon: &mut Monitor, e: &UiEvent) -> bool {
     match e {
         UiEvent::Pressed(SORT_CPU) => mon.press_sort(Sort::Cpu),
         UiEvent::Pressed(SORT_MEMORY) => mon.press_sort(Sort::Memory),
@@ -221,7 +217,6 @@ pub fn on_ui(mon: &mut Monitor, os: &mut dyn Os, e: &UiEvent) -> bool {
         // The component reads a new sample after every event, so there is
         // nothing for the model to do: the press only redraws.
         UiEvent::Pressed(REFRESH) => {}
-        UiEvent::Pressed(STOP) => mon.stop_selected(os),
         UiEvent::Changed(TABLE, Value::Index(i)) => return mon.select_index(*i as usize),
         _ => return false,
     }

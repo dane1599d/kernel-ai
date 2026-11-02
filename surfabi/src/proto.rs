@@ -364,6 +364,10 @@ pub enum Event<'a> {
         interface: &'a str,
         version: u32,
     },
+    /// The desktop's theme, by name (`look`'s shipped themes): at connect and
+    /// after each change, for the client to paint in. A name it does not know
+    /// leaves it as it is. Only `Global` (opcode 0) is a greeting.
+    Theme(&'a str),
     // buffer
     Release,
     // surface
@@ -418,6 +422,7 @@ impl<'a> Event<'a> {
                 interface: r.string()?,
                 version: r.uint()?,
             },
+            (I::Registry, 1) => Event::Theme(r.string()?),
             (I::Buffer, 0) => Event::Release,
             (I::Surface, 0) => Event::PreferredScale(r.uint()?),
             (I::Surface, 1) => Event::Enter,
@@ -473,6 +478,7 @@ impl<'a> Event<'a> {
                 interface,
                 version,
             } => w(0).uint(name).string(interface).uint(version),
+            Event::Theme(name) => w(1).string(name),
             Event::Release => w(0),
             Event::PreferredScale(scale) => w(0).uint(scale),
             Event::Enter => w(1),

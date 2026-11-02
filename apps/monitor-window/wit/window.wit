@@ -1,15 +1,12 @@
 /// The System monitor as its manifest names it: a live component with its window,
-/// its two actions, and the granted reading of the machine. It stops a process
-/// only through an effect, so it has no storage and no clock of its own.
+/// its two actions, and the granted reading of the machine. It queues no effect
+/// and keeps nothing in storage, so it has no clock of its own either.
 package app:monitor-window@1.0.0;
 
-/// The one OS row the app queues as an effect, and the only one the agent core
-/// runs for it (effects are deny-by-default): `process_stop`, which asks the
-/// user first.
-/// kai: effects=process_stop
+/// It queues no effect: the agent core runs only the file rows for an app, and
+/// stopping a process is the OS's `process_stop`, which asks.
 world monitor-window {
     include kai:app/component@0.1.0;
-    import kai:app/effects@0.1.0;
     import kai:ui/view@0.1.1;
     import kai:system/system@0.1.0;
     export kai:ui/input@0.1.1;

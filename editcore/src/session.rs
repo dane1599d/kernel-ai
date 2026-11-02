@@ -60,6 +60,14 @@ impl File {
                 ending,
             });
         }
+        // An empty file is one empty line, so there is a line to type into; it
+        // writes back as the same no bytes.
+        if lines.is_empty() {
+            lines.push(Line {
+                text: String::new(),
+                ending: Ending::None,
+            });
+        }
         if lines.len() > MAX_LINES {
             return Err(format!("{path} has more than {MAX_LINES} lines"));
         }
@@ -475,6 +483,14 @@ impl Session {
         self.line = snapshot.line;
         self.built = None;
         true
+    }
+
+    /// Takes the text as it stands for the version as opened (a file just saved):
+    /// nothing is changed against it, and `reset` comes back to it. The edits
+    /// already made cannot be undone any more.
+    pub fn keep(&mut self) {
+        self.original = self.to_bundle();
+        self.undo.clear();
     }
 
     /// Back to the version as opened.

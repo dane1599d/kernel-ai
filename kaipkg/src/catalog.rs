@@ -130,7 +130,7 @@ pub fn rows(installed: &[Index], image: &[Index], mirror: &[Index]) -> Vec<Row> 
 /// Characters that reorder or hide the text around them: the bidirectional
 /// controls and the zero-width ones. A summary drawn as data loses them, so it
 /// shows what it says.
-fn reorders(c: char) -> bool {
+pub(crate) fn reorders(c: char) -> bool {
     matches!(c, '\u{061C}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2069}' | '\u{FEFF}')
 }
 

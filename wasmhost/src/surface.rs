@@ -153,14 +153,22 @@ pub struct Seat {
 }
 
 impl Seat {
-    /// `seat.modifiers(mask)`.
+    /// `seat.modifiers(mask)`: what is held when the window gains the seat, and
+    /// every change after it. It is for a button's modifiers (a Ctrl-click) and a
+    /// start; a key says its own.
     pub fn modifiers(&mut self, mask: u32) {
         self.mods = Mods((mask & 0xF) as u8);
     }
 
     /// One ring event as `uikit` input; none for what a window does not take
-    /// (frame and buffer events, other buttons, horizontal wheels).
-    pub fn input(&self, event: &Event) -> Option<Input> {
+    /// (frame and buffer events, other buttons, horizontal wheels). A key carries
+    /// the modifiers held with it in its `x` (shift 1, ctrl 2, alt 4, super 8, in the
+    /// 24.8 place; a modifier key's own event includes its change), because the
+    /// seat's message comes by another road at another time: read before the ring
+    /// it left a Ctrl-B plain (TCG), and read after it, it put back what the ring
+    /// had already let go of (KVM). The key's mods are also the seat's from then on,
+    /// for the button that follows.
+    pub fn input(&mut self, event: &Event) -> Option<Input> {
         let Event::Input {
             event,
             x,
@@ -185,6 +193,7 @@ impl Seat {
             },
             Kind::Wheel if code == 0 => Input::Wheel { at, dy: value },
             Kind::Key => {
+                self.mods = Mods(((x >> 8) & 0xF) as u8);
                 let typed = text.get(..usize::from(*len)).unwrap_or(&[]);
                 Input::Key {
                     key: Key::from_hid(code),

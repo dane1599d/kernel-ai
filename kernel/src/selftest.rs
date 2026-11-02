@@ -29,6 +29,9 @@ pub enum ActCase {
     /// `app-terminal` (P4 task 4): the agent types into the Terminal app and a
     /// person's Enter runs the line.
     AppTerminal,
+    /// `app-models` (P4 task 10): the agent lists, imports and uses a model,
+    /// and `undo` puts the one before back.
+    AppModels,
     /// `profile-switch` (P3 task 12): profiles through the supervisor.
     Profile,
 }
@@ -170,8 +173,20 @@ pub enum SelfTest {
     DeskCatalog,
     /// An app's kai:ui window on the desktop, closed from its control (P3 task 9).
     UiWindow,
+    /// The editor app's window on the desktop, opened by the agent's door, typed
+    /// into and built in the background (P4 task 11).
+    AppEditor,
+    /// The editor opens a file of the person's own, saves it through the file door and
+    /// the shell, and `undo` puts it back (P4 task 11).
+    AppEditorFiles,
+    /// The System monitor's window on the desktop, given a sample of the machine
+    /// and closed from its control (P4 task 9).
+    UiMonitor,
     /// An unused app naps and a click wakes it (P3 task 12b).
     DeskNap,
+    /// A saved appearance repaints `desktop` at once and holds across its
+    /// restart (P4 task 8).
+    DeskAppearance,
     /// Settings' keep-running switch, shell only, kept across a reboot (P4
     /// task 7): boot 1, then boot 2 (`reread`).
     KeepRunning {
@@ -181,13 +196,30 @@ pub enum SelfTest {
     DeskCard,
     /// A standing instruction fired by Notes' window minimized and restored (P3 task 11).
     DeskStanding,
+    /// No standing instruction from text the AI read, and no firing outside
+    /// the rule allowed (P3's exit case).
+    DeskStandingRefused,
+    /// S05-1's budgets timed on the real `desktop` (P3's exit case).
+    DeskPerf,
+    /// A profile applied exactly, switched by a focus change, undone (P3's exit case).
+    DeskProfile,
+    /// Every resource-profile floor refused by the kernel (P3's exit case).
+    DeskProfileFloor,
     /// The keyboard reaches an app's widgets (key input for uikit apps).
     UiKeys,
     DeskTerm,
     /// `desk-agent` (P3 task 10): the agent opens Notes and acts inside it.
     DeskAgent,
+    /// The v0.1 system as the default boot plans it: the desktop, the Apps
+    /// sheet's catalogue, and an app opened (`desk-default`).
+    DeskDefault,
+    /// The same system with no memory left for an app: opening it says so
+    /// (`desk-no-memory`).
+    DeskNoMemory,
     /// The Settings app on the desktop, its window kept from the agent (P4 task 7).
     AppSettings,
+    /// `test=desk-tour`: screenshots of the desktop and its apps, not a gate.
+    DeskTour,
     /// `desk-takeover` (P3 task 10): a key in the agent's window stops it.
     DeskTakeover,
     /// `scriptrun` through a Job, and spike S01-1's M3 and M5 (P1 task 14).
@@ -290,6 +322,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=fs-trash" => Some(SelfTest::Act(ActCase::FsTrash)),
             "test=app-route" => Some(SelfTest::Act(ActCase::AppRoute)),
             "test=app-terminal" => Some(SelfTest::Act(ActCase::AppTerminal)),
+            "test=app-models" => Some(SelfTest::Act(ActCase::AppModels)),
             "test=profile-switch" => Some(SelfTest::Act(ActCase::Profile)),
             "test=fs-undo-reboot" => Some(SelfTest::Act(
                 match cmdline.split_whitespace().any(|w| w == "reread") {
@@ -358,16 +391,27 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=desk-panel-shell" => Some(SelfTest::DeskPanelShell),
             "test=desk-catalog" => Some(SelfTest::DeskCatalog),
             "test=ui-window" => Some(SelfTest::UiWindow),
+            "test=app-editor" => Some(SelfTest::AppEditor),
+            "test=app-editor-files" => Some(SelfTest::AppEditorFiles),
+            "test=ui-monitor" => Some(SelfTest::UiMonitor),
             "test=desk-nap" => Some(SelfTest::DeskNap),
+            "test=desk-appearance" => Some(SelfTest::DeskAppearance),
             "test=keep-running" => Some(SelfTest::KeepRunning {
                 reread: cmdline.split_whitespace().any(|w| w == "reread"),
             }),
             "test=desk-card" => Some(SelfTest::DeskCard),
             "test=desk-standing" => Some(SelfTest::DeskStanding),
+            "test=desk-standing-refused" => Some(SelfTest::DeskStandingRefused),
+            "test=desk-perf" => Some(SelfTest::DeskPerf),
+            "test=desk-profile" => Some(SelfTest::DeskProfile),
+            "test=desk-profile-floor" => Some(SelfTest::DeskProfileFloor),
             "test=ui-keys" => Some(SelfTest::UiKeys),
             "test=desk-term" => Some(SelfTest::DeskTerm),
             "test=desk-agent" => Some(SelfTest::DeskAgent),
+            "test=desk-default" => Some(SelfTest::DeskDefault),
+            "test=desk-no-memory" => Some(SelfTest::DeskNoMemory),
             "test=app-settings" => Some(SelfTest::AppSettings),
+            "test=desk-tour" => Some(SelfTest::DeskTour),
             "test=desk-takeover" => Some(SelfTest::DeskTakeover),
             "test=scriptrun" => Some(SelfTest::Scriptrun),
             "test=fpu" => Some(SelfTest::Fpu),
@@ -403,6 +447,35 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             }),
         })
         .unwrap_or(SelfTest::None)
+}
+
+/// The words after `updated`'s plan line in a test boot: `start=demand`
+/// ([`kabi::plan::ON_DEMAND`]), so it holds no memory until the shell's first
+/// model request, except in `update`, which runs a step of the update service
+/// at boot (`updated=`, `check` by default; a refusal restarts into the
+/// running slot) and takes any `updated.<word>` as a word, as `restart=window`.
+/// The default boot starts it at boot (`kabi::plan::system`), and so does
+/// `app-models`, whose first list would otherwise wait on its start.
+fn updated_words(test: SelfTest) -> String {
+    if test == SelfTest::Act(ActCase::AppModels) {
+        return String::new();
+    }
+    if test != SelfTest::Update {
+        return String::from(kabi::plan::ON_DEMAND);
+    }
+    let step = crate::cmdline()
+        .split_whitespace()
+        .find_map(|w| w.strip_prefix("updated="))
+        .unwrap_or("check");
+    let mut words = format!(" after=restart step={step}");
+    for word in crate::cmdline()
+        .split_whitespace()
+        .filter_map(|w| w.strip_prefix("updated."))
+    {
+        words.push(' ');
+        words.push_str(word);
+    }
+    words
 }
 
 /// The service plan for this boot, or None for the boots that run no user space.
@@ -453,14 +526,25 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DeskPanelShell
             | SelfTest::DeskCatalog
             | SelfTest::UiWindow
+            | SelfTest::AppEditor
+            | SelfTest::AppEditorFiles
+            | SelfTest::UiMonitor
             | SelfTest::DeskNap
             | SelfTest::KeepRunning { .. }
+            | SelfTest::DeskAppearance
             | SelfTest::DeskCard
             | SelfTest::DeskStanding
+            | SelfTest::DeskStandingRefused
+            | SelfTest::DeskPerf
+            | SelfTest::DeskProfile
+            | SelfTest::DeskProfileFloor
             | SelfTest::UiKeys
             | SelfTest::DeskTerm
             | SelfTest::DeskAgent
+            | SelfTest::DeskDefault
+            | SelfTest::DeskNoMemory
             | SelfTest::AppSettings
+            | SelfTest::DeskTour
             | SelfTest::DeskTakeover
             | SelfTest::TuneRevert
             | SelfTest::TuneStall
@@ -471,6 +555,26 @@ pub fn plan(test: SelfTest) -> Option<String> {
     );
     if !wanted {
         return None;
+    }
+    // The v0.1 system (`kabi::plan::system`): what the default boot plans, and
+    // what `desk-default` boots unchanged. With a build service (`build=`, the
+    // edit loop), the boot manifest's headless `notes`, which `:edit notes` and
+    // the editor build, and the edit service follow; without one no user sees
+    // `notes`, and it would cost 32 MiB of the admission budget at boot. The
+    // screenshot tour boots it too, so its pictures are the real boot's.
+    if matches!(
+        test,
+        SelfTest::None | SelfTest::DeskDefault | SelfTest::DeskNoMemory | SelfTest::DeskTour
+    ) {
+        let files = crate::block::has_partition(diskmap::KAI_DATA_TYPE);
+        let mut plan = kabi::plan::system::plan(&crate::llm::plan_line(), files);
+        if let Some(edit) = crate::build_service::plan_line() {
+            plan.push('\n');
+            plan.push_str(&crate::boot_manifest::plan_line());
+            plan.push('\n');
+            plan.push_str(&edit);
+        }
+        return Some(plan);
     }
     // The live, edit and manifest cases need only their services, with probation
     // ended by calls; the live case also needs llm for `:why`, and the others the
@@ -574,41 +678,43 @@ pub fn plan(test: SelfTest) -> Option<String> {
                 plan.push_str(crate::app_terminal_tests::PLAN);
                 kabi::plan::SHELL_DESK
             }
-            SelfTest::DeskAgent | SelfTest::DeskTakeover | SelfTest::AppSettings => {
+            SelfTest::DeskAgent | SelfTest::DeskTakeover | SelfTest::DeskStandingRefused => {
                 plan.push('\n');
                 plan.push_str(crate::agent_desk_tests::DESK);
                 kabi::plan::SHELL_DESK
+            }
+            // The editor saves through the shell's file rows, so its shell has `files`
+            // and a route to `desktop`; the editor itself is planned after the shell.
+            SelfTest::AppEditorFiles => {
+                plan.push('\n');
+                plan.push_str(crate::app_editor_files_tests::DESKTOP);
+                kabi::plan::SHELL_DESK_FILES
+            }
+            // Settings reads what the shell saved, so its shell has a state
+            // directory as well as the desktop.
+            SelfTest::AppSettings => {
+                plan.push('\n');
+                plan.push_str(crate::agent_desk_tests::DESK);
+                crate::app_settings_tests::SHELL
             }
             SelfTest::KeepRunning { .. } => {
                 plan.push('\n');
                 plan.push_str(crate::keep_tests::PLAN);
                 crate::keep_tests::SHELL
             }
+            // The desktop with its card, before the shell with `files` and
+            // `state` (the appearance is saved in `/system/state`) and its
+            // route to `desktop`.
+            SelfTest::DeskAppearance => {
+                plan.push('\n');
+                plan.push_str(crate::desk_tests::BOOT_PLAN);
+                crate::keep_tests::SHELL
+            }
             _ => shell,
         };
+        // `updated`, the shell's model channel, comes just before it.
         plan.push('\n');
-        plan.push_str(shell);
-    }
-    // `update` runs the update service's check once the shell is up.
-    if test == SelfTest::Update {
-        // `updated=update`: an update from the update disk in place of the
-        // check; in both, a refusal restarts into the running slot.
-        let step = crate::cmdline()
-            .split_whitespace()
-            .find_map(|w| w.strip_prefix("updated="))
-            .unwrap_or("check");
-        plan.push('\n');
-        plan.push_str(kabi::plan::UPDATED);
-        plan.push_str(" after=restart step=");
-        plan.push_str(step);
-        // `updated.<word>`: a word for `updated`'s line, as `restart=window`.
-        for word in crate::cmdline()
-            .split_whitespace()
-            .filter_map(|w| w.strip_prefix("updated."))
-        {
-            plan.push(' ');
-            plan.push_str(word);
-        }
+        plan.push_str(&kabi::plan::with_updated(shell, &updated_words(test)));
     }
     // `act-rule` stops processes the supervisor does not restart, and one
     // service it does.
@@ -662,6 +768,18 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
         plan.push('\n');
         plan.push_str(crate::ui_tests::PLAN);
     }
+    if test == SelfTest::AppEditorFiles {
+        plan.push('\n');
+        plan.push_str(kabi::plan::EDITOR);
+    }
+    if test == SelfTest::AppEditor {
+        plan.push('\n');
+        plan.push_str(&crate::app_editor_tests::plan());
+    }
+    if test == SelfTest::UiMonitor {
+        plan.push('\n');
+        plan.push_str(&crate::app_window_tests::monitor_plan());
+    }
     if test == SelfTest::DeskNap {
         plan.push('\n');
         plan.push_str(crate::nap_tests::PLAN);
@@ -669,6 +787,22 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
     if test == SelfTest::DeskStanding {
         plan.push('\n');
         plan.push_str(crate::standing_tests::PLAN);
+    }
+    if test == SelfTest::DeskStandingRefused {
+        plan.push('\n');
+        plan.push_str(crate::standing_tests::NOTES);
+    }
+    if test == SelfTest::DeskPerf {
+        plan.push('\n');
+        plan.push_str(crate::desk_perf_tests::PLAN);
+    }
+    if test == SelfTest::DeskProfile {
+        plan.push('\n');
+        plan.push_str(crate::desk_profile_tests::PLAN);
+    }
+    if test == SelfTest::DeskProfileFloor {
+        plan.push('\n');
+        plan.push_str(crate::profile_floor_tests::PLAN);
     }
     if test == SelfTest::UiKeys {
         plan.push('\n');
@@ -685,14 +819,6 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
     if test == SelfTest::AppSettings {
         plan.push('\n');
         plan.push_str(crate::app_settings_tests::APPS);
-    }
-    if test == SelfTest::None {
-        plan.push('\n');
-        plan.push_str(&crate::boot_manifest::plan_line());
-        if let Some(edit) = crate::build_service::plan_line() {
-            plan.push('\n');
-            plan.push_str(&edit);
-        }
     }
     Some(plan)
 }

@@ -2,6 +2,7 @@
 //! resolution, and the store of objects and numbered generations that `pkg`
 //! switches between.
 //!
+//! - [`app`]: the service an app package runs as, its own name or its window;
 //! - [`bundle`]: `kai-pkg 1`, length-framed files with plain relative paths;
 //! - [`catalog`]: the Apps sheet's rows, installed then offered, in
 //!   `kai-catalog 1`;
@@ -21,6 +22,7 @@
 //!   signed by its device key;
 //! - [`mirror`]: installs from the fixed `pkgrepo=` mirror, its metadata checked
 //!   with `kaituf`, its packages fetched in pieces;
+//! - [`models`]: the image's signed `models` role, the models a user may import;
 //! - [`memvol`]: the store's volume in memory;
 //! - [`fsvol`]: the store's [`store::Volume`] over `kai-fs 1`, as `pkg` holds
 //!   `/system/pkg`;
@@ -37,6 +39,7 @@ extern crate alloc;
 #[cfg(test)]
 extern crate std;
 
+pub mod app;
 pub mod bundle;
 pub mod catalog;
 pub mod effects;
@@ -48,6 +51,7 @@ pub mod index;
 pub mod local;
 pub mod memvol;
 pub mod mirror;
+pub mod models;
 pub mod resolve;
 pub mod sign;
 pub mod store;

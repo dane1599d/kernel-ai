@@ -263,6 +263,58 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("desk-standing", "test=desk-standing")
     },
+    // P3's exit case: no standing instruction from text the AI read (a note the
+    // mock model was steered by), and no firing outside the rule allowed.
+    TestCase {
+        expect: &[
+            "desk-standing-refused: the note's instruction made no rule, asked nothing, and its refusal is logged",
+            r#"supervisor: refused "service_stop(\"notes-window\")" for pid "#,
+            "desk-standing-refused: a firing outside the allowed rule was refused and logged, and nothing asked",
+        ],
+        ..case("desk-standing-refused", "test=desk-standing-refused")
+    },
+    // P3's exit case: S05-1's budgets on the real `desktop` at 1920x1080, a gate
+    // under KVM, best of two (a scene with a miss is measured once more, and a
+    // figure over budget in both runs fails it); under TCG nothing is judged.
+    TestCase {
+        gpu: true,
+        memory_mib: Some(2048),
+        min_timeout: Some(std::time::Duration::from_secs(1_200)),
+        expect: &[
+            "desk-perf: (a) full composite at 1920x1080: ",
+            "desk-perf: (b) drag render: ",
+            "desk-perf: (b) drag flush: ",
+            "desk-perf: (c) text page ",
+            "desk-perf: (e) key to flush: ",
+            "desk-perf: (f) drag under load, render+flush: ",
+            "desk-perf: the figures are in",
+        ],
+        ..case("desk-perf", "test=desk-perf display=1920x1080")
+    },
+    // P3's exit case: a profile applied exactly, switched by a real focus change
+    // through the user's rule, and undone.
+    TestCase {
+        expect: &[
+            "desk-profile: the focus rule was allowed on the card",
+            "desktop: event focus notes-window",
+            "desk-profile: focusing Notes switched to gaming: both apps went to the background, their quotas and the system untouched",
+            "desk-profile: undo put default back: both apps normal again",
+        ],
+        ..case("desk-profile", "test=desk-profile")
+    },
+    // P3's exit case: each resource-profile floor, asked for as the shell asks,
+    // refused by the kernel.
+    TestCase {
+        expect: &[
+            "desk-profile-floor: the kernel's reserve: a quota of all ",
+            "desk-profile-floor: the model holder: llm was not made background, nor its quota lowered",
+            "desk-profile-floor: the supervisor, the shell and desktop were not made background, nor their quotas lowered",
+            "desk-profile-floor: free / 2: a raise one page past the admission budget was refused, and one to it was taken",
+            "desk-profile-floor: system services' CPU share: a service holding TERM was not made background, and an app was",
+            "desk-profile-floor: every floor held, whatever the shell asked",
+        ],
+        ..case("desk-profile-floor", "test=desk-profile-floor")
+    },
     // Key input for uikit apps: the keyboard reaches Notes' widgets.
     TestCase {
         keys: &[&["tab", "tab", "ret", "tab", "tab", "h", "i"]],
@@ -326,9 +378,95 @@ pub(super) const CASES: &[TestCase] = &[
     // kept from the agent: the view shows only that it is private, and an act in
     // it is refused after a yes.
     TestCase {
+        // A writable `kai-data` disk, so the shell can save the theme the first
+        // line sets and answer Settings' `file appearance` with it.
+        data: Some(crate::blklog::Data {
+            nvme: false,
+            log: None,
+            gpt: true,
+        }),
+        // The file system service, the shell, the desktop, the terminal and
+        // Settings (32 MiB of pages each for the last) outgrew the default 512 MiB:
+        // the first boot with the data disk could not start settings-window.
+        memory_mib: Some(1024),
         keys: &[
             &[
+                "s", "w", "i", "t", "c", "h", "spc", "t", "o", "spc", "t", "h", "e", "spc", "l",
+                "i", "g", "h", "t", "spc", "t", "h", "e", "m", "e", "ret",
+            ],
+            // A standing rule, typed as the user's own line: `rules_add on
+            // time(22:00) -> app_suspend(game)`, asked on the card, and a yes.
+            &[
+                "r",
+                "u",
+                "l",
+                "e",
+                "s",
+                "shift-minus",
+                "a",
+                "d",
+                "d",
+                "spc",
+                "o",
+                "n",
+                "spc",
+                "t",
+                "i",
+                "m",
+                "e",
+                "shift-9",
+                "2",
+                "2",
+                "shift-semicolon",
+                "0",
+                "0",
+                "shift-0",
+                "spc",
+                "minus",
+                "shift-dot",
+                "spc",
+                "a",
+                "p",
+                "p",
+                "shift-minus",
+                "s",
+                "u",
+                "s",
+                "p",
+                "e",
+                "n",
+                "d",
+                "shift-9",
+                "g",
+                "a",
+                "m",
+                "e",
+                "shift-0",
+                "ret",
+            ],
+            &["y"],
+            &[
+                "o", "p", "e", "n", "spc", "f", "i", "x", "t", "u", "r", "e", "ret",
+            ],
+            &[
                 "o", "p", "e", "n", "spc", "s", "e", "t", "t", "i", "n", "g", "s", "ret",
+            ],
+            // A person's keys in the fixture's window and Settings' (the
+            // sequences are pinned in `apps/settings-ui/tests/keys.rs`): Alt+Tab
+            // raises the fixture, under the Terminal until then, and the
+            // fixture's button is pressed; remove the rule on the Rules page;
+            // revoke the fixture's row; press (refused); restore the row; press
+            // (runs); then the Theme button, and the Updates page's switch for
+            // the restart window.
+            &["alt-tab", "tab", "ret"],
+            &["tab", "right", "right", "tab", "ret"],
+            &["tab", "left", "tab", "tab", "ret"],
+            &["tab", "ret"],
+            &["tab", "tab", "tab", "ret"],
+            &["tab", "ret"],
+            &["tab", "left", "tab", "ret"],
+            &[
+                "tab", "tab", "tab", "right", "right", "right", "right", "tab", "spc",
             ],
             &[
                 "l", "o", "o", "k", "spc", "a", "t", "spc", "s", "e", "t", "t", "i", "n", "g", "s",
@@ -340,6 +478,39 @@ pub(super) const CASES: &[TestCase] = &[
             "comphost: window 1 \"Settings\" shown at 640x460",
             "\"Settings\" opened at ",
             "comphost: the first settings answer reached the app",
+            "app-settings: the theme was set before Settings opened",
+            "settings: appearance theme light",
+            "app-settings: a standing rule was added before Settings opened",
+            // The rule Settings lists, and gone once it is removed by key and
+            // the rules are read again.
+            "settings: rules 1",
+            "settings: rules 0",
+            "app-settings: ui_open started the fixture and its window opened",
+            "app-settings: keys were pressed in Settings' window",
+            // The revoke, held end to end: the fixture's `fs_list` runs, is
+            // refused after Settings revokes the row (and Settings reads back
+            // that the shell now holds it withheld), and runs again once it is
+            // restored.
+            "fixture: fs_list ok #1",
+            "settings: grants fixture-window 1 rows, 1 withheld",
+            "fixture: fs_list refused #2",
+            "fixture: fs_list ok #3",
+            // The theme after light, set by the key press and read back from the
+            // shell, and the restart window set from the page and read back
+            // through `file updates`.
+            "settings: appearance theme high-contrast",
+            "settings: restart window 02:00-05:00",
+            // What each other page was given, from the app's log (its window is
+            // private to the agent): the rules, the apps with rows, About, the
+            // profiles, the apps that can nap, the keep-running list and the
+            // restart window.
+            "settings: rules ",
+            "settings: grants ",
+            "settings: about ",
+            "settings: profiles ",
+            "settings: apps ",
+            "settings: keep running ",
+            "settings: restart window off",
             "app-settings: ui_open started Settings and its window opened",
             "desktop: the agent's ui view: ok (private window)",
             "desktop: the agent's ui act: refused (private window)",

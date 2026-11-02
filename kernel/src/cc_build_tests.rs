@@ -52,14 +52,15 @@ const SYNC_MS: u64 = 1_000;
 /// `pkg`'s publish, check and install, under TCG too.
 const BUILD_MS: u64 = 280_000;
 
-/// `pkg`'s image step, the model, `cc`, the app's line and the shell.
+/// `pkg`'s image step, the model, `cc`, the app's line, and the shell with
+/// `updated` just before it, started on demand.
 pub fn plan() -> String {
     format!(
         "{}\n{}\n{}\n{HELLO}\n{}",
         crate::pkg_tests::plan(Step::Image),
         crate::llm::plan_line(),
         kabi::plan::CC,
-        kabi::plan::SHELL_BUILD
+        kabi::plan::with_updated(kabi::plan::SHELL_BUILD, kabi::plan::ON_DEMAND)
     )
 }
 

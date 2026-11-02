@@ -208,3 +208,129 @@ fn an_app_that_exports_no_replies_is_told_nothing() {
     .unwrap();
     assert_eq!(app.edit_reply(1, Ok(Vec::new())), Ok(()));
 }
+
+/// A guest that sends "open notes" when a window event reaches it and again
+/// whenever an answer does, as an editor does with the next of its requests.
+const CHAIN: &str = r#"(module
+  (import "kai:edit/edit@0.1.0" "send" (func $send (param i32 i32) (result i32)))
+  (memory (export "memory") 1)
+  (data (i32.const 32) "open notes")
+  (global $top (mut i32) (i32.const 4096))
+  (func (export "cabi_realloc") (param i32 i32 i32 i32) (result i32)
+    (local $at i32)
+    global.get $top
+    local.set $at
+    global.get $top
+    local.get 3
+    i32.add
+    global.set $top
+    local.get $at)
+  (func (export "kai:ui/input@0.1.0#on-ui") (param i32 i32 i32 i32 i32 i32)
+    (drop (call $send (i32.const 32) (i32.const 10))))
+  (func (export "kai:edit/replies@0.1.0#on-reply") (param i32 i32 i32 i32)
+    (drop (call $send (i32.const 32) (i32.const 10)))))"#;
+
+fn chain_app() -> CoreInstance {
+    let wasm = wat::parse_str(CHAIN).unwrap();
+    load_core_granted(&wasm, LIMITS, None, granted()).unwrap()
+}
+
+/// The one message the app has queued, and whether it is a person's.
+fn only_one(app: &mut CoreInstance) -> (u32, bool) {
+    let sent = app.take_edits();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    (sent[0].ticket, sent[0].user)
+}
+
+#[test]
+fn what_an_answer_makes_the_app_send_is_the_persons_when_their_key_caused_the_message() {
+    use uikit::widget::UiEvent;
+    let mut app = chain_app();
+    let press = [UiEvent::Pressed(2)];
+    in_call(&mut app, |a| a.ui_events_user(1, &press)).unwrap();
+    let (mut ticket, user) = only_one(&mut app);
+    assert!(user);
+    // Each answer to a person's message makes the next one theirs too.
+    for _ in 0..3 {
+        in_call(&mut app, |a| a.edit_reply(ticket, Ok(Vec::new()))).unwrap();
+        // The mark is `kai:edit`'s alone: nothing else takes the answer's call
+        // for a person's (`kai:settings` reads `user_input`).
+        assert!(!app.store.data().user_input);
+        assert!(!app.last_call_by_user());
+        let (next, user) = only_one(&mut app);
+        assert!(user, "ticket {next}");
+        ticket = next;
+    }
+}
+
+#[test]
+fn an_answer_to_the_agents_message_starts_no_chain() {
+    use uikit::widget::UiEvent;
+    let mut app = chain_app();
+    // The agent's `ui_act` reaches the app as an event that is not a person's.
+    in_call(&mut app, |a| a.ui_events(1, &[UiEvent::Pressed(2)])).unwrap();
+    let (ticket, user) = only_one(&mut app);
+    assert!(!user);
+    in_call(&mut app, |a| a.edit_reply(ticket, Ok(Vec::new()))).unwrap();
+    assert!(!only_one(&mut app).1);
+    // An answer for a ticket nobody sent is no one's either.
+    in_call(&mut app, |a| a.edit_reply(4242, Ok(Vec::new()))).unwrap();
+    assert!(!only_one(&mut app).1);
+}
+
+#[test]
+fn a_chain_of_answers_ends_after_the_most_a_person_can_start() {
+    use uikit::widget::UiEvent;
+    let mut app = chain_app();
+    in_call(&mut app, |a| a.ui_events_user(1, &[UiEvent::Pressed(2)])).unwrap();
+    let (mut ticket, mut user) = only_one(&mut app);
+    let mut persons = 0;
+    for _ in 0..crate::edit::MAX_CHAIN + 4 {
+        assert!(user || persons > 0);
+        if !user {
+            break;
+        }
+        persons += 1;
+        in_call(&mut app, |a| a.edit_reply(ticket, Ok(Vec::new()))).unwrap();
+        (ticket, user) = only_one(&mut app);
+    }
+    // The key's own message and then one for each answer, up to the limit.
+    assert_eq!(persons, usize::from(crate::edit::MAX_CHAIN) + 1);
+    assert!(!user, "the message after the limit is nobody's");
+    assert!(!app.store.data().user_input);
+}
+
+#[test]
+fn an_answer_counts_once_and_a_trap_in_it_leaves_the_flag_down() {
+    use uikit::widget::UiEvent;
+    let mut app = chain_app();
+    in_call(&mut app, |a| a.ui_events_user(1, &[UiEvent::Pressed(2)])).unwrap();
+    let (ticket, _) = only_one(&mut app);
+    in_call(&mut app, |a| a.edit_reply(ticket, Ok(Vec::new()))).unwrap();
+    assert!(only_one(&mut app).1);
+    // The same answer again (a replay, a duplicate) is not the person's.
+    in_call(&mut app, |a| a.edit_reply(ticket, Ok(Vec::new()))).unwrap();
+    assert!(!only_one(&mut app).1);
+    // An app that traps while it handles the person's chain does not leave the
+    // mark up for the next call.
+    let wasm = wat::parse_str(CHAIN.replace(
+        r#"(func (export "kai:edit/replies@0.1.0#on-reply") (param i32 i32 i32 i32)"#,
+        r#"(func (export "kai:edit/replies@0.1.0#on-reply") (param i32 i32 i32 i32)
+    local.get 0
+    i32.const 1
+    i32.eq
+    if
+      unreachable
+    end"#,
+    ))
+    .unwrap();
+    let mut app = load_core_granted(&wasm, LIMITS, None, granted()).unwrap();
+    in_call(&mut app, |a| a.ui_events_user(1, &[UiEvent::Pressed(2)])).unwrap();
+    let (first, _) = only_one(&mut app);
+    in_call(&mut app, |a| a.edit_reply(first, Ok(Vec::new()))).unwrap();
+    let (second, user) = only_one(&mut app);
+    assert!(user);
+    assert!(in_call(&mut app, |a| a.edit_reply(second, Ok(Vec::new()))).is_err());
+    in_call(&mut app, |a| a.ui_events(1, &[UiEvent::Pressed(2)])).unwrap();
+    assert!(!only_one(&mut app).1);
+}

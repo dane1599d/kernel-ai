@@ -178,6 +178,20 @@ pub fn update_disk_args(name: &str) -> [String; 4] {
     ]
 }
 
+/// QEMU arguments attaching `name`, a file in `target/` as the update disk is,
+/// read-only as the import disk, by its serial (`kabi::update::IMPORT_SERIAL`).
+pub fn import_disk_args(name: &str) -> [String; 4] {
+    [
+        "-drive".into(),
+        format!("if=none,id=import,format=raw,readonly=on,file={name}"),
+        "-device".into(),
+        format!(
+            "virtio-blk-pci,drive=import,serial={}",
+            kabi::update::IMPORT_SERIAL
+        ),
+    ]
+}
+
 /// The slot cases' disk, in `target/`.
 const SLOTS_IMAGE: &str = "slots.img";
 

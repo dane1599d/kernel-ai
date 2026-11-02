@@ -132,6 +132,7 @@ impl Screen {
                     PromptKind::Find => "find",
                     PromptKind::Goto => "go to line",
                     PromptKind::Command => "command",
+                    PromptKind::OpenPath => "open file",
                 };
                 view.prompt = Some((label, text.clone()));
                 view.cursor = None;

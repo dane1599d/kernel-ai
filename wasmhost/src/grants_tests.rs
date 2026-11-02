@@ -6,7 +6,9 @@ const SETTINGS: Grants = Grants {
     settings: true,
     shell_line: false,
     system: false,
+    models: false,
     edit: false,
+    files: false,
 };
 
 #[test]
@@ -74,4 +76,21 @@ fn the_terminals_user_effects_follow_the_same_rule() {
     image.fetched("e2", [2; 32]);
     assert!(image.grants_for(&[1; 32], terminal).shell_line);
     assert!(!image.grants_for(&[2; 32], terminal).shell_line);
+}
+
+/// The model manager's list is granted as the System monitor's sample is: to
+/// the image's own version alone, never a package or upload under its name.
+#[test]
+fn the_model_list_follows_the_same_rule() {
+    let window = Grants {
+        models: true,
+        ..Grants::default()
+    };
+    let mut image = FromImage::default();
+    image.fetched("1", [1; 32]);
+    image.fetched("e2", [2; 32]);
+    image.fetched("p-0123456789ab", [3; 32]);
+    assert!(image.grants_for(&[1; 32], window).models);
+    assert!(!image.grants_for(&[2; 32], window).models);
+    assert!(!image.grants_for(&[3; 32], window).models);
 }

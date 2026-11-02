@@ -9,6 +9,7 @@
 //! line is named [`SETTINGS_APP`], and `desktop` and the shell check that name
 //! again.
 
+use crate::started::shown_serial;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -16,8 +17,8 @@ use deskcore::settings_wire::{self as wire, MAX_WAITING};
 use kabi::handle::Handle;
 use livecore::host::{Env, Host};
 use user::{println, sys};
+use wasmhost::LiveInstance;
 use wasmhost::settings_ledger::{Ledger, Owed};
-use wasmhost::{AppEvent, LiveInstance};
 
 pub use deskcore::settings_wire::SETTINGS_APP;
 
@@ -26,8 +27,6 @@ pub struct Forward {
     ledger: Ledger,
     /// Whether an answer has reached the app yet, for the one line that says so.
     told: bool,
-    /// The serial of the instance last told `started`.
-    started: Option<u64>,
 }
 
 impl Forward {
@@ -45,7 +44,6 @@ impl Forward {
         route: Handle,
         reply: &mut [u8],
     ) -> bool {
-        self.start(host);
         let mut owed = self.take(host);
         owed.extend(self.send(route, reply));
         owed.extend(self.results(route, reply));
@@ -56,24 +54,6 @@ impl Forward {
             println!("comphost: the first settings answer reached the app");
         }
         any
-    }
-
-    /// Tells the shown version it started, once for each instance shown: that
-    /// is when the app asks for what its pages show. A standby's requests are
-    /// dropped, so it could not ask any earlier (at `init`), and nothing else
-    /// tells an app it was shown.
-    fn start<E: Env<Instance = LiveInstance>>(&mut self, host: &mut Host<E>) {
-        let Some(serial) = shown_serial(host) else {
-            return;
-        };
-        if self.started == Some(serial) {
-            return;
-        }
-        self.started = Some(serial);
-        let started = crate::ui::serve_shown(host, |core| core.deliver_event(&AppEvent::Started));
-        if started.is_none() {
-            println!("comphost: the Settings app could not be told it started");
-        }
     }
 
     /// The shown version's requests; a standby's are dropped, so a rehearsed
@@ -169,17 +149,6 @@ fn give<E: Env<Instance = LiveInstance>>(host: &mut Host<E>, owed: Vec<Owed>) ->
         }
     }
     given
-}
-
-/// The serial of the shown version's instance, if one is loaded.
-fn shown_serial<E: Env<Instance = LiveInstance>>(host: &mut Host<E>) -> Option<u64> {
-    let mut serial = None;
-    host.each_instance(|instance, _, shown| {
-        if let (LiveInstance::V2(core), true) = (instance, shown) {
-            serial = Some(core.serial());
-        }
-    });
-    serial
 }
 
 /// One call to `desktop`, and its answer as text.

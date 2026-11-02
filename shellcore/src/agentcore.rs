@@ -262,6 +262,10 @@ impl Shell {
             let reply = self.pkg_call(id, request, row.name, &args.values, decision);
             return outcome(decision.tier, decision.why, reply);
         }
+        if agentabi::MODEL_ROWS.iter().any(|r| r.name == row.name) {
+            let reply = self.model_call(id, request, row.name, &args.values, decision);
+            return outcome(decision.tier, decision.why, reply);
+        }
         // A file or window row's one-line script is found among its own rows,
         // every other row's among the bound ones.
         let own = |rows: &[Action]| rows.iter().any(|r| r.name == row.name);
@@ -357,7 +361,11 @@ impl Shell {
             Why::NotEnglish => String::from("the request is not in English, so it asks first"),
             Why::Added => String::from("the request did not ask for it"),
             Why::NoUndo => String::from("it has no undo"),
-            Why::Steered(source) | Why::Outbound(source) => format!("{source} chose it"),
+            Why::Steered(source) => format!("Kai took it from {}", read_from(source)),
+            Why::Outbound(source) => format!(
+                "it would send what Kai read from {} out of this machine",
+                read_from(source)
+            ),
             Why::Ungrounded => String::from("the request did not name that site"),
             _ => String::from("it asks first"),
         };
@@ -383,6 +391,7 @@ impl Shell {
             menu: None,
             pkg: None,
             standing: None,
+            model: None,
         });
         // The highlight starts on Allow only for a call the line plainly asked for.
         let origin = match why {
@@ -602,4 +611,14 @@ fn literal(ty: &ArgType, value: &Value) -> Option<(String, String)> {
 /// text the ONCE digest names (`termcore::once::quote`).
 fn quote(s: &str) -> Option<String> {
     termcore::once::quote(s)
+}
+
+/// Where content a call was steered by came from, in words: a window's view,
+/// a file, or an app's answer, named as people know the app.
+fn read_from(source: &str) -> String {
+    match source {
+        "ui" => String::from("what a window shows"),
+        "fs" => String::from("a file"),
+        app => format!("what {} answered", crate::apps::title(app)),
+    }
 }
