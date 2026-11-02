@@ -257,7 +257,7 @@ pub(super) const CASES: &[TestCase] = &[
             "pkg: the image's notes-1.0.0.kpkg is refused: length or hash mismatch",
             "pkg: the image's repository verified, 6 kept and 1 refused; generation 1 is its packages: ",
             "pkg: generation 1 starts no app from a package",
-            "pkg-image: generation 1 holds the seven apps but notes: the tampered notes is not in it",
+            "pkg-image: generation 1 holds the six apps but notes: the tampered notes is not in it",
             "pkg-image: pkg loaded no window: no plan line here runs one from a package",
         ],
         server: false,

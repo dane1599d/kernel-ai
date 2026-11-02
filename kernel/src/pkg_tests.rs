@@ -231,7 +231,7 @@ fn image_generation(step: Step) -> Result<(), &'static str> {
     }
     match step {
         Step::ImageTampered => log!(
-            "pkg-image: generation 1 holds the seven apps but notes: the tampered notes is not in it"
+            "pkg-image: generation 1 holds the six apps but notes: the tampered notes is not in it"
         ),
         _ => log!(
             "pkg-image: generation 1 is the seven apps at 1.0.0, from the image's signed repository"
