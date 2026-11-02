@@ -350,3 +350,28 @@ fn an_app_has_at_most_eight_windows() {
     assert!(!ids[..3].contains(&again) && ui.window(again).is_ok());
     assert_eq!(ui.close(999), Err(uikit::widget::UiError::NoWindow));
 }
+
+/// A table shorter than its rows scrolls to keep the selection in view, and a
+/// click picks the row drawn under it, not the one that would be there unscrolled.
+#[test]
+fn a_click_in_a_scrolled_table_picks_the_row_it_shows() {
+    use uikit::style::metric::ROW_H;
+    let mut w = Window::new("Monitor", 300, (4 * ROW_H + 2) as u16);
+    let rows = (0..10).map(|i| vec![format!("p{i}")]).collect();
+    w.put(
+        1,
+        ROOT,
+        Layout::FILL,
+        Widget::Table {
+            label: s("Processes"),
+            columns: vec![s("Name")],
+            rows,
+            selected: Some(9),
+        },
+    )
+    .unwrap();
+    let b = w.commit(&M).a11y.iter().find(|n| n.id == 1).unwrap().bounds;
+    // Rows 7, 8 and 9 show; the first one under the heading is row 7.
+    let at = Point::new(b.x + 4, b.y + 1 + ROW_H + ROW_H / 2);
+    assert_eq!(click(&mut w, at), [UiEvent::Changed(1, Value::Index(7))]);
+}

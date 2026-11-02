@@ -315,10 +315,12 @@ impl Window {
                     out.extend(self.change(t, Value::Index(i as u32)).ok().flatten());
                 }
             }
-            Widget::Table { .. } => {
+            Widget::Table { rows, selected, .. } => {
+                let (first, shown) = crate::layout::table_window(rows.len(), selected, r.h);
                 let row = (at.y - r.y - 1) / metric::ROW_H - 1;
-                if row >= 0 {
-                    out.extend(self.change(t, Value::Index(row as u32)).ok().flatten());
+                if row >= 0 && (row as usize) < shown {
+                    let row = (first + row as usize) as u32;
+                    out.extend(self.change(t, Value::Index(row)).ok().flatten());
                 }
             }
             Widget::Tabs { labels, .. } => {
