@@ -17,13 +17,13 @@ node 7 clip 9,45 214x382
   fill 13,97 206x24 raised r0
   fill 13,97 2x24 accent r0
 node 1000 clip 10,46 212x380
-  text 13,49 body accent "docs/"
+  text 21,49 body accent "docs/"
 node 1001 clip 10,46 212x380
-  text 13,73 body accent "old/"
+  text 21,73 body accent "old/"
 node 1002 clip 10,46 212x380
-  text 13,97 body text "notes.txt"
+  text 21,97 body text "notes.txt"
 node 1003 clip 10,46 212x380
-  text 13,121 body text "photo one.png"
+  text 21,121 body text "photo one.png"
 node 9 clip 218,45 493x382
   text 233,60 heading text "notes.txt"
 node 2000 clip 230,89 469x234

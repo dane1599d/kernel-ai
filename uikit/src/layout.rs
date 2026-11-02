@@ -361,7 +361,8 @@ pub fn layout(
                     .iter()
                     .map(|&k| {
                         let h = nat.get(&k).map_or(0, |n| n.1).max(metric::ROW_H);
-                        let r = Rect::new(inner.x, y, inner.w, h);
+                        let pad = metric::ITEM_PAD;
+                        let r = Rect::new(inner.x + pad, y, (inner.w - 2 * pad).max(0), h);
                         y += h;
                         (k, r, clip.intersect(&inner))
                     })
