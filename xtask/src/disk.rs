@@ -22,7 +22,7 @@ const MIB: u64 = 1024 * 1024;
 /// The model's share of guest memory is rounded up to a multiple of this.
 const MEMORY_STEP_MIB: u64 = 64;
 const RAW_LEN: usize = 3 * MIB as usize + 777;
-const GGUF_LEN: usize = 2 * MIB as usize + 4093;
+pub(crate) const GGUF_LEN: usize = 2 * MIB as usize + 4093;
 
 pub struct ModelDisk {
     path: PathBuf,
@@ -189,7 +189,7 @@ impl ModelDisk {
 
 /// Guest memory, in MiB, for a VM with a model file of `len` bytes (see
 /// [`ModelDisk::memory_mib`]); `cargo xtask doctor` sizes WSL by it.
-pub fn memory_mib_for(len: u64) -> u64 {
+pub const fn memory_mib_for(len: u64) -> u64 {
     let engine_mib = kabi::model::ENGINE_PAGES * 4096 / MIB;
     let extra = len.div_ceil(MIB) + 2 * engine_mib;
     BASE_MEMORY_MIB + extra.next_multiple_of(MEMORY_STEP_MIB)
