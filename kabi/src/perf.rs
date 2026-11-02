@@ -22,7 +22,7 @@ pub const OVER_BUDGET: &str = "OVER BUDGET ";
 pub const REFERENCE: &str = "reference p50 ";
 /// The reference work's median on GitHub's runners under KVM, in ns, as
 /// recorded in `docs/decisions.md`.
-pub const REFERENCE_BASELINE_NS: u64 = 1_500_000;
+pub const REFERENCE_BASELINE_NS: u64 = 16_000_000;
 /// A median this many times the baseline is a runner too slow to judge.
 pub const SLOW_FACTOR: u64 = 2;
 /// The reference work's buffer, in 32-bit words: 2 MiB.
