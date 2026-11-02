@@ -37,10 +37,14 @@ const PERIOD_MS: u64 = 1_000;
 /// asks llm for its `health` (at most 3 s while the model is busy), one request
 /// at a time; the window waits for the list only when it asks.
 const LIST_MS: u64 = 5_000;
-/// How many times in a row a read waits on `updated` not serving yet, each up
-/// to [`LIST_MS`], before it is told so: `updated` starts at boot, and the
-/// window may ask before it serves.
-const STARTING_TRIES: u32 = 6;
+/// How many times in a row a read waits on `updated` not serving yet before it
+/// is told so: `updated` starts at boot, and the window may ask before it
+/// serves. The first try waits up to [`LIST_MS`]; each one after it up to
+/// [`NOT_YET_MS`], with as long again before the next, so the window answers
+/// keys between tries (lane C's review of #568). About 30 s in all.
+const STARTING_TRIES: u32 = 30;
+/// A later try's wait for `updated` to serve, and the pause after it.
+const NOT_YET_MS: u64 = 500;
 
 /// Why there is no list.
 enum NoList {
@@ -115,6 +119,9 @@ impl Lister {
         let list = match self.list() {
             Err(NoList::NotYet(_)) if self.tries < STARTING_TRIES => {
                 self.tries += 1;
+                // From when this try ended, which may be a full wait later.
+                let ended_ms = sys::time_ns() / 1_000_000;
+                self.next_ms = ended_ms.saturating_add(NOT_YET_MS);
                 return false;
             }
             Err(NoList::NotYet(why) | NoList::Why(why)) => Err(why),
@@ -148,12 +155,16 @@ impl Lister {
                 "this window has no route to the update service",
             ))
         })?;
+        let starting = self.tries > 0;
+        let wait_ms = if starting { NOT_YET_MS } else { LIST_MS };
         let len =
-            sys::call_route(route, LIST.as_bytes(), &mut self.reply, LIST_MS).map_err(|error| {
+            sys::call_route(route, LIST.as_bytes(), &mut self.reply, wait_ms).map_err(|error| {
                 let why = format!("the update service did not answer ({error:?})");
                 match error {
                     // The kernel waited the call's time for it to serve.
                     Error::Unavailable => NoList::NotYet(why),
+                    // A short try may reach it as it starts serving.
+                    Error::TimedOut if starting => NoList::NotYet(why),
                     _ => NoList::Why(why),
                 }
             })?;
