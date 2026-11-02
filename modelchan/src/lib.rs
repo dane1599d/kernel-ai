@@ -4,7 +4,8 @@
 //! - [`import`]: a model read from an attached disk, hashed as it streams and
 //!   held to the signed `models` role before it is kept (`comp_models::check`);
 //! - [`trial`]: `kai-modeltrial 1`, the record of a model chosen for the next
-//!   restart, and the probation that keeps it or goes back to the model before.
+//!   restart, and the probation that keeps it or goes back to the model before;
+//! - [`listing`]: `kai-models 1`, the list `updated` answers `models` with.
 //!
 //! Both are pure: `updated` reads the disk, writes the store through `fs`, and
 //! asks `llm` for its health, and hands what it got to these.
@@ -14,6 +15,7 @@
 extern crate alloc;
 
 pub mod import;
+pub mod listing;
 pub mod trial;
 
 pub use comp_models::Sha256;

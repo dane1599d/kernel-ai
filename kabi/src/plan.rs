@@ -38,19 +38,16 @@ pub const FS: &str = "fs caps=serve+partition pages=8192 stack_pages=64 burst_ms
 /// The update service (ADR 0008 §10): the only holder of the slots and the boot
 /// record. `kaituf`'s JSON and `kai-fs 1`'s CBOR decoders recurse, hence the
 /// larger stack, which counts within its pages with a 512 KiB root buffer and
-/// two 128 KiB slot buffers.
-pub const UPDATED: &str =
-    "updated caps=update dir=trust+updates+restart pages=2048 stack_pages=128 burst_ms=5000";
+/// two 128 KiB slot buffers. It is also the model channel (P4 task 10): it
+/// serves the shell's model requests, asks `llm` for its health to judge a
+/// model on trial, writes the model store (`dir=models`), and reads the signed
+/// `models` role from the image's repository (`bootfiles=pkgrepo`).
+pub const UPDATED: &str = "updated caps=update+serve+call uses=llm \
+    dir=trust+updates+restart+models bootfiles=pkgrepo pages=2048 stack_pages=128 burst_ms=5000";
 /// The live `notes` component, run by the shared `comphost` program, without its
 /// arguments.
 const NOTES_BASE: &str =
     "notes program=comphost caps=serve+component pages=8192 stack_pages=512 burst_ms=20000";
-/// The live `notes` component as an app of the current generation (P4 task 1):
-/// the supervisor starts it when `pkg` names its package version.
-pub fn notes_from_pkg() -> String {
-    format!("{NOTES_BASE} start=pkg")
-}
-
 /// The live `notes` component starting on `version`, falling back to `fallback`
 /// when that cannot start. Its arguments go to the host. Version 2 is built from
 /// `components/notes`, which `:edit notes` edits; the boot manifest may name a

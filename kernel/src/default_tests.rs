@@ -1,11 +1,13 @@
 //! `test=desk-default`: the v0.1 system as the default boot plans it
 //! (`kabi::plan::system`, no plan line of the case's own), on a disk with
 //! `kai-data`. `desktop` claims the screen and draws; `pkg` seeds the image's
-//! signed repository and serves its catalogue; the case types Ctrl+Space,
-//! `apps` and Enter, and the Apps sheet lists the catalogue with `notes`
-//! installed first. Enter on it sends `open notes` as a panel line, the shell
-//! takes it, the model's `ui_open` starts `notes-window` on demand, and its
-//! window opens. The host checks `desktop`'s and the supervisor's lines.
+//! signed repository and serves its catalogue, the image's six apps installed
+//! (`pkg` loads none: each app's plan line runs the image's own version); the
+//! case types Ctrl+Space, `apps` and Enter, and the Apps sheet lists them by
+//! name. Down three times, past `editor`, `files` and `monitor`, and Enter on
+//! `notes` sends `open notes` as a panel line, the shell takes it, the model's
+//! `ui_open` starts `notes-window` on demand, and its window opens. The host
+//! checks `desktop`'s and the supervisor's lines.
 //!
 //! `test=desk-no-memory`: the same system and the same steps, but first a
 //! process takes what is left of the admission budget (free / 2), so the
@@ -23,27 +25,49 @@ use kabi::{ExitReason, Limits};
 
 /// Time for `desktop` to take each step in.
 const STEP_MS: u64 = 400;
-/// Ctrl+Space; `apps` and Enter; Enter (scan code set 1).
+/// Ctrl+Space; `apps` and Enter; Down; Enter (scan code set 1).
 const CTRL_SPACE: [u8; 4] = [0x1D, 0x39, 0xB9, 0x9D];
 const APPS_ENTER: [u8; 10] = [0x1E, 0x9E, 0x19, 0x99, 0x19, 0x99, 0x1F, 0x9F, 0x1C, 0x9C];
+const DOWN: [u8; 4] = [0xE0, 0x50, 0xE0, 0xD0];
 const ENTER: [u8; 2] = [0x1C, 0x9C];
-/// The app the sheet's first row opens.
+/// The catalogue `pkg` serves: the image's six apps, installed, by name.
+const CATALOGUE: [&str; 7] = [
+    "kai-catalog 1",
+    "installed\teditor\t1.0.0\tapp\t",
+    "installed\tfiles\t1.0.0\tapp\t",
+    "installed\tmonitor\t1.0.0\tapp\t",
+    "installed\tnotes\t1.0.0\tapp\t",
+    "installed\tsettings\t1.0.0\tapp\t",
+    "installed\tterminal\t1.0.0\tapp\t",
+];
+/// The app the sheet's fourth row opens, and the Downs that reach it.
 const APP: &str = "notes-window";
+const APP_ROW: usize = 3;
 /// `pkg` answers once it has seeded the store, so its first answer can wait on
 /// that under TCG.
 const CALL_MS: u64 = 60_000;
 /// What the shell says when there is no memory to open Notes.
 const NOT_ENOUGH: &str = "Not enough memory to open Notes";
 
-/// The desktop drawn, the shell up, and `pkg` seeded.
+/// The desktop drawn, the shell up, and `pkg` seeded with the image's windows.
 fn system_up() -> Result<(), &'static str> {
     desk_tests::wait("desktop to draw", || {
         desk_tests::desktop_shows() && claim::flushes() > 0
     })?;
     desk_tests::wait("the shell", || ipc::server_of("shell").is_some())?;
     // `pkg` serves only once the image's repository is generation 1.
-    if ipc::call("pkg", b"catalog 0", CALL_MS).is_err() {
-        return Err("desk-default: pkg did not answer");
+    let answer =
+        ipc::call("pkg", b"catalog 0", CALL_MS).map_err(|_| "desk-default: pkg did not answer")?;
+    let text = core::str::from_utf8(&answer).unwrap_or("");
+    let rows: alloc::vec::Vec<&str> = text.lines().collect();
+    let listed = rows.len() == CATALOGUE.len()
+        && rows
+            .iter()
+            .zip(CATALOGUE)
+            .all(|(row, start)| row.starts_with(start));
+    if !listed {
+        log!("desk-default: pkg's catalogue is {text:?}");
+        return Err("desk-default: the catalogue is not the image's six apps");
     }
     if !process::named(APP).is_empty() {
         return Err("desk-default: an app started before it was opened");
@@ -51,23 +75,27 @@ fn system_up() -> Result<(), &'static str> {
     Ok(())
 }
 
-/// Opens the Apps sheet from the panel and presses Enter on its first row.
-fn open_first_app() {
+/// Opens the Apps sheet from the panel and presses Enter on Notes' row.
+fn open_notes_row() {
     crate::claim_tests::type_keys(&CTRL_SPACE);
     threads::sleep_ms(STEP_MS);
     crate::claim_tests::type_keys(&APPS_ENTER);
     threads::sleep_ms(STEP_MS * 3);
+    for _ in 0..APP_ROW {
+        crate::claim_tests::type_keys(&DOWN);
+        threads::sleep_ms(STEP_MS);
+    }
     crate::claim_tests::type_keys(&ENTER);
 }
 
 pub fn check() -> Result<(), &'static str> {
     system_up()?;
-    open_first_app();
+    open_notes_row();
     desk_tests::wait("the app to start", || !process::named(APP).is_empty())?;
     // comphost starts the app and paints its first frame, slowly under TCG.
     threads::sleep_ms(10_000);
     log!(
-        "desk-default: the desktop came up, the Apps sheet listed the catalogue, and Enter opened notes-window"
+        "desk-default: the desktop came up, the Apps sheet listed the image's six apps, and Enter on Notes opened notes-window"
     );
     Ok(())
 }

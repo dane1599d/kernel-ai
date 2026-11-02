@@ -19,7 +19,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const IMPORTING: &str = ".importing.gguf";
 /// Where a model blob keeps its FNV-1a64, little-endian, so `fs` can rewrite
 /// the hint after a model change without reading the blob again.
-pub const FNV_ATTR: &str = "kai.fnv1a64";
+pub const FNV_ATTR: &str = kabi::modelhint::FNV_ATTR;
 
 /// Writes `host` into `image` as a sealed model blob, in one pass that also
 /// hashes it, and names it the active model. A model already there is named

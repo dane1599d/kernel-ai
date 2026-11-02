@@ -34,10 +34,12 @@ mod centry;
 mod cmode;
 mod commands;
 pub mod data;
+pub mod door;
 mod effects;
 mod engine;
 pub mod grants;
 mod instructions;
+mod models;
 mod packages;
 mod panel;
 mod pkg;
@@ -100,6 +102,9 @@ pub enum Proof {
 pub enum FsRead<'a> {
     List(&'a str),
     Read(&'a str),
+    /// The whole file or an error, for the editor's door: no cut at a few
+    /// messages (`Read` hands a script a prefix), and it must be text.
+    Whole(&'a str),
     History(&'a str),
     Changes,
 }
@@ -197,6 +202,12 @@ pub trait Host {
     /// supervisor's `app-call`: the app's reply, or why not.
     fn app_call(&self, _app: &str, _request: &str) -> Result<String, String> {
         Err(String::from("there are no apps here"))
+    }
+    /// One of `updated`'s model requests (`models`, `models import`, `models
+    /// progress`, `models use <64 hex>`; P4 task 10): its answer, or why there
+    /// is none.
+    fn models(&self, _request: &str) -> Result<String, String> {
+        Err(String::from("there is no model channel here"))
     }
     /// The user's appearance as `kai-appearance 1` text (P4 task 8).
     fn appearance_read(&self) -> Option<String> {

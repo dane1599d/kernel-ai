@@ -786,6 +786,7 @@ dependencies = [
  "fsproto",
  "kabi",
  "kaifs",
+ "sha2",
 ]
 
 [[package]]
@@ -1609,16 +1610,19 @@ dependencies = [
  "appabi",
  "bootslot",
  "ccserve",
+ "comp-models",
  "kabi",
  "kaigrants",
  "kaiprofile",
  "livecore",
  "llmproto",
  "look",
+ "modelchan",
  "promptcore",
  "rhai",
  "sched",
  "serde_json",
+ "sha2",
  "termcore",
 ]
 
@@ -1929,6 +1933,7 @@ dependencies = [
  "appabi",
  "bootslot",
  "ccserve",
+ "comp-models",
  "cpufeat",
  "deskcore",
  "ecdsa",
@@ -1947,6 +1952,7 @@ dependencies = [
  "livecore",
  "llmproto",
  "look",
+ "modelchan",
  "p256",
  "promptcore",
  "quant",

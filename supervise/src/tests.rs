@@ -126,6 +126,24 @@ fn a_lines_folders_go_only_to_its_own_program() {
         apps.grants("notes", "comphost").unwrap().dirs,
         [Folder::Apps]
     );
+    // The model store is `updated`'s alone, as the trust store and updates are.
+    let updated = parse_plan("updated caps=update dir=trust+updates+settings+models");
+    assert!(updated.errors.is_empty(), "{:?}", updated.errors);
+    let dirs = [
+        Folder::Trust,
+        Folder::Updates,
+        Folder::Settings,
+        Folder::Models,
+    ];
+    assert_eq!(updated.grants("updated", "updated").unwrap().dirs, dirs);
+    assert_eq!(Folder::Models.badge(), kabi::fs::MODELS_ROOT);
+    assert!(!Folder::Models.read_only());
+    let other = parse_plan("pkg dir=models");
+    assert!(
+        !other.errors.is_empty() || other.grants("pkg", "pkg").is_err(),
+        "{:?}",
+        other.errors
+    );
     // A line's `program=` is the program its folder goes to, not its name.
     assert_eq!(plan.grants("store", "pkgd").unwrap().dirs, [Folder::Pkg]);
     assert!(plan.grants("store", "store").is_err());
@@ -886,6 +904,26 @@ fn only_the_store_holder_may_run_a_package_version() {
         "start notes",
     ] {
         assert_eq!(Run::parse(bad), None, "{bad}");
+    }
+}
+
+#[test]
+fn may_run_asks_what_a_run_would_get_and_starts_nothing() {
+    let plan = parse_plan(&format!(
+        "{RUN_PLAN}\nnotes-window program=comphost caps=serve+component start=demand"
+    ));
+    let pids = [Some(10), Some(11), None, Some(13), None];
+    let held: Vec<(&ServiceSpec, Option<u64>)> = plan.services.iter().zip(pids).collect();
+    assert_eq!(parse_may_run("may-run notes"), Some("notes"));
+    assert_eq!(encode_may_run("notes"), "may-run notes");
+    assert_eq!(check_run_name("notes", &held, 11), Ok(2));
+    // A window the plan runs from the image's version: pkg adds no version of it.
+    assert_eq!(check_run_name("notes-window", &held, 11), Err(NOT_FROM_PKG));
+    assert_eq!(check_run_name("files-window", &held, 11), Err(NOT_PLANNED));
+    // Only the store's holder asks.
+    assert!(check_run_name("notes", &held, 13).is_err());
+    for bad in ["may-run", "may-run notes x", "may-run no/tes", "may notes"] {
+        assert_eq!(parse_may_run(bad), None, "{bad}");
     }
 }
 

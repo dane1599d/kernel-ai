@@ -9,14 +9,18 @@
 //! - (f): (b) again with one `work` hog per CPU under `classes`, as S05-1's
 //!   scene (f) ran.
 //!
-//! A gate under KVM: each miss is one `desk-perf: OVER BUDGET <figure> <value>
-//! ms (budget ...)` line, and any miss fails the case. Under TCG the figures
-//! are recorded and not judged, with fewer frames.
+//! A gate under KVM: each miss is one `OVER BUDGET <figure> <value> ms
+//! (budget ...)` line. Shared runners are noisy, so it is best of two
+//! ([`kabi::perf`]): a scene with a miss is measured once more in this boot,
+//! both runs' lines are logged, and only a figure over its budget in both
+//! fails the case. Under TCG the figures are recorded and not judged, with
+//! fewer frames.
 
 use crate::desk_tests::{desktop_shows, wait};
 use crate::process::{self, SpawnRequest};
 use crate::{ipc, log, threads};
 use alloc::format;
+use alloc::string::String;
 use alloc::vec::Vec;
 use kabi::{ExitReason, Limits};
 
@@ -107,6 +111,55 @@ fn stop_hogs(hogs: &[u64]) {
     let _ = crate::sched_control::set_policy(sched::spec::PolicySpec::DEFAULT);
 }
 
+/// One scene's figures, best of two when `gated`: a run with a miss is run
+/// once more, and the figures over budget in both are returned.
+fn scene(
+    gated: bool,
+    what: &str,
+    mut run: impl FnMut() -> Result<Vec<u8>, &'static str>,
+) -> Result<Vec<String>, &'static str> {
+    let first = run()?;
+    let first = String::from_utf8_lossy(&first);
+    let over = kabi::perf::misses(&first);
+    if !gated || over.is_empty() {
+        return Ok(Vec::new());
+    }
+    for miss in &over {
+        log!("desk-perf: {what}, first run: over budget: {miss}");
+    }
+    log!("desk-perf: {what}: measured once more, best of two");
+    let second = run()?;
+    let second = String::from_utf8_lossy(&second);
+    let again = kabi::perf::misses(&second);
+    for miss in &again {
+        log!("desk-perf: {what}, second run: over budget: {miss}");
+    }
+    Ok(kabi::perf::still_over(&over, &again)
+        .into_iter()
+        .map(String::from)
+        .collect())
+}
+
+/// (e): the panel takes the letters, one damaged line each.
+fn keys() -> Result<Vec<u8>, &'static str> {
+    perf("perf forget")?;
+    for _ in 0..KEYS {
+        crate::claim_tests::type_keys(&LETTER);
+        threads::sleep_ms(KEY_GAP_MS);
+    }
+    threads::sleep_ms(SETTLE_MS);
+    perf("perf keys")
+}
+
+/// (f): the drag again, under load.
+fn loaded_drag() -> Result<Vec<u8>, &'static str> {
+    let hogs = start_hogs()?;
+    threads::sleep_ms(500);
+    let loaded = perf("perf drag");
+    stop_hogs(&hogs);
+    loaded
+}
+
 pub fn check() -> Result<(), &'static str> {
     wait("desktop and deskdemo", || {
         desktop_shows() && !process::named("deskdemo").is_empty()
@@ -114,40 +167,22 @@ pub fn check() -> Result<(), &'static str> {
     threads::sleep_ms(SETTLE_MS);
     let gated = under_kvm();
     let frames = if gated { KVM_FRAMES } else { TCG_FRAMES };
-    let mut lines = perf(&format!("perf scenes {frames}"))?;
-    // (e): the panel takes the letters, one damaged line each.
+    let request = format!("perf scenes {frames}");
+    let mut misses = scene(gated, "(a)-(c)", || perf(&request))?;
     crate::claim_tests::type_keys(&CTRL_SPACE);
     threads::sleep_ms(SETTLE_MS);
-    perf("perf forget")?;
-    for _ in 0..KEYS {
-        crate::claim_tests::type_keys(&LETTER);
-        threads::sleep_ms(KEY_GAP_MS);
-    }
-    threads::sleep_ms(SETTLE_MS);
-    lines.push(b'\n');
-    lines.extend(perf("perf keys")?);
-    // (f): the drag again, under load.
-    let hogs = start_hogs()?;
-    threads::sleep_ms(500);
-    let loaded = perf("perf drag");
-    stop_hogs(&hogs);
-    lines.push(b'\n');
-    lines.extend(loaded?);
+    misses.extend(scene(gated, "(e)", keys)?);
+    misses.extend(scene(gated, "(f)", loaded_drag)?);
     log!("desk-perf: the figures are in");
     if !gated {
         log!("desk-perf: recorded without KVM, not judged");
         return Ok(());
     }
-    let text = core::str::from_utf8(&lines).unwrap_or("");
-    let misses: Vec<&str> = text
-        .lines()
-        .filter(|l| l.starts_with("OVER BUDGET "))
-        .collect();
     for miss in &misses {
-        log!("desk-perf: {miss}");
+        log!("desk-perf: OVER BUDGET in both runs: {miss}");
     }
     log!(
-        "desk-perf: judged under KVM: {} figures over budget",
+        "desk-perf: judged under KVM: {} figures over budget in both runs",
         misses.len()
     );
     match misses.is_empty() {

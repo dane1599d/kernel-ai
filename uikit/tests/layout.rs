@@ -169,3 +169,21 @@ fn fractional_measures_round_up_at_layout() {
     let p = layout(&t, &Quarter, (200, 100), &BTreeMap::new());
     assert_eq!(p[&1].rect, Rect::new(0, 0, 29, 21));
 }
+
+/// A table given less height than its rows ask for shows what fits under its
+/// heading, scrolled only as far as keeps the selected row in view.
+#[test]
+fn a_short_table_shows_what_fits_and_keeps_the_selection_in_view() {
+    use uikit::layout::table_window;
+    use uikit::style::metric::ROW_H;
+    // A heading and 3 rows, inside a 1 px frame.
+    let h = 4 * ROW_H + 2;
+    assert_eq!(table_window(10, None, h), (0, 3));
+    assert_eq!(table_window(10, Some(2), h), (0, 3));
+    assert_eq!(table_window(10, Some(3), h), (1, 3));
+    assert_eq!(table_window(10, Some(9), h), (7, 3));
+    assert_eq!(table_window(2, Some(1), h), (0, 2));
+    // Out of range, or no room under the heading: nothing scrolls.
+    assert_eq!(table_window(10, Some(10), h), (0, 3));
+    assert_eq!(table_window(10, Some(5), ROW_H), (0, 0));
+}
