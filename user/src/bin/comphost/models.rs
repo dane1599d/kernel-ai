@@ -17,6 +17,7 @@
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
+use kabi::Error;
 use kabi::handle::Handle;
 use livecore::host::{Env, Host};
 // The one request the window's reads become.
@@ -36,6 +37,17 @@ const PERIOD_MS: u64 = 1_000;
 /// asks llm for its `health` (at most 3 s while the model is busy), one request
 /// at a time; the window waits for the list only when it asks.
 const LIST_MS: u64 = 5_000;
+/// How many times in a row a read waits on `updated` not serving yet, each up
+/// to [`LIST_MS`], before it is told so: `updated` starts at boot, and the
+/// window may ask before it serves.
+const STARTING_TRIES: u32 = 6;
+
+/// Why there is no list.
+enum NoList {
+    /// `updated` is not serving yet: worth asking again.
+    NotYet(String),
+    Why(String),
+}
 
 pub struct Lister {
     /// The route to `updated`: the second, so the plan line's `uses=` must be
@@ -47,6 +59,8 @@ pub struct Lister {
     reply: Vec<u8>,
     /// Whether the log has said that the first list reached the app.
     said: bool,
+    /// The tries in a row that found `updated` not serving yet.
+    tries: u32,
 }
 
 impl Lister {
@@ -56,6 +70,7 @@ impl Lister {
             next_ms: 0,
             reply: alloc::vec![0u8; kabi::MAX_MESSAGE],
             said: false,
+            tries: 0,
         }
     }
 
@@ -86,7 +101,8 @@ impl Lister {
             .then(|| self.next_ms.saturating_sub(now_ms))
     }
 
-    /// Answers the waiting reads if one is due; whether it did.
+    /// Answers the waiting reads if one is due; whether it did. While `updated`
+    /// is not serving yet the reads stay waiting, for [`STARTING_TRIES`] tries.
     pub fn pump<E: Env<Instance = LiveInstance>>(
         &mut self,
         host: &mut Host<E>,
@@ -95,8 +111,16 @@ impl Lister {
         if self.wait_ms(host, now_ms) != Some(0) {
             return false;
         }
-        let list = self.list();
         self.next_ms = now_ms.saturating_add(PERIOD_MS);
+        let list = match self.list() {
+            Err(NoList::NotYet(_)) if self.tries < STARTING_TRIES => {
+                self.tries += 1;
+                return false;
+            }
+            Err(NoList::NotYet(why) | NoList::Why(why)) => Err(why),
+            Ok(list) => Ok(list),
+        };
+        self.tries = 0;
         let bytes = list.as_ref().map(String::len);
         let answered = crate::ui::serve_shown(host, |core| {
             for ticket in core.take_models() {
@@ -118,16 +142,25 @@ impl Lister {
     }
 
     /// `updated`'s list, or why there is none.
-    fn list(&mut self) -> Result<String, String> {
-        let route = self
-            .updated
-            .ok_or_else(|| String::from("this window has no route to the update service"))?;
-        let len = sys::call_route(route, LIST.as_bytes(), &mut self.reply, LIST_MS)
-            .map_err(|error| format!("the update service did not answer ({error:?})"))?;
+    fn list(&mut self) -> Result<String, NoList> {
+        let route = self.updated.ok_or_else(|| {
+            NoList::Why(String::from(
+                "this window has no route to the update service",
+            ))
+        })?;
+        let len =
+            sys::call_route(route, LIST.as_bytes(), &mut self.reply, LIST_MS).map_err(|error| {
+                let why = format!("the update service did not answer ({error:?})");
+                match error {
+                    // The kernel waited the call's time for it to serve.
+                    Error::Unavailable => NoList::NotYet(why),
+                    _ => NoList::Why(why),
+                }
+            })?;
         let text = core::str::from_utf8(&self.reply[..len.min(self.reply.len())])
-            .map_err(|_| String::from("the update service's list is not text"))?;
+            .map_err(|_| NoList::Why(String::from("the update service's list is not text")))?;
         match text.strip_prefix("err ") {
-            Some(why) => Err(String::from(why)),
+            Some(why) => Err(NoList::Why(String::from(why))),
             None => Ok(String::from(text)),
         }
     }

@@ -98,6 +98,13 @@ pub fn notes(version: &str, fallback: Option<&str>) -> String {
 /// the name is the grant of `kai:system`, which no other line may carry. Planned
 /// after `desktop` and `llm`.
 pub const MONITOR_WINDOW: &str = "monitor-window program=comphost caps=serve+component+call uses=desktop+llm pages=8192 stack_pages=512 burst_ms=20000 version=1";
+/// The model manager's window (P4 task 10), `comphost` serving `models-window`:
+/// a route to `desktop` for its window, and after it one to `updated`, which
+/// comphost asks for `models` and which answers this name nothing else. As for
+/// the Monitor, the order in `uses=` is part of the line (a test in `supervise`
+/// pins it), and the name is the grant of `kai:models`, which no other line may
+/// carry. Planned after `desktop` and `updated`.
+pub const MODELS_WINDOW: &str = "models-window program=comphost caps=serve+component+call uses=desktop+updated pages=8192 stack_pages=512 burst_ms=20000 version=1";
 /// Probation ended by calls alone, so a test runs the same under KVM and TCG.
 pub const CALLS_ONLY: &str = "probation_calls=3 probation_ms=0";
 /// For the M9a test: version 1, with probation ended by calls alone, so the test

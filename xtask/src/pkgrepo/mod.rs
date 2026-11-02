@@ -77,7 +77,8 @@ const fn window(name: &'static str, recipe: &components::Recipe, summary: &'stat
     }
 }
 
-/// Every built-in app: P4's windows and the editor (P4 plan, tasks 4-11).
+/// Every built-in app: P4's windows, the editor and the model manager (P4
+/// plan, tasks 4-11).
 pub const APPS: &[App] = &[
     window(
         "notes",
@@ -108,6 +109,11 @@ pub const APPS: &[App] = &[
         "editor",
         &components::EDITOR_RECIPE,
         "A code editor for your files and the system's source",
+    ),
+    window(
+        "models",
+        &components::MODELS_WINDOW_RECIPE,
+        "The AI models: which one runs, each one's licence, and how to switch",
     ),
 ];
 

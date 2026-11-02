@@ -76,6 +76,9 @@ pub fn ask_kai(models: &Models, intent: &Intent) -> String {
             let name = row
                 .as_ref()
                 .map_or_else(|| name_of(models, sha256), Row::name);
+            // `use_model` offers only a stored model the signed role names, so
+            // the row always has its id; the hash prefix is a fallback that
+            // a list as `updated` writes it never reaches.
             let id = row
                 .and_then(|r| r.signed)
                 .map_or_else(|| String::from(&hex(sha256)[..12]), |s| s.id.clone());
@@ -84,8 +87,9 @@ pub fn ask_kai(models: &Models, intent: &Intent) -> String {
                 clip(&name)
             )
         }
+        // Not "import …": a line that starts with a Rhai keyword runs as code.
         Intent::Import(_) => String::from(
-            "To import a model, ask Kai: \"import the model on the attached disk\". It is kept only if the signed role names it.",
+            "To import a model, ask Kai: \"fetch the model from the attached disk\". It is kept only if the signed role names it.",
         ),
     }
 }
@@ -274,7 +278,7 @@ fn ask_for_disks(tree: &mut Vec<Entry>) {
         COLUMN,
         wide(),
         label(
-            "To import a model, attach the disk that holds it and ask Kai to import it.",
+            "To import a model, attach the disk that holds it and ask Kai: \"fetch the model from the attached disk\".",
             TypeStyle::Body,
             Tone::Muted,
         ),

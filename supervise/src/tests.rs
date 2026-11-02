@@ -989,6 +989,13 @@ fn the_v0_1_system_plan_parses_and_its_routes_come_first() {
         assert_eq!(named("fs").is_some(), files);
         let desktop = named("desktop").expect("the desktop is planned");
         assert_eq!(desktop.uses.contains(&String::from("pkg")), files);
+        // The model manager's window, with `kai-data` only, on demand.
+        let models = named("models-window");
+        assert_eq!(models.is_some(), files);
+        if let Some(models) = models {
+            assert_eq!(models.start, Start::Demand);
+            assert_eq!(models.uses, ["desktop", "updated"]);
+        }
     }
     // The System monitor's line is main's own, started on demand.
     assert!(
@@ -1038,4 +1045,22 @@ fn the_monitor_s_routes_are_desktop_then_llm_and_the_name_is_the_grant() {
     assert_eq!(plan.services[2].uses, ["llm", "desktop"]);
     // Without the services before it the line is an error, not a route elsewhere.
     assert!(!parse_plan(kabi::plan::MONITOR_WINDOW).errors.is_empty());
+}
+
+#[test]
+fn the_models_window_s_routes_are_desktop_then_updated_and_the_name_is_the_grant() {
+    let plan = parse_plan(&alloc::format!(
+        "desktop caps=display+input+serve\nupdated caps=update+serve+call\n{}",
+        kabi::plan::MODELS_WINDOW
+    ));
+    assert!(plan.errors.is_empty(), "{:?}", plan.errors);
+    let models = &plan.services[2];
+    // comphost grants `kai:models` and `updated` answers `models` by this name.
+    assert_eq!(models.name, "models-window");
+    assert_eq!(models.program, "comphost");
+    // comphost reads the first route as desktop's and the second as updated's.
+    assert_eq!(models.uses, ["desktop", "updated"]);
+    assert_eq!(models.limits.caps, cap::SERVE | cap::COMPONENT | cap::CALL);
+    // Without the services before it the line is an error, not a route elsewhere.
+    assert!(!parse_plan(kabi::plan::MODELS_WINDOW).errors.is_empty());
 }
