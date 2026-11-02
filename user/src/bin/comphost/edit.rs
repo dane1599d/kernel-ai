@@ -14,7 +14,7 @@ use alloc::vec::Vec;
 use editcore::gate::Gate;
 use kabi::handle::{HandleInfo, Kind, MAX_STARTUP};
 use livecore::host::{Env, Host};
-use user::sys;
+use user::{println, sys};
 use wasmhost::{EditRequest, Grants, LiveInstance};
 
 /// Rounds of sending and answering one pump may make, since an answer can make
@@ -37,6 +37,33 @@ pub fn grants() -> Grants {
     Grants {
         edit,
         ..Grants::default()
+    }
+}
+
+/// What a message is, for the log: `open`, or `cmd` and the command's verb; never
+/// the text typed in it.
+fn verb(message: &[u8]) -> String {
+    let text = core::str::from_utf8(message).unwrap_or("");
+    let mut words = text.split_whitespace();
+    let kind = words.next().unwrap_or("");
+    if kind != "cmd" {
+        return kind.chars().take(8).collect();
+    }
+    let command: String = words
+        .next()
+        .unwrap_or("")
+        .chars()
+        .take_while(char::is_ascii_alphabetic)
+        .take(8)
+        .collect();
+    format!("cmd {command}")
+}
+
+/// How a message went, for the log.
+fn outcome_text(outcome: &Result<Vec<u8>, String>) -> String {
+    match outcome {
+        Ok(bytes) => format!("answered {} bytes", bytes.len()),
+        Err(why) => format!("failed: {why}"),
     }
 }
 
@@ -78,13 +105,23 @@ pub fn pump<E: Env<Instance = LiveInstance>>(host: &mut Host<E>, gate: &mut Gate
                 if failed.is_none() && spent > BUDGET_MS {
                     failed = Some(String::from("the edit service is too slow"));
                 }
-                let now_ms = sys::time_ns() / 1_000_000;
+                let began = sys::time_ns();
+                let now_ms = began / 1_000_000;
                 let verdict = gate.check(&request.message, request.user, now_ms);
+                let gated = verdict.is_err();
                 let outcome = match (&failed, verdict) {
                     (Some(why), _) => Err(why.clone()),
                     (None, Err(refused)) => Ok(refused.as_bytes().to_vec()),
                     (None, Ok(())) => call(&request.message, &mut reply),
                 };
+                println!(
+                    "comphost: edit: {} (person {}{}) {} in {} ms",
+                    verb(&request.message),
+                    request.user,
+                    if gated { ", refused" } else { "" },
+                    outcome_text(&outcome),
+                    sys::time_ns().saturating_sub(began) / 1_000_000,
+                );
                 if let (None, Err(why)) = (&failed, &outcome) {
                     failed = Some(why.clone());
                 }
@@ -100,6 +137,7 @@ pub fn pump<E: Env<Instance = LiveInstance>>(host: &mut Host<E>, gate: &mut Gate
                 // It faulted and was reloaded from its checkpoint, or nothing
                 // serves: the reloaded version never asked for the answers still
                 // waiting, and its queue is gone, so there is nothing more to do.
+                println!("comphost: edit: the answer for ticket {ticket} did not reach the app");
                 return;
             }
         }

@@ -20,6 +20,7 @@ const WORLDS: &[(&str, &str)] = &[
     ("kai:system", "system-read"),
     ("kai:settings", "settings-access"),
     ("kai:edit", "editing"),
+    ("kai:files", "filing"),
     ("kai:code", "coding"),
 ];
 

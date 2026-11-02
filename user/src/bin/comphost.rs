@@ -28,6 +28,8 @@ use wasmhost::{Limits, LiveInstance};
 mod disk;
 #[path = "comphost/edit.rs"]
 mod edit;
+#[path = "comphost/files.rs"]
+mod files;
 #[path = "comphost/settings.rs"]
 mod kai_settings;
 #[path = "comphost/started.rs"]
@@ -72,6 +74,8 @@ struct SysEnv {
 /// The one app whose effects go to the shell as the user's when a person's key
 /// or click caused them (the Terminal's `shell_line`): the plan line's name.
 const TERMINAL_APP: &str = "terminal-window";
+/// The editor's plan line name, which the file door is granted to (`kai:files`).
+const EDITOR_APP: &str = "editor";
 
 fn version_log(line: &str) {
     println!("{line}");
@@ -192,6 +196,7 @@ fn main() -> i32 {
     // The plan line's name is the grant: `desktop` and the shell check it too.
     env.grants.settings = name == kai_settings::SETTINGS_APP;
     env.grants.shell_line = name == TERMINAL_APP;
+    env.grants.files = name == EDITOR_APP;
     if let (true, Some(ui)) = (env.grants.settings, windows.as_mut()) {
         ui.carry_settings();
     }
@@ -356,6 +361,7 @@ fn settle(
 ) {
     if let Some(gate) = edits.as_mut() {
         edit::pump(host, gate);
+        files::pump(host);
     }
     if let Some(ui) = windows.as_mut() {
         ui.pump(host);

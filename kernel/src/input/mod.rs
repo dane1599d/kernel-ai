@@ -12,10 +12,11 @@
 //!   before, and the queue gets only [`Kind::Screen`] when the screen changes
 //!   hands.
 //! - INPUT_TO_CONSOLE leases the keys back to the console's terminal while
-//!   `desktop` shows, for the terminal window (P3 task 8): about a second at a
-//!   time, renewed by `desktop` while that window has focus. The lease ends on
-//!   any pointer button, on Alt+Tab, on Ctrl+Alt+F12, and whenever the screen
-//!   changes hands ([`end_lease`]). Alt and Alt+Tab always reach the queue, so
+//!   `desktop` shows, for the terminal window (P3 task 8), until `desktop` ends
+//!   it when that window loses focus: no timer ends it, so a `desktop` that is
+//!   slow for a moment never hands keys back halfway through a press. The lease
+//!   also ends on any pointer button, on Alt+Tab, on Ctrl+Alt+F12, and whenever
+//!   the screen changes hands, `desktop`'s exit included ([`end_lease`]). Alt and Alt+Tab always reach the queue, so
 //!   `desktop` can always switch away. Keys change hands only between scancode
 //!   sequences, and the console's ring is emptied each time they do.
 
@@ -55,11 +56,9 @@ static WAITER: AtomicUsize = AtomicUsize::new(NO_WAITER);
 static PENDING: [AtomicUsize; 2] = [const { AtomicUsize::new(NO_WAITER) }; 2];
 /// Set while `desktop` holds the screen: input is its, not the console's.
 static TAKING: AtomicBool = AtomicBool::new(false);
-/// While `desktop` holds the screen, keys go to the console until this HPET
-/// time (INPUT_TO_CONSOLE); 0 for no lease.
-static LEASE_UNTIL_NS: AtomicU64 = AtomicU64::new(0);
-/// How long one INPUT_TO_CONSOLE lends the keys.
-const LEASE_NS: u64 = 1_000_000_000;
+/// While `desktop` holds the screen, keys go to the console while this is set
+/// (INPUT_TO_CONSOLE).
+static LEASED: AtomicBool = AtomicBool::new(false);
 
 /// The interrupt side's decoders: one producer, the CPU that takes IRQ1.
 struct Decoders {
@@ -90,26 +89,21 @@ pub fn set_taking(on: bool) {
     TAKING.store(on, Ordering::Release);
 }
 
-/// INPUT_TO_CONSOLE: lends the keys to the console for [`LEASE_NS`] from now,
-/// or (`on` false) ends the lease.
+/// INPUT_TO_CONSOLE: lends the keys to the console until the lease ends, or
+/// (`on` false) ends it.
 pub fn lease(on: bool) {
-    let until = match on {
-        true => hpet::nanos().saturating_add(LEASE_NS).max(1),
-        false => 0,
-    };
-    LEASE_UNTIL_NS.store(until, Ordering::Release);
+    LEASED.store(on, Ordering::Release);
 }
 
 /// Ends the lease: the keys go back to `desktop`'s queue at the next sequence
 /// boundary. Safe in interrupt context.
 pub fn end_lease() {
-    LEASE_UNTIL_NS.store(0, Ordering::Release);
+    LEASED.store(false, Ordering::Release);
 }
 
 /// Whether a lease lends the keys to the console now.
 fn leased_now() -> bool {
-    let until = LEASE_UNTIL_NS.load(Ordering::Acquire);
-    until != 0 && hpet::nanos() < until
+    LEASED.load(Ordering::Acquire)
 }
 
 /// What the i8042 ring does with a byte: keep it for the console, or not

@@ -1,5 +1,5 @@
 //! What a version is granted when it loads. A granted interface (`kai:settings`,
-//! `kai:system` and `kai:edit`) is linked only for a version
+//! `kai:system`, `kai:edit` and `kai:files`) is linked only for a version
 //! whose [`Grants`] allow it: without the grant, the import does not link and the
 //! version does not stage (`Reason::Link`).
 //!
@@ -24,6 +24,8 @@ pub struct Grants {
     pub system: bool,
     /// May import `kai:edit/edit`.
     pub edit: bool,
+    /// May import `kai:files/files` (the editor only).
+    pub files: bool,
 }
 
 /// The artifacts the host fetched under a boot label: the signed image's own

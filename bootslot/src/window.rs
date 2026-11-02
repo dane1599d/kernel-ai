@@ -1,48 +1,53 @@
 //! When an update may restart the machine by itself (ADR 0008 question 3, P4
-//! plan question 10): the Settings app's `/system/settings/updates.cbor`,
-//! `[1, {"restart_window": [start, end] | null}]`, minutes after midnight. No
-//! window, the default, means only when the user says "restart". Times are
-//! UTC until the OS has a time zone.
-
-use minicbor::Decoder;
-use minicbor::data::Type;
+//! plan question 10): the window the shell saves from a Settings click, in
+//! `/system/state/restart/window`, as `kai-updates 1` text:
+//!
+//! ```text
+//! kai-updates 1
+//! restart-window <start> <end>
+//! ```
+//!
+//! in minutes after midnight, the second line only while a window is set. No
+//! window, the default, means only when the user says "restart". Times are UTC
+//! until the OS has a time zone.
 
 /// Minutes in a day: a window's ends are below it.
 pub const DAY_MINUTES: u16 = 24 * 60;
-/// The file's schema.
-const SCHEMA: u32 = 1;
+/// The file's first line.
+pub const HEADER: &str = "kai-updates 1";
+/// The window's line, before its two minutes.
+pub const LINE: &str = "restart-window";
+/// The file's path beneath `/system/state`; `updated`'s `dir=restart` gives it
+/// the folder alone.
+pub const FOLDER: &str = "restart";
+pub const FILE: &str = "window";
 
 /// `(start, end)` as a window, if both are minutes of a day and differ.
 pub fn window(start: u16, end: u16) -> Option<(u16, u16)> {
     (start < DAY_MINUTES && end < DAY_MINUTES && start != end).then_some((start, end))
 }
 
-/// The window `updates.cbor` holds; `None` for none, or for a file that does
-/// not read, so a damaged file never restarts the machine.
-pub fn restart_window(bytes: &[u8]) -> Option<(u16, u16)> {
-    let mut d = Decoder::new(bytes);
-    if d.array().ok()? != Some(2) || d.u32().ok()? != SCHEMA {
+/// The window `kai-updates 1` text holds; `None` for none, or for text out of
+/// shape, so a damaged file never restarts the machine.
+pub fn restart_window(text: &str) -> Option<(u16, u16)> {
+    let mut lines = text.lines();
+    if lines.next()? != HEADER {
         return None;
     }
-    let entries = d.map().ok()??;
-    let mut found = None;
-    for _ in 0..entries {
-        let key = d.str().ok()?;
-        if key != "restart_window" {
-            d.skip().ok()?;
-            continue;
-        }
-        if d.datatype().ok()? == Type::Null {
-            d.null().ok()?;
-            found = None;
-            continue;
-        }
-        if d.array().ok()? != Some(2) {
-            return None;
-        }
-        found = window(d.u16().ok()?, d.u16().ok()?);
+    let line = lines.next()?;
+    if lines.next().is_some() {
+        return None;
     }
-    found
+    let mut words = line.split(' ');
+    if words.next()? != LINE {
+        return None;
+    }
+    let minute = |word: Option<&str>| word?.parse::<u16>().ok();
+    let (start, end) = (minute(words.next())?, minute(words.next())?);
+    if words.next().is_some() {
+        return None;
+    }
+    window(start, end)
 }
 
 /// Whether minute `now` of the day falls in `w`; a window may run past
@@ -63,41 +68,37 @@ pub fn minute_of_day(unix: u64) -> u16 {
 
 #[cfg(test)]
 mod tests {
-    extern crate std;
     use super::*;
 
-    /// `[1, {"restart_window": [start, end]}]`, as the Settings app writes it.
-    fn file(start: u16, end: u16) -> [u8; 27] {
-        let mut b = [0u8; 27];
-        let mut e = minicbor::Encoder::new(&mut b[..]);
-        e.array(2).unwrap().u32(1).unwrap().map(1).unwrap();
-        e.str("restart_window").unwrap();
-        e.array(2).unwrap().u16(start).unwrap().u16(end).unwrap();
-        b
+    #[test]
+    fn the_saved_text_gives_its_window() {
+        assert_eq!(
+            restart_window("kai-updates 1\nrestart-window 120 300\n"),
+            Some((120, 300))
+        );
+        assert_eq!(
+            restart_window("kai-updates 1\nrestart-window 1380 60"),
+            Some((1380, 60))
+        );
     }
 
     #[test]
-    fn the_settings_file_gives_its_window() {
-        assert_eq!(restart_window(&file(120, 300)), Some((120, 300)));
-        assert_eq!(restart_window(&file(1380, 60)), Some((1380, 60)));
-    }
-
-    #[test]
-    fn no_window_null_or_a_bad_file_never_restarts() {
-        // [1, {"restart_window": null}]
-        let null = [0x82, 0x01, 0xa1, 0x6e]
-            .iter()
-            .copied()
-            .chain(*b"restart_window")
-            .chain([0xf6])
-            .collect::<std::vec::Vec<u8>>();
-        assert_eq!(restart_window(&null), None);
-        assert_eq!(restart_window(&file(300, 300)), None);
-        assert_eq!(restart_window(&file(0, DAY_MINUTES)), None);
-        assert_eq!(restart_window(&[]), None);
-        let mut other_schema = file(120, 300);
-        other_schema[1] = 0x02;
-        assert_eq!(restart_window(&other_schema), None);
+    fn no_window_or_text_out_of_shape_never_restarts() {
+        for text in [
+            "",
+            "kai-updates 1\n",
+            "kai-updates 2\nrestart-window 120 300\n",
+            "kai-updates 1\nrestart-window 300 300\n",
+            "kai-updates 1\nrestart-window 0 1440\n",
+            "kai-updates 1\nrestart-window 120\n",
+            "kai-updates 1\nrestart-window 120 300 9\n",
+            "kai-updates 1\nrestart-window -1 300\n",
+            "kai-updates 1\nrestart-window 120  300\n",
+            "kai-updates 1\nrestart-window 120 300\nrestart-window 1 2\n",
+            "kai-updates 1\nrestart 120 300\n",
+        ] {
+            assert_eq!(restart_window(text), None, "{text:?}");
+        }
     }
 
     #[test]

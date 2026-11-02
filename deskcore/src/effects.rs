@@ -5,7 +5,9 @@
 //! - from an app, `effects put\n<effect lines>` → `ok`: queues its reply's
 //!   `effect <ticket> <WAVE>` lines;
 //! - from an app, `effects results` → `<ticket>\tok|err\t<text>` lines (or
-//!   nothing): what came of its effects, oldest first, taken;
+//!   nothing): what came of its effects, oldest first, taken. A text of several
+//!   lines (a folder's listing) is `okm` or `errm` and has `\`, tab, return and
+//!   newline escaped, cut at the end of a line within the limit below;
 //! - from an app, `effects put user\n<effect lines>` → `ok`: the same, for
 //!   lines queued while a person's key or click was handled (comphost says so;
 //!   `desktop` takes its word only as the app's own, never for another);
@@ -252,9 +254,9 @@ pub fn parse_take(text: &str) -> Option<Option<(&str, bool, &str)>> {
     }))
 }
 
-/// Results as lines: `<ticket>\tok|err\t<text>`, each text one line cut at
-/// [`MAX_LINE_TEXT`]: what `desktop` hands an app, the shell having cut each
-/// already.
+/// Results as lines: `<ticket>\tok|err|okm|errm\t<text>`, each text one line cut
+/// at [`MAX_LINE_TEXT`] (a text of several lines escaped, as the module says):
+/// what `desktop` hands an app, the shell having cut each already.
 pub fn encode_results(results: &[Done]) -> String {
     encode_results_at(results, MAX_LINE_TEXT)
 }
@@ -263,24 +265,33 @@ fn encode_results_at(results: &[Done], cap: usize) -> String {
     let lines: Vec<String> = results
         .iter()
         .map(|done| {
-            let (word, text) = word_and_text(done);
-            format!("{}\t{word}\t{}", done.ticket, one_line(text, cap))
+            let (word, text) = wire(done, cap);
+            format!("{}\t{word}\t{text}", done.ticket)
         })
         .collect();
     lines.join("\n")
 }
 
-fn word_and_text(done: &Done) -> (&'static str, &String) {
-    match &done.outcome {
-        Ok(text) => ("ok", text),
-        Err(text) => ("err", text),
+/// A result's word and its text as one wire line. A text of one line goes as it
+/// is (`ok`, `err`), cut at `cap`. A text of several (a folder's listing) goes
+/// as `okm` or `errm`, with `\`, tab, return and newline escaped (`\\`, `\t`,
+/// `\r`, `\n`) and cut at the end of a line within `cap`, so a name is never
+/// left half; a word of the one kind or the other tells the reader which.
+fn wire(done: &Done, cap: usize) -> (&'static str, String) {
+    let (words, text) = match &done.outcome {
+        Ok(text) => (("ok", "okm"), text),
+        Err(text) => (("err", "errm"), text),
+    };
+    match text.lines().nth(1) {
+        None => (words.0, one_line(text, cap)),
+        Some(_) => (words.1, escaped_lines(text, cap)),
     }
 }
 
 /// Bytes one result takes in [`encode_results`], its newline included.
 fn encoded_len(done: &Done) -> usize {
-    let (word, text) = word_and_text(done);
-    done.ticket.to_string().len() + word.len() + 3 + one_line(text, MAX_LINE_TEXT).len()
+    let (word, text) = wire(done, MAX_LINE_TEXT);
+    done.ticket.to_string().len() + word.len() + 3 + text.len()
 }
 
 /// [`encode_results`] read back; lines out of shape are skipped.
@@ -294,11 +305,67 @@ pub fn parse_results(text: &str) -> Vec<Done> {
             let outcome = match word {
                 "ok" => Ok(text),
                 "err" => Err(text),
+                "okm" => Ok(unescape(&text)),
+                "errm" => Err(unescape(&text)),
                 _ => return None,
             };
             Some(Done { ticket, outcome })
         })
         .collect()
+}
+
+/// `text` with `\`, tab, return and newline escaped, cut at the end of the last
+/// whole line that fits `cap` bytes; a first line longer than `cap` is cut inside
+/// (never inside an escape).
+fn escaped_lines(text: &str, cap: usize) -> String {
+    let mut out = String::new();
+    let mut whole = 0;
+    for c in text.chars() {
+        let escape = match c {
+            '\\' => Some("\\\\"),
+            '\n' => Some("\\n"),
+            '\r' => Some("\\r"),
+            '\t' => Some("\\t"),
+            _ => None,
+        };
+        let size = escape.map_or(c.len_utf8(), str::len);
+        if out.len() + size > cap {
+            if whole > 0 {
+                out.truncate(whole);
+            }
+            return out;
+        }
+        match escape {
+            Some(escape) => out.push_str(escape),
+            None => out.push(c),
+        }
+        if c == '\n' {
+            whole = out.len();
+        }
+    }
+    out
+}
+
+/// [`escaped_lines`] read back. A backslash before anything else, or at the end,
+/// stays as it is.
+fn unescape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        let unescaped = match (c, chars.peek()) {
+            ('\\', Some('\\')) => '\\',
+            ('\\', Some('n')) => '\n',
+            ('\\', Some('r')) => '\r',
+            ('\\', Some('t')) => '\t',
+            _ => {
+                out.push(c);
+                continue;
+            }
+        };
+        chars.next();
+        out.push(unescaped);
+    }
+    out
 }
 
 /// The shell's report on `app`'s effects, as its request: each text cut at
@@ -630,7 +697,166 @@ mod tests {
         let (app, back) = parse_done(&request).expect("a done request");
         assert_eq!(app, "files");
         assert_eq!(back[0], results[0]);
-        assert_eq!(back[1].outcome, Err(String::from("no such")));
+        // A text of several lines goes whole, on one line.
+        assert_eq!(back[1], results[1]);
         assert_eq!(parse_done("effects take"), None);
+    }
+
+    fn ok(text: &str) -> Done {
+        Done {
+            ticket: 7,
+            outcome: Ok(String::from(text)),
+        }
+    }
+
+    fn through_the_wire(done: &Done, cap: usize) -> Done {
+        let wire = encode_results_at(core::slice::from_ref(done), cap);
+        assert_eq!(wire.lines().count(), 1, "{wire:?}");
+        parse_results(&wire).remove(0)
+    }
+
+    /// The desktop tour's Files window (`03-files`): `notes.txt`, `plan.txt` and
+    /// `ideas.txt` were created, `fs_list` answered all three, and the app was
+    /// told only the first line. Through the shell, `desktop` and `comphost`, an
+    /// app's own listing and a person's both reach it whole.
+    #[test]
+    fn a_folder_of_three_files_reaches_the_app_with_all_three() {
+        let listing = "ideas.txt\nnotes.txt\nplan.txt\n";
+        for user in [false, true] {
+            let got = through("files-window", user, &[ok(listing)]);
+            assert_eq!(got, alloc::vec![ok(listing)], "user {user}");
+        }
+        // With a folder in it, and among other results of the same reply.
+        let mixed = alloc::vec![ok("Done: x"), ok("docs/\nnotes.txt\n"), ok("plain")];
+        assert_eq!(through("files-window", false, &mixed), mixed);
+    }
+
+    #[test]
+    fn a_listing_arrives_with_every_name() {
+        let listing = "ideas.txt\nnotes.txt\nplan.txt\n";
+        let wire = encode_results(&[ok(listing)]);
+        assert_eq!(wire, "7\tokm\tideas.txt\\nnotes.txt\\nplan.txt\\n");
+        assert_eq!(parse_results(&wire), alloc::vec![ok(listing)]);
+        // One line, with or without its newline, is as it was before.
+        assert_eq!(encode_results(&[ok("Done: x")]), "7\tok\tDone: x");
+        assert_eq!(encode_results(&[ok("Done: x\n")]), "7\tok\tDone: x");
+        assert_eq!(encode_results(&[ok("")]), "7\tok\t");
+    }
+
+    #[test]
+    fn several_lines_keep_their_backslashes_tabs_returns_and_letters() {
+        for text in [
+            "a\\nb\nc",
+            "back\\slash\nand\ttab\r\nand\rreturn",
+            "é\u{2028}\nfolder/\nname with spaces ",
+            "\\\n\\\\\n\\n\n\\",
+            "ends in a backslash\\\nsecond",
+        ] {
+            let done = ok(text);
+            assert_eq!(through_the_wire(&done, MAX_LINE_TEXT), done, "{text:?}");
+        }
+        let err = Done {
+            ticket: 2,
+            outcome: Err(String::from("no\nsuch\trow")),
+        };
+        assert_eq!(through_the_wire(&err, MAX_TEXT), err);
+    }
+
+    #[test]
+    fn a_long_listing_is_cut_between_names_never_inside_one() {
+        let names: Vec<String> = (0..60).map(|i| format!("file-number-{i:03}.txt")).collect();
+        let listing = format!("{}\n", names.join("\n"));
+        let got = through_the_wire(&ok(&listing), MAX_TEXT);
+        let Ok(text) = got.outcome else {
+            panic!("an ok result");
+        };
+        assert!(text.len() < MAX_TEXT, "{} bytes", text.len());
+        assert!(text.ends_with('\n'));
+        let kept: Vec<&str> = text.lines().collect();
+        assert!(kept.len() > 5 && kept.len() < names.len());
+        assert!(kept.iter().zip(&names).all(|(kept, name)| kept == name));
+        // A first line longer than the cap is cut inside, at a character.
+        let long = format!("{}\nsecond", "é".repeat(MAX_TEXT));
+        let Ok(text) = through_the_wire(&ok(&long), MAX_TEXT).outcome else {
+            panic!("an ok result");
+        };
+        assert!(text.len() <= MAX_TEXT && text.chars().all(|c| c == 'é'));
+        // Nor is an escape ever cut in two.
+        let slashes = format!("{}\nx", "\\".repeat(MAX_TEXT));
+        let Ok(text) = through_the_wire(&ok(&slashes), MAX_TEXT).outcome else {
+            panic!("an ok result");
+        };
+        assert!(text.chars().all(|c| c == '\\') && text.len() == MAX_TEXT / 2);
+    }
+
+    #[test]
+    fn the_budget_counts_a_listing_as_it_goes_on_the_wire() {
+        let mut queue = Queue::default();
+        let big = ok(&"n
+"
+        .repeat(2000));
+        // The budget holds the listing as cut and sent, and not a byte more.
+        let size = encode_results(core::slice::from_ref(&big)).len() + 1;
+        queue.finish("files", big.clone());
+        queue.finish("files", ok("Done: x"));
+        let taken = queue.results("files", size);
+        assert_eq!(
+            taken,
+            alloc::vec![big],
+            "the second waits for the next call"
+        );
+        assert_eq!(queue.results("files", size), alloc::vec![ok("Done: x")]);
+    }
+
+    #[test]
+    fn an_escape_the_reader_does_not_know_stays_as_it_is() {
+        for (wire, text) in [
+            ("7\tokm\ta\\qb\\", "a\\qb\\"),
+            ("7\tokm\t\\\\n", "\\n"),
+            ("7\tokm\t", ""),
+            ("7\tokm\t\\\\", "\\"),
+        ] {
+            assert_eq!(parse_results(wire), alloc::vec![ok(text)], "{wire:?}");
+        }
+        // A word the reader does not know is skipped, not guessed at.
+        assert_eq!(parse_results("7\tokx\ta"), Vec::new());
+        assert_eq!(parse_results("7\tOKM\ta"), Vec::new());
+        // Only a text of several lines is written with the m.
+        assert!(!encode_results(&[ok("a b")]).contains("okm"));
+    }
+
+    #[test]
+    fn any_text_goes_through_and_comes_out_the_same_or_cut_to_whole_lines() {
+        // A fixed xorshift, so a failure is the same failure next time.
+        let mut state = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let alphabet = ['a', 'b', ' ', '\n', '\n', '\\', '\t', '\r', 'é', 'n', 't'];
+        for _ in 0..2000 {
+            let len = (next() % 400) as usize;
+            let text: String = (0..len)
+                .map(|_| alphabet[(next() % alphabet.len() as u64) as usize])
+                .collect();
+            let cap = 1 + (next() % 300) as usize;
+            let got = through_the_wire(&ok(&text), cap);
+            let Ok(got) = got.outcome else {
+                panic!("an ok result");
+            };
+            if text.lines().nth(1).is_none() {
+                // One line: as `one_line` always did.
+                assert_eq!(
+                    got.replace(' ', "\t"),
+                    one_line(&text, cap).replace(' ', "\t")
+                );
+                continue;
+            }
+            assert!(text.starts_with(&got), "{text:?} {got:?}");
+            // What is kept ends where a line ends, or is all there is.
+            assert!(got == text || got.ends_with('\n') || !got.contains('\n'));
+        }
     }
 }

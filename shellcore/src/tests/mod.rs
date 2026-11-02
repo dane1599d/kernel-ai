@@ -82,6 +82,8 @@ struct FakeHost {
     /// A refusal the supervisor gives every `keep` request, as for an app it
     /// does not run.
     keep_refusal: RefCell<Option<String>>,
+    /// The saved restart window (`kai-updates 1`).
+    restart_file: RefCell<Option<String>>,
     /// The installed apps' rows, and what each `app_call` sent and answers.
     apps: RefCell<crate::apps::Apps>,
     app_requests: RefCell<Vec<(String, String)>>,
@@ -143,6 +145,8 @@ pub(super) struct FakeTriggers {
     pub runs: RefCell<Vec<(u64, String, String, bool)>>,
     /// The owner's answer: `Err` when it finds no live rule covering a firing.
     pub refuse: RefCell<Option<String>>,
+    /// The event box's lines waiting to be read.
+    pub waiting: RefCell<String>,
 }
 
 impl crate::standing::Triggers for FakeTriggers {
@@ -163,6 +167,10 @@ impl crate::standing::Triggers for FakeTriggers {
             .borrow_mut()
             .push((rule, action.into(), app.into(), undo));
         Ok(())
+    }
+
+    fn waiting(&self) -> String {
+        core::mem::take(&mut *self.waiting.borrow_mut())
     }
 }
 
@@ -247,6 +255,7 @@ impl FakeHost {
             keep_file: RefCell::new(None),
             keep_fails: Cell::new(0),
             keep_refusal: RefCell::new(None),
+            restart_file: RefCell::new(None),
             apps: RefCell::new(crate::apps::Apps::default()),
             app_requests: RefCell::new(Vec::new()),
             app_replies: RefCell::new(VecDeque::new()),
@@ -670,6 +679,15 @@ impl Host for FakeHost {
             return Err(why.clone());
         }
         self.kept.borrow_mut().push((String::from(app), on));
+        Ok(())
+    }
+
+    fn restart_read(&self) -> Option<String> {
+        self.restart_file.borrow().clone()
+    }
+
+    fn restart_write(&self, text: &str) -> Result<(), String> {
+        *self.restart_file.borrow_mut() = Some(String::from(text));
         Ok(())
     }
 

@@ -137,6 +137,57 @@ fn appearance_set_by_click_saves_the_setting_is_logged_as_the_click_and_undoes()
 }
 
 #[test]
+fn a_restart_window_by_click_is_saved_for_updated_and_read_back_as_its_file() {
+    let host = host();
+    let mut shell = shell(&host);
+    let file = |shell: &mut Shell| shell.settings(SETTINGS_APP, "file updates", false);
+    assert_eq!(file(&mut shell).as_deref(), Ok(""));
+    assert_eq!(
+        shell.settings(SETTINGS_APP, "restart-window 120 300", true),
+        Ok(String::from("restart window 02:00-05:00 UTC"))
+    );
+    let saved = "kai-updates 1\nrestart-window 120 300\n";
+    assert_eq!(host.restart_file.borrow().as_deref(), Some(saved));
+    assert_eq!(bootslot::window::restart_window(saved), Some((120, 300)));
+    assert_eq!(file(&mut shell).as_deref(), Ok(saved));
+    assert!(
+        shell.log.text().contains("user-click:settings"),
+        "{}",
+        shell.log.text()
+    );
+    // Without a click, or out of shape, nothing is saved.
+    for (request, user) in [
+        ("restart-window 60 90", false),
+        ("restart-window 300 300", true),
+        ("restart-window 0 1440", true),
+        ("restart-window 120", true),
+        ("restart-window 1 2 3", true),
+        ("restart-window -1 300", true),
+        ("restart-window on", true),
+        ("restart-window", true),
+    ] {
+        assert!(
+            shell.settings(SETTINGS_APP, request, user).is_err(),
+            "{request:?}"
+        );
+    }
+    assert_eq!(host.restart_file.borrow().as_deref(), Some(saved));
+    // `off` is the default again: the file says no window.
+    assert_eq!(
+        shell.settings(SETTINGS_APP, "restart-window off", true),
+        Ok(String::from("restart window off"))
+    );
+    assert_eq!(
+        host.restart_file.borrow().as_deref(),
+        Some("kai-updates 1\n")
+    );
+    assert_eq!(file(&mut shell).as_deref(), Ok(""));
+    // A saved file out of shape reads as no window, as `updated` reads it.
+    *host.restart_file.borrow_mut() = Some(String::from("kai-updates 1\nrestart-window x\n"));
+    assert_eq!(file(&mut shell).as_deref(), Ok(""));
+}
+
+#[test]
 fn keep_running_tells_the_supervisor_saves_the_list_and_undoes() {
     let host = host();
     let mut shell = shell(&host);

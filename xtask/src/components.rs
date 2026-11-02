@@ -57,6 +57,11 @@ const SETTINGS_DIRS: &[&str] = &[
 const SETTINGS_WINDOW_WIT: &str = "apps/settings-window/wit";
 /// `app:settings/actions`, which the window exports.
 const SETTINGS_WIT: &str = "apps/settings/wit";
+/// The editor (P4 task 11): its window, the model's tree and the shared glue.
+const EDITOR_WINDOW: &str = "apps/editor-window";
+const EDITOR_DIRS: &[&str] = &[EDITOR_WINDOW, "apps/editor-ui", "apps/ui-bind"];
+/// `app:editor/actions`, which the window exports.
+const EDITOR_WIT: &str = "apps/editor/wit";
 
 /// The Terminal app (P4 task 4): its window, model, tree and the shared `kai:ui` glue.
 const TERMINAL_WINDOW: &str = "apps/terminal-window";
@@ -104,8 +109,9 @@ const fn bad(label: &'static str, feature: &'static str) -> Version {
     }
 }
 
-/// Every version on the boot drive: `notes` 1 and 2, and the broken ones the M9a
-/// test expects to roll back.
+/// Every version that ships on the boot drive: `notes` 1 and 2 and the apps.
+/// The broken `notes` versions the M9a test expects to roll back are
+/// [`TEST_ONLY`].
 pub const VERSIONS: &[Version] = &[
     Version {
         label: "1",
@@ -121,10 +127,6 @@ pub const VERSIONS: &[Version] = &[
         label: "2",
         recipe: NOTES_RECIPE,
     },
-    bad("3-import", "bug-import"),
-    bad("3-health", "bug-health"),
-    bad("3-trap", "bug-trap"),
-    bad("3-spin", "bug-spin"),
     // Notes with its window (P3 task 9): the build P4 ships, its own component
     // so the edit loop's `notes` is untouched.
     Version {
@@ -175,6 +177,23 @@ pub const VERSIONS: &[Version] = &[
             ],
         },
     },
+    // The editor (P4 task 11), a window over the edit service.
+    Version {
+        label: "1",
+        recipe: Recipe {
+            component: "editor",
+            krate: "comp-editor-window",
+            dirs: EDITOR_DIRS,
+            feature: None,
+            wit: &[
+                "wit/kai-ui",
+                "wit/kai-edit",
+                "wit/kai-files",
+                "wit/kai-code",
+                EDITOR_WIT,
+            ],
+        },
+    },
     // The System monitor (P4 task 9), a window over a reading of the machine.
     Version {
         label: "1",
@@ -199,7 +218,15 @@ pub const VERSIONS: &[Version] = &[
 /// [`build_for_tests`] adds them for the images `cargo xtask test` boots, and
 /// [`check_no_test_only`] fails an image that has one. A version here is not also
 /// in [`VERSIONS`].
-pub const TEST_ONLY: &[Version] = &[];
+pub const TEST_ONLY: &[Version] = &[
+    // `notes` versions that fail to import, fail their health check, trap and
+    // spin: live-update rolls each back (M9a), and `:fault notes` names
+    // 3-trap's panic. A release must never offer one to update into.
+    bad("3-import", "bug-import"),
+    bad("3-health", "bug-health"),
+    bad("3-trap", "bug-trap"),
+    bad("3-spin", "bug-spin"),
+];
 
 /// Builds and packs every version that ships.
 pub fn build(root: &Path) -> Result<Vec<Module>, String> {
@@ -401,12 +428,13 @@ mod tests {
     #[test]
     fn the_versions_are_distinct_and_their_crates_exist() {
         let root = crate::workspace_root();
-        for (index, version) in VERSIONS.iter().enumerate() {
+        let all: Vec<&Version> = VERSIONS.iter().chain(TEST_ONLY).collect();
+        for (index, version) in all.iter().enumerate() {
             assert!(kabi::live::valid_label(version.label), "{}", version.label);
             let same = |v: &Version| {
                 (v.recipe.component, v.label) == (version.recipe.component, version.label)
             };
-            assert!(!VERSIONS[..index].iter().any(same));
+            assert!(!all[..index].iter().any(|v| same(v)));
             assert!(version.recipe.wit.iter().all(|w| root.join(w).is_dir()));
             for dir in version.recipe.dirs {
                 assert!(root.join(dir).join("Cargo.toml").exists(), "{dir}");
@@ -445,9 +473,9 @@ mod tests {
             assert!(
                 !VERSIONS
                     .iter()
-                    .any(|v| v.recipe.component == fixture.recipe.component),
+                    .any(|v| module_path(v) == module_path(fixture)),
                 "{}",
-                fixture.recipe.component
+                module_path(fixture)
             );
             assert!(kabi::live::valid_label(fixture.label));
             let root = crate::workspace_root();
@@ -484,8 +512,16 @@ mod tests {
             module("comp/fixture-window/2.wasm"),
         ];
         assert_eq!(check_none_of(&near, &fixtures), Ok(()));
-        // The list that ships is checked with `check_no_test_only`.
+        // The list that ships is checked with `check_no_test_only`: `notes` 1
+        // and 2 ship, its broken versions do not.
         assert_eq!(check_no_test_only(&clean), Ok(()));
+        let shipped: Vec<Module> = VERSIONS.iter().map(|v| module(&module_path(v))).collect();
+        assert_eq!(check_no_test_only(&shipped), Ok(()));
+        for broken in ["3-import", "3-health", "3-trap", "3-spin"] {
+            let path = std::format!("comp/notes/{broken}.wasm");
+            let why = check_no_test_only(&[module("comp/notes/2.wasm"), module(&path)]);
+            assert!(why.unwrap_err().contains(&path), "{broken}");
+        }
     }
 
     /// The images that ship call the check before they are made, and the test
@@ -582,6 +618,25 @@ mod tests {
         assert_eq!(open.export, "app:settings/actions@1.0.0#open");
     }
 
+    /// The editor build carries its two action rows, under its world.
+    #[test]
+    fn the_editor_build_packs_with_the_editor_actions() {
+        let editor = VERSIONS
+            .iter()
+            .find(|v| v.recipe.component == "editor")
+            .unwrap();
+        let module = Vec::from(&b"\0asm\x01\0\0\0"[..]);
+        let root = crate::workspace_root();
+        let source = artifact::bundle(&[("apps/editor-window/src/lib.rs", b"//")]);
+        let bytes = pack(&root, &editor.recipe, editor.label, module, &source).unwrap();
+        let parsed = artifact::parse(&bytes).unwrap();
+        assert_eq!(parsed.manifest.world, "app:editor/editor@1.0.0");
+        let actions = livecore::actions::parse(parsed.actions.unwrap()).unwrap();
+        let open = actions.by_name("editor_open").unwrap();
+        assert_eq!(open.export, "app:editor/actions@1.0.0#open");
+        assert!(actions.by_name("editor_status").is_some());
+    }
+
     /// The Terminal build carries its three rows, under its world.
     #[test]
     fn the_terminal_build_packs_with_its_three_actions() {
@@ -645,8 +700,8 @@ mod tests {
         let root = crate::workspace_root();
         let bytes = pack(
             &root,
-            &VERSIONS[2].recipe,
-            VERSIONS[2].label,
+            &TEST_ONLY[0].recipe,
+            TEST_ONLY[0].label,
             module.clone(),
             &source,
         )

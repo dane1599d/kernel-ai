@@ -566,6 +566,129 @@ fn the_pkg_dir_reaches_only_beneath_system_pkg() {
 }
 
 #[test]
+fn a_restore_reverts_only_inside_the_handles_folder() {
+    let mut disk = MemDisk::new(BLOCKS);
+    let (mut c, _) = Client::start(&mut disk);
+    let (pkg, state) = (kabi::fs::SYSTEM_PKG, kabi::fs::SYSTEM_STATE);
+    let open = |path: &str, how| Request::Open {
+        path: path.into(),
+        rights: (Rights::READ | Rights::WRITE).bits(),
+        how,
+    };
+    let (_, current) = c.call(ALICE, pkg, DIR_RIGHTS, open("current", How::CreateFile));
+    let current = current.unwrap();
+    c.write(&current, 0, b"v1");
+    // An action in /system/pkg, committed.
+    c.call(ALICE, pkg, DIR_RIGHTS, Request::Begin { action: 7 });
+    c.write(&current, 0, b"v2");
+    let Reply::Committed { generation } = c.call(ALICE, pkg, DIR_RIGHTS, Request::Commit).0 else {
+        panic!("not committed");
+    };
+    let restore = |action| Request::Restore {
+        txn: generation,
+        action,
+    };
+    // The state folder's handle, with every right, may not revert it.
+    let reply = c.call(ALICE, state, DIR_RIGHTS, restore(8));
+    assert_eq!(failed(reply), Error::Permission);
+    assert_eq!(c.read(&current), Ok(b"v2".to_vec()));
+    // Nor may a handle on a folder inside the one the action changed.
+    let (_, sub) = c.call(ALICE, pkg, DIR_RIGHTS, open("sub", How::Mkdir));
+    let sub = sub.unwrap();
+    let reply = c.call(ALICE, sub.badge, DIR_RIGHTS, restore(8));
+    assert_eq!(failed(reply), Error::Permission);
+    // The pkg folder's own handle may.
+    let reply = c.call(ALICE, pkg, DIR_RIGHTS, restore(9)).0;
+    assert!(matches!(reply, Reply::Restored { .. }), "{reply:?}");
+    assert_eq!(c.read(&current), Ok(b"v1".to_vec()));
+}
+
+#[test]
+fn a_restore_puts_nothing_in_the_volume_root() {
+    let mut disk = MemDisk::new(BLOCKS);
+    let (mut c, _) = Client::start(&mut disk);
+    let pkg = kabi::fs::SYSTEM_PKG;
+    let open = |path: &str, how| Request::Open {
+        path: path.into(),
+        rights: DIR_RIGHTS.bits(),
+        how,
+    };
+    let (_, x) = c.call(ALICE, pkg, DIR_RIGHTS, open("x", How::Mkdir));
+    let x = x.unwrap();
+    let (_, f) = c.call(ALICE, x.badge, DIR_RIGHTS, open("planted", How::CreateFile));
+    let f = f.unwrap();
+    c.write(&f, 0, b"v1");
+    c.call(ALICE, pkg, DIR_RIGHTS, Request::Begin { action: 7 });
+    c.write(&f, 0, b"v2");
+    let Reply::Committed { generation } = c.call(ALICE, pkg, DIR_RIGHTS, Request::Commit).0 else {
+        panic!("not committed");
+    };
+    // x goes to the trash, then for good: pkg's own handle does both.
+    let trashed = c.call(ALICE, pkg, DIR_RIGHTS, Request::Trash { name: "x".into() });
+    assert_eq!(trashed.0, Reply::Done);
+    let emptied = c.call(ALICE, pkg, DIR_RIGHTS, Request::EmptyTrash).0;
+    assert_eq!(emptied, Reply::Emptied { count: 1 });
+    // Bringing `planted` back would put it in the volume's root.
+    let restore = Request::Restore {
+        txn: generation,
+        action: 8,
+    };
+    let reply = c.call(ALICE, pkg, DIR_RIGHTS, restore);
+    assert_eq!(failed(reply), Error::Permission);
+    let at_root = c.server.fs().lookup(ROOT, "planted").unwrap();
+    assert!(at_root.is_none(), "{at_root:?}");
+}
+
+#[test]
+fn a_handle_reverts_only_its_own_folders_empty_trash() {
+    let mut disk = MemDisk::new(BLOCKS);
+    let (mut c, _) = Client::start(&mut disk);
+    let (pkg, state) = (kabi::fs::SYSTEM_PKG, kabi::fs::SYSTEM_STATE);
+    let open = |path: &str, how| Request::Open {
+        path: path.into(),
+        rights: DIR_RIGHTS.bits(),
+        how,
+    };
+    let (_, s) = c.call(ALICE, state, DIR_RIGHTS, open("secret", How::CreateFile));
+    c.write(&s.unwrap(), 0, b"gone for good");
+    let trashed = c.call(
+        ALICE,
+        state,
+        DIR_RIGHTS,
+        Request::Trash {
+            name: "secret".into(),
+        },
+    );
+    assert_eq!(trashed.0, Reply::Done);
+    c.call(ALICE, state, DIR_RIGHTS, Request::Begin { action: 7 });
+    let emptied = c.call(ALICE, state, DIR_RIGHTS, Request::EmptyTrash).0;
+    assert_eq!(emptied, Reply::Emptied { count: 1 });
+    let Reply::Committed { generation } = c.call(ALICE, state, DIR_RIGHTS, Request::Commit).0
+    else {
+        panic!("not committed");
+    };
+    let restore = |action| Request::Restore {
+        txn: generation,
+        action,
+    };
+    let listed = |c: &mut Client| {
+        let reply = c.call(ALICE, state, DIR_RIGHTS, Request::TrashList { after: None });
+        match reply.0 {
+            Reply::Trash { items, .. } => items.len(),
+            other => panic!("{other:?}"),
+        }
+    };
+    // pkg's handle may not revert state's purge.
+    let reply = c.call(BOB, pkg, DIR_RIGHTS, restore(8));
+    assert_eq!(failed(reply), Error::Permission);
+    assert_eq!(listed(&mut c), 0);
+    // state's own handle may.
+    let reply = c.call(ALICE, state, DIR_RIGHTS, restore(9)).0;
+    assert!(matches!(reply, Reply::Restored { .. }), "{reply:?}");
+    assert_eq!(listed(&mut c), 1);
+}
+
+#[test]
 fn the_state_dir_reaches_only_beneath_system_state() {
     let mut disk = MemDisk::new(BLOCKS);
     let (mut c, _) = Client::start(&mut disk);
@@ -767,6 +890,30 @@ fn the_trash_lists_by_path_and_gives_back_by_name() {
 }
 
 #[test]
+fn a_file_named_info_cbor_goes_to_the_trash_and_back() {
+    let mut disk = MemDisk::new(BLOCKS);
+    let (mut c, _) = Client::start(&mut disk);
+    let file = c.open("info.cbor", How::CreateFile).unwrap();
+    c.write(&file, 0, b"my own notes");
+    // Inside an action, as the shell trashes.
+    assert_eq!(c.home(Request::Begin { action: 7 }).0, Reply::Done);
+    c.trash(HOME_USER, "info.cbor");
+    let committed = c.home(Request::Commit).0;
+    assert!(
+        matches!(committed, Reply::Committed { .. }),
+        "{committed:?}"
+    );
+    assert_eq!(c.trash_paths(HOME_USER), ["info.cbor"]);
+    let back = c.home(Request::TrashRestore {
+        path: "info.cbor".into(),
+    });
+    assert_eq!(back.0, Reply::Done);
+    let file = c.open("info.cbor", How::Existing).unwrap();
+    assert_eq!(c.read(&file), Ok(b"my own notes".to_vec()));
+    assert!(c.trash_paths(HOME_USER).is_empty());
+}
+
+#[test]
 fn a_restore_from_the_trash_is_undone_like_any_action() {
     let mut disk = MemDisk::new(BLOCKS);
     let (mut c, _) = Client::start(&mut disk);
@@ -884,6 +1031,55 @@ fn the_update_snapshot_is_taken_and_restored_only_on_system_updates() {
     assert!(matches!(reply, Reply::Committed { .. }), "{reply:?}");
     let (_, marker) = state(&mut c, How::Existing);
     assert_eq!(c.read(&marker.unwrap()).unwrap(), b"before");
+}
+
+#[test]
+fn the_restart_window_is_written_through_state_and_only_read_through_its_badge() {
+    let mut disk = MemDisk::new(BLOCKS);
+    let (mut c, _) = Client::start(&mut disk);
+    assert_ne!(c.server.system_restart, 0);
+    let open = |path: &str, rights: Rights, how: How| Request::Open {
+        path: path.into(),
+        rights: rights.bits(),
+        how,
+    };
+    // The shell writes it through its `/system/state`.
+    let (_, file) = c.call(
+        ALICE,
+        kabi::fs::SYSTEM_STATE,
+        DIR_RIGHTS,
+        open(
+            "restart/window",
+            Rights::READ | Rights::WRITE,
+            How::CreateFile,
+        ),
+    );
+    let file = file.unwrap();
+    assert!(matches!(c.write(&file, 0, b"kai-updates 1\n"), Reply::Done));
+    // `updated` reads it through `dir=restart`, and changes nothing there.
+    let restart = kabi::fs::SYSTEM_RESTART;
+    let (_, file) = c.call(
+        ALICE,
+        restart,
+        DIR_RIGHTS,
+        open("window", Rights::READ, How::Existing),
+    );
+    assert_eq!(c.read(&file.unwrap()).unwrap(), b"kai-updates 1\n");
+    for request in [
+        open("window", Rights::READ | Rights::WRITE, How::Existing),
+        open("other", Rights::READ, How::CreateFile),
+        open("../log", Rights::READ, How::Existing),
+        Request::Trash {
+            name: "window".into(),
+        },
+        Request::Begin { action: 0 },
+    ] {
+        let reply = c.call(ALICE, restart, DIR_RIGHTS, request.clone());
+        assert!(
+            matches!(reply.0, Reply::Failed(_)),
+            "{request:?}: {reply:?}"
+        );
+    }
 }
 
 #[test]

@@ -7,7 +7,7 @@ use kaifs::check::{Cache, check};
 use kaifs::fs::{Faults, HOME, SYSTEM};
 use kaifs::gc::Why;
 use kaifs::ns_check::check_namespace;
-use kaifs::trash::{INFO, TRASH, TrashInfo, decode_info, encode_info};
+use kaifs::trash::{INFO, ITEM, TRASH, TrashInfo, decode_info, encode_info};
 use kaifs::vol::{SnapKind, UNDO_LIFE};
 use kaifs::{Error, Fs, MemDisk, ROOT};
 
@@ -69,6 +69,43 @@ fn a_trash_is_a_move_beside_info_cbor_and_its_undo_moves_it_back() {
     assert_eq!(fs.resolve("/docs/letter.txt").unwrap(), f);
     assert_eq!(fs.read_file(f).unwrap(), b"dear founder");
     assert_eq!(fs.resolve(&format!("/{TRASH}/{txn}")), Err(Error::NotFound));
+    assert!(fs.trash_list().unwrap().is_empty());
+    checked(&mut fs);
+}
+
+#[test]
+fn a_file_named_info_cbor_goes_beside_the_slots_own_and_comes_back() {
+    let mut fs = fresh(4096);
+    let docs = fs.mkdir(ROOT, "docs").unwrap();
+    // Its bytes read as a trash record that says it came from elsewhere.
+    let forged = encode_info(&TrashInfo {
+        path: "/elsewhere/secret".into(),
+        deleted: 1,
+        action: 0,
+    });
+    let f = write(&mut fs, docs, INFO, &forged);
+    fs.commit().unwrap();
+    fs.clock = 5_000;
+    fs.begin(31).unwrap();
+    let trashed = fs.trash(docs, INFO).unwrap();
+    let txn = fs.commit().unwrap();
+    assert_eq!(trashed.ino, f);
+    assert_eq!(trashed.info.path, format!("/docs/{INFO}"));
+    // The slot's record is the one the trash wrote, and the file is its item.
+    let info = fs.resolve(&format!("/{TRASH}/{txn}/1/{INFO}")).unwrap();
+    assert_ne!(info, f);
+    assert_eq!(
+        decode_info(&fs.read_file(info).unwrap()).unwrap(),
+        trashed.info
+    );
+    assert_eq!(fs.resolve(&format!("/{TRASH}/{txn}/1/{ITEM}")).unwrap(), f);
+    assert_eq!(fs.trash_list().unwrap(), std::slice::from_ref(&trashed));
+    // Undoing the action moves it back under its own name, bytes and all.
+    fs.begin(32).unwrap();
+    fs.restore(txn).unwrap();
+    fs.commit().unwrap();
+    assert_eq!(fs.resolve(&format!("/docs/{INFO}")).unwrap(), f);
+    assert_eq!(fs.read_file(f).unwrap(), forged);
     assert!(fs.trash_list().unwrap().is_empty());
     checked(&mut fs);
 }

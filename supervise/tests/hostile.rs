@@ -69,8 +69,9 @@ fn near_misses_of_dir_pkg_are_refused() {
 
 /// `updated`'s plan line (ADR 0008 §10) beside others that try for its folders.
 const UPDATED_PLAN: &str = "fs caps=serve+partition\n\
-    updated caps=update dir=trust+updates step=update\n\
+    updated caps=update dir=trust+updates+restart step=update\n\
     notes caps=serve dir=trust\n\
+    desktop caps=serve dir=restart\n\
     pkg dir=pkg+updates\n\
     shell program=updated dir=updates caps=call\n";
 
@@ -80,7 +81,8 @@ fn named(part: &str) -> Option<Folder> {
 }
 
 /// Every folder a service came out with is named in its own line's `dir=` word,
-/// and `/system/trust` and `/system/updates` go only to the program `updated`.
+/// and `/system/trust`, `/system/updates` and `/system/state/restart` go only
+/// to the program `updated`.
 fn trust_and_updates_go_only_to_updated(bytes: &[u8]) {
     let Ok(text) = core::str::from_utf8(bytes) else {
         return;
@@ -103,7 +105,7 @@ fn trust_and_updates_go_only_to_updated(bytes: &[u8]) {
         if service
             .dirs
             .iter()
-            .any(|d| matches!(d, Folder::Trust | Folder::Updates))
+            .any(|d| matches!(d, Folder::Trust | Folder::Updates | Folder::Restart))
         {
             assert_eq!(service.program, "updated", "{line:?}");
             assert_eq!(service.name, "updated", "{line:?}");
@@ -154,14 +156,18 @@ fn only_updated_gets_the_trust_and_updates_folders() {
             .find(|s| s.name == name)
             .map(|s| s.dirs.clone())
     };
-    assert_eq!(dirs("updated"), Some(vec![Folder::Trust, Folder::Updates]));
+    assert_eq!(
+        dirs("updated"),
+        Some(vec![Folder::Trust, Folder::Updates, Folder::Restart])
+    );
     // A line for another program asking for them is refused whole.
     assert_eq!(dirs("notes"), None);
+    assert_eq!(dirs("desktop"), None);
     assert_eq!(dirs("pkg"), None);
     // Running the program `updated` under another name is refused too: the
     // name and the program must both be `updated`, as for the UPDATE capability.
     assert_eq!(dirs("shell"), None);
-    assert_eq!(plan.errors.len(), 3, "{:?}", plan.errors);
+    assert_eq!(plan.errors.len(), 4, "{:?}", plan.errors);
     fuzz(
         UPDATED_PLAN.as_bytes(),
         0xd2,
@@ -178,7 +184,7 @@ fn only_updated_gets_the_trust_and_updates_folders() {
 #[test]
 fn dir_settings_goes_to_any_service_and_only_reads() {
     let plan = parse_plan(
-        "updated caps=update dir=trust+updates+settings\n\
+        "updated caps=update dir=trust+updates+restart\n\
          desktop dir=settings\n",
     );
     assert!(plan.errors.is_empty(), "{:?}", plan.errors);
@@ -186,11 +192,13 @@ fn dir_settings_goes_to_any_service_and_only_reads() {
     assert_eq!(
         dirs,
         vec![
-            vec![Folder::Trust, Folder::Updates, Folder::Settings],
+            vec![Folder::Trust, Folder::Updates, Folder::Restart],
             vec![Folder::Settings],
         ]
     );
     assert!(Folder::Settings.read_only());
+    assert!(Folder::Restart.read_only());
+    assert_eq!(Folder::Restart.badge(), kabi::fs::SYSTEM_RESTART);
     assert_eq!(Folder::Settings.badge(), kabi::fs::SYSTEM_SETTINGS);
     for writable in [Folder::Pkg, Folder::Trust, Folder::Updates] {
         assert!(!writable.read_only());

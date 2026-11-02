@@ -301,6 +301,28 @@ pub const KEEP: &str = "keep";
 pub const APPEARANCE: &str = "appearance";
 /// The rows withheld from apps' effects (`kai-withheld 1`, P4 task 7).
 pub const WITHHELD: &str = "withheld";
+/// The restart window (`kai-updates 1`), in the folder `updated`'s read-only
+/// `dir=restart` gives it alone.
+pub const RESTART: &str = "restart/window";
+const _: () = {
+    let (path, folder, file) = (
+        RESTART.as_bytes(),
+        bootslot::window::FOLDER.as_bytes(),
+        bootslot::window::FILE.as_bytes(),
+    );
+    assert!(path.len() == folder.len() + 1 + file.len());
+    let mut i = 0;
+    while i < folder.len() {
+        assert!(path[i] == folder[i]);
+        i += 1;
+    }
+    assert!(path[folder.len()] == b'/');
+    let mut j = 0;
+    while j < file.len() {
+        assert!(path[folder.len() + 1 + j] == file[j]);
+        j += 1;
+    }
+};
 
 impl State {
     /// File `name` as `/system/state` holds it; `None` with no such file or no

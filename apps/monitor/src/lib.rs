@@ -2,8 +2,10 @@
 //! samples the host hands in ([`Monitor::update`]), sorted and selected the way
 //! the window or the agent says. A [`Sample`] is plain numbers (the kernel's
 //! `METRICS` and the model's `health`), so there is nothing to parse; this crate
-//! turns two samples into each process's CPU share. It changes nothing itself:
-//! stopping a process is the OS's `process_stop`, which asks, queued as an effect.
+//! turns two samples into each process's CPU share. It changes nothing itself and
+//! queues no effect: stopping a process is the OS's `process_stop`, which asks, and
+//! no app may declare it as an effect (the agent core runs only the file rows for
+//! an app), so the window points the user to Kai for it.
 //!
 //! The agent's rows are `monitor_sort` and `monitor_select` ([`Monitor::act_sort`]
 //! and [`Monitor::act_select`]). They move the view and say what they found, so
@@ -15,8 +17,6 @@ extern crate alloc;
 #[cfg(test)]
 extern crate std;
 
-pub mod calls;
-pub mod fake;
 pub mod view;
 
 /// The sample the host hands in is `systemabi`'s, the format `kai:system` carries.
@@ -25,7 +25,6 @@ pub use systemabi as sample;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use calls::Call;
 use core::cmp::Ordering;
 use sample::{ModelStatus, PAGE, Sample};
 
@@ -37,15 +36,6 @@ pub const MAX_PROCS: usize = 256;
 pub const NAME_CHARS: usize = 48;
 /// Pages in a MiB.
 const PAGES_PER_MIB: u64 = (1 << 20) / PAGE;
-/// Most requests waiting for an answer; the oldest is forgotten past this.
-const MAX_PENDING: usize = 16;
-
-/// How the app queues an effect (`compsdk::app::request` in the component).
-pub trait Os {
-    /// Queues `call`; its ticket, which [`Monitor::done`] gets with the result.
-    fn request(&mut self, call: &Call) -> u32;
-}
-
 /// `text` for one line of the window: control characters become spaces, and it
 /// is cut to `max` characters.
 pub fn tame(text: &str, max: usize) -> String {
@@ -65,9 +55,6 @@ pub struct Proc {
     pub pid: u32,
     /// The name as the window shows it: no control characters, cut short.
     pub name: String,
-    /// Whether `name` is the name the OS gave. `process_stop` takes a name, so
-    /// only a process whose name is exact can be stopped from here.
-    pub exact: bool,
     /// CPU over the time between the last two samples, in thousandths of one
     /// CPU; unknown until there are two.
     pub cpu_permille: Option<u32>,
@@ -119,7 +106,6 @@ impl Sort {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Status {
     Ready,
-    Done(String),
     Failed(String),
 }
 
@@ -143,8 +129,6 @@ pub struct Monitor {
     flipped: bool,
     selected: Option<u32>,
     status: Status,
-    /// Tickets of `process_stop` effects, by the name they were asked for.
-    pending: Vec<(u32, String)>,
     /// Whether `status` says the last sample could not be read, which the next
     /// good one clears.
     unreadable: bool,
@@ -205,7 +189,6 @@ impl Monitor {
             flipped: false,
             selected: None,
             status: Status::Ready,
-            pending: Vec::new(),
             unreadable: false,
         }
     }
@@ -246,11 +229,6 @@ impl Monitor {
 
     pub fn status(&self) -> &Status {
         &self.status
-    }
-
-    /// Whether a `process_stop` is still to be answered.
-    pub fn busy(&self) -> bool {
-        !self.pending.is_empty()
     }
 
     /// The selected process, if it is still in the list.
@@ -315,7 +293,6 @@ impl Monitor {
                 let shown = tame(&p.name, NAME_CHARS);
                 Proc {
                     pid: p.pid,
-                    exact: shown == p.name,
                     name: shown,
                     cpu_permille: elapsed
                         .zip(before(p))
@@ -410,40 +387,6 @@ impl Monitor {
             }
             None => Err(format!("No process is called {}.", tame(name, 40))),
         }
-    }
-
-    /// Asks the OS to stop the selected process by name. `process_stop` asks
-    /// the user first and cannot be undone, and it stops every process of that
-    /// name; this only queues it.
-    pub fn stop_selected(&mut self, os: &mut dyn Os) {
-        let Some(p) = self.selected().cloned() else {
-            return self.fail("Pick a process to stop first.");
-        };
-        let call = p.exact.then(|| calls::stop(&p.name)).flatten();
-        let Some(call) = call else {
-            return self.fail("That name cannot be given to the stop row.");
-        };
-        let ticket = os.request(&call);
-        if self.pending.len() == MAX_PENDING {
-            self.pending.remove(0);
-        }
-        self.pending.push((ticket, p.name));
-    }
-
-    /// The result of the effect with `ticket`; whether the window changed.
-    pub fn done(&mut self, ticket: u32, outcome: Result<String, String>) -> bool {
-        let Some(at) = self.pending.iter().position(|(t, _)| *t == ticket) else {
-            return false;
-        };
-        let (_, name) = self.pending.remove(at);
-        match outcome {
-            Ok(_) => {
-                self.status = Status::Done(format!("Stopped {}.", tame(&name, 40)));
-                self.unreadable = false;
-            }
-            Err(why) => self.fail(&why),
-        }
-        true
     }
 }
 

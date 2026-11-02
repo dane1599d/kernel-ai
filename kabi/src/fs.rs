@@ -10,6 +10,10 @@
 //! from before a restore or from another disk, finds nothing, never another
 //! object.
 
+/// The `kai-data` disk's name: its partition's in the log, and the virtio
+/// serial the tests attach it by.
+pub const DATA_SERIAL: &str = "kai-data";
+
 /// kaifs's volumes, as a badge holds them.
 pub const SYSTEM: u8 = 1;
 pub const HOME: u8 = 2;
@@ -126,6 +130,20 @@ pub const SYSTEM_SETTINGS: u64 = Badge {
 }
 .raw();
 
+/// The badge of the startup `Dir` a plan line's `dir=restart` grants:
+/// `/system/state/restart`, which holds only the restart window the shell
+/// saves from a Settings click (`kai-updates 1`), for `updated` to follow. Read
+/// only, as [`SYSTEM_SETTINGS`] is: the kernel gives it READ and ENUMERATE, and
+/// `fs` refuses any change through it. The shell writes it through its own
+/// `/system/state`. Fixed; object 6.
+pub const SYSTEM_RESTART: u64 = Badge {
+    volume: SYSTEM,
+    file: false,
+    epoch: 0,
+    object: 6,
+}
+.raw();
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,6 +185,7 @@ mod tests {
             SYSTEM_UPDATES,
             SYSTEM_SETTINGS,
             SYSTEM_APPS,
+            SYSTEM_RESTART,
         ];
         for (i, a) in fixed.iter().enumerate() {
             assert_eq!(Badge::parse(*a).epoch, 0);
