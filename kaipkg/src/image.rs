@@ -90,29 +90,12 @@ const UNEXPIRED: u64 = 0;
 /// refused too, in resolution's words. An error means the metadata did not
 /// verify, and nothing in it is kept.
 pub fn check(files: &mut dyn Files, provided: &[(&str, Version)]) -> Result<Checked, String> {
-    let root = files
-        .file(ROOT, updater::ROOT_MAX)?
-        .ok_or_else(|| format!("the image has no {ROOT}"))?;
-    let mut cache = Memory::default();
-    cache.0.insert("root".into(), root);
-    let mut listed = Vec::new();
-    let mut checked = Checked::default();
-    {
-        let tuf = |e: kaituf::Error| e.to_string();
-        let mut remote = Metadata(files);
-        let mut updater = Updater::new(&mut remote, &mut cache, UNEXPIRED).map_err(tuf)?;
-        updater.refresh().map_err(tuf)?;
-        for path in updater.listed(ROLE, "targets").map_err(tuf)? {
-            match updater.target(&path) {
-                Ok(Some(target)) => listed.push(target),
-                Ok(None) => checked
-                    .refused
-                    .push((path, "no trusted role names it".into())),
-                Err(why) => checked.refused.push((path, why.to_string())),
-            }
-        }
-    }
-    for target in listed {
+    let Listed { targets, refused } = listed(files, ROLE)?;
+    let mut checked = Checked {
+        refused,
+        ..Checked::default()
+    };
+    for target in targets {
         let kept = |name: &str| checked.packages.iter().any(|(e, _)| e.name == name);
         match package(files, &target) {
             Ok((entry, ..)) if kept(&entry.name) => {
@@ -134,6 +117,37 @@ pub fn check(files: &mut dyn Files, provided: &[(&str, Version)]) -> Result<Chec
     let indexes = core::mem::take(&mut checked.indexes);
     checked.indexes = indexes.into_iter().filter(|i| kept(i)).collect();
     Ok(checked)
+}
+
+/// What one role lists, from [`listed`].
+pub struct Listed {
+    /// Each target, as the search of the delegations finds it.
+    pub targets: Vec<TargetFile>,
+    /// Each listed path no trusted role names, and why.
+    pub refused: Vec<(String, String)>,
+}
+
+/// The targets `role`, as `targets` delegates it, lists in the image's
+/// repository ([`UNEXPIRED`]). An error means the metadata did not verify.
+pub fn listed(files: &mut dyn Files, role: &str) -> Result<Listed, String> {
+    let root = files
+        .file(ROOT, updater::ROOT_MAX)?
+        .ok_or_else(|| format!("the image has no {ROOT}"))?;
+    let mut cache = Memory::default();
+    cache.0.insert("root".into(), root);
+    let tuf = |e: kaituf::Error| e.to_string();
+    let mut remote = Metadata(files);
+    let mut updater = Updater::new(&mut remote, &mut cache, UNEXPIRED).map_err(tuf)?;
+    updater.refresh().map_err(tuf)?;
+    let (mut targets, mut refused) = (Vec::new(), Vec::new());
+    for path in updater.listed(role, "targets").map_err(tuf)? {
+        match updater.target(&path) {
+            Ok(Some(target)) => targets.push(target),
+            Ok(None) => refused.push((path, "no trusted role names it".into())),
+            Err(why) => refused.push((path, why.to_string())),
+        }
+    }
+    Ok(Listed { targets, refused })
 }
 
 /// Refuses, one at a time, each kept package that does not resolve against the
