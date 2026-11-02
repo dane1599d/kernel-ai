@@ -41,10 +41,11 @@ pub fn encode(models: &Models) -> String {
 
 /// `models` as [`encode`] writes it if that is at most `max` bytes. Otherwise
 /// the lines that matter most come first, and each line that would pass `max`
-/// is left out: the running, next and trial lines, then each stored blob with
-/// its role target, then the role's other targets. So one IPC message always
-/// holds a list that parses, and a role too long for one shows its first
-/// targets.
+/// is left out: the running, next and trial lines, then the running and next
+/// models' own blob and role target (so the list names them), then each other
+/// stored blob with its role target, then the role's other targets. So one
+/// IPC message always holds a list that parses, and a role too long for one
+/// shows its first targets.
 pub fn encode_within(models: &Models, max: usize) -> String {
     let all = encode(models);
     if all.len() <= max {
@@ -58,7 +59,9 @@ pub fn encode_within(models: &Models, max: usize) -> String {
     };
     let store = &models.store;
     push(state_lines(store));
-    for b in &store.blobs {
+    let first = |b: &&Stored| [store.running, store.next].contains(&Some(b.sha256));
+    let (named, rest): (Vec<&Stored>, Vec<&Stored>) = store.blobs.iter().partition(first);
+    for b in named.into_iter().chain(rest) {
         push(stored_line(b));
         if let Some(s) = models.signed.iter().find(|s| s.sha256 == b.sha256) {
             push(signed_line(s));

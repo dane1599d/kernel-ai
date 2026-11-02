@@ -213,6 +213,8 @@ fn main() -> i32 {
     // Likewise only the model manager's window reads the model list, and only
     // it has the route to `updated`, which answers it the list alone.
     env.grants.models = name == models::MODELS_APP;
+    // Each holds its own route at index 1, so no app may hold both.
+    debug_assert!(!(env.grants.system && env.grants.models));
     let mut lister = env.grants.models.then(models::Lister::new);
     let mut napper = Napper::new(Nap::new(settings.nap_ms, now_ms()));
     napper.nap.keep_running(settings.keep_running);
