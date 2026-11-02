@@ -8,21 +8,13 @@
 //! while it runs: only the shown version's queue is taken.
 //!
 //! A read carries nothing but its ticket, so there is no grammar to check, and a
-//! read is allowed at any time (it changes nothing). The queue is short
-//! ([`MAX_QUEUED`]) because the app wants the latest sample, not a backlog. A call
-//! that faults leaves nothing queued.
+//! read is allowed at any time (it changes nothing). The reads wait in the
+//! instance's own short queue ([`crate::reads`]), so a sample only ever reaches
+//! the instance that asked for it.
 //!
 //! The interface is linked only for an instance loaded with the `system` grant
 //! ([`Grants`]); without it the import fails to link, and the version does not
 //! stage (`Reason::Link`).
-//!
-//! Tickets count from 0 for each instance, so a read's answer must go to the
-//! instance that made it and to no later one. comphost keeps that by never
-//! holding a read itself: a read waits in the instance's own queue
-//! ([`CoreInstance::system_waiting`] says whether one does, which also keeps the
-//! app from napping), and comphost takes it ([`CoreInstance::take_system`]) only
-//! when it can answer in the same step. A reloaded, resumed or swapped instance
-//! starts with an empty queue, so it is never answered for its predecessor.
 
 use crate::canonical::CoreInstance;
 use crate::grants::Grants;
@@ -43,35 +35,13 @@ pub(crate) const SYSTEM: &str = "kai:system/system";
 /// The export the samples go to.
 pub(crate) const SAMPLES: &str = "kai:system/samples";
 
-/// Most reads waiting for comphost; a call that makes more traps.
-pub const MAX_QUEUED: usize = 4;
+pub use crate::reads::MAX_QUEUED;
 /// Largest sample the app is given; a larger one is replaced by an error.
 pub const MAX_REPLY: usize = systemabi::MAX_BYTES;
 
-/// The tickets of the reads not yet taken, and the next ticket.
-#[derive(Default)]
-pub(crate) struct SystemHost {
-    queue: Vec<u32>,
-    next: u32,
-    /// Where this call's reads start in the queue.
-    call_start: usize,
-}
-
 /// `system.read() -> u32`: the read's ticket.
 pub(crate) fn read(mut caller: Caller<'_, HostState>) -> Result<i32, Error> {
-    let host = &mut caller.data_mut().system;
-    if host.queue.len() >= MAX_QUEUED {
-        return Err(Error::new(alloc::format!(
-            "{SYSTEM} read: {MAX_QUEUED} reads waiting for comphost"
-        )));
-    }
-    let ticket = host.next;
-    host.next = host
-        .next
-        .checked_add(1)
-        .ok_or_else(|| Error::new(alloc::format!("{SYSTEM} read: tickets used up")))?;
-    host.queue.push(ticket);
-    Ok(ticket as i32)
+    caller.data_mut().system.read(SYSTEM)
 }
 
 /// Whether `grants` lets an app import `kai:system/system`.
@@ -82,26 +52,23 @@ pub(crate) fn granted(grants: Grants) -> bool {
 impl CoreInstance {
     /// Starts counting a call's reads: where they start in the queue.
     pub(crate) fn system_call_begins(&mut self) {
-        let host = &mut self.store.data_mut().system;
-        host.call_start = host.queue.len();
+        self.store.data_mut().system.call_begins();
     }
 
     /// A call faulted: what it queued is not sent.
     pub(crate) fn system_call_faulted(&mut self) {
-        let host = &mut self.store.data_mut().system;
-        let start = host.call_start.min(host.queue.len());
-        host.queue.truncate(start);
+        self.store.data_mut().system.call_faulted();
     }
 
     /// Whether a read waits to be answered.
     pub fn system_waiting(&self) -> bool {
-        !self.store.data().system.queue.is_empty()
+        self.store.data().system.waiting()
     }
 
     /// The tickets of the reads the app made since the last call here, oldest
     /// first.
     pub fn take_system(&mut self) -> Vec<u32> {
-        core::mem::take(&mut self.store.data_mut().system.queue)
+        self.store.data_mut().system.take()
     }
 
     /// Tells the app the sample for `ticket`, or why there is none. A sample over

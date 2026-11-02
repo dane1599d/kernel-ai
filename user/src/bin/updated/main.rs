@@ -27,9 +27,9 @@
 //! It prints a line for each step that passed, or `updated: FAIL ...`. With no
 //! step, as every boot with a shell plans it (`kabi::plan::with_updated`), it
 //! does nothing at boot but settle a model trial left pending. Then, with
-//! `serve` in its plan line, it answers the shell's model requests and judges
-//! a model on trial; without, it idles: the supervisor would restart an exited
-//! service.
+//! `serve` in its plan line, it answers the shell's model requests and the
+//! model manager's window's `models` read, and judges a model on trial;
+//! without, it idles: the supervisor would restart an exited service.
 
 #![no_std]
 #![no_main]
@@ -49,6 +49,7 @@ use bootslot::{Nv, Record, Slot};
 use kabi::Error;
 use kabi::handle::{Handle, HandleInfo, Kind, MAX_STARTUP, MAX_TRANSFER, RecvInfo};
 use kabi::update::{DISK, IMPORT, MAX_IO, NONE, SECTOR, WRITABLE};
+use modelchan::asker::Asker;
 use user::{println, sys};
 
 user::entry!(main);
@@ -198,20 +199,24 @@ fn models_check(channel: Option<&mut models::Channel>) -> Result<(), String> {
     Ok(())
 }
 
-/// The process the kernel named `shell` from its plan line, the only one the
-/// model requests are answered for (K, 2026-10-30); never pid 0.
-fn from_shell(pid: u64) -> bool {
+/// Who called, by the name the kernel gave the process from its plan line:
+/// the shell may send every model request (K, 2026-10-30), the model manager's
+/// window only `models`, and anyone else nothing (`modelchan::asker`). Never
+/// pid 0.
+fn asker(pid: u64) -> Asker {
     let Ok(metrics) = sys::metrics() else {
-        return false;
+        return Asker::Other;
     };
     let count = (metrics.process_count as usize).min(metrics.processes.len());
     metrics.processes[..count]
         .iter()
-        .any(|p| p.pid == pid && pid != 0 && p.name() == "shell")
+        .find(|p| p.pid == pid && pid != 0)
+        .map_or(Asker::Other, |p| Asker::of(p.name()))
 }
 
-/// Answers the shell's model requests on `updated`'s endpoint, and between
-/// them judges a trial and moves an import on; with no endpoint, only that.
+/// Answers the shell's model requests, and the model manager's window's list,
+/// on `updated`'s endpoint, and between them judges a trial and moves an import
+/// on; with no endpoint, only that.
 /// Every request is at most [`REQUEST`] bytes and every answer one message.
 /// With no model store (no `fs`), each request is answered at once that there
 /// is none, so the shell never waits on it.
@@ -231,10 +236,11 @@ fn serve(mut channel: Option<models::Channel>) -> ! {
                     let _ = sys::handle_close(Handle(*moved));
                 }
                 let text = core::str::from_utf8(&request[..len.min(REQUEST)]).unwrap_or("");
-                let mut reply = match (from_shell(info.caller_pid), len > REQUEST) {
-                    (false, _) => String::from("err only the shell may ask"),
-                    (true, true) => String::from("err request too long"),
-                    (true, false) => match channel.as_mut() {
+                let asked = asker(info.caller_pid).may_ask(text);
+                let mut reply = match (asked, len > REQUEST) {
+                    (Err(why), _) => format!("err {why}"),
+                    (Ok(()), true) => String::from("err request too long"),
+                    (Ok(()), false) => match channel.as_mut() {
                         Some(channel) => channel.answer(text),
                         None => String::from("err there is no model store: no data disk"),
                     },

@@ -5,15 +5,17 @@
 //!   held to the signed `models` role before it is kept (`comp_models::check`);
 //! - [`trial`]: `kai-modeltrial 1`, the record of a model chosen for the next
 //!   restart, and the probation that keeps it or goes back to the model before;
-//! - [`listing`]: `kai-models 1`, the list `updated` answers `models` with.
+//! - [`listing`]: `kai-models 1`, the list `updated` answers `models` with;
+//! - [`asker`]: who may ask `updated` what.
 //!
-//! Both are pure: `updated` reads the disk, writes the store through `fs`, and
+//! All are pure: `updated` reads the disk, writes the store through `fs`, and
 //! asks `llm` for its health, and hands what it got to these.
 
 #![no_std]
 
 extern crate alloc;
 
+pub mod asker;
 pub mod import;
 pub mod listing;
 pub mod trial;

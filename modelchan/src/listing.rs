@@ -30,19 +30,65 @@ pub const MAGIC: &str = "kai-models 1";
 pub fn encode(models: &Models) -> String {
     let mut out = format!("{MAGIC}\n");
     for s in &models.signed {
-        out.push_str(&format!(
-            "signed {} {} {} {} {}\n",
-            hex(&s.sha256),
-            s.length,
-            s.licence.replace(' ', "_"),
-            s.id,
-            s.name
-        ));
+        out.push_str(&signed_line(s));
     }
     for b in &models.store.blobs {
-        out.push_str(&format!("stored {} {}\n", hex(&b.sha256), b.length));
+        out.push_str(&stored_line(b));
     }
+    out.push_str(&state_lines(&models.store));
+    out
+}
+
+/// `models` as [`encode`] writes it if that is at most `max` bytes. Otherwise
+/// the lines that matter most come first, and each line that would pass `max`
+/// is left out: the running, next and trial lines, then each stored blob with
+/// its role target, then the role's other targets. So one IPC message always
+/// holds a list that parses, and a role too long for one shows its first
+/// targets.
+pub fn encode_within(models: &Models, max: usize) -> String {
+    let all = encode(models);
+    if all.len() <= max {
+        return all;
+    }
+    let mut out = format!("{MAGIC}\n");
+    let mut push = |line: String| {
+        if out.len() + line.len() <= max {
+            out.push_str(&line);
+        }
+    };
     let store = &models.store;
+    push(state_lines(store));
+    for b in &store.blobs {
+        push(stored_line(b));
+        if let Some(s) = models.signed.iter().find(|s| s.sha256 == b.sha256) {
+            push(signed_line(s));
+        }
+    }
+    let stored = |s: &Signed| store.blobs.iter().any(|b| b.sha256 == s.sha256);
+    for s in models.signed.iter().filter(|s| !stored(s)) {
+        push(signed_line(s));
+    }
+    out
+}
+
+fn signed_line(s: &Signed) -> String {
+    format!(
+        "signed {} {} {} {} {}\n",
+        hex(&s.sha256),
+        s.length,
+        s.licence.replace(' ', "_"),
+        s.id,
+        s.name
+    )
+}
+
+fn stored_line(b: &Stored) -> String {
+    format!("stored {} {}\n", hex(&b.sha256), b.length)
+}
+
+/// The running, next and trial lines, each there at most once.
+fn state_lines(store: &Store) -> String {
+    let mut out = String::new();
     for (key, sha) in [("running", store.running), ("next", store.next)] {
         if let Some(sha) = sha {
             out.push_str(&format!("{key} {}\n", hex(&sha)));

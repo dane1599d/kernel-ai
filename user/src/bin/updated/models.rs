@@ -261,7 +261,9 @@ impl Channel {
     }
 
     /// One request from the shell: `models`, `models import`, `models
-    /// progress` or `models use <64 hex>`. Nothing in it is used as a path.
+    /// progress` or `models use <64 hex>`; from the model manager's window,
+    /// `models` alone (`serve` checks who asked). Nothing in it is used as a
+    /// path.
     pub fn answer(&mut self, text: &str) -> String {
         let done = match text.split(' ').collect::<Vec<_>>().as_slice() {
             ["models"] => self.list(),
@@ -342,8 +344,10 @@ impl Channel {
         })
     }
 
+    /// The list as one message holds it (`listing::encode_within`).
     fn list(&self) -> Result<String, String> {
-        self.models().map(|m| listing::encode(&m))
+        self.models()
+            .map(|m| listing::encode_within(&m, kabi::MAX_MESSAGE))
     }
 
     /// `model_use`: the stored, signed model `sha256` from the next restart,

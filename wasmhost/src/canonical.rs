@@ -57,6 +57,8 @@ pub struct CoreInstance {
     grants: Grants,
     /// The `kai:system/samples` `on-sample` export, when the module has one.
     pub(crate) on_system_sample: Option<String>,
+    /// The `kai:models/listing` `on-listing` export, when the module has one.
+    pub(crate) on_models_listing: Option<String>,
     /// The `kai:edit/replies` `on-reply` export, when the module has one.
     pub(crate) on_edit_reply: Option<String>,
     /// The `kai:files/replies` `on-done` export, when the module has one.
@@ -151,6 +153,7 @@ pub fn load_core_granted(
         user_input: false,
         settings: Default::default(),
         system: Default::default(),
+        models: Default::default(),
         edit: Default::default(),
         files: Default::default(),
         memory: None,
@@ -194,6 +197,10 @@ pub fn load_core_granted(
         .iter()
         .find(|f| f.interface == crate::system::SAMPLES && f.name == "on-sample")
         .and_then(|f| export_for(&module, f));
+    let on_models_listing = tables::EXPORTS
+        .iter()
+        .find(|f| f.interface == crate::models::LISTING && f.name == "on-listing")
+        .and_then(|f| export_for(&module, f));
     let on_edit_reply = tables::EXPORTS
         .iter()
         .find(|f| f.interface == crate::edit::REPLIES && f.name == "on-reply")
@@ -220,6 +227,7 @@ pub fn load_core_granted(
         serial: SERIALS.fetch_add(1, core::sync::atomic::Ordering::Relaxed),
         grants,
         on_system_sample,
+        on_models_listing,
         on_edit_reply,
         on_files_reply,
     })
@@ -304,6 +312,14 @@ fn link_imports(
             (crate::system::SYSTEM, "read") => {
                 linker.func_wrap(qualified, name, crate::system::read)
             }
+            (crate::models::MODELS, _) if !crate::models::granted(grants) => {
+                return Err(link_err(format!(
+                    "{qualified} needs the models grant, which this app's package does not hold"
+                )));
+            }
+            (crate::models::MODELS, "read") => {
+                linker.func_wrap(qualified, name, crate::models::read)
+            }
             (crate::edit::EDIT, _) if !grants.edit => {
                 return Err(link_err(format!(
                     "{qualified} needs the edit grant, which this app's package does not hold"
@@ -378,6 +394,7 @@ impl CoreInstance {
         self.by_user = by_user;
         self.settings_call_begins();
         self.system_call_begins();
+        self.models_call_begins();
         let result = appabi::call(self, func, args).map_err(|trap| {
             self.last
                 .take()
@@ -386,6 +403,7 @@ impl CoreInstance {
         if result.is_err() {
             self.settings_call_faulted();
             self.system_call_faulted();
+            self.models_call_faulted();
         }
         result
     }

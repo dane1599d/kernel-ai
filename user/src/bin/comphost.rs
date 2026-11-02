@@ -32,6 +32,8 @@ mod edit;
 mod files;
 #[path = "comphost/settings.rs"]
 mod kai_settings;
+#[path = "comphost/models.rs"]
+mod models;
 #[path = "comphost/started.rs"]
 mod started;
 #[path = "comphost/system.rs"]
@@ -63,7 +65,7 @@ struct SysEnv {
     /// at the first restore, which names the app.
     disk: Option<disk::Disk>,
     /// What the app may import beyond `kai:app` and `kai:ui`: `settings`,
-    /// `shell_line` and `system` from the plan line's name for it (the kernel's),
+    /// `shell_line`, `system` and `models` from the plan line's name for it (the kernel's),
     /// `edit` if the kernel gave this process an `Edit` handle; never from its
     /// package.
     grants: wasmhost::Grants,
@@ -208,6 +210,10 @@ fn main() -> i32 {
     // machine, and only it has the route to llm for `health`.
     env.grants.system = name == system::MONITOR_APP;
     let mut source = env.grants.system.then(system::Source::new);
+    // Likewise only the model manager's window reads the model list, and only
+    // it has the route to `updated`, which answers it the list alone.
+    env.grants.models = name == models::MODELS_APP;
+    let mut lister = env.grants.models.then(models::Lister::new);
     let mut napper = Napper::new(Nap::new(settings.nap_ms, now_ms()));
     napper.nap.keep_running(settings.keep_running);
     let mut host = match Host::start(env, &name, settings) {
@@ -250,11 +256,17 @@ fn main() -> i32 {
             (true, 0) => ui::POLL_MS,
             (true, ms) => ms.min(ui::POLL_MS),
         };
-        // A read waiting for its sample is use: the app does not nap until it
-        // has it, and the wait ends when the sample is due.
+        // A read waiting for its sample or list is use: the app does not nap
+        // until it has it, and the wait ends when the answer is due. No app is
+        // granted both.
         let due = source
             .as_ref()
-            .and_then(|source| source.wait_ms(&mut host, now_ms()));
+            .and_then(|source| source.wait_ms(&mut host, now_ms()))
+            .or_else(|| {
+                lister
+                    .as_ref()
+                    .and_then(|lister| lister.wait_ms(&mut host, now_ms()))
+            });
         if due.is_some() != leased {
             leased = due.is_some();
             napper.nap.lease(leased);
@@ -339,6 +351,12 @@ fn main() -> i32 {
         // for the sample is shown.
         if let Some(source) = source.as_mut()
             && source.pump(&mut host, now_ms())
+        {
+            settle(&mut windows, &mut edits, &mut relay, &mut host);
+        }
+        // Likewise a read of the model list.
+        if let Some(lister) = lister.as_mut()
+            && lister.pump(&mut host, now_ms())
         {
             settle(&mut windows, &mut edits, &mut relay, &mut host);
         }
