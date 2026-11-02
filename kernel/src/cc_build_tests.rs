@@ -11,14 +11,16 @@
 //! - `cc` builds it;
 //! - `pkg` publishes it into `local`, signed by the device key it makes, and
 //!   installs it as generation 2, then starts it as `p-...`; its `init` logs a
-//!   line, and it keeps running.
+//!   line. The case waits until the app runs that version, which the ledger
+//!   says only after `init`, since comphost starts it after `pkg`'s reply,
+//!   slowly when QEMU emulates the CPU.
 //!
 //! `undo` switches back to generation 1, which ends the running app, and the
-//! next build, 0.0.2, starts again from `local`. The host checks `pkg`'s and
-//! the app's lines.
+//! next build is 0.0.2. The host checks `pkg`'s and the app's lines.
 
 use crate::files_tests::ask;
 use crate::pkg_tests::{Step, wait_for};
+use crate::process::components;
 use crate::shell_tests::start;
 use crate::{ipc, log, threads};
 use alloc::format;
@@ -26,6 +28,8 @@ use alloc::string::String;
 use fsproto::{How, Reply, Request};
 use kabi::handle::Rights;
 
+/// The built app's name: its component, process and service.
+const NAME: &str = "hello";
 /// The built app's plan line: started by `pkg`, run by comphost like notes.
 const HELLO: &str = "hello program=comphost caps=serve+component pages=8192 stack_pages=512 burst_ms=20000 start=pkg";
 /// An app that asks for nothing: what `local` installs. Its `init` logs.
@@ -66,6 +70,9 @@ const SYNC_MS: u64 = 1_000;
 /// A build's line: cc.wasm's translation on the first, the build itself, and
 /// `pkg`'s publish, check and install, under TCG too.
 const BUILD_MS: u64 = 280_000;
+/// Longest wait for the app to run the version `pkg` started, under TCG too.
+const UP_MS: u64 = 120_000;
+const POLL_MS: u64 = 50;
 
 /// `pkg`'s image step, the model, `cc`, the app's line, and the shell with
 /// `updated` just before it, started on demand.
@@ -93,6 +100,8 @@ pub fn check() -> Result<(), &'static str> {
         return Err("c-build: the first build was not installed as generation 2");
     }
     log!("c-build: cc build hello built 0.0.1, and pkg installed it from local as generation 2");
+    let label = wait_up("0.0.1")?;
+    log!("c-build: hello 0.0.1 runs as {label}");
     let undone = line("undo")?;
     if !undone.contains("packages back to generation 1") {
         log!("c-build: undo: {undone:?}");
@@ -104,7 +113,32 @@ pub fn check() -> Result<(), &'static str> {
         return Err("c-build: the second build was not 0.0.2");
     }
     log!("c-build: undo switched back to generation 1, and the next build is 0.0.2");
+    // TODO: wait for 0.0.2 to run too, once an app restarted on another
+    // package version runs it; today the ledger restores the withdrawn one.
     Ok(())
+}
+
+/// Waits until `hello` serves on the package version of `version`, which the
+/// ledger names active only after its `init` and a state it saved, so its line
+/// is out; that version's label.
+fn wait_up(version: &str) -> Result<String, &'static str> {
+    let world = format!("app:{NAME}/{NAME}@{version}");
+    for _ in 0..UP_MS / POLL_MS {
+        let label = components::component(NAME).and_then(|component| {
+            let found = component.versions().iter().find(|v| v.world == world);
+            found.map(|v| v.label.clone())
+        });
+        let active = components::ledger(NAME).and_then(|l| l.active().map(String::from));
+        if let Some(label) = label
+            && active.as_deref() == Some(label.as_str())
+            && ipc::server_of(NAME).is_some()
+        {
+            return Ok(label);
+        }
+        threads::sleep_ms(POLL_MS);
+    }
+    log!("c-build: hello {version} did not run within {UP_MS} ms");
+    Err("c-build: the built app did not start")
 }
 
 /// `text` sent to the shell as the terminal sends it: the reply.
