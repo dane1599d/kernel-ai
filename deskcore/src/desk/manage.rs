@@ -105,6 +105,7 @@ impl Desk {
         w.minimized = false;
         let frame = w.frame;
         self.damage.add(frame);
+        self.tabs_changed();
         self.raise(id);
         self.set_focus(Focus::Window(id), effects);
     }
@@ -119,6 +120,7 @@ impl Desk {
         let window = self.windows.remove(at);
         self.damage.add(window.frame);
         self.windows.push(window);
+        self.tabs_changed();
     }
 
     pub(super) fn minimize(&mut self, id: WindowId, effects: &mut Vec<Effect>) {
@@ -126,6 +128,7 @@ impl Desk {
             w.minimized = true;
             let frame = w.frame;
             self.damage.add(frame);
+            self.tabs_changed();
         }
         if self.focus == Focus::Window(id) {
             let next = self.top_visible().map_or(Focus::Nothing, Focus::Window);

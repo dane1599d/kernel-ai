@@ -230,6 +230,13 @@ impl Desk {
         Rect::new(0, 0, self.width, TOP_BAR)
     }
 
+    /// What the top bar's tabs show changed: a window came or went, rose, was
+    /// renamed, minimized or restored, or the focus moved.
+    pub(super) fn tabs_changed(&mut self) {
+        let bar = self.top_bar();
+        self.damage.add(bar);
+    }
+
     pub fn panel(&self) -> Rect {
         Rect::new(0, self.height - PANEL, self.width, PANEL)
     }
@@ -307,6 +314,7 @@ impl Desk {
         };
         self.damage.add(window.frame);
         self.windows.push(window);
+        self.tabs_changed();
         let mut effects = Vec::new();
         if activated {
             self.set_focus(Focus::Window(id), &mut effects);
@@ -322,6 +330,7 @@ impl Desk {
         };
         let window = self.windows.remove(at);
         self.damage.add(window.frame);
+        self.tabs_changed();
         if self.over == Some(id) {
             self.over = None;
         }
@@ -341,6 +350,7 @@ impl Desk {
             w.title = String::from(title);
             let bar = chrome::title_bar(w.frame);
             self.damage.add(bar);
+            self.tabs_changed();
         }
     }
 
@@ -633,6 +643,7 @@ impl Desk {
             self.damage.add(panel);
         }
         self.focus = focus;
+        self.tabs_changed();
         effects.push(Effect::Focus(focus));
     }
 }
