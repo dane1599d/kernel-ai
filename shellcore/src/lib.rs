@@ -1003,10 +1003,12 @@ impl Shell {
 }
 
 /// A line that does not run as Rhai is sent to the LLM if it reads like words: mostly
-/// letters, no code punctuation, and not starting with a Rhai keyword.
+/// letters and no code punctuation. One starting with a Rhai keyword is Rhai with a
+/// typo unless it is a sentence: "import the model on the attached disk" is words,
+/// "let x be 5" and "print hello world" are code.
 pub fn reads_like_words(line: &str) -> bool {
     let words: Vec<&str> = line.split_whitespace().collect();
-    if words.is_empty() || RHAI_WORDS.contains(&words[0]) {
+    if words.is_empty() || (RHAI_WORDS.contains(&words[0]) && !is_sentence(&words)) {
         return false;
     }
     if line.chars().any(|c| "(){}[];=\"`#$".contains(c)) {
@@ -1018,6 +1020,24 @@ pub fn reads_like_words(line: &str) -> bool {
         .filter(|c| !c.is_alphabetic() && !c.is_whitespace())
         .count();
     letters >= 4 * others
+}
+
+/// The fewest words a line led by a Rhai keyword needs to read as a sentence.
+const SENTENCE_WORDS: usize = 4;
+
+/// Whether `words` are a sentence: at least [`SENTENCE_WORDS`] of them, each
+/// letters with at most an inner `'` or `-` and a trailing `,` `.` `?` or `!`.
+/// A digit or an operator anywhere makes it code.
+fn is_sentence(words: &[&str]) -> bool {
+    words.len() >= SENTENCE_WORDS
+        && words.iter().all(|word| {
+            let word = word.trim_end_matches([',', '.', '?', '!']);
+            !word.is_empty()
+                && word.starts_with(char::is_alphabetic)
+                && word
+                    .chars()
+                    .all(|c| c.is_alphabetic() || c == '\'' || c == '-')
+        })
 }
 
 /// A name that reads as a word, not as code: two or more letters and nothing else.
