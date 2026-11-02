@@ -22,15 +22,37 @@ use crate::{ask_box, log, process, terminal, threads};
 /// saved there, and the shell answers Settings' `file appearance` from it.
 pub const SHELL: &str = kabi::plan::SHELL_DESK_FILES;
 
-/// Settings' title bar: its frame is the second, at 80,84, below the Terminal's,
-/// and the click lands 8 px down and 102 px across, as the Terminal's does.
-const SETTINGS_TITLE: (i32, i32) = (182, 92);
+/// The fixture's title bar: its frame is the second, at 80,84, and the click
+/// lands 8 px down and 60 px across. The Terminal is under it once Alt+Tab has
+/// raised the fixture (see `check`); it covers the fixture before that, as typing
+/// into it raises it.
+const FIXTURE_TITLE: (i32, i32) = (140, 92);
+/// Settings' title bar: its frame is the third, at 112,116. The click is 500 px
+/// across, past the fixture's frame (80..402), so neither window can cover the
+/// other's title bar however they are raised.
+const SETTINGS_TITLE: (i32, i32) = (500, 124);
 
-/// The terminal's window, and Settings' as an app that starts only when
-/// `ui_open` asks for it. Its name is the grant: `desktop` and the shell check
-/// it again.
+/// The terminal's window, the fixture's (the test app whose `fs_list` row
+/// Settings revokes, never shipped) and Settings', the last two as apps that
+/// start only when `ui_open` asks for them, the fixture first. The name is the
+/// grant: `desktop` and the shell check it again.
 pub const APPS: &str = "term uses=desktop caps=call+term pages=4096 stack_pages=512\n\
+     fixture-window program=comphost caps=serve+component+call uses=desktop pages=8192 stack_pages=512 burst_ms=20000 version=1 start=demand\n\
      settings-window program=comphost caps=serve+component+call uses=desktop pages=8192 stack_pages=512 burst_ms=20000 version=1 start=demand";
+
+/// One stage of keys to the window that has them: the harness sends them, and
+/// their effects have `settle_ms` to show.
+fn keys_here(case: &str, settle_ms: u64) {
+    threads::sleep_ms(1_000);
+    log!("{case}: ready for keys");
+    threads::sleep_ms(settle_ms);
+}
+
+/// A click on `title` gives that window the keys, then one stage of them.
+fn keys_in(case: &str, at: &mut (i32, i32), title: (i32, i32), settle_ms: u64) {
+    click(at, title);
+    keys_here(case, settle_ms);
+}
 
 pub fn check() -> Result<(), &'static str> {
     const CASE: &str = "app-settings";
@@ -49,6 +71,23 @@ pub fn check() -> Result<(), &'static str> {
     terminal_keys(CASE, &mut at)?;
     threads::sleep_ms(KEYS_MS);
     log!("{CASE}: the theme was set before Settings opened");
+    // "rules_add on time(22:00) -> app_suspend(game)": a standing instruction,
+    // asked on `desktop`'s card; `y` allows it. Settings lists it when it starts.
+    terminal_keys(CASE, &mut at)?;
+    wait(CASE, "the ask on desktop's card", ask_box::shown)?;
+    threads::sleep_ms(KEYS_MS);
+    // "y" on the card.
+    log!("{CASE}: ready for keys");
+    wait(CASE, "the card's answer", || !ask_box::shown())?;
+    threads::sleep_ms(KEYS_MS);
+    log!("{CASE}: a standing rule was added before Settings opened");
+    // "open fixture": the test app, first, so its frame is the second.
+    terminal_keys(CASE, &mut at)?;
+    wait(CASE, "ui_open to start the fixture", || {
+        !process::named("fixture-window").is_empty()
+    })?;
+    threads::sleep_ms(OPEN_MS / 2);
+    log!("{CASE}: ui_open started the fixture and its window opened");
     // "open settings"
     terminal_keys(CASE, &mut at)?;
     wait(CASE, "ui_open to start Settings", || {
@@ -57,17 +96,29 @@ pub fn check() -> Result<(), &'static str> {
     // The app opens its window, reads its pages and gets its answers.
     threads::sleep_ms(OPEN_MS);
     log!("{CASE}: ui_open started Settings and its window opened");
-    // A click on Settings' title bar gives it the keys, and then a person's
-    // keys: a gesture the OS can tell from the agent's. `tab tab ret` presses
-    // the Theme button, and `tab tab tab right right right right tab spc` goes
-    // round to the page tabs, to the Updates page and its switch, which turns
-    // the restart window on. Each change is read back from the shell.
-    click(&mut at, SETTINGS_TITLE);
-    threads::sleep_ms(KEYS_MS);
-    log!("{CASE}: ready for keys");
-    threads::sleep_ms(2 * KEYS_MS);
-    log!("{CASE}: ready for keys");
-    threads::sleep_ms(2 * KEYS_MS);
+    // A person's keys in two windows, a gesture the OS can tell from the
+    // agent's: a key in the fixture queues its one `fs_list` and the OS runs it;
+    // in Settings, `tab right right tab ret` removes the rule from the Rules
+    // page; `tab left tab down tab ret` revokes that row and the next key in the
+    // fixture is refused; `tab tab tab ret` restores it and the one after runs;
+    // `tab left tab ret` presses the Theme button; and `tab tab tab right right
+    // right right tab spc` goes round to the Updates page and its switch, which
+    // turns the restart window on. Each change is read back from the shell
+    // (`apps/settings-ui/tests/keys.rs` pins the sequences).
+    const SETTLE_MS: u64 = 2 * KEYS_MS;
+    // The stack is now the fixture, the Terminal (typing raised it over the
+    // fixture) and Settings. The first stage is Alt+Tab, which raises the
+    // bottom window, the fixture, and gives it the keys, so no click is needed
+    // on a title bar the Terminal covers. Clicks after that find the Terminal
+    // at the bottom, and both title bars free.
+    keys_here(CASE, SETTLE_MS);
+    keys_in(CASE, &mut at, SETTINGS_TITLE, SETTLE_MS);
+    keys_in(CASE, &mut at, SETTINGS_TITLE, SETTLE_MS);
+    keys_in(CASE, &mut at, FIXTURE_TITLE, SETTLE_MS);
+    keys_in(CASE, &mut at, SETTINGS_TITLE, SETTLE_MS);
+    keys_in(CASE, &mut at, FIXTURE_TITLE, SETTLE_MS);
+    keys_in(CASE, &mut at, SETTINGS_TITLE, SETTLE_MS);
+    keys_in(CASE, &mut at, SETTINGS_TITLE, SETTLE_MS);
     log!("{CASE}: keys were pressed in Settings' window");
     // "look at settings": a view of a private window, then an act that asks.
     terminal_keys(CASE, &mut at)?;
