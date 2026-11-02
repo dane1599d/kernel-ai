@@ -15,6 +15,11 @@
 //! both runs' lines are logged, and only a figure over its budget in both
 //! fails the case. Under TCG the figures are recorded and not judged, with
 //! fewer frames.
+//!
+//! First `desktop` times `kabi::perf`'s fixed reference work. Under KVM a
+//! median over twice its recorded baseline is a runner too slow for any
+//! budget: every figure is still measured and logged, once each, and the case
+//! passes as `runner too slow: figures reported, not gated`.
 
 use crate::desk_tests::{desktop_shows, wait};
 use crate::process::{self, SpawnRequest};
@@ -160,13 +165,32 @@ fn loaded_drag() -> Result<Vec<u8>, &'static str> {
     loaded
 }
 
+/// Whether the runner is too slow to judge, from the reference work's median.
+fn too_slow() -> Result<bool, &'static str> {
+    let reply = perf("perf reference")?;
+    let p50 = kabi::perf::reference_ns(&String::from_utf8_lossy(&reply))
+        .ok_or("desk-perf: desktop's reference line did not parse")?;
+    let slow = kabi::perf::too_slow(p50);
+    log!(
+        "desk-perf: the reference work's median is {p50} ns, baseline {} ns: {}",
+        kabi::perf::REFERENCE_BASELINE_NS,
+        match slow {
+            true => "over twice it",
+            false => "within twice it",
+        }
+    );
+    Ok(slow)
+}
+
 pub fn check() -> Result<(), &'static str> {
     wait("desktop and deskdemo", || {
         desktop_shows() && !process::named("deskdemo").is_empty()
     })?;
     threads::sleep_ms(SETTLE_MS);
-    let gated = under_kvm();
-    let frames = if gated { KVM_FRAMES } else { TCG_FRAMES };
+    let kvm = under_kvm();
+    let slow = too_slow()?;
+    let gated = kvm && !slow;
+    let frames = if kvm { KVM_FRAMES } else { TCG_FRAMES };
     let request = format!("perf scenes {frames}");
     let mut misses = scene(gated, "(a)-(c)", || perf(&request))?;
     crate::claim_tests::type_keys(&CTRL_SPACE);
@@ -174,8 +198,12 @@ pub fn check() -> Result<(), &'static str> {
     misses.extend(scene(gated, "(e)", keys)?);
     misses.extend(scene(gated, "(f)", loaded_drag)?);
     log!("desk-perf: the figures are in");
-    if !gated {
+    if !kvm {
         log!("desk-perf: recorded without KVM, not judged");
+        return Ok(());
+    }
+    if slow {
+        log!("desk-perf: runner too slow: figures reported, not gated");
         return Ok(());
     }
     for miss in &misses {
