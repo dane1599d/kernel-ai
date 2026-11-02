@@ -31,8 +31,9 @@ pub struct Folders {
     pub models: Option<Handle>,
 }
 
-/// Set once a probe found no `fs` at all: a boot without `kai-data` never
-/// gains one, so later reads of the folders know at once.
+/// Set once a probe found no `fs` at all, so later reads of the folders know at
+/// once: a boot without `kai-data`, or whose `fs` never bound in the probe's
+/// window. The second fails closed: no store, so no model channel this boot.
 static NO_FS: AtomicBool = AtomicBool::new(false);
 
 impl Folders {

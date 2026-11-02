@@ -433,6 +433,9 @@ const M_TRIAL: TestCase = TestCase {
     ],
     server: false,
     data: Some(DATA),
+    // The imported fixture is now the store's model: the boot reserves its
+    // runs only with the memory a case with that store gets (`store:`).
+    memory_mib: Some(crate::disk::memory_mib_for(crate::disk::GGUF_LEN as u64)),
     ..case(
         "model-import (2: the fixture's trial rolls back)",
         "test=update updated=probation",
