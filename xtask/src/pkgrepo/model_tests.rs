@@ -70,12 +70,26 @@ fn the_catalog_is_signed_as_it_is_pinned() {
     assert!(qwen.source.starts_with(
         "https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/a06e946bb6b655725eafa393f4a9745d460374c9/"
     ));
-    assert!(catalog.iter().all(|m| m.id != models::FIXTURE));
-    let fixture = models::fixture();
-    let bytes = crate::disk::Fixture::Gguf.bytes();
-    assert_eq!(fixture.length, bytes.len() as u64);
-    assert_eq!(fixture.sha256, crate::sha256_hex(&bytes));
-    assert!(bytes.starts_with(b"GGUF"));
+    assert!(
+        catalog
+            .iter()
+            .all(|m| m.id != models::FIXTURE && m.id != models::FIXTURE_2)
+    );
+    for (fixture, disk) in [
+        (models::fixture(), crate::disk::Fixture::Gguf),
+        (models::fixture_2(), crate::disk::Fixture::Gguf2),
+    ] {
+        let bytes = disk.bytes();
+        assert_eq!(fixture.length, bytes.len() as u64);
+        assert_eq!(fixture.sha256, crate::sha256_hex(&bytes));
+        assert!(bytes.starts_with(b"GGUF"));
+    }
+    // The import finds a disk's target by its length, so the two differ.
+    assert_ne!(models::fixture().length, models::fixture_2().length);
+    // The boot cases name each by its SHA-256's first 12 digits
+    // (`model-import`, `app-models`): a change to the filler fails here first.
+    assert!(models::fixture().sha256.starts_with("73174ba39c9a"));
+    assert!(models::fixture_2().sha256.starts_with("cc73ee264158"));
     // Every field reads back within the OS's limits.
     let repo = tuf::build_with_models(&[], &models::for_image().unwrap(), &keys(1), NOW);
     assert_eq!(read(repo.unwrap()).unwrap().refused, []);
@@ -147,7 +161,8 @@ fn a_malformed_target_is_refused_by_path_and_the_rest_kept() {
     let checked = read(repo).unwrap();
     assert_eq!(checked.refused.len(), 1);
     assert_eq!(checked.refused[0].0, "fixture.gguf");
-    assert_eq!(checked.models.len(), models::catalog().unwrap().len());
+    // The catalog and the other fixture are kept.
+    assert_eq!(checked.models.len(), models::catalog().unwrap().len() + 1);
 }
 
 #[test]

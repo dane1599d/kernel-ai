@@ -23,6 +23,7 @@ const MIB: u64 = 1024 * 1024;
 const MEMORY_STEP_MIB: u64 = 64;
 const RAW_LEN: usize = 3 * MIB as usize + 777;
 pub(crate) const GGUF_LEN: usize = 2 * MIB as usize + 4093;
+const GGUF_2_LEN: usize = 2 * MIB as usize + 8189;
 
 pub struct ModelDisk {
     path: PathBuf,
@@ -216,6 +217,9 @@ pub enum Fixture {
     /// The GGUF v3 magic and version, then filler: the kernel checks only those
     /// eight bytes, so the `model` case can map it into llm, which cannot run it.
     Gguf,
+    /// The same, with other filler and another length: `app-models` imports it
+    /// while the store holds [`Fixture::Gguf`], so `model_use` has a model before.
+    Gguf2,
     /// The generated model `local-ask` answers from (`infer::fixture::local_ask`),
     /// with the golden answer xtask computes for it.
     LocalAsk,
@@ -236,6 +240,7 @@ impl Fixture {
         match self {
             Fixture::Raw => "blk-raw.img",
             Fixture::Gguf => "model.gguf",
+            Fixture::Gguf2 => "model-2.gguf",
             Fixture::LocalAsk => "local-ask.gguf",
             Fixture::LocalScript => "local-script.gguf",
             Fixture::LiveLocal => "live-local.gguf",
@@ -256,6 +261,11 @@ impl Fixture {
                 b"GGUF\x03\0\0\0Kernel AI model fixture\n",
                 0x6b61_692d_6767_7566,
                 GGUF_LEN,
+            ),
+            Fixture::Gguf2 => (
+                b"GGUF\x03\0\0\0Kernel AI second model fixture\n",
+                0x6b61_692d_6767_7532,
+                GGUF_2_LEN,
             ),
             Fixture::LocalAsk => return infer::fixture::local_ask(),
             Fixture::LocalScript | Fixture::LiveLocal => {
@@ -317,7 +327,7 @@ impl Fixture {
                     hashed: llmproto::tune::encode_completion(&answer),
                 })
             }
-            Fixture::Raw | Fixture::Gguf | Fixture::LiveLocal => None,
+            Fixture::Raw | Fixture::Gguf | Fixture::Gguf2 | Fixture::LiveLocal => None,
         };
         Ok(disk)
     }

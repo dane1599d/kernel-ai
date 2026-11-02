@@ -31,7 +31,15 @@ pub trait Transport {
         request: Request,
     ) -> Result<(Reply, Option<Self::Handle>), String>;
     fn close(&mut self, handle: Self::Handle);
+    /// Waits `ms` before a request `fs` answered Busy is asked again.
+    fn wait_ms(&mut self, ms: u64);
 }
+
+/// How long to wait between asks while another caller's action holds `fs`.
+pub const BUSY_WAIT_MS: u64 = 100;
+/// How many times a Busy request is asked again: about 10 s in all, longer
+/// than any one action at boot, after which Busy is the store's error.
+pub const BUSY_TRIES: u32 = 100;
 
 /// Where the partial downloads lie beside the objects (see the module doc).
 const PARTIAL_PREFIX: &str = ".partial.";
@@ -76,6 +84,10 @@ impl<T: Transport> FsVolume<T> {
         }
     }
 
+    /// `request` on `on`. While another caller's action holds `fs` it answers a
+    /// change (or a Begin) Busy and leaves everything as it was, so the request
+    /// is asked again, each [`BUSY_WAIT_MS`] up to [`BUSY_TRIES`] times: at boot
+    /// the shell's first change can hold `fs` as `pkg` opens its store.
     fn ask(
         &mut self,
         on: T::Handle,
@@ -89,9 +101,18 @@ impl<T: Transport> FsVolume<T> {
                 .next()
                 .unwrap_or(""),
         );
-        self.transport
-            .call(on, request)
-            .map_err(|e| format!("{what}: {e}"))
+        let mut tries = 0;
+        loop {
+            let answer = self
+                .transport
+                .call(on, request.clone())
+                .map_err(|e| format!("{what}: {e}"))?;
+            if !matches!(answer.0, Reply::Failed(Error::Busy)) || tries == BUSY_TRIES {
+                return Ok(answer);
+            }
+            tries += 1;
+            self.transport.wait_ms(BUSY_WAIT_MS);
+        }
     }
 
     /// `request` on `on`, which must answer Done.
