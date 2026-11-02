@@ -59,7 +59,7 @@ fn the_plan_the_kernel_sends_parses() {
     let text = alloc::format!(
         "llm caps=serve+net burst_ms=10000 pages=1024 host=10.0.2.2:8080 model=org/model-7b\n{}\n{}",
         kabi::plan::CC,
-        kabi::plan::SHELL
+        kabi::plan::with_updated(kabi::plan::SHELL, "")
     );
     let plan = parse_plan(&text);
     assert_eq!(plan.errors, Vec::<String>::new());
@@ -69,13 +69,19 @@ fn the_plan_the_kernel_sends_parses() {
     assert!(cc.uses.is_empty());
     // It starts when the shell first calls it, not at boot.
     assert_eq!(cc.start, Start::Demand);
-    let shell = &plan.services[2];
+    // `updated`, the model channel, comes just before the shell: its one
+    // route is to llm, and it alone holds the model store.
+    let updated = &plan.services[2];
+    assert_eq!(updated.name, "updated");
+    assert_eq!(updated.uses, ["llm"]);
+    assert!(updated.dirs.contains(&Folder::Models));
+    let shell = &plan.services[3];
     assert_eq!(shell.name, "shell");
     assert_eq!(
         shell.limits.caps,
         cap::SERVE | cap::CALL | cap::POLICY | cap::STOP | cap::SCRIPT
     );
-    assert_eq!(shell.uses, ["llm", SUPERVISOR, "cc"]);
+    assert_eq!(shell.uses, ["llm", SUPERVISOR, "cc", "updated"]);
     assert_eq!(shell.limits.stack_pages, 512);
     assert!(shell.limits.stack_pages < shell.limits.max_pages);
     assert_eq!(
@@ -644,11 +650,12 @@ fn program_names_the_program_and_is_not_passed_on() {
 {}
 {}",
         kabi::plan::CC,
-        kabi::plan::SHELL
+        kabi::plan::with_updated(kabi::plan::SHELL, "")
     ));
     assert_eq!(plan.errors, Vec::<String>::new());
     assert_eq!(plan.services[1].program, "cc");
-    let shell = &plan.services[2];
+    assert_eq!(plan.services[2].program, "updated");
+    let shell = &plan.services[3];
     assert_eq!(shell.program, "shell");
 }
 

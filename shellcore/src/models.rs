@@ -33,6 +33,9 @@ pub(crate) enum Waiting {
 impl Shell {
     fn models_now(&self) -> Result<Models, String> {
         let text = self.host.models("models")?;
+        if let Some(why) = text.strip_prefix("err ") {
+            return Err(String::from(why));
+        }
         listing::parse(&text).map_err(|why| format!("updated's list: {why}"))
     }
 

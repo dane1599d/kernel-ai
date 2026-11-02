@@ -18,7 +18,7 @@ use termcore::menu::{self, Answer};
 const CASE: &str = "desk-tour";
 /// The shell with a route to `desktop`, `cc` for its prompt, and `files` and
 /// `state` on the case's data disk: the theme and the files are saved there.
-pub const SHELL: &str = "shell caps=serve+call+policy+stop+script+files+state uses=llm+supervisor+cc+desktop pages=4096 stack_pages=512 burst_ms=5000";
+pub const SHELL: &str = kabi::plan::SHELL_DESK_FILES;
 /// Every app the image packs, each started when it is first opened. The
 /// System monitor's routes are `desktop` then `llm` (`comphost/system.rs`).
 pub const APPS: &str = "notes-window program=comphost caps=serve+component+call uses=desktop pages=8192 stack_pages=512 burst_ms=20000 version=1 start=demand\n\
