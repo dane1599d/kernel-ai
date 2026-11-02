@@ -24,6 +24,8 @@ pub const DIR: &str = "/home/user/c";
 /// How the host's `pkg_local` begins its error when `pkg` gave no answer at
 /// all, so the install may have happened.
 pub const NO_ANSWER: &str = "pkg did not answer";
+/// Most characters of a text from `cc` or `pkg` that a reply or the log shows.
+const MAX_SHOWN: usize = 300;
 
 /// What `cc` built, from its `build` reply: `<kind> <bytes> <provenance>`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -40,7 +42,7 @@ pub struct CcBuilt {
 impl CcBuilt {
     /// `text`, cc's reply to `build`, for the artifact written at `path`.
     pub fn from_reply(text: &str, path: String) -> Result<Self, String> {
-        let bad = || format!("cc's build reply is not one: {text}");
+        let bad = || format!("cc's build reply is not one: {}", shown(text));
         let mut words = text.splitn(3, ' ');
         let app = match words.next() {
             Some("app") => true,
@@ -77,6 +79,32 @@ fn source_of(line: &str) -> Option<&str> {
     (hex(commit, 40) && hex(source, 64)).then_some(source)
 }
 
+/// `text`, from `cc` or `pkg`, as a reply or the log shows it: printable
+/// ASCII, anything else as `?`, cut at [`MAX_SHOWN`] characters.
+fn shown(text: &str) -> String {
+    text.chars()
+        .take(MAX_SHOWN)
+        .map(|c| {
+            if c == ' ' || c.is_ascii_graphic() {
+                c
+            } else {
+                '?'
+            }
+        })
+        .collect()
+}
+
+/// Whether `version`, `local-next`'s answer, is `x.y.z` in digits, as cc
+/// takes it.
+fn valid_version(version: &str) -> bool {
+    let parts: alloc::vec::Vec<&str> = version.split('.').collect();
+    version.len() <= 32
+        && parts.len() == 3
+        && parts
+            .iter()
+            .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+}
+
 /// Whether `name` may be built: a package's name, 2-12 of a-z, 0-9 and `-`,
 /// starting with a letter. `cc` and `pkg` check it again.
 pub fn valid_name(name: &str) -> bool {
@@ -106,12 +134,18 @@ impl Shell {
             ));
         }
         let version = match self.host.pkg(&format!("local-next {name}")) {
-            Ok(version) => version,
-            Err(why) => return Reply::err(format!("cc build {name}: pkg: {why}")),
+            Ok(version) if valid_version(&version) => version,
+            Ok(other) => {
+                return Reply::err(format!(
+                    "cc build {name}: pkg's next version is not one: {}",
+                    shown(&other)
+                ));
+            }
+            Err(why) => return Reply::err(format!("cc build {name}: pkg: {}", shown(&why))),
         };
         let built = match self.host.cc_build(name, &version) {
             Ok(built) => built,
-            Err(why) => return Reply::err(format!("cc build {name}: {why}")),
+            Err(why) => return Reply::err(format!("cc build {name}: {}", shown(&why))),
         };
         let script = format!("cc build {name} {version}\n{}", built.provenance);
         self.host
@@ -127,6 +161,7 @@ impl Shell {
             // No answer at all: pkg may have installed it, so the attempt is
             // logged, with nothing `undo` could switch back.
             Err(why) if why.starts_with(NO_ANSWER) => {
+                let why = shown(&why);
                 self.log_build(line, script, &format!("local: {why}"), State::Nothing, None);
                 return Reply::err(format!(
                     "built {name} {version} at {}, but {why}: it may have installed it, and undo cannot switch that back",
@@ -135,8 +170,9 @@ impl Shell {
             }
             Err(why) => {
                 return Reply::err(format!(
-                    "built {name} {version} at {}, but local did not install it: {why}",
-                    built.path
+                    "built {name} {version} at {}, but local did not install it: {}",
+                    built.path,
+                    shown(&why)
                 ));
             }
         };
@@ -159,7 +195,8 @@ impl Shell {
                 built.bytes
             )),
             None => Reply::ok(format!(
-                "built {name} {version} and installed it, but pkg's answer gives no undo: {answer}"
+                "built {name} {version} and installed it, but pkg's answer gives no undo: {}",
+                shown(&answer)
             )),
         }
     }

@@ -128,9 +128,12 @@ fn answer(
         Ok(address) => address,
         Err(error) => return refusal(&format!("cc cannot map the Shm: {error:?}")),
     };
-    // SAFETY: the kernel mapped the Shm read-write at `address`; the shell
-    // makes it `shm::BYTES` long (a shorter one faults cc, see `shm`). Nothing
-    // else refers to it, and it is unmapped before the slice's last use ends.
+    // SAFETY: the kernel mapped the Shm read-write at `address`, in a slot of
+    // its own (`kabi::layout::SHM_SLOT`, 1 GiB), and the shell makes it
+    // `shm::BYTES` long. Past a shorter one's pages the slot is unmapped, so it
+    // faults cc and reaches no other memory. Nothing else refers to it, and the
+    // slice is not used after the unmap.
+    // TODO: refuse a short Shm once HANDLE_INFO reports an Shm's pages.
     let bytes = unsafe { core::slice::from_raw_parts_mut(address as *mut u8, shm::BYTES) };
     let reply = service.handle_with(request, Some(bytes), host);
     if let Err(error) = sys::shm_unmap(address) {

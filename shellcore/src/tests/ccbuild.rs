@@ -182,6 +182,40 @@ fn a_local_that_never_answers_is_logged_without_an_undo() {
     assert_eq!(shell.eval("undo"), Reply::err("nothing to undo"));
 }
 
+/// Security review (lane C): a text from `cc` or `pkg` reaches the reply
+/// printable and cut, and `local-next`'s version must be `x.y.z` before it
+/// reaches cc, the audit or the log.
+#[test]
+fn texts_from_cc_and_pkg_are_shown_printable_and_cut() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    answers(&host, &[Err("no\npkg\u{1b}[2J here")]);
+    assert_eq!(
+        shell.eval("cc build hello"),
+        Reply::err("cc build hello: pkg: no?pkg?[2J here")
+    );
+    for version in ["0.0.1\nforged", "1.2", "1.2.3.4", "a.b.c", "1..2", ""] {
+        answers(&host, &[Ok(version)]);
+        let reply = shell.eval("cc build hello");
+        assert!(
+            reply.text.contains("pkg's next version is not one"),
+            "{version:?}: {reply:?}"
+        );
+        assert!(!reply.text.contains('\n'), "{version:?}");
+    }
+    assert!(
+        host.pkg_sent
+            .borrow()
+            .iter()
+            .all(|sent| !sent.contains("forged"))
+    );
+    assert!(host.audit.borrow().iter().all(|a| !a.contains("forged")));
+    answers(&host, &[Ok("0.0.1")]);
+    *host.cc_built.borrow_mut() = Some(Err("x".repeat(1_000)));
+    let reply = shell.eval("cc build hello");
+    assert_eq!(reply.text, format!("cc build hello: {}", "x".repeat(300)));
+}
+
 #[test]
 fn ccs_reply_is_read_strictly() {
     let path = || String::from("/home/user/c/hello.kai");

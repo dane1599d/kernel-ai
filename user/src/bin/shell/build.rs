@@ -6,7 +6,9 @@
 //!   artifact over. One `Shm` serves every build: its pages count against
 //!   the shell's quota until it ends;
 //! - the artifact checked (its name, version and source hash) and written to
-//!   `/home/user/c/<name>.kai` in an action of its own;
+//!   `/home/user/c/<name>.kai` in an action of its own. The file is the
+//!   build's own output, so the write replaces the last build's with no log
+//!   entry of its own: the line's entry is the install;
 //! - handed to `pkg`'s `local` as a read-only copy of the File handle it
 //!   was written through, not opened again by its path.
 
