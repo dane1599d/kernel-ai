@@ -320,7 +320,7 @@ pub fn dead_client() -> Result<(), &'static str> {
 }
 
 /// One request to `fs` on `badge`, as its kernel client.
-fn ask(badge: u64, request: Request) -> Result<Reply, &'static str> {
+pub(crate) fn ask(badge: u64, request: Request) -> Result<Reply, &'static str> {
     let bytes = fsproto::encode_request(&request);
     let deadline = crate::hpet::nanos() + CALL_MS * 1_000_000;
     let extra = ipc::Extra {

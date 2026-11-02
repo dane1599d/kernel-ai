@@ -35,6 +35,8 @@ const END_ROOM: usize = MAX_CALL + 64;
 pub const E2BIG: i64 = -7;
 /// Longest error text sent back.
 const MAX_ERR: usize = 2048;
+/// A whole `cc build`'s deadline, in line budgets: ten entries' worth.
+pub const BUILD_LINES: u64 = 10;
 
 /// kai.h's fixed part, and kairt's source (D1, D2).
 pub const KAI_H: &str = include_str!("../kai/kai.h");
@@ -119,20 +121,41 @@ impl<E: Effects> Service<E> {
 
     /// Answers one message.
     pub fn handle(&mut self, message: &[u8], host: &dyn Host) -> Vec<u8> {
+        self.handle_with(message, None, host)
+    }
+
+    /// Answers one message, given the `Shm` it came with, mapped: a `build`'s
+    /// sources ([`crate::build::shm`]).
+    pub fn handle_with(
+        &mut self,
+        message: &[u8],
+        shm: Option<&mut [u8]>,
+        host: &dyn Host,
+    ) -> Vec<u8> {
         let mut reply = Reply::new(REPLY_CAP);
         let request = core::str::from_utf8(message)
             .map_err(|_| "a request is text")
             .and_then(|text| Request::parse(text).map_err(|e| e.0));
         match request {
-            Ok(request) => self.serve(request, host, &mut reply),
+            Ok(request) => self.serve(request, shm, host, &mut reply),
             Err(why) => error(&mut reply, 0, why),
         }
         reply.into_bytes()
     }
 
-    fn serve(&mut self, request: Request, host: &dyn Host, reply: &mut Reply) {
+    fn serve(
+        &mut self,
+        request: Request,
+        shm: Option<&mut [u8]>,
+        host: &dyn Host,
+        reply: &mut Reply,
+    ) {
         if let Request::Open { origin, .. } = request {
             return self.open(origin, reply);
+        }
+        // A build needs no session and leaves a waiting run waiting.
+        if let Request::Build { component, version } = request {
+            return self.build(component, version, shm, host, reply);
         }
         let Some(open) = self.open.as_mut() else {
             return error(reply, 0, "no session is open");
@@ -142,7 +165,7 @@ impl<E: Effects> Service<E> {
         }
         let effects = &self.effects;
         match request {
-            Request::Open { .. } => {}
+            Request::Open { .. } | Request::Build { .. } => {}
             Request::Eval { seq, entry } => eval(
                 &self.compiler,
                 effects,
@@ -184,7 +207,28 @@ impl<E: Effects> Service<E> {
                 &Record::Text(capped(&open.defs.listing()).as_bytes()),
             ),
             Request::Reset => self.open(Origin::User, reply),
-            Request::Build(_) => error(reply, 0, "cc build comes with P4 task 13"),
+        }
+    }
+
+    /// `cc build` (D7), in [`BUILD_LINES`] line budgets.
+    fn build(
+        &self,
+        component: &str,
+        version: &str,
+        shm: Option<&mut [u8]>,
+        host: &dyn Host,
+        reply: &mut Reply,
+    ) {
+        let Some(shm) = shm else {
+            return error(reply, 0, "build brings its sources in an Shm");
+        };
+        let budget = &mut Budget::new(host, host.line_ns().saturating_mul(BUILD_LINES));
+        match crate::build::shm::serve(&self.compiler, component, version, shm, budget) {
+            Ok(text) => end(reply, &Record::Text(text.as_bytes())),
+            Err(e) => match e.text() {
+                Ok(why) => error(reply, 0, &why),
+                Err(stop) => trap(reply, stop.word()),
+            },
         }
     }
 

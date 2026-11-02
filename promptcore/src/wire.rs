@@ -11,11 +11,14 @@
 //! dis <name>                          need <id> <n>\n<call>       an effect, as ADR 0002's call
 //! defs                                done <compile_us> <link_us> <run_us>
 //! reset                               err <line> <n>\n<text>      line 0: not in the entry
-//! build <component>                   trap <reason> <function>|-
+//! build <component> <version>         trap <reason> <function>|-
 //!                                     undone <seq>
 //!                                     text <n>\n<text>            for dis and defs
 //!                                     ok
 //! ```
+//!
+//! `build` comes with an `Shm` that holds the component's source bundle; cc
+//! writes the artifact over it and answers `text` (see `ccserve::build::shm`).
 //!
 //! Every reply header ends in a newline; a record that carries text gives its
 //! byte count last, and the bytes follow the newline. So output and wcc's
@@ -82,7 +85,11 @@ pub enum Request<'a> {
     Dis(&'a str),
     Defs,
     Reset,
-    Build(&'a str),
+    /// `cc build`: the sources come in an `Shm`, not in the message.
+    Build {
+        component: &'a str,
+        version: &'a str,
+    },
 }
 
 impl<'a> Request<'a> {
@@ -125,7 +132,10 @@ impl<'a> Request<'a> {
             (["defs"], None) => Request::Defs,
             (["reset"], None) => Request::Reset,
             (["dis", name], None) => Request::Dis(ident(name)?),
-            (["build", component], None) => Request::Build(word(component, 32)?),
+            (["build", component, v], None) => Request::Build {
+                component: word(component, 32)?,
+                version: version(v)?,
+            },
             _ => return Err(WireError("not a request")),
         };
         Ok(request)
@@ -151,7 +161,7 @@ impl<'a> Request<'a> {
             Request::Dis(name) => format!("dis {name}"),
             Request::Defs => "defs".into(),
             Request::Reset => "reset".into(),
-            Request::Build(component) => format!("build {component}"),
+            Request::Build { component, version } => format!("build {component} {version}"),
         }
     }
 }
@@ -186,6 +196,15 @@ fn word(text: &str, max: usize) -> Result<&str, WireError> {
             .bytes()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'_' | b'-'));
     ok.then_some(text).ok_or(WireError("not a name"))
+}
+
+/// A version's shape: digits and dots, at most 32 bytes. `cc build` checks
+/// that it is `x.y.z`.
+fn version(text: &str) -> Result<&str, WireError> {
+    let ok = !text.is_empty()
+        && text.len() <= 32
+        && text.bytes().all(|c| c.is_ascii_digit() || c == b'.');
+    ok.then_some(text).ok_or(WireError("not a version"))
 }
 
 /// A C identifier of at most 63 bytes.
