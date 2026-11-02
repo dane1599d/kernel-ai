@@ -1,0 +1,15 @@
+/// The model manager as its manifest names it: a live component with its window
+/// and the granted read of the model list. It keeps only the chosen model in
+/// storage.
+package app:models-window@1.0.0;
+
+/// It declares no action and queues no effect: a switch or an import is Kai's
+/// `model_use` or `model_fetch`, logged and undoable, and the window says so.
+world models-window {
+    include kai:app/component@0.1.0;
+    import kai:ui/view@0.1.1;
+    import kai:models/models@0.1.0;
+    export kai:ui/input@0.1.1;
+    export kai:app/events@0.1.0;
+    export kai:models/listing@0.1.0;
+}

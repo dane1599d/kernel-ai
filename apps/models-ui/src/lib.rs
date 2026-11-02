@@ -5,19 +5,21 @@
 //! each event and [`diff`]s it against the last one. A choice comes back from
 //! [`on_ui`] as the model's [`Intent`], which the component carries out through
 //! the agent's rows, so the window itself changes nothing in the OS.
+//!
+//! In v0.1 the window reads only ([`View::read_only`]): its list comes from
+//! `updated`, which has no disks in it, and a choice is shown as what to ask
+//! Kai ([`ask_kai`]), whose rows are the one way to switch or import a model.
 
 #![no_std]
 
 extern crate alloc;
 
-mod tree;
-
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use comp_models::{Import, Intent, Models, Row, Sha256, State, hex, size};
-pub use tree::{Change, Entry, diff};
-use tree::{entry, label, row, wide};
+use comp_ui_bind::tree::{self, entry, label, row, wide};
+pub use comp_ui_bind::tree::{Change, Entry, diff};
 use uikit::style::{Tone, TypeStyle};
 use uikit::widget::{Axis, Layout, NodeId, ROOT, UiEvent, Value, Widget};
 
@@ -29,10 +31,14 @@ pub const USE: NodeId = 5;
 pub const DISKS: NodeId = 6;
 pub const NO_DISKS: NodeId = 7;
 pub const IMPORTING: NodeId = 8;
+/// The line under the table: what to ask Kai, or why there is no list.
+pub const NOTE: NodeId = 9;
 /// The status lines: a trial, a rollback, the next restart's model.
 pub const STATUS: NodeId = 10;
 /// The chosen model's lines.
 pub const DETAIL_LINE: NodeId = 20;
+/// Asks for the list again (read-only windows only).
+pub const REFRESH: NodeId = 30;
 // Disks take a block of 1,000 ids each, and the window shows at most
 // [`MAX_ROWS`] of them, so no two nodes can share an id.
 pub const DISK: NodeId = 1000;
@@ -53,6 +59,35 @@ pub const COLUMNS: [&str; 4] = ["Model", "Size", "Licence", "State"];
 pub struct View {
     /// The chosen model, by its SHA-256, so it stays chosen as the list moves.
     pub selected: Option<Sha256>,
+    /// The window reads only: its choices are bound to no row, it has a
+    /// Refresh button, and it does not list disks, which its list never holds.
+    pub read_only: bool,
+    /// A line under the table: what to ask Kai for the last choice, or why
+    /// there is no list.
+    pub note: Option<String>,
+}
+
+/// What to ask Kai for `intent`, for a window that reads only. The words are
+/// the ones Kai's rows take: the role's id for a model.
+pub fn ask_kai(models: &Models, intent: &Intent) -> String {
+    match intent {
+        Intent::Use(sha256) => {
+            let row = models.row(sha256);
+            let name = row
+                .as_ref()
+                .map_or_else(|| name_of(models, sha256), Row::name);
+            let id = row
+                .and_then(|r| r.signed)
+                .map_or_else(|| String::from(&hex(sha256)[..12]), |s| s.id.clone());
+            format!(
+                "To use {} from the next restart, ask Kai: \"use the {id} model\". It is tried on trial, and undo switches back.",
+                clip(&name)
+            )
+        }
+        Intent::Import(_) => String::from(
+            "To import a model, ask Kai: \"import the model on the attached disk\". It is kept only if the signed role names it.",
+        ),
+    }
 }
 
 /// `text`, cut to [`MAX_CHARS`] characters with an ellipsis.
@@ -122,6 +157,17 @@ pub fn build(models: &Models, view: &View) -> Vec<Entry> {
             label("Models", TypeStyle::Heading, Tone::Normal)
         ),
     ];
+    if view.read_only {
+        tree.push(entry(
+            REFRESH,
+            COLUMN,
+            Layout::FIT,
+            Widget::Button {
+                text: String::from("Refresh"),
+                action: None,
+            },
+        ));
+    }
     for (i, text) in status(models).iter().enumerate() {
         tree.push(entry(
             STATUS + i as u32,
@@ -156,13 +202,24 @@ pub fn build(models: &Models, view: &View) -> Vec<Entry> {
         },
     ));
     if let Some(r) = selected.map(|i| &rows[i]) {
-        detail(models, r, &mut tree);
+        detail(models, r, view, &mut tree);
     }
-    disks(models, &mut tree);
+    if let Some(note) = &view.note {
+        tree.push(entry(
+            NOTE,
+            COLUMN,
+            wide(),
+            label(note, TypeStyle::Body, Tone::Normal),
+        ));
+    }
+    match view.read_only {
+        true => ask_for_disks(&mut tree),
+        false => disks(models, &mut tree),
+    }
     tree
 }
 
-fn detail(m: &Models, r: &Row<'_>, tree: &mut Vec<Entry>) {
+fn detail(m: &Models, r: &Row<'_>, view: &View, tree: &mut Vec<Entry>) {
     tree.push(entry(
         DETAIL,
         COLUMN,
@@ -174,7 +231,7 @@ fn detail(m: &Models, r: &Row<'_>, tree: &mut Vec<Entry>) {
         format!("SHA-256 {}", hex(&r.sha256)),
         format!("Licence: {}", clip(r.licence())),
     ];
-    if let Some(s) = r.signed {
+    if let Some(s) = r.signed.filter(|s| !s.source.is_empty()) {
         lines.push(format!("From {}", clip(&s.source)));
     }
     for (i, text) in lines.iter().enumerate() {
@@ -186,16 +243,42 @@ fn detail(m: &Models, r: &Row<'_>, tree: &mut Vec<Entry>) {
         ));
     }
     if m.use_model(&r.sha256).is_some() {
+        // A window that reads only binds the button to no row: it says what
+        // to ask Kai.
+        let (text, action) = match view.read_only {
+            true => ("How to use it", None),
+            false => ("Use from the next restart", Some(String::from("model_use"))),
+        };
         tree.push(entry(
             USE,
             DETAIL,
             Layout::FIT,
             Widget::Button {
-                text: String::from("Use from the next restart"),
-                action: Some(String::from("model_use")),
+                text: String::from(text),
+                action,
             },
         ));
     }
+}
+
+/// The disks section of a window that reads only: its list has no disks.
+fn ask_for_disks(tree: &mut Vec<Entry>) {
+    tree.push(entry(
+        DISKS,
+        COLUMN,
+        wide(),
+        label("Attached disks", TypeStyle::Label, Tone::Normal),
+    ));
+    tree.push(entry(
+        NO_DISKS,
+        COLUMN,
+        wide(),
+        label(
+            "To import a model, attach the disk that holds it and ask Kai to import it.",
+            TypeStyle::Body,
+            Tone::Muted,
+        ),
+    ));
 }
 
 fn disks(m: &Models, tree: &mut Vec<Entry>) {

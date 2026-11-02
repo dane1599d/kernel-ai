@@ -279,7 +279,25 @@ name = "comp-models-ui"
 version = "0.1.0-dev"
 dependencies = [
  "comp-models",
+ "comp-ui-bind",
  "uikit",
+]
+
+[[package]]
+name = "comp-models-window"
+version = "0.1.0-dev"
+dependencies = [
+ "appabi",
+ "comp-models",
+ "comp-models-ui",
+ "comp-ui-bind",
+ "compsdk",
+ "livecore",
+ "minicbor",
+ "modelchan",
+ "uikit",
+ "wasmhost",
+ "wit-bindgen",
 ]
 
 [[package]]

@@ -4,8 +4,8 @@
 
 use comp_models::{Disk, Import, Intent, Models, Refusal, Sha256, Signed, Store, Stored};
 use comp_models_ui::{
-    Change, DETAIL, Entry, IMPORT, IMPORTING, MAX_CHARS, MAX_ROWS, SIZE, TABLE, USE, View, build,
-    clip, diff, on_ui, status,
+    Change, DETAIL, Entry, IMPORT, IMPORTING, MAX_CHARS, MAX_ROWS, NOTE, REFRESH, SIZE, TABLE, USE,
+    View, ask_kai, build, clip, diff, on_ui, status,
 };
 use uikit::a11y::A11yNode;
 use uikit::layout::FixedAdvance;
@@ -112,7 +112,13 @@ fn every_state_is_a_tree_uikit_takes() {
     for import in imports {
         m.import = import;
         for selected in [None, Some(QWEN), Some(SMALL), Some(FIXTURE), Some([0; 32])] {
-            let tree = build(&m, &View { selected });
+            let tree = build(
+                &m,
+                &View {
+                    selected,
+                    ..View::default()
+                },
+            );
             let shown = names(&tree);
             assert!(shown.iter().any(|n| n == "Models"), "{shown:?}");
         }
@@ -121,6 +127,7 @@ fn every_state_is_a_tree_uikit_takes() {
         &m,
         &View {
             selected: Some(SMALL),
+            ..View::default()
         },
     ));
     let table = shown.iter().find(|n| n.id == TABLE).unwrap();
@@ -303,7 +310,13 @@ fn a_full_role_with_long_text_still_fits_the_window() {
         length: 1000,
     });
     let selected = Some(m.signed[3].sha256);
-    let tree = build(&m, &View { selected });
+    let tree = build(
+        &m,
+        &View {
+            selected,
+            ..View::default()
+        },
+    );
     let mut ids: Vec<u32> = tree.iter().map(|e| e.id).collect();
     let total = ids.len();
     ids.sort_unstable();
@@ -322,4 +335,62 @@ fn a_full_role_with_long_text_still_fits_the_window() {
     assert!(table.value.as_deref().unwrap().starts_with("256 rows"));
     assert_eq!(clip(&long).chars().count(), MAX_CHARS + 1);
     assert_eq!(clip("short"), "short");
+}
+
+fn read_only() -> View {
+    View {
+        read_only: true,
+        ..View::default()
+    }
+}
+
+#[test]
+fn a_window_that_reads_only_binds_no_row_and_says_what_to_ask_kai() {
+    let mut m = models();
+    // Its list comes from `updated`, which has no disks or sources in it.
+    m.disks.clear();
+    for s in &mut m.signed {
+        s.source.clear();
+    }
+    let mut view = read_only();
+    on_ui(&m, &mut view, &UiEvent::Changed(TABLE, Value::Index(1)));
+    let tree = build(&m, &view);
+    let shown = a11y(&tree);
+    assert!(has(&tree, REFRESH));
+    let button = shown.iter().find(|n| n.id == USE).unwrap();
+    assert_eq!(button.name, "How to use it");
+    // No control in the window is bound to a row.
+    assert!(shown.iter().all(|n| n.bound.is_none()), "{shown:?}");
+    assert!(!names(&tree).iter().any(|n| n.starts_with("From ")));
+    // A choice is still the model's intent; the window shows it as words.
+    let (_, intent) = on_ui(&m, &mut view, &UiEvent::Pressed(USE));
+    view.note = intent.map(|i| ask_kai(&m, &i));
+    let shown = names(&build(&m, &view));
+    assert!(
+        shown.iter().any(|n| n
+            == "To use Qwen3-0.6B Q8_0 from the next restart, ask Kai: \"use the qwen3-0.6b model\". It is tried on trial, and undo switches back."),
+        "{shown:?}"
+    );
+    assert!(has(&build(&m, &view), NOTE));
+    // The disks section says how to import, and lists no disk.
+    assert!(
+        shown
+            .iter()
+            .any(|n| n.starts_with("To import a model, attach the disk")),
+        "{shown:?}"
+    );
+    assert!(!build(&m, &view).iter().any(|e| e.id >= IMPORT));
+}
+
+#[test]
+fn a_window_that_carries_out_choices_keeps_its_bound_button_and_disks() {
+    let m = models();
+    let mut view = View::default();
+    on_ui(&m, &mut view, &UiEvent::Changed(TABLE, Value::Index(1)));
+    let tree = build(&m, &view);
+    assert!(!has(&tree, REFRESH));
+    let shown = a11y(&tree);
+    let button = shown.iter().find(|n| n.id == USE).unwrap();
+    assert_eq!(button.bound.as_deref(), Some("model_use"));
+    assert!(has(&tree, IMPORT));
 }
