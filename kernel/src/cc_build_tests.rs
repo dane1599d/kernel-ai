@@ -1,16 +1,21 @@
 //! P4 task 13's exit case (`test=c-build`): `cc build` in the OS. `pkg` runs
-//! `pkg-image`'s step (generation 1, the image's notes), and the shell has
-//! [`kabi::plan::SHELL_BUILD`]'s route to it.
+//! `pkg-image`'s step: generation 1 is the image's packages, which run from the
+//! image and start no app from a package (#536). The shell has
+//! [`kabi::plan::SHELL_BUILD`]'s route to `pkg`.
 //!
-//! The case writes a C app into `/home/user/c/hello/` as `fs`'s kernel
-//! client, then types `cc build hello` as the terminal does:
+//! The case writes a C app the image does not ship, `hello`, into
+//! `/home/user/c/hello/` as `fs`'s kernel client. Its source lives only here
+//! and in that folder, so no image or repository holds it. Then the case types
+//! `cc build hello` as the terminal does:
 //! - `local-next` gives 0.0.1;
 //! - `cc` builds it;
 //! - `pkg` publishes it into `local`, signed by the device key it makes, and
-//!   installs it as generation 2, then starts it; its `init` logs a line.
+//!   installs it as generation 2, then starts it as `p-...`; its `init` logs a
+//!   line, and it keeps running.
 //!
-//! `undo` switches back to generation 1, and the next build is 0.0.2. The host
-//! checks `pkg`'s and the app's lines.
+//! `undo` switches back to generation 1, which ends the running app, and the
+//! next build, 0.0.2, starts again from `local`. The host checks `pkg`'s and
+//! the app's lines.
 
 use crate::files_tests::ask;
 use crate::pkg_tests::{Step, wait_for};
@@ -25,6 +30,7 @@ use kabi::handle::Rights;
 const HELLO: &str = "hello program=comphost caps=serve+component pages=8192 stack_pages=512 burst_ms=20000 start=pkg";
 /// An app that asks for nothing: what `local` installs. Its `init` logs.
 const SOURCE: &str = "#include <app.h>
+#include <stdlib.h>
 // SPDX-License-Identifier: MIT
 uint32_t exports_kai_live_lifecycle_schema(void) { return 1; }
 bool exports_kai_live_lifecycle_init(exports_kai_live_lifecycle_start_error_t *err) {
@@ -35,9 +41,18 @@ bool exports_kai_live_lifecycle_init(exports_kai_live_lifecycle_start_error_t *e
 }
 bool exports_kai_live_lifecycle_migrate(app_list_u8_t *state, uint32_t from_schema,
                                         exports_kai_live_lifecycle_start_error_t *err) { return true; }
+// Its state in schema 1, CBOR [1, empty text], which the glue frees after.
+// comphost checks the state after init, so an app that saves nothing stops.
 bool exports_kai_live_lifecycle_save(uint32_t to_schema, app_list_u8_t *ret) {
-    ret->ptr = 0;
-    ret->len = 0;
+    uint8_t *state = malloc(3);
+    if (!state) {
+        return false;
+    }
+    state[0] = 0x82;
+    state[1] = 0x01;
+    state[2] = 0x60;
+    ret->ptr = state;
+    ret->len = 3;
     return true;
 }
 uint32_t exports_kai_live_lifecycle_health(void) { return 0; }

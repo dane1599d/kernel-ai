@@ -30,18 +30,22 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("c-prompt", "test=c-prompt")
     },
-    // P4 task 13's exit case: `cc build hello` builds a C app from
-    // `/home/user/c/hello/`, `pkg` publishes it into `local` signed by the
-    // device key it makes, installs it as generation 2 and starts it, and its
-    // `init` logs. `undo` switches back, and the next build is 0.0.2. Two
-    // builds take minutes when QEMU emulates the CPU.
+    // P4 task 13's exit case: generation 1 is the image's packages, which
+    // start no app (#536). `cc build hello` builds a C app the image does not
+    // ship from `/home/user/c/hello/`; `pkg` publishes it into `local` signed
+    // by the device key it makes, installs it as generation 2 and starts it,
+    // and its `init` logs. `undo` switches back and ends it, which only a
+    // running app can be, and the next build, 0.0.2, starts from `local`
+    // again. Two builds take minutes when QEMU emulates the CPU.
     TestCase {
         expect: &[
-            "pkg: started from generation 1: notes 1.0.0 as p-",
+            "pkg: generation 1 starts no app from a package",
             "pkg: started from local: hello 0.0.1 as p-",
             "hello from C, built in the OS",
             "c-build: cc build hello built 0.0.1, and pkg installed it from local as generation 2",
             "pkg: switched back from generation 2 to 1's packages as generation 3",
+            "pkg: ended, undone: hello as p-",
+            "pkg: started from local: hello 0.0.2 as p-",
             "c-build: undo switched back to generation 1, and the next build is 0.0.2",
         ],
         data: Some(VIRTIO),
