@@ -403,8 +403,9 @@ pub const INPUT_READ: u64 = 77;
 /// fits.
 pub const TERM_READ: u64 = 78;
 /// `input_to_console(on, pid) -> 0`: with `on` 1, keys go to the kernel
-/// console's terminal instead of the input queue for about a second (a lease,
-/// renewed by calling again), while the caller keeps showing on the screen and
+/// console's terminal instead of the input queue until the lease ends (no
+/// timer ends it; calling again changes nothing), while the caller keeps
+/// showing on the screen and
 /// `pid`, the client whose window has the focus, is the terminal window: a
 /// process holding [`super::cap::TERM`]. Permission, ending any lease, for any
 /// other `pid`. `on` 0 ends it. Alt

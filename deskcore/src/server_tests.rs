@@ -285,6 +285,15 @@ fn input_for_a_window_goes_to_its_pool_with_its_text() {
             (2, Kind::Key, 0x04, 0, &b""[..]),
         ]
     );
+    // Each key says what was held with it, in the ring: Shift's own event too.
+    let held: Vec<i32> = posts
+        .iter()
+        .map(|(_, e)| match e {
+            Ring::Input { x, .. } => *x,
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(held, [1 << 8, 1 << 8, 1 << 8]);
     // The seat (7) heard Shift.
     let sent = events(&mut client);
     let modifiers = Event::decode(Interface::Seat, sent[0].1, &sent[0].2);
@@ -293,6 +302,18 @@ fn input_for_a_window_goes_to_its_pool_with_its_text() {
     client.apply(&[key(0xE1, false), key(0xE0, true), key(0x06, true)]);
     let ctrl_c = client.take_posts();
     assert!(matches!(ctrl_c[2].1, Ring::Input { len: 0, .. }));
+    let held: Vec<i32> = ctrl_c
+        .iter()
+        .map(|(_, e)| match e {
+            Ring::Input { x, .. } => *x,
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        held,
+        [0, 2 << 8, 2 << 8],
+        "Shift let go, Ctrl down, C with Ctrl"
+    );
     // A click carries its place in 24.8; another window's input is not ours.
     let at = Point { x: 10, y: 20 };
     client.apply(&[Effect::Button {

@@ -49,6 +49,7 @@ mod console;
 mod cpu;
 mod default_tests;
 mod demand_tests;
+mod desk_perf_tests;
 mod desk_tests;
 mod desk_tour_tests;
 mod devhost;
@@ -399,6 +400,8 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::DeskAppearance => run_case(appearance_tests::check),
         SelfTest::DeskCard => run_case(card_tests::check),
         SelfTest::DeskStanding => run_case(standing_tests::check),
+        SelfTest::DeskStandingRefused => run_case(standing_tests::refused_check),
+        SelfTest::DeskPerf => run_case(desk_perf_tests::check),
         SelfTest::UiKeys => run_case(keys_tests::check),
         SelfTest::DeskTerm => run_case(term_tests::check),
         SelfTest::DeskAgent => run_case(agent_desk_tests::agent_check),

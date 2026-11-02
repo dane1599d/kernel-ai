@@ -22,8 +22,10 @@
 //!   arguments (`theme=light`, `legible=on`, ...), each an `appearance_set`
 //!   setting.
 //! - While the terminal window (`term`'s) has focus, the keys go to the
-//!   kernel's terminal instead: a lease (INPUT_TO_CONSOLE) renewed every
-//!   [`LEASE_RENEW_NS`], and ended when the focus moves (P3 task 8). The
+//!   kernel's terminal instead: a lease (INPUT_TO_CONSOLE, `deskcore::lease`),
+//!   asked for again at once after a click and every `lease::ASK_NS` in case
+//!   the kernel ended it on Alt+Tab or the screen changing hands, and ended
+//!   when the focus moves (P3 task 8). The
 //!   kernel, not `desktop`, decides which client is the terminal: it lends the
 //!   keys only for the window of a process holding TERM.
 //! - `apps` sent in the panel opens the Apps sheet, with what `pkg` lists
@@ -46,6 +48,7 @@ use deskcore::compose::{Pixels, Source};
 use deskcore::desk::{Button, Desk, Effect, Focus, Input, WindowId};
 use deskcore::effects;
 use deskcore::geom::{Point, Rect};
+use deskcore::lease::{Lease, Step};
 use deskcore::paint::{self, Bar, Painter, Scene};
 use deskcore::paint_panel;
 use deskcore::panel::Panel;
@@ -66,6 +69,8 @@ user::entry!(main);
 
 #[path = "desktop/agent.rs"]
 mod agent;
+#[path = "desktop/perf.rs"]
+mod perf;
 
 /// The fonts ADR 0005 §8 names, built in until P2's files carry them.
 const FONTS: Fonts = Fonts {
@@ -79,9 +84,6 @@ const BAR_EVERY_NS: u64 = 1_000_000_000;
 /// Waits for input or a client, in turn, so neither starves.
 const INPUT_WAIT_MS: u64 = 2;
 const CLIENT_WAIT_MS: u64 = 2;
-/// How often the lease is renewed while that window has focus: well inside the
-/// kernel's one second.
-const LEASE_RENEW_NS: u64 = 250_000_000;
 
 struct Pool {
     pid: u64,
@@ -115,6 +117,9 @@ struct State {
     draws_cursor: bool,
     /// The first frame is on the screen.
     drawn: bool,
+    /// A key has been logged since the claim: only the first is, so what the
+    /// user types never reaches the serial log, and a frame never waits on it.
+    key_logged: bool,
     /// The AI panel's line and the state the shell reports.
     panel: Panel,
     /// The Apps sheet, while it is up: it takes the panel's keys.
@@ -136,15 +141,15 @@ struct State {
     focus: Focus,
     /// What standing instructions hear about: window events and idle.
     watch: Watch,
-    /// When the keys were last lent to the kernel's terminal, while they are.
-    leased_at: Option<u64>,
-    /// The focused window, and whether the kernel lent the keys for it.
-    asked: Option<(WindowId, bool)>,
+    /// The keyboard lease to the kernel's terminal, as desktop knows it.
+    lease: Lease,
     /// What the user chose, and what the painter paints in: kept with the
     /// painter across a lost screen, and the default (what `Painter::new`
     /// paints) at first, so the first frame does no theme work for it.
     appearance: Appearance,
     painted_in: Appearance,
+    /// Frame and key timings for `desk-perf`, with `perf=on` only.
+    perf: Option<perf::Perf>,
     /// The theme's name, as clients are told it (`surfabi`'s `Theme`).
     theme_name: String,
 }
@@ -180,6 +185,7 @@ fn main() -> i32 {
             extra: Vec::new(),
             draws_cursor: screen.info.cursor == 0,
             drawn: false,
+            key_logged: false,
             panel: Panel::new(),
             sheet: None,
             effects: effects::Queue::default(),
@@ -191,10 +197,10 @@ fn main() -> i32 {
             known: Vec::new(),
             focus: Focus::Nothing,
             watch: Watch::new(now_ms()),
-            leased_at: None,
-            asked: None,
+            lease: Lease::new(),
             appearance: appearance.clone(),
             painted_in,
+            perf: perf::from_args(),
             theme_name: theme_name.clone(),
         };
         println!("desktop: claimed {width}x{height}");
@@ -252,7 +258,7 @@ fn run(state: &mut State, screen: &Screen) -> Option<bool> {
         }
         let mut info = RecvInfo::default();
         if let Ok(len) = sys::recv_h(&mut request, CLIENT_WAIT_MS, &mut info) {
-            serve(state, &request[..len.min(request.len())], &info);
+            serve(state, screen, &request[..len.min(request.len())], &info);
         }
         report(state);
         post_events(state);
@@ -266,8 +272,10 @@ fn run(state: &mut State, screen: &Screen) -> Option<bool> {
 }
 
 /// Lends the keys to the kernel's terminal while the terminal window has
-/// focus, renewing the lease; ends it once the focus moves. The kernel says
-/// which window that is: it refuses the lease for any other client.
+/// focus, asking again in case the kernel ended the lease; ends it once the
+/// focus moves. The kernel says which window that is: it refuses the lease for
+/// any other client. When the keys are newly lent the desk forgets the keys it
+/// holds down, as their releases now go to the console.
 fn lease(state: &mut State) {
     let focused = match state.desk.focus() {
         Focus::Window(id) => state
@@ -278,31 +286,29 @@ fn lease(state: &mut State) {
         _ => None,
     };
     let now = sys::time_ns();
-    let Some((id, pid)) = focused else {
-        if state.leased_at.take().is_some() {
+    match state.lease.step(focused.map(|(id, _)| id), now) {
+        Step::Stay => {}
+        Step::End => {
             let _ = sys::input_to_console(false, 0);
             println!("desktop: the keys are the desktop's again");
+            state.lease.forget();
         }
-        state.asked = None;
-        return;
-    };
-    let fresh = state
-        .leased_at
-        .is_some_and(|at| now.saturating_sub(at) < LEASE_RENEW_NS);
-    match state.asked {
-        // Not the terminal: asked once for this focus.
-        Some((asked, false)) if asked == id => return,
-        Some((asked, true)) if asked == id && fresh => return,
-        _ => {}
+        Step::Ask => {
+            let Some((id, pid)) = focused else {
+                return;
+            };
+            let lent = sys::input_to_console(true, pid).is_ok();
+            let lent = state.lease.asked(id, lent, now);
+            if lent.new {
+                state.desk.keys_lent();
+            }
+            match lent.moved {
+                Some(true) => println!("desktop: the terminal window has the keys"),
+                Some(false) => println!("desktop: the keys are the desktop's again"),
+                None => {}
+            }
+        }
     }
-    let lent = sys::input_to_console(true, pid).is_ok();
-    match (lent, state.leased_at.is_some()) {
-        (true, false) => println!("desktop: the terminal window has the keys"),
-        (false, true) => println!("desktop: the keys are the desktop's again"),
-        _ => {}
-    }
-    state.asked = Some((id, lent));
-    state.leased_at = lent.then_some(now);
 }
 
 /// One kernel input event, in logical px at scale 1.
@@ -338,13 +344,23 @@ fn input(state: &mut State, screen: &Screen, event: &InputEvent) {
                 2 => Button::Right,
                 _ => Button::Middle,
             };
+            if event.value != 0 {
+                // The kernel ended any lease on the press: lend again this pass.
+                state.lease.forget();
+            }
             Some(Input::Button {
                 button,
                 down: event.value != 0,
             })
         }
         Kind::Key => {
-            println!("desktop: key {:#x} {}", event.code, event.value);
+            if !state.key_logged {
+                state.key_logged = true;
+                println!("desktop: key {:#x} {}", event.code, event.value);
+            }
+            if event.value != 0 {
+                perf::key(state, event.time_ns);
+            }
             Some(Input::Key {
                 usage: event.code,
                 down: event.value != 0,
@@ -521,8 +537,12 @@ fn tick_panel(state: &mut State) {
     }
 }
 
-fn serve(state: &mut State, bytes: &[u8], info: &RecvInfo) {
+fn serve(state: &mut State, screen: &Screen, bytes: &[u8], info: &RecvInfo) {
     let pid = info.caller_pid;
+    if let Some(reply) = perf::request(state, screen, bytes, pid) {
+        let _ = sys::reply_h(reply.as_bytes(), &[]);
+        return;
+    }
     if let Some(reply) = panel_request(state, bytes, pid) {
         let _ = sys::reply_h(reply.as_bytes(), &[]);
         return;
@@ -911,6 +931,9 @@ fn draw(state: &mut State, screen: &Screen) {
         .iter()
         .filter_map(|r| paint::reach(*r).intersect(&bounds))
         .collect();
+    // Timed only for `desk-perf`: no TIME calls on the normal path.
+    let timed = state.perf.is_some();
+    let started = if timed { sys::time_ns() } else { 0 };
     let mut frame = state.frame.canvas();
     let (shown, pools) = (&state.shown, &state.pools);
     let scene = Scene {
@@ -948,6 +971,7 @@ fn draw(state: &mut State, screen: &Screen) {
             state.painter.cursor(&mut frame, clip, state.desk.pointer());
         }
     }
+    let rendered = if timed { sys::time_ns() } else { 0 };
     copy_to_screen(&state.frame.px, state.width, screen, &damage);
     let rects: Vec<FlushRect> = damage
         .iter()
@@ -960,6 +984,10 @@ fn draw(state: &mut State, screen: &Screen) {
         .collect();
     for chunk in rects.chunks(kabi::display::MAX_FLUSH) {
         let _ = sys::display_flush(chunk);
+    }
+    if timed {
+        let flushed = sys::time_ns();
+        perf::drew(state, rendered - started, flushed - rendered, flushed);
     }
     if !state.drawn {
         state.drawn = true;

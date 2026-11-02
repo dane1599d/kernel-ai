@@ -8,6 +8,7 @@
 
 use super::{TestCase, UpdateDisk, case};
 use crate::blklog::Data;
+use crate::disk::Fixture;
 
 /// A `kai-data` disk for `fs`, so `updated` has `/system/trust` and
 /// `/system/updates`; one per chained case, kept across its boots.
@@ -149,10 +150,13 @@ const B_UP: TestCase = boot(
         "slots: next boot kai-b",
     ],
 );
-/// `update-stage` boot 2: `updated` in A checks the Update calls, writes B and
-/// restarts into it.
+/// `update-stage` boot 2: `updated` in A checks the Update calls, the import
+/// disk's among them, writes B and restarts into it. The import disk holds a
+/// GGUF file and no disk is `kai-model`, so the kernel must not take it for
+/// the model (P4 task 10).
 const A_UPDATES: TestCase = TestCase {
     then: Some(&B_UP),
+    import: Some(Fixture::Gguf),
     ..boot(
         "update-stage (2: updated stages kai-b)",
         "test=update panic=reset",
@@ -160,7 +164,9 @@ const A_UPDATES: TestCase = TestCase {
             "slots: up in kai-a (trial, 2 tries left)",
             "updated: slots R ",
             "this boot runs in A",
+            "block: kai-import disk holds a GGUF file; a disk with a role is never the model",
             "updated: SLOT_WRITE refuses the active slot, and R from a trial slot",
+            "updated: the import disk reads, 4104 sectors of a GGUF file, and SLOT_WRITE refuses it",
             "updated: BOOTREC_SET refuses a bad record and arming a slot being written",
             "updated: staged B as release 2: ",
             "update: restarting into kai-b",

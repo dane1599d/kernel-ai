@@ -10,7 +10,9 @@
 //! corners rounded, then put on the frame: copied where opaque and blended at
 //! the corners. Only the focused window has a shadow, two nine-slice layers kept
 //! inside [`SHADOW_REACH`]; `desktop` grows its damage by that much, so a moved
-//! or refocused window takes its shadow with it.
+//! or refocused window takes its shadow with it. A window being dragged has none
+//! until it is let go ([`Desk::dragged`]): ADR 0005's fail rule, so a drag frame
+//! under load fits its budget.
 
 use crate::askcard::Card;
 use crate::chrome::{self, Part};
@@ -126,7 +128,7 @@ impl Painter {
                 continue;
             }
             let focused = desk.focus() == Focus::Window(window.id);
-            if focused {
+            if focused && desk.dragged() != Some(window.id) {
                 self.far.draw(c, g(window.frame), g(clip));
                 self.near.draw(c, g(window.frame), g(clip));
             }
