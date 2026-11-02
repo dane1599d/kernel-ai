@@ -1,8 +1,8 @@
 //! `ctl swap`: stage a candidate, move the state into it, check it, then put it on
-//! probation (or commit it at once when probation is off, or the caller wants none).
-//! Every attempt that gets
-//! as far as the kernel's BEGIN ends in a COMMIT or a ROLLBACK naming the step that
-//! failed; the active version is only ever asked to export.
+//! probation (or commit it at once when probation is off, or the caller wants
+//! none). Every attempt that gets as far as the kernel's BEGIN ends in a COMMIT or
+//! a ROLLBACK naming the step that failed; the active version is only ever asked
+//! to export.
 
 use crate::host::{Core, Env, Exit, Mode, Probation, Report, Version, export_own, text};
 use crate::{Fault, Instance, Reason};

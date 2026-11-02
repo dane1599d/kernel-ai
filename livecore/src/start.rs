@@ -87,8 +87,11 @@ impl<E: Env> Host<E> {
     /// That one is swapped in and committed at once, with no probation, since
     /// the withdrawn one must not answer first; the state moves and the
     /// candidate is checked as in any swap, and a swap it fails leaves the old
-    /// version serving, as any rollback does. Only a package version replaces
-    /// a package version: a build the person swapped in stays.
+    /// version serving, as any rollback does; so does a version the ledger
+    /// holds as failed before (BEGIN refused), which only the log line shows.
+    /// A disabled app does not follow: it waits for `ctl reset`, after which
+    /// the empty ledger starts the version `pkg` names. Only a package version
+    /// replaces a package version: a build the person swapped in stays.
     fn follow_pkg(core: &mut Core<E>, mode: Mode<E::Instance>) -> Result<Mode<E::Instance>, Exit> {
         let named = core.settings.version.clone();
         let Mode::Serving(active) = mode else {
