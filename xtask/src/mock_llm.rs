@@ -349,6 +349,20 @@ const ACTS: &[(&str, &str)] = &[
         "do what my note says",
         r#"{"name":"ui_view","arguments":{"window":"notes"}}"#,
     ),
+    // `app-models` (P4 task 10): the agent lists the models, imports the
+    // attached disk's, uses it and (`undo`) puts the one before back.
+    (
+        "list the AI models",
+        r#"{"name":"model_list","arguments":{}}"#,
+    ),
+    (
+        "import the model on the attached disk",
+        r#"{"name":"model_fetch","arguments":{"source":"disk"}}"#,
+    ),
+    (
+        "use the fixture-2 model",
+        r#"{"name":"model_use","arguments":{"name":"fixture-2"}}"#,
+    ),
     // `app-settings` (P4 task 7): the agent sets the theme, opens Settings and
     // looks at it.
     (

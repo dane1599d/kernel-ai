@@ -29,6 +29,9 @@ pub enum ActCase {
     /// `app-terminal` (P4 task 4): the agent types into the Terminal app and a
     /// person's Enter runs the line.
     AppTerminal,
+    /// `app-models` (P4 task 10): the agent lists, imports and uses a model,
+    /// and `undo` puts the one before back.
+    AppModels,
     /// `profile-switch` (P3 task 12): profiles through the supervisor.
     Profile,
 }
@@ -315,6 +318,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=fs-trash" => Some(SelfTest::Act(ActCase::FsTrash)),
             "test=app-route" => Some(SelfTest::Act(ActCase::AppRoute)),
             "test=app-terminal" => Some(SelfTest::Act(ActCase::AppTerminal)),
+            "test=app-models" => Some(SelfTest::Act(ActCase::AppModels)),
             "test=profile-switch" => Some(SelfTest::Act(ActCase::Profile)),
             "test=fs-undo-reboot" => Some(SelfTest::Act(
                 match cmdline.split_whitespace().any(|w| w == "reread") {
@@ -446,8 +450,12 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
 /// model request, except in `update`, which runs a step of the update service
 /// at boot (`updated=`, `check` by default; a refusal restarts into the
 /// running slot) and takes any `updated.<word>` as a word, as `restart=window`.
-/// The default boot starts it at boot (`kabi::plan::system`).
+/// The default boot starts it at boot (`kabi::plan::system`), and so does
+/// `app-models`, whose first list would otherwise wait on its start.
 fn updated_words(test: SelfTest) -> String {
+    if test == SelfTest::Act(ActCase::AppModels) {
+        return String::new();
+    }
     if test != SelfTest::Update {
         return String::from(kabi::plan::ON_DEMAND);
     }

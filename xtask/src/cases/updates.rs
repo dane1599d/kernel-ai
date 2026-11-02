@@ -486,7 +486,7 @@ pub(super) const CASES: &[TestCase] = &[
         import: Some(Fixture::Gguf),
         expect: &[
             "block: kai-import disk holds a GGUF file; a disk with a role is never the model",
-            "updated: models: 4 signed, 0 stored",
+            "updated: models: 5 signed, 0 stored",
             "updated: ok importing fixture 2101245",
             "updated: imported fixture (73174ba39c9a), 2101245 bytes",
             "updated: model_use fixture: the next restart uses it, on trial",

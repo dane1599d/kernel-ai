@@ -23,6 +23,7 @@ mod allow;
 mod apic;
 mod app_editor_files_tests;
 mod app_editor_tests;
+mod app_models_tests;
 mod app_route_tests;
 mod app_settings_tests;
 mod app_terminal_tests;
