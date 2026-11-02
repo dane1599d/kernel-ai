@@ -36,7 +36,7 @@ use alloc::vec;
 use bootslot::{Nv, Record, Slot};
 use kabi::Error;
 use kabi::handle::{Handle, HandleInfo, Kind, MAX_STARTUP};
-use kabi::update::{MAX_IO, NONE, SECTOR, WRITABLE};
+use kabi::update::{DISK, IMPORT, MAX_IO, NONE, SECTOR, WRITABLE};
 use user::{println, sys};
 
 user::entry!(main);
@@ -162,6 +162,7 @@ fn check(handle: Handle) -> Result<(), String> {
         return Err(String::from("SLOT_WRITE took R from a trial slot"));
     }
     println!("updated: SLOT_WRITE refuses the active slot, and R from a trial slot");
+    import_disk(handle)?;
 
     let mut nv = Nv {
         record: record(handle)?,
@@ -191,6 +192,32 @@ fn check(handle: Handle) -> Result<(), String> {
     );
     println!("updated: restarting into {other:?}");
     set(handle, &nv, true)
+}
+
+/// The import disk, when one is attached (P4 task 10): SLOT_INFO and SLOT_READ
+/// take it as the update disk, and SLOT_WRITE refuses it, as it does the update
+/// disk.
+fn import_disk(handle: Handle) -> Result<(), String> {
+    let Ok(info) = sys::slot_info(handle, IMPORT) else {
+        return Ok(());
+    };
+    let mut first = [0u8; SECTOR as usize];
+    sys::slot_read(handle, IMPORT, 0, &mut first).map_err(|e| format!("SLOT_READ: {e:?}"))?;
+    if !first.starts_with(&kabi::model::MAGIC) {
+        return Err(String::from(
+            "the import disk does not start with GGUF's magic",
+        ));
+    }
+    for disk in [IMPORT, DISK] {
+        if sys::slot_write(handle, disk, 0, &first) != Err(Error::Permission) {
+            return Err(format!("SLOT_WRITE did not refuse disk {disk}"));
+        }
+    }
+    println!(
+        "updated: the import disk reads, {} sectors of a GGUF file, and SLOT_WRITE refuses it",
+        info.sectors
+    );
+    Ok(())
 }
 
 pub(crate) fn set(handle: Handle, nv: &Nv, restart: bool) -> Result<(), String> {

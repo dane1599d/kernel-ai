@@ -161,6 +161,7 @@ fn the_title_bar_drags_a_window_200_px_and_damages_both_places() {
         down: true,
     });
     desk.take_damage();
+    assert_eq!(desk.dragged(), Some(ids[0]));
     desk.input(at((grab.0 + 200, grab.1)));
     let moved = desk.window(ids[0]).unwrap().frame;
     assert_eq!(moved, frame.translate(200, 0));
@@ -171,12 +172,20 @@ fn the_title_bar_drags_a_window_200_px_and_damages_both_places() {
         button: Button::Left,
         down: false,
     });
+    let released = desk.take_damage();
+    assert!(
+        released.iter().any(|d| d.intersect(&moved) == Some(moved)),
+        "{released:?}"
+    );
     desk.input(at((10, 400)));
     assert_eq!(
         desk.window(ids[0]).unwrap().frame,
         moved,
         "released: no more moving"
     );
+    // While it moved it was the dragged window; let go, it is not, and its
+    // place is damaged so its shadow is drawn again.
+    assert_eq!(desk.dragged(), None);
     // Dragged up, the title bar stops at the top of the work area.
     let grab = (moved.x + 60, moved.y + 10);
     desk.input(at(grab));
@@ -445,6 +454,18 @@ fn a_y_held_before_the_card_cannot_answer_it_and_buttons_can() {
     assert_eq!(desk.hide_ask(11), []);
     assert!(!desk.hide_ask(10).is_empty());
     assert_eq!(desk.ask(), None);
+}
+
+#[test]
+fn a_key_whose_release_went_to_the_terminal_can_answer_the_next_card() {
+    let (mut desk, _) = desk_with(1);
+    desk.show_ask(1, 1);
+    assert!(key(&mut desk, usage::Y, true).contains(&Effect::Answer { id: 1, yes: true }));
+    // Focus is back on the terminal window: desktop lends the keys, and the
+    // y's release goes to the console, never to the desk.
+    desk.keys_lent();
+    desk.show_ask(2, 1);
+    assert!(key(&mut desk, usage::Y, true).contains(&Effect::Answer { id: 2, yes: true }));
 }
 
 #[test]
