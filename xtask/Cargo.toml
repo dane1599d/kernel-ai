@@ -54,3 +54,5 @@ kaituf = { path = "../kaituf" }
 # The slot disk's tests read its kai-slot 1 back.
 bootslot = { path = "../bootslot" }
 wat = "1.262.0"
+# The c-app-1 card's test presses a window app's button.
+uikit = { path = "../uikit" }

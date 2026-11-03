@@ -125,6 +125,15 @@ pub mod bind {
         exports: include_str!("../kai/bind/app.exports"),
     };
 
+    /// `kai:ui/app` (the app world, `view` and `input`) with an empty
+    /// `actions`.
+    pub const WINDOW: World = World {
+        header_name: "window.h",
+        header: include_bytes!("../kai/bind/window.h"),
+        glue: include_str!("../kai/bind/window.c"),
+        exports: include_str!("../kai/bind/window.exports"),
+    };
+
     pub const STDLIB_H: &[u8] = include_bytes!("../kai/stdlib.h");
 }
 
