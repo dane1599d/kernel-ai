@@ -75,12 +75,13 @@ impl Kind {
         }
     }
 
-    /// What `files` build: a window app if one of them includes `kaiapp.h` or
-    /// the window world's header, else an app if one includes the app world's
-    /// (`#include <app.h>` or `"app.h"`), else a component.
+    /// What `files` build: a window app if one of them includes `kaiapp.h`,
+    /// whose runtime owns the window world's exports, else an app if one
+    /// includes the app world's header (`#include <app.h>` or `"app.h"`), else
+    /// a component.
     pub fn of(files: &[(&str, &[u8])]) -> Kind {
         let includes = |header: &str| files.iter().any(|(_, text)| includes(text, header));
-        if includes("kaiapp.h") || includes(bind::WINDOW.header_name) {
+        if includes(KAIAPP_HEADER) {
             Kind::Window
         } else if includes(bind::APP.header_name) {
             Kind::App
@@ -309,12 +310,15 @@ fn compile(
     if kind == Kind::Window {
         one(&[("kaiapp.c", KAIAPP.as_bytes())], "kaiapp.c", budget)?;
     }
+    let mut sized = false;
     for (name, text) in files.iter().filter(|(n, _)| n.ends_with(".c")) {
-        match kind == Kind::Window && defines_state(text) {
-            // Compiled with the size check after it; `kai.source` keeps the
-            // file as it was.
+        match kind == Kind::Window && includes(text, KAIAPP_HEADER) {
+            // Compiled with the size check after it, and the first such file
+            // with the state's size; `kai.source` keeps the files as they were.
             true => {
-                let checked = [text, STATE_CHECK.as_bytes()].concat();
+                let size = if sized { "" } else { STATE_SIZE };
+                sized = true;
+                let checked = [text, STATE_CHECK.as_bytes(), size.as_bytes()].concat();
                 let sources: Vec<(&str, &[u8])> = files
                     .iter()
                     .map(|&(n, t)| {
@@ -334,22 +338,19 @@ fn compile(
     Ok((objects.list, imports))
 }
 
-/// What a window app's file that defines `struct state` is compiled with
-/// after its last line: the runtime saves the state as `KAI_STATE_MAX` bytes.
-/// wcc has no `_Static_assert`, so an array of size -1 fails the compile, and
-/// its name says why.
+/// The header a window app includes.
+const KAIAPP_HEADER: &str = "kaiapp.h";
+
+/// What each file of a window app that includes `kaiapp.h` is compiled with
+/// after its last line: the runtime saves at most `KAI_STATE_MAX` bytes of
+/// state, so `struct state` must be complete there and fit. wcc has no
+/// `_Static_assert`, so an array of size -1 fails the compile, and its name
+/// says why.
 pub const STATE_CHECK: &str = "\ntypedef char struct_state_is_over_KAI_STATE_MAX_bytes\
      [sizeof(struct state) <= KAI_STATE_MAX ? 1 : -1];\n";
-
-/// Whether `text` defines `struct state`: `struct state` and then `{`.
-fn defines_state(text: &[u8]) -> bool {
-    let text = String::from_utf8_lossy(text);
-    text.match_indices("struct state").any(|(at, word)| {
-        let before = text[..at].chars().next_back();
-        !before.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
-            && text[at + word.len()..].trim_start().starts_with('{')
-    })
-}
+/// What the first of those files gets after it besides: the size the runtime
+/// saves, so a version whose `struct state` differs starts afresh.
+pub const STATE_SIZE: &str = "const I64 kai_state_size = sizeof(struct state);\n";
 
 /// wcc's link of `objects`, exporting the world's symbols and [`module::TRAP`].
 fn link(
@@ -562,5 +563,9 @@ mod tests {
         assert_eq!(of(b"#include <\xff\xfeapp.h>\n"), Kind::Component);
         assert_eq!(of(b"// #include <app.h>\n"), Kind::Component);
         assert_eq!(of(b"#include <app.hh>\n"), Kind::Component);
+        assert_eq!(of(b"#include <kaiapp.h>\n"), Kind::Window);
+        // The window world's own header is no window app: kaiapp.c owns the
+        // exports, and it is linked only for kaiapp.h.
+        assert_eq!(of(b"#include \"window.h\"\n#include <app.h>\n"), Kind::App);
     }
 }
