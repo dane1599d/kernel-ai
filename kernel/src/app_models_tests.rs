@@ -70,9 +70,6 @@ fn import_after_allow() -> Result<String, &'static str> {
 }
 
 pub fn check() -> Result<(), &'static str> {
-    // The boot lever first, as the default boot runs it: until it has, `updated`
-    // waits (up to 2 minutes) before it serves the model rows.
-    crate::slots::on_boot(false);
     let listed = list_until("(fixture): in use")?;
     log!("app-models: the models: {}", listed.replace('\n', "; "));
     if !listed.contains("(fixture-2): signed, not stored") {

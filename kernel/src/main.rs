@@ -25,6 +25,7 @@ mod app_editor_build_tests;
 mod app_editor_files_tests;
 mod app_editor_tests;
 mod app_models_tests;
+mod app_monitor_tests;
 mod app_notes_tests;
 mod app_route_tests;
 mod app_settings_tests;
@@ -406,6 +407,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::AppEditorFiles => run_case(app_editor_files_tests::check),
         SelfTest::AppEditorBuild => run_case(app_editor_build_tests::check),
         SelfTest::UiMonitor => run_case(app_window_tests::monitor_check),
+        SelfTest::UiFiles => run_case(app_window_tests::files_check),
         SelfTest::UiModels => run_case(app_window_tests::models_check),
         SelfTest::DeskNap => run_case(nap_tests::check),
         SelfTest::KeepRunning { reread } => run_case(|| keep_tests::check(reread)),

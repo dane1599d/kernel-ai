@@ -22,10 +22,13 @@ use crate::display::claim;
 use crate::{console, ipc, log, process, threads};
 use alloc::string::String;
 
-/// Notes' window, started at boot so its window is open, with its folder for
-/// its saved state. Planned after the shell, as `desk-agent`'s is: the shell
-/// reaches it through the supervisor's `app-call`.
-pub const NOTES: &str = "notes-window program=comphost caps=serve+component+call uses=desktop dir=apps pages=8192 stack_pages=512 burst_ms=20000 version=1";
+/// Notes' window as the image plans it with `kai-data` (its folder for its
+/// saved state), but started at boot so its window is open. Planned after the
+/// shell, as `desk-agent`'s is: the shell reaches it through the supervisor's
+/// `app-call`.
+pub fn notes() -> String {
+    kabi::plan::system::NOTES_SAVED.replacen(" start=demand", "", 1)
+}
 
 const NAME: &str = "notes-window";
 const COUNT: &str = "kai-call 1\nfunc app:notes/actions@1.0.0#count\nargs {}\n";

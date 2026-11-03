@@ -24,7 +24,7 @@
 //! | 160-169 | M, memory | MEM_RESERVE, MEM_COMMIT, MEM_RELEASE, PROC_QUOTA_SET, PROC_CLASS_SET |
 //! | 170-179 | U, updates (P4) | SLOT_INFO, SLOT_READ, SLOT_WRITE, SLOT_FLUSH, BOOTREC_GET, BOOTREC_SET, TRUST_ROOT, TRUST_TIME |
 //! | 180-189 | G-core (P3), second block | ASK_READ, ASK_ANSWER, EVENT_POST, EVENT_READ, APP_CTL, APP_CALL |
-//! | 190-191 | S-io (P2), second block | PART_PEER_ALIVE |
+//! | 190-191 | S-io (P2), second block | PART_PEER_ALIVE, PART_PEER_NAME |
 
 /// `exit(code: i32) -> !`
 pub const EXIT: u64 = 0;
@@ -591,6 +591,13 @@ pub const APP_CALL: u64 = 185;
 /// every later change at Busy. Needs a `Partition` handle (any rights), so only
 /// `fs` can ask. NotFound once `pid` has exited; pid 0, the kernel, always runs.
 pub const PART_PEER_ALIVE: u64 = 190;
+/// `part_peer_name(partition, pid, ptr, cap) -> len`: the name of live process
+/// `pid`, read from the process table, for `fs`, which opens a caller's own
+/// folder of `/system/apps` by it and nothing else. Needs a `Partition` handle
+/// (any rights), so only `fs` can ask. NotFound when `pid` is not running (pid
+/// 0, the kernel, has no name); TooBig when `cap` is under the name's length,
+/// at most [`super::MAX_NAME`].
+pub const PART_PEER_NAME: u64 = 191;
 
 /// The end of the reserved blocks (see the table above): the highest number a
 /// call may have. A call that is not there yet answers NotFound.
