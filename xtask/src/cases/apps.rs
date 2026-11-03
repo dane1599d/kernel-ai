@@ -54,6 +54,8 @@ pub(super) const CASES: &[TestCase] = &[
             "comphost: window 1 closed",
             "desktop: window 1 closed",
             "ui-models: the model manager's window was shown, and its close control pressed",
+            // Off a slot image there is no lever, so updated serves at once.
+            "updated: the boot record answered at once",
         ],
         data: Some(DATA),
         memory_mib: Some(WINDOW_AND_FS_MIB),
@@ -68,6 +70,8 @@ pub(super) const CASES: &[TestCase] = &[
             "block: kai-import disk holds a GGUF file; a disk with a role is never the model",
             "updated: imported fixture-2 (cc73ee264158), 2105341 bytes",
             "app-models: the agent listed the models, imported fixture-2 checked against the signed role, used it, and undo put fixture back",
+            // Off a slot image there is no lever, so updated serves at once.
+            "updated: the boot record answered at once",
         ],
         data: Some(DATA),
         store: Some(Fixture::Gguf),
