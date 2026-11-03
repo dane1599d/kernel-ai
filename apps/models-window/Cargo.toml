@@ -1,0 +1,31 @@
+[package]
+name = "comp-models-window"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The model manager in the OS (P4 task 10), read-only for v0.1: `comp-models`'
+# list with the window `comp-models-ui` builds from it, bound to `kai:ui`
+# (`comp-ui-bind`) and to the granted read of the list (`kai:models`). It
+# declares no action and queues no effect: a switch or an import is Kai's row.
+[lib]
+crate-type = ["cdylib", "rlib"]
+doctest = false
+
+[dependencies]
+comp-models = { path = "../models" }
+comp-models-ui = { path = "../models-ui" }
+comp-ui-bind = { path = "../ui-bind" }
+compsdk = { path = "../../compsdk" }
+minicbor = { version = "2.3.0", default-features = false, features = ["alloc", "derive"] }
+modelchan = { path = "../../modelchan" }
+uikit = { path = "../../uikit" }
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+wit-bindgen = { version = "=0.63.0", default-features = false, features = ["macros", "realloc"] }
+
+[dev-dependencies]
+appabi = { path = "../../appabi" }
+livecore = { path = "../../livecore" }
+wasmhost = { path = "../../wasmhost" }

@@ -11,11 +11,18 @@
 //! dis <name>                          need <id> <n>\n<call>       an effect, as ADR 0002's call
 //! defs                                done <compile_us> <link_us> <run_us>
 //! reset                               err <line> <n>\n<text>      line 0: not in the entry
-//! build <component>                   trap <reason> <function>|-
-//!                                     undone <seq>
+//! build <component> <version>         trap <reason> <function>|-
+//! back                                undone <seq>
 //!                                     text <n>\n<text>            for dis and defs
 //!                                     ok
 //! ```
+//!
+//! `open <session> origin=model` sets the user's session aside and starts a
+//! fresh one for a model-written program (D5, P4 task 14); `back` drops it and
+//! brings the user's session back as it was. `origin=user` drops both.
+//!
+//! `build` comes with an `Shm` that holds the component's source bundle; cc
+//! writes the artifact over it and answers `text` (see `ccserve::build::shm`).
 //!
 //! Every reply header ends in a newline; a record that carries text gives its
 //! byte count last, and the bytes follow the newline. So output and wcc's
@@ -58,7 +65,8 @@ pub enum Origin {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Request<'a> {
-    /// Starts a session, dropping any other.
+    /// Starts a session. `origin=user` drops any other; `origin=model` sets the
+    /// user's session aside until [`Request::Back`].
     Open {
         session: &'a str,
         origin: Origin,
@@ -82,7 +90,13 @@ pub enum Request<'a> {
     Dis(&'a str),
     Defs,
     Reset,
-    Build(&'a str),
+    /// Drops the model's session and brings the user's back.
+    Back,
+    /// `cc build`: the sources come in an `Shm`, not in the message.
+    Build {
+        component: &'a str,
+        version: &'a str,
+    },
 }
 
 impl<'a> Request<'a> {
@@ -124,8 +138,12 @@ impl<'a> Request<'a> {
             (["undo"], None) => Request::Undo,
             (["defs"], None) => Request::Defs,
             (["reset"], None) => Request::Reset,
+            (["back"], None) => Request::Back,
             (["dis", name], None) => Request::Dis(ident(name)?),
-            (["build", component], None) => Request::Build(word(component, 32)?),
+            (["build", component, v], None) => Request::Build {
+                component: word(component, 32)?,
+                version: version(v)?,
+            },
             _ => return Err(WireError("not a request")),
         };
         Ok(request)
@@ -151,7 +169,8 @@ impl<'a> Request<'a> {
             Request::Dis(name) => format!("dis {name}"),
             Request::Defs => "defs".into(),
             Request::Reset => "reset".into(),
-            Request::Build(component) => format!("build {component}"),
+            Request::Back => "back".into(),
+            Request::Build { component, version } => format!("build {component} {version}"),
         }
     }
 }
@@ -186,6 +205,15 @@ fn word(text: &str, max: usize) -> Result<&str, WireError> {
             .bytes()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'_' | b'-'));
     ok.then_some(text).ok_or(WireError("not a name"))
+}
+
+/// A version's shape: digits and dots, at most 32 bytes. `cc build` checks
+/// that it is `x.y.z`.
+fn version(text: &str) -> Result<&str, WireError> {
+    let ok = !text.is_empty()
+        && text.len() <= 32
+        && text.bytes().all(|c| c.is_ascii_digit() || c == b'.');
+    ok.then_some(text).ok_or(WireError("not a version"))
 }
 
 /// A C identifier of at most 63 bytes.

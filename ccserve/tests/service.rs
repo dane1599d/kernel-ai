@@ -232,6 +232,20 @@ fn another_request_drops_a_waiting_run() {
     assert_eq!(cc.send("resume 3 ok\n2"), ["err 0 no run is waiting"]);
 }
 
+/// Lane T's review of #588: a model's `open` drops the user's waiting run, as
+/// any other request does, so a late `resume` cannot finish it after `back`.
+#[test]
+fn a_model_open_drops_the_users_waiting_run() {
+    let mut cc = Cc::open();
+    cc.ok(DECLARE);
+    let asked = cc.eval("I64 Kept() { return 1; }\nadd_one(1);");
+    assert!(asked[0].starts_with("need 1 "), "{asked:?}");
+    assert_eq!(cc.send("open trial origin=model"), ["ok"]);
+    assert_eq!(cc.send("back"), ["ok"]);
+    assert_eq!(cc.send("resume 1 ok\n2"), ["err 0 no run is waiting"]);
+    assert!(cc.eval("Kept()")[0].starts_with("err "));
+}
+
 /// Review findings: effects answered by cc itself still meet the deadline and
 /// Ctrl-C, and a reply always ends however many effects a run makes.
 #[test]
@@ -320,15 +334,41 @@ fn reset_and_sessions() {
     cc.ok("I64 Sq(I64 x) { return x * x; }");
     assert_eq!(cc.send("reset"), ["ok"]);
     assert!(cc.eval("Sq(2)")[0].starts_with("err 1 "));
+    assert_eq!(cc.send("back"), ["err 0 no model session is open"]);
     assert_eq!(
-        cc.send("open trial origin=model"),
-        ["err 0 model-written C is not enabled"]
-    );
-    assert_eq!(
-        cc.send("build hello"),
-        ["err 0 cc build comes with P4 task 13"]
+        cc.send("build hello 0.0.1"),
+        ["err 0 build brings its sources in an Shm"]
     );
     assert_eq!(cc.send("nonsense"), ["err 0 not a request"]);
+}
+
+/// A model's program runs in a fresh session (D5): it sees nothing the user
+/// defined, and `back` brings the user's session back with its globals.
+#[test]
+fn a_model_session_sets_the_users_aside() {
+    let mut cc = Cc::open();
+    cc.ok("I64 Sq(I64 x) { return x * x; }");
+    cc.ok("I64 kept = 7;");
+    assert_eq!(cc.send("open trial origin=model"), ["ok"]);
+    assert!(
+        cc.eval("Sq(2)")[0].starts_with("err 1 "),
+        "the model sees Sq"
+    );
+    cc.ok("I64 Cube(I64 x) { return x * x * x; }");
+    // A second program gets a fresh session again; the user's stays aside.
+    assert_eq!(cc.send("open trial origin=model"), ["ok"]);
+    assert!(cc.eval("Cube(2)")[0].starts_with("err 1 "));
+    assert_eq!(cc.send("reset"), ["ok"]);
+    assert_eq!(cc.send("back"), ["ok"]);
+    assert_eq!(cc.value("kept"), "i64 7");
+    assert_eq!(cc.value("Sq(3)"), "i64 9");
+    assert!(cc.eval("Cube(2)")[0].starts_with("err 1 "));
+    assert_eq!(cc.send("back"), ["err 0 no model session is open"]);
+    // A user's open drops a model's session and the one set aside.
+    assert_eq!(cc.send("open trial origin=model"), ["ok"]);
+    assert_eq!(cc.send("open main origin=user"), ["ok"]);
+    assert_eq!(cc.send("back"), ["err 0 no model session is open"]);
+    assert!(cc.eval("Sq(2)")[0].starts_with("err 1 "));
 }
 
 /// cc's plan line covers everything it may hold at once.

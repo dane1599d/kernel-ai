@@ -282,3 +282,22 @@ fn hostile_names_and_text_are_drawn_as_text_in_bounds() {
     ));
     assert!(tree.iter().any(|e| e.id == ITEM));
 }
+
+#[test]
+fn the_count_says_one_folder_and_one_file_in_the_singular() {
+    let count = |listing: &str| {
+        let mut app = App::new();
+        app.files.refresh(&mut app.os);
+        app.answer(listing);
+        let tree = app.tree();
+        match &tree.iter().find(|e| e.id == ui::STATUS).unwrap().widget {
+            Widget::Label { text, .. } => text.clone(),
+            other => panic!("{other:?}"),
+        }
+    };
+    assert_eq!(count(""), "0 folders, 0 files");
+    assert_eq!(count("a.txt\n"), "0 folders, 1 file");
+    assert_eq!(count("docs/\n"), "1 folder, 0 files");
+    assert_eq!(count("docs/\na.txt\n"), "1 folder, 1 file");
+    assert_eq!(count("a/\nb/\nc.txt\nd.txt\n"), "2 folders, 2 files");
+}

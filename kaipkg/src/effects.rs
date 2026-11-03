@@ -134,7 +134,7 @@ pub(crate) mod tests {
     }
 
     /// The store installs `files` from `index`'s entry listing `effects`.
-    fn install(object: &[u8], effects: &[&str]) -> Result<u64, crate::store::Error> {
+    pub(crate) fn install(object: &[u8], effects: &[&str]) -> Result<u64, crate::store::Error> {
         let mut vol = crate::memvol::MemVolume::default();
         install_on(&mut vol, object, effects)
     }

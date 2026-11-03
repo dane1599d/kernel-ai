@@ -32,6 +32,10 @@ pub enum Inverse {
     /// the switch made) still is. The shell's package store does it
     /// (`Shell::revert_entry`), not the host.
     Generation { from: u64, to: u64 },
+    /// Make generation `to` of `pkg`'s store current again while `from`, the
+    /// one a `cc build` install made, still is: `pkg`'s `switch-back`, which
+    /// goes back to the parent only, so an install is not redone (P4 task 13).
+    Local { from: u64, to: u64 },
     /// Restore what `fs` transaction `txn` replaced (P2 task 11); the `fs`
     /// server refuses one over a later change.
     Fs { txn: u64 },
@@ -71,6 +75,14 @@ pub enum Inverse {
     /// Close `window`, which `ui_open` opened for `app`. It asks first, since
     /// the window may hold work by now.
     Reclose { window: Name, app: Name },
+    /// Use model `back` from the next restart again, while the next restart's
+    /// model is still `from` (P4 task 10's `model_use`); none when no model
+    /// was in use, which cannot be gone back to. The shell asks `updated`
+    /// (`Shell::revert_entry`).
+    Model {
+        back: Option<[u8; 32]>,
+        from: [u8; 32],
+    },
     /// Withhold `row` from `app`'s effects again (`withheld`), or give it back:
     /// the undo of `grant_restore` and of `grant_revoke` (P4 task 7).
     Grant {
@@ -142,7 +154,7 @@ pub fn target(inverse: Inverse) -> String {
         Inverse::Spec { policy, preset, .. } => spec_name(policy, preset),
         Inverse::Started(name) => format!("{} stopped", name.as_str()),
         Inverse::Stopped(name) => format!("{} running", name.as_str()),
-        Inverse::Generation { to, .. } => format!("generation {to}"),
+        Inverse::Generation { to, .. } | Inverse::Local { to, .. } => format!("generation {to}"),
         Inverse::Fs { .. } => String::from("the files as they were"),
         Inverse::Fired { app, .. } => format!("{} as it was", app.as_str()),
         Inverse::Instruction { id, made: true } => format!("standing instruction S{id} removed"),
@@ -159,6 +171,7 @@ pub fn target(inverse: Inverse) -> String {
         Inverse::Reopen(app) => format!("{} open", app.as_str()),
         Inverse::Reclose { app, .. } => format!("{} closed", app.as_str()),
         Inverse::Grant { app, row, withheld } => grant_words(app, row, withheld),
+        Inverse::Model { .. } => String::from("the model before, from the next restart"),
     }
 }
 
@@ -257,6 +270,13 @@ fn revert_one(
             .start_service(name.as_str(), ids.next)
             .map(|()| format!("service {} started again", name.as_str()))
             .map_err(Refused::Failed),
+        Inverse::Local { from, to } if to < from => host
+            .pkg(&format!("switch-back {to} {from}"))
+            .map(|_| format!("packages back to generation {to}"))
+            .map_err(Refused::Failed),
+        Inverse::Local { .. } => Err(Refused::Failed(String::from(
+            "a cc build is installed again by cc build",
+        ))),
         Inverse::Generation { .. } => Err(Refused::Failed(String::from(
             "a package switch is put back by the shell's store",
         ))),
@@ -277,9 +297,12 @@ fn revert_one(
                 .map(|_| grant_words(app, row, withheld))
                 .map_err(Refused::Failed)
         }
-        Inverse::Instruction { .. } | Inverse::Profile { .. } | Inverse::Keep { .. } => Err(
-            Refused::Failed(String::from("it is put back by the shell's own store")),
-        ),
+        Inverse::Instruction { .. }
+        | Inverse::Profile { .. }
+        | Inverse::Keep { .. }
+        | Inverse::Model { .. } => Err(Refused::Failed(String::from(
+            "it is put back by the shell's own store",
+        ))),
     }
 }
 
@@ -306,6 +329,7 @@ pub fn reverse(inverse: Inverse) -> Inverse {
         Inverse::Started(name) => Inverse::Stopped(name),
         Inverse::Stopped(name) => Inverse::Started(name),
         Inverse::Generation { from, to } => Inverse::Generation { from: to, to: from },
+        Inverse::Local { from, to } => Inverse::Local { from: to, to: from },
         // Only the `fs` server knows the restore's own transaction ([`revert`]),
         // and only the app its undo's id.
         Inverse::Fs { txn } => Inverse::Fs { txn },
@@ -343,6 +367,16 @@ pub fn reverse(inverse: Inverse) -> Inverse {
             row,
             withheld: !withheld,
         },
+        // With no model before there was nothing to undo to, so no redo either:
+        // the inverse stays one that refuses.
+        Inverse::Model { back: None, from } => Inverse::Model { back: None, from },
+        Inverse::Model {
+            back: Some(back),
+            from,
+        } => Inverse::Model {
+            back: Some(from),
+            from: back,
+        },
     }
 }
 
@@ -359,6 +393,7 @@ pub fn inverse_word(inverse: Option<Inverse>) -> String {
         Some(Inverse::Started(name)) => format!("started:{}", name.as_str()),
         Some(Inverse::Stopped(name)) => format!("stopped:{}", name.as_str()),
         Some(Inverse::Generation { from, to }) => format!("generation:{from}:{to}"),
+        Some(Inverse::Local { from, to }) => format!("local:{from}:{to}"),
         Some(Inverse::Fs { txn }) => format!("fs:{txn}"),
         Some(Inverse::Fired {
             rule,
@@ -398,6 +433,11 @@ pub fn inverse_word(inverse: Option<Inverse>) -> String {
             row.as_str(),
             u8::from(withheld)
         ),
+        Some(Inverse::Model { back, from }) => format!(
+            "model:{}:{}",
+            back.map_or_else(|| String::from("none"), |b| comp_models::hex(&b)),
+            comp_models::hex(&from)
+        ),
     }
 }
 
@@ -415,6 +455,10 @@ pub fn parse_inverse(text: &str) -> Option<Option<Inverse>> {
         "started" => Inverse::Started(Name::new(parts.next()?)?),
         "stopped" => Inverse::Stopped(Name::new(parts.next()?)?),
         "generation" => Inverse::Generation {
+            from: number(parts.next())?,
+            to: number(parts.next())?,
+        },
+        "local" => Inverse::Local {
             from: number(parts.next())?,
             to: number(parts.next())?,
         },
@@ -461,6 +505,17 @@ pub fn parse_inverse(text: &str) -> Option<Option<Inverse>> {
             row: Name::new(parts.next()?)?,
             withheld: flag(parts.next())?,
         },
+        "model" => {
+            let sha = |part: Option<&str>| modelchan::listing::sha256(part?).ok();
+            let back = match parts.next()? {
+                "none" => None,
+                hex => Some(sha(Some(hex))?),
+            };
+            Inverse::Model {
+                back,
+                from: sha(parts.next())?,
+            }
+        }
         _ => return None,
     }))
 }

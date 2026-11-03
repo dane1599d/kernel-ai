@@ -139,6 +139,9 @@ impl<D: BlockDev> Fs<D> {
     /// superblock slot was written): then its changes are on the disk, and the
     /// caller must say so, not that it failed.
     pub fn abort(&mut self) -> Result<u64, Error> {
+        // First, so nothing begun in this transaction outlives it, even when
+        // the abort itself fails.
+        self.ended += 1;
         let (sb, _) = Self::newest(&mut self.io.dev)?;
         if sb.generation < self.committed {
             return Err(Error::Corrupt("the disk lost the last commit"));

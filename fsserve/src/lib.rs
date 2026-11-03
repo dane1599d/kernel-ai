@@ -20,6 +20,9 @@ pub mod batch;
 mod buffer;
 mod lookup;
 #[cfg(test)]
+mod model_tests;
+pub mod models;
+#[cfg(test)]
 mod tests;
 mod trash;
 
@@ -30,8 +33,8 @@ use fsproto::{
     Version,
 };
 use kabi::fs::{
-    Badge, HOME, HOME_USER, MODELS, SYSTEM, SYSTEM_APPS, SYSTEM_PKG, SYSTEM_SETTINGS, SYSTEM_STATE,
-    SYSTEM_TRUST, SYSTEM_UPDATES,
+    Badge, HOME, HOME_USER, MODELS, MODELS_ROOT, SYSTEM, SYSTEM_APPS, SYSTEM_PKG, SYSTEM_RESTART,
+    SYSTEM_SETTINGS, SYSTEM_STATE, SYSTEM_TRUST, SYSTEM_UPDATES,
 };
 use kabi::handle::Rights;
 use kaifs::ns::Listed;
@@ -49,7 +52,17 @@ const FOLDERS: [(u8, &str); 7] = [
     (SYSTEM, "apps"),
 ];
 
-/// The most a [`SYSTEM_SETTINGS`] handle may use, however it was made.
+/// `/system/state`'s folder for the restart window, which `dir=restart` grants
+/// alone ([`SYSTEM_RESTART`]); made at mount, as [`FOLDERS`] are.
+const RESTART: &str = "restart";
+
+/// Whether `badge` is a fixed folder read only through it: `/system/settings`
+/// and `/system/state/restart`.
+fn read_only(badge: u64) -> bool {
+    matches!(badge, SYSTEM_SETTINGS | SYSTEM_RESTART)
+}
+
+/// The most a read-only folder's handle may use, however it was made.
 const SETTINGS_RIGHTS: Rights = Rights::READ.union(Rights::ENUMERATE).union(BASE);
 
 /// Rights every minted handle carries, as the kernel's startup handles do.
@@ -140,6 +153,8 @@ pub struct Server<D: BlockDev> {
     system_updates: u64,
     /// `/system/settings`: what [`SYSTEM_SETTINGS`] names, read only.
     system_settings: u64,
+    /// `/system/state/restart`: what [`SYSTEM_RESTART`] names, read only.
+    system_restart: u64,
     /// `/system/apps`'s object id in `system`: what [`SYSTEM_APPS`] names, the
     /// folder a plan line's `dir=apps` grants.
     system_apps: u64,
@@ -155,6 +170,8 @@ pub struct Server<D: BlockDev> {
     /// Whether a caller (a pid) still runs: a dead owner's action is aborted
     /// ([`Server::set_alive`]).
     alive: fn(u64) -> bool,
+    /// The model store's blob being written in the open action ([`models`]).
+    sealing: Option<models::Sealing>,
 }
 
 /// The object a checked badge names.
@@ -185,12 +202,14 @@ impl<D: BlockDev> Server<D> {
             system_trust: 0,
             system_updates: 0,
             system_settings: 0,
+            system_restart: 0,
             system_apps: 0,
             epoch: 0,
             base,
             pending: None,
             cache: None,
             alive: |_| true,
+            sealing: None,
         };
         let fixed = server.prepare(&uuid)?;
         (
@@ -202,6 +221,7 @@ impl<D: BlockDev> Server<D> {
                 server.system_updates,
                 server.system_settings,
                 server.system_apps,
+                server.system_restart,
             ],
             server.epoch,
         ) = fixed;
@@ -234,7 +254,7 @@ impl<D: BlockDev> Server<D> {
     /// Makes the missing [`FOLDERS`], and the disk's epoch if it has none, in
     /// one commit; `/home/user`'s, `/system/state`'s and `/system/pkg`'s ids and
     /// the epoch.
-    fn prepare(&mut self, uuid: &[u8; 16]) -> Result<(u64, u64, [u64; 5], u16), kaifs::Error> {
+    fn prepare(&mut self, uuid: &[u8; 16]) -> Result<(u64, u64, [u64; 6], u16), kaifs::Error> {
         let fs = self.fs();
         let writable = fs.writable();
         let mut made = false;
@@ -246,6 +266,13 @@ impl<D: BlockDev> Server<D> {
             }
         }
         fs.set_volume(SYSTEM.into())?;
+        if let Some(state) = fs.lookup(ROOT, "state")?
+            && fs.lookup(state.ino, RESTART)?.is_none()
+            && writable
+        {
+            fs.mkdir(state.ino, RESTART)?;
+            made = true;
+        }
         let epoch = match fs.get_xattr(ROOT, EPOCH)? {
             Some(bytes) if bytes.len() == 2 => u16::from_le_bytes([bytes[0], bytes[1]]),
             _ => {
@@ -264,11 +291,14 @@ impl<D: BlockDev> Server<D> {
         }
         let system_state = fs.lookup(ROOT, "state")?.map_or(0, |e| e.ino);
         // The plan-line folders: `/system/pkg`, `/system/trust`, `/system/updates`,
-        // `/system/settings`, `/system/apps`.
-        let mut granted = [0; 5];
+        // `/system/settings`, `/system/apps`, and `/system/state/restart`.
+        let mut granted = [0; 6];
         let names = ["pkg", "trust", "updates", "settings", "apps"];
         for (id, name) in granted.iter_mut().zip(names) {
             *id = fs.lookup(ROOT, name)?.map_or(0, |e| e.ino);
+        }
+        if system_state != 0 {
+            granted[5] = fs.lookup(system_state, RESTART)?.map_or(0, |e| e.ino);
         }
         fs.set_volume(HOME.into())?;
         let home_user = fs.lookup(ROOT, "user")?.map_or(0, |e| e.ino);
@@ -389,23 +419,23 @@ impl<D: BlockDev> Server<D> {
     }
 
     fn answer(&mut self, call: &Call) -> Result<(Reply, Option<Mint>), Error> {
-        // `/system/settings` is read only through its fixed badge, whatever
-        // rights the handle carries: nothing it opens gets more than READ and
-        // ENUMERATE either.
-        let read_only;
-        let call = match call.badge == SYSTEM_SETTINGS {
+        // `/system/settings` and `/system/state/restart` are read only through
+        // their fixed badges, whatever rights the handle carries: nothing they
+        // open gets more than READ and ENUMERATE either.
+        let narrowed;
+        let call = match read_only(call.badge) {
             true => {
-                read_only = Call {
+                narrowed = Call {
                     rights: call.rights & SETTINGS_RIGHTS,
                     ..*call
                 };
-                &read_only
+                &narrowed
             }
             false => call,
         };
         let request = fsproto::decode_request(call.request)?;
         let changes = changes(&request);
-        if changes && call.badge == SYSTEM_SETTINGS {
+        if changes && read_only(call.badge) {
             return Err(Error::Permission);
         }
         if changes && self.owner.is_some_and(|o| o != call.caller) {
@@ -462,6 +492,8 @@ impl<D: BlockDev> Server<D> {
                 | SYSTEM_UPDATES
                 | SYSTEM_SETTINGS
                 | SYSTEM_APPS
+                | SYSTEM_RESTART
+                | MODELS_ROOT
         );
         let ours = epoch == self.epoch || fixed;
         if !matches!(volume, SYSTEM | HOME | MODELS) || !ours {
@@ -475,6 +507,8 @@ impl<D: BlockDev> Server<D> {
             SYSTEM_UPDATES => self.system_updates,
             SYSTEM_SETTINGS => self.system_settings,
             SYSTEM_APPS => self.system_apps,
+            SYSTEM_RESTART => self.system_restart,
+            MODELS_ROOT => ROOT,
             _ => object,
         };
         let fs = self.fs();
@@ -593,6 +627,11 @@ impl<D: BlockDev> Server<D> {
             }
             Request::Commit => {
                 self.owned(call.caller)?;
+                // Refused before the action changes hands, so its owner can
+                // still finish or abort the blob.
+                if self.sealing.is_some() {
+                    return Err(Error::Invalid);
+                }
                 let generation = self.commit();
                 self.owner = None;
                 Reply::Committed {
@@ -609,7 +648,7 @@ impl<D: BlockDev> Server<D> {
                 if self.owner.is_some() {
                     return Err(Error::Busy);
                 }
-                self.restore(txn, action)?
+                self.restore(object, txn, action)?
             }
             Request::History => {
                 need(Rights::READ)?;
@@ -700,6 +739,11 @@ impl<D: BlockDev> Server<D> {
                 let generation = self.commit()?;
                 Reply::Committed { generation }
             }
+            Request::SealedBegin { name, len } => self.sealed_begin(call, target, &name, len)?,
+            Request::SealedPush { data } => self.sealed_push(call, target, &data)?,
+            Request::SealedFinish => self.sealed_finish(call, target)?,
+            Request::ModelHint { name } => self.model_hint(call, target, name.as_deref())?,
+            Request::ModelInfo { name } => self.model_info(call, target, &name)?,
         };
         Ok((reply, None))
     }
@@ -835,15 +879,23 @@ impl<D: BlockDev> Server<D> {
         })
     }
 
-    fn restore(&mut self, txn: u64, action: u64) -> Result<Reply, Error> {
+    /// Restores action `txn` as action `action`, if all it changed, and all the
+    /// restore changes, lies in folder `dir` (the handle's), its trashed items
+    /// counted by where they came from ([`Fs::restore_within`]): a handle
+    /// reverts nothing in a folder it was not given.
+    fn restore(&mut self, dir: u64, txn: u64, action: u64) -> Result<Reply, Error> {
         let fs = self.fs();
         let volume = fs.volume();
         let done = (|| {
             fs.begin(action)?;
-            fs.restore(txn)
+            fs.restore_within(txn, dir)
         })();
         let done = match done {
-            Ok(rows) => self.commit().map(|generation| (rows, generation)),
+            Ok(Some(rows)) => self.commit().map(|generation| (rows, generation)),
+            Ok(None) => {
+                self.drop_changes();
+                Err(Error::Permission)
+            }
             Err(e) => {
                 self.drop_changes();
                 Err(error(e))
@@ -869,6 +921,7 @@ impl<D: BlockDev> Server<D> {
     fn drop_changes(&mut self) -> u64 {
         self.owner = None;
         self.pending = None;
+        self.sealing = None;
         self.cache = None;
         // A disk that no longer mounts leaves nothing to serve: `fs` exits and
         // its supervisor starts it again.
@@ -877,7 +930,12 @@ impl<D: BlockDev> Server<D> {
 
     /// Commits, or drops the changes if the commit fails; a commit that landed
     /// whole despite the error counts as done (its changes are on the disk).
+    /// A model blob begun and not finished is never made durable, whatever
+    /// commits: Commit, Sync, or a change outside an action (S-io's review).
     fn commit(&mut self) -> Result<u64, Error> {
+        if self.sealing.is_some() {
+            return Err(Error::Invalid);
+        }
         let before = self.fs.committed;
         match self.fs.commit() {
             Ok(generation) => Ok(generation),
@@ -906,7 +964,11 @@ fn changes(request: &Request) -> bool {
         | Request::Sync
         | Request::UpdateSnapshot
         | Request::UpdateRestore { .. }
-        | Request::UpdateDrop { .. } => true,
+        | Request::UpdateDrop { .. }
+        | Request::SealedBegin { .. }
+        | Request::SealedPush { .. }
+        | Request::SealedFinish
+        | Request::ModelHint { .. } => true,
         Request::Stat
         | Request::List { .. }
         | Request::Read { .. }
@@ -914,7 +976,8 @@ fn changes(request: &Request) -> bool {
         | Request::Changes { .. }
         | Request::Df
         | Request::Generation
-        | Request::TrashList { .. } => false,
+        | Request::TrashList { .. }
+        | Request::ModelInfo { .. } => false,
     }
 }
 

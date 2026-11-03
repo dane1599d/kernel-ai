@@ -225,6 +225,22 @@ impl Screen {
         }
     }
 
+    /// A build's report from the OS, which the app got for a C component built from
+    /// a file of the person's own: `ok <headline>` or `err <headline>`, then `cc`'s
+    /// lines. The headline goes to the status row, and a failed build's lines to the
+    /// pager, as the edit service's build reports do. Anything else is a failure.
+    pub fn build_report(&mut self, report: &str) {
+        let (failed, text) = match report.strip_prefix("ok ") {
+            Some(text) => (false, text),
+            None => (true, report.strip_prefix("err ").unwrap_or(report)),
+        };
+        let headline = text.lines().next().unwrap_or("");
+        self.say(String::from(headline), failed);
+        if failed && text.contains('\n') {
+            self.mode = Mode::Pager(Pager::new("build", pager::Kind::Text, text));
+        }
+    }
+
     /// Goes to `path` line `line`: this file at once, another by opening it.
     pub(crate) fn go_to(&mut self, path: &str, line: usize) {
         let Some(path) = self.resolve(path) else {

@@ -1,0 +1,15 @@
+/// A test fixture, never shipped: the one row it queues is read-only. It lets the
+/// `app-settings` boot case revoke and restore a row in Settings and see the OS
+/// refuse and then run the app's next effect.
+package app:fixture-window@1.0.0;
+
+/// The OS rows the app queues as effects, and the only ones the agent core runs
+/// for it (effects are deny-by-default).
+/// kai: effects=fs_list
+world fixture-window {
+    include kai:app/component@0.1.0;
+    import kai:app/effects@0.1.0;
+    import kai:ui/view@0.1.1;
+    export kai:ui/input@0.1.1;
+    export kai:app/events@0.1.0;
+}

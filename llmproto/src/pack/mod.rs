@@ -16,6 +16,7 @@
 //! workflow counts the real tokens (`cargo xtask tokens`).
 
 pub mod apps;
+pub mod c1;
 mod dsl1;
 
 pub use dsl1::INDEX_HEADING;
@@ -81,6 +82,7 @@ pub const INDEX: &[(&str, &[&str])] = &[
         ],
     ),
     ("appearance", &["appearance_set"]),
+    ("models", &["model_list", "model_fetch", "model_use"]),
 ];
 
 /// Each index group's gloss, at most [`GLOSS_TOKENS`] (ADR 0010 §6's
@@ -94,6 +96,7 @@ pub const GLOSS: &[(&str, &str)] = &[
     ("file_edits", "write, rename, trash or restore files"),
     ("ui", "open, close, switch to or type in apps"),
     ("appearance", "theme, text size, motion or legible type"),
+    ("models", "list, import or switch the AI model"),
 ];
 /// The longest a gloss may be, in estimated tokens.
 pub const GLOSS_TOKENS: usize = 12;
@@ -142,15 +145,18 @@ pub const MODE_ACT: &str =
 pub enum Format {
     M8,
     Dsl1,
+    /// The Kai C card for program requests (ADR 0012, spike S12-2).
+    C1,
 }
 
 impl Format {
-    pub const ALL: [Self; 2] = [Self::M8, Self::Dsl1];
+    pub const ALL: [Self; 3] = [Self::M8, Self::Dsl1, Self::C1];
 
     pub const fn name(self) -> &'static str {
         match self {
             Self::M8 => "m8",
             Self::Dsl1 => "dsl-1",
+            Self::C1 => "c-1",
         }
     }
 }
@@ -169,6 +175,7 @@ pub fn render(format: Format) -> String {
     match format {
         Format::M8 => crate::script::system_prompt(),
         Format::Dsl1 => dsl1::render(&rows()),
+        Format::C1 => c1::render(),
     }
 }
 

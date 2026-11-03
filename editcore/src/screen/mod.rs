@@ -140,6 +140,8 @@ pub(crate) enum PromptKind {
     Find,
     Goto,
     Command,
+    /// A path to open as a file of the person's own.
+    OpenPath,
 }
 
 #[derive(Clone, Debug)]
@@ -186,6 +188,16 @@ pub struct Screen {
     /// edits have replayed.
     pub(crate) resume: Option<Draft>,
     pub(crate) quit: bool,
+    /// Whether the file open is one of the person's own, not a component's source:
+    /// Ctrl-O then asks for a path, not for the file within the source.
+    pub(crate) file_mode: bool,
+    /// Ctrl-S was pressed and the draft line sent; the app saves, once.
+    pub(crate) save: bool,
+    /// Ctrl-B was pressed in a file of the person's own: the app builds the C
+    /// component it is in, once. The edit service builds a component's source.
+    pub(crate) build: bool,
+    /// The path typed at the open-file prompt, until the app takes it.
+    pub(crate) open: Option<String>,
     /// Counts the times the screen changed lines it already shows. An answer
     /// about lines asked for before a change would put the old text back, so
     /// it is dropped.
@@ -220,6 +232,10 @@ impl Screen {
             goto: None,
             resume: None,
             quit: false,
+            file_mode: false,
+            save: false,
+            build: false,
+            open: None,
             epoch: 0,
         }
     }
@@ -232,6 +248,63 @@ impl Screen {
 
     pub fn wants_quit(&self) -> bool {
         self.quit
+    }
+
+    /// Whether the file the screen shows is one of the person's own (not a
+    /// component's source): Ctrl-O then asks for another path.
+    pub fn set_file_mode(&mut self, on: bool) {
+        self.file_mode = on;
+    }
+
+    /// Whether Ctrl-S asked for a save since the last look; the draft line was
+    /// sent with it, so once its answer is in the file has the text. Told once.
+    pub fn take_save(&mut self) -> bool {
+        core::mem::take(&mut self.save)
+    }
+
+    /// Whether Ctrl-B (or `build` at the prompt) asked for a build in a file of the
+    /// person's own since the last look. Told once.
+    pub fn take_build(&mut self) -> bool {
+        core::mem::take(&mut self.build)
+    }
+
+    /// The path typed at the open-file prompt (Ctrl-O, in a file or with nothing
+    /// open) since the last look. Told once.
+    pub fn take_open(&mut self) -> Option<String> {
+        self.open.take()
+    }
+
+    /// The file was saved: nothing differs from the disk, and there is nothing to
+    /// undo (the session forgets its undo steps when it keeps the text).
+    pub fn saved(&mut self) {
+        self.doc.flags.changed = false;
+        self.doc.flags.undo = false;
+    }
+
+    /// A line for the status row, for what the app itself did (a save, a file
+    /// that did not open).
+    pub fn note(&mut self, text: impl Into<String>, error: bool) {
+        self.say(text, error);
+    }
+
+    /// The cursor's line (from 1) and column (from 0) in the file on screen.
+    pub fn position(&self) -> (usize, usize) {
+        (self.line, self.col)
+    }
+
+    /// Whether a build is running on the host.
+    pub fn is_building(&self) -> bool {
+        self.building
+    }
+
+    /// Whether a line is being typed that has not gone to the service yet.
+    pub fn typing(&self) -> bool {
+        self.dirty.is_some()
+    }
+
+    /// How many edits the draft holds, those not yet answered included.
+    pub fn edits(&self) -> usize {
+        self.log.len() + self.unanswered_edits().count()
     }
 
     /// Opens `component` (its running version by default), with the cursor at

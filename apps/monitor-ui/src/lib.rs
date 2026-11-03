@@ -88,6 +88,15 @@ fn status(mon: &Monitor) -> (String, Tone) {
     }
 }
 
+/// A row's layout: as wide as its parent, with a gap between its children, so a
+/// count does not run into the uptime after it, nor a sort button into the next.
+fn spaced() -> Layout {
+    Layout { gap: GAP, ..wide() }
+}
+
+/// The gap between a row's children, in logical px.
+const GAP: u16 = 8;
+
 /// The whole tree for this model, parents before children.
 pub fn build(mon: &Monitor) -> Vec<Entry> {
     let rows: Vec<Vec<String>> = mon
@@ -114,7 +123,7 @@ pub fn build(mon: &Monitor) -> Vec<Entry> {
             column(12, 8),
             Widget::Stack { axis: Axis::Column }
         ),
-        entry(SUMMARY, COLUMN, wide(), row()),
+        entry(SUMMARY, COLUMN, spaced(), row()),
         entry(
             CPUS,
             SUMMARY,
@@ -147,7 +156,7 @@ pub fn build(mon: &Monitor) -> Vec<Entry> {
                 done: view::used_permille(mon.memory()),
             },
         ),
-        entry(BAR, COLUMN, wide(), row()),
+        entry(BAR, COLUMN, spaced(), row()),
         entry(SORT_CPU, BAR, Layout::FIT, sort_button(mon, Sort::Cpu)),
         entry(
             SORT_MEMORY,

@@ -28,8 +28,12 @@ use wasmhost::{Limits, LiveInstance};
 mod disk;
 #[path = "comphost/edit.rs"]
 mod edit;
+#[path = "comphost/files.rs"]
+mod files;
 #[path = "comphost/settings.rs"]
 mod kai_settings;
+#[path = "comphost/models.rs"]
+mod models;
 #[path = "comphost/started.rs"]
 mod started;
 #[path = "comphost/system.rs"]
@@ -61,7 +65,7 @@ struct SysEnv {
     /// at the first restore, which names the app.
     disk: Option<disk::Disk>,
     /// What the app may import beyond `kai:app` and `kai:ui`: `settings`,
-    /// `shell_line` and `system` from the plan line's name for it (the kernel's),
+    /// `shell_line`, `system` and `models` from the plan line's name for it (the kernel's),
     /// `edit` if the kernel gave this process an `Edit` handle; never from its
     /// package.
     grants: wasmhost::Grants,
@@ -72,6 +76,8 @@ struct SysEnv {
 /// The one app whose effects go to the shell as the user's when a person's key
 /// or click caused them (the Terminal's `shell_line`): the plan line's name.
 const TERMINAL_APP: &str = "terminal-window";
+/// The editor's plan line name, which the file door is granted to (`kai:files`).
+const EDITOR_APP: &str = "editor";
 
 fn version_log(line: &str) {
     println!("{line}");
@@ -192,15 +198,24 @@ fn main() -> i32 {
     // The plan line's name is the grant: `desktop` and the shell check it too.
     env.grants.settings = name == kai_settings::SETTINGS_APP;
     env.grants.shell_line = name == TERMINAL_APP;
+    env.grants.files = name == EDITOR_APP;
     if let (true, Some(ui)) = (env.grants.settings, windows.as_mut()) {
         ui.carry_settings();
     }
     // The editor's rules for what it may send; none for an app without the grant.
     let mut edits = env.grants.edit.then(editcore::gate::Gate::new);
+    // The editor's files go to `desktop` in pieces; only the plan line `editor`.
+    let mut relay = env.grants.files.then(files::Relay::new);
     // The plan line's name is the grant: only the System monitor reads the
     // machine, and only it has the route to llm for `health`.
     env.grants.system = name == system::MONITOR_APP;
     let mut source = env.grants.system.then(system::Source::new);
+    // Likewise only the model manager's window reads the model list, and only
+    // it has the route to `updated`, which answers it the list alone.
+    env.grants.models = name == models::MODELS_APP;
+    // Each holds its own route at index 1, so no app may hold both.
+    debug_assert!(!(env.grants.system && env.grants.models));
+    let mut lister = env.grants.models.then(models::Lister::new);
     let mut napper = Napper::new(Nap::new(settings.nap_ms, now_ms()));
     napper.nap.keep_running(settings.keep_running);
     let mut host = match Host::start(env, &name, settings) {
@@ -214,7 +229,7 @@ fn main() -> i32 {
         "up (restart {}): serving {name}",
         arg(&args, "restart").unwrap_or("0")
     );
-    settle(&mut windows, &mut edits, &mut host);
+    settle(&mut windows, &mut edits, &mut relay, &mut host);
     let mut request = vec![0u8; kabi::MAX_MESSAGE];
     // Whether the nap holds a lease for settings requests in flight.
     let mut settings_leased = false;
@@ -235,7 +250,7 @@ fn main() -> i32 {
                 }
                 None => {}
             }
-            settle(&mut windows, &mut edits, &mut host);
+            settle(&mut windows, &mut edits, &mut relay, &mut host);
         }
         let open = windows.as_ref().is_some_and(ui::Ui::wants_poll);
         let wait = match (open, host.timeout_ms()) {
@@ -243,11 +258,17 @@ fn main() -> i32 {
             (true, 0) => ui::POLL_MS,
             (true, ms) => ms.min(ui::POLL_MS),
         };
-        // A read waiting for its sample is use: the app does not nap until it
-        // has it, and the wait ends when the sample is due.
+        // A read waiting for its sample or list is use: the app does not nap
+        // until it has it, and the wait ends when the answer is due. No app is
+        // granted both.
         let due = source
             .as_ref()
-            .and_then(|source| source.wait_ms(&mut host, now_ms()));
+            .and_then(|source| source.wait_ms(&mut host, now_ms()))
+            .or_else(|| {
+                lister
+                    .as_ref()
+                    .and_then(|lister| lister.wait_ms(&mut host, now_ms()))
+            });
         if due.is_some() != leased {
             leased = due.is_some();
             napper.nap.lease(leased);
@@ -282,7 +303,7 @@ fn main() -> i32 {
                 }
                 tick_at = deadline(host.timeout_ms());
                 napper.after(&host, now_ms());
-                settle(&mut windows, &mut edits, &mut host);
+                settle(&mut windows, &mut edits, &mut relay, &mut host);
             }
             Err(Error::TimedOut) => {
                 if let Some(ui) = windows.as_mut().filter(|ui| ui.wants_poll())
@@ -298,14 +319,15 @@ fn main() -> i32 {
                     println!("{}", exit.why);
                     return exit.code;
                 }
-                // A settings request waiting for its answer is use: the app
-                // does not nap until it has it.
-                let busy = windows.as_ref().is_some_and(ui::Ui::settings_busy);
+                // A settings request or a file waiting for its answer is use: the
+                // app does not nap until it has it.
+                let busy = windows.as_ref().is_some_and(ui::Ui::settings_busy)
+                    || relay.as_ref().is_some_and(files::Relay::busy);
                 if busy != settings_leased {
                     napper.nap.lease(busy);
                     settings_leased = busy;
                 }
-                settle(&mut windows, &mut edits, &mut host);
+                settle(&mut windows, &mut edits, &mut relay, &mut host);
                 match napper.tick(&mut host, now_ms()) {
                     Ok(napped) => log_nap(&name, napped),
                     Err(exit) => {
@@ -319,7 +341,7 @@ fn main() -> i32 {
                         return exit.code;
                     }
                     tick_at = deadline(host.timeout_ms());
-                    settle(&mut windows, &mut edits, &mut host);
+                    settle(&mut windows, &mut edits, &mut relay, &mut host);
                 }
             }
             Err(error) => {
@@ -332,7 +354,13 @@ fn main() -> i32 {
         if let Some(source) = source.as_mut()
             && source.pump(&mut host, now_ms())
         {
-            settle(&mut windows, &mut edits, &mut host);
+            settle(&mut windows, &mut edits, &mut relay, &mut host);
+        }
+        // Likewise a read of the model list.
+        if let Some(lister) = lister.as_mut()
+            && lister.pump(&mut host, now_ms())
+        {
+            settle(&mut windows, &mut edits, &mut relay, &mut host);
         }
     }
 }
@@ -348,14 +376,18 @@ fn soonest(wait: u64, due: Option<u64>) -> u64 {
 }
 
 /// What the instances did that leaves comphost: the editor's messages go to the
-/// edit service, then the windows' frames to `desktop`.
+/// edit service and its files to `desktop`, then the windows' frames.
 fn settle(
     windows: &mut Option<ui::Ui>,
     edits: &mut Option<editcore::gate::Gate>,
+    relay: &mut Option<files::Relay>,
     host: &mut Host<SysEnv>,
 ) {
     if let Some(gate) = edits.as_mut() {
         edit::pump(host, gate);
+    }
+    if let Some(relay) = relay.as_mut() {
+        relay.pump(host);
     }
     if let Some(ui) = windows.as_mut() {
         ui.pump(host);

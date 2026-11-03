@@ -57,6 +57,11 @@ const SETTINGS_DIRS: &[&str] = &[
 const SETTINGS_WINDOW_WIT: &str = "apps/settings-window/wit";
 /// `app:settings/actions`, which the window exports.
 const SETTINGS_WIT: &str = "apps/settings/wit";
+/// The editor (P4 task 11): its window, the model's tree and the shared glue.
+const EDITOR_WINDOW: &str = "apps/editor-window";
+const EDITOR_DIRS: &[&str] = &[EDITOR_WINDOW, "apps/editor-ui", "apps/ui-bind"];
+/// `app:editor/actions`, which the window exports.
+const EDITOR_WIT: &str = "apps/editor/wit";
 
 /// The Terminal app (P4 task 4): its window, model, tree and the shared `kai:ui` glue.
 const TERMINAL_WINDOW: &str = "apps/terminal-window";
@@ -80,6 +85,17 @@ const MONITOR_DIRS: &[&str] = &[
 const MONITOR_WINDOW_WIT: &str = "apps/monitor-window/wit";
 /// `app:monitor/actions`, which the window exports.
 const MONITOR_WIT: &str = "apps/monitor/wit";
+/// The model manager (P4 task 10): its window, list, tree, the list format it
+/// reads (`modelchan`) and the shared `kai:ui` glue. It exports no actions.
+const MODELS_WINDOW: &str = "apps/models-window";
+const MODELS_DIRS: &[&str] = &[
+    MODELS_WINDOW,
+    "apps/models",
+    "apps/models-ui",
+    "apps/ui-bind",
+    "modelchan",
+];
+const MODELS_WINDOW_WIT: &str = "apps/models-window/wit";
 
 /// `notes` from `components/notes`: version 2, and every upload the edit loop
 /// builds.
@@ -90,6 +106,92 @@ pub const NOTES_RECIPE: Recipe = Recipe {
     feature: None,
     wit: &[NOTES_WIT],
 };
+
+/// Notes with its window (P3 task 9): the build P4 ships, its own component so
+/// the edit loop's `notes` is untouched. Package `notes` carries it.
+pub const NOTES_WINDOW_RECIPE: Recipe = Recipe {
+    component: "notes-window",
+    krate: "comp-notes-window",
+    dirs: &[WINDOW, NOTES_UI, NOTES],
+    feature: None,
+    wit: &[WINDOW_WIT, "wit/kai-ui", NOTES_WIT],
+};
+
+/// The Files app (P4 task 5), a window over the OS's file rows.
+pub const FILES_WINDOW_RECIPE: Recipe = Recipe {
+    component: "files-window",
+    krate: "comp-files-window",
+    dirs: FILES_DIRS,
+    feature: None,
+    wit: &[FILES_WINDOW_WIT, "wit/kai-ui", FILES_WIT],
+};
+
+/// The Terminal app (P4 task 4), today's shell in a window.
+pub const TERMINAL_WINDOW_RECIPE: Recipe = Recipe {
+    component: "terminal-window",
+    krate: "comp-terminal-window",
+    dirs: TERMINAL_DIRS,
+    feature: None,
+    wit: &[TERMINAL_WINDOW_WIT, "wit/kai-ui"],
+};
+
+/// The Settings app (P4 task 7), a window over the system's settings.
+pub const SETTINGS_WINDOW_RECIPE: Recipe = Recipe {
+    component: "settings-window",
+    krate: "comp-settings-window",
+    dirs: SETTINGS_DIRS,
+    feature: None,
+    wit: &[
+        SETTINGS_WINDOW_WIT,
+        "wit/kai-ui",
+        "wit/kai-settings",
+        SETTINGS_WIT,
+    ],
+};
+
+/// The System monitor (P4 task 9), a window over a reading of the machine.
+pub const MONITOR_WINDOW_RECIPE: Recipe = Recipe {
+    component: "monitor-window",
+    krate: "comp-monitor-window",
+    dirs: MONITOR_DIRS,
+    feature: None,
+    wit: &[
+        MONITOR_WINDOW_WIT,
+        "wit/kai-ui",
+        "wit/kai-system",
+        MONITOR_WIT,
+    ],
+};
+
+/// The model manager (P4 task 10), a window over the model list that reads
+/// only: a switch or an import is Kai's row.
+pub const MODELS_WINDOW_RECIPE: Recipe = Recipe {
+    component: "models-window",
+    krate: "comp-models-window",
+    dirs: MODELS_DIRS,
+    feature: None,
+    wit: &[MODELS_WINDOW_WIT, "wit/kai-ui", "wit/kai-models"],
+};
+
+/// The editor (P4 task 11), a window over the edit service and the person's
+/// files. Its component is `editor`, not `editor-window`: the kernel grants
+/// `edit` to that name alone.
+pub const EDITOR_RECIPE: Recipe = Recipe {
+    component: "editor",
+    krate: "comp-editor-window",
+    dirs: EDITOR_DIRS,
+    feature: None,
+    wit: &[
+        "wit/kai-ui",
+        "wit/kai-edit",
+        "wit/kai-files",
+        "wit/kai-code",
+        EDITOR_WIT,
+    ],
+};
+
+/// The label every window's one version has on the boot drive.
+pub const WINDOW_LABEL: &str = "1";
 
 const fn bad(label: &'static str, feature: &'static str) -> Version {
     Version {
@@ -104,8 +206,9 @@ const fn bad(label: &'static str, feature: &'static str) -> Version {
     }
 }
 
-/// Every version on the boot drive: `notes` 1 and 2, and the broken ones the M9a
-/// test expects to roll back.
+/// Every version that ships on the boot drive: `notes` 1 and 2 and the apps.
+/// The broken `notes` versions the M9a test expects to roll back are
+/// [`TEST_ONLY`].
 pub const VERSIONS: &[Version] = &[
     Version {
         label: "1",
@@ -121,75 +224,34 @@ pub const VERSIONS: &[Version] = &[
         label: "2",
         recipe: NOTES_RECIPE,
     },
-    bad("3-import", "bug-import"),
-    bad("3-health", "bug-health"),
-    bad("3-trap", "bug-trap"),
-    bad("3-spin", "bug-spin"),
-    // Notes with its window (P3 task 9): the build P4 ships, its own component
-    // so the edit loop's `notes` is untouched.
+    // The windows P4 ships, each also a package of the image's repository.
     Version {
-        label: "1",
-        recipe: Recipe {
-            component: "notes-window",
-            krate: "comp-notes-window",
-            dirs: &[WINDOW, NOTES_UI, NOTES],
-            feature: None,
-            wit: &[WINDOW_WIT, "wit/kai-ui", NOTES_WIT],
-        },
+        label: WINDOW_LABEL,
+        recipe: NOTES_WINDOW_RECIPE,
     },
-    // The Files app (P4 task 5), a window over the OS's file rows.
     Version {
-        label: "1",
-        recipe: Recipe {
-            component: "files-window",
-            krate: "comp-files-window",
-            dirs: FILES_DIRS,
-            feature: None,
-            wit: &[FILES_WINDOW_WIT, "wit/kai-ui", FILES_WIT],
-        },
+        label: WINDOW_LABEL,
+        recipe: FILES_WINDOW_RECIPE,
     },
-    // The Terminal app (P4 task 4), today's shell in a window.
     Version {
-        label: "1",
-        recipe: Recipe {
-            component: "terminal-window",
-            krate: "comp-terminal-window",
-            dirs: TERMINAL_DIRS,
-            feature: None,
-            wit: &[TERMINAL_WINDOW_WIT, "wit/kai-ui"],
-        },
+        label: WINDOW_LABEL,
+        recipe: TERMINAL_WINDOW_RECIPE,
     },
-    // The Settings app (P4 task 7), a window over the system's settings.
     Version {
-        label: "1",
-        recipe: Recipe {
-            component: "settings-window",
-            krate: "comp-settings-window",
-            dirs: SETTINGS_DIRS,
-            feature: None,
-            wit: &[
-                SETTINGS_WINDOW_WIT,
-                "wit/kai-ui",
-                "wit/kai-settings",
-                SETTINGS_WIT,
-            ],
-        },
+        label: WINDOW_LABEL,
+        recipe: SETTINGS_WINDOW_RECIPE,
     },
-    // The System monitor (P4 task 9), a window over a reading of the machine.
     Version {
-        label: "1",
-        recipe: Recipe {
-            component: "monitor-window",
-            krate: "comp-monitor-window",
-            dirs: MONITOR_DIRS,
-            feature: None,
-            wit: &[
-                MONITOR_WINDOW_WIT,
-                "wit/kai-ui",
-                "wit/kai-system",
-                MONITOR_WIT,
-            ],
-        },
+        label: WINDOW_LABEL,
+        recipe: EDITOR_RECIPE,
+    },
+    Version {
+        label: WINDOW_LABEL,
+        recipe: MONITOR_WINDOW_RECIPE,
+    },
+    Version {
+        label: WINDOW_LABEL,
+        recipe: MODELS_WINDOW_RECIPE,
     },
 ];
 
@@ -199,7 +261,30 @@ pub const VERSIONS: &[Version] = &[
 /// [`build_for_tests`] adds them for the images `cargo xtask test` boots, and
 /// [`check_no_test_only`] fails an image that has one. A version here is not also
 /// in [`VERSIONS`].
-pub const TEST_ONLY: &[Version] = &[];
+pub const TEST_ONLY: &[Version] = &[
+    // `notes` versions that fail to import, fail their health check, trap and
+    // spin: live-update rolls each back (M9a), and `:fault notes` names
+    // 3-trap's panic. A release must never offer one to update into.
+    bad("3-import", "bug-import"),
+    bad("3-health", "bug-health"),
+    bad("3-trap", "bug-trap"),
+    bad("3-spin", "bug-spin"),
+    // The `app-settings` case revokes and restores its one read-only `fs_list`
+    // row in Settings, and presses its button between (P4 task 7).
+    Version {
+        label: "1",
+        recipe: Recipe {
+            component: "fixture-window",
+            krate: "comp-grant-fixture",
+            dirs: FIXTURE_DIRS,
+            feature: None,
+            wit: &["apps/grant-fixture/wit", "wit/kai-ui"],
+        },
+    },
+];
+
+/// The test fixtures' directories: the window, and the shared `kai:ui` glue.
+const FIXTURE_DIRS: &[&str] = &["apps/grant-fixture", "apps/ui-bind"];
 
 /// Builds and packs every version that ships.
 pub fn build(root: &Path) -> Result<Vec<Module>, String> {
@@ -401,12 +486,13 @@ mod tests {
     #[test]
     fn the_versions_are_distinct_and_their_crates_exist() {
         let root = crate::workspace_root();
-        for (index, version) in VERSIONS.iter().enumerate() {
+        let all: Vec<&Version> = VERSIONS.iter().chain(TEST_ONLY).collect();
+        for (index, version) in all.iter().enumerate() {
             assert!(kabi::live::valid_label(version.label), "{}", version.label);
             let same = |v: &Version| {
                 (v.recipe.component, v.label) == (version.recipe.component, version.label)
             };
-            assert!(!VERSIONS[..index].iter().any(same));
+            assert!(!all[..index].iter().any(|v| same(v)));
             assert!(version.recipe.wit.iter().all(|w| root.join(w).is_dir()));
             for dir in version.recipe.dirs {
                 assert!(root.join(dir).join("Cargo.toml").exists(), "{dir}");
@@ -445,9 +531,9 @@ mod tests {
             assert!(
                 !VERSIONS
                     .iter()
-                    .any(|v| v.recipe.component == fixture.recipe.component),
+                    .any(|v| module_path(v) == module_path(fixture)),
                 "{}",
-                fixture.recipe.component
+                module_path(fixture)
             );
             assert!(kabi::live::valid_label(fixture.label));
             let root = crate::workspace_root();
@@ -484,8 +570,16 @@ mod tests {
             module("comp/fixture-window/2.wasm"),
         ];
         assert_eq!(check_none_of(&near, &fixtures), Ok(()));
-        // The list that ships is checked with `check_no_test_only`.
+        // The list that ships is checked with `check_no_test_only`: `notes` 1
+        // and 2 ship, its broken versions do not.
         assert_eq!(check_no_test_only(&clean), Ok(()));
+        let shipped: Vec<Module> = VERSIONS.iter().map(|v| module(&module_path(v))).collect();
+        assert_eq!(check_no_test_only(&shipped), Ok(()));
+        for broken in ["3-import", "3-health", "3-trap", "3-spin"] {
+            let path = std::format!("comp/notes/{broken}.wasm");
+            let why = check_no_test_only(&[module("comp/notes/2.wasm"), module(&path)]);
+            assert!(why.unwrap_err().contains(&path), "{broken}");
+        }
     }
 
     /// The images that ship call the check before they are made, and the test
@@ -582,6 +676,65 @@ mod tests {
         assert_eq!(open.export, "app:settings/actions@1.0.0#open");
     }
 
+    /// The Settings fixture packs with a window and its one effect row.
+    /// The model manager's build packs under its world with no action rows: the
+    /// model rows are the OS's, and the window reads only.
+    #[test]
+    fn the_models_build_packs_with_no_action_rows() {
+        let models = VERSIONS
+            .iter()
+            .find(|v| v.recipe.component == "models-window")
+            .unwrap();
+        let module = Vec::from(&b"\0asm\x01\0\0\0"[..]);
+        let root = crate::workspace_root();
+        let source = artifact::bundle(&[("apps/models-window/src/lib.rs", b"//")]);
+        let bytes = pack(&root, &models.recipe, models.label, module, &source).unwrap();
+        let parsed = artifact::parse(&bytes).unwrap();
+        assert_eq!(
+            parsed.manifest.world,
+            "app:models-window/models-window@1.0.0"
+        );
+        let actions = livecore::actions::parse(parsed.actions.unwrap()).unwrap();
+        assert!(actions.rows.is_empty());
+    }
+
+    #[test]
+    fn the_settings_fixture_packs_with_its_one_effect_row() {
+        let fixture = TEST_ONLY
+            .iter()
+            .find(|v| v.recipe.component == "fixture-window")
+            .unwrap();
+        let module = Vec::from(&b"\0asm\x01\0\0\0"[..]);
+        let root = crate::workspace_root();
+        let source = artifact::bundle(&[("apps/grant-fixture/src/lib.rs", b"//")]);
+        let bytes = pack(&root, &fixture.recipe, fixture.label, module, &source).unwrap();
+        let parsed = artifact::parse(&bytes).unwrap();
+        assert_eq!(
+            parsed.manifest.world,
+            "app:fixture-window/fixture-window@1.0.0"
+        );
+        assert!(parsed.actions.unwrap().contains("fs_list"));
+    }
+
+    /// The editor build carries its two action rows, under its world.
+    #[test]
+    fn the_editor_build_packs_with_the_editor_actions() {
+        let editor = VERSIONS
+            .iter()
+            .find(|v| v.recipe.component == "editor")
+            .unwrap();
+        let module = Vec::from(&b"\0asm\x01\0\0\0"[..]);
+        let root = crate::workspace_root();
+        let source = artifact::bundle(&[("apps/editor-window/src/lib.rs", b"//")]);
+        let bytes = pack(&root, &editor.recipe, editor.label, module, &source).unwrap();
+        let parsed = artifact::parse(&bytes).unwrap();
+        assert_eq!(parsed.manifest.world, "app:editor/editor@1.0.0");
+        let actions = livecore::actions::parse(parsed.actions.unwrap()).unwrap();
+        let open = actions.by_name("editor_open").unwrap();
+        assert_eq!(open.export, "app:editor/actions@1.0.0#open");
+        assert!(actions.by_name("editor_status").is_some());
+    }
+
     /// The Terminal build carries its three rows, under its world.
     #[test]
     fn the_terminal_build_packs_with_its_three_actions() {
@@ -645,8 +798,8 @@ mod tests {
         let root = crate::workspace_root();
         let bytes = pack(
             &root,
-            &VERSIONS[2].recipe,
-            VERSIONS[2].label,
+            &TEST_ONLY[0].recipe,
+            TEST_ONLY[0].label,
             module.clone(),
             &source,
         )

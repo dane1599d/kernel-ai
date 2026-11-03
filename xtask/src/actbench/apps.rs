@@ -55,7 +55,16 @@ mod tests {
         for group in &groups {
             println!("{}", apps::group_text(group));
         }
-        assert!(left_out.is_empty(), "{left_out:?}");
+        // Every app with rows fits; only one with none is left out, which adds
+        // nothing to the turn or the grammar: the model manager's window reads
+        // only, and its switch and import are the OS's `model_*` rows.
+        let rowless: Vec<String> = groups
+            .iter()
+            .filter(|g| g.rows.is_empty())
+            .map(|g| g.app.clone())
+            .collect();
+        assert_eq!(left_out, rowless);
+        assert_eq!(rowless, ["models-window"]);
         assert!(llmproto::pack::estimate_tokens(&turn) <= apps::APPS_BUDGET);
         assert!(grammar().is_ok());
     }

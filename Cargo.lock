@@ -124,9 +124,6 @@ dependencies = [
 [[package]]
 name = "bootslot"
 version = "0.1.0-dev"
-dependencies = [
- "minicbor",
-]
 
 [[package]]
 name = "bpe"
@@ -181,10 +178,13 @@ dependencies = [
  "agentabi",
  "kabi",
  "kailink",
+ "kaipkg",
+ "livecore",
  "promptcore",
  "serde_json",
  "sha2",
  "wasihost",
+ "wasmhost",
  "wasmi",
  "wasmparser 0.228.0",
 ]
@@ -200,6 +200,31 @@ name = "cmov"
 version = "0.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
+
+[[package]]
+name = "comp-editor-ui"
+version = "0.1.0-dev"
+dependencies = [
+ "comp-ui-bind",
+ "editcore",
+ "uikit",
+]
+
+[[package]]
+name = "comp-editor-window"
+version = "0.1.0-dev"
+dependencies = [
+ "appabi",
+ "comp-editor-ui",
+ "comp-ui-bind",
+ "compsdk",
+ "editcore",
+ "livecore",
+ "minicbor",
+ "uikit",
+ "wasmhost",
+ "wit-bindgen",
+]
 
 [[package]]
 name = "comp-files"
@@ -235,6 +260,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "comp-grant-fixture"
+version = "0.1.0-dev"
+dependencies = [
+ "comp-ui-bind",
+ "compsdk",
+ "livecore",
+ "uikit",
+ "wasmhost",
+ "wit-bindgen",
+]
+
+[[package]]
 name = "comp-models"
 version = "0.1.0-dev"
 
@@ -243,7 +280,25 @@ name = "comp-models-ui"
 version = "0.1.0-dev"
 dependencies = [
  "comp-models",
+ "comp-ui-bind",
  "uikit",
+]
+
+[[package]]
+name = "comp-models-window"
+version = "0.1.0-dev"
+dependencies = [
+ "appabi",
+ "comp-models",
+ "comp-models-ui",
+ "comp-ui-bind",
+ "compsdk",
+ "livecore",
+ "minicbor",
+ "modelchan",
+ "uikit",
+ "wasmhost",
+ "wit-bindgen",
 ]
 
 [[package]]
@@ -333,7 +388,6 @@ version = "0.1.0-dev"
 dependencies = [
  "kaiprofile",
  "look",
- "minicbor",
 ]
 
 [[package]]
@@ -751,6 +805,7 @@ dependencies = [
  "fsproto",
  "kabi",
  "kaifs",
+ "sha2",
 ]
 
 [[package]]
@@ -1193,6 +1248,15 @@ name = "mm"
 version = "0.1.0-dev"
 
 [[package]]
+name = "modelchan"
+version = "0.1.0-dev"
+dependencies = [
+ "comp-models",
+ "kabi",
+ "sha2",
+]
+
+[[package]]
 name = "netcore"
 version = "0.1.0-dev"
 dependencies = [
@@ -1563,17 +1627,21 @@ version = "0.1.0-dev"
 dependencies = [
  "agentabi",
  "appabi",
+ "bootslot",
  "ccserve",
+ "comp-models",
  "kabi",
  "kaigrants",
  "kaiprofile",
  "livecore",
  "llmproto",
  "look",
+ "modelchan",
  "promptcore",
  "rhai",
  "sched",
  "serde_json",
+ "sha2",
  "termcore",
 ]
 
@@ -1884,6 +1952,7 @@ dependencies = [
  "appabi",
  "bootslot",
  "ccserve",
+ "comp-models",
  "cpufeat",
  "deskcore",
  "ecdsa",
@@ -1902,6 +1971,7 @@ dependencies = [
  "livecore",
  "llmproto",
  "look",
+ "modelchan",
  "p256",
  "promptcore",
  "quant",
@@ -2274,6 +2344,7 @@ dependencies = [
  "agentabi",
  "bootslot",
  "bpe",
+ "ccserve",
  "cpufeat",
  "deskcore",
  "diskmap",
@@ -2293,6 +2364,7 @@ dependencies = [
  "llmproto",
  "netcore",
  "object",
+ "promptcore",
  "quant",
  "rustc-demangle",
  "sched",

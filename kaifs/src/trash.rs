@@ -1,7 +1,9 @@
 //! The trash (ADR 0004 §4; P2 task 6): deleting moves an object to
 //! `/.trash/<txn>/<n>/` in its volume, beside an `info.cbor` that says where it
 //! was, when, and which action moved it (the freedesktop Trash 1.0 idea). A trash
-//! is a rename, so undoing the action that trashed something moves it back.
+//! is a rename, so undoing the action that trashed something moves it back. An
+//! object itself named `info.cbor` is held as [`ITEM`], so a slot's `info.cbor`
+//! is always the one the trash wrote; its path says what it was called.
 //! Only [`Fs::empty_trash`] removes anything for good, and its caller logs what
 //! went (the space comes back once the undo snapshots that hold it expire and
 //! the GC runs).
@@ -23,6 +25,8 @@ use alloc::vec::Vec;
 pub const TRASH: &str = ".trash";
 /// The file beside each trashed object.
 pub const INFO: &str = "info.cbor";
+/// The name an object called [`INFO`] has in its slot.
+pub const ITEM: &str = "item";
 const INFO_SCHEMA: u64 = 1;
 
 /// What `info.cbor` says.
@@ -42,6 +46,7 @@ pub struct Trashed {
     /// Its folder, `/.trash/<txn>/<n>`.
     pub folder: u64,
     pub ino: u64,
+    /// Its name in the folder: its own, or [`ITEM`] for one called [`INFO`].
     pub name: String,
     pub info: TrashInfo,
 }
@@ -98,7 +103,9 @@ impl<D: BlockDev> Fs<D> {
     }
 
     /// Moves the name `name` in `dir` of the active volume to its trash, with an
-    /// `info.cbor` beside it.
+    /// `info.cbor` beside it. The record is written first and the move comes
+    /// last, so a trash that fails leaves the object where it was and at most a
+    /// slot with no object, which [`Fs::trash_list`] skips.
     pub fn trash(&mut self, dir: u64, name: &str) -> Result<Trashed, Error> {
         self.writing()?;
         let entry = self.lookup(dir, name)?.ok_or(Error::NotFound)?;
@@ -115,7 +122,6 @@ impl<D: BlockDev> Fs<D> {
             n += 1;
         }
         let folder = self.mkdir(txn, &format!("{n}"))?;
-        self.rename(dir, name, folder, name)?;
         let info = TrashInfo {
             path,
             deleted: self.clock,
@@ -123,10 +129,15 @@ impl<D: BlockDev> Fs<D> {
         };
         let file = self.create(folder, INFO)?;
         self.write_file(file, &encode_info(&info))?;
+        let held = match name {
+            INFO => ITEM,
+            _ => name,
+        };
+        self.rename(dir, name, folder, held)?;
         Ok(Trashed {
             folder,
             ino: entry.ino,
-            name: name.to_string(),
+            name: held.to_string(),
             info,
         })
     }

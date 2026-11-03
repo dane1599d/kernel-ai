@@ -73,16 +73,25 @@ pub fn device_key(
     vol: &mut dyn Volume,
     entropy: impl FnOnce() -> Result<[u8; 32], String>,
 ) -> Result<Key, String> {
-    if let Some(seed) = vol.read(KEY)? {
-        let seed: [u8; 32] = seed
-            .as_slice()
-            .try_into()
-            .map_err(|_| "the device key is not 32 bytes")?;
-        return Ok(Key::from_seed(seed));
+    if let Some(key) = saved_key(vol)? {
+        return Ok(key);
     }
     let seed = entropy()?;
     store::in_action(vol, SAVE_ACTION, |vol| vol.write(KEY, &seed))?;
     Ok(Key::from_seed(seed))
+}
+
+/// The device key if one was made, read and never made: a question such as
+/// [`next`] writes nothing.
+pub fn saved_key(vol: &mut dyn Volume) -> Result<Option<Key>, String> {
+    let Some(seed) = vol.read(KEY)? else {
+        return Ok(None);
+    };
+    let seed: [u8; 32] = seed
+        .as_slice()
+        .try_into()
+        .map_err(|_| "the device key is not 32 bytes")?;
+    Ok(Some(Key::from_seed(seed)))
 }
 
 /// A build put in `local`.
@@ -96,14 +105,18 @@ pub struct Published {
 type Build = (Header, String, Vec<u8>);
 
 /// The version the next build of `name` takes unless the user names one: one
-/// patch past the newest build `local` holds, or `0.0.1`.
+/// patch past the newest build `local` holds, or `0.0.1`. `key` is the device
+/// key ([`saved_key`]); with none, `local` holds nothing yet.
 pub fn next(
     vol: &mut dyn Volume,
-    key: &Key,
+    key: Option<&Key>,
     provided: &[(&str, Version)],
     name: &str,
 ) -> Result<Version, String> {
-    let held = verified(vol, key, provided)?;
+    let held = match key {
+        Some(key) => verified(vol, key, provided)?,
+        None => Vec::new(),
+    };
     Ok(
         match held.iter().find(|(header, _, _)| header.name == name) {
             Some((old, _, _)) => {
@@ -523,7 +536,7 @@ mod tests {
         let rebuilt = artifact("app1", "0.0.2", "int y;\n");
         assert!(publish(&mut vol, &key(1), &rebuilt, &[], PROVIDED, NOW).is_ok());
         assert_eq!(
-            next(&mut vol, &key(1), PROVIDED, "app1"),
+            next(&mut vol, Some(&key(1)), PROVIDED, "app1"),
             Ok(Version::new(0, 0, 3))
         );
     }
@@ -557,11 +570,25 @@ mod tests {
     }
 
     #[test]
+    fn asking_the_next_version_makes_no_key() {
+        let mut vol = MemVolume::default();
+        assert_eq!(saved_key(&mut vol).map(|k| k.is_some()), Ok(false));
+        assert_eq!(
+            next(&mut vol, None, PROVIDED, "hello"),
+            Ok(Version::new(0, 0, 1))
+        );
+        assert!(vol.files().is_empty());
+        let made = device_key(&mut vol, || Ok([7; 32])).unwrap();
+        let saved = saved_key(&mut vol).unwrap().unwrap();
+        assert_eq!(saved.id(), made.id());
+    }
+
+    #[test]
     fn a_build_is_published_signed_by_the_device_key_and_a_rebuild_replaces_it() {
         let mut vol = MemVolume::default();
         let key = key(1);
         assert_eq!(
-            next(&mut vol, &key, PROVIDED, "hello"),
+            next(&mut vol, Some(&key), PROVIDED, "hello"),
             Ok(Version::new(0, 0, 1))
         );
         let hello = artifact("hello", "0.0.1", "int main(void) { return 0; }\n");
@@ -572,7 +599,7 @@ mod tests {
         assert!(checked.refused.is_empty(), "{:?}", checked.refused);
         assert_eq!(checked.indexes[0].summary, SUMMARY);
         assert_eq!(
-            next(&mut vol, &key, PROVIDED, "hello"),
+            next(&mut vol, Some(&key), PROVIDED, "hello"),
             Ok(Version::new(0, 0, 2))
         );
         // A rebuild must be newer than the build it replaces.
@@ -594,7 +621,7 @@ mod tests {
         let named = artifact("other", "1.2.0", "int x;\n");
         publish(&mut vol, &key, &named, &[], PROVIDED, NOW).unwrap();
         assert_eq!(
-            next(&mut vol, &key, PROVIDED, "other"),
+            next(&mut vol, Some(&key), PROVIDED, "other"),
             Ok(Version::new(1, 2, 1)),
             "one patch past the named version, which publish takes"
         );

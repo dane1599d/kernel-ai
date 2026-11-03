@@ -15,14 +15,19 @@ mod actions;
 mod apart;
 mod appline;
 mod apps;
+mod ccbuild;
 mod centry;
 mod cmode;
+mod cprogram;
+mod door;
+mod door_build;
 mod effects;
 mod files;
 mod fuzz;
 mod log;
 mod logdisk;
 mod look;
+mod models;
 mod more;
 mod packages;
 mod panel;
@@ -82,6 +87,8 @@ struct FakeHost {
     /// A refusal the supervisor gives every `keep` request, as for an app it
     /// does not run.
     keep_refusal: RefCell<Option<String>>,
+    /// The saved restart window (`kai-updates 1`).
+    restart_file: RefCell<Option<String>>,
     /// The installed apps' rows, and what each `app_call` sent and answers.
     apps: RefCell<crate::apps::Apps>,
     app_requests: RefCell<Vec<(String, String)>>,
@@ -112,6 +119,11 @@ struct FakeHost {
     /// every request the shell sent cc.
     cc_script: RefCell<VecDeque<Vec<u8>>>,
     cc_sent: RefCell<Vec<String>>,
+    /// `cc build`'s calls to `pkg` and the host, in order, the answers a
+    /// test scripts for `pkg`, and what `cc_build` gives.
+    pkg_sent: RefCell<Vec<String>>,
+    pkg_answers: RefCell<VecDeque<Result<String, String>>>,
+    cc_built: RefCell<Option<Result<crate::ccbuild::CcBuilt, String>>>,
     /// The `fs` server's files, and each transaction's files before and after.
     files: RefCell<std::collections::BTreeMap<String, String>>,
     txns: RefCell<Vec<(Files, Files)>>,
@@ -134,6 +146,11 @@ struct FakeHost {
     /// not here runs normal with 4,096 pages. And the app with focus.
     profile_state: RefCell<std::collections::BTreeMap<String, (kaiprofile::Class, u64)>>,
     focused: RefCell<Option<String>>,
+    /// What `updated` holds for the model rows, and each request it was sent.
+    models: RefCell<comp_models::Models>,
+    model_requests: RefCell<Vec<String>>,
+    /// What `updated` answers every request with instead, when set.
+    model_answer: RefCell<Option<String>>,
 }
 
 /// What standing instructions asked the desktop and the owners for.
@@ -143,6 +160,8 @@ pub(super) struct FakeTriggers {
     pub runs: RefCell<Vec<(u64, String, String, bool)>>,
     /// The owner's answer: `Err` when it finds no live rule covering a firing.
     pub refuse: RefCell<Option<String>>,
+    /// The event box's lines waiting to be read.
+    pub waiting: RefCell<String>,
 }
 
 impl crate::standing::Triggers for FakeTriggers {
@@ -163,6 +182,10 @@ impl crate::standing::Triggers for FakeTriggers {
             .borrow_mut()
             .push((rule, action.into(), app.into(), undo));
         Ok(())
+    }
+
+    fn waiting(&self) -> String {
+        core::mem::take(&mut *self.waiting.borrow_mut())
     }
 }
 
@@ -247,6 +270,7 @@ impl FakeHost {
             keep_file: RefCell::new(None),
             keep_fails: Cell::new(0),
             keep_refusal: RefCell::new(None),
+            restart_file: RefCell::new(None),
             apps: RefCell::new(crate::apps::Apps::default()),
             app_requests: RefCell::new(Vec::new()),
             app_replies: RefCell::new(VecDeque::new()),
@@ -266,6 +290,9 @@ impl FakeHost {
             cc: RefCell::new(None),
             cc_script: RefCell::new(VecDeque::new()),
             cc_sent: RefCell::new(Vec::new()),
+            pkg_sent: RefCell::new(Vec::new()),
+            pkg_answers: RefCell::new(VecDeque::new()),
+            cc_built: RefCell::new(None),
             files: RefCell::new(Files::new()),
             txns: RefCell::new(Vec::new()),
             one_action: Cell::new(false),
@@ -279,6 +306,9 @@ impl FakeHost {
             triggers: FakeTriggers::default(),
             profile_state: RefCell::new(std::collections::BTreeMap::new()),
             focused: RefCell::new(None),
+            models: RefCell::new(models::store()),
+            model_requests: RefCell::new(Vec::new()),
+            model_answer: RefCell::new(None),
         })
     }
 }
@@ -517,7 +547,7 @@ impl Host for FakeHost {
                     "
 ",
                 )),
-            FsRead::Read(path) => files
+            FsRead::Read(path) | FsRead::Whole(path) => files
                 .get(path)
                 .cloned()
                 .ok_or_else(|| String::from("NotFound")),
@@ -673,6 +703,15 @@ impl Host for FakeHost {
         Ok(())
     }
 
+    fn restart_read(&self) -> Option<String> {
+        self.restart_file.borrow().clone()
+    }
+
+    fn restart_write(&self, text: &str) -> Result<(), String> {
+        *self.restart_file.borrow_mut() = Some(String::from(text));
+        Ok(())
+    }
+
     fn apps(&self) -> Option<&RefCell<crate::apps::Apps>> {
         Some(&self.apps)
     }
@@ -687,6 +726,35 @@ impl Host for FakeHost {
             .ok_or_else(|| String::from("the app did not answer"))
     }
 
+    /// `updated`'s answers, as `models.rs` there gives them.
+    fn models(&self, request: &str) -> Result<String, String> {
+        self.model_requests.borrow_mut().push(String::from(request));
+        if let Some(answer) = self.model_answer.borrow().clone() {
+            return Ok(answer);
+        }
+        let mut m = self.models.borrow_mut();
+        let words: Vec<&str> = request.split(' ').collect();
+        Ok(match words.as_slice() {
+            ["models"] => modelchan::listing::encode(&m),
+            ["models", "import"] => String::from("ok importing fixture 4096"),
+            ["models", "use", hex] => {
+                let sha = modelchan::listing::sha256(hex)?;
+                match (m.store.running == Some(sha), m.next() == Some(sha)) {
+                    (_, true) => String::from("ok already"),
+                    (true, false) => {
+                        m.store.next = None;
+                        String::from("ok cancelled")
+                    }
+                    (false, false) => {
+                        m.store.next = Some(sha);
+                        format!("ok next {hex}")
+                    }
+                }
+            }
+            _ => String::from("err unknown request"),
+        })
+    }
+
     fn appearance_read(&self) -> Option<String> {
         self.appearance.borrow().clone()
     }
@@ -698,6 +766,24 @@ impl Host for FakeHost {
 
     fn audit(&self, text: &str) {
         self.audit.borrow_mut().push(String::from(text));
+    }
+
+    fn pkg(&self, request: &str) -> Result<String, String> {
+        self.pkg_sent.borrow_mut().push(String::from(request));
+        let answer = self.pkg_answers.borrow_mut().pop_front();
+        answer.unwrap_or_else(|| Err(String::from("no pkg here")))
+    }
+
+    fn cc_build(&self, name: &str, version: &str) -> Result<crate::ccbuild::CcBuilt, String> {
+        self.pkg_sent
+            .borrow_mut()
+            .push(format!("cc_build {name} {version}"));
+        let built = self.cc_built.borrow_mut().take();
+        built.unwrap_or_else(|| Err(String::from("no cc here")))
+    }
+
+    fn pkg_local(&self, name: &str, path: &str) -> Result<String, String> {
+        self.pkg(&format!("local {name} {path}"))
     }
 
     fn cc(&self, request: &[u8]) -> Result<Vec<u8>, String> {

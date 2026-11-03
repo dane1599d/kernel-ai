@@ -470,6 +470,15 @@ pub const IMPORTS: &[WitFunc] = &[
         result: || Some(Ty::U32),
     },
     WitFunc {
+        interface: "kai:models/models",
+        version: "0.1",
+        name: "read",
+        core_params: &[],
+        core_results: &[CoreTy::I32],
+        params: || vec![],
+        result: || Some(Ty::U32),
+    },
+    WitFunc {
         interface: "kai:settings/settings",
         version: "0.1",
         name: "send",
@@ -485,6 +494,39 @@ pub const IMPORTS: &[WitFunc] = &[
         core_params: &[CoreTy::I32, CoreTy::I32],
         core_results: &[CoreTy::I32],
         params: || vec![Ty::List(Box::new(Ty::U8))],
+        result: || Some(Ty::U32),
+    },
+    WitFunc {
+        interface: "kai:files/files",
+        version: "0.1",
+        name: "read",
+        core_params: &[CoreTy::I32, CoreTy::I32],
+        core_results: &[CoreTy::I32],
+        params: || vec![Ty::String],
+        result: || Some(Ty::U32),
+    },
+    WitFunc {
+        interface: "kai:files/files",
+        version: "0.1",
+        name: "write",
+        core_params: &[
+            CoreTy::I32,
+            CoreTy::I32,
+            CoreTy::I32,
+            CoreTy::I32,
+            CoreTy::I32,
+        ],
+        core_results: &[CoreTy::I32],
+        params: || vec![Ty::String, Ty::List(Box::new(Ty::U8)), Ty::Bool],
+        result: || Some(Ty::U32),
+    },
+    WitFunc {
+        interface: "kai:files/files",
+        version: "0.1",
+        name: "build",
+        core_params: &[CoreTy::I32, CoreTy::I32],
+        core_results: &[CoreTy::I32],
+        params: || vec![Ty::String],
         result: || Some(Ty::U32),
     },
     WitFunc {
@@ -733,6 +775,20 @@ pub const EXPORTS: &[WitFunc] = &[
         result: || None,
     },
     WitFunc {
+        interface: "kai:models/listing",
+        version: "0.1",
+        name: "on-listing",
+        core_params: &[CoreTy::I32, CoreTy::I32, CoreTy::I32, CoreTy::I32],
+        core_results: &[],
+        params: || {
+            vec![
+                Ty::U32,
+                Ty::Result(Some(Box::new(Ty::String)), Some(Box::new(Ty::String))),
+            ]
+        },
+        result: || None,
+    },
+    WitFunc {
         interface: "kai:settings/replies",
         version: "0.1",
         name: "on-reply",
@@ -753,6 +809,23 @@ pub const EXPORTS: &[WitFunc] = &[
         interface: "kai:edit/replies",
         version: "0.1",
         name: "on-reply",
+        core_params: &[CoreTy::I32, CoreTy::I32, CoreTy::I32, CoreTy::I32],
+        core_results: &[],
+        params: || {
+            vec![
+                Ty::U32,
+                Ty::Result(
+                    Some(Box::new(Ty::List(Box::new(Ty::U8)))),
+                    Some(Box::new(Ty::String)),
+                ),
+            ]
+        },
+        result: || None,
+    },
+    WitFunc {
+        interface: "kai:files/replies",
+        version: "0.1",
+        name: "on-done",
         core_params: &[CoreTy::I32, CoreTy::I32, CoreTy::I32, CoreTy::I32],
         core_results: &[],
         params: || {

@@ -7,19 +7,23 @@
 //! the artifact's component and licence against the header's, its action names
 //! against the `<name>_` prefix and the OS's rows, and the header's `world`
 //! against the `kai:app` version the artifact's WIT world includes. The
-//! packages then go into a TUF repository signed by a fresh test root
-//! ([`tuf`]), written to DIR (default `target/pkgrepo`).
+//! packages, with the catalog's models in a `models` role ([`models`]), then go
+//! into a TUF repository signed by a fresh test root ([`tuf`]), written to DIR
+//! (default `target/pkgrepo`).
 //!
 //! `cargo xtask pkgrepo serve [--port PORT]` builds the same into
 //! `target/pkgrepo` and serves it as a mirror ([`serve`]; P4 task 2's host
 //! half) until stopped.
 
 pub mod mirrors;
+pub mod models;
 mod serve;
 pub(crate) mod tuf;
 
 #[cfg(test)]
 mod mirror_tests;
+#[cfg(test)]
+mod model_tests;
 #[cfg(test)]
 mod tests;
 
@@ -44,26 +48,74 @@ pub const ARTIFACT: &str = bundle::ARTIFACT;
 /// A built-in app: the version on the boot drive it is packed from, and the
 /// header fields the artifact does not carry.
 pub struct App {
-    /// The package name, which must be the artifact's component.
+    /// The package name, the app's as the agent and the Apps sheet know it.
     pub name: &'static str,
-    /// The boot drive's version, `comp/<name>/<label>.wasm`.
+    /// The artifact's component, the service it runs as: the package's name,
+    /// or its window, `<name>-window` (`kaipkg::app`).
+    pub component: &'static str,
+    /// The boot drive's version, `comp/<component>/<label>.wasm`.
     pub label: &'static str,
     /// At most 80 bytes; data, never instructions.
     pub summary: &'static str,
     /// Must be the artifact's own licence.
     pub licence: &'static str,
-    /// The app's WIT package directory.
-    pub wit: &'static str,
+    /// The app's WIT package directories, as its recipe builds it.
+    pub wit: &'static [&'static str],
 }
 
-/// Every built-in app. P4's apps join as they land (P4 plan, tasks 4-11).
-pub const APPS: &[App] = &[App {
-    name: "notes",
-    label: livecore::boot::BUILT_IN,
-    summary: "Plain-text notes the AI can read and write",
-    licence: "MPL-2.0",
-    wit: components::NOTES_RECIPE.wit[0],
-}];
+/// A built-in window app: package `name` around the boot drive's own build of
+/// `recipe`, byte for byte, so the Apps sheet lists it as installed while its
+/// plan line runs the image's version (v0.1; the window apps' decision row).
+const fn window(name: &'static str, recipe: &components::Recipe, summary: &'static str) -> App {
+    App {
+        name,
+        component: recipe.component,
+        label: components::WINDOW_LABEL,
+        summary,
+        licence: "MPL-2.0",
+        wit: recipe.wit,
+    }
+}
+
+/// Every built-in app: P4's windows, the editor and the model manager (P4
+/// plan, tasks 4-11).
+pub const APPS: &[App] = &[
+    window(
+        "notes",
+        &components::NOTES_WINDOW_RECIPE,
+        "Plain-text notes the AI can read and write",
+    ),
+    window(
+        "files",
+        &components::FILES_WINDOW_RECIPE,
+        "Your files: browse, move, trash and restore them",
+    ),
+    window(
+        "terminal",
+        &components::TERMINAL_WINDOW_RECIPE,
+        "The shell in a window",
+    ),
+    window(
+        "settings",
+        &components::SETTINGS_WINDOW_RECIPE,
+        "Appearance, permissions and the system's settings",
+    ),
+    window(
+        "monitor",
+        &components::MONITOR_WINDOW_RECIPE,
+        "What the machine is doing: processes, memory and the model",
+    ),
+    window(
+        "editor",
+        &components::EDITOR_RECIPE,
+        "A code editor for your files and the system's source",
+    ),
+    window(
+        "models",
+        &components::MODELS_WINDOW_RECIPE,
+        "The AI models: which one runs, each one's licence, and how to switch",
+    ),
+];
 
 /// One packed package and the index fields its artifact gives.
 #[derive(Clone)]
@@ -161,15 +213,18 @@ pub struct Image {
 }
 
 /// The image's repository: every app of [`APPS`] packed from `versions`, the
-/// boot drive's, and signed by a fresh test root (P4 plan §4, item 3).
+/// boot drive's, and the models of [`models::for_image`], signed by a fresh
+/// test root (P4 plan §4, item 3).
 pub fn image(root: &Path, versions: &[Module]) -> Result<Image, String> {
     let packages = pack_all(root, versions)?;
+    let models = models::for_image()?;
     let keys = Keys::generate()?;
     let now = unix_now()?;
-    let repository = tuf::build(&packages, &keys, now)?;
+    let repository = tuf::build_with_models(&packages, &models, &keys, now)?;
     println!(
-        "xtask: the image's repository: {} packages signed by test root {}",
+        "xtask: the image's repository: {} packages and {} models signed by test root {}",
         packages.len(),
+        models.len(),
         &keys.root.id()[..12]
     );
     Ok(Image {
@@ -239,13 +294,14 @@ pub fn flip(modules: &mut [Module], package: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Packs the apps, signs them into a repository with a fresh test root, and
-/// writes it to `dir`.
+/// Packs the apps, signs them and the catalog's models into a repository with
+/// a fresh test root, and writes it to `dir`.
 fn build(root: &Path, dir: &Path) -> Result<Repository, String> {
     let versions = components::build(root)?;
     let packages = pack_all(root, &versions)?;
     let keys = Keys::generate()?;
-    let repository = tuf::build(&packages, &keys, unix_now()?)?;
+    let models = models::catalog()?;
+    let repository = tuf::build_with_models(&packages, &models, &keys, unix_now()?)?;
     write(&repository, dir)?;
     for package in &packages {
         println!(
@@ -282,7 +338,7 @@ pub fn pack_all(root: &Path, versions: &[Module]) -> Result<Vec<Package>, String
     let mut actions = BTreeSet::new();
     let mut packages = Vec::new();
     for app in APPS {
-        let path = format!("comp/{}/{}.wasm", app.name, app.label);
+        let path = format!("comp/{}/{}.wasm", app.component, app.label);
         let module = versions
             .iter()
             .find(|m| m.path == path)
@@ -303,9 +359,15 @@ pub fn pack_all(root: &Path, versions: &[Module]) -> Result<Vec<Package>, String
 /// `app`'s package around `artifact`, or why its parts disagree.
 pub fn pack(root: &Path, app: &App, artifact: &[u8]) -> Result<Package, String> {
     let fail = |why: String| format!("{}: {why}", app.name);
+    if !kaipkg::app::may_run_as(app.name, app.component) {
+        return Err(fail(format!(
+            "it may carry only itself or its window, not {}",
+            app.component
+        )));
+    }
     let parsed = artifact::parse(artifact).map_err(fail)?;
     let manifest = &parsed.manifest;
-    if manifest.component != app.name {
+    if manifest.component != app.component {
         return Err(fail(format!(
             "the artifact is component {}",
             manifest.component
@@ -319,13 +381,13 @@ pub fn pack(root: &Path, app: &App, artifact: &[u8]) -> Result<Package, String> 
     }
     let version = manifest
         .world
-        .strip_prefix(&format!("app:{}/", app.name))
+        .strip_prefix(&format!("app:{}/", app.component))
         .and_then(|rest| rest.split_once('@'))
         .map(|(_, version)| version)
         .ok_or_else(|| {
             fail(format!(
                 "the artifact's world {} is not app:{}/",
-                manifest.world, app.name
+                manifest.world, app.component
             ))
         })?;
     let world = kai_app_world(root, app, &manifest.world).map_err(fail)?;
@@ -385,7 +447,12 @@ fn declarable(effects: Vec<String>) -> Result<Vec<String>, String> {
 /// `app:notes/notes@1.0.0`) imports or exports interfaces of.
 fn kai_app_world(root: &Path, app: &App, world: &str) -> Result<String, String> {
     let mut dirs = kai_wit(root)?;
-    dirs.push(root.join(app.wit));
+    // A recipe names the `wit/` packages it needs too, which are there already.
+    for wit in app.wit.iter().map(|wit| root.join(wit)) {
+        if !dirs.contains(&wit) {
+            dirs.push(wit);
+        }
+    }
     let (resolve, packages) = crate::wit::load_dirs(&dirs)?;
     let (package, name) = world
         .split_once('/')

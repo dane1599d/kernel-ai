@@ -13,6 +13,9 @@
 /// Bytes in the record: one sector.
 pub const SIZE: usize = 512;
 pub const MAGIC: &[u8; 8] = b"KAIMHINT";
+/// The extended attribute a store blob keeps its FNV-1a64 in, so `fs` can
+/// write a hint for it without reading the blob again.
+pub const FNV_ATTR: &str = "kai.fnv1a64";
 pub const VERSION: u32 = 1;
 const CRC_AT: usize = SIZE - 4;
 

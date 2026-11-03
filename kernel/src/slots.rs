@@ -168,9 +168,12 @@ pub fn on_boot(test: bool) {
 
 /// Whether this boot's lever has written its record: until then `updated`'s
 /// BOOTREC_* and SLOT_WRITE calls answer Busy, so the lever's write never
-/// overwrites a change of theirs.
+/// overwrites a change of theirs. A boot off a slot image has no lever write
+/// ([`lever`] returns before it reads the record), so there is nothing to wait
+/// for: a test boot that never runs the lever does not hold `updated` for
+/// its whole wait.
 pub fn lever_done() -> bool {
-    LEVER_DONE.load(Ordering::SeqCst)
+    LEVER_DONE.load(Ordering::SeqCst) || this_slot().is_none()
 }
 
 static LEVER_DONE: AtomicBool = AtomicBool::new(false);

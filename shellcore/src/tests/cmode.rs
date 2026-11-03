@@ -23,7 +23,7 @@ impl ccserve::Host for CcClock {
 
 static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
 
-fn start_cc(host: &FakeHost) {
+pub(super) fn start_cc(host: &FakeHost) {
     let service =
         Service::new(ccserve::CC_WASM, &XCC_HEADERS, Rows::os(), &CcClock).expect("cc starts");
     *host.cc.borrow_mut() = Some(service);

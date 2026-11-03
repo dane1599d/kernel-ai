@@ -1,0 +1,17 @@
+[package]
+name = "comp-editor-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The editor's window (P4 task 11): the tree `kai:ui` and `kai:code` take, built
+# from `editcore::screen`'s view. No `kai:ui` calls here, so it is host-tested
+# through a real `uikit::Window`.
+[lib]
+doctest = false
+
+[dependencies]
+comp-ui-bind = { path = "../ui-bind" }
+editcore = { path = "../../editcore" }
+uikit = { path = "../../uikit" }

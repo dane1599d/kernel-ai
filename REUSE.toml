@@ -14,9 +14,9 @@ SPDX-License-Identifier = "MPL-2.0"
 
 # Compiled into programs written for Kernel AI (ADR 0009 D1); ccserve/kai/bind is
 # wit-bindgen-c's output from wit/ (`cargo xtask cc-bind`), which `cc build`
-# compiles into components and apps.
+# compiles into components and apps with its runtime, buildrt.c.
 [[annotations]]
-path = ["kabi/**", "compsdk/**", "wit/**", "ccserve/kai/bind/**", "ccserve/kai/stdlib.h"]
+path = ["kabi/**", "compsdk/**", "wit/**", "ccserve/kai/bind/**", "ccserve/kai/stdlib.h", "ccserve/kai/buildrt.c"]
 precedence = "closest"
 SPDX-FileCopyrightText = "The Kernel AI contributors"
 SPDX-License-Identifier = "MIT OR Apache-2.0"

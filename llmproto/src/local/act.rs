@@ -260,6 +260,7 @@ pub fn routed(
         request: request.line.clone(),
         repair: None,
         timeout_ms: request.timeout_ms,
+        lang: script::Lang::Rhai,
     };
     let prompt = script::request_with(&asked.request, None, false);
     if !room(engine.uncached_tokens(&super::turns(&prompt))) {

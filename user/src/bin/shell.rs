@@ -10,8 +10,12 @@ extern crate alloc;
 // A program's crate root sits in src/bin, so its modules are named by path.
 #[path = "shell/apart.rs"]
 mod apart;
+#[path = "shell/build.rs"]
+mod build;
 #[path = "shell/files.rs"]
 mod files;
+#[path = "shell/routes.rs"]
+mod routes;
 #[path = "shell/ui.rs"]
 mod ui;
 
@@ -49,32 +53,78 @@ struct System {
     state: files::State,
     /// The installed apps' rows, loaded as the agent first calls them (P4).
     apps: core::cell::RefCell<shellcore::apps::Apps>,
+    /// The saved appearance is still to reach `desktop`: at start, and after
+    /// each change ([`give_appearance`]).
+    appearance_due: core::cell::Cell<bool>,
+    /// When `desktop` was last offered it, so one that is down costs a call
+    /// only every [`APPEARANCE_RETRY_NS`].
+    appearance_tried_ns: core::cell::Cell<u64>,
+    /// The `desktop` last given it, by pid: a new one (a restart) is given it
+    /// again.
+    desktop_pid: core::cell::Cell<u64>,
+    /// When the shell last looked for a new `desktop`.
+    desktop_looked_ns: core::cell::Cell<u64>,
 }
 
-/// The route to the llm service: the shell's plan line has `uses=llm`, its only
-/// route.
+/// How often an appearance `desktop` did not take is offered again.
+const APPEARANCE_RETRY_NS: u64 = 10_000_000_000;
+/// How often the shell looks for a `desktop` that started or restarted since
+/// it last gave it the appearance.
+const DESKTOP_LOOK_NS: u64 = 2_000_000_000;
+
+/// The running `desktop`'s pid, from the kernel's METRICS.
+fn desktop_pid() -> Option<u64> {
+    let metrics = sys::metrics().ok()?;
+    metrics
+        .processes
+        .iter()
+        .take(metrics.process_count as usize)
+        .find(|p| p.name() == "desktop")
+        .map(|p| p.pid)
+}
+
+// The shell's first routes, by their index in its plan line's
+// `uses=llm+supervisor+cc+updated` (`kabi::plan::SHELL_ROUTES`); those after
+// them by name (`shell/routes.rs`).
+use kabi::plan::shell_route;
+
+/// The route to the llm service.
 fn llm() -> kabi::handle::Handle {
-    user::route(0).unwrap_or(kabi::handle::Handle::NONE)
+    user::route(shell_route::LLM).unwrap_or(kabi::handle::Handle::NONE)
 }
 
-/// The route to the supervisor: the second in the shell's `uses=llm+supervisor`.
+/// The route to the supervisor.
 fn supervisor() -> kabi::handle::Handle {
-    user::route(1).unwrap_or(kabi::handle::Handle::NONE)
+    user::route(shell_route::SUPERVISOR).unwrap_or(kabi::handle::Handle::NONE)
 }
 
-/// The route to `cc`, the `c>` prompt's compiler: the third in `uses=llm+supervisor+cc`.
+/// The route to `cc`, the `c>` prompt's compiler.
 fn cc_route() -> kabi::handle::Handle {
-    user::route(2).unwrap_or(kabi::handle::Handle::NONE)
+    user::route(shell_route::CC).unwrap_or(kabi::handle::Handle::NONE)
 }
 
 /// cc's wait for one entry: a compile and a run of 2 s each, and on its first
 /// request, translating cc.wasm and compiling kairt.
 const CC_CALL_MS: u64 = 30_000;
 
-/// The route to `desktop`, fourth in `uses=llm+supervisor+cc+desktop`, on a
-/// desktop only (P3 task 7).
+/// The route to `updated`, the model channel (P4 task 10).
+fn updated() -> kabi::handle::Handle {
+    user::route(shell_route::UPDATED).unwrap_or(kabi::handle::Handle::NONE)
+}
+
+/// `updated`'s wait for one model request: a list reads the store and checks
+/// the signed role, and a switch commits the trial record and the hint; an
+/// import only starts, and goes on between requests.
+const UPDATED_CALL_MS: u64 = 10_000;
+
+/// The route to `desktop`, on a desktop only (P3 task 7): `routes=desktop`.
 fn desktop() -> Option<kabi::handle::Handle> {
-    user::route(3)
+    routes::named("desktop")
+}
+
+/// The route to `pkg`, where `cc build` installs (P4 task 13): `routes=pkg`.
+fn pkg_route() -> Result<kabi::handle::Handle, String> {
+    routes::named("pkg").ok_or_else(|| String::from("this shell has no route to pkg"))
 }
 
 const DESKTOP_CALL_MS: u64 = 5_000;
@@ -85,6 +135,43 @@ fn ask_desktop(route: kabi::handle::Handle, request: &str) -> Result<String, Str
     let len = sys::call_route(route, request.as_bytes(), &mut reply, DESKTOP_CALL_MS)
         .map_err(|error| format!("desktop did not answer ({error:?})"))?;
     Ok(String::from_utf8_lossy(&reply[..len.min(reply.len())]).into_owned())
+}
+
+/// Gives `desktop` the saved appearance, when it is due: at start (a
+/// `desktop` that starts after the shell gets it on a later pass), after each
+/// change, and to each new `desktop` (a restart). No desktop, or nothing
+/// saved, leaves nothing to do.
+fn give_appearance(system: &System) {
+    let now = sys::time_ns();
+    // A `desktop` that started or restarted (the supervisor's restart, a new
+    // boot) starts from its plan line: give it the saved appearance again.
+    if now.saturating_sub(system.desktop_looked_ns.get()) >= DESKTOP_LOOK_NS {
+        system.desktop_looked_ns.set(now);
+        if let Some(pid) = desktop_pid().filter(|&pid| pid != system.desktop_pid.get()) {
+            system.desktop_pid.set(pid);
+            system.appearance_due.set(true);
+            system.appearance_tried_ns.set(0);
+        }
+    }
+    if !system.appearance_due.get()
+        || now.saturating_sub(system.appearance_tried_ns.get()) < APPEARANCE_RETRY_NS
+            && system.appearance_tried_ns.get() != 0
+    {
+        return;
+    }
+    let (Some(route), Some(text)) = (desktop(), system.state.read(files::APPEARANCE)) else {
+        system.appearance_due.set(false);
+        return;
+    };
+    system.appearance_tried_ns.set(now);
+    let request = deskcore::panel_wire::encode_appearance(&text);
+    // Not up yet, or busy: offered again on a later pass.
+    if let Ok(reply) = ask_desktop(route, &request) {
+        if reply != "ok" {
+            println!("desktop did not take the saved appearance: {reply}");
+        }
+        system.appearance_due.set(false);
+    }
 }
 
 /// Takes the panel's oldest request, runs a line apart from the terminal's
@@ -164,6 +251,101 @@ const _: () = assert!(same(
     shellcore::SETTINGS_APP,
     deskcore::settings_wire::SETTINGS_APP
 ));
+// The same for the editor's file door.
+const _: () = assert!(same(shellcore::door::DOOR_APP, deskcore::files::DOOR_APP));
+
+/// One request to `desktop`, answered in bytes: a file's piece is not always text.
+fn ask_desktop_bytes(route: kabi::handle::Handle, request: &[u8]) -> Result<Vec<u8>, String> {
+    let mut reply = vec![0u8; kabi::MAX_MESSAGE];
+    let len = sys::call_route(route, request, &mut reply, DESKTOP_CALL_MS)
+        .map_err(|error| format!("desktop did not answer ({error:?})"))?;
+    reply.truncate(len.min(reply.len()));
+    Ok(reply)
+}
+
+/// Most files taken in one pass of the loop.
+const FILES_PER_PASS: usize = 4;
+
+/// The editor's files, a few at a time: each complete transfer `desktop` holds is
+/// done through the agent core's door (`Shell::door_read`, `Shell::door_write`),
+/// and what came of it goes back, a write's reason or a read's bytes.
+fn take_files(shell: &mut Shell) {
+    use deskcore::files::parse_job;
+    let Some(route) = desktop() else {
+        return;
+    };
+    for _ in 0..FILES_PER_PASS {
+        let Ok(answer) = ask_desktop(route, "files take") else {
+            return;
+        };
+        let Some(job) = parse_job(&answer) else {
+            return;
+        };
+        let done = match do_file_job(shell, route, &job) {
+            Ok(()) => format!("files done {} ok", job.id),
+            Err(why) => {
+                // One line, as `desktop` keeps it.
+                let why: String = why
+                    .chars()
+                    .map(|c| if c.is_control() { ' ' } else { c })
+                    .collect();
+                format!("files done {} err {}", job.id, why.trim())
+            }
+        };
+        if let Err(why) = ask_desktop(route, &done) {
+            println!("the editor's file {} was not reported: {why}", job.id);
+        }
+    }
+}
+
+/// Fills a read's bytes, or a build's report, into the transfer in pieces.
+fn fill_job(route: kabi::handle::Handle, id: u32, bytes: &[u8]) -> Result<(), String> {
+    use deskcore::files::CHUNK;
+    let total = bytes.len();
+    for (i, piece) in bytes.chunks(CHUNK).enumerate() {
+        let head = format!("files fill {id} {} {total}\n", i * CHUNK);
+        let mut message = head.into_bytes();
+        message.extend_from_slice(piece);
+        if ask_desktop_bytes(route, &message)? != b"ok" {
+            return Err(String::from("desktop did not take the file"));
+        }
+    }
+    Ok(())
+}
+
+/// One transfer: a write fetches its pieces and saves; a read reads and fills; a
+/// build builds the component's C sources as a typed `cc build` does and fills its
+/// report, which takes as long as the build.
+fn do_file_job(
+    shell: &mut Shell,
+    route: kabi::handle::Handle,
+    job: &deskcore::files::Job,
+) -> Result<(), String> {
+    use deskcore::files::Op;
+    match job.op {
+        Op::Read => {
+            let bytes = shell.door_read(&job.app, &job.path)?;
+            fill_job(route, job.id, &bytes)
+        }
+        Op::Build => {
+            let report = shell.door_build(&job.app, &job.path, job.user)?;
+            fill_job(route, job.id, report.as_bytes())
+        }
+        Op::Write { create } => {
+            let mut bytes: Vec<u8> = Vec::with_capacity(job.total);
+            while bytes.len() < job.total {
+                let request = format!("files fetch {} {}", job.id, bytes.len());
+                let reply = ask_desktop_bytes(route, request.as_bytes())?;
+                let piece = reply
+                    .strip_prefix(b"ok\n")
+                    .filter(|piece| !piece.is_empty())
+                    .ok_or_else(|| String::from("desktop did not give the file"))?;
+                bytes.extend_from_slice(piece);
+            }
+            shell.door_write(&job.app, &job.path, &bytes, create, job.user)
+        }
+    }
+}
 
 const fn same(a: &str, b: &str) -> bool {
     let (a, b) = (a.as_bytes(), b.as_bytes());
@@ -287,6 +469,27 @@ impl Host for System {
             .map_err(|error| format!("{error:?}"))?;
         reply.truncate(len.min(kabi::MAX_MESSAGE));
         Ok(reply)
+    }
+
+    fn pkg(&self, request: &str) -> Result<String, String> {
+        build::ask_pkg(pkg_route()?, request)
+    }
+
+    fn cc_build(&self, name: &str, version: &str) -> Result<shellcore::ccbuild::CcBuilt, String> {
+        build::build(&self.files, cc_route(), name, version)
+    }
+
+    fn pkg_local(&self, name: &str, path: &str) -> Result<String, String> {
+        build::install(pkg_route()?, name, path)
+    }
+
+    fn models(&self, request: &str) -> Result<String, String> {
+        let mut reply = vec![0u8; kabi::MAX_MESSAGE];
+        let len = sys::call_route(updated(), request.as_bytes(), &mut reply, UPDATED_CALL_MS)
+            .map_err(|error| format!("the model channel did not answer ({error:?})"))?;
+        let text = core::str::from_utf8(&reply[..len.min(reply.len())])
+            .map_err(|_| String::from("the model channel's answer is not text"))?;
+        Ok(text.to_string())
     }
 
     fn apps(&self) -> Option<&core::cell::RefCell<shellcore::apps::Apps>> {
@@ -529,6 +732,20 @@ impl Host for System {
         }
     }
 
+    fn restart_read(&self) -> Option<String> {
+        self.state.read(files::RESTART)
+    }
+
+    /// As the keep-running list is: with the line's files, if it changed any.
+    fn restart_write(&self, text: &str) -> Result<(), String> {
+        match self.files.is_open() {
+            true => self.state.write_in(files::RESTART, text),
+            false => self
+                .state
+                .write(files::RESTART, text, self.files.next_action()),
+        }
+    }
+
     /// `keep <app> on|off` to the supervisor, which keeps the app from napping.
     fn keep_running(&self, app: &str, on: bool) -> Result<(), String> {
         supervise(&supervise::keep::encode(app, on))
@@ -538,15 +755,18 @@ impl Host for System {
         self.state.read(files::APPEARANCE)
     }
 
-    /// Saved with the line's files, as the rules are. `desktop` takes it up
-    /// when it next starts (live redraw is desktop's follow-up).
+    /// Saved with the line's files, as the rules are; then `desktop` paints in
+    /// it at once ([`give_appearance`], between lines).
     fn appearance_write(&self, text: &str) -> Result<(), String> {
         match self.files.is_open() {
             true => self.state.write_in(files::APPEARANCE, text),
             false => self
                 .state
                 .write(files::APPEARANCE, text, self.files.next_action()),
-        }
+        }?;
+        self.appearance_due.set(true);
+        self.appearance_tried_ns.set(0);
+        Ok(())
     }
 
     /// As the rules are written: with the line's files, if it changed any.
@@ -663,6 +883,14 @@ impl shellcore::standing::Triggers for Firings {
 
     fn unwatch(&self, _when: &shellcore::standing::When) {}
 
+    fn waiting(&self) -> String {
+        let mut buf = vec![0u8; kabi::event::READ_BYTES];
+        match sys::event_read(&mut buf) {
+            Ok(len) => String::from_utf8_lossy(&buf[..len.min(buf.len())]).into_owned(),
+            Err(_) => String::new(),
+        }
+    }
+
     /// `suspend <app> rule` or `resume <app> rule`; `undo` sends the inverse.
     fn run(&self, _rule: u64, action: &str, app: &str, undo: bool) -> Result<(), String> {
         let request = match (action, undo) {
@@ -691,30 +919,27 @@ fn take_events(shell: &mut Shell, buf: &mut [u8]) {
         return;
     };
     let text = core::str::from_utf8(&buf[..len.min(buf.len())]).unwrap_or("");
-    for event in text
-        .lines()
-        .filter_map(shellcore::standing::Event::from_line)
-    {
-        if let Some(note) = shell.on_event(&event) {
-            println!("{note}");
-        }
+    for note in shell.on_events(text) {
+        println!("{note}");
     }
 }
 
 fn main() -> i32 {
     let args = args();
-    let mut shell = Shell::new(
-        {
-            let (files, state) = files::Files::new();
-            Rc::new(System {
-                pool: apart::Pool::new(),
-                files,
-                state,
-                apps: core::cell::RefCell::default(),
-            })
-        },
-        DEFAULT_CONFIG,
-    );
+    let system = {
+        let (files, state) = files::Files::new();
+        Rc::new(System {
+            pool: apart::Pool::new(),
+            files,
+            state,
+            apps: core::cell::RefCell::default(),
+            appearance_due: core::cell::Cell::new(true),
+            appearance_tried_ns: core::cell::Cell::new(0),
+            desktop_pid: core::cell::Cell::new(0),
+            desktop_looked_ns: core::cell::Cell::new(0),
+        })
+    };
+    let mut shell = Shell::new(system.clone(), DEFAULT_CONFIG);
     println!("up (restart {})", arg(&args, "restart").unwrap_or("0"));
     let mut line = vec![0u8; kabi::MAX_MESSAGE];
     let mut events = vec![0u8; kabi::event::READ_BYTES];
@@ -729,7 +954,9 @@ fn main() -> i32 {
         take_events(&mut shell, &mut events);
         take_panel(&mut shell);
         take_effects(&mut shell);
+        take_files(&mut shell);
         take_settings(&mut shell);
+        give_appearance(&system);
         shell.retry_keep();
         let mut caller = u64::MAX;
         let len = match sys::svc_recv(&mut line, wait_ms, &mut caller) {

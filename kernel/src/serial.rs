@@ -110,10 +110,26 @@ pub fn _print_quiet(args: fmt::Arguments) {
     });
 }
 
-/// Releases the line lock unconditionally. Only for fatal-error reporting, after the
-/// other CPUs were halted, possibly while holding it.
-pub fn break_line_lock() {
-    LINE_OWNER.store(0, Ordering::Release);
+/// How many times [`take_line_for_report`] tries for the line before it takes it
+/// anyway: a second or more of spinning, longer than any one line takes.
+const REPORT_LINE_TRIES: u32 = 20_000_000;
+
+/// Takes the line lock for good, for fatal-error reporting. The other CPUs were
+/// asked to halt, but one printing a line has interrupts off and takes the request
+/// only after the line is out, so this waits for it to end the line first. A CPU
+/// that never ends it (stuck while holding it) loses it after
+/// [`REPORT_LINE_TRIES`]. The report's own lines then re-enter, and nothing else
+/// prints after them.
+pub fn take_line_for_report() {
+    let me = crate::percpu::index() + 1;
+    for _ in 0..REPORT_LINE_TRIES {
+        match LINE_OWNER.compare_exchange(0, me, Ordering::Acquire, Ordering::Relaxed) {
+            Ok(_) => return,
+            Err(owner) if owner == me => return,
+            Err(_) => core::hint::spin_loop(),
+        }
+    }
+    LINE_OWNER.store(me, Ordering::Release);
 }
 
 /// Prints a line to COM1 and the framebuffer console.

@@ -78,7 +78,7 @@ impl<E: Env> Host<E> {
                 (mode, text(reply))
             }
             (Control::Swap { label, force }, Mode::Serving(version)) => {
-                crate::swap::swap(&mut self.core, version, &label, force)?
+                crate::swap::swap(&mut self.core, version, &label, force, true)?
             }
             (Control::Swap { .. } | Control::Try { .. }, mode @ Mode::Probation(_)) => {
                 (mode, text("err busy: a version is on probation"))

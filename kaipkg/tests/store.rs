@@ -180,15 +180,34 @@ fn a_remove_keeps_what_others_need_and_fetches_nothing() {
     w.install("notes").unwrap();
     w.install("weather").unwrap();
     let store = w.store;
-    store.remove(&mut w.cx(), &index(), OS, "notes").unwrap();
+    store
+        .remove(&mut w.cx(), &index(), OS, &[], "notes")
+        .unwrap();
     let mut names = w.names();
     names.sort();
     let want = [("ui-kit", false), ("weather", true)];
     assert_eq!(names, want.map(|(n, e)| (n.to_string(), e)));
     assert_eq!(
-        refused(store.remove(&mut w.cx(), &index(), OS, "notes")),
+        refused(store.remove(&mut w.cx(), &index(), OS, &[], "notes")),
         Refused::NotInstalled("notes".into())
     );
+    w.check();
+}
+
+#[test]
+fn a_pinned_app_is_not_removed_but_its_install_still_undoes() {
+    let mut w = World::new();
+    let before = w.install("notes").unwrap();
+    let names = w.names();
+    let store = w.store;
+    assert_eq!(
+        refused(store.remove(&mut w.cx(), &index(), OS, &["notes"], "notes")),
+        Refused::Pinned("notes".into())
+    );
+    assert_eq!(w.names(), names);
+    // A pin holds only against a remove: undoing the install is a switch back.
+    store.rollback(&mut w.cx(), before - 1).unwrap();
+    assert!(w.names().is_empty());
     w.check();
 }
 
@@ -259,7 +278,7 @@ fn gc_keeps_the_newest_the_recent_current_and_good() {
     let store = w.store;
     for name in ["notes", "camera", "maps"] {
         w.install(name).unwrap();
-        store.remove(&mut w.cx(), &index(), OS, name).unwrap();
+        store.remove(&mut w.cx(), &index(), OS, &[], name).unwrap();
     }
     // Generations 1-7; days pass so only the newest three are recent.
     w.now.0 += 10 * DAY;
@@ -303,7 +322,9 @@ fn a_remove_resolves_what_stays_against_the_os() {
     w.install("notes").unwrap();
     w.install("weather").unwrap();
     let store = w.store;
-    store.remove(&mut w.cx(), &index(), OS, "weather").unwrap();
+    store
+        .remove(&mut w.cx(), &index(), OS, &[], "weather")
+        .unwrap();
     assert!(w.names().iter().any(|(n, e)| n == "notes" && *e));
     w.check();
 }
