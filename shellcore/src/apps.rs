@@ -41,8 +41,10 @@ pub struct Apps {
     pub results: Vec<(String, Vec<crate::effects::EffectDone>)>,
 }
 
-/// Batches of results kept for the host to hand back: past this the oldest go.
+/// Batches of results kept for the host to hand back, in all and for one app:
+/// past either the oldest go, and the shell says so.
 const MAX_RESULT_BATCHES: usize = 16;
+const MAX_RESULT_BATCHES_PER_APP: usize = 8;
 
 impl Apps {
     /// What the runs queued since the last take, as (app, effect lines).
@@ -50,15 +52,29 @@ impl Apps {
         core::mem::take(&mut self.effects)
     }
 
-    /// Keeps what `app`'s effects came to, until the host takes it.
-    pub fn keep_results(&mut self, app: &str, done: Vec<crate::effects::EffectDone>) {
+    /// Keeps what `app`'s effects came to, until the host takes it. Past
+    /// [`MAX_RESULT_BATCHES_PER_APP`] of the app's own, or [`MAX_RESULT_BATCHES`]
+    /// in all, the oldest batch goes, and its app's name comes back for the
+    /// caller to say so: nothing is dropped silently.
+    pub fn keep_results(
+        &mut self,
+        app: &str,
+        done: Vec<crate::effects::EffectDone>,
+    ) -> Option<String> {
         if done.is_empty() {
-            return;
+            return None;
         }
-        if self.results.len() == MAX_RESULT_BATCHES {
-            self.results.remove(0);
-        }
+        let own = self.results.iter().filter(|(name, _)| name == app).count();
+        let oldest = if own == MAX_RESULT_BATCHES_PER_APP {
+            self.results.iter().position(|(name, _)| name == app)
+        } else if self.results.len() == MAX_RESULT_BATCHES {
+            Some(0)
+        } else {
+            None
+        };
+        let dropped = oldest.map(|at| self.results.remove(at).0);
         self.results.push((app.to_string(), done));
+        dropped
     }
 
     /// What the effects run since the last take came to, as (app, results).
