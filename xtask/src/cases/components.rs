@@ -4,6 +4,26 @@ use super::{TestCase, case};
 use crate::disk::Fixture;
 use std::time::Duration;
 
+/// `app-notes`' disk: Notes' saved state is in `/system/apps` on `kai-data`.
+const NOTES_DISK: crate::blklog::Data = crate::blklog::Data {
+    nvme: false,
+    log: None,
+    gpt: true,
+};
+
+/// Boot 2 of `app-notes`: Notes starts from its saved state, the one note left.
+const APP_NOTES_2: TestCase = TestCase {
+    expect: &[
+        "live: notes-window 1 restored from its saved state",
+        "app-notes: the agent read the window: ok Notes shows: buy milk.",
+        "app-notes: boot 2's window shows the note Kai made, from the saved state",
+    ],
+    data: Some(NOTES_DISK),
+    memory_mib: Some(1024),
+    min_timeout: Some(Duration::from_secs(300)),
+    ..case("app-notes (boot 2)", "test=app-notes reread")
+};
+
 pub(super) const CASES: &[TestCase] = &[
     case("live", "test=live"),
     TestCase {
@@ -89,6 +109,21 @@ pub(super) const CASES: &[TestCase] = &[
         // pages for the last) outgrow the default 512 MiB, as for app-settings.
         memory_mib: Some(1024),
         ..case("app-editor-files", "test=app-editor-files")
+    },
+    // P4's close: Kai makes a note in Notes' window, the window shows it, a second
+    // note is taken back by `undo`, and boot 2 finds the one left on disk.
+    TestCase {
+        expect: &[
+            "app-notes: Kai's notes_add ran at once, the text being the person's: ok ",
+            "app-notes: the agent read the window: ok Notes shows: buy milk.",
+            "app-notes: the Notes window shows the note Kai made",
+            "app-notes: undo took the second note back, in Notes and its window",
+        ],
+        data: Some(NOTES_DISK),
+        memory_mib: Some(1024),
+        min_timeout: Some(Duration::from_secs(300)),
+        then: Some(&APP_NOTES_2),
+        ..case("app-notes", "test=app-notes")
     },
     // P4 task 11, C components from the editor: the editor opens a C source the case
     // wrote into `/home/user/c/hello/` (Ctrl-O and its path), and Ctrl-B builds the

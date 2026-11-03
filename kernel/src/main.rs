@@ -27,6 +27,7 @@ mod app_editor_tests;
 mod app_files_tests;
 mod app_models_tests;
 mod app_monitor_tests;
+mod app_notes_tests;
 mod app_route_tests;
 mod app_settings_tests;
 mod app_terminal_tests;
@@ -421,6 +422,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::DeskProfileFloor => run_case(profile_floor_tests::check),
         SelfTest::UiKeys => run_case(keys_tests::check),
         SelfTest::DeskTerm => run_case(term_tests::check),
+        SelfTest::AppNotes { reread } => run_case(|| app_notes_tests::check(reread)),
         SelfTest::DeskAgent => run_case(agent_desk_tests::agent_check),
         SelfTest::DeskDefault => run_case(default_tests::check),
         SelfTest::DeskNoMemory => run_case(default_tests::no_memory_check),
