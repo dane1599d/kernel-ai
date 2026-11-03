@@ -332,6 +332,8 @@ impl Shell {
         source: &str,
     ) -> Result<(String, CcBuilt, String), Unbuilt> {
         let fail = |why: String| Unbuilt::Final(why);
+        // Between rounds in the background the person may have edited it.
+        self.app_check_source(name).map_err(fail)?;
         self.host
             .app_source(name, source)
             .map_err(|why| fail(format!("the app's source was not kept: {}", shown(&why))))?;
@@ -427,7 +429,7 @@ impl Shell {
         let reply = format!(
             "Built {name} {version} ({} bytes): {}. Its source is in {APPS_DIR}/{name}/.",
             cc.bytes,
-            shown(summary)
+            shown(summary).trim_end_matches('.')
         );
         self.app_built = Some(built);
         Reply::ok(reply)

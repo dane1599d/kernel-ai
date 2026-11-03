@@ -199,6 +199,12 @@ impl Shell {
         })
     }
 
+    /// Esc on the panel: stops the build in the background, if one runs.
+    pub fn stop_app_build(&mut self) -> Option<Reply> {
+        self.app_job.as_ref()?;
+        Some(self.app_stop())
+    }
+
     /// What builds in the background came to since the last look, for the
     /// desktop; the terminal sees them ahead of its next reply.
     pub fn take_notices(&mut self) -> Vec<String> {

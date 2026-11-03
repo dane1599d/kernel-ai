@@ -753,10 +753,17 @@ impl Shell {
 
     /// Runs one line and returns what to show; the log goes to disk after it.
     pub fn eval(&mut self, input: &str) -> Reply {
-        let mut reply = self.eval_line(input);
+        let reply = self.eval_line(input);
         self.save_log();
-        // A build's notice goes ahead of a plain reply; a question keeps it
-        // for the next.
+        reply
+    }
+
+    /// [`Shell::eval`] for the terminal's own line: a build's notice goes
+    /// ahead of a plain reply, and a question keeps it for the next. The
+    /// panel's and apps' lines go through `eval`, so their result stays
+    /// theirs (C on #621).
+    pub fn eval_console(&mut self, input: &str) -> Reply {
+        let mut reply = self.eval(input);
         if reply.confirm.is_none() && !reply.more && !self.notices.is_empty() {
             let mut text = self.take_notices().join("\n");
             if !reply.text.is_empty() {

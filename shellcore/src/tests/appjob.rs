@@ -80,7 +80,7 @@ fn the_line_answers_at_once_and_the_build_s_notice_leads_the_next_reply() {
         ]
     );
     assert!(shell.app_built.is_some());
-    let next = shell.eval("build status");
+    let next = shell.eval_console("build status");
     assert!(
         next.text
             .starts_with("Built timer 0.0.1 (9216 bytes): A countdown timer.")
@@ -88,7 +88,10 @@ fn the_line_answers_at_once_and_the_build_s_notice_leads_the_next_reply() {
         "{next:?}"
     );
     // Shown once.
-    assert_eq!(shell.eval("build status").text, "Kai is building no app.");
+    assert_eq!(
+        shell.eval_console("build status").text,
+        "Kai is building no app."
+    );
     assert!(
         shell
             .eval("log actlog")
@@ -200,8 +203,64 @@ fn a_job_the_llm_dropped_ends_with_why() {
         matches!(&shown, Some(crate::PanelResult::Refused(why)) if why.contains("restarted")),
         "{shown:?}"
     );
+    let after = shell.eval_console("build status").text;
+    assert!(after.contains("restarted"), "{after}");
+    assert_eq!(after.lines().last(), Some("Kai is building no app."));
+}
+
+/// C on #621: a panel line after a build ended keeps its own result, and the
+/// notice waits for the terminal.
+#[test]
+fn a_panel_line_keeps_its_result_and_the_notice_waits_for_the_terminal() {
+    let (host, mut shell) = background(vec![app()]);
+    host.pkg_answers
+        .borrow_mut()
+        .push_back(Ok(String::from("0.0.1")));
+    host.cc_builds.borrow_mut().push_back(Ok(built()));
+    assert!(shell.eval_console("make me a countdown timer app").ok);
+    answer(&host, &mut shell);
     assert_eq!(
-        shell.eval("build status").text.lines().last(),
-        Some("Kai is building no app.")
+        shell.eval_panel("1 + 1"),
+        crate::PanelResult::Done(String::from("2"))
     );
+    let next = shell.eval_console("build status").text;
+    assert!(next.starts_with("Built timer 0.0.1"), "{next}");
+}
+
+/// C on #621: between rounds the person may edit main.c; the next round
+/// never overwrites it.
+#[test]
+fn a_main_c_edited_mid_build_is_not_overwritten_by_the_repair() {
+    let (host, mut shell) = background(vec![app(), app()]);
+    host.pkg_answers
+        .borrow_mut()
+        .push_back(Ok(String::from("0.0.1")));
+    host.cc_builds
+        .borrow_mut()
+        .push_back(Err(String::from("main.c:2: error: expected ';'")));
+    assert!(shell.eval_console("make me a countdown timer app").ok);
+    answer(&host, &mut shell);
+    host.app_sources.borrow_mut()[0].1 = String::from("/* mine */\n");
+    let shown = answer(&host, &mut shell);
+    assert!(
+        matches!(&shown, Some(crate::PanelResult::Refused(why)) if why.contains("was changed since Kai wrote it")),
+        "{shown:?}"
+    );
+    assert_eq!(
+        *host.app_sources.borrow(),
+        [(String::from("timer"), String::from("/* mine */\n"))]
+    );
+}
+
+#[test]
+fn esc_on_the_panel_stops_a_build_and_nothing_else() {
+    let (_host, mut shell) = background(vec![app()]);
+    assert!(shell.stop_app_build().is_none());
+    assert!(shell.eval_console("make me a countdown timer app").ok);
+    let stopped = shell.stop_app_build().expect("a build runs");
+    assert!(
+        stopped.text.starts_with("Stopped building timer"),
+        "{stopped:?}"
+    );
+    assert!(shell.stop_app_build().is_none());
 }

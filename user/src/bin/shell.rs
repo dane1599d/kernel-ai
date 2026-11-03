@@ -48,6 +48,9 @@ const APP_JOB_CALL_MS: u64 = 10_000;
 /// The app job (`app-start`) the shell waits for, 0 for none; `app-take` is
 /// asked only while there is one.
 static APP_TICKET: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+/// When `app-take` was last asked, and the least time between two.
+static APP_TAKEN_NS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+const APP_TAKE_GAP_NS: u64 = 2_000_000_000;
 
 /// How long a script's child may run: the line budget its engine keeps, and a
 /// margin for the child's own check before it.
@@ -209,6 +212,11 @@ fn take_panel(shell: &mut Shell) {
                 PanelResult::Refused(reason) => State::Refused { reason },
             }
         }
+        // Esc while Kai builds an app in the background stops the build.
+        Some(Some(Request::Stop)) => match shell.stop_app_build() {
+            Some(reply) => State::Done { line: reply.text },
+            None => return,
+        },
         // Esc after the shell took the line: it has run already, one line at
         // a time, and its result stays shown. Esc before is desktop's own: the
         // line never came here.
@@ -604,8 +612,13 @@ impl Host for System {
         use core::sync::atomic::Ordering;
         use shellcore::appjob::Started;
         let asked = alloc::format!("app-start {}", request.encode());
-        let Ok(text) = app_job(&asked) else {
-            return Started::Inline;
+        let text = match app_job(&asked) {
+            Ok(text) => text,
+            // llm may have taken the job and be slow to say so.
+            Err(kabi::Error::TimedOut) => {
+                return Started::Busy(String::from("the model did not answer in time"));
+            }
+            Err(_) => return Started::Inline,
         };
         match text.split_once(' ').unwrap_or((text.as_str(), "")) {
             ("ok", ticket) => match ticket.parse::<u64>() {
@@ -628,6 +641,13 @@ impl Host for System {
         if ticket == 0 {
             return None;
         }
+        // At most one app-take a pass of APP_TAKE_GAP_NS, however often
+        // desktop events wake the loop.
+        let now = sys::time_ns();
+        if now.saturating_sub(APP_TAKEN_NS.load(Ordering::Relaxed)) < APP_TAKE_GAP_NS {
+            return None;
+        }
+        APP_TAKEN_NS.store(now, Ordering::Relaxed);
         let gone = |why: &str| AnswerError::Unavailable(alloc::format!("llm service: {why}"));
         let answer = match app_job(&alloc::format!("app-take {ticket}")) {
             Ok(text) if text == "pending" => return None,
@@ -1084,7 +1104,7 @@ fn main() -> i32 {
             if !text.starts_with("answer ") {
                 ui::begin();
             }
-            shell.eval(text).to_wire()
+            shell.eval_console(text).to_wire()
         } else {
             String::from("err the shell answers only the terminal")
         };
