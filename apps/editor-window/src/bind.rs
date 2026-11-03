@@ -44,7 +44,7 @@ mod files {
         path: ["../../wit/kai-files"],
     });
     pub use exports::kai::files::replies::Guest;
-    pub use kai::files::files::{read, write};
+    pub use kai::files::files::{build, read, write};
 }
 
 mod code {
@@ -178,6 +178,10 @@ impl Host for Os {
 
     fn write_file(&mut self, path: &str, data: &[u8], create: bool) -> u32 {
         files::write(path, data, create)
+    }
+
+    fn build_component(&mut self, name: &str) -> u32 {
+        files::build(name)
     }
 }
 

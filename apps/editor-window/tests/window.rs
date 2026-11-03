@@ -82,6 +82,10 @@ impl Host for Os {
     fn write_file(&mut self, path: &str, _data: &[u8], _create: bool) -> u32 {
         panic!("this test saves no file: {path}");
     }
+
+    fn build_component(&mut self, name: &str) -> u32 {
+        panic!("this test builds no C component: {name}");
+    }
 }
 
 impl Os {

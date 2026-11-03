@@ -26,6 +26,8 @@ pub const DIR: &str = "/home/user/c";
 pub const NO_ANSWER: &str = "pkg did not answer";
 /// Most characters of a text from `cc` or `pkg` that a reply or the log shows.
 const MAX_SHOWN: usize = 300;
+/// Most characters of `cc`'s diagnostics the editor's pager gets, lines kept.
+const MAX_DIAGNOSTICS: usize = 4_000;
 
 /// What `cc` built, from its `build` reply: `<kind> <bytes> <provenance>`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -94,6 +96,21 @@ fn shown(text: &str) -> String {
         .collect()
 }
 
+/// `text` as [`shown`] has it, but with its lines kept and more of it: `cc`'s
+/// diagnostics, one to a line, for the editor's pager.
+fn shown_lines(text: &str) -> String {
+    text.chars()
+        .take(MAX_DIAGNOSTICS)
+        .map(|c| {
+            if c == '\n' || c == ' ' || c.is_ascii_graphic() {
+                c
+            } else {
+                '?'
+            }
+        })
+        .collect()
+}
+
 /// Whether `version`, `local-next`'s answer, is `x.y.z` in digits, as cc
 /// takes it.
 fn valid_version(version: &str) -> bool {
@@ -126,8 +143,28 @@ fn installed(text: &str, name: &str, version: &str) -> Option<(u64, u64)> {
     }
 }
 
+/// Who a build is for, as its log entry records it.
+pub(crate) struct Asker<'a> {
+    /// The entry's request: the line typed, or the app's account of it.
+    pub request: &'a str,
+    /// The entry's consent: `typed`, or `app:<name>` for an app's door.
+    pub consent: &'a str,
+    /// Whether `cc`'s diagnostics keep their lines, for the editor's pager.
+    pub lines: bool,
+}
+
 impl Shell {
+    /// `cc build <name>` as the person typed `line`.
     pub(crate) fn cc_build(&mut self, line: &str, name: &str) -> Reply {
+        let asker = Asker {
+            request: line,
+            consent: "typed",
+            lines: false,
+        };
+        self.cc_build_as(&asker, name)
+    }
+
+    pub(crate) fn cc_build_as(&mut self, asker: &Asker<'_>, name: &str) -> Reply {
         if !valid_name(name) {
             return Reply::err(format!(
                 "cc build takes a component's name: 2-12 of a-z, 0-9 and -, starting with a letter, not {name:?}"
@@ -145,7 +182,14 @@ impl Shell {
         };
         let built = match self.host.cc_build(name, &version) {
             Ok(built) => built,
-            Err(why) => return Reply::err(format!("cc build {name}: {}", shown(&why))),
+            Err(why) => {
+                let why = if asker.lines {
+                    shown_lines(&why)
+                } else {
+                    shown(&why)
+                };
+                return Reply::err(format!("cc build {name}: {why}"));
+            }
         };
         let script = format!("cc build {name} {version}\n{}", built.provenance);
         self.host
@@ -162,7 +206,8 @@ impl Shell {
             // logged, with nothing `undo` could switch back.
             Err(why) if why.starts_with(NO_ANSWER) => {
                 let why = shown(&why);
-                self.log_build(line, script, &format!("local: {why}"), State::Nothing, None);
+                let outcome = format!("local: {why}");
+                self.log_build(asker, script, &outcome, State::Nothing, None);
                 return Reply::err(format!(
                     "built {name} {version} at {}, but {why}: it may have installed it, and undo cannot switch that back",
                     built.path
@@ -188,7 +233,7 @@ impl Shell {
                 to: parent,
             }),
         };
-        self.log_build(line, script, "ran", State::Done, Some(change));
+        self.log_build(asker, script, "ran", State::Done, Some(change));
         match made {
             Some((n, _)) => Reply::ok(format!(
                 "built {name} {version} ({} bytes) and installed it as generation {n}. undo",
@@ -201,10 +246,10 @@ impl Shell {
         }
     }
 
-    /// Logs a build that reached `local`, as one the user typed.
+    /// Logs a build that reached `local`, as `asker` asked it.
     fn log_build(
         &mut self,
-        line: &str,
+        asker: &Asker<'_>,
         script: String,
         outcome: &str,
         state: State,
@@ -219,9 +264,9 @@ impl Shell {
             of: None,
             tier: None,
             pack: None,
-            consent: String::from("typed"),
+            consent: String::from(asker.consent),
             state,
-            request: String::from(line),
+            request: String::from(asker.request),
             script,
             outcome: String::from(outcome),
             changes: change.into_iter().collect(),

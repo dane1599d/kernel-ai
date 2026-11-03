@@ -56,6 +56,35 @@ pub fn check_path(path: &str) -> Result<(), String> {
     artifact::valid_path(plain).map_err(|why| format!("{path}: {why}"))
 }
 
+/// Where C components' sources are: `/home/user/c/<name>/<file>.c`, the folder
+/// `cc build <name>` reads.
+pub const C_DIR: &str = "/home/user/c/";
+
+/// The C component whose folder holds the file at `path`, for Ctrl-B: the name in
+/// `/home/user/c/<name>/<file>`, a package's name (2-12 of a-z, 0-9 and `-`,
+/// starting with a letter), or why the file is not in one. `cc build` takes the
+/// folder's own files only, so a file in a folder below is not either.
+pub fn component_of(path: &str) -> Result<&str, String> {
+    let not_in_one =
+        || format!("Ctrl-B builds a C component: the file must be in {C_DIR}<name>/, not {path}");
+    let (name, _) = path
+        .strip_prefix(C_DIR)
+        .and_then(|rest| rest.split_once('/'))
+        .filter(|(_, file)| !file.is_empty() && !file.contains('/'))
+        .ok_or_else(not_in_one)?;
+    let shaped = (2..=12).contains(&name.len())
+        && name.starts_with(|c: char| c.is_ascii_lowercase())
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+    if !shaped {
+        return Err(format!(
+            "{name:?} is not a component's name: 2-12 of a-z, 0-9 and -, starting with a letter"
+        ));
+    }
+    Ok(name)
+}
+
 /// An environment with nothing in it: a file reads no component and builds no
 /// artifact. The service asks it only for what `build` and `try` would need,
 /// which [`FileEditor::handle`] refuses first.

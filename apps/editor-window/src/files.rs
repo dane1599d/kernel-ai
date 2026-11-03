@@ -1,6 +1,8 @@
 //! The editor on a file of the person's own: Ctrl-O asks for a path, the OS reads
 //! the file (`kai:files/files.read`), and Ctrl-S sends it back whole
-//! (`kai:files/files.write`). The file's lines are edited here, in an
+//! (`kai:files/files.write`). Ctrl-B on a saved file in a C component's folder
+//! asks the OS to build that component (`kai:files/files.build`) and shows its
+//! report. The file's lines are edited here, in an
 //! `editcore::file::FileEditor` that answers the screen's requests in the call
 //! that makes them; the edit service is for components and has no part in it.
 //!
@@ -13,7 +15,7 @@ use crate::Host;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use editcore::file::{COMPONENT, FileEditor, check_path};
+use editcore::file::{COMPONENT, FileEditor, check_path, component_of};
 use editcore::screen::Screen;
 
 /// Most requests the screen is answered in one go: it asks for the lines on
@@ -35,12 +37,19 @@ enum Job {
         bytes: Vec<u8>,
         ticket: u32,
     },
+    Build {
+        /// The C component being built.
+        name: String,
+        ticket: u32,
+    },
 }
 
 impl Job {
     fn ticket(&self) -> u32 {
         match self {
-            Self::Read { ticket, .. } | Self::Write { ticket, .. } => *ticket,
+            Self::Read { ticket, .. } | Self::Write { ticket, .. } | Self::Build { ticket, .. } => {
+                *ticket
+            }
         }
     }
 }
@@ -141,6 +150,31 @@ impl Files {
         });
     }
 
+    /// Ctrl-B: builds the C component whose folder the file is in, from what is
+    /// saved on disk. The report comes back with [`Files::reply`].
+    pub(crate) fn ask_build(&mut self, host: &mut dyn Host, screen: &mut Screen) {
+        let Some(editor) = &self.editor else {
+            return screen.note(
+                "Ctrl-B builds a C component: open a file in one first",
+                true,
+            );
+        };
+        if self.job.is_some() {
+            return screen.note("a file is still on its way; wait for it", true);
+        }
+        let name = match component_of(editor.path()) {
+            Ok(name) => String::from(name),
+            Err(why) => return screen.note(why, true),
+        };
+        // The OS builds the files as they are on disk, not what is typed here.
+        if editor.changed() || self.new {
+            return screen.note("Ctrl-S saves first: a build reads the files as saved", true);
+        }
+        let ticket = host.build_component(&name);
+        screen.note(format!("building {name}..."), false);
+        self.job = Some(Job::Build { name, ticket });
+    }
+
     /// The OS's answer to the request out, or why there is none.
     pub(crate) fn reply(
         &mut self,
@@ -159,6 +193,12 @@ impl Files {
             (Job::Read { .. }, Err(why)) => screen.note(why, true),
             (Job::Write { path, bytes, .. }, Ok(_)) => self.wrote(screen, &path, &bytes),
             (Job::Write { .. }, Err(why)) => screen.note(format!("not saved: {why}"), true),
+            (Job::Build { .. }, Ok(report)) => {
+                screen.build_report(&String::from_utf8_lossy(&report))
+            }
+            (Job::Build { name, .. }, Err(why)) => {
+                screen.note(format!("{name} was not built: {why}"), true);
+            }
         }
     }
 

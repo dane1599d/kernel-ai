@@ -335,6 +335,9 @@ fn link_imports(
             (crate::files::FILES, "write") => {
                 linker.func_wrap(qualified, name, crate::files::write)
             }
+            (crate::files::FILES, "build") => {
+                linker.func_wrap(qualified, name, crate::files::build)
+            }
             (crate::code::CODE, _) | (crate::ui::VIEW, _) => linker.func_new(
                 qualified,
                 name,

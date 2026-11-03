@@ -18,6 +18,7 @@
 
 use crate::actions::How;
 use crate::actlog::{Form, State};
+use crate::ccbuild::Asker;
 use crate::grants;
 use crate::script::{Checked, file_done, home_path};
 use crate::{FsChange, FsRead, Shell};
@@ -140,6 +141,45 @@ impl Shell {
         // line land in one commit.
         self.save_log();
         Ok(())
+    }
+}
+
+impl Shell {
+    /// The editor's Ctrl-B on a C component: `cc build <name>` for the sources
+    /// in `/home/user/c/<name>/`, as the shell runs it for a typed line, with the
+    /// same install and the same `undo` (an app goes to `pkg`'s `local`, a
+    /// component is built only). The log entry's consent is `app:<app>`, and
+    /// its request says whose key started it.
+    ///
+    /// Only the editor may, and only for a person's key or click, which the
+    /// editor's `comphost` and `desktop` carried here as `user` and this checks
+    /// again. It is not a script's: there is no function to call, so no script
+    /// (the model's, the panel's, `shell_line`'s) reaches it.
+    ///
+    /// The answer is the build's own report, `ok <text>` or `err <text>` with
+    /// `cc`'s diagnostics after the first line, for the editor to show; or why
+    /// the door refused before building anything.
+    pub fn door_build(&mut self, app: &str, name: &str, user: bool) -> Result<String, String> {
+        if app != DOOR_APP {
+            return Err(format!("{app} does not use the file door"));
+        }
+        if !user {
+            return Err(String::from(
+                "a build needs a key or click of the person at the editor",
+            ));
+        }
+        let request = format!("{app}: build {name}");
+        let asker = Asker {
+            request: &request,
+            consent: &format!("app:{app}"),
+            lines: true,
+        };
+        let reply = self.cc_build_as(&asker, name);
+        Ok(format!(
+            "{} {}",
+            if reply.ok { "ok" } else { "err" },
+            reply.text
+        ))
     }
 }
 

@@ -21,6 +21,7 @@ mod act_tests;
 mod agent_desk_tests;
 mod allow;
 mod apic;
+mod app_editor_build_tests;
 mod app_editor_files_tests;
 mod app_editor_tests;
 mod app_models_tests;
@@ -402,6 +403,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::UiWindow => run_case(ui_tests::check),
         SelfTest::AppEditor => run_case(app_editor_tests::check),
         SelfTest::AppEditorFiles => run_case(app_editor_files_tests::check),
+        SelfTest::AppEditorBuild => run_case(app_editor_build_tests::check),
         SelfTest::UiMonitor => run_case(app_window_tests::monitor_check),
         SelfTest::DeskNap => run_case(nap_tests::check),
         SelfTest::KeepRunning { reread } => run_case(|| keep_tests::check(reread)),

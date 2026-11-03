@@ -19,6 +19,7 @@ mod ccbuild;
 mod centry;
 mod cmode;
 mod door;
+mod door_build;
 mod effects;
 mod files;
 mod fuzz;

@@ -179,6 +179,9 @@ pub enum SelfTest {
     /// The editor opens a file of the person's own, saves it through the file door and
     /// the shell, and `undo` puts it back (P4 task 11).
     AppEditorFiles,
+    /// Ctrl-B in the editor builds the C component whose folder the open file is in,
+    /// through the file door and the shell, and `undo` takes it back (P4 task 11).
+    AppEditorBuild,
     /// The System monitor's window on the desktop, given a sample of the machine
     /// and closed from its control (P4 task 9).
     UiMonitor,
@@ -393,6 +396,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=ui-window" => Some(SelfTest::UiWindow),
             "test=app-editor" => Some(SelfTest::AppEditor),
             "test=app-editor-files" => Some(SelfTest::AppEditorFiles),
+            "test=app-editor-build" => Some(SelfTest::AppEditorBuild),
             "test=ui-monitor" => Some(SelfTest::UiMonitor),
             "test=desk-nap" => Some(SelfTest::DeskNap),
             "test=desk-appearance" => Some(SelfTest::DeskAppearance),
@@ -528,6 +532,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::UiWindow
             | SelfTest::AppEditor
             | SelfTest::AppEditorFiles
+            | SelfTest::AppEditorBuild
             | SelfTest::UiMonitor
             | SelfTest::DeskNap
             | SelfTest::KeepRunning { .. }
@@ -610,6 +615,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
         SelfTest::PkgStore(step) => crate::pkg_tests::plan(step),
         SelfTest::DeskCatalog => crate::catalog_tests::plan(),
         SelfTest::CBuild => crate::cc_build_tests::plan(),
+        SelfTest::AppEditorBuild => crate::app_editor_build_tests::plan(),
         SelfTest::Edit | SelfTest::Manifest | SelfTest::ManifestGood => {
             let mut plan = match test {
                 SelfTest::Edit => String::from(kabi::plan::NOTES_EDIT_TEST),
@@ -648,6 +654,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::PkgStore(_)
             | SelfTest::DeskCatalog
             | SelfTest::CBuild
+            | SelfTest::AppEditorBuild
     ) {
         // The file system service starts before the shell, once there is a
         // `kai-data` partition for it (ADR 0004).
